@@ -215,6 +215,7 @@ GRUB2 Multiboot2
 - Clock display is static (RTC not yet wired up)
 
 ---
+<img width="1413" height="1069" alt="image" src="https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e" />
 
 ## License
 
