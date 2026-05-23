@@ -145,7 +145,7 @@ with 8-byte breakout stubs assembled by the \texttt{MK\_THUNK} macro in
 
 \begin{lstlisting}[language={[Motorola68k]Assembler}, caption={MK\_THUNK macro}]
 MK_THUNK MACRO
-        ILLEGAL             ; $4AFC — triggers JIT breakout
+        ILLEGAL             ; $4AFC --- triggers JIT breakout
         dc.w    \1          ; UAOS magic token ($414D = "AM")
         dc.w    \2          ; function index (1-based)
         rts                 ; return to guest after dispatch
@@ -260,11 +260,104 @@ ld -T kernel/boot/uaos_kernel.ld build/*.o -o build/uaos-kernel.elf
 
 \section{Testing in QEMU}
 
+Copy the OVMF variables file once (required for UEFI variable store):
+
+\begin{lstlisting}[language=bash, caption={One-time OVMF setup}]
+cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd
+\end{lstlisting}
+
 \begin{lstlisting}[language=bash, caption={QEMU test invocation}]
 qemu-system-x86_64 \
-    -cdrom build/Ultimate_Amiga_OS.iso \
-    -m 512M -boot d -vga std -serial stdio
+  -machine q35,usb=off \
+  -drive if=pflash,format=raw,readonly=on,\
+file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+  -cdrom build/Ultimate_Amiga_OS.iso \
+  -m 512M -vga virtio -no-reboot
 \end{lstlisting}
+
+The \texttt{usb=off} flag is required to prevent QEMU's USB tablet device
+from conflicting with the PS/2 relative mouse driver.
+Add \texttt{-serial stdio} to see kernel debug output on the terminal.
+
+% =========================================================================
+\chapter{Graphics and Window Manager}
+% =========================================================================
+
+\section{Framebuffer Initialisation}
+
+GRUB2 fills the Multiboot2 framebuffer tag (type~8) from the UEFI GOP driver.
+\texttt{FB\_Init()} parses this tag to populate the global \texttt{FbState g\_fb}
+structure, which holds the physical base address, pixel dimensions, pitch
+(bytes per row), and bit depth (24 or 32 bpp).
+
+All drawing primitives (\texttt{FB\_FillRect}, \texttt{FB\_DrawHLine},
+\texttt{FB\_DrawVLine}, \texttt{FB\_PutPixel}, \texttt{FB\_PutStr}) clip
+coordinates to the framebuffer bounds before writing, supporting windows
+that extend partially off-screen.
+
+\section{Desktop}
+
+\texttt{Desktop\_Draw()} renders the full Workbench-style backdrop:
+\begin{itemize}
+    \item \textbf{Menu bar} (top, 20 px) --- Workbench menu labels and clock area.
+    \item \textbf{Backdrop} --- light grey base with a dark-grey stipple dot overlay,
+          one dot per two pixels alternating rows/columns (classic Amiga pattern).
+    \item \textbf{Disk icons} --- top-right corner, stacked vertically.
+    \item \textbf{Information window} --- centred boot status window.
+    \item \textbf{Status bar} (bottom, 18 px) --- kernel idle message and RAM size.
+\end{itemize}
+
+\texttt{Desktop\_RedrawRect(rx, ry, rw, rh)} repaints a sub-rectangle of the
+desktop (backdrop + overlays) without a full-screen repaint.  This is used
+by the window manager to erase the old window footprint during drag and resize,
+avoiding the full-screen flicker that would otherwise occur.
+
+\section{Window Manager}
+
+\texttt{kernel/display/wm.c} implements a lightweight window manager supporting
+up to eight windows simultaneously.
+
+\subsection{Data Structures}
+
+\begin{lstlisting}[language=C, caption={WmWindow structure}]
+typedef struct {
+    int       x, y, w, h;
+    char      title[32];
+    WM_DrawFn draw;     /* repaint callback: (x, y, w, h) */
+    WM_KeyFn  on_key;   /* keystroke callback: (char c)   */
+    int       active;
+} WmWindow;
+\end{lstlisting}
+
+\subsection{Z-Order and Focus}
+
+Windows are stored in \texttt{g\_wins[]} and indexed by a separate
+\texttt{g\_zorder[]} array (\texttt{[0]} = back, \texttt{[g\_nwins-1]} = top).
+\texttt{WM\_Redraw()} paints windows back-to-front.  Clicking a window calls
+\texttt{raise\_window()} to promote it to the top of the z-stack.
+
+\subsection{Drag and Resize}
+
+\begin{itemize}
+    \item \textbf{Drag} --- a mouse-down on the title bar records the grab offset.
+          Each subsequent mouse move erases the old footprint with
+          \texttt{Desktop\_RedrawRect}, updates \texttt{w->x/y}, and repaints
+          all windows.
+    \item \textbf{Resize} --- a mouse-down on the 16$\times$16 resize grip in the
+          bottom-right corner records the base size and origin.  Mouse movement
+          computes the new dimensions relative to the drag start point.
+    \item Windows may extend off the left, right, and bottom screen edges.
+          The title bar is always constrained to remain on-screen.
+\end{itemize}
+
+\section{Software Cursor}
+
+\texttt{kernel/display/cursor.c} implements a 16$\times$16 Amiga-style arrow
+sprite cursor.  The cursor is rendered by saving the background pixels beneath
+it, drawing the sprite, and on each move restoring the saved background before
+re-saving and re-drawing at the new position.  This ensures the desktop and
+window content are never permanently overwritten by cursor movement.
 
 % =========================================================================
 \chapter{Troubleshooting}

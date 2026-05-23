@@ -1,0 +1,222 @@
+/* UAOS Documentation Stylesheet — Workbench 3.x inspired */
+
+:root {
+    --bg:          #1a1a2e;
+    --surface:     #16213e;
+    --border:      #0f3460;
+    --accent:      #0088ff;
+    --accent2:     #ff8800;
+    --text:        #dde1e7;
+    --text-dim:    #8a9bb0;
+    --code-bg:     #0d1117;
+    --code-text:   #00cc66;
+    --link:        #44aaff;
+    --title-bar:   #0055aa;
+    --title-text:  #ffffff;
+    --wb-grey:     #aaaaaa;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Segoe UI', 'Liberation Sans', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    background-color: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ── Sidebar TOC ─────────────────────────────────────────── */
+
+#TOC {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 2px solid var(--border);
+    padding: 1.5rem 1rem;
+    font-size: 13px;
+    scrollbar-width: thin;
+}
+
+#TOC::before {
+    content: "UAOS Docs";
+    display: block;
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--title-text);
+    background: var(--title-bar);
+    margin: -1.5rem -1rem 1rem -1rem;
+    padding: 0.75rem 1rem;
+    letter-spacing: 0.05em;
+}
+
+#TOC ul { list-style: none; padding-left: 0.75rem; }
+#TOC > ul { padding-left: 0; }
+#TOC li { margin: 0.2rem 0; }
+#TOC a { color: var(--text-dim); text-decoration: none; }
+#TOC a:hover { color: var(--accent); }
+
+/* ── Main content ────────────────────────────────────────── */
+
+body > div, #content-wrap, article, section, .main-content {
+    margin-left: 260px;
+    padding: 2rem 3rem;
+    max-width: 960px;
+    width: 100%;
+}
+
+/* Pandoc wraps content in a div directly in body */
+body > div:not(#TOC) {
+    margin-left: 280px;
+    padding: 2rem 2.5rem;
+    flex: 1;
+}
+
+/* ── Headings ─────────────────────────────────────────────── */
+
+h1 {
+    font-size: 2rem;
+    color: var(--title-text);
+    background: var(--title-bar);
+    padding: 0.6rem 1.2rem;
+    margin: 2rem -2.5rem 1.5rem -2.5rem;
+    border-bottom: 3px solid var(--accent2);
+}
+
+h2 {
+    font-size: 1.4rem;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.3rem;
+    margin: 2rem 0 0.8rem;
+}
+
+h3 {
+    font-size: 1.1rem;
+    color: var(--accent2);
+    margin: 1.5rem 0 0.5rem;
+}
+
+h4 { font-size: 1rem; color: var(--text-dim); margin: 1rem 0 0.4rem; }
+
+/* ── Paragraphs & lists ───────────────────────────────────── */
+
+p { margin: 0.6rem 0 0.9rem; }
+
+ul, ol { padding-left: 1.8rem; margin: 0.5rem 0 0.9rem; }
+li { margin: 0.25rem 0; }
+
+/* ── Code ─────────────────────────────────────────────────── */
+
+code {
+    font-family: 'Courier New', 'Lucida Console', monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #333;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 4px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    margin: 0.8rem 0 1.2rem;
+    font-size: 0.87em;
+    line-height: 1.5;
+}
+
+pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--code-text);
+}
+
+/* ── Tables ───────────────────────────────────────────────── */
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.92em;
+}
+
+th {
+    background: var(--title-bar);
+    color: var(--title-text);
+    padding: 0.5rem 0.8rem;
+    text-align: left;
+    border: 1px solid var(--border);
+}
+
+td {
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--border);
+}
+
+tr:nth-child(even) td { background: var(--surface); }
+tr:hover td { background: #1f3058; }
+
+/* ── Links ────────────────────────────────────────────────── */
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; color: var(--accent2); }
+
+/* ── Blockquotes ──────────────────────────────────────────── */
+
+blockquote {
+    border-left: 4px solid var(--accent2);
+    margin: 0.8rem 0;
+    padding: 0.5rem 1rem;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ── Horizontal rule ──────────────────────────────────────── */
+
+hr {
+    border: none;
+    border-top: 2px solid var(--border);
+    margin: 2rem 0;
+}
+
+/* ── Title block ──────────────────────────────────────────── */
+
+header, .title-block {
+    background: var(--title-bar);
+    color: var(--title-text);
+    padding: 2rem 2.5rem;
+    margin: -2rem -2.5rem 2rem -2.5rem;
+    border-bottom: 4px solid var(--accent2);
+}
+
+header h1, .title { color: var(--title-text); background: none;
+    margin: 0; padding: 0; font-size: 2.2rem; }
+header p, .subtitle, .author, .date { color: #aac8ff; margin-top: 0.3rem; }
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ── Responsive ───────────────────────────────────────────── */
+
+@media (max-width: 800px) {
+    #TOC { display: none; }
+    body > div:not(#TOC) { margin-left: 0; padding: 1rem; }
+    h1 { margin-left: -1rem; margin-right: -1rem; }
+}
