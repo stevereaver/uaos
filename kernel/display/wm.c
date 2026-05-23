@@ -211,12 +211,12 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         int new_x = mx - g_drag_off_x;
         int new_y = my - g_drag_off_y;
 
-        if (new_x < 0) new_x = 0;
-        if (new_y < 20) new_y = 20;  /* don't drag behind menubar */
-        int max_x = (int)g_fb_width_irq  - w->w;
-        int max_y = (int)g_fb_height_irq - WM_TITLEBAR_H;
-        if (new_x > max_x) new_x = max_x;
-        if (new_y > max_y) new_y = max_y;
+        /* Keep title bar reachable: at least 32px of it must stay on screen */
+        int min_visible = 32;
+        if (new_x > (int)g_fb_width_irq  - min_visible) new_x = (int)g_fb_width_irq  - min_visible;
+        if (new_x < -(w->w - min_visible))               new_x = -(w->w - min_visible);
+        if (new_y < 20) new_y = 20;  /* title bar must stay below menu bar */
+        /* no bottom clamp — allow window to go off the bottom */
 
         if (new_x != w->x || new_y != w->y) {
             int old_x = w->x, old_y = w->y, old_w = w->w, old_h = w->h;

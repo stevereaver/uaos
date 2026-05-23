@@ -103,7 +103,7 @@ static inline void put_pixel24(uint8_t *base, uint32_t pitch,
 void FB_PutPixel(int x, int y, uint32_t colour)
 {
     if (!g_fb.valid) return;
-    if ((unsigned)x >= g_fb.width || (unsigned)y >= g_fb.height) return;
+    if (x < 0 || y < 0 || (unsigned)x >= g_fb.width || (unsigned)y >= g_fb.height) return;
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, x, y, colour);
     else                put_pixel24(base, g_fb.pitch, x, y, colour);
@@ -112,11 +112,14 @@ void FB_PutPixel(int x, int y, uint32_t colour)
 void FB_DrawHLine(int x, int y, int len, uint32_t colour)
 {
     if (!g_fb.valid) return;
-    if ((unsigned)y >= g_fb.height) return;
+    if (y < 0 || (unsigned)y >= g_fb.height) return;
+    /* Clip x range to [0, width) */
+    int x0 = x < 0 ? 0 : x;
+    int x1 = x + len;
+    if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
+    if (x0 >= x1) return;
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
-    for (int i = 0; i < len; i++) {
-        int px = x + i;
-        if ((unsigned)px >= g_fb.width) break;
+    for (int px = x0; px < x1; px++) {
         if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, px, y, colour);
         else                put_pixel24(base, g_fb.pitch, px, y, colour);
     }
@@ -125,11 +128,14 @@ void FB_DrawHLine(int x, int y, int len, uint32_t colour)
 void FB_DrawVLine(int x, int y, int len, uint32_t colour)
 {
     if (!g_fb.valid) return;
-    if ((unsigned)x >= g_fb.width) return;
+    if (x < 0 || (unsigned)x >= g_fb.width) return;
+    /* Clip y range to [0, height) */
+    int y0 = y < 0 ? 0 : y;
+    int y1 = y + len;
+    if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    if (y0 >= y1) return;
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
-    for (int i = 0; i < len; i++) {
-        int py = y + i;
-        if ((unsigned)py >= g_fb.height) break;
+    for (int py = y0; py < y1; py++) {
         if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, x, py, colour);
         else                put_pixel24(base, g_fb.pitch, x, py, colour);
     }
@@ -138,8 +144,14 @@ void FB_DrawVLine(int x, int y, int len, uint32_t colour)
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour)
 {
     if (!g_fb.valid || w <= 0 || h <= 0) return;
-    for (int row = 0; row < h; row++)
-        FB_DrawHLine(x, y + row, w, colour);
+    /* Clip rect to framebuffer bounds */
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w; if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
+    int y1 = y + h; if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    if (x0 >= x1 || y0 >= y1) return;
+    for (int row = y0; row < y1; row++)
+        FB_DrawHLine(x0, row, x1 - x0, colour);
 }
 
 void FB_DrawRect(int x, int y, int w, int h, uint32_t colour)
