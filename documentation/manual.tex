@@ -1,0 +1,301 @@
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+
+\geometry{margin=2.5cm}
+
+% Code listing style
+\lstdefinestyle{uaos}{
+    backgroundcolor=\color{black!95},
+    basicstyle=\ttfamily\small\color{green!80!black},
+    keywordstyle=\color{cyan},
+    commentstyle=\color{gray},
+    stringstyle=\color{yellow!70!white},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{gray!40},
+}
+\lstset{style=uaos}
+
+% Header/footer
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textsc{Ultimate Amiga OS}}
+\rhead{\textsc{Technical Reference Manual}}
+\cfoot{\thepage}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=cyan,
+    pdftitle={UAOS Technical Reference Manual},
+    pdfauthor={UAOS Development Team},
+}
+
+% -------------------------------------------------------------------------
+\begin{document}
+% -------------------------------------------------------------------------
+
+\begin{titlepage}
+    \centering
+    \vspace*{3cm}
+    {\Huge\bfseries Ultimate Amiga OS\\[0.5em]}
+    {\Large\itshape Technical Reference Manual\\[2em]}
+    {\large Version 0.1.0-dev\\[0.5em]}
+    {\large \today\\[3em]}
+    \rule{\linewidth}{0.5pt}\\[1em]
+    {\normalsize
+        UAOS is a standalone, bare-metal 64-bit operating system for x86\_64 platforms.\\
+        It is derived from the AROS open-source Amiga replacement kernel and features\\
+        transparent M68k JIT emulation and native GNU tool integration.
+    }
+    \vfill
+    {\small Copyright \textcopyright\ 2026 UAOS Development Team.
+     Released under the AROS Public License (APL).}
+\end{titlepage}
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+% =========================================================================
+\chapter{Introduction}
+% =========================================================================
+
+\section{Project Overview}
+
+Ultimate Amiga OS (UAOS) is a standalone bare-metal x86\_64 operating system
+designed to provide a native Amiga-compatible environment on modern hardware
+without requiring any host operating system.  It achieves this through:
+
+\begin{itemize}
+    \item An extended AROS microkernel providing Exec, DOS, and Intuition
+          semantics on 64-bit hardware.
+    \item A transparent M68k JIT emulation sandbox that executes legacy
+          Amiga ``Hunk'' binaries inside a 4~GB virtual address space.
+    \item An illegal-opcode trap mechanism (\texttt{ILLEGAL}/\texttt{0x4AFC})
+          that intercepts system calls at the ROM vector level and dispatches
+          them to native 64-bit C implementations.
+    \item An MMU sandbox using 2~MB huge pages with hardware-register
+          windows deliberately left non-present to transparently virtualise
+          custom chipset I/O via \#PF exceptions.
+\end{itemize}
+
+\section{Architectural Constraints}
+
+\begin{enumerate}
+    \item \textbf{No Linux kernel.}  UAOS boots directly into its own
+          x86\_64 AROS-derived microkernel.  No Linux, no POSIX kernel layer.
+
+    \item \textbf{Trap-based thunking.}  M68k Hunk binaries are loaded into
+          the 4~GB sandbox.  System calls are intercepted via
+          \texttt{ILLEGAL + \$414D} magic-token sequences routed to native
+          64-bit AROS libraries.
+
+    \item \textbf{MMU hardware virtualisation.}  x86\_64 page tables map the
+          sandbox with 2~MB huge pages.  The Amiga hardware register window
+          \texttt{0x00B00000}--\texttt{0x00DFFFFF} is marked \textsc{not present}.
+
+    \item \textbf{Coexisting filesystem namespace.}  \texttt{dos.library}
+          handlers resolve Amiga assigns (\texttt{SYS:}, \texttt{S:},
+          \texttt{C:}, \texttt{RAM:}) alongside POSIX translation paths.
+
+    \item \textbf{AROS Kickstart firmware.}  The open-source AROS replacement
+          ROM is used as the modular firmware base with vectors patched at
+          build time.
+\end{enumerate}
+
+% =========================================================================
+\chapter{System Architecture}
+% =========================================================================
+
+\section{Boot Sequence}
+
+\begin{enumerate}
+    \item GRUB2 loads the ELF64 kernel via the Multiboot2 protocol.
+    \item \texttt{uaos\_kernel\_entry.asm} transitions the CPU from 32-bit
+          protected mode into 64-bit long mode, sets up a bootstrap identity-map
+          page table, and calls \texttt{uaos\_kernel\_main()}.
+    \item The C kernel entry point validates the Multiboot2 magic value,
+          initialises the VGA text-mode console and UART, then calls:
+          \begin{itemize}
+              \item \texttt{UAOS\_MMU\_Init()} --- installs the sandbox page tables.
+              \item \texttt{UAOS\_ROM\_RegisterAll()} --- populates the ROM module registry.
+              \item \texttt{UAOS\_Bridge\_Init()} --- allocates the 4~GB guest RAM window.
+          \end{itemize}
+\end{enumerate}
+
+\section{M68k Thunk Dispatch}
+
+The thunk mechanism replaces selected Exec jump-table vectors in the AROS ROM
+with 8-byte breakout stubs assembled by the \texttt{MK\_THUNK} macro in
+\texttt{emulation/rom\_patches/rom\_traps.s}:
+
+\begin{lstlisting}[language={[Motorola68k]Assembler}, caption={MK\_THUNK macro}]
+MK_THUNK MACRO
+        ILLEGAL             ; $4AFC — triggers JIT breakout
+        dc.w    \1          ; UAOS magic token ($414D = "AM")
+        dc.w    \2          ; function index (1-based)
+        rts                 ; return to guest after dispatch
+        ENDM
+\end{lstlisting}
+
+When the JIT core decodes \texttt{0x4AFC} it invokes
+\texttt{UAOS\_Bridge\_IllegalOpcode()}.  The C dispatcher:
+\begin{enumerate}
+    \item Reads the two words immediately following the ILLEGAL opcode.
+    \item Validates the \texttt{\$414D} signature.
+    \item Extracts arguments from the M68k register state (A1, D0, D1, \ldots).
+    \item Calls the native 64-bit stub.
+    \item Writes return values back into D0/A0.
+    \item Advances the guest PC by 6 bytes.
+\end{enumerate}
+
+\section{MMU Sandbox}
+
+\texttt{kernel/exec/mmu\_sandbox.c} constructs four-level x86\_64 paging
+tables mapping the entire 4~GB guest address space using 2~MB huge pages.
+Table~\ref{tab:memmap} shows the critical address assignments.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{Address Range} & \textbf{Size} & \textbf{Description} \\
+        \midrule
+        \texttt{0x00000000--0x001FFFFF} & 2 MB  & Chip RAM \\
+        \texttt{0x00200000--0x009FFFFF} & 8 MB  & Fast RAM (lower) \\
+        \texttt{0x00B00000--0x00DFFFFF} & 3 MB  & \textbf{Custom chip registers (NOT PRESENT)} \\
+        \texttt{0x00F80000--0x00FFFFFF} & 512 KB & Kickstart ROM mirror \\
+        \texttt{0x01000000--0x7FFFFFFF} & 2 GB  & Extended Fast RAM \\
+        \texttt{0x80000000--0xFFFFFFFF} & 2 GB  & x86\_64 kernel space \\
+        \bottomrule
+    \end{tabular}
+    \caption{UAOS Guest Address Space Map}
+    \label{tab:memmap}
+\end{table}
+
+Pages in the hardware register window have \texttt{PAGE\_PRESENT} cleared and
+\texttt{PAGE\_NO\_CACHE} set.  Any access faults to this region are caught by
+the \#PF handler in \texttt{kernel/exec/page\_fault\_handler.c} and forwarded
+to the chip emulator.
+
+% =========================================================================
+\chapter{Kernel Subsystems}
+% =========================================================================
+
+\section{ROM Module Registry (\texttt{rom\_modules.c})}
+
+\texttt{UAOS\_ROM\_RegisterAll()} is called once at boot.  It populates a
+static array of \texttt{UaosRomModule} descriptors, each holding:
+\begin{itemize}
+    \item Library name string (e.g.\ \texttt{"exec.library"}).
+    \item Library version number.
+    \item 32-bit Amiga base address.
+    \item Array of native function pointers (indexed 1-based to match
+          \texttt{rom\_traps.s} function indices).
+\end{itemize}
+
+\section{Thunk Handler (\texttt{thunk\_handler.c})}
+
+The \texttt{UAOS\_AMIGA\_TO\_HOST()} macro translates any 32-bit Amiga guest
+address to the corresponding host linear address:
+\begin{lstlisting}[language=C, caption={Address translation macro}]
+#define UAOS_AMIGA_TO_HOST(amiga_addr) \
+    ((void *)((uintptr_t)(uaos_ram_base) + (uint32_t)(amiga_addr)))
+\end{lstlisting}
+
+\section{Page Fault Handler (\texttt{page\_fault\_handler.c})}
+
+The ISR entry stub \texttt{uaos\_page\_fault\_isr} (written in inline GAS
+assembly) saves all 15 GPRs onto the kernel stack, computes pointers to the
+\texttt{InterruptFrame} and \texttt{SavedRegs} blocks, and calls the C
+function \texttt{UAOS\_PageFaultHandler()}.  On return from the C handler,
+GPRs are restored and \texttt{IRETQ} resumes execution past the faulting
+instruction.
+
+% =========================================================================
+\chapter{Build System}
+% =========================================================================
+
+\section{Prerequisites}
+
+\begin{lstlisting}[language=bash, caption={Install build dependencies (Ubuntu/Debian)}]
+sudo apt install nasm gcc binutils xorriso \
+    grub-pc-bin grub-common \
+    binutils-m68k-linux-gnu python3
+\end{lstlisting}
+
+\section{Building the ISO}
+
+\begin{lstlisting}[language=bash, caption={Full build pipeline}]
+# Assemble NASM kernel entry
+nasm -f elf64 kernel/boot/uaos_kernel_entry.asm \
+    -o build/uaos_kernel_entry.o
+
+# Compile C kernel sources (freestanding)
+gcc -ffreestanding -fno-stack-protector -fno-pie \
+    -mno-red-zone -nostdlib -m64 -O2 \
+    -c kernel/boot/uaos_kernel_main.c -o build/uaos_kernel_main.o
+# ... (see scripts/build_iso.sh for full compile step list)
+
+# Link ELF64 kernel
+ld -T kernel/boot/uaos_kernel.ld build/*.o -o build/uaos-kernel.elf
+
+# Package ISO
+./scripts/build_iso.sh
+\end{lstlisting}
+
+\section{Testing in QEMU}
+
+\begin{lstlisting}[language=bash, caption={QEMU test invocation}]
+qemu-system-x86_64 \
+    -cdrom build/Ultimate_Amiga_OS.iso \
+    -m 512M -boot d -vga std -serial stdio
+\end{lstlisting}
+
+% =========================================================================
+\chapter{Troubleshooting}
+% =========================================================================
+
+\section{GRUB: ``Invalid arch-dependent ELF magic''}
+
+This error means GRUB received a file that is not a valid ELF64 executable.
+Ensure \texttt{uaos-kernel.elf} was produced by the full NASM + GCC + LD
+pipeline (not the Python mock generator used for structural validation only).
+
+\section{GRUB: ``You need to load the kernel first''}
+
+GRUB could not find the \texttt{multiboot2} header within the first 32~KB of
+the binary.  Verify the linker script places \texttt{.multiboot2} first and
+that the NASM source emits the section correctly.
+
+\section{Kernel halts immediately after boot}
+
+Enable serial output and check the UART log:
+\begin{lstlisting}[language=bash]
+qemu-system-x86_64 -cdrom build/Ultimate_Amiga_OS.iso \
+    -m 512M -boot d -serial stdio 2>&1 | tee boot.log
+\end{lstlisting}
+
+% =========================================================================
+\appendix
+\chapter{Amiga Memory Map Reference}
+% =========================================================================
+
+See Table~\ref{tab:memmap} in Chapter~2.  The full OCS/ECS/AGA custom chip
+register map follows Commodore's \emph{Hardware Reference Manual, 3rd Ed.}
+
+\end{document}

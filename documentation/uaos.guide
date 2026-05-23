@@ -1,0 +1,403 @@
+@DATABASE uaos.guide
+@$VER: uaos.guide 1.0 (23.05.2026)
+@AUTHOR "UAOS Development Team"
+@(C) "2026 UAOS Project — Released under the AROS Public License"
+@WORDWRAP
+
+@NODE MAIN "Ultimate Amiga OS — Documentation Index"
+@TITLE "Ultimate Amiga OS (UAOS) Help System"
+
+  @{b}Ultimate Amiga OS (UAOS)@{ub}
+  @{i}A bare-metal 64-bit OS for x86_64 with transparent M68k emulation@{ui}
+
+  ─────────────────────────────────────────────────────────────────────────
+
+  Welcome to the UAOS help system.  Use the buttons below or your
+  AmigaGuide viewer's navigation keys to browse the documentation.
+
+  @{" Quickstart              " LINK QUICKSTART}
+     Get UAOS running in under five minutes.
+
+  @{" Hardware Configuration  " LINK HARDWARE}
+     BIOS/UEFI settings, GRUB boot parameters, memory layout.
+
+  @{" AmigaDOS Integration    " LINK AMIGADOS}
+     AmigaDOS command paths, assignments, and POSIX namespace bridge.
+
+  @{" M68k Emulation Layer    " LINK EMULATION}
+     Thunk dispatch, ROM patches, and custom chip register interception.
+
+  @{" Kernel Subsystems       " LINK KERNEL}
+     Exec, MMU sandbox, page fault handler, ROM module registry.
+
+  @{" Building from Source    " LINK BUILDING}
+     Cross-compiler toolchain setup and ISO packaging pipeline.
+
+  @{" Troubleshooting         " LINK TROUBLE}
+     Common problems and diagnostic procedures.
+
+@ENDNODE
+
+
+@NODE QUICKSTART "Quickstart Guide"
+@TITLE "UAOS — Quickstart"
+@PREV MAIN
+@NEXT HARDWARE
+
+  @{b}Quickstart@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  @{b}Minimum Requirements@{ub}
+
+    • x86_64 CPU with 64-bit long mode and PAE support
+    • 512 MB RAM (2 GB recommended)
+    • BIOS or UEFI firmware with legacy boot or GRUB2 support
+    • CD-ROM drive or USB port for ISO boot media
+
+  @{b}Booting the ISO@{ub}
+
+  1. Write @{i}build/Ultimate_Amiga_OS.iso@{ui} to a USB drive or burn to CD-R:
+
+       dd if=Ultimate_Amiga_OS.iso of=/dev/sdX bs=4M status=progress
+
+  2. Set your BIOS/UEFI boot order to boot from the removable medium.
+
+  3. At the GRUB menu select @{b}Ultimate Amiga OS (UAOS) — Normal Boot@{ub}.
+     The kernel loads, initialises the MMU sandbox, registers Exec ROM
+     modules, and launches the M68k emulator run-loop.
+
+  @{b}Testing in QEMU@{ub}
+
+       qemu-system-x86_64 -cdrom build/Ultimate_Amiga_OS.iso \
+           -m 512M -boot d -vga std
+
+  @{b}First Steps@{ub}
+
+    • The AmigaDOS CLI is accessible via @{b}SYS:C/Shell@{ub}.
+    • GNU tools are merged into @{b}C:@{ub} — type @{i}ls@{ui}, @{i}gcc@{ui}, @{i}make@{ui} as normal.
+    • The Workbench screen can be opened with @{i}LoadWB@{ui}.
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE HARDWARE "Hardware Configuration"
+@TITLE "UAOS — Hardware Configuration"
+@PREV QUICKSTART
+@NEXT AMIGADOS
+
+  @{b}Hardware Configuration@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  @{b}BIOS / UEFI Settings@{ub}
+
+    • Disable Secure Boot (UAOS kernel is not signed by default).
+    • Enable Legacy USB Support if booting from USB on older boards.
+    • Set memory above 4 GB to @{i}above 4G MMIO@{ui} if available.
+
+  @{b}GRUB Boot Parameters@{ub}
+
+  Pass on the kernel command line (edit grub.cfg or press @{b}e@{ub} at menu):
+
+    @{b}sysroot=@{ub}/boot/uaos-sysroot.img   Path to the sysroot archive module.
+    @{b}config=@{ub}/boot/aros_kickstart.conf  Path to the AROS ROM configuration.
+    @{b}loglevel=@{ub}[debug|info|warn|error]  Kernel log verbosity.
+    @{b}vga=@{ub}0x0318                        VESA mode 1024×768 32 bpp.
+    @{b}console=@{ub}ttyS0,115200              Redirect console to serial port.
+
+  @{b}Memory Address Map@{ub}
+
+    0x00000000 – 0x001FFFFF   Chip RAM  (2 MB)
+    0x00200000 – 0x00FFFFFF   Fast RAM  (14 MB lower window)
+    0x00B00000 – 0x00DFFFFF   @{b}Custom chip / CIA registers@{ub} (MMU-trapped)
+    0x00F80000 – 0x00FFFFFF   Kickstart ROM mirror
+    0x01000000 – 0x7FFFFFFF   Extended Fast RAM (up to 2 GB)
+    0x80000000 – 0xFFFFFFFF   x86_64 kernel and driver space
+
+  The address window 0x00B00000–0x00DFFFFF is intentionally left
+  non-present in the paging tables.  Any access triggers a #PF which
+  is intercepted by the UAOS page fault handler and forwarded to the
+  custom chip emulator.  See @{"Kernel Subsystems" LINK KERNEL}.
+
+  @{b}Supported Video Hardware@{ub}
+
+    • VESA/VBE 2.0+ framebuffer (universal fallback)
+    • UEFI GOP framebuffer
+    • VirtIO-GPU (for QEMU/KVM guests)
+
+  @{b}Supported Network Hardware@{ub}
+
+    • Realtek RTL8139 / RTL8169
+    • Intel e1000 / e1000e
+    • VirtIO-net
+
+  @{b}Supported Audio Hardware@{ub}
+
+    • SoundBlaster 16 (ISA/PCI)
+    • Intel HD Audio (HDA)
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE AMIGADOS "AmigaDOS Integration"
+@TITLE "UAOS — AmigaDOS Integration"
+@PREV HARDWARE
+@NEXT EMULATION
+
+  @{b}AmigaDOS Integration@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  UAOS presents a merged AmigaDOS / POSIX namespace.  AmigaDOS assigns
+  map onto the following host directories:
+
+    @{b}SYS:@{ub}    →  sys-root/SYS/      Base Workbench layout
+    @{b}C:@{ub}      →  sys-root/C/        AmigaDOS + GNU binary path
+    @{b}S:@{ub}      →  sys-root/S/        Startup-Sequence and scripts
+    @{b}L:@{ub}      →  sys-root/L/        Filesystem handler libraries
+    @{b}DEVS:@{ub}   →  sys-root/DEVS/     Device and MountList entries
+
+  @{b}Startup-Sequence@{ub}
+
+  The file @{b}S:Startup-Sequence@{ub} is executed by AmigaDOS immediately after
+  Exec initialises.  It sets up assigns, mounts devices, and optionally
+  launches the Workbench or a CLI shell.
+
+  @{b}GNU Tool Integration@{ub}
+
+  GNU binaries (bash, gcc, make, ls, grep, etc.) are installed into
+  @{b}C:@{ub} alongside native AmigaDOS commands.  UAOS provides a thin POSIX
+  syscall shim that maps Unix file descriptors and paths onto the
+  AmigaDOS I/O model.
+
+  @{b}AmigaDOS Path Syntax@{ub}
+
+    Absolute:   SYS:Utilities/More
+    Relative:   :Utilities/More        (from current volume)
+    Parent:     /Utilities/More        (one directory up)
+
+  @{b}Useful Commands@{ub}
+
+    @{i}List SYS:@{ui}             Directory listing of SYS:
+    @{i}Assign@{ui}                Show all current assignments
+    @{i}Mount DEVS:DOSDrivers/@{ui} Mount all configured devices
+    @{i}LoadWB@{ui}                Launch the Workbench GUI
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE EMULATION "M68k Emulation Layer"
+@TITLE "UAOS — M68k Emulation Layer"
+@PREV AMIGADOS
+@NEXT KERNEL
+
+  @{b}M68k Emulation Layer@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  UAOS runs a headless M68k emulator core (derived from UAE/FS-UAE) inside
+  a 4 GB virtual address sandbox.  Amiga software executes unmodified at
+  near-native speed via the JIT recompiler.
+
+  @{b}Thunk Dispatch Mechanism@{ub}
+
+  Every intercepted Exec library call is replaced in the AROS ROM with a
+  6-byte breakout sequence assembled by the @{b}MK_THUNK@{ub} macro in
+  @{i}emulation/rom_patches/rom_traps.s@{ui}:
+
+      0x4AFC   ILLEGAL opcode  — triggers the JIT trap callback
+      0x414D   UAOS signature  — "AM", validates the trap origin
+      0xNNNN   Function index  — identifies the library call
+
+  When the emulator decodes @{b}0x4AFC@{ub}, it invokes @{b}UAOS_Bridge_IllegalOpcode()@{ub}
+  which calls @{b}UAOS_HandleThunk()@{ub}.  The thunk handler:
+
+    1. Reads the signature word and function index from guest memory.
+    2. Validates the @{b}0x414D@{ub} signature.
+    3. Extracts arguments from M68k registers per Amiga ABI conventions
+       (A1 = pointer args, D0/D1 = integer args).
+    4. Calls the native x86_64 C stub.
+    5. Writes return values back into D0/A0.
+    6. Advances the guest PC by 6 bytes past the breakout sequence.
+
+  @{b}ROM Patch Configuration@{ub}
+
+  @{i}emulation/rom_patches/aros_kickstart.conf@{ui} controls which ROM image is
+  loaded and which Exec vectors are intercepted.  Set
+  @{b}thunk_trace = yes@{ub} to log every intercepted call to stderr.
+
+  @{b}Custom Chip Register Access@{ub}
+
+  The address range 0x00B00000–0x00DFFFFF is unmapped in the MMU sandbox.
+  Reads and writes from the emulated M68k to this range fault through to
+  the page fault handler which forwards them to the chip emulator.
+  See @{"Kernel Subsystems" LINK KERNEL}.
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE KERNEL "Kernel Subsystems"
+@TITLE "UAOS — Kernel Subsystems"
+@PREV EMULATION
+@NEXT BUILDING
+
+  @{b}Kernel Subsystems@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  @{b}MMU Sandbox (kernel/exec/mmu_sandbox.c)@{ub}
+
+  @{b}UAOS_MMU_Init()@{ub} constructs 4-level paging tables (PML4 → PDPT → PD)
+  mapping the entire 4 GB guest address space using 2 MB huge pages.
+  Pages covering 0x00B00000–0x00DFFFFF have @{b}PAGE_PRESENT@{ub} cleared and
+  @{b}PAGE_NO_CACHE@{ub} set, making them invisible to normal loads and stores
+  but identifiable by the fault handler.  The completed PML4 is loaded
+  into @{b}CR3@{ub} to activate the sandbox.
+
+  @{b}Page Fault Handler (kernel/exec/page_fault_handler.c)@{ub}
+
+  @{b}uaos_page_fault_isr@{ub} is registered at IDT vector 14.  On entry it saves
+  all 15 general-purpose registers and calls @{b}UAOS_PageFaultHandler()@{ub}:
+
+    • Reads @{b}CR2@{ub} for the fault address.
+    • If outside the chip window, halts (unrecoverable fault).
+    • @{b}Write fault:@{ub} forwards RAX + chip offset to @{b}chip_emu_write()@{ub}.
+    • @{b}Read fault:@{ub}  decodes the faulting MOV instruction's ModRM byte,
+      queries @{b}chip_emu_read()@{ub}, injects the result into the destination
+      register slot on the interrupt stack, then advances RIP past the
+      faulting instruction before executing @{b}IRETQ@{ub}.
+
+  @{b}ROM Module Registry (kernel/exec/rom_modules.c)@{ub}
+
+  @{b}UAOS_ROM_RegisterAll()@{ub} populates the module registry at boot time.
+  Each module descriptor holds the library name, version, 32-bit Amiga
+  base address, and an array of native function pointers.
+  @{b}UAOS_ROM_NativeFunc()@{ub} resolves a (library name, function index) pair
+  to the matching host function pointer for the thunk dispatcher.
+
+  @{b}Thunk Handler (kernel/exec/thunk_handler.c)@{ub}
+
+  See @{"M68k Emulation Layer" LINK EMULATION} for the full dispatch flow.
+  The @{b}UAOS_AMIGA_TO_HOST()@{ub} macro translates any 32-bit Amiga guest address
+  to the corresponding host linear address relative to the RAM base pointer
+  set by @{b}UAOS_SetRamBase()@{ub}.
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE BUILDING "Building from Source"
+@TITLE "UAOS — Building from Source"
+@PREV KERNEL
+@NEXT TROUBLE
+
+  @{b}Building from Source@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  @{b}Prerequisites@{ub}
+
+    • GCC cross-compiler targeting x86_64-elf (freestanding)
+    • GNU Binutils (ld, objcopy, nasm/gas)
+    • m68k-elf-as  (for rom_traps.s)
+    • GRUB2 tools: grub-mkrescue, grub-pc-bin
+    • xorriso (ISO 9660 image writer)
+    • Python 3.8+  (mock kernel generator in build_iso.sh)
+
+  On Debian/Ubuntu:
+
+      sudo apt install gcc-multilib binutils xorriso \
+          grub-pc-bin grub-common \
+          binutils-m68k-linux-gnu python3
+
+  @{b}Repository Layout@{ub}
+
+      emulation/         M68k emulator bridge and ROM patches
+      kernel/exec/       Core kernel subsystems
+      kernel/dos/        AmigaDOS namespace layer (in progress)
+      kernel/intuition/  Intuition UI engine (in progress)
+      drivers/           Audio, video, network drivers
+      scripts/           Build and packaging scripts
+      sys-root/          Live AmigaDOS filesystem tree
+      documentation/     This help system
+      build/             Generated output (created by build_iso.sh)
+
+  @{b}Building the ISO@{ub}
+
+      chmod +x scripts/build_iso.sh
+      ./scripts/build_iso.sh
+
+  The script stages all artefacts, generates a mock multiboot2 kernel
+  binary, and invokes grub-mkrescue.  Output: @{b}build/Ultimate_Amiga_OS.iso@{ub}.
+
+  For a clean rebuild:
+
+      ./scripts/build_iso.sh --clean
+
+  @{b}Testing@{ub}
+
+      qemu-system-x86_64 -cdrom build/Ultimate_Amiga_OS.iso \
+          -m 512M -boot d -vga std -serial stdio
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE TROUBLE "Troubleshooting"
+@TITLE "UAOS — Troubleshooting"
+@PREV BUILDING
+@NEXT MAIN
+
+  @{b}Troubleshooting@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  @{b}build_iso.sh fails: grub-mkrescue not found@{ub}
+
+      sudo apt install grub-pc-bin grub-common xorriso
+
+  @{b}QEMU: No bootable device@{ub}
+
+    Ensure the ISO was produced without errors.  Verify it contains a
+    GRUB EFI/BIOS boot record:
+
+        file build/Ultimate_Amiga_OS.iso
+        isoinfo -d -i build/Ultimate_Amiga_OS.iso | grep -i bootable
+
+  @{b}Thunk handler: RAM base not set@{ub}
+
+    Call @{b}UAOS_SetRamBase()@{ub} (or @{b}UAOS_Bridge_Init()@{ub}) before starting the
+    emulator run-loop.  The bridge init function allocates the 4 GB window
+    and calls SetRamBase automatically.
+
+  @{b}Page fault outside chip window — kernel halts@{ub}
+
+    A #PF occurred at an address outside 0x00B00000–0x00DFFFFF.  This
+    indicates either a genuine null-pointer dereference in the kernel or
+    a missing page table entry.  Boot with @{b}loglevel=debug@{ub} and redirect
+    output to serial:
+
+        console=ttyS0,115200
+
+    then inspect the fault address reported before the halt.
+
+  @{b}Unknown thunk function index@{ub}
+
+    The rom_traps.s function index does not have a matching case in
+    UAOS_HandleThunk().  Add the stub and a new @{b}#define THUNK_@{ub}* constant
+    in thunk_handler.c, and add the corresponding entry to rom_traps.s.
+
+  @{b}ILLEGAL opcode crash in guest — not a UAOS trap@{ub}
+
+    The 0x414D signature word was not present after 0x4AFC.  The guest
+    has executed a genuine illegal instruction.  Enable
+    @{b}break_on_illegal = yes@{ub} in aros_kickstart.conf to trap it in the
+    debugger and inspect the guest PC and surrounding memory.
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE

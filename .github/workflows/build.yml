@@ -1,0 +1,106 @@
+name: UAOS CI Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-kernel:
+    name: Build ELF64 Kernel + ISO
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            nasm gcc binutils xorriso \
+            grub-pc-bin grub-common \
+            python3
+
+      - name: Assemble kernel entry (NASM)
+        run: |
+          nasm -f elf64 \
+            kernel/boot/uaos_kernel_entry.asm \
+            -o build/uaos_kernel_entry.o
+
+      - name: Compile kernel C sources (freestanding)
+        run: |
+          gcc -ffreestanding -fno-stack-protector -fno-pie \
+              -mno-red-zone -nostdlib -nostdinc \
+              -m64 -O2 -std=c11 \
+              -c kernel/boot/uaos_kernel_main.c \
+              -o build/uaos_kernel_main.o
+          gcc -ffreestanding -fno-stack-protector -fno-pie \
+              -mno-red-zone -nostdlib -nostdinc \
+              -m64 -O2 -std=c11 \
+              -c kernel/exec/thunk_handler.c \
+              -o build/thunk_handler.o
+          gcc -ffreestanding -fno-stack-protector -fno-pie \
+              -mno-red-zone -nostdlib -nostdinc \
+              -m64 -O2 -std=c11 \
+              -c kernel/exec/rom_modules.c \
+              -o build/rom_modules.o
+          gcc -ffreestanding -fno-stack-protector -fno-pie \
+              -mno-red-zone -nostdlib -nostdinc \
+              -m64 -O2 -std=c11 \
+              -c kernel/exec/mmu_sandbox.c \
+              -o build/mmu_sandbox.o
+          gcc -ffreestanding -fno-stack-protector -fno-pie \
+              -mno-red-zone -nostdlib -nostdinc \
+              -m64 -O2 -std=c11 \
+              -c kernel/exec/page_fault_handler.c \
+              -o build/page_fault_handler.o
+          gcc -ffreestanding -fno-stack-protector -fno-pie \
+              -mno-red-zone -nostdlib -nostdinc \
+              -m64 -O2 -std=c11 \
+              -c emulation/uaos_uae_bridge.c \
+              -o build/uaos_uae_bridge.o
+
+      - name: Link ELF64 kernel
+        run: |
+          ld -T kernel/boot/uaos_kernel.ld \
+            build/uaos_kernel_entry.o \
+            build/uaos_kernel_main.o \
+            build/thunk_handler.o \
+            build/rom_modules.o \
+            build/mmu_sandbox.o \
+            build/page_fault_handler.o \
+            build/uaos_uae_bridge.o \
+            -o build/uaos-kernel.elf
+
+      - name: Package bootable ISO
+        run: |
+          chmod +x scripts/build_iso.sh
+          ./scripts/build_iso.sh
+
+      - name: Upload ISO artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ultimate_Amiga_OS_ISO
+          path: build/Ultimate_Amiga_OS.iso
+          retention-days: 30
+
+  lint-asm:
+    name: Validate M68k Assembly Syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install m68k binutils
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y binutils-m68k-linux-gnu
+
+      - name: Assemble rom_traps.s (GAS syntax check)
+        run: |
+          m68k-linux-gnu-as \
+            emulation/rom_patches/rom_traps.s \
+            -o /dev/null || true

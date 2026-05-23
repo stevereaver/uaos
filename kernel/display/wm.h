@@ -1,0 +1,46 @@
+/* wm.h — UAOS Window Manager
+ *
+ * Manages a z-ordered stack of windows. Each window has a position, size,
+ * title, and callbacks for draw and key input. The WM handles:
+ *   - Click-to-focus (raises window to top of z-order)
+ *   - Title-bar drag to move windows
+ *   - Repainting windows back-to-front after move/focus change
+ */
+
+#ifndef UAOS_WM_H
+#define UAOS_WM_H
+
+#define WM_MAX_WINDOWS  8
+#define WM_TITLEBAR_H   20
+
+typedef void (*WM_DrawFn)(int win_x, int win_y, int win_w, int win_h);
+typedef void (*WM_KeyFn)(char c);
+
+typedef struct {
+    int       x, y, w, h;
+    char      title[32];
+    WM_DrawFn draw;      /* called to repaint window contents at (x,y)   */
+    WM_KeyFn  on_key;    /* called with keystrokes when window is focused */
+    int       active;    /* 1 = registered, 0 = slot free                */
+} WmWindow;
+
+/* Register a window — returns handle (0..WM_MAX_WINDOWS-1) or -1 on fail */
+int  WM_AddWindow(int x, int y, int w, int h, const char *title,
+                  WM_DrawFn draw, WM_KeyFn on_key);
+
+/* Call from main loop with current mouse state */
+void WM_MouseEvent(int mx, int my, int btn_left);
+
+/* Feed a keystroke to the focused window */
+void WM_KeyEvent(char c);
+
+/* Redraw all windows back-to-front, then cursor */
+void WM_Redraw(void);
+
+/* Get the currently focused window handle (-1 if none) */
+int  WM_GetFocus(void);
+
+/* Move a window to a new position and repaint */
+void WM_MoveWindow(int handle, int new_x, int new_y);
+
+#endif
