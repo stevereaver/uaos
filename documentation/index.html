@@ -1,137 +1,240 @@
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="generator" content="pandoc" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
-  <title>Ultimate Amiga OS — Documentation</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ultimate Amiga OS</title>
   <style>
-    code{white-space: pre-wrap;}
-    span.smallcaps{font-variant: small-caps;}
-    div.columns{display: flex; gap: min(4vw, 1.5em);}
-    div.column{flex: auto; overflow-x: auto;}
-    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
-    /* The extra [class] is a hack that increases specificity enough to
-       override a similar rule in reveal.js */
-    ul.task-list[class]{list-style: none;}
-    ul.task-list li input[type="checkbox"] {
-      font-size: inherit;
-      width: 0.8em;
-      margin: 0 0.8em 0.2em -1.6em;
-      vertical-align: middle;
-    }
-    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
-    /* CSS for syntax highlighting */
-    pre > code.sourceCode { white-space: pre; position: relative; }
-    pre > code.sourceCode > span { line-height: 1.25; }
-    pre > code.sourceCode > span:empty { height: 1.2em; }
-    .sourceCode { overflow: visible; }
-    code.sourceCode > span { color: inherit; text-decoration: inherit; }
-    div.sourceCode { margin: 1em 0; }
-    pre.sourceCode { margin: 0; }
-    @media screen {
-    div.sourceCode { overflow: auto; }
-    }
-    @media print {
-    pre > code.sourceCode { white-space: pre-wrap; }
-    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
-    }
-    pre.numberSource code
-      { counter-reset: source-line 0; }
-    pre.numberSource code > span
-      { position: relative; left: -4em; counter-increment: source-line; }
-    pre.numberSource code > span > a:first-child::before
-      { content: counter(source-line);
-        position: relative; left: -1em; text-align: right; vertical-align: baseline;
-        border: none; display: inline-block;
-        -webkit-touch-callout: none; -webkit-user-select: none;
-        -khtml-user-select: none; -moz-user-select: none;
-        -ms-user-select: none; user-select: none;
-        padding: 0 4px; width: 4em;
-        color: #aaaaaa;
-      }
-    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
-    div.sourceCode
-      {   }
-    @media screen {
-    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
-    }
-    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
-    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
-    code span.at { color: #7d9029; } /* Attribute */
-    code span.bn { color: #40a070; } /* BaseN */
-    code span.bu { color: #008000; } /* BuiltIn */
-    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
-    code span.ch { color: #4070a0; } /* Char */
-    code span.cn { color: #880000; } /* Constant */
-    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
-    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
-    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
-    code span.dt { color: #902000; } /* DataType */
-    code span.dv { color: #40a070; } /* DecVal */
-    code span.er { color: #ff0000; font-weight: bold; } /* Error */
-    code span.ex { } /* Extension */
-    code span.fl { color: #40a070; } /* Float */
-    code span.fu { color: #06287e; } /* Function */
-    code span.im { color: #008000; font-weight: bold; } /* Import */
-    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
-    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
-    code span.op { color: #666666; } /* Operator */
-    code span.ot { color: #007020; } /* Other */
-    code span.pp { color: #bc7a00; } /* Preprocessor */
-    code span.sc { color: #4070a0; } /* SpecialChar */
-    code span.ss { color: #bb6688; } /* SpecialString */
-    code span.st { color: #4070a0; } /* String */
-    code span.va { color: #19177c; } /* Variable */
-    code span.vs { color: #4070a0; } /* VerbatimString */
-    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+/* UAOS Documentation Stylesheet — Workbench 3.x inspired */
+
+:root {
+    --bg:          #1a1a2e;
+    --surface:     #16213e;
+    --border:      #0f3460;
+    --accent:      #0088ff;
+    --accent2:     #ff8800;
+    --text:        #dde1e7;
+    --text-dim:    #8a9bb0;
+    --code-bg:     #0d1117;
+    --code-text:   #00cc66;
+    --link:        #44aaff;
+    --title-bar:   #0055aa;
+    --title-text:  #ffffff;
+    --wb-grey:     #aaaaaa;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Segoe UI', 'Liberation Sans', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    background-color: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ── Sidebar TOC ─────────────────────────────────────────── */
+
+#TOC {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 2px solid var(--border);
+    padding: 1.5rem 1rem;
+    font-size: 13px;
+    scrollbar-width: thin;
+}
+
+#TOC::before {
+    content: "UAOS Docs";
+    display: block;
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--title-text);
+    background: var(--title-bar);
+    margin: -1.5rem -1rem 1rem -1rem;
+    padding: 0.75rem 1rem;
+    letter-spacing: 0.05em;
+}
+
+#TOC ul { list-style: none; padding-left: 0.75rem; }
+#TOC > ul { padding-left: 0; }
+#TOC li { margin: 0.2rem 0; }
+#TOC a { color: var(--text-dim); text-decoration: none; }
+#TOC a:hover { color: var(--accent); }
+
+/* ── Main content ────────────────────────────────────────── */
+
+#main {
+    margin-left: 260px;
+    padding: 2rem 2.5rem;
+    max-width: 900px;
+    flex: 1;
+}
+
+/* Fallback: pandoc wraps content in a div directly in body */
+body > div:not(#TOC) {
+    margin-left: 260px;
+    padding: 2rem 2.5rem;
+    max-width: 900px;
+    flex: 1;
+}
+
+/* ── Headings ─────────────────────────────────────────────── */
+
+h1 {
+    font-size: 2rem;
+    color: var(--title-text);
+    background: var(--title-bar);
+    padding: 0.6rem 1.2rem;
+    margin: 2rem -2.5rem 1.5rem -2.5rem;
+    border-bottom: 3px solid var(--accent2);
+}
+
+h2 {
+    font-size: 1.4rem;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.3rem;
+    margin: 2rem 0 0.8rem;
+}
+
+h3 {
+    font-size: 1.1rem;
+    color: var(--accent2);
+    margin: 1.5rem 0 0.5rem;
+}
+
+h4 { font-size: 1rem; color: var(--text-dim); margin: 1rem 0 0.4rem; }
+
+/* ── Paragraphs & lists ───────────────────────────────────── */
+
+p { margin: 0.6rem 0 0.9rem; }
+
+ul, ol { padding-left: 1.8rem; margin: 0.5rem 0 0.9rem; }
+li { margin: 0.25rem 0; }
+
+/* ── Code ─────────────────────────────────────────────────── */
+
+code {
+    font-family: 'Courier New', 'Lucida Console', monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #333;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 4px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    margin: 0.8rem 0 1.2rem;
+    font-size: 0.87em;
+    line-height: 1.5;
+}
+
+pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--code-text);
+}
+
+/* ── Tables ───────────────────────────────────────────────── */
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.92em;
+}
+
+th {
+    background: var(--title-bar);
+    color: var(--title-text);
+    padding: 0.5rem 0.8rem;
+    text-align: left;
+    border: 1px solid var(--border);
+}
+
+td {
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--border);
+}
+
+tr:nth-child(even) td { background: var(--surface); }
+tr:hover td { background: #1f3058; }
+
+/* ── Links ────────────────────────────────────────────────── */
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; color: var(--accent2); }
+
+/* ── Blockquotes ──────────────────────────────────────────── */
+
+blockquote {
+    border-left: 4px solid var(--accent2);
+    margin: 0.8rem 0;
+    padding: 0.5rem 1rem;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ── Horizontal rule ──────────────────────────────────────── */
+
+hr {
+    border: none;
+    border-top: 2px solid var(--border);
+    margin: 2rem 0;
+}
+
+/* ── Title block ──────────────────────────────────────────── */
+
+header, .title-block {
+    background: var(--title-bar);
+    color: var(--title-text);
+    padding: 2rem 2.5rem;
+    margin: -2rem -2.5rem 2rem -2.5rem;
+    border-bottom: 4px solid var(--accent2);
+}
+
+header h1, .title { color: var(--title-text); background: none;
+    margin: 0; padding: 0; font-size: 2.2rem; }
+header p, .subtitle, .author, .date { color: #aac8ff; margin-top: 0.3rem; }
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ── Responsive ───────────────────────────────────────────── */
+
+@media (max-width: 800px) {
+    #TOC { display: none; }
+    body > div:not(#TOC) { margin-left: 0; padding: 1rem; }
+    h1 { margin-left: -1rem; margin-right: -1rem; }
+}
   </style>
-  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-<header id="title-block-header">
-<h1 class="title">Ultimate Amiga OS — Documentation</h1>
-</header>
-<nav id="TOC" role="doc-toc">
-<ul>
-<li><a href="#ultimate-amiga-os-uaos"
-id="toc-ultimate-amiga-os-uaos">Ultimate Amiga OS (UAOS)</a>
-<ul>
-<li><a href="#features" id="toc-features">Features</a></li>
-<li><a href="#repository-layout" id="toc-repository-layout">Repository
-Layout</a></li>
-<li><a href="#dependencies" id="toc-dependencies">Dependencies</a></li>
-<li><a href="#building-the-iso" id="toc-building-the-iso">Building the
-ISO</a>
-<ul>
-<li><a href="#what-the-build-script-does"
-id="toc-what-the-build-script-does">What the build script does</a></li>
-</ul></li>
-<li><a href="#running-in-qemu" id="toc-running-in-qemu">Running in
-QEMU</a>
-<ul>
-<li><a href="#first-time-setup-copy-ovmf-variables-file"
-id="toc-first-time-setup-copy-ovmf-variables-file">First-time setup —
-copy OVMF variables file</a></li>
-<li><a href="#launch-qemu" id="toc-launch-qemu">Launch QEMU</a></li>
-<li><a href="#optional-serial-debug-output"
-id="toc-optional-serial-debug-output">Optional: serial debug
-output</a></li>
-</ul></li>
-<li><a href="#using-the-desktop" id="toc-using-the-desktop">Using the
-Desktop</a>
-<ul>
-<li><a href="#mouse" id="toc-mouse">Mouse</a></li>
-<li><a href="#shell-window" id="toc-shell-window">Shell window</a></li>
-</ul></li>
-<li><a href="#architecture-overview"
-id="toc-architecture-overview">Architecture Overview</a></li>
-<li><a href="#known-limitations" id="toc-known-limitations">Known
-Limitations</a></li>
-<li><a href="#license" id="toc-license">License</a></li>
-</ul></li>
-</ul>
-</nav>
+  <nav id="TOC">
+
+  </nav>
+  <div id="main">
 <h1 id="ultimate-amiga-os-uaos">Ultimate Amiga OS (UAOS)</h1>
 <p>A bare-metal x86_64 hobby operating system inspired by the Amiga
 Workbench 3.x aesthetic, built from scratch using NASM, C11, GRUB2, and
@@ -186,25 +289,22 @@ legacy BIOS via GRUB2</li>
 <hr />
 <h2 id="dependencies">Dependencies</h2>
 <p>Install on Debian/Ubuntu:</p>
-<div class="sourceCode" id="cb2"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt install <span class="dt">\</span></span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    nasm <span class="dt">\</span></span>
-<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    gcc <span class="dt">\</span></span>
-<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    binutils <span class="dt">\</span></span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    grub-pc-bin <span class="dt">\</span></span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    grub-efi-amd64-bin <span class="dt">\</span></span>
-<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    grub-common <span class="dt">\</span></span>
-<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    xorriso <span class="dt">\</span></span>
-<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    ovmf <span class="dt">\</span></span>
-<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    qemu-system-x86</span></code></pre></div>
+<pre class="bash"><code>sudo apt install \
+    nasm \
+    gcc \
+    binutils \
+    grub-pc-bin \
+    grub-efi-amd64-bin \
+    grub-common \
+    xorriso \
+    ovmf \
+    qemu-system-x86</code></pre>
 <hr />
 <h2 id="building-the-iso">Building the ISO</h2>
 <p>From the repository root:</p>
-<div class="sourceCode" id="cb3"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> scripts/build_iso.sh</span></code></pre></div>
+<pre class="bash"><code>bash scripts/build_iso.sh</code></pre>
 <p>To do a clean rebuild from scratch:</p>
-<div class="sourceCode" id="cb4"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> scripts/build_iso.sh <span class="at">--clean</span></span></code></pre></div>
+<pre class="bash"><code>bash scripts/build_iso.sh --clean</code></pre>
 <p>On success the ISO is written to:</p>
 <pre><code>build/Ultimate_Amiga_OS.iso</code></pre>
 <h3 id="what-the-build-script-does">What the build script does</h3>
@@ -263,22 +363,20 @@ custom linker script</td>
 <h3 id="first-time-setup-copy-ovmf-variables-file">First-time setup —
 copy OVMF variables file</h3>
 <p>OVMF requires a writable variables file. Copy it once:</p>
-<div class="sourceCode" id="cb6"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cp</span> /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd</span></code></pre></div>
+<pre class="bash"><code>cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd</code></pre>
 <blockquote>
 <p>If your OVMF package uses a different path, check with:
 <code>find /usr/share -name 'OVMF_VARS_4M.fd' 2&gt;/dev/null</code></p>
 </blockquote>
 <h3 id="launch-qemu">Launch QEMU</h3>
-<div class="sourceCode" id="cb7"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="ex">qemu-system-x86_64</span> <span class="dt">\</span></span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-machine</span> q35,usb=off <span class="dt">\</span></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-drive</span> if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd <span class="dt">\</span></span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-drive</span> if=pflash,format=raw,file=/tmp/ovmf_vars.fd <span class="dt">\</span></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">-cdrom</span> build/Ultimate_Amiga_OS.iso <span class="dt">\</span></span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">-m</span> 512M <span class="dt">\</span></span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-vga</span> virtio <span class="dt">\</span></span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">-no-reboot</span></span></code></pre></div>
+<pre class="bash"><code>qemu-system-x86_64 \
+  -machine q35,usb=off \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+  -cdrom build/Ultimate_Amiga_OS.iso \
+  -m 512M \
+  -vga virtio \
+  -no-reboot</code></pre>
 <table>
 <colgroup>
 <col style="width: 42%" />
@@ -318,19 +416,17 @@ debugging)</td>
 <h3 id="optional-serial-debug-output">Optional: serial debug output</h3>
 <p>Add <code>-serial stdio</code> to see serial debug output from the
 kernel on your terminal:</p>
-<div class="sourceCode" id="cb8"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">qemu-system-x86_64</span> <span class="dt">\</span></span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-machine</span> q35,usb=off <span class="dt">\</span></span>
-<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-drive</span> if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd <span class="dt">\</span></span>
-<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">-drive</span> if=pflash,format=raw,file=/tmp/ovmf_vars.fd <span class="dt">\</span></span>
-<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">-cdrom</span> build/Ultimate_Amiga_OS.iso <span class="dt">\</span></span>
-<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">-m</span> 512M <span class="dt">\</span></span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-vga</span> virtio <span class="dt">\</span></span>
-<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">-no-reboot</span> <span class="dt">\</span></span>
-<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">-serial</span> stdio</span></code></pre></div>
+<pre class="bash"><code>qemu-system-x86_64 \
+  -machine q35,usb=off \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+  -cdrom build/Ultimate_Amiga_OS.iso \
+  -m 512M \
+  -vga virtio \
+  -no-reboot \
+  -serial stdio</code></pre>
 <p>Or log to a file:</p>
-<div class="sourceCode" id="cb9"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>  <span class="ex">-serial</span> file:/tmp/uaos_serial.log</span></code></pre></div>
+<pre class="bash"><code>  -serial file:/tmp/uaos_serial.log</code></pre>
 <hr />
 <h2 id="using-the-desktop">Using the Desktop</h2>
 <p>Once booted you will see a Workbench-style desktop.</p>
@@ -425,5 +521,6 @@ type commands:</p>
 <h2 id="license">License</h2>
 <p>This project is a personal research and hobby project. No licence is
 currently applied.</p>
+  </div>
 </body>
 </html>

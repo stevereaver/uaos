@@ -1,498 +1,833 @@
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="generator" content="pandoc" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>UAOS Technical Reference Manual</title>
   <style>
-    code{white-space: pre-wrap;}
-    span.smallcaps{font-variant: small-caps;}
-    div.columns{display: flex; gap: min(4vw, 1.5em);}
-    div.column{flex: auto; overflow-x: auto;}
-    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
-    /* The extra [class] is a hack that increases specificity enough to
-       override a similar rule in reveal.js */
-    ul.task-list[class]{list-style: none;}
-    ul.task-list li input[type="checkbox"] {
-      font-size: inherit;
-      width: 0.8em;
-      margin: 0 0.8em 0.2em -1.6em;
-      vertical-align: middle;
-    }
-    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
-    /* CSS for syntax highlighting */
-    pre > code.sourceCode { white-space: pre; position: relative; }
-    pre > code.sourceCode > span { line-height: 1.25; }
-    pre > code.sourceCode > span:empty { height: 1.2em; }
-    .sourceCode { overflow: visible; }
-    code.sourceCode > span { color: inherit; text-decoration: inherit; }
-    div.sourceCode { margin: 1em 0; }
-    pre.sourceCode { margin: 0; }
-    @media screen {
-    div.sourceCode { overflow: auto; }
-    }
-    @media print {
-    pre > code.sourceCode { white-space: pre-wrap; }
-    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
-    }
-    pre.numberSource code
-      { counter-reset: source-line 0; }
-    pre.numberSource code > span
-      { position: relative; left: -4em; counter-increment: source-line; }
-    pre.numberSource code > span > a:first-child::before
-      { content: counter(source-line);
-        position: relative; left: -1em; text-align: right; vertical-align: baseline;
-        border: none; display: inline-block;
-        -webkit-touch-callout: none; -webkit-user-select: none;
-        -khtml-user-select: none; -moz-user-select: none;
-        -ms-user-select: none; user-select: none;
-        padding: 0 4px; width: 4em;
-        color: #aaaaaa;
-      }
-    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
-    div.sourceCode
-      {   }
-    @media screen {
-    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
-    }
-    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
-    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
-    code span.at { color: #7d9029; } /* Attribute */
-    code span.bn { color: #40a070; } /* BaseN */
-    code span.bu { color: #008000; } /* BuiltIn */
-    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
-    code span.ch { color: #4070a0; } /* Char */
-    code span.cn { color: #880000; } /* Constant */
-    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
-    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
-    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
-    code span.dt { color: #902000; } /* DataType */
-    code span.dv { color: #40a070; } /* DecVal */
-    code span.er { color: #ff0000; font-weight: bold; } /* Error */
-    code span.ex { } /* Extension */
-    code span.fl { color: #40a070; } /* Float */
-    code span.fu { color: #06287e; } /* Function */
-    code span.im { color: #008000; font-weight: bold; } /* Import */
-    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
-    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
-    code span.op { color: #666666; } /* Operator */
-    code span.ot { color: #007020; } /* Other */
-    code span.pp { color: #bc7a00; } /* Preprocessor */
-    code span.sc { color: #4070a0; } /* SpecialChar */
-    code span.ss { color: #bb6688; } /* SpecialString */
-    code span.st { color: #4070a0; } /* String */
-    code span.va { color: #19177c; } /* Variable */
-    code span.vs { color: #4070a0; } /* VerbatimString */
-    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+/* UAOS Documentation Stylesheet — Workbench 3.x inspired */
+
+:root {
+    --bg:          #1a1a2e;
+    --surface:     #16213e;
+    --border:      #0f3460;
+    --accent:      #0088ff;
+    --accent2:     #ff8800;
+    --text:        #dde1e7;
+    --text-dim:    #8a9bb0;
+    --code-bg:     #0d1117;
+    --code-text:   #00cc66;
+    --link:        #44aaff;
+    --title-bar:   #0055aa;
+    --title-text:  #ffffff;
+    --wb-grey:     #aaaaaa;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Segoe UI', 'Liberation Sans', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    background-color: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ── Sidebar TOC ─────────────────────────────────────────── */
+
+#TOC {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 2px solid var(--border);
+    padding: 1.5rem 1rem;
+    font-size: 13px;
+    scrollbar-width: thin;
+}
+
+#TOC::before {
+    content: "UAOS Docs";
+    display: block;
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--title-text);
+    background: var(--title-bar);
+    margin: -1.5rem -1rem 1rem -1rem;
+    padding: 0.75rem 1rem;
+    letter-spacing: 0.05em;
+}
+
+#TOC ul { list-style: none; padding-left: 0.75rem; }
+#TOC > ul { padding-left: 0; }
+#TOC li { margin: 0.2rem 0; }
+#TOC a { color: var(--text-dim); text-decoration: none; }
+#TOC a:hover { color: var(--accent); }
+
+/* ── Main content ────────────────────────────────────────── */
+
+#main {
+    margin-left: 260px;
+    padding: 2rem 2.5rem;
+    max-width: 900px;
+    flex: 1;
+}
+
+/* Fallback: pandoc wraps content in a div directly in body */
+body > div:not(#TOC) {
+    margin-left: 260px;
+    padding: 2rem 2.5rem;
+    max-width: 900px;
+    flex: 1;
+}
+
+/* ── Headings ─────────────────────────────────────────────── */
+
+h1 {
+    font-size: 2rem;
+    color: var(--title-text);
+    background: var(--title-bar);
+    padding: 0.6rem 1.2rem;
+    margin: 2rem -2.5rem 1.5rem -2.5rem;
+    border-bottom: 3px solid var(--accent2);
+}
+
+h2 {
+    font-size: 1.4rem;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.3rem;
+    margin: 2rem 0 0.8rem;
+}
+
+h3 {
+    font-size: 1.1rem;
+    color: var(--accent2);
+    margin: 1.5rem 0 0.5rem;
+}
+
+h4 { font-size: 1rem; color: var(--text-dim); margin: 1rem 0 0.4rem; }
+
+/* ── Paragraphs & lists ───────────────────────────────────── */
+
+p { margin: 0.6rem 0 0.9rem; }
+
+ul, ol { padding-left: 1.8rem; margin: 0.5rem 0 0.9rem; }
+li { margin: 0.25rem 0; }
+
+/* ── Code ─────────────────────────────────────────────────── */
+
+code {
+    font-family: 'Courier New', 'Lucida Console', monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    border: 1px solid #333;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 4px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    margin: 0.8rem 0 1.2rem;
+    font-size: 0.87em;
+    line-height: 1.5;
+}
+
+pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--code-text);
+}
+
+/* ── Tables ───────────────────────────────────────────────── */
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.92em;
+}
+
+th {
+    background: var(--title-bar);
+    color: var(--title-text);
+    padding: 0.5rem 0.8rem;
+    text-align: left;
+    border: 1px solid var(--border);
+}
+
+td {
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--border);
+}
+
+tr:nth-child(even) td { background: var(--surface); }
+tr:hover td { background: #1f3058; }
+
+/* ── Links ────────────────────────────────────────────────── */
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; color: var(--accent2); }
+
+/* ── Blockquotes ──────────────────────────────────────────── */
+
+blockquote {
+    border-left: 4px solid var(--accent2);
+    margin: 0.8rem 0;
+    padding: 0.5rem 1rem;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+/* ── Horizontal rule ──────────────────────────────────────── */
+
+hr {
+    border: none;
+    border-top: 2px solid var(--border);
+    margin: 2rem 0;
+}
+
+/* ── Title block ──────────────────────────────────────────── */
+
+header, .title-block {
+    background: var(--title-bar);
+    color: var(--title-text);
+    padding: 2rem 2.5rem;
+    margin: -2rem -2.5rem 2rem -2.5rem;
+    border-bottom: 4px solid var(--accent2);
+}
+
+header h1, .title { color: var(--title-text); background: none;
+    margin: 0; padding: 0; font-size: 2.2rem; }
+header p, .subtitle, .author, .date { color: #aac8ff; margin-top: 0.3rem; }
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ── Responsive ───────────────────────────────────────────── */
+
+@media (max-width: 800px) {
+    #TOC { display: none; }
+    body > div:not(#TOC) { margin-left: 0; padding: 1rem; }
+    h1 { margin-left: -1rem; margin-right: -1rem; }
+}
   </style>
-  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-<header id="title-block-header">
-<h1 class="title">UAOS Technical Reference Manual</h1>
-</header>
-<nav id="TOC" role="doc-toc">
-<ul>
-<li><a href="#introduction" id="toc-introduction">Introduction</a>
-<ul>
-<li><a href="#project-overview" id="toc-project-overview">Project
-Overview</a></li>
-<li><a href="#architectural-constraints"
-id="toc-architectural-constraints">Architectural Constraints</a></li>
-</ul></li>
-<li><a href="#system-architecture" id="toc-system-architecture">System
-Architecture</a>
-<ul>
-<li><a href="#boot-sequence" id="toc-boot-sequence">Boot
-Sequence</a></li>
-<li><a href="#m68k-thunk-dispatch" id="toc-m68k-thunk-dispatch">M68k
-Thunk Dispatch</a></li>
-<li><a href="#mmu-sandbox" id="toc-mmu-sandbox">MMU Sandbox</a></li>
-</ul></li>
-<li><a href="#kernel-subsystems" id="toc-kernel-subsystems">Kernel
-Subsystems</a>
-<ul>
-<li><a href="#rom-module-registry-rom_modules.c"
-id="toc-rom-module-registry-rom_modules.c">ROM Module Registry
-(<code>rom_modules.c</code>)</a></li>
-<li><a href="#thunk-handler-thunk_handler.c"
-id="toc-thunk-handler-thunk_handler.c">Thunk Handler
-(<code>thunk_handler.c</code>)</a></li>
-<li><a href="#page-fault-handler-page_fault_handler.c"
-id="toc-page-fault-handler-page_fault_handler.c">Page Fault Handler
-(<code>page_fault_handler.c</code>)</a></li>
-</ul></li>
-<li><a href="#build-system" id="toc-build-system">Build System</a>
-<ul>
-<li><a href="#prerequisites"
-id="toc-prerequisites">Prerequisites</a></li>
-<li><a href="#building-the-iso" id="toc-building-the-iso">Building the
-ISO</a></li>
-<li><a href="#testing-in-qemu" id="toc-testing-in-qemu">Testing in
-QEMU</a></li>
-</ul></li>
-<li><a href="#graphics-and-window-manager"
-id="toc-graphics-and-window-manager">Graphics and Window Manager</a>
-<ul>
-<li><a href="#framebuffer-initialisation"
-id="toc-framebuffer-initialisation">Framebuffer Initialisation</a></li>
-<li><a href="#desktop" id="toc-desktop">Desktop</a></li>
-<li><a href="#window-manager" id="toc-window-manager">Window Manager</a>
-<ul>
-<li><a href="#data-structures" id="toc-data-structures">Data
-Structures</a></li>
-<li><a href="#z-order-and-focus" id="toc-z-order-and-focus">Z-Order and
-Focus</a></li>
-<li><a href="#drag-and-resize" id="toc-drag-and-resize">Drag and
-Resize</a></li>
-</ul></li>
-<li><a href="#software-cursor" id="toc-software-cursor">Software
-Cursor</a></li>
-</ul></li>
-<li><a href="#troubleshooting"
-id="toc-troubleshooting">Troubleshooting</a>
-<ul>
-<li><a href="#grub-invalid-arch-dependent-elf-magic"
-id="toc-grub-invalid-arch-dependent-elf-magic">GRUB: “Invalid
-arch-dependent ELF magic”</a></li>
-<li><a href="#grub-you-need-to-load-the-kernel-first"
-id="toc-grub-you-need-to-load-the-kernel-first">GRUB: “You need to load
-the kernel first”</a></li>
-<li><a href="#kernel-halts-immediately-after-boot"
-id="toc-kernel-halts-immediately-after-boot">Kernel halts immediately
-after boot</a></li>
-</ul></li>
-<li><a href="#amiga-memory-map-reference"
-id="toc-amiga-memory-map-reference">Amiga Memory Map Reference</a></li>
-</ul>
-</nav>
-<div class="titlepage">
-<p><span><strong>Ultimate Amiga OS<br />
-</strong></span> <span><em>Technical Reference Manual<br />
-</em></span> <span>Version 0.1.0-dev<br />
-</span> <span>2026-05-23<br />
-</span></p>
+  <nav id="TOC">
+
+  </nav>
+  <div id="main">
+<h1 id="ultimate-amiga-os-technical-reference-manual">Ultimate Amiga OS
+— Technical Reference Manual</h1>
+<p><strong>Version 0.1.0-dev</strong> | Generated: 2026</p>
 <hr />
-<p><br />
-<span> UAOS is a standalone, bare-metal 64-bit operating system for
-x86_64 platforms.<br />
-It is derived from the AROS open-source Amiga replacement kernel and
-features<br />
-transparent M68k JIT emulation and native GNU tool integration. </span>
-<span>Copyright  2026 UAOS Development Team. Released under the AROS
-Public License (APL).</span></p>
-</div>
-<h1 id="introduction">Introduction</h1>
-<h2 id="project-overview">Project Overview</h2>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li><a href="#introduction">Introduction</a></li>
+<li><a href="#system-architecture">System Architecture</a></li>
+<li><a href="#kernel-subsystems">Kernel Subsystems</a></li>
+<li><a href="#graphics-and-window-manager">Graphics and Window
+Manager</a></li>
+<li><a href="#input-drivers">Input Drivers</a></li>
+<li><a href="#shell">Shell</a></li>
+<li><a href="#build-system">Build System</a></li>
+<li><a href="#running-in-qemu">Running in QEMU</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#memory-map-reference">Memory Map Reference</a></li>
+</ol>
+<hr />
+<h2 id="introduction">Introduction</h2>
 <p>Ultimate Amiga OS (UAOS) is a standalone bare-metal x86_64 operating
 system designed to provide a native Amiga-compatible environment on
-modern hardware without requiring any host operating system. It achieves
-this through:</p>
+modern hardware without requiring any host operating system. It boots
+directly from a hybrid UEFI/BIOS ISO via GRUB2 Multiboot2, initialises a
+linear framebuffer through UEFI GOP, and presents a graphical Workbench
+3.x-style desktop with a fully-functional window manager, PS/2 mouse and
+keyboard drivers, and an interactive shell.</p>
+<h3 id="project-goals">Project Goals</h3>
 <ul>
-<li><p>An extended AROS microkernel providing Exec, DOS, and Intuition
-semantics on 64-bit hardware.</p></li>
-<li><p>A transparent M68k JIT emulation sandbox that executes legacy
-Amiga “Hunk” binaries inside a 4 GB virtual address space.</p></li>
-<li><p>An illegal-opcode trap mechanism
-(<code>ILLEGAL</code>/<code>0x4AFC</code>) that intercepts system calls
-at the ROM vector level and dispatches them to native 64-bit C
-implementations.</p></li>
-<li><p>An MMU sandbox using 2 MB huge pages with hardware-register
-windows deliberately left non-present to transparently virtualise custom
-chipset I/O via #PF exceptions.</p></li>
+<li>Provide a Workbench 3.x-style graphical environment natively on
+x86_64</li>
+<li>Implement transparent M68k emulation to run legacy Amiga Hunk
+binaries</li>
+<li>Intercept Amiga Exec/DOS/Intuition system calls via illegal-opcode
+traps and dispatch to native 64-bit C implementations</li>
+<li>Use MMU 2 MB huge pages to virtualise the Amiga custom chip register
+window via <code>#PF</code> exceptions</li>
 </ul>
-<h2 id="architectural-constraints">Architectural Constraints</h2>
-<ol>
-<li><p><strong>No Linux kernel.</strong> UAOS boots directly into its
-own x86_64 AROS-derived microkernel. No Linux, no POSIX kernel
-layer.</p></li>
-<li><p><strong>Trap-based thunking.</strong> M68k Hunk binaries are
-loaded into the 4 GB sandbox. System calls are intercepted via
-<code>ILLEGAL + $414D</code> magic-token sequences routed to native
-64-bit AROS libraries.</p></li>
-<li><p><strong>MMU hardware virtualisation.</strong> x86_64 page tables
-map the sandbox with 2 MB huge pages. The Amiga hardware register window
-<code>0x00B00000</code>–<code>0x00DFFFFF</code> is marked <span
-class="smallcaps">not present</span>.</p></li>
-<li><p><strong>Coexisting filesystem namespace.</strong>
-<code>dos.library</code> handlers resolve Amiga assigns
-(<code>SYS:</code>, <code>S:</code>, <code>C:</code>, <code>RAM:</code>)
-alongside POSIX translation paths.</p></li>
-<li><p><strong>AROS Kickstart firmware.</strong> The open-source AROS
-replacement ROM is used as the modular firmware base with vectors
-patched at build time.</p></li>
-</ol>
-<h1 id="system-architecture">System Architecture</h1>
-<h2 id="boot-sequence">Boot Sequence</h2>
-<ol>
-<li><p>GRUB2 loads the ELF64 kernel via the Multiboot2
-protocol.</p></li>
-<li><p><code>uaos_kernel_entry.asm</code> transitions the CPU from
-32-bit protected mode into 64-bit long mode, sets up a bootstrap
-identity-map page table, and calls
-<code>uaos_kernel_main()</code>.</p></li>
-<li><p>The C kernel entry point validates the Multiboot2 magic value,
-initialises the VGA text-mode console and UART, then calls:</p>
+<h3 id="architectural-constraints">Architectural Constraints</h3>
 <ul>
-<li><p><code>UAOS_MMU_Init()</code> — installs the sandbox page
-tables.</p></li>
-<li><p><code>UAOS_ROM_RegisterAll()</code> — populates the ROM module
-registry.</p></li>
-<li><p><code>UAOS_Bridge_Init()</code> — allocates the 4 GB guest RAM
-window.</p></li>
+<li><strong>No Linux kernel</strong> — UAOS boots directly into its own
+x86_64 microkernel</li>
+<li><strong>Trap-based thunking</strong> — M68k binaries are loaded into
+a 4 GB sandbox; system calls intercepted via
+<code>ILLEGAL + $414D</code> magic-token sequences</li>
+<li><strong>MMU hardware virtualisation</strong> — the Amiga hardware
+register window <code>0x00B00000–0x00DFFFFF</code> is marked NOT
+PRESENT, faults routed to the chip emulator</li>
+<li><strong>Amiga filesystem namespace</strong> —
+<code>dos.library</code> handlers resolve <code>SYS:</code>,
+<code>S:</code>, <code>C:</code>, <code>RAM:</code> assigns alongside
+POSIX translation paths</li>
+</ul>
+<hr />
+<h2 id="system-architecture">System Architecture</h2>
+<h3 id="boot-sequence">Boot Sequence</h3>
+<ol type="1">
+<li>GRUB2 loads the ELF64 kernel via the Multiboot2 protocol and fills
+the framebuffer tag from the UEFI GOP driver.</li>
+<li><code>uaos_kernel_entry.asm</code> — NASM bootstrap:
+<ul>
+<li>Transitions CPU from 32-bit protected mode to 64-bit long mode</li>
+<li>Sets up a bootstrap identity-map page table</li>
+<li>Calls <code>uaos_kernel_main()</code></li>
+</ul></li>
+<li><code>uaos_kernel_main()</code> (C):
+<ul>
+<li>Validates Multiboot2 magic value</li>
+<li>Initialises VGA text console and UART (COM1, 38400 baud)</li>
+<li>Calls <code>FB_Init()</code> to parse the Multiboot2 framebuffer
+tag</li>
+<li>Calls <code>IDT_Init()</code> to install the 256-vector IDT and
+remap the 8259A PIC</li>
+<li>Calls <code>UAOS_MMU_Init()</code> to install the sandbox page
+tables</li>
+<li>Calls <code>UAOS_ROM_RegisterAll()</code> to populate the ROM module
+registry</li>
+<li>Calls <code>UAOS_Bridge_Init()</code> to allocate the 4 GB guest RAM
+window</li>
+<li>Calls <code>PS2Mouse_Init()</code> and
+<code>PS2Kbd_Init()</code></li>
+<li>Renders the desktop and registers the shell window with the WM</li>
+<li>Enters the <code>hlt</code>-loop event dispatcher</li>
 </ul></li>
 </ol>
-<h2 id="m68k-thunk-dispatch">M68k Thunk Dispatch</h2>
+<h3 id="m68k-thunk-dispatch">M68k Thunk Dispatch</h3>
 <p>The thunk mechanism replaces selected Exec jump-table vectors in the
-AROS ROM with 8-byte breakout stubs assembled by the
-<code>MK_THUNK</code> macro in
-<code>emulation/rom_patches/rom_traps.s</code>:</p>
-<pre class="[Motorola68k]Assembler"
-data-language="[Motorola68k]Assembler"
-data-caption="MK\_THUNK macro"><code>MK_THUNK MACRO
-        ILLEGAL             ; $4AFC --- triggers JIT breakout
+AROS ROM with 8-byte breakout stubs using the <code>MK_THUNK</code>
+macro in <code>emulation/rom_patches/rom_traps.s</code>:</p>
+<pre class="asm"><code>MK_THUNK MACRO
+        ILLEGAL             ; $4AFC — triggers JIT breakout
         dc.w    \1          ; UAOS magic token ($414D = &quot;AM&quot;)
         dc.w    \2          ; function index (1-based)
         rts                 ; return to guest after dispatch
         ENDM</code></pre>
 <p>When the JIT core decodes <code>0x4AFC</code> it invokes
 <code>UAOS_Bridge_IllegalOpcode()</code>. The C dispatcher:</p>
-<ol>
-<li><p>Reads the two words immediately following the ILLEGAL
-opcode.</p></li>
-<li><p>Validates the <code>$414D</code> signature.</p></li>
-<li><p>Extracts arguments from the M68k register state (A1, D0, D1,
-…).</p></li>
-<li><p>Calls the native 64-bit stub.</p></li>
-<li><p>Writes return values back into D0/A0.</p></li>
-<li><p>Advances the guest PC by 6 bytes.</p></li>
+<ol type="1">
+<li>Reads the two words immediately following the ILLEGAL opcode</li>
+<li>Validates the <code>$414D</code> signature</li>
+<li>Extracts arguments from the M68k register state (A1, D0, D1, …)</li>
+<li>Calls the native 64-bit stub</li>
+<li>Writes return values back into D0/A0</li>
+<li>Advances the guest PC by 6 bytes</li>
 </ol>
-<h2 id="mmu-sandbox">MMU Sandbox</h2>
+<h3 id="mmu-sandbox">MMU Sandbox</h3>
 <p><code>kernel/exec/mmu_sandbox.c</code> constructs four-level x86_64
-paging tables mapping the entire 4 GB guest address space using 2 MB
-huge pages. Table <a href="#tab:memmap" data-reference-type="ref"
-data-reference="tab:memmap">2.1</a> shows the critical address
-assignments.</p>
-<div id="tab:memmap">
+paging tables mapping the entire 4 GB guest address space using 2 MB
+huge pages.</p>
 <table>
-<caption>UAOS Guest Address Space Map</caption>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr class="header">
-<th style="text-align: left;"><strong>Address Range</strong></th>
-<th style="text-align: left;"><strong>Size</strong></th>
-<th style="text-align: left;"><strong>Description</strong></th>
+<th>Address Range</th>
+<th>Size</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td style="text-align: left;"><code>0x00000000–0x001FFFFF</code></td>
-<td style="text-align: left;">2 MB</td>
-<td style="text-align: left;">Chip RAM</td>
+<td><code>0x00000000–0x001FFFFF</code></td>
+<td>2 MB</td>
+<td>Chip RAM</td>
 </tr>
 <tr class="even">
-<td style="text-align: left;"><code>0x00200000–0x009FFFFF</code></td>
-<td style="text-align: left;">8 MB</td>
-<td style="text-align: left;">Fast RAM (lower)</td>
+<td><code>0x00200000–0x009FFFFF</code></td>
+<td>8 MB</td>
+<td>Fast RAM (lower)</td>
 </tr>
 <tr class="odd">
-<td style="text-align: left;"><code>0x00B00000–0x00DFFFFF</code></td>
-<td style="text-align: left;">3 MB</td>
-<td style="text-align: left;"><strong>Custom chip registers (NOT
-PRESENT)</strong></td>
+<td><code>0x00B00000–0x00DFFFFF</code></td>
+<td>3 MB</td>
+<td><strong>Custom chip registers (NOT PRESENT)</strong></td>
 </tr>
 <tr class="even">
-<td style="text-align: left;"><code>0x00F80000–0x00FFFFFF</code></td>
-<td style="text-align: left;">512 KB</td>
-<td style="text-align: left;">Kickstart ROM mirror</td>
+<td><code>0x00F80000–0x00FFFFFF</code></td>
+<td>512 KB</td>
+<td>Kickstart ROM mirror</td>
 </tr>
 <tr class="odd">
-<td style="text-align: left;"><code>0x01000000–0x7FFFFFFF</code></td>
-<td style="text-align: left;">2 GB</td>
-<td style="text-align: left;">Extended Fast RAM</td>
+<td><code>0x01000000–0x7FFFFFFF</code></td>
+<td>2 GB</td>
+<td>Extended Fast RAM</td>
 </tr>
 <tr class="even">
-<td style="text-align: left;"><code>0x80000000–0xFFFFFFFF</code></td>
-<td style="text-align: left;">2 GB</td>
-<td style="text-align: left;">x86_64 kernel space</td>
+<td><code>0x80000000–0xFFFFFFFF</code></td>
+<td>2 GB</td>
+<td>x86_64 kernel space</td>
 </tr>
 </tbody>
 </table>
-</div>
 <p>Pages in the hardware register window have <code>PAGE_PRESENT</code>
-cleared and <code>PAGE_NO_CACHE</code> set. Any access faults to this
-region are caught by the #PF handler in
+cleared. Any access faults to this region are caught by the
+<code>#PF</code> handler in
 <code>kernel/exec/page_fault_handler.c</code> and forwarded to the chip
 emulator.</p>
-<h1 id="kernel-subsystems">Kernel Subsystems</h1>
-<h2 id="rom-module-registry-rom_modules.c">ROM Module Registry
-(<code>rom_modules.c</code>)</h2>
+<hr />
+<h2 id="kernel-subsystems">Kernel Subsystems</h2>
+<h3 id="rom-module-registry-rom_modules.c">ROM Module Registry
+(<code>rom_modules.c</code>)</h3>
 <p><code>UAOS_ROM_RegisterAll()</code> is called once at boot. It
 populates a static array of <code>UaosRomModule</code> descriptors, each
 holding:</p>
 <ul>
-<li><p>Library name string (e.g. <code>"exec.library"</code>).</p></li>
-<li><p>Library version number.</p></li>
-<li><p>32-bit Amiga base address.</p></li>
-<li><p>Array of native function pointers (indexed 1-based to match
-<code>rom_traps.s</code> function indices).</p></li>
+<li>Library name string (e.g. <code>"exec.library"</code>)</li>
+<li>Library version number</li>
+<li>32-bit Amiga base address</li>
+<li>Array of native function pointers (indexed 1-based to match
+<code>rom_traps.s</code> function indices)</li>
 </ul>
-<h2 id="thunk-handler-thunk_handler.c">Thunk Handler
-(<code>thunk_handler.c</code>)</h2>
+<h3 id="thunk-handler-thunk_handler.c">Thunk Handler
+(<code>thunk_handler.c</code>)</h3>
 <p>The <code>UAOS_AMIGA_TO_HOST()</code> macro translates any 32-bit
 Amiga guest address to the corresponding host linear address:</p>
-<div class="sourceCode" id="cb2" data-language="C"
-data-caption="Address translation macro"><pre
-class="sourceCode objectivec"><code class="sourceCode objectivec"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="pp">#define UAOS_AMIGA_TO_HOST(amiga_addr) \</span></span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="pp">    ((void *)((uintptr_t)(uaos_ram_base) + (uint32_t)(amiga_addr)))</span></span></code></pre></div>
-<h2 id="page-fault-handler-page_fault_handler.c">Page Fault Handler
-(<code>page_fault_handler.c</code>)</h2>
-<p>The ISR entry stub <code>uaos_page_fault_isr</code> (written in
-inline GAS assembly) saves all 15 GPRs onto the kernel stack, computes
-pointers to the <code>InterruptFrame</code> and <code>SavedRegs</code>
-blocks, and calls the C function <code>UAOS_PageFaultHandler()</code>.
-On return from the C handler, GPRs are restored and <code>IRETQ</code>
-resumes execution past the faulting instruction.</p>
-<h1 id="build-system">Build System</h1>
-<h2 id="prerequisites">Prerequisites</h2>
-<div class="sourceCode" id="cb3" data-language="bash"
-data-caption="Install build dependencies (Ubuntu/Debian)"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> apt install nasm gcc binutils xorriso <span class="dt">\</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    grub-pc-bin grub-common <span class="dt">\</span></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    binutils-m68k-linux-gnu python3</span></code></pre></div>
-<h2 id="building-the-iso">Building the ISO</h2>
-<div class="sourceCode" id="cb4" data-language="bash"
-data-caption="Full build pipeline"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Assemble NASM kernel entry</span></span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fu">nasm</span> <span class="at">-f</span> elf64 kernel/boot/uaos_kernel_entry.asm <span class="dt">\</span></span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="at">-o</span> build/uaos_kernel_entry.o</span>
-<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Compile C kernel sources (freestanding)</span></span>
-<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="fu">gcc</span> <span class="at">-ffreestanding</span> <span class="at">-fno-stack-protector</span> <span class="at">-fno-pie</span> <span class="dt">\</span></span>
-<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">-mno-red-zone</span> <span class="at">-nostdlib</span> <span class="at">-m64</span> <span class="at">-O2</span> <span class="dt">\</span></span>
-<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">-c</span> kernel/boot/uaos_kernel_main.c <span class="at">-o</span> build/uaos_kernel_main.o</span>
-<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="co"># ... (see scripts/build_iso.sh for full compile step list)</span></span>
-<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Link ELF64 kernel</span></span>
-<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="fu">ld</span> <span class="at">-T</span> kernel/boot/uaos_kernel.ld build/<span class="pp">*</span>.o <span class="at">-o</span> build/uaos-kernel.elf</span>
-<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Package ISO</span></span>
-<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="ex">./scripts/build_iso.sh</span></span></code></pre></div>
-<h2 id="testing-in-qemu">Testing in QEMU</h2>
-<p>Copy the OVMF variables file once (required for UEFI variable
-store):</p>
-<div class="sourceCode" id="cb5" data-language="bash"
-data-caption="One-time OVMF setup"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cp</span> /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd</span></code></pre></div>
-<div class="sourceCode" id="cb6" data-language="bash"
-data-caption="QEMU test invocation"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">qemu-system-x86_64</span> <span class="dt">\</span></span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">-machine</span> q35,usb=off <span class="dt">\</span></span>
-<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">-drive</span> if=pflash,format=raw,readonly=on,<span class="dt">\</span></span>
-<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>file=/usr/share/OVMF/OVMF_CODE_4M.fd <span class="dt">\</span></span>
-<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">-drive</span> if=pflash,format=raw,file=/tmp/ovmf_vars.fd <span class="dt">\</span></span>
-<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">-cdrom</span> build/Ultimate_Amiga_OS.iso <span class="dt">\</span></span>
-<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">-m</span> 512M <span class="at">-vga</span> virtio <span class="at">-no-reboot</span></span></code></pre></div>
-<p>The <code>usb=off</code> flag is required to prevent QEMU’s USB
-tablet device from conflicting with the PS/2 relative mouse driver. Add
-<code>-serial stdio</code> to see kernel debug output on the
-terminal.</p>
-<h1 id="graphics-and-window-manager">Graphics and Window Manager</h1>
-<h2 id="framebuffer-initialisation">Framebuffer Initialisation</h2>
-<p>GRUB2 fills the Multiboot2 framebuffer tag (type 8) from the UEFI GOP
+<pre class="c"><code>#define UAOS_AMIGA_TO_HOST(amiga_addr) \
+    ((void *)((uintptr_t)(uaos_ram_base) + (uint32_t)(amiga_addr)))</code></pre>
+<h3 id="page-fault-handler-page_fault_handler.c">Page Fault Handler
+(<code>page_fault_handler.c</code>)</h3>
+<p>The ISR entry stub <code>uaos_page_fault_isr</code> (inline GAS
+assembly) saves all 15 GPRs onto the kernel stack, computes pointers to
+the <code>InterruptFrame</code> and <code>SavedRegs</code> blocks, and
+calls <code>UAOS_PageFaultHandler()</code>. On return, GPRs are restored
+and <code>IRETQ</code> resumes execution.</p>
+<h3 id="idt-and-pic-idt.c">IDT and PIC (<code>idt.c</code>)</h3>
+<ul>
+<li>256-vector Interrupt Descriptor Table installed via
+<code>LIDT</code></li>
+<li>8259A PIC remapped: IRQ0–7 → vectors 32–39, IRQ8–15 → vectors
+40–47</li>
+<li>IRQ1 (vector 33) — PS/2 keyboard</li>
+<li>IRQ12 (vector 44) — PS/2 mouse</li>
+</ul>
+<hr />
+<h2 id="graphics-and-window-manager">Graphics and Window Manager</h2>
+<h3 id="framebuffer-framebuffer.c">Framebuffer
+(<code>framebuffer.c</code>)</h3>
+<p>GRUB2 fills the Multiboot2 framebuffer tag (type 8) from the UEFI GOP
 driver. <code>FB_Init()</code> parses this tag to populate the global
-<code>FbState g_fb</code> structure, which holds the physical base
-address, pixel dimensions, pitch (bytes per row), and bit depth (24 or
-32 bpp).</p>
-<p>All drawing primitives (<code>FB_FillRect</code>,
-<code>FB_DrawHLine</code>, <code>FB_DrawVLine</code>,
-<code>FB_PutPixel</code>, <code>FB_PutStr</code>) clip coordinates to
-the framebuffer bounds before writing, supporting windows that extend
-partially off-screen.</p>
-<h2 id="desktop">Desktop</h2>
+<code>FbState g_fb</code> structure:</p>
+<pre class="c"><code>typedef struct {
+    uint64_t  phys_addr;   /* physical base address */
+    uint32_t  width;       /* pixels wide           */
+    uint32_t  height;      /* pixels tall           */
+    uint32_t  pitch;       /* bytes per row         */
+    uint8_t   bpp;         /* 24 or 32              */
+    uint8_t   valid;
+} FbState;</code></pre>
+<p>All drawing primitives clip coordinates to screen bounds before
+writing, correctly handling windows that extend partially off-screen
+(including negative x/y coordinates):</p>
+<table>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>FB_FillRect(x, y, w, h, col)</code></td>
+<td>Filled rectangle</td>
+</tr>
+<tr class="even">
+<td><code>FB_DrawRect(x, y, w, h, col)</code></td>
+<td>Outline rectangle</td>
+</tr>
+<tr class="odd">
+<td><code>FB_DrawHLine(x, y, len, col)</code></td>
+<td>Horizontal line</td>
+</tr>
+<tr class="even">
+<td><code>FB_DrawVLine(x, y, len, col)</code></td>
+<td>Vertical line</td>
+</tr>
+<tr class="odd">
+<td><code>FB_PutPixel(x, y, col)</code></td>
+<td>Single pixel</td>
+</tr>
+<tr class="even">
+<td><code>FB_PutStr(x, y, s, fg, bg)</code></td>
+<td>8×16 bitmap font string</td>
+</tr>
+</tbody>
+</table>
+<h3 id="desktop-desktop.c">Desktop (<code>desktop.c</code>)</h3>
 <p><code>Desktop_Draw()</code> renders the full Workbench-style
 backdrop:</p>
 <ul>
-<li><p><strong>Menu bar</strong> (top, 20 px) — Workbench menu labels
-and clock area.</p></li>
-<li><p><strong>Backdrop</strong> — light grey base with a dark-grey
-stipple dot overlay, one dot per two pixels alternating rows/columns
-(classic Amiga pattern).</p></li>
-<li><p><strong>Disk icons</strong> — top-right corner, stacked
-vertically.</p></li>
-<li><p><strong>Information window</strong> — centred boot status
-window.</p></li>
-<li><p><strong>Status bar</strong> (bottom, 18 px) — kernel idle message
-and RAM size.</p></li>
+<li><strong>Menu bar</strong> (top, 20 px) — Workbench menu labels and
+clock area</li>
+<li><strong>Backdrop</strong> — light grey base (<code>#AAAAAA</code>)
+with a dark-grey (<code>#555555</code>) stipple dot overlay; one dot per
+two pixels on alternating rows/columns — the classic Amiga pattern</li>
+<li><strong>Disk icons</strong> — top-right corner, stacked vertically
+(RAM Disk, UAOS:)</li>
+<li><strong>Information window</strong> — centred boot status
+window</li>
+<li><strong>Status bar</strong> (bottom, 18 px) — kernel idle message
+and RAM size</li>
 </ul>
 <p><code>Desktop_RedrawRect(rx, ry, rw, rh)</code> repaints a
-sub-rectangle of the desktop (backdrop + overlays) without a full-screen
-repaint. This is used by the window manager to erase the old window
-footprint during drag and resize, avoiding the full-screen flicker that
-would otherwise occur.</p>
-<h2 id="window-manager">Window Manager</h2>
-<p><code>kernel/display/wm.c</code> implements a lightweight window
-manager supporting up to eight windows simultaneously.</p>
-<h3 id="data-structures">Data Structures</h3>
-<div class="sourceCode" id="cb7" data-language="C"
-data-caption="WmWindow structure"><pre
-class="sourceCode objectivec"><code class="sourceCode objectivec"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">typedef</span> <span class="kw">struct</span> <span class="op">{</span></span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span>       x<span class="op">,</span> y<span class="op">,</span> w<span class="op">,</span> h<span class="op">;</span></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">char</span>      title<span class="op">[</span><span class="dv">32</span><span class="op">];</span></span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    WM_DrawFn draw<span class="op">;</span>     <span class="co">/* repaint callback: (x, y, w, h) */</span></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    WM_KeyFn  on_key<span class="op">;</span>   <span class="co">/* keystroke callback: (char c)   */</span></span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span>       active<span class="op">;</span></span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span> WmWindow<span class="op">;</span></span></code></pre></div>
-<h3 id="z-order-and-focus">Z-Order and Focus</h3>
+sub-rectangle of the desktop (backdrop + all overlays: icons, info
+window, menu bar, status bar) without a full-screen repaint. This is
+called by the window manager on every drag/resize step to erase the old
+window footprint efficiently.</p>
+<h3 id="window-manager-wm.c">Window Manager (<code>wm.c</code>)</h3>
+<p>A lightweight WM supporting up to 8 simultaneous windows.</p>
+<h4 id="wmwindow-structure">WmWindow structure</h4>
+<pre class="c"><code>typedef struct {
+    int       x, y, w, h;
+    char      title[32];
+    WM_DrawFn draw;      /* repaint callback: (x, y, w, h) */
+    WM_KeyFn  on_key;    /* keystroke callback: (char c)   */
+    int       active;
+} WmWindow;</code></pre>
+<h4 id="z-order-and-focus">Z-Order and Focus</h4>
 <p>Windows are stored in <code>g_wins[]</code> and indexed by a separate
 <code>g_zorder[]</code> array (<code>[0]</code> = back,
 <code>[g_nwins-1]</code> = top). <code>WM_Redraw()</code> paints windows
 back-to-front. Clicking a window calls <code>raise_window()</code> to
 promote it to the top of the z-stack.</p>
-<h3 id="drag-and-resize">Drag and Resize</h3>
+<h4 id="drag-and-resize">Drag and Resize</h4>
 <ul>
-<li><p><strong>Drag</strong> — a mouse-down on the title bar records the
-grab offset. Each subsequent mouse move erases the old footprint with
-<code>Desktop_RedrawRect</code>, updates <code>w-&gt;x/y</code>, and
-repaints all windows.</p></li>
-<li><p><strong>Resize</strong> — a mouse-down on the 16<span
-class="math inline">×</span>16 resize grip in the bottom-right corner
-records the base size and origin. Mouse movement computes the new
-dimensions relative to the drag start point.</p></li>
-<li><p>Windows may extend off the left, right, and bottom screen edges.
-The title bar is always constrained to remain on-screen.</p></li>
+<li><strong>Drag</strong> — mouse-down on the title bar records the grab
+offset. Each subsequent mouse move calls <code>Desktop_RedrawRect</code>
+on the old footprint, updates <code>w-&gt;x/y</code>, then repaints all
+windows front-to-back.</li>
+<li><strong>Resize</strong> — mouse-down on the 16×16 resize grip
+(bottom-right corner) records the base size and drag origin. Mouse
+movement computes new dimensions relative to the drag start point.
+Minimum size: 120×80 px.</li>
+<li>Windows may extend off the left, right, and bottom screen edges. The
+title bar is always constrained to remain at or below the menu bar
+(<code>y &gt;= 20</code>), and at least 32 px of horizontal width stays
+on-screen.</li>
 </ul>
-<h2 id="software-cursor">Software Cursor</h2>
-<p><code>kernel/display/cursor.c</code> implements a 16<span
-class="math inline">×</span>16 Amiga-style arrow sprite cursor. The
-cursor is rendered by saving the background pixels beneath it, drawing
-the sprite, and on each move restoring the saved background before
-re-saving and re-drawing at the new position. This ensures the desktop
-and window content are never permanently overwritten by cursor
-movement.</p>
-<h1 id="troubleshooting">Troubleshooting</h1>
-<h2 id="grub-invalid-arch-dependent-elf-magic">GRUB: “Invalid
-arch-dependent ELF magic”</h2>
-<p>This error means GRUB received a file that is not a valid ELF64
-executable. Ensure <code>uaos-kernel.elf</code> was produced by the full
-NASM + GCC + LD pipeline (not the Python mock generator used for
-structural validation only).</p>
-<h2 id="grub-you-need-to-load-the-kernel-first">GRUB: “You need to load
-the kernel first”</h2>
+<h3 id="software-cursor-cursor.c">Software Cursor
+(<code>cursor.c</code>)</h3>
+<p>A 16×16 Amiga-style arrow sprite cursor rendered in software:</p>
+<ol type="1">
+<li>Save the 16×16 background pixels beneath the cursor position</li>
+<li>Draw the sprite (two-colour XOR mask)</li>
+<li>On each move: restore saved background, save new background, draw
+sprite at new position</li>
+</ol>
+<p>This ensures desktop and window content are never permanently
+overwritten by cursor movement.</p>
+<hr />
+<h2 id="input-drivers">Input Drivers</h2>
+<h3 id="ps2-mouse-ps2mouse.c">PS/2 Mouse (<code>ps2mouse.c</code>)</h3>
+<ul>
+<li><strong>IRQ12</strong> (vector 44), 3-byte packet protocol</li>
+<li>Byte 0: flags (button state, overflow, sign bits)</li>
+<li>Bytes 1–2: signed X and Y deltas (two’s complement with sign
+extension from flags)</li>
+<li>Cursor position clamped to <code>[0, screen_width-1]</code> ×
+<code>[0, screen_height-1]</code></li>
+<li>Calls <code>Cursor_Move(new_x, new_y)</code> on each valid
+packet</li>
+</ul>
+<h3 id="ps2-keyboard-ps2kbd.c">PS/2 Keyboard
+(<code>ps2kbd.c</code>)</h3>
+<ul>
+<li><strong>IRQ1</strong> (vector 33), scancode set 1</li>
+<li>Ring buffer stores decoded ASCII characters</li>
+<li><code>PS2Kbd_HasChar()</code> / <code>PS2Kbd_GetChar()</code> polled
+by the event loop</li>
+<li>Keystrokes routed to the focused window via
+<code>WM_KeyEvent(c)</code></li>
+</ul>
+<hr />
+<h2 id="shell">Shell</h2>
+<p>The shell window (<code>shell_win.c</code>) registers with the WM via
+<code>WM_AddWindow()</code> and implements a scrollable terminal:</p>
+<ul>
+<li>History buffer: up to 128 lines × 128 characters</li>
+<li>Input line with backspace support</li>
+<li>Dynamic layout — adapts to window resize</li>
+</ul>
+<h3 id="built-in-commands">Built-in Commands</h3>
+<table>
+<thead>
+<tr class="header">
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>help</code></td>
+<td>List available commands</td>
+</tr>
+<tr class="even">
+<td><code>version</code></td>
+<td>Show kernel version and CPU architecture</td>
+</tr>
+<tr class="odd">
+<td><code>mem</code></td>
+<td>Display total RAM from Multiboot2 tag</td>
+</tr>
+<tr class="even">
+<td><code>clear</code></td>
+<td>Clear the shell history buffer</td>
+</tr>
+<tr class="odd">
+<td><code>reboot</code></td>
+<td>Trigger a system reboot via port <code>0x64</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="build-system">Build System</h2>
+<h3 id="dependencies">Dependencies</h3>
+<pre class="bash"><code>sudo apt install \
+    nasm \
+    gcc \
+    binutils \
+    grub-pc-bin \
+    grub-efi-amd64-bin \
+    grub-common \
+    xorriso \
+    ovmf \
+    qemu-system-x86</code></pre>
+<h3 id="build-pipeline">Build Pipeline</h3>
+<pre class="bash"><code># Full clean build
+bash scripts/build_iso.sh --clean
+
+# Incremental build
+bash scripts/build_iso.sh</code></pre>
+<p>Output: <code>build/Ultimate_Amiga_OS.iso</code></p>
+<h4 id="what-the-script-does">What the script does</h4>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Step</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>1</td>
+<td>Creates <code>build/</code> staging directories</td>
+</tr>
+<tr class="even">
+<td>2</td>
+<td>Assembles <code>uaos_kernel_entry.asm</code> +
+<code>idt_stubs.asm</code> with NASM</td>
+</tr>
+<tr class="odd">
+<td>3</td>
+<td>Compiles all C sources:
+<code>-ffreestanding -m64 -O2 -std=c11 -fno-stack-protector</code></td>
+</tr>
+<tr class="even">
+<td>4</td>
+<td>Links into <code>uaos-kernel.elf</code> (ELF64) via the custom
+linker script</td>
+</tr>
+<tr class="odd">
+<td>5</td>
+<td>Packages the <code>sys-root</code> Amiga filesystem skeleton</td>
+</tr>
+<tr class="even">
+<td>6</td>
+<td>Injects <code>grub.cfg</code></td>
+</tr>
+<tr class="odd">
+<td>7</td>
+<td>Builds <code>bootx64.efi</code> with
+<code>grub-mkstandalone</code></td>
+</tr>
+<tr class="even">
+<td>8</td>
+<td>Produces hybrid BIOS+EFI ISO with <code>grub-mkrescue</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="gcc-flags">GCC Flags</h3>
+<pre><code>-ffreestanding -fno-stack-protector -fno-pie -fno-PIE
+-mno-red-zone -nostdlib -m64 -O2 -std=c11
+-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+-Wall -Wextra</code></pre>
+<hr />
+<h2 id="running-in-qemu">Running in QEMU</h2>
+<h3 id="one-time-ovmf-setup">One-time OVMF Setup</h3>
+<pre class="bash"><code>cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd</code></pre>
+<h3 id="launch-command">Launch Command</h3>
+<pre class="bash"><code>qemu-system-x86_64 \
+  -machine q35,usb=off \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+  -cdrom build/Ultimate_Amiga_OS.iso \
+  -m 512M \
+  -vga virtio \
+  -no-reboot</code></pre>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>-machine q35,usb=off</code></td>
+<td>Q35 chipset; <code>usb=off</code> prevents USB tablet conflicting
+with PS/2 mouse</td>
+</tr>
+<tr class="even">
+<td><code>OVMF_CODE_4M.fd</code></td>
+<td>UEFI firmware (read-only)</td>
+</tr>
+<tr class="odd">
+<td><code>ovmf_vars.fd</code></td>
+<td>UEFI variable store (writable copy)</td>
+</tr>
+<tr class="even">
+<td><code>-vga virtio</code></td>
+<td>Best framebuffer performance</td>
+</tr>
+<tr class="odd">
+<td><code>-no-reboot</code></td>
+<td>Keeps QEMU open after kernel reboot call</td>
+</tr>
+</tbody>
+</table>
+<h3 id="serial-debug-output">Serial Debug Output</h3>
+<pre class="bash"><code># To terminal
+qemu-system-x86_64 ... -serial stdio
+
+# To file
+qemu-system-x86_64 ... -serial file:/tmp/uaos_serial.log</code></pre>
+<hr />
+<h2 id="troubleshooting">Troubleshooting</h2>
+<h3 id="grub-invalid-arch-dependent-elf-magic">GRUB: “Invalid
+arch-dependent ELF magic”</h3>
+<p><code>uaos-kernel.elf</code> is not a valid ELF64 binary. Ensure the
+full NASM + GCC + LD pipeline completed without errors. Run
+<code>file build/uaos-kernel.elf</code> — it must report
+<code>ELF 64-bit LSB executable, x86-64</code>.</p>
+<h3 id="grub-you-need-to-load-the-kernel-first">GRUB: “You need to load
+the kernel first”</h3>
 <p>GRUB could not find the <code>multiboot2</code> header within the
-first 32 KB of the binary. Verify the linker script places
+first 32 KB of the binary. Verify the linker script places
 <code>.multiboot2</code> first and that the NASM source emits the
 section correctly.</p>
-<h2 id="kernel-halts-immediately-after-boot">Kernel halts immediately
-after boot</h2>
-<p>Enable serial output and check the UART log:</p>
-<div class="sourceCode" id="cb8" data-language="bash"><pre
-class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">qemu-system-x86_64</span> <span class="at">-cdrom</span> build/Ultimate_Amiga_OS.iso <span class="dt">\</span></span>
-<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="at">-m</span> 512M <span class="at">-boot</span> d <span class="at">-serial</span> stdio <span class="dv">2</span><span class="op">&gt;&amp;</span><span class="dv">1</span> <span class="kw">|</span> <span class="fu">tee</span> boot.log</span></code></pre></div>
-<h1 id="amiga-memory-map-reference">Amiga Memory Map Reference</h1>
-<p>See Table <a href="#tab:memmap" data-reference-type="ref"
-data-reference="tab:memmap">2.1</a> in Chapter 2. The full OCS/ECS/AGA
-custom chip register map follows Commodore’s <em>Hardware Reference
-Manual, 3rd Ed.</em></p>
+<h3 id="kernel-halts-immediately-after-boot">Kernel halts immediately
+after boot</h3>
+<p>Enable serial output to see debug messages:</p>
+<pre class="bash"><code>qemu-system-x86_64 ... -serial stdio 2&gt;&amp;1 | tee boot.log</code></pre>
+<h3 id="mouse-jitters-or-snaps-back-to-centre">Mouse jitters or snaps
+back to centre</h3>
+<p>Ensure QEMU is launched with <code>-machine q35,usb=off</code>. The
+USB tablet device provides absolute coordinates that conflict with the
+PS/2 relative mouse driver.</p>
+<h3 id="mouse-cursor-not-visible">Mouse cursor not visible</h3>
+<p>The cursor is rendered in software. If the framebuffer is not
+initialised (no <code>[BOOT] Framebuffer: ...</code> line in serial
+log), GRUB did not provide a framebuffer tag — check
+<code>grub.cfg</code> for <code>set gfxmode</code> and
+<code>insmod all_video</code>.</p>
+<hr />
+<h2 id="memory-map-reference">Memory Map Reference</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Address Range</th>
+<th>Size</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>0x00000000–0x001FFFFF</code></td>
+<td>2 MB</td>
+<td>Chip RAM</td>
+</tr>
+<tr class="even">
+<td><code>0x00200000–0x009FFFFF</code></td>
+<td>8 MB</td>
+<td>Fast RAM (lower)</td>
+</tr>
+<tr class="odd">
+<td><code>0x00A00000–0x00AFFFFF</code></td>
+<td>1 MB</td>
+<td>Slow RAM / ranger</td>
+</tr>
+<tr class="even">
+<td><code>0x00B00000–0x00DFFFFF</code></td>
+<td>3 MB</td>
+<td><strong>Custom chip registers (NOT PRESENT — #PF trap)</strong></td>
+</tr>
+<tr class="odd">
+<td><code>0x00E00000–0x00EFFFFF</code></td>
+<td>1 MB</td>
+<td>Extended ROM / card space</td>
+</tr>
+<tr class="even">
+<td><code>0x00F80000–0x00FFFFFF</code></td>
+<td>512 KB</td>
+<td>Kickstart ROM mirror</td>
+</tr>
+<tr class="odd">
+<td><code>0x01000000–0x7FFFFFFF</code></td>
+<td>2 GB</td>
+<td>Extended Fast RAM</td>
+</tr>
+<tr class="even">
+<td><code>0x80000000–0xFFFFFFFF</code></td>
+<td>2 GB</td>
+<td>x86_64 kernel space</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><em>Copyright © 2026 UAOS Development Team</em></p>
+  </div>
 </body>
 </html>

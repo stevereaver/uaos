@@ -64,17 +64,18 @@ body {
 
 /* ── Main content ────────────────────────────────────────── */
 
-body > div, #content-wrap, article, section, .main-content {
+#main {
     margin-left: 260px;
-    padding: 2rem 3rem;
-    max-width: 960px;
-    width: 100%;
+    padding: 2rem 2.5rem;
+    max-width: 900px;
+    flex: 1;
 }
 
-/* Pandoc wraps content in a div directly in body */
+/* Fallback: pandoc wraps content in a div directly in body */
 body > div:not(#TOC) {
-    margin-left: 280px;
+    margin-left: 260px;
     padding: 2rem 2.5rem;
+    max-width: 900px;
     flex: 1;
 }
 
