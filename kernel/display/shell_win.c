@@ -34,9 +34,13 @@
 #define MAX_SHELLS      4
 #define SCROLL_LINES    4    /* lines per Page-Up/Down tick */
 
-/* Special virtual keys injected by kbd driver for scroll */
+/* Special virtual keys injected by kbd driver for scroll/history */
 #define VKEY_PGUP  0x01
 #define VKEY_PGDN  0x02
+#define VKEY_UP    0x03
+#define VKEY_DOWN  0x04
+
+#define MAX_CMD_HIST  64   /* command history entries per shell */
 
 /* =========================================================================
  * Per-instance state
@@ -55,8 +59,14 @@ typedef struct {
     int  hist_count;
     int  hist_scroll;
 
+    /* Command history (up/down arrow recall) */
+    char cmd_hist[MAX_CMD_HIST][MAX_INPUT + 1];
+    int  cmd_hist_count;  /* total commands entered */
+    int  cmd_hist_nav;    /* navigation offset: 0 = live input, 1 = last cmd */
+
     /* Input */
     char input_buf[MAX_INPUT + 1];
+    char input_saved[MAX_INPUT + 1]; /* saved live input while navigating */
     int  input_len;
 } ShellInstance;
 
@@ -344,14 +354,51 @@ static void inst_handle_key(ShellInstance *s, char c)
         inst_draw_history(s);
         return;
     }
+    if (c == VKEY_UP) {
+        if (s->cmd_hist_count == 0) return;
+        if (s->cmd_hist_nav == 0)
+            scopy(s->input_saved, s->input_buf, MAX_INPUT + 1); /* save live input */
+        if (s->cmd_hist_nav < s->cmd_hist_count)
+            s->cmd_hist_nav++;
+        int idx = (s->cmd_hist_count - s->cmd_hist_nav) % MAX_CMD_HIST;
+        scopy(s->input_buf, s->cmd_hist[idx], MAX_INPUT + 1);
+        s->input_len = 0;
+        while (s->input_buf[s->input_len]) s->input_len++;
+        inst_draw_input(s);
+        return;
+    }
+    if (c == VKEY_DOWN) {
+        if (s->cmd_hist_nav == 0) return;
+        s->cmd_hist_nav--;
+        if (s->cmd_hist_nav == 0) {
+            scopy(s->input_buf, s->input_saved, MAX_INPUT + 1);
+        } else {
+            int idx = (s->cmd_hist_count - s->cmd_hist_nav) % MAX_CMD_HIST;
+            scopy(s->input_buf, s->cmd_hist[idx], MAX_INPUT + 1);
+        }
+        s->input_len = 0;
+        while (s->input_buf[s->input_len]) s->input_len++;
+        inst_draw_input(s);
+        return;
+    }
     if (c == '\n' || c == '\r') {
         s->input_buf[s->input_len] = 0;
+        /* Save non-empty command to cmd_hist */
+        if (s->input_len > 0) {
+            int slot = s->cmd_hist_count % MAX_CMD_HIST;
+            scopy(s->cmd_hist[slot], s->input_buf, MAX_INPUT + 1);
+            s->cmd_hist_count++;
+        }
+        s->cmd_hist_nav = 0;
+        s->input_saved[0] = 0;
         inst_dispatch(s, s->input_buf);
         s->input_len = 0;
         s->input_buf[0] = 0;
     } else if (c == '\b') {
+        s->cmd_hist_nav = 0;
         if (s->input_len > 0) { s->input_len--; s->input_buf[s->input_len]=0; }
     } else if (c >= 0x20 && c < 0x7F) {
+        s->cmd_hist_nav = 0;
         if (s->input_len < MAX_INPUT) {
             s->input_buf[s->input_len++] = c;
             s->input_buf[s->input_len]   = 0;
