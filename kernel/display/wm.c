@@ -186,6 +186,16 @@ static void draw_chrome(int wh)
     FB_DrawRect(cg_x, cg_y, 14, 14, WB_WHITE);
     FB_FillRect(cg_x + 1, cg_y + 1, 12, 12, tbar_col);
 
+    /* Depth gadget — top-right corner: two overlapping rectangles (Amiga style) */
+    int dg_x = w->x + w->w - 15;
+    int dg_y = w->y + 1;
+    /* Back layer (larger rect, offset right+down) */
+    FB_DrawRect(dg_x + 3, dg_y,     10, 10, WB_WHITE);
+    FB_FillRect(dg_x + 4, dg_y + 1,  8,  8, tbar_col);
+    /* Front layer (smaller rect, offset left+up) */
+    FB_DrawRect(dg_x,     dg_y + 3, 10, 10, WB_WHITE);
+    FB_FillRect(dg_x + 1, dg_y + 4,  8,  8, tbar_col);
+
     /* Window body background */
     int cx, cy, cw, ch;
     client_rect(w, &cx, &cy, &cw, &ch);
@@ -269,6 +279,41 @@ static int hit_titlebar(int wh, int mx, int my)
     WmWindow *w = &g_wins[wh];
     return (mx >= w->x && mx < w->x + w->w &&
             my >= w->y && my < w->y + WM_TITLEBAR_H);
+}
+
+/* Hit-test depth gadget (top-right of title bar) */
+static int hit_depth_gadget(int wh, int mx, int my)
+{
+    WmWindow *w = &g_wins[wh];
+    int dg_x = w->x + w->w - 15;
+    int dg_y = w->y + 1;
+    return (mx >= dg_x && mx < dg_x + 13 &&
+            my >= dg_y && my < dg_y + 13);
+}
+
+/* Cycle window to back of z-order (send behind all others) */
+static void depth_window(int wh)
+{
+    /* Find position of wh in g_zorder */
+    int pos = -1;
+    for (int i = 0; i < g_nwins; i++)
+        if (g_zorder[i] == wh) { pos = i; break; }
+    if (pos < 0) return;
+
+    if (pos == 0) {
+        /* Already at back — bring to front */
+        for (int i = 0; i < g_nwins - 1; i++)
+            g_zorder[i] = g_zorder[i + 1];
+        g_zorder[g_nwins - 1] = wh;
+    } else {
+        /* Send to back */
+        for (int i = pos; i > 0; i--)
+            g_zorder[i] = g_zorder[i - 1];
+        g_zorder[0] = wh;
+    }
+
+    /* Focus shifts to the new topmost window */
+    g_focus = g_zorder[g_nwins - 1];
 }
 
 /* Hit-test resize grip (bottom-right SB×SB square) */
@@ -402,6 +447,13 @@ void WM_MouseEvent(int mx, int my, int btn_left)
             /* Close gadget takes priority */
             if (hit_close_gadget(wh, mx, my)) {
                 WM_CloseWindow(wh);
+                return;
+            }
+
+            /* Depth gadget — check before focus/raise */
+            if (hit_depth_gadget(wh, mx, my)) {
+                depth_window(wh);
+                WM_Redraw();
                 return;
             }
 
