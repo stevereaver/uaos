@@ -11,6 +11,7 @@
 #include "filebrowser.h"
 #include "wm.h"
 #include "framebuffer.h"
+#include "desktop.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -56,21 +57,119 @@ static const FileEntry k_uaos_files[] = {
     { NULL, NULL }
 };
 
+static const FileEntry k_c_files[] = {
+    { "Dir",        "PROG" },
+    { "List",       "PROG" },
+    { "Copy",       "PROG" },
+    { "Delete",     "PROG" },
+    { "Execute",    "PROG" },
+    { "Run",        "PROG" },
+    { "Stack",      "PROG" },
+    { "Type",       "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_s_files[] = {
+    { "Startup-Sequence", "PROG" },
+    { "User-Startup",     "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_libs_files[] = {
+    { "icon.library",     "PROG" },
+    { "intuition.library","PROG" },
+    { "dos.library",      "PROG" },
+    { "exec.library",     "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_devs_files[] = {
+    { "serial.device",    "PROG" },
+    { "keyboard.device",  "PROG" },
+    { "timer.device",     "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_prefs_files[] = {
+    { "Env-Archive",  "DIR"  },
+    { "Palette",      "PROG" },
+    { "Pointer",      "PROG" },
+    { "ScreenMode",   "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_system_files[] = {
+    { "Format",       "PROG" },
+    { "NoFastMem",    "PROG" },
+    { "RexxMast",     "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_utilities_files[] = {
+    { "Calculator",   "PROG" },
+    { "Clock",        "PROG" },
+    { "MultiView",    "PROG" },
+    { NULL, NULL }
+};
+
+static const FileEntry k_ramdisk_t_files[]     = { { NULL, NULL } };
+static const FileEntry k_ramdisk_clips_files[] = { { NULL, NULL } };
+static const FileEntry k_ramdisk_env_files[]   = { { NULL, NULL } };
+
+static const FileEntry k_prefs_env_files[]     = { { NULL, NULL } };
+
+typedef struct { const char *path; const FileEntry *entries; } PathEntry;
+
+static const PathEntry k_path_table[] = {
+    { "RAM Disk",         k_ramdisk_files       },
+    { "UAOS:",            k_uaos_files          },
+    { "UAOS:/C",          k_c_files             },
+    { "UAOS:/S",          k_s_files             },
+    { "UAOS:/Libs",       k_libs_files          },
+    { "UAOS:/Devs",       k_devs_files          },
+    { "UAOS:/Prefs",      k_prefs_files         },
+    { "UAOS:/System",     k_system_files        },
+    { "UAOS:/Utilities",  k_utilities_files     },
+    { "RAM Disk:/T",      k_ramdisk_t_files     },
+    { "RAM Disk:/CLIPS",  k_ramdisk_clips_files },
+    { "RAM Disk:/ENV",    k_ramdisk_env_files   },
+    { "UAOS:/Prefs/Env-Archive", k_prefs_env_files },
+    { NULL, NULL }
+};
+
+static const FileEntry *entries_for_path(const char *path)
+{
+    for (int i = 0; k_path_table[i].path; i++) {
+        if (str_eq(k_path_table[i].path, path))
+            return k_path_table[i].entries;
+    }
+    return k_uaos_files;  /* fallback */
+}
+
 /* =========================================================================
  * Per-browser instance state (one per volume)
  * ========================================================================= */
 
-#define MAX_BROWSERS 4
+#define MAX_BROWSERS 8
+#define DBLCLICK_TICKS 2
 
 typedef struct {
-    char             volume[32];
+    char             volume[32];     /* path string used as key and title */
     int              wm_handle;      /* -1 = not open */
     const FileEntry *entries;
     int              scroll;         /* future: vertical scroll offset */
+    /* Double-click tracking for icon cells */
+    int              last_click_icon; /* index of last clicked icon, -1 = none */
+    unsigned int     last_click_tick;
+    /* Cached window geometry (updated every draw call) */
+    int              win_x, win_y, win_w, win_h;
 } Browser;
 
 static Browser g_browsers[MAX_BROWSERS];
 static int     g_n_browsers = 0;
+
+/* Forward declaration — click shims call this */
+static void browser_click_impl(Browser *b, int wh, int mx, int my);
 
 /* =========================================================================
  * Drawing helpers
@@ -121,6 +220,95 @@ static void draw_label_centred(int cx, int y, int cell_w,
 
 static void browser_key(char c) { (void)c; }
 
+/* Compute the icon index hit by client-relative pixel (rx, ry).          */
+/* Returns -1 if no icon was hit. Replicates layout from browser_draw_impl */
+static int browser_icon_hit(Browser *b, int wx, int wy, int ww, int wh,
+                             int mx, int my)
+{
+    int cx = wx + 1;
+    int cy = wy + WM_TITLEBAR_H;
+    int cw = ww - 1 - WM_SCROLLBAR_W;
+    int ch = wh - WM_TITLEBAR_H - WM_SCROLLBAR_W;
+
+    /* Must be inside client area */
+    if (mx < cx || mx >= cx + cw || my < cy || my >= cy + ch) return -1;
+
+    int n_entries = 0;
+    const FileEntry *e = b->entries;
+    while (e && e[n_entries].name) n_entries++;
+
+    int usable = cw - 8;
+    int cols   = usable / ICON_COL_W;
+    if (cols < 1) cols = 1;
+    int cell_w = (cols == 1) ? usable : ICON_COL_W;
+
+    int path_h  = 20;
+    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+    int grid_base = cy + path_h - scroll_y;
+
+    /* Path bar absorbs clicks in its region */
+    if (my < cy + path_h) return -1;
+
+    int col = 0, row = 0;
+    for (int i = 0; e && e[i].name; i++) {
+        int cell_x = cx + 4 + col * cell_w;
+        int iy     = grid_base + row * ICON_ROW_H;
+        /* Cell bounds: full cell_w wide, ICON_ROW_H tall */
+        if (mx >= cell_x && mx < cell_x + cell_w &&
+            my >= iy     && my < iy + ICON_ROW_H)
+            return i;
+        if (++col >= cols) { col = 0; row++; }
+    }
+    return -1;
+}
+
+/* Called by WM on client-area click for a browser window */
+static void browser_click_impl(Browser *b, int wh, int mx, int my)
+{
+    if (!b || b->wm_handle != wh) return;
+
+    int icon = browser_icon_hit(b, b->win_x, b->win_y, b->win_w, b->win_h,
+                                mx, my);
+    if (icon < 0) {
+        /* Missed all icons — reset double-click state */
+        b->last_click_icon = -1;
+        return;
+    }
+
+    unsigned int now = Desktop_GetTick();
+
+    if (b->last_click_icon == icon &&
+        (now - b->last_click_tick) <= DBLCLICK_TICKS) {
+        /* Double-click: open folder if it is a DIR entry */
+        b->last_click_icon = -1;
+        const FileEntry *e = b->entries;
+        if (e && e[icon].name && e[icon].type[0] == 'D') {
+            /* Build child path to match k_path_table keys:
+             *   "UAOS:"        + "/" + "C"         -> "UAOS:/C"
+             *   "RAM Disk"     + ":/" + "T"         -> "RAM Disk:/T"
+             *   "UAOS:/Prefs"  + "/" + "Env-Archive" -> "UAOS:/Prefs/Env-Archive"
+             * Rule: if volume ends in ':', append '/'; else append ":/". */
+            char child_path[64];
+            int vi = 0;
+            while (vi < 63 && b->volume[vi]) { child_path[vi] = b->volume[vi]; vi++; }
+            int last = (vi > 0) ? b->volume[vi - 1] : 0;
+            if (last != ':' && last != '/') {
+                /* Plain name like "RAM Disk" — add ":/" separator */
+                if (vi < 63) child_path[vi++] = ':';
+            }
+            if (vi < 63) child_path[vi++] = '/';
+            const char *nm = e[icon].name;
+            while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
+            child_path[vi] = '\0';
+            FileBrowser_Open(child_path);
+        }
+    } else {
+        /* First click — record for double-click detection */
+        b->last_click_icon = icon;
+        b->last_click_tick = now;
+    }
+}
+
 /* =========================================================================
  * Per-window draw shim — each window needs its own callback to know
  * which browser it belongs to (WM callbacks don't receive a handle).
@@ -129,6 +317,9 @@ static void browser_key(char c) { (void)c; }
 
 static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
 {
+    /* Cache geometry so the click handler can use it without a separate API */
+    if (b) { b->win_x = wx; b->win_y = wy; b->win_w = ww; b->win_h = wh; }
+
     /* Client area: 1px left outline, right = scrollbar, bottom = scrollbar */
     int cx = wx + 1;
     int cy = wy + WM_TITLEBAR_H;
@@ -199,10 +390,30 @@ static void draw_shim_0(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_b
 static void draw_shim_1(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[1], wx, wy, ww, wh); }
 static void draw_shim_2(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[2], wx, wy, ww, wh); }
 static void draw_shim_3(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[3], wx, wy, ww, wh); }
+static void draw_shim_4(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[4], wx, wy, ww, wh); }
+static void draw_shim_5(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[5], wx, wy, ww, wh); }
+static void draw_shim_6(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[6], wx, wy, ww, wh); }
+static void draw_shim_7(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[7], wx, wy, ww, wh); }
+
+static void click_shim_0(int wh, int mx, int my) { browser_click_impl(&g_browsers[0], wh, mx, my); }
+static void click_shim_1(int wh, int mx, int my) { browser_click_impl(&g_browsers[1], wh, mx, my); }
+static void click_shim_2(int wh, int mx, int my) { browser_click_impl(&g_browsers[2], wh, mx, my); }
+static void click_shim_3(int wh, int mx, int my) { browser_click_impl(&g_browsers[3], wh, mx, my); }
+static void click_shim_4(int wh, int mx, int my) { browser_click_impl(&g_browsers[4], wh, mx, my); }
+static void click_shim_5(int wh, int mx, int my) { browser_click_impl(&g_browsers[5], wh, mx, my); }
+static void click_shim_6(int wh, int mx, int my) { browser_click_impl(&g_browsers[6], wh, mx, my); }
+static void click_shim_7(int wh, int mx, int my) { browser_click_impl(&g_browsers[7], wh, mx, my); }
 
 typedef void (*DrawShim)(int,int,int,int);
-static const DrawShim k_shims[MAX_BROWSERS] = {
-    draw_shim_0, draw_shim_1, draw_shim_2, draw_shim_3
+static const DrawShim k_draw_shims[MAX_BROWSERS] = {
+    draw_shim_0, draw_shim_1, draw_shim_2, draw_shim_3,
+    draw_shim_4, draw_shim_5, draw_shim_6, draw_shim_7
+};
+
+typedef void (*ClickShim)(int,int,int);
+static const ClickShim k_click_shims[MAX_BROWSERS] = {
+    click_shim_0, click_shim_1, click_shim_2, click_shim_3,
+    click_shim_4, click_shim_5, click_shim_6, click_shim_7
 };
 
 /* =========================================================================
@@ -233,20 +444,21 @@ void FileBrowser_Open(const char *volume)
 
     Browser *b = &g_browsers[idx];
     str_cp(b->volume, volume, 32);
-    b->scroll = 0;
+    b->scroll           = 0;
+    b->last_click_icon  = -1;
+    b->last_click_tick  = 0;
+    b->win_x = b->win_y = b->win_w = b->win_h = 0;
 
-    /* Select file list */
-    if (volume[0] == 'R')        /* "RAM Disk" */
-        b->entries = k_ramdisk_files;
-    else
-        b->entries = k_uaos_files;
+    /* Select file list by path table lookup */
+    b->entries = entries_for_path(volume);
 
     /* Stagger windows so they don't all stack exactly */
     int wx = 80  + idx * 24;
     int wy = 60  + idx * 24;
 
     b->wm_handle = WM_AddWindow(wx, wy, 320, 240, volume,
-                                k_shims[idx], browser_key);
+                                k_draw_shims[idx], browser_key);
+    WM_SetClickHandler(b->wm_handle, k_click_shims[idx]);
 
     WM_Redraw();
 }

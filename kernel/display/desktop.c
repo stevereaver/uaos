@@ -345,6 +345,11 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
     return 0;
 }
 
+unsigned int Desktop_GetTick(void)
+{
+    return (unsigned int)g_tick;
+}
+
 void Desktop_UpdateClock(void)
 {
     if (!g_fb.valid) return;

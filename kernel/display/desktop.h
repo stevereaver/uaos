@@ -12,4 +12,8 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh); /* repaint backdrop rec
  * Returns 1 if the desktop handled the event, 0 otherwise. */
 int  Desktop_MouseEvent(int mx, int my, int btn_pressed);
 
+/* Returns the current 1-Hz tick counter (incremented by Desktop_UpdateClock).
+ * Used by the file browser for double-click timing. */
+unsigned int Desktop_GetTick(void);
+
 #endif
