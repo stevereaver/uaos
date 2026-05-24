@@ -213,6 +213,7 @@ static void inst_print(ShellInstance *s, const char *line)
     s->hist_count++;
     s->hist_scroll = 0;
     inst_sync_scrollbar(s);
+    WM_Redraw();
 }
 
 static void inst_cmd_help(ShellInstance *s)
