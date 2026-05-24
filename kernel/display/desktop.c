@@ -11,6 +11,7 @@
 
 #include "desktop.h"
 #include "framebuffer.h"
+#include "../irq/rtc.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -246,6 +247,25 @@ void Desktop_Draw(void)
 
 void Desktop_UpdateClock(void)
 {
-    /* Stub — a real implementation would read CMOS RTC and redraw clock area */
     if (!g_fb.valid) return;
+
+    RtcTime t = RTC_ReadTime();
+
+    /* Format as HH:MM:SS */
+    char buf[9];
+    buf[0] = (char)('0' + t.hour / 10);
+    buf[1] = (char)('0' + t.hour % 10);
+    buf[2] = ':';
+    buf[3] = (char)('0' + t.min  / 10);
+    buf[4] = (char)('0' + t.min  % 10);
+    buf[5] = ':';
+    buf[6] = (char)('0' + t.sec  / 10);
+    buf[7] = (char)('0' + t.sec  % 10);
+    buf[8] = '\0';
+
+    /* Repaint just the clock rectangle in the menu bar (right-aligned, 8 chars) */
+    int W = (int)g_fb.width;
+    int cx = W - 80;
+    FB_FillRect(cx, 0, 80, MENUBAR_H - 2, WB_BLUE);
+    FB_PutStr(cx, 2, buf, WB_CREAM, WB_BLUE);
 }

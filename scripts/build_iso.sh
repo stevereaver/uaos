@@ -101,6 +101,7 @@ for src in \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
     "${REPO_ROOT}/kernel/irq/vmmouse.c" \
+    "${REPO_ROOT}/kernel/irq/rtc.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
@@ -199,6 +200,7 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/ps2mouse.o" \
     "${BUILD_DIR}/obj/ps2kbd.o" \
     "${BUILD_DIR}/obj/vmmouse.o" \
+    "${BUILD_DIR}/obj/rtc.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \

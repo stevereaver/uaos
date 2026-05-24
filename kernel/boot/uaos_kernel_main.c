@@ -18,6 +18,7 @@
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
 #include "../irq/vmmouse.h"
+#include "../irq/rtc.h"
 #include "../display/wm.h"
 
 /* -----------------------------------------------------------------------
@@ -275,6 +276,13 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
             kprint("[BOOT] vmmouse active (absolute mode).\n");
         else
             kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
+
+        kprint("[BOOT] Initialising RTC clock...\n");
+        IDT_SetHandler(40, RTC_IRQHandler);  /* IRQ8 = vector 40 */
+        RTC_Init();
+        PIC_UnmaskIRQ(8);
+        Desktop_UpdateClock();               /* initial draw from CMOS */
+        kprint("[BOOT] RTC active.\n");
     }
 
     kprint("[BOOT] Enabling interrupts — entering event loop.\n");

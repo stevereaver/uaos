@@ -233,10 +233,13 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code)
 {
     if (g_handlers[vector]) {
         g_handlers[vector](vector, error_code);
-    }
-    /* Unhandled: if it's a CPU exception, halt; if IRQ, send EOI */
-    if (vector < 32) {
+    } else if (vector < 32) {
+        /* Unhandled CPU exception — halt */
         __asm__ volatile ("cli; hlt");
+    }
+    /* Send EOI to PIC for all hardware IRQs (vectors 32-47) */
+    if (vector >= 32 && vector < 48) {
+        PIC_SendEOI((int)(vector - 32));
     }
 }
 
