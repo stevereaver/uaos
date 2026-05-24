@@ -701,6 +701,14 @@ int WM_IsWindowActive(int handle)
     return g_wins[handle].active;
 }
 
+void WM_RaiseWindow(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    if (!g_wins[handle].active) return;
+    raise_window(handle);
+    g_focus = handle;
+}
+
 void WM_MoveWindow(int handle, int new_x, int new_y)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;

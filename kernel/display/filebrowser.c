@@ -32,6 +32,42 @@ static void str_cp(char *dst, const char *src, int max)
     dst[i] = '\0';
 }
 
+static int str_len(const char *s)
+{
+    int n = 0; while (s[n]) n++; return n;
+}
+
+/* Compute the parent path of a volume string into dst[max].
+ * Returns 1 if a parent exists, 0 if already at a root volume. */
+static int parent_path(const char *vol, char *dst, int max)
+{
+    /* Root volumes have no parent: "RAM Disk" (no colon) or "UAOS:" (colon
+     * is the last character, no slash after it). */
+    int len = str_len(vol);
+
+    /* Find the last '/' */
+    int last_slash = -1;
+    for (int i = len - 1; i >= 0; i--) {
+        if (vol[i] == '/') { last_slash = i; break; }
+    }
+
+    if (last_slash <= 0) return 0;  /* no slash — root volume */
+
+    /* Strip everything from the last '/' onward */
+    int plen = last_slash;          /* e.g. "UAOS:" has len 5, slash at 5 */
+
+    /* Special case: if the result would end in ':' it is a root volume
+     * key like "UAOS:" — keep it as-is. */
+    /* If the result ends in a plain name with no ':', it is also a valid
+     * root key (e.g. "RAM Disk"). */
+    if (plen <= 0) return 0;
+
+    if (plen >= max) plen = max - 1;
+    for (int i = 0; i < plen; i++) dst[i] = vol[i];
+    dst[plen] = '\0';
+    return 1;
+}
+
 /* =========================================================================
  * Static file entries per volume
  * ========================================================================= */
@@ -267,6 +303,28 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
 {
     if (!b || b->wm_handle != wh) return;
 
+    /* Check path-bar up-button first (sits above the icon grid) */
+    int cx  = b->win_x + 1;
+    int cy  = b->win_y + WM_TITLEBAR_H;
+    int cw  = b->win_w - 1 - WM_SCROLLBAR_W;
+    int path_h = 20;
+
+    if (my >= cy && my < cy + path_h) {
+        /* Click in path bar — check up-button hit zone */
+        int ub_w = 18;
+        int ub_x = cx + cw - ub_w - 2;
+        int ub_y = cy + 2;
+        int ub_h = path_h - 4;
+        char par[64];
+        if (mx >= ub_x && mx < ub_x + ub_w &&
+            my >= ub_y && my < ub_y + ub_h &&
+            parent_path(b->volume, par, 64)) {
+            FileBrowser_Open(par);
+        }
+        b->last_click_icon = -1;
+        return;
+    }
+
     int icon = browser_icon_hit(b, b->win_x, b->win_y, b->win_w, b->win_h,
                                 mx, my);
     if (icon < 0) {
@@ -383,6 +441,25 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
     /* Path bar drawn last so it always appears on top of any icon overflow */
     FB_FillRect(cx, cy, cw, path_h, WB_WHITE);
     FB_PutStr(cx + 4, cy + 2, b->volume, WB_BLACK, WB_WHITE);
+
+    /* Up-button: small arrow box on the right side of the path bar,
+     * only shown when a parent directory exists */
+    char par[64];
+    if (parent_path(b->volume, par, 64)) {
+        int ub_w = 18;
+        int ub_x = cx + cw - ub_w - 2;
+        int ub_y = cy + 2;
+        int ub_h = path_h - 4;
+        FB_FillRect(ub_x, ub_y, ub_w, ub_h, WB_LIGHT_GREY);
+        FB_DrawRect(ub_x, ub_y, ub_w, ub_h, WB_DARK_GREY);
+        /* Draw a small upward triangle (tip at top, base at bottom):
+         * row 0 = tip (1px wide) at ty+0, row 4 = base (9px wide) at ty+4 */
+        int mx2 = ub_x + ub_w / 2;
+        int ty  = ub_y + (ub_h - 5) / 2;
+        for (int row = 0; row < 5; row++)
+            FB_DrawHLine(mx2 - (4 - row), ty + (4 - row), (4 - row) * 2 + 1, WB_DARK_GREY);
+    }
+
     FB_DrawHLine(cx, cy + path_h - 1, cw, WB_DARK_GREY);
 }
 
@@ -427,7 +504,8 @@ void FileBrowser_Open(const char *volume)
         if (str_eq(g_browsers[i].volume, volume)) {
             if (g_browsers[i].wm_handle >= 0 &&
                 WM_IsWindowActive(g_browsers[i].wm_handle)) {
-                /* Already open — bring to front */
+                /* Already open — raise to front and focus */
+                WM_RaiseWindow(g_browsers[i].wm_handle);
                 WM_Redraw();
                 return;
             }

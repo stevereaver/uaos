@@ -62,6 +62,9 @@ int  WM_GetFocus(void);
 /* Move a window to a new position and repaint */
 void WM_MoveWindow(int handle, int new_x, int new_y);
 
+/* Raise a window to the top of the z-order and give it focus */
+void WM_RaiseWindow(int handle);
+
 /* Close (destroy) a window by handle — repaints desktop */
 void WM_CloseWindow(int handle);
 
