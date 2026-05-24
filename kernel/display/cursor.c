@@ -29,45 +29,60 @@
 #define CUR_W  16
 #define CUR_H  16
 
-/* AND mask: 0 = draw cursor pixel, 1 = show background */
-static const uint16_t cur_and[CUR_H] = {
-    0x0000,   /* 1111111111111111  ← row 0: tip of arrow (fully opaque) */
-    0x4000,   /* 0100000000000000 */
-    0x6000,   /* 0110000000000000 */
-    0x7000,   /* 0111000000000000 */
-    0x7800,   /* 0111100000000000 */
-    0x7C00,   /* 0111110000000000 */
-    0x7E00,   /* 0111111000000000 */
-    0x7F00,   /* 0111111100000000 */
-    0x7F80,   /* 0111111110000000 */
-    0x7C00,   /* 0111110000000000 */
-    0x6C00,   /* 0110110000000000 */
-    0x4600,   /* 0100011000000000 */
-    0x0600,   /* 0000011000000000 */
-    0x0300,   /* 0000001100000000 */
-    0x0300,   /* 0000001100000000 */
-    0x0000,   /* 0000000000000000 */
+/*
+ * Authentic Amiga Workbench 3.x arrow pointer.
+ * Pixel map: 0=transparent, 1=black (shadow/outline), 2=white (body)
+ * Hotspot at (0,0). White body with black drop-shadow on right/bottom edges.
+ *
+ *  W = white body pixel
+ *  B = black shadow/outline pixel
+ *  . = transparent
+ *
+ *  Col: 0  1  2  3  4  5  6  7  8  9 ...
+ *  r0:  W  .  .  .  .  .  .  .  .  .
+ *  r1:  W  W  .  .  .  .  .  .  .  .
+ *  r2:  W  W  W  .  .  .  .  .  .  .
+ *  r3:  W  W  W  W  .  .  .  .  .  .
+ *  r4:  W  W  W  W  W  .  .  .  .  .
+ *  r5:  W  W  W  W  W  W  .  .  .  .
+ *  r6:  W  W  W  W  W  W  W  .  .  .
+ *  r7:  W  W  W  W  W  W  W  W  .  .
+ *  r8:  W  W  W  W  W  W  W  W  W  .
+ *  r9:  W  W  W  W  W  W  B  B  B  .
+ *  r10: W  W  W  B  W  W  .  .  .  .
+ *  r11: W  W  B  .  W  W  .  .  .  .
+ *  r12: W  B  .  .  .  W  W  .  .  .
+ *  r13: B  .  .  .  .  .  W  W  .  .
+ *  r14: .  .  .  .  .  .  .  W  B  .
+ *  r15: .  .  .  .  .  .  .  .  .  .
+ */
+#define _ 0
+#define B 1
+#define W 2
+
+static const uint8_t cur_pixels[CUR_H][CUR_W] = {
+/*       0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 */
+/* r0 */ W, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+/* r1 */ W, W, B, _, _, _, _, _, _, _, _, _, _, _, _, _,
+/* r2 */ W, W, W, B, _, _, _, _, _, _, _, _, _, _, _, _,
+/* r3 */ W, W, W, W, B, _, _, _, _, _, _, _, _, _, _, _,
+/* r4 */ W, W, W, W, W, B, _, _, _, _, _, _, _, _, _, _,
+/* r5 */ W, W, W, W, W, W, B, _, _, _, _, _, _, _, _, _,
+/* r6 */ W, W, W, W, W, W, W, B, _, _, _, _, _, _, _, _,
+/* r7 */ W, W, W, W, W, W, W, W, B, _, _, _, _, _, _, _,
+/* r8 */ W, W, W, W, W, W, W, W, W, B, _, _, _, _, _, _,
+/* r9 */ W, W, W, W, W, W, B, B, B, B, _, _, _, _, _, _,
+/*r10 */ W, W, W, B, W, W, B, _, _, _, _, _, _, _, _, _,
+/*r11 */ W, W, B, _, B, W, W, B, _, _, _, _, _, _, _, _,
+/*r12 */ W, B, _, _, _, B, W, W, B, _, _, _, _, _, _, _,
+/*r13 */ B, _, _, _, _, _, B, W, W, B, _, _, _, _, _, _,
+/*r14 */ _, _, _, _, _, _, _, B, W, W, B, _, _, _, _, _,
+/*r15 */ _, _, _, _, _, _, _, _, B, B, _, _, _, _, _, _,
 };
 
-/* XOR mask: 0 = black, 1 = white (applied only where AND=0) */
-static const uint16_t cur_xor[CUR_H] = {
-    0x0000,
-    0xC000,
-    0xE000,
-    0xF000,
-    0xF800,
-    0xFC00,
-    0xFE00,
-    0xFF00,
-    0xFF80,
-    0xFC00,
-    0xEC00,
-    0xC600,
-    0x0600,
-    0x0300,
-    0x0300,
-    0x0180,
-};
+#undef _
+#undef B
+#undef W
 
 /* =========================================================================
  * Background save buffer
@@ -141,20 +156,13 @@ static void cursor_draw(int x, int y)
     for (int row = 0; row < CUR_H; row++) {
         int py = y + row;
         if (py < 0 || py >= H) continue;
-        uint16_t and_row = cur_and[row];
-        uint16_t xor_row = cur_xor[row];
         for (int col = 0; col < CUR_W; col++) {
             int px = x + col;
             if (px < 0 || px >= W) continue;
-            uint16_t bit = (uint16_t)(0x8000 >> col);
-            int and_bit = (and_row & bit) ? 1 : 0;
-            int xor_bit = (xor_row & bit) ? 1 : 0;
-            if (!and_bit) {
-                /* Opaque pixel */
-                uint32_t colour = xor_bit ? WB_WHITE : WB_BLACK;
-                FB_PutPixel(px, py, colour);
-            }
-            /* and_bit=1 → transparent, leave background as-is */
+            uint8_t p = cur_pixels[row][col];
+            if (p == 1)      FB_PutPixel(px, py, WB_BLACK);
+            else if (p == 2) FB_PutPixel(px, py, WB_WHITE);
+            /* p == 0: transparent — leave background as-is */
         }
     }
 }
