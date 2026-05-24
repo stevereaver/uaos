@@ -38,6 +38,7 @@ static void uint_to_dec(uint32_t v, char *buf, int max)
 #define WIN_H  300
 
 static int g_wm_handle = -1;
+static int g_cx = 0, g_cy = 0, g_cw = 0, g_ch = 0;  /* last-drawn client rect */
 
 /* =========================================================================
  * Drawing helpers
@@ -83,6 +84,7 @@ static void about_draw(int wx, int wy, int ww, int wh)
     int cy = wy + TITLEBAR_H + BORDER;
     int cw = ww - BORDER * 2;
     int ch = wh - TITLEBAR_H - BORDER * 2;
+    g_cx = cx; g_cy = cy; g_cw = cw; g_ch = ch;
 
     FB_FillRect(cx, cy, cw, ch, WB_GREY);
     draw_bevel(cx, cy, cw, ch, 0);   /* sunken client area */
@@ -162,6 +164,16 @@ static void about_draw(int wx, int wy, int ww, int wh)
 
 static void about_key(char c) { (void)c; }
 
+static void about_click(int handle, int mx, int my)
+{
+    (void)handle;
+    int btn_w = 72, btn_h = 22;
+    int bx = g_cx + (g_cw - btn_w) / 2;
+    int by = g_cy + g_ch - btn_h - PAD;
+    if (mx >= bx && mx < bx + btn_w && my >= by && my < by + btn_h)
+        WM_CloseWindow(g_wm_handle);
+}
+
 /* =========================================================================
  * Public API
  * ========================================================================= */
@@ -184,5 +196,6 @@ void AboutWin_Open(void)
 
     g_wm_handle = WM_AddWindow(wx, wy, WIN_W, WIN_H,
                                "About UAOS", about_draw, about_key);
+    WM_SetClickHandler(g_wm_handle, about_click);
     WM_Redraw();
 }

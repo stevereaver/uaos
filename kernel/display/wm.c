@@ -166,9 +166,10 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     win->y       = y;
     win->w       = w;
     win->h       = h;
-    win->draw    = draw;
-    win->on_key  = on_key;
-    win->active  = 1;
+    win->draw     = draw;
+    win->on_key   = on_key;
+    win->on_click = (WM_ClickFn)0;
+    win->active   = 1;
     str_copy(win->title, title, 32);
 
     g_zorder[g_nwins++] = slot;
@@ -220,6 +221,9 @@ void WM_MouseEvent(int mx, int my, int btn_left)
                 g_drag_handle = wh;
                 g_drag_off_x  = mx - g_wins[wh].x;
                 g_drag_off_y  = my - g_wins[wh].y;
+            } else if (g_wins[wh].on_click) {
+                /* Client-area click — notify the window */
+                g_wins[wh].on_click(wh, mx, my);
             }
         }
     }
@@ -342,6 +346,12 @@ void WM_CloseWindow(int handle)
         if (g_wins[wh].active) repaint_window(wh);
     }
     Cursor_Redraw();
+}
+
+void WM_SetClickHandler(int handle, WM_ClickFn on_click)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    g_wins[handle].on_click = on_click;
 }
 
 int WM_IsWindowActive(int handle)

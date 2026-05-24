@@ -15,18 +15,23 @@
 
 typedef void (*WM_DrawFn)(int win_x, int win_y, int win_w, int win_h);
 typedef void (*WM_KeyFn)(char c);
+typedef void (*WM_ClickFn)(int win_handle, int mx, int my);
 
 typedef struct {
-    int       x, y, w, h;
-    char      title[32];
-    WM_DrawFn draw;      /* called to repaint window contents at (x,y)   */
-    WM_KeyFn  on_key;    /* called with keystrokes when window is focused */
-    int       active;    /* 1 = registered, 0 = slot free                */
+    int        x, y, w, h;
+    char       title[32];
+    WM_DrawFn  draw;      /* called to repaint window contents at (x,y)   */
+    WM_KeyFn   on_key;    /* called with keystrokes when window is focused */
+    WM_ClickFn on_click;  /* called on client-area mouse press (may be 0)  */
+    int        active;    /* 1 = registered, 0 = slot free                */
 } WmWindow;
 
 /* Register a window — returns handle (0..WM_MAX_WINDOWS-1) or -1 on fail */
 int  WM_AddWindow(int x, int y, int w, int h, const char *title,
                   WM_DrawFn draw, WM_KeyFn on_key);
+
+/* Set an optional client-area click callback on an existing window */
+void WM_SetClickHandler(int handle, WM_ClickFn on_click);
 
 /* Call from main loop with current mouse state */
 void WM_MouseEvent(int mx, int my, int btn_left);
