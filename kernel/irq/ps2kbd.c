@@ -138,14 +138,21 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
 
     uint8_t sc = inb(PS2_DATA);
 
-    /* 0xE0 extended prefix — consume and ignore for now */
+    /* 0xE0 extended prefix — handle Page Up/Down for scrollback */
     static int extended = 0;
     if (sc == 0xE0) { extended = 1; PIC_SendEOI(1); return; }
 
     int is_break = (sc & 0x80) != 0;
     uint8_t key  = sc & 0x7F;
 
-    if (extended) { extended = 0; PIC_SendEOI(1); return; }
+    if (extended) {
+        extended = 0;
+        if (!is_break) {
+            if (key == 0x49) { kbuf_push(0x01); } /* Page Up   → VKEY_PGUP */
+            if (key == 0x51) { kbuf_push(0x02); } /* Page Down → VKEY_PGDN */
+        }
+        PIC_SendEOI(1); return;
+    }
 
     /* Update modifiers on both make and break */
     if (key == 0x2A || key == 0x36) { /* L/R Shift */

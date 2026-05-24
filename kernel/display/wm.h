@@ -50,6 +50,9 @@ void WM_SetScrollInfo(int handle, int content_w, int content_h);
 int  WM_GetScrollX(int handle);
 int  WM_GetScrollY(int handle);
 
+/* Set vertical scroll offset (clamped to content range) */
+void WM_SetScrollY(int handle, int y);
+
 /* Call from main loop with current mouse state */
 void WM_MouseEvent(int mx, int my, int btn_left);
 

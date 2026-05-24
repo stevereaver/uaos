@@ -28,10 +28,15 @@
 #define BORDER_L        1                  /* left: just the outline */
 #define BORDER_R        WM_SCROLLBAR_W     /* right: scrollbar width */
 #define BORDER          BORDER_L           /* legacy alias for top inset */
-#define MAX_HIST_LINES  128
-#define MAX_LINE_LEN    128
-#define MAX_INPUT       (MAX_LINE_LEN - 8 - 1)
+#define MAX_HIST_LINES  1000
+#define MAX_LINE_LEN    96
+#define MAX_INPUT       80
 #define MAX_SHELLS      4
+#define SCROLL_LINES    4    /* lines per Page-Up/Down tick */
+
+/* Special virtual keys injected by kbd driver for scroll */
+#define VKEY_PGUP  0x01
+#define VKEY_PGDN  0x02
 
 /* =========================================================================
  * Per-instance state
@@ -41,12 +46,12 @@ typedef struct {
     /* WM */
     int  wm_handle;
     int  number;        /* shell number shown in prompt, 1-based */
+    int  index;         /* index into g_shells[] and g_hist_buf[] */
 
     /* Geometry — updated by draw callback */
     int  wx, wy, ww, wh;
 
-    /* History */
-    char hist[MAX_HIST_LINES][MAX_LINE_LEN];
+    /* History — ring buffer indices, actual storage in g_hist_buf below */
     int  hist_count;
     int  hist_scroll;
 
@@ -54,6 +59,9 @@ typedef struct {
     char input_buf[MAX_INPUT + 1];
     int  input_len;
 } ShellInstance;
+
+/* History storage in BSS (not on stack) — 1000×96 × 4 shells = 384 KB */
+static char g_hist_buf[MAX_SHELLS][MAX_HIST_LINES][MAX_LINE_LEN];
 
 static ShellInstance g_shells[MAX_SHELLS];
 static int           g_n_shells = 0;
@@ -115,13 +123,22 @@ static void inst_draw_history(ShellInstance *s)
 
     FB_FillRect(wx+BORDER_L, hy, ww-BORDER_L-BORDER_R, hh, WB_BLACK);
 
+    /* Max chars that fit in the client width (8px per char, 4px left margin) */
+    int max_chars = (ww - BORDER_L - BORDER_R - 8) / 8;
+    if (max_chars < 1) max_chars = 1;
+
     int start = s->hist_count - rows - s->hist_scroll;
     if (start < 0) start = 0;
     for (int r = 0; r < rows; r++) {
         int li = start + r;
         if (li >= s->hist_count) break;
-        FB_PutStr(hx, hy + r*16,
-                  s->hist[li % MAX_HIST_LINES], WB_CREAM, WB_BLACK);
+        /* Copy and truncate to fit */
+        char clipped[MAX_LINE_LEN];
+        const char *src = g_hist_buf[s->index][li % MAX_HIST_LINES];
+        int ci = 0;
+        while (ci < max_chars && src[ci]) { clipped[ci] = src[ci]; ci++; }
+        clipped[ci] = '\0';
+        FB_PutStr(hx, hy + r*16, clipped, WB_CREAM, WB_BLACK);
     }
 }
 
@@ -138,26 +155,64 @@ static void inst_draw_input(ShellInstance *s)
     prompt[5] = 'S'; prompt[6]='>'; prompt[7]=' '; prompt[8]=0;
     int plen = 8;
 
+    int right_edge = wx + ww - BORDER_R;  /* pixel x of right clip boundary */
+
     FB_FillRect(wx+BORDER_L, iy, ww-BORDER_L-BORDER_R, INPUTBAR_H, WB_BLACK);
     FB_PutStr(ix, iy+1, prompt, WB_GREEN, WB_BLACK);
 
     int px = ix + plen*8;
-    FB_PutStr(px, iy+1, s->input_buf, WB_WHITE, WB_BLACK);
-
-    /* Block cursor */
-    FB_FillRect(px + s->input_len*8, iy+1, 8, 14, WB_WHITE);
+    /* Only draw input text if prompt fits */
+    if (px < right_edge) {
+        int input_max_chars = (right_edge - px - 8) / 8; /* leave room for cursor */
+        if (input_max_chars > 0) {
+            char clipped[MAX_INPUT + 1];
+            int ci = 0;
+            while (ci < input_max_chars && s->input_buf[ci])
+                { clipped[ci] = s->input_buf[ci]; ci++; }
+            clipped[ci] = '\0';
+            FB_PutStr(px, iy+1, clipped, WB_WHITE, WB_BLACK);
+        }
+        /* Block cursor — only if it fits */
+        int cur_x = px + s->input_len * 8;
+        if (cur_x + 8 <= right_edge)
+            FB_FillRect(cur_x, iy+1, 8, 14, WB_WHITE);
+    }
 }
 
 /* =========================================================================
  * Command dispatch (operates on a specific instance)
  * ========================================================================= */
 
+/* Compute visible rows for this shell's current window height */
+static int inst_rows(ShellInstance *s)
+{
+    int hh = s->wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W - 8;
+    return (hh > 0) ? hh / 16 : 1;
+}
+
+/* Push current scroll state into WM so the scrollbar thumb is correct */
+static void inst_sync_scrollbar(ShellInstance *s)
+{
+    if (s->wm_handle < 0) return;
+    int rows = inst_rows(s);
+    int content_h = s->hist_count * 16;
+    int view_h    = rows * 16;
+    WM_SetScrollInfo(s->wm_handle, 0, content_h > view_h ? content_h : view_h + 1);
+    /* scroll_y = lines-from-top * 16 */
+    int from_top = s->hist_count - rows - s->hist_scroll;
+    if (from_top < 0) from_top = 0;
+    /* Directly update scroll_y via WM_GetScrollY trick: set via SetScrollInfo side-effect
+     * is not enough — we need to write scroll_y. Use a small helper exposed below. */
+    WM_SetScrollY(s->wm_handle, from_top * 16);
+}
+
 static void inst_print(ShellInstance *s, const char *line)
 {
-    int idx = s->hist_count % MAX_HIST_LINES;
-    scopy(s->hist[idx], line, MAX_LINE_LEN);
+    int slot = s->hist_count % MAX_HIST_LINES;
+    scopy(g_hist_buf[s->index][slot], line, MAX_LINE_LEN);
     s->hist_count++;
     s->hist_scroll = 0;
+    inst_sync_scrollbar(s);
 }
 
 static void inst_cmd_help(ShellInstance *s)
@@ -202,7 +257,7 @@ static void inst_cmd_clear(ShellInstance *s)
 {
     s->hist_count = 0;
     s->hist_scroll = 0;
-    for (int i = 0; i < MAX_HIST_LINES; i++) s->hist[i][0] = 0;
+    for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[s->index][i][0] = 0;
 }
 
 static void inst_cmd_reboot(ShellInstance *s)
@@ -271,6 +326,23 @@ static void inst_dispatch(ShellInstance *s, const char *line)
 static void inst_handle_key(ShellInstance *s, char c)
 {
     if (!g_fb.valid) return;
+    if (c == VKEY_PGUP) {
+        int rows = inst_rows(s);
+        int max_scroll = s->hist_count - rows;
+        if (max_scroll < 0) max_scroll = 0;
+        s->hist_scroll += SCROLL_LINES;
+        if (s->hist_scroll > max_scroll) s->hist_scroll = max_scroll;
+        inst_sync_scrollbar(s);
+        inst_draw_history(s);
+        return;
+    }
+    if (c == VKEY_PGDN) {
+        s->hist_scroll -= SCROLL_LINES;
+        if (s->hist_scroll < 0) s->hist_scroll = 0;
+        inst_sync_scrollbar(s);
+        inst_draw_history(s);
+        return;
+    }
     if (c == '\n' || c == '\r') {
         s->input_buf[s->input_len] = 0;
         inst_dispatch(s, s->input_buf);
@@ -296,6 +368,15 @@ static void inst_handle_key(ShellInstance *s, char c)
 static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
     ShellInstance *s=&g_shells[N]; \
     s->wx=wx;s->wy=wy;s->ww=ww;s->wh=wh; \
+    /* Sync hist_scroll from WM scroll_y (covers scrollbar thumb drag) */ \
+    if (s->wm_handle >= 0) { \
+        int sy = WM_GetScrollY(s->wm_handle); \
+        int rows = inst_rows(s); \
+        int from_top = sy / 16; \
+        int hs = s->hist_count - rows - from_top; \
+        if (hs < 0) hs = 0; \
+        s->hist_scroll = hs; \
+    } \
     inst_draw_contents(s); inst_draw_history(s); inst_draw_input(s); } \
 static void shell_key_##N(char c) { inst_handle_key(&g_shells[N],c); }
 
@@ -328,6 +409,7 @@ static void open_shell(int stagger)
 
     s->wm_handle  = -1;
     s->number     = idx + 1;
+    s->index      = idx;
     s->wx         = 24 + stagger * 28;
     s->wy         = 28 + stagger * 28;
     s->ww         = 600;
@@ -336,7 +418,7 @@ static void open_shell(int stagger)
     s->hist_scroll= 0;
     s->input_len  = 0;
     s->input_buf[0] = 0;
-    for (int i = 0; i < MAX_HIST_LINES; i++) s->hist[i][0] = 0;
+    for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[idx][i][0] = 0;
 
     char title[32];
     scopy(title, "Shell ", 32);

@@ -60,7 +60,8 @@ static void sb_right_rect(WmWindow *w, int *x, int *y, int *wd, int *ht)
     *x  = w->x + w->w - SB;
     *y  = w->y + WM_TITLEBAR_H;
     *wd = SB;
-    *ht = w->h - WM_TITLEBAR_H - SB;  /* stops above resize grip row */
+    *ht = w->h - WM_TITLEBAR_H - SB;  /* full height minus title and resize grip */
+    if (*ht < 0) *ht = 0;
 }
 
 /* Bottom scrollbar rect */
@@ -126,18 +127,22 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
     if (axis == 0) { /* vertical */
         /* Up arrow */
         draw_arrow(tx, ty, tw, arrow_sz, 0, bg);
-        /* Down arrow */
-        draw_arrow(tx, ty + th - arrow_sz, tw, arrow_sz, 1, bg);
+        /* Down arrow — only if track is tall enough */
+        if (th >= arrow_sz * 2)
+            draw_arrow(tx, ty + th - arrow_sz, tw, arrow_sz, 1, bg);
 
         /* Track between arrows */
         int track_y = ty + arrow_sz;
         int track_h = th - arrow_sz * 2;
-        if (track_h > 4 && content_sz > view_sz) {
+        if (track_h > 4 && content_sz > view_sz && scroll >= 0) {
             int thumb_h = track_h * view_sz / content_sz;
             if (thumb_h < 8) thumb_h = 8;
             if (thumb_h > track_h) thumb_h = track_h;
-            int thumb_y = track_y + (track_h - thumb_h) * scroll
-                          / (content_sz - view_sz);
+            int range = content_sz - view_sz;
+            int thumb_y = track_y + (range > 0 ? (track_h - thumb_h) * scroll / range : 0);
+            /* Clamp thumb within track */
+            if (thumb_y < track_y) thumb_y = track_y;
+            if (thumb_y + thumb_h > track_y + track_h) thumb_y = track_y + track_h - thumb_h;
             FB_FillRect(tx + 1, thumb_y, tw - 2, thumb_h, WB_LIGHT_GREY);
             FB_DrawRect(tx + 1, thumb_y, tw - 2, thumb_h, WB_DARK_GREY);
         }
@@ -223,7 +228,8 @@ static void draw_chrome(int wh)
     /* Right scrollbar */
     int rx, ry, rw, rh;
     sb_right_rect(w, &rx, &ry, &rw, &rh);
-    int sv = (w->content_h > 0) ? w->content_h : (ch + 1);
+    int sv = w->content_h > ch ? w->content_h : ch + 1;
+    if (w->scroll_y < 0) w->scroll_y = 0;
     draw_scrollbar(rx, ry, rw, rh, SB,
                    w->scroll_y, sv, ch, 0);
 
@@ -395,9 +401,7 @@ static void scroll_by(int wh, int axis, int delta)
         if (w->scroll_x < 0) w->scroll_x = 0;
         if (w->scroll_x > max_s) w->scroll_x = max_s;
     }
-    Cursor_Hide();
-    repaint_window(wh);
-    Cursor_Redraw();
+    WM_Redraw();
 }
 
 /* Hit-test scrollbar arrows/thumb, returning scroll delta or 0 */
@@ -556,14 +560,9 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         /* no bottom clamp — allow window to go off the bottom */
 
         if (new_x != w->x || new_y != w->y) {
-            int old_x = w->x, old_y = w->y, old_w = w->w, old_h = w->h;
             w->x = new_x;
             w->y = new_y;
-            Cursor_Hide();
-            Desktop_RedrawRect(old_x, old_y, old_w, old_h);
-            for (int i = 0; i < g_nwins; i++)
-                if (g_wins[g_zorder[i]].active) repaint_window(g_zorder[i]);
-            Cursor_Redraw();
+            WM_Redraw();
         }
     }
 
@@ -581,29 +580,9 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         if (new_h > max_h) new_h = max_h;
 
         if (new_w != w->w || new_h != w->h) {
-            int old_x = w->x, old_y = w->y;
-            int old_w = w->w, old_h = w->h;
             w->w = new_w;
             w->h = new_h;
-
-            Cursor_Hide();
-
-            /* If window shrank in either dimension, erase the exposed strip
-             * on the right and/or bottom before repainting */
-            if (new_w < old_w) {
-                int strip_x = old_x + new_w;
-                int strip_w = old_w - new_w + 2;
-                Desktop_RedrawRect(strip_x, old_y, strip_w, old_h + 2);
-            }
-            if (new_h < old_h) {
-                int strip_y = old_y + new_h;
-                int strip_h = old_h - new_h + 2;
-                Desktop_RedrawRect(old_x, strip_y, old_w + 2, strip_h);
-            }
-
-            for (int i = 0; i < g_nwins; i++)
-                if (g_wins[g_zorder[i]].active) repaint_window(g_zorder[i]);
-            Cursor_Redraw();
+            WM_Redraw();
         }
     }
 
@@ -627,9 +606,7 @@ void WM_MouseEvent(int mx, int my, int btn_left)
                 if (new_s > max_s) new_s = max_s;
                 if (new_s != w->scroll_y) {
                     w->scroll_y = new_s;
-                    Cursor_Hide();
-                    repaint_window(wh);
-                    Cursor_Redraw();
+                    WM_Redraw();
                 }
             }
         } else { /* horizontal */
@@ -645,9 +622,7 @@ void WM_MouseEvent(int mx, int my, int btn_left)
                 if (new_s > max_s) new_s = max_s;
                 if (new_s != w->scroll_x) {
                     w->scroll_x = new_s;
-                    Cursor_Hide();
-                    repaint_window(wh);
-                    Cursor_Redraw();
+                    WM_Redraw();
                 }
             }
         }
@@ -754,6 +729,19 @@ int WM_GetScrollY(int handle)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return 0;
     return g_wins[handle].scroll_y;
+}
+
+void WM_SetScrollY(int handle, int y)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    WmWindow *w = &g_wins[handle];
+    int cx, cy, cw, ch;
+    client_rect(w, &cx, &cy, &cw, &ch);
+    int sv = (w->content_h > ch) ? w->content_h : ch;
+    int max_s = sv - ch;  /* always >= 0 now */
+    if (y < 0) y = 0;
+    if (y > max_s) y = max_s;
+    w->scroll_y = y;
 }
 
 int WM_IsWindowActive(int handle)

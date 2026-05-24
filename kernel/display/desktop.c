@@ -165,11 +165,12 @@ static void draw_statusbar(int W, int H)
 
 static void draw_backdrop(int W, int H)
 {
+    /* Clear the full screen first so no stale window chrome survives
+     * in the menubar / statusbar bands after a resize or move */
+    FB_FillRect(0, 0, W, H, WB_GREY);
+
     int top    = MENUBAR_H;
     int bottom = H - STATUSBAR_H;
-
-    /* Fill base colour first */
-    FB_FillRect(0, top, W, bottom - top, WB_GREY);
 
     /* Overlay dark dots at every other position for stipple effect */
     for (int y = top; y < bottom; y += 2)
