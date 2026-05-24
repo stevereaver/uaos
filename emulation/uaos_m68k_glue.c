@@ -78,10 +78,12 @@ static void u32_dec(uint32_t v, char *buf, int max) {
  * ========================================================================= */
 
 #define GUEST_RAM_SIZE  (2 * 1024 * 1024)   /* 2 MB */
-#define STACK_TOP       0x001000
-#define PROG_BASE       0x001000
+#define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
+#define PROG_BASE       0x001000  /* program hunks load here */
 
 static uint8_t g_ram[GUEST_RAM_SIZE];
+static int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
+static uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */
@@ -165,7 +167,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
  * ========================================================================= */
 
 #define JMPTAB_BASE     0x100
-#define JMPTAB_LIB_SZ   64      /* 16 slots × 4 bytes per lib */
+#define JMPTAB_LIB_SZ   80      /* 20 slots × 4 bytes per lib (DOS now has 17 fns) */
 
 #define LIB_EXEC        1
 #define LIB_DOS         2
@@ -185,6 +187,16 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_READ            5
 #define DOS_EXIT            6
 #define DOS_IO_ERR          7
+#define DOS_INPUT           8
+#define DOS_VFPRINTF        9
+#define DOS_FPUTS          10
+#define DOS_PUTSTR         11
+#define DOS_VPRINTF        12
+#define DOS_PRINTF         13
+#define DOS_VFWRITEF       14
+#define DOS_READARGS       15
+#define DOS_GETARGSTR      16
+#define DOS_ISINTERACTIVE  17
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -194,12 +206,6 @@ static void install_stub(int lib_id, int func_idx)
     g_ram[addr]   = 0x4A; g_ram[addr+1] = 0xFC; /* ILLEGAL */
     g_ram[addr+2] = (uint8_t)lib_id;
     g_ram[addr+3] = (uint8_t)func_idx;
-}
-
-static uint32_t stub_addr(int lib_id, int func_idx)
-{
-    return JMPTAB_BASE + (uint32_t)(lib_id-1) * JMPTAB_LIB_SZ
-                       + (uint32_t)(func_idx-1) * 4;
 }
 
 /* =========================================================================
@@ -214,7 +220,26 @@ static uint32_t stub_addr(int lib_id, int func_idx)
  * exec via our pre-patched jump table at exec_base.
  * ========================================================================= */
 
-#define EXEC_BASE   0x0200
+#define EXEC_BASE    0x0300   /* must be > largest |LVO| = 552 = 0x228 */
+#define FAKE_LIB_BASE 0xF000   /* returned for unknown libraries — has RTS at LVO slots
+                                 * LVO range: 0xED0C–0xEFFA, above LHA data hunk (ends ~0xDF88) */
+
+/* Fake Process struct layout (AmigaOS offsets):
+ * Task struct embedded at start, then Process extensions.
+ * pr_CLI  is at Process+0xAC (172) — non-zero means launched from CLI.
+ * pr_CIS  is at Process+0x32  — CLI input stream (we set to DOS_STDIN_BPTR).
+ * pr_COS  is at Process+0x36  — CLI output stream (we set to DOS_STDOUT_BPTR). */
+#define FAKE_PROCESS_ADDR  0x10000  /* well above hunk data */
+#define FAKE_CLI_ADDR      0x10100  /* fake CLI struct */
+#define PR_CLI_OFFSET      0xAC
+#define PR_CIS_OFFSET      0x32
+#define PR_COS_OFFSET      0x36
+
+/* Fake file handle BPTRs (defined here so install_library_tables can use them) */
+#define FAKE_STDOUT_ADDR   0x0500
+#define FAKE_STDIN_ADDR    0x0504
+#define DOS_STDOUT_BPTR    (FAKE_STDOUT_ADDR >> 2)
+#define DOS_STDIN_BPTR     (FAKE_STDIN_ADDR  >> 2)
 
 /* We patch the exec base JVT so that JSR -offset(A6) hits our stubs.
  * Standard AmigaOS exec LVO table (word offsets from base, all negative):
@@ -227,7 +252,7 @@ static uint32_t stub_addr(int lib_id, int func_idx)
  */
 
 /* Fake library bases */
-#define DOS_BASE    0x0280
+#define DOS_BASE    0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
 
 /* LVO (Library Vector Offset) — negative byte offset from lib base
  * These are the standard AmigaOS offsets. */
@@ -244,6 +269,49 @@ static uint32_t stub_addr(int lib_id, int func_idx)
 #define LVO_DOS_READ       (-42)
 #define LVO_DOS_EXIT       (-144)
 #define LVO_DOS_IO_ERR     (-132)
+#define LVO_DOS_INPUT      (-54)
+#define LVO_DOS_VFPRINTF   (-936)  /* correct AmigaDOS offset */
+#define LVO_DOS_FPUTS      (-930)
+#define LVO_DOS_PUTSTR     (-918)
+#define LVO_DOS_VPRINTF    (-924)
+#define LVO_DOS_PRINTF     (-924)  /* alias VPrintf */
+#define LVO_DOS_VFWRITEF   (-732)
+#define LVO_DOS_READARGS   (-756)
+#define LVO_DOS_GETARGSTR  (-462)
+#define LVO_DOS_ISINTERACTIVE (-366)
+
+static uint32_t stub_addr(int lib_id, int func_idx)
+{
+    if (lib_id == LIB_EXEC) {
+        switch (func_idx) {
+            case EXEC_OPEN_LIBRARY:  return (uint32_t)((int)EXEC_BASE + LVO_OPEN_LIBRARY);
+            case EXEC_CLOSE_LIBRARY: return (uint32_t)((int)EXEC_BASE + LVO_CLOSE_LIBRARY);
+            case EXEC_ALLOC_MEM:     return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_MEM);
+            case EXEC_FREE_MEM:      return (uint32_t)((int)EXEC_BASE + LVO_FREE_MEM);
+            case EXEC_FIND_TASK:     return (uint32_t)((int)EXEC_BASE + LVO_FIND_TASK);
+        }
+    } else if (lib_id == LIB_DOS) {
+        switch (func_idx) {
+            case DOS_OUTPUT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OUTPUT);
+            case DOS_INPUT:    return (uint32_t)((int)DOS_BASE + LVO_DOS_INPUT);
+            case DOS_VFPRINTF:      return (uint32_t)((int)DOS_BASE + LVO_DOS_VFPRINTF);
+            case DOS_FPUTS:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FPUTS);
+            case DOS_PUTSTR:         return (uint32_t)((int)DOS_BASE + LVO_DOS_PUTSTR);
+            case DOS_VPRINTF:        return (uint32_t)((int)DOS_BASE + LVO_DOS_VPRINTF);
+            case DOS_VFWRITEF:       return (uint32_t)((int)DOS_BASE + LVO_DOS_VFWRITEF);
+            case DOS_READARGS:       return (uint32_t)((int)DOS_BASE + LVO_DOS_READARGS);
+            case DOS_GETARGSTR:      return (uint32_t)((int)DOS_BASE + LVO_DOS_GETARGSTR);
+            case DOS_ISINTERACTIVE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_ISINTERACTIVE);
+            case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
+            case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
+            case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
+            case DOS_READ:   return (uint32_t)((int)DOS_BASE + LVO_DOS_READ);
+            case DOS_EXIT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_EXIT);
+            case DOS_IO_ERR: return (uint32_t)((int)DOS_BASE + LVO_DOS_IO_ERR);
+        }
+    }
+    return JMPTAB_BASE;
+}
 
 /* Install a stub at base + lvo (lvo is negative) */
 static void install_lvo(uint32_t base, int lvo, int lib_id, int func_idx)
@@ -259,6 +327,16 @@ static void install_lvo(uint32_t base, int lvo, int lib_id, int func_idx)
 
 static void install_library_tables(void)
 {
+    /* Pre-fill all DOS LVO slots with MOVEQ #0,D0 + RTS
+     * Specific stubs below override the ones LHA actually uses. */
+    for (int lvo = -6; lvo >= -936; lvo -= 6) {
+        uint32_t addr = (uint32_t)((int)DOS_BASE + lvo);
+        if (addr < GUEST_RAM_SIZE - 5) {
+            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
+            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
+        }
+    }
+
     /* exec.library at EXEC_BASE */
     install_lvo(EXEC_BASE, LVO_OPEN_LIBRARY,  LIB_EXEC, EXEC_OPEN_LIBRARY);
     install_lvo(EXEC_BASE, LVO_CLOSE_LIBRARY, LIB_EXEC, EXEC_CLOSE_LIBRARY);
@@ -267,13 +345,75 @@ static void install_library_tables(void)
     install_lvo(EXEC_BASE, LVO_FIND_TASK,     LIB_EXEC, EXEC_FIND_TASK);
 
     /* dos.library at DOS_BASE */
-    install_lvo(DOS_BASE, LVO_DOS_OUTPUT, LIB_DOS, DOS_OUTPUT);
+    install_lvo(DOS_BASE, LVO_DOS_OUTPUT,   LIB_DOS, DOS_OUTPUT);
+    install_lvo(DOS_BASE, LVO_DOS_INPUT,    LIB_DOS, DOS_INPUT);
+    install_lvo(DOS_BASE, LVO_DOS_VFPRINTF,     LIB_DOS, DOS_VFPRINTF);
+    install_lvo(DOS_BASE, LVO_DOS_FPUTS,         LIB_DOS, DOS_FPUTS);
+    install_lvo(DOS_BASE, LVO_DOS_PUTSTR,        LIB_DOS, DOS_PUTSTR);
+    install_lvo(DOS_BASE, LVO_DOS_VPRINTF,       LIB_DOS, DOS_VPRINTF);
+    install_lvo(DOS_BASE, LVO_DOS_VFWRITEF,      LIB_DOS, DOS_VFWRITEF);
+    install_lvo(DOS_BASE, LVO_DOS_READARGS,      LIB_DOS, DOS_READARGS);
+    install_lvo(DOS_BASE, LVO_DOS_GETARGSTR,     LIB_DOS, DOS_GETARGSTR);
+    install_lvo(DOS_BASE, LVO_DOS_ISINTERACTIVE, LIB_DOS, DOS_ISINTERACTIVE);
     install_lvo(DOS_BASE, LVO_DOS_WRITE,  LIB_DOS, DOS_WRITE);
     install_lvo(DOS_BASE, LVO_DOS_OPEN,   LIB_DOS, DOS_OPEN);
     install_lvo(DOS_BASE, LVO_DOS_CLOSE,  LIB_DOS, DOS_CLOSE);
     install_lvo(DOS_BASE, LVO_DOS_READ,   LIB_DOS, DOS_READ);
     install_lvo(DOS_BASE, LVO_DOS_EXIT,   LIB_DOS, DOS_EXIT);
     install_lvo(DOS_BASE, LVO_DOS_IO_ERR, LIB_DOS, DOS_IO_ERR);
+
+    /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
+     * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
+     * For FAKE_LIB_BASE we just put RTS everywhere (D0=0 is the default return). */
+    for (int lvo = -6; lvo >= -756; lvo -= 6) {
+        uint32_t addr = (uint32_t)((int)FAKE_LIB_BASE + lvo);
+        if (addr < GUEST_RAM_SIZE - 2) {
+            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
+            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
+        }
+    }
+
+    /* Build fake Process struct so LHA sees a CLI launch:
+     * pr_CLI (offset 0xAC) must be non-zero (BPTR to CLI struct)
+     * pr_COS (offset 0x36) = stdout BPTR
+     * pr_CIS (offset 0x32) = stdin BPTR */
+    {
+        uint32_t base = FAKE_PROCESS_ADDR;
+        /* Zero the struct area */
+        for (int i = 0; i < 0x100; i++) g_ram[base + i] = 0;
+        /* pr_CLI: BPTR to fake CLI struct (BPTR = addr >> 2) */
+        uint32_t cli_bptr = FAKE_CLI_ADDR >> 2;
+        g_ram[base + PR_CLI_OFFSET]     = (cli_bptr >> 24) & 0xFF;
+        g_ram[base + PR_CLI_OFFSET + 1] = (cli_bptr >> 16) & 0xFF;
+        g_ram[base + PR_CLI_OFFSET + 2] = (cli_bptr >>  8) & 0xFF;
+        g_ram[base + PR_CLI_OFFSET + 3] = (cli_bptr      ) & 0xFF;
+        /* pr_COS: stdout */
+        uint32_t cout = DOS_STDOUT_BPTR;
+        g_ram[base + PR_COS_OFFSET]     = (cout >> 24) & 0xFF;
+        g_ram[base + PR_COS_OFFSET + 1] = (cout >> 16) & 0xFF;
+        g_ram[base + PR_COS_OFFSET + 2] = (cout >>  8) & 0xFF;
+        g_ram[base + PR_COS_OFFSET + 3] = (cout      ) & 0xFF;
+        /* pr_CIS: stdin */
+        uint32_t cin = DOS_STDIN_BPTR;
+        g_ram[base + PR_CIS_OFFSET]     = (cin >> 24) & 0xFF;
+        g_ram[base + PR_CIS_OFFSET + 1] = (cin >> 16) & 0xFF;
+        g_ram[base + PR_CIS_OFFSET + 2] = (cin >>  8) & 0xFF;
+        g_ram[base + PR_CIS_OFFSET + 3] = (cin      ) & 0xFF;
+        /* Minimal fake CLI struct (just needs to be non-zero and readable) */
+        for (int i = 0; i < 0x80; i++) g_ram[FAKE_CLI_ADDR + i] = 0;
+        g_ram[FAKE_CLI_ADDR] = 0x01; /* version / any non-zero byte */
+    }
+
+    /* LHA startup: MOVEA.L (0x4).W,A6 loads EXEC_BASE into A6, then
+     * MOVEA.L 0x114(A6),A3 reads the Process pointer from EXEC_BASE+0x114.
+     * Store FAKE_PROCESS_ADDR at that offset in the exec base area. */
+    {
+        uint32_t proc_slot = EXEC_BASE + 0x114;
+        g_ram[proc_slot]   = (FAKE_PROCESS_ADDR >> 24) & 0xFF;
+        g_ram[proc_slot+1] = (FAKE_PROCESS_ADDR >> 16) & 0xFF;
+        g_ram[proc_slot+2] = (FAKE_PROCESS_ADDR >>  8) & 0xFF;
+        g_ram[proc_slot+3] = (FAKE_PROCESS_ADDR      ) & 0xFF;
+    }
 
     /* Store exec_base at absolute address 4 (SysBase) */
     g_ram[4] = (EXEC_BASE >> 24) & 0xFF;
@@ -301,22 +441,14 @@ static void exec_OpenLibrary(void)
     name[i] = '\0';
 
     /* Match known libraries */
-    int match = 0;
-    for (int j = 0; name[j] && "dos.library"[j]; j++)
-        if (name[j] == "dos.library"[j]) match++;
-    uint32_t result = 0;
-    if (match == 11) result = DOS_BASE;   /* "dos.library" */
+    uint32_t result = FAKE_LIB_BASE; /* default: return a stub base for unknown libs */
+    const char *dos_name = "dos.library";
+    int dos_match = 1;
+    for (int j = 0; dos_name[j]; j++)
+        if (name[j] != dos_name[j]) { dos_match = 0; break; }
+    if (dos_match) result = DOS_BASE;
 
     m68k_set_reg(M68K_REG_D0, result);
-    if (!result) {
-        char msg[80];
-        int mi = 0;
-        const char *pre = "[exec] OpenLibrary: unknown: ";
-        while (*pre && mi < 79) msg[mi++] = *pre++;
-        for (int j = 0; name[j] && mi < 79; j++) msg[mi++] = name[j];
-        msg[mi++] = '\n'; msg[mi] = '\0';
-        emu_print(msg);
-    }
 }
 
 static void exec_CloseLibrary(void) { /* no-op */ }
@@ -332,22 +464,28 @@ static void exec_FreeMem(void) { /* bump allocator — no-op free */ }
 
 static void exec_FindTask(void)
 {
-    /* Return a fake task pointer */
-    m68k_set_reg(M68K_REG_D0, 0x300);
+    /* Return pointer to our fake Process struct */
+    m68k_set_reg(M68K_REG_D0, FAKE_PROCESS_ADDR);
 }
 
 /* =========================================================================
  * dos.library implementation
  * ========================================================================= */
 
-/* File handle table — maps dos handle numbers to output (1=stdout) */
-#define DOS_STDOUT  1
-#define DOS_STDERR  2
+/* (BPTR defines moved above install_library_tables — see near FAKE_PROCESS_ADDR) */
+
+static int is_our_handle(uint32_t bptr) {
+    return bptr == DOS_STDOUT_BPTR || bptr == DOS_STDIN_BPTR;
+}
 
 static void dos_Output(void)
 {
-    /* Returns the stdout file handle (BPTR) */
-    m68k_set_reg(M68K_REG_D0, DOS_STDOUT);
+    m68k_set_reg(M68K_REG_D0, DOS_STDOUT_BPTR);
+}
+
+static void dos_Input(void)
+{
+    m68k_set_reg(M68K_REG_D0, DOS_STDIN_BPTR);
 }
 
 static void dos_Write(void)
@@ -356,8 +494,10 @@ static void dos_Write(void)
     uint32_t fh  = m68k_get_reg(NULL, M68K_REG_D1);
     uint32_t ptr = m68k_get_reg(NULL, M68K_REG_D2);
     uint32_t len = m68k_get_reg(NULL, M68K_REG_D3);
-
-    (void)fh; /* route all output to shell */
+    if (!is_our_handle(fh)) {
+        /* Accept any non-zero handle as stdout for now */
+        if (fh == 0) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
+    }
 
     if (ptr < GUEST_RAM_SIZE && len < 4096) {
         /* Build a NUL-terminated copy and print it */
@@ -373,16 +513,161 @@ static void dos_Write(void)
     }
 }
 
+static void dos_VFPrintf(void)
+{
+    /* D1=fh (BPTR), D2=format string ptr, D3=arg array ptr
+     * For now print the format string raw (no substitution) */
+    uint32_t ptr = m68k_get_reg(NULL, M68K_REG_D2);
+    if (ptr < GUEST_RAM_SIZE) {
+        char buf[512]; uint32_t i;
+        for (i = 0; i < 511 && ptr+i < GUEST_RAM_SIZE && g_ram[ptr+i]; i++)
+            buf[i] = (char)g_ram[ptr+i];
+        buf[i] = '\0';
+        emu_print(buf);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void dos_FPuts(void)
+{
+    /* D1=fh (BPTR), D2=string ptr (C string) */
+    uint32_t ptr = m68k_get_reg(NULL, M68K_REG_D2);
+    if (ptr < GUEST_RAM_SIZE) {
+        char buf[512]; uint32_t i;
+        for (i = 0; i < 511 && ptr+i < GUEST_RAM_SIZE && g_ram[ptr+i]; i++)
+            buf[i] = (char)g_ram[ptr+i];
+        buf[i] = '\0';
+        emu_print(buf);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void dos_PutStr(void)
+{
+    /* D1=string ptr (C string) — output to stdout */
+    uint32_t ptr = m68k_get_reg(NULL, M68K_REG_D1);
+    if (ptr < GUEST_RAM_SIZE) {
+        char buf[512]; uint32_t i;
+        for (i = 0; i < 511 && ptr+i < GUEST_RAM_SIZE && g_ram[ptr+i]; i++)
+            buf[i] = (char)g_ram[ptr+i];
+        buf[i] = '\0';
+        emu_print(buf);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void dos_VPrintf(void)
+{
+    /* D1=format string ptr, D2=arg array ptr — output to stdout */
+    uint32_t ptr = m68k_get_reg(NULL, M68K_REG_D1);
+    if (ptr < GUEST_RAM_SIZE) {
+        char buf[512]; uint32_t i;
+        for (i = 0; i < 511 && ptr+i < GUEST_RAM_SIZE && g_ram[ptr+i]; i++)
+            buf[i] = (char)g_ram[ptr+i];
+        buf[i] = '\0';
+        emu_print(buf);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* Fake RDArgs struct returned by ReadArgs */
+#define FAKE_RDARGS_ADDR   0x10200
+#define FAKE_ARGARRAY_ADDR 0x10280  /* array of ULONG results from ReadArgs */
+
+static void dos_VFWritef(void)
+{
+    /* D1=fh, D2=format BSTR ptr, D3=array ptr — like printf with %lx etc.
+     * For now just print the format string raw */
+    uint32_t fmt_bptr = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t fmt_ptr  = fmt_bptr << 2;
+    if (fmt_ptr < GUEST_RAM_SIZE) {
+        uint8_t blen = g_ram[fmt_ptr];
+        char buf[512]; uint32_t i;
+        for (i = 0; i < blen && i < 511 && fmt_ptr+1+i < GUEST_RAM_SIZE; i++)
+            buf[i] = (char)g_ram[fmt_ptr+1+i];
+        buf[i] = '\0';
+        emu_print(buf);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void dos_ReadArgs(void)
+{
+    /* D1=template BSTR, D2=array ptr, D3=rdargs or 0
+     * Returns non-NULL RDArgs handle; fills D2 array with parsed args.
+     * We just return a fake handle — LHA will use it to get args.
+     * The command line was placed at cmdline_ptr (a C string). */
+    /* Zero out the arg result array (D2) */
+    uint32_t array_ptr = m68k_get_reg(NULL, M68K_REG_D2);
+    if (array_ptr && array_ptr + 64 < GUEST_RAM_SIZE) {
+        for (int i = 0; i < 64; i++) g_ram[array_ptr + i] = 0;
+    }
+    /* Return fake RDArgs struct */
+    for (int i = 0; i < 0x40; i++) g_ram[FAKE_RDARGS_ADDR + i] = 0;
+    m68k_set_reg(M68K_REG_D0, FAKE_RDARGS_ADDR);
+}
+
+static void dos_GetArgStr(void)
+{
+    /* Returns BPTR to the CLI argument string (BSTR format) */
+    m68k_set_reg(M68K_REG_D0, g_cmdline_bptr);
+}
+
+static void dos_IsInteractive(void)
+{
+    /* D1=fh — returns DOSTRUE (-1) for console handles */
+    m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+}
+
 static void dos_Open(void)
 {
-    /* Stub: return 0 (failure) — file I/O not yet supported */
-    m68k_set_reg(M68K_REG_D0, 0);
-    g_last_err = 205; /* ERROR_OBJECT_NOT_FOUND */
+    /* D1=name BPTR (AmigaDOS BSTR: addr >> 2, then byte[0]=len, bytes[1..] = chars)
+     * D2=mode (MODE_OLDFILE=1005, MODE_NEWFILE=1006) */
+    uint32_t bptr     = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t name_ptr = bptr << 2;  /* convert BPTR to byte address */
+    char name[64];
+    uint8_t blen = (name_ptr < GUEST_RAM_SIZE) ? g_ram[name_ptr] : 0;
+    if (blen > 63) blen = 63;
+    for (int i = 0; i < (int)blen; i++)
+        name[i] = (char)g_ram[name_ptr + 1 + i];
+    name[blen] = '\0';
+
+    /* Accept CON:, *, NIL:, empty, or any interactive device as console */
+    if (blen == 0 || name[0] == '*' ||
+        (name[0]=='C' && name[1]=='O' && name[2]=='N') ||
+        (name[0]=='N' && name[1]=='I' && name[2]=='L') ||
+        (name[0]=='R' && name[1]=='A' && name[2]=='W') ||
+        (name[0]=='A' && name[1]=='U' && name[2]=='X')) {
+        m68k_set_reg(M68K_REG_D0, DOS_STDOUT_BPTR);
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = 205;
+    }
 }
 
 static void dos_Close(void) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); }
 
-static void dos_Read(void) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); }
+/* Stdin data to feed LHA: "q\n" to quit interactive mode cleanly */
+static const char g_stdin_data[] = "?\n";
+static int g_stdin_reads = 0;
+
+static void dos_Read(void)
+{
+    /* D1=fh (BPTR), D2=buf ptr, D3=max len */
+    uint32_t buf = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t len = m68k_get_reg(NULL, M68K_REG_D3);
+    if (g_stdin_reads == 0 && buf < GUEST_RAM_SIZE && len > 0) {
+        /* First read: supply "q\n" so LHA exits interactive mode */
+        uint32_t n = 0;
+        while (g_stdin_data[n] && n < len && buf+n < GUEST_RAM_SIZE) {
+            g_ram[buf+n] = (uint8_t)g_stdin_data[n]; n++;
+        }
+        m68k_set_reg(M68K_REG_D0, n);
+    } else {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);  /* EOF/error */
+    }
+    g_stdin_reads++;
+}
 
 static void dos_Exit(void)
 {
@@ -392,9 +677,10 @@ static void dos_Exit(void)
     int i = emu_strlen(buf), j = 0;
     while (num[j] && i < 30) buf[i++] = num[j++];
     buf[i++] = '\n'; buf[i] = '\0';
-    emu_print(buf);
-    /* Stop the CPU */
-    m68k_pulse_halt();
+    (void)buf; /* suppress exit message for clean output */
+    /* Stop the execute loop */
+    g_emu_halted = 1;
+    m68k_end_timeslice();
 }
 
 static void dos_IoErr(void)
@@ -415,6 +701,17 @@ int m68k_illg_instr_callback(int opcode)
     uint32_t pc  = m68k_get_reg(NULL, M68K_REG_PC);
     uint8_t  lib = g_ram[pc];     /* pc already advanced past ILLEGAL word */
     uint8_t  fn  = g_ram[pc + 1];
+
+    /* [C] trace disabled — re-enable by uncommenting for debugging */
+    /*{
+        char msg[48] = "[C] ";
+        char n[4]; int i = 4, j = 0;
+        u32_dec(lib, n, 4); while(n[j]&&i<46) msg[i++]=n[j++];
+        msg[i++]='.';
+        u32_dec(fn,  n, 4); j=0; while(n[j]&&i<46) msg[i++]=n[j++];
+        msg[i++]='\n'; msg[i]=0;
+        emu_print(msg);
+    }*/
 
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);
@@ -437,7 +734,16 @@ int m68k_illg_instr_callback(int opcode)
         }
     } else if (lib == LIB_DOS) {
         switch (fn) {
-            case DOS_OUTPUT: dos_Output(); break;
+            case DOS_OUTPUT:   dos_Output();   break;
+            case DOS_INPUT:    dos_Input();    break;
+            case DOS_VFPRINTF:     dos_VFPrintf();     break;
+            case DOS_FPUTS:        dos_FPuts();        break;
+            case DOS_PUTSTR:       dos_PutStr();       break;
+            case DOS_VPRINTF:      dos_VPrintf();      break;
+            case DOS_VFWRITEF:     dos_VFWritef();     break;
+            case DOS_READARGS:     dos_ReadArgs();     break;
+            case DOS_GETARGSTR:    dos_GetArgStr();    break;
+            case DOS_ISINTERACTIVE: dos_IsInteractive(); break;
             case DOS_WRITE:  dos_Write();  break;
             case DOS_OPEN:   dos_Open();   break;
             case DOS_CLOSE:  dos_Close();  break;
@@ -632,6 +938,8 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     g_heap_ptr = PROG_BASE;
     g_last_err = 0;
     g_hunk_count = 0;
+    g_emu_halted  = 0;
+    g_stdin_reads = 0;
 
     /* Install library jump tables */
     install_library_tables();
@@ -643,69 +951,85 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
         return -1;
     }
 
-    {
-        char msg[64] = "[emu] Loaded, entry=0x";
-        char hex[9]; u32_hex(entry, hex);
-        int i = emu_strlen(msg), j = 0;
-        while (hex[j] && i<62) msg[i++]=hex[j++];
-        msg[i++]='\n'; msg[i]='\0';
-        emu_print(msg);
-    }
-
-    /* ---- Build Amiga-style process startup stack ----
-     * The Amiga startup convention (as seen by a DOS program):
-     *   SP at entry:
-     *     +0: return address (to DOS Exit stub)
-     *     +4: argc  (number of args including name)
-     *     +8: argv  (pointer to array of pointers)
-     *
-     * We build this on the guest stack.
+    /* ---- Amiga CLI startup convention ----
+     * A0 = pointer to command-line string (everything after program name)
+     * D0 = command-line string length (byte count, NOT NUL-terminated)
+     * SP = stack pointer with return address on top
+     * SysBase is read by the program from absolute address 4
+     * A6 is NOT set by us — the program loads SysBase itself via MOVEA.L 4.W,A6
      */
+
+    /* Build command line string in guest RAM below the stack */
     uint32_t sp = STACK_TOP;
 
-    /* Count args */
-    int argc = 0;
-    if (argv) while (argv[argc]) argc++;
-
-    /* Push arg strings onto stack, record their addresses */
-    uint32_t arg_ptrs[16];
-    int narg = (argc > 15) ? 15 : argc;
-    for (int i = narg - 1; i >= 0; i--) {
-        sp = push_string(sp, argv[i]);
-        arg_ptrs[i] = sp;
+    /* Concatenate all argv[1..] into one space-separated string */
+    char cmdline[256];
+    int cmdlen = 0;
+    if (argv) {
+        for (int i = 1; argv[i] && cmdlen < 254; i++) {
+            if (i > 1 && cmdlen < 254) cmdline[cmdlen++] = ' ';
+            for (int j = 0; argv[i][j] && cmdlen < 254; j++)
+                cmdline[cmdlen++] = argv[i][j];
+        }
     }
-    arg_ptrs[narg] = 0;
+    cmdline[cmdlen] = '\n'; /* Amiga CLI lines end with newline */
+    cmdlen++;
+    cmdline[cmdlen] = '\0';
 
-    /* Push null terminator then arg pointer array */
-    sp -= 4; m68k_write_memory_32(sp, 0);  /* NULL terminator */
-    for (int i = narg - 1; i >= 0; i--) {
-        sp -= 4; m68k_write_memory_32(sp, arg_ptrs[i]);
+    /* Place cmdline string just below SP */
+    sp -= (uint32_t)((cmdlen + 2) & ~1u);
+    uint32_t cmdline_ptr = sp;
+    emu_memcpy(g_ram + cmdline_ptr, cmdline, (unsigned int)cmdlen);
+
+    /* Build a BSTR version for GetArgStr (byte[0]=len, byte[1..len]=chars)
+     * Place it 4 bytes below cmdline_ptr, 4-byte aligned */
+    sp -= (uint32_t)((cmdlen + 2 + 4) & ~3u);
+    uint32_t bstr_ptr = sp;
+    g_ram[bstr_ptr] = (uint8_t)(cmdlen < 255 ? cmdlen : 255);
+    emu_memcpy(g_ram + bstr_ptr + 1, cmdline, (unsigned int)cmdlen);
+    g_cmdline_bptr = bstr_ptr >> 2;  /* BPTR = addr >> 2 */
+
+    /* Patch cli_CommandName (offset +0x10 in CLI struct) to our cmdline BSTR */
+    {
+        uint32_t cn_slot = FAKE_CLI_ADDR + 0x10;
+        uint32_t bptr = g_cmdline_bptr;
+        g_ram[cn_slot]   = (bptr >> 24) & 0xFF;
+        g_ram[cn_slot+1] = (bptr >> 16) & 0xFF;
+        g_ram[cn_slot+2] = (bptr >>  8) & 0xFF;
+        g_ram[cn_slot+3] = (bptr      ) & 0xFF;
     }
-    uint32_t argv_ptr = sp;
 
-    /* Push argc and argv */
-    sp -= 4; m68k_write_memory_32(sp, argv_ptr);
-    sp -= 4; m68k_write_memory_32(sp, (uint32_t)narg);
-
-    /* Push return address — a DOS Exit stub */
+    /* Push return address — our DOS Exit stub so RTS ends execution */
     uint32_t exit_stub = stub_addr(LIB_DOS, DOS_EXIT);
-    sp -= 4; m68k_write_memory_32(sp, exit_stub);
+    sp -= 4;
+    m68k_write_memory_32(sp, exit_stub);
 
-    /* Set up CPU */
+    /* Initialise CPU — MUST call pulse_reset before setting registers */
     m68k_init();
     m68k_set_cpu_type(M68K_CPU_TYPE_68000);
-    m68k_pulse_reset();
+    m68k_set_illg_instr_callback(m68k_illg_instr_callback);
 
-    /* Set registers */
-    m68k_set_reg(M68K_REG_PC, entry);
-    m68k_set_reg(M68K_REG_SP, sp);
-    m68k_set_reg(M68K_REG_A6, EXEC_BASE);  /* ExecBase in A6 */
+    /* Patch reset vectors so pulse_reset loads our entry/stack:
+     * Address 0 = initial SSP, Address 4 = initial PC
+     * We save/restore SysBase (stored at addr 4) around this. */
+    m68k_write_memory_32(0, sp);     /* SSP */
+    m68k_write_memory_32(4, entry);  /* PC  */
+    m68k_pulse_reset();              /* CPU loads SSP from 0, PC from 4 */
 
-    emu_print("[emu] Starting execution...\n");
+    /* Restore SysBase at address 4 (pulse_reset consumed it as PC) */
+    m68k_write_memory_32(4, EXEC_BASE);
 
-    /* Run for up to 50M cycles (should be plenty for a CLI tool) */
-    m68k_execute(50000000);
+    /* Set entry registers per Amiga CLI convention */
+    m68k_set_reg(M68K_REG_A0, cmdline_ptr);       /* command line ptr */
+    m68k_set_reg(M68K_REG_D0, (uint32_t)cmdlen);  /* command line length */
 
-    emu_print("[emu] Execution complete\n");
+
+    /* Run in 1M-cycle slices until the program calls Exit or we time out */
+    int slices = 0;
+    while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
+        m68k_execute(1000000);
+        slices++;
+    }
+    (void)slices;
     return 0;
 }
