@@ -12,4 +12,7 @@ void Cursor_Move(int x, int y);
 /* Draw cursor at current position (call after desktop redraw) */
 void Cursor_Redraw(void);
 
+/* Remove cursor from screen (restore background) — call before any repaint */
+void Cursor_Hide(void);
+
 #endif

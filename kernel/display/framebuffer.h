@@ -14,6 +14,7 @@
 
 /* Workbench 3.x palette */
 #define WB_GREY         FB_RGB(0xAA,0xAA,0xAA)   /* backdrop grey            */
+#define WB_LIGHT_GREY   FB_RGB(0xCC,0xCC,0xCC)   /* scrollbar thumb          */
 #define WB_DARK_GREY    FB_RGB(0x55,0x55,0x55)   /* shadow / borders         */
 #define WB_BLACK        FB_RGB(0x00,0x00,0x00)
 #define WB_WHITE        FB_RGB(0xFF,0xFF,0xFF)

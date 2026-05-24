@@ -24,7 +24,9 @@
 
 #define TITLEBAR_H      WM_TITLEBAR_H
 #define INPUTBAR_H      18
-#define BORDER          2
+#define BORDER_L        1                  /* left: just the outline */
+#define BORDER_R        WM_SCROLLBAR_W     /* right: scrollbar width */
+#define BORDER          BORDER_L           /* legacy alias for top inset */
 #define MAX_HIST_LINES  128
 #define MAX_LINE_LEN    128
 #define MAX_INPUT       (MAX_LINE_LEN - 8 - 1)
@@ -87,29 +89,30 @@ static void inst_draw_contents(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
 
+    int body_w = ww - BORDER_L - BORDER_R;
+    int body_y  = wy + TITLEBAR_H + 1;
+    int body_h  = wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W - 1;
+
     /* History area */
-    FB_FillRect(wx+BORDER, wy+TITLEBAR_H+1,
-                ww-BORDER*2, wh-TITLEBAR_H-INPUTBAR_H-BORDER-1, WB_BLACK);
+    FB_FillRect(wx+BORDER_L, body_y, body_w, body_h, WB_BLACK);
 
     /* Separator */
-    FB_DrawHLine(wx+BORDER, wy+wh-INPUTBAR_H-BORDER-1,
-                 ww-BORDER*2, WB_DARK_GREY);
+    FB_DrawHLine(wx+BORDER_L, body_y + body_h, body_w, WB_DARK_GREY);
 
     /* Input bar */
-    FB_FillRect(wx+BORDER, wy+wh-INPUTBAR_H-BORDER,
-                ww-BORDER*2, INPUTBAR_H, WB_BLACK);
+    FB_FillRect(wx+BORDER_L, body_y + body_h + 1,
+                body_w, INPUTBAR_H, WB_BLACK);
 }
 
 static void inst_draw_history(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
-    int hx = wx + BORDER + 4;
+    int hx = wx + BORDER_L + 4;
     int hy = wy + TITLEBAR_H + 4;
-    int hw = ww - BORDER*2 - 8;
-    int hh = wh - TITLEBAR_H - INPUTBAR_H - BORDER*2 - 8;
+    int hh = wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W - 8;
     int rows = hh / 16;
 
-    FB_FillRect(wx+BORDER+1, hy, ww-BORDER*2-2, hh, WB_BLACK);
+    FB_FillRect(wx+BORDER_L, hy, ww-BORDER_L-BORDER_R, hh, WB_BLACK);
 
     int start = s->hist_count - rows - s->hist_scroll;
     if (start < 0) start = 0;
@@ -124,8 +127,8 @@ static void inst_draw_history(ShellInstance *s)
 static void inst_draw_input(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
-    int ix = wx + BORDER + 4;
-    int iy = wy + wh - INPUTBAR_H - BORDER - 2;
+    int ix = wx + BORDER_L + 4;
+    int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W - 2;
 
     /* Build prompt "N.UAOS> " */
     char prompt[12];
@@ -134,7 +137,7 @@ static void inst_draw_input(ShellInstance *s)
     prompt[5] = 'S'; prompt[6]='>'; prompt[7]=' '; prompt[8]=0;
     int plen = 8;
 
-    FB_FillRect(wx+BORDER+1, iy, ww-BORDER*2-2, INPUTBAR_H, WB_BLACK);
+    FB_FillRect(wx+BORDER_L, iy, ww-BORDER_L-BORDER_R, INPUTBAR_H, WB_BLACK);
     FB_PutStr(ix, iy+1, prompt, WB_GREEN, WB_BLACK);
 
     int px = ix + plen*8;

@@ -12,6 +12,8 @@
 
 #define WM_MAX_WINDOWS  8
 #define WM_TITLEBAR_H   20
+#define WM_BORDER       4    /* border thickness on left/right/bottom */
+#define WM_SCROLLBAR_W  16   /* width of right scrollbar / height of bottom scrollbar */
 
 typedef void (*WM_DrawFn)(int win_x, int win_y, int win_w, int win_h);
 typedef void (*WM_KeyFn)(char c);
@@ -24,6 +26,11 @@ typedef struct {
     WM_KeyFn   on_key;    /* called with keystrokes when window is focused */
     WM_ClickFn on_click;  /* called on client-area mouse press (may be 0)  */
     int        active;    /* 1 = registered, 0 = slot free                */
+    /* Scroll state — set by window content via WM_SetScrollInfo */
+    int        scroll_x;      /* current horizontal scroll offset (pixels) */
+    int        scroll_y;      /* current vertical scroll offset (pixels)   */
+    int        content_w;     /* total content width  (0 = same as client) */
+    int        content_h;     /* total content height (0 = same as client) */
 } WmWindow;
 
 /* Register a window — returns handle (0..WM_MAX_WINDOWS-1) or -1 on fail */
@@ -32,6 +39,13 @@ int  WM_AddWindow(int x, int y, int w, int h, const char *title,
 
 /* Set an optional client-area click callback on an existing window */
 void WM_SetClickHandler(int handle, WM_ClickFn on_click);
+
+/* Tell the WM the total content size so scrollbars can be proportional */
+void WM_SetScrollInfo(int handle, int content_w, int content_h);
+
+/* Query current scroll offsets */
+int  WM_GetScrollX(int handle);
+int  WM_GetScrollY(int handle);
 
 /* Call from main loop with current mouse state */
 void WM_MouseEvent(int mx, int my, int btn_left);

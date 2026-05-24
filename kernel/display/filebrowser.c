@@ -129,44 +129,70 @@ static void browser_key(char c) { (void)c; }
 
 static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
 {
-    int cy = wy + TITLEBAR_H + BORDER;
-    int ch = wh - TITLEBAR_H - BORDER * 2;
-    int cx = wx + BORDER;
-    int cw = ww - BORDER * 2;
+    /* Client area: 1px left outline, right = scrollbar, bottom = scrollbar */
+    int cx = wx + 1;
+    int cy = wy + WM_TITLEBAR_H;
+    int cw = ww - 1 - WM_SCROLLBAR_W;
+    int ch = wh - WM_TITLEBAR_H - WM_SCROLLBAR_W;
 
     FB_FillRect(cx, cy, cw, ch, WB_GREY);
-    FB_DrawRect(cx, cy, cw, ch, WB_DARK_GREY);
 
     if (!b) return;
 
-    /* Path bar */
-    FB_FillRect(cx + 1, cy + 1, cw - 2, 16, WB_WHITE);
-    FB_PutStr(cx + 4, cy + 1, b->volume, WB_BLACK, WB_WHITE);
-    FB_DrawHLine(cx + 1, cy + 17, cw - 2, WB_DARK_GREY);
-
-    /* Icon grid */
+    /* Count entries to compute total content height */
+    int n_entries = 0;
     const FileEntry *e = b->entries;
-    int col = 0, row = 0;
-    int grid_y = cy + 20;
-    int cols    = (cw - 8) / ICON_COL_W;
+    while (e && e[n_entries].name) n_entries++;
+
+    int usable = cw - 8;
+    int cols   = usable / ICON_COL_W;
     if (cols < 1) cols = 1;
+    int cell_w = (cols == 1) ? usable : ICON_COL_W;
+    int n_rows = (n_entries + cols - 1) / cols;
+
+    /* Path bar height */
+    int path_h = 20;
+
+    /* Total content height: path bar + icon rows */
+    int total_h = path_h + n_rows * ICON_ROW_H + 8;
+
+    /* Tell WM the content size for proportional scrollbar thumb */
+    if (b->wm_handle >= 0)
+        WM_SetScrollInfo(b->wm_handle, cw, total_h);
+
+    /* Get current vertical scroll offset */
+    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+
+    /* Icon grid — offset by scroll_y, strictly clipped to client area */
+    int icon_top    = cy + path_h;   /* first pixel icons may appear */
+    int icon_bottom = cy + ch - 1;   /* last pixel inside window (1px outline) */
+    int col = 0, row = 0;
+    int grid_base = icon_top - scroll_y;
 
     for (int i = 0; e && e[i].name; i++) {
-        int ix = cx + 4 + col * ICON_COL_W + (ICON_COL_W - ICON_SZ) / 2;
-        int iy = grid_y + row * ICON_ROW_H + 4;
+        int cell_x    = cx + 4 + col * cell_w;
+        int iy        = grid_base + row * ICON_ROW_H;
+        int ix        = cell_x + (cell_w - ICON_SZ) / 2;
+        int icon_top1 = iy + 4;
+        int label_bot = iy + 4 + ICON_SZ + LABEL_H + 2;
 
-        if (iy + ICON_SZ + LABEL_H < cy || iy > cy + ch) {
-            if (++col >= cols) { col = 0; row++; }
-            continue;
+        /* Draw only when the entire icon+label fits within the clip zone */
+        if (icon_top1 >= icon_top && label_bot <= icon_bottom) {
+            if (ix >= cx && cell_x + cell_w <= cx + cw) {
+                uint32_t icol = (e[i].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
+                draw_small_icon(ix, icon_top1, e[i].type, icol);
+                draw_label_centred(cell_x, iy + 4 + ICON_SZ + 2,
+                                   cell_w, e[i].name, WB_BLACK, WB_GREY);
+            }
         }
-
-        uint32_t icol = (e[i].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
-        draw_small_icon(ix, iy, e[i].type, icol);
-        draw_label_centred(cx + 4 + col * ICON_COL_W, iy + ICON_SZ + 2,
-                           ICON_COL_W, e[i].name, WB_BLACK, WB_GREY);
 
         if (++col >= cols) { col = 0; row++; }
     }
+
+    /* Path bar drawn last so it always appears on top of any icon overflow */
+    FB_FillRect(cx, cy, cw, path_h, WB_WHITE);
+    FB_PutStr(cx + 4, cy + 2, b->volume, WB_BLACK, WB_WHITE);
+    FB_DrawHLine(cx, cy + path_h - 1, cw, WB_DARK_GREY);
 }
 
 static void draw_shim_0(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[0], wx, wy, ww, wh); }

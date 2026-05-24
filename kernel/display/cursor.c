@@ -195,3 +195,12 @@ void Cursor_Redraw(void)
     cursor_draw(cur_x, cur_y);
     cur_drawn = 1;
 }
+
+void Cursor_Hide(void)
+{
+    if (!g_fb.valid) return;
+    if (cur_drawn) {
+        cursor_restore_bg(cur_x, cur_y);
+        cur_drawn = 0;
+    }
+}

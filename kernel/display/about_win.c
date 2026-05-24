@@ -45,7 +45,7 @@ static int g_cx = 0, g_cy = 0, g_cw = 0, g_ch = 0;  /* last-drawn client rect */
  * ========================================================================= */
 
 #define TITLEBAR_H  WM_TITLEBAR_H
-#define BORDER      3
+#define BORDER      1   /* left/top: just outline; right uses WM scrollbar */
 #define LINE_H      16
 #define PAD         8
 
@@ -124,14 +124,16 @@ static void about_draw(int wx, int wy, int ww, int wh)
     /* Display resolution */
     char res[32];
     char num[12];
-    uint_to_dec(g_fb.width,  num, 12); int i = 0;
-    while (num[i]) res[i] = num[i++]; res[i++] = 'x';
-    uint_to_dec(g_fb.height, num, 12); int j = 0;
-    while (num[j]) res[i++] = num[j++]; res[i++] = ' ';
-    res[i++] = '@'; res[i++] = ' ';
-    uint_to_dec(g_fb.bpp, num, 12); j = 0;
-    while (num[j]) res[i++] = num[j++];
-    res[i++] = 'b'; res[i++] = 'p'; res[i++] = 'p'; res[i] = '\0';
+    int ri = 0, ni;
+    uint_to_dec(g_fb.width, num, 12);
+    for (ni = 0; num[ni]; ni++) res[ri++] = num[ni];
+    res[ri++] = 'x';
+    uint_to_dec(g_fb.height, num, 12);
+    for (ni = 0; num[ni]; ni++) res[ri++] = num[ni];
+    res[ri++] = ' '; res[ri++] = '@'; res[ri++] = ' ';
+    uint_to_dec(g_fb.bpp, num, 12);
+    for (ni = 0; num[ni]; ni++) res[ri++] = num[ni];
+    res[ri++] = 'b'; res[ri++] = 'p'; res[ri++] = 'p'; res[ri] = '\0';
     draw_row(cx, &y, cw, "Display:   ", res, lc, vc, bg);
 
     draw_row(cx, &y, cw, "RAM:       ", "512 MB", lc, vc, bg);
