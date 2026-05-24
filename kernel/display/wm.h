@@ -43,4 +43,10 @@ int  WM_GetFocus(void);
 /* Move a window to a new position and repaint */
 void WM_MoveWindow(int handle, int new_x, int new_y);
 
+/* Close (destroy) a window by handle — repaints desktop */
+void WM_CloseWindow(int handle);
+
+/* Returns 1 if the handle refers to an active window */
+int  WM_IsWindowActive(int handle);
+
 #endif

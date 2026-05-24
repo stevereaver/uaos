@@ -1,15 +1,14 @@
 /* shell_win.c — UAOS Shell Window
  *
- * Draws a resizable Workbench-style CLI window on the framebuffer.
- * Accepts character input from the keyboard driver, renders an input
- * line with a blinking cursor, scrolls a history buffer of output lines,
- * and dispatches commands via a small built-in command table.
+ * Supports up to MAX_SHELLS independent shell windows.
+ * Each instance has its own history buffer, input line, and geometry.
+ * A per-slot draw/key shim routes WM callbacks to the correct instance.
  *
- * Layout (all coordinates relative to window top-left):
- *   Title bar     : 20 px
- *   History area  : (WIN_H - TITLEBAR - INPUTBAR) px, scrollable
- *   Separator     : 1 px
- *   Input bar     : 18 px  "1.UAOS> _"
+ * Layout (relative to window top-left):
+ *   Title bar  : 20 px
+ *   History    : variable (scrollable)
+ *   Separator  : 1 px
+ *   Input bar  : 18 px   "1.UAOS> _"
  */
 
 #include "shell_win.h"
@@ -20,119 +19,192 @@
 #include <stddef.h>
 
 /* =========================================================================
- * Window geometry
+ * Constants
  * ========================================================================= */
 
-#define TITLEBAR_H  WM_TITLEBAR_H
-#define INPUTBAR_H  18
-#define BORDER      2
-
-/* Dynamic geometry — updated by WM draw callback */
-static int s_wx = 24;
-static int s_wy = 28;
-static int s_ww = 600;
-static int s_wh = 340;
-
-#define HIST_X      (s_wx + BORDER + 4)
-#define HIST_Y      (s_wy + TITLEBAR_H + 4)
-#define HIST_W      (s_ww - BORDER*2 - 8)
-#define HIST_H      (s_wh - TITLEBAR_H - INPUTBAR_H - BORDER*2 - 8)
-#define HIST_ROWS   (HIST_H / 16)
-#define HIST_COLS   (HIST_W / 8)
-
-#define INPUT_X     (s_wx + BORDER + 4)
-#define INPUT_Y     (s_wy + s_wh - INPUTBAR_H - BORDER - 2)
-
-/* =========================================================================
- * History buffer — circular array of text lines
- * ========================================================================= */
-
+#define TITLEBAR_H      WM_TITLEBAR_H
+#define INPUTBAR_H      18
+#define BORDER          2
 #define MAX_HIST_LINES  128
-#define MAX_LINE_LEN    128           /* fixed max width (600px / 8 = 75 + slack) */
+#define MAX_LINE_LEN    128
 #define MAX_INPUT       (MAX_LINE_LEN - 8 - 1)
-
-static char   hist[MAX_HIST_LINES][MAX_LINE_LEN];
-static int    hist_count  = 0;    /* total lines ever written    */
-static int    hist_scroll = 0;    /* lines scrolled up from bottom */
-
-/* Input line */
-static char input_buf[MAX_INPUT + 1];
-static int  input_len = 0;
-
-static const char *PROMPT = "1.UAOS> ";
-#define PROMPT_LEN 8
+#define MAX_SHELLS      4
 
 /* =========================================================================
- * Internal helpers
+ * Per-instance state
+ * ========================================================================= */
+
+typedef struct {
+    /* WM */
+    int  wm_handle;
+    int  number;        /* shell number shown in prompt, 1-based */
+
+    /* Geometry — updated by draw callback */
+    int  wx, wy, ww, wh;
+
+    /* History */
+    char hist[MAX_HIST_LINES][MAX_LINE_LEN];
+    int  hist_count;
+    int  hist_scroll;
+
+    /* Input */
+    char input_buf[MAX_INPUT + 1];
+    int  input_len;
+} ShellInstance;
+
+static ShellInstance g_shells[MAX_SHELLS];
+static int           g_n_shells = 0;
+
+/* =========================================================================
+ * String helpers
  * ========================================================================= */
 
 static int slen(const char *s) {
     int n = 0; while (s[n]) n++; return n;
 }
-static void scopy(char *dst, const char *src, int max) {
+static void scopy(char *d, const char *s, int max) {
     int i = 0;
-    while (i < max - 1 && src[i]) { dst[i] = src[i]; i++; }
-    dst[i] = 0;
+    while (i < max - 1 && s[i]) { d[i] = s[i]; i++; }
+    d[i] = 0;
 }
-static void scat(char *dst, const char *src, int max) {
-    int dl = slen(dst);
-    scopy(dst + dl, src, max - dl);
+static void scat(char *d, const char *s, int max) {
+    int dl = slen(d); scopy(d + dl, s, max - dl);
 }
-
-/* Push a new line into the history ring */
-static void hist_push(const char *line)
+static void uint_to_dec_s(uint32_t v, char *buf, int max)
 {
-    int idx = hist_count % MAX_HIST_LINES;
-    scopy(hist[idx], line, MAX_LINE_LEN);
-    hist_count++;
-    hist_scroll = 0;   /* auto-scroll to bottom on new output */
+    char tmp[12]; int i = 0, j = 0;
+    if (!v) { buf[j++]='0'; buf[j]=0; return; }
+    while (v && i<11) { tmp[i++]=(char)('0'+v%10); v/=10; }
+    while (i-- && j<max-1) buf[j++]=tmp[i];
+    buf[j]=0;
 }
 
 /* =========================================================================
- * Command dispatch
+ * Per-instance rendering
  * ========================================================================= */
 
-static void shell_print(const char *s) { hist_push(s); }
-
-static void cmd_help(void)
+static void inst_draw_contents(ShellInstance *s)
 {
-    shell_print("UAOS Shell v0.1 - built-in commands:");
-    shell_print("  help     show this help");
-    shell_print("  version  show OS version");
-    shell_print("  mem      memory information");
-    shell_print("  clear    clear the shell window");
-    shell_print("  reboot   warm reboot via keyboard controller");
+    int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
+
+    /* History area */
+    FB_FillRect(wx+BORDER, wy+TITLEBAR_H+1,
+                ww-BORDER*2, wh-TITLEBAR_H-INPUTBAR_H-BORDER-1, WB_BLACK);
+
+    /* Separator */
+    FB_DrawHLine(wx+BORDER, wy+wh-INPUTBAR_H-BORDER-1,
+                 ww-BORDER*2, WB_DARK_GREY);
+
+    /* Input bar */
+    FB_FillRect(wx+BORDER, wy+wh-INPUTBAR_H-BORDER,
+                ww-BORDER*2, INPUTBAR_H, WB_BLACK);
 }
 
-static void cmd_version(void)
+static void inst_draw_history(ShellInstance *s)
 {
-    shell_print("Ultimate Amiga OS  v0.1.0-dev");
-    shell_print("Kernel: x86_64 ELF64, Multiboot2, long mode");
-    shell_print("Display: 1024x768 32bpp linear framebuffer (GOP)");
-    shell_print("Input: PS/2 keyboard + mouse, IRQ1/IRQ12");
+    int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
+    int hx = wx + BORDER + 4;
+    int hy = wy + TITLEBAR_H + 4;
+    int hw = ww - BORDER*2 - 8;
+    int hh = wh - TITLEBAR_H - INPUTBAR_H - BORDER*2 - 8;
+    int rows = hh / 16;
+
+    FB_FillRect(wx+BORDER+1, hy, ww-BORDER*2-2, hh, WB_BLACK);
+
+    int start = s->hist_count - rows - s->hist_scroll;
+    if (start < 0) start = 0;
+    for (int r = 0; r < rows; r++) {
+        int li = start + r;
+        if (li >= s->hist_count) break;
+        FB_PutStr(hx, hy + r*16,
+                  s->hist[li % MAX_HIST_LINES], WB_CREAM, WB_BLACK);
+    }
 }
 
-static void cmd_mem(void)
+static void inst_draw_input(ShellInstance *s)
 {
-    shell_print("RAM:  512 MB (QEMU)");
-    shell_print("Kernel load: 0x0000000000100000");
-    shell_print("Framebuffer: mapped (GOP physical address)");
-    shell_print("Stack: 16 KB (bootstrap), no heap allocator yet");
+    int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
+    int ix = wx + BORDER + 4;
+    int iy = wy + wh - INPUTBAR_H - BORDER - 2;
+
+    /* Build prompt "N.UAOS> " */
+    char prompt[12];
+    prompt[0] = (char)('0' + s->number);
+    prompt[1] = '.'; prompt[2]='U'; prompt[3]='A'; prompt[4]='O';
+    prompt[5] = 'S'; prompt[6]='>'; prompt[7]=' '; prompt[8]=0;
+    int plen = 8;
+
+    FB_FillRect(wx+BORDER+1, iy, ww-BORDER*2-2, INPUTBAR_H, WB_BLACK);
+    FB_PutStr(ix, iy+1, prompt, WB_GREEN, WB_BLACK);
+
+    int px = ix + plen*8;
+    FB_PutStr(px, iy+1, s->input_buf, WB_WHITE, WB_BLACK);
+
+    /* Block cursor */
+    FB_FillRect(px + s->input_len*8, iy+1, 8, 14, WB_WHITE);
 }
 
-static void cmd_clear(void)
+/* =========================================================================
+ * Command dispatch (operates on a specific instance)
+ * ========================================================================= */
+
+static void inst_print(ShellInstance *s, const char *line)
 {
-    hist_count  = 0;
-    hist_scroll = 0;
-    for (int i = 0; i < MAX_HIST_LINES; i++)
-        hist[i][0] = 0;
+    int idx = s->hist_count % MAX_HIST_LINES;
+    scopy(s->hist[idx], line, MAX_LINE_LEN);
+    s->hist_count++;
+    s->hist_scroll = 0;
 }
 
-static void cmd_reboot(void)
+static void inst_cmd_help(ShellInstance *s)
 {
-    shell_print("Rebooting...");
-    ShellWin_Redraw();
-    /* Pulse keyboard controller reset line */
+    inst_print(s, "UAOS Shell v0.1 - built-in commands:");
+    inst_print(s, "  help     show this help");
+    inst_print(s, "  version  show OS version");
+    inst_print(s, "  mem      memory information");
+    inst_print(s, "  clear    clear the shell window");
+    inst_print(s, "  reboot   warm reboot via keyboard controller");
+}
+
+static void inst_cmd_version(ShellInstance *s)
+{
+    inst_print(s, "Ultimate Amiga OS  v0.1.0-dev");
+    inst_print(s, "Kernel: x86_64 ELF64, Multiboot2, long mode");
+
+    char res[48];
+    scopy(res, "Display: ", 48);
+    char num[12];
+    uint_to_dec_s(g_fb.width,  num, 12); scat(res, num, 48);
+    scat(res, "x", 48);
+    uint_to_dec_s(g_fb.height, num, 12); scat(res, num, 48);
+    scat(res, " ", 48);
+    uint_to_dec_s(g_fb.bpp,   num, 12); scat(res, num, 48);
+    scat(res, "bpp linear framebuffer", 48);
+    inst_print(s, res);
+
+    inst_print(s, "Input: PS/2 keyboard + mouse, IRQ1/IRQ12");
+}
+
+static void inst_cmd_mem(ShellInstance *s)
+{
+    inst_print(s, "RAM:  512 MB (QEMU)");
+    inst_print(s, "Kernel load: 0x0000000000100000");
+    inst_print(s, "Framebuffer: mapped (GOP physical address)");
+    inst_print(s, "Stack: 16 KB (bootstrap), no heap allocator yet");
+}
+
+static void inst_cmd_clear(ShellInstance *s)
+{
+    s->hist_count = 0;
+    s->hist_scroll = 0;
+    for (int i = 0; i < MAX_HIST_LINES; i++) s->hist[i][0] = 0;
+}
+
+static void inst_cmd_reboot(ShellInstance *s)
+{
+    inst_print(s, "Rebooting...");
+    inst_draw_history(s);
+    inst_draw_input(s);
     __asm__ volatile (
         "1: inb  $0x64, %%al\n"
         "   testb $0x02, %%al\n"
@@ -144,32 +216,33 @@ static void cmd_reboot(void)
     for (;;) __asm__ volatile ("hlt");
 }
 
-static void dispatch(const char *line)
+static void inst_dispatch(ShellInstance *s, const char *line)
 {
-    /* Echo the command with prompt */
+    /* Echo */
     char echo[MAX_LINE_LEN];
-    scopy(echo, PROMPT, MAX_LINE_LEN);
+    char prompt[12];
+    prompt[0]=(char)('0'+s->number);
+    prompt[1]='.';prompt[2]='U';prompt[3]='A';prompt[4]='O';
+    prompt[5]='S';prompt[6]='>';prompt[7]=' ';prompt[8]=0;
+    scopy(echo, prompt, MAX_LINE_LEN);
     scat(echo, line, MAX_LINE_LEN);
-    hist_push(echo);
+    inst_print(s, echo);
 
-    /* Skip leading spaces */
     while (*line == ' ') line++;
-
     if (!*line) return;
 
-    /* Compare command word */
     const char *cmds[] = { "help","version","mem","clear","reboot", NULL };
-    void (*fns[])(void) = { cmd_help, cmd_version, cmd_mem, cmd_clear, cmd_reboot };
-
     for (int i = 0; cmds[i]; i++) {
         const char *c = cmds[i];
-        int cl = slen(c);
-        int match = 1;
-        for (int j = 0; j < cl; j++) {
-            if (line[j] != c[j]) { match = 0; break; }
-        }
-        if (match && (line[cl] == 0 || line[cl] == ' ')) {
-            fns[i]();
+        int cl = slen(c), match = 1;
+        for (int j = 0; j < cl; j++)
+            if (line[j] != c[j]) { match=0; break; }
+        if (match && (line[cl]==0 || line[cl]==' ')) {
+            if (i==0) inst_cmd_help(s);
+            else if (i==1) inst_cmd_version(s);
+            else if (i==2) inst_cmd_mem(s);
+            else if (i==3) inst_cmd_clear(s);
+            else if (i==4) inst_cmd_reboot(s);
             return;
         }
     }
@@ -177,95 +250,119 @@ static void dispatch(const char *line)
     char msg[MAX_LINE_LEN];
     scopy(msg, "Unknown command: ", MAX_LINE_LEN);
     scat(msg, line, MAX_LINE_LEN);
-    hist_push(msg);
+    inst_print(s, msg);
 }
 
 /* =========================================================================
- * Rendering
+ * Key handler (operates on a specific instance)
  * ========================================================================= */
 
-static void draw_window_contents(void)
+static void inst_handle_key(ShellInstance *s, char c)
 {
-    /* History area background */
-    FB_FillRect(s_wx+BORDER, s_wy+TITLEBAR_H+1,
-                s_ww-BORDER*2, s_wh-TITLEBAR_H-INPUTBAR_H-BORDER-1,
-                WB_BLACK);
-
-    /* Separator above input bar */
-    FB_DrawHLine(s_wx+BORDER,
-                 s_wy+s_wh-INPUTBAR_H-BORDER-1,
-                 s_ww-BORDER*2, WB_DARK_GREY);
-
-    /* Input bar background */
-    FB_FillRect(s_wx+BORDER,
-                s_wy+s_wh-INPUTBAR_H-BORDER,
-                s_ww-BORDER*2, INPUTBAR_H,
-                WB_BLACK);
-}
-
-static void draw_history(void)
-{
-    /* Clear history area */
-    FB_FillRect(s_wx+BORDER+1, HIST_Y,
-                s_ww-BORDER*2-2, HIST_H, WB_BLACK);
-
-    /* Determine which lines to show */
-    int visible = HIST_ROWS;
-    int start_line = hist_count - visible - hist_scroll;
-    if (start_line < 0) start_line = 0;
-
-    for (int row = 0; row < visible; row++) {
-        int li = start_line + row;
-        if (li >= hist_count) break;
-        int idx = li % MAX_HIST_LINES;
-        FB_PutStr(HIST_X, HIST_Y + row * 16,
-                  hist[idx], WB_CREAM, WB_BLACK);
+    if (!g_fb.valid) return;
+    if (c == '\n' || c == '\r') {
+        s->input_buf[s->input_len] = 0;
+        inst_dispatch(s, s->input_buf);
+        s->input_len = 0;
+        s->input_buf[0] = 0;
+    } else if (c == '\b') {
+        if (s->input_len > 0) { s->input_len--; s->input_buf[s->input_len]=0; }
+    } else if (c >= 0x20 && c < 0x7F) {
+        if (s->input_len < MAX_INPUT) {
+            s->input_buf[s->input_len++] = c;
+            s->input_buf[s->input_len]   = 0;
+        }
     }
+    inst_draw_history(s);
+    inst_draw_input(s);
 }
 
-static void draw_input_line(void)
+/* =========================================================================
+ * WM draw/key shims — one per slot (routes WM callback to instance)
+ * ========================================================================= */
+
+#define MAKE_SHIMS(N) \
+static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
+    ShellInstance *s=&g_shells[N]; \
+    s->wx=wx;s->wy=wy;s->ww=ww;s->wh=wh; \
+    inst_draw_contents(s); inst_draw_history(s); inst_draw_input(s); } \
+static void shell_key_##N(char c) { inst_handle_key(&g_shells[N],c); }
+
+MAKE_SHIMS(0)
+MAKE_SHIMS(1)
+MAKE_SHIMS(2)
+MAKE_SHIMS(3)
+
+typedef void (*DrawFn)(int,int,int,int);
+typedef void (*KeyFn)(char);
+
+static const DrawFn k_draw_shims[MAX_SHELLS] = {
+    shell_draw_0, shell_draw_1, shell_draw_2, shell_draw_3
+};
+static const KeyFn k_key_shims[MAX_SHELLS] = {
+    shell_key_0, shell_key_1, shell_key_2, shell_key_3
+};
+
+/* =========================================================================
+ * Internal: open one shell instance
+ * ========================================================================= */
+
+static void open_shell(int stagger)
 {
-    /* Clear input bar */
-    FB_FillRect(s_wx+BORDER+1,
-                INPUT_Y, s_ww-BORDER*2-2, INPUTBAR_H, WB_BLACK);
+    if (g_n_shells >= MAX_SHELLS) return;
+    if (!g_fb.valid) return;
 
-    /* Prompt */
-    FB_PutStr(INPUT_X, INPUT_Y + 1, PROMPT, WB_GREEN, WB_BLACK);
+    int idx = g_n_shells++;
+    ShellInstance *s = &g_shells[idx];
 
-    /* Input text */
-    int px = INPUT_X + PROMPT_LEN * 8;
-    FB_PutStr(px, INPUT_Y + 1, input_buf, WB_WHITE, WB_BLACK);
+    s->wm_handle  = -1;
+    s->number     = idx + 1;
+    s->wx         = 24 + stagger * 28;
+    s->wy         = 28 + stagger * 28;
+    s->ww         = 600;
+    s->wh         = 340;
+    s->hist_count = 0;
+    s->hist_scroll= 0;
+    s->input_len  = 0;
+    s->input_buf[0] = 0;
+    for (int i = 0; i < MAX_HIST_LINES; i++) s->hist[i][0] = 0;
 
-    /* Block cursor */
-    int cx = px + input_len * 8;
-    FB_FillRect(cx, INPUT_Y + 1, 8, 14, WB_WHITE);
+    char title[32];
+    scopy(title, "Shell ", 32);
+    char num[4]; num[0]=(char)('0'+s->number); num[1]=0;
+    scat(title, num, 32);
+
+    inst_print(s, "UAOS Shell  v0.1 - type 'help' for commands");
+    inst_print(s, "");
+
+    s->wm_handle = WM_AddWindow(s->wx, s->wy, s->ww, s->wh,
+                                title,
+                                k_draw_shims[idx],
+                                k_key_shims[idx]);
+    WM_Redraw();
 }
 
 /* =========================================================================
  * Public API
  * ========================================================================= */
 
-/* WM draw callback — called by WM with current window geometry */
-static void shell_wm_draw(int wx, int wy, int ww, int wh)
-{
-    s_wx = wx;
-    s_wy = wy;
-    s_ww = ww;
-    s_wh = wh;
-    draw_window_contents();
-    draw_history();
-    draw_input_line();
-}
-
 void ShellWin_Init(void)
 {
-    if (!g_fb.valid) return;
-    cmd_clear();
-    shell_print("UAOS Shell  v0.1 - type 'help' for commands");
-    shell_print("");
-    WM_AddWindow(s_wx, s_wy, s_ww, s_wh, "UAOS Shell",
-                 shell_wm_draw, ShellWin_HandleKey);
-    WM_Redraw();
+    open_shell(0);
+}
+
+void ShellWin_Open(void)
+{
+    /* Find a free slot — also allow re-use of a closed slot */
+    for (int i = 0; i < g_n_shells; i++) {
+        if (!WM_IsWindowActive(g_shells[i].wm_handle)) {
+            /* Reclaim this slot */
+            g_n_shells = i;
+            open_shell(i);
+            return;
+        }
+    }
+    open_shell(g_n_shells);
 }
 
 void ShellWin_Redraw(void)
@@ -276,27 +373,12 @@ void ShellWin_Redraw(void)
 
 void ShellWin_HandleKey(char c)
 {
-    if (!g_fb.valid) return;
-
-    if (c == '\n' || c == '\r') {
-        input_buf[input_len] = 0;
-        dispatch(input_buf);
-        input_len = 0;
-        input_buf[0] = 0;
-    } else if (c == '\b') {
-        if (input_len > 0) {
-            input_len--;
-            input_buf[input_len] = 0;
-        }
-    } else if (c >= 0x20 && c < 0x7F) {
-        if (input_len < MAX_INPUT) {
-            input_buf[input_len++] = c;
-            input_buf[input_len]   = 0;
+    /* Legacy entry point — route to the focused window's key shim */
+    int focus = WM_GetFocus();
+    for (int i = 0; i < g_n_shells; i++) {
+        if (g_shells[i].wm_handle == focus) {
+            inst_handle_key(&g_shells[i], c);
+            return;
         }
     }
-
-    draw_history();
-    draw_input_line();
-    /* Do NOT call Cursor_Redraw here — mouse IRQ owns the cursor position.
-     * Calling it here re-saves bg with stale cursor pixels causing ghosts. */
 }

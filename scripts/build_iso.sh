@@ -97,6 +97,8 @@ for src in \
     "${REPO_ROOT}/kernel/display/cursor.c" \
     "${REPO_ROOT}/kernel/display/shell_win.c" \
     "${REPO_ROOT}/kernel/display/wm.c" \
+    "${REPO_ROOT}/kernel/display/filebrowser.c" \
+    "${REPO_ROOT}/kernel/display/about_win.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
@@ -196,6 +198,8 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cursor.o" \
     "${BUILD_DIR}/obj/shell_win.o" \
     "${BUILD_DIR}/obj/wm.o" \
+    "${BUILD_DIR}/obj/filebrowser.o" \
+    "${BUILD_DIR}/obj/about_win.o" \
     "${BUILD_DIR}/obj/idt.o" \
     "${BUILD_DIR}/obj/ps2mouse.o" \
     "${BUILD_DIR}/obj/ps2kbd.o" \

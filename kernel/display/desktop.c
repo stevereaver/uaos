@@ -11,6 +11,9 @@
 
 #include "desktop.h"
 #include "framebuffer.h"
+#include "filebrowser.h"
+#include "about_win.h"
+#include "shell_win.h"
 #include "../irq/rtc.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -245,6 +248,103 @@ void Desktop_Draw(void)
     draw_welcome_window(W, H);
 }
 
+/* =========================================================================
+ * Tick counter — incremented by Desktop_UpdateClock (once per second)
+ * Used for double-click timing: two clicks within 2 ticks = double-click
+ * ========================================================================= */
+
+static volatile uint32_t g_tick = 0;
+
+/* =========================================================================
+ * Icon hit-test and double-click
+ * ========================================================================= */
+
+#define DBLCLICK_TICKS  2   /* max seconds between two clicks for double-click */
+
+typedef struct {
+    int      x, y;         /* icon top-left on desktop */
+    const char *volume;    /* FileBrowser_Open argument */
+    uint32_t last_tick;    /* tick of last click */
+    int      click_count;  /* clicks within window */
+} IconState;
+
+static IconState *get_icons(int *count)
+{
+    static IconState icons[2];
+    static int initialised = 0;
+    if (!initialised) {
+        initialised = 1;
+        /* Icons are drawn at these coords (must match Desktop_Draw / Desktop_RedrawRect) */
+        icons[0].volume      = "RAM Disk";
+        icons[0].last_tick   = 0;
+        icons[0].click_count = 0;
+        icons[1].volume      = "UAOS:";
+        icons[1].last_tick   = 0;
+        icons[1].click_count = 0;
+    }
+    /* Recompute positions each call in case screen size changed */
+    int W  = (int)g_fb.width;
+    int ix = W - ICON_W - 16;
+    int iy = MENUBAR_H + 16;
+    icons[0].x = ix;  icons[0].y = iy;
+    icons[1].x = ix;  icons[1].y = iy + ICON_H + 8;
+    *count = 2;
+    return icons;
+}
+
+/* Hit-test the menubar and return which menu index was clicked (-1 = none).
+ * Replicates the layout logic from draw_menubar. */
+static int menubar_hit(int mx, int my)
+{
+    if (my < 0 || my >= MENUBAR_H) return -1;
+    const char *menus[] = { "Workbench", "Window", "Shell", "UAOS", NULL };
+    int x = 8;
+    for (int i = 0; menus[i]; i++) {
+        int len = 0;
+        for (const char *p = menus[i]; *p; p++) len++;
+        int x1 = x + len * 8 + 8;  /* right edge of hit zone */
+        if (mx >= x - 4 && mx < x1)
+            return i;
+        x += len * 8 + 16;
+    }
+    return -1;
+}
+
+int Desktop_MouseEvent(int mx, int my, int btn_pressed)
+{
+    if (!btn_pressed) return 0;
+
+    /* ── Menubar click ──────────────────────────────────── */
+    int menu = menubar_hit(mx, my);
+    if (menu >= 0) {
+        if (menu == 2) ShellWin_Open();   /* Shell menu */
+        if (menu == 3) AboutWin_Open();   /* UAOS menu  */
+        return 1;
+    }
+
+    /* ── Desktop icon double-click ──────────────────────── */
+    int n;
+    IconState *icons = get_icons(&n);
+
+    for (int i = 0; i < n; i++) {
+        IconState *ic = &icons[i];
+        if (mx >= ic->x && mx < ic->x + ICON_W &&
+            my >= ic->y && my < ic->y + ICON_H) {
+
+            uint32_t now = g_tick;
+            if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
+                ic->click_count = 0;
+                FileBrowser_Open(ic->volume);
+            } else {
+                ic->click_count = 1;
+                ic->last_tick   = now;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void Desktop_UpdateClock(void)
 {
     if (!g_fb.valid) return;
@@ -268,4 +368,6 @@ void Desktop_UpdateClock(void)
     int cx = W - 80;
     FB_FillRect(cx, 0, 80, MENUBAR_H - 2, WB_BLUE);
     FB_PutStr(cx, 2, buf, WB_CREAM, WB_BLUE);
+
+    g_tick++;
 }

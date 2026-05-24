@@ -3,13 +3,16 @@
 #ifndef UAOS_SHELL_WIN_H
 #define UAOS_SHELL_WIN_H
 
-/* Draw the initial shell window on the desktop */
+/* Open the first shell window at boot */
 void ShellWin_Init(void);
 
-/* Feed one ASCII character into the shell (from keyboard IRQ) */
+/* Open a new independent shell window (up to MAX_SHELLS) */
+void ShellWin_Open(void);
+
+/* Feed one ASCII character into the focused shell (from keyboard IRQ) */
 void ShellWin_HandleKey(char c);
 
-/* Redraw the shell window contents (call after desktop repaint) */
+/* Redraw all shell windows (call after desktop repaint) */
 void ShellWin_Redraw(void);
 
 #endif

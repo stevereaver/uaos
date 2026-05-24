@@ -110,6 +110,14 @@ static int hit_test(int mx, int my)
     return -1;
 }
 
+/* Hit-test close gadget (14x14 box at top-left of title bar) */
+static int hit_close_gadget(int wh, int mx, int my)
+{
+    WmWindow *w = &g_wins[wh];
+    return (mx >= w->x + 3 && mx < w->x + 3 + 14 &&
+            my >= w->y + 3 && my < w->y + 3 + 14);
+}
+
 /* Hit-test title bar only */
 static int hit_titlebar(int wh, int mx, int my)
 {
@@ -182,7 +190,17 @@ void WM_MouseEvent(int mx, int my, int btn_left)
 
     if (btn_pressed) {
         int wh = hit_test(mx, my);
+        if (wh < 0) {
+            /* Missed all windows — pass to desktop (icon hit-test) */
+            Desktop_MouseEvent(mx, my, 1);
+        }
         if (wh >= 0) {
+            /* Close gadget takes priority */
+            if (hit_close_gadget(wh, mx, my)) {
+                WM_CloseWindow(wh);
+                return;
+            }
+
             /* Focus and raise */
             int was_focused = (wh == g_focus);
             g_focus = wh;
@@ -288,6 +306,48 @@ void WM_Redraw(void)
 int WM_GetFocus(void)
 {
     return g_focus;
+}
+
+void WM_CloseWindow(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    WmWindow *w = &g_wins[handle];
+    if (!w->active) return;
+
+    /* Save footprint before deactivating */
+    int ox = w->x, oy = w->y, ow = w->w, oh = w->h;
+
+    /* Remove from z-order array */
+    int pos = -1;
+    for (int i = 0; i < g_nwins; i++) {
+        if (g_zorder[i] == handle) { pos = i; break; }
+    }
+    if (pos >= 0) {
+        for (int i = pos; i < g_nwins - 1; i++)
+            g_zorder[i] = g_zorder[i + 1];
+        g_nwins--;
+    }
+
+    /* Free the slot */
+    w->active = 0;
+
+    /* Update focus to the new top window */
+    if (g_focus == handle)
+        g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
+
+    /* Erase window footprint and repaint everything below it */
+    Desktop_RedrawRect(ox, oy, ow + 2, oh + 2);
+    for (int i = 0; i < g_nwins; i++) {
+        int wh = g_zorder[i];
+        if (g_wins[wh].active) repaint_window(wh);
+    }
+    Cursor_Redraw();
+}
+
+int WM_IsWindowActive(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return 0;
+    return g_wins[handle].active;
 }
 
 void WM_MoveWindow(int handle, int new_x, int new_y)
