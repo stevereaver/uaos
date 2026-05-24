@@ -15,6 +15,7 @@
 #include "framebuffer.h"
 #include "cursor.h"
 #include "wm.h"
+#include "../../emulation/uaos_emu.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -167,6 +168,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  mem      memory information");
     inst_print(s, "  clear    clear the shell window");
     inst_print(s, "  reboot   warm reboot via keyboard controller");
+    inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
 
 static void inst_cmd_version(ShellInstance *s)
@@ -234,7 +236,7 @@ static void inst_dispatch(ShellInstance *s, const char *line)
     while (*line == ' ') line++;
     if (!*line) return;
 
-    const char *cmds[] = { "help","version","mem","clear","reboot", NULL };
+    const char *cmds[] = { "help","version","mem","clear","reboot","run", NULL };
     for (int i = 0; cmds[i]; i++) {
         const char *c = cmds[i];
         int cl = slen(c), match = 1;
@@ -246,6 +248,12 @@ static void inst_dispatch(ShellInstance *s, const char *line)
             else if (i==2) inst_cmd_mem(s);
             else if (i==3) inst_cmd_clear(s);
             else if (i==4) inst_cmd_reboot(s);
+            else if (i==5) {
+                /* run <prog> [args] — forward to emulator */
+                const char *args = line + 3;
+                while (*args == ' ') args++;
+                UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print);
+            }
             return;
         }
     }

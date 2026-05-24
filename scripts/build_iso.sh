@@ -78,6 +78,17 @@ info "Step 1b: Compiling ELF64 kernel"
 
 mkdir -p "${BUILD_DIR}/obj"
 
+# -------------------------------------------------------------------------
+# Step 1c — Generate Musashi m68kops.c if not already present
+# -------------------------------------------------------------------------
+MUSASHI_DIR="${REPO_ROOT}/emulation/src/musashi"
+if [ ! -f "${MUSASHI_DIR}/m68kops.c" ]; then
+    info "Step 1c: Generating Musashi opcode handlers"
+    gcc -o "${BUILD_DIR}/m68kmake" "${MUSASHI_DIR}/m68kmake.c"
+    "${BUILD_DIR}/m68kmake" "${MUSASHI_DIR}" "${MUSASHI_DIR}/m68k_in.c"
+    ok "  Generated: m68kops.c ($(wc -l < ${MUSASHI_DIR}/m68kops.c) lines)"
+fi
+
 # Assemble NASM sources
 nasm -f elf64 \
     "${KERNEL_ASM}" \
@@ -88,6 +99,38 @@ nasm -f elf64 \
     "${REPO_ROOT}/kernel/irq/idt_stubs.asm" \
     -o "${BUILD_DIR}/obj/idt_stubs.o"
 ok "  Assembled: idt_stubs.asm"
+
+# Compile Musashi M68k core (suppress its own warnings — not our code)
+for msrc in \
+    "${MUSASHI_DIR}/softfloat/softfloat.c" \
+    "${MUSASHI_DIR}/m68kcpu.c" \
+    "${MUSASHI_DIR}/m68kops.c"
+do
+    base="$(basename "${msrc}" .c)"
+    gcc ${GCC_FLAGS} -w \
+        -DMUSASHI_CNF='"uaos_m68kconf.h"' \
+        -DFLOATX80 -DFLOAT128 \
+        -I"${REPO_ROOT}/emulation" \
+        -I"${MUSASHI_DIR}" \
+        -I"${MUSASHI_DIR}/softfloat" \
+        -c "${msrc}" -o "${BUILD_DIR}/obj/${base}.o"
+    ok "  Compiled:  ${msrc##*/}"
+done
+
+# Compile emulation layer
+for esrc in \
+    "${REPO_ROOT}/emulation/uaos_m68k_glue.c" \
+    "${REPO_ROOT}/emulation/uaos_emu_registry.c" \
+    "${REPO_ROOT}/emulation/binaries/Lha_bin.c"
+do
+    base="$(basename "${esrc}" .c)"
+    gcc ${GCC_FLAGS} \
+        -DMUSASHI_CNF='"uaos_m68kconf.h"' \
+        -I"${REPO_ROOT}/emulation" \
+        -I"${MUSASHI_DIR}" \
+        -c "${esrc}" -o "${BUILD_DIR}/obj/${base}.o"
+    ok "  Compiled:  ${esrc##*/}"
+done
 
 # Compile C kernel sources (freestanding — no libc)
 for src in \
@@ -112,7 +155,9 @@ for src in \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c"
 do
     base="$(basename "${src}" .c)"
-    gcc ${GCC_FLAGS} -c "${src}" -o "${BUILD_DIR}/obj/${base}.o"
+    gcc ${GCC_FLAGS} \
+        -I"${REPO_ROOT}/emulation" \
+        -c "${src}" -o "${BUILD_DIR}/obj/${base}.o"
     ok "  Compiled:  ${src##*/}"
 done
 
@@ -132,6 +177,35 @@ unsigned int g_fb_height_irq = 768;
 /* Memory allocation stubs */
 void *aligned_alloc(unsigned long a, unsigned long s)  { (void)a;(void)s; return (void*)0; }
 void  free(void *p)                                    { (void)p; }
+
+/* vfprintf / fprintf / printf / sprintf / sscanf / exit stubs for Musashi */
+typedef __builtin_va_list va_list;
+#define va_start(v,l) __builtin_va_start(v,l)
+#define va_end(v)     __builtin_va_end(v)
+#define va_arg(v,l)   __builtin_va_arg(v,l)
+typedef void FILE2;
+extern FILE2 *stderr;
+int vfprintf(FILE2 *f, const char *fmt, va_list ap) {
+    (void)f; (void)fmt; (void)ap; return 0;
+}
+int sprintf(char *buf, const char *fmt, ...) {
+    (void)buf; (void)fmt; return 0;
+}
+int sscanf(const char *s, const char *fmt, ...) {
+    (void)s; (void)fmt; return 0;
+}
+int __isoc99_sscanf(const char *s, const char *fmt, ...) {
+    (void)s; (void)fmt; return 0;
+}
+void exit(int code) { (void)code; for(;;) __asm__ volatile("hlt"); }
+double sin(double x)  { (void)x; return 0.0; }
+double cos(double x)  { (void)x; return 1.0; }
+/* setjmp/longjmp stubs — Musashi uses these for exception unwinding.
+ * In a bare-metal single-threaded kernel we just halt on longjmp. */
+typedef long long jmp_buf[8];
+int  _setjmp(jmp_buf *e)          { (void)e; return 0; }
+void longjmp(jmp_buf *e, int v)   { (void)e; (void)v;
+    for(;;) __asm__ volatile("hlt"); }
 
 /* String / memory stubs */
 void *memset(void *d, int c, unsigned long n) {
@@ -202,6 +276,12 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/filebrowser.o" \
     "${BUILD_DIR}/obj/about_win.o" \
     "${BUILD_DIR}/obj/calc_win.o" \
+    "${BUILD_DIR}/obj/softfloat.o" \
+    "${BUILD_DIR}/obj/m68kcpu.o" \
+    "${BUILD_DIR}/obj/m68kops.o" \
+    "${BUILD_DIR}/obj/uaos_m68k_glue.o" \
+    "${BUILD_DIR}/obj/uaos_emu_registry.o" \
+    "${BUILD_DIR}/obj/Lha_bin.o" \
     "${BUILD_DIR}/obj/idt.o" \
     "${BUILD_DIR}/obj/ps2mouse.o" \
     "${BUILD_DIR}/obj/ps2kbd.o" \

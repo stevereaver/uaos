@@ -1,0 +1,21 @@
+/* uaos_emu.h — UAOS M68k emulator public API */
+
+#ifndef UAOS_EMU_H
+#define UAOS_EMU_H
+
+#include <stdint.h>
+
+/* Callback type for printing output to the shell history */
+typedef void (*UAOS_PrintFn)(void *shell, const char *line);
+
+/* Run an embedded Amiga binary by name (e.g. "Lha", "Calculator").
+ * shell is the ShellInstance* passed back to print_fn.
+ * Returns 0 on success, -1 if binary not found.                    */
+int UAOS_Emu_RunByName(const char *name, void *shell, UAOS_PrintFn print_fn);
+
+/* Lower-level: run a raw binary image directly */
+int UAOS_Emu_LoadAndRun(const uint8_t *binary, uint32_t bin_size,
+                         const char **argv, void *shell,
+                         UAOS_PrintFn print_fn);
+
+#endif /* UAOS_EMU_H */
