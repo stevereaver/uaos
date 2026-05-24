@@ -12,6 +12,7 @@
 #include "wm.h"
 #include "framebuffer.h"
 #include "desktop.h"
+#include "calc_win.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -337,10 +338,18 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
 
     if (b->last_click_icon == icon &&
         (now - b->last_click_tick) <= DBLCLICK_TICKS) {
-        /* Double-click: open folder if it is a DIR entry */
+        /* Double-click: open folder (DIR) or launch app (PROG) */
         b->last_click_icon = -1;
         const FileEntry *e = b->entries;
-        if (e && e[icon].name && e[icon].type[0] == 'D') {
+        if (e && e[icon].name && e[icon].type[0] == 'P') {
+            /* Launch known applications by name */
+            const char *nm = e[icon].name;
+            int ni = 0;
+            char name[32];
+            while (ni < 31 && nm[ni]) { name[ni] = nm[ni]; ni++; }
+            name[ni] = '\0';
+            if (str_eq(name, "Calculator")) CalcWin_Open();
+        } else if (e && e[icon].name && e[icon].type[0] == 'D') {
             /* Build child path to match k_path_table keys:
              *   "UAOS:"        + "/" + "C"         -> "UAOS:/C"
              *   "RAM Disk"     + ":/" + "T"         -> "RAM Disk:/T"
