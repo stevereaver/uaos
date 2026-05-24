@@ -99,6 +99,8 @@ static int      cur_drawn = 0;   /* 1 if cursor is currently on screen */
 
 static void cursor_save_bg(int x, int y)
 {
+    if (FB_IsDrawing()) return;  /* back buffer — skip save, no real fb to read */
+
     uint8_t *base  = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     uint32_t pitch = g_fb.pitch;
     uint8_t  bpp   = g_fb.bpp;
@@ -132,6 +134,7 @@ static void cursor_save_bg(int x, int y)
 
 static void cursor_restore_bg(int x, int y)
 {
+    if (FB_IsDrawing()) return;  /* back buffer — full frame redrawn anyway */
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
     for (int row = 0; row < CUR_H; row++) {
@@ -207,6 +210,7 @@ void Cursor_Redraw(void)
 void Cursor_Hide(void)
 {
     if (!g_fb.valid) return;
+    if (FB_IsDrawing()) return;  /* no-op during double-buffered draw */
     if (cur_drawn) {
         cursor_restore_bg(cur_x, cur_y);
         cur_drawn = 0;

@@ -40,6 +40,11 @@ extern FbState g_fb;
 /* Initialise from Multiboot2 info struct */
 void FB_Init(uint32_t mb2_info_phys);
 
+/* Double buffering — call BeginDraw before any drawing, Flip to push to screen */
+void FB_BeginDraw(void);
+void FB_Flip(void);
+int  FB_IsDrawing(void);   /* returns 1 while back buffer is active */
+
 /* Primitive drawing --------------------------------------------------------- */
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour);
 void FB_DrawRect(int x, int y, int w, int h, uint32_t colour);   /* outline   */

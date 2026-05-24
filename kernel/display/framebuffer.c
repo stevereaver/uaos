@@ -16,6 +16,53 @@
 FbState g_fb = { 0, 0, 0, 0, 0, 0 };
 
 /* =========================================================================
+ * Back buffer for flicker-free double buffering
+ * Max 1280×1024 @ 32bpp = 5 MB in BSS
+ * ========================================================================= */
+#define BB_MAX_W 1280
+#define BB_MAX_H 1024
+static uint32_t g_backbuf[BB_MAX_H][BB_MAX_W];
+static int g_drawing = 0;  /* 1 = drawing to back buffer, 0 = direct */
+
+void FB_BeginDraw(void)
+{
+    g_drawing = 1;
+}
+
+int FB_IsDrawing(void)
+{
+    return g_drawing;
+}
+
+void FB_Flip(void)
+{
+    if (!g_fb.valid || !g_drawing) return;
+    uint8_t *dst = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    uint32_t W = g_fb.width  < BB_MAX_W ? g_fb.width  : BB_MAX_W;
+    uint32_t H = g_fb.height < BB_MAX_H ? g_fb.height : BB_MAX_H;
+    if (g_fb.bpp == 32) {
+        for (uint32_t y = 0; y < H; y++) {
+            uint32_t *row_dst = (uint32_t *)(dst + y * g_fb.pitch);
+            uint32_t *row_src = g_backbuf[y];
+            for (uint32_t x = 0; x < W; x++)
+                row_dst[x] = row_src[x];
+        }
+    } else {
+        for (uint32_t y = 0; y < H; y++) {
+            uint8_t *row_dst = dst + y * g_fb.pitch;
+            uint32_t *row_src = g_backbuf[y];
+            for (uint32_t x = 0; x < W; x++) {
+                uint32_t c = row_src[x];
+                row_dst[x*3+0] = (uint8_t)(c & 0xFF);
+                row_dst[x*3+1] = (uint8_t)((c >> 8) & 0xFF);
+                row_dst[x*3+2] = (uint8_t)((c >> 16) & 0xFF);
+            }
+        }
+    }
+    g_drawing = 0;
+}
+
+/* =========================================================================
  * Multiboot2 tag parsing
  * ========================================================================= */
 
@@ -83,6 +130,11 @@ void FB_Init(uint32_t mb2_info_phys)
 static inline void put_pixel32(uint8_t *base, uint32_t pitch,
                                 int x, int y, uint32_t colour)
 {
+    if (g_drawing) {
+        if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
+            g_backbuf[y][x] = colour;
+        return;
+    }
     uint32_t *px = (uint32_t *)(base + (uint32_t)y * pitch + (uint32_t)x * 4);
     *px = colour;
 }
@@ -90,6 +142,11 @@ static inline void put_pixel32(uint8_t *base, uint32_t pitch,
 static inline void put_pixel24(uint8_t *base, uint32_t pitch,
                                 int x, int y, uint32_t colour)
 {
+    if (g_drawing) {
+        if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
+            g_backbuf[y][x] = colour;
+        return;
+    }
     uint8_t *px = base + (uint32_t)y * pitch + (uint32_t)x * 3;
     px[0] = (uint8_t)(colour & 0xFF);
     px[1] = (uint8_t)((colour >> 8) & 0xFF);

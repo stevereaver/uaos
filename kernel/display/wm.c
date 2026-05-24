@@ -645,7 +645,7 @@ void WM_KeyEvent(char c)
 
 void WM_Redraw(void)
 {
-    Cursor_Hide();
+    FB_BeginDraw();
 
     /* Repaint full desktop backdrop */
     Desktop_Draw();
@@ -660,8 +660,9 @@ void WM_Redraw(void)
             w->draw(w->x, w->y, w->w, w->h);
     }
 
-    /* Restore cursor on top */
+    /* Cursor on top, then flip entire frame to screen in one blit */
     Cursor_Redraw();
+    FB_Flip();
 }
 
 int WM_GetFocus(void)
