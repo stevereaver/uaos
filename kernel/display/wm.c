@@ -186,6 +186,25 @@ static void draw_chrome(int wh)
     FB_DrawRect(cg_x, cg_y, 14, 14, WB_WHITE);
     FB_FillRect(cg_x + 1, cg_y + 1, 12, 12, tbar_col);
 
+    /* Zoom gadget — second from right: upward-pointing arrow box (Amiga style) */
+    int zg_x = w->x + w->w - 30;   /* 15px wide, 15px left of depth gadget */
+    int zg_y = w->y + 1;
+    FB_DrawRect(zg_x, zg_y, 14, 14, WB_WHITE);
+    FB_FillRect(zg_x + 1, zg_y + 1, 12, 12, tbar_col);
+    if (w->zoomed) {
+        /* Restore icon: downward-pointing arrow (shrink back) */
+        int mx2 = zg_x + 7;
+        int ty  = zg_y + 9;
+        for (int r = 0; r < 4; r++)
+            FB_DrawHLine(mx2 - r, ty - r, r * 2 + 1, WB_WHITE);
+    } else {
+        /* Zoom icon: upward-pointing arrow (maximise) */
+        int mx2 = zg_x + 7;
+        int ty  = zg_y + 3;
+        for (int r = 0; r < 4; r++)
+            FB_DrawHLine(mx2 - r, ty + r, r * 2 + 1, WB_WHITE);
+    }
+
     /* Depth gadget — top-right corner: two overlapping rectangles (Amiga style) */
     int dg_x = w->x + w->w - 15;
     int dg_y = w->y + 1;
@@ -279,6 +298,41 @@ static int hit_titlebar(int wh, int mx, int my)
     WmWindow *w = &g_wins[wh];
     return (mx >= w->x && mx < w->x + w->w &&
             my >= w->y && my < w->y + WM_TITLEBAR_H);
+}
+
+/* Hit-test zoom gadget (second from right in title bar) */
+static int hit_zoom_gadget(int wh, int mx, int my)
+{
+    WmWindow *w = &g_wins[wh];
+    int zg_x = w->x + w->w - 30;
+    int zg_y = w->y + 1;
+    return (mx >= zg_x && mx < zg_x + 14 &&
+            my >= zg_y && my < zg_y + 14);
+}
+
+/* Toggle zoom: maximise to full usable screen or restore saved geometry */
+static void zoom_window(int wh)
+{
+    WmWindow *w = &g_wins[wh];
+    if (w->zoomed) {
+        /* Restore */
+        w->x = w->restore_x;
+        w->y = w->restore_y;
+        w->w = w->restore_w;
+        w->h = w->restore_h;
+        w->zoomed = 0;
+    } else {
+        /* Save current geometry and maximise */
+        w->restore_x = w->x;
+        w->restore_y = w->y;
+        w->restore_w = w->w;
+        w->restore_h = w->h;
+        w->x = 0;
+        w->y = 20;   /* below menu bar */
+        w->w = (int)g_fb.width;
+        w->h = (int)g_fb.height - 20;
+        w->zoomed = 1;
+    }
 }
 
 /* Hit-test depth gadget (top-right of title bar) */
@@ -447,6 +501,13 @@ void WM_MouseEvent(int mx, int my, int btn_left)
             /* Close gadget takes priority */
             if (hit_close_gadget(wh, mx, my)) {
                 WM_CloseWindow(wh);
+                return;
+            }
+
+            /* Zoom gadget */
+            if (hit_zoom_gadget(wh, mx, my)) {
+                zoom_window(wh);
+                WM_Redraw();
                 return;
             }
 

@@ -31,6 +31,9 @@ typedef struct {
     int        scroll_y;      /* current vertical scroll offset (pixels)   */
     int        content_w;     /* total content width  (0 = same as client) */
     int        content_h;     /* total content height (0 = same as client) */
+    /* Zoom / maximise state */
+    int        zoomed;        /* 1 = currently maximised                   */
+    int        restore_x, restore_y, restore_w, restore_h;
 } WmWindow;
 
 /* Register a window — returns handle (0..WM_MAX_WINDOWS-1) or -1 on fail */
