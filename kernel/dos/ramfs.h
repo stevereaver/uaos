@@ -88,4 +88,7 @@ int RamFS_Delete(RamFsVol *vol, const char *path);
  * Use node->next_sibling to walk all siblings. */
 RamFsNode *RamFS_FirstChild(RamFsNode *dir);
 
+/* Allocate bytes from the shared pool (bump allocator). Returns NULL if full. */
+uint8_t *RamFS_AllocPool(uint32_t bytes);
+
 #endif

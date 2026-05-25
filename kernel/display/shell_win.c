@@ -220,8 +220,19 @@ static void inst_sync_scrollbar(ShellInstance *s)
     WM_SetScrollY(s->wm_handle, from_top * 16);
 }
 
+/* Forward declaration — defined below after inst_dispatch */
+typedef struct { void *shell; VfsFile fh; int active; } RedirCtx;
+static RedirCtx g_redir;
+
 static void inst_print(ShellInstance *s, const char *line)
 {
+    /* If stdout is redirected, write to file instead of shell history */
+    if (g_redir.active) {
+        VFS_Write(&g_redir.fh, (const uint8_t *)line, (uint32_t)slen(line));
+        uint8_t nl = '\n';
+        VFS_Write(&g_redir.fh, &nl, 1);
+        return;
+    }
     int slot = s->hist_count % MAX_HIST_LINES;
     scopy(g_hist_buf[s->index][slot], line, MAX_LINE_LEN);
     s->hist_count++;
@@ -245,6 +256,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  type <file>        print file contents");
     inst_print(s, "  copy <src> <dst>   copy file");
     inst_print(s, "  pwd                print working directory");
+    inst_print(s, "  echo <text>         print text to shell");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
 
@@ -546,24 +558,75 @@ static int cmd_match(const char *line, const char *cmd, int cl)
     return line[cl] == 0 || line[cl] == ' ';
 }
 
-static void inst_dispatch(ShellInstance *s, const char *line)
+/* =========================================================================
+ * Redirect support
+ * ========================================================================= */
+
+
+/* Parse the command line for redirect operators.
+ * Fills cmd_only (the command + args without redirect tokens),
+ * redir_path (the file path), redir_mode: 0=none 1=>write 2=>>append 3=<read.
+ * Returns redir_mode. */
+static int parse_redirects(ShellInstance *s, const char *line,
+                            char *cmd_only, int cmd_max,
+                            char *redir_path, int path_max)
 {
-    /* Echo with current directory prompt */
-    char echo[MAX_LINE_LEN];
-    scopy(echo, s->cwd, MAX_LINE_LEN);
-    scat(echo, "> ", MAX_LINE_LEN);
-    scat(echo, line, MAX_LINE_LEN);
-    inst_print(s, echo);
+    redir_path[0] = '\0';
+    int mode = 0;
+    int ci = 0;
+    const char *p = line;
 
-    while (*line == ' ') line++;
-    if (!*line) return;
+    while (*p) {
+        /* Check for >> before > */
+        if (p[0] == '>' && p[1] == '>') {
+            mode = 2; p += 2;
+            while (*p == ' ') p++;
+            /* Grab path token */
+            char raw[64]; int ri = 0;
+            while (*p && *p != ' ' && ri < 63) raw[ri++] = *p++;
+            raw[ri] = '\0';
+            make_abs_path(s, raw, redir_path, path_max);
+            continue;
+        }
+        if (p[0] == '>') {
+            mode = 1; p++;
+            while (*p == ' ') p++;
+            char raw[64]; int ri = 0;
+            while (*p && *p != ' ' && ri < 63) raw[ri++] = *p++;
+            raw[ri] = '\0';
+            make_abs_path(s, raw, redir_path, path_max);
+            continue;
+        }
+        if (p[0] == '<') {
+            mode = 3; p++;
+            while (*p == ' ') p++;
+            char raw[64]; int ri = 0;
+            while (*p && *p != ' ' && ri < 63) raw[ri++] = *p++;
+            raw[ri] = '\0';
+            make_abs_path(s, raw, redir_path, path_max);
+            continue;
+        }
+        if (ci < cmd_max - 1) cmd_only[ci++] = *p;
+        p++;
+    }
+    /* Trim trailing spaces from cmd_only */
+    while (ci > 0 && cmd_only[ci-1] == ' ') ci--;
+    cmd_only[ci] = '\0';
+    return mode;
+}
 
-    /* Extract command and args */
+/* =========================================================================
+ * Dispatch
+ * ========================================================================= */
+
+static void run_cmd(ShellInstance *s, const char *line)
+{
     const char *cmds[] = {
         "help","version","mem","clear","reboot","run",
-        "dir","cd","makedir","delete","type","copy","pwd",
+        "dir","cd","makedir","delete","type","copy","pwd","echo",
         NULL
     };
+
     for (int i = 0; cmds[i]; i++) {
         const char *c = cmds[i];
         int cl = slen(c);
@@ -585,6 +648,7 @@ static void inst_dispatch(ShellInstance *s, const char *line)
         else if (i==10) inst_cmd_type(s, args);
         else if (i==11) inst_cmd_copy(s, args);
         else if (i==12) inst_print(s, s->cwd);
+        else if (i==13) inst_print(s, *args ? args : "");
         return;
     }
 
@@ -592,6 +656,65 @@ static void inst_dispatch(ShellInstance *s, const char *line)
     scopy(msg, "Unknown command: ", MAX_LINE_LEN);
     scat(msg, line, MAX_LINE_LEN);
     inst_print(s, msg);
+}
+
+static void inst_dispatch(ShellInstance *s, const char *line)
+{
+    /* Echo prompt */
+    char echo_line[MAX_LINE_LEN];
+    scopy(echo_line, s->cwd, MAX_LINE_LEN);
+    scat(echo_line, "> ", MAX_LINE_LEN);
+    scat(echo_line, line, MAX_LINE_LEN);
+    inst_print(s, echo_line);
+
+    while (*line == ' ') line++;
+    if (!*line) return;
+
+    /* Parse redirect operators out of line */
+    char cmd_only[MAX_LINE_LEN];
+    char redir_path[64];
+    int redir_mode = parse_redirects(s, line, cmd_only, MAX_LINE_LEN,
+                                     redir_path, 64);
+
+    /* stdin redirect (<): treat as: type <file>, pass content as stdin.
+     * For simplicity: < just feeds the file content as if typed — currently
+     * we support it by making type read from redir_path. */
+    if (redir_mode == 3) {
+        /* < redirect: run cmd with file as implicit first arg if no arg given */
+        if (cmd_only[0]) {
+            char augmented[MAX_LINE_LEN];
+            scopy(augmented, cmd_only, MAX_LINE_LEN);
+            scat(augmented, " ", MAX_LINE_LEN);
+            scat(augmented, redir_path, MAX_LINE_LEN);
+            run_cmd(s, augmented);
+        }
+        return;
+    }
+
+    /* stdout redirect (> or >>) */
+    if (redir_mode == 1 || redir_mode == 2) {
+        int flags = VFS_WRITE | VFS_CREATE | (redir_mode == 1 ? VFS_TRUNC : 0);
+        if (!VFS_Open(&g_redir.fh, redir_path, flags)) {
+            char msg[MAX_LINE_LEN];
+            scopy(msg, "Cannot open for write: ", MAX_LINE_LEN);
+            scat(msg, redir_path, MAX_LINE_LEN);
+            inst_print(s, msg);
+            return;
+        }
+        /* For append, seek to end */
+        if (redir_mode == 2)
+            VFS_Seek(&g_redir.fh, VFS_Size(&g_redir.fh));
+
+        g_redir.shell  = s;
+        g_redir.active = 1;
+        run_cmd(s, cmd_only);
+        g_redir.active = 0;
+        VFS_Close(&g_redir.fh);
+        return;
+    }
+
+    /* No redirect — normal execution */
+    run_cmd(s, cmd_only);
 }
 
 /* =========================================================================

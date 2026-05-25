@@ -127,11 +127,14 @@ uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len)
     return got;
 }
 
+/* Block size pre-allocated per file on first write — large enough for typical
+ * shell output while keeping BSS pool usage reasonable. */
+#define VFS_BLOCK_SZ  512
+
 uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
 {
     if (!fh->node || fh->node->type != RAMFS_TYPE_FILE) return 0;
 
-    /* Simple append/overwrite from fh->pos */
     uint32_t end = fh->pos + len;
     if (end > RAMFS_MAX_FILESIZE) {
         len = RAMFS_MAX_FILESIZE - fh->pos;
@@ -139,17 +142,24 @@ uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
     }
     if (len == 0) return 0;
 
-    /* Ensure the node has enough allocated space */
-    if (end > fh->node->alloc) {
-        /* Can't realloc in a bump allocator — write is only valid if
-         * we're writing to a freshly created node from pos 0 */
-        int rc = RamFS_Write(fh->node, buf, len);
-        if (rc != 0) return 0;
-        fh->pos += len;
-        return len;
+    /* First write to this node: allocate a full block from the pool */
+    if (fh->node->alloc == 0) {
+        uint32_t alloc_sz = end < VFS_BLOCK_SZ ? VFS_BLOCK_SZ : end;
+        if (alloc_sz > RAMFS_MAX_FILESIZE) alloc_sz = RAMFS_MAX_FILESIZE;
+        uint8_t *pool_buf = RamFS_AllocPool(alloc_sz);
+        if (!pool_buf) return 0;
+        fh->node->data  = pool_buf;
+        fh->node->alloc = alloc_sz;
+        fh->node->size  = 0;
     }
 
-    /* Write into existing allocation */
+    /* Allocation too small — can't grow (bump allocator), truncate write */
+    if (end > fh->node->alloc) {
+        len = fh->node->alloc - fh->pos;
+        end = fh->node->alloc;
+        if (len == 0) return 0;
+    }
+
     for (uint32_t i = 0; i < len; i++)
         fh->node->data[fh->pos + i] = buf[i];
     fh->pos += len;

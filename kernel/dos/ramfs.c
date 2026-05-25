@@ -9,7 +9,7 @@
  * ========================================================================= */
 
 static RamFsNode  g_nodes[RAMFS_MAX_NODES];
-static uint8_t    g_pool[RAMFS_MAX_NODES * 256]; /* 64 KB shared data pool  */
+static uint8_t    g_pool[RAMFS_MAX_NODES * 512]; /* 128 KB shared data pool */
 static uint32_t   g_pool_top = 0;                /* bump allocator cursor   */
 
 #define MAX_VOLS  4
@@ -109,7 +109,7 @@ static RamFsNode *find_child(RamFsNode *dir, const char *name)
 }
 
 /* Allocate bytes from the data pool */
-static uint8_t *pool_alloc(uint32_t bytes)
+uint8_t *RamFS_AllocPool(uint32_t bytes)
 {
     uint32_t pool_sz = (uint32_t)sizeof(g_pool);
     if (g_pool_top + bytes > pool_sz) return NULL;
@@ -117,6 +117,8 @@ static uint8_t *pool_alloc(uint32_t bytes)
     g_pool_top += bytes;
     return p;
 }
+
+static uint8_t *pool_alloc(uint32_t bytes) { return RamFS_AllocPool(bytes); }
 
 /* =========================================================================
  * Path resolution
