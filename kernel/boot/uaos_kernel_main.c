@@ -20,6 +20,7 @@
 #include "../irq/vmmouse.h"
 #include "../irq/rtc.h"
 #include "../display/wm.h"
+#include "dos/vfs.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -235,6 +236,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     }
 
     kprint("\n[BOOT] UAOS kernel initialisation complete.\n");
+
+    /* Initialise virtual filesystem + RAM: disk */
+    kprint("[BOOT] Initialising VFS + RAM disk...\n");
+    VFS_Init();
+    kprint("[BOOT] RAM: mounted.\n");
 
     /* Draw the Workbench-style desktop */
     if (g_fb.valid) {

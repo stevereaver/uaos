@@ -152,11 +152,14 @@ for src in \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
-    "${REPO_ROOT}/emulation/uaos_uae_bridge.c"
+    "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
+    "${REPO_ROOT}/kernel/dos/ramfs.c" \
+    "${REPO_ROOT}/kernel/dos/vfs.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
         -I"${REPO_ROOT}/emulation" \
+        -I"${REPO_ROOT}/kernel" \
         -c "${src}" -o "${BUILD_DIR}/obj/${base}.o"
     ok "  Compiled:  ${src##*/}"
 done
@@ -292,6 +295,8 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
+    "${BUILD_DIR}/obj/ramfs.o" \
+    "${BUILD_DIR}/obj/vfs.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"

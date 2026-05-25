@@ -16,6 +16,7 @@
 #include "cursor.h"
 #include "wm.h"
 #include "../../emulation/uaos_emu.h"
+#include "dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -63,6 +64,9 @@ typedef struct {
     char cmd_hist[MAX_CMD_HIST][MAX_INPUT + 1];
     int  cmd_hist_count;  /* total commands entered */
     int  cmd_hist_nav;    /* navigation offset: 0 = live input, 1 = last cmd */
+
+    /* Current working directory (AmigaDOS path, e.g. "RAM:") */
+    char cwd[64];
 
     /* Input */
     char input_buf[MAX_INPUT + 1];
@@ -229,11 +233,18 @@ static void inst_print(ShellInstance *s, const char *line)
 static void inst_cmd_help(ShellInstance *s)
 {
     inst_print(s, "UAOS Shell v0.1 - built-in commands:");
-    inst_print(s, "  help     show this help");
-    inst_print(s, "  version  show OS version");
-    inst_print(s, "  mem      memory information");
-    inst_print(s, "  clear    clear the shell window");
-    inst_print(s, "  reboot   warm reboot via keyboard controller");
+    inst_print(s, "  help               show this help");
+    inst_print(s, "  version            show OS version");
+    inst_print(s, "  mem                memory information");
+    inst_print(s, "  clear              clear the shell window");
+    inst_print(s, "  reboot             warm reboot");
+    inst_print(s, "  dir [path]         list directory");
+    inst_print(s, "  cd [path]          change/show directory");
+    inst_print(s, "  makedir <path>     create directory");
+    inst_print(s, "  delete <path>      delete file or empty dir");
+    inst_print(s, "  type <file>        print file contents");
+    inst_print(s, "  copy <src> <dst>   copy file");
+    inst_print(s, "  pwd                print working directory");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
 
@@ -287,41 +298,294 @@ static void inst_cmd_reboot(ShellInstance *s)
     for (;;) __asm__ volatile ("hlt");
 }
 
+/* =========================================================================
+ * Path helpers
+ * ========================================================================= */
+
+/* Build an absolute VFS path from cwd + user-supplied arg.
+ * If arg already contains ':', treat as absolute. */
+static void make_abs_path(ShellInstance *s, const char *arg,
+                           char *out, int max)
+{
+    /* Check for volume prefix (contains ':') */
+    const char *p = arg;
+    while (*p && *p != ':') p++;
+    if (*p == ':') {
+        scopy(out, arg, max);
+        return;
+    }
+    /* Relative: prepend cwd */
+    scopy(out, s->cwd, max);
+    /* Ensure cwd ends with '/' unless it ends with ':' */
+    int cl = slen(out);
+    if (cl > 0 && out[cl-1] != ':' && out[cl-1] != '/') {
+        if (cl < max - 1) { out[cl] = '/'; out[cl+1] = '\0'; }
+    }
+    scat(out, arg, max);
+}
+
+/* =========================================================================
+ * DOS-style shell commands
+ * ========================================================================= */
+
+static void inst_cmd_dir(ShellInstance *s, const char *arg)
+{
+    char path[64];
+    if (arg && *arg) make_abs_path(s, arg, path, 64);
+    else scopy(path, s->cwd, 64);
+
+    RamFsNode *child = VFS_OpenDir(path);
+
+    /* Print header */
+    char hdr[MAX_LINE_LEN];
+    scopy(hdr, "Directory of ", MAX_LINE_LEN);
+    scat(hdr, path, MAX_LINE_LEN);
+    inst_print(s, hdr);
+    inst_print(s, "");
+
+    if (!child) {
+        inst_print(s, "  (empty or not found)");
+        inst_print(s, "");
+        return;
+    }
+
+    int count = 0;
+    while (child) {
+        char line[MAX_LINE_LEN];
+        if (child->type == RAMFS_TYPE_DIR) {
+            scopy(line, "  ", MAX_LINE_LEN);
+            scat(line, child->name, MAX_LINE_LEN);
+            scat(line, "  (dir)", MAX_LINE_LEN);
+        } else {
+            char sz[12];
+            uint_to_dec_s(child->size, sz, 12);
+            scopy(line, "  ", MAX_LINE_LEN);
+            scat(line, child->name, MAX_LINE_LEN);
+            scat(line, "  ", MAX_LINE_LEN);
+            scat(line, sz, MAX_LINE_LEN);
+            scat(line, " bytes", MAX_LINE_LEN);
+        }
+        inst_print(s, line);
+        count++;
+        child = child->next_sibling;
+    }
+
+    inst_print(s, "");
+    char summary[MAX_LINE_LEN];
+    char cn[8]; uint_to_dec_s((uint32_t)count, cn, 8);
+    scopy(summary, cn, MAX_LINE_LEN);
+    scat(summary, " item(s)", MAX_LINE_LEN);
+    inst_print(s, summary);
+}
+
+static void inst_cmd_cd(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        inst_print(s, s->cwd);
+        return;
+    }
+    char path[64];
+    make_abs_path(s, arg, path, 64);
+
+    /* Resolve the node directly — VFS_OpenDir returns first_child which is
+     * NULL for empty dirs, so we can't use it to check existence. */
+    RamFsNode *node = VFS_ResolveDir(path);
+    if (!node) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Not found: ", MAX_LINE_LEN);
+        scat(msg, path, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    scopy(s->cwd, path, 64);
+}
+
+static void inst_cmd_makedir(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: makedir <path>"); return; }
+    char path[64];
+    make_abs_path(s, arg, path, 64);
+    int rc = VFS_MkDir(path);
+    if (rc == 0) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Created: ", MAX_LINE_LEN);
+        scat(msg, path, MAX_LINE_LEN);
+        inst_print(s, msg);
+    } else {
+        inst_print(s, "Failed to create directory.");
+    }
+}
+
+static void inst_cmd_delete(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: delete <path>"); return; }
+    char path[64];
+    make_abs_path(s, arg, path, 64);
+    int rc = VFS_Delete(path);
+    if (rc == 0) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Deleted: ", MAX_LINE_LEN);
+        scat(msg, path, MAX_LINE_LEN);
+        inst_print(s, msg);
+    } else if (rc == -2) {
+        inst_print(s, "Directory not empty.");
+    } else {
+        inst_print(s, "Not found.");
+    }
+}
+
+static void inst_cmd_type(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: type <file>"); return; }
+    char path[64];
+    make_abs_path(s, arg, path, 64);
+
+    VfsFile fh;
+    if (!VFS_Open(&fh, path, VFS_READ)) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Cannot open: ", MAX_LINE_LEN);
+        scat(msg, path, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    uint8_t buf[MAX_LINE_LEN];
+    uint32_t pos = 0;
+    uint32_t size = VFS_Size(&fh);
+    while (pos < size) {
+        /* Read one line at a time */
+        int col = 0;
+        while (pos < size && col < MAX_LINE_LEN - 1) {
+            uint8_t c;
+            if (VFS_Read(&fh, &c, 1) == 0) break;
+            pos++;
+            if (c == '\n') break;
+            if (c != '\r') buf[col++] = c;
+        }
+        buf[col] = '\0';
+        inst_print(s, (char *)buf);
+    }
+    VFS_Close(&fh);
+}
+
+static void inst_cmd_copy(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: copy <src> <dst>"); return; }
+
+    /* Split arg into src and dst at first space */
+    char src[64], dst[64];
+    const char *p = arg;
+    int i = 0;
+    while (*p && *p != ' ' && i < 63) { src[i++] = *p++; }
+    src[i] = '\0';
+    while (*p == ' ') p++;
+    i = 0;
+    while (*p && i < 63) { dst[i++] = *p++; }
+    dst[i] = '\0';
+
+    if (!src[0] || !dst[0]) { inst_print(s, "Usage: copy <src> <dst>"); return; }
+
+    char abs_src[64], abs_dst[64];
+    make_abs_path(s, src, abs_src, 64);
+    make_abs_path(s, dst, abs_dst, 64);
+
+    VfsFile fsrc;
+    if (!VFS_Open(&fsrc, abs_src, VFS_READ)) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Cannot open source: ", MAX_LINE_LEN);
+        scat(msg, abs_src, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    VfsFile fdst;
+    if (!VFS_Open(&fdst, abs_dst, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
+        VFS_Close(&fsrc);
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Cannot open dest: ", MAX_LINE_LEN);
+        scat(msg, abs_dst, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    /* Copy all bytes */
+    uint8_t buf[256];
+    uint32_t total = 0;
+    uint32_t got;
+    while ((got = VFS_Read(&fsrc, buf, 256)) > 0) {
+        VFS_Write(&fdst, buf, got);
+        total += got;
+    }
+    VFS_Close(&fsrc);
+    VFS_Close(&fdst);
+
+    char msg[MAX_LINE_LEN];
+    char sz[12]; uint_to_dec_s(total, sz, 12);
+    scopy(msg, "Copied ", MAX_LINE_LEN);
+    scat(msg, sz, MAX_LINE_LEN);
+    scat(msg, " bytes -> ", MAX_LINE_LEN);
+    scat(msg, abs_dst, MAX_LINE_LEN);
+    inst_print(s, msg);
+}
+
+/* =========================================================================
+ * Dispatch
+ * ========================================================================= */
+
+/* Match command name (case-insensitive for first token) */
+static int cmd_match(const char *line, const char *cmd, int cl)
+{
+    for (int j = 0; j < cl; j++) {
+        char lc = line[j];
+        if (lc >= 'A' && lc <= 'Z') lc += 32;
+        char cc = cmd[j];
+        if (cc >= 'A' && cc <= 'Z') cc += 32;
+        if (lc != cc) return 0;
+    }
+    return line[cl] == 0 || line[cl] == ' ';
+}
+
 static void inst_dispatch(ShellInstance *s, const char *line)
 {
-    /* Echo */
+    /* Echo with current directory prompt */
     char echo[MAX_LINE_LEN];
-    char prompt[12];
-    prompt[0]=(char)('0'+s->number);
-    prompt[1]='.';prompt[2]='U';prompt[3]='A';prompt[4]='O';
-    prompt[5]='S';prompt[6]='>';prompt[7]=' ';prompt[8]=0;
-    scopy(echo, prompt, MAX_LINE_LEN);
+    scopy(echo, s->cwd, MAX_LINE_LEN);
+    scat(echo, "> ", MAX_LINE_LEN);
     scat(echo, line, MAX_LINE_LEN);
     inst_print(s, echo);
 
     while (*line == ' ') line++;
     if (!*line) return;
 
-    const char *cmds[] = { "help","version","mem","clear","reboot","run", NULL };
+    /* Extract command and args */
+    const char *cmds[] = {
+        "help","version","mem","clear","reboot","run",
+        "dir","cd","makedir","delete","type","copy","pwd",
+        NULL
+    };
     for (int i = 0; cmds[i]; i++) {
         const char *c = cmds[i];
-        int cl = slen(c), match = 1;
-        for (int j = 0; j < cl; j++)
-            if (line[j] != c[j]) { match=0; break; }
-        if (match && (line[cl]==0 || line[cl]==' ')) {
-            if (i==0) inst_cmd_help(s);
-            else if (i==1) inst_cmd_version(s);
-            else if (i==2) inst_cmd_mem(s);
-            else if (i==3) inst_cmd_clear(s);
-            else if (i==4) inst_cmd_reboot(s);
-            else if (i==5) {
-                /* run <prog> [args] — forward to emulator */
-                const char *args = line + 3;
-                while (*args == ' ') args++;
-                UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print);
-            }
-            return;
-        }
+        int cl = slen(c);
+        if (!cmd_match(line, c, cl)) continue;
+
+        const char *args = line + cl;
+        while (*args == ' ') args++;
+
+        if (i==0) inst_cmd_help(s);
+        else if (i==1) inst_cmd_version(s);
+        else if (i==2) inst_cmd_mem(s);
+        else if (i==3) inst_cmd_clear(s);
+        else if (i==4) inst_cmd_reboot(s);
+        else if (i==5) UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print);
+        else if (i==6) inst_cmd_dir(s, args);
+        else if (i==7) inst_cmd_cd(s, args);
+        else if (i==8) inst_cmd_makedir(s, args);
+        else if (i==9) inst_cmd_delete(s, args);
+        else if (i==10) inst_cmd_type(s, args);
+        else if (i==11) inst_cmd_copy(s, args);
+        else if (i==12) inst_print(s, s->cwd);
+        return;
     }
 
     char msg[MAX_LINE_LEN];
@@ -466,6 +730,7 @@ static void open_shell(int stagger)
     s->hist_scroll= 0;
     s->input_len  = 0;
     s->input_buf[0] = 0;
+    scopy(s->cwd, "RAM:", 64);
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[idx][i][0] = 0;
 
     char title[32];
