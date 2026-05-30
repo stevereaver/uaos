@@ -140,6 +140,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register utility.library */
     UAOS_UTILITY_Register();
 
+    /* Register console.device */
+    UAOS_CONSOLE_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }

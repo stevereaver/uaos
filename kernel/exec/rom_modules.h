@@ -42,4 +42,7 @@ void UAOS_ROM_RegisterAll(void);
 /* Register utility.library */
 void UAOS_UTILITY_Register(void);
 
+/* Register console.device */
+void UAOS_CONSOLE_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */
