@@ -54,4 +54,7 @@ void UAOS_LOCALE_Register(void);
 /* Register ixemul.library */
 void UAOS_IXEMUL_Register(void);
 
+/* Register timer.device */
+void UAOS_TIMER_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

@@ -152,6 +152,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register ixemul.library */
     UAOS_IXEMUL_Register();
 
+    /* Register timer.device */
+    UAOS_TIMER_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }
