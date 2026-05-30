@@ -251,6 +251,7 @@ for src in \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
     "${REPO_ROOT}/kernel/irq/vmmouse.c" \
     "${REPO_ROOT}/kernel/irq/rtc.c" \
+    "${REPO_ROOT}/kernel/irq/virtio_blk.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \
@@ -402,6 +403,7 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/ps2kbd.o" \
     "${BUILD_DIR}/obj/vmmouse.o" \
     "${BUILD_DIR}/obj/rtc.o" \
+    "${BUILD_DIR}/obj/virtio_blk.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/utility_lib.o" \
