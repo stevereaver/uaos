@@ -39,4 +39,7 @@ int UAOS_ROM_ListAll(char *names[], uint16_t versions[], int max_count);
 /* Register all built-in ROM modules at boot time */
 void UAOS_ROM_RegisterAll(void);
 
+/* Register utility.library */
+void UAOS_UTILITY_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

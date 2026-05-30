@@ -137,6 +137,9 @@ void UAOS_ROM_RegisterAll(void)
                       (uint16_t)(sizeof(exec_funcs) / sizeof(exec_funcs[0])),
                       exec_funcs);
 
+    /* Register utility.library */
+    UAOS_UTILITY_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }
