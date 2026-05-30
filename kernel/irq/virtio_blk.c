@@ -5,6 +5,8 @@
  * VirtIO is a paravirtualized I/O framework used by QEMU/KVM.
  */
 
+#include "virtio_blk.h"
+#include "../dos/blockdev.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -83,9 +85,9 @@ typedef struct {
 } virtq_used_t;
 
 /* Virtqueue will be allocated when needed */
-static virtq_desc_t *virtq_desc = NULL;
-static virtq_avail_t *virtq_avail = NULL;
-static virtq_used_t *virtq_used = NULL;
+/* static virtq_desc_t *virtq_desc = NULL; */
+/* static virtq_avail_t *virtq_avail = NULL; */
+/* static virtq_used_t *virtq_used = NULL; */
 
 /* =========================================================================
  * VirtIO Block Device Request/Response
@@ -106,7 +108,8 @@ typedef struct {
  * ========================================================================= */
 
 static uint32_t virtio_blk_mmio_base = 0;
-static uint32_t virtio_blk_capacity = 0;
+static uint64_t virtio_blk_capacity = 0;
+static BlockDev g_virtio_blk_dev;
 
 /* =========================================================================
  * I/O Port Access
@@ -167,6 +170,47 @@ static uint16_t pci_config_read_word(uint8_t bus, uint8_t dev, uint8_t func, uin
 }
 
 /* =========================================================================
+ * VirtIO Block Device Operations (BlockDevOps interface)
+ * ========================================================================= */
+
+static int virtio_blk_read_op(uint64_t sector, void *buffer, uint32_t num_sectors)
+{
+    (void)buffer; /* Suppress unused warning */
+    if (!virtio_blk_mmio_base) {
+        printf("[VIRTIO] Device not initialized\n");
+        return -1;
+    }
+    
+    printf("[VIRTIO] Read: sector=%llu, count=%u\n", sector, num_sectors);
+    /* TODO: Implement actual virtqueue-based I/O */
+    return -1;
+}
+
+static int virtio_blk_write_op(uint64_t sector, const void *buffer, uint32_t num_sectors)
+{
+    (void)buffer; /* Suppress unused warning */
+    if (!virtio_blk_mmio_base) {
+        printf("[VIRTIO] Device not initialized\n");
+        return -1;
+    }
+    
+    printf("[VIRTIO] Write: sector=%llu, count=%u\n", sector, num_sectors);
+    /* TODO: Implement actual virtqueue-based I/O */
+    return -1;
+}
+
+static uint64_t virtio_blk_get_capacity_op(void)
+{
+    return virtio_blk_capacity;
+}
+
+static const BlockDevOps virtio_blk_ops = {
+    .read = virtio_blk_read_op,
+    .write = virtio_blk_write_op,
+    .get_capacity = virtio_blk_get_capacity_op,
+};
+
+/* =========================================================================
  * VirtIO Block Device Initialization
  * ========================================================================= */
 
@@ -201,6 +245,19 @@ int virtio_blk_init(void)
                            ((uint64_t)capacity_high << 32) | capacity_low,
                            (((uint64_t)capacity_high << 32) | capacity_low) * 512 / (1024 * 1024));
                     
+                    /* Register with block device layer */
+                    g_virtio_blk_dev.name = "virtio0";
+                    g_virtio_blk_dev.sector_size = 512;
+                    g_virtio_blk_dev.num_sectors = virtio_blk_capacity;
+                    g_virtio_blk_dev.private_data = NULL;
+                    g_virtio_blk_dev.ops = &virtio_blk_ops;
+                    g_virtio_blk_dev.next = NULL;
+                    
+                    if (BlockDev_Register(&g_virtio_blk_dev) != 0) {
+                        printf("[VIRTIO] Failed to register with block device layer\n");
+                        return -1;
+                    }
+                    
                     return 0;
                 }
             }
@@ -209,43 +266,4 @@ int virtio_blk_init(void)
     
     printf("[VIRTIO] No VirtIO block device found\n");
     return -1;
-}
-
-/* =========================================================================
- * VirtIO Block Device Read/Write
- * ========================================================================= */
-
-int virtio_blk_read(uint64_t sector, void *buffer, uint32_t num_sectors)
-{
-    (void)buffer; /* Suppress unused warning */
-    if (!virtio_blk_mmio_base) {
-        printf("[VIRTIO] Device not initialized\n");
-        return -1;
-    }
-    
-    printf("[VIRTIO] Read: sector=%llu, count=%u\n", sector, num_sectors);
-    /* TODO: Implement actual virtqueue-based I/O */
-    return -1;
-}
-
-int virtio_blk_write(uint64_t sector, const void *buffer, uint32_t num_sectors)
-{
-    (void)buffer; /* Suppress unused warning */
-    if (!virtio_blk_mmio_base) {
-        printf("[VIRTIO] Device not initialized\n");
-        return -1;
-    }
-    
-    printf("[VIRTIO] Write: sector=%llu, count=%u\n", sector, num_sectors);
-    /* TODO: Implement actual virtqueue-based I/O */
-    return -1;
-}
-
-/* =========================================================================
- * Get Device Capacity
- * ========================================================================= */
-
-uint64_t virtio_blk_get_capacity(void)
-{
-    return virtio_blk_capacity;
 }

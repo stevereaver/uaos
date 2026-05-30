@@ -5,6 +5,8 @@
 #ifndef UAOS_VIRTIO_BLK_H
 #define UAOS_VIRTIO_BLK_H
 
+#include <stdint.h>
+
 /* Initialize VirtIO block device driver */
 int virtio_blk_init(void);
 
