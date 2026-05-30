@@ -143,6 +143,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register console.device */
     UAOS_CONSOLE_Register();
 
+    /* Register mathffp.library */
+    UAOS_MATHFFP_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }

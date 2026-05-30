@@ -45,4 +45,7 @@ void UAOS_UTILITY_Register(void);
 /* Register console.device */
 void UAOS_CONSOLE_Register(void);
 
+/* Register mathffp.library */
+void UAOS_MATHFFP_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */
