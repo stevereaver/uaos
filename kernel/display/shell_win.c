@@ -17,6 +17,7 @@
 #include "wm.h"
 #include "../../emulation/uaos_emu.h"
 #include "dos/vfs.h"
+#include "exec/rom_modules.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -289,6 +290,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  help               show this help");
     inst_print(s, "  version            show OS version");
     inst_print(s, "  mem                memory information");
+    inst_print(s, "  libs               show loaded kernel libraries");
     inst_print(s, "  clear              clear the shell window");
     inst_print(s, "  reboot             warm reboot");
     inst_print(s, "  dir [path]         list directory");
@@ -327,6 +329,36 @@ static void inst_cmd_mem(ShellInstance *s)
     inst_print(s, "Kernel load: 0x0000000000100000");
     inst_print(s, "Framebuffer: mapped (GOP physical address)");
     inst_print(s, "Stack: 16 KB (bootstrap), no heap allocator yet");
+}
+
+static void inst_cmd_libs(ShellInstance *s)
+{
+    char *names[64];
+    uint16_t versions[64];
+    int count = UAOS_ROM_ListAll(names, versions, 64);
+    
+    if (count == 0) {
+        inst_print(s, "No kernel libraries loaded.");
+        return;
+    }
+    
+    char hdr[MAX_LINE_LEN];
+    scopy(hdr, "Loaded kernel libraries (", MAX_LINE_LEN);
+    char num[12];
+    uint_to_dec_s(count, num, 12);
+    scat(hdr, num, MAX_LINE_LEN);
+    scat(hdr, "):", MAX_LINE_LEN);
+    inst_print(s, hdr);
+    
+    for (int i = 0; i < count; i++) {
+        char line[MAX_LINE_LEN];
+        scopy(line, "  ", MAX_LINE_LEN);
+        scat(line, names[i], MAX_LINE_LEN);
+        scat(line, " v", MAX_LINE_LEN);
+        uint_to_dec_s(versions[i], num, 12);
+        scat(line, num, MAX_LINE_LEN);
+        inst_print(s, line);
+    }
 }
 
 static void inst_cmd_clear(ShellInstance *s)
@@ -664,7 +696,7 @@ static int parse_redirects(ShellInstance *s, const char *line,
 static void run_cmd(ShellInstance *s, const char *line)
 {
     const char *cmds[] = {
-        "help","version","mem","clear","reboot","run",
+        "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo",
         NULL
     };
@@ -680,17 +712,18 @@ static void run_cmd(ShellInstance *s, const char *line)
         if (i==0) inst_cmd_help(s);
         else if (i==1) inst_cmd_version(s);
         else if (i==2) inst_cmd_mem(s);
-        else if (i==3) inst_cmd_clear(s);
-        else if (i==4) inst_cmd_reboot(s);
-        else if (i==5) { UAOS_Emu_SetCwd(s->cwd); UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print); }
-        else if (i==6) inst_cmd_dir(s, args);
-        else if (i==7) inst_cmd_cd(s, args);
-        else if (i==8) inst_cmd_makedir(s, args);
-        else if (i==9) inst_cmd_delete(s, args);
-        else if (i==10) inst_cmd_type(s, args);
-        else if (i==11) inst_cmd_copy(s, args);
-        else if (i==12) inst_print(s, s->cwd);
-        else if (i==13) inst_print(s, *args ? args : "");
+        else if (i==3) inst_cmd_libs(s);
+        else if (i==4) inst_cmd_clear(s);
+        else if (i==5) inst_cmd_reboot(s);
+        else if (i==6) { UAOS_Emu_SetCwd(s->cwd); UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print); }
+        else if (i==7) inst_cmd_dir(s, args);
+        else if (i==8) inst_cmd_cd(s, args);
+        else if (i==9) inst_cmd_makedir(s, args);
+        else if (i==10) inst_cmd_delete(s, args);
+        else if (i==11) inst_cmd_type(s, args);
+        else if (i==12) inst_cmd_copy(s, args);
+        else if (i==13) inst_print(s, s->cwd);
+        else if (i==14) inst_print(s, *args ? args : "");
         return;
     }
 

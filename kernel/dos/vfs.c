@@ -80,13 +80,6 @@ void VFS_Init(void)
     RamFS_MkDir(ram, "RAM:ENV");
     RamFS_MkDir(ram, "RAM:CLIPS");
     RamFS_MkDir(ram, "RAM:S");
-
-    /* Create test file for tar experiments */
-    RamFsNode *testfile = RamFS_Create(ram, "RAM:T/hello.txt");
-    if (testfile) {
-        const uint8_t content[] = "Hello World";
-        RamFS_Write(testfile, content, sizeof(content)-1);
-    }
 }
 
 /* =========================================================================

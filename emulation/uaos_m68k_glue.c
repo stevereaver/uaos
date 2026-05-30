@@ -251,6 +251,8 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_DELETEFILE     18
 #define DOS_RENAME         19
 #define DOS_SETPROTECTION  20
+#define DOS_GETVAR         21
+#define DOS_SETVAR         22
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -336,6 +338,8 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_DELETEFILE (-78)
 #define LVO_DOS_RENAME     (-84)
 #define LVO_DOS_SETPROTECTION (-90)
+#define LVO_DOS_GETVAR     (-132)
+#define LVO_DOS_SETVAR     (-138)
 
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
@@ -362,6 +366,8 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_DELETEFILE:     return (uint32_t)((int)DOS_BASE + LVO_DOS_DELETEFILE);
             case DOS_RENAME:         return (uint32_t)((int)DOS_BASE + LVO_DOS_RENAME);
             case DOS_SETPROTECTION:  return (uint32_t)((int)DOS_BASE + LVO_DOS_SETPROTECTION);
+            case DOS_GETVAR:         return (uint32_t)((int)DOS_BASE + LVO_DOS_GETVAR);
+            case DOS_SETVAR:         return (uint32_t)((int)DOS_BASE + LVO_DOS_SETVAR);
             case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
             case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
             case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
@@ -424,6 +430,8 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_DELETEFILE, LIB_DOS, DOS_DELETEFILE);
     install_lvo(DOS_BASE, LVO_DOS_RENAME,     LIB_DOS, DOS_RENAME);
     install_lvo(DOS_BASE, LVO_DOS_SETPROTECTION, LIB_DOS, DOS_SETPROTECTION);
+    install_lvo(DOS_BASE, LVO_DOS_GETVAR,     LIB_DOS, DOS_GETVAR);
+    install_lvo(DOS_BASE, LVO_DOS_SETVAR,     LIB_DOS, DOS_SETVAR);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -849,6 +857,24 @@ static void dos_SetProtection(void)
     g_last_err = 205;
 }
 
+static void dos_GetVar(void)
+{
+    /* D1=name BPTR, D2=buffer ptr, D3=size, D4=flags
+     * Returns length of value or -1 on error */
+    /* Not implemented yet - return error */
+    m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+    g_last_err = 205;
+}
+
+static void dos_SetVar(void)
+{
+    /* D1=name BPTR, D2=value BPTR, D3=size, D4=flags
+     * Returns DOSTRUE on success */
+    /* Not implemented yet - return error */
+    m68k_set_reg(M68K_REG_D0, 0);
+    g_last_err = 205;
+}
+
 /* Stdin data to feed LHA: "q\n" to quit interactive mode cleanly */
 static const char g_stdin_data[] = "?\n";
 static int g_stdin_reads = 0;
@@ -955,6 +981,8 @@ int m68k_illg_instr_callback(int opcode)
             case DOS_DELETEFILE:     dos_DeleteFile();     break;
             case DOS_RENAME:         dos_Rename();         break;
             case DOS_SETPROTECTION:  dos_SetProtection();  break;
+            case DOS_GETVAR:         dos_GetVar();         break;
+            case DOS_SETVAR:         dos_SetVar();         break;
             case DOS_WRITE:  dos_Write();  break;
             case DOS_OPEN:   dos_Open();   break;
             case DOS_CLOSE:  dos_Close();  break;

@@ -7,7 +7,7 @@
  * in thunk_handler.c resolves calls against the registered module list.
  */
 
-#include <stdint.h>
+#include "rom_modules.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,18 +17,6 @@
  * ----------------------------------------------------------------------- */
 
 #define UAOS_MAX_ROM_MODULES  64
-
-/* -----------------------------------------------------------------------
- * ROM module descriptor
- * ----------------------------------------------------------------------- */
-
-typedef struct {
-    const char *name;           /* AmigaOS library name, e.g. "exec.library" */
-    uint16_t    version;        /* library version                            */
-    uint32_t    amiga_base;     /* 32-bit Amiga address of the library base   */
-    uint16_t    func_count;     /* number of exported jump table vectors      */
-    void      **native_funcs;   /* array of native function pointers          */
-} UaosRomModule;
 
 static UaosRomModule rom_registry[UAOS_MAX_ROM_MODULES];
 static int           rom_count = 0;
@@ -118,6 +106,26 @@ static void *exec_funcs[] = {
     exec_stub_Signal,        /* index 9  */
     exec_stub_SetFunction,   /* index 10 */
 };
+
+/* -----------------------------------------------------------------------
+ * UAOS_ROM_ListAll — return count and optionally list all modules
+ *
+ * If names is non-NULL, copies module names into the array (up to max_count).
+ * Returns the total number of registered modules.
+ * ----------------------------------------------------------------------- */
+
+int UAOS_ROM_ListAll(char *names[], uint16_t versions[], int max_count)
+{
+    int count = rom_count;
+    if (names && versions && max_count > 0) {
+        int copy = (count < max_count) ? count : max_count;
+        for (int i = 0; i < copy; i++) {
+            names[i] = (char *)rom_registry[i].name;
+            versions[i] = rom_registry[i].version;
+        }
+    }
+    return count;
+}
 
 /* -----------------------------------------------------------------------
  * UAOS_ROM_RegisterAll — register all built-in ROM modules at boot time
