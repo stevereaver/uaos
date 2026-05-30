@@ -7,10 +7,27 @@
  */
 
 #include "rom_modules.h"
+#include "../irq/ps2kbd.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+
+/* =========================================================================
+ * AmigaOS Input Event Structure
+ * ========================================================================= */
+
+typedef struct {
+    uint16_t ie_Class;      /* Event class */
+    uint16_t ie_Code;       /* Event code */
+    uint16_t ie_Qualifier;  /* Qualifiers (shift, ctrl, alt, etc) */
+    uint16_t ie_Position;   /* Mouse position (for keyboard events) */
+} InputEvent;
+
+/* Event classes */
+#define IECLASS_RAWKEY     0x11
+#define IECLASS_RAWMOUSE   0x12
+#define IECLASS_TIMER      0x1F
 
 /* =========================================================================
  * keyboard.device function indices (must match AmigaOS LVO offsets)
@@ -57,38 +74,66 @@ static void keyboard_AbortIO(void)
 
 static void keyboard_Read(void)
 {
-    /* Read - read from keyboard */
-    fprintf(stderr, "[KEYBOARD] Read called\n");
+    /* Read - read character from keyboard
+     * D1 = pointer to buffer to fill
+     * Returns character read or -1 if no data */
+    if (PS2Kbd_HasChar()) {
+        char c = PS2Kbd_GetChar();
+        fprintf(stderr, "[KEYBOARD] Read: '%c' (0x%02X)\n", c, (unsigned char)c);
+        /* TODO: Write to guest memory via M68k glue */
+    } else {
+        fprintf(stderr, "[KEYBOARD] Read: no data\n");
+    }
 }
 
 static void keyboard_Write(void)
 {
-    /* Write - write to keyboard (LED control, etc) */
-    fprintf(stderr, "[KEYBOARD] Write called\n");
+    /* Write - write to keyboard (LED control, etc)
+     * D1 = command byte */
+    fprintf(stderr, "[KEYBOARD] Write called (LED control)\n");
+    /* TODO: Implement LED control via PS/2 controller */
 }
 
 static void keyboard_RawKey(void)
 {
-    /* RawKey - read raw key codes */
-    fprintf(stderr, "[KEYBOARD] RawKey called\n");
+    /* RawKey - read raw key codes
+     * D1 = pointer to InputEvent structure to fill */
+    if (PS2Kbd_HasChar()) {
+        char c = PS2Kbd_GetChar();
+        fprintf(stderr, "[KEYBOARD] RawKey: 0x%02X\n", (unsigned char)c);
+        /* TODO: Fill InputEvent structure with raw key code */
+    } else {
+        fprintf(stderr, "[KEYBOARD] RawKey: no data\n");
+    }
 }
 
 static void keyboard_KbdRead(void)
 {
-    /* KbdRead - read keyboard events */
-    fprintf(stderr, "[KEYBOARD] KbdRead called\n");
+    /* KbdRead - read keyboard events
+     * D1 = pointer to InputEvent structure to fill */
+    if (PS2Kbd_HasChar()) {
+        char c = PS2Kbd_GetChar();
+        fprintf(stderr, "[KEYBOARD] KbdRead: 0x%02X\n", (unsigned char)c);
+        /* TODO: Fill InputEvent structure with class, code, qualifiers */
+    } else {
+        fprintf(stderr, "[KEYBOARD] KbdRead: no data\n");
+    }
 }
 
 static void keyboard_KbdWrite(void)
 {
-    /* KbdWrite - write keyboard events */
+    /* KbdWrite - write keyboard events (inject keypresses)
+     * D1 = pointer to InputEvent structure */
     fprintf(stderr, "[KEYBOARD] KbdWrite called\n");
+    /* TODO: Implement key injection */
 }
 
 static void keyboard_KbdRemap(void)
 {
-    /* KbdRemap - remap keyboard codes */
+    /* KbdRemap - remap keyboard codes
+     * D1 = mapping table */
     fprintf(stderr, "[KEYBOARD] KbdRemap called\n");
+    /* TODO: Implement key remapping */
 }
 
 /* =========================================================================
