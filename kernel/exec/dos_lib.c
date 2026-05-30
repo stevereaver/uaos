@@ -14,6 +14,69 @@
 #include <stdio.h>
 
 /* =========================================================================
+ * AmigaOS DOS Structures
+ * ========================================================================= */
+
+/* Lock structure - represents a locked directory */
+typedef struct {
+    RamFsNode *node;      /* Directory node */
+    uint32_t    flags;    /* Lock flags (shared/exclusive) */
+} DosLock;
+
+/* FileInfoBlock structure - file/directory information */
+typedef struct {
+    uint64_t fib_DiskKey;      /* Disk key */
+    uint32_t fib_DirEntryType; /* Entry type (file/directory) */
+    char     fib_FileName[108];/* File name */
+    uint32_t fib_Protection;   /* Protection bits */
+    uint32_t fib_EntryType;    /* Entry type */
+    uint32_t fib_Size;         /* File size */
+    uint32_t fib_NumBlocks;    /* Number of blocks */
+    uint32_t fib_Date;         /* Date stamp */
+    uint32_t fib_Comment;      /* Comment */
+    uint8_t  fib_Reserved[32]; /* Reserved */
+} FileInfoBlock;
+
+/* Entry types */
+#define ST_ROOTDIR   1
+#define ST_USERDIR   2
+#define ST_FILE      -3
+
+/* =========================================================================
+ * Lock Management
+ * ========================================================================= */
+
+#define MAX_LOCKS 64
+static DosLock g_locks[MAX_LOCKS];
+static uint32_t g_next_lock_id = 1;
+
+static uint32_t alloc_lock(RamFsNode *node, uint32_t flags)
+{
+    if (g_next_lock_id >= MAX_LOCKS)
+        return 0; /* No more locks */
+    
+    uint32_t lock_id = g_next_lock_id++;
+    g_locks[lock_id].node = node;
+    g_locks[lock_id].flags = flags;
+    return lock_id;
+}
+
+static void free_lock(uint32_t lock_id)
+{
+    if (lock_id > 0 && lock_id < MAX_LOCKS) {
+        g_locks[lock_id].node = NULL;
+        g_locks[lock_id].flags = 0;
+    }
+}
+
+static DosLock *get_lock(uint32_t lock_id)
+{
+    if (lock_id > 0 && lock_id < MAX_LOCKS)
+        return &g_locks[lock_id];
+    return NULL;
+}
+
+/* =========================================================================
  * dos.library function indices (must match AmigaOS LVO offsets)
  * Note: dos.library has a very large API - this is a subset
  * ========================================================================= */
@@ -145,26 +208,67 @@ static void dos_SelectOutput(void)
 
 static void dos_Lock(void)
 {
-    /* Lock - lock a directory */
+    /* Lock - lock a directory
+     * D1 = path string
+     * D2 = access mode (SHARED_LOCK/EXCLUSIVE_LOCK)
+     * Returns: lock handle (BPTR) or 0 on failure */
     fprintf(stderr, "[DOS] Lock called\n");
+    /* TODO: Implement with M68k memory access
+     * Implementation would be:
+     * 1. Read path string from guest memory
+     * 2. Use VFS_ResolveDir to find the directory
+     * 3. Allocate a lock with alloc_lock()
+     * 4. Return lock ID to guest
+     */
 }
 
 static void dos_Unlock(void)
 {
-    /* Unlock - unlock a directory */
+    /* Unlock - unlock a directory
+     * D1 = lock handle to release */
     fprintf(stderr, "[DOS] Unlock called\n");
+    /* TODO: Implement with M68k memory access
+     * Implementation would be:
+     * 1. Read lock ID from D1
+     * 2. Call free_lock(lock_id)
+     */
 }
 
 static void dos_Examine(void)
 {
-    /* Examine - examine file/directory info */
+    /* Examine - examine file/directory info
+     * D1 = lock handle
+     * D2 = pointer to FileInfoBlock structure
+     * Returns: 1 on success, 0 on failure */
     fprintf(stderr, "[DOS] Examine called\n");
+    /* TODO: Implement with M68k memory access
+     * Implementation would be:
+     * 1. Read lock ID from D1
+     * 2. Get DosLock from lock ID
+     * 3. Fill FileInfoBlock with node information:
+     *    - fib_DirEntryType = ST_USERDIR or ST_FILE
+     *    - fib_FileName = node name
+     *    - fib_Size = node size
+     *    - fib_Protection = default protection
+     * 4. Write FileInfoBlock to guest memory
+     */
 }
 
 static void dos_ExamineNext(void)
 {
-    /* ExamineNext - get next directory entry */
+    /* ExamineNext - get next directory entry
+     * D1 = lock handle
+     * D2 = pointer to FileInfoBlock structure
+     * Returns: 1 on success, 0 on failure (no more entries) */
     fprintf(stderr, "[DOS] ExamineNext called\n");
+    /* TODO: Implement with M68k memory access
+     * Implementation would be:
+     * 1. Read lock ID from D1
+     * 2. Get DosLock from lock ID
+     * 3. Use VFS_OpenDir to get directory entries
+     * 4. Fill FileInfoBlock with next entry information
+     * 5. Write FileInfoBlock to guest memory
+     */
 }
 
 static void dos_OpenFromLock(void)
