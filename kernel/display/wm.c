@@ -185,11 +185,22 @@ static void draw_chrome(int wh)
                      w->w - 2, WM_TITLEBAR_H - 1,
                      w->title, WB_WHITE, tbar_col);
 
-    /* Close gadget — flush to top-left corner of window */
+    /* Close gadget — flush to top-left corner of window with X symbol */
     int cg_x = w->x + 1;
     int cg_y = w->y + 1;
     FB_DrawRect(cg_x, cg_y, 14, 14, WB_WHITE);
     FB_FillRect(cg_x + 1, cg_y + 1, 12, 12, tbar_col);
+    
+    /* Draw X symbol in close gadget */
+    uint32_t x_col = focused ? WB_WHITE : WB_LIGHT_GREY;
+    /* Diagonal from top-left to bottom-right */
+    for (int i = 0; i < 10; i++) {
+        FB_PutPixel(cg_x + 3 + i, cg_y + 3 + i, x_col);
+    }
+    /* Diagonal from top-right to bottom-left */
+    for (int i = 0; i < 10; i++) {
+        FB_PutPixel(cg_x + 12 - i, cg_y + 3 + i, x_col);
+    }
 
     /* Zoom gadget — second from right: upward-pointing arrow box (Amiga style) */
     int zg_x = w->x + w->w - 30;   /* 15px wide, 15px left of depth gadget */
