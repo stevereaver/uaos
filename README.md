@@ -12,10 +12,25 @@ UAOS boots directly from a hybrid ISO via GRUB2 Multiboot2, initialises a linear
 - **Window manager** — multiple windows, click-to-focus, z-order, title bar drag, resize grip
 - **PS/2 mouse** — IRQ12-driven relative tracking, 16×16 Amiga-style software cursor
 - **PS/2 keyboard** — IRQ1-driven, scancode set 1, ring buffer
-- **Shell window** — scrollable history, input line, built-in commands: `help`, `version`, `mem`, `clear`, `reboot`
+- **Shell window** — scrollable history, input line, built-in commands: `help`, `version`, `mem`, `clear`, `reboot`, `libs`, `dir`, `cd`, `makedir`, `delete`, `type`, `copy`
 - **IDT / 8259A PIC** — 256-vector IDT, PIC remapped to vectors 32–47
 - **MMU sandbox** — 4-level paging, 2 MB huge pages
-- **M68k emulation stubs** — UAOS/UAE bridge skeleton (Exec thunks, ROM module registry)
+- **M68k emulation** — Musashi CPU, ILLEGAL opcode dispatch, LVO stubs
+- **ROM module system** — Native AmigaOS-compatible library implementations:
+  - `exec.library` v45 — Process management, memory allocation
+  - `utility.library` v37 — String functions, memory utilities
+  - `console.device` v40 — Console I/O
+  - `mathffp.library` v40 — Floating-point operations
+  - `locale.library` v38 — Localization support
+  - `ixemul.library` v53 — Unix compatibility layer
+  - `timer.device` v40 — Timing functions (connected to RTC)
+  - `keyboard.device` v40 — Keyboard input (connected to PS/2 driver)
+  - `graphics.library` v40 — Graphics primitives
+  - `dos.library` v40 — File system operations
+- **VFS / RAM filesystem** — In-memory node tree, auto-mounted at boot with T, ENV, CLIPS, S dirs
+- **VirtIO block device driver** — PCI scanning, device detection, capacity reporting
+- **Block device layer** — Unified interface for storage devices
+- **RTC driver** — CMOS real-time clock with UIE interrupt
 - **EFI + BIOS hybrid ISO** — boots on OVMF UEFI and legacy BIOS via GRUB2
 
 ---
@@ -27,11 +42,17 @@ uaos/
 ├── kernel/
 │   ├── boot/           # NASM entry point, C kernel main, linker script
 │   ├── display/        # Framebuffer, desktop, cursor, window manager, shell window
-│   ├── irq/            # IDT, 8259A PIC, PS/2 mouse, PS/2 keyboard, VMware mouse
-│   └── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules
+│   ├── irq/            # IDT, 8259A PIC, PS/2 mouse, PS/2 keyboard, VMware mouse, RTC, VirtIO block
+│   ├── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules
+│   │                   # ROM libraries: utility, console, mathffp, locale, ixemul
+│   │                   # ROM devices: timer, keyboard, graphics
+│   │                   # dos.library implementation
+│   └── dos/            # VFS layer, RAM filesystem, block device layer
 ├── emulation/
 │   ├── rom_patches/    # M68k Vasm/Devpac stubs, kickstart config
-│   └── uaos_uae_bridge.c
+│   ├── src/musashi/    # M68k CPU emulator
+│   ├── uaos_m68k_glue.c # M68k emulator glue, LVO stubs, DOS stubs
+│   └── uaos_emu_registry.c
 ├── drivers/            # Future device drivers
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
@@ -184,6 +205,13 @@ Click the **UAOS Shell** title bar to focus it, then type commands:
 | `mem` | Display memory information |
 | `clear` | Clear the shell history |
 | `reboot` | Reboot the system |
+| `libs` | List loaded kernel libraries with versions |
+| `dir` | List files in current directory |
+| `cd` | Change current directory |
+| `makedir` | Create a directory |
+| `delete` | Delete a file or directory |
+| `type` | Display file contents |
+| `copy` | Copy a file |
 
 ---
 
@@ -197,6 +225,21 @@ GRUB2 Multiboot2
                     ├── IDT_Init()          256-vector IDT + 8259A PIC remap
                     ├── PS2Mouse_Init()     IRQ12 PS/2 mouse driver
                     ├── PS2Kbd_Init()       IRQ1  PS/2 keyboard driver
+                    ├── RTC_Init()          CMOS real-time clock (IRQ8)
+                    ├── VFS_Init()          VFS layer + RAM filesystem
+                    ├── BlockDev_Init()     Block device layer
+                    ├── virtio_blk_init()   VirtIO block device driver
+                    ├── UAOS_ROM_RegisterAll()  Register ROM modules
+                    │   ├── exec.library v45
+                    │   ├── utility.library v37
+                    │   ├── console.device v40
+                    │   ├── mathffp.library v40
+                    │   ├── locale.library v38
+                    │   ├── ixemul.library v53
+                    │   ├── timer.device v40 (→ RTC)
+                    │   ├── keyboard.device v40 (→ PS/2)
+                    │   ├── graphics.library v40
+                    │   └── dos.library v40 (→ VFS)
                     ├── Desktop_Draw()      Workbench backdrop + icons
                     ├── ShellWin_Init()     Shell window → registers with WM
                     └── event loop
@@ -208,11 +251,13 @@ GRUB2 Multiboot2
 
 ## Known Limitations
 
-- M68k emulation is not yet functional (Exec thunks are stubs)
-- Shell commands are built-in only; no filesystem execution
+- M68k emulation has basic LVO stubs but needs full memory access integration
+- ROM library functions are stubs with implementation logic in comments
+- VirtIO block device read/write needs virtqueue I/O implementation
+- No filesystem support on block devices (FAT32, ext2, etc.)
 - No networking, no audio
 - Single CPU, no SMP
-- Clock display is static (RTC not yet wired up)
+- Clock display updates via RTC but needs full date/time integration
 
 ---
 <img width="1413" height="1069" alt="image" src="https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e" />
