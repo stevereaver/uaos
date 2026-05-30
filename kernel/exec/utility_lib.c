@@ -30,6 +30,24 @@
 #define UTIL_DATE_MATCH     13
 
 /* =========================================================================
+ * String Helper Functions
+ * ========================================================================= */
+
+static char to_lower(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        return (char)(c + 32);
+    return c;
+}
+
+static char to_upper(char c)
+{
+    if (c >= 'a' && c <= 'z')
+        return (char)(c - 32);
+    return c;
+}
+
+/* =========================================================================
  * Stub implementations
  * ========================================================================= */
 
@@ -59,26 +77,63 @@ static void util_FreeItem(void)
 
 static void util_StrIcmp(void)
 {
-    /* Stricmp - case-insensitive string comparison */
+    /* Stricmp - case-insensitive string comparison
+     * D1 = string1, D2 = string2
+     * Returns: <0 if s1 < s2, 0 if equal, >0 if s1 > s2 */
     fprintf(stderr, "[UTILITY] StrIcmp called\n");
+    /* TODO: Implement with M68k memory access */
+    /* Implementation would be:
+     * while (*s1 && *s2) {
+     *     char c1 = to_lower(*s1++);
+     *     char c2 = to_lower(*s2++);
+     *     if (c1 != c2) return c1 - c2;
+     * }
+     * return *s1 - *s2;
+     */
 }
 
 static void util_StrNicmp(void)
 {
-    /* Strnicmp - case-insensitive string comparison with length */
+    /* Strnicmp - case-insensitive string comparison with length
+     * D1 = string1, D2 = string2, D3 = length
+     * Returns: <0 if s1 < s2, 0 if equal, >0 if s1 > s2 */
     fprintf(stderr, "[UTILITY] StrNicmp called\n");
+    /* TODO: Implement with M68k memory access */
+    /* Implementation would be similar to StrIcmp but with length limit */
 }
 
 static void util_UcStr(void)
 {
-    /* UcStr - convert string to uppercase */
+    /* UcStr - convert string to uppercase in-place
+     * D1 = string pointer
+     * Returns: same string pointer */
     fprintf(stderr, "[UTILITY] UcStr called\n");
+    /* TODO: Implement with M68k memory access */
+    /* Implementation would be:
+     * char *s = str;
+     * while (*s) {
+     *     *s = to_upper(*s);
+     *     s++;
+     * }
+     * return str;
+     */
 }
 
 static void util_LcStr(void)
 {
-    /* LcStr - convert string to lowercase */
+    /* LcStr - convert string to lowercase in-place
+     * D1 = string pointer
+     * Returns: same string pointer */
     fprintf(stderr, "[UTILITY] LcStr called\n");
+    /* TODO: Implement with M68k memory access */
+    /* Implementation would be:
+     * char *s = str;
+     * while (*s) {
+     *     *s = to_lower(*s);
+     *     s++;
+     * }
+     * return str;
+     */
 }
 
 static void util_SMult32(void)
