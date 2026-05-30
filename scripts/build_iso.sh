@@ -261,6 +261,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/timer_device.c" \
     "${REPO_ROOT}/kernel/exec/keyboard_device.c" \
     "${REPO_ROOT}/kernel/exec/graphics_lib.c" \
+    "${REPO_ROOT}/kernel/exec/dos_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
@@ -411,6 +412,7 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/timer_device.o" \
     "${BUILD_DIR}/obj/keyboard_device.o" \
     "${BUILD_DIR}/obj/graphics_lib.o" \
+    "${BUILD_DIR}/obj/dos_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \

@@ -63,4 +63,7 @@ void UAOS_KEYBOARD_Register(void);
 /* Register graphics.library */
 void UAOS_GRAPHICS_Register(void);
 
+/* Register dos.library */
+void UAOS_DOS_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

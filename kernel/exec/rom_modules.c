@@ -161,6 +161,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register graphics.library */
     UAOS_GRAPHICS_Register();
 
-    /* Additional ROM modules (dos, intuition, graphics …) are registered
+    /* Register dos.library */
+    UAOS_DOS_Register();
+
+    /* Additional ROM modules (intuition, workbench …) are registered
      * here as their native implementations are completed.                  */
 }
