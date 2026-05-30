@@ -48,4 +48,7 @@ void UAOS_CONSOLE_Register(void);
 /* Register mathffp.library */
 void UAOS_MATHFFP_Register(void);
 
+/* Register locale.library */
+void UAOS_LOCALE_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

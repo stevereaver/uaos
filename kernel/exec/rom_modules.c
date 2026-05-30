@@ -146,6 +146,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register mathffp.library */
     UAOS_MATHFFP_Register();
 
+    /* Register locale.library */
+    UAOS_LOCALE_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }
