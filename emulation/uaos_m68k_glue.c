@@ -717,30 +717,64 @@ static void dos_Open(void)
         if (g_tar_open_index == 0) {
             /* First open - determine mode based on which file exists */
             VfsFile test_fh;
-            if (VFS_Open(&test_fh, "RAM:hello.tar", VFS_READ)) {
+            char test_path[64];
+            
+            /* Use g_cwd for path resolution */
+            int cwd_len = 0;
+            while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+            emu_memcpy((uint8_t*)test_path, (uint8_t*)g_cwd, cwd_len);
+            if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
+                test_path[cwd_len++] = '/';
+            }
+            const char *tar_name = "hello.tar";
+            emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)tar_name, 9);
+            test_path[cwd_len + 9] = '\0';
+            
+            if (VFS_Open(&test_fh, test_path, VFS_READ)) {
                 VFS_Close(&test_fh);
                 /* hello.tar exists - this is extraction */
                 g_tar_is_extraction = 1;
-                filename = "RAM:hello.tar";  /* Read archive */
-            } else if (VFS_Open(&test_fh, "RAM:hello.txt", VFS_READ)) {
-                VFS_Close(&test_fh);
-                /* hello.txt exists - this is creation */
-                g_tar_is_extraction = 0;
-                filename = "RAM:hello.txt";  /* Read file to archive */
+                filename = test_path;  /* Read archive */
             } else {
-                /* Neither exists - assume creation */
-                g_tar_is_extraction = 0;
-                filename = "RAM:hello.txt";  /* Read file to archive */
+                /* Try hello.txt */
+                const char *txt_name = "hello.txt";
+                emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)txt_name, 9);
+                test_path[cwd_len + 9] = '\0';
+                
+                if (VFS_Open(&test_fh, test_path, VFS_READ)) {
+                    VFS_Close(&test_fh);
+                    /* hello.txt exists - this is creation */
+                    g_tar_is_extraction = 0;
+                    filename = test_path;  /* Read file to archive */
+                } else {
+                    /* Neither exists - assume creation */
+                    g_tar_is_extraction = 0;
+                    filename = test_path;  /* Read file to archive */
+                }
             }
         } else if (g_tar_open_index == 1) {
             /* Second open - based on mode */
+            char test_path[64];
+            int cwd_len = 0;
+            while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+            emu_memcpy((uint8_t*)test_path, (uint8_t*)g_cwd, cwd_len);
+            if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
+                test_path[cwd_len++] = '/';
+            }
+            
             if (g_tar_is_extraction) {
-                filename = "RAM:hello.txt";  /* Write extracted file */
+                const char *txt_name = "hello.txt";
+                emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)txt_name, 9);
+                test_path[cwd_len + 9] = '\0';
+                filename = test_path;  /* Write extracted file */
                 /* For extraction, use write+create mode regardless of what tar requests */
                 /* Tar opens in read mode to check existence, then should open in write mode */
                 vfs_mode = VFS_WRITE | VFS_CREATE | VFS_TRUNC;
             } else {
-                filename = "RAM:hello.tar";  /* Write archive */
+                const char *tar_name = "hello.tar";
+                emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)tar_name, 9);
+                test_path[cwd_len + 9] = '\0';
+                filename = test_path;  /* Write archive */
             }
         }
         
@@ -783,19 +817,32 @@ static void dos_Open(void)
         (name[0]=='A' && name[1]=='U' && name[2]=='X')) {
         m68k_set_reg(M68K_REG_D0, DOS_STDOUT_BPTR);
     } else {
-        /* Regular file - prepend RAM: if no device specified */
+        /* Regular file - resolve path using g_cwd if no device specified */
         char full_name[64];
         int has_device = 0;
         for (int i = 0; i < (int)blen; i++) {
             if (name[i] == ':') { has_device = 1; break; }
         }
         if (has_device) {
+            /* Absolute path with device - use as-is */
             emu_memcpy((uint8_t*)full_name, (uint8_t*)name, blen);
             full_name[blen] = '\0';
         } else {
-            full_name[0] = 'R'; full_name[1] = 'A'; full_name[2] = 'M'; full_name[3] = ':';
-            emu_memcpy((uint8_t*)full_name + 4, (uint8_t*)name, blen);
-            full_name[blen + 4] = '\0';
+            /* Relative path - prepend g_cwd */
+            int cwd_len = 0;
+            while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+            
+            /* Copy g_cwd */
+            emu_memcpy((uint8_t*)full_name, (uint8_t*)g_cwd, cwd_len);
+            
+            /* Add separator if g_cwd doesn't end with : or / */
+            if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
+                full_name[cwd_len++] = '/';
+            }
+            
+            /* Append relative path */
+            emu_memcpy((uint8_t*)full_name + cwd_len, (uint8_t*)name, blen);
+            full_name[cwd_len + blen] = '\0';
         }
         
         /* Call VFS_Open */
