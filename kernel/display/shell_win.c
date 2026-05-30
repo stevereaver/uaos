@@ -14,6 +14,7 @@
 #include "shell_win.h"
 #include "framebuffer.h"
 #include "cursor.h"
+#include "pointer_prefs.h"
 #include "wm.h"
 #include "../../emulation/uaos_emu.h"
 #include "dos/vfs.h"
@@ -301,6 +302,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  copy <src> <dst>   copy file");
     inst_print(s, "  pwd                print working directory");
     inst_print(s, "  echo <text>         print text to shell");
+    inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
 
@@ -586,33 +588,38 @@ static void inst_cmd_copy(ShellInstance *s, const char *arg)
     }
 
     VfsFile fdst;
-    if (!VFS_Open(&fdst, abs_dst, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
-        VFS_Close(&fsrc);
+    if (!VFS_Open(&fdst, abs_dst, VFS_WRITE)) {
         char msg[MAX_LINE_LEN];
-        scopy(msg, "Cannot open dest: ", MAX_LINE_LEN);
+        scopy(msg, "Cannot open destination: ", MAX_LINE_LEN);
         scat(msg, abs_dst, MAX_LINE_LEN);
         inst_print(s, msg);
+        VFS_Close(&fsrc);
         return;
     }
 
-    /* Copy all bytes */
-    uint8_t buf[256];
-    uint32_t total = 0;
-    uint32_t got;
-    while ((got = VFS_Read(&fsrc, buf, 256)) > 0) {
-        VFS_Write(&fdst, buf, got);
-        total += got;
+    char buf[256];
+    int total = 0;
+    while (1) {
+        int n = VFS_Read(&fsrc, buf, 256);
+        if (n <= 0) break;
+        VFS_Write(&fdst, buf, n);
+        total += n;
     }
+
     VFS_Close(&fsrc);
     VFS_Close(&fdst);
 
     char msg[MAX_LINE_LEN];
-    char sz[12]; uint_to_dec_s(total, sz, 12);
     scopy(msg, "Copied ", MAX_LINE_LEN);
-    scat(msg, sz, MAX_LINE_LEN);
-    scat(msg, " bytes -> ", MAX_LINE_LEN);
-    scat(msg, abs_dst, MAX_LINE_LEN);
+    uint_to_dec_s(total, msg + slen(msg), 12);
+    scat(msg, " bytes", MAX_LINE_LEN);
     inst_print(s, msg);
+}
+
+static void inst_cmd_pointer(ShellInstance *s)
+{
+    (void)s;
+    PointerPrefs_Show();
 }
 
 /* =========================================================================
@@ -697,7 +704,7 @@ static void run_cmd(ShellInstance *s, const char *line)
 {
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
-        "dir","cd","makedir","delete","type","copy","pwd","echo",
+        "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
         NULL
     };
 
@@ -724,6 +731,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==12) inst_cmd_copy(s, args);
         else if (i==13) inst_print(s, s->cwd);
         else if (i==14) inst_print(s, *args ? args : "");
+        else if (i==15) inst_cmd_pointer(s);
         return;
     }
 
