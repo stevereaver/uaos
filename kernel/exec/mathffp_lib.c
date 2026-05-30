@@ -13,6 +13,10 @@
 #include <stdio.h>
 
 /* =========================================================================
+ * AmigaOS mathffp.library uses IEEE single-precision (32-bit) format
+ * ========================================================================= */
+
+/* =========================================================================
  * mathffp.library function indices (must match AmigaOS LVO offsets)
  * ========================================================================= */
 
@@ -55,110 +59,268 @@ static void mathffp_CloseLibrary(void)
 
 static void mathffp_SPAdd(void)
 {
-    /* SPAdd - single precision addition */
+    /* SPAdd - single precision addition
+     * D0 = operand1 (float32)
+     * D1 = operand2 (float32)
+     * Returns: result in D0 */
     fprintf(stderr, "[MATHFFP] SPAdd called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * Implementation using softfloat library:
+     * #include "../../emulation/src/musashi/softfloat/softfloat.h"
+     * 
+     * float32 a = (float32)D0;
+     * float32 b = (float32)D1;
+     * float32 result = float32_add(a, b);
+     * D0 = (uint32_t)result;
+     * 
+     * Note: softfloat uses float32 = uint32_t for IEEE 754 single precision
+     */
 }
 
 static void mathffp_SPSub(void)
 {
-    /* SPSub - single precision subtraction */
+    /* SPSub - single precision subtraction
+     * D0 = operand1 (float32)
+     * D1 = operand2 (float32)
+     * Returns: result in D0 */
     fprintf(stderr, "[MATHFFP] SPSub called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * float32 b = (float32)D1;
+     * float32 result = float32_sub(a, b);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPMul(void)
 {
-    /* SPMul - single precision multiplication */
+    /* SPMul - single precision multiplication
+     * D0 = operand1 (float32)
+     * D1 = operand2 (float32)
+     * Returns: result in D0 */
     fprintf(stderr, "[MATHFFP] SPMul called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * float32 b = (float32)D1;
+     * float32 result = float32_mul(a, b);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPDiv(void)
 {
-    /* SPDiv - single precision division */
+    /* SPDiv - single precision division
+     * D0 = operand1 (float32)
+     * D1 = operand2 (float32)
+     * Returns: result in D0 */
     fprintf(stderr, "[MATHFFP] SPDiv called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * float32 b = (float32)D1;
+     * float32 result = float32_div(a, b);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPCmp(void)
 {
-    /* SPCmp - single precision comparison */
+    /* SPCmp - single precision comparison
+     * D0 = operand1 (float32)
+     * D1 = operand2 (float32)
+     * Returns: -1 if D0 < D1, 0 if equal, 1 if D0 > D1 */
     fprintf(stderr, "[MATHFFP] SPCmp called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * float32 b = (float32)D1;
+     * if (float32_lt(a, b)) D0 = -1;
+     * else if (float32_eq(a, b)) D0 = 0;
+     * else D0 = 1;
+     */
 }
 
 static void mathffp_SPNeg(void)
 {
-    /* SPNeg - single precision negation */
+    /* SPNeg - single precision negation
+     * D0 = operand (float32)
+     * Returns: -operand in D0 */
     fprintf(stderr, "[MATHFFP] SPNeg called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * float32 zero = int32_to_float32(0);
+     * float32 result = float32_sub(zero, a);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPAbs(void)
 {
-    /* SPAbs - single precision absolute value */
+    /* SPAbs - single precision absolute value
+     * D0 = operand (float32)
+     * Returns: |operand| in D0 */
     fprintf(stderr, "[MATHFFP] SPAbs called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * if (a < 0) {
+     *     float32 zero = int32_to_float32(0);
+     *     a = float32_sub(zero, a);
+     * }
+     * D0 = (uint32_t)a;
+     */
 }
 
 static void mathffp_SPFix(void)
 {
-    /* SPFix - convert float to integer */
+    /* SPFix - convert float to integer
+     * D0 = operand (float32)
+     * Returns: integer in D0 */
     fprintf(stderr, "[MATHFFP] SPFix called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * int32 result = float32_to_int32_round_to_zero(a);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPFlt(void)
 {
-    /* SPFlt - convert integer to float */
+    /* SPFlt - convert integer to float
+     * D0 = operand (int32)
+     * Returns: float in D0 */
     fprintf(stderr, "[MATHFFP] SPFlt called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * int32 a = (int32)D0;
+     * float32 result = int32_to_float32(a);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPSqrt(void)
 {
-    /* SPSqrt - single precision square root */
+    /* SPSqrt - single precision square root
+     * D0 = operand (float32)
+     * Returns: sqrt(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPSqrt called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * float32 a = (float32)D0;
+     * float32 result = float32_sqrt(a);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPLog(void)
 {
-    /* SPLog - single precision natural logarithm */
+    /* SPLog - single precision natural logarithm
+     * D0 = operand (float32)
+     * Returns: ln(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPLog called\n");
+    /* TODO: Implement with M68k memory access using softfloat
+     * 
+     * Use floatx80_flogn from softfloat, then convert back to float32:
+     * float32 a = (float32)D0;
+     * floatx80 a80 = float32_to_floatx80(a);
+     * floatx80 result80 = floatx80_flogn(a80);
+     * float32 result = floatx80_to_float32(result80);
+     * D0 = (uint32_t)result;
+     */
 }
 
 static void mathffp_SPExp(void)
 {
-    /* SPExp - single precision exponential */
+    /* SPExp - single precision exponential
+     * D0 = operand (float32)
+     * Returns: e^operand in D0 */
     fprintf(stderr, "[MATHFFP] SPExp called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have exp - would need Taylor series implementation:
+     * exp(x) = 1 + x + x^2/2! + x^3/3! + ...
+     * Or use floatx80 exp function if available
+     */
 }
 
 static void mathffp_SPSin(void)
 {
-    /* SPSin - single precision sine */
+    /* SPSin - single precision sine
+     * D0 = operand (float32, radians)
+     * Returns: sin(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPSin called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have sin - would need Taylor series implementation:
+     * sin(x) = x - x^3/3! + x^5/5! - x^7/7! + ...
+     */
 }
 
 static void mathffp_SPCos(void)
 {
-    /* SPCos - single precision cosine */
+    /* SPCos - single precision cosine
+     * D0 = operand (float32, radians)
+     * Returns: cos(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPCos called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have cos - would need Taylor series implementation:
+     * cos(x) = 1 - x^2/2! + x^4/4! - x^6/6! + ...
+     */
 }
 
 static void mathffp_SPTan(void)
 {
-    /* SPTan - single precision tangent */
+    /* SPTan - single precision tangent
+     * D0 = operand (float32, radians)
+     * Returns: tan(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPTan called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have tan - would need implementation:
+     * tan(x) = sin(x) / cos(x)
+     */
 }
 
 static void mathffp_SPAtan(void)
 {
-    /* SPAtan - single precision arctangent */
+    /* SPAtan - single precision arctangent
+     * D0 = operand (float32)
+     * Returns: atan(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPAtan called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have atan - would need Taylor series implementation
+     */
 }
 
 static void mathffp_SPAsin(void)
 {
-    /* SPAsin - single precision arcsine */
+    /* SPAsin - single precision arcsine
+     * D0 = operand (float32)
+     * Returns: asin(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPAsin called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have asin - would need implementation
+     */
 }
 
 static void mathffp_SPAcos(void)
 {
-    /* SPAcos - single precision arccosine */
+    /* SPAcos - single precision arccosine
+     * D0 = operand (float32)
+     * Returns: acos(operand) in D0 */
     fprintf(stderr, "[MATHFFP] SPAcos called\n");
+    /* TODO: Implement with M68k memory access
+     * 
+     * Softfloat doesn't have acos - would need implementation
+     */
 }
 
 /* =========================================================================
