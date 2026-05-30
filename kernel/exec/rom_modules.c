@@ -149,6 +149,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register locale.library */
     UAOS_LOCALE_Register();
 
+    /* Register ixemul.library */
+    UAOS_IXEMUL_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }

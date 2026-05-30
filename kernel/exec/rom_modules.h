@@ -51,4 +51,7 @@ void UAOS_MATHFFP_Register(void);
 /* Register locale.library */
 void UAOS_LOCALE_Register(void);
 
+/* Register ixemul.library */
+void UAOS_IXEMUL_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */
