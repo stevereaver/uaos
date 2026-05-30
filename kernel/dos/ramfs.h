@@ -27,6 +27,12 @@
 #define RAMFS_TYPE_FILE  2
 
 /* -------------------------------------------------------------------------
+ * Node attributes (bit flags)
+ * ------------------------------------------------------------------------- */
+#define RAMFS_ATTR_READONLY  0x01  /* Read-only flag */
+#define RAMFS_ATTR_HIDDEN    0x02  /* Hidden flag */
+
+/* -------------------------------------------------------------------------
  * Node structure
  * Each node is either a directory or a file.
  * Directories contain a linked list of child nodes.
@@ -34,6 +40,7 @@
  * ------------------------------------------------------------------------- */
 typedef struct RamFsNode {
     uint8_t  type;                  /* RAMFS_TYPE_*                           */
+    uint8_t  attrs;                 /* RAMFS_ATTR_* bit flags                  */
     char     name[RAMFS_MAX_NAME];  /* entry name (no path separator)         */
     struct RamFsNode *parent;       /* NULL for volume root                   */
     struct RamFsNode *first_child;  /* first child (dirs only)                */
@@ -90,5 +97,11 @@ RamFsNode *RamFS_FirstChild(RamFsNode *dir);
 
 /* Allocate bytes from the shared pool (bump allocator). Returns NULL if full. */
 uint8_t *RamFS_AllocPool(uint32_t bytes);
+
+/* Get attributes of a node. Returns RAMFS_ATTR_* bit flags. */
+uint8_t RamFS_GetAttrs(RamFsNode *node);
+
+/* Set attributes of a node. Returns 0 on success, -1 if node is NULL. */
+int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs);
 
 #endif

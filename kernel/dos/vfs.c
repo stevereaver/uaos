@@ -239,3 +239,25 @@ RamFsNode *VFS_GetRoot(const char *vol_name)
     if (!vol) return NULL;
     return vol->root;
 }
+
+uint8_t VFS_GetAttrs(const char *path)
+{
+    char vol_name[16];
+    if (!extract_vol(path, vol_name, 16)) return 0;
+    RamFsVol *vol = find_vol(vol_name);
+    if (!vol) return 0;
+    RamFsNode *node = RamFS_Resolve(vol, path);
+    if (!node) return 0;
+    return RamFS_GetAttrs(node);
+}
+
+int VFS_SetAttrs(const char *path, uint8_t attrs)
+{
+    char vol_name[16];
+    if (!extract_vol(path, vol_name, 16)) return -1;
+    RamFsVol *vol = find_vol(vol_name);
+    if (!vol) return -1;
+    RamFsNode *node = RamFS_Resolve(vol, path);
+    if (!node) return -1;
+    return RamFS_SetAttrs(node, attrs);
+}

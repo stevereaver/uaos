@@ -59,6 +59,7 @@ static RamFsNode *alloc_node(void)
     for (int i = 0; i < RAMFS_MAX_NODES; i++) {
         if (g_nodes[i].type == RAMFS_TYPE_FREE) {
             g_nodes[i].type         = 0xFF; /* mark claimed, caller sets type */
+            g_nodes[i].attrs        = 0;   /* no attributes */
             g_nodes[i].name[0]      = '\0';
             g_nodes[i].parent       = NULL;
             g_nodes[i].first_child  = NULL;
@@ -284,6 +285,7 @@ RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
 int RamFS_Write(RamFsNode *node, const uint8_t *data, uint32_t len)
 {
     if (!node || node->type != RAMFS_TYPE_FILE) return -1;
+    if (node->attrs & RAMFS_ATTR_READONLY) return -2; /* read-only */
     if (len == 0) { node->size = 0; return 0; }
 
     if (len > node->alloc) {
@@ -316,10 +318,12 @@ int RamFS_Delete(RamFsVol *vol, const char *path)
     if (!node) return -1;
     if (node->type == RAMFS_TYPE_DIR && node->first_child) return -2; /* not empty */
     if (!node->parent) return -3; /* cannot delete root */
+    if (node->attrs & RAMFS_ATTR_READONLY) return -4; /* read-only */
 
     dir_remove_child(node->parent, node);
     node->type = RAMFS_TYPE_FREE;
     node->name[0] = '\0';
+    node->attrs = 0;
     node->size  = 0;
     node->alloc = 0;
     node->data  = NULL;
@@ -331,4 +335,17 @@ RamFsNode *RamFS_FirstChild(RamFsNode *dir)
 {
     if (!dir || dir->type != RAMFS_TYPE_DIR) return NULL;
     return dir->first_child;
+}
+
+uint8_t RamFS_GetAttrs(RamFsNode *node)
+{
+    if (!node) return 0;
+    return node->attrs;
+}
+
+int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs)
+{
+    if (!node) return -1;
+    node->attrs = attrs;
+    return 0;
 }

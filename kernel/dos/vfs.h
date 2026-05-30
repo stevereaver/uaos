@@ -81,4 +81,10 @@ RamFsNode *VFS_ResolveDir(const char *path);
 /* Returns the volume root node for "RAM:" (for direct tree walking). */
 RamFsNode *VFS_GetRoot(const char *vol_name);
 
+/* Get attributes of a file/directory. Returns RAMFS_ATTR_* bit flags. */
+uint8_t VFS_GetAttrs(const char *path);
+
+/* Set attributes of a file/directory. Returns 0 on success, -1 on failure. */
+int VFS_SetAttrs(const char *path, uint8_t attrs);
+
 #endif
