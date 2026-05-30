@@ -268,7 +268,10 @@ for src in \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
     "${REPO_ROOT}/kernel/dos/ramfs.c" \
     "${REPO_ROOT}/kernel/dos/vfs.c" \
-    "${REPO_ROOT}/kernel/dos/blockdev.c"
+    "${REPO_ROOT}/kernel/dos/blockdev.c" \
+    "${REPO_ROOT}/kernel/dos/fat32.c" \
+    "${REPO_ROOT}/kernel/dos/pfs3.c" \
+    "${REPO_ROOT}/kernel/dos/ext4.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -422,6 +425,9 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/ramfs.o" \
     "${BUILD_DIR}/obj/vfs.o" \
     "${BUILD_DIR}/obj/blockdev.o" \
+    "${BUILD_DIR}/obj/fat32.o" \
+    "${BUILD_DIR}/obj/pfs3.o" \
+    "${BUILD_DIR}/obj/ext4.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
