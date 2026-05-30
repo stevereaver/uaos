@@ -57,4 +57,7 @@ void UAOS_IXEMUL_Register(void);
 /* Register timer.device */
 void UAOS_TIMER_Register(void);
 
+/* Register keyboard.device */
+void UAOS_KEYBOARD_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

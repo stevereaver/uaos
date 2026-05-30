@@ -155,6 +155,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register timer.device */
     UAOS_TIMER_Register();
 
+    /* Register keyboard.device */
+    UAOS_KEYBOARD_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }
