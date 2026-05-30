@@ -9,13 +9,15 @@
 1. [Introduction](#introduction)
 2. [System Architecture](#system-architecture)
 3. [Kernel Subsystems](#kernel-subsystems)
-4. [Graphics and Window Manager](#graphics-and-window-manager)
-5. [Input Drivers](#input-drivers)
-6. [Shell](#shell)
-7. [Build System](#build-system)
-8. [Running in QEMU](#running-in-qemu)
-9. [Troubleshooting](#troubleshooting)
-10. [Memory Map Reference](#memory-map-reference)
+4. [ROM Module System](#rom-module-system)
+5. [Graphics and Window Manager](#graphics-and-window-manager)
+6. [Input Drivers](#input-drivers)
+7. [Filesystem Layer](#filesystem-layer)
+8. [Shell](#shell)
+9. [Build System](#build-system)
+10. [Running in QEMU](#running-in-qemu)
+11. [Troubleshooting](#troubleshooting)
+12. [Memory Map Reference](#memory-map-reference)
 
 ---
 
@@ -144,7 +146,117 @@ restored and `IRETQ` resumes execution.
 - 256-vector Interrupt Descriptor Table installed via `LIDT`
 - 8259A PIC remapped: IRQ0–7 → vectors 32–39, IRQ8–15 → vectors 40–47
 - IRQ1 (vector 33) — PS/2 keyboard
+- IRQ8 (vector 40) — RTC (CMOS real-time clock)
 - IRQ12 (vector 44) — PS/2 mouse
+
+### RTC Driver (`rtc.c`)
+
+CMOS real-time clock driver providing time snapshots and UIE interrupt support:
+
+- **I/O ports**: 0x70 (index), 0x71 (data)
+- **Functions**: `RTC_ReadTime()` reads current time into `RtcTime` structure
+- **IRQ handler**: Updates cached time on each UIE interrupt
+- **Connected to**: `timer.device` for timing functions
+
+### VirtIO Block Device Driver (`virtio_blk.c`)
+
+VirtIO block device driver for QEMU external disk support:
+
+- **PCI scanning**: Searches for VirtIO block device (vendor 0x1AF4, device 0x1001)
+- **BAR0**: I/O space for VirtIO device configuration
+- **Capacity reporting**: Reads device capacity from configuration space
+- **Registered as**: "virtio0" with block device layer
+- **Status**: PCI scanning and capacity reporting implemented; virtqueue I/O marked as TODO
+
+---
+
+## ROM Module System
+
+UAOS implements a native ROM module system that provides AmigaOS-compatible library and device implementations. These modules are registered at boot and can be called by M68k emulated code via ILLEGAL opcode dispatch.
+
+### ROM Module Registry (`rom_modules.c`)
+
+`UAOS_ROM_RegisterAll()` is called once at boot. It populates a static array of `UaosRomModule` descriptors, each holding:
+
+- Library name string (e.g. `"exec.library"`)
+- Library version number
+- 32-bit Amiga base address
+- Array of native function pointers (indexed 1-based to match LVO offsets)
+
+### Registered ROM Modules
+
+#### Libraries
+
+| Library | Version | Base Address | Functions |
+|---------|---------|-------------|-----------|
+| `exec.library` | v45 | 0x000000D0 | Process management, memory allocation |
+| `utility.library` | v37 | 0x000000E0 | String functions, memory utilities |
+| `console.device` | v40 | 0x000000F0 | Console I/O |
+| `mathffp.library` | v40 | 0x00000070 | Software floating-point (uses softfloat) |
+| `locale.library` | v38 | 0x00000100 | Localization support |
+| `ixemul.library` | v53 | 0x00000110 | Unix compatibility layer |
+| `graphics.library` | v40 | 0x00000120 | Graphics primitives |
+| `dos.library` | v40 | 0x000000D0 | File system operations |
+
+#### Devices
+
+| Device | Version | Base Address | Connected To |
+|--------|---------|-------------|-------------|
+| `timer.device` | v40 | 0x00000130 | RTC driver (CMOS) |
+| `keyboard.device` | v40 | 0x00000140 | PS/2 keyboard driver |
+
+### Library Function Implementation
+
+Each library is implemented in `kernel/exec/` with the pattern:
+
+```c
+/* Function indices matching AmigaOS LVO offsets */
+#define LIBRARY_FUNCTION_1   1
+#define LIBRARY_FUNCTION_2   2
+/* ... */
+
+static void library_Function1(void)
+{
+    /* Implementation with M68k register access */
+    /* D0, D1, A0, A1 contain arguments */
+    /* Return value in D0/A0 */
+}
+
+static void *library_funcs[] = {
+    library_Function1,   /* index 1 */
+    library_Function2,   /* index 2 */
+    /* ... */
+};
+
+void UAOS_LIBRARY_Register(void)
+{
+    UAOS_ROM_Register("library.name", version, base_addr,
+                      (uint16_t)(sizeof(library_funcs) / sizeof(library_funcs[0])),
+                      library_funcs);
+}
+```
+
+### M68k Integration
+
+Functions are called via ILLEGAL opcode dispatch in `uaos_m68k_glue.c`:
+
+1. M68k code calls library function via LVO
+2. ILLEGAL opcode triggers dispatch
+3. Arguments read from M68k registers (D0, D1, A0, A1)
+4. Native C function called
+5. Return values written back to M68k registers
+6. Execution resumes in M68k code
+
+### Current Implementation Status
+
+- **exec.library**: Basic stubs for OpenLibrary, CloseLibrary, AllocMem, FreeMem, FindTask
+- **utility.library**: String functions (StrIcmp, StrNicmp, UcStr, LcStr) with implementation logic
+- **mathffp.library**: All 18 floating-point functions with softfloat integration logic
+- **dos.library**: Lock/Unlock, Examine/ExamineNext with implementation logic
+- **timer.device**: Connected to RTC driver for timing functions
+- **keyboard.device**: Connected to PS/2 keyboard driver for input
+
+Functions currently log calls and have detailed implementation logic in comments. Full M68k memory access integration is pending.
 
 ---
 
@@ -261,6 +373,169 @@ cursor movement.
 
 ---
 
+## Filesystem Layer
+
+UAOS provides a layered filesystem architecture supporting multiple filesystem types through a unified VFS (Virtual Filesystem) interface.
+
+### Block Device Layer (`blockdev.c`)
+
+The block device layer provides a unified interface for storage devices:
+
+```c
+typedef struct BlockDev {
+    const char *name;           /* Device name (e.g., "virtio0") */
+    uint32_t  sector_size;     /* Sector size in bytes (usually 512) */
+    uint64_t  num_sectors;     /* Total number of sectors */
+    void     *private_data;    /* Driver-specific data */
+    const BlockDevOps *ops;    /* Device operations */
+    struct BlockDev *next;     /* Next device in list */
+} BlockDev;
+```
+
+#### Block Device Operations
+
+| Function | Description |
+|----------|-------------|
+| `BlockDev_Register(dev)` | Register a block device |
+| `BlockDev_Unregister(dev)` | Unregister a block device |
+| `BlockDev_Find(name)` | Find device by name |
+| `BlockDev_Read(dev, sector, buffer, num)` | Read sectors |
+| `BlockDev_Write(dev, sector, buffer, num)` | Write sectors |
+| `BlockDev_GetCapacity(dev)` | Get device capacity |
+
+#### Supported Block Devices
+
+- **VirtIO Block Device** (`virtio_blk.c`): PCI scanning, device detection, capacity reporting
+  - Registers as "virtio0"
+  - Currently stub implementation (virtqueue I/O marked as TODO)
+
+### VFS Layer (`vfs.c`)
+
+The VFS layer provides a thin dispatch over filesystem implementations:
+
+```c
+typedef struct {
+    RamFsNode *node;    /* NULL = invalid / not open */
+    uint32_t   pos;     /* current read/write position */
+} VfsFile;
+```
+
+#### VFS Operations
+
+| Function | Description |
+|----------|-------------|
+| `VFS_Init()` | Initialize VFS and mount RAM: |
+| `VFS_Open(fh, path, flags)` | Open a file |
+| `VFS_Close(fh)` | Close a file handle |
+| `VFS_Read(fh, buf, len)` | Read from file |
+| `VFS_Write(fh, buf, len)` | Write to file |
+| `VFS_Seek(fh, pos)` | Seek to position |
+| `VFS_Size(fh)` | Get file size |
+| `VFS_MkDir(path)` | Create directory |
+| `VFS_Delete(path)` | Delete file/directory |
+| `VFS_OpenDir(path)` | Open directory for reading |
+| `VFS_ResolveDir(path)` | Resolve path to directory node |
+| `VFS_GetRoot(vol_name)` | Get volume root node |
+
+### RAM Filesystem (`ramfs.c`)
+
+In-memory filesystem with BSS-backed storage:
+
+- **Node tree**: 256 nodes maximum
+- **Data pool**: 64KB for file contents
+- **Auto-mounted at boot**: RAM: with T, ENV, CLIPS, S directories
+- **Include style**: `#include "dos/vfs.h"` (kernel root relative)
+
+### Filesystem Drivers
+
+#### FAT32 (`fat32.c`)
+
+FAT32 filesystem driver for block devices:
+
+```c
+typedef struct {
+    BlockDev *bdev;           /* Block device */
+    Fat32BPB  bpb;            /* Boot sector */
+    uint32_t  fat_start;      /* FAT start sector */
+    uint32_t  data_start;     /* Data start sector */
+    uint32_t  root_cluster;   /* Root directory cluster */
+    uint32_t  bytes_per_sec;  /* Bytes per sector */
+    uint32_t  sec_per_clus;   /* Sectors per cluster */
+    uint32_t  cluster_size;   /* Cluster size in bytes */
+    uint8_t  *fat_cache;      /* FAT cache */
+    uint32_t  fat_cache_sec;  /* Cached FAT sector */
+} Fat32FS;
+```
+
+**Operations**: Mount, Unmount, Open, Close, Read, Write, Seek, Size, ReadDir
+
+**Status**: Mount function implemented with boot sector parsing. File operations are stubs with implementation logic.
+
+#### PFS3 (`pfs3.c`)
+
+Professional File System 3 (Amiga-specific) driver:
+
+```c
+typedef struct {
+    BlockDev *bdev;           /* Block device */
+    Pfs3RootBlock root;       /* Root block */
+    uint32_t  block_size;     /* Block size */
+    uint32_t  total_blocks;   /* Total blocks */
+    uint32_t  root_block;     /* Root block number */
+    uint32_t  bitmap_start;   /* Bitmap start block */
+    uint32_t  bitmap_blocks;  /* Number of bitmap blocks */
+} Pfs3FS;
+```
+
+**Operations**: Mount, Unmount, Open, Close, Read, Write, Seek, Size, ReadDir
+
+**Status**: Mount function implemented with signature validation. File operations are stubs.
+
+#### EXT4 (`ext4.c`)
+
+Linux EXT4 filesystem driver:
+
+```c
+typedef struct {
+    BlockDev *bdev;           /* Block device */
+    Ext4Superblock sb;         /* Superblock */
+    uint32_t  block_size;     /* Block size */
+    uint32_t  inode_size;     /* Inode size */
+    uint32_t  blocks_per_group;/* Blocks per group */
+    uint32_t  inodes_per_group;/* Inodes per group */
+    uint32_t  inode_table_start;/* Inode table start */
+} Ext4FS;
+```
+
+**Operations**: Mount, Unmount, Open, Close, Read, Write, Seek, Size, ReadDir
+
+**Status**: Mount function implemented with superblock parsing. File operations are stubs.
+
+### Shell Commands
+
+The shell integrates with the VFS layer for filesystem operations:
+
+| Command | Description |
+|---------|-------------|
+| `dir` | List files in current directory |
+| `cd` | Change current directory |
+| `makedir` | Create a directory |
+| `delete` | Delete a file or directory |
+| `type` | Display file contents |
+| `copy` | Copy a file |
+
+### Current Implementation Status
+
+- **Block device layer**: Complete with VirtIO registration
+- **VFS layer**: Complete with RAM filesystem
+- **FAT32**: Mount implemented, file operations stubs
+- **PFS3**: Mount implemented, file operations stubs
+- **EXT4**: Mount implemented, file operations stubs
+
+All filesystem drivers use static allocation (no malloc) for freestanding environment. File operations have detailed implementation logic in comments pending M68k memory access integration.
+
+---
+
 ## Shell
 
 The shell window (`shell_win.c`) registers with the WM via `WM_AddWindow()` and
@@ -273,12 +548,19 @@ implements a scrollable terminal:
 ### Built-in Commands
 
 | Command | Description |
-|---|---|
+|---------|-------------|
 | `help` | List available commands |
 | `version` | Show kernel version and CPU architecture |
 | `mem` | Display total RAM from Multiboot2 tag |
 | `clear` | Clear the shell history buffer |
 | `reboot` | Trigger a system reboot via port `0x64` |
+| `libs` | List loaded kernel libraries with versions |
+| `dir` | List files in current directory (VFS) |
+| `cd` | Change current directory (VFS) |
+| `makedir` | Create a directory (VFS) |
+| `delete` | Delete a file or directory (VFS) |
+| `type` | Display file contents (VFS) |
+| `copy` | Copy a file (VFS) |
 
 ---
 
