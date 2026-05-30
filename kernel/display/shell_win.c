@@ -47,6 +47,11 @@
 #define VKEY_RIGHT 0x06
 
 #define MAX_CMD_HIST  64   /* command history entries per shell */
+#define MAX_ALIASES   32   /* max aliases per shell */
+#define MAX_ALIAS_LEN 128  /* max alias expansion string */
+#define MAX_ENV_VARS   32   /* max environment variables per shell */
+#define MAX_ENV_NAME  32   /* max env var name length */
+#define MAX_ENV_VAL   128  /* max env var value length */
 
 /* =========================================================================
  * Per-instance state
@@ -69,6 +74,16 @@ typedef struct {
     char cmd_hist[MAX_CMD_HIST][MAX_INPUT + 1];
     int  cmd_hist_count;  /* total commands entered */
     int  cmd_hist_nav;    /* navigation offset: 0 = live input, 1 = last cmd */
+
+    /* Aliases */
+    char alias_names[MAX_ALIASES][32];
+    char alias_values[MAX_ALIASES][MAX_ALIAS_LEN];
+    int  alias_count;
+
+    /* Local environment variables */
+    char env_names[MAX_ENV_VARS][MAX_ENV_NAME];
+    char env_values[MAX_ENV_VARS][MAX_ENV_VAL];
+    int  env_count;
 
     /* Current working directory (AmigaDOS path, e.g. "RAM:") */
     char cwd[64];
@@ -109,6 +124,16 @@ static void uint_to_dec_s(uint32_t v, char *buf, int max)
     while (v && i<11) { tmp[i++]=(char)('0'+v%10); v/=10; }
     while (i-- && j<max-1) buf[j++]=tmp[i];
     buf[j]=0;
+}
+
+static int seq(const char *a, const char *b)
+{
+    int i = 0;
+    while (a[i] && b[i]) {
+        if (a[i] != b[i]) return 0;
+        i++;
+    }
+    return a[i] == b[i];
 }
 
 /* =========================================================================
@@ -301,10 +326,17 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  delete <path>      delete file or empty dir");
     inst_print(s, "  type <file>        print file contents");
     inst_print(s, "  copy <src> <dst>   copy file");
+    inst_print(s, "  rename <from> <to> rename/move file");
     inst_print(s, "  pwd                print working directory");
     inst_print(s, "  echo <text>         print text to shell");
     inst_print(s, "  protect <flags> <path>  set file attributes (+r,-r,+h,-h)");
     inst_print(s, "  info <path>         show file attributes");
+    inst_print(s, "  alias [name cmd]   create/list command aliases");
+    inst_print(s, "  unalias <name>      remove an alias");
+    inst_print(s, "  set [name val]     set/list local environment variable");
+    inst_print(s, "  unset <name>        remove local environment variable");
+    inst_print(s, "  date               show current date/time");
+    inst_print(s, "  which <cmd>        locate a command");
     inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
@@ -719,6 +751,223 @@ static void inst_cmd_info(ShellInstance *s, const char *arg)
     inst_print(s, msg);
 }
 
+static void inst_cmd_alias(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        /* List all aliases */
+        if (s->alias_count == 0) {
+            inst_print(s, "No aliases defined");
+            return;
+        }
+        for (int i = 0; i < s->alias_count; i++) {
+            char line[MAX_LINE_LEN];
+            scopy(line, s->alias_names[i], MAX_LINE_LEN);
+            scat(line, " = ", MAX_LINE_LEN);
+            scat(line, s->alias_values[i], MAX_LINE_LEN);
+            inst_print(s, line);
+        }
+        return;
+    }
+
+    /* Parse: alias name value */
+    char name[32];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < 31) { name[i++] = *arg++; }
+    name[i] = '\0';
+    while (*arg == ' ') arg++;
+
+    if (!name[0]) { inst_print(s, "Usage: alias <name> <command>"); return; }
+    if (!*arg) { inst_print(s, "Usage: alias <name> <command>"); return; }
+
+    /* Check if alias already exists */
+    for (int i = 0; i < s->alias_count; i++) {
+        if (seq(s->alias_names[i], name)) {
+            scopy(s->alias_values[i], arg, MAX_ALIAS_LEN);
+            inst_print(s, "Alias updated");
+            return;
+        }
+    }
+
+    /* Add new alias */
+    if (s->alias_count >= MAX_ALIASES) {
+        inst_print(s, "Alias limit reached");
+        return;
+    }
+    scopy(s->alias_names[s->alias_count], name, 32);
+    scopy(s->alias_values[s->alias_count], arg, MAX_ALIAS_LEN);
+    s->alias_count++;
+    inst_print(s, "Alias added");
+}
+
+static void inst_cmd_unalias(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: unalias <name>"); return; }
+
+    char name[32];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < 31) { name[i++] = *arg++; }
+    name[i] = '\0';
+
+    for (int i = 0; i < s->alias_count; i++) {
+        if (seq(s->alias_names[i], name)) {
+            /* Shift remaining aliases down */
+            for (int j = i; j < s->alias_count - 1; j++) {
+                scopy(s->alias_names[j], s->alias_names[j + 1], 32);
+                scopy(s->alias_values[j], s->alias_values[j + 1], MAX_ALIAS_LEN);
+            }
+            s->alias_count--;
+            inst_print(s, "Alias removed");
+            return;
+        }
+    }
+    inst_print(s, "Alias not found");
+}
+
+static void inst_cmd_set(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        /* List all environment variables */
+        if (s->env_count == 0) {
+            inst_print(s, "No environment variables set");
+            return;
+        }
+        for (int i = 0; i < s->env_count; i++) {
+            char line[MAX_LINE_LEN];
+            scopy(line, s->env_names[i], MAX_LINE_LEN);
+            scat(line, " = ", MAX_LINE_LEN);
+            scat(line, s->env_values[i], MAX_LINE_LEN);
+            inst_print(s, line);
+        }
+        return;
+    }
+
+    /* Parse: set name value */
+    char name[MAX_ENV_NAME];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < MAX_ENV_NAME - 1) { name[i++] = *arg++; }
+    name[i] = '\0';
+    while (*arg == ' ') arg++;
+
+    if (!name[0]) { inst_print(s, "Usage: set <name> <value>"); return; }
+    if (!*arg) { inst_print(s, "Usage: set <name> <value>"); return; }
+
+    /* Check if env var already exists */
+    for (int i = 0; i < s->env_count; i++) {
+        if (seq(s->env_names[i], name)) {
+            scopy(s->env_values[i], arg, MAX_ENV_VAL);
+            inst_print(s, "Variable updated");
+            return;
+        }
+    }
+
+    /* Add new env var */
+    if (s->env_count >= MAX_ENV_VARS) {
+        inst_print(s, "Environment variable limit reached");
+        return;
+    }
+    scopy(s->env_names[s->env_count], name, MAX_ENV_NAME);
+    scopy(s->env_values[s->env_count], arg, MAX_ENV_VAL);
+    s->env_count++;
+    inst_print(s, "Variable set");
+}
+
+static void inst_cmd_unset(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: unset <name>"); return; }
+
+    char name[MAX_ENV_NAME];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < MAX_ENV_NAME - 1) { name[i++] = *arg++; }
+    name[i] = '\0';
+
+    for (int i = 0; i < s->env_count; i++) {
+        if (seq(s->env_names[i], name)) {
+            /* Shift remaining env vars down */
+            for (int j = i; j < s->env_count - 1; j++) {
+                scopy(s->env_names[j], s->env_names[j + 1], MAX_ENV_NAME);
+                scopy(s->env_values[j], s->env_values[j + 1], MAX_ENV_VAL);
+            }
+            s->env_count--;
+            inst_print(s, "Variable removed");
+            return;
+        }
+    }
+    inst_print(s, "Variable not found");
+}
+
+static void inst_cmd_rename(ShellInstance *s, const char *arg)
+{
+    (void)s; (void)arg;
+    inst_print(s, "Rename not yet implemented - use copy and delete");
+}
+
+static void inst_cmd_date(ShellInstance *s, const char *arg)
+{
+    (void)arg; /* TODO: support setting date */
+    /* UAOS doesn't have a real-time clock yet, display build date */
+    inst_print(s, "Ultimate Amiga OS - Build Date: 2026");
+    inst_print(s, "Note: Real-time clock not yet implemented");
+}
+
+static void inst_cmd_which(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: which <command>"); return; }
+
+    char cmd[32];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < 31) { cmd[i++] = *arg++; }
+    cmd[i] = '\0';
+
+    /* Check if it's a built-in command */
+    const char *cmds[] = {
+        "help","version","mem","libs","clear","reboot","run",
+        "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
+        "protect","info","alias","unalias","set","unset","rename","date","which",
+        NULL
+    };
+
+    for (int i = 0; cmds[i]; i++) {
+        if (seq(cmds[i], cmd)) {
+            char msg[MAX_LINE_LEN];
+            scopy(msg, cmd, MAX_LINE_LEN);
+            scat(msg, " is a built-in command", MAX_LINE_LEN);
+            inst_print(s, msg);
+            return;
+        }
+    }
+
+    /* Check if it's a file in current directory */
+    char path[64];
+    scopy(path, s->cwd, 64);
+    scat(path, cmd, 64);
+
+    VfsFile test;
+    if (VFS_Open(&test, path, VFS_READ)) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, path, MAX_LINE_LEN);
+        inst_print(s, msg);
+        VFS_Close(&test);
+        return;
+    }
+
+    /* Check if it's an alias */
+    for (int i = 0; i < s->alias_count; i++) {
+        if (seq(s->alias_names[i], cmd)) {
+            char msg[MAX_LINE_LEN];
+            scopy(msg, cmd, MAX_LINE_LEN);
+            scat(msg, " is aliased to: ", MAX_LINE_LEN);
+            scat(msg, s->alias_values[i], MAX_LINE_LEN);
+            inst_print(s, msg);
+            return;
+        }
+    }
+
+    char msg[MAX_LINE_LEN];
+    scopy(msg, cmd, MAX_LINE_LEN);
+    scat(msg, " not found", MAX_LINE_LEN);
+    inst_print(s, msg);
+}
+
 static void inst_cmd_pointer(ShellInstance *s)
 {
     (void)s;
@@ -805,19 +1054,43 @@ static int parse_redirects(ShellInstance *s, const char *line,
 
 static void run_cmd(ShellInstance *s, const char *line)
 {
+    /* Check for alias expansion first */
+    char first_word[32];
+    const char *p = line;
+    int i = 0;
+    while (*p && *p != ' ' && i < 31) { first_word[i++] = *p++; }
+    first_word[i] = '\0';
+
+    /* Try to expand alias */
+    char expanded[MAX_LINE_LEN];
+    const char *cmd_to_run = line;
+    for (int i = 0; i < s->alias_count; i++) {
+        if (seq(s->alias_names[i], first_word)) {
+            /* Expand alias: alias_value + remaining args */
+            scopy(expanded, s->alias_values[i], MAX_LINE_LEN);
+            while (*p == ' ') p++;
+            if (*p) {
+                scat(expanded, " ", MAX_LINE_LEN);
+                scat(expanded, p, MAX_LINE_LEN);
+            }
+            cmd_to_run = expanded;
+            break;
+        }
+    }
+
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","info",
+        "protect","info","alias","unalias","set","unset","rename","date","which",
         NULL
     };
 
     for (int i = 0; cmds[i]; i++) {
         const char *c = cmds[i];
         int cl = slen(c);
-        if (!cmd_match(line, c, cl)) continue;
+        if (!cmd_match(cmd_to_run, c, cl)) continue;
 
-        const char *args = line + cl;
+        const char *args = cmd_to_run + cl;
         while (*args == ' ') args++;
 
         if (i==0) inst_cmd_help(s);
@@ -838,12 +1111,19 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==15) inst_cmd_pointer(s);
         else if (i==16) inst_cmd_protect(s, args);
         else if (i==17) inst_cmd_info(s, args);
+        else if (i==18) inst_cmd_alias(s, args);
+        else if (i==19) inst_cmd_unalias(s, args);
+        else if (i==20) inst_cmd_set(s, args);
+        else if (i==21) inst_cmd_unset(s, args);
+        else if (i==22) inst_cmd_rename(s, args);
+        else if (i==23) inst_cmd_date(s, args);
+        else if (i==24) inst_cmd_which(s, args);
         return;
     }
 
     char msg[MAX_LINE_LEN];
     scopy(msg, "Unknown command: ", MAX_LINE_LEN);
-    scat(msg, line, MAX_LINE_LEN);
+    scat(msg, cmd_to_run, MAX_LINE_LEN);
     inst_print(s, msg);
 }
 
