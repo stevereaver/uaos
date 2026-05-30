@@ -248,6 +248,9 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_READARGS       15
 #define DOS_GETARGSTR      16
 #define DOS_ISINTERACTIVE  17
+#define DOS_DELETEFILE     18
+#define DOS_RENAME         19
+#define DOS_SETPROTECTION  20
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -330,6 +333,9 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_READARGS   (-756)
 #define LVO_DOS_GETARGSTR  (-462)
 #define LVO_DOS_ISINTERACTIVE (-366)
+#define LVO_DOS_DELETEFILE (-78)
+#define LVO_DOS_RENAME     (-84)
+#define LVO_DOS_SETPROTECTION (-90)
 
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
@@ -353,6 +359,9 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_READARGS:       return (uint32_t)((int)DOS_BASE + LVO_DOS_READARGS);
             case DOS_GETARGSTR:      return (uint32_t)((int)DOS_BASE + LVO_DOS_GETARGSTR);
             case DOS_ISINTERACTIVE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_ISINTERACTIVE);
+            case DOS_DELETEFILE:     return (uint32_t)((int)DOS_BASE + LVO_DOS_DELETEFILE);
+            case DOS_RENAME:         return (uint32_t)((int)DOS_BASE + LVO_DOS_RENAME);
+            case DOS_SETPROTECTION:  return (uint32_t)((int)DOS_BASE + LVO_DOS_SETPROTECTION);
             case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
             case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
             case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
@@ -412,6 +421,9 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_READ,   LIB_DOS, DOS_READ);
     install_lvo(DOS_BASE, LVO_DOS_EXIT,   LIB_DOS, DOS_EXIT);
     install_lvo(DOS_BASE, LVO_DOS_IO_ERR, LIB_DOS, DOS_IO_ERR);
+    install_lvo(DOS_BASE, LVO_DOS_DELETEFILE, LIB_DOS, DOS_DELETEFILE);
+    install_lvo(DOS_BASE, LVO_DOS_RENAME,     LIB_DOS, DOS_RENAME);
+    install_lvo(DOS_BASE, LVO_DOS_SETPROTECTION, LIB_DOS, DOS_SETPROTECTION);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -773,6 +785,70 @@ static void dos_Close(void)
     m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
 }
 
+static void dos_DeleteFile(void)
+{
+    /* D1=name BPTR (BSTR format) */
+    uint32_t bptr = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t name_ptr = bptr << 2;
+    
+    if (name_ptr >= GUEST_RAM_SIZE || name_ptr < 0x1000) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        g_last_err = 205;
+        return;
+    }
+    
+    char name[64];
+    uint8_t blen = (name_ptr < GUEST_RAM_SIZE) ? g_ram[name_ptr] : 0;
+    if (blen > 63) blen = 63;
+    for (int i = 0; i < (int)blen; i++)
+        name[i] = (char)g_ram[name_ptr + 1 + i];
+    name[blen] = '\0';
+    
+    /* Resolve path using g_cwd if no device specified */
+    char full_name[64];
+    int has_device = 0;
+    for (int i = 0; i < (int)blen; i++) {
+        if (name[i] == ':') { has_device = 1; break; }
+    }
+    if (has_device) {
+        emu_memcpy((uint8_t*)full_name, (uint8_t*)name, blen);
+        full_name[blen] = '\0';
+    } else {
+        int cwd_len = 0;
+        while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        emu_memcpy((uint8_t*)full_name, (uint8_t*)g_cwd, cwd_len);
+        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
+            full_name[cwd_len++] = '/';
+        }
+        emu_memcpy((uint8_t*)full_name + cwd_len, (uint8_t*)name, blen);
+        full_name[cwd_len + blen] = '\0';
+    }
+    
+    /* Call VFS_Delete */
+    if (VFS_Delete(full_name)) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1); /* DOSTRUE = success */
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = 205;
+    }
+}
+
+static void dos_Rename(void)
+{
+    /* D1=old name BPTR, D2=new name BPTR */
+    /* Not implemented in VFS yet - return error */
+    m68k_set_reg(M68K_REG_D0, 0);
+    g_last_err = 205;
+}
+
+static void dos_SetProtection(void)
+{
+    /* D1=name BPTR, D2=protection mask */
+    /* Not implemented in VFS yet - return error */
+    m68k_set_reg(M68K_REG_D0, 0);
+    g_last_err = 205;
+}
+
 /* Stdin data to feed LHA: "q\n" to quit interactive mode cleanly */
 static const char g_stdin_data[] = "?\n";
 static int g_stdin_reads = 0;
@@ -876,6 +952,9 @@ int m68k_illg_instr_callback(int opcode)
             case DOS_READARGS:     dos_ReadArgs();     break;
             case DOS_GETARGSTR:    dos_GetArgStr();    break;
             case DOS_ISINTERACTIVE: dos_IsInteractive(); break;
+            case DOS_DELETEFILE:     dos_DeleteFile();     break;
+            case DOS_RENAME:         dos_Rename();         break;
+            case DOS_SETPROTECTION:  dos_SetProtection();  break;
             case DOS_WRITE:  dos_Write();  break;
             case DOS_OPEN:   dos_Open();   break;
             case DOS_CLOSE:  dos_Close();  break;
