@@ -60,4 +60,7 @@ void UAOS_TIMER_Register(void);
 /* Register keyboard.device */
 void UAOS_KEYBOARD_Register(void);
 
+/* Register graphics.library */
+void UAOS_GRAPHICS_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

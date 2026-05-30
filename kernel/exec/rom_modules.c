@@ -158,6 +158,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register keyboard.device */
     UAOS_KEYBOARD_Register();
 
+    /* Register graphics.library */
+    UAOS_GRAPHICS_Register();
+
     /* Additional ROM modules (dos, intuition, graphics …) are registered
      * here as their native implementations are completed.                  */
 }
