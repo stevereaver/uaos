@@ -18,6 +18,7 @@
 #include "wm.h"
 #include "../../emulation/uaos_emu.h"
 #include "dos/vfs.h"
+#include "dos/ramfs.h"
 #include "exec/rom_modules.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -302,6 +303,8 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  copy <src> <dst>   copy file");
     inst_print(s, "  pwd                print working directory");
     inst_print(s, "  echo <text>         print text to shell");
+    inst_print(s, "  protect <flags> <path>  set file attributes (+r,-r,+h,-h)");
+    inst_print(s, "  info <path>         show file attributes");
     inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
@@ -616,6 +619,106 @@ static void inst_cmd_copy(ShellInstance *s, const char *arg)
     inst_print(s, msg);
 }
 
+static void inst_cmd_protect(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: protect [+r|-r][+h|-h] <path>"); return; }
+
+    /* Parse flags: +r, -r, +h, -h */
+    uint8_t new_attrs = 0;
+    uint8_t clear_mask = 0;
+    const char *p = arg;
+
+    while (*p && (*p == '+' || *p == '-')) {
+        char op = *p++;
+        char flag = *p++;
+        if (flag == 'r') {
+            if (op == '+') new_attrs |= RAMFS_ATTR_READONLY;
+            else clear_mask |= RAMFS_ATTR_READONLY;
+        } else if (flag == 'h') {
+            if (op == '+') new_attrs |= RAMFS_ATTR_HIDDEN;
+            else clear_mask |= RAMFS_ATTR_HIDDEN;
+        } else {
+            inst_print(s, "Invalid flag. Use: +r, -r, +h, -h");
+            return;
+        }
+        while (*p == ' ') p++;
+    }
+
+    /* Skip to path */
+    while (*p == ' ') p++;
+    if (!*p) { inst_print(s, "Usage: protect [+r|-r][+h|-h] <path>"); return; }
+
+    char path[64];
+    int i = 0;
+    while (*p && i < 63) { path[i++] = *p++; }
+    path[i] = '\0';
+
+    char abs_path[64];
+    make_abs_path(s, path, abs_path, 64);
+
+    /* Get current attributes */
+    uint8_t current = VFS_GetAttrs(abs_path);
+    if (current == 0 && VFS_ResolveDir(abs_path) == NULL) {
+        /* Check if file exists */
+        VfsFile test;
+        if (!VFS_Open(&test, abs_path, VFS_READ)) {
+            char msg[MAX_LINE_LEN];
+            scopy(msg, "File not found: ", MAX_LINE_LEN);
+            scat(msg, abs_path, MAX_LINE_LEN);
+            inst_print(s, msg);
+            return;
+        }
+        VFS_Close(&test);
+    }
+
+    /* Apply changes */
+    uint8_t final = (current & ~clear_mask) | new_attrs;
+    if (VFS_SetAttrs(abs_path, final) == 0) {
+        inst_print(s, "Attributes updated");
+    } else {
+        inst_print(s, "Failed to set attributes");
+    }
+}
+
+static void inst_cmd_info(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: info <path>"); return; }
+
+    char path[64];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < 63) { path[i++] = *arg++; }
+    path[i] = '\0';
+
+    char abs_path[64];
+    make_abs_path(s, path, abs_path, 64);
+
+    uint8_t attrs = VFS_GetAttrs(abs_path);
+    if (attrs == 0) {
+        /* Check if path exists */
+        VfsFile test;
+        if (!VFS_Open(&test, abs_path, VFS_READ)) {
+            RamFsNode *dir = VFS_ResolveDir(abs_path);
+            if (!dir) {
+                char msg[MAX_LINE_LEN];
+                scopy(msg, "Not found: ", MAX_LINE_LEN);
+                scat(msg, abs_path, MAX_LINE_LEN);
+                inst_print(s, msg);
+                return;
+            }
+            attrs = RamFS_GetAttrs(dir);
+        } else {
+            VFS_Close(&test);
+        }
+    }
+
+    char msg[MAX_LINE_LEN];
+    scopy(msg, "Attributes: ", MAX_LINE_LEN);
+    if (attrs & RAMFS_ATTR_READONLY) scat(msg, "Read-Only ", MAX_LINE_LEN);
+    if (attrs & RAMFS_ATTR_HIDDEN) scat(msg, "Hidden ", MAX_LINE_LEN);
+    if (attrs == 0) scat(msg, "None", MAX_LINE_LEN);
+    inst_print(s, msg);
+}
+
 static void inst_cmd_pointer(ShellInstance *s)
 {
     (void)s;
@@ -705,6 +808,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
+        "protect","info",
         NULL
     };
 
@@ -732,6 +836,8 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==13) inst_print(s, s->cwd);
         else if (i==14) inst_print(s, *args ? args : "");
         else if (i==15) inst_cmd_pointer(s);
+        else if (i==16) inst_cmd_protect(s, args);
+        else if (i==17) inst_cmd_info(s, args);
         return;
     }
 
