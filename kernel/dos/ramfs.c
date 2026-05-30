@@ -9,7 +9,7 @@
  * ========================================================================= */
 
 static RamFsNode  g_nodes[RAMFS_MAX_NODES];
-static uint8_t    g_pool[RAMFS_MAX_NODES * 512]; /* 128 KB shared data pool */
+static uint8_t    g_pool[1024 * 1024]; /* 1 MB shared data pool */
 static uint32_t   g_pool_top = 0;                /* bump allocator cursor   */
 
 #define MAX_VOLS  4

@@ -15,7 +15,7 @@
  * ------------------------------------------------------------------------- */
 #define RAMFS_MAX_NODES     256     /* total nodes across all RAM volumes     */
 #define RAMFS_MAX_NAME      32      /* max filename length (incl. NUL)        */
-#define RAMFS_MAX_FILESIZE  65536   /* max bytes per file (64 KB)             */
+#define RAMFS_MAX_FILESIZE  524288  /* max bytes per file (512 KB)            */
 #define RAMFS_FILE_POOL     (RAMFS_MAX_NODES * RAMFS_MAX_FILESIZE / 4)
                                     /* ~4 MB data pool in BSS                 */
 

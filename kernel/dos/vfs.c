@@ -80,6 +80,13 @@ void VFS_Init(void)
     RamFS_MkDir(ram, "RAM:ENV");
     RamFS_MkDir(ram, "RAM:CLIPS");
     RamFS_MkDir(ram, "RAM:S");
+
+    /* Create test file for tar experiments */
+    RamFsNode *testfile = RamFS_Create(ram, "RAM:T/hello.txt");
+    if (testfile) {
+        const uint8_t content[] = "Hello World";
+        RamFS_Write(testfile, content, sizeof(content)-1);
+    }
 }
 
 /* =========================================================================
@@ -127,9 +134,9 @@ uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len)
     return got;
 }
 
-/* Block size pre-allocated per file on first write — large enough for typical
- * shell output while keeping BSS pool usage reasonable. */
-#define VFS_BLOCK_SZ  512
+/* Block size pre-allocated per file on first write.
+ * 32 KB covers typical shell output and small tar archives. */
+#define VFS_BLOCK_SZ  (32 * 1024)
 
 uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
 {

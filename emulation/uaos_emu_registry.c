@@ -117,14 +117,29 @@ int UAOS_Emu_RunByName(const char *cmdline, void *shell, UAOS_PrintFn print_fn)
         return -1;
     }
 
-    /* Build argv: name + any extra args from cmdline */
-    const char *argv[16];
+    /* Build argv: tokenise the remainder into individual words */
+    static char arg_store[256];
+    static const char *argv[18];
     argv[0] = prog->name;
     int argc = 1;
-    const char *p = cmdline + ni;
-    while (*p == ' ') p++;
-    /* Simple: pass the rest as a single argument string */
-    if (*p && argc < 15) { argv[argc++] = p; }
+
+    /* Copy remainder into mutable buffer and split on spaces */
+    const char *src = cmdline + ni;
+    while (*src == ' ') src++;
+    int ai = 0;
+    while (*src && ai < 254) { arg_store[ai++] = *src++; }
+    arg_store[ai] = '\0';
+
+    char *tok = arg_store;
+    while (*tok && argc < 16) {
+        /* Skip leading spaces */
+        while (*tok == ' ') tok++;
+        if (!*tok) break;
+        argv[argc++] = tok;
+        /* Advance to next space or end */
+        while (*tok && *tok != ' ') tok++;
+        if (*tok == ' ') *tok++ = '\0';
+    }
     argv[argc] = NULL;
 
     /* Set up print adapter */

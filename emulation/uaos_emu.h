@@ -18,4 +18,8 @@ int UAOS_Emu_LoadAndRun(const uint8_t *binary, uint32_t bin_size,
                          const char **argv, void *shell,
                          UAOS_PrintFn print_fn);
 
+/* Set the current working directory used to resolve relative paths in
+ * dos_Open calls from emulated programs. Call before RunByName/LoadAndRun. */
+void UAOS_Emu_SetCwd(const char *cwd);
+
 #endif /* UAOS_EMU_H */

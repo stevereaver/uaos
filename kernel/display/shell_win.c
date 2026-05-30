@@ -40,6 +40,8 @@
 #define VKEY_PGDN  0x02
 #define VKEY_UP    0x03
 #define VKEY_DOWN  0x04
+#define VKEY_LEFT  0x05
+#define VKEY_RIGHT 0x06
 
 #define MAX_CMD_HIST  64   /* command history entries per shell */
 
@@ -72,6 +74,8 @@ typedef struct {
     char input_buf[MAX_INPUT + 1];
     char input_saved[MAX_INPUT + 1]; /* saved live input while navigating */
     int  input_len;
+    int  input_cur;    /* cursor position within input_buf, 0..input_len */
+    int  auto_scroll;   /* 1 = pin to bottom on next draw (set by inst_print) */
 } ShellInstance;
 
 /* History storage in BSS (not on stack) — 1000×96 × 4 shells = 384 KB */
@@ -141,7 +145,14 @@ static void inst_draw_history(ShellInstance *s)
     int max_chars = (ww - BORDER_L - BORDER_R - 8) / 8;
     if (max_chars < 1) max_chars = 1;
 
-    int start = s->hist_count - rows - s->hist_scroll;
+    /* When not scrolled up, always pin to the bottom regardless of geometry
+     * timing — avoids missing last lines due to stale wh/scroll_y mismatch. */
+    int start;
+    if (s->hist_scroll == 0) {
+        start = s->hist_count - rows;
+    } else {
+        start = s->hist_count - rows - s->hist_scroll;
+    }
     if (start < 0) start = 0;
     for (int r = 0; r < rows; r++) {
         int li = start + r;
@@ -187,9 +198,15 @@ static void inst_draw_input(ShellInstance *s)
             FB_PutStr(px, iy+1, clipped, WB_WHITE, WB_BLACK);
         }
         /* Block cursor — only if it fits */
-        int cur_x = px + s->input_len * 8;
-        if (cur_x + 8 <= right_edge)
+        /* Cursor block at input_cur position */
+        int cur_x = px + s->input_cur * 8;
+        if (cur_x + 8 <= right_edge) {
+            uint32_t cur_ch_col = WB_BLACK;
+            char cur_ch = s->input_buf[s->input_cur] ? s->input_buf[s->input_cur] : ' ';
             FB_FillRect(cur_x, iy+1, 8, 14, WB_WHITE);
+            char tmp[2]; tmp[0] = cur_ch; tmp[1] = 0;
+            FB_PutStr(cur_x, iy+1, tmp, cur_ch_col, WB_WHITE);
+        }
     }
 }
 
@@ -217,15 +234,40 @@ static void inst_sync_scrollbar(ShellInstance *s)
     if (from_top < 0) from_top = 0;
     /* Directly update scroll_y via WM_GetScrollY trick: set via SetScrollInfo side-effect
      * is not enough — we need to write scroll_y. Use a small helper exposed below. */
-    WM_SetScrollY(s->wm_handle, from_top * 16);
+    int new_sy = from_top * 16;
+    WM_SetScrollY(s->wm_handle, new_sy);
 }
 
 /* Forward declaration — defined below after inst_dispatch */
 typedef struct { void *shell; VfsFile fh; int active; } RedirCtx;
 static RedirCtx g_redir;
 
+static inline void outb(uint16_t port, uint8_t val)
+{
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+static inline uint8_t inb(uint16_t port)
+{
+    uint8_t v;
+    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+
+static inline void _ser_putc(char c) {
+    while ((inb(0x3F8 + 5) & 0x20) == 0) {}
+    outb(0x3F8, (uint8_t)c);
+    if (c == '\n') { _ser_putc('\r'); }
+}
+static inline void _ser_puts(const char *s) {
+    while (*s) _ser_putc(*s++);
+}
+
 static void inst_print(ShellInstance *s, const char *line)
 {
+    /* Also mirror to serial port so QEMU -serial stdio captures emu traces */
+    _ser_puts(line);
+    _ser_putc('\n');
+
     /* If stdout is redirected, write to file instead of shell history */
     if (g_redir.active) {
         VFS_Write(&g_redir.fh, (const uint8_t *)line, (uint32_t)slen(line));
@@ -237,7 +279,7 @@ static void inst_print(ShellInstance *s, const char *line)
     scopy(g_hist_buf[s->index][slot], line, MAX_LINE_LEN);
     s->hist_count++;
     s->hist_scroll = 0;
-    inst_sync_scrollbar(s);
+    s->auto_scroll = 1;  /* draw shim will pin to bottom with fresh geometry */
     WM_Redraw();
 }
 
@@ -640,7 +682,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==2) inst_cmd_mem(s);
         else if (i==3) inst_cmd_clear(s);
         else if (i==4) inst_cmd_reboot(s);
-        else if (i==5) UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print);
+        else if (i==5) { UAOS_Emu_SetCwd(s->cwd); UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print); }
         else if (i==6) inst_cmd_dir(s, args);
         else if (i==7) inst_cmd_cd(s, args);
         else if (i==8) inst_cmd_makedir(s, args);
@@ -741,6 +783,16 @@ static void inst_handle_key(ShellInstance *s, char c)
         inst_draw_history(s);
         return;
     }
+    if (c == VKEY_LEFT) {
+        if (s->input_cur > 0) s->input_cur--;
+        inst_draw_input(s);
+        return;
+    }
+    if (c == VKEY_RIGHT) {
+        if (s->input_cur < s->input_len) s->input_cur++;
+        inst_draw_input(s);
+        return;
+    }
     if (c == VKEY_UP) {
         if (s->cmd_hist_count == 0) return;
         if (s->cmd_hist_nav == 0)
@@ -751,6 +803,7 @@ static void inst_handle_key(ShellInstance *s, char c)
         scopy(s->input_buf, s->cmd_hist[idx], MAX_INPUT + 1);
         s->input_len = 0;
         while (s->input_buf[s->input_len]) s->input_len++;
+        s->input_cur = s->input_len;
         inst_draw_input(s);
         return;
     }
@@ -765,6 +818,7 @@ static void inst_handle_key(ShellInstance *s, char c)
         }
         s->input_len = 0;
         while (s->input_buf[s->input_len]) s->input_len++;
+        s->input_cur = s->input_len;
         inst_draw_input(s);
         return;
     }
@@ -780,15 +834,30 @@ static void inst_handle_key(ShellInstance *s, char c)
         s->input_saved[0] = 0;
         inst_dispatch(s, s->input_buf);
         s->input_len = 0;
+        s->input_cur = 0;
         s->input_buf[0] = 0;
     } else if (c == '\b') {
         s->cmd_hist_nav = 0;
-        if (s->input_len > 0) { s->input_len--; s->input_buf[s->input_len]=0; }
+        if (s->input_cur > 0) {
+            /* Delete char before cursor */
+            int i = s->input_cur - 1;
+            while (i < s->input_len - 1) {
+                s->input_buf[i] = s->input_buf[i+1]; i++;
+            }
+            s->input_len--;
+            s->input_cur--;
+            s->input_buf[s->input_len] = 0;
+        }
     } else if (c >= 0x20 && c < 0x7F) {
         s->cmd_hist_nav = 0;
         if (s->input_len < MAX_INPUT) {
-            s->input_buf[s->input_len++] = c;
-            s->input_buf[s->input_len]   = 0;
+            /* Insert at cursor */
+            for (int i = s->input_len; i > s->input_cur; i--)
+                s->input_buf[i] = s->input_buf[i-1];
+            s->input_buf[s->input_cur] = c;
+            s->input_len++;
+            s->input_cur++;
+            s->input_buf[s->input_len] = 0;
         }
     }
     inst_draw_history(s);
@@ -803,12 +872,22 @@ static void inst_handle_key(ShellInstance *s, char c)
 static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
     ShellInstance *s=&g_shells[N]; \
     s->wx=wx;s->wy=wy;s->ww=ww;s->wh=wh; \
-    /* Sync hist_scroll from WM scroll_y (covers scrollbar thumb drag) */ \
-    if (s->wm_handle >= 0) { \
+    if (s->auto_scroll) { \
+        /* New output arrived — pin to bottom using fresh geometry */ \
+        s->hist_scroll = 0; \
+        s->auto_scroll = 0; \
+        if (s->wm_handle >= 0) { \
+            int rows2 = inst_rows(s); \
+            int from_top2 = s->hist_count - rows2; \
+            if (from_top2 < 0) from_top2 = 0; \
+            WM_SetScrollY(s->wm_handle, from_top2 * 16); \
+        } \
+    } else if (s->wm_handle >= 0) { \
+        /* Scrollbar thumb may have moved — sync hist_scroll from scroll_y */ \
         int sy = WM_GetScrollY(s->wm_handle); \
-        int rows = inst_rows(s); \
-        int from_top = sy / 16; \
-        int hs = s->hist_count - rows - from_top; \
+        int rows2 = inst_rows(s); \
+        int from_top2 = sy / 16; \
+        int hs = s->hist_count - rows2 - from_top2; \
         if (hs < 0) hs = 0; \
         s->hist_scroll = hs; \
     } \

@@ -60,8 +60,8 @@
 /* No PC-change monitor */
 #define M68K_MONITOR_PC             M68K_OPT_OFF
 
-/* No instruction hook */
-#define M68K_INSTRUCTION_HOOK       M68K_OPT_OFF
+/* Instruction hook — enabled for debugging */
+#define M68K_INSTRUCTION_HOOK       M68K_OPT_ON
 
 /* No prefetch queue */
 #define M68K_EMULATE_PREFETCH       M68K_OPT_OFF

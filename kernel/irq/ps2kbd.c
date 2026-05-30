@@ -150,8 +150,10 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
         if (!is_break) {
             if (key == 0x49) { kbuf_push(0x01); } /* Page Up   → VKEY_PGUP */
             if (key == 0x51) { kbuf_push(0x02); } /* Page Down → VKEY_PGDN */
-            if (key == 0x48) { kbuf_push(0x03); } /* Up arrow  → VKEY_UP   */
-            if (key == 0x50) { kbuf_push(0x04); } /* Down arrow→ VKEY_DOWN */
+            if (key == 0x48) { kbuf_push(0x03); } /* Up arrow  → VKEY_UP    */
+            if (key == 0x50) { kbuf_push(0x04); } /* Down arrow→ VKEY_DOWN  */
+            if (key == 0x4B) { kbuf_push(0x05); } /* Left arrow→ VKEY_LEFT  */
+            if (key == 0x4D) { kbuf_push(0x06); } /* Right arrow→VKEY_RIGHT */
         }
         PIC_SendEOI(1); return;
     }
