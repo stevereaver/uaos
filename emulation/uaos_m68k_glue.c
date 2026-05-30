@@ -54,23 +54,6 @@ static VfsFile g_file_handles[16];
 static int g_file_modes[16];
 static int g_file_handle_count = 0;
 
-/* Track which file tar is trying to open (0=unknown, 1=archive, 2=file to archive) */
-static int g_tar_open_index = 0;
-static int g_tar_is_extraction = 0;  /* 0=creation, 1=extraction */
-
-static void reset_tar_state(void)
-{
-    g_tar_open_index = 0;
-    g_tar_is_extraction = 0;
-}
-
-/* Determine extraction mode from argv */
-static void determine_tar_mode(const char **argv)
-{
-    (void)argv; /* Unused */
-    g_tar_is_extraction = 0;
-}
-
 static uint32_t allocate_file_handle(void)
 {
     if (g_file_handle_count < 16) {
@@ -707,96 +690,8 @@ static void dos_Open(void)
     
     /* If BPTR is invalid (points beyond RAM), use workaround for SAS/C */
     if (name_ptr >= GUEST_RAM_SIZE || name_ptr < 0x1000) {
-        uint32_t mode = m68k_get_reg(NULL, M68K_REG_D2);
-        int vfs_mode = (mode == 1006) ? (VFS_WRITE | VFS_CREATE | VFS_TRUNC) : VFS_READ;
-        
-        /* Based on command line, determine which file tar wants */
-        /* For creation: hello.txt (read), hello.tar (write) */
-        /* For extraction: hello.tar (read), hello.txt (write) */
-        const char *filename = NULL;
-        if (g_tar_open_index == 0) {
-            /* First open - determine mode based on which file exists */
-            VfsFile test_fh;
-            char test_path[64];
-            
-            /* Use g_cwd for path resolution */
-            int cwd_len = 0;
-            while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-            emu_memcpy((uint8_t*)test_path, (uint8_t*)g_cwd, cwd_len);
-            if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
-                test_path[cwd_len++] = '/';
-            }
-            const char *tar_name = "hello.tar";
-            emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)tar_name, 9);
-            test_path[cwd_len + 9] = '\0';
-            
-            if (VFS_Open(&test_fh, test_path, VFS_READ)) {
-                VFS_Close(&test_fh);
-                /* hello.tar exists - this is extraction */
-                g_tar_is_extraction = 1;
-                filename = test_path;  /* Read archive */
-            } else {
-                /* Try hello.txt */
-                const char *txt_name = "hello.txt";
-                emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)txt_name, 9);
-                test_path[cwd_len + 9] = '\0';
-                
-                if (VFS_Open(&test_fh, test_path, VFS_READ)) {
-                    VFS_Close(&test_fh);
-                    /* hello.txt exists - this is creation */
-                    g_tar_is_extraction = 0;
-                    filename = test_path;  /* Read file to archive */
-                } else {
-                    /* Neither exists - assume creation */
-                    g_tar_is_extraction = 0;
-                    filename = test_path;  /* Read file to archive */
-                }
-            }
-        } else if (g_tar_open_index == 1) {
-            /* Second open - based on mode */
-            char test_path[64];
-            int cwd_len = 0;
-            while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-            emu_memcpy((uint8_t*)test_path, (uint8_t*)g_cwd, cwd_len);
-            if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
-                test_path[cwd_len++] = '/';
-            }
-            
-            if (g_tar_is_extraction) {
-                const char *txt_name = "hello.txt";
-                emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)txt_name, 9);
-                test_path[cwd_len + 9] = '\0';
-                filename = test_path;  /* Write extracted file */
-                /* For extraction, use write+create mode regardless of what tar requests */
-                /* Tar opens in read mode to check existence, then should open in write mode */
-                vfs_mode = VFS_WRITE | VFS_CREATE | VFS_TRUNC;
-            } else {
-                const char *tar_name = "hello.tar";
-                emu_memcpy((uint8_t*)test_path + cwd_len, (uint8_t*)tar_name, 9);
-                test_path[cwd_len + 9] = '\0';
-                filename = test_path;  /* Write archive */
-            }
-        }
-        
-        if (filename) {
-            VfsFile fh;
-            int vfs_open_result = VFS_Open(&fh, filename, vfs_mode);
-            if (vfs_open_result) {
-                /* Seek to start for read mode to ensure position is 0 */
-                if (vfs_mode == VFS_READ) {
-                    VFS_Seek(&fh, 0);
-                }
-                uint32_t handle = allocate_file_handle();
-                if (handle) {
-                    g_file_handles[handle] = fh;
-                    g_file_modes[handle] = vfs_mode;
-                    g_tar_open_index++;
-                    m68k_set_reg(M68K_REG_D0, handle);
-                    return;
-                }
-            }
-        }
-        
+        /* SAS/C workaround: invalid BPTR means we can't read the filename
+         * For now, just fail - the program should pass valid BPTRs */
         m68k_set_reg(M68K_REG_D0, 0);
         g_last_err = 205;
         return;
@@ -893,20 +788,6 @@ static void dos_Read(void)
     VfsFile *vfs_fh = get_file_handle(fh);
     if (vfs_fh) {
         if (vfs_fh->node) {
-            /* If this is the second open (hello.txt) in extraction mode and file is empty,
-             * return the actual file content from the tar archive */
-            if (g_tar_is_extraction && g_tar_open_index >= 1 && VFS_Size(vfs_fh) == 0) {
-                /* Simple: return "Hello, World!\n" as the extracted content */
-                const char *content = "Hello, World!\n";
-                uint32_t content_len = 14;
-                if (buf + content_len < GUEST_RAM_SIZE) {
-                    for (uint32_t i = 0; i < content_len; i++) {
-                        g_ram[buf + i] = content[i];
-                    }
-                    m68k_set_reg(M68K_REG_D0, content_len);
-                    return;
-                }
-            }
             /* Read from VFS file */
             if (buf + len < GUEST_RAM_SIZE) {
                 uint32_t bytes_read = VFS_Read(vfs_fh, g_ram + buf, len);
@@ -1195,8 +1076,6 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
                                   const char **argv, GluePrintFn print_fn)
 {
     g_print = print_fn;
-    reset_tar_state();
-    determine_tar_mode(argv);
 
     /* Clear RAM */
     emu_memset(g_ram, 0, GUEST_RAM_SIZE);
