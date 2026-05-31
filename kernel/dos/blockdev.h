@@ -40,6 +40,9 @@ void BlockDev_Unregister(BlockDev *dev);
 /* Find a block device by name */
 BlockDev *BlockDev_Find(const char *name);
 
+/* Get the list of all registered block devices */
+BlockDev *BlockDev_GetList(void);
+
 /* Read sectors from a block device */
 int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors);
 

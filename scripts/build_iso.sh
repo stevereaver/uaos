@@ -269,6 +269,8 @@ for src in \
     "${REPO_ROOT}/kernel/dos/ramfs.c" \
     "${REPO_ROOT}/kernel/dos/vfs.c" \
     "${REPO_ROOT}/kernel/dos/blockdev.c" \
+    "${REPO_ROOT}/kernel/dos/partition.c" \
+    "${REPO_ROOT}/kernel/dos/dma.c" \
     "${REPO_ROOT}/kernel/dos/fat32.c" \
     "${REPO_ROOT}/kernel/dos/pfs3.c" \
     "${REPO_ROOT}/kernel/dos/ext4.c" \
@@ -426,6 +428,8 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/ramfs.o" \
     "${BUILD_DIR}/obj/vfs.o" \
     "${BUILD_DIR}/obj/blockdev.o" \
+    "${BUILD_DIR}/obj/partition.o" \
+    "${BUILD_DIR}/obj/dma.o" \
     "${BUILD_DIR}/obj/fat32.o" \
     "${BUILD_DIR}/obj/pfs3.o" \
     "${BUILD_DIR}/obj/ext4.o" \

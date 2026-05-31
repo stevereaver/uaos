@@ -10,6 +10,9 @@
 /* Initialize VirtIO block device driver */
 int virtio_blk_init(void);
 
+/* Register VirtIO interrupt handler (call after IDT_Init and PIC_Init) */
+void virtio_blk_setup_irq(void);
+
 /* Read sectors from VirtIO block device */
 int virtio_blk_read(uint64_t sector, void *buffer, uint32_t num_sectors);
 

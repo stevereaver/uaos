@@ -19,9 +19,23 @@
 #include "../../emulation/uaos_emu.h"
 #include "dos/vfs.h"
 #include "dos/ramfs.h"
+#include "dos/blockdev.h"
+#include "dos/partition.h"
+#include "dos/fat32.h"
 #include "exec/rom_modules.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Forward declarations */
+typedef struct ShellInstance ShellInstance;
+static void inst_print(ShellInstance *s, const char *line);
+static ShellInstance *g_fdisk_shell = NULL;
+static void inst_print_wrapper(const char *line)
+{
+    if (g_fdisk_shell) inst_print(g_fdisk_shell, line);
+}
 
 /* =========================================================================
  * Constants
@@ -57,7 +71,7 @@
  * Per-instance state
  * ========================================================================= */
 
-typedef struct {
+struct ShellInstance {
     /* WM */
     int  wm_handle;
     int  number;        /* shell number shown in prompt, 1-based */
@@ -94,7 +108,13 @@ typedef struct {
     int  input_len;
     int  input_cur;    /* cursor position within input_buf, 0..input_len */
     int  auto_scroll;   /* 1 = pin to bottom on next draw (set by inst_print) */
-} ShellInstance;
+
+    /* Fdisk interactive mode */
+    int          fdisk_mode;    /* 0 = normal, 1 = fdisk interactive */
+    BlockDev    *fdisk_dev;     /* Device being edited */
+    PartitionTable fdisk_pt;    /* Partition table being edited */
+};
+typedef struct ShellInstance ShellInstance;
 
 /* History storage in BSS (not on stack) — 1000×96 × 4 shells = 384 KB */
 static char g_hist_buf[MAX_SHELLS][MAX_HIST_LINES][MAX_LINE_LEN];
@@ -337,6 +357,9 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  unset <name>        remove local environment variable");
     inst_print(s, "  date               show current date/time");
     inst_print(s, "  which <cmd>        locate a command");
+    inst_print(s, "  disks              list detected block devices");
+    inst_print(s, "  fdisk <device>     partition a block device");
+    inst_print(s, "  format <dev> [fs]  format a partition");
     inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
 }
@@ -974,6 +997,436 @@ static void inst_cmd_pointer(ShellInstance *s)
     PointerPrefs_Show();
 }
 
+static void inst_cmd_disks(ShellInstance *s, const char *arg)
+{
+    (void)arg;
+    /* List all registered block devices */
+    extern BlockDev *BlockDev_Find(const char *name);
+    extern uint64_t BlockDev_GetCapacity(BlockDev *dev);
+    
+    /* We need to iterate through the block device list */
+    /* Since BlockDev_Find only finds by name, we'll iterate through known names */
+    /* For now, just check for virtio0 */
+    BlockDev *dev = BlockDev_Find("virtio0");
+    if (dev) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Device: ", MAX_LINE_LEN);
+        scat(msg, dev->name, MAX_LINE_LEN);
+        inst_print(s, msg);
+        
+        uint64_t capacity = BlockDev_GetCapacity(dev);
+        uint64_t mb = (capacity * 512) / (1024 * 1024);
+        
+        scopy(msg, "  Capacity: ", MAX_LINE_LEN);
+        uint_to_dec_s(capacity, msg + slen(msg), MAX_LINE_LEN - slen(msg));
+        scat(msg, " sectors (", MAX_LINE_LEN);
+        uint_to_dec_s(mb, msg + slen(msg), MAX_LINE_LEN - slen(msg));
+        scat(msg, " MB)", MAX_LINE_LEN);
+        inst_print(s, msg);
+        
+        scopy(msg, "  Sector size: ", MAX_LINE_LEN);
+        uint_to_dec_s(dev->sector_size, msg + slen(msg), MAX_LINE_LEN - slen(msg));
+        scat(msg, " bytes", MAX_LINE_LEN);
+        inst_print(s, msg);
+    } else {
+        inst_print(s, "No block devices detected");
+    }
+}
+
+/* Fdisk interactive command handler */
+static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
+{
+    char msg[MAX_LINE_LEN];
+    PartitionTable *pt = &s->fdisk_pt;
+
+    if (!cmd || !*cmd) {
+        inst_print(s, "Command (m for help):");
+        return;
+    }
+
+    switch (cmd[0]) {
+        case 'm':  /* Help */
+            inst_print(s, "Partition table editor commands:");
+            inst_print(s, "  m   print this menu");
+            inst_print(s, "  p   print the partition table");
+            inst_print(s, "  n   add a new partition");
+            inst_print(s, "  d   delete a partition");
+            inst_print(s, "  t   change a partition type");
+            inst_print(s, "  w   write table to disk and exit");
+            inst_print(s, "  q   quit without saving");
+            inst_print(s, "  x   create new partition table");
+            inst_print(s, "  g   select GPT scheme");
+            inst_print(s, "  r   select RDB (Amiga) scheme");
+            inst_print(s, "  b   select MBR scheme");
+            break;
+
+        case 'p':  /* Print partition table */
+            if (!pt->valid) {
+                inst_print(s, "No partition table loaded. Use 'x' to create one.");
+            } else {
+                partition_print(pt, (void (*)(const char *))inst_print_wrapper);
+            }
+            break;
+
+        case 'n':  /* New partition */
+            if (!pt->valid) {
+                inst_print(s, "No partition table. Use 'x' to create one first.");
+                break;
+            }
+            if (pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "New partition only implemented for MBR.");
+                break;
+            }
+            {
+                /* Find first free sector */
+                uint32_t start = 2048;
+                uint32_t end = (uint32_t)(pt->disk_sectors > 0xFFFFFFFF ? 0xFFFFFFFF : pt->disk_sectors);
+                for (int i = 0; i < MBR_PART_COUNT; i++) {
+                    if (pt->mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
+                        uint32_t part_end = pt->mbr.partitions[i].lba_start + pt->mbr.partitions[i].sector_count;
+                        if (part_end > start) start = part_end;
+                    }
+                }
+                if (start >= end) {
+                    inst_print(s, "No free space for new partition.");
+                    break;
+                }
+                uint32_t count = end - start;
+                if (count > 0xFFFFFFFF) count = 0xFFFFFFFF;
+
+                int idx = mbr_add_partition(pt, start, count, PART_TYPE_LINUX);
+                if (idx < 0) {
+                    inst_print(s, "Failed to add partition (table full).");
+                } else {
+                    scopy(msg, "Created partition ", MAX_LINE_LEN);
+                    msg[18] = '1' + idx;
+                    msg[19] = '\0';
+                    scat(msg, " (Linux, ", MAX_LINE_LEN);
+                    uint64_t mb = ((uint64_t)count * 512) / (1024 * 1024);
+                    uint_to_dec_s((uint32_t)mb, msg + slen(msg), MAX_LINE_LEN - slen(msg));
+                    scat(msg, " MB)", MAX_LINE_LEN);
+                    inst_print(s, msg);
+                }
+            }
+            break;
+
+        case 'd':  /* Delete partition */
+            if (!pt->valid || pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "Delete only implemented for MBR.");
+                break;
+            }
+            {
+                int idx = -1;
+                if (cmd[1] == ' ' && cmd[2] >= '1' && cmd[2] <= '4') {
+                    idx = cmd[2] - '1';
+                } else {
+                    inst_print(s, "Usage: d <partition_number> (1-4)");
+                    break;
+                }
+                if (mbr_delete_partition(pt, idx) == 0) {
+                    scopy(msg, "Deleted partition ", MAX_LINE_LEN);
+                    msg[18] = '1' + idx;
+                    msg[19] = '\0';
+                    inst_print(s, msg);
+                } else {
+                    inst_print(s, "Partition not found or already empty.");
+                }
+            }
+            break;
+
+        case 't':  /* Change partition type */
+            if (!pt->valid || pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "Type change only implemented for MBR.");
+                break;
+            }
+            {
+                int idx = -1;
+                uint8_t type = 0;
+                if (cmd[1] == ' ' && cmd[2] >= '1' && cmd[2] <= '4') {
+                    idx = cmd[2] - '1';
+                    /* Parse hex type from cmd+4 */
+                    const char *tp = cmd + 4;
+                    while (*tp == ' ') tp++;
+                    if (tp[0] && tp[1]) {
+                        /* Simple hex parse */
+                        int h1 = tp[0], h2 = tp[1];
+                        if (h1 >= '0' && h1 <= '9') h1 -= '0';
+                        else if (h1 >= 'a' && h1 <= 'f') h1 = h1 - 'a' + 10;
+                        else if (h1 >= 'A' && h1 <= 'F') h1 = h1 - 'A' + 10;
+                        else h1 = 0;
+                        if (h2 >= '0' && h2 <= '9') h2 -= '0';
+                        else if (h2 >= 'a' && h2 <= 'f') h2 = h2 - 'a' + 10;
+                        else if (h2 >= 'A' && h2 <= 'F') h2 = h2 - 'A' + 10;
+                        else h2 = 0;
+                        type = (uint8_t)((h1 << 4) | h2);
+                    }
+                }
+                if (idx < 0 || type == 0) {
+                    inst_print(s, "Usage: t <part> <hex_type>");
+                    inst_print(s, "  Example: t 1 83  (Linux)");
+                    inst_print(s, "  Common types: 01=FAT12, 06=FAT16, 0B=FAT32");
+                    inst_print(s, "                07=NTFS, 83=Linux, EF=EFI");
+                    break;
+                }
+                if (pt->mbr.partitions[idx].type_code == PART_TYPE_EMPTY) {
+                    inst_print(s, "Partition is empty.");
+                    break;
+                }
+                pt->mbr.partitions[idx].type_code = type;
+                pt->mbr_modified = 1;
+                scopy(msg, "Changed partition ", MAX_LINE_LEN);
+                msg[18] = '1' + idx;
+                msg[19] = '\0';
+                scat(msg, " type to ", MAX_LINE_LEN);
+                scat(msg, partition_type_name(type), MAX_LINE_LEN);
+                inst_print(s, msg);
+            }
+            break;
+
+        case 'w':  /* Write to disk */
+            if (!pt->valid) {
+                inst_print(s, "No partition table to write.");
+                break;
+            }
+            if (!s->fdisk_dev) {
+                inst_print(s, "No device selected.");
+                break;
+            }
+            {
+                inst_print(s, "Writing partition table...");
+                int ret = partition_write(s->fdisk_dev, pt);
+                if (ret == 0) {
+                    inst_print(s, "Partition table written to disk.");
+                    s->fdisk_mode = 0;
+                    inst_print(s, "Exiting fdisk.");
+                } else {
+                    char em[48];
+                    int code = ret < 0 ? -ret : ret;
+                    scopy(em, "Write failed (code: ", 48);
+                    /* Simple int to string */
+                    char num[8];
+                    int ni = 0;
+                    if (code == 0) { num[0] = '0'; ni = 1; }
+                    while (code > 0 && ni < 7) { num[ni++] = '0' + (code % 10); code /= 10; }
+                    for (int j = 0; j < ni; j++) {
+                        int sl = 0;
+                        while (em[sl] && sl < 47) sl++;
+                        em[sl] = num[ni - 1 - j];
+                        em[sl + 1] = '\0';
+                    }
+                    int sl = 0;
+                    while (em[sl] && sl < 47) sl++;
+                    em[sl] = ')';
+                    em[sl + 1] = '\0';
+                    inst_print(s, em);
+                }
+            }
+            break;
+
+        case 'q':  /* Quit without saving */
+            if (pt->valid && (pt->mbr_modified || pt->gpt_modified || pt->rdb_modified)) {
+                inst_print(s, "WARNING: Unsaved changes will be lost.");
+            }
+            s->fdisk_mode = 0;
+            inst_print(s, "Exiting fdisk.");
+            break;
+
+        case 'x':  /* Create new partition table */
+            {
+                int scheme = PART_SCHEME_MBR;
+                if (cmd[1] == ' ' && cmd[2] == 'g') scheme = PART_SCHEME_GPT;
+                if (cmd[1] == ' ' && cmd[2] == 'r') scheme = PART_SCHEME_RDB;
+
+                if (scheme == PART_SCHEME_MBR) {
+                    mbr_create_new(pt);
+                    inst_print(s, "Created new MBR partition table.");
+                } else if (scheme == PART_SCHEME_GPT) {
+                    inst_print(s, "GPT not yet implemented. Using MBR.");
+                    mbr_create_new(pt);
+                    pt->scheme = PART_SCHEME_MBR;
+                } else {
+                    inst_print(s, "RDB not yet implemented. Using MBR.");
+                    mbr_create_new(pt);
+                    pt->scheme = PART_SCHEME_MBR;
+                }
+            }
+            break;
+
+        case 'g':
+            inst_print(s, "Selected GPT scheme (not yet fully implemented).");
+            if (!pt->valid) mbr_create_new(pt);
+            pt->scheme = PART_SCHEME_GPT;
+            break;
+
+        case 'r':
+            inst_print(s, "Selected RDB (Amiga) scheme (not yet fully implemented).");
+            if (!pt->valid) mbr_create_new(pt);
+            pt->scheme = PART_SCHEME_RDB;
+            break;
+
+        case 'b':
+            inst_print(s, "Selected MBR scheme.");
+            if (!pt->valid) mbr_create_new(pt);
+            pt->scheme = PART_SCHEME_MBR;
+            break;
+
+        default:
+            scopy(msg, "Unknown command: '", MAX_LINE_LEN);
+            {
+                int i = 18;
+                int j = 0;
+                while (cmd[j] && i < 40 && cmd[j] != ' ') {
+                    msg[i++] = cmd[j++];
+                }
+                msg[i] = '\0';
+            }
+            scat(msg, "'. Type 'm' for help.", MAX_LINE_LEN);
+            inst_print(s, msg);
+            break;
+    }
+}
+
+static void inst_cmd_fdisk(ShellInstance *s, const char *arg)
+{
+    /* Check for -l option to list disks */
+    if (arg && arg[0] == '-' && arg[1] == 'l') {
+        inst_print(s, "Available block devices:");
+        
+        BlockDev *dev = BlockDev_GetList();
+        int count = 0;
+        while (dev) {
+            char msg[MAX_LINE_LEN];
+            scopy(msg, "  ", MAX_LINE_LEN);
+            scat(msg, dev->name, MAX_LINE_LEN);
+            scat(msg, " - ", MAX_LINE_LEN);
+            
+            uint64_t capacity = BlockDev_GetCapacity(dev);
+            uint64_t mb = (capacity * 512) / (1024 * 1024);
+            uint_to_dec_s(mb, msg + slen(msg), MAX_LINE_LEN - slen(msg));
+            scat(msg, " MB", MAX_LINE_LEN);
+            
+            inst_print(s, msg);
+            dev = dev->next;
+            count++;
+        }
+        
+        if (count == 0) {
+            inst_print(s, "  No block devices found.");
+        }
+        
+        inst_print(s, "");
+        inst_print(s, "Usage: fdisk <device>");
+        inst_print(s, "       fdisk -l      (list available disks)");
+        inst_print(s, "Example: fdisk virtio0");
+        return;
+    }
+    
+    if (!arg || !*arg) {
+        inst_print(s, "Usage: fdisk <device>");
+        inst_print(s, "       fdisk -l      (list available disks)");
+        inst_print(s, "Example: fdisk virtio0");
+        inst_print(s, "");
+        inst_print(s, "Note: Partition operations require disk I/O support.");
+        return;
+    }
+
+    char devname[32];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < 31) { devname[i++] = *arg++; }
+    devname[i] = '\0';
+
+    BlockDev *dev = BlockDev_Find(devname);
+    if (!dev) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Device not found: ", MAX_LINE_LEN);
+        scat(msg, devname, MAX_LINE_LEN);
+        inst_print(s, msg);
+        inst_print(s, "");
+        inst_print(s, "Use 'fdisk -l' to list available devices.");
+        return;
+    }
+
+    /* Enter fdisk interactive mode */
+    s->fdisk_mode = 1;
+    s->fdisk_dev = dev;
+    memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
+
+    /* Try to read existing partition table */
+    if (partition_read(dev, &s->fdisk_pt) == 0) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Reading partition table from ", MAX_LINE_LEN);
+        scat(msg, devname, MAX_LINE_LEN);
+        inst_print(s, msg);
+    } else {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "No valid partition table on ", MAX_LINE_LEN);
+        scat(msg, devname, MAX_LINE_LEN);
+        inst_print(s, msg);
+        inst_print(s, "Use 'x' to create a new partition table.");
+    }
+
+    inst_print(s, "");
+    inst_print(s, "Type 'm' for help, 'q' to quit.");
+    inst_print(s, "Command (m for help):");
+}
+
+static void inst_cmd_format(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        inst_print(s, "Usage: format <device> [filesystem]");
+        inst_print(s, "Example: format virtio0 fat32");
+        inst_print(s, "");
+        inst_print(s, "Supported filesystems: fat32");
+        inst_print(s, "");
+        inst_print(s, "Note: Formatting requires disk I/O support.");
+        inst_print(s, "This is a placeholder - VirtIO I/O not yet implemented.");
+        return;
+    }
+
+    char devname[32];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < 31) { devname[i++] = *arg++; }
+    devname[i] = '\0';
+    while (*arg == ' ') arg++;
+
+    char fs[16];
+    i = 0;
+    while (*arg && *arg != ' ' && i < 15) { fs[i++] = *arg++; }
+    fs[i] = '\0';
+
+    if (!fs[0]) scopy(fs, "fat32", 16);
+
+    BlockDev *dev = BlockDev_Find(devname);
+    if (!dev) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Device not found: ", MAX_LINE_LEN);
+        scat(msg, devname, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    char msg[MAX_LINE_LEN];
+    scopy(msg, "format: ", MAX_LINE_LEN);
+    scat(msg, devname, MAX_LINE_LEN);
+    scat(msg, " as ", MAX_LINE_LEN);
+    scat(msg, fs, MAX_LINE_LEN);
+    inst_print(s, msg);
+    inst_print(s, "");
+
+    if (seq(fs, "fat32")) {
+        inst_print(s, "Formatting... please wait.");
+        int ret = FAT32_Format(dev);
+        if (ret == 0) {
+            inst_print(s, "Format complete.");
+        } else {
+            inst_print(s, "Format failed.");
+        }
+    } else {
+        inst_print(s, "Unsupported filesystem.");
+        inst_print(s, "Supported: fat32");
+    }
+}
+
 /* =========================================================================
  * Dispatch
  * ========================================================================= */
@@ -1081,7 +1534,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","info","alias","unalias","set","unset","rename","date","which",
+        "protect","info","alias","unalias","set","unset","rename","date","which","disks","fdisk","format",
         NULL
     };
 
@@ -1118,6 +1571,9 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==22) inst_cmd_rename(s, args);
         else if (i==23) inst_cmd_date(s, args);
         else if (i==24) inst_cmd_which(s, args);
+        else if (i==25) inst_cmd_disks(s, args);
+        else if (i==26) inst_cmd_fdisk(s, args);
+        else if (i==27) inst_cmd_format(s, args);
         return;
     }
 
@@ -1251,18 +1707,31 @@ static void inst_handle_key(ShellInstance *s, char c)
     }
     if (c == '\n' || c == '\r') {
         s->input_buf[s->input_len] = 0;
-        /* Save non-empty command to cmd_hist */
-        if (s->input_len > 0) {
-            int slot = s->cmd_hist_count % MAX_CMD_HIST;
-            scopy(s->cmd_hist[slot], s->input_buf, MAX_INPUT + 1);
-            s->cmd_hist_count++;
+        if (s->fdisk_mode) {
+            /* Fdisk interactive mode */
+            g_fdisk_shell = s;
+            fdisk_handle_cmd(s, s->input_buf);
+            g_fdisk_shell = NULL;
+            if (s->fdisk_mode) {
+                inst_print(s, "Command (m for help):");
+            }
+            s->input_len = 0;
+            s->input_cur = 0;
+            s->input_buf[0] = 0;
+        } else {
+            /* Save non-empty command to cmd_hist */
+            if (s->input_len > 0) {
+                int slot = s->cmd_hist_count % MAX_CMD_HIST;
+                scopy(s->cmd_hist[slot], s->input_buf, MAX_INPUT + 1);
+                s->cmd_hist_count++;
+            }
+            s->cmd_hist_nav = 0;
+            s->input_saved[0] = 0;
+            inst_dispatch(s, s->input_buf);
+            s->input_len = 0;
+            s->input_cur = 0;
+            s->input_buf[0] = 0;
         }
-        s->cmd_hist_nav = 0;
-        s->input_saved[0] = 0;
-        inst_dispatch(s, s->input_buf);
-        s->input_len = 0;
-        s->input_cur = 0;
-        s->input_buf[0] = 0;
     } else if (c == '\b') {
         s->cmd_hist_nav = 0;
         if (s->input_cur > 0) {
@@ -1359,6 +1828,9 @@ static void open_shell(int stagger)
     s->hist_scroll= 0;
     s->input_len  = 0;
     s->input_buf[0] = 0;
+    s->fdisk_mode = 0;
+    s->fdisk_dev  = NULL;
+    memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
     scopy(s->cwd, "RAM:", 64);
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[idx][i][0] = 0;
 

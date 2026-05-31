@@ -121,4 +121,7 @@ uint32_t FAT32_Size(Fat32File *file);
 /* Read directory entry */
 int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir);
 
+/* Format a block device with FAT32 */
+int FAT32_Format(BlockDev *bdev);
+
 #endif /* UAOS_FAT32_H */

@@ -19,8 +19,10 @@
 #include "../irq/ps2kbd.h"
 #include "../irq/vmmouse.h"
 #include "../irq/rtc.h"
+#include "../irq/virtio_blk.h"
 #include "../display/wm.h"
 #include "dos/vfs.h"
+#include "dos/blockdev.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -129,13 +131,14 @@ static void uart_puts(const char *s)
  * Combined console output
  * ----------------------------------------------------------------------- */
 
-static void kprint(const char *s)
+/* Simple VGA text-mode console output */
+void kprint(const char *s)
 {
     vga_puts(s);
     uart_puts(s);
 }
 
-static void kprinthex(uint64_t v)
+void kprinthex(uint64_t v)
 {
     vga_puthex(v);
     static const char hex[] = "0123456789ABCDEF";
@@ -242,6 +245,19 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     VFS_Init();
     kprint("[BOOT] RAM: mounted.\n");
 
+    /* Initialise block device layer */
+    kprint("[BOOT] Initialising block device layer...\n");
+    BlockDev_Init();
+    kprint("[BOOT] Block device layer initialised.\n");
+
+    /* Initialise VirtIO block device driver */
+    kprint("[BOOT] Scanning for VirtIO block devices...\n");
+    if (virtio_blk_init() == 0) {
+        kprint("[BOOT] VirtIO block device detected and registered.\n");
+    } else {
+        kprint("[BOOT] No VirtIO block device found (this is OK if no disk attached).\n");
+    }
+
     /* Draw the Workbench-style desktop */
     if (g_fb.valid) {
         kprint("[BOOT] Drawing desktop...\n");
@@ -254,6 +270,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     IDT_Init();
     kprint("[BOOT] Initialising PIC...\n");
     PIC_Init();
+    PIC_UnmaskIRQ(0);  /* Enable PIT timer interrupt */
+
+    /* Register VirtIO interrupt handler (must be after IDT/PIC init) */
+    kprint("[BOOT] Registering VirtIO IRQ...\n");
+    virtio_blk_setup_irq();
 
     /* Initialise PS/2 mouse (needs IRQ12 = vector 44) */
     if (g_fb.valid) {

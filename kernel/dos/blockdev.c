@@ -93,6 +93,11 @@ BlockDev *BlockDev_Find(const char *name)
     return NULL;
 }
 
+BlockDev *BlockDev_GetList(void)
+{
+    return g_blockdev_list;
+}
+
 /* =========================================================================
  * Block Device I/O Operations
  * ========================================================================= */
@@ -114,14 +119,22 @@ int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sec
 
 int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors)
 {
-    if (!dev || !dev->ops || !dev->ops->write) {
-        printf("[BLOCKDEV] Invalid device or write operation\n");
+    if (!dev) {
+        printf("[BLOCKDEV] Write: dev is NULL\n");
         return -1;
+    }
+    if (!dev->ops) {
+        printf("[BLOCKDEV] Write: ops is NULL\n");
+        return -2;
+    }
+    if (!dev->ops->write) {
+        printf("[BLOCKDEV] Write: ops->write is NULL\n");
+        return -3;
     }
 
     if (sector + num_sectors > dev->num_sectors) {
         printf("[BLOCKDEV] Write beyond device capacity\n");
-        return -1;
+        return -4;
     }
 
     return dev->ops->write(sector, buffer, num_sectors);
