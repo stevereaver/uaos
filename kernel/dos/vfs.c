@@ -112,6 +112,23 @@ int VFS_MountPartition(const char *name)
     return 0;
 }
 
+int VFS_GetMountCount(void)
+{
+    return g_n_mounts;
+}
+
+int VFS_GetMountName(int idx, char *dst, int max)
+{
+    if (idx < 0 || idx >= g_n_mounts || !dst || max < 2) return 0;
+    int i = 0;
+    while (i < max - 1 && g_mounts[idx].vol_name[i]) {
+        dst[i] = g_mounts[idx].vol_name[i];
+        i++;
+    }
+    dst[i] = '\0';
+    return 1;
+}
+
 /* =========================================================================
  * VFS_Open
  * ========================================================================= */

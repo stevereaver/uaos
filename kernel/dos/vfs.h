@@ -50,6 +50,13 @@ void VFS_Init(void);
  * Returns 0 on success, -1 if mount table full or name too long. */
 int VFS_MountPartition(const char *name);
 
+/* Return number of currently mounted volumes. */
+int VFS_GetMountCount(void);
+
+/* Get name of i-th mounted volume into dst[max].
+ * Returns 1 on success, 0 if idx out of range. */
+int VFS_GetMountName(int idx, char *dst, int max);
+
 /* Open a file.  Returns 1 on success, 0 on failure. */
 int  VFS_Open(VfsFile *fh, const char *path, int flags);
 

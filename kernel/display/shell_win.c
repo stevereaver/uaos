@@ -735,9 +735,9 @@ static void inst_cmd_protect(ShellInstance *s, const char *arg)
     }
 }
 
-static void inst_cmd_info(ShellInstance *s, const char *arg)
+static void inst_cmd_attr(ShellInstance *s, const char *arg)
 {
-    if (!arg || !*arg) { inst_print(s, "Usage: info <path>"); return; }
+    if (!arg || !*arg) { inst_print(s, "Usage: attr <path>"); return; }
 
     char path[64];
     int i = 0;
@@ -772,6 +772,153 @@ static void inst_cmd_info(ShellInstance *s, const char *arg)
     if (attrs & RAMFS_ATTR_HIDDEN) scat(msg, "Hidden ", MAX_LINE_LEN);
     if (attrs == 0) scat(msg, "None", MAX_LINE_LEN);
     inst_print(s, msg);
+}
+
+/* Append src to dst[max], then pad with spaces up to width.
+ * Truncates if src is longer than width. */
+static void pad_field(char *dst, const char *src, int max, int width)
+{
+    int dl = slen(dst);
+    int si = 0;
+    while (si < width && dl < max - 1 && src[si]) {
+        dst[dl++] = src[si++];
+    }
+    while (si++ < width && dl < max - 1) {
+        dst[dl++] = ' ';
+    }
+    dst[dl] = '\0';
+}
+
+static void format_cap(uint64_t bytes, char *out, int max)
+{
+    if (bytes < 1024) {
+        uint_to_dec_s((uint32_t)bytes, out, max);
+        scat(out, "B", max);
+    } else if (bytes < 1024 * 1024) {
+        uint_to_dec_s((uint32_t)(bytes / 1024), out, max);
+        scat(out, "K", max);
+    } else if (bytes < 1024ULL * 1024 * 1024) {
+        uint_to_dec_s((uint32_t)(bytes / (1024 * 1024)), out, max);
+        scat(out, "M", max);
+    } else {
+        uint_to_dec_s((uint32_t)(bytes / (1024ULL * 1024 * 1024)), out, max);
+        scat(out, "G", max);
+    }
+}
+
+static void inst_cmd_info(ShellInstance *s, const char *arg)
+{
+    if (arg && *arg) {
+        /* Info for a specific device */
+        char devname[32] = {0};
+        int i = 0;
+        while (*arg && *arg != ' ' && i < 31) { devname[i++] = *arg++; }
+        devname[i] = '\0';
+
+        /* Handle RAM: special case */
+        if (seq(devname, "RAM") || seq(devname, "RAM:")) {
+            inst_print(s, "Unit: RAM:");
+            inst_print(s, "Size: Dynamic");
+            inst_print(s, "Status: Read/Write");
+            return;
+        }
+
+        BlockDev *dev = BlockDev_Find(devname);
+        if (!dev) {
+            BlockDev *all = BlockDev_GetList();
+            while (all) {
+                if (all->display_name && seq(all->display_name, devname)) {
+                    dev = all; break;
+                }
+                all = all->next;
+            }
+        }
+        if (!dev) {
+            char msg[MAX_LINE_LEN];
+            scopy(msg, "Device not found: ", MAX_LINE_LEN);
+            scat(msg, devname, MAX_LINE_LEN);
+            inst_print(s, msg);
+            return;
+        }
+
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Unit: ", MAX_LINE_LEN);
+        scat(msg, dev->display_name ? dev->display_name : dev->name, MAX_LINE_LEN);
+        inst_print(s, msg);
+
+        uint64_t cap = BlockDev_GetCapacity(dev);
+        uint64_t bytes = cap * dev->sector_size;
+        char sz[16]; sz[0] = '\0';
+        format_cap(bytes, sz, 16);
+
+        scopy(msg, "Size: ", MAX_LINE_LEN);
+        scat(msg, sz, MAX_LINE_LEN);
+        inst_print(s, msg);
+
+        scopy(msg, "Status: Read/Write", MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    /* Show all mounted disks */
+    inst_print(s, "Mounted disks:");
+    inst_print(s, "Unit      Size       Used       Free      Full  Errs Status        Name");
+
+    BlockDev *dev = BlockDev_GetList();
+    while (dev) {
+        if (dev->part_offset != 0) {
+            uint64_t cap = BlockDev_GetCapacity(dev);
+            uint64_t bytes = cap * dev->sector_size;
+            char sz[16]; sz[0] = '\0';
+            format_cap(bytes, sz, 16);
+
+            const char *name = dev->display_name ? dev->display_name : dev->name;
+            char vol_label[16] = {0};
+            BlockDev_ReadVolLabel(dev, vol_label, sizeof(vol_label));
+            const char *vol_name = vol_label[0] ? vol_label : name;
+
+            char line[MAX_LINE_LEN];
+            line[0] = '\0';
+            pad_field(line, name,         MAX_LINE_LEN, 10);
+            pad_field(line, sz,           MAX_LINE_LEN, 11);
+            pad_field(line, "0",          MAX_LINE_LEN, 11);
+            pad_field(line, sz,           MAX_LINE_LEN, 11);
+            pad_field(line, "0%",         MAX_LINE_LEN, 6);
+            pad_field(line, "0",          MAX_LINE_LEN, 5);
+            pad_field(line, "Read/Write", MAX_LINE_LEN, 14);
+            pad_field(line, vol_name,     MAX_LINE_LEN, 10);
+            inst_print(s, line);
+        }
+        dev = dev->next;
+    }
+
+    /* RAM: pseudo-entry */
+    {
+        char line[MAX_LINE_LEN];
+        line[0] = '\0';
+        pad_field(line, "RAM:",      MAX_LINE_LEN, 10);
+        pad_field(line, "Dynamic",   MAX_LINE_LEN, 11);
+        pad_field(line, "0",         MAX_LINE_LEN, 11);
+        pad_field(line, "—",         MAX_LINE_LEN, 11);
+        pad_field(line, "0%",        MAX_LINE_LEN, 6);
+        pad_field(line, "0",         MAX_LINE_LEN, 5);
+        pad_field(line, "Read/Write",MAX_LINE_LEN, 14);
+        pad_field(line, "RAM",       MAX_LINE_LEN, 10);
+        inst_print(s, line);
+    }
+
+    inst_print(s, "");
+    inst_print(s, "Volumes available:");
+    int n = VFS_GetMountCount();
+    for (int i = 0; i < n; i++) {
+        char vol[16];
+        if (VFS_GetMountName(i, vol, sizeof(vol))) {
+            char line[MAX_LINE_LEN];
+            scopy(line, vol, MAX_LINE_LEN);
+            scat(line, ": [Mounted]", MAX_LINE_LEN);
+            inst_print(s, line);
+        }
+    }
 }
 
 static void inst_cmd_alias(ShellInstance *s, const char *arg)
@@ -945,7 +1092,7 @@ static void inst_cmd_which(ShellInstance *s, const char *arg)
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","info","alias","unalias","set","unset","rename","date","which",
+        "protect","attr","alias","unalias","set","unset","rename","date","which","info",
         NULL
     };
 
@@ -1797,7 +1944,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","info","alias","unalias","set","unset","rename","date","which","disks","fdisk","format",
+        "protect","attr","alias","unalias","set","unset","rename","date","which","disks","fdisk","format","info",
         NULL
     };
 
@@ -1826,7 +1973,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==14) inst_print(s, *args ? args : "");
         else if (i==15) inst_cmd_pointer(s);
         else if (i==16) inst_cmd_protect(s, args);
-        else if (i==17) inst_cmd_info(s, args);
+        else if (i==17) inst_cmd_attr(s, args);
         else if (i==18) inst_cmd_alias(s, args);
         else if (i==19) inst_cmd_unalias(s, args);
         else if (i==20) inst_cmd_set(s, args);
@@ -1837,6 +1984,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==25) inst_cmd_disks(s, args);
         else if (i==26) inst_cmd_fdisk(s, args);
         else if (i==27) inst_cmd_format(s, args);
+        else if (i==28) inst_cmd_info(s, args);
         return;
     }
 
