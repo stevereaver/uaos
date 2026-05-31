@@ -23,6 +23,7 @@ typedef struct BlockDev {
     const char *name;           /* Device name (e.g., "virtio0") */
     uint32_t  sector_size;     /* Sector size in bytes (usually 512) */
     uint64_t  num_sectors;     /* Total number of sectors */
+    uint64_t  part_offset;     /* Partition start sector offset (0 for whole disk) */
     void     *private_data;    /* Driver-specific data */
     const BlockDevOps *ops;    /* Device operations */
     struct BlockDev *next;     /* Next device in list */
@@ -51,6 +52,12 @@ int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t 
 
 /* Get device capacity in sectors */
 uint64_t BlockDev_GetCapacity(BlockDev *dev);
+
+/* Register a partition device (child of parent with offset) */
+int BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_sector, uint32_t num_sectors);
+
+/* Unregister all partition devices of a parent */
+void BlockDev_UnregisterPartitions(BlockDev *parent);
 
 /* Initialize block device layer */
 void BlockDev_Init(void);

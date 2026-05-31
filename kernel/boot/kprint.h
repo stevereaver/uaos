@@ -16,4 +16,7 @@ void kprint(const char *s);
 /* Print a hex number to console */
 void kprinthex(uint64_t v);
 
+/* Print a decimal number to console */
+void kprintdec(uint32_t v);
+
 #endif /* UAOS_KPRINT_H */

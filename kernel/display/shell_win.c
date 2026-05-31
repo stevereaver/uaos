@@ -1197,6 +1197,16 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
                 int ret = partition_write(s->fdisk_dev, pt);
                 if (ret == 0) {
                     inst_print(s, "Partition table written to disk.");
+                    /* Unregister old partitions and register new ones */
+                    BlockDev_UnregisterPartitions(s->fdisk_dev);
+                    for (int i = 0; i < MBR_PART_COUNT; i++) {
+                        if (pt->mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
+                            BlockDev_RegisterPartition(
+                                s->fdisk_dev, i + 1,
+                                pt->mbr.partitions[i].lba_start,
+                                pt->mbr.partitions[i].sector_count);
+                        }
+                    }
                     s->fdisk_mode = 0;
                     inst_print(s, "Exiting fdisk.");
                 } else {
@@ -1374,12 +1384,12 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
 {
     if (!arg || !*arg) {
         inst_print(s, "Usage: format <device> [filesystem]");
-        inst_print(s, "Example: format virtio0 fat32");
+        inst_print(s, "Example: format virtio01 fat32");
         inst_print(s, "");
         inst_print(s, "Supported filesystems: fat32");
         inst_print(s, "");
-        inst_print(s, "Note: Formatting requires disk I/O support.");
-        inst_print(s, "This is a placeholder - VirtIO I/O not yet implemented.");
+        inst_print(s, "Note: Format a partition (e.g. virtio01),");
+        inst_print(s, "      not the whole disk (virtio0).");
         return;
     }
 
@@ -1403,6 +1413,18 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
         scat(msg, devname, MAX_LINE_LEN);
         inst_print(s, msg);
         return;
+    }
+
+    /* Refuse to format a whole disk — partitions only */
+    if (dev->part_offset == 0) {
+        int len = 0;
+        while (devname[len]) len++;
+        if (len > 0 && !(devname[len - 1] >= '0' && devname[len - 1] <= '9')) {
+            inst_print(s, "Cannot format whole disk.");
+            inst_print(s, "Use fdisk to create a partition, then format it.");
+            inst_print(s, "Example: format virtio01 fat32");
+            return;
+        }
     }
 
     char msg[MAX_LINE_LEN];

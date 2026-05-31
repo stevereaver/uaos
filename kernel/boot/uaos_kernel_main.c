@@ -23,6 +23,7 @@
 #include "../display/wm.h"
 #include "dos/vfs.h"
 #include "dos/blockdev.h"
+#include "dos/partition.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -149,6 +150,27 @@ void kprinthex(uint64_t v)
     uart_puts(buf);
 }
 
+void kprintdec(uint32_t v)
+{
+    char buf[12];
+    int i = 0;
+    if (v == 0) {
+        buf[0] = '0'; buf[1] = '\0';
+        kprint(buf);
+        return;
+    }
+    while (v > 0 && i < 11) {
+        buf[i++] = '0' + (v % 10);
+        v /= 10;
+    }
+    buf[i] = '\0';
+    /* Reverse in place for output */
+    for (int j = 0; j < i / 2; j++) {
+        char t = buf[j]; buf[j] = buf[i - 1 - j]; buf[i - 1 - j] = t;
+    }
+    kprint(buf);
+}
+
 /* -----------------------------------------------------------------------
  * UAOS Banner
  * ----------------------------------------------------------------------- */
@@ -254,6 +276,20 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Scanning for VirtIO block devices...\n");
     if (virtio_blk_init() == 0) {
         kprint("[BOOT] VirtIO block device detected and registered.\n");
+        /* Auto-detect partitions on virtio0 */
+        BlockDev *vdev = BlockDev_Find("virtio0");
+        if (vdev) {
+            PartitionTable pt;
+            if (partition_read(vdev, &pt) == 0 && pt.valid && pt.scheme == PART_SCHEME_MBR) {
+                for (int i = 0; i < MBR_PART_COUNT; i++) {
+                    if (pt.mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
+                        BlockDev_RegisterPartition(vdev, i + 1,
+                            pt.mbr.partitions[i].lba_start,
+                            pt.mbr.partitions[i].sector_count);
+                    }
+                }
+            }
+        }
     } else {
         kprint("[BOOT] No VirtIO block device found (this is OK if no disk attached).\n");
     }

@@ -10,6 +10,13 @@
 #include <stdio.h>
 #include <string.h>
 
+static void scpy(char *dst, const char *src, int max)
+{
+    int i = 0;
+    while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+}
+
 /* =========================================================================
  * Global State
  * ========================================================================= */
@@ -114,7 +121,7 @@ int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sec
         return -1;
     }
 
-    return dev->ops->read(sector, buffer, num_sectors);
+    return dev->ops->read(sector + dev->part_offset, buffer, num_sectors);
 }
 
 int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors)
@@ -137,18 +144,91 @@ int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t 
         return -4;
     }
 
-    return dev->ops->write(sector, buffer, num_sectors);
+    return dev->ops->write(sector + dev->part_offset, buffer, num_sectors);
 }
 
 uint64_t BlockDev_GetCapacity(BlockDev *dev)
 {
     if (!dev) return 0;
 
+    /* For partition devices, return the partition size, not parent disk size */
+    if (dev->part_offset != 0) {
+        return dev->num_sectors;
+    }
+
     if (dev->ops && dev->ops->get_capacity) {
         return dev->ops->get_capacity();
     }
 
     return dev->num_sectors;
+}
+
+/* =========================================================================
+ * Partition Device Registration
+ * ========================================================================= */
+
+int BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_sector, uint32_t num_sectors)
+{
+    if (!parent || part_index < 0 || part_index > 9) {
+        printf("[BLOCKDEV] Invalid partition parameters\n");
+        return -1;
+    }
+
+    if (g_num_blockdevs >= MAX_BLOCKDEVS) {
+        printf("[BLOCKDEV] Maximum block devices reached\n");
+        return -1;
+    }
+
+    /* Build partition name: parent name + digit */
+    static char part_names[MAX_BLOCKDEVS][32];
+    int pi = g_num_blockdevs;
+    scpy(part_names[pi], parent->name, 32);
+    int nl = 0;
+    while (part_names[pi][nl]) nl++;
+    part_names[pi][nl] = '0' + part_index;
+    part_names[pi][nl + 1] = '\0';
+
+    /* Check for duplicate */
+    if (BlockDev_Find(part_names[pi]) != NULL) {
+        printf("[BLOCKDEV] Partition '%s' already registered\n", part_names[pi]);
+        return -1;
+    }
+
+    BlockDev part;
+    memset(&part, 0, sizeof(part));
+    part.name = part_names[pi];
+    part.sector_size = parent->sector_size;
+    part.num_sectors = num_sectors;
+    part.part_offset = start_sector;
+    part.private_data = parent->private_data;
+    part.ops = parent->ops;
+
+    return BlockDev_Register(&part);
+}
+
+void BlockDev_UnregisterPartitions(BlockDev *parent)
+{
+    if (!parent) return;
+
+    /* Scan list and remove any device whose name starts with parent's name
+     * followed by a digit */
+    int parent_len = 0;
+    while (parent->name[parent_len]) parent_len++;
+
+    BlockDev *dev = g_blockdev_list;
+    while (dev) {
+        BlockDev *next = dev->next;
+        if (dev != parent) {
+            int match = 1;
+            for (int i = 0; i < parent_len; i++) {
+                if (dev->name[i] != parent->name[i]) { match = 0; break; }
+            }
+            if (match && dev->name[parent_len] >= '0' && dev->name[parent_len] <= '9') {
+                BlockDev_Unregister(dev);
+            }
+        }
+        dev = next;
+    }
 }
 
 /* =========================================================================
