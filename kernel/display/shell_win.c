@@ -1052,6 +1052,10 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
             inst_print(s, "  n   add a new partition");
             inst_print(s, "  d   delete a partition");
             inst_print(s, "  t   change a partition type");
+            inst_print(s, "  N   set partition name (e.g. N 1 DH0:)");
+            inst_print(s, "  a   toggle auto-mount flag (a 1)");
+            inst_print(s, "  B   toggle bootable flag (B 1)");
+            inst_print(s, "  P   set boot priority (P 1 0)");
             inst_print(s, "  w   write table to disk and exit");
             inst_print(s, "  q   quit without saving");
             inst_print(s, "  x   create new partition table");
@@ -1183,6 +1187,142 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
             }
             break;
 
+        case 'N':  /* Set partition name */
+            if (!pt->valid || pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "Name set only for MBR.");
+                break;
+            }
+            {
+                int idx = -1;
+                if (cmd[1] == ' ' && cmd[2] >= '1' && cmd[2] <= '4') {
+                    idx = cmd[2] - '1';
+                } else {
+                    inst_print(s, "Usage: N <part> <name>");
+                    inst_print(s, "  Example: N 1 DH0:");
+                    break;
+                }
+                if (pt->mbr.partitions[idx].type_code == PART_TYPE_EMPTY) {
+                    inst_print(s, "Partition is empty.");
+                    break;
+                }
+                /* Parse name after partition number */
+                const char *np = cmd + 4;
+                while (*np == ' ') np++;
+                if (!*np) {
+                    inst_print(s, "Usage: N <part> <name>");
+                    break;
+                }
+                int ni = 0;
+                for (ni = 0; ni < UAOS_PART_MAX_NAME - 1 && np[ni] && np[ni] != ' '; ni++)
+                    pt->uaos_meta.parts[idx].name[ni] = np[ni];
+                pt->uaos_meta.parts[idx].name[ni] = '\0';
+                pt->meta_modified = 1;
+                scopy(msg, "Set partition ", MAX_LINE_LEN);
+                msg[14] = '1' + idx;
+                msg[15] = ' '; msg[16] = 'n'; msg[17] = 'a'; msg[18] = 'm'; msg[19] = 'e'; msg[20] = '='; msg[21] = '\0';
+                scat(msg, pt->uaos_meta.parts[idx].name, MAX_LINE_LEN);
+                inst_print(s, msg);
+            }
+            break;
+
+        case 'a':  /* Toggle auto-mount */
+            if (!pt->valid || pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "Auto-mount toggle only for MBR.");
+                break;
+            }
+            {
+                int idx = -1;
+                if (cmd[1] == ' ' && cmd[2] >= '1' && cmd[2] <= '4') {
+                    idx = cmd[2] - '1';
+                } else {
+                    inst_print(s, "Usage: a <partition_number> (1-4)");
+                    break;
+                }
+                if (pt->mbr.partitions[idx].type_code == PART_TYPE_EMPTY) {
+                    inst_print(s, "Partition is empty.");
+                    break;
+                }
+                pt->uaos_meta.parts[idx].automount = !pt->uaos_meta.parts[idx].automount;
+                pt->meta_modified = 1;
+                scopy(msg, "Partition ", MAX_LINE_LEN);
+                msg[10] = '1' + idx;
+                msg[11] = ' '; msg[12] = '\0';
+                scat(msg, pt->uaos_meta.parts[idx].automount ? "auto-mount ON" : "auto-mount OFF", MAX_LINE_LEN);
+                inst_print(s, msg);
+            }
+            break;
+
+        case 'B':  /* Toggle bootable */
+            if (!pt->valid || pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "Bootable toggle only for MBR.");
+                break;
+            }
+            {
+                int idx = -1;
+                if (cmd[1] == ' ' && cmd[2] >= '1' && cmd[2] <= '4') {
+                    idx = cmd[2] - '1';
+                } else {
+                    inst_print(s, "Usage: B <partition_number> (1-4)");
+                    break;
+                }
+                if (pt->mbr.partitions[idx].type_code == PART_TYPE_EMPTY) {
+                    inst_print(s, "Partition is empty.");
+                    break;
+                }
+                pt->uaos_meta.parts[idx].bootable = !pt->uaos_meta.parts[idx].bootable;
+                if (pt->uaos_meta.parts[idx].bootable) {
+                    pt->mbr.partitions[idx].boot_flag = 0x80;
+                } else {
+                    pt->mbr.partitions[idx].boot_flag = 0x00;
+                }
+                pt->meta_modified = 1;
+                pt->mbr_modified = 1;
+                scopy(msg, "Partition ", MAX_LINE_LEN);
+                msg[10] = '1' + idx;
+                msg[11] = ' '; msg[12] = '\0';
+                scat(msg, pt->uaos_meta.parts[idx].bootable ? "bootable ON" : "bootable OFF", MAX_LINE_LEN);
+                inst_print(s, msg);
+            }
+            break;
+
+        case 'P':  /* Set boot priority */
+            if (!pt->valid || pt->scheme != PART_SCHEME_MBR) {
+                inst_print(s, "Priority set only for MBR.");
+                break;
+            }
+            {
+                int idx = -1;
+                int pri = 0;
+                if (cmd[1] == ' ' && cmd[2] >= '1' && cmd[2] <= '4') {
+                    idx = cmd[2] - '1';
+                    const char *pp = cmd + 4;
+                    while (*pp == ' ') pp++;
+                    while (*pp >= '0' && *pp <= '9') {
+                        pri = pri * 10 + (*pp - '0');
+                        pp++;
+                        if (pri > 255) pri = 255;
+                    }
+                } else {
+                    inst_print(s, "Usage: P <part> <priority>");
+                    inst_print(s, "  Example: P 1 10");
+                    break;
+                }
+                if (pt->mbr.partitions[idx].type_code == PART_TYPE_EMPTY) {
+                    inst_print(s, "Partition is empty.");
+                    break;
+                }
+                pt->uaos_meta.parts[idx].boot_pri = (uint8_t)pri;
+                pt->meta_modified = 1;
+                scopy(msg, "Partition ", MAX_LINE_LEN);
+                msg[10] = '1' + idx;
+                msg[11] = ' '; msg[12] = 'p'; msg[13] = 'r'; msg[14] = 'i'; msg[15] = '='; msg[16] = '\0';
+                char prbuf[8];
+                uint_to_dec_s((uint32_t)pri, prbuf, 8);
+                scat(msg, prbuf, MAX_LINE_LEN);
+                inst_print(s, msg);
+            }
+            break;
+
         case 'w':  /* Write to disk */
             if (!pt->valid) {
                 inst_print(s, "No partition table to write.");
@@ -1201,10 +1341,12 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
                     BlockDev_UnregisterPartitions(s->fdisk_dev);
                     for (int i = 0; i < MBR_PART_COUNT; i++) {
                         if (pt->mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
+                            char namebuf[16];
+                            const char *dname = uaos_meta_get_name(&pt->uaos_meta, i, namebuf, sizeof(namebuf));
                             BlockDev_RegisterPartition(
                                 s->fdisk_dev, i + 1,
                                 pt->mbr.partitions[i].lba_start,
-                                pt->mbr.partitions[i].sector_count);
+                                pt->mbr.partitions[i].sector_count, dname);
                         }
                     }
                     s->fdisk_mode = 0;
@@ -1234,7 +1376,7 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
             break;
 
         case 'q':  /* Quit without saving */
-            if (pt->valid && (pt->mbr_modified || pt->gpt_modified || pt->rdb_modified)) {
+            if (pt->valid && (pt->mbr_modified || pt->gpt_modified || pt->rdb_modified || pt->meta_modified)) {
                 inst_print(s, "WARNING: Unsaved changes will be lost.");
             }
             s->fdisk_mode = 0;
@@ -1249,14 +1391,20 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
 
                 if (scheme == PART_SCHEME_MBR) {
                     mbr_create_new(pt);
+                    uaos_meta_init(&pt->uaos_meta);
+                    pt->meta_modified = 1;
                     inst_print(s, "Created new MBR partition table.");
                 } else if (scheme == PART_SCHEME_GPT) {
                     inst_print(s, "GPT not yet implemented. Using MBR.");
                     mbr_create_new(pt);
+                    uaos_meta_init(&pt->uaos_meta);
+                    pt->meta_modified = 1;
                     pt->scheme = PART_SCHEME_MBR;
                 } else {
                     inst_print(s, "RDB not yet implemented. Using MBR.");
                     mbr_create_new(pt);
+                    uaos_meta_init(&pt->uaos_meta);
+                    pt->meta_modified = 1;
                     pt->scheme = PART_SCHEME_MBR;
                 }
             }
@@ -1305,6 +1453,11 @@ static void inst_cmd_fdisk(ShellInstance *s, const char *arg)
         BlockDev *dev = BlockDev_GetList();
         int count = 0;
         while (dev) {
+            /* Skip partition devices — only list whole disks */
+            if (dev->part_offset != 0) {
+                dev = dev->next;
+                continue;
+            }
             char msg[MAX_LINE_LEN];
             scopy(msg, "  ", MAX_LINE_LEN);
             scat(msg, dev->name, MAX_LINE_LEN);
@@ -1384,29 +1537,86 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
 {
     if (!arg || !*arg) {
         inst_print(s, "Usage: format <device> [filesystem]");
-        inst_print(s, "Example: format virtio01 fat32");
+        inst_print(s, "       format Device=DH0: Name=Workbench FFS");
         inst_print(s, "");
         inst_print(s, "Supported filesystems: fat32");
         inst_print(s, "");
-        inst_print(s, "Note: Format a partition (e.g. virtio01),");
+        inst_print(s, "Note: Format a partition (e.g. virtio01 or DH0:),");
         inst_print(s, "      not the whole disk (virtio0).");
         return;
     }
 
-    char devname[32];
-    int i = 0;
-    while (*arg && *arg != ' ' && i < 31) { devname[i++] = *arg++; }
-    devname[i] = '\0';
-    while (*arg == ' ') arg++;
+    /* Parse Amiga-style keyword parameters */
+    char devname[32] = {0};
+    char volname[12] = {0};
+    char fs[16] = {0};
 
-    char fs[16];
-    i = 0;
-    while (*arg && *arg != ' ' && i < 15) { fs[i++] = *arg++; }
-    fs[i] = '\0';
+    const char *p = arg;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+
+        /* Check for keyword=value */
+        if ((p[0] == 'D' || p[0] == 'd') &&
+            (p[1] == 'e' || p[1] == 'E') &&
+            (p[2] == 'V' || p[2] == 'v') &&
+            p[3] == 'i' && p[4] == 'c' && p[5] == 'e' && p[6] == '=') {
+            /* Device= */
+            p += 7;
+            int i = 0;
+            while (*p && *p != ' ' && i < 31) { devname[i++] = *p++; }
+            devname[i] = '\0';
+        } else if ((p[0] == 'N' || p[0] == 'n') &&
+                   (p[1] == 'a' || p[1] == 'A') &&
+                   (p[2] == 'M' || p[2] == 'm') &&
+                   (p[3] == 'e' || p[3] == 'E') && p[4] == '=') {
+            /* Name= */
+            p += 5;
+            int i = 0;
+            while (*p && *p != ' ' && i < 11) { volname[i++] = *p++; }
+            volname[i] = '\0';
+        } else if ((p[0] == 'F' || p[0] == 'f') &&
+                   (p[1] == 'F' || p[1] == 'f') &&
+                   (p[2] == 'S' || p[2] == 's')) {
+            /* FFS */
+            scopy(fs, "fat32", 16);
+            p += 3;
+        } else {
+            /* Bare token: device name or fs type */
+            char tok[32];
+            int i = 0;
+            while (*p && *p != ' ' && i < 31) { tok[i++] = *p++; }
+            tok[i] = '\0';
+
+            if (!devname[0]) {
+                scopy(devname, tok, 32);
+            } else if (!fs[0]) {
+                scopy(fs, tok, 16);
+            }
+        }
+    }
 
     if (!fs[0]) scopy(fs, "fat32", 16);
 
-    BlockDev *dev = BlockDev_Find(devname);
+    if (!devname[0]) {
+        inst_print(s, "No device specified.");
+        inst_print(s, "Example: format virtio01 fat32");
+        inst_print(s, "         format Device=DH0: Name=Workbench FFS");
+        return;
+    }
+
+    /* Try to find by display name first, then by device name */
+    BlockDev *dev = NULL;
+    BlockDev *bdev = BlockDev_GetList();
+    while (bdev) {
+        if (bdev->display_name && seq(bdev->display_name, devname)) {
+            dev = bdev;
+            break;
+        }
+        bdev = bdev->next;
+    }
+    if (!dev) dev = BlockDev_Find(devname);
+
     if (!dev) {
         char msg[MAX_LINE_LEN];
         scopy(msg, "Device not found: ", MAX_LINE_LEN);
@@ -1429,7 +1639,11 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
 
     char msg[MAX_LINE_LEN];
     scopy(msg, "format: ", MAX_LINE_LEN);
-    scat(msg, devname, MAX_LINE_LEN);
+    scat(msg, dev->display_name ? dev->display_name : dev->name, MAX_LINE_LEN);
+    if (volname[0]) {
+        scat(msg, " name=", MAX_LINE_LEN);
+        scat(msg, volname, MAX_LINE_LEN);
+    }
     scat(msg, " as ", MAX_LINE_LEN);
     scat(msg, fs, MAX_LINE_LEN);
     inst_print(s, msg);
@@ -1437,9 +1651,36 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
 
     if (seq(fs, "fat32")) {
         inst_print(s, "Formatting... please wait.");
-        int ret = FAT32_Format(dev);
+        int ret = FAT32_Format(dev, volname[0] ? volname : NULL);
         if (ret == 0) {
+            dev->formatted = 1;
             inst_print(s, "Format complete.");
+            /* Auto-mount in VFS so cd/dir work */
+            const char *dname = dev->display_name ? dev->display_name : dev->name;
+            char mnt_name[16];
+            int ni = 0, si = 0;
+            while (si < 15 && dname[si] && dname[si] != ':')
+                mnt_name[ni++] = dname[si++];
+            mnt_name[ni] = '\0';
+            if (mnt_name[0]) {
+                if (VFS_MountPartition(mnt_name) == 0) {
+                    char msg2[MAX_LINE_LEN];
+                    scopy(msg2, "Mounted as ", MAX_LINE_LEN);
+                    scat(msg2, mnt_name, MAX_LINE_LEN);
+                    scat(msg2, ":", MAX_LINE_LEN);
+                    inst_print(s, msg2);
+                }
+            }
+            /* Also mount by the FAT32 volume label (Name=) if different */
+            if (volname[0] && !seq(volname, mnt_name)) {
+                if (VFS_MountPartition(volname) == 0) {
+                    char msg2[MAX_LINE_LEN];
+                    scopy(msg2, "Mounted as ", MAX_LINE_LEN);
+                    scat(msg2, volname, MAX_LINE_LEN);
+                    scat(msg2, ":", MAX_LINE_LEN);
+                    inst_print(s, msg2);
+                }
+            }
         } else {
             inst_print(s, "Format failed.");
         }

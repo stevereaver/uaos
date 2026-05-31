@@ -15,8 +15,16 @@
 #include "about_win.h"
 #include "shell_win.h"
 #include "../irq/rtc.h"
+#include "../dos/blockdev.h"
 #include <stdint.h>
 #include <stddef.h>
+
+static void scpy(char *dst, const char *src, int max)
+{
+    int i = 0;
+    while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+}
 
 /* =========================================================================
  * Layout constants
@@ -179,6 +187,136 @@ static void draw_backdrop(int W, int H)
 }
 
 /* =========================================================================
+ * Icon state for desktop
+ * ========================================================================= */
+
+#define DBLCLICK_TICKS  2   /* max seconds between two clicks for double-click */
+#define MAX_ICONS 10
+
+typedef struct {
+    int      x, y;         /* icon top-left on desktop */
+    const char *volume;    /* FileBrowser_Open argument */
+    const char *label;     /* Icon label text */
+    int      is_ndos;      /* 1 = unformatted (NDOS) */
+    uint32_t last_tick;    /* tick of last click */
+    int      click_count;  /* clicks within window */
+} IconState;
+
+/* Read the FAT32 volume label from a partition's boot sector.
+ * Returns a pointer to a static buffer, or NULL if not a valid FAT32. */
+static const char *read_fat32_vol_label(BlockDev *dev)
+{
+    static char label_buf[12];
+    uint8_t sector[512];
+
+    if (BlockDev_Read(dev, 0, sector, 1) != 0)
+        return NULL;
+
+    /* Check boot signature */
+    if (sector[510] != 0x55 || sector[511] != 0xAA)
+        return NULL;
+
+    /* Check FAT32 signature bytes: bytes_per_sec at offset 11 should be 512 */
+    uint16_t bps = sector[11] | (sector[12] << 8);
+    if (bps != 512)
+        return NULL;
+
+    /* Volume label at BPB offset 71, 11 bytes, space-padded */
+    int li = 0;
+    for (int i = 0; i < 11; i++) {
+        uint8_t c = sector[71 + i];
+        if (c != ' ') label_buf[li++] = c;
+    }
+    label_buf[li] = '\0';
+
+    if (li == 0)
+        return NULL;
+
+    return label_buf;
+}
+
+static IconState *get_icons(int *count)
+{
+    static IconState icons[MAX_ICONS];
+    static char vol_labels[MAX_ICONS][16];
+    static int initialised = 0;
+    if (!initialised) {
+        initialised = 1;
+        /* Fixed icons */
+        icons[0].volume      = "RAM Disk";
+        icons[0].label       = "RAM Disk";
+        icons[0].is_ndos     = 0;
+        icons[0].last_tick   = 0;
+        icons[0].click_count = 0;
+        icons[1].volume      = "UAOS:";
+        icons[1].label       = "UAOS:";
+        icons[1].is_ndos     = 0;
+        icons[1].last_tick   = 0;
+        icons[1].click_count = 0;
+    }
+    /* Recompute positions each call in case screen size changed */
+    int W  = (int)g_fb.width;
+    int ix = W - ICON_W - 16;
+    int iy = MENUBAR_H + 16;
+    icons[0].x = ix;  icons[0].y = iy;
+    icons[1].x = ix;  icons[1].y = iy + ICON_H + 8;
+
+    int n = 2;
+
+    /* Scan block devices for partition icons */
+    BlockDev *dev = BlockDev_GetList();
+    while (dev && n < MAX_ICONS) {
+        if (dev->part_offset != 0) {  /* partition device */
+            icons[n].x = ix;
+            icons[n].y = iy + n * (ICON_H + 8);
+            icons[n].volume = dev->display_name ? dev->display_name : dev->name;
+            /* last_tick and click_count are NOT reset here — they must persist
+             * across Desktop_Draw / get_icons calls for double-click detection. */
+
+            /* Check formatted status (lazy, cached) */
+            if (dev->formatted == 0) {
+                dev->formatted = BlockDev_CheckFormatted(dev) ? 1 : -1;
+            }
+            icons[n].is_ndos = (dev->formatted < 0);
+
+            if (icons[n].is_ndos) {
+                static char ndos_labels[MAX_ICONS][16];
+                scpy(ndos_labels[n], "NDOS:", 16);
+                int nl = 0;
+                while (ndos_labels[n][nl]) nl++;
+                ndos_labels[n][nl++] = ' ';
+                const char *dn = dev->display_name ? dev->display_name : dev->name;
+                int di = 0;
+                while (di < 8 && dn[di]) { ndos_labels[n][nl++] = dn[di++]; }
+                ndos_labels[n][nl] = '\0';
+                icons[n].label = ndos_labels[n];
+            } else {
+                /* Try to read the real FAT32 volume label */
+                const char *vl = read_fat32_vol_label(dev);
+                if (vl) {
+                    scpy(vol_labels[n], vl, 16);
+                    /* Append colon like Amiga volume names */
+                    int vli = 0;
+                    while (vol_labels[n][vli] && vli < 14) vli++;
+                    if (vli < 15) {
+                        vol_labels[n][vli++] = ':';
+                        vol_labels[n][vli] = '\0';
+                    }
+                    icons[n].label = vol_labels[n];
+                } else {
+                    icons[n].label = dev->display_name ? dev->display_name : dev->name;
+                }
+            }
+            n++;
+        }
+        dev = dev->next;
+    }
+
+    *count = n;
+    return icons;
+}
+
+/* =========================================================================
  * Public entry
  * ========================================================================= */
 
@@ -221,6 +359,18 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     int iy = MENUBAR_H + 16;
     draw_disk_icon(ix, iy,              "RAM Disk", WB_ORANGE);
     draw_disk_icon(ix, iy + ICON_H + 8, "UAOS:",    FB_RGB(0x44, 0x88, 0xFF));
+
+    /* Dynamic partition icons */
+    {
+        int n;
+        IconState *icons = get_icons(&n);
+        for (int i = 2; i < n; i++) {
+            IconState *ic = &icons[i];
+            uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
+            draw_disk_icon(ic->x, ic->y, ic->label, colour);
+        }
+    }
+
     draw_welcome_window(W, H);
 
     /* Always repaint bars — a window may have overlapped them */
@@ -245,6 +395,18 @@ void Desktop_Draw(void)
     draw_disk_icon(ix, iy,               "RAM Disk",  WB_ORANGE);
     draw_disk_icon(ix, iy + ICON_H + 8,  "UAOS:",     FB_RGB(0x44, 0x88, 0xFF));
 
+    /* Dynamic partition icons below fixed ones */
+    {
+        int n;
+        (void)get_icons(&n);  /* forces layout computation */
+        IconState *icons = get_icons(&n);
+        for (int i = 2; i < n; i++) {
+            IconState *ic = &icons[i];
+            uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
+            draw_disk_icon(ic->x, ic->y, ic->label, colour);
+        }
+    }
+
     /* Centre welcome window */
     draw_welcome_window(W, H);
 }
@@ -255,43 +417,6 @@ void Desktop_Draw(void)
  * ========================================================================= */
 
 static volatile uint32_t g_tick = 0;
-
-/* =========================================================================
- * Icon hit-test and double-click
- * ========================================================================= */
-
-#define DBLCLICK_TICKS  2   /* max seconds between two clicks for double-click */
-
-typedef struct {
-    int      x, y;         /* icon top-left on desktop */
-    const char *volume;    /* FileBrowser_Open argument */
-    uint32_t last_tick;    /* tick of last click */
-    int      click_count;  /* clicks within window */
-} IconState;
-
-static IconState *get_icons(int *count)
-{
-    static IconState icons[2];
-    static int initialised = 0;
-    if (!initialised) {
-        initialised = 1;
-        /* Icons are drawn at these coords (must match Desktop_Draw / Desktop_RedrawRect) */
-        icons[0].volume      = "RAM Disk";
-        icons[0].last_tick   = 0;
-        icons[0].click_count = 0;
-        icons[1].volume      = "UAOS:";
-        icons[1].last_tick   = 0;
-        icons[1].click_count = 0;
-    }
-    /* Recompute positions each call in case screen size changed */
-    int W  = (int)g_fb.width;
-    int ix = W - ICON_W - 16;
-    int iy = MENUBAR_H + 16;
-    icons[0].x = ix;  icons[0].y = iy;
-    icons[1].x = ix;  icons[1].y = iy + ICON_H + 8;
-    *count = 2;
-    return icons;
-}
 
 /* Hit-test the menubar and return which menu index was clicked (-1 = none).
  * Replicates the layout logic from draw_menubar. */

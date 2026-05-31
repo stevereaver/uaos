@@ -21,9 +21,11 @@ typedef struct BlockDevOps {
 /* Block device structure */
 typedef struct BlockDev {
     const char *name;           /* Device name (e.g., "virtio0") */
+    const char *display_name;   /* Display name (e.g., "DH0:") */
     uint32_t  sector_size;     /* Sector size in bytes (usually 512) */
     uint64_t  num_sectors;     /* Total number of sectors */
     uint64_t  part_offset;     /* Partition start sector offset (0 for whole disk) */
+    int       formatted;        /* 1 = has valid filesystem */
     void     *private_data;    /* Driver-specific data */
     const BlockDevOps *ops;    /* Device operations */
     struct BlockDev *next;     /* Next device in list */
@@ -53,11 +55,19 @@ int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t 
 /* Get device capacity in sectors */
 uint64_t BlockDev_GetCapacity(BlockDev *dev);
 
-/* Register a partition device (child of parent with offset) */
-int BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_sector, uint32_t num_sectors);
+/* Register a partition device (child of parent with offset).
+ * Returns the registered BlockDev* on success, NULL on failure. */
+BlockDev *BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_sector, uint32_t num_sectors, const char *display_name);
 
 /* Unregister all partition devices of a parent */
 void BlockDev_UnregisterPartitions(BlockDev *parent);
+
+/* Detect if a partition has a valid filesystem (reads boot sector) */
+int BlockDev_CheckFormatted(BlockDev *dev);
+
+/* Read FAT32 volume label from boot sector into buf[max].
+ * Returns 1 on success, 0 if not formatted / no label. */
+int BlockDev_ReadVolLabel(BlockDev *dev, char *buf, int max);
 
 /* Initialize block device layer */
 void BlockDev_Init(void);

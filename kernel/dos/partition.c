@@ -248,6 +248,7 @@ void mbr_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
     if (!pt || !pt->valid || !print_fn) return;
 
     char msg[256];
+    char namebuf[16];
 
     print_fn("Disk identifier: 0x");
     char hex[16];
@@ -255,7 +256,7 @@ void mbr_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
     print_fn(hex);
     print_fn("");
 
-    print_fn("Device     Boot   Start      End  Sectors   Size Id Type");
+    print_fn("Device   Name       Boot   Start      End  Sectors   Size Id Type");
 
     for (int i = 0; i < MBR_PART_COUNT; i++) {
         MbrPartEntry *p = &pt->mbr.partitions[i];
@@ -265,21 +266,31 @@ void mbr_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
         msg[7] = '1' + i;
         msg[8] = '\0';
 
-        /* Pad to 10 chars */
+        /* Pad to 9 chars (device column width) */
         int len = 0;
         while (msg[len]) len++;
-        while (len < 10) { msg[len] = ' '; len++; }
+        while (len < 9) { msg[len] = ' '; len++; }
+        msg[len] = '\0';
+
+        /* UAOS display name */
+        const char *pn = uaos_meta_get_name(&pt->uaos_meta, i, namebuf, sizeof(namebuf));
+        scat(msg, pn, 256);
+        len = 0;
+        while (msg[len]) len++;
+        while (len < 20) { msg[len] = ' '; len++; }
         msg[len] = '\0';
 
         /* Boot flag */
         if (p->boot_flag == 0x80) {
-            scat(msg, "*   ", 256);
+            scat(msg, "* ", 256);
+        } else if (pt->uaos_meta.parts[i].bootable) {
+            scat(msg, "B ", 256);
         } else {
-            scat(msg, "    ", 256);
+            scat(msg, "  ", 256);
         }
 
         if (p->type_code == PART_TYPE_EMPTY) {
-            scat(msg, "       -        -        -        -     -  - Empty", 256);
+            scat(msg, "      -        -        -        -     -  - Empty", 256);
         } else {
             /* Start */
             char num[32];
@@ -323,6 +334,17 @@ void mbr_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
 
             /* Type name */
             scat(msg, partition_type_name(p->type_code), 256);
+
+            /* Flags summary */
+            if (pt->uaos_meta.parts[i].automount) {
+                scat(msg, " [auto]", 256);
+            }
+            if (pt->uaos_meta.parts[i].boot_pri > 0) {
+                scat(msg, " pri=", 256);
+                char prbuf[4];
+                uint_to_str(pt->uaos_meta.parts[i].boot_pri, prbuf, 4);
+                scat(msg, prbuf, 256);
+            }
         }
 
         print_fn(msg);
@@ -396,6 +418,8 @@ int partition_read(BlockDev *dev, PartitionTable *pt)
 
     /* Try MBR first */
     if (mbr_read(dev, pt) == 0) {
+        /* Read UAOS metadata from sector 1 */
+        uaos_meta_read(dev, &pt->uaos_meta);
         return 0;
     }
 
@@ -410,16 +434,25 @@ int partition_write(BlockDev *dev, PartitionTable *pt)
     if (!pt) return -2;
     if (!pt->valid) return -3;
 
+    int ret = 0;
     switch (pt->scheme) {
         case PART_SCHEME_MBR:
-            return mbr_write(dev, pt);
+            ret = mbr_write(dev, pt);
+            break;
         case PART_SCHEME_GPT:
-            return gpt_write(dev, pt);
+            ret = gpt_write(dev, pt);
+            break;
         case PART_SCHEME_RDB:
-            return rdb_write(dev, pt);
+            ret = rdb_write(dev, pt);
+            break;
         default:
             return -4;
     }
+    if (ret == 0 && pt->meta_modified) {
+        uaos_meta_write(dev, &pt->uaos_meta);
+        pt->meta_modified = 0;
+    }
+    return ret;
 }
 
 void partition_print(PartitionTable *pt, void (*print_fn)(const char *))
@@ -440,5 +473,88 @@ void partition_print(PartitionTable *pt, void (*print_fn)(const char *))
             print_fn("Unknown partition scheme");
             break;
     }
+}
+
+/* =========================================================================
+ * UAOS Partition Metadata (sector 1)
+ * ========================================================================= */
+
+void uaos_meta_init(UaosPartMeta *meta)
+{
+    if (!meta) return;
+    memset(meta, 0, sizeof(UaosPartMeta));
+    meta->magic = UAOS_PART_META_MAGIC;
+    meta->version = UAOS_PART_META_VER;
+}
+
+static uint32_t uaos_meta_checksum(const UaosPartMeta *meta)
+{
+    uint32_t sum = 0;
+    const uint8_t *p = (const uint8_t *)meta->parts;
+    for (size_t i = 0; i < sizeof(meta->parts); i++)
+        sum += p[i];
+    return sum;
+}
+
+int uaos_meta_read(BlockDev *dev, UaosPartMeta *meta)
+{
+    if (!dev || !meta) return -1;
+
+    uint8_t sector[512];
+    memset(sector, 0, 512);
+
+    if (BlockDev_Read(dev, 1, sector, 1) != 0) {
+        return -1;
+    }
+
+    memcpy(meta, sector, sizeof(UaosPartMeta));
+
+    if (meta->magic != UAOS_PART_META_MAGIC) {
+        /* No valid metadata — initialise defaults */
+        uaos_meta_init(meta);
+        return 0;  /* Not an error, just no metadata yet */
+    }
+
+    uint32_t computed = uaos_meta_checksum(meta);
+    if (computed != meta->checksum) {
+        /* Checksum mismatch — reset to defaults */
+        uaos_meta_init(meta);
+        return 0;
+    }
+
+    return 0;
+}
+
+int uaos_meta_write(BlockDev *dev, UaosPartMeta *meta)
+{
+    if (!dev || !meta) return -1;
+
+    meta->magic = UAOS_PART_META_MAGIC;
+    meta->version = UAOS_PART_META_VER;
+    meta->checksum = uaos_meta_checksum(meta);
+
+    uint8_t sector[512];
+    memset(sector, 0, 512);
+    memcpy(sector, meta, sizeof(UaosPartMeta));
+
+    return BlockDev_Write(dev, 1, sector, 1);
+}
+
+const char *uaos_meta_get_name(UaosPartMeta *meta, int part_index, char *buf, int buf_len)
+{
+    if (!meta || !buf || buf_len < 1 || part_index < 0 || part_index >= MBR_PART_COUNT)
+        return NULL;
+
+    if (meta->parts[part_index].name[0]) {
+        int i = 0;
+        for (i = 0; i < buf_len - 1 && i < UAOS_PART_MAX_NAME; i++)
+            buf[i] = meta->parts[part_index].name[i];
+        buf[i] = '\0';
+        return buf;
+    }
+    /* Default name */
+    buf[0] = 'D'; buf[1] = 'H'; buf[2] = '0' + part_index;
+    buf[3] = ':'; buf[4] = '\0';
+    return buf;
 }
 

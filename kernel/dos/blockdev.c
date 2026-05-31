@@ -167,20 +167,21 @@ uint64_t BlockDev_GetCapacity(BlockDev *dev)
  * Partition Device Registration
  * ========================================================================= */
 
-int BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_sector, uint32_t num_sectors)
+BlockDev *BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_sector, uint32_t num_sectors, const char *display_name)
 {
     if (!parent || part_index < 0 || part_index > 9) {
         printf("[BLOCKDEV] Invalid partition parameters\n");
-        return -1;
+        return NULL;
     }
 
     if (g_num_blockdevs >= MAX_BLOCKDEVS) {
         printf("[BLOCKDEV] Maximum block devices reached\n");
-        return -1;
+        return NULL;
     }
 
     /* Build partition name: parent name + digit */
     static char part_names[MAX_BLOCKDEVS][32];
+    static char disp_names[MAX_BLOCKDEVS][16];
     int pi = g_num_blockdevs;
     scpy(part_names[pi], parent->name, 32);
     int nl = 0;
@@ -191,19 +192,85 @@ int BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t start_
     /* Check for duplicate */
     if (BlockDev_Find(part_names[pi]) != NULL) {
         printf("[BLOCKDEV] Partition '%s' already registered\n", part_names[pi]);
-        return -1;
+        return NULL;
+    }
+
+    /* Store display name */
+    if (display_name && display_name[0]) {
+        scpy(disp_names[pi], display_name, 16);
+    } else {
+        /* Default: DH0:, DH1:, etc. */
+        disp_names[pi][0] = 'D'; disp_names[pi][1] = 'H';
+        disp_names[pi][2] = '0' + (part_index - 1);
+        disp_names[pi][3] = ':'; disp_names[pi][4] = '\0';
     }
 
     BlockDev part;
     memset(&part, 0, sizeof(part));
     part.name = part_names[pi];
+    part.display_name = disp_names[pi];
     part.sector_size = parent->sector_size;
     part.num_sectors = num_sectors;
     part.part_offset = start_sector;
     part.private_data = parent->private_data;
     part.ops = parent->ops;
 
-    return BlockDev_Register(&part);
+    if (BlockDev_Register(&part) != 0)
+        return NULL;
+
+    return BlockDev_Find(part_names[pi]);
+}
+
+int BlockDev_CheckFormatted(BlockDev *dev)
+{
+    if (!dev) return 0;
+
+    uint8_t sector[512];
+    memset(sector, 0, 512);
+
+    if (BlockDev_Read(dev, 0, sector, 1) != 0) {
+        return 0;
+    }
+
+    /* Check boot signature 0x55AA at offset 510 */
+    uint16_t sig = sector[510] | (sector[511] << 8);
+    if (sig != 0xAA55) {
+        return 0;
+    }
+
+    /* Also check for FAT32 signature in the BPB */
+    /* bytes_per_sec should be 512, and sec_per_clus should be power of 2 */
+    uint16_t bps = sector[11] | (sector[12] << 8);
+    uint8_t spc = sector[13];
+    if (bps != 512 || spc == 0 || (spc & (spc - 1)) != 0) {
+        return 0;  /* Not a valid FAT BPB */
+    }
+
+    return 1;
+}
+
+int BlockDev_ReadVolLabel(BlockDev *dev, char *buf, int max)
+{
+    if (!dev || max < 2) return 0;
+
+    uint8_t sector[512];
+    memset(sector, 0, 512);
+
+    if (BlockDev_Read(dev, 0, sector, 1) != 0)
+        return 0;
+
+    if (sector[510] != 0x55 || sector[511] != 0xAA)
+        return 0;
+
+    /* FAT32 volume label at offset 71, 11 bytes, space-padded */
+    int n = 0;
+    for (int i = 0; i < 11 && n < max - 1; i++) {
+        uint8_t c = sector[71 + i];
+        if (c == ' ') break;  /* stop at first space (padding) */
+        buf[n++] = c;
+    }
+    buf[n] = '\0';
+    return n > 0 ? 1 : 0;
 }
 
 void BlockDev_UnregisterPartitions(BlockDev *parent)

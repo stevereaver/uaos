@@ -14,6 +14,9 @@
 #include "desktop.h"
 #include "calc_win.h"
 #include "pointer_prefs.h"
+#include "../dos/blockdev.h"
+#include "../dos/vfs.h"
+#include "../dos/ramfs.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -157,6 +160,18 @@ static const FileEntry k_ramdisk_env_files[]   = { { NULL, NULL } };
 
 static const FileEntry k_prefs_env_files[]     = { { NULL, NULL } };
 
+/* Placeholder for partition volumes until FAT32_ReadDir is implemented */
+static const FileEntry k_partition_empty_files[] = { { NULL, NULL } };
+
+/* Dynamic entry buffers for VFS-mounted partition volumes.
+ * Ring of 8 slots so multiple partition browsers can coexist. */
+#define MAX_VFS_DYN_ENTRIES 32
+#define MAX_VFS_DYN_BUFFERS 8
+static FileEntry g_vfs_entries[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES + 1];
+static char      g_vfs_names[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES][16];
+static char      g_vfs_types[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES][8];
+static int       g_vfs_buf_idx = 0;
+
 typedef struct { const char *path; const FileEntry *entries; } PathEntry;
 
 static const PathEntry k_path_table[] = {
@@ -182,6 +197,55 @@ static const FileEntry *entries_for_path(const char *path)
         if (str_eq(k_path_table[i].path, path))
             return k_path_table[i].entries;
     }
+
+    /* Try VFS first — if the path resolves to a mounted volume, enumerate it */
+    RamFsNode *child = VFS_OpenDir(path);
+    if (child) {
+        int slot = g_vfs_buf_idx % MAX_VFS_DYN_BUFFERS;
+        g_vfs_buf_idx++;
+        int n = 0;
+        while (child && n < MAX_VFS_DYN_ENTRIES) {
+            int ni = 0;
+            while (ni < 15 && child->name[ni]) {
+                g_vfs_names[slot][n][ni] = child->name[ni];
+                ni++;
+            }
+            g_vfs_names[slot][n][ni] = '\0';
+            g_vfs_entries[slot][n].name = g_vfs_names[slot][n];
+
+            if (child->type == RAMFS_TYPE_DIR) {
+                g_vfs_types[slot][n][0] = 'D'; g_vfs_types[slot][n][1] = 'I';
+                g_vfs_types[slot][n][2] = 'R'; g_vfs_types[slot][n][3] = '\0';
+            } else {
+                g_vfs_types[slot][n][0] = 'F'; g_vfs_types[slot][n][1] = 'I';
+                g_vfs_types[slot][n][2] = 'L'; g_vfs_types[slot][n][3] = 'E';
+                g_vfs_types[slot][n][4] = '\0';
+            }
+            g_vfs_entries[slot][n].type = g_vfs_types[slot][n];
+            n++;
+            child = child->next_sibling;
+        }
+        g_vfs_entries[slot][n].name = NULL;
+        g_vfs_entries[slot][n].type = NULL;
+        return g_vfs_entries[slot];
+    }
+
+    /* Check if this is a partition device (not yet mounted in VFS) */
+    BlockDev *dev = BlockDev_Find(path);
+    if (!dev) {
+        BlockDev *all = BlockDev_GetList();
+        while (all) {
+            if (all->display_name && str_eq(all->display_name, path)) {
+                dev = all;
+                break;
+            }
+            all = all->next;
+        }
+    }
+    if (dev && dev->part_offset != 0) {
+        return k_partition_empty_files;
+    }
+
     return k_uaos_files;  /* fallback */
 }
 

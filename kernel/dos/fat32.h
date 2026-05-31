@@ -121,7 +121,7 @@ uint32_t FAT32_Size(Fat32File *file);
 /* Read directory entry */
 int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir);
 
-/* Format a block device with FAT32 */
-int FAT32_Format(BlockDev *bdev);
+/* Format a block device with FAT32.  vol_label: optional 11-char volume name */
+int FAT32_Format(BlockDev *bdev, const char *vol_label);
 
 #endif /* UAOS_FAT32_H */

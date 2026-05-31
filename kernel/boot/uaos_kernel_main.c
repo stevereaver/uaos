@@ -283,9 +283,30 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
             if (partition_read(vdev, &pt) == 0 && pt.valid && pt.scheme == PART_SCHEME_MBR) {
                 for (int i = 0; i < MBR_PART_COUNT; i++) {
                     if (pt.mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
-                        BlockDev_RegisterPartition(vdev, i + 1,
+                        char namebuf[16];
+                        const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
+                        BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
                             pt.mbr.partitions[i].lba_start,
-                            pt.mbr.partitions[i].sector_count);
+                            pt.mbr.partitions[i].sector_count, dname);
+                        if (pdev && BlockDev_CheckFormatted(pdev)) {
+                            /* Strip trailing colon for VFS mount name */
+                            char mnt_name[16];
+                            int ni = 0, si = 0;
+                            while (si < 15 && dname[si] && dname[si] != ':')
+                                mnt_name[ni++] = dname[si++];
+                            mnt_name[ni] = '\0';
+                            if (mnt_name[0])
+                                VFS_MountPartition(mnt_name);
+                            /* Also mount by FAT32 volume label if different */
+                            char fat_label[16];
+                            if (BlockDev_ReadVolLabel(pdev, fat_label, sizeof(fat_label))) {
+                                int diff = 0;
+                                for (int ci = 0; mnt_name[ci] || fat_label[ci]; ci++)
+                                    if (mnt_name[ci] != fat_label[ci]) { diff = 1; break; }
+                                if (diff)
+                                    VFS_MountPartition(fat_label);
+                            }
+                        }
                     }
                 }
             }

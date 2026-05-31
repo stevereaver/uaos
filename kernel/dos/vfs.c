@@ -83,6 +83,36 @@ void VFS_Init(void)
 }
 
 /* =========================================================================
+ * Partition volume mounting (FAT32 partitions backed by empty RAMFS for now)
+ * ========================================================================= */
+
+int VFS_MountPartition(const char *name)
+{
+    if (!name || !*name) return -1;
+
+    /* Check if already mounted */
+    for (int i = 0; i < g_n_mounts; i++) {
+        if (seq(g_mounts[i].vol_name, name))
+            return 0;  /* already mounted */
+    }
+
+    if (g_n_mounts >= MAX_MOUNTS) return -1;
+
+    RamFsVol *vol = RamFS_MountVol(name);
+    if (!vol) return -1;
+
+    int i = 0;
+    while (i < 15 && name[i]) {
+        g_mounts[g_n_mounts].vol_name[i] = name[i];
+        i++;
+    }
+    g_mounts[g_n_mounts].vol_name[i] = '\0';
+    g_mounts[g_n_mounts].vol = vol;
+    g_n_mounts++;
+    return 0;
+}
+
+/* =========================================================================
  * VFS_Open
  * ========================================================================= */
 

@@ -180,7 +180,7 @@ int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir)
  * Format
  * ========================================================================= */
 
-int FAT32_Format(BlockDev *bdev)
+int FAT32_Format(BlockDev *bdev, const char *vol_label)
 {
     if (!bdev) {
         printf("[FAT32] Invalid block device\n");
@@ -260,7 +260,17 @@ int FAT32_Format(BlockDev *bdev)
     bpb.reserved1     = 0;
     bpb.boot_sig      = 0x29;
     bpb.vol_id        = 0x12345678;
-    memcpy(bpb.vol_label, "UAOS       ", 11);
+    if (vol_label && vol_label[0]) {
+        /* Pad/truncate to 11 chars, uppercase, space-padded */
+        int vi = 0;
+        for (vi = 0; vi < 11; vi++) {
+            char c = vol_label[vi];
+            if (c >= 'a' && c <= 'z') c -= 32;
+            bpb.vol_label[vi] = (c != '\0') ? c : ' ';
+        }
+    } else {
+        memcpy(bpb.vol_label, "NO NAME    ", 11);
+    }
     memcpy(bpb.fs_type, "FAT32   ", 8);
     bpb.boot_sig55aa  = 0xAA55;
 

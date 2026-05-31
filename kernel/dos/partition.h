@@ -147,6 +147,30 @@ typedef struct {
 } __attribute__((packed)) RdbPartBlock;
 
 /* =========================================================================
+ * UAOS Partition Metadata (stored in sector 1 of MBR disks)
+ * ========================================================================= */
+
+#define UAOS_PART_META_MAGIC  0x55414F53  /* 'UAOS' */
+#define UAOS_PART_META_VER    1
+#define UAOS_PART_MAX_NAME    12
+
+typedef struct {
+    char     name[UAOS_PART_MAX_NAME];  /* Display name e.g. "DH0:" */
+    uint8_t  automount;                 /* Auto-mount at boot */
+    uint8_t  bootable;                  /* Bootable flag */
+    uint8_t  boot_pri;                  /* Boot priority (higher = earlier) */
+    uint8_t  reserved;
+} UaosPartMetaEntry;
+
+typedef struct {
+    uint32_t magic;                     /* UAOS_PART_META_MAGIC */
+    uint32_t version;                   /* UAOS_PART_META_VER */
+    uint32_t checksum;                  /* Simple sum of data area */
+    uint32_t reserved;
+    UaosPartMetaEntry parts[MBR_PART_COUNT];
+} UaosPartMeta;
+
+/* =========================================================================
  * Partition Editor State
  * ========================================================================= */
 
@@ -169,6 +193,9 @@ typedef struct {
     RdbBlock  rdb;
     RdbPartBlock rdb_parts[16];
     int       rdb_modified;
+    /* UAOS metadata */
+    UaosPartMeta uaos_meta;
+    int       meta_modified;
 } PartitionTable;
 
 /* =========================================================================
@@ -211,5 +238,13 @@ void rdb_print_partitions(PartitionTable *pt, void (*print_fn)(const char *));
 int partition_read(BlockDev *dev, PartitionTable *pt);
 int partition_write(BlockDev *dev, PartitionTable *pt);
 void partition_print(PartitionTable *pt, void (*print_fn)(const char *));
+
+/* UAOS partition metadata (sector 1) */
+int uaos_meta_read(BlockDev *dev, UaosPartMeta *meta);
+int uaos_meta_write(BlockDev *dev, UaosPartMeta *meta);
+void uaos_meta_init(UaosPartMeta *meta);
+
+/* Get partition display name from metadata (falls back to default) */
+const char *uaos_meta_get_name(UaosPartMeta *meta, int part_index, char *buf, int buf_len);
 
 #endif /* UAOS_PARTITION_H */

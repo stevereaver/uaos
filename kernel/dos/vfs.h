@@ -45,6 +45,11 @@ typedef struct {
 /* Initialise VFS + mount RAM: with standard dirs. Call once at boot. */
 void VFS_Init(void);
 
+/* Mount a partition volume by name (e.g. "DH0", "WORK").
+ * Creates an empty RAMFS backing volume so cd/dir work.
+ * Returns 0 on success, -1 if mount table full or name too long. */
+int VFS_MountPartition(const char *name);
+
 /* Open a file.  Returns 1 on success, 0 on failure. */
 int  VFS_Open(VfsFile *fh, const char *path, int flags);
 
