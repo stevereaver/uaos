@@ -399,6 +399,10 @@ typedef struct BlockDev {
 | `BlockDev_Register(dev)` | Register a block device |
 | `BlockDev_Unregister(dev)` | Unregister a block device |
 | `BlockDev_Find(name)` | Find device by name |
+| `BlockDev_RegisterPartition(parent, idx, start, count, name)` | Register a partition device |
+| `BlockDev_UnregisterPartitions(parent)` | Remove all partitions of a parent |
+| `BlockDev_CheckFormatted(dev)` | Detect valid boot sector / FAT BPB |
+| `BlockDev_ReadVolLabel(dev, buf, max)` | Read FAT32 volume label from boot sector |
 | `BlockDev_Read(dev, sector, buffer, num)` | Read sectors |
 | `BlockDev_Write(dev, sector, buffer, num)` | Write sectors |
 | `BlockDev_GetCapacity(dev)` | Get device capacity |
@@ -436,6 +440,9 @@ typedef struct {
 | `VFS_OpenDir(path)` | Open directory for reading |
 | `VFS_ResolveDir(path)` | Resolve path to directory node |
 | `VFS_GetRoot(vol_name)` | Get volume root node |
+| `VFS_MountPartition(name)` | Mount a partition volume by name (creates RAMFS backing) |
+| `VFS_GetMountCount()` | Return number of mounted volumes |
+| `VFS_GetMountName(idx, dst, max)` | Get name of i-th mounted volume |
 
 ### RAM Filesystem (`ramfs.c`)
 
@@ -444,6 +451,7 @@ In-memory filesystem with BSS-backed storage:
 - **Node tree**: 256 nodes maximum
 - **Data pool**: 64KB for file contents
 - **Auto-mounted at boot**: RAM: with T, ENV, CLIPS, S directories
+- **Partition volumes**: Auto-mounted at boot if formatted; mountable by display name (e.g. `DH0:`) or FAT32 volume label (e.g. `WORK:`)
 - **Include style**: `#include "dos/vfs.h"` (kernel root relative)
 
 ### Filesystem Drivers
@@ -469,7 +477,7 @@ typedef struct {
 
 **Operations**: Mount, Unmount, Open, Close, Read, Write, Seek, Size, ReadDir
 
-**Status**: Mount function implemented with boot sector parsing. File operations are stubs with implementation logic.
+**Status**: Boot sector parsing, volume label extraction (`BlockDev_ReadVolLabel`), and formatting via `FAT32_Format()` are implemented. File read/write via virtqueue I/O is pending.
 
 #### PFS3 (`pfs3.c`)
 
@@ -517,18 +525,34 @@ The shell integrates with the VFS layer for filesystem operations:
 
 | Command | Description |
 |---------|-------------|
-| `dir` | List files in current directory |
-| `cd` | Change current directory |
-| `makedir` | Create a directory |
-| `delete` | Delete a file or directory |
-| `type` | Display file contents |
-| `copy` | Copy a file |
+| `dir [path]` | List files in current directory |
+| `cd [path]` | Change or show current directory |
+| `makedir <path>` | Create a directory |
+| `delete <path>` | Delete a file or empty directory |
+| `type <file>` | Display file contents |
+| `copy <src> <dst>` | Copy a file |
+| `rename <from> <to>` | Rename or move a file |
+| `pwd` | Print working directory |
+| `echo <text>` | Print text to shell |
+| `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
+| `attr <path>` | Show file attributes (Read-Only, Hidden, etc.) |
+| `info [device]` | Show mounted disks and volumes; or info for a specific device |
+| `alias [name cmd]` | Create or list command aliases |
+| `unalias <name>` | Remove an alias |
+| `set [name val]` | Set or list environment variables |
+| `unset <name>` | Remove an environment variable |
+| `date` | Show current date and time |
+| `which <cmd>` | Locate a command |
+| `disks` | List detected block devices |
+| `fdisk <device>` | Partition a block device |
+| `format <dev> [fs]` | Format a partition (FAT32) |
+| `run <prog> [args]` | Run an embedded Amiga binary |
 
 ### Current Implementation Status
 
-- **Block device layer**: Complete with VirtIO registration
-- **VFS layer**: Complete with RAM filesystem
-- **FAT32**: Mount implemented, file operations stubs
+- **Block device layer**: Complete with VirtIO registration and MBR partition support
+- **VFS layer**: Complete with RAM filesystem and partition volume mounting
+- **FAT32**: Boot sector parsing, volume label extraction, and formatting implemented; file read/write via virtqueue I/O pending
 - **PFS3**: Mount implemented, file operations stubs
 - **EXT4**: Mount implemented, file operations stubs
 
@@ -555,12 +579,29 @@ implements a scrollable terminal:
 | `clear` | Clear the shell history buffer |
 | `reboot` | Trigger a system reboot via port `0x64` |
 | `libs` | List loaded kernel libraries with versions |
-| `dir` | List files in current directory (VFS) |
-| `cd` | Change current directory (VFS) |
-| `makedir` | Create a directory (VFS) |
-| `delete` | Delete a file or directory (VFS) |
-| `type` | Display file contents (VFS) |
-| `copy` | Copy a file (VFS) |
+| `dir [path]` | List files in current directory (VFS) |
+| `cd [path]` | Change or show current directory (VFS) |
+| `makedir <path>` | Create a directory (VFS) |
+| `delete <path>` | Delete a file or empty directory (VFS) |
+| `type <file>` | Display file contents (VFS) |
+| `copy <src> <dst>` | Copy a file (VFS) |
+| `rename <from> <to>` | Rename or move a file (VFS) |
+| `pwd` | Print working directory |
+| `echo <text>` | Print text to shell |
+| `pointer` | Open pointer preferences |
+| `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
+| `attr <path>` | Show file attributes |
+| `info [device]` | Show mounted disks and volumes; or device info |
+| `alias [name cmd]` | Create or list command aliases |
+| `unalias <name>` | Remove an alias |
+| `set [name val]` | Set or list environment variables |
+| `unset <name>` | Remove an environment variable |
+| `date` | Show current date and time |
+| `which <cmd>` | Locate a command |
+| `disks` | List detected block devices |
+| `fdisk <device>` | Partition a block device |
+| `format <dev> [fs]` | Format a partition (FAT32) |
+| `run <prog> [args]` | Run an embedded Amiga binary |
 
 ---
 

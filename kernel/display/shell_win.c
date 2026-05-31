@@ -350,7 +350,8 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  pwd                print working directory");
     inst_print(s, "  echo <text>         print text to shell");
     inst_print(s, "  protect <flags> <path>  set file attributes (+r,-r,+h,-h)");
-    inst_print(s, "  info <path>         show file attributes");
+    inst_print(s, "  attr <path>         show file attributes");
+    inst_print(s, "  info [device]       show mounted disks/volumes");
     inst_print(s, "  alias [name cmd]   create/list command aliases");
     inst_print(s, "  unalias <name>      remove an alias");
     inst_print(s, "  set [name val]     set/list local environment variable");

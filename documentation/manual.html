@@ -244,9 +244,11 @@ header p, .subtitle, .author, .date { color: #aac8ff; margin-top: 0.3rem; }
 <li><a href="#introduction">Introduction</a></li>
 <li><a href="#system-architecture">System Architecture</a></li>
 <li><a href="#kernel-subsystems">Kernel Subsystems</a></li>
+<li><a href="#rom-module-system">ROM Module System</a></li>
 <li><a href="#graphics-and-window-manager">Graphics and Window
 Manager</a></li>
 <li><a href="#input-drivers">Input Drivers</a></li>
+<li><a href="#filesystem-layer">Filesystem Layer</a></li>
 <li><a href="#shell">Shell</a></li>
 <li><a href="#build-system">Build System</a></li>
 <li><a href="#running-in-qemu">Running in QEMU</a></li>
@@ -429,8 +431,204 @@ and <code>IRETQ</code> resumes execution.</p>
 <li>8259A PIC remapped: IRQ0–7 → vectors 32–39, IRQ8–15 → vectors
 40–47</li>
 <li>IRQ1 (vector 33) — PS/2 keyboard</li>
+<li>IRQ8 (vector 40) — RTC (CMOS real-time clock)</li>
 <li>IRQ12 (vector 44) — PS/2 mouse</li>
 </ul>
+<h3 id="rtc-driver-rtc.c">RTC Driver (<code>rtc.c</code>)</h3>
+<p>CMOS real-time clock driver providing time snapshots and UIE
+interrupt support:</p>
+<ul>
+<li><strong>I/O ports</strong>: 0x70 (index), 0x71 (data)</li>
+<li><strong>Functions</strong>: <code>RTC_ReadTime()</code> reads
+current time into <code>RtcTime</code> structure</li>
+<li><strong>IRQ handler</strong>: Updates cached time on each UIE
+interrupt</li>
+<li><strong>Connected to</strong>: <code>timer.device</code> for timing
+functions</li>
+</ul>
+<h3 id="virtio-block-device-driver-virtio_blk.c">VirtIO Block Device
+Driver (<code>virtio_blk.c</code>)</h3>
+<p>VirtIO block device driver for QEMU external disk support:</p>
+<ul>
+<li><strong>PCI scanning</strong>: Searches for VirtIO block device
+(vendor 0x1AF4, device 0x1001)</li>
+<li><strong>BAR0</strong>: I/O space for VirtIO device
+configuration</li>
+<li><strong>Capacity reporting</strong>: Reads device capacity from
+configuration space</li>
+<li><strong>Registered as</strong>: “virtio0” with block device
+layer</li>
+<li><strong>Status</strong>: PCI scanning and capacity reporting
+implemented; virtqueue I/O marked as TODO</li>
+</ul>
+<hr />
+<h2 id="rom-module-system">ROM Module System</h2>
+<p>UAOS implements a native ROM module system that provides
+AmigaOS-compatible library and device implementations. These modules are
+registered at boot and can be called by M68k emulated code via ILLEGAL
+opcode dispatch.</p>
+<h3 id="rom-module-registry-rom_modules.c-1">ROM Module Registry
+(<code>rom_modules.c</code>)</h3>
+<p><code>UAOS_ROM_RegisterAll()</code> is called once at boot. It
+populates a static array of <code>UaosRomModule</code> descriptors, each
+holding:</p>
+<ul>
+<li>Library name string (e.g. <code>"exec.library"</code>)</li>
+<li>Library version number</li>
+<li>32-bit Amiga base address</li>
+<li>Array of native function pointers (indexed 1-based to match LVO
+offsets)</li>
+</ul>
+<h3 id="registered-rom-modules">Registered ROM Modules</h3>
+<h4 id="libraries">Libraries</h4>
+<table>
+<colgroup>
+<col style="width: 21%" />
+<col style="width: 21%" />
+<col style="width: 30%" />
+<col style="width: 26%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Library</th>
+<th>Version</th>
+<th>Base Address</th>
+<th>Functions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>exec.library</code></td>
+<td>v45</td>
+<td>0x000000D0</td>
+<td>Process management, memory allocation</td>
+</tr>
+<tr class="even">
+<td><code>utility.library</code></td>
+<td>v37</td>
+<td>0x000000E0</td>
+<td>String functions, memory utilities</td>
+</tr>
+<tr class="odd">
+<td><code>console.device</code></td>
+<td>v40</td>
+<td>0x000000F0</td>
+<td>Console I/O</td>
+</tr>
+<tr class="even">
+<td><code>mathffp.library</code></td>
+<td>v40</td>
+<td>0x00000070</td>
+<td>Software floating-point (uses softfloat)</td>
+</tr>
+<tr class="odd">
+<td><code>locale.library</code></td>
+<td>v38</td>
+<td>0x00000100</td>
+<td>Localization support</td>
+</tr>
+<tr class="even">
+<td><code>ixemul.library</code></td>
+<td>v53</td>
+<td>0x00000110</td>
+<td>Unix compatibility layer</td>
+</tr>
+<tr class="odd">
+<td><code>graphics.library</code></td>
+<td>v40</td>
+<td>0x00000120</td>
+<td>Graphics primitives</td>
+</tr>
+<tr class="even">
+<td><code>dos.library</code></td>
+<td>v40</td>
+<td>0x000000D0</td>
+<td>File system operations</td>
+</tr>
+</tbody>
+</table>
+<h4 id="devices">Devices</h4>
+<table>
+<thead>
+<tr class="header">
+<th>Device</th>
+<th>Version</th>
+<th>Base Address</th>
+<th>Connected To</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>timer.device</code></td>
+<td>v40</td>
+<td>0x00000130</td>
+<td>RTC driver (CMOS)</td>
+</tr>
+<tr class="even">
+<td><code>keyboard.device</code></td>
+<td>v40</td>
+<td>0x00000140</td>
+<td>PS/2 keyboard driver</td>
+</tr>
+</tbody>
+</table>
+<h3 id="library-function-implementation">Library Function
+Implementation</h3>
+<p>Each library is implemented in <code>kernel/exec/</code> with the
+pattern:</p>
+<pre class="c"><code>/* Function indices matching AmigaOS LVO offsets */
+#define LIBRARY_FUNCTION_1   1
+#define LIBRARY_FUNCTION_2   2
+/* ... */
+
+static void library_Function1(void)
+{
+    /* Implementation with M68k register access */
+    /* D0, D1, A0, A1 contain arguments */
+    /* Return value in D0/A0 */
+}
+
+static void *library_funcs[] = {
+    library_Function1,   /* index 1 */
+    library_Function2,   /* index 2 */
+    /* ... */
+};
+
+void UAOS_LIBRARY_Register(void)
+{
+    UAOS_ROM_Register(&quot;library.name&quot;, version, base_addr,
+                      (uint16_t)(sizeof(library_funcs) / sizeof(library_funcs[0])),
+                      library_funcs);
+}</code></pre>
+<h3 id="m68k-integration">M68k Integration</h3>
+<p>Functions are called via ILLEGAL opcode dispatch in
+<code>uaos_m68k_glue.c</code>:</p>
+<ol type="1">
+<li>M68k code calls library function via LVO</li>
+<li>ILLEGAL opcode triggers dispatch</li>
+<li>Arguments read from M68k registers (D0, D1, A0, A1)</li>
+<li>Native C function called</li>
+<li>Return values written back to M68k registers</li>
+<li>Execution resumes in M68k code</li>
+</ol>
+<h3 id="current-implementation-status">Current Implementation
+Status</h3>
+<ul>
+<li><strong>exec.library</strong>: Basic stubs for OpenLibrary,
+CloseLibrary, AllocMem, FreeMem, FindTask</li>
+<li><strong>utility.library</strong>: String functions (StrIcmp,
+StrNicmp, UcStr, LcStr) with implementation logic</li>
+<li><strong>mathffp.library</strong>: All 18 floating-point functions
+with softfloat integration logic</li>
+<li><strong>dos.library</strong>: Lock/Unlock, Examine/ExamineNext with
+implementation logic</li>
+<li><strong>timer.device</strong>: Connected to RTC driver for timing
+functions</li>
+<li><strong>keyboard.device</strong>: Connected to PS/2 keyboard driver
+for input</li>
+</ul>
+<p>Functions currently log calls and have detailed implementation logic
+in comments. Full M68k memory access integration is pending.</p>
 <hr />
 <h2 id="graphics-and-window-manager">Graphics and Window Manager</h2>
 <h3 id="framebuffer-framebuffer.c">Framebuffer
@@ -570,6 +768,356 @@ by the event loop</li>
 <code>WM_KeyEvent(c)</code></li>
 </ul>
 <hr />
+<h2 id="filesystem-layer">Filesystem Layer</h2>
+<p>UAOS provides a layered filesystem architecture supporting multiple
+filesystem types through a unified VFS (Virtual Filesystem)
+interface.</p>
+<h3 id="block-device-layer-blockdev.c">Block Device Layer
+(<code>blockdev.c</code>)</h3>
+<p>The block device layer provides a unified interface for storage
+devices:</p>
+<pre class="c"><code>typedef struct BlockDev {
+    const char *name;           /* Device name (e.g., &quot;virtio0&quot;) */
+    uint32_t  sector_size;     /* Sector size in bytes (usually 512) */
+    uint64_t  num_sectors;     /* Total number of sectors */
+    void     *private_data;    /* Driver-specific data */
+    const BlockDevOps *ops;    /* Device operations */
+    struct BlockDev *next;     /* Next device in list */
+} BlockDev;</code></pre>
+<h4 id="block-device-operations">Block Device Operations</h4>
+<table>
+<colgroup>
+<col style="width: 43%" />
+<col style="width: 56%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>BlockDev_Register(dev)</code></td>
+<td>Register a block device</td>
+</tr>
+<tr class="even">
+<td><code>BlockDev_Unregister(dev)</code></td>
+<td>Unregister a block device</td>
+</tr>
+<tr class="odd">
+<td><code>BlockDev_Find(name)</code></td>
+<td>Find device by name</td>
+</tr>
+<tr class="even">
+<td><code>BlockDev_RegisterPartition(parent, idx, start, count, name)</code></td>
+<td>Register a partition device</td>
+</tr>
+<tr class="odd">
+<td><code>BlockDev_UnregisterPartitions(parent)</code></td>
+<td>Remove all partitions of a parent</td>
+</tr>
+<tr class="even">
+<td><code>BlockDev_CheckFormatted(dev)</code></td>
+<td>Detect valid boot sector / FAT BPB</td>
+</tr>
+<tr class="odd">
+<td><code>BlockDev_ReadVolLabel(dev, buf, max)</code></td>
+<td>Read FAT32 volume label from boot sector</td>
+</tr>
+<tr class="even">
+<td><code>BlockDev_Read(dev, sector, buffer, num)</code></td>
+<td>Read sectors</td>
+</tr>
+<tr class="odd">
+<td><code>BlockDev_Write(dev, sector, buffer, num)</code></td>
+<td>Write sectors</td>
+</tr>
+<tr class="even">
+<td><code>BlockDev_GetCapacity(dev)</code></td>
+<td>Get device capacity</td>
+</tr>
+</tbody>
+</table>
+<h4 id="supported-block-devices">Supported Block Devices</h4>
+<ul>
+<li><strong>VirtIO Block Device</strong> (<code>virtio_blk.c</code>):
+PCI scanning, device detection, capacity reporting
+<ul>
+<li>Registers as “virtio0”</li>
+<li>Currently stub implementation (virtqueue I/O marked as TODO)</li>
+</ul></li>
+</ul>
+<h3 id="vfs-layer-vfs.c">VFS Layer (<code>vfs.c</code>)</h3>
+<p>The VFS layer provides a thin dispatch over filesystem
+implementations:</p>
+<pre class="c"><code>typedef struct {
+    RamFsNode *node;    /* NULL = invalid / not open */
+    uint32_t   pos;     /* current read/write position */
+} VfsFile;</code></pre>
+<h4 id="vfs-operations">VFS Operations</h4>
+<table>
+<colgroup>
+<col style="width: 43%" />
+<col style="width: 56%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>VFS_Init()</code></td>
+<td>Initialize VFS and mount RAM:</td>
+</tr>
+<tr class="even">
+<td><code>VFS_Open(fh, path, flags)</code></td>
+<td>Open a file</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_Close(fh)</code></td>
+<td>Close a file handle</td>
+</tr>
+<tr class="even">
+<td><code>VFS_Read(fh, buf, len)</code></td>
+<td>Read from file</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_Write(fh, buf, len)</code></td>
+<td>Write to file</td>
+</tr>
+<tr class="even">
+<td><code>VFS_Seek(fh, pos)</code></td>
+<td>Seek to position</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_Size(fh)</code></td>
+<td>Get file size</td>
+</tr>
+<tr class="even">
+<td><code>VFS_MkDir(path)</code></td>
+<td>Create directory</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_Delete(path)</code></td>
+<td>Delete file/directory</td>
+</tr>
+<tr class="even">
+<td><code>VFS_OpenDir(path)</code></td>
+<td>Open directory for reading</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_ResolveDir(path)</code></td>
+<td>Resolve path to directory node</td>
+</tr>
+<tr class="even">
+<td><code>VFS_GetRoot(vol_name)</code></td>
+<td>Get volume root node</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_MountPartition(name)</code></td>
+<td>Mount a partition volume by name (creates RAMFS backing)</td>
+</tr>
+<tr class="even">
+<td><code>VFS_GetMountCount()</code></td>
+<td>Return number of mounted volumes</td>
+</tr>
+<tr class="odd">
+<td><code>VFS_GetMountName(idx, dst, max)</code></td>
+<td>Get name of i-th mounted volume</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ram-filesystem-ramfs.c">RAM Filesystem
+(<code>ramfs.c</code>)</h3>
+<p>In-memory filesystem with BSS-backed storage:</p>
+<ul>
+<li><strong>Node tree</strong>: 256 nodes maximum</li>
+<li><strong>Data pool</strong>: 64KB for file contents</li>
+<li><strong>Auto-mounted at boot</strong>: RAM: with T, ENV, CLIPS, S
+directories</li>
+<li><strong>Partition volumes</strong>: Auto-mounted at boot if
+formatted; mountable by display name (e.g. <code>DH0:</code>) or FAT32
+volume label (e.g. <code>WORK:</code>)</li>
+<li><strong>Include style</strong>: <code>#include "dos/vfs.h"</code>
+(kernel root relative)</li>
+</ul>
+<h3 id="filesystem-drivers">Filesystem Drivers</h3>
+<h4 id="fat32-fat32.c">FAT32 (<code>fat32.c</code>)</h4>
+<p>FAT32 filesystem driver for block devices:</p>
+<pre class="c"><code>typedef struct {
+    BlockDev *bdev;           /* Block device */
+    Fat32BPB  bpb;            /* Boot sector */
+    uint32_t  fat_start;      /* FAT start sector */
+    uint32_t  data_start;     /* Data start sector */
+    uint32_t  root_cluster;   /* Root directory cluster */
+    uint32_t  bytes_per_sec;  /* Bytes per sector */
+    uint32_t  sec_per_clus;   /* Sectors per cluster */
+    uint32_t  cluster_size;   /* Cluster size in bytes */
+    uint8_t  *fat_cache;      /* FAT cache */
+    uint32_t  fat_cache_sec;  /* Cached FAT sector */
+} Fat32FS;</code></pre>
+<p><strong>Operations</strong>: Mount, Unmount, Open, Close, Read,
+Write, Seek, Size, ReadDir</p>
+<p><strong>Status</strong>: Boot sector parsing, volume label extraction
+(<code>BlockDev_ReadVolLabel</code>), and formatting via
+<code>FAT32_Format()</code> are implemented. File read/write via
+virtqueue I/O is pending.</p>
+<h4 id="pfs3-pfs3.c">PFS3 (<code>pfs3.c</code>)</h4>
+<p>Professional File System 3 (Amiga-specific) driver:</p>
+<pre class="c"><code>typedef struct {
+    BlockDev *bdev;           /* Block device */
+    Pfs3RootBlock root;       /* Root block */
+    uint32_t  block_size;     /* Block size */
+    uint32_t  total_blocks;   /* Total blocks */
+    uint32_t  root_block;     /* Root block number */
+    uint32_t  bitmap_start;   /* Bitmap start block */
+    uint32_t  bitmap_blocks;  /* Number of bitmap blocks */
+} Pfs3FS;</code></pre>
+<p><strong>Operations</strong>: Mount, Unmount, Open, Close, Read,
+Write, Seek, Size, ReadDir</p>
+<p><strong>Status</strong>: Mount function implemented with signature
+validation. File operations are stubs.</p>
+<h4 id="ext4-ext4.c">EXT4 (<code>ext4.c</code>)</h4>
+<p>Linux EXT4 filesystem driver:</p>
+<pre class="c"><code>typedef struct {
+    BlockDev *bdev;           /* Block device */
+    Ext4Superblock sb;         /* Superblock */
+    uint32_t  block_size;     /* Block size */
+    uint32_t  inode_size;     /* Inode size */
+    uint32_t  blocks_per_group;/* Blocks per group */
+    uint32_t  inodes_per_group;/* Inodes per group */
+    uint32_t  inode_table_start;/* Inode table start */
+} Ext4FS;</code></pre>
+<p><strong>Operations</strong>: Mount, Unmount, Open, Close, Read,
+Write, Seek, Size, ReadDir</p>
+<p><strong>Status</strong>: Mount function implemented with superblock
+parsing. File operations are stubs.</p>
+<h3 id="shell-commands">Shell Commands</h3>
+<p>The shell integrates with the VFS layer for filesystem
+operations:</p>
+<table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 59%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>dir [path]</code></td>
+<td>List files in current directory</td>
+</tr>
+<tr class="even">
+<td><code>cd [path]</code></td>
+<td>Change or show current directory</td>
+</tr>
+<tr class="odd">
+<td><code>makedir &lt;path&gt;</code></td>
+<td>Create a directory</td>
+</tr>
+<tr class="even">
+<td><code>delete &lt;path&gt;</code></td>
+<td>Delete a file or empty directory</td>
+</tr>
+<tr class="odd">
+<td><code>type &lt;file&gt;</code></td>
+<td>Display file contents</td>
+</tr>
+<tr class="even">
+<td><code>copy &lt;src&gt; &lt;dst&gt;</code></td>
+<td>Copy a file</td>
+</tr>
+<tr class="odd">
+<td><code>rename &lt;from&gt; &lt;to&gt;</code></td>
+<td>Rename or move a file</td>
+</tr>
+<tr class="even">
+<td><code>pwd</code></td>
+<td>Print working directory</td>
+</tr>
+<tr class="odd">
+<td><code>echo &lt;text&gt;</code></td>
+<td>Print text to shell</td>
+</tr>
+<tr class="even">
+<td><code>protect &lt;flags&gt; &lt;path&gt;</code></td>
+<td>Set file attributes (<code>+r</code>, <code>-r</code>,
+<code>+h</code>, <code>-h</code>)</td>
+</tr>
+<tr class="odd">
+<td><code>attr &lt;path&gt;</code></td>
+<td>Show file attributes (Read-Only, Hidden, etc.)</td>
+</tr>
+<tr class="even">
+<td><code>info [device]</code></td>
+<td>Show mounted disks and volumes; or info for a specific device</td>
+</tr>
+<tr class="odd">
+<td><code>alias [name cmd]</code></td>
+<td>Create or list command aliases</td>
+</tr>
+<tr class="even">
+<td><code>unalias &lt;name&gt;</code></td>
+<td>Remove an alias</td>
+</tr>
+<tr class="odd">
+<td><code>set [name val]</code></td>
+<td>Set or list environment variables</td>
+</tr>
+<tr class="even">
+<td><code>unset &lt;name&gt;</code></td>
+<td>Remove an environment variable</td>
+</tr>
+<tr class="odd">
+<td><code>date</code></td>
+<td>Show current date and time</td>
+</tr>
+<tr class="even">
+<td><code>which &lt;cmd&gt;</code></td>
+<td>Locate a command</td>
+</tr>
+<tr class="odd">
+<td><code>disks</code></td>
+<td>List detected block devices</td>
+</tr>
+<tr class="even">
+<td><code>fdisk &lt;device&gt;</code></td>
+<td>Partition a block device</td>
+</tr>
+<tr class="odd">
+<td><code>format &lt;dev&gt; [fs]</code></td>
+<td>Format a partition (FAT32)</td>
+</tr>
+<tr class="even">
+<td><code>run &lt;prog&gt; [args]</code></td>
+<td>Run an embedded Amiga binary</td>
+</tr>
+</tbody>
+</table>
+<h3 id="current-implementation-status-1">Current Implementation
+Status</h3>
+<ul>
+<li><strong>Block device layer</strong>: Complete with VirtIO
+registration and MBR partition support</li>
+<li><strong>VFS layer</strong>: Complete with RAM filesystem and
+partition volume mounting</li>
+<li><strong>FAT32</strong>: Boot sector parsing, volume label
+extraction, and formatting implemented; file read/write via virtqueue
+I/O pending</li>
+<li><strong>PFS3</strong>: Mount implemented, file operations stubs</li>
+<li><strong>EXT4</strong>: Mount implemented, file operations stubs</li>
+</ul>
+<p>All filesystem drivers use static allocation (no malloc) for
+freestanding environment. File operations have detailed implementation
+logic in comments pending M68k memory access integration.</p>
+<hr />
 <h2 id="shell">Shell</h2>
 <p>The shell window (<code>shell_win.c</code>) registers with the WM via
 <code>WM_AddWindow()</code> and implements a scrollable terminal:</p>
@@ -580,6 +1128,10 @@ by the event loop</li>
 </ul>
 <h3 id="built-in-commands">Built-in Commands</h3>
 <table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 59%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Command</th>
@@ -606,6 +1158,103 @@ by the event loop</li>
 <tr class="odd">
 <td><code>reboot</code></td>
 <td>Trigger a system reboot via port <code>0x64</code></td>
+</tr>
+<tr class="even">
+<td><code>libs</code></td>
+<td>List loaded kernel libraries with versions</td>
+</tr>
+<tr class="odd">
+<td><code>dir [path]</code></td>
+<td>List files in current directory (VFS)</td>
+</tr>
+<tr class="even">
+<td><code>cd [path]</code></td>
+<td>Change or show current directory (VFS)</td>
+</tr>
+<tr class="odd">
+<td><code>makedir &lt;path&gt;</code></td>
+<td>Create a directory (VFS)</td>
+</tr>
+<tr class="even">
+<td><code>delete &lt;path&gt;</code></td>
+<td>Delete a file or empty directory (VFS)</td>
+</tr>
+<tr class="odd">
+<td><code>type &lt;file&gt;</code></td>
+<td>Display file contents (VFS)</td>
+</tr>
+<tr class="even">
+<td><code>copy &lt;src&gt; &lt;dst&gt;</code></td>
+<td>Copy a file (VFS)</td>
+</tr>
+<tr class="odd">
+<td><code>rename &lt;from&gt; &lt;to&gt;</code></td>
+<td>Rename or move a file (VFS)</td>
+</tr>
+<tr class="even">
+<td><code>pwd</code></td>
+<td>Print working directory</td>
+</tr>
+<tr class="odd">
+<td><code>echo &lt;text&gt;</code></td>
+<td>Print text to shell</td>
+</tr>
+<tr class="even">
+<td><code>pointer</code></td>
+<td>Open pointer preferences</td>
+</tr>
+<tr class="odd">
+<td><code>protect &lt;flags&gt; &lt;path&gt;</code></td>
+<td>Set file attributes (<code>+r</code>, <code>-r</code>,
+<code>+h</code>, <code>-h</code>)</td>
+</tr>
+<tr class="even">
+<td><code>attr &lt;path&gt;</code></td>
+<td>Show file attributes</td>
+</tr>
+<tr class="odd">
+<td><code>info [device]</code></td>
+<td>Show mounted disks and volumes; or device info</td>
+</tr>
+<tr class="even">
+<td><code>alias [name cmd]</code></td>
+<td>Create or list command aliases</td>
+</tr>
+<tr class="odd">
+<td><code>unalias &lt;name&gt;</code></td>
+<td>Remove an alias</td>
+</tr>
+<tr class="even">
+<td><code>set [name val]</code></td>
+<td>Set or list environment variables</td>
+</tr>
+<tr class="odd">
+<td><code>unset &lt;name&gt;</code></td>
+<td>Remove an environment variable</td>
+</tr>
+<tr class="even">
+<td><code>date</code></td>
+<td>Show current date and time</td>
+</tr>
+<tr class="odd">
+<td><code>which &lt;cmd&gt;</code></td>
+<td>Locate a command</td>
+</tr>
+<tr class="even">
+<td><code>disks</code></td>
+<td>List detected block devices</td>
+</tr>
+<tr class="odd">
+<td><code>fdisk &lt;device&gt;</code></td>
+<td>Partition a block device</td>
+</tr>
+<tr class="even">
+<td><code>format &lt;dev&gt; [fs]</code></td>
+<td>Format a partition (FAT32)</td>
+</tr>
+<tr class="odd">
+<td><code>run &lt;prog&gt; [args]</code></td>
+<td>Run an embedded Amiga binary</td>
 </tr>
 </tbody>
 </table>

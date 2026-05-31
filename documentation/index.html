@@ -256,12 +256,49 @@ Amiga-style software cursor</li>
 buffer</li>
 <li><strong>Shell window</strong> — scrollable history, input line,
 built-in commands: <code>help</code>, <code>version</code>,
-<code>mem</code>, <code>clear</code>, <code>reboot</code></li>
+<code>mem</code>, <code>libs</code>, <code>clear</code>,
+<code>reboot</code>, <code>run</code>, <code>dir</code>,
+<code>cd</code>, <code>makedir</code>, <code>delete</code>,
+<code>type</code>, <code>copy</code>, <code>rename</code>,
+<code>pwd</code>, <code>echo</code>, <code>pointer</code>,
+<code>protect</code>, <code>attr</code>, <code>info</code>,
+<code>alias</code>, <code>unalias</code>, <code>set</code>,
+<code>unset</code>, <code>date</code>, <code>which</code>,
+<code>disks</code>, <code>fdisk</code>, <code>format</code></li>
 <li><strong>IDT / 8259A PIC</strong> — 256-vector IDT, PIC remapped to
 vectors 32–47</li>
 <li><strong>MMU sandbox</strong> — 4-level paging, 2 MB huge pages</li>
-<li><strong>M68k emulation stubs</strong> — UAOS/UAE bridge skeleton
-(Exec thunks, ROM module registry)</li>
+<li><strong>M68k emulation</strong> — Musashi CPU, ILLEGAL opcode
+dispatch, LVO stubs</li>
+<li><strong>ROM module system</strong> — Native AmigaOS-compatible
+library implementations:
+<ul>
+<li><code>exec.library</code> v45 — Process management, memory
+allocation</li>
+<li><code>utility.library</code> v37 — String functions, memory
+utilities</li>
+<li><code>console.device</code> v40 — Console I/O</li>
+<li><code>mathffp.library</code> v40 — Floating-point operations</li>
+<li><code>locale.library</code> v38 — Localization support</li>
+<li><code>ixemul.library</code> v53 — Unix compatibility layer</li>
+<li><code>timer.device</code> v40 — Timing functions (connected to
+RTC)</li>
+<li><code>keyboard.device</code> v40 — Keyboard input (connected to PS/2
+driver)</li>
+<li><code>graphics.library</code> v40 — Graphics primitives</li>
+<li><code>dos.library</code> v40 — File system operations</li>
+</ul></li>
+<li><strong>VFS / RAM filesystem</strong> — In-memory node tree,
+auto-mounted at boot with T, ENV, CLIPS, S dirs; partition volumes
+mountable by display name or FAT32 volume label</li>
+<li><strong>VirtIO block device driver</strong> — PCI scanning, device
+detection, capacity reporting</li>
+<li><strong>Block device layer</strong> — Unified interface for storage
+devices; partition registration and MBR parsing</li>
+<li><strong>FAT32 support</strong> — Boot sector reading, volume label
+extraction, formatting via <code>format</code> command</li>
+<li><strong>RTC driver</strong> — CMOS real-time clock with UIE
+interrupt</li>
 <li><strong>EFI + BIOS hybrid ISO</strong> — boots on OVMF UEFI and
 legacy BIOS via GRUB2</li>
 </ul>
@@ -271,11 +308,17 @@ legacy BIOS via GRUB2</li>
 ├── kernel/
 │   ├── boot/           # NASM entry point, C kernel main, linker script
 │   ├── display/        # Framebuffer, desktop, cursor, window manager, shell window
-│   ├── irq/            # IDT, 8259A PIC, PS/2 mouse, PS/2 keyboard, VMware mouse
-│   └── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules
+│   ├── irq/            # IDT, 8259A PIC, PS/2 mouse, PS/2 keyboard, VMware mouse, RTC, VirtIO block
+│   ├── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules
+│   │                   # ROM libraries: utility, console, mathffp, locale, ixemul
+│   │                   # ROM devices: timer, keyboard, graphics
+│   │                   # dos.library implementation
+│   └── dos/            # VFS layer, RAM filesystem, block device layer
 ├── emulation/
 │   ├── rom_patches/    # M68k Vasm/Devpac stubs, kickstart config
-│   └── uaos_uae_bridge.c
+│   ├── src/musashi/    # M68k CPU emulator
+│   ├── uaos_m68k_glue.c # M68k emulator glue, LVO stubs, DOS stubs
+│   └── uaos_emu_registry.c
 ├── drivers/            # Future device drivers
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
@@ -465,6 +508,10 @@ kernel on your terminal:</p>
 <p>Click the <strong>UAOS Shell</strong> title bar to focus it, then
 type commands:</p>
 <table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 59%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Command</th>
@@ -492,6 +539,103 @@ type commands:</p>
 <td><code>reboot</code></td>
 <td>Reboot the system</td>
 </tr>
+<tr class="even">
+<td><code>libs</code></td>
+<td>List loaded kernel libraries with versions</td>
+</tr>
+<tr class="odd">
+<td><code>dir [path]</code></td>
+<td>List files in current directory</td>
+</tr>
+<tr class="even">
+<td><code>cd [path]</code></td>
+<td>Change or show current directory</td>
+</tr>
+<tr class="odd">
+<td><code>makedir &lt;path&gt;</code></td>
+<td>Create a directory</td>
+</tr>
+<tr class="even">
+<td><code>delete &lt;path&gt;</code></td>
+<td>Delete a file or empty directory</td>
+</tr>
+<tr class="odd">
+<td><code>type &lt;file&gt;</code></td>
+<td>Display file contents</td>
+</tr>
+<tr class="even">
+<td><code>copy &lt;src&gt; &lt;dst&gt;</code></td>
+<td>Copy a file</td>
+</tr>
+<tr class="odd">
+<td><code>rename &lt;from&gt; &lt;to&gt;</code></td>
+<td>Rename or move a file</td>
+</tr>
+<tr class="even">
+<td><code>pwd</code></td>
+<td>Print working directory</td>
+</tr>
+<tr class="odd">
+<td><code>echo &lt;text&gt;</code></td>
+<td>Print text to shell</td>
+</tr>
+<tr class="even">
+<td><code>pointer</code></td>
+<td>Open pointer preferences</td>
+</tr>
+<tr class="odd">
+<td><code>protect &lt;flags&gt; &lt;path&gt;</code></td>
+<td>Set file attributes (<code>+r</code>, <code>-r</code>,
+<code>+h</code>, <code>-h</code>)</td>
+</tr>
+<tr class="even">
+<td><code>attr &lt;path&gt;</code></td>
+<td>Show file attributes (Read-Only, Hidden, etc.)</td>
+</tr>
+<tr class="odd">
+<td><code>info [device]</code></td>
+<td>Show mounted disks and volumes; or info for a specific device</td>
+</tr>
+<tr class="even">
+<td><code>alias [name cmd]</code></td>
+<td>Create or list command aliases</td>
+</tr>
+<tr class="odd">
+<td><code>unalias &lt;name&gt;</code></td>
+<td>Remove an alias</td>
+</tr>
+<tr class="even">
+<td><code>set [name val]</code></td>
+<td>Set or list environment variables</td>
+</tr>
+<tr class="odd">
+<td><code>unset &lt;name&gt;</code></td>
+<td>Remove an environment variable</td>
+</tr>
+<tr class="even">
+<td><code>date</code></td>
+<td>Show current date and time</td>
+</tr>
+<tr class="odd">
+<td><code>which &lt;cmd&gt;</code></td>
+<td>Locate a command</td>
+</tr>
+<tr class="even">
+<td><code>disks</code></td>
+<td>List detected block devices</td>
+</tr>
+<tr class="odd">
+<td><code>fdisk &lt;device&gt;</code></td>
+<td>Partition a block device</td>
+</tr>
+<tr class="even">
+<td><code>format &lt;dev&gt; [fs]</code></td>
+<td>Format a partition (FAT32)</td>
+</tr>
+<tr class="odd">
+<td><code>run &lt;prog&gt; [args]</code></td>
+<td>Run an embedded Amiga binary</td>
+</tr>
 </tbody>
 </table>
 <hr />
@@ -503,6 +647,21 @@ type commands:</p>
                     ├── IDT_Init()          256-vector IDT + 8259A PIC remap
                     ├── PS2Mouse_Init()     IRQ12 PS/2 mouse driver
                     ├── PS2Kbd_Init()       IRQ1  PS/2 keyboard driver
+                    ├── RTC_Init()          CMOS real-time clock (IRQ8)
+                    ├── VFS_Init()          VFS layer + RAM filesystem
+                    ├── BlockDev_Init()     Block device layer
+                    ├── virtio_blk_init()   VirtIO block device driver
+                    ├── UAOS_ROM_RegisterAll()  Register ROM modules
+                    │   ├── exec.library v45
+                    │   ├── utility.library v37
+                    │   ├── console.device v40
+                    │   ├── mathffp.library v40
+                    │   ├── locale.library v38
+                    │   ├── ixemul.library v53
+                    │   ├── timer.device v40 (→ RTC)
+                    │   ├── keyboard.device v40 (→ PS/2)
+                    │   ├── graphics.library v40
+                    │   └── dos.library v40 (→ VFS)
                     ├── Desktop_Draw()      Workbench backdrop + icons
                     ├── ShellWin_Init()     Shell window → registers with WM
                     └── event loop
@@ -511,13 +670,21 @@ type commands:</p>
 <hr />
 <h2 id="known-limitations">Known Limitations</h2>
 <ul>
-<li>M68k emulation is not yet functional (Exec thunks are stubs)</li>
-<li>Shell commands are built-in only; no filesystem execution</li>
+<li>M68k emulation has basic LVO stubs but needs full memory access
+integration</li>
+<li>ROM library functions are stubs with implementation logic in
+comments</li>
+<li>VirtIO block device read/write needs virtqueue I/O
+implementation</li>
+<li>FAT32 partition read/write via virtqueue I/O not yet
+implemented</li>
 <li>No networking, no audio</li>
 <li>Single CPU, no SMP</li>
-<li>Clock display is static (RTC not yet wired up)</li>
+<li>Clock display updates via RTC but needs full date/time
+integration</li>
 </ul>
 <hr />
+<p><img width="1413" height="1069" alt="image" src="https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e" /></p>
 <h2 id="license">License</h2>
 <p>This project is a personal research and hobby project. No licence is
 currently applied.</p>

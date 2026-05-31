@@ -131,10 +131,19 @@ without requiring any host operating system.  It achieves this through:
     \item The C kernel entry point validates the Multiboot2 magic value,
           initialises the VGA text-mode console and UART, then calls:
           \begin{itemize}
+              \item \texttt{FB\_Init()} --- parses the Multiboot2 framebuffer tag.
+              \item \texttt{IDT\_Init()} --- installs 256-vector IDT and remaps 8259A PIC.
               \item \texttt{UAOS\_MMU\_Init()} --- installs the sandbox page tables.
               \item \texttt{UAOS\_ROM\_RegisterAll()} --- populates the ROM module registry.
               \item \texttt{UAOS\_Bridge\_Init()} --- allocates the 4~GB guest RAM window.
+              \item \texttt{PS2Mouse\_Init()} and \texttt{PS2Kbd\_Init()} --- PS/2 input drivers.
+              \item \texttt{RTC\_Init()} --- CMOS real-time clock with UIE interrupt.
+              \item \texttt{VFS\_Init()} --- virtual filesystem layer and RAM: mount.
+              \item \texttt{BlockDev\_Init()} --- block device layer.
+              \item \texttt{virtio\_blk\_init()} --- VirtIO block device detection.
+              \item \texttt{Desktop\_Draw()} and \texttt{ShellWin\_Init()} --- graphical shell.
           \end{itemize}
+    \item Enters the \texttt{hlt}-loop event dispatcher.
 \end{enumerate}
 
 \section{M68k Thunk Dispatch}
@@ -225,6 +234,52 @@ assembly) saves all 15 GPRs onto the kernel stack, computes pointers to the
 function \texttt{UAOS\_PageFaultHandler()}.  On return from the C handler,
 GPRs are restored and \texttt{IRETQ} resumes execution past the faulting
 instruction.
+
+\section{Virtual Filesystem Layer (\texttt{vfs.c}, \texttt{ramfs.c})}
+
+UAOS provides a thin VFS dispatch layer over an in-memory RAM filesystem.
+Paths use AmigaDOS format: \texttt{VOL:path/to/file}.
+
+\begin{lstlisting}[language=C, caption={VFS file handle}]
+typedef struct {
+    RamFsNode *node;    /* NULL = invalid / not open */
+    uint32_t   pos;     /* current read/write position */
+} VfsFile;
+\end{lstlisting}
+
+\textbf{RAM Filesystem} (\texttt{ramfs.c}): BSS-backed storage with 256 nodes
+and a 64\,KB data pool.  Auto-mounted at boot as \texttt{RAM:} with
+\texttt{T}, \texttt{ENV}, \texttt{CLIPS}, and \texttt{S} directories.
+
+\textbf{Partition volumes}: The block device layer detects MBR partitions
+on VirtIO devices and registers them as child block devices
+(e.g.\ \texttt{virtio01}).  Formatted partitions are auto-mounted in the VFS
+by their display name (e.g.\ \texttt{DH0:}) and by their FAT32 volume label
+(e.g.\ \texttt{WORK:}), both backed by RAMFS volumes.
+
+\textbf{VFS Operations} include \texttt{VFS\_Open}, \texttt{VFS\_Read},
+\texttt{VFS\_Write}, \texttt{VFS\_MkDir}, \texttt{VFS\_Delete},
+\texttt{VFS\_ResolveDir}, \texttt{VFS\_MountPartition},
+\texttt{VFS\_GetMountCount}, and \texttt{VFS\_GetMountName}.
+
+\section{Block Device Layer (\texttt{blockdev.c})}
+
+Unified interface for storage devices.  Key operations:
+
+\begin{itemize}
+    \item \texttt{BlockDev\_Register(dev)} / \texttt{BlockDev\_Unregister(dev)}
+    \item \texttt{BlockDev\_RegisterPartition(parent, idx, start, count, name)}
+          --- creates child partition devices from MBR entries.
+    \item \texttt{BlockDev\_CheckFormatted(dev)} --- reads boot sector for
+          valid FAT BPB signature.
+    \item \texttt{BlockDev\_ReadVolLabel(dev, buf, max)} --- extracts the
+          11-byte FAT32 volume label from boot sector offset~71.
+    \item \texttt{BlockDev\_Read} / \texttt{BlockDev\_Write} / \texttt{BlockDev\_GetCapacity}
+\end{itemize}
+
+\textbf{VirtIO Block Driver} (\texttt{virtio\_blk.c}): PCI scanning for
+vendor~0x1AF4 / device~0x1001, capacity reporting from configuration space.
+Virtqueue I/O is pending implementation.
 
 % =========================================================================
 \chapter{Build System}
@@ -358,6 +413,64 @@ sprite cursor.  The cursor is rendered by saving the background pixels beneath
 it, drawing the sprite, and on each move restoring the saved background before
 re-saving and re-drawing at the new position.  This ensures the desktop and
 window content are never permanently overwritten by cursor movement.
+
+% =========================================================================
+\chapter{Shell and Built-in Commands}
+% =========================================================================
+
+The shell window (\texttt{shell\_win.c}) registers with the window manager
+via \texttt{WM\_AddWindow()} and implements a scrollable terminal with
+up to 128 lines of history and an input line with backspace support.
+
+\section{Built-in Commands}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{Command} & \textbf{Description} \\
+        \midrule
+        \texttt{help} & List available commands \\
+        \texttt{version} & Show OS version and architecture \\
+        \texttt{mem} & Display memory information \\
+        \texttt{clear} & Clear shell history \\
+        \texttt{reboot} & Warm reboot \\
+        \texttt{libs} & List loaded kernel libraries \\
+        \texttt{dir [path]} & List directory contents \\
+        \texttt{cd [path]} & Change or show current directory \\
+        \texttt{makedir <path>} & Create a directory \\
+        \texttt{delete <path>} & Delete a file or empty directory \\
+        \texttt{type <file>} & Display file contents \\
+        \texttt{copy <src> <dst>} & Copy a file \\
+        \texttt{rename <from> <to>} & Rename or move a file \\
+        \texttt{pwd} & Print working directory \\
+        \texttt{echo <text>} & Print text \\
+        \texttt{pointer} & Open pointer preferences \\
+        \texttt{protect <flags> <path>} & Set attributes ($\pm$r, $\pm$h) \\
+        \texttt{attr <path>} & Show file attributes \\
+        \texttt{info [device]} & Show mounted disks and volumes \\
+        \texttt{alias [name cmd]} & Create or list aliases \\
+        \texttt{unalias <name>} & Remove an alias \\
+        \texttt{set [name val]} & Set or list environment variables \\
+        \texttt{unset <name>} & Remove a variable \\
+        \texttt{date} & Show date and time \\
+        \texttt{which <cmd>} & Locate a command \\
+        \texttt{disks} & List block devices \\
+        \texttt{fdisk <device>} & Partition a block device \\
+        \texttt{format <dev> [fs]} & Format a partition (FAT32) \\
+        \texttt{run <prog> [args]} & Run an embedded Amiga binary \\
+        \bottomrule
+    \end{tabular}
+    \caption{UAOS Shell Built-in Commands}
+    \label{tab:shellcmds}
+\end{table}
+
+\section{Filesystem Operations}
+
+The shell integrates with the VFS layer for all filesystem operations.
+Partition volumes (e.g.\ \texttt{DH0:}, \texttt{WORK:}) can be accessed
+with \texttt{cd} and \texttt{dir} once auto-mounted at boot or after
+formatting with the \texttt{format} command.
 
 % =========================================================================
 \chapter{Troubleshooting}

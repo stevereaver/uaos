@@ -12,7 +12,7 @@ UAOS boots directly from a hybrid ISO via GRUB2 Multiboot2, initialises a linear
 - **Window manager** — multiple windows, click-to-focus, z-order, title bar drag, resize grip
 - **PS/2 mouse** — IRQ12-driven relative tracking, 16×16 Amiga-style software cursor
 - **PS/2 keyboard** — IRQ1-driven, scancode set 1, ring buffer
-- **Shell window** — scrollable history, input line, built-in commands: `help`, `version`, `mem`, `clear`, `reboot`, `libs`, `dir`, `cd`, `makedir`, `delete`, `type`, `copy`
+- **Shell window** — scrollable history, input line, built-in commands: `help`, `version`, `mem`, `libs`, `clear`, `reboot`, `run`, `dir`, `cd`, `makedir`, `delete`, `type`, `copy`, `rename`, `pwd`, `echo`, `pointer`, `protect`, `attr`, `info`, `alias`, `unalias`, `set`, `unset`, `date`, `which`, `disks`, `fdisk`, `format`
 - **IDT / 8259A PIC** — 256-vector IDT, PIC remapped to vectors 32–47
 - **MMU sandbox** — 4-level paging, 2 MB huge pages
 - **M68k emulation** — Musashi CPU, ILLEGAL opcode dispatch, LVO stubs
@@ -27,9 +27,10 @@ UAOS boots directly from a hybrid ISO via GRUB2 Multiboot2, initialises a linear
   - `keyboard.device` v40 — Keyboard input (connected to PS/2 driver)
   - `graphics.library` v40 — Graphics primitives
   - `dos.library` v40 — File system operations
-- **VFS / RAM filesystem** — In-memory node tree, auto-mounted at boot with T, ENV, CLIPS, S dirs
+- **VFS / RAM filesystem** — In-memory node tree, auto-mounted at boot with T, ENV, CLIPS, S dirs; partition volumes mountable by display name or FAT32 volume label
 - **VirtIO block device driver** — PCI scanning, device detection, capacity reporting
-- **Block device layer** — Unified interface for storage devices
+- **Block device layer** — Unified interface for storage devices; partition registration and MBR parsing
+- **FAT32 support** — Boot sector reading, volume label extraction, formatting via `format` command
 - **RTC driver** — CMOS real-time clock with UIE interrupt
 - **EFI + BIOS hybrid ISO** — boots on OVMF UEFI and legacy BIOS via GRUB2
 
@@ -206,12 +207,29 @@ Click the **UAOS Shell** title bar to focus it, then type commands:
 | `clear` | Clear the shell history |
 | `reboot` | Reboot the system |
 | `libs` | List loaded kernel libraries with versions |
-| `dir` | List files in current directory |
-| `cd` | Change current directory |
-| `makedir` | Create a directory |
-| `delete` | Delete a file or directory |
-| `type` | Display file contents |
-| `copy` | Copy a file |
+| `dir [path]` | List files in current directory |
+| `cd [path]` | Change or show current directory |
+| `makedir <path>` | Create a directory |
+| `delete <path>` | Delete a file or empty directory |
+| `type <file>` | Display file contents |
+| `copy <src> <dst>` | Copy a file |
+| `rename <from> <to>` | Rename or move a file |
+| `pwd` | Print working directory |
+| `echo <text>` | Print text to shell |
+| `pointer` | Open pointer preferences |
+| `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
+| `attr <path>` | Show file attributes (Read-Only, Hidden, etc.) |
+| `info [device]` | Show mounted disks and volumes; or info for a specific device |
+| `alias [name cmd]` | Create or list command aliases |
+| `unalias <name>` | Remove an alias |
+| `set [name val]` | Set or list environment variables |
+| `unset <name>` | Remove an environment variable |
+| `date` | Show current date and time |
+| `which <cmd>` | Locate a command |
+| `disks` | List detected block devices |
+| `fdisk <device>` | Partition a block device |
+| `format <dev> [fs]` | Format a partition (FAT32) |
+| `run <prog> [args]` | Run an embedded Amiga binary |
 
 ---
 
@@ -254,7 +272,7 @@ GRUB2 Multiboot2
 - M68k emulation has basic LVO stubs but needs full memory access integration
 - ROM library functions are stubs with implementation logic in comments
 - VirtIO block device read/write needs virtqueue I/O implementation
-- No filesystem support on block devices (FAT32, ext2, etc.)
+- FAT32 partition read/write via virtqueue I/O not yet implemented
 - No networking, no audio
 - Single CPU, no SMP
 - Clock display updates via RTC but needs full date/time integration
