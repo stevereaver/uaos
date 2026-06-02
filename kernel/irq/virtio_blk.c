@@ -36,7 +36,7 @@
 #define PCI_BAR5_OFFSET           0x24
 
 /* =========================================================================
- /* VirtIO Block Device Configuration
+ * VirtIO Block Device Configuration
  * ========================================================================= */
 
 /* Device config offsets within BAR0 (after common config at 0x00-0x13) */
@@ -177,9 +177,9 @@ static volatile virtq_t g_virtq __attribute__((aligned(4096)));
 static uint16_t g_virtq_free_idx = 0;
 static uint16_t g_virtq_used_idx = 0;
 static volatile int g_virtio_irq_pending = 0;
-int g_canary_before = 0xDEADBEEF;
+unsigned int g_canary_before = 0xDEADBEEF;
 int g_virtio_irq_line = -1;
-int g_canary_after = 0xCAFEBABE;
+unsigned int g_canary_after = 0xCAFEBABE;
 
 /* DMA-aligned buffers for I/O */
 static uint8_t g_virtq_buffer[4096] __attribute__((aligned(4096)));
@@ -271,7 +271,7 @@ static inline uint32_t virtio_readl(uint32_t offset)
         return inl(virtio_blk_mmio_base + offset);
     } else {
         /* Memory-mapped I/O - use memory access */
-        volatile uint32_t *mmio = (volatile uint32_t *)(virtio_blk_mmio_base + offset);
+        volatile uint32_t *mmio = (volatile uint32_t *)(uintptr_t)(virtio_blk_mmio_base + offset);
         return *mmio;
     }
 }
@@ -283,7 +283,7 @@ static inline void virtio_writel(uint32_t offset, uint32_t value)
         outl(virtio_blk_mmio_base + offset, value);
     } else {
         /* Memory-mapped I/O - use memory access */
-        volatile uint32_t *mmio = (volatile uint32_t *)(virtio_blk_mmio_base + offset);
+        volatile uint32_t *mmio = (volatile uint32_t *)(uintptr_t)(virtio_blk_mmio_base + offset);
         *mmio = value;
     }
 }
@@ -365,7 +365,7 @@ static int virtio_setup_queue(void)
     }
     
     /* Get physical address of the entire virtqueue structure */
-    uint64_t virtq_phys = DMA_VirtToPhys(&g_virtq);
+    uint64_t virtq_phys = DMA_VirtToPhys((void *)&g_virtq);
     
     if (!virtq_phys) {
         kprint("[VIRTIO] Failed to get virtqueue physical address\n");
@@ -554,9 +554,9 @@ static int virtio_blk_read_op(BlockDev *dev, uint64_t sector, void *buffer, uint
     g_blk_req.sector = sector;
     
     /* Get physical addresses for DMA */
-    uint64_t req_phys = DMA_VirtToPhys(&g_blk_req);
-    uint64_t resp_phys = DMA_VirtToPhys(&g_blk_resp);
-    uint64_t data_phys = DMA_VirtToPhys(buffer);
+    uint64_t req_phys = DMA_VirtToPhys((void *)&g_blk_req);
+    uint64_t resp_phys = DMA_VirtToPhys((void *)&g_blk_resp);
+    uint64_t data_phys = DMA_VirtToPhys((void *)buffer);
     
     if (!req_phys || !resp_phys || !data_phys) {
         kprint("[VIRTIO] Failed to get physical addresses\n");
@@ -608,8 +608,8 @@ static int virtio_blk_write_op(BlockDev *dev, uint64_t sector, const void *buffe
     g_blk_req.sector = sector;
     
     /* Get physical addresses for DMA */
-    uint64_t req_phys = DMA_VirtToPhys(&g_blk_req);
-    uint64_t resp_phys = DMA_VirtToPhys(&g_blk_resp);
+    uint64_t req_phys = DMA_VirtToPhys((void *)&g_blk_req);
+    uint64_t resp_phys = DMA_VirtToPhys((void *)&g_blk_resp);
     uint64_t data_phys = DMA_VirtToPhys((void *)buffer);
     
     if (!req_phys || !resp_phys || !data_phys) {

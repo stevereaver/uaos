@@ -378,7 +378,6 @@ void Cursor_ApplySettings(void)
     }
     
     /* Clear background save buffer to prevent artifacts from size changes */
-    int cur_size = get_cursor_size();
     for (int i = 0; i < CUR_MAX_W * CUR_MAX_H; i++) {
         bg_save[i] = 0;
     }

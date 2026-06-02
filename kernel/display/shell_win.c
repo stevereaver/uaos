@@ -660,9 +660,9 @@ static void inst_cmd_copy(ShellInstance *s, const char *arg)
     char buf[256];
     int total = 0;
     while (1) {
-        int n = VFS_Read(&fsrc, buf, 256);
+        int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, 256);
         if (n <= 0) break;
-        VFS_Write(&fdst, buf, n);
+        VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
         total += n;
     }
 

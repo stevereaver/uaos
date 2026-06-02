@@ -52,7 +52,7 @@ static VfsFile* get_file_handle(uint32_t handle);
 /* Fake file handle management for VFS files */
 static VfsFile g_file_handles[16];
 static int g_file_modes[16];
-static int g_file_handle_count = 0;
+static uint32_t g_file_handle_count = 0;
 
 static uint32_t allocate_file_handle(void)
 {

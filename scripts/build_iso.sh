@@ -33,7 +33,9 @@ KERNEL_ELF="${BUILD_DIR}/uaos-kernel.elf"
 GCC_FLAGS="-ffreestanding -fno-stack-protector -fno-pie -fno-PIE \
            -mno-red-zone -nostdlib -m64 -O2 -std=c11 \
            -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
-           -Wall -Wextra"
+           -Wall -Wextra \
+           -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
+           -Wno-address-of-packed-member -Wno-missing-braces"
 
 # -------------------------------------------------------------------------
 # Helpers
@@ -389,7 +391,7 @@ gcc ${GCC_FLAGS} -c "${BUILD_DIR}/obj/stubs.c" -o "${BUILD_DIR}/obj/stubs.o"
 ok "  Compiled:  stubs.c (symbol resolution)"
 
 # Link into ELF64
-ld -T "${KERNEL_LD}" \
+ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_kernel_entry.o" \
     "${BUILD_DIR}/obj/idt_stubs.o" \
     "${BUILD_DIR}/obj/uaos_kernel_main.o" \

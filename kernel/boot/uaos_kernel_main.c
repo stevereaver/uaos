@@ -126,6 +126,11 @@ static inline void wrmsr(uint32_t msr, uint64_t val)
     __asm__ volatile ("wrmsr" :: "a"(lo), "d"(hi), "c"(msr));
 }
 
+/* Forward declarations (defined further down) */
+void kprint(const char *s);
+void kprinthex(uint64_t v);
+void kprintdec(uint32_t v);
+
 static void APIC_Init(void)
 {
     /* Read APIC base from MSR 0x1B.  Bits 35:12 are the physical base. */
@@ -389,8 +394,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Scan for ATAPI CD-ROMs and mount ISO 9660 volumes */
     {
         extern int g_virtio_irq_line;
-        extern int g_canary_before;
-        extern int g_canary_after;
+        extern unsigned int g_canary_before;
+        extern unsigned int g_canary_after;
         kprint("[BOOT] virtio_irq_line before ISO9660 = "); kprinthex(g_virtio_irq_line);
         kprint(" canary_before="); kprinthex(g_canary_before);
         kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
@@ -421,8 +426,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     }
     {
         extern int g_virtio_irq_line;
-        extern int g_canary_before;
-        extern int g_canary_after;
+        extern unsigned int g_canary_before;
+        extern unsigned int g_canary_after;
         kprint("[BOOT] virtio_irq_line after ISO9660 = "); kprinthex(g_virtio_irq_line);
         kprint(" canary_before="); kprinthex(g_canary_before);
         kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
@@ -486,7 +491,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     {
         IDT_SetHandler(32, PIT_IRQHandler);
         PIC_UnmaskIRQ(0);
-        uint16_t divisor = 1193180 / 10;   /* 10 Hz */
+        uint16_t divisor = (uint16_t)(1193180UL / 10UL);   /* 10 Hz */
         outb(0x43, 0x36);                  /* channel 0, lobyte/hibyte, mode 3 */
         outb(0x40, (uint8_t)(divisor & 0xFF));
         outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));

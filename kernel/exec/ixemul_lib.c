@@ -61,12 +61,12 @@
 #define IXEMUL_FCNTL          42
 #define IXEMUL_ISATTY         43
 #define IXEMUL_FILENO         44
-#define IXEMUL_FILENO         45
-#define IXEMUL_FILENO         46
-#define IXEMUL_FILENO         47
-#define IXEMUL_FILENO         48
-#define IXEMUL_FILENO         49
-#define IXEMUL_FILENO         50
+#define IXEMUL_STUB_45        45
+#define IXEMUL_STUB_46        46
+#define IXEMUL_GETTIMEOFDAY   47
+#define IXEMUL_GETPID         48
+#define IXEMUL_GETUID         49
+#define IXEMUL_GETGID         50
 
 /* =========================================================================
  * Stub implementations

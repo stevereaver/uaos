@@ -7,9 +7,9 @@
 extern void kprint(const char *s);
 extern void kprinthex(uint64_t v);
 extern int g_virtio_irq_line;
-extern int g_canary_before;
-extern int g_canary_after;
-#define CHECK_IRQ(label) do { int _irq = g_virtio_irq_line; int _cb = g_canary_before; int _ca = g_canary_after; if (_irq != 10) { kprint("[RAMFS] irq="); kprinthex(_irq); kprint(" at " label "\n"); } if (_cb != 0xDEADBEEF) { kprint("[RAMFS] CANARY_BEFORE="); kprinthex(_cb); kprint(" at " label "\n"); } if (_ca != 0xCAFEBABE) { kprint("[RAMFS] CANARY_AFTER="); kprinthex(_ca); kprint(" at " label "\n"); } } while(0)
+extern unsigned int g_canary_before;
+extern unsigned int g_canary_after;
+#define CHECK_IRQ(label) do { int _irq = g_virtio_irq_line; unsigned int _cb = g_canary_before; unsigned int _ca = g_canary_after; if (_irq != 10) { kprint("[RAMFS] irq="); kprinthex(_irq); kprint(" at " label "\n"); } if (_cb != 0xDEADBEEF) { kprint("[RAMFS] CANARY_BEFORE="); kprinthex(_cb); kprint(" at " label "\n"); } if (_ca != 0xCAFEBABE) { kprint("[RAMFS] CANARY_AFTER="); kprinthex(_ca); kprint(" at " label "\n"); } } while(0)
 
 /* =========================================================================
  * Static storage — all in BSS (zero-initialised)

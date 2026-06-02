@@ -8,8 +8,8 @@
 #include <stddef.h>
 
 extern int g_virtio_irq_line;
-extern int g_canary_before;
-extern int g_canary_after;
+extern unsigned int g_canary_before;
+extern unsigned int g_canary_after;
 
 #define ISO_SECTOR_SIZE 2048
 
