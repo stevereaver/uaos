@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+extern void kprint(const char *s);
+extern void kprinthex(uint64_t v);
+extern int g_virtio_irq_line;
+extern int g_canary_before;
+extern int g_canary_after;
+#define CHECK_IRQ(label) do { int _irq = g_virtio_irq_line; int _cb = g_canary_before; int _ca = g_canary_after; if (_irq != 10) { kprint("[RAMFS] irq="); kprinthex(_irq); kprint(" at " label "\n"); } if (_cb != 0xDEADBEEF) { kprint("[RAMFS] CANARY_BEFORE="); kprinthex(_cb); kprint(" at " label "\n"); } if (_ca != 0xCAFEBABE) { kprint("[RAMFS] CANARY_AFTER="); kprinthex(_ca); kprint(" at " label "\n"); } } while(0)
+
 /* =========================================================================
  * Static storage — all in BSS (zero-initialised)
  * ========================================================================= */
@@ -12,7 +19,7 @@ static RamFsNode  g_nodes[RAMFS_MAX_NODES];
 static uint8_t    g_pool[1024 * 1024]; /* 1 MB shared data pool */
 static uint32_t   g_pool_top = 0;                /* bump allocator cursor   */
 
-#define MAX_VOLS  4
+#define MAX_VOLS  16
 static RamFsVol   g_vols[MAX_VOLS];
 
 /* =========================================================================
@@ -67,6 +74,9 @@ static RamFsNode *alloc_node(void)
             g_nodes[i].data         = NULL;
             g_nodes[i].size         = 0;
             g_nodes[i].alloc        = 0;
+            g_nodes[i].ext_bdev     = NULL;
+            g_nodes[i].ext_lba      = 0;
+            g_nodes[i].ext_blksz    = 0;
             return &g_nodes[i];
         }
     }
@@ -190,6 +200,7 @@ RamFsNode *RamFS_Resolve(RamFsVol *vol, const char *path)
 
 RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
 {
+    CHECK_IRQ("RamFS_MkDir start");
     if (!vol || !vol->valid) return NULL;
     const char *p = skip_vol_prefix(path);
     if (*p == '/') p++;
@@ -233,11 +244,13 @@ RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
     scopy(node->name, last, RAMFS_MAX_NAME);
     node->parent = dir;
     dir_add_child(dir, node);
+    CHECK_IRQ("RamFS_MkDir end");
     return node;
 }
 
 RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
 {
+    CHECK_IRQ("RamFS_Create start");
     if (!vol || !vol->valid) return NULL;
     const char *p = skip_vol_prefix(path);
     if (*p == '/') p++;
@@ -279,6 +292,7 @@ RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
     node->alloc  = 0;
     node->data   = NULL;
     dir_add_child(dir, node);
+    CHECK_IRQ("RamFS_Create end");
     return node;
 }
 
@@ -286,6 +300,7 @@ int RamFS_Write(RamFsNode *node, const uint8_t *data, uint32_t len)
 {
     if (!node || node->type != RAMFS_TYPE_FILE) return -1;
     if (node->attrs & RAMFS_ATTR_READONLY) return -2; /* read-only */
+    if (node->ext_bdev) return -3; /* proxy file — read-only */
     if (len == 0) { node->size = 0; return 0; }
 
     if (len > node->alloc) {
@@ -308,6 +323,31 @@ uint32_t RamFS_Read(RamFsNode *node, uint32_t offset,
     if (offset >= node->size) return 0;
     uint32_t avail = node->size - offset;
     if (len > avail) len = avail;
+
+    if (node->ext_bdev) {
+        /* Proxy file — read from block device on demand */
+        uint32_t blksz = node->ext_blksz ? node->ext_blksz : 2048;
+        uint32_t sector = node->ext_lba + (offset / blksz);
+        uint32_t sec_off = offset % blksz;
+        uint32_t total = 0;
+        while (len > 0) {
+            uint8_t sec_buf[4096];
+            uint32_t ratio = blksz / node->ext_bdev->sector_size;
+            uint64_t dev_sec = (uint64_t)sector * ratio;
+            if (BlockDev_Read(node->ext_bdev, dev_sec, sec_buf, ratio) != 0)
+                break;
+            uint32_t chunk = blksz - sec_off;
+            if (chunk > len) chunk = len;
+            for (uint32_t i = 0; i < chunk; i++)
+                buf[total + i] = sec_buf[sec_off + i];
+            total += chunk;
+            len -= chunk;
+            sec_off = 0;
+            sector++;
+        }
+        return total;
+    }
+
     for (uint32_t i = 0; i < len; i++) buf[i] = node->data[offset + i];
     return len;
 }
@@ -327,6 +367,9 @@ int RamFS_Delete(RamFsVol *vol, const char *path)
     node->size  = 0;
     node->alloc = 0;
     node->data  = NULL;
+    node->ext_bdev = NULL;
+    node->ext_lba  = 0;
+    node->ext_blksz = 0;
     node->parent = node->first_child = node->next_sibling = NULL;
     return 0;
 }

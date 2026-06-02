@@ -50,6 +50,11 @@ void VFS_Init(void);
  * Returns 0 on success, -1 if mount table full or name too long. */
 int VFS_MountPartition(const char *name);
 
+/* Register an existing RAMFS volume with the VFS mount table.
+ * Used when a volume is already populated (e.g. ISO9660 sub-volume).
+ * Returns 0 on success, -1 if mount table full or name too long. */
+int VFS_MountExistingVol(const char *name, RamFsVol *vol);
+
 /* Return number of currently mounted volumes. */
 int VFS_GetMountCount(void);
 

@@ -274,6 +274,8 @@ for src in \
     "${REPO_ROOT}/kernel/dos/fat32.c" \
     "${REPO_ROOT}/kernel/dos/pfs3.c" \
     "${REPO_ROOT}/kernel/dos/ext4.c" \
+    "${REPO_ROOT}/kernel/dos/iso9660.c" \
+    "${REPO_ROOT}/kernel/drivers/ide.c" \
     "${REPO_ROOT}/kernel/display/pointer_prefs.c"
 do
     base="$(basename "${src}" .c)"
@@ -433,6 +435,8 @@ ld -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/fat32.o" \
     "${BUILD_DIR}/obj/pfs3.o" \
     "${BUILD_DIR}/obj/ext4.o" \
+    "${BUILD_DIR}/obj/iso9660.o" \
+    "${BUILD_DIR}/obj/ide.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"

@@ -11,11 +11,14 @@
 
 #include <stdint.h>
 
+/* Forward declaration */
+struct BlockDev;
+
 /* Block device operations */
 typedef struct BlockDevOps {
-    int (*read)(uint64_t sector, void *buffer, uint32_t num_sectors);
-    int (*write)(uint64_t sector, const void *buffer, uint32_t num_sectors);
-    uint64_t (*get_capacity)(void);
+    int (*read)(struct BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors);
+    int (*write)(struct BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors);
+    uint64_t (*get_capacity)(struct BlockDev *dev);
 } BlockDevOps;
 
 /* Block device structure */

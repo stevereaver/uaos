@@ -84,7 +84,7 @@ pd_table:   resb 4096           ; covers 0–1 GB with 512 × 2 MB pages
 
 align 16
 stack_bottom:
-    resb    16384               ; 16 KB bootstrap stack
+    resb    65536               ; 64 KB bootstrap stack
 stack_top:
 
 ; =========================================================================

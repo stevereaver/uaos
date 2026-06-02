@@ -177,7 +177,9 @@ static volatile virtq_t g_virtq __attribute__((aligned(4096)));
 static uint16_t g_virtq_free_idx = 0;
 static uint16_t g_virtq_used_idx = 0;
 static volatile int g_virtio_irq_pending = 0;
-static int g_virtio_irq_line = -1;
+int g_canary_before = 0xDEADBEEF;
+int g_virtio_irq_line = -1;
+int g_canary_after = 0xCAFEBABE;
 
 /* DMA-aligned buffers for I/O */
 static uint8_t g_virtq_buffer[4096] __attribute__((aligned(4096)));
@@ -526,7 +528,7 @@ static int virtio_wait_completion(uint16_t desc_idx, uint32_t timeout_ms)
  * VirtIO Block Device Operations (BlockDevOps interface)
  * ========================================================================= */
 
-static int virtio_blk_read_op(uint64_t sector, void *buffer, uint32_t num_sectors)
+static int virtio_blk_read_op(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors)
 {
     if (!virtio_blk_mmio_base) {
         kprint("[VIRTIO] Device not initialized\n");
@@ -580,7 +582,7 @@ static int virtio_blk_read_op(uint64_t sector, void *buffer, uint32_t num_sector
     return 0;
 }
 
-static int virtio_blk_write_op(uint64_t sector, const void *buffer, uint32_t num_sectors)
+static int virtio_blk_write_op(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors)
 {
     if (!virtio_blk_mmio_base) {
         kprint("[VIRTIO] Device not initialized\n");
@@ -634,8 +636,9 @@ static int virtio_blk_write_op(uint64_t sector, const void *buffer, uint32_t num
     return 0;
 }
 
-static uint64_t virtio_blk_get_capacity_op(void)
+static uint64_t virtio_blk_get_capacity_op(BlockDev *dev)
 {
+    (void)dev;
     return virtio_blk_capacity;
 }
 
@@ -723,13 +726,18 @@ int virtio_blk_init(void)
  * VirtIO IRQ Setup (must be called AFTER IDT_Init and PIC_Init)
  * ========================================================================= */
 
+int virtio_blk_get_irq_line(void)
+{
+    return g_virtio_irq_line;
+}
+
 void virtio_blk_setup_irq(void)
 {
     if (!virtio_blk_mmio_base) {
         kprint("[VIRTIO] No device to setup IRQ for\n");
         return;
     }
-    
+
     if (g_virtio_irq_line >= 0 && g_virtio_irq_line < 16) {
         uint8_t vector = 32 + g_virtio_irq_line;
         IDT_SetHandler(vector, virtio_irq_handler);

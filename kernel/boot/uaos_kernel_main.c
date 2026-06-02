@@ -24,6 +24,8 @@
 #include "dos/vfs.h"
 #include "dos/blockdev.h"
 #include "dos/partition.h"
+#include "drivers/ide.h"
+#include "dos/iso9660.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -105,6 +107,56 @@ static inline uint8_t inb(uint16_t port)
     return v;
 }
 
+/* -----------------------------------------------------------------------
+ * Local APIC helpers — q35 enables LAPIC by default but LINT0 may need
+ * explicit ExtINT configuration for the 8259A PIC to deliver IRQs.
+ * ----------------------------------------------------------------------- */
+
+static inline uint64_t rdmsr(uint32_t msr)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val)
+{
+    uint32_t lo = (uint32_t)val;
+    uint32_t hi = (uint32_t)(val >> 32);
+    __asm__ volatile ("wrmsr" :: "a"(lo), "d"(hi), "c"(msr));
+}
+
+static void APIC_Init(void)
+{
+    /* Read APIC base from MSR 0x1B.  Bits 35:12 are the physical base. */
+    uint64_t apic_base = rdmsr(0x1B);
+    kprint("[APIC] MSR 0x1B base="); kprinthex(apic_base); kprint("\n");
+
+    /* Default base is 0xFEE00000; bail if the APIC is not enabled. */
+    if (!(apic_base & 0x800)) {
+        kprint("[APIC] WARNING: APIC not enabled in MSR!\n");
+        return;
+    }
+
+    uint32_t *lapic = (uint32_t *)(apic_base & 0xFFFFF000);
+
+    /* Spurious Interrupt Vector Register (SVR) at offset 0x0F0 */
+    uint32_t svr = lapic[0x0F0 / 4];
+    kprint("[APIC] SVR old="); kprinthex(svr); kprint("\n");
+    /* Ensure APIC software enable (bit 8) and set spurious vector 0xFF */
+    svr = (svr & ~0xFF) | 0xFF | 0x100;
+    lapic[0x0F0 / 4] = svr;
+
+    /* LVT LINT0 at offset 0x350 — configure for ExtINT (delivery mode 111) */
+    uint32_t lint0 = lapic[0x350 / 4];
+    kprint("[APIC] LINT0 old="); kprinthex(lint0); kprint("\n");
+    lint0 = (lint0 & ~0x10700) | 0x700;  /* ExtINT, not masked, edge trig */
+    lapic[0x350 / 4] = lint0;
+
+    kprint("[APIC] LINT0 new="); kprinthex(lapic[0x350 / 4]); kprint("\n");
+    kprint("[APIC] APIC initialised.\n");
+}
+
 static void uart_init(void)
 {
     outb(UART_BASE + 1, 0x00);  /* Disable interrupts                      */
@@ -169,6 +221,20 @@ void kprintdec(uint32_t v)
         char t = buf[j]; buf[j] = buf[i - 1 - j]; buf[i - 1 - j] = t;
     }
     kprint(buf);
+}
+
+/* -----------------------------------------------------------------------
+ * PIT timer test handler — prints a dot to verify interrupt delivery
+ * ----------------------------------------------------------------------- */
+static volatile uint64_t g_pit_ticks = 0;
+
+void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
+{
+    (void)vector; (void)error_code;
+    g_pit_ticks++;
+    if ((g_pit_ticks % 10) == 0) {
+        kprint("[PIT] tick="); kprintdec((uint32_t)g_pit_ticks); kprint("\n");
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -315,6 +381,53 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] No VirtIO block device found (this is OK if no disk attached).\n");
     }
 
+    /* Initialise IDE/ATAPI controller and register CD-ROM block devices */
+    kprint("[BOOT] Initialising IDE controller...\n");
+    IDE_Init();
+    IDE_RegisterBlockDevs();
+
+    /* Scan for ATAPI CD-ROMs and mount ISO 9660 volumes */
+    {
+        extern int g_virtio_irq_line;
+        extern int g_canary_before;
+        extern int g_canary_after;
+        kprint("[BOOT] virtio_irq_line before ISO9660 = "); kprinthex(g_virtio_irq_line);
+        kprint(" canary_before="); kprinthex(g_canary_before);
+        kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
+    }
+    kprint("[BOOT] Scanning for ATAPI CD-ROMs...\n");
+    for (int ch = 0; ch < IDE_GetChannelCount(); ch++) {
+        for (int dev = 0; dev < 2; dev++) {
+            const IdeDeviceInfo *info = IDE_GetDeviceInfo(ch, dev);
+            if (info && info->present && info->type == IDE_DEV_ATAPI) {
+                char bdev_name[16];
+                int idx = ch * 2 + dev;
+                bdev_name[0] = 'a'; bdev_name[1] = 't'; bdev_name[2] = 'a';
+                bdev_name[3] = 'p'; bdev_name[4] = 'i'; bdev_name[5] = '0' + idx;
+                bdev_name[6] = '\0';
+                BlockDev *cd_dev = BlockDev_Find(bdev_name);
+                if (cd_dev) {
+                    kprint("[BOOT] Mounting ISO 9660 from ");
+                    kprint(bdev_name);
+                    kprint("...\n");
+                    if (ISO9660_MountCD(cd_dev, "CDROM") == 0) {
+                        kprint("[BOOT] CDROM: mounted.\n");
+                    } else {
+                        kprint("[BOOT] ISO 9660 mount failed.\n");
+                    }
+                }
+            }
+        }
+    }
+    {
+        extern int g_virtio_irq_line;
+        extern int g_canary_before;
+        extern int g_canary_after;
+        kprint("[BOOT] virtio_irq_line after ISO9660 = "); kprinthex(g_virtio_irq_line);
+        kprint(" canary_before="); kprinthex(g_canary_before);
+        kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
+    }
+
     /* Draw the Workbench-style desktop */
     if (g_fb.valid) {
         kprint("[BOOT] Drawing desktop...\n");
@@ -369,13 +482,31 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] RTC active.\n");
     }
 
+    /* Program PIT for ~10 Hz tick to verify interrupt delivery */
+    {
+        IDT_SetHandler(32, PIT_IRQHandler);
+        PIC_UnmaskIRQ(0);
+        uint16_t divisor = 1193180 / 10;   /* 10 Hz */
+        outb(0x43, 0x36);                  /* channel 0, lobyte/hibyte, mode 3 */
+        outb(0x40, (uint8_t)(divisor & 0xFF));
+        outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+        kprint("[BOOT] PIT timer programmed (10 Hz).\n");
+    }
+
+    /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
+    APIC_Init();
+
     kprint("[BOOT] Enabling interrupts — entering event loop.\n");
     __asm__ volatile ("sti");
 
-    /* Event loop — halt until IRQ fires, then dispatch input */
+    /* Event loop — yield until IRQ fires, then dispatch input */
     int last_mx = -1, last_my = -1, last_btn = -1;
+    uint64_t loop_count = 0;
     for (;;) {
-        __asm__ volatile ("hlt");
+        /* "memory" clobber forces compiler to reload g_mouse / kbd state
+         * from memory on every iteration (ISRs write them).            */
+        __asm__ volatile ("pause" ::: "memory");
+
         /* Only dispatch mouse event if state actually changed */
         if (g_fb.valid) {
             int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
@@ -387,6 +518,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         /* Keyboard -> focused window via WM */
         while (PS2Kbd_HasChar())
             WM_KeyEvent(PS2Kbd_GetChar());
+
+        /* Periodic heartbeat so we know the loop hasn't hung */
+        loop_count++;
+        if ((loop_count & 0x7FFFFFF) == 0) {
+            extern volatile uint64_t g_pit_ticks;
+            volatile uint32_t *mbox = (volatile uint32_t *)0x90000;
+            kprint("[EVT] loop="); kprinthex(loop_count);
+            kprint(" pit="); kprinthex(g_pit_ticks);
+            kprint(" mbox="); kprinthex(mbox[0]);
+            kprint(" v="); kprinthex(mbox[1]);
+            kprint(" seq="); kprinthex(mbox[2]); kprint("\n");
+        }
     }
     return;
 

@@ -13,6 +13,7 @@
 
 #include "shell_win.h"
 #include "framebuffer.h"
+#include "desktop.h"
 #include "cursor.h"
 #include "pointer_prefs.h"
 #include "wm.h"
@@ -1945,7 +1946,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     const char *cmds[] = {
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","attr","alias","unalias","set","unset","rename","date","which","disks","fdisk","format","info",
+        "protect","attr","alias","unalias","set","unset","rename","date","which","disks","fdisk","format","info","loadwb",
         NULL
     };
 
@@ -1986,6 +1987,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==26) inst_cmd_fdisk(s, args);
         else if (i==27) inst_cmd_format(s, args);
         else if (i==28) inst_cmd_info(s, args);
+        else if (i==29) { inst_print(s, "LoadWB — launching Workbench desktop..."); Desktop_Draw(); }
         return;
     }
 
@@ -2006,6 +2008,7 @@ static void inst_dispatch(ShellInstance *s, const char *line)
 
     while (*line == ' ') line++;
     if (!*line) return;
+    if (*line == ';') return; /* skip comment lines */
 
     /* Parse redirect operators out of line */
     char cmd_only[MAX_LINE_LEN];
@@ -2300,4 +2303,49 @@ void ShellWin_HandleKey(char c)
             return;
         }
     }
+}
+
+/* =========================================================================
+ * Startup-Sequence execution
+ * ========================================================================= */
+
+void ShellWin_RunStartupSequence(void)
+{
+    if (g_n_shells == 0) return;
+    ShellInstance *s = &g_shells[0];
+
+    inst_print(s, "Executing S:Startup-Sequence...");
+
+    VfsFile fh;
+    if (!VFS_Open(&fh, "S:Startup-Sequence", VFS_READ)) {
+        inst_print(s, "S:Startup-Sequence not found.");
+        return;
+    }
+
+    char line[256];
+    int pos = 0;
+    for (;;) {
+        uint8_t c;
+        int r = VFS_Read(&fh, &c, 1);
+        if (r <= 0) {
+            /* EOF — dispatch last line */
+            if (pos > 0) {
+                line[pos] = '\0';
+                inst_dispatch(s, line);
+            }
+            break;
+        }
+        if (c == '\n' || c == '\r') {
+            if (pos > 0) {
+                line[pos] = '\0';
+                inst_dispatch(s, line);
+            }
+            pos = 0;
+        } else if (pos < 255) {
+            line[pos++] = (char)c;
+        }
+    }
+
+    VFS_Close(&fh);
+    inst_print(s, "Startup-Sequence complete.");
 }

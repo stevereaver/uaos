@@ -229,8 +229,20 @@ void IDT_SetHandler(uint8_t vector, ISRHandler handler)
  * ISR_Dispatch — called from isr_common in idt_stubs.asm
  * ========================================================================= */
 
+/* Debug: memory-mapped mailbox at a known physical address.
+ * We write a magic sequence here so the event loop can detect
+ * whether ISR_Dispatch was entered at all. */
+static volatile uint32_t *const g_isr_mailbox = (volatile uint32_t *)0x90000;
+
 void ISR_Dispatch(uint64_t vector, uint64_t error_code)
 {
+    /* Write a rotating magic value to the mailbox */
+    static volatile uint32_t mailbox_seq = 0;
+    uint32_t seq = mailbox_seq++;
+    g_isr_mailbox[0] = 0xDEADBEEF;
+    g_isr_mailbox[1] = (uint32_t)vector;
+    g_isr_mailbox[2] = seq;
+
     if (g_handlers[vector]) {
         g_handlers[vector](vector, error_code);
     } else if (vector < 32) {

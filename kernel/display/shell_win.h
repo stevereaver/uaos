@@ -15,4 +15,7 @@ void ShellWin_HandleKey(char c);
 /* Redraw all shell windows (call after desktop repaint) */
 void ShellWin_Redraw(void);
 
+/* Execute S:Startup-Sequence in the first shell instance */
+void ShellWin_RunStartupSequence(void);
+
 #endif

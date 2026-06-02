@@ -660,7 +660,11 @@ Output: `build/Ultimate_Amiga_OS.iso`
 
 ## Running in QEMU
 
-### One-time OVMF Setup
+### OVMF Setup
+
+Copy a **fresh** variables file before each run. Stale vars can save a changed
+boot order and cause the firmware to drop to the UEFI shell instead of booting
+from CD:
 
 ```bash
 cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd
@@ -673,10 +677,13 @@ qemu-system-x86_64 \
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
-  -cdrom build/Ultimate_Amiga_OS.iso \
+  -device piix3-ide,id=ide \
+  -drive if=none,id=cdrom,media=cdrom,file=build/Ultimate_Amiga_OS.iso \
+  -device ide-cd,drive=cdrom,bus=ide.0 \
   -m 512M \
   -vga virtio \
-  -no-reboot
+  -no-reboot \
+  -no-shutdown
 ```
 
 | Flag | Purpose |
@@ -684,8 +691,11 @@ qemu-system-x86_64 \
 | `-machine q35,usb=off` | Q35 chipset; `usb=off` prevents USB tablet conflicting with PS/2 mouse |
 | `OVMF_CODE_4M.fd` | UEFI firmware (read-only) |
 | `ovmf_vars.fd` | UEFI variable store (writable copy) |
+| `-device piix3-ide` | Explicit IDE controller (Q35 has no built-in IDE; required for ATAPI CD-ROM) |
+| `-device ide-cd` | Attach CD-ROM to the IDE controller |
 | `-vga virtio` | Best framebuffer performance |
 | `-no-reboot` | Keeps QEMU open after kernel reboot call |
+| `-no-shutdown` | Keeps QEMU window open when guest CPU is idle |
 
 ### Serial Debug Output
 

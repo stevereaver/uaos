@@ -2,6 +2,7 @@
 
 #include "vfs.h"
 #include "ramfs.h"
+#include "boot/kprint.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -9,7 +10,7 @@
  * Mount table — maps "VOL" names to RamFsVol instances
  * ========================================================================= */
 
-#define MAX_MOUNTS  4
+#define MAX_MOUNTS  16
 
 typedef struct {
     char      vol_name[16]; /* e.g. "RAM" (no colon) */
@@ -42,11 +43,27 @@ static int extract_vol(const char *path, char *dst, int max)
     return (path[i] == ':') ? i : 0;
 }
 
-/* Find mounted volume by name */
+/* Case-insensitive string compare */
+static int seq_ci(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = ca - 'A' + 'a';
+        if (cb >= 'A' && cb <= 'Z') cb = cb - 'A' + 'a';
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    char ca = *a, cb = *b;
+    if (ca >= 'A' && ca <= 'Z') ca = ca - 'A' + 'a';
+    if (cb >= 'A' && cb <= 'Z') cb = cb - 'A' + 'a';
+    return ca == cb;
+}
+
+/* Find mounted volume by name (case-insensitive) */
 static RamFsVol *find_vol(const char *name)
 {
     for (int i = 0; i < g_n_mounts; i++)
-        if (seq(g_mounts[i].vol_name, name))
+        if (seq_ci(g_mounts[i].vol_name, name))
             return g_mounts[i].vol;
     return NULL;
 }
@@ -101,14 +118,23 @@ int VFS_MountPartition(const char *name)
     RamFsVol *vol = RamFS_MountVol(name);
     if (!vol) return -1;
 
-    int i = 0;
-    while (i < 15 && name[i]) {
-        g_mounts[g_n_mounts].vol_name[i] = name[i];
-        i++;
+    register_mount(name, vol);
+    return 0;
+}
+
+int VFS_MountExistingVol(const char *name, RamFsVol *vol)
+{
+    if (!name || !*name || !vol) return -1;
+
+    /* Check if already mounted */
+    for (int i = 0; i < g_n_mounts; i++) {
+        if (seq(g_mounts[i].vol_name, name))
+            return 0;  /* already mounted */
     }
-    g_mounts[g_n_mounts].vol_name[i] = '\0';
-    g_mounts[g_n_mounts].vol = vol;
-    g_n_mounts++;
+
+    if (g_n_mounts >= MAX_MOUNTS) return -1;
+
+    register_mount(name, vol);
     return 0;
 }
 

@@ -121,7 +121,7 @@ int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sec
         return -1;
     }
 
-    return dev->ops->read(sector + dev->part_offset, buffer, num_sectors);
+    return dev->ops->read(dev, sector + dev->part_offset, buffer, num_sectors);
 }
 
 int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors)
@@ -144,7 +144,7 @@ int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t 
         return -4;
     }
 
-    return dev->ops->write(sector + dev->part_offset, buffer, num_sectors);
+    return dev->ops->write(dev, sector + dev->part_offset, buffer, num_sectors);
 }
 
 uint64_t BlockDev_GetCapacity(BlockDev *dev)
@@ -157,7 +157,7 @@ uint64_t BlockDev_GetCapacity(BlockDev *dev)
     }
 
     if (dev->ops && dev->ops->get_capacity) {
-        return dev->ops->get_capacity();
+        return dev->ops->get_capacity(dev);
     }
 
     return dev->num_sectors;
