@@ -25,6 +25,7 @@
 #include "dos/fat32.h"
 #include "exec/rom_modules.h"
 #include "shell/native_cmd.h"
+#include "exec/uaos_binary.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -2215,6 +2216,107 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
 }
 
 /* =========================================================================
+ * UAOS binary executor
+ *
+ * Opens a VFS file, reads the 32-byte UAOS header, then:
+ *   NATIVE  -> NativeCmd_Run(name, ctx, args)
+ *   M68K    -> UAOS_Emu_LoadAndRun with the payload bytes
+ *   fallback -> execute as a text script (legacy / plain text files)
+ * Returns 0 on success, -1 if file not found, -2 bad magic / unknown type.
+ * ========================================================================= */
+
+/* Static payload buffer for M68K binaries loaded from VFS (max 512 KB) */
+#define UAOS_MAX_BIN_PAYLOAD (512 * 1024)
+static uint8_t g_bin_payload[UAOS_MAX_BIN_PAYLOAD];
+
+static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
+                               const char *args)
+{
+    VfsFile fh;
+    if (!VFS_Open(&fh, full_path, VFS_READ)) return -1;
+
+    uint32_t file_size = VFS_Size(&fh);
+
+    /* --- Try to read UAOS header --- */
+    if (file_size >= UAOS_BIN_HEADER_SIZE) {
+        uint8_t hdr[UAOS_BIN_HEADER_SIZE];
+        if (VFS_Read(&fh, hdr, UAOS_BIN_HEADER_SIZE) == UAOS_BIN_HEADER_SIZE
+            && uaos_bin_check_magic(hdr)) {
+
+            uint16_t type         = uaos_bin_u16(hdr + 4);
+            uint32_t payload_size = uaos_bin_u32(hdr + 8);
+
+            /* Extract name from header (NUL-padded, 16 bytes at offset 12) */
+            char bin_name[17];
+            int ni = 0;
+            while (ni < 16 && hdr[12 + ni]) { bin_name[ni] = (char)hdr[12 + ni]; ni++; }
+            bin_name[ni] = '\0';
+
+            if (type == UAOS_BIN_TYPE_NATIVE) {
+                VFS_Close(&fh);
+                NativeCmdCtx nctx = shell_make_ctx(s);
+                if (NativeCmd_Run(bin_name, &nctx, args) == 0) return 0;
+                char msg[MAX_LINE_LEN];
+                scopy(msg, "Native handler not found: ", MAX_LINE_LEN);
+                scat(msg, bin_name, MAX_LINE_LEN);
+                inst_print(s, msg);
+                return -2;
+            }
+
+            if (type == UAOS_BIN_TYPE_M68K) {
+                if (payload_size == 0 || payload_size > UAOS_MAX_BIN_PAYLOAD) {
+                    VFS_Close(&fh);
+                    inst_print(s, "M68K binary: payload size invalid or too large");
+                    return -2;
+                }
+                uint32_t n = VFS_Read(&fh, g_bin_payload, payload_size);
+                VFS_Close(&fh);
+                if (n != payload_size) {
+                    inst_print(s, "M68K binary: read error");
+                    return -2;
+                }
+                /* Build argv from bin_name + args */
+                static const char *m68k_argv[18];
+                static char m68k_argstore[256];
+                m68k_argv[0] = bin_name;
+                int argc = 1;
+                if (args && *args) {
+                    /* Copy args into mutable store and split on spaces */
+                    int ai = 0;
+                    while (*args && ai < 254) m68k_argstore[ai++] = *args++;
+                    m68k_argstore[ai] = '\0';
+                    char *tok = m68k_argstore;
+                    while (*tok && argc < 16) {
+                        while (*tok == ' ') tok++;
+                        if (!*tok) break;
+                        m68k_argv[argc++] = tok;
+                        while (*tok && *tok != ' ') tok++;
+                        if (*tok == ' ') *tok++ = '\0';
+                    }
+                }
+                m68k_argv[argc] = NULL;
+                UAOS_Emu_SetCwd(s->cwd);
+                UAOS_Emu_LoadAndRun(g_bin_payload, payload_size,
+                                    m68k_argv, s, (UAOS_PrintFn)inst_print);
+                return 0;
+            }
+
+            /* Unknown type */
+            VFS_Close(&fh);
+            inst_print(s, "Unknown UAOS binary type");
+            return -2;
+        }
+        /* Not a UAOS binary — rewind and fall through to script execution */
+        VFS_Seek(&fh, 0);
+    }
+
+    VFS_Close(&fh);
+    /* Fallback: execute as a text script */
+    inst_cmd_execute(s, full_path);
+    return 0;
+}
+
+/* =========================================================================
  * Dispatch
  * ========================================================================= */
 
@@ -2268,29 +2370,24 @@ static void run_cmd(ShellInstance *s, const char *line)
         return;
     }
 
-    /* ---- Native binary commands (found in C:, dispatched directly) ---- */
-    /* Build context once for any native dispatch below */
-    NativeCmdCtx nctx = shell_make_ctx(s);
-
-    /* Check native registry by name first (avoids a VFS lookup for C: commands) */
-    if (NativeCmd_Exists(first_word)) {
-        const char *args = cmd_to_run + slen(first_word);
-        while (*args == ' ') args++;
-        NativeCmd_Run(first_word, &nctx, args);
-        return;
-    }
-
-    /* ---- PATH search: look for the command in each PATH directory ---- */
+    /* ---- PATH search: look for the command in each PATH directory ----
+     *
+     * Each file found is opened and its UAOS binary header is inspected:
+     *   NATIVE header -> call NativeCmd_Run by the name embedded in the header
+     *   M68K   header -> pass payload to UAOS_Emu_LoadAndRun (transparent)
+     *   no header     -> execute as a text script (legacy / plain scripts)
+     * -------------------------------------------------------------------- */
     char path_buf[256];
     scopy(path_buf, s->path, 256);
     char *path_p = path_buf;
 
+    const char *args_tail = cmd_to_run + slen(first_word);
+    while (*args_tail == ' ') args_tail++;
+
     while (*path_p) {
-        /* Skip leading spaces */
         while (*path_p == ' ') path_p++;
         if (!*path_p) break;
 
-        /* Extract path entry */
         char entry[64];
         int ei = 0;
         while (*path_p && *path_p != ' ' && ei < 63) {
@@ -2299,26 +2396,28 @@ static void run_cmd(ShellInstance *s, const char *line)
         entry[ei] = '\0';
 
         if (ei > 0) {
-            /* Build full path: entry + first_word */
             char full_path[128];
             scopy(full_path, entry, 128);
             if (ei > 0 && entry[ei-1] != ':' && entry[ei-1] != '/')
                 scat(full_path, "/", 128);
             scat(full_path, first_word, 128);
 
-            VfsFile test;
-            if (VFS_Open(&test, full_path, VFS_READ)) {
-                VFS_Close(&test);
-                /* Found in PATH — check native registry first */
-                const char *args = cmd_to_run + slen(first_word);
-                while (*args == ' ') args++;
-                if (NativeCmd_Run(first_word, &nctx, args) == 0)
-                    return;
-                /* Not a native command — execute as a script */
-                inst_cmd_execute(s, full_path);
-                return;
-            }
+            /* Try to open — inst_exec_uaos_bin checks file existence */
+            if (inst_exec_uaos_bin(s, full_path, args_tail) != -1)
+                return;  /* executed (or error printed) */
         }
+    }
+
+    /* Also search the current working directory */
+    {
+        char cwd_path[128];
+        scopy(cwd_path, s->cwd, 128);
+        int cl = slen(cwd_path);
+        if (cl > 0 && cwd_path[cl-1] != ':' && cwd_path[cl-1] != '/')
+            scat(cwd_path, "/", 128);
+        scat(cwd_path, first_word, 128);
+        if (inst_exec_uaos_bin(s, cwd_path, args_tail) != -1)
+            return;
     }
 
     char msg[MAX_LINE_LEN];

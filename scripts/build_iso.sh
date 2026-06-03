@@ -73,6 +73,18 @@ mkdir -p "${ISO_STAGING}/sys-root/SYS"
 ok "Staging directories created at ${ISO_STAGING}"
 
 # -------------------------------------------------------------------------
+# Step 1a — Build host-side UAOS binary tools
+# -------------------------------------------------------------------------
+
+info "Step 1a: Building UAOS binary generation tools"
+
+TOOLS_DIR="${REPO_ROOT}/tools"
+gcc -O2 -o "${BUILD_DIR}/gen_uaos_native" "${TOOLS_DIR}/gen_uaos_native.c"
+ok "  Built: gen_uaos_native"
+gcc -O2 -o "${BUILD_DIR}/gen_uaos_m68k"   "${TOOLS_DIR}/gen_uaos_m68k.c"
+ok "  Built: gen_uaos_m68k"
+
+# -------------------------------------------------------------------------
 # Step 1b — Compile ELF64 kernel from NASM + C sources
 # -------------------------------------------------------------------------
 
@@ -517,6 +529,51 @@ if [[ -d "${SYS_ROOT}" ]]; then
 else
     warn "sys-root not found at ${SYS_ROOT} — using empty skeleton"
 fi
+
+# -------------------------------------------------------------------------
+# Step 2b — Generate real UAOS NATIVE binaries for C: commands
+#
+# Each C: command becomes a real 32-byte UAOS binary file with magic "UAOS",
+# type NATIVE (0x0001), and the command name embedded in the header.
+# The shell reads this header, looks up the native handler, and runs it.
+# These files REPLACE the text stub files copied from sys-root/C/.
+# -------------------------------------------------------------------------
+
+info "Step 2b: Generating UAOS NATIVE binaries for C:"
+
+C_STAGING="${ISO_STAGING}/sys-root/C"
+GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
+
+for cmd in version mem libs clear reboot dir makedir delete type copy rename \
+           pwd echo protect attr info date which disks fdisk format pointer \
+           run assign execute loadwb; do
+    "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
+    ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
+done
+
+# -------------------------------------------------------------------------
+# Step 2c — Wrap any Amiga Hunk binaries in emulation/binaries/ with UAOS header
+#
+# Each plain Amiga Hunk file gets a 32-byte UAOS header prepended.
+# The wrapped file is placed in sys-root/C/ so it can be run transparently
+# from the shell without the 'run' prefix.
+# -------------------------------------------------------------------------
+
+info "Step 2c: Wrapping M68k Amiga Hunk binaries with UAOS header"
+
+GEN_M68K="${BUILD_DIR}/gen_uaos_m68k"
+
+for f in "${BINARIES_DIR}"/*; do
+    base="$(basename "$f")"
+    [[ "$base" == .* ]]        && continue
+    [[ "$base" == *.c ]]       && continue
+    [[ "$base" == *.h ]]       && continue
+    [[ "$base" == *.gitkeep ]] && continue
+    [[ -f "$f" ]]              || continue
+    lname="${base,,}"  # lowercase for C: filename
+    "${GEN_M68K}" "${base}" "${f}" "${C_STAGING}/${lname}"
+    ok "  Wrapped:   C:${lname}  (M68K Hunk, $(wc -c < "$f") bytes + 32 header)"
+done
 
 # -------------------------------------------------------------------------
 # Step 3 — Install GRUB configuration
