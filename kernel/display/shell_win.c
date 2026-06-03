@@ -270,21 +270,43 @@ static int inst_rows(ShellInstance *s)
     return (hh > 0) ? hh / 16 : 1;
 }
 
-/* Push current scroll state into WM so the scrollbar thumb is correct */
-static void inst_sync_scrollbar(ShellInstance *s)
+/* Update WM's content size for scrollbar thumb proportion. Call when content or window size changes. */
+static void inst_update_scrollinfo(ShellInstance *s)
 {
     if (s->wm_handle < 0) return;
     int rows = inst_rows(s);
     int content_h = s->hist_count * 16;
-    int view_h    = rows * 16;
-    WM_SetScrollInfo(s->wm_handle, 0, content_h > view_h ? content_h : view_h + 1);
-    /* scroll_y = lines-from-top * 16 */
-    int from_top = s->hist_count - rows - s->hist_scroll;
-    if (from_top < 0) from_top = 0;
-    /* Directly update scroll_y via WM_GetScrollY trick: set via SetScrollInfo side-effect
-     * is not enough — we need to write scroll_y. Use a small helper exposed below. */
-    int new_sy = from_top * 16;
-    WM_SetScrollY(s->wm_handle, new_sy);
+    int view_h = rows * 16;
+    /* Ensure content_h >= view_h so scrollbar range is valid */
+    WM_SetScrollInfo(s->wm_handle, 0, content_h > view_h ? content_h : view_h);
+}
+
+/* Sync shell's hist_scroll from WM's scroll_y. Call before drawing to reflect user scrollbar interaction. */
+static void inst_sync_from_wm(ShellInstance *s)
+{
+    if (s->wm_handle < 0) return;
+    int rows = inst_rows(s);
+    int sy = WM_GetScrollY(s->wm_handle);
+    int max_scroll = s->hist_count - rows;
+    if (max_scroll < 0) max_scroll = 0;
+    /* WM scroll_y is pixels from top. Convert to lines from top, then to hist_scroll (lines from bottom). */
+    int from_top_lines = sy / 16;
+    s->hist_scroll = max_scroll - from_top_lines;
+    if (s->hist_scroll < 0) s->hist_scroll = 0;
+    if (s->hist_scroll > max_scroll) s->hist_scroll = max_scroll;
+}
+
+/* Push shell's hist_scroll to WM's scroll_y. Call after keyboard scrolling to update scrollbar thumb. */
+static void inst_push_scroll_to_wm(ShellInstance *s)
+{
+    if (s->wm_handle < 0) return;
+    int rows = inst_rows(s);
+    int max_scroll = s->hist_count - rows;
+    if (max_scroll < 0) max_scroll = 0;
+    /* Convert hist_scroll (lines from bottom) to WM scroll_y (pixels from top) */
+    int from_top_lines = max_scroll - s->hist_scroll;
+    if (from_top_lines < 0) from_top_lines = 0;
+    WM_SetScrollY(s->wm_handle, from_top_lines * 16);
 }
 
 /* Forward declaration — defined below after inst_dispatch */
@@ -329,6 +351,8 @@ static void inst_print(ShellInstance *s, const char *line)
     s->hist_count++;
     s->hist_scroll = 0;
     s->auto_scroll = 1;  /* draw shim will pin to bottom with fresh geometry */
+    /* Update WM content size so scrollbar thumb adapts to new content */
+    inst_update_scrollinfo(s);
     WM_Redraw();
 }
 
@@ -2070,14 +2094,14 @@ static void inst_handle_key(ShellInstance *s, char c)
         if (max_scroll < 0) max_scroll = 0;
         s->hist_scroll += SCROLL_LINES;
         if (s->hist_scroll > max_scroll) s->hist_scroll = max_scroll;
-        inst_sync_scrollbar(s);
+        inst_push_scroll_to_wm(s);
         inst_draw_history(s);
         return;
     }
     if (c == VKEY_PGDN) {
         s->hist_scroll -= SCROLL_LINES;
         if (s->hist_scroll < 0) s->hist_scroll = 0;
-        inst_sync_scrollbar(s);
+        inst_push_scroll_to_wm(s);
         inst_draw_history(s);
         return;
     }
@@ -2182,7 +2206,12 @@ static void inst_handle_key(ShellInstance *s, char c)
 #define MAKE_SHIMS(N) \
 static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
     ShellInstance *s=&g_shells[N]; \
+    int old_ww = s->ww, old_wh = s->wh; \
     s->wx=wx;s->wy=wy;s->ww=ww;s->wh=wh; \
+    if (s->wm_handle >= 0 && (ww != old_ww || wh != old_wh)) { \
+        /* Window resized — update WM content size for proper scrollbar thumb */ \
+        inst_update_scrollinfo(s); \
+    } \
     if (s->auto_scroll) { \
         /* New output arrived — pin to bottom using fresh geometry */ \
         s->hist_scroll = 0; \
@@ -2194,13 +2223,8 @@ static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
             WM_SetScrollY(s->wm_handle, from_top2 * 16); \
         } \
     } else if (s->wm_handle >= 0) { \
-        /* Scrollbar thumb may have moved — sync hist_scroll from scroll_y */ \
-        int sy = WM_GetScrollY(s->wm_handle); \
-        int rows2 = inst_rows(s); \
-        int from_top2 = sy / 16; \
-        int hs = s->hist_count - rows2 - from_top2; \
-        if (hs < 0) hs = 0; \
-        s->hist_scroll = hs; \
+        /* Sync from WM scroll_y to reflect user scrollbar interaction */ \
+        inst_sync_from_wm(s); \
     } \
     inst_draw_contents(s); inst_draw_history(s); inst_draw_input(s); } \
 static void shell_key_##N(char c) { inst_handle_key(&g_shells[N],c); }

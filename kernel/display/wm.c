@@ -121,19 +121,24 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
 {
     uint32_t bg = WB_GREY;
 
+    /* Clear entire scrollbar area including full interior to prevent ANY artifacts */
     FB_FillRect(tx, ty, tw, th, WB_GREY);
-    FB_DrawRect(tx, ty, tw, th, WB_DARK_GREY);
 
     if (axis == 0) { /* vertical */
+        /* Track area between arrows - clear first */
+        int track_y = ty + arrow_sz;
+        int track_h = th - arrow_sz * 2;
+        if (track_h > 0) {
+            FB_FillRect(tx, track_y, tw, track_h, WB_GREY);
+        }
+
         /* Up arrow */
         draw_arrow(tx, ty, tw, arrow_sz, 0, bg);
         /* Down arrow — only if track is tall enough */
         if (th >= arrow_sz * 2)
             draw_arrow(tx, ty + th - arrow_sz, tw, arrow_sz, 1, bg);
 
-        /* Track between arrows */
-        int track_y = ty + arrow_sz;
-        int track_h = th - arrow_sz * 2;
+        /* Draw thumb if scrollable and track is tall enough */
         if (track_h > 4 && content_sz > view_sz && scroll >= 0) {
             int thumb_h = track_h * view_sz / content_sz;
             if (thumb_h < 8) thumb_h = 8;
@@ -146,14 +151,23 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
             FB_FillRect(tx + 1, thumb_y, tw - 2, thumb_h, WB_LIGHT_GREY);
             FB_DrawRect(tx + 1, thumb_y, tw - 2, thumb_h, WB_DARK_GREY);
         }
+
+        /* Draw outer border last to ensure it's clean */
+        FB_DrawRect(tx, ty, tw, th, WB_DARK_GREY);
     } else { /* horizontal */
+        /* Track area between arrows - clear first */
+        int track_x = tx + arrow_sz;
+        int track_w = tw - arrow_sz * 2;
+        if (track_w > 0) {
+            FB_FillRect(track_x, ty, track_w, th, WB_GREY);
+        }
+
         /* Left arrow */
         draw_arrow(tx, ty, arrow_sz, th, 2, bg);
         /* Right arrow */
         draw_arrow(tx + tw - arrow_sz, ty, arrow_sz, th, 3, bg);
 
-        int track_x = tx + arrow_sz;
-        int track_w = tw - arrow_sz * 2;
+        /* Draw thumb if scrollable and track is wide enough */
         if (track_w > 4 && content_sz > view_sz) {
             int thumb_w = track_w * view_sz / content_sz;
             if (thumb_w < 8) thumb_w = 8;
@@ -163,6 +177,9 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
             FB_FillRect(thumb_x, ty + 1, thumb_w, th - 2, WB_LIGHT_GREY);
             FB_DrawRect(thumb_x, ty + 1, thumb_w, th - 2, WB_DARK_GREY);
         }
+
+        /* Draw outer border last to ensure it's clean */
+        FB_DrawRect(tx, ty, tw, th, WB_DARK_GREY);
     }
 }
 
@@ -251,13 +268,15 @@ static void draw_chrome(int wh)
     draw_scrollbar(bx, by, bw, bh, SB,
                    w->scroll_x, sh, cw, 1);
 
-    /* Resize grip — SB×SB square in bottom-right corner */
+    /* Resize grip — SB×SB square in bottom-right corner
+     * Clear area first, then draw border and diagonal stripes */
     {
         int gx = w->x + w->w - SB;
         int gy = w->y + w->h - SB;
+        /* Clear entire grip area including inner pixels to prevent artifacts */
         FB_FillRect(gx, gy, SB, SB, WB_GREY);
         FB_DrawRect(gx, gy, SB, SB, WB_DARK_GREY);
-        /* Two diagonal stripes */
+        /* Two diagonal stripes (drawn within the border, so offset by 1) */
         for (int row = 2; row < SB - 1; row++) {
             int c1 = SB - 2 - row;
             int c2 = SB - 4 - row;
@@ -427,8 +446,8 @@ static int hit_scrollbars(int wh, int mx, int my)
     int rx, ry, rw, rh;
     sb_right_rect(w, &rx, &ry, &rw, &rh);
     if (mx >= rx && mx < rx + rw && my >= ry && my < ry + rh) {
-        if (my < ry + SB) { scroll_by(wh, 0, -ch/4); return 1; } /* up arrow */
-        if (my >= ry + rh - SB) { scroll_by(wh, 0, ch/4); return 1; } /* down */
+        if (my < ry + SB) { scroll_by(wh, 0, -16); return 1; } /* up arrow: scroll 1 line up */
+        if (my >= ry + rh - SB) { scroll_by(wh, 0, 16); return 1; } /* down arrow: scroll 1 line down */
         /* Thumb track drag start */
         g_scroll_drag_win  = wh;
         g_scroll_drag_axis = 0;
@@ -441,8 +460,8 @@ static int hit_scrollbars(int wh, int mx, int my)
     int bx, by, bw, bh;
     sb_bottom_rect(w, &bx, &by, &bw, &bh);
     if (mx >= bx && mx < bx + bw && my >= by && my < by + bh) {
-        if (mx < bx + SB) { scroll_by(wh, 1, -cw/4); return 1; } /* left */
-        if (mx >= bx + bw - SB) { scroll_by(wh, 1, cw/4); return 1; } /* right */
+        if (mx < bx + SB) { scroll_by(wh, 1, -16); return 1; } /* left arrow: small scroll */
+        if (mx >= bx + bw - SB) { scroll_by(wh, 1, 16); return 1; } /* right arrow: small scroll */
         g_scroll_drag_win  = wh;
         g_scroll_drag_axis = 1;
         g_scroll_drag_base = w->scroll_x;
