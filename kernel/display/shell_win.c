@@ -2346,6 +2346,55 @@ static void run_cmd(ShellInstance *s, const char *line)
         }
     }
 
+    /* ---- Explicit path: user typed "C:cmd", "SYS:tools/foo", etc. ----
+     *
+     * If first_word contains a colon it is already a fully-qualified VFS
+     * path.  Try it directly.  For the common AmigaDOS convention of
+     * "C:CommandName" we also lowercase the part after the colon so that
+     * "C:LoadWB", "c:loadwb" and "C:LOADWB" all resolve to the same file.
+     * -------------------------------------------------------------------- */
+    {
+        const char *colon = first_word;
+        while (*colon && *colon != ':') colon++;
+        if (*colon == ':') {
+            /* first_word IS the path — args_tail follows it in cmd_to_run */
+            const char *expl_args = cmd_to_run + slen(first_word);
+            while (*expl_args == ' ') expl_args++;
+
+            /* Try the path exactly as typed first */
+            if (inst_exec_uaos_bin(s, first_word, expl_args) != -1)
+                return;
+
+            /* Build a lowercased version of the filename part and retry.
+             * e.g. "C:LoadWB" -> "C:loadwb" */
+            char lower_path[64];
+            int li = 0;
+            /* copy up to and including the colon verbatim */
+            const char *fp = first_word;
+            while (*fp && *fp != ':' && li < 62) lower_path[li++] = *fp++;
+            if (*fp == ':') lower_path[li++] = ':';
+            fp++; /* skip colon */
+            while (*fp && li < 62) {
+                char c = *fp++;
+                if (c >= 'A' && c <= 'Z') c += 32;
+                lower_path[li++] = c;
+            }
+            lower_path[li] = '\0';
+
+            if (!seq(lower_path, first_word)) {
+                if (inst_exec_uaos_bin(s, lower_path, expl_args) != -1)
+                    return;
+            }
+
+            /* Not found at that explicit path */
+            char msg[MAX_LINE_LEN];
+            scopy(msg, "Unknown command: ", MAX_LINE_LEN);
+            scat(msg, first_word, MAX_LINE_LEN);
+            inst_print(s, msg);
+            return;
+        }
+    }
+
     /* ---- Shell built-in commands (not discrete C: binaries) ---- */
     const char *builtins[] = {
         "help", "cd", "alias", "unalias", "set", "unset", "path",
