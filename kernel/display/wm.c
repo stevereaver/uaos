@@ -677,8 +677,9 @@ void WM_Redraw(void)
 {
     FB_BeginDraw();
 
-    /* Repaint full desktop backdrop */
-    Desktop_Draw();
+    /* Repaint full desktop backdrop only if Workbench has been loaded */
+    if (Desktop_IsWorkbenchLoaded())
+        Desktop_Draw();
 
     /* Paint windows back-to-front */
     for (int i = 0; i < g_nwins; i++) {

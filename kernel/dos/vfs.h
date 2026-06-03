@@ -45,6 +45,10 @@ typedef struct {
 /* Initialise VFS + mount RAM: with standard dirs. Call once at boot. */
 void VFS_Init(void);
 
+/* Setup default Workbench assigns (C:, S:, L:, DEVS:, LIBS:, SYS:).
+ * Call after Workbench: volume is mounted. */
+void VFS_SetupWorkbenchAssigns(void);
+
 /* Mount a partition volume by name (e.g. "DH0", "WORK").
  * Creates an empty RAMFS backing volume so cd/dir work.
  * Returns 0 on success, -1 if mount table full or name too long. */
@@ -103,5 +107,31 @@ uint8_t VFS_GetAttrs(const char *path);
 
 /* Set attributes of a file/directory. Returns 0 on success, -1 on failure. */
 int VFS_SetAttrs(const char *path, uint8_t attrs);
+
+/* -------------------------------------------------------------------------
+ * AmigaDOS Assign Support
+ * Assigns create logical names that map to physical paths.
+ * ------------------------------------------------------------------------- */
+
+/* Add an assign: maps assign_name -> target_path.
+ * Returns 0 on success, -1 on failure (table full or invalid path). */
+int VFS_AddAssign(const char *assign_name, const char *target_path);
+
+/* Remove an assign by name. Returns 0 on success, -1 if not found. */
+int VFS_RemoveAssign(const char *assign_name);
+
+/* Resolve an assign name to its target path.
+ * Returns pointer to static buffer, or NULL if not an assign.
+ * The returned string is valid until next call. */
+const char *VFS_ResolveAssign(const char *assign_name);
+
+/* List all assigns into buffer (one per line).
+ * Returns number of assigns written. */
+int VFS_ListAssigns(char *buf, int max);
+
+/* Resolve a path that may contain assigns (e.g., "C:dir" -> "Workbench:C/dir").
+ * Writes resolved path to dst[max] and returns dst, or NULL if error.
+ * The returned pointer is valid until next call. */
+const char *VFS_ExpandAssigns(const char *path, char *dst, int max);
 
 #endif

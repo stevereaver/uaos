@@ -7,6 +7,10 @@ void Desktop_Draw(void);          /* render full desktop (call once after FB_Ini
 void Desktop_UpdateClock(void);   /* redraw clock area in menu bar                 */
 void Desktop_RedrawRect(int rx, int ry, int rw, int rh); /* repaint backdrop rect */
 
+/* Workbench load control - desktop only draws after LoadWB is called */
+void Desktop_MarkWorkbenchLoaded(void);  /* call from LoadWB */
+int  Desktop_IsWorkbenchLoaded(void);  /* check before drawing desktop */
+
 /* Feed a mouse event to the desktop (icon hit-test / double-click).
  * Call this from WM_MouseEvent when no window was hit.
  * Returns 1 if the desktop handled the event, 0 otherwise. */

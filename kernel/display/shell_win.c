@@ -32,6 +32,7 @@
 /* Forward declarations */
 typedef struct ShellInstance ShellInstance;
 static void inst_print(ShellInstance *s, const char *line);
+static void inst_dispatch(ShellInstance *s, const char *line);
 static ShellInstance *g_fdisk_shell = NULL;
 static void inst_print_wrapper(const char *line)
 {
@@ -99,6 +100,9 @@ struct ShellInstance {
     char env_names[MAX_ENV_VARS][MAX_ENV_NAME];
     char env_values[MAX_ENV_VARS][MAX_ENV_VAL];
     int  env_count;
+
+    /* Command search path (space-separated list like "C: S: SYS:Utilities") */
+    char path[256];
 
     /* Current working directory (AmigaDOS path, e.g. "RAM:") */
     char cwd[64];
@@ -216,18 +220,38 @@ static void inst_draw_history(ShellInstance *s)
     }
 }
 
+/* Extract volume name from path (e.g., "RAM:" or "Workbench:") */
+static void extract_vol_prompt(const char *path, char *out, int max)
+{
+    int i = 0;
+    while (i < max - 1 && path[i] && path[i] != '/') {
+        out[i] = path[i];
+        i++;
+    }
+    out[i] = '\0';
+}
+
 static void inst_draw_input(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
     int ix = wx + BORDER_L + 4;
     int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W - 2;
 
-    /* Build prompt "N.UAOS> " */
-    char prompt[12];
-    prompt[0] = (char)('0' + s->number);
-    prompt[1] = '.'; prompt[2]='U'; prompt[3]='A'; prompt[4]='O';
-    prompt[5] = 'S'; prompt[6]='>'; prompt[7]=' '; prompt[8]=0;
-    int plen = 8;
+    /* Build Amiga-style prompt from current volume */
+    char vol[32];
+    extract_vol_prompt(s->cwd, vol, sizeof(vol));
+    /* Show just the volume name without the number prefix */
+    char prompt[40];
+    int pi = 0;
+    /* Copy volume name */
+    int vi = 0;
+    while (vol[vi] && pi < 35) {
+        prompt[pi++] = vol[vi++];
+    }
+    /* Add "> " */
+    if (pi < 38) { prompt[pi++] = '>'; prompt[pi++] = ' '; }
+    prompt[pi] = '\0';
+    int plen = pi;
 
     int right_edge = wx + ww - BORDER_R;  /* pixel x of right clip boundary */
 
@@ -388,6 +412,10 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  format <dev> [fs]  format a partition");
     inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
+    inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
+    inst_print(s, "  execute <script>   run a script file");
+    inst_print(s, "  path [dirs...]     show/set command search path");
+    inst_print(s, "  loadwb             launch Workbench desktop");
 }
 
 static void inst_cmd_version(ShellInstance *s)
@@ -1119,6 +1147,7 @@ static void inst_cmd_which(ShellInstance *s, const char *arg)
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
         "protect","attr","alias","unalias","set","unset","rename","date","which","info",
+        "assign","execute","path",
         NULL
     };
 
@@ -1162,6 +1191,213 @@ static void inst_cmd_which(ShellInstance *s, const char *arg)
     scopy(msg, cmd, MAX_LINE_LEN);
     scat(msg, " not found", MAX_LINE_LEN);
     inst_print(s, msg);
+}
+
+static void inst_cmd_assign(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        /* List current assigns */
+        char buf[512];
+        int n = VFS_ListAssigns(buf, sizeof(buf));
+        if (n > 0) {
+            inst_print(s, "Current assigns:");
+            /* Parse lines and print individually */
+            const char *p = buf;
+            char line[64];
+            int li = 0;
+            while (*p && li < sizeof(line) - 1) {
+                if (*p == '\n') {
+                    line[li] = '\0';
+                    if (li > 0) inst_print(s, line);
+                    li = 0;
+                } else {
+                    line[li++] = *p;
+                }
+                p++;
+            }
+            if (li > 0) {
+                line[li] = '\0';
+                inst_print(s, line);
+            }
+        } else {
+            inst_print(s, "No assigns defined.");
+        }
+        inst_print(s, "");
+        inst_print(s, "Usage: assign <name>: <target>");
+        inst_print(s, "Example: assign C: Workbench:C");
+        return;
+    }
+
+    /* Parse assign name and target */
+    char name[32];
+    char target[64];
+    const char *p = arg;
+
+    /* Skip leading spaces */
+    while (*p == ' ') p++;
+
+    /* Extract assign name (e.g., "C:") */
+    int ni = 0;
+    while (*p && *p != ' ' && ni < 31) {
+        name[ni++] = *p++;
+    }
+    name[ni] = '\0';
+
+    /* Skip spaces */
+    while (*p == ' ') p++;
+
+    /* Check for optional "TO" keyword (AmigaDOS style) */
+    if ((name[0] == 'T' || name[0] == 't') &&
+        (name[1] == 'O' || name[1] == 'o') &&
+        name[2] == '\0') {
+        /* "TO" was specified, re-read the actual name */
+        ni = 0;
+        while (*p && *p != ' ' && ni < 31) {
+            name[ni++] = *p++;
+        }
+        name[ni] = '\0';
+        while (*p == ' ') p++;
+    }
+
+    /* Extract target */
+    int ti = 0;
+    while (*p && ti < 63) {
+        target[ti++] = *p++;
+    }
+    target[ti] = '\0';
+
+    if (!name[0] || !target[0]) {
+        inst_print(s, "Usage: assign <name>: <target>");
+        inst_print(s, "Example: assign C: Workbench:C");
+        return;
+    }
+
+    /* Add the assign */
+    if (VFS_AddAssign(name, target) == 0) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Assigned ", MAX_LINE_LEN);
+        scat(msg, name, MAX_LINE_LEN);
+        scat(msg, " -> ", MAX_LINE_LEN);
+        scat(msg, target, MAX_LINE_LEN);
+        inst_print(s, msg);
+    } else {
+        inst_print(s, "Failed to create assign.");
+    }
+}
+
+/* Static buffer for script execution (max 4KB scripts) */
+#define MAX_SCRIPT_SIZE 4096
+static char g_script_buf[MAX_SCRIPT_SIZE];
+
+static void inst_cmd_execute(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        inst_print(s, "Usage: execute <script>");
+        inst_print(s, "Executes a script file line by line.");
+        return;
+    }
+
+    /* Parse script path */
+    char path[64];
+    make_abs_path(s, arg, path, 64);
+
+    /* Open the script file */
+    VfsFile fh;
+    if (!VFS_Open(&fh, path, VFS_READ)) {
+        char msg[MAX_LINE_LEN];
+        scopy(msg, "Cannot open: ", MAX_LINE_LEN);
+        scat(msg, path, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
+
+    /* Read script into static buffer */
+    uint32_t size = VFS_Size(&fh);
+    if (size == 0 || size >= MAX_SCRIPT_SIZE) {
+        inst_print(s, "Script empty or too large (max 4KB)");
+        VFS_Close(&fh);
+        return;
+    }
+
+    uint32_t read = VFS_Read(&fh, (uint8_t *)g_script_buf, size);
+    g_script_buf[read] = '\0';
+    VFS_Close(&fh);
+
+    /* Execute script line by line */
+    char line[MAX_LINE_LEN];
+    const char *p = g_script_buf;
+    int line_num = 0;
+
+    inst_print(s, "Executing script...");
+
+    while (*p) {
+        /* Extract one line */
+        int li = 0;
+        while (*p && *p != '\n' && li < MAX_LINE_LEN - 1) {
+            line[li++] = *p++;
+        }
+        line[li] = '\0';
+        if (*p == '\n') p++; /* skip newline */
+
+        line_num++;
+
+        /* Skip empty lines and comments */
+        const char *lp = line;
+        while (*lp == ' ') lp++;
+        if (*lp == '\0' || *lp == ';' || *lp == '*') continue;
+
+        /* Execute the line */
+        inst_dispatch(s, line);
+    }
+
+    char msg[32];
+    scopy(msg, "Script complete (", 32);
+    char num[8];
+    uint_to_dec_s((uint32_t)line_num, num, 8);
+    scat(msg, num, 32);
+    scat(msg, " lines)", 32);
+    inst_print(s, msg);
+}
+
+static void inst_cmd_path(ShellInstance *s, const char *arg)
+{
+    /* If no argument, show current path */
+    if (!arg || !*arg) {
+        inst_print(s, "Current command search path:");
+        /* Parse and display each path entry */
+        char buf[256];
+        scopy(buf, s->path, 256);
+        char *p = buf;
+        while (*p) {
+            /* Skip leading spaces */
+            while (*p == ' ') p++;
+            if (!*p) break;
+            /* Find end of this path entry */
+            char entry[64];
+            int ei = 0;
+            while (*p && *p != ' ' && ei < 63) {
+                entry[ei++] = *p++;
+            }
+            entry[ei] = '\0';
+            if (ei > 0) {
+                char msg[MAX_LINE_LEN];
+                scopy(msg, "  ", MAX_LINE_LEN);
+                scat(msg, entry, MAX_LINE_LEN);
+                inst_print(s, msg);
+            }
+        }
+        inst_print(s, "");
+        inst_print(s, "The shell searches for commands in:");
+        inst_print(s, "  1. Built-in commands");
+        inst_print(s, "  2. Current directory");
+        inst_print(s, "  3. Path directories (in order)");
+        return;
+    }
+
+    /* Set new path - copy the argument directly */
+    scopy(s->path, arg, 256);
+
+    inst_print(s, "Command search path updated.");
 }
 
 static void inst_cmd_pointer(ShellInstance *s)
@@ -1971,6 +2207,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         "help","version","mem","libs","clear","reboot","run",
         "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
         "protect","attr","alias","unalias","set","unset","rename","date","which","disks","fdisk","format","info","loadwb",
+        "assign","execute","path",
         NULL
     };
 
@@ -2011,8 +2248,58 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==26) inst_cmd_fdisk(s, args);
         else if (i==27) inst_cmd_format(s, args);
         else if (i==28) inst_cmd_info(s, args);
-        else if (i==29) { inst_print(s, "LoadWB — launching Workbench desktop..."); Desktop_Draw(); }
+        else if (i==29) {
+            inst_print(s, "LoadWB — launching Workbench desktop...");
+            Desktop_MarkWorkbenchLoaded();
+            Desktop_Draw();
+            WM_Redraw();  /* Ensure full refresh with desktop */
+        }
+        else if (i==30) inst_cmd_assign(s, args);
+        else if (i==31) inst_cmd_execute(s, args);
+        else if (i==32) inst_cmd_path(s, args);
         return;
+    }
+
+    /* Not a built-in - search through PATH (reuses first_word from alias check) */
+    /* Parse path and search each directory */
+    char path_buf[256];
+    scopy(path_buf, s->path, 256);
+    char *path_p = path_buf;
+
+    while (*path_p) {
+        /* Skip leading spaces */
+        while (*path_p == ' ') path_p++;
+        if (!*path_p) break;
+
+        /* Extract path entry */
+        char entry[64];
+        int ei = 0;
+        while (*path_p && *path_p != ' ' && ei < 63) {
+            entry[ei++] = *path_p++;
+        }
+        entry[ei] = '\0';
+
+        if (ei > 0) {
+            /* Build full path: entry + "/" + command */
+            char full_path[128];
+            scopy(full_path, entry, 128);
+            /* Add trailing : if not present */
+            if (ei > 0 && entry[ei-1] != ':' && entry[ei-1] != '/') {
+                scat(full_path, "/", 128);
+            }
+            scat(full_path, first_word, 128);
+
+            /* Try to open the file */
+            VfsFile test;
+            if (VFS_Open(&test, full_path, VFS_READ)) {
+                VFS_Close(&test);
+                /* Found! Execute as a script */
+                inst_print(s, "Found in PATH:");
+                inst_print(s, full_path);
+                /* For now, just show we found it. Later: execute it */
+                return;
+            }
+        }
     }
 
     char msg[MAX_LINE_LEN];
@@ -2271,6 +2558,8 @@ static void open_shell(int stagger)
     s->fdisk_dev  = NULL;
     memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
     scopy(s->cwd, "RAM:", 64);
+    /* Default AmigaDOS-style search path */
+    scopy(s->path, "C: S: SYS:Utilities SYS:Rexx SYS:System SYS:Prefs SYS:WBStartup SYS:Tools SYS:Tools/Commodities", 256);
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[idx][i][0] = 0;
 
     char title[32];
@@ -2339,6 +2628,23 @@ void ShellWin_RunStartupSequence(void)
     ShellInstance *s = &g_shells[0];
 
     inst_print(s, "Executing S:Startup-Sequence...");
+
+    /* Debug: show what S: resolves to */
+    char resolved[128];
+    const char *assign_target = VFS_ResolveAssign("S");
+    if (assign_target) {
+        inst_print(s, "[Debug] S: assign target found");
+    } else {
+        inst_print(s, "[Debug] S: assign NOT found - checking assigns...");
+        char buf[256];
+        int n = VFS_ListAssigns(buf, sizeof(buf));
+        if (n > 0) {
+            inst_print(s, "[Debug] Current assigns:");
+            inst_print(s, buf);
+        } else {
+            inst_print(s, "[Debug] No assigns defined!");
+        }
+    }
 
     VfsFile fh;
     if (!VFS_Open(&fh, "S:Startup-Sequence", VFS_READ)) {

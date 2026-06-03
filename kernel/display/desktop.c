@@ -248,8 +248,8 @@ static IconState *get_icons(int *count)
         icons[0].is_ndos     = 0;
         icons[0].last_tick   = 0;
         icons[0].click_count = 0;
-        icons[1].volume      = "UAOS:";
-        icons[1].label       = "UAOS:";
+        icons[1].volume      = "Workbench:";
+        icons[1].label       = "Workbench:";
         icons[1].is_ndos     = 0;
         icons[1].last_tick   = 0;
         icons[1].click_count = 0;
@@ -393,14 +393,14 @@ void Desktop_Draw(void)
     int ix = W - ICON_W - 16;
     int iy = MENUBAR_H + 16;
     draw_disk_icon(ix, iy,               "RAM Disk",  WB_ORANGE);
-    draw_disk_icon(ix, iy + ICON_H + 8,  "UAOS:",     FB_RGB(0x44, 0x88, 0xFF));
+    draw_disk_icon(ix, iy + ICON_H + 8,  "Workbench:", WB_ORANGE);
 
     /* Dynamic partition icons below fixed ones */
     {
         int n;
         (void)get_icons(&n);  /* forces layout computation */
         IconState *icons = get_icons(&n);
-        for (int i = 2; i < n; i++) {
+        for (int i = 2; i < n; i++) {  /* Start at 2 (after RAM Disk and Workbench:) */
             IconState *ic = &icons[i];
             uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
             draw_disk_icon(ic->x, ic->y, ic->label, colour);
@@ -409,6 +409,19 @@ void Desktop_Draw(void)
 
     /* Centre welcome window */
     draw_welcome_window(W, H);
+}
+
+/* Workbench load control - prevents desktop from showing before LoadWB */
+static int g_workbench_loaded = 0;
+
+void Desktop_MarkWorkbenchLoaded(void)
+{
+    g_workbench_loaded = 1;
+}
+
+int Desktop_IsWorkbenchLoaded(void)
+{
+    return g_workbench_loaded;
 }
 
 /* =========================================================================

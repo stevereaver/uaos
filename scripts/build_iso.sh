@@ -521,19 +521,24 @@ info "Step 7: Creating S/Startup-Sequence stub"
 
 cat > "${ISO_STAGING}/sys-root/S/Startup-Sequence" <<'STARTUP'
 ; Ultimate Amiga OS — Startup-Sequence
-; This script is executed by AmigaDOS after the kernel initialises Exec.
+; This script is executed automatically at boot for live Workbench environment
 
-Assign SYS: SYS:
-Assign C:   SYS:C
-Assign S:   SYS:S
-Assign L:   SYS:L
-Assign DEVS: SYS:DEVS
+; Welcome message
+echo "Ultimate Amiga OS - Live Workbench Environment"
+echo ""
 
-; Load device drivers
-Mount DEVS:DOSDrivers/~(#?.info)
+; Assigns are automatically set up by the kernel:
+; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
+; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
 
-; Execute user startup
-Execute S:User-Startup
+; Show current assigns
+echo "Current assigns:"
+assign
+
+; Load Workbench desktop
+echo ""
+echo "Starting Workbench..."
+LoadWB
 STARTUP
 
 ok "Startup-Sequence written"

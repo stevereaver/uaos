@@ -1,0 +1,21 @@
+; Ultimate Amiga OS - Startup-Sequence
+; This script is executed automatically at boot for live Workbench environment
+
+; Welcome message
+echo "Ultimate Amiga OS - Live Workbench Environment"
+echo ""
+
+; Assigns are automatically set up by the kernel:
+; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
+; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
+
+; Show current assigns
+echo "Current assigns:"
+assign
+
+
+;IF EXISTS S:User-Startup
+;  Execute S:User-Startup
+;EndIF
+
+LoadWB

@@ -225,27 +225,35 @@ static void iso_process_entry(BlockDev *bdev, const uint8_t *rec, int rec_len,
         if (!node) return;
         if (extent_size == 0) return;
 
-        /* Read file data and copy into RAMFS */
-        uint8_t *file_buf = RamFS_AllocPool(extent_size);
-        if (!file_buf) {
-            kprint("[ISO9660] Out of pool space for file "); kprint(ram_path); kprint("\n");
-            return;
-        }
-        node->data = file_buf;
-        node->alloc = extent_size;
+        if (proxy) {
+            /* Proxy file: data stays on block device, read on demand */
+            node->ext_bdev = bdev;
+            node->ext_lba = extent_lba;
+            node->ext_blksz = ISO_SECTOR_SIZE;
+            node->size = extent_size;
+        } else {
+            /* Read file data and copy into RAMFS */
+            uint8_t *file_buf = RamFS_AllocPool(extent_size);
+            if (!file_buf) {
+                kprint("[ISO9660] Out of pool space for file "); kprint(ram_path); kprint("\n");
+                return;
+            }
+            node->data = file_buf;
+            node->alloc = extent_size;
 
-        uint8_t file_sec[ISO_SECTOR_SIZE];
-        uint32_t sectors = (extent_size + ISO_SECTOR_SIZE - 1) / ISO_SECTOR_SIZE;
-        uint32_t offset = 0;
-        for (uint32_t s = 0; s < sectors && offset < extent_size; s++) {
-            if (iso_read_sector(bdev, extent_lba + s, file_sec) != 0) break;
-            uint32_t chunk = extent_size - offset;
-            if (chunk > ISO_SECTOR_SIZE) chunk = ISO_SECTOR_SIZE;
-            for (uint32_t i = 0; i < chunk; i++)
-                file_buf[offset + i] = file_sec[i];
-            offset += chunk;
+            uint8_t file_sec[ISO_SECTOR_SIZE];
+            uint32_t sectors = (extent_size + ISO_SECTOR_SIZE - 1) / ISO_SECTOR_SIZE;
+            uint32_t offset = 0;
+            for (uint32_t s = 0; s < sectors && offset < extent_size; s++) {
+                if (iso_read_sector(bdev, extent_lba + s, file_sec) != 0) break;
+                uint32_t chunk = extent_size - offset;
+                if (chunk > ISO_SECTOR_SIZE) chunk = ISO_SECTOR_SIZE;
+                for (uint32_t i = 0; i < chunk; i++)
+                    file_buf[offset + i] = file_sec[i];
+                offset += chunk;
+            }
+            node->size = offset;
         }
-        node->size = offset;
     }
 }
 
@@ -381,24 +389,53 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
     /* Check for sys-root directory (ISO names are uppercase) */
     uint32_t sys_lba, sys_size;
     int sys_is_dir;
-    /* Always create a CDROM: proxy volume from the full ISO root */
-    RamFsVol *cdrom_vol = RamFS_MountVol("CDROM");
-    CHECK_IRQ("after_mountvol_cdrom");
-    if (cdrom_vol) {
-        if (VFS_MountExistingVol("CDROM", cdrom_vol) == 0) {
-            iso_traverse_dir(bdev, root_lba, root_size, cdrom_vol, "CDROM:", 1);
-            CHECK_IRQ("after_traverse_cdrom");
-        } else {
-            kprint("[ISO9660] VFS_MountExistingVol CDROM failed\n");
+    int is_workbench_mount = 0;
+    /* Check if this is a Workbench mount request (CDROM/Workbench both accepted) */
+    const char *p = vol_name;
+    int vol_len = 0;
+    while (p[vol_len]) vol_len++;
+    if (vol_len == 5) {
+        const char *cdrom = "CDROM";
+        int match = 1;
+        for (int i = 0; i < 5; i++) {
+            char c = p[i];
+            if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+            if (c != cdrom[i]) { match = 0; break; }
         }
-    } else {
-        kprint("[ISO9660] RamFS_MountVol CDROM failed\n");
+        if (match) is_workbench_mount = 1;
+    } else if (vol_len == 9) {
+        const char *workbench = "WORKBENCH";
+        int match = 1;
+        for (int i = 0; i < 9; i++) {
+            char c = p[i];
+            if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+            if (c != workbench[i]) { match = 0; break; }
+        }
+        if (match) is_workbench_mount = 1;
     }
 
-    if (iso_find_dir_entry(bdev, root_lba, root_size, "SYS_ROOT", &sys_lba, &sys_size, &sys_is_dir)) {
+    if (is_workbench_mount && iso_find_dir_entry(bdev, root_lba, root_size, "SYS_ROOT", &sys_lba, &sys_size, &sys_is_dir)) {
         CHECK_IRQ("after_find_sysroot");
         if (sys_is_dir) {
-            kprint("[ISO9660] Found SYS-ROOT, mounting sub-volumes...\n");
+            kprint("[ISO9660] Found SYS-ROOT, mounting Workbench: from SYS-ROOT contents...\n");
+            /* Mount SYS-ROOT contents as Workbench: (Amiga-style live environment) */
+            RamFsVol *wb_vol = RamFS_MountVol("Workbench");
+            CHECK_IRQ("after_mountvol_workbench");
+            if (wb_vol) {
+                if (VFS_MountExistingVol("Workbench", wb_vol) == 0) {
+                    /* Traverse SYS-ROOT to populate Workbench: with proxy files */
+                    iso_traverse_dir(bdev, sys_lba, sys_size, wb_vol, "Workbench:", 1);
+                    CHECK_IRQ("after_traverse_sysroot");
+                    kprint("[ISO9660] Workbench: mounted from SYS-ROOT\n");
+                } else {
+                    kprint("[ISO9660] VFS_MountExistingVol Workbench failed\n");
+                }
+            } else {
+                kprint("[ISO9660] RamFS_MountVol Workbench failed\n");
+            }
+
+            /* Also mount individual sub-volumes from SYS-ROOT */
+            kprint("[ISO9660] Mounting sub-volumes...\n");
             uint8_t sys_buf[ISO_SECTOR_SIZE];
             uint32_t sectors = (sys_size + ISO_SECTOR_SIZE - 1) / ISO_SECTOR_SIZE;
             for (uint32_t s = 0; s < sectors; s++) {
@@ -448,9 +485,9 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
             return 0;
         }
     }
-    CHECK_IRQ("after_sysroot");
+    CHECK_IRQ("after_sysroot_check");
 
-    /* Fallback: mount entire CD as vol_name */
+    /* Fallback: mount entire CD as vol_name (or if not Workbench/CDROM) */
     RamFsVol *vol = RamFS_MountVol(vol_name);
     if (!vol) return -1;
     if (VFS_MountExistingVol(vol_name, vol) != 0) return -1;
@@ -460,6 +497,6 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
     while (vol_name[i] && i < 15) { root_path[i] = vol_name[i]; i++; }
     root_path[i] = ':'; root_path[i + 1] = '\0';
 
-    iso_traverse_dir(bdev, root_lba, root_size, vol, root_path, 0);
+    iso_traverse_dir(bdev, root_lba, root_size, vol, root_path, is_workbench_mount ? 1 : 0);
     return 0;
 }

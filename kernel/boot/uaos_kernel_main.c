@@ -415,8 +415,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
                     kprint("[BOOT] Mounting ISO 9660 from ");
                     kprint(bdev_name);
                     kprint("...\n");
-                    if (ISO9660_MountCD(cd_dev, "CDROM") == 0) {
-                        kprint("[BOOT] CDROM: mounted.\n");
+                    if (ISO9660_MountCD(cd_dev, "Workbench") == 0) {
+                        kprint("[BOOT] Workbench: mounted.\n");
                     } else {
                         kprint("[BOOT] ISO 9660 mount failed.\n");
                     }
@@ -433,12 +433,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
     }
 
-    /* Draw the Workbench-style desktop */
-    if (g_fb.valid) {
-        kprint("[BOOT] Drawing desktop...\n");
-        Desktop_Draw();
-        kprint("[BOOT] Desktop rendered.\n");
-    }
+    /* Note: Desktop is NOT drawn here - it starts via LoadWB from Startup-Sequence */
 
     /* Set up interrupts — IDT must be loaded before STI */
     kprint("[BOOT] Initialising IDT...\n");
@@ -469,8 +464,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         PIC_UnmaskIRQ(1);
         kprint("[BOOT] PS/2 keyboard active.\n");
 
+        kprint("[BOOT] Setting up Workbench assigns...\n");
+        VFS_SetupWorkbenchAssigns();
+
         kprint("[BOOT] Opening shell window...\n");
         ShellWin_Init();
+
+        kprint("[BOOT] Running Startup-Sequence...\n");
+        ShellWin_RunStartupSequence();
 
         kprint("[BOOT] Detecting vmmouse...\n");
         VMMouse_Init();
