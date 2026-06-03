@@ -278,7 +278,34 @@ for src in \
     "${REPO_ROOT}/kernel/dos/ext4.c" \
     "${REPO_ROOT}/kernel/dos/iso9660.c" \
     "${REPO_ROOT}/kernel/drivers/ide.c" \
-    "${REPO_ROOT}/kernel/display/pointer_prefs.c"
+    "${REPO_ROOT}/kernel/display/pointer_prefs.c" \
+    "${REPO_ROOT}/kernel/shell/native_cmd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_version.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_mem.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_libs.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_clear.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_reboot.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_dir.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_makedir.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_delete.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_type.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_copy.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_rename.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_pwd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_echo.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_protect.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_attr.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_info.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_date.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_which.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_disks.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_fdisk.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_format.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_pointer.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_run.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_assign.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_execute.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_loadwb.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -440,6 +467,33 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/iso9660.o" \
     "${BUILD_DIR}/obj/ide.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
+    "${BUILD_DIR}/obj/native_cmd.o" \
+    "${BUILD_DIR}/obj/cmd_version.o" \
+    "${BUILD_DIR}/obj/cmd_mem.o" \
+    "${BUILD_DIR}/obj/cmd_libs.o" \
+    "${BUILD_DIR}/obj/cmd_clear.o" \
+    "${BUILD_DIR}/obj/cmd_reboot.o" \
+    "${BUILD_DIR}/obj/cmd_dir.o" \
+    "${BUILD_DIR}/obj/cmd_makedir.o" \
+    "${BUILD_DIR}/obj/cmd_delete.o" \
+    "${BUILD_DIR}/obj/cmd_type.o" \
+    "${BUILD_DIR}/obj/cmd_copy.o" \
+    "${BUILD_DIR}/obj/cmd_rename.o" \
+    "${BUILD_DIR}/obj/cmd_pwd.o" \
+    "${BUILD_DIR}/obj/cmd_echo.o" \
+    "${BUILD_DIR}/obj/cmd_protect.o" \
+    "${BUILD_DIR}/obj/cmd_attr.o" \
+    "${BUILD_DIR}/obj/cmd_info.o" \
+    "${BUILD_DIR}/obj/cmd_date.o" \
+    "${BUILD_DIR}/obj/cmd_which.o" \
+    "${BUILD_DIR}/obj/cmd_disks.o" \
+    "${BUILD_DIR}/obj/cmd_fdisk.o" \
+    "${BUILD_DIR}/obj/cmd_format.o" \
+    "${BUILD_DIR}/obj/cmd_pointer.o" \
+    "${BUILD_DIR}/obj/cmd_run.o" \
+    "${BUILD_DIR}/obj/cmd_assign.o" \
+    "${BUILD_DIR}/obj/cmd_execute.o" \
+    "${BUILD_DIR}/obj/cmd_loadwb.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"

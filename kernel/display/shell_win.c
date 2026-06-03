@@ -24,6 +24,7 @@
 #include "dos/partition.h"
 #include "dos/fat32.h"
 #include "exec/rom_modules.h"
+#include "shell/native_cmd.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -33,6 +34,7 @@
 typedef struct ShellInstance ShellInstance;
 static void inst_print(ShellInstance *s, const char *line);
 static void inst_dispatch(ShellInstance *s, const char *line);
+static NativeCmdCtx shell_make_ctx(ShellInstance *s);
 static ShellInstance *g_fdisk_shell = NULL;
 static void inst_print_wrapper(const char *line)
 {
@@ -382,29 +384,34 @@ static void inst_print(ShellInstance *s, const char *line)
 
 static void inst_cmd_help(ShellInstance *s)
 {
-    inst_print(s, "UAOS Shell v0.1 - built-in commands:");
+    inst_print(s, "UAOS Shell v0.1");
+    inst_print(s, "");
+    inst_print(s, "Shell built-in commands:");
     inst_print(s, "  help               show this help");
-    inst_print(s, "  version            show OS version");
+    inst_print(s, "  cd [path]          change/show directory");
+    inst_print(s, "  alias [name cmd]   create/list command aliases");
+    inst_print(s, "  unalias <name>     remove an alias");
+    inst_print(s, "  set [name val]     set/list local environment variable");
+    inst_print(s, "  unset <name>       remove local environment variable");
+    inst_print(s, "  path [dirs...]     show/set command search path");
+    inst_print(s, "");
+    inst_print(s, "C: binaries (type 'which <cmd>' to locate):");
+    inst_print(s, "  version            OS version info");
     inst_print(s, "  mem                memory information");
-    inst_print(s, "  libs               show loaded kernel libraries");
+    inst_print(s, "  libs               loaded kernel libraries");
     inst_print(s, "  clear              clear the shell window");
     inst_print(s, "  reboot             warm reboot");
     inst_print(s, "  dir [path]         list directory");
-    inst_print(s, "  cd [path]          change/show directory");
     inst_print(s, "  makedir <path>     create directory");
     inst_print(s, "  delete <path>      delete file or empty dir");
     inst_print(s, "  type <file>        print file contents");
     inst_print(s, "  copy <src> <dst>   copy file");
     inst_print(s, "  rename <from> <to> rename/move file");
     inst_print(s, "  pwd                print working directory");
-    inst_print(s, "  echo <text>         print text to shell");
-    inst_print(s, "  protect <flags> <path>  set file attributes (+r,-r,+h,-h)");
-    inst_print(s, "  attr <path>         show file attributes");
-    inst_print(s, "  info [device]       show mounted disks/volumes");
-    inst_print(s, "  alias [name cmd]   create/list command aliases");
-    inst_print(s, "  unalias <name>      remove an alias");
-    inst_print(s, "  set [name val]     set/list local environment variable");
-    inst_print(s, "  unset <name>        remove local environment variable");
+    inst_print(s, "  echo <text>        print text to shell");
+    inst_print(s, "  protect <f> <path> set file attributes (+r,-r,+h,-h)");
+    inst_print(s, "  attr <path>        show file attributes");
+    inst_print(s, "  info [device]      show mounted disks/volumes");
     inst_print(s, "  date               show current date/time");
     inst_print(s, "  which <cmd>        locate a command");
     inst_print(s, "  disks              list detected block devices");
@@ -414,7 +421,6 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
     inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
     inst_print(s, "  execute <script>   run a script file");
-    inst_print(s, "  path [dirs...]     show/set command search path");
     inst_print(s, "  loadwb             launch Workbench desktop");
 }
 
@@ -1135,62 +1141,9 @@ static void inst_cmd_date(ShellInstance *s, const char *arg)
 
 static void inst_cmd_which(ShellInstance *s, const char *arg)
 {
-    if (!arg || !*arg) { inst_print(s, "Usage: which <command>"); return; }
-
-    char cmd[32];
-    int i = 0;
-    while (*arg && *arg != ' ' && i < 31) { cmd[i++] = *arg++; }
-    cmd[i] = '\0';
-
-    /* Check if it's a built-in command */
-    const char *cmds[] = {
-        "help","version","mem","libs","clear","reboot","run",
-        "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","attr","alias","unalias","set","unset","rename","date","which","info",
-        "assign","execute","path",
-        NULL
-    };
-
-    for (int i = 0; cmds[i]; i++) {
-        if (seq(cmds[i], cmd)) {
-            char msg[MAX_LINE_LEN];
-            scopy(msg, cmd, MAX_LINE_LEN);
-            scat(msg, " is a built-in command", MAX_LINE_LEN);
-            inst_print(s, msg);
-            return;
-        }
-    }
-
-    /* Check if it's a file in current directory */
-    char path[64];
-    scopy(path, s->cwd, 64);
-    scat(path, cmd, 64);
-
-    VfsFile test;
-    if (VFS_Open(&test, path, VFS_READ)) {
-        char msg[MAX_LINE_LEN];
-        scopy(msg, path, MAX_LINE_LEN);
-        inst_print(s, msg);
-        VFS_Close(&test);
-        return;
-    }
-
-    /* Check if it's an alias */
-    for (int i = 0; i < s->alias_count; i++) {
-        if (seq(s->alias_names[i], cmd)) {
-            char msg[MAX_LINE_LEN];
-            scopy(msg, cmd, MAX_LINE_LEN);
-            scat(msg, " is aliased to: ", MAX_LINE_LEN);
-            scat(msg, s->alias_values[i], MAX_LINE_LEN);
-            inst_print(s, msg);
-            return;
-        }
-    }
-
-    char msg[MAX_LINE_LEN];
-    scopy(msg, cmd, MAX_LINE_LEN);
-    scat(msg, " not found", MAX_LINE_LEN);
-    inst_print(s, msg);
+    /* Delegate to the native C:which binary */
+    NativeCmdCtx nctx = shell_make_ctx(s);
+    NativeCmd_Run("which", &nctx, arg ? arg : "");
 }
 
 static void inst_cmd_assign(ShellInstance *s, const char *arg)
@@ -1205,7 +1158,7 @@ static void inst_cmd_assign(ShellInstance *s, const char *arg)
             const char *p = buf;
             char line[64];
             int li = 0;
-            while (*p && li < sizeof(line) - 1) {
+            while (*p && li < (int)sizeof(line) - 1) {
                 if (*p == '\n') {
                     line[li] = '\0';
                     if (li > 0) inst_print(s, line);
@@ -2174,6 +2127,94 @@ static int parse_redirects(ShellInstance *s, const char *line,
 }
 
 /* =========================================================================
+ * NativeCmdCtx callbacks — bridge between native commands and ShellInstance
+ * ========================================================================= */
+
+/* Activate fdisk interactive mode on this shell instance */
+static void shell_set_fdisk_mode(void *shell_extra, struct BlockDev *dev)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->fdisk_mode = 1;
+    s->fdisk_dev  = dev;
+    memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
+
+    char msg[MAX_LINE_LEN];
+    if (partition_read(dev, &s->fdisk_pt) == 0) {
+        scopy(msg, "Reading partition table from ", MAX_LINE_LEN);
+        scat(msg, dev->name, MAX_LINE_LEN);
+        inst_print(s, msg);
+    } else {
+        scopy(msg, "No valid partition table on ", MAX_LINE_LEN);
+        scat(msg, dev->name, MAX_LINE_LEN);
+        inst_print(s, msg);
+        inst_print(s, "Use 'x' to create a new partition table.");
+    }
+    inst_print(s, "");
+    inst_print(s, "Type 'm' for help, 'q' to quit.");
+    inst_print(s, "Command (m for help):");
+}
+
+/* Launch Workbench desktop */
+static void shell_loadwb(void)
+{
+    Desktop_MarkWorkbenchLoaded();
+    Desktop_Draw();
+    WM_Redraw();
+}
+
+/* Clear shell history buffer */
+static void shell_clear_history(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->hist_count  = 0;
+    s->hist_scroll = 0;
+    for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[s->index][i][0] = 0;
+}
+
+static void shell_dispatch_line(void *shell_extra, const char *line)
+{
+    inst_dispatch((ShellInstance *)shell_extra, line);
+}
+
+/* Check if name is a shell built-in (non-binary commands that stay in shell) */
+static int shell_is_builtin(const char *name)
+{
+    static const char *builtins[] = {
+        "help", "cd", "alias", "unalias", "set", "unset", "path", NULL
+    };
+    for (int i = 0; builtins[i]; i++) {
+        int j = 0;
+        const char *a = builtins[i], *b = name;
+        while (a[j] && b[j]) {
+            char ac = a[j]; if (ac >= 'A' && ac <= 'Z') ac += 32;
+            char bc = b[j]; if (bc >= 'A' && bc <= 'Z') bc += 32;
+            if (ac != bc) goto next;
+            j++;
+        }
+        if (!a[j] && !b[j]) return 1;
+        next:;
+    }
+    return 0;
+}
+
+/* Build a NativeCmdCtx for the given shell instance */
+static NativeCmdCtx shell_make_ctx(ShellInstance *s)
+{
+    NativeCmdCtx ctx;
+    ctx.shell          = s;
+    ctx.print          = (void (*)(void *, const char *))inst_print;
+    ctx.cwd            = s->cwd;
+    ctx.path           = s->path;
+    ctx.shell_extra    = s;
+    ctx.set_fdisk_mode = shell_set_fdisk_mode;
+    ctx.loadwb         = shell_loadwb;
+    ctx.clear_history  = shell_clear_history;
+    ctx.is_builtin     = shell_is_builtin;
+    ctx.dispatch_line  = shell_dispatch_line;
+    return ctx;
+}
+
+/* =========================================================================
  * Dispatch
  * ========================================================================= */
 
@@ -2203,16 +2244,14 @@ static void run_cmd(ShellInstance *s, const char *line)
         }
     }
 
-    const char *cmds[] = {
-        "help","version","mem","libs","clear","reboot","run",
-        "dir","cd","makedir","delete","type","copy","pwd","echo","pointer",
-        "protect","attr","alias","unalias","set","unset","rename","date","which","disks","fdisk","format","info","loadwb",
-        "assign","execute","path",
+    /* ---- Shell built-in commands (not discrete C: binaries) ---- */
+    const char *builtins[] = {
+        "help", "cd", "alias", "unalias", "set", "unset", "path",
         NULL
     };
 
-    for (int i = 0; cmds[i]; i++) {
-        const char *c = cmds[i];
+    for (int i = 0; builtins[i]; i++) {
+        const char *c = builtins[i];
         int cl = slen(c);
         if (!cmd_match(cmd_to_run, c, cl)) continue;
 
@@ -2220,48 +2259,28 @@ static void run_cmd(ShellInstance *s, const char *line)
         while (*args == ' ') args++;
 
         if (i==0) inst_cmd_help(s);
-        else if (i==1) inst_cmd_version(s);
-        else if (i==2) inst_cmd_mem(s);
-        else if (i==3) inst_cmd_libs(s);
-        else if (i==4) inst_cmd_clear(s);
-        else if (i==5) inst_cmd_reboot(s);
-        else if (i==6) { UAOS_Emu_SetCwd(s->cwd); UAOS_Emu_RunByName(args, s, (UAOS_PrintFn)inst_print); }
-        else if (i==7) inst_cmd_dir(s, args);
-        else if (i==8) inst_cmd_cd(s, args);
-        else if (i==9) inst_cmd_makedir(s, args);
-        else if (i==10) inst_cmd_delete(s, args);
-        else if (i==11) inst_cmd_type(s, args);
-        else if (i==12) inst_cmd_copy(s, args);
-        else if (i==13) inst_print(s, s->cwd);
-        else if (i==14) inst_print(s, *args ? args : "");
-        else if (i==15) inst_cmd_pointer(s);
-        else if (i==16) inst_cmd_protect(s, args);
-        else if (i==17) inst_cmd_attr(s, args);
-        else if (i==18) inst_cmd_alias(s, args);
-        else if (i==19) inst_cmd_unalias(s, args);
-        else if (i==20) inst_cmd_set(s, args);
-        else if (i==21) inst_cmd_unset(s, args);
-        else if (i==22) inst_cmd_rename(s, args);
-        else if (i==23) inst_cmd_date(s, args);
-        else if (i==24) inst_cmd_which(s, args);
-        else if (i==25) inst_cmd_disks(s, args);
-        else if (i==26) inst_cmd_fdisk(s, args);
-        else if (i==27) inst_cmd_format(s, args);
-        else if (i==28) inst_cmd_info(s, args);
-        else if (i==29) {
-            inst_print(s, "LoadWB — launching Workbench desktop...");
-            Desktop_MarkWorkbenchLoaded();
-            Desktop_Draw();
-            WM_Redraw();  /* Ensure full refresh with desktop */
-        }
-        else if (i==30) inst_cmd_assign(s, args);
-        else if (i==31) inst_cmd_execute(s, args);
-        else if (i==32) inst_cmd_path(s, args);
+        else if (i==1) inst_cmd_cd(s, args);
+        else if (i==2) inst_cmd_alias(s, args);
+        else if (i==3) inst_cmd_unalias(s, args);
+        else if (i==4) inst_cmd_set(s, args);
+        else if (i==5) inst_cmd_unset(s, args);
+        else if (i==6) inst_cmd_path(s, args);
         return;
     }
 
-    /* Not a built-in - search through PATH (reuses first_word from alias check) */
-    /* Parse path and search each directory */
+    /* ---- Native binary commands (found in C:, dispatched directly) ---- */
+    /* Build context once for any native dispatch below */
+    NativeCmdCtx nctx = shell_make_ctx(s);
+
+    /* Check native registry by name first (avoids a VFS lookup for C: commands) */
+    if (NativeCmd_Exists(first_word)) {
+        const char *args = cmd_to_run + slen(first_word);
+        while (*args == ' ') args++;
+        NativeCmd_Run(first_word, &nctx, args);
+        return;
+    }
+
+    /* ---- PATH search: look for the command in each PATH directory ---- */
     char path_buf[256];
     scopy(path_buf, s->path, 256);
     char *path_p = path_buf;
@@ -2280,23 +2299,23 @@ static void run_cmd(ShellInstance *s, const char *line)
         entry[ei] = '\0';
 
         if (ei > 0) {
-            /* Build full path: entry + "/" + command */
+            /* Build full path: entry + first_word */
             char full_path[128];
             scopy(full_path, entry, 128);
-            /* Add trailing : if not present */
-            if (ei > 0 && entry[ei-1] != ':' && entry[ei-1] != '/') {
+            if (ei > 0 && entry[ei-1] != ':' && entry[ei-1] != '/')
                 scat(full_path, "/", 128);
-            }
             scat(full_path, first_word, 128);
 
-            /* Try to open the file */
             VfsFile test;
             if (VFS_Open(&test, full_path, VFS_READ)) {
                 VFS_Close(&test);
-                /* Found! Execute as a script */
-                inst_print(s, "Found in PATH:");
-                inst_print(s, full_path);
-                /* For now, just show we found it. Later: execute it */
+                /* Found in PATH — check native registry first */
+                const char *args = cmd_to_run + slen(first_word);
+                while (*args == ' ') args++;
+                if (NativeCmd_Run(first_word, &nctx, args) == 0)
+                    return;
+                /* Not a native command — execute as a script */
+                inst_cmd_execute(s, full_path);
                 return;
             }
         }
