@@ -417,23 +417,45 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             if (str_eq(name, "Calculator")) CalcWin_Open();
             else if (str_eq(name, "Pointer")) PointerPrefs_Show();
         } else if (e && e[icon].name && e[icon].type[0] == 'D') {
-            /* Build child path to match k_path_table keys:
-             *   "UAOS:"        + "/" + "C"         -> "UAOS:/C"
-             *   "RAM Disk"     + ":/" + "T"         -> "RAM Disk:/T"
-             *   "UAOS:/Prefs"  + "/" + "Env-Archive" -> "UAOS:/Prefs/Env-Archive"
-             * Rule: if volume ends in ':', append '/'; else append ":/". */
-            char child_path[64];
-            int vi = 0;
-            while (vi < 63 && b->volume[vi]) { child_path[vi] = b->volume[vi]; vi++; }
-            int last = (vi > 0) ? b->volume[vi - 1] : 0;
-            if (last != ':' && last != '/') {
-                /* Plain name like "RAM Disk" — add ":/" separator */
-                if (vi < 63) child_path[vi++] = ':';
-            }
-            if (vi < 63) child_path[vi++] = '/';
+            /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS) */
             const char *nm = e[icon].name;
-            while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
-            child_path[vi] = '\0';
+            int is_top_level_assign = 0;
+            if (str_eq(nm, "C") || str_eq(nm, "DEVS") || str_eq(nm, "L") || 
+                str_eq(nm, "LIBS") || str_eq(nm, "S") || str_eq(nm, "SYS")) {
+                is_top_level_assign = 1;
+            }
+            
+            char child_path[64];
+            if (is_top_level_assign) {
+                /* For top-level assigns, construct "Workbench:ASSIGN" directly */
+                int vi = 0;
+                /* Copy base volume up to colon (e.g., "Workbench:") */
+                while (vi < 63 && b->volume[vi] && b->volume[vi] != ':') { 
+                    child_path[vi] = b->volume[vi]; vi++; 
+                }
+                if (vi < 63 && b->volume[vi] == ':') {
+                    child_path[vi++] = ':';
+                }
+                /* Add assign name */
+                while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
+                child_path[vi] = '\0';
+            } else {
+                /* Build child path to match k_path_table keys:
+                 *   "UAOS:"        + "/" + "C"         -> "UAOS:/C"
+                 *   "RAM Disk"     + ":/" + "T"         -> "RAM Disk:/T"
+                 *   "UAOS:/Prefs"  + "/" + "Env-Archive" -> "UAOS:/Prefs/Env-Archive"
+                 * Rule: if volume ends in ':', append '/'; else append ":/". */
+                int vi = 0;
+                while (vi < 63 && b->volume[vi]) { child_path[vi] = b->volume[vi]; vi++; }
+                int last = (vi > 0) ? b->volume[vi - 1] : 0;
+                if (last != ':' && last != '/') {
+                    /* Plain name like "RAM Disk" — add ":/" separator */
+                    if (vi < 63) child_path[vi++] = ':';
+                }
+                if (vi < 63) child_path[vi++] = '/';
+                while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
+                child_path[vi] = '\0';
+            }
             FileBrowser_Open(child_path);
         }
     } else {
@@ -575,7 +597,7 @@ static const ClickShim k_click_shims[MAX_BROWSERS] = {
 
 void FileBrowser_Open(const char *volume)
 {
-    /* Find existing browser for this volume */
+    /* Find existing browser for this exact volume path */
     for (int i = 0; i < g_n_browsers; i++) {
         if (str_eq(g_browsers[i].volume, volume)) {
             if (g_browsers[i].wm_handle >= 0 &&

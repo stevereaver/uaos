@@ -64,11 +64,12 @@ info "Step 1: Creating build staging directories"
 
 mkdir -p "${ISO_STAGING}/boot/grub"
 mkdir -p "${ISO_STAGING}/boot/uaos"
-mkdir -p "${ISO_STAGING}/sys-root/C"
-mkdir -p "${ISO_STAGING}/sys-root/DEVS"
-mkdir -p "${ISO_STAGING}/sys-root/L"
-mkdir -p "${ISO_STAGING}/sys-root/S"
-mkdir -p "${ISO_STAGING}/sys-root/SYS"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/C"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/DEVS"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/L"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/LIBS"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/S"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/SYS"
 
 ok "Staging directories created at ${ISO_STAGING}"
 
@@ -521,14 +522,10 @@ fi
 # Step 2 — Package sys-root directory layout into the ISO staging area
 # -------------------------------------------------------------------------
 
-info "Step 2: Packaging sys-root layout"
+info "Step 2: Creating empty sys-root layout"
 
-if [[ -d "${SYS_ROOT}" ]]; then
-    cp -r "${SYS_ROOT}/." "${ISO_STAGING}/sys-root/"
-    ok "sys-root copied"
-else
-    warn "sys-root not found at ${SYS_ROOT} — using empty skeleton"
-fi
+# sys-root is now built dynamically in Step 7, so we just create the directory structure
+ok "sys-root directory structure created"
 
 # -------------------------------------------------------------------------
 # Step 2b — Generate real UAOS NATIVE binaries for C: commands
@@ -541,7 +538,7 @@ fi
 
 info "Step 2b: Generating UAOS NATIVE binaries for C:"
 
-C_STAGING="${ISO_STAGING}/sys-root/C"
+C_STAGING="${ISO_STAGING}/SYS_ROOT/C"
 GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
@@ -625,34 +622,54 @@ dd if=/dev/zero                         \
 ok "Mock sysroot image created (1 MB placeholder)"
 
 # -------------------------------------------------------------------------
-# Step 7 — Create S/Startup-Sequence stub
+# Step 7 — Copy system files to dynamic sys-root
 # -------------------------------------------------------------------------
 
-info "Step 7: Creating S/Startup-Sequence stub"
+info "Step 7: Building dynamic sys-root from system files"
 
-cat > "${ISO_STAGING}/sys-root/S/Startup-Sequence" <<'STARTUP'
-; Ultimate Amiga OS — Startup-Sequence
-; This script is executed automatically at boot for live Workbench environment
+# Copy Startup-Sequence from the system directory
+if [[ -f "${REPO_ROOT}/system/Startup-Sequence" ]]; then
+    cp "${REPO_ROOT}/system/Startup-Sequence" "${ISO_STAGING}/SYS_ROOT/S/Startup-Sequence"
+    ok "  Copied: system/Startup-Sequence -> sys-root/S/Startup-Sequence"
+else
+    fatal "  Startup-Sequence not found at ${REPO_ROOT}/system/Startup-Sequence"
+fi
 
-; Welcome message
-echo "Ultimate Amiga OS - Live Workbench Environment"
-echo ""
+# Copy any additional system files if they exist
+SYSTEM_DIR="${REPO_ROOT}/system"
+if [[ -d "${SYSTEM_DIR}" ]]; then
+    # Copy any shell scripts to C:
+    if [[ -d "${SYSTEM_DIR}/C" ]]; then
+        cp -r "${SYSTEM_DIR}/C/"* "${ISO_STAGING}/SYS_ROOT/C/" 2>/dev/null || true
+        ok "  Copied: system/C/ -> sys-root/C/"
+    fi
+    
+    # Copy any libraries to LIBS:
+    if [[ -d "${SYSTEM_DIR}/LIBS" ]]; then
+        cp -r "${SYSTEM_DIR}/LIBS/"* "${ISO_STAGING}/SYS_ROOT/LIBS/" 2>/dev/null || true
+        ok "  Copied: system/LIBS/ -> sys-root/LIBS/"
+    fi
+    
+    # Copy any devices to DEVS:
+    if [[ -d "${SYSTEM_DIR}/DEVS" ]]; then
+        cp -r "${SYSTEM_DIR}/DEVS/"* "${ISO_STAGING}/SYS_ROOT/DEVS/" 2>/dev/null || true
+        ok "  Copied: system/DEVS/ -> sys-root/DEVS/"
+    fi
+    
+    # Copy any L: files
+    if [[ -d "${SYSTEM_DIR}/L" ]]; then
+        cp -r "${SYSTEM_DIR}/L/"* "${ISO_STAGING}/SYS_ROOT/L/" 2>/dev/null || true
+        ok "  Copied: system/L/ -> sys-root/L/"
+    fi
+    
+    # Copy any SYS files
+    if [[ -d "${SYSTEM_DIR}/SYS" ]]; then
+        cp -r "${SYSTEM_DIR}/SYS/"* "${ISO_STAGING}/SYS_ROOT/SYS/" 2>/dev/null || true
+        ok "  Copied: system/SYS/ -> sys-root/SYS/"
+    fi
+fi
 
-; Assigns are automatically set up by the kernel:
-; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
-; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
-
-; Show current assigns
-echo "Current assigns:"
-assign
-
-; Load Workbench desktop
-echo ""
-echo "Starting Workbench..."
-LoadWB
-STARTUP
-
-ok "Startup-Sequence written"
+ok "Dynamic sys-root populated from system files"
 
 # -------------------------------------------------------------------------
 # Step 8 — Validate staging directory structure
@@ -665,7 +682,7 @@ REQUIRED_FILES=(
     "boot/uaos-kernel.bin"
     "boot/uaos-sysroot.img"
     "boot/aros_kickstart.conf"
-    "sys-root/S/Startup-Sequence"
+    "SYS_ROOT/S/Startup-Sequence"
 )
 
 MISSING=0
