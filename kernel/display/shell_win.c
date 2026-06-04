@@ -2624,6 +2624,11 @@ static void inst_handle_key(ShellInstance *s, char c)
             s->input_len = 0;
             s->input_cur = 0;
             s->input_buf[0] = 0;
+            /* Commands may open/raise windows (e.g. Calculator, LoadWB).
+             * Do a full WM redraw to avoid shell direct-draw overwriting
+             * other windows' pixels. */
+            WM_Redraw();
+            return;
         }
     } else if (c == '\b') {
         s->cmd_hist_nav = 0;

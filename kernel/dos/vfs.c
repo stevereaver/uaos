@@ -170,6 +170,7 @@ void VFS_SetupWorkbenchAssigns(void)
     if (VFS_AddAssign("DEVS", "Workbench:DEVS") == 0) kprint("[VFS]  DEVS: -> Workbench:DEVS\n");
     if (VFS_AddAssign("LIBS", "Workbench:LIBS") == 0) kprint("[VFS]  LIBS: -> Workbench:LIBS\n");
     if (VFS_AddAssign("SYS", "Workbench:SYS") == 0) kprint("[VFS]  SYS: -> Workbench:SYS\n");
+    if (VFS_AddAssign("Tools", "Workbench:Tools") == 0) kprint("[VFS]  Tools: -> Workbench:Tools\n");
 }
 
 /* =========================================================================

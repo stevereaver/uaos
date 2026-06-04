@@ -74,91 +74,10 @@ static int parent_path(const char *vol, char *dst, int max)
 }
 
 /* =========================================================================
- * Static file entries per volume
+ * File entry structure and VFS integration
  * ========================================================================= */
 
 typedef struct { const char *name; const char *type; } FileEntry;
-
-static const FileEntry k_ramdisk_files[] = {
-    { "T",          "DIR"  },
-    { "CLIPS",      "DIR"  },
-    { "ENV",        "DIR"  },
-    { NULL, NULL }
-};
-
-static const FileEntry k_uaos_files[] = {
-    { "C",          "DIR"  },
-    { "S",          "DIR"  },
-    { "Libs",       "DIR"  },
-    { "Devs",       "DIR"  },
-    { "Prefs",      "DIR"  },
-    { "System",     "DIR"  },
-    { "Utilities",  "DIR"  },
-    { "Shell",      "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_c_files[] = {
-    { "Dir",        "PROG" },
-    { "List",       "PROG" },
-    { "Copy",       "PROG" },
-    { "Delete",     "PROG" },
-    { "Execute",    "PROG" },
-    { "Run",        "PROG" },
-    { "Stack",      "PROG" },
-    { "Type",       "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_s_files[] = {
-    { "Startup-Sequence", "PROG" },
-    { "User-Startup",     "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_libs_files[] = {
-    { "icon.library",     "PROG" },
-    { "intuition.library","PROG" },
-    { "dos.library",      "PROG" },
-    { "exec.library",     "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_devs_files[] = {
-    { "serial.device",    "PROG" },
-    { "keyboard.device",  "PROG" },
-    { "timer.device",     "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_prefs_files[] = {
-    { "Env-Archive",  "DIR"  },
-    { "Palette",      "PROG" },
-    { "Pointer",      "PROG" },
-    { "ScreenMode",   "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_system_files[] = {
-    { "Format",       "PROG" },
-    { "NoFastMem",    "PROG" },
-    { "RexxMast",     "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_utilities_files[] = {
-    { "Calculator",   "PROG" },
-    { "Clock",        "PROG" },
-    { "MultiView",    "PROG" },
-    { "Pointer",      "PROG" },
-    { NULL, NULL }
-};
-
-static const FileEntry k_ramdisk_t_files[]     = { { NULL, NULL } };
-static const FileEntry k_ramdisk_clips_files[] = { { NULL, NULL } };
-static const FileEntry k_ramdisk_env_files[]   = { { NULL, NULL } };
-
-static const FileEntry k_prefs_env_files[]     = { { NULL, NULL } };
 
 /* Placeholder for partition volumes until FAT32_ReadDir is implemented */
 static const FileEntry k_partition_empty_files[] = { { NULL, NULL } };
@@ -172,32 +91,11 @@ static char      g_vfs_names[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES][16];
 static char      g_vfs_types[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES][8];
 static int       g_vfs_buf_idx = 0;
 
-typedef struct { const char *path; const FileEntry *entries; } PathEntry;
-
-static const PathEntry k_path_table[] = {
-    { "RAM Disk",         k_ramdisk_files       },
-    { "UAOS:",            k_uaos_files          },
-    { "UAOS:/C",          k_c_files             },
-    { "UAOS:/S",          k_s_files             },
-    { "UAOS:/Libs",       k_libs_files          },
-    { "UAOS:/Devs",       k_devs_files          },
-    { "UAOS:/Prefs",      k_prefs_files         },
-    { "UAOS:/System",     k_system_files        },
-    { "UAOS:/Utilities",  k_utilities_files     },
-    { "RAM Disk:/T",      k_ramdisk_t_files     },
-    { "RAM Disk:/CLIPS",  k_ramdisk_clips_files },
-    { "RAM Disk:/ENV",    k_ramdisk_env_files   },
-    { "UAOS:/Prefs/Env-Archive", k_prefs_env_files },
-    { NULL, NULL }
-};
+/* Dynamic entry buffers for VFS-mounted volumes.
+ * Ring of 8 slots so multiple browsers can coexist. */
 
 static const FileEntry *entries_for_path(const char *path)
 {
-    for (int i = 0; k_path_table[i].path; i++) {
-        if (str_eq(k_path_table[i].path, path))
-            return k_path_table[i].entries;
-    }
-
     /* Try VFS first — if the path resolves to a mounted volume, enumerate it */
     RamFsNode *child = VFS_OpenDir(path);
     if (child) {
@@ -246,7 +144,7 @@ static const FileEntry *entries_for_path(const char *path)
         return k_partition_empty_files;
     }
 
-    return k_uaos_files;  /* fallback */
+    return NULL;  /* no hardcoded fallback - use real filesystem only */
 }
 
 /* =========================================================================
@@ -408,7 +306,16 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
         b->last_click_icon = -1;
         const FileEntry *e = b->entries;
         if (e && e[icon].name && e[icon].type[0] == 'P') {
-            /* Launch known applications by name */
+            /* Launch known applications by name (PROG type) */
+            const char *nm = e[icon].name;
+            int ni = 0;
+            char name[32];
+            while (ni < 31 && nm[ni]) { name[ni] = nm[ni]; ni++; }
+            name[ni] = '\0';
+            if (str_eq(name, "Calculator")) CalcWin_Open();
+            else if (str_eq(name, "Pointer")) PointerPrefs_Show();
+        } else if (e && e[icon].name && e[icon].type[0] == 'F') {
+            /* Launch known applications by name (FILE type - VFS files) */
             const char *nm = e[icon].name;
             int ni = 0;
             char name[32];
@@ -417,11 +324,12 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             if (str_eq(name, "Calculator")) CalcWin_Open();
             else if (str_eq(name, "Pointer")) PointerPrefs_Show();
         } else if (e && e[icon].name && e[icon].type[0] == 'D') {
-            /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS) */
+            /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS, Tools) */
             const char *nm = e[icon].name;
             int is_top_level_assign = 0;
             if (str_eq(nm, "C") || str_eq(nm, "DEVS") || str_eq(nm, "L") || 
-                str_eq(nm, "LIBS") || str_eq(nm, "S") || str_eq(nm, "SYS")) {
+                str_eq(nm, "LIBS") || str_eq(nm, "S") || str_eq(nm, "SYS") ||
+                str_eq(nm, "Tools")) {
                 is_top_level_assign = 1;
             }
             

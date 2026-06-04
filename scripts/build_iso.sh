@@ -70,6 +70,7 @@ mkdir -p "${ISO_STAGING}/SYS_ROOT/L"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/LIBS"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/S"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/SYS"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Tools"
 
 ok "Staging directories created at ${ISO_STAGING}"
 
@@ -318,7 +319,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_run.c" \
     "${REPO_ROOT}/kernel/shell/cmd_assign.c" \
     "${REPO_ROOT}/kernel/shell/cmd_execute.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_loadwb.c"
+    "${REPO_ROOT}/kernel/shell/cmd_loadwb.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_calc.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -507,6 +509,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_assign.o" \
     "${BUILD_DIR}/obj/cmd_execute.o" \
     "${BUILD_DIR}/obj/cmd_loadwb.o" \
+    "${BUILD_DIR}/obj/cmd_calc.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -547,6 +550,12 @@ for cmd in version mem libs clear reboot dir makedir delete type copy rename \
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done
+
+# Generate Calculator binary in Tools:
+info "Step 2d: Generating Calculator binary for Tools:"
+TOOLS_STAGING="${ISO_STAGING}/SYS_ROOT/Tools"
+"${GEN_NATIVE}" "calculator" "${TOOLS_STAGING}/Calculator"
+ok "  Generated: Tools:Calculator  (32-byte NATIVE binary)"
 
 # -------------------------------------------------------------------------
 # Step 2c — Wrap any Amiga Hunk binaries in emulation/binaries/ with UAOS header
@@ -666,6 +675,12 @@ if [[ -d "${SYSTEM_DIR}" ]]; then
     if [[ -d "${SYSTEM_DIR}/SYS" ]]; then
         cp -r "${SYSTEM_DIR}/SYS/"* "${ISO_STAGING}/SYS_ROOT/SYS/" 2>/dev/null || true
         ok "  Copied: system/SYS/ -> sys-root/SYS/"
+    fi
+    
+    # Copy any Tools files
+    if [[ -d "${SYSTEM_DIR}/Tools" ]]; then
+        cp -r "${SYSTEM_DIR}/Tools/"* "${ISO_STAGING}/SYS_ROOT/Tools/" 2>/dev/null || true
+        ok "  Copied: system/Tools/ -> sys-root/Tools/"
     fi
 fi
 
