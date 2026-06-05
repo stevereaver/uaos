@@ -291,7 +291,7 @@ static IconState *get_icons(int *count)
         /* Build the volume string (same format that will be stored in icons[n].volume) */
         const char *vol_str;
         if (str_eq(mname, "RAM")) {
-            vol_str = "RAM";
+            vol_str = "RAM:";
         } else {
             int li = 0;
             while (mname[li] && li < 30) {
@@ -322,6 +322,7 @@ static IconState *get_icons(int *count)
         icons[n].is_ndos = 0;
         icons[n].last_tick   = old_tick;
         icons[n].click_count = old_clicks;
+        DT_LOG("[DT] VFS icon "); DT_LOG_DEC(n); DT_LOG(" mname='"); DT_LOG(mname); DT_LOG("' vol_str='"); DT_LOG(vol_str); DT_LOG("'\n");
         n++;
     }
 
@@ -375,6 +376,7 @@ static IconState *get_icons(int *count)
             }
             icons[n].last_tick   = old_tick;
             icons[n].click_count = old_clicks;
+            DT_LOG("[DT] Part icon "); DT_LOG_DEC(n); DT_LOG(" dev_name='"); DT_LOG(dev_name); DT_LOG("' label='"); DT_LOG(icons[n].label); DT_LOG("'\n");
             n++;
         }
         dev = dev->next;
@@ -538,7 +540,7 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
 
             uint32_t now = g_tick;
             if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
-                DT_LOG("[DT] Double-click, calling FileBrowser_Open\n");
+                DT_LOG("[DT] Double-click icon "); DT_LOG_DEC(i); DT_LOG(" vol='"); DT_LOG(ic->volume); DT_LOG("'\n");
                 ic->click_count = 0;
                 FileBrowser_Open(ic->volume);
             } else {

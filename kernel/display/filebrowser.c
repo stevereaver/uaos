@@ -33,7 +33,7 @@
     static int dbg_line_count = 0;
     static int dbg_scroll = 0;
 
-    static void dbg_add_line(const char *msg)
+    void dbg_add_line(const char *msg)
     {
         if (dbg_line_count < DBG_MAX_LINES) {
             int i = 0;
@@ -578,29 +578,117 @@ static const ClickShim k_click_shims[MAX_BROWSERS] = {
 
 void FileBrowser_Open(const char *volume)
 {
-    /* Debug: trace what we're trying to open */
-    FB_LOG("[FB] Opening: '"); FB_LOG(volume); FB_LOG("'\n");
-    char dbg_buf[64];
-    int i = 0;
-    const char *prefix = "Opening: ";
-    while (i < 60 && prefix[i]) { dbg_buf[i] = prefix[i]; i++; }
-    int j = 0;
-    while (i < 60 && volume[j]) { dbg_buf[i++] = volume[j++]; }
-    dbg_buf[i] = '\0';
-    FB_LOG_SCREEN(dbg_buf);
+    /* Dump WM state */
+    FB_LOG_SCREEN("WM:");
+    for (int w = 0; w < 8; w++) {
+        if (WM_IsWindowActive(w)) {
+            char wmst[16];
+            wmst[0] = '0' + w;
+            wmst[1] = 'A';
+            wmst[2] = '\0';
+            FB_LOG_SCREEN(wmst);
+        }
+    }
+    /* Clear summary of all browser slots */
+    FB_LOG_SCREEN("SLOTS:");
+    for (int s = 0; s < g_n_browsers && s < MAX_BROWSERS; s++) {
+        char sum[32];
+        int si = 0;
+        sum[si++] = '0' + s;
+        sum[si++] = ':';
+        const char *sv = g_browsers[s].volume;
+        while (*sv && si < 20) sum[si++] = *sv++;
+        sum[si++] = 'h';
+        if (g_browsers[s].wm_handle < 0) sum[si++] = '-';
+        else sum[si++] = '0' + g_browsers[s].wm_handle;
+        /* Check if WM thinks this handle is active */
+        int wma = WM_IsWindowActive(g_browsers[s].wm_handle);
+        sum[si++] = wma ? 'A' : 'X';
+        sum[si] = '\0';
+        FB_LOG_SCREEN(sum);
+    }
     FB_LOG("[FB] Current browsers: "); FB_LOG_DEC(g_n_browsers); FB_LOG("\n");
 
     /* Find existing browser for this exact volume path */
-    for (int i = 0; i < g_n_browsers; i++) {
-        FB_LOG("[FB] Checking slot "); FB_LOG_DEC(i); FB_LOG(": '");
+    FB_LOG("[FB] Scanning "); FB_LOG_DEC(g_n_browsers); FB_LOG(" browsers for '"); FB_LOG(volume); FB_LOG("'\n");
+    char dbg2[64];
+    str_cp(dbg2, "Scanning ", 64);
+    int di = str_len(dbg2);
+    dbg2[di++] = '0' + g_n_browsers;
+    str_cp(&dbg2[di], " slots for ", 64-di);
+    di = str_len(dbg2);
+    const char *vp = volume;
+    while (*vp && di < 60) dbg2[di++] = *vp++;
+    dbg2[di] = '\0';
+    FB_LOG_SCREEN(dbg2);
+
+    /* Debug: show all slots */
+    int slots_at_start = g_n_browsers;
+    for (int k = 0; k < slots_at_start && k < MAX_BROWSERS; k++) {
+        char dslot[64];
+        str_cp(dslot, "All slot ", 64);
+        int dk = str_len(dslot);
+        dslot[dk++] = '0' + k;
+        dslot[dk++] = '=';
+        const char *bv = g_browsers[k].volume;
+        while (*bv && dk < 40) dslot[dk++] = *bv++;
+        dslot[dk++] = 'h';
+        int h = g_browsers[k].wm_handle;
+        if (h < 0) { dslot[dk++] = '-'; }
+        else { dslot[dk++] = '0' + h; }
+        dslot[dk] = '\0';
+        FB_LOG_SCREEN(dslot);
+    }
+    if (g_n_browsers != slots_at_start) {
+        char dbgc[64];
+        str_cp(dbgc, "COUNT CHANGED! was ", 64);
+        int dc = str_len(dbgc);
+        dbgc[dc++] = '0' + slots_at_start;
+        str_cp(&dbgc[dc], " now ", 64-dc);
+        dc = str_len(dbgc);
+        dbgc[dc++] = '0' + g_n_browsers;
+        dbgc[dc] = '\0';
+        FB_LOG_SCREEN(dbgc);
+    }
+
+    for (int i = 0; i < slots_at_start && i < MAX_BROWSERS; i++) {
+        FB_LOG("[FB] Slot "); FB_LOG_DEC(i); FB_LOG(": vol='");
         FB_LOG(g_browsers[i].volume); FB_LOG("' handle="); FB_LOG_DEC(g_browsers[i].wm_handle);
         FB_LOG(" active="); FB_LOG_DEC(WM_IsWindowActive(g_browsers[i].wm_handle));
+        FB_LOG(" compare="); FB_LOG_DEC(str_eq(g_browsers[i].volume, volume));
         FB_LOG("\n");
+        int match = str_eq(g_browsers[i].volume, volume);
+        char dbg3[64];
+        str_cp(dbg3, "Slot ", 64);
+        int dj = str_len(dbg3);
+        dbg3[dj++] = '0' + i;
+        dbg3[dj++] = '=';
+        const char *bv = g_browsers[i].volume;
+        while (*bv && dj < 40) dbg3[dj++] = *bv++;
+        dbg3[dj++] = 'h';
+        int h = g_browsers[i].wm_handle;
+        if (h < 0) { dbg3[dj++] = '-'; }
+        else { dbg3[dj++] = '0' + h; }
+        dbg3[dj++] = match ? '!' : '?';
+        dbg3[dj] = '\0';
+        FB_LOG_SCREEN(dbg3);
 
-        if (str_eq(g_browsers[i].volume, volume)) {
+        if (match) {
             FB_LOG("[FB] Match found at slot "); FB_LOG_DEC(i); FB_LOG("\n");
-            if (g_browsers[i].wm_handle >= 0 &&
-                WM_IsWindowActive(g_browsers[i].wm_handle)) {
+            int active = WM_IsWindowActive(g_browsers[i].wm_handle);
+            char dbgm[64];
+            str_cp(dbgm, "Match slot ", 64);
+            int dm = str_len(dbgm);
+            dbgm[dm++] = '0' + i;
+            dbgm[dm++] = ' ';
+            dbgm[dm++] = 'h';
+            if (g_browsers[i].wm_handle < 0) dbgm[dm++] = '-';
+            else dbgm[dm++] = '0' + g_browsers[i].wm_handle;
+            str_cp(&dbgm[dm], active ? " active" : " CLOSED", 64-dm);
+            dm = str_len(dbgm);
+            dbgm[dm] = '\0';
+            FB_LOG_SCREEN(dbgm);
+            if (g_browsers[i].wm_handle >= 0 && active) {
                 /* Already open — raise to front and focus */
                 FB_LOG_SCREEN("MATCH: raising window");
                 FB_LOG("[FB] Window active, raising\n");
@@ -620,10 +708,20 @@ void FileBrowser_Open(const char *volume)
 
             int wx = 80 + i * 120;
             int wy = 60 + i * 100;
-            b->wm_handle = WM_AddWindow(wx, wy, 320, 240, volume,
-                                        k_draw_shims[i], browser_key);
+            int reuse_handle = WM_AddWindow(wx, wy, 320, 240, volume,
+                                            k_draw_shims[i], browser_key);
+            /* CRITICAL FIX: Check if another browser slot already has this handle.
+             * This happens when that slot's window was closed, but it still
+             * has the stale handle value. Invalidate it to prevent duplicates. */
+            for (int check = 0; check < g_n_browsers; check++) {
+                if (check != i && g_browsers[check].wm_handle == reuse_handle) {
+                    g_browsers[check].wm_handle = -1;
+                }
+            }
+            b->wm_handle = reuse_handle;
             if (b->wm_handle < 0) return;
             WM_SetClickHandler(b->wm_handle, k_click_shims[i]);
+            WM_RaiseWindow(b->wm_handle);
             WM_Redraw();
             return;
         }
@@ -636,10 +734,32 @@ void FileBrowser_Open(const char *volume)
     }
     int idx = g_n_browsers++;
     FB_LOG("[FB] Allocated slot "); FB_LOG_DEC(idx); FB_LOG("\n");
-    FB_LOG_SCREEN("NEW slot allocated");
+    char dbga[64];
+    str_cp(dbga, "ALLOC slot ", 64);
+    int da = str_len(dbga);
+    dbga[da++] = '0' + idx;
+    str_cp(&dbga[da], " vol=", 64-da);
+    da = str_len(dbga);
+    const char *vp2 = volume;
+    while (*vp2 && da < 50) dbga[da++] = *vp2++;
+    str_cp(&dbga[da], " n=", 64-da);
+    da = str_len(dbga);
+    dbga[da++] = '0' + g_n_browsers;
+    dbga[da] = '\0';
+    FB_LOG_SCREEN(dbga);
 
     Browser *b = &g_browsers[idx];
+    b->wm_handle = -1;  /* Initialize to invalid - CRITICAL FIX */
     str_cp(b->volume, volume, 32);
+    char dbgc[64];
+    str_cp(dbgc, "AFTER slot ", 64);
+    int dc = str_len(dbgc);
+    dbgc[dc++] = '0' + idx;
+    dbgc[dc++] = '=';
+    const char *bv3 = b->volume;
+    while (*bv3 && dc < 40) dbgc[dc++] = *bv3++;
+    dbgc[dc] = '\0';
+    FB_LOG_SCREEN(dbgc);
     b->scroll           = 0;
     b->last_click_icon  = -1;
     b->last_click_tick  = 0;
@@ -654,13 +774,22 @@ void FileBrowser_Open(const char *volume)
     int wx = 80  + idx * 120;
     int wy = 60  + idx * 100;
 
-    b->wm_handle = WM_AddWindow(wx, wy, 320, 240, volume,
-                                k_draw_shims[idx], browser_key);
+    int new_handle = WM_AddWindow(wx, wy, 320, 240, volume,
+                                  k_draw_shims[idx], browser_key);
+    /* CRITICAL FIX: Check if another browser slot already has this handle.
+     * Invalidate stale handle to prevent duplicates. */
+    for (int check = 0; check < idx; check++) {
+        if (g_browsers[check].wm_handle == new_handle) {
+            g_browsers[check].wm_handle = -1;
+        }
+    }
+    b->wm_handle = new_handle;
     if (b->wm_handle < 0) {
         g_n_browsers--;  /* rollback */
         return;
     }
     WM_SetClickHandler(b->wm_handle, k_click_shims[idx]);
+    WM_RaiseWindow(b->wm_handle);
 
     WM_Redraw();
 }
