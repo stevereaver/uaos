@@ -362,9 +362,20 @@ RamFsNode *VFS_OpenDir(const char *path)
     if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return NULL;
 
     char vol_name[16];
-    if (!extract_vol(resolved_path, vol_name, 16)) return NULL;
+    int vl = extract_vol(resolved_path, vol_name, 16);
+    if (!vl) return NULL;
+
     RamFsVol *vol = find_vol(vol_name);
     if (!vol) return NULL;
+
+    /* Handle bare volume root like "Workbench:" */
+    const char *after = resolved_path + vl + 1; /* skip colon */
+    while (*after == '/') after++;
+    if (*after == '\0') {
+        /* Path is just the volume root */
+        return vol->root ? vol->root->first_child : NULL;
+    }
+
     RamFsNode *node = RamFS_Resolve(vol, resolved_path);
     if (!node || node->type != RAMFS_TYPE_DIR) return NULL;
     return node->first_child;

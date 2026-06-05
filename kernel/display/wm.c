@@ -7,6 +7,16 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Debug output */
+#define WM_DEBUG 1
+#if WM_DEBUG
+    #define WM_LOG(msg) do { extern void kprint(const char *); kprint(msg); } while(0)
+    #define WM_LOG_DEC(v) do { extern void kprintdec(uint32_t); kprintdec((uint32_t)(v)); } while(0)
+#else
+    #define WM_LOG(msg) do {} while(0)
+    #define WM_LOG_DEC(v) do {} while(0)
+#endif
+
 /* =========================================================================
  * Window registry and z-order
  * ========================================================================= */
@@ -526,11 +536,15 @@ void WM_MouseEvent(int mx, int my, int btn_left)
     g_btn_prev = btn_left;
 
     if (btn_pressed) {
+        WM_LOG("[WM] Mouse press at "); WM_LOG_DEC(mx); WM_LOG(","); WM_LOG_DEC(my); WM_LOG("\n");
         int wh = hit_test(mx, my);
         if (wh < 0) {
             /* Missed all windows — pass to desktop (icon hit-test) */
+            WM_LOG("[WM] Missed windows, sending to desktop\n");
             Desktop_MouseEvent(mx, my, 1);
+            return;
         }
+        WM_LOG("[WM] Hit window "); WM_LOG_DEC(wh); WM_LOG("\n");
         if (wh >= 0) {
             /* Close gadget takes priority */
             if (hit_close_gadget(wh, mx, my)) {
@@ -699,6 +713,18 @@ void WM_Redraw(void)
 int WM_GetFocus(void)
 {
     return g_focus;
+}
+
+void WM_RequestFocus(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    if (!g_wins[handle].active) return;
+    
+    int was_focused = (handle == g_focus);
+    g_focus = handle;
+    raise_window(handle);
+    if (!was_focused)
+        WM_Redraw();
 }
 
 void WM_CloseWindow(int handle)

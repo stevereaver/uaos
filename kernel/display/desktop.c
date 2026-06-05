@@ -4,7 +4,7 @@
  * framebuffer:
  *   - Menu bar (top, 20px high) with Workbench menus and clock
  *   - Desktop backdrop (grey stipple)
- *   - Disk icons (RAM Disk, UAOS: drive)
+ *   - Disk icons (VFS-mounted volumes + partition devices, discovered dynamically)
  *   - Status bar (bottom, 18px)
  *   - A boot/welcome window in the centre
  */
@@ -16,14 +16,31 @@
 #include "shell_win.h"
 #include "../irq/rtc.h"
 #include "../dos/blockdev.h"
+#include "../dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
+
+/* Debug output */
+#define DT_DEBUG 1
+#if DT_DEBUG
+    #define DT_LOG(msg) do { extern void kprint(const char *); kprint(msg); } while(0)
+    #define DT_LOG_DEC(v) do { extern void kprintdec(uint32_t); kprintdec((uint32_t)(v)); } while(0)
+#else
+    #define DT_LOG(msg) do {} while(0)
+    #define DT_LOG_DEC(v) do {} while(0)
+#endif
 
 static void scpy(char *dst, const char *src, int max)
 {
     int i = 0;
     while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
     dst[i] = '\0';
+}
+
+static int str_eq(const char *a, const char *b)
+{
+    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
+    return *a == *b;
 }
 
 /* =========================================================================
@@ -235,81 +252,138 @@ static const char *read_fat32_vol_label(BlockDev *dev)
     return label_buf;
 }
 
+/* Build the desktop icon list from real mounted volumes (VFS) and block devices.
+ * click_count / last_tick persist across calls by matching on volume name. */
 static IconState *get_icons(int *count)
 {
     static IconState icons[MAX_ICONS];
-    static char vol_labels[MAX_ICONS][16];
+    static char vol_labels[MAX_ICONS][32];
+    static char ndos_labels[MAX_ICONS][32];
     static int initialised = 0;
+
     if (!initialised) {
+        for (int i = 0; i < MAX_ICONS; i++) {
+            icons[i].volume = NULL;
+            icons[i].label  = NULL;
+            icons[i].is_ndos = 0;
+            icons[i].last_tick = 0;
+            icons[i].click_count = 0;
+        }
         initialised = 1;
-        /* Fixed icons */
-        icons[0].volume      = "RAM Disk";
-        icons[0].label       = "RAM Disk";
-        icons[0].is_ndos     = 0;
-        icons[0].last_tick   = 0;
-        icons[0].click_count = 0;
-        icons[1].volume      = "Workbench:";
-        icons[1].label       = "Workbench:";
-        icons[1].is_ndos     = 0;
-        icons[1].last_tick   = 0;
-        icons[1].click_count = 0;
     }
-    /* Recompute positions each call in case screen size changed */
+
+    /* Snapshot old click state so we can restore it after rebuilding */
+    IconState old_icons[MAX_ICONS];
+    for (int i = 0; i < MAX_ICONS; i++) old_icons[i] = icons[i];
+
     int W  = (int)g_fb.width;
     int ix = W - ICON_W - 16;
     int iy = MENUBAR_H + 16;
-    icons[0].x = ix;  icons[0].y = iy;
-    icons[1].x = ix;  icons[1].y = iy + ICON_H + 8;
 
-    int n = 2;
+    int n = 0;
 
-    /* Scan block devices for partition icons */
+    /* ── VFS-mounted volumes (RAM:, Workbench:, etc.) ── */
+    int mount_count = VFS_GetMountCount();
+    for (int mi = 0; mi < mount_count && n < MAX_ICONS; mi++) {
+        char mname[32];
+        if (!VFS_GetMountName(mi, mname, 32)) continue;
+
+        /* Build the volume string (same format that will be stored in icons[n].volume) */
+        const char *vol_str;
+        if (str_eq(mname, "RAM")) {
+            vol_str = "RAM";
+        } else {
+            int li = 0;
+            while (mname[li] && li < 30) {
+                vol_labels[n][li] = mname[li];
+                li++;
+            }
+            if (li < 31) vol_labels[n][li++] = ':';
+            vol_labels[n][li] = '\0';
+            vol_str = vol_labels[n];
+        }
+
+        /* Find previous icon with the same volume name to preserve clicks */
+        uint32_t old_tick = 0;
+        int old_clicks = 0;
+        for (int j = 0; j < MAX_ICONS; j++) {
+            if (old_icons[j].volume && str_eq(old_icons[j].volume, vol_str)) {
+                old_tick = old_icons[j].last_tick;
+                old_clicks = old_icons[j].click_count;
+                break;
+            }
+        }
+
+        /* Store icon data */
+        icons[n].volume = vol_str;
+        icons[n].label  = str_eq(mname, "RAM") ? "RAM Disk" : vol_str;
+        icons[n].x = ix;
+        icons[n].y = iy + n * (ICON_H + 8);
+        icons[n].is_ndos = 0;
+        icons[n].last_tick   = old_tick;
+        icons[n].click_count = old_clicks;
+        n++;
+    }
+
+    /* ── Partition devices ── */
     BlockDev *dev = BlockDev_GetList();
     while (dev && n < MAX_ICONS) {
-        if (dev->part_offset != 0) {  /* partition device */
+        if (dev->part_offset != 0) {
+            const char *dev_name = dev->display_name ? dev->display_name : dev->name;
+
+            /* Preserve click state */
+            uint32_t old_tick = 0;
+            int old_clicks = 0;
+            for (int j = 0; j < MAX_ICONS; j++) {
+                if (old_icons[j].volume && str_eq(old_icons[j].volume, dev_name)) {
+                    old_tick = old_icons[j].last_tick;
+                    old_clicks = old_icons[j].click_count;
+                    break;
+                }
+            }
+
             icons[n].x = ix;
             icons[n].y = iy + n * (ICON_H + 8);
-            icons[n].volume = dev->display_name ? dev->display_name : dev->name;
-            /* last_tick and click_count are NOT reset here — they must persist
-             * across Desktop_Draw / get_icons calls for double-click detection. */
+            icons[n].volume = dev_name;
 
-            /* Check formatted status (lazy, cached) */
             if (dev->formatted == 0) {
                 dev->formatted = BlockDev_CheckFormatted(dev) ? 1 : -1;
             }
             icons[n].is_ndos = (dev->formatted < 0);
 
             if (icons[n].is_ndos) {
-                static char ndos_labels[MAX_ICONS][16];
-                scpy(ndos_labels[n], "NDOS:", 16);
-                int nl = 0;
-                while (ndos_labels[n][nl]) nl++;
-                ndos_labels[n][nl++] = ' ';
-                const char *dn = dev->display_name ? dev->display_name : dev->name;
+                scpy(ndos_labels[n], "NDOS: ", 32);
+                int nl = 6;
                 int di = 0;
-                while (di < 8 && dn[di]) { ndos_labels[n][nl++] = dn[di++]; }
+                while (di < 8 && dev_name[di]) { ndos_labels[n][nl++] = dev_name[di++]; }
                 ndos_labels[n][nl] = '\0';
                 icons[n].label = ndos_labels[n];
             } else {
-                /* Try to read the real FAT32 volume label */
                 const char *vl = read_fat32_vol_label(dev);
                 if (vl) {
-                    scpy(vol_labels[n], vl, 16);
-                    /* Append colon like Amiga volume names */
+                    scpy(vol_labels[n], vl, 32);
                     int vli = 0;
-                    while (vol_labels[n][vli] && vli < 14) vli++;
-                    if (vli < 15) {
+                    while (vol_labels[n][vli] && vli < 30) vli++;
+                    if (vli < 31) {
                         vol_labels[n][vli++] = ':';
                         vol_labels[n][vli] = '\0';
                     }
                     icons[n].label = vol_labels[n];
                 } else {
-                    icons[n].label = dev->display_name ? dev->display_name : dev->name;
+                    icons[n].label = dev_name;
                 }
             }
+            icons[n].last_tick   = old_tick;
+            icons[n].click_count = old_clicks;
             n++;
         }
         dev = dev->next;
+    }
+
+    /* Clear any leftover slots */
+    for (int i = n; i < MAX_ICONS; i++) {
+        icons[i].volume = NULL;
+        icons[i].label  = NULL;
     }
 
     *count = n;
@@ -354,17 +428,11 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
             FB_PutPixel(x, y, WB_DARK_GREY);
     }
 
-    /* Repaint desktop overlays that sit on the backdrop */
-    int ix = W - ICON_W - 16;
-    int iy = MENUBAR_H + 16;
-    draw_disk_icon(ix, iy,              "RAM Disk", WB_ORANGE);
-    draw_disk_icon(ix, iy + ICON_H + 8, "UAOS:",    FB_RGB(0x44, 0x88, 0xFF));
-
-    /* Dynamic partition icons */
+    /* Repaint desktop icons — all icons come from get_icons (VFS + partitions) */
     {
         int n;
         IconState *icons = get_icons(&n);
-        for (int i = 2; i < n; i++) {
+        for (int i = 0; i < n; i++) {
             IconState *ic = &icons[i];
             uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
             draw_disk_icon(ic->x, ic->y, ic->label, colour);
@@ -389,18 +457,11 @@ void Desktop_Draw(void)
     draw_menubar(W);
     draw_statusbar(W, H);
 
-    /* Disk icons — top-right corner, stacked vertically */
-    int ix = W - ICON_W - 16;
-    int iy = MENUBAR_H + 16;
-    draw_disk_icon(ix, iy,               "RAM Disk",  WB_ORANGE);
-    draw_disk_icon(ix, iy + ICON_H + 8,  "Workbench:", WB_ORANGE);
-
-    /* Dynamic partition icons below fixed ones */
+    /* Disk icons — all come from get_icons (VFS-mounted volumes + partitions) */
     {
         int n;
-        (void)get_icons(&n);  /* forces layout computation */
         IconState *icons = get_icons(&n);
-        for (int i = 2; i < n; i++) {  /* Start at 2 (after RAM Disk and Workbench:) */
+        for (int i = 0; i < n; i++) {
             IconState *ic = &icons[i];
             uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
             draw_disk_icon(ic->x, ic->y, ic->label, colour);
@@ -465,16 +526,23 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
     int n;
     IconState *icons = get_icons(&n);
 
+    DT_LOG("[DT] Checking "); DT_LOG_DEC(n); DT_LOG(" icons for hit\n");
+
     for (int i = 0; i < n; i++) {
         IconState *ic = &icons[i];
         if (mx >= ic->x && mx < ic->x + ICON_W &&
             my >= ic->y && my < ic->y + ICON_H) {
 
+            DT_LOG("[DT] Icon "); DT_LOG_DEC(i); DT_LOG(" hit, volume='");
+            DT_LOG(ic->volume); DT_LOG("'\n");
+
             uint32_t now = g_tick;
             if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
+                DT_LOG("[DT] Double-click, calling FileBrowser_Open\n");
                 ic->click_count = 0;
                 FileBrowser_Open(ic->volume);
             } else {
+                DT_LOG("[DT] First click\n");
                 ic->click_count = 1;
                 ic->last_tick   = now;
             }

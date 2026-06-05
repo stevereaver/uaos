@@ -371,6 +371,11 @@ void CalcWin_Open(void)
         WM_Redraw();
         return;
     }
+    
+    /* If we have a handle but the window is no longer active, reset it */
+    if (g_wm_handle >= 0 && !WM_IsWindowActive(g_wm_handle)) {
+        g_wm_handle = -1;
+    }
 
     /* Reset state */
     g_disp[0]='0'; g_disp[1]='\0'; g_disp_len=1;
@@ -384,6 +389,11 @@ void CalcWin_Open(void)
 
     g_wm_handle = WM_AddWindow(wx, wy, WIN_W, WIN_H,
                                "Calc", calc_draw, calc_key);
+    if (g_wm_handle < 0) {
+        /* Failed to create window (likely too many windows open) */
+        g_wm_handle = -1;  /* Reset handle since we failed */
+        return;
+    }
     WM_SetClickHandler(g_wm_handle, calc_click);
     WM_Redraw();
 }

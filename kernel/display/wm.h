@@ -65,6 +65,9 @@ void WM_Redraw(void);
 /* Get the currently focused window handle (-1 if none) */
 int  WM_GetFocus(void);
 
+/* Request focus for a window (raises it and gives focus) */
+void WM_RequestFocus(int handle);
+
 /* Move a window to a new position and repaint */
 void WM_MoveWindow(int handle, int new_x, int new_y);
 

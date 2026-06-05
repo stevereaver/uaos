@@ -286,7 +286,8 @@ static void iso_traverse_dir(BlockDev *bdev, uint32_t dir_lba, uint32_t dir_size
 static int is_assign_dir(const char *name)
 {
     static const char *assigns[] = {
-        "c", "devs", "l", "libs", "s", "fonts", "t", "env", "clips", NULL
+        "c", "devs", "l", "libs", "s", "fonts", "t", "env", "clips",
+        "sys", "tools", "utilities", "prefs", "system", NULL
     };
     for (int i = 0; assigns[i]; i++) {
         const char *a = assigns[i];

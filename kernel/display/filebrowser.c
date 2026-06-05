@@ -20,6 +20,73 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Debug output - prints to screen for debugging */
+#define FB_DEBUG 1
+#if FB_DEBUG
+    #define FB_LOG(msg) do { extern void kprint(const char *); kprint(msg); } while(0)
+    #define FB_LOG_DEC(v) do { extern void kprintdec(uint32_t); kprintdec((uint32_t)(v)); } while(0)
+
+    /* On-screen debug output */
+    #define DBG_MAX_LINES 8
+    #define DBG_LINE_LEN 60
+    static char dbg_lines[DBG_MAX_LINES][DBG_LINE_LEN];
+    static int dbg_line_count = 0;
+    static int dbg_scroll = 0;
+
+    static void dbg_add_line(const char *msg)
+    {
+        if (dbg_line_count < DBG_MAX_LINES) {
+            int i = 0;
+            while (i < DBG_LINE_LEN - 1 && msg[i]) {
+                dbg_lines[dbg_line_count][i] = msg[i];
+                i++;
+            }
+            dbg_lines[dbg_line_count][i] = '\0';
+            dbg_line_count++;
+        } else {
+            /* Scroll up */
+            for (int i = 0; i < DBG_MAX_LINES - 1; i++) {
+                int j = 0;
+                while (j < DBG_LINE_LEN) {
+                    dbg_lines[i][j] = dbg_lines[i+1][j];
+                    j++;
+                }
+            }
+            int i = 0;
+            while (i < DBG_LINE_LEN - 1 && msg[i]) {
+                dbg_lines[DBG_MAX_LINES-1][i] = msg[i];
+                i++;
+            }
+            dbg_lines[DBG_MAX_LINES-1][i] = '\0';
+        }
+    }
+
+    static void dbg_draw(void)
+    {
+        extern void FB_FillRect(int x, int y, int w, int h, uint32_t colour);
+        extern void FB_DrawRect(int x, int y, int w, int h, uint32_t colour);
+        extern void FB_PutStr(int x, int y, const char *s, uint32_t fg, uint32_t bg);
+
+        int x = 10, y = 400;
+        int w = 480, h = DBG_MAX_LINES * 12 + 8;
+
+        /* Dark background (0x202020) and red border (0xFF0000) */
+        FB_FillRect(x, y, w, h, 0x00202020U);
+        FB_DrawRect(x, y, w, h, 0x00FF0000U);
+
+        for (int i = 0; i < dbg_line_count; i++) {
+            FB_PutStr(x + 4, y + 4 + i * 12, dbg_lines[i], 0x00FFFF00U, 0x00202020U);
+        }
+    }
+
+    #define FB_LOG_SCREEN(msg) dbg_add_line(msg)
+#else
+    #define FB_LOG(msg) do {} while(0)
+    #define FB_LOG_DEC(v) do {} while(0)
+    #define FB_LOG_SCREEN(msg) do {} while(0)
+    static void dbg_draw(void) {}
+#endif
+
 /* =========================================================================
  * String helpers (no libc)
  * ========================================================================= */
@@ -82,50 +149,50 @@ typedef struct { const char *name; const char *type; } FileEntry;
 /* Placeholder for partition volumes until FAT32_ReadDir is implemented */
 static const FileEntry k_partition_empty_files[] = { { NULL, NULL } };
 
-/* Dynamic entry buffers for VFS-mounted partition volumes.
- * Ring of 8 slots so multiple partition browsers can coexist. */
-#define MAX_VFS_DYN_ENTRIES 32
-#define MAX_VFS_DYN_BUFFERS 8
-static FileEntry g_vfs_entries[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES + 1];
-static char      g_vfs_names[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES][16];
-static char      g_vfs_types[MAX_VFS_DYN_BUFFERS][MAX_VFS_DYN_ENTRIES][8];
-static int       g_vfs_buf_idx = 0;
+/* Per-browser entry storage to prevent shared buffer corruption */
+#define MAX_BROWSER_ENTRIES 32
+#define MAX_ENTRY_NAME_LEN 16
+#define MAX_ENTRY_TYPE_LEN 8
 
-/* Dynamic entry buffers for VFS-mounted volumes.
- * Ring of 8 slots so multiple browsers can coexist. */
+typedef struct {
+    FileEntry entries[MAX_BROWSER_ENTRIES + 1];
+    char names[MAX_BROWSER_ENTRIES][MAX_ENTRY_NAME_LEN];
+    char types[MAX_BROWSER_ENTRIES][MAX_ENTRY_TYPE_LEN];
+} BrowserEntryBuffer;
 
-static const FileEntry *entries_for_path(const char *path)
+/* Load entries from path into a specific browser's buffer */
+static const FileEntry *load_entries_for_browser(const char *path, BrowserEntryBuffer *buf)
 {
+    if (!buf) return NULL;
+
     /* Try VFS first — if the path resolves to a mounted volume, enumerate it */
     RamFsNode *child = VFS_OpenDir(path);
     if (child) {
-        int slot = g_vfs_buf_idx % MAX_VFS_DYN_BUFFERS;
-        g_vfs_buf_idx++;
         int n = 0;
-        while (child && n < MAX_VFS_DYN_ENTRIES) {
+        while (child && n < MAX_BROWSER_ENTRIES) {
             int ni = 0;
-            while (ni < 15 && child->name[ni]) {
-                g_vfs_names[slot][n][ni] = child->name[ni];
+            while (ni < MAX_ENTRY_NAME_LEN - 1 && child->name[ni]) {
+                buf->names[n][ni] = child->name[ni];
                 ni++;
             }
-            g_vfs_names[slot][n][ni] = '\0';
-            g_vfs_entries[slot][n].name = g_vfs_names[slot][n];
+            buf->names[n][ni] = '\0';
+            buf->entries[n].name = buf->names[n];
 
             if (child->type == RAMFS_TYPE_DIR) {
-                g_vfs_types[slot][n][0] = 'D'; g_vfs_types[slot][n][1] = 'I';
-                g_vfs_types[slot][n][2] = 'R'; g_vfs_types[slot][n][3] = '\0';
+                buf->types[n][0] = 'D'; buf->types[n][1] = 'I';
+                buf->types[n][2] = 'R'; buf->types[n][3] = '\0';
             } else {
-                g_vfs_types[slot][n][0] = 'F'; g_vfs_types[slot][n][1] = 'I';
-                g_vfs_types[slot][n][2] = 'L'; g_vfs_types[slot][n][3] = 'E';
-                g_vfs_types[slot][n][4] = '\0';
+                buf->types[n][0] = 'F'; buf->types[n][1] = 'I';
+                buf->types[n][2] = 'L'; buf->types[n][3] = 'E';
+                buf->types[n][4] = '\0';
             }
-            g_vfs_entries[slot][n].type = g_vfs_types[slot][n];
+            buf->entries[n].type = buf->types[n];
             n++;
             child = child->next_sibling;
         }
-        g_vfs_entries[slot][n].name = NULL;
-        g_vfs_entries[slot][n].type = NULL;
-        return g_vfs_entries[slot];
+        buf->entries[n].name = NULL;
+        buf->entries[n].type = NULL;
+        return buf->entries;
     }
 
     /* Check if this is a partition device (not yet mounted in VFS) */
@@ -158,6 +225,7 @@ typedef struct {
     char             volume[32];     /* path string used as key and title */
     int              wm_handle;      /* -1 = not open */
     const FileEntry *entries;
+    BrowserEntryBuffer entry_buffer; /* Private buffer for this browser's entries */
     int              scroll;         /* future: vertical scroll offset */
     /* Double-click tracking for icon cells */
     int              last_click_icon; /* index of last clicked icon, -1 = none */
@@ -467,6 +535,11 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
     }
 
     FB_DrawHLine(cx, cy + path_h - 1, cw, WB_DARK_GREY);
+
+#if FB_DEBUG
+    /* Draw debug overlay on screen */
+    dbg_draw();
+#endif
 }
 
 static void draw_shim_0(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[0], wx, wy, ww, wh); }
@@ -505,26 +578,65 @@ static const ClickShim k_click_shims[MAX_BROWSERS] = {
 
 void FileBrowser_Open(const char *volume)
 {
+    /* Debug: trace what we're trying to open */
+    FB_LOG("[FB] Opening: '"); FB_LOG(volume); FB_LOG("'\n");
+    char dbg_buf[64];
+    int i = 0;
+    const char *prefix = "Opening: ";
+    while (i < 60 && prefix[i]) { dbg_buf[i] = prefix[i]; i++; }
+    int j = 0;
+    while (i < 60 && volume[j]) { dbg_buf[i++] = volume[j++]; }
+    dbg_buf[i] = '\0';
+    FB_LOG_SCREEN(dbg_buf);
+    FB_LOG("[FB] Current browsers: "); FB_LOG_DEC(g_n_browsers); FB_LOG("\n");
+
     /* Find existing browser for this exact volume path */
     for (int i = 0; i < g_n_browsers; i++) {
+        FB_LOG("[FB] Checking slot "); FB_LOG_DEC(i); FB_LOG(": '");
+        FB_LOG(g_browsers[i].volume); FB_LOG("' handle="); FB_LOG_DEC(g_browsers[i].wm_handle);
+        FB_LOG(" active="); FB_LOG_DEC(WM_IsWindowActive(g_browsers[i].wm_handle));
+        FB_LOG("\n");
+
         if (str_eq(g_browsers[i].volume, volume)) {
+            FB_LOG("[FB] Match found at slot "); FB_LOG_DEC(i); FB_LOG("\n");
             if (g_browsers[i].wm_handle >= 0 &&
                 WM_IsWindowActive(g_browsers[i].wm_handle)) {
                 /* Already open — raise to front and focus */
+                FB_LOG_SCREEN("MATCH: raising window");
+                FB_LOG("[FB] Window active, raising\n");
                 WM_RaiseWindow(g_browsers[i].wm_handle);
                 WM_Redraw();
                 return;
             }
-            /* Was closed — fall through to re-open in the same slot */
-            g_browsers[i].wm_handle = -1;
-            g_n_browsers = i;   /* reclaim slot */
-            break;
+            /* Was closed — reuse this slot */
+            FB_LOG("[FB] Reusing closed slot\n");
+            FB_LOG_SCREEN("Reusing closed slot");
+            Browser *b = &g_browsers[i];
+            b->scroll = 0;
+            b->last_click_icon = -1;
+            b->last_click_tick = 0;
+            b->win_x = b->win_y = b->win_w = b->win_h = 0;
+            b->entries = load_entries_for_browser(volume, &b->entry_buffer);
+
+            int wx = 80 + i * 120;
+            int wy = 60 + i * 100;
+            b->wm_handle = WM_AddWindow(wx, wy, 320, 240, volume,
+                                        k_draw_shims[i], browser_key);
+            if (b->wm_handle < 0) return;
+            WM_SetClickHandler(b->wm_handle, k_click_shims[i]);
+            WM_Redraw();
+            return;
         }
     }
 
     /* Allocate new browser slot */
-    if (g_n_browsers >= MAX_BROWSERS) return;
+    if (g_n_browsers >= MAX_BROWSERS) {
+        FB_LOG_SCREEN("ERROR: MAX_BROWSERS");
+        return;
+    }
     int idx = g_n_browsers++;
+    FB_LOG("[FB] Allocated slot "); FB_LOG_DEC(idx); FB_LOG("\n");
+    FB_LOG_SCREEN("NEW slot allocated");
 
     Browser *b = &g_browsers[idx];
     str_cp(b->volume, volume, 32);
@@ -533,15 +645,21 @@ void FileBrowser_Open(const char *volume)
     b->last_click_tick  = 0;
     b->win_x = b->win_y = b->win_w = b->win_h = 0;
 
-    /* Select file list by path table lookup */
-    b->entries = entries_for_path(volume);
+    /* Load entries into this browser's private buffer */
+    b->entries = load_entries_for_browser(volume, &b->entry_buffer);
 
-    /* Stagger windows so they don't all stack exactly */
-    int wx = 80  + idx * 24;
-    int wy = 60  + idx * 24;
+    /* Stagger windows so each new browser is clearly visible.
+     * A 320x240 window with only 24px stagger would be ~90% covered
+     * by the previous window; 120px/100px ensures real visibility. */
+    int wx = 80  + idx * 120;
+    int wy = 60  + idx * 100;
 
     b->wm_handle = WM_AddWindow(wx, wy, 320, 240, volume,
                                 k_draw_shims[idx], browser_key);
+    if (b->wm_handle < 0) {
+        g_n_browsers--;  /* rollback */
+        return;
+    }
     WM_SetClickHandler(b->wm_handle, k_click_shims[idx]);
 
     WM_Redraw();
