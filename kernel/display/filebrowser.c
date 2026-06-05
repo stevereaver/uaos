@@ -706,8 +706,16 @@ void FileBrowser_Open(const char *volume)
             b->win_x = b->win_y = b->win_w = b->win_h = 0;
             b->entries = load_entries_for_browser(volume, &b->entry_buffer);
 
+            /* Calculate window position with stagger, clamped to desktop bounds */
             int wx = 80 + i * 120;
             int wy = 60 + i * 100;
+            /* Desktop bounds: below menubar (20), above statusbar (18), window size 320x240 */
+            int max_x = (int)g_fb.width - 320;
+            int max_y = (int)g_fb.height - 20 - 18 - 240;  /* menubar + statusbar + window */
+            if (wx > max_x) wx = max_x;
+            if (wx < 0) wx = 0;
+            if (wy > max_y) wy = max_y;
+            if (wy < 20) wy = 20;  /* MENUBAR_H */
             int reuse_handle = WM_AddWindow(wx, wy, 320, 240, volume,
                                             k_draw_shims[i], browser_key);
             /* CRITICAL FIX: Check if another browser slot already has this handle.
@@ -769,10 +777,16 @@ void FileBrowser_Open(const char *volume)
     b->entries = load_entries_for_browser(volume, &b->entry_buffer);
 
     /* Stagger windows so each new browser is clearly visible.
-     * A 320x240 window with only 24px stagger would be ~90% covered
-     * by the previous window; 120px/100px ensures real visibility. */
-    int wx = 80  + idx * 120;
-    int wy = 60  + idx * 100;
+     * Clamp to desktop bounds: below menubar (20), above statusbar (18).
+     * Window size is 320x240. */
+    int wx = 80 + idx * 120;
+    int wy = 60 + idx * 100;
+    int max_x = (int)g_fb.width - 320;
+    int max_y = (int)g_fb.height - 20 - 18 - 240;  /* menubar + statusbar + window */
+    if (wx > max_x) wx = max_x;
+    if (wx < 0) wx = 0;
+    if (wy > max_y) wy = max_y;
+    if (wy < 20) wy = 20;  /* MENUBAR_H */
 
     int new_handle = WM_AddWindow(wx, wy, 320, 240, volume,
                                   k_draw_shims[idx], browser_key);
