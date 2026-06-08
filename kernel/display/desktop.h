@@ -16,6 +16,12 @@ int  Desktop_IsWorkbenchLoaded(void);  /* check before drawing desktop */
  * Returns 1 if the desktop handled the event, 0 otherwise. */
 int  Desktop_MouseEvent(int mx, int my, int btn_pressed);
 
+/* Drag-tracking mouse events for desktop icons.
+ * Call from WM_MouseEvent when no window drag/resize is active. */
+void Desktop_MouseMove(int mx, int my, int btn_left);
+void Desktop_MouseRelease(int mx, int my);
+int  Desktop_IsDraggingIcon(void);
+
 /* Returns the current 1-Hz tick counter (incremented by Desktop_UpdateClock).
  * Used by the file browser for double-click timing. */
 unsigned int Desktop_GetTick(void);

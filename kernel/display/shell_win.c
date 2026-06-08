@@ -2025,21 +2025,14 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
             while (si < 15 && dname[si] && dname[si] != ':')
                 mnt_name[ni++] = dname[si++];
             mnt_name[ni] = '\0';
-            if (mnt_name[0]) {
-                if (VFS_MountPartition(mnt_name) == 0) {
+
+            /* Mount by volume label if provided, else fall back to device name */
+            const char *vol_mnt = volname[0] ? volname : mnt_name;
+            if (vol_mnt[0]) {
+                if (VFS_MountPartition(vol_mnt) == 0) {
                     char msg2[MAX_LINE_LEN];
                     scopy(msg2, "Mounted as ", MAX_LINE_LEN);
-                    scat(msg2, mnt_name, MAX_LINE_LEN);
-                    scat(msg2, ":", MAX_LINE_LEN);
-                    inst_print(s, msg2);
-                }
-            }
-            /* Also mount by the FAT32 volume label (Name=) if different */
-            if (volname[0] && !seq(volname, mnt_name)) {
-                if (VFS_MountPartition(volname) == 0) {
-                    char msg2[MAX_LINE_LEN];
-                    scopy(msg2, "Mounted as ", MAX_LINE_LEN);
-                    scat(msg2, volname, MAX_LINE_LEN);
+                    scat(msg2, vol_mnt, MAX_LINE_LEN);
                     scat(msg2, ":", MAX_LINE_LEN);
                     inst_print(s, msg2);
                 }

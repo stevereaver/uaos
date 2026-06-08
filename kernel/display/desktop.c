@@ -4,7 +4,7 @@
  * framebuffer:
  *   - Menu bar (top, 20px high) with Workbench menus and clock
  *   - Desktop backdrop (grey stipple)
- *   - Disk icons (VFS-mounted volumes + partition devices, discovered dynamically)
+ *   - Disk icons (VFS-mounted volumes, discovered dynamically)
  *   - Status bar (bottom, 18px)
  *   - A boot/welcome window in the centre
  */
@@ -15,7 +15,6 @@
 #include "about_win.h"
 #include "shell_win.h"
 #include "../irq/rtc.h"
-#include "../dos/blockdev.h"
 #include "../dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -219,46 +218,22 @@ typedef struct {
     int      click_count;  /* clicks within window */
 } IconState;
 
-/* Read the FAT32 volume label from a partition's boot sector.
- * Returns a pointer to a static buffer, or NULL if not a valid FAT32. */
-static const char *read_fat32_vol_label(BlockDev *dev)
-{
-    static char label_buf[12];
-    uint8_t sector[512];
+/* Desktop icon drag state */
+static int      g_icon_drag_idx   = -1;
+static int      g_icon_drag_off_x = 0;
+static int      g_icon_drag_off_y = 0;
+static int      g_icon_drag_moved = 0;
+static int      g_icon_drag_orig_x = 0;
+static int      g_icon_drag_orig_y = 0;
 
-    if (BlockDev_Read(dev, 0, sector, 1) != 0)
-        return NULL;
+extern void WM_Redraw(void);
 
-    /* Check boot signature */
-    if (sector[510] != 0x55 || sector[511] != 0xAA)
-        return NULL;
-
-    /* Check FAT32 signature bytes: bytes_per_sec at offset 11 should be 512 */
-    uint16_t bps = sector[11] | (sector[12] << 8);
-    if (bps != 512)
-        return NULL;
-
-    /* Volume label at BPB offset 71, 11 bytes, space-padded */
-    int li = 0;
-    for (int i = 0; i < 11; i++) {
-        uint8_t c = sector[71 + i];
-        if (c != ' ') label_buf[li++] = c;
-    }
-    label_buf[li] = '\0';
-
-    if (li == 0)
-        return NULL;
-
-    return label_buf;
-}
-
-/* Build the desktop icon list from real mounted volumes (VFS) and block devices.
+/* Build the desktop icon list from real mounted volumes (VFS).
  * click_count / last_tick persist across calls by matching on volume name. */
 static IconState *get_icons(int *count)
 {
     static IconState icons[MAX_ICONS];
     static char vol_labels[MAX_ICONS][32];
-    static char ndos_labels[MAX_ICONS][32];
     static int initialised = 0;
 
     if (!initialised) {
@@ -303,13 +278,17 @@ static IconState *get_icons(int *count)
             vol_str = vol_labels[n];
         }
 
-        /* Find previous icon with the same volume name to preserve clicks */
+        /* Find previous icon with the same volume name to preserve state */
         uint32_t old_tick = 0;
         int old_clicks = 0;
+        int old_x = ix;
+        int old_y = iy + n * (ICON_H + 8);
         for (int j = 0; j < MAX_ICONS; j++) {
             if (old_icons[j].volume && str_eq(old_icons[j].volume, vol_str)) {
                 old_tick = old_icons[j].last_tick;
                 old_clicks = old_icons[j].click_count;
+                old_x = old_icons[j].x;
+                old_y = old_icons[j].y;
                 break;
             }
         }
@@ -317,69 +296,13 @@ static IconState *get_icons(int *count)
         /* Store icon data */
         icons[n].volume = vol_str;
         icons[n].label  = str_eq(mname, "RAM") ? "RAM Disk" : vol_str;
-        icons[n].x = ix;
-        icons[n].y = iy + n * (ICON_H + 8);
+        icons[n].x = old_x;
+        icons[n].y = old_y;
         icons[n].is_ndos = 0;
         icons[n].last_tick   = old_tick;
         icons[n].click_count = old_clicks;
         DT_LOG("[DT] VFS icon "); DT_LOG_DEC(n); DT_LOG(" mname='"); DT_LOG(mname); DT_LOG("' vol_str='"); DT_LOG(vol_str); DT_LOG("'\n");
         n++;
-    }
-
-    /* ── Partition devices ── */
-    BlockDev *dev = BlockDev_GetList();
-    while (dev && n < MAX_ICONS) {
-        if (dev->part_offset != 0) {
-            const char *dev_name = dev->display_name ? dev->display_name : dev->name;
-
-            /* Preserve click state */
-            uint32_t old_tick = 0;
-            int old_clicks = 0;
-            for (int j = 0; j < MAX_ICONS; j++) {
-                if (old_icons[j].volume && str_eq(old_icons[j].volume, dev_name)) {
-                    old_tick = old_icons[j].last_tick;
-                    old_clicks = old_icons[j].click_count;
-                    break;
-                }
-            }
-
-            icons[n].x = ix;
-            icons[n].y = iy + n * (ICON_H + 8);
-            icons[n].volume = dev_name;
-
-            if (dev->formatted == 0) {
-                dev->formatted = BlockDev_CheckFormatted(dev) ? 1 : -1;
-            }
-            icons[n].is_ndos = (dev->formatted < 0);
-
-            if (icons[n].is_ndos) {
-                scpy(ndos_labels[n], "NDOS: ", 32);
-                int nl = 6;
-                int di = 0;
-                while (di < 8 && dev_name[di]) { ndos_labels[n][nl++] = dev_name[di++]; }
-                ndos_labels[n][nl] = '\0';
-                icons[n].label = ndos_labels[n];
-            } else {
-                const char *vl = read_fat32_vol_label(dev);
-                if (vl) {
-                    scpy(vol_labels[n], vl, 32);
-                    int vli = 0;
-                    while (vol_labels[n][vli] && vli < 30) vli++;
-                    if (vli < 31) {
-                        vol_labels[n][vli++] = ':';
-                        vol_labels[n][vli] = '\0';
-                    }
-                    icons[n].label = vol_labels[n];
-                } else {
-                    icons[n].label = dev_name;
-                }
-            }
-            icons[n].last_tick   = old_tick;
-            icons[n].click_count = old_clicks;
-            DT_LOG("[DT] Part icon "); DT_LOG_DEC(n); DT_LOG(" dev_name='"); DT_LOG(dev_name); DT_LOG("' label='"); DT_LOG(icons[n].label); DT_LOG("'\n");
-            n++;
-        }
-        dev = dev->next;
     }
 
     /* Clear any leftover slots */
@@ -524,7 +447,7 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
         return 1;
     }
 
-    /* ── Desktop icon double-click ──────────────────────── */
+    /* ── Desktop icon press (start potential drag) ─────── */
     int n;
     IconState *icons = get_icons(&n);
 
@@ -535,23 +458,86 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
         if (mx >= ic->x && mx < ic->x + ICON_W &&
             my >= ic->y && my < ic->y + ICON_H) {
 
-            DT_LOG("[DT] Icon "); DT_LOG_DEC(i); DT_LOG(" hit, volume='");
+            DT_LOG("[DT] Icon "); DT_LOG_DEC(i); DT_LOG(" press, volume='");
             DT_LOG(ic->volume); DT_LOG("'\n");
 
-            uint32_t now = g_tick;
-            if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
-                DT_LOG("[DT] Double-click icon "); DT_LOG_DEC(i); DT_LOG(" vol='"); DT_LOG(ic->volume); DT_LOG("'\n");
-                ic->click_count = 0;
-                FileBrowser_Open(ic->volume);
-            } else {
-                DT_LOG("[DT] First click\n");
-                ic->click_count = 1;
-                ic->last_tick   = now;
-            }
+            g_icon_drag_idx    = i;
+            g_icon_drag_off_x  = mx - ic->x;
+            g_icon_drag_off_y  = my - ic->y;
+            g_icon_drag_orig_x = ic->x;
+            g_icon_drag_orig_y = ic->y;
+            g_icon_drag_moved  = 0;
             return 1;
         }
     }
     return 0;
+}
+
+void Desktop_MouseMove(int mx, int my, int btn_left)
+{
+    (void)btn_left;
+    if (g_icon_drag_idx < 0) return;
+
+    int n;
+    IconState *icons = get_icons(&n);
+    if (g_icon_drag_idx >= n) {
+        g_icon_drag_idx = -1;
+        return;
+    }
+
+    IconState *ic = &icons[g_icon_drag_idx];
+    int new_x = mx - g_icon_drag_off_x;
+    int new_y = my - g_icon_drag_off_y;
+
+    /* Clamp to desktop bounds */
+    int W = (int)g_fb.width;
+    int H = (int)g_fb.height;
+    int top = MENUBAR_H;
+    int bottom = H - STATUSBAR_H;
+
+    if (new_x < 0) new_x = 0;
+    if (new_x > W - ICON_W) new_x = W - ICON_W;
+    if (new_y < top) new_y = top;
+    if (new_y > bottom - ICON_H) new_y = bottom - ICON_H;
+
+    if (new_x != ic->x || new_y != ic->y) {
+        if (new_x != g_icon_drag_orig_x || new_y != g_icon_drag_orig_y)
+            g_icon_drag_moved = 1;
+        ic->x = new_x;
+        ic->y = new_y;
+        WM_Redraw();
+    }
+}
+
+void Desktop_MouseRelease(int mx, int my)
+{
+    (void)mx; (void)my;
+    if (g_icon_drag_idx < 0) return;
+
+    int n;
+    IconState *icons = get_icons(&n);
+    if (g_icon_drag_idx < n && !g_icon_drag_moved) {
+        /* Treat as click — double-click logic */
+        IconState *ic = &icons[g_icon_drag_idx];
+        uint32_t now = g_tick;
+        if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
+            DT_LOG("[DT] Double-click icon "); DT_LOG_DEC(g_icon_drag_idx);
+            DT_LOG(" vol='"); DT_LOG(ic->volume); DT_LOG("'\n");
+            ic->click_count = 0;
+            FileBrowser_Open(ic->volume);
+        } else {
+            DT_LOG("[DT] First click (release)\n");
+            ic->click_count = 1;
+            ic->last_tick   = now;
+        }
+    }
+
+    g_icon_drag_idx = -1;
+}
+
+int Desktop_IsDraggingIcon(void)
+{
+    return g_icon_drag_idx >= 0;
 }
 
 unsigned int Desktop_GetTick(void)

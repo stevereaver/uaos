@@ -366,16 +366,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
                             while (si < 15 && dname[si] && dname[si] != ':')
                                 mnt_name[ni++] = dname[si++];
                             mnt_name[ni] = '\0';
-                            if (mnt_name[0])
-                                VFS_MountPartition(mnt_name);
-                            /* Also mount by FAT32 volume label if different */
+
+                            /* Mount by FAT32 volume label if available,
+                             * otherwise fall back to the device name (DH0 etc.) */
                             char fat_label[16];
                             if (BlockDev_ReadVolLabel(pdev, fat_label, sizeof(fat_label))) {
-                                int diff = 0;
-                                for (int ci = 0; mnt_name[ci] || fat_label[ci]; ci++)
-                                    if (mnt_name[ci] != fat_label[ci]) { diff = 1; break; }
-                                if (diff)
-                                    VFS_MountPartition(fat_label);
+                                VFS_MountPartition(fat_label);
+                            } else if (mnt_name[0]) {
+                                VFS_MountPartition(mnt_name);
                             }
                         }
                     }

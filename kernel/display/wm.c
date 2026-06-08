@@ -689,10 +689,16 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         }
     }
 
+    /* Desktop icon drag — only when no window interaction is active */
+    if (btn_left && g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
+        Desktop_MouseMove(mx, my, 1);
+    }
+
     if (btn_released) {
         g_drag_handle      = -1;
         g_resize_handle    = -1;
         g_scroll_drag_win  = -1;
+        Desktop_MouseRelease(mx, my);
     }
 }
 

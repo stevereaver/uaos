@@ -735,12 +735,24 @@ void FileBrowser_Open(const char *volume)
         }
     }
 
-    /* Allocate new browser slot */
-    if (g_n_browsers >= MAX_BROWSERS) {
-        FB_LOG_SCREEN("ERROR: MAX_BROWSERS");
-        return;
+    /* Allocate new browser slot — recycle a closed slot first */
+    int idx = -1;
+    for (int i = 0; i < g_n_browsers && i < MAX_BROWSERS; i++) {
+        if (g_browsers[i].volume[0] == '\0' ||
+            !WM_IsWindowActive(g_browsers[i].wm_handle)) {
+            idx = i;
+            break;
+        }
     }
-    int idx = g_n_browsers++;
+    int did_increment = 0;
+    if (idx < 0) {
+        if (g_n_browsers >= MAX_BROWSERS) {
+            FB_LOG_SCREEN("ERROR: MAX_BROWSERS");
+            return;
+        }
+        idx = g_n_browsers++;
+        did_increment = 1;
+    }
     FB_LOG("[FB] Allocated slot "); FB_LOG_DEC(idx); FB_LOG("\n");
     char dbga[64];
     str_cp(dbga, "ALLOC slot ", 64);
@@ -792,14 +804,15 @@ void FileBrowser_Open(const char *volume)
                                   k_draw_shims[idx], browser_key);
     /* CRITICAL FIX: Check if another browser slot already has this handle.
      * Invalidate stale handle to prevent duplicates. */
-    for (int check = 0; check < idx; check++) {
-        if (g_browsers[check].wm_handle == new_handle) {
+    for (int check = 0; check < g_n_browsers; check++) {
+        if (check != idx && g_browsers[check].wm_handle == new_handle) {
             g_browsers[check].wm_handle = -1;
         }
     }
     b->wm_handle = new_handle;
     if (b->wm_handle < 0) {
-        g_n_browsers--;  /* rollback */
+        if (did_increment)
+            g_n_browsers--;  /* rollback only if we incremented */
         return;
     }
     WM_SetClickHandler(b->wm_handle, k_click_shims[idx]);
