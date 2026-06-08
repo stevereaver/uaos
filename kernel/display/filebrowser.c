@@ -218,7 +218,7 @@ static const FileEntry *load_entries_for_browser(const char *path, BrowserEntryB
  * Per-browser instance state (one per volume)
  * ========================================================================= */
 
-#define MAX_BROWSERS 8
+#define MAX_BROWSERS 16
 #define DBLCLICK_TICKS 2
 
 typedef struct {
@@ -550,6 +550,14 @@ static void draw_shim_4(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_b
 static void draw_shim_5(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[5], wx, wy, ww, wh); }
 static void draw_shim_6(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[6], wx, wy, ww, wh); }
 static void draw_shim_7(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[7], wx, wy, ww, wh); }
+static void draw_shim_8(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[8], wx, wy, ww, wh); }
+static void draw_shim_9(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[9], wx, wy, ww, wh); }
+static void draw_shim_10(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[10], wx, wy, ww, wh); }
+static void draw_shim_11(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[11], wx, wy, ww, wh); }
+static void draw_shim_12(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[12], wx, wy, ww, wh); }
+static void draw_shim_13(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[13], wx, wy, ww, wh); }
+static void draw_shim_14(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[14], wx, wy, ww, wh); }
+static void draw_shim_15(int wx, int wy, int ww, int wh) { browser_draw_impl(&g_browsers[15], wx, wy, ww, wh); }
 
 static void click_shim_0(int wh, int mx, int my) { browser_click_impl(&g_browsers[0], wh, mx, my); }
 static void click_shim_1(int wh, int mx, int my) { browser_click_impl(&g_browsers[1], wh, mx, my); }
@@ -559,17 +567,29 @@ static void click_shim_4(int wh, int mx, int my) { browser_click_impl(&g_browser
 static void click_shim_5(int wh, int mx, int my) { browser_click_impl(&g_browsers[5], wh, mx, my); }
 static void click_shim_6(int wh, int mx, int my) { browser_click_impl(&g_browsers[6], wh, mx, my); }
 static void click_shim_7(int wh, int mx, int my) { browser_click_impl(&g_browsers[7], wh, mx, my); }
+static void click_shim_8(int wh, int mx, int my) { browser_click_impl(&g_browsers[8], wh, mx, my); }
+static void click_shim_9(int wh, int mx, int my) { browser_click_impl(&g_browsers[9], wh, mx, my); }
+static void click_shim_10(int wh, int mx, int my) { browser_click_impl(&g_browsers[10], wh, mx, my); }
+static void click_shim_11(int wh, int mx, int my) { browser_click_impl(&g_browsers[11], wh, mx, my); }
+static void click_shim_12(int wh, int mx, int my) { browser_click_impl(&g_browsers[12], wh, mx, my); }
+static void click_shim_13(int wh, int mx, int my) { browser_click_impl(&g_browsers[13], wh, mx, my); }
+static void click_shim_14(int wh, int mx, int my) { browser_click_impl(&g_browsers[14], wh, mx, my); }
+static void click_shim_15(int wh, int mx, int my) { browser_click_impl(&g_browsers[15], wh, mx, my); }
 
 typedef void (*DrawShim)(int,int,int,int);
 static const DrawShim k_draw_shims[MAX_BROWSERS] = {
     draw_shim_0, draw_shim_1, draw_shim_2, draw_shim_3,
-    draw_shim_4, draw_shim_5, draw_shim_6, draw_shim_7
+    draw_shim_4, draw_shim_5, draw_shim_6, draw_shim_7,
+    draw_shim_8, draw_shim_9, draw_shim_10, draw_shim_11,
+    draw_shim_12, draw_shim_13, draw_shim_14, draw_shim_15
 };
 
 typedef void (*ClickShim)(int,int,int);
 static const ClickShim k_click_shims[MAX_BROWSERS] = {
     click_shim_0, click_shim_1, click_shim_2, click_shim_3,
-    click_shim_4, click_shim_5, click_shim_6, click_shim_7
+    click_shim_4, click_shim_5, click_shim_6, click_shim_7,
+    click_shim_8, click_shim_9, click_shim_10, click_shim_11,
+    click_shim_12, click_shim_13, click_shim_14, click_shim_15
 };
 
 /* =========================================================================
@@ -578,9 +598,13 @@ static const ClickShim k_click_shims[MAX_BROWSERS] = {
 
 void FileBrowser_Open(const char *volume)
 {
+    /* Defensive clamp in case previous buggy code corrupted the counter */
+    if (g_n_browsers < 0) g_n_browsers = 0;
+    if (g_n_browsers > MAX_BROWSERS) g_n_browsers = MAX_BROWSERS;
+
     /* Dump WM state */
     FB_LOG_SCREEN("WM:");
-    for (int w = 0; w < 8; w++) {
+    for (int w = 0; w < WM_MAX_WINDOWS; w++) {
         if (WM_IsWindowActive(w)) {
             char wmst[16];
             wmst[0] = '0' + w;
@@ -721,7 +745,7 @@ void FileBrowser_Open(const char *volume)
             /* CRITICAL FIX: Check if another browser slot already has this handle.
              * This happens when that slot's window was closed, but it still
              * has the stale handle value. Invalidate it to prevent duplicates. */
-            for (int check = 0; check < g_n_browsers; check++) {
+            for (int check = 0; check < MAX_BROWSERS; check++) {
                 if (check != i && g_browsers[check].wm_handle == reuse_handle) {
                     g_browsers[check].wm_handle = -1;
                 }
@@ -804,7 +828,7 @@ void FileBrowser_Open(const char *volume)
                                   k_draw_shims[idx], browser_key);
     /* CRITICAL FIX: Check if another browser slot already has this handle.
      * Invalidate stale handle to prevent duplicates. */
-    for (int check = 0; check < g_n_browsers; check++) {
+    for (int check = 0; check < MAX_BROWSERS; check++) {
         if (check != idx && g_browsers[check].wm_handle == new_handle) {
             g_browsers[check].wm_handle = -1;
         }

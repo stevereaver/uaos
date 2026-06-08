@@ -10,7 +10,7 @@
 #ifndef UAOS_WM_H
 #define UAOS_WM_H
 
-#define WM_MAX_WINDOWS  8
+#define WM_MAX_WINDOWS  16
 #define WM_TITLEBAR_H   20
 #define WM_BORDER       4    /* border thickness on left/right/bottom */
 #define WM_SCROLLBAR_W  16   /* width of right scrollbar / height of bottom scrollbar */
