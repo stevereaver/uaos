@@ -226,6 +226,11 @@ static int      g_icon_drag_moved = 0;
 static int      g_icon_drag_orig_x = 0;
 static int      g_icon_drag_orig_y = 0;
 
+/* Desktop background double-click state */
+static int       g_desktop_pressed = 0;
+static uint32_t  g_desktop_last_tick = 0;
+static int       g_desktop_click_count = 0;
+
 extern void WM_Redraw(void);
 
 /* Build the desktop icon list from real mounted volumes (VFS).
@@ -467,9 +472,12 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
             g_icon_drag_orig_x = ic->x;
             g_icon_drag_orig_y = ic->y;
             g_icon_drag_moved  = 0;
+            g_desktop_pressed  = 0;
             return 1;
         }
     }
+    /* Missed all icons — mark as desktop background press */
+    g_desktop_pressed = 1;
     return 0;
 }
 
@@ -512,27 +520,42 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
 void Desktop_MouseRelease(int mx, int my)
 {
     (void)mx; (void)my;
-    if (g_icon_drag_idx < 0) return;
 
-    int n;
-    IconState *icons = get_icons(&n);
-    if (g_icon_drag_idx < n && !g_icon_drag_moved) {
-        /* Treat as click — double-click logic */
-        IconState *ic = &icons[g_icon_drag_idx];
-        uint32_t now = g_tick;
-        if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
-            DT_LOG("[DT] Double-click icon "); DT_LOG_DEC(g_icon_drag_idx);
-            DT_LOG(" vol='"); DT_LOG(ic->volume); DT_LOG("'\n");
-            ic->click_count = 0;
-            FileBrowser_Open(ic->volume);
-        } else {
-            DT_LOG("[DT] First click (release)\n");
-            ic->click_count = 1;
-            ic->last_tick   = now;
+    if (g_icon_drag_idx >= 0) {
+        int n;
+        IconState *icons = get_icons(&n);
+        if (g_icon_drag_idx < n && !g_icon_drag_moved) {
+            /* Treat as click — double-click logic */
+            IconState *ic = &icons[g_icon_drag_idx];
+            uint32_t now = g_tick;
+            if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
+                DT_LOG("[DT] Double-click icon "); DT_LOG_DEC(g_icon_drag_idx);
+                DT_LOG(" vol='"); DT_LOG(ic->volume); DT_LOG("'\n");
+                ic->click_count = 0;
+                FileBrowser_Open(ic->volume);
+            } else {
+                DT_LOG("[DT] First click (release)\n");
+                ic->click_count = 1;
+                ic->last_tick   = now;
+            }
         }
+        g_icon_drag_idx = -1;
+        g_desktop_pressed = 0;
+        return;
     }
 
-    g_icon_drag_idx = -1;
+    /* Desktop background double-click opens a new Shell */
+    if (g_desktop_pressed) {
+        uint32_t now = g_tick;
+        if (g_desktop_click_count > 0 && (now - g_desktop_last_tick) <= DBLCLICK_TICKS) {
+            g_desktop_click_count = 0;
+            ShellWin_Open();
+        } else {
+            g_desktop_click_count = 1;
+            g_desktop_last_tick = now;
+        }
+        g_desktop_pressed = 0;
+    }
 }
 
 int Desktop_IsDraggingIcon(void)
