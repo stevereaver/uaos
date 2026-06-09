@@ -18,6 +18,8 @@
 typedef void (*WM_DrawFn)(int win_x, int win_y, int win_w, int win_h);
 typedef void (*WM_KeyFn)(char c);
 typedef void (*WM_ClickFn)(int win_handle, int mx, int my);
+typedef void (*WM_MouseMoveFn)(int win_handle, int mx, int my);
+typedef void (*WM_MouseReleaseFn)(int win_handle, int mx, int my);
 
 typedef struct {
     int        x, y, w, h;
@@ -25,6 +27,8 @@ typedef struct {
     WM_DrawFn  draw;      /* called to repaint window contents at (x,y)   */
     WM_KeyFn   on_key;    /* called with keystrokes when window is focused */
     WM_ClickFn on_click;  /* called on client-area mouse press (may be 0)  */
+    WM_MouseMoveFn on_move;   /* called while mouse is held inside window   */
+    WM_MouseReleaseFn on_release; /* called on mouse release inside window */
     int        active;    /* 1 = registered, 0 = slot free                */
     /* Scroll state — set by window content via WM_SetScrollInfo */
     int        scroll_x;      /* current horizontal scroll offset (pixels) */
@@ -40,8 +44,10 @@ typedef struct {
 int  WM_AddWindow(int x, int y, int w, int h, const char *title,
                   WM_DrawFn draw, WM_KeyFn on_key);
 
-/* Set an optional client-area click callback on an existing window */
+/* Set optional client-area mouse callbacks on an existing window */
 void WM_SetClickHandler(int handle, WM_ClickFn on_click);
+void WM_SetMouseMoveHandler(int handle, WM_MouseMoveFn on_move);
+void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release);
 
 /* Tell the WM the total content size so scrollbars can be proportional */
 void WM_SetScrollInfo(int handle, int content_w, int content_h);

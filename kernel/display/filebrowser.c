@@ -232,6 +232,10 @@ typedef struct {
     unsigned int     last_click_tick;
     /* Cached window geometry (updated every draw call) */
     int              win_x, win_y, win_w, win_h;
+    /* Icon drag state */
+    int              drag_icon;       /* -1 = none, >=0 = entry index being dragged */
+    int              drag_off_x, drag_off_y; /* offset from icon top-left at press */
+    int              drag_x, drag_y;  /* current screen position of dragged icon */
 } Browser;
 
 static Browser g_browsers[MAX_BROWSERS];
@@ -298,6 +302,7 @@ static void browser_key(char c)
             WM_CloseWindow(fh);
             g_browsers[i].wm_handle = -1;
             g_browsers[i].volume[0] = '\0';
+            g_browsers[i].drag_icon = -1;
             return;
         }
     }
@@ -345,6 +350,44 @@ static int browser_icon_hit(Browser *b, int wx, int wy, int ww, int wh,
     return -1;
 }
 
+/* Compute the grid cell index at screen pixel (mx, my).
+ * Returns -1 if outside the grid.  Does NOT account for a dragged icon. */
+static int browser_cell_at_pos(Browser *b, int wx, int wy, int ww, int wh,
+                                int mx, int my)
+{
+    int cx = wx + 1;
+    int cy = wy + WM_TITLEBAR_H;
+    int cw = ww - 1 - WM_SCROLLBAR_W;
+    int ch = wh - WM_TITLEBAR_H - WM_SCROLLBAR_W;
+
+    if (mx < cx || mx >= cx + cw || my < cy || my >= cy + ch) return -1;
+
+    int n_entries = 0;
+    const FileEntry *e = b->entries;
+    while (e && e[n_entries].name) n_entries++;
+
+    int usable = cw - 8;
+    int cols   = usable / ICON_COL_W;
+    if (cols < 1) cols = 1;
+    int cell_w = (cols == 1) ? usable : ICON_COL_W;
+
+    int path_h = 20;
+    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+    int grid_base = cy + path_h - scroll_y;
+
+    if (my < cy + path_h) return -1;
+
+    int col = (mx - (cx + 4)) / cell_w;
+    int row = (my - grid_base) / ICON_ROW_H;
+    if (col < 0) col = 0;
+    if (row < 0) row = 0;
+    if (col >= cols) col = cols - 1;
+
+    int idx = row * cols + col;
+    if (idx >= n_entries) return -1;
+    return idx;
+}
+
 /* Called by WM on client-area click for a browser window */
 static void browser_click_impl(Browser *b, int wh, int mx, int my)
 {
@@ -369,14 +412,16 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             FileBrowser_Open(par);
         }
         b->last_click_icon = -1;
+        b->drag_icon = -1;
         return;
     }
 
     int icon = browser_icon_hit(b, b->win_x, b->win_y, b->win_w, b->win_h,
                                 mx, my);
     if (icon < 0) {
-        /* Missed all icons — reset double-click state */
+        /* Missed all icons — reset double-click state and cancel drag */
         b->last_click_icon = -1;
+        b->drag_icon = -1;
         return;
     }
 
@@ -386,6 +431,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
         (now - b->last_click_tick) <= DBLCLICK_TICKS) {
         /* Double-click: open folder (DIR) or launch app (PROG) */
         b->last_click_icon = -1;
+        b->drag_icon = -1;
         const FileEntry *e = b->entries;
         if (e && e[icon].name && e[icon].type[0] == 'P') {
             /* Launch known applications by name (PROG type) */
@@ -449,9 +495,65 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             FileBrowser_Open(child_path);
         }
     } else {
-        /* First click — record for double-click detection */
+        /* First click — record for double-click detection and start drag */
         b->last_click_icon = icon;
         b->last_click_tick = now;
+
+        int n_entries = 0;
+        while (b->entries && b->entries[n_entries].name) n_entries++;
+        int usable = cw - 8;
+        int cols   = usable / ICON_COL_W;
+        if (cols < 1) cols = 1;
+        int cell_w = (cols == 1) ? usable : ICON_COL_W;
+        int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+        int grid_base = cy + path_h - scroll_y;
+
+        int drag_col = icon % cols;
+        int drag_row = icon / cols;
+        int cell_x   = cx + 4 + drag_col * cell_w;
+        int iy       = grid_base + drag_row * ICON_ROW_H;
+        int ix       = cell_x + (cell_w - ICON_SZ) / 2;
+
+        b->drag_icon   = icon;
+        b->drag_off_x  = mx - ix;
+        b->drag_off_y  = my - iy;
+        b->drag_x      = ix;
+        b->drag_y      = iy;
+    }
+}
+
+static void browser_mouse_move(int wh, int mx, int my)
+{
+    for (int i = 0; i < MAX_BROWSERS; i++) {
+        Browser *b = &g_browsers[i];
+        if (b->wm_handle == wh && b->drag_icon >= 0) {
+            b->drag_x = mx - b->drag_off_x;
+            b->drag_y = my - b->drag_off_y;
+            WM_Redraw();
+            return;
+        }
+    }
+}
+
+static void browser_mouse_release(int wh, int mx, int my)
+{
+    for (int i = 0; i < MAX_BROWSERS; i++) {
+        Browser *b = &g_browsers[i];
+        if (b->wm_handle == wh && b->drag_icon >= 0) {
+            int target = browser_cell_at_pos(b, b->win_x, b->win_y,
+                                              b->win_w, b->win_h, mx, my);
+            int n_entries = 0;
+            while (b->entries && b->entries[n_entries].name) n_entries++;
+            if (target >= 0 && target != b->drag_icon && target < n_entries) {
+                FileEntry tmp = b->entry_buffer.entries[b->drag_icon];
+                b->entry_buffer.entries[b->drag_icon] =
+                    b->entry_buffer.entries[target];
+                b->entry_buffer.entries[target] = tmp;
+            }
+            b->drag_icon = -1;
+            WM_Redraw();
+            return;
+        }
     }
 }
 
@@ -513,6 +615,11 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
         int icon_top1 = iy + 4;
         int label_bot = iy + 4 + ICON_SZ + LABEL_H + 2;
 
+        if (b->drag_icon == i) {
+            if (++col >= cols) { col = 0; row++; }
+            continue; /* dragged icon drawn separately */
+        }
+
         /* Draw only when the entire icon+label fits within the clip zone */
         if (icon_top1 >= icon_top && label_bot <= icon_bottom) {
             if (ix >= cx && cell_x + cell_w <= cx + cw) {
@@ -524,6 +631,20 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
         }
 
         if (++col >= cols) { col = 0; row++; }
+    }
+
+    /* Draw dragged icon at its current mouse position */
+    if (b->drag_icon >= 0 && e && e[b->drag_icon].name) {
+        int dx = b->drag_x;
+        int dy = b->drag_y;
+        if (dx < cx) dx = cx;
+        if (dx + ICON_SZ > cx + cw) dx = cx + cw - ICON_SZ;
+        if (dy < cy + path_h) dy = cy + path_h;
+        if (dy + ICON_SZ + LABEL_H + 2 > cy + ch) dy = cy + ch - ICON_SZ - LABEL_H - 2;
+        uint32_t icol = (e[b->drag_icon].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
+        draw_small_icon(dx, dy + 4, e[b->drag_icon].type, icol);
+        draw_label_centred(dx, dy + 4 + ICON_SZ + 2, cell_w,
+                           e[b->drag_icon].name, WB_BLACK, WB_GREY);
     }
 
     /* Path bar drawn last so it always appears on top of any icon overflow */
@@ -766,7 +887,10 @@ void FileBrowser_Open(const char *volume)
             }
             b->wm_handle = reuse_handle;
             if (b->wm_handle < 0) return;
+            b->drag_icon = -1;
             WM_SetClickHandler(b->wm_handle, k_click_shims[i]);
+            WM_SetMouseMoveHandler(b->wm_handle, browser_mouse_move);
+            WM_SetMouseReleaseHandler(b->wm_handle, browser_mouse_release);
             WM_RaiseWindow(b->wm_handle);
             WM_Redraw();
             return;
@@ -808,6 +932,7 @@ void FileBrowser_Open(const char *volume)
 
     Browser *b = &g_browsers[idx];
     b->wm_handle = -1;  /* Initialize to invalid - CRITICAL FIX */
+    b->drag_icon = -1;
     str_cp(b->volume, volume, 32);
     char dbgc[64];
     str_cp(dbgc, "AFTER slot ", 64);
@@ -854,6 +979,8 @@ void FileBrowser_Open(const char *volume)
         return;
     }
     WM_SetClickHandler(b->wm_handle, k_click_shims[idx]);
+    WM_SetMouseMoveHandler(b->wm_handle, browser_mouse_move);
+    WM_SetMouseReleaseHandler(b->wm_handle, browser_mouse_release);
     WM_RaiseWindow(b->wm_handle);
 
     WM_Redraw();

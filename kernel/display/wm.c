@@ -531,6 +531,8 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     win->draw     = draw;
     win->on_key   = on_key;
     win->on_click   = (WM_ClickFn)0;
+    win->on_move    = (WM_MouseMoveFn)0;
+    win->on_release = (WM_MouseReleaseFn)0;
     win->scroll_x   = 0;
     win->scroll_y   = 0;
     win->content_w  = 0;
@@ -544,6 +546,18 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     g_focus = slot;
 
     return slot;
+}
+
+void WM_SetMouseMoveHandler(int handle, WM_MouseMoveFn on_move)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    g_wins[handle].on_move = on_move;
+}
+
+void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    g_wins[handle].on_release = on_release;
 }
 
 void WM_MouseEvent(int mx, int my, int btn_left)
@@ -689,12 +703,26 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         }
     }
 
+    /* Window client-area mouse move */
+    if (btn_left && g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
+        if (g_focus >= 0) {
+            WmWindow *w = &g_wins[g_focus];
+            if (w->active && w->on_move)
+                w->on_move(g_focus, mx, my);
+        }
+    }
+
     /* Desktop icon drag — only when no window interaction is active */
     if (btn_left && g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
         Desktop_MouseMove(mx, my, 1);
     }
 
     if (btn_released) {
+        if (g_focus >= 0) {
+            WmWindow *w = &g_wins[g_focus];
+            if (w->active && w->on_release)
+                w->on_release(g_focus, mx, my);
+        }
         g_drag_handle      = -1;
         g_resize_handle    = -1;
         g_scroll_drag_win  = -1;
