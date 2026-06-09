@@ -32,7 +32,7 @@ static inline uint8_t inb(uint16_t port)
 
 static const char sc_normal[89] = {
 /*00*/  0,
-/*01*/  0,      /* Esc          */
+/*01*/  27,     /* Esc          */
 /*02*/  '1','2','3','4','5','6','7','8','9','0','-','=',
 /*0E*/  '\b',
 /*0F*/  '\t',

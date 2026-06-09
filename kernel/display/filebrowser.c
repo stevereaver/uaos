@@ -287,7 +287,21 @@ static void draw_label_centred(int cx, int y, int cell_w,
     FB_PutStr(tx, y, s, fg, bg);
 }
 
-static void browser_key(char c) { (void)c; }
+static void browser_key(char c)
+{
+    if (c != 27) return;  /* ESC */
+    int fh = WM_GetFocus();
+    if (fh < 0) return;
+    /* Find the browser that owns this focused window and close it */
+    for (int i = 0; i < MAX_BROWSERS; i++) {
+        if (g_browsers[i].wm_handle == fh) {
+            WM_CloseWindow(fh);
+            g_browsers[i].wm_handle = -1;
+            g_browsers[i].volume[0] = '\0';
+            return;
+        }
+    }
+}
 
 /* Compute the icon index hit by client-relative pixel (rx, ry).          */
 /* Returns -1 if no icon was hit. Replicates layout from browser_draw_impl */
