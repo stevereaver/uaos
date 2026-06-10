@@ -429,6 +429,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "");
     inst_print(s, "C: binaries (type 'which <cmd>' to locate):");
     inst_print(s, "  version            OS version info");
+    inst_print(s, "  showconfig         show hardware configuration");
     inst_print(s, "  mem                memory information");
     inst_print(s, "  libs               loaded kernel libraries");
     inst_print(s, "  clear              clear the shell window");
@@ -473,6 +474,43 @@ static void inst_cmd_version(ShellInstance *s)
     inst_print(s, res);
 
     inst_print(s, "Input: PS/2 keyboard + mouse, IRQ1/IRQ12");
+}
+
+static void inst_cmd_showconfig(ShellInstance *s)
+{
+    char line[MAX_LINE_LEN];
+    char num[16];
+
+    /* PROCESSOR */
+    inst_print(s, "PROCESSOR:    CPU x86_64 (64-bit, long mode)");
+
+    /* CUSTOM CHIPS — equivalent: our display/input subsystem */
+    scopy(line, "DISPLAY:      ", MAX_LINE_LEN);
+    uint_to_dec_s(g_fb.width,  num, 16); scat(line, num, MAX_LINE_LEN);
+    scat(line, "x", MAX_LINE_LEN);
+    uint_to_dec_s(g_fb.height, num, 16); scat(line, num, MAX_LINE_LEN);
+    scat(line, ", ", MAX_LINE_LEN);
+    uint_to_dec_s(g_fb.bpp,    num, 16); scat(line, num, MAX_LINE_LEN);
+    scat(line, "bpp linear framebuffer (VirtIO VGA)", MAX_LINE_LEN);
+    inst_print(s, line);
+
+    /* VERSION */
+    inst_print(s, "VERS:         UAOS v0.1.0-dev, Kernel build 1, Exec 1.0");
+
+    /* RAM — describe regions in AmigaDOS ShowConfig style */
+    inst_print(s, "RAM:");
+    inst_print(s, "      Node type $A, Attributes $005 (FAST), at $0000000-$1FFFFFFF (512.0 meg)");
+    inst_print(s, "      Node type $A, Attributes $703 (CHIP), at $0000000-$000FFFFF (~1.0 meg)");
+
+    /* BOARDS / expansion — list hardware we know about */
+    inst_print(s, "BOARDS:");
+    inst_print(s, "  Board (UEFI GOP framebuffer):  VirtIO VGA, linear");
+    scopy(line, "  Board (PS/2 controller):       IRQ1 keyboard, IRQ12 mouse", MAX_LINE_LEN);
+    inst_print(s, line);
+    inst_print(s, "  Board (APIC/PIC):              8259A-compat PIC, APIC mapped $FEE00000");
+    inst_print(s, "  Board (PIT timer):             8253/8254, 10 Hz, IRQ0");
+    inst_print(s, "  Board (UART):                  16550A COM1 $3F8, IRQ4");
+    inst_print(s, "  Board (RTC):                   MC146818 CMOS RTC, IRQ8");
 }
 
 static void inst_cmd_mem(ShellInstance *s)
@@ -2291,7 +2329,7 @@ static int shell_is_builtin(const char *name)
 {
     static const char *builtins[] = {
         "help", "cd", "alias", "unalias", "set", "unset", "path",
-        "setenv", "unsetenv", NULL
+        "setenv", "unsetenv", "showconfig", NULL
     };
     for (int i = 0; builtins[i]; i++) {
         int j = 0;
@@ -2508,7 +2546,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     /* ---- Shell built-in commands (not discrete C: binaries) ---- */
     const char *builtins[] = {
         "help", "cd", "alias", "unalias", "set", "unset", "path",
-        "setenv", "unsetenv",
+        "setenv", "unsetenv", "showconfig",
         NULL
     };
 
@@ -2529,6 +2567,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==6) inst_cmd_path(s, args);
         else if (i==7) inst_cmd_setenv(s, args);
         else if (i==8) inst_cmd_unsetenv(s, args);
+        else if (i==9) inst_cmd_showconfig(s);
         return;
     }
 
