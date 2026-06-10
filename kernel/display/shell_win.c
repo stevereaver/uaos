@@ -1072,54 +1072,61 @@ static void inst_cmd_unalias(ShellInstance *s, const char *arg)
 static void inst_cmd_set(ShellInstance *s, const char *arg)
 {
     if (!arg || !*arg) {
-        /* List all environment variables */
-        if (s->env_count == 0) {
-            inst_print(s, "No environment variables set");
-            return;
-        }
         for (int i = 0; i < s->env_count; i++) {
             char line[MAX_LINE_LEN];
-            scopy(line, s->env_names[i], MAX_LINE_LEN);
-            scat(line, " = ", MAX_LINE_LEN);
+            /* Name padded to 16 chars, then value */
+            int ni = 0;
+            while (s->env_names[i][ni]) { line[ni] = s->env_names[i][ni]; ni++; }
+            while (ni < 16) line[ni++] = ' ';
+            line[ni] = '\0';
             scat(line, s->env_values[i], MAX_LINE_LEN);
             inst_print(s, line);
         }
         return;
     }
 
-    /* Parse: set name value */
+    /* Parse: Set <name> [<value>] — value may be empty */
     char name[MAX_ENV_NAME];
     int i = 0;
     while (*arg && *arg != ' ' && i < MAX_ENV_NAME - 1) { name[i++] = *arg++; }
     name[i] = '\0';
     while (*arg == ' ') arg++;
 
-    if (!name[0]) { inst_print(s, "Usage: set <name> <value>"); return; }
-    if (!*arg) { inst_print(s, "Usage: set <name> <value>"); return; }
+    if (!name[0]) { inst_print(s, "Usage: Set <name> [<value>]"); return; }
 
-    /* Check if env var already exists */
+    /* Check if env var already exists — update silently */
     for (int i = 0; i < s->env_count; i++) {
-        if (seq(s->env_names[i], name)) {
+        if (seq_ci(s->env_names[i], name)) {
             scopy(s->env_values[i], arg, MAX_ENV_VAL);
-            inst_print(s, "Variable updated");
             return;
         }
     }
 
-    /* Add new env var */
+    /* Add new env var — silently */
     if (s->env_count >= MAX_ENV_VARS) {
-        inst_print(s, "Environment variable limit reached");
+        inst_print(s, "Too many variables");
         return;
     }
     scopy(s->env_names[s->env_count], name, MAX_ENV_NAME);
     scopy(s->env_values[s->env_count], arg, MAX_ENV_VAL);
     s->env_count++;
-    inst_print(s, "Variable set");
 }
 
 static void inst_cmd_unset(ShellInstance *s, const char *arg)
 {
-    if (!arg || !*arg) { inst_print(s, "Usage: unset <name>"); return; }
+    if (!arg || !*arg) {
+        /* List local vars same as Set with no args */
+        for (int i = 0; i < s->env_count; i++) {
+            char line[MAX_LINE_LEN];
+            int ni = 0;
+            while (s->env_names[i][ni]) { line[ni] = s->env_names[i][ni]; ni++; }
+            while (ni < 16) line[ni++] = ' ';
+            line[ni] = '\0';
+            scat(line, s->env_values[i], MAX_LINE_LEN);
+            inst_print(s, line);
+        }
+        return;
+    }
 
     char name[MAX_ENV_NAME];
     int i = 0;
@@ -1127,18 +1134,96 @@ static void inst_cmd_unset(ShellInstance *s, const char *arg)
     name[i] = '\0';
 
     for (int i = 0; i < s->env_count; i++) {
-        if (seq(s->env_names[i], name)) {
-            /* Shift remaining env vars down */
+        if (seq_ci(s->env_names[i], name)) {
             for (int j = i; j < s->env_count - 1; j++) {
                 scopy(s->env_names[j], s->env_names[j + 1], MAX_ENV_NAME);
                 scopy(s->env_values[j], s->env_values[j + 1], MAX_ENV_VAL);
             }
             s->env_count--;
-            inst_print(s, "Variable removed");
             return;
         }
     }
-    inst_print(s, "Variable not found");
+}
+
+/* SetEnv <name> <value> — set global env var (local + ENV: file) */
+static void inst_cmd_setenv(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        /* List names of all ENV: variables (read ENV: directory) */
+        RamFsNode *child = VFS_OpenDir("ENV:");
+        while (child) {
+            if (child->type != RAMFS_TYPE_DIR)
+                inst_print(s, child->name);
+            child = child->next_sibling;
+        }
+        return;
+    }
+
+    char name[MAX_ENV_NAME];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < MAX_ENV_NAME - 1) { name[i++] = *arg++; }
+    name[i] = '\0';
+    while (*arg == ' ') arg++;
+
+    if (!name[0]) { inst_print(s, "Usage: SetEnv <name> <value>"); return; }
+
+    /* Update or insert in local env store */
+    int found = 0;
+    for (int j = 0; j < s->env_count; j++) {
+        if (seq_ci(s->env_names[j], name)) {
+            scopy(s->env_values[j], arg, MAX_ENV_VAL);
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        if (s->env_count >= MAX_ENV_VARS) {
+            inst_print(s, "Environment variable limit reached");
+            return;
+        }
+        scopy(s->env_names[s->env_count], name, MAX_ENV_NAME);
+        scopy(s->env_values[s->env_count], arg, MAX_ENV_VAL);
+        s->env_count++;
+    }
+
+    /* Write value to ENV:<name> file */
+    char env_path[64];
+    scopy(env_path, "ENV:", 64);
+    scat(env_path, name, 64);
+    VfsFile fh;
+    if (VFS_Open(&fh, env_path, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
+        VFS_Write(&fh, (const uint8_t *)arg, slen(arg));
+        VFS_Close(&fh);
+    }
+}
+
+/* UnSet <name> — remove global env var (local + ENV: file) */
+static void inst_cmd_unsetenv(ShellInstance *s, const char *arg)
+{
+    if (!arg || !*arg) { inst_print(s, "Usage: UnSet <name>"); return; }
+
+    char name[MAX_ENV_NAME];
+    int i = 0;
+    while (*arg && *arg != ' ' && i < MAX_ENV_NAME - 1) { name[i++] = *arg++; }
+    name[i] = '\0';
+
+    /* Remove from local env store */
+    for (int j = 0; j < s->env_count; j++) {
+        if (seq_ci(s->env_names[j], name)) {
+            for (int k = j; k < s->env_count - 1; k++) {
+                scopy(s->env_names[k], s->env_names[k + 1], MAX_ENV_NAME);
+                scopy(s->env_values[k], s->env_values[k + 1], MAX_ENV_VAL);
+            }
+            s->env_count--;
+            break;
+        }
+    }
+
+    /* Delete ENV:<name> file */
+    char env_path[64];
+    scopy(env_path, "ENV:", 64);
+    scat(env_path, name, 64);
+    VFS_Delete(env_path);
 }
 
 static void inst_cmd_rename(ShellInstance *s, const char *arg)
@@ -2189,7 +2274,8 @@ static void shell_dispatch_line(void *shell_extra, const char *line)
 static int shell_is_builtin(const char *name)
 {
     static const char *builtins[] = {
-        "help", "cd", "alias", "unalias", "set", "unset", "path", NULL
+        "help", "cd", "alias", "unalias", "set", "unset", "path",
+        "setenv", "unsetenv", NULL
     };
     for (int i = 0; builtins[i]; i++) {
         int j = 0;
@@ -2406,6 +2492,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     /* ---- Shell built-in commands (not discrete C: binaries) ---- */
     const char *builtins[] = {
         "help", "cd", "alias", "unalias", "set", "unset", "path",
+        "setenv", "unsetenv",
         NULL
     };
 
@@ -2424,6 +2511,8 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==4) inst_cmd_set(s, args);
         else if (i==5) inst_cmd_unset(s, args);
         else if (i==6) inst_cmd_path(s, args);
+        else if (i==7) inst_cmd_setenv(s, args);
+        else if (i==8) inst_cmd_unsetenv(s, args);
         return;
     }
 
@@ -2483,8 +2572,59 @@ static void run_cmd(ShellInstance *s, const char *line)
     inst_print(s, msg);
 }
 
+/* Expand $VarName references in src into dst[max].  Reads local env store.
+ * Also reads ENV:<name> file as fallback for vars not in local store. */
+static void expand_vars(ShellInstance *s, const char *src, char *dst, int max)
+{
+    int di = 0;
+    while (*src && di < max - 1) {
+        if (*src == '$') {
+            src++;
+            char vname[MAX_ENV_NAME];
+            int vi = 0;
+            while (*src && (*src == '_' ||
+                   (*src >= 'A' && *src <= 'Z') ||
+                   (*src >= 'a' && *src <= 'z') ||
+                   (*src >= '0' && *src <= '9')) && vi < MAX_ENV_NAME - 1)
+                vname[vi++] = *src++;
+            vname[vi] = '\0';
+            if (!vi) { if (di < max - 1) dst[di++] = '$'; continue; }
+            /* Look up in local store first */
+            const char *val = NULL;
+            for (int i = 0; i < s->env_count; i++) {
+                if (seq_ci(s->env_names[i], vname)) { val = s->env_values[i]; break; }
+            }
+            /* Fallback: read from ENV:<name> file */
+            if (!val) {
+                static char env_file_buf[MAX_ENV_VAL];
+                char env_path[64];
+                scopy(env_path, "ENV:", 64);
+                scat(env_path, vname, 64);
+                VfsFile fh;
+                if (VFS_Open(&fh, env_path, VFS_READ)) {
+                    uint32_t n = VFS_Read(&fh, (uint8_t *)env_file_buf, MAX_ENV_VAL - 1);
+                    env_file_buf[n] = '\0';
+                    VFS_Close(&fh);
+                    val = env_file_buf;
+                }
+            }
+            if (val) {
+                while (*val && di < max - 1) dst[di++] = *val++;
+            }
+        } else {
+            dst[di++] = *src++;
+        }
+    }
+    dst[di] = '\0';
+}
+
 static void inst_dispatch(ShellInstance *s, const char *line)
 {
+    /* Expand $variables before anything else */
+    char expanded_line[MAX_LINE_LEN];
+    expand_vars(s, line, expanded_line, MAX_LINE_LEN);
+    line = expanded_line;
+
     /* Echo prompt */
     char echo_line[MAX_LINE_LEN];
     scopy(echo_line, s->cwd, MAX_LINE_LEN);
