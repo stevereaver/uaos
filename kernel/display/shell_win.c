@@ -164,6 +164,21 @@ static int seq(const char *a, const char *b)
     return a[i] == b[i];
 }
 
+static int seq_ci(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    char ca = *a, cb = *b;
+    if (ca >= 'A' && ca <= 'Z') ca += 32;
+    if (cb >= 'A' && cb <= 'Z') cb += 32;
+    return ca == cb;
+}
+
 /* =========================================================================
  * Per-instance rendering
  * ========================================================================= */
@@ -2326,7 +2341,7 @@ static void run_cmd(ShellInstance *s, const char *line)
     char expanded[MAX_LINE_LEN];
     const char *cmd_to_run = line;
     for (int i = 0; i < s->alias_count; i++) {
-        if (seq(s->alias_names[i], first_word)) {
+        if (seq_ci(s->alias_names[i], first_word)) {
             /* Expand alias: alias_value + remaining args */
             scopy(expanded, s->alias_values[i], MAX_LINE_LEN);
             while (*p == ' ') p++;

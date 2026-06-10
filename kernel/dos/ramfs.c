@@ -37,6 +37,21 @@ static int seq(const char *a, const char *b)
     return *a == *b;
 }
 
+static int seq_ci(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    char ca = *a, cb = *b;
+    if (ca >= 'A' && ca <= 'Z') ca += 32;
+    if (cb >= 'A' && cb <= 'Z') cb += 32;
+    return ca == cb;
+}
+
 static void scopy(char *dst, const char *src, int max)
 {
     int i = 0;
@@ -113,7 +128,7 @@ static RamFsNode *find_child(RamFsNode *dir, const char *name)
 {
     RamFsNode *c = dir->first_child;
     while (c) {
-        if (seq(c->name, name)) return c;
+        if (seq_ci(c->name, name)) return c;
         c = c->next_sibling;
     }
     return NULL;
