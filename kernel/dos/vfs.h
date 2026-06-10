@@ -19,6 +19,7 @@
 typedef struct {
     RamFsNode *node;    /* NULL = invalid / not open */
     uint32_t   pos;     /* current read/write position */
+    int        nil;     /* 1 = NIL: handle (discard writes, EOF on read) */
 } VfsFile;
 
 /* -------------------------------------------------------------------------

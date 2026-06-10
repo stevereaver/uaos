@@ -233,14 +233,33 @@ int VFS_GetMountName(int idx, char *dst, int max)
  * VFS_Open
  * ========================================================================= */
 
+/* Return 1 if path is "NIL:" (case-insensitive) */
+static int is_nil(const char *path)
+{
+    if (!path) return 0;
+    const char *p = path;
+    while (*p == ' ') p++;
+    if ((p[0] == 'N' || p[0] == 'n') &&
+        (p[1] == 'I' || p[1] == 'i') &&
+        (p[2] == 'L' || p[2] == 'l') &&
+        p[3] == ':') return 1;
+    return 0;
+}
+
 int VFS_Open(VfsFile *fh, const char *path, int flags)
 {
     fh->node = NULL;
     fh->pos  = 0;
+    fh->nil  = 0;
 
     /* Expand assigns in path */
     char resolved_path[128];
     if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return 0;
+
+    if (is_nil(resolved_path)) {
+        fh->nil = 1;
+        return 1;
+    }
 
     char vol_name[16];
     if (!extract_vol(resolved_path, vol_name, 16)) return 0;
@@ -268,10 +287,12 @@ void VFS_Close(VfsFile *fh)
 {
     fh->node = NULL;
     fh->pos  = 0;
+    fh->nil  = 0;
 }
 
 uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len)
 {
+    if (fh->nil) return 0; /* EOF immediately */
     if (!fh->node) return 0;
     uint32_t got = RamFS_Read(fh->node, fh->pos, buf, len);
     fh->pos += got;
@@ -284,6 +305,7 @@ uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len)
 
 uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
 {
+    if (fh->nil) return len; /* discard silently */
     if (!fh->node || fh->node->type != RAMFS_TYPE_FILE) return 0;
 
     uint32_t end = fh->pos + len;
@@ -321,12 +343,14 @@ uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
 
 void VFS_Seek(VfsFile *fh, uint32_t pos)
 {
+    if (fh->nil) return;
     if (!fh->node) return;
     fh->pos = (pos <= fh->node->size) ? pos : fh->node->size;
 }
 
 uint32_t VFS_Size(VfsFile *fh)
 {
+    if (fh->nil) return 0;
     if (!fh->node) return 0;
     return fh->node->size;
 }
