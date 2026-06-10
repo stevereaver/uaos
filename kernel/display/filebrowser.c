@@ -234,8 +234,10 @@ typedef struct {
     int              win_x, win_y, win_w, win_h;
     /* Icon drag state */
     int              drag_icon;       /* -1 = none, >=0 = entry index being dragged */
+    int              drag_active;     /* 1 = dragging visually (threshold passed) */
     int              drag_off_x, drag_off_y; /* offset from icon top-left at press */
     int              drag_x, drag_y;  /* current screen position of dragged icon */
+    int              drag_start_x, drag_start_y; /* mouse position at press */
 } Browser;
 
 static Browser g_browsers[MAX_BROWSERS];
@@ -302,7 +304,8 @@ static void browser_key(char c)
             WM_CloseWindow(fh);
             g_browsers[i].wm_handle = -1;
             g_browsers[i].volume[0] = '\0';
-            g_browsers[i].drag_icon = -1;
+            g_browsers[i].drag_icon   = -1;
+            g_browsers[i].drag_active = 0;
             return;
         }
     }
@@ -514,11 +517,14 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
         int iy       = grid_base + drag_row * ICON_ROW_H;
         int ix       = cell_x + (cell_w - ICON_SZ) / 2;
 
-        b->drag_icon   = icon;
-        b->drag_off_x  = mx - ix;
-        b->drag_off_y  = my - iy;
-        b->drag_x      = ix;
-        b->drag_y      = iy;
+        b->drag_icon     = icon;
+        b->drag_active   = 0;
+        b->drag_off_x    = mx - ix;
+        b->drag_off_y    = my - iy;
+        b->drag_x        = ix;
+        b->drag_y        = iy;
+        b->drag_start_x  = mx;
+        b->drag_start_y  = my;
     }
 }
 
@@ -527,6 +533,14 @@ static void browser_mouse_move(int wh, int mx, int my)
     for (int i = 0; i < MAX_BROWSERS; i++) {
         Browser *b = &g_browsers[i];
         if (b->wm_handle == wh && b->drag_icon >= 0) {
+            if (!b->drag_active) {
+                int dx = mx - b->drag_start_x;
+                int dy = my - b->drag_start_y;
+                if (dx < 0) dx = -dx;
+                if (dy < 0) dy = -dy;
+                if (dx < 4 && dy < 4) return; /* below threshold, no redraw */
+                b->drag_active = 1;
+            }
             b->drag_x = mx - b->drag_off_x;
             b->drag_y = my - b->drag_off_y;
             WM_Redraw();
@@ -550,7 +564,8 @@ static void browser_mouse_release(int wh, int mx, int my)
                     b->entry_buffer.entries[target];
                 b->entry_buffer.entries[target] = tmp;
             }
-            b->drag_icon = -1;
+            b->drag_icon   = -1;
+            b->drag_active = 0;
             WM_Redraw();
             return;
         }
@@ -605,20 +620,19 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
     /* Icon grid — offset by scroll_y, strictly clipped to client area */
     int icon_top    = cy + path_h;   /* first pixel icons may appear */
     int icon_bottom = cy + ch - 1;   /* last pixel inside window (1px outline) */
-    int col = 0, row = 0;
     int grid_base = icon_top - scroll_y;
 
     for (int i = 0; e && e[i].name; i++) {
+        if (b->drag_active && b->drag_icon == i)
+            continue; /* dragged icon drawn separately — only hide once drag is active */
+
+        int col       = i % cols;
+        int row       = i / cols;
         int cell_x    = cx + 4 + col * cell_w;
         int iy        = grid_base + row * ICON_ROW_H;
         int ix        = cell_x + (cell_w - ICON_SZ) / 2;
         int icon_top1 = iy + 4;
         int label_bot = iy + 4 + ICON_SZ + LABEL_H + 2;
-
-        if (b->drag_icon == i) {
-            if (++col >= cols) { col = 0; row++; }
-            continue; /* dragged icon drawn separately */
-        }
 
         /* Draw only when the entire icon+label fits within the clip zone */
         if (icon_top1 >= icon_top && label_bot <= icon_bottom) {
@@ -629,22 +643,27 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
                                    cell_w, e[i].name, WB_BLACK, WB_GREY);
             }
         }
-
-        if (++col >= cols) { col = 0; row++; }
     }
 
-    /* Draw dragged icon at its current mouse position */
-    if (b->drag_icon >= 0 && e && e[b->drag_icon].name) {
-        int dx = b->drag_x;
-        int dy = b->drag_y;
-        if (dx < cx) dx = cx;
-        if (dx + ICON_SZ > cx + cw) dx = cx + cw - ICON_SZ;
-        if (dy < cy + path_h) dy = cy + path_h;
-        if (dy + ICON_SZ + LABEL_H + 2 > cy + ch) dy = cy + ch - ICON_SZ - LABEL_H - 2;
-        uint32_t icol = (e[b->drag_icon].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
-        draw_small_icon(dx, dy + 4, e[b->drag_icon].type, icol);
-        draw_label_centred(dx, dy + 4 + ICON_SZ + 2, ICON_SZ,
-                           e[b->drag_icon].name, WB_BLACK, WB_GREY);
+    /* Draw dragged icon at its current mouse position (only once threshold passed) */
+    if (b->drag_active && b->drag_icon >= 0 && e && e[b->drag_icon].name) {
+        /* Total height: 4 (gap) + ICON_SZ (icon) + 2 + LABEL_H (label) */
+        int drag_h = 4 + ICON_SZ + 2 + LABEL_H;
+        int dy_min = cy + path_h;
+        int dy_max = cy + ch - drag_h;
+        /* Only draw if the client area can actually fit the icon */
+        if (dy_max >= dy_min) {
+            int dx = b->drag_x;
+            int dy = b->drag_y;
+            if (dx < cx) dx = cx;
+            if (dx + ICON_SZ > cx + cw) dx = cx + cw - ICON_SZ;
+            if (dy < dy_min) dy = dy_min;
+            if (dy > dy_max) dy = dy_max;
+            uint32_t icol = (e[b->drag_icon].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
+            draw_small_icon(dx, dy + 4, e[b->drag_icon].type, icol);
+            draw_label_centred(dx, dy + 4 + ICON_SZ + 2, ICON_SZ,
+                               e[b->drag_icon].name, WB_BLACK, WB_GREY);
+        }
     }
 
     /* Path bar drawn last so it always appears on top of any icon overflow */

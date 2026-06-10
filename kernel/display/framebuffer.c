@@ -34,6 +34,21 @@ int FB_IsDrawing(void)
     return g_drawing;
 }
 
+uint32_t FB_GetPixel(int x, int y)
+{
+    if ((unsigned)x >= BB_MAX_W || (unsigned)y >= BB_MAX_H) return 0;
+    if (g_drawing) return g_backbuf[y][x];
+    if (!g_fb.valid) return 0;
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        uint32_t *p = (uint32_t *)(base + (uint32_t)y * g_fb.pitch + (uint32_t)x * 4);
+        return *p;
+    } else {
+        uint8_t *p = base + (uint32_t)y * g_fb.pitch + (uint32_t)x * 3;
+        return (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0];
+    }
+}
+
 void FB_Flip(void)
 {
     if (!g_fb.valid || !g_drawing) return;

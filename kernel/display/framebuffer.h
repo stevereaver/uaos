@@ -41,9 +41,10 @@ extern FbState g_fb;
 void FB_Init(uint32_t mb2_info_phys);
 
 /* Double buffering — call BeginDraw before any drawing, Flip to push to screen */
-void FB_BeginDraw(void);
-void FB_Flip(void);
-int  FB_IsDrawing(void);   /* returns 1 while back buffer is active */
+void     FB_BeginDraw(void);
+void     FB_Flip(void);
+int      FB_IsDrawing(void);   /* returns 1 while back buffer is active */
+uint32_t FB_GetPixel(int x, int y); /* reads from back buf if drawing, physical fb otherwise */
 
 /* Primitive drawing --------------------------------------------------------- */
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour);

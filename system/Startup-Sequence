@@ -2,7 +2,23 @@
 ; This script is executed automatically at boot for live Workbench environment
 C:Version >NIL:
 
+
+Assign >NIL: ENV: RAM:ENV
 Assign >NIL: T: RAM:T
+Assign >NIL: Clips: RAM:Clipboards
+Assign >NIL: REXX: S:
+Assign >NIL: PRINTERS: DEVS:Printers
+Assign >NIL: KEYMAPS: DEVS:Keymaps
+Assign >NIL: LOCALE: SYS:Locale
+Assign >NIL: LIBS: SYS:Classes ADD
+Assign >NIL: HELP: LOCALE:Help DEFER
+
+SetEnv Language "english"
+SetEnv Workbench $Workbench
+SetEnv Kickstart $Kickstart
+UnSet Workbench
+UnSet Kickstart
+
 
 ; Welcome message
 echo "Ultimate Amiga OS - Live Workbench Environment"
