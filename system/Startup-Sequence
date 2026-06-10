@@ -1,5 +1,8 @@
 ; Ultimate Amiga OS — Startup-Sequence
 ; This script is executed automatically at boot for live Workbench environment
+C:Version >NIL:
+
+Assign >NIL: T: RAM:T
 
 ; Welcome message
 echo "Ultimate Amiga OS - Live Workbench Environment"
