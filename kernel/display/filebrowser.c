@@ -643,7 +643,7 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
         if (dy + ICON_SZ + LABEL_H + 2 > cy + ch) dy = cy + ch - ICON_SZ - LABEL_H - 2;
         uint32_t icol = (e[b->drag_icon].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
         draw_small_icon(dx, dy + 4, e[b->drag_icon].type, icol);
-        draw_label_centred(dx, dy + 4 + ICON_SZ + 2, cell_w,
+        draw_label_centred(dx, dy + 4 + ICON_SZ + 2, ICON_SZ,
                            e[b->drag_icon].name, WB_BLACK, WB_GREY);
     }
 
