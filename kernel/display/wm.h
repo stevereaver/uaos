@@ -35,6 +35,7 @@ typedef struct {
     int        scroll_y;      /* current vertical scroll offset (pixels)   */
     int        content_w;     /* total content width  (0 = same as client) */
     int        content_h;     /* total content height (0 = same as client) */
+    int        view_h;        /* visible viewport height set by content (0 = use client ch) */
     /* Zoom / maximise state */
     int        zoomed;        /* 1 = currently maximised                   */
     int        restore_x, restore_y, restore_w, restore_h;
@@ -49,8 +50,12 @@ void WM_SetClickHandler(int handle, WM_ClickFn on_click);
 void WM_SetMouseMoveHandler(int handle, WM_MouseMoveFn on_move);
 void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release);
 
-/* Tell the WM the total content size so scrollbars can be proportional */
+/* Tell the WM the total content size and visible viewport height so scrollbars
+ * can be proportional and scroll clamping is correct.
+ * view_h: the actual visible content area height (may differ from client ch
+ * if the window has internal chrome like an input bar). Pass 0 to use ch. */
 void WM_SetScrollInfo(int handle, int content_w, int content_h);
+void WM_SetScrollInfoEx(int handle, int content_w, int content_h, int view_h);
 
 /* Query current scroll offsets */
 int  WM_GetScrollX(int handle);

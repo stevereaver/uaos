@@ -434,7 +434,8 @@ static void scroll_by(int wh, int axis, int delta)
     int cx, cy, cw, ch;
     client_rect(w, &cx, &cy, &cw, &ch);
     if (axis == 0) { /* vertical */
-        int max_s = (w->content_h > ch) ? w->content_h - ch : 0;
+        int vh = (w->view_h > 0) ? w->view_h : ch;
+        int max_s = (w->content_h > vh) ? w->content_h - vh : 0;
         w->scroll_y += delta;
         if (w->scroll_y < 0) w->scroll_y = 0;
         if (w->scroll_y > max_s) w->scroll_y = max_s;
@@ -672,10 +673,11 @@ void WM_MouseEvent(int mx, int my, int btn_left)
             int rx, ry, rw, rh;
             sb_right_rect(w, &rx, &ry, &rw, &rh);
             int track_h = rh - SB * 2;
-            int sv = (w->content_h > 0) ? w->content_h : ch;
-            if (track_h > 0 && sv > ch) {
+            int vh = (w->view_h > 0) ? w->view_h : ch;
+            int sv = (w->content_h > 0) ? w->content_h : vh;
+            if (track_h > 0 && sv > vh) {
                 int dm = my - g_scroll_drag_mbase;
-                int max_s = sv - ch;
+                int max_s = sv - vh;
                 int new_s = g_scroll_drag_base + dm * max_s / track_h;
                 if (new_s < 0) new_s = 0;
                 if (new_s > max_s) new_s = max_s;
@@ -843,6 +845,14 @@ void WM_SetScrollInfo(int handle, int content_w, int content_h)
     g_wins[handle].content_h = content_h;
 }
 
+void WM_SetScrollInfoEx(int handle, int content_w, int content_h, int view_h)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    g_wins[handle].content_w = content_w;
+    g_wins[handle].content_h = content_h;
+    g_wins[handle].view_h    = view_h;
+}
+
 int WM_GetScrollX(int handle)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return 0;
@@ -861,8 +871,10 @@ void WM_SetScrollY(int handle, int y)
     WmWindow *w = &g_wins[handle];
     int cx, cy, cw, ch;
     client_rect(w, &cx, &cy, &cw, &ch);
-    int sv = (w->content_h > ch) ? w->content_h : ch;
-    int max_s = sv - ch;  /* always >= 0 now */
+    /* Use content-supplied view_h if set, otherwise fall back to client ch */
+    int vh = (w->view_h > 0) ? w->view_h : ch;
+    int sv = (w->content_h > vh) ? w->content_h : vh;
+    int max_s = sv - vh;  /* always >= 0 */
     if (y < 0) y = 0;
     if (y > max_s) y = max_s;
     w->scroll_y = y;

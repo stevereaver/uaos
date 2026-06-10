@@ -183,6 +183,30 @@ static int seq_ci(const char *a, const char *b)
  * Per-instance rendering
  * ========================================================================= */
 
+static inline void outb_ser(uint16_t port, uint8_t val)
+{
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+static inline uint8_t inb_ser(uint16_t port)
+{
+    uint8_t v;
+    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+static inline void _ser_putc(char c) {
+    while ((inb_ser(0x3F8 + 5) & 0x20) == 0) {}
+    outb_ser(0x3F8, (uint8_t)c);
+    if (c == '\n') outb_ser(0x3F8, '\r');
+}
+static inline void _ser_puts(const char *s) { while (*s) _ser_putc(*s++); }
+static inline void _ser_putd(int v) {
+    char buf[12]; int i = 0;
+    if (v == 0) { _ser_putc('0'); return; }
+    if (v < 0) { _ser_putc('-'); v = -v; }
+    while (v > 0) { buf[i++] = '0' + (v % 10); v /= 10; }
+    while (i > 0) _ser_putc(buf[--i]);
+}
+
 static void inst_draw_contents(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
@@ -216,13 +240,15 @@ static void inst_draw_history(ShellInstance *s)
     int max_chars = (ww - BORDER_L - BORDER_R - 8) / 8;
     if (max_chars < 1) max_chars = 1;
 
-    /* When not scrolled up, always pin to the bottom regardless of geometry
-     * timing — avoids missing last lines due to stale wh/scroll_y mismatch. */
+    /* Derive start line directly from WM scroll_y.
+     * scroll_y=0 -> top of content, scroll_y=max -> bottom (newest lines). */
     int start;
-    if (s->hist_scroll == 0) {
-        start = s->hist_count - rows;
+    if (s->wm_handle >= 0) {
+        int sy = WM_GetScrollY(s->wm_handle);
+        start = sy / 16;
     } else {
-        start = s->hist_count - rows - s->hist_scroll;
+        start = s->hist_count - rows;
+        if (start < 0) start = 0;
     }
     if (start < 0) start = 0;
     for (int r = 0; r < rows; r++) {
@@ -317,10 +343,12 @@ static void inst_update_scrollinfo(ShellInstance *s)
 {
     if (s->wm_handle < 0) return;
     int rows = inst_rows(s);
+    int view_h    = rows * 16;
     int content_h = s->hist_count * 16;
-    int view_h = rows * 16;
-    /* Ensure content_h >= view_h so scrollbar range is valid */
-    WM_SetScrollInfo(s->wm_handle, 0, content_h > view_h ? content_h : view_h);
+    if (content_h < view_h) content_h = view_h;
+    /* Pass view_h so WM_SetScrollY clamps against the history area,
+     * not the full client height which includes input bar + margins. */
+    WM_SetScrollInfoEx(s->wm_handle, 0, content_h, view_h);
 }
 
 /* Sync shell's hist_scroll from WM's scroll_y. Call before drawing to reflect user scrollbar interaction. */
@@ -366,15 +394,6 @@ static inline uint8_t inb(uint16_t port)
     return v;
 }
 
-static inline void _ser_putc(char c) {
-    while ((inb(0x3F8 + 5) & 0x20) == 0) {}
-    outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { _ser_putc('\r'); }
-}
-static inline void _ser_puts(const char *s) {
-    while (*s) _ser_putc(*s++);
-}
-
 static void inst_print(ShellInstance *s, const char *line)
 {
     /* Also mirror to serial port so QEMU -serial stdio captures emu traces */
@@ -391,10 +410,7 @@ static void inst_print(ShellInstance *s, const char *line)
     int slot = s->hist_count % MAX_HIST_LINES;
     scopy(g_hist_buf[s->index][slot], line, MAX_LINE_LEN);
     s->hist_count++;
-    s->hist_scroll = 0;
-    s->auto_scroll = 1;  /* draw shim will pin to bottom with fresh geometry */
-    /* Update WM content size so scrollbar thumb adapts to new content */
-    inst_update_scrollinfo(s);
+    s->auto_scroll = 1;
     WM_Redraw();
 }
 
@@ -2691,19 +2707,25 @@ static void inst_handle_key(ShellInstance *s, char c)
 {
     if (!g_fb.valid) return;
     if (c == VKEY_PGUP) {
-        int rows = inst_rows(s);
-        int max_scroll = s->hist_count - rows;
-        if (max_scroll < 0) max_scroll = 0;
-        s->hist_scroll += SCROLL_LINES;
-        if (s->hist_scroll > max_scroll) s->hist_scroll = max_scroll;
-        inst_push_scroll_to_wm(s);
+        if (s->wm_handle >= 0) {
+            int sy = WM_GetScrollY(s->wm_handle);
+            sy -= SCROLL_LINES * 16;
+            if (sy < 0) sy = 0;
+            WM_SetScrollY(s->wm_handle, sy);
+        }
         inst_draw_history(s);
         return;
     }
     if (c == VKEY_PGDN) {
-        s->hist_scroll -= SCROLL_LINES;
-        if (s->hist_scroll < 0) s->hist_scroll = 0;
-        inst_push_scroll_to_wm(s);
+        if (s->wm_handle >= 0) {
+            int rows = inst_rows(s);
+            int sy = WM_GetScrollY(s->wm_handle);
+            int max_sy = (s->hist_count - rows) * 16;
+            if (max_sy < 0) max_sy = 0;
+            sy += SCROLL_LINES * 16;
+            if (sy > max_sy) sy = max_sy;
+            WM_SetScrollY(s->wm_handle, sy);
+        }
         inst_draw_history(s);
         return;
     }
@@ -2820,18 +2842,17 @@ static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
         inst_update_scrollinfo(s); \
     } \
     if (s->auto_scroll) { \
-        /* New output arrived — pin to bottom using fresh geometry */ \
-        s->hist_scroll = 0; \
         s->auto_scroll = 0; \
         if (s->wm_handle >= 0) { \
-            int rows2 = inst_rows(s); \
+            int rows2    = inst_rows(s); \
+            int view_h2  = rows2 * 16; \
+            int cont_h2  = s->hist_count * 16; \
+            if (cont_h2 < view_h2) cont_h2 = view_h2; \
+            WM_SetScrollInfoEx(s->wm_handle, 0, cont_h2, view_h2); \
             int from_top2 = s->hist_count - rows2; \
             if (from_top2 < 0) from_top2 = 0; \
             WM_SetScrollY(s->wm_handle, from_top2 * 16); \
         } \
-    } else if (s->wm_handle >= 0) { \
-        /* Sync from WM scroll_y to reflect user scrollbar interaction */ \
-        inst_sync_from_wm(s); \
     } \
     inst_draw_contents(s); inst_draw_history(s); inst_draw_input(s); } \
 static void shell_key_##N(char c) { inst_handle_key(&g_shells[N],c); }
