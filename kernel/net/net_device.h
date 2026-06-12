@@ -123,9 +123,21 @@ int  netdev_is_up(void);
 
 /*
  * Register the built-in VirtIO-Net adapter as the active device.
- * Call this from net_stack_init() at boot.  When a real hardware driver is
- * added, call netdev_register(&your_device) instead of this.
+ * Used as fallback when no other driver is found.
  */
 void netdev_register_virtio_net(void);
+
+/*
+ * Register the Intel 82540EM (e1000) adapter as the active device.
+ * Called automatically by net_stack_init_ex() when an e1000 is present.
+ */
+void netdev_register_e1000(void);
+
+/*
+ * Auto-probe all known drivers and register the first one found.
+ * Tries e1000 first (real hardware), then virtio-net (virtual).
+ * Called by net_stack_init_ex() before netdev_init().
+ */
+void netdev_probe(void);
 
 #endif /* UAOS_NET_DEVICE_H */

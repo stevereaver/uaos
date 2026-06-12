@@ -1,19 +1,25 @@
 /*
- * net_device.c — UAOS Network Device Registry and VirtIO-Net Adapter
+ * net_device.c — UAOS Network Device Registry, VirtIO-Net and e1000 Adapters
  *
- * Two responsibilities:
+ * Three responsibilities:
  *
  * 1. Global device registry: keeps a pointer to the one active NetDevice
  *    and exposes the netdev_* convenience wrappers used by the stack.
  *
- * 2. VirtIO-Net adapter: a static NetDevice instance that wraps the
- *    existing virtio_net.c driver.  This is the default device registered
- *    at boot.  When a real hardware driver is written it simply provides
- *    its own NetDevice and calls netdev_register() instead.
+ * 2. VirtIO-Net adapter: wraps virtio_net.c behind the NetDevice interface.
+ *    Used when running under QEMU with -device virtio-net-pci.
+ *
+ * 3. e1000 adapter: wraps e1000.c behind the NetDevice interface.
+ *    Used when running under VirtualBox (Intel PRO/1000 MT) or QEMU
+ *    with -device e1000.
+ *
+ * netdev_probe() tries e1000 first (real/virtual hardware), then falls back
+ * to virtio-net.  net_stack_init_ex() calls netdev_probe() automatically.
  */
 
 #include "net_device.h"
 #include "../drivers/virtio_net.h"
+#include "../drivers/e1000.h"
 
 /* -------------------------------------------------------------------------
  * Global registry
@@ -128,11 +134,96 @@ static NetDevice g_virtio_net_device = {
 
 /*
  * netdev_register_virtio_net() — register the built-in VirtIO-Net adapter.
- * Called from net_stack_init() before netdev_init().
- * When a real hardware driver exists, call netdev_register(&your_device)
- * instead and this function need not be called.
  */
 void netdev_register_virtio_net(void)
 {
+    netdev_register(&g_virtio_net_device);
+}
+
+/* -------------------------------------------------------------------------
+ * e1000 adapter
+ *
+ * Wraps e1000.c behind the NetDevice interface.
+ * e1000_rx_cb and netdev_rx_fn have identical signatures so the cast is safe.
+ * -------------------------------------------------------------------------
+ */
+
+static int e1k_init(NetDevice *dev)
+{
+    (void)dev;
+    return e1000_init();
+}
+
+static void e1k_get_mac(NetDevice *dev, uint8_t *buf)
+{
+    (void)dev;
+    e1000_get_mac(buf);
+}
+
+static int e1k_send(NetDevice *dev, const uint8_t *data, uint16_t len)
+{
+    (void)dev;
+    return e1000_send(data, len);
+}
+
+static void e1k_poll(NetDevice *dev)
+{
+    (void)dev;
+    e1000_poll();
+}
+
+static void e1k_set_rx_callback(NetDevice *dev, netdev_rx_fn cb)
+{
+    (void)dev;
+    e1000_set_rx_callback((e1000_rx_cb)cb);
+}
+
+static void e1k_setup_irq(NetDevice *dev)
+{
+    (void)dev;
+    e1000_setup_irq();
+}
+
+static NetDevice g_e1000_device = {
+    .name            = "e1000",
+    .init            = e1k_init,
+    .get_mac         = e1k_get_mac,
+    .send            = e1k_send,
+    .poll            = e1k_poll,
+    .set_rx_callback = e1k_set_rx_callback,
+    .setup_irq       = e1k_setup_irq,
+    .priv            = 0,
+};
+
+void netdev_register_e1000(void)
+{
+    netdev_register(&g_e1000_device);
+}
+
+/* -------------------------------------------------------------------------
+ * netdev_probe() — try all known drivers, register the first found.
+ *
+ * Priority order:
+ *   1. e1000  — Intel PRO/1000 (VirtualBox, QEMU -device e1000)
+ *   2. virtio-net — QEMU -device virtio-net-pci (default QEMU)
+ *
+ * The actual hardware detection happens inside each driver's init(), so
+ * we register the candidate and then let netdev_init() call init().
+ * If init() returns 0 we try the next candidate.
+ *
+ * Note: this function sets the registered device but does NOT call
+ * netdev_init() — net_stack_init_ex() does that separately.
+ * -------------------------------------------------------------------------
+ */
+void netdev_probe(void)
+{
+    /* Try e1000 first.  We do a lightweight PCI probe by temporarily
+     * registering it and calling init().  If init() fails (device not
+     * present) we fall through to virtio-net. */
+    netdev_register(&g_e1000_device);
+    if (netdev_init()) return;   /* e1000 found and initialised */
+
+    /* Fall back to VirtIO-Net */
+    g_up = 0;   /* reset flag set by the failed e1000 attempt */
     netdev_register(&g_virtio_net_device);
 }

@@ -269,6 +269,7 @@ for src in \
     "${REPO_ROOT}/kernel/irq/rtc.c" \
     "${REPO_ROOT}/kernel/irq/virtio_blk.c" \
     "${REPO_ROOT}/kernel/drivers/virtio_net.c" \
+    "${REPO_ROOT}/kernel/drivers/e1000.c" \
     "${REPO_ROOT}/kernel/net/eth.c" \
     "${REPO_ROOT}/kernel/net/arp.c" \
     "${REPO_ROOT}/kernel/net/ip.c" \
@@ -471,6 +472,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/rtc.o" \
     "${BUILD_DIR}/obj/virtio_blk.o" \
     "${BUILD_DIR}/obj/virtio_net.o" \
+    "${BUILD_DIR}/obj/e1000.o" \
     "${BUILD_DIR}/obj/eth.o" \
     "${BUILD_DIR}/obj/arp.o" \
     "${BUILD_DIR}/obj/ip.o" \

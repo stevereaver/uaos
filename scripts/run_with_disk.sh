@@ -42,7 +42,7 @@ if [ "$NET" = "bridge" ]; then
     NETDEV_ARGS="-netdev tap,id=n0,ifname=${TAP},script=no,downscript=no"
 else
     # user-mode NAT: QEMU built-in DHCP serves 10.0.2.15
-    NETDEV_ARGS="-netdev user,id=n0"
+    NETDEV_ARGS="-netdev user,id=n0,net=10.0.2.0/24,host=10.0.2.2,restrict=off"
 fi
 
 SERIAL_LOG=/tmp/uaos_serial.log

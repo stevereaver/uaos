@@ -22,12 +22,14 @@ static void rx_callback(const uint8_t *frame, uint16_t len)
 int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
                       ipv4_t fallback_nm, uint32_t dhcp_timeout_ms)
 {
-    /* Register the built-in VirtIO-Net adapter if no device was registered
-     * externally.  Real hardware drivers call netdev_register() before
-     * net_stack_init() to override this. */
-    if (!netdev_is_up()) netdev_register_virtio_net();
+    /* Auto-probe all known drivers (e1000 first, then virtio-net) and
+     * initialise the first one found.  Callers may call netdev_register()
+     * before net_stack_init() to override this with a specific driver. */
+    if (!netdev_is_up()) netdev_probe();
 
-    if (!netdev_init()) return 0;
+    /* netdev_probe() already called netdev_init() internally;
+     * if nothing was found both calls returned 0 and g_up is still 0. */
+    if (!netdev_is_up()) return 0;
 
     uint8_t mac[ETH_ALEN];
     netdev_get_mac(mac);
