@@ -458,16 +458,18 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     netdev_set_rx_callback(dhcp_rx_cb);
 
     /* --- Phase 1: DISCOVER with retries ---
-     * Send a DISCOVER every 500 ms until we get an OFFER or time out.
-     * Real DHCP servers (especially through a bridge) may need 1-3 s
-     * to respond after the NIC link comes up. */
+     * Send a DISCOVER every 1500 ms until we get an OFFER or time out.
+     * Observed: PiHole (dnsmasq) over a bridged Wi-Fi adapter can take
+     * ~1.4 s to deliver the OFFER after the DISCOVER arrives.  Retrying
+     * too quickly (e.g. every 500 ms) floods the server and causes it to
+     * batch all its OFFERs together, arriving AFTER our window closes. */
     uint32_t waited = 0;
     uint32_t next_discover = 0;  /* send immediately on first iteration */
     while (!g_dhcp_got && waited < timeout_ms) {
         if (waited >= next_discover) {
             _dh_puts("[DHCP] sending DISCOVER (t="); _dh_phex(waited); _dh_puts(")\n");
             dhcp_send(DHCPDISCOVER, 0, 0);
-            next_discover = waited + 500;  /* retry every 500 ms */
+            next_discover = waited + 1500;  /* retry every 1.5 s */
         }
         dhcp_delay_ms(10);
         netdev_poll();

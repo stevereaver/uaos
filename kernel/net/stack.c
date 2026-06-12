@@ -59,11 +59,11 @@ int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
 
 int net_stack_init(ipv4_t ip, ipv4_t gateway, ipv4_t netmask)
 {
-    /* Try DHCP for up to 2 seconds; fall back to static only if no reply.
+    /* Try DHCP for up to 5 seconds; fall back to static only if no reply.
      * NAT (QEMU/VirtualBox) replies within ~50 ms; bridged mode with a
-     * real router typically replies within 1 s.  The DHCP client retries
-     * DISCOVER every 500 ms within this window. */
-    return net_stack_init_ex(ip, gateway, netmask, 2000);
+     * real router can take 1-2 s to respond (observed: ~1.4 s via PiHole).
+     * The DHCP client retries DISCOVER every 1.5 s within this window. */
+    return net_stack_init_ex(ip, gateway, netmask, 5000);
 }
 
 int  net_stack_is_up(void)    { return g_up; }
