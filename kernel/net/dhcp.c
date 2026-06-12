@@ -107,11 +107,14 @@ static void dhcp_delay_ms(uint32_t ms)
  * ------------------------------------------------------------------------- */
 static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
 {
+    /* Log every frame seen during DHCP so we can diagnose receive issues */
+    _dh_puts("[DHCP] rx frame len="); _dh_phex(len);
+    uint16_t et = (uint16_t)((frame[12]<<8)|frame[13]);
+    _dh_puts(" et="); _dh_phex(et); _dh_putc('\n');
+
     if (len < ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + sizeof(DhcpPkt) - 308)
         return;
 
-    /* Check ethertype = IP */
-    uint16_t et = (uint16_t)((frame[12]<<8)|frame[13]);
     if (et != 0x0800) return;
 
     const uint8_t *ip = frame + ETH_HDR_LEN;

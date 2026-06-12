@@ -55,6 +55,12 @@ void netdev_register(NetDevice *dev)
 
 int netdev_is_up(void)  { return g_up; }
 
+const char *netdev_name(void)
+{
+    if (g_netdev && g_netdev->name) return g_netdev->name;
+    return "unknown";
+}
+
 int netdev_init(void)
 {
     if (!g_netdev || !g_netdev->init) return 0;

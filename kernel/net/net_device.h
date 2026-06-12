@@ -113,13 +113,14 @@ void netdev_register(NetDevice *dev);
  * Convenience wrappers — these forward to the registered device.
  * The stack and tools use ONLY these; they never call virtio_net_* directly.
  */
-int  netdev_init(void);
-void netdev_get_mac(uint8_t *buf);
-int  netdev_send(const uint8_t *data, uint16_t len);
-void netdev_poll(void);
-void netdev_set_rx_callback(netdev_rx_fn cb);
-void netdev_setup_irq(void);
-int  netdev_is_up(void);
+int         netdev_init(void);
+void        netdev_get_mac(uint8_t *buf);
+int         netdev_send(const uint8_t *data, uint16_t len);
+void        netdev_poll(void);
+void        netdev_set_rx_callback(netdev_rx_fn cb);
+void        netdev_setup_irq(void);
+int         netdev_is_up(void);
+const char *netdev_name(void);   /* returns driver name, e.g. "e1000" or "virtio-net" */
 
 /*
  * Register the built-in VirtIO-Net adapter as the active device.
