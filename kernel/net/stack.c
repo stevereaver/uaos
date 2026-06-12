@@ -72,6 +72,25 @@ void net_stack_poll(void)     { if (g_up) netdev_poll(); }
 void net_stack_tick(void)     { if (g_up) tcp_tick(); }
 ipv4_t net_stack_get_ip(void) { return g_ip; }
 
+int net_stack_dhcp_renew(uint32_t timeout_ms)
+{
+    if (!g_up) return 0;
+    uint8_t mac[ETH_ALEN];
+    netdev_get_mac(mac);
+    DhcpLease lease;
+    if (dhcp_request(&lease, timeout_ms)) {
+        g_ip = lease.ip;
+        ipv4_t gw = lease.gateway;
+        ipv4_t nm = lease.netmask ? lease.netmask : IPV4(255,255,255,0);
+        arp_init(g_ip, mac);
+        ip_init(g_ip, gw, nm);
+        netdev_set_rx_callback(rx_callback);
+        g_dhcp_used = 1;
+        return 1;
+    }
+    return 0;
+}
+
 /* -------------------------------------------------------------------------
  * IP <-> string conversion
  * ------------------------------------------------------------------------- */

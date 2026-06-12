@@ -26,6 +26,9 @@ int  net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
 /* Returns 1 if the current IP was obtained via DHCP */
 int  net_stack_dhcp_used(void);
 
+/* Run a fresh DHCP discovery and apply the result. Returns 1 on success. */
+int  net_stack_dhcp_renew(uint32_t timeout_ms);
+
 /* Returns 1 if the network stack is up */
 int  net_stack_is_up(void);
 

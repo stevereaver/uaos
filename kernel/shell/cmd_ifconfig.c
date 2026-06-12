@@ -10,8 +10,31 @@
 #include "../net/net.h"
 #include "../net/net_device.h"
 
+/* Simple string comparison helper */
+static int scmp(const char *a, const char *b)
+{
+    while (*a && *b && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 void Cmd_Ifconfig(NativeCmdCtx *ctx, const char *args)
 {
+    /* ifconfig dhcp  — run a fresh DHCP discovery and apply */
+    if (args && scmp(args, "dhcp") == 0) {
+        PRINT("Running DHCP...");
+        if (net_stack_dhcp_renew(8000)) {
+            char ip_s[20];
+            net_ip_to_str(net_stack_get_ip(), ip_s);
+            char line[64];
+            cmd_scopy(line, "DHCP OK: ", sizeof(line));
+            cmd_scat(line, ip_s, sizeof(line));
+            PRINT(line);
+        } else {
+            PRINT("DHCP failed: no offer received.");
+        }
+        return;
+    }
+
     /* Set mode: ifconfig <ip> <gw> */
     if (args && *args) {
         char ip_s[20]; int i = 0;
@@ -24,7 +47,7 @@ void Cmd_Ifconfig(NativeCmdCtx *ctx, const char *args)
 
         ipv4_t ip = 0, gw = 0;
         if (!net_str_to_ip(ip_s, &ip) || !net_str_to_ip(gw_s, &gw)) {
-            PRINT("Usage: ifconfig [<ip> <gateway>]");
+            PRINT("Usage: ifconfig [dhcp | <ip> <gateway>]");
             return;
         }
         ipv4_t nm = IPV4(255,255,255,0);
