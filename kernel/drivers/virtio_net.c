@@ -95,10 +95,15 @@ static void pci_disable_msi(uint8_t bus, uint8_t dev, uint8_t fn)
     if (!(status & 0x10)) return;
 
     uint8_t cap_ptr = pci_read8(bus, dev, fn, 0x34) & 0xFC;
+    _vn_ps("[VNET] cap_list start="); _vn_ph(cap_ptr); _vn_ps("\n");
     int limit = 48;   /* guard against loops */
     while (cap_ptr && limit--) {
         uint8_t cap_id   = pci_read8(bus, dev, fn, cap_ptr);
         uint8_t cap_next = pci_read8(bus, dev, fn, (uint8_t)(cap_ptr + 1));
+        _vn_ps("[VNET] cap @"); _vn_ph(cap_ptr);
+        _vn_ps(" id="); _vn_ph(cap_id);
+        _vn_ps(" next="); _vn_ph(cap_next);
+        _vn_ps(" mc="); _vn_ph(pci_read16(bus,dev,fn,(uint8_t)(cap_ptr+2))); _vn_ps("\n");
         if (cap_id == 0x05) {
             /* MSI: Message Control is at cap_ptr+2, bit 0 = MSI Enable */
             uint16_t mc = pci_read16(bus, dev, fn, (uint8_t)(cap_ptr + 2));
@@ -108,12 +113,13 @@ static void pci_disable_msi(uint8_t bus, uint8_t dev, uint8_t fn)
             }
         }
         if (cap_id == 0x11) {
-            /* MSI-X: Message Control is at cap_ptr+2, bit 15 = MSI-X Enable */
+            /* MSI-X: Message Control is at cap_ptr+2, bit 15 = MSI-X Enable
+             * Disable unconditionally — QEMU enables it during DRIVER_OK
+             * negotiation even if the bit was clear beforehand. */
             uint16_t mc = pci_read16(bus, dev, fn, (uint8_t)(cap_ptr + 2));
-            if (mc & 0x8000) {
-                _vn_ps("[VNET] disabling MSI-X at cap="); _vn_ph(cap_ptr); _vn_ps("\n");
-                pci_write16(bus, dev, fn, (uint8_t)(cap_ptr + 2), (uint16_t)(mc & ~0x8000));
-            }
+            _vn_ps("[VNET] disabling MSI-X at cap="); _vn_ph(cap_ptr);
+            _vn_ps(" mc="); _vn_ph(mc); _vn_ps("\n");
+            pci_write16(bus, dev, fn, (uint8_t)(cap_ptr + 2), (uint16_t)(mc & ~0x8000));
         }
         cap_ptr = cap_next & 0xFC;
     }
@@ -228,6 +234,8 @@ static uint16_t  g_io_base = 0;
 static uint8_t   g_mac[ETH_ALEN];
 static int       g_up = 0;
 static uint8_t   g_irq_line = 0;
+/* PCI coordinates — stored so we can re-disable MSI-X after DRIVER_OK */
+static uint8_t   g_pci_bus = 0, g_pci_dev = 0, g_pci_fn = 0;
 
 static virtio_net_rx_cb g_rx_cb = 0;
 
@@ -309,8 +317,16 @@ static int pci_find_virtio_net(uint8_t *bus_out, uint8_t *dev_out,
                         uint16_t subsys_dev = (uint16_t)(sub >> 16);
                         if (subsys_dev != 1) continue;
                     }
+                    /* Dump key PCI config regs for debug */
+                    _vn_ps("[VNET] found dev="); _vn_ph(device);
+                    _vn_ps(" bus="); _vn_ph(bus);
+                    _vn_ps(" slot="); _vn_ph(dev); _vn_ps("\n");
+                    _vn_ps("[VNET] status="); _vn_ph(pci_read16((uint8_t)bus,dev,fn,0x06));
+                    _vn_ps(" cmd="); _vn_ph(pci_read16((uint8_t)bus,dev,fn,0x04));
+                    _vn_ps(" cap_ptr="); _vn_ph(pci_read8((uint8_t)bus,dev,fn,0x34)); _vn_ps("\n");
                     /* Read BAR0 (I/O) */
                     uint32_t bar0 = pci_read32((uint8_t)bus, dev, fn, 0x10);
+                    _vn_ps("[VNET] bar0="); _vn_ph(bar0); _vn_ps("\n");
                     if (!(bar0 & 1)) continue;   /* must be I/O space */
                     *iobase_out = (uint16_t)(bar0 & ~3U);
                     /* Read interrupt line */
@@ -376,6 +392,9 @@ int virtio_net_init(void)
 
     g_io_base   = iobase;
     g_irq_line  = irq;
+    g_pci_bus   = bus;
+    g_pci_dev   = dev;
+    g_pci_fn    = fn;
 
     /* 1. Reset device */
     outb(iobase + VIRTIO_PCI_STATUS, VIRTIO_STATUS_RESET);
@@ -415,6 +434,10 @@ int virtio_net_init(void)
     /* 7. Driver OK */
     outb(iobase + VIRTIO_PCI_STATUS,
          VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+
+    /* Re-disable MSI-X after DRIVER_OK: QEMU re-enables it during
+     * feature negotiation even if we cleared it earlier. */
+    pci_disable_msi(bus, dev, fn);
 
     /* Kick RX queue so device knows buffers are available immediately */
     outw(iobase + VIRTIO_PCI_QUEUE_NOTIFY, 0);

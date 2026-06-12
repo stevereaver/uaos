@@ -57,6 +57,6 @@ qemu-system-x86_64 \
   -device ide-cd,drive=cdrom,bus=ide.0 \
   -device virtio-blk-pci,disable-modern=on,drive=blk0 \
   -drive id=blk0,file="$DISK_PATH",if=none,format=qcow2 \
-  ${NETDEV_ARGS} -device virtio-net-pci,netdev=n0 \
+  ${NETDEV_ARGS} -device virtio-net-pci,netdev=n0,disable-modern=on \
   -serial "file:${SERIAL_LOG}" \
   -m 512M -vga virtio -no-reboot -no-shutdown
