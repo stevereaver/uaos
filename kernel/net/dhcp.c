@@ -52,11 +52,14 @@ static void _dh_phex(uint32_t v) {
 #define OPT_SUBNET_MASK     1
 #define OPT_ROUTER          3
 #define OPT_DNS             6
+#define OPT_HOSTNAME       12
 #define OPT_REQUESTED_IP   50
 #define OPT_LEASE_TIME     51
 #define OPT_MSG_TYPE       53
 #define OPT_SERVER_ID      54
 #define OPT_PARAM_REQ      55
+#define OPT_MAX_MSG_SIZE   57
+#define OPT_CLIENT_ID      61
 #define OPT_END           255
 
 typedef struct __attribute__((packed)) {
@@ -244,9 +247,24 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     net_memcpy(dhcp->chaddr, g_dhcp_mac, ETH_ALEN);
     dhcp->magic = net_htonl(DHCP_MAGIC);
 
-    /* Options */
+    /* Options — match what a real Linux dhclient sends so dnsmasq accepts us */
     uint8_t *opt = dhcp->options;
+
+    /* Option 53: DHCP Message Type */
     *opt++ = OPT_MSG_TYPE; *opt++ = 1; *opt++ = msg_type;
+
+    /* Option 61: Client Identifier (type 1 = Ethernet, then 6-byte MAC).
+     * Required by many DHCP servers to uniquely identify the client. */
+    *opt++ = OPT_CLIENT_ID; *opt++ = 7; *opt++ = 1;
+    net_memcpy(opt, g_dhcp_mac, ETH_ALEN); opt += ETH_ALEN;
+
+    /* Option 57: Maximum DHCP Message Size — tell server we can handle 1500 */
+    *opt++ = OPT_MAX_MSG_SIZE; *opt++ = 2; *opt++ = 0x05; *opt++ = 0xDC;
+
+    /* Option 12: Hostname */
+    static const char hostname[] = "uaos";
+    *opt++ = OPT_HOSTNAME; *opt++ = 4;
+    net_memcpy(opt, hostname, 4); opt += 4;
 
     if (requested_ip) {
         *opt++ = OPT_REQUESTED_IP; *opt++ = 4;
@@ -258,11 +276,14 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
         uint32_t sip = net_htonl(server_ip);
         net_memcpy(opt, &sip, 4); opt += 4;
     }
-    /* Parameter request list */
-    *opt++ = OPT_PARAM_REQ; *opt++ = 3;
+
+    /* Option 55: Parameter Request List */
+    *opt++ = OPT_PARAM_REQ; *opt++ = 4;
     *opt++ = OPT_SUBNET_MASK;
     *opt++ = OPT_ROUTER;
     *opt++ = OPT_DNS;
+    *opt++ = OPT_LEASE_TIME;
+
     *opt++ = OPT_END;
 
     /* RFC 951 / RFC 2131: BOOTP/DHCP payload must be at least 300 bytes.
@@ -341,11 +362,15 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     }
     _dh_puts(" dst=FF:FF:FF:FF:FF:FF");
     _dh_puts(" xid="); _dh_phex(g_dhcp_xid);
-    _dh_puts("\n[DHCP] tx dump: ");
+    /* Dump the full DHCP options section so we can verify magic cookie +
+     * option bytes. Start at offset 42 (ETH+IP+UDP) + 236 (DHCP fixed hdr
+     * without options) = byte 278 in the frame, dump 32 bytes of options. */
+    _dh_puts("\n[DHCP] opts: ");
     {
         static const char hx[] = "0123456789ABCDEF";
-        uint16_t dump = total < 64 ? total : 64;
-        for (uint16_t i = 0; i < dump; i++) {
+        uint16_t start = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + 236;
+        uint16_t end   = start + 32 < total ? start + 32 : total;
+        for (uint16_t i = start; i < end; i++) {
             _dh_putc(hx[frame[i]>>4]); _dh_putc(hx[frame[i]&0xF]);
             _dh_putc(' ');
         }
