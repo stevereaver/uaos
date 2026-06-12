@@ -89,7 +89,7 @@ typedef struct __attribute__((packed)) {
 static volatile int     g_dhcp_got    = 0;
 static DhcpPkt          g_dhcp_reply;
 static uint8_t          g_dhcp_mac[ETH_ALEN];
-static uint32_t         g_dhcp_xid    = 0xDEADBEEFUL;
+static uint32_t         g_dhcp_xid    = 0;
 static ipv4_t           g_server_ip   = 0;
 
 /* -------------------------------------------------------------------------
@@ -347,6 +347,19 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     netdev_get_mac(g_dhcp_mac);
     g_dhcp_got = 0;
     g_server_ip = 0;
+
+    /* Generate a random XID from TSC + MAC so repeated boots get different
+     * transaction IDs. Some DHCP servers (e.g. dnsmasq/PiHole) silently
+     * drop requests with a hardcoded/repeated XID. */
+    {
+        uint64_t tsc = rdtsc();
+        g_dhcp_xid = (uint32_t)(tsc ^ (tsc >> 32))
+                   ^ ((uint32_t)g_dhcp_mac[2] << 24)
+                   ^ ((uint32_t)g_dhcp_mac[3] << 16)
+                   ^ ((uint32_t)g_dhcp_mac[4] <<  8)
+                   ^  (uint32_t)g_dhcp_mac[5];
+        if (!g_dhcp_xid) g_dhcp_xid = 0x12345678;  /* never zero */
+    }
 
     _dh_puts("[DHCP] starting, MAC=");
     static const char hx[] = "0123456789ABCDEF";
