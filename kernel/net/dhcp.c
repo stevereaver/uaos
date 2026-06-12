@@ -201,7 +201,11 @@ static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
     }
 
     _dh_puts("[DHCP] rx: valid OFFER/ACK\n");
-    net_memcpy(&g_dhcp_reply, p, sizeof(g_dhcp_reply));
+    /* Copy only as much as the packet contains, zero the rest */
+    uint16_t copy_len = payload_len < (uint16_t)sizeof(g_dhcp_reply)
+                      ? payload_len : (uint16_t)sizeof(g_dhcp_reply);
+    net_memset(&g_dhcp_reply, 0, sizeof(g_dhcp_reply));
+    net_memcpy(&g_dhcp_reply, p, copy_len);
     g_dhcp_got = 1;
 }
 
@@ -251,7 +255,8 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     *opt++ = OPT_DNS;
     *opt++ = OPT_END;
 
-    uint16_t dhcp_len = (uint16_t)sizeof(DhcpPkt);
+    /* Actual DHCP payload length = fixed header up to options[] + bytes written */
+    uint16_t dhcp_len = (uint16_t)((opt - (uint8_t *)dhcp));
 
     /* ---- UDP header ---- */
     uint8_t *udp = frame + ETH_HDR_LEN + IP_HDR_LEN;
