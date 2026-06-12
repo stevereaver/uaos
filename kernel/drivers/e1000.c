@@ -532,9 +532,13 @@ int e1000_init(void)
     tx_init();
 
     /* 9. Configure receive control:
-     *    EN | BAM (accept broadcast) | SECRC (strip CRC) | 2KB buffers */
+     *    EN | UPE (unicast promisc) | MPE (multicast promisc) |
+     *    BAM (broadcast) | SECRC (strip CRC) | 2KB buffers
+     * UPE ensures we receive unicast OFFERs directed to our MAC even if
+     * the hardware address filter has any edge-case timing issue. */
     mmio_w32(g_bar0, E1000_RCTL,
-             E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_SECRC | E1000_RCTL_BSIZE_2K);
+             E1000_RCTL_EN | E1000_RCTL_UPE | E1000_RCTL_MPE |
+             E1000_RCTL_BAM | E1000_RCTL_SECRC | E1000_RCTL_BSIZE_2K);
 
     /* 10. Configure transmit control:
      *     EN | PSP | CT=0x10 (16 collisions) | COLD=0x200 (512, full-duplex) */
