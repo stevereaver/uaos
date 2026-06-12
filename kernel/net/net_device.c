@@ -22,6 +22,25 @@
 #include "../drivers/e1000.h"
 
 /* -------------------------------------------------------------------------
+ * Serial debug helpers (COM1 = 0x3F8) — mirrors the ones in e1000.c
+ * ------------------------------------------------------------------------- */
+static inline void _nd_outb(uint16_t p, uint8_t v)
+{
+    __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p));
+}
+static inline uint8_t _nd_inb(uint16_t p)
+{
+    uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v;
+}
+static void _nd_putc(char c)
+{
+    while ((_nd_inb(0x3FD) & 0x20) == 0) {}
+    _nd_outb(0x3F8, (uint8_t)c);
+    if (c == '\n') { while ((_nd_inb(0x3FD) & 0x20) == 0) {} _nd_outb(0x3F8, '\r'); }
+}
+static void _nd_puts(const char *s) { while (*s) _nd_putc(*s++); }
+
+/* -------------------------------------------------------------------------
  * Global registry
  * ------------------------------------------------------------------------- */
 
@@ -217,13 +236,21 @@ void netdev_register_e1000(void)
  */
 void netdev_probe(void)
 {
-    /* Try e1000 first.  We do a lightweight PCI probe by temporarily
-     * registering it and calling init().  If init() fails (device not
-     * present) we fall through to virtio-net. */
+    /* Try e1000 first. */
+    _nd_puts("[NETDEV] probing e1000...\n");
     netdev_register(&g_e1000_device);
-    if (netdev_init()) return;   /* e1000 found and initialised */
+    if (netdev_init()) {
+        _nd_puts("[NETDEV] e1000 selected\n");
+        return;
+    }
 
-    /* Fall back to VirtIO-Net */
-    g_up = 0;   /* reset flag set by the failed e1000 attempt */
+    /* Fall back to VirtIO-Net — must call netdev_init() here too. */
+    _nd_puts("[NETDEV] e1000 not found, trying virtio-net...\n");
     netdev_register(&g_virtio_net_device);
+    if (netdev_init()) {
+        _nd_puts("[NETDEV] virtio-net selected\n");
+        return;
+    }
+
+    _nd_puts("[NETDEV] no network device found\n");
 }

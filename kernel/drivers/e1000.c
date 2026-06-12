@@ -271,27 +271,45 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
                 if (id == 0xFFFFFFFF) { if (fn == 0) goto next_dev; continue; }
                 uint16_t vendor = (uint16_t)(id & 0xFFFF);
                 uint16_t device = (uint16_t)(id >> 16);
+
+                /* Log every Intel device so we can diagnose missed matches */
+                if (vendor == 0x8086) {
+                    _e_puts("[E1000] Intel PCI dev="); _e_phex(device);
+                    _e_puts(" bus="); _e_phex(bus);
+                    _e_puts(" slot="); _e_phex(dev); _e_puts("\n");
+                }
+
                 if (vendor != 0x8086) continue;
                 int match = 0;
                 for (int k = 0; k_e1000_devids[k]; k++)
                     if (device == k_e1000_devids[k]) { match = 1; break; }
                 if (!match) continue;
 
-                _e_puts("[E1000] found dev="); _e_phex(device);
-                _e_puts(" bus="); _e_phex(bus);
-                _e_puts(" slot="); _e_phex(dev); _e_puts("\n");
+                _e_puts("[E1000] matched dev="); _e_phex(device); _e_puts("\n");
 
-                /* BAR0 — must be a memory BAR (bit 0 = 0) */
-                uint32_t bar0 = pci_read32((uint8_t)bus, dev, fn, 0x10);
-                _e_puts("[E1000] bar0="); _e_phex(bar0); _e_puts("\n");
-                if (bar0 & 1) {
-                    _e_puts("[E1000] BAR0 is I/O, skipping\n");
+                /* Read all BARs — we want the first memory BAR (MMIO).
+                 * On the 82540EM, BAR0 is a 32-bit memory BAR.
+                 * Some virtualisation layers present BAR0 as I/O and
+                 * MMIO at BAR2; we try BAR0 first then BAR2. */
+                uint32_t mmio_base = 0;
+                for (uint8_t bar_off = 0x10; bar_off <= 0x18; bar_off += 4) {
+                    uint32_t bar = pci_read32((uint8_t)bus, dev, fn, bar_off);
+                    _e_puts("[E1000] BAR@"); _e_phex(bar_off);
+                    _e_puts("="); _e_phex(bar); _e_puts("\n");
+                    if (!(bar & 1) && (bar & 0xFFFFFFF0U)) {
+                        mmio_base = bar & 0xFFFFFFF0U;
+                        break;
+                    }
+                }
+                if (!mmio_base) {
+                    _e_puts("[E1000] no usable MMIO BAR found, skipping\n");
                     continue;
                 }
-                uint32_t bar0_base = bar0 & 0xFFFFFFF0U;
+                _e_puts("[E1000] MMIO base="); _e_phex(mmio_base); _e_puts("\n");
 
                 /* IRQ line */
                 uint8_t irq = (uint8_t)(pci_read32((uint8_t)bus, dev, fn, 0x3C) & 0xFF);
+                _e_puts("[E1000] IRQ="); _e_phex(irq); _e_puts("\n");
 
                 /* Enable bus-master + memory space */
                 uint16_t cmd = pci_read16((uint8_t)bus, dev, fn, 0x04);
@@ -302,12 +320,13 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
                 *dev_out  = dev;
                 *fn_out   = fn;
                 *irq_out  = irq;
-                *bar0_out = bar0_base;
+                *bar0_out = mmio_base;
                 return 1;
             }
             next_dev:;
         }
     }
+    _e_puts("[E1000] PCI scan complete, device not found\n");
     return 0;
 }
 
