@@ -26,6 +26,9 @@
 #include "exec/rom_modules.h"
 #include "shell/native_cmd.h"
 #include "exec/uaos_binary.h"
+#include "../net/stack.h"
+#include "../irq/ps2mouse.h"
+#include "../irq/ps2kbd.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -2346,6 +2349,41 @@ static int shell_is_builtin(const char *name)
     return 0;
 }
 
+/* Cooperative yield — pumps mouse/keyboard/WM/network for approximately ms
+ * milliseconds without blocking the event loop.  Native commands that need
+ * to wait (ping, etc.) must call CMD_YIELD() instead of a bare busy-loop. */
+static void shell_yield_ms(void *shell_extra, uint32_t ms)
+{
+    (void)shell_extra;
+
+    /* Calibrated spin: each inner iteration ≈ 10 ns on a 1 GHz+ guest.
+     * We break the total wait into 1 ms slices and pump events each slice. */
+    uint32_t slices = ms ? ms : 1;
+    static int last_mx = -1, last_my = -1, last_btn = -1;
+
+    for (uint32_t slice = 0; slice < slices; slice++) {
+        /* ~1 ms of CPU spin */
+        volatile uint32_t n = 100000UL;
+        while (n--) __asm__ volatile("pause");
+
+        /* Pump mouse */
+        int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
+        if (mx != last_mx || my != last_my || btn != last_btn) {
+            last_mx = mx; last_my = my; last_btn = btn;
+            WM_MouseEvent(mx, my, btn);
+        }
+
+        /* Pump keyboard (but don't dispatch Enter — that would recurse) */
+        while (PS2Kbd_HasChar()) {
+            char c = PS2Kbd_GetChar();
+            WM_KeyEvent(c);
+        }
+
+        /* Poll network */
+        net_stack_poll();
+    }
+}
+
 /* Build a NativeCmdCtx for the given shell instance */
 static NativeCmdCtx shell_make_ctx(ShellInstance *s)
 {
@@ -2360,6 +2398,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.clear_history  = shell_clear_history;
     ctx.is_builtin     = shell_is_builtin;
     ctx.dispatch_line  = shell_dispatch_line;
+    ctx.yield_ms       = shell_yield_ms;
     return ctx;
 }
 

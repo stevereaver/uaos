@@ -57,7 +57,15 @@ typedef struct NativeCmdCtx {
 
     /* For execute: dispatch a command line through the shell */
     void      (*dispatch_line)(void *shell_extra, const char *line);
+
+    /* Cooperative yield — pump mouse/keyboard/WM/network for ~N ms without
+     * blocking the UI.  Commands that busy-wait (ping, etc.) must call this
+     * instead of raw delay loops so the desktop stays responsive. */
+    void      (*yield_ms)(void *shell_extra, uint32_t ms);
 } NativeCmdCtx;
+
+/* Convenience macro — yield N ms from inside a Cmd_* function */
+#define CMD_YIELD(ctx, ms)  do { if ((ctx)->yield_ms) (ctx)->yield_ms((ctx)->shell_extra, (ms)); } while(0)
 
 /* Convenience macro — emit one line from inside a Cmd_* function */
 #define CMD_PRINT(ctx, msg)  (ctx)->print((ctx)->shell, (msg))

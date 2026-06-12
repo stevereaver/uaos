@@ -10,13 +10,6 @@
 #include "../net/net.h"
 #include "../net/arp.h"
 
-/* Busy-wait for approximately N ms (no HPET in freestanding env — uses loop) */
-static void ping_delay_ms(uint32_t ms)
-{
-    volatile uint64_t n = (uint64_t)ms * 100000ULL;
-    while (n--) __asm__ volatile("pause");
-}
-
 void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
 {
     if (!net_stack_is_up()) {
@@ -59,7 +52,7 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
 
     /* Ensure we have an ARP entry for the gateway/target.
      * For remote hosts (e.g. 8.8.8.8) the nexthop is the gateway.
-     * Retry up to ~1 second: send an ARP request and poll for the reply. */
+     * Retry up to ~1 second via CMD_YIELD so the UI stays responsive. */
     uint8_t gw_mac[ETH_ALEN];
     ipv4_t nexthop = dst;
     ipv4_t nm = ip_get_netmask();
@@ -67,11 +60,10 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
     if (!arp_lookup(nexthop, gw_mac)) {
         for (int arp_try = 0; arp_try < 10 && !arp_lookup(nexthop, gw_mac); arp_try++) {
             arp_request(nexthop);
-            ping_delay_ms(100);
-            net_stack_poll();
+            CMD_YIELD(ctx, 100);
         }
         if (!arp_lookup(nexthop, gw_mac)) {
-            PRINT("ping: no ARP reply from gateway — network unreachable");
+            PRINT("ping: no ARP reply from gateway - network unreachable");
             return;
         }
     }
@@ -82,11 +74,10 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
         icmp_ping(dst, (uint16_t)seq);
         sent++;
 
-        /* Wait up to ~1000 ms for a reply */
+        /* Wait up to ~1000 ms for a reply, yielding each 100 ms slice */
         int got = 0;
         for (int t = 0; t < 10; t++) {
-            ping_delay_ms(100);
-            net_stack_poll();
+            CMD_YIELD(ctx, 100);
             if (icmp_got_reply()) { got = 1; break; }
         }
 
