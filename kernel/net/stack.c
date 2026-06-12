@@ -61,8 +61,11 @@ int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
 
 int net_stack_init(ipv4_t ip, ipv4_t gateway, ipv4_t netmask)
 {
-    /* Try DHCP for up to 1 second; fall back to static if no reply */
-    return net_stack_init_ex(ip, gateway, netmask, 1000);
+    /* Try DHCP for up to 3 seconds; fall back to the provided static
+     * addresses only if DHCP genuinely fails.  3 s gives bridged-mode
+     * guests enough time to hear back from a real router, while NAT
+     * (QEMU slirp / VirtualBox NAT) typically replies within ~50 ms. */
+    return net_stack_init_ex(ip, gateway, netmask, 3000);
 }
 
 int  net_stack_is_up(void)    { return g_up; }

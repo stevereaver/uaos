@@ -448,17 +448,24 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Registering VirtIO IRQ...\n");
     virtio_blk_setup_irq();
 
-    /* Initialise VirtIO-Net + TCP/IP stack */
-    kprint("[BOOT] Initialising VirtIO-Net + TCP/IP stack...\n");
-    /* QEMU -netdev user default: guest=10.0.2.15, gateway=10.0.2.2 */
+    /* Initialise network stack (e1000 or virtio-net, auto-detected).
+     * DHCP is tried first (3-second timeout).  The static fallback of
+     * 10.0.2.15/24 gw 10.0.2.2 matches the QEMU/VirtualBox NAT default
+     * and is only used when DHCP receives no reply at all (e.g. no DHCP
+     * server on a bridged network segment with no router). */
+    kprint("[BOOT] Initialising network stack...\n");
     if (net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0))) {
         if (net_stack_dhcp_used()) {
-            kprint("[BOOT] Network up via DHCP\n");
+            char ipbuf[20];
+            net_ip_to_str(net_stack_get_ip(), ipbuf);
+            kprint("[BOOT] Network up via DHCP: ");
+            kprint(ipbuf);
+            kprint("\n");
         } else {
             kprint("[BOOT] Network up: 10.0.2.15/24 gw 10.0.2.2 (static fallback)\n");
         }
     } else {
-        kprint("[BOOT] VirtIO-Net not found (no network).\n");
+        kprint("[BOOT] No network card found.\n");
     }
     BsdSocket_Init();
 

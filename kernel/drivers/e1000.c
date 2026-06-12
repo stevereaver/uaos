@@ -313,18 +313,27 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
 
 /* -------------------------------------------------------------------------
  * EEPROM word read via EERD register
- * The 82540EM EERD format (small EEPROM interface):
- *   bits  7:0  = word address
- *   bit   8    = START
- *   bit   4    = DONE (read-back)
- *   bits 31:16 = data
+ *
+ * Intel 8254x "small EEPROM" interface (used by 82540EM):
+ *   EERD[3:0]   = address (4-bit, wraps every 16 words — but word 0/1/2
+ *                 for the MAC are always in this range)
+ *   EERD[0]     = START  (write 1 to begin)
+ *   EERD[4]     = DONE   (hardware sets 1 when data is ready)
+ *   EERD[31:16] = data   (valid when DONE=1)
+ *
+ * Correct write: (word << 2) | START  — address in bits [3:2], START in [0].
+ *
+ * Note: After a global reset the hardware pre-loads the MAC from the EEPROM
+ * into RAL0/RAH0.  We therefore try RAL0/RAH0 first (the most reliable
+ * method), and only use EERD as a secondary cross-check / fallback.
  * ------------------------------------------------------------------------- */
 static uint16_t eeprom_read(uint16_t word)
 {
-    mmio_w32(g_bar0, E1000_EERD, ((uint32_t)word << 8) | E1000_EERD_START);
-    /* Poll DONE — timeout after ~10 ms */
+    /* Write: address in bits [3:2], START in bit [0] */
+    mmio_w32(g_bar0, E1000_EERD, ((uint32_t)(word & 0x3F) << 2) | E1000_EERD_START);
+    /* Poll DONE (bit 4) — timeout after ~5 ms */
     uint32_t val = 0;
-    for (uint32_t i = 0; i < 100000; i++) {
+    for (uint32_t i = 0; i < 200000; i++) {
         val = mmio_r32(g_bar0, E1000_EERD);
         if (val & E1000_EERD_DONE) break;
         io_delay();
@@ -332,21 +341,53 @@ static uint16_t eeprom_read(uint16_t word)
     return (uint16_t)(val >> 16);
 }
 
-/* Read MAC from EEPROM words 0, 1, 2 */
-static void read_mac_from_eeprom(void)
+/* -------------------------------------------------------------------------
+ * read_mac() — primary path: RAL0/RAH0 registers (loaded from EEPROM by HW)
+ *             fallback: direct EERD word reads
+ *
+ * The 82540EM datasheet (§5.6.1) states that RAL0/RAH0 are initialised from
+ * EEPROM words 0-2 during power-up / reset.  Reading them avoids all EERD
+ * timing and format concerns and is the method used by Linux/BSD e1000 drivers.
+ * We use EERD only when RAL0 reads as zero (e.g. very early in reset).
+ * ------------------------------------------------------------------------- */
+static void read_mac(void)
 {
-    uint16_t w0 = eeprom_read(0);
-    uint16_t w1 = eeprom_read(1);
-    uint16_t w2 = eeprom_read(2);
-    g_mac[0] = (uint8_t)(w0 & 0xFF);
-    g_mac[1] = (uint8_t)(w0 >> 8);
-    g_mac[2] = (uint8_t)(w1 & 0xFF);
-    g_mac[3] = (uint8_t)(w1 >> 8);
-    g_mac[4] = (uint8_t)(w2 & 0xFF);
-    g_mac[5] = (uint8_t)(w2 >> 8);
-    _e_puts("[E1000] MAC=");
+    uint32_t ral = mmio_r32(g_bar0, E1000_RAL0);
+    uint32_t rah = mmio_r32(g_bar0, E1000_RAH0);
+
+    _e_puts("[E1000] RAL0="); _e_phex(ral);
+    _e_puts(" RAH0="); _e_phex(rah); _e_puts("\n");
+
+    /* Check that RAH has the Address Valid bit and RAL is not all-zero */
+    if ((rah & E1000_RAH_AV) && (ral != 0)) {
+        g_mac[0] = (uint8_t)( ral        & 0xFF);
+        g_mac[1] = (uint8_t)((ral >>  8) & 0xFF);
+        g_mac[2] = (uint8_t)((ral >> 16) & 0xFF);
+        g_mac[3] = (uint8_t)((ral >> 24) & 0xFF);
+        g_mac[4] = (uint8_t)( rah        & 0xFF);
+        g_mac[5] = (uint8_t)((rah >>  8) & 0xFF);
+        _e_puts("[E1000] MAC from RAL/RAH: ");
+    } else {
+        /* Fallback: read directly from EEPROM via EERD */
+        _e_puts("[E1000] RAL/RAH empty, trying EERD\n");
+        uint16_t w0 = eeprom_read(0);
+        uint16_t w1 = eeprom_read(1);
+        uint16_t w2 = eeprom_read(2);
+        _e_puts("[E1000] EERD w0="); _e_phex(w0);
+        _e_puts(" w1="); _e_phex(w1);
+        _e_puts(" w2="); _e_phex(w2); _e_puts("\n");
+        g_mac[0] = (uint8_t)(w0 & 0xFF);
+        g_mac[1] = (uint8_t)(w0 >> 8);
+        g_mac[2] = (uint8_t)(w1 & 0xFF);
+        g_mac[3] = (uint8_t)(w1 >> 8);
+        g_mac[4] = (uint8_t)(w2 & 0xFF);
+        g_mac[5] = (uint8_t)(w2 >> 8);
+        _e_puts("[E1000] MAC from EERD: ");
+    }
+
+    /* Log final MAC */
+    static const char h[] = "0123456789ABCDEF";
     for (int i = 0; i < 6; i++) {
-        static const char h[] = "0123456789ABCDEF";
         _e_putc(h[g_mac[i] >> 4]); _e_putc(h[g_mac[i] & 0xF]);
         if (i < 5) _e_putc(':');
     }
@@ -447,8 +488,8 @@ int e1000_init(void)
     ctrl |=  E1000_CTRL_SLU | E1000_CTRL_ASDE | E1000_CTRL_FD;
     mmio_w32(g_bar0, E1000_CTRL, ctrl);
 
-    /* 5. Read MAC address from EEPROM */
-    read_mac_from_eeprom();
+    /* 5. Read MAC address (from RAL/RAH registers, falling back to EERD) */
+    read_mac();
 
     /* 6. Program MAC address into receive address filter RAL0/RAH0 */
     uint32_t ral = (uint32_t)g_mac[0]
