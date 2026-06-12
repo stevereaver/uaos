@@ -284,7 +284,30 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     udp[2] = 0;  udp[3] = 67;   /* dst port 67 */
     uint16_t udp_len = (uint16_t)(UDP_HDR_LEN + dhcp_len);
     udp[4] = (uint8_t)(udp_len >> 8); udp[5] = (uint8_t)(udp_len);
-    udp[6] = 0; udp[7] = 0;          /* checksum = 0 (optional for UDP) */
+    /* UDP checksum over pseudo-header + UDP header + payload.
+     * Some DHCP servers reject packets with a zero UDP checksum. */
+    {
+        /* pseudo-header: src(4) dst(4) zero(1) proto(1) udplen(2) */
+        uint32_t psum = 0;
+        /* src IP = 0.0.0.0 → contributes 0 */
+        /* dst IP = 255.255.255.255 */
+        psum += 0xFFFFu;
+        psum += 0xFFFFu;
+        /* zero byte + proto 17 */
+        psum += (uint32_t)17;
+        /* UDP length */
+        psum += (uint32_t)udp_len;
+        /* UDP header + data (reuse inet_cksum style) */
+        const uint16_t *wp = (const uint16_t *)udp;
+        uint32_t remaining = udp_len;
+        while (remaining > 1) { psum += *wp++; remaining -= 2; }
+        if (remaining) psum += *(const uint8_t *)wp;
+        while (psum >> 16) psum = (psum & 0xFFFF) + (psum >> 16);
+        uint16_t usum = (uint16_t)(~psum);
+        if (usum == 0) usum = 0xFFFF;  /* zero means disabled; use 0xFFFF */
+        udp[6] = (uint8_t)(usum >> 8);
+        udp[7] = (uint8_t)(usum);
+    }
 
     /* ---- IP header ---- */
     uint8_t *ip = frame + ETH_HDR_LEN;
@@ -318,6 +341,15 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     }
     _dh_puts(" dst=FF:FF:FF:FF:FF:FF");
     _dh_puts(" xid="); _dh_phex(g_dhcp_xid);
+    _dh_puts("\n[DHCP] tx dump: ");
+    {
+        static const char hx[] = "0123456789ABCDEF";
+        uint16_t dump = total < 64 ? total : 64;
+        for (uint16_t i = 0; i < dump; i++) {
+            _dh_putc(hx[frame[i]>>4]); _dh_putc(hx[frame[i]&0xF]);
+            _dh_putc(' ');
+        }
+    }
     _dh_putc('\n');
     netdev_send(frame, total);
 }
