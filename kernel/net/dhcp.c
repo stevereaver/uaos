@@ -93,12 +93,68 @@ static uint32_t         g_dhcp_xid    = 0xDEADBEEFUL;
 static ipv4_t           g_server_ip   = 0;
 
 /* -------------------------------------------------------------------------
- * Busy-wait ~N ms
+ * rdtsc-based timing
+ * We calibrate once against a known ~50ms busy-loop, then use rdtsc for
+ * all subsequent delays so timing is accurate regardless of CPU speed.
  * ------------------------------------------------------------------------- */
+static uint64_t g_tsc_hz = 0;   /* TSC ticks per second, 0 = uncalibrated */
+
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Calibrate TSC against PIT channel 2 (speaker timer).
+ * Programs PIT ch2 for a one-shot count of 59659 ticks @ 1.193182 MHz
+ * = exactly 50 ms, measures TSC ticks elapsed, extrapolates to Hz.
+ * Safe to call before interrupts are enabled. */
+static void dhcp_calibrate_tsc(void)
+{
+    if (g_tsc_hz) return;
+
+    /* Gate PIT channel 2: bit1=gate on, bit0=speaker off */
+    uint8_t old;
+    __asm__ volatile("inb $0x61,%0" : "=a"(old));
+    __asm__ volatile("outb %0,$0x61" :: "a"((uint8_t)((old & ~0x02) | 0x01)));
+
+    /* Programme ch2: mode 0 (one-shot), lsb+msb, binary */
+    __asm__ volatile("outb %0,$0x43" :: "a"((uint8_t)0xB0));
+    /* 59659 = 1193182 / 20  → 50 ms */
+    __asm__ volatile("outb %0,$0x42" :: "a"((uint8_t)(59659 & 0xFF)));
+    __asm__ volatile("outb %0,$0x42" :: "a"((uint8_t)(59659 >> 8)));
+
+    /* Enable gate */
+    __asm__ volatile("outb %0,$0x61" :: "a"((uint8_t)((old & ~0x02) | 0x01)));
+
+    uint64_t t0 = rdtsc();
+
+    /* Wait for OUT pin to go high (bit 5 of port 0x61) */
+    uint8_t s;
+    do { __asm__ volatile("inb $0x61,%0" : "=a"(s)); } while (!(s & 0x20));
+
+    uint64_t t1 = rdtsc();
+
+    /* Restore port 0x61 */
+    __asm__ volatile("outb %0,$0x61" :: "a"(old));
+
+    uint64_t diff = t1 - t0;   /* ticks in ~50 ms */
+    g_tsc_hz = diff * 20;      /* extrapolate to 1 second */
+    _dh_puts("[DHCP] TSC Hz="); _dh_phex((uint32_t)(g_tsc_hz >> 32));
+    _dh_phex((uint32_t)g_tsc_hz); _dh_putc('\n');
+}
+
 static void dhcp_delay_ms(uint32_t ms)
 {
-    volatile uint64_t n = (uint64_t)ms * 100000ULL;
-    while (n--) __asm__ volatile("pause");
+    if (!g_tsc_hz) {
+        /* Fallback before calibration: conservative busy-wait */
+        volatile uint64_t n = (uint64_t)ms * 200000ULL;
+        while (n--) __asm__ volatile("pause");
+        return;
+    }
+    uint64_t end = rdtsc() + (g_tsc_hz * ms / 1000ULL);
+    while (rdtsc() < end) __asm__ volatile("pause");
 }
 
 /* -------------------------------------------------------------------------
@@ -266,6 +322,8 @@ static void parse_offer(const DhcpPkt *p, DhcpLease *lease)
  * ------------------------------------------------------------------------- */
 int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
 {
+    dhcp_calibrate_tsc();
+
     netdev_get_mac(g_dhcp_mac);
     g_dhcp_got = 0;
     g_server_ip = 0;
