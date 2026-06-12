@@ -479,6 +479,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/tcp.o" \
     "${BUILD_DIR}/obj/dhcp.o" \
     "${BUILD_DIR}/obj/stack.o" \
+    "${BUILD_DIR}/obj/net_device.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/utility_lib.o" \
