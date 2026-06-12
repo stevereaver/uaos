@@ -318,11 +318,14 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
         psum += (uint32_t)17;
         /* UDP length */
         psum += (uint32_t)udp_len;
-        /* UDP header + data (reuse inet_cksum style) */
-        const uint16_t *wp = (const uint16_t *)udp;
+        /* UDP header + data — sum as big-endian 16-bit words */
+        const uint8_t *wp = udp;
         uint32_t remaining = udp_len;
-        while (remaining > 1) { psum += *wp++; remaining -= 2; }
-        if (remaining) psum += *(const uint8_t *)wp;
+        while (remaining > 1) {
+            psum += (uint32_t)(((uint16_t)wp[0] << 8) | wp[1]);
+            wp += 2; remaining -= 2;
+        }
+        if (remaining) psum += (uint32_t)wp[0] << 8;
         while (psum >> 16) psum = (psum & 0xFFFF) + (psum >> 16);
         uint16_t usum = (uint16_t)(~psum);
         if (usum == 0) usum = 0xFFFF;  /* zero means disabled; use 0xFFFF */

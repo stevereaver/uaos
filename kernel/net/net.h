@@ -42,10 +42,14 @@ typedef struct { uint8_t b[ETH_ALEN]; } MacAddr;
 /* Internet checksum over len bytes of data */
 static inline uint16_t inet_cksum(const void *data, uint32_t len)
 {
-    const uint16_t *p = (const uint16_t *)data;
+    const uint8_t *p = (const uint8_t *)data;
     uint32_t sum = 0;
-    while (len > 1) { sum += *p++; len -= 2; }
-    if (len) sum += *(const uint8_t *)p;
+    /* Sum as big-endian 16-bit words (network byte order) */
+    while (len > 1) {
+        sum += (uint32_t)(((uint16_t)p[0] << 8) | p[1]);
+        p += 2; len -= 2;
+    }
+    if (len) sum += (uint32_t)(*p) << 8;  /* odd byte in high position */
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return (uint16_t)(~sum);
 }
