@@ -163,10 +163,20 @@ static void dhcp_delay_ms(uint32_t ms)
  * ------------------------------------------------------------------------- */
 static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
 {
-    /* Log every frame seen during DHCP so we can diagnose receive issues */
+    /* Log every frame seen during DHCP with first 32 bytes as hex */
     _dh_puts("[DHCP] rx frame len="); _dh_phex(len);
     uint16_t et = (uint16_t)((frame[12]<<8)|frame[13]);
-    _dh_puts(" et="); _dh_phex(et); _dh_putc('\n');
+    _dh_puts(" et="); _dh_phex(et);
+    _dh_puts(" hdr=");
+    {
+        static const char hx[] = "0123456789ABCDEF";
+        uint16_t dump = len < 32 ? len : 32;
+        for (uint16_t i = 0; i < dump; i++) {
+            _dh_putc(hx[frame[i]>>4]); _dh_putc(hx[frame[i]&0xF]);
+            _dh_putc(' ');
+        }
+    }
+    _dh_putc('\n');
 
     /* Minimum size: ETH + IP + UDP + DHCP header (without full options) */
     uint16_t min_len = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + 240;
