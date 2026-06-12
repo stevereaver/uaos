@@ -544,8 +544,6 @@ int e1000_send(const uint8_t *data, uint16_t len)
     /* Reset head to 0, then set tail to 1 — kicks transmission */
     mmio_w32(g_bar0, E1000_TDH, 0);
     mmio_w32(g_bar0, E1000_TDT, 1);
-
-    _e_puts("[E1000] TX len="); _e_phex(len); _e_puts("\n");
     return 1;
 }
 
@@ -563,7 +561,6 @@ void e1000_poll(void)
         if (!(d->status & E1000_DESC_DD)) break;
 
         uint16_t pkt_len = d->length;
-        _e_puts("[E1000] RX len="); _e_phex(pkt_len); _e_puts("\n");
 
         if (pkt_len > 0 && pkt_len <= E1000_RX_BUFSZ && g_rx_cb) {
             g_rx_cb(g_rx_buf[g_rx_tail], pkt_len);
