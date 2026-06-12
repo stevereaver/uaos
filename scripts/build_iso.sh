@@ -277,6 +277,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/tcp.c" \
     "${REPO_ROOT}/kernel/net/dhcp.c" \
     "${REPO_ROOT}/kernel/net/stack.c" \
+    "${REPO_ROOT}/kernel/net/net_device.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \

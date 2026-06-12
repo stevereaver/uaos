@@ -3,7 +3,7 @@
  */
 #include "arp.h"
 #include "eth.h"
-#include "../drivers/virtio_net.h"
+#include "net_device.h"
 
 static ipv4_t   g_my_ip  = 0;
 static uint8_t  g_my_mac[ETH_ALEN];
@@ -71,7 +71,7 @@ static void arp_send(uint16_t oper, const uint8_t *tha, ipv4_t tpa)
     a->spa   = net_htonl(g_my_ip);
     net_memcpy(a->tha, tha, ETH_ALEN);
     a->tpa   = net_htonl(tpa);
-    virtio_net_send(frame, (uint16_t)sizeof(frame));
+    netdev_send(frame, (uint16_t)sizeof(frame));
 }
 
 void arp_request(ipv4_t target_ip)

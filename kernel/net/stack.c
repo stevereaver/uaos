@@ -7,7 +7,7 @@
 #include "ip.h"
 #include "tcp.h"
 #include "dhcp.h"
-#include "../drivers/virtio_net.h"
+#include "net_device.h"
 
 static int    g_up        = 0;
 static ipv4_t g_ip        = 0;
@@ -22,10 +22,15 @@ static void rx_callback(const uint8_t *frame, uint16_t len)
 int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
                       ipv4_t fallback_nm, uint32_t dhcp_timeout_ms)
 {
-    if (!virtio_net_init()) return 0;
+    /* Register the built-in VirtIO-Net adapter if no device was registered
+     * externally.  Real hardware drivers call netdev_register() before
+     * net_stack_init() to override this. */
+    if (!netdev_is_up()) netdev_register_virtio_net();
+
+    if (!netdev_init()) return 0;
 
     uint8_t mac[ETH_ALEN];
-    virtio_net_get_mac(mac);
+    netdev_get_mac(mac);
 
     ipv4_t ip = fallback_ip;
     ipv4_t gw = fallback_gw;
@@ -46,8 +51,8 @@ int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
     g_ip = ip;
     arp_init(ip, mac);
     ip_init(ip, gw, nm);
-    virtio_net_set_rx_callback(rx_callback);
-    virtio_net_setup_irq();
+    netdev_set_rx_callback(rx_callback);
+    netdev_setup_irq();
     g_up = 1;
     return 1;
 }
@@ -60,7 +65,7 @@ int net_stack_init(ipv4_t ip, ipv4_t gateway, ipv4_t netmask)
 
 int  net_stack_is_up(void)    { return g_up; }
 int  net_stack_dhcp_used(void){ return g_dhcp_used; }
-void net_stack_poll(void)     { if (g_up) virtio_net_poll(); }
+void net_stack_poll(void)     { if (g_up) netdev_poll(); }
 void net_stack_tick(void)     { if (g_up) tcp_tick(); }
 ipv4_t net_stack_get_ip(void) { return g_ip; }
 

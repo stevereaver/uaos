@@ -5,17 +5,17 @@
  *   DISCOVER (broadcast) → OFFER → REQUEST → ACK
  *
  * Uses the UDP layer (port 68 client, port 67 server).
- * All communication is via raw virtio_net_send / eth_rx since the
+ * All communication is via raw netdev_send / eth_rx since the
  * IP layer is not yet up at the time DHCP runs.
  *
- * We send directly via virtio_net_send with broadcast frames, and
- * poll virtio_net_poll() to receive replies into a local RX buffer
+ * We send directly via netdev_send with broadcast frames, and
+ * poll netdev_poll() to receive replies into a local RX buffer
  * registered as a temporary rx_callback.
  */
 #include "dhcp.h"
 #include "net.h"
 #include "eth.h"
-#include "../drivers/virtio_net.h"
+#include "net_device.h"
 
 /* -------------------------------------------------------------------------
  * DHCP packet layout (RFC 2131)
@@ -195,7 +195,7 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     net_memcpy(frame + ETH_ALEN, g_dhcp_mac, ETH_ALEN);
     frame[12] = 0x08; frame[13] = 0x00;
 
-    virtio_net_send(frame, (uint16_t)(ETH_HDR_LEN + ip_tot));
+    netdev_send(frame, (uint16_t)(ETH_HDR_LEN + ip_tot));
 }
 
 /* -------------------------------------------------------------------------
@@ -243,12 +243,12 @@ static void parse_offer(const DhcpPkt *p, DhcpLease *lease)
  * ------------------------------------------------------------------------- */
 int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
 {
-    virtio_net_get_mac(g_dhcp_mac);
+    netdev_get_mac(g_dhcp_mac);
     g_dhcp_got = 0;
     g_server_ip = 0;
 
     /* Register temporary RX callback */
-    virtio_net_set_rx_callback(dhcp_rx_cb);
+    netdev_set_rx_callback(dhcp_rx_cb);
 
     /* --- Phase 1: DISCOVER --- */
     dhcp_send(DHCPDISCOVER, 0, 0);
@@ -256,7 +256,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     uint32_t waited = 0;
     while (!g_dhcp_got && waited < timeout_ms) {
         dhcp_delay_ms(10);
-        virtio_net_poll();
+        netdev_poll();
         waited += 10;
     }
     if (!g_dhcp_got) return 0;
@@ -287,7 +287,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     waited = 0;
     while (!g_dhcp_got && waited < timeout_ms) {
         dhcp_delay_ms(10);
-        virtio_net_poll();
+        netdev_poll();
         waited += 10;
     }
     if (!g_dhcp_got) return 0;
@@ -313,13 +313,13 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
 int dhcp_renew(DhcpLease *lease, uint32_t timeout_ms)
 {
     g_dhcp_got = 0;
-    virtio_net_set_rx_callback(dhcp_rx_cb);
+    netdev_set_rx_callback(dhcp_rx_cb);
     dhcp_send(DHCPREQUEST, lease->ip, g_server_ip);
 
     uint32_t waited = 0;
     while (!g_dhcp_got && waited < timeout_ms) {
         dhcp_delay_ms(10);
-        virtio_net_poll();
+        netdev_poll();
         waited += 10;
     }
     if (!g_dhcp_got) return 0;

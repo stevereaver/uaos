@@ -7,7 +7,7 @@
 #include "icmp.h"
 #include "udp.h"
 #include "tcp.h"
-#include "../drivers/virtio_net.h"
+#include "net_device.h"
 
 static ipv4_t   g_my_ip   = 0;
 static ipv4_t   g_gateway = 0;
@@ -20,7 +20,7 @@ void ip_init(ipv4_t my_ip, ipv4_t gateway, ipv4_t netmask)
     g_my_ip   = my_ip;
     g_gateway = gateway;
     g_netmask = netmask;
-    virtio_net_get_mac(g_my_mac);
+    netdev_get_mac(g_my_mac);
 }
 
 ipv4_t ip_get_local(void)   { return g_my_ip;   }
@@ -68,7 +68,7 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
 
 int ip_send(ipv4_t dst_ip, uint8_t proto, uint8_t *payload, uint16_t payload_len)
 {
-    if (!virtio_net_is_up()) return 0;
+    if (!netdev_is_up()) return 0;
 
     /* Build complete Ethernet frame buffer */
     uint8_t frame[ETH_HDR_LEN + IP_HDR_LEN + 1500];
@@ -108,5 +108,5 @@ int ip_send(ipv4_t dst_ip, uint8_t proto, uint8_t *payload, uint16_t payload_len
     }
 
     eth_build(frame, dst_mac, g_my_mac, ETHERTYPE_IP, total_ip);
-    return virtio_net_send(frame, (uint16_t)(ETH_HDR_LEN + total_ip));
+    return netdev_send(frame, (uint16_t)(ETH_HDR_LEN + total_ip));
 }

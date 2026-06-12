@@ -20,7 +20,7 @@ typedef struct {
  * sends REQUEST, waits for ACK.  Returns 1 on success and fills *lease.
  * Returns 0 on timeout/failure.
  *
- * Must be called after virtio_net_init() and before ip_init().
+ * Must be called after netdev_init() and before ip_init().
  */
 int dhcp_request(DhcpLease *lease, uint32_t timeout_ms);
 
