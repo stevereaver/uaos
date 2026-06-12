@@ -226,7 +226,8 @@ static uint8_t  g_mac[E1000_ETH_ALEN];
 static int      g_up      = 0;
 static uint8_t  g_irq     = 0;
 static uint16_t g_rx_tail = 0;   /* next descriptor to check for DD */
-static uint16_t g_tx_tail = 0;   /* next TX descriptor slot to use */
+/* TX uses slot 0 only with a single bounce buffer.
+ * We wait for DD before every send so the buffer is safe to reuse. */
 static volatile uint8_t g_poll_lock = 0;
 
 static e1000_rx_cb g_rx_cb = 0;
@@ -453,7 +454,6 @@ static void tx_init(void)
     mmio_w32(g_bar0, E1000_TDLEN, (uint32_t)E1000_NUM_TX_DESC * 16);
     mmio_w32(g_bar0, E1000_TDH, 0);
     mmio_w32(g_bar0, E1000_TDT, 0);
-    g_tx_tail = 0;
 
     _e_puts("[E1000] tx_init tdbal="); _e_phex(base);
     _e_puts(" tdlen="); _e_phex(E1000_NUM_TX_DESC * 16); _e_puts("\n");
@@ -579,12 +579,12 @@ int e1000_send(const uint8_t *data, uint16_t len)
     if (!g_up || !g_bar0) return 0;
     if (len > E1000_MTU) return 0;
 
-    /* Wait for the current slot's DD bit — hardware marks it done */
+    /* Wait for DD on slot 0 — ensures previous TX is done and g_tx_buf is free */
     uint32_t spin = 0;
-    while (!(g_tx_desc[g_tx_tail].sta & E1000_DESC_DD)) {
+    while (!(g_tx_desc[0].sta & E1000_DESC_DD)) {
         __asm__ volatile("pause" ::: "memory");
-        if (++spin > 500000) {
-            _e_puts("[E1000] TX timeout\n");
+        if (++spin > 1000000) {
+            _e_puts("[E1000] TX timeout waiting for DD\n");
             return 0;
         }
     }
@@ -592,23 +592,34 @@ int e1000_send(const uint8_t *data, uint16_t len)
     /* Copy frame into bounce buffer */
     for (uint16_t i = 0; i < len; i++) g_tx_buf[i] = data[i];
 
-    /* Fill the descriptor */
-    g_tx_desc[g_tx_tail].addr    = (uint64_t)(uintptr_t)g_tx_buf;
-    g_tx_desc[g_tx_tail].length  = len;
-    g_tx_desc[g_tx_tail].cso     = 0;
-    g_tx_desc[g_tx_tail].cmd     = E1000_TXD_CMD_EOP | E1000_TXD_CMD_IFCS | E1000_TXD_CMD_RS;
-    g_tx_desc[g_tx_tail].sta     = 0;   /* clear DD — hardware sets it when done */
-    g_tx_desc[g_tx_tail].css     = 0;
-    g_tx_desc[g_tx_tail].special = 0;
+    /* Fill descriptor slot 0 */
+    g_tx_desc[0].addr    = (uint64_t)(uintptr_t)g_tx_buf;
+    g_tx_desc[0].length  = len;
+    g_tx_desc[0].cso     = 0;
+    g_tx_desc[0].cmd     = E1000_TXD_CMD_EOP | E1000_TXD_CMD_IFCS | E1000_TXD_CMD_RS;
+    g_tx_desc[0].sta     = 0;   /* clear DD — hardware sets it when done */
+    g_tx_desc[0].css     = 0;
+    g_tx_desc[0].special = 0;
 
     __asm__ volatile("mfence" ::: "memory");
 
-    /* Advance tail — this kicks the hardware to transmit */
-    uint16_t old_tail = g_tx_tail;
-    g_tx_tail = (uint16_t)((g_tx_tail + 1) % E1000_NUM_TX_DESC);
-    mmio_w32(g_bar0, E1000_TDT, g_tx_tail);
+    /* TDH stays at 0; write TDT=1 to hand the single descriptor to hardware */
+    mmio_w32(g_bar0, E1000_TDT, 1);
 
-    (void)old_tail;
+    /* Wait for DD — hardware clears it then sets it again when TX completes */
+    uint32_t spin2 = 0;
+    while (!(g_tx_desc[0].sta & E1000_DESC_DD)) {
+        __asm__ volatile("pause" ::: "memory");
+        if (++spin2 > 1000000) {
+            _e_puts("[E1000] TX no DD — frame not sent\n");
+            return 0;
+        }
+    }
+    _e_puts("[E1000] TX done sta="); _e_phex(g_tx_desc[0].sta); _e_puts("\n");
+
+    /* Reset TDH and TDT back to 0 ready for next packet */
+    mmio_w32(g_bar0, E1000_TDT, 0);
+
     return 1;
 }
 
