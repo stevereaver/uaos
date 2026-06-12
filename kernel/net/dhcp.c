@@ -387,7 +387,9 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
  * ------------------------------------------------------------------------- */
 static void parse_offer(const DhcpPkt *p, DhcpLease *lease)
 {
-    lease->ip      = net_ntohl(p->yiaddr);
+    /* yiaddr is in network byte order in the packet; read byte-by-byte */
+    const uint8_t *y = (const uint8_t *)&p->yiaddr;
+    lease->ip      = (uint32_t)y[0]<<24|(uint32_t)y[1]<<16|(uint32_t)y[2]<<8|y[3];
     lease->netmask = IPV4(255,255,255,0);
     lease->gateway = 0;
     lease->dns     = 0;
@@ -401,23 +403,26 @@ static void parse_offer(const DhcpPkt *p, DhcpLease *lease)
         if (opt >= end) break;
         uint8_t olen = *opt++;
         if (opt + olen > end) break;
+        /* Assemble 4-byte IPs directly from bytes — no net_ntohl needed */
+#define OPT_IP4(o) ((uint32_t)(o)[0]<<24|(uint32_t)(o)[1]<<16|(uint32_t)(o)[2]<<8|(o)[3])
         switch (code) {
         case OPT_SUBNET_MASK:
-            if (olen == 4) lease->netmask = net_ntohl((uint32_t)opt[0]<<24|(uint32_t)opt[1]<<16|(uint32_t)opt[2]<<8|opt[3]);
+            if (olen == 4) lease->netmask = OPT_IP4(opt);
             break;
         case OPT_ROUTER:
-            if (olen >= 4) lease->gateway = net_ntohl((uint32_t)opt[0]<<24|(uint32_t)opt[1]<<16|(uint32_t)opt[2]<<8|opt[3]);
+            if (olen >= 4) lease->gateway = OPT_IP4(opt);
             break;
         case OPT_DNS:
-            if (olen >= 4) lease->dns = net_ntohl((uint32_t)opt[0]<<24|(uint32_t)opt[1]<<16|(uint32_t)opt[2]<<8|opt[3]);
+            if (olen >= 4) lease->dns = OPT_IP4(opt);
             break;
         case OPT_LEASE_TIME:
-            if (olen == 4) lease->lease_secs = (uint32_t)opt[0]<<24|(uint32_t)opt[1]<<16|(uint32_t)opt[2]<<8|opt[3];
+            if (olen == 4) lease->lease_secs = OPT_IP4(opt);
             break;
         case OPT_SERVER_ID:
-            if (olen == 4) g_server_ip = net_ntohl((uint32_t)opt[0]<<24|(uint32_t)opt[1]<<16|(uint32_t)opt[2]<<8|opt[3]);
+            if (olen == 4) g_server_ip = OPT_IP4(opt);
             break;
         }
+#undef OPT_IP4
         opt += olen;
     }
 }
