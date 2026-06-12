@@ -75,10 +75,22 @@ void netdev_get_mac(uint8_t *buf)
         g_netdev->get_mac(g_netdev, buf);
 }
 
+/* Ethernet minimum frame size is 60 bytes (+ 4 FCS = 64 on the wire).
+ * Frames shorter than 60 bytes are runts and are silently dropped by
+ * switches, physical NICs, and bridged VMs. Pad with zeros if needed. */
+#define ETH_MIN_FRAME 60
+
 int netdev_send(const uint8_t *data, uint16_t len)
 {
     if (!g_up || !g_netdev || !g_netdev->send) return 0;
-    return g_netdev->send(g_netdev, data, len);
+    if (len >= ETH_MIN_FRAME)
+        return g_netdev->send(g_netdev, data, len);
+
+    /* Pad short frame into a local buffer */
+    static uint8_t padded[ETH_MIN_FRAME];
+    for (uint16_t i = 0; i < len; i++)         padded[i] = data[i];
+    for (uint16_t i = len; i < ETH_MIN_FRAME; i++) padded[i] = 0;
+    return g_netdev->send(g_netdev, padded, ETH_MIN_FRAME);
 }
 
 void netdev_poll(void)
