@@ -20,6 +20,9 @@
 #include "../irq/vmmouse.h"
 #include "../irq/rtc.h"
 #include "../irq/virtio_blk.h"
+#include "../drivers/virtio_net.h"
+#include "../net/stack.h"
+#include "../exec/bsdsocket_lib.h"
 #include "../display/wm.h"
 #include "dos/vfs.h"
 #include "dos/blockdev.h"
@@ -240,6 +243,7 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
     if ((g_pit_ticks % 10) == 0) {
         kprint("[PIT] tick="); kprintdec((uint32_t)g_pit_ticks); kprint("\n");
     }
+    net_stack_tick();
 }
 
 /* -----------------------------------------------------------------------
@@ -444,6 +448,20 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Registering VirtIO IRQ...\n");
     virtio_blk_setup_irq();
 
+    /* Initialise VirtIO-Net + TCP/IP stack */
+    kprint("[BOOT] Initialising VirtIO-Net + TCP/IP stack...\n");
+    /* QEMU -netdev user default: guest=10.0.2.15, gateway=10.0.2.2 */
+    if (net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0))) {
+        if (net_stack_dhcp_used()) {
+            kprint("[BOOT] Network up via DHCP\n");
+        } else {
+            kprint("[BOOT] Network up: 10.0.2.15/24 gw 10.0.2.2 (static fallback)\n");
+        }
+    } else {
+        kprint("[BOOT] VirtIO-Net not found (no network).\n");
+    }
+    BsdSocket_Init();
+
     /* Initialise PS/2 mouse (needs IRQ12 = vector 44) */
     if (g_fb.valid) {
         g_fb_width_irq  = g_fb.width;
@@ -522,6 +540,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         /* Keyboard -> focused window via WM */
         while (PS2Kbd_HasChar())
             WM_KeyEvent(PS2Kbd_GetChar());
+
+        /* Poll network stack for incoming packets */
+        net_stack_poll();
 
         /* Periodic heartbeat so we know the loop hasn't hung */
         loop_count++;

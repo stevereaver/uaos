@@ -268,6 +268,15 @@ for src in \
     "${REPO_ROOT}/kernel/irq/vmmouse.c" \
     "${REPO_ROOT}/kernel/irq/rtc.c" \
     "${REPO_ROOT}/kernel/irq/virtio_blk.c" \
+    "${REPO_ROOT}/kernel/drivers/virtio_net.c" \
+    "${REPO_ROOT}/kernel/net/eth.c" \
+    "${REPO_ROOT}/kernel/net/arp.c" \
+    "${REPO_ROOT}/kernel/net/ip.c" \
+    "${REPO_ROOT}/kernel/net/icmp.c" \
+    "${REPO_ROOT}/kernel/net/udp.c" \
+    "${REPO_ROOT}/kernel/net/tcp.c" \
+    "${REPO_ROOT}/kernel/net/dhcp.c" \
+    "${REPO_ROOT}/kernel/net/stack.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \
@@ -276,6 +285,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/locale_lib.c" \
     "${REPO_ROOT}/kernel/exec/ixemul_lib.c" \
     "${REPO_ROOT}/kernel/exec/timer_device.c" \
+    "${REPO_ROOT}/kernel/exec/bsdsocket_lib.c" \
     "${REPO_ROOT}/kernel/exec/keyboard_device.c" \
     "${REPO_ROOT}/kernel/exec/graphics_lib.c" \
     "${REPO_ROOT}/kernel/exec/dos_lib.c" \
@@ -320,7 +330,9 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_assign.c" \
     "${REPO_ROOT}/kernel/shell/cmd_execute.c" \
     "${REPO_ROOT}/kernel/shell/cmd_loadwb.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_calc.c"
+    "${REPO_ROOT}/kernel/shell/cmd_calc.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ifconfig.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ping.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -457,6 +469,15 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/vmmouse.o" \
     "${BUILD_DIR}/obj/rtc.o" \
     "${BUILD_DIR}/obj/virtio_blk.o" \
+    "${BUILD_DIR}/obj/virtio_net.o" \
+    "${BUILD_DIR}/obj/eth.o" \
+    "${BUILD_DIR}/obj/arp.o" \
+    "${BUILD_DIR}/obj/ip.o" \
+    "${BUILD_DIR}/obj/icmp.o" \
+    "${BUILD_DIR}/obj/udp.o" \
+    "${BUILD_DIR}/obj/tcp.o" \
+    "${BUILD_DIR}/obj/dhcp.o" \
+    "${BUILD_DIR}/obj/stack.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/utility_lib.o" \
@@ -465,6 +486,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/locale_lib.o" \
     "${BUILD_DIR}/obj/ixemul_lib.o" \
     "${BUILD_DIR}/obj/timer_device.o" \
+    "${BUILD_DIR}/obj/bsdsocket_lib.o" \
     "${BUILD_DIR}/obj/keyboard_device.o" \
     "${BUILD_DIR}/obj/graphics_lib.o" \
     "${BUILD_DIR}/obj/dos_lib.o" \
@@ -510,6 +532,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_execute.o" \
     "${BUILD_DIR}/obj/cmd_loadwb.o" \
     "${BUILD_DIR}/obj/cmd_calc.o" \
+    "${BUILD_DIR}/obj/cmd_ifconfig.o" \
+    "${BUILD_DIR}/obj/cmd_ping.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -546,7 +570,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb; do
+           run assign execute loadwb ifconfig ping; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

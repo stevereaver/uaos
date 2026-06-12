@@ -112,7 +112,7 @@ static void u32_dec(uint32_t v, char *buf, int max) {
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
 #define PROG_BASE       0x001000  /* program hunks load here */
 
-static uint8_t g_ram[GUEST_RAM_SIZE];
+uint8_t g_ram[GUEST_RAM_SIZE];
 static int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 static uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 
@@ -222,6 +222,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 
 #define LIB_EXEC        1
 #define LIB_DOS         2
+#define LIB_BSDSOCKET   3
 
 /* exec.library function indices */
 #define EXEC_OPEN_LIBRARY   1
@@ -229,6 +230,24 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define EXEC_ALLOC_MEM      3
 #define EXEC_FREE_MEM       4
 #define EXEC_FIND_TASK      5
+
+/* bsdsocket.library function indices */
+#define BSD_FN_SOCKET        1
+#define BSD_FN_BIND          2
+#define BSD_FN_LISTEN        3
+#define BSD_FN_ACCEPT        4
+#define BSD_FN_CONNECT       5
+#define BSD_FN_SEND          6
+#define BSD_FN_SENDTO        7
+#define BSD_FN_RECV          8
+#define BSD_FN_RECVFROM      9
+#define BSD_FN_CLOSESOCKET   10
+#define BSD_FN_SETSOCKOPT    11
+#define BSD_FN_GETSOCKOPT    12
+#define BSD_FN_IOCTLSOCKET   13
+#define BSD_FN_INET_ADDR     14
+#define BSD_FN_INET_NTOA     15
+#define BSD_FN_GETHOSTBYNAME 16
 
 /* dos.library function indices */
 #define DOS_OUTPUT          1
@@ -309,6 +328,25 @@ static void install_stub(int lib_id, int func_idx)
 
 /* Fake library bases */
 #define DOS_BASE    0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
+#define BSD_BASE    0x3000  /* bsdsocket.library base — clear of DOS range */
+
+/* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
+#define LVO_BSD_SOCKET        (-30)
+#define LVO_BSD_BIND          (-36)
+#define LVO_BSD_LISTEN        (-42)
+#define LVO_BSD_ACCEPT        (-48)
+#define LVO_BSD_CONNECT       (-54)
+#define LVO_BSD_SEND          (-60)
+#define LVO_BSD_SENDTO        (-66)
+#define LVO_BSD_RECV          (-72)
+#define LVO_BSD_RECVFROM      (-78)
+#define LVO_BSD_CLOSESOCKET   (-84)
+#define LVO_BSD_SETSOCKOPT    (-96)
+#define LVO_BSD_GETSOCKOPT    (-102)
+#define LVO_BSD_IOCTLSOCKET   (-108)
+#define LVO_BSD_INET_ADDR     (-132)
+#define LVO_BSD_INET_NTOA     (-138)
+#define LVO_BSD_GETHOSTBYNAME (-210)
 
 /* LVO (Library Vector Offset) — negative byte offset from lib base
  * These are the standard AmigaOS offsets. */
@@ -433,6 +471,31 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_GETVAR,     LIB_DOS, DOS_GETVAR);
     install_lvo(DOS_BASE, LVO_DOS_SETVAR,     LIB_DOS, DOS_SETVAR);
 
+    /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
+    for (int lvo = -6; lvo >= -216; lvo -= 6) {
+        uint32_t addr = (uint32_t)((int)BSD_BASE + lvo);
+        if (addr < GUEST_RAM_SIZE - 4) {
+            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00;
+            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75;
+        }
+    }
+    install_lvo(BSD_BASE, LVO_BSD_SOCKET,        LIB_BSDSOCKET, BSD_FN_SOCKET);
+    install_lvo(BSD_BASE, LVO_BSD_BIND,          LIB_BSDSOCKET, BSD_FN_BIND);
+    install_lvo(BSD_BASE, LVO_BSD_LISTEN,        LIB_BSDSOCKET, BSD_FN_LISTEN);
+    install_lvo(BSD_BASE, LVO_BSD_ACCEPT,        LIB_BSDSOCKET, BSD_FN_ACCEPT);
+    install_lvo(BSD_BASE, LVO_BSD_CONNECT,       LIB_BSDSOCKET, BSD_FN_CONNECT);
+    install_lvo(BSD_BASE, LVO_BSD_SEND,          LIB_BSDSOCKET, BSD_FN_SEND);
+    install_lvo(BSD_BASE, LVO_BSD_SENDTO,        LIB_BSDSOCKET, BSD_FN_SENDTO);
+    install_lvo(BSD_BASE, LVO_BSD_RECV,          LIB_BSDSOCKET, BSD_FN_RECV);
+    install_lvo(BSD_BASE, LVO_BSD_RECVFROM,      LIB_BSDSOCKET, BSD_FN_RECVFROM);
+    install_lvo(BSD_BASE, LVO_BSD_CLOSESOCKET,   LIB_BSDSOCKET, BSD_FN_CLOSESOCKET);
+    install_lvo(BSD_BASE, LVO_BSD_SETSOCKOPT,    LIB_BSDSOCKET, BSD_FN_SETSOCKOPT);
+    install_lvo(BSD_BASE, LVO_BSD_GETSOCKOPT,    LIB_BSDSOCKET, BSD_FN_GETSOCKOPT);
+    install_lvo(BSD_BASE, LVO_BSD_IOCTLSOCKET,   LIB_BSDSOCKET, BSD_FN_IOCTLSOCKET);
+    install_lvo(BSD_BASE, LVO_BSD_INET_ADDR,     LIB_BSDSOCKET, BSD_FN_INET_ADDR);
+    install_lvo(BSD_BASE, LVO_BSD_INET_NTOA,     LIB_BSDSOCKET, BSD_FN_INET_NTOA);
+    install_lvo(BSD_BASE, LVO_BSD_GETHOSTBYNAME, LIB_BSDSOCKET, BSD_FN_GETHOSTBYNAME);
+
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
      * For FAKE_LIB_BASE we just put RTS everywhere (D0=0 is the default return). */
@@ -518,6 +581,12 @@ static void exec_OpenLibrary(void)
     for (int j = 0; dos_name[j]; j++)
         if (name[j] != dos_name[j]) { dos_match = 0; break; }
     if (dos_match) result = DOS_BASE;
+
+    const char *bsd_name = "bsdsocket.library";
+    int bsd_match = 1;
+    for (int j = 0; bsd_name[j]; j++)
+        if (name[j] != bsd_name[j]) { bsd_match = 0; break; }
+    if (bsd_match) result = BSD_BASE;
 
     m68k_set_reg(M68K_REG_D0, result);
 }
@@ -998,6 +1067,9 @@ int m68k_illg_instr_callback(int opcode)
                 emu_print(msg);
             }
         }
+    } else if (lib == LIB_BSDSOCKET) {
+        extern void BsdSocket_Dispatch(uint32_t fn, uint32_t *regs);
+        BsdSocket_Dispatch((uint32_t)fn, (uint32_t*)0);
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);
