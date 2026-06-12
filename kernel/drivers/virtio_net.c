@@ -26,6 +26,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Serial debug (COM1 = 0x3F8) */
+static inline void _vn_ob(uint16_t p,uint8_t v){__asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p));}
+static inline uint8_t _vn_ib(uint16_t p){uint8_t v;__asm__ volatile("inb %1,%0":"=a"(v):"Nd"(p));return v;}
+static void _vn_pc(char c){while((_vn_ib(0x3FD)&0x20)==0){}_vn_ob(0x3F8,(uint8_t)c);if(c=='\n'){while((_vn_ib(0x3FD)&0x20)==0){}_vn_ob(0x3F8,'\r');}}
+static void _vn_ps(const char *s){while(*s)_vn_pc(*s++);}
+static void _vn_ph(uint32_t v){static const char h[]="0123456789ABCDEF";_vn_ps("0x");for(int i=28;i>=0;i-=4)_vn_pc(h[(v>>i)&0xF]);}
+
 /* forward declared in idt.h as void (*ISRHandler)(uint64_t vector, uint64_t error_code) */
 
 /* -------------------------------------------------------------------------
@@ -297,6 +304,7 @@ static void virtio_net_irq_handler(uint64_t vector, uint64_t error_code)
     (void)vector; (void)error_code;
     if (!g_io_base) return;
     uint8_t isr = inb(g_io_base + VIRTIO_PCI_ISR);
+    _vn_ps("[IRQ] isr="); _vn_ph(isr); _vn_ps("\n");
     if (isr & 1)
         virtio_net_poll();
     PIC_SendEOI((int)(g_irq_line));
@@ -414,6 +422,7 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     __asm__ volatile("mfence" ::: "memory");
 
     /* Notify device: queue 1 = TX */
+    _vn_ps("[TX] sending len="); _vn_ph(total); _vn_ps(" avail_idx="); _vn_ph(g_txq_avail->idx); _vn_ps("\n");
     outw(g_io_base + VIRTIO_PCI_QUEUE_NOTIFY, 1);
 
     return 1;
@@ -433,14 +442,22 @@ void virtio_net_poll(void)
     if (already_locked) return;
 
     /* Drain used RX ring */
+    if (g_rxq_last_used != g_rxq_used->idx) {
+        _vn_ps("[RX] used->idx="); _vn_ph(g_rxq_used->idx);
+        _vn_ps(" last="); _vn_ph(g_rxq_last_used); _vn_ps("\n");
+    }
     while (g_rxq_last_used != g_rxq_used->idx) {
         uint16_t ui = g_rxq_last_used % VIRTQ_SIZE;
         uint32_t received_len = g_rxq_used->ring[ui].len;
         uint16_t desc_id      = (uint16_t)(g_rxq_used->ring[ui].id % VIRTQ_SIZE);
+        _vn_ps("[RX] pkt len="); _vn_ph(received_len); _vn_ps(" desc="); _vn_ph(desc_id); _vn_ps("\n");
 
         if (received_len > VIRTIO_NET_HDR_SIZE) {
             uint16_t frame_len = (uint16_t)(received_len - VIRTIO_NET_HDR_SIZE);
             const uint8_t *frame = g_rx_bufs[desc_id] + VIRTIO_NET_HDR_SIZE;
+            /* Log first 4 bytes of Ethernet dst MAC */
+            _vn_ps("[RX] dst="); _vn_ph(frame[0]); _vn_pc(':'); _vn_ph(frame[1]);
+            _vn_ps(" ethertype="); _vn_ph((uint32_t)((frame[12]<<8)|frame[13])); _vn_ps("\n");
             if (g_rx_cb)
                 g_rx_cb(frame, frame_len);
         }
@@ -467,6 +484,8 @@ int virtio_net_is_up(void) { return g_up; }
 void virtio_net_setup_irq(void)
 {
     if (!g_up) return;
+    _vn_ps("[VNET] setup_irq line="); _vn_ph(g_irq_line);
+    _vn_ps(" iobase="); _vn_ph(g_io_base); _vn_ps("\n");
     IDT_SetHandler((uint8_t)(32 + g_irq_line), virtio_net_irq_handler);
     PIC_UnmaskIRQ((int)g_irq_line);
 }
