@@ -14,10 +14,11 @@
 6. [Input Drivers](#input-drivers)
 7. [Filesystem Layer](#filesystem-layer)
 8. [Shell](#shell)
-9. [Build System](#build-system)
-10. [Running in QEMU](#running-in-qemu)
-11. [Troubleshooting](#troubleshooting)
-12. [Memory Map Reference](#memory-map-reference)
+9. [TCP/IP Networking](#tcpip-networking)
+10. [Build System](#build-system)
+11. [Running in QEMU](#running-in-qemu)
+12. [Troubleshooting](#troubleshooting)
+13. [Memory Map Reference](#memory-map-reference)
 
 ---
 
@@ -166,7 +167,49 @@ VirtIO block device driver for QEMU external disk support:
 - **BAR0**: I/O space for VirtIO device configuration
 - **Capacity reporting**: Reads device capacity from configuration space
 - **Registered as**: "virtio0" with block device layer
-- **Status**: PCI scanning and capacity reporting implemented; virtqueue I/O marked as TODO
+
+### Network Drivers
+
+UAOS includes two network hardware drivers, both accessed through the
+`NetDevice` abstraction layer. The correct driver is selected automatically
+at boot via `netdev_probe()`.
+
+#### VirtIO-Net (`virtio_net.c`)
+
+- **PCI**: vendor `0x1AF4`, device `0x1000` (legacy VirtIO 0.9)
+- **Interface**: I/O-port BAR0; legacy virtqueue ring protocol
+- **Queue size**: 256 descriptors each for RX and TX (matches QEMU default)
+- **MSI-X**: present in device but kept disabled; uses 8259A PIC IRQ
+- **Used by**: QEMU (`-device virtio-net-pci,disable-modern=on`)
+
+#### Intel 82540EM e1000 (`e1000.c`)
+
+- **PCI**: vendor `0x8086`, device `0x100E` (and related 8254x family)
+- **Interface**: 128 KB MMIO BAR0; legacy 16-byte TX/RX descriptor rings
+- **MAC**: read from EEPROM via EERD register at init
+- **Interrupts**: ICR self-clearing; IRQ routed through 8259A PIC
+- **Used by**: VirtualBox (Intel PRO/1000 MT Desktop) and QEMU (`-device e1000`)
+
+#### NetDevice Abstraction (`net_device.h`, `net_device.c`)
+
+Both drivers are registered behind a `NetDevice` interface struct:
+
+```c
+typedef struct NetDevice {
+    const char *name;
+    int  (*init)(struct NetDevice *dev);
+    void (*get_mac)(struct NetDevice *dev, uint8_t *buf);
+    int  (*send)(struct NetDevice *dev, const uint8_t *data, uint16_t len);
+    void (*poll)(struct NetDevice *dev);
+    void (*set_rx_callback)(struct NetDevice *dev, netdev_rx_fn cb);
+    void (*setup_irq)(struct NetDevice *dev);
+    void *priv;
+} NetDevice;
+```
+
+`netdev_probe()` (called by `net_stack_init_ex()`) tries e1000 first, then
+virtio-net. All TCP/IP stack layers call only the `netdev_*` wrappers —
+they never reference either driver directly.
 
 ---
 
@@ -602,6 +645,272 @@ implements a scrollable terminal:
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
 | `run <prog> [args]` | Run an embedded Amiga binary |
+| `ping <host> [count]` | Send ICMP echo requests to a dotted-decimal IPv4 address |
+| `ifconfig` | Show network interface IP, netmask, gateway and MAC address |
+
+---
+
+## TCP/IP Networking
+
+UAOS includes a complete freestanding TCP/IP stack. It auto-detects the
+network card at boot, attempts DHCP, and falls back to a static address if
+DHCP times out. The stack runs in the kernel event loop — no threads or
+blocking I/O required.
+
+### Architecture
+
+```
+Shell commands / bsdsocket.library
+          │
+          ▼
+   icmp / tcp / udp  (kernel/net/)
+          │
+          ▼
+    ip.c  ◄──►  arp.c
+          │
+          ▼
+   net_device  (abstract hardware interface)
+          │
+     ┌────┴────┐
+     ▼         ▼
+ virtio_net  e1000
+ (QEMU)    (VirtualBox)
+```
+
+### Initialisation
+
+`net_stack_init()` (or `net_stack_init_ex()`) is called once from
+`uaos_kernel_main()`. It:
+
+1. Calls `netdev_probe()` — scans PCI for e1000 first, then virtio-net.
+2. Calls the found driver's `init()` to reset and configure the hardware.
+3. Attempts DHCP (1 second timeout by default).
+4. Falls back to static `10.0.2.15/24 gw 10.0.2.2` if DHCP fails.
+5. Initialises ARP and IP tables with the assigned address.
+6. Registers the RX callback and IRQ handler.
+
+```c
+/* Static IP, skip DHCP */
+net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0));
+
+/* DHCP with 2-second timeout, static fallback */
+net_stack_init_ex(IPV4(10,0,2,15), IPV4(10,0,2,2),
+                  IPV4(255,255,255,0), 2000);
+```
+
+### Stack Public API (`kernel/net/stack.h`)
+
+| Function | Description |
+|---|---|
+| `net_stack_init(ip, gw, nm)` | Init with static fallback; tries DHCP first |
+| `net_stack_init_ex(ip, gw, nm, ms)` | Init with explicit DHCP timeout |
+| `net_stack_is_up()` | Returns 1 if a network card was found and stack is live |
+| `net_stack_dhcp_used()` | Returns 1 if the current IP came from DHCP |
+| `net_stack_poll()` | Process pending RX packets (call from event loop) |
+| `net_stack_tick()` | TCP retransmit/timeout tick (call from PIT handler) |
+| `net_stack_get_ip()` | Returns the current IPv4 address |
+| `net_ip_to_str(ip, buf)` | Formats an `ipv4_t` as `"a.b.c.d"` into `buf` (≥18 bytes) |
+| `net_str_to_ip(str, out)` | Parses `"a.b.c.d"` into an `ipv4_t`; returns 0 on error |
+
+### IPv4 Address Type
+
+```c
+typedef uint32_t ipv4_t;   /* host byte order: 0xAABBCCDD = a.b.c.d */
+
+/* Build address from dotted quads */
+#define IPV4(a,b,c,d) ((ipv4_t)(((uint32_t)(a)<<24)|((uint32_t)(b)<<16) \
+                               |((uint32_t)(c)<<8)|(uint32_t)(d)))
+```
+
+### ICMP — Ping (`kernel/net/icmp.h`)
+
+```c
+/* Send one ICMP echo request */
+void icmp_ping(ipv4_t dst_ip, uint16_t seq);
+
+/* Poll for reply after icmp_ping() */
+int  icmp_got_reply(void);   /* returns 1 when reply arrives */
+void icmp_clear_reply(void); /* reset before each icmp_ping() */
+```
+
+The shell `ping` command uses these functions, yielding every 100 ms so
+the UI remains responsive during the 1-second per-echo timeout.
+
+### ARP (`kernel/net/arp.h`)
+
+The ARP module maintains a 16-entry cache. `ip_send()` consults it
+automatically; callers do not need to manage ARP directly.
+
+```c
+void arp_init(ipv4_t my_ip, const uint8_t *my_mac);
+void arp_request(ipv4_t target_ip);          /* broadcast ARP who-has */
+int  arp_lookup(ipv4_t ip, uint8_t *mac_out);/* 1 = found, 0 = miss   */
+void arp_cache_update(ipv4_t ip, const uint8_t *mac);
+```
+
+### IP (`kernel/net/ip.h`)
+
+```c
+#define IP_PROTO_ICMP   1
+#define IP_PROTO_TCP    6
+#define IP_PROTO_UDP   17
+
+int  ip_send(ipv4_t dst_ip, uint8_t proto,
+             uint8_t *payload, uint16_t payload_len);
+
+ipv4_t ip_get_local(void);
+ipv4_t ip_get_gateway(void);
+ipv4_t ip_get_netmask(void);
+```
+
+`ip_send()` looks up the nexthop (gateway if off-subnet), resolves its
+MAC via ARP (returns 0 if not yet cached — caller retries after
+`arp_request()`), and hands the frame to `netdev_send()`.
+
+### UDP (`kernel/net/udp.h`)
+
+```c
+int  udp_open(uint16_t local_port);  /* 0 = ephemeral */
+void udp_close(int sock);
+int  udp_send(int sock, ipv4_t dst_ip, uint16_t dst_port,
+              const uint8_t *data, uint16_t len);
+int  udp_recv(int sock, uint8_t *buf, uint16_t maxlen,
+              ipv4_t *src_ip_out, uint16_t *src_port_out);
+```
+
+`udp_recv()` is non-blocking and returns 0 if no datagram is available.
+Up to 8 sockets may be open simultaneously. Each socket has a 2 KB
+receive ring buffer.
+
+**Example — send a UDP datagram:**
+
+```c
+int s = udp_open(0);          /* bind to ephemeral port */
+uint8_t msg[] = "hello";
+udp_send(s, IPV4(10,0,2,2), 9, msg, sizeof(msg));
+udp_close(s);
+```
+
+### TCP (`kernel/net/tcp.h`)
+
+Up to 8 simultaneous TCP connections. Each socket has 4 KB TX and 4 KB
+RX ring buffers. `tcp_tick()` must be called periodically (typically
+from the PIT IRQ handler) for retransmit and timeout handling.
+
+#### Client connection
+
+```c
+int sock = tcp_connect(IPV4(93,184,216,34), 80, 0);
+/* wait until established */
+while (tcp_state(sock) != TCP_ESTABLISHED) net_stack_poll();
+
+uint8_t req[] = "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
+tcp_send(sock, req, sizeof(req) - 1);
+
+uint8_t buf[512]; int n;
+while ((n = tcp_recv(sock, buf, sizeof(buf))) > 0) {
+    /* process buf[0..n-1] */
+    net_stack_poll();
+}
+tcp_close(sock);
+```
+
+#### Server (passive listen)
+
+```c
+int lsock = tcp_listen(8080);
+while (1) {
+    net_stack_poll();
+    int csock = tcp_accept(lsock);
+    if (csock < 0) continue;
+    /* handle csock … */
+    tcp_close(csock);
+}
+```
+
+#### TCP API reference
+
+| Function | Description |
+|---|---|
+| `tcp_connect(ip, port, lport)` | Active open; returns socket index or -1 |
+| `tcp_listen(port)` | Passive open; returns listening socket index or -1 |
+| `tcp_accept(lsock)` | Accept a pending connection; returns new socket or -1 |
+| `tcp_send(sock, data, len)` | Queue data for sending; returns bytes queued |
+| `tcp_recv(sock, buf, max)` | Non-blocking receive; returns bytes read or 0 |
+| `tcp_close(sock)` | Initiate graceful close (sends FIN) |
+| `tcp_state(sock)` | Returns current `TcpState` enum value |
+| `tcp_tick()` | Retransmit / timeout processing (call from timer IRQ) |
+
+#### TCP connection states
+
+| State | Meaning |
+|---|---|
+| `TCP_CLOSED` | Socket unused |
+| `TCP_SYN_SENT` | SYN sent, waiting for SYN-ACK |
+| `TCP_ESTABLISHED` | Data transfer in progress |
+| `TCP_CLOSE_WAIT` | Remote FIN received, waiting for app to close |
+| `TCP_FIN_WAIT_1/2` | Local FIN sent, draining |
+| `TCP_TIME_WAIT` | 2×MSL quiet time before socket recycled |
+
+### DHCP (`kernel/net/dhcp.h`)
+
+DHCP is used automatically by `net_stack_init_ex()`. It can also be
+called directly:
+
+```c
+DhcpLease lease;
+if (dhcp_request(&lease, 2000)) {   /* 2-second timeout */
+    /* lease.ip, lease.gateway, lease.netmask, lease.dns populated */
+}
+```
+
+DHCP sends DISCOVER/REQUEST over UDP port 67 and listens on port 68.
+
+### Byte-Order Helpers (`kernel/net/net.h`)
+
+```c
+uint16_t net_htons(uint16_t v);   /* host → network (16-bit) */
+uint16_t net_ntohs(uint16_t v);   /* network → host (16-bit) */
+uint32_t net_htonl(uint32_t v);   /* host → network (32-bit) */
+uint32_t net_ntohl(uint32_t v);   /* network → host (32-bit) */
+```
+
+### Polling Model
+
+The stack has no dedicated thread. RX is processed in two ways:
+
+1. **IRQ path**: the NIC fires an interrupt, the handler calls
+   `e1000_poll()` or `virtio_net_poll()`, which invokes the RX callback,
+   which calls `eth_rx()` → `arp_rx()` / `ip_rx()` → TCP/UDP demux.
+2. **Poll path**: `net_stack_poll()` is called from the main event loop
+   (`hlt` loop) and from `CMD_YIELD()` inside long-running shell commands.
+
+Both paths call `netdev_poll()` which is guarded by a reentrancy lock, so
+it is safe to call from both contexts.
+
+### VirtualBox Setup
+
+1. VM Settings → Network → Adapter 1
+2. **Attached to**: NAT (default)
+3. **Adapter Type**: Intel PRO/1000 MT Desktop (82540EM)
+4. Boot UAOS — the e1000 driver is detected automatically.
+5. `ping 10.0.2.2` (VirtualBox gateway) confirms basic connectivity.
+6. `ping 8.8.8.8` tests full NAT routing via the host.
+
+### QEMU Setup
+
+```bash
+bash scripts/run_with_disk.sh
+# or manually:
+qemu-system-x86_64 ... \
+  -netdev user,id=n0 \
+  -device virtio-net-pci,netdev=n0,disable-modern=on
+```
+
+The virtio-net driver is selected automatically. QEMU's slirp user-mode
+network responds to `ping 10.0.2.2` (gateway). Pings to external IPs
+require the host process to have `CAP_NET_RAW` (or use TAP/bridge mode);
+all TCP and UDP traffic is proxied normally.
 
 ---
 

@@ -250,6 +250,7 @@ Manager</a></li>
 <li><a href="#input-drivers">Input Drivers</a></li>
 <li><a href="#filesystem-layer">Filesystem Layer</a></li>
 <li><a href="#shell">Shell</a></li>
+<li><a href="#tcpip-networking">TCP/IP Networking</a></li>
 <li><a href="#build-system">Build System</a></li>
 <li><a href="#running-in-qemu">Running in QEMU</a></li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -458,9 +459,57 @@ configuration</li>
 configuration space</li>
 <li><strong>Registered as</strong>: “virtio0” with block device
 layer</li>
-<li><strong>Status</strong>: PCI scanning and capacity reporting
-implemented; virtqueue I/O marked as TODO</li>
 </ul>
+<h3 id="network-drivers">Network Drivers</h3>
+<p>UAOS includes two network hardware drivers, both accessed through the
+<code>NetDevice</code> abstraction layer. The correct driver is selected
+automatically at boot via <code>netdev_probe()</code>.</p>
+<h4 id="virtio-net-virtio_net.c">VirtIO-Net
+(<code>virtio_net.c</code>)</h4>
+<ul>
+<li><strong>PCI</strong>: vendor <code>0x1AF4</code>, device
+<code>0x1000</code> (legacy VirtIO 0.9)</li>
+<li><strong>Interface</strong>: I/O-port BAR0; legacy virtqueue ring
+protocol</li>
+<li><strong>Queue size</strong>: 256 descriptors each for RX and TX
+(matches QEMU default)</li>
+<li><strong>MSI-X</strong>: present in device but kept disabled; uses
+8259A PIC IRQ</li>
+<li><strong>Used by</strong>: QEMU
+(<code>-device virtio-net-pci,disable-modern=on</code>)</li>
+</ul>
+<h4 id="intel-82540em-e1000-e1000.c">Intel 82540EM e1000
+(<code>e1000.c</code>)</h4>
+<ul>
+<li><strong>PCI</strong>: vendor <code>0x8086</code>, device
+<code>0x100E</code> (and related 8254x family)</li>
+<li><strong>Interface</strong>: 128 KB MMIO BAR0; legacy 16-byte TX/RX
+descriptor rings</li>
+<li><strong>MAC</strong>: read from EEPROM via EERD register at
+init</li>
+<li><strong>Interrupts</strong>: ICR self-clearing; IRQ routed through
+8259A PIC</li>
+<li><strong>Used by</strong>: VirtualBox (Intel PRO/1000 MT Desktop) and
+QEMU (<code>-device e1000</code>)</li>
+</ul>
+<h4 id="netdevice-abstraction-net_device.h-net_device.c">NetDevice
+Abstraction (<code>net_device.h</code>, <code>net_device.c</code>)</h4>
+<p>Both drivers are registered behind a <code>NetDevice</code> interface
+struct:</p>
+<pre class="c"><code>typedef struct NetDevice {
+    const char *name;
+    int  (*init)(struct NetDevice *dev);
+    void (*get_mac)(struct NetDevice *dev, uint8_t *buf);
+    int  (*send)(struct NetDevice *dev, const uint8_t *data, uint16_t len);
+    void (*poll)(struct NetDevice *dev);
+    void (*set_rx_callback)(struct NetDevice *dev, netdev_rx_fn cb);
+    void (*setup_irq)(struct NetDevice *dev);
+    void *priv;
+} NetDevice;</code></pre>
+<p><code>netdev_probe()</code> (called by
+<code>net_stack_init_ex()</code>) tries e1000 first, then virtio-net.
+All TCP/IP stack layers call only the <code>netdev_*</code> wrappers —
+they never reference either driver directly.</p>
 <hr />
 <h2 id="rom-module-system">ROM Module System</h2>
 <p>UAOS implements a native ROM module system that provides
@@ -1256,8 +1305,327 @@ logic in comments pending M68k memory access integration.</p>
 <td><code>run &lt;prog&gt; [args]</code></td>
 <td>Run an embedded Amiga binary</td>
 </tr>
+<tr class="even">
+<td><code>ping &lt;host&gt; [count]</code></td>
+<td>Send ICMP echo requests to a dotted-decimal IPv4 address</td>
+</tr>
+<tr class="odd">
+<td><code>ifconfig</code></td>
+<td>Show network interface IP, netmask, gateway and MAC address</td>
+</tr>
 </tbody>
 </table>
+<hr />
+<h2 id="tcpip-networking">TCP/IP Networking</h2>
+<p>UAOS includes a complete freestanding TCP/IP stack. It auto-detects
+the network card at boot, attempts DHCP, and falls back to a static
+address if DHCP times out. The stack runs in the kernel event loop — no
+threads or blocking I/O required.</p>
+<h3 id="architecture">Architecture</h3>
+<pre><code>Shell commands / bsdsocket.library
+          │
+          ▼
+   icmp / tcp / udp  (kernel/net/)
+          │
+          ▼
+    ip.c  ◄──►  arp.c
+          │
+          ▼
+   net_device  (abstract hardware interface)
+          │
+     ┌────┴────┐
+     ▼         ▼
+ virtio_net  e1000
+ (QEMU)    (VirtualBox)</code></pre>
+<h3 id="initialisation">Initialisation</h3>
+<p><code>net_stack_init()</code> (or <code>net_stack_init_ex()</code>)
+is called once from <code>uaos_kernel_main()</code>. It:</p>
+<ol type="1">
+<li>Calls <code>netdev_probe()</code> — scans PCI for e1000 first, then
+virtio-net.</li>
+<li>Calls the found driver’s <code>init()</code> to reset and configure
+the hardware.</li>
+<li>Attempts DHCP (1 second timeout by default).</li>
+<li>Falls back to static <code>10.0.2.15/24 gw 10.0.2.2</code> if DHCP
+fails.</li>
+<li>Initialises ARP and IP tables with the assigned address.</li>
+<li>Registers the RX callback and IRQ handler.</li>
+</ol>
+<pre class="c"><code>/* Static IP, skip DHCP */
+net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0));
+
+/* DHCP with 2-second timeout, static fallback */
+net_stack_init_ex(IPV4(10,0,2,15), IPV4(10,0,2,2),
+                  IPV4(255,255,255,0), 2000);</code></pre>
+<h3 id="stack-public-api-kernelnetstack.h">Stack Public API
+(<code>kernel/net/stack.h</code>)</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>net_stack_init(ip, gw, nm)</code></td>
+<td>Init with static fallback; tries DHCP first</td>
+</tr>
+<tr class="even">
+<td><code>net_stack_init_ex(ip, gw, nm, ms)</code></td>
+<td>Init with explicit DHCP timeout</td>
+</tr>
+<tr class="odd">
+<td><code>net_stack_is_up()</code></td>
+<td>Returns 1 if a network card was found and stack is live</td>
+</tr>
+<tr class="even">
+<td><code>net_stack_dhcp_used()</code></td>
+<td>Returns 1 if the current IP came from DHCP</td>
+</tr>
+<tr class="odd">
+<td><code>net_stack_poll()</code></td>
+<td>Process pending RX packets (call from event loop)</td>
+</tr>
+<tr class="even">
+<td><code>net_stack_tick()</code></td>
+<td>TCP retransmit/timeout tick (call from PIT handler)</td>
+</tr>
+<tr class="odd">
+<td><code>net_stack_get_ip()</code></td>
+<td>Returns the current IPv4 address</td>
+</tr>
+<tr class="even">
+<td><code>net_ip_to_str(ip, buf)</code></td>
+<td>Formats an <code>ipv4_t</code> as <code>"a.b.c.d"</code> into
+<code>buf</code> (≥18 bytes)</td>
+</tr>
+<tr class="odd">
+<td><code>net_str_to_ip(str, out)</code></td>
+<td>Parses <code>"a.b.c.d"</code> into an <code>ipv4_t</code>; returns 0
+on error</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ipv4-address-type">IPv4 Address Type</h3>
+<pre class="c"><code>typedef uint32_t ipv4_t;   /* host byte order: 0xAABBCCDD = a.b.c.d */
+
+/* Build address from dotted quads */
+#define IPV4(a,b,c,d) ((ipv4_t)(((uint32_t)(a)&lt;&lt;24)|((uint32_t)(b)&lt;&lt;16) \
+                               |((uint32_t)(c)&lt;&lt;8)|(uint32_t)(d)))</code></pre>
+<h3 id="icmp-ping-kernelneticmp.h">ICMP — Ping
+(<code>kernel/net/icmp.h</code>)</h3>
+<pre class="c"><code>/* Send one ICMP echo request */
+void icmp_ping(ipv4_t dst_ip, uint16_t seq);
+
+/* Poll for reply after icmp_ping() */
+int  icmp_got_reply(void);   /* returns 1 when reply arrives */
+void icmp_clear_reply(void); /* reset before each icmp_ping() */</code></pre>
+<p>The shell <code>ping</code> command uses these functions, yielding
+every 100 ms so the UI remains responsive during the 1-second per-echo
+timeout.</p>
+<h3 id="arp-kernelnetarp.h">ARP (<code>kernel/net/arp.h</code>)</h3>
+<p>The ARP module maintains a 16-entry cache. <code>ip_send()</code>
+consults it automatically; callers do not need to manage ARP
+directly.</p>
+<pre class="c"><code>void arp_init(ipv4_t my_ip, const uint8_t *my_mac);
+void arp_request(ipv4_t target_ip);          /* broadcast ARP who-has */
+int  arp_lookup(ipv4_t ip, uint8_t *mac_out);/* 1 = found, 0 = miss   */
+void arp_cache_update(ipv4_t ip, const uint8_t *mac);</code></pre>
+<h3 id="ip-kernelnetip.h">IP (<code>kernel/net/ip.h</code>)</h3>
+<pre class="c"><code>#define IP_PROTO_ICMP   1
+#define IP_PROTO_TCP    6
+#define IP_PROTO_UDP   17
+
+int  ip_send(ipv4_t dst_ip, uint8_t proto,
+             uint8_t *payload, uint16_t payload_len);
+
+ipv4_t ip_get_local(void);
+ipv4_t ip_get_gateway(void);
+ipv4_t ip_get_netmask(void);</code></pre>
+<p><code>ip_send()</code> looks up the nexthop (gateway if off-subnet),
+resolves its MAC via ARP (returns 0 if not yet cached — caller retries
+after <code>arp_request()</code>), and hands the frame to
+<code>netdev_send()</code>.</p>
+<h3 id="udp-kernelnetudp.h">UDP (<code>kernel/net/udp.h</code>)</h3>
+<pre class="c"><code>int  udp_open(uint16_t local_port);  /* 0 = ephemeral */
+void udp_close(int sock);
+int  udp_send(int sock, ipv4_t dst_ip, uint16_t dst_port,
+              const uint8_t *data, uint16_t len);
+int  udp_recv(int sock, uint8_t *buf, uint16_t maxlen,
+              ipv4_t *src_ip_out, uint16_t *src_port_out);</code></pre>
+<p><code>udp_recv()</code> is non-blocking and returns 0 if no datagram
+is available. Up to 8 sockets may be open simultaneously. Each socket
+has a 2 KB receive ring buffer.</p>
+<p><strong>Example — send a UDP datagram:</strong></p>
+<pre class="c"><code>int s = udp_open(0);          /* bind to ephemeral port */
+uint8_t msg[] = &quot;hello&quot;;
+udp_send(s, IPV4(10,0,2,2), 9, msg, sizeof(msg));
+udp_close(s);</code></pre>
+<h3 id="tcp-kernelnettcp.h">TCP (<code>kernel/net/tcp.h</code>)</h3>
+<p>Up to 8 simultaneous TCP connections. Each socket has 4 KB TX and 4
+KB RX ring buffers. <code>tcp_tick()</code> must be called periodically
+(typically from the PIT IRQ handler) for retransmit and timeout
+handling.</p>
+<h4 id="client-connection">Client connection</h4>
+<pre class="c"><code>int sock = tcp_connect(IPV4(93,184,216,34), 80, 0);
+/* wait until established */
+while (tcp_state(sock) != TCP_ESTABLISHED) net_stack_poll();
+
+uint8_t req[] = &quot;GET / HTTP/1.0\r\nHost: example.com\r\n\r\n&quot;;
+tcp_send(sock, req, sizeof(req) - 1);
+
+uint8_t buf[512]; int n;
+while ((n = tcp_recv(sock, buf, sizeof(buf))) &gt; 0) {
+    /* process buf[0..n-1] */
+    net_stack_poll();
+}
+tcp_close(sock);</code></pre>
+<h4 id="server-passive-listen">Server (passive listen)</h4>
+<pre class="c"><code>int lsock = tcp_listen(8080);
+while (1) {
+    net_stack_poll();
+    int csock = tcp_accept(lsock);
+    if (csock &lt; 0) continue;
+    /* handle csock … */
+    tcp_close(csock);
+}</code></pre>
+<h4 id="tcp-api-reference">TCP API reference</h4>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>tcp_connect(ip, port, lport)</code></td>
+<td>Active open; returns socket index or -1</td>
+</tr>
+<tr class="even">
+<td><code>tcp_listen(port)</code></td>
+<td>Passive open; returns listening socket index or -1</td>
+</tr>
+<tr class="odd">
+<td><code>tcp_accept(lsock)</code></td>
+<td>Accept a pending connection; returns new socket or -1</td>
+</tr>
+<tr class="even">
+<td><code>tcp_send(sock, data, len)</code></td>
+<td>Queue data for sending; returns bytes queued</td>
+</tr>
+<tr class="odd">
+<td><code>tcp_recv(sock, buf, max)</code></td>
+<td>Non-blocking receive; returns bytes read or 0</td>
+</tr>
+<tr class="even">
+<td><code>tcp_close(sock)</code></td>
+<td>Initiate graceful close (sends FIN)</td>
+</tr>
+<tr class="odd">
+<td><code>tcp_state(sock)</code></td>
+<td>Returns current <code>TcpState</code> enum value</td>
+</tr>
+<tr class="even">
+<td><code>tcp_tick()</code></td>
+<td>Retransmit / timeout processing (call from timer IRQ)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="tcp-connection-states">TCP connection states</h4>
+<table>
+<thead>
+<tr class="header">
+<th>State</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>TCP_CLOSED</code></td>
+<td>Socket unused</td>
+</tr>
+<tr class="even">
+<td><code>TCP_SYN_SENT</code></td>
+<td>SYN sent, waiting for SYN-ACK</td>
+</tr>
+<tr class="odd">
+<td><code>TCP_ESTABLISHED</code></td>
+<td>Data transfer in progress</td>
+</tr>
+<tr class="even">
+<td><code>TCP_CLOSE_WAIT</code></td>
+<td>Remote FIN received, waiting for app to close</td>
+</tr>
+<tr class="odd">
+<td><code>TCP_FIN_WAIT_1/2</code></td>
+<td>Local FIN sent, draining</td>
+</tr>
+<tr class="even">
+<td><code>TCP_TIME_WAIT</code></td>
+<td>2×MSL quiet time before socket recycled</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dhcp-kernelnetdhcp.h">DHCP (<code>kernel/net/dhcp.h</code>)</h3>
+<p>DHCP is used automatically by <code>net_stack_init_ex()</code>. It
+can also be called directly:</p>
+<pre class="c"><code>DhcpLease lease;
+if (dhcp_request(&amp;lease, 2000)) {   /* 2-second timeout */
+    /* lease.ip, lease.gateway, lease.netmask, lease.dns populated */
+}</code></pre>
+<p>DHCP sends DISCOVER/REQUEST over UDP port 67 and listens on port
+68.</p>
+<h3 id="byte-order-helpers-kernelnetnet.h">Byte-Order Helpers
+(<code>kernel/net/net.h</code>)</h3>
+<pre class="c"><code>uint16_t net_htons(uint16_t v);   /* host → network (16-bit) */
+uint16_t net_ntohs(uint16_t v);   /* network → host (16-bit) */
+uint32_t net_htonl(uint32_t v);   /* host → network (32-bit) */
+uint32_t net_ntohl(uint32_t v);   /* network → host (32-bit) */</code></pre>
+<h3 id="polling-model">Polling Model</h3>
+<p>The stack has no dedicated thread. RX is processed in two ways:</p>
+<ol type="1">
+<li><strong>IRQ path</strong>: the NIC fires an interrupt, the handler
+calls <code>e1000_poll()</code> or <code>virtio_net_poll()</code>, which
+invokes the RX callback, which calls <code>eth_rx()</code> →
+<code>arp_rx()</code> / <code>ip_rx()</code> → TCP/UDP demux.</li>
+<li><strong>Poll path</strong>: <code>net_stack_poll()</code> is called
+from the main event loop (<code>hlt</code> loop) and from
+<code>CMD_YIELD()</code> inside long-running shell commands.</li>
+</ol>
+<p>Both paths call <code>netdev_poll()</code> which is guarded by a
+reentrancy lock, so it is safe to call from both contexts.</p>
+<h3 id="virtualbox-setup">VirtualBox Setup</h3>
+<ol type="1">
+<li>VM Settings → Network → Adapter 1</li>
+<li><strong>Attached to</strong>: NAT (default)</li>
+<li><strong>Adapter Type</strong>: Intel PRO/1000 MT Desktop
+(82540EM)</li>
+<li>Boot UAOS — the e1000 driver is detected automatically.</li>
+<li><code>ping 10.0.2.2</code> (VirtualBox gateway) confirms basic
+connectivity.</li>
+<li><code>ping 8.8.8.8</code> tests full NAT routing via the host.</li>
+</ol>
+<h3 id="qemu-setup">QEMU Setup</h3>
+<pre class="bash"><code>bash scripts/run_with_disk.sh
+# or manually:
+qemu-system-x86_64 ... \
+  -netdev user,id=n0 \
+  -device virtio-net-pci,netdev=n0,disable-modern=on</code></pre>
+<p>The virtio-net driver is selected automatically. QEMU’s slirp
+user-mode network responds to <code>ping 10.0.2.2</code> (gateway).
+Pings to external IPs require the host process to have
+<code>CAP_NET_RAW</code> (or use TAP/bridge mode); all TCP and UDP
+traffic is proxied normally.</p>
 <hr />
 <h2 id="build-system">Build System</h2>
 <h3 id="dependencies">Dependencies</h3>
@@ -1336,17 +1704,23 @@ linker script</td>
 -Wall -Wextra</code></pre>
 <hr />
 <h2 id="running-in-qemu">Running in QEMU</h2>
-<h3 id="one-time-ovmf-setup">One-time OVMF Setup</h3>
+<h3 id="ovmf-setup">OVMF Setup</h3>
+<p>Copy a <strong>fresh</strong> variables file before each run. Stale
+vars can save a changed boot order and cause the firmware to drop to the
+UEFI shell instead of booting from CD:</p>
 <pre class="bash"><code>cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd</code></pre>
 <h3 id="launch-command">Launch Command</h3>
 <pre class="bash"><code>qemu-system-x86_64 \
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
-  -cdrom build/Ultimate_Amiga_OS.iso \
+  -device piix3-ide,id=ide \
+  -drive if=none,id=cdrom,media=cdrom,file=build/Ultimate_Amiga_OS.iso \
+  -device ide-cd,drive=cdrom,bus=ide.0 \
   -m 512M \
   -vga virtio \
-  -no-reboot</code></pre>
+  -no-reboot \
+  -no-shutdown</code></pre>
 <table>
 <colgroup>
 <col style="width: 50%" />
@@ -1373,12 +1747,25 @@ with PS/2 mouse</td>
 <td>UEFI variable store (writable copy)</td>
 </tr>
 <tr class="even">
+<td><code>-device piix3-ide</code></td>
+<td>Explicit IDE controller (Q35 has no built-in IDE; required for ATAPI
+CD-ROM)</td>
+</tr>
+<tr class="odd">
+<td><code>-device ide-cd</code></td>
+<td>Attach CD-ROM to the IDE controller</td>
+</tr>
+<tr class="even">
 <td><code>-vga virtio</code></td>
 <td>Best framebuffer performance</td>
 </tr>
 <tr class="odd">
 <td><code>-no-reboot</code></td>
 <td>Keeps QEMU open after kernel reboot call</td>
+</tr>
+<tr class="even">
+<td><code>-no-shutdown</code></td>
+<td>Keeps QEMU window open when guest CPU is idle</td>
 </tr>
 </tbody>
 </table>

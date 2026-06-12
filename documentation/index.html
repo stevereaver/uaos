@@ -405,7 +405,10 @@ custom linker script</td>
 <h2 id="running-in-qemu">Running in QEMU</h2>
 <h3 id="first-time-setup-copy-ovmf-variables-file">First-time setup —
 copy OVMF variables file</h3>
-<p>OVMF requires a writable variables file. Copy it once:</p>
+<p>OVMF requires a writable variables file. <strong>Copy a fresh copy
+before each run</strong> — stale vars can save a changed boot order and
+cause the firmware to drop to the UEFI shell instead of booting from
+CD:</p>
 <pre class="bash"><code>cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf_vars.fd</code></pre>
 <blockquote>
 <p>If your OVMF package uses a different path, check with:
@@ -416,10 +419,13 @@ copy OVMF variables file</h3>
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
-  -cdrom build/Ultimate_Amiga_OS.iso \
+  -device piix3-ide,id=ide \
+  -drive if=none,id=cdrom,media=cdrom,file=build/Ultimate_Amiga_OS.iso \
+  -device ide-cd,drive=cdrom,bus=ide.0 \
   -m 512M \
   -vga virtio \
-  -no-reboot</code></pre>
+  -no-reboot \
+  -no-shutdown</code></pre>
 <table>
 <colgroup>
 <col style="width: 42%" />
@@ -446,6 +452,15 @@ conflicts with PS/2 mouse</td>
 <td>UEFI variable store (writable copy)</td>
 </tr>
 <tr class="even">
+<td><code>-device piix3-ide</code></td>
+<td>Explicit IDE controller (Q35 lacks built-in IDE; needed for ATAPI
+CD-ROM detect)</td>
+</tr>
+<tr class="odd">
+<td><code>-device ide-cd</code></td>
+<td>Attach CD-ROM to the IDE controller</td>
+</tr>
+<tr class="even">
 <td><code>-vga virtio</code></td>
 <td>Best framebuffer performance under QEMU</td>
 </tr>
@@ -453,6 +468,11 @@ conflicts with PS/2 mouse</td>
 <td><code>-no-reboot</code></td>
 <td>Keeps QEMU open if the kernel calls reboot (useful for
 debugging)</td>
+</tr>
+<tr class="even">
+<td><code>-no-shutdown</code></td>
+<td>Keeps QEMU window open when guest CPU is idle (prevents window
+disappearing)</td>
 </tr>
 </tbody>
 </table>
@@ -463,10 +483,13 @@ kernel on your terminal:</p>
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
-  -cdrom build/Ultimate_Amiga_OS.iso \
+  -device piix3-ide,id=ide \
+  -drive if=none,id=cdrom,media=cdrom,file=build/Ultimate_Amiga_OS.iso \
+  -device ide-cd,drive=cdrom,bus=ide.0 \
   -m 512M \
   -vga virtio \
   -no-reboot \
+  -no-shutdown \
   -serial stdio</code></pre>
 <p>Or log to a file:</p>
 <pre class="bash"><code>  -serial file:/tmp/uaos_serial.log</code></pre>

@@ -30,6 +30,9 @@
   @{" Kernel Subsystems       " LINK KERNEL}
      Exec, MMU sandbox, page fault handler, ROM module registry.
 
+  @{" TCP/IP Networking       " LINK NETWORKING}
+     Network drivers, stack init, ping, UDP, TCP, DHCP.
+
   @{" Building from Source    " LINK BUILDING}
      Cross-compiler toolchain setup and ISO packaging pipeline.
 
@@ -128,9 +131,10 @@
 
   @{b}Supported Network Hardware@{ub}
 
-    • Realtek RTL8139 / RTL8169
-    • Intel e1000 / e1000e
-    • VirtIO-net
+    • Intel 82540EM (e1000)  — VirtualBox Intel PRO/1000 MT Desktop
+    • VirtIO-Net             — QEMU -device virtio-net-pci,disable-modern=on
+
+  See @{"TCP/IP Networking" LINK NETWORKING} for driver setup and API.
 
   @{b}Supported Audio Hardware@{ub}
 
@@ -244,7 +248,7 @@
 @NODE KERNEL "Kernel Subsystems"
 @TITLE "UAOS — Kernel Subsystems"
 @PREV EMULATION
-@NEXT BUILDING
+@NEXT NETWORKING
 
   @{b}Kernel Subsystems@{ub}
   ─────────────────────────────────────────────────────────────────────────
@@ -291,9 +295,120 @@
 @ENDNODE
 
 
+@NODE NETWORKING "TCP/IP Networking"
+@TITLE "UAOS — TCP/IP Networking"
+@PREV KERNEL
+@NEXT BUILDING
+
+  @{b}TCP/IP Networking@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  UAOS includes a complete freestanding TCP/IP stack.  It auto-detects the
+  network card at boot, runs DHCP, and falls back to a static IP if DHCP
+  times out.  The stack runs in the kernel event loop — no threads needed.
+
+  @{b}Supported Hardware@{ub}
+
+    • @{b}Intel 82540EM (e1000)@{ub}  — VirtualBox (Intel PRO/1000 MT Desktop),
+      QEMU @{i}-device e1000@{ui}.  PCI vendor 0x8086 / device 0x100E.
+    • @{b}VirtIO-Net@{ub}             — QEMU @{i}-device virtio-net-pci,disable-modern=on@{ui}.
+      PCI vendor 0x1AF4 / device 0x1000.
+
+  The correct driver is selected automatically via @{b}netdev_probe()@{ui}.
+  e1000 is always tried first; virtio-net is the fallback.
+
+  @{b}Stack Layers@{ub}
+
+    @{b}kernel/net/stack.c@{ub}   — top-level init, DHCP orchestration, poll/tick
+    @{b}kernel/net/ip.c@{ub}      — IPv4 send/receive, routing via gateway
+    @{b}kernel/net/arp.c@{ub}     — ARP request/reply, 16-entry cache
+    @{b}kernel/net/icmp.c@{ub}    — echo request/reply (ping)
+    @{b}kernel/net/udp.c@{ub}     — UDP sockets (up to 8, 2 KB RX each)
+    @{b}kernel/net/tcp.c@{ub}     — TCP sockets (up to 8, 4 KB TX/RX each)
+    @{b}kernel/net/dhcp.c@{ub}    — DHCP DISCOVER/REQUEST/ACK over UDP
+
+  @{b}Initialisation@{ub}
+
+  Called once from @{b}uaos_kernel_main()@{ub}:
+
+      net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0));
+
+  Or with an explicit DHCP timeout (milliseconds):
+
+      net_stack_init_ex(fallback_ip, fallback_gw, fallback_nm, 2000);
+
+  @{b}Key API Functions@{ub}
+
+    @{b}Stack (stack.h)@{ub}
+      @{i}net_stack_is_up()@{ui}        — returns 1 if NIC found and configured
+      @{i}net_stack_poll()@{ui}         — process pending RX frames (call from loop)
+      @{i}net_stack_tick()@{ui}         — TCP retransmit timer (call from PIT IRQ)
+      @{i}net_stack_get_ip()@{ui}       — returns assigned IPv4 as ipv4_t
+      @{i}net_ip_to_str(ip, buf)@{ui}   — format IP to "a.b.c.d" string
+      @{i}net_str_to_ip(str, out)@{ui}  — parse "a.b.c.d" to ipv4_t
+
+    @{b}ICMP (icmp.h)@{ub}
+      @{i}icmp_ping(dst, seq)@{ui}      — send one ICMP echo request
+      @{i}icmp_got_reply()@{ui}         — returns 1 when echo reply arrives
+      @{i}icmp_clear_reply()@{ui}       — reset reply flag before each ping
+
+    @{b}UDP (udp.h)@{ub}
+      @{i}udp_open(local_port)@{ui}     — bind socket; 0 = ephemeral port
+      @{i}udp_send(s,ip,port,buf,len)@{ui} — send datagram
+      @{i}udp_recv(s,buf,max,&ip,&p)@{ui} — non-blocking receive; 0 if empty
+      @{i}udp_close(s)@{ui}             — release socket
+
+    @{b}TCP (tcp.h)@{ub}
+      @{i}tcp_connect(ip,port,lport)@{ui} — active open; returns socket or -1
+      @{i}tcp_listen(port)@{ui}          — passive open; returns socket or -1
+      @{i}tcp_accept(lsock)@{ui}         — accept pending connection
+      @{i}tcp_send(s,data,len)@{ui}      — queue data for sending
+      @{i}tcp_recv(s,buf,max)@{ui}       — non-blocking receive
+      @{i}tcp_close(s)@{ui}              — graceful close (sends FIN)
+      @{i}tcp_state(s)@{ui}              — returns TcpState enum value
+
+    @{b}ARP (arp.h)@{ub}
+      @{i}arp_lookup(ip, mac_out)@{ui}   — 1 if found in cache, 0 if miss
+      @{i}arp_request(ip)@{ui}           — broadcast ARP who-has
+      @{i}arp_cache_update(ip, mac)@{ui} — insert/refresh cache entry
+
+  @{b}Shell Commands@{ub}
+
+    @{i}ping <ip> [count]@{ui}   — ICMP echo; default 4 packets, 1-second timeout each
+    @{i}ifconfig@{ui}             — show IP, netmask, gateway, MAC, DHCP/static flag
+
+  @{b}Polling Model@{ub}
+
+  No separate network thread exists.  Frames are processed either:
+    • from the NIC's IRQ handler (calls @{i}netdev_poll()@{ui} inline), or
+    • from @{i}net_stack_poll()@{ui} called by the main @{i}hlt@{ui}-loop dispatcher.
+  Both paths share a reentrancy lock so simultaneous calls are safe.
+
+  @{b}VirtualBox Quick-Start@{ub}
+
+  1. VM Settings → Network → Adapter 1
+  2. Attached to: @{b}NAT@{ub}, Adapter type: @{b}Intel PRO/1000 MT Desktop@{ub}
+  3. Boot UAOS — e1000 detected automatically, DHCP runs.
+  4. @{i}ping 10.0.2.2@{ui} — gateway reachable.
+  5. @{i}ping 8.8.8.8@{ui}  — full internet via VirtualBox NAT.
+
+  @{b}QEMU Quick-Start@{ub}
+
+      qemu-system-x86_64 ... \
+          -netdev user,id=n0 \
+          -device virtio-net-pci,netdev=n0,disable-modern=on
+
+  @{i}ping 10.0.2.2@{ui} works.  Pings to external IPs require host @{b}CAP_NET_RAW@{ub};
+  TCP and UDP are fully proxied by slirp regardless.
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
 @NODE BUILDING "Building from Source"
 @TITLE "UAOS — Building from Source"
-@PREV KERNEL
+@PREV NETWORKING
 @NEXT TROUBLE
 
   @{b}Building from Source@{ub}

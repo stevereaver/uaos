@@ -473,6 +473,275 @@ with \texttt{cd} and \texttt{dir} once auto-mounted at boot or after
 formatting with the \texttt{format} command.
 
 % =========================================================================
+% =========================================================================
+\chapter{TCP/IP Networking}
+\label{ch:networking}
+% =========================================================================
+
+UAOS includes a complete freestanding TCP/IP stack.  It auto-detects the
+network card at boot, attempts DHCP, and falls back to a static IP address
+if DHCP times out.  The stack runs entirely in the kernel event loop --- no
+threads or blocking system calls are required.
+
+% -------------------------------------------------------------------------
+\section{Architecture}
+% -------------------------------------------------------------------------
+
+\begin{verbatim}
+Shell / bsdsocket.library
+        │
+        ▼
+ icmp / tcp / udp   (kernel/net/)
+        │
+        ▼
+  ip.c  ◄──►  arp.c
+        │
+        ▼
+ NetDevice  (abstract hardware interface)
+        │
+   ┌────┴────┐
+   ▼         ▼
+virtio_net  e1000
+(QEMU)   (VirtualBox)
+\end{verbatim}
+
+% -------------------------------------------------------------------------
+\section{Network Hardware Drivers}
+% -------------------------------------------------------------------------
+
+\subsection{NetDevice Abstraction (\texttt{net\_device.h})}
+
+All stack components call through the \texttt{NetDevice} interface rather
+than any specific driver.  \texttt{netdev\_probe()} (called by
+\texttt{net\_stack\_init\_ex()}) scans PCI for a supported device, registers
+the first one found, and calls its \texttt{init()} function.  The e1000 is
+tried before virtio-net so that VirtualBox guests are served without
+configuration.
+
+\begin{lstlisting}[language=C]
+typedef struct NetDevice {
+    const char *name;
+    int  (*init)(struct NetDevice *dev);
+    void (*get_mac)(struct NetDevice *dev, uint8_t *buf);
+    int  (*send)(struct NetDevice *dev, const uint8_t *data, uint16_t len);
+    void (*poll)(struct NetDevice *dev);
+    void (*set_rx_callback)(struct NetDevice *dev, netdev_rx_fn cb);
+    void (*setup_irq)(struct NetDevice *dev);
+    void *priv;
+} NetDevice;
+\end{lstlisting}
+
+\subsection{VirtIO-Net (\texttt{virtio\_net.c})}
+
+\begin{itemize}
+  \item PCI vendor \texttt{0x1AF4}, device \texttt{0x1000} (legacy VirtIO~0.9).
+  \item I/O-port BAR0; 256-entry legacy virtqueue descriptor rings.
+  \item MSI-X capability is present but kept disabled; interrupts use the
+        8259A~PIC (IRQ~10 on Q35 QEMU).
+  \item Used by: QEMU \texttt{-device virtio-net-pci,disable-modern=on}.
+\end{itemize}
+
+\subsection{Intel 82540EM e1000 (\texttt{e1000.c})}
+
+\begin{itemize}
+  \item PCI vendor \texttt{0x8086}, device \texttt{0x100E} (and related 8254x family IDs).
+  \item 128~KB MMIO BAR0; legacy 16-byte TX/RX descriptor rings (32 slots each).
+  \item MAC address read from EEPROM via the EERD register at initialisation.
+  \item IRQ delivered via ICR (self-clearing); routed through the 8259A PIC.
+  \item Used by: VirtualBox (Intel PRO/1000 MT Desktop) and QEMU
+        \texttt{-device e1000}.
+\end{itemize}
+
+% -------------------------------------------------------------------------
+\section{Stack Initialisation}
+% -------------------------------------------------------------------------
+
+Call \texttt{net\_stack\_init()} once from \texttt{uaos\_kernel\_main()}:
+
+\begin{lstlisting}[language=C]
+/* DHCP with 1-second timeout, static fallback */
+net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0));
+
+/* Explicit DHCP timeout (ms) */
+net_stack_init_ex(IPV4(10,0,2,15), IPV4(10,0,2,2),
+                  IPV4(255,255,255,0), 2000);
+\end{lstlisting}
+
+\noindent The \texttt{IPV4(a,b,c,d)} macro builds a host-byte-order \texttt{ipv4\_t}:
+
+\begin{lstlisting}[language=C]
+#define IPV4(a,b,c,d) ((ipv4_t)(  ((uint32_t)(a)<<24) \
+                                 | ((uint32_t)(b)<<16) \
+                                 | ((uint32_t)(c)<< 8) \
+                                 |  (uint32_t)(d)     ))
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\section{Stack API Reference}
+% -------------------------------------------------------------------------
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Function} & \textbf{Description} \\
+\midrule
+\texttt{net\_stack\_init(ip, gw, nm)} & Init; DHCP then static fallback \\
+\texttt{net\_stack\_init\_ex(ip, gw, nm, ms)} & Init with explicit DHCP timeout \\
+\texttt{net\_stack\_is\_up()} & 1 if NIC found and stack is live \\
+\texttt{net\_stack\_dhcp\_used()} & 1 if IP came from DHCP \\
+\texttt{net\_stack\_poll()} & Process pending RX frames \\
+\texttt{net\_stack\_tick()} & TCP retransmit / timeout tick \\
+\texttt{net\_stack\_get\_ip()} & Return assigned IPv4 address \\
+\texttt{net\_ip\_to\_str(ip, buf)} & Format \texttt{ipv4\_t} as \texttt{"a.b.c.d"} \\
+\texttt{net\_str\_to\_ip(str, out)} & Parse \texttt{"a.b.c.d"} string \\
+\bottomrule
+\end{tabular}
+\caption{TCP/IP stack top-level API (\texttt{kernel/net/stack.h})}
+\end{table}
+
+% -------------------------------------------------------------------------
+\section{ICMP (Ping)}
+% -------------------------------------------------------------------------
+
+\begin{lstlisting}[language=C]
+icmp_clear_reply();
+icmp_ping(IPV4(10,0,2,2), 1);          /* send echo request seq=1 */
+/* poll until reply or timeout */
+for (int i = 0; i < 10 && !icmp_got_reply(); i++) {
+    net_stack_poll();
+    /* sleep ~100 ms */
+}
+if (icmp_got_reply()) { /* success */ }
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\section{UDP}
+% -------------------------------------------------------------------------
+
+\begin{lstlisting}[language=C]
+int s = udp_open(0);          /* ephemeral local port */
+uint8_t msg[] = "hello";
+udp_send(s, IPV4(10,0,2,2), 9, msg, sizeof(msg));
+
+uint8_t buf[512]; ipv4_t src; uint16_t sport;
+int n = udp_recv(s, buf, sizeof(buf), &src, &sport);
+if (n > 0) { /* buf[0..n-1] contains datagram payload */ }
+udp_close(s);
+\end{lstlisting}
+
+Up to 8 simultaneous UDP sockets.  Each socket has a 2~KB receive ring
+buffer.  \texttt{udp\_recv()} is non-blocking and returns 0 if no datagram
+is waiting.
+
+% -------------------------------------------------------------------------
+\section{TCP}
+% -------------------------------------------------------------------------
+
+\subsection{Client Connection}
+
+\begin{lstlisting}[language=C]
+int sock = tcp_connect(IPV4(93,184,216,34), 80, 0);
+while (tcp_state(sock) != TCP_ESTABLISHED) net_stack_poll();
+
+uint8_t req[] = "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
+tcp_send(sock, req, sizeof(req) - 1);
+
+uint8_t buf[512]; int n;
+while ((n = tcp_recv(sock, buf, sizeof(buf))) > 0) {
+    /* process buf[0..n-1] */
+    net_stack_poll();
+}
+tcp_close(sock);
+\end{lstlisting}
+
+\subsection{Passive Server}
+
+\begin{lstlisting}[language=C]
+int lsock = tcp_listen(8080);
+while (1) {
+    net_stack_poll();
+    int csock = tcp_accept(lsock);
+    if (csock < 0) continue;
+    /* handle connection ... */
+    tcp_close(csock);
+}
+\end{lstlisting}
+
+\subsection{TCP API Reference}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Function} & \textbf{Description} \\
+\midrule
+\texttt{tcp\_connect(ip, port, lport)} & Active open; socket index or $-1$ \\
+\texttt{tcp\_listen(port)} & Passive open; socket index or $-1$ \\
+\texttt{tcp\_accept(lsock)} & Accept pending connection \\
+\texttt{tcp\_send(sock, data, len)} & Queue data; returns bytes queued \\
+\texttt{tcp\_recv(sock, buf, max)} & Non-blocking receive \\
+\texttt{tcp\_close(sock)} & Graceful close (sends FIN) \\
+\texttt{tcp\_state(sock)} & Returns \texttt{TcpState} enum \\
+\texttt{tcp\_tick()} & Retransmit / timeout (call from PIT) \\
+\bottomrule
+\end{tabular}
+\caption{TCP API (\texttt{kernel/net/tcp.h})}
+\end{table}
+
+\noindent Up to 8 simultaneous TCP connections; 4~KB TX and 4~KB RX ring
+buffers per socket.
+
+% -------------------------------------------------------------------------
+\section{DHCP}
+% -------------------------------------------------------------------------
+
+\texttt{net\_stack\_init\_ex()} invokes DHCP automatically.  For direct
+use:
+
+\begin{lstlisting}[language=C]
+DhcpLease lease;
+if (dhcp_request(&lease, 2000)) {
+    /* lease.ip, .gateway, .netmask, .dns filled */
+}
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\section{Polling Model}
+% -------------------------------------------------------------------------
+
+The stack has no dedicated network thread.  RX is processed via two paths:
+
+\begin{enumerate}
+  \item \textbf{IRQ path} --- the NIC fires an interrupt; the handler calls
+        \texttt{e1000\_poll()} / \texttt{virtio\_net\_poll()}, which invokes
+        the RX callback, which drives \texttt{eth\_rx()} $\to$ \texttt{arp\_rx()} /
+        \texttt{ip\_rx()} $\to$ TCP/UDP demux.
+  \item \textbf{Poll path} --- \texttt{net\_stack\_poll()} is called from the
+        main \texttt{hlt} loop and from \texttt{CMD\_YIELD()} inside shell commands.
+\end{enumerate}
+
+Both paths call \texttt{netdev\_poll()} which is guarded by a per-driver
+reentrancy lock, making simultaneous calls safe.
+
+% -------------------------------------------------------------------------
+\section{Shell Network Commands}
+% -------------------------------------------------------------------------
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Command} & \textbf{Description} \\
+\midrule
+\texttt{ping <ip> [count]} & Send ICMP echo requests; \texttt{ip} is dotted-decimal \\
+\texttt{ifconfig} & Show IP address, netmask, gateway and MAC \\
+\bottomrule
+\end{tabular}
+\caption{Network shell commands}
+\end{table}
+
+% =========================================================================
 \chapter{Troubleshooting}
 % =========================================================================
 
