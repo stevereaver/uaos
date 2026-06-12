@@ -2373,11 +2373,14 @@ static void shell_yield_ms(void *shell_extra, uint32_t ms)
             WM_MouseEvent(mx, my, btn);
         }
 
-        /* Pump keyboard (but don't dispatch Enter — that would recurse) */
-        while (PS2Kbd_HasChar()) {
-            char c = PS2Kbd_GetChar();
-            WM_KeyEvent(c);
-        }
+        /* Drain the keyboard ring WITHOUT dispatching.
+         * The shell key handler calls inst_dispatch(), which is already on
+         * the call stack — forwarding keystrokes here would cause recursive
+         * command execution (e.g. the Enter key from the original "ping"
+         * would re-launch ping mid-run).  Discard while busy; when yield
+         * returns the normal event loop resumes and handles fresh input. */
+        while (PS2Kbd_HasChar())
+            PS2Kbd_GetChar();   /* consume and discard */
 
         /* Poll network */
         net_stack_poll();
