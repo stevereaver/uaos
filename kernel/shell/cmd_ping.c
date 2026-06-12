@@ -57,15 +57,23 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
     cmd_scat(line, ": 32 data bytes", sizeof(line));
     PRINT(line);
 
-    /* Ensure we have an ARP entry for the gateway/target */
+    /* Ensure we have an ARP entry for the gateway/target.
+     * For remote hosts (e.g. 8.8.8.8) the nexthop is the gateway.
+     * Retry up to ~1 second: send an ARP request and poll for the reply. */
     uint8_t gw_mac[ETH_ALEN];
     ipv4_t nexthop = dst;
     ipv4_t nm = ip_get_netmask();
     if ((dst & nm) != (ip_get_local() & nm)) nexthop = ip_get_gateway();
     if (!arp_lookup(nexthop, gw_mac)) {
-        arp_request(nexthop);
-        ping_delay_ms(100);
-        net_stack_poll();
+        for (int arp_try = 0; arp_try < 10 && !arp_lookup(nexthop, gw_mac); arp_try++) {
+            arp_request(nexthop);
+            ping_delay_ms(100);
+            net_stack_poll();
+        }
+        if (!arp_lookup(nexthop, gw_mac)) {
+            PRINT("ping: no ARP reply from gateway — network unreachable");
+            return;
+        }
     }
 
     int sent = 0, received = 0;

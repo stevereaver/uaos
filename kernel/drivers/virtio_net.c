@@ -375,10 +375,14 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     if (!g_up || !g_io_base) return 0;
     if (len > VIRTIO_NET_MTU) return 0;
 
-    /* Simple single-TX-at-a-time: wait for device to finish previous packet */
-    while (g_txq_used->idx != g_txq_avail->idx && g_up) {
-        __asm__ volatile("pause");
+    /* Drain TX used ring before reusing descriptor 0.
+     * We always use a single descriptor (slot 0) for TX, so we just need
+     * to reclaim whatever the device has already finished with. */
+    while (g_txq_last_used != g_txq_used->idx) {
+        g_txq_last_used++;
     }
+    /* Reset to descriptor 0 for simplicity (single-packet-at-a-time TX) */
+    g_txq_free_head = 0;
 
     /* Build: [VirtioNetHdr][Ethernet frame] in one contiguous buffer */
     VirtioNetHdr *hdr = (VirtioNetHdr *)g_tx_hdr_buf;
@@ -392,14 +396,13 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     for (uint16_t i = 0; i < len; i++) payload[i] = data[i];
     uint16_t total = (uint16_t)(VIRTIO_NET_HDR_SIZE + len);
 
-    /* Use TX descriptor 0 (simple single-buffer chained approach) */
-    uint16_t di = (uint16_t)(g_txq_free_head % VIRTQ_SIZE);
-    g_txq_desc[di].addr  = (uint64_t)(uintptr_t)g_tx_hdr_buf;
-    g_txq_desc[di].len   = total;
-    g_txq_desc[di].flags = 0;
-    g_txq_desc[di].next  = 0;
+    /* Place into descriptor 0 */
+    g_txq_desc[0].addr  = (uint64_t)(uintptr_t)g_tx_hdr_buf;
+    g_txq_desc[0].len   = total;
+    g_txq_desc[0].flags = 0;
+    g_txq_desc[0].next  = 0;
 
-    g_txq_avail->ring[g_txq_avail->idx % VIRTQ_SIZE] = di;
+    g_txq_avail->ring[g_txq_avail->idx % VIRTQ_SIZE] = 0;
     __asm__ volatile("mfence" ::: "memory");
     g_txq_avail->idx++;
     __asm__ volatile("mfence" ::: "memory");
@@ -407,7 +410,6 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     /* Notify device: queue 1 = TX */
     outw(g_io_base + VIRTIO_PCI_QUEUE_NOTIFY, 1);
 
-    g_txq_free_head = (uint16_t)((di + 1) % VIRTQ_SIZE);
     return 1;
 }
 
