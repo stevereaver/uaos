@@ -18,6 +18,26 @@
 #include "net_device.h"
 
 /* -------------------------------------------------------------------------
+ * Serial debug (COM1 = 0x3F8)
+ * ------------------------------------------------------------------------- */
+static inline void _dh_outb(uint16_t p, uint8_t v)
+{ __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
+static inline uint8_t _dh_inb(uint16_t p)
+{ uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
+static void _dh_putc(char c)
+{
+    while ((_dh_inb(0x3FD) & 0x20) == 0) {}
+    _dh_outb(0x3F8, (uint8_t)c);
+    if (c == '\n') { while ((_dh_inb(0x3FD) & 0x20) == 0) {} _dh_outb(0x3F8, '\r'); }
+}
+static void _dh_puts(const char *s) { while (*s) _dh_putc(*s++); }
+static void _dh_phex(uint32_t v) {
+    static const char h[] = "0123456789ABCDEF";
+    _dh_puts("0x");
+    for (int i = 28; i >= 0; i -= 4) _dh_putc(h[(v >> i) & 0xF]);
+}
+
+/* -------------------------------------------------------------------------
  * DHCP packet layout (RFC 2131)
  * ------------------------------------------------------------------------- */
 #define DHCP_MAGIC       0x63825363UL
@@ -247,19 +267,38 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     g_dhcp_got = 0;
     g_server_ip = 0;
 
+    _dh_puts("[DHCP] starting, MAC=");
+    static const char hx[] = "0123456789ABCDEF";
+    for (int i = 0; i < 6; i++) {
+        _dh_putc(hx[g_dhcp_mac[i] >> 4]); _dh_putc(hx[g_dhcp_mac[i] & 0xF]);
+        if (i < 5) _dh_putc(':');
+    }
+    _dh_puts(" timeout_ms="); _dh_phex(timeout_ms); _dh_putc('\n');
+
     /* Register temporary RX callback */
     netdev_set_rx_callback(dhcp_rx_cb);
 
-    /* --- Phase 1: DISCOVER --- */
-    dhcp_send(DHCPDISCOVER, 0, 0);
-
+    /* --- Phase 1: DISCOVER with retries ---
+     * Send a DISCOVER every 500 ms until we get an OFFER or time out.
+     * Real DHCP servers (especially through a bridge) may need 1-3 s
+     * to respond after the NIC link comes up. */
     uint32_t waited = 0;
+    uint32_t next_discover = 0;  /* send immediately on first iteration */
     while (!g_dhcp_got && waited < timeout_ms) {
+        if (waited >= next_discover) {
+            _dh_puts("[DHCP] sending DISCOVER (t="); _dh_phex(waited); _dh_puts(")\n");
+            dhcp_send(DHCPDISCOVER, 0, 0);
+            next_discover = waited + 500;  /* retry every 500 ms */
+        }
         dhcp_delay_ms(10);
         netdev_poll();
         waited += 10;
     }
-    if (!g_dhcp_got) return 0;
+    if (!g_dhcp_got) {
+        _dh_puts("[DHCP] no OFFER received\n");
+        return 0;
+    }
+    _dh_puts("[DHCP] OFFER received\n");
 
     /* Check it's an OFFER */
     {
@@ -280,8 +319,12 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     parse_offer(&g_dhcp_reply, lease);
     ipv4_t offered_ip = lease->ip;
 
+    _dh_puts("[DHCP] offered IP="); _dh_phex(offered_ip);
+    _dh_puts(" gw="); _dh_phex(lease->gateway); _dh_putc('\n');
+
     /* --- Phase 2: REQUEST --- */
     g_dhcp_got = 0;
+    _dh_puts("[DHCP] sending REQUEST\n");
     dhcp_send(DHCPREQUEST, offered_ip, g_server_ip);
 
     waited = 0;
@@ -290,7 +333,10 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
         netdev_poll();
         waited += 10;
     }
-    if (!g_dhcp_got) return 0;
+    if (!g_dhcp_got) {
+        _dh_puts("[DHCP] no ACK received\n");
+        return 0;
+    }
 
     /* Check for ACK */
     {
@@ -301,12 +347,18 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
             if (code == 0) continue;
             uint8_t olen = *opt++;
             if (code == OPT_MSG_TYPE && olen == 1) {
-                if (*opt == DHCPNAK) return 0;
-                if (*opt == DHCPACK) { parse_offer(&g_dhcp_reply, lease); return 1; }
+                if (*opt == DHCPNAK) { _dh_puts("[DHCP] NAK\n"); return 0; }
+                if (*opt == DHCPACK) {
+                    parse_offer(&g_dhcp_reply, lease);
+                    _dh_puts("[DHCP] ACK, IP="); _dh_phex(lease->ip);
+                    _dh_puts(" gw="); _dh_phex(lease->gateway); _dh_putc('\n');
+                    return 1;
+                }
             }
             opt += olen;
         }
     }
+    _dh_puts("[DHCP] no ACK msg type in reply\n");
     return 0;
 }
 

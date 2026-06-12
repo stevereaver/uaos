@@ -556,8 +556,18 @@ int e1000_init(void)
     }
     uint32_t status = mmio_r32(g_bar0, E1000_STATUS);
     _e_puts("[E1000] STATUS="); _e_phex(status); _e_puts("\n");
-    if (!(status & E1000_STATUS_LU))
+    if (!(status & E1000_STATUS_LU)) {
         _e_puts("[E1000] WARNING: link not up after reset\n");
+    } else {
+        /* Link is up — give the switch/bridge port time to transition out
+         * of STP listening/learning state before we send DHCP DISCOVER.
+         * A real managed switch needs up to 30 s (STP) but fast STP / RSTP
+         * is usually ~1-3 s; VirtualBox bridging is typically ~500 ms.
+         * We wait 750 ms: enough for bridged mode, negligible for NAT. */
+        _e_puts("[E1000] link up, settling 750 ms...\n");
+        msdelay(750);
+        _e_puts("[E1000] settle done\n");
+    }
 
     g_up = 1;
     _e_puts("[E1000] init OK\n");
