@@ -191,7 +191,7 @@ typedef struct __attribute__((packed)) {
 #define VIRTQ_ALIGN     4096
 /* Each virtqueue needs enough space for all three parts, aligned to 4K */
 /* Size = desc_table(16*N) + avail(6+2*N) padded to 4K + used(6+8*N) padded */
-#define VIRTQ_BYTES     8192   /* 2 pages is always enough for N=64 */
+#define VIRTQ_BYTES     16384  /* 4 pages — enough for N=256 (QEMU default) */
 
 /* VirtIO net header (legacy, 10 bytes) */
 typedef struct __attribute__((packed)) {
@@ -356,9 +356,18 @@ static void vq_register(uint16_t iobase, uint16_t qidx, void *mem)
 {
     /* Select queue */
     outw(iobase + VIRTIO_PCI_QUEUE_SEL, qidx);
+    /* Read back queue size to confirm device accepted the selection */
+    uint16_t qsize = inw(iobase + VIRTIO_PCI_QUEUE_SIZE);
     /* Write guest physical address of queue (page number, 4K pages) */
     uint32_t pfn = (uint32_t)((uintptr_t)mem >> 12);
+    _vn_ps("[VNET] vq"); _vn_ph(qidx);
+    _vn_ps(" qsize="); _vn_ph(qsize);
+    _vn_ps(" mem="); _vn_ph((uint32_t)(uintptr_t)mem);
+    _vn_ps(" pfn="); _vn_ph(pfn); _vn_ps("\n");
     outl(iobase + VIRTIO_PCI_QUEUE_PFN, pfn);
+    /* Read back PFN to confirm write was accepted */
+    uint32_t pfn_rb = inl(iobase + VIRTIO_PCI_QUEUE_PFN);
+    _vn_ps("[VNET] vq"); _vn_ph(qidx); _vn_ps(" pfn_readback="); _vn_ph(pfn_rb); _vn_ps("\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -495,7 +504,11 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     __asm__ volatile("mfence" ::: "memory");
 
     /* Notify device: queue 1 = TX */
-    _vn_ps("[TX] sending len="); _vn_ph(total); _vn_ps(" avail_idx="); _vn_ph(g_txq_avail->idx); _vn_ps("\n");
+    _vn_ps("[TX] len="); _vn_ph(total);
+    _vn_ps(" avail="); _vn_ph(g_txq_avail->idx);
+    _vn_ps(" desc0.addr="); _vn_ph((uint32_t)g_txq_desc[0].addr);
+    _vn_ps(" desc0.len="); _vn_ph(g_txq_desc[0].len);
+    _vn_ps(" used="); _vn_ph(g_txq_used->idx); _vn_ps("\n");
     outw(g_io_base + VIRTIO_PCI_QUEUE_NOTIFY, 1);
 
     return 1;

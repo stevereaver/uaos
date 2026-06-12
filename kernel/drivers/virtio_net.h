@@ -22,8 +22,10 @@
 /* Receive buffer size: one header + one max frame */
 #define VIRTIO_NET_RX_BUFSZ     (VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MTU + 2)
 
-/* Number of descriptors per virtqueue (must be power of 2) */
-#define VIRTQ_SIZE              64
+/* Number of descriptors per virtqueue.
+ * Must match or exceed what the device reports via QUEUE_SIZE.
+ * QEMU virtio-net-pci reports 256 — we must allocate for that. */
+#define VIRTQ_SIZE              256
 
 /* MAC address length */
 #define ETH_ALEN                6

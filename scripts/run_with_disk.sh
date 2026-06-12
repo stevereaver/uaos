@@ -58,5 +58,6 @@ qemu-system-x86_64 \
   -device virtio-blk-pci,disable-modern=on,drive=blk0 \
   -drive id=blk0,file="$DISK_PATH",if=none,format=qcow2 \
   ${NETDEV_ARGS} -device virtio-net-pci,netdev=n0,disable-modern=on \
+  -object filter-dump,id=dump0,netdev=n0,file=/tmp/uaos_net.pcap \
   -serial "file:${SERIAL_LOG}" \
   -m 512M -vga virtio -no-reboot -no-shutdown
