@@ -375,13 +375,19 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     if (!g_up || !g_io_base) return 0;
     if (len > VIRTIO_NET_MTU) return 0;
 
-    /* Drain TX used ring before reusing descriptor 0.
-     * We always use a single descriptor (slot 0) for TX, so we just need
-     * to reclaim whatever the device has already finished with. */
-    while (g_txq_last_used != g_txq_used->idx) {
-        g_txq_last_used++;
+    /* Wait for the previous TX descriptor to be returned by the device before
+     * overwriting g_tx_hdr_buf.  The used->idx is updated by the device when
+     * it finishes with the descriptor.  Spin briefly; QEMU is fast. */
+    {
+        uint32_t spin = 0;
+        while (g_txq_last_used != g_txq_used->idx) {
+            __asm__ volatile("pause" ::: "memory");
+            if (++spin > 500000) break;   /* ~5 ms safety exit */
+        }
+        /* Drain whatever came back so last_used tracks used->idx */
+        g_txq_last_used = g_txq_used->idx;
     }
-    /* Reset to descriptor 0 for simplicity (single-packet-at-a-time TX) */
+    /* Always use descriptor slot 0 (single-packet TX model) */
     g_txq_free_head = 0;
 
     /* Build: [VirtioNetHdr][Ethernet frame] in one contiguous buffer */

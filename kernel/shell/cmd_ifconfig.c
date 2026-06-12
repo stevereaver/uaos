@@ -6,6 +6,7 @@
  */
 #include "cmd_internal.h"
 #include "../net/stack.h"
+#include "../net/ip.h"
 #include "../net/net.h"
 #include "../drivers/virtio_net.h"
 

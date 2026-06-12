@@ -45,6 +45,9 @@ else
     NETDEV_ARGS="-netdev user,id=n0"
 fi
 
+SERIAL_LOG=/tmp/uaos_serial.log
+echo "Serial debug log: $SERIAL_LOG"
+
 qemu-system-x86_64 \
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
@@ -55,4 +58,5 @@ qemu-system-x86_64 \
   -device virtio-blk-pci,disable-modern=on,drive=blk0 \
   -drive id=blk0,file="$DISK_PATH",if=none,format=qcow2 \
   ${NETDEV_ARGS} -device virtio-net-pci,netdev=n0 \
+  -serial "file:${SERIAL_LOG}" \
   -m 512M -vga virtio -no-reboot -no-shutdown
