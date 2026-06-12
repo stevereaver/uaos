@@ -70,6 +70,54 @@ static void pci_write16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg, uint1
     cur = (cur & ~(0xFFFFU << shift)) | ((uint32_t)val << shift);
     outl(0xCFC, cur);
 }
+static uint8_t pci_read8(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg)
+{
+    return (uint8_t)(pci_read32(bus,dev,fn,reg) >> ((reg&3)*8));
+}
+static void pci_write8(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg, uint8_t val)
+{
+    uint32_t addr = 0x80000000U | ((uint32_t)bus<<16) | ((uint32_t)dev<<11)
+                  | ((uint32_t)fn<<8) | (reg & 0xFC);
+    outl(0xCF8, addr);
+    uint32_t cur = inl(0xCFC);
+    int shift = (reg & 3) * 8;
+    cur = (cur & ~(0xFFU << shift)) | ((uint32_t)val << shift);
+    outl(0xCFC, cur);
+}
+
+/* Walk the PCI capabilities list and disable MSI (cap ID 0x05) so the
+ * device uses legacy INTx instead.  On Q35 QEMU defaults to MSI for
+ * virtio-net-pci, which bypasses the 8259 PIC entirely. */
+static void pci_disable_msi(uint8_t bus, uint8_t dev, uint8_t fn)
+{
+    /* Capabilities present only if bit 4 of Status register is set */
+    uint16_t status = pci_read16(bus, dev, fn, 0x06);
+    if (!(status & 0x10)) return;
+
+    uint8_t cap_ptr = pci_read8(bus, dev, fn, 0x34) & 0xFC;
+    int limit = 48;   /* guard against loops */
+    while (cap_ptr && limit--) {
+        uint8_t cap_id   = pci_read8(bus, dev, fn, cap_ptr);
+        uint8_t cap_next = pci_read8(bus, dev, fn, (uint8_t)(cap_ptr + 1));
+        if (cap_id == 0x05) {
+            /* MSI: Message Control is at cap_ptr+2, bit 0 = MSI Enable */
+            uint16_t mc = pci_read16(bus, dev, fn, (uint8_t)(cap_ptr + 2));
+            if (mc & 1) {
+                _vn_ps("[VNET] disabling MSI at cap="); _vn_ph(cap_ptr); _vn_ps("\n");
+                pci_write16(bus, dev, fn, (uint8_t)(cap_ptr + 2), (uint16_t)(mc & ~1));
+            }
+        }
+        if (cap_id == 0x11) {
+            /* MSI-X: Message Control is at cap_ptr+2, bit 15 = MSI-X Enable */
+            uint16_t mc = pci_read16(bus, dev, fn, (uint8_t)(cap_ptr + 2));
+            if (mc & 0x8000) {
+                _vn_ps("[VNET] disabling MSI-X at cap="); _vn_ph(cap_ptr); _vn_ps("\n");
+                pci_write16(bus, dev, fn, (uint8_t)(cap_ptr + 2), (uint16_t)(mc & ~0x8000));
+            }
+        }
+        cap_ptr = cap_next & 0xFC;
+    }
+}
 
 /* -------------------------------------------------------------------------
  * VirtIO legacy register offsets (BAR0 I/O base)
@@ -268,6 +316,8 @@ static int pci_find_virtio_net(uint8_t *bus_out, uint8_t *dev_out,
                     /* Read interrupt line */
                     uint32_t irq_reg = pci_read32((uint8_t)bus, dev, fn, 0x3C);
                     *irq_out = (uint8_t)(irq_reg & 0xFF);
+                    /* Disable MSI/MSI-X so legacy INTx (8259 PIC) is used */
+                    pci_disable_msi((uint8_t)bus, dev, fn);
                     /* Enable bus-master + I/O space */
                     uint16_t cmd = pci_read16((uint8_t)bus, dev, fn, 0x04);
                     pci_write16((uint8_t)bus, dev, fn, 0x04, cmd | 0x05);
