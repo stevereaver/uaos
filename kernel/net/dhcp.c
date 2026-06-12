@@ -265,8 +265,18 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     *opt++ = OPT_DNS;
     *opt++ = OPT_END;
 
-    /* Actual DHCP payload length = fixed header up to options[] + bytes written */
-    uint16_t dhcp_len = (uint16_t)((opt - (uint8_t *)dhcp));
+    /* RFC 951 / RFC 2131: BOOTP/DHCP payload must be at least 300 bytes.
+     * Many servers silently drop shorter packets. Pad with zeros (OPT_PAD)
+     * up to the minimum before computing the length. */
+    #define DHCP_MIN_PAYLOAD 300
+    uint16_t written = (uint16_t)((opt - (uint8_t *)dhcp));
+    while (written < DHCP_MIN_PAYLOAD) {
+        *opt++ = 0x00;  /* OPT_PAD */
+        written++;
+    }
+
+    /* Actual DHCP payload length = fixed header + options written + padding */
+    uint16_t dhcp_len = written;
 
     /* ---- UDP header ---- */
     uint8_t *udp = frame + ETH_HDR_LEN + IP_HDR_LEN;
