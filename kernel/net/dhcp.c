@@ -168,30 +168,39 @@ static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
     uint16_t et = (uint16_t)((frame[12]<<8)|frame[13]);
     _dh_puts(" et="); _dh_phex(et); _dh_putc('\n');
 
-    if (len < ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + sizeof(DhcpPkt) - 308)
-        return;
-
-    if (et != 0x0800) return;
+    /* Minimum size: ETH + IP + UDP + DHCP header (without full options) */
+    uint16_t min_len = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + 240;
+    if (len < min_len) { _dh_puts("[DHCP] rx: too short\n"); return; }
+    if (et != 0x0800)  { _dh_puts("[DHCP] rx: not IP\n"); return; }
 
     const uint8_t *ip = frame + ETH_HDR_LEN;
-    if ((ip[0] >> 4) != 4) return;
+    if ((ip[0] >> 4) != 4) { _dh_puts("[DHCP] rx: not IPv4\n"); return; }
     uint8_t ihl = (ip[0] & 0xF) * 4;
-    if (ip[9] != 17) return;   /* not UDP */
+    if (ip[9] != 17) { _dh_puts("[DHCP] rx: not UDP (proto="); _dh_phex(ip[9]); _dh_puts(")\n"); return; }
 
     const uint8_t *udp = ip + ihl;
     uint16_t src_port = (uint16_t)((udp[0]<<8)|udp[1]);
     uint16_t dst_port = (uint16_t)((udp[2]<<8)|udp[3]);
-    if (src_port != 67 || dst_port != 68) return;
+    if (src_port != 67 || dst_port != 68) {
+        _dh_puts("[DHCP] rx: wrong ports src="); _dh_phex(src_port);
+        _dh_puts(" dst="); _dh_phex(dst_port); _dh_putc('\n');
+        return;
+    }
 
     const uint8_t *payload = udp + UDP_HDR_LEN;
     uint16_t payload_len = (uint16_t)(len - ETH_HDR_LEN - ihl - UDP_HDR_LEN);
-    if (payload_len < 240) return;
+    if (payload_len < 240) { _dh_puts("[DHCP] rx: payload too short\n"); return; }
 
     const DhcpPkt *p = (const DhcpPkt *)payload;
-    if (p->op != 2) return;              /* BOOTREPLY */
-    if (net_ntohl(p->magic) != DHCP_MAGIC) return;
-    if (net_ntohl(p->xid) != g_dhcp_xid) return;
+    if (p->op != 2) { _dh_puts("[DHCP] rx: not BOOTREPLY\n"); return; }
+    if (net_ntohl(p->magic) != DHCP_MAGIC) { _dh_puts("[DHCP] rx: bad magic\n"); return; }
+    if (net_ntohl(p->xid) != g_dhcp_xid) {
+        _dh_puts("[DHCP] rx: xid mismatch got="); _dh_phex(net_ntohl(p->xid));
+        _dh_puts(" want="); _dh_phex(g_dhcp_xid); _dh_putc('\n');
+        return;
+    }
 
+    _dh_puts("[DHCP] rx: valid OFFER/ACK\n");
     net_memcpy(&g_dhcp_reply, p, sizeof(g_dhcp_reply));
     g_dhcp_got = 1;
 }
@@ -274,7 +283,18 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     net_memcpy(frame + ETH_ALEN, g_dhcp_mac, ETH_ALEN);
     frame[12] = 0x08; frame[13] = 0x00;
 
-    netdev_send(frame, (uint16_t)(ETH_HDR_LEN + ip_tot));
+    uint16_t total = (uint16_t)(ETH_HDR_LEN + ip_tot);
+    _dh_puts("[DHCP] send len="); _dh_phex(total);
+    _dh_puts(" src=");
+    for (int i = 0; i < 6; i++) {
+        static const char hx[] = "0123456789ABCDEF";
+        _dh_putc(hx[frame[6+i]>>4]); _dh_putc(hx[frame[6+i]&0xF]);
+        if (i<5) _dh_putc(':');
+    }
+    _dh_puts(" dst=FF:FF:FF:FF:FF:FF");
+    _dh_puts(" xid="); _dh_phex(g_dhcp_xid);
+    _dh_putc('\n');
+    netdev_send(frame, total);
 }
 
 /* -------------------------------------------------------------------------
