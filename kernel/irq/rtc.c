@@ -20,6 +20,7 @@
 #include "../net/ntp.h"
 #include <stdint.h>
 
+
 /* -------------------------------------------------------------------------
  * I/O helpers
  * ------------------------------------------------------------------------- */
@@ -240,21 +241,6 @@ void RTC_IRQHandler(uint64_t vec, uint64_t err)
 /* -------------------------------------------------------------------------
  * Init
  * ------------------------------------------------------------------------- */
-/* Busy-wait for the RTC Update-Ended flag (bit 7 of register A goes 0→1→0).
- * Polls register C until the UF (Update Ended Flag) bit is set.
- * Used only during boot calibration — not called from IRQ context. */
-static void rtc_wait_uie(void)
-{
-    /* Drain any already-pending UIE first by reading register C */
-    outb(0x70, 0x0C); inb(0x71);
-    /* Spin until the next Update-Ended flag appears in register C */
-    for (;;) {
-        outb(0x70, 0x0C);
-        uint8_t c = inb(0x71);
-        if (c & 0x10) break;   /* UF = bit 4 of register C */
-    }
-}
-
 void RTC_Init(void)
 {
     rtc_snapshot();
@@ -264,20 +250,6 @@ void RTC_Init(void)
     uint8_t prev = inb(0x71);
     outb(0x70, 0x8B);
     outb(0x71, (uint8_t)(prev | 0x10));
-
-    /* ── Calibrate TSC against one RTC second ───────────────────────────
-     * Poll register C directly (interrupts not yet in use at this point)
-     * to sample the TSC at the boundary of two consecutive RTC updates.
-     * This gives an accurate TSC-ticks-per-second measurement so that
-     * ntp_tick_epoch() can reject spurious burst UIE deliveries. */
-    rtc_wait_uie();                      /* align to an update boundary   */
-    uint32_t lo0, hi0, lo1, hi1;
-    __asm__ volatile("rdtsc" : "=a"(lo0), "=d"(hi0));
-    rtc_wait_uie();                      /* wait exactly one more second  */
-    __asm__ volatile("rdtsc" : "=a"(lo1), "=d"(hi1));
-    uint64_t tsc0 = ((uint64_t)hi0 << 32) | lo0;
-    uint64_t tsc1 = ((uint64_t)hi1 << 32) | lo1;
-    ntp_calibrate_tsc(tsc0, tsc1);
 
     /* Clear any pending interrupt in register C */
     outb(0x70, 0x0C);

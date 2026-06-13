@@ -50,7 +50,6 @@ void ntp_unix_to_datetime(uint32_t unix_ts,
  */
 void     ntp_set_epoch(uint32_t unix_utc);
 uint32_t ntp_get_epoch(void);
-void     ntp_tick_epoch(void);          /* call from RTC IRQ (adds 1 second)     */
-void     ntp_calibrate_tsc(uint64_t tsc_start, uint64_t tsc_end); /* call from RTC_Init */
+void     ntp_tick_epoch(void);   /* call from RTC IRQ (adds 1 second) */
 
 #endif /* UAOS_NTP_H */

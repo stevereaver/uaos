@@ -59,37 +59,20 @@ static void _nt_phex32(uint32_t v) {
  * CMOS is the ground truth; we re-derive from it if we get too far behind).
  * ------------------------------------------------------------------------- */
 
-static volatile uint32_t g_epoch        = 0;
-static volatile uint64_t g_last_tick_tsc = 0;  /* TSC at last accepted epoch advance */
-static volatile uint64_t g_tsc_per_sec  = 0;   /* calibrated once by ntp_calibrate_tsc() */
+static volatile uint32_t g_epoch          = 0;
+static volatile uint64_t g_last_tick_pit  = 0; /* g_pit_ticks at last epoch advance */
 
-static inline uint64_t _ntp_rdtsc(void)
-{
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
+/* PIT runs at 10 Hz; guard = 8 ticks (~800 ms).  This absorbs any burst of
+ * queued RTC UIE interrupts without ever blocking a genuine 1-per-second tick. */
+#define NTP_TICK_GUARD_PIT  8ULL
 
-/*
- * ntp_calibrate_tsc() — called from RTC_Init after two consecutive UIE ticks.
- * Pass the TSC values sampled at the start and end of one RTC second.
- * We use 90% of that measured interval as the minimum guard to absorb queued
- * bursts without ever blocking a real tick.
- */
-void ntp_calibrate_tsc(uint64_t tsc_start, uint64_t tsc_end)
-{
-    uint64_t measured = tsc_end - tsc_start;
-    /* Sanity: must be between 100 MHz and 10 GHz per second */
-    if (measured < 100000000ULL || measured > 10000000000ULL)
-        return;
-    /* Guard = 90% of one measured second */
-    g_tsc_per_sec = (measured / 10) * 9;
-}
+/* Provided by uaos_kernel_main.c — incremented at 10 Hz by PIT IRQ0 */
+extern volatile uint64_t g_pit_ticks;
 
 void ntp_set_epoch(uint32_t unix_utc)
 {
-    g_epoch          = unix_utc;
-    g_last_tick_tsc  = _ntp_rdtsc();
+    g_epoch         = unix_utc;
+    g_last_tick_pit = g_pit_ticks;
 }
 
 uint32_t ntp_get_epoch(void) { return g_epoch; }
@@ -98,17 +81,13 @@ void ntp_tick_epoch(void)
 {
     if (!g_epoch) return;
 
-    uint64_t now     = _ntp_rdtsc();
-    uint64_t elapsed = now - g_last_tick_tsc;
+    uint64_t now     = g_pit_ticks;
+    uint64_t elapsed = now - g_last_tick_pit;
 
-    /* If we have a calibrated TSC rate, use it; otherwise fall back to a
-     * conservative 500 MHz floor (allows up to 2x burst absorption). */
-    uint64_t guard = g_tsc_per_sec ? g_tsc_per_sec : 450000000ULL;
-
-    if (g_last_tick_tsc && elapsed < guard) return;
+    if (g_last_tick_pit && elapsed < NTP_TICK_GUARD_PIT) return;
 
     g_epoch++;
-    g_last_tick_tsc = now;
+    g_last_tick_pit = now;
 }
 
 /* -------------------------------------------------------------------------

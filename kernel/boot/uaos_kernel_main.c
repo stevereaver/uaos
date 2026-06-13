@@ -234,7 +234,7 @@ void kprintdec(uint32_t v)
 /* -----------------------------------------------------------------------
  * PIT timer test handler — prints a dot to verify interrupt delivery
  * ----------------------------------------------------------------------- */
-static volatile uint64_t g_pit_ticks = 0;
+volatile uint64_t g_pit_ticks = 0;
 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
@@ -554,7 +554,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         /* Periodic heartbeat so we know the loop hasn't hung */
         loop_count++;
         if ((loop_count & 0x7FFFFFF) == 0) {
-            extern volatile uint64_t g_pit_ticks;
+
             volatile uint32_t *mbox = (volatile uint32_t *)0x90000;
             kprint("[EVT] loop="); kprinthex(loop_count);
             kprint(" pit="); kprinthex(g_pit_ticks);
