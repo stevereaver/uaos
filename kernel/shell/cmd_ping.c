@@ -3,6 +3,8 @@
  *
  * Usage: ping <host>           (sends 4 ICMP echo requests)
  *        ping <host> <count>
+ *
+ * Hostnames are resolved via the DNS resolver before pinging.
  */
 #include "cmd_internal.h"
 #include "../net/stack.h"
@@ -10,6 +12,7 @@
 #include "../net/ip.h"
 #include "../net/net.h"
 #include "../net/arp.h"
+#include "../net/dns.h"
 
 /* Serial debug helpers (COM1 = 0x3F8) */
 static inline void _po(uint16_t p, uint8_t v) { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
@@ -17,6 +20,12 @@ static inline uint8_t _pi(uint16_t p) { uint8_t v; __asm__ volatile("inb %1,%0":
 static void _pc(char c) { while((_pi(0x3FD)&0x20)==0){} _po(0x3F8,(uint8_t)c); if(c=='\n'){ while((_pi(0x3FD)&0x20)==0){} _po(0x3F8,'\r'); } }
 static void _ps(const char *s) { while(*s) _pc(*s++); }
 static void _ph(uint32_t v) { static const char h[]="0123456789ABCDEF"; _ps("0x"); for(int i=28;i>=0;i-=4) _pc(h[(v>>i)&0xF]); }
+
+/* DnsPollFn adapter: forward slice to CMD_YIELD */
+static void ping_dns_poll(void *arg, uint32_t ms)
+{
+    CMD_YIELD((NativeCmdCtx *)arg, ms);
+}
 
 void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
 {
@@ -31,8 +40,8 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
     }
 
     /* Parse host */
-    char host[64]; int i = 0;
-    while (*args && *args != ' ' && i < 63) host[i++] = *args++;
+    char host[256]; int i = 0;
+    while (*args && *args != ' ' && i < 255) host[i++] = *args++;
     host[i] = '\0';
     while (*args == ' ') args++;
 
@@ -45,16 +54,28 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
         if (count > 64) count = 64;
     }
 
-    /* Resolve IP */
+    /* Resolve hostname (fast-path for dotted-decimal, DNS query otherwise) */
     ipv4_t dst = 0;
-    if (!net_str_to_ip(host, &dst)) {
-        PRINT("ping: only dotted-decimal addresses supported");
+    if (!dns_resolve(host, &dst, 5000, ping_dns_poll, ctx)) {
+        char line[80];
+        cmd_scopy(line, "ping: cannot resolve '", sizeof(line));
+        cmd_scat(line, host, sizeof(line));
+        cmd_scat(line, "'", sizeof(line));
+        PRINT(line);
         return;
     }
 
-    char line[80];
+    char line[128];
+    char dst_s[20];
+    net_ip_to_str(dst, dst_s);
     cmd_scopy(line, "PING ", sizeof(line));
     cmd_scat(line, host, sizeof(line));
+    /* Show resolved IP when host was a name, not already an address */
+    if (dst_s[0] && cmd_seq(host, dst_s) == 0) {
+        cmd_scat(line, " (", sizeof(line));
+        cmd_scat(line, dst_s, sizeof(line));
+        cmd_scat(line, ")", sizeof(line));
+    }
     cmd_scat(line, ": 32 data bytes", sizeof(line));
     PRINT(line);
 

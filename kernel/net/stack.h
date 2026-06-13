@@ -41,6 +41,12 @@ void net_stack_tick(void);
 /* Returns our assigned IP address */
 ipv4_t net_stack_get_ip(void);
 
+/* Returns the DNS server IP (from DHCP, or 0 if not set) */
+ipv4_t net_stack_get_dns(void);
+
+/* Override the DNS server IP at runtime */
+void   net_stack_set_dns(ipv4_t dns);
+
 /* Fill buf (at least 18 chars) with "a.b.c.d" string */
 void net_ip_to_str(ipv4_t ip, char *buf);
 

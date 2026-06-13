@@ -44,10 +44,11 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "execute", Cmd_Execute  },
     { "loadwb",  Cmd_LoadWB   },
     { "calculator", Cmd_CalcWin  },
-    { "ifconfig",   Cmd_Ifconfig },
-    { "ping",       Cmd_Ping     },
-    { "route",      Cmd_Route    },
-    { NULL,         NULL         }
+    { "ifconfig",   Cmd_Ifconfig  },
+    { "ping",       Cmd_Ping      },
+    { "route",      Cmd_Route     },
+    { "nslookup",   Cmd_Nslookup  },
+    { NULL,         NULL          }
 };
 
 /* -------------------------------------------------------------------------

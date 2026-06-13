@@ -27,6 +27,7 @@
 #include "../net/stack.h"
 #include "../net/tcp.h"
 #include "../net/udp.h"
+#include "../net/dns.h"
 #include "../net/net.h"
 #include <stdint.h>
 
@@ -291,14 +292,14 @@ static void bsd_closesocket(void)
 
 static void bsd_gethostbyname(void)
 {
-    /* Simplified: only handles dotted-decimal, returns a minimal hostent */
     uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A0);
-    char name[64]; int i = 0;
-    while (i < 63 && g_ram[name_ptr+i]) { name[i]=g_ram[name_ptr+i]; i++; }
+    char name[256]; int i = 0;
+    while (i < 255 && g_ram[name_ptr+i]) { name[i]=g_ram[name_ptr+i]; i++; }
     name[i] = '\0';
 
+    /* Resolve via DNS (handles dotted-decimal as fast path) */
     ipv4_t ip = 0;
-    if (!net_str_to_ip(name, &ip)) {
+    if (!dns_resolve(name, &ip, 5000, NULL, NULL)) {
         m68k_set_reg(M68K_REG_D0, 0); /* NULL = not found */
         return;
     }

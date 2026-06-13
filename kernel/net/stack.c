@@ -11,6 +11,7 @@
 
 static int    g_up        = 0;
 static ipv4_t g_ip        = 0;
+static ipv4_t g_dns       = 0;
 static int    g_dhcp_used = 0;
 
 /* RX callback registered with VirtIO-Net driver after stack is up */
@@ -43,6 +44,7 @@ int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
             ip = lease.ip;
             gw = lease.gateway ? lease.gateway : fallback_gw;
             nm = lease.netmask ? lease.netmask : fallback_nm;
+            if (lease.dns) g_dns = lease.dns;
             g_dhcp_used = 1;
         }
         /* DHCP temporarily installed its own rx_callback — restore ours */
@@ -66,11 +68,15 @@ int net_stack_init(ipv4_t ip, ipv4_t gateway, ipv4_t netmask)
     return net_stack_init_ex(ip, gateway, netmask, 5000);
 }
 
-int  net_stack_is_up(void)    { return g_up; }
-int  net_stack_dhcp_used(void){ return g_dhcp_used; }
-void net_stack_poll(void)     { if (g_up) netdev_poll(); }
-void net_stack_tick(void)     { if (g_up) tcp_tick(); }
-ipv4_t net_stack_get_ip(void) { return g_ip; }
+int  net_stack_is_up(void)     { return g_up; }
+int  net_stack_dhcp_used(void) { return g_dhcp_used; }
+void net_stack_poll(void)      { if (g_up) netdev_poll(); }
+void net_stack_tick(void)      { if (g_up) tcp_tick(); }
+ipv4_t net_stack_get_ip(void)  { return g_ip; }
+ipv4_t net_stack_get_dns(void) { return g_dns; }
+
+/* Allow runtime override (e.g. from a resolv.conf-style command) */
+void net_stack_set_dns(ipv4_t dns) { g_dns = dns; }
 
 int net_stack_dhcp_renew(uint32_t timeout_ms)
 {
@@ -80,6 +86,7 @@ int net_stack_dhcp_renew(uint32_t timeout_ms)
     DhcpLease lease;
     if (dhcp_request(&lease, timeout_ms)) {
         g_ip = lease.ip;
+        if (lease.dns) g_dns = lease.dns;
         ipv4_t gw = lease.gateway;
         ipv4_t nm = lease.netmask ? lease.netmask : IPV4(255,255,255,0);
         arp_init(g_ip, mac);
