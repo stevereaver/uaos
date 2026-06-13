@@ -690,6 +690,12 @@ else
     fatal "  Startup-Sequence not found at ${REPO_ROOT}/system/Startup-Sequence"
 fi
 
+# Copy any extra files from system/S/ (e.g. ntp.conf, timezone.conf)
+if [[ -d "${REPO_ROOT}/system/S" ]]; then
+    cp -r "${REPO_ROOT}/system/S/"* "${ISO_STAGING}/SYS_ROOT/S/" 2>/dev/null || true
+    ok "  Copied: system/S/ -> sys-root/S/"
+fi
+
 # Copy any additional system files if they exist
 SYSTEM_DIR="${REPO_ROOT}/system"
 if [[ -d "${SYSTEM_DIR}" ]]; then

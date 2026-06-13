@@ -27,8 +27,8 @@
 
 #define NTP_DEFAULT_SERVER  "pool.ntp.org"
 #define TZ_DEFAULT          "Australia/Sydney"
-#define NTP_CONF_PATH       "C:ntp.conf"
-#define TZ_CONF_PATH        "C:timezone.conf"
+#define NTP_CONF_PATH       "S:ntp.conf"
+#define TZ_CONF_PATH        "S:timezone.conf"
 
 /* Shared poll adapter */
 static void ntpd_poll(void *arg, uint32_t ms) { CMD_YIELD((NativeCmdCtx *)arg, ms); }
