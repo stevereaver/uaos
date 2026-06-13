@@ -551,6 +551,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         while (PS2Kbd_HasChar())
             WM_KeyEvent(PS2Kbd_GetChar());
 
+        /* Flush any pending clock redraw requested by the RTC IRQ */
+        if (g_fb.valid) Desktop_FlushClockRedraw();
+
         /* Poll network stack for incoming packets */
         net_stack_poll();
 

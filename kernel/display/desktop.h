@@ -26,4 +26,8 @@ int  Desktop_IsDraggingIcon(void);
  * Used by the file browser for double-click timing. */
 unsigned int Desktop_GetTick(void);
 
+/* Set by Desktop_UpdateClock (from RTC IRQ) to request a WM_Redraw.
+ * The main event loop calls Desktop_FlushClockRedraw() each iteration. */
+void Desktop_FlushClockRedraw(void);
+
 #endif

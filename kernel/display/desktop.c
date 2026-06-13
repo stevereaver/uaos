@@ -616,14 +616,24 @@ unsigned int Desktop_GetTick(void)
     return (unsigned int)g_tick;
 }
 
+/* Set by Desktop_UpdateClock (IRQ context) — consumed by the main loop */
+static volatile int g_clock_redraw_pending = 0;
+
 void Desktop_UpdateClock(void)
 {
     if (!g_fb.valid) return;
-
-    /* Full repaint via the WM — this repaints the menubar (which reads the
-     * current local time via current_time_str) and all open windows including
-     * the Clock app.  Called once per second from the RTC IRQ handler. */
-    WM_Redraw();
-
+    /* Only set a flag here — do NOT call WM_Redraw() from IRQ context.
+     * WM_Redraw() takes >100 ms (full framebuffer repaint), which starves
+     * the PIT IRQ while IF=0, causing g_pit_ticks to jump in a burst when
+     * the IRQ returns.  That falsely advances the ntp_tick_epoch guard,
+     * letting queued UIE bursts slip through and making the clock fast. */
+    g_clock_redraw_pending = 1;
     g_tick++;
+}
+
+void Desktop_FlushClockRedraw(void)
+{
+    if (!g_clock_redraw_pending) return;
+    g_clock_redraw_pending = 0;
+    WM_Redraw();
 }
