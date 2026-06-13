@@ -75,7 +75,7 @@ static void draw_bevel_box(int x, int y, int w, int h, int raised)
  * Menu bar
  * ========================================================================= */
 
-/* Fill buf[9] with the current local time as "HH:MM:SS\0".
+/* Fill buf[6] with the current local time as "HH:MM\0".
  * Uses the NTP epoch + timezone when synced, falls back to CMOS UTC. */
 static void current_time_str(char *buf)
 {
@@ -89,14 +89,12 @@ static void current_time_str(char *buf)
         ntp_unix_to_datetime(local, &yr, &mo, &dy, &h, &m, &s);
     } else {
         RtcTime t = RTC_ReadTime();
-        h = t.hour; m = t.min; s = t.sec;
+        h = t.hour; m = t.min;
     }
     buf[0] = (char)('0' + h / 10); buf[1] = (char)('0' + h % 10);
     buf[2] = ':';
     buf[3] = (char)('0' + m / 10); buf[4] = (char)('0' + m % 10);
-    buf[5] = ':';
-    buf[6] = (char)('0' + s / 10); buf[7] = (char)('0' + s % 10);
-    buf[8] = '\0';
+    buf[5] = '\0';
 }
 
 static void draw_menubar(int W)
@@ -121,7 +119,7 @@ static void draw_menubar(int W)
     /* Clock — show current local time (not hardcoded 00:00:00) */
     char buf[9];
     current_time_str(buf);
-    FB_PutStr(W - 80, 2, buf, WB_CREAM, WB_BLUE);
+    FB_PutStr(W - 50, 2, buf, WB_CREAM, WB_BLUE);
 }
 
 /* =========================================================================
@@ -478,7 +476,7 @@ int Desktop_MouseEvent(int mx, int my, int btn_pressed)
 
     /* ── Clock area double-click (top-right, 80px wide) ─── */
     int W_scr = (int)g_fb.width;
-    if (my >= 0 && my < MENUBAR_H && mx >= W_scr - 80) {
+    if (my >= 0 && my < MENUBAR_H && mx >= W_scr - 50) {
         uint32_t now = g_tick;
         if (now - g_clock_last_tick <= DBLCLICK_TICKS)
             g_clock_click_count++;
