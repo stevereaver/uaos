@@ -147,6 +147,12 @@ RtcDateTime RTC_ReadDateTime(void)
  * ------------------------------------------------------------------------- */
 void RTC_SetDateTime(const RtcDateTime *dt)
 {
+    /* Disable CPU interrupts for the entire CMOS write sequence.
+     * Without this, a pending IRQ8 fires between setting the SET bit and
+     * actually writing the registers, reads partially-written (or frozen)
+     * CMOS values, and overwrites the in-memory cache with garbage/zeros. */
+    __asm__ volatile("cli");
+
     /* Wait for any update in progress to finish */
     while (cmos_read(0x0A) & 0x80)
         ;
@@ -164,7 +170,7 @@ void RTC_SetDateTime(const RtcDateTime *dt)
     cmos_write(0x09, bin2bcd((uint8_t)(dt->year % 100)));
     cmos_write(0x32, bin2bcd((uint8_t)(dt->year / 100)));
 
-    /* Force binary=0 (BCD), 24h=1 so our reads always agree */
+    /* Clear SET bit; preserve UIE (bit4) and force BCD+24h mode */
     cmos_write(0x0B, (uint8_t)((regB & ~0x84) | 0x02));
 
     /* Update the in-memory cache immediately */
@@ -174,6 +180,9 @@ void RTC_SetDateTime(const RtcDateTime *dt)
     g_day   = dt->day;
     g_month = dt->month;
     g_year  = dt->year;
+
+    /* Re-enable interrupts */
+    __asm__ volatile("sti");
 }
 
 /* -------------------------------------------------------------------------
