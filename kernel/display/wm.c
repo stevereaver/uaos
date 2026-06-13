@@ -618,7 +618,13 @@ void WM_MouseEvent(int mx, int my, int btn_left)
             } else if (hit_scrollbars(wh, mx, my)) {
                 /* consumed by scrollbar */
             } else if (g_wins[wh].on_click) {
+                /* Save focus before the click handler; the handler may open
+                 * a new window which changes g_focus.  We must return after
+                 * on_click so the new window layout isn't immediately hit-tested
+                 * against the same button-press event (which could spuriously
+                 * trigger the new window's close gadget or other gadgets). */
                 g_wins[wh].on_click(wh, mx, my);
+                return;
             }
         }
     }
