@@ -17,6 +17,7 @@
 #include "../irq/rtc.h"
 #include "../net/ntp.h"
 #include "../net/timezone.h"
+#include "clock_win.h"
 #include "../dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -258,6 +259,10 @@ static int       g_desktop_pressed = 0;
 static uint32_t  g_desktop_last_tick = 0;
 static int       g_desktop_click_count = 0;
 
+/* Clock double-click state */
+static uint32_t  g_clock_last_tick = 0;
+static int       g_clock_click_count = 0;
+
 extern void WM_Redraw(void);
 
 /* Build the desktop icon list from real mounted volumes (VFS).
@@ -470,6 +475,22 @@ static int menubar_hit(int mx, int my)
 int Desktop_MouseEvent(int mx, int my, int btn_pressed)
 {
     if (!btn_pressed) return 0;
+
+    /* ── Clock area double-click (top-right, 80px wide) ─── */
+    int W_scr = (int)g_fb.width;
+    if (my >= 0 && my < MENUBAR_H && mx >= W_scr - 80) {
+        uint32_t now = g_tick;
+        if (now - g_clock_last_tick <= DBLCLICK_TICKS)
+            g_clock_click_count++;
+        else
+            g_clock_click_count = 1;
+        g_clock_last_tick = now;
+        if (g_clock_click_count >= 2) {
+            g_clock_click_count = 0;
+            ClockWin_Open();
+        }
+        return 1;
+    }
 
     /* ── Menubar click ──────────────────────────────────── */
     int menu = menubar_hit(mx, my);
