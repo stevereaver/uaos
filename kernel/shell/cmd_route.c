@@ -80,38 +80,44 @@ void Cmd_Route(NativeCmdCtx *ctx, const char *args)
     char line[96];
     char dst_s[20], nm_s[20], gw_s[20];
 
+    /* Helper: append str to line then space-pad the column to 'width' chars */
+#define COL(str, width) do { \
+        cmd_scat(line, (str), sizeof(line)); \
+        int _n = (width) - cmd_slen(str); \
+        int _p = cmd_slen(line); \
+        while (_n-- > 0 && _p < (int)sizeof(line)-1) line[_p++] = ' '; \
+        line[_p] = '\0'; \
+    } while(0)
+
     /* Local subnet route */
     ipv4_t subnet = local & nm;
     net_ip_to_str(subnet, dst_s);
     net_ip_to_str(nm,     nm_s);
 
     cmd_scopy(line, "  ", sizeof(line));
-    cmd_scat(line, dst_s, sizeof(line));
-    int pad = 17 - cmd_slen(dst_s);
-    int pos = cmd_slen(line);
-    while (pad-- > 0 && pos < (int)sizeof(line) - 1) line[pos++] = ' ';
-    line[pos] = '\0';
+    COL(dst_s,       17);
     cmd_scat(line, "  ", sizeof(line));
-    cmd_scat(line, nm_s, sizeof(line));
-    pad = 17 - cmd_slen(nm_s);
-    pos = cmd_slen(line);
-    while (pad-- > 0 && pos < (int)sizeof(line) - 1) line[pos++] = ' ';
-    line[pos] = '\0';
-    cmd_scat(line, "  link#local          U      ", sizeof(line));
+    COL(nm_s,        17);
+    cmd_scat(line, "  ", sizeof(line));
+    COL("link#local", 17);
+    cmd_scat(line, "  U      ", sizeof(line));
     cmd_scat(line, devname, sizeof(line));
     PRINT(line);
 
     /* Default route */
     net_ip_to_str(gw, gw_s);
-    cmd_scopy(line, "  0.0.0.0          0.0.0.0          ", sizeof(line));
-    cmd_scat(line, gw_s, sizeof(line));
-    pad = 17 - cmd_slen(gw_s);
-    pos = cmd_slen(line);
-    while (pad-- > 0 && pos < (int)sizeof(line) - 1) line[pos++] = ' ';
-    line[pos] = '\0';
+
+    cmd_scopy(line, "  ", sizeof(line));
+    COL("0.0.0.0",   17);
+    cmd_scat(line, "  ", sizeof(line));
+    COL("0.0.0.0",   17);
+    cmd_scat(line, "  ", sizeof(line));
+    COL(gw_s,        17);
     cmd_scat(line, "  UG     ", sizeof(line));
     cmd_scat(line, devname, sizeof(line));
     PRINT(line);
+
+#undef COL
 
     /* ---- ARP cache ---- */
     PRINT("");
