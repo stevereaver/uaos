@@ -6,8 +6,9 @@
  *   - Passive listen/accept
  *   - Data send/receive with ACK
  *   - Connection teardown (FIN/FIN-ACK)
+ *   - Retransmit timer with exponential backoff (tcp_tick, called at 10 Hz)
+ *   - Connect timeout (SYN_SENT), TIME_WAIT expiry, half-open cleanup
  *
- * No retransmit timer yet — relies on remote to resend on loss.
  * Single-segment send (no Nagle, no window splitting).
  */
 #include "tcp.h"
@@ -101,11 +102,31 @@ static void tcp_send_seg(TcpSocket *s, uint8_t flags,
 
     h->checksum = tcp_checksum(s->local_ip, s->remote_ip, seg, seg_len);
 
+    /* Record snd_nxt BEFORE advancing, for retransmit replay */
+    uint32_t seq_before = s->snd_nxt;
+
     ip_send(s->remote_ip, IP_PROTO_TCP, seg, seg_len);
 
     /* Advance snd_nxt for data and SYN/FIN (each consumes 1 seq) */
     if (flags & (TCP_SYN | TCP_FIN)) s->snd_nxt++;
     s->snd_nxt += data_len;
+
+    /* Save segment for retransmit — but not for pure ACKs (nothing to replay) */
+    int carries_seq = (flags & (TCP_SYN | TCP_FIN)) || data_len > 0;
+    if (carries_seq) {
+        s->retx_seq   = seq_before;
+        s->retx_flags = flags;
+        if (data && data_len && data_len <= TCP_RETX_BUF_SIZE) {
+            net_memcpy(s->retx_buf, data, data_len);
+            s->retx_len = data_len;
+        } else {
+            s->retx_len = 0;    /* SYN/FIN — no payload to store */
+        }
+        /* Arm the retransmit timer; count is NOT reset here — that happens
+         * only when snd_una advances (i.e. the remote ACKs our data). */
+        if (s->retx_count == 0)
+            s->retx_timer = TCP_RETX_TICKS_INIT;
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -184,6 +205,12 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
 
     /* Update ACK / window */
     if (flags & TCP_ACK) {
+        /* If new data was ACKed, clear the retransmit state */
+        if (ack_num != s->snd_una) {
+            s->retx_timer = 0;
+            s->retx_count = 0;
+            s->retx_len   = 0;
+        }
         s->snd_una = ack_num;
         s->snd_wnd = net_ntohs(h->window);
     }
@@ -227,7 +254,8 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         if (flags & TCP_FIN) {
             s->rcv_nxt++;
             tcp_send_seg(s, TCP_ACK, 0, 0);
-            s->state = TCP_TIME_WAIT;
+            s->state      = TCP_TIME_WAIT;
+            s->conn_timer = 0;
         }
         break;
 
@@ -235,7 +263,8 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         if (flags & TCP_FIN) {
             s->rcv_nxt++;
             tcp_send_seg(s, TCP_ACK, 0, 0);
-            s->state = TCP_TIME_WAIT;
+            s->state      = TCP_TIME_WAIT;
+            s->conn_timer = 0;
         }
         break;
 
@@ -244,7 +273,11 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_TIME_WAIT:
-        s->state = TCP_CLOSED;
+        /* Restart the 2MSL timer if we get a retransmitted FIN */
+        if (flags & TCP_FIN) {
+            tcp_send_seg(s, TCP_ACK, 0, 0);
+            s->conn_timer = 0;   /* reset wait */
+        }
         break;
 
     default:
@@ -334,10 +367,95 @@ TcpState tcp_state(int sock)
     return g_socks[sock].state;
 }
 
+/* -------------------------------------------------------------------------
+ * Retransmit helper — resend the saved segment with the original seq number.
+ * We temporarily roll snd_nxt back so tcp_send_seg builds the right header,
+ * then restore it.  The retransmit itself does NOT re-save retx state (that
+ * would reset the counter); we update the timer manually after the call.
+ * ------------------------------------------------------------------------- */
+static void tcp_retransmit(TcpSocket *s)
+{
+    uint32_t saved_nxt = s->snd_nxt;
+    s->snd_nxt = s->retx_seq;          /* rewind so header uses original seq */
+
+    const uint8_t *payload = (s->retx_len > 0) ? s->retx_buf : 0;
+    uint16_t       plen    = s->retx_len;
+
+    /* Build and send; temporarily clear retx_count so tcp_send_seg
+     * re-arms the timer (we override it right after). */
+    uint8_t saved_count = s->retx_count;
+    s->retx_count = 0;
+    tcp_send_seg(s, s->retx_flags, payload, plen);
+    s->retx_count = saved_count;       /* restore — we increment it below */
+
+    s->snd_nxt = saved_nxt;            /* restore real snd_nxt */
+}
+
 void tcp_tick(void)
 {
-    /* Advance TIME_WAIT sockets to CLOSED after a tick */
-    for (int i = 0; i < TCP_MAX_SOCKETS; i++)
-        if (g_socks[i].state == TCP_TIME_WAIT)
-            g_socks[i].state = TCP_CLOSED;
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        TcpSocket *s = &g_socks[i];
+
+        switch (s->state) {
+
+        /* ── TIME_WAIT: expire after TCP_TIMEWAIT_TICKS ─────────────────── */
+        case TCP_TIME_WAIT:
+            if (s->conn_timer < TCP_TIMEWAIT_TICKS)
+                s->conn_timer++;
+            else
+                s->state = TCP_CLOSED;
+            break;
+
+        /* ── SYN_SENT: hard connect timeout ─────────────────────────────── */
+        case TCP_SYN_SENT:
+            s->conn_timer++;
+            if (s->conn_timer >= TCP_CONN_TIMEOUT_TICKS) {
+                s->state = TCP_CLOSED;   /* give up */
+                break;
+            }
+            /* Fall through to retransmit logic for SYN retry */
+            /* fall through */
+
+        /* ── States with retransmittable data ───────────────────────────── */
+        case TCP_SYN_RECEIVED:
+        case TCP_ESTABLISHED:
+        case TCP_FIN_WAIT_1:
+        case TCP_LAST_ACK:
+        case TCP_CLOSE_WAIT:
+            /* Only retransmit if there is actually unacked data/control */
+            if (s->retx_timer == 0) break;       /* nothing armed */
+            if (s->snd_una == s->snd_nxt) {      /* everything acked */
+                s->retx_timer = 0;
+                s->retx_count = 0;
+                break;
+            }
+
+            s->retx_timer--;
+            if (s->retx_timer > 0) break;        /* not yet */
+
+            /* Timer expired — retransmit or abort */
+            s->retx_count++;
+            if (s->retx_count > TCP_RETX_MAX_TRIES) {
+                /* Too many retries: send RST and close */
+                tcp_send_seg(s, TCP_RST, 0, 0);
+                s->state = TCP_CLOSED;
+                break;
+            }
+
+            /* Retransmit the saved segment */
+            tcp_retransmit(s);
+
+            /* Exponential backoff: double the RTO, capped at max shift */
+            {
+                uint8_t  shift  = s->retx_count < TCP_RETX_BACKOFF_MAX
+                                  ? s->retx_count : TCP_RETX_BACKOFF_MAX;
+                uint16_t new_to = (uint16_t)(TCP_RETX_TICKS_INIT << shift);
+                s->retx_timer   = new_to;
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
 }

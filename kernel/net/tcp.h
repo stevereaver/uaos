@@ -48,6 +48,24 @@ typedef enum {
 #define TCP_TX_BUF_SIZE     4096
 #define TCP_RX_BUF_SIZE     4096
 
+/* Retransmit tuning (tcp_tick runs at 10 Hz)
+ *
+ *  TCP_RETX_TICKS_INIT   — initial RTO: 10 ticks = 1 s
+ *  TCP_RETX_BACKOFF_MAX  — max RTO doubling steps (1→2→4→8→16 s, then give up)
+ *  TCP_RETX_MAX_TRIES    — total attempts before aborting the connection
+ *  TCP_CONN_TIMEOUT_TICKS— SYN_SENT hard deadline: 75 ticks = 7.5 s
+ *  TCP_TIMEWAIT_TICKS    — TIME_WAIT duration: 20 ticks = 2 s (2×MSL for QEMU)
+ */
+#define TCP_RETX_TICKS_INIT     10u
+#define TCP_RETX_BACKOFF_MAX    4u
+#define TCP_RETX_MAX_TRIES      5u
+#define TCP_CONN_TIMEOUT_TICKS  75u
+#define TCP_TIMEWAIT_TICKS      20u
+
+/* Retransmit buffer: holds the payload of the last sent-but-unacked segment.
+ * We only need one outstanding segment (single-segment send model). */
+#define TCP_RETX_BUF_SIZE  1460
+
 typedef struct {
     TcpState  state;
     ipv4_t    local_ip;
@@ -64,6 +82,14 @@ typedef struct {
     /* RX buffer (received data ready for app) */
     uint8_t   rx_buf[TCP_RX_BUF_SIZE];
     uint16_t  rx_head, rx_tail;
+    /* Retransmit state */
+    uint8_t   retx_buf[TCP_RETX_BUF_SIZE]; /* copy of last sent payload     */
+    uint16_t  retx_len;    /* length of retx_buf (0 = nothing pending)       */
+    uint8_t   retx_flags;  /* TCP flags of the last sent segment             */
+    uint32_t  retx_seq;    /* snd_nxt at the time the segment was sent       */
+    uint16_t  retx_timer;  /* ticks until next retransmit (counts down)      */
+    uint8_t   retx_count;  /* number of retransmits already attempted        */
+    uint16_t  conn_timer;  /* general connection timer (TIME_WAIT, SYN wait) */
 } TcpSocket;
 
 /* Handle incoming TCP segment */
