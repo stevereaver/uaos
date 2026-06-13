@@ -116,5 +116,6 @@ void Cmd_LoadWB  (NativeCmdCtx *ctx, const char *args);
 void Cmd_CalcWin (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ifconfig(NativeCmdCtx *ctx, const char *args);
 void Cmd_Ping    (NativeCmdCtx *ctx, const char *args);
+void Cmd_Route   (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

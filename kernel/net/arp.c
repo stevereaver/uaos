@@ -80,6 +80,18 @@ void arp_request(ipv4_t target_ip)
     arp_send(1, zero_mac, target_ip);
 }
 
+int arp_cache_dump(ArpDumpCb cb, void *ud)
+{
+    int count = 0;
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (g_cache[i].valid) {
+            cb(g_cache[i].ip, g_cache[i].mac, ud);
+            count++;
+        }
+    }
+    return count;
+}
+
 void arp_rx(const uint8_t *pkt, uint16_t len)
 {
     if (len < (uint16_t)sizeof(ArpPkt)) return;

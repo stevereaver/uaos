@@ -46,6 +46,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "calculator", Cmd_CalcWin  },
     { "ifconfig",   Cmd_Ifconfig },
     { "ping",       Cmd_Ping     },
+    { "route",      Cmd_Route    },
     { NULL,         NULL         }
 };
 

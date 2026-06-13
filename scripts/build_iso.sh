@@ -334,7 +334,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_loadwb.c" \
     "${REPO_ROOT}/kernel/shell/cmd_calc.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ifconfig.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_ping.c"
+    "${REPO_ROOT}/kernel/shell/cmd_ping.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_route.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -538,6 +539,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_calc.o" \
     "${BUILD_DIR}/obj/cmd_ifconfig.o" \
     "${BUILD_DIR}/obj/cmd_ping.o" \
+    "${BUILD_DIR}/obj/cmd_route.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -574,7 +576,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping; do
+           run assign execute loadwb ifconfig ping route; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

@@ -25,7 +25,7 @@ void icmp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         r->ident    = h->ident;
         r->seq      = h->seq;
         net_memcpy(reply + ICMP_HDR_LEN, pkt + ICMP_HDR_LEN, data_len);
-        r->checksum = inet_cksum(reply, (uint32_t)(ICMP_HDR_LEN + data_len));
+        r->checksum = net_htons(inet_cksum(reply, (uint32_t)(ICMP_HDR_LEN + data_len)));
         ip_send(src_ip, IP_PROTO_ICMP, reply, (uint16_t)(ICMP_HDR_LEN + data_len));
 
     } else if (h->type == ICMP_ECHO_REPLY) {
@@ -44,7 +44,7 @@ void icmp_ping(ipv4_t dst_ip, uint16_t seq)
     h->seq      = net_htons(seq);
     /* Payload */
     for (int i = 0; i < 32; i++) pkt[ICMP_HDR_LEN + i] = (uint8_t)i;
-    h->checksum = inet_cksum(pkt, (uint32_t)(ICMP_HDR_LEN + 32));
+    h->checksum = net_htons(inet_cksum(pkt, (uint32_t)(ICMP_HDR_LEN + 32)));
     ip_send(dst_ip, IP_PROTO_ICMP, pkt, (uint16_t)(ICMP_HDR_LEN + 32));
 }
 

@@ -40,4 +40,11 @@ void arp_request(ipv4_t target_ip);
 /* Add/update an entry in the ARP cache */
 void arp_cache_update(ipv4_t ip, const uint8_t *mac);
 
+/*
+ * Iterate ARP cache entries.  Calls cb(ip, mac, ud) for each valid entry.
+ * Returns the number of entries visited.
+ */
+typedef void (*ArpDumpCb)(ipv4_t ip, const uint8_t *mac, void *ud);
+int arp_cache_dump(ArpDumpCb cb, void *ud);
+
 #endif /* UAOS_ARP_H */

@@ -27,6 +27,23 @@ ipv4_t ip_get_local(void)   { return g_my_ip;   }
 ipv4_t ip_get_gateway(void) { return g_gateway; }
 ipv4_t ip_get_netmask(void) { return g_netmask; }
 
+/* Serial debug helpers */
+static inline void _ip_outb(uint16_t p, uint8_t v)
+{ __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
+static inline uint8_t _ip_inb(uint16_t p)
+{ uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
+static void _ip_putc(char c) {
+    while ((_ip_inb(0x3FD) & 0x20) == 0) {}
+    _ip_outb(0x3F8, (uint8_t)c);
+    if (c == '\n') { while ((_ip_inb(0x3FD) & 0x20) == 0) {} _ip_outb(0x3F8, '\r'); }
+}
+static void _ip_puts(const char *s) { while (*s) _ip_putc(*s++); }
+static void _ip_phex(uint32_t v) {
+    static const char h[] = "0123456789ABCDEF";
+    _ip_puts("0x");
+    for (int i = 28; i >= 0; i -= 4) _ip_putc(h[(v >> i) & 0xF]);
+}
+
 void ip_rx(const uint8_t *pkt, uint16_t len)
 {
     if (len < IP_HDR_LEN) return;
@@ -34,22 +51,45 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
     if ((h->ver_ihl >> 4) != 4) return;          /* IPv4 only */
     uint8_t  ihl      = (h->ver_ihl & 0x0F) * 4;
     uint16_t tot_len  = net_ntohs(h->tot_len);
-    if (tot_len > len || ihl < IP_HDR_LEN) return;
 
-    /* Verify checksum */
+    _ip_puts("[IP] rx proto="); _ip_phex(h->protocol);
+    _ip_puts(" tot_len="); _ip_phex(tot_len);
+    _ip_puts(" len="); _ip_phex(len);
+    _ip_puts(" ihl="); _ip_phex(ihl);
+    _ip_putc('\n');
+
+    if (tot_len > len || ihl < IP_HDR_LEN) {
+        _ip_puts("[IP] rx: bad length\n");
+        return;
+    }
+
+    /* Verify checksum.
+     * inet_cksum() returns a value in host byte order (big-endian semantics).
+     * The stored checksum in the packet is big-endian on the wire, which
+     * x86 reads as a byte-swapped uint16_t.  Convert calc to network byte
+     * order before comparing. */
     uint16_t saved = h->checksum;
     ((IpHdr *)h)->checksum = 0;
-    uint16_t calc = inet_cksum(h, ihl);
+    uint16_t calc = net_htons(inet_cksum(h, ihl));
     ((IpHdr *)h)->checksum = saved;
-    if (calc != saved) return;
+    if (calc != saved) {
+        _ip_puts("[IP] rx: bad cksum calc="); _ip_phex(calc);
+        _ip_puts(" saved="); _ip_phex(saved); _ip_putc('\n');
+        return;
+    }
 
-    /* Drop fragments (frag_off != 0 and MF bit set, or non-zero offset) */
+    /* Drop fragments */
     uint16_t frag = net_ntohs(h->frag_off);
-    if (frag & 0x3FFF) return;   /* fragmented — not supported */
+    if (frag & 0x3FFF) {
+        _ip_puts("[IP] rx: fragment dropped\n");
+        return;
+    }
 
     ipv4_t src_ip = net_ntohl(h->src);
     const uint8_t *payload = pkt + ihl;
     uint16_t plen = (uint16_t)(tot_len - ihl);
+
+    _ip_puts("[IP] rx: dispatching proto="); _ip_phex(h->protocol); _ip_putc('\n');
 
     switch (h->protocol) {
     case IP_PROTO_ICMP:
@@ -87,7 +127,7 @@ int ip_send(ipv4_t dst_ip, uint8_t proto, uint8_t *payload, uint16_t payload_len
     h->checksum = 0;
     h->src      = net_htonl(g_my_ip);
     h->dst      = net_htonl(dst_ip);
-    h->checksum = inet_cksum(h, IP_HDR_LEN);
+    h->checksum = net_htons(inet_cksum(h, IP_HDR_LEN));
 
     /* Copy payload */
     net_memcpy(frame + ETH_HDR_LEN + IP_HDR_LEN, payload, payload_len);
