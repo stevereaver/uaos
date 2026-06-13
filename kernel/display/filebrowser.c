@@ -753,6 +753,21 @@ static const ClickShim k_click_shims[MAX_BROWSERS] = {
  * Public API
  * ========================================================================= */
 
+void FileBrowser_CancelClicks(int wm_handle_keep)
+{
+    /* Reset pending double-click state for every browser whose WM window
+     * handle is not wm_handle_keep.  Pass -1 to cancel all slots.
+     * Called on every WM btn_pressed that hits a window so that a stale
+     * first-click in a background browser cannot spuriously complete as a
+     * double-click when a later unrelated click happens to land there. */
+    for (int i = 0; i < MAX_BROWSERS; i++) {
+        if (g_browsers[i].wm_handle != wm_handle_keep) {
+            g_browsers[i].last_click_icon = -1;
+            g_browsers[i].last_click_tick = 0;
+        }
+    }
+}
+
 void FileBrowser_Open(const char *volume)
 {
     /* Defensive clamp in case previous buggy code corrupted the counter */

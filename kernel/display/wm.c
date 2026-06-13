@@ -4,6 +4,7 @@
 #include "framebuffer.h"
 #include "cursor.h"
 #include "desktop.h"
+#include "filebrowser.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -584,6 +585,13 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         }
         WM_LOG("[WM] Hit window "); WM_LOG_DEC(wh); WM_LOG("\n");
         if (wh >= 0) {
+            /* Cancel pending double-click state in all browsers except the
+             * one being clicked.  A stale first-click in a background browser
+             * could otherwise complete as a spurious double-click the next
+             * time that browser's on_click fires (e.g. clicking Clock in
+             * Tools opens DEVS in the Workbench: browser underneath). */
+            FileBrowser_CancelClicks(wh);
+
             /* Close gadget takes priority */
             if (hit_close_gadget(wh, mx, my)) {
                 WM_CloseWindow(wh);
