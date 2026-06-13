@@ -16,6 +16,8 @@
 #include "shell_win.h"
 #include "../irq/rtc.h"
 #include "clock_win.h"
+#include "../net/ntp.h"
+#include "../net/timezone.h"
 #include "../dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -73,6 +75,30 @@ static void draw_bevel_box(int x, int y, int w, int h, int raised)
  * Menu bar
  * ========================================================================= */
 
+/* Fill buf[9] with the current local time as "HH:MM:SS\0".
+ * Uses the NTP epoch + timezone when synced, falls back to CMOS UTC. */
+static void current_time_str(char *buf)
+{
+    uint8_t h, m, s;
+    uint32_t epoch = ntp_get_epoch();
+    if (epoch) {
+        const TzInfo *tz = tz_get_current();
+        int32_t  off     = tz_offset_min(tz, epoch);
+        uint32_t local   = (uint32_t)((int64_t)epoch + (int64_t)off * 60);
+        uint16_t yr; uint8_t mo, dy;
+        ntp_unix_to_datetime(local, &yr, &mo, &dy, &h, &m, &s);
+    } else {
+        RtcTime t = RTC_ReadTime();
+        h = t.hour; m = t.min; s = t.sec;
+    }
+    buf[0] = (char)('0' + h / 10); buf[1] = (char)('0' + h % 10);
+    buf[2] = ':';
+    buf[3] = (char)('0' + m / 10); buf[4] = (char)('0' + m % 10);
+    buf[5] = ':';
+    buf[6] = (char)('0' + s / 10); buf[7] = (char)('0' + s % 10);
+    buf[8] = '\0';
+}
+
 static void draw_menubar(int W)
 {
     /* Solid dark-blue background */
@@ -87,14 +113,15 @@ static void draw_menubar(int W)
     int mx = 8;
     for (int i = 0; menus[i]; i++) {
         FB_PutStr(mx, 2, menus[i], WB_WHITE, WB_BLUE);
-        /* count chars */
         int len = 0;
         for (const char *p = menus[i]; *p; p++) len++;
         mx += len * 8 + 16;
     }
 
-    /* Clock placeholder (right-aligned) */
-    FB_PutStr(W - 80, 2, "00:00:00", WB_CREAM, WB_BLUE);
+    /* Clock — show current local time (not hardcoded 00:00:00) */
+    char buf[9];
+    current_time_str(buf);
+    FB_PutStr(W - 80, 2, buf, WB_CREAM, WB_BLUE);
 }
 
 /* =========================================================================
@@ -573,19 +600,9 @@ void Desktop_UpdateClock(void)
 {
     if (!g_fb.valid) return;
 
-    RtcTime t = RTC_ReadTime();
-
-    /* Format as HH:MM:SS */
+    /* Format current local time */
     char buf[9];
-    buf[0] = (char)('0' + t.hour / 10);
-    buf[1] = (char)('0' + t.hour % 10);
-    buf[2] = ':';
-    buf[3] = (char)('0' + t.min  / 10);
-    buf[4] = (char)('0' + t.min  % 10);
-    buf[5] = ':';
-    buf[6] = (char)('0' + t.sec  / 10);
-    buf[7] = (char)('0' + t.sec  % 10);
-    buf[8] = '\0';
+    current_time_str(buf);
 
     /* Repaint just the clock rectangle in the menu bar (right-aligned, 8 chars) */
     int W = (int)g_fb.width;
