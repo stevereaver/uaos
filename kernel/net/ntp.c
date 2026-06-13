@@ -59,8 +59,11 @@ static void _nt_phex32(uint32_t v) {
  * CMOS is the ground truth; we re-derive from it if we get too far behind).
  * ------------------------------------------------------------------------- */
 
-static volatile uint32_t g_epoch          = 0;
-static volatile uint64_t g_last_tick_pit  = 0; /* g_pit_ticks at last epoch advance */
+static volatile uint32_t g_epoch         = 0;
+/* Initialised to (uint64_t)-1 so the subtraction elapsed = now - g_last
+ * wraps to a huge number on the very first call, guaranteeing the first
+ * real UIE tick is always accepted — without bypassing the guard. */
+static volatile uint64_t g_last_tick_pit = (uint64_t)-1;
 
 /* PIT runs at 10 Hz; guard = 8 ticks (~800 ms).  This absorbs any burst of
  * queued RTC UIE interrupts without ever blocking a genuine 1-per-second tick. */
@@ -72,12 +75,9 @@ extern volatile uint64_t g_pit_ticks;
 void ntp_set_epoch(uint32_t unix_utc)
 {
     g_epoch         = unix_utc;
-    /* Initialise the guard to "now", so the first tick from the RTC IRQ
-     * (which fires ~1 second after this) is always accepted.  Using the
-     * current PIT counter means we need at least NTP_TICK_GUARD_PIT more
-     * PIT ticks (800 ms) before the next epoch advance — preventing any
-     * queued UIE burst that arrives right after ntp_set_epoch() from
-     * skipping ahead. */
+    /* Record "now" so the guard is active from this point.  The first real
+     * UIE (≥1 s away) will see elapsed ≥ 10, which passes the guard of 8.
+     * Any burst arriving sooner will be rejected. */
     g_last_tick_pit = g_pit_ticks;
 }
 
@@ -88,9 +88,11 @@ void ntp_tick_epoch(void)
     if (!g_epoch) return;
 
     uint64_t now     = g_pit_ticks;
-    uint64_t elapsed = now - g_last_tick_pit;
+    uint64_t elapsed = now - g_last_tick_pit;  /* wraps safely on first call */
 
-    if (g_last_tick_pit && elapsed < NTP_TICK_GUARD_PIT) return;
+    /* Always guard — no special case for zero.  The sentinel initialisation
+     * of g_last_tick_pit ensures the first genuine tick passes. */
+    if (elapsed < NTP_TICK_GUARD_PIT) return;
 
     g_epoch++;
     g_last_tick_pit = now;
