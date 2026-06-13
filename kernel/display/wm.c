@@ -30,6 +30,11 @@ static int      g_nwins = 0;
 
 static int g_focus    = -1;   /* index into g_wins of focused window   */
 
+/* Set on btn_pressed when hit_test returns -1 (desktop press).
+ * Desktop_MouseRelease is only forwarded when this flag is set, so that a
+ * release after a window click never accidentally triggers desktop actions. */
+static int g_press_was_desktop = 0;
+
 /* Drag/resize state */
 static int g_drag_handle  = -1;
 static int g_drag_off_x   = 0;
@@ -570,6 +575,7 @@ void WM_MouseEvent(int mx, int my, int btn_left)
     if (btn_pressed) {
         WM_LOG("[WM] Mouse press at "); WM_LOG_DEC(mx); WM_LOG(","); WM_LOG_DEC(my); WM_LOG("\n");
         int wh = hit_test(mx, my);
+        g_press_was_desktop = (wh < 0);
         if (wh < 0) {
             /* Missed all windows — pass to desktop (icon hit-test) */
             WM_LOG("[WM] Missed windows, sending to desktop\n");
@@ -720,8 +726,9 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         }
     }
 
-    /* Desktop icon drag — only when no window interaction is active */
-    if (btn_left && g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
+    /* Desktop icon drag — only when this gesture started on the desktop */
+    if (g_press_was_desktop && btn_left &&
+        g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
         Desktop_MouseMove(mx, my, 1);
     }
 
@@ -734,7 +741,13 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         g_drag_handle      = -1;
         g_resize_handle    = -1;
         g_scroll_drag_win  = -1;
-        Desktop_MouseRelease(mx, my);
+        /* Only forward the release to the desktop if the press also landed on
+         * the desktop.  If the press hit a window, Desktop_MouseRelease must
+         * not fire — it could misfire a stale g_icon_drag_idx as a double-click
+         * on a desktop icon (e.g. opening Workbench:DEVS after clicking Clock). */
+        if (g_press_was_desktop)
+            Desktop_MouseRelease(mx, my);
+        g_press_was_desktop = 0;
     }
 }
 
