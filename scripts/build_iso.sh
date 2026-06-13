@@ -278,6 +278,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/tcp.c" \
     "${REPO_ROOT}/kernel/net/dhcp.c" \
     "${REPO_ROOT}/kernel/net/dns.c" \
+    "${REPO_ROOT}/kernel/net/ntp.c" \
     "${REPO_ROOT}/kernel/net/stack.c" \
     "${REPO_ROOT}/kernel/net/net_device.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
@@ -337,7 +338,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_ifconfig.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ping.c" \
     "${REPO_ROOT}/kernel/shell/cmd_route.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_nslookup.c"
+    "${REPO_ROOT}/kernel/shell/cmd_nslookup.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ntpd.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -484,6 +486,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/tcp.o" \
     "${BUILD_DIR}/obj/dhcp.o" \
     "${BUILD_DIR}/obj/dns.o" \
+    "${BUILD_DIR}/obj/ntp.o" \
     "${BUILD_DIR}/obj/stack.o" \
     "${BUILD_DIR}/obj/net_device.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
@@ -544,6 +547,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_ping.o" \
     "${BUILD_DIR}/obj/cmd_route.o" \
     "${BUILD_DIR}/obj/cmd_nslookup.o" \
+    "${BUILD_DIR}/obj/cmd_ntpd.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -580,7 +584,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup; do
+           run assign execute loadwb ifconfig ping route nslookup ntpd; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

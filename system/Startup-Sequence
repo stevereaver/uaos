@@ -28,6 +28,9 @@ echo ""
 ; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
 ; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
 
+; Synchronise system clock from NTP (pool.ntp.org)
+C:ntpd
+
 ; Load Workbench desktop
 echo ""
 echo "Starting Workbench..."

@@ -48,6 +48,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "ping",       Cmd_Ping      },
     { "route",      Cmd_Route     },
     { "nslookup",   Cmd_Nslookup  },
+    { "ntpd",       Cmd_Ntpd      },
     { NULL,         NULL          }
 };
 
