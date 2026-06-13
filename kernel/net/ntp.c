@@ -72,6 +72,12 @@ extern volatile uint64_t g_pit_ticks;
 void ntp_set_epoch(uint32_t unix_utc)
 {
     g_epoch         = unix_utc;
+    /* Initialise the guard to "now", so the first tick from the RTC IRQ
+     * (which fires ~1 second after this) is always accepted.  Using the
+     * current PIT counter means we need at least NTP_TICK_GUARD_PIT more
+     * PIT ticks (800 ms) before the next epoch advance — preventing any
+     * queued UIE burst that arrives right after ntp_set_epoch() from
+     * skipping ahead. */
     g_last_tick_pit = g_pit_ticks;
 }
 

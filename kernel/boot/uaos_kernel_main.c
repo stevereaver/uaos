@@ -442,7 +442,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     IDT_Init();
     kprint("[BOOT] Initialising PIC...\n");
     PIC_Init();
-    PIC_UnmaskIRQ(0);  /* Enable PIT timer interrupt */
+    /* PIT is programmed and unmasked later, after its handler is registered */
 
     /* Register VirtIO interrupt handler (must be after IDT/PIC init) */
     kprint("[BOOT] Registering VirtIO IRQ...\n");
@@ -503,23 +503,26 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         else
             kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
 
+        /* Program PIT at 10 Hz BEFORE enabling RTC so that g_pit_ticks is
+         * already ticking when the first RTC UIE fires.  ntp_tick_epoch()
+         * gates on g_pit_ticks, so it must be running first. */
+        kprint("[BOOT] Programming PIT (10 Hz)...\n");
+        IDT_SetHandler(32, PIT_IRQHandler);
+        {
+            uint16_t divisor = (uint16_t)(1193180UL / 10UL);
+            outb(0x43, 0x36);
+            outb(0x40, (uint8_t)(divisor & 0xFF));
+            outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+        }
+        PIC_UnmaskIRQ(0);
+        kprint("[BOOT] PIT active.\n");
+
         kprint("[BOOT] Initialising RTC clock...\n");
         IDT_SetHandler(40, RTC_IRQHandler);  /* IRQ8 = vector 40 */
         RTC_Init();
         PIC_UnmaskIRQ(8);
         Desktop_UpdateClock();               /* initial draw from CMOS */
         kprint("[BOOT] RTC active.\n");
-    }
-
-    /* Program PIT for ~10 Hz tick to verify interrupt delivery */
-    {
-        IDT_SetHandler(32, PIT_IRQHandler);
-        PIC_UnmaskIRQ(0);
-        uint16_t divisor = (uint16_t)(1193180UL / 10UL);   /* 10 Hz */
-        outb(0x43, 0x36);                  /* channel 0, lobyte/hibyte, mode 3 */
-        outb(0x40, (uint8_t)(divisor & 0xFF));
-        outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
-        kprint("[BOOT] PIT timer programmed (10 Hz).\n");
     }
 
     /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
