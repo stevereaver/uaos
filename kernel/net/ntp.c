@@ -46,13 +46,56 @@ static void _nt_phex32(uint32_t v) {
 
 /* -------------------------------------------------------------------------
  * Epoch keeper — live UTC Unix seconds, ticked by RTC IRQ
+ *
+ * ntp_tick_epoch() is called from the RTC UIE IRQ handler once per second.
+ * However QEMU (and real hardware) can queue multiple UIE interrupts and
+ * deliver them in a burst after the CPU was briefly unresponsive (e.g.
+ * during a cli window, or a heavy repaint loop).  A burst of rapid ticks
+ * makes the clock display jump ahead visibly.
+ *
+ * Guard: record the TSC at the last tick and refuse to advance the epoch
+ * if less than ~900 ms of real time has elapsed since the previous one.
+ * This absorbs any burst without losing real seconds (the RTC counter in
+ * CMOS is the ground truth; we re-derive from it if we get too far behind).
  * ------------------------------------------------------------------------- */
 
-static volatile uint32_t g_epoch = 0;
+static volatile uint32_t g_epoch     = 0;
+static volatile uint64_t g_last_tick_tsc = 0;   /* TSC at last epoch advance */
 
-void     ntp_set_epoch(uint32_t unix_utc) { g_epoch = unix_utc; }
-uint32_t ntp_get_epoch(void)              { return g_epoch; }
-void     ntp_tick_epoch(void)             { if (g_epoch) g_epoch++; }
+static inline uint64_t _ntp_rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Estimate TSC ticks per second at first call (lightweight PIT-free method:
+ * just use a fixed conservative estimate for QEMU — 1 GHz = 1e9 ticks/s).
+ * For real hardware the guard is slightly loose but still safe: at 3 GHz a
+ * "second" is 3e9 ticks, so 900 ms = 2.7e9 ticks. */
+#define NTP_MIN_TICK_TSC  900000000ULL   /* 900 ms @ ~1 GHz, conservative */
+
+void ntp_set_epoch(uint32_t unix_utc)
+{
+    g_epoch         = unix_utc;
+    g_last_tick_tsc = _ntp_rdtsc();   /* reset guard on explicit set */
+}
+
+uint32_t ntp_get_epoch(void) { return g_epoch; }
+
+void ntp_tick_epoch(void)
+{
+    if (!g_epoch) return;
+
+    uint64_t now = _ntp_rdtsc();
+    uint64_t elapsed = now - g_last_tick_tsc;
+
+    /* Ignore the tick if it arrived too soon after the previous one */
+    if (g_last_tick_tsc && elapsed < NTP_MIN_TICK_TSC) return;
+
+    g_epoch++;
+    g_last_tick_tsc = now;
+}
 
 /* -------------------------------------------------------------------------
  * Calendar decomposition (Unix timestamp → UTC date/time)

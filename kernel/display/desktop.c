@@ -15,7 +15,6 @@
 #include "about_win.h"
 #include "shell_win.h"
 #include "../irq/rtc.h"
-#include "clock_win.h"
 #include "../net/ntp.h"
 #include "../net/timezone.h"
 #include "../dos/vfs.h"
@@ -600,18 +599,10 @@ void Desktop_UpdateClock(void)
 {
     if (!g_fb.valid) return;
 
-    /* Format current local time */
-    char buf[9];
-    current_time_str(buf);
-
-    /* Repaint just the clock rectangle in the menu bar (right-aligned, 8 chars) */
-    int W = (int)g_fb.width;
-    int cx = W - 80;
-    FB_FillRect(cx, 0, 80, MENUBAR_H - 2, WB_BLUE);
-    FB_PutStr(cx, 2, buf, WB_CREAM, WB_BLUE);
-
-    /* Tick the clock window (if open) */
-    ClockWin_Tick();
+    /* Full repaint via the WM — this repaints the menubar (which reads the
+     * current local time via current_time_str) and all open windows including
+     * the Clock app.  Called once per second from the RTC IRQ handler. */
+    WM_Redraw();
 
     g_tick++;
 }
