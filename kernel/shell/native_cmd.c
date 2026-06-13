@@ -49,6 +49,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "route",      Cmd_Route     },
     { "nslookup",   Cmd_Nslookup  },
     { "ntpd",       Cmd_Ntpd      },
+    { "clock",      Cmd_ClockWin  },
     { NULL,         NULL          }
 };
 

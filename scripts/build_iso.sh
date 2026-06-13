@@ -262,6 +262,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/filebrowser.c" \
     "${REPO_ROOT}/kernel/display/about_win.c" \
     "${REPO_ROOT}/kernel/display/calc_win.c" \
+    "${REPO_ROOT}/kernel/display/clock_win.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
@@ -279,6 +280,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/dhcp.c" \
     "${REPO_ROOT}/kernel/net/dns.c" \
     "${REPO_ROOT}/kernel/net/ntp.c" \
+    "${REPO_ROOT}/kernel/net/timezone.c" \
     "${REPO_ROOT}/kernel/net/stack.c" \
     "${REPO_ROOT}/kernel/net/net_device.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
@@ -339,7 +341,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_ping.c" \
     "${REPO_ROOT}/kernel/shell/cmd_route.c" \
     "${REPO_ROOT}/kernel/shell/cmd_nslookup.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_ntpd.c"
+    "${REPO_ROOT}/kernel/shell/cmd_ntpd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_clock.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -464,6 +467,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/filebrowser.o" \
     "${BUILD_DIR}/obj/about_win.o" \
     "${BUILD_DIR}/obj/calc_win.o" \
+    "${BUILD_DIR}/obj/clock_win.o" \
     "${BUILD_DIR}/obj/softfloat.o" \
     "${BUILD_DIR}/obj/m68kcpu.o" \
     "${BUILD_DIR}/obj/m68kops.o" \
@@ -487,6 +491,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/dhcp.o" \
     "${BUILD_DIR}/obj/dns.o" \
     "${BUILD_DIR}/obj/ntp.o" \
+    "${BUILD_DIR}/obj/timezone.o" \
     "${BUILD_DIR}/obj/stack.o" \
     "${BUILD_DIR}/obj/net_device.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
@@ -548,6 +553,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_route.o" \
     "${BUILD_DIR}/obj/cmd_nslookup.o" \
     "${BUILD_DIR}/obj/cmd_ntpd.o" \
+    "${BUILD_DIR}/obj/cmd_clock.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -589,11 +595,13 @@ for cmd in version mem libs clear reboot dir makedir delete type copy rename \
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done
 
-# Generate Calculator binary in Tools:
-info "Step 2d: Generating Calculator binary for Tools:"
+# Generate Calculator and Clock binaries in Tools:
+info "Step 2d: Generating Tools: binaries (Calculator, Clock)"
 TOOLS_STAGING="${ISO_STAGING}/SYS_ROOT/Tools"
 "${GEN_NATIVE}" "calculator" "${TOOLS_STAGING}/Calculator"
 ok "  Generated: Tools:Calculator  (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "clock"      "${TOOLS_STAGING}/Clock"
+ok "  Generated: Tools:Clock       (32-byte NATIVE binary)"
 
 # -------------------------------------------------------------------------
 # Step 2c — Wrap any Amiga Hunk binaries in emulation/binaries/ with UAOS header

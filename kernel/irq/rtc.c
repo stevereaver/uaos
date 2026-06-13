@@ -17,6 +17,7 @@
 
 #include "rtc.h"
 #include "../display/desktop.h"
+#include "../net/ntp.h"
 #include <stdint.h>
 
 /* -------------------------------------------------------------------------
@@ -219,6 +220,9 @@ void RTC_IRQHandler(uint64_t vec, uint64_t err)
 
     rtc_decode(raw_s, raw_m, raw_h, raw_day, raw_mon, raw_yr,
                raw_cent, status_b);
+
+    /* Advance the live UTC epoch counter */
+    ntp_tick_epoch();
 
     /* Redraw clock in menu bar */
     Desktop_UpdateClock();

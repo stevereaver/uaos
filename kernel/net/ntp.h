@@ -43,4 +43,13 @@ void ntp_unix_to_datetime(uint32_t unix_ts,
                            uint16_t *year, uint8_t *month, uint8_t *day,
                            uint8_t *hour, uint8_t *min,   uint8_t *sec);
 
+/*
+ * Epoch keeper — updated by ntpd after a successful sync.
+ * The RTC IRQ increments this by 1 each second so it stays live.
+ * Value is UTC Unix seconds (0 = not yet synced).
+ */
+void     ntp_set_epoch(uint32_t unix_utc);
+uint32_t ntp_get_epoch(void);
+void     ntp_tick_epoch(void);   /* call from RTC IRQ (adds 1 second) */
+
 #endif /* UAOS_NTP_H */

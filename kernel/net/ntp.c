@@ -45,6 +45,16 @@ static void _nt_phex32(uint32_t v) {
 }
 
 /* -------------------------------------------------------------------------
+ * Epoch keeper — live UTC Unix seconds, ticked by RTC IRQ
+ * ------------------------------------------------------------------------- */
+
+static volatile uint32_t g_epoch = 0;
+
+void     ntp_set_epoch(uint32_t unix_utc) { g_epoch = unix_utc; }
+uint32_t ntp_get_epoch(void)              { return g_epoch; }
+void     ntp_tick_epoch(void)             { if (g_epoch) g_epoch++; }
+
+/* -------------------------------------------------------------------------
  * Calendar decomposition (Unix timestamp → UTC date/time)
  *
  * Uses the algorithm from:

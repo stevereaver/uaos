@@ -15,6 +15,7 @@
 #include "about_win.h"
 #include "shell_win.h"
 #include "../irq/rtc.h"
+#include "clock_win.h"
 #include "../dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -591,6 +592,9 @@ void Desktop_UpdateClock(void)
     int cx = W - 80;
     FB_FillRect(cx, 0, 80, MENUBAR_H - 2, WB_BLUE);
     FB_PutStr(cx, 2, buf, WB_CREAM, WB_BLUE);
+
+    /* Tick the clock window (if open) */
+    ClockWin_Tick();
 
     g_tick++;
 }
