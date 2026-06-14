@@ -585,6 +585,42 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         }
         WM_LOG("[WM] Hit window "); WM_LOG_DEC(wh); WM_LOG("\n");
         if (wh >= 0) {
+            /* On-screen debug: show which window was hit and mouse coords */
+            {
+                extern void dbg_add_line(const char *);
+                char dbghit[64];
+                int dhi = 0;
+                const char *lbl = "HIT wh=";
+                while (lbl[dhi]) dbghit[dhi++] = lbl[dhi];
+                dbghit[dhi++] = '0' + wh;
+                dbghit[dhi++] = ' ';
+                dbghit[dhi++] = 'x';
+                dbghit[dhi++] = '=';
+                /* encode mx as 3 decimal digits */
+                dbghit[dhi++] = '0' + (mx / 100) % 10;
+                dbghit[dhi++] = '0' + (mx / 10)  % 10;
+                dbghit[dhi++] = '0' + mx % 10;
+                dbghit[dhi++] = ' ';
+                dbghit[dhi++] = 'y';
+                dbghit[dhi++] = '=';
+                dbghit[dhi++] = '0' + (my / 100) % 10;
+                dbghit[dhi++] = '0' + (my / 10)  % 10;
+                dbghit[dhi++] = '0' + my % 10;
+                dbghit[dhi++] = ' ';
+                /* show the hit window's rect */
+                WmWindow *hw = &g_wins[wh];
+                dbghit[dhi++] = 'r';
+                dbghit[dhi++] = '0' + (hw->x / 100) % 10;
+                dbghit[dhi++] = '0' + (hw->x / 10) % 10;
+                dbghit[dhi++] = '0' + hw->x % 10;
+                dbghit[dhi++] = ',';
+                dbghit[dhi++] = '0' + (hw->y / 100) % 10;
+                dbghit[dhi++] = '0' + (hw->y / 10) % 10;
+                dbghit[dhi++] = '0' + hw->y % 10;
+                dbghit[dhi] = '\0';
+                dbg_add_line(dbghit);
+            }
+
             /* Cancel pending double-click state in all browsers except the
              * one being clicked.  A stale first-click in a background browser
              * could otherwise complete as a spurious double-click the next
