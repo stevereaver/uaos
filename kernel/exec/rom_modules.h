@@ -11,6 +11,19 @@
 #include <stdint.h>
 
 /* -----------------------------------------------------------------------
+ * M68k CPU context block — shared between Musashi glue, thunk handler,
+ * and ROM module stubs so that dos.library (and future libraries) can
+ * be dispatched from any emulator backend without backend-specific APIs.
+ * ----------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t d[8];   /* D0–D7 data registers                              */
+    uint32_t a[8];   /* A0–A7 address registers (A7 = stack pointer)      */
+    uint32_t pc;     /* Guest Program Counter                              */
+    uint16_t sr;     /* Guest Status Register                              */
+} M68kCPUState;
+
+/* -----------------------------------------------------------------------
  * ROM module descriptor
  * ----------------------------------------------------------------------- */
 

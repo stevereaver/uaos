@@ -33,6 +33,7 @@
 #include "dos/handle_table.h"
 #include "dos/dospacket.h"
 #include "dos/amiga_dos_types.h"
+#include "exec/rom_modules.h"
 
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
@@ -42,7 +43,7 @@ typedef void (*GluePrintFn)(const char *s);
 static GluePrintFn g_print = (void*)0;
 
 /* Current working directory for resolving relative paths */
-static char g_cwd[64] = "RAM:";
+char g_uaos_cwd[64] = "RAM:";
 
 static void emu_print(const char *s)
 {
@@ -127,20 +128,20 @@ static void u32_dec(uint32_t v, char *buf, int max) {
 #define PROG_BASE       0x001000  /* program hunks load here */
 
 uint8_t g_ram[GUEST_RAM_SIZE];
-static int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
+int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 static uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */
-static uint32_t g_heap_ptr = PROG_BASE;
+uint32_t g_uaos_heap_ptr = PROG_BASE;
 
 static uint32_t heap_alloc(uint32_t size)
 {
     /* Align to 4 bytes */
     size = (size + 3) & ~3u;
-    if (g_heap_ptr + size > GUEST_RAM_SIZE) return 0;
-    uint32_t addr = g_heap_ptr;
-    g_heap_ptr += size;
+    if (g_uaos_heap_ptr + size > GUEST_RAM_SIZE) return 0;
+    uint32_t addr = g_uaos_heap_ptr;
+    g_uaos_heap_ptr += size;
     emu_memset(g_ram + addr, 0, size);
     return addr;
 }
@@ -896,7 +897,7 @@ static void install_loadable_libs(void)
  * exec.library implementation
  * ========================================================================= */
 
-static int g_last_err = 0;
+/* g_last_err replaced by global g_dos_last_ioerr via SetIoErr()/IoErr() */
 
 static void exec_OpenLibrary(void)
 {
@@ -1120,9 +1121,9 @@ static void dos_Open(void)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
-        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
+        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1133,7 +1134,7 @@ static void dos_Open(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1142,7 +1143,7 @@ static void dos_Open(void)
     int32_t handle = DoPkt(port, action, (int32_t)full_name, (int32_t)mode, 0, 0, 0);
     if (handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = IoErr();
+        SetIoErr(IoErr());
     } else {
         m68k_set_reg(M68K_REG_D0, (uint32_t)handle);
     }
@@ -1228,7 +1229,7 @@ static void dos_Seek(void)
     HandleEntry *ent = HandleTable_Get(fh);
     if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
         m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
@@ -1250,7 +1251,7 @@ static void dos_DeleteFile(void)
     int blen = bstr_to_c(bptr, name, sizeof(name));
     if (blen == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
@@ -1261,9 +1262,9 @@ static void dos_DeleteFile(void)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
-        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
+        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1274,7 +1275,7 @@ static void dos_DeleteFile(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1295,7 +1296,7 @@ static void dos_Rename(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1318,9 +1319,9 @@ static void dos_SetProtection(void)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
-        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
+        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1331,7 +1332,7 @@ static void dos_SetProtection(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1342,13 +1343,13 @@ static void dos_SetProtection(void)
 static void dos_GetVar(void)
 {
     m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-    g_last_err = ERROR_ACTION_NOT_KNOWN;
+    SetIoErr(ERROR_ACTION_NOT_KNOWN);
 }
 
 static void dos_SetVar(void)
 {
     m68k_set_reg(M68K_REG_D0, 0);
-    g_last_err = ERROR_ACTION_NOT_KNOWN;
+    SetIoErr(ERROR_ACTION_NOT_KNOWN);
 }
 
 /* Stdin data to feed LHA: "?\n" to quit interactive mode cleanly */
@@ -1369,9 +1370,9 @@ static void dos_Lock(void)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
-        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
+        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1382,21 +1383,21 @@ static void dos_Lock(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
     int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)full_name, mode, 0, 0, 0);
     if (handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = IoErr();
+        SetIoErr(IoErr());
         return;
     }
     uint32_t lock_bptr = guest_alloc_filelock((uint32_t)handle, mode);
     if (lock_bptr == 0) {
         HandleTable_Free((uint32_t)handle);
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_NO_FREE_STORE;
+        SetIoErr(ERROR_NO_FREE_STORE);
         return;
     }
     m68k_set_reg(M68K_REG_D0, lock_bptr);
@@ -1426,14 +1427,14 @@ static void dos_DupLock(void)
     int32_t access = 0;
     if (!guest_read_filelock(lock, &handle, &access) || handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
     HandleEntry *ent = HandleTable_Get(handle);
     if (!ent || ent->type != HTYPE_LOCK) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
@@ -1442,21 +1443,21 @@ static void dos_DupLock(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
     int32_t dup = DoPkt(port, ACTION_COPY_DIR, (int32_t)handle, 0, 0, 0, 0);
     if (dup == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = IoErr();
+        SetIoErr(IoErr());
         return;
     }
     uint32_t dup_bptr = guest_alloc_filelock((uint32_t)dup, access);
     if (dup_bptr == 0) {
         HandleTable_Free((uint32_t)dup);
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_NO_FREE_STORE;
+        SetIoErr(ERROR_NO_FREE_STORE);
         return;
     }
     m68k_set_reg(M68K_REG_D0, dup_bptr);
@@ -1473,14 +1474,14 @@ static void dos_Parent(void)
     int32_t access = 0;
     if (!guest_read_filelock(lock, &handle, &access) || handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
     HandleEntry *ent = HandleTable_Get(handle);
     if (!ent || ent->type != HTYPE_LOCK) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
@@ -1489,21 +1490,21 @@ static void dos_Parent(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
     int32_t ph = DoPkt(port, ACTION_PARENT, (int32_t)handle, 0, 0, 0, 0);
     if (ph == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = IoErr();
+        SetIoErr(IoErr());
         return;
     }
     uint32_t p_bptr = guest_alloc_filelock((uint32_t)ph, access);
     if (p_bptr == 0) {
         HandleTable_Free((uint32_t)ph);
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_NO_FREE_STORE;
+        SetIoErr(ERROR_NO_FREE_STORE);
         return;
     }
     m68k_set_reg(M68K_REG_D0, p_bptr);
@@ -1517,21 +1518,21 @@ static void dos_Examine(void)
 
     if (fib_ptr >= GUEST_RAM_SIZE) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
     uint32_t handle = 0;
     if (!guest_read_filelock(lock, &handle, NULL) || handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
     HandleEntry *ent = HandleTable_Get(handle);
     if (!ent || ent->type != HTYPE_LOCK) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
@@ -1540,7 +1541,7 @@ static void dos_Examine(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1557,21 +1558,21 @@ static void dos_ExamineNext(void)
 
     if (fib_ptr >= GUEST_RAM_SIZE) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
     uint32_t handle = 0;
     if (!guest_read_filelock(lock, &handle, NULL) || handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
     HandleEntry *ent = HandleTable_Get(handle);
     if (!ent || ent->type != HTYPE_LOCK) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
@@ -1580,7 +1581,7 @@ static void dos_ExamineNext(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1602,9 +1603,9 @@ static void dos_CreateDir(void)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
-        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
+        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1615,7 +1616,7 @@ static void dos_CreateDir(void)
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
         return;
     }
 
@@ -1639,7 +1640,7 @@ static void dos_Exit(void)
 
 static void dos_IoErr(void)
 {
-    m68k_set_reg(M68K_REG_D0, (uint32_t)g_last_err);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)IoErr());
 }
 
 /* =========================================================================
@@ -1687,44 +1688,58 @@ int m68k_illg_instr_callback(int opcode)
             }
         }
     } else if (lib == LIB_DOS) {
-        switch (fn) {
-            case DOS_OUTPUT:   dos_Output();   break;
-            case DOS_INPUT:    dos_Input();    break;
-            case DOS_VFPRINTF:     dos_VFPrintf();     break;
-            case DOS_FPUTS:        dos_FPuts();        break;
-            case DOS_PUTSTR:       dos_PutStr();       break;
-            case DOS_VPRINTF:      dos_VPrintf();      break;
-            case DOS_VFWRITEF:     dos_VFWritef();     break;
-            case DOS_READARGS:     dos_ReadArgs();     break;
-            case DOS_GETARGSTR:    dos_GetArgStr();    break;
-            case DOS_ISINTERACTIVE: dos_IsInteractive(); break;
-            case DOS_DELETEFILE:     dos_DeleteFile();     break;
-            case DOS_RENAME:         dos_Rename();         break;
-            case DOS_SETPROTECTION:  dos_SetProtection();  break;
-            case DOS_GETVAR:         dos_GetVar();         break;
-            case DOS_SETVAR:         dos_SetVar();         break;
-            case DOS_SEEK:           dos_Seek();           break;
-            case DOS_LOCK:           dos_Lock();           break;
-            case DOS_UNLOCK:         dos_Unlock();         break;
-            case DOS_EXAMINE:        dos_Examine();        break;
-            case DOS_EXAMINE_NEXT:   dos_ExamineNext();    break;
-            case DOS_CREATE_DIR:     dos_CreateDir();      break;
-            case DOS_DUPLOCK:        dos_DupLock();        break;
-            case DOS_PARENT:         dos_Parent();         break;
-            case DOS_WRITE:  dos_Write();  break;
-            case DOS_OPEN:   dos_Open();   break;
-            case DOS_CLOSE:  dos_Close();  break;
-            case DOS_READ:   dos_Read();   break;
-            case DOS_EXIT:   dos_Exit();   break;
-            case DOS_IO_ERR: dos_IoErr();  break;
-            default: {
-                char msg[40] = "[dos] unknown fn=";
-                char n[4]; u32_dec(fn, n, 4);
-                int i = emu_strlen(msg), j = 0;
-                while (n[j] && i<38) msg[i++]=n[j++];
-                msg[i++]='\n'; msg[i]='\0';
-                emu_print(msg);
-            }
+        /* Delegate dos.library to ROM module dispatcher */
+        M68kCPUState cpu;
+        cpu.d[0] = m68k_get_reg(NULL, M68K_REG_D0);
+        cpu.d[1] = m68k_get_reg(NULL, M68K_REG_D1);
+        cpu.d[2] = m68k_get_reg(NULL, M68K_REG_D2);
+        cpu.d[3] = m68k_get_reg(NULL, M68K_REG_D3);
+        cpu.d[4] = m68k_get_reg(NULL, M68K_REG_D4);
+        cpu.d[5] = m68k_get_reg(NULL, M68K_REG_D5);
+        cpu.d[6] = m68k_get_reg(NULL, M68K_REG_D6);
+        cpu.d[7] = m68k_get_reg(NULL, M68K_REG_D7);
+        cpu.a[0] = m68k_get_reg(NULL, M68K_REG_A0);
+        cpu.a[1] = m68k_get_reg(NULL, M68K_REG_A1);
+        cpu.a[2] = m68k_get_reg(NULL, M68K_REG_A2);
+        cpu.a[3] = m68k_get_reg(NULL, M68K_REG_A3);
+        cpu.a[4] = m68k_get_reg(NULL, M68K_REG_A4);
+        cpu.a[5] = m68k_get_reg(NULL, M68K_REG_A5);
+        cpu.a[6] = m68k_get_reg(NULL, M68K_REG_A6);
+        cpu.a[7] = m68k_get_reg(NULL, M68K_REG_A7);
+        cpu.pc   = m68k_get_reg(NULL, M68K_REG_PC);
+        cpu.sr   = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+
+        void *rom_fn = UAOS_ROM_NativeFunc("dos.library", (uint16_t)fn);
+        if (rom_fn) {
+            void (*fn_ptr)(M68kCPUState *) = (void (*)(M68kCPUState *))rom_fn;
+            fn_ptr(&cpu);
+            /* Write back registers that may have been modified */
+            m68k_set_reg(M68K_REG_D0, cpu.d[0]);
+            m68k_set_reg(M68K_REG_D1, cpu.d[1]);
+            m68k_set_reg(M68K_REG_D2, cpu.d[2]);
+            m68k_set_reg(M68K_REG_D3, cpu.d[3]);
+            m68k_set_reg(M68K_REG_D4, cpu.d[4]);
+            m68k_set_reg(M68K_REG_D5, cpu.d[5]);
+            m68k_set_reg(M68K_REG_D6, cpu.d[6]);
+            m68k_set_reg(M68K_REG_D7, cpu.d[7]);
+            m68k_set_reg(M68K_REG_A0, cpu.a[0]);
+            m68k_set_reg(M68K_REG_A1, cpu.a[1]);
+            m68k_set_reg(M68K_REG_A2, cpu.a[2]);
+            m68k_set_reg(M68K_REG_A3, cpu.a[3]);
+            m68k_set_reg(M68K_REG_A4, cpu.a[4]);
+            m68k_set_reg(M68K_REG_A5, cpu.a[5]);
+            m68k_set_reg(M68K_REG_A6, cpu.a[6]);
+            m68k_set_reg(M68K_REG_A7, cpu.a[7]);
+            m68k_set_reg(M68K_REG_PC, cpu.pc);
+            if (g_emu_halted)
+                m68k_end_timeslice();
+        } else {
+            char msg[40] = "[dos] unknown fn=";
+            char n[4]; u32_dec(fn, n, 4);
+            int i = emu_strlen(msg), j = 0;
+            while (n[j] && i<38) msg[i++]=n[j++];
+            msg[i++]='\n'; msg[i]='\0';
+            emu_print(msg);
         }
     } else if (lib == LIB_BSDSOCKET) {
         extern void BsdSocket_Dispatch(uint32_t fn, uint32_t *regs);
@@ -1904,10 +1919,10 @@ void UAOS_Emu_SetCwd(const char *cwd)
     if (cwd) {
         int i = 0;
         while (cwd[i] && i < 63) {
-            g_cwd[i] = cwd[i];
+            g_uaos_cwd[i] = cwd[i];
             i++;
         }
-        g_cwd[i] = '\0';
+        g_uaos_cwd[i] = '\0';
     }
 }
 
@@ -1923,8 +1938,8 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
 
     /* Clear RAM */
     emu_memset(g_ram, 0, GUEST_RAM_SIZE);
-    g_heap_ptr = PROG_BASE;
-    g_last_err = 0;
+    g_uaos_heap_ptr = PROG_BASE;
+    SetIoErr(0);
     g_hunk_count = 0;
     g_emu_halted  = 0;
     g_stdin_reads = 0;

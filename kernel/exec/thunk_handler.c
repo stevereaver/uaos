@@ -10,19 +10,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include "rom_modules.h"
 
-/* -----------------------------------------------------------------------
- * M68k CPU context block — mirrors the register file exposed by the JIT
- * core.  The emulator must fill this structure before invoking the thunk
- * dispatcher and read back D0/A0 for function return values afterward.
- * ----------------------------------------------------------------------- */
-
-typedef struct {
-    uint32_t d[8];   /* D0–D7 data registers                              */
-    uint32_t a[8];   /* A0–A7 address registers (A7 = stack pointer)      */
-    uint32_t pc;     /* Guest Program Counter                              */
-    uint16_t sr;     /* Guest Status Register                              */
-} M68kCPUState;
+/* M68kCPUState is defined in rom_modules.h (shared with ROM stubs) */
 
 /* -----------------------------------------------------------------------
  * UAOS_AMIGA_TO_HOST — maps a 32-bit Amiga-space address to the host

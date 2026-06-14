@@ -5,6 +5,22 @@
 
 #include <stdint.h>
 
+#define GUEST_RAM_SIZE (2 * 1024 * 1024)
+
+/* Guest RAM base — shared with ROM stubs so dos.library (and future
+ * libraries) can read/write guest memory without backend-specific APIs. */
+extern uint8_t g_ram[];
+
+/* Bump allocator pointer — shared so ROM stubs can allocate guest
+ * FileLock structs, BSTRs, etc. */
+extern uint32_t g_uaos_heap_ptr;
+
+/* Current working directory for resolving relative paths */
+extern char g_uaos_cwd[64];
+
+/* Emulation halt flag — set by dos_Exit to break the execute loop */
+extern int g_emu_halted;
+
 /* Callback type for printing output to the shell history */
 typedef void (*UAOS_PrintFn)(void *shell, const char *line);
 
