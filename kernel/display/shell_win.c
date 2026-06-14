@@ -2914,6 +2914,11 @@ static void inst_tab_complete(ShellInstance *s)
     int  tc_common_len = -1;  /* -1 = not seeded yet */
     tc_common[0] = '\0';
 
+    /* Length of the *name* portion of the prefix (after any dir separator).
+     * For "S:St" the name portion is "St" (len=2); for bare "dir" it equals
+     * pfx_len.  Filled in during the completion branch below. */
+    int name_pfx_len_out = pfx_len;
+
     /* ---------------------------------------------------------------
      * Helper lambda (macro) — record one match candidate
      * --------------------------------------------------------------- */
@@ -2999,6 +3004,8 @@ static void inst_tab_complete(ShellInstance *s)
             tc_scopy(name_pfx, prefix, MAX_INPUT + 1);
             name_pfx_len = pfx_len;
         }
+        /* Expose to insertion code: only the name part was matched */
+        name_pfx_len_out = name_pfx_len;
 
         /* Enumerate directory */
         RamFsNode *child = VFS_OpenDir(dir_part);
@@ -3028,13 +3035,19 @@ static void inst_tab_complete(ShellInstance *s)
         return;
     }
 
-    if (tc_count == 1 || (tc_common_len > pfx_len)) {
-        /* Single match OR unambiguous common extension → complete in-place */
+    if (tc_count == 1 || (tc_common_len > name_pfx_len_out)) {
+        /* Single match OR unambiguous common extension → complete in-place.
+         *
+         * 'fill' contains only the NAME portion of the completion
+         * (e.g. "Startup-Sequence"), NOT the directory prefix ("S:").
+         * name_pfx_len_out is how many chars of that name the user already
+         * typed (e.g. 2 for "St"), so we insert fill[name_pfx_len_out..].
+         */
         const char *fill = (tc_count == 1) ? tc_matches[0] : tc_common;
         int fill_len = 0; while (fill[fill_len]) fill_len++;
 
-        /* How many chars do we need to insert? (fill already includes pfx) */
-        int insert_len = fill_len - pfx_len;
+        /* How many chars to insert: remainder of name after the typed portion */
+        int insert_len = fill_len - name_pfx_len_out;
 
         /* Make room in input_buf at cursor position */
         if (s->input_len + insert_len > MAX_INPUT)
@@ -3047,7 +3060,7 @@ static void inst_tab_complete(ShellInstance *s)
 
         /* Fill the gap with the new characters */
         for (int i = 0; i < insert_len; i++)
-            s->input_buf[cur + i] = fill[pfx_len + i];
+            s->input_buf[cur + i] = fill[name_pfx_len_out + i];
 
         s->input_len += insert_len;
         s->input_cur += insert_len;
