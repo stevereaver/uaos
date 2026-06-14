@@ -353,7 +353,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_newcli.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ask.c" \
     "${REPO_ROOT}/kernel/shell/resident_cmd.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_resident.c"
+    "${REPO_ROOT}/kernel/shell/cmd_resident.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ps.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -575,6 +576,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_ask.o" \
     "${BUILD_DIR}/obj/resident_cmd.o" \
     "${BUILD_DIR}/obj/cmd_resident.o" \
+    "${BUILD_DIR}/obj/cmd_ps.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
@@ -612,7 +614,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim; do
+           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

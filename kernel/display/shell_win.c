@@ -490,6 +490,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
     inst_print(s, "  execute <script>   run a script file");
     inst_print(s, "  loadwb             launch Workbench desktop");
+    inst_print(s, "  ps                 list running tasks");
     inst_print(s, "");
     inst_print(s, "Script flow control:");
     inst_print(s, "  IF <c> THEN <cmd>              single-line conditional");
@@ -2876,6 +2877,60 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
     }
 }
 
+/* Enumerate running tasks for the ps command.
+ * idx starts at 0; returns 1 and fills out while tasks remain, 0 at end. */
+static int shell_enum_tasks(void *shell_extra, int idx, char *out, int max)
+{
+    (void)shell_extra;
+    int n = 0;
+
+    /* Shell CLI instances */
+    for (int i = 0; i < g_n_shells; i++) {
+        if (n++ == idx) {
+            char msg[96];
+            scopy(msg, "CLI #", 96);
+            char num[8];
+            uint_to_dec_s((uint32_t)g_shells[i].number, num, sizeof(num));
+            scat(msg, num, 96);
+            scat(msg, "   Shell  ", 96);
+            scat(msg, g_shells[i].cwd, 96);
+            if (g_shells[i].vim_mode) {
+                scat(msg, "  (vim)", 96);
+            } else if (g_shells[i].fdisk_mode) {
+                scat(msg, "  (fdisk)", 96);
+            } else if (g_shells[i].ask_mode) {
+                scat(msg, "  (ask)", 96);
+            }
+            scopy(out, msg, max);
+            return 1;
+        }
+    }
+
+    /* WM windows that are not already listed above (e.g. Calculator, Clock) */
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
+        if (!WM_IsWindowActive(i)) continue;
+
+        /* Skip shell windows — already listed as CLI #N */
+        int is_shell = 0;
+        for (int j = 0; j < g_n_shells; j++) {
+            if (g_shells[j].wm_handle == i) { is_shell = 1; break; }
+        }
+        if (is_shell) continue;
+
+        if (n++ == idx) {
+            char title[32];
+            WM_GetWindowTitle(i, title, sizeof(title));
+            char msg[96];
+            scopy(msg, title, 96);
+            scat(msg, "   Window", 96);
+            scopy(out, msg, max);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /* Compute the number of text rows visible in the history pane of shell s */
 static int shell_visible_rows(ShellInstance *s)
 {
@@ -2905,6 +2960,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.read_line      = shell_read_line;
     ctx.set_ask_mode   = shell_set_ask_mode;
     ctx.visible_rows   = shell_visible_rows(s);
+    ctx.enum_tasks     = shell_enum_tasks;
     return ctx;
 }
 

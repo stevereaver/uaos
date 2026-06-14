@@ -85,6 +85,12 @@ typedef struct NativeCmdCtx {
      * Used by more to compute the page size without hard-coding a number.
      * 0 means unknown (fall back to a safe default). */
     int         visible_rows;
+
+    /* For ps: enumerate running tasks.
+     * idx starts at 0 and increments until the callback returns 0.
+     * When active, fills out (up to max bytes) with a formatted task line
+     * and returns 1.  Returns 0 when idx is past the end of the list. */
+    int       (*enum_tasks)(void *shell_extra, int idx, char *out, int max);
 } NativeCmdCtx;
 
 /* Convenience macro — yield N ms from inside a Cmd_* function */
@@ -152,5 +158,6 @@ void Cmd_Vim      (NativeCmdCtx *ctx, const char *args);
 void Cmd_NewCLI   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ask      (NativeCmdCtx *ctx, const char *args);
 void Cmd_Resident (NativeCmdCtx *ctx, const char *args);
+void Cmd_Ps       (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

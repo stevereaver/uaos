@@ -1683,3 +1683,23 @@ int VimWin_IsActive(int slot)
     return g_vims[slot].active;
 }
 
+int VimWin_GetFilename(int slot, char *out, int max)
+{
+    if (slot < 0 || slot >= VIM_MAX_WINDOWS || !g_vims[slot].active)
+        return 0;
+    int i = 0;
+    while (i < max - 1 && g_vims[slot].buf.filename[i]) {
+        out[i] = g_vims[slot].buf.filename[i];
+        i++;
+    }
+    out[i] = '\0';
+    return 1;
+}
+
+int VimWin_IsInline(int slot)
+{
+    if (slot < 0 || slot >= VIM_MAX_WINDOWS || !g_vims[slot].active)
+        return 0;
+    return g_vims[slot].inline_mode;
+}
+

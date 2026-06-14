@@ -3,6 +3,8 @@
 #ifndef UAOS_VIM_WIN_H
 #define UAOS_VIM_WIN_H
 
+#define VIM_MAX_SLOTS 4
+
 /* Open a standalone vim window editing the given file.
  * Returns 0 on success, -1 if no free slot. */
 int VimWin_Open(const char *filename);
@@ -37,5 +39,11 @@ void VimWin_KeyInline(int slot, char c);
 
 /* Returns 1 if inline vim is still active. */
 int VimWin_IsActive(int slot);
+
+/* Get the filename of an active vim instance.  Returns 1 if active. */
+int VimWin_GetFilename(int slot, char *out, int max);
+
+/* Returns 1 if the vim instance at slot is in inline (shell-integrated) mode. */
+int VimWin_IsInline(int slot);
 
 #endif

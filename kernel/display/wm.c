@@ -936,3 +936,16 @@ void WM_MoveWindow(int handle, int new_x, int new_y)
     g_wins[handle].y = new_y;
     WM_Redraw();
 }
+
+int WM_GetWindowTitle(int handle, char *out, int max)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS || !g_wins[handle].active)
+        return 0;
+    int i = 0;
+    while (i < max - 1 && g_wins[handle].title[i]) {
+        out[i] = g_wins[handle].title[i];
+        i++;
+    }
+    out[i] = '\0';
+    return 1;
+}

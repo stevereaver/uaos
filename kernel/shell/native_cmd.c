@@ -57,6 +57,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "newshell",   Cmd_NewCLI    },  /* alias */
     { "ask",        Cmd_Ask       },
     { "resident",   Cmd_Resident  },
+    { "ps",         Cmd_Ps        },
     { NULL,         NULL          }
 };
 

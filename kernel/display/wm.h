@@ -92,4 +92,7 @@ void WM_CloseWindow(int handle);
 int       WM_IsWindowActive(int handle);
 WM_DrawFn WM_GetDrawFn(int handle);   /* returns NULL if handle invalid/inactive */
 
+/* Copy the title of an active window into out (max bytes).  Returns 1 if active. */
+int       WM_GetWindowTitle(int handle, char *out, int max);
+
 #endif
