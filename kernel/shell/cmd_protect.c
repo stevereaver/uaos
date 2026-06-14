@@ -2,61 +2,128 @@
 
 #include "cmd_internal.h"
 
+static int protect_bit(char c)
+{
+    switch (c) {
+        case 'h': case 'H': return FIBF_HOLD;
+        case 's': case 'S': return FIBF_SCRIPT;
+        case 'p': case 'P': return FIBF_PURE;
+        case 'a': case 'A': return FIBF_ARCHIVE;
+        case 'r': case 'R': return FIBF_READ;
+        case 'w': case 'W': return FIBF_WRITE;
+        case 'e': case 'E': return FIBF_EXECUTE;
+        case 'd': case 'D': return FIBF_DELETE;
+    }
+    return 0;
+}
+
+static const char *protect_name(int bit)
+{
+    switch (bit) {
+        case FIBF_HOLD:     return "hold";
+        case FIBF_SCRIPT:   return "script";
+        case FIBF_PURE:     return "pure";
+        case FIBF_ARCHIVE:  return "archive";
+        case FIBF_READ:     return "read";
+        case FIBF_WRITE:    return "write";
+        case FIBF_EXECUTE:  return "execute";
+        case FIBF_DELETE:   return "delete";
+    }
+    return "";
+}
+
+static void protect_one(NativeCmdCtx *ctx, const char *path,
+                        uint16_t set_bits, uint16_t clear_bits,
+                        int quiet)
+{
+    uint16_t current = VFS_GetProtection(path);
+    uint16_t final = (current & ~clear_bits) | set_bits;
+
+    if (VFS_SetProtection(path, final) == 0) {
+        if (!quiet) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Protected: ", CMD_MAX_LINE);
+            cmd_scat(msg, path, CMD_MAX_LINE);
+            PRINT(msg);
+        }
+    } else {
+        if (!quiet) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Failed: ", CMD_MAX_LINE);
+            cmd_scat(msg, path, CMD_MAX_LINE);
+            PRINT(msg);
+        }
+    }
+}
+
+static void protect_dir(NativeCmdCtx *ctx, const char *path,
+                        uint16_t set_bits, uint16_t clear_bits,
+                        int quiet)
+{
+    protect_one(ctx, path, set_bits, clear_bits, quiet);
+    RamFsNode *dir = VFS_ResolveDir(path);
+    if (!dir) return;
+    RamFsNode *child = dir->first_child;
+    while (child) {
+        char sub[CMD_MAX_PATH];
+        cmd_scopy(sub, path, CMD_MAX_PATH);
+        int sl = cmd_slen(sub);
+        if (sl > 0 && sub[sl - 1] != ':' && sub[sl - 1] != '/') {
+            if (sl < CMD_MAX_PATH - 1) { sub[sl] = '/'; sub[sl + 1] = '\0'; }
+        }
+        cmd_scat(sub, child->name, CMD_MAX_PATH);
+        if (child->type == RAMFS_TYPE_DIR) {
+            protect_dir(ctx, sub, set_bits, clear_bits, quiet);
+        } else {
+            protect_one(ctx, sub, set_bits, clear_bits, quiet);
+        }
+        child = child->next_sibling;
+    }
+}
+
 void Cmd_Protect(NativeCmdCtx *ctx, const char *args)
 {
     if (!args || !*args) {
-        PRINT("Usage: protect [+r|-r][+h|-h] <path>");
+        PRINT("Usage: protect <file> [+|-][hsparwed] [ALL]");
         return;
     }
 
-    uint8_t new_attrs  = 0;
-    uint8_t clear_mask = 0;
-    const char *p = args;
+    int all   = cmd_kw_find(args, "ALL");
+    int quiet = cmd_kw_find(args, "QUIET");
 
+    /* Extract flag operations and path */
+    uint16_t set_bits = 0, clear_bits = 0;
+    const char *p = args;
     while (*p && (*p == '+' || *p == '-')) {
-        char op   = *p++;
+        char op = *p++;
         char flag = *p++;
-        if (flag == 'r') {
-            if (op == '+') new_attrs  |= RAMFS_ATTR_READONLY;
-            else           clear_mask |= RAMFS_ATTR_READONLY;
-        } else if (flag == 'h') {
-            if (op == '+') new_attrs  |= RAMFS_ATTR_HIDDEN;
-            else           clear_mask |= RAMFS_ATTR_HIDDEN;
-        } else {
-            PRINT("Invalid flag. Use: +r, -r, +h, -h");
-            return;
+        int bit = protect_bit(flag);
+        if (bit) {
+            if (op == '+') set_bits |= (uint16_t)bit;
+            else           clear_bits |= (uint16_t)bit;
         }
         while (*p == ' ') p++;
     }
 
     while (*p == ' ') p++;
-    if (!*p) { PRINT("Usage: protect [+r|-r][+h|-h] <path>"); return; }
 
+    /* Skip ALL / QUIET keywords to get path */
     char path[CMD_MAX_PATH];
-    int i = 0;
-    while (*p && i < CMD_MAX_PATH - 1) { path[i++] = *p++; }
-    path[i] = '\0';
-
-    char abs_path[CMD_MAX_PATH];
-    cmd_make_abs(ctx->cwd, path, abs_path, CMD_MAX_PATH);
-
-    uint8_t current = VFS_GetAttrs(abs_path);
-    if (current == 0 && VFS_ResolveDir(abs_path) == NULL) {
-        VfsFile test;
-        if (!VFS_Open(&test, abs_path, VFS_READ)) {
-            char msg[CMD_MAX_LINE];
-            cmd_scopy(msg, "File not found: ", CMD_MAX_LINE);
-            cmd_scat(msg, abs_path, CMD_MAX_LINE);
-            PRINT(msg);
-            return;
-        }
-        VFS_Close(&test);
+    {
+        char clean[CMD_MAX_LINE];
+        cmd_kw_strip(p, "ALL", NULL, clean, CMD_MAX_LINE);
+        cmd_kw_strip(clean, "QUIET", NULL, clean, CMD_MAX_LINE);
+        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
     }
 
-    uint8_t final = (current & ~clear_mask) | new_attrs;
-    if (VFS_SetAttrs(abs_path, final) == 0) {
-        PRINT("Attributes updated");
+    if (!path[0]) {
+        PRINT("Usage: protect <file> [+|-][hsparwed] [ALL]");
+        return;
+    }
+
+    if (all) {
+        protect_dir(ctx, path, set_bits, clear_bits, quiet);
     } else {
-        PRINT("Failed to set attributes");
+        protect_one(ctx, path, set_bits, clear_bits, quiet);
     }
 }

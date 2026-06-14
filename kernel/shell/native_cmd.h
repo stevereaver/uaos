@@ -40,6 +40,7 @@ struct PartitionTable;
 typedef struct NativeCmdCtx {
     void       *shell;
     void      (*print)(void *shell, const char *line);
+    void      (*print_raw)(void *shell, const char *text); /* no newline appended */
     const char *cwd;
     const char *path;          /* shell's command search path (space-separated) */
 

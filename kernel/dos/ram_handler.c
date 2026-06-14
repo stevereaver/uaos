@@ -237,10 +237,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             fib->fib_FileName[i] = '\0';
             fib->fib_Size       = (int32_t)node->size;
             fib->fib_NumBlocks  = (int32_t)((node->size + 511) / 512);
-            /* Map RAMFS attrs to Amiga protection bits */
-            int32_t prot = DEFAULT_PROTECTION;
-            if (node->attrs & RAMFS_ATTR_READONLY) prot |= FIBF_WRITE | FIBF_DELETE;
-            fib->fib_Protection = prot;
+            fib->fib_Protection = (int32_t)node->protection;
             /* Date is left at zero (no RTC in RamFS) */
             int j = 0;
             while (j < 79 && node->comment[j]) { fib->fib_Comment[j] = node->comment[j]; j++; }
@@ -282,9 +279,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             fib->fib_FileName[i] = '\0';
             fib->fib_Size      = (int32_t)child->size;
             fib->fib_NumBlocks = (int32_t)((child->size + 511) / 512);
-            int32_t prot = DEFAULT_PROTECTION;
-            if (child->attrs & RAMFS_ATTR_READONLY) prot |= FIBF_WRITE | FIBF_DELETE;
-            fib->fib_Protection = prot;
+            fib->fib_Protection = (int32_t)child->protection;
             int j = 0;
             while (j < 79 && child->comment[j]) { fib->fib_Comment[j] = child->comment[j]; j++; }
             fib->fib_Comment[j] = '\0';
@@ -375,9 +370,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     case ACTION_SET_PROTECT: {
         const char *path = (const char *)pkt->dp_Arg1;
         int32_t mask = pkt->dp_Arg2;
-        uint8_t attrs = 0;
-        if (mask & FIBF_WRITE) attrs |= RAMFS_ATTR_READONLY; /* inverted! */
-        if (VFS_SetAttrs(path, attrs) == 0) {
+        if (VFS_SetProtection(path, (uint16_t)mask) == 0) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
             pkt->dp_Res1 = DOSFALSE;
@@ -461,9 +454,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             fib->fib_FileName[i] = '\0';
             fib->fib_Size       = (int32_t)node->size;
             fib->fib_NumBlocks  = (int32_t)((node->size + 511) / 512);
-            int32_t prot = DEFAULT_PROTECTION;
-            if (node->attrs & RAMFS_ATTR_READONLY) prot |= FIBF_WRITE | FIBF_DELETE;
-            fib->fib_Protection = prot;
+            fib->fib_Protection = (int32_t)node->protection;
             int j = 0;
             while (j < 79 && node->comment[j]) { fib->fib_Comment[j] = node->comment[j]; j++; }
             fib->fib_Comment[j] = '\0';
@@ -504,9 +495,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             fib->fib_FileName[i] = '\0';
             fib->fib_Size      = (int32_t)child->size;
             fib->fib_NumBlocks = (int32_t)((child->size + 511) / 512);
-            int32_t prot = DEFAULT_PROTECTION;
-            if (child->attrs & RAMFS_ATTR_READONLY) prot |= FIBF_WRITE | FIBF_DELETE;
-            fib->fib_Protection = prot;
+            fib->fib_Protection = (int32_t)child->protection;
             int j = 0;
             while (j < 79 && child->comment[j]) { fib->fib_Comment[j] = child->comment[j]; j++; }
             fib->fib_Comment[j] = '\0';

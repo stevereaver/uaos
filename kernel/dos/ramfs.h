@@ -42,6 +42,7 @@
 typedef struct RamFsNode {
     uint8_t  type;                  /* RAMFS_TYPE_*                           */
     uint8_t  attrs;                 /* RAMFS_ATTR_* bit flags                  */
+    uint16_t protection;            /* AmigaDOS FIBF_* bits (inverted logic)   */
     char     name[RAMFS_MAX_NAME];  /* entry name (no path separator)         */
     struct RamFsNode *parent;       /* NULL for volume root                   */
     struct RamFsNode *first_child;  /* first child (dirs only)                */
@@ -110,6 +111,12 @@ uint8_t RamFS_GetAttrs(RamFsNode *node);
 
 /* Set attributes of a node. Returns 0 on success, -1 if node is NULL. */
 int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs);
+
+/* Get protection bits of a node. */
+uint16_t RamFS_GetProtection(RamFsNode *node);
+
+/* Set protection bits of a node. Returns 0 on success, -1 if node is NULL. */
+int RamFS_SetProtection(RamFsNode *node, uint16_t prot);
 
 /* Rename a volume. Returns 0 on success, -1 if not found. */
 int RamFS_RenameVol(RamFsVol *vol, const char *new_name);

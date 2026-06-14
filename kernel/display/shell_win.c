@@ -2735,6 +2735,32 @@ static void shell_clear_history(void *shell_extra)
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[s->index][i][0] = 0;
 }
 
+/* Print text without appending a newline (append to current last line). */
+static void shell_print_raw(void *shell_extra, const char *text)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    if (!s || !text) return;
+    _ser_puts(text);
+    if (s->hist_count > 0) {
+        int slot = (s->hist_count - 1) % MAX_HIST_LINES;
+        char *last = g_hist_buf[s->index][slot];
+        int ll = slen(last);
+        int tl = slen(text);
+        int i = 0;
+        while (i < tl && ll + i < MAX_LINE_LEN - 1) {
+            last[ll + i] = text[i];
+            i++;
+        }
+        last[ll + i] = '\0';
+    } else {
+        int slot = 0;
+        scopy(g_hist_buf[s->index][slot], text, MAX_LINE_LEN);
+        s->hist_count = 1;
+    }
+    s->auto_scroll = 1;
+    WM_Redraw();
+}
+
 static void shell_dispatch_line(void *shell_extra, const char *line)
 {
     inst_dispatch((ShellInstance *)shell_extra, line);
@@ -3047,6 +3073,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     NativeCmdCtx ctx;
     ctx.shell          = s;
     ctx.print          = (void (*)(void *, const char *))inst_print;
+    ctx.print_raw      = shell_print_raw;
     ctx.cwd            = s->cwd;
     ctx.path           = s->path;
     ctx.shell_extra    = s;

@@ -14,6 +14,7 @@
 #include "native_cmd.h"
 #include "../dos/vfs.h"
 #include "../dos/ramfs.h"
+#include "../dos/amiga_dos_types.h"
 #include "../dos/blockdev.h"
 #include "../dos/partition.h"
 #include <stdint.h>
@@ -101,5 +102,170 @@ static inline void cmd_make_abs(const char *cwd, const char *arg,
 
 /* Convenience print via ctx */
 #define PRINT(msg)  CMD_PRINT(ctx, (msg))
+
+/* -------------------------------------------------------------------------
+ * Shared helpers for flag parsing and interactive prompts
+ * ------------------------------------------------------------------------- */
+
+/* Return 1 if keyword appears as a whole word in args (case-insensitive). */
+static inline int cmd_kw_find(const char *args, const char *kw)
+{
+    if (!args || !kw) return 0;
+    int kl = cmd_slen(kw);
+    const char *p = args;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ' ') p++;
+        int len = (int)(p - start);
+        if (len == kl) {
+            int match = 1;
+            for (int i = 0; i < kl; i++) {
+                char c = start[i]; if (c >= 'A' && c <= 'Z') c += 32;
+                char k = kw[i];    if (k >= 'A' && k <= 'Z') k += 32;
+                if (c != k) { match = 0; break; }
+            }
+            if (match) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Strip a keyword (and optional following token) from args into out[max].
+ * The remaining text is the "cleaned" argument string.
+ * If kw_param is non-NULL, the token immediately after kw is also stripped.
+ * Returns 1 if the keyword was found. */
+static inline int cmd_kw_strip(const char *args, const char *kw,
+                                const char *kw_param,
+                                char *out, int max)
+{
+    if (!args) { out[0] = '\0'; return 0; }
+    int kl = cmd_slen(kw);
+    int pl = kw_param ? cmd_slen(kw_param) : 0;
+    int found = 0;
+    int oi = 0;
+    const char *p = args;
+    while (*p && oi < max - 1) {
+        while (*p == ' ') {
+            if (oi > 0 && out[oi - 1] != ' ') out[oi++] = ' ';
+            p++;
+            if (oi >= max - 1) break;
+        }
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ' ') p++;
+        int len = (int)(p - start);
+        int is_kw = 0;
+        if (len == kl) {
+            int match = 1;
+            for (int i = 0; i < kl; i++) {
+                char c = start[i]; if (c >= 'A' && c <= 'Z') c += 32;
+                char k = kw[i];    if (k >= 'A' && k <= 'Z') k += 32;
+                if (c != k) { match = 0; break; }
+            }
+            if (match) {
+                is_kw = 1; found = 1;
+                /* Skip parameter token if requested */
+                if (kw_param) {
+                    while (*p == ' ') p++;
+                    const char *ps = p;
+                    while (*p && *p != ' ') p++;
+                    if ((int)(p - ps) == pl) {
+                        int pm = 1;
+                        for (int i = 0; i < pl; i++) {
+                            char c = ps[i]; if (c >= 'A' && c <= 'Z') c += 32;
+                            char k = kw_param[i]; if (k >= 'A' && k <= 'Z') k += 32;
+                            if (c != k) { pm = 0; break; }
+                        }
+                        if (!pm) p = ps; /* rewind if param didn't match */
+                    } else {
+                        p = ps; /* rewind */
+                    }
+                }
+            }
+        }
+        if (!is_kw) {
+            if (oi > 0 && out[oi - 1] != ' ' && out[oi - 1] != '\0') out[oi++] = ' ';
+            for (int i = 0; i < len && oi < max - 1; i++) out[oi++] = start[i];
+        }
+    }
+    out[oi] = '\0';
+    while (oi > 0 && out[oi - 1] == ' ') out[--oi] = '\0';
+    return found;
+}
+
+/* Blocking yes/no prompt. Returns 1 for yes, 0 for no. */
+static inline int cmd_prompt_yn(NativeCmdCtx *ctx, const char *msg)
+{
+    char line[CMD_MAX_LINE];
+    cmd_scopy(line, msg, CMD_MAX_LINE);
+    cmd_scat(line, " (y/n)? ", CMD_MAX_LINE);
+    PRINT(line);
+    if (!ctx->read_line) return 0;
+    char buf[8];
+    int n = ctx->read_line(ctx->shell_extra, buf, sizeof(buf));
+    if (n > 0 && (buf[0] == 'y' || buf[0] == 'Y')) return 1;
+    return 0;
+}
+
+/* Copy a single file from src to dst. Returns bytes copied or -1 on error. */
+static inline int cmd_copy_file(const char *src, const char *dst)
+{
+    VfsFile fsrc;
+    if (!VFS_Open(&fsrc, src, VFS_READ)) return -1;
+    VfsFile fdst;
+    if (!VFS_Open(&fdst, dst, VFS_WRITE | VFS_CREATE)) {
+        VFS_Close(&fsrc);
+        return -1;
+    }
+    char buf[256];
+    int total = 0;
+    while (1) {
+        int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, 256);
+        if (n <= 0) break;
+        VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
+        total += n;
+    }
+    VFS_Close(&fsrc);
+    VFS_Close(&fdst);
+    return total;
+}
+
+/* Recursive delete of a directory tree. Returns 0 on success. */
+static inline int cmd_delete_recursive(const char *path, int force)
+{
+    RamFsNode *node = VFS_ResolveDir(path);
+    if (!node) {
+        /* Try as file */
+        VfsFile test;
+        if (VFS_Open(&test, path, VFS_READ)) {
+            VFS_Close(&test);
+            int rc = VFS_Delete(path);
+            if (rc == -4 && force) {
+                uint16_t p = VFS_GetProtection(path);
+                VFS_SetProtection(path, p & ~FIBF_DELETE);
+                rc = VFS_Delete(path);
+            }
+            return rc;
+        }
+        return -1;
+    }
+    /* Directory: delete children first */
+    RamFsNode *child = node->first_child;
+    while (child) {
+        RamFsNode *next = child->next_sibling;
+        char sub[CMD_MAX_PATH];
+        cmd_scopy(sub, path, CMD_MAX_PATH);
+        int sl = cmd_slen(sub);
+        if (sl > 0 && sub[sl - 1] != ':' && sub[sl - 1] != '/') {
+            if (sl < CMD_MAX_PATH - 1) { sub[sl] = '/'; sub[sl + 1] = '\0'; }
+        }
+        cmd_scat(sub, child->name, CMD_MAX_PATH);
+        cmd_delete_recursive(sub, force);
+        child = next;
+    }
+    return VFS_Delete(path);
+}
 
 #endif /* UAOS_CMD_INTERNAL_H */

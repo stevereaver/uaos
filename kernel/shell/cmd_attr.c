@@ -2,6 +2,19 @@
 
 #include "cmd_internal.h"
 
+static void prot_bit_str(char *buf, uint16_t prot)
+{
+    buf[0] = (prot & FIBF_HOLD)    ? 'h' : '-';
+    buf[1] = (prot & FIBF_SCRIPT)  ? 's' : '-';
+    buf[2] = (prot & FIBF_PURE)    ? 'p' : '-';
+    buf[3] = (prot & FIBF_ARCHIVE) ? 'a' : '-';
+    buf[4] = (prot & FIBF_READ)    ? '-' : 'r'; /* inverted: bit set = denied */
+    buf[5] = (prot & FIBF_WRITE)   ? '-' : 'w';
+    buf[6] = (prot & FIBF_EXECUTE) ? '-' : 'e';
+    buf[7] = (prot & FIBF_DELETE)  ? '-' : 'd';
+    buf[8] = '\0';
+}
+
 void Cmd_Attr(NativeCmdCtx *ctx, const char *args)
 {
     if (!args || !*args) { PRINT("Usage: attr <path>"); return; }
@@ -33,10 +46,16 @@ void Cmd_Attr(NativeCmdCtx *ctx, const char *args)
         }
     }
 
+    uint16_t prot = VFS_GetProtection(abs_path);
+    char pstr[16];
+    prot_bit_str(pstr, prot);
+
     char msg[CMD_MAX_LINE];
     cmd_scopy(msg, "Attributes: ", CMD_MAX_LINE);
     if (attrs & RAMFS_ATTR_READONLY) cmd_scat(msg, "Read-Only ", CMD_MAX_LINE);
     if (attrs & RAMFS_ATTR_HIDDEN)   cmd_scat(msg, "Hidden ",    CMD_MAX_LINE);
-    if (attrs == 0)                  cmd_scat(msg, "None",       CMD_MAX_LINE);
+    if (attrs == 0)                  cmd_scat(msg, "Normal ",    CMD_MAX_LINE);
+    cmd_scat(msg, " Protection: ", CMD_MAX_LINE);
+    cmd_scat(msg, pstr, CMD_MAX_LINE);
     PRINT(msg);
 }

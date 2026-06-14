@@ -113,6 +113,12 @@ uint8_t VFS_GetAttrs(const char *path);
 /* Set attributes of a file/directory. Returns 0 on success, -1 on failure. */
 int VFS_SetAttrs(const char *path, uint8_t attrs);
 
+/* Get protection bits of a file/directory. Returns 16-bit FIBF_* mask. */
+uint16_t VFS_GetProtection(const char *path);
+
+/* Set protection bits of a file/directory. Returns 0 on success, -1 on failure. */
+int VFS_SetProtection(const char *path, uint16_t prot);
+
 /* Get comment of a file/directory. Writes to dst[max], returns 0 on success. */
 int VFS_GetComment(const char *path, char *dst, int max);
 

@@ -43,8 +43,86 @@ void Cmd_Assign(NativeCmdCtx *ctx, const char *args)
             PRINT("No assigns defined.");
         }
         PRINT("");
-        PRINT("Usage: assign <name>: <target> [ADD | DEFER]");
+        PRINT("Usage: assign <name>: <target> [ADD | DEFER | REMOVE | PATH | DISMOUNT]");
         PRINT("Example: assign C: Workbench:C");
+        return;
+    }
+
+    /* Check for REMOVE keyword */
+    if (cmd_kw_find(args, "REMOVE")) {
+        char name[32];
+        const char *p = args;
+        while (*p == ' ') p++;
+        int ni = 0;
+        while (*p && *p != ' ' && ni < 31) { name[ni++] = *p++; }
+        name[ni] = '\0';
+        if (VFS_RemoveAssign(name) == 0) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Removed assign: ", CMD_MAX_LINE);
+            cmd_scat(msg, name, CMD_MAX_LINE);
+            PRINT(msg);
+        } else {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Assign not found: ", CMD_MAX_LINE);
+            cmd_scat(msg, name, CMD_MAX_LINE);
+            PRINT(msg);
+        }
+        return;
+    }
+
+    /* Check for DISMOUNT keyword */
+    if (cmd_kw_find(args, "DISMOUNT")) {
+        char name[32];
+        const char *p = args;
+        while (*p == ' ') p++;
+        int ni = 0;
+        while (*p && *p != ' ' && ni < 31) { name[ni++] = *p++; }
+        name[ni] = '\0';
+        /* In RamFS, dismount just removes the assign and volume reference */
+        if (VFS_RemoveAssign(name) == 0) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Dismounted: ", CMD_MAX_LINE);
+            cmd_scat(msg, name, CMD_MAX_LINE);
+            PRINT(msg);
+        } else {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Volume not found: ", CMD_MAX_LINE);
+            cmd_scat(msg, name, CMD_MAX_LINE);
+            PRINT(msg);
+        }
+        return;
+    }
+
+    /* Check for PATH keyword (show assign target path) */
+    if (cmd_kw_find(args, "PATH")) {
+        char name[32];
+        const char *p = args;
+        while (*p == ' ') p++;
+        int ni = 0;
+        while (*p && *p != ' ' && ni < 31) { name[ni++] = *p++; }
+        name[ni] = '\0';
+        const char *target = VFS_ResolveAssign(name);
+        if (target) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, name, CMD_MAX_LINE);
+            cmd_scat(msg, " -> ", CMD_MAX_LINE);
+            cmd_scat(msg, target, CMD_MAX_LINE);
+            PRINT(msg);
+            int n = VFS_GetAssignTargetCount(name);
+            for (int i = 1; i < n; i++) {
+                const char *t = VFS_GetAssignTarget(name, i);
+                if (t) {
+                    cmd_scopy(msg, "  + ", CMD_MAX_LINE);
+                    cmd_scat(msg, t, CMD_MAX_LINE);
+                    PRINT(msg);
+                }
+            }
+        } else {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Assign not found: ", CMD_MAX_LINE);
+            cmd_scat(msg, name, CMD_MAX_LINE);
+            PRINT(msg);
+        }
         return;
     }
 
@@ -90,7 +168,7 @@ void Cmd_Assign(NativeCmdCtx *ctx, const char *args)
     }
 
     if (!name[0] || !target[0]) {
-        PRINT("Usage: assign <name>: <target> [ADD | DEFER]");
+        PRINT("Usage: assign <name>: <target> [ADD | DEFER | REMOVE | PATH | DISMOUNT]");
         PRINT("Example: assign C: Workbench:C");
         return;
     }

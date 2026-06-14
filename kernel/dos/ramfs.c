@@ -1,6 +1,7 @@
 /* ramfs.c — UAOS In-Memory RAM Filesystem */
 
 #include "ramfs.h"
+#include "amiga_dos_types.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -82,6 +83,7 @@ static RamFsNode *alloc_node(void)
         if (g_nodes[i].type == RAMFS_TYPE_FREE) {
             g_nodes[i].type         = 0xFF; /* mark claimed, caller sets type */
             g_nodes[i].attrs        = 0;   /* no attributes */
+            g_nodes[i].protection   = DEFAULT_PROTECTION;
             g_nodes[i].name[0]      = '\0';
             g_nodes[i].comment[0]   = '\0';
             g_nodes[i].parent       = NULL;
@@ -374,12 +376,13 @@ int RamFS_Delete(RamFsVol *vol, const char *path)
     if (!node) return -1;
     if (node->type == RAMFS_TYPE_DIR && node->first_child) return -2; /* not empty */
     if (!node->parent) return -3; /* cannot delete root */
-    if (node->attrs & RAMFS_ATTR_READONLY) return -4; /* read-only */
+    if (node->protection & FIBF_DELETE) return -4; /* delete-protected */
 
     dir_remove_child(node->parent, node);
     node->type = RAMFS_TYPE_FREE;
     node->name[0] = '\0';
     node->attrs = 0;
+    node->protection = DEFAULT_PROTECTION;
     node->size  = 0;
     node->alloc = 0;
     node->data  = NULL;
@@ -400,7 +403,7 @@ int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path)
     RamFsNode *src = RamFS_Resolve(vol, old_path);
     if (!src) return -1;
     if (!src->parent) return -3; /* cannot rename root */
-    if (src->attrs & RAMFS_ATTR_READONLY) return -4;
+    if (src->protection & FIBF_DELETE) return -4;
 
     /* Parse destination into parent directory + leaf name */
     const char *p = skip_vol_prefix(new_path);
@@ -429,7 +432,7 @@ int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path)
         /* AmigaDOS: overwrite only if same type and not a non-empty dir */
         if (existing->type == RAMFS_TYPE_DIR && existing->first_child)
             return -2; /* destination dir not empty */
-        if (existing->attrs & RAMFS_ATTR_READONLY) return -4;
+        if (existing->protection & FIBF_DELETE) return -4;
         /* Remove existing node */
         dir_remove_child(existing->parent, existing);
         existing->type = RAMFS_TYPE_FREE;
@@ -464,6 +467,19 @@ int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs)
 {
     if (!node) return -1;
     node->attrs = attrs;
+    return 0;
+}
+
+uint16_t RamFS_GetProtection(RamFsNode *node)
+{
+    if (!node) return DEFAULT_PROTECTION;
+    return node->protection;
+}
+
+int RamFS_SetProtection(RamFsNode *node, uint16_t prot)
+{
+    if (!node) return -1;
+    node->protection = prot;
     return 0;
 }
 

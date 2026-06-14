@@ -8,13 +8,61 @@
 static char g_sort_buf[MAX_SORT_LINES][MAX_SORT_LINE];
 static int  g_sort_count;
 
-static int sort_cmp(const char *a, const char *b)
+static int sort_col_start = 0;
+static int sort_col_end   = MAX_SORT_LINE;
+
+static int sort_extract_col(const char *line, int col, char *out, int max)
+{
+    int i = 0, c = 0;
+    /* Skip leading spaces */
+    while (line[i] && line[i] == ' ') i++;
+    while (c < col && line[i]) {
+        while (line[i] && line[i] != ' ') i++;
+        while (line[i] && line[i] == ' ') i++;
+        c++;
+    }
+    int j = 0;
+    while (line[i] && line[i] != ' ' && j < max - 1) out[j++] = line[i++];
+    out[j] = '\0';
+    return j;
+}
+
+static int sort_cmp_ci(const char *a, const char *b)
 {
     int i = 0;
     while (a[i] && b[i]) {
         char ac = a[i]; if (ac >= 'A' && ac <= 'Z') ac += 32;
-        char bc = b[i]; if (bc >= 'B' && bc <= 'Z') bc += 32;
+        char bc = b[i]; if (bc >= 'A' && bc <= 'Z') bc += 32;
         if (ac != bc) return ac - bc;
+        i++;
+    }
+    return (unsigned char)a[i] - (unsigned char)b[i];
+}
+
+static int sort_cmp_num(const char *a, const char *b)
+{
+    int na = 0, nb = 0;
+    int ha = 0, hb = 0;
+    /* Try to extract leading numbers */
+    const char *pa = a;
+    const char *pb = b;
+    while (*pa && (*pa < '0' || *pa > '9')) pa++;
+    while (*pb && (*pb < '0' || *pb > '9')) pb++;
+    while (*pa >= '0' && *pa <= '9') { na = na * 10 + (*pa - '0'); ha = 1; pa++; }
+    while (*pb >= '0' && *pb <= '9') { nb = nb * 10 + (*pb - '0'); hb = 1; pb++; }
+    if (ha && hb) {
+        if (na != nb) return na - nb;
+    }
+    return sort_cmp_ci(a, b);
+}
+
+static int sort_cmp(const char *a, const char *b, int numeric, int case_sens)
+{
+    if (numeric) return sort_cmp_num(a, b);
+    if (!case_sens) return sort_cmp_ci(a, b);
+    int i = 0;
+    while (a[i] && b[i]) {
+        if (a[i] != b[i]) return a[i] - b[i];
         i++;
     }
     return (unsigned char)a[i] - (unsigned char)b[i];
@@ -31,12 +79,50 @@ static void sort_swap(int i, int j)
 void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
 {
     if (!args || !*args) {
-        PRINT("Usage: sort <file>");
+        PRINT("Usage: sort <file> [COL <n>] [CASE] [NUMERIC]");
         return;
     }
 
+    int case_sens = cmd_kw_find(args, "CASE");
+    int numeric   = cmd_kw_find(args, "NUMERIC");
+
+    /* Parse COL <n> */
+    int col = 0;
+    {
+        const char *p = args;
+        while (*p) {
+            while (*p == ' ') p++;
+            if (!*p) break;
+            const char *start = p;
+            while (*p && *p != ' ') p++;
+            int len = (int)(p - start);
+            if (len == 3 &&
+                ((start[0]=='C'||start[0]=='c') && (start[1]=='O'||start[1]=='o') &&
+                 (start[2]=='L'||start[2]=='l'))) {
+                while (*p == ' ') p++;
+                col = 0;
+                while (*p >= '0' && *p <= '9') { col = col * 10 + (*p - '0'); p++; }
+                break;
+            }
+        }
+    }
+
+    /* Strip flags to get filename */
+    char clean[CMD_MAX_LINE];
+    cmd_kw_strip(args, "CASE", NULL, clean, CMD_MAX_LINE);
+    cmd_kw_strip(clean, "NUMERIC", NULL, clean, CMD_MAX_LINE);
+    if (col >= 0) {
+        char ckw[CMD_MAX_LINE];
+        ckw[0] = '\0';
+        cmd_scat(ckw, "COL ", CMD_MAX_LINE);
+        char cnum[8];
+        cmd_uint_to_dec((uint32_t)col, cnum, 8);
+        cmd_scat(ckw, cnum, CMD_MAX_LINE);
+        cmd_kw_strip(clean, ckw, NULL, clean, CMD_MAX_LINE);
+    }
+
     char path[CMD_MAX_PATH];
-    cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
+    cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
 
     VfsFile fh;
     if (!VFS_Open(&fh, path, VFS_READ)) {
@@ -68,7 +154,16 @@ void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
     /* Bubble sort */
     for (int i = 0; i < g_sort_count - 1; i++) {
         for (int j = 0; j < g_sort_count - 1 - i; j++) {
-            if (sort_cmp(g_sort_buf[j], g_sort_buf[j + 1]) > 0) {
+            char key_a[MAX_SORT_LINE];
+            char key_b[MAX_SORT_LINE];
+            if (col > 0) {
+                sort_extract_col(g_sort_buf[j],     col, key_a, MAX_SORT_LINE);
+                sort_extract_col(g_sort_buf[j + 1], col, key_b, MAX_SORT_LINE);
+            } else {
+                cmd_scopy(key_a, g_sort_buf[j],     MAX_SORT_LINE);
+                cmd_scopy(key_b, g_sort_buf[j + 1], MAX_SORT_LINE);
+            }
+            if (sort_cmp(key_a, key_b, numeric, case_sens) > 0) {
                 sort_swap(j, j + 1);
             }
         }

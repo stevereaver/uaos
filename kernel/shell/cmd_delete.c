@@ -1,21 +1,53 @@
-/* cmd_delete.c — C:delete — delete a file or empty directory */
+/* cmd_delete.c — C:delete — delete a file or directory */
 
 #include "cmd_internal.h"
 
 void Cmd_Delete(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) { PRINT("Usage: delete <path>"); return; }
+    if (!args || !*args) {
+        PRINT("Usage: delete <path> [ALL] [QUIET] [FORCE]");
+        return;
+    }
+
+    int all   = cmd_kw_find(args, "ALL");
+    int quiet = cmd_kw_find(args, "QUIET");
+    int force = cmd_kw_find(args, "FORCE");
+
+    char clean[CMD_MAX_LINE];
+    cmd_kw_strip(args, "ALL", NULL, clean, CMD_MAX_LINE);
+    cmd_kw_strip(clean, "QUIET", NULL, clean, CMD_MAX_LINE);
+    cmd_kw_strip(clean, "FORCE", NULL, clean, CMD_MAX_LINE);
+
     char path[CMD_MAX_PATH];
-    cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
-    int rc = VFS_Delete(path);
-    if (rc == 0) {
-        char msg[CMD_MAX_LINE];
-        cmd_scopy(msg, "Deleted: ", CMD_MAX_LINE);
-        cmd_scat(msg, path, CMD_MAX_LINE);
-        PRINT(msg);
-    } else if (rc == -2) {
-        PRINT("Directory not empty.");
+    cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+
+    int rc;
+    if (all) {
+        rc = cmd_delete_recursive(path, force);
     } else {
-        PRINT("Not found.");
+        rc = VFS_Delete(path);
+        if (rc == -4 && force) {
+            uint16_t p = VFS_GetProtection(path);
+            VFS_SetProtection(path, p & ~FIBF_DELETE);
+            rc = VFS_Delete(path);
+        }
+    }
+
+    if (!quiet) {
+        if (rc == 0) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Deleted: ", CMD_MAX_LINE);
+            cmd_scat(msg, path, CMD_MAX_LINE);
+            PRINT(msg);
+        } else if (rc == -2) {
+            PRINT("Directory not empty.");
+        } else if (rc == -1) {
+            PRINT("Not found.");
+        } else {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Failed to delete: ", CMD_MAX_LINE);
+            cmd_scat(msg, path, CMD_MAX_LINE);
+            PRINT(msg);
+        }
     }
 }

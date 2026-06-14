@@ -2,6 +2,7 @@
 
 #include "vfs.h"
 #include "ramfs.h"
+#include "amiga_dos_types.h"
 #include "ram_handler.h"
 #include "fat_handler.h"
 #include "handle_table.h"
@@ -620,6 +621,34 @@ int VFS_SetAttrs(const char *path, uint8_t attrs)
     RamFsNode *node = RamFS_Resolve(vol, resolved_path);
     if (!node) return -1;
     return RamFS_SetAttrs(node, attrs);
+}
+
+uint16_t VFS_GetProtection(const char *path)
+{
+    char resolved_path[128];
+    if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return DEFAULT_PROTECTION;
+
+    char vol_name[16];
+    if (!extract_vol(resolved_path, vol_name, 16)) return DEFAULT_PROTECTION;
+    RamFsVol *vol = find_vol(vol_name);
+    if (!vol) return DEFAULT_PROTECTION;
+    RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+    if (!node) return DEFAULT_PROTECTION;
+    return RamFS_GetProtection(node);
+}
+
+int VFS_SetProtection(const char *path, uint16_t prot)
+{
+    char resolved_path[128];
+    if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return -1;
+
+    char vol_name[16];
+    if (!extract_vol(resolved_path, vol_name, 16)) return -1;
+    RamFsVol *vol = find_vol(vol_name);
+    if (!vol) return -1;
+    RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+    if (!node) return -1;
+    return RamFS_SetProtection(node, prot);
 }
 
 int VFS_GetComment(const char *path, char *dst, int max)
