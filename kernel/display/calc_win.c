@@ -366,16 +366,15 @@ static void calc_click(int handle, int mx, int my)
 
 void CalcWin_Open(void)
 {
-    if (g_wm_handle >= 0 && WM_IsWindowActive(g_wm_handle)) {
+    /* Verify the slot still belongs to us — WM slots are recycled, so
+     * IsWindowActive alone is not sufficient (another window could reuse
+     * the same slot index after Calc was closed). */
+    if (g_wm_handle >= 0 && WM_GetDrawFn(g_wm_handle) == calc_draw) {
         WM_RaiseWindow(g_wm_handle);
         WM_Redraw();
         return;
     }
-    
-    /* If we have a handle but the window is no longer active, reset it */
-    if (g_wm_handle >= 0 && !WM_IsWindowActive(g_wm_handle)) {
-        g_wm_handle = -1;
-    }
+    g_wm_handle = -1;
 
     /* Reset state */
     g_disp[0]='0'; g_disp[1]='\0'; g_disp_len=1;

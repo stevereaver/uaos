@@ -284,11 +284,12 @@ static void pointer_prefs_click(int handle, int mx, int my)
 
 void PointerPrefs_Show(void)
 {
-    if (g_wm_handle >= 0 && WM_IsWindowActive(g_wm_handle)) {
+    if (g_wm_handle >= 0 && WM_GetDrawFn(g_wm_handle) == pointer_prefs_draw) {
         WM_RaiseWindow(g_wm_handle);
         WM_Redraw();
         return;
     }
+    g_wm_handle = -1;
     
     g_current_settings = Cursor_GetSettings();
     init_buttons();
@@ -316,5 +317,5 @@ void PointerPrefs_Hide(void)
 
 int PointerPrefs_IsOpen(void)
 {
-    return (g_wm_handle >= 0 && WM_IsWindowActive(g_wm_handle));
+    return (g_wm_handle >= 0 && WM_GetDrawFn(g_wm_handle) == pointer_prefs_draw);
 }

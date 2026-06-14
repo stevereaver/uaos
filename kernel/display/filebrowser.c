@@ -434,32 +434,6 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
     if (b->last_click_icon == icon &&
         (now - b->last_click_tick) <= DBLCLICK_TICKS) {
         /* Double-click: open folder (DIR) or launch app (PROG) */
-        /* Debug: show what we're about to act on */
-        {
-            char dbl[64]; int di = 0;
-            const char *lbl = "DBL vol=";
-            while (lbl[di]) dbl[di++] = lbl[di];
-            const char *vp = b->volume;
-            while (*vp && di < 24) dbl[di++] = *vp++;
-            dbl[di++] = ' '; dbl[di++] = 'i'; dbl[di++] = '=';
-            dbl[di++] = '0' + icon;
-            dbl[di++] = ' '; dbl[di++] = 't'; dbl[di++] = '=';
-            const FileEntry *de = b->entries;
-            if (de && de[icon].name && de[icon].type) {
-                dbl[di++] = de[icon].type[0];
-                dbl[di++] = ' '; dbl[di++] = 'n'; dbl[di++] = '=';
-                const char *np = de[icon].name;
-                while (*np && di < 58) dbl[di++] = *np++;
-            } else { dbl[di++] = '?'; }
-            dbl[di++] = ' '; dbl[di++] = 'w'; dbl[di++] = 'x';
-            dbl[di++] = '=';
-            int wx2 = b->win_x;
-            dbl[di++] = '0' + (wx2/100)%10;
-            dbl[di++] = '0' + (wx2/10)%10;
-            dbl[di++] = '0' + wx2%10;
-            dbl[di] = '\0';
-            FB_LOG_SCREEN(dbl);
-        }
         b->last_click_icon = -1;
         b->drag_icon = -1;
         const FileEntry *e = b->entries;

@@ -182,12 +182,12 @@ static void about_click(int handle, int mx, int my)
 
 void AboutWin_Open(void)
 {
-    if (g_wm_handle >= 0 && WM_IsWindowActive(g_wm_handle)) {
+    if (g_wm_handle >= 0 && WM_GetDrawFn(g_wm_handle) == about_draw) {
         /* Already open — just redraw (brings it into view) */
         WM_Redraw();
         return;
     }
-    g_wm_handle = -1;   /* was closed via the WM close gadget */
+    g_wm_handle = -1;
 
     /* Centre on screen */
     int sx = (int)g_fb.width;

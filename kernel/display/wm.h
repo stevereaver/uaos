@@ -89,6 +89,7 @@ void WM_RaiseWindow(int handle);
 void WM_CloseWindow(int handle);
 
 /* Returns 1 if the handle refers to an active window */
-int  WM_IsWindowActive(int handle);
+int       WM_IsWindowActive(int handle);
+WM_DrawFn WM_GetDrawFn(int handle);   /* returns NULL if handle invalid/inactive */
 
 #endif

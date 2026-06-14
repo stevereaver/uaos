@@ -236,14 +236,18 @@ static void clock_key(char c) { (void)c; }
 void ClockWin_Tick(void)
 {
     if (g_wm_handle < 0) return;
-    if (!WM_IsWindowActive(g_wm_handle)) { g_wm_handle = -1; return; }
+    if (WM_GetDrawFn(g_wm_handle) != clock_draw) { g_wm_handle = -1; return; }
     /* Redraw just our window content without a full WM_Redraw() */
     clock_draw_content(g_win_x, g_win_y, g_win_w, g_win_h);
 }
 
 void ClockWin_Open(void)
 {
-    if (g_wm_handle >= 0 && WM_IsWindowActive(g_wm_handle)) {
+    /* Verify the slot still belongs to us — WM slots are recycled when
+     * windows close, so IsWindowActive alone is not sufficient.  If the
+     * draw function doesn't match clock_draw the slot was reused by
+     * another window (e.g. Workbench:DEVS) and we must open a fresh one. */
+    if (g_wm_handle >= 0 && WM_GetDrawFn(g_wm_handle) == clock_draw) {
         WM_RaiseWindow(g_wm_handle);
         WM_Redraw();
         return;
