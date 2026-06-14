@@ -268,7 +268,6 @@ extern void UAOS_MMU_Init(void);
 extern void UAOS_ROM_RegisterAll(void);
 extern int  UAOS_Bridge_Init(void);
 extern void UAOS_LoadableLib_Init(void);
-extern void UAOS_POWERPACKER_Register(void);
 extern void FB_Init(uint32_t mb2_info_phys);
 extern void Desktop_Draw(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
@@ -452,7 +451,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     kprint("[BOOT] Scanning LIBS: for loadable libraries...\n");
     UAOS_LoadableLib_Init();
-    UAOS_POWERPACKER_Register();
 
     /* Note: Desktop is NOT drawn here - it starts via LoadWB from Startup-Sequence */
 

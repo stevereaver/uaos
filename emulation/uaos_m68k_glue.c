@@ -29,7 +29,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "dos/vfs.h"
-#include "exec/loadable_lib.h"
 
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
@@ -553,6 +552,8 @@ static void install_lvo(uint32_t base, int lvo, int lib_id, int func_idx)
     g_ram[addr+4] = 0x4E; g_ram[addr+5] = 0x75; /* RTS */
 }
 
+static void install_loadable_libs(void);
+
 static void install_library_tables(void)
 {
     /* Pre-fill all DOS LVO slots with MOVEQ #0,D0 + RTS
@@ -680,16 +681,8 @@ static void install_library_tables(void)
         }
     }
 
-    /* Install jump table stubs for all registered loadable libraries */
-    {
-        LoadableLibInfo linfo;
-        for (int li = 0; UAOS_LoadableLib_GetInfo(li, &linfo); li++) {
-            for (int fi = 0; fi < (int)linfo.func_count && fi < 32; fi++) {
-                int lvo = -(30 + fi * 6);
-                install_lvo(linfo.base_addr, lvo, (int)linfo.lib_id, fi + 1);
-            }
-        }
-    }
+    /* Install real M68k binary libraries loaded from disk */
+    install_loadable_libs();
 
     /* Build fake Process struct so LHA sees a CLI launch:
      * pr_CLI (offset 0xAC) must be non-zero (BPTR to CLI struct)
@@ -743,6 +736,66 @@ static void install_library_tables(void)
 }
 
 /* =========================================================================
+ * Loadable library registry — real M68k binaries loaded from disk
+ * ========================================================================= */
+
+#define MAX_GLUE_LOADABLE_LIBS  16
+#define MAX_GLUE_LIB_NAME       64
+
+typedef struct {
+    char     name[MAX_GLUE_LIB_NAME];
+    uint32_t base_addr;
+    uint16_t func_count;
+    uint8_t  loaded;
+    const uint8_t *binary;
+    uint32_t bin_size;
+} GlueLoadableLib;
+
+static GlueLoadableLib g_glue_libs[MAX_GLUE_LOADABLE_LIBS];
+static int             g_glue_lib_count = 0;
+static uint32_t        g_next_loadable_base = 0x6000;
+
+void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
+                                  uint32_t size, uint32_t *out_base)
+{
+    if (!name || !data || !size || !out_base) return;
+    if (g_glue_lib_count >= MAX_GLUE_LOADABLE_LIBS) return;
+    if (size < 64 ||
+        data[0] != 'U' || data[1] != 'A' ||
+        data[2] != 'O' || data[3] != 'S' || data[4] != 2) {
+        return;
+    }
+
+    GlueLoadableLib *e = &g_glue_libs[g_glue_lib_count++];
+    int i = 0;
+    while (i < MAX_GLUE_LIB_NAME - 1 && name[i]) {
+        e->name[i] = name[i]; i++;
+    }
+    e->name[i] = '\0';
+    e->func_count = (uint16_t)(((uint16_t)data[6] << 8) | (uint16_t)data[7]);
+    e->loaded = 0;
+    e->binary = data;
+    e->bin_size = size;
+    e->base_addr = g_next_loadable_base;
+    g_next_loadable_base += 0x1000;
+    *out_base = e->base_addr;
+}
+
+/* Install all registered loadable libraries into g_ram */
+static void install_loadable_libs(void)
+{
+    for (int i = 0; i < g_glue_lib_count; i++) {
+        GlueLoadableLib *e = &g_glue_libs[i];
+        if (e->loaded) continue;
+        if (e->base_addr + e->bin_size > GUEST_RAM_SIZE) continue;
+
+        for (uint32_t j = 0; j < e->bin_size; j++)
+            g_ram[e->base_addr + j] = e->binary[j];
+        e->loaded = 1;
+    }
+}
+
+/* =========================================================================
  * exec.library implementation
  * ========================================================================= */
 
@@ -784,11 +837,18 @@ static void exec_OpenLibrary(void)
         if (name[j] != intuition_name[j]) { intuition_match = 0; break; }
     if (intuition_match) result = INTUITION_BASE;
 
-    /* Check loadable libraries */
+    /* Check loadable libraries (real M68k binaries loaded from disk) */
     if (result == FAKE_LIB_BASE) {
-        LoadableLibInfo *linfo = UAOS_LoadableLib_FindByName(name);
-        if (linfo) {
-            result = linfo->base_addr;
+        for (int li = 0; li < g_glue_lib_count; li++) {
+            if (!g_glue_libs[li].loaded) continue;
+            const char *ln = g_glue_libs[li].name;
+            int lmatch = 1;
+            for (int j = 0; ln[j]; j++)
+                if (name[j] != ln[j]) { lmatch = 0; break; }
+            if (lmatch && name[emu_strlen(ln)] == '\0') {
+                result = g_glue_libs[li].base_addr;
+                break;
+            }
         }
     }
 
@@ -1280,18 +1340,6 @@ int m68k_illg_instr_callback(int opcode)
     } else if (lib == LIB_INTUITION) {
         extern void UAOS_Intuition_Dispatch(uint32_t fn);
         UAOS_Intuition_Dispatch((uint32_t)fn);
-    } else if (lib >= 6) {
-        LoadableLibInfo *linfo = UAOS_LoadableLib_GetById((uint8_t)lib);
-        if (linfo && linfo->dispatch) {
-            linfo->dispatch((uint32_t)fn);
-        } else {
-            char msg[64] = "[emu] ILLEGAL: loadable lib=";
-            char n[4]; u32_dec(lib, n, 4);
-            int i = emu_strlen(msg), j = 0;
-            while (n[j] && i<62) msg[i++]=n[j++];
-            msg[i++]='\n'; msg[i]='\0';
-            emu_print(msg);
-        }
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);

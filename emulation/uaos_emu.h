@@ -22,4 +22,11 @@ int UAOS_Emu_LoadAndRun(const uint8_t *binary, uint32_t bin_size,
  * dos_Open calls from emulated programs. Call before RunByName/LoadAndRun. */
 void UAOS_Emu_SetCwd(const char *cwd);
 
+/* Register a loadable library binary for installation into guest RAM.
+ * Call at boot after scanning LIBS:.  The binary pointer must remain
+ * valid until the first M68k program starts (install_library_tables
+ * copies it into g_ram).  out_base receives the assigned guest address. */
+void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
+                                  uint32_t size, uint32_t *out_base);
+
 #endif /* UAOS_EMU_H */

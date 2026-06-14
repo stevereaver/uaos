@@ -85,17 +85,17 @@ gcc -O2 -o "${BUILD_DIR}/gen_uaos_native" "${TOOLS_DIR}/gen_uaos_native.c"
 ok "  Built: gen_uaos_native"
 gcc -O2 -o "${BUILD_DIR}/gen_uaos_m68k"   "${TOOLS_DIR}/gen_uaos_m68k.c"
 ok "  Built: gen_uaos_m68k"
-gcc -O2 -o "${BUILD_DIR}/gen_library"      "${TOOLS_DIR}/gen_library.c"
-ok "  Built: gen_library"
+gcc -O2 -o "${BUILD_DIR}/gen_m68k_library" "${TOOLS_DIR}/gen_m68k_library.c"
+ok "  Built: gen_m68k_library"
 
 # -------------------------------------------------------------------------
-# Step 1b — Generate .library descriptor files
+# Step 1b — Generate real M68k binary .library files
 # -------------------------------------------------------------------------
 
-info "Step 1b: Generating .library descriptor files"
+info "Step 1b: Generating M68k binary .library files"
 
 mkdir -p "${REPO_ROOT}/system/LIBS"
-"${BUILD_DIR}/gen_library" "powerpacker.library" 1 4 \
+"${BUILD_DIR}/gen_m68k_library" "powerpacker.library" 1 4 \
     "${REPO_ROOT}/system/LIBS/powerpacker.library"
 ok "  Generated: system/LIBS/powerpacker.library"
 
@@ -314,7 +314,6 @@ for src in \
     "${REPO_ROOT}/kernel/exec/workbench_lib.c" \
     "${REPO_ROOT}/kernel/exec/intuition_lib.c" \
     "${REPO_ROOT}/kernel/exec/loadable_lib.c" \
-    "${REPO_ROOT}/kernel/exec/powerpacker_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
@@ -542,7 +541,6 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/workbench_lib.o" \
     "${BUILD_DIR}/obj/intuition_lib.o" \
     "${BUILD_DIR}/obj/loadable_lib.o" \
-    "${BUILD_DIR}/obj/powerpacker_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
