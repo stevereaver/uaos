@@ -18,12 +18,17 @@ typedef uint32_t BSTR;
 
 /* -------------------------------------------------------------------------
  * FileLock — pointed to by a lock BPTR
+ *
+ * Layout matches 32-bit AmigaDOS: 16 bytes, all 4-byte fields.
+ * fl_Key stores the host HandleTable slot ID (opaque to guest).
+ * fl_Task stores a handler marker; guest never dereferences it directly
+ * because all dos.library calls are intercepted by the glue layer.
  * ------------------------------------------------------------------------- */
 typedef struct FileLock {
-    BPTR           fl_Link;      /* next lock in list (or 0) */
-    int32_t        fl_Key;       /* disk key / unique ID */
-    int32_t        fl_Access;    /* SHARED_LOCK or EXCLUSIVE_LOCK */
-    struct MsgPort  *fl_Volume;   /* handler MsgPort for this lock */
+    BPTR    fl_Key;      /* 0: disk key / handle ID */
+    int32_t fl_Access;   /* 4: SHARED_LOCK (-2) or EXCLUSIVE_LOCK (-1) */
+    BPTR    fl_Task;     /* 8: handler marker (not a real guest pointer) */
+    BPTR    fl_Volume;   /* 12: DosList BPTR (0 for now) */
 } FileLock;
 
 /* -------------------------------------------------------------------------

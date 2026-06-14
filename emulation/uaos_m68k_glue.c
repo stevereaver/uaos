@@ -146,6 +146,57 @@ static uint32_t heap_alloc(uint32_t size)
 }
 
 /* =========================================================================
+ * Guest-visible FileLock helpers
+ * FileLock lives in guest RAM so M68k binaries can inspect / pass BPTRs.
+ * Layout (16 bytes, big-endian, matching 32-bit AmigaOS):
+ *   offset 0: fl_Key     (BPTR to handle table slot)
+ *   offset 4: fl_Access  (SHARED_LOCK=-2 / EXCLUSIVE_LOCK=-1)
+ *   offset 8: fl_Task    (handler marker, not a real guest pointer)
+ *   offset 12: fl_Volume (DosList BPTR, 0 for now)
+ * ========================================================================= */
+
+static void guest_write_be32(uint32_t addr, uint32_t val)
+{
+    g_ram[addr + 0] = (uint8_t)(val >> 24);
+    g_ram[addr + 1] = (uint8_t)(val >> 16);
+    g_ram[addr + 2] = (uint8_t)(val >>  8);
+    g_ram[addr + 3] = (uint8_t)(val      );
+}
+
+static uint32_t guest_read_be32(uint32_t addr)
+{
+    return ((uint32_t)g_ram[addr + 0] << 24)
+         | ((uint32_t)g_ram[addr + 1] << 16)
+         | ((uint32_t)g_ram[addr + 2] <<  8)
+         | ((uint32_t)g_ram[addr + 3]      );
+}
+
+/* Allocate a FileLock in guest RAM and return its BPTR.
+ * On failure returns 0 (no free store). */
+static uint32_t guest_alloc_filelock(uint32_t handle, int32_t access)
+{
+    uint32_t addr = heap_alloc(sizeof(FileLock));
+    if (!addr) return 0;
+    guest_write_be32(addr + 0, handle);       /* fl_Key    */
+    guest_write_be32(addr + 4, (uint32_t)access); /* fl_Access */
+    guest_write_be32(addr + 8, 1);             /* fl_Task   = RAM handler marker */
+    guest_write_be32(addr + 12, 0);            /* fl_Volume = 0 */
+    return addr >> 2;  /* BPTR = addr >> 2 */
+}
+
+/* Read a FileLock from guest RAM.  Returns 0 if lock_bptr invalid. */
+static int guest_read_filelock(uint32_t lock_bptr,
+                                uint32_t *out_handle,
+                                int32_t  *out_access)
+{
+    uint32_t addr = lock_bptr << 2;
+    if (addr + sizeof(FileLock) > GUEST_RAM_SIZE) return 0;
+    if (out_handle) *out_handle = guest_read_be32(addr + 0);
+    if (out_access) *out_access = (int32_t)guest_read_be32(addr + 4);
+    return 1;
+}
+
+/* =========================================================================
  * Musashi memory callbacks
  * ========================================================================= */
 
@@ -294,6 +345,8 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_EXAMINE        26
 #define DOS_EXAMINE_NEXT   27
 #define DOS_CREATE_DIR     28
+#define DOS_DUPLOCK        29
+#define DOS_PARENT         30
 
 /* graphics.library function indices (must match graphics_lib.c) */
 #define GFX_OPEN_LIBRARY      1
@@ -455,6 +508,8 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_EXAMINE    (-84)
 #define LVO_DOS_EXAMINE_NEXT (-90)
 #define LVO_DOS_CREATE_DIR (-96)
+#define LVO_DOS_DUPLOCK    (-102)
+#define LVO_DOS_PARENT     (-108)
 
 /* graphics.library LVO offsets (AmigaOS standard) */
 #define LVO_GFX_INIT_RASTPORT  (-30)
@@ -524,6 +579,8 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_EXAMINE:        return (uint32_t)((int)DOS_BASE + LVO_DOS_EXAMINE);
             case DOS_EXAMINE_NEXT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_EXAMINE_NEXT);
             case DOS_CREATE_DIR:     return (uint32_t)((int)DOS_BASE + LVO_DOS_CREATE_DIR);
+            case DOS_DUPLOCK:        return (uint32_t)((int)DOS_BASE + LVO_DOS_DUPLOCK);
+            case DOS_PARENT:         return (uint32_t)((int)DOS_BASE + LVO_DOS_PARENT);
             case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
             case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
             case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
@@ -633,6 +690,8 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_EXAMINE,     LIB_DOS, DOS_EXAMINE);
     install_lvo(DOS_BASE, LVO_DOS_EXAMINE_NEXT, LIB_DOS, DOS_EXAMINE_NEXT);
     install_lvo(DOS_BASE, LVO_DOS_CREATE_DIR,  LIB_DOS, DOS_CREATE_DIR);
+    install_lvo(DOS_BASE, LVO_DOS_DUPLOCK,     LIB_DOS, DOS_DUPLOCK);
+    install_lvo(DOS_BASE, LVO_DOS_PARENT,      LIB_DOS, DOS_PARENT);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {
@@ -1328,7 +1387,19 @@ static void dos_Lock(void)
     }
 
     int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)full_name, mode, 0, 0, 0);
-    m68k_set_reg(M68K_REG_D0, (uint32_t)handle);
+    if (handle == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = IoErr();
+        return;
+    }
+    uint32_t lock_bptr = guest_alloc_filelock((uint32_t)handle, mode);
+    if (lock_bptr == 0) {
+        HandleTable_Free((uint32_t)handle);
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_NO_FREE_STORE;
+        return;
+    }
+    m68k_set_reg(M68K_REG_D0, lock_bptr);
 }
 
 static void dos_Unlock(void)
@@ -1338,23 +1409,28 @@ static void dos_Unlock(void)
         m68k_set_reg(M68K_REG_D0, DOSTRUE);
         return;
     }
-    HandleTable_Free(lock);
+    uint32_t handle = 0;
+    if (guest_read_filelock(lock, &handle, NULL) && handle != 0)
+        HandleTable_Free(handle);
     m68k_set_reg(M68K_REG_D0, DOSTRUE);
 }
 
-static void dos_Examine(void)
+static void dos_DupLock(void)
 {
     uint32_t lock = m68k_get_reg(NULL, M68K_REG_D1);
-    uint32_t fib_bptr = m68k_get_reg(NULL, M68K_REG_D2);
-    uint32_t fib_ptr  = fib_bptr << 2;
-
-    if (fib_ptr >= GUEST_RAM_SIZE) {
+    if (lock == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t handle = 0;
+    int32_t access = 0;
+    if (!guest_read_filelock(lock, &handle, &access) || handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
         g_last_err = ERROR_OBJECT_NOT_FOUND;
         return;
     }
 
-    HandleEntry *ent = HandleTable_Get(lock);
+    HandleEntry *ent = HandleTable_Get(handle);
     if (!ent || ent->type != HTYPE_LOCK) {
         m68k_set_reg(M68K_REG_D0, 0);
         g_last_err = ERROR_OBJECT_NOT_FOUND;
@@ -1370,7 +1446,105 @@ static void dos_Examine(void)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_EXAMINE_OBJECT, (int32_t)lock,
+    int32_t dup = DoPkt(port, ACTION_COPY_DIR, (int32_t)handle, 0, 0, 0, 0);
+    if (dup == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = IoErr();
+        return;
+    }
+    uint32_t dup_bptr = guest_alloc_filelock((uint32_t)dup, access);
+    if (dup_bptr == 0) {
+        HandleTable_Free((uint32_t)dup);
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_NO_FREE_STORE;
+        return;
+    }
+    m68k_set_reg(M68K_REG_D0, dup_bptr);
+}
+
+static void dos_Parent(void)
+{
+    uint32_t lock = m68k_get_reg(NULL, M68K_REG_D1);
+    if (lock == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t handle = 0;
+    int32_t access = 0;
+    if (!guest_read_filelock(lock, &handle, &access) || handle == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_Get(handle);
+    if (!ent || ent->type != HTYPE_LOCK) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    char vol_name[16];
+    extract_vol_name(ent->path, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t ph = DoPkt(port, ACTION_PARENT, (int32_t)handle, 0, 0, 0, 0);
+    if (ph == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = IoErr();
+        return;
+    }
+    uint32_t p_bptr = guest_alloc_filelock((uint32_t)ph, access);
+    if (p_bptr == 0) {
+        HandleTable_Free((uint32_t)ph);
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_NO_FREE_STORE;
+        return;
+    }
+    m68k_set_reg(M68K_REG_D0, p_bptr);
+}
+
+static void dos_Examine(void)
+{
+    uint32_t lock = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t fib_bptr = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t fib_ptr  = fib_bptr << 2;
+
+    if (fib_ptr >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    uint32_t handle = 0;
+    if (!guest_read_filelock(lock, &handle, NULL) || handle == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_Get(handle);
+    if (!ent || ent->type != HTYPE_LOCK) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    char vol_name[16];
+    extract_vol_name(ent->path, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t res = DoPkt(port, ACTION_EXAMINE_OBJECT, (int32_t)handle,
                         (int32_t)(g_ram + fib_ptr), 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
@@ -1387,7 +1561,14 @@ static void dos_ExamineNext(void)
         return;
     }
 
-    HandleEntry *ent = HandleTable_Get(lock);
+    uint32_t handle = 0;
+    if (!guest_read_filelock(lock, &handle, NULL) || handle == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_Get(handle);
     if (!ent || ent->type != HTYPE_LOCK) {
         m68k_set_reg(M68K_REG_D0, 0);
         g_last_err = ERROR_OBJECT_NOT_FOUND;
@@ -1403,7 +1584,7 @@ static void dos_ExamineNext(void)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_EXAMINE_NEXT, (int32_t)lock,
+    int32_t res = DoPkt(port, ACTION_EXAMINE_NEXT, (int32_t)handle,
                         (int32_t)(g_ram + fib_ptr), 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
@@ -1528,6 +1709,8 @@ int m68k_illg_instr_callback(int opcode)
             case DOS_EXAMINE:        dos_Examine();        break;
             case DOS_EXAMINE_NEXT:   dos_ExamineNext();    break;
             case DOS_CREATE_DIR:     dos_CreateDir();      break;
+            case DOS_DUPLOCK:        dos_DupLock();        break;
+            case DOS_PARENT:         dos_Parent();         break;
             case DOS_WRITE:  dos_Write();  break;
             case DOS_OPEN:   dos_Open();   break;
             case DOS_CLOSE:  dos_Close();  break;
