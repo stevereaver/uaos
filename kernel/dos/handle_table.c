@@ -42,7 +42,7 @@ uint32_t HandleTable_AllocFile(const char *path, const VfsFile *fh, int flags)
     return h;
 }
 
-uint32_t HandleTable_AllocLock(const char *path, RamFsNode *node, int32_t access)
+uint32_t HandleTable_AllocLock(const char *path, void *node, int32_t access)
 {
     uint32_t h = find_free_slot();
     if (h == 0) return 0;
@@ -52,8 +52,7 @@ uint32_t HandleTable_AllocLock(const char *path, RamFsNode *node, int32_t access
     scopy(e->path, path ? path : "", sizeof(e->path));
     e->u.lock.node      = node;
     e->u.lock.access    = access;
-    e->u.lock.iter_next = (node && node->type == RAMFS_TYPE_DIR)
-                         ? node->first_child : NULL;
+    e->u.lock.iter_next = NULL; /* caller must reset with LockResetIter */
     return h;
 }
 
@@ -78,30 +77,28 @@ VfsFile *HandleTable_GetFile(uint32_t handle)
     return NULL;
 }
 
-RamFsNode *HandleTable_GetLock(uint32_t handle, int32_t *access_out)
+HandleEntry *HandleTable_GetLockEntry(uint32_t handle, int32_t *access_out)
 {
     HandleEntry *e = HandleTable_Get(handle);
     if (e && e->type == HTYPE_LOCK) {
         if (access_out) *access_out = e->u.lock.access;
-        return e->u.lock.node;
+        return e;
     }
     return NULL;
 }
 
-RamFsNode *HandleTable_LockIterate(uint32_t handle)
+void *HandleTable_LockIterate(uint32_t handle)
 {
     HandleEntry *e = HandleTable_Get(handle);
     if (!e || e->type != HTYPE_LOCK) return NULL;
-    RamFsNode *cur = e->u.lock.iter_next;
-    if (cur) e->u.lock.iter_next = cur->next_sibling;
+    void *cur = e->u.lock.iter_next;
+    /* iter_next advance is handler-specific; caller must update it */
     return cur;
 }
 
-void HandleTable_LockResetIter(uint32_t handle)
+void HandleTable_LockResetIter(uint32_t handle, void *first_child)
 {
     HandleEntry *e = HandleTable_Get(handle);
     if (!e || e->type != HTYPE_LOCK) return;
-    RamFsNode *node = e->u.lock.node;
-    e->u.lock.iter_next = (node && node->type == RAMFS_TYPE_DIR)
-                         ? node->first_child : NULL;
+    e->u.lock.iter_next = first_child;
 }

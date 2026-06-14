@@ -142,8 +142,14 @@ Handler *VFS_FindHandler(const char *vol_name);
 MsgPort *VFS_GetHandlerPort(const char *vol_name);
 
 /* Get the RamFsVol backing a mounted volume (for direct native access).
- * Returns NULL if the volume is not mounted. */
+ * Returns NULL if the volume is not mounted or is a block-device volume. */
 RamFsVol *VFS_FindVol(const char *vol_name);
+
+/* Mount a block device as a FAT32 volume via the packet handler model.
+ * The volume name must be unique (e.g. "FAT", "DH0").
+ * Returns 0 on success, -1 on failure (device not found, already mounted,
+ * or mount table full). */
+int VFS_MountFat(const char *name, BlockDev *bdev);
 
 /* -------------------------------------------------------------------------
  * AmigaDOS Assign Support

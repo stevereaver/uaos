@@ -3,6 +3,7 @@
 #include "vfs.h"
 #include "ramfs.h"
 #include "ram_handler.h"
+#include "fat_handler.h"
 #include "handle_table.h"
 #include "boot/kprint.h"
 #include <stdint.h>
@@ -235,6 +236,31 @@ int VFS_MountExistingVol(const char *name, RamFsVol *vol)
 
     Handler *handler = RamHandler_Create(name, vol);
     register_mount(name, vol, handler);
+    return 0;
+}
+
+int VFS_MountFat(const char *name, BlockDev *bdev)
+{
+    if (!name || !*name || !bdev) return -1;
+
+    /* Check if already mounted */
+    for (int i = 0; i < g_n_mounts; i++) {
+        if (seq(g_mounts[i].vol_name, name))
+            return 0;  /* already mounted */
+    }
+
+    if (g_n_mounts >= MAX_MOUNTS) return -1;
+
+    Fat32FS *fs = FAT32_Mount(bdev);
+    if (!fs) return -1;
+
+    Handler *handler = FatHandler_Create(name, fs);
+    if (!handler) {
+        FAT32_Unmount(fs);
+        return -1;
+    }
+
+    register_mount(name, NULL, handler);
     return 0;
 }
 

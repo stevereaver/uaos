@@ -217,7 +217,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         RamFsNode *node = NULL;
 
         int32_t access = 0;
-        node = HandleTable_GetLock(handle, &access);
+        HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
+        if (le) node = (RamFsNode *)le->u.lock.node;
         if (!node) {
             VfsFile *fh = HandleTable_GetFile(handle);
             if (fh) node = fh->node;
@@ -257,14 +258,17 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
         FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
         int32_t access = 0;
-        RamFsNode *dir = HandleTable_GetLock(handle, &access);
+        HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
+        RamFsNode *dir = le ? (RamFsNode *)le->u.lock.node : NULL;
         if (!dir || dir->type != RAMFS_TYPE_DIR) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
             break;
         }
-        RamFsNode *child = HandleTable_LockIterate(handle);
+        RamFsNode *child = (RamFsNode *)HandleTable_LockIterate(handle);
         if (child) {
+            /* Advance iterator for next call */
+            le->u.lock.iter_next = child->next_sibling;
             memset(fib, 0, sizeof(*fib));
             if (child->type == RAMFS_TYPE_DIR) {
                 fib->fib_DirEntryType = ST_USERDIR;
@@ -289,7 +293,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
             /* Reset iterator so next Examine works again */
-            HandleTable_LockResetIter(handle);
+            HandleTable_LockResetIter(handle, dir->first_child);
         }
         break;
     }
@@ -325,7 +329,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     case ACTION_PARENT: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
         int32_t access = 0;
-        RamFsNode *node = HandleTable_GetLock(handle, &access);
+        HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
+        RamFsNode *node = le ? (RamFsNode *)le->u.lock.node : NULL;
         if (node && node->parent) {
             uint32_t ph = HandleTable_AllocLock("", node->parent, access);
             pkt->dp_Res1 = (int32_t)ph;
@@ -340,7 +345,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     case ACTION_COPY_DIR: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
         int32_t access = 0;
-        RamFsNode *node = HandleTable_GetLock(handle, &access);
+        HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
+        RamFsNode *node = le ? (RamFsNode *)le->u.lock.node : NULL;
         if (node) {
             uint32_t ph = HandleTable_AllocLock("", node, access);
             pkt->dp_Res1 = (int32_t)ph;
@@ -398,8 +404,10 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         uint32_t h1 = (uint32_t)pkt->dp_Arg1;
         uint32_t h2 = (uint32_t)pkt->dp_Arg2;
         int32_t a1 = 0, a2 = 0;
-        RamFsNode *n1 = HandleTable_GetLock(h1, &a1);
-        RamFsNode *n2 = HandleTable_GetLock(h2, &a2);
+        HandleEntry *le1 = HandleTable_GetLockEntry(h1, &a1);
+        HandleEntry *le2 = HandleTable_GetLockEntry(h2, &a2);
+        RamFsNode *n1 = le1 ? (RamFsNode *)le1->u.lock.node : NULL;
+        RamFsNode *n2 = le2 ? (RamFsNode *)le2->u.lock.node : NULL;
         pkt->dp_Res1 = (n1 && n2 && n1 == n2) ? DOSTRUE : DOSFALSE;
         break;
     }
