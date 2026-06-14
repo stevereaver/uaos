@@ -427,6 +427,119 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         break;
     }
 
+    /* ===== Parent from file handle ===== */
+    case ACTION_PARENT_FH: {
+        uint32_t handle = (uint32_t)pkt->dp_Arg1;
+        VfsFile *fh = HandleTable_GetFile(handle);
+        if (fh && fh->node && fh->node->parent) {
+            uint32_t ph = HandleTable_AllocLock("", fh->node->parent, SHARED_LOCK);
+            pkt->dp_Res1 = (int32_t)ph;
+            if (ph == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
+        } else {
+            pkt->dp_Res1 = 0; /* NULL lock = no parent (root) */
+        }
+        break;
+    }
+
+    /* ===== Examine file handle ===== */
+    case ACTION_EXAMINE_FH: {
+        uint32_t handle = (uint32_t)pkt->dp_Arg1;
+        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        VfsFile *fh = HandleTable_GetFile(handle);
+        RamFsNode *node = fh ? fh->node : NULL;
+        if (node) {
+            memset(fib, 0, sizeof(*fib));
+            if (node->type == RAMFS_TYPE_DIR) {
+                fib->fib_DirEntryType = ST_USERDIR;
+                fib->fib_EntryType    = ST_USERDIR;
+            } else {
+                fib->fib_DirEntryType = ST_FILE;
+                fib->fib_EntryType    = ST_FILE;
+            }
+            int i = 0;
+            while (i < 107 && node->name[i]) { fib->fib_FileName[i] = node->name[i]; i++; }
+            fib->fib_FileName[i] = '\0';
+            fib->fib_Size       = (int32_t)node->size;
+            fib->fib_NumBlocks  = (int32_t)((node->size + 511) / 512);
+            int32_t prot = DEFAULT_PROTECTION;
+            if (node->attrs & RAMFS_ATTR_READONLY) prot |= FIBF_WRITE | FIBF_DELETE;
+            fib->fib_Protection = prot;
+            int j = 0;
+            while (j < 79 && node->comment[j]) { fib->fib_Comment[j] = node->comment[j]; j++; }
+            fib->fib_Comment[j] = '\0';
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        }
+        break;
+    }
+
+    /* ===== Examine all (includes . and ..) ===== */
+    case ACTION_EXAMINE_ALL: {
+        /* RamFS has no . / .. entries; delegate to EXAMINE_NEXT */
+        uint32_t handle = (uint32_t)pkt->dp_Arg1;
+        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        int32_t access = 0;
+        HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
+        RamFsNode *dir = le ? (RamFsNode *)le->u.lock.node : NULL;
+        if (!dir || dir->type != RAMFS_TYPE_DIR) {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+            break;
+        }
+        RamFsNode *child = (RamFsNode *)HandleTable_LockIterate(handle);
+        if (child) {
+            le->u.lock.iter_next = child->next_sibling;
+            memset(fib, 0, sizeof(*fib));
+            if (child->type == RAMFS_TYPE_DIR) {
+                fib->fib_DirEntryType = ST_USERDIR;
+                fib->fib_EntryType    = ST_USERDIR;
+            } else {
+                fib->fib_DirEntryType = ST_FILE;
+                fib->fib_EntryType    = ST_FILE;
+            }
+            int i = 0;
+            while (i < 107 && child->name[i]) { fib->fib_FileName[i] = child->name[i]; i++; }
+            fib->fib_FileName[i] = '\0';
+            fib->fib_Size      = (int32_t)child->size;
+            fib->fib_NumBlocks = (int32_t)((child->size + 511) / 512);
+            int32_t prot = DEFAULT_PROTECTION;
+            if (child->attrs & RAMFS_ATTR_READONLY) prot |= FIBF_WRITE | FIBF_DELETE;
+            fib->fib_Protection = prot;
+            int j = 0;
+            while (j < 79 && child->comment[j]) { fib->fib_Comment[j] = child->comment[j]; j++; }
+            fib->fib_Comment[j] = '\0';
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
+            HandleTable_LockResetIter(handle, dir->first_child);
+        }
+        break;
+    }
+
+    /* ===== Set date (touch) ===== */
+    case ACTION_SET_DATE: {
+        /* RamFS has no timestamps — no-op success */
+        pkt->dp_Res1 = DOSTRUE;
+        break;
+    }
+
+    /* ===== Flush buffers ===== */
+    case ACTION_FLUSH: {
+        /* RamFS is memory-only; nothing to flush */
+        pkt->dp_Res1 = DOSTRUE;
+        break;
+    }
+
+    /* ===== Inhibit volume I/O ===== */
+    case ACTION_INHIBIT: {
+        /* Stub: would set a per-volume inhibit flag */
+        pkt->dp_Res1 = DOSTRUE;
+        break;
+    }
+
     /* ===== Die ===== */
     case ACTION_DIE: {
         pkt->dp_Res1 = DOSTRUE;

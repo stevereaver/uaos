@@ -282,7 +282,64 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         break;
     }
 
-    /* ===== Rename / Set protect / Set comment ===== */
+    /* ===== Parent from file handle ===== */
+    case ACTION_PARENT_FH: {
+        uint32_t handle = (uint32_t)pkt->dp_Arg1;
+        Fat32File *file = fat_get_file_handle(handle);
+        (void)file; /* FAT32 lacks parent tracking for now */
+        pkt->dp_Res1 = 0;
+        break;
+    }
+
+    /* ===== Examine file handle ===== */
+    case ACTION_EXAMINE_FH: {
+        uint32_t handle = (uint32_t)pkt->dp_Arg1;
+        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        Fat32File *file = fat_get_file_handle(handle);
+        if (file) {
+            memset(fib, 0, sizeof(*fib));
+            fib->fib_DirEntryType = file->is_dir ? ST_USERDIR : ST_FILE;
+            fib->fib_EntryType    = file->is_dir ? ST_USERDIR : ST_FILE;
+            fib->fib_Size         = (int32_t)file->size;
+            fib->fib_NumBlocks    = (int32_t)((file->size + 511) / 512);
+            fib->fib_Protection   = DEFAULT_PROTECTION;
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        }
+        break;
+    }
+
+    /* ===== Examine all ===== */
+    case ACTION_EXAMINE_ALL: {
+        /* Delegate to EXAMINE_NEXT until FAT32_ReadDir is functional */
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
+        break;
+    }
+
+    /* ===== Set date ===== */
+    case ACTION_SET_DATE: {
+        /* FAT32 write support not yet implemented */
+        pkt->dp_Res1 = DOSFALSE;
+        pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;
+        break;
+    }
+
+    /* ===== Flush ===== */
+    case ACTION_FLUSH: {
+        pkt->dp_Res1 = DOSTRUE;
+        break;
+    }
+
+    /* ===== Inhibit ===== */
+    case ACTION_INHIBIT: {
+        pkt->dp_Res1 = DOSTRUE;
+        break;
+    }
+
+    /* ===== Rename / Set protect / Set comment / Set file size ===== */
     case ACTION_RENAME_OBJECT:
     case ACTION_SET_PROTECT:
     case ACTION_SET_COMMENT:
