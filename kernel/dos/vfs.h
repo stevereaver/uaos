@@ -111,6 +111,15 @@ uint8_t VFS_GetAttrs(const char *path);
 /* Set attributes of a file/directory. Returns 0 on success, -1 on failure. */
 int VFS_SetAttrs(const char *path, uint8_t attrs);
 
+/* Get comment of a file/directory. Writes to dst[max], returns 0 on success. */
+int VFS_GetComment(const char *path, char *dst, int max);
+
+/* Set comment of a file/directory. Returns 0 on success, -1 on failure. */
+int VFS_SetComment(const char *path, const char *comment);
+
+/* Rename a volume. Returns 0 on success, -1 if not found. */
+int VFS_RenameVol(const char *old_name, const char *new_name);
+
 /* -------------------------------------------------------------------------
  * AmigaDOS Assign Support
  * Assigns create logical names that map to physical paths.

@@ -59,6 +59,21 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "resident",   Cmd_Resident  },
     { "ps",         Cmd_Ps        },
     { "netinfo",    Cmd_NetInfo   },
+    { "list",       Cmd_List      },
+    { "search",     Cmd_Search    },
+    { "sort",       Cmd_Sort      },
+    { "join",       Cmd_Join      },
+    { "wait",       Cmd_Wait      },
+    { "prompt",     Cmd_Prompt    },
+    { "stack",      Cmd_Stack     },
+    { "why",        Cmd_Why       },
+    { "quit",       Cmd_Quit      },
+    { "endcli",     Cmd_EndCLI    },
+    { "filenote",   Cmd_Filenote  },
+    { "relabel",    Cmd_Relabel   },
+    { "avail",      Cmd_Avail     },
+    { "getenv",     Cmd_GetEnv    },
+    { "unset",      Cmd_UnSet     },
     { NULL,         NULL          }
 };
 

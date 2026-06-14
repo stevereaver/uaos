@@ -46,6 +46,8 @@ typedef struct RamFsNode {
     struct RamFsNode *parent;       /* NULL for volume root                   */
     struct RamFsNode *first_child;  /* first child (dirs only)                */
     struct RamFsNode *next_sibling; /* linked list of siblings                */
+    /* File metadata */
+    char     comment[64];           /* file comment (filenote)                */
     /* File data */
     uint8_t *data;                  /* pointer into g_ramfs_pool              */
     uint32_t size;                  /* current file size in bytes             */
@@ -108,5 +110,8 @@ uint8_t RamFS_GetAttrs(RamFsNode *node);
 
 /* Set attributes of a node. Returns 0 on success, -1 if node is NULL. */
 int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs);
+
+/* Rename a volume. Returns 0 on success, -1 if not found. */
+int RamFS_RenameVol(RamFsVol *vol, const char *new_name);
 
 #endif

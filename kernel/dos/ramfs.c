@@ -83,6 +83,7 @@ static RamFsNode *alloc_node(void)
             g_nodes[i].type         = 0xFF; /* mark claimed, caller sets type */
             g_nodes[i].attrs        = 0;   /* no attributes */
             g_nodes[i].name[0]      = '\0';
+            g_nodes[i].comment[0]   = '\0';
             g_nodes[i].parent       = NULL;
             g_nodes[i].first_child  = NULL;
             g_nodes[i].next_sibling = NULL;
@@ -405,5 +406,14 @@ int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs)
 {
     if (!node) return -1;
     node->attrs = attrs;
+    return 0;
+}
+
+int RamFS_RenameVol(RamFsVol *vol, const char *new_name)
+{
+    if (!vol || !vol->valid || !new_name || !*new_name) return -1;
+    int i = 0;
+    while (i < 15 && new_name[i]) { vol->name[i] = new_name[i]; i++; }
+    vol->name[i] = '\0';
     return 0;
 }

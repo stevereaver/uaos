@@ -136,6 +136,15 @@ struct ShellInstance {
     char         ask_prompt[MAX_INPUT + 1];  /* Custom prompt to display */
     char         ask_result[MAX_INPUT + 1];  /* Result buffer */
     int          ask_result_ready;           /* 1 = result is ready */
+
+    /* Custom prompt (set by PROMPT command) */
+    char         custom_prompt[64];
+
+    /* Last command return code (set by WHY-compatible commands) */
+    int          last_rc;
+
+    /* Script quit flag (set by QUIT command) */
+    int          quit_flag;
 };
 typedef struct ShellInstance ShellInstance;
 
@@ -317,6 +326,12 @@ static void inst_draw_input(ShellInstance *s)
         }
         /* Add ": " if there's room */
         if (pi < 77) { prompt[pi++] = ':'; prompt[pi++] = ' '; }
+    } else if (s->custom_prompt[0]) {
+        /* Use PROMPT command string */
+        while (s->custom_prompt[pi] && pi < 75) {
+            prompt[pi] = s->custom_prompt[pi];
+            pi++;
+        }
     } else {
         /* Build normal prompt from current volume */
         char vol[32];
@@ -1605,7 +1620,7 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
 static int script_run_block(ShellInstance *s, const char **lines, int line_count, int start, int end)
 {
     int pc = start;
-    while (pc < end) {
+    while (pc < end && !s->quit_flag) {
         pc = script_run_line(s, lines, line_count, pc);
     }
     return pc;
@@ -1674,6 +1689,12 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
     if (script_kw_match(line, "else") || script_kw_match(line, "endif") ||
         script_kw_match(line, "endfor")) {
         return pc;
+    }
+
+    /* QUIT — abort script execution */
+    if (script_kw_match(line, "quit")) {
+        s->quit_flag = 1;
+        return line_count;
     }
 
     /* FOR block */
@@ -1778,7 +1799,9 @@ static void run_script_text(ShellInstance *s, char *text)
         }
     }
 
+    s->quit_flag = 0;
     script_run_block(s, lines, line_count, 0, line_count);
+    s->quit_flag = 0;
 }
 
 static void shell_run_script(void *shell_extra, const char *text)
@@ -2953,6 +2976,63 @@ static int shell_enum_tasks(void *shell_extra, int idx, char *out, int max)
     return 0;
 }
 
+/* Set custom prompt (PROMPT command) */
+static void shell_set_prompt(void *shell_extra, const char *prompt)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    if (prompt) {
+        scopy(s->custom_prompt, prompt, sizeof(s->custom_prompt));
+    } else {
+        s->custom_prompt[0] = '\0';
+    }
+}
+
+/* Close the current shell window (ENDCLI command) */
+static void shell_close_shell(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    if (s->wm_handle >= 0) {
+        WM_CloseWindow(s->wm_handle);
+    }
+}
+
+/* Get last command return code (WHY command) */
+static int shell_get_last_rc(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    return s->last_rc;
+}
+
+/* Set last command return code */
+static void shell_set_rc(void *shell_extra, int rc)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->last_rc = rc;
+}
+
+/* Get environment variable value */
+static int shell_get_env(void *shell_extra, const char *name, char *buf, int max)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    if (!name || !buf || max < 1) return 0;
+    for (int i = 0; i < s->env_count; i++) {
+        if (seq_ci(s->env_names[i], name)) {
+            scopy(buf, s->env_values[i], max);
+            return 1;
+        }
+    }
+    buf[0] = '\0';
+    return 0;
+}
+
+/* Signal script runner to quit (QUIT command) */
+static void shell_quit_script(void *shell_extra, int rc)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->quit_flag = 1;
+    s->last_rc = rc;
+}
+
 /* Compute the number of text rows visible in the history pane of shell s */
 static int shell_visible_rows(ShellInstance *s)
 {
@@ -2983,6 +3063,12 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.set_ask_mode   = shell_set_ask_mode;
     ctx.visible_rows   = shell_visible_rows(s);
     ctx.enum_tasks     = shell_enum_tasks;
+    ctx.set_prompt     = shell_set_prompt;
+    ctx.close_shell    = shell_close_shell;
+    ctx.get_last_rc    = shell_get_last_rc;
+    ctx.set_rc         = shell_set_rc;
+    ctx.get_env        = shell_get_env;
+    ctx.quit_script    = shell_quit_script;
     return ctx;
 }
 
@@ -3979,6 +4065,9 @@ static void open_shell(int stagger)
     s->ask_prompt[0] = '\0';
     s->ask_result[0] = '\0';
     s->ask_result_ready = 0;
+    s->custom_prompt[0] = '\0';
+    s->last_rc = 0;
+    s->quit_flag = 0;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
     /* Default AmigaDOS search path.  SYS: is the boot volume root,

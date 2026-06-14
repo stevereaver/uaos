@@ -91,6 +91,27 @@ typedef struct NativeCmdCtx {
      * When active, fills out (up to max bytes) with a formatted task line
      * and returns 1.  Returns 0 when idx is past the end of the list. */
     int       (*enum_tasks)(void *shell_extra, int idx, char *out, int max);
+
+    /* For prompt: set a custom shell prompt string (replaces volume>).
+     * Pass empty string to reset to default. */
+    void      (*set_prompt)(void *shell_extra, const char *prompt);
+
+    /* For endcli: close the current shell window. */
+    void      (*close_shell)(void *shell_extra);
+
+    /* For why: get the last command return code. Returns 0 if unavailable. */
+    int       (*get_last_rc)(void *shell_extra);
+
+    /* For why: set the last command return code. */
+    void      (*set_rc)(void *shell_extra, int rc);
+
+    /* For getenv: read an environment variable value into buf[max].
+     * Returns 1 if found, 0 if not found. */
+    int       (*get_env)(void *shell_extra, const char *name, char *buf, int max);
+
+    /* For quit: signal the script runner to stop at the next boundary.
+     * Optional rc is stored as the script return code. */
+    void      (*quit_script)(void *shell_extra, int rc);
 } NativeCmdCtx;
 
 /* Convenience macro — yield N ms from inside a Cmd_* function */
@@ -160,5 +181,20 @@ void Cmd_Ask      (NativeCmdCtx *ctx, const char *args);
 void Cmd_Resident (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ps       (NativeCmdCtx *ctx, const char *args);
 void Cmd_NetInfo  (NativeCmdCtx *ctx, const char *args);
+void Cmd_List     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Search   (NativeCmdCtx *ctx, const char *args);
+void Cmd_Sort     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Join     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Wait     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Prompt   (NativeCmdCtx *ctx, const char *args);
+void Cmd_Stack    (NativeCmdCtx *ctx, const char *args);
+void Cmd_Why      (NativeCmdCtx *ctx, const char *args);
+void Cmd_Quit     (NativeCmdCtx *ctx, const char *args);
+void Cmd_EndCLI   (NativeCmdCtx *ctx, const char *args);
+void Cmd_Filenote (NativeCmdCtx *ctx, const char *args);
+void Cmd_Relabel  (NativeCmdCtx *ctx, const char *args);
+void Cmd_Avail    (NativeCmdCtx *ctx, const char *args);
+void Cmd_GetEnv   (NativeCmdCtx *ctx, const char *args);
+void Cmd_UnSet    (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

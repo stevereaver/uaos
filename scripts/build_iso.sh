@@ -372,7 +372,22 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_ask.c" \
     "${REPO_ROOT}/kernel/shell/resident_cmd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_resident.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_ps.c"
+    "${REPO_ROOT}/kernel/shell/cmd_ps.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_list.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_search.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_sort.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_join.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_wait.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_prompt.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_stack.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_why.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_quit.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_endcli.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_filenote.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_relabel.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_avail.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_getenv.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_unset.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -600,6 +615,21 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/resident_cmd.o" \
     "${BUILD_DIR}/obj/cmd_resident.o" \
     "${BUILD_DIR}/obj/cmd_ps.o" \
+    "${BUILD_DIR}/obj/cmd_list.o" \
+    "${BUILD_DIR}/obj/cmd_search.o" \
+    "${BUILD_DIR}/obj/cmd_sort.o" \
+    "${BUILD_DIR}/obj/cmd_join.o" \
+    "${BUILD_DIR}/obj/cmd_wait.o" \
+    "${BUILD_DIR}/obj/cmd_prompt.o" \
+    "${BUILD_DIR}/obj/cmd_stack.o" \
+    "${BUILD_DIR}/obj/cmd_why.o" \
+    "${BUILD_DIR}/obj/cmd_quit.o" \
+    "${BUILD_DIR}/obj/cmd_endcli.o" \
+    "${BUILD_DIR}/obj/cmd_filenote.o" \
+    "${BUILD_DIR}/obj/cmd_relabel.o" \
+    "${BUILD_DIR}/obj/cmd_avail.o" \
+    "${BUILD_DIR}/obj/cmd_getenv.o" \
+    "${BUILD_DIR}/obj/cmd_unset.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
@@ -637,7 +667,9 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps netinfo; do
+           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps netinfo \
+           list search sort join wait prompt stack why quit endcli filenote relabel \
+           avail getenv unset; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

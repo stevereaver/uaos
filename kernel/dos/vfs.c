@@ -574,6 +574,48 @@ int VFS_SetAttrs(const char *path, uint8_t attrs)
     return RamFS_SetAttrs(node, attrs);
 }
 
+int VFS_GetComment(const char *path, char *dst, int max)
+{
+    if (!dst || max < 1) return -1;
+    dst[0] = '\0';
+    char resolved_path[128];
+    if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return -1;
+    char vol_name[16];
+    if (!extract_vol(resolved_path, vol_name, 16)) return -1;
+    RamFsVol *vol = find_vol(vol_name);
+    if (!vol) return -1;
+    RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+    if (!node) return -1;
+    int i = 0;
+    while (i < max - 1 && node->comment[i]) { dst[i] = node->comment[i]; i++; }
+    dst[i] = '\0';
+    return 0;
+}
+
+int VFS_SetComment(const char *path, const char *comment)
+{
+    char resolved_path[128];
+    if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return -1;
+    char vol_name[16];
+    if (!extract_vol(resolved_path, vol_name, 16)) return -1;
+    RamFsVol *vol = find_vol(vol_name);
+    if (!vol) return -1;
+    RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+    if (!node) return -1;
+    int i = 0;
+    while (i < 63 && comment && comment[i]) { node->comment[i] = comment[i]; i++; }
+    node->comment[i] = '\0';
+    return 0;
+}
+
+int VFS_RenameVol(const char *old_name, const char *new_name)
+{
+    if (!old_name || !*old_name || !new_name || !*new_name) return -1;
+    RamFsVol *vol = find_vol(old_name);
+    if (!vol) return -1;
+    return RamFS_RenameVol(vol, new_name);
+}
+
 /* =========================================================================
  * AmigaDOS Assign Support
  * Assigns create logical names that map to physical paths.
