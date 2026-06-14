@@ -4,17 +4,107 @@
  * AmigaOS graphics.library provides basic graphics primitives including
  * text rendering, shapes, bitmaps, and RastPort operations. This is a
  * native implementation for UAOS using the existing framebuffer driver.
+ *
+ * All drawing functions read their arguments from the Musashi m68k
+ * register file and write directly to the linear framebuffer.
  */
 
 #include "rom_modules.h"
+#include "amiga_graphics.h"
+#include "../display/framebuffer.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 
 /* =========================================================================
+ * Musashi register access (provided by emulation/uaos_m68k_glue.c)
+ * ========================================================================= */
+
+extern unsigned int m68k_get_reg(void *context, int reg);
+extern void         m68k_set_reg(int reg, unsigned int value);
+extern unsigned int m68k_read_memory_8(unsigned int addr);
+extern unsigned int m68k_read_memory_16(unsigned int addr);
+extern unsigned int m68k_read_memory_32(unsigned int addr);
+extern void         m68k_write_memory_8(unsigned int addr, unsigned int val);
+extern void         m68k_write_memory_16(unsigned int addr, unsigned int val);
+extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
+
+#define M68K_REG_D0  0
+#define M68K_REG_D1  1
+#define M68K_REG_D2  2
+#define M68K_REG_D3  3
+#define M68K_REG_A0  8
+#define M68K_REG_A1  9
+
+/* =========================================================================
+ * Helper: read / write RastPort fields in guest RAM
+ * ========================================================================= */
+
+static inline uint8_t  rp_u8 (uint32_t rp, int off)
+    { return (uint8_t)m68k_read_memory_8(rp + off); }
+static inline uint16_t rp_u16(uint32_t rp, int off)
+    { return (uint16_t)m68k_read_memory_16(rp + off); }
+static inline int16_t  rp_s16(uint32_t rp, int off)
+    { return (int16_t)m68k_read_memory_16(rp + off); }
+static inline void rp_w_u8 (uint32_t rp, int off, uint8_t  v)
+    { m68k_write_memory_8(rp + off, v); }
+static inline void rp_w_u16(uint32_t rp, int off, uint16_t v)
+    { m68k_write_memory_16(rp + off, v); }
+static inline void rp_w_s16(uint32_t rp, int off, int16_t  v)
+    { m68k_write_memory_16(rp + off, (uint16_t)v); }
+
+/* =========================================================================
+ * Helpers: pen → RGB, line drawing
+ * ========================================================================= */
+
+static uint32_t current_fg(uint32_t rp)
+{
+    if (!rp) return amiga_pen_to_rgb(1); /* default white */
+    return amiga_pen_to_rgb(rp_u8(rp, RP_OFF_FGPEN));
+}
+
+static uint32_t current_bg(uint32_t rp)
+{
+    if (!rp) return amiga_pen_to_rgb(0); /* default black */
+    return amiga_pen_to_rgb(rp_u8(rp, RP_OFF_BGPEN));
+}
+
+static int current_mode(uint32_t rp)
+{
+    if (!rp) return JAM1;
+    return (int)rp_u8(rp, RP_OFF_DRAWMODE);
+}
+
+/* Bresenham line — clipped per-pixel by FB_PutPixel */
+static void draw_line(int x0, int y0, int x1, int y1, uint32_t colour)
+{
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int sx = dx > 0 ? 1 : -1;
+    int sy = dy > 0 ? 1 : -1;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+
+    if (dx >= dy) {
+        int err = dx / 2;
+        for (int x = x0, y = y0, i = 0; i <= dx; i++, x += sx) {
+            FB_PutPixel(x, y, colour);
+            err -= dy;
+            if (err < 0) { y += sy; err += dx; }
+        }
+    } else {
+        int err = dy / 2;
+        for (int x = x0, y = y0, i = 0; i <= dy; i++, y += sy) {
+            FB_PutPixel(x, y, colour);
+            err -= dx;
+            if (err < 0) { x += sx; err += dy; }
+        }
+    }
+}
+
+/* =========================================================================
  * graphics.library function indices (must match AmigaOS LVO offsets)
- * Note: graphics.library has a very large API - this is a subset
  * ========================================================================= */
 
 #define GRAPHICS_OPEN_LIBRARY   1
@@ -49,191 +139,271 @@
 #define GRAPHICS_GET_COLOR_MAP 30
 
 /* =========================================================================
- * Stub implementations
+ * Implementation
  * ========================================================================= */
 
 static void graphics_OpenLibrary(void)
 {
-    /* OpenLibrary - return library base */
-    fprintf(stderr, "[GRAPHICS] OpenLibrary called\n");
+    /* OpenLibrary — return library base (set by exec_OpenLibrary in glue) */
 }
 
 static void graphics_CloseLibrary(void)
 {
-    /* CloseLibrary - no-op for ROM library */
-    fprintf(stderr, "[GRAPHICS] CloseLibrary called\n");
+    /* CloseLibrary — no-op for ROM library */
 }
 
 static void graphics_InitRastPort(void)
 {
-    /* InitRastPort - initialize RastPort structure */
-    fprintf(stderr, "[GRAPHICS] InitRastPort called\n");
+    /* InitRastPort — zero out the guest RastPort structure */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!rp) return;
+    for (int i = 0; i < RP_SIZE_MIN; i++)
+        m68k_write_memory_8(rp + i, 0);
+    /* Default pen = 1 (white), draw mode = JAM2 (Workbench default) */
+    rp_w_u8(rp, RP_OFF_FGPEN, 1);
+    rp_w_u8(rp, RP_OFF_BGPEN, 0);
+    rp_w_u8(rp, RP_OFF_DRAWMODE, JAM2);
 }
 
 static void graphics_InitView(void)
 {
-    /* InitView - initialize View structure */
-    fprintf(stderr, "[GRAPHICS] InitView called\n");
+    /* InitView — stub, we have no copper/display hardware */
 }
 
 static void graphics_LoadView(void)
 {
-    /* LoadView - load view into display */
-    fprintf(stderr, "[GRAPHICS] LoadView called\n");
+    /* LoadView — stub */
 }
 
 static void graphics_WaitTOF(void)
 {
-    /* WaitTOF - wait for vertical blank */
-    fprintf(stderr, "[GRAPHICS] WaitTOF called\n");
+    /* WaitTOF — stub, host display has no hardware VBlank to wait for */
 }
 
 static void graphics_RastPort(void)
 {
-    /* RastPort - get/set RastPort */
-    fprintf(stderr, "[GRAPHICS] RastPort called\n");
+    /* RastPort — placeholder, not a standard graphics function */
 }
 
 static void graphics_Text(void)
 {
-    /* Text - draw text string */
-    fprintf(stderr, "[GRAPHICS] Text called\n");
+    /* Text(rp, string, length)
+     * A1 = rp, A0 = string, D0 = length
+     */
+    uint32_t rp  = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t str = m68k_get_reg(NULL, M68K_REG_A0);
+    int      len = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    if (!rp || !str || len <= 0) return;
+
+    int x = (int)rp_s16(rp, RP_OFF_CP_X);
+    int y = (int)rp_s16(rp, RP_OFF_CP_Y);
+
+    uint32_t fg = current_fg(rp);
+    uint32_t bg = current_bg(rp);
+    int mode    = current_mode(rp);
+
+    /* Render each character using the fixed 8×16 font.
+     * For JAM1 we draw only fg pixels; for JAM2 we draw bg too.  */
+    for (int i = 0; i < len; i++) {
+        char ch = (char)m68k_read_memory_8(str + i);
+        if (mode == JAM1) {
+            /* Draw character with transparent background:
+             * FB_PutChar always draws a full char cell with bg colour,
+             * so we need a different approach.  For now, use the bg
+             * pen because the framebuffer font renderer doesn't support
+             * transparent bg directly.  This is a known limitation. */
+            FB_PutChar(x, y, ch, fg, bg);
+        } else {
+            FB_PutChar(x, y, ch, fg, bg);
+        }
+        x += FB_CharWidth();
+    }
+
+    rp_w_s16(rp, RP_OFF_CP_X, (int16_t)x);
 }
 
 static void graphics_TextFit(void)
 {
-    /* TextFit - fit text in bounding box */
-    fprintf(stderr, "[GRAPHICS] TextFit called\n");
+    /* TextFit — stub, return 0 */
+    m68k_set_reg(M68K_REG_D0, 0);
 }
 
 static void graphics_TextLength(void)
 {
-    /* TextLength - get text width */
-    fprintf(stderr, "[GRAPHICS] TextLength called\n");
+    /* TextLength(rp, string, length)
+     * A1 = rp, A0 = string, D0 = length
+     * Returns pixel width in D0.
+     */
+    int len = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    if (len < 0) len = 0;
+    m68k_set_reg(M68K_REG_D0, (unsigned int)(len * FB_CharWidth()));
 }
 
 static void graphics_Move(void)
 {
-    /* Move - move drawing cursor */
-    fprintf(stderr, "[GRAPHICS] Move called\n");
+    /* Move(rp, x, y)
+     * A1 = rp, D0 = x, D1 = y
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    if (!rp) return;
+    rp_w_s16(rp, RP_OFF_CP_X, (int16_t)x);
+    rp_w_s16(rp, RP_OFF_CP_Y, (int16_t)y);
 }
 
 static void graphics_Draw(void)
 {
-    /* Draw - draw line to point */
-    fprintf(stderr, "[GRAPHICS] Draw called\n");
+    /* Draw(rp, x, y)
+     * A1 = rp, D0 = x, D1 = y
+     * Draw line from current pen position to (x,y), then update pen pos.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    if (!rp) return;
+
+    int x0 = (int)rp_s16(rp, RP_OFF_CP_X);
+    int y0 = (int)rp_s16(rp, RP_OFF_CP_Y);
+
+    uint32_t col = current_fg(rp);
+    draw_line(x0, y0, x1, y1, col);
+
+    rp_w_s16(rp, RP_OFF_CP_X, (int16_t)x1);
+    rp_w_s16(rp, RP_OFF_CP_Y, (int16_t)y1);
 }
 
 static void graphics_RectFill(void)
 {
-    /* RectFill - fill rectangle */
-    fprintf(stderr, "[GRAPHICS] RectFill called\n");
+    /* RectFill(rp, xMin, yMin, xMax, yMax)
+     * A1 = rp, D0 = xMin, D1 = yMin, D2 = xMax, D3 = yMax
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int x2 = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int y2 = (int)m68k_get_reg(NULL, M68K_REG_D3);
+
+    uint32_t col = current_fg(rp);
+    /* FB_FillRect takes x, y, w, h */
+    FB_FillRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1, col);
 }
 
 static void graphics_Polygon(void)
 {
-    /* Polygon - draw polygon */
-    fprintf(stderr, "[GRAPHICS] Polygon called\n");
+    /* Polygon — stub */
 }
 
 static void graphics_Ellipse(void)
 {
-    /* Ellipse - draw ellipse */
-    fprintf(stderr, "[GRAPHICS] Ellipse called\n");
+    /* Ellipse — stub */
 }
 
 static void graphics_SetRast(void)
 {
-    /* SetRast - set RastPort background */
-    fprintf(stderr, "[GRAPHICS] SetRast called\n");
+    /* SetRast — fill the entire rasterport bitmap with BgPen (stub: fill screen) */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t col = current_bg(rp);
+    if (g_fb.valid) {
+        FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, col);
+    }
 }
 
 static void graphics_SetAPen(void)
 {
-    /* SetAPen - set primary drawing pen */
-    fprintf(stderr, "[GRAPHICS] SetAPen called\n");
+    /* SetAPen(rp, pen) — A1 = rp, D0 = pen */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint8_t pen = (uint8_t)m68k_get_reg(NULL, M68K_REG_D0);
+    if (rp) rp_w_u8(rp, RP_OFF_FGPEN, pen);
 }
 
 static void graphics_SetBPen(void)
 {
-    /* SetBPen - set background pen */
-    fprintf(stderr, "[GRAPHICS] SetBPen called\n");
+    /* SetBPen(rp, pen) — A1 = rp, D0 = pen */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint8_t pen = (uint8_t)m68k_get_reg(NULL, M68K_REG_D0);
+    if (rp) rp_w_u8(rp, RP_OFF_BGPEN, pen);
 }
 
 static void graphics_SetDrMd(void)
 {
-    /* SetDrMd - set drawing mode */
-    fprintf(stderr, "[GRAPHICS] SetDrMd called\n");
+    /* SetDrMd(rp, mode) — A1 = rp, D0 = mode */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint8_t mode = (uint8_t)m68k_get_reg(NULL, M68K_REG_D0);
+    if (rp) rp_w_u8(rp, RP_OFF_DRAWMODE, mode);
 }
 
 static void graphics_SetOPen(void)
 {
-    /* SetOPen - set outline pen */
-    fprintf(stderr, "[GRAPHICS] SetOPen called\n");
+    /* SetOPen — stub */
 }
 
 static void graphics_SetWriteMask(void)
 {
-    /* SetWriteMask - set write mask */
-    fprintf(stderr, "[GRAPHICS] SetWriteMask called\n");
+    /* SetWriteMask — stub */
 }
 
 static void graphics_Blit(void)
 {
-    /* Blit - block image transfer */
-    fprintf(stderr, "[GRAPHICS] Blit called\n");
+    /* Blit — stub */
 }
 
 static void graphics_ReadPixel(void)
 {
-    /* ReadPixel - read pixel color */
-    fprintf(stderr, "[GRAPHICS] ReadPixel called\n");
+    /* ReadPixel(rp, x, y)
+     * A1 = rp, D0 = x, D1 = y
+     * Returns colour in D0.
+     */
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t col = FB_GetPixel(x, y);
+    m68k_set_reg(M68K_REG_D0, col);
 }
 
 static void graphics_WritePixel(void)
 {
-    /* WritePixel - write pixel color */
-    fprintf(stderr, "[GRAPHICS] WritePixel called\n");
+    /* WritePixel(rp, x, y)
+     * A1 = rp, D0 = x, D1 = y
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t col = current_fg(rp);
+    FB_PutPixel(x, y, col);
 }
 
 static void graphics_GetBitMap(void)
 {
-    /* GetBitMap - get bitmap structure */
-    fprintf(stderr, "[GRAPHICS] GetBitMap called\n");
+    /* GetBitMap — stub */
 }
 
 static void graphics_AllocBitMap(void)
 {
-    /* AllocBitMap - allocate bitmap */
-    fprintf(stderr, "[GRAPHICS] AllocBitMap called\n");
+    /* AllocBitMap — stub */
 }
 
 static void graphics_FreeBitMap(void)
 {
-    /* FreeBitMap - free bitmap */
-    fprintf(stderr, "[GRAPHICS] FreeBitMap called\n");
+    /* FreeBitMap — stub */
 }
 
 static void graphics_LoadRGB4(void)
 {
-    /* LoadRGB4 - load RGB4 color table */
-    fprintf(stderr, "[GRAPHICS] LoadRGB4 called\n");
+    /* LoadRGB4 — stub */
 }
 
 static void graphics_LoadRGB32(void)
 {
-    /* LoadRGB32 - load RGB32 color table */
-    fprintf(stderr, "[GRAPHICS] LoadRGB32 called\n");
+    /* LoadRGB32 — stub */
 }
 
 static void graphics_GetColorMap(void)
 {
-    /* GetColorMap - get color map */
-    fprintf(stderr, "[GRAPHICS] GetColorMap called\n");
+    /* GetColorMap — stub */
 }
 
 /* =========================================================================
- * Function table
+ * Function table (ROM module registry, consumed by thunk_handler.c)
  * ========================================================================= */
 
 static void *graphics_funcs[] = {
@@ -268,6 +438,20 @@ static void *graphics_funcs[] = {
     graphics_LoadRGB32,    /* index 29 */
     graphics_GetColorMap,  /* index 30 */
 };
+
+/* =========================================================================
+ * Musashi dispatch entry point (called from uaos_m68k_glue.c)
+ * ========================================================================= */
+
+void UAOS_Graphics_Dispatch(uint32_t fn)
+{
+    if (fn == 0 || fn > 30) {
+        fprintf(stderr, "[GRAPHICS] unknown fn=%u\n", fn);
+        return;
+    }
+    void (*fp)(void) = graphics_funcs[fn - 1];
+    if (fp) fp();
+}
 
 /* =========================================================================
  * Registration function

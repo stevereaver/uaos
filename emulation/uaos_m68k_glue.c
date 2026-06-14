@@ -223,6 +223,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_EXEC        1
 #define LIB_DOS         2
 #define LIB_BSDSOCKET   3
+#define LIB_GRAPHICS    4
 
 /* exec.library function indices */
 #define EXEC_OPEN_LIBRARY   1
@@ -272,6 +273,38 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_SETPROTECTION  20
 #define DOS_GETVAR         21
 #define DOS_SETVAR         22
+
+/* graphics.library function indices (must match graphics_lib.c) */
+#define GFX_OPEN_LIBRARY      1
+#define GFX_CLOSE_LIBRARY     2
+#define GFX_INIT_RASTPORT     3
+#define GFX_INIT_VIEW         4
+#define GFX_LOAD_VIEW         5
+#define GFX_WAITTOF           6
+#define GFX_RASTPORT          7
+#define GFX_TEXT              8
+#define GFX_TEXTFIT           9
+#define GFX_TEXT_LENGTH       10
+#define GFX_MOVE              11
+#define GFX_DRAW              12
+#define GFX_RECTFILL          13
+#define GFX_POLYGON           14
+#define GFX_ELLIPSE           15
+#define GFX_SET_RAST          16
+#define GFX_SET_APEN          17
+#define GFX_SET_BPEN          18
+#define GFX_SET_DRMD          19
+#define GFX_SET_OPEN          20
+#define GFX_SET_WRITE_MASK    21
+#define GFX_BLIT              22
+#define GFX_READ_PIXEL        23
+#define GFX_WRITE_PIXEL       24
+#define GFX_GET_BITMAP        25
+#define GFX_ALLOC_BITMAP      26
+#define GFX_FREE_BITMAP       27
+#define GFX_LOAD_RGB4         28
+#define GFX_LOAD_RGB32        29
+#define GFX_GET_COLOR_MAP     30
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -327,8 +360,9 @@ static void install_stub(int lib_id, int func_idx)
  */
 
 /* Fake library bases */
-#define DOS_BASE    0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
-#define BSD_BASE    0x3000  /* bsdsocket.library base — clear of DOS range */
+#define DOS_BASE       0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
+#define BSD_BASE       0x3000  /* bsdsocket.library base — clear of DOS range */
+#define GRAPHICS_BASE  0x4000  /* graphics.library base — clear of BSD range */
 
 /* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
 #define LVO_BSD_SOCKET        (-30)
@@ -379,6 +413,26 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_GETVAR     (-132)
 #define LVO_DOS_SETVAR     (-138)
 
+/* graphics.library LVO offsets (AmigaOS standard) */
+#define LVO_GFX_INIT_RASTPORT  (-30)
+#define LVO_GFX_INIT_VIEW     (-36)
+#define LVO_GFX_LOAD_VIEW     (-42)
+#define LVO_GFX_WAITTOF       (-48)
+#define LVO_GFX_SET_RAST      (-54)
+#define LVO_GFX_MOVE          (-60)
+#define LVO_GFX_DRAW          (-66)
+#define LVO_GFX_SET_OPEN      (-126)
+#define LVO_GFX_SET_APEN      (-132)
+#define LVO_GFX_SET_BPEN      (-138)
+#define LVO_GFX_SET_DRMD      (-144)
+#define LVO_GFX_TEXT          (-150)
+#define LVO_GFX_TEXT_LENGTH   (-156)
+#define LVO_GFX_TEXTFIT       (-162)
+#define LVO_GFX_RECTFILL      (-216)
+#define LVO_GFX_BLIT          (-228)
+#define LVO_GFX_READ_PIXEL    (-234)
+#define LVO_GFX_WRITE_PIXEL   (-240)
+
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
     if (lib_id == LIB_EXEC) {
@@ -412,6 +466,27 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_READ:   return (uint32_t)((int)DOS_BASE + LVO_DOS_READ);
             case DOS_EXIT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_EXIT);
             case DOS_IO_ERR: return (uint32_t)((int)DOS_BASE + LVO_DOS_IO_ERR);
+        }
+    } else if (lib_id == LIB_GRAPHICS) {
+        switch (func_idx) {
+            case GFX_INIT_RASTPORT: return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_INIT_RASTPORT);
+            case GFX_INIT_VIEW:     return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_INIT_VIEW);
+            case GFX_LOAD_VIEW:     return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_LOAD_VIEW);
+            case GFX_WAITTOF:       return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_WAITTOF);
+            case GFX_SET_RAST:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_RAST);
+            case GFX_MOVE:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_MOVE);
+            case GFX_DRAW:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_DRAW);
+            case GFX_SET_OPEN:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_OPEN);
+            case GFX_SET_APEN:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_APEN);
+            case GFX_SET_BPEN:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_BPEN);
+            case GFX_SET_DRMD:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_DRMD);
+            case GFX_TEXT:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_TEXT);
+            case GFX_TEXT_LENGTH:   return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_TEXT_LENGTH);
+            case GFX_TEXTFIT:       return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_TEXTFIT);
+            case GFX_RECTFILL:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_RECTFILL);
+            case GFX_BLIT:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_BLIT);
+            case GFX_READ_PIXEL:    return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_READ_PIXEL);
+            case GFX_WRITE_PIXEL:   return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_WRITE_PIXEL);
         }
     }
     return JMPTAB_BASE;
@@ -495,6 +570,33 @@ static void install_library_tables(void)
     install_lvo(BSD_BASE, LVO_BSD_INET_ADDR,     LIB_BSDSOCKET, BSD_FN_INET_ADDR);
     install_lvo(BSD_BASE, LVO_BSD_INET_NTOA,     LIB_BSDSOCKET, BSD_FN_INET_NTOA);
     install_lvo(BSD_BASE, LVO_BSD_GETHOSTBYNAME, LIB_BSDSOCKET, BSD_FN_GETHOSTBYNAME);
+
+    /* graphics.library at GRAPHICS_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
+    for (int lvo = -6; lvo >= -240; lvo -= 6) {
+        uint32_t addr = (uint32_t)((int)GRAPHICS_BASE + lvo);
+        if (addr < GUEST_RAM_SIZE - 4) {
+            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
+            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
+        }
+    }
+    install_lvo(GRAPHICS_BASE, LVO_GFX_INIT_RASTPORT, LIB_GRAPHICS, GFX_INIT_RASTPORT);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_INIT_VIEW,     LIB_GRAPHICS, GFX_INIT_VIEW);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_LOAD_VIEW,     LIB_GRAPHICS, GFX_LOAD_VIEW);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_WAITTOF,       LIB_GRAPHICS, GFX_WAITTOF);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_RAST,      LIB_GRAPHICS, GFX_SET_RAST);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_MOVE,          LIB_GRAPHICS, GFX_MOVE);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_DRAW,          LIB_GRAPHICS, GFX_DRAW);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_OPEN,      LIB_GRAPHICS, GFX_SET_OPEN);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_APEN,      LIB_GRAPHICS, GFX_SET_APEN);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_BPEN,      LIB_GRAPHICS, GFX_SET_BPEN);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_DRMD,      LIB_GRAPHICS, GFX_SET_DRMD);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_TEXT,          LIB_GRAPHICS, GFX_TEXT);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_TEXT_LENGTH,   LIB_GRAPHICS, GFX_TEXT_LENGTH);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_TEXTFIT,       LIB_GRAPHICS, GFX_TEXTFIT);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_RECTFILL,      LIB_GRAPHICS, GFX_RECTFILL);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_BLIT,          LIB_GRAPHICS, GFX_BLIT);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_READ_PIXEL,    LIB_GRAPHICS, GFX_READ_PIXEL);
+    install_lvo(GRAPHICS_BASE, LVO_GFX_WRITE_PIXEL,   LIB_GRAPHICS, GFX_WRITE_PIXEL);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -587,6 +689,12 @@ static void exec_OpenLibrary(void)
     for (int j = 0; bsd_name[j]; j++)
         if (name[j] != bsd_name[j]) { bsd_match = 0; break; }
     if (bsd_match) result = BSD_BASE;
+
+    const char *gfx_name = "graphics.library";
+    int gfx_match = 1;
+    for (int j = 0; gfx_name[j]; j++)
+        if (name[j] != gfx_name[j]) { gfx_match = 0; break; }
+    if (gfx_match) result = GRAPHICS_BASE;
 
     m68k_set_reg(M68K_REG_D0, result);
 }
@@ -1070,6 +1178,9 @@ int m68k_illg_instr_callback(int opcode)
     } else if (lib == LIB_BSDSOCKET) {
         extern void BsdSocket_Dispatch(uint32_t fn, uint32_t *regs);
         BsdSocket_Dispatch((uint32_t)fn, (uint32_t*)0);
+    } else if (lib == LIB_GRAPHICS) {
+        extern void UAOS_Graphics_Dispatch(uint32_t fn);
+        UAOS_Graphics_Dispatch((uint32_t)fn);
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);
