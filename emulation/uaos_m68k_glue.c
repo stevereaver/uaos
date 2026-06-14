@@ -224,6 +224,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_DOS         2
 #define LIB_BSDSOCKET   3
 #define LIB_GRAPHICS    4
+#define LIB_INTUITION   5
 
 /* exec.library function indices */
 #define EXEC_OPEN_LIBRARY   1
@@ -306,6 +307,21 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define GFX_LOAD_RGB32        29
 #define GFX_GET_COLOR_MAP     30
 
+/* intuition.library function indices */
+#define INTUITION_OPEN_LIBRARY      1
+#define INTUITION_CLOSE_LIBRARY     2
+#define INTUITION_OPEN_WINDOW       3
+#define INTUITION_CLOSE_WINDOW      4
+#define INTUITION_WINDOW_TO_FRONT   5
+#define INTUITION_WINDOW_TO_BACK    6
+#define INTUITION_ACTIVATE_WINDOW   7
+#define INTUITION_MOVE_WINDOW       8
+#define INTUITION_SIZE_WINDOW       9
+#define INTUITION_REFRESH_WINDOW    10
+#define INTUITION_MODIFY_IDCMP      11
+#define INTUITION_SET_WINDOW_TITLES 12
+#define INTUITION_OPEN_WINDOW_TAGS  13
+
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
 {
@@ -363,6 +379,7 @@ static void install_stub(int lib_id, int func_idx)
 #define DOS_BASE       0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
 #define BSD_BASE       0x3000  /* bsdsocket.library base — clear of DOS range */
 #define GRAPHICS_BASE  0x4000  /* graphics.library base — clear of BSD range */
+#define INTUITION_BASE 0x5000  /* intuition.library base — clear of graphics range */
 
 /* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
 #define LVO_BSD_SOCKET        (-30)
@@ -433,6 +450,21 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_GFX_READ_PIXEL    (-234)
 #define LVO_GFX_WRITE_PIXEL   (-240)
 
+/* intuition.library LVO offsets */
+#define LVO_INTUITION_OPEN_LIBRARY       (-30)
+#define LVO_INTUITION_CLOSE_LIBRARY      (-36)
+#define LVO_INTUITION_OPEN_WINDOW        (-204)
+#define LVO_INTUITION_CLOSE_WINDOW       (-72)
+#define LVO_INTUITION_WINDOW_TO_FRONT  (-126)
+#define LVO_INTUITION_WINDOW_TO_BACK   (-132)
+#define LVO_INTUITION_ACTIVATE_WINDOW  (-138)
+#define LVO_INTUITION_MOVE_WINDOW      (-150)
+#define LVO_INTUITION_SIZE_WINDOW      (-156)
+#define LVO_INTUITION_REFRESH_WINDOW   (-162)
+#define LVO_INTUITION_MODIFY_IDCMP     (-174)
+#define LVO_INTUITION_SET_WINDOW_TITLES (-276)
+#define LVO_INTUITION_OPEN_WINDOW_TAGS (-294)
+
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
     if (lib_id == LIB_EXEC) {
@@ -487,6 +519,22 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case GFX_BLIT:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_BLIT);
             case GFX_READ_PIXEL:    return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_READ_PIXEL);
             case GFX_WRITE_PIXEL:   return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_WRITE_PIXEL);
+        }
+    } else if (lib_id == LIB_INTUITION) {
+        switch (func_idx) {
+            case INTUITION_OPEN_LIBRARY:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_LIBRARY);
+            case INTUITION_CLOSE_LIBRARY:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_LIBRARY);
+            case INTUITION_OPEN_WINDOW:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW);
+            case INTUITION_CLOSE_WINDOW:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_WINDOW);
+            case INTUITION_WINDOW_TO_FRONT:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_TO_FRONT);
+            case INTUITION_WINDOW_TO_BACK:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_TO_BACK);
+            case INTUITION_ACTIVATE_WINDOW:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ACTIVATE_WINDOW);
+            case INTUITION_MOVE_WINDOW:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_WINDOW);
+            case INTUITION_SIZE_WINDOW:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SIZE_WINDOW);
+            case INTUITION_REFRESH_WINDOW:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_WINDOW);
+            case INTUITION_MODIFY_IDCMP:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MODIFY_IDCMP);
+            case INTUITION_SET_WINDOW_TITLES: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_TITLES);
+            case INTUITION_OPEN_WINDOW_TAGS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW_TAGS);
         }
     }
     return JMPTAB_BASE;
@@ -598,6 +646,28 @@ static void install_library_tables(void)
     install_lvo(GRAPHICS_BASE, LVO_GFX_READ_PIXEL,    LIB_GRAPHICS, GFX_READ_PIXEL);
     install_lvo(GRAPHICS_BASE, LVO_GFX_WRITE_PIXEL,   LIB_GRAPHICS, GFX_WRITE_PIXEL);
 
+    /* intuition.library at INTUITION_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
+    for (int lvo = -6; lvo >= -300; lvo -= 6) {
+        uint32_t addr = (uint32_t)((int)INTUITION_BASE + lvo);
+        if (addr < GUEST_RAM_SIZE - 4) {
+            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
+            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
+        }
+    }
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_LIBRARY,       LIB_INTUITION, INTUITION_OPEN_LIBRARY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_LIBRARY,      LIB_INTUITION, INTUITION_CLOSE_LIBRARY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW,        LIB_INTUITION, INTUITION_OPEN_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_WINDOW,       LIB_INTUITION, INTUITION_CLOSE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_TO_FRONT,    LIB_INTUITION, INTUITION_WINDOW_TO_FRONT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_TO_BACK,     LIB_INTUITION, INTUITION_WINDOW_TO_BACK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ACTIVATE_WINDOW,    LIB_INTUITION, INTUITION_ACTIVATE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_WINDOW,        LIB_INTUITION, INTUITION_MOVE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SIZE_WINDOW,        LIB_INTUITION, INTUITION_SIZE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_WINDOW,     LIB_INTUITION, INTUITION_REFRESH_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MODIFY_IDCMP,       LIB_INTUITION, INTUITION_MODIFY_IDCMP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_TITLES,  LIB_INTUITION, INTUITION_SET_WINDOW_TITLES);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW_TAGS,   LIB_INTUITION, INTUITION_OPEN_WINDOW_TAGS);
+
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
      * For FAKE_LIB_BASE we just put RTS everywhere (D0=0 is the default return). */
@@ -695,6 +765,12 @@ static void exec_OpenLibrary(void)
     for (int j = 0; gfx_name[j]; j++)
         if (name[j] != gfx_name[j]) { gfx_match = 0; break; }
     if (gfx_match) result = GRAPHICS_BASE;
+
+    const char *intuition_name = "intuition.library";
+    int intuition_match = 1;
+    for (int j = 0; intuition_name[j]; j++)
+        if (name[j] != intuition_name[j]) { intuition_match = 0; break; }
+    if (intuition_match) result = INTUITION_BASE;
 
     m68k_set_reg(M68K_REG_D0, result);
 }
@@ -1181,6 +1257,9 @@ int m68k_illg_instr_callback(int opcode)
     } else if (lib == LIB_GRAPHICS) {
         extern void UAOS_Graphics_Dispatch(uint32_t fn);
         UAOS_Graphics_Dispatch((uint32_t)fn);
+    } else if (lib == LIB_INTUITION) {
+        extern void UAOS_Intuition_Dispatch(uint32_t fn);
+        UAOS_Intuition_Dispatch((uint32_t)fn);
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);

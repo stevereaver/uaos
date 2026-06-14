@@ -170,6 +170,6 @@ void UAOS_ROM_RegisterAll(void)
     /* Register workbench.library */
     UAOS_WORKBENCH_Register();
 
-    /* Additional ROM modules (intuition, …) are registered
-     * here as their native implementations are completed.                  */
+    /* Register intuition.library */
+    UAOS_INTUITION_Register();
 }

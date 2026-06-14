@@ -72,4 +72,7 @@ void UAOS_BSDSOCKET_Register(void);
 /* Register workbench.library */
 void UAOS_WORKBENCH_Register(void);
 
+/* Register intuition.library */
+void UAOS_INTUITION_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */
