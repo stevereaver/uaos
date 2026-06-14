@@ -28,6 +28,16 @@ echo ""
 ; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
 ; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
 
+; Demo: conditional execution
+IF EXISTS S:timezone.conf
+  echo "Timezone configuration present"
+ENDIF
+
+; Demo: numeric loop
+FOR i = 1 TO 3
+  echo "Loading system module $i..."
+ENDFOR
+
 ; Synchronise system clock from NTP (pool.ntp.org)
 C:ntpd
 

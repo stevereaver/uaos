@@ -36,26 +36,29 @@ void Cmd_Execute(NativeCmdCtx *ctx, const char *args)
     g_exec_buf[nread] = '\0';
     VFS_Close(&fh);
 
-    char line[CMD_MAX_LINE];
-    const char *p = g_exec_buf;
-    while (*p) {
-        int li = 0;
-        while (*p && *p != '\n' && li < CMD_MAX_LINE - 1) {
-            if (*p != '\r') line[li++] = *p;
-            p++;
+    if (ctx->run_script && ctx->shell_extra) {
+        ctx->run_script(ctx->shell_extra, g_exec_buf);
+    } else {
+        /* Fallback: line-by-line dispatch without flow control */
+        char line[CMD_MAX_LINE];
+        const char *p = g_exec_buf;
+        while (*p) {
+            int li = 0;
+            while (*p && *p != '\n' && li < CMD_MAX_LINE - 1) {
+                if (*p != '\r') line[li++] = *p;
+                p++;
+            }
+            if (*p == '\n') p++;
+            line[li] = '\0';
+
+            const char *lp = line;
+            while (*lp == ' ' || *lp == '\t') lp++;
+            if (!*lp || *lp == ';') continue;
+
+            if (ctx->dispatch_line && ctx->shell_extra)
+                ctx->dispatch_line(ctx->shell_extra, line);
+            else
+                PRINT(line);
         }
-        if (*p == '\n') p++;
-        line[li] = '\0';
-
-        /* Skip comment lines and blank lines */
-        const char *lp = line;
-        while (*lp == ' ' || *lp == '\t') lp++;
-        if (!*lp || *lp == ';') continue;
-
-        /* Dispatch through shell if callback available, else print */
-        if (ctx->dispatch_line && ctx->shell_extra)
-            ctx->dispatch_line(ctx->shell_extra, line);
-        else
-            PRINT(line);
     }
 }

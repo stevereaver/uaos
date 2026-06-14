@@ -58,6 +58,9 @@ typedef struct NativeCmdCtx {
     /* For execute: dispatch a command line through the shell */
     void      (*dispatch_line)(void *shell_extra, const char *line);
 
+    /* For execute: run a script text with flow-control support */
+    void      (*run_script)(void *shell_extra, const char *text);
+
     /* Cooperative yield — pump mouse/keyboard/WM/network for ~N ms without
      * blocking the UI.  Commands that busy-wait (ping, etc.) must call this
      * instead of raw delay loops so the desktop stays responsive. */

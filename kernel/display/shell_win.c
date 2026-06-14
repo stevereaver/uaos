@@ -458,6 +458,12 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
     inst_print(s, "  execute <script>   run a script file");
     inst_print(s, "  loadwb             launch Workbench desktop");
+    inst_print(s, "");
+    inst_print(s, "Script flow control:");
+    inst_print(s, "  IF <c> THEN <cmd>              single-line conditional");
+    inst_print(s, "  IF <c> ... ELSE ... ENDIF      multi-line conditional");
+    inst_print(s, "  FOR <v>=<a> TO <b> ... ENDFOR  numeric loop");
+    inst_print(s, "  Conditions: EXISTS <file>, <a> EQ <b>, <a> NE <b>, NOT <c>");
 }
 
 static void inst_cmd_version(ShellInstance *s)
@@ -1396,23 +1402,355 @@ static void inst_cmd_assign(ShellInstance *s, const char *arg)
     }
 }
 
-/* Static buffer for script execution (max 4KB scripts) */
-#define MAX_SCRIPT_SIZE 4096
-static char g_script_buf[MAX_SCRIPT_SIZE];
+/* Forward declaration — defined below after run_cmd */
+static void expand_vars(ShellInstance *s, const char *src, char *dst, int max);
+
+/* -------------------------------------------------------------------------
+ * Script flow-control runner
+ * ------------------------------------------------------------------------- */
+#define MAX_SCRIPT_SIZE   4096
+#define MAX_SCRIPT_NEST   4
+#define MAX_SCRIPT_LINES  128
+
+static char g_script_buf[MAX_SCRIPT_NEST][MAX_SCRIPT_SIZE];
+static int  g_script_nest_level = 0;
+
+static char *script_acquire_buf(void)
+{
+    if (g_script_nest_level >= MAX_SCRIPT_NEST) return NULL;
+    return g_script_buf[g_script_nest_level++];
+}
+
+static void script_release_buf(void)
+{
+    if (g_script_nest_level > 0) g_script_nest_level--;
+}
+
+static const char *script_skip_sp(const char *p)
+{
+    while (*p == ' ' || *p == '\t') p++;
+    return p;
+}
+
+/* Case-insensitive keyword match; kw must be lower-case. */
+static int script_kw_match(const char *line, const char *kw)
+{
+    const char *p = script_skip_sp(line);
+    const char *k = kw;
+    while (*k) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != *k) return 0;
+        p++; k++;
+    }
+    char c = *p;
+    if (c && c != ' ' && c != '\t') return 0;
+    return 1;
+}
+
+static int script_parse_int(const char *p, int *out)
+{
+    int neg = 0;
+    if (*p == '-') { neg = 1; p++; }
+    if (*p < '0' || *p > '9') return 0;
+    int v = 0;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + (*p - '0');
+        p++;
+    }
+    *out = neg ? -v : v;
+    return 1;
+}
+
+static void script_set_var(ShellInstance *s, const char *name, const char *value)
+{
+    int found = 0;
+    for (int j = 0; j < s->env_count; j++) {
+        if (seq_ci(s->env_names[j], name)) {
+            scopy(s->env_values[j], value, MAX_ENV_VAL);
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        if (s->env_count < MAX_ENV_VARS) {
+            scopy(s->env_names[s->env_count], name, MAX_ENV_NAME);
+            scopy(s->env_values[s->env_count], value, MAX_ENV_VAL);
+            s->env_count++;
+        }
+    }
+}
+
+static int script_exists(const char *path)
+{
+    VfsFile fh;
+    if (VFS_Open(&fh, path, VFS_READ)) {
+        VFS_Close(&fh);
+        return 1;
+    }
+    return 0;
+}
+
+/* Evaluate a condition string (text after "IF "). Returns 1=true, 0=false. */
+static int script_eval_cond(ShellInstance *s, const char *cond)
+{
+    /* Expand $variables in the condition first */
+    char expanded[MAX_LINE_LEN];
+    expand_vars(s, cond, expanded, MAX_LINE_LEN);
+    cond = script_skip_sp(expanded);
+    if (!*cond) return 0;
+
+    /* NOT <condition> */
+    if (script_kw_match(cond, "not")) {
+        const char *p = script_skip_sp(cond + 3);
+        return !script_eval_cond(s, p);
+    }
+
+    /* EXISTS <path> */
+    if (script_kw_match(cond, "exists")) {
+        const char *p = script_skip_sp(cond + 6);
+        char path[64];
+        make_abs_path(s, p, path, 64);
+        return script_exists(path);
+    }
+
+    /* <left> EQ <right>  or  <left> NE <right> */
+    const char *lp = cond;
+    while (*lp && *lp != ' ' && *lp != '\t') lp++;
+    int left_len = lp - cond;
+    if (left_len <= 0) return 0;
+    lp = script_skip_sp(lp);
+
+    int is_eq = script_kw_match(lp, "eq");
+    int is_ne = script_kw_match(lp, "ne");
+    if (is_eq || is_ne) {
+        const char *rp = script_skip_sp(lp + 2);
+        const char *re = rp;
+        while (*re && *re != ' ' && *re != '\t') re++;
+        int right_len = re - rp;
+
+        int same = (left_len == right_len);
+        if (same) {
+            for (int i = 0; i < left_len; i++) {
+                char a = cond[i], b = rp[i];
+                if (a >= 'A' && a <= 'Z') a += 32;
+                if (b >= 'A' && b <= 'Z') b += 32;
+                if (a != b) { same = 0; break; }
+            }
+        }
+        return is_eq ? same : !same;
+    }
+
+    /* Bare word: true if non-empty */
+    return *cond ? 1 : 0;
+}
+
+static int script_run_line(ShellInstance *s, const char **lines, int line_count, int pc);
+
+static int script_run_block(ShellInstance *s, const char **lines, int line_count, int start, int end)
+{
+    int pc = start;
+    while (pc < end) {
+        pc = script_run_line(s, lines, line_count, pc);
+    }
+    return pc;
+}
+
+static int script_run_line(ShellInstance *s, const char **lines, int line_count, int pc)
+{
+    if (pc >= line_count) return line_count;
+    const char *line = lines[pc];
+    pc++;
+
+    const char *lp = script_skip_sp(line);
+    if (!*lp || *lp == ';' || *lp == '*') return pc;
+
+    /* IF block */
+    if (script_kw_match(line, "if")) {
+        const char *cond = script_skip_sp(line + 2);
+
+        /* Single-line: IF <cond> THEN <cmd> */
+        const char *tp = cond;
+        while (*tp && *tp != ' ' && *tp != '\t') tp++;
+        tp = script_skip_sp(tp);
+        int is_then = (tp[0] == 'T' || tp[0] == 't') &&
+                      (tp[1] == 'H' || tp[1] == 'h') &&
+                      (tp[2] == 'E' || tp[2] == 'e') &&
+                      (tp[3] == 'N' || tp[3] == 'n') &&
+                      (tp[4] == ' ' || tp[4] == '\t' || tp[4] == '\0');
+        if (is_then) {
+            if (script_eval_cond(s, cond)) {
+                inst_dispatch(s, script_skip_sp(tp + 4));
+            }
+            return pc;
+        }
+
+        /* Multi-line IF */
+        int depth = 1;
+        int else_pc = -1;
+        int endif_pc = -1;
+        int scan = pc;
+        while (scan < line_count && depth > 0) {
+            if (script_kw_match(lines[scan], "if")) depth++;
+            else if (script_kw_match(lines[scan], "else")) {
+                if (depth == 1 && else_pc < 0) else_pc = scan;
+            } else if (script_kw_match(lines[scan], "endif")) {
+                depth--;
+                if (depth == 0) endif_pc = scan;
+            }
+            scan++;
+        }
+
+        if (endif_pc < 0) {
+            inst_print(s, "Script error: IF without ENDIF");
+            return line_count;
+        }
+
+        if (script_eval_cond(s, cond)) {
+            pc = script_run_block(s, lines, line_count, pc,
+                                  (else_pc >= 0) ? else_pc : endif_pc);
+        } else if (else_pc >= 0) {
+            pc = script_run_block(s, lines, line_count, else_pc + 1, endif_pc);
+        }
+        return endif_pc + 1;
+    }
+
+    /* ELSE / ENDIF / ENDFOR consumed by their block openers */
+    if (script_kw_match(line, "else") || script_kw_match(line, "endif") ||
+        script_kw_match(line, "endfor")) {
+        return pc;
+    }
+
+    /* FOR block */
+    if (script_kw_match(line, "for")) {
+        const char *rest = script_skip_sp(line + 3);
+        char varname[MAX_ENV_NAME];
+        int vi = 0;
+        while (*rest && *rest != ' ' && *rest != '\t' && *rest != '=' && vi < MAX_ENV_NAME - 1)
+            varname[vi++] = *rest++;
+        varname[vi] = '\0';
+        rest = script_skip_sp(rest);
+        if (*rest != '=') {
+            inst_print(s, "Script error: FOR syntax (expected =)");
+            return line_count;
+        }
+        rest = script_skip_sp(rest + 1);
+        int start_val, end_val, step_val = 1;
+        if (!script_parse_int(rest, &start_val)) {
+            inst_print(s, "Script error: FOR expected numeric start");
+            return line_count;
+        }
+        while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
+        rest = script_skip_sp(rest);
+        if (!script_kw_match(rest, "to")) {
+            inst_print(s, "Script error: FOR syntax (expected TO)");
+            return line_count;
+        }
+        rest = script_skip_sp(rest + 2);
+        if (!script_parse_int(rest, &end_val)) {
+            inst_print(s, "Script error: FOR expected numeric end");
+            return line_count;
+        }
+        while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
+        rest = script_skip_sp(rest);
+        if (script_kw_match(rest, "step")) {
+            rest = script_skip_sp(rest + 4);
+            if (!script_parse_int(rest, &step_val)) {
+                inst_print(s, "Script error: FOR expected numeric step");
+                return line_count;
+            }
+            while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
+            rest = script_skip_sp(rest);
+        }
+
+        /* Find matching ENDFOR */
+        int depth = 1;
+        int endfor_pc = -1;
+        int scan = pc;
+        while (scan < line_count && depth > 0) {
+            if (script_kw_match(lines[scan], "for")) depth++;
+            else if (script_kw_match(lines[scan], "endfor")) {
+                depth--;
+                if (depth == 0) endfor_pc = scan;
+            }
+            scan++;
+        }
+        if (endfor_pc < 0) {
+            inst_print(s, "Script error: FOR without ENDFOR");
+            return line_count;
+        }
+
+        /* Execute loop body */
+        for (int v = start_val; (step_val > 0) ? (v <= end_val) : (v >= end_val); v += step_val) {
+            char valstr[16];
+            int n = v, neg = 0;
+            if (n < 0) { neg = 1; n = -n; }
+            char tmp[16]; int ti = 0;
+            do { tmp[ti++] = '0' + (n % 10); n /= 10; } while (n > 0);
+            int di = 0;
+            if (neg) valstr[di++] = '-';
+            while (ti-- > 0) valstr[di++] = tmp[ti];
+            valstr[di] = '\0';
+
+            script_set_var(s, varname, valstr);
+            script_run_block(s, lines, line_count, pc, endfor_pc);
+        }
+        return endfor_pc + 1;
+    }
+
+    /* Normal command line */
+    inst_dispatch(s, line);
+    return pc;
+}
+
+static void run_script_text(ShellInstance *s, char *text)
+{
+    const char *lines[MAX_SCRIPT_LINES];
+    int line_count = 0;
+
+    char *p = text;
+    while (*p && line_count < MAX_SCRIPT_LINES) {
+        lines[line_count++] = p;
+        while (*p && *p != '\n' && *p != '\r') p++;
+        if (*p == '\r') {
+            char *term = p;
+            p++;
+            if (*p == '\n') p++;
+            *term = '\0';
+        } else if (*p == '\n') {
+            *p = '\0';
+            p++;
+        }
+    }
+
+    script_run_block(s, lines, line_count, 0, line_count);
+}
+
+static void shell_run_script(void *shell_extra, const char *text)
+{
+    char *buf = script_acquire_buf();
+    if (!buf) return;
+    int len = 0;
+    while (text[len] && len < MAX_SCRIPT_SIZE - 1) {
+        buf[len] = text[len];
+        len++;
+    }
+    buf[len] = '\0';
+    run_script_text((ShellInstance *)shell_extra, buf);
+    script_release_buf();
+}
 
 static void inst_cmd_execute(ShellInstance *s, const char *arg)
 {
     if (!arg || !*arg) {
         inst_print(s, "Usage: execute <script>");
-        inst_print(s, "Executes a script file line by line.");
+        inst_print(s, "Executes a script file with flow-control support.");
         return;
     }
 
-    /* Parse script path */
     char path[64];
     make_abs_path(s, arg, path, 64);
 
-    /* Open the script file */
     VfsFile fh;
     if (!VFS_Open(&fh, path, VFS_READ)) {
         char msg[MAX_LINE_LEN];
@@ -1422,7 +1760,6 @@ static void inst_cmd_execute(ShellInstance *s, const char *arg)
         return;
     }
 
-    /* Read script into static buffer */
     uint32_t size = VFS_Size(&fh);
     if (size == 0 || size >= MAX_SCRIPT_SIZE) {
         inst_print(s, "Script empty or too large (max 4KB)");
@@ -1430,44 +1767,21 @@ static void inst_cmd_execute(ShellInstance *s, const char *arg)
         return;
     }
 
-    uint32_t read = VFS_Read(&fh, (uint8_t *)g_script_buf, size);
-    g_script_buf[read] = '\0';
-    VFS_Close(&fh);
-
-    /* Execute script line by line */
-    char line[MAX_LINE_LEN];
-    const char *p = g_script_buf;
-    int line_num = 0;
-
-    inst_print(s, "Executing script...");
-
-    while (*p) {
-        /* Extract one line */
-        int li = 0;
-        while (*p && *p != '\n' && li < MAX_LINE_LEN - 1) {
-            line[li++] = *p++;
-        }
-        line[li] = '\0';
-        if (*p == '\n') p++; /* skip newline */
-
-        line_num++;
-
-        /* Skip empty lines and comments */
-        const char *lp = line;
-        while (*lp == ' ') lp++;
-        if (*lp == '\0' || *lp == ';' || *lp == '*') continue;
-
-        /* Execute the line */
-        inst_dispatch(s, line);
+    char *buf = script_acquire_buf();
+    if (!buf) {
+        inst_print(s, "Script nesting too deep");
+        VFS_Close(&fh);
+        return;
     }
 
-    char msg[32];
-    scopy(msg, "Script complete (", 32);
-    char num[8];
-    uint_to_dec_s((uint32_t)line_num, num, 8);
-    scat(msg, num, 32);
-    scat(msg, " lines)", 32);
-    inst_print(s, msg);
+    uint32_t nread = VFS_Read(&fh, (uint8_t *)buf, size);
+    buf[nread] = '\0';
+    VFS_Close(&fh);
+
+    inst_print(s, "Executing script...");
+    run_script_text(s, buf);
+    script_release_buf();
+    inst_print(s, "Script complete.");
 }
 
 static void inst_cmd_path(ShellInstance *s, const char *arg)
@@ -2438,6 +2752,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.clear_history  = shell_clear_history;
     ctx.is_builtin     = shell_is_builtin;
     ctx.dispatch_line  = shell_dispatch_line;
+    ctx.run_script     = shell_run_script;
     ctx.yield_ms       = shell_yield_ms;
     ctx.read_key       = shell_read_key;
     ctx.visible_rows   = shell_visible_rows(s);
@@ -2551,6 +2866,84 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
 
 static void run_cmd(ShellInstance *s, const char *line)
 {
+    const char *lp = script_skip_sp(line);
+
+    /* Single-line IF at the interactive prompt */
+    if (script_kw_match(lp, "if")) {
+        const char *cond = script_skip_sp(lp + 2);
+        const char *tp = cond;
+        while (*tp && *tp != ' ' && *tp != '\t') tp++;
+        tp = script_skip_sp(tp);
+        int is_then = (tp[0] == 'T' || tp[0] == 't') &&
+                      (tp[1] == 'H' || tp[1] == 'h') &&
+                      (tp[2] == 'E' || tp[2] == 'e') &&
+                      (tp[3] == 'N' || tp[3] == 'n') &&
+                      (tp[4] == ' ' || tp[4] == '\t' || tp[4] == '\0');
+        if (is_then) {
+            if (script_eval_cond(s, cond)) {
+                inst_dispatch(s, script_skip_sp(tp + 4));
+            }
+            return;
+        }
+        inst_print(s, "Multi-line IF blocks are only valid inside scripts.");
+        return;
+    }
+
+    /* Block keywords at the prompt */
+    if (script_kw_match(lp, "else") || script_kw_match(lp, "endif") ||
+        script_kw_match(lp, "endfor")) {
+        inst_print(s, "Block keyword only valid inside scripts.");
+        return;
+    }
+
+    /* Single-line FOR at the interactive prompt */
+    if (script_kw_match(lp, "for")) {
+        const char *rest = script_skip_sp(lp + 3);
+        char varname[MAX_ENV_NAME];
+        int vi = 0;
+        while (*rest && *rest != ' ' && *rest != '\t' && *rest != '=' && vi < MAX_ENV_NAME - 1)
+            varname[vi++] = *rest++;
+        varname[vi] = '\0';
+        rest = script_skip_sp(rest);
+        if (*rest != '=') goto for_prompt_err;
+        rest = script_skip_sp(rest + 1);
+        int start_val, end_val, step_val = 1;
+        if (!script_parse_int(rest, &start_val)) goto for_prompt_err;
+        while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
+        rest = script_skip_sp(rest);
+        if (!script_kw_match(rest, "to")) goto for_prompt_err;
+        rest = script_skip_sp(rest + 2);
+        if (!script_parse_int(rest, &end_val)) goto for_prompt_err;
+        while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
+        rest = script_skip_sp(rest);
+        if (script_kw_match(rest, "step")) {
+            rest = script_skip_sp(rest + 4);
+            if (!script_parse_int(rest, &step_val)) goto for_prompt_err;
+            while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
+            rest = script_skip_sp(rest);
+        }
+        if (!script_kw_match(rest, "do")) goto for_prompt_err;
+        rest = script_skip_sp(rest + 2);
+
+        for (int v = start_val; (step_val > 0) ? (v <= end_val) : (v >= end_val); v += step_val) {
+            char valstr[16];
+            int n = v, neg = 0;
+            if (n < 0) { neg = 1; n = -n; }
+            char tmp[16]; int ti = 0;
+            do { tmp[ti++] = '0' + (n % 10); n /= 10; } while (n > 0);
+            int di = 0;
+            if (neg) valstr[di++] = '-';
+            while (ti-- > 0) valstr[di++] = tmp[ti];
+            valstr[di] = '\0';
+            script_set_var(s, varname, valstr);
+            inst_dispatch(s, rest);
+        }
+        return;
+    for_prompt_err:
+        inst_print(s, "Multi-line FOR blocks are only valid inside scripts.");
+        return;
+    }
+
     /* Check for alias expansion first */
     char first_word[32];
     const char *p = line;
@@ -3380,53 +3773,31 @@ void ShellWin_RunStartupSequence(void)
 
     inst_print(s, "Executing S:Startup-Sequence...");
 
-    /* Debug: show what S: resolves to */
-    char resolved[128];
-    const char *assign_target = VFS_ResolveAssign("S");
-    if (assign_target) {
-        inst_print(s, "[Debug] S: assign target found");
-    } else {
-        inst_print(s, "[Debug] S: assign NOT found - checking assigns...");
-        char buf[256];
-        int n = VFS_ListAssigns(buf, sizeof(buf));
-        if (n > 0) {
-            inst_print(s, "[Debug] Current assigns:");
-            inst_print(s, buf);
-        } else {
-            inst_print(s, "[Debug] No assigns defined!");
-        }
-    }
-
     VfsFile fh;
     if (!VFS_Open(&fh, "S:Startup-Sequence", VFS_READ)) {
         inst_print(s, "S:Startup-Sequence not found.");
         return;
     }
 
-    char line[256];
-    int pos = 0;
-    for (;;) {
-        uint8_t c;
-        int r = VFS_Read(&fh, &c, 1);
-        if (r <= 0) {
-            /* EOF — dispatch last line */
-            if (pos > 0) {
-                line[pos] = '\0';
-                inst_dispatch(s, line);
-            }
-            break;
-        }
-        if (c == '\n' || c == '\r') {
-            if (pos > 0) {
-                line[pos] = '\0';
-                inst_dispatch(s, line);
-            }
-            pos = 0;
-        } else if (pos < 255) {
-            line[pos++] = (char)c;
-        }
+    uint32_t size = VFS_Size(&fh);
+    if (size == 0 || size >= MAX_SCRIPT_SIZE) {
+        inst_print(s, "Startup-Sequence empty or too large.");
+        VFS_Close(&fh);
+        return;
     }
 
+    char *buf = script_acquire_buf();
+    if (!buf) {
+        inst_print(s, "Startup-Sequence nesting too deep");
+        VFS_Close(&fh);
+        return;
+    }
+
+    uint32_t nread = VFS_Read(&fh, (uint8_t *)buf, size);
+    buf[nread] = '\0';
     VFS_Close(&fh);
+
+    run_script_text(s, buf);
+    script_release_buf();
     inst_print(s, "Startup-Sequence complete.");
 }
