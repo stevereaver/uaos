@@ -52,6 +52,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "clock",      Cmd_ClockWin  },
     { "grep",       Cmd_Grep      },
     { "more",       Cmd_More      },
+    { "vim",        Cmd_Vim       },
     { NULL,         NULL          }
 };
 

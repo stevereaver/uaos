@@ -1,0 +1,7 @@
+; Ultimate Amiga OS — User-Startup
+; Place personal startup commands here.
+; This script is executed automatically at the end of Startup-Sequence
+; (before Workbench loads) only if the file exists.
+
+; Alias vi to vim
+alias vi vim

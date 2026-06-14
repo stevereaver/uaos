@@ -17,6 +17,7 @@
 #include "cursor.h"
 #include "pointer_prefs.h"
 #include "wm.h"
+#include "vim_win.h"
 #include "../../emulation/uaos_emu.h"
 #include "dos/vfs.h"
 #include "dos/ramfs.h"
@@ -124,6 +125,10 @@ struct ShellInstance {
     int          fdisk_mode;    /* 0 = normal, 1 = fdisk interactive */
     BlockDev    *fdisk_dev;     /* Device being edited */
     PartitionTable fdisk_pt;    /* Partition table being edited */
+
+    /* Vim inline mode */
+    int          vim_mode;      /* 0 = normal, 1 = vim inline */
+    int          vim_slot;      /* slot in g_vims */
 };
 typedef struct ShellInstance ShellInstance;
 
@@ -232,6 +237,12 @@ static void inst_draw_contents(ShellInstance *s)
 static void inst_draw_history(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
+
+    if (s->vim_mode) {
+        VimWin_DrawInline(s->vim_slot, wx, wy, ww, wh);
+        return;
+    }
+
     int hx = wx + BORDER_L + 4;
     int hy = wy + TITLEBAR_H + 4;
     int hh = wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W - 8;
@@ -281,6 +292,9 @@ static void extract_vol_prompt(const char *path, char *out, int max)
 static void inst_draw_input(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
+
+    if (s->vim_mode) return;
+
     int ix = wx + BORDER_L + 4;
     int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W - 2;
 
@@ -2619,6 +2633,27 @@ static void shell_set_fdisk_mode(void *shell_extra, struct BlockDev *dev)
     inst_print(s, "Command (m for help):");
 }
 
+/* Quit callback for inline vim */
+static void shell_vim_quit(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->vim_mode = 0;
+    s->vim_slot = -1;
+}
+
+/* Activate vim inline mode on this shell instance */
+static void shell_set_vim_mode(void *shell_extra, const char *filename)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    int slot = VimWin_OpenInline(filename, s, shell_vim_quit);
+    if (slot < 0) {
+        inst_print(s, "vim: failed to open editor");
+        return;
+    }
+    s->vim_mode = 1;
+    s->vim_slot = slot;
+}
+
 /* Launch Workbench desktop */
 static void shell_loadwb(void)
 {
@@ -2748,6 +2783,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.path           = s->path;
     ctx.shell_extra    = s;
     ctx.set_fdisk_mode = shell_set_fdisk_mode;
+    ctx.set_vim_mode   = shell_set_vim_mode;
     ctx.loadwb         = shell_loadwb;
     ctx.clear_history  = shell_clear_history;
     ctx.is_builtin     = shell_is_builtin;
@@ -2966,6 +3002,14 @@ static void run_cmd(ShellInstance *s, const char *line)
             cmd_to_run = expanded;
             break;
         }
+    }
+
+    /* Re-extract first_word from the (possibly expanded) command */
+    {
+        const char *q = cmd_to_run;
+        int j = 0;
+        while (*q && *q != ' ' && j < 31) { first_word[j++] = *q++; }
+        first_word[j] = '\0';
     }
 
     /* ---- Explicit path: user typed "C:cmd", "SYS:tools/foo", etc. ----
@@ -3501,6 +3545,19 @@ show_all:
 static void inst_handle_key(ShellInstance *s, char c)
 {
     if (!g_fb.valid) return;
+
+    if (s->vim_mode) {
+        VimWin_KeyInline(s->vim_slot, c);
+        if (!VimWin_IsActive(s->vim_slot)) {
+            s->vim_mode = 0;
+            s->vim_slot = -1;
+        }
+        inst_draw_contents(s);
+        inst_draw_history(s);
+        inst_draw_input(s);
+        return;
+    }
+
     if (c == VKEY_PGUP) {
         if (s->wm_handle >= 0) {
             int sy = WM_GetScrollY(s->wm_handle);
@@ -3701,6 +3758,8 @@ static void open_shell(int stagger)
     s->fdisk_mode = 0;
     s->fdisk_dev  = NULL;
     memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
+    s->vim_mode = 0;
+    s->vim_slot = -1;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
     scopy(s->path, "C: S: SYS:Utilities SYS:Rexx SYS:System SYS:Prefs SYS:WBStartup SYS:Tools SYS:Tools/Commodities", 256);

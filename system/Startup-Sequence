@@ -19,7 +19,6 @@ SetEnv Kickstart $Kickstart
 UnSet Workbench
 UnSet Kickstart
 
-
 ; Welcome message
 echo "Ultimate Amiga OS - Live Workbench Environment"
 echo ""
@@ -28,11 +27,6 @@ echo ""
 ; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
 ; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
 
-; Demo: conditional execution
-IF EXISTS S:timezone.conf
-  echo "Timezone configuration present"
-ENDIF
-
 ; Demo: numeric loop
 FOR i = 1 TO 3
   echo "Loading system module $i..."
@@ -40,6 +34,11 @@ ENDFOR
 
 ; Synchronise system clock from NTP (pool.ntp.org)
 C:ntpd
+
+; Execute user-defined startup commands if present
+IF EXISTS S:User-Startup
+  execute S:User-Startup
+ENDIF
 
 ; Load Workbench desktop
 echo ""

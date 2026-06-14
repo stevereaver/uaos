@@ -47,6 +47,8 @@ typedef struct NativeCmdCtx {
     void       *shell_extra;   /* ShellInstance* */
     void      (*set_fdisk_mode)(void *shell_extra,
                                 struct BlockDev *dev);
+    /* For vim: open inline editor in the shell window */
+    void      (*set_vim_mode)(void *shell_extra, const char *filename);
     /* For loadwb: launch the desktop */
     void      (*loadwb)(void);
     /* For clear: wipe shell history */
@@ -138,5 +140,6 @@ void Cmd_Ntpd     (NativeCmdCtx *ctx, const char *args);
 void Cmd_ClockWin (NativeCmdCtx *ctx, const char *args);
 void Cmd_Grep     (NativeCmdCtx *ctx, const char *args);
 void Cmd_More     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Vim      (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */
