@@ -157,7 +157,7 @@
   UAOS presents a merged AmigaDOS / POSIX namespace.  AmigaDOS assigns
   map onto the following host directories:
 
-    @{b}SYS:@{ub}    →  sys-root/SYS/      Base Workbench layout
+    @{b}SYS:@{ub}    →  sys-root/            Boot volume root (AmigaOS semantics)
     @{b}C:@{ub}      →  sys-root/C/        AmigaDOS + GNU binary path
     @{b}S:@{ub}      →  sys-root/S/        Startup-Sequence and scripts
     @{b}L:@{ub}      →  sys-root/L/        Filesystem handler libraries

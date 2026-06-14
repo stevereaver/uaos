@@ -46,7 +46,9 @@ typedef struct {
 /* Initialise VFS + mount RAM: with standard dirs. Call once at boot. */
 void VFS_Init(void);
 
-/* Setup default Workbench assigns (C:, S:, L:, DEVS:, LIBS:, SYS:).
+/* Setup ROM fallback assigns immediately after the boot volume is identified.
+ * Maps SYS: to the boot volume root and LIBS:/C:/S:/DEVS:/L: to standard
+ * subdirectories.  This mirrors the Kickstart ROM pre-assign phase on Amiga.
  * Call after Workbench: volume is mounted. */
 void VFS_SetupWorkbenchAssigns(void);
 

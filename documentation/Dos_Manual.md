@@ -286,7 +286,7 @@ Print the current working directory.
 
 ```
 UAOS> pwd
-Workbench:SYS
+RAM:
 ```
 
 #### `echo <text>`
@@ -587,7 +587,7 @@ AmigaDOS assigns map logical volume names to physical paths. They are essential 
 | `L:` | `Workbench:L` |
 | `DEVS:` | `Workbench:DEVS` |
 | `LIBS:` | `Workbench:LIBS` |
-| `SYS:` | `Workbench:SYS` |
+| `SYS:` | `Workbench:` (boot volume root) |
 
 ### Common Startup Assigns
 

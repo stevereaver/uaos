@@ -173,7 +173,8 @@ void VFS_SetupWorkbenchAssigns(void)
     if (VFS_AddAssign("L", "Workbench:L", 0, 0) == 0) kprint("[VFS]  L: -> Workbench:L\n");
     if (VFS_AddAssign("DEVS", "Workbench:DEVS", 0, 0) == 0) kprint("[VFS]  DEVS: -> Workbench:DEVS\n");
     if (VFS_AddAssign("LIBS", "Workbench:LIBS", 0, 0) == 0) kprint("[VFS]  LIBS: -> Workbench:LIBS\n");
-    if (VFS_AddAssign("SYS", "Workbench:SYS", 0, 0) == 0) kprint("[VFS]  SYS: -> Workbench:SYS\n");
+    /* SYS: is the boot volume root (AmigaOS semantics) */
+    if (VFS_AddAssign("SYS", "Workbench:", 0, 0) == 0) kprint("[VFS]  SYS: -> Workbench:\n");
     if (VFS_AddAssign("Tools", "Workbench:Tools", 0, 0) == 0) kprint("[VFS]  Tools: -> Workbench:Tools\n");
 }
 

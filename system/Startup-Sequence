@@ -1,17 +1,36 @@
 ; Ultimate Amiga OS — Startup-Sequence
-; This script is executed automatically at boot for live Workbench environment
+; Phase 2: Explicit startup-script initialisation.
+;
+; Phase 1 (ROM fallback) has already been performed by the kernel when the
+; boot volume was identified:
+;   SYS:    -> boot volume root (Workbench:)
+;   LIBS:   -> SYS:Libs  (Workbench:Libs)
+;   C:      -> SYS:C     (Workbench:C)
+;   S:      -> SYS:S     (Workbench:S)
+;   DEVS:   -> SYS:Devs  (Workbench:Devs)
+;   L:      -> SYS:L     (Workbench:L)
+;
+; This script now refines and extends those fallback assigns, exactly as
+; AmigaDOS does after Kickstart hooks up the pre-assigns.
+
 C:Version >NIL:
 
-
+; RAM-based transient assigns
 Assign >NIL: ENV: RAM:ENV
 Assign >NIL: T: RAM:T
 Assign >NIL: Clips: RAM:Clipboards
 Assign >NIL: REXX: S:
+
+; Device sub-directory assigns
 Assign >NIL: PRINTERS: DEVS:Printers
 Assign >NIL: KEYMAPS: DEVS:Keymaps
-Assign >NIL: LOCALE: SYS:Locale
+
+; Extend LIBS: with additional class directories (searched after SYS:Libs)
 Assign >NIL: LIBS: SYS:Classes ADD
+
+; Optional assigns — deferred so missing targets do not fail boot
 Assign >NIL: HELP: LOCALE:Help DEFER
+Assign >NIL: LOCALE: SYS:Locale DEFER
 
 SetEnv Language "english"
 SetEnv Workbench $Workbench
@@ -22,10 +41,6 @@ UnSet Kickstart
 ; Welcome message
 echo "Ultimate Amiga OS - Live Workbench Environment"
 echo ""
-
-; Assigns are automatically set up by the kernel:
-; C: -> Workbench:C, S: -> Workbench:S, L: -> Workbench:L
-; DEVS: -> Workbench:DEVS, LIBS: -> Workbench:LIBS, SYS: -> Workbench:SYS
 
 ; Demo: numeric loop
 FOR i = 1 TO 3

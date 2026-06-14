@@ -3981,7 +3981,9 @@ static void open_shell(int stagger)
     s->ask_result_ready = 0;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
-    scopy(s->path, "C: S: SYS:Utilities SYS:Rexx SYS:System SYS:Prefs SYS:WBStartup SYS:Tools SYS:Tools/Commodities", 256);
+    /* Default AmigaDOS search path.  SYS: is the boot volume root,
+     * so SYS:Tools resolves to Workbench:Tools/ etc. */
+    scopy(s->path, "C: S: SYS:Tools", 256);
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[idx][i][0] = 0;
 
     char title[32];

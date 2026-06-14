@@ -437,6 +437,23 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
     }
 
+    /* -------------------------------------------------------------------
+     * Phase 1 — ROM Fallback Assigns (Kickstart-style pre-assign)
+     *
+     * On Amiga, the ROM hooks up SYS:, LIBS:, C:, DEVS:, L:, S:, FONTS:
+     * etc. to the boot volume *before* any startup script runs.  UAOS
+     * mirrors that here: as soon as the boot device is identified and
+     * Workbench: is mounted, we create the hardcoded fallback assigns.
+     * The Startup-Sequence may later override or extend them (e.g.
+     * Assign LIBS: SYS:Classes ADD).
+     * ------------------------------------------------------------------- */
+    kprint("[BOOT] Setting up ROM fallback assigns...\n");
+    VFS_SetupWorkbenchAssigns();
+
+    kprint("[BOOT] Scanning LIBS: for loadable libraries...\n");
+    UAOS_LoadableLib_Init();
+    UAOS_POWERPACKER_Register();
+
     /* Note: Desktop is NOT drawn here - it starts via LoadWB from Startup-Sequence */
 
     /* Set up interrupts — IDT must be loaded before STI */
@@ -489,12 +506,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         PIC_UnmaskIRQ(1);
         kprint("[BOOT] PS/2 keyboard active.\n");
 
-        kprint("[BOOT] Setting up Workbench assigns...\n");
-        VFS_SetupWorkbenchAssigns();
-
-        kprint("[BOOT] Scanning LIBS: for loadable libraries...\n");
-        UAOS_LoadableLib_Init();
-        UAOS_POWERPACKER_Register();
+        /* ROM fallback assigns and loadable library scan were already
+         * performed in Phase 1 immediately after the boot volume mount. */
 
         kprint("[BOOT] Opening shell window...\n");
         ShellWin_Init();
