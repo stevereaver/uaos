@@ -120,5 +120,6 @@ void Cmd_Route    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Nslookup (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ntpd     (NativeCmdCtx *ctx, const char *args);
 void Cmd_ClockWin (NativeCmdCtx *ctx, const char *args);
+void Cmd_Grep     (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */
