@@ -29,6 +29,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "dos/vfs.h"
+#include "dos/handler.h"
+#include "dos/handle_table.h"
+#include "dos/dospacket.h"
+#include "dos/amiga_dos_types.h"
 
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
@@ -45,31 +49,41 @@ static void emu_print(const char *s)
     if (g_print) g_print(s);
 }
 
-/* Forward declarations for file handle management */
-static uint32_t allocate_file_handle(void);
-static VfsFile* get_file_handle(uint32_t handle);
+/* Guest memory base for BPTR-to-native conversion */
+extern uint8_t g_ram[];
+#define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
-/* Fake file handle management for VFS files */
-static VfsFile g_file_handles[16];
-static int g_file_modes[16];
-static uint32_t g_file_handle_count = 0;
-
-static uint32_t allocate_file_handle(void)
+/* Convert BSTR BPTR to native C string into dst[max].
+ * Returns length or 0 if invalid. */
+static int bstr_to_c(uint32_t bptr_bptr, char *dst, int max)
 {
-    if (g_file_handle_count < 16) {
-        return (uint32_t)g_file_handle_count++;  /* Return handles 0-15 */
-    }
-    return 0;
+    uint32_t addr = bptr_bptr << 2;
+    if (addr >= GUEST_RAM_SIZE || max < 2) return 0;
+    uint8_t len = g_ram[addr];
+    if (len > (uint8_t)(max - 1)) len = (uint8_t)(max - 1);
+    for (int i = 0; i < (int)len; i++) dst[i] = (char)g_ram[addr + 1 + i];
+    dst[len] = '\0';
+    return (int)len;
 }
 
-static VfsFile* get_file_handle(uint32_t handle)
+/* Extract volume name from a path like "RAM:dir/file" into dst[max].
+ * Returns length or 0 if no colon. */
+static int extract_vol_name(const char *path, char *dst, int max)
 {
-    if (handle < 16) {
-        if (handle < g_file_handle_count) {
-            return &g_file_handles[handle];
-        }
-    }
-    return NULL;
+    int i = 0;
+    while (path[i] && path[i] != ':' && i < max - 1) { dst[i] = path[i]; i++; }
+    dst[i] = '\0';
+    return (path[i] == ':') ? i : 0;
+}
+
+/* Append src to dst (up to max-1 chars total) */
+static void scat(char *dst, const char *src, int max)
+{
+    int i = 0;
+    while (dst[i] && i < max - 1) i++;
+    int j = 0;
+    while (i < max - 1 && src[j]) { dst[i++] = src[j++]; }
+    dst[i] = '\0';
 }
 
 /* =========================================================================
@@ -274,6 +288,12 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_SETPROTECTION  20
 #define DOS_GETVAR         21
 #define DOS_SETVAR         22
+#define DOS_SEEK           23
+#define DOS_LOCK           24
+#define DOS_UNLOCK         25
+#define DOS_EXAMINE        26
+#define DOS_EXAMINE_NEXT   27
+#define DOS_CREATE_DIR     28
 
 /* graphics.library function indices (must match graphics_lib.c) */
 #define GFX_OPEN_LIBRARY      1
@@ -429,6 +449,12 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_SETPROTECTION (-90)
 #define LVO_DOS_GETVAR     (-132)
 #define LVO_DOS_SETVAR     (-138)
+#define LVO_DOS_SEEK       (-66)
+#define LVO_DOS_LOCK       (-72)
+#define LVO_DOS_UNLOCK     (-78)
+#define LVO_DOS_EXAMINE    (-84)
+#define LVO_DOS_EXAMINE_NEXT (-90)
+#define LVO_DOS_CREATE_DIR (-96)
 
 /* graphics.library LVO offsets (AmigaOS standard) */
 #define LVO_GFX_INIT_RASTPORT  (-30)
@@ -492,6 +518,12 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_SETPROTECTION:  return (uint32_t)((int)DOS_BASE + LVO_DOS_SETPROTECTION);
             case DOS_GETVAR:         return (uint32_t)((int)DOS_BASE + LVO_DOS_GETVAR);
             case DOS_SETVAR:         return (uint32_t)((int)DOS_BASE + LVO_DOS_SETVAR);
+            case DOS_SEEK:           return (uint32_t)((int)DOS_BASE + LVO_DOS_SEEK);
+            case DOS_LOCK:           return (uint32_t)((int)DOS_BASE + LVO_DOS_LOCK);
+            case DOS_UNLOCK:         return (uint32_t)((int)DOS_BASE + LVO_DOS_UNLOCK);
+            case DOS_EXAMINE:        return (uint32_t)((int)DOS_BASE + LVO_DOS_EXAMINE);
+            case DOS_EXAMINE_NEXT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_EXAMINE_NEXT);
+            case DOS_CREATE_DIR:     return (uint32_t)((int)DOS_BASE + LVO_DOS_CREATE_DIR);
             case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
             case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
             case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
@@ -595,6 +627,12 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_SETPROTECTION, LIB_DOS, DOS_SETPROTECTION);
     install_lvo(DOS_BASE, LVO_DOS_GETVAR,     LIB_DOS, DOS_GETVAR);
     install_lvo(DOS_BASE, LVO_DOS_SETVAR,     LIB_DOS, DOS_SETVAR);
+    install_lvo(DOS_BASE, LVO_DOS_SEEK,        LIB_DOS, DOS_SEEK);
+    install_lvo(DOS_BASE, LVO_DOS_LOCK,        LIB_DOS, DOS_LOCK);
+    install_lvo(DOS_BASE, LVO_DOS_UNLOCK,      LIB_DOS, DOS_UNLOCK);
+    install_lvo(DOS_BASE, LVO_DOS_EXAMINE,     LIB_DOS, DOS_EXAMINE);
+    install_lvo(DOS_BASE, LVO_DOS_EXAMINE_NEXT, LIB_DOS, DOS_EXAMINE_NEXT);
+    install_lvo(DOS_BASE, LVO_DOS_CREATE_DIR,  LIB_DOS, DOS_CREATE_DIR);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {
@@ -878,10 +916,6 @@ static void exec_FindTask(void)
 
 /* (BPTR defines moved above install_library_tables — see near FAKE_PROCESS_ADDR) */
 
-static int is_our_handle(uint32_t bptr) {
-    return bptr == DOS_STDOUT_BPTR || bptr == DOS_STDIN_BPTR;
-}
-
 static void dos_Output(void)
 {
     m68k_set_reg(M68K_REG_D0, DOS_STDOUT_BPTR);
@@ -892,43 +926,7 @@ static void dos_Input(void)
     m68k_set_reg(M68K_REG_D0, DOS_STDIN_BPTR);
 }
 
-static void dos_Write(void)
-{
-    /* D1=fh (BPTR), D2=buffer ptr, D3=length */
-    uint32_t fh  = m68k_get_reg(NULL, M68K_REG_D1);
-    uint32_t ptr = m68k_get_reg(NULL, M68K_REG_D2);
-    uint32_t len = m68k_get_reg(NULL, M68K_REG_D3);
-    
-    /* Check if this is a VFS file handle */
-    VfsFile *vfs_fh = get_file_handle(fh);
-    if (vfs_fh && vfs_fh->node) {
-        /* Write to VFS file */
-        if (ptr + len < GUEST_RAM_SIZE) {
-            uint32_t bytes_written = VFS_Write(vfs_fh, g_ram + ptr, len);
-            m68k_set_reg(M68K_REG_D0, bytes_written);
-            return;
-        }
-    }
-    
-    /* Otherwise, print to console (for stdout/stderr) */
-    if (!is_our_handle(fh)) {
-        /* Accept any non-zero handle as stdout for now */
-        if (fh == 0) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
-    }
 
-    if (ptr < GUEST_RAM_SIZE && len < 4096) {
-        /* Build a NUL-terminated copy and print it */
-        char buf[4097];
-        uint32_t i;
-        for (i = 0; i < len && ptr + i < GUEST_RAM_SIZE; i++)
-            buf[i] = (char)g_ram[ptr + i];
-        buf[i] = '\0';
-        emu_print(buf);
-        m68k_set_reg(M68K_REG_D0, len);
-    } else {
-        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-    }
-}
 
 static void dos_VFPrintf(void)
 {
@@ -1036,204 +1034,412 @@ static void dos_IsInteractive(void)
 
 static void dos_Open(void)
 {
-    /* D1=name BPTR (AmigaDOS BSTR: addr >> 2, then byte[0]=len, bytes[1..] = chars)
-     * D2=mode (MODE_OLDFILE=1005, MODE_NEWFILE=1006) */
-    uint32_t bptr     = m68k_get_reg(NULL, M68K_REG_D1);
-    uint32_t name_ptr = bptr << 2;  /* convert BPTR to byte address */
-    
-    /* If BPTR is invalid (points beyond RAM), use workaround for SAS/C */
-    if (name_ptr >= GUEST_RAM_SIZE || name_ptr < 0x1000) {
-        /* SAS/C workaround: invalid BPTR means we can't read the filename
-         * For now, just fail - the program should pass valid BPTRs */
-        m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = 205;
+    /* D1=name BPTR, D2=mode */
+    uint32_t bptr = m68k_get_reg(NULL, M68K_REG_D1);
+    char name[128];
+    int blen = bstr_to_c(bptr, name, sizeof(name));
+    if (blen == 0) {
+        m68k_set_reg(M68K_REG_D0, DOS_STDOUT_BPTR);
         return;
     }
-    
-    char name[64];
-    uint8_t blen = (name_ptr < GUEST_RAM_SIZE) ? g_ram[name_ptr] : 0;
-    if (blen > 63) blen = 63;
-    for (int i = 0; i < (int)blen; i++)
-        name[i] = (char)g_ram[name_ptr + 1 + i];
-    name[blen] = '\0';
 
-    /* Accept CON:, *, NIL:, empty, or any interactive device as console */
-    if (blen == 0 || name[0] == '*' ||
+    /* Accept console-like names */
+    if (name[0] == '*' ||
         (name[0]=='C' && name[1]=='O' && name[2]=='N') ||
         (name[0]=='N' && name[1]=='I' && name[2]=='L') ||
         (name[0]=='R' && name[1]=='A' && name[2]=='W') ||
         (name[0]=='A' && name[1]=='U' && name[2]=='X')) {
         m68k_set_reg(M68K_REG_D0, DOS_STDOUT_BPTR);
+        return;
+    }
+
+    /* Build full path */
+    char full_name[128];
+    int has_device = 0;
+    for (int i = 0; i < blen; i++) if (name[i] == ':') { has_device = 1; break; }
+    if (has_device) {
+        int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
+        full_name[i] = '\0';
     } else {
-        /* Regular file - resolve path using g_cwd if no device specified */
-        char full_name[64];
-        int has_device = 0;
-        for (int i = 0; i < (int)blen; i++) {
-            if (name[i] == ':') { has_device = 1; break; }
-        }
-        if (has_device) {
-            /* Absolute path with device - use as-is */
-            emu_memcpy((uint8_t*)full_name, (uint8_t*)name, blen);
-            full_name[blen] = '\0';
-        } else {
-            /* Relative path - prepend g_cwd */
-            int cwd_len = 0;
-            while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-            
-            /* Copy g_cwd */
-            emu_memcpy((uint8_t*)full_name, (uint8_t*)g_cwd, cwd_len);
-            
-            /* Add separator if g_cwd doesn't end with : or / */
-            if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
-                full_name[cwd_len++] = '/';
-            }
-            
-            /* Append relative path */
-            emu_memcpy((uint8_t*)full_name + cwd_len, (uint8_t*)name, blen);
-            full_name[cwd_len + blen] = '\0';
-        }
-        
-        /* Call VFS_Open */
-        VfsFile fh;
-        uint32_t mode = m68k_get_reg(NULL, M68K_REG_D2);
-        int vfs_mode = (mode == 1006) ? VFS_WRITE : VFS_READ;
-        if (VFS_Open(&fh, full_name, vfs_mode)) {
-            /* Allocate a fake file handle slot */
-            uint32_t handle = allocate_file_handle();
-            if (handle) {
-                g_file_handles[handle] = fh;
-                g_file_modes[handle] = vfs_mode;
-                m68k_set_reg(M68K_REG_D0, handle);
-                return;
-            }
-        }
+        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
+        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+            full_name[i++] = '/';
+        int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
+        full_name[i] = '\0';
+    }
+
+    char vol_name[16];
+    extract_vol_name(full_name, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = 205;
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    uint32_t mode = m68k_get_reg(NULL, M68K_REG_D2);
+    int32_t action = (mode == 1006) ? ACTION_FINDOUTPUT : ACTION_FINDINPUT;
+    int32_t handle = DoPkt(port, action, (int32_t)full_name, (int32_t)mode, 0, 0, 0);
+    if (handle == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = IoErr();
+    } else {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)handle);
     }
 }
 
 static void dos_Close(void)
 {
     uint32_t fh = m68k_get_reg(NULL, M68K_REG_D1);
-    
-    /* Check if this is a VFS file handle */
-    VfsFile *vfs_fh = get_file_handle(fh);
-    if (vfs_fh && vfs_fh->node) {
-        VFS_Close(vfs_fh);
-        vfs_fh->node = NULL;
+
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (ent && ent->type == HTYPE_FILE && ent->u.file.fh.node) {
+        VFS_Close(&ent->u.file.fh);
+        ent->u.file.fh.node = NULL;
     }
-    
+    HandleTable_Free(fh);
     m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+}
+
+static void dos_Read(void)
+{
+    uint32_t fh  = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t buf = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t len = m68k_get_reg(NULL, M68K_REG_D3);
+
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        return;
+    }
+
+    if (buf + len >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        return;
+    }
+
+    uint32_t bytes = VFS_Read(&ent->u.file.fh, g_ram + buf, len);
+    m68k_set_reg(M68K_REG_D0, bytes);
+}
+
+static void dos_Write(void)
+{
+    uint32_t fh  = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t buf = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t len = m68k_get_reg(NULL, M68K_REG_D3);
+
+    /* Console handles */
+    if (fh == DOS_STDOUT_BPTR || fh == DOS_STDIN_BPTR) {
+        if (buf + len < GUEST_RAM_SIZE) {
+            char tmp[4096];
+            uint32_t i;
+            for (i = 0; i < len && buf + i < GUEST_RAM_SIZE; i++)
+                tmp[i] = (char)g_ram[buf + i];
+            tmp[i] = '\0';
+            emu_print(tmp);
+            m68k_set_reg(M68K_REG_D0, len);
+        } else {
+            m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        }
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        return;
+    }
+
+    if (buf + len >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        return;
+    }
+
+    uint32_t bytes = VFS_Write(&ent->u.file.fh, g_ram + buf, len);
+    m68k_set_reg(M68K_REG_D0, bytes);
+}
+
+static void dos_Seek(void)
+{
+    uint32_t fh    = m68k_get_reg(NULL, M68K_REG_D1);
+    int32_t  offset = (int32_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int32_t  mode   = (int32_t)m68k_get_reg(NULL, M68K_REG_D3);
+
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    uint32_t old_pos = ent->u.file.fh.pos;
+    uint32_t size    = VFS_Size(&ent->u.file.fh);
+    uint32_t new_pos = 0;
+    if (mode == OFFSET_CURRENT)      new_pos = old_pos + (uint32_t)offset;
+    else if (mode == OFFSET_END)     new_pos = size + (uint32_t)offset;
+    else if (mode == OFFSET_BEGINNING) new_pos = (uint32_t)offset;
+    else                               new_pos = (uint32_t)offset;
+    VFS_Seek(&ent->u.file.fh, new_pos);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)old_pos);
 }
 
 static void dos_DeleteFile(void)
 {
-    /* D1=name BPTR (BSTR format) */
     uint32_t bptr = m68k_get_reg(NULL, M68K_REG_D1);
-    uint32_t name_ptr = bptr << 2;
-    
-    if (name_ptr >= GUEST_RAM_SIZE || name_ptr < 0x1000) {
-        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-        g_last_err = 205;
+    char name[128];
+    int blen = bstr_to_c(bptr, name, sizeof(name));
+    if (blen == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
         return;
     }
-    
-    char name[64];
-    uint8_t blen = (name_ptr < GUEST_RAM_SIZE) ? g_ram[name_ptr] : 0;
-    if (blen > 63) blen = 63;
-    for (int i = 0; i < (int)blen; i++)
-        name[i] = (char)g_ram[name_ptr + 1 + i];
-    name[blen] = '\0';
-    
-    /* Resolve path using g_cwd if no device specified */
-    char full_name[64];
+
+    char full_name[128];
     int has_device = 0;
-    for (int i = 0; i < (int)blen; i++) {
-        if (name[i] == ':') { has_device = 1; break; }
-    }
+    for (int i = 0; i < blen; i++) if (name[i] == ':') { has_device = 1; break; }
     if (has_device) {
-        emu_memcpy((uint8_t*)full_name, (uint8_t*)name, blen);
-        full_name[blen] = '\0';
+        int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
+        full_name[i] = '\0';
     } else {
-        int cwd_len = 0;
-        while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        emu_memcpy((uint8_t*)full_name, (uint8_t*)g_cwd, cwd_len);
-        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/') {
-            full_name[cwd_len++] = '/';
-        }
-        emu_memcpy((uint8_t*)full_name + cwd_len, (uint8_t*)name, blen);
-        full_name[cwd_len + blen] = '\0';
+        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
+        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+            full_name[i++] = '/';
+        int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
+        full_name[i] = '\0';
     }
-    
-    /* Call VFS_Delete */
-    if (VFS_Delete(full_name)) {
-        m68k_set_reg(M68K_REG_D0, (uint32_t)-1); /* DOSTRUE = success */
-    } else {
+
+    char vol_name[16];
+    extract_vol_name(full_name, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
         m68k_set_reg(M68K_REG_D0, 0);
-        g_last_err = 205;
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
     }
+
+    int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (int32_t)full_name, 0, 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
 static void dos_Rename(void)
 {
-    /* D1=old name BPTR, D2=new name BPTR */
-    /* Not implemented in VFS yet - return error */
-    m68k_set_reg(M68K_REG_D0, 0);
-    g_last_err = 205;
+    uint32_t old_bptr = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t new_bptr = m68k_get_reg(NULL, M68K_REG_D2);
+    char old_name[128], new_name[128];
+    bstr_to_c(old_bptr, old_name, sizeof(old_name));
+    bstr_to_c(new_bptr, new_name, sizeof(new_name));
+
+    char vol_name[16];
+    extract_vol_name(old_name, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t res = DoPkt(port, ACTION_RENAME_OBJECT,
+                        (int32_t)old_name, (int32_t)new_name, 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
 static void dos_SetProtection(void)
 {
-    /* D1=name BPTR, D2=protection mask */
-    /* Not implemented in VFS yet - return error */
-    m68k_set_reg(M68K_REG_D0, 0);
-    g_last_err = 205;
+    uint32_t bptr = m68k_get_reg(NULL, M68K_REG_D1);
+    int32_t mask  = (int32_t)m68k_get_reg(NULL, M68K_REG_D2);
+    char name[128];
+    bstr_to_c(bptr, name, sizeof(name));
+
+    char full_name[128];
+    int has_device = 0;
+    for (int i = 0; name[i]; i++) if (name[i] == ':') { has_device = 1; break; }
+    if (has_device) {
+        int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
+        full_name[i] = '\0';
+    } else {
+        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
+        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+            full_name[i++] = '/';
+        int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
+        full_name[i] = '\0';
+    }
+
+    char vol_name[16];
+    extract_vol_name(full_name, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t res = DoPkt(port, ACTION_SET_PROTECT, (int32_t)full_name, mask, 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
 static void dos_GetVar(void)
 {
-    /* D1=name BPTR, D2=buffer ptr, D3=size, D4=flags
-     * Returns length of value or -1 on error */
-    /* Not implemented yet - return error */
     m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-    g_last_err = 205;
+    g_last_err = ERROR_ACTION_NOT_KNOWN;
 }
 
 static void dos_SetVar(void)
 {
-    /* D1=name BPTR, D2=value BPTR, D3=size, D4=flags
-     * Returns DOSTRUE on success */
-    /* Not implemented yet - return error */
     m68k_set_reg(M68K_REG_D0, 0);
-    g_last_err = 205;
+    g_last_err = ERROR_ACTION_NOT_KNOWN;
 }
 
-/* Stdin data to feed LHA: "q\n" to quit interactive mode cleanly */
+/* Stdin data to feed LHA: "?\n" to quit interactive mode cleanly */
 static const char g_stdin_data[] = "?\n";
 static int g_stdin_reads = 0;
 
-static void dos_Read(void)
+static void dos_Lock(void)
 {
-    /* D1=fh (BPTR), D2=buf ptr, D3=max len */
-    uint32_t fh = m68k_get_reg(NULL, M68K_REG_D1);
-    uint32_t buf = m68k_get_reg(NULL, M68K_REG_D2);
-    uint32_t len = m68k_get_reg(NULL, M68K_REG_D3);
-    
-    /* Check if this is a VFS file handle */
-    VfsFile *vfs_fh = get_file_handle(fh);
-    if (vfs_fh) {
-        if (vfs_fh->node) {
-            /* Read from VFS file */
-            if (buf + len < GUEST_RAM_SIZE) {
-                uint32_t bytes_read = VFS_Read(vfs_fh, g_ram + buf, len);
-                m68k_set_reg(M68K_REG_D0, bytes_read);
-                return;
-            }
-        }
+    uint32_t bptr  = m68k_get_reg(NULL, M68K_REG_D1);
+    int32_t  mode  = (int32_t)m68k_get_reg(NULL, M68K_REG_D2);
+    char name[128];
+    bstr_to_c(bptr, name, sizeof(name));
+
+    char full_name[128];
+    int has_device = 0;
+    for (int i = 0; name[i]; i++) if (name[i] == ':') { has_device = 1; break; }
+    if (has_device) {
+        int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
+        full_name[i] = '\0';
+    } else {
+        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
+        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+            full_name[i++] = '/';
+        int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
+        full_name[i] = '\0';
     }
-    
-    /* Otherwise return EOF */
-    m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+
+    char vol_name[16];
+    extract_vol_name(full_name, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)full_name, mode, 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)handle);
+}
+
+static void dos_Unlock(void)
+{
+    uint32_t lock = m68k_get_reg(NULL, M68K_REG_D1);
+    if (lock == 0) {
+        m68k_set_reg(M68K_REG_D0, DOSTRUE);
+        return;
+    }
+    HandleTable_Free(lock);
+    m68k_set_reg(M68K_REG_D0, DOSTRUE);
+}
+
+static void dos_Examine(void)
+{
+    uint32_t lock = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t fib_bptr = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t fib_ptr  = fib_bptr << 2;
+
+    if (fib_ptr >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_Get(lock);
+    if (!ent || ent->type != HTYPE_LOCK) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    char vol_name[16];
+    extract_vol_name(ent->path, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t res = DoPkt(port, ACTION_EXAMINE_OBJECT, (int32_t)lock,
+                        (int32_t)(g_ram + fib_ptr), 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)res);
+}
+
+static void dos_ExamineNext(void)
+{
+    uint32_t lock = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t fib_bptr = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t fib_ptr  = fib_bptr << 2;
+
+    if (fib_ptr >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_Get(lock);
+    if (!ent || ent->type != HTYPE_LOCK) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_OBJECT_NOT_FOUND;
+        return;
+    }
+
+    char vol_name[16];
+    extract_vol_name(ent->path, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t res = DoPkt(port, ACTION_EXAMINE_NEXT, (int32_t)lock,
+                        (int32_t)(g_ram + fib_ptr), 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)res);
+}
+
+static void dos_CreateDir(void)
+{
+    uint32_t bptr = m68k_get_reg(NULL, M68K_REG_D1);
+    char name[128];
+    bstr_to_c(bptr, name, sizeof(name));
+
+    char full_name[128];
+    int has_device = 0;
+    for (int i = 0; name[i]; i++) if (name[i] == ':') { has_device = 1; break; }
+    if (has_device) {
+        int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
+        full_name[i] = '\0';
+    } else {
+        int cwd_len = 0; while (g_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_cwd[i]; i++; }
+        if (cwd_len > 0 && g_cwd[cwd_len-1] != ':' && g_cwd[cwd_len-1] != '/')
+            full_name[i++] = '/';
+        int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
+        full_name[i] = '\0';
+    }
+
+    char vol_name[16];
+    extract_vol_name(full_name, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        g_last_err = ERROR_DEVICE_NOT_MOUNTED;
+        return;
+    }
+
+    int32_t res = DoPkt(port, ACTION_CREATE_DIR, (int32_t)full_name, 0, 0, 0, 0);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
 static void dos_Exit(void)
@@ -1316,6 +1522,12 @@ int m68k_illg_instr_callback(int opcode)
             case DOS_SETPROTECTION:  dos_SetProtection();  break;
             case DOS_GETVAR:         dos_GetVar();         break;
             case DOS_SETVAR:         dos_SetVar();         break;
+            case DOS_SEEK:           dos_Seek();           break;
+            case DOS_LOCK:           dos_Lock();           break;
+            case DOS_UNLOCK:         dos_Unlock();         break;
+            case DOS_EXAMINE:        dos_Examine();        break;
+            case DOS_EXAMINE_NEXT:   dos_ExamineNext();    break;
+            case DOS_CREATE_DIR:     dos_CreateDir();      break;
             case DOS_WRITE:  dos_Write();  break;
             case DOS_OPEN:   dos_Open();   break;
             case DOS_CLOSE:  dos_Close();  break;

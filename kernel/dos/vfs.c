@@ -2,6 +2,8 @@
 
 #include "vfs.h"
 #include "ramfs.h"
+#include "ram_handler.h"
+#include "handle_table.h"
 #include "boot/kprint.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -14,7 +16,8 @@
 
 typedef struct {
     char      vol_name[16]; /* e.g. "RAM" (no colon) */
-    RamFsVol *vol;
+    RamFsVol *vol;          /* direct pointer for native VFS access */
+    Handler  *handler;      /* packet handler for DoPkt routing */
 } MountEntry;
 
 static MountEntry g_mounts[MAX_MOUNTS];
@@ -59,18 +62,17 @@ static int seq_ci(const char *a, const char *b)
     return ca == cb;
 }
 
-/* Find mounted volume by name (case-insensitive) */
-static RamFsVol *find_vol(const char *name)
+/* Find mount entry by name (case-insensitive) */
+static MountEntry *find_mount(const char *name)
 {
     /* First check if this is an assign */
     const char *assign_target = VFS_ResolveAssign(name);
     if (assign_target) {
-        /* Resolve the target volume */
         char target_vol[16];
         if (extract_vol(assign_target, target_vol, 16)) {
             for (int i = 0; i < g_n_mounts; i++)
                 if (seq_ci(g_mounts[i].vol_name, target_vol))
-                    return g_mounts[i].vol;
+                    return &g_mounts[i];
         }
         return NULL;
     }
@@ -78,8 +80,22 @@ static RamFsVol *find_vol(const char *name)
     /* Direct volume lookup */
     for (int i = 0; i < g_n_mounts; i++)
         if (seq_ci(g_mounts[i].vol_name, name))
-            return g_mounts[i].vol;
+            return &g_mounts[i];
     return NULL;
+}
+
+/* Find mounted volume by name (case-insensitive) */
+static RamFsVol *find_vol(const char *name)
+{
+    MountEntry *m = find_mount(name);
+    return m ? m->vol : NULL;
+}
+
+/* Find handler by name (case-insensitive) */
+static Handler *find_handler(const char *name)
+{
+    MountEntry *m = find_mount(name);
+    return m ? m->handler : NULL;
 }
 
 /* Get the actual target path for a path that may contain assigns.
@@ -123,14 +139,15 @@ static const char *resolve_assign_path(const char *path, char *dst, int max)
 static const char *expand_with_target(const char *path, int vol_len,
                                       const char *target, char *dst, int max);
 
-/* Register a mounted volume */
-static void register_mount(const char *name, RamFsVol *vol)
+/* Register a mounted volume with an associated packet handler */
+static void register_mount(const char *name, RamFsVol *vol, Handler *handler)
 {
     if (g_n_mounts >= MAX_MOUNTS) return;
     int i = 0;
     while (i < 15 && name[i]) { g_mounts[g_n_mounts].vol_name[i] = name[i]; i++; }
     g_mounts[g_n_mounts].vol_name[i] = '\0';
-    g_mounts[g_n_mounts].vol = vol;
+    g_mounts[g_n_mounts].vol     = vol;
+    g_mounts[g_n_mounts].handler = handler;
     g_n_mounts++;
 }
 
@@ -141,11 +158,13 @@ static void register_mount(const char *name, RamFsVol *vol)
 void VFS_Init(void)
 {
     RamFS_Init();
+    HandleTable_Init();
 
     /* Mount RAM: */
     RamFsVol *ram = RamFS_MountVol("RAM");
     if (!ram) return;
-    register_mount("RAM", ram);
+    Handler *ram_handler = RamHandler_Create("ram-handler", ram);
+    register_mount("RAM", ram, ram_handler);
 
     /* Standard AmigaDOS RAM disk directories */
     RamFS_MkDir(ram, "RAM:T");
@@ -197,7 +216,8 @@ int VFS_MountPartition(const char *name)
     RamFsVol *vol = RamFS_MountVol(name);
     if (!vol) return -1;
 
-    register_mount(name, vol);
+    Handler *handler = RamHandler_Create(name, vol);
+    register_mount(name, vol, handler);
     return 0;
 }
 
@@ -213,7 +233,8 @@ int VFS_MountExistingVol(const char *name, RamFsVol *vol)
 
     if (g_n_mounts >= MAX_MOUNTS) return -1;
 
-    register_mount(name, vol);
+    Handler *handler = RamHandler_Create(name, vol);
+    register_mount(name, vol, handler);
     return 0;
 }
 
@@ -253,9 +274,10 @@ static int is_nil(const char *path)
 
 int VFS_Open(VfsFile *fh, const char *path, int flags)
 {
-    fh->node = NULL;
-    fh->pos  = 0;
-    fh->nil  = 0;
+    fh->node      = NULL;
+    fh->pos       = 0;
+    fh->nil       = 0;
+    fh->handle_id = 0;
 
     /* Check if this is a multi-assign path */
     char vol_name[16];
@@ -921,4 +943,24 @@ const char *VFS_ExpandAssigns(const char *path, char *dst, int max)
     while (i < max - 1 && path[i]) { dst[i] = path[i]; i++; }
     dst[i] = '\0';
     return dst;
+}
+
+/* -------------------------------------------------------------------------
+ * AmigaDOS Handler Support
+ * ------------------------------------------------------------------------- */
+
+Handler *VFS_FindHandler(const char *vol_name)
+{
+    return find_handler(vol_name);
+}
+
+MsgPort *VFS_GetHandlerPort(const char *vol_name)
+{
+    Handler *h = find_handler(vol_name);
+    return h ? &h->port : NULL;
+}
+
+RamFsVol *VFS_FindVol(const char *vol_name)
+{
+    return find_vol(vol_name);
 }

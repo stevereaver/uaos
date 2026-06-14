@@ -12,14 +12,16 @@
 
 #include <stdint.h>
 #include "ramfs.h"
+#include "dos/handler.h"
 
 /* -------------------------------------------------------------------------
  * File handle (returned by VFS_Open)
  * ------------------------------------------------------------------------- */
 typedef struct {
-    RamFsNode *node;    /* NULL = invalid / not open */
-    uint32_t   pos;     /* current read/write position */
-    int        nil;     /* 1 = NIL: handle (discard writes, EOF on read) */
+    RamFsNode *node;     /* NULL = invalid / not open */
+    uint32_t   pos;      /* current read/write position */
+    int        nil;      /* 1 = NIL: handle (discard writes, EOF on read) */
+    uint32_t   handle_id;/* global HandleTable ID (0 = not tracked) */
 } VfsFile;
 
 /* -------------------------------------------------------------------------
@@ -119,6 +121,22 @@ int VFS_SetComment(const char *path, const char *comment);
 
 /* Rename a volume. Returns 0 on success, -1 if not found. */
 int VFS_RenameVol(const char *old_name, const char *new_name);
+
+/* -------------------------------------------------------------------------
+ * AmigaDOS Handler Support
+ * ------------------------------------------------------------------------- */
+
+/* Look up a mounted volume's packet handler by name (e.g. "RAM").
+ * Returns NULL if the volume is not mounted. */
+Handler *VFS_FindHandler(const char *vol_name);
+
+/* Get the MsgPort of a mounted volume's handler.
+ * Returns NULL if the volume is not mounted. */
+MsgPort *VFS_GetHandlerPort(const char *vol_name);
+
+/* Get the RamFsVol backing a mounted volume (for direct native access).
+ * Returns NULL if the volume is not mounted. */
+RamFsVol *VFS_FindVol(const char *vol_name);
 
 /* -------------------------------------------------------------------------
  * AmigaDOS Assign Support

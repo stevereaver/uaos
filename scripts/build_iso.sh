@@ -319,6 +319,9 @@ for src in \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
     "${REPO_ROOT}/kernel/dos/ramfs.c" \
     "${REPO_ROOT}/kernel/dos/vfs.c" \
+    "${REPO_ROOT}/kernel/dos/handle_table.c" \
+    "${REPO_ROOT}/kernel/dos/handler.c" \
+    "${REPO_ROOT}/kernel/dos/ram_handler.c" \
     "${REPO_ROOT}/kernel/dos/blockdev.c" \
     "${REPO_ROOT}/kernel/dos/partition.c" \
     "${REPO_ROOT}/kernel/dos/dma.c" \
@@ -561,6 +564,9 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
     "${BUILD_DIR}/obj/ramfs.o" \
     "${BUILD_DIR}/obj/vfs.o" \
+    "${BUILD_DIR}/obj/handle_table.o" \
+    "${BUILD_DIR}/obj/handler.o" \
+    "${BUILD_DIR}/obj/ram_handler.o" \
     "${BUILD_DIR}/obj/blockdev.o" \
     "${BUILD_DIR}/obj/partition.o" \
     "${BUILD_DIR}/obj/dma.o" \
