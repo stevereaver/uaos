@@ -475,3 +475,15 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name)
     vol->name[i] = '\0';
     return 0;
 }
+
+void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes)
+{
+    (void)vol; /* all volumes share the same global pool */
+    uint32_t used = 0;
+    for (int i = 0; i < RAMFS_MAX_NODES; i++) {
+        if (g_nodes[i].type == RAMFS_TYPE_FILE)
+            used += g_nodes[i].size;
+    }
+    *total_bytes = (uint32_t)sizeof(g_pool);
+    *used_bytes  = used;
+}

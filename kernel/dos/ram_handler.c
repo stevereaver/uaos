@@ -297,8 +297,26 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Disk info ===== */
     case ACTION_DISK_INFO:
     case ACTION_INFO: {
-        /* Stub: return success with zeroed info.
-         * Real implementation would fill struct InfoData*. */
+        InfoData *id = (InfoData *)pkt->dp_Arg2;
+        if (!id) {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+            break;
+        }
+
+        uint32_t total_bytes = 0, used_bytes = 0;
+        RamFS_GetVolumeStats(vol, &total_bytes, &used_bytes);
+
+        id->id_NumBlocks     = (int32_t)(total_bytes / 512);
+        id->id_NumBlocksUsed = (int32_t)(used_bytes / 512);
+        id->id_BytesPerBlock = 512;
+        id->id_DiskState     = ID_VALIDATED;
+        id->id_NumSoftErrors = 0;
+        id->id_UnitNumber    = 0;
+        id->id_DiskType      = ID_DOS_DISK;
+        id->id_VolumeNode    = 0;
+        id->id_InUse         = 1;
+
         pkt->dp_Res1 = DOSTRUE;
         break;
     }

@@ -117,4 +117,34 @@ typedef struct DosList {
     } u;
 } DosList;
 
+/* -------------------------------------------------------------------------
+ * InfoData — filled by ACTION_DISK_INFO / ACTION_INFO (Info())
+ * ------------------------------------------------------------------------- */
+typedef struct InfoData {
+    int32_t id_NumBlocks;       /* total number of blocks */
+    int32_t id_NumBlocksUsed;   /* blocks in use */
+    int32_t id_BytesPerBlock;   /* bytes per block */
+    int32_t id_DiskState;       /* disk state */
+    int32_t id_NumSoftErrors;   /* number of soft errors */
+    int32_t id_UnitNumber;      /* unit number */
+    int32_t id_DiskType;        /* disk type code */
+    int32_t id_VolumeNode;      /* volume node */
+    int32_t id_InUse;           /* in-use flag */
+} InfoData;
+
+/* Disk state values */
+#define ID_VALIDATED         0
+#define ID_WRITE_PROTECTED   1
+#define ID_ERROR             2
+#define ID_NO_DISK_PRESENT   3
+
+/* Common disk type IDs */
+#define ID_DOS_DISK     0x444F5300  /* 'DOS\0' */
+#define ID_FFS_DISK     0x444F5301  /* 'DOS\1' FFS */
+#define ID_INTER_DOS    0x444F5302  /* international mode */
+#define ID_INTER_FFS    0x444F5303
+#define ID_FASTDIR_DOS  0x444F5304
+#define ID_FASTDIR_FFS  0x444F5305
+#define ID_KICKSTART    0x4B49434B  /* 'KICK' */
+
 #endif

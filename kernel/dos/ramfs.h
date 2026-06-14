@@ -117,4 +117,8 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name);
 /* Rename a node (move within the same volume). Returns 0 on success. */
 int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path);
 
+/* Get volume capacity statistics.
+ * total = total pool bytes, used = sum of all file data sizes. */
+void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes);
+
 #endif

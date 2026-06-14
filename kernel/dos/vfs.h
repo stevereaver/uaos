@@ -125,6 +125,10 @@ int VFS_RenameVol(const char *old_name, const char *new_name);
 /* Rename a file or directory. Returns 0 on success, -1 on failure. */
 int VFS_Rename(const char *old_path, const char *new_path);
 
+/* Get volume capacity statistics for a path (uses volume prefix).
+ * Returns 0 on success, -1 if volume not found. */
+int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_bytes);
+
 /* -------------------------------------------------------------------------
  * AmigaDOS Handler Support
  * ------------------------------------------------------------------------- */

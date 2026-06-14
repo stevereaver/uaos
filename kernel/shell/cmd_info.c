@@ -45,9 +45,24 @@ void Cmd_Info(NativeCmdCtx *ctx, const char *args)
 
         /* Handle RAM: special case */
         if (cmd_seq(devname, "RAM") || cmd_seq(devname, "RAM:")) {
-            PRINT("Unit: RAM:");
-            PRINT("Size: Dynamic");
-            PRINT("Status: Read/Write");
+            uint32_t total = 0, used = 0;
+            VFS_GetVolumeInfo("RAM:", &total, &used);
+            uint32_t free = total - used;
+            char sz[16], usz[16], fsz[16];
+            sz[0] = usz[0] = fsz[0] = '\0';
+            format_cap(total, sz, 16);
+            format_cap(used, usz, 16);
+            format_cap(free, fsz, 16);
+
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "Unit: RAM:", CMD_MAX_LINE); PRINT(msg);
+            cmd_scopy(msg, "Size: ", CMD_MAX_LINE);
+            cmd_scat(msg, sz, CMD_MAX_LINE); PRINT(msg);
+            cmd_scopy(msg, "Used: ", CMD_MAX_LINE);
+            cmd_scat(msg, usz, CMD_MAX_LINE); PRINT(msg);
+            cmd_scopy(msg, "Free: ", CMD_MAX_LINE);
+            cmd_scat(msg, fsz, CMD_MAX_LINE); PRINT(msg);
+            cmd_scopy(msg, "Status: Read/Write", CMD_MAX_LINE); PRINT(msg);
             return;
         }
 
@@ -119,15 +134,28 @@ void Cmd_Info(NativeCmdCtx *ctx, const char *args)
         dev = dev->next;
     }
 
-    /* RAM: pseudo-entry */
+    /* RAM: entry */
     {
+        uint32_t total = 0, used = 0;
+        VFS_GetVolumeInfo("RAM:", &total, &used);
+        uint32_t free = (total > used) ? (total - used) : 0;
+        int full_pct = (total > 0) ? (int)((used * 100ULL) / total) : 0;
+
+        char sz[16], usz[16], fsz[16], pct[8];
+        sz[0] = usz[0] = fsz[0] = pct[0] = '\0';
+        format_cap(total, sz, 16);
+        format_cap(used, usz, 16);
+        format_cap(free, fsz, 16);
+        cmd_uint_to_dec((uint32_t)full_pct, pct, 8);
+        cmd_scat(pct, "%", 8);
+
         char line[CMD_MAX_LINE];
         line[0] = '\0';
         pad_field(line, "RAM:",       CMD_MAX_LINE, 10);
-        pad_field(line, "Dynamic",    CMD_MAX_LINE, 11);
-        pad_field(line, "0",          CMD_MAX_LINE, 11);
-        pad_field(line, "\xe2\x80\x94", CMD_MAX_LINE, 11); /* em dash */
-        pad_field(line, "0%",         CMD_MAX_LINE,  6);
+        pad_field(line, sz,           CMD_MAX_LINE, 11);
+        pad_field(line, usz,          CMD_MAX_LINE, 11);
+        pad_field(line, fsz,          CMD_MAX_LINE, 11);
+        pad_field(line, pct,          CMD_MAX_LINE,  6);
         pad_field(line, "0",          CMD_MAX_LINE,  5);
         pad_field(line, "Read/Write", CMD_MAX_LINE, 14);
         pad_field(line, "RAM",        CMD_MAX_LINE, 10);
