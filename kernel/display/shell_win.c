@@ -1373,7 +1373,7 @@ static void inst_cmd_assign(ShellInstance *s, const char *arg)
             inst_print(s, "No assigns defined.");
         }
         inst_print(s, "");
-        inst_print(s, "Usage: assign <name>: <target>");
+        inst_print(s, "Usage: assign <name>: <target> [ADD | DEFER]");
         inst_print(s, "Example: assign C: Workbench:C");
         return;
     }
@@ -1409,23 +1409,45 @@ static void inst_cmd_assign(ShellInstance *s, const char *arg)
         while (*p == ' ') p++;
     }
 
-    /* Extract target */
+    /* Extract target (stop before ADD / DEFER) */
     int ti = 0;
-    while (*p && ti < 63) {
+    while (*p && *p != ' ' && ti < 63) {
         target[ti++] = *p++;
     }
     target[ti] = '\0';
 
+    while (*p == ' ') p++;
+
+    /* Check for ADD / DEFER keywords */
+    int add = 0;
+    int defer = 0;
+    if ((p[0] == 'A' || p[0] == 'a') &&
+        (p[1] == 'D' || p[1] == 'd') &&
+        (p[2] == 'D' || p[2] == 'd') &&
+        (p[3] == '\0' || p[3] == ' ')) {
+        add = 1;
+        p += 3;
+        while (*p == ' ') p++;
+    }
+    if ((p[0] == 'D' || p[0] == 'd') &&
+        (p[1] == 'E' || p[1] == 'e') &&
+        (p[2] == 'F' || p[2] == 'f') &&
+        (p[3] == 'E' || p[3] == 'e') &&
+        (p[4] == 'R' || p[4] == 'r') &&
+        (p[5] == '\0' || p[5] == ' ')) {
+        defer = 1;
+    }
+
     if (!name[0] || !target[0]) {
-        inst_print(s, "Usage: assign <name>: <target>");
+        inst_print(s, "Usage: assign <name>: <target> [ADD | DEFER]");
         inst_print(s, "Example: assign C: Workbench:C");
         return;
     }
 
     /* Add the assign */
-    if (VFS_AddAssign(name, target) == 0) {
+    if (VFS_AddAssign(name, target, add, defer) == 0) {
         char msg[MAX_LINE_LEN];
-        scopy(msg, "Assigned ", MAX_LINE_LEN);
+        scopy(msg, add ? "Added " : "Assigned ", MAX_LINE_LEN);
         scat(msg, name, MAX_LINE_LEN);
         scat(msg, " -> ", MAX_LINE_LEN);
         scat(msg, target, MAX_LINE_LEN);

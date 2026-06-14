@@ -181,25 +181,36 @@ void UAOS_LoadableLib_Init(void)
     g_next_lib_id = 6;
     g_next_base = 0x6000;
 
-    RamFsNode *node = VFS_OpenDir("Workbench:LIBS");
-    if (!node) {
-        kprint("[LOADABLE] Workbench:LIBS not found.\n");
+    int target_count = VFS_GetAssignTargetCount("LIBS");
+    if (target_count == 0) {
+        kprint("[LOADABLE] LIBS: assign not found.\n");
         return;
     }
 
-    int found = 0;
-    while (node) {
-        if (node->type == RAMFS_TYPE_FILE && ends_with(node->name, ".library")) {
-            char path[128];
-            scopy(path, "Workbench:LIBS/", 128);
-            scat(path, node->name, 128);
-            parse_library_file(path);
-            found++;
+    int total_found = 0;
+    for (int t = 0; t < target_count; t++) {
+        const char *target = VFS_GetAssignTarget("LIBS", t);
+        if (!target) continue;
+
+        RamFsNode *node = VFS_OpenDir(target);
+        if (!node) continue;
+
+        int found = 0;
+        while (node) {
+            if (node->type == RAMFS_TYPE_FILE && ends_with(node->name, ".library")) {
+                char path[128];
+                scopy(path, target, 128);
+                if (path[slen(path) - 1] != '/') scat(path, "/", 128);
+                scat(path, node->name, 128);
+                parse_library_file(path);
+                found++;
+            }
+            node = node->next_sibling;
         }
-        node = node->next_sibling;
+        total_found += found;
     }
 
-    if (found == 0)
+    if (total_found == 0)
         kprint("[LOADABLE] No .library files found.\n");
 }
 

@@ -115,22 +115,33 @@ int VFS_SetAttrs(const char *path, uint8_t attrs);
  * ------------------------------------------------------------------------- */
 
 /* Add an assign: maps assign_name -> target_path.
+ *   add   : 1 = append to existing multi-assign, 0 = overwrite/create
+ *   defer : 1 = skip target validation (DEFER), 0 = validate immediately
  * Returns 0 on success, -1 on failure (table full or invalid path). */
-int VFS_AddAssign(const char *assign_name, const char *target_path);
+int VFS_AddAssign(const char *assign_name, const char *target_path,
+                  int add, int defer);
 
 /* Remove an assign by name. Returns 0 on success, -1 if not found. */
 int VFS_RemoveAssign(const char *assign_name);
 
-/* Resolve an assign name to its target path.
+/* Resolve an assign name to its first target path.
  * Returns pointer to static buffer, or NULL if not an assign.
  * The returned string is valid until next call. */
 const char *VFS_ResolveAssign(const char *assign_name);
 
+/* Return the number of targets for a multi-assign. 0 = not found. */
+int VFS_GetAssignTargetCount(const char *assign_name);
+
+/* Return the i-th target of an assign (0-based). NULL if out of range. */
+const char *VFS_GetAssignTarget(const char *assign_name, int idx);
+
 /* List all assigns into buffer (one per line).
- * Returns number of assigns written. */
+ * Multi-assign additional targets shown indented with '+ '.
+ * Returns number of characters written. */
 int VFS_ListAssigns(char *buf, int max);
 
 /* Resolve a path that may contain assigns (e.g., "C:dir" -> "Workbench:C/dir").
+ * Uses the first target for multi-assigns.
  * Writes resolved path to dst[max] and returns dst, or NULL if error.
  * The returned pointer is valid until next call. */
 const char *VFS_ExpandAssigns(const char *path, char *dst, int max);

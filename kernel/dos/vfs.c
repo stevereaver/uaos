@@ -119,6 +119,10 @@ static const char *resolve_assign_path(const char *path, char *dst, int max)
     return dst;
 }
 
+/* Forward declaration — defined in the Assign Support section below */
+static const char *expand_with_target(const char *path, int vol_len,
+                                      const char *target, char *dst, int max);
+
 /* Register a mounted volume */
 static void register_mount(const char *name, RamFsVol *vol)
 {
@@ -164,13 +168,13 @@ void VFS_SetupWorkbenchAssigns(void)
     kprint("[VFS] Creating Workbench assigns...\n");
 
     /* Create standard AmigaDOS assigns pointing to Workbench subdirectories */
-    if (VFS_AddAssign("C", "Workbench:C") == 0) kprint("[VFS]  C: -> Workbench:C\n");
-    if (VFS_AddAssign("S", "Workbench:S") == 0) kprint("[VFS]  S: -> Workbench:S\n");
-    if (VFS_AddAssign("L", "Workbench:L") == 0) kprint("[VFS]  L: -> Workbench:L\n");
-    if (VFS_AddAssign("DEVS", "Workbench:DEVS") == 0) kprint("[VFS]  DEVS: -> Workbench:DEVS\n");
-    if (VFS_AddAssign("LIBS", "Workbench:LIBS") == 0) kprint("[VFS]  LIBS: -> Workbench:LIBS\n");
-    if (VFS_AddAssign("SYS", "Workbench:SYS") == 0) kprint("[VFS]  SYS: -> Workbench:SYS\n");
-    if (VFS_AddAssign("Tools", "Workbench:Tools") == 0) kprint("[VFS]  Tools: -> Workbench:Tools\n");
+    if (VFS_AddAssign("C", "Workbench:C", 0, 0) == 0) kprint("[VFS]  C: -> Workbench:C\n");
+    if (VFS_AddAssign("S", "Workbench:S", 0, 0) == 0) kprint("[VFS]  S: -> Workbench:S\n");
+    if (VFS_AddAssign("L", "Workbench:L", 0, 0) == 0) kprint("[VFS]  L: -> Workbench:L\n");
+    if (VFS_AddAssign("DEVS", "Workbench:DEVS", 0, 0) == 0) kprint("[VFS]  DEVS: -> Workbench:DEVS\n");
+    if (VFS_AddAssign("LIBS", "Workbench:LIBS", 0, 0) == 0) kprint("[VFS]  LIBS: -> Workbench:LIBS\n");
+    if (VFS_AddAssign("SYS", "Workbench:SYS", 0, 0) == 0) kprint("[VFS]  SYS: -> Workbench:SYS\n");
+    if (VFS_AddAssign("Tools", "Workbench:Tools", 0, 0) == 0) kprint("[VFS]  Tools: -> Workbench:Tools\n");
 }
 
 /* =========================================================================
@@ -252,7 +256,40 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
     fh->pos  = 0;
     fh->nil  = 0;
 
-    /* Expand assigns in path */
+    /* Check if this is a multi-assign path */
+    char vol_name[16];
+    int vl = extract_vol(path, vol_name, 16);
+
+    int target_count = 0;
+    if (vl) target_count = VFS_GetAssignTargetCount(vol_name);
+
+    if (target_count > 1 && !(flags & VFS_CREATE)) {
+        /* Multi-assign file search: try each target in order */
+        char resolved_path[128];
+        for (int t = 0; t < target_count; t++) {
+            const char *target = VFS_GetAssignTarget(vol_name, t);
+            if (!target) continue;
+            expand_with_target(path, vl, target, resolved_path,
+                               sizeof(resolved_path));
+
+            char rvol[16];
+            if (!extract_vol(resolved_path, rvol, 16)) continue;
+            RamFsVol *vol = find_vol(rvol);
+            if (!vol) continue;
+
+            RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+            if (node && node->type == RAMFS_TYPE_FILE) {
+                if (flags & VFS_TRUNC) node->size = 0;
+                fh->node = node;
+                fh->pos = 0;
+                return 1;
+            }
+        }
+        /* Not found in any target */
+        return 0;
+    }
+
+    /* Standard single-target resolution (also used for CREATE) */
     char resolved_path[128];
     if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return 0;
 
@@ -261,10 +298,10 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
         return 1;
     }
 
-    char vol_name[16];
-    if (!extract_vol(resolved_path, vol_name, 16)) return 0;
+    char rvol[16];
+    if (!extract_vol(resolved_path, rvol, 16)) return 0;
 
-    RamFsVol *vol = find_vol(vol_name);
+    RamFsVol *vol = find_vol(rvol);
     if (!vol) return 0;
 
     RamFsNode *node = RamFS_Resolve(vol, resolved_path);
@@ -382,21 +419,56 @@ int VFS_Delete(const char *path)
 
 RamFsNode *VFS_OpenDir(const char *path)
 {
+    /* Check if this is a multi-assign path */
+    char vol_name[16];
+    int vl = extract_vol(path, vol_name, 16);
+
+    int target_count = 0;
+    if (vl) target_count = VFS_GetAssignTargetCount(vol_name);
+
+    if (target_count > 1) {
+        /* Multi-assign: return the first existing directory */
+        char resolved_path[128];
+        for (int t = 0; t < target_count; t++) {
+            const char *target = VFS_GetAssignTarget(vol_name, t);
+            if (!target) continue;
+            expand_with_target(path, vl, target, resolved_path,
+                               sizeof(resolved_path));
+
+            char rvol[16];
+            int rvl = extract_vol(resolved_path, rvol, 16);
+            if (!rvl) continue;
+            RamFsVol *vol = find_vol(rvol);
+            if (!vol) continue;
+
+            const char *after = resolved_path + rvl + 1;
+            while (*after == '/') after++;
+            if (*after == '\0') {
+                return vol->root ? vol->root->first_child : NULL;
+            }
+
+            RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+            if (node && node->type == RAMFS_TYPE_DIR)
+                return node->first_child;
+        }
+        return NULL;
+    }
+
+    /* Standard single-target resolution */
     char resolved_path[128];
     if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return NULL;
 
-    char vol_name[16];
-    int vl = extract_vol(resolved_path, vol_name, 16);
-    if (!vl) return NULL;
+    char rvol[16];
+    int rvl = extract_vol(resolved_path, rvol, 16);
+    if (!rvl) return NULL;
 
-    RamFsVol *vol = find_vol(vol_name);
+    RamFsVol *vol = find_vol(rvol);
     if (!vol) return NULL;
 
     /* Handle bare volume root like "Workbench:" */
-    const char *after = resolved_path + vl + 1; /* skip colon */
+    const char *after = resolved_path + rvl + 1;
     while (*after == '/') after++;
     if (*after == '\0') {
-        /* Path is just the volume root */
         return vol->root ? vol->root->first_child : NULL;
     }
 
@@ -407,24 +479,59 @@ RamFsNode *VFS_OpenDir(const char *path)
 
 RamFsNode *VFS_ResolveDir(const char *path)
 {
+    /* Check if this is a multi-assign path */
+    char vol_name[16];
+    int vl = extract_vol(path, vol_name, 16);
+
+    int target_count = 0;
+    if (vl) target_count = VFS_GetAssignTargetCount(vol_name);
+
+    if (target_count > 1) {
+        /* Multi-assign: return the first existing directory */
+        char resolved_path[128];
+        for (int t = 0; t < target_count; t++) {
+            const char *target = VFS_GetAssignTarget(vol_name, t);
+            if (!target) continue;
+            expand_with_target(path, vl, target, resolved_path,
+                               sizeof(resolved_path));
+
+            char rvol[16];
+            int rvl = extract_vol(resolved_path, rvol, 16);
+            if (!rvl) continue;
+            RamFsVol *vol = find_vol(rvol);
+            if (!vol) continue;
+
+            const char *after = resolved_path + rvl + 1;
+            while (*after == '/') after++;
+            if (*after == '\0') {
+                return vol->root;
+            }
+
+            RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+            if (node && node->type == RAMFS_TYPE_DIR)
+                return node;
+        }
+        return NULL;
+    }
+
+    /* Standard single-target resolution */
     char resolved_path[128];
     if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return NULL;
 
-    char vol_name[16];
-    int vl = extract_vol(resolved_path, vol_name, 16);
+    char rvol[16];
+    int rvl = extract_vol(resolved_path, rvol, 16);
 
     /* Handle bare volume root like "RAM:" */
-    if (vl > 0) {
-        const char *after = resolved_path + vl + 1; /* skip colon */
+    if (rvl > 0) {
+        const char *after = resolved_path + rvl + 1;
         while (*after == '/') after++;
         if (*after == '\0') {
-            /* Path is just the volume root */
-            RamFsVol *vol = find_vol(vol_name);
+            RamFsVol *vol = find_vol(rvol);
             return vol ? vol->root : NULL;
         }
     }
 
-    RamFsVol *vol = find_vol(vol_name);
+    RamFsVol *vol = find_vol(rvol);
     if (!vol) return NULL;
     RamFsNode *node = RamFS_Resolve(vol, resolved_path);
     if (!node || node->type != RAMFS_TYPE_DIR) return NULL;
@@ -469,17 +576,22 @@ int VFS_SetAttrs(const char *path, uint8_t attrs)
 /* =========================================================================
  * AmigaDOS Assign Support
  * Assigns create logical names that map to physical paths.
- * Example: "Assign C: Workbench:C" makes "C:dir/file" resolve to "Workbench:C/dir/file"
+ * Multi-assign (ADD) allows an assign to resolve to multiple directories.
+ * Example: "Assign LIBS: Workbench:LIBS" then "Assign LIBS: SYS:Classes ADD"
+ * makes "LIBS:foo" search Workbench:LIBS/foo then SYS:Classes/foo.
  * ========================================================================= */
 
 #define MAX_ASSIGNS 16
 #define ASSIGN_MAX_NAME 16
 #define ASSIGN_MAX_PATH 64
+#define ASSIGN_MAX_TARGETS 8
 
 typedef struct {
-    char name[ASSIGN_MAX_NAME];     /* Assign name without colon, e.g., "C" */
-    char target[ASSIGN_MAX_PATH];   /* Target path with colon, e.g., "Workbench:C" */
-    int valid;                      /* 1 = in use, 0 = free */
+    char name[ASSIGN_MAX_NAME];
+    char targets[ASSIGN_MAX_TARGETS][ASSIGN_MAX_PATH];
+    int  target_count;
+    int  valid;
+    int  deferred;
 } AssignEntry;
 
 static AssignEntry g_assigns[MAX_ASSIGNS];
@@ -514,7 +626,36 @@ static void strip_colon(char *dst, const char *src, int max)
     dst[i] = '\0';
 }
 
-int VFS_AddAssign(const char *assign_name, const char *target_path)
+/* Find assign index by name, or -1 if not found */
+static int find_assign_idx(const char *name)
+{
+    for (int i = 0; i < MAX_ASSIGNS; i++) {
+        if (g_assigns[i].valid && seq_ci_assign(g_assigns[i].name, name))
+            return i;
+    }
+    return -1;
+}
+
+/* Expand a path using a specific assign target (not looking up the assign).
+ * path = "C:dir/file", vol_len = 1 (length of "C"), target = "Workbench:C"
+ * result = "Workbench:C/dir/file" */
+static const char *expand_with_target(const char *path, int vol_len,
+                                      const char *target, char *dst, int max)
+{
+    int ti = 0;
+    while (ti < max - 1 && target[ti]) { dst[ti] = target[ti]; ti++; }
+
+    const char *rest = path + vol_len + 1; /* skip "VOL:" */
+    if (*rest) {
+        if (ti < max - 1 && target[ti - 1] != ':') dst[ti++] = '/';
+        while (ti < max - 1 && *rest) { dst[ti++] = *rest++; }
+    }
+    dst[ti] = '\0';
+    return dst;
+}
+
+int VFS_AddAssign(const char *assign_name, const char *target_path,
+                  int add, int defer)
 {
     if (!assign_name || !*assign_name || !target_path || !*target_path)
         return -1;
@@ -524,31 +665,57 @@ int VFS_AddAssign(const char *assign_name, const char *target_path)
     strip_colon(name, assign_name, ASSIGN_MAX_NAME);
     if (!name[0]) return -1;
 
-    /* Check if target path exists (must be a valid volume) */
-    char test_vol[16];
-    if (!extract_vol(target_path, test_vol, 16)) return -1;
-    if (!find_vol(test_vol)) return -1;
-
-    /* Find existing or free slot */
-    int free_idx = -1;
-    for (int i = 0; i < MAX_ASSIGNS; i++) {
-        if (g_assigns[i].valid && seq_ci_assign(g_assigns[i].name, name)) {
-            /* Overwrite existing assign */
-            int ti = 0;
-            while (ti < ASSIGN_MAX_PATH - 1 && target_path[ti]) {
-                g_assigns[i].target[ti] = target_path[ti];
-                ti++;
-            }
-            g_assigns[i].target[ti] = '\0';
-            return 0;
-        }
-        if (!g_assigns[i].valid && free_idx < 0)
-            free_idx = i;
+    /* Validate target path exists unless DEFER is set */
+    if (!defer) {
+        char test_vol[16];
+        if (!extract_vol(target_path, test_vol, 16)) return -1;
+        if (!find_vol(test_vol)) return -1;
     }
 
+    int idx = find_assign_idx(name);
+
+    if (idx >= 0 && add) {
+        /* Append to existing multi-assign */
+        if (g_assigns[idx].target_count >= ASSIGN_MAX_TARGETS)
+            return -1; /* Too many targets */
+        /* Check for duplicate target */
+        for (int t = 0; t < g_assigns[idx].target_count; t++) {
+            if (seq_ci_assign(g_assigns[idx].targets[t], target_path))
+                return 0; /* already present */
+        }
+        int ti = 0;
+        while (ti < ASSIGN_MAX_PATH - 1 && target_path[ti]) {
+            g_assigns[idx].targets[g_assigns[idx].target_count][ti] = target_path[ti];
+            ti++;
+        }
+        g_assigns[idx].targets[g_assigns[idx].target_count][ti] = '\0';
+        g_assigns[idx].target_count++;
+        return 0;
+    }
+
+    if (idx >= 0 && !add) {
+        /* Overwrite existing assign */
+        g_assigns[idx].target_count = 1;
+        int ti = 0;
+        while (ti < ASSIGN_MAX_PATH - 1 && target_path[ti]) {
+            g_assigns[idx].targets[0][ti] = target_path[ti];
+            ti++;
+        }
+        g_assigns[idx].targets[0][ti] = '\0';
+        g_assigns[idx].deferred = defer;
+        return 0;
+    }
+
+    /* Find a free slot for a new assign */
+    int free_idx = -1;
+    for (int i = 0; i < MAX_ASSIGNS; i++) {
+        if (!g_assigns[i].valid) {
+            free_idx = i;
+            break;
+        }
+    }
     if (free_idx < 0) return -1; /* Table full */
 
-    /* Add new assign */
     int ni = 0;
     while (ni < ASSIGN_MAX_NAME - 1 && name[ni]) {
         g_assigns[free_idx].name[ni] = name[ni];
@@ -558,11 +725,13 @@ int VFS_AddAssign(const char *assign_name, const char *target_path)
 
     int ti = 0;
     while (ti < ASSIGN_MAX_PATH - 1 && target_path[ti]) {
-        g_assigns[free_idx].target[ti] = target_path[ti];
+        g_assigns[free_idx].targets[0][ti] = target_path[ti];
         ti++;
     }
-    g_assigns[free_idx].target[ti] = '\0';
+    g_assigns[free_idx].targets[0][ti] = '\0';
+    g_assigns[free_idx].target_count = 1;
     g_assigns[free_idx].valid = 1;
+    g_assigns[free_idx].deferred = defer;
 
     return 0;
 }
@@ -575,15 +744,16 @@ int VFS_RemoveAssign(const char *assign_name)
     strip_colon(name, assign_name, ASSIGN_MAX_NAME);
     if (!name[0]) return -1;
 
-    for (int i = 0; i < MAX_ASSIGNS; i++) {
-        if (g_assigns[i].valid && seq_ci_assign(g_assigns[i].name, name)) {
-            g_assigns[i].valid = 0;
-            g_assigns[i].name[0] = '\0';
-            g_assigns[i].target[0] = '\0';
-            return 0;
-        }
-    }
-    return -1; /* Not found */
+    int idx = find_assign_idx(name);
+    if (idx < 0) return -1;
+
+    g_assigns[idx].valid = 0;
+    g_assigns[idx].name[0] = '\0';
+    for (int t = 0; t < ASSIGN_MAX_TARGETS; t++)
+        g_assigns[idx].targets[t][0] = '\0';
+    g_assigns[idx].target_count = 0;
+    g_assigns[idx].deferred = 0;
+    return 0;
 }
 
 const char *VFS_ResolveAssign(const char *assign_name)
@@ -594,11 +764,36 @@ const char *VFS_ResolveAssign(const char *assign_name)
     strip_colon(name, assign_name, ASSIGN_MAX_NAME);
     if (!name[0]) return NULL;
 
-    for (int i = 0; i < MAX_ASSIGNS; i++) {
-        if (g_assigns[i].valid && seq_ci_assign(g_assigns[i].name, name))
-            return g_assigns[i].target;
-    }
-    return NULL;
+    int idx = find_assign_idx(name);
+    if (idx < 0) return NULL;
+    return g_assigns[idx].targets[0];
+}
+
+int VFS_GetAssignTargetCount(const char *assign_name)
+{
+    if (!assign_name || !*assign_name) return 0;
+
+    char name[ASSIGN_MAX_NAME];
+    strip_colon(name, assign_name, ASSIGN_MAX_NAME);
+    if (!name[0]) return 0;
+
+    int idx = find_assign_idx(name);
+    if (idx < 0) return 0;
+    return g_assigns[idx].target_count;
+}
+
+const char *VFS_GetAssignTarget(const char *assign_name, int idx)
+{
+    if (!assign_name || !*assign_name || idx < 0) return NULL;
+
+    char name[ASSIGN_MAX_NAME];
+    strip_colon(name, assign_name, ASSIGN_MAX_NAME);
+    if (!name[0]) return NULL;
+
+    int ai = find_assign_idx(name);
+    if (ai < 0) return NULL;
+    if (idx >= g_assigns[ai].target_count) return NULL;
+    return g_assigns[ai].targets[idx];
 }
 
 int VFS_ListAssigns(char *buf, int max)
@@ -609,22 +804,34 @@ int VFS_ListAssigns(char *buf, int max)
     buf[0] = '\0';
 
     for (int i = 0; i < MAX_ASSIGNS && total < max - 1; i++) {
-        if (g_assigns[i].valid) {
-            if (total > 0) {
+        if (!g_assigns[i].valid) continue;
+
+        if (total > 0) {
+            if (total < max - 1) buf[total++] = '\n';
+        }
+
+        int ni = 0;
+        while (total < max - 1 && g_assigns[i].name[ni]) {
+            buf[total++] = g_assigns[i].name[ni++];
+        }
+        if (total < max - 1) buf[total++] = ':';
+        if (total < max - 1) buf[total++] = ' ';
+        if (total < max - 1) buf[total++] = '-';
+        if (total < max - 1) buf[total++] = '>';
+        if (total < max - 1) buf[total++] = ' ';
+
+        for (int t = 0; t < g_assigns[i].target_count && total < max - 1; t++) {
+            if (t > 0) {
                 if (total < max - 1) buf[total++] = '\n';
+                /* Indent and '+' for additional targets */
+                if (total < max - 1) buf[total++] = ' ';
+                if (total < max - 1) buf[total++] = ' ';
+                if (total < max - 1) buf[total++] = '+';
+                if (total < max - 1) buf[total++] = ' ';
             }
-            int ni = 0;
-            while (total < max - 1 && g_assigns[i].name[ni]) {
-                buf[total++] = g_assigns[i].name[ni++];
-            }
-            if (total < max - 1) buf[total++] = ':';
-            if (total < max - 1) buf[total++] = ' ';
-            if (total < max - 1) buf[total++] = '-';
-            if (total < max - 1) buf[total++] = '>';
-            if (total < max - 1) buf[total++] = ' ';
             int ti = 0;
-            while (total < max - 1 && g_assigns[i].target[ti]) {
-                buf[total++] = g_assigns[i].target[ti++];
+            while (total < max - 1 && g_assigns[i].targets[t][ti]) {
+                buf[total++] = g_assigns[i].targets[t][ti++];
             }
         }
     }
@@ -653,7 +860,7 @@ const char *VFS_ExpandAssigns(const char *path, char *dst, int max)
     /* Check if it's an assign */
     const char *target = VFS_ResolveAssign(vol_name);
     if (target) {
-        /* It's an assign - expand it */
+        /* It's an assign - expand using first target */
         int ti = 0;
         while (ti < max - 1 && target[ti]) { dst[ti] = target[ti]; ti++; }
         /* Append rest of path after colon */

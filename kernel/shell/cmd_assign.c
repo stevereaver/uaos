@@ -2,6 +2,21 @@
 
 #include "cmd_internal.h"
 
+static int slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
+
+/* Case-insensitive compare of two words (max len bytes) */
+static int kw_match(const char *s, const char *kw)
+{
+    while (*s && *kw) {
+        char cs = *s, ck = *kw;
+        if (cs >= 'A' && cs <= 'Z') cs += 32;
+        if (ck >= 'A' && ck <= 'Z') ck += 32;
+        if (cs != ck) return 0;
+        s++; kw++;
+    }
+    return *kw == '\0';
+}
+
 void Cmd_Assign(NativeCmdCtx *ctx, const char *args)
 {
     if (!args || !*args) {
@@ -28,7 +43,7 @@ void Cmd_Assign(NativeCmdCtx *ctx, const char *args)
             PRINT("No assigns defined.");
         }
         PRINT("");
-        PRINT("Usage: assign <name>: <target>");
+        PRINT("Usage: assign <name>: <target> [ADD | DEFER]");
         PRINT("Example: assign C: Workbench:C");
         return;
     }
@@ -48,31 +63,46 @@ void Cmd_Assign(NativeCmdCtx *ctx, const char *args)
     while (*p == ' ') p++;
 
     /* Optional "TO" keyword */
-    if ((name[0] == 'T' || name[0] == 't') &&
-        (name[1] == 'O' || name[1] == 'o') &&
-        name[2] == '\0') {
+    if (kw_match(name, "to")) {
         ni = 0;
         while (*p && *p != ' ' && ni < 31) { name[ni++] = *p++; }
         name[ni] = '\0';
         while (*p == ' ') p++;
     }
 
+    /* Extract target (stop before ADD / DEFER) */
     int ti = 0;
-    while (*p && ti < 63) { target[ti++] = *p++; }
+    while (*p && *p != ' ' && ti < 63) { target[ti++] = *p++; }
     target[ti] = '\0';
 
+    while (*p == ' ') p++;
+
+    /* Check for ADD / DEFER keywords */
+    int add = 0;
+    int defer = 0;
+    if (kw_match(p, "add")) {
+        add = 1;
+        p += 3;
+        while (*p == ' ') p++;
+        if (kw_match(p, "defer")) defer = 1;
+    } else if (kw_match(p, "defer")) {
+        defer = 1;
+    }
+
     if (!name[0] || !target[0]) {
-        PRINT("Usage: assign <name>: <target>");
+        PRINT("Usage: assign <name>: <target> [ADD | DEFER]");
         PRINT("Example: assign C: Workbench:C");
         return;
     }
 
-    if (VFS_AddAssign(name, target) == 0) {
+    if (VFS_AddAssign(name, target, add, defer) == 0) {
         char msg[CMD_MAX_LINE];
-        cmd_scopy(msg, "Assigned ", CMD_MAX_LINE);
+        cmd_scopy(msg, add ? "Added " : "Assigned ", CMD_MAX_LINE);
         cmd_scat(msg, name, CMD_MAX_LINE);
         cmd_scat(msg, " -> ", CMD_MAX_LINE);
         cmd_scat(msg, target, CMD_MAX_LINE);
+        if (add) cmd_scat(msg, " (ADD)", CMD_MAX_LINE);
+        if (defer) cmd_scat(msg, " (DEFER)", CMD_MAX_LINE);
         PRINT(msg);
     } else {
         PRINT("Failed to create assign.");
