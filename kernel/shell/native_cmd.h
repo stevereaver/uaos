@@ -62,10 +62,23 @@ typedef struct NativeCmdCtx {
      * blocking the UI.  Commands that busy-wait (ping, etc.) must call this
      * instead of raw delay loops so the desktop stays responsive. */
     void      (*yield_ms)(void *shell_extra, uint32_t ms);
+
+    /* Blocking key read — pumps UI events and returns the next ASCII character
+     * typed by the user.  Used by the pager (more) to wait for Space/Enter/q.
+     * Returns 0 if the callback is not set. */
+    char      (*read_key)(void *shell_extra);
+
+    /* Shell window geometry — visible text rows in the history area.
+     * Used by more to compute the page size without hard-coding a number.
+     * 0 means unknown (fall back to a safe default). */
+    int         visible_rows;
 } NativeCmdCtx;
 
 /* Convenience macro — yield N ms from inside a Cmd_* function */
 #define CMD_YIELD(ctx, ms)  do { if ((ctx)->yield_ms) (ctx)->yield_ms((ctx)->shell_extra, (ms)); } while(0)
+
+/* Convenience macro — blocking read of one key from inside a Cmd_* function */
+#define CMD_READ_KEY(ctx)  ((ctx)->read_key ? (ctx)->read_key((ctx)->shell_extra) : (char)0)
 
 /* Convenience macro — emit one line from inside a Cmd_* function */
 #define CMD_PRINT(ctx, msg)  (ctx)->print((ctx)->shell, (msg))
@@ -121,5 +134,6 @@ void Cmd_Nslookup (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ntpd     (NativeCmdCtx *ctx, const char *args);
 void Cmd_ClockWin (NativeCmdCtx *ctx, const char *args);
 void Cmd_Grep     (NativeCmdCtx *ctx, const char *args);
+void Cmd_More     (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

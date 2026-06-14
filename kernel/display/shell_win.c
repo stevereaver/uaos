@@ -2387,6 +2387,43 @@ static void shell_yield_ms(void *shell_extra, uint32_t ms)
     }
 }
 
+/* Blocking key read — spins pumping mouse/WM/network until the user presses
+ * a key, then returns it.  Used by the pager (more) to wait at --More--
+ * prompts without freezing the desktop. */
+static char shell_read_key(void *shell_extra)
+{
+    (void)shell_extra;
+    static int last_mx = -1, last_my = -1, last_btn = -1;
+
+    for (;;) {
+        /* ~1 ms of CPU spin */
+        volatile uint32_t n = 100000UL;
+        while (n--) __asm__ volatile("pause");
+
+        /* Pump mouse */
+        int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
+        if (mx != last_mx || my != last_my || btn != last_btn) {
+            last_mx = mx; last_my = my; last_btn = btn;
+            WM_MouseEvent(mx, my, btn);
+        }
+
+        /* Poll network */
+        net_stack_poll();
+
+        /* Return the first key waiting in the buffer */
+        if (PS2Kbd_HasChar())
+            return PS2Kbd_GetChar();
+    }
+}
+
+/* Compute the number of text rows visible in the history pane of shell s */
+static int shell_visible_rows(ShellInstance *s)
+{
+    int hh = s->wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W - 8;
+    int rows = hh / 16;
+    return rows > 0 ? rows : 20;
+}
+
 /* Build a NativeCmdCtx for the given shell instance */
 static NativeCmdCtx shell_make_ctx(ShellInstance *s)
 {
@@ -2402,6 +2439,8 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.is_builtin     = shell_is_builtin;
     ctx.dispatch_line  = shell_dispatch_line;
     ctx.yield_ms       = shell_yield_ms;
+    ctx.read_key       = shell_read_key;
+    ctx.visible_rows   = shell_visible_rows(s);
     return ctx;
 }
 

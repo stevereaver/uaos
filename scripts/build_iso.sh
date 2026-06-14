@@ -343,7 +343,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_nslookup.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ntpd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_grep.c"
+    "${REPO_ROOT}/kernel/shell/cmd_grep.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_more.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -556,6 +557,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_ntpd.o" \
     "${BUILD_DIR}/obj/cmd_clock.o" \
     "${BUILD_DIR}/obj/cmd_grep.o" \
+    "${BUILD_DIR}/obj/cmd_more.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -592,7 +594,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd grep; do
+           run assign execute loadwb ifconfig ping route nslookup ntpd grep more; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

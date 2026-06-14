@@ -51,6 +51,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "ntpd",       Cmd_Ntpd      },
     { "clock",      Cmd_ClockWin  },
     { "grep",       Cmd_Grep      },
+    { "more",       Cmd_More      },
     { NULL,         NULL          }
 };
 
