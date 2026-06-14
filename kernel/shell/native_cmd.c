@@ -53,6 +53,10 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "grep",       Cmd_Grep      },
     { "more",       Cmd_More      },
     { "vim",        Cmd_Vim       },
+    { "newcli",     Cmd_NewCLI    },
+    { "newshell",   Cmd_NewCLI    },  /* alias */
+    { "ask",        Cmd_Ask       },
+    { "resident",   Cmd_Resident  },
     { NULL,         NULL          }
 };
 

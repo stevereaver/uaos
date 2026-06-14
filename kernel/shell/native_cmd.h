@@ -73,6 +73,14 @@ typedef struct NativeCmdCtx {
      * Returns 0 if the callback is not set. */
     char      (*read_key)(void *shell_extra);
 
+    /* Blocking line read — pumps UI events and fills buffer until Enter.
+     * Used by 'ask' command to get user input. Returns bytes read or 0. */
+    int       (*read_line)(void *shell_extra, char *buf, int max);
+
+    /* Set ask mode — sets a custom prompt for the next input line.
+     * Used by 'ask' command to display a custom prompt to the user. */
+    void      (*set_ask_mode)(void *shell_extra, const char *prompt);
+
     /* Shell window geometry — visible text rows in the history area.
      * Used by more to compute the page size without hard-coding a number.
      * 0 means unknown (fall back to a safe default). */
@@ -141,5 +149,8 @@ void Cmd_ClockWin (NativeCmdCtx *ctx, const char *args);
 void Cmd_Grep     (NativeCmdCtx *ctx, const char *args);
 void Cmd_More     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Vim      (NativeCmdCtx *ctx, const char *args);
+void Cmd_NewCLI   (NativeCmdCtx *ctx, const char *args);
+void Cmd_Ask      (NativeCmdCtx *ctx, const char *args);
+void Cmd_Resident (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

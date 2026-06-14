@@ -346,7 +346,11 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
     "${REPO_ROOT}/kernel/shell/cmd_grep.c" \
     "${REPO_ROOT}/kernel/shell/cmd_more.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_vim.c"
+    "${REPO_ROOT}/kernel/shell/cmd_vim.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_newcli.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ask.c" \
+    "${REPO_ROOT}/kernel/shell/resident_cmd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_resident.c"
 do
     base="$(basename "${src}" .c)"
     gcc ${GCC_FLAGS} \
@@ -561,6 +565,10 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_grep.o" \
     "${BUILD_DIR}/obj/cmd_more.o" \
     "${BUILD_DIR}/obj/cmd_vim.o" \
+    "${BUILD_DIR}/obj/cmd_newcli.o" \
+    "${BUILD_DIR}/obj/cmd_ask.o" \
+    "${BUILD_DIR}/obj/resident_cmd.o" \
+    "${BUILD_DIR}/obj/cmd_resident.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"

@@ -26,6 +26,7 @@
 #include "dos/fat32.h"
 #include "exec/rom_modules.h"
 #include "shell/native_cmd.h"
+#include "shell/resident_cmd.h"
 #include "exec/uaos_binary.h"
 #include "../net/stack.h"
 #include "../irq/ps2mouse.h"
@@ -129,6 +130,12 @@ struct ShellInstance {
     /* Vim inline mode */
     int          vim_mode;      /* 0 = normal, 1 = vim inline */
     int          vim_slot;      /* slot in g_vims */
+
+    /* Ask mode - for interactive input prompts */
+    int          ask_mode;      /* 0 = normal, 1 = waiting for ask input */
+    char         ask_prompt[MAX_INPUT + 1];  /* Custom prompt to display */
+    char         ask_result[MAX_INPUT + 1];  /* Result buffer */
+    int          ask_result_ready;           /* 1 = result is ready */
 };
 typedef struct ShellInstance ShellInstance;
 
@@ -298,19 +305,30 @@ static void inst_draw_input(ShellInstance *s)
     int ix = wx + BORDER_L + 4;
     int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W - 2;
 
-    /* Build Amiga-style prompt from current volume */
-    char vol[32];
-    extract_vol_prompt(s->cwd, vol, sizeof(vol));
-    /* Show just the volume name without the number prefix */
-    char prompt[40];
+    /* Build Amiga-style prompt from current volume, or use ask prompt if in ask mode */
+    char prompt[80];
     int pi = 0;
-    /* Copy volume name */
-    int vi = 0;
-    while (vol[vi] && pi < 35) {
-        prompt[pi++] = vol[vi++];
+
+    if (s->ask_mode && s->ask_prompt[0]) {
+        /* Use custom ask prompt */
+        while (s->ask_prompt[pi] && pi < 75) {
+            prompt[pi] = s->ask_prompt[pi];
+            pi++;
+        }
+        /* Add ": " if there's room */
+        if (pi < 77) { prompt[pi++] = ':'; prompt[pi++] = ' '; }
+    } else {
+        /* Build normal prompt from current volume */
+        char vol[32];
+        extract_vol_prompt(s->cwd, vol, sizeof(vol));
+        /* Copy volume name */
+        int vi = 0;
+        while (vol[vi] && pi < 35) {
+            prompt[pi++] = vol[vi++];
+        }
+        /* Add "> " */
+        if (pi < 38) { prompt[pi++] = '>'; prompt[pi++] = ' '; }
     }
-    /* Add "> " */
-    if (pi < 38) { prompt[pi++] = '>'; prompt[pi++] = ' '; }
     prompt[pi] = '\0';
     int plen = pi;
 
@@ -2765,6 +2783,99 @@ static char shell_read_key(void *shell_extra)
     }
 }
 
+/* Set ask mode — sets a custom prompt for the next input line.
+ * Used by 'ask' command to display a custom prompt to the user. */
+static void shell_set_ask_mode(void *shell_extra, const char *prompt)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->ask_mode = 1;
+    s->ask_result_ready = 0;
+    s->ask_result[0] = '\0';
+    if (prompt) {
+        scopy(s->ask_prompt, prompt, MAX_INPUT);
+    } else {
+        s->ask_prompt[0] = '\0';
+    }
+    /* Clear the regular input buffer to prepare for fresh input */
+    s->input_len = 0;
+    s->input_buf[0] = '\0';
+    s->input_cur = 0;
+}
+
+/* Blocking line read — spins pumping mouse/WM/network until the user presses
+ * Enter, then returns the line in buf (up to max-1 chars).
+ * Used by 'ask' command to get user input.
+ * Returns number of characters read (excluding null terminator). */
+static int shell_read_line(void *shell_extra, char *buf, int max)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    static int last_mx = -1, last_my = -1, last_btn = -1;
+
+    /* Clear the result buffer and flag */
+    s->ask_result[0] = '\0';
+    s->ask_result_ready = 0;
+
+    for (;;) {
+        /* ~1 ms of CPU spin */
+        volatile uint32_t n = 100000UL;
+        while (n--) __asm__ volatile("pause");
+
+        /* Pump mouse */
+        int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
+        if (mx != last_mx || my != last_my || btn != last_btn) {
+            last_mx = mx; last_my = my; last_btn = btn;
+            WM_MouseEvent(mx, my, btn);
+        }
+
+        /* Poll network */
+        net_stack_poll();
+
+        /* Process any pending keystrokes */
+        while (PS2Kbd_HasChar()) {
+            char c = PS2Kbd_GetChar();
+
+            /* Handle Enter - line complete */
+            if (c == '\r' || c == '\n') {
+                s->ask_result[s->input_len] = '\0';
+                s->ask_result_ready = 1;
+                s->ask_mode = 0;  /* Exit ask mode */
+                /* Copy result to caller's buffer */
+                int len = s->input_len;
+                if (len >= max) len = max - 1;
+                for (int i = 0; i < len; i++) buf[i] = s->ask_result[i];
+                buf[len] = '\0';
+                /* Clear input buffer for next time */
+                s->input_len = 0;
+                s->input_buf[0] = '\0';
+                s->input_cur = 0;
+                return len;
+            }
+
+            /* Handle backspace */
+            if (c == '\b' || c == 0x7F) {
+                if (s->input_len > 0) {
+                    s->input_len--;
+                    s->input_cur--;
+                    s->input_buf[s->input_len] = '\0';
+                }
+                continue;
+            }
+
+            /* Handle printable characters */
+            if (c >= 32 && c < 127 && s->input_len < MAX_INPUT) {
+                s->input_buf[s->input_len++] = c;
+                s->input_cur++;
+                s->input_buf[s->input_len] = '\0';
+                /* Copy to result buffer */
+                s->ask_result[s->input_len] = '\0';
+                for (int i = 0; i < s->input_len; i++) {
+                    s->ask_result[i] = s->input_buf[i];
+                }
+            }
+        }
+    }
+}
+
 /* Compute the number of text rows visible in the history pane of shell s */
 static int shell_visible_rows(ShellInstance *s)
 {
@@ -2791,6 +2902,8 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.run_script     = shell_run_script;
     ctx.yield_ms       = shell_yield_ms;
     ctx.read_key       = shell_read_key;
+    ctx.read_line      = shell_read_line;
+    ctx.set_ask_mode   = shell_set_ask_mode;
     ctx.visible_rows   = shell_visible_rows(s);
     return ctx;
 }
@@ -3086,6 +3199,24 @@ static void run_cmd(ShellInstance *s, const char *line)
         else if (i==7) inst_cmd_setenv(s, args);
         else if (i==8) inst_cmd_unsetenv(s, args);
         else if (i==9) inst_cmd_showconfig(s);
+        return;
+    }
+
+    /* ---- Check resident commands (in-memory cached binaries) ---- */
+    if (Resident_Exists(first_word)) {
+        NativeCmdCtx ctx = shell_make_ctx(s);
+        if (Resident_Run(first_word, &ctx, cmd_to_run + slen(first_word)) == 0) {
+            return;
+        }
+    }
+
+    /* ---- Check native command registry (C: binaries) ---- */
+    if (NativeCmd_Exists(first_word)) {
+        NativeCmdCtx ctx = shell_make_ctx(s);
+        /* Skip command name in args */
+        const char *args = cmd_to_run + slen(first_word);
+        while (*args == ' ') args++;
+        NativeCmd_Run(first_word, &ctx, args);
         return;
     }
 
@@ -3546,6 +3677,7 @@ static void inst_handle_key(ShellInstance *s, char c)
 {
     if (!g_fb.valid) return;
 
+    /* Skip normal handling in special modes (handled by their own loops) */
     if (s->vim_mode) {
         VimWin_KeyInline(s->vim_slot, c);
         if (!VimWin_IsActive(s->vim_slot)) {
@@ -3555,6 +3687,11 @@ static void inst_handle_key(ShellInstance *s, char c)
         inst_draw_contents(s);
         inst_draw_history(s);
         inst_draw_input(s);
+        return;
+    }
+
+    /* Ask mode handles input in its own polling loop - skip here */
+    if (s->ask_mode) {
         return;
     }
 
@@ -3760,6 +3897,10 @@ static void open_shell(int stagger)
     memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
     s->vim_mode = 0;
     s->vim_slot = -1;
+    s->ask_mode = 0;
+    s->ask_prompt[0] = '\0';
+    s->ask_result[0] = '\0';
+    s->ask_result_ready = 0;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
     scopy(s->path, "C: S: SYS:Utilities SYS:Rexx SYS:System SYS:Prefs SYS:WBStartup SYS:Tools SYS:Tools/Commodities", 256);
@@ -3786,6 +3927,7 @@ static void open_shell(int stagger)
 
 void ShellWin_Init(void)
 {
+    Resident_Init();
     open_shell(0);
 }
 
