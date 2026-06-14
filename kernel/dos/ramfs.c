@@ -390,6 +390,64 @@ int RamFS_Delete(RamFsVol *vol, const char *path)
     return 0;
 }
 
+/* Rename / move a node within the same volume.
+ * Returns 0 on success, negative on error. */
+int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path)
+{
+    if (!vol || !vol->valid) return -1;
+
+    /* Resolve source */
+    RamFsNode *src = RamFS_Resolve(vol, old_path);
+    if (!src) return -1;
+    if (!src->parent) return -3; /* cannot rename root */
+    if (src->attrs & RAMFS_ATTR_READONLY) return -4;
+
+    /* Parse destination into parent directory + leaf name */
+    const char *p = skip_vol_prefix(new_path);
+    if (*p == '/') p++;
+
+    char comp[RAMFS_MAX_NAME];
+    char last[RAMFS_MAX_NAME];
+    last[0] = '\0';
+    RamFsNode *dst_dir = vol->root;
+    const char *cur = p;
+
+    while (next_component(&cur, comp, RAMFS_MAX_NAME)) {
+        scopy(last, comp, RAMFS_MAX_NAME);
+        if (*cur) {
+            RamFsNode *child = find_child(dst_dir, comp);
+            if (!child || child->type != RAMFS_TYPE_DIR) return -1; /* path invalid */
+            dst_dir = child;
+        }
+    }
+    if (!last[0]) return -1; /* no destination name */
+
+    /* Check if destination already exists */
+    RamFsNode *existing = find_child(dst_dir, last);
+    if (existing) {
+        if (existing == src) return 0; /* no-op */
+        /* AmigaDOS: overwrite only if same type and not a non-empty dir */
+        if (existing->type == RAMFS_TYPE_DIR && existing->first_child)
+            return -2; /* destination dir not empty */
+        if (existing->attrs & RAMFS_ATTR_READONLY) return -4;
+        /* Remove existing node */
+        dir_remove_child(existing->parent, existing);
+        existing->type = RAMFS_TYPE_FREE;
+        existing->parent = existing->first_child = existing->next_sibling = NULL;
+    }
+
+    /* If moving to a different parent, unlink from old and link to new */
+    if (src->parent != dst_dir) {
+        dir_remove_child(src->parent, src);
+        src->parent = dst_dir;
+        dir_add_child(dst_dir, src);
+    }
+
+    /* Update name */
+    scopy(src->name, last, RAMFS_MAX_NAME);
+    return 0;
+}
+
 RamFsNode *RamFS_FirstChild(RamFsNode *dir)
 {
     if (!dir || dir->type != RAMFS_TYPE_DIR) return NULL;

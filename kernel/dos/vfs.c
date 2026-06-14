@@ -638,6 +638,26 @@ int VFS_RenameVol(const char *old_name, const char *new_name)
     return RamFS_RenameVol(vol, new_name);
 }
 
+int VFS_Rename(const char *old_path, const char *new_path)
+{
+    if (!old_path || !*old_path || !new_path || !*new_path) return -1;
+
+    char old_res[128], new_res[128];
+    if (!resolve_assign_path(old_path, old_res, sizeof(old_res))) return -1;
+    if (!resolve_assign_path(new_path, new_res, sizeof(new_res))) return -1;
+
+    char old_vol[16], new_vol[16];
+    if (!extract_vol(old_res, old_vol, 16)) return -1;
+    if (!extract_vol(new_res, new_vol, 16)) return -1;
+
+    /* Same-volume rename only */
+    if (!seq_ci(old_vol, new_vol)) return -1;
+
+    RamFsVol *vol = find_vol(old_vol);
+    if (!vol) return -1;
+    return RamFS_Rename(vol, old_res, new_res);
+}
+
 /* =========================================================================
  * AmigaDOS Assign Support
  * Assigns create logical names that map to physical paths.

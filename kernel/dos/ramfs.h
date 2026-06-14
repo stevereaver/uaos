@@ -114,4 +114,7 @@ int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs);
 /* Rename a volume. Returns 0 on success, -1 if not found. */
 int RamFS_RenameVol(RamFsVol *vol, const char *new_name);
 
+/* Rename a node (move within the same volume). Returns 0 on success. */
+int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path);
+
 #endif

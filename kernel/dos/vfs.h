@@ -122,6 +122,9 @@ int VFS_SetComment(const char *path, const char *comment);
 /* Rename a volume. Returns 0 on success, -1 if not found. */
 int VFS_RenameVol(const char *old_name, const char *new_name);
 
+/* Rename a file or directory. Returns 0 on success, -1 on failure. */
+int VFS_Rename(const char *old_path, const char *new_path);
+
 /* -------------------------------------------------------------------------
  * AmigaDOS Handler Support
  * ------------------------------------------------------------------------- */

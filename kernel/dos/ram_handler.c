@@ -336,9 +336,14 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Rename object ===== */
     case ACTION_RENAME_OBJECT: {
-        /* VFS has no Rename yet — stub */
-        pkt->dp_Res1 = DOSFALSE;
-        pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;
+        const char *old_path = (const char *)pkt->dp_Arg1;
+        const char *new_path = (const char *)pkt->dp_Arg2;
+        if (VFS_Rename(old_path, new_path) == 0) {
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        }
         break;
     }
 
