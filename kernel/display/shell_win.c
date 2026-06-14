@@ -2820,6 +2820,275 @@ static void inst_dispatch(ShellInstance *s, const char *line)
 }
 
 /* =========================================================================
+ * Tab completion
+ * ========================================================================= */
+
+/* Copy at most max-1 chars of src into dst; NUL-terminate. */
+static void tc_scopy(char *dst, const char *src, int max)
+{
+    int i = 0;
+    while (i < max - 1 && src[i]) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+}
+
+/* Case-insensitive prefix match: does entry start with pfx? */
+static int tc_has_prefix(const char *entry, const char *pfx, int pfx_len)
+{
+    for (int i = 0; i < pfx_len; i++) {
+        char a = entry[i], b = pfx[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (!a || a != b) return 0;
+    }
+    return 1;
+}
+
+/* Extend *common_len so that common[0..n-1] is the longest prefix shared by
+ * common and candidate.  On first call set *common_len = -1. */
+static void tc_extend_common(char *common, int *common_len, const char *candidate)
+{
+    int clen = 0; while (candidate[clen]) clen++;
+    if (*common_len < 0) {
+        /* First candidate — seed with full name */
+        tc_scopy(common, candidate, MAX_INPUT);
+        *common_len = clen;
+        return;
+    }
+    /* Trim common to match candidate */
+    int lim = *common_len < clen ? *common_len : clen;
+    int i = 0;
+    while (i < lim) {
+        char a = common[i], b = candidate[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) break;
+        i++;
+    }
+    common[i] = '\0';
+    *common_len = i;
+}
+
+/*
+ * inst_tab_complete — handle a Tab keypress on instance s.
+ *
+ * Strategy:
+ *   - Extract the word currently under/before the cursor.
+ *   - If it is the first (and only) token → command completion
+ *       (shell builtins + native commands in C:).
+ *   - Otherwise → filename completion relative to cwd.
+ *   - Single match  → fill in the rest, append '/' (dir) or ' ' (file).
+ *   - Multi  match  → print all matches, keep input unchanged.
+ *   - No match      → bell (no-op for now; keep input unchanged).
+ */
+static void inst_tab_complete(ShellInstance *s)
+{
+    /* ---------------------------------------------------------------
+     * Step 1: find word boundaries up to cursor position.
+     * We only complete the token that ends at input_cur.
+     * --------------------------------------------------------------- */
+    int cur = s->input_cur;
+    /* Walk backward to find start of the current word */
+    int word_start = cur;
+    while (word_start > 0 && s->input_buf[word_start - 1] != ' ')
+        word_start--;
+
+    /* The prefix typed so far */
+    char prefix[MAX_INPUT + 1];
+    int pfx_len = cur - word_start;
+    if (pfx_len < 0) pfx_len = 0;
+    if (pfx_len > MAX_INPUT) pfx_len = MAX_INPUT;
+    for (int i = 0; i < pfx_len; i++) prefix[i] = s->input_buf[word_start + i];
+    prefix[pfx_len] = '\0';
+
+    /* Is this the first token? (no non-space chars before word_start) */
+    int is_first_token = 1;
+    for (int i = 0; i < word_start; i++) {
+        if (s->input_buf[i] != ' ') { is_first_token = 0; break; }
+    }
+
+    /* Storage for matches — keep up to 64 names (MAX_INPUT+1 each) */
+#define TC_MAX_MATCHES 64
+    static char tc_matches[TC_MAX_MATCHES][MAX_INPUT + 1];
+    int tc_count = 0;
+    char tc_common[MAX_INPUT + 1];
+    int  tc_common_len = -1;  /* -1 = not seeded yet */
+    tc_common[0] = '\0';
+
+    /* ---------------------------------------------------------------
+     * Helper lambda (macro) — record one match candidate
+     * --------------------------------------------------------------- */
+#define TC_ADD(name) do { \
+    if (tc_count < TC_MAX_MATCHES) { \
+        tc_scopy(tc_matches[tc_count], (name), MAX_INPUT + 1); \
+        tc_extend_common(tc_common, &tc_common_len, (name)); \
+        tc_count++; \
+    } \
+} while(0)
+
+    /* ---------------------------------------------------------------
+     * Does the prefix contain a ':' or '/'? Then it is an explicit
+     * path — skip command completion, go straight to file completion.
+     * --------------------------------------------------------------- */
+    int has_colon = 0;
+    for (int i = 0; i < pfx_len; i++)
+        if (prefix[i] == ':') { has_colon = 1; break; }
+
+    if (is_first_token && !has_colon) {
+        /* ===========================================================
+         * Command completion
+         * ===========================================================
+         * Candidates: shell builtins + native command table.
+         * =========================================================== */
+
+        /* Shell builtins */
+        const char *builtins[] = {
+            "help", "cd", "alias", "unalias", "set", "unset", "path",
+            "setenv", "unsetenv", "showconfig", NULL
+        };
+        for (int i = 0; builtins[i]; i++) {
+            if (tc_has_prefix(builtins[i], prefix, pfx_len))
+                TC_ADD(builtins[i]);
+        }
+
+        /* Native commands — iterate k_native_cmds via NativeCmd_Exists +
+         * direct table walk.  We re-declare a minimal local table because
+         * k_native_cmds is static to native_cmd.c.  The canonical list is
+         * the same as k_native_cmds[] in native_cmd.c. */
+        const char *natcmds[] = {
+            "version","mem","libs","clear","reboot","dir","makedir",
+            "delete","type","copy","rename","pwd","echo","protect","attr",
+            "info","date","which","disks","fdisk","format","pointer","run",
+            "assign","execute","loadwb","calculator","ifconfig","ping",
+            "route","nslookup","ntpd","clock","grep","more", NULL
+        };
+        for (int i = 0; natcmds[i]; i++) {
+            if (tc_has_prefix(natcmds[i], prefix, pfx_len))
+                TC_ADD(natcmds[i]);
+        }
+
+    } else {
+        /* ===========================================================
+         * Filename completion
+         * ===========================================================
+         * Split prefix into a directory part and a name prefix.
+         * e.g. "RAM:foo/bar" → dir="RAM:foo/" name_pfx="bar"
+         *      "bar"         → dir=cwd        name_pfx="bar"
+         * =========================================================== */
+
+        /* Find last path separator in prefix */
+        int sep_pos = -1;
+        for (int i = pfx_len - 1; i >= 0; i--) {
+            if (prefix[i] == '/' || prefix[i] == ':') { sep_pos = i; break; }
+        }
+
+        char dir_part[MAX_INPUT + 1];
+        char name_pfx[MAX_INPUT + 1];
+        int  name_pfx_len;
+
+        if (sep_pos >= 0) {
+            /* Include the separator in dir_part */
+            for (int i = 0; i <= sep_pos; i++) dir_part[i] = prefix[i];
+            dir_part[sep_pos + 1] = '\0';
+            for (int i = sep_pos + 1; i < pfx_len; i++)
+                name_pfx[i - sep_pos - 1] = prefix[i];
+            name_pfx_len = pfx_len - sep_pos - 1;
+            name_pfx[name_pfx_len] = '\0';
+        } else {
+            /* No separator — use cwd as directory */
+            tc_scopy(dir_part, s->cwd, MAX_INPUT + 1);
+            tc_scopy(name_pfx, prefix, MAX_INPUT + 1);
+            name_pfx_len = pfx_len;
+        }
+
+        /* Enumerate directory */
+        RamFsNode *child = VFS_OpenDir(dir_part);
+        while (child) {
+            if (tc_has_prefix(child->name, name_pfx, name_pfx_len)) {
+                /* Build the full candidate: dir_part + child->name [+ '/'] */
+                char cand[MAX_INPUT + 1];
+                /* For display we use just the name portion after dir_part */
+                tc_scopy(cand, child->name, MAX_INPUT + 1);
+                if (child->type == RAMFS_TYPE_DIR) {
+                    int nl = 0; while (cand[nl]) nl++;
+                    if (nl < MAX_INPUT) { cand[nl] = '/'; cand[nl+1] = '\0'; }
+                }
+                TC_ADD(cand);
+            }
+            child = child->next_sibling;
+        }
+    }
+
+#undef TC_ADD
+
+    /* ---------------------------------------------------------------
+     * Act on results
+     * --------------------------------------------------------------- */
+    if (tc_count == 0) {
+        /* No matches — nothing to do */
+        return;
+    }
+
+    if (tc_count == 1 || (tc_common_len > pfx_len)) {
+        /* Single match OR unambiguous common extension → complete in-place */
+        const char *fill = (tc_count == 1) ? tc_matches[0] : tc_common;
+        int fill_len = 0; while (fill[fill_len]) fill_len++;
+
+        /* How many chars do we need to insert? (fill already includes pfx) */
+        int insert_len = fill_len - pfx_len;
+
+        /* Make room in input_buf at cursor position */
+        if (s->input_len + insert_len > MAX_INPUT)
+            insert_len = MAX_INPUT - s->input_len;
+        if (insert_len <= 0) goto show_all;
+
+        /* Shift tail right */
+        for (int i = s->input_len; i >= cur; i--)
+            s->input_buf[i + insert_len] = s->input_buf[i];
+
+        /* Fill the gap with the new characters */
+        for (int i = 0; i < insert_len; i++)
+            s->input_buf[cur + i] = fill[pfx_len + i];
+
+        s->input_len += insert_len;
+        s->input_cur += insert_len;
+        s->input_buf[s->input_len] = '\0';
+
+        /* For a single unambiguous match, append a trailing space or '/'
+         * (unless already there or unless we already ended with '/') */
+        if (tc_count == 1) {
+            char last = s->input_buf[s->input_cur - 1];
+            if (last != ' ' && last != '/' && s->input_len < MAX_INPUT) {
+                /* Shift tail right by 1 */
+                for (int i = s->input_len; i >= s->input_cur; i--)
+                    s->input_buf[i + 1] = s->input_buf[i];
+                s->input_buf[s->input_cur] = ' ';
+                s->input_len++;
+                s->input_cur++;
+                s->input_buf[s->input_len] = '\0';
+            }
+        }
+        return;
+    }
+
+show_all:
+    /* Multiple ambiguous matches — print them, leave input unchanged */
+    {
+        /* Print a blank line then all matches on one line separated by spaces */
+        char line_buf[MAX_LINE_LEN];
+        line_buf[0] = '\0';
+        int li = 0;
+        for (int i = 0; i < tc_count && li < MAX_LINE_LEN - 2; i++) {
+            if (i > 0 && li < MAX_LINE_LEN - 2) { line_buf[li++] = ' '; line_buf[li] = '\0'; }
+            int nl = 0; while (tc_matches[i][nl] && li < MAX_LINE_LEN - 1) {
+                line_buf[li++] = tc_matches[i][nl++];
+            }
+            line_buf[li] = '\0';
+        }
+        inst_print(s, line_buf);
+    }
+}
+
+/* =========================================================================
  * Key handler (operates on a specific instance)
  * ========================================================================= */
 
@@ -2847,6 +3116,14 @@ static void inst_handle_key(ShellInstance *s, char c)
             WM_SetScrollY(s->wm_handle, sy);
         }
         inst_draw_history(s);
+        return;
+    }
+    if (c == '\t') {
+        if (!s->fdisk_mode) {
+            inst_tab_complete(s);
+            inst_draw_history(s);
+            inst_draw_input(s);
+        }
         return;
     }
     if (c == VKEY_LEFT) {
