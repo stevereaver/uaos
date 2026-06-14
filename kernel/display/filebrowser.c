@@ -1,7 +1,6 @@
 /* filebrowser.c — UAOS Workbench-style file browser / drawer window
  *
  * Presents a Workbench 3.x Drawer window for a named volume.
- * Contents are static (no real filesystem yet); shows placeholder entries
  * with Amiga-style small file icons drawn in the client area.
  *
  * Each volume has one window slot — double-clicking the desktop icon
