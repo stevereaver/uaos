@@ -85,12 +85,25 @@ gcc -O2 -o "${BUILD_DIR}/gen_uaos_native" "${TOOLS_DIR}/gen_uaos_native.c"
 ok "  Built: gen_uaos_native"
 gcc -O2 -o "${BUILD_DIR}/gen_uaos_m68k"   "${TOOLS_DIR}/gen_uaos_m68k.c"
 ok "  Built: gen_uaos_m68k"
+gcc -O2 -o "${BUILD_DIR}/gen_library"      "${TOOLS_DIR}/gen_library.c"
+ok "  Built: gen_library"
 
 # -------------------------------------------------------------------------
-# Step 1b — Compile ELF64 kernel from NASM + C sources
+# Step 1b — Generate .library descriptor files
 # -------------------------------------------------------------------------
 
-info "Step 1b: Compiling ELF64 kernel"
+info "Step 1b: Generating .library descriptor files"
+
+mkdir -p "${REPO_ROOT}/system/LIBS"
+"${BUILD_DIR}/gen_library" "powerpacker.library" 1 4 \
+    "${REPO_ROOT}/system/LIBS/powerpacker.library"
+ok "  Generated: system/LIBS/powerpacker.library"
+
+# -------------------------------------------------------------------------
+# Step 1c — Compile ELF64 kernel from NASM + C sources
+# -------------------------------------------------------------------------
+
+info "Step 1c: Compiling ELF64 kernel"
 
 mkdir -p "${BUILD_DIR}/obj"
 
@@ -264,6 +277,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/about_win.c" \
     "${REPO_ROOT}/kernel/display/calc_win.c" \
     "${REPO_ROOT}/kernel/display/clock_win.c" \
+    "${REPO_ROOT}/kernel/display/netinfo_win.c" \
     "${REPO_ROOT}/kernel/display/vim_win.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
@@ -299,6 +313,8 @@ for src in \
     "${REPO_ROOT}/kernel/exec/dos_lib.c" \
     "${REPO_ROOT}/kernel/exec/workbench_lib.c" \
     "${REPO_ROOT}/kernel/exec/intuition_lib.c" \
+    "${REPO_ROOT}/kernel/exec/loadable_lib.c" \
+    "${REPO_ROOT}/kernel/exec/powerpacker_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
@@ -348,6 +364,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_nslookup.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ntpd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_netinfo.c" \
     "${REPO_ROOT}/kernel/shell/cmd_grep.c" \
     "${REPO_ROOT}/kernel/shell/cmd_more.c" \
     "${REPO_ROOT}/kernel/shell/cmd_vim.c" \
@@ -482,6 +499,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/about_win.o" \
     "${BUILD_DIR}/obj/calc_win.o" \
     "${BUILD_DIR}/obj/clock_win.o" \
+    "${BUILD_DIR}/obj/netinfo_win.o" \
     "${BUILD_DIR}/obj/softfloat.o" \
     "${BUILD_DIR}/obj/m68kcpu.o" \
     "${BUILD_DIR}/obj/m68kops.o" \
@@ -522,6 +540,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/dos_lib.o" \
     "${BUILD_DIR}/obj/workbench_lib.o" \
     "${BUILD_DIR}/obj/intuition_lib.o" \
+    "${BUILD_DIR}/obj/loadable_lib.o" \
+    "${BUILD_DIR}/obj/powerpacker_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
@@ -571,6 +591,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_nslookup.o" \
     "${BUILD_DIR}/obj/cmd_ntpd.o" \
     "${BUILD_DIR}/obj/cmd_clock.o" \
+    "${BUILD_DIR}/obj/cmd_netinfo.o" \
     "${BUILD_DIR}/obj/cmd_grep.o" \
     "${BUILD_DIR}/obj/cmd_more.o" \
     "${BUILD_DIR}/obj/cmd_vim.o" \
@@ -616,18 +637,20 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps; do
+           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps netinfo; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done
 
-# Generate Calculator and Clock binaries in Tools:
-info "Step 2d: Generating Tools: binaries (Calculator, Clock)"
+# Generate Tools: binaries
+info "Step 2d: Generating Tools: binaries (Calculator, Clock, NetInfo)"
 TOOLS_STAGING="${ISO_STAGING}/SYS_ROOT/Tools"
 "${GEN_NATIVE}" "calculator" "${TOOLS_STAGING}/Calculator"
 ok "  Generated: Tools:Calculator  (32-byte NATIVE binary)"
 "${GEN_NATIVE}" "clock"      "${TOOLS_STAGING}/Clock"
 ok "  Generated: Tools:Clock       (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "netinfo"    "${TOOLS_STAGING}/NetInfo"
+ok "  Generated: Tools:NetInfo     (32-byte NATIVE binary)"
 
 # -------------------------------------------------------------------------
 # Step 2c — Wrap any Amiga Hunk binaries in emulation/binaries/ with UAOS header

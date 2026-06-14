@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "dos/vfs.h"
+#include "exec/loadable_lib.h"
 
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
@@ -679,6 +680,17 @@ static void install_library_tables(void)
         }
     }
 
+    /* Install jump table stubs for all registered loadable libraries */
+    {
+        LoadableLibInfo linfo;
+        for (int li = 0; UAOS_LoadableLib_GetInfo(li, &linfo); li++) {
+            for (int fi = 0; fi < (int)linfo.func_count && fi < 32; fi++) {
+                int lvo = -(30 + fi * 6);
+                install_lvo(linfo.base_addr, lvo, (int)linfo.lib_id, fi + 1);
+            }
+        }
+    }
+
     /* Build fake Process struct so LHA sees a CLI launch:
      * pr_CLI (offset 0xAC) must be non-zero (BPTR to CLI struct)
      * pr_COS (offset 0x36) = stdout BPTR
@@ -771,6 +783,14 @@ static void exec_OpenLibrary(void)
     for (int j = 0; intuition_name[j]; j++)
         if (name[j] != intuition_name[j]) { intuition_match = 0; break; }
     if (intuition_match) result = INTUITION_BASE;
+
+    /* Check loadable libraries */
+    if (result == FAKE_LIB_BASE) {
+        LoadableLibInfo *linfo = UAOS_LoadableLib_FindByName(name);
+        if (linfo) {
+            result = linfo->base_addr;
+        }
+    }
 
     m68k_set_reg(M68K_REG_D0, result);
 }
@@ -1260,6 +1280,18 @@ int m68k_illg_instr_callback(int opcode)
     } else if (lib == LIB_INTUITION) {
         extern void UAOS_Intuition_Dispatch(uint32_t fn);
         UAOS_Intuition_Dispatch((uint32_t)fn);
+    } else if (lib >= 6) {
+        LoadableLibInfo *linfo = UAOS_LoadableLib_GetById((uint8_t)lib);
+        if (linfo && linfo->dispatch) {
+            linfo->dispatch((uint32_t)fn);
+        } else {
+            char msg[64] = "[emu] ILLEGAL: loadable lib=";
+            char n[4]; u32_dec(lib, n, 4);
+            int i = emu_strlen(msg), j = 0;
+            while (n[j] && i<62) msg[i++]=n[j++];
+            msg[i++]='\n'; msg[i]='\0';
+            emu_print(msg);
+        }
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);
