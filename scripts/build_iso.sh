@@ -331,6 +331,7 @@ for src in \
     "${REPO_ROOT}/kernel/drivers/ide.c" \
     "${REPO_ROOT}/kernel/display/pointer_prefs.c" \
     "${REPO_ROOT}/kernel/shell/native_cmd.c" \
+    "${REPO_ROOT}/kernel/shell/exec_file.c" \
     "${REPO_ROOT}/kernel/shell/cmd_version.c" \
     "${REPO_ROOT}/kernel/shell/cmd_mem.c" \
     "${REPO_ROOT}/kernel/shell/cmd_libs.c" \
@@ -558,6 +559,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/ide.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
     "${BUILD_DIR}/obj/native_cmd.o" \
+    "${BUILD_DIR}/obj/exec_file.o" \
     "${BUILD_DIR}/obj/cmd_version.o" \
     "${BUILD_DIR}/obj/cmd_mem.o" \
     "${BUILD_DIR}/obj/cmd_libs.o" \
@@ -643,7 +645,7 @@ for cmd in version mem libs clear reboot dir makedir delete type copy rename \
 done
 
 # Generate Tools: binaries
-info "Step 2d: Generating Tools: binaries (Calculator, Clock, NetInfo)"
+info "Step 2d: Generating Tools: binaries (Calculator, Clock, NetInfo, Pointer)"
 TOOLS_STAGING="${ISO_STAGING}/SYS_ROOT/Tools"
 "${GEN_NATIVE}" "calculator" "${TOOLS_STAGING}/Calculator"
 ok "  Generated: Tools:Calculator  (32-byte NATIVE binary)"
@@ -651,6 +653,8 @@ ok "  Generated: Tools:Calculator  (32-byte NATIVE binary)"
 ok "  Generated: Tools:Clock       (32-byte NATIVE binary)"
 "${GEN_NATIVE}" "netinfo"    "${TOOLS_STAGING}/NetInfo"
 ok "  Generated: Tools:NetInfo     (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "pointer"    "${TOOLS_STAGING}/Pointer"
+ok "  Generated: Tools:Pointer    (32-byte NATIVE binary)"
 
 # -------------------------------------------------------------------------
 # Step 2c — Wrap any Amiga Hunk binaries in emulation/binaries/ with UAOS header

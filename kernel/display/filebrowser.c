@@ -11,10 +11,7 @@
 #include "wm.h"
 #include "framebuffer.h"
 #include "desktop.h"
-#include "calc_win.h"
-#include "clock_win.h"
-#include "netinfo_win.h"
-#include "pointer_prefs.h"
+#include "../shell/exec_file.h"
 #include "../dos/blockdev.h"
 #include "../dos/vfs.h"
 #include "../dos/ramfs.h"
@@ -139,6 +136,29 @@ static int parent_path(const char *vol, char *dst, int max)
     for (int i = 0; i < plen; i++) dst[i] = vol[i];
     dst[plen] = '\0';
     return 1;
+}
+
+/* Construct a child path from a parent path and a child name.
+ * Handles Amiga-style volume prefixes correctly so nested paths work
+ * for both assigns ("Workbench:Tools/Calculator") and plain volumes
+ * ("RAM Disk:/T/file"). */
+static void build_path(const char *parent, const char *name, char *dst, int max)
+{
+    int has_colon = 0;
+    for (int i = 0; parent[i]; i++) if (parent[i] == ':') has_colon = 1;
+
+    int vi = 0;
+    while (vi < max - 1 && parent[vi]) { dst[vi] = parent[vi]; vi++; }
+    int last = (vi > 0) ? parent[vi - 1] : 0;
+    if (last != ':' && last != '/') {
+        if (!has_colon) {
+            if (vi < max - 1) dst[vi++] = ':';
+        }
+        if (vi < max - 1) dst[vi++] = '/';
+    }
+    int ni = 0;
+    while (vi < max - 1 && name[ni]) { dst[vi++] = name[ni++]; }
+    dst[vi] = '\0';
 }
 
 /* =========================================================================
@@ -433,49 +453,27 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
 
     if (b->last_click_icon == icon &&
         (now - b->last_click_tick) <= DBLCLICK_TICKS) {
-        /* Double-click: open folder (DIR) or launch app (PROG) */
+        /* Double-click: open folder (DIR) or launch file */
         b->last_click_icon = -1;
         b->drag_icon = -1;
         const FileEntry *e = b->entries;
-        if (e && e[icon].name && e[icon].type[0] == 'P') {
-            /* Launch known applications by name (PROG type) */
-            const char *nm = e[icon].name;
-            int ni = 0;
-            char name[32];
-            while (ni < 31 && nm[ni]) { name[ni] = nm[ni]; ni++; }
-            name[ni] = '\0';
-            if (str_eq(name, "Calculator")) CalcWin_Open();
-            else if (str_eq(name, "Clock"))       ClockWin_Open();
-            else if (str_eq(name, "NetInfo"))   NetInfoWin_Open();
-            else if (str_eq(name, "Pointer")) PointerPrefs_Show();
-        } else if (e && e[icon].name && e[icon].type[0] == 'F') {
-            /* Launch known applications by name (FILE type - VFS files) */
-            const char *nm = e[icon].name;
-            int ni = 0;
-            char name[32];
-            while (ni < 31 && nm[ni]) { name[ni] = nm[ni]; ni++; }
-            name[ni] = '\0';
-            if (str_eq(name, "Calculator")) CalcWin_Open();
-            else if (str_eq(name, "Clock"))       ClockWin_Open();
-            else if (str_eq(name, "NetInfo"))   NetInfoWin_Open();
-            else if (str_eq(name, "Pointer")) PointerPrefs_Show();
-        } else if (e && e[icon].name && e[icon].type[0] == 'D') {
+        if (e && e[icon].name && e[icon].type[0] == 'D') {
             /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS, Tools) */
             const char *nm = e[icon].name;
             int is_top_level_assign = 0;
-            if (str_eq(nm, "C") || str_eq(nm, "DEVS") || str_eq(nm, "L") || 
+            if (str_eq(nm, "C") || str_eq(nm, "DEVS") || str_eq(nm, "L") ||
                 str_eq(nm, "LIBS") || str_eq(nm, "S") || str_eq(nm, "SYS") ||
                 str_eq(nm, "Tools")) {
                 is_top_level_assign = 1;
             }
-            
+
             char child_path[64];
             if (is_top_level_assign) {
                 /* For top-level assigns, construct "Workbench:ASSIGN" directly */
                 int vi = 0;
                 /* Copy base volume up to colon (e.g., "Workbench:") */
-                while (vi < 63 && b->volume[vi] && b->volume[vi] != ':') { 
-                    child_path[vi] = b->volume[vi]; vi++; 
+                while (vi < 63 && b->volume[vi] && b->volume[vi] != ':') {
+                    child_path[vi] = b->volume[vi]; vi++;
                 }
                 if (vi < 63 && b->volume[vi] == ':') {
                     child_path[vi++] = ':';
@@ -484,23 +482,14 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
                 while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
                 child_path[vi] = '\0';
             } else {
-                /* Build child path to match k_path_table keys:
-                 *   "UAOS:"        + "/" + "C"         -> "UAOS:/C"
-                 *   "RAM Disk"     + ":/" + "T"         -> "RAM Disk:/T"
-                 *   "UAOS:/Prefs"  + "/" + "Env-Archive" -> "UAOS:/Prefs/Env-Archive"
-                 * Rule: if volume ends in ':', append '/'; else append ":/". */
-                int vi = 0;
-                while (vi < 63 && b->volume[vi]) { child_path[vi] = b->volume[vi]; vi++; }
-                int last = (vi > 0) ? b->volume[vi - 1] : 0;
-                if (last != ':' && last != '/') {
-                    /* Plain name like "RAM Disk" — add ":/" separator */
-                    if (vi < 63) child_path[vi++] = ':';
-                }
-                if (vi < 63) child_path[vi++] = '/';
-                while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
-                child_path[vi] = '\0';
+                build_path(b->volume, nm, child_path, 64);
             }
             FileBrowser_Open(child_path);
+        } else if (e && e[icon].name) {
+            /* FILE or any other type: try to execute it generically */
+            char file_path[128];
+            build_path(b->volume, e[icon].name, file_path, 128);
+            ExecFile_Run(file_path, "");
         }
     } else {
         /* First click — record for double-click detection and start drag */
