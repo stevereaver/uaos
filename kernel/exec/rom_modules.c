@@ -167,6 +167,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register bsdsocket.library */
     UAOS_BSDSOCKET_Register();
 
-    /* Additional ROM modules (intuition, workbench …) are registered
+    /* Register workbench.library */
+    UAOS_WORKBENCH_Register();
+
+    /* Additional ROM modules (intuition, …) are registered
      * here as their native implementations are completed.                  */
 }

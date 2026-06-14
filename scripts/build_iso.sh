@@ -256,6 +256,7 @@ for src in \
     "${KERNEL_MAIN}" \
     "${REPO_ROOT}/kernel/display/framebuffer.c" \
     "${REPO_ROOT}/kernel/display/desktop.c" \
+    "${REPO_ROOT}/kernel/display/icon_render.c" \
     "${REPO_ROOT}/kernel/display/cursor.c" \
     "${REPO_ROOT}/kernel/display/shell_win.c" \
     "${REPO_ROOT}/kernel/display/wm.c" \
@@ -296,6 +297,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/keyboard_device.c" \
     "${REPO_ROOT}/kernel/exec/graphics_lib.c" \
     "${REPO_ROOT}/kernel/exec/dos_lib.c" \
+    "${REPO_ROOT}/kernel/exec/workbench_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
@@ -308,6 +310,7 @@ for src in \
     "${REPO_ROOT}/kernel/dos/pfs3.c" \
     "${REPO_ROOT}/kernel/dos/ext4.c" \
     "${REPO_ROOT}/kernel/dos/iso9660.c" \
+    "${REPO_ROOT}/kernel/dos/icon_loader.c" \
     "${REPO_ROOT}/kernel/drivers/ide.c" \
     "${REPO_ROOT}/kernel/display/pointer_prefs.c" \
     "${REPO_ROOT}/kernel/shell/native_cmd.c" \
@@ -469,6 +472,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_kernel_main.o" \
     "${BUILD_DIR}/obj/framebuffer.o" \
     "${BUILD_DIR}/obj/desktop.o" \
+    "${BUILD_DIR}/obj/icon_render.o" \
     "${BUILD_DIR}/obj/cursor.o" \
     "${BUILD_DIR}/obj/shell_win.o" \
     "${BUILD_DIR}/obj/wm.o" \
@@ -514,6 +518,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/keyboard_device.o" \
     "${BUILD_DIR}/obj/graphics_lib.o" \
     "${BUILD_DIR}/obj/dos_lib.o" \
+    "${BUILD_DIR}/obj/workbench_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
@@ -526,6 +531,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/pfs3.o" \
     "${BUILD_DIR}/obj/ext4.o" \
     "${BUILD_DIR}/obj/iso9660.o" \
+    "${BUILD_DIR}/obj/icon_loader.o" \
     "${BUILD_DIR}/obj/ide.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
     "${BUILD_DIR}/obj/native_cmd.o" \

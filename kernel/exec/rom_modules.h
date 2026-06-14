@@ -69,4 +69,7 @@ void UAOS_DOS_Register(void);
 /* Register bsdsocket.library */
 void UAOS_BSDSOCKET_Register(void);
 
+/* Register workbench.library */
+void UAOS_WORKBENCH_Register(void);
+
 #endif /* UAOS_ROM_MODULES_H */

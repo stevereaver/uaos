@@ -14,13 +14,16 @@
 #include "filebrowser.h"
 #include "about_win.h"
 #include "shell_win.h"
+#include "icon_render.h"
 #include "../irq/rtc.h"
 #include "../net/ntp.h"
 #include "../net/timezone.h"
 #include "clock_win.h"
 #include "../dos/vfs.h"
+#include "../dos/icon_loader.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* Debug output */
 #define DT_DEBUG 1
@@ -242,6 +245,8 @@ typedef struct {
     int      is_ndos;      /* 1 = unformatted (NDOS) */
     uint32_t last_tick;    /* tick of last click */
     int      click_count;  /* clicks within window */
+    ParsedIcon parsed;    /* loaded .info icon (zeroed if none) */
+    int      has_parsed;    /* 1 if parsed icon is valid */
 } IconState;
 
 /* Desktop icon drag state */
@@ -282,8 +287,10 @@ static IconState *get_icons(int *count)
         initialised = 1;
     }
 
-    /* Snapshot old click state so we can restore it after rebuilding */
-    IconState old_icons[MAX_ICONS];
+    /* Snapshot old click state so we can restore it after rebuilding.
+     * Must be static — ParsedIcon is huge (~32 KB) and 10 of them on the
+     * kernel stack would overflow it. */
+    static IconState old_icons[MAX_ICONS];
     for (int i = 0; i < MAX_ICONS; i++) old_icons[i] = icons[i];
 
     int W  = (int)g_fb.width;
@@ -336,6 +343,18 @@ static IconState *get_icons(int *count)
         icons[n].is_ndos = 0;
         icons[n].last_tick   = old_tick;
         icons[n].click_count = old_clicks;
+        icons[n].has_parsed  = 0;
+        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
+
+        /* Try to load a .info icon for this volume */
+        if (Icon_Load(vol_str, &icons[n].parsed)) {
+            icons[n].has_parsed = 1;
+            /* Use .info label if present */
+            if (icons[n].parsed.label[0]) {
+                icons[n].label = icons[n].parsed.label;
+            }
+        }
+
         DT_LOG("[DT] VFS icon "); DT_LOG_DEC(n); DT_LOG(" mname='"); DT_LOG(mname); DT_LOG("' vol_str='"); DT_LOG(vol_str); DT_LOG("'\n");
         n++;
     }
@@ -348,6 +367,23 @@ static IconState *get_icons(int *count)
 
     *count = n;
     return icons;
+}
+
+/* Draw an IconState using .info image when available, else procedural fallback. */
+static void draw_icon_state(const IconState *ic)
+{
+    if (ic->has_parsed && ic->parsed.image.width > 0) {
+        int img_h = ic->parsed.image.height;
+        int img_w = ic->parsed.image.width;
+        int ix = ic->x + (ICON_W - img_w) / 2;
+        int iy = ic->y + (ICON_H - ICON_LABEL_H - img_h) / 2;
+        if (iy < ic->y) iy = ic->y;
+        Icon_Draw(&ic->parsed, ix, iy);
+        Icon_DrawLabel(&ic->parsed, ic->x, ic->y + ICON_H - ICON_LABEL_H, ICON_W);
+    } else {
+        uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
+        draw_disk_icon(ic->x, ic->y, ic->label, colour);
+    }
 }
 
 /* =========================================================================
@@ -393,9 +429,7 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
         int n;
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
-            IconState *ic = &icons[i];
-            uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
-            draw_disk_icon(ic->x, ic->y, ic->label, colour);
+            draw_icon_state(&icons[i]);
         }
     }
 
@@ -422,9 +456,7 @@ void Desktop_Draw(void)
         int n;
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
-            IconState *ic = &icons[i];
-            uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
-            draw_disk_icon(ic->x, ic->y, ic->label, colour);
+            draw_icon_state(&icons[i]);
         }
     }
 
