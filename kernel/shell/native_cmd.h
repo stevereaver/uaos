@@ -106,6 +106,10 @@ typedef struct NativeCmdCtx {
     /* For why: set the last command return code. */
     void      (*set_rc)(void *shell_extra, int rc);
 
+    /* For failat: get/set the failure threshold (default 10). */
+    int       (*get_failat)(void *shell_extra);
+    void      (*set_failat)(void *shell_extra, int threshold);
+
     /* For getenv: read an environment variable value into buf[max].
      * Returns 1 if found, 0 if not found. */
     int       (*get_env)(void *shell_extra, const char *name, char *buf, int max);
@@ -190,6 +194,7 @@ void Cmd_Wait     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Prompt   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Stack    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Why      (NativeCmdCtx *ctx, const char *args);
+void Cmd_Failat   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Quit     (NativeCmdCtx *ctx, const char *args);
 void Cmd_EndCLI   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Filenote (NativeCmdCtx *ctx, const char *args);

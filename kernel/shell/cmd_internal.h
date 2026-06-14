@@ -232,8 +232,103 @@ static inline int cmd_copy_file(const char *src, const char *dst)
     return total;
 }
 
-/* Recursive delete of a directory tree. Returns 0 on success. */
-static inline int cmd_delete_recursive(const char *path, int force)
+/* -------------------------------------------------------------------------
+ * AmigaDOS-style pattern matching for filenames.
+ * Supports:  ?     = any single character
+ *            #?    = zero or more characters (AmigaDOS wildcard)
+ *            *     = zero or more characters (convenience alias)
+ * Case-insensitive.  Returns 1 if name matches pattern, 0 otherwise.
+ * ------------------------------------------------------------------------- */
+static inline int cmd_pattern_match(const char *name, const char *pat)
+{
+    const char *n = name;
+    const char *p = pat;
+    const char *star_n = NULL;
+    const char *star_p = NULL;
+
+    while (*n) {
+        char pc = *p;
+        char nc = *n;
+        if (pc >= 'A' && pc <= 'Z') pc += 32;
+        if (nc >= 'A' && nc <= 'Z') nc += 32;
+
+        if (pc == '*' || (pc == '#' && p[1] == '?')) {
+            /* #? consumes two chars; * consumes one */
+            if (pc == '#') p++;
+            star_p = ++p;
+            star_n = n;
+            continue;
+        } else if (pc == '?') {
+            p++;
+            n++;
+            continue;
+        } else if (pc == nc) {
+            p++;
+            n++;
+            continue;
+        }
+
+        if (star_p) {
+            p = star_p;
+            n = ++star_n;
+            continue;
+        }
+        return 0;
+    }
+
+    /* Consume trailing #? or * */
+    while (*p == '*' || (*p == '#' && p[1] == '?')) {
+        if (*p == '#') p++;
+        p++;
+    }
+    return *p == '\0';
+}
+
+/* Return 1 if s contains any wildcard characters (? * #) */
+static inline int cmd_has_wildcards(const char *s)
+{
+    while (*s) {
+        if (*s == '?' || *s == '*' || *s == '#') return 1;
+        s++;
+    }
+    return 0;
+}
+
+/* Split an argument that may contain wildcards into directory path and pattern.
+ * If the last component contains wildcards, it becomes the pattern and the
+ * preceding part becomes the directory path.  Otherwise pattern is empty.
+ * path_out and pat_out must each be at least CMD_MAX_PATH bytes.
+ */
+static inline void cmd_split_path_pat(const char *cwd, const char *arg,
+                                        char *path_out, char *pat_out)
+{
+    char abs[CMD_MAX_PATH];
+    cmd_make_abs(cwd, arg, abs, CMD_MAX_PATH);
+
+    /* Find last separator */
+    const char *sep = NULL;
+    const char *p = abs;
+    while (*p) {
+        if (*p == ':' || *p == '/') sep = p;
+        p++;
+    }
+
+    if (sep && cmd_has_wildcards(sep + 1)) {
+        int dir_len = (int)(sep - abs) + 1;
+        if (dir_len >= CMD_MAX_PATH) dir_len = CMD_MAX_PATH - 1;
+        cmd_scopy(path_out, abs, CMD_MAX_PATH);
+        path_out[dir_len] = '\0';
+        cmd_scopy(pat_out, sep + 1, CMD_MAX_PATH);
+    } else {
+        cmd_scopy(path_out, abs, CMD_MAX_PATH);
+        pat_out[0] = '\0';
+    }
+}
+
+/* Recursive delete of a directory tree.
+ * If pat is non-NULL and non-empty, only delete entries whose names match pat.
+ * Returns 0 on success. */
+static inline int cmd_delete_recursive(const char *path, int force, const char *pat)
 {
     RamFsNode *node = VFS_ResolveDir(path);
     if (!node) {
@@ -241,6 +336,12 @@ static inline int cmd_delete_recursive(const char *path, int force)
         VfsFile test;
         if (VFS_Open(&test, path, VFS_READ)) {
             VFS_Close(&test);
+            if (pat && pat[0]) {
+                const char *name = path;
+                const char *tmp = path;
+                while (*tmp) { if (*tmp == ':' || *tmp == '/') name = tmp + 1; tmp++; }
+                if (!cmd_pattern_match(name, pat)) return -1;
+            }
             int rc = VFS_Delete(path);
             if (rc == -4 && force) {
                 uint16_t p = VFS_GetProtection(path);
@@ -251,21 +352,25 @@ static inline int cmd_delete_recursive(const char *path, int force)
         }
         return -1;
     }
-    /* Directory: delete children first */
+    /* Directory: delete matching children first */
     RamFsNode *child = node->first_child;
     while (child) {
         RamFsNode *next = child->next_sibling;
-        char sub[CMD_MAX_PATH];
-        cmd_scopy(sub, path, CMD_MAX_PATH);
-        int sl = cmd_slen(sub);
-        if (sl > 0 && sub[sl - 1] != ':' && sub[sl - 1] != '/') {
-            if (sl < CMD_MAX_PATH - 1) { sub[sl] = '/'; sub[sl + 1] = '\0'; }
+        if (!pat || !pat[0] || cmd_pattern_match(child->name, pat)) {
+            char sub[CMD_MAX_PATH];
+            cmd_scopy(sub, path, CMD_MAX_PATH);
+            int sl = cmd_slen(sub);
+            if (sl > 0 && sub[sl - 1] != ':' && sub[sl - 1] != '/') {
+                if (sl < CMD_MAX_PATH - 1) { sub[sl] = '/'; sub[sl + 1] = '\0'; }
+            }
+            cmd_scat(sub, child->name, CMD_MAX_PATH);
+            cmd_delete_recursive(sub, force, pat);
         }
-        cmd_scat(sub, child->name, CMD_MAX_PATH);
-        cmd_delete_recursive(sub, force);
         child = next;
     }
-    return VFS_Delete(path);
+    /* Only delete the directory itself if no pattern is filtering */
+    if (!pat || !pat[0]) return VFS_Delete(path);
+    return 0;
 }
 
 #endif /* UAOS_CMD_INTERNAL_H */

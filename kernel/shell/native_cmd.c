@@ -67,6 +67,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "prompt",     Cmd_Prompt    },
     { "stack",      Cmd_Stack     },
     { "why",        Cmd_Why       },
+    { "failat",     Cmd_Failat    },
     { "quit",       Cmd_Quit      },
     { "endcli",     Cmd_EndCLI    },
     { "filenote",   Cmd_Filenote  },

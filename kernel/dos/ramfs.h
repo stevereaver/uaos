@@ -49,6 +49,7 @@ typedef struct RamFsNode {
     struct RamFsNode *next_sibling; /* linked list of siblings                */
     /* File metadata */
     char     comment[64];           /* file comment (filenote)                */
+    uint32_t mtime;                 /* modification time (Unix epoch seconds)   */
     /* File data */
     uint8_t *data;                  /* pointer into g_ramfs_pool              */
     uint32_t size;                  /* current file size in bytes             */

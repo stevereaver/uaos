@@ -58,13 +58,17 @@ static void protect_one(NativeCmdCtx *ctx, const char *path,
 
 static void protect_dir(NativeCmdCtx *ctx, const char *path,
                         uint16_t set_bits, uint16_t clear_bits,
-                        int quiet)
+                        int quiet, const char *pat)
 {
-    protect_one(ctx, path, set_bits, clear_bits, quiet);
+    if (!pat || !pat[0]) protect_one(ctx, path, set_bits, clear_bits, quiet);
     RamFsNode *dir = VFS_ResolveDir(path);
     if (!dir) return;
     RamFsNode *child = dir->first_child;
     while (child) {
+        if (pat && pat[0] && !cmd_pattern_match(child->name, pat)) {
+            child = child->next_sibling;
+            continue;
+        }
         char sub[CMD_MAX_PATH];
         cmd_scopy(sub, path, CMD_MAX_PATH);
         int sl = cmd_slen(sub);
@@ -73,7 +77,7 @@ static void protect_dir(NativeCmdCtx *ctx, const char *path,
         }
         cmd_scat(sub, child->name, CMD_MAX_PATH);
         if (child->type == RAMFS_TYPE_DIR) {
-            protect_dir(ctx, sub, set_bits, clear_bits, quiet);
+            protect_dir(ctx, sub, set_bits, clear_bits, quiet, pat);
         } else {
             protect_one(ctx, sub, set_bits, clear_bits, quiet);
         }
@@ -109,11 +113,12 @@ void Cmd_Protect(NativeCmdCtx *ctx, const char *args)
 
     /* Skip ALL / QUIET keywords to get path */
     char path[CMD_MAX_PATH];
+    char pat[CMD_MAX_PATH];
     {
         char clean[CMD_MAX_LINE];
         cmd_kw_strip(p, "ALL", NULL, clean, CMD_MAX_LINE);
         cmd_kw_strip(clean, "QUIET", NULL, clean, CMD_MAX_LINE);
-        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+        cmd_split_path_pat(ctx->cwd, clean, path, pat);
     }
 
     if (!path[0]) {
@@ -121,8 +126,8 @@ void Cmd_Protect(NativeCmdCtx *ctx, const char *args)
         return;
     }
 
-    if (all) {
-        protect_dir(ctx, path, set_bits, clear_bits, quiet);
+    if (all || pat[0]) {
+        protect_dir(ctx, path, set_bits, clear_bits, quiet, pat);
     } else {
         protect_one(ctx, path, set_bits, clear_bits, quiet);
     }

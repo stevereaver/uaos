@@ -55,7 +55,7 @@ static void dir_print_entry(NativeCmdCtx *ctx, RamFsNode *node,
     if (lines) (*lines)++;
 }
 
-static void dir_list(NativeCmdCtx *ctx, const char *path,
+static void dir_list(NativeCmdCtx *ctx, const char *path, const char *pat,
                      int all, int dates, int inter, int keys,
                      int opt_alpha, int opt_dirfirst,
                      int *total_lines)
@@ -67,7 +67,8 @@ static void dir_list(NativeCmdCtx *ctx, const char *path,
     RamFsNode *ents[DIR_MAX_ENTRIES];
     int count = 0;
     while (child && count < DIR_MAX_ENTRIES) {
-        ents[count++] = child;
+        if (!pat[0] || cmd_pattern_match(child->name, pat))
+            ents[count++] = child;
         child = child->next_sibling;
     }
 
@@ -119,7 +120,7 @@ static void dir_list(NativeCmdCtx *ctx, const char *path,
                 if (sl < CMD_MAX_PATH - 1) { sub[sl] = '/'; sub[sl + 1] = '\0'; }
             }
             cmd_scat(sub, node->name, CMD_MAX_PATH);
-            dir_list(ctx, sub, all, dates, inter, keys, opt_alpha, opt_dirfirst, total_lines);
+            dir_list(ctx, sub, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst, total_lines);
         }
     }
 }
@@ -177,14 +178,22 @@ void Cmd_Dir(NativeCmdCtx *ctx, const char *args)
     }
 
     char path[CMD_MAX_PATH];
-    if (clean[0])
-        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
-    else
+    char pat[CMD_MAX_PATH];
+    if (clean[0]) {
+        cmd_split_path_pat(ctx->cwd, clean, path, pat);
+    } else {
         cmd_scopy(path, ctx->cwd, CMD_MAX_PATH);
+        pat[0] = '\0';
+    }
 
     char hdr[CMD_MAX_LINE];
     cmd_scopy(hdr, "Directory of ", CMD_MAX_LINE);
     cmd_scat(hdr, path, CMD_MAX_LINE);
+    if (pat[0]) {
+        cmd_scat(hdr, "  (pattern: ", CMD_MAX_LINE);
+        cmd_scat(hdr, pat, CMD_MAX_LINE);
+        cmd_scat(hdr, ")", CMD_MAX_LINE);
+    }
     PRINT(hdr);
     PRINT("");
 
@@ -196,17 +205,19 @@ void Cmd_Dir(NativeCmdCtx *ctx, const char *args)
     }
 
     int lines = 2; /* header + blank */
-    dir_list(ctx, path, all, dates, inter, keys, opt_alpha, opt_dirfirst, &lines);
+    dir_list(ctx, path, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst, &lines);
 
     PRINT("");
 
-    /* Compute bytes used by files in this directory */
+    /* Compute bytes used by matching files in this directory */
     uint32_t bytes_used = 0;
     int count = 0;
     RamFsNode *n = child;
     while (n) {
-        count++;
-        if (n->type == RAMFS_TYPE_FILE) bytes_used += n->size;
+        if (!pat[0] || cmd_pattern_match(n->name, pat)) {
+            count++;
+            if (n->type == RAMFS_TYPE_FILE) bytes_used += n->size;
+        }
         n = n->next_sibling;
     }
 

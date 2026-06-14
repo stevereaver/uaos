@@ -7,6 +7,7 @@
 
 extern void kprint(const char *s);
 extern void kprinthex(uint64_t v);
+extern uint32_t ntp_get_epoch(void);
 extern int g_virtio_irq_line;
 extern unsigned int g_canary_before;
 extern unsigned int g_canary_after;
@@ -86,6 +87,7 @@ static RamFsNode *alloc_node(void)
             g_nodes[i].protection   = DEFAULT_PROTECTION;
             g_nodes[i].name[0]      = '\0';
             g_nodes[i].comment[0]   = '\0';
+            g_nodes[i].mtime        = 0;
             g_nodes[i].parent       = NULL;
             g_nodes[i].first_child  = NULL;
             g_nodes[i].next_sibling = NULL;
@@ -240,6 +242,7 @@ RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
                 child = alloc_node();
                 if (!child) return NULL;
                 child->type   = RAMFS_TYPE_DIR;
+                child->mtime  = ntp_get_epoch();
                 scopy(child->name, comp, RAMFS_MAX_NAME);
                 child->parent = dir;
                 dir_add_child(dir, child);
@@ -259,6 +262,7 @@ RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
     RamFsNode *node = alloc_node();
     if (!node) return NULL;
     node->type   = RAMFS_TYPE_DIR;
+    node->mtime  = ntp_get_epoch();
     scopy(node->name, last, RAMFS_MAX_NAME);
     node->parent = dir;
     dir_add_child(dir, node);
@@ -296,6 +300,7 @@ RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
     if (existing) {
         if (existing->type == RAMFS_TYPE_FILE) {
             existing->size = 0;
+            existing->mtime = ntp_get_epoch();
             return existing;
         }
         return NULL; /* exists as dir */
@@ -304,6 +309,7 @@ RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
     RamFsNode *node = alloc_node();
     if (!node) return NULL;
     node->type   = RAMFS_TYPE_FILE;
+    node->mtime  = ntp_get_epoch();
     scopy(node->name, last, RAMFS_MAX_NAME);
     node->parent = dir;
     node->size   = 0;
@@ -331,6 +337,7 @@ int RamFS_Write(RamFsNode *node, const uint8_t *data, uint32_t len)
 
     for (uint32_t i = 0; i < len; i++) node->data[i] = data[i];
     node->size = len;
+    node->mtime = ntp_get_epoch();
     return 0;
 }
 

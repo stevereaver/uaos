@@ -143,6 +143,9 @@ struct ShellInstance {
     /* Last command return code (set by WHY-compatible commands) */
     int          last_rc;
 
+    /* FAILAT threshold — minimum return code treated as failure (default 10) */
+    int          failat_threshold;
+
     /* Script quit flag (set by QUIT command) */
     int          quit_flag;
 };
@@ -1485,6 +1488,13 @@ static void expand_vars(ShellInstance *s, const char *src, char *dst, int max);
 static char g_script_buf[MAX_SCRIPT_NEST][MAX_SCRIPT_SIZE];
 static int  g_script_nest_level = 0;
 
+#define MAX_SCRIPT_LABELS 32
+static struct {
+    char name[16];
+    int pc;
+} g_script_labels[MAX_SCRIPT_LABELS];
+static int g_script_label_count = 0;
+
 static char *script_acquire_buf(void)
 {
     if (g_script_nest_level >= MAX_SCRIPT_NEST) return NULL;
@@ -1611,6 +1621,14 @@ static int script_eval_cond(ShellInstance *s, const char *cond)
         return is_eq ? same : !same;
     }
 
+    /* WARN / ERROR / FAIL — check last command return code */
+    if (script_kw_match(cond, "warn"))
+        return s->last_rc >= 5;
+    if (script_kw_match(cond, "error"))
+        return s->last_rc >= 10;
+    if (script_kw_match(cond, "fail"))
+        return s->last_rc >= 20;
+
     /* Bare word: true if non-empty */
     return *cond ? 1 : 0;
 }
@@ -1655,32 +1673,71 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
             return pc;
         }
 
-        /* Multi-line IF */
+        /* Multi-line IF with optional ELSE IF chaining */
         int depth = 1;
-        int else_pc = -1;
-        int endif_pc = -1;
         int scan = pc;
+        int branch_pc[16];
+        const char *branch_cond[16];
+        int branch_count = 0;
+
+        branch_pc[0] = pc;
+        branch_cond[0] = cond;
+        branch_count = 1;
+
         while (scan < line_count && depth > 0) {
-            if (script_kw_match(lines[scan], "if")) depth++;
-            else if (script_kw_match(lines[scan], "else")) {
-                if (depth == 1 && else_pc < 0) else_pc = scan;
+            if (script_kw_match(lines[scan], "if")) {
+                depth++;
+            } else if (script_kw_match(lines[scan], "else")) {
+                if (depth == 1 && branch_count < 16) {
+                    const char *after_else = script_skip_sp(lines[scan] + 4);
+                    int is_else_if = script_kw_match(after_else, "if");
+                    if (!is_else_if && scan + 1 < line_count)
+                        is_else_if = script_kw_match(lines[scan + 1], "if");
+
+                    if (is_else_if) {
+                        if (script_kw_match(after_else, "if")) {
+                            /* IF cond on same line after ELSE */
+                            branch_cond[branch_count] = script_skip_sp(after_else + 2);
+                            branch_pc[branch_count] = scan + 1;
+                            branch_count++;
+                        } else {
+                            /* IF on next line */
+                            branch_cond[branch_count] = script_skip_sp(lines[scan + 1] + 2);
+                            branch_pc[branch_count] = scan + 2;
+                            branch_count++;
+                            scan++; /* skip the IF line so it doesn't increment depth */
+                        }
+                    } else {
+                        /* Simple ELSE */
+                        branch_cond[branch_count] = NULL;
+                        branch_pc[branch_count] = scan + 1;
+                        branch_count++;
+                    }
+                }
             } else if (script_kw_match(lines[scan], "endif")) {
                 depth--;
-                if (depth == 0) endif_pc = scan;
+                if (depth == 0 && branch_count < 16) {
+                    branch_pc[branch_count] = scan;
+                    branch_cond[branch_count] = NULL;
+                    branch_count++;
+                }
             }
             scan++;
         }
 
-        if (endif_pc < 0) {
+        int endif_pc = branch_pc[branch_count - 1];
+        if (branch_count < 2 || endif_pc < 0) {
             inst_print(s, "Script error: IF without ENDIF");
             return line_count;
         }
 
-        if (script_eval_cond(s, cond)) {
-            pc = script_run_block(s, lines, line_count, pc,
-                                  (else_pc >= 0) ? else_pc : endif_pc);
-        } else if (else_pc >= 0) {
-            pc = script_run_block(s, lines, line_count, else_pc + 1, endif_pc);
+        /* Execute the first true branch */
+        for (int b = 0; b < branch_count - 1; b++) {
+            if (branch_cond[b] == NULL || script_eval_cond(s, branch_cond[b])) {
+                script_run_block(s, lines, line_count,
+                                 branch_pc[b], branch_pc[b + 1]);
+                break;
+            }
         }
         return endif_pc + 1;
     }
@@ -1694,6 +1751,39 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
     /* QUIT — abort script execution */
     if (script_kw_match(line, "quit")) {
         s->quit_flag = 1;
+        return line_count;
+    }
+
+    /* LAB — label marker (no-op at runtime; labels are pre-scanned) */
+    if (script_kw_match(line, "lab")) {
+        return pc;
+    }
+
+    /* SKIP — jump to a label or skip lines */
+    if (script_kw_match(line, "skip")) {
+        const char *arg = script_skip_sp(line + 4);
+        if (!*arg) return pc; /* no arg: skip 1 line forward */
+
+        int backward = 0;
+        if (script_kw_match(arg, "back")) {
+            backward = 1;
+            arg = script_skip_sp(arg + 4);
+        }
+
+        int skip_n;
+        if (script_parse_int(arg, &skip_n)) {
+            if (backward)
+                return (pc > skip_n) ? (pc - skip_n) : 0;
+            return pc + skip_n;
+        }
+
+        /* Label lookup */
+        for (int i = 0; i < g_script_label_count; i++) {
+            if (seq_ci(arg, g_script_labels[i].name)) {
+                return g_script_labels[i].pc + 1;
+            }
+        }
+        inst_print(s, "Script error: SKIP label not found");
         return line_count;
     }
 
@@ -1800,6 +1890,23 @@ static void run_script_text(ShellInstance *s, char *text)
     }
 
     s->quit_flag = 0;
+
+    /* Pre-scan for labels */
+    g_script_label_count = 0;
+    for (int i = 0; i < line_count && g_script_label_count < MAX_SCRIPT_LABELS; i++) {
+        if (script_kw_match(lines[i], "lab")) {
+            const char *name = script_skip_sp(lines[i] + 3);
+            int j = 0;
+            while (name[j] && name[j] != ' ' && name[j] != '\t' && j < 15) {
+                g_script_labels[g_script_label_count].name[j] = name[j];
+                j++;
+            }
+            g_script_labels[g_script_label_count].name[j] = '\0';
+            g_script_labels[g_script_label_count].pc = i;
+            g_script_label_count++;
+        }
+    }
+
     script_run_block(s, lines, line_count, 0, line_count);
     s->quit_flag = 0;
 }
@@ -3036,6 +3143,36 @@ static void shell_set_rc(void *shell_extra, int rc)
     s->last_rc = rc;
 }
 
+/* Get FAILAT threshold */
+static int shell_get_failat(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    return s->failat_threshold;
+}
+
+/* Set FAILAT threshold */
+static void shell_set_failat(void *shell_extra, int threshold)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->failat_threshold = threshold;
+}
+
+/* Check if last_rc meets or exceeds FAILAT threshold and print a message */
+static void check_failat(ShellInstance *s)
+{
+    if (s->last_rc != 0 && s->last_rc >= s->failat_threshold) {
+        char msg[MAX_LINE_LEN];
+        char num[8], th[8];
+        uint_to_dec_s((uint32_t)s->last_rc, num, 8);
+        uint_to_dec_s((uint32_t)s->failat_threshold, th, 8);
+        scopy(msg, "FAILAT: return code ", MAX_LINE_LEN);
+        scat(msg, num, MAX_LINE_LEN);
+        scat(msg, " >= threshold ", MAX_LINE_LEN);
+        scat(msg, th, MAX_LINE_LEN);
+        inst_print(s, msg);
+    }
+}
+
 /* Get environment variable value */
 static int shell_get_env(void *shell_extra, const char *name, char *buf, int max)
 {
@@ -3094,6 +3231,8 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.close_shell    = shell_close_shell;
     ctx.get_last_rc    = shell_get_last_rc;
     ctx.set_rc         = shell_set_rc;
+    ctx.get_failat     = shell_get_failat;
+    ctx.set_failat     = shell_set_failat;
     ctx.get_env        = shell_get_env;
     ctx.quit_script    = shell_quit_script;
     return ctx;
@@ -3548,6 +3687,7 @@ static void inst_dispatch(ShellInstance *s, const char *line)
             scat(augmented, " ", MAX_LINE_LEN);
             scat(augmented, redir_path, MAX_LINE_LEN);
             run_cmd(s, augmented);
+            check_failat(s);
         }
         return;
     }
@@ -3570,12 +3710,14 @@ static void inst_dispatch(ShellInstance *s, const char *line)
         g_redir.active = 1;
         run_cmd(s, cmd_only);
         g_redir.active = 0;
+        check_failat(s);
         VFS_Close(&g_redir.fh);
         return;
     }
 
     /* No redirect — normal execution */
     run_cmd(s, cmd_only);
+    check_failat(s);
 }
 
 /* =========================================================================
@@ -4094,6 +4236,7 @@ static void open_shell(int stagger)
     s->ask_result_ready = 0;
     s->custom_prompt[0] = '\0';
     s->last_rc = 0;
+    s->failat_threshold = 10;
     s->quit_flag = 0;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */

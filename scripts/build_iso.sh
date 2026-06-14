@@ -385,6 +385,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_prompt.c" \
     "${REPO_ROOT}/kernel/shell/cmd_stack.c" \
     "${REPO_ROOT}/kernel/shell/cmd_why.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_failat.c" \
     "${REPO_ROOT}/kernel/shell/cmd_quit.c" \
     "${REPO_ROOT}/kernel/shell/cmd_endcli.c" \
     "${REPO_ROOT}/kernel/shell/cmd_filenote.c" \
@@ -631,6 +632,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_prompt.o" \
     "${BUILD_DIR}/obj/cmd_stack.o" \
     "${BUILD_DIR}/obj/cmd_why.o" \
+    "${BUILD_DIR}/obj/cmd_failat.o" \
     "${BUILD_DIR}/obj/cmd_quit.o" \
     "${BUILD_DIR}/obj/cmd_endcli.o" \
     "${BUILD_DIR}/obj/cmd_filenote.o" \
@@ -676,7 +678,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
            run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps netinfo \
-           list search sort join wait prompt stack why quit endcli filenote relabel \
+           list search sort join wait prompt stack why failat quit endcli filenote relabel \
            avail getenv unset; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
