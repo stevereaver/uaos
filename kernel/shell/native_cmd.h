@@ -159,5 +159,6 @@ void Cmd_NewCLI   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ask      (NativeCmdCtx *ctx, const char *args);
 void Cmd_Resident (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ps       (NativeCmdCtx *ctx, const char *args);
+void Cmd_NetInfo  (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

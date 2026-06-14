@@ -13,6 +13,7 @@
 #include "desktop.h"
 #include "calc_win.h"
 #include "clock_win.h"
+#include "netinfo_win.h"
 #include "pointer_prefs.h"
 #include "../dos/blockdev.h"
 #include "../dos/vfs.h"
@@ -445,6 +446,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             name[ni] = '\0';
             if (str_eq(name, "Calculator")) CalcWin_Open();
             else if (str_eq(name, "Clock"))       ClockWin_Open();
+            else if (str_eq(name, "NetInfo"))   NetInfoWin_Open();
             else if (str_eq(name, "Pointer")) PointerPrefs_Show();
         } else if (e && e[icon].name && e[icon].type[0] == 'F') {
             /* Launch known applications by name (FILE type - VFS files) */
@@ -455,6 +457,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             name[ni] = '\0';
             if (str_eq(name, "Calculator")) CalcWin_Open();
             else if (str_eq(name, "Clock"))       ClockWin_Open();
+            else if (str_eq(name, "NetInfo"))   NetInfoWin_Open();
             else if (str_eq(name, "Pointer")) PointerPrefs_Show();
         } else if (e && e[icon].name && e[icon].type[0] == 'D') {
             /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS, Tools) */

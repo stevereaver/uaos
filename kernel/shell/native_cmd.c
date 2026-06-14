@@ -58,6 +58,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     { "ask",        Cmd_Ask       },
     { "resident",   Cmd_Resident  },
     { "ps",         Cmd_Ps        },
+    { "netinfo",    Cmd_NetInfo   },
     { NULL,         NULL          }
 };
 
