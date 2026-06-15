@@ -18,6 +18,10 @@
 #include "dos/amiga_dos_types.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "irq/rtc.h"
+#include "net/ntp.h"
+
+extern volatile uint64_t g_pit_ticks;
 
 /* =========================================================================
  * Console output helpers
@@ -801,6 +805,200 @@ static void dos_CreateDir(M68kCPUState *cpu)
     cpu->d[0] = (uint32_t)res;
 }
 
+/* =========================================================================
+ * Date / time helpers
+ * ========================================================================= */
+
+static int is_leap_year(int y)
+{
+    return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+}
+
+static int32_t days_since_1978(uint16_t year, uint8_t month, uint8_t day)
+{
+    int32_t days = 0;
+    for (int y = 1978; y < year; y++) {
+        days += is_leap_year(y) ? 366 : 365;
+    }
+    static const int mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    for (int m = 1; m < month; m++) {
+        days += mdays[m - 1];
+        if (m == 2 && is_leap_year(year)) days++;
+    }
+    days += day - 1;
+    return days;
+}
+
+static void uint_to_str(uint32_t v, char *buf, int max)
+{
+    if (max <= 1) { if (max == 1) buf[0] = '\0'; return; }
+    if (v == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
+
+    char tmp[12];
+    int i = 0;
+    while (v > 0 && i < 11) {
+        tmp[i++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    int j = 0;
+    while (j < i && j < max - 1) {
+        buf[j] = tmp[i - 1 - j];
+        j++;
+    }
+    buf[j] = '\0';
+}
+
+static void uint_to_str_2d(uint32_t v, char *buf)
+{
+    buf[0] = (char)('0' + (v / 10));
+    buf[1] = (char)('0' + (v % 10));
+    buf[2] = '\0';
+}
+
+/* =========================================================================
+ * DateStamp — fill guest DateStamp with current date/time
+ * ========================================================================= */
+
+static void dos_DateStamp(M68kCPUState *cpu)
+{
+    uint32_t addr = cpu->a[0];
+    if (addr && addr + 12 <= GUEST_RAM_SIZE) {
+        RtcDateTime dt = RTC_ReadDateTime();
+        int32_t days = days_since_1978(dt.year, dt.month, dt.day);
+        int32_t minutes = (int32_t)dt.hour * 60 + (int32_t)dt.min;
+        int32_t ticks = (int32_t)dt.sec * 50;  /* PAL: 50 ticks/sec */
+
+        guest_write_be32(addr + 0, (uint32_t)days);
+        guest_write_be32(addr + 4, (uint32_t)minutes);
+        guest_write_be32(addr + 8, (uint32_t)ticks);
+    }
+    cpu->d[0] = cpu->a[0];
+}
+
+/* =========================================================================
+ * Delay — busy-wait using a spin loop
+ * ========================================================================= */
+
+static void dos_Delay(M68kCPUState *cpu)
+{
+    uint32_t ticks = cpu->d[0];
+    if (ticks == 0) return;
+
+    /* Conservative busy-wait: ~20 ms per Amiga tick.
+     * This is approximate; real timing depends on CPU frequency. */
+    volatile uint64_t n = (uint64_t)ticks * 4000000ULL;
+    while (n--) {
+        __asm__ __volatile__("pause");
+    }
+}
+
+/* =========================================================================
+ * DateToStr — convert DateStamp to formatted strings
+ * ========================================================================= */
+
+static void dos_DateToStr(M68kCPUState *cpu)
+{
+    uint32_t dt_addr = cpu->a[0];
+    if (!dt_addr || dt_addr + 28 > GUEST_RAM_SIZE) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    /* Read DateTime struct from guest RAM (big-endian) */
+    int32_t ds_days    = (int32_t)guest_read_be32(dt_addr + 0);
+    int32_t ds_minute  = (int32_t)guest_read_be32(dt_addr + 4);
+    int32_t ds_tick    = (int32_t)guest_read_be32(dt_addr + 8);
+    uint8_t format     = g_ram[dt_addr + 12];
+    uint32_t str_day   = guest_read_be32(dt_addr + 16);
+    uint32_t str_date  = guest_read_be32(dt_addr + 20);
+    uint32_t str_time  = guest_read_be32(dt_addr + 24);
+
+    /* Convert DateStamp to calendar fields.
+     * Amiga epoch (1978-01-01) to Unix epoch (1970-01-01) = 2922 days. */
+    uint32_t unix_ts = (uint32_t)((ds_days + 2922) * 86400LL +
+                                   ds_minute * 60LL + ds_tick / 50);
+    uint16_t year; uint8_t month, day, hour, min, sec;
+    ntp_unix_to_datetime(unix_ts, &year, &month, &day, &hour, &min, &sec);
+
+    static const char *mon_name[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+
+    /* Write day string (empty for now) */
+    if (str_day && str_day < GUEST_RAM_SIZE) {
+        g_ram[str_day] = '\0';
+    }
+
+    /* Write date string */
+    if (str_date && str_date + 16 < GUEST_RAM_SIZE) {
+        char buf[16];
+        uint32_t yr = year % 100;
+        switch (format) {
+            case 2: /* FORMAT_USA */
+                uint_to_str_2d(month, buf);
+                buf[2] = '-';
+                uint_to_str_2d(day, buf + 3);
+                buf[5] = '-';
+                uint_to_str_2d(yr, buf + 6);
+                buf[8] = '\0';
+                break;
+            case 3: /* FORMAT_CDN */
+                uint_to_str_2d(yr, buf);
+                buf[2] = '-';
+                uint_to_str_2d(month, buf + 3);
+                buf[5] = '-';
+                uint_to_str_2d(day, buf + 6);
+                buf[8] = '\0';
+                break;
+            case 1: /* FORMAT_INTL */
+                uint_to_str_2d(day, buf);
+                buf[2] = '-';
+                buf[3] = mon_name[month - 1][0];
+                buf[4] = mon_name[month - 1][1];
+                buf[5] = mon_name[month - 1][2];
+                buf[6] = '-';
+                uint_to_str(year, buf + 7, 6);
+                break;
+            default: /* FORMAT_DOS, FORMAT_DEF */
+                uint_to_str_2d(day, buf);
+                buf[2] = '-';
+                buf[3] = mon_name[month - 1][0];
+                buf[4] = mon_name[month - 1][1];
+                buf[5] = mon_name[month - 1][2];
+                buf[6] = '-';
+                uint_to_str_2d(yr, buf + 7);
+                buf[9] = '\0';
+                break;
+        }
+        int i = 0;
+        while (buf[i] && str_date + i < GUEST_RAM_SIZE) {
+            g_ram[str_date + i] = (uint8_t)buf[i];
+            i++;
+        }
+        g_ram[str_date + i] = '\0';
+    }
+
+    /* Write time string */
+    if (str_time && str_time + 10 < GUEST_RAM_SIZE) {
+        char buf[10];
+        uint_to_str_2d(hour, buf);
+        buf[2] = ':';
+        uint_to_str_2d(min, buf + 3);
+        buf[5] = ':';
+        uint_to_str_2d(sec, buf + 6);
+        buf[8] = '\0';
+        int i = 0;
+        while (buf[i] && str_time + i < GUEST_RAM_SIZE) {
+            g_ram[str_time + i] = (uint8_t)buf[i];
+            i++;
+        }
+        g_ram[str_time + i] = '\0';
+    }
+
+    cpu->d[0] = (uint32_t)DOSTRUE;
+}
+
 
 /* =========================================================================
  * Function table — indices must match the ILLEGAL handler's DOS_* constants
@@ -837,6 +1035,9 @@ static void *dos_funcs[] = {
     dos_CreateDir,     /* index 28 */
     dos_DupLock,       /* index 29 */
     dos_Parent,        /* index 30 */
+    dos_DateStamp,     /* index 31 */
+    dos_Delay,         /* index 32 */
+    dos_DateToStr,     /* index 33 */
 };
 
 /* =========================================================================
