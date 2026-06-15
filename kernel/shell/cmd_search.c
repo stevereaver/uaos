@@ -145,108 +145,123 @@ static void search_dir(NativeCmdCtx *ctx, const char *path,
 
 void Cmd_Search(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) {
-        PRINT("Usage: search [-i] <pattern> [file/dir] [ALL] [FROM <dir>] [FILE <pat>]");
-        PRINT("  -i   case-insensitive matching");
-        return;
-    }
-
     int ci = 0;
-    const char *p = args;
-    while (*p == '-') {
-        p++;
-        while (*p && *p != ' ') {
-            if (*p == 'i') ci = 1;
-            p++;
-        }
-        while (*p == ' ') p++;
-    }
-
-    int all = cmd_kw_find(args, "ALL");
-
-    /* Parse FROM <dir> */
+    int all = 0;
     char from_dir[CMD_MAX_PATH];
     from_dir[0] = '\0';
-    {
-        const char *fp = args;
-        while (*fp) {
-            while (*fp == ' ') fp++;
-            if (!*fp) break;
-            const char *start = fp;
-            while (*fp && *fp != ' ') fp++;
-            int len = (int)(fp - start);
-            if (len == 4 &&
-                ((start[0]=='F'||start[0]=='f') && (start[1]=='R'||start[1]=='r') &&
-                 (start[2]=='O'||start[2]=='o') && (start[3]=='M'||start[3]=='m'))) {
-                while (*fp == ' ') fp++;
-                int i = 0;
-                while (*fp && *fp != ' ' && i < CMD_MAX_PATH - 1) from_dir[i++] = *fp++;
-                from_dir[i] = '\0';
-                break;
-            }
-        }
-    }
-
-    /* Parse FILE <pattern> */
     char file_pat[RAMFS_MAX_NAME];
     file_pat[0] = '\0';
-    {
-        const char *fp = args;
-        while (*fp) {
-            while (*fp == ' ') fp++;
-            if (!*fp) break;
-            const char *start = fp;
-            while (*fp && *fp != ' ') fp++;
-            int len = (int)(fp - start);
-            if (len == 4 &&
-                ((start[0]=='F'||start[0]=='f') && (start[1]=='I'||start[1]=='i') &&
-                 (start[2]=='L'||start[2]=='l') && (start[3]=='E'||start[3]=='e'))) {
+    char pattern[CMD_MAX_LINE];
+    pattern[0] = '\0';
+    const char *pos_file = NULL;
+
+    if (ctx->template) {
+        ci = CmdTemplate_GetSwitch(ctx->template, "CI");
+        all = CmdTemplate_GetSwitch(ctx->template, "ALL");
+        const char *pat = CmdTemplate_GetString(ctx->template, "PATTERN");
+        if (pat) cmd_scopy(pattern, pat, CMD_MAX_LINE);
+        pos_file = CmdTemplate_GetString(ctx->template, "FILE");
+        const char *from = CmdTemplate_GetString(ctx->template, "FROM");
+        if (from) cmd_scopy(from_dir, from, CMD_MAX_PATH);
+        const char *fpat = CmdTemplate_GetString(ctx->template, "FILEPAT");
+        if (fpat) cmd_scopy(file_pat, fpat, RAMFS_MAX_NAME);
+    }
+
+    /* Legacy manual parsing when no template is present */
+    if (!pattern[0] && args && *args) {
+        const char *p = args;
+        while (*p == '-') {
+            p++;
+            while (*p && *p != ' ') {
+                if (*p == 'i') ci = 1;
+                p++;
+            }
+            while (*p == ' ') p++;
+        }
+
+        all = cmd_kw_find(args, "ALL");
+
+        /* Parse FROM <dir> */
+        {
+            const char *fp = args;
+            while (*fp) {
                 while (*fp == ' ') fp++;
-                int i = 0;
-                while (*fp && *fp != ' ' && i < RAMFS_MAX_NAME - 1) file_pat[i++] = *fp++;
-                file_pat[i] = '\0';
-                break;
+                if (!*fp) break;
+                const char *start = fp;
+                while (*fp && *fp != ' ') fp++;
+                int len = (int)(fp - start);
+                if (len == 4 &&
+                    ((start[0]=='F'||start[0]=='f') && (start[1]=='R'||start[1]=='r') &&
+                     (start[2]=='O'||start[2]=='o') && (start[3]=='M'||start[3]=='m'))) {
+                    while (*fp == ' ') fp++;
+                    int i = 0;
+                    while (*fp && *fp != ' ' && i < CMD_MAX_PATH - 1) from_dir[i++] = *fp++;
+                    from_dir[i] = '\0';
+                    break;
+                }
             }
         }
-    }
 
-    /* Extract pattern and optional target path */
-    char pattern[CMD_MAX_LINE];
-    int pi = 0;
-    while (*p && *p != ' ' && pi < CMD_MAX_LINE - 1)
-        pattern[pi++] = *p++;
-    pattern[pi] = '\0';
-    while (*p == ' ') p++;
+        /* Parse FILE <pattern> */
+        {
+            const char *fp = args;
+            while (*fp) {
+                while (*fp == ' ') fp++;
+                if (!*fp) break;
+                const char *start = fp;
+                while (*fp && *fp != ' ') fp++;
+                int len = (int)(fp - start);
+                if (len == 4 &&
+                    ((start[0]=='F'||start[0]=='f') && (start[1]=='I'||start[1]=='i') &&
+                     (start[2]=='L'||start[2]=='l') && (start[3]=='E'||start[3]=='e'))) {
+                    while (*fp == ' ') fp++;
+                    int i = 0;
+                    while (*fp && *fp != ' ' && i < RAMFS_MAX_NAME - 1) file_pat[i++] = *fp++;
+                    file_pat[i] = '\0';
+                    break;
+                }
+            }
+        }
 
-    /* Build clean remaining args for path */
-    char clean[CMD_MAX_LINE];
-    cmd_scopy(clean, p, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "ALL", NULL, clean, CMD_MAX_LINE);
-    if (from_dir[0]) {
-        char fkw[CMD_MAX_PATH + 8];
-        fkw[0] = '\0';
-        cmd_scat(fkw, "FROM ", CMD_MAX_PATH + 8);
-        cmd_scat(fkw, from_dir, CMD_MAX_PATH + 8);
-        cmd_kw_strip(clean, fkw, NULL, clean, CMD_MAX_LINE);
-    }
-    if (file_pat[0]) {
-        char fkw[RAMFS_MAX_NAME + 8];
-        fkw[0] = '\0';
-        cmd_scat(fkw, "FILE ", RAMFS_MAX_NAME + 8);
-        cmd_scat(fkw, file_pat, RAMFS_MAX_NAME + 8);
-        cmd_kw_strip(clean, fkw, NULL, clean, CMD_MAX_LINE);
+        /* Extract pattern and optional target path */
+        int pi = 0;
+        while (*p && *p != ' ' && pi < CMD_MAX_LINE - 1)
+            pattern[pi++] = *p++;
+        pattern[pi] = '\0';
+        while (*p == ' ') p++;
+
+        /* Build clean remaining args for path */
+        char clean[CMD_MAX_LINE];
+        cmd_scopy(clean, p, CMD_MAX_LINE);
+        cmd_kw_strip(clean, "ALL", NULL, clean, CMD_MAX_LINE);
+        if (from_dir[0]) {
+            char fkw[CMD_MAX_PATH + 8];
+            fkw[0] = '\0';
+            cmd_scat(fkw, "FROM ", CMD_MAX_PATH + 8);
+            cmd_scat(fkw, from_dir, CMD_MAX_PATH + 8);
+            cmd_kw_strip(clean, fkw, NULL, clean, CMD_MAX_LINE);
+        }
+        if (file_pat[0]) {
+            char fkw[RAMFS_MAX_NAME + 8];
+            fkw[0] = '\0';
+            cmd_scat(fkw, "FILE ", RAMFS_MAX_NAME + 8);
+            cmd_scat(fkw, file_pat, RAMFS_MAX_NAME + 8);
+            cmd_kw_strip(clean, fkw, NULL, clean, CMD_MAX_LINE);
+        }
+
+        if (clean[0]) pos_file = clean;
     }
 
     if (!pattern[0]) {
-        PRINT("Usage: search [-i] <pattern> [file/dir] [ALL] [FROM <dir>] [FILE <pat>]");
+        PRINT("Usage: search <pattern> [file/dir] [ALL] [FROM <dir>] [FILEPAT <pat>] [CI]");
         return;
     }
 
     char path[CMD_MAX_PATH];
     if (from_dir[0])
         cmd_make_abs(ctx->cwd, from_dir, path, CMD_MAX_PATH);
-    else if (clean[0])
-        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+    else if (pos_file && pos_file[0])
+        cmd_make_abs(ctx->cwd, pos_file, path, CMD_MAX_PATH);
     else
         cmd_scopy(path, ctx->cwd, CMD_MAX_PATH);
 

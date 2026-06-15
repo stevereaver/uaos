@@ -49,44 +49,62 @@ static int grep_match(const char *needle, int nl,
  * ------------------------------------------------------------------------- */
 void Cmd_Grep(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) {
-        PRINT("Usage: grep [-i] <pattern> <file>");
-        return;
+    int ci = 0;
+    const char *pattern = NULL;
+    const char *file_arg = NULL;
+
+    if (ctx->template) {
+        ci = CmdTemplate_GetSwitch(ctx->template, "CI");
+        pattern = CmdTemplate_GetString(ctx->template, "PATTERN");
+        file_arg = CmdTemplate_GetString(ctx->template, "FILE");
     }
 
-    /* ---- parse flags ---- */
-    int ci = 0;                     /* case-insensitive flag */
-    while (*args == '-') {
-        args++;
-        while (*args && *args != ' ') {
-            if (*args == 'i') ci = 1;
-            args++;
+    /* Legacy -i flag for backward compatibility */
+    if (!ci && args) {
+        const char *p = args;
+        while (*p == '-') {
+            p++;
+            while (*p && *p != ' ') {
+                if (*p == 'i') ci = 1;
+                p++;
+            }
+            while (*p == ' ') p++;
         }
-        while (*args == ' ') args++;
     }
 
-    /* ---- extract pattern ---- */
-    char pattern[CMD_MAX_LINE];
-    int pi = 0;
-    while (*args && *args != ' ' && pi < CMD_MAX_LINE - 1)
-        pattern[pi++] = *args++;
-    pattern[pi] = '\0';
-    while (*args == ' ') args++;
+    /* Fallback if template is not present or didn't fill pattern */
+    if (!pattern && args && *args) {
+        const char *p = args;
+        while (*p == '-') {
+            p++;
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+        }
+        char pat_buf[CMD_MAX_LINE];
+        pat_buf[0] = '\0';
+        int pi = 0;
+        while (*p && *p != ' ' && pi < CMD_MAX_LINE - 1)
+            pat_buf[pi++] = *p++;
+        pat_buf[pi] = '\0';
+        pattern = pat_buf;
+        while (*p == ' ') p++;
+        if (!file_arg && *p) file_arg = p;
+    }
 
-    if (!pattern[0]) {
-        PRINT("Usage: grep [-i] <pattern> <file>");
+    if (!pattern || !*pattern) {
+        PRINT("Usage: grep <pattern> [file] [CI]");
         return;
     }
 
     /* ---- resolve file path ---- */
     char path[CMD_MAX_PATH];
-    if (!*args && ctx->pipe_file) {
+    if (file_arg && *file_arg) {
+        cmd_make_abs(ctx->cwd, file_arg, path, CMD_MAX_PATH);
+    } else if (ctx->pipe_file) {
         cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
-    } else if (!*args) {
-        PRINT("Usage: grep [-i] <pattern> <file>");
-        return;
     } else {
-        cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
+        PRINT("Usage: grep <pattern> [file] [CI]");
+        return;
     }
 
     VfsFile fh;

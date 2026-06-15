@@ -19,10 +19,21 @@
  * ------------------------------------------------------------------------- */
 void Cmd_More(NativeCmdCtx *ctx, const char *args)
 {
-    if ((!args || !*args) && !ctx->pipe_file) { PRINT("Usage: more <file>"); return; }
+    const char *file_arg = NULL;
+
+    if (ctx->template) {
+        file_arg = CmdTemplate_GetString(ctx->template, "FILE");
+    }
+
+    if (!file_arg && (!args || !*args) && !ctx->pipe_file) {
+        PRINT("Usage: more <file>");
+        return;
+    }
 
     char path[CMD_MAX_PATH];
-    if ((!args || !*args) && ctx->pipe_file) {
+    if (file_arg && *file_arg) {
+        cmd_make_abs(ctx->cwd, file_arg, path, CMD_MAX_PATH);
+    } else if ((!args || !*args) && ctx->pipe_file) {
         cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
     } else {
         cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);

@@ -78,54 +78,70 @@ static void sort_swap(int i, int j)
 
 void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
 {
-    if ((!args || !*args) && !ctx->pipe_file) {
+    int case_sens = 0;
+    int numeric = 0;
+    int col = 0;
+    const char *file_arg = NULL;
+
+    if (ctx->template) {
+        case_sens = CmdTemplate_GetSwitch(ctx->template, "CASE");
+        numeric   = CmdTemplate_GetSwitch(ctx->template, "NUMERIC");
+        file_arg  = CmdTemplate_GetString(ctx->template, "FILE");
+        int cval = 0;
+        if (CmdTemplate_GetInt(ctx->template, "COL", &cval)) {
+            col = cval;
+        }
+    } else {
+        /* Legacy manual parsing when no template is present */
+        case_sens = cmd_kw_find(args, "CASE");
+        numeric   = cmd_kw_find(args, "NUMERIC");
+        {
+            const char *p = args;
+            while (*p) {
+                while (*p == ' ') p++;
+                if (!*p) break;
+                const char *start = p;
+                while (*p && *p != ' ') p++;
+                int len = (int)(p - start);
+                if (len == 3 &&
+                    ((start[0]=='C'||start[0]=='c') && (start[1]=='O'||start[1]=='o') &&
+                     (start[2]=='L'||start[2]=='l'))) {
+                    while (*p == ' ') p++;
+                    col = 0;
+                    while (*p >= '0' && *p <= '9') { col = col * 10 + (*p - '0'); p++; }
+                    break;
+                }
+            }
+        }
+        /* Strip flags to get filename */
+        char clean[CMD_MAX_LINE];
+        clean[0] = '\0';
+        cmd_kw_strip(args, "CASE", NULL, clean, CMD_MAX_LINE);
+        cmd_kw_strip(clean, "NUMERIC", NULL, clean, CMD_MAX_LINE);
+        if (col >= 0) {
+            char ckw[CMD_MAX_LINE];
+            ckw[0] = '\0';
+            cmd_scat(ckw, "COL ", CMD_MAX_LINE);
+            char cnum[8];
+            cmd_uint_to_dec((uint32_t)col, cnum, 8);
+            cmd_scat(ckw, cnum, CMD_MAX_LINE);
+            cmd_kw_strip(clean, ckw, NULL, clean, CMD_MAX_LINE);
+        }
+        if (clean[0]) file_arg = clean;
+    }
+
+    if (!file_arg && (!args || !*args) && !ctx->pipe_file) {
         PRINT("Usage: sort <file> [COL <n>] [CASE] [NUMERIC]");
         return;
     }
 
-    int case_sens = cmd_kw_find(args, "CASE");
-    int numeric   = cmd_kw_find(args, "NUMERIC");
-
-    /* Parse COL <n> */
-    int col = 0;
-    {
-        const char *p = args;
-        while (*p) {
-            while (*p == ' ') p++;
-            if (!*p) break;
-            const char *start = p;
-            while (*p && *p != ' ') p++;
-            int len = (int)(p - start);
-            if (len == 3 &&
-                ((start[0]=='C'||start[0]=='c') && (start[1]=='O'||start[1]=='o') &&
-                 (start[2]=='L'||start[2]=='l'))) {
-                while (*p == ' ') p++;
-                col = 0;
-                while (*p >= '0' && *p <= '9') { col = col * 10 + (*p - '0'); p++; }
-                break;
-            }
-        }
-    }
-
-    /* Strip flags to get filename */
-    char clean[CMD_MAX_LINE];
-    cmd_kw_strip(args, "CASE", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "NUMERIC", NULL, clean, CMD_MAX_LINE);
-    if (col >= 0) {
-        char ckw[CMD_MAX_LINE];
-        ckw[0] = '\0';
-        cmd_scat(ckw, "COL ", CMD_MAX_LINE);
-        char cnum[8];
-        cmd_uint_to_dec((uint32_t)col, cnum, 8);
-        cmd_scat(ckw, cnum, CMD_MAX_LINE);
-        cmd_kw_strip(clean, ckw, NULL, clean, CMD_MAX_LINE);
-    }
-
     char path[CMD_MAX_PATH];
-    if (!clean[0] && ctx->pipe_file) {
+    if (file_arg && *file_arg) {
+        cmd_make_abs(ctx->cwd, file_arg, path, CMD_MAX_PATH);
+    } else if ((!args || !*args) && ctx->pipe_file) {
         cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
     } else {
-        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+        cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
     }
 
     VfsFile fh;

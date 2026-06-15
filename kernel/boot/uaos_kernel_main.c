@@ -574,6 +574,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         /* Poll network stack for incoming packets */
         net_stack_poll();
 
+        /* Run one background job if the queue is not empty and
+         * the keyboard is idle (so we don't block interactive use). */
+        if (!PS2Kbd_HasChar()) {
+            ShellWin_PollJobs();
+        }
+
         /* Periodic heartbeat so we know the loop hasn't hung */
         loop_count++;
         if ((loop_count & 0x7FFFFFF) == 0) {

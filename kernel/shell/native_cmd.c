@@ -59,8 +59,8 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("nslookup",   Cmd_Nslookup ),
     CMD ("ntpd",       Cmd_Ntpd     ),
     CMD ("clock",      Cmd_ClockWin ),
-    CMD ("grep",       Cmd_Grep     ),
-    CMD ("more",       Cmd_More     ),
+    CMDT("grep",       Cmd_Grep,     "PATTERN/A,FILE,CI/S" ),
+    CMDT("more",       Cmd_More,     "FILE" ),
     CMD ("vim",        Cmd_Vim      ),
     CMD ("newcli",     Cmd_NewCLI   ),
     CMD ("newshell",   Cmd_NewCLI   ),  /* alias */
@@ -69,8 +69,8 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("ps",         Cmd_Ps       ),
     CMD ("netinfo",    Cmd_NetInfo  ),
     CMD ("list",       Cmd_List     ),
-    CMD ("search",     Cmd_Search   ),
-    CMD ("sort",       Cmd_Sort     ),
+    CMDT("search",     Cmd_Search,   "PATTERN/A,FILE,ALL/S,FROM/K,FILEPAT/K,CI/S" ),
+    CMDT("sort",       Cmd_Sort,     "FILE,COL/K/N,CASE/S,NUMERIC/S" ),
     CMD ("join",       Cmd_Join     ),
     CMD ("wait",       Cmd_Wait     ),
     CMD ("prompt",     Cmd_Prompt   ),
@@ -84,6 +84,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("avail",      Cmd_Avail    ),
     CMD ("getenv",     Cmd_GetEnv   ),
     CMD ("unset",      Cmd_UnSet    ),
+    CMD ("jobs",       Cmd_Jobs     ),
     { NULL, NULL, NULL }
 };
 

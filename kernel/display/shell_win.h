@@ -18,4 +18,13 @@ void ShellWin_Redraw(void);
 /* Execute S:Startup-Sequence in the first shell instance */
 void ShellWin_RunStartupSequence(void);
 
+/* Poll background job queue — call from the main event loop.
+ * Runs one queued job to completion (commands that yield will
+ * still pump UI/network during their execution). */
+void ShellWin_PollJobs(void);
+
+/* List background jobs for the given shell.
+ * The print callback receives (shell_opaque, line_text). */
+void ShellWin_ListJobs(void *shell, void (*print)(void *, const char *));
+
 #endif

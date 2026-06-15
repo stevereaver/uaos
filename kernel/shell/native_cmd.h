@@ -207,6 +207,7 @@ void Cmd_Why      (NativeCmdCtx *ctx, const char *args);
 void Cmd_Failat   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Quit     (NativeCmdCtx *ctx, const char *args);
 void Cmd_EndCLI   (NativeCmdCtx *ctx, const char *args);
+void Cmd_Jobs     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Filenote (NativeCmdCtx *ctx, const char *args);
 void Cmd_Relabel  (NativeCmdCtx *ctx, const char *args);
 void Cmd_Avail    (NativeCmdCtx *ctx, const char *args);

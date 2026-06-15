@@ -40,6 +40,7 @@
 typedef struct ShellInstance ShellInstance;
 static void inst_print(ShellInstance *s, const char *line);
 static void inst_dispatch(ShellInstance *s, const char *line);
+static void run_cmd(ShellInstance *s, const char *line);
 static NativeCmdCtx shell_make_ctx(ShellInstance *s);
 static ShellInstance *g_fdisk_shell = NULL;
 static void inst_print_wrapper(const char *line)
@@ -453,6 +454,116 @@ static int     g_pipe_active = 0;
 static int     g_pipe_next_idx = 0;
 static char    g_pipe_in_file[64];
 static int     g_pipe_in_active = 0;
+
+/* -------------------------------------------------------------------------
+ * Background job support
+ * ------------------------------------------------------------------------- */
+
+#define MAX_BG_JOBS 8
+
+typedef struct {
+    char     cmd[MAX_LINE_LEN];
+    ShellInstance *shell;
+    int      active;      /* 1 = running, 0 = queued */
+    int      number;      /* job number for user display */
+    int      done;        /* 1 = finished, waiting for removal */
+} BgJob;
+
+static BgJob g_bg_jobs[MAX_BG_JOBS];
+static int   g_bg_job_count = 0;
+static int   g_next_job_num = 1;
+static int   g_bg_running   = 0;  /* prevent nested bg dispatch */
+
+static void bg_enqueue(ShellInstance *s, const char *cmd)
+{
+    if (g_bg_job_count >= MAX_BG_JOBS) {
+        inst_print(s, "Job queue full.");
+        return;
+    }
+    BgJob *job = &g_bg_jobs[g_bg_job_count];
+    scopy(job->cmd, cmd, MAX_LINE_LEN);
+    job->shell   = s;
+    job->active  = 0;
+    job->done    = 0;
+    job->number  = g_next_job_num++;
+    g_bg_job_count++;
+
+    char msg[MAX_LINE_LEN];
+    scopy(msg, "[", MAX_LINE_LEN);
+    char num[8];
+    uint_to_dec_s((uint32_t)job->number, num, 8);
+    scat(msg, num, MAX_LINE_LEN);
+    scat(msg, "] ", MAX_LINE_LEN);
+    scat(msg, cmd, MAX_LINE_LEN);
+    inst_print(s, msg);
+}
+
+static void bg_remove_done(void)
+{
+    int write = 0;
+    for (int read = 0; read < g_bg_job_count; read++) {
+        if (g_bg_jobs[read].done) continue;
+        if (write != read) {
+            g_bg_jobs[write] = g_bg_jobs[read];
+        }
+        write++;
+    }
+    g_bg_job_count = write;
+}
+
+static void bg_run_next(void)
+{
+    if (g_bg_running) return;
+    bg_remove_done();
+    if (g_bg_job_count == 0) return;
+
+    /* Find first queued (not active) job */
+    int idx = -1;
+    for (int i = 0; i < g_bg_job_count; i++) {
+        if (!g_bg_jobs[i].active && !g_bg_jobs[i].done) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) return;
+
+    BgJob *job = &g_bg_jobs[idx];
+    job->active = 1;
+    g_bg_running = 1;
+
+    /* Suppress prompt echo for background execution by calling run_cmd
+     * directly — inst_dispatch would print the command again.  If the
+     * command contains redirects or pipes, run_cmd won't handle them,
+     * so for now we fall back to inst_dispatch and accept the extra echo.
+     * A cleaner future approach would be to refactor redirect/pipe logic
+     * into a shared helper callable from here. */
+    char check[MAX_LINE_LEN];
+    scopy(check, job->cmd, MAX_LINE_LEN);
+    int has_pipe = 0, has_redir = 0;
+    for (int i = 0; check[i]; i++) {
+        if (check[i] == '|') has_pipe = 1;
+        if (check[i] == '>' || check[i] == '<') has_redir = 1;
+    }
+
+    if (!has_pipe && !has_redir) {
+        run_cmd(job->shell, job->cmd);
+    } else {
+        /* Re-parse redirects/pipes via inst_dispatch */
+        inst_dispatch(job->shell, job->cmd);
+    }
+
+    char done_msg[MAX_LINE_LEN];
+    scopy(done_msg, "[", MAX_LINE_LEN);
+    char num[8];
+    uint_to_dec_s((uint32_t)job->number, num, 8);
+    scat(done_msg, num, MAX_LINE_LEN);
+    scat(done_msg, "] done", MAX_LINE_LEN);
+    inst_print(job->shell, done_msg);
+
+    job->active = 0;
+    job->done   = 1;
+    g_bg_running = 0;
+}
 
 static void pipe_print(void *shell, const char *line)
 {
@@ -3746,6 +3857,17 @@ static void expand_vars(ShellInstance *s, const char *src, char *dst, int max)
     dst[di] = '\0';
 }
 
+static void strip_trailing_ampersand(char *s)
+{
+    int len = slen(s);
+    while (len > 0 && s[len - 1] == ' ') len--;
+    if (len > 0 && s[len - 1] == '&') {
+        len--;
+        while (len > 0 && s[len - 1] == ' ') len--;
+        s[len] = '\0';
+    }
+}
+
 static void inst_dispatch(ShellInstance *s, const char *line)
 {
     /* Expand $variables before anything else */
@@ -3753,22 +3875,42 @@ static void inst_dispatch(ShellInstance *s, const char *line)
     expand_vars(s, line, expanded_line, MAX_LINE_LEN);
     line = expanded_line;
 
-    /* Echo prompt */
-    char echo_line[MAX_LINE_LEN];
-    scopy(echo_line, s->cwd, MAX_LINE_LEN);
-    scat(echo_line, "> ", MAX_LINE_LEN);
-    scat(echo_line, line, MAX_LINE_LEN);
-    inst_print(s, echo_line);
+    /* Echo prompt (skip when dispatching a queued background job) */
+    if (!g_bg_running) {
+        char echo_line[MAX_LINE_LEN];
+        scopy(echo_line, s->cwd, MAX_LINE_LEN);
+        scat(echo_line, "> ", MAX_LINE_LEN);
+        scat(echo_line, line, MAX_LINE_LEN);
+        inst_print(s, echo_line);
+    }
 
     while (*line == ' ') line++;
     if (!*line) return;
     if (*line == ';') return; /* skip comment lines */
+
+    /* Detect background operator (&) before redirect parsing */
+    int bg = 0;
+    {
+        int len = slen(line);
+        while (len > 0 && line[len - 1] == ' ') len--;
+        bg = (len > 0 && line[len - 1] == '&');
+    }
 
     /* Parse redirect operators out of line */
     char cmd_only[MAX_LINE_LEN];
     char redir_path[64];
     int redir_mode = parse_redirects(s, line, cmd_only, MAX_LINE_LEN,
                                      redir_path, 64);
+    strip_trailing_ampersand(cmd_only);
+
+    /* If background, enqueue the clean line and return immediately */
+    if (bg) {
+        char bg_line[MAX_LINE_LEN];
+        scopy(bg_line, line, MAX_LINE_LEN);
+        strip_trailing_ampersand(bg_line);
+        bg_enqueue(s, bg_line);
+        return;
+    }
 
     /* stdin redirect (<): treat as: type <file>, pass content as stdin.
      * For simplicity: < just feeds the file content as if typed — currently
@@ -4423,6 +4565,32 @@ void ShellWin_Redraw(void)
 {
     if (!g_fb.valid) return;
     WM_Redraw();
+}
+
+void ShellWin_PollJobs(void)
+{
+    bg_run_next();
+}
+
+void ShellWin_ListJobs(void *shell, void (*print)(void *, const char *))
+{
+    if (g_bg_job_count == 0) {
+        print(shell, "No active jobs.");
+        return;
+    }
+    print(shell, "Job  Status  Command");
+    print(shell, "-----------------------------");
+    for (int i = 0; i < g_bg_job_count; i++) {
+        char line[MAX_LINE_LEN];
+        line[0] = '\0';
+        char num[8];
+        uint_to_dec_s((uint32_t)g_bg_jobs[i].number, num, 8);
+        scat(line, num, MAX_LINE_LEN);
+        scat(line, "    ", MAX_LINE_LEN);
+        scat(line, g_bg_jobs[i].active ? "run   " : "queue ", MAX_LINE_LEN);
+        scat(line, g_bg_jobs[i].cmd, MAX_LINE_LEN);
+        print(shell, line);
+    }
 }
 
 void ShellWin_HandleKey(char c)
