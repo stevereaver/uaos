@@ -856,6 +856,53 @@ static void uint_to_str_2d(uint32_t v, char *buf)
 }
 
 /* =========================================================================
+ * Pattern matching helpers — shared by ParsePattern / MatchPattern
+ * ========================================================================= */
+
+static int pattern_match(const char *name, const char *pat)
+{
+    const char *n = name;
+    const char *p = pat;
+    const char *star_n = NULL;
+    const char *star_p = NULL;
+
+    while (*n) {
+        char pc = *p;
+        char nc = *n;
+        if (pc >= 'A' && pc <= 'Z') pc += 32;
+        if (nc >= 'A' && nc <= 'Z') nc += 32;
+
+        if (pc == '*' || (pc == '#' && p[1] == '?')) {
+            if (pc == '#') p++;
+            star_p = ++p;
+            star_n = n;
+            continue;
+        } else if (pc == '?') {
+            p++;
+            n++;
+            continue;
+        } else if (pc == nc) {
+            p++;
+            n++;
+            continue;
+        }
+
+        if (star_p) {
+            p = star_p;
+            n = ++star_n;
+            continue;
+        }
+        return 0;
+    }
+
+    while (*p == '*' || (*p == '#' && p[1] == '?')) {
+        if (*p == '#') p++;
+        p++;
+    }
+    return *p == '\0';
+}
+
+/* =========================================================================
  * DateStamp — fill guest DateStamp with current date/time
  * ========================================================================= */
 
@@ -999,6 +1046,82 @@ static void dos_DateToStr(M68kCPUState *cpu)
     cpu->d[0] = (uint32_t)DOSTRUE;
 }
 
+/* =========================================================================
+ * ParsePattern / ParsePatternNoCase — copy pattern and detect wildcards
+ * ========================================================================= */
+
+static void dos_ParsePattern(M68kCPUState *cpu)
+{
+    uint32_t src = cpu->d[1];
+    uint32_t dst = cpu->a[0];
+    int32_t dst_len = (int32_t)cpu->d[2];
+
+    if (dst_len < 1 || src >= GUEST_RAM_SIZE || dst >= GUEST_RAM_SIZE) {
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    int i = 0;
+    int has_wild = 0;
+
+    while (i < dst_len - 1 && src + i < GUEST_RAM_SIZE && g_ram[src + i]) {
+        char c = (char)g_ram[src + i];
+        g_ram[dst + i] = (uint8_t)c;
+        if (c == '?' || c == '*' || c == '#') has_wild = 1;
+        i++;
+    }
+
+    if (src + i < GUEST_RAM_SIZE && g_ram[src + i]) {
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    g_ram[dst + i] = 0;
+    cpu->d[0] = has_wild ? 1 : 0;
+}
+
+static void dos_ParsePatternNoCase(M68kCPUState *cpu)
+{
+    /* Same behaviour as ParsePattern — our MatchPattern is case-insensitive */
+    dos_ParsePattern(cpu);
+}
+
+/* =========================================================================
+ * MatchPattern / MatchPatternNoCase — match string against parsed pattern
+ * ========================================================================= */
+
+static void dos_MatchPattern(M68kCPUState *cpu)
+{
+    uint32_t pat = cpu->d[1];
+    uint32_t str = cpu->a[0];
+
+    if (pat >= GUEST_RAM_SIZE || str >= GUEST_RAM_SIZE) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    char pat_buf[128];
+    char str_buf[128];
+    int i = 0;
+    while (i < 127 && pat + i < GUEST_RAM_SIZE && g_ram[pat + i]) {
+        pat_buf[i] = (char)g_ram[pat + i]; i++;
+    }
+    pat_buf[i] = '\0';
+
+    i = 0;
+    while (i < 127 && str + i < GUEST_RAM_SIZE && g_ram[str + i]) {
+        str_buf[i] = (char)g_ram[str + i]; i++;
+    }
+    str_buf[i] = '\0';
+
+    cpu->d[0] = pattern_match(str_buf, pat_buf) ? (uint32_t)DOSTRUE : (uint32_t)DOSFALSE;
+}
+
+static void dos_MatchPatternNoCase(M68kCPUState *cpu)
+{
+    /* Same behaviour as MatchPattern — our pattern_match is already case-insensitive */
+    dos_MatchPattern(cpu);
+}
 
 /* =========================================================================
  * Function table — indices must match the ILLEGAL handler's DOS_* constants
@@ -1038,6 +1161,10 @@ static void *dos_funcs[] = {
     dos_DateStamp,     /* index 31 */
     dos_Delay,         /* index 32 */
     dos_DateToStr,     /* index 33 */
+    dos_ParsePattern,       /* index 34 */
+    dos_ParsePatternNoCase, /* index 35 */
+    dos_MatchPattern,       /* index 36 */
+    dos_MatchPatternNoCase, /* index 37 */
 };
 
 /* =========================================================================

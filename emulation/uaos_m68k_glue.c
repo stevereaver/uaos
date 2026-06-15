@@ -351,6 +351,10 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_DATE_STAMP     31
 #define DOS_DELAY          32
 #define DOS_DATE_TO_STR    33
+#define DOS_PARSE_PATTERN       34
+#define DOS_MATCH_PATTERN       35
+#define DOS_PARSE_PATTERN_NO_CASE 36
+#define DOS_MATCH_PATTERN_NO_CASE 37
 
 /* graphics.library function indices (must match graphics_lib.c) */
 #define GFX_OPEN_LIBRARY      1
@@ -517,6 +521,10 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_DATE_STAMP (-192)
 #define LVO_DOS_DELAY      (-198)
 #define LVO_DOS_DATE_TO_STR (-678)
+#define LVO_DOS_PARSE_PATTERN       (-474)
+#define LVO_DOS_MATCH_PATTERN       (-506)
+#define LVO_DOS_PARSE_PATTERN_NO_CASE (-480)
+#define LVO_DOS_MATCH_PATTERN_NO_CASE (-512)
 
 /* graphics.library LVO offsets (AmigaOS standard) */
 #define LVO_GFX_INIT_RASTPORT  (-30)
@@ -591,6 +599,10 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_DATE_STAMP:     return (uint32_t)((int)DOS_BASE + LVO_DOS_DATE_STAMP);
             case DOS_DELAY:          return (uint32_t)((int)DOS_BASE + LVO_DOS_DELAY);
             case DOS_DATE_TO_STR:    return (uint32_t)((int)DOS_BASE + LVO_DOS_DATE_TO_STR);
+            case DOS_PARSE_PATTERN:       return (uint32_t)((int)DOS_BASE + LVO_DOS_PARSE_PATTERN);
+            case DOS_MATCH_PATTERN:       return (uint32_t)((int)DOS_BASE + LVO_DOS_MATCH_PATTERN);
+            case DOS_PARSE_PATTERN_NO_CASE: return (uint32_t)((int)DOS_BASE + LVO_DOS_PARSE_PATTERN_NO_CASE);
+            case DOS_MATCH_PATTERN_NO_CASE: return (uint32_t)((int)DOS_BASE + LVO_DOS_MATCH_PATTERN_NO_CASE);
             case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
             case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
             case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
@@ -705,6 +717,10 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_DATE_STAMP,  LIB_DOS, DOS_DATE_STAMP);
     install_lvo(DOS_BASE, LVO_DOS_DELAY,       LIB_DOS, DOS_DELAY);
     install_lvo(DOS_BASE, LVO_DOS_DATE_TO_STR, LIB_DOS, DOS_DATE_TO_STR);
+    install_lvo(DOS_BASE, LVO_DOS_PARSE_PATTERN,       LIB_DOS, DOS_PARSE_PATTERN);
+    install_lvo(DOS_BASE, LVO_DOS_MATCH_PATTERN,       LIB_DOS, DOS_MATCH_PATTERN);
+    install_lvo(DOS_BASE, LVO_DOS_PARSE_PATTERN_NO_CASE, LIB_DOS, DOS_PARSE_PATTERN_NO_CASE);
+    install_lvo(DOS_BASE, LVO_DOS_MATCH_PATTERN_NO_CASE, LIB_DOS, DOS_MATCH_PATTERN_NO_CASE);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {
