@@ -52,6 +52,7 @@ void Cmd_Grep(NativeCmdCtx *ctx, const char *args)
     int ci = 0;
     const char *pattern = NULL;
     const char *file_arg = NULL;
+    char pat_buf[CMD_MAX_LINE];
 
     if (ctx->template) {
         ci = CmdTemplate_GetSwitch(ctx->template, "CI");
@@ -80,7 +81,6 @@ void Cmd_Grep(NativeCmdCtx *ctx, const char *args)
             while (*p && *p != ' ') p++;
             while (*p == ' ') p++;
         }
-        char pat_buf[CMD_MAX_LINE];
         pat_buf[0] = '\0';
         int pi = 0;
         while (*p && *p != ' ' && pi < CMD_MAX_LINE - 1)

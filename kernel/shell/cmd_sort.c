@@ -82,6 +82,7 @@ void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
     int numeric = 0;
     int col = 0;
     const char *file_arg = NULL;
+    char clean[CMD_MAX_LINE];
 
     if (ctx->template) {
         case_sens = CmdTemplate_GetSwitch(ctx->template, "CASE");
@@ -114,7 +115,6 @@ void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
             }
         }
         /* Strip flags to get filename */
-        char clean[CMD_MAX_LINE];
         clean[0] = '\0';
         cmd_kw_strip(args, "CASE", NULL, clean, CMD_MAX_LINE);
         cmd_kw_strip(clean, "NUMERIC", NULL, clean, CMD_MAX_LINE);

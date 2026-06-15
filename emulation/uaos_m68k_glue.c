@@ -1241,7 +1241,7 @@ static void dos_Open(void)
 
     uint32_t mode = m68k_get_reg(NULL, M68K_REG_D2);
     int32_t action = (mode == 1006) ? ACTION_FINDOUTPUT : ACTION_FINDINPUT;
-    int32_t handle = DoPkt(port, action, (int32_t)full_name, (int32_t)mode, 0, 0, 0);
+    int32_t handle = DoPkt(port, action, (int32_t)(intptr_t)full_name, (int32_t)mode, 0, 0, 0);
     if (handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
         SetIoErr(IoErr());
@@ -1380,7 +1380,7 @@ static void dos_DeleteFile(void)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (int32_t)full_name, 0, 0, 0, 0);
+    int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (int32_t)(intptr_t)full_name, 0, 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
@@ -1402,7 +1402,7 @@ static void dos_Rename(void)
     }
 
     int32_t res = DoPkt(port, ACTION_RENAME_OBJECT,
-                        (int32_t)old_name, (int32_t)new_name, 0, 0, 0);
+                        (int32_t)(intptr_t)old_name, (int32_t)(intptr_t)new_name, 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
@@ -1437,7 +1437,7 @@ static void dos_SetProtection(void)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_SET_PROTECT, (int32_t)full_name, mask, 0, 0, 0);
+    int32_t res = DoPkt(port, ACTION_SET_PROTECT, (int32_t)(intptr_t)full_name, mask, 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
@@ -1488,7 +1488,7 @@ static void dos_Lock(void)
         return;
     }
 
-    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)full_name, mode, 0, 0, 0);
+    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)(intptr_t)full_name, mode, 0, 0, 0);
     if (handle == 0) {
         m68k_set_reg(M68K_REG_D0, 0);
         SetIoErr(IoErr());
@@ -1647,7 +1647,7 @@ static void dos_Examine(void)
     }
 
     int32_t res = DoPkt(port, ACTION_EXAMINE_OBJECT, (int32_t)handle,
-                        (int32_t)(g_ram + fib_ptr), 0, 0, 0);
+                        (int32_t)(intptr_t)(g_ram + fib_ptr), 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
@@ -1687,7 +1687,7 @@ static void dos_ExamineNext(void)
     }
 
     int32_t res = DoPkt(port, ACTION_EXAMINE_NEXT, (int32_t)handle,
-                        (int32_t)(g_ram + fib_ptr), 0, 0, 0);
+                        (int32_t)(intptr_t)(g_ram + fib_ptr), 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 
@@ -1721,7 +1721,7 @@ static void dos_CreateDir(void)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_CREATE_DIR, (int32_t)full_name, 0, 0, 0, 0);
+    int32_t res = DoPkt(port, ACTION_CREATE_DIR, (int32_t)(intptr_t)full_name, 0, 0, 0, 0);
     m68k_set_reg(M68K_REG_D0, (uint32_t)res);
 }
 

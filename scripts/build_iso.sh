@@ -476,12 +476,14 @@ unsigned long strlen(const char *s) {
 static inline void _uart_putc(char c) {
     /* Wait for transmit-hold-empty on COM1 */
     __asm__ volatile (
-        "1: inb $0x3FD, %%al\n"
+        "   movw $0x3FD, %%dx\n"
+        "1: inb %%dx, %%al\n"
         "   testb $0x20, %%al\n"
         "   jz 1b\n"
         "   movb %0, %%al\n"
-        "   outb %%al, $0x3F8\n"
-        :: "r"((unsigned char)c) : "eax"
+        "   movw $0x3F8, %%dx\n"
+        "   outb %%al, %%dx\n"
+        :: "r"((unsigned char)c) : "eax", "edx"
     );
 }
 static void _uart_puts(const char *s) {

@@ -287,7 +287,7 @@ static void dos_Open(M68kCPUState *cpu)
 
     uint32_t mode = cpu->d[2];
     int32_t action = (mode == 1006) ? ACTION_FINDOUTPUT : ACTION_FINDINPUT;
-    int32_t handle = DoPkt(port, action, (int32_t)full_name, (int32_t)mode, 0, 0, 0);
+    int32_t handle = DoPkt(port, action, (int32_t)(intptr_t)full_name, (int32_t)mode, 0, 0, 0);
     if (handle == 0) {
         cpu->d[0] = 0;
         SetIoErr(IoErr());
@@ -439,7 +439,7 @@ static void dos_DeleteFile(M68kCPUState *cpu)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (int32_t)full_name, 0, 0, 0, 0);
+    int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (int32_t)(intptr_t)full_name, 0, 0, 0, 0);
     cpu->d[0] = (uint32_t)res;
 }
 
@@ -490,7 +490,7 @@ static void dos_Rename(M68kCPUState *cpu)
     }
 
     int32_t res = DoPkt(port, ACTION_RENAME_OBJECT,
-                        (int32_t)old_full, (int32_t)new_full, 0, 0, 0);
+                        (int32_t)(intptr_t)old_full, (int32_t)(intptr_t)new_full, 0, 0, 0);
     cpu->d[0] = (uint32_t)res;
 }
 
@@ -525,7 +525,7 @@ static void dos_SetProtection(M68kCPUState *cpu)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_SET_PROTECT, (int32_t)full_name, mask, 0, 0, 0);
+    int32_t res = DoPkt(port, ACTION_SET_PROTECT, (int32_t)(intptr_t)full_name, mask, 0, 0, 0);
     cpu->d[0] = (uint32_t)res;
 }
 
@@ -575,7 +575,7 @@ static void dos_Lock(M68kCPUState *cpu)
         return;
     }
 
-    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)full_name, mode, 0, 0, 0);
+    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (int32_t)(intptr_t)full_name, mode, 0, 0, 0);
     if (handle == 0) {
         cpu->d[0] = 0;
         SetIoErr(IoErr());
@@ -728,7 +728,7 @@ static void dos_Examine(M68kCPUState *cpu)
     }
 
     int32_t res = DoPkt(port, ACTION_EXAMINE_OBJECT, (int32_t)handle,
-                        (int32_t)(g_ram + fib_ptr), 0, 0, 0);
+                        (int32_t)(intptr_t)(g_ram + fib_ptr), 0, 0, 0);
     cpu->d[0] = (uint32_t)res;
 }
 
@@ -767,7 +767,7 @@ static void dos_ExamineNext(M68kCPUState *cpu)
     }
 
     int32_t res = DoPkt(port, ACTION_EXAMINE_NEXT, (int32_t)handle,
-                        (int32_t)(g_ram + fib_ptr), 0, 0, 0);
+                        (int32_t)(intptr_t)(g_ram + fib_ptr), 0, 0, 0);
     cpu->d[0] = (uint32_t)res;
 }
 
@@ -801,7 +801,7 @@ static void dos_CreateDir(M68kCPUState *cpu)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_CREATE_DIR, (int32_t)full_name, 0, 0, 0, 0);
+    int32_t res = DoPkt(port, ACTION_CREATE_DIR, (int32_t)(intptr_t)full_name, 0, 0, 0, 0);
     cpu->d[0] = (uint32_t)res;
 }
 

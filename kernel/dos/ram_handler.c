@@ -7,6 +7,7 @@
 #include "dos/ramfs.h"
 #include "dos/vfs.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 extern void kprint(const char *s);
@@ -41,7 +42,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     case ACTION_FINDINPUT:
     case ACTION_FINDOUTPUT:
     case ACTION_FINDUPDATE: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         int vfs_flags = 0;
         if (pkt->dp_Type == ACTION_FINDINPUT)       vfs_flags = VFS_READ;
         else if (pkt->dp_Type == ACTION_FINDOUTPUT)  vfs_flags = VFS_WRITE | VFS_CREATE | VFS_TRUNC;
@@ -65,7 +66,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Read ===== */
     case ACTION_READ: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        uint8_t *buf    = (uint8_t *)pkt->dp_Arg2;
+        uint8_t *buf    = (uint8_t *)(intptr_t)pkt->dp_Arg2;
         uint32_t len    = (uint32_t)pkt->dp_Arg3;
         VfsFile *fh = HandleTable_GetFile(handle);
         if (fh && fh->node) {
@@ -80,7 +81,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Write ===== */
     case ACTION_WRITE: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        const uint8_t *buf = (const uint8_t *)pkt->dp_Arg2;
+        const uint8_t *buf = (const uint8_t *)(intptr_t)pkt->dp_Arg2;
         uint32_t len = (uint32_t)pkt->dp_Arg3;
         VfsFile *fh = HandleTable_GetFile(handle);
         if (fh && fh->node) {
@@ -156,7 +157,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Delete object ===== */
     case ACTION_DELETE_OBJECT: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         if (VFS_Delete(path)) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
@@ -168,7 +169,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Create directory ===== */
     case ACTION_CREATE_DIR: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         if (VFS_MkDir(path)) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
@@ -180,7 +181,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Lock / Locate object ===== */
     case ACTION_LOCATE_OBJECT: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         int32_t access = pkt->dp_Arg2;
         RamFsNode *node = VFS_ResolveDir(path);
         if (!node) {
@@ -213,7 +214,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Examine object (lock or file handle) ===== */
     case ACTION_EXAMINE_OBJECT: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        FileInfoBlock *fib = (FileInfoBlock *)(intptr_t)pkt->dp_Arg2;
         RamFsNode *node = NULL;
 
         int32_t access = 0;
@@ -253,7 +254,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Examine next (directory listing) ===== */
     case ACTION_EXAMINE_NEXT: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        FileInfoBlock *fib = (FileInfoBlock *)(intptr_t)pkt->dp_Arg2;
         int32_t access = 0;
         HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
         RamFsNode *dir = le ? (RamFsNode *)le->u.lock.node : NULL;
@@ -296,7 +297,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Disk info ===== */
     case ACTION_DISK_INFO:
     case ACTION_INFO: {
-        InfoData *id = (InfoData *)pkt->dp_Arg2;
+        InfoData *id = (InfoData *)(intptr_t)pkt->dp_Arg2;
         if (!id) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
@@ -355,8 +356,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Rename object ===== */
     case ACTION_RENAME_OBJECT: {
-        const char *old_path = (const char *)pkt->dp_Arg1;
-        const char *new_path = (const char *)pkt->dp_Arg2;
+        const char *old_path = (const char *)(intptr_t)pkt->dp_Arg1;
+        const char *new_path = (const char *)(intptr_t)pkt->dp_Arg2;
         if (VFS_Rename(old_path, new_path) == 0) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
@@ -368,7 +369,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Set protection ===== */
     case ACTION_SET_PROTECT: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         int32_t mask = pkt->dp_Arg2;
         if (VFS_SetProtection(path, (uint16_t)mask) == 0) {
             pkt->dp_Res1 = DOSTRUE;
@@ -381,8 +382,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Set comment ===== */
     case ACTION_SET_COMMENT: {
-        const char *path    = (const char *)pkt->dp_Arg1;
-        const char *comment = (const char *)pkt->dp_Arg2;
+        const char *path    = (const char *)(intptr_t)pkt->dp_Arg1;
+        const char *comment = (const char *)(intptr_t)pkt->dp_Arg2;
         if (VFS_SetComment(path, comment) == 0) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
@@ -437,7 +438,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Examine file handle ===== */
     case ACTION_EXAMINE_FH: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        FileInfoBlock *fib = (FileInfoBlock *)(intptr_t)pkt->dp_Arg2;
         VfsFile *fh = HandleTable_GetFile(handle);
         RamFsNode *node = fh ? fh->node : NULL;
         if (node) {
@@ -470,7 +471,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     case ACTION_EXAMINE_ALL: {
         /* RamFS has no . / .. entries; delegate to EXAMINE_NEXT */
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        FileInfoBlock *fib = (FileInfoBlock *)(intptr_t)pkt->dp_Arg2;
         int32_t access = 0;
         HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
         RamFsNode *dir = le ? (RamFsNode *)le->u.lock.node : NULL;

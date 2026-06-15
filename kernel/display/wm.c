@@ -522,7 +522,7 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     extern void dbg_add_line(const char *msg);
     char wm_dbg[64];
     int wi = 0;
-    while (wi < 10 && "WM slot="[wi]) wm_dbg[wi++] = "WM slot="[wi];
+    while (wi < 10 && "WM slot="[wi]) { wm_dbg[wi] = "WM slot="[wi]; wi++; }
     wm_dbg[wi++] = '0' + slot;
     wm_dbg[wi++] = ' ';
     const char *tp = title;
@@ -815,7 +815,7 @@ void WM_CloseWindow(int handle)
 
     char close_dbg[64];
     int ci = 0;
-    while (ci < 12 && "WM close h="[ci]) close_dbg[ci++] = "WM close h="[ci];
+    while (ci < 12 && "WM close h="[ci]) { close_dbg[ci] = "WM close h="[ci]; ci++; }
     close_dbg[ci++] = '0' + handle;
     close_dbg[ci] = '\0';
     dbg_add_line(close_dbg);
@@ -840,7 +840,7 @@ void WM_CloseWindow(int handle)
     /* Debug: show freed slot */
     char free_dbg[64];
     int fi = 0;
-    while (fi < 14 && "WM freed slot "[fi]) free_dbg[fi++] = "WM freed slot "[fi];
+    while (fi < 14 && "WM freed slot "[fi]) { free_dbg[fi] = "WM freed slot "[fi]; fi++; }
     free_dbg[fi++] = '0' + handle;
     free_dbg[fi] = '\0';
     dbg_add_line(free_dbg);

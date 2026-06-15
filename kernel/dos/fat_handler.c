@@ -12,6 +12,7 @@
 #include "dos/amiga_dos_types.h"
 #include "dos/handle_table.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------
@@ -67,7 +68,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     case ACTION_FINDINPUT:
     case ACTION_FINDOUTPUT:
     case ACTION_FINDUPDATE: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         Fat32File *file = FAT32_Open(fs, path);
         if (file) {
             uint32_t handle = fat_alloc_file_handle(file);
@@ -86,7 +87,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Read ===== */
     case ACTION_READ: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        void *buf = (void *)pkt->dp_Arg2;
+        void *buf = (void *)(intptr_t)pkt->dp_Arg2;
         uint32_t len = (uint32_t)pkt->dp_Arg3;
         Fat32File *file = fat_get_file_handle(handle);
         if (file && !file->is_dir) {
@@ -101,7 +102,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Write ===== */
     case ACTION_WRITE: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        const void *buf = (const void *)pkt->dp_Arg2;
+        const void *buf = (const void *)(intptr_t)pkt->dp_Arg2;
         uint32_t len = (uint32_t)pkt->dp_Arg3;
         Fat32File *file = fat_get_file_handle(handle);
         if (file && !file->is_dir) {
@@ -162,7 +163,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Lock / Locate object ===== */
     case ACTION_LOCATE_OBJECT: {
-        const char *path = (const char *)pkt->dp_Arg1;
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
         int32_t access = pkt->dp_Arg2;
         Fat32File *dir = FAT32_Open(fs, path);
         if (dir) {
@@ -195,7 +196,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Examine object ===== */
     case ACTION_EXAMINE_OBJECT: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        FileInfoBlock *fib = (FileInfoBlock *)(intptr_t)pkt->dp_Arg2;
         HandleEntry *le = HandleTable_GetLockEntry(handle, NULL);
         Fat32File *node = le ? (Fat32File *)le->u.lock.node : NULL;
         if (!node) node = fat_get_file_handle(handle);
@@ -225,7 +226,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Disk info ===== */
     case ACTION_DISK_INFO:
     case ACTION_INFO: {
-        InfoData *id = (InfoData *)pkt->dp_Arg2;
+        InfoData *id = (InfoData *)(intptr_t)pkt->dp_Arg2;
         if (!id) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
@@ -294,7 +295,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Examine file handle ===== */
     case ACTION_EXAMINE_FH: {
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
-        FileInfoBlock *fib = (FileInfoBlock *)pkt->dp_Arg2;
+        FileInfoBlock *fib = (FileInfoBlock *)(intptr_t)pkt->dp_Arg2;
         Fat32File *file = fat_get_file_handle(handle);
         if (file) {
             memset(fib, 0, sizeof(*fib));

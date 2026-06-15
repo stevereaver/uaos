@@ -85,7 +85,7 @@ typedef struct FileInfoBlock {
 #define FIBF_GRP_DELETE  (1 << 15)
 
 /* Default protection: owner R/W/E/D, group+other R only */
-#define DEFAULT_PROTECTION (0xFFFFFFE0 | FIBF_GRP_READ | FIBF_OTR_READ)
+#define DEFAULT_PROTECTION (0xFFE0 | FIBF_GRP_READ | FIBF_OTR_READ)
 
 /* -------------------------------------------------------------------------
  * DosList node types
