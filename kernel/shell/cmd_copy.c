@@ -85,69 +85,31 @@ static void copy_dir(NativeCmdCtx *ctx, const char *src, const char *dst,
 
 void Cmd_Copy(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) {
-        PRINT("Usage: copy <src> <dst> [ALL] [CLONE] [DATES] [COM] [QUIET] [BUFFER <n>]");
+    (void)args;  /* args are parsed via ctx->template */
+
+    if (!ctx->template) {
+        PRINT("Usage: copy <from> <to> [ALL] [CLONE] [DATES] [COM] [QUIET] [BUFFER <n>]");
         return;
     }
 
-    int all   = cmd_kw_find(args, "ALL");
-    int clone = cmd_kw_find(args, "CLONE");
-    int com   = cmd_kw_find(args, "COM");
-    int quiet = cmd_kw_find(args, "QUIET");
-    /* DATES and BUFFER are parsed but have no effect in RamFS (no dates/buffer tuning) */
+    int all   = CmdTemplate_GetSwitch(ctx->template, "ALL");
+    int clone = CmdTemplate_GetSwitch(ctx->template, "CLONE");
+    int com   = CmdTemplate_GetSwitch(ctx->template, "COM");
+    int quiet = CmdTemplate_GetSwitch(ctx->template, "QUIET");
+    /* DATES and BUFFER are parsed but have no effect in RamFS */
 
-    /* Strip flags to leave src and dst */
-    char clean[CMD_MAX_LINE];
-    cmd_kw_strip(args, "ALL", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "CLONE", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "DATES", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "COM", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "QUIET", NULL, clean, CMD_MAX_LINE);
-    /* BUFFER <n> */
-    {
-        const char *p = clean;
-        while (*p) {
-            while (*p == ' ') p++;
-            if (!*p) break;
-            const char *start = p;
-            while (*p && *p != ' ') p++;
-            int len = (int)(p - start);
-            if (len == 6 &&
-                ((start[0]=='B'||start[0]=='b') && (start[1]=='U'||start[1]=='u') &&
-                 (start[2]=='F'||start[2]=='f') && (start[3]=='F'||start[3]=='f') &&
-                 (start[4]=='E'||start[4]=='e') && (start[5]=='R'||start[5]=='r'))) {
-                while (*p == ' ') p++;
-                while (*p && *p != ' ') p++;
-                break;
-            }
-        }
-        /* Copy remainder back to clean */
-        int ci = 0;
-        while (*p && ci < CMD_MAX_LINE - 1) clean[ci++] = *p++;
-        while (ci > 0 && clean[ci-1] == ' ') ci--;
-        clean[ci] = '\0';
-    }
+    const char *from = CmdTemplate_GetString(ctx->template, "FROM");
+    const char *to   = CmdTemplate_GetString(ctx->template, "TO");
 
-    /* Split clean into src and dst at first space */
-    char src[CMD_MAX_PATH], dst[CMD_MAX_PATH];
-    const char *p = clean;
-    int i = 0;
-    while (*p && *p != ' ' && i < CMD_MAX_PATH - 1) { src[i++] = *p++; }
-    src[i] = '\0';
-    while (*p == ' ') p++;
-    i = 0;
-    while (*p && i < CMD_MAX_PATH - 1) { dst[i++] = *p++; }
-    dst[i] = '\0';
-
-    if (!src[0] || !dst[0]) {
-        PRINT("Usage: copy <src> <dst> [ALL] [CLONE] [DATES] [COM] [QUIET] [BUFFER <n>]");
+    if (!from || !to) {
+        PRINT("Usage: copy <from> <to> [ALL] [CLONE] [DATES] [COM] [QUIET] [BUFFER <n>]");
         return;
     }
 
     char abs_src[CMD_MAX_PATH], abs_dst[CMD_MAX_PATH];
     char src_pat[CMD_MAX_PATH];
-    cmd_split_path_pat(ctx->cwd, src, abs_src, src_pat);
-    cmd_make_abs(ctx->cwd, dst, abs_dst, CMD_MAX_PATH);
+    cmd_split_path_pat(ctx->cwd, from, abs_src, src_pat);
+    cmd_make_abs(ctx->cwd, to, abs_dst, CMD_MAX_PATH);
 
     if (src_pat[0]) {
         /* Pattern-based copy: source is a directory + pattern */

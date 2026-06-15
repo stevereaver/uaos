@@ -78,7 +78,7 @@ static void sort_swap(int i, int j)
 
 void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) {
+    if ((!args || !*args) && !ctx->pipe_file) {
         PRINT("Usage: sort <file> [COL <n>] [CASE] [NUMERIC]");
         return;
     }
@@ -122,7 +122,11 @@ void Cmd_Sort(NativeCmdCtx *ctx, const char *args)
     }
 
     char path[CMD_MAX_PATH];
-    cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+    if (!clean[0] && ctx->pipe_file) {
+        cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
+    } else {
+        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+    }
 
     VfsFile fh;
     if (!VFS_Open(&fh, path, VFS_READ)) {

@@ -436,6 +436,90 @@ static void inst_push_scroll_to_wm(ShellInstance *s)
 typedef struct { void *shell; VfsFile fh; int active; } RedirCtx;
 static RedirCtx g_redir;
 
+/* -------------------------------------------------------------------------
+ * Pipe support
+ * ------------------------------------------------------------------------- */
+
+#define MAX_PIPE_LINES    512
+#define MAX_PIPE_SEGMENTS 4
+
+typedef struct {
+    char lines[MAX_PIPE_LINES][MAX_LINE_LEN];
+    int count;
+} PipeBuf;
+
+static PipeBuf g_pipe_buf;
+static int     g_pipe_active = 0;
+static int     g_pipe_next_idx = 0;
+static char    g_pipe_in_file[64];
+static int     g_pipe_in_active = 0;
+
+static void pipe_print(void *shell, const char *line)
+{
+    (void)shell;
+    if (g_pipe_buf.count < MAX_PIPE_LINES) {
+        scopy(g_pipe_buf.lines[g_pipe_buf.count], line, MAX_LINE_LEN);
+        g_pipe_buf.count++;
+    }
+}
+
+static void pipe_print_raw(void *shell, const char *text)
+{
+    (void)shell;
+    if (g_pipe_buf.count == 0) g_pipe_buf.count = 1;
+    int idx = g_pipe_buf.count - 1;
+    int cur = slen(g_pipe_buf.lines[idx]);
+    int tl = slen(text);
+    int i = 0;
+    while (i < tl && cur + i < MAX_LINE_LEN - 1) {
+        g_pipe_buf.lines[idx][cur + i] = text[i];
+        i++;
+    }
+    g_pipe_buf.lines[idx][cur + i] = '\0';
+}
+
+static NativeCmdCtx shell_make_pipe_ctx(ShellInstance *s)
+{
+    NativeCmdCtx ctx = shell_make_ctx(s);
+    ctx.print     = pipe_print;
+    ctx.print_raw = pipe_print_raw;
+    return ctx;
+}
+
+static void write_pipe_to_temp_file(const char *path)
+{
+    VfsFile fh;
+    if (!VFS_Open(&fh, path, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) return;
+    for (int i = 0; i < g_pipe_buf.count; i++) {
+        VFS_Write(&fh, (const uint8_t *)g_pipe_buf.lines[i], (uint32_t)slen(g_pipe_buf.lines[i]));
+        uint8_t nl = '\n';
+        VFS_Write(&fh, &nl, 1);
+    }
+    VFS_Close(&fh);
+}
+
+static int parse_pipes(const char *line, char segs[MAX_PIPE_SEGMENTS][MAX_LINE_LEN])
+{
+    int count = 0;
+    const char *p = line;
+    while (*p && count < MAX_PIPE_SEGMENTS) {
+        /* skip leading spaces before this segment */
+        while (*p == ' ') p++;
+        int i = 0;
+        while (*p && *p != '|' && i < MAX_LINE_LEN - 1) {
+            segs[count][i++] = *p++;
+        }
+        segs[count][i] = '\0';
+        /* trim trailing spaces */
+        while (i > 0 && segs[count][i - 1] == ' ') {
+            segs[count][--i] = '\0';
+        }
+        count++;
+        if (*p == '|') p++;
+    }
+    return count;
+}
+
 static inline void outb(uint16_t port, uint8_t val)
 {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -3235,6 +3319,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.set_failat     = shell_set_failat;
     ctx.get_env        = shell_get_env;
     ctx.quit_script    = shell_quit_script;
+    ctx.pipe_file      = g_pipe_in_active ? g_pipe_in_file : NULL;
     return ctx;
 }
 
@@ -3303,11 +3388,17 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                 static char m68k_argstore[256];
                 m68k_argv[0] = bin_name;
                 int argc = 1;
+                int ai = 0;
                 if (args && *args) {
-                    /* Copy args into mutable store and split on spaces */
-                    int ai = 0;
                     while (*args && ai < 254) m68k_argstore[ai++] = *args++;
-                    m68k_argstore[ai] = '\0';
+                }
+                if (g_pipe_in_active && ai < 254) {
+                    if (ai > 0) m68k_argstore[ai++] = ' ';
+                    const char *pf = g_pipe_in_file;
+                    while (*pf && ai < 254) m68k_argstore[ai++] = *pf++;
+                }
+                m68k_argstore[ai] = '\0';
+                if (ai > 0) {
                     char *tok = m68k_argstore;
                     while (*tok && argc < 16) {
                         while (*tok == ' ') tok++;
@@ -3712,6 +3803,47 @@ static void inst_dispatch(ShellInstance *s, const char *line)
         g_redir.active = 0;
         check_failat(s);
         VFS_Close(&g_redir.fh);
+        return;
+    }
+
+    /* Pipe handling (|) */
+    char pipe_segs[MAX_PIPE_SEGMENTS][MAX_LINE_LEN];
+    int pipe_count = parse_pipes(cmd_only, pipe_segs);
+    if (pipe_count > 1) {
+        char pipe_files[MAX_PIPE_SEGMENTS][64];
+        int start_idx = g_pipe_next_idx;
+        for (int i = 0; i < pipe_count - 1; i++) {
+            char path[64];
+            scopy(path, "T:pipe", 64);
+            char idx_str[8];
+            uint_to_dec_s((uint32_t)g_pipe_next_idx++, idx_str, 8);
+            scat(path, idx_str, 64);
+            scopy(pipe_files[i], path, 64);
+            if (!VFS_Open(&g_redir.fh, path, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
+                char msg[MAX_LINE_LEN];
+                scopy(msg, "Cannot create pipe file: ", MAX_LINE_LEN);
+                scat(msg, path, MAX_LINE_LEN);
+                inst_print(s, msg);
+                for (int j = 0; j < i; j++) VFS_Delete(pipe_files[j]);
+                return;
+            }
+            g_redir.shell  = s;
+            g_redir.active = 1;
+            run_cmd(s, pipe_segs[i]);
+            g_redir.active = 0;
+            VFS_Close(&g_redir.fh);
+        }
+        /* Run last segment with pipe input */
+        g_pipe_in_active = 1;
+        scopy(g_pipe_in_file, pipe_files[pipe_count - 2], 64);
+        run_cmd(s, pipe_segs[pipe_count - 1]);
+        g_pipe_in_active = 0;
+        check_failat(s);
+        /* Clean up temp files */
+        for (int i = 0; i < pipe_count - 1; i++) {
+            VFS_Delete(pipe_files[i]);
+        }
+        g_pipe_next_idx = start_idx; /* reuse indices */
         return;
     }
 

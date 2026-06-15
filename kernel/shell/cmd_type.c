@@ -83,7 +83,7 @@ static void type_text(NativeCmdCtx *ctx, VfsFile *fh, int numbers, VfsFile *outf
 
 void Cmd_Type(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) { PRINT("Usage: type <file> [HEX] [NUMBER] [TO <file>]"); return; }
+    if ((!args || !*args) && !ctx->pipe_file) { PRINT("Usage: type <file> [HEX] [NUMBER] [TO <file>]"); return; }
 
     int hex = cmd_kw_find(args, "HEX");
     int numbers = cmd_kw_find(args, "NUMBER");
@@ -122,7 +122,11 @@ void Cmd_Type(NativeCmdCtx *ctx, const char *args)
         cmd_scat(to_kw, to_file, CMD_MAX_LINE);
         cmd_kw_strip(clean, to_kw, NULL, clean, CMD_MAX_LINE);
     }
-    cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+    if (!clean[0] && ctx->pipe_file) {
+        cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
+    } else {
+        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+    }
 
     VfsFile fh;
     if (!VFS_Open(&fh, path, VFS_READ)) {

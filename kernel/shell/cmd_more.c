@@ -19,10 +19,14 @@
  * ------------------------------------------------------------------------- */
 void Cmd_More(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) { PRINT("Usage: more <file>"); return; }
+    if ((!args || !*args) && !ctx->pipe_file) { PRINT("Usage: more <file>"); return; }
 
     char path[CMD_MAX_PATH];
-    cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
+    if ((!args || !*args) && ctx->pipe_file) {
+        cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
+    } else {
+        cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
+    }
 
     VfsFile fh;
     if (!VFS_Open(&fh, path, VFS_READ)) {

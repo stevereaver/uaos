@@ -334,6 +334,7 @@ for src in \
     "${REPO_ROOT}/kernel/drivers/ide.c" \
     "${REPO_ROOT}/kernel/display/pointer_prefs.c" \
     "${REPO_ROOT}/kernel/shell/native_cmd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_template.c" \
     "${REPO_ROOT}/kernel/shell/exec_file.c" \
     "${REPO_ROOT}/kernel/shell/cmd_version.c" \
     "${REPO_ROOT}/kernel/shell/cmd_mem.c" \
@@ -581,6 +582,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/ide.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
     "${BUILD_DIR}/obj/native_cmd.o" \
+    "${BUILD_DIR}/obj/cmd_template.o" \
     "${BUILD_DIR}/obj/exec_file.o" \
     "${BUILD_DIR}/obj/cmd_version.o" \
     "${BUILD_DIR}/obj/cmd_mem.o" \

@@ -127,35 +127,17 @@ static void dir_list(NativeCmdCtx *ctx, const char *path, const char *pat,
 
 void Cmd_Dir(NativeCmdCtx *ctx, const char *args)
 {
-    int all         = cmd_kw_find(args, "ALL");
-    int dates       = cmd_kw_find(args, "DATES");
-    int inter       = cmd_kw_find(args, "INTER");
-    int keys        = cmd_kw_find(args, "KEYS");
+    (void)args;
+
+    int all         = CmdTemplate_GetSwitch(ctx->template, "ALL");
+    int dates       = CmdTemplate_GetSwitch(ctx->template, "DATES");
+    int inter       = CmdTemplate_GetSwitch(ctx->template, "INTER");
+    int keys        = CmdTemplate_GetSwitch(ctx->template, "KEYS");
     int opt_alpha   = 0;
     int opt_dirfirst = 0;
 
-    /* Parse OPT keyword */
-    char opt_str[8];
-    opt_str[0] = '\0';
-    {
-        const char *p = args;
-        while (*p) {
-            while (*p == ' ') p++;
-            if (!*p) break;
-            const char *start = p;
-            while (*p && *p != ' ') p++;
-            int len = (int)(p - start);
-            if (len == 3 &&
-                ((start[0]=='O'||start[0]=='o') && (start[1]=='P'||start[1]=='p') && (start[2]=='T'||start[2]=='t'))) {
-                while (*p == ' ') p++;
-                int i = 0;
-                while (*p && *p != ' ' && i < 7) opt_str[i++] = *p++;
-                opt_str[i] = '\0';
-                break;
-            }
-        }
-    }
-    if (opt_str[0]) {
+    const char *opt_str = CmdTemplate_GetString(ctx->template, "OPT");
+    if (opt_str) {
         for (int i = 0; opt_str[i]; i++) {
             char c = opt_str[i];
             if (c >= 'A' && c <= 'Z') c += 32;
@@ -164,23 +146,11 @@ void Cmd_Dir(NativeCmdCtx *ctx, const char *args)
         }
     }
 
-    char clean[CMD_MAX_LINE];
-    cmd_kw_strip(args, "ALL", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "DATES", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "INTER", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "KEYS", NULL, clean, CMD_MAX_LINE);
-    if (opt_str[0]) {
-        char opt_kw[CMD_MAX_LINE];
-        opt_kw[0] = '\0';
-        cmd_scat(opt_kw, "OPT ", CMD_MAX_LINE);
-        cmd_scat(opt_kw, opt_str, CMD_MAX_LINE);
-        cmd_kw_strip(clean, opt_kw, NULL, clean, CMD_MAX_LINE);
-    }
-
     char path[CMD_MAX_PATH];
     char pat[CMD_MAX_PATH];
-    if (clean[0]) {
-        cmd_split_path_pat(ctx->cwd, clean, path, pat);
+    const char *dir = CmdTemplate_GetString(ctx->template, "DIR");
+    if (dir) {
+        cmd_split_path_pat(ctx->cwd, dir, path, pat);
     } else {
         cmd_scopy(path, ctx->cwd, CMD_MAX_PATH);
         pat[0] = '\0';

@@ -2,80 +2,89 @@
  *
  * Maps command names (as found on C:) to their native x86 handler functions.
  * Case-insensitive lookup so "DIR", "Dir", and "dir" all resolve correctly.
+ *
+ * Commands may optionally declare an AmigaDOS-style template.  When a template
+ * is present, NativeCmd_Run parses the argument string automatically before
+ * calling the handler, and places the result in ctx->template.
  */
 
 #include "native_cmd.h"
+#include "cmd_template.h"
 #include <stddef.h>
 
 /* -------------------------------------------------------------------------
  * Command table
  * ------------------------------------------------------------------------- */
 
+#define CMD(n, f)     { (n), (f), NULL }
+#define CMDT(n, f, t) { (n), (f), (t) }
+
 typedef struct {
-    const char  *name;   /* lowercase canonical name matching C: stub */
+    const char  *name;      /* lowercase canonical name matching C: stub */
     NativeCmdFn  fn;
+    const char  *template;  /* AmigaDOS template string, or NULL */
 } NativeCmdEntry;
 
 static const NativeCmdEntry k_native_cmds[] = {
-    { "version", Cmd_Version  },
-    { "mem",     Cmd_Mem      },
-    { "libs",    Cmd_Libs     },
-    { "clear",   Cmd_Clear    },
-    { "reboot",  Cmd_Reboot   },
-    { "dir",     Cmd_Dir      },
-    { "makedir", Cmd_Makedir  },
-    { "delete",  Cmd_Delete   },
-    { "type",    Cmd_Type     },
-    { "copy",    Cmd_Copy     },
-    { "rename",  Cmd_Rename   },
-    { "pwd",     Cmd_Pwd      },
-    { "echo",    Cmd_Echo     },
-    { "protect", Cmd_Protect  },
-    { "attr",    Cmd_Attr     },
-    { "info",    Cmd_Info     },
-    { "date",    Cmd_Date     },
-    { "which",   Cmd_Which    },
-    { "disks",   Cmd_Disks    },
-    { "fdisk",   Cmd_Fdisk    },
-    { "format",  Cmd_Format   },
-    { "pointer", Cmd_Pointer  },
-    { "run",     Cmd_Run      },
-    { "assign",  Cmd_Assign   },
-    { "execute", Cmd_Execute  },
-    { "loadwb",  Cmd_LoadWB   },
-    { "calculator", Cmd_CalcWin  },
-    { "ifconfig",   Cmd_Ifconfig  },
-    { "ping",       Cmd_Ping      },
-    { "route",      Cmd_Route     },
-    { "nslookup",   Cmd_Nslookup  },
-    { "ntpd",       Cmd_Ntpd      },
-    { "clock",      Cmd_ClockWin  },
-    { "grep",       Cmd_Grep      },
-    { "more",       Cmd_More      },
-    { "vim",        Cmd_Vim       },
-    { "newcli",     Cmd_NewCLI    },
-    { "newshell",   Cmd_NewCLI    },  /* alias */
-    { "ask",        Cmd_Ask       },
-    { "resident",   Cmd_Resident  },
-    { "ps",         Cmd_Ps        },
-    { "netinfo",    Cmd_NetInfo   },
-    { "list",       Cmd_List      },
-    { "search",     Cmd_Search    },
-    { "sort",       Cmd_Sort      },
-    { "join",       Cmd_Join      },
-    { "wait",       Cmd_Wait      },
-    { "prompt",     Cmd_Prompt    },
-    { "stack",      Cmd_Stack     },
-    { "why",        Cmd_Why       },
-    { "failat",     Cmd_Failat    },
-    { "quit",       Cmd_Quit      },
-    { "endcli",     Cmd_EndCLI    },
-    { "filenote",   Cmd_Filenote  },
-    { "relabel",    Cmd_Relabel   },
-    { "avail",      Cmd_Avail     },
-    { "getenv",     Cmd_GetEnv    },
-    { "unset",      Cmd_UnSet     },
-    { NULL,         NULL          }
+    CMD ("version",    Cmd_Version  ),
+    CMD ("mem",        Cmd_Mem      ),
+    CMD ("libs",       Cmd_Libs     ),
+    CMD ("clear",      Cmd_Clear    ),
+    CMD ("reboot",     Cmd_Reboot   ),
+    CMDT("dir",        Cmd_Dir,      "DIR,ALL/S,DATES/S,INTER/S,KEYS/S,OPT/K" ),
+    CMD ("makedir",    Cmd_Makedir  ),
+    CMDT("delete",     Cmd_Delete,   "FILE/A,ALL/S,QUIET/S,FORCE/S" ),
+    CMD ("type",       Cmd_Type     ),
+    CMDT("copy",       Cmd_Copy,     "FROM/A,TO/A,ALL/S,CLONE/S,DATES/S,COM/S,QUIET/S,BUFFER/K/N" ),
+    CMD ("rename",     Cmd_Rename   ),
+    CMD ("pwd",        Cmd_Pwd      ),
+    CMD ("echo",       Cmd_Echo     ),
+    CMD ("protect",    Cmd_Protect  ),
+    CMD ("attr",       Cmd_Attr     ),
+    CMD ("info",       Cmd_Info     ),
+    CMD ("date",       Cmd_Date     ),
+    CMD ("which",      Cmd_Which    ),
+    CMD ("disks",      Cmd_Disks    ),
+    CMD ("fdisk",      Cmd_Fdisk    ),
+    CMD ("format",     Cmd_Format   ),
+    CMD ("pointer",    Cmd_Pointer  ),
+    CMD ("run",        Cmd_Run      ),
+    CMD ("assign",     Cmd_Assign   ),
+    CMD ("execute",    Cmd_Execute  ),
+    CMD ("loadwb",     Cmd_LoadWB   ),
+    CMD ("calculator", Cmd_CalcWin  ),
+    CMD ("ifconfig",   Cmd_Ifconfig ),
+    CMD ("ping",       Cmd_Ping     ),
+    CMD ("route",      Cmd_Route    ),
+    CMD ("nslookup",   Cmd_Nslookup ),
+    CMD ("ntpd",       Cmd_Ntpd     ),
+    CMD ("clock",      Cmd_ClockWin ),
+    CMD ("grep",       Cmd_Grep     ),
+    CMD ("more",       Cmd_More     ),
+    CMD ("vim",        Cmd_Vim      ),
+    CMD ("newcli",     Cmd_NewCLI   ),
+    CMD ("newshell",   Cmd_NewCLI   ),  /* alias */
+    CMD ("ask",        Cmd_Ask      ),
+    CMD ("resident",   Cmd_Resident ),
+    CMD ("ps",         Cmd_Ps       ),
+    CMD ("netinfo",    Cmd_NetInfo  ),
+    CMD ("list",       Cmd_List     ),
+    CMD ("search",     Cmd_Search   ),
+    CMD ("sort",       Cmd_Sort     ),
+    CMD ("join",       Cmd_Join     ),
+    CMD ("wait",       Cmd_Wait     ),
+    CMD ("prompt",     Cmd_Prompt   ),
+    CMD ("stack",      Cmd_Stack    ),
+    CMD ("why",        Cmd_Why      ),
+    CMD ("failat",     Cmd_Failat   ),
+    CMD ("quit",       Cmd_Quit     ),
+    CMD ("endcli",     Cmd_EndCLI   ),
+    CMD ("filenote",   Cmd_Filenote ),
+    CMD ("relabel",    Cmd_Relabel  ),
+    CMD ("avail",      Cmd_Avail    ),
+    CMD ("getenv",     Cmd_GetEnv   ),
+    CMD ("unset",      Cmd_UnSet    ),
+    { NULL, NULL, NULL }
 };
 
 /* -------------------------------------------------------------------------
@@ -105,10 +114,50 @@ static int nc_ieq(const char *a, const char *b)
 int NativeCmd_Run(const char *name, NativeCmdCtx *ctx, const char *args)
 {
     for (int i = 0; k_native_cmds[i].name; i++) {
-        if (nc_ieq(k_native_cmds[i].name, name)) {
+        if (!nc_ieq(k_native_cmds[i].name, name))
+            continue;
+
+        if (k_native_cmds[i].template) {
+            CmdTemplateResult tr;
+            CmdTemplate_Parse(k_native_cmds[i].template, &tr);
+            if (tr.error[0]) {
+                char msg[128];
+                int j = 0;
+                const char *s = "Template parse error: ";
+                while (*s && j < 127) msg[j++] = *s++;
+                s = tr.error;
+                while (*s && j < 127) msg[j++] = *s++;
+                msg[j] = '\0';
+                if (ctx->print)
+                    ctx->print(ctx->shell, msg);
+                if (ctx->set_rc)
+                    ctx->set_rc(ctx->shell_extra, 20);
+                return 0;
+            }
+
+            CmdTemplate_MatchArgs(&tr, args);
+            if (tr.error[0]) {
+                char msg[128];
+                int j = 0;
+                const char *s = "Bad args: ";
+                while (*s && j < 127) msg[j++] = *s++;
+                s = tr.error;
+                while (*s && j < 127) msg[j++] = *s++;
+                msg[j] = '\0';
+                if (ctx->print)
+                    ctx->print(ctx->shell, msg);
+                if (ctx->set_rc)
+                    ctx->set_rc(ctx->shell_extra, 20);
+                return 0;
+            }
+
+            ctx->template = &tr;
             k_native_cmds[i].fn(ctx, args);
-            return 0;
+            ctx->template = NULL;
+        } else {
+            k_native_cmds[i].fn(ctx, args);
         }
+        return 0;
     }
     return -1;
 }

@@ -73,14 +73,21 @@ void Cmd_Grep(NativeCmdCtx *ctx, const char *args)
     pattern[pi] = '\0';
     while (*args == ' ') args++;
 
-    if (!pattern[0] || !*args) {
+    if (!pattern[0]) {
         PRINT("Usage: grep [-i] <pattern> <file>");
         return;
     }
 
     /* ---- resolve file path ---- */
     char path[CMD_MAX_PATH];
-    cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
+    if (!*args && ctx->pipe_file) {
+        cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
+    } else if (!*args) {
+        PRINT("Usage: grep [-i] <pattern> <file>");
+        return;
+    } else {
+        cmd_make_abs(ctx->cwd, args, path, CMD_MAX_PATH);
+    }
 
     VfsFile fh;
     if (!VFS_Open(&fh, path, VFS_READ)) {

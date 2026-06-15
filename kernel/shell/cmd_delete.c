@@ -4,23 +4,26 @@
 
 void Cmd_Delete(NativeCmdCtx *ctx, const char *args)
 {
-    if (!args || !*args) {
+    (void)args;
+
+    if (!ctx->template) {
         PRINT("Usage: delete <path> [ALL] [QUIET] [FORCE]");
         return;
     }
 
-    int all   = cmd_kw_find(args, "ALL");
-    int quiet = cmd_kw_find(args, "QUIET");
-    int force = cmd_kw_find(args, "FORCE");
+    int all   = CmdTemplate_GetSwitch(ctx->template, "ALL");
+    int quiet = CmdTemplate_GetSwitch(ctx->template, "QUIET");
+    int force = CmdTemplate_GetSwitch(ctx->template, "FORCE");
 
-    char clean[CMD_MAX_LINE];
-    cmd_kw_strip(args, "ALL", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "QUIET", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "FORCE", NULL, clean, CMD_MAX_LINE);
+    const char *file = CmdTemplate_GetString(ctx->template, "FILE");
+    if (!file) {
+        PRINT("Usage: delete <path> [ALL] [QUIET] [FORCE]");
+        return;
+    }
 
     char path[CMD_MAX_PATH];
     char pat[CMD_MAX_PATH];
-    cmd_split_path_pat(ctx->cwd, clean, path, pat);
+    cmd_split_path_pat(ctx->cwd, file, path, pat);
 
     int rc;
     if (all || pat[0]) {

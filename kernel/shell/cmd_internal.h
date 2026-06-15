@@ -12,6 +12,7 @@
 #define UAOS_CMD_INTERNAL_H
 
 #include "native_cmd.h"
+#include "cmd_template.h"
 #include "../dos/vfs.h"
 #include "../dos/ramfs.h"
 #include "../dos/amiga_dos_types.h"

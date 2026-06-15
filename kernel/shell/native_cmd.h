@@ -35,6 +35,7 @@
 #include <stdint.h>
 
 struct BlockDev;   /* forward-declare to avoid pulling blockdev.h here */
+struct CmdTemplateResult;  /* forward-declare for template parsing */
 struct PartitionTable;
 
 typedef struct NativeCmdCtx {
@@ -117,6 +118,15 @@ typedef struct NativeCmdCtx {
     /* For quit: signal the script runner to stop at the next boundary.
      * Optional rc is stored as the script return code. */
     void      (*quit_script)(void *shell_extra, int rc);
+
+    /* For piping: path to a temp file containing the previous command's
+     * output.  Commands that read from a file should use this when no
+     * explicit file argument is given. */
+    const char *pipe_file;
+
+    /* Set automatically by NativeCmd_Run when the command has a template.
+     * Commands can query parsed arguments via the CmdTemplate_* helpers. */
+    struct CmdTemplateResult *template;
 } NativeCmdCtx;
 
 /* Convenience macro — yield N ms from inside a Cmd_* function */
