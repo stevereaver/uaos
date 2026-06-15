@@ -18,6 +18,8 @@ section .text
 ; -------------------------------------------------------------------------
 
 extern ISR_Dispatch
+extern Task_SwitchNext
+extern Task_SwitchPrev
 
 isr_common:
     ; Stack at entry:
@@ -28,9 +30,6 @@ isr_common:
     ;   [rsp+32] = rflags
     ;   [rsp+40] = rsp_prev
     ;   [rsp+48] = ss
-    ;
-    ; We swap so error_code is at +0, vector at +8.  Actually easier to just
-    ; build an IrqFrame struct by pushing everything.
 
     push    rax
     push    rbx
@@ -61,6 +60,24 @@ isr_common:
     mov     rsi, [rsp + 16*8]   ; error_code
     call    ISR_Dispatch
 
+    ; -----------------------------------------------------------------
+    ; Task switch requested by scheduler?
+    ; -----------------------------------------------------------------
+    mov     rax, [rel Task_SwitchNext]
+    test    rax, rax
+    jz      .no_switch
+
+    ; Save current RSP (points to R15 slot on interrupted task's stack)
+    ; into the old task's native_rsp.
+    mov     rbx, [rel Task_SwitchPrev]
+    mov     [rbx + 136], rsp    ; offset of native_rsp in UaosTask
+
+    ; Load new task's RSP and clear switch request.
+    mov     rsp, [rax + 136]    ; rax = Task_SwitchNext
+    mov     qword [rel Task_SwitchNext], 0
+    mov     qword [rel Task_SwitchPrev], 0
+
+.no_switch:
     pop     r15
     pop     r14
     pop     r13

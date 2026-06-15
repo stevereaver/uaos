@@ -129,6 +129,11 @@ nasm -f elf64 \
     -o "${BUILD_DIR}/obj/idt_stubs.o"
 ok "  Assembled: idt_stubs.asm"
 
+nasm -f elf64 \
+    "${REPO_ROOT}/kernel/exec/task_switch.asm" \
+    -o "${BUILD_DIR}/obj/task_switch.o"
+ok "  Assembled: task_switch.asm"
+
 # Compile Musashi M68k core (suppress its own warnings — not our code)
 for msrc in \
     "${MUSASHI_DIR}/softfloat/softfloat.c" \
@@ -301,6 +306,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/net_device.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
+    "${REPO_ROOT}/kernel/exec/task.c" \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \
     "${REPO_ROOT}/kernel/exec/console_device.c" \
     "${REPO_ROOT}/kernel/exec/mathffp_lib.c" \
@@ -512,6 +518,7 @@ ok "  Compiled:  stubs.c (symbol resolution)"
 ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_kernel_entry.o" \
     "${BUILD_DIR}/obj/idt_stubs.o" \
+    "${BUILD_DIR}/obj/task_switch.o" \
     "${BUILD_DIR}/obj/uaos_kernel_main.o" \
     "${BUILD_DIR}/obj/framebuffer.o" \
     "${BUILD_DIR}/obj/desktop.o" \
@@ -552,6 +559,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/net_device.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
+    "${BUILD_DIR}/obj/task.o" \
     "${BUILD_DIR}/obj/utility_lib.o" \
     "${BUILD_DIR}/obj/console_device.o" \
     "${BUILD_DIR}/obj/mathffp_lib.o" \

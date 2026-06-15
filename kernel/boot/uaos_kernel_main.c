@@ -29,6 +29,7 @@
 #include "dos/partition.h"
 #include "drivers/ide.h"
 #include "dos/iso9660.h"
+#include "exec/task.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -236,14 +237,14 @@ void kprintdec(uint32_t v)
  * ----------------------------------------------------------------------- */
 volatile uint64_t g_pit_ticks = 0;
 
+extern void Task_ScheduleFromIRQ(void);
+
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
     (void)vector; (void)error_code;
     g_pit_ticks++;
-    if ((g_pit_ticks % 10) == 0) {
-        kprint("[PIT] tick="); kprintdec((uint32_t)g_pit_ticks); kprint("\n");
-    }
     net_stack_tick();
+    Task_ScheduleFromIRQ();
 }
 
 /* -----------------------------------------------------------------------
@@ -523,10 +524,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         /* Program PIT at 10 Hz BEFORE enabling RTC so that g_pit_ticks is
          * already ticking when the first RTC UIE fires.  ntp_tick_epoch()
          * gates on g_pit_ticks, so it must be running first. */
-        kprint("[BOOT] Programming PIT (10 Hz)...\n");
+        kprint("[BOOT] Programming PIT (100 Hz)...\n");
         IDT_SetHandler(32, PIT_IRQHandler);
         {
-            uint16_t divisor = (uint16_t)(1193180UL / 10UL);
+            uint16_t divisor = (uint16_t)(1193180UL / 100UL);
             outb(0x43, 0x36);
             outb(0x40, (uint8_t)(divisor & 0xFF));
             outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
@@ -545,54 +546,22 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
     APIC_Init();
 
-    kprint("[BOOT] Enabling interrupts — entering event loop.\n");
-    __asm__ volatile ("sti");
+    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
 
-    /* Event loop — yield until IRQ fires, then dispatch input */
-    int last_mx = -1, last_my = -1, last_btn = -1;
-    uint64_t loop_count = 0;
-    for (;;) {
-        /* "memory" clobber forces compiler to reload g_mouse / kbd state
-         * from memory on every iteration (ISRs write them).            */
-        __asm__ volatile ("pause" ::: "memory");
+    /* Init scheduler */
+    TaskScheduler_Init();
 
-        /* Only dispatch mouse event if state actually changed */
-        if (g_fb.valid) {
-            int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
-            if (mx != last_mx || my != last_my || btn != last_btn) {
-                last_mx = mx; last_my = my; last_btn = btn;
-                WM_MouseEvent(mx, my, btn);
-            }
-        }
-        /* Keyboard -> focused window via WM */
-        while (PS2Kbd_HasChar())
-            WM_KeyEvent(PS2Kbd_GetChar());
+    /* Create system idle task (runs the former event loop) */
+    extern void Task_IdleEntry(void *arg);
+    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
 
-        /* Flush any pending clock redraw requested by the RTC IRQ */
-        if (g_fb.valid) Desktop_FlushClockRedraw();
+    /* Spawn test tasks for Phase 1 verification */
+    extern void Task_TestSpawn(void);
+    Task_TestSpawn();
 
-        /* Poll network stack for incoming packets */
-        net_stack_poll();
-
-        /* Run one background job if the queue is not empty and
-         * the keyboard is idle (so we don't block interactive use). */
-        if (!PS2Kbd_HasChar()) {
-            ShellWin_PollJobs();
-        }
-
-        /* Periodic heartbeat so we know the loop hasn't hung */
-        loop_count++;
-        if ((loop_count & 0x7FFFFFF) == 0) {
-
-            volatile uint32_t *mbox = (volatile uint32_t *)0x90000;
-            kprint("[EVT] loop="); kprinthex(loop_count);
-            kprint(" pit="); kprinthex(g_pit_ticks);
-            kprint(" mbox="); kprinthex(mbox[0]);
-            kprint(" v="); kprinthex(mbox[1]);
-            kprint(" seq="); kprinthex(mbox[2]); kprint("\n");
-        }
-    }
-    return;
+    /* Start the first task with interrupts off */
+    __asm__ volatile ("cli");
+    Task_StartFirst();
 
 halt:
     for (;;) {
