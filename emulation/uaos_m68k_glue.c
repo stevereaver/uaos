@@ -357,6 +357,23 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_MATCH_PATTERN_NO_CASE 37
 #define DOS_LOADSEG        38
 #define DOS_UNLOADSEG      39
+#define DOS_CREATE_PROC    40
+#define DOS_SYSTEM_TAG_LIST 41
+#define DOS_RUN_COMMAND    42
+#define DOS_SEND_PKT       43
+#define DOS_WAIT_PKT       44
+#define DOS_REPLY_PKT      45
+#define DOS_ADD_PART       46
+#define DOS_COMPARE_NAMES  47
+#define DOS_STR_TO_DATE    48
+#define DOS_CHECK_SIGNAL   49
+#define DOS_WAIT_FOR_CHAR  50
+#define DOS_NAME_FROM_LOCK 51
+#define DOS_LOCK_RECORD    52
+#define DOS_UNLOCK_RECORD  53
+#define DOS_GET_CONSOLE_TASK 54
+#define DOS_SET_CONSOLE_TASK 55
+#define DOS_CREATE_SEG_LIST 56
 
 /* graphics.library function indices (must match graphics_lib.c) */
 #define GFX_OPEN_LIBRARY      1
@@ -529,6 +546,22 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_MATCH_PATTERN_NO_CASE (-512)
 #define LVO_DOS_LOADSEG    (-156)
 #define LVO_DOS_UNLOADSEG  (-150)
+#define LVO_DOS_CREATE_PROC    (-120)
+#define LVO_DOS_SYSTEM_TAG_LIST (-774)
+#define LVO_DOS_RUN_COMMAND    (-630)
+#define LVO_DOS_SEND_PKT       (-174)
+#define LVO_DOS_WAIT_PKT       (-180)
+#define LVO_DOS_REPLY_PKT      (-186)
+#define LVO_DOS_ADD_PART       (-522)
+#define LVO_DOS_COMPARE_NAMES  (-546)
+#define LVO_DOS_STR_TO_DATE    (-672)
+#define LVO_DOS_CHECK_SIGNAL   (-300)
+#define LVO_DOS_WAIT_FOR_CHAR  (-204)
+#define LVO_DOS_NAME_FROM_LOCK (-498)
+#define LVO_DOS_LOCK_RECORD    (-516)
+#define LVO_DOS_UNLOCK_RECORD  (-510)
+#define LVO_DOS_GET_CONSOLE_TASK (-294)
+#define LVO_DOS_SET_CONSOLE_TASK (-288)
 
 /* graphics.library LVO offsets (AmigaOS standard) */
 #define LVO_GFX_INIT_RASTPORT  (-30)
@@ -615,6 +648,22 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_READ:   return (uint32_t)((int)DOS_BASE + LVO_DOS_READ);
             case DOS_EXIT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_EXIT);
             case DOS_IO_ERR: return (uint32_t)((int)DOS_BASE + LVO_DOS_IO_ERR);
+            case DOS_CREATE_PROC:    return (uint32_t)((int)DOS_BASE + LVO_DOS_CREATE_PROC);
+            case DOS_SYSTEM_TAG_LIST: return (uint32_t)((int)DOS_BASE + LVO_DOS_SYSTEM_TAG_LIST);
+            case DOS_RUN_COMMAND:    return (uint32_t)((int)DOS_BASE + LVO_DOS_RUN_COMMAND);
+            case DOS_SEND_PKT:       return (uint32_t)((int)DOS_BASE + LVO_DOS_SEND_PKT);
+            case DOS_WAIT_PKT:       return (uint32_t)((int)DOS_BASE + LVO_DOS_WAIT_PKT);
+            case DOS_REPLY_PKT:      return (uint32_t)((int)DOS_BASE + LVO_DOS_REPLY_PKT);
+            case DOS_ADD_PART:       return (uint32_t)((int)DOS_BASE + LVO_DOS_ADD_PART);
+            case DOS_COMPARE_NAMES:  return (uint32_t)((int)DOS_BASE + LVO_DOS_COMPARE_NAMES);
+            case DOS_STR_TO_DATE:    return (uint32_t)((int)DOS_BASE + LVO_DOS_STR_TO_DATE);
+            case DOS_CHECK_SIGNAL:   return (uint32_t)((int)DOS_BASE + LVO_DOS_CHECK_SIGNAL);
+            case DOS_WAIT_FOR_CHAR:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WAIT_FOR_CHAR);
+            case DOS_NAME_FROM_LOCK: return (uint32_t)((int)DOS_BASE + LVO_DOS_NAME_FROM_LOCK);
+            case DOS_LOCK_RECORD:    return (uint32_t)((int)DOS_BASE + LVO_DOS_LOCK_RECORD);
+            case DOS_UNLOCK_RECORD:  return (uint32_t)((int)DOS_BASE + LVO_DOS_UNLOCK_RECORD);
+            case DOS_GET_CONSOLE_TASK: return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_CONSOLE_TASK);
+            case DOS_SET_CONSOLE_TASK: return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_CONSOLE_TASK);
         }
     } else if (lib_id == LIB_GRAPHICS) {
         switch (func_idx) {
@@ -729,6 +778,22 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_MATCH_PATTERN_NO_CASE, LIB_DOS, DOS_MATCH_PATTERN_NO_CASE);
     install_lvo(DOS_BASE, LVO_DOS_LOADSEG,    LIB_DOS, DOS_LOADSEG);
     install_lvo(DOS_BASE, LVO_DOS_UNLOADSEG,  LIB_DOS, DOS_UNLOADSEG);
+    install_lvo(DOS_BASE, LVO_DOS_CREATE_PROC,    LIB_DOS, DOS_CREATE_PROC);
+    install_lvo(DOS_BASE, LVO_DOS_SYSTEM_TAG_LIST, LIB_DOS, DOS_SYSTEM_TAG_LIST);
+    install_lvo(DOS_BASE, LVO_DOS_RUN_COMMAND,    LIB_DOS, DOS_RUN_COMMAND);
+    install_lvo(DOS_BASE, LVO_DOS_SEND_PKT,       LIB_DOS, DOS_SEND_PKT);
+    install_lvo(DOS_BASE, LVO_DOS_WAIT_PKT,       LIB_DOS, DOS_WAIT_PKT);
+    install_lvo(DOS_BASE, LVO_DOS_REPLY_PKT,      LIB_DOS, DOS_REPLY_PKT);
+    install_lvo(DOS_BASE, LVO_DOS_ADD_PART,       LIB_DOS, DOS_ADD_PART);
+    install_lvo(DOS_BASE, LVO_DOS_COMPARE_NAMES,  LIB_DOS, DOS_COMPARE_NAMES);
+    install_lvo(DOS_BASE, LVO_DOS_STR_TO_DATE,    LIB_DOS, DOS_STR_TO_DATE);
+    install_lvo(DOS_BASE, LVO_DOS_CHECK_SIGNAL,   LIB_DOS, DOS_CHECK_SIGNAL);
+    install_lvo(DOS_BASE, LVO_DOS_WAIT_FOR_CHAR,  LIB_DOS, DOS_WAIT_FOR_CHAR);
+    install_lvo(DOS_BASE, LVO_DOS_NAME_FROM_LOCK, LIB_DOS, DOS_NAME_FROM_LOCK);
+    install_lvo(DOS_BASE, LVO_DOS_LOCK_RECORD,    LIB_DOS, DOS_LOCK_RECORD);
+    install_lvo(DOS_BASE, LVO_DOS_UNLOCK_RECORD,  LIB_DOS, DOS_UNLOCK_RECORD);
+    install_lvo(DOS_BASE, LVO_DOS_GET_CONSOLE_TASK, LIB_DOS, DOS_GET_CONSOLE_TASK);
+    install_lvo(DOS_BASE, LVO_DOS_SET_CONSOLE_TASK, LIB_DOS, DOS_SET_CONSOLE_TASK);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {

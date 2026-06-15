@@ -1309,6 +1309,395 @@ static void dos_UnLoadSeg(M68kCPUState *cpu)
 }
 
 /* =========================================================================
+ * Process control
+ * ========================================================================= */
+
+static void dos_CreateProc(M68kCPUState *cpu)
+{
+    /* Amiga: D1=BSTR name, D2=pri, D3=seglist, D4=stackSize → D0=process ptr */
+    /* No real M68k multitasking — return a fake Process BPTR */
+    (void)cpu;
+    uint32_t fake_proc = heap_alloc(256);
+    cpu->d[0] = fake_proc ? (fake_proc >> 2) : 0;
+    if (!fake_proc) SetIoErr(ERROR_NO_FREE_STORE);
+}
+
+static void dos_SystemTagList(M68kCPUState *cpu)
+{
+    /* Amiga: D1=STRPTR command, D2=struct TagItem *tags → D0=result */
+    (void)cpu;
+    cpu->d[0] = (uint32_t)DOSFALSE;
+    SetIoErr(ERROR_ACTION_NOT_KNOWN);
+}
+
+static void dos_RunCommand(M68kCPUState *cpu)
+{
+    /* Amiga: D1=BPTR seglist, D2=stacksize, A0=argptr, D3=argsize → D0=rc */
+    (void)cpu;
+    cpu->d[0] = (uint32_t)DOSFALSE;
+    SetIoErr(ERROR_ACTION_NOT_KNOWN);
+}
+
+/* =========================================================================
+ * Packets (SendPkt / WaitPkt / ReplyPkt)
+ * ========================================================================= */
+
+static void dos_SendPkt(M68kCPUState *cpu)
+{
+    /* Amiga: A0=DosPacket*, A1=MsgPort* port, D1=MsgPort* replyport → D0=res */
+    DosPacket *dp = (DosPacket *)(uintptr_t)cpu->a[0];
+    MsgPort *port = (MsgPort *)(uintptr_t)cpu->a[1];
+    (void)cpu->d[1];
+    if (!dp || !port) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_ACTION_NOT_KNOWN);
+        return;
+    }
+    /* Synchronous dispatch */
+    int32_t res = DoPkt(port, dp->dp_Type,
+                        dp->dp_Arg1, dp->dp_Arg2, dp->dp_Arg3,
+                        dp->dp_Arg4, dp->dp_Arg5);
+    dp->dp_Res1 = res;
+    dp->dp_Res2 = IoErr();
+    cpu->d[0] = (uint32_t)res;
+}
+
+static void dos_WaitPkt(M68kCPUState *cpu)
+{
+    /* Amiga: → D0=DosPacket*  (async queue empty in single-threaded mode) */
+    cpu->d[0] = 0;
+}
+
+static void dos_ReplyPkt(M68kCPUState *cpu)
+{
+    /* Amiga: A0=DosPacket*, D0=res1, D1=res2 */
+    DosPacket *dp = (DosPacket *)(uintptr_t)cpu->a[0];
+    if (dp) {
+        dp->dp_Res1 = (int32_t)cpu->d[0];
+        dp->dp_Res2 = (int32_t)cpu->d[1];
+    }
+}
+
+/* =========================================================================
+ * Path handling (AddPart / CompareNames)
+ * ========================================================================= */
+
+static void dos_AddPart(M68kCPUState *cpu)
+{
+    /* Amiga: D1=STRPTR dirname, D2=STRPTR filename, D3=ULONG size → D0=BOOL */
+    uint32_t dir_ptr = cpu->d[1];
+    uint32_t file_ptr = cpu->d[2];
+    uint32_t max_size = cpu->d[3];
+    if (dir_ptr >= GUEST_RAM_SIZE || file_ptr >= GUEST_RAM_SIZE || max_size < 2) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    /* Read dirname */
+    char dir[128];
+    int i = 0;
+    while (i < 127 && dir_ptr + i < GUEST_RAM_SIZE && g_ram[dir_ptr + i]) {
+        dir[i] = (char)g_ram[dir_ptr + i]; i++;
+    }
+    dir[i] = '\0';
+
+    /* Read filename */
+    char file[128];
+    i = 0;
+    while (i < 127 && file_ptr + i < GUEST_RAM_SIZE && g_ram[file_ptr + i]) {
+        file[i] = (char)g_ram[file_ptr + i]; i++;
+    }
+    file[i] = '\0';
+
+    /* If dirname doesn't end with / or :, append / */
+    int dir_len = 0;
+    while (dir[dir_len]) dir_len++;
+    int need_slash = 0;
+    if (dir_len > 0 && dir[dir_len - 1] != ':' && dir[dir_len - 1] != '/')
+        need_slash = 1;
+
+    int file_len = 0;
+    while (file[file_len]) file_len++;
+
+    if ((uint32_t)(dir_len + need_slash + file_len + 1) > max_size) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    uint32_t out_ptr = dir_ptr;
+    if (need_slash) {
+        g_ram[out_ptr + dir_len] = '/';
+        dir_len++;
+    }
+    for (int j = 0; j < file_len; j++)
+        g_ram[out_ptr + dir_len + j] = (uint8_t)file[j];
+    g_ram[out_ptr + dir_len + file_len] = '\0';
+    cpu->d[0] = (uint32_t)DOSTRUE;
+}
+
+static void dos_CompareNames(M68kCPUState *cpu)
+{
+    /* Amiga: D1=LONG type, D2=STRPTR name1, D3=STRPTR name2 → D0=LONG */
+    int32_t type = (int32_t)cpu->d[1];
+    uint32_t n1_ptr = cpu->d[2];
+    uint32_t n2_ptr = cpu->d[3];
+
+    char name1[128], name2[128];
+    int i = 0;
+    while (i < 127 && n1_ptr + i < GUEST_RAM_SIZE && g_ram[n1_ptr + i]) {
+        name1[i] = (char)g_ram[n1_ptr + i]; i++;
+    }
+    name1[i] = '\0';
+
+    i = 0;
+    while (i < 127 && n2_ptr + i < GUEST_RAM_SIZE && g_ram[n2_ptr + i]) {
+        name2[i] = (char)g_ram[n2_ptr + i]; i++;
+    }
+    name2[i] = '\0';
+
+    int ci = (type != 0);
+    int j = 0;
+    while (name1[j] && name2[j]) {
+        char c1 = name1[j];
+        char c2 = name2[j];
+        if (ci) {
+            if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+            if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        }
+        if (c1 != c2) {
+            cpu->d[0] = (c1 < c2) ? (uint32_t)-1 : 1;
+            return;
+        }
+        j++;
+    }
+    if (name1[j] == name2[j]) {
+        cpu->d[0] = 0;
+    } else if (name1[j] == '\0') {
+        cpu->d[0] = (uint32_t)-1;
+    } else {
+        cpu->d[0] = 1;
+    }
+}
+
+/* =========================================================================
+ * Date/Time (StrToDate)
+ * ========================================================================= */
+
+static void dos_StrToDate(M68kCPUState *cpu)
+{
+    /* Amiga: A0=struct DateTime *datetime → D0=BOOL
+     *
+     * DateTime layout:
+     *  0 : DateStamp  (12 bytes)
+     * 12 : ULONG dat_Format
+     * 16 : ULONG dat_Flags
+     * 20 : APTR dat_StrDay
+     * 24 : APTR dat_StrDate
+     * 28 : APTR dat_StrTime
+     */
+    uint32_t dt_ptr = cpu->a[0];
+    if (dt_ptr + 32 > GUEST_RAM_SIZE) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    uint32_t str_date_ptr = guest_read_be32(dt_ptr + 24);
+    uint32_t str_time_ptr = guest_read_be32(dt_ptr + 28);
+    uint32_t format = guest_read_be32(dt_ptr + 12);
+
+    int day = 1, month = 1, year = 78;
+    int hour = 0, min = 0, sec = 0;
+
+    /* Parse date string */
+    if (str_date_ptr && str_date_ptr + 12 < GUEST_RAM_SIZE) {
+        char ds[32];
+        int k = 0;
+        while (k < 31 && str_date_ptr + k < GUEST_RAM_SIZE && g_ram[str_date_ptr + k]) {
+            ds[k] = (char)g_ram[str_date_ptr + k]; k++;
+        }
+        ds[k] = '\0';
+
+        if (format == 1) { /* FORMAT_INTL / USA: MM-DD-YY */
+            int v[3] = {0,0,0};
+            int vi = 0, val = 0;
+            for (int j = 0; ds[j] && vi < 3; j++) {
+                char ch = ds[j];
+                if (ch >= '0' && ch <= '9') {
+                    val = val * 10 + (ch - '0');
+                } else if (ch == '-' || ch == '/' || ch == '.') {
+                    v[vi++] = val; val = 0;
+                }
+            }
+            if (vi < 3) v[vi] = val;
+            month = v[0]; day = v[1]; year = v[2];
+        } else {
+            /* FORMAT_DOS: DD-MMM-YY */
+            day = (ds[0] - '0') * 10 + (ds[1] - '0');
+            year = (ds[7] - '0') * 10 + (ds[8] - '0');
+            char mon[4] = {0,0,0,0};
+            mon[0] = ds[3]; mon[1] = ds[4]; mon[2] = ds[5];
+            const char *mns[] = {"jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"};
+            for (int m = 0; m < 12; m++) {
+                char a = mon[0]; if (a >= 'A' && a <= 'Z') a += 32;
+                char b = mns[m][0];
+                if (a == b && mon[1] == mns[m][1] && mon[2] == mns[m][2]) {
+                    month = m + 1; break;
+                }
+            }
+        }
+    }
+
+    /* Parse time string */
+    if (str_time_ptr && str_time_ptr + 10 < GUEST_RAM_SIZE) {
+        char ts[16];
+        int k = 0;
+        while (k < 15 && str_time_ptr + k < GUEST_RAM_SIZE && g_ram[str_time_ptr + k]) {
+            ts[k] = (char)g_ram[str_time_ptr + k]; k++;
+        }
+        ts[k] = '\0';
+        hour = (ts[0] - '0') * 10 + (ts[1] - '0');
+        min  = (ts[3] - '0') * 10 + (ts[4] - '0');
+        sec  = (ts[6] - '0') * 10 + (ts[7] - '0');
+    }
+
+    /* Validate */
+    if (day < 1 || day > 31 || month < 1 || month > 12 || year < 0 || year > 99 ||
+        hour < 0 || hour > 23 || min < 0 || min > 59 || sec < 0 || sec > 59) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    /* Convert to DateStamp (days since 1-Jan-1978, minutes, ticks) */
+    static const int16_t mdays[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
+    int y = year + 1900;
+    if (y < 1978) y += 100;
+    int leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
+    int days = (y - 1978) * 365;
+    for (int ly = 1978; ly < y; ly++) {
+        if ((ly % 4 == 0 && (ly % 100 != 0 || ly % 400 == 0))) days++;
+    }
+    days += mdays[month - 1];
+    if (month > 2) days += leap;
+    days += (day - 1);
+
+    int total_ticks = ((hour * 60 + min) * 60 + sec) * 50;
+    int minutes = total_ticks / 3000;
+    int ticks = total_ticks % 3000;
+
+    guest_write_be32(dt_ptr + 0, (uint32_t)days);
+    guest_write_be32(dt_ptr + 4, (uint32_t)minutes);
+    guest_write_be32(dt_ptr + 8, (uint32_t)ticks);
+
+    cpu->d[0] = (uint32_t)DOSTRUE;
+}
+
+/* =========================================================================
+ * Signals (CheckSignal / WaitForChar)
+ * ========================================================================= */
+
+static void dos_CheckSignal(M68kCPUState *cpu)
+{
+    /* Amiga: D1=ULONG mask → D0=ULONG received */
+    (void)cpu;
+    cpu->d[0] = 0;
+}
+
+static void dos_WaitForChar(M68kCPUState *cpu)
+{
+    /* Amiga: D1=BPTR file, D2=ULONG timeout → D0=BOOL (0=timeout, -1=available) */
+    uint32_t fh = cpu->d[1];
+    (void)cpu->d[2];
+    if (fh == DOS_STDIN_BPTR) {
+        cpu->d[0] = (uint32_t)DOSTRUE;
+    } else {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+    }
+}
+
+/* =========================================================================
+ * Advanced locks (NameFromLock / LockRecord / UnLockRecord)
+ * ========================================================================= */
+
+static void dos_NameFromLock(M68kCPUState *cpu)
+{
+    /* Amiga: D1=BPTR lock, D2=STRPTR buffer, D3=LONG len → D0=BOOL */
+    uint32_t lock = cpu->d[1];
+    uint32_t buf = cpu->d[2];
+    int32_t len = (int32_t)cpu->d[3];
+
+    if (buf >= GUEST_RAM_SIZE || len < 2) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        return;
+    }
+
+    uint32_t handle = 0;
+    if (!guest_read_filelock(lock, &handle, NULL) || handle == 0) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    HandleEntry *ent = HandleTable_GetLockEntry(handle, NULL);
+    if (!ent || ent->type != HTYPE_LOCK) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    const char *path = ent->path;
+    int i = 0;
+    while (path[i] && i < len - 1 && buf + i < GUEST_RAM_SIZE) {
+        g_ram[buf + i] = (uint8_t)path[i];
+        i++;
+    }
+    g_ram[buf + i] = '\0';
+    cpu->d[0] = (uint32_t)DOSTRUE;
+}
+
+static void dos_LockRecord(M68kCPUState *cpu)
+{
+    /* Amiga: D1=BPTR fh, D2=offset, D3=length, D4=mode, D5=timeout → D0=BOOL */
+    /* Synchronous single-threaded system — records are never contested */
+    (void)cpu;
+    cpu->d[0] = (uint32_t)DOSTRUE;
+}
+
+static void dos_UnLockRecord(M68kCPUState *cpu)
+{
+    /* Amiga: D1=BPTR fh, D2=offset, D3=length */
+    (void)cpu;
+}
+
+/* =========================================================================
+ * CLI (GetConsoleTask / SetConsoleTask)
+ * ========================================================================= */
+
+static uint32_t g_console_task = 0;
+
+static void dos_GetConsoleTask(M68kCPUState *cpu)
+{
+    /* Amiga: → D0=struct MsgPort* */
+    cpu->d[0] = g_console_task;
+}
+
+static void dos_SetConsoleTask(M68kCPUState *cpu)
+{
+    /* Amiga: D1=struct MsgPort* */
+    g_console_task = cpu->d[1];
+}
+
+/* =========================================================================
+ * CreateSegList stub
+ * ========================================================================= */
+
+static void dos_CreateSegList(M68kCPUState *cpu)
+{
+    /* Not a standard AmigaDOS 3.1 library function; stub */
+    (void)cpu;
+    cpu->d[0] = 0;
+}
+
+/* =========================================================================
  * Function table — indices must match the ILLEGAL handler's DOS_* constants
  * ========================================================================= */
 
@@ -1352,6 +1741,23 @@ static void *dos_funcs[] = {
     dos_MatchPatternNoCase, /* index 37 */
     dos_LoadSeg,            /* index 38 */
     dos_UnLoadSeg,          /* index 39 */
+    dos_CreateProc,         /* index 40 */
+    dos_SystemTagList,      /* index 41 */
+    dos_RunCommand,         /* index 42 */
+    dos_SendPkt,            /* index 43 */
+    dos_WaitPkt,            /* index 44 */
+    dos_ReplyPkt,           /* index 45 */
+    dos_AddPart,            /* index 46 */
+    dos_CompareNames,       /* index 47 */
+    dos_StrToDate,          /* index 48 */
+    dos_CheckSignal,        /* index 49 */
+    dos_WaitForChar,        /* index 50 */
+    dos_NameFromLock,       /* index 51 */
+    dos_LockRecord,         /* index 52 */
+    dos_UnLockRecord,       /* index 53 */
+    dos_GetConsoleTask,     /* index 54 */
+    dos_SetConsoleTask,     /* index 55 */
+    dos_CreateSegList,      /* index 56 */
 };
 
 /* =========================================================================
