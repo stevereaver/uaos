@@ -83,49 +83,29 @@ static void type_text(NativeCmdCtx *ctx, VfsFile *fh, int numbers, VfsFile *outf
 
 void Cmd_Type(NativeCmdCtx *ctx, const char *args)
 {
-    if ((!args || !*args) && !ctx->pipe_file) { PRINT("Usage: type <file> [HEX] [NUMBER] [TO <file>]"); return; }
+    (void)args;
+    int hex = 0;
+    int numbers = 0;
+    const char *to_file = NULL;
+    const char *file_arg = NULL;
 
-    int hex = cmd_kw_find(args, "HEX");
-    int numbers = cmd_kw_find(args, "NUMBER");
-
-    /* Extract TO filename */
-    char to_file[CMD_MAX_PATH];
-    to_file[0] = '\0';
-    {
-        const char *p = args;
-        while (*p) {
-            while (*p == ' ') p++;
-            if (!*p) break;
-            const char *start = p;
-            while (*p && *p != ' ') p++;
-            int len = (int)(p - start);
-            if (len == 2 &&
-                ((start[0]=='T'||start[0]=='t') && (start[1]=='O'||start[1]=='o'))) {
-                while (*p == ' ') p++;
-                int i = 0;
-                while (*p && *p != ' ' && i < CMD_MAX_PATH - 1) to_file[i++] = *p++;
-                to_file[i] = '\0';
-                break;
-            }
-        }
+    if (ctx->template) {
+        hex = CmdTemplate_GetSwitch(ctx->template, "HEX");
+        numbers = CmdTemplate_GetSwitch(ctx->template, "NUMBER");
+        to_file = CmdTemplate_GetString(ctx->template, "TO");
+        file_arg = CmdTemplate_GetString(ctx->template, "FILE");
     }
 
-    /* Build path argument (strip flags and TO clause) */
+    if (!file_arg && !ctx->pipe_file) {
+        PRINT("Usage: type <file> [HEX] [NUMBER] [TO <file>]");
+        return;
+    }
+
     char path[CMD_MAX_PATH];
-    char clean[CMD_MAX_LINE];
-    cmd_kw_strip(args, "HEX", NULL, clean, CMD_MAX_LINE);
-    cmd_kw_strip(clean, "NUMBER", NULL, clean, CMD_MAX_LINE);
-    if (to_file[0]) {
-        char to_kw[CMD_MAX_LINE];
-        to_kw[0] = '\0';
-        cmd_scat(to_kw, "TO ", CMD_MAX_LINE);
-        cmd_scat(to_kw, to_file, CMD_MAX_LINE);
-        cmd_kw_strip(clean, to_kw, NULL, clean, CMD_MAX_LINE);
-    }
-    if (!clean[0] && ctx->pipe_file) {
-        cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
+    if (file_arg) {
+        cmd_make_abs(ctx->cwd, file_arg, path, CMD_MAX_PATH);
     } else {
-        cmd_make_abs(ctx->cwd, clean, path, CMD_MAX_PATH);
+        cmd_scopy(path, ctx->pipe_file, CMD_MAX_PATH);
     }
 
     VfsFile fh;
@@ -139,7 +119,7 @@ void Cmd_Type(NativeCmdCtx *ctx, const char *args)
 
     VfsFile outfh;
     int has_out = 0;
-    if (to_file[0]) {
+    if (to_file) {
         char abs_to[CMD_MAX_PATH];
         cmd_make_abs(ctx->cwd, to_file, abs_to, CMD_MAX_PATH);
         if (VFS_Open(&outfh, abs_to, VFS_WRITE | VFS_CREATE)) {

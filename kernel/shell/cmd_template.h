@@ -38,7 +38,7 @@ typedef struct {
     int   value_count;
 } CmdTemplateItem;
 
-typedef struct {
+typedef struct CmdTemplateResult {
     CmdTemplateItem items[CMD_MAX_TEMPLATE_ITEMS];
     int             count;
     char            error[CMD_MAX_TEMPLATE_VAL];

@@ -35,7 +35,7 @@
 #include <stdint.h>
 
 struct BlockDev;   /* forward-declare to avoid pulling blockdev.h here */
-struct CmdTemplateResult;  /* forward-declare for template parsing */
+typedef struct CmdTemplateResult CmdTemplateResult;  /* forward-declare for template parsing */
 struct PartitionTable;
 
 typedef struct NativeCmdCtx {
@@ -126,7 +126,7 @@ typedef struct NativeCmdCtx {
 
     /* Set automatically by NativeCmd_Run when the command has a template.
      * Commands can query parsed arguments via the CmdTemplate_* helpers. */
-    struct CmdTemplateResult *template;
+    CmdTemplateResult *template;
 } NativeCmdCtx;
 
 /* Convenience macro — yield N ms from inside a Cmd_* function */

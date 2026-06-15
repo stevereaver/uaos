@@ -595,9 +595,12 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  ps                 list running tasks");
     inst_print(s, "");
     inst_print(s, "Script flow control:");
-    inst_print(s, "  IF <c> THEN <cmd>              single-line conditional");
-    inst_print(s, "  IF <c> ... ELSE ... ENDIF      multi-line conditional");
-    inst_print(s, "  FOR <v>=<a> TO <b> ... ENDFOR  numeric loop");
+    inst_print(s, "  IF <c> THEN <cmd>                    single-line conditional");
+    inst_print(s, "  IF <c> ... ELSE ... ENDIF            multi-line conditional");
+    inst_print(s, "  IF <c> ... ELSE IF <c> ... ENDIF     chained conditional");
+    inst_print(s, "  FOR <v>=<a> TO <b> ... ENDFOR        numeric loop");
+    inst_print(s, "  LAB <name>                           define script label");
+    inst_print(s, "  SKIP <label|n> [BACK]                jump to label or skip lines");
     inst_print(s, "  Conditions: EXISTS <file>, <a> EQ <b>, <a> NE <b>, NOT <c>");
 }
 
