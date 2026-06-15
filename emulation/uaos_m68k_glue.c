@@ -355,6 +355,8 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_MATCH_PATTERN       35
 #define DOS_PARSE_PATTERN_NO_CASE 36
 #define DOS_MATCH_PATTERN_NO_CASE 37
+#define DOS_LOADSEG        38
+#define DOS_UNLOADSEG      39
 
 /* graphics.library function indices (must match graphics_lib.c) */
 #define GFX_OPEN_LIBRARY      1
@@ -525,6 +527,8 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_MATCH_PATTERN       (-506)
 #define LVO_DOS_PARSE_PATTERN_NO_CASE (-480)
 #define LVO_DOS_MATCH_PATTERN_NO_CASE (-512)
+#define LVO_DOS_LOADSEG    (-156)
+#define LVO_DOS_UNLOADSEG  (-150)
 
 /* graphics.library LVO offsets (AmigaOS standard) */
 #define LVO_GFX_INIT_RASTPORT  (-30)
@@ -603,6 +607,8 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_MATCH_PATTERN:       return (uint32_t)((int)DOS_BASE + LVO_DOS_MATCH_PATTERN);
             case DOS_PARSE_PATTERN_NO_CASE: return (uint32_t)((int)DOS_BASE + LVO_DOS_PARSE_PATTERN_NO_CASE);
             case DOS_MATCH_PATTERN_NO_CASE: return (uint32_t)((int)DOS_BASE + LVO_DOS_MATCH_PATTERN_NO_CASE);
+            case DOS_LOADSEG:  return (uint32_t)((int)DOS_BASE + LVO_DOS_LOADSEG);
+            case DOS_UNLOADSEG: return (uint32_t)((int)DOS_BASE + LVO_DOS_UNLOADSEG);
             case DOS_WRITE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE);
             case DOS_OPEN:   return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN);
             case DOS_CLOSE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_CLOSE);
@@ -721,6 +727,8 @@ static void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_MATCH_PATTERN,       LIB_DOS, DOS_MATCH_PATTERN);
     install_lvo(DOS_BASE, LVO_DOS_PARSE_PATTERN_NO_CASE, LIB_DOS, DOS_PARSE_PATTERN_NO_CASE);
     install_lvo(DOS_BASE, LVO_DOS_MATCH_PATTERN_NO_CASE, LIB_DOS, DOS_MATCH_PATTERN_NO_CASE);
+    install_lvo(DOS_BASE, LVO_DOS_LOADSEG,    LIB_DOS, DOS_LOADSEG);
+    install_lvo(DOS_BASE, LVO_DOS_UNLOADSEG,  LIB_DOS, DOS_UNLOADSEG);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {

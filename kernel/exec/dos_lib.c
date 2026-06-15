@@ -1124,6 +1124,191 @@ static void dos_MatchPatternNoCase(M68kCPUState *cpu)
 }
 
 /* =========================================================================
+ * Segment loading (LoadSeg / UnLoadSeg)
+ * ========================================================================= */
+
+#define LS_HUNK_HEADER   0x3F3
+#define LS_HUNK_CODE     0x3E9
+#define LS_HUNK_DATA     0x3EA
+#define LS_HUNK_BSS      0x3EB
+#define LS_HUNK_RELOC32  0x3EC
+#define LS_HUNK_END      0x3F2
+#define LS_HUNK_SYMBOL   0x3F0
+#define LS_HUNK_DEBUG    0x3F1
+
+#define MAX_LOADSEG_HUNKS  32
+
+static uint8_t g_loadseg_buf[131072]; /* 128KB temp for hunk loading */
+
+static uint32_t ls_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] <<  8) | ((uint32_t)p[3]);
+}
+
+static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
+{
+    if (bin_size < 8) return 0;
+    const uint8_t *p = bin;
+    const uint8_t *end = bin + bin_size;
+
+    if (ls_be32(p) != LS_HUNK_HEADER) return 0;
+    p += 4;
+
+    while (p + 4 <= end) {
+        uint32_t cnt = ls_be32(p); p += 4;
+        if (!cnt) break;
+        p += cnt * 4;
+    }
+
+    if (p + 12 > end) return 0;
+    uint32_t table_size = ls_be32(p); p += 4;
+    uint32_t first_hunk = ls_be32(p); p += 4;
+    uint32_t last_hunk  = ls_be32(p); p += 4;
+    (void)table_size;
+
+    uint32_t n_hunks = last_hunk - first_hunk + 1;
+    if (n_hunks > MAX_LOADSEG_HUNKS) return 0;
+
+    uint32_t hunk_base[MAX_LOADSEG_HUNKS];
+    uint32_t allocated[MAX_LOADSEG_HUNKS];
+
+    for (uint32_t i = 0; i < n_hunks; i++) {
+        if (p + 4 > end) return 0;
+        uint32_t words = ls_be32(p) & 0x3FFFFFFF; p += 4;
+        uint32_t bytes = words * 4;
+        uint32_t seg_size = 4 + (bytes ? bytes : 4);
+        seg_size = (seg_size + 3) & ~3u;
+        allocated[i] = heap_alloc(seg_size);
+        if (!allocated[i]) return 0;
+        hunk_base[i] = allocated[i] + 4;
+    }
+
+    /* Write SegList next pointers */
+    for (uint32_t i = 0; i < n_hunks; i++) {
+        guest_write_be32(allocated[i], (i + 1 < n_hunks) ? (allocated[i + 1] >> 2) : 0);
+    }
+
+    int cur = 0;
+    while (p + 4 <= end && cur < (int)n_hunks) {
+        uint32_t type = ls_be32(p) & 0x3FFFFFFF; p += 4;
+
+        if (type == LS_HUNK_CODE || type == LS_HUNK_DATA) {
+            if (p + 4 > end) break;
+            uint32_t words = ls_be32(p); p += 4;
+            uint32_t bytes = words * 4;
+            if (p + bytes > end) return 0;
+            for (uint32_t i = 0; i < bytes; i++)
+                g_ram[hunk_base[cur] + i] = p[i];
+            p += bytes;
+        } else if (type == LS_HUNK_BSS) {
+            if (p + 4 > end) break;
+            p += 4;
+        } else if (type == LS_HUNK_RELOC32) {
+            while (p + 4 <= end) {
+                uint32_t n_offsets = ls_be32(p); p += 4;
+                if (!n_offsets) break;
+                if (p + 4 > end) break;
+                uint32_t ref_hunk = ls_be32(p); p += 4;
+                if (ref_hunk >= n_hunks) { p += n_offsets * 4; continue; }
+                uint32_t base = hunk_base[ref_hunk];
+                for (uint32_t r = 0; r < n_offsets; r++) {
+                    if (p + 4 > end) break;
+                    uint32_t offset = ls_be32(p); p += 4;
+                    uint32_t patch_addr = hunk_base[cur] + offset;
+                    if (patch_addr + 4 <= GUEST_RAM_SIZE) {
+                        uint32_t old_val = guest_read_be32(patch_addr);
+                        guest_write_be32(patch_addr, old_val + base);
+                    }
+                }
+            }
+            continue;
+        } else if (type == LS_HUNK_SYMBOL || type == LS_HUNK_DEBUG) {
+            while (p + 4 <= end) {
+                uint32_t len = ls_be32(p); p += 4;
+                if (!len) break;
+                p += len * 4 + 4;
+            }
+            continue;
+        } else if (type == LS_HUNK_END) {
+            cur++;
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    return allocated[0];
+}
+
+static void dos_LoadSeg(M68kCPUState *cpu)
+{
+    uint32_t bptr = cpu->d[1];
+    char name[128];
+    int blen = bstr_to_c(bptr, name, sizeof(name));
+    if (blen == 0) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    char full_name[128];
+    int has_device = 0;
+    for (int i = 0; i < blen; i++) if (name[i] == ':') { has_device = 1; break; }
+    if (has_device) {
+        int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
+        full_name[i] = '\0';
+    } else {
+        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
+        if (cwd_len > 0 && g_uaos_cwd[cwd_len - 1] != ':' && g_uaos_cwd[cwd_len - 1] != '/')
+            full_name[i++] = '/';
+        int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
+        full_name[i] = '\0';
+    }
+
+    VfsFile fh;
+    if (!VFS_Open(&fh, full_name, VFS_READ)) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    uint32_t size = VFS_Size(&fh);
+    if (size == 0 || size > sizeof(g_loadseg_buf)) {
+        VFS_Close(&fh);
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    uint32_t read = VFS_Read(&fh, g_loadseg_buf, size);
+    VFS_Close(&fh);
+    if (read != size) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    uint32_t seglist = loadseg_hunk_load(g_loadseg_buf, size);
+    if (seglist == 0) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    cpu->d[0] = seglist >> 2;
+}
+
+static void dos_UnLoadSeg(M68kCPUState *cpu)
+{
+    /* Bump allocator — cannot free individual allocations.
+     * Just no-op; the segment memory will be reclaimed when
+     * the guest RAM is reset for the next program. */
+    (void)cpu;
+}
+
+/* =========================================================================
  * Function table — indices must match the ILLEGAL handler's DOS_* constants
  * ========================================================================= */
 
@@ -1165,6 +1350,8 @@ static void *dos_funcs[] = {
     dos_ParsePatternNoCase, /* index 35 */
     dos_MatchPattern,       /* index 36 */
     dos_MatchPatternNoCase, /* index 37 */
+    dos_LoadSeg,            /* index 38 */
+    dos_UnLoadSeg,          /* index 39 */
 };
 
 /* =========================================================================
