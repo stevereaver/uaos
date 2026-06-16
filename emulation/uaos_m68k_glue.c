@@ -40,18 +40,23 @@
  * ========================================================================= */
 
 typedef void (*GluePrintFn)(const char *s);
-static GluePrintFn g_print = (void*)0;
+GluePrintFn g_print = (void*)0;
 
 /* Current working directory for resolving relative paths */
 char g_uaos_cwd[64] = "RAM:";
 
 static void emu_print(const char *s)
 {
-    if (g_print) g_print(s);
+    if (g_print) {
+        g_print(s);
+    } else {
+        extern void kprint(const char *);
+        kprint(s);
+    }
 }
 
 /* Guest memory base for BPTR-to-native conversion */
-extern uint8_t g_ram[];
+extern uint8_t *g_ram;
 #define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
 /* Convert BSTR BPTR to native C string into dst[max].
@@ -127,7 +132,8 @@ static void u32_dec(uint32_t v, char *buf, int max) {
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
 #define PROG_BASE       0x001000  /* program hunks load here */
 
-uint8_t g_ram[GUEST_RAM_SIZE];
+static uint8_t g_default_ram[GUEST_RAM_SIZE];
+uint8_t *g_ram = g_default_ram;
 int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 static uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 
@@ -720,7 +726,7 @@ static void install_lvo(uint32_t base, int lvo, int lib_id, int func_idx)
 
 static void install_loadable_libs(void);
 
-static void install_library_tables(void)
+void install_library_tables(void)
 {
     /* Pre-fill all DOS LVO slots with MOVEQ #0,D0 + RTS
      * Specific stubs below override the ones LHA actually uses. */
@@ -1896,7 +1902,7 @@ static uint32_t g_hunk_base[MAX_HUNKS];
 static int      g_hunk_count = 0;
 
 /* Returns start PC (first hunk base) or 0 on error */
-static uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
+uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
 {
     if (bin_size < 8) { emu_print("[hunk] too small\n"); return 0; }
 

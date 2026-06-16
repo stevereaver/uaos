@@ -10,6 +10,7 @@
 #include "native_cmd.h"
 #include "../exec/uaos_binary.h"
 #include "../../emulation/uaos_emu.h"
+#include "../exec/task.h"
 #include "../dos/vfs.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -116,8 +117,10 @@ int ExecFile_Run(const char *path, const char *args)
                 }
                 m68k_argv[argc] = NULL;
                 UAOS_Emu_SetCwd("");
-                UAOS_Emu_LoadAndRun(g_exec_payload, payload_size,
-                                    m68k_argv, NULL, exec_nop_print);
+                UaosTask *t = Task_CreateM68k(bin_name, 0,
+                                                g_exec_payload, payload_size,
+                                                m68k_argv, NULL);
+                (void)t;  /* task is now running in background */
                 return 0;
             }
 

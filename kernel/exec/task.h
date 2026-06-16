@@ -90,9 +90,17 @@ typedef struct UaosTask {
     void    *native_arg;
 
     /* M68k guest fields */
-    uint32_t m68k_task_struct;  /* guest RAM address of AmigaOS Task struct */
+    uint32_t m68k_task_struct;    /* guest RAM address of AmigaOS Task struct */
     uint32_t m68k_context_size;
     void    *m68k_context_buf;    /* host buffer for m68k_get_context/set_context */
+    uint8_t *m68k_ram;            /* per-task guest RAM (NULL for native tasks) */
+    uint32_t m68k_entry;          /* guest PC entry point */
+    uint32_t m68k_stack_top;      /* guest SP */
+    uint32_t m68k_bin_size;       /* size of loaded binary */
+    int      m68k_initial_cycles; /* saved m68ki_initial_cycles */
+    int      m68k_remaining_cycles; /* saved m68ki_remaining_cycles */
+    uint8_t  m68k_halted;       /* set when dos_Exit called */
+    void    *m68k_print_fn;       /* GluePrintFn for output */
 
     /* Scheduling */
     uint32_t time_slice_ticks;
@@ -114,6 +122,13 @@ void TaskScheduler_Init(void);
 /* Create a native x86_64 task. Returns task pointer or NULL. */
 UaosTask *Task_CreateNative(const char *name, int8_t pri,
                             void (*entry)(void *), void *arg);
+
+/* Create an M68k guest task (native wrapper that runs a binary).
+ * Returns task pointer or NULL. */
+UaosTask *Task_CreateM68k(const char *name, int8_t pri,
+                           const uint8_t *binary, uint32_t bin_size,
+                           const char **argv,
+                           void (*print_fn)(const char *));
 
 /* Current task yields CPU voluntarily */
 void Task_Yield(void);

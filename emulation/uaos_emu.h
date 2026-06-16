@@ -8,8 +8,13 @@
 #define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
 /* Guest RAM base — shared with ROM stubs so dos.library (and future
- * libraries) can read/write guest memory without backend-specific APIs. */
-extern uint8_t g_ram[];
+ * libraries) can read/write guest memory without backend-specific APIs.
+ * This is a pointer so each M68k task can have its own guest RAM. */
+extern uint8_t *g_ram;
+
+/* Print callback for M68k stdout output */
+typedef void (*GluePrintFn)(const char *s);
+extern GluePrintFn g_print;
 
 /* Bump allocator pointer — shared so ROM stubs can allocate guest
  * FileLock structs, BSTRs, etc. */
@@ -44,5 +49,9 @@ void UAOS_Emu_SetCwd(const char *cwd);
  * copies it into g_ram).  out_base receives the assigned guest address. */
 void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
                                   uint32_t size, uint32_t *out_base);
+
+/* Internal helpers used by the M68k task wrapper (exec_task.c) */
+void install_library_tables(void);
+uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size);
 
 #endif /* UAOS_EMU_H */

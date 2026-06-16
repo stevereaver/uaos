@@ -73,7 +73,7 @@ static int alloc_fd(BsdSockType type, int idx)
 #define SOCKADDR_ADDR_OFF    4
 
 /* Guest RAM accessor — provided by the glue layer (uaos_m68k_glue.c) */
-extern uint8_t g_ram[];
+extern uint8_t *g_ram;
 #define GUEST_RAM_SIZE  (2 * 1024 * 1024)
 
 static uint16_t ram_r16(uint32_t addr)

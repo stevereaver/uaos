@@ -307,6 +307,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/task.c" \
+    "${REPO_ROOT}/kernel/exec/exec_task.c" \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \
     "${REPO_ROOT}/kernel/exec/console_device.c" \
     "${REPO_ROOT}/kernel/exec/mathffp_lib.c" \
@@ -560,6 +561,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/task.o" \
+    "${BUILD_DIR}/obj/exec_task.o" \
     "${BUILD_DIR}/obj/utility_lib.o" \
     "${BUILD_DIR}/obj/console_device.o" \
     "${BUILD_DIR}/obj/mathffp_lib.o" \

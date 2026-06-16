@@ -18,6 +18,14 @@
 
 extern volatile uint64_t g_pit_ticks;
 
+/* Musashi M68k context save/restore (for switching between M68k tasks) */
+extern unsigned int m68k_get_context(void *dst);
+extern void m68k_set_context(void *src);
+extern void m68k_end_timeslice(void);
+extern int m68ki_initial_cycles;
+extern int m68ki_remaining_cycles;
+extern uint8_t *g_ram;
+
 /* -------------------------------------------------------------------------
  * Globals
  * ------------------------------------------------------------------------- */
@@ -179,6 +187,7 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
      */
     sp -= 22;
     for (int i = 0; i < 15; i++) sp[i] = 0;
+    sp[9] = (uint64_t)arg;                      /* RDI — first argument */
     sp[15] = 0;                                 /* vector */
     sp[16] = 0;                                 /* error_code */
     sp[17] = (uint64_t)entry;                   /* RIP */
@@ -215,11 +224,33 @@ void Task_ScheduleFromIRQ(void)
     }
 
     UaosTask *prev = g_current;
-    prev->tc_State = TASK_READY;
-    ready_enqueue(prev);
+    if (prev->tc_State != TASK_REMOVED) {
+        prev->tc_State = TASK_READY;
+        ready_enqueue(prev);
+    }
+
+    /* If the current task is an M68k guest, stop Musashi and save context */
+    if (prev->type == TASK_TYPE_M68K) {
+        m68k_end_timeslice();   /* causes m68k_execute() to return after current insn */
+        if (prev->m68k_context_buf) {
+            m68k_get_context(prev->m68k_context_buf);
+            prev->m68k_initial_cycles = m68ki_initial_cycles;
+            prev->m68k_remaining_cycles = m68ki_remaining_cycles;
+        }
+    }
 
     g_current = next;
     next->tc_State = TASK_RUNNING;
+
+    /* If the new task is an M68k guest, restore its context and RAM */
+    if (next->type == TASK_TYPE_M68K) {
+        if (next->m68k_context_buf) {
+            m68k_set_context(next->m68k_context_buf);
+            m68ki_initial_cycles = next->m68k_initial_cycles;
+            m68ki_remaining_cycles = next->m68k_remaining_cycles;
+        }
+        g_ram = next->m68k_ram;
+    }
 
     /* Tell isr_common to perform the switch */
     Task_SwitchPrev = prev;
@@ -237,9 +268,11 @@ void Task_Yield(void)
 
 void Task_Exit(void)
 {
-    /* Phase 1: tasks do not voluntarily exit; if they return, halt. */
-    __asm__ volatile ("cli; hlt");
-    for (;;) __asm__ volatile ("cli; hlt");
+    /* Mark task as removed so the scheduler never picks it again.
+     * Then halt with interrupts enabled so the timer ISR can
+     * switch to another task.  The task becomes a zombie. */
+    if (g_current) g_current->tc_State = TASK_REMOVED;
+    for (;;) __asm__ volatile ("sti; hlt");
 }
 
 UaosTask *Task_Current(void)
