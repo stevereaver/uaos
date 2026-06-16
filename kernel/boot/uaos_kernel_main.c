@@ -508,19 +508,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         /* ROM fallback assigns and loadable library scan were already
          * performed in Phase 1 immediately after the boot volume mount. */
 
-        kprint("[BOOT] Opening shell window...\n");
-        ShellWin_Init();
-
-        kprint("[BOOT] Running Startup-Sequence...\n");
-        ShellWin_RunStartupSequence();
-
-        kprint("[BOOT] Detecting vmmouse...\n");
-        VMMouse_Init();
-        if (VMMouse_Detect())
-            kprint("[BOOT] vmmouse active (absolute mode).\n");
-        else
-            kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
         /* Program PIT at 10 Hz BEFORE enabling RTC so that g_pit_ticks is
          * already ticking when the first RTC UIE fires.  ntp_tick_epoch()
          * gates on g_pit_ticks, so it must be running first. */
@@ -546,18 +533,27 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
     APIC_Init();
 
+    kprint("[BOOT] Detecting vmmouse...\n");
+    VMMouse_Init();
+    if (VMMouse_Detect())
+        kprint("[BOOT] vmmouse active (absolute mode).\n");
+    else
+        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
+
     kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
 
-    /* Init scheduler */
+    /* Init scheduler BEFORE creating any tasks */
     TaskScheduler_Init();
 
     /* Create system idle task (runs the former event loop) */
     extern void Task_IdleEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
 
-    /* Spawn test tasks for Phase 1 verification */
-    extern void Task_TestSpawn(void);
-    Task_TestSpawn();
+    kprint("[BOOT] Opening shell window...\n");
+    ShellWin_Init();
+
+    kprint("[BOOT] Running Startup-Sequence...\n");
+    ShellWin_RunStartupSequence();
 
     /* Start the first task with interrupts off */
     __asm__ volatile ("cli");

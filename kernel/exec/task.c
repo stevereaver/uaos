@@ -228,9 +228,11 @@ void Task_ScheduleFromIRQ(void)
 
 void Task_Yield(void)
 {
-    __asm__ volatile ("cli");
-    Task_ScheduleFromIRQ();
-    __asm__ volatile ("sti");
+    /* Under the timer-driven scheduler, voluntary yield is a no-op.
+     * The timer ISR will preempt us at the next tick boundary.
+     * Calling Task_ScheduleFromIRQ from normal task context corrupts
+     * g_current because the current task context has not been saved. */
+    __asm__ volatile ("pause");
 }
 
 void Task_Exit(void)

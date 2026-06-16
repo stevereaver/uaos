@@ -31,6 +31,7 @@
 #include "../net/stack.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
+#include "../exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -149,6 +150,12 @@ struct ShellInstance {
 
     /* Script quit flag (set by QUIT command) */
     int          quit_flag;
+
+    /* Keyboard ring buffer — fed by WM/idle task, consumed by shell task */
+#define SHELL_KB_BUFSIZE 64
+    char         kb_buf[SHELL_KB_BUFSIZE];
+    int          kb_head;
+    int          kb_tail;
 };
 typedef struct ShellInstance ShellInstance;
 
@@ -157,6 +164,36 @@ static char g_hist_buf[MAX_SHELLS][MAX_HIST_LINES][MAX_LINE_LEN];
 
 static ShellInstance g_shells[MAX_SHELLS];
 static int           g_n_shells = 0;
+
+/* -------------------------------------------------------------------------
+ * Keyboard ring buffer helpers (interrupt-safe)
+ * ------------------------------------------------------------------------- */
+static int shell_kb_enqueue(ShellInstance *s, char c)
+{
+    __asm__ volatile ("cli");
+    int next = (s->kb_tail + 1) % SHELL_KB_BUFSIZE;
+    if (next == s->kb_head) {
+        __asm__ volatile ("sti");
+        return 0;   /* full */
+    }
+    s->kb_buf[s->kb_tail] = c;
+    s->kb_tail = next;
+    __asm__ volatile ("sti");
+    return 1;
+}
+
+static int shell_kb_dequeue(ShellInstance *s, char *c)
+{
+    __asm__ volatile ("cli");
+    if (s->kb_head == s->kb_tail) {
+        __asm__ volatile ("sti");
+        return 0;   /* empty */
+    }
+    *c = s->kb_buf[s->kb_head];
+    s->kb_head = (s->kb_head + 1) % SHELL_KB_BUFSIZE;
+    __asm__ volatile ("sti");
+    return 1;
+}
 
 /* =========================================================================
  * String helpers
@@ -3093,70 +3130,28 @@ static int shell_is_builtin(const char *name)
     return 0;
 }
 
-/* Cooperative yield — pumps mouse/keyboard/WM/network for approximately ms
- * milliseconds without blocking the event loop.  Native commands that need
- * to wait (ping, etc.) must call CMD_YIELD() instead of a bare busy-loop. */
+/* Cooperative yield — voluntary reschedule for approximately ms milliseconds.
+ * Under the preemptive scheduler this simply calls Task_Yield() repeatedly;
+ * the idle task handles mouse, keyboard, and network polling. */
 static void shell_yield_ms(void *shell_extra, uint32_t ms)
 {
     (void)shell_extra;
-
-    /* Calibrated spin: each inner iteration ≈ 10 ns on a 1 GHz+ guest.
-     * We break the total wait into 1 ms slices and pump events each slice. */
     uint32_t slices = ms ? ms : 1;
-    static int last_mx = -1, last_my = -1, last_btn = -1;
-
     for (uint32_t slice = 0; slice < slices; slice++) {
-        /* ~1 ms of CPU spin */
-        volatile uint32_t n = 100000UL;
-        while (n--) __asm__ volatile("pause");
-
-        /* Pump mouse */
-        int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
-        if (mx != last_mx || my != last_my || btn != last_btn) {
-            last_mx = mx; last_my = my; last_btn = btn;
-            WM_MouseEvent(mx, my, btn);
-        }
-
-        /* Drain the keyboard ring WITHOUT dispatching.
-         * The shell key handler calls inst_dispatch(), which is already on
-         * the call stack — forwarding keystrokes here would cause recursive
-         * command execution (e.g. the Enter key from the original "ping"
-         * would re-launch ping mid-run).  Discard while busy; when yield
-         * returns the normal event loop resumes and handles fresh input. */
-        while (PS2Kbd_HasChar())
-            PS2Kbd_GetChar();   /* consume and discard */
-
-        /* Poll network */
-        net_stack_poll();
+        Task_Yield();
     }
 }
 
-/* Blocking key read — spins pumping mouse/WM/network until the user presses
- * a key, then returns it.  Used by the pager (more) to wait at --More--
- * prompts without freezing the desktop. */
+/* Blocking key read — waits for a key in the shell's keyboard buffer,
+ * yielding the CPU so other tasks remain responsive. */
 static char shell_read_key(void *shell_extra)
 {
-    (void)shell_extra;
-    static int last_mx = -1, last_my = -1, last_btn = -1;
-
+    ShellInstance *s = (ShellInstance *)shell_extra;
     for (;;) {
-        /* ~1 ms of CPU spin */
-        volatile uint32_t n = 100000UL;
-        while (n--) __asm__ volatile("pause");
-
-        /* Pump mouse */
-        int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
-        if (mx != last_mx || my != last_my || btn != last_btn) {
-            last_mx = mx; last_my = my; last_btn = btn;
-            WM_MouseEvent(mx, my, btn);
-        }
-
-        /* Poll network */
-        net_stack_poll();
-
-        /* Return the first key waiting in the buffer */
-        if (PS2Kbd_HasChar())
-            return PS2Kbd_GetChar();
+        char c;
+        if (shell_kb_dequeue(s, &c))
+            return c;
+        Task_Yield();
     }
 }
 
@@ -3179,38 +3174,20 @@ static void shell_set_ask_mode(void *shell_extra, const char *prompt)
     s->input_cur = 0;
 }
 
-/* Blocking line read — spins pumping mouse/WM/network until the user presses
- * Enter, then returns the line in buf (up to max-1 chars).
- * Used by 'ask' command to get user input.
+/* Blocking line read — waits for Enter in the shell's keyboard buffer,
+ * yielding the CPU so other tasks remain responsive.
  * Returns number of characters read (excluding null terminator). */
 static int shell_read_line(void *shell_extra, char *buf, int max)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
-    static int last_mx = -1, last_my = -1, last_btn = -1;
 
     /* Clear the result buffer and flag */
     s->ask_result[0] = '\0';
     s->ask_result_ready = 0;
 
     for (;;) {
-        /* ~1 ms of CPU spin */
-        volatile uint32_t n = 100000UL;
-        while (n--) __asm__ volatile("pause");
-
-        /* Pump mouse */
-        int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
-        if (mx != last_mx || my != last_my || btn != last_btn) {
-            last_mx = mx; last_my = my; last_btn = btn;
-            WM_MouseEvent(mx, my, btn);
-        }
-
-        /* Poll network */
-        net_stack_poll();
-
-        /* Process any pending keystrokes */
-        while (PS2Kbd_HasChar()) {
-            char c = PS2Kbd_GetChar();
-
+        char c;
+        if (shell_kb_dequeue(s, &c)) {
             /* Handle Enter - line complete */
             if (c == '\r' || c == '\n') {
                 s->ask_result[s->input_len] = '\0';
@@ -3250,6 +3227,7 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                 }
             }
         }
+        Task_Yield();
     }
 }
 
@@ -4462,7 +4440,7 @@ static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
         } \
     } \
     inst_draw_contents(s); inst_draw_history(s); inst_draw_input(s); } \
-static void shell_key_##N(char c) { inst_handle_key(&g_shells[N],c); }
+static void shell_key_##N(char c) { shell_kb_enqueue(&g_shells[N], c); }
 
 MAKE_SHIMS(0)
 MAKE_SHIMS(1)
@@ -4478,6 +4456,22 @@ static const DrawFn k_draw_shims[MAX_SHELLS] = {
 static const KeyFn k_key_shims[MAX_SHELLS] = {
     shell_key_0, shell_key_1, shell_key_2, shell_key_3
 };
+
+/* =========================================================================
+ * Shell task entry — each shell window runs as a native scheduled task
+ * ========================================================================= */
+
+static void shell_task_entry(void *arg)
+{
+    ShellInstance *s = (ShellInstance *)arg;
+    for (;;) {
+        char c;
+        if (shell_kb_dequeue(s, &c)) {
+            inst_handle_key(s, c);
+        }
+        Task_Yield();
+    }
+}
 
 /* =========================================================================
  * Internal: open one shell instance
@@ -4534,6 +4528,9 @@ static void open_shell(int stagger)
                                 title,
                                 k_draw_shims[idx],
                                 k_key_shims[idx]);
+    s->kb_head = 0;
+    s->kb_tail = 0;
+    Task_CreateNative("Shell", 0, shell_task_entry, s);
     WM_Redraw();
 }
 
@@ -4595,11 +4592,11 @@ void ShellWin_ListJobs(void *shell, void (*print)(void *, const char *))
 
 void ShellWin_HandleKey(char c)
 {
-    /* Legacy entry point — route to the focused window's key shim */
+    /* Legacy entry point — route to the focused window's key buffer */
     int focus = WM_GetFocus();
     for (int i = 0; i < g_n_shells; i++) {
         if (g_shells[i].wm_handle == focus) {
-            inst_handle_key(&g_shells[i], c);
+            shell_kb_enqueue(&g_shells[i], c);
             return;
         }
     }
