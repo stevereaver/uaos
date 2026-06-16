@@ -30,9 +30,9 @@ extern uint8_t *g_ram;
  * Globals
  * ------------------------------------------------------------------------- */
 
-static UaosTask g_tasks[MAX_TASKS];
-static uint8_t  g_task_stacks[MAX_TASKS][TASK_STACK_SIZE];
-static int      g_task_count = 0;
+UaosTask g_tasks[MAX_TASKS];
+uint8_t  g_task_stacks[MAX_TASKS][TASK_STACK_SIZE];
+int      g_task_count = 0;
 static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
 UaosTask *Task_SwitchPrev = NULL;
@@ -40,6 +40,10 @@ UaosTask *Task_SwitchPrev = NULL;
 /* Ready queues: one doubly-linked list per priority level */
 static UaosTask g_ready_heads[256];  /* index 0 = pri -128 */
 static int      g_ready_mask = 0;    /* bit i set if ready queue at pri i-128 is non-empty */
+
+/* Wait queue — tasks blocked on Wait() */
+static UaosTask g_wait_head;
+static int      g_wait_count = 0;
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -90,7 +94,7 @@ static inline int pri_to_idx(int8_t pri)
  * Ready queue management
  * ------------------------------------------------------------------------- */
 
-static void ready_enqueue(UaosTask *task)
+void ready_enqueue(UaosTask *task)
 {
     int idx = pri_to_idx(task->ln_Pri);
     list_append(&g_ready_heads[idx], task);
@@ -109,6 +113,23 @@ static UaosTask *ready_dequeue_highest(void)
         }
     }
     return NULL;
+}
+
+/* -------------------------------------------------------------------------
+ * Wait queue management
+ * ------------------------------------------------------------------------- */
+
+static void wait_enqueue(UaosTask *task)
+{
+    list_append(&g_wait_head, task);
+    g_wait_count++;
+    task->tc_State = TASK_WAITING;
+}
+
+void wait_remove(UaosTask *task)
+{
+    list_remove(task);
+    if (g_wait_count > 0) g_wait_count--;
 }
 
 /* -------------------------------------------------------------------------
@@ -206,32 +227,33 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
  * Scheduling
  * ------------------------------------------------------------------------- */
 
-void Task_ScheduleFromIRQ(void)
+static void do_schedule(int from_irq)
 {
     if (!g_current) return;
 
-    /* Honour Forbid / Disable nesting */
-    if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0)
-        return;
+    if (from_irq) {
+        /* Honour Forbid / Disable nesting — timer ISR only */
+        if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0)
+            return;
+    }
 
     UaosTask *next = ready_dequeue_highest();
     if (!next) return;   /* nothing else to run */
 
     if (next == g_current) {
-        /* Only task running; put it back and continue */
-        ready_enqueue(next);
+        if (from_irq) ready_enqueue(next);
         return;
     }
 
     UaosTask *prev = g_current;
-    if (prev->tc_State != TASK_REMOVED) {
+    if (prev->tc_State == TASK_RUNNING) {
         prev->tc_State = TASK_READY;
         ready_enqueue(prev);
     }
 
     /* If the current task is an M68k guest, stop Musashi and save context */
     if (prev->type == TASK_TYPE_M68K) {
-        m68k_end_timeslice();   /* causes m68k_execute() to return after current insn */
+        m68k_end_timeslice();
         if (prev->m68k_context_buf) {
             m68k_get_context(prev->m68k_context_buf);
             prev->m68k_initial_cycles = m68ki_initial_cycles;
@@ -255,6 +277,16 @@ void Task_ScheduleFromIRQ(void)
     /* Tell isr_common to perform the switch */
     Task_SwitchPrev = prev;
     Task_SwitchNext = next;
+}
+
+void Task_ScheduleFromIRQ(void)
+{
+    do_schedule(1);
+}
+
+void Task_ScheduleFromSyscall(void)
+{
+    do_schedule(0);
 }
 
 void Task_Yield(void)
@@ -291,6 +323,8 @@ void TaskScheduler_Init(void)
     for (int i = 0; i < 256; i++)
         list_init(&g_ready_heads[i]);
     g_ready_mask = 0;
+    list_init(&g_wait_head);
+    g_wait_count = 0;
 
     kprint("[TASK] Scheduler initialised\n");
 }
@@ -406,4 +440,84 @@ void Task_TestSpawn(void)
     Task_CreateNative("TestB", 0, test_task_b, NULL);
     Task_CreateNative("TestC", 0, test_task_c, NULL);
     kprint("[TASK] Test tasks spawned\n");
+}
+
+/* =========================================================================
+ * Signal / Wait / Critical sections
+ * ========================================================================= */
+
+void Signal(UaosTask *task, uint32_t sigmask)
+{
+    if (!task || !sigmask) return;
+
+    __asm__ volatile ("cli");
+    task->tc_SigRecvd |= sigmask;
+
+    if (task->tc_State == TASK_WAITING && (task->tc_SigRecvd & task->tc_SigWait) != 0) {
+        wait_remove(task);
+        ready_enqueue(task);
+    }
+    __asm__ volatile ("sti");
+}
+
+uint32_t Wait(uint32_t sigmask)
+{
+    uint32_t result;
+
+    __asm__ volatile ("cli");
+    g_current->tc_SigWait = sigmask;
+
+    while ((g_current->tc_SigRecvd & sigmask) == 0) {
+        g_current->tc_State = TASK_WAITING;
+        wait_enqueue(g_current);
+        __asm__ volatile ("int $0x80");
+    }
+
+    result = g_current->tc_SigRecvd & sigmask;
+    g_current->tc_SigRecvd &= ~sigmask;
+    g_current->tc_SigWait = 0;
+    __asm__ volatile ("sti");
+
+    return result;
+}
+
+uint32_t SetSignal(uint32_t newsignals, uint32_t sigmask)
+{
+    __asm__ volatile ("cli");
+    uint32_t old = g_current->tc_SigRecvd;
+    g_current->tc_SigRecvd = (old & ~sigmask) | (newsignals & sigmask);
+    __asm__ volatile ("sti");
+    return old;
+}
+
+void Forbid(void)
+{
+    if (g_current) g_current->tc_TDNestCnt++;
+}
+
+void Permit(void)
+{
+    if (!g_current) return;
+    if (--g_current->tc_TDNestCnt <= 0) {
+        g_current->tc_TDNestCnt = 0;
+        /* A task switch is deferred to the next timer tick */
+    }
+}
+
+void Disable(void)
+{
+    __asm__ volatile ("cli");
+    if (g_current) g_current->tc_IDNestCnt++;
+}
+
+void Enable(void)
+{
+    if (!g_current) {
+        __asm__ volatile ("sti");
+        return;
+    }
+    if (--g_current->tc_IDNestCnt <= 0) {
+        g_current->tc_IDNestCnt = 0;
+        __asm__ volatile ("sti");
+    }
 }

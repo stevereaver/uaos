@@ -158,6 +158,35 @@ void Task_StartFirst(void);
 extern UaosTask *Task_SwitchNext;
 extern UaosTask *Task_SwitchPrev;
 
+/* -------------------------------------------------------------------------
+ * Signal / Wait / Critical sections
+ * ------------------------------------------------------------------------- */
+
+uint32_t Wait(uint32_t sigmask);
+void     Signal(UaosTask *task, uint32_t sigmask);
+uint32_t SetSignal(uint32_t newsignals, uint32_t sigmask);
+void     Forbid(void);
+void     Permit(void);
+void     Disable(void);
+void     Enable(void);
+
+/* Syscall entry — called from vector 0x80 ISR for voluntary task switch */
+void Task_ScheduleFromSyscall(void);
+
+/* -------------------------------------------------------------------------
+ * Internal scheduler helpers (used by exec_signal.c / exec_ipc.c)
+ * ------------------------------------------------------------------------- */
+
+void ready_enqueue(UaosTask *task);
+void wait_remove(UaosTask *task);
+
+extern UaosTask g_tasks[];
+extern int      g_task_count;
+
+/* M68k task lookup */
+UaosTask *Task_FindByM68kAddr(uint32_t guest_addr);
+UaosTask *Task_FindByName(const char *name);
+
 /* Test helper: spawn UART-printing tasks */
 void Task_TestSpawn(void);
 

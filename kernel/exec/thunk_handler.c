@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include "rom_modules.h"
+#include "task.h"
 
 /* M68kCPUState is defined in rom_modules.h (shared with ROM stubs) */
 
@@ -89,13 +90,20 @@ static void stub_CloseLibrary(M68kCPUState *cpu)
 static void stub_FindTask(M68kCPUState *cpu)
 {
     uint32_t name_ptr = cpu->a[1];
+    UaosTask *t = NULL;
     if (name_ptr != 0) {
         const char *name = (const char *)UAOS_AMIGA_TO_HOST(name_ptr);
-        fprintf(stderr, "[THUNK] FindTask(\"%s\")\n", name);
+        t = Task_FindByName(name);
     } else {
-        fprintf(stderr, "[THUNK] FindTask(NULL) — current task\n");
+        t = Task_Current();
     }
-    cpu->d[0] = 0;
+    if (t && t->type == TASK_TYPE_M68K) {
+        cpu->d[0] = t->m68k_task_struct;
+    } else if (t) {
+        cpu->d[0] = (uint32_t)(uintptr_t)t;
+    } else {
+        cpu->d[0] = 0;
+    }
 }
 
 static void stub_AddTask(M68kCPUState *cpu)
@@ -112,14 +120,17 @@ static void stub_RemTask(M68kCPUState *cpu)
 
 static void stub_Wait(M68kCPUState *cpu)
 {
-    fprintf(stderr, "[THUNK] Wait(sigmask=0x%08X)\n", cpu->d[0]);
-    cpu->d[0] = 0;
+    uint32_t sigmask = cpu->d[0];
+    cpu->d[0] = Wait(sigmask);
 }
 
 static void stub_Signal(M68kCPUState *cpu)
 {
-    fprintf(stderr, "[THUNK] Signal(task=0x%08X, signals=0x%08X)\n",
-            cpu->a[1], cpu->d[0]);
+    uint32_t task_addr = cpu->a[1];
+    uint32_t sigmask   = cpu->d[0];
+    UaosTask *t = Task_FindByM68kAddr(task_addr);
+    if (!t) t = Task_Current();
+    Signal(t, sigmask);
 }
 
 static void stub_SetFunction(M68kCPUState *cpu)

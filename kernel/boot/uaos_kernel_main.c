@@ -237,6 +237,35 @@ void kprintdec(uint32_t v)
  * ----------------------------------------------------------------------- */
 volatile uint64_t g_pit_ticks = 0;
 
+/* -----------------------------------------------------------------------
+ * Phase 4 test tasks — Signal/Wait cross-task synchronization
+ * ----------------------------------------------------------------------- */
+static UaosTask *g_test_waiter = NULL;
+
+static void waiter_task(void *arg)
+{
+    (void)arg;
+    kprint("[TEST-W] Waiter started, waiting for signal\n");
+    uint32_t sigs = Wait(SIGF_BREAKF);
+    kprint("[TEST-W] Received signal="); kprinthex(sigs); kprint("\n");
+    Task_Exit();
+}
+
+static void signaler_task(void *arg)
+{
+    (void)arg;
+    kprint("[TEST-S] Signaler started\n");
+    /* Burn ~5 timer ticks (50ms) */
+    uint64_t start = g_pit_ticks;
+    while (g_pit_ticks - start < 5) {
+        __asm__ volatile ("pause");
+    }
+    kprint("[TEST-S] Signaling waiter\n");
+    Signal(g_test_waiter, SIGF_BREAKF);
+    kprint("[TEST-S] Done\n");
+    Task_Exit();
+}
+
 extern void Task_ScheduleFromIRQ(void);
 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
@@ -245,6 +274,17 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
     g_pit_ticks++;
     net_stack_tick();
     Task_ScheduleFromIRQ();
+}
+
+/* -----------------------------------------------------------------------
+ * Software interrupt handler (vector 0x80) — voluntary task switch from Wait()
+ * ----------------------------------------------------------------------- */
+extern void Task_ScheduleFromSyscall(void);
+
+static void SysCall_IRQHandler(uint64_t vector, uint64_t error_code)
+{
+    (void)vector; (void)error_code;
+    Task_ScheduleFromSyscall();
 }
 
 /* -----------------------------------------------------------------------
@@ -545,9 +585,19 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Init scheduler BEFORE creating any tasks */
     TaskScheduler_Init();
 
+    /* Register software interrupt handler for Wait()/voluntary switch */
+    IDT_SetHandler(0x80, SysCall_IRQHandler);
+
     /* Create system idle task (runs the former event loop) */
     extern void Task_IdleEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
+
+    /* Phase 4 test: Signal/Wait cross-task synchronization */
+    {
+        g_test_waiter = Task_CreateNative("Waiter", 0, waiter_task, NULL);
+        Task_CreateNative("Signaler", 0, signaler_task, NULL);
+        kprint("[BOOT] Phase 4 test tasks spawned\n");
+    }
 
     kprint("[BOOT] Opening shell window...\n");
     ShellWin_Init();
