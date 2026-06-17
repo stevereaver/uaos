@@ -135,6 +135,61 @@ void kprint(const char *s);
 void kprinthex(uint64_t v);
 void kprintdec(uint32_t v);
 
+/* -----------------------------------------------------------------------
+ * Phase 5 diagnostic test: reproduce ntpd hang with serial tracing
+ * ----------------------------------------------------------------------- */
+#include "../net/stack.h"
+#include "../net/dns.h"
+#include "../net/ntp.h"
+
+extern volatile uint64_t g_pit_ticks;
+
+static void ntp_test_poll(void *arg, uint32_t ms)
+{
+    (void)arg;
+    /* PIT runs at 100 Hz → 1 tick = 10 ms.  Convert ms → ticks. */
+    uint64_t ticks = ms / 10;
+    if (ticks == 0) ticks = 1;
+    uint64_t start = g_pit_ticks;
+    while (g_pit_ticks - start < ticks) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void ntp_test_task(void *arg)
+{
+    (void)arg;
+    kprint("[NTP-TEST] Waiting 3s for network...\n");
+    uint64_t t0 = g_pit_ticks;
+    while (g_pit_ticks - t0 < 300) {
+        __asm__ volatile ("pause");
+    }
+
+    if (!net_stack_is_up()) {
+        kprint("[NTP-TEST] Network not up\n");
+        Task_Exit();
+    }
+
+    kprint("[NTP-TEST] Resolving pool.ntp.org...\n");
+    ipv4_t srv_ip = 0;
+    int ok = dns_resolve("pool.ntp.org", &srv_ip, 5000, ntp_test_poll, NULL);
+    if (!ok) {
+        kprint("[NTP-TEST] DNS resolve FAILED\n");
+        Task_Exit();
+    }
+    kprint("[NTP-TEST] DNS OK ip="); kprinthex(srv_ip); kprint("\n");
+
+    kprint("[NTP-TEST] Starting ntp_query...\n");
+    uint32_t unix_utc = 0;
+    ok = ntp_query(srv_ip, &unix_utc, 5000, ntp_test_poll, NULL);
+    if (ok) {
+        kprint("[NTP-TEST] ntp_query SUCCESS unix="); kprinthex(unix_utc); kprint("\n");
+    } else {
+        kprint("[NTP-TEST] ntp_query TIMEOUT\n");
+    }
+    Task_Exit();
+}
+
 static void APIC_Init(void)
 {
     /* Read APIC base from MSR 0x1B.  Bits 35:12 are the physical base. */
@@ -237,35 +292,6 @@ void kprintdec(uint32_t v)
  * ----------------------------------------------------------------------- */
 volatile uint64_t g_pit_ticks = 0;
 
-/* -----------------------------------------------------------------------
- * Phase 4 test tasks — Signal/Wait cross-task synchronization
- * ----------------------------------------------------------------------- */
-static UaosTask *g_test_waiter = NULL;
-
-static void waiter_task(void *arg)
-{
-    (void)arg;
-    kprint("[TEST-W] Waiter started, waiting for signal\n");
-    uint32_t sigs = Wait(SIGF_BREAKF);
-    kprint("[TEST-W] Received signal="); kprinthex(sigs); kprint("\n");
-    Task_Exit();
-}
-
-static void signaler_task(void *arg)
-{
-    (void)arg;
-    kprint("[TEST-S] Signaler started\n");
-    /* Burn ~5 timer ticks (50ms) */
-    uint64_t start = g_pit_ticks;
-    while (g_pit_ticks - start < 5) {
-        __asm__ volatile ("pause");
-    }
-    kprint("[TEST-S] Signaling waiter\n");
-    Signal(g_test_waiter, SIGF_BREAKF);
-    kprint("[TEST-S] Done\n");
-    Task_Exit();
-}
-
 extern void Task_ScheduleFromIRQ(void);
 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
@@ -291,6 +317,9 @@ static void SysCall_IRQHandler(uint64_t vector, uint64_t error_code)
  * UAOS Banner
  * ----------------------------------------------------------------------- */
 
+/* -----------------------------------------------------------------------
+ * UAOS Banner
+ * ----------------------------------------------------------------------- */
 static void print_banner(void)
 {
     kprint("\n");
@@ -592,18 +621,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     extern void Task_IdleEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
 
-    /* Phase 4 test: Signal/Wait cross-task synchronization */
-    {
-        g_test_waiter = Task_CreateNative("Waiter", 0, waiter_task, NULL);
-        Task_CreateNative("Signaler", 0, signaler_task, NULL);
-        kprint("[BOOT] Phase 4 test tasks spawned\n");
-    }
-
     kprint("[BOOT] Opening shell window...\n");
     ShellWin_Init();
 
     kprint("[BOOT] Running Startup-Sequence...\n");
     ShellWin_RunStartupSequence();
+
+    /* Phase 5 diagnostic: background task to reproduce ntpd hang */
+    Task_CreateNative("NtpTest", -128, ntp_test_task, NULL);
 
     /* Start the first task with interrupts off */
     __asm__ volatile ("cli");

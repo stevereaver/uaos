@@ -139,7 +139,9 @@ void wait_remove(UaosTask *task)
 UaosTask *Task_CreateNative(const char *name, int8_t pri,
                             void (*entry)(void *), void *arg)
 {
-    if (g_task_count >= MAX_TASKS) return NULL;
+    Forbid();
+
+    if (g_task_count >= MAX_TASKS) { Permit(); return NULL; }
 
     UaosTask *t = &g_tasks[g_task_count];
     uint8_t *stack = g_task_stacks[g_task_count];
@@ -220,6 +222,7 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     t->native_rsp = (uint64_t)sp;  /* points to R15 slot */
 
     ready_enqueue(t);
+    Permit();
     return t;
 }
 
@@ -237,18 +240,20 @@ static void do_schedule(int from_irq)
             return;
     }
 
-    UaosTask *next = ready_dequeue_highest();
-    if (!next) return;   /* nothing else to run */
-
-    if (next == g_current) {
-        if (from_irq) ready_enqueue(next);
-        return;
-    }
-
     UaosTask *prev = g_current;
     if (prev->tc_State == TASK_RUNNING) {
         prev->tc_State = TASK_READY;
         ready_enqueue(prev);
+    }
+
+    UaosTask *next = ready_dequeue_highest();
+    if (!next) return;   /* nothing else to run */
+
+    if (next == prev) {
+        /* We were the only runnable task; keep running */
+        g_current = prev;
+        prev->tc_State = TASK_RUNNING;
+        return;
     }
 
     /* If the current task is an M68k guest, stop Musashi and save context */
@@ -277,6 +282,7 @@ static void do_schedule(int from_irq)
     /* Tell isr_common to perform the switch */
     Task_SwitchPrev = prev;
     Task_SwitchNext = next;
+
 }
 
 void Task_ScheduleFromIRQ(void)
@@ -363,6 +369,9 @@ void Task_IdleEntry(void *arg)
     for (;;) {
         __asm__ volatile ("pause" ::: "memory");
 
+        /* --- Protected section: WM + input + network + jobs --- */
+        Forbid();
+
         /* Mouse -> WM */
         if (g_fb.valid) {
             int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
@@ -385,6 +394,9 @@ void Task_IdleEntry(void *arg)
         /* Background jobs */
         if (!PS2Kbd_HasChar())
             ShellWin_PollJobs();
+
+        Permit();
+        /* --- End protected section --- */
 
         /* Heartbeat */
         loop_count++;
@@ -520,4 +532,22 @@ void Enable(void)
         g_current->tc_IDNestCnt = 0;
         __asm__ volatile ("sti");
     }
+}
+
+/* =========================================================================
+ * Scheduler state query (for status bar etc.)
+ * ========================================================================= */
+
+void Task_GetCounts(int *out_total, int *out_running, int *out_waiting)
+{
+    int total = 0, running = 0, waiting = 0;
+    for (int i = 0; i < g_task_count; i++) {
+        if (g_tasks[i].tc_State == TASK_REMOVED) continue;
+        total++;
+        if (g_tasks[i].tc_State == TASK_RUNNING) running++;
+        else if (g_tasks[i].tc_State == TASK_WAITING) waiting++;
+    }
+    if (out_total)   *out_total   = total;
+    if (out_running) *out_running = running;
+    if (out_waiting) *out_waiting = waiting;
 }
