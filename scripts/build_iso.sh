@@ -674,6 +674,13 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_getenv.o" \
     "${BUILD_DIR}/obj/cmd_unset.o" \
     "${BUILD_DIR}/obj/cmd_jobs.o" \
+    "${BUILD_DIR}/obj/cmd_install.o" \
+    "${BUILD_DIR}/obj/cmd_diskchange.o" \
+    "${BUILD_DIR}/obj/cmd_addbuffers.o" \
+    "${BUILD_DIR}/obj/cmd_requestchoice.o" \
+    "${BUILD_DIR}/obj/cmd_requestfile.o" \
+    "${BUILD_DIR}/obj/cmd_changetaskpri.o" \
+    "${BUILD_DIR}/obj/cmd_status.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
