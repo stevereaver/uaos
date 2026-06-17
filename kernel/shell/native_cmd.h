@@ -115,6 +115,14 @@ typedef struct NativeCmdCtx {
      * Returns 1 if found, 0 if not found. */
     int       (*get_env)(void *shell_extra, const char *name, char *buf, int max);
 
+    /* For requestchoice/requestfile: write a shell variable by name.
+     * Creates the variable if it does not exist, updates it if it does. */
+    void      (*set_env)(void *shell_extra, const char *name, const char *value);
+
+    /* For changetaskpri: change the priority of a named task.
+     * Looks up the task by ln_Name and sets ln_Pri.  Returns 1 on success. */
+    int       (*change_task_pri)(void *shell_extra, const char *name, int8_t pri);
+
     /* For quit: signal the script runner to stop at the next boundary.
      * Optional rc is stored as the script return code. */
     void      (*quit_script)(void *shell_extra, int rc);
@@ -211,7 +219,14 @@ void Cmd_Jobs     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Filenote (NativeCmdCtx *ctx, const char *args);
 void Cmd_Relabel  (NativeCmdCtx *ctx, const char *args);
 void Cmd_Avail    (NativeCmdCtx *ctx, const char *args);
-void Cmd_GetEnv   (NativeCmdCtx *ctx, const char *args);
-void Cmd_UnSet    (NativeCmdCtx *ctx, const char *args);
+void Cmd_GetEnv          (NativeCmdCtx *ctx, const char *args);
+void Cmd_UnSet           (NativeCmdCtx *ctx, const char *args);
+void Cmd_Install         (NativeCmdCtx *ctx, const char *args);
+void Cmd_DiskChange      (NativeCmdCtx *ctx, const char *args);
+void Cmd_AddBuffers      (NativeCmdCtx *ctx, const char *args);
+void Cmd_RequestChoice   (NativeCmdCtx *ctx, const char *args);
+void Cmd_RequestFile     (NativeCmdCtx *ctx, const char *args);
+void Cmd_ChangeTaskPri   (NativeCmdCtx *ctx, const char *args);
+void Cmd_Status          (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

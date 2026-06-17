@@ -403,7 +403,14 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_avail.c" \
     "${REPO_ROOT}/kernel/shell/cmd_getenv.c" \
     "${REPO_ROOT}/kernel/shell/cmd_unset.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_jobs.c"
+    "${REPO_ROOT}/kernel/shell/cmd_jobs.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_install.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_diskchange.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_addbuffers.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_requestchoice.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_requestfile.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_changetaskpri.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_status.c"
 do
     base="$(basename "${src}" .c)"
     if [ "${src##*/}" = "ntp.c" ]; then
@@ -706,7 +713,8 @@ for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
            run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps netinfo \
            list search sort join wait prompt stack why failat quit endcli filenote relabel \
-           avail getenv unset jobs; do
+           avail getenv unset jobs \
+           install diskchange addbuffers requestchoice requestfile changetaskpri status; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

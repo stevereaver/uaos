@@ -82,9 +82,16 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("filenote",   Cmd_Filenote ),
     CMD ("relabel",    Cmd_Relabel  ),
     CMD ("avail",      Cmd_Avail    ),
-    CMD ("getenv",     Cmd_GetEnv   ),
-    CMD ("unset",      Cmd_UnSet    ),
-    CMD ("jobs",       Cmd_Jobs     ),
+    CMD ("getenv",          Cmd_GetEnv        ),
+    CMD ("unset",           Cmd_UnSet         ),
+    CMD ("jobs",            Cmd_Jobs          ),
+    CMDT("install",         Cmd_Install,       "DEVICE/A,NOBOOT/S" ),
+    CMD ("diskchange",      Cmd_DiskChange    ),
+    CMD ("addbuffers",      Cmd_AddBuffers    ),
+    CMDT("requestchoice",   Cmd_RequestChoice, "TITLE/A,BODY/A,BUTTON/M" ),
+    CMDT("requestfile",     Cmd_RequestFile,   "TITLE/K,DRAWER/K,FILE/K,PATTERN/K,PUBSCREEN/K" ),
+    CMDT("changetaskpri",   Cmd_ChangeTaskPri, "PRI/A/N,TASK/K" ),
+    CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
     { NULL, NULL, NULL }
 };
 

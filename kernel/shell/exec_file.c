@@ -45,6 +45,8 @@ static NativeCmdCtx exec_make_ctx(void)
     ctx.set_ask_mode   = NULL;
     ctx.visible_rows   = 0;
     ctx.enum_tasks     = NULL;
+    ctx.set_env        = NULL;
+    ctx.change_task_pri = NULL;
     return ctx;
 }
 

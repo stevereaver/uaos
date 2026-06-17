@@ -3364,6 +3364,34 @@ static int shell_get_env(void *shell_extra, const char *name, char *buf, int max
     return 0;
 }
 
+/* Set a shell environment variable by name (requestchoice/requestfile) */
+static void shell_set_env(void *shell_extra, const char *name, const char *value)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    if (!name || !value) return;
+    for (int i = 0; i < s->env_count; i++) {
+        if (seq_ci(s->env_names[i], name)) {
+            scopy(s->env_values[i], value, MAX_ENV_VAL);
+            return;
+        }
+    }
+    if (s->env_count < MAX_ENV_VARS) {
+        scopy(s->env_names[s->env_count], name, MAX_ENV_NAME);
+        scopy(s->env_values[s->env_count], value, MAX_ENV_VAL);
+        s->env_count++;
+    }
+}
+
+/* Change the priority of a named task (changetaskpri) */
+static int shell_change_task_pri(void *shell_extra, const char *name, int8_t pri)
+{
+    (void)shell_extra;
+    UaosTask *t = Task_FindByName(name);
+    if (!t) return 0;
+    t->ln_Pri = pri;
+    return 1;
+}
+
 /* Signal script runner to quit (QUIT command) */
 static void shell_quit_script(void *shell_extra, int rc)
 {
@@ -3410,6 +3438,8 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.get_failat     = shell_get_failat;
     ctx.set_failat     = shell_set_failat;
     ctx.get_env        = shell_get_env;
+    ctx.set_env        = shell_set_env;
+    ctx.change_task_pri = shell_change_task_pri;
     ctx.quit_script    = shell_quit_script;
     ctx.pipe_file      = g_pipe_in_active ? g_pipe_in_file : NULL;
     return ctx;
@@ -3789,14 +3819,165 @@ static void run_cmd(ShellInstance *s, const char *line)
     inst_print(s, msg);
 }
 
+/* -------------------------------------------------------------------------
+ * $[expr] arithmetic evaluator
+ *
+ * Supports: integer literals, $VarName references, unary minus, binary
+ *           + - * / % operators with standard precedence, and parentheses.
+ * Division/modulo by zero yields 0.
+ * Variable lookup is done from the shell's local env store.
+ * ------------------------------------------------------------------------- */
+
+typedef struct { const char *p; ShellInstance *s; } ArithCtx;
+
+static void arith_skip_sp(ArithCtx *a) { while (*a->p == ' ') a->p++; }
+
+/* Resolve a $VarName or a bare name used as a variable.  Returns its integer
+ * value, or 0 if not found / not numeric. */
+static int arith_lookup_var(ShellInstance *s, const char *name)
+{
+    for (int i = 0; i < s->env_count; i++) {
+        if (seq_ci(s->env_names[i], name)) {
+            const char *v = s->env_values[i];
+            int neg = 0, n = 0;
+            if (*v == '-') { neg = 1; v++; }
+            while (*v >= '0' && *v <= '9') { n = n * 10 + (*v - '0'); v++; }
+            return neg ? -n : n;
+        }
+    }
+    return 0;
+}
+
+static int arith_expr(ArithCtx *a);  /* forward */
+
+/* Parse a primary: number, $var, (expr), or bare identifier */
+static int arith_primary(ArithCtx *a)
+{
+    arith_skip_sp(a);
+    /* Unary minus */
+    if (*a->p == '-') { a->p++; return -arith_primary(a); }
+    /* Parenthesised expression */
+    if (*a->p == '(') {
+        a->p++;
+        int v = arith_expr(a);
+        arith_skip_sp(a);
+        if (*a->p == ')') a->p++;
+        return v;
+    }
+    /* Variable reference: $NAME */
+    if (*a->p == '$') {
+        a->p++;
+        char vname[MAX_ENV_NAME]; int vi = 0;
+        while (*a->p && (*a->p == '_' ||
+               (*a->p >= 'A' && *a->p <= 'Z') ||
+               (*a->p >= 'a' && *a->p <= 'z') ||
+               (*a->p >= '0' && *a->p <= '9')) && vi < MAX_ENV_NAME - 1)
+            vname[vi++] = *a->p++;
+        vname[vi] = '\0';
+        return arith_lookup_var(a->s, vname);
+    }
+    /* Decimal integer literal */
+    if (*a->p >= '0' && *a->p <= '9') {
+        int v = 0;
+        while (*a->p >= '0' && *a->p <= '9') { v = v * 10 + (*a->p - '0'); a->p++; }
+        return v;
+    }
+    /* Bare identifier (variable name without $) */
+    if ((*a->p >= 'A' && *a->p <= 'Z') || (*a->p >= 'a' && *a->p <= 'z') || *a->p == '_') {
+        char vname[MAX_ENV_NAME]; int vi = 0;
+        while (*a->p && (*a->p == '_' ||
+               (*a->p >= 'A' && *a->p <= 'Z') ||
+               (*a->p >= 'a' && *a->p <= 'z') ||
+               (*a->p >= '0' && *a->p <= '9')) && vi < MAX_ENV_NAME - 1)
+            vname[vi++] = *a->p++;
+        vname[vi] = '\0';
+        return arith_lookup_var(a->s, vname);
+    }
+    return 0;
+}
+
+/* Multiplicative: * / % */
+static int arith_mul(ArithCtx *a)
+{
+    int v = arith_primary(a);
+    for (;;) {
+        arith_skip_sp(a);
+        char op = *a->p;
+        if (op != '*' && op != '/' && op != '%') break;
+        a->p++;
+        int r = arith_primary(a);
+        if (op == '*') v *= r;
+        else if (op == '/') v = r ? v / r : 0;
+        else                v = r ? v % r : 0;
+    }
+    return v;
+}
+
+/* Additive: + - */
+static int arith_expr(ArithCtx *a)
+{
+    int v = arith_mul(a);
+    for (;;) {
+        arith_skip_sp(a);
+        char op = *a->p;
+        if (op != '+' && op != '-') break;
+        a->p++;
+        int r = arith_mul(a);
+        v = (op == '+') ? v + r : v - r;
+    }
+    return v;
+}
+
+/* Evaluate a NUL-terminated expression string.  Returns result as int. */
+static int arith_eval(ShellInstance *s, const char *expr)
+{
+    ArithCtx a;
+    a.p = expr;
+    a.s = s;
+    return arith_expr(&a);
+}
+
+/* Write a signed decimal integer into buf[max].  Returns bytes written. */
+static int arith_itoa(int v, char *buf, int max)
+{
+    if (max < 2) return 0;
+    char tmp[16]; int ti = 0, di = 0;
+    int neg = (v < 0);
+    unsigned int uv = neg ? (unsigned int)(-(v + 1)) + 1u : (unsigned int)v;
+    if (uv == 0) { tmp[ti++] = '0'; }
+    else { while (uv) { tmp[ti++] = '0' + (int)(uv % 10u); uv /= 10u; } }
+    if (neg && di < max - 1) buf[di++] = '-';
+    while (ti-- > 0 && di < max - 1) buf[di++] = tmp[ti];
+    buf[di] = '\0';
+    return di;
+}
+
 /* Expand $VarName references in src into dst[max].  Reads local env store.
- * Also reads ENV:<name> file as fallback for vars not in local store. */
+ * Also reads ENV:<name> file as fallback for vars not in local store.
+ * Supports $[<expr>] arithmetic expansion. */
 static void expand_vars(ShellInstance *s, const char *src, char *dst, int max)
 {
     int di = 0;
     while (*src && di < max - 1) {
         if (*src == '$') {
             src++;
+
+            /* $[expr] — arithmetic expansion */
+            if (*src == '[') {
+                src++;
+                /* Collect everything up to matching ']' */
+                char expr[128]; int ei = 0;
+                while (*src && *src != ']' && ei < 127) expr[ei++] = *src++;
+                expr[ei] = '\0';
+                if (*src == ']') src++;
+                int result = arith_eval(s, expr);
+                char numstr[20];
+                arith_itoa(result, numstr, sizeof(numstr));
+                const char *np = numstr;
+                while (*np && di < max - 1) dst[di++] = *np++;
+                continue;
+            }
+
             char vname[MAX_ENV_NAME];
             int vi = 0;
             while (*src && (*src == '_' ||
