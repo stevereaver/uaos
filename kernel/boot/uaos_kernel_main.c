@@ -293,12 +293,14 @@ void kprintdec(uint32_t v)
 volatile uint64_t g_pit_ticks = 0;
 
 extern void Task_ScheduleFromIRQ(void);
+extern void timer_ProcessTicks(void);
 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
     (void)vector; (void)error_code;
     g_pit_ticks++;
     net_stack_tick();
+    timer_ProcessTicks();
     Task_ScheduleFromIRQ();
 }
 
