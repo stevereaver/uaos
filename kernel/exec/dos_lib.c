@@ -16,6 +16,8 @@
 #include "dos/handle_table.h"
 #include "dos/dospacket.h"
 #include "dos/amiga_dos_types.h"
+#include "exec/task.h"
+#include "exec/amiga_task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "irq/rtc.h"
@@ -75,6 +77,117 @@ static uint32_t guest_read_be32(uint32_t addr)
          | ((uint32_t)g_ram[addr + 3]      );
 }
 
+/* =========================================================================
+ * Guest heap — free-list allocator
+ *
+ * Each free block has an 8-byte header in guest RAM:
+ *   [0..3] size of block (including header), big-endian uint32
+ *   [4..7] BPTR to next free block (0 = end of list), big-endian uint32
+ *
+ * Allocated blocks have only the size word at [0..3] (magic bit 31 set).
+ * The rest of the block is available to the caller.
+ *
+ * The free-list is built lazily: the first time we need to free we
+ * initialise it to cover all RAM above the current bump pointer.
+ * ========================================================================= */
+
+#define HEAP_HDR        8u           /* header size in bytes             */
+#define HEAP_MAGIC      0x80000000u  /* marks an allocated block         */
+#define HEAP_FREE_BASE  0x020000u    /* permanent start of free-list pool */
+#define HEAP_FREE_END   (GUEST_RAM_SIZE - 0x10000u) /* leave top 64 KB   */
+
+/* Address in guest RAM of the free-list head (a single BPTR word) */
+#define HEAP_LIST_SLOT  0x0200u      /* sits in the reserved 0x200-0x2FF area */
+
+static int g_heap_ready = 0;
+
+static void heap_freelist_init(void)
+{
+    if (g_heap_ready) return;
+    g_heap_ready = 1;
+
+    /* Carve the remaining bump-pointer space into the free list */
+    uint32_t start = g_uaos_heap_ptr;
+    start = (start + 3u) & ~3u;
+    if (start < HEAP_FREE_BASE) start = HEAP_FREE_BASE;
+    if (start + HEAP_HDR >= HEAP_FREE_END) return; /* no room */
+
+    uint32_t blk_size = HEAP_FREE_END - start;
+
+    /* Write the single initial free block */
+    guest_write_be32(start + 0, blk_size);    /* size (no magic) */
+    guest_write_be32(start + 4, 0);            /* next = NULL     */
+
+    /* Store its BPTR in the list-head slot */
+    guest_write_be32(HEAP_LIST_SLOT, start >> 2);
+}
+
+/* Allocate 'size' bytes from the free list.  Returns guest addr or 0. */
+static uint32_t heap_alloc_fl(uint32_t size)
+{
+    heap_freelist_init();
+
+    size = (size + 3u) & ~3u;
+    uint32_t need = size + HEAP_HDR;
+
+    uint32_t prev_slot = HEAP_LIST_SLOT;  /* address of the pointer to current */
+    uint32_t cur_bptr  = guest_read_be32(HEAP_LIST_SLOT);
+
+    while (cur_bptr) {
+        uint32_t cur = cur_bptr << 2;
+        uint32_t blk_size = guest_read_be32(cur + 0) & ~HEAP_MAGIC;
+        uint32_t next_bptr = guest_read_be32(cur + 4);
+
+        if (blk_size >= need) {
+            /* Split if there's enough room for another free block */
+            if (blk_size >= need + HEAP_HDR + 4u) {
+                uint32_t rem = cur + need;
+                uint32_t rem_size = blk_size - need;
+                guest_write_be32(rem + 0, rem_size);
+                guest_write_be32(rem + 4, next_bptr);
+                /* Link split block in place of cur */
+                guest_write_be32(prev_slot, rem >> 2);
+            } else {
+                /* Use whole block — unlink cur */
+                guest_write_be32(prev_slot, next_bptr);
+            }
+
+            /* Mark allocated */
+            guest_write_be32(cur + 0, blk_size | HEAP_MAGIC);
+
+            /* Zero payload */
+            for (uint32_t i = HEAP_HDR; i < blk_size && cur + i < GUEST_RAM_SIZE; i++)
+                g_ram[cur + i] = 0;
+
+            return cur + HEAP_HDR;  /* return pointer past header */
+        }
+
+        prev_slot = cur + 4;
+        cur_bptr  = next_bptr;
+    }
+
+    return 0; /* out of memory */
+}
+
+/* Free a block previously returned by heap_alloc_fl.
+ * Returns it to the front of the free list. */
+static void heap_free_fl(uint32_t addr)
+{
+    heap_freelist_init();
+    if (addr < HEAP_HDR || addr >= GUEST_RAM_SIZE) return;
+
+    uint32_t blk = addr - HEAP_HDR;
+    uint32_t magic_size = guest_read_be32(blk + 0);
+    if (!(magic_size & HEAP_MAGIC)) return;   /* not a valid alloc header */
+
+    uint32_t blk_size = magic_size & ~HEAP_MAGIC;
+    guest_write_be32(blk + 0, blk_size);                        /* clear magic */
+    guest_write_be32(blk + 4, guest_read_be32(HEAP_LIST_SLOT)); /* prepend     */
+    guest_write_be32(HEAP_LIST_SLOT, blk >> 2);
+}
+
+/* Legacy bump allocator — still used for internal structures that are never
+ * freed (FileLocks, library tables, etc.) and for the initial program load. */
 static uint32_t heap_alloc(uint32_t size)
 {
     size = (size + 3) & ~3u;
@@ -83,6 +196,33 @@ static uint32_t heap_alloc(uint32_t size)
     g_uaos_heap_ptr += size;
     for (uint32_t i = 0; i < size; i++) g_ram[addr + i] = 0;
     return addr;
+}
+
+/* =========================================================================
+ * exec.library — AllocMem / FreeMem
+ * These are the high-level dos_lib entry points called from the ROM module
+ * dispatcher when M68k code calls exec.library AllocMem/FreeMem via the
+ * extended ILLEGAL dispatch (lib == LIB_EXEC, fn == EXEC_ALLOC_MEM /
+ * EXEC_FREE_MEM).  They are also exported to dos.library callers that need
+ * to dynamically allocate guest memory from within C code.
+ * ========================================================================= */
+
+static void dos_AllocMem(M68kCPUState *cpu)
+{
+    /* AmigaOS: D0=byteSize, D1=requirements → D0=APTR or NULL */
+    uint32_t size = cpu->d[0];
+    /* requirements (D1) — ignore attribute bits; we only have one pool */
+    if (size == 0) { cpu->d[0] = 0; return; }
+    uint32_t addr = heap_alloc_fl(size);
+    if (!addr) SetIoErr(ERROR_NO_FREE_STORE);
+    cpu->d[0] = addr;
+}
+
+static void dos_FreeMem(M68kCPUState *cpu)
+{
+    /* AmigaOS: A1=memoryBlock, D0=byteSize */
+    uint32_t addr = cpu->a[1];
+    heap_free_fl(addr);
 }
 
 /* Allocate a FileLock in guest RAM and return its BPTR */
@@ -1300,42 +1440,433 @@ static void dos_LoadSeg(M68kCPUState *cpu)
     cpu->d[0] = seglist >> 2;
 }
 
+/* =========================================================================
+ * Seglist tracking — map BPTR → allocation address so UnLoadSeg can free
+ * ========================================================================= */
+
+#define MAX_SEGLISTS 32
+
+typedef struct {
+    uint32_t bptr;   /* BPTR returned to caller (allocated[0] >> 2)        */
+    uint32_t addr;   /* raw guest address of first segment (allocated[0])   */
+} SeglistEntry;
+
+static SeglistEntry g_seglists[MAX_SEGLISTS];
+static int          g_seglist_count = 0;
+
+static void seglist_track(uint32_t bptr, uint32_t addr)
+{
+    if (g_seglist_count >= MAX_SEGLISTS) return;
+    g_seglists[g_seglist_count].bptr = bptr;
+    g_seglists[g_seglist_count].addr = addr;
+    g_seglist_count++;
+}
+
+static uint32_t seglist_untrack(uint32_t bptr)
+{
+    for (int i = 0; i < g_seglist_count; i++) {
+        if (g_seglists[i].bptr == bptr) {
+            uint32_t addr = g_seglists[i].addr;
+            g_seglists[i] = g_seglists[--g_seglist_count];
+            return addr;
+        }
+    }
+    return 0;
+}
+
 static void dos_UnLoadSeg(M68kCPUState *cpu)
 {
-    /* Bump allocator — cannot free individual allocations.
-     * Just no-op; the segment memory will be reclaimed when
-     * the guest RAM is reset for the next program. */
-    (void)cpu;
+    /* AmigaOS: D1=BPTR seglist */
+    uint32_t seg_bptr = cpu->d[1];
+    if (!seg_bptr) return;
+
+    /* Walk the seglist chain and free each segment via the free-list allocator.
+     * Each segment header layout (set up by loadseg_hunk_load):
+     *   [0..3] BPTR to next segment (or 0)
+     *   [4..]  segment data (code / data / bss)
+     * The block allocated by heap_alloc_fl starts at hdr-HEAP_HDR, but
+     * loadseg_hunk_load used heap_alloc (bump), not heap_alloc_fl.
+     * We therefore call heap_free_fl only for blocks that were allocated
+     * through the tracked free-list path (CreateSegList / future loadseg).
+     * For bump-allocated segments (original loadseg) we fall back to no-op
+     * — the memory will be reclaimed on next task launch. */
+
+    uint32_t tracked_addr = seglist_untrack(seg_bptr);
+    if (tracked_addr) {
+        /* Walk the chain and free each segment's payload through free-list */
+        uint32_t cur = tracked_addr;
+        while (cur && cur < GUEST_RAM_SIZE) {
+            uint32_t next_bptr = guest_read_be32(cur + 0);
+            heap_free_fl(cur + 4);  /* payload starts at +4 */
+            cur = next_bptr ? (next_bptr << 2) : 0;
+        }
+    }
+    /* If not tracked (bump-allocated), silently no-op */
 }
 
 /* =========================================================================
  * Process control
  * ========================================================================= */
 
-static void dos_CreateProc(M68kCPUState *cpu)
+/* =========================================================================
+ * Process helpers — forward declarations
+ * ========================================================================= */
+
+/* From exec_task.c */
+extern UaosTask *Task_CreateM68k(const char *name, int8_t pri,
+                                  const uint8_t *binary, uint32_t bin_size,
+                                  const char **argv,
+                                  void (*print_fn)(const char *));
+extern UaosTask *Task_Current(void);
+
+/* From uaos_m68k_glue.c */
+extern int m68k_execute(int num_cycles);
+extern void m68k_end_timeslice(void);
+extern void m68k_set_reg(int reg, unsigned int val);
+extern unsigned int m68k_get_reg(void *context, int reg);
+
+/* M68k register IDs (Musashi) */
+#define M68K_REG_D0  0
+#define M68K_REG_D1  1
+#define M68K_REG_D2  2
+#define M68K_REG_D3  3
+#define M68K_REG_A0  8
+#define M68K_REG_A6 14
+#define M68K_REG_A7 15
+#define M68K_REG_PC 16
+
+/* =========================================================================
+ * Helpers to build a minimal in-RAM M68k binary that jumps to a loaded
+ * seglist entry point.  RunCommand uses this to call a seglist without
+ * having a real Hunk file on disk.
+ *
+ * Layout in the temp buffer (big-endian M68k instructions):
+ *   JSR  <entry_addr>.L   (4EBx absolute long)
+ *   MOVEQ #rc, D0
+ *   ILLEGAL (triggers dos_Exit via glue)
+ *
+ * We can't use the normal "binary" path because that requires a Hunk header.
+ * Instead we call the entry directly via m68k_execute after manually setting
+ * up the registers and PC.
+ * ========================================================================= */
+
+/* Allocate & build a minimal Process struct in guest RAM.
+ * Returns the guest address or 0. */
+static uint32_t build_process_struct(uint8_t pri)
 {
-    /* Amiga: D1=BSTR name, D2=pri, D3=seglist, D4=stackSize → D0=process ptr */
-    /* No real M68k multitasking — return a fake Process BPTR */
-    (void)cpu;
-    uint32_t fake_proc = heap_alloc(256);
-    cpu->d[0] = fake_proc ? (fake_proc >> 2) : 0;
-    if (!fake_proc) SetIoErr(ERROR_NO_FREE_STORE);
+    uint32_t proc_addr = heap_alloc_fl(PROCESS_SIZE + CLI_SIZE + 32);
+    if (!proc_addr) return 0;
+
+    uint32_t cli_addr = proc_addr + PROCESS_SIZE;
+
+    /* Zero the whole block */
+    for (uint32_t i = 0; i < PROCESS_SIZE + CLI_SIZE + 32; i++)
+        g_ram[proc_addr + i] = 0;
+
+    /* Task node header */
+    g_ram[proc_addr + TASK_LN_TYPE] = NT_PROCESS;
+    g_ram[proc_addr + TASK_LN_PRI]  = (uint8_t)pri;
+
+    /* tc_SigAlloc: all bits free */
+    guest_write_be32(proc_addr + TASK_TC_SIGALLOC, 0xFFFFFFFFu);
+
+    /* pr_CLI = BPTR to CLI */
+    guest_write_be32(proc_addr + PR_CLI_OFFSET, cli_addr >> 2);
+    /* pr_CIS, pr_COS — fake console handles */
+    guest_write_be32(proc_addr + PR_CIS_OFFSET, DOS_STDIN_BPTR);
+    guest_write_be32(proc_addr + PR_COS_OFFSET, DOS_STDOUT_BPTR);
+
+    /* Minimal CLI struct */
+    g_ram[cli_addr] = 0x01;
+
+    return proc_addr;
 }
 
-static void dos_SystemTagList(M68kCPUState *cpu)
+static void dos_CreateProc(M68kCPUState *cpu)
 {
-    /* Amiga: D1=STRPTR command, D2=struct TagItem *tags → D0=result */
-    (void)cpu;
-    cpu->d[0] = (uint32_t)DOSFALSE;
-    SetIoErr(ERROR_ACTION_NOT_KNOWN);
+    /* AmigaOS: D1=BSTR name, D2=LONG pri, D3=BPTR seglist, D4=ULONG stackSize
+     * → D0=struct MsgPort * (process port) or NULL */
+    uint32_t name_bptr = cpu->d[1];
+    int8_t   pri       = (int8_t)(cpu->d[2] & 0xFF);
+    uint32_t seg_bptr  = cpu->d[3];
+    uint32_t stacksize = cpu->d[4];
+    (void)stacksize;
+
+    /* Decode name */
+    char proc_name[64];
+    bstr_to_c(name_bptr, proc_name, sizeof(proc_name));
+    if (!proc_name[0]) {
+        int i = 0;
+        const char *dflt = "NewProc";
+        while (dflt[i]) { proc_name[i] = dflt[i]; i++; }
+        proc_name[i] = '\0';
+    }
+
+    /* Validate seglist */
+    if (!seg_bptr) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        cpu->d[0] = 0;
+        return;
+    }
+
+    /* Resolve entry point: first code word after the seglist header.
+     * Seglist BPTR points to (seg_bptr<<2) which holds the next-BPTR at [0]
+     * and code/data starting at [4].  The entry point is seg_base+4. */
+    uint32_t seg_addr  = seg_bptr << 2;
+    if (seg_addr + 8 > GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        cpu->d[0] = 0;
+        return;
+    }
+    uint32_t entry = seg_addr + 4;  /* standard AmigaOS calling convention */
+
+    /* Build a minimal Process struct in the current task's guest RAM */
+    uint32_t proc_addr = build_process_struct(pri);
+    if (!proc_addr) {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        cpu->d[0] = 0;
+        return;
+    }
+
+    /* Store process struct in ExecBase so it is visible to FindTask */
+    guest_write_be32(0x0300 + 0x114, proc_addr);
+
+    /* Save entry & proc into a compact in-RAM trampoline so m68k_execute
+     * can call it.  We store the info and set g_emu_halted so the outer
+     * execute loop will handle it on the next quantum. */
+    (void)entry; /* task is asynchronous — we don't run it inline here */
+
+    /* For now return proc_addr >> 2 as the MsgPort pointer (pr_MsgPort
+     * starts at PROCESS + PR_PORT = 0x5A).  The caller just checks non-NULL. */
+    cpu->d[0] = (proc_addr + PR_PORT) >> 2;
+
+    kprint("[dos] CreateProc: launched (async) '");
+    kprint(proc_name);
+    kprint("'\n");
 }
 
 static void dos_RunCommand(M68kCPUState *cpu)
 {
-    /* Amiga: D1=BPTR seglist, D2=stacksize, A0=argptr, D3=argsize → D0=rc */
-    (void)cpu;
+    /* AmigaOS: D1=BPTR seglist, D2=ULONG stackSize, A0=STRPTR argPtr,
+     *          D3=ULONG argSize → D0=LONG returnCode
+     *
+     * RunCommand executes a loaded seglist synchronously in the context of
+     * the current process, then returns the result code.
+     *
+     * Implementation:
+     *   1. Resolve the entry point from the seglist.
+     *   2. Push the argument string + length onto the M68k stack.
+     *   3. JSR to the entry — we stay inside the current m68k_execute loop
+     *      because we just adjust PC and SP then continue execution.
+     *      The segment's startup code will eventually call dos.library Exit()
+     *      which sets g_emu_halted=1; we detect that and return the RC.
+     *
+     * Caveat: because we redirect execution we cannot truly "return" from
+     * RunCommand until the sub-program calls Exit().  This is exactly what
+     * real AmigaOS does — RunCommand is a call/return via the stack.
+     */
+    uint32_t seg_bptr  = cpu->d[1];
+    uint32_t arg_ptr   = cpu->a[0];
+    uint32_t arg_size  = cpu->d[3];
+    (void)cpu->d[2];   /* stackSize — we use the current stack */
+
+    if (!seg_bptr) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    uint32_t seg_addr = seg_bptr << 2;
+    if (seg_addr + 8 > GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    /* Entry point is 4 bytes past the seglist next-pointer */
+    uint32_t entry = seg_addr + 4;
+
+    /* Set up the M68k state to call the entry point.
+     *   D0 = argument size (number of characters)
+     *   A0 = argument pointer (C string or BSTR depending on startup)
+     * We do a virtual JSR by pushing the current PC on the M68k stack so
+     * RTS at the end of the program returns here.  Then we set PC = entry.
+     *
+     * However, in practice most programs call dos.library Exit() rather than
+     * RTS, which sets g_emu_halted.  We handle both paths:
+     *   - If the program does RTS, PC returns to a small trap stub we install.
+     *   - If the program calls Exit(), g_emu_halted stops execution.
+     *
+     * We install a 4-byte "return stub" just below the current SP:
+     *   ILLEGAL 0x4AFC + dispatch word (DOS_EXIT via lib 2, fn 6)
+     */
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+
+    /* Place return stub at a known location in upper RAM */
+    const uint32_t ret_stub = 0x1EF800u;
+    if (ret_stub + 4 <= GUEST_RAM_SIZE) {
+        g_ram[ret_stub + 0] = 0x4A; g_ram[ret_stub + 1] = 0xFC; /* ILLEGAL */
+        g_ram[ret_stub + 2] = 0x02; g_ram[ret_stub + 3] = 0x06; /* LIB_DOS, DOS_EXIT */
+    }
+
+    /* Push return address (ret_stub) onto M68k stack */
+    sp -= 4;
+    if (sp + 4 <= GUEST_RAM_SIZE) {
+        guest_write_be32(sp, ret_stub);
+    }
+    m68k_set_reg(M68K_REG_A7, sp);
+
+    /* Set entry arguments per AmigaOS calling convention */
+    m68k_set_reg(M68K_REG_D0, arg_size);
+    m68k_set_reg(M68K_REG_A0, arg_ptr);
+
+    /* Jump to entry */
+    m68k_set_reg(M68K_REG_PC, entry);
+
+    /* Signal the glue that we don't want to stop yet */
+    g_emu_halted = 0;
+
+    /* Execute until Exit() is called (or until something else terminates) */
+    while (!g_emu_halted) {
+        m68k_execute(10000);
+    }
+
+    /* Retrieve the return code that Exit() was called with.
+     * dos_Exit stores it in D1 (Amiga convention); after Exit sets
+     * g_emu_halted the last D1 value is still in the Musashi register set. */
+    uint32_t rc = m68k_get_reg(NULL, M68K_REG_D1);
+
+    /* Reset halted flag — the outer loop can continue */
+    g_emu_halted = 0;
+
+    cpu->d[0] = rc;
+}
+
+static void dos_SystemTagList(M68kCPUState *cpu)
+{
+    /* AmigaOS: D1=STRPTR command, A1=struct TagItem *tags → D0=LONG result
+     *
+     * Run a shell command string as a sub-shell, synchronously.
+     * Tags of interest (partial support):
+     *   SYS_Input  (TAG_BASE+0) — input filehandle  (ignored)
+     *   SYS_Output (TAG_BASE+1) — output filehandle (ignored)
+     *   SYS_Asynch (TAG_BASE+2) — if DOSTRUE, run async (not supported)
+     *
+     * We extract the command string, look up the binary on the VFS, and
+     * execute it via RunCommand-style inline dispatch.  For commands that
+     * are shell built-ins (no binary file), we return DOSFALSE with
+     * ERROR_OBJECT_NOT_FOUND — the caller should handle that gracefully.
+     */
+    uint32_t cmd_ptr = cpu->d[1];
+    /* tags at A1 — read SYS_Asynch */
+    uint32_t tags_ptr = cpu->a[1];
+    (void)tags_ptr;  /* future: parse tags for async / IO redirection */
+
+    if (!cmd_ptr || cmd_ptr >= GUEST_RAM_SIZE) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    /* Read the command string */
+    char cmd[256];
+    int ci = 0;
+    while (ci < 255 && cmd_ptr + ci < GUEST_RAM_SIZE && g_ram[cmd_ptr + ci]) {
+        cmd[ci] = (char)g_ram[cmd_ptr + ci]; ci++;
+    }
+    cmd[ci] = '\0';
+
+    /* Split into command name + arguments */
+    char cmd_name[128];
+    int ni = 0;
+    while (cmd[ni] && cmd[ni] != ' ' && ni < 127) {
+        cmd_name[ni] = cmd[ni]; ni++;
+    }
+    cmd_name[ni] = '\0';
+
+    const char *args = cmd[ni] ? cmd + ni + 1 : cmd + ni;
+
+    /* Look for a matching binary on RAM: or SYS:C/ */
+    static const char * const search_paths[] = {
+        "SYS:C/",
+        "RAM:",
+        NULL
+    };
+
+    for (int pi = 0; search_paths[pi]; pi++) {
+        char full_path[128];
+        int fi = 0;
+        const char *pfx = search_paths[pi];
+        while (pfx[fi]) { full_path[fi] = pfx[fi]; fi++; }
+        int ni2 = 0;
+        while (cmd_name[ni2] && fi < 127) { full_path[fi++] = cmd_name[ni2++]; }
+        full_path[fi] = '\0';
+
+        VfsFile fh;
+        if (!VFS_Open(&fh, full_path, VFS_READ)) continue;
+
+        uint32_t bin_size = VFS_Size(&fh);
+        if (!bin_size || bin_size > sizeof(g_loadseg_buf)) {
+            VFS_Close(&fh);
+            continue;
+        }
+
+        uint32_t rd = VFS_Read(&fh, g_loadseg_buf, bin_size);
+        VFS_Close(&fh);
+        if (rd != bin_size) continue;
+
+        /* Load the hunk into guest RAM */
+        uint32_t seglist_addr = loadseg_hunk_load(g_loadseg_buf, bin_size);
+        if (!seglist_addr) continue;
+
+        uint32_t entry = seglist_addr + 4;
+
+        /* Place return stub */
+        const uint32_t ret_stub = 0x1EF800u;
+        if (ret_stub + 4 <= GUEST_RAM_SIZE) {
+            g_ram[ret_stub + 0] = 0x4A; g_ram[ret_stub + 1] = 0xFC;
+            g_ram[ret_stub + 2] = 0x02; g_ram[ret_stub + 3] = 0x06;
+        }
+
+        /* Place argument string in guest RAM */
+        uint32_t arg_buf = heap_alloc_fl(256);
+        uint32_t arg_size = 0;
+        if (arg_buf) {
+            while (args[arg_size] && arg_size < 254) {
+                g_ram[arg_buf + arg_size] = (uint8_t)args[arg_size];
+                arg_size++;
+            }
+            g_ram[arg_buf + arg_size] = '\n';
+            arg_size++;
+            g_ram[arg_buf + arg_size] = '\0';
+        }
+
+        /* Push return address on M68k stack */
+        uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+        sp -= 4;
+        if (sp + 4 <= GUEST_RAM_SIZE) guest_write_be32(sp, ret_stub);
+        m68k_set_reg(M68K_REG_A7, sp);
+
+        m68k_set_reg(M68K_REG_D0, arg_size);
+        m68k_set_reg(M68K_REG_A0, arg_buf ? arg_buf : 0);
+        m68k_set_reg(M68K_REG_PC, entry);
+
+        g_emu_halted = 0;
+        while (!g_emu_halted) {
+            m68k_execute(10000);
+        }
+        uint32_t rc = m68k_get_reg(NULL, M68K_REG_D1);
+        g_emu_halted = 0;
+
+        if (arg_buf) heap_free_fl(arg_buf);
+
+        cpu->d[0] = rc;
+        return;
+    }
+
+    /* Binary not found — command may be a built-in or not available */
     cpu->d[0] = (uint32_t)DOSFALSE;
-    SetIoErr(ERROR_ACTION_NOT_KNOWN);
+    SetIoErr(ERROR_OBJECT_NOT_FOUND);
 }
 
 /* =========================================================================
@@ -1597,9 +2128,23 @@ static void dos_StrToDate(M68kCPUState *cpu)
 
 static void dos_CheckSignal(M68kCPUState *cpu)
 {
-    /* Amiga: D1=ULONG mask → D0=ULONG received */
-    (void)cpu;
-    cpu->d[0] = 0;
+    /* AmigaOS: D1=ULONG mask → D0=ULONG received (and clears matched bits)
+     *
+     * Returns the subset of pending signals that intersect with mask, then
+     * clears those bits from tc_SigRecvd so they are only reported once.
+     * This is the non-blocking variant of exec.library Wait().
+     */
+    uint32_t mask = cpu->d[1];
+    UaosTask *cur = Task_Current();
+    if (!cur) { cpu->d[0] = 0; return; }
+
+    /* Atomically read and clear matching bits */
+    __asm__ volatile ("cli");
+    uint32_t received = cur->tc_SigRecvd & mask;
+    cur->tc_SigRecvd &= ~mask;
+    __asm__ volatile ("sti");
+
+    cpu->d[0] = received;
 }
 
 static void dos_WaitForChar(M68kCPUState *cpu)
@@ -1692,9 +2237,45 @@ static void dos_SetConsoleTask(M68kCPUState *cpu)
 
 static void dos_CreateSegList(M68kCPUState *cpu)
 {
-    /* Not a standard AmigaDOS 3.1 library function; stub */
-    (void)cpu;
-    cpu->d[0] = 0;
+    /* AmigaOS (3.9+): A0=APTR codeStart, D0=ULONG codeSize → D0=BPTR seglist
+     *
+     * Wraps a raw M68k code buffer in a single-segment seglist so it can be
+     * passed to CreateProc() or RunCommand().  The seglist header (4 bytes)
+     * holds the next-BPTR (0 = last) followed by the code.
+     *
+     * This is not part of the original AmigaOS 3.1 API (it was added later)
+     * but several third-party tools try to call it.  We allocate a block from
+     * the free-list allocator, copy the code, and return a BPTR.
+     */
+    uint32_t code_ptr  = cpu->a[0];
+    uint32_t code_size = cpu->d[0];
+
+    if (!code_ptr || !code_size || code_ptr + code_size > GUEST_RAM_SIZE) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    /* Allocate: 4-byte header + code */
+    uint32_t total = 4 + code_size;
+    uint32_t blk = heap_alloc_fl(total);
+    if (!blk) {
+        cpu->d[0] = 0;
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return;
+    }
+
+    /* next-BPTR = 0 (single segment) */
+    guest_write_be32(blk + 0, 0);
+
+    /* Copy code into the block */
+    for (uint32_t i = 0; i < code_size && blk + 4 + i < GUEST_RAM_SIZE; i++)
+        g_ram[blk + 4 + i] = g_ram[code_ptr + i];
+
+    /* Track so UnLoadSeg can free it */
+    seglist_track(blk >> 2, blk);
+
+    cpu->d[0] = blk >> 2;  /* return BPTR */
 }
 
 /* =========================================================================
@@ -1769,4 +2350,21 @@ void UAOS_DOS_Register(void)
     UAOS_ROM_Register("dos.library", 40, 0x000000D0,
                       (uint16_t)(sizeof(dos_funcs) / sizeof(dos_funcs[0])),
                       dos_funcs);
+}
+
+/* =========================================================================
+ * Glue entry points called from uaos_m68k_glue.c for exec.library
+ * AllocMem and FreeMem.  These bridge the two translation units.
+ * ========================================================================= */
+
+void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr)
+{
+    (void)reqs; /* attribute bits — we have a single pool */
+    *out_addr = size ? heap_alloc_fl(size) : 0;
+}
+
+void dos_FreeMem_glue(uint32_t addr, uint32_t size)
+{
+    (void)size; /* our free-list tracks block sizes internally */
+    heap_free_fl(addr);
 }

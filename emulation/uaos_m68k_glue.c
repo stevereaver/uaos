@@ -1062,14 +1062,27 @@ static void exec_OpenLibrary(void)
 
 static void exec_CloseLibrary(void) { /* no-op */ }
 
+/* AllocMem / FreeMem — delegate to the dos_lib free-list allocator.
+ * The functions are defined in dos_lib.c but we need them here via a thin
+ * wrapper that forwards the M68k register arguments. */
+extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
+extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
+
 static void exec_AllocMem(void)
 {
     uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
-    uint32_t addr = heap_alloc(size);
+    uint32_t reqs = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t addr = 0;
+    dos_AllocMem_glue(size, reqs, &addr);
     m68k_set_reg(M68K_REG_D0, addr);
 }
 
-static void exec_FreeMem(void) { /* bump allocator — no-op free */ }
+static void exec_FreeMem(void)
+{
+    uint32_t addr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    dos_FreeMem_glue(addr, size);
+}
 
 static void exec_FindTask(void)
 {
