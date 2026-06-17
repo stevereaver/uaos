@@ -30,6 +30,20 @@
 #define UTIL_DATE_MATCH     13
 
 /* =========================================================================
+ * TagItem structure (AmigaOS compatible)
+ * ========================================================================= */
+typedef struct TagItem {
+    uint32_t ti_Tag;
+    uint32_t ti_Data;
+} TagItem;
+
+#define TAG_DONE 0
+#define TAG_MORE 0x80000001
+#define TAG_IGNORE 0x80000002
+#define TAG_JUMP 0x80000003
+#define TAG_END 0x80000004
+
+/* =========================================================================
  * String Helper Functions
  * ========================================================================= */
 
@@ -47,123 +61,237 @@ static char to_upper(char c)
     return c;
 }
 
+/* Access to guest RAM for string operations
+ * Note: These utility functions operate on M68k guest memory
+ * The addresses in CPU registers are guest addresses that need
+ * to be accessed through g_ram */
+extern uint8_t *g_ram;
+#define GUEST_RAM_SIZE (4 * 1024 * 1024)  /* 4MB guest RAM */
+#define M68K_TO_HOST(addr) ((void *)(g_ram + (addr)))
+
 /* =========================================================================
- * Stub implementations
+ * utility.library function implementations
  * ========================================================================= */
 
-static void util_OpenLibrary(void)
+static void util_OpenLibrary(M68kCPUState *cpu)
 {
-    /* OpenLibrary - return library base */
-    fprintf(stderr, "[UTILITY] OpenLibrary called\n");
+    /* OpenLibrary - return library base (already registered at 0x50) */
+    cpu->d[0] = 0x00000050;
 }
 
-static void util_CloseLibrary(void)
+static void util_CloseLibrary(M68kCPUState *cpu)
 {
     /* CloseLibrary - no-op for ROM library */
-    fprintf(stderr, "[UTILITY] CloseLibrary called\n");
+    (void)cpu;
 }
 
-static void util_AllocItem(void)
+static void util_AllocItem(M68kCPUState *cpu)
 {
     /* AllocateItem - allocate memory for tagged item */
-    fprintf(stderr, "[UTILITY] AllocateItem called\n");
+    /* For now, return 0 (not implemented) */
+    cpu->d[0] = 0;
 }
 
-static void util_FreeItem(void)
+static void util_FreeItem(M68kCPUState *cpu)
 {
     /* FreeItem - free memory from AllocateItem */
-    fprintf(stderr, "[UTILITY] FreeItem called\n");
+    (void)cpu;
 }
 
-static void util_StrIcmp(void)
+static void util_StrIcmp(M68kCPUState *cpu)
 {
     /* Stricmp - case-insensitive string comparison
-     * D1 = string1, D2 = string2
-     * Returns: <0 if s1 < s2, 0 if equal, >0 if s1 > s2 */
-    fprintf(stderr, "[UTILITY] StrIcmp called\n");
-    /* TODO: Implement with M68k memory access */
-    /* Implementation would be:
-     * while (*s1 && *s2) {
-     *     char c1 = to_lower(*s1++);
-     *     char c2 = to_lower(*s2++);
-     *     if (c1 != c2) return c1 - c2;
-     * }
-     * return *s1 - *s2;
-     */
+     * A0 = string1, A1 = string2
+     * Returns: D0 = <0 if s1 < s2, 0 if equal, >0 if s1 > s2 */
+    const char *s1 = (const char *)M68K_TO_HOST(cpu->a[0]);
+    const char *s2 = (const char *)M68K_TO_HOST(cpu->a[1]);
+
+    while (*s1 && *s2) {
+        char c1 = to_lower(*s1++);
+        char c2 = to_lower(*s2++);
+        if (c1 != c2) {
+            cpu->d[0] = (int32_t)(c1 - c2);
+            return;
+        }
+    }
+    cpu->d[0] = (int32_t)(to_lower(*s1) - to_lower(*s2));
 }
 
-static void util_StrNicmp(void)
+static void util_StrNicmp(M68kCPUState *cpu)
 {
     /* Strnicmp - case-insensitive string comparison with length
-     * D1 = string1, D2 = string2, D3 = length
-     * Returns: <0 if s1 < s2, 0 if equal, >0 if s1 > s2 */
-    fprintf(stderr, "[UTILITY] StrNicmp called\n");
-    /* TODO: Implement with M68k memory access */
-    /* Implementation would be similar to StrIcmp but with length limit */
+     * A0 = string1, A1 = string2, D0 = length
+     * Returns: D0 = <0 if s1 < s2, 0 if equal, >0 if s1 > s2 */
+    const char *s1 = (const char *)M68K_TO_HOST(cpu->a[0]);
+    const char *s2 = (const char *)M68K_TO_HOST(cpu->a[1]);
+    uint32_t len = cpu->d[0];
+
+    for (uint32_t i = 0; i < len; i++) {
+        char c1 = to_lower(s1[i]);
+        char c2 = to_lower(s2[i]);
+        if (c1 != c2) {
+            cpu->d[0] = (int32_t)(c1 - c2);
+            return;
+        }
+        if (s1[i] == '\0' || s2[i] == '\0')
+            break;
+    }
+    cpu->d[0] = 0;
 }
 
-static void util_UcStr(void)
+static void util_UcStr(M68kCPUState *cpu)
 {
-    /* UcStr - convert string to uppercase in-place
-     * D1 = string pointer
-     * Returns: same string pointer */
-    fprintf(stderr, "[UTILITY] UcStr called\n");
-    /* TODO: Implement with M68k memory access */
-    /* Implementation would be:
-     * char *s = str;
-     * while (*s) {
-     *     *s = to_upper(*s);
-     *     s++;
-     * }
-     * return str;
-     */
+    /* UCStr - convert string to uppercase in-place
+     * A0 = string pointer
+     * Returns: A0 = same string pointer */
+    char *s = (char *)M68K_TO_HOST(cpu->a[0]);
+    char *start = s;
+    while (*s) {
+        *s = to_upper(*s);
+        s++;
+    }
+    cpu->a[0] = (uint32_t)(uintptr_t)start;
 }
 
-static void util_LcStr(void)
+static void util_LcStr(M68kCPUState *cpu)
 {
-    /* LcStr - convert string to lowercase in-place
-     * D1 = string pointer
-     * Returns: same string pointer */
-    fprintf(stderr, "[UTILITY] LcStr called\n");
-    /* TODO: Implement with M68k memory access */
-    /* Implementation would be:
-     * char *s = str;
-     * while (*s) {
-     *     *s = to_lower(*s);
-     *     s++;
-     * }
-     * return str;
-     */
+    /* LCStr - convert string to lowercase in-place
+     * A0 = string pointer
+     * Returns: A0 = same string pointer */
+    char *s = (char *)M68K_TO_HOST(cpu->a[0]);
+    char *start = s;
+    while (*s) {
+        *s = to_lower(*s);
+        s++;
+    }
+    cpu->a[0] = (uint32_t)(uintptr_t)start;
 }
 
-static void util_SMult32(void)
+static void util_SMult32(M68kCPUState *cpu)
 {
-    /* SMult32 - signed 32-bit multiplication */
-    fprintf(stderr, "[UTILITY] SMult32 called\n");
+    /* SMult32 - signed 32x32/32 multiply-divide (SmulDiv)
+     * D0 = multiplicand, D1 = multiplier, D2 = divisor
+     * Returns: D0 = (multiplicand * multiplier) / divisor */
+    int32_t multiplicand = (int32_t)cpu->d[0];
+    int32_t multiplier = (int32_t)cpu->d[1];
+    int32_t divisor = (int32_t)cpu->d[2];
+
+    if (divisor == 0) {
+        cpu->d[0] = 0;
+        return;
+    }
+    int64_t result = (int64_t)multiplicand * (int64_t)multiplier;
+    cpu->d[0] = (uint32_t)(result / divisor);
 }
 
-static void util_UMult32(void)
+static void util_UMult32(M68kCPUState *cpu)
 {
-    /* UMult32 - unsigned 32-bit multiplication */
-    fprintf(stderr, "[UTILITY] UMult32 called\n");
+    /* UMult32 - unsigned 32x32/32 multiply-divide
+     * D0 = multiplicand, D1 = multiplier, D2 = divisor
+     * Returns: D0 = (multiplicand * multiplier) / divisor */
+    uint64_t multiplicand = cpu->d[0];
+    uint64_t multiplier = cpu->d[1];
+    uint32_t divisor = cpu->d[2];
+
+    if (divisor == 0) {
+        cpu->d[0] = 0;
+        return;
+    }
+    cpu->d[0] = (uint32_t)((multiplicand * multiplier) / divisor);
 }
 
-static void util_NextTagItem(void)
+static void util_NextTagItem(M68kCPUState *cpu)
 {
-    /* NextTagItem - iterate through tag list */
-    fprintf(stderr, "[UTILITY] NextTagItem called\n");
+    /* NextTagItem - iterate through tag list
+     * A0 = pointer to tag list pointer (updated to next item)
+     * Returns: D0 = current tag item pointer or NULL if end */
+    TagItem **tag_list_ptr = (TagItem **)M68K_TO_HOST(cpu->a[0]);
+    TagItem *current = *tag_list_ptr;
+
+    if (!current) {
+        cpu->d[0] = 0;
+        return;
+    }
+
+    TagItem *item = (TagItem *)M68K_TO_HOST((uint32_t)(uintptr_t)current);
+    uint32_t tag = item->ti_Tag;
+
+    /* Handle special tag control codes */
+    switch (tag) {
+        case TAG_DONE:
+        case TAG_END:
+            *tag_list_ptr = NULL;
+            cpu->d[0] = 0;
+            return;
+
+        case TAG_MORE:
+            /* Jump to new tag list */
+            *tag_list_ptr = (TagItem *)M68K_TO_HOST(item->ti_Data);
+            cpu->d[0] = cpu->a[0];
+            return;
+
+        case TAG_JUMP:
+            /* Jump to absolute address */
+            *tag_list_ptr = (TagItem *)M68K_TO_HOST(item->ti_Data);
+            cpu->d[0] = cpu->a[0];
+            return;
+
+        case TAG_IGNORE:
+            /* Skip this item */
+            *tag_list_ptr = current + 1;
+            cpu->d[0] = (uint32_t)(uintptr_t)current;
+            return;
+
+        default:
+            /* Normal tag - advance to next and return current */
+            *tag_list_ptr = current + 1;
+            cpu->d[0] = (uint32_t)(uintptr_t)current;
+            return;
+    }
 }
 
-static void util_GetTagData(void)
+static void util_GetTagData(M68kCPUState *cpu)
 {
-    /* GetTagData - get data from tag list */
-    fprintf(stderr, "[UTILITY] GetTagData called\n");
+    /* GetTagData - get data value for a tag from tag list
+     * D0 = tag ID to search for, A0 = tag list, D1 = default value
+     * Returns: D0 = tag data value or default if not found */
+    uint32_t tag_id = cpu->d[0];
+    TagItem *tag_list = (TagItem *)M68K_TO_HOST(cpu->a[0]);
+    uint32_t default_val = cpu->d[1];
+
+    if (!tag_list) {
+        cpu->d[0] = default_val;
+        return;
+    }
+
+    while (1) {
+        uint32_t tag = tag_list->ti_Tag;
+
+        if (tag == TAG_DONE || tag == TAG_END) {
+            break;
+        }
+
+        if (tag == tag_id) {
+            cpu->d[0] = tag_list->ti_Data;
+            return;
+        }
+
+        if (tag == TAG_MORE || tag == TAG_JUMP) {
+            tag_list = (TagItem *)M68K_TO_HOST(tag_list->ti_Data);
+            continue;
+        }
+
+        tag_list++;
+    }
+
+    cpu->d[0] = default_val;
 }
 
-static void util_DateMatch(void)
+static void util_DateMatch(M68kCPUState *cpu)
 {
-    /* DateMatch - compare date patterns */
-    fprintf(stderr, "[UTILITY] DateMatch called\n");
+    /* DateMatch - compare date patterns (not fully implemented) */
+    (void)cpu;
+    cpu->d[0] = 0;  /* No match */
 }
 
 /* =========================================================================

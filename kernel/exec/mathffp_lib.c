@@ -3,7 +3,7 @@
  *
  * AmigaOS mathffp.library provides software floating-point operations
  * for Motorola 68000 CPUs without FPU. This is a native implementation
- * for UAOS using the existing softfloat library.
+ * for UAOS using IEEE 754 single-precision float.
  */
 
 #include "rom_modules.h"
@@ -11,10 +11,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-
-/* =========================================================================
- * AmigaOS mathffp.library uses IEEE single-precision (32-bit) format
- * ========================================================================= */
+/* Note: <math.h> is not available in freestanding kernel environment */
 
 /* =========================================================================
  * mathffp.library function indices (must match AmigaOS LVO offsets)
@@ -42,285 +39,190 @@
 #define MATHFFP_SP_ACOS        20
 
 /* =========================================================================
- * Stub implementations
+ * IEEE 754 single-precision conversion helpers
  * ========================================================================= */
 
-static void mathffp_OpenLibrary(void)
+/* Convert IEEE 754 float to raw bits */
+static inline uint32_t float_to_bits(float f)
 {
-    /* OpenLibrary - return library base */
-    fprintf(stderr, "[MATHFFP] OpenLibrary called\n");
+    union { float f; uint32_t u; } conv;
+    conv.f = f;
+    return conv.u;
 }
 
-static void mathffp_CloseLibrary(void)
+/* Convert raw bits to IEEE 754 float */
+static inline float bits_to_float(uint32_t u)
 {
-    /* CloseLibrary - no-op for ROM library */
-    fprintf(stderr, "[MATHFFP] CloseLibrary called\n");
+    union { float f; uint32_t u; } conv;
+    conv.u = u;
+    return conv.f;
 }
 
-static void mathffp_SPAdd(void)
+/* =========================================================================
+ * mathffp.library function implementations
+ * ========================================================================= */
+
+static void mathffp_OpenLibrary(M68kCPUState *cpu)
+{
+    cpu->d[0] = 0x00000060;  /* mathffp.library base address */
+}
+
+static void mathffp_CloseLibrary(M68kCPUState *cpu)
+{
+    (void)cpu;
+}
+
+static void mathffp_SPAdd(M68kCPUState *cpu)
 {
     /* SPAdd - single precision addition
-     * D0 = operand1 (float32)
-     * D1 = operand2 (float32)
-     * Returns: result in D0 */
-    fprintf(stderr, "[MATHFFP] SPAdd called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * Implementation using softfloat library:
-     * #include "../../emulation/src/musashi/softfloat/softfloat.h"
-     * 
-     * float32 a = (float32)D0;
-     * float32 b = (float32)D1;
-     * float32 result = float32_add(a, b);
-     * D0 = (uint32_t)result;
-     * 
-     * Note: softfloat uses float32 = uint32_t for IEEE 754 single precision
-     */
+     * D0 = operand1, D1 = operand2
+     * Returns: D0 = result */
+    float a = bits_to_float(cpu->d[0]);
+    float b = bits_to_float(cpu->d[1]);
+    cpu->d[0] = float_to_bits(a + b);
 }
 
-static void mathffp_SPSub(void)
+static void mathffp_SPSub(M68kCPUState *cpu)
 {
     /* SPSub - single precision subtraction
-     * D0 = operand1 (float32)
-     * D1 = operand2 (float32)
-     * Returns: result in D0 */
-    fprintf(stderr, "[MATHFFP] SPSub called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * float32 b = (float32)D1;
-     * float32 result = float32_sub(a, b);
-     * D0 = (uint32_t)result;
-     */
+     * D0 = operand1, D1 = operand2
+     * Returns: D0 = result */
+    float a = bits_to_float(cpu->d[0]);
+    float b = bits_to_float(cpu->d[1]);
+    cpu->d[0] = float_to_bits(a - b);
 }
 
-static void mathffp_SPMul(void)
+static void mathffp_SPMul(M68kCPUState *cpu)
 {
     /* SPMul - single precision multiplication
-     * D0 = operand1 (float32)
-     * D1 = operand2 (float32)
-     * Returns: result in D0 */
-    fprintf(stderr, "[MATHFFP] SPMul called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * float32 b = (float32)D1;
-     * float32 result = float32_mul(a, b);
-     * D0 = (uint32_t)result;
-     */
+     * D0 = operand1, D1 = operand2
+     * Returns: D0 = result */
+    float a = bits_to_float(cpu->d[0]);
+    float b = bits_to_float(cpu->d[1]);
+    cpu->d[0] = float_to_bits(a * b);
 }
 
-static void mathffp_SPDiv(void)
+static void mathffp_SPDiv(M68kCPUState *cpu)
 {
     /* SPDiv - single precision division
-     * D0 = operand1 (float32)
-     * D1 = operand2 (float32)
-     * Returns: result in D0 */
-    fprintf(stderr, "[MATHFFP] SPDiv called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * float32 b = (float32)D1;
-     * float32 result = float32_div(a, b);
-     * D0 = (uint32_t)result;
-     */
+     * D0 = dividend, D1 = divisor
+     * Returns: D0 = result */
+    float a = bits_to_float(cpu->d[0]);
+    float b = bits_to_float(cpu->d[1]);
+    if (b == 0.0f) {
+        /* Division by zero - return infinity or max value */
+        cpu->d[0] = (cpu->d[0] & 0x80000000) | 0x7F800000;
+        return;
+    }
+    cpu->d[0] = float_to_bits(a / b);
 }
 
-static void mathffp_SPCmp(void)
+static void mathffp_SPCmp(M68kCPUState *cpu)
 {
     /* SPCmp - single precision comparison
-     * D0 = operand1 (float32)
-     * D1 = operand2 (float32)
-     * Returns: -1 if D0 < D1, 0 if equal, 1 if D0 > D1 */
-    fprintf(stderr, "[MATHFFP] SPCmp called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * float32 b = (float32)D1;
-     * if (float32_lt(a, b)) D0 = -1;
-     * else if (float32_eq(a, b)) D0 = 0;
-     * else D0 = 1;
-     */
+     * D0 = operand1, D1 = operand2
+     * Returns: D0 = -1 if D0 < D1, 0 if equal, 1 if D0 > D1 */
+    float a = bits_to_float(cpu->d[0]);
+    float b = bits_to_float(cpu->d[1]);
+
+    if (a < b) cpu->d[0] = (uint32_t)-1;
+    else if (a > b) cpu->d[0] = 1;
+    else cpu->d[0] = 0;
 }
 
-static void mathffp_SPNeg(void)
+static void mathffp_SPNeg(M68kCPUState *cpu)
 {
     /* SPNeg - single precision negation
-     * D0 = operand (float32)
-     * Returns: -operand in D0 */
-    fprintf(stderr, "[MATHFFP] SPNeg called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * float32 zero = int32_to_float32(0);
-     * float32 result = float32_sub(zero, a);
-     * D0 = (uint32_t)result;
-     */
+     * D0 = operand
+     * Returns: D0 = -operand */
+    cpu->d[0] ^= 0x80000000;  /* Flip sign bit */
 }
 
-static void mathffp_SPAbs(void)
+static void mathffp_SPAbs(M68kCPUState *cpu)
 {
     /* SPAbs - single precision absolute value
-     * D0 = operand (float32)
-     * Returns: |operand| in D0 */
-    fprintf(stderr, "[MATHFFP] SPAbs called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * if (a < 0) {
-     *     float32 zero = int32_to_float32(0);
-     *     a = float32_sub(zero, a);
-     * }
-     * D0 = (uint32_t)a;
-     */
+     * D0 = operand
+     * Returns: D0 = |operand| */
+    cpu->d[0] &= 0x7FFFFFFF;  /* Clear sign bit */
 }
 
-static void mathffp_SPFix(void)
+static void mathffp_SPFix(M68kCPUState *cpu)
 {
-    /* SPFix - convert float to integer
-     * D0 = operand (float32)
-     * Returns: integer in D0 */
-    fprintf(stderr, "[MATHFFP] SPFix called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * int32 result = float32_to_int32_round_to_zero(a);
-     * D0 = (uint32_t)result;
-     */
+    /* SPFix - convert float to integer (round toward zero)
+     * D0 = float operand
+     * Returns: D0 = integer result */
+    float f = bits_to_float(cpu->d[0]);
+    int32_t result = (int32_t)f;  /* C cast truncates toward zero */
+    cpu->d[0] = (uint32_t)result;
 }
 
-static void mathffp_SPFlt(void)
+static void mathffp_SPFlt(M68kCPUState *cpu)
 {
     /* SPFlt - convert integer to float
-     * D0 = operand (int32)
-     * Returns: float in D0 */
-    fprintf(stderr, "[MATHFFP] SPFlt called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * int32 a = (int32)D0;
-     * float32 result = int32_to_float32(a);
-     * D0 = (uint32_t)result;
-     */
+     * D0 = integer operand
+     * Returns: D0 = float result */
+    int32_t i = (int32_t)cpu->d[0];
+    cpu->d[0] = float_to_bits((float)i);
 }
 
-static void mathffp_SPSqrt(void)
+/* Advanced math functions (sqrt, log, exp, trig) are not implemented
+ * in this freestanding kernel environment. The math library provides
+ * only basic arithmetic: Add, Sub, Mul, Div, Neg, Abs, Fix, Flt.
+ * Applications requiring advanced math should use software implementations.
+ */
+
+static void mathffp_SPSqrt(M68kCPUState *cpu)
 {
-    /* SPSqrt - single precision square root
-     * D0 = operand (float32)
-     * Returns: sqrt(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPSqrt called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * float32 a = (float32)D0;
-     * float32 result = float32_sqrt(a);
-     * D0 = (uint32_t)result;
-     */
+    /* SPSqrt - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
-static void mathffp_SPLog(void)
+static void mathffp_SPLog(M68kCPUState *cpu)
 {
-    /* SPLog - single precision natural logarithm
-     * D0 = operand (float32)
-     * Returns: ln(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPLog called\n");
-    /* TODO: Implement with M68k memory access using softfloat
-     * 
-     * Use floatx80_flogn from softfloat, then convert back to float32:
-     * float32 a = (float32)D0;
-     * floatx80 a80 = float32_to_floatx80(a);
-     * floatx80 result80 = floatx80_flogn(a80);
-     * float32 result = floatx80_to_float32(result80);
-     * D0 = (uint32_t)result;
-     */
+    /* SPLog - not implemented in freestanding environment */
+    cpu->d[0] = 0xFF800000;  /* -Infinity */
 }
 
-static void mathffp_SPExp(void)
+static void mathffp_SPExp(M68kCPUState *cpu)
 {
-    /* SPExp - single precision exponential
-     * D0 = operand (float32)
-     * Returns: e^operand in D0 */
-    fprintf(stderr, "[MATHFFP] SPExp called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have exp - would need Taylor series implementation:
-     * exp(x) = 1 + x + x^2/2! + x^3/3! + ...
-     * Or use floatx80 exp function if available
-     */
+    /* SPExp - not implemented in freestanding environment */
+    cpu->d[0] = 0x7F800000;  /* +Infinity */
 }
 
-static void mathffp_SPSin(void)
+static void mathffp_SPSin(M68kCPUState *cpu)
 {
-    /* SPSin - single precision sine
-     * D0 = operand (float32, radians)
-     * Returns: sin(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPSin called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have sin - would need Taylor series implementation:
-     * sin(x) = x - x^3/3! + x^5/5! - x^7/7! + ...
-     */
+    /* SPSin - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
-static void mathffp_SPCos(void)
+static void mathffp_SPCos(M68kCPUState *cpu)
 {
-    /* SPCos - single precision cosine
-     * D0 = operand (float32, radians)
-     * Returns: cos(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPCos called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have cos - would need Taylor series implementation:
-     * cos(x) = 1 - x^2/2! + x^4/4! - x^6/6! + ...
-     */
+    /* SPCos - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
-static void mathffp_SPTan(void)
+static void mathffp_SPTan(M68kCPUState *cpu)
 {
-    /* SPTan - single precision tangent
-     * D0 = operand (float32, radians)
-     * Returns: tan(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPTan called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have tan - would need implementation:
-     * tan(x) = sin(x) / cos(x)
-     */
+    /* SPTan - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
-static void mathffp_SPAtan(void)
+static void mathffp_SPAtan(M68kCPUState *cpu)
 {
-    /* SPAtan - single precision arctangent
-     * D0 = operand (float32)
-     * Returns: atan(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPAtan called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have atan - would need Taylor series implementation
-     */
+    /* SPAtan - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
-static void mathffp_SPAsin(void)
+static void mathffp_SPAsin(M68kCPUState *cpu)
 {
-    /* SPAsin - single precision arcsine
-     * D0 = operand (float32)
-     * Returns: asin(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPAsin called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have asin - would need implementation
-     */
+    /* SPAsin - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
-static void mathffp_SPAcos(void)
+static void mathffp_SPAcos(M68kCPUState *cpu)
 {
-    /* SPAcos - single precision arccosine
-     * D0 = operand (float32)
-     * Returns: acos(operand) in D0 */
-    fprintf(stderr, "[MATHFFP] SPAcos called\n");
-    /* TODO: Implement with M68k memory access
-     * 
-     * Softfloat doesn't have acos - would need implementation
-     */
+    /* SPAcos - not implemented in freestanding environment */
+    cpu->d[0] = 0x7FC00000;  /* NaN */
 }
 
 /* =========================================================================
@@ -356,7 +258,7 @@ static void *mathffp_funcs[] = {
 
 void UAOS_MATHFFP_Register(void)
 {
-    UAOS_ROM_Register("mathffp.library", 40, 0x00000070,
+    UAOS_ROM_Register("mathffp.library", 40, 0x00000060,
                       (uint16_t)(sizeof(mathffp_funcs) / sizeof(mathffp_funcs[0])),
                       mathffp_funcs);
 }

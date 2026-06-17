@@ -27,7 +27,22 @@ static int slen(const char *s)
     int n = 0; while (s[n]) n++; return n;
 }
 
-
+/* -------------------------------------------------------------------------
+ * Convert Unix epoch seconds to AmigaDOS DateStamp
+ * AmigaDOS epoch is 1978-01-01 = Unix timestamp 252460800
+ * -------------------------------------------------------------------------
+ */
+static void epoch_to_datestamp(uint32_t mtime, int32_t *out_days, int32_t *out_minute, int32_t *out_tick)
+{
+    /* AmigaDOS epoch offset: 1978-01-01 */
+    const uint32_t AMIGA_EPOCH = 252460800u;
+    if (mtime < AMIGA_EPOCH) mtime = AMIGA_EPOCH;
+    uint32_t amiga_secs = mtime - AMIGA_EPOCH;
+    *out_days = (int32_t)(amiga_secs / 86400u);
+    uint32_t rem = amiga_secs % 86400u;
+    *out_minute = (int32_t)(rem / 60u);
+    *out_tick = (int32_t)((rem % 60u) * 50u);  /* 50 ticks per second */
+}
 
 /* -------------------------------------------------------------------------
  * Packet processor
@@ -239,7 +254,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             fib->fib_Size       = (int32_t)node->size;
             fib->fib_NumBlocks  = (int32_t)((node->size + 511) / 512);
             fib->fib_Protection = (int32_t)node->protection;
-            /* Date is left at zero (no RTC in RamFS) */
+            epoch_to_datestamp(node->mtime, &fib->fib_Date.ds_Days, &fib->fib_Date.ds_Minute, &fib->fib_Date.ds_Tick);
             int j = 0;
             while (j < 79 && node->comment[j]) { fib->fib_Comment[j] = node->comment[j]; j++; }
             fib->fib_Comment[j] = '\0';
@@ -281,6 +296,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             fib->fib_Size      = (int32_t)child->size;
             fib->fib_NumBlocks = (int32_t)((child->size + 511) / 512);
             fib->fib_Protection = (int32_t)child->protection;
+            epoch_to_datestamp(child->mtime, &fib->fib_Date.ds_Days, &fib->fib_Date.ds_Minute, &fib->fib_Date.ds_Tick);
             int j = 0;
             while (j < 79 && child->comment[j]) { fib->fib_Comment[j] = child->comment[j]; j++; }
             fib->fib_Comment[j] = '\0';

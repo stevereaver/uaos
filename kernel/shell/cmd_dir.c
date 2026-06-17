@@ -1,8 +1,45 @@
 /* cmd_dir.c — C:dir — list a directory */
 
 #include "cmd_internal.h"
+#include "../net/ntp.h"
 
 #define DIR_MAX_ENTRIES 256
+
+static const char *k_months_short[] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+
+static void fmt_mtime_dir(uint32_t ts, char *out, int max)
+{
+    if (ts == 0) {
+        cmd_scopy(out, "--/--/--", max);
+        return;
+    }
+    uint16_t year; uint8_t month, day, hour, min, sec;
+    ntp_unix_to_datetime(ts, &year, &month, &day, &hour, &min, &sec);
+    if (month < 1 || month > 12) month = 1;
+    /* DD-Mon-YYYY HH:MM */
+    out[0] = (char)('0' + day / 10);
+    out[1] = (char)('0' + day % 10);
+    out[2] = '-';
+    const char *m = k_months_short[month - 1];
+    out[3] = m[0]; out[4] = m[1]; out[5] = m[2];
+    out[6] = '-';
+    out[7] = (char)('0' + (year / 1000) % 10);
+    out[8] = (char)('0' + (year / 100) % 10);
+    out[9] = (char)('0' + (year / 10) % 10);
+    out[10] = (char)('0' + year % 10);
+    out[11] = ' ';
+    out[12] = (char)('0' + hour / 10);
+    out[13] = (char)('0' + hour % 10);
+    out[14] = ':';
+    out[15] = (char)('0' + min / 10);
+    out[16] = (char)('0' + min % 10);
+    out[17] = '\0';
+    (void)sec;
+    (void)max;
+}
 
 static int dir_cmp_name(const void *a, const void *b)
 {
@@ -48,7 +85,10 @@ static void dir_print_entry(NativeCmdCtx *ctx, RamFsNode *node,
     }
 
     if (dates) {
-        cmd_scat(line, "  --/--/--", CMD_MAX_LINE);
+        char dstr[20];
+        fmt_mtime_dir(node->mtime, dstr, sizeof(dstr));
+        cmd_scat(line, "  ", CMD_MAX_LINE);
+        cmd_scat(line, dstr, CMD_MAX_LINE);
     }
 
     PRINT(line);

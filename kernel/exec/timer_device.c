@@ -3,31 +3,46 @@
  *
  * AmigaOS timer.device provides timing functions including
  * system time, delays, and interval timers. This is a native
- * implementation for UAOS using the existing RTC driver.
+ * implementation for UAOS using the NTP RTC driver.
  */
 
 #include "rom_modules.h"
-#include "../irq/rtc.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 
 /* =========================================================================
- * AmigaOS Time Structures
+ * NTP/RTC interface
+ * ========================================================================= */
+extern uint32_t ntp_get_epoch(void);
+
+/* =========================================================================
+ * AmigaOS Time Structures (compatible with timeval)
  * ========================================================================= */
 
-typedef struct {
+typedef struct timeval {
     uint32_t tv_sec;   /* Seconds */
     uint32_t tv_usec;  /* Microseconds */
 } timeval_t;
+
+/* EClockVal structure for ReadEClock */
+typedef struct EClockVal {
+    uint32_t ev_hi;    /* High 32 bits */
+    uint32_t ev_lo;    /* Low 32 bits */
+} EClockVal_t;
 
 /* =========================================================================
  * Global State
  * ========================================================================= */
 
-static uint64_t g_eclock_value = 0;  /* E-clock counter */
-static uint64_t g_boot_time = 0;    /* Boot time in seconds */
+static uint64_t g_eclock_value = 0;  /* E-clock counter in microseconds */
+
+/* =========================================================================
+ * Memory access helper
+ * ========================================================================= */
+extern uint8_t *g_ram;
+#define M68K_TO_HOST(addr) ((void *)(g_ram + (addr)))
 
 /* =========================================================================
  * timer.device function indices (must match AmigaOS LVO offsets)
@@ -45,82 +60,173 @@ static uint64_t g_boot_time = 0;    /* Boot time in seconds */
 #define TIMER_CMP_TIME      10
 
 /* =========================================================================
- * Stub implementations
+ * timer.device function implementations
  * ========================================================================= */
 
-static void timer_OpenDevice(void)
+static void timer_OpenDevice(M68kCPUState *cpu)
 {
-    /* OpenDevice - open timer device */
-    fprintf(stderr, "[TIMER] OpenDevice called\n");
+    /* OpenDevice - open timer device
+     * A0 = IORequest pointer, D0 = unit number, D1 = flags
+     * Returns: D0 = 0 for success, non-zero for error */
+    (void)cpu;
+    cpu->d[0] = 0;  /* Success */
 }
 
-static void timer_CloseDevice(void)
+static void timer_CloseDevice(M68kCPUState *cpu)
 {
-    /* CloseDevice - close timer device */
-    fprintf(stderr, "[TIMER] CloseDevice called\n");
+    /* CloseDevice - close timer device
+     * A1 = IORequest pointer */
+    (void)cpu;
 }
 
-static void timer_BeginIO(void)
+static void timer_BeginIO(M68kCPUState *cpu)
 {
-    /* BeginIO - start I/O operation (request timing) */
-    fprintf(stderr, "[TIMER] BeginIO called\n");
+    /* BeginIO - start I/O operation
+     * A1 = IORequest pointer */
+    (void)cpu;
 }
 
-static void timer_AbortIO(void)
+static void timer_AbortIO(M68kCPUState *cpu)
 {
-    /* AbortIO - abort I/O operation */
-    fprintf(stderr, "[TIMER] AbortIO called\n");
+    /* AbortIO - abort I/O operation
+     * A1 = IORequest pointer */
+    (void)cpu;
 }
 
-static void timer_GetSysTime(void)
+static void timer_GetSysTime(M68kCPUState *cpu)
 {
     /* GetSysTime - get current system time
-     * D1 = pointer to timeval structure to fill */
-    RtcTime rtc = RTC_ReadTime();
-    
-    /* Calculate seconds since boot (simplified) */
-    uint32_t total_sec = (rtc.hour * 3600) + (rtc.min * 60) + rtc.sec;
-    
-    /* For now, return a simple time value
-     * TODO: Use external M68k glue to write to guest memory */
-    fprintf(stderr, "[TIMER] GetSysTime: %02u:%02u:%02u\n", rtc.hour, rtc.min, rtc.sec);
+     * A0 = pointer to timeval structure to fill
+     * Fills: tv_sec, tv_usec with current time */
+    uint32_t time_ptr = cpu->a[0];
+    if (!time_ptr) {
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    uint32_t epoch = ntp_get_epoch();
+    timeval_t *tv = (timeval_t *)M68K_TO_HOST(time_ptr);
+
+    tv->tv_sec = epoch;
+    tv->tv_usec = 0;  /* We only have second precision from ntp_get_epoch */
+
+    cpu->d[0] = 0;  /* Success */
 }
 
-static void timer_ECLOCK_UPDATE(void)
+static void timer_ECLOCK_UPDATE(M68kCPUState *cpu)
 {
     /* ECLOCK_UPDATE - update E-clock value
-     * Called periodically to advance the E-clock */
-    g_eclock_value++;
+     * Called periodically by the system to advance the E-clock
+     * Each call adds approximately 40 microseconds (typical Amiga E-clock period) */
+    (void)cpu;
+    g_eclock_value += 40;  /* ~40 microseconds per E-clock tick */
 }
 
-static void timer_ReadEClock(void)
+static void timer_ReadEClock(M68kCPUState *cpu)
 {
     /* ReadEClock - read E-clock value
-     * D1 = pointer to structure to fill
-     * Returns E-clock value in units */
-    fprintf(stderr, "[TIMER] ReadEClock: %llu\n", g_eclock_value);
+     * A0 = pointer to EClockVal structure to fill
+     * Returns: D0 = E-clock frequency in ticks/second */
+    uint32_t eclock_ptr = cpu->a[0];
+    if (!eclock_ptr) {
+        cpu->d[0] = 0;
+        return;
+    }
+
+    EClockVal_t *ev = (EClockVal_t *)M68K_TO_HOST(eclock_ptr);
+    ev->ev_hi = (uint32_t)(g_eclock_value >> 32);
+    ev->ev_lo = (uint32_t)g_eclock_value;
+
+    /* Return E-clock frequency (~709379 ticks per second on PAL Amiga) */
+    cpu->d[0] = 709379;
 }
 
-static void timer_AddTime(void)
+static void timer_AddTime(M68kCPUState *cpu)
 {
     /* AddTime - add two time values
-     * D1 = source1, D2 = source2, D0 = destination */
-    fprintf(stderr, "[TIMER] AddTime called\n");
+     * A0 = destination timeval, A1 = source timeval to add
+     * destination = destination + source */
+    uint32_t dst_ptr = cpu->a[0];
+    uint32_t src_ptr = cpu->a[1];
+
+    if (!dst_ptr || !src_ptr) {
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    timeval_t *dst = (timeval_t *)M68K_TO_HOST(dst_ptr);
+    timeval_t *src = (timeval_t *)M68K_TO_HOST(src_ptr);
+
+    dst->tv_sec += src->tv_sec;
+    dst->tv_usec += src->tv_usec;
+
+    /* Normalize microseconds */
+    if (dst->tv_usec >= 1000000) {
+        dst->tv_sec += 1;
+        dst->tv_usec -= 1000000;
+    }
+
+    cpu->d[0] = 0;  /* Success */
 }
 
-static void timer_SubTime(void)
+static void timer_SubTime(M68kCPUState *cpu)
 {
     /* SubTime - subtract two time values
-     * D1 = source1, D2 = source2, D0 = destination */
-    fprintf(stderr, "[TIMER] SubTime called\n");
+     * A0 = destination timeval, A1 = source timeval to subtract
+     * destination = destination - source */
+    uint32_t dst_ptr = cpu->a[0];
+    uint32_t src_ptr = cpu->a[1];
+
+    if (!dst_ptr || !src_ptr) {
+        cpu->d[0] = (uint32_t)-1;
+        return;
+    }
+
+    timeval_t *dst = (timeval_t *)M68K_TO_HOST(dst_ptr);
+    timeval_t *src = (timeval_t *)M68K_TO_HOST(src_ptr);
+
+    /* Handle microseconds underflow */
+    if (dst->tv_usec < src->tv_usec) {
+        dst->tv_sec -= 1;
+        dst->tv_usec += 1000000;
+    }
+
+    dst->tv_usec -= src->tv_usec;
+    dst->tv_sec -= src->tv_sec;
+
+    cpu->d[0] = 0;  /* Success */
 }
 
-static void timer_CmpTime(void)
+static void timer_CmpTime(M68kCPUState *cpu)
 {
     /* CmpTime - compare two time values
-     * D1 = time1, D2 = time2
-     * Returns: <0 if time1 < time2, 0 if equal, >0 if time1 > time2 */
-    fprintf(stderr, "[TIMER] CmpTime called\n");
+     * A0 = first timeval, A1 = second timeval
+     * Returns: D0 = -1 if t1 < t2, 0 if equal, 1 if t1 > t2 */
+    uint32_t t1_ptr = cpu->a[0];
+    uint32_t t2_ptr = cpu->a[1];
+
+    if (!t1_ptr || !t2_ptr) {
+        cpu->d[0] = 0;
+        return;
+    }
+
+    timeval_t *t1 = (timeval_t *)M68K_TO_HOST(t1_ptr);
+    timeval_t *t2 = (timeval_t *)M68K_TO_HOST(t2_ptr);
+
+    if (t1->tv_sec < t2->tv_sec) {
+        cpu->d[0] = (uint32_t)-1;
+    } else if (t1->tv_sec > t2->tv_sec) {
+        cpu->d[0] = 1;
+    } else {
+        /* Seconds equal, compare microseconds */
+        if (t1->tv_usec < t2->tv_usec) {
+            cpu->d[0] = (uint32_t)-1;
+        } else if (t1->tv_usec > t2->tv_usec) {
+            cpu->d[0] = 1;
+        } else {
+            cpu->d[0] = 0;
+        }
+    }
 }
 
 /* =========================================================================

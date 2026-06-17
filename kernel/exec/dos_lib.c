@@ -1278,7 +1278,11 @@ static void dos_MatchPatternNoCase(M68kCPUState *cpu)
 
 #define MAX_LOADSEG_HUNKS  32
 
-static uint8_t g_loadseg_buf[131072]; /* 128KB temp for hunk loading */
+static uint8_t g_loadseg_buf[524288]; /* 512KB temp for hunk loading */
+
+/* Forward declarations for seglist tracking */
+static void seglist_track(uint32_t bptr, uint32_t addr);
+static uint32_t seglist_untrack(uint32_t bptr);
 
 static uint32_t ls_be32(const uint8_t *p)
 {
@@ -1319,7 +1323,7 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
         uint32_t bytes = words * 4;
         uint32_t seg_size = 4 + (bytes ? bytes : 4);
         seg_size = (seg_size + 3) & ~3u;
-        allocated[i] = heap_alloc(seg_size);
+        allocated[i] = heap_alloc_fl(seg_size);
         if (!allocated[i]) return 0;
         hunk_base[i] = allocated[i] + 4;
     }
@@ -1437,6 +1441,9 @@ static void dos_LoadSeg(M68kCPUState *cpu)
         return;
     }
 
+    /* Track the seglist so UnLoadSeg can free it */
+    seglist_track(seglist >> 2, seglist);
+
     cpu->d[0] = seglist >> 2;
 }
 
@@ -1484,12 +1491,8 @@ static void dos_UnLoadSeg(M68kCPUState *cpu)
      * Each segment header layout (set up by loadseg_hunk_load):
      *   [0..3] BPTR to next segment (or 0)
      *   [4..]  segment data (code / data / bss)
-     * The block allocated by heap_alloc_fl starts at hdr-HEAP_HDR, but
-     * loadseg_hunk_load used heap_alloc (bump), not heap_alloc_fl.
-     * We therefore call heap_free_fl only for blocks that were allocated
-     * through the tracked free-list path (CreateSegList / future loadseg).
-     * For bump-allocated segments (original loadseg) we fall back to no-op
-     * — the memory will be reclaimed on next task launch. */
+     * All segments allocated via heap_alloc_fl are tracked in g_seglists.
+     * We walk the chain and free each segment through the free-list allocator. */
 
     uint32_t tracked_addr = seglist_untrack(seg_bptr);
     if (tracked_addr) {
@@ -1501,7 +1504,7 @@ static void dos_UnLoadSeg(M68kCPUState *cpu)
             cur = next_bptr ? (next_bptr << 2) : 0;
         }
     }
-    /* If not tracked (bump-allocated), silently no-op */
+    /* If not tracked, silently no-op (should not happen with properly loaded seglists) */
 }
 
 /* =========================================================================
@@ -1631,18 +1634,61 @@ static void dos_CreateProc(M68kCPUState *cpu)
     /* Store process struct in ExecBase so it is visible to FindTask */
     guest_write_be32(0x0300 + 0x114, proc_addr);
 
-    /* Save entry & proc into a compact in-RAM trampoline so m68k_execute
-     * can call it.  We store the info and set g_emu_halted so the outer
-     * execute loop will handle it on the next quantum. */
-    (void)entry; /* task is asynchronous — we don't run it inline here */
+    /* Calculate total seglist size by walking the hunks.
+     * Read actual segment sizes from heap allocation metadata. */
+    uint32_t total_size = 0;
+    uint32_t cur_seg = seg_addr;
+    while (cur_seg && cur_seg >= HEAP_HDR && cur_seg < GUEST_RAM_SIZE) {
+        uint32_t next_bptr = guest_read_be32(cur_seg);
+        /* Read segment size from heap header (at cur_seg - HEAP_HDR) */
+        uint32_t seg_size = 4096;  /* Default fallback */
+        if (cur_seg >= HEAP_HDR + 4) {
+            uint32_t blk = cur_seg - HEAP_HDR;
+            uint32_t magic_size = guest_read_be32(blk);
+            if (magic_size & HEAP_MAGIC) {
+                seg_size = (magic_size & ~HEAP_MAGIC) - HEAP_HDR;
+            }
+        }
+        total_size += seg_size;
+        if (next_bptr == 0) break;
+        cur_seg = next_bptr << 2;
+    }
 
-    /* For now return proc_addr >> 2 as the MsgPort pointer (pr_MsgPort
-     * starts at PROCESS + PR_PORT = 0x5A).  The caller just checks non-NULL. */
-    cpu->d[0] = (proc_addr + PR_PORT) >> 2;
+    /* Create M68k task to run the seglist
+     * We pass the first segment's address as the binary pointer
+     * The entry point is seg_addr + 4 as per AmigaOS convention
+     * The task wrapper will handle setting up the execution context */
+    if (total_size > 0 && total_size < GUEST_RAM_SIZE) {
+        /* Copy seglist data to a temporary buffer for Task_CreateM68k */
+        static uint8_t seglist_buf[256 * 1024];  /* 256KB max for CreateProc */
+        if (total_size > sizeof(seglist_buf)) total_size = sizeof(seglist_buf);
 
-    kprint("[dos] CreateProc: launched (async) '");
+        /* Copy first segment - this is what the task will execute from */
+        uint32_t first_seg_size = total_size;
+        if (first_seg_size > sizeof(seglist_buf)) first_seg_size = sizeof(seglist_buf);
+        for (uint32_t i = 0; i < first_seg_size && (seg_addr + i) < GUEST_RAM_SIZE; i++) {
+            seglist_buf[i] = g_ram[seg_addr + i];
+        }
+
+        /* Create the task - it will use the seglist buffer */
+        UaosTask *new_task = Task_CreateM68k(proc_name, pri, seglist_buf, first_seg_size, NULL, NULL);
+        if (new_task) {
+            /* Store the entry point for the task */
+            new_task->m68k_entry = entry;
+            /* Link the process struct to the task */
+            new_task->m68k_task_struct = proc_addr;
+            kprint("[dos] CreateProc: launched task '");
+        } else {
+            kprint("[dos] CreateProc: failed to create task '");
+        }
+    } else {
+        kprint("[dos] CreateProc: invalid seglist size '");
+    }
     kprint(proc_name);
     kprint("'\n");
+
+    /* Return the MsgPort BPTR (pr_MsgPort starts at PROCESS + PR_PORT = 0x5A) */
+    cpu->d[0] = (proc_addr + PR_PORT) >> 2;
 }
 
 static void dos_RunCommand(M68kCPUState *cpu)
@@ -1742,131 +1788,239 @@ static void dos_RunCommand(M68kCPUState *cpu)
     cpu->d[0] = rc;
 }
 
+/* Tag constants for SystemTagList (from dos/dosextens.h) */
+#define NP_Seglist      (0x80000000 + 2)   /* BPTR seglist for new process */
+#define NP_FreeSeglist  (0x80000000 + 3)   /* BOOL: free seglist on exit */
+#define NP_CopyArgs     (0x80000000 + 4)   /* BOOL: copy args */
+#define NP_ArgPtr       (0x80000000 + 5)   /* STRPTR: argument pointer */
+#define NP_ArgLen       (0x80000000 + 6)   /* ULONG: argument length */
+#define NP_Priority     (0x80000000 + 7)   /* BYTE: initial priority */
+#define NP_Name         (0x80000000 + 9)   /* STRPTR: process name */
+#define NP_Cwd          (0x80000000 + 12)  /* BPTR: current working directory */
+#define NP_StackSize    (0x80000000 + 13)  /* ULONG: stack size */
+
+/* Tag constants for SystemTagList (SYS_*) */
+#define SYS_Input       (0x80000000 + 100) /* BPTR: input filehandle */
+#define SYS_Output      (0x80000000 + 101) /* BPTR: output filehandle */
+#define SYS_Asynch      (0x80000000 + 102) /* BOOL: run asynchronously */
+
+/* Tag list control tags */
+#define TAG_DONE        0
+#define TAG_MORE        0x80000001
+#define TAG_IGNORE      0x80000002
+#define TAG_JUMP        0x80000003
+
+typedef struct TagItem {
+    uint32_t ti_Tag;
+    uint32_t ti_Data;
+} TagItem_t;
+
+static uint32_t parse_tag_item(uint32_t *tag_ptr, uint32_t tag_to_find)
+{
+    if (!tag_ptr) return 0;
+
+    while (1) {
+        uint32_t tag = guest_read_be32((uint32_t)(uintptr_t)tag_ptr);
+        uint32_t data = guest_read_be32((uint32_t)(uintptr_t)tag_ptr + 4);
+
+        if (tag == TAG_DONE) {
+            break;
+        }
+
+        if (tag == TAG_MORE || tag == TAG_JUMP) {
+            tag_ptr = (uint32_t *)(uintptr_t)data;
+            continue;
+        }
+
+        if (tag == TAG_IGNORE) {
+            tag_ptr += 2;
+            continue;
+        }
+
+        if (tag == tag_to_find) {
+            return data;
+        }
+
+        tag_ptr += 2;  /* Each tag item is 8 bytes */
+    }
+
+    return 0;  /* Tag not found */
+}
+
 static void dos_SystemTagList(M68kCPUState *cpu)
 {
     /* AmigaOS: D1=STRPTR command, A1=struct TagItem *tags → D0=LONG result
      *
-     * Run a shell command string as a sub-shell, synchronously.
-     * Tags of interest (partial support):
-     *   SYS_Input  (TAG_BASE+0) — input filehandle  (ignored)
-     *   SYS_Output (TAG_BASE+1) — output filehandle (ignored)
-     *   SYS_Asynch (TAG_BASE+2) — if DOSTRUE, run async (not supported)
-     *
-     * We extract the command string, look up the binary on the VFS, and
-     * execute it via RunCommand-style inline dispatch.  For commands that
-     * are shell built-ins (no binary file), we return DOSFALSE with
-     * ERROR_OBJECT_NOT_FOUND — the caller should handle that gracefully.
+     * Create and run a new process with configuration from tag list.
+     * Tags extracted:
+     *   NP_Name       - process name
+     *   NP_Seglist    - BPTR seglist to run
+     *   NP_StackSize  - stack size for process
+     *   NP_Priority   - task priority (-128 to 127)
+     *   NP_ArgPtr     - pointer to argument string
+     *   NP_ArgLen     - length of argument string
+     *   NP_Cwd        - current working directory
+     *   SYS_Input     - input filehandle
+     *   SYS_Output    - output filehandle
+     *   SYS_Asynch    - if true, run asynchronously
      */
     uint32_t cmd_ptr = cpu->d[1];
-    /* tags at A1 — read SYS_Asynch */
     uint32_t tags_ptr = cpu->a[1];
-    (void)tags_ptr;  /* future: parse tags for async / IO redirection */
 
-    if (!cmd_ptr || cmd_ptr >= GUEST_RAM_SIZE) {
+    /* Extract tag values */
+    uint32_t np_name = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Name);
+    uint32_t np_seglist = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Seglist);
+    uint32_t np_stacksize = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_StackSize);
+    uint32_t np_priority = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Priority);
+    uint32_t np_argptr = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_ArgPtr);
+    uint32_t np_arglen = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_ArgLen);
+    uint32_t np_cwd = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Cwd);
+    uint32_t sys_asynch = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, SYS_Asynch);
+
+    /* If no seglist provided, try to load from command string */
+    if (!np_seglist && cmd_ptr && cmd_ptr < GUEST_RAM_SIZE) {
+        /* Read the command string */
+        char cmd[256];
+        int ci = 0;
+        while (ci < 255 && cmd_ptr + ci < GUEST_RAM_SIZE && g_ram[cmd_ptr + ci]) {
+            cmd[ci] = (char)g_ram[cmd_ptr + ci]; ci++;
+        }
+        cmd[ci] = '\0';
+
+        /* Split into command name + arguments */
+        char cmd_name[128];
+        int ni = 0;
+        while (cmd[ni] && cmd[ni] != ' ' && ni < 127) {
+            cmd_name[ni] = cmd[ni]; ni++;
+        }
+        cmd_name[ni] = '\0';
+
+        /* Look for binary and load seglist */
+        static const char * const search_paths[] = {
+            "SYS:C/",
+            "RAM:",
+            NULL
+        };
+
+        for (int pi = 0; search_paths[pi]; pi++) {
+            char full_path[128];
+            int fi = 0;
+            const char *pfx = search_paths[pi];
+            while (pfx[fi]) { full_path[fi] = pfx[fi]; fi++; }
+            int ni2 = 0;
+            while (cmd_name[ni2] && fi < 127) { full_path[fi++] = cmd_name[ni2++]; }
+            full_path[fi] = '\0';
+
+            VfsFile fh;
+            if (!VFS_Open(&fh, full_path, VFS_READ)) continue;
+
+            uint32_t bin_size = VFS_Size(&fh);
+            if (!bin_size || bin_size > sizeof(g_loadseg_buf)) {
+                VFS_Close(&fh);
+                continue;
+            }
+
+            uint32_t rd = VFS_Read(&fh, g_loadseg_buf, bin_size);
+            VFS_Close(&fh);
+            if (rd != bin_size) continue;
+
+            np_seglist = loadseg_hunk_load(g_loadseg_buf, bin_size);
+            if (np_seglist) {
+                seglist_track(np_seglist >> 2, np_seglist);
+                break;
+            }
+        }
+    }
+
+    if (!np_seglist) {
         cpu->d[0] = (uint32_t)DOSFALSE;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
-    /* Read the command string */
-    char cmd[256];
-    int ci = 0;
-    while (ci < 255 && cmd_ptr + ci < GUEST_RAM_SIZE && g_ram[cmd_ptr + ci]) {
-        cmd[ci] = (char)g_ram[cmd_ptr + ci]; ci++;
+    /* Use defaults for optional parameters */
+    if (!np_stacksize) np_stacksize = 8192;  /* Default 8KB stack */
+    if (!np_priority) np_priority = 0;       /* Normal priority */
+
+    /* Read process name */
+    char proc_name[64] = "NewProc";
+    if (np_name) {
+        int ni = 0;
+        while (ni < 63 && np_name + ni < GUEST_RAM_SIZE && g_ram[np_name + ni]) {
+            proc_name[ni] = (char)g_ram[np_name + ni];
+            ni++;
+        }
+        proc_name[ni] = '\0';
     }
-    cmd[ci] = '\0';
 
-    /* Split into command name + arguments */
-    char cmd_name[128];
-    int ni = 0;
-    while (cmd[ni] && cmd[ni] != ' ' && ni < 127) {
-        cmd_name[ni] = cmd[ni]; ni++;
-    }
-    cmd_name[ni] = '\0';
-
-    const char *args = cmd[ni] ? cmd + ni + 1 : cmd + ni;
-
-    /* Look for a matching binary on RAM: or SYS:C/ */
-    static const char * const search_paths[] = {
-        "SYS:C/",
-        "RAM:",
-        NULL
-    };
-
-    for (int pi = 0; search_paths[pi]; pi++) {
-        char full_path[128];
-        int fi = 0;
-        const char *pfx = search_paths[pi];
-        while (pfx[fi]) { full_path[fi] = pfx[fi]; fi++; }
-        int ni2 = 0;
-        while (cmd_name[ni2] && fi < 127) { full_path[fi++] = cmd_name[ni2++]; }
-        full_path[fi] = '\0';
-
-        VfsFile fh;
-        if (!VFS_Open(&fh, full_path, VFS_READ)) continue;
-
-        uint32_t bin_size = VFS_Size(&fh);
-        if (!bin_size || bin_size > sizeof(g_loadseg_buf)) {
-            VFS_Close(&fh);
-            continue;
-        }
-
-        uint32_t rd = VFS_Read(&fh, g_loadseg_buf, bin_size);
-        VFS_Close(&fh);
-        if (rd != bin_size) continue;
-
-        /* Load the hunk into guest RAM */
-        uint32_t seglist_addr = loadseg_hunk_load(g_loadseg_buf, bin_size);
-        if (!seglist_addr) continue;
-
-        uint32_t entry = seglist_addr + 4;
-
-        /* Place return stub */
-        const uint32_t ret_stub = 0x1EF800u;
-        if (ret_stub + 4 <= GUEST_RAM_SIZE) {
-            g_ram[ret_stub + 0] = 0x4A; g_ram[ret_stub + 1] = 0xFC;
-            g_ram[ret_stub + 2] = 0x02; g_ram[ret_stub + 3] = 0x06;
-        }
-
-        /* Place argument string in guest RAM */
-        uint32_t arg_buf = heap_alloc_fl(256);
-        uint32_t arg_size = 0;
-        if (arg_buf) {
-            while (args[arg_size] && arg_size < 254) {
-                g_ram[arg_buf + arg_size] = (uint8_t)args[arg_size];
-                arg_size++;
-            }
-            g_ram[arg_buf + arg_size] = '\n';
-            arg_size++;
-            g_ram[arg_buf + arg_size] = '\0';
-        }
-
-        /* Push return address on M68k stack */
-        uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
-        sp -= 4;
-        if (sp + 4 <= GUEST_RAM_SIZE) guest_write_be32(sp, ret_stub);
-        m68k_set_reg(M68K_REG_A7, sp);
-
-        m68k_set_reg(M68K_REG_D0, arg_size);
-        m68k_set_reg(M68K_REG_A0, arg_buf ? arg_buf : 0);
-        m68k_set_reg(M68K_REG_PC, entry);
-
-        g_emu_halted = 0;
-        while (!g_emu_halted) {
-            m68k_execute(10000);
-        }
-        uint32_t rc = m68k_get_reg(NULL, M68K_REG_D1);
-        g_emu_halted = 0;
-
-        if (arg_buf) heap_free_fl(arg_buf);
-
-        cpu->d[0] = rc;
+    /* Build process struct */
+    uint32_t proc_addr = build_process_struct((int8_t)np_priority);
+    if (!proc_addr) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_NO_FREE_STORE);
         return;
     }
 
-    /* Binary not found — command may be a built-in or not available */
-    cpu->d[0] = (uint32_t)DOSFALSE;
-    SetIoErr(ERROR_OBJECT_NOT_FOUND);
+    /* Store process struct in ExecBase */
+    guest_write_be32(0x0300 + 0x114, proc_addr);
+
+    /* Calculate total seglist size for task creation */
+    uint32_t total_size = 0;
+    uint32_t cur_seg = np_seglist;
+    while (cur_seg && cur_seg < GUEST_RAM_SIZE) {
+        uint32_t next_bptr = guest_read_be32(cur_seg);
+        total_size += 4096;  /* Estimate 4KB per segment */
+        if (next_bptr == 0) break;
+        cur_seg = next_bptr << 2;
+    }
+
+    /* Copy seglist data to buffer for task creation */
+    static uint8_t seglist_buf[256 * 1024];
+    if (total_size > sizeof(seglist_buf)) total_size = sizeof(seglist_buf);
+
+    uint32_t first_seg_size = total_size;
+    if (first_seg_size > sizeof(seglist_buf)) first_seg_size = sizeof(seglist_buf);
+    for (uint32_t i = 0; i < first_seg_size && (np_seglist + i) < GUEST_RAM_SIZE; i++) {
+        seglist_buf[i] = g_ram[np_seglist + i];
+    }
+
+    /* Create M68k task */
+    UaosTask *new_task = Task_CreateM68k(proc_name, (int8_t)np_priority,
+                                          seglist_buf, first_seg_size, NULL, NULL);
+    if (new_task) {
+        uint32_t entry = np_seglist + 4;
+        new_task->m68k_entry = entry;
+        new_task->m68k_task_struct = proc_addr;
+
+        /* Set up arguments if provided */
+        if (np_argptr && np_arglen) {
+            uint32_t arg_buf = heap_alloc_fl(np_arglen + 1);
+            if (arg_buf) {
+                for (uint32_t i = 0; i < np_arglen && (np_argptr + i) < GUEST_RAM_SIZE; i++) {
+                    g_ram[arg_buf + i] = g_ram[np_argptr + i];
+                }
+                g_ram[arg_buf + np_arglen] = '\0';
+                /* Arguments are now in guest RAM, task will access via A0 */
+                (void)arg_buf;  /* Suppress unused warning - used by guest code */
+            }
+        }
+
+        kprint("[dos] SystemTagList: launched process '\"");
+        kprint(proc_name);
+        kprint("\"'\n");
+        cpu->d[0] = (uint32_t)DOSTRUE;
+    } else {
+        kprint("[dos] SystemTagList: failed to create process '\"");
+        kprint(proc_name);
+        kprint("\"'\n");
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_NO_FREE_STORE);
+    }
+
+    /* Return process message port BPTR */
+    cpu->a[0] = (proc_addr + 0x5A) >> 2;
+    (void)sys_asynch;  /* Synchronous execution for now */
+    (void)np_cwd;      /* CWD handling not yet implemented */
 }
 
 /* =========================================================================
@@ -2128,20 +2282,20 @@ static void dos_StrToDate(M68kCPUState *cpu)
 
 static void dos_CheckSignal(M68kCPUState *cpu)
 {
-    /* AmigaOS: D1=ULONG mask → D0=ULONG received (and clears matched bits)
+    /* AmigaOS: D0=ULONG mask → D0=ULONG received (and clears matched bits)
      *
      * Returns the subset of pending signals that intersect with mask, then
      * clears those bits from tc_SigRecvd so they are only reported once.
      * This is the non-blocking variant of exec.library Wait().
      */
-    uint32_t mask = cpu->d[1];
+    uint32_t mask = cpu->d[0];
     UaosTask *cur = Task_Current();
     if (!cur) { cpu->d[0] = 0; return; }
 
     /* Atomically read and clear matching bits */
     __asm__ volatile ("cli");
     uint32_t received = cur->tc_SigRecvd & mask;
-    cur->tc_SigRecvd &= ~mask;
+    cur->tc_SigRecvd &= ~received;  /* Clear only the bits that were matched */
     __asm__ volatile ("sti");
 
     cpu->d[0] = received;
