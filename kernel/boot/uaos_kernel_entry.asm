@@ -151,9 +151,9 @@ _start:
     ; ENTER LONG MODE
     ; ================================================================
 
-    ; 1. Enable PAE (CR4.PAE = bit 5)
+    ; 1. Enable PAE (CR4.PAE = bit 5) and SSE (CR4.OSFXSR = bit 9)
     mov     eax, cr4
-    or      eax, (1 << 5)
+    or      eax, (1 << 5) | (1 << 9)
     mov     cr4, eax
 
     ; 2. Load PML4 into CR3

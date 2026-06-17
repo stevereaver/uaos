@@ -209,7 +209,35 @@ static void draw_statusbar(int W, int H)
     int y = H - STATUSBAR_H;
     FB_FillRect(0, y, W, STATUSBAR_H, WB_DARK_GREY);
     FB_DrawHLine(0, y, W, WB_WHITE);
-    FB_PutStr(8, y + 1, "UAOS kernel idle  |  No tasks running  |  RAM: 512 MB", WB_CREAM, WB_DARK_GREY);
+
+    int total = 0, running = 0, waiting = 0;
+    extern void Task_GetCounts(int *, int *, int *);
+    Task_GetCounts(&total, &running, &waiting);
+
+    char buf[80];
+    /* Simple sprintf replacement */
+    {
+        const char *prefix = "Tasks: ";
+        const char *sep1   = " run / ";
+        const char *sep2   = " wait / ";
+        const char *suffix = " total";
+        int pi = 0, bi = 0;
+        while (prefix[pi] && bi < 79) buf[bi++] = prefix[pi++];
+        /* running */
+        if (running >= 10) buf[bi++] = (char)('0' + running / 10);
+        if (running > 0 || bi == 0) buf[bi++] = (char)('0' + running % 10);
+        pi = 0; while (sep1[pi] && bi < 79) buf[bi++] = sep1[pi++];
+        /* waiting */
+        if (waiting >= 10) buf[bi++] = (char)('0' + waiting / 10);
+        if (waiting > 0 || bi == 0) buf[bi++] = (char)('0' + waiting % 10);
+        pi = 0; while (sep2[pi] && bi < 79) buf[bi++] = sep2[pi++];
+        /* total */
+        if (total >= 10) buf[bi++] = (char)('0' + total / 10);
+        buf[bi++] = (char)('0' + total % 10);
+        pi = 0; while (suffix[pi] && bi < 79) buf[bi++] = suffix[pi++];
+        buf[bi] = '\0';
+    }
+    FB_PutStr(8, y + 1, buf, WB_CREAM, WB_DARK_GREY);
 }
 
 /* =========================================================================

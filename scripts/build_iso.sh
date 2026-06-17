@@ -406,10 +406,17 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_jobs.c"
 do
     base="$(basename "${src}" .c)"
-    gcc ${GCC_FLAGS} \
-        -I"${REPO_ROOT}/emulation" \
-        -I"${REPO_ROOT}/kernel" \
-        -c "${src}" -o "${BUILD_DIR}/obj/${base}.o"
+    if [ "${src##*/}" = "ntp.c" ]; then
+        gcc ${GCC_FLAGS} -mno-sse \
+            -I"${REPO_ROOT}/emulation" \
+            -I"${REPO_ROOT}/kernel" \
+            -c "${src}" -o "${BUILD_DIR}/obj/${base}.o"
+    else
+        gcc ${GCC_FLAGS} \
+            -I"${REPO_ROOT}/emulation" \
+            -I"${REPO_ROOT}/kernel" \
+            -c "${src}" -o "${BUILD_DIR}/obj/${base}.o"
+    fi
     ok "  Compiled:  ${src##*/}"
 done
 

@@ -232,10 +232,13 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
         ctx_buf = ctx_pool[slot];
     }
 
+    Forbid();
+
     /* Create the native wrapper task */
     UaosTask *t = Task_CreateNative(name, pri, m68k_wrapper_entry, NULL);
     if (!t) {
         free_m68k_ram_slot(g_ram_pool[slot]);
+        Permit();
         return NULL;
     }
 
@@ -253,6 +256,7 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     uint64_t *frame = (uint64_t *)t->native_rsp;
     frame[9] = (uint64_t)t;           /* RDI slot */
 
+    Permit();
     return t;
 }
 

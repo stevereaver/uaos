@@ -4530,7 +4530,7 @@ static void open_shell(int stagger)
                                 k_key_shims[idx]);
     s->kb_head = 0;
     s->kb_tail = 0;
-    Task_CreateNative("Shell", 0, shell_task_entry, s);
+    Task_CreateNative("Shell", -128, shell_task_entry, s);
     WM_Redraw();
 }
 

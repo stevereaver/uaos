@@ -516,19 +516,7 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     }
     if (slot < 0) return -1;
 
-    WM_LOG("[WM] AddWindow slot="); WM_LOG_DEC(slot); WM_LOG(" title='"); WM_LOG(title); WM_LOG("'\n");
-
-    /* On-screen debug - use filebrowser's debug system */
-    extern void dbg_add_line(const char *msg);
-    char wm_dbg[64];
-    int wi = 0;
-    while (wi < 10 && "WM slot="[wi]) { wm_dbg[wi] = "WM slot="[wi]; wi++; }
-    wm_dbg[wi++] = '0' + slot;
-    wm_dbg[wi++] = ' ';
-    const char *tp = title;
-    while (*tp && wi < 50) wm_dbg[wi++] = *tp++;
-    wm_dbg[wi] = '\0';
-    dbg_add_line(wm_dbg);
+    /* WM_LOG disabled — causes hang when called at runtime from non-boot context */
 
     WmWindow *win = &g_wins[slot];
     win->x       = x;
@@ -813,13 +801,6 @@ void WM_CloseWindow(int handle)
     WmWindow *w = &g_wins[handle];
     if (!w->active) return;
 
-    char close_dbg[64];
-    int ci = 0;
-    while (ci < 12 && "WM close h="[ci]) { close_dbg[ci] = "WM close h="[ci]; ci++; }
-    close_dbg[ci++] = '0' + handle;
-    close_dbg[ci] = '\0';
-    dbg_add_line(close_dbg);
-
     /* Save footprint before deactivating */
     int ox = w->x, oy = w->y, ow = w->w, oh = w->h;
 
@@ -836,14 +817,6 @@ void WM_CloseWindow(int handle)
 
     /* Free the slot */
     w->active = 0;
-
-    /* Debug: show freed slot */
-    char free_dbg[64];
-    int fi = 0;
-    while (fi < 14 && "WM freed slot "[fi]) { free_dbg[fi] = "WM freed slot "[fi]; fi++; }
-    free_dbg[fi++] = '0' + handle;
-    free_dbg[fi] = '\0';
-    dbg_add_line(free_dbg);
 
     /* Update focus to the new top window */
     if (g_focus == handle)

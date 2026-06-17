@@ -1,6 +1,7 @@
 /* handle_table.c — Global open-file and lock handle table */
 
 #include "handle_table.h"
+#include "../exec/task.h"
 #include <stddef.h>
 
 #define MAX_HANDLES 128
@@ -31,21 +32,24 @@ static uint32_t find_free_slot(void)
 
 uint32_t HandleTable_AllocFile(const char *path, const VfsFile *fh, int flags)
 {
+    Forbid();
     uint32_t h = find_free_slot();
-    if (h == 0) return 0;
+    if (h == 0) { Permit(); return 0; }
 
     HandleEntry *e = &g_entries[h - 1];
     e->type = HTYPE_FILE;
     scopy(e->path, path ? path : "", sizeof(e->path));
     e->u.file.fh    = *fh;
     e->u.file.flags = flags;
+    Permit();
     return h;
 }
 
 uint32_t HandleTable_AllocLock(const char *path, void *node, int32_t access)
 {
+    Forbid();
     uint32_t h = find_free_slot();
-    if (h == 0) return 0;
+    if (h == 0) { Permit(); return 0; }
 
     HandleEntry *e = &g_entries[h - 1];
     e->type = HTYPE_LOCK;
@@ -53,20 +57,26 @@ uint32_t HandleTable_AllocLock(const char *path, void *node, int32_t access)
     e->u.lock.node      = node;
     e->u.lock.access    = access;
     e->u.lock.iter_next = NULL; /* caller must reset with LockResetIter */
+    Permit();
     return h;
 }
 
 void HandleTable_Free(uint32_t handle)
 {
     if (handle == 0 || handle > MAX_HANDLES) return;
+    Forbid();
     g_entries[handle - 1].type = HTYPE_FREE;
+    Permit();
 }
 
 HandleEntry *HandleTable_Get(uint32_t handle)
 {
     if (handle == 0 || handle > MAX_HANDLES) return NULL;
+    Forbid();
     HandleEntry *e = &g_entries[handle - 1];
-    return (e->type != HTYPE_FREE) ? e : NULL;
+    HandleEntry *result = (e->type != HTYPE_FREE) ? e : NULL;
+    Permit();
+    return result;
 }
 
 VfsFile *HandleTable_GetFile(uint32_t handle)

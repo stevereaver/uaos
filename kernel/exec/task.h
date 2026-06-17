@@ -187,6 +187,9 @@ extern int      g_task_count;
 UaosTask *Task_FindByM68kAddr(uint32_t guest_addr);
 UaosTask *Task_FindByName(const char *name);
 
+/* Query scheduler state for status bar */
+void Task_GetCounts(int *out_total, int *out_running, int *out_waiting);
+
 /* Test helper: spawn UART-printing tasks */
 void Task_TestSpawn(void);
 
