@@ -738,6 +738,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
     inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
+    inst_print(s, "  mount <dev> [from] mount a handler device");
     inst_print(s, "  execute <script>   run a script file");
     inst_print(s, "  loadwb             launch Workbench desktop");
     inst_print(s, "  ps                 list running tasks");
@@ -3136,9 +3137,17 @@ static int shell_is_builtin(const char *name)
 static void shell_yield_ms(void *shell_extra, uint32_t ms)
 {
     (void)shell_extra;
-    uint32_t slices = ms ? ms : 1;
-    for (uint32_t slice = 0; slice < slices; slice++) {
-        Task_Yield();
+    /* PIT runs at 100 Hz → 1 tick = 10 ms.  Convert ms to ticks.
+     * Poll the network stack each iteration so that while the shell
+     * task is waiting, incoming packets (DNS replies, ICMP, NTP, …)
+     * still get processed even if the idle task hasn't run yet. */
+    extern volatile uint64_t g_pit_ticks;
+    uint64_t ticks = ms / 10;
+    if (ticks == 0) ticks = 1;
+    uint64_t start = g_pit_ticks;
+    while (g_pit_ticks - start < ticks) {
+        net_stack_poll();
+        __asm__ volatile ("pause");
     }
 }
 
