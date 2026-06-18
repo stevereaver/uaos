@@ -27,4 +27,8 @@ void ShellWin_PollJobs(void);
  * The print callback receives (shell_opaque, line_text). */
 void ShellWin_ListJobs(void *shell, void (*print)(void *, const char *));
 
+/* Dispatch a single command line through the first shell instance.
+ * Safe to call from any task after ShellWin_Init() has run. */
+void ShellWin_DispatchLine(const char *line);
+
 #endif

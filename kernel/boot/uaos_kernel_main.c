@@ -136,57 +136,38 @@ void kprinthex(uint64_t v);
 void kprintdec(uint32_t v);
 
 /* -----------------------------------------------------------------------
- * Phase 5 diagnostic test: reproduce ntpd hang with serial tracing
+ * Boot-time ntpd task — runs after the scheduler is live.
+ *
+ * The Startup-Sequence executes synchronously before Task_StartFirst()
+ * so interrupts are off and g_pit_ticks cannot advance.  Any command
+ * that needs to wait for network replies (ntpd, ping, nslookup) must
+ * instead run as a proper task after the scheduler starts.
+ *
+ * This task waits 3 s for the network stack to stabilise, then
+ * dispatches "ntpd" through the first shell instance so the user sees
+ * its output in the shell window.
  * ----------------------------------------------------------------------- */
 #include "../net/stack.h"
-#include "../net/dns.h"
-#include "../net/ntp.h"
+#include "../display/shell_win.h"
 
 extern volatile uint64_t g_pit_ticks;
 
-static void ntp_test_poll(void *arg, uint32_t ms)
+static void ntpd_boot_task(void *arg)
 {
     (void)arg;
-    /* PIT runs at 100 Hz → 1 tick = 10 ms.  Convert ms → ticks. */
-    uint64_t ticks = ms / 10;
-    if (ticks == 0) ticks = 1;
-    uint64_t start = g_pit_ticks;
-    while (g_pit_ticks - start < ticks) {
-        __asm__ volatile ("pause");
-    }
-}
-
-static void ntp_test_task(void *arg)
-{
-    (void)arg;
-    kprint("[NTP-TEST] Waiting 3s for network...\n");
+    /* Wait 3 s for DHCP / link-up before trying NTP */
     uint64_t t0 = g_pit_ticks;
-    while (g_pit_ticks - t0 < 300) {
+    while (g_pit_ticks - t0 < 300) {   /* 300 ticks × 10 ms = 3 s */
         __asm__ volatile ("pause");
     }
 
     if (!net_stack_is_up()) {
-        kprint("[NTP-TEST] Network not up\n");
+        kprint("[ntpd-boot] Network not available — skipping NTP sync\n");
         Task_Exit();
     }
 
-    kprint("[NTP-TEST] Resolving pool.ntp.org...\n");
-    ipv4_t srv_ip = 0;
-    int ok = dns_resolve("pool.ntp.org", &srv_ip, 5000, ntp_test_poll, NULL);
-    if (!ok) {
-        kprint("[NTP-TEST] DNS resolve FAILED\n");
-        Task_Exit();
-    }
-    kprint("[NTP-TEST] DNS OK ip="); kprinthex(srv_ip); kprint("\n");
-
-    kprint("[NTP-TEST] Starting ntp_query...\n");
-    uint32_t unix_utc = 0;
-    ok = ntp_query(srv_ip, &unix_utc, 5000, ntp_test_poll, NULL);
-    if (ok) {
-        kprint("[NTP-TEST] ntp_query SUCCESS unix="); kprinthex(unix_utc); kprint("\n");
-    } else {
-        kprint("[NTP-TEST] ntp_query TIMEOUT\n");
-    }
+    /* Dispatch through the shell so output appears in the shell window */
+    ShellWin_DispatchLine("ntpd");
     Task_Exit();
 }
 
@@ -521,6 +502,20 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Setting up ROM fallback assigns...\n");
     VFS_SetupWorkbenchAssigns();
 
+    /* -------------------------------------------------------------------
+     * Phase 1b — Handler loader initialisation
+     *
+     * Scan L: for handler binaries and register built-in native handlers.
+     * This must happen after Workbench: assigns are set up so L: resolves.
+     * ------------------------------------------------------------------- */
+    extern void HandlerLoader_Init(void);
+    extern int HandlerLoader_ScanLDirectory(void);
+    extern void DosList_Init(void);
+    kprint("[BOOT] Initialising handler loader...\n");
+    DosList_Init();
+    HandlerLoader_Init();
+    HandlerLoader_ScanLDirectory();
+
     kprint("[BOOT] Scanning LIBS: for loadable libraries...\n");
     UAOS_LoadableLib_Init();
 
@@ -558,7 +553,21 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     }
     BsdSocket_Init();
 
-    /* Initialise PS/2 mouse (needs IRQ12 = vector 44) */
+    /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
+     * kernel timing (network poll pacing, yield_ms, ntp guards) and must
+     * tick regardless of whether a framebuffer is present. */
+    kprint("[BOOT] Programming PIT (100 Hz)...\n");
+    IDT_SetHandler(32, PIT_IRQHandler);
+    {
+        uint16_t divisor = (uint16_t)(1193180UL / 100UL);
+        outb(0x43, 0x36);
+        outb(0x40, (uint8_t)(divisor & 0xFF));
+        outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+    }
+    PIC_UnmaskIRQ(0);
+    kprint("[BOOT] PIT active.\n");
+
+    /* Initialise PS/2 mouse/keyboard and RTC only when a display is present */
     if (g_fb.valid) {
         g_fb_width_irq  = g_fb.width;
         g_fb_height_irq = g_fb.height;
@@ -575,23 +584,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         PS2Kbd_Init();
         PIC_UnmaskIRQ(1);
         kprint("[BOOT] PS/2 keyboard active.\n");
-
-        /* ROM fallback assigns and loadable library scan were already
-         * performed in Phase 1 immediately after the boot volume mount. */
-
-        /* Program PIT at 10 Hz BEFORE enabling RTC so that g_pit_ticks is
-         * already ticking when the first RTC UIE fires.  ntp_tick_epoch()
-         * gates on g_pit_ticks, so it must be running first. */
-        kprint("[BOOT] Programming PIT (100 Hz)...\n");
-        IDT_SetHandler(32, PIT_IRQHandler);
-        {
-            uint16_t divisor = (uint16_t)(1193180UL / 100UL);
-            outb(0x43, 0x36);
-            outb(0x40, (uint8_t)(divisor & 0xFF));
-            outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
-        }
-        PIC_UnmaskIRQ(0);
-        kprint("[BOOT] PIT active.\n");
 
         kprint("[BOOT] Initialising RTC clock...\n");
         IDT_SetHandler(40, RTC_IRQHandler);  /* IRQ8 = vector 40 */
@@ -629,8 +621,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running Startup-Sequence...\n");
     ShellWin_RunStartupSequence();
 
-    /* Phase 5 diagnostic: background task to reproduce ntpd hang */
-    Task_CreateNative("NtpTest", -128, ntp_test_task, NULL);
+    /* Start background ntpd task — waits 3 s then syncs clock via NTP */
+    Task_CreateNative("NtpdBoot", 0, ntpd_boot_task, NULL);
 
     /* Start the first task with interrupts off */
     __asm__ volatile ("cli");

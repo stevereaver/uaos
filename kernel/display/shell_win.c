@@ -4831,3 +4831,10 @@ void ShellWin_RunStartupSequence(void)
     script_release_buf();
     inst_print(s, "Startup-Sequence complete.");
 }
+
+void ShellWin_DispatchLine(const char *line)
+{
+    if (g_n_shells == 0 || !line || !*line) return;
+    ShellInstance *s = &g_shells[0];
+    inst_dispatch(s, line);
+}
