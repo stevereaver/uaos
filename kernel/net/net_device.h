@@ -119,6 +119,7 @@ int         netdev_send(const uint8_t *data, uint16_t len);
 void        netdev_poll(void);
 void        netdev_set_rx_callback(netdev_rx_fn cb);
 void        netdev_setup_irq(void);
+void        netdev_shutdown(void);
 int         netdev_is_up(void);
 const char *netdev_name(void);   /* returns driver name, e.g. "e1000" or "virtio-net" */
 

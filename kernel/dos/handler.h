@@ -45,6 +45,32 @@ int32_t DoPkt(MsgPort *port, int32_t action,
 Handler *Handler_FromPort(MsgPort *port);
 
 /* -------------------------------------------------------------------------
+ * Async packet support
+ * ------------------------------------------------------------------------- */
+
+typedef struct PendingPacket {
+    DosPacket *pkt;
+    MsgPort   *port;         /* target handler port */
+    MsgPort   *reply_port;
+    uint32_t   timestamp;
+    struct PendingPacket *next;
+} PendingPacket;
+
+/* Send packet asynchronously — returns immediately, packet is queued.
+ * Returns 1 on success, 0 on failure. */
+int32_t SendPktAsync(MsgPort *port, DosPacket *pkt, MsgPort *reply_port);
+
+/* Process any pending async packets by dispatching them to handlers.
+ * Call periodically from the main loop or scheduler tick. */
+void Handler_CheckReplies(void);
+
+/* -------------------------------------------------------------------------
+ * Handler lifecycle actions
+ * ------------------------------------------------------------------------- */
+#define ACTION_STARTUP  2000
+#define ACTION_SHUTDOWN 2001
+
+/* -------------------------------------------------------------------------
  * Global IoErr (single-threaded = one global value)
  * ------------------------------------------------------------------------- */
 extern int32_t g_dos_last_ioerr;

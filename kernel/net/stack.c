@@ -9,10 +9,11 @@
 #include "dhcp.h"
 #include "net_device.h"
 
-static int    g_up        = 0;
-static ipv4_t g_ip        = 0;
-static ipv4_t g_dns       = 0;
-static int    g_dhcp_used = 0;
+static int    g_up          = 0;
+static ipv4_t g_ip          = 0;
+static ipv4_t g_dns         = 0;
+static int    g_dhcp_used   = 0;
+static ipv4_t g_dhcp_server = 0;  /* DHCP server IP for release */
 
 /* RX callback registered with VirtIO-Net driver after stack is up */
 static void rx_callback(const uint8_t *frame, uint16_t len)
@@ -46,6 +47,7 @@ int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
             nm = lease.netmask ? lease.netmask : fallback_nm;
             if (lease.dns) g_dns = lease.dns;
             g_dhcp_used = 1;
+            g_dhcp_server = dhcp_get_server_ip();
         }
         /* DHCP temporarily installed its own rx_callback — restore ours */
     }
@@ -93,9 +95,32 @@ int net_stack_dhcp_renew(uint32_t timeout_ms)
         ip_init(g_ip, gw, nm);
         netdev_set_rx_callback(rx_callback);
         g_dhcp_used = 1;
+        g_dhcp_server = dhcp_get_server_ip();
         return 1;
     }
     return 0;
+}
+
+/*
+ * Shutdown the network stack.
+ * Sends DHCPRELEASE if DHCP was used, then clears stack state.
+ * Call this before shutting down the network device.
+ */
+void net_stack_shutdown(void)
+{
+    if (!g_up) return;
+
+    /* Send DHCPRELEASE if we have a DHCP lease and server IP */
+    if (g_dhcp_used && g_ip && g_dhcp_server) {
+        dhcp_release(g_ip, g_dhcp_server);
+    }
+
+    /* Clear all state */
+    g_up = 0;
+    g_ip = 0;
+    g_dns = 0;
+    g_dhcp_used = 0;
+    g_dhcp_server = 0;
 }
 
 /* -------------------------------------------------------------------------

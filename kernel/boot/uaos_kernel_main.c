@@ -135,42 +135,6 @@ void kprint(const char *s);
 void kprinthex(uint64_t v);
 void kprintdec(uint32_t v);
 
-/* -----------------------------------------------------------------------
- * Boot-time ntpd task — runs after the scheduler is live.
- *
- * The Startup-Sequence executes synchronously before Task_StartFirst()
- * so interrupts are off and g_pit_ticks cannot advance.  Any command
- * that needs to wait for network replies (ntpd, ping, nslookup) must
- * instead run as a proper task after the scheduler starts.
- *
- * This task waits 3 s for the network stack to stabilise, then
- * dispatches "ntpd" through the first shell instance so the user sees
- * its output in the shell window.
- * ----------------------------------------------------------------------- */
-#include "../net/stack.h"
-#include "../display/shell_win.h"
-
-extern volatile uint64_t g_pit_ticks;
-
-static void ntpd_boot_task(void *arg)
-{
-    (void)arg;
-    /* Wait 3 s for DHCP / link-up before trying NTP */
-    uint64_t t0 = g_pit_ticks;
-    while (g_pit_ticks - t0 < 300) {   /* 300 ticks × 10 ms = 3 s */
-        __asm__ volatile ("pause");
-    }
-
-    if (!net_stack_is_up()) {
-        kprint("[ntpd-boot] Network not available — skipping NTP sync\n");
-        Task_Exit();
-    }
-
-    /* Dispatch through the shell so output appears in the shell window */
-    ShellWin_DispatchLine("ntpd");
-    Task_Exit();
-}
-
 static void APIC_Init(void)
 {
     /* Read APIC base from MSR 0x1B.  Bits 35:12 are the physical base. */
@@ -532,27 +496,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Registering VirtIO IRQ...\n");
     virtio_blk_setup_irq();
 
-    /* Initialise network stack (e1000 or virtio-net, auto-detected).
-     * DHCP is tried first (3-second timeout).  The static fallback of
-     * 10.0.2.15/24 gw 10.0.2.2 matches the QEMU/VirtualBox NAT default
-     * and is only used when DHCP receives no reply at all (e.g. no DHCP
-     * server on a bridged network segment with no router). */
-    kprint("[BOOT] Initialising network stack...\n");
-    if (net_stack_init(IPV4(10,0,2,15), IPV4(10,0,2,2), IPV4(255,255,255,0))) {
-        if (net_stack_dhcp_used()) {
-            char ipbuf[20];
-            net_ip_to_str(net_stack_get_ip(), ipbuf);
-            kprint("[BOOT] Network up via DHCP: ");
-            kprint(ipbuf);
-            kprint("\n");
-        } else {
-            kprint("[BOOT] Network up: 10.0.2.15/24 gw 10.0.2.2 (static fallback)\n");
-        }
-    } else {
-        kprint("[BOOT] No network card found.\n");
-    }
-    BsdSocket_Init();
-
     /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
      * kernel timing (network poll pacing, yield_ms, ntp guards) and must
      * tick regardless of whether a framebuffer is present. */
@@ -620,9 +563,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     kprint("[BOOT] Running Startup-Sequence...\n");
     ShellWin_RunStartupSequence();
-
-    /* Start background ntpd task — waits 3 s then syncs clock via NTP */
-    Task_CreateNative("NtpdBoot", 0, ntpd_boot_task, NULL);
 
     /* Start the first task with interrupts off */
     __asm__ volatile ("cli");

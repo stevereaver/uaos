@@ -330,6 +330,11 @@ for src in \
     "${REPO_ROOT}/kernel/dos/vfs.c" \
     "${REPO_ROOT}/kernel/dos/handle_table.c" \
     "${REPO_ROOT}/kernel/dos/handler.c" \
+    "${REPO_ROOT}/kernel/dos/handler_loader.c" \
+    "${REPO_ROOT}/kernel/dos/dos_list.c" \
+    "${REPO_ROOT}/kernel/dos/device_handler.c" \
+    "${REPO_ROOT}/kernel/dos/aux_handler.c" \
+    "${REPO_ROOT}/kernel/dos/port_handler.c" \
     "${REPO_ROOT}/kernel/dos/ram_handler.c" \
     "${REPO_ROOT}/kernel/dos/fat_handler.c" \
     "${REPO_ROOT}/kernel/dos/blockdev.c" \
@@ -377,6 +382,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_route.c" \
     "${REPO_ROOT}/kernel/shell/cmd_nslookup.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ntpd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_netstart.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_netstop.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
     "${REPO_ROOT}/kernel/shell/cmd_netinfo.c" \
     "${REPO_ROOT}/kernel/shell/cmd_grep.c" \
@@ -401,6 +408,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_filenote.c" \
     "${REPO_ROOT}/kernel/shell/cmd_relabel.c" \
     "${REPO_ROOT}/kernel/shell/cmd_avail.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_mount.c" \
     "${REPO_ROOT}/kernel/shell/cmd_getenv.c" \
     "${REPO_ROOT}/kernel/shell/cmd_unset.c" \
     "${REPO_ROOT}/kernel/shell/cmd_jobs.c" \
@@ -410,7 +418,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_requestchoice.c" \
     "${REPO_ROOT}/kernel/shell/cmd_requestfile.c" \
     "${REPO_ROOT}/kernel/shell/cmd_changetaskpri.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_status.c"
+    "${REPO_ROOT}/kernel/shell/cmd_status.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_strace.c"
 do
     base="$(basename "${src}" .c)"
     if [ "${src##*/}" = "ntp.c" ]; then
@@ -600,6 +609,11 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/vfs.o" \
     "${BUILD_DIR}/obj/handle_table.o" \
     "${BUILD_DIR}/obj/handler.o" \
+    "${BUILD_DIR}/obj/handler_loader.o" \
+    "${BUILD_DIR}/obj/dos_list.o" \
+    "${BUILD_DIR}/obj/device_handler.o" \
+    "${BUILD_DIR}/obj/aux_handler.o" \
+    "${BUILD_DIR}/obj/port_handler.o" \
     "${BUILD_DIR}/obj/ram_handler.o" \
     "${BUILD_DIR}/obj/fat_handler.o" \
     "${BUILD_DIR}/obj/blockdev.o" \
@@ -647,6 +661,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_route.o" \
     "${BUILD_DIR}/obj/cmd_nslookup.o" \
     "${BUILD_DIR}/obj/cmd_ntpd.o" \
+    "${BUILD_DIR}/obj/cmd_netstart.o" \
+    "${BUILD_DIR}/obj/cmd_netstop.o" \
     "${BUILD_DIR}/obj/cmd_clock.o" \
     "${BUILD_DIR}/obj/cmd_netinfo.o" \
     "${BUILD_DIR}/obj/cmd_grep.o" \
@@ -671,6 +687,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_filenote.o" \
     "${BUILD_DIR}/obj/cmd_relabel.o" \
     "${BUILD_DIR}/obj/cmd_avail.o" \
+    "${BUILD_DIR}/obj/cmd_mount.o" \
     "${BUILD_DIR}/obj/cmd_getenv.o" \
     "${BUILD_DIR}/obj/cmd_unset.o" \
     "${BUILD_DIR}/obj/cmd_jobs.o" \
@@ -681,6 +698,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_requestfile.o" \
     "${BUILD_DIR}/obj/cmd_changetaskpri.o" \
     "${BUILD_DIR}/obj/cmd_status.o" \
+    "${BUILD_DIR}/obj/cmd_strace.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
@@ -718,10 +736,11 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot dir makedir delete type copy rename \
            pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd grep more vim ps netinfo \
+           run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop grep more vim ps netinfo \
            list search sort join wait prompt stack why failat quit endcli filenote relabel \
            avail getenv unset jobs \
-           install diskchange addbuffers requestchoice requestfile changetaskpri status; do
+           install diskchange addbuffers requestchoice requestfile changetaskpri status \
+           strace; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done

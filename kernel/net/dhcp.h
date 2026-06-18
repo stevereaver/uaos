@@ -27,4 +27,17 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms);
 /* Renew an existing lease (sends REQUEST with known server IP). */
 int dhcp_renew(DhcpLease *lease, uint32_t timeout_ms);
 
+/*
+ * Send DHCPRELEASE to inform the server we're releasing the lease.
+ * This is fire-and-forget; we don't wait for a response (RFC 2131).
+ * Should be called before shutting down the network interface.
+ */
+void dhcp_release(ipv4_t client_ip, ipv4_t server_ip);
+
+/*
+ * Get the last known DHCP server IP address.
+ * Returns 0 if no server has been contacted (no DHCP transaction completed).
+ */
+ipv4_t dhcp_get_server_ip(void);
+
 #endif /* UAOS_DHCP_H */

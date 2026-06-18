@@ -49,14 +49,23 @@ static void type_hex(NativeCmdCtx *ctx, VfsFile *fh)
 static void type_text(NativeCmdCtx *ctx, VfsFile *fh, int numbers, VfsFile *outfh)
 {
     uint8_t buf[CMD_MAX_LINE];
+    uint8_t chunk[256];
     uint32_t pos = 0;
     uint32_t sz = VFS_Size(fh);
     int line_no = 0;
+    int chunk_pos = 0, chunk_end = 0;
     while (pos < sz) {
         int col = 0;
         while (pos < sz && col < CMD_MAX_LINE - 1) {
             uint8_t c;
-            if (VFS_Read(fh, &c, 1) == 0) break;
+            if (chunk_pos >= chunk_end) {
+                uint32_t remain = sz - pos;
+                int to_read = (remain < 256) ? (int)remain : 256;
+                chunk_end = (int)VFS_Read(fh, chunk, to_read);
+                chunk_pos = 0;
+                if (chunk_end <= 0) break;
+            }
+            c = chunk[chunk_pos++];
             pos++;
             if (c == '\n') break;
             if (c != '\r') buf[col++] = c;

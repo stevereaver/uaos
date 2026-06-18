@@ -1348,7 +1348,7 @@ static void vim_draw(VimInstance *v, int wx, int wy, int ww, int wh)
     int max_vis_lines = text_h / 16;
     if (max_vis_lines < 1) max_vis_lines = 1;
 
-    int scroll_y = WM_GetScrollY(v->wm_handle);
+    int scroll_y = v->inline_mode ? (v->cur.scroll_y * 16) : WM_GetScrollY(v->wm_handle);
     int first_line = scroll_y / 16;
     if (first_line < 0) first_line = 0;
 

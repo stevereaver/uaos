@@ -240,7 +240,7 @@ Click the **UAOS Shell** title bar to focus it, then type commands:
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
-| `run <prog> [args]` | Run an embedded Amiga binary |
+| `run <cmd> [args]` | Run a command in a new CLI |
 
 ---
 

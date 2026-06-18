@@ -27,7 +27,14 @@ int  net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
 int  net_stack_dhcp_used(void);
 
 /* Run a fresh DHCP discovery and apply the result. Returns 1 on success. */
-int  net_stack_dhcp_renew(uint32_t timeout_ms);
+int net_stack_dhcp_renew(uint32_t timeout_ms);
+
+/*
+ * Shutdown the network stack.
+ * Sends DHCPRELEASE if DHCP was used, then clears stack state.
+ * Call this before shutting down the network device.
+ */
+void net_stack_shutdown(void);
 
 /* Returns 1 if the network stack is up */
 int  net_stack_is_up(void);

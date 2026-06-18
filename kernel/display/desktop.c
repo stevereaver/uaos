@@ -193,7 +193,7 @@ static void draw_welcome_window(int W, int H)
     cy += ls;
     FB_PutStr(cx, cy,        "Boot protocol: Multiboot2 via GRUB2/OVMF", WB_BLACK, WB_GREY);
     cy += ls;
-    FB_PutStr(cx, cy,        "M68k emulator: Musashi 3.32 (68000, run <prog> in Shell)", WB_BLACK, WB_GREY);
+    FB_PutStr(cx, cy,        "M68k emulator: Musashi 3.32 (68000, run <cmd> in Shell)", WB_BLACK, WB_GREY);
     cy += ls + 4;
     FB_DrawHLine(wx + 8, cy, ww - 16, WB_DARK_GREY);
     cy += 8;

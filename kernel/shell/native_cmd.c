@@ -58,6 +58,8 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("route",      Cmd_Route    ),
     CMD ("nslookup",   Cmd_Nslookup ),
     CMD ("ntpd",       Cmd_Ntpd     ),
+    CMD ("netstart",   Cmd_Netstart ),
+    CMD ("netstop",    Cmd_Netstop  ),
     CMD ("clock",      Cmd_ClockWin ),
     CMDT("grep",       Cmd_Grep,     "PATTERN/A,FILE,CI/S" ),
     CMDT("more",       Cmd_More,     "FILE" ),

@@ -47,6 +47,7 @@ static void _dh_phex(uint32_t v) {
 #define DHCPREQUEST   3
 #define DHCPACK       5
 #define DHCPNAK       6
+#define DHCPRELEASE   7
 
 /* DHCP option codes */
 #define OPT_SUBNET_MASK     1
@@ -563,4 +564,41 @@ int dhcp_renew(DhcpLease *lease, uint32_t timeout_ms)
     if (!g_dhcp_got) return 0;
     parse_offer(&g_dhcp_reply, lease);
     return 1;
+}
+
+/*
+ * Send DHCPRELEASE to inform the server we're releasing the lease.
+ * This is fire-and-forget; we don't wait for a response (RFC 2131).
+ * Should be called before shutting down the network interface.
+ */
+void dhcp_release(ipv4_t client_ip, ipv4_t server_ip)
+{
+    if (!client_ip || !server_ip) return;
+
+    _dh_puts("[DHCP] sending RELEASE for ");
+    _dh_phex(client_ip);
+    _dh_puts(" to server ");
+    _dh_phex(server_ip);
+    _dh_puts("\n");
+
+    /* Temporarily set the server IP for the dhcp_send function */
+    ipv4_t saved_server_ip = g_server_ip;
+    g_server_ip = server_ip;
+
+    dhcp_send(DHCPRELEASE, client_ip, server_ip);
+
+    /* Restore saved server IP */
+    g_server_ip = saved_server_ip;
+
+    /* Brief delay to ensure packet is transmitted before shutdown */
+    dhcp_delay_ms(100);
+}
+
+/*
+ * Get the last known DHCP server IP address.
+ * Returns 0 if no server has been contacted (no DHCP transaction completed).
+ */
+ipv4_t dhcp_get_server_ip(void)
+{
+    return g_server_ip;
 }

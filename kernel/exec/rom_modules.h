@@ -88,4 +88,7 @@ void UAOS_WORKBENCH_Register(void);
 /* Register intuition.library */
 void UAOS_INTUITION_Register(void);
 
+/* Global guest RAM base for Amiga address translation */
+extern uint8_t *uaos_ram_base;
+
 #endif /* UAOS_ROM_MODULES_H */

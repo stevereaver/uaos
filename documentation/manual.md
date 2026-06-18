@@ -589,7 +589,7 @@ The shell integrates with the VFS layer for filesystem operations:
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
-| `run <prog> [args]` | Run an embedded Amiga binary |
+| `run <cmd> [args]` | Run a command in a new CLI |
 
 ### Current Implementation Status
 
@@ -644,7 +644,7 @@ implements a scrollable terminal:
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
-| `run <prog> [args]` | Run an embedded Amiga binary |
+| `run <cmd> [args]` | Run a command in a new CLI |
 | `ping <host> [count]` | Send ICMP echo requests to a dotted-decimal IPv4 address |
 | `ifconfig` | Show network interface IP, netmask, gateway and MAC address |
 

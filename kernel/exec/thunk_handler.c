@@ -16,12 +16,18 @@
 /* M68kCPUState is defined in rom_modules.h (shared with ROM stubs) */
 
 /* -----------------------------------------------------------------------
+ * Strace forward declarations — for syscall tracing
+ * ----------------------------------------------------------------------- */
+extern void Strace_ThunkEntry(uint32_t thunk_idx, M68kCPUState *cpu);
+extern void Strace_ThunkExit(uint32_t thunk_idx, uint32_t result, uint32_t elapsed_us);
+
+/* -----------------------------------------------------------------------
  * UAOS_AMIGA_TO_HOST — maps a 32-bit Amiga-space address to the host
  * linear address by adding the physical RAM base allocated for the guest.
  * ram_base must point to the start of the 4 GB guest memory window.
  * ----------------------------------------------------------------------- */
 
-static uint8_t *uaos_ram_base = NULL;
+uint8_t *uaos_ram_base = NULL;
 
 #define UAOS_AMIGA_TO_HOST(amiga_addr) \
     ((void *)((uintptr_t)(uaos_ram_base) + (uint32_t)(amiga_addr)))
@@ -305,6 +311,15 @@ int UAOS_HandleThunk(M68kCPUState *cpu)
         return -1;
     }
 
+    /* DEBUG: Strace disabled to test for lockups
+     * Strace_ThunkEntry((uint32_t)func_idx, cpu);
+     */
+    (void)func_idx; (void)cpu;
+
+    /* Save D0 for result capture (some stubs modify it) */
+    uint32_t d0_before = cpu->d[0];
+    (void)d0_before; /* May be used in future for comparison */
+
     switch (func_idx) {
         case THUNK_OPEN_LIBRARY:   stub_OpenLibrary(cpu);   break;
         case THUNK_ALLOC_MEM:      stub_AllocMem(cpu);      break;
@@ -325,6 +340,10 @@ int UAOS_HandleThunk(M68kCPUState *cpu)
                     func_idx, cpu->pc);
             return -2;
     }
+
+    /* DEBUG: Strace disabled to test for lockups
+     * Strace_ThunkExit((uint32_t)func_idx, cpu->d[0], 0);
+     */
 
     /* Advance guest PC past the entire 6-byte breakout sequence.
      * The RTS at the end of the stub is handled by the normal flow.        */

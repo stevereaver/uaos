@@ -757,7 +757,7 @@ echo "Scan saved to RAM:dirlog.txt"
 | `calculator` | `calculator` | Calculator win |
 | `clock` | `clock` | Clock win |
 | `loadwb` | `loadwb` | Launch Workbench |
-| `run` | `run <prog>` | M68k binary |
+| `run` | `run <cmd>` | Run command in new CLI |
 | `assign` | `assign [name: tgt]` | Create/list assigns |
 | `execute` | `execute <script>` | Run script file |
 

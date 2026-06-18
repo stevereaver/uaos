@@ -111,6 +111,27 @@ void netdev_setup_irq(void)
         g_netdev->setup_irq(g_netdev);
 }
 
+/*
+ * Shutdown the network device.
+ * Disables interrupts and marks the device as down.
+ * The stack should be shut down (net_stack_shutdown) before calling this.
+ */
+void netdev_shutdown(void)
+{
+    if (!g_netdev) return;
+
+    _nd_puts("[NETDEV] shutting down ");
+    _nd_puts(g_netdev->name);
+    _nd_puts("...\n");
+
+    /* Mark as down first to prevent new operations */
+    g_up = 0;
+
+    /* Note: full hardware shutdown would require driver-specific functions
+     * to disable RX/TX and mask interrupts. For now, marking as down
+     * prevents further network operations. */
+}
+
 /* -------------------------------------------------------------------------
  * VirtIO-Net adapter
  *

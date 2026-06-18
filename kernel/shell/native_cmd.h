@@ -195,6 +195,8 @@ void Cmd_Ping     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Route    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Nslookup (NativeCmdCtx *ctx, const char *args);
 void Cmd_Ntpd     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Netstart (NativeCmdCtx *ctx, const char *args);
+void Cmd_Netstop  (NativeCmdCtx *ctx, const char *args);
 void Cmd_ClockWin (NativeCmdCtx *ctx, const char *args);
 void Cmd_Grep     (NativeCmdCtx *ctx, const char *args);
 void Cmd_More     (NativeCmdCtx *ctx, const char *args);
