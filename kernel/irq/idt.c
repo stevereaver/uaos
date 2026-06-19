@@ -225,6 +225,11 @@ void IDT_SetHandler(uint8_t vector, ISRHandler handler)
     g_handlers[vector] = handler;
 }
 
+void IDT_SetRawHandler(uint8_t vector, void (*handler)(void))
+{
+    idt_set_entry(vector, handler);
+}
+
 /* =========================================================================
  * ISR_Dispatch — called from isr_common in idt_stubs.asm
  * ========================================================================= */

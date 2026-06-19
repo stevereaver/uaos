@@ -9,6 +9,7 @@
 #define UAOS_KPRINT_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* Print a string to console */
 void kprint(const char *s);
@@ -18,5 +19,8 @@ void kprinthex(uint64_t v);
 
 /* Print a decimal number to console */
 void kprintdec(uint32_t v);
+
+/* Print a fixed-length buffer to console */
+void kprintbuf(const char *s, size_t len);
 
 #endif /* UAOS_KPRINT_H */

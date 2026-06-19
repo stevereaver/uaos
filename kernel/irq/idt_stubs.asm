@@ -170,3 +170,78 @@ ISR_STUB 31, 0
     ISR_STUB v, 0
     %assign v v+1
 %endrep
+
+; -------------------------------------------------------------------------
+; Syscall vector 0x80 — direct dispatch to Syscall_Dispatch(frame, regs)
+;
+; Saves GPRs in the same order as the page-fault handler so the shared
+; SavedRegs struct (rax..r15) matches memory layout.
+;
+; INT 0x80 does not push an error code; we push a dummy one so the CPU frame
+; (RIP/CS/RFLAGS/RSP/SS) aligns with the shared InterruptFrame struct.
+;
+; The C handler receives:
+;   rdi = pointer to SavedRegs (rax slot at the top of saved GPRs)
+;   rsi = pointer to InterruptFrame (error_code slot)
+; -------------------------------------------------------------------------
+
+extern Syscall_Dispatch
+
+global uaos_syscall_isr
+uaos_syscall_isr:
+    push    qword 0             ; dummy error code
+
+    push    r15
+    push    r14
+    push    r13
+    push    r12
+    push    r11
+    push    r10
+    push    r9
+    push    r8
+    push    rbp
+    push    rdi
+    push    rsi
+    push    rdx
+    push    rcx
+    push    rbx
+    push    rax
+
+    ; RDI = &SavedRegs (rax slot), RSI = &InterruptFrame (error_code slot)
+    mov     rdi, rsp
+    mov     rsi, rsp
+    add     rsi, 15 * 8
+    call    Syscall_Dispatch
+
+    ; Task switch requested by scheduler?
+    mov     rax, [rel Task_SwitchNext]
+    test    rax, rax
+    jz      .no_switch
+
+    ; Save current RSP into the old task's native_rsp.
+    mov     rbx, [rel Task_SwitchPrev]
+    mov     [rbx + 136], rsp    ; offset of native_rsp in UaosTask
+
+    ; Load new task's RSP and clear switch request.
+    mov     rsp, [rax + 136]
+    mov     qword [rel Task_SwitchNext], 0
+    mov     qword [rel Task_SwitchPrev], 0
+
+.no_switch:
+    pop     rax
+    pop     rbx
+    pop     rcx
+    pop     rdx
+    pop     rsi
+    pop     rdi
+    pop     rbp
+    pop     r8
+    pop     r9
+    pop     r10
+    pop     r11
+    pop     r12
+    pop     r13
+    pop     r14
+    pop     r15
+    add     rsp, 8              ; discard dummy error_code
+    iretq

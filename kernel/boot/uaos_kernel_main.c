@@ -30,6 +30,7 @@
 #include "drivers/ide.h"
 #include "dos/iso9660.h"
 #include "exec/task.h"
+#include "exec/syscall_table.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -84,6 +85,12 @@ static void vga_putchar(char ch)
 static void vga_puts(const char *s)
 {
     while (*s) vga_putchar(*s++);
+}
+
+static void vga_write(const char *s, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+        vga_putchar(s[i]);
 }
 
 static void vga_puthex(uint64_t v)
@@ -189,6 +196,12 @@ static void uart_puts(const char *s)
     while (*s) uart_putchar(*s++);
 }
 
+static void uart_write(const char *s, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+        uart_putchar(s[i]);
+}
+
 /* -----------------------------------------------------------------------
  * Combined console output
  * ----------------------------------------------------------------------- */
@@ -198,6 +211,12 @@ void kprint(const char *s)
 {
     vga_puts(s);
     uart_puts(s);
+}
+
+void kprintbuf(const char *s, size_t len)
+{
+    vga_write(s, len);
+    uart_write(s, len);
 }
 
 void kprinthex(uint64_t v)
@@ -250,15 +269,9 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 }
 
 /* -----------------------------------------------------------------------
- * Software interrupt handler (vector 0x80) — voluntary task switch from Wait()
+ * Software interrupt handler (vector 0x80) — UAOS x86-64 syscall table
  * ----------------------------------------------------------------------- */
-extern void Task_ScheduleFromSyscall(void);
-
-static void SysCall_IRQHandler(uint64_t vector, uint64_t error_code)
-{
-    (void)vector; (void)error_code;
-    Task_ScheduleFromSyscall();
-}
+extern void uaos_syscall_isr(void);
 
 /* -----------------------------------------------------------------------
  * UAOS Banner
@@ -551,8 +564,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Init scheduler BEFORE creating any tasks */
     TaskScheduler_Init();
 
-    /* Register software interrupt handler for Wait()/voluntary switch */
-    IDT_SetHandler(0x80, SysCall_IRQHandler);
+    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
+     * starts.  The raw assembly entry passes the full interrupt frame to
+     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
+    IDT_SetRawHandler(0x80, uaos_syscall_isr);
 
     /* Create system idle task (runs the former event loop) */
     extern void Task_IdleEntry(void *arg);

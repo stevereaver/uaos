@@ -560,7 +560,14 @@ uint32_t Wait(uint32_t sigmask)
     while ((g_current->tc_SigRecvd & sigmask) == 0) {
         g_current->tc_State = TASK_WAITING;
         wait_enqueue(g_current);
-        __asm__ volatile ("int $0x80");
+        /* RAX = SYSCALL_SCHEDULE (0xFF) so the new syscall dispatcher
+         * treats this as a voluntary yield rather than dispatching by
+         * whatever value the compiler left in RAX. */
+        __asm__ volatile (
+            "mov $0xFF, %%rax\n"
+            "int $0x80"
+            ::: "rax", "memory"
+        );
     }
 
     result = g_current->tc_SigRecvd & sigmask;

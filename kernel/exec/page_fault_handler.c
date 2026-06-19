@@ -25,6 +25,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "syscall_table.h"
 
 /* -----------------------------------------------------------------------
  * Amiga hardware register window boundaries
@@ -37,42 +38,6 @@ static inline int is_chip_address(uint64_t addr)
 {
     return (addr >= CHIP_WINDOW_START) && (addr <= CHIP_WINDOW_END);
 }
-
-/* -----------------------------------------------------------------------
- * x86_64 interrupt stack frame layout (no privilege change, no error code
- * in the frame itself — the CPU pushes error code before RIP for #PF).
- *
- *  RSP + 0x00  : error_code  (pushed by CPU before entering ISR)
- *  RSP + 0x08  : rip
- *  RSP + 0x10  : cs
- *  RSP + 0x18  : rflags
- *  RSP + 0x20  : rsp_user   (only present on privilege-level change)
- *  RSP + 0x28  : ss_user
- *
- * We declare this as a packed struct so we can take its address from the
- * compiler-generated interrupt stub.
- * ----------------------------------------------------------------------- */
-
-typedef struct __attribute__((packed)) {
-    uint64_t error_code;
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-} InterruptFrame;
-
-/* -----------------------------------------------------------------------
- * General-purpose register block saved by the ISR prologue.
- * The order must match the PUSH sequence in the ISR wrapper below.
- * ----------------------------------------------------------------------- */
-
-typedef struct __attribute__((packed)) {
-    uint64_t rax, rbx, rcx, rdx;
-    uint64_t rsi, rdi, rbp;
-    uint64_t r8,  r9,  r10, r11;
-    uint64_t r12, r13, r14, r15;
-} SavedRegs;
 
 /* -----------------------------------------------------------------------
  * Chip emulator interface — stub declarations.

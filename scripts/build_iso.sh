@@ -310,6 +310,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/task.c" \
     "${REPO_ROOT}/kernel/exec/elf64_loader.c" \
+    "${REPO_ROOT}/kernel/exec/syscall_dispatch.c" \
     "${REPO_ROOT}/kernel/exec/exec_task.c" \
     "${REPO_ROOT}/kernel/exec/exec_signal.c" \
     "${REPO_ROOT}/kernel/exec/exec_ipc.c" \
@@ -590,6 +591,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/task.o" \
     "${BUILD_DIR}/obj/elf64_loader.o" \
+    "${BUILD_DIR}/obj/syscall_dispatch.o" \
     "${BUILD_DIR}/obj/exec_task.o" \
     "${BUILD_DIR}/obj/exec_signal.o" \
     "${BUILD_DIR}/obj/exec_ipc.o" \
