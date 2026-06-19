@@ -102,6 +102,12 @@ typedef struct UaosTask {
     uint8_t  m68k_halted;       /* set when dos_Exit called */
     void    *m68k_print_fn;       /* GluePrintFn for output */
 
+    /* M68k CLI argument storage — copied at creation so asynchronous
+     * tasks keep their argument vector alive after the caller returns. */
+    char       m68k_name[16];       /* persistent copy of task name */
+    const char *m68k_argv[18];      /* argv[0] = name, argv[1..] = args */
+    char       m68k_argv_store[256]; /* string storage for m68k_argv */
+
     /* Scheduling */
     uint32_t time_slice_ticks;
     uint32_t ticks_remaining;

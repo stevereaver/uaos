@@ -37,6 +37,10 @@
 #define UAOS_BIN_MAGIC      0x55414F53UL   /* "UAOS" */
 #define UAOS_BIN_TYPE_NATIVE 0x0001U       /* native x86 kernel command  */
 #define UAOS_BIN_TYPE_M68K   0x0002U       /* AmigaOS Amiga Hunk binary  */
+#define UAOS_BIN_TYPE_X64    0x0003U       /* x86-64 ELF64 binary        */
+
+/* Amiga Hunk header magic (raw binaries without UAOS wrapper) */
+#define UAOS_BIN_HUNK_MAGIC 0x000003F3UL
 
 #define UAOS_BIN_HEADER_SIZE 32            /* fixed header size in bytes */
 

@@ -85,6 +85,8 @@ gcc -O2 -o "${BUILD_DIR}/gen_uaos_native" "${TOOLS_DIR}/gen_uaos_native.c"
 ok "  Built: gen_uaos_native"
 gcc -O2 -o "${BUILD_DIR}/gen_uaos_m68k"   "${TOOLS_DIR}/gen_uaos_m68k.c"
 ok "  Built: gen_uaos_m68k"
+gcc -O2 -o "${BUILD_DIR}/gen_uaos_x64"    "${TOOLS_DIR}/gen_uaos_x64.c"
+ok "  Built: gen_uaos_x64"
 gcc -O2 -o "${BUILD_DIR}/gen_m68k_library" "${TOOLS_DIR}/gen_m68k_library.c"
 ok "  Built: gen_m68k_library"
 

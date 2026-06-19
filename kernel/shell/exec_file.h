@@ -2,8 +2,10 @@
  *
  * Provides ExecFile_Run(), which opens a VFS file, inspects its UAOS binary
  * header, and dispatches to the appropriate runner:
- *   NATIVE -> NativeCmd_Run with a minimal context
- *   M68K   -> UAOS_Emu_LoadAndRun with the payload
+ *   NATIVE  -> NativeCmd_Run with a minimal context
+ *   M68K    -> Task_CreateM68k with the payload (background task)
+ *   raw hunk -> Task_CreateM68k for raw Amiga Hunk files (0x000003F3)
+ *   X64     -> recognised but not yet executed (reserved for Phase 3)
  *
  * This allows any subsystem (file browser, desktop, etc.) to launch
  * executables without needing a ShellInstance.

@@ -135,7 +135,7 @@ static void u32_dec(uint32_t v, char *buf, int max) {
 static uint8_t g_default_ram[GUEST_RAM_SIZE];
 uint8_t *g_ram = g_default_ram;
 int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
-static uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
+uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */

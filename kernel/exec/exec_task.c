@@ -113,6 +113,10 @@ static void guest_memcpy(uint32_t dst, const uint8_t *src, uint32_t n)
 #define DOS_STDIN_BPTR  0x00000200
 #define DOS_STDOUT_BPTR 0x00000204
 
+/* CLI struct offsets used by the M68k wrapper to publish command-line info */
+#define CLI_COMMAND_NAME_OFFSET 0x10
+#define CLI_COMMAND_LINE_OFFSET 0x2C
+
 static void m68k_wrapper_entry(void *arg)
 {
     UaosTask *task = (UaosTask *)arg;
@@ -140,11 +144,44 @@ static void m68k_wrapper_entry(void *arg)
         Task_Exit();
     }
 
-    /* Build minimal command line in guest RAM */
+    /* Build command line in guest RAM (matches UAOS_Emu_LoadAndRun_Internal) */
     uint32_t sp = STACK_TOP;
-    uint32_t cmdline_ptr = sp - 256;
-    guest_memset(cmdline_ptr, 0, 256);
-    guest_w32(cmdline_ptr, 0x0A0D0000);  /* minimal fake cmdline */
+    char cmdline[256];
+    int cmdlen = 0;
+    const char **argv = task->m68k_argv;
+    if (argv) {
+        for (int i = 1; argv[i] && cmdlen < 254; i++) {
+            if (i > 1 && cmdlen < 254) cmdline[cmdlen++] = ' ';
+            for (int j = 0; argv[i][j] && cmdlen < 254; j++)
+                cmdline[cmdlen++] = argv[i][j];
+        }
+    }
+    cmdline[cmdlen] = '\n';
+    cmdlen++;
+    cmdline[cmdlen] = '\0';
+
+    /* Place cmdline string just below SP */
+    sp -= (uint32_t)((cmdlen + 2) & ~1u);
+    uint32_t cmdline_ptr = sp;
+    guest_memcpy(cmdline_ptr, (const uint8_t *)cmdline, (uint32_t)cmdlen);
+
+    /* Build a BSTR version for GetArgStr (byte[0]=len, byte[1..len]=chars) */
+    sp -= (uint32_t)((cmdlen + 2 + 4) & ~3u);
+    uint32_t bstr_ptr = sp;
+    g_ram[bstr_ptr] = (uint8_t)(cmdlen < 255 ? cmdlen : 255);
+    guest_memcpy(bstr_ptr + 1, (const uint8_t *)cmdline, (uint32_t)cmdlen);
+    g_cmdline_bptr = bstr_ptr >> 2;
+
+    /* Build a BSTR for the command name (argv[0] / task name) */
+    sp -= 8;
+    uint32_t cmdname_bstr_ptr = sp;
+    const char *cmdname = task->m68k_argv[0] ? task->m68k_argv[0] : task->m68k_name;
+    uint8_t cmdname_len = 0;
+    while (cmdname_len < 15 && cmdname[cmdname_len]) cmdname_len++;
+    g_ram[cmdname_bstr_ptr] = cmdname_len;
+    for (int i = 0; i < cmdname_len; i++)
+        g_ram[cmdname_bstr_ptr + 1 + i] = (uint8_t)cmdname[i];
+    uint32_t cmdname_bptr = cmdname_bstr_ptr >> 2;
 
     /* Build minimal Process struct */
     uint32_t proc_addr = 0x10000;
@@ -160,6 +197,9 @@ static void m68k_wrapper_entry(void *arg)
     guest_w32(proc_addr + PR_COS_OFFSET, DOS_STDOUT_BPTR);
     /* Minimal CLI struct (just needs to be non-zero) */
     g_ram[cli_addr] = 0x01;
+    /* Publish command name and command line in the CLI struct */
+    guest_w32(cli_addr + CLI_COMMAND_NAME_OFFSET, cmdname_bptr);
+    guest_w32(cli_addr + CLI_COMMAND_LINE_OFFSET, g_cmdline_bptr);
 
     /* Store Process pointer at ExecBase+0x114 */
     guest_w32(EXEC_BASE + 0x114, proc_addr);
@@ -176,9 +216,9 @@ static void m68k_wrapper_entry(void *arg)
     m68k_pulse_reset();
     m68k_write_memory_32(4, EXEC_BASE);
 
-    /* CLI entry registers */
-    m68k_set_reg(0, cmdline_ptr);  /* M68K_REG_A0 */
-    m68k_set_reg(8, (unsigned int)(cmdline_ptr + 4));  /* M68K_REG_D0 = length (fake) */
+    /* CLI entry registers per Amiga CLI convention */
+    m68k_set_reg(0, cmdline_ptr);        /* A0 = command line pointer */
+    m68k_set_reg(8, (unsigned int)cmdlen); /* D0 = command line length */
 
     /* Run in time-sliced chunks */
     g_emu_halted = 0;
@@ -250,6 +290,39 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     t->native_arg = t;                /* pass task pointer to wrapper */
     t->tc_UserData = (void *)binary;  /* binary pointer for wrapper */
     t->m68k_print_fn = (void *)print_fn;
+
+    /* Copy task name into a persistent per-task buffer. */
+    {
+        int i = 0;
+        while (i < 15 && name[i]) {
+            t->m68k_name[i] = name[i];
+            i++;
+        }
+        t->m68k_name[i] = '\0';
+        t->ln_Name = t->m68k_name;
+    }
+
+    /* Copy argv into a persistent per-task buffer. */
+    if (argv) {
+        int argc = 0;
+        int ai = 0;
+        while (argv[argc] && argc < 17) {
+            const char *src = argv[argc];
+            int len = 0;
+            while (src[len] && ai + len < 255) {
+                t->m68k_argv_store[ai + len] = src[len];
+                len++;
+            }
+            t->m68k_argv_store[ai + len] = '\0';
+            t->m68k_argv[argc] = &t->m68k_argv_store[ai];
+            ai += len + 1;
+            argc++;
+            if (ai >= 256) break;
+        }
+        t->m68k_argv[argc] = NULL;
+    } else {
+        t->m68k_argv[0] = NULL;
+    }
 
     /* Patch the synthetic interrupt frame so the first time the task
      * is switched to via Task_SwitchContext, RDI receives the task pointer. */

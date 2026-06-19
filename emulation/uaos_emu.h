@@ -20,6 +20,9 @@ extern GluePrintFn g_print;
  * FileLock structs, BSTRs, etc. */
 extern uint32_t g_uaos_heap_ptr;
 
+/* BPTR to the CLI argument BSTR, set at startup for GetArgStr() */
+extern uint32_t g_cmdline_bptr;
+
 /* Current working directory for resolving relative paths */
 extern char g_uaos_cwd[64];
 

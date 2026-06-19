@@ -3464,9 +3464,20 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
  * Returns 0 on success, -1 if file not found, -2 bad magic / unknown type.
  * ========================================================================= */
 
-/* Static payload buffer for M68K binaries loaded from VFS (max 512 KB) */
-#define UAOS_MAX_BIN_PAYLOAD (512 * 1024)
+/* Static payload buffer for M68K binaries loaded from VFS (max 2 MB) */
+#define UAOS_MAX_BIN_PAYLOAD (2 * 1024 * 1024)
 static uint8_t g_bin_payload[UAOS_MAX_BIN_PAYLOAD];
+
+/* Print adapters for raw M68k binaries launched as background tasks.
+ * Each adapter is bound to a fixed shell slot so the task keeps its output
+ * routed to the correct shell even after concurrent launches. */
+static void raw_m68k_print_0(const char *line) { if (g_shells[0].wm_handle) inst_print(&g_shells[0], line); }
+static void raw_m68k_print_1(const char *line) { if (g_shells[1].wm_handle) inst_print(&g_shells[1], line); }
+static void raw_m68k_print_2(const char *line) { if (g_shells[2].wm_handle) inst_print(&g_shells[2], line); }
+static void raw_m68k_print_3(const char *line) { if (g_shells[3].wm_handle) inst_print(&g_shells[3], line); }
+static void (*raw_m68k_print[4])(const char *) = {
+    raw_m68k_print_0, raw_m68k_print_1, raw_m68k_print_2, raw_m68k_print_3
+};
 
 static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                                const char *args)
@@ -3475,84 +3486,167 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
     if (!VFS_Open(&fh, full_path, VFS_READ)) return -1;
 
     uint32_t file_size = VFS_Size(&fh);
+    if (file_size < 4) {
+        VFS_Close(&fh);
+        return -2;
+    }
 
-    /* --- Try to read UAOS header --- */
-    if (file_size >= UAOS_BIN_HEADER_SIZE) {
-        uint8_t hdr[UAOS_BIN_HEADER_SIZE];
-        if (VFS_Read(&fh, hdr, UAOS_BIN_HEADER_SIZE) == UAOS_BIN_HEADER_SIZE
-            && uaos_bin_check_magic(hdr)) {
+    /* Read the first 4 bytes to detect either a UAOS wrapper or raw Hunk. */
+    uint8_t first4[4];
+    if (VFS_Read(&fh, first4, 4) != 4) {
+        VFS_Close(&fh);
+        return -2;
+    }
+    uint32_t magic = uaos_bin_u32(first4);
 
-            uint16_t type         = uaos_bin_u16(hdr + 4);
-            uint32_t payload_size = uaos_bin_u32(hdr + 8);
-
-            /* Extract name from header (NUL-padded, 16 bytes at offset 12) */
-            char bin_name[17];
-            int ni = 0;
-            while (ni < 16 && hdr[12 + ni]) { bin_name[ni] = (char)hdr[12 + ni]; ni++; }
-            bin_name[ni] = '\0';
-
-            if (type == UAOS_BIN_TYPE_NATIVE) {
-                VFS_Close(&fh);
-                NativeCmdCtx nctx = shell_make_ctx(s);
-                if (NativeCmd_Run(bin_name, &nctx, args) == 0) return 0;
-                char msg[MAX_LINE_LEN];
-                scopy(msg, "Native handler not found: ", MAX_LINE_LEN);
-                scat(msg, bin_name, MAX_LINE_LEN);
-                inst_print(s, msg);
-                return -2;
-            }
-
-            if (type == UAOS_BIN_TYPE_M68K) {
-                if (payload_size == 0 || payload_size > UAOS_MAX_BIN_PAYLOAD) {
-                    VFS_Close(&fh);
-                    inst_print(s, "M68K binary: payload size invalid or too large");
-                    return -2;
-                }
-                uint32_t n = VFS_Read(&fh, g_bin_payload, payload_size);
-                VFS_Close(&fh);
-                if (n != payload_size) {
-                    inst_print(s, "M68K binary: read error");
-                    return -2;
-                }
-                /* Build argv from bin_name + args */
-                static const char *m68k_argv[18];
-                static char m68k_argstore[256];
-                m68k_argv[0] = bin_name;
-                int argc = 1;
-                int ai = 0;
-                if (args && *args) {
-                    while (*args && ai < 254) m68k_argstore[ai++] = *args++;
-                }
-                if (g_pipe_in_active && ai < 254) {
-                    if (ai > 0) m68k_argstore[ai++] = ' ';
-                    const char *pf = g_pipe_in_file;
-                    while (*pf && ai < 254) m68k_argstore[ai++] = *pf++;
-                }
-                m68k_argstore[ai] = '\0';
-                if (ai > 0) {
-                    char *tok = m68k_argstore;
-                    while (*tok && argc < 16) {
-                        while (*tok == ' ') tok++;
-                        if (!*tok) break;
-                        m68k_argv[argc++] = tok;
-                        while (*tok && *tok != ' ') tok++;
-                        if (*tok == ' ') *tok++ = '\0';
-                    }
-                }
-                m68k_argv[argc] = NULL;
-                UAOS_Emu_SetCwd(s->cwd);
-                UAOS_Emu_LoadAndRun(g_bin_payload, payload_size,
-                                    m68k_argv, s, (UAOS_PrintFn)inst_print);
-                return 0;
-            }
-
-            /* Unknown type */
+    if (magic == UAOS_BIN_MAGIC) {
+        if (file_size < UAOS_BIN_HEADER_SIZE) {
             VFS_Close(&fh);
-            inst_print(s, "Unknown UAOS binary type");
             return -2;
         }
-        /* Not a UAOS binary — rewind and fall through to script execution */
+
+        uint8_t hdr[UAOS_BIN_HEADER_SIZE];
+        memcpy(hdr, first4, 4);
+        if (VFS_Read(&fh, hdr + 4, UAOS_BIN_HEADER_SIZE - 4) != UAOS_BIN_HEADER_SIZE - 4) {
+            VFS_Close(&fh);
+            return -2;
+        }
+
+        uint16_t type         = uaos_bin_u16(hdr + 4);
+        uint32_t payload_size = uaos_bin_u32(hdr + 8);
+
+        /* Extract name from header (NUL-padded, 16 bytes at offset 12) */
+        char bin_name[17];
+        int ni = 0;
+        while (ni < 16 && hdr[12 + ni]) { bin_name[ni] = (char)hdr[12 + ni]; ni++; }
+        bin_name[ni] = '\0';
+
+        if (type == UAOS_BIN_TYPE_NATIVE) {
+            VFS_Close(&fh);
+            NativeCmdCtx nctx = shell_make_ctx(s);
+            if (NativeCmd_Run(bin_name, &nctx, args) == 0) return 0;
+            char msg[MAX_LINE_LEN];
+            scopy(msg, "Native handler not found: ", MAX_LINE_LEN);
+            scat(msg, bin_name, MAX_LINE_LEN);
+            inst_print(s, msg);
+            return -2;
+        }
+
+        if (type == UAOS_BIN_TYPE_M68K) {
+            if (payload_size == 0 || payload_size > UAOS_MAX_BIN_PAYLOAD) {
+                VFS_Close(&fh);
+                inst_print(s, "M68K binary: payload size invalid or too large");
+                return -2;
+            }
+            uint32_t n = VFS_Read(&fh, g_bin_payload, payload_size);
+            VFS_Close(&fh);
+            if (n != payload_size) {
+                inst_print(s, "M68K binary: read error");
+                return -2;
+            }
+            /* Build argv from bin_name + args */
+            const char *m68k_argv[18];
+            char m68k_argstore[256];
+            m68k_argv[0] = bin_name;
+            int argc = 1;
+            int ai = 0;
+            if (args && *args) {
+                while (*args && ai < 254) m68k_argstore[ai++] = *args++;
+            }
+            if (g_pipe_in_active && ai < 254) {
+                if (ai > 0) m68k_argstore[ai++] = ' ';
+                const char *pf = g_pipe_in_file;
+                while (*pf && ai < 254) m68k_argstore[ai++] = *pf++;
+            }
+            m68k_argstore[ai] = '\0';
+            if (ai > 0) {
+                char *tok = m68k_argstore;
+                while (*tok && argc < 16) {
+                    while (*tok == ' ') tok++;
+                    if (!*tok) break;
+                    m68k_argv[argc++] = tok;
+                    while (*tok && *tok != ' ') tok++;
+                    if (*tok == ' ') *tok++ = '\0';
+                }
+            }
+            m68k_argv[argc] = NULL;
+            UAOS_Emu_SetCwd(s->cwd);
+            UAOS_Emu_LoadAndRun(g_bin_payload, payload_size,
+                                m68k_argv, s, (UAOS_PrintFn)inst_print);
+            return 0;
+        }
+
+        /* Unknown type */
+        VFS_Close(&fh);
+        inst_print(s, "Unknown UAOS binary type");
+        return -2;
+    }
+
+    if (magic == UAOS_BIN_HUNK_MAGIC) {
+        /* Raw Amiga Hunk binary — run as a background M68k task. */
+        if (file_size > UAOS_MAX_BIN_PAYLOAD) {
+            VFS_Close(&fh);
+            inst_print(s, "M68K binary: payload size too large");
+            return -2;
+        }
         VFS_Seek(&fh, 0);
+        uint32_t n = VFS_Read(&fh, g_bin_payload, file_size);
+        VFS_Close(&fh);
+        if (n != file_size) {
+            inst_print(s, "M68K binary: read error");
+            return -2;
+        }
+
+        /* Derive a name from the file path */
+        const char *name = full_path;
+        for (const char *p = full_path; *p; p++) {
+            if (*p == '/' || *p == ':' || *p == '\\') name = p + 1;
+        }
+        char bin_name[16];
+        int bi = 0;
+        while (bi < 15 && name[bi] && name[bi] != '.') {
+            bin_name[bi] = name[bi];
+            bi++;
+        }
+        bin_name[bi] = '\0';
+
+        /* Build argv from bin_name + args */
+        const char *m68k_argv[18];
+        char m68k_argstore[256];
+        m68k_argv[0] = bin_name;
+        int argc = 1;
+        int ai = 0;
+        if (args && *args) {
+            while (*args && ai < 254) m68k_argstore[ai++] = *args++;
+        }
+        if (g_pipe_in_active && ai < 254) {
+            if (ai > 0) m68k_argstore[ai++] = ' ';
+            const char *pf = g_pipe_in_file;
+            while (*pf && ai < 254) m68k_argstore[ai++] = *pf++;
+        }
+        m68k_argstore[ai] = '\0';
+        if (ai > 0) {
+            char *tok = m68k_argstore;
+            while (*tok && argc < 16) {
+                while (*tok == ' ') tok++;
+                if (!*tok) break;
+                m68k_argv[argc++] = tok;
+                while (*tok && *tok != ' ') tok++;
+                if (*tok == ' ') *tok++ = '\0';
+            }
+        }
+        m68k_argv[argc] = NULL;
+
+        int slot = (int)(s - g_shells);
+        UAOS_Emu_SetCwd(s->cwd);
+        UaosTask *t = Task_CreateM68k(bin_name, 0,
+                                      g_bin_payload, file_size,
+                                      m68k_argv,
+                                      (slot >= 0 && slot < MAX_SHELLS)
+                                          ? raw_m68k_print[slot]
+                                          : NULL);
+        (void)t;
+        return 0;
     }
 
     VFS_Close(&fh);
