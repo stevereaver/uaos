@@ -45,7 +45,9 @@ static const char *status_state(uint8_t st)
 /* Render task type as a short string. */
 static const char *status_type(TaskType t)
 {
-    return (t == TASK_TYPE_M68K) ? "M68K" : "Natv";
+    if (t == TASK_TYPE_M68K) return "M68K";
+    if (t == TASK_TYPE_X64)  return "X64 ";
+    return "Natv";
 }
 
 /* Left-pad name to width w (truncate if longer). */
@@ -88,9 +90,9 @@ void Cmd_Status(NativeCmdCtx *ctx, const char *args)
             /* CLI-only filter */
             if (cli_only) {
                 /* Heuristic: native tasks whose name starts with "Shell" or
-                 * "CLI" are shell instances; all M68K tasks are processes. */
+                 * "CLI" are shell instances; M68K and X64 tasks are processes. */
                 const char *n = t->ln_Name ? t->ln_Name : "";
-                int is_cli = (t->type == TASK_TYPE_M68K);
+                int is_cli = (t->type == TASK_TYPE_M68K) || (t->type == TASK_TYPE_X64);
                 if (!is_cli) {
                     is_cli = (n[0]=='S'&&n[1]=='h'&&n[2]=='e'&&n[3]=='l'&&n[4]=='l') ||
                              (n[0]=='C'&&n[1]=='L'&&n[2]=='I');
@@ -175,16 +177,24 @@ void Cmd_Status(NativeCmdCtx *ctx, const char *args)
             status_hex(t->tc_SigRecvd, hex); cmd_scat(line, hex, CMD_MAX_LINE); PRINT(line);
         }
 
-        if (t->type == TASK_TYPE_NATIVE) {
+        if (t->type == TASK_TYPE_NATIVE || t->type == TASK_TYPE_X64) {
             char hex[17]; hex[16] = '\0';
+            const char *h = "0123456789ABCDEF";
             /* Print native_rsp as 16-digit hex */
             uint64_t rsp = t->native_rsp;
             for (int j = 15; j >= 0; j--) {
-                const char *h = "0123456789ABCDEF";
                 hex[j] = h[rsp & 0xF]; rsp >>= 4;
             }
             cmd_scopy(line, "SP(x86) : 0x", CMD_MAX_LINE);
             cmd_scat(line, hex, CMD_MAX_LINE); PRINT(line);
+            if (t->type == TASK_TYPE_X64) {
+                uint64_t urs = t->native_initial_rsp;
+                for (int j = 15; j >= 0; j--) {
+                    hex[j] = h[urs & 0xF]; urs >>= 4;
+                }
+                cmd_scopy(line, "SP(usr) : 0x", CMD_MAX_LINE);
+                cmd_scat(line, hex, CMD_MAX_LINE); PRINT(line);
+            }
         } else {
             char hex[9];
             cmd_scopy(line, "M68K SP : 0x", CMD_MAX_LINE);

@@ -265,7 +265,7 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     t->tc_SPLower = stack;
     t->tc_SPUpper = stack + TASK_STACK_SIZE;
 
-    t->type = TASK_TYPE_NATIVE;
+    t->type = TASK_TYPE_X64;
     t->native_stack_base = stack;
     t->native_stack_size = TASK_STACK_SIZE;
     t->native_entry = Task_RunNewX64;

@@ -43,6 +43,7 @@
 typedef enum {
     TASK_TYPE_NATIVE = 0,
     TASK_TYPE_M68K   = 1,
+    TASK_TYPE_X64    = 2,
 } TaskType;
 
 /* -------------------------------------------------------------------------
