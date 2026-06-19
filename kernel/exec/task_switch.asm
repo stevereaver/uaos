@@ -36,6 +36,7 @@ section .text
 
 global Task_SwitchContext
 global Task_RunNew
+global Task_RunNewX64
 
 Task_SwitchContext:
     ; Save current RSP into old_task->native_rsp
@@ -82,5 +83,19 @@ Task_RunNew:
     sti
     call    r11
     ; Task returned — should not happen for Phase 1, but halt just in case.
+    cli
+    hlt
+
+Task_RunNewX64:
+    ; First launch of an ELF64-loaded task.
+    ; RDI = task (already set by Task_RunNew, and native_arg == task)
+    ; Switch to the ELF64 user stack and jump to the loaded entry point.
+    ; The user stack already contains argc / argv / envp in the layout
+    ; expected by a standard musl/newlib _start.
+    mov     rsp, [rdi + 184]    ; task->native_initial_rsp
+    mov     rax, [rdi + 144]    ; task->native_rip
+    sti
+    jmp     rax
+    ; ELF entry should not return; halt if it does.
     cli
     hlt

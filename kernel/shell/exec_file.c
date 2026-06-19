@@ -9,6 +9,7 @@
 #include "exec_file.h"
 #include "native_cmd.h"
 #include "../exec/uaos_binary.h"
+#include "../exec/elf64_loader.h"
 #include "../../emulation/uaos_emu.h"
 #include "../exec/task.h"
 #include "../dos/vfs.h"
@@ -167,6 +168,32 @@ int ExecFile_Run(const char *path, const char *args)
                                             g_exec_payload, payload_size,
                                             m68k_argv, NULL);
             (void)t;  /* task is now running in background */
+            return 0;
+        }
+
+        if (type == UAOS_BIN_TYPE_X64) {
+            if (payload_size == 0 || payload_size > EXEC_MAX_PAYLOAD) {
+                VFS_Close(&fh);
+                return -2;
+            }
+            uint32_t n = VFS_Read(&fh, g_exec_payload, payload_size);
+            VFS_Close(&fh);
+            if (n != payload_size) return -2;
+
+            static const char *x64_argv[18];
+            static char x64_argstore[256];
+            exec_build_argv(bin_name, args, x64_argv, x64_argstore, 256);
+
+            ELF64Result result;
+            if (ELF64_Load(g_exec_payload, payload_size, x64_argv, &result) != 0) {
+                return -2;
+            }
+            int8_t pri = 0;
+            UaosTask *cur = Task_Current();
+            if (cur) pri = cur->ln_Pri;
+            UaosTask *t = Task_CreateX64(bin_name, pri,
+                                         result.entry_rip, result.initial_rsp);
+            (void)t;
             return 0;
         }
 

@@ -88,6 +88,7 @@ typedef struct UaosTask {
     uint32_t native_stack_size;
     void   (*native_entry)(void *arg);
     void    *native_arg;
+    uint64_t native_initial_rsp;  /* ELF64 user stack pointer at entry */
 
     /* M68k guest fields */
     uint32_t m68k_task_struct;    /* guest RAM address of AmigaOS Task struct */
@@ -128,6 +129,13 @@ void TaskScheduler_Init(void);
 /* Create a native x86_64 task. Returns task pointer or NULL. */
 UaosTask *Task_CreateNative(const char *name, int8_t pri,
                             void (*entry)(void *), void *arg);
+
+/* Create an x86-64 native task from an ELF64-loaded image.
+ * entry_rip:    initial instruction pointer
+ * initial_rsp:  initial user stack pointer (e.g. ELF64 loader result)
+ * Returns task pointer or NULL. */
+UaosTask *Task_CreateX64(const char *name, int8_t pri,
+                         uint64_t entry_rip, uint64_t initial_rsp);
 
 /* Create an M68k guest task (native wrapper that runs a binary).
  * Returns task pointer or NULL. */

@@ -28,6 +28,7 @@
 #include "shell/native_cmd.h"
 #include "shell/resident_cmd.h"
 #include "exec/uaos_binary.h"
+#include "exec/elf64_loader.h"
 #include "../net/stack.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
@@ -3573,6 +3574,62 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             UAOS_Emu_SetCwd(s->cwd);
             UAOS_Emu_LoadAndRun(g_bin_payload, payload_size,
                                 m68k_argv, s, (UAOS_PrintFn)inst_print);
+            return 0;
+        }
+
+        if (type == UAOS_BIN_TYPE_X64) {
+            if (payload_size == 0 || payload_size > UAOS_MAX_BIN_PAYLOAD) {
+                VFS_Close(&fh);
+                inst_print(s, "X64 binary: payload size invalid or too large");
+                return -2;
+            }
+            uint32_t n = VFS_Read(&fh, g_bin_payload, payload_size);
+            VFS_Close(&fh);
+            if (n != payload_size) {
+                inst_print(s, "X64 binary: read error");
+                return -2;
+            }
+            /* Build argv from bin_name + args */
+            const char *x64_argv[18];
+            char x64_argstore[256];
+            x64_argv[0] = bin_name;
+            int argc = 1;
+            int ai = 0;
+            if (args && *args) {
+                while (*args && ai < 254) x64_argstore[ai++] = *args++;
+            }
+            if (g_pipe_in_active && ai < 254) {
+                if (ai > 0) x64_argstore[ai++] = ' ';
+                const char *pf = g_pipe_in_file;
+                while (*pf && ai < 254) x64_argstore[ai++] = *pf++;
+            }
+            x64_argstore[ai] = '\0';
+            if (ai > 0) {
+                char *tok = x64_argstore;
+                while (*tok && argc < 16) {
+                    while (*tok == ' ') tok++;
+                    if (!*tok) break;
+                    x64_argv[argc++] = tok;
+                    while (*tok && *tok != ' ') tok++;
+                    if (*tok == ' ') *tok++ = '\0';
+                }
+            }
+            x64_argv[argc] = NULL;
+
+            ELF64Result result;
+            if (ELF64_Load(g_bin_payload, payload_size, x64_argv, &result) != 0) {
+                inst_print(s, "X64 binary: load failed");
+                return -2;
+            }
+            int8_t pri = 0;
+            UaosTask *cur = Task_Current();
+            if (cur) pri = cur->ln_Pri;
+            UaosTask *t = Task_CreateX64(bin_name, pri,
+                                         result.entry_rip, result.initial_rsp);
+            if (!t) {
+                inst_print(s, "X64 binary: failed to create task");
+                return -2;
+            }
             return 0;
         }
 

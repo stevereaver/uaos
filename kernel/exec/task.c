@@ -227,6 +227,84 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
 }
 
 /* -------------------------------------------------------------------------
+ * Create an x86-64 task from an ELF64-loaded image
+ * ------------------------------------------------------------------------- */
+
+/* Assembly trampoline used by Task_RunNew for the very first switch to
+ * an ELF64 task.  It switches to the ELF64 user stack and jumps to the
+ * loaded entry point.  The argument is the task pointer. */
+extern void Task_RunNewX64(void *task);
+
+UaosTask *Task_CreateX64(const char *name, int8_t pri,
+                         uint64_t entry_rip, uint64_t initial_rsp)
+{
+    Forbid();
+
+    if (g_task_count >= MAX_TASKS) { Permit(); return NULL; }
+
+    UaosTask *t = &g_tasks[g_task_count];
+    uint8_t *stack = g_task_stacks[g_task_count];
+    g_task_count++;
+
+    for (int i = 0; i < (int)sizeof(UaosTask); i++)
+        ((uint8_t *)t)[i] = 0;
+
+    t->ln_Type = 1;  /* NT_TASK */
+    t->ln_Pri = pri;
+    t->ln_Name = name;
+    list_init(t);
+
+    t->tc_Flags = 0;
+    t->tc_State = TASK_READY;
+    t->tc_IDNestCnt = 0;
+    t->tc_TDNestCnt = 0;
+    t->tc_SigAlloc = 0xFFFF;
+    t->tc_SigWait = 0;
+    t->tc_SigRecvd = 0;
+    t->tc_SigExcept = 0;
+    t->tc_SPLower = stack;
+    t->tc_SPUpper = stack + TASK_STACK_SIZE;
+
+    t->type = TASK_TYPE_NATIVE;
+    t->native_stack_base = stack;
+    t->native_stack_size = TASK_STACK_SIZE;
+    t->native_entry = Task_RunNewX64;
+    t->native_arg = t;
+    t->native_rip = entry_rip;
+    t->native_initial_rsp = initial_rsp;
+
+    /* Build synthetic interrupt frame on the kernel task stack.
+     * When Task_SwitchContext restores this frame and executes iretq,
+     * the CPU resumes at the ELF64 entry point with the user stack. */
+    uint64_t *sp = (uint64_t *)(stack + TASK_STACK_SIZE);
+    sp -= 22;
+    for (int i = 0; i < 15; i++) sp[i] = 0;
+    sp[15] = 0;                                 /* vector */
+    sp[16] = 0;                                 /* error_code */
+    sp[17] = entry_rip;                         /* RIP */
+    sp[18] = 0x08;                              /* CS */
+    sp[19] = 0x202;                             /* RFLAGS: IF=1 */
+    sp[20] = initial_rsp;                       /* RSP (user stack) */
+    sp[21] = 0x10;                              /* SS */
+
+    t->native_rsp = (uint64_t)sp;  /* kernel stack frame pointer */
+
+    kprint("[TASK] Created X64 task '");
+    kprint(name);
+    kprint("' entry=0x");
+    kprinthex((uint32_t)(entry_rip >> 32));
+    kprinthex((uint32_t)entry_rip);
+    kprint(" rsp=0x");
+    kprinthex((uint32_t)(initial_rsp >> 32));
+    kprinthex((uint32_t)initial_rsp);
+    kprint("\n");
+
+    ready_enqueue(t);
+    Permit();
+    return t;
+}
+
+/* -------------------------------------------------------------------------
  * Scheduling
  * ------------------------------------------------------------------------- */
 
