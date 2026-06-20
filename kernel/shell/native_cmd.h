@@ -174,7 +174,6 @@ void Cmd_Delete  (NativeCmdCtx *ctx, const char *args);
 void Cmd_Type    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Copy    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Rename  (NativeCmdCtx *ctx, const char *args);
-void Cmd_Pwd     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Echo    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Protect (NativeCmdCtx *ctx, const char *args);
 void Cmd_Attr    (NativeCmdCtx *ctx, const char *args);

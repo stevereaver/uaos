@@ -44,6 +44,7 @@ static void inst_print(ShellInstance *s, const char *line);
 static void inst_dispatch(ShellInstance *s, const char *line);
 static void run_cmd(ShellInstance *s, const char *line);
 static NativeCmdCtx shell_make_ctx(ShellInstance *s);
+static int arith_itoa(int v, char *buf, int max);
 static ShellInstance *g_fdisk_shell = NULL;
 static void inst_print_wrapper(const char *line)
 {
@@ -347,6 +348,39 @@ static void extract_vol_prompt(const char *path, char *out, int max)
     out[i] = '\0';
 }
 
+/* Expand AmigaDOS-style prompt escapes: %N = shell number, %S = current
+ * directory, %R = last return code.  Unknown %X is copied literally. */
+static void expand_prompt(const ShellInstance *s, const char *src,
+                          char *dst, int max)
+{
+    int di = 0;
+    while (*src && di < max - 1) {
+        if (*src == '%') {
+            char c = src[1];
+            const char *p = NULL;
+            char num[12];
+            if (c == 'N' || c == 'n') {
+                arith_itoa(s->number, num, sizeof(num));
+                p = num;
+            } else if (c == 'S' || c == 's') {
+                p = s->cwd;
+            } else if (c == 'R' || c == 'r') {
+                arith_itoa(s->last_rc, num, sizeof(num));
+                p = num;
+            }
+            if (p) {
+                while (*p && di < max - 1) dst[di++] = *p++;
+                src += 2;
+            } else {
+                dst[di++] = *src++;
+            }
+        } else {
+            dst[di++] = *src++;
+        }
+    }
+    dst[di] = '\0';
+}
+
 static void inst_draw_input(ShellInstance *s)
 {
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
@@ -369,11 +403,9 @@ static void inst_draw_input(ShellInstance *s)
         /* Add ": " if there's room */
         if (pi < 77) { prompt[pi++] = ':'; prompt[pi++] = ' '; }
     } else if (s->custom_prompt[0]) {
-        /* Use PROMPT command string */
-        while (s->custom_prompt[pi] && pi < 75) {
-            prompt[pi] = s->custom_prompt[pi];
-            pi++;
-        }
+        /* Use PROMPT command string, expanding AmigaDOS escapes */
+        expand_prompt(s, s->custom_prompt, prompt, sizeof(prompt));
+        pi = slen(prompt);
     } else {
         /* Build normal prompt from current volume */
         char vol[32];
@@ -3625,11 +3657,18 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             UaosTask *cur = Task_Current();
             if (cur) pri = cur->ln_Pri;
             UaosTask *t = Task_CreateX64(bin_name, pri,
-                                         result.entry_rip, result.initial_rsp);
+                                         result.entry_rip, result.initial_rsp,
+                                         s->cwd,
+                                         (void (*)(void *, const char *))inst_print,
+                                         s);
             if (!t) {
                 inst_print(s, "X64 binary: failed to create task");
                 return -2;
             }
+            /* Wait for the foreground X64 command to finish before
+             * returning to the prompt, so output appears before the
+             * next prompt line. */
+            Wait(SIGF_CHILD);
             return 0;
         }
 

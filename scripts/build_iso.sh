@@ -71,8 +71,21 @@ mkdir -p "${ISO_STAGING}/SYS_ROOT/LIBS"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/S"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/SYS"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/Tools"
+mkdir -p "${ISO_STAGING}/documentation"
 
 ok "Staging directories created at ${ISO_STAGING}"
+
+# -------------------------------------------------------------------------
+# Step 1d — Stage documentation files
+# -------------------------------------------------------------------------
+
+info "Step 1d: Staging documentation"
+if [[ -f "${REPO_ROOT}/documentation/uaos.guide" ]]; then
+    cp "${REPO_ROOT}/documentation/uaos.guide" "${ISO_STAGING}/documentation/uaos.guide"
+    ok "  Copied: documentation/uaos.guide"
+else
+    warn "  uaos.guide not found in documentation/"
+fi
 
 # -------------------------------------------------------------------------
 # Step 1a — Build host-side UAOS binary tools
@@ -285,6 +298,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/calc_win.c" \
     "${REPO_ROOT}/kernel/display/clock_win.c" \
     "${REPO_ROOT}/kernel/display/netinfo_win.c" \
+    "${REPO_ROOT}/kernel/display/user_window.c" \
     "${REPO_ROOT}/kernel/display/vim_win.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
@@ -365,7 +379,6 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_type.c" \
     "${REPO_ROOT}/kernel/shell/cmd_copy.c" \
     "${REPO_ROOT}/kernel/shell/cmd_rename.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_pwd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_echo.c" \
     "${REPO_ROOT}/kernel/shell/cmd_protect.c" \
     "${REPO_ROOT}/kernel/shell/cmd_attr.c" \
@@ -561,6 +574,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/calc_win.o" \
     "${BUILD_DIR}/obj/clock_win.o" \
     "${BUILD_DIR}/obj/netinfo_win.o" \
+    "${BUILD_DIR}/obj/user_window.o" \
     "${BUILD_DIR}/obj/softfloat.o" \
     "${BUILD_DIR}/obj/m68kcpu.o" \
     "${BUILD_DIR}/obj/m68kops.o" \
@@ -646,7 +660,6 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_type.o" \
     "${BUILD_DIR}/obj/cmd_copy.o" \
     "${BUILD_DIR}/obj/cmd_rename.o" \
-    "${BUILD_DIR}/obj/cmd_pwd.o" \
     "${BUILD_DIR}/obj/cmd_echo.o" \
     "${BUILD_DIR}/obj/cmd_protect.o" \
     "${BUILD_DIR}/obj/cmd_attr.o" \
@@ -814,6 +827,8 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
     for src in "${USERSPACE_DIR}"/*.c; do
         [[ -f "${src}" ]] || continue
         base="$(basename "${src}" .c)"
+        # Guide viewer is built separately for Tools:.
+        [[ "${base}" == "guide" ]] && continue
         elf_out="${BUILD_DIR}/userspace/${base}"
         bin_out="${C_STAGING}/${base}"
 
@@ -833,6 +848,37 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
         "${GEN_X64}" "${base}" "${elf_out}" "${bin_out}"
         ok "  Wrapped:  C:${base}  (x86-64 ELF64)"
     done
+
+    # -------------------------------------------------------------------------
+    # Step 2f — Build AmigaGuide help viewer for SYS:Tools
+    # -------------------------------------------------------------------------
+    info "Step 2f: Building AmigaGuide viewer for Tools:"
+    GUIDE_SRC="${REPO_ROOT}/system/userspace/guide.c"
+    if [[ -f "${GUIDE_SRC}" ]]; then
+        mkdir -p "${BUILD_DIR}/userspace"
+        mkdir -p "${ISO_STAGING}/SYS_ROOT/Tools"
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie \
+            -fcf-protection=none \
+            -m64 -O2 -std=c11 \
+            -I"${REPO_ROOT}/system/libuaos" \
+            -c "${GUIDE_SRC}" -o "${BUILD_DIR}/userspace/guide.o"
+        ok "  Compiled: userspace/guide.c"
+
+        gcc -nostdlib -fPIE -pie -m64 -fcf-protection=none \
+            -o "${BUILD_DIR}/userspace/guide" \
+            "${BUILD_DIR}/obj/uaos_start.o" \
+            "${BUILD_DIR}/userspace/guide.o"
+        ok "  Linked:   userspace/guide"
+
+        "${GEN_X64}" "Guide" "${BUILD_DIR}/userspace/guide" "${ISO_STAGING}/SYS_ROOT/Tools/Guide"
+        ok "  Wrapped:  Tools:Guide  (x86-64 ELF64)"
+
+        # Keep a copy of the guide database in Tools: as well.
+        if [[ -f "${REPO_ROOT}/documentation/uaos.guide" ]]; then
+            cp "${REPO_ROOT}/documentation/uaos.guide" "${ISO_STAGING}/SYS_ROOT/Tools/uaos.guide"
+            ok "  Copied:  Tools:uaos.guide"
+        fi
+    fi
 else
     ok "  No userspace programs to build (system/userspace/ not found)"
 fi

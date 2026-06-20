@@ -111,6 +111,21 @@ Pages in the hardware register window have `PAGE_PRESENT` cleared. Any access
 faults to this region are caught by the `#PF` handler in
 `kernel/exec/page_fault_handler.c` and forwarded to the chip emulator.
 
+### Ring-3 Userspace and System Calls (`INT 0x80`)
+
+UAOS implements a Ring-3 (user-mode) task execution model for native 64-bit ELF binaries. These programs are compiled with `-ffreestanding -nostdlib -fPIE -pie` and linked against [uaos_start.o](file:///home/reaver/uaos/system/libuaos/uaos_start.c) to produce position-independent binaries wrapped in a 32-byte `UAOS` header (type `0x0003` / `UAOS_TYPE_X64`).
+
+1. **GDT & TSS Setup**: The ELF64 loader in [task.c](file:///home/reaver/uaos/kernel/exec/task.c) sets up the task stack, GDT user code/data segments (`SEG_USER_CS`, `SEG_USER_DS`), and registers the task with the Task State Segment (TSS). Transition to Ring 3 is performed via an `iretq` sequence targeting the binary's entry point.
+2. **INT 0x80 System Calls**: Userspace utilities interact with the kernel using software interrupts via the `INT 0x80` vector. Arguments are passed via GPR registers:
+   - **RAX**: System call number (e.g. `0x02` for write, `0x0C` for getcwd)
+   - **RDI, RSI, RDX**: Arguments 1, 2, 3
+   - **RAX**: Return value (negative values represent errors)
+   The dispatcher in [syscall_dispatch.c](file:///home/reaver/uaos/kernel/exec/syscall_dispatch.c) implements page allocation (`sys_alloc`), process management (`sys_spawn`, `sys_wait`, `sys_exit`), and VFS file/directory interfaces (`sys_getcwd`, `sys_opendir`, `sys_readdir`, `sys_closedir`, `sys_stat`).
+3. **Execution State & Redirection**:
+   - **Per-Task CWD**: Each task struct tracks its own current working directory in `task_cwd` which VFS resolves relative paths against.
+   - **Output Buffering**: Stdout writes are buffered per-task in `task_out` and flushed line-by-line via `native_print_fn` to the active shell window.
+   - **Synchronous Exit**: When a child task exits via `sys_exit`, the parent task is signaled with `SIGF_CHILD`, allowing the command-line interface to wait for command completion.
+
 ---
 
 ## Kernel Subsystems
@@ -575,7 +590,11 @@ The shell integrates with the VFS layer for filesystem operations:
 | `type <file>` | Display file contents |
 | `copy <src> <dst>` | Copy a file |
 | `rename <from> <to>` | Rename or move a file |
-| `pwd` | Print working directory |
+| `pwd` | Print working directory (native userspace utility) |
+| `find [path] [-name pat] [-type f|d]` | Recursively list directory contents (native userspace utility) |
+| `file <path>` | Identify file format using magic numbers (native userspace utility) |
+| `strings <path> [-n len]` | Scan files for printable character sequences (native userspace utility) |
+| `hello` | Print simple greeting (userspace validation utility) |
 | `echo <text>` | Print text to shell |
 | `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
 | `attr <path>` | Show file attributes (Read-Only, Hidden, etc.) |
@@ -629,7 +648,11 @@ implements a scrollable terminal:
 | `type <file>` | Display file contents (VFS) |
 | `copy <src> <dst>` | Copy a file (VFS) |
 | `rename <from> <to>` | Rename or move a file (VFS) |
-| `pwd` | Print working directory |
+| `pwd` | Print working directory (native userspace utility) |
+| `find [path] [-name pat] [-type f|d]` | Recursively list directory contents (native userspace utility) |
+| `file <path>` | Identify file format using magic numbers (native userspace utility) |
+| `strings <path> [-n len]` | Scan files for printable character sequences (native userspace utility) |
+| `hello` | Print simple greeting (userspace validation utility) |
 | `echo <text>` | Print text to shell |
 | `pointer` | Open pointer preferences |
 | `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |

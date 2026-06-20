@@ -282,11 +282,27 @@ Attributes: Read-Only
 ```
 
 #### `pwd`
-Print the current working directory.
+Print the current working directory. Implemented as an external userspace Ring-3 utility.
 
 ```
 UAOS> pwd
 RAM:
+```
+
+#### `find [path] [-name pattern] [-type f|d]`
+Recursively walk a directory tree and list matching path entries.
+- `path`: Starting directory path (defaults to current working directory).
+- `-name pattern`: Shell glob pattern to match filename (e.g., `*.txt`).
+- `-type f|d`: Filter by file type (`f` for files, `d` for directories).
+
+```
+UAOS> find RAM:
+RAM:MyDir
+RAM:MyDir/notes.txt
+UAOS> find RAM: -name *.txt
+RAM:MyDir/notes.txt
+UAOS> find -type d
+RAM:MyDir
 ```
 
 #### `echo <text>`
@@ -384,6 +400,27 @@ Paginate file output one screen at a time.
 
 ```
 UAOS> more S:Startup-Sequence
+```
+
+#### `file <path>...`
+Inspect file contents and report their format based on magic numbers. Supports identifying ASCII text, native x86-64 ELF64 binaries, raw and wrapped Amiga Hunk (M68k) binaries, directories, and raw data.
+
+```
+UAOS> file C:dir C:lha S:Startup-Sequence
+C:dir: UAOS native shell command
+C:lha: UAOS Amiga Hunk (M68k) binary
+S:Startup-Sequence: ASCII text
+```
+
+#### `strings <path>... [-n minlen]`
+Scan files for printable character sequences of a minimum length (defaults to 4) and print them.
+
+```
+UAOS> strings C:pwd -n 6
+__start
+main
+uaos_getcwd
+uaos_write
 ```
 
 ---
@@ -740,7 +777,8 @@ echo "Scan saved to RAM:dirlog.txt"
 | `copy` | `copy <src> <dst>` | Copy file |
 | `protect` | `protect [+-][rh] <path>` | Set attributes |
 | `attr` | `attr <path>` | Show attributes |
-| `pwd` | `pwd` | Working directory |
+| `pwd` | `pwd` | Working directory (userspace) |
+| `find` | `find [path] [-name pat] [-type f|d]` | Search directory recursively |
 | `echo` | `echo <text>` | Print text |
 | `fdisk` | `fdisk <dev>` / `fdisk -l` | Partition editor |
 | `format` | `format <dev> [fs]` | Format partition |
@@ -751,6 +789,8 @@ echo "Scan saved to RAM:dirlog.txt"
 | `ntpd` | `ntpd [server]` | NTP sync |
 | `grep` | `grep [-i] <pat> <file>` | Search file |
 | `more` | `more <file>` | Paginated view |
+| `file` | `file <path>...` | Identify file magic/format |
+| `strings` | `strings <path>...` | Print printable strings |
 | `clear` | `clear` | Clear shell |
 | `reboot` | `reboot` | Warm reboot |
 | `pointer` | `pointer` | Pointer prefs |

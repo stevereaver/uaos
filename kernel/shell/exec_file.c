@@ -24,6 +24,16 @@ static void exec_nop_print(void *shell, const char *line)
     (void)line;
 }
 
+/* Fallback line printer for X64 binaries launched without a shell instance. */
+static void exec_kprint_line(void *shell, const char *line)
+{
+    (void)shell;
+    extern void kprintbuf(const char *s, size_t len);
+    int i = 0;
+    while (line[i]) i++;
+    kprintbuf(line, (size_t)i);
+}
+
 /* Build a minimal NativeCmdCtx for non-shell callers.
  * Safe for commands that only open windows or don't use ctx at all. */
 static NativeCmdCtx exec_make_ctx(void)
@@ -192,7 +202,10 @@ int ExecFile_Run(const char *path, const char *args)
             UaosTask *cur = Task_Current();
             if (cur) pri = cur->ln_Pri;
             UaosTask *t = Task_CreateX64(bin_name, pri,
-                                         result.entry_rip, result.initial_rsp);
+                                         result.entry_rip, result.initial_rsp,
+                                         "",
+                                         exec_kprint_line,
+                                         NULL);
             (void)t;
             return 0;
         }

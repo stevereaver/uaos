@@ -14,6 +14,7 @@
 #include "../display/desktop.h"
 #include "../display/cursor.h"
 #include "../display/shell_win.h"
+#include "../display/user_window.h"
 #include "../irq/idt.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
@@ -575,6 +576,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Create system idle task (runs the former event loop) */
     extern void Task_IdleEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
+
+    kprint("[BOOT] Initialising userspace GUI windows...\n");
+    UserWindow_Init();
 
     kprint("[BOOT] Opening shell window...\n");
     ShellWin_Init();

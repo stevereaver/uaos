@@ -398,6 +398,52 @@ cleared. Any access faults to this region are caught by the
 <code>#PF</code> handler in
 <code>kernel/exec/page_fault_handler.c</code> and forwarded to the chip
 emulator.</p>
+<h3 id="ring-3-userspace-and-system-calls-int-0x80">Ring-3 Userspace and
+System Calls (<code>INT 0x80</code>)</h3>
+<p>UAOS implements a Ring-3 (user-mode) task execution model for native
+64-bit ELF binaries. These programs are compiled with
+<code>-ffreestanding -nostdlib -fPIE -pie</code> and linked against <a
+href="file:///home/reaver/uaos/system/libuaos/uaos_start.c">uaos_start.o</a>
+to produce position-independent binaries wrapped in a 32-byte
+<code>UAOS</code> header (type <code>0x0003</code> /
+<code>UAOS_TYPE_X64</code>).</p>
+<ol type="1">
+<li><strong>GDT &amp; TSS Setup</strong>: The ELF64 loader in <a
+href="file:///home/reaver/uaos/kernel/exec/task.c">task.c</a> sets up
+the task stack, GDT user code/data segments (<code>SEG_USER_CS</code>,
+<code>SEG_USER_DS</code>), and registers the task with the Task State
+Segment (TSS). Transition to Ring 3 is performed via an
+<code>iretq</code> sequence targeting the binary’s entry point.</li>
+<li><strong>INT 0x80 System Calls</strong>: Userspace utilities interact
+with the kernel using software interrupts via the <code>INT 0x80</code>
+vector. Arguments are passed via GPR registers:
+<ul>
+<li><strong>RAX</strong>: System call number (e.g. <code>0x02</code> for
+write, <code>0x0C</code> for getcwd)</li>
+<li><strong>RDI, RSI, RDX</strong>: Arguments 1, 2, 3</li>
+<li><strong>RAX</strong>: Return value (negative values represent
+errors) The dispatcher in <a
+href="file:///home/reaver/uaos/kernel/exec/syscall_dispatch.c">syscall_dispatch.c</a>
+implements page allocation (<code>sys_alloc</code>), process management
+(<code>sys_spawn</code>, <code>sys_wait</code>, <code>sys_exit</code>),
+and VFS file/directory interfaces (<code>sys_getcwd</code>,
+<code>sys_opendir</code>, <code>sys_readdir</code>,
+<code>sys_closedir</code>, <code>sys_stat</code>).</li>
+</ul></li>
+<li><strong>Execution State &amp; Redirection</strong>:
+<ul>
+<li><strong>Per-Task CWD</strong>: Each task struct tracks its own
+current working directory in <code>task_cwd</code> which VFS resolves
+relative paths against.</li>
+<li><strong>Output Buffering</strong>: Stdout writes are buffered
+per-task in <code>task_out</code> and flushed line-by-line via
+<code>native_print_fn</code> to the active shell window.</li>
+<li><strong>Synchronous Exit</strong>: When a child task exits via
+<code>sys_exit</code>, the parent task is signaled with
+<code>SIGF_CHILD</code>, allowing the command-line interface to wait for
+command completion.</li>
+</ul></li>
+</ol>
 <hr />
 <h2 id="kernel-subsystems">Kernel Subsystems</h2>
 <h3 id="rom-module-registry-rom_modules.c">ROM Module Registry
@@ -1089,7 +1135,25 @@ operations:</p>
 </tr>
 <tr class="even">
 <td><code>pwd</code></td>
-<td>Print working directory</td>
+<td>Print working directory (native userspace utility)</td>
+</tr>
+<tr class="odd">
+<td><code>find [path] [-name pat] [-type f|d]</code></td>
+<td>Recursively list directory contents (native userspace utility)</td>
+</tr>
+<tr class="even">
+<td><code>file &lt;path&gt;</code></td>
+<td>Identify file format using magic numbers (native userspace
+utility)</td>
+</tr>
+<tr class="odd">
+<td><code>strings &lt;path&gt; [-n len]</code></td>
+<td>Scan files for printable character sequences (native userspace
+utility)</td>
+</tr>
+<tr class="even">
+<td><code>hello</code></td>
+<td>Print simple greeting (userspace validation utility)</td>
 </tr>
 <tr class="odd">
 <td><code>echo &lt;text&gt;</code></td>
@@ -1145,8 +1209,8 @@ operations:</p>
 <td>Format a partition (FAT32)</td>
 </tr>
 <tr class="even">
-<td><code>run &lt;prog&gt; [args]</code></td>
-<td>Run an embedded Amiga binary</td>
+<td><code>run &lt;cmd&gt; [args]</code></td>
+<td>Run a command in a new CLI</td>
 </tr>
 </tbody>
 </table>
@@ -1242,7 +1306,25 @@ logic in comments pending M68k memory access integration.</p>
 </tr>
 <tr class="even">
 <td><code>pwd</code></td>
-<td>Print working directory</td>
+<td>Print working directory (native userspace utility)</td>
+</tr>
+<tr class="odd">
+<td><code>find [path] [-name pat] [-type f|d]</code></td>
+<td>Recursively list directory contents (native userspace utility)</td>
+</tr>
+<tr class="even">
+<td><code>file &lt;path&gt;</code></td>
+<td>Identify file format using magic numbers (native userspace
+utility)</td>
+</tr>
+<tr class="odd">
+<td><code>strings &lt;path&gt; [-n len]</code></td>
+<td>Scan files for printable character sequences (native userspace
+utility)</td>
+</tr>
+<tr class="even">
+<td><code>hello</code></td>
+<td>Print simple greeting (userspace validation utility)</td>
 </tr>
 <tr class="odd">
 <td><code>echo &lt;text&gt;</code></td>
@@ -1302,8 +1384,8 @@ logic in comments pending M68k memory access integration.</p>
 <td>Format a partition (FAT32)</td>
 </tr>
 <tr class="odd">
-<td><code>run &lt;prog&gt; [args]</code></td>
-<td>Run an embedded Amiga binary</td>
+<td><code>run &lt;cmd&gt; [args]</code></td>
+<td>Run a command in a new CLI</td>
 </tr>
 <tr class="even">
 <td><code>ping &lt;host&gt; [count]</code></td>

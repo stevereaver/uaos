@@ -343,11 +343,11 @@ UaosTask *FindTask(const char *name)
 }
 
 /* SetTaskPri — change a task's priority */
-void SetTaskPri(UaosTask *task, int8_t newpri)
+void SetTaskPri(UaosTask *task, int newpri)
 {
     if (!task) return;
     if (newpri < MIN_PRI) newpri = MIN_PRI;
     if (newpri > MAX_PRI) newpri = MAX_PRI;
-    task->ln_Pri = newpri;
+    task->ln_Pri = (int8_t)newpri;
     /* TODO: if task is on a ready queue, move it to the new priority queue */
 }

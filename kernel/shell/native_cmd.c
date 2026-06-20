@@ -37,7 +37,6 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("type",       Cmd_Type,     "FILE,HEX/S,NUMBER/S,TO/K" ),
     CMDT("copy",       Cmd_Copy,     "FROM/A,TO/A,ALL/S,CLONE/S,DATES/S,COM/S,QUIET/S,BUFFER/K/N" ),
     CMD ("rename",     Cmd_Rename   ),
-    CMD ("pwd",        Cmd_Pwd      ),
     CMDT("echo",       Cmd_Echo,     "STRING/F,NOLINE/S" ),
     CMD ("protect",    Cmd_Protect  ),
     CMD ("attr",       Cmd_Attr     ),

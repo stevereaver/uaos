@@ -133,6 +133,21 @@ void wait_remove(UaosTask *task)
 }
 
 /* -------------------------------------------------------------------------
+ * Helpers
+ * ------------------------------------------------------------------------- */
+static void copy_cwd(char *dst, const char *src)
+{
+    int i = 0;
+    if (src) {
+        while (i < 127 && src[i]) {
+            dst[i] = src[i];
+            i++;
+        }
+    }
+    dst[i] = '\0';
+}
+
+/* -------------------------------------------------------------------------
  * Task creation
  * ------------------------------------------------------------------------- */
 
@@ -172,6 +187,7 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     t->native_stack_size = TASK_STACK_SIZE;
     t->native_entry = entry;
     t->native_arg = arg;
+    copy_cwd(t->task_cwd, "");
 
     /* Build initial stack frame that looks like what the timer ISR pushes:
      *
@@ -236,7 +252,10 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
 extern void Task_RunNewX64(void *task);
 
 UaosTask *Task_CreateX64(const char *name, int8_t pri,
-                         uint64_t entry_rip, uint64_t initial_rsp)
+                         uint64_t entry_rip, uint64_t initial_rsp,
+                         const char *cwd,
+                         void (*print_fn)(void *ctx, const char *line),
+                         void *print_ctx)
 {
     Forbid();
 
@@ -272,6 +291,11 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     t->native_arg = t;
     t->native_rip = entry_rip;
     t->native_initial_rsp = initial_rsp;
+    t->parent = Task_Current();
+    copy_cwd(t->task_cwd, cwd);
+    t->native_print_fn  = print_fn;
+    t->native_print_ctx = print_ctx;
+    t->task_out_len     = 0;
 
     /* Build synthetic interrupt frame on the kernel task stack.
      * When Task_SwitchContext restores this frame and executes iretq,
@@ -385,9 +409,13 @@ void Task_Yield(void)
 void Task_Exit(void)
 {
     /* Mark task as removed so the scheduler never picks it again.
-     * Then halt with interrupts enabled so the timer ISR can
-     * switch to another task.  The task becomes a zombie. */
-    if (g_current) g_current->tc_State = TASK_REMOVED;
+     * Signal the parent so a shell (or other task) waiting via SIGF_CHILD
+     * knows the foreground command has finished. */
+    if (g_current) {
+        g_current->tc_State = TASK_REMOVED;
+        if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
+            Signal(g_current->parent, SIGF_CHILD);
+    }
     for (;;) __asm__ volatile ("sti; hlt");
 }
 

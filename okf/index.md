@@ -3,7 +3,7 @@ type: OS Architecture
 title: Ultimate Amiga OS (UAOS) Architecture
 description: A comprehensive guide to the architecture of UAOS, a hobby operating system inspired by AmigaOS.
 tags: [architecture, uaos, overview]
-timestamp: 2026-06-18T10:00:00Z
+timestamp: 2026-06-20T15:30:00Z
 ---
 
 # Ultimate Amiga OS (UAOS) Architecture
@@ -13,6 +13,7 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 ## Core Subsystems
 
 - [Kernel Architecture](/kernel/index.md) - The heart of UAOS.
+- [Userspace & Syscalls](/concepts/userspace_syscalls.md) - The Ring-3 task execution model and syscall interface.
 - [M68k Emulation](/concepts/m68k_emulation.md) - How UAOS runs classic Amiga binaries.
 - [Handler System](/kernel/dos/handler_system.md) - Packet-based I/O and filesystem architecture.
 - [Window Manager](/kernel/display/index.md) - The graphical user interface and desktop.

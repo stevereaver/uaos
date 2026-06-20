@@ -113,6 +113,20 @@ typedef struct UaosTask {
     /* Scheduling */
     uint32_t time_slice_ticks;
     uint32_t ticks_remaining;
+
+    /* Parent task (for SIGF_CHILD notification on exit). */
+    struct UaosTask *parent;
+
+    /* Per-task current working directory (copied at creation). */
+    char     task_cwd[128];
+
+    /* Output routing for X64/native userspace tasks.
+     * raw output is accumulated in task_out and flushed line-by-line
+     * through native_print_fn when a newline is seen or on task exit. */
+    void   (*native_print_fn)(void *ctx, const char *line);
+    void    *native_print_ctx;
+    char     task_out[256];
+    int      task_out_len;
 } UaosTask;
 
 /* -------------------------------------------------------------------------
@@ -134,9 +148,15 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
 /* Create an x86-64 native task from an ELF64-loaded image.
  * entry_rip:    initial instruction pointer
  * initial_rsp:  initial user stack pointer (e.g. ELF64 loader result)
+ * cwd:          current working directory string (copied into task)
+ * print_fn:     line printer that receives flushed stdout lines
+ * print_ctx:    opaque context passed to print_fn
  * Returns task pointer or NULL. */
 UaosTask *Task_CreateX64(const char *name, int8_t pri,
-                         uint64_t entry_rip, uint64_t initial_rsp);
+                         uint64_t entry_rip, uint64_t initial_rsp,
+                         const char *cwd,
+                         void (*print_fn)(void *ctx, const char *line),
+                         void *print_ctx);
 
 /* Create an M68k guest task (native wrapper that runs a binary).
  * Returns task pointer or NULL. */
@@ -156,6 +176,9 @@ void Task_ScheduleFromIRQ(void);
 
 /* Get currently running task */
 UaosTask *Task_Current(void);
+
+/* Change a task's scheduler priority (clamped to [MIN_PRI, MAX_PRI]) */
+void SetTaskPri(UaosTask *task, int newpri);
 
 /* Idle task entry (system loop) */
 void Task_IdleEntry(void *arg);

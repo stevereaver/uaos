@@ -61,7 +61,8 @@ void WM_SetScrollInfoEx(int handle, int content_w, int content_h, int view_h);
 int  WM_GetScrollX(int handle);
 int  WM_GetScrollY(int handle);
 
-/* Set vertical scroll offset (clamped to content range) */
+/* Set scroll offsets (clamped to content range) */
+void WM_SetScrollX(int handle, int x);
 void WM_SetScrollY(int handle, int y);
 
 /* Call from main loop with current mouse state */
@@ -91,6 +92,13 @@ void WM_CloseWindow(int handle);
 /* Returns 1 if the handle refers to an active window */
 int       WM_IsWindowActive(int handle);
 WM_DrawFn WM_GetDrawFn(int handle);   /* returns NULL if handle invalid/inactive */
+
+/* Handle of the window currently being painted by WM_Redraw/repaint_window.
+ * Draw callbacks can use this to identify themselves instead of hit-testing. */
+extern int WM_CurrentDrawHandle;
+
+/* Get the absolute screen geometry of an active window. Returns 1 if active. */
+int       WM_GetWindowRect(int handle, int *x, int *y, int *w, int *h);
 
 /* Copy the title of an active window into out (max bytes).  Returns 1 if active. */
 int       WM_GetWindowTitle(int handle, char *out, int max);

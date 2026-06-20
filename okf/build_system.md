@@ -4,7 +4,7 @@ title: UAOS Build System
 description: Details of the toolchain and process used to build UAOS.
 resource: /scripts/
 tags: [build, gcc, nasm, grub, iso]
-timestamp: 2026-06-18T10:00:00Z
+timestamp: 2026-06-20T15:30:00Z
 ---
 
 # UAOS Build System
@@ -26,9 +26,10 @@ The primary build script is `scripts/build_iso.sh`.
 2. **Assembly**: Assembles `.asm` files (e.g., `uaos_kernel_entry.asm`).
 3. **Compilation**: Compiles all kernel C files.
 4. **Linking**: Links objects into `uaos-kernel.elf`.
-5. **System Root**: Packages the `system/` directory (Amiga-style layout).
-6. **GRUB Config**: Injects `scripts/grub.cfg`.
-7. **ISO Generation**: Runs `grub-mkrescue` to create the final `Ultimate_Amiga_OS.iso`.
+5. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
+6. **System Root**: Packages the `system/` directory (Amiga-style layout, wrapping Amiga Hunk and staging native shell command stubs).
+7. **GRUB Config**: Injects `scripts/grub.cfg`.
+8. **ISO Generation**: Runs `grub-mkrescue` to create the final `Ultimate_Amiga_OS.iso`.
 
 ## Hybrid Boot
 

@@ -27,6 +27,22 @@
 #define SYSCALL_SPAWN       0x09   /* sys_spawn(path, args)              */
 #define SYSCALL_WAIT        0x0A   /* sys_wait()                         */
 #define SYSCALL_ALLOC       0x0B   /* sys_alloc(size)                    */
+#define SYSCALL_GETCWD      0x0C   /* sys_getcwd(buf, size)              */
+#define SYSCALL_OPENDIR     0x0D   /* sys_opendir(path) -> dir fd          */
+#define SYSCALL_READDIR     0x0E   /* sys_readdir(fd, ent)                 */
+#define SYSCALL_CLOSEDIR    0x0F   /* sys_closedir(fd)                   */
+#define SYSCALL_STAT        0x10   /* sys_stat(path, stat)               */
+
+/* GUI / windowing syscalls for userspace tasks */
+#define SYSCALL_GUI_CREATE_WINDOW  0x11   /* create_window(title, x, y, w, h) */
+#define SYSCALL_GUI_DESTROY_WINDOW 0x12   /* destroy_window(handle)           */
+#define SYSCALL_GUI_SET_SCROLL_INFO 0x13  /* set_scroll_info(handle, cw, ch)*/
+#define SYSCALL_GUI_SET_SCROLL     0x14   /* set_scroll(handle, sx, sy)       */
+#define SYSCALL_GUI_DRAW_TEXT      0x15   /* draw_text(handle, x, y, text, col)*/
+#define SYSCALL_GUI_DRAW_RECT      0x16   /* draw_rect(handle, x, y, w, h, col)*/
+#define SYSCALL_GUI_PRESENT        0x17   /* present(handle)                    */
+#define SYSCALL_GUI_GET_EVENT      0x18   /* get_event(handle, event)         */
+
 #define SYSCALL_SCHEDULE    0xFF   /* reserved: yield/reschedule         */
 
 /* -------------------------------------------------------------------------

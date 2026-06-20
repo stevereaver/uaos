@@ -54,6 +54,7 @@ void FB_DrawVLine(int x, int y, int len, uint32_t colour);
 void FB_PutPixel(int x, int y, uint32_t colour);
 
 /* Text rendering — 8×16 bitmap font ---------------------------------------- */
+extern const uint8_t g_font8x16[95][16];
 void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg);
 void FB_PutStr(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 int  FB_CharWidth(void);    /* always 8                                        */

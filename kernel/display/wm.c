@@ -47,6 +47,9 @@ static int g_resize_orig_mx = 0;
 static int g_resize_orig_my = 0;
 static int g_btn_prev     = 0;
 
+/* Handle of the window currently being painted by WM_Redraw/repaint_window. */
+int WM_CurrentDrawHandle = -1;
+
 /* Scrollbar drag state */
 static int g_scroll_drag_win  = -1;  /* window whose thumb is being dragged */
 static int g_scroll_drag_axis = 0;   /* 0=vert, 1=horiz */
@@ -496,8 +499,11 @@ static void repaint_window(int wh)
 {
     draw_chrome(wh);
     WmWindow *w = &g_wins[wh];
-    if (w->draw)
+    if (w->draw) {
+        WM_CurrentDrawHandle = wh;
         w->draw(w->x, w->y, w->w, w->h);
+        WM_CurrentDrawHandle = -1;
+    }
 }
 
 /* =========================================================================
@@ -769,8 +775,11 @@ void WM_Redraw(void)
         WmWindow *w = &g_wins[wh];
         if (!w->active) continue;
         draw_chrome(wh);
-        if (w->draw)
+        if (w->draw) {
+            WM_CurrentDrawHandle = wh;
             w->draw(w->x, w->y, w->w, w->h);
+            WM_CurrentDrawHandle = -1;
+        }
     }
 
     /* Cursor on top, then flip entire frame to screen in one blit */
@@ -865,6 +874,19 @@ int WM_GetScrollY(int handle)
     return g_wins[handle].scroll_y;
 }
 
+void WM_SetScrollX(int handle, int x)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    WmWindow *w = &g_wins[handle];
+    int cx, cy, cw, ch;
+    client_rect(w, &cx, &cy, &cw, &ch);
+    int sv = (w->content_w > cw) ? w->content_w : cw;
+    int max_s = sv - cw;
+    if (x < 0) x = 0;
+    if (x > max_s) x = max_s;
+    w->scroll_x = x;
+}
+
 void WM_SetScrollY(int handle, int y)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
@@ -884,6 +906,18 @@ int WM_IsWindowActive(int handle)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return 0;
     return g_wins[handle].active;
+}
+
+int WM_GetWindowRect(int handle, int *x, int *y, int *w, int *h)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS || !g_wins[handle].active)
+        return 0;
+    WmWindow *win = &g_wins[handle];
+    if (x) *x = win->x;
+    if (y) *y = win->y;
+    if (w) *w = win->w;
+    if (h) *h = win->h;
+    return 1;
 }
 
 WM_DrawFn WM_GetDrawFn(int handle)

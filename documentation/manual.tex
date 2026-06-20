@@ -201,6 +201,27 @@ Pages in the hardware register window have \texttt{PAGE\_PRESENT} cleared and
 the \#PF handler in \texttt{kernel/exec/page\_fault\_handler.c} and forwarded
 to the chip emulator.
 
+\section{Ring-3 Userspace and System Calls (\texttt{INT 0x80})}
+
+UAOS implements a Ring-3 (user-mode) task execution model for native 64-bit ELF binaries. These programs are compiled with \texttt{-ffreestanding -nostdlib -fPIE -pie} and linked against \texttt{uaos\_start.o} to produce position-independent binaries wrapped in a 32-byte \texttt{UAOS} header (type \texttt{0x0003} / \texttt{UAOS\_TYPE\_X64}).
+
+\begin{enumerate}
+    \item \textbf{GDT \& TSS Setup} --- The ELF64 loader in \texttt{task.c} sets up the task stack, GDT user code/data segments (\texttt{SEG\_USER\_CS}, \texttt{SEG\_USER\_DS}), and registers the task with the Task State Segment (TSS). Transition to Ring 3 is performed via an \texttt{iretq} sequence targeting the binary's entry point.
+    \item \textbf{INT 0x80 System Calls} --- Userspace utilities interact with the kernel using software interrupts via the \texttt{INT 0x80} vector. Arguments are passed via registers:
+          \begin{itemize}
+              \item \textbf{RAX} --- System call number (e.g. \texttt{0x02} for write, \texttt{0x0C} for getcwd).
+              \item \textbf{RDI, RSI, RDX} --- Arguments 1, 2, 3.
+              \item \textbf{RAX} --- Return value (negative values represent errors).
+          \end{itemize}
+          The dispatcher in \texttt{syscall\_dispatch.c} implements page allocation (\texttt{sys\_alloc}), process management (\texttt{sys\_spawn}, \texttt{sys\_wait}, \texttt{sys\_exit}), and VFS file/directory interfaces (\texttt{sys\_getcwd}, \texttt{sys\_opendir}, \texttt{sys\_readdir}, \texttt{sys\_closedir}, \texttt{sys\_stat}).
+    \item \textbf{Execution State \& Redirection} ---
+          \begin{itemize}
+              \item \textbf{Per-Task CWD} --- Each task struct tracks its own current working directory in \texttt{task\_cwd} which VFS resolves relative paths against.
+              \item \textbf{Output Buffering} --- Stdout writes are buffered per-task in \texttt{task\_out} and flushed line-by-line via \texttt{native\_print\_fn} to the active shell window.
+              \item \textbf{Synchronous Exit} --- When a child task exits via \texttt{sys\_exit}, the parent task is signaled with \texttt{SIGF\_CHILD}, allowing the command-line interface to wait for command completion.
+          \end{itemize}
+\end{enumerate}
+
 % =========================================================================
 \chapter{Kernel Subsystems}
 % =========================================================================
@@ -443,7 +464,11 @@ up to 128 lines of history and an input line with backspace support.
         \texttt{type <file>} & Display file contents \\
         \texttt{copy <src> <dst>} & Copy a file \\
         \texttt{rename <from> <to>} & Rename or move a file \\
-        \texttt{pwd} & Print working directory \\
+        \texttt{pwd} & Print working directory (native userspace utility) \\
+        \texttt{find [path] [-name pat] [-type f|d]} & Recursively list directory contents (native userspace utility) \\
+        \texttt{file <path>} & Identify file format using magic numbers (native userspace utility) \\
+        \texttt{strings <path> [-n len]} & Scan files for printable character sequences (native userspace utility) \\
+        \texttt{hello} & Print simple greeting (userspace validation utility) \\
         \texttt{echo <text>} & Print text \\
         \texttt{pointer} & Open pointer preferences \\
         \texttt{protect <flags> <path>} & Set attributes ($\pm$r, $\pm$h) \\
