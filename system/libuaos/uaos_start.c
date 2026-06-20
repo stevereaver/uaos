@@ -23,9 +23,6 @@ extern int main(int argc, const char **argv);
 __attribute__((naked, noreturn)) void _start(void)
 {
     __asm__ volatile(
-        "movw  $0x3F8, %%dx\n\t"
-        "movb  $'S', %%al\n\t"
-        "outb  %%al, %%dx\n\t"
         "movq  %%rsp, %%rax\n\t"        /* RAX = initial user stack pointer */
         "movl  (%%rax), %%edi\n\t"       /* RDI = argc */
         "leaq  8(%%rax), %%rsi\n\t"      /* RSI = argv */
