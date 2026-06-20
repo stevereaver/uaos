@@ -12,12 +12,14 @@ UAOS boots directly from a hybrid ISO via GRUB2 Multiboot2, initialises a linear
 - **Window manager** — multiple windows, click-to-focus, z-order, title bar drag, resize grip
 - **PS/2 mouse** — IRQ12-driven relative tracking, 16×16 Amiga-style software cursor
 - **PS/2 keyboard** — IRQ1-driven, scancode set 1, ring buffer
-- **Shell window** — scrollable history, input line, built-in commands: `help`, `version`, `mem`, `libs`, `clear`, `reboot`, `run`, `dir`, `cd`, `makedir`, `delete`, `type`, `copy`, `rename`, `pwd`, `echo`, `pointer`, `protect`, `attr`, `info`, `alias`, `unalias`, `set`, `unset`, `date`, `which`, `disks`, `fdisk`, `format`
-- **IDT / 8259A PIC** — 256-vector IDT, PIC remapped to vectors 32–47
+- **Shell window** — scrollable history, input line, built-in commands: `help`, `cd`, `alias`, `unalias`, `set`, `unset`, `path`, `setenv`, `unsetenv`, `showconfig`
+- **Native C: commands** — 65+ x86-64 kernel commands including `version`, `mem`, `libs`, `dir`, `makedir`, `delete`, `type`, `copy`, `rename`, `echo`, `protect`, `attr`, `info`, `date`, `which`, `disks`, `fdisk`, `format`, `assign`, `execute`, `loadwb`, `run`, `ping`, `ifconfig`, `route`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo`, `grep`, `more`, `list`, `search`, `sort`, `ps`, `jobs`, `wait`, `ask`, `newcli`, `calculator`, `clock`, `pointer`, `vim`, `status`, `avail`, `filenote`, `relabel`, `install`, `diskchange`, `addbuffers`, `requestchoice`, `requestfile`, `changetaskpri`, `prompt`, `stack`, `why`, `failat`, `quit`, `endcli`, `getenv`, `unset`, `resident`, `join`
+- **Ring-3 userspace programs** — `hello`, `pwd`, `file`, `strings`, `find`, `Guide` built as native x86-64 ELF64 binaries using the `INT 0x80` syscall interface
+- **IDT / 8259A PIC** — 256-vector IDT, PIC remapped to vectors 32–47, plus local APIC setup
 - **MMU sandbox** — 4-level paging, 2 MB huge pages
-- **M68k emulation** — Musashi CPU, ILLEGAL opcode dispatch, LVO stubs
+- **M68k emulation** — Musashi CPU, ILLEGAL opcode dispatch, LVO stubs; runs raw Amiga Hunk binaries and embedded M68k binaries
 - **ROM module system** — Native AmigaOS-compatible library implementations:
-  - `exec.library` v45 — Process management, memory allocation
+  - `exec.library` v45 — Process management, memory allocation, signals, IPC
   - `utility.library` v37 — String functions, memory utilities
   - `console.device` v40 — Console I/O
   - `mathffp.library` v40 — Floating-point operations
@@ -27,11 +29,16 @@ UAOS boots directly from a hybrid ISO via GRUB2 Multiboot2, initialises a linear
   - `keyboard.device` v40 — Keyboard input (connected to PS/2 driver)
   - `graphics.library` v40 — Graphics primitives
   - `dos.library` v40 — File system operations
-- **VFS / RAM filesystem** — In-memory node tree, auto-mounted at boot with T, ENV, CLIPS, S dirs; partition volumes mountable by display name or FAT32 volume label
+  - `bsdsocket.library` v4 — BSD socket API mapped to the native TCP/IP stack
+  - `workbench.library` v45 — Workbench desktop integration
+  - `intuition.library` v40 — Intuition GUI API
+- **VFS / RAM filesystem** — In-memory node tree (1024 nodes, 512 KB per file), auto-mounted at boot with T, ENV, CLIPS, S dirs; partition volumes mountable by display name or FAT32 volume label
+- **Filesystem drivers** — FAT32, PFS3, EXT4 (read-only), ISO9660 (CD-ROM), and RAMFS
 - **VirtIO block device driver** — PCI scanning, device detection, capacity reporting
+- **IDE / ATAPI driver** — Storage controller for CD-ROM and hard disks
 - **Block device layer** — Unified interface for storage devices; partition registration and MBR parsing
-- **FAT32 support** — Boot sector reading, volume label extraction, formatting via `format` command
 - **RTC driver** — CMOS real-time clock with UIE interrupt
+- **TCP/IP networking stack** — IPv4, ARP, ICMP, TCP, UDP, DHCP, DNS, NTP; Intel e1000 and VirtIO-Net drivers
 - **EFI + BIOS hybrid ISO** — boots on OVMF UEFI and legacy BIOS via GRUB2
 
 ---
@@ -44,24 +51,32 @@ uaos/
 │   ├── boot/           # NASM entry point, C kernel main, linker script
 │   ├── display/        # Framebuffer, desktop, cursor, window manager, shell window
 │   ├── irq/            # IDT, 8259A PIC, PS/2 mouse, PS/2 keyboard, VMware mouse, RTC, VirtIO block
-│   ├── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules
-│   │                   # ROM libraries: utility, console, mathffp, locale, ixemul
-│   │                   # ROM devices: timer, keyboard, graphics
-│   │                   # dos.library implementation
-│   └── dos/            # VFS layer, RAM filesystem, block device layer
+│   ├── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules, task scheduler,
+│   │                   # syscall dispatch, native x86-64 ELF64 loader
+│   ├── dos/            # VFS layer, RAM filesystem, block device layer, FAT32/PFS3/EXT4/ISO9660
+│   ├── net/            # TCP/IP stack (IPv4, ARP, ICMP, TCP, UDP, DHCP, DNS, NTP)
+│   ├── drivers/        # Network and storage drivers (e1000, virtio-net, virtio-blk, IDE)
+│   └── shell/          # Native C: command implementations (cmd_*.c) and resident command system
 ├── emulation/
+│   ├── binaries/       # Embedded M68k binaries (auto-wrapped into the kernel image)
 │   ├── rom_patches/    # M68k Vasm/Devpac stubs, kickstart config
 │   ├── src/musashi/    # M68k CPU emulator
 │   ├── uaos_m68k_glue.c # M68k emulator glue, LVO stubs, DOS stubs
+│   ├── uaos_uae_bridge.c  # UAE bridge and RAM-base management
 │   └── uaos_emu_registry.c
-├── drivers/            # Future device drivers
+├── system/             # Amiga-style filesystem skeleton (C, S, LIBS, L, DEVS, SYS, Tools)
+│   ├── libuaos/        # Userspace C library headers and startup code
+│   ├── userspace/      # Native x86-64 Ring-3 ELF64 programs (pwd, file, strings, find, Guide, ...)
+│   └── S/              # Startup-Sequence, network, NTP, timezone configs
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
 │   └── grub.cfg        # GRUB2 multiboot2 configuration
-├── sys-root/           # Amiga-style filesystem skeleton (C, DEVS, L, S, SYS)
+├── tools/              # Host-side build helpers (gen_uaos_native, gen_uaos_m68k, gen_uaos_x64)
 ├── documentation/
 │   ├── uaos.guide      # AmigaGuide database
-│   └── manual.tex      # LaTeX technical reference
+│   ├── manual.md       # Markdown technical reference
+│   ├── manual.tex      # LaTeX technical reference
+│   └── Dos_Manual.md   # Shell and scripting reference
 └── build/              # Generated output (created by build script)
     └── Ultimate_Amiga_OS.iso
 ```
@@ -111,14 +126,45 @@ build/Ultimate_Amiga_OS.iso
 
 | Step | Action |
 |------|--------|
-| 1 | Creates `build/` staging directories |
-| 2 | Assembles `uaos_kernel_entry.asm` and `idt_stubs.asm` with NASM |
-| 3 | Compiles all C kernel sources with GCC (`-ffreestanding -m64 -O2 -std=c11`) |
-| 4 | Links everything into `uaos-kernel.elf` (ELF64) via the custom linker script |
-| 5 | Packages the `sys-root` Amiga filesystem skeleton |
-| 6 | Injects `grub.cfg` |
-| 7 | Builds a standalone GRUB EFI image (`bootx64.efi`) with `grub-mkstandalone` |
-| 8 | Produces a hybrid BIOS+EFI ISO with `grub-mkrescue` |
+| 1 | Creates `build/` staging directories and the dynamic `SYS_ROOT` image |
+| 2 | Builds host tools (`gen_uaos_native`, `gen_uaos_m68k`, `gen_uaos_x64`, `gen_m68k_library`) |
+| 3 | Assembles `uaos_kernel_entry.asm`, `idt_stubs.asm` and `task_switch.asm` with NASM |
+| 4 | Generates the Musashi M68k opcode table if needed |
+| 5 | Compiles all C kernel sources with GCC (`-ffreestanding -m64 -O2 -std=c11`) |
+| 6 | Links everything into `uaos-kernel.elf` (ELF64) via the custom linker script |
+| 7 | Wraps embedded M68k binaries from `emulation/binaries/` and Amiga `.library` files |
+| 8 | Builds native x86-64 Ring-3 userspace programs from `system/userspace/` |
+| 9 | Stages the `system/` Amiga filesystem skeleton into `SYS_ROOT` (C:, S:, LIBS:, DEVS:, L:, SYS, Tools) |
+| 10 | Injects `grub.cfg` and the AROS kickstart configuration |
+| 11 | Produces a hybrid BIOS+EFI ISO with `grub-mkrescue` |
+
+---
+
+## Native x86-64 Userspace Programs
+
+Programs in `system/userspace/` are compiled as position-independent x86-64
+ELF64 binaries, linked against `system/libuaos/uaos_start.c`, and wrapped with a
+32-byte `UAOS` header (`UAOS_BIN_TYPE_X64`). At runtime the kernel loads them
+into Ring-3 tasks and enters user mode via `iretq`. They communicate with the
+kernel through the `INT 0x80` syscall ABI:
+
+```c
+RAX = syscall number        RDI = arg 1   RSI = arg 2   RDX = arg 3
+```
+
+Current userspace tools:
+
+| Program | Source | Syscalls used |
+|---------|--------|---------------|
+| `hello` | `system/userspace/hello.c` | `write` |
+| `pwd` | `system/userspace/pwd.c` | `getcwd`, `write` |
+| `file` | `system/userspace/file.c` | `open`, `read_file`, `stat`, `write`, `close` |
+| `strings` | `system/userspace/strings.c` | `open`, `read_file`, `write`, `close` |
+| `find` | `system/userspace/find.c` | `getcwd`, `opendir`, `readdir`, `closedir`, `write` |
+| `Guide` | `system/userspace/guide.c` | GUI syscalls (`create_window`, `draw_text`, `present`, `get_event`) |
+
+The syscall numbers are defined in `kernel/exec/syscall_table.h` (kernel) and
+`system/libuaos/uaos_syscall.h` (userspace).
 
 ---
 
@@ -225,22 +271,71 @@ Click the **UAOS Shell** title bar to focus it, then type commands:
 | `type <file>` | Display file contents |
 | `copy <src> <dst>` | Copy a file |
 | `rename <from> <to>` | Rename or move a file |
-| `pwd` | Print working directory |
+| `pwd` | Print working directory (userspace Ring-3 utility) |
 | `echo <text>` | Print text to shell |
 | `pointer` | Open pointer preferences |
 | `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
 | `attr <path>` | Show file attributes (Read-Only, Hidden, etc.) |
 | `info [device]` | Show mounted disks and volumes; or info for a specific device |
-| `alias [name cmd]` | Create or list command aliases |
-| `unalias <name>` | Remove an alias |
-| `set [name val]` | Set or list environment variables |
-| `unset <name>` | Remove an environment variable |
+| `alias [name cmd]` | Create or list command aliases (built-in) |
+| `unalias <name>` | Remove an alias (built-in) |
+| `set [name val]` | Set or list local variables (built-in) |
+| `unset <name>` | Remove a local variable (built-in) |
+| `path [dirs...]` | Show or set the command search path (built-in) |
+| `setenv <name> <value>` | Set a global environment variable (built-in) |
+| `unsetenv <name>` | Remove a global environment variable (built-in) |
+| `showconfig` | Show hardware configuration (built-in) |
 | `date` | Show current date and time |
 | `which <cmd>` | Locate a command |
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
 | `run <cmd> [args]` | Run a command in a new CLI |
+| `ifconfig [dhcp \| <ip> <gw>]` | Configure or show network settings |
+| `ping <host> [count]` | Send ICMP echo requests |
+| `route` | Show routing table and ARP cache |
+| `nslookup <host> [server]` | Resolve a hostname via DNS |
+| `ntpd [server]` | Synchronise time via NTP |
+| `netstart` / `netstop` | Start or stop the network stack |
+| `netinfo` | Open the network information window |
+| `grep [-i] <pattern> <file>` | Search a file for a pattern |
+| `more <file>` | Paginated file viewer |
+| `file <path>...` | Identify file format from magic numbers |
+| `strings <path>... [-n minlen]` | Extract printable strings |
+| `find [path] [-name pat] [-type f\|d]` | Recursively search directories |
+| `list` | List files with detailed information |
+| `search <pattern> [file]` | Advanced file search |
+| `sort [file] [options]` | Sort file lines |
+| `join <file1> <file2>` | Join two files by key |
+| `ps` | List running tasks |
+| `jobs` | List background jobs |
+| `wait` | Wait for background jobs |
+| `changetaskpri <pri> [task]` | Change task priority |
+| `ask <prompt>` | Prompt the user for input |
+| `calculator` | Open the calculator window |
+| `clock` | Open the clock window |
+| `loadwb` | Launch the Workbench desktop |
+| `vim <file>` | Open the inline text editor |
+| `newcli` / `newshell` | Open a new shell window |
+| `execute <script>` | Execute a script file |
+| `assign [name: target]` | Create or list assigns |
+| `getenv <name>` | Read an environment variable |
+| `resident` | Manage resident commands |
+| `status` | Show system status |
+| `avail` | Show available memory |
+| `filenote <file> <comment>` | Set a file comment |
+| `relabel <device> <name>` | Rename a volume |
+| `install <device>` | Install a boot block |
+| `diskchange <device>` | Notify the system of a disk change |
+| `addbuffers <device> <n>` | Add disk buffers |
+| `requestchoice <title> <body> <buttons...>` | Show a choice dialog |
+| `requestfile [options]` | Show a file requester dialog |
+| `prompt <string>` | Set a custom shell prompt |
+| `stack` | Show stack usage |
+| `why` | Show the last command return code |
+| `failat <n>` | Set the failure threshold |
+| `quit [rc]` | Exit a script |
+| `endcli` | Close the current shell window |
 
 ---
 
@@ -252,12 +347,15 @@ GRUB2 Multiboot2
             └── uaos_kernel_main.c
                     ├── FB_Init()           framebuffer from Multiboot2 tag
                     ├── IDT_Init()          256-vector IDT + 8259A PIC remap
+                    ├── APIC_Init()         Local APIC configuration
                     ├── PS2Mouse_Init()     IRQ12 PS/2 mouse driver
                     ├── PS2Kbd_Init()       IRQ1  PS/2 keyboard driver
                     ├── RTC_Init()          CMOS real-time clock (IRQ8)
                     ├── VFS_Init()          VFS layer + RAM filesystem
                     ├── BlockDev_Init()     Block device layer
                     ├── virtio_blk_init()   VirtIO block device driver
+                    ├── ide_init()          IDE/ATAPI controller
+                    ├── UAOS_MMU_Init()     MMU sandbox page tables
                     ├── UAOS_ROM_RegisterAll()  Register ROM modules
                     │   ├── exec.library v45
                     │   ├── utility.library v37
@@ -268,12 +366,19 @@ GRUB2 Multiboot2
                     │   ├── timer.device v40 (→ RTC)
                     │   ├── keyboard.device v40 (→ PS/2)
                     │   ├── graphics.library v40
-                    │   └── dos.library v40 (→ VFS)
+                    │   ├── dos.library v40 (→ VFS)
+                    │   ├── bsdsocket.library v4 (→ TCP/IP stack)
+                    │   ├── workbench.library v45
+                    │   └── intuition.library v40
+                    ├── net_stack_init()    TCP/IP stack + NIC auto-probe
+                    ├── Task_Init()         Ring-3 task scheduler / TSS
                     ├── Desktop_Draw()      Workbench backdrop + icons
                     ├── ShellWin_Init()     Shell window → registers with WM
                     └── event loop
                             ├── WM_MouseEvent()   drag / focus / resize
-                            └── WM_KeyEvent()     routes keystrokes to focused window
+                            ├── WM_KeyEvent()     routes keystrokes to focused window
+                            ├── net_stack_poll()  process RX frames
+                            └── Syscall_Dispatch()  INT 0x80 from Ring-3 tasks
 ```
 
 ---

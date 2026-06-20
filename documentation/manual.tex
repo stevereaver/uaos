@@ -131,17 +131,22 @@ without requiring any host operating system.  It achieves this through:
     \item The C kernel entry point validates the Multiboot2 magic value,
           initialises the VGA text-mode console and UART, then calls:
           \begin{itemize}
+              \item \texttt{APIC\_Init()} --- configures the local APIC for ExtINT delivery.
               \item \texttt{FB\_Init()} --- parses the Multiboot2 framebuffer tag.
               \item \texttt{IDT\_Init()} --- installs 256-vector IDT and remaps 8259A PIC.
               \item \texttt{UAOS\_MMU\_Init()} --- installs the sandbox page tables.
-              \item \texttt{UAOS\_ROM\_RegisterAll()} --- populates the ROM module registry.
-              \item \texttt{UAOS\_Bridge\_Init()} --- allocates the 4~GB guest RAM window.
-              \item \texttt{PS2Mouse\_Init()} and \texttt{PS2Kbd\_Init()} --- PS/2 input drivers.
               \item \texttt{RTC\_Init()} --- CMOS real-time clock with UIE interrupt.
               \item \texttt{VFS\_Init()} --- virtual filesystem layer and RAM: mount.
               \item \texttt{BlockDev\_Init()} --- block device layer.
               \item \texttt{virtio\_blk\_init()} --- VirtIO block device detection.
+              \item \texttt{ide\_init()} --- IDE/ATAPI controller.
+              \item \texttt{UAOS\_ROM\_RegisterAll()} --- populates the ROM module registry.
+              \item \texttt{UAOS\_Bridge\_Init()} --- allocates the 4~GB guest RAM window.
+              \item \texttt{Task\_Init()} --- Ring-3 task scheduler and TSS.
+              \item \texttt{PS2Mouse\_Init()} and \texttt{PS2Kbd\_Init()} --- PS/2 input drivers.
+              \item \texttt{net\_stack\_init()} --- TCP/IP stack and NIC auto-probe.
               \item \texttt{Desktop\_Draw()} and \texttt{ShellWin\_Init()} --- graphical shell.
+              \item \texttt{ShellWin\_RunStartupSequence()} --- executes \texttt{S:Startup-Sequence}.
           \end{itemize}
     \item Enters the \texttt{hlt}-loop event dispatcher.
 \end{enumerate}
@@ -186,7 +191,9 @@ Table~\ref{tab:memmap} shows the critical address assignments.
         \midrule
         \texttt{0x00000000--0x001FFFFF} & 2 MB  & Chip RAM \\
         \texttt{0x00200000--0x009FFFFF} & 8 MB  & Fast RAM (lower) \\
+        \texttt{0x00A00000--0x00AFFFFF} & 1 MB  & Slow RAM / ranger \\
         \texttt{0x00B00000--0x00DFFFFF} & 3 MB  & \textbf{Custom chip registers (NOT PRESENT)} \\
+        \texttt{0x00E00000--0x00EFFFFF} & 1 MB  & Extended ROM / card space \\
         \texttt{0x00F80000--0x00FFFFFF} & 512 KB & Kickstart ROM mirror \\
         \texttt{0x01000000--0x7FFFFFFF} & 2 GB  & Extended Fast RAM \\
         \texttt{0x80000000--0xFFFFFFFF} & 2 GB  & x86\_64 kernel space \\
@@ -213,7 +220,8 @@ UAOS implements a Ring-3 (user-mode) task execution model for native 64-bit ELF 
               \item \textbf{RDI, RSI, RDX} --- Arguments 1, 2, 3.
               \item \textbf{RAX} --- Return value (negative values represent errors).
           \end{itemize}
-          The dispatcher in \texttt{syscall\_dispatch.c} implements page allocation (\texttt{sys\_alloc}), process management (\texttt{sys\_spawn}, \texttt{sys\_wait}, \texttt{sys\_exit}), and VFS file/directory interfaces (\texttt{sys\_getcwd}, \texttt{sys\_opendir}, \texttt{sys\_readdir}, \texttt{sys\_closedir}, \texttt{sys\_stat}).
+          The dispatcher in \texttt{syscall\_dispatch.c} implements page allocation (\texttt{sys\_alloc}), process management (\texttt{sys\_spawn}, \texttt{sys\_wait}, \texttt{sys\_exit}), VFS file/directory interfaces (\texttt{sys\_getcwd}, \texttt{sys\_opendir}, \texttt{sys\_readdir}, \texttt{sys\_closedir}, \texttt{sys\_stat}), and GUI windowing syscalls (\texttt{create\_window}, \texttt{destroy\_window}, \texttt{draw\_text}, \texttt{draw\_rect}, \texttt{present}, \texttt{get\_event}, \texttt{set\_scroll\_info}, \texttt{set\_scroll}).
+    \item \textbf{Current Userspace Programs} --- \texttt{hello}, \texttt{pwd}, \texttt{file}, \texttt{strings}, \texttt{find}, and \texttt{Guide} are built from \texttt{system/userspace/} and staged into \texttt{C:} (or \texttt{Tools:} for \texttt{Guide}).
     \item \textbf{Execution State \& Redirection} ---
           \begin{itemize}
               \item \textbf{Per-Task CWD} --- Each task struct tracks its own current working directory in \texttt{task\_cwd} which VFS resolves relative paths against.
@@ -238,6 +246,36 @@ static array of \texttt{UaosRomModule} descriptors, each holding:
           \texttt{rom\_traps.s} function indices).
 \end{itemize}
 
+\subsection{Registered ROM Modules}
+
+Table~\ref{tab:rommodules} lists the modules registered by
+\texttt{UAOS\_ROM\_RegisterAll()}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llcl}
+\toprule
+\textbf{Module} & \textbf{Version} & \textbf{Base} & \textbf{Purpose} \\
+\midrule
+\texttt{exec.library} & 45 & 0x00000004 & Process/task control, memory, signals \\
+\texttt{utility.library} & 37 & 0x00000050 & String utilities \\
+\texttt{console.device} & 40 & 0x00000060 & Console I/O \\
+\texttt{mathffp.library} & 40 & 0x00000060 & Soft-float arithmetic \\
+\texttt{locale.library} & 38 & 0x000000B0 & Localisation \\
+\texttt{ixemul.library} & 53 & 0x00000090 & Unix compatibility layer \\
+\texttt{timer.device} & 40 & 0x000000A0 & Timing (RTC-backed) \\
+\texttt{keyboard.device} & 40 & 0x000000B0 & Keyboard input (PS/2) \\
+\texttt{graphics.library} & 40 & 0x000000C0 & Graphics primitives \\
+\texttt{dos.library} & 40 & 0x000000D0 & VFS file system operations \\
+\texttt{bsdsocket.library} & 4 & 0x00003000 & BSD socket API \\
+\texttt{workbench.library} & 45 & 0x00000000 & Workbench integration \\
+\texttt{intuition.library} & 40 & 0x00005000 & GUI/Intuition API \\
+\bottomrule
+\end{tabular}
+\caption{ROM modules registered at boot}
+\label{tab:rommodules}
+\end{table}
+
 \section{Thunk Handler (\texttt{thunk\_handler.c})}
 
 The \texttt{UAOS\_AMIGA\_TO\_HOST()} macro translates any 32-bit Amiga guest
@@ -256,6 +294,22 @@ function \texttt{UAOS\_PageFaultHandler()}.  On return from the C handler,
 GPRs are restored and \texttt{IRETQ} resumes execution past the faulting
 instruction.
 
+\section{Native Command System (\texttt{kernel/shell/})}
+
+The shell dispatches \texttt{C:} binaries through a static registry in
+\texttt{native\_cmd.c}.  \texttt{k\_native\_cmds[]} maps a lowercase command
+name to a \texttt{NativeCmdFn} handler and an optional AmigaDOS-style template
+string.  Key components:
+
+\begin{itemize}
+    \item \texttt{native\_cmd.c/h} --- registry and case-insensitive lookup.
+    \item \texttt{cmd\_template.c/h} --- AmigaDOS-style argument parser
+          (\texttt{/A}, \texttt{/K}, \texttt{/S}, \texttt{/N}, \texttt{/M}, \texttt{/F}).
+    \item \texttt{resident\_cmd.c/h} --- in-memory resident command cache
+          (256~KB, up to 16 slots).
+    \item \texttt{cmd\_*.c} --- individual command implementations (65+ commands).
+\end{itemize}
+
 \section{Virtual Filesystem Layer (\texttt{vfs.c}, \texttt{ramfs.c})}
 
 UAOS provides a thin VFS dispatch layer over an in-memory RAM filesystem.
@@ -268,15 +322,20 @@ typedef struct {
 } VfsFile;
 \end{lstlisting}
 
-\textbf{RAM Filesystem} (\texttt{ramfs.c}): BSS-backed storage with 256 nodes
-and a 64\,KB data pool.  Auto-mounted at boot as \texttt{RAM:} with
-\texttt{T}, \texttt{ENV}, \texttt{CLIPS}, and \texttt{S} directories.
+\textbf{RAM Filesystem} (\texttt{ramfs.c}): BSS-backed storage with up to 1024
+nodes, 512~KB per file, and a 4~MB data pool.  Auto-mounted at boot as
+\texttt{RAM:} with \texttt{T}, \texttt{ENV}, \texttt{CLIPS}, and \texttt{S}
+directories.
+
+\textbf{Filesystem drivers}: FAT32 (mount, open, seek, size, format;
+cluster read/write pending), PFS3 (mount), EXT4 (read-only mount), and
+ISO9660 (CD-ROM reader that loads files into RAMFS at boot).
 
 \textbf{Partition volumes}: The block device layer detects MBR partitions
-on VirtIO devices and registers them as child block devices
+on VirtIO/IDE devices and registers them as child block devices
 (e.g.\ \texttt{virtio01}).  Formatted partitions are auto-mounted in the VFS
 by their display name (e.g.\ \texttt{DH0:}) and by their FAT32 volume label
-(e.g.\ \texttt{WORK:}), both backed by RAMFS volumes.
+(e.g.\ \texttt{WORK:}).
 
 \textbf{VFS Operations} include \texttt{VFS\_Open}, \texttt{VFS\_Read},
 \texttt{VFS\_Write}, \texttt{VFS\_MkDir}, \texttt{VFS\_Delete},
@@ -317,22 +376,18 @@ sudo apt install nasm gcc binutils xorriso \
 \section{Building the ISO}
 
 \begin{lstlisting}[language=bash, caption={Full build pipeline}]
-# Assemble NASM kernel entry
-nasm -f elf64 kernel/boot/uaos_kernel_entry.asm \
-    -o build/uaos_kernel_entry.o
-
-# Compile C kernel sources (freestanding)
-gcc -ffreestanding -fno-stack-protector -fno-pie \
-    -mno-red-zone -nostdlib -m64 -O2 \
-    -c kernel/boot/uaos_kernel_main.c -o build/uaos_kernel_main.o
-# ... (see scripts/build_iso.sh for full compile step list)
-
-# Link ELF64 kernel
-ld -T kernel/boot/uaos_kernel.ld build/*.o -o build/uaos-kernel.elf
-
-# Package ISO
+# Single command builds everything:
 ./scripts/build_iso.sh
+
+# Clean rebuild:
+./scripts/build_iso.sh --clean
 \end{lstlisting}
+
+The script compiles the NASM and C kernel sources, links the ELF64 kernel,
+embeds any M68k binaries in \texttt{emulation/binaries/}, builds native x86-64
+Ring-3 userspace programs from \texttt{system/userspace/}, stages the
+\texttt{system/} skeleton into a dynamic \texttt{SYS\_ROOT}, and invokes
+\texttt{grub-mkrescue} to produce \texttt{build/Ultimate\_Amiga\_OS.iso}.
 
 \section{Testing in QEMU}
 
@@ -348,13 +403,19 @@ qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,\
 file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
-  -cdrom build/Ultimate_Amiga_OS.iso \
-  -m 512M -vga virtio -no-reboot
+  -device piix3-ide,id=ide \
+  -drive if=none,id=cdrom,media=cdrom,\
+file=build/Ultimate_Amiga_OS.iso \
+  -device ide-cd,drive=cdrom,bus=ide.0 \
+  -m 512M -vga virtio -no-reboot -no-shutdown \
+  -serial stdio
 \end{lstlisting}
 
 The \texttt{usb=off} flag is required to prevent QEMU's USB tablet device
-from conflicting with the PS/2 relative mouse driver.
-Add \texttt{-serial stdio} to see kernel debug output on the terminal.
+from conflicting with the PS/2 relative mouse driver. The explicit
+\texttt{piix3-ide} controller is needed because the Q35 chipset has no
+built-in IDE controller. Add \texttt{-serial stdio} to see kernel debug
+output on the terminal.
 
 % =========================================================================
 \chapter{Graphics and Window Manager}
@@ -435,6 +496,22 @@ it, drawing the sprite, and on each move restoring the saved background before
 re-saving and re-drawing at the new position.  This ensures the desktop and
 window content are never permanently overwritten by cursor movement.
 
+\section{Additional Windows}
+
+Besides the main shell and Workbench, the kernel provides several standalone
+windows:
+
+\begin{itemize}
+    \item \textbf{About UAOS} --- \texttt{kernel/display/about\_win.c}
+    \item \textbf{Calculator} --- \texttt{kernel/display/calc\_win.c}, opened by \texttt{calculator}
+    \item \textbf{Clock} --- \texttt{kernel/display/clock\_win.c}, opened by \texttt{clock}
+    \item \textbf{NetInfo} --- \texttt{kernel/display/netinfo\_win.c}, opened by \texttt{netinfo}
+    \item \textbf{Pointer preferences} --- \texttt{kernel/display/pointer\_prefs.c}, opened by \texttt{pointer}
+    \item \textbf{User window / Guide viewer} --- \texttt{kernel/display/user\_window.c}, opened by \texttt{Guide}
+    \item \textbf{VIM editor} --- \texttt{kernel/display/vim\_win.c}, opened by \texttt{vim}
+    \item \textbf{File browser} --- \texttt{kernel/display/filebrowser.c}, opened from Workbench icons
+\end{itemize}
+
 % =========================================================================
 \chapter{Shell and Built-in Commands}
 % =========================================================================
@@ -442,6 +519,23 @@ window content are never permanently overwritten by cursor movement.
 The shell window (\texttt{shell\_win.c}) registers with the window manager
 via \texttt{WM\_AddWindow()} and implements a scrollable terminal with
 up to 128 lines of history and an input line with backspace support.
+
+\section{Command Execution Flow}
+
+The shell resolves a command in the following order:
+
+\begin{enumerate}
+    \item \textbf{Shell built-ins} --- implemented directly in the shell.
+    \item \textbf{Resident commands} --- cached in memory by \texttt{resident}.
+    \item \textbf{Native C: commands} --- dispatched from \texttt{k\_native\_cmds[]}.
+    \item \textbf{M68k Hunk binaries} --- loaded into the Musashi emulator.
+    \item \textbf{Ring-3 userspace ELF64 binaries} --- run with \texttt{INT 0x80} syscalls.
+\end{enumerate}
+
+All command lookup is case-insensitive.  Native commands may declare an
+AmigaDOS-style template (\texttt{/A} required, \texttt{/K} keyword,
+\texttt{/S} switch, \texttt{/N} numeric, \texttt{/M} multiple, \texttt{/F}
+free-form) that is parsed automatically before the handler is invoked.
 
 \section{Built-in Commands}
 
@@ -452,42 +546,97 @@ up to 128 lines of history and an input line with backspace support.
         \textbf{Command} & \textbf{Description} \\
         \midrule
         \texttt{help} & List available commands \\
+        \texttt{cd [path]} & Change or show current directory \\
+        \texttt{alias [name cmd]} & Create or list aliases \\
+        \texttt{unalias <name>} & Remove an alias \\
+        \texttt{set [name val]} & Set or list local variables \\
+        \texttt{unset <name>} & Remove a local variable \\
+        \texttt{path [dirs...]} & Show or set command search path \\
+        \texttt{setenv <name> <value>} & Set a global variable \\
+        \texttt{unsetenv <name>} & Remove a global variable \\
+        \texttt{showconfig} & Show hardware configuration \\
+        \bottomrule
+    \end{tabular}
+    \caption{UAOS Shell Built-in Commands}
+    \label{tab:builtins}
+\end{table}
+
+\section{Native C: Commands}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{Command} & \textbf{Description} \\
+        \midrule
         \texttt{version} & Show OS version and architecture \\
         \texttt{mem} & Display memory information \\
+        \texttt{libs} & List loaded ROM libraries \\
         \texttt{clear} & Clear shell history \\
         \texttt{reboot} & Warm reboot \\
-        \texttt{libs} & List loaded kernel libraries \\
         \texttt{dir [path]} & List directory contents \\
-        \texttt{cd [path]} & Change or show current directory \\
         \texttt{makedir <path>} & Create a directory \\
         \texttt{delete <path>} & Delete a file or empty directory \\
         \texttt{type <file>} & Display file contents \\
         \texttt{copy <src> <dst>} & Copy a file \\
         \texttt{rename <from> <to>} & Rename or move a file \\
-        \texttt{pwd} & Print working directory (native userspace utility) \\
-        \texttt{find [path] [-name pat] [-type f|d]} & Recursively list directory contents (native userspace utility) \\
-        \texttt{file <path>} & Identify file format using magic numbers (native userspace utility) \\
-        \texttt{strings <path> [-n len]} & Scan files for printable character sequences (native userspace utility) \\
-        \texttt{hello} & Print simple greeting (userspace validation utility) \\
         \texttt{echo <text>} & Print text \\
-        \texttt{pointer} & Open pointer preferences \\
         \texttt{protect <flags> <path>} & Set attributes ($\pm$r, $\pm$h) \\
         \texttt{attr <path>} & Show file attributes \\
         \texttt{info [device]} & Show mounted disks and volumes \\
-        \texttt{alias [name cmd]} & Create or list aliases \\
-        \texttt{unalias <name>} & Remove an alias \\
-        \texttt{set [name val]} & Set or list environment variables \\
-        \texttt{unset <name>} & Remove a variable \\
         \texttt{date} & Show date and time \\
         \texttt{which <cmd>} & Locate a command \\
         \texttt{disks} & List block devices \\
         \texttt{fdisk <device>} & Partition a block device \\
         \texttt{format <dev> [fs]} & Format a partition (FAT32) \\
+        \texttt{pointer} & Open pointer preferences \\
         \texttt{run <cmd> [args]} & Run a command in a new CLI \\
+        \texttt{assign [name: target]} & Create or list assigns \\
+        \texttt{execute <script>} & Run a script file \\
+        \texttt{loadwb} & Launch the Workbench desktop \\
+        \texttt{calculator} & Open calculator window \\
+        \texttt{clock} & Open clock window \\
+        \texttt{ifconfig} & Show or configure network \\
+        \texttt{ping} & Send ICMP echo requests \\
+        \texttt{route} & Show routing table and ARP cache \\
+        \texttt{nslookup} & Resolve a hostname \\
+        \texttt{ntpd} & Synchronise time via NTP \\
+        \texttt{netstart / netstop} & Start or stop the network stack \\
+        \texttt{netinfo} & Open network info window \\
+        \texttt{grep / more / list / search / sort / join} & Text/file processing \\
+        \texttt{vim} & Inline text editor \\
+        \texttt{newcli / newshell} & Open a new shell window \\
+        \texttt{ask / prompt / why / failat / quit / endcli} & Shell scripting \\
+        \texttt{resident} & Manage resident commands \\
+        \texttt{ps / jobs / wait / changetaskpri} & Process/task control \\
+        \texttt{filenote / relabel / install / diskchange / addbuffers} & Disk maintenance \\
+        \texttt{requestchoice / requestfile} & Dialogs \\
+        \texttt{status / avail / stack} & System utilities \\
+        \texttt{getenv / unset} & Environment access \\
         \bottomrule
     \end{tabular}
-    \caption{UAOS Shell Built-in Commands}
-    \label{tab:shellcmds}
+    \caption{UAOS Native C: Commands}
+    \label{tab:nativecmds}
+\end{table}
+
+\section{Ring-3 Userspace Commands}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{Command} & \textbf{Description} \\
+        \midrule
+        \texttt{pwd} & Print working directory \\
+        \texttt{find [path] [-name pat] [-type f|d]} & Recursively search directories \\
+        \texttt{file <path>...} & Identify file format from magic numbers \\
+        \texttt{strings <path>... [-n minlen]} & Extract printable strings \\
+        \texttt{hello} & Print a simple greeting \\
+        \texttt{Guide} & AmigaGuide help viewer \\
+        \bottomrule
+    \end{tabular}
+    \caption{UAOS Ring-3 Userspace Commands}
+    \label{tab:userspacecmds}
 \end{table}
 
 \section{Filesystem Operations}
@@ -514,18 +663,19 @@ threads or blocking system calls are required.
 
 \begin{verbatim}
 Shell / bsdsocket.library
-        │
-        ▼
+        |
+        v
  icmp / tcp / udp   (kernel/net/)
-        │
-        ▼
-  ip.c  ◄──►  arp.c
-        │
-        ▼
+        |
+        v
+  ip.c  <-->  arp.c
+        |
+        v
  NetDevice  (abstract hardware interface)
-        │
-   ┌────┴────┐
-   ▼         ▼
+        |
+   +----+----+
+   |         |
+   v         v
 virtio_net  e1000
 (QEMU)   (VirtualBox)
 \end{verbatim}
@@ -559,11 +709,12 @@ typedef struct NetDevice {
 \subsection{VirtIO-Net (\texttt{virtio\_net.c})}
 
 \begin{itemize}
-  \item PCI vendor \texttt{0x1AF4}, device \texttt{0x1000} (legacy VirtIO~0.9).
-  \item I/O-port BAR0; 256-entry legacy virtqueue descriptor rings.
+  \item PCI vendor \texttt{0x1AF4}, device \texttt{0x1000} (legacy VirtIO~0.9)
+        or \texttt{0x1041} (modern).
+  \item I/O-port or MMIO BAR0; split virtqueue descriptor rings.
   \item MSI-X capability is present but kept disabled; interrupts use the
         8259A~PIC (IRQ~10 on Q35 QEMU).
-  \item Used by: QEMU \texttt{-device virtio-net-pci,disable-modern=on}.
+  \item Used by: QEMU \texttt{-device virtio-net-pci}.
 \end{itemize}
 
 \subsection{Intel 82540EM e1000 (\texttt{e1000.c})}
@@ -759,11 +910,66 @@ reentrancy lock, making simultaneous calls safe.
 \toprule
 \textbf{Command} & \textbf{Description} \\
 \midrule
-\texttt{ping <ip> [count]} & Send ICMP echo requests; \texttt{ip} is dotted-decimal \\
-\texttt{ifconfig} & Show IP address, netmask, gateway and MAC \\
+\texttt{netstart} & Initialise stack from \texttt{S:net.conf} \\
+\texttt{netstop} & Shut down stack, release DHCP lease \\
+\texttt{ifconfig [dhcp | <ip> <gw>]} & Show or configure network \\
+\texttt{ping <host> [count]} & Send ICMP echo requests \\
+\texttt{route} & Display routing table and ARP cache \\
+\texttt{nslookup <host> [server]} & Resolve hostname via DNS \\
+\texttt{ntpd [server]} & Synchronise time via NTP \\
+\texttt{netinfo} & Open network info window \\
 \bottomrule
 \end{tabular}
 \caption{Network shell commands}
+\end{table}
+
+\subsection{Network Configuration Files}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{File} & \textbf{Purpose} & \textbf{Default} \\
+\midrule
+\texttt{S:net.conf} & Mode (dhcp/static), IP, netmask, gateway, DNS & dhcp / 10.0.2.15/24 \\
+\texttt{S:ntp.conf} & NTP server hostname & pool.ntp.org \\
+\texttt{S:timezone.conf} & IANA timezone name & Australia/Sydney \\
+\bottomrule
+\end{tabular}
+\caption{Network configuration files}
+\end{table}
+
+\subsection{\texttt{bsdsocket.library} LVO Table}
+
+The \texttt{bsdsocket.library} ROM module exposes a standard AmigaOS BSD
+socket LVO table to M68k binaries.  Descriptors 0--7 map to TCP sockets and
+8--15 to UDP sockets.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{cll}
+\toprule
+\textbf{LVO} & \textbf{Function} & \textbf{Arguments} \\
+\midrule
+-30 & \texttt{socket} & domain/D0, type/D1, protocol/D2 \\
+-36 & \texttt{bind} & fd/D0, sockaddr/A0, addrlen/D1 \\
+-42 & \texttt{listen} & fd/D0, backlog/D1 \\
+-48 & \texttt{accept} & fd/D0, sockaddr/A0, addrlen/A1 \\
+-54 & \texttt{connect} & fd/D0, sockaddr/A0, addrlen/D1 \\
+-60 & \texttt{send} & fd/D0, buf/A0, len/D1, flags/D2 \\
+-66 & \texttt{sendto} & fd/D0, buf/A0, len/D1, flags/D2, addr/A1, addrlen/D3 \\
+-72 & \texttt{recv} & fd/D0, buf/A0, len/D1, flags/D2 \\
+-78 & \texttt{recvfrom} & fd/D0, buf/A0, len/D1, flags/D2, addr/A1, addrlen/A2 \\
+-84 & \texttt{closesocket} & fd/D0 \\
+-96 & \texttt{setsockopt} & fd/D0, level/D1, optname/D2, val/A0, optlen/D3 \\
+-102 & \texttt{getsockopt} & fd/D0, level/D1, optname/D2, val/A0, optlen/A1 \\
+-108 & \texttt{IoctlSocket} & fd/D0, req/D1, arg/A0 \\
+-132 & \texttt{inet\_addr} & str/A0 \\
+-138 & \texttt{inet\_ntoa} & addr/D0 \\
+-210 & \texttt{gethostbyname} & name/A0 \\
+\bottomrule
+\end{tabular}
+\caption{\texttt{bsdsocket.library} LVO table}
 \end{table}
 
 % =========================================================================

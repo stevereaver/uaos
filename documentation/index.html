@@ -255,26 +255,48 @@ Amiga-style software cursor</li>
 <li><strong>PS/2 keyboard</strong> — IRQ1-driven, scancode set 1, ring
 buffer</li>
 <li><strong>Shell window</strong> — scrollable history, input line,
-built-in commands: <code>help</code>, <code>version</code>,
-<code>mem</code>, <code>libs</code>, <code>clear</code>,
-<code>reboot</code>, <code>run</code>, <code>dir</code>,
-<code>cd</code>, <code>makedir</code>, <code>delete</code>,
-<code>type</code>, <code>copy</code>, <code>rename</code>,
-<code>pwd</code>, <code>echo</code>, <code>pointer</code>,
-<code>protect</code>, <code>attr</code>, <code>info</code>,
+built-in commands: <code>help</code>, <code>cd</code>,
 <code>alias</code>, <code>unalias</code>, <code>set</code>,
-<code>unset</code>, <code>date</code>, <code>which</code>,
-<code>disks</code>, <code>fdisk</code>, <code>format</code></li>
+<code>unset</code>, <code>path</code>, <code>setenv</code>,
+<code>unsetenv</code>, <code>showconfig</code></li>
+<li><strong>Native C: commands</strong> — 65+ x86-64 kernel commands
+including <code>version</code>, <code>mem</code>, <code>libs</code>,
+<code>dir</code>, <code>makedir</code>, <code>delete</code>,
+<code>type</code>, <code>copy</code>, <code>rename</code>,
+<code>echo</code>, <code>protect</code>, <code>attr</code>,
+<code>info</code>, <code>date</code>, <code>which</code>,
+<code>disks</code>, <code>fdisk</code>, <code>format</code>,
+<code>assign</code>, <code>execute</code>, <code>loadwb</code>,
+<code>run</code>, <code>ping</code>, <code>ifconfig</code>,
+<code>route</code>, <code>nslookup</code>, <code>ntpd</code>,
+<code>netstart</code>, <code>netstop</code>, <code>netinfo</code>,
+<code>grep</code>, <code>more</code>, <code>list</code>,
+<code>search</code>, <code>sort</code>, <code>ps</code>,
+<code>jobs</code>, <code>wait</code>, <code>ask</code>,
+<code>newcli</code>, <code>calculator</code>, <code>clock</code>,
+<code>pointer</code>, <code>vim</code>, <code>status</code>,
+<code>avail</code>, <code>filenote</code>, <code>relabel</code>,
+<code>install</code>, <code>diskchange</code>, <code>addbuffers</code>,
+<code>requestchoice</code>, <code>requestfile</code>,
+<code>changetaskpri</code>, <code>prompt</code>, <code>stack</code>,
+<code>why</code>, <code>failat</code>, <code>quit</code>,
+<code>endcli</code>, <code>getenv</code>, <code>unset</code>,
+<code>resident</code>, <code>join</code></li>
+<li><strong>Ring-3 userspace programs</strong> — <code>hello</code>,
+<code>pwd</code>, <code>file</code>, <code>strings</code>,
+<code>find</code>, <code>Guide</code> built as native x86-64 ELF64
+binaries using the <code>INT 0x80</code> syscall interface</li>
 <li><strong>IDT / 8259A PIC</strong> — 256-vector IDT, PIC remapped to
-vectors 32–47</li>
+vectors 32–47, plus local APIC setup</li>
 <li><strong>MMU sandbox</strong> — 4-level paging, 2 MB huge pages</li>
 <li><strong>M68k emulation</strong> — Musashi CPU, ILLEGAL opcode
-dispatch, LVO stubs</li>
+dispatch, LVO stubs; runs raw Amiga Hunk binaries and embedded M68k
+binaries</li>
 <li><strong>ROM module system</strong> — Native AmigaOS-compatible
 library implementations:
 <ul>
 <li><code>exec.library</code> v45 — Process management, memory
-allocation</li>
+allocation, signals, IPC</li>
 <li><code>utility.library</code> v37 — String functions, memory
 utilities</li>
 <li><code>console.device</code> v40 — Console I/O</li>
@@ -287,18 +309,28 @@ RTC)</li>
 driver)</li>
 <li><code>graphics.library</code> v40 — Graphics primitives</li>
 <li><code>dos.library</code> v40 — File system operations</li>
+<li><code>bsdsocket.library</code> v4 — BSD socket API mapped to the
+native TCP/IP stack</li>
+<li><code>workbench.library</code> v45 — Workbench desktop
+integration</li>
+<li><code>intuition.library</code> v40 — Intuition GUI API</li>
 </ul></li>
-<li><strong>VFS / RAM filesystem</strong> — In-memory node tree,
-auto-mounted at boot with T, ENV, CLIPS, S dirs; partition volumes
-mountable by display name or FAT32 volume label</li>
+<li><strong>VFS / RAM filesystem</strong> — In-memory node tree (1024
+nodes, 512 KB per file), auto-mounted at boot with T, ENV, CLIPS, S
+dirs; partition volumes mountable by display name or FAT32 volume
+label</li>
+<li><strong>Filesystem drivers</strong> — FAT32, PFS3, EXT4 (read-only),
+ISO9660 (CD-ROM), and RAMFS</li>
 <li><strong>VirtIO block device driver</strong> — PCI scanning, device
 detection, capacity reporting</li>
+<li><strong>IDE / ATAPI driver</strong> — Storage controller for CD-ROM
+and hard disks</li>
 <li><strong>Block device layer</strong> — Unified interface for storage
 devices; partition registration and MBR parsing</li>
-<li><strong>FAT32 support</strong> — Boot sector reading, volume label
-extraction, formatting via <code>format</code> command</li>
 <li><strong>RTC driver</strong> — CMOS real-time clock with UIE
 interrupt</li>
+<li><strong>TCP/IP networking stack</strong> — IPv4, ARP, ICMP, TCP,
+UDP, DHCP, DNS, NTP; Intel e1000 and VirtIO-Net drivers</li>
 <li><strong>EFI + BIOS hybrid ISO</strong> — boots on OVMF UEFI and
 legacy BIOS via GRUB2</li>
 </ul>
@@ -309,24 +341,32 @@ legacy BIOS via GRUB2</li>
 │   ├── boot/           # NASM entry point, C kernel main, linker script
 │   ├── display/        # Framebuffer, desktop, cursor, window manager, shell window
 │   ├── irq/            # IDT, 8259A PIC, PS/2 mouse, PS/2 keyboard, VMware mouse, RTC, VirtIO block
-│   ├── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules
-│   │                   # ROM libraries: utility, console, mathffp, locale, ixemul
-│   │                   # ROM devices: timer, keyboard, graphics
-│   │                   # dos.library implementation
-│   └── dos/            # VFS layer, RAM filesystem, block device layer
+│   ├── exec/           # Thunk handler, MMU sandbox, page fault ISR, ROM modules, task scheduler,
+│   │                   # syscall dispatch, native x86-64 ELF64 loader
+│   ├── dos/            # VFS layer, RAM filesystem, block device layer, FAT32/PFS3/EXT4/ISO9660
+│   ├── net/            # TCP/IP stack (IPv4, ARP, ICMP, TCP, UDP, DHCP, DNS, NTP)
+│   ├── drivers/        # Network and storage drivers (e1000, virtio-net, virtio-blk, IDE)
+│   └── shell/          # Native C: command implementations (cmd_*.c) and resident command system
 ├── emulation/
+│   ├── binaries/       # Embedded M68k binaries (auto-wrapped into the kernel image)
 │   ├── rom_patches/    # M68k Vasm/Devpac stubs, kickstart config
 │   ├── src/musashi/    # M68k CPU emulator
 │   ├── uaos_m68k_glue.c # M68k emulator glue, LVO stubs, DOS stubs
+│   ├── uaos_uae_bridge.c  # UAE bridge and RAM-base management
 │   └── uaos_emu_registry.c
-├── drivers/            # Future device drivers
+├── system/             # Amiga-style filesystem skeleton (C, S, LIBS, L, DEVS, SYS, Tools)
+│   ├── libuaos/        # Userspace C library headers and startup code
+│   ├── userspace/      # Native x86-64 Ring-3 ELF64 programs (pwd, file, strings, find, Guide, ...)
+│   └── S/              # Startup-Sequence, network, NTP, timezone configs
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
 │   └── grub.cfg        # GRUB2 multiboot2 configuration
-├── sys-root/           # Amiga-style filesystem skeleton (C, DEVS, L, S, SYS)
+├── tools/              # Host-side build helpers (gen_uaos_native, gen_uaos_m68k, gen_uaos_x64)
 ├── documentation/
 │   ├── uaos.guide      # AmigaGuide database
-│   └── manual.tex      # LaTeX technical reference
+│   ├── manual.md       # Markdown technical reference
+│   ├── manual.tex      # LaTeX technical reference
+│   └── Dos_Manual.md   # Shell and scripting reference
 └── build/              # Generated output (created by build script)
     └── Ultimate_Amiga_OS.iso</code></pre>
 <hr />
@@ -365,42 +405,126 @@ legacy BIOS via GRUB2</li>
 <tbody>
 <tr class="odd">
 <td>1</td>
-<td>Creates <code>build/</code> staging directories</td>
+<td>Creates <code>build/</code> staging directories and the dynamic
+<code>SYS_ROOT</code> image</td>
 </tr>
 <tr class="even">
 <td>2</td>
-<td>Assembles <code>uaos_kernel_entry.asm</code> and
-<code>idt_stubs.asm</code> with NASM</td>
+<td>Builds host tools (<code>gen_uaos_native</code>,
+<code>gen_uaos_m68k</code>, <code>gen_uaos_x64</code>,
+<code>gen_m68k_library</code>)</td>
 </tr>
 <tr class="odd">
 <td>3</td>
+<td>Assembles <code>uaos_kernel_entry.asm</code>,
+<code>idt_stubs.asm</code> and <code>task_switch.asm</code> with
+NASM</td>
+</tr>
+<tr class="even">
+<td>4</td>
+<td>Generates the Musashi M68k opcode table if needed</td>
+</tr>
+<tr class="odd">
+<td>5</td>
 <td>Compiles all C kernel sources with GCC
 (<code>-ffreestanding -m64 -O2 -std=c11</code>)</td>
 </tr>
 <tr class="even">
-<td>4</td>
+<td>6</td>
 <td>Links everything into <code>uaos-kernel.elf</code> (ELF64) via the
 custom linker script</td>
 </tr>
 <tr class="odd">
-<td>5</td>
-<td>Packages the <code>sys-root</code> Amiga filesystem skeleton</td>
-</tr>
-<tr class="even">
-<td>6</td>
-<td>Injects <code>grub.cfg</code></td>
-</tr>
-<tr class="odd">
 <td>7</td>
-<td>Builds a standalone GRUB EFI image (<code>bootx64.efi</code>) with
-<code>grub-mkstandalone</code></td>
+<td>Wraps embedded M68k binaries from <code>emulation/binaries/</code>
+and Amiga <code>.library</code> files</td>
 </tr>
 <tr class="even">
 <td>8</td>
+<td>Builds native x86-64 Ring-3 userspace programs from
+<code>system/userspace/</code></td>
+</tr>
+<tr class="odd">
+<td>9</td>
+<td>Stages the <code>system/</code> Amiga filesystem skeleton into
+<code>SYS_ROOT</code> (C:, S:, LIBS:, DEVS:, L:, SYS, Tools)</td>
+</tr>
+<tr class="even">
+<td>10</td>
+<td>Injects <code>grub.cfg</code> and the AROS kickstart
+configuration</td>
+</tr>
+<tr class="odd">
+<td>11</td>
 <td>Produces a hybrid BIOS+EFI ISO with <code>grub-mkrescue</code></td>
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="native-x86-64-userspace-programs">Native x86-64 Userspace
+Programs</h2>
+<p>Programs in <code>system/userspace/</code> are compiled as
+position-independent x86-64 ELF64 binaries, linked against
+<code>system/libuaos/uaos_start.c</code>, and wrapped with a 32-byte
+<code>UAOS</code> header (<code>UAOS_BIN_TYPE_X64</code>). At runtime
+the kernel loads them into Ring-3 tasks and enters user mode via
+<code>iretq</code>. They communicate with the kernel through the
+<code>INT 0x80</code> syscall ABI:</p>
+<pre class="c"><code>RAX = syscall number        RDI = arg 1   RSI = arg 2   RDX = arg 3</code></pre>
+<p>Current userspace tools:</p>
+<table>
+<colgroup>
+<col style="width: 28%" />
+<col style="width: 25%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Program</th>
+<th>Source</th>
+<th>Syscalls used</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>hello</code></td>
+<td><code>system/userspace/hello.c</code></td>
+<td><code>write</code></td>
+</tr>
+<tr class="even">
+<td><code>pwd</code></td>
+<td><code>system/userspace/pwd.c</code></td>
+<td><code>getcwd</code>, <code>write</code></td>
+</tr>
+<tr class="odd">
+<td><code>file</code></td>
+<td><code>system/userspace/file.c</code></td>
+<td><code>open</code>, <code>read_file</code>, <code>stat</code>,
+<code>write</code>, <code>close</code></td>
+</tr>
+<tr class="even">
+<td><code>strings</code></td>
+<td><code>system/userspace/strings.c</code></td>
+<td><code>open</code>, <code>read_file</code>, <code>write</code>,
+<code>close</code></td>
+</tr>
+<tr class="odd">
+<td><code>find</code></td>
+<td><code>system/userspace/find.c</code></td>
+<td><code>getcwd</code>, <code>opendir</code>, <code>readdir</code>,
+<code>closedir</code>, <code>write</code></td>
+</tr>
+<tr class="even">
+<td><code>Guide</code></td>
+<td><code>system/userspace/guide.c</code></td>
+<td>GUI syscalls (<code>create_window</code>, <code>draw_text</code>,
+<code>present</code>, <code>get_event</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>The syscall numbers are defined in
+<code>kernel/exec/syscall_table.h</code> (kernel) and
+<code>system/libuaos/uaos_syscall.h</code> (userspace).</p>
 <hr />
 <h2 id="running-in-qemu">Running in QEMU</h2>
 <h3 id="first-time-setup-copy-ovmf-variables-file">First-time setup —
@@ -596,7 +720,7 @@ type commands:</p>
 </tr>
 <tr class="even">
 <td><code>pwd</code></td>
-<td>Print working directory</td>
+<td>Print working directory (userspace Ring-3 utility)</td>
 </tr>
 <tr class="odd">
 <td><code>echo &lt;text&gt;</code></td>
@@ -621,19 +745,35 @@ type commands:</p>
 </tr>
 <tr class="even">
 <td><code>alias [name cmd]</code></td>
-<td>Create or list command aliases</td>
+<td>Create or list command aliases (built-in)</td>
 </tr>
 <tr class="odd">
 <td><code>unalias &lt;name&gt;</code></td>
-<td>Remove an alias</td>
+<td>Remove an alias (built-in)</td>
 </tr>
 <tr class="even">
 <td><code>set [name val]</code></td>
-<td>Set or list environment variables</td>
+<td>Set or list local variables (built-in)</td>
 </tr>
 <tr class="odd">
 <td><code>unset &lt;name&gt;</code></td>
-<td>Remove an environment variable</td>
+<td>Remove a local variable (built-in)</td>
+</tr>
+<tr class="even">
+<td><code>path [dirs...]</code></td>
+<td>Show or set the command search path (built-in)</td>
+</tr>
+<tr class="odd">
+<td><code>setenv &lt;name&gt; &lt;value&gt;</code></td>
+<td>Set a global environment variable (built-in)</td>
+</tr>
+<tr class="even">
+<td><code>unsetenv &lt;name&gt;</code></td>
+<td>Remove a global environment variable (built-in)</td>
+</tr>
+<tr class="odd">
+<td><code>showconfig</code></td>
+<td>Show hardware configuration (built-in)</td>
 </tr>
 <tr class="even">
 <td><code>date</code></td>
@@ -659,6 +799,186 @@ type commands:</p>
 <td><code>run &lt;cmd&gt; [args]</code></td>
 <td>Run a command in a new CLI</td>
 </tr>
+<tr class="even">
+<td><code>ifconfig [dhcp \| &lt;ip&gt; &lt;gw&gt;]</code></td>
+<td>Configure or show network settings</td>
+</tr>
+<tr class="odd">
+<td><code>ping &lt;host&gt; [count]</code></td>
+<td>Send ICMP echo requests</td>
+</tr>
+<tr class="even">
+<td><code>route</code></td>
+<td>Show routing table and ARP cache</td>
+</tr>
+<tr class="odd">
+<td><code>nslookup &lt;host&gt; [server]</code></td>
+<td>Resolve a hostname via DNS</td>
+</tr>
+<tr class="even">
+<td><code>ntpd [server]</code></td>
+<td>Synchronise time via NTP</td>
+</tr>
+<tr class="odd">
+<td><code>netstart</code> / <code>netstop</code></td>
+<td>Start or stop the network stack</td>
+</tr>
+<tr class="even">
+<td><code>netinfo</code></td>
+<td>Open the network information window</td>
+</tr>
+<tr class="odd">
+<td><code>grep [-i] &lt;pattern&gt; &lt;file&gt;</code></td>
+<td>Search a file for a pattern</td>
+</tr>
+<tr class="even">
+<td><code>more &lt;file&gt;</code></td>
+<td>Paginated file viewer</td>
+</tr>
+<tr class="odd">
+<td><code>file &lt;path&gt;...</code></td>
+<td>Identify file format from magic numbers</td>
+</tr>
+<tr class="even">
+<td><code>strings &lt;path&gt;... [-n minlen]</code></td>
+<td>Extract printable strings</td>
+</tr>
+<tr class="odd">
+<td><code>find [path] [-name pat] [-type f\|d]</code></td>
+<td>Recursively search directories</td>
+</tr>
+<tr class="even">
+<td><code>list</code></td>
+<td>List files with detailed information</td>
+</tr>
+<tr class="odd">
+<td><code>search &lt;pattern&gt; [file]</code></td>
+<td>Advanced file search</td>
+</tr>
+<tr class="even">
+<td><code>sort [file] [options]</code></td>
+<td>Sort file lines</td>
+</tr>
+<tr class="odd">
+<td><code>join &lt;file1&gt; &lt;file2&gt;</code></td>
+<td>Join two files by key</td>
+</tr>
+<tr class="even">
+<td><code>ps</code></td>
+<td>List running tasks</td>
+</tr>
+<tr class="odd">
+<td><code>jobs</code></td>
+<td>List background jobs</td>
+</tr>
+<tr class="even">
+<td><code>wait</code></td>
+<td>Wait for background jobs</td>
+</tr>
+<tr class="odd">
+<td><code>changetaskpri &lt;pri&gt; [task]</code></td>
+<td>Change task priority</td>
+</tr>
+<tr class="even">
+<td><code>ask &lt;prompt&gt;</code></td>
+<td>Prompt the user for input</td>
+</tr>
+<tr class="odd">
+<td><code>calculator</code></td>
+<td>Open the calculator window</td>
+</tr>
+<tr class="even">
+<td><code>clock</code></td>
+<td>Open the clock window</td>
+</tr>
+<tr class="odd">
+<td><code>loadwb</code></td>
+<td>Launch the Workbench desktop</td>
+</tr>
+<tr class="even">
+<td><code>vim &lt;file&gt;</code></td>
+<td>Open the inline text editor</td>
+</tr>
+<tr class="odd">
+<td><code>newcli</code> / <code>newshell</code></td>
+<td>Open a new shell window</td>
+</tr>
+<tr class="even">
+<td><code>execute &lt;script&gt;</code></td>
+<td>Execute a script file</td>
+</tr>
+<tr class="odd">
+<td><code>assign [name: target]</code></td>
+<td>Create or list assigns</td>
+</tr>
+<tr class="even">
+<td><code>getenv &lt;name&gt;</code></td>
+<td>Read an environment variable</td>
+</tr>
+<tr class="odd">
+<td><code>resident</code></td>
+<td>Manage resident commands</td>
+</tr>
+<tr class="even">
+<td><code>status</code></td>
+<td>Show system status</td>
+</tr>
+<tr class="odd">
+<td><code>avail</code></td>
+<td>Show available memory</td>
+</tr>
+<tr class="even">
+<td><code>filenote &lt;file&gt; &lt;comment&gt;</code></td>
+<td>Set a file comment</td>
+</tr>
+<tr class="odd">
+<td><code>relabel &lt;device&gt; &lt;name&gt;</code></td>
+<td>Rename a volume</td>
+</tr>
+<tr class="even">
+<td><code>install &lt;device&gt;</code></td>
+<td>Install a boot block</td>
+</tr>
+<tr class="odd">
+<td><code>diskchange &lt;device&gt;</code></td>
+<td>Notify the system of a disk change</td>
+</tr>
+<tr class="even">
+<td><code>addbuffers &lt;device&gt; &lt;n&gt;</code></td>
+<td>Add disk buffers</td>
+</tr>
+<tr class="odd">
+<td><code>requestchoice &lt;title&gt; &lt;body&gt; &lt;buttons...&gt;</code></td>
+<td>Show a choice dialog</td>
+</tr>
+<tr class="even">
+<td><code>requestfile [options]</code></td>
+<td>Show a file requester dialog</td>
+</tr>
+<tr class="odd">
+<td><code>prompt &lt;string&gt;</code></td>
+<td>Set a custom shell prompt</td>
+</tr>
+<tr class="even">
+<td><code>stack</code></td>
+<td>Show stack usage</td>
+</tr>
+<tr class="odd">
+<td><code>why</code></td>
+<td>Show the last command return code</td>
+</tr>
+<tr class="even">
+<td><code>failat &lt;n&gt;</code></td>
+<td>Set the failure threshold</td>
+</tr>
+<tr class="odd">
+<td><code>quit [rc]</code></td>
+<td>Exit a script</td>
+</tr>
+<tr class="even">
+<td><code>endcli</code></td>
+<td>Close the current shell window</td>
+</tr>
 </tbody>
 </table>
 <hr />
@@ -668,12 +988,15 @@ type commands:</p>
             └── uaos_kernel_main.c
                     ├── FB_Init()           framebuffer from Multiboot2 tag
                     ├── IDT_Init()          256-vector IDT + 8259A PIC remap
+                    ├── APIC_Init()         Local APIC configuration
                     ├── PS2Mouse_Init()     IRQ12 PS/2 mouse driver
                     ├── PS2Kbd_Init()       IRQ1  PS/2 keyboard driver
                     ├── RTC_Init()          CMOS real-time clock (IRQ8)
                     ├── VFS_Init()          VFS layer + RAM filesystem
                     ├── BlockDev_Init()     Block device layer
                     ├── virtio_blk_init()   VirtIO block device driver
+                    ├── ide_init()          IDE/ATAPI controller
+                    ├── UAOS_MMU_Init()     MMU sandbox page tables
                     ├── UAOS_ROM_RegisterAll()  Register ROM modules
                     │   ├── exec.library v45
                     │   ├── utility.library v37
@@ -684,12 +1007,19 @@ type commands:</p>
                     │   ├── timer.device v40 (→ RTC)
                     │   ├── keyboard.device v40 (→ PS/2)
                     │   ├── graphics.library v40
-                    │   └── dos.library v40 (→ VFS)
+                    │   ├── dos.library v40 (→ VFS)
+                    │   ├── bsdsocket.library v4 (→ TCP/IP stack)
+                    │   ├── workbench.library v45
+                    │   └── intuition.library v40
+                    ├── net_stack_init()    TCP/IP stack + NIC auto-probe
+                    ├── Task_Init()         Ring-3 task scheduler / TSS
                     ├── Desktop_Draw()      Workbench backdrop + icons
                     ├── ShellWin_Init()     Shell window → registers with WM
                     └── event loop
                             ├── WM_MouseEvent()   drag / focus / resize
-                            └── WM_KeyEvent()     routes keystrokes to focused window</code></pre>
+                            ├── WM_KeyEvent()     routes keystrokes to focused window
+                            ├── net_stack_poll()  process RX frames
+                            └── Syscall_Dispatch()  INT 0x80 from Ring-3 tasks</code></pre>
 <hr />
 <h2 id="known-limitations">Known Limitations</h2>
 <ul>

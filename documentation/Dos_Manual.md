@@ -10,12 +10,14 @@
 2. [Getting Started](#getting-started)
 3. [Shell Built-In Commands](#shell-built-in-commands)
 4. [C: Binaries (Native Commands)](#c-binaries-native-commands)
-5. [Scripting & Flow Control](#scripting--flow-control)
-6. [Environment Variables](#environment-variables)
-7. [File Assigns](#file-assigns)
-8. [I/O Redirection](#io-redirection)
-9. [Example Scripts](#example-scripts)
-10. [Quick Reference Card](#quick-reference-card)
+5. [Ring-3 Userspace Commands](#ring-3-userspace-commands)
+6. [Scripting & Flow Control](#scripting--flow-control)
+7. [Environment Variables](#environment-variables)
+8. [File Assigns](#file-assigns)
+9. [I/O Redirection](#io-redirection)
+10. [Resident Commands](#resident-commands)
+11. [Example Scripts](#example-scripts)
+12. [Quick Reference Card](#quick-reference-card)
 
 ---
 
@@ -29,9 +31,25 @@ Commands are case-insensitive. Both `DIR` and `dir` work identically.
 
 | Type | Description | Examples |
 |------|-------------|----------|
-| **Shell Built-Ins** | Executed directly by the shell; manage shell state | `cd`, `alias`, `set` |
-| **C: Binaries** | Native x86_64 commands registered in `native_cmd.c` | `dir`, `copy`, `ping` |
+| **Shell Built-Ins** | Executed directly by the shell; manage shell state | `help`, `cd`, `alias`, `set`, `path` |
+| **C: Binaries** | Native x86_64 kernel commands registered in `native_cmd.c` | `dir`, `copy`, `ping`, `loadwb` |
+| **Ring-3 Userspace** | Native x86-64 ELF64 binaries using `INT 0x80` | `pwd`, `file`, `strings`, `find`, `Guide` |
 | **M68k Binaries** | Legacy Amiga Hunk binaries run via emulation | any file found in PATH |
+
+### Command Templates
+
+Native commands may declare an AmigaDOS-style template for automatic argument parsing:
+
+| Qualifier | Meaning | Example |
+|-----------|---------|---------|
+| `/A` | Required argument | `FILE/A` |
+| `/K` | Keyword argument | `FROM/K` |
+| `/S` | Switch (boolean) | `ALL/S` |
+| `/N` | Numeric | `COL/K/N` |
+| `/M` | Multiple values | `BUTTON/M` |
+| `/F` | Free-form (absorbs rest) | `STRING/F` |
+
+Example: `copy FROM/A,TO/A,ALL/S,CLONE/S` means `copy` requires `FROM` and `TO`, and accepts `ALL` and `CLONE` switches.
 
 ---
 
@@ -133,8 +151,12 @@ Remove a global environment variable from both the local store and `ENV:`.
 UAOS> unsetenv Language
 ```
 
-### `rename <from> <to>`
-**Not yet implemented.** Use `copy` followed by `delete` as a workaround.
+### `showconfig`
+Show hardware configuration in Amiga-style format (processor, RAM, boards).
+
+```
+UAOS> showconfig
+```
 
 ---
 
@@ -153,13 +175,6 @@ Ultimate Amiga OS  v0.1.0-dev
 Kernel: x86_64 ELF64, Multiboot2, long mode
 Display: 1024x768 32bpp linear framebuffer
 Input: PS/2 keyboard + mouse, IRQ1/IRQ12
-```
-
-#### `showconfig`
-Show hardware configuration in Amiga-style format (processor, RAM, boards).
-
-```
-UAOS> showconfig
 ```
 
 #### `mem`
@@ -256,7 +271,25 @@ UAOS> copy S:Startup-Sequence RAM:T/backup.txt
 ```
 
 #### `rename <from> <to>`
-**Not yet implemented.** Use `copy` then `delete`.
+Rename or move a file or directory.
+
+```
+UAOS> rename RAM:T/old.txt RAM:T/new.txt
+```
+
+#### `filenote <file> <comment>`
+Set or update a file comment.
+
+```
+UAOS> filenote RAM:T/notes.txt "My notes"
+```
+
+#### `relabel <device> <name>`
+Rename a volume.
+
+```
+UAOS> relabel RAM: TempRAM
+```
 
 #### `protect [+r|-r][+h|-h] <path>`
 Set file protection attributes.
@@ -281,19 +314,79 @@ UAOS> attr RAM:important.txt
 Attributes: Read-Only
 ```
 
+#### `list [path]`
+List directory contents with detailed information (similar to `dir` with size and attributes).
+
+```
+UAOS> list
+UAOS> list C:
+```
+
+#### `search <pattern> [file]`
+Search files for a pattern. Supports recursive search (`ALL/S`), a starting directory (`FROM/K`), file pattern (`FILEPAT/K`), and case-insensitive matching (`CI/S`).
+
+```
+UAOS> search error S:Startup-Sequence
+UAOS> search "TODO" RAM: ALL
+```
+
+#### `sort [file] [options]`
+Sort the lines of a file. Options include `COL/K/N` (column), `CASE/S` (case-sensitive), `NUMERIC/S` (numeric sort).
+
+```
+UAOS> sort RAM:T/names.txt
+UAOS> sort RAM:T/data.txt NUMERIC COL=2
+```
+
+#### `join <file1> <file2>`
+Join two files by a common key.
+
+```
+UAOS> join RAM:T/a.txt RAM:T/b.txt
+```
+
+#### `echo <text>`
+Print text to the shell. Supports variable expansion with `$var`.
+
+```
+UAOS> echo "Hello World"
+UAOS> echo "User is $User"
+```
+
+---
+
+### Ring-3 Userspace Commands
+
+These commands are built from `system/userspace/` as native x86-64 ELF64 binaries. They run in user mode and use the `INT 0x80` syscall ABI.
+
 #### `pwd`
-Print the current working directory. Implemented as an external userspace Ring-3 utility.
+Print the current working directory.
 
 ```
 UAOS> pwd
 RAM:
 ```
 
+#### `file <path>...`
+Identify the format of one or more files from magic numbers.
+
+```
+UAOS> file C:dir C:loadwb S:Startup-Sequence
+C:dir: UAOS x86-64 ELF64 binary
+C:loadwb: UAOS native shell command
+S:Startup-Sequence: ASCII text
+```
+
+#### `strings <path>... [-n minlen]`
+Scan files for printable character sequences.
+
+```
+UAOS> strings C:pwd
+UAOS> strings C:lha -n 6
+```
+
 #### `find [path] [-name pattern] [-type f|d]`
 Recursively walk a directory tree and list matching path entries.
-- `path`: Starting directory path (defaults to current working directory).
-- `-name pattern`: Shell glob pattern to match filename (e.g., `*.txt`).
-- `-type f|d`: Filter by file type (`f` for files, `d` for directories).
 
 ```
 UAOS> find RAM:
@@ -305,12 +398,19 @@ UAOS> find -type d
 RAM:MyDir
 ```
 
-#### `echo <text>`
-Print text to the shell. Supports variable expansion with `$var`.
+#### `hello`
+Print a simple greeting (userspace validation utility).
 
 ```
-UAOS> echo "Hello World"
-UAOS> echo "User is $User"
+UAOS> hello
+Hello from UAOS userspace!
+```
+
+#### `Guide`
+Open the AmigaGuide help viewer (`Tools:Guide`).
+
+```
+UAOS> Guide
 ```
 
 ---
@@ -377,6 +477,27 @@ UAOS> ntpd
 UAOS> ntpd pool.ntp.org
 ```
 
+#### `netstart`
+Initialise the TCP/IP stack, read `S:net.conf`, and start `bsdsocket.library`.
+
+```
+UAOS> netstart
+```
+
+#### `netstop`
+Shut down the network stack and release the DHCP lease if used.
+
+```
+UAOS> netstop
+```
+
+#### `netinfo`
+Open the network information window.
+
+```
+UAOS> netinfo
+```
+
 ---
 
 ### Text Processing
@@ -400,27 +521,6 @@ Paginate file output one screen at a time.
 
 ```
 UAOS> more S:Startup-Sequence
-```
-
-#### `file <path>...`
-Inspect file contents and report their format based on magic numbers. Supports identifying ASCII text, native x86-64 ELF64 binaries, raw and wrapped Amiga Hunk (M68k) binaries, directories, and raw data.
-
-```
-UAOS> file C:dir C:lha S:Startup-Sequence
-C:dir: UAOS native shell command
-C:lha: UAOS Amiga Hunk (M68k) binary
-S:Startup-Sequence: ASCII text
-```
-
-#### `strings <path>... [-n minlen]`
-Scan files for printable character sequences of a minimum length (defaults to 4) and print them.
-
-```
-UAOS> strings C:pwd -n 6
-__start
-main
-uaos_getcwd
-uaos_write
 ```
 
 ---
@@ -469,6 +569,20 @@ Launch the Workbench desktop.
 UAOS> loadwb
 ```
 
+#### `vim <file>`
+Open the inline text editor in the shell window.
+
+```
+UAOS> vim RAM:T/notes.txt
+```
+
+#### `newcli` / `newshell`
+Open a new shell window.
+
+```
+UAOS> newcli
+```
+
 ---
 
 ### Amiga Compatibility
@@ -495,6 +609,179 @@ Run a script file line by line with full flow-control support.
 ```
 UAOS> execute S:Startup-Sequence
 UAOS> execute RAM:T/myscript
+```
+
+---
+
+### Process and Task Commands
+
+#### `ps`
+List running tasks.
+
+```
+UAOS> ps
+```
+
+#### `jobs`
+List background jobs.
+
+```
+UAOS> jobs
+```
+
+#### `wait`
+Wait for background jobs to complete.
+
+```
+UAOS> wait
+```
+
+#### `changetaskpri <priority> [task]`
+Change the priority of a task.
+
+```
+UAOS> changetaskpri 5 Shell
+```
+
+---
+
+### Shell and Script Commands
+
+#### `ask <prompt>`
+Display a prompt and read a line of user input.
+
+```
+UAOS> ask "Continue? "
+```
+
+#### `prompt <string>`
+Set a custom shell prompt. Pass an empty string to reset.
+
+```
+UAOS> prompt "$cwd> "
+```
+
+#### `why`
+Show the return code of the last command.
+
+```
+UAOS> why
+```
+
+#### `failat <n>`
+Set the failure threshold (default 10). Commands returning a code greater than this are considered failures.
+
+```
+UAOS> failat 5
+```
+
+#### `quit [rc]`
+Exit the current script with an optional return code.
+
+```
+UAOS> quit 0
+```
+
+#### `endcli`
+Close the current shell window.
+
+```
+UAOS> endcli
+```
+
+#### `resident`
+Manage resident commands kept in memory.
+
+```
+UAOS> resident C:dir
+UAOS> resident
+```
+
+---
+
+### Environment Commands
+
+#### `getenv <name>`
+Read the value of a global environment variable.
+
+```
+UAOS> getenv Language
+```
+
+#### `unset <name>`
+Remove a variable (same as the built-in `unset`).
+
+```
+UAOS> unset greeting
+```
+
+---
+
+### Disk Maintenance Commands
+
+#### `diskchange <device>`
+Notify the system that a disk has changed.
+
+```
+UAOS> diskchange DH0:
+```
+
+#### `addbuffers <device> <n>`
+Add disk buffers to a device.
+
+```
+UAOS> addbuffers DH0: 10
+```
+
+#### `install <device> [NOBOOT]`
+Install a boot block on a device.
+
+```
+UAOS> install DH0:
+```
+
+---
+
+### Dialog Commands
+
+#### `requestchoice <title> <body> <buttons...>`
+Show a choice dialog and return the selected button index.
+
+```
+UAOS> requestchoice "Confirm" "Delete file?" "Yes" "No"
+```
+
+#### `requestfile [TITLE/K] [DRAWER/K] [FILE/K] [PATTERN/K] [PUBSCREEN/K]`
+Show a file requester dialog.
+
+```
+UAOS> requestfile TITLE="Open" DRAWER=RAM:
+```
+
+---
+
+### Utility Commands
+
+#### `status [FULL/S] [TCB/S] [CLI/S]`
+Show system status.
+
+```
+UAOS> status
+UAOS> status FULL
+```
+
+#### `stack`
+Show stack usage.
+
+```
+UAOS> stack
+```
+
+#### `avail`
+Show available memory.
+
+```
+UAOS> avail
 ```
 
 ---
@@ -667,6 +954,17 @@ Note: `>NIL:` and similar pseudo-assigns are treated as literal paths unless `NI
 
 ---
 
+## Resident Commands
+
+The `resident` command keeps frequently-used binaries in a 256 KB in-memory cache so they do not need to be re-loaded from disk. Up to 16 resident commands can be cached. Resident commands may be native C: binaries, M68k binaries, or scripts.
+
+```
+UAOS> resident C:dir          ; make dir resident
+UAOS> resident                ; list resident commands
+```
+
+---
+
 ## Example Scripts
 
 ### Basic Startup Script
@@ -748,6 +1046,7 @@ echo "Scan saved to RAM:dirlog.txt"
 
 | Command | Syntax | Purpose |
 |---------|--------|---------|
+| `help` | `help` | List commands |
 | `cd` | `cd [path]` | Change directory |
 | `alias` | `alias [name cmd]` | Manage aliases |
 | `unalias` | `unalias <name>` | Remove alias |
@@ -756,14 +1055,13 @@ echo "Scan saved to RAM:dirlog.txt"
 | `path` | `path [dirs...]` | Search path |
 | `setenv` | `setenv <name> <value>` | Global variable |
 | `unsetenv` | `unsetenv <name>` | Remove global var |
-| `execute` | `execute <script>` | Run script |
+| `showconfig` | `showconfig` | Hardware info |
 
-### Native Commands
+### Native C: Commands
 
 | Command | Syntax | Purpose |
 |---------|--------|---------|
 | `version` | `version` | OS version |
-| `showconfig` | `showconfig` | Hardware info |
 | `mem` | `mem` | Memory layout |
 | `libs` | `libs` | ROM libraries |
 | `date` | `date` | Current date/time |
@@ -775,31 +1073,70 @@ echo "Scan saved to RAM:dirlog.txt"
 | `delete` | `delete <path>` | Delete file/dir |
 | `type` | `type <file>` | Print file |
 | `copy` | `copy <src> <dst>` | Copy file |
+| `rename` | `rename <from> <to>` | Rename/move |
 | `protect` | `protect [+-][rh] <path>` | Set attributes |
 | `attr` | `attr <path>` | Show attributes |
-| `pwd` | `pwd` | Working directory (userspace) |
-| `find` | `find [path] [-name pat] [-type f|d]` | Search directory recursively |
+| `filenote` | `filenote <file> <comment>` | File comment |
+| `relabel` | `relabel <dev> <name>` | Rename volume |
 | `echo` | `echo <text>` | Print text |
 | `fdisk` | `fdisk <dev>` / `fdisk -l` | Partition editor |
 | `format` | `format <dev> [fs]` | Format partition |
-| `ifconfig` | `ifconfig [dhcp | ip gw]` | Network config |
+| `diskchange` | `diskchange <dev>` | Disk change |
+| `addbuffers` | `addbuffers <dev> <n>` | Add buffers |
+| `install` | `install <dev> [NOBOOT]` | Install boot block |
+| `ifconfig` | `ifconfig [dhcp \| ip gw]` | Network config |
 | `ping` | `ping <host> [count]` | ICMP echo |
 | `route` | `route` | Routing/ARP table |
 | `nslookup` | `nslookup <host> [srv]` | DNS lookup |
 | `ntpd` | `ntpd [server]` | NTP sync |
+| `netstart` | `netstart` | Start network |
+| `netstop` | `netstop` | Stop network |
+| `netinfo` | `netinfo` | Network info window |
 | `grep` | `grep [-i] <pat> <file>` | Search file |
 | `more` | `more <file>` | Paginated view |
-| `file` | `file <path>...` | Identify file magic/format |
-| `strings` | `strings <path>...` | Print printable strings |
+| `list` | `list [path]` | Detailed dir listing |
+| `search` | `search <pat> [file]` | Advanced search |
+| `sort` | `sort [file] [options]` | Sort lines |
+| `join` | `join <f1> <f2>` | Join files |
 | `clear` | `clear` | Clear shell |
 | `reboot` | `reboot` | Warm reboot |
 | `pointer` | `pointer` | Pointer prefs |
 | `calculator` | `calculator` | Calculator win |
 | `clock` | `clock` | Clock win |
 | `loadwb` | `loadwb` | Launch Workbench |
+| `vim` | `vim <file>` | Text editor |
+| `newcli` | `newcli` / `newshell` | New shell window |
 | `run` | `run <cmd>` | Run command in new CLI |
 | `assign` | `assign [name: tgt]` | Create/list assigns |
 | `execute` | `execute <script>` | Run script file |
+| `ask` | `ask <prompt>` | Prompt user |
+| `resident` | `resident` | Manage resident commands |
+| `ps` | `ps` | List tasks |
+| `jobs` | `jobs` | List jobs |
+| `wait` | `wait` | Wait for jobs |
+| `changetaskpri` | `changetaskpri <pri> [task]` | Change priority |
+| `prompt` | `prompt <string>` | Set prompt |
+| `stack` | `stack` | Stack usage |
+| `why` | `why` | Last return code |
+| `failat` | `failat <n>` | Failure threshold |
+| `quit` | `quit [rc]` | Exit script |
+| `endcli` | `endcli` | Close shell |
+| `getenv` | `getenv <name>` | Read variable |
+| `status` | `status [FULL] [TCB] [CLI]` | System status |
+| `avail` | `avail` | Available memory |
+| `requestchoice` | `requestchoice <t> <b> <btn...>` | Choice dialog |
+| `requestfile` | `requestfile [options]` | File requester |
+
+### Ring-3 Userspace Commands
+
+| Command | Syntax | Purpose |
+|---------|--------|---------|
+| `pwd` | `pwd` | Working directory |
+| `find` | `find [path] [-name pat] [-type f\|d]` | Recursive search |
+| `file` | `file <path>...` | Identify format |
+| `strings` | `strings <path>... [-n minlen]` | Printable strings |
+| `hello` | `hello` | Greeting |
+| `Guide` | `Guide` | Help viewer |
 
 ### Script Keywords
 

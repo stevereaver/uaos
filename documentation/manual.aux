@@ -2,65 +2,105 @@
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
-\@writefile{toc}{\contentsline {chapter}{\numberline {1}Introduction}{4}{chapter.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {1}Introduction}{5}{chapter.1}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {1.1}Project Overview}{4}{section.1.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {1.2}Architectural Constraints}{4}{section.1.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {chapter}{\numberline {2}System Architecture}{5}{chapter.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {1.1}Project Overview}{5}{section.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {1.2}Architectural Constraints}{5}{section.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {2}System Architecture}{6}{chapter.2}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {2.1}Boot Sequence}{5}{section.2.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {2.2}M68k Thunk Dispatch}{5}{section.2.2}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {2.1}MK\_THUNK macro}{5}{lstlisting.2.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {2.3}MMU Sandbox}{6}{section.2.3}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {2.1}{\ignorespaces UAOS Guest Address Space Map}}{6}{table.2.1}\protected@file@percent }
-\newlabel{tab:memmap}{{2.1}{6}{UAOS Guest Address Space Map}{table.2.1}{}}
-\@writefile{toc}{\contentsline {chapter}{\numberline {3}Kernel Subsystems}{7}{chapter.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2.1}Boot Sequence}{6}{section.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2.2}M68k Thunk Dispatch}{6}{section.2.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {2.1}MK\_THUNK macro}{7}{lstlisting.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2.3}MMU Sandbox}{7}{section.2.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2.1}{\ignorespaces UAOS Guest Address Space Map}}{7}{table.2.1}\protected@file@percent }
+\newlabel{tab:memmap}{{2.1}{7}{UAOS Guest Address Space Map}{table.2.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2.4}Ring-3 Userspace and System Calls (\texttt  {INT 0x80})}{7}{section.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {3}Kernel Subsystems}{9}{chapter.3}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {3.1}ROM Module Registry (\texttt  {rom\_modules.c})}{7}{section.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3.2}Thunk Handler (\texttt  {thunk\_handler.c})}{7}{section.3.2}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {3.1}Address translation macro}{7}{lstlisting.3.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3.3}Page Fault Handler (\texttt  {page\_fault\_handler.c})}{7}{section.3.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3.4}Virtual Filesystem Layer (\texttt  {vfs.c}, \texttt  {ramfs.c})}{7}{section.3.4}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {3.2}VFS file handle}{7}{lstlisting.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3.5}Block Device Layer (\texttt  {blockdev.c})}{8}{section.3.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {chapter}{\numberline {4}Build System}{9}{chapter.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3.1}ROM Module Registry (\texttt  {rom\_modules.c})}{9}{section.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1.1}Registered ROM Modules}{9}{subsection.3.1.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3.1}{\ignorespaces ROM modules registered at boot}}{9}{table.3.1}\protected@file@percent }
+\newlabel{tab:rommodules}{{3.1}{9}{ROM modules registered at boot}{table.3.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3.2}Thunk Handler (\texttt  {thunk\_handler.c})}{9}{section.3.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {3.1}Address translation macro}{10}{lstlisting.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3.3}Page Fault Handler (\texttt  {page\_fault\_handler.c})}{10}{section.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3.4}Native Command System (\texttt  {kernel/shell/})}{10}{section.3.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3.5}Virtual Filesystem Layer (\texttt  {vfs.c}, \texttt  {ramfs.c})}{10}{section.3.5}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {3.2}VFS file handle}{10}{lstlisting.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3.6}Block Device Layer (\texttt  {blockdev.c})}{10}{section.3.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {4}Build System}{12}{chapter.4}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {4.1}Prerequisites}{9}{section.4.1}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.1}Install build dependencies (Ubuntu/Debian)}{9}{lstlisting.4.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4.2}Building the ISO}{9}{section.4.2}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.2}Full build pipeline}{9}{lstlisting.4.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4.3}Testing in QEMU}{9}{section.4.3}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.3}One-time OVMF setup}{9}{lstlisting.4.3}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.4}QEMU test invocation}{9}{lstlisting.4.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {chapter}{\numberline {5}Graphics and Window Manager}{11}{chapter.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.1}Prerequisites}{12}{section.4.1}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.1}Install build dependencies (Ubuntu/Debian)}{12}{lstlisting.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.2}Building the ISO}{12}{section.4.2}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.2}Full build pipeline}{12}{lstlisting.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.3}Testing in QEMU}{12}{section.4.3}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.3}One-time OVMF setup}{12}{lstlisting.4.3}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4.4}QEMU test invocation}{12}{lstlisting.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {5}Graphics and Window Manager}{14}{chapter.5}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {5.1}Framebuffer Initialisation}{11}{section.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.2}Desktop}{11}{section.5.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.3}Window Manager}{11}{section.5.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.1}Data Structures}{11}{subsection.5.3.1}\protected@file@percent }
-\@writefile{lol}{\contentsline {lstlisting}{\numberline {5.1}WmWindow structure}{11}{lstlisting.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.2}Z-Order and Focus}{12}{subsection.5.3.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.3}Drag and Resize}{12}{subsection.5.3.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.4}Software Cursor}{12}{section.5.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {chapter}{\numberline {6}Shell and Built-in Commands}{13}{chapter.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.1}Framebuffer Initialisation}{14}{section.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.2}Desktop}{14}{section.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.3}Window Manager}{14}{section.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.1}Data Structures}{14}{subsection.5.3.1}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {5.1}WmWindow structure}{14}{lstlisting.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.2}Z-Order and Focus}{15}{subsection.5.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3.3}Drag and Resize}{15}{subsection.5.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.4}Software Cursor}{15}{section.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.5}Additional Windows}{15}{section.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {6}Shell and Built-in Commands}{16}{chapter.6}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {6.1}Built-in Commands}{13}{section.6.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {6.2}Filesystem Operations}{13}{section.6.2}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {6.1}{\ignorespaces UAOS Shell Built-in Commands}}{14}{table.6.1}\protected@file@percent }
-\newlabel{tab:shellcmds}{{6.1}{14}{UAOS Shell Built-in Commands}{table.6.1}{}}
-\@writefile{toc}{\contentsline {chapter}{\numberline {7}Troubleshooting}{15}{chapter.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6.1}Command Execution Flow}{16}{section.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6.2}Built-in Commands}{16}{section.6.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6.1}{\ignorespaces UAOS Shell Built-in Commands}}{16}{table.6.1}\protected@file@percent }
+\newlabel{tab:builtins}{{6.1}{16}{UAOS Shell Built-in Commands}{table.6.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6.3}Native C: Commands}{17}{section.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6.4}Ring-3 Userspace Commands}{17}{section.6.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6.5}Filesystem Operations}{17}{section.6.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6.2}{\ignorespaces UAOS Native C: Commands}}{18}{table.6.2}\protected@file@percent }
+\newlabel{tab:nativecmds}{{6.2}{18}{UAOS Native C: Commands}{table.6.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6.3}{\ignorespaces UAOS Ring-3 Userspace Commands}}{19}{table.6.3}\protected@file@percent }
+\newlabel{tab:userspacecmds}{{6.3}{19}{UAOS Ring-3 Userspace Commands}{table.6.3}{}}
+\@writefile{toc}{\contentsline {chapter}{\numberline {7}TCP/IP Networking}{20}{chapter.7}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {7.1}GRUB: ``Invalid arch-dependent ELF magic''}{15}{section.7.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {7.2}GRUB: ``You need to load the kernel first''}{15}{section.7.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {7.3}Kernel halts immediately after boot}{15}{section.7.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {chapter}{\numberline {A}Amiga Memory Map Reference}{16}{appendix.A}\protected@file@percent }
+\newlabel{ch:networking}{{7}{20}{TCP/IP Networking}{chapter.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7.1}Architecture}{20}{section.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.2}Network Hardware Drivers}{20}{section.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2.1}NetDevice Abstraction (\texttt  {net\_device.h})}{20}{subsection.7.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2.2}VirtIO-Net (\texttt  {virtio\_net.c})}{21}{subsection.7.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2.3}Intel 82540EM e1000 (\texttt  {e1000.c})}{21}{subsection.7.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.3}Stack Initialisation}{21}{section.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.4}Stack API Reference}{21}{section.7.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.5}ICMP (Ping)}{21}{section.7.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7.1}{\ignorespaces TCP/IP stack top-level API (\texttt  {kernel/net/stack.h})}}{22}{table.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.6}UDP}{22}{section.7.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.7}TCP}{22}{section.7.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.7.1}Client Connection}{22}{subsection.7.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.7.2}Passive Server}{22}{subsection.7.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.7.3}TCP API Reference}{23}{subsection.7.7.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7.2}{\ignorespaces TCP API (\texttt  {kernel/net/tcp.h})}}{23}{table.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.8}DHCP}{23}{section.7.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.9}Polling Model}{23}{section.7.9}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7.3}{\ignorespaces Network shell commands}}{24}{table.7.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7.4}{\ignorespaces Network configuration files}}{24}{table.7.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7.10}Shell Network Commands}{24}{section.7.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.10.1}Network Configuration Files}{24}{subsection.7.10.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.10.2}\texttt  {bsdsocket.library} LVO Table}{24}{subsection.7.10.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7.5}{\ignorespaces \texttt  {bsdsocket.library} LVO table}}{24}{table.7.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {8}Troubleshooting}{25}{chapter.8}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\gdef \@abspage@last{17}
+\@writefile{toc}{\contentsline {section}{\numberline {8.1}GRUB: ``Invalid arch-dependent ELF magic''}{25}{section.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8.2}GRUB: ``You need to load the kernel first''}{25}{section.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8.3}Kernel halts immediately after boot}{25}{section.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {A}Amiga Memory Map Reference}{26}{appendix.A}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\gdef \@abspage@last{27}

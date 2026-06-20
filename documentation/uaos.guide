@@ -8,7 +8,7 @@
 @TITLE "Ultimate Amiga OS (UAOS) Help System"
 
   @{b}Ultimate Amiga OS (UAOS)@{ub}
-  @{i}A bare-metal 64-bit OS for x86_64 with transparent M68k emulation@{ui}
+  @{i}A bare-metal 64-bit OS for x86_64 with transparent M68k emulation and native Ring-3 userspace@{ui}
 
   ─────────────────────────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@
      BIOS/UEFI settings, GRUB boot parameters, memory layout.
 
   @{" AmigaDOS Integration    " LINK AMIGADOS}
-     AmigaDOS command paths, assignments, and POSIX namespace bridge.
+     AmigaDOS command paths, assignments, and native shell commands.
 
   @{" M68k Emulation Layer    " LINK EMULATION}
      Thunk dispatch, ROM patches, and custom chip register interception.
@@ -31,10 +31,10 @@
      Exec, MMU sandbox, page fault handler, ROM module registry.
 
   @{" TCP/IP Networking       " LINK NETWORKING}
-     Network drivers, stack init, ping, UDP, TCP, DHCP.
+     Network drivers, stack init, ping, UDP, TCP, DHCP, DNS, NTP.
 
   @{" Building from Source    " LINK BUILDING}
-     Cross-compiler toolchain setup and ISO packaging pipeline.
+     Toolchain setup and ISO packaging pipeline.
 
   @{" Troubleshooting         " LINK TROUBLE}
      Common problems and diagnostic procedures.
@@ -71,13 +71,21 @@
 
   @{b}Testing in QEMU@{ub}
 
-       qemu-system-x86_64 -cdrom build/Ultimate_Amiga_OS.iso \
-           -m 512M -boot d -vga std
+       qemu-system-x86_64 \
+           -machine q35,usb=off \
+           -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+           -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+           -device piix3-ide,id=ide \
+           -drive if=none,id=cdrom,media=cdrom,file=build/Ultimate_Amiga_OS.iso \
+           -device ide-cd,drive=cdrom,bus=ide.0 \
+           -m 512M -vga virtio -no-reboot -no-shutdown \
+           -serial stdio
 
   @{b}First Steps@{ub}
 
-    • The AmigaDOS CLI is accessible via @{b}SYS:C/Shell@{ub}.
-    • GNU tools are merged into @{b}C:@{ub} — type @{i}ls@{ui}, @{i}gcc@{ui}, @{i}make@{ui} as normal.
+    • The shell window opens automatically when the Workbench starts.
+    • Native commands live on @{b}C:@{ub}; M68k binaries run transparently.
+    • Ring-3 userspace utilities (pwd, file, strings, find, Guide) are also on @{b}C:@{ub}.
     • The Workbench screen can be opened with @{i}LoadWB@{ui}.
 
   @{"  Back to Index  " LINK MAIN}
@@ -112,9 +120,11 @@
   @{b}Memory Address Map@{ub}
 
     0x00000000 – 0x001FFFFF   Chip RAM  (2 MB)
-    0x00200000 – 0x00FFFFFF   Fast RAM  (14 MB lower window)
+    0x00200000 – 0x009FFFFF   Fast RAM  (8 MB lower window)
+    0x00A00000 – 0x00AFFFFF   Slow RAM / ranger  (1 MB)
     0x00B00000 – 0x00DFFFFF   @{b}Custom chip / CIA registers@{ub} (MMU-trapped)
-    0x00F80000 – 0x00FFFFFF   Kickstart ROM mirror
+    0x00E00000 – 0x00EFFFFF   Extended ROM / card space  (1 MB)
+    0x00F80000 – 0x00FFFFFF   Kickstart ROM mirror  (512 KB)
     0x01000000 – 0x7FFFFFFF   Extended Fast RAM (up to 2 GB)
     0x80000000 – 0xFFFFFFFF   x86_64 kernel and driver space
 
@@ -132,7 +142,7 @@
   @{b}Supported Network Hardware@{ub}
 
     • Intel 82540EM (e1000)  — VirtualBox Intel PRO/1000 MT Desktop
-    • VirtIO-Net             — QEMU -device virtio-net-pci,disable-modern=on
+    • VirtIO-Net             — QEMU -device virtio-net-pci
 
   See @{"TCP/IP Networking" LINK NETWORKING} for driver setup and API.
 
@@ -154,27 +164,29 @@
   @{b}AmigaDOS Integration@{ub}
   ─────────────────────────────────────────────────────────────────────────
 
-  UAOS presents a merged AmigaDOS / POSIX namespace.  AmigaDOS assigns
-  map onto the following host directories:
+  UAOS presents a merged AmigaDOS namespace.  AmigaDOS assigns map onto
+  the dynamic @{b}SYS_ROOT@{ub} volume (usually mounted as Workbench:) from the
+  boot ISO:
 
-    @{b}SYS:@{ub}    →  sys-root/            Boot volume root (AmigaOS semantics)
-    @{b}C:@{ub}      →  sys-root/C/        AmigaDOS + GNU binary path
-    @{b}S:@{ub}      →  sys-root/S/        Startup-Sequence and scripts
-    @{b}L:@{ub}      →  sys-root/L/        Filesystem handler libraries
-    @{b}DEVS:@{ub}   →  sys-root/DEVS/     Device and MountList entries
+    @{b}SYS:@{ub}    →  Workbench:           Boot volume root
+    @{b}C:@{ub}      →  Workbench:C          Native commands + M68k stubs
+    @{b}S:@{ub}      →  Workbench:S          Startup-Sequence and scripts
+    @{b}L:@{ub}      →  Workbench:L          Filesystem handler libraries
+    @{b}DEVS:@{ub}   →  Workbench:DEVS       Device and MountList entries
+    @{b}LIBS:@{ub}   →  Workbench:LIBS       Amiga-style library files
+    @{b}Tools:@{ub}  →  Workbench:Tools      Ring-3 userspace tools
 
   @{b}Startup-Sequence@{ub}
 
-  The file @{b}S:Startup-Sequence@{ub} is executed by AmigaDOS immediately after
-  Exec initialises.  It sets up assigns, mounts devices, and optionally
-  launches the Workbench or a CLI shell.
+  The file @{b}S:Startup-Sequence@{ub} is executed automatically after the boot
+  volume is mounted.  It sets up assigns, starts the network stack, and
+  launches the Workbench.
 
-  @{b}GNU Tool Integration@{ub}
+  @{b}Native and M68k Command Integration@{ub}
 
-  GNU binaries (bash, gcc, make, ls, grep, etc.) are installed into
-  @{b}C:@{ub} alongside native AmigaDOS commands.  UAOS provides a thin POSIX
-  syscall shim that maps Unix file descriptors and paths onto the
-  AmigaDOS I/O model.
+  @{b}C:@{ub} contains native x86-64 kernel commands, Ring-3 userspace ELF64
+  utilities, and M68k Hunk binary stubs.  The shell resolves each command in
+  order: built-in, resident, native, M68k, userspace.
 
   @{b}AmigaDOS Path Syntax@{ub}
 
@@ -186,8 +198,8 @@
 
     @{i}List SYS:@{ui}             Directory listing of SYS:
     @{i}Assign@{ui}                Show all current assignments
-    @{i}Mount DEVS:DOSDrivers/@{ui} Mount all configured devices
     @{i}LoadWB@{ui}                Launch the Workbench GUI
+    @{i}Guide@{ui}                 Open the AmigaGuide help viewer
 
   @{"  Back to Index  " LINK MAIN}
 
@@ -202,36 +214,37 @@
   @{b}M68k Emulation Layer@{ub}
   ─────────────────────────────────────────────────────────────────────────
 
-  UAOS runs a headless M68k emulator core (derived from UAE/FS-UAE) inside
-  a 4 GB virtual address sandbox.  Amiga software executes unmodified at
-  near-native speed via the JIT recompiler.
+  UAOS runs a headless M68k emulator core (Musashi) inside a 4 GB virtual
+  address sandbox.  Amiga Hunk binaries execute unmodified through the
+  Musashi interpreter; the emulator is reset per run and loaded from the
+  AROS kickstart stub.
 
   @{b}Thunk Dispatch Mechanism@{ub}
 
   Every intercepted Exec library call is replaced in the AROS ROM with a
-  6-byte breakout sequence assembled by the @{b}MK_THUNK@{ub} macro in
+  8-byte breakout sequence assembled by the @{b}MK_THUNK@{ub} macro in
   @{i}emulation/rom_patches/rom_traps.s@{ui}:
 
-      0x4AFC   ILLEGAL opcode  — triggers the JIT trap callback
+      0x4AFC   ILLEGAL opcode  — triggers the emulator trap
       0x414D   UAOS signature  — "AM", validates the trap origin
+      0xLLLL   Library ID
       0xNNNN   Function index  — identifies the library call
 
-  When the emulator decodes @{b}0x4AFC@{ub}, it invokes @{b}UAOS_Bridge_IllegalOpcode()@{ub}
-  which calls @{b}UAOS_HandleThunk()@{ub}.  The thunk handler:
+  When the emulator executes @{b}0x4AFC@{ub}, it invokes the bridge illegal-opcode
+  handler which dispatches to the native x86_64 C stub:
 
-    1. Reads the signature word and function index from guest memory.
+    1. Reads the signature word, library ID, and function index from guest memory.
     2. Validates the @{b}0x414D@{ub} signature.
-    3. Extracts arguments from M68k registers per Amiga ABI conventions
-       (A1 = pointer args, D0/D1 = integer args).
+    3. Extracts arguments from M68k registers per Amiga ABI conventions.
     4. Calls the native x86_64 C stub.
     5. Writes return values back into D0/A0.
-    6. Advances the guest PC by 6 bytes past the breakout sequence.
+    6. Advances the guest PC by 8 bytes past the breakout sequence.
 
   @{b}ROM Patch Configuration@{ub}
 
-  @{i}emulation/rom_patches/aros_kickstart.conf@{ui} controls which ROM image is
-  loaded and which Exec vectors are intercepted.  Set
-  @{b}thunk_trace = yes@{ub} to log every intercepted call to stderr.
+  @{i}emulation/rom_patches/aros_kickstart.conf@{ui} is the AROS ROM configuration
+  loaded at boot.  Native binaries in @{i}emulation/binaries/@{ui} are wrapped
+  into the ISO image.
 
   @{b}Custom Chip Register Access@{ub}
 
@@ -278,10 +291,21 @@
   @{b}ROM Module Registry (kernel/exec/rom_modules.c)@{ub}
 
   @{b}UAOS_ROM_RegisterAll()@{ub} populates the module registry at boot time.
-  Each module descriptor holds the library name, version, 32-bit Amiga
-  base address, and an array of native function pointers.
-  @{b}UAOS_ROM_NativeFunc()@{ub} resolves a (library name, function index) pair
-  to the matching host function pointer for the thunk dispatcher.
+  Registered modules include:
+
+    exec.library v45          @ 0x00000004   (task/memory/signal IPC)
+    utility.library v37       @ 0x00000050   (string utilities)
+    console.device v40        @ 0x00000060   (console I/O)
+    mathffp.library v40       @ 0x00000060   (soft-float math)
+    locale.library v38        @ 0x000000B0   (localisation)
+    ixemul.library v53        @ 0x00000090   (Unix compatibility)
+    timer.device v40          @ 0x000000A0   (RTC-backed timing)
+    keyboard.device v40       @ 0x000000B0   (PS/2 keyboard)
+    graphics.library v40      @ 0x000000C0   (graphics primitives)
+    dos.library v40           @ 0x000000D0   (VFS file operations)
+    bsdsocket.library v4      @ 0x00003000   (BSD socket API)
+    workbench.library v45     @ 0x00000000   (Workbench integration)
+    intuition.library v40     @ 0x00005000   (GUI/Intuition API)
 
   @{b}Thunk Handler (kernel/exec/thunk_handler.c)@{ub}
 
@@ -311,11 +335,11 @@
 
     • @{b}Intel 82540EM (e1000)@{ub}  — VirtualBox (Intel PRO/1000 MT Desktop),
       QEMU @{i}-device e1000@{ui}.  PCI vendor 0x8086 / device 0x100E.
-    • @{b}VirtIO-Net@{ub}             — QEMU @{i}-device virtio-net-pci,disable-modern=on@{ui}.
-      PCI vendor 0x1AF4 / device 0x1000.
+    • @{b}VirtIO-Net@{ub}             — QEMU @{i}-device virtio-net-pci@{ui}.
+      PCI vendor 0x1AF4 / device 0x1000 (legacy) or 0x1041 (modern).
 
   The correct driver is selected automatically via @{b}netdev_probe()@{ui}.
-  e1000 is always tried first; virtio-net is the fallback.
+  e1000 is tried first; virtio-net is the fallback.
 
   @{b}Stack Layers@{ub}
 
@@ -326,6 +350,9 @@
     @{b}kernel/net/udp.c@{ub}     — UDP sockets (up to 8, 2 KB RX each)
     @{b}kernel/net/tcp.c@{ub}     — TCP sockets (up to 8, 4 KB TX/RX each)
     @{b}kernel/net/dhcp.c@{ub}    — DHCP DISCOVER/REQUEST/ACK over UDP
+    @{b}kernel/net/dns.c@{ub}     — DNS A-record queries
+    @{b}kernel/net/ntp.c@{ub}     — NTP/SNTP time sync
+    @{b}kernel/exec/bsdsocket_lib.c@{ub} — AmigaOS BSD socket API
 
   @{b}Initialisation@{ub}
 
@@ -374,8 +401,20 @@
 
   @{b}Shell Commands@{ub}
 
-    @{i}ping <ip> [count]@{ui}   — ICMP echo; default 4 packets, 1-second timeout each
-    @{i}ifconfig@{ui}             — show IP, netmask, gateway, MAC, DHCP/static flag
+    @{i}netstart@{ui}              — start network stack from S:net.conf
+    @{i}netstop@{ui}               — stop network stack
+    @{i}ifconfig [dhcp | ip gw]@{ui} — show or configure network
+    @{i}ping <host> [count]@{ui}  — ICMP echo; default 4 packets
+    @{i}route@{ui}                — show routing table and ARP cache
+    @{i}nslookup <host> [server]@{ui} — DNS lookup
+    @{i}ntpd [server]@{ui}       — NTP time sync
+    @{i}netinfo@{ui}              — open network info window
+
+  @{b}Configuration Files@{ub}
+
+    S:net.conf       — mode (dhcp/static), IP, netmask, gateway, DNS
+    S:ntp.conf       — NTP server hostname
+    S:timezone.conf  — IANA timezone name
 
   @{b}Polling Model@{ub}
 
@@ -416,38 +455,43 @@
 
   @{b}Prerequisites@{ub}
 
-    • GCC cross-compiler targeting x86_64-elf (freestanding)
-    • GNU Binutils (ld, objcopy, nasm/gas)
-    • m68k-elf-as  (for rom_traps.s)
-    • GRUB2 tools: grub-mkrescue, grub-pc-bin
+    • GCC targeting x86_64 (freestanding)
+    • GNU Binutils (ld, nasm)
+    • GRUB2 tools: grub-mkrescue, grub-pc-bin, grub-common
     • xorriso (ISO 9660 image writer)
-    • Python 3.8+  (mock kernel generator in build_iso.sh)
+    • xxd (for embedding binaries)
 
   On Debian/Ubuntu:
 
-      sudo apt install gcc-multilib binutils xorriso \
-          grub-pc-bin grub-common \
-          binutils-m68k-linux-gnu python3
+      sudo apt install gcc binutils nasm xorriso \
+          grub-pc-bin grub-efi-amd64-bin grub-common \
+          ovmf qemu-system-x86
 
   @{b}Repository Layout@{ub}
 
+      kernel/boot/       NASM entry, C kernel main, linker script
+      kernel/display/    Framebuffer, desktop, window manager, shell
+      kernel/irq/        IDT, PIC, PS/2 mouse/keyboard, RTC, VirtIO block
+      kernel/exec/       ROM modules, MMU, task scheduler, syscall dispatch
+      kernel/dos/        VFS, RAMFS, FAT32/PFS3/EXT4/ISO9660, block devices
+      kernel/net/        TCP/IP stack
+      kernel/drivers/    e1000, virtio-net, virtio-blk, IDE
+      kernel/shell/      Native C: command implementations
       emulation/         M68k emulator bridge and ROM patches
-      kernel/exec/       Core kernel subsystems
-      kernel/dos/        AmigaDOS namespace layer (in progress)
-      kernel/intuition/  Intuition UI engine (in progress)
-      drivers/           Audio, video, network drivers
+      system/            AmigaDOS filesystem skeleton + userspace programs
       scripts/           Build and packaging scripts
-      sys-root/          Live AmigaDOS filesystem tree
+      tools/             Host-side build helpers
       documentation/     This help system
       build/             Generated output (created by build_iso.sh)
 
   @{b}Building the ISO@{ub}
 
-      chmod +x scripts/build_iso.sh
       ./scripts/build_iso.sh
 
-  The script stages all artefacts, generates a mock multiboot2 kernel
-  binary, and invokes grub-mkrescue.  Output: @{b}build/Ultimate_Amiga_OS.iso@{ub}.
+  The script builds the NASM and C kernel, embeds M68k binaries, builds
+  native x86-64 userspace programs from system/userspace/, stages the
+  system/ skeleton into a dynamic SYS_ROOT, and invokes grub-mkrescue.
+  Output: @{b}build/Ultimate_Amiga_OS.iso@{ub}.
 
   For a clean rebuild:
 
@@ -455,8 +499,15 @@
 
   @{b}Testing@{ub}
 
-      qemu-system-x86_64 -cdrom build/Ultimate_Amiga_OS.iso \
-          -m 512M -boot d -vga std -serial stdio
+      qemu-system-x86_64 \
+          -machine q35,usb=off \
+          -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+          -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+          -device piix3-ide,id=ide \
+          -drive if=none,id=cdrom,media=cdrom,file=build/Ultimate_Amiga_OS.iso \
+          -device ide-cd,drive=cdrom,bus=ide.0 \
+          -m 512M -vga virtio -no-reboot -no-shutdown \
+          -serial stdio
 
   @{"  Back to Index  " LINK MAIN}
 
@@ -499,6 +550,17 @@
         console=ttyS0,115200
 
     then inspect the fault address reported before the halt.
+
+  @{b}Mouse jitters or snaps to centre@{ub}
+
+    Ensure QEMU is launched with @{b}-machine q35,usb=off@{ub}.  The USB tablet
+    device provides absolute coordinates that conflict with the PS/2 relative
+    mouse driver.
+
+  @{b}Network not coming up@{ub}
+
+    Check that @{b}S:net.conf@{ub} exists and is configured correctly.  Run
+    @{b}netstart@{ub} manually from the shell to see diagnostic messages.
 
   @{b}Unknown thunk function index@{ub}
 

@@ -60,13 +60,20 @@ interactive shell.
 3. `uaos_kernel_main()` (C):
    - Validates Multiboot2 magic value
    - Initialises VGA text console and UART (COM1, 38400 baud)
+   - Calls `APIC_Init()` to configure the local APIC for ExtINT delivery
    - Calls `FB_Init()` to parse the Multiboot2 framebuffer tag
    - Calls `IDT_Init()` to install the 256-vector IDT and remap the 8259A PIC
    - Calls `UAOS_MMU_Init()` to install the sandbox page tables
+   - Calls `RTC_Init()` to start the CMOS real-time clock
+   - Calls `VFS_Init()` to mount `RAM:` and create the transient directories
+   - Calls `BlockDev_Init()` and scans VirtIO/IDE block devices
    - Calls `UAOS_ROM_RegisterAll()` to populate the ROM module registry
    - Calls `UAOS_Bridge_Init()` to allocate the 4 GB guest RAM window
+   - Calls `Task_Init()` to set up the Ring-3 task scheduler and TSS
    - Calls `PS2Mouse_Init()` and `PS2Kbd_Init()`
+   - Calls `net_stack_init()` to bring up the TCP/IP stack (optional)
    - Renders the desktop and registers the shell window with the WM
+   - Runs `S:Startup-Sequence`
    - Enters the `hlt`-loop event dispatcher
 
 ### M68k Thunk Dispatch
@@ -102,7 +109,9 @@ the entire 4 GB guest address space using 2 MB huge pages.
 |---|---|---|
 | `0x00000000–0x001FFFFF` | 2 MB | Chip RAM |
 | `0x00200000–0x009FFFFF` | 8 MB | Fast RAM (lower) |
+| `0x00A00000–0x00AFFFFF` | 1 MB | Slow RAM / ranger |
 | `0x00B00000–0x00DFFFFF` | 3 MB | **Custom chip registers (NOT PRESENT)** |
+| `0x00E00000–0x00EFFFFF` | 1 MB | Extended ROM / card space |
 | `0x00F80000–0x00FFFFFF` | 512 KB | Kickstart ROM mirror |
 | `0x01000000–0x7FFFFFFF` | 2 GB | Extended Fast RAM |
 | `0x80000000–0xFFFFFFFF` | 2 GB | x86_64 kernel space |
@@ -120,8 +129,9 @@ UAOS implements a Ring-3 (user-mode) task execution model for native 64-bit ELF 
    - **RAX**: System call number (e.g. `0x02` for write, `0x0C` for getcwd)
    - **RDI, RSI, RDX**: Arguments 1, 2, 3
    - **RAX**: Return value (negative values represent errors)
-   The dispatcher in [syscall_dispatch.c](file:///home/reaver/uaos/kernel/exec/syscall_dispatch.c) implements page allocation (`sys_alloc`), process management (`sys_spawn`, `sys_wait`, `sys_exit`), and VFS file/directory interfaces (`sys_getcwd`, `sys_opendir`, `sys_readdir`, `sys_closedir`, `sys_stat`).
-3. **Execution State & Redirection**:
+   The dispatcher in [syscall_dispatch.c](file:///home/reaver/uaos/kernel/exec/syscall_dispatch.c) implements page allocation (`sys_alloc`), process management (`sys_spawn`, `sys_wait`, `sys_exit`), VFS file/directory interfaces (`sys_getcwd`, `sys_opendir`, `sys_readdir`, `sys_closedir`, `sys_stat`), and GUI windowing syscalls (`create_window`, `destroy_window`, `draw_text`, `draw_rect`, `present`, `get_event`, `set_scroll_info`, `set_scroll`).
+3. **Current Userspace Programs**: `hello`, `pwd`, `file`, `strings`, `find`, and `Guide` are built from `system/userspace/` and staged into `C:` (or `Tools:` for `Guide`).
+4. **Execution State & Redirection**:
    - **Per-Task CWD**: Each task struct tracks its own current working directory in `task_cwd` which VFS resolves relative paths against.
    - **Output Buffering**: Stdout writes are buffered per-task in `task_out` and flushed line-by-line via `native_print_fn` to the active shell window.
    - **Synchronous Exit**: When a child task exits via `sys_exit`, the parent task is signaled with `SIGF_CHILD`, allowing the command-line interface to wait for command completion.
@@ -139,6 +149,17 @@ UAOS implements a Ring-3 (user-mode) task execution model for native 64-bit ELF 
 - Library version number
 - 32-bit Amiga base address
 - Array of native function pointers (indexed 1-based to match `rom_traps.s` function indices)
+
+### Native Command System (`kernel/shell/`)
+
+The shell dispatches C: binaries through a static registry in `native_cmd.c`.
+`k_native_cmds[]` maps a lowercase command name to a `NativeCmdFn` handler and an
+optional AmigaDOS template string. Key components:
+
+- **`native_cmd.c/h`** — registry, case-insensitive lookup, template parsing
+- **`cmd_template.c/h`** — AmigaDOS-style argument parser (`/A`, `/K`, `/S`, `/N`, `/M`, `/F`)
+- **`resident_cmd.c/h`** — in-memory resident command cache (256 KB, up to 16 slots)
+- **`cmd_*.c`** — individual command implementations (65+ commands)
 
 ### Thunk Handler (`thunk_handler.c`)
 
@@ -191,8 +212,8 @@ at boot via `netdev_probe()`.
 
 #### VirtIO-Net (`virtio_net.c`)
 
-- **PCI**: vendor `0x1AF4`, device `0x1000` (legacy VirtIO 0.9)
-- **Interface**: I/O-port BAR0; legacy virtqueue ring protocol
+- **PCI**: vendor `0x1AF4`, device `0x1000` (legacy VirtIO 0.9) or `0x1041` (modern)
+- **Interface**: I/O-port or MMIO BAR0; split virtqueue ring protocol
 - **Queue size**: 256 descriptors each for RX and TX (matches QEMU default)
 - **MSI-X**: present in device but kept disabled; uses 8259A PIC IRQ
 - **Used by**: QEMU (`-device virtio-net-pci,disable-modern=on`)
@@ -247,21 +268,24 @@ UAOS implements a native ROM module system that provides AmigaOS-compatible libr
 
 | Library | Version | Base Address | Functions |
 |---------|---------|-------------|-----------|
-| `exec.library` | v45 | 0x000000D0 | Process management, memory allocation |
-| `utility.library` | v37 | 0x000000E0 | String functions, memory utilities |
-| `console.device` | v40 | 0x000000F0 | Console I/O |
-| `mathffp.library` | v40 | 0x00000070 | Software floating-point (uses softfloat) |
-| `locale.library` | v38 | 0x00000100 | Localization support |
-| `ixemul.library` | v53 | 0x00000110 | Unix compatibility layer |
-| `graphics.library` | v40 | 0x00000120 | Graphics primitives |
+| `exec.library` | v45 | 0x00000004 | Process management, memory allocation, signals, IPC |
+| `utility.library` | v37 | 0x00000050 | String functions, memory utilities |
+| `console.device` | v40 | 0x00000060 | Console I/O |
+| `mathffp.library` | v40 | 0x00000060 | Software floating-point (uses softfloat) |
+| `locale.library` | v38 | 0x000000B0 | Localization support |
+| `ixemul.library` | v53 | 0x00000090 | Unix compatibility layer |
+| `graphics.library` | v40 | 0x000000C0 | Graphics primitives |
 | `dos.library` | v40 | 0x000000D0 | File system operations |
+| `bsdsocket.library` | v4 | 0x00003000 | BSD socket API mapped to native TCP/IP stack |
+| `workbench.library` | v45 | 0x00000000 | Workbench desktop integration |
+| `intuition.library` | v40 | 0x00005000 | Intuition GUI API |
 
 #### Devices
 
 | Device | Version | Base Address | Connected To |
 |--------|---------|-------------|-------------|
-| `timer.device` | v40 | 0x00000130 | RTC driver (CMOS) |
-| `keyboard.device` | v40 | 0x00000140 | PS/2 keyboard driver |
+| `timer.device` | v40 | 0x000000A0 | RTC driver (CMOS) |
+| `keyboard.device` | v40 | 0x000000B0 | PS/2 keyboard driver |
 
 ### Library Function Implementation
 
@@ -307,12 +331,15 @@ Functions are called via ILLEGAL opcode dispatch in `uaos_m68k_glue.c`:
 
 ### Current Implementation Status
 
-- **exec.library**: Basic stubs for OpenLibrary, CloseLibrary, AllocMem, FreeMem, FindTask
+- **exec.library**: Task/process control, signals, IPC, AllocMem/FreeMem, OpenLibrary/CloseLibrary, FindTask
 - **utility.library**: String functions (StrIcmp, StrNicmp, UcStr, LcStr) with implementation logic
 - **mathffp.library**: All 18 floating-point functions with softfloat integration logic
-- **dos.library**: Lock/Unlock, Examine/ExamineNext with implementation logic
+- **dos.library**: VFS-backed Lock/Unlock, Examine/ExamineNext, file I/O
 - **timer.device**: Connected to RTC driver for timing functions
 - **keyboard.device**: Connected to PS/2 keyboard driver for input
+- **bsdsocket.library**: Full BSD socket API mapped to the native TCP/IP stack
+- **workbench.library**: Workbench startup and icon integration stubs
+- **intuition.library**: Window/open/close gadget stubs
 
 Functions currently log calls and have detailed implementation logic in comments. Full M68k memory access integration is pending.
 
@@ -409,6 +436,22 @@ A 16×16 Amiga-style arrow sprite cursor rendered in software:
 
 This ensures desktop and window content are never permanently overwritten by
 cursor movement.
+
+### Additional Windows
+
+Besides the main shell and Workbench, the kernel provides several standalone
+windows that can be opened from the shell or from M68k/Ring-3 programs:
+
+| Window | Source | Opened by |
+|--------|--------|-----------|
+| About UAOS | `kernel/display/about_win.c` | Workbench menu |
+| Calculator | `kernel/display/calc_win.c` | `calculator` |
+| Clock | `kernel/display/clock_win.c` | `clock` |
+| NetInfo | `kernel/display/netinfo_win.c` | `netinfo` |
+| Pointer preferences | `kernel/display/pointer_prefs.c` | `pointer` |
+| User window / Guide viewer | `kernel/display/user_window.c` | `Guide` (userspace) |
+| VIM editor | `kernel/display/vim_win.c` | `vim` |
+| File browser | `kernel/display/filebrowser.c` | Workbench icon double-click |
 
 ---
 
@@ -535,7 +578,14 @@ typedef struct {
 
 **Operations**: Mount, Unmount, Open, Close, Read, Write, Seek, Size, ReadDir
 
-**Status**: Boot sector parsing, volume label extraction (`BlockDev_ReadVolLabel`), and formatting via `FAT32_Format()` are implemented. File read/write via virtqueue I/O is pending.
+**Status**: Boot sector parsing, volume label extraction (`BlockDev_ReadVolLabel`), and formatting via `FAT32_Format()` are implemented. Cluster-chain read/write and directory traversal are pending.
+
+#### ISO9660 (`iso9660.c`)
+
+CD-ROM reader used at boot to load files from the boot ISO into RAMFS:
+
+- **Operations**: `ISO9660_MountCD()` scans the CD, reads directory entries, and copies files into RAMFS nodes
+- **Used by**: boot sequence to populate the `Workbench:` volume from the ISO
 
 #### PFS3 (`pfs3.c`)
 
@@ -631,45 +681,115 @@ implements a scrollable terminal:
 - Input line with backspace support
 - Dynamic layout — adapts to window resize
 
-### Built-in Commands
+### Command Execution Flow
+
+The shell resolves a command in this order:
+
+1. **Shell built-ins** — implemented directly in the shell (`help`, `cd`, `alias`, etc.).
+2. **Resident commands** — kept in a 256 KB in-memory cache by `resident`.
+3. **Native C: commands** — dispatched through the `k_native_cmds[]` table in `kernel/shell/native_cmd.c`.
+4. **M68k Hunk binaries** — loaded and run via the Musashi emulator.
+5. **Ring-3 userspace ELF64 binaries** — loaded and run with `INT 0x80` syscalls.
+
+All lookup is case-insensitive. Native commands may declare an AmigaDOS-style template (`/A` required, `/K` keyword, `/S` switch, `/N` numeric, `/M` multiple, `/F` free-form) that is parsed automatically before the handler is invoked.
+
+### Shell Built-ins
 
 | Command | Description |
 |---------|-------------|
 | `help` | List available commands |
-| `version` | Show kernel version and CPU architecture |
-| `mem` | Display total RAM from Multiboot2 tag |
-| `clear` | Clear the shell history buffer |
-| `reboot` | Trigger a system reboot via port `0x64` |
-| `libs` | List loaded kernel libraries with versions |
-| `dir [path]` | List files in current directory (VFS) |
-| `cd [path]` | Change or show current directory (VFS) |
-| `makedir <path>` | Create a directory (VFS) |
-| `delete <path>` | Delete a file or empty directory (VFS) |
-| `type <file>` | Display file contents (VFS) |
-| `copy <src> <dst>` | Copy a file (VFS) |
-| `rename <from> <to>` | Rename or move a file (VFS) |
-| `pwd` | Print working directory (native userspace utility) |
-| `find [path] [-name pat] [-type f|d]` | Recursively list directory contents (native userspace utility) |
-| `file <path>` | Identify file format using magic numbers (native userspace utility) |
-| `strings <path> [-n len]` | Scan files for printable character sequences (native userspace utility) |
-| `hello` | Print simple greeting (userspace validation utility) |
-| `echo <text>` | Print text to shell |
-| `pointer` | Open pointer preferences |
-| `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
-| `attr <path>` | Show file attributes |
-| `info [device]` | Show mounted disks and volumes; or device info |
+| `cd [path]` | Change or show current directory |
 | `alias [name cmd]` | Create or list command aliases |
 | `unalias <name>` | Remove an alias |
-| `set [name val]` | Set or list environment variables |
-| `unset <name>` | Remove an environment variable |
+| `set [name val]` | Set or list local variables |
+| `unset <name>` | Remove a local variable |
+| `path [dirs...]` | Show or set the command search path |
+| `setenv <name> <value>` | Set a global environment variable |
+| `unsetenv <name>` | Remove a global environment variable |
+| `showconfig` | Show hardware configuration |
+
+### Native C: Commands
+
+| Command | Description |
+|---------|-------------|
+| `version` | Show kernel version and architecture |
+| `mem` | Display memory information |
+| `libs` | List loaded ROM libraries with versions |
+| `clear` | Clear the shell history buffer |
+| `reboot` | Reboot the system |
+| `dir [path]` | List directory contents |
+| `makedir <path>` | Create a directory |
+| `delete <path>` | Delete a file or empty directory |
+| `type <file>` | Display file contents |
+| `copy <src> <dst>` | Copy a file |
+| `rename <from> <to>` | Rename or move a file |
+| `echo <text>` | Print text to shell |
+| `protect <flags> <path>` | Set file attributes (`+r`, `-r`, `+h`, `-h`) |
+| `attr <path>` | Show file attributes |
+| `info [device]` | Show mounted disks and volumes |
 | `date` | Show current date and time |
 | `which <cmd>` | Locate a command |
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
+| `pointer` | Open pointer preferences |
 | `run <cmd> [args]` | Run a command in a new CLI |
-| `ping <host> [count]` | Send ICMP echo requests to a dotted-decimal IPv4 address |
-| `ifconfig` | Show network interface IP, netmask, gateway and MAC address |
+| `assign [name: target]` | Create or list assigns |
+| `execute <script>` | Execute a script file |
+| `loadwb` | Launch the Workbench desktop |
+| `calculator` | Open the calculator window |
+| `clock` | Open the clock window |
+| `ifconfig [dhcp \| <ip> <gw>]` | Show or configure network |
+| `ping <host> [count]` | Send ICMP echo requests |
+| `route` | Display routing table and ARP cache |
+| `nslookup <host> [server]` | Resolve a hostname via DNS |
+| `ntpd [server]` | Synchronise time via NTP |
+| `netstart` / `netstop` | Start or stop the network stack |
+| `netinfo` | Open the network information window |
+| `grep [-i] <pattern> <file>` | Search a file for a pattern |
+| `more <file>` | Paginated file viewer |
+| `vim <file>` | Inline text editor |
+| `newcli` / `newshell` | Open a new shell window |
+| `ask <prompt>` | Prompt the user for input |
+| `resident` | Manage resident commands |
+| `ps` | List running tasks |
+| `list` | List files with details |
+| `search <pattern> [file]` | Advanced file search |
+| `sort [file] [options]` | Sort file lines |
+| `join <file1> <file2>` | Join two files by key |
+| `wait` | Wait for background jobs |
+| `prompt <string>` | Set a custom shell prompt |
+| `stack` | Show stack usage |
+| `why` | Show last command return code |
+| `failat <n>` | Set failure threshold |
+| `quit [rc]` | Exit a script |
+| `endcli` | Close the current shell window |
+| `filenote <file> <comment>` | Set a file comment |
+| `relabel <device> <name>` | Rename a volume |
+| `avail` | Show available memory |
+| `getenv <name>` | Read an environment variable |
+| `unset <name>` | Remove an environment variable |
+| `jobs` | List background jobs |
+| `install <device>` | Install a boot block |
+| `diskchange <device>` | Notify disk change |
+| `addbuffers <device> <n>` | Add disk buffers |
+| `requestchoice <title> <body> <buttons...>` | Choice dialog |
+| `requestfile [options]` | File requester dialog |
+| `changetaskpri <pri> [task]` | Change task priority |
+| `status` | Show system status |
+
+### Ring-3 Userspace Commands
+
+These commands are built from `system/userspace/` as native x86-64 ELF64 binaries and communicate with the kernel via `INT 0x80` syscalls:
+
+| Command | Description |
+|---------|-------------|
+| `hello` | Print a simple greeting |
+| `pwd` | Print working directory |
+| `file <path>...` | Identify file format from magic numbers |
+| `strings <path>... [-n minlen]` | Extract printable strings |
+| `find [path] [-name pat] [-type f\|d]` | Recursively search directories |
+| `Guide` | AmigaGuide help viewer (`Tools:Guide`) |
 
 ---
 
@@ -911,6 +1031,45 @@ The stack has no dedicated thread. RX is processed in two ways:
 Both paths call `netdev_poll()` which is guarded by a reentrancy lock, so
 it is safe to call from both contexts.
 
+### Network Configuration Files
+
+| File | Purpose | Default |
+|------|---------|---------|
+| `S:net.conf` | Network mode (`dhcp` or `static`), IP, netmask, gateway, DNS | `dhcp` / `10.0.2.15/24 gw 10.0.2.2 dns 8.8.8.8` |
+| `S:ntp.conf` | NTP server hostname | `pool.ntp.org` |
+| `S:timezone.conf` | IANA timezone name | `Australia/Sydney` |
+
+`netstart` reads `S:net.conf` and initialises the stack. `ntpd` reads `S:ntp.conf` and `S:timezone.conf` for time synchronisation and local-time conversion.
+
+### `bsdsocket.library` (AmigaOS Socket API)
+
+The `bsdsocket.library` ROM module (v4, base 0x3000) exposes a standard AmigaOS
+BSD socket LVO table to M68k binaries. The native implementation maps each call
+to the kernel TCP/IP stack.
+
+| LVO Offset | Function | Args (M68k) |
+|------------|----------|-------------|
+| -30 | `socket` | `domain/D0, type/D1, protocol/D2` |
+| -36 | `bind` | `fd/D0, sockaddr/A0, addrlen/D1` |
+| -42 | `listen` | `fd/D0, backlog/D1` |
+| -48 | `accept` | `fd/D0, sockaddr/A0, addrlen/A1` |
+| -54 | `connect` | `fd/D0, sockaddr/A0, addrlen/D1` |
+| -60 | `send` | `fd/D0, buf/A0, len/D1, flags/D2` |
+| -66 | `sendto` | `fd/D0, buf/A0, len/D1, flags/D2, addr/A1, addrlen/D3` |
+| -72 | `recv` | `fd/D0, buf/A0, len/D1, flags/D2` |
+| -78 | `recvfrom` | `fd/D0, buf/A0, len/D1, flags/D2, addr/A1, addrlen/A2` |
+| -84 | `closesocket` | `fd/D0` |
+| -96 | `setsockopt` | `fd/D0, level/D1, optname/D2, val/A0, optlen/D3` |
+| -102 | `getsockopt` | `fd/D0, level/D1, optname/D2, val/A0, optlen/A1` |
+| -108 | `IoctlSocket` | `fd/D0, req/D1, arg/A0` |
+| -132 | `inet_addr` | `str/A0` |
+| -138 | `inet_ntoa` | `addr/D0` |
+| -210 | `gethostbyname` | `name/A0` |
+
+Supported constants: `AF_INET = 2`, `SOCK_STREAM = 1`, `SOCK_DGRAM = 2`,
+`IPPROTO_TCP = 6`, `IPPROTO_UDP = 17`. Socket descriptors 0–7 map to TCP
+sockets, 8–15 to UDP sockets.
+
 ### VirtualBox Setup
 
 1. VM Settings → Network → Adapter 1
@@ -970,22 +1129,27 @@ Output: `build/Ultimate_Amiga_OS.iso`
 
 | Step | Action |
 |---|---|
-| 1 | Creates `build/` staging directories |
-| 2 | Assembles `uaos_kernel_entry.asm` + `idt_stubs.asm` with NASM |
-| 3 | Compiles all C sources: `-ffreestanding -m64 -O2 -std=c11 -fno-stack-protector` |
-| 4 | Links into `uaos-kernel.elf` (ELF64) via the custom linker script |
-| 5 | Packages the `sys-root` Amiga filesystem skeleton |
-| 6 | Injects `grub.cfg` |
-| 7 | Builds `bootx64.efi` with `grub-mkstandalone` |
-| 8 | Produces hybrid BIOS+EFI ISO with `grub-mkrescue` |
+| 1 | Creates `build/` staging directories and the dynamic `SYS_ROOT` image |
+| 2 | Builds host tools (`gen_uaos_native`, `gen_uaos_m68k`, `gen_uaos_x64`, `gen_m68k_library`) |
+| 3 | Assembles `uaos_kernel_entry.asm`, `idt_stubs.asm` and `task_switch.asm` with NASM |
+| 4 | Generates the Musashi M68k opcode table if needed |
+| 5 | Compiles all C sources: `-ffreestanding -m64 -O2 -std=c11 -fno-stack-protector` |
+| 6 | Links into `uaos-kernel.elf` (ELF64) via the custom linker script |
+| 7 | Wraps embedded M68k binaries from `emulation/binaries/` and Amiga `.library` files |
+| 8 | Builds native x86-64 Ring-3 userspace programs from `system/userspace/` |
+| 9 | Stages the `system/` skeleton into `SYS_ROOT` (C:, S:, LIBS:, DEVS:, L:, SYS, Tools) |
+| 10 | Injects `grub.cfg` and the AROS kickstart configuration |
+| 11 | Produces hybrid BIOS+EFI ISO with `grub-mkrescue` |
 
 ### GCC Flags
 
 ```
 -ffreestanding -fno-stack-protector -fno-pie -fno-PIE
--mno-red-zone -nostdlib -m64 -O2 -std=c11
--U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
--Wall -Wextra
+-fno-asynchronous-unwind-tables -mno-red-zone -nostdlib
+-m64 -O2 -std=c11 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+-Wall -Wextra -Wno-unused-function -Wno-unused-variable
+-Wno-unused-parameter -Wno-address-of-packed-member
+-Wno-missing-braces
 ```
 
 ---

@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.5.23)  31 MAY 2026 22:55
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.14)  20 JUN 2026 16:28
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -473,38 +473,47 @@ e
 [1
 
 {/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}] (./manual.toc
-LaTeX Font Info:    Trying to load font information for T1+cmtt on input line 9
+LaTeX Font Info:    Trying to load font information for T1+cmtt on input line 8
 .
 
 (/usr/share/texlive/texmf-dist/tex/latex/base/t1cmtt.fd
 File: t1cmtt.fd 2023/04/13 v2.5m Standard LaTeX font definitions
-))
-\tf@toc=\write4
-\openout4 = `manual.toc'.
-
-
+)
 pdfTeX warning (ext4): destination with the same identifier (name{page.1}) has 
 been already used, duplicate ignored
 <to be read again> 
                    \relax 
-l.70 \listoffigures
-                    [1
+l.38 ...Network Hardware Drivers}{20}{section.7.2}
+                                                  % [1
 
-] (./manual.lof)
+])
+\tf@toc=\write4
+\openout4 = `manual.toc'.
+
+
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[2] (./manual.lof)
 \tf@lof=\write5
 \openout5 = `manual.lof'.
 
- [2
+ [3
 
 ] (./manual.lot)
 \tf@lot=\write6
 \openout6 = `manual.lot'.
 
- [3
+ [4
 
 ]
 Chapter 1.
-[4
+[5
 
 ]
 Chapter 2.
@@ -518,13 +527,48 @@ File: lstlang2.sty 2023/02/27 1.9 listings language file
 File: lstlang3.sty 2023/02/27 1.9 listings language file
 )
 Package hyperref Info: bookmark level for unknown lstlisting defaults to 0 on i
-nput line 155.
- [5
+nput line 160.
+ [6
 
 ]
-Overfull \hbox (29.44522pt too wide) in paragraph at lines 199--203
+Overfull \hbox (29.44522pt too wide) in paragraph at lines 206--210
 \T1/cmr/m/n/10.95 Any ac-cess faults to this re-gion are caught by the #PF han-
 dler in \T1/cmtt/m/n/10.95 kernel/exec/page_fault_handler.c
+ []
+
+LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <14.4> not available
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 211.
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[7]
+Overfull \hbox (0.99345pt too wide) in paragraph at lines 223--224
+\T1/cmr/m/n/10.95 man-age-ment (\T1/cmtt/m/n/10.95 sys_spawn\T1/cmr/m/n/10.95 ,
+ \T1/cmtt/m/n/10.95 sys_wait\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 sys_exit\T1/
+cmr/m/n/10.95 ), VFS file/di-rec-tory in-ter-faces (\T1/cmtt/m/n/10.95 sys_getc
+wd\T1/cmr/m/n/10.95 ,
+ []
+
+
+Overfull \hbox (50.92798pt too wide) in paragraph at lines 223--224
+\T1/cmtt/m/n/10.95 sys_opendir\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 sys_readdi
+r\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 sys_closedir\T1/cmr/m/n/10.95 , \T1/cmt
+t/m/n/10.95 sys_stat\T1/cmr/m/n/10.95 ), and GUI win-dow-ing syscalls (\T1/cmtt
+/m/n/10.95 create_window\T1/cmr/m/n/10.95 ,
+ []
+
+
+Overfull \hbox (26.59013pt too wide) in paragraph at lines 223--224
+\T1/cmtt/m/n/10.95 destroy_window\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 draw_te
+xt\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 draw_rect\T1/cmr/m/n/10.95 , \T1/cmtt/
+m/n/10.95 present\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 get_event\T1/cmr/m/n/10
+.95 , \T1/cmtt/m/n/10.95 set_scroll_info\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 
+set_scroll\T1/cmr/m/n/10.95 ). 
  []
 
 
@@ -535,19 +579,17 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
-[6]
+[8]
 Chapter 3.
-LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <14.4> not available
-(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 208.
 (/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
 File: lstlang1.sty 2023/02/27 1.9 listings language file
 )
 (/usr/share/texlive/texmf-dist/tex/latex/listings/lstmisc.sty
 File: lstmisc.sty 2023/02/27 1.9 (Carsten Heinz)
-) [7
+) [9
 
 ]
-Overfull \hbox (47.26384pt too wide) in paragraph at lines 260--264
+Overfull \hbox (47.26384pt too wide) in paragraph at lines 340--344
 []\T1/cmr/bx/n/10.95 VFS Op-er-a-tions \T1/cmr/m/n/10.95 in-clude \T1/cmtt/m/n/
 10.95 VFS_Open\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 VFS_Read\T1/cmr/m/n/10.95 
 , \T1/cmtt/m/n/10.95 VFS_Write\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 VFS_MkDir\
@@ -556,7 +598,7 @@ n/10.95 VFS_ResolveDir\T1/cmr/m/n/10.95 ,
  []
 
 
-Overfull \hbox (1.3211pt too wide) in paragraph at lines 271--273
+Overfull \hbox (1.3211pt too wide) in paragraph at lines 351--353
 []\T1/cmtt/m/n/10.95 BlockDev_RegisterPartition(parent, idx, start, count, name
 ) \T1/cmr/m/n/10.95 --- cre-ates child par-
  []
@@ -569,14 +611,23 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
-[8]
+[10]
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[11]
 Chapter 4.
 (/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
 File: lstlang1.sty 2023/02/27 1.9 listings language file
 )
 (/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
 File: lstlang1.sty 2023/02/27 1.9 listings language file
-) [9
+) [12
 
 ]
 
@@ -587,17 +638,17 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
-[10]
+[13]
 Chapter 5.
 
-Overfull \hbox (10.72395pt too wide) in paragraph at lines 349--353
+Overfull \hbox (10.72395pt too wide) in paragraph at lines 431--435
 []\T1/cmr/m/n/10.95 All draw-ing prim-i-tives (\T1/cmtt/m/n/10.95 FB_FillRect\T
 1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 FB_DrawHLine\T1/cmr/m/n/10.95 , \T1/cmtt/m
 /n/10.95 FB_DrawVLine\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 FB_PutPixel\T1/cmr/
 m/n/10.95 , \T1/cmtt/m/n/10.95 FB_PutStr\T1/cmr/m/n/10.95 )
  []
 
-[11
+[14
 
 ]
 
@@ -608,14 +659,22 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
-[12]
+[15]
 Chapter 6.
+
+Overfull \hbox (42.4632pt too wide) in paragraph at lines 568--618
+ [][] 
+ []
+
+[16
+
+]
 
 LaTeX Warning: `h' float specifier changed to `ht'.
 
-[13
 
-]
+LaTeX Warning: `h' float specifier changed to `ht'.
+
 
 Package fancyhdr Warning: \headheight is too small (12.0pt): 
 (fancyhdr)                Make it at least 13.59999pt, for example:
@@ -624,19 +683,102 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
-[14]
-Chapter 7.
+[17]
 
-Overfull \hbox (20.63011pt too wide) in paragraph at lines 481--484
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[18]
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[19]
+Chapter 7.
+LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <12> not available
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 687.
+[20
+
+]
+
+LaTeX Warning: `h' float specifier changed to `ht'.
+
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[21]
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[22]
+Overfull \hbox (18.83945pt too wide) in paragraph at lines 892--896
+[]\T1/cmr/bx/n/10.95 IRQ path \T1/cmr/m/n/10.95 --- the NIC fires an in-ter-rup
+t; the han-dler calls \T1/cmtt/m/n/10.95 e1000_poll() \T1/cmr/m/n/10.95 / \T1/c
+mtt/m/n/10.95 virtio_net_poll()\T1/cmr/m/n/10.95 ,
+ []
+
+
+Overfull \hbox (3.3989pt too wide) in paragraph at lines 892--896
+\T1/cmr/m/n/10.95 which in-vokes the RX call-back, which drives \T1/cmtt/m/n/10
+.95 eth_rx() $\OMS/cmsy/m/n/10.95 !$ \T1/cmtt/m/n/10.95 arp_rx() \T1/cmr/m/n/10
+.95 / \T1/cmtt/m/n/10.95 ip_rx() $\OMS/cmsy/m/n/10.95 !$ \T1/cmr/m/n/10.95 TCP/
+UDP
+ []
+
+
+LaTeX Warning: `h' float specifier changed to `ht'.
+
+
+LaTeX Warning: `h' float specifier changed to `ht'.
+
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[23]
+
+Package fancyhdr Warning: \headheight is too small (12.0pt): 
+(fancyhdr)                Make it at least 13.59999pt, for example:
+(fancyhdr)                \setlength{\headheight}{13.59999pt}.
+(fancyhdr)                You might also make \topmargin smaller to compensate:
+
+(fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
+
+[24]
+Chapter 8.
+
+Overfull \hbox (20.63011pt too wide) in paragraph at lines 981--984
 \T1/cmr/m/n/10.95 This er-ror means GRUB re-ceived a file that is not a valid E
 LF64 ex-e-cutable. En-sure \T1/cmtt/m/n/10.95 uaos-kernel.elf
  []
 
-[15
+[25
 
 ]
 Appendix A.
-[16
+[26
 
 ] (./manual.aux)
  ***********
@@ -644,39 +786,41 @@ LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-22>
  ***********
 Package rerunfilecheck Info: File `manual.out' has not changed.
-(rerunfilecheck)             Checksum: 08F6552285801AFFD3EE099FD2ACED75;5613.
+(rerunfilecheck)             Checksum: C6E720494FF6D2F47D7FDF96980CE5E2;9898.
  ) 
 Here is how much of TeX's memory you used:
- 13173 strings out of 476182
- 194054 string characters out of 5795595
- 2115975 words of memory out of 5000000
- 34873 multiletter control sequences out of 15000+600000
- 574410 words of font info for 68 fonts, out of 8000000 for 9000
+ 13408 strings out of 476182
+ 197048 string characters out of 5795595
+ 2136975 words of memory out of 5000000
+ 34990 multiletter control sequences out of 15000+600000
+ 574723 words of font info for 69 fonts, out of 8000000 for 9000
  14 hyphenation exceptions out of 8191
- 75i,11n,79p,468b,2051s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,12n,79p,584b,2175s stack positions out of 10000i,1000n,20000p,200000b,200000s
  </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ecti1095.60
-0pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ecbx1200.
-600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ectt144
+0pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ectt1200.
+600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ecbx120
 0.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ectt1
-000.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ecr
-m0600.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/e
-ccc1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec
+440.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/ect
+t1000.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec/e
+crm0600.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/ec
 /tcrm1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappen/
 ec/ecbx1440.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknappe
 n/ec/ecbx2074.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jknap
-pen/ec/ectt1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jkn
-appen/ec/ecbx1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/j
-knappen/ec/tcrm1000.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour
-/jknappen/ec/ecrm1000.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfo
-ur/jknappen/ec/ecrm1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/lj
-four/jknappen/ec/ecrm1200.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/
-ljfour/jknappen/ec/ecti1440.600pk> </home/reaver/.texlive2023/texmf-var/fonts/p
-k/ljfour/jknappen/ec/ecbx2488.600pk></usr/share/texlive/texmf-dist/fonts/type1/
-public/amsfonts/cm/cmsy10.pfb>
-Output written on manual.pdf (17 pages, 221962 bytes).
+pen/ec/eccc1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/jkn
+appen/ec/ectt1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour/j
+knappen/ec/ecbx1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfour
+/jknappen/ec/tcrm1000.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/ljfo
+ur/jknappen/ec/ecrm1000.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/lj
+four/jknappen/ec/ecrm1095.600pk> </home/reaver/.texlive2023/texmf-var/fonts/pk/
+ljfour/jknappen/ec/ecrm1200.600pk> </home/reaver/.texlive2023/texmf-var/fonts/p
+k/ljfour/jknappen/ec/ecti1440.600pk> </home/reaver/.texlive2023/texmf-var/fonts
+/pk/ljfour/jknappen/ec/ecbx2488.600pk></usr/share/texlive/texmf-dist/fonts/type
+1/public/amsfonts/cm/cmr10.pfb></usr/share/texlive/texmf-dist/fonts/type1/publi
+c/amsfonts/cm/cmsy10.pfb>
+Output written on manual.pdf (27 pages, 286245 bytes).
 PDF statistics:
- 998 PDF objects out of 1000 (max. 8388607)
- 401 compressed objects within 5 object streams
- 126 named destinations out of 1000 (max. 500000)
- 265 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 1377 PDF objects out of 1440 (max. 8388607)
+ 685 compressed objects within 7 object streams
+ 243 named destinations out of 1000 (max. 500000)
+ 473 words of extra memory for PDF output out of 10000 (max. 10000000)
 
