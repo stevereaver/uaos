@@ -435,7 +435,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
     }
     kprint("[BOOT] Scanning for ATAPI CD-ROMs...\n");
-    for (int ch = 0; ch < IDE_GetChannelCount(); ch++) {
+    /* Probe both fixed IDE channels (primary + secondary).  IDE_GetChannelCount()
+     * returns the number of *populated* channels, which is NOT a valid index
+     * bound — e.g. an empty primary + a CD on the secondary yields a count of 1
+     * but the CD lives at channel index 1, so it would be skipped.  Iterate all
+     * channels and rely on info->present (matching IDE_RegisterBlockDevs). */
+    for (int ch = 0; ch < 2; ch++) {
         for (int dev = 0; dev < 2; dev++) {
             const IdeDeviceInfo *info = IDE_GetDeviceInfo(ch, dev);
             if (info && info->present && info->type == IDE_DEV_ATAPI) {

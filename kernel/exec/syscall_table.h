@@ -62,7 +62,9 @@ typedef struct __attribute__((packed)) {
     uint64_t ss;
 } InterruptFrame;
 
-/* GPR block saved by isr_common in idt_stubs.asm. */
+/* GPR block as saved by the page-fault ISR (uaos_page_fault_isr): GPRs are
+ * pushed rax-last, so rax sits at the lowest address and this field order
+ * matches the in-memory layout. */
 typedef struct __attribute__((packed)) {
     uint64_t rax, rbx, rcx, rdx;
     uint64_t rsi, rdi, rbp;
@@ -70,10 +72,21 @@ typedef struct __attribute__((packed)) {
     uint64_t r12, r13, r14, r15;
 } SavedRegs;
 
+/* GPR block as saved by uaos_syscall_isr.  It uses the *same* push order and
+ * frame layout as isr_common (GPRs pushed rax-first, so r15 ends up at the
+ * lowest address, followed by vector + error_code padding).  Using an
+ * identical layout is what allows a task switched out by the timer ISR to be
+ * resumed by the syscall ISR (and vice-versa) without corrupting the frame.
+ * The field order below matches that ascending-address memory layout. */
+typedef struct __attribute__((packed)) {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+} SyscallRegs;
+
 /* -------------------------------------------------------------------------
  * Dispatch entry
  * ------------------------------------------------------------------------- */
-/* Assembly calls: rdi=SavedRegs*, rsi=InterruptFrame* (SysV order) */
-void Syscall_Dispatch(SavedRegs *regs, InterruptFrame *frame);
+/* Assembly calls: rdi=SyscallRegs*, rsi=InterruptFrame* (SysV order) */
+void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame);
 
 #endif /* UAOS_SYSCALL_TABLE_H */

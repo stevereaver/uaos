@@ -181,16 +181,22 @@ ISR_STUB 31, 0
 %endrep
 
 ; -------------------------------------------------------------------------
-; Syscall vector 0x80 — direct dispatch to Syscall_Dispatch(frame, regs)
+; Syscall vector 0x80 — direct dispatch to Syscall_Dispatch(regs, frame)
 ;
-; Saves GPRs in the same order as the page-fault handler so the shared
-; SavedRegs struct (rax..r15) matches memory layout.
+; CRITICAL: this stub builds *exactly* the same frame layout as isr_common
+; (GPRs pushed rax-first so r15 ends up at the lowest address, followed by a
+; vector slot and an error_code slot, then the CPU-pushed RIP/CS/RFLAGS/RSP/SS).
+; This is required because the scheduler can switch tasks from either the timer
+; ISR (isr_common) or this syscall ISR.  Both paths save the outgoing task and
+; restore the incoming task using their own epilogue, so the two frame formats
+; MUST be byte-compatible — otherwise a task created/saved in one format and
+; resumed in the other gets a corrupted iretq frame and the system freezes.
 ;
-; INT 0x80 does not push an error code; we push a dummy one so the CPU frame
-; (RIP/CS/RFLAGS/RSP/SS) aligns with the shared InterruptFrame struct.
+; INT 0x80 does not push an error code; we push a dummy error_code and a dummy
+; vector so the layout matches isr_common one-for-one.
 ;
 ; The C handler receives:
-;   rdi = pointer to SavedRegs (rax slot at the top of saved GPRs)
+;   rdi = pointer to SyscallRegs   (r15 slot at the lowest saved-GPR address)
 ;   rsi = pointer to InterruptFrame (error_code slot)
 ; -------------------------------------------------------------------------
 
@@ -199,27 +205,30 @@ extern Syscall_Dispatch
 global uaos_syscall_isr
 uaos_syscall_isr:
     push    qword 0             ; dummy error code
+    push    qword 0             ; dummy vector (matches isr_common layout)
 
-    push    r15
-    push    r14
-    push    r13
-    push    r12
-    push    r11
-    push    r10
-    push    r9
-    push    r8
-    push    rbp
-    push    rdi
-    push    rsi
-    push    rdx
-    push    rcx
-    push    rbx
     push    rax
+    push    rbx
+    push    rcx
+    push    rdx
+    push    rsi
+    push    rdi
+    push    rbp
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+    push    r12
+    push    r13
+    push    r14
+    push    r15
 
-    ; RDI = &SavedRegs (rax slot), RSI = &InterruptFrame (error_code slot)
+    ; RDI = &SyscallRegs (r15 slot, lowest address), RSI = &InterruptFrame.
+    ; Layout from rsp: [15 GPRs][vector][error_code][rip][cs][rflags][rsp][ss]
+    ; so error_code (start of InterruptFrame) is at rsp + 16*8.
     mov     rdi, rsp
     mov     rsi, rsp
-    add     rsi, 15 * 8
+    add     rsi, 16 * 8
     call    Syscall_Dispatch
 
     ; Task switch requested by scheduler?
@@ -231,34 +240,28 @@ uaos_syscall_isr:
     mov     rbx, [rel Task_SwitchPrev]
     mov     [rbx + 136], rsp    ; offset of native_rsp in UaosTask
 
-    ; All task types (including X64 ELF64) use the same iretq-based restore
-    ; path. Task_CreateX64 builds a synthetic interrupt frame with user-mode
-    ; CS/SS, so normal_switch resumes at the ELF entry point in Ring 3. The
-    ; previous special-case first-launch path incorrectly restarted an X64
-    ; task from its entry point on every syscall, causing an infinite loop.
-    jmp     .normal_switch
-
-.normal_switch:
-    ; Load new task's RSP and clear switch request.
+    ; Load new task's RSP and clear switch request.  All task types (native,
+    ; X64 ELF64) use this same iretq-based restore path; their synthetic
+    ; frames are built in the shared isr_common layout.
     mov     rsp, [rax + 136]
     mov     qword [rel Task_SwitchNext], 0
     mov     qword [rel Task_SwitchPrev], 0
 
 .no_switch:
-    pop     rax
-    pop     rbx
-    pop     rcx
-    pop     rdx
-    pop     rsi
-    pop     rdi
-    pop     rbp
-    pop     r8
-    pop     r9
-    pop     r10
-    pop     r11
-    pop     r12
-    pop     r13
-    pop     r14
     pop     r15
-    add     rsp, 8              ; discard dummy error_code
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rbp
+    pop     rdi
+    pop     rsi
+    pop     rdx
+    pop     rcx
+    pop     rbx
+    pop     rax
+    add     rsp, 16             ; discard dummy vector + error_code
     iretq

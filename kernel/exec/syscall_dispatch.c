@@ -615,7 +615,7 @@ static int sys_gui_get_event(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 /* -------------------------------------------------------------------------
  * Dispatcher
  * ------------------------------------------------------------------------- */
-void Syscall_Dispatch(SavedRegs *regs, InterruptFrame *frame)
+void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
 {
     (void)frame;
 
