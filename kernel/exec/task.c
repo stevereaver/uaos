@@ -282,10 +282,10 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     sp[15] = 0;                                 /* vector */
     sp[16] = 0;                                 /* error_code */
     sp[17] = entry_rip;                         /* RIP */
-    sp[18] = 0x08;                              /* CS */
+    sp[18] = 0x1B;                              /* CS  — user code  (0x18 | RPL=3) */
     sp[19] = 0x202;                             /* RFLAGS: IF=1 */
     sp[20] = initial_rsp;                       /* RSP (user stack) */
-    sp[21] = 0x10;                              /* SS */
+    sp[21] = 0x23;                              /* SS  — user data  (0x20 | RPL=3) */
 
     t->native_rsp = (uint64_t)sp;  /* kernel stack frame pointer */
 

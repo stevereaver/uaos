@@ -58,10 +58,16 @@ mb2_end:
 
 section .data progbits alloc noexec write align=8
 
+global gdt64_start
 gdt64_start:
     dq  0x0000000000000000      ; 0x00 — null
-    dq  0x00AF9A000000FFFF      ; 0x08 — 64-bit code: P=1 DPL=0 L=1 D=0
-    dq  0x00CF92000000FFFF      ; 0x10 — 64-bit data: P=1 DPL=0 G=1 DB=1
+    dq  0x00AF9A000000FFFF      ; 0x08 — 64-bit kernel code: P=1 DPL=0 L=1
+    dq  0x00CF92000000FFFF      ; 0x10 — 64-bit kernel data: P=1 DPL=0
+    dq  0x00AFFA000000FFFF      ; 0x18 — 64-bit user   code: P=1 DPL=3 L=1  (selector 0x1B with RPL=3)
+    dq  0x00CFF2000000FFFF      ; 0x20 — 64-bit user   data: P=1 DPL=3      (selector 0x23 with RPL=3)
+    ; 0x28/0x30 — TSS descriptor (16 bytes, two slots) — base filled at runtime by GDT_Init_TSS()
+    dq  0x0000000000000000      ; TSS low  (type=0x89 = 64-bit available TSS, filled at runtime)
+    dq  0x0000000000000000      ; TSS high (base[63:32], all zeros filled at runtime)
 gdt64_end:
 
 gdt64_ptr:

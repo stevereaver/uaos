@@ -87,23 +87,54 @@ Task_RunNew:
     hlt
 
 Task_RunNewX64:
-    ; First launch of an ELF64-loaded task.
+    ; First launch of an ELF64-loaded task (ring-0 → ring-3 transition).
     ; RDI = task (already set by Task_RunNew, and native_arg == task)
-    ; Switch to the ELF64 user stack and jump to the loaded entry point.
-    ; The user stack already contains argc / argv / envp in the layout
-    ; expected by a standard musl/newlib _start.
-    push    rax
+    ;
+    ; We build an iretq frame on the current (kernel) stack and execute iretq,
+    ; which atomically loads CS/RIP/RFLAGS/SS/RSP and switches to ring 3.
+    ;
+    ; iretq frame layout (pushed in reverse order, high → low addresses):
+    ;   SS      (user data selector = 0x23)
+    ;   RSP     (user stack top)
+    ;   RFLAGS  (IF=1)
+    ;   CS      (user code selector = 0x1B)
+    ;   RIP     (ELF entry point)
+    ;
+    ; Call debug helper first (preserving RDI)
     push    rdi
     extern  Task_RunNewX64_Debug
-    mov     rdi, [rsp]          ; task pointer (was in rdi before push)
     call    Task_RunNewX64_Debug
-    add     rsp, 8              ; discard return address pushed by call
     pop     rdi                 ; restore task pointer
-    pop     rax                 ; restore original rax
-    mov     rsp, [rdi + 184]    ; task->native_initial_rsp
-    mov     rax, [rdi + 144]    ; task->native_rip
-    sti
-    jmp     rax
-    ; ELF entry should not return; halt if it does.
+
+    mov     rax, [rdi + 144]    ; task->native_rip  (ELF entry point)
+    mov     rcx, [rdi + 184]    ; task->native_initial_rsp
+
+    ; Build iretq frame on the current kernel stack
+    push    qword 0x23          ; SS  — user data (0x20 | RPL=3)
+    push    rcx                 ; RSP — user stack top
+    pushfq
+    or      qword [rsp], (1 << 9)   ; ensure IF=1
+    push    qword 0x1B          ; CS  — user code (0x18 | RPL=3)
+    push    rax                 ; RIP — ELF entry point
+
+    ; Zero most GPRs so userspace starts with a clean state
+    xor     rax, rax
+    xor     rbx, rbx
+    xor     rcx, rcx
+    xor     rdx, rdx
+    xor     rsi, rsi
+    xor     rdi, rdi
+    xor     rbp, rbp
+    xor     r8,  r8
+    xor     r9,  r9
+    xor     r10, r10
+    xor     r11, r11
+    xor     r12, r12
+    xor     r13, r13
+    xor     r14, r14
+    xor     r15, r15
+
+    iretq
+    ; Should never reach here
     cli
     hlt

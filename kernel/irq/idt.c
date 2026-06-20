@@ -9,6 +9,41 @@ extern void kprint(const char *s);
 extern void kprinthex(uint64_t v);
 
 /* =========================================================================
+ * Segment selector constants
+ * ========================================================================= */
+
+#define SEG_KERNEL_CODE  0x08
+#define SEG_KERNEL_DATA  0x10
+#define SEG_USER_CODE    0x1B   /* 0x18 | RPL=3 */
+#define SEG_USER_DATA    0x23   /* 0x20 | RPL=3 */
+#define SEG_TSS          0x28   /* index 5 in GDT */
+
+/* =========================================================================
+ * TSS (Task State Segment) — x86_64, 104 bytes
+ * ========================================================================= */
+
+typedef struct __attribute__((packed)) {
+    uint32_t reserved0;
+    uint64_t rsp0;       /* kernel stack pointer for ring-0 transitions */
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist[7];     /* IST1-IST7 (we leave at zero) */
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iopb_offset; /* I/O permission bitmap offset (0 = disabled) */
+} Tss64;
+
+static Tss64 g_tss;
+
+/* Dedicated kernel interrupt stack (used as RSP0 in the TSS) */
+#define KERNEL_INT_STACK_SIZE 8192
+static uint8_t g_kernel_int_stack[KERNEL_INT_STACK_SIZE] __attribute__((aligned(16)));
+
+/* GDT base — symbol exported from uaos_kernel_entry.asm */
+extern uint64_t gdt64_start[];
+
+/* =========================================================================
  * I/O port helpers
  * ========================================================================= */
 
@@ -194,16 +229,21 @@ static void (*const stub_table[256])(void) = {
  * IDT entry helpers
  * ========================================================================= */
 
-static void idt_set_entry(int vec, void (*handler)(void))
+static void idt_set_entry_dpl(int vec, void (*handler)(void), uint8_t type_attr)
 {
     uint64_t addr = (uint64_t)(uintptr_t)handler;
     g_idt[vec].offset_low  = (uint16_t)(addr & 0xFFFF);
     g_idt[vec].selector    = 0x08;          /* kernel code segment */
     g_idt[vec].ist         = 0;
-    g_idt[vec].type_attr   = 0x8E;          /* present, 64-bit interrupt gate */
+    g_idt[vec].type_attr   = type_attr;
     g_idt[vec].offset_mid  = (uint16_t)((addr >> 16) & 0xFFFF);
     g_idt[vec].offset_high = (uint32_t)((addr >> 32) & 0xFFFFFFFF);
     g_idt[vec].zero        = 0;
+}
+
+static void idt_set_entry(int vec, void (*handler)(void))
+{
+    idt_set_entry_dpl(vec, handler, 0x8E); /* present, DPL=0, 64-bit interrupt gate */
 }
 
 /* =========================================================================
@@ -224,6 +264,69 @@ void IDT_Init(void)
     __asm__ volatile ("lidt %0" :: "m"(idtp));
 }
 
+void GDT_InitTSS(void)
+{
+    /* Zero TSS */
+    uint8_t *p = (uint8_t *)&g_tss;
+    for (int i = 0; i < (int)sizeof(g_tss); i++) p[i] = 0;
+
+    /* RSP0 = top of dedicated kernel interrupt stack */
+    g_tss.rsp0 = (uint64_t)(uintptr_t)(g_kernel_int_stack + KERNEL_INT_STACK_SIZE);
+
+    /* IOPB offset beyond TSS size — disables I/O port bitmap */
+    g_tss.iopb_offset = (uint16_t)sizeof(g_tss);
+
+    /* Patch the TSS descriptor at GDT offset 0x28 (index 5).
+     *
+     * A 64-bit TSS descriptor occupies two consecutive 8-byte GDT slots:
+     *
+     * Low qword (offset 0x28):
+     *   bits 15:0   = limit[15:0]       = sizeof(Tss64)-1
+     *   bits 39:16  = base[23:0]
+     *   bits 43:40  = type = 0x9 (64-bit available TSS)
+     *   bit  44     = S = 0 (system descriptor)
+     *   bits 46:45  = DPL = 0
+     *   bit  47     = P = 1 (present)
+     *   bits 51:48  = limit[19:16]
+     *   bits 55:52  = flags (G=0,DB=0,L=0,AVL=0)
+     *   bits 63:56  = base[31:24]
+     *
+     * High qword (offset 0x30):
+     *   bits 31:0   = base[63:32]
+     *   bits 63:32  = reserved (zero)
+     */
+    uint64_t base  = (uint64_t)(uintptr_t)&g_tss;
+    uint32_t limit = (uint32_t)(sizeof(g_tss) - 1);
+
+    uint64_t tss_low =
+        ((base  & 0x00FFFFFFULL) << 16) |        /* base[23:0]  → bits 39:16 */
+        ((uint64_t)0x89ULL        << 40) |        /* P=1 DPL=0 type=9        */
+        ((uint64_t)(limit & 0xFFFF))     |        /* limit[15:0]             */
+        (((base  >> 24) & 0xFFULL) << 56);        /* base[31:24] → bits 63:56 */
+
+    uint64_t tss_high = (base >> 32) & 0xFFFFFFFFULL;
+
+    /* GDT slot 5 = offset 0x28 = index 5 */
+    gdt64_start[5] = tss_low;
+    gdt64_start[6] = tss_high;
+
+    /* Reload the GDT pointer to pick up the new limit */
+    struct __attribute__((packed)) { uint16_t limit; uint64_t base; } gdtp;
+    /* Calculate the new limit: 7 entries × 8 bytes - 1 = 55 */
+    gdtp.limit = (uint16_t)(7 * 8 - 1);
+    gdtp.base  = (uint64_t)(uintptr_t)gdt64_start;
+    __asm__ volatile ("lgdt %0" :: "m"(gdtp) : "memory");
+
+    /* Load the TSS selector into TR */
+    __asm__ volatile ("ltr %0" :: "r"((uint16_t)SEG_TSS) : "memory");
+
+    kprint("[GDT] TSS installed: base=0x");
+    kprinthex(base);
+    kprint(" rsp0=0x");
+    kprinthex(g_tss.rsp0);
+    kprint("\n");
+}
+
 void IDT_SetHandler(uint8_t vector, ISRHandler handler)
 {
     g_handlers[vector] = handler;
@@ -232,6 +335,12 @@ void IDT_SetHandler(uint8_t vector, ISRHandler handler)
 void IDT_SetRawHandler(uint8_t vector, void (*handler)(void))
 {
     idt_set_entry(vector, handler);
+}
+
+void IDT_SetRawHandlerDPL3(uint8_t vector, void (*handler)(void))
+{
+    /* 0xEE = present, DPL=3, 64-bit interrupt gate — callable from ring 3 */
+    idt_set_entry_dpl(vector, handler, 0xEE);
 }
 
 /* =========================================================================

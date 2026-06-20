@@ -501,6 +501,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Set up interrupts — IDT must be loaded before STI */
     kprint("[BOOT] Initialising IDT...\n");
     IDT_Init();
+    kprint("[BOOT] Initialising TSS/GDT (user segments)...\n");
+    GDT_InitTSS();
     kprint("[BOOT] Initialising PIC...\n");
     PIC_Init();
     /* PIT is programmed and unmasked later, after its handler is registered */
@@ -565,9 +567,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     TaskScheduler_Init();
 
     /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  The raw assembly entry passes the full interrupt frame to
+     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
+     * The raw assembly entry passes the full interrupt frame to
      * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandler(0x80, uaos_syscall_isr);
+    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
 
     /* Create system idle task (runs the former event loop) */
     extern void Task_IdleEntry(void *arg);

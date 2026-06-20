@@ -73,43 +73,12 @@ isr_common:
     mov     rbx, [rel Task_SwitchPrev]
     mov     [rbx + 136], rsp    ; offset of native_rsp in UaosTask
 
-    ; Check if the new task is an x86-64 ELF64 task on its first launch.
-    ; On first launch, native_rsp still points to the synthetic interrupt
-    ; frame built inside the kernel task stack.  Subsequent launches have
-    ; native_rsp pointing to the user stack inside the x64 heap.
-    ;
-    ; UaosTask offsets:
-    ;   128 = type (TASK_TYPE_X64 = 2)
-    ;   136 = native_rsp
-    ;   152 = native_stack_base
-    ;   160 = native_stack_size
-    ;   184 = native_initial_rsp
-    ;   144 = native_rip
-    ;
-    ; First launch: switch directly to the ELF64 user stack and jump to
-    ; the entry point.  IRET cannot switch stacks for a same-privilege
-    ; (ring 0) return, so a direct jmp is required.
     ; -----------------------------------------------------------------
-    mov     rbx, [rax + 128]    ; type
-    cmp     rbx, 2              ; TASK_TYPE_X64
-    jne     .normal_switch
-
-    mov     rbx, [rax + 152]    ; native_stack_base
-    mov     rcx, [rax + 160]    ; native_stack_size
-    add     rcx, rbx            ; native_stack_base + native_stack_size
-    mov     rdx, [rax + 136]    ; native_rsp
-    cmp     rdx, rbx
-    jb      .normal_switch      ; native_rsp < stack_base
-    cmp     rdx, rcx
-    jae     .normal_switch      ; native_rsp >= stack_top
-
-    ; First launch of an X64 task.
-    mov     rsp, [rax + 184]    ; native_initial_rsp (user stack)
-    mov     rbx, [rax + 144]    ; native_rip (entry point)
-    mov     qword [rel Task_SwitchNext], 0
-    mov     qword [rel Task_SwitchPrev], 0
-    sti
-    jmp     rbx
+    ; All task types (including X64 ELF64) use the same iretq-based
+    ; restore path.  Task_CreateX64 builds a synthetic interrupt frame
+    ; with user-mode CS (0x1B) and SS (0x23) so iretq automatically
+    ; transitions to ring 3.  No special first-launch branch needed.
+    ; -----------------------------------------------------------------
 
 .normal_switch:
     ; Load new task's RSP and clear switch request.
