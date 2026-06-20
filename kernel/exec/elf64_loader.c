@@ -373,5 +373,18 @@ int ELF64_Load(const uint8_t *data, uint32_t size,
     kprintdec(g_x64_heap_used / 1024);
     kprint("KB\n");
 
+    kprint("[ELF64] bytes @ entry: ");
+    const uint8_t *ep = (const uint8_t *)out->entry_rip;
+    for (int i = 0; i < 16; i++) {
+        static const char hx[] = "0123456789ABCDEF";
+        char buf[3];
+        buf[0] = hx[ep[i] >> 4];
+        buf[1] = hx[ep[i] & 0xF];
+        buf[2] = 0;
+        kprint(buf);
+        kprint(" ");
+    }
+    kprint("\n");
+
     return ELF64_OK;
 }

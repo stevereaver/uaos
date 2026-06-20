@@ -92,6 +92,14 @@ Task_RunNewX64:
     ; Switch to the ELF64 user stack and jump to the loaded entry point.
     ; The user stack already contains argc / argv / envp in the layout
     ; expected by a standard musl/newlib _start.
+    push    rax
+    push    rdi
+    extern  Task_RunNewX64_Debug
+    mov     rdi, [rsp]          ; task pointer (was in rdi before push)
+    call    Task_RunNewX64_Debug
+    add     rsp, 8              ; discard return address pushed by call
+    pop     rdi                 ; restore task pointer
+    pop     rax                 ; restore original rax
     mov     rsp, [rdi + 184]    ; task->native_initial_rsp
     mov     rax, [rdi + 144]    ; task->native_rip
     sti

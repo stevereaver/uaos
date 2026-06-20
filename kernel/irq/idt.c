@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Forward declarations (defined in uaos_kernel_main.c) */
+extern void kprint(const char *s);
+extern void kprinthex(uint64_t v);
+
 /* =========================================================================
  * I/O port helpers
  * ========================================================================= */
@@ -239,7 +243,7 @@ void IDT_SetRawHandler(uint8_t vector, void (*handler)(void))
  * whether ISR_Dispatch was entered at all. */
 static volatile uint32_t *const g_isr_mailbox = (volatile uint32_t *)0x90000;
 
-void ISR_Dispatch(uint64_t vector, uint64_t error_code)
+void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip)
 {
     /* Write a rotating magic value to the mailbox */
     static volatile uint32_t mailbox_seq = 0;
@@ -252,6 +256,10 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code)
         g_handlers[vector](vector, error_code);
     } else if (vector < 32) {
         /* Unhandled CPU exception — halt */
+        kprint("[EXC] unhandled exception vector="); kprinthex(vector);
+        kprint(" error_code="); kprinthex(error_code);
+        kprint(" rip="); kprinthex(rip);
+        kprint("\n");
         __asm__ volatile ("cli; hlt");
     }
     /* Send EOI to PIC for all hardware IRQs (vectors 32-47) */

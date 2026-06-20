@@ -57,6 +57,7 @@ typedef struct __attribute__((packed)) {
 /* -------------------------------------------------------------------------
  * Dispatch entry
  * ------------------------------------------------------------------------- */
-void Syscall_Dispatch(InterruptFrame *frame, SavedRegs *regs);
+/* Assembly calls: rdi=SavedRegs*, rsi=InterruptFrame* (SysV order) */
+void Syscall_Dispatch(SavedRegs *regs, InterruptFrame *frame);
 
 #endif /* UAOS_SYSCALL_TABLE_H */

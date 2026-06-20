@@ -30,6 +30,6 @@ void IDT_SetHandler(uint8_t vector, ISRHandler handler);
 void IDT_SetRawHandler(uint8_t vector, void (*handler)(void));
 
 /* C dispatch entry (called from idt_stubs.asm isr_common) */
-void ISR_Dispatch(uint64_t vector, uint64_t error_code);
+void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip);
 
 #endif

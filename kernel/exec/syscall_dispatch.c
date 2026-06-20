@@ -261,7 +261,7 @@ static int sys_alloc(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 /* -------------------------------------------------------------------------
  * Dispatcher
  * ------------------------------------------------------------------------- */
-void Syscall_Dispatch(InterruptFrame *frame, SavedRegs *regs)
+void Syscall_Dispatch(SavedRegs *regs, InterruptFrame *frame)
 {
     (void)frame;
 
@@ -270,6 +270,13 @@ void Syscall_Dispatch(InterruptFrame *frame, SavedRegs *regs)
     uint64_t rsi = regs->rsi;
     uint64_t rdx = regs->rdx;
     int64_t ret;
+
+    kprint("[SYSCALL] rip="); kprinthex(frame->rip);
+    kprint(" rax="); kprinthex(n);
+    kprint(" rdi="); kprinthex(rdi);
+    kprint(" rsi="); kprinthex(rsi);
+    kprint(" rdx="); kprinthex(rdx);
+    kprint("\n");
 
     switch (n) {
     case SYSCALL_WRITE:      ret = sys_write(rdi, rsi, rdx); break;

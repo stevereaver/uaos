@@ -396,6 +396,15 @@ UaosTask *Task_Current(void)
     return g_current;
 }
 
+void Task_RunNewX64_Debug(UaosTask *t)
+{
+    kprint("[TASK] RunNewX64: jumping to user RIP=0x");
+    kprinthex(t->native_rip);
+    kprint(" RSP=0x");
+    kprinthex(t->native_initial_rsp);
+    kprint("\n");
+}
+
 /* -------------------------------------------------------------------------
  * Scheduler init
  * ------------------------------------------------------------------------- */

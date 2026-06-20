@@ -10,22 +10,29 @@
  *   [rsp+8n]   = argv[argc-1]
  *   [rsp+8n+8] = NULL
  *
- * _start reads argc/argv, calls main(), then invokes sys_exit().
+ * _start is a naked entry point: the kernel jumps to us with the user stack
+ * already 16-byte aligned, so we must not touch the stack before the call to
+ * main().  That call pushes the return address, giving main() the expected
+ * 16-byte-aligned-minus-8 stack layout and avoiding SSE alignment faults.
  */
 
 #include "uaos_syscall.h"
 
 extern int main(int argc, const char **argv);
 
-__attribute__((noreturn)) void _start(void)
+__attribute__((naked, noreturn)) void _start(void)
 {
-    long *sp;
-    __asm__ volatile("movq %%rsp, %0" : "=r"(sp));
-
-    int argc = (int)sp[0];
-    const char **argv = (const char **)(sp + 1);
-
-    int rc = main(argc, argv);
-    uaos_exit(rc);
+    __asm__ volatile(
+        "movw  $0x3F8, %%dx\n\t"
+        "movb  $'S', %%al\n\t"
+        "outb  %%al, %%dx\n\t"
+        "movq  %%rsp, %%rax\n\t"        /* RAX = initial user stack pointer */
+        "movl  (%%rax), %%edi\n\t"       /* RDI = argc */
+        "leaq  8(%%rax), %%rsi\n\t"      /* RSI = argv */
+        "call  main\n\t"                 /* call main(argc, argv) */
+        "movslq %%eax, %%rdi\n\t"        /* RDI = main return code */
+        "movq  $7, %%rax\n\t"            /* RAX = SYSCALL_EXIT */
+        "int   $0x80\n\t"                /* uaos_exit(rc) */
+        ::: "rax", "rdi", "rsi", "rcx", "rdx", "memory");
     __builtin_unreachable();
 }

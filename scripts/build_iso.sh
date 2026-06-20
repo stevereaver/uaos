@@ -788,6 +788,56 @@ for f in "${BINARIES_DIR}"/*; do
 done
 
 # -------------------------------------------------------------------------
+# Step 2e — Build native x86-64 userspace programs from system/userspace/
+# -------------------------------------------------------------------------
+#
+# Phase 7 ABI: compile any C programs in system/userspace/ with -nostdlib
+# -fPIE -pie, link against the shared uaos_start.o, wrap the resulting
+# ELF64 with gen_uaos_x64, and stage into SYS_ROOT/C/.
+# -------------------------------------------------------------------------
+
+info "Step 2e: Building native x86-64 userspace programs"
+
+USERSPACE_DIR="${REPO_ROOT}/system/userspace"
+if [[ -d "${USERSPACE_DIR}" ]]; then
+    mkdir -p "${BUILD_DIR}/userspace"
+    GEN_X64="${BUILD_DIR}/gen_uaos_x64"
+
+    gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE \
+        -fcf-protection=none \
+        -m64 -O2 -std=c11 \
+        -I"${REPO_ROOT}/system/libuaos" \
+        -c "${REPO_ROOT}/system/libuaos/uaos_start.c" \
+        -o "${BUILD_DIR}/obj/uaos_start.o"
+    ok "  Compiled: uaos_start.o"
+
+    for src in "${USERSPACE_DIR}"/*.c; do
+        [[ -f "${src}" ]] || continue
+        base="$(basename "${src}" .c)"
+        elf_out="${BUILD_DIR}/userspace/${base}"
+        bin_out="${C_STAGING}/${base}"
+
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie \
+            -fcf-protection=none \
+            -m64 -O2 -std=c11 \
+            -I"${REPO_ROOT}/system/libuaos" \
+            -c "${src}" -o "${BUILD_DIR}/userspace/${base}.o"
+        ok "  Compiled: userspace/${base}.c"
+
+        gcc -nostdlib -fPIE -pie -m64 -fcf-protection=none \
+            -o "${elf_out}" \
+            "${BUILD_DIR}/obj/uaos_start.o" \
+            "${BUILD_DIR}/userspace/${base}.o"
+        ok "  Linked:   userspace/${base}"
+
+        "${GEN_X64}" "${base}" "${elf_out}" "${bin_out}"
+        ok "  Wrapped:  C:${base}  (x86-64 ELF64)"
+    done
+else
+    ok "  No userspace programs to build (system/userspace/ not found)"
+fi
+
+# -------------------------------------------------------------------------
 # Step 3 — Install GRUB configuration
 # -------------------------------------------------------------------------
 
