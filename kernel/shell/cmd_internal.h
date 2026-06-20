@@ -238,6 +238,7 @@ static inline int cmd_copy_file(const char *src, const char *dst)
  * Supports:  ?     = any single character
  *            #?    = zero or more characters (AmigaDOS wildcard)
  *            *     = zero or more characters (convenience alias)
+ *            %     = empty (NULL) string (AmigaDOS wildcard)
  * Case-insensitive.  Returns 1 if name matches pattern, 0 otherwise.
  * ------------------------------------------------------------------------- */
 static inline int cmd_pattern_match(const char *name, const char *pat)
@@ -253,7 +254,11 @@ static inline int cmd_pattern_match(const char *name, const char *pat)
         if (pc >= 'A' && pc <= 'Z') pc += 32;
         if (nc >= 'A' && nc <= 'Z') nc += 32;
 
-        if (pc == '*' || (pc == '#' && p[1] == '?')) {
+        if (pc == '%') {
+            /* % matches the empty (NULL) string */
+            p++;
+            continue;
+        } else if (pc == '*' || (pc == '#' && p[1] == '?')) {
             /* #? consumes two chars; * consumes one */
             if (pc == '#') p++;
             star_p = ++p;
@@ -277,19 +282,19 @@ static inline int cmd_pattern_match(const char *name, const char *pat)
         return 0;
     }
 
-    /* Consume trailing #? or * */
-    while (*p == '*' || (*p == '#' && p[1] == '?')) {
+    /* Consume trailing #? or * or % */
+    while (*p == '*' || (*p == '#' && p[1] == '?') || *p == '%') {
         if (*p == '#') p++;
         p++;
     }
     return *p == '\0';
 }
 
-/* Return 1 if s contains any wildcard characters (? * #) */
+/* Return 1 if s contains any wildcard characters (? * # %) */
 static inline int cmd_has_wildcards(const char *s)
 {
     while (*s) {
-        if (*s == '?' || *s == '*' || *s == '#') return 1;
+        if (*s == '?' || *s == '*' || *s == '#' || *s == '%') return 1;
         s++;
     }
     return 0;

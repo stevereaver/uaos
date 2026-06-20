@@ -1012,7 +1012,11 @@ static int pattern_match(const char *name, const char *pat)
         if (pc >= 'A' && pc <= 'Z') pc += 32;
         if (nc >= 'A' && nc <= 'Z') nc += 32;
 
-        if (pc == '*' || (pc == '#' && p[1] == '?')) {
+        if (pc == '%') {
+            /* % matches the empty (NULL) string */
+            p++;
+            continue;
+        } else if (pc == '*' || (pc == '#' && p[1] == '?')) {
             if (pc == '#') p++;
             star_p = ++p;
             star_n = n;
@@ -1035,7 +1039,7 @@ static int pattern_match(const char *name, const char *pat)
         return 0;
     }
 
-    while (*p == '*' || (*p == '#' && p[1] == '?')) {
+    while (*p == '*' || (*p == '#' && p[1] == '?') || *p == '%') {
         if (*p == '#') p++;
         p++;
     }
@@ -1188,6 +1192,10 @@ static void dos_DateToStr(M68kCPUState *cpu)
 
 /* =========================================================================
  * ParsePattern / ParsePatternNoCase — copy pattern and detect wildcards
+ *
+ * Recognised wildcards: ?, *, #? (and convenience alias *), plus % (matches
+ * the empty string, as in AmigaDOS).  ParsePattern returns 1 if the
+ * pattern contains wildcards, 0 if it is a plain literal, and -1 on error.
  * ========================================================================= */
 
 static void dos_ParsePattern(M68kCPUState *cpu)
@@ -1207,7 +1215,7 @@ static void dos_ParsePattern(M68kCPUState *cpu)
     while (i < dst_len - 1 && src + i < GUEST_RAM_SIZE && g_ram[src + i]) {
         char c = (char)g_ram[src + i];
         g_ram[dst + i] = (uint8_t)c;
-        if (c == '?' || c == '*' || c == '#') has_wild = 1;
+        if (c == '?' || c == '*' || c == '#' || c == '%') has_wild = 1;
         i++;
     }
 
