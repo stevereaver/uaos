@@ -231,28 +231,12 @@ uaos_syscall_isr:
     mov     rbx, [rel Task_SwitchPrev]
     mov     [rbx + 136], rsp    ; offset of native_rsp in UaosTask
 
-    ; First-launch handling for X64 ELF64 tasks (same as in isr_common).
-    ; See the detailed comments in isr_common above.
-    mov     rbx, [rax + 128]    ; type
-    cmp     rbx, 2              ; TASK_TYPE_X64
-    jne     .normal_switch
-
-    mov     rbx, [rax + 152]    ; native_stack_base
-    mov     rcx, [rax + 160]    ; native_stack_size
-    add     rcx, rbx            ; native_stack_base + native_stack_size
-    mov     rdx, [rax + 136]    ; native_rsp
-    cmp     rdx, rbx
-    jb      .normal_switch      ; native_rsp < stack_base
-    cmp     rdx, rcx
-    jae     .normal_switch      ; native_rsp >= stack_top
-
-    ; First launch of an X64 task from a syscall context.
-    mov     rsp, [rax + 184]    ; native_initial_rsp (user stack)
-    mov     rbx, [rax + 144]    ; native_rip (entry point)
-    mov     qword [rel Task_SwitchNext], 0
-    mov     qword [rel Task_SwitchPrev], 0
-    sti
-    jmp     rbx
+    ; All task types (including X64 ELF64) use the same iretq-based restore
+    ; path. Task_CreateX64 builds a synthetic interrupt frame with user-mode
+    ; CS/SS, so normal_switch resumes at the ELF entry point in Ring 3. The
+    ; previous special-case first-launch path incorrectly restarted an X64
+    ; task from its entry point on every syscall, causing an infinite loop.
+    jmp     .normal_switch
 
 .normal_switch:
     ; Load new task's RSP and clear switch request.

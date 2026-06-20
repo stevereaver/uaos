@@ -3667,8 +3667,14 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             }
             /* Wait for the foreground X64 command to finish before
              * returning to the prompt, so output appears before the
-             * next prompt line. */
-            Wait(SIGF_CHILD);
+             * next prompt line. When the shell is not running as a
+             * scheduled task (e.g. during the pre-scheduler startup
+             * sequence), there is no parent task context to wait in; the
+             * newly created task will be picked up by the scheduler once
+             * it starts. */
+            if (cur) {
+                Wait(SIGF_CHILD);
+            }
             return 0;
         }
 

@@ -22,6 +22,15 @@ Native userspace programs are compiled as position-independent executables (PIE)
 
 Userspace programs request kernel operations using `INT 0x80`. 
 
+### Syscall Return Path
+
+The `INT 0x80` handler saves the interrupted task's GPRs and, after the C dispatcher returns, uses the same `iretq`-based restore path as the hardware interrupt stubs. This means:
+
+- New X64 tasks are first entered by restoring the synthetic interrupt frame built by `Task_CreateX64` (user-mode CS/SS, ELF entry point, and user stack).
+- On subsequent syscalls or context switches, the handler restores the previously saved kernel stack frame and returns to the instruction following the `INT 0x80`.
+
+There is no special-case "first-launch" branch in the syscall handler; using the shared `iretq` path prevents accidental task restart loops that would freeze the system when a userspace program calls the kernel.
+
 ### Registers
 Syscalls use the following register layout for parameter passing:
 - **RAX**: Syscall number (e.g., `0x02` for write, `0x0C` for getcwd)
