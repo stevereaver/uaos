@@ -27,3 +27,5 @@ The kernel sets up a 256-vector IDT in 64-bit mode.
 ## Interrupt Handlers
 
 Interrupt stubs are written in assembly (`idt_stubs.asm`) to save/restore registers and then call C handlers in `idt.c` or specific driver files.
+
+All 256 stubs converge on `isr_common`, which pushes the general-purpose registers, dispatches to the C handler, and optionally performs a task switch by loading `native_rsp` from the target `UaosTask`. The `INT 0x80` syscall path uses a dedicated `uaos_syscall_isr` stub with the same frame layout so that scheduler-driven context switches can reuse the same `iretq` restore path. The synthetic interrupt frames built in `task.c` match this exact layout, ensuring that both the interrupted task and the newly-selected task can be resumed with a single `iretq` epilogue.

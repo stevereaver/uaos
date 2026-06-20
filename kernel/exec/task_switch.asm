@@ -78,6 +78,7 @@ Task_RunNew:
     mov     eax, [rdi + 160]    ; task->native_stack_size
     mov     rsp, rcx
     add     rsp, rax            ; rsp = stack top
+    and     rsp, -16            ; align to 16 bytes before call (SysV ABI)
     mov     rdi, rsi            ; first argument (SysV ABI: RDI)
     mov     r11, r8             ; entry point (keep in callee-saved reg)
     sti
@@ -100,12 +101,6 @@ Task_RunNewX64:
     ;   CS      (user code selector = 0x1B)
     ;   RIP     (ELF entry point)
     ;
-    ; Call debug helper first (preserving RDI)
-    push    rdi
-    extern  Task_RunNewX64_Debug
-    call    Task_RunNewX64_Debug
-    pop     rdi                 ; restore task pointer
-
     mov     rax, [rdi + 144]    ; task->native_rip  (ELF entry point)
     mov     rcx, [rdi + 184]    ; task->native_initial_rsp
 

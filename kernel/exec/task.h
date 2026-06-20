@@ -192,9 +192,6 @@ void Task_RunNew(UaosTask *task);
 /* Start the first ready task (called once at boot with interrupts off) */
 void Task_StartFirst(void);
 
-/* Debug hook called from Task_RunNewX64 before jumping to user code */
-void Task_RunNewX64_Debug(UaosTask *t);
-
 /* Global used by assembly ISR to perform context switch */
 extern UaosTask *Task_SwitchNext;
 extern UaosTask *Task_SwitchPrev;

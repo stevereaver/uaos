@@ -31,7 +31,7 @@ extern uint8_t *g_ram;
  * ------------------------------------------------------------------------- */
 
 UaosTask g_tasks[MAX_TASKS];
-uint8_t  g_task_stacks[MAX_TASKS][TASK_STACK_SIZE];
+uint8_t __attribute__((aligned(8))) g_task_stacks[MAX_TASKS][TASK_STACK_SIZE];
 int      g_task_count = 0;
 static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
@@ -223,6 +223,8 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
      *   sp[17] = RIP
      *   sp[18] = CS
      *   sp[19] = RFLAGS
+     *   sp[20] = RSP
+     *   sp[21] = SS
      */
     sp -= 22;
     for (int i = 0; i < 15; i++) sp[i] = 0;
@@ -312,16 +314,6 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     sp[21] = 0x23;                              /* SS  — user data  (0x20 | RPL=3) */
 
     t->native_rsp = (uint64_t)sp;  /* kernel stack frame pointer */
-
-    kprint("[TASK] Created X64 task '");
-    kprint(name);
-    kprint("' entry=0x");
-    kprinthex((uint32_t)(entry_rip >> 32));
-    kprinthex((uint32_t)entry_rip);
-    kprint(" rsp=0x");
-    kprinthex((uint32_t)(initial_rsp >> 32));
-    kprinthex((uint32_t)initial_rsp);
-    kprint("\n");
 
     ready_enqueue(t);
     Permit();
@@ -424,15 +416,6 @@ UaosTask *Task_Current(void)
     return g_current;
 }
 
-void Task_RunNewX64_Debug(UaosTask *t)
-{
-    kprint("[TASK] RunNewX64: jumping to user RIP=0x");
-    kprinthex(t->native_rip);
-    kprint(" RSP=0x");
-    kprinthex(t->native_initial_rsp);
-    kprint("\n");
-}
-
 /* -------------------------------------------------------------------------
  * Scheduler init
  * ------------------------------------------------------------------------- */
@@ -452,14 +435,8 @@ void TaskScheduler_Init(void)
 
 void Task_StartFirst(void)
 {
-    kprint("[TASK] Task_StartFirst called, count="); kprinthex(g_task_count); kprint("\n");
     UaosTask *first = ready_dequeue_highest();
     if (first) {
-        kprint("[TASK] Starting first task: "); kprint(first->ln_Name); kprint("\n");
-        kprint("[TASK] entry="); kprinthex((uint64_t)(uintptr_t)first->native_entry);
-        kprint(" stack="); kprinthex((uint64_t)(uintptr_t)first->native_stack_base);
-        kprint(" size="); kprinthex(first->native_stack_size);
-        kprint(" rsp="); kprinthex(first->native_rsp); kprint("\n");
         g_current = first;
         first->tc_State = TASK_RUNNING;
         extern void Task_RunNew(UaosTask *);
@@ -477,9 +454,6 @@ void Task_IdleEntry(void *arg)
 {
     (void)arg;
     int last_mx = -1, last_my = -1, last_btn = -1;
-    uint64_t loop_count = 0;
-
-    kprint("[IDLE] System idle task started\n");
 
     for (;;) {
         __asm__ volatile ("pause" ::: "memory");
@@ -512,14 +486,6 @@ void Task_IdleEntry(void *arg)
 
         Permit();
         /* --- End protected section --- */
-
-        /* Heartbeat */
-        loop_count++;
-        if ((loop_count & 0x7FFFFFF) == 0) {
-            kprint("[IDLE] loop="); kprinthex(loop_count);
-            kprint(" pit="); kprinthex(g_pit_ticks);
-            kprint("\n");
-        }
     }
 }
 

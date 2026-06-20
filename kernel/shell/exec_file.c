@@ -111,7 +111,9 @@ int ExecFile_Run(const char *path, const char *args)
     if (!path || !*path) return -1;
 
     VfsFile fh;
-    if (!VFS_Open(&fh, path, VFS_READ)) return -1;
+    if (!VFS_Open(&fh, path, VFS_READ)) {
+        return -1;
+    }
 
     uint32_t file_size = VFS_Size(&fh);
     if (file_size < 4) {
@@ -155,8 +157,9 @@ int ExecFile_Run(const char *path, const char *args)
         if (type == UAOS_BIN_TYPE_NATIVE) {
             VFS_Close(&fh);
             NativeCmdCtx ctx = exec_make_ctx();
-            if (NativeCmd_Run(bin_name, &ctx, args ? args : "") == 0)
+            if (NativeCmd_Run(bin_name, &ctx, args ? args : "") == 0) {
                 return 0;
+            }
             return -2;
         }
 

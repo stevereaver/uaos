@@ -29,6 +29,15 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `loadable_lib.c`: Infrastructure for loading and managing UAOS libraries.
 - `mmu_sandbox.c`: Paging and memory protection setup.
 
+## Task Stack Alignment
+
+The x86-64 SysV ABI requires the stack pointer to be 16-byte aligned *before* a `CALL` instruction, which means a function is entered with `%rsp` 8-byte misaligned (the return address pushed by `CALL` makes it 16-byte aligned). To preserve this invariant across context switches, the kernel stacks are aligned to 8-byte boundaries (not 16-byte), and the synthetic interrupt frames built by `Task_CreateNative()` and `Task_CreateX64()` are sized so that the `iretq` epilogue leaves the new task with the ABI-required 8-byte misaligned `%rsp`.
+
+Key details:
+- Per-task kernel stacks are declared with `__attribute__((aligned(8)))`.
+- Synthetic frames are 176 bytes for Ring-3 tasks (X64 ELF64) and 160 bytes for Ring-0 native tasks, matching the `iretq` pop count.
+- `isr_common` and `uaos_syscall_isr` use the same frame layout for both the interrupted task and the task being switched to; no padding is inserted into the synthetic frame, keeping the layout identical to a CPU-generated interrupt frame.
+
 ## M68k Integration
 
 Exec provides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call native C functions.

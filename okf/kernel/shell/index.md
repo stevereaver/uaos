@@ -31,6 +31,10 @@ Commands in UAOS can be:
 > [!NOTE]
 > Previously resident commands (like `pwd`) have been refactored into external userspace utilities to utilize and test the Ring-3 system call interface.
 
+## File Browser Launching
+
+Double-clicking an icon in the Workbench file browser (`filebrowser.c`) calls `ExecFile_Run()` in `exec_file.c`. The loader reads the first four bytes of the selected file to determine whether it is a UAOS wrapper binary (e.g. `UAOS` for a native command), an Amiga Hunk executable, or an ELF64 binary. Native commands are dispatched through `NativeCmd_Run()`, which constructs a minimal `NativeCmdCtx` and invokes the corresponding `Cmd_` function registered in the native command table.
+
 ## Scripting
 
 The shell supports basic scripting via `S:Startup-Sequence` and the `execute` command, allowing for automated system initialization.
