@@ -65,8 +65,9 @@ int  WM_GetScrollY(int handle);
 void WM_SetScrollX(int handle, int x);
 void WM_SetScrollY(int handle, int y);
 
-/* Call from main loop with current mouse state */
-void WM_MouseEvent(int mx, int my, int btn_left);
+/* Call from main loop with current mouse state.
+ * btn_left and btn_right are 1 when the corresponding button is held. */
+void WM_MouseEvent(int mx, int my, int btn_left, int btn_right);
 
 /* Feed a keystroke to the focused window */
 void WM_KeyEvent(char c);

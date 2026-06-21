@@ -251,6 +251,8 @@ typedef struct {
     /* Double-click tracking for icon cells */
     int              last_click_icon; /* index of last clicked icon, -1 = none */
     unsigned int     last_click_tick;
+    /* Single-click selection */
+    int              selected_icon;   /* index of currently selected icon, -1 = none */
     /* Cached window geometry (updated every draw call) */
     int              win_x, win_y, win_w, win_h;
     /* Icon drag state */
@@ -278,29 +280,34 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my);
 #define ICON_SZ     32    /* small icon bitmap size */
 #define LABEL_H     14
 
-static void draw_small_icon(int x, int y, const char *type, uint32_t col)
+static void draw_small_icon(int x, int y, const char *type, uint32_t col, int is_selected)
 {
+    /* Selected state: inverse/video colours. */
+    uint32_t body_col = is_selected ? (col ^ 0x00FFFFFF) : col;
+    uint32_t edge_col = is_selected ? (WB_DARK_GREY ^ 0x00FFFFFF) : WB_DARK_GREY;
+    uint32_t hili_col = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+
     /* Tiny folder / file icon */
     if (type[0] == 'D') {
         /* Folder tab */
-        FB_FillRect(x, y + 4, ICON_SZ / 2, 5, col);
-        FB_FillRect(x, y + 8, ICON_SZ, ICON_SZ - 8, col);
-        FB_DrawRect(x, y + 4, ICON_SZ / 2, 5, WB_DARK_GREY);
-        FB_DrawRect(x, y + 8, ICON_SZ, ICON_SZ - 8, WB_DARK_GREY);
-        FB_DrawHLine(x, y + 8, ICON_SZ / 2 + 1, WB_DARK_GREY);
+        FB_FillRect(x, y + 4, ICON_SZ / 2, 5, body_col);
+        FB_FillRect(x, y + 8, ICON_SZ, ICON_SZ - 8, body_col);
+        FB_DrawRect(x, y + 4, ICON_SZ / 2, 5, edge_col);
+        FB_DrawRect(x, y + 8, ICON_SZ, ICON_SZ - 8, edge_col);
+        FB_DrawHLine(x, y + 8, ICON_SZ / 2 + 1, edge_col);
     } else {
         /* File / program icon */
-        FB_FillRect(x, y, ICON_SZ - 6, ICON_SZ, col);
+        FB_FillRect(x, y, ICON_SZ - 6, ICON_SZ, body_col);
         /* Dog-ear fold */
-        FB_FillRect(x + ICON_SZ - 6, y + 6, 6, ICON_SZ - 6, col);
-        FB_DrawVLine(x + ICON_SZ - 6, y, 6, WB_DARK_GREY);
-        FB_DrawHLine(x + ICON_SZ - 6, y + 6, 6, WB_DARK_GREY);
-        FB_DrawRect(x, y, ICON_SZ - 6, ICON_SZ, WB_DARK_GREY);
-        FB_DrawRect(x, y, ICON_SZ, ICON_SZ, WB_DARK_GREY);
+        FB_FillRect(x + ICON_SZ - 6, y + 6, 6, ICON_SZ - 6, body_col);
+        FB_DrawVLine(x + ICON_SZ - 6, y, 6, edge_col);
+        FB_DrawHLine(x + ICON_SZ - 6, y + 6, 6, edge_col);
+        FB_DrawRect(x, y, ICON_SZ - 6, ICON_SZ, edge_col);
+        FB_DrawRect(x, y, ICON_SZ, ICON_SZ, edge_col);
     }
-    /* White highlight */
-    FB_DrawHLine(x + 1, y + (type[0]=='D' ? 9 : 1), 4, WB_WHITE);
-    FB_DrawVLine(x + 1, y + (type[0]=='D' ? 9 : 1), 4, WB_WHITE);
+    /* Highlight */
+    FB_DrawHLine(x + 1, y + (type[0]=='D' ? 9 : 1), 4, hili_col);
+    FB_DrawVLine(x + 1, y + (type[0]=='D' ? 9 : 1), 4, hili_col);
 }
 
 /* Centred string in a fixed-width cell (clip at cell boundary) */
@@ -436,6 +443,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             FileBrowser_Open(par);
         }
         b->last_click_icon = -1;
+        b->selected_icon = -1;
         b->drag_icon = -1;
         return;
     }
@@ -443,8 +451,9 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
     int icon = browser_icon_hit(b, b->win_x, b->win_y, b->win_w, b->win_h,
                                 mx, my);
     if (icon < 0) {
-        /* Missed all icons — reset double-click state and cancel drag */
+        /* Missed all icons — reset double-click state, selection, and cancel drag */
         b->last_click_icon = -1;
+        b->selected_icon = -1;
         b->drag_icon = -1;
         return;
     }
@@ -492,7 +501,8 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             ExecFile_Run(file_path, "");
         }
     } else {
-        /* First click — record for double-click detection and start drag */
+        /* First click — select icon, record for double-click detection and start drag */
+        b->selected_icon = icon;
         b->last_click_icon = icon;
         b->last_click_tick = now;
 
@@ -631,10 +641,13 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
         /* Draw only when the entire icon+label fits within the clip zone */
         if (icon_top1 >= icon_top && label_bot <= icon_bottom) {
             if (ix >= cx && cell_x + cell_w <= cx + cw) {
+                int is_selected = (b->selected_icon == i);
                 uint32_t icol = (e[i].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
-                draw_small_icon(ix, icon_top1, e[i].type, icol);
+                draw_small_icon(ix, icon_top1, e[i].type, icol, is_selected);
+                uint32_t label_fg = is_selected ? (WB_BLACK ^ 0x00FFFFFF) : WB_BLACK;
+                uint32_t label_bg = is_selected ? (WB_GREY ^ 0x00FFFFFF) : WB_GREY;
                 draw_label_centred(cell_x, iy + 4 + ICON_SZ + 2,
-                                   cell_w, e[i].name, WB_BLACK, WB_GREY);
+                                   cell_w, e[i].name, label_fg, label_bg);
             }
         }
     }
@@ -654,9 +667,9 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
             if (dy < dy_min) dy = dy_min;
             if (dy > dy_max) dy = dy_max;
             uint32_t icol = (e[b->drag_icon].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
-            draw_small_icon(dx, dy + 4, e[b->drag_icon].type, icol);
+            draw_small_icon(dx, dy + 4, e[b->drag_icon].type, icol, 1);
             draw_label_centred(dx, dy + 4 + ICON_SZ + 2, ICON_SZ,
-                               e[b->drag_icon].name, WB_BLACK, WB_GREY);
+                               e[b->drag_icon].name, WB_WHITE, WB_DARK_GREY);
         }
     }
 
@@ -890,6 +903,7 @@ void FileBrowser_Open(const char *volume)
             b->scroll = 0;
             b->last_click_icon = -1;
             b->last_click_tick = 0;
+            b->selected_icon = -1;
             b->win_x = b->win_y = b->win_w = b->win_h = 0;
             b->entries = load_entries_for_browser(volume, &b->entry_buffer);
 
@@ -974,6 +988,7 @@ void FileBrowser_Open(const char *volume)
     b->scroll           = 0;
     b->last_click_icon  = -1;
     b->last_click_tick  = 0;
+    b->selected_icon    = -1;
     b->win_x = b->win_y = b->win_w = b->win_h = 0;
 
     /* Load entries into this browser's private buffer */

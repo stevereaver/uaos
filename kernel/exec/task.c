@@ -453,7 +453,7 @@ void Task_StartFirst(void)
 void Task_IdleEntry(void *arg)
 {
     (void)arg;
-    int last_mx = -1, last_my = -1, last_btn = -1;
+    int last_mx = -1, last_my = -1, last_btn = -1, last_btn_right = -1;
 
     for (;;) {
         __asm__ volatile ("pause" ::: "memory");
@@ -463,10 +463,14 @@ void Task_IdleEntry(void *arg)
 
         /* Mouse -> WM */
         if (g_fb.valid) {
-            int mx = g_mouse.x, my = g_mouse.y, btn = g_mouse.btn_left;
-            if (mx != last_mx || my != last_my || btn != last_btn) {
-                last_mx = mx; last_my = my; last_btn = btn;
-                WM_MouseEvent(mx, my, btn);
+            int mx = g_mouse.x, my = g_mouse.y;
+            int btn_left = g_mouse.btn_left;
+            int btn_right = g_mouse.btn_right;
+            if (mx != last_mx || my != last_my ||
+                btn_left != last_btn || btn_right != last_btn_right) {
+                last_mx = mx; last_my = my;
+                last_btn = btn_left; last_btn_right = btn_right;
+                WM_MouseEvent(mx, my, btn_left, btn_right);
             }
         }
 

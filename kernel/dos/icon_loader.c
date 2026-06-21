@@ -220,6 +220,7 @@ int Icon_Load(const char *path, ParsedIcon *out)
         out->image.width  = n_w;
         out->image.height = n_h;
         out->image.depth  = n_depth;
+        out->image.has_selected = 0;
 
         /* Convert normal image */
         planar_to_argb(data + data_off,
@@ -242,6 +243,7 @@ int Icon_Load(const char *path, ParsedIcon *out)
                                out->image.selected,
                                s_w, s_h, s_depth,
                                0x00000000);
+                out->image.has_selected = 1;
             } else {
                 /* If selected image is missing or mismatched, use normal */
                 memcpy(out->image.selected, out->image.normal,

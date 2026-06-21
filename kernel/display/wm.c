@@ -45,7 +45,8 @@ static int g_resize_base_w = 0;
 static int g_resize_base_h = 0;
 static int g_resize_orig_mx = 0;
 static int g_resize_orig_my = 0;
-static int g_btn_prev     = 0;
+static int g_btn_left_prev  = 0;
+static int g_btn_right_prev = 0;
 
 /* Handle of the window currently being painted by WM_Redraw/repaint_window. */
 int WM_CurrentDrawHandle = -1;
@@ -561,20 +562,23 @@ void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release)
     g_wins[handle].on_release = on_release;
 }
 
-void WM_MouseEvent(int mx, int my, int btn_left)
+void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 {
-    int btn_pressed  = (btn_left && !g_btn_prev);
-    int btn_released = (!btn_left && g_btn_prev);
-    g_btn_prev = btn_left;
+    int btn_left_pressed  = (btn_left && !g_btn_left_prev);
+    int btn_left_released = (!btn_left && g_btn_left_prev);
+    int btn_right_pressed  = (btn_right && !g_btn_right_prev);
+    int btn_right_released = (!btn_right && g_btn_right_prev);
+    g_btn_left_prev = btn_left;
+    g_btn_right_prev = btn_right;
 
-    if (btn_pressed) {
+    if (btn_left_pressed) {
         WM_LOG("[WM] Mouse press at "); WM_LOG_DEC(mx); WM_LOG(","); WM_LOG_DEC(my); WM_LOG("\n");
         int wh = hit_test(mx, my);
         g_press_was_desktop = (wh < 0);
         if (wh < 0) {
-            /* Missed all windows — pass to desktop (icon hit-test) */
+            /* Missed all windows — pass to desktop (icon hit-test / menu) */
             WM_LOG("[WM] Missed windows, sending to desktop\n");
-            Desktop_MouseEvent(mx, my, 1);
+            Desktop_MouseEvent(mx, my, 1, 0);
             return;
         }
         WM_LOG("[WM] Hit window "); WM_LOG_DEC(wh); WM_LOG("\n");
@@ -634,6 +638,16 @@ void WM_MouseEvent(int mx, int my, int btn_left)
                 g_wins[wh].on_click(wh, mx, my);
                 return;
             }
+        }
+    }
+
+    /* Right-click on the desktop (not over any window) — handled by desktop
+     * for Amiga-style menu activation. */
+    if (btn_right_pressed) {
+        int wh = hit_test(mx, my);
+        if (wh < 0) {
+            Desktop_MouseEvent(mx, my, 0, 1);
+            return;
         }
     }
 
@@ -734,7 +748,7 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         Desktop_MouseMove(mx, my, 1);
     }
 
-    if (btn_released) {
+    if (btn_left_released) {
         if (g_focus >= 0) {
             WmWindow *w = &g_wins[g_focus];
             if (w->active && w->on_release)
@@ -750,6 +764,22 @@ void WM_MouseEvent(int mx, int my, int btn_left)
         if (g_press_was_desktop)
             Desktop_MouseRelease(mx, my);
         g_press_was_desktop = 0;
+    }
+
+    /* Right-button release: close the desktop menu and trigger the highlighted
+     * item (Amiga-style press-and-drag menu behaviour).  This is always handled
+     * by the desktop regardless of whether the cursor is over a window, so that
+     * releasing the right button dismisses an open menu. */
+    if (btn_right_released) {
+        Desktop_RightButtonRelease(mx, my);
+    }
+
+    /* Desktop hover (e.g. menu dropdown highlighting) — allowed while the
+     * right mouse button is held so menu items highlight as the cursor moves. */
+    if (!btn_left &&
+        g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
+        if (hit_test(mx, my) < 0)
+            Desktop_MouseHover(mx, my);
     }
 }
 

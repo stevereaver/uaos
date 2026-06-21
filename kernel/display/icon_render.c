@@ -46,11 +46,27 @@ void Icon_DrawSelected(const ParsedIcon *icon, int x, int y)
     uint16_t w = icon->image.width;
     uint16_t h = icon->image.height;
 
-    for (uint16_t row = 0; row < h; row++) {
-        for (uint16_t col = 0; col < w; col++) {
-            uint32_t px = icon->image.selected[row * ICON_MAX_WIDTH + col];
-            if ((px >> 24) != 0) {
-                FB_PutPixel(x + col, y + row, px & 0x00FFFFFF);
+    if (icon->image.has_selected) {
+        /* Use the selected planar image embedded in the .info file */
+        for (uint16_t row = 0; row < h; row++) {
+            for (uint16_t col = 0; col < w; col++) {
+                uint32_t px = icon->image.selected[row * ICON_MAX_WIDTH + col];
+                if ((px >> 24) != 0) {
+                    FB_PutPixel(x + col, y + row, px & 0x00FFFFFF);
+                }
+            }
+        }
+    } else {
+        /* No selected image: draw the normal icon with inverse/video colors. */
+        for (uint16_t row = 0; row < h; row++) {
+            for (uint16_t col = 0; col < w; col++) {
+                uint32_t px = icon->image.normal[row * ICON_MAX_WIDTH + col];
+                if ((px >> 24) != 0) {
+                    /* Invert RGB channels while preserving alpha; mask to 24-bit colour */
+                    uint32_t rgb = px & 0x00FFFFFF;
+                    uint32_t inv = rgb ^ 0x00FFFFFF;
+                    FB_PutPixel(x + col, y + row, inv);
+                }
             }
         }
     }

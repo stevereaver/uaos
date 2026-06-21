@@ -378,18 +378,17 @@ x/y coordinates):
 
 ### Desktop (`desktop.c`)
 
-`Desktop_Draw()` renders the full Workbench-style backdrop:
+`Desktop_Draw()` renders the full Workbench-style desktop:
 
 - **Menu bar** (top, 20 px) — Workbench menu labels and clock area
-- **Backdrop** — light grey base (`#AAAAAA`) with a dark-grey (`#555555`) stipple dot overlay; one dot per two pixels on alternating rows/columns — the classic Amiga pattern
+- **Backdrop** — solid Amiga grey (`#AAAAAA`, R:170 G:170 B:170)
 - **Disk icons** — top-right corner, stacked vertically (RAM Disk, UAOS:)
-- **Information window** — centred boot status window
 - **Status bar** (bottom, 18 px) — kernel idle message and RAM size
 
 `Desktop_RedrawRect(rx, ry, rw, rh)` repaints a sub-rectangle of the desktop
-(backdrop + all overlays: icons, info window, menu bar, status bar) without a
-full-screen repaint. This is called by the window manager on every drag/resize
-step to erase the old window footprint efficiently.
+(backdrop + all overlays: icons, menu bar, status bar) without a full-screen
+repaint. This is called by the window manager on every drag/resize step to erase
+the old window footprint efficiently.
 
 ### Window Manager (`wm.c`)
 

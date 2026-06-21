@@ -3,7 +3,7 @@ type: OS Architecture
 title: Ultimate Amiga OS (UAOS) Architecture
 description: A comprehensive guide to the architecture of UAOS, a hobby operating system inspired by AmigaOS.
 tags: [architecture, uaos, overview]
-timestamp: 2026-06-20T15:30:00Z
+timestamp: 2026-06-21T11:25:00Z
 ---
 
 # Ultimate Amiga OS (UAOS) Architecture
@@ -18,6 +18,11 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 - [Handler System](/kernel/dos/handler_system.md) - Packet-based I/O and filesystem architecture.
 - [Window Manager](/kernel/display/index.md) - The graphical user interface and desktop.
 - [Build System](/build_system.md) - How the OS is compiled and packaged.
+
+## Cross-Cutting Concepts
+
+- [Icons](/concepts/icons.md) - Amiga `.info` icon loading, selected-state rendering, and desktop selection interaction.
+- [Concepts Index](/concepts/index.md) - All cross-cutting concepts.
 
 ## Directory Structure Overview
 

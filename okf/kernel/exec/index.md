@@ -24,6 +24,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 ## Core Files
 
 - `task.c`: Task creation (native, X64 user-space, and emulated M68k) and context switching logic.
+- `graphics_lib.c`: Native thunk implementation of `graphics.library` for emulated M68k drawing primitives. See [graphics.library](graphics_library.md).
 - `syscall_dispatch.c`: Handling register-based system call routing and implementation.
 - `exec_ipc.c`: Message port and message passing implementation.
 - `loadable_lib.c`: Infrastructure for loading and managing UAOS libraries.

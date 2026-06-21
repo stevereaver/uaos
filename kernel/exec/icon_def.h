@@ -94,6 +94,8 @@ typedef struct {
     uint16_t width;
     uint16_t height;
     uint16_t depth;
+    uint8_t  has_selected;                               /* 1 if selected image present in .info */
+    uint8_t  pad;
     uint32_t normal[ICON_MAX_WIDTH * ICON_MAX_HEIGHT];   /* ARGB */
     uint32_t selected[ICON_MAX_WIDTH * ICON_MAX_HEIGHT]; /* ARGB */
 } IconImage;

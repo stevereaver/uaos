@@ -11,7 +11,8 @@
  * Transparent pixels (alpha 0) are not drawn. */
 void Icon_Draw(const ParsedIcon *icon, int x, int y);
 
-/* Draw selected state (highlighted). */
+/* Draw selected state (highlighted).
+ * Uses the embedded selected image if present; otherwise inverts the normal image. */
 void Icon_DrawSelected(const ParsedIcon *icon, int x, int y);
 
 /* Draw icon label below the image, centred. */

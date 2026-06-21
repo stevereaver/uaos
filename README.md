@@ -8,7 +8,7 @@ UAOS boots directly from a hybrid ISO via GRUB2 Multiboot2, initialises a linear
 
 ## Features
 
-- **Workbench-style desktop** — stipple backdrop, menu bar, status bar, disk icons
+- **Workbench-style desktop** — solid Amiga grey backdrop, menu bar, status bar, disk icons
 - **Window manager** — multiple windows, click-to-focus, z-order, title bar drag, resize grip
 - **PS/2 mouse** — IRQ12-driven relative tracking, 16×16 Amiga-style software cursor
 - **PS/2 keyboard** — IRQ1-driven, scancode set 1, ring buffer
@@ -55,7 +55,7 @@ uaos/
 │   │                   # syscall dispatch, native x86-64 ELF64 loader
 │   ├── dos/            # VFS layer, RAM filesystem, block device layer, FAT32/PFS3/EXT4/ISO9660
 │   ├── net/            # TCP/IP stack (IPv4, ARP, ICMP, TCP, UDP, DHCP, DNS, NTP)
-│   ├── drivers/        # Network and storage drivers (e1000, virtio-net, virtio-blk, IDE)
+│   ├── drivers/        # Network and IDE storage drivers (e1000, virtio-net, IDE)
 │   └── shell/          # Native C: command implementations (cmd_*.c) and resident command system
 ├── emulation/
 │   ├── binaries/       # Embedded M68k binaries (auto-wrapped into the kernel image)
@@ -385,13 +385,12 @@ GRUB2 Multiboot2
 
 ## Known Limitations
 
-- M68k emulation has basic LVO stubs but needs full memory access integration
-- ROM library functions are stubs with implementation logic in comments
-- VirtIO block device read/write needs virtqueue I/O implementation
-- FAT32 partition read/write via virtqueue I/O not yet implemented
-- No networking, no audio
-- Single CPU, no SMP
-- Clock display updates via RTC but needs full date/time integration
+- **No audio support** — audio drivers are not implemented yet.
+- **M68k emulation is partial** — the Musashi CPU core, Hunk loader, and trap-based thunking can run simple M68k binaries and embedded programs; full custom-chip emulation and complex AmigaOS software compatibility are still being completed.
+- **ROM library coverage is incomplete** — the native AmigaOS-compatible libraries are functional implementations, but not every AmigaOS API is available.
+- **Storage driver coverage is limited** — VirtIO block read/write and FAT32 are implemented, but IDE, PFS3, EXT4, and ISO9660 support varies and is not fully exercised.
+- **Single CPU only** — no SMP/multicore support.
+- **Clock display uses RTC time** — full timezone, calendar arithmetic, and date/time formatting integration are still being completed.
 
 ---
 <img width="1413" height="1069" alt="image" src="https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e" />

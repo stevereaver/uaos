@@ -435,13 +435,11 @@ that extend partially off-screen.
 
 \section{Desktop}
 
-\texttt{Desktop\_Draw()} renders the full Workbench-style backdrop:
+\texttt{Desktop\_Draw()} renders the full Workbench-style desktop:
 \begin{itemize}
     \item \textbf{Menu bar} (top, 20 px) --- Workbench menu labels and clock area.
-    \item \textbf{Backdrop} --- light grey base with a dark-grey stipple dot overlay,
-          one dot per two pixels alternating rows/columns (classic Amiga pattern).
+    \item \textbf{Backdrop} --- solid Amiga grey (\texttt{\#AAAAAA}, R:170 G:170 B:170).
     \item \textbf{Disk icons} --- top-right corner, stacked vertically.
-    \item \textbf{Information window} --- centred boot status window.
     \item \textbf{Status bar} (bottom, 18 px) --- kernel idle message and RAM size.
 \end{itemize}
 
