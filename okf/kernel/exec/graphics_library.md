@@ -182,6 +182,23 @@ timestamp: 2026-06-21T12:00:00Z
 | `SyncSBitMap` | Implemented | No-op (no super-bitmap state). |
 | `CopySBitMap` | Implemented | No-op (no super-bitmap state). |
 
+### Advanced graphics support
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `GfxNew` | Implemented | Allocates a minimal graphics library node. |
+| `GfxFree` | Implemented | Frees a node created by `GfxNew`. |
+| `GfxAssociate` | Implemented | Stores a single association pointer in a node. |
+| `GfxLookUp` | Implemented | Returns the associated pointer from a node. |
+| `SetRPAttrsA` | Implemented | Sets `RastPort` attributes from a tag list (FgPen/BgPen/DrawMode/BitMap). |
+| `GetRPAttrsA` | Implemented | Reads `RastPort` attributes into a tag list. |
+| `CalcIVG` | Implemented | Returns 0 (not meaningful for chunky BitMaps). |
+| `AllocDBufInfo` | Implemented | Allocates a dummy `DBufInfo` structure. |
+| `FreeDBufInfo` | Implemented | Frees a `DBufInfo` structure. |
+| `WeightAMatch` | Implemented | Returns 0 (single font). |
+| `BitMapScale` | Implemented | Nearest-neighbour scale from source to destination `BitMap`. |
+| `ScalerDiv` | Implemented | Returns `(factor * numerator) / denominator`. |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -316,14 +333,14 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 107 | -642 | *reserved* | No-op |
 | 108 | -648 | *reserved* | No-op |
 | 109 | -654 | AttemptLockLayerRom | Implemented |
-| 110 | -660 | GfxNew | Stub |
-| 111 | -666 | GfxFree | Stub |
-| 112 | -672 | GfxAssociate | Stub |
-| 113 | -678 | BitMapScale | Stub |
-| 114 | -684 | ScalerDiv | Stub |
+| 110 | -660 | GfxNew | Implemented |
+| 111 | -666 | GfxFree | Implemented |
+| 112 | -672 | GfxAssociate | Implemented |
+| 113 | -678 | BitMapScale | Implemented |
+| 114 | -684 | ScalerDiv | Implemented |
 | 115 | -690 | TextExtent | Implemented |
 | 116 | -696 | TextFit | Implemented |
-| 117 | -702 | GfxLookUp | Stub |
+| 117 | -702 | GfxLookUp | Implemented |
 | 118 | -708 | VideoControl | Implemented |
 | 119 | -714 | OpenMonitor | Implemented |
 | 120 | -720 | CloseMonitor | Implemented |
@@ -340,11 +357,11 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 131 | -786 | WritePixelArray8 | Implemented |
 | 132 | -792 | GetVPModeID | Implemented |
 | 133 | -798 | ModeNotAvailable | Implemented |
-| 134 | -804 | WeighTAMatch | Stub |
+| 134 | -804 | WeighTAMatch | Implemented |
 | 135 | -810 | EraseRect | Implemented |
 | 136 | -816 | ExtendFont | Implemented |
 | 137 | -822 | StripFont | Implemented |
-| 138 | -828 | CalcIVG | Stub |
+| 138 | -828 | CalcIVG | Implemented |
 | 139 | -834 | AttachPalExtra | Implemented |
 | 140 | -840 | ObtainBestPenA | Implemented |
 | 141 | -846 | *reserved* | No-op |
@@ -367,8 +384,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 158 | -948 | ReleasePen | Implemented |
 | 159 | -954 | ObtainPen | Implemented |
 | 160 | -960 | GetBitMapAttr | Implemented |
-| 161 | -966 | AllocDBufInfo | Stub |
-| 162 | -972 | FreeDBufInfo | Stub |
+| 161 | -966 | AllocDBufInfo | Implemented |
+| 162 | -972 | FreeDBufInfo | Implemented |
 | 163 | -978 | SetOutlinePen | Implemented |
 | 164 | -984 | SetWriteMask | Implemented |
 | 165 | -990 | SetMaxPen | Implemented |
@@ -379,8 +396,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 170 | -1020 | AllocSpriteDataA | Stub |
 | 171 | -1026 | ChangeExtSpriteA | Stub |
 | 172 | -1032 | FreeSpriteData | Stub |
-| 173 | -1038 | SetRPAttrsA | Stub |
-| 174 | -1044 | GetRPAttrsA | Stub |
+| 173 | -1038 | SetRPAttrsA | Implemented |
+| 174 | -1044 | GetRPAttrsA | Implemented |
 | 175 | -1050 | BestModeIDA | Implemented |
 | 176 | -1056 | WriteChunkyPixels | Implemented |
 

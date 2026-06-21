@@ -3035,6 +3035,255 @@ static void graphics_VBeamPos(void)
 }
 
 /* =========================================================================
+ * Advanced graphics support (tag-list helpers, scaling, internals)
+ * ========================================================================= */
+
+#define TAG_DONE 0
+#define TAG_END  0
+
+/* RastPort attribute tags (AmigaOS RPTAG_* values) */
+#define RPTAG_FGPEN      0x80000000
+#define RPTAG_BGPEN      0x80000001
+#define RPTAG_DRAWMODE   0x80000002
+#define RPTAG_BITMAP     0x80000003
+#define RPTAG_WIDTH      0x80000004
+#define RPTAG_HEIGHT     0x80000005
+
+static uint32_t taglist_get(uint32_t tags, uint32_t tag)
+{
+    if (!tags) return 0;
+    for (uint32_t p = tags; ; p += 8) {
+        uint32_t t = m68k_read_memory_32(p);
+        uint32_t v = m68k_read_memory_32(p + 4);
+        if (t == TAG_DONE || t == TAG_END) return 0;
+        if (t == tag) return v;
+    }
+}
+
+static void taglist_set(uint32_t tags, uint32_t tag, uint32_t value)
+{
+    if (!tags) return;
+    for (uint32_t p = tags; ; p += 8) {
+        uint32_t t = m68k_read_memory_32(p);
+        if (t == TAG_DONE || t == TAG_END) return;
+        if (t == tag) {
+            m68k_write_memory_32(p + 4, value);
+            return;
+        }
+    }
+}
+
+/* Gfx internal object store (simple linked list of associations) */
+#define GFXOBJ_SIZE 16
+
+static uint32_t gfxobj_create(void)
+{
+    uint32_t obj = 0;
+    dos_AllocMem_glue(GFXOBJ_SIZE, 0, &obj);
+    if (obj) {
+        for (int i = 0; i < GFXOBJ_SIZE; i++) m68k_write_memory_8(obj + i, 0);
+    }
+    return obj;
+}
+
+static void gfxobj_destroy(uint32_t obj)
+{
+    if (obj) dos_FreeMem_glue(obj, GFXOBJ_SIZE);
+}
+
+static void graphics_GfxNew(void)
+{
+    /* GfxNew(type) — D0 = node type
+     * Returns a new graphics node in D0.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, gfxobj_create());
+}
+
+static void graphics_GfxFree(void)
+{
+    /* GfxFree(node) — A0 = node */
+    uint32_t node = m68k_get_reg(NULL, M68K_REG_A0);
+    gfxobj_destroy(node);
+}
+
+static void graphics_GfxAssociate(void)
+{
+    /* GfxAssociate(source, dest) — A0 = source, A1 = dest
+     * Stores a single association pointer in the source node.
+     */
+    uint32_t src = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t dst = m68k_get_reg(NULL, M68K_REG_A1);
+    if (src) m68k_write_memory_32(src + 8, dst);
+}
+
+static void graphics_GfxLookUp(void)
+{
+    /* GfxLookUp(node) — A0 = node
+     * Returns the associated pointer in D0.
+     */
+    uint32_t node = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t val = node ? m68k_read_memory_32(node + 8) : 0;
+    m68k_set_reg(M68K_REG_D0, val);
+}
+
+static void graphics_SetRPAttrsA(void)
+{
+    /* SetRPAttrsA(rp, tags) — A1 = rp, A0 = tags */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!rp || !tags) return;
+
+    for (uint32_t p = tags; ; p += 8) {
+        uint32_t tag = m68k_read_memory_32(p);
+        uint32_t val = m68k_read_memory_32(p + 4);
+        if (tag == TAG_DONE || tag == TAG_END) break;
+        switch (tag) {
+            case RPTAG_FGPEN:     rp_w_u8(rp, RP_OFF_FGPEN, (uint8_t)val); break;
+            case RPTAG_BGPEN:     rp_w_u8(rp, RP_OFF_BGPEN, (uint8_t)val); break;
+            case RPTAG_DRAWMODE:  rp_w_u8(rp, RP_OFF_DRAWMODE, (uint8_t)val); break;
+            case RPTAG_BITMAP:    m68k_write_memory_32(rp + RP_OFF_BITMAP, val); break;
+            default: break;
+        }
+    }
+}
+
+static void graphics_GetRPAttrsA(void)
+{
+    /* GetRPAttrsA(rp, tags) — A1 = rp, A0 = tags */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!rp || !tags) return;
+
+    for (uint32_t p = tags; ; p += 8) {
+        uint32_t tag = m68k_read_memory_32(p);
+        if (tag == TAG_DONE || tag == TAG_END) break;
+        uint32_t val = 0;
+        switch (tag) {
+            case RPTAG_FGPEN:     val = rp_u8(rp, RP_OFF_FGPEN); break;
+            case RPTAG_BGPEN:     val = rp_u8(rp, RP_OFF_BGPEN); break;
+            case RPTAG_DRAWMODE:  val = rp_u8(rp, RP_OFF_DRAWMODE); break;
+            case RPTAG_BITMAP:    val = m68k_read_memory_32(rp + RP_OFF_BITMAP); break;
+            default: break;
+        }
+        m68k_write_memory_32(p + 4, val);
+    }
+}
+
+static void graphics_CalcIVG(void)
+{
+    /* CalcIVG(vp, width, height) — A0 = vp, D0 = width, D1 = height
+     * Returns an interleaved value in D0.  UAOS uses chunky BitMaps so
+     * this is not meaningful; return 0.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void graphics_AllocDBufInfo(void)
+{
+    /* AllocDBufInfo(vp) — A0 = vp
+     * Returns a DBufInfo pointer in D0.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t db = 0;
+    dos_AllocMem_glue(32, 0, &db);
+    if (db) {
+        for (int i = 0; i < 32; i++) m68k_write_memory_8(db + i, 0);
+    }
+    m68k_set_reg(M68K_REG_D0, db);
+}
+
+static void graphics_FreeDBufInfo(void)
+{
+    /* FreeDBufInfo(db) — A0 = db */
+    uint32_t db = m68k_get_reg(NULL, M68K_REG_A0);
+    if (db) dos_FreeMem_glue(db, 32);
+}
+
+static void graphics_WeightAMatch(void)
+{
+    /* WeightAMatch(textAttr, textAttr, oldTextAttr, newTextAttr, flags)
+     * A0, A1, A2, A3 = textAttr, D0 = flags
+     * Returns a match weight in D0.  UAOS has only one font, so return 0.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    (void)m68k_get_reg(NULL, M68K_REG_A3);
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* BitMapScaleArgs offsets (simplified) */
+#define BSA_SRCBITMAP   0
+#define BSA_DESTBITMAP  4
+#define BSA_SRCX        8
+#define BSA_SRCY        10
+#define BSA_SRCWIDTH    12
+#define BSA_SRCHEIGHT   14
+#define BSA_DESTX       16
+#define BSA_DESTY       18
+#define BSA_DESTWIDTH   20
+#define BSA_DESTHEIGHT  22
+#define BSA_XSRCFACTOR  24
+#define BSA_XDESTFACTOR 25
+#define BSA_YSRCFACTOR  26
+#define BSA_YDESTFACTOR 27
+
+static void graphics_BitMapScale(void)
+{
+    /* BitMapScale(scaleArgs) — A0 = BitMapScaleArgs
+     * Simple nearest-neighbour scale from source to destination BitMap.
+     */
+    uint32_t args = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!args) return;
+
+    uint32_t src_bm = m68k_read_memory_32(args + BSA_SRCBITMAP);
+    uint32_t dst_bm = m68k_read_memory_32(args + BSA_DESTBITMAP);
+    if (!src_bm || !dst_bm) return;
+
+    int sx = (int)m68k_read_memory_16(args + BSA_SRCX);
+    int sy = (int)m68k_read_memory_16(args + BSA_SRCY);
+    int sw = (int)m68k_read_memory_16(args + BSA_SRCWIDTH);
+    int sh = (int)m68k_read_memory_16(args + BSA_SRCHEIGHT);
+    int dx = (int)m68k_read_memory_16(args + BSA_DESTX);
+    int dy = (int)m68k_read_memory_16(args + BSA_DESTY);
+    int dw = (int)m68k_read_memory_16(args + BSA_DESTWIDTH);
+    int dh = (int)m68k_read_memory_16(args + BSA_DESTHEIGHT);
+
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+
+    BlitSurface src, dst;
+    blit_surface_from_bitmap(&src, src_bm);
+    blit_surface_from_bitmap(&dst, dst_bm);
+
+    for (int y = 0; y < dh; y++) {
+        int src_y = sy + (y * sh) / dh;
+        for (int x = 0; x < dw; x++) {
+            int src_x = sx + (x * sw) / dw;
+            uint32_t p = 0;
+            blit_surface_get(&src, src_x, src_y, &p);
+            blit_surface_put(&dst, dx + x, dy + y, p);
+        }
+    }
+}
+
+static void graphics_ScalerDiv(void)
+{
+    /* ScalerDiv(factor, numerator, denominator) — D0, D1, D2
+     * Returns (factor * numerator) / denominator.
+     */
+    uint32_t factor = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t numer  = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t denom  = m68k_get_reg(NULL, M68K_REG_D2);
+    if (denom == 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    m68k_set_reg(M68K_REG_D0, (factor * numer) / denom);
+}
+
+/* =========================================================================
  * Function table indexed by LVO slot (|LVO| / 6).
  *
  * The AmigaOS graphics.library jump table runs from LVO -30 (slot 5) to
@@ -3069,6 +3318,11 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETRGB4]                 = graphics_SetRGB4,
     [GFX_SLOT_BLTPATTERN]              = graphics_BltPattern,
     [GFX_SLOT_BLTCLEAR]                = graphics_BltClear,
+    [GFX_SLOT_GFXNEW]                  = graphics_GfxNew,
+    [GFX_SLOT_GFXFREE]                 = graphics_GfxFree,
+    [GFX_SLOT_GFXASSOCIATE]            = graphics_GfxAssociate,
+    [GFX_SLOT_BITMAPSCALE]             = graphics_BitMapScale,
+    [GFX_SLOT_SCALERDIV]               = graphics_ScalerDiv,
     [GFX_SLOT_LOCKLAYERROM]            = graphics_LockLayerRom,
     [GFX_SLOT_UNLOCKLAYERROM]          = graphics_UnlockLayerRom,
     [GFX_SLOT_SYNCSBITMAP]             = graphics_SyncSBitMap,
@@ -3105,6 +3359,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_FREERASTER]              = graphics_FreeRaster,
     [GFX_SLOT_INITTMPRAS]              = graphics_InitTmpRas,
     [GFX_SLOT_TEXTFIT]                 = graphics_TextFit,
+    [GFX_SLOT_GFXLOOKUP]               = graphics_GfxLookUp,
     [GFX_SLOT_SETRGB4CM]               = graphics_SetRGB4CM,
     [GFX_SLOT_CLIPBLIT]                = graphics_ClipBlt,
     [GFX_SLOT_ORREGIONREGION]          = graphics_OrRegionRegion,
@@ -3113,6 +3368,8 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_BLTBITMAPRASTPORT]       = graphics_BltBitMapRastPort,
     [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
     [GFX_SLOT_MODENOTAVAILABLE]        = graphics_ModeNotAvailable,
+    [GFX_SLOT_WEIGHTAMATCH]            = graphics_WeightAMatch,
+    [GFX_SLOT_CALCIVG]                 = graphics_CalcIVG,
     [GFX_SLOT_ATTACHPALEXTRA]          = graphics_AttachPalExtra,
     [GFX_SLOT_OBTAINBESTPENA]          = graphics_ObtainBestPenA,
     [GFX_SLOT_VIDEOCONTROL]            = graphics_VideoControl,
@@ -3135,6 +3392,8 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
+    [GFX_SLOT_ALLOCDBUFINFO]           = graphics_AllocDBufInfo,
+    [GFX_SLOT_FREEDBUFINFO]            = graphics_FreeDBufInfo,
     [GFX_SLOT_RELEASEPEN]              = graphics_ReleasePen,
     [GFX_SLOT_OBTAINPEN]               = graphics_ObtainPen,
     [GFX_SLOT_READPIXELLINE8]          = graphics_ReadPixelLine8,
@@ -3153,6 +3412,8 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_BESTMODEIDA]             = graphics_BestModeIDA,
     [GFX_SLOT_SCROLLRASTERBF]          = graphics_ScrollRasterBF,
     [GFX_SLOT_FINDCOLOR]               = graphics_FindColor,
+    [GFX_SLOT_SETRPATTRSA]             = graphics_SetRPAttrsA,
+    [GFX_SLOT_GETRPATTRSA]             = graphics_GetRPAttrsA,
     [GFX_SLOT_WRITECHUNKYPIXELS]         = graphics_WriteChunkyPixels,
 };
 
