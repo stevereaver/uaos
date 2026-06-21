@@ -33,6 +33,13 @@
 #define RP_OFF_MAXPEN       41   /* max pen used in RastPort (V39) */
 #define RP_SIZE_MIN         64   /* enough to cover fields we touch */
 
+/* BitMap flags for AllocBitMap / GetBitMapAttr */
+#define BMF_CLEAR        0x00000001
+#define BMF_DISPLAYABLE  0x00000002
+#define BMF_INTERLEAVED  0x00000004
+#define BMF_STANDARD     0x00000008
+#define BMF_MINPLANES    0x00000010
+
 /* TextFont structure offsets */
 #define TF_OFF_NODE          0
 #define TF_OFF_YSIZE        14

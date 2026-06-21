@@ -95,6 +95,20 @@ timestamp: 2026-06-21T12:00:00Z
 | `ExtendFont` | Implemented | Returns TRUE for the built-in font. |
 | `StripFont` | Implemented | No-op for the built-in font. |
 
+### BitMap / RastPort allocation and management
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `InitBitMap` | Implemented | Initialises a `BitMap` header and clears plane pointers. |
+| `AllocBitMap` | Implemented | Allocates a `BitMap` + chunky 32-bit pixel buffer; honours `BMF_CLEAR`. |
+| `FreeBitMap` | Implemented | Frees `BitMap` and pixel buffer allocated by `AllocBitMap`. |
+| `GetBitMap` | Implemented | Returns `rp->BitMap` pointer in D0 (internal helper). |
+| `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES`; width computed from chunky row bytes. |
+| `AllocRaster` | Implemented | Allocates a planar raster buffer, zeroed. |
+| `FreeRaster` | Implemented | Frees a raster buffer allocated by `AllocRaster`. |
+| `InitTmpRas` | Implemented | Initialises a `TmpRas` structure with buffer and size. |
+| `SetRast` | Implemented | Clears the RastPort's `BitMap` with a pen; falls back to clearing the screen. |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -109,7 +123,6 @@ timestamp: 2026-06-21T12:00:00Z
 
 - `LoadView`, `WaitTOF` — no copper/display hardware.
 - `BltBitMap`, `BltTemplate`, `BltPattern`, `BltBitMapRastPort`, `BltMaskBitMapRastPort` — complex blitter/memory operations; not yet implemented.
-- `AllocBitMap`, `FreeBitMap` — no off-screen bitmap allocation yet.
 - `LoadRGB4`, `LoadRGB32`, `GetColorMap`, `FreeColorMap`, `SetRGB32CM`, `GetRGB32` — palette/colourmap not wired to framebuffer.
 
 ## LVO dispatch
@@ -199,12 +212,12 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 75 | -450 | CopySBitMap | Stub |
 | 76 | -456 | OwnBlitter | Stub |
 | 77 | -462 | DisownBlitter | Stub |
-| 78 | -468 | InitTmpRas | Stub |
+| 78 | -468 | InitTmpRas | Implemented |
 | 79 | -474 | AskFont | Implemented |
 | 80 | -480 | AddFont | Implemented |
 | 81 | -486 | RemFont | Implemented |
-| 82 | -492 | AllocRaster | Stub |
-| 83 | -498 | FreeRaster | Stub |
+| 82 | -492 | AllocRaster | Implemented |
+| 83 | -498 | FreeRaster | Implemented |
 | 84 | -504 | AndRectRegion | Stub |
 | 85 | -510 | OrRectRegion | Stub |
 | 86 | -516 | NewRegion | Stub |
@@ -274,8 +287,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 150 | -900 | GetRGB32 | Stub |
 | 151 | -906 | *reserved* | No-op |
 | 152 | -912 | *reserved* | No-op |
-| 153 | -918 | AllocBitMap | Stub |
-| 154 | -924 | FreeBitMap | Stub |
+| 153 | -918 | AllocBitMap | Implemented |
+| 154 | -924 | FreeBitMap | Implemented |
 | 155 | -930 | GetExtSpriteA | Stub |
 | 156 | -936 | CoerceMode | Stub |
 | 157 | -942 | ChangeVPBitMap | Stub |

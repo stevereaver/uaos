@@ -1145,11 +1145,29 @@ static void graphics_AreaEnd(void)
 
 static void graphics_SetRast(void)
 {
-    /* SetRast — fill the entire rasterport bitmap with BgPen (stub: fill screen) */
+    /* SetRast(rp, pen) — A1 = rp, D0 = pen
+     * Fill the RastPort's BitMap with pen.  If the RastPort has no
+     * BitMap (screen RastPort), clear the physical screen instead.
+     */
     uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
-    uint32_t col = current_bg(rp);
-    if (g_fb.valid) {
-        FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, col);
+    uint8_t pen = (uint8_t)m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t col = amiga_pen_to_rgb(pen);
+    if (!rp) return;
+
+    uint32_t bm = m68k_read_memory_32(rp + RP_OFF_BITMAP);
+    if (!bm) {
+        if (g_fb.valid)
+            FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, col);
+        return;
+    }
+
+    uint16_t bpr  = m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
+    uint16_t rows = m68k_read_memory_16(bm + BM_OFF_ROWS);
+    uint32_t pix  = m68k_read_memory_32(bm + BM_OFF_PLANES);
+    if (pix && bpr && rows) {
+        uint32_t count = ((uint32_t)bpr * rows) / 4;
+        for (uint32_t i = 0; i < count; i++)
+            m68k_write_memory_32(pix + i * 4, col);
     }
 }
 
@@ -1335,13 +1353,129 @@ static void graphics_WriteChunkyPixels(void)
 
 static void graphics_AllocBitMap(void)
 {
-    /* AllocBitMap — stub */
-    m68k_set_reg(M68K_REG_D0, 0);
+    /* AllocBitMap(width, height, depth, flags, friendBitmap)
+     * D0 = width, D1 = height, D2 = depth, D3 = flags, A0 = friendBitmap
+     * Returns a BitMap pointer in D0, or 0 on failure.
+     *
+     * UAOS stores BitMaps as chunky 32-bit buffers: one plane pointer
+     * (Planes[0]) points to width * height * 4 bytes.  BytesPerRow is
+     * the actual row byte count (width * 4).
+     */
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int d = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t flags = m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t friend = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)friend;
+
+    if (w <= 0 || h <= 0 || d <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t bm = 0;
+    dos_AllocMem_glue(64, 0, &bm);
+    if (!bm) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    for (int i = 0; i < 64; i++)
+        m68k_write_memory_8(bm + i, 0);
+
+    uint32_t bpr = (uint32_t)(((w * 4) + 3) & ~3u);
+    uint32_t size = bpr * (uint32_t)h;
+    uint32_t pixels = 0;
+    dos_AllocMem_glue(size, 0, &pixels);
+    if (!pixels) {
+        dos_FreeMem_glue(bm, 64);
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    if (flags & BMF_CLEAR) {
+        for (uint32_t i = 0; i < size / 4; i++)
+            m68k_write_memory_32(pixels + i * 4, 0);
+    }
+
+    m68k_write_memory_16(bm + BM_OFF_BYTESPERROW, (uint16_t)bpr);
+    m68k_write_memory_16(bm + BM_OFF_ROWS,         (uint16_t)h);
+    m68k_write_memory_8 (bm + BM_OFF_FLAGS,        (uint8_t)flags);
+    m68k_write_memory_8 (bm + BM_OFF_DEPTH,        (uint8_t)d);
+    m68k_write_memory_32(bm + BM_OFF_PLANES,       pixels);
+
+    m68k_set_reg(M68K_REG_D0, bm);
 }
 
 static void graphics_FreeBitMap(void)
 {
-    /* FreeBitMap — stub */
+    /* FreeBitMap(bitmap) — A1 = bitmap
+     * Free a BitMap allocated by AllocBitMap.
+     */
+    uint32_t bm = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!bm) return;
+
+    uint32_t pixels = m68k_read_memory_32(bm + BM_OFF_PLANES);
+    uint16_t bpr    = m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
+    uint16_t rows   = m68k_read_memory_16(bm + BM_OFF_ROWS);
+    if (pixels && bpr && rows)
+        dos_FreeMem_glue(pixels, (uint32_t)bpr * rows);
+
+    dos_FreeMem_glue(bm, 64);
+}
+
+static void graphics_GetBitMap(void)
+{
+    /* GetBitMap(rp) — A1 = rp
+     * Helper that returns the RastPort's BitMap pointer in D0.
+     * (Not a standard AmigaOS graphics.library LVO; provided for
+     *  internal use and callers that expect a getter.)
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t bm = rp ? m68k_read_memory_32(rp + RP_OFF_BITMAP) : 0;
+    m68k_set_reg(M68K_REG_D0, bm);
+}
+
+static void graphics_AllocRaster(void)
+{
+    /* AllocRaster(width, height)
+     * D0 = width, D1 = height
+     * Returns a planar raster buffer in D0, zeroed.
+     */
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    if (w <= 0 || h <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t size = (uint32_t)((((w + 15) / 16) * 2) * h);
+    uint32_t addr = 0;
+    dos_AllocMem_glue(size, 0, &addr);
+    if (addr) {
+        for (uint32_t i = 0; i < size; i++)
+            m68k_write_memory_8(addr + i, 0);
+    }
+    m68k_set_reg(M68K_REG_D0, addr);
+}
+
+static void graphics_FreeRaster(void)
+{
+    /* FreeRaster(mem, width, height)
+     * A0 = mem, D0 = width, D1 = height
+     */
+    uint32_t addr = m68k_get_reg(NULL, M68K_REG_A0);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    if (!addr || w <= 0 || h <= 0) return;
+
+    uint32_t size = (uint32_t)((((w + 15) / 16) * 2) * h);
+    dos_FreeMem_glue(addr, size);
+}
+
+static void graphics_InitTmpRas(void)
+{
+    /* InitTmpRas(tmpRas, buffer, size)
+     * A0 = tmpRas, A1 = buffer, D0 = size
+     * Initialises a TmpRas structure (8 bytes: buffer, size).
+     */
+    uint32_t tmpRas = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t buffer = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t size   = m68k_get_reg(NULL, M68K_REG_D0);
+    if (!tmpRas) return;
+    m68k_write_memory_32(tmpRas,     buffer);
+    m68k_write_memory_32(tmpRas + 4, size);
 }
 
 static void graphics_LoadRGB4(void)
@@ -1453,20 +1587,24 @@ static void graphics_GetBitMapAttr(void)
 {
     /* GetBitMapAttr(bm, attr) — A0 = bm, D1 = attr
      * Returns the requested BitMap attribute in D0.
+     * UAOS BitMaps are chunky 32-bit, so pixel width = BytesPerRow / 4.
      */
     uint32_t bm = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t attr = m68k_get_reg(NULL, M68K_REG_D1);
     uint32_t val = 0;
     if (bm) {
+        uint16_t bpr = m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
+        uint8_t depth = m68k_read_memory_8(bm + BM_OFF_DEPTH);
         switch (attr) {
             case BMA_WIDTH:
-                val = (uint32_t)m68k_read_memory_16(bm + BM_OFF_BYTESPERROW) * 8;
+                /* UAOS stores chunky 32-bit rows; pixel width is rowbytes / 4. */
+                val = (depth >= 8) ? ((uint32_t)bpr / 4) : ((uint32_t)bpr * 8);
                 break;
             case BMA_HEIGHT:
                 val = (uint32_t)m68k_read_memory_16(bm + BM_OFF_ROWS);
                 break;
             case BMA_DEPTH:
-                val = (uint32_t)m68k_read_memory_8(bm + BM_OFF_DEPTH);
+                val = (uint32_t)depth;
                 break;
             case BMA_FLAGS:
                 val = (uint32_t)m68k_read_memory_8(bm + BM_OFF_FLAGS);
@@ -1475,7 +1613,7 @@ static void graphics_GetBitMapAttr(void)
                 val = m68k_read_memory_32(bm + BM_OFF_PLANES);
                 break;
             case BMA_ROWBYTES:
-                val = (uint32_t)m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
+                val = (uint32_t)bpr;
                 break;
             default:
                 val = 0;
@@ -1578,6 +1716,9 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_ASKFONT]                 = graphics_AskFont,
     [GFX_SLOT_ADDFONT]                 = graphics_AddFont,
     [GFX_SLOT_REMFONT]                 = graphics_RemFont,
+    [GFX_SLOT_ALLOCRASTER]             = graphics_AllocRaster,
+    [GFX_SLOT_FREERASTER]              = graphics_FreeRaster,
+    [GFX_SLOT_INITTMPRAS]              = graphics_InitTmpRas,
     [GFX_SLOT_TEXTFIT]                 = graphics_TextFit,
     [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
     [GFX_SLOT_SETRGB32]                = graphics_LoadRGB32,
