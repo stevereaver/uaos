@@ -109,6 +109,21 @@ timestamp: 2026-06-21T12:00:00Z
 | `InitTmpRas` | Implemented | Initialises a `TmpRas` structure with buffer and size. |
 | `SetRast` | Implemented | Clears the RastPort's `BitMap` with a pen; falls back to clearing the screen. |
 
+### Region operations
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `NewRegion` | Implemented | Allocates an empty `Region` (single `RegionRectangle`). |
+| `DisposeRegion` | Implemented | Frees a `Region` and its `RegionRectangle` list. |
+| `AndRectRegion` | Implemented | Intersects region with a `Rectangle`; returns non-empty status. |
+| `OrRectRegion` | Implemented | Unions region with a `Rectangle`; returns non-empty status. |
+| `XorRectRegion` | Implemented | Approximated as union (single bounding-box representation). |
+| `ClearRectRegion` | Implemented | Empties region if rectangle fully covers it; otherwise no-op. |
+| `ClearRegion` | Implemented | Empties the region. |
+| `AndRegionRegion` | Implemented | Intersects two regions; destination is updated. |
+| `OrRegionRegion` | Implemented | Unions two regions; destination is updated. |
+| `XorRegionRegion` | Implemented | Approximated as union (single bounding-box representation). |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -218,16 +233,16 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 81 | -486 | RemFont | Implemented |
 | 82 | -492 | AllocRaster | Implemented |
 | 83 | -498 | FreeRaster | Implemented |
-| 84 | -504 | AndRectRegion | Stub |
-| 85 | -510 | OrRectRegion | Stub |
-| 86 | -516 | NewRegion | Stub |
-| 87 | -522 | ClearRectRegion | Stub |
-| 88 | -528 | ClearRegion | Stub |
-| 89 | -534 | DisposeRegion | Stub |
+| 84 | -504 | AndRectRegion | Implemented |
+| 85 | -510 | OrRectRegion | Implemented |
+| 86 | -516 | NewRegion | Implemented |
+| 87 | -522 | ClearRectRegion | Implemented |
+| 88 | -528 | ClearRegion | Implemented |
+| 89 | -534 | DisposeRegion | Implemented |
 | 90 | -540 | FreeVPortCopLists | Stub |
 | 91 | -546 | FreeCopList | Stub |
 | 92 | -552 | ClipBlit | Stub |
-| 93 | -558 | XorRectRegion | Stub |
+| 93 | -558 | XorRectRegion | Implemented |
 | 94 | -564 | FreeCprList | Stub |
 | 95 | -570 | GetColorMap | Stub |
 | 96 | -576 | FreeColorMap | Stub |
@@ -236,9 +251,9 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 99 | -594 | UCopperListInit | Stub |
 | 100 | -600 | FreeGBuffers | Stub |
 | 101 | -606 | BltBitMapRastPort | Stub |
-| 102 | -612 | OrRegionRegion | Stub |
-| 103 | -618 | XorRegionRegion | Stub |
-| 104 | -624 | AndRegionRegion | Stub |
+| 102 | -612 | OrRegionRegion | Implemented |
+| 103 | -618 | XorRegionRegion | Implemented |
+| 104 | -624 | AndRegionRegion | Implemented |
 | 105 | -630 | SetRGB4CM | Stub |
 | 106 | -636 | BltMaskBitMapRastPort | Stub |
 | 107 | -642 | *reserved* | No-op |

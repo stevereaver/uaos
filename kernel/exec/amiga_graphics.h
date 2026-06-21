@@ -79,6 +79,30 @@
 #define FSF_UNDERLINE   0x04
 #define FSF_EXTENDED    0x08
 
+/* Rectangle offsets */
+#define RECT_MINX            0
+#define RECT_MINY            2
+#define RECT_MAXX            4
+#define RECT_MAXY            6
+#define RECT_SIZE            8
+
+/* Region offsets */
+#define RG_OFF_REGIONRECT    0
+#define RG_OFF_MINX          4
+#define RG_OFF_MINY          6
+#define RG_OFF_MAXX          8
+#define RG_OFF_MAXY         10
+#define RG_SIZE             12
+
+/* RegionRectangle offsets */
+#define RR_OFF_NEXT          0
+#define RR_OFF_PREV          4
+#define RR_OFF_MINX          8
+#define RR_OFF_MINY          10
+#define RR_OFF_MAXX          12
+#define RR_OFF_MAXY          14
+#define RR_SIZE             16
+
 /* BitMap offsets */
 #define BM_OFF_BYTESPERROW   0
 #define BM_OFF_ROWS          2

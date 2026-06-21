@@ -584,6 +584,97 @@ static void flood_fill(int sx, int sy, uint32_t target, uint32_t fill)
 }
 
 /* =========================================================================
+ * Region helpers (single bounding-box region representation)
+ * ========================================================================= */
+
+static void rg_set_bounds(uint32_t rg, int16_t minx, int16_t miny,
+                          int16_t maxx, int16_t maxy)
+{
+    if (!rg) return;
+    m68k_write_memory_16(rg + RG_OFF_MINX, (uint16_t)minx);
+    m68k_write_memory_16(rg + RG_OFF_MINY, (uint16_t)miny);
+    m68k_write_memory_16(rg + RG_OFF_MAXX, (uint16_t)maxx);
+    m68k_write_memory_16(rg + RG_OFF_MAXY, (uint16_t)maxy);
+
+    uint32_t rr = m68k_read_memory_32(rg + RG_OFF_REGIONRECT);
+    if (rr) {
+        m68k_write_memory_16(rr + RR_OFF_MINX, (uint16_t)minx);
+        m68k_write_memory_16(rr + RR_OFF_MINY, (uint16_t)miny);
+        m68k_write_memory_16(rr + RR_OFF_MAXX, (uint16_t)maxx);
+        m68k_write_memory_16(rr + RR_OFF_MAXY, (uint16_t)maxy);
+    }
+}
+
+static int rg_is_empty(uint32_t rg)
+{
+    if (!rg) return 1;
+    int16_t minx = (int16_t)m68k_read_memory_16(rg + RG_OFF_MINX);
+    int16_t miny = (int16_t)m68k_read_memory_16(rg + RG_OFF_MINY);
+    int16_t maxx = (int16_t)m68k_read_memory_16(rg + RG_OFF_MAXX);
+    int16_t maxy = (int16_t)m68k_read_memory_16(rg + RG_OFF_MAXY);
+    return (minx > maxx || miny > maxy);
+}
+
+static void rg_read_bounds(uint32_t rg, int16_t *minx, int16_t *miny,
+                           int16_t *maxx, int16_t *maxy)
+{
+    if (!rg) {
+        *minx = 0; *miny = 0; *maxx = -1; *maxy = -1;
+        return;
+    }
+    *minx = (int16_t)m68k_read_memory_16(rg + RG_OFF_MINX);
+    *miny = (int16_t)m68k_read_memory_16(rg + RG_OFF_MINY);
+    *maxx = (int16_t)m68k_read_memory_16(rg + RG_OFF_MAXX);
+    *maxy = (int16_t)m68k_read_memory_16(rg + RG_OFF_MAXY);
+}
+
+static void rg_read_rect(uint32_t rect, int16_t *minx, int16_t *miny,
+                         int16_t *maxx, int16_t *maxy)
+{
+    if (!rect) {
+        *minx = 0; *miny = 0; *maxx = -1; *maxy = -1;
+        return;
+    }
+    *minx = (int16_t)m68k_read_memory_16(rect + RECT_MINX);
+    *miny = (int16_t)m68k_read_memory_16(rect + RECT_MINY);
+    *maxx = (int16_t)m68k_read_memory_16(rect + RECT_MAXX);
+    *maxy = (int16_t)m68k_read_memory_16(rect + RECT_MAXY);
+}
+
+static void rg_union_rect(int16_t ax, int16_t ay, int16_t aw, int16_t ah,
+                          int16_t bx, int16_t by, int16_t bw, int16_t bh,
+                          int16_t *rx, int16_t *ry, int16_t *rw, int16_t *rh)
+{
+    if (ax > aw && bx > bw) { /* both empty */
+        *rx = 0; *ry = 0; *rw = -1; *rh = -1;
+        return;
+    }
+    if (ax > aw) { *rx = bx; *ry = by; *rw = bw; *rh = bh; return; }
+    if (bx > bw) { *rx = ax; *ry = ay; *rw = aw; *rh = ah; return; }
+    *rx = (ax < bx) ? ax : bx;
+    *ry = (ay < by) ? ay : by;
+    *rw = (aw > bw) ? aw : bw;
+    *rh = (ah > bh) ? ah : bh;
+}
+
+static void rg_intersect_rect(int16_t ax, int16_t ay, int16_t aw, int16_t ah,
+                              int16_t bx, int16_t by, int16_t bw, int16_t bh,
+                              int16_t *rx, int16_t *ry, int16_t *rw, int16_t *rh)
+{
+    if (ax > aw || bx > bw) { /* one empty */
+        *rx = 0; *ry = 0; *rw = -1; *rh = -1;
+        return;
+    }
+    *rx = (ax > bx) ? ax : bx;
+    *ry = (ay > by) ? ay : by;
+    *rw = (aw < bw) ? aw : bw;
+    *rh = (ah < bh) ? ah : bh;
+    if (*rx > *rw || *ry > *rh) {
+        *rx = 0; *ry = 0; *rw = -1; *rh = -1;
+    }
+}
+
+/* =========================================================================
  * Default no-op for unimplemented LVOs
  * ========================================================================= */
 
@@ -1071,6 +1162,172 @@ static void graphics_BltClear(void)
     if (!mem || size == 0) return;
     for (uint32_t i = 0; i < size; i++)
         m68k_write_memory_8(mem + i, 0);
+}
+
+static void graphics_NewRegion(void)
+{
+    /* NewRegion() — returns a pointer to an empty Region in D0. */
+    uint32_t rg = 0, rr = 0;
+    dos_AllocMem_glue(RG_SIZE, 0, &rg);
+    if (!rg) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    dos_AllocMem_glue(RR_SIZE, 0, &rr);
+    if (!rr) {
+        dos_FreeMem_glue(rg, RG_SIZE);
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    for (int i = 0; i < RG_SIZE; i++) m68k_write_memory_8(rg + i, 0);
+    for (int i = 0; i < RR_SIZE; i++) m68k_write_memory_8(rr + i, 0);
+
+    /* Empty region: MinX > MaxX */
+    rg_set_bounds(rg, 0, 0, -1, -1);
+    m68k_write_memory_32(rg + RG_OFF_REGIONRECT, rr);
+    m68k_write_memory_32(rr + RR_OFF_NEXT, 0);
+    m68k_write_memory_32(rr + RR_OFF_PREV, 0);
+    m68k_set_reg(M68K_REG_D0, rg);
+}
+
+static void graphics_DisposeRegion(void)
+{
+    /* DisposeRegion(region) — A0 = region */
+    uint32_t rg = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!rg) return;
+    uint32_t rr = m68k_read_memory_32(rg + RG_OFF_REGIONRECT);
+    while (rr) {
+        uint32_t next = m68k_read_memory_32(rr + RR_OFF_NEXT);
+        dos_FreeMem_glue(rr, RR_SIZE);
+        rr = next;
+    }
+    dos_FreeMem_glue(rg, RG_SIZE);
+}
+
+static void graphics_AndRectRegion(void)
+{
+    /* AndRectRegion(region, rectangle) — A0 = region, A1 = rectangle
+     * Returns TRUE (1) if the result is non-empty, FALSE (0) otherwise.
+     */
+    uint32_t rg = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t rect = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!rg || !rect) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    int16_t rminx, rminy, rmaxx, rmaxy;
+    int16_t minx, miny, maxx, maxy;
+    rg_read_bounds(rg, &rminx, &rminy, &rmaxx, &rmaxy);
+    rg_read_rect(rect, &minx, &miny, &maxx, &maxy);
+
+    if (rminx > rmaxx || rminy > rmaxy) {
+        /* region already empty */
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    int16_t nx, ny, nw, nh;
+    rg_intersect_rect(rminx, rminy, rmaxx, rmaxy,
+                      minx, miny, maxx, maxy,
+                      &nx, &ny, &nw, &nh);
+    rg_set_bounds(rg, nx, ny, nw, nh);
+    m68k_set_reg(M68K_REG_D0, (nx <= nw && ny <= nh) ? 1 : 0);
+}
+
+static void graphics_OrRectRegion(void)
+{
+    /* OrRectRegion(region, rectangle) — A0 = region, A1 = rectangle
+     * Returns TRUE (1) if the result is non-empty.
+     */
+    uint32_t rg = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t rect = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!rg || !rect) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    int16_t rminx, rminy, rmaxx, rmaxy;
+    int16_t minx, miny, maxx, maxy;
+    rg_read_bounds(rg, &rminx, &rminy, &rmaxx, &rmaxy);
+    rg_read_rect(rect, &minx, &miny, &maxx, &maxy);
+
+    int16_t nx, ny, nw, nh;
+    rg_union_rect(rminx, rminy, rmaxx, rmaxy,
+                  minx, miny, maxx, maxy,
+                  &nx, &ny, &nw, &nh);
+    rg_set_bounds(rg, nx, ny, nw, nh);
+    m68k_set_reg(M68K_REG_D0, (nx <= nw && ny <= nh) ? 1 : 0);
+}
+
+static void graphics_XorRectRegion(void)
+{
+    /* XorRectRegion(region, rectangle) — A0 = region, A1 = rectangle
+     * For a single-bounding-box representation, geometric XOR is not
+     * generally rectangular; we approximate as the union.
+     */
+    graphics_OrRectRegion();
+}
+
+static void graphics_ClearRectRegion(void)
+{
+    /* ClearRectRegion(region, rectangle) — A0 = region, A1 = rectangle
+     * Returns TRUE if the region is still non-empty.
+     */
+    uint32_t rg = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t rect = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!rg || !rect) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    int16_t rminx, rminy, rmaxx, rmaxy;
+    int16_t minx, miny, maxx, maxy;
+    rg_read_bounds(rg, &rminx, &rminy, &rmaxx, &rmaxy);
+    rg_read_rect(rect, &minx, &miny, &maxx, &maxy);
+
+    /* If the rectangle fully covers the region, empty it. */
+    if (minx <= rminx && miny <= rminy && maxx >= rmaxx && maxy >= rmaxy) {
+        rg_set_bounds(rg, 0, 0, -1, -1);
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    /* Otherwise, a single bounding box cannot represent the subtraction;
+     * keep the region unchanged. */
+    m68k_set_reg(M68K_REG_D0, (rminx <= rmaxx && rminy <= rmaxy) ? 1 : 0);
+}
+
+static void graphics_ClearRegion(void)
+{
+    /* ClearRegion(region) — A0 = region */
+    uint32_t rg = m68k_get_reg(NULL, M68K_REG_A0);
+    if (rg) rg_set_bounds(rg, 0, 0, -1, -1);
+}
+
+static void graphics_AndRegionRegion(void)
+{
+    /* AndRegionRegion(srcRegion, dstRegion) — A0 = src, A1 = dst */
+    uint32_t src = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t dst = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!src || !dst) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    int16_t sx, sy, sw, sh, dx, dy, dw, dh, rx, ry, rw, rh;
+    rg_read_bounds(src, &sx, &sy, &sw, &sh);
+    rg_read_bounds(dst, &dx, &dy, &dw, &dh);
+    rg_intersect_rect(sx, sy, sw, sh, dx, dy, dw, dh, &rx, &ry, &rw, &rh);
+    rg_set_bounds(dst, rx, ry, rw, rh);
+    m68k_set_reg(M68K_REG_D0, (rx <= rw && ry <= rh) ? 1 : 0);
+}
+
+static void graphics_OrRegionRegion(void)
+{
+    /* OrRegionRegion(srcRegion, dstRegion) — A0 = src, A1 = dst */
+    uint32_t src = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t dst = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!src || !dst) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    int16_t sx, sy, sw, sh, dx, dy, dw, dh, rx, ry, rw, rh;
+    rg_read_bounds(src, &sx, &sy, &sw, &sh);
+    rg_read_bounds(dst, &dx, &dy, &dw, &dh);
+    rg_union_rect(sx, sy, sw, sh, dx, dy, dw, dh, &rx, &ry, &rw, &rh);
+    rg_set_bounds(dst, rx, ry, rw, rh);
+    m68k_set_reg(M68K_REG_D0, (rx <= rw && ry <= rh) ? 1 : 0);
+}
+
+static void graphics_XorRegionRegion(void)
+{
+    /* XorRegionRegion(srcRegion, dstRegion) — A0 = src, A1 = dst
+     * Approximated as a union for the single-bounding-box representation.
+     */
+    graphics_OrRegionRegion();
 }
 
 static void graphics_InitArea(void)
@@ -1698,11 +1955,18 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_INITAREA]                = graphics_InitArea,
     [GFX_SLOT_SETRGB4]                 = graphics_SetRGB4,
     [GFX_SLOT_BLTCLEAR]                = graphics_BltClear,
+    [GFX_SLOT_ANDRECTREGION]           = graphics_AndRectRegion,
+    [GFX_SLOT_ORRECTREGION]            = graphics_OrRectRegion,
+    [GFX_SLOT_NEWREGION]               = graphics_NewRegion,
+    [GFX_SLOT_CLEARRECTREGION]         = graphics_ClearRectRegion,
+    [GFX_SLOT_CLEARREGION]             = graphics_ClearRegion,
+    [GFX_SLOT_DISPOSEREGION]           = graphics_DisposeRegion,
     [GFX_SLOT_RECTFILL]                = graphics_RectFill,
     [GFX_SLOT_FLOOD]                   = graphics_Flood,
     [GFX_SLOT_POLYDRAW]                = graphics_PolyDraw,
     [GFX_SLOT_READPIXEL]               = graphics_ReadPixel,
     [GFX_SLOT_WRITEPIXEL]              = graphics_WritePixel,
+    [GFX_SLOT_XORRECTREGION]           = graphics_XorRectRegion,
     [GFX_SLOT_SETAPEN]                 = graphics_SetAPen,
     [GFX_SLOT_SETBPEN]                 = graphics_SetBPen,
     [GFX_SLOT_SETDRMD]                 = graphics_SetDrMd,
@@ -1720,6 +1984,9 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_FREERASTER]              = graphics_FreeRaster,
     [GFX_SLOT_INITTMPRAS]              = graphics_InitTmpRas,
     [GFX_SLOT_TEXTFIT]                 = graphics_TextFit,
+    [GFX_SLOT_ORREGIONREGION]          = graphics_OrRegionRegion,
+    [GFX_SLOT_XORREGIONREGION]         = graphics_XorRegionRegion,
+    [GFX_SLOT_ANDREGIONREGION]         = graphics_AndRegionRegion,
     [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
     [GFX_SLOT_SETRGB32]                = graphics_LoadRGB32,
     [GFX_SLOT_GETAPEN]                 = graphics_GetAPen,
