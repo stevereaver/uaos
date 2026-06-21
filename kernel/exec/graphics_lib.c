@@ -34,10 +34,18 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 #define M68K_REG_D1  1
 #define M68K_REG_D2  2
 #define M68K_REG_D3  3
+#define M68K_REG_D4  4
+#define M68K_REG_D5  5
+#define M68K_REG_D6  6
+#define M68K_REG_D7  7
 #define M68K_REG_A0  8
 #define M68K_REG_A1  9
 #define M68K_REG_A2 10
 #define M68K_REG_A3 11
+#define M68K_REG_A4 12
+#define M68K_REG_A5 13
+#define M68K_REG_A6 14
+#define M68K_REG_A7 15
 
 /* =========================================================================
  * External helpers for guest memory allocation and font bitmap
@@ -672,6 +680,145 @@ static void rg_intersect_rect(int16_t ax, int16_t ay, int16_t aw, int16_t ah,
     if (*rx > *rw || *ry > *rh) {
         *rx = 0; *ry = 0; *rw = -1; *rh = -1;
     }
+}
+
+/* =========================================================================
+ * Blitting surface helpers
+ * ========================================================================= */
+
+typedef struct {
+    uint32_t  base;
+    uint16_t  bpr;
+    uint16_t  width;
+    uint16_t  height;
+    uint8_t   is_fb;
+} BlitSurface;
+
+static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
+{
+    if (!bm) {
+        s->is_fb = 1;
+        s->base = 0;
+        s->bpr = 0;
+        s->width = (uint16_t)g_fb.width;
+        s->height = (uint16_t)g_fb.height;
+        return;
+    }
+    s->is_fb = 0;
+    s->base = m68k_read_memory_32(bm + BM_OFF_PLANES);
+    s->bpr = m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
+    s->width = s->bpr / 4;
+    s->height = m68k_read_memory_16(bm + BM_OFF_ROWS);
+}
+
+static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
+{
+    if (!rp) {
+        s->is_fb = 1;
+        s->base = 0;
+        s->bpr = 0;
+        s->width = (uint16_t)g_fb.width;
+        s->height = (uint16_t)g_fb.height;
+        return;
+    }
+    uint32_t bm = m68k_read_memory_32(rp + RP_OFF_BITMAP);
+    if (!bm) {
+        s->is_fb = 1;
+        s->base = 0;
+        s->bpr = 0;
+        s->width = (uint16_t)g_fb.width;
+        s->height = (uint16_t)g_fb.height;
+    } else {
+        blit_surface_from_bitmap(s, bm);
+    }
+}
+
+static int blit_surface_get(BlitSurface *s, int x, int y, uint32_t *pixel)
+{
+    if (s->is_fb) {
+        if (x < 0 || x >= (int)g_fb.width || y < 0 || y >= (int)g_fb.height) return 0;
+        *pixel = FB_GetPixel(x, y);
+        return 1;
+    }
+    if (!s->base || x < 0 || y < 0 || x >= s->width || y >= s->height) return 0;
+    *pixel = m68k_read_memory_32(s->base + (uint32_t)y * s->bpr + (uint32_t)x * 4);
+    return 1;
+}
+
+static int blit_surface_put(BlitSurface *s, int x, int y, uint32_t pixel)
+{
+    if (s->is_fb) {
+        if (x < 0 || x >= (int)g_fb.width || y < 0 || y >= (int)g_fb.height) return 0;
+        FB_PutPixel(x, y, pixel);
+        return 1;
+    }
+    if (!s->base || x < 0 || y < 0 || x >= s->width || y >= s->height) return 0;
+    m68k_write_memory_32(s->base + (uint32_t)y * s->bpr + (uint32_t)x * 4, pixel);
+    return 1;
+}
+
+static int planar_mask_get(uint32_t mask_base, int mask_bpr, int x, int y)
+{
+    if (!mask_base || mask_bpr <= 0) return 1;
+    int byte = y * mask_bpr + (x / 8);
+    int bit = 7 - (x % 8);
+    uint8_t b = m68k_read_memory_8(mask_base + byte);
+    return (b & (1 << bit)) ? 1 : 0;
+}
+
+static uint32_t apply_minterm(uint32_t src, uint32_t dst, uint8_t minterm)
+{
+    switch (minterm) {
+        case 0x00: return 0;
+        case 0xFF: return 0xFFFFFFFF;
+        case 0xC0: return src;           /* copy source */
+        case 0x30: return ~src;           /* inverse source */
+        case 0x0C: return dst;           /* keep dest */
+        case 0xF0: return ~dst;           /* inverse dest */
+        case 0x3C: return src ^ dst;     /* XOR */
+        case 0xFC: return src | dst;     /* OR */
+        case 0x0F: return ~(src | dst);    /* NOR */
+        case 0xCC: return src & dst;     /* AND */
+        default:   return src;           /* default copy */
+    }
+}
+
+static void blit_rect(BlitSurface *src, int sx, int sy,
+                      BlitSurface *dst, int dx, int dy,
+                      int w, int h, uint8_t minterm,
+                      uint32_t mask_base, int mask_bpr, int mask_x, int mask_y)
+{
+    if (w <= 0 || h <= 0) return;
+
+    /* Allocate a temporary copy of the source rectangle so overlapping
+     * source and destination are handled safely. */
+    uint32_t tmp_size = (uint32_t)w * (uint32_t)h * 4;
+    uint32_t tmp = 0;
+    dos_AllocMem_glue(tmp_size, 0, &tmp);
+    if (!tmp) return;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint32_t p = 0;
+            if (!blit_surface_get(src, sx + x, sy + y, &p)) p = 0;
+            m68k_write_memory_32(tmp + ((uint32_t)y * (uint32_t)w + (uint32_t)x) * 4, p);
+        }
+    }
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (!planar_mask_get(mask_base, mask_bpr, mask_x + x, mask_y + y)) continue;
+
+            uint32_t src_pixel = m68k_read_memory_32(tmp + ((uint32_t)y * (uint32_t)w + (uint32_t)x) * 4);
+            uint32_t dst_pixel = 0;
+            blit_surface_get(dst, dx + x, dy + y, &dst_pixel);
+
+            uint32_t out = apply_minterm(src_pixel, dst_pixel, minterm);
+            blit_surface_put(dst, dx + x, dy + y, out);
+        }
+    }
+
+    dos_FreeMem_glue(tmp, tmp_size);
 }
 
 /* =========================================================================
@@ -1466,12 +1613,271 @@ static void graphics_SetWriteMask(void)
 
 static void graphics_BltBitMap(void)
 {
-    /* BltBitMap — stub */
+    /* BltBitMap(src, xSrc, ySrc, dst, xDst, yDst, xSize, ySize, minterm, mask, temp)
+     * A0 = src, D0 = xSrc, D1 = ySrc, A1 = dst, D2 = xDst, D3 = yDst,
+     * D4 = xSize, D5 = ySize, D6 = minterm, A2 = mask, A3 = temp
+     */
+    uint32_t src_bm = m68k_get_reg(NULL, M68K_REG_A0);
+    int sx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int sy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t dst_bm = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D5);
+    uint8_t minterm = (uint8_t)m68k_get_reg(NULL, M68K_REG_D6);
+    uint32_t mask = m68k_get_reg(NULL, M68K_REG_A2);
+    (void)m68k_get_reg(NULL, M68K_REG_A3);
+
+    BlitSurface src, dst;
+    blit_surface_from_bitmap(&src, src_bm);
+    blit_surface_from_bitmap(&dst, dst_bm);
+
+    int mask_bpr = 0;
+    if (mask) {
+        /* Planar mask: assume same width as source, 2 bytes per 16 pixels. */
+        mask_bpr = (w + 15) / 16 * 2;
+    }
+    blit_rect(&src, sx, sy, &dst, dx, dy, w, h, minterm, mask, mask_bpr, 0, 0);
 }
 
 static void graphics_BltTemplate(void)
 {
-    /* BltTemplate — stub */
+    /* BltTemplate(source, xSrc, srcMod, destRP, xDest, yDest, xSize, ySize)
+     * A0 = source, D0 = xSrc, D1 = srcMod, A1 = destRP, D2 = xDest,
+     * D3 = yDest, D4 = xSize, D5 = ySize
+     * The 1-bit template acts as a mask: set bits draw FgPen, unset bits
+     * draw BgPen for JAM2 or are skipped for JAM1.
+     */
+    uint32_t src = m68k_get_reg(NULL, M68K_REG_A0);
+    int sx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int src_mod = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D5);
+
+    BlitSurface dst;
+    blit_surface_from_rastport(&dst, rp);
+    uint32_t fg = current_fg(rp);
+    uint32_t bg = current_bg(rp);
+    int mode = current_mode(rp);
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int bit_set = planar_mask_get(src, src_mod, sx + x, y);
+            uint32_t col = bit_set ? fg : bg;
+            if (bit_set || mode == JAM2)
+                blit_surface_put(&dst, dx + x, dy + y, col);
+        }
+    }
+}
+
+static void graphics_BltPattern(void)
+{
+    /* BltPattern(rp, mask, xMin, yMin, xMax, yMax, xOffset, yOffset)
+     * A1 = rp, A0 = mask, D0 = xMin, D1 = yMin, D2 = xMax, D3 = yMax,
+     * D4 = xOffset, D5 = yOffset
+     * Fills the rectangle with a 16×16 tiled 1-bit pattern.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t mask = m68k_get_reg(NULL, M68K_REG_A0);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int x2 = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int y2 = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int xoff = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int yoff = (int)m68k_get_reg(NULL, M68K_REG_D5);
+
+    if (!rp || !mask) return;
+    BlitSurface dst;
+    blit_surface_from_rastport(&dst, rp);
+    uint32_t fg = current_fg(rp);
+    uint32_t bg = current_bg(rp);
+    int mode = current_mode(rp);
+    int pat_bpr = 2; /* 16-bit wide pattern */
+
+    for (int y = y1; y <= y2; y++) {
+        for (int x = x1; x <= x2; x++) {
+            int px = ((x - x1) + xoff) & 15;
+            int py = ((y - y1) + yoff) & 15;
+            int bit_set = planar_mask_get(mask, pat_bpr, px, py);
+            uint32_t col = bit_set ? fg : bg;
+            if (bit_set || mode == JAM2)
+                blit_surface_put(&dst, x, y, col);
+        }
+    }
+}
+
+static void graphics_ClipBlt(void)
+{
+    /* ClipBlt(srcRP, xSrc, ySrc, dstRP, xDst, yDst, xSize, ySize, minterm)
+     * A0 = srcRP, D0 = xSrc, D1 = ySrc, A1 = dstRP, D2 = xDst, D3 = yDst,
+     * D4 = xSize, D5 = ySize, D6 = minterm
+     */
+    uint32_t src_rp = m68k_get_reg(NULL, M68K_REG_A0);
+    int sx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int sy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t dst_rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D5);
+    uint8_t minterm = (uint8_t)m68k_get_reg(NULL, M68K_REG_D6);
+
+    BlitSurface src, dst;
+    blit_surface_from_rastport(&src, src_rp);
+    blit_surface_from_rastport(&dst, dst_rp);
+    blit_rect(&src, sx, sy, &dst, dx, dy, w, h, minterm, 0, 0, 0, 0);
+}
+
+static void graphics_BltBitMapRastPort(void)
+{
+    /* BltBitMapRastPort(src, xSrc, ySrc, dstRP, xDst, yDst, xSize, ySize, minterm)
+     * A0 = src, D0 = xSrc, D1 = ySrc, A1 = dstRP, D2 = xDst, D3 = yDst,
+     * D4 = xSize, D5 = ySize, D6 = minterm
+     */
+    uint32_t src_bm = m68k_get_reg(NULL, M68K_REG_A0);
+    int sx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int sy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t dst_rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D5);
+    uint8_t minterm = (uint8_t)m68k_get_reg(NULL, M68K_REG_D6);
+
+    BlitSurface src, dst;
+    blit_surface_from_bitmap(&src, src_bm);
+    blit_surface_from_rastport(&dst, dst_rp);
+    blit_rect(&src, sx, sy, &dst, dx, dy, w, h, minterm, 0, 0, 0, 0);
+}
+
+static void graphics_BltMaskBitMapRastPort(void)
+{
+    /* BltMaskBitMapRastPort(src, xSrc, ySrc, dstRP, xDst, yDst, xSize, ySize, minterm, mask)
+     * A0 = src, D0 = xSrc, D1 = ySrc, A1 = dstRP, D2 = xDst, D3 = yDst,
+     * D4 = xSize, D5 = ySize, D6 = minterm, A2 = mask
+     */
+    uint32_t src_bm = m68k_get_reg(NULL, M68K_REG_A0);
+    int sx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int sy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t dst_rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D5);
+    uint8_t minterm = (uint8_t)m68k_get_reg(NULL, M68K_REG_D6);
+    uint32_t mask = m68k_get_reg(NULL, M68K_REG_A2);
+
+    BlitSurface src, dst;
+    blit_surface_from_bitmap(&src, src_bm);
+    blit_surface_from_rastport(&dst, dst_rp);
+    int mask_bpr = mask ? (w + 15) / 16 * 2 : 0;
+    blit_rect(&src, sx, sy, &dst, dx, dy, w, h, minterm, mask, mask_bpr, 0, 0);
+}
+
+static void scroll_raster(uint32_t rp, int dx, int dy,
+                          int x1, int y1, int x2, int y2,
+                          int fill_bg)
+{
+    if (x1 > x2 || y1 > y2) return;
+
+    BlitSurface s;
+    blit_surface_from_rastport(&s, rp);
+
+    int w = x2 - x1 + 1;
+    int h = y2 - y1 + 1;
+    if (w <= 0 || h <= 0) return;
+
+    uint32_t tmp_size = (uint32_t)w * (uint32_t)h * 4;
+    uint32_t tmp = 0;
+    dos_AllocMem_glue(tmp_size, 0, &tmp);
+    if (!tmp) return;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint32_t p = 0;
+            blit_surface_get(&s, x1 + x, y1 + y, &p);
+            m68k_write_memory_32(tmp + ((uint32_t)y * (uint32_t)w + (uint32_t)x) * 4, p);
+        }
+    }
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint32_t p = m68k_read_memory_32(tmp + ((uint32_t)y * (uint32_t)w + (uint32_t)x) * 4);
+            blit_surface_put(&s, x1 + x + dx, y1 + y + dy, p);
+        }
+    }
+
+    dos_FreeMem_glue(tmp, tmp_size);
+
+    if (!fill_bg) return;
+
+    /* Fill the exposed area with the background pen. */
+    uint32_t bg = rp ? current_bg(rp) : 0;
+    int sx1 = x1, sy1 = y1, sx2 = x2, sy2 = y2;
+    int dx1 = x1 + dx, dy1 = y1 + dy, dx2 = x2 + dx, dy2 = y2 + dy;
+
+    if (dy > 0) {
+        /* Top strip exposed */
+        for (int y = sy1; y < dy1 && y <= sy2; y++)
+            for (int x = sx1; x <= sx2; x++)
+                blit_surface_put(&s, x, y, bg);
+    } else if (dy < 0) {
+        /* Bottom strip exposed */
+        for (int y = dy2 + 1; y <= sy2; y++)
+            for (int x = sx1; x <= sx2; x++)
+                blit_surface_put(&s, x, y, bg);
+    }
+
+    if (dx > 0) {
+        /* Left strip exposed (excluding already filled corner) */
+        int top = (dy > 0) ? dy1 : sy1;
+        int bottom = (dy < 0) ? dy2 : sy2;
+        for (int y = top; y <= bottom; y++)
+            for (int x = sx1; x < dx1 && x <= sx2; x++)
+                blit_surface_put(&s, x, y, bg);
+    } else if (dx < 0) {
+        /* Right strip exposed (excluding already filled corner) */
+        int top = (dy > 0) ? dy1 : sy1;
+        int bottom = (dy < 0) ? dy2 : sy2;
+        for (int y = top; y <= bottom; y++)
+            for (int x = dx2 + 1; x <= sx2; x++)
+                blit_surface_put(&s, x, y, bg);
+    }
+}
+
+static void graphics_ScrollRaster(void)
+{
+    /* ScrollRaster(rp, dx, dy, xMin, yMin, xMax, yMax)
+     * A1 = rp, D0 = dx, D1 = dy, D2 = xMin, D3 = yMin, D4 = xMax, D5 = yMax
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int x2 = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int y2 = (int)m68k_get_reg(NULL, M68K_REG_D5);
+    scroll_raster(rp, dx, dy, x1, y1, x2, y2, 0);
+}
+
+static void graphics_ScrollRasterBF(void)
+{
+    /* ScrollRasterBF(rp, dx, dy, xMin, yMin, xMax, yMax)
+     * A1 = rp, D0 = dx, D1 = dy, D2 = xMin, D3 = yMin, D4 = xMax, D5 = yMax
+     * Scrolls and fills the exposed area with the background pen.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int x2 = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int y2 = (int)m68k_get_reg(NULL, M68K_REG_D5);
+    scroll_raster(rp, dx, dy, x1, y1, x2, y2, 1);
 }
 
 static void graphics_ReadPixel(void)
@@ -1954,6 +2360,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_WAITTOF]                 = graphics_WaitTOF,
     [GFX_SLOT_INITAREA]                = graphics_InitArea,
     [GFX_SLOT_SETRGB4]                 = graphics_SetRGB4,
+    [GFX_SLOT_BLTPATTERN]              = graphics_BltPattern,
     [GFX_SLOT_BLTCLEAR]                = graphics_BltClear,
     [GFX_SLOT_ANDRECTREGION]           = graphics_AndRectRegion,
     [GFX_SLOT_ORRECTREGION]            = graphics_OrRectRegion,
@@ -1975,6 +2382,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_AREAELLIPSE]             = graphics_AreaEllipse,
     [GFX_SLOT_VBEAMPOS]                = graphics_VBeamPos,
     [GFX_SLOT_INITBITMAP]              = graphics_InitBitMap,
+    [GFX_SLOT_SCROLLRASTER]            = graphics_ScrollRaster,
     [GFX_SLOT_WAITBOVP]                = graphics_WaitBOVP,
     [GFX_SLOT_GETCOLORMAP]             = graphics_GetColorMap,
     [GFX_SLOT_ASKFONT]                 = graphics_AskFont,
@@ -1984,9 +2392,11 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_FREERASTER]              = graphics_FreeRaster,
     [GFX_SLOT_INITTMPRAS]              = graphics_InitTmpRas,
     [GFX_SLOT_TEXTFIT]                 = graphics_TextFit,
+    [GFX_SLOT_CLIPBLIT]                = graphics_ClipBlt,
     [GFX_SLOT_ORREGIONREGION]          = graphics_OrRegionRegion,
     [GFX_SLOT_XORREGIONREGION]         = graphics_XorRegionRegion,
     [GFX_SLOT_ANDREGIONREGION]         = graphics_AndRegionRegion,
+    [GFX_SLOT_BLTBITMAPRASTPORT]       = graphics_BltBitMapRastPort,
     [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
     [GFX_SLOT_SETRGB32]                = graphics_LoadRGB32,
     [GFX_SLOT_GETAPEN]                 = graphics_GetAPen,
@@ -1995,6 +2405,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_GETOUTLINEPEN]           = graphics_GetOutlinePen,
     [GFX_SLOT_LOADRGB32]               = graphics_LoadRGB32,
     [GFX_SLOT_SETABPENDRMD]            = graphics_SetABPenDrMd,
+    [GFX_SLOT_BLTMASKBITMAPRASTPORT]   = graphics_BltMaskBitMapRastPort,
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
@@ -2010,6 +2421,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETOUTLINEPEN]           = graphics_SetOutlinePen,
     [GFX_SLOT_SETWRITEMASK]            = graphics_SetWriteMask,
     [GFX_SLOT_SETMAXPEN]               = graphics_SetMaxPen,
+    [GFX_SLOT_SCROLLRASTERBF]          = graphics_ScrollRasterBF,
     [GFX_SLOT_WRITECHUNKYPIXELS]         = graphics_WriteChunkyPixels,
 };
 

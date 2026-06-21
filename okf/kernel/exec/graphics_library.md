@@ -124,6 +124,19 @@ timestamp: 2026-06-21T12:00:00Z
 | `OrRegionRegion` | Implemented | Unions two regions; destination is updated. |
 | `XorRegionRegion` | Implemented | Approximated as union (single bounding-box representation). |
 
+### CPU-based blitting and scrolling
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `BltBitMap` | Implemented | CPU copy from `BitMap` to `BitMap` with minterms and optional mask. |
+| `BltTemplate` | Implemented | Renders a 1-bit template using `FgPen`/`BgPen` (JAM1/JAM2). |
+| `BltPattern` | Implemented | Tiles a 16×16 1-bit pattern over a rectangle. |
+| `ClipBlt` | Implemented | Blits between two `RastPort`s using the same blit engine. |
+| `BltBitMapRastPort` | Implemented | Blits from a `BitMap` to a `RastPort`. |
+| `BltMaskBitMapRastPort` | Implemented | Blits from a `BitMap` to a `RastPort` with a planar mask. |
+| `ScrollRaster` | Implemented | Copies a rectangle by `(dx,dy)` without filling exposed area. |
+| `ScrollRasterBF` | Implemented | Copies a rectangle by `(dx,dy)` and fills exposed area with `BgPen`. |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -137,7 +150,6 @@ timestamp: 2026-06-21T12:00:00Z
 ### Still stubbed
 
 - `LoadView`, `WaitTOF` — no copper/display hardware.
-- `BltBitMap`, `BltTemplate`, `BltPattern`, `BltBitMapRastPort`, `BltMaskBitMapRastPort` — complex blitter/memory operations; not yet implemented.
 - `LoadRGB4`, `LoadRGB32`, `GetColorMap`, `FreeColorMap`, `SetRGB32CM`, `GetRGB32` — palette/colourmap not wired to framebuffer.
 
 ## LVO dispatch
@@ -154,8 +166,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 
 | Slot | LVO | Function | Status |
 |------|-----|----------|--------|
-| 5 | -30 | BltBitMap | Stub |
-| 6 | -36 | BltTemplate | Stub |
+| 5 | -30 | BltBitMap | Implemented |
+| 6 | -36 | BltTemplate | Implemented |
 | 7 | -42 | ClearEOL | Implemented |
 | 8 | -48 | ClearScreen | Implemented |
 | 9 | -54 | TextLength | Implemented |
@@ -201,7 +213,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 49 | -294 | QBSBlit | Stub |
 | 50 | -300 | BltClear | Implemented |
 | 51 | -306 | RectFill | Implemented |
-| 52 | -312 | BltPattern | Stub |
+| 52 | -312 | BltPattern | Implemented |
 | 53 | -318 | ReadPixel | Implemented |
 | 54 | -324 | WritePixel | Implemented |
 | 55 | -330 | Flood | Implemented |
@@ -215,7 +227,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 63 | -378 | CWait | Stub |
 | 64 | -384 | VBeamPos | Implemented |
 | 65 | -390 | InitBitMap | Implemented |
-| 66 | -396 | ScrollRaster | Stub |
+| 66 | -396 | ScrollRaster | Implemented |
 | 67 | -402 | WaitBOVP | Implemented |
 | 68 | -408 | GetSprite | Stub |
 | 69 | -414 | FreeSprite | Stub |
@@ -241,7 +253,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 89 | -534 | DisposeRegion | Implemented |
 | 90 | -540 | FreeVPortCopLists | Stub |
 | 91 | -546 | FreeCopList | Stub |
-| 92 | -552 | ClipBlit | Stub |
+| 92 | -552 | ClipBlit | Implemented |
 | 93 | -558 | XorRectRegion | Implemented |
 | 94 | -564 | FreeCprList | Stub |
 | 95 | -570 | GetColorMap | Stub |
@@ -250,12 +262,12 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 98 | -588 | ScrollVPort | Stub |
 | 99 | -594 | UCopperListInit | Stub |
 | 100 | -600 | FreeGBuffers | Stub |
-| 101 | -606 | BltBitMapRastPort | Stub |
+| 101 | -606 | BltBitMapRastPort | Implemented |
 | 102 | -612 | OrRegionRegion | Implemented |
 | 103 | -618 | XorRegionRegion | Implemented |
 | 104 | -624 | AndRegionRegion | Implemented |
 | 105 | -630 | SetRGB4CM | Stub |
-| 106 | -636 | BltMaskBitMapRastPort | Stub |
+| 106 | -636 | BltMaskBitMapRastPort | Implemented |
 | 107 | -642 | *reserved* | No-op |
 | 108 | -648 | *reserved* | No-op |
 | 109 | -654 | AttemptLockLayerRom | Stub |
@@ -316,7 +328,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 164 | -984 | SetWriteMask | Implemented |
 | 165 | -990 | SetMaxPen | Implemented |
 | 166 | -996 | SetRGB32CM | Stub |
-| 167 | -1002 | ScrollRasterBF | Stub |
+| 167 | -1002 | ScrollRasterBF | Implemented |
 | 168 | -1008 | FindColor | Stub |
 | 169 | -1014 | *reserved* | No-op |
 | 170 | -1020 | AllocSpriteDataA | Stub |
