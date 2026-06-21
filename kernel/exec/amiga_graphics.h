@@ -130,6 +130,15 @@
 #define VP_OFF_COLORSET     34
 #define VP_OFF_DISPLAYID    36
 
+/* ColorMap offsets */
+#define CM_OFF_TYPE          0
+#define CM_OFF_FLAGS         1
+#define CM_OFF_COUNT         2
+#define CM_OFF_TABLEENTRIES  4
+#define CM_OFF_COLORTABLE    6
+#define CM_OFF_PALEXTRA     10
+#define CM_SIZE             14
+
 /* Drawing modes */
 #define JAM1        0
 #define JAM2        1

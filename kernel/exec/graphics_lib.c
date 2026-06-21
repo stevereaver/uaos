@@ -822,6 +822,69 @@ static void blit_rect(BlitSurface *src, int sx, int sy,
 }
 
 /* =========================================================================
+ * ColorMap / palette helpers
+ * ========================================================================= */
+
+static uint32_t cm_get_colortable(uint32_t cm)
+{
+    if (!cm) return 0;
+    return m68k_read_memory_32(cm + CM_OFF_COLORTABLE);
+}
+
+static uint32_t cm_get_count(uint32_t cm)
+{
+    if (!cm) return 0;
+    return (uint32_t)m68k_read_memory_16(cm + CM_OFF_COUNT);
+}
+
+static uint32_t vp_get_colormap(uint32_t vp)
+{
+    if (!vp) return 0;
+    return m68k_read_memory_32(vp + VP_OFF_COLORMAP);
+}
+
+static void cm_set_color(uint32_t cm, uint32_t index, uint32_t rgb32)
+{
+    uint32_t table = cm_get_colortable(cm);
+    uint32_t count = cm_get_count(cm);
+    if (!table || index >= count) return;
+    m68k_write_memory_32(table + index * 4, rgb32);
+}
+
+static uint32_t cm_get_color(uint32_t cm, uint32_t index)
+{
+    uint32_t table = cm_get_colortable(cm);
+    uint32_t count = cm_get_count(cm);
+    if (!table || index >= count) return 0;
+    return m68k_read_memory_32(table + index * 4);
+}
+
+static uint32_t rgb4_to_rgb32(uint8_t r, uint8_t g, uint8_t b)
+{
+    /* Convert 4-bit components to 32-bit ARGB (alpha = 0xFF). */
+    uint8_t rr = (r << 4) | r;
+    uint8_t gg = (g << 4) | g;
+    uint8_t bb = (b << 4) | b;
+    return 0xFF000000 | ((uint32_t)rr << 16) | ((uint32_t)gg << 8) | (uint32_t)bb;
+}
+
+static void rgb32_to_rgb4(uint32_t rgb32, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    *r = (uint8_t)(((rgb32 >> 20) & 0x0F));
+    *g = (uint8_t)(((rgb32 >> 12) & 0x0F));
+    *b = (uint8_t)(((rgb32 >> 4) & 0x0F));
+}
+
+static uint32_t rgb32_from_32bit(uint32_t r, uint32_t g, uint32_t b)
+{
+    /* Clamp to 8-bit and build ARGB. */
+    r = r > 0xFF ? 0xFF : r;
+    g = g > 0xFF ? 0xFF : g;
+    b = b > 0xFF ? 0xFF : b;
+    return 0xFF000000 | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+}
+
+/* =========================================================================
  * Default no-op for unimplemented LVOs
  * ========================================================================= */
 
@@ -2143,18 +2206,368 @@ static void graphics_InitTmpRas(void)
 
 static void graphics_LoadRGB4(void)
 {
-    /* LoadRGB4 — stub */
+    /* LoadRGB4(vp, colors, count)
+     * A0 = vp, A1 = colors, D0 = count
+     * colors is an array of UWORD: bits 11-8 R, 7-4 G, 3-0 B.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t colors = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t count = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t cm = vp_get_colormap(vp);
+    if (!cm || !colors) return;
+
+    uint32_t max = cm_get_count(cm);
+    for (uint32_t i = 0; i < count && i < max; i++) {
+        uint16_t packed = m68k_read_memory_16(colors + i * 2);
+        uint8_t r = (uint8_t)((packed >> 8) & 0x0F);
+        uint8_t g = (uint8_t)((packed >> 4) & 0x0F);
+        uint8_t b = (uint8_t)(packed & 0x0F);
+        cm_set_color(cm, i, rgb4_to_rgb32(r, g, b));
+    }
+}
+
+static void graphics_SetRGB32(void)
+{
+    /* SetRGB32(vp, index, r, g, b)
+     * A0 = vp, D0 = index, D1 = r, D2 = g, D3 = b
+     * 32-bit components are taken from the high byte.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t index = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t r = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t g = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t b = m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t cm = vp_get_colormap(vp);
+    cm_set_color(cm, index, rgb32_from_32bit(r >> 24, g >> 24, b >> 24));
 }
 
 static void graphics_LoadRGB32(void)
 {
-    /* LoadRGB32 — stub */
+    /* LoadRGB32(vp, count, table)
+     * A0 = vp, D0 = count, A1 = table
+     * table is an array of {r, g, b} 32-bit values.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t count = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t table = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t cm = vp_get_colormap(vp);
+    if (!cm || !table) return;
+
+    uint32_t max = cm_get_count(cm);
+    for (uint32_t i = 0; i < count && i < max; i++) {
+        uint32_t r = m68k_read_memory_32(table + i * 12);
+        uint32_t g = m68k_read_memory_32(table + i * 12 + 4);
+        uint32_t b = m68k_read_memory_32(table + i * 12 + 8);
+        cm_set_color(cm, i, rgb32_from_32bit(r >> 24, g >> 24, b >> 24));
+    }
 }
 
 static void graphics_GetColorMap(void)
 {
-    /* GetColorMap — stub */
-    m68k_set_reg(M68K_REG_D0, 0);
+    /* GetColorMap(entries) — D0 = entries
+     * Returns a ColorMap pointer in D0.
+     */
+    uint32_t entries = m68k_get_reg(NULL, M68K_REG_D0);
+    if (entries == 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t cm = 0;
+    dos_AllocMem_glue(CM_SIZE, 0, &cm);
+    if (!cm) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t table_size = entries * 4;
+    uint32_t table = 0;
+    dos_AllocMem_glue(table_size, 0, &table);
+    if (!table) {
+        dos_FreeMem_glue(cm, CM_SIZE);
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    for (int i = 0; i < CM_SIZE; i++) m68k_write_memory_8(cm + i, 0);
+    for (uint32_t i = 0; i < table_size / 4; i++) m68k_write_memory_32(table + i * 4, 0);
+
+    m68k_write_memory_8(cm + CM_OFF_TYPE, 1);
+    m68k_write_memory_16(cm + CM_OFF_COUNT, (uint16_t)entries);
+    m68k_write_memory_16(cm + CM_OFF_TABLEENTRIES, (uint16_t)entries);
+    m68k_write_memory_32(cm + CM_OFF_COLORTABLE, table);
+    m68k_write_memory_32(cm + CM_OFF_PALEXTRA, 0);
+
+    m68k_set_reg(M68K_REG_D0, cm);
+}
+
+static uint32_t cm_get_palextra(uint32_t cm);
+static uint32_t pal_extra_size(uint32_t count);
+
+static void graphics_FreeColorMap(void)
+{
+    /* FreeColorMap(cm) — A0 = cm */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!cm) return;
+
+    uint32_t table = cm_get_colortable(cm);
+    uint32_t pe = cm_get_palextra(cm);
+    uint32_t count = cm_get_count(cm);
+    if (table && count) dos_FreeMem_glue(table, count * 4);
+    if (pe) {
+        uint32_t pe_size = pal_extra_size(count);
+        dos_FreeMem_glue(pe, pe_size);
+    }
+    dos_FreeMem_glue(cm, CM_SIZE);
+}
+
+static void graphics_GetRGB4(void)
+{
+    /* GetRGB4(vp, index) — A0 = vp, D0 = index
+     * Returns packed RGB4 in D0.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t index = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t cm = vp_get_colormap(vp);
+    uint32_t rgb = cm_get_color(cm, index);
+    uint8_t r, g, b;
+    rgb32_to_rgb4(rgb, &r, &g, &b);
+    m68k_set_reg(M68K_REG_D0, ((uint32_t)r << 8) | ((uint32_t)g << 4) | (uint32_t)b);
+}
+
+static void graphics_GetRGB32(void)
+{
+    /* GetRGB32(cm, first, count, table)
+     * A0 = cm, D0 = first, D1 = count, A1 = table
+     */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t first = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t count = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t table = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!cm || !table) return;
+
+    uint32_t max = cm_get_count(cm);
+    for (uint32_t i = 0; i < count && (first + i) < max; i++) {
+        uint32_t rgb = cm_get_color(cm, first + i);
+        m68k_write_memory_32(table + i * 4, rgb);
+    }
+}
+
+static void graphics_SetRGB4CM(void)
+{
+    /* SetRGB4CM(cm, index, r, g, b) — A0 = cm, D0 = index, D1 = r, D2 = g, D3 = b */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t index = m68k_get_reg(NULL, M68K_REG_D0);
+    uint8_t r = (uint8_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint8_t g = (uint8_t)m68k_get_reg(NULL, M68K_REG_D2);
+    uint8_t b = (uint8_t)m68k_get_reg(NULL, M68K_REG_D3);
+    cm_set_color(cm, index, rgb4_to_rgb32(r, g, b));
+}
+
+static void graphics_SetRGB32CM(void)
+{
+    /* SetRGB32CM(cm, index, r, g, b) — A0 = cm, D0 = index, D1 = r, D2 = g, D3 = b */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t index = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t r = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t g = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t b = m68k_get_reg(NULL, M68K_REG_D3);
+    cm_set_color(cm, index, rgb32_from_32bit(r >> 24, g >> 24, b >> 24));
+}
+
+static void graphics_FindColor(void)
+{
+    /* FindColor(cm, r, g, b, tolerance)
+     * A0 = cm, D1 = r, D2 = g, D3 = b, D4 = tolerance
+     * Returns pen index in D0, or -1 if none within tolerance.
+     */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint8_t r = (uint8_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint8_t g = (uint8_t)m68k_get_reg(NULL, M68K_REG_D2);
+    uint8_t b = (uint8_t)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t tolerance = m68k_get_reg(NULL, M68K_REG_D4);
+    uint32_t target = rgb4_to_rgb32(r, g, b);
+
+    if (!cm) { m68k_set_reg(M68K_REG_D0, 0xFFFFFFFF); return; }
+
+    uint32_t count = cm_get_count(cm);
+    int best_pen = -1;
+    uint32_t best_dist = 0xFFFFFFFF;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t rgb = cm_get_color(cm, i);
+        int dr = (int)((rgb >> 16) & 0xFF) - (int)((target >> 16) & 0xFF);
+        int dg = (int)((rgb >> 8) & 0xFF) - (int)((target >> 8) & 0xFF);
+        int db = (int)(rgb & 0xFF) - (int)(target & 0xFF);
+        uint32_t dist = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (dist <= tolerance && dist < best_dist) {
+            best_dist = dist;
+            best_pen = (int)i;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, (best_pen < 0) ? 0xFFFFFFFF : (uint32_t)best_pen);
+}
+
+static uint32_t cm_get_palextra(uint32_t cm)
+{
+    if (!cm) return 0;
+    return m68k_read_memory_32(cm + CM_OFF_PALEXTRA);
+}
+
+static void cm_set_palextra(uint32_t cm, uint32_t pe)
+{
+    if (!cm) return;
+    m68k_write_memory_32(cm + CM_OFF_PALEXTRA, pe);
+}
+
+static uint32_t pal_extra_size(uint32_t count)
+{
+    return count + (count + 7) / 8;
+}
+
+static uint8_t pe_get_ref(uint32_t pe, uint32_t pen)
+{
+    if (!pe) return 0;
+    return m68k_read_memory_8(pe + pen);
+}
+
+static void pe_set_ref(uint32_t pe, uint32_t pen, uint8_t ref)
+{
+    if (!pe) return;
+    m68k_write_memory_8(pe + pen, ref);
+}
+
+static int pe_is_alloc(uint32_t pe, uint32_t pen)
+{
+    if (!pe) return 0;
+    uint32_t byte = pe + pen / 8;
+    uint8_t bit = 7 - (pen % 8);
+    uint8_t b = m68k_read_memory_8(byte);
+    return (b & (1 << bit)) ? 1 : 0;
+}
+
+static void pe_set_alloc(uint32_t pe, uint32_t pen, int alloc)
+{
+    if (!pe) return;
+    uint32_t byte = pe + pen / 8;
+    uint8_t bit = 7 - (pen % 8);
+    uint8_t b = m68k_read_memory_8(byte);
+    if (alloc) b |= (1 << bit);
+    else b &= ~(1 << bit);
+    m68k_write_memory_8(byte, b);
+}
+
+static void graphics_AttachPalExtra(void)
+{
+    /* AttachPalExtra(cm, vp) — A0 = cm, A1 = vp
+     * Allocates and attaches a PalExtra structure to the ColorMap.
+     */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!cm) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t pe = cm_get_palextra(cm);
+    if (!pe) {
+        uint32_t count = cm_get_count(cm);
+        uint32_t size = pal_extra_size(count);
+        dos_AllocMem_glue(size, 0, &pe);
+        if (!pe) { m68k_set_reg(M68K_REG_D0, 0); return; }
+        for (uint32_t i = 0; i < size; i++) m68k_write_memory_8(pe + i, 0);
+        cm_set_palextra(cm, pe);
+    }
+
+    if (vp) m68k_write_memory_32(vp + VP_OFF_COLORMAP, cm);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+static void graphics_ObtainPen(void)
+{
+    /* ObtainPen(cm, r, g, b, flags)
+     * A0 = cm, D1 = r, D2 = g, D3 = b, D4 = flags
+     * Returns pen index in D0, or -1 on failure.
+     */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint8_t r = (uint8_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint8_t g = (uint8_t)m68k_get_reg(NULL, M68K_REG_D2);
+    uint8_t b = (uint8_t)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t flags = m68k_get_reg(NULL, M68K_REG_D4);
+    (void)flags;
+
+    if (!cm) { m68k_set_reg(M68K_REG_D0, 0xFFFFFFFF); return; }
+
+    uint32_t target = rgb4_to_rgb32(r, g, b);
+    uint32_t count = cm_get_count(cm);
+    uint32_t pe = cm_get_palextra(cm);
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (cm_get_color(cm, i) == target) {
+            if (pe) {
+                pe_set_ref(pe, i, pe_get_ref(pe, i) + 1);
+                pe_set_alloc(pe, i, 1);
+            }
+            m68k_set_reg(M68K_REG_D0, i);
+            return;
+        }
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (!pe || !pe_is_alloc(pe, i)) {
+            cm_set_color(cm, i, target);
+            if (pe) {
+                pe_set_ref(pe, i, 1);
+                pe_set_alloc(pe, i, 1);
+            }
+            m68k_set_reg(M68K_REG_D0, i);
+            return;
+        }
+    }
+
+    m68k_set_reg(M68K_REG_D0, 0xFFFFFFFF);
+}
+
+static void graphics_ReleasePen(void)
+{
+    /* ReleasePen(cm, pen) — A0 = cm, D0 = pen */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t pen = m68k_get_reg(NULL, M68K_REG_D0);
+    if (!cm || pen >= cm_get_count(cm)) return;
+
+    uint32_t pe = cm_get_palextra(cm);
+    if (!pe) return;
+
+    uint8_t ref = pe_get_ref(pe, pen);
+    if (ref > 0) {
+        pe_set_ref(pe, pen, ref - 1);
+        if (ref == 1) pe_set_alloc(pe, pen, 0);
+    }
+}
+
+static void graphics_ObtainBestPenA(void)
+{
+    /* ObtainBestPenA(cm, r, g, b, tags)
+     * A0 = cm, D1 = r, D2 = g, D3 = b, A1 = tags
+     * Returns best pen index in D0, or -1.
+     */
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint8_t r = (uint8_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint8_t g = (uint8_t)m68k_get_reg(NULL, M68K_REG_D2);
+    uint8_t b = (uint8_t)m68k_get_reg(NULL, M68K_REG_D3);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+
+    if (!cm) { m68k_set_reg(M68K_REG_D0, 0xFFFFFFFF); return; }
+
+    uint32_t target = rgb4_to_rgb32(r, g, b);
+    uint32_t count = cm_get_count(cm);
+    int best_pen = -1;
+    uint32_t best_dist = 0xFFFFFFFF;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t rgb = cm_get_color(cm, i);
+        int dr = (int)((rgb >> 16) & 0xFF) - (int)((target >> 16) & 0xFF);
+        int dg = (int)((rgb >> 8) & 0xFF) - (int)((target >> 8) & 0xFF);
+        int db = (int)(rgb & 0xFF) - (int)(target & 0xFF);
+        uint32_t dist = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_pen = (int)i;
+        }
+    }
+
+    m68k_set_reg(M68K_REG_D0, (best_pen < 0) ? 0xFFFFFFFF : (uint32_t)best_pen);
 }
 
 static void graphics_GetAPen(void)
@@ -2301,13 +2714,15 @@ static void graphics_SetRGB4(void)
 {
     /* SetRGB4(vp, index, red, green, blue)
      * A0 = vp, D0 = index, D1 = red, D2 = green, D3 = blue
-     * No-op: host framebuffer has a fixed 32-bit palette.
+     * Stores the 4-bit RGB value in the ViewPort's ColorMap.
      */
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
-    (void)m68k_get_reg(NULL, M68K_REG_D0);
-    (void)m68k_get_reg(NULL, M68K_REG_D1);
-    (void)m68k_get_reg(NULL, M68K_REG_D2);
-    (void)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t index = m68k_get_reg(NULL, M68K_REG_D0);
+    uint8_t r = (uint8_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint8_t g = (uint8_t)m68k_get_reg(NULL, M68K_REG_D2);
+    uint8_t b = (uint8_t)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t cm = vp_get_colormap(vp);
+    cm_set_color(cm, index, rgb4_to_rgb32(r, g, b));
 }
 
 static void graphics_WaitBlit(void)
@@ -2385,6 +2800,8 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SCROLLRASTER]            = graphics_ScrollRaster,
     [GFX_SLOT_WAITBOVP]                = graphics_WaitBOVP,
     [GFX_SLOT_GETCOLORMAP]             = graphics_GetColorMap,
+    [GFX_SLOT_FREECOLORMAP]            = graphics_FreeColorMap,
+    [GFX_SLOT_GETRGB4]                 = graphics_GetRGB4,
     [GFX_SLOT_ASKFONT]                 = graphics_AskFont,
     [GFX_SLOT_ADDFONT]                 = graphics_AddFont,
     [GFX_SLOT_REMFONT]                 = graphics_RemFont,
@@ -2392,23 +2809,29 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_FREERASTER]              = graphics_FreeRaster,
     [GFX_SLOT_INITTMPRAS]              = graphics_InitTmpRas,
     [GFX_SLOT_TEXTFIT]                 = graphics_TextFit,
+    [GFX_SLOT_SETRGB4CM]               = graphics_SetRGB4CM,
     [GFX_SLOT_CLIPBLIT]                = graphics_ClipBlt,
     [GFX_SLOT_ORREGIONREGION]          = graphics_OrRegionRegion,
     [GFX_SLOT_XORREGIONREGION]         = graphics_XorRegionRegion,
     [GFX_SLOT_ANDREGIONREGION]         = graphics_AndRegionRegion,
     [GFX_SLOT_BLTBITMAPRASTPORT]       = graphics_BltBitMapRastPort,
     [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
-    [GFX_SLOT_SETRGB32]                = graphics_LoadRGB32,
+    [GFX_SLOT_ATTACHPALEXTRA]          = graphics_AttachPalExtra,
+    [GFX_SLOT_OBTAINBESTPENA]          = graphics_ObtainBestPenA,
+    [GFX_SLOT_SETRGB32]                = graphics_SetRGB32,
     [GFX_SLOT_GETAPEN]                 = graphics_GetAPen,
     [GFX_SLOT_GETBPEN]                 = graphics_GetBPen,
     [GFX_SLOT_GETDRMD]                 = graphics_GetDrMd,
     [GFX_SLOT_GETOUTLINEPEN]           = graphics_GetOutlinePen,
     [GFX_SLOT_LOADRGB32]               = graphics_LoadRGB32,
+    [GFX_SLOT_GETRGB32]                = graphics_GetRGB32,
     [GFX_SLOT_SETABPENDRMD]            = graphics_SetABPenDrMd,
     [GFX_SLOT_BLTMASKBITMAPRASTPORT]   = graphics_BltMaskBitMapRastPort,
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
+    [GFX_SLOT_RELEASEPEN]              = graphics_ReleasePen,
+    [GFX_SLOT_OBTAINPEN]               = graphics_ObtainPen,
     [GFX_SLOT_READPIXELLINE8]          = graphics_ReadPixelLine8,
     [GFX_SLOT_WRITEPIXELLINE8]         = graphics_WritePixelLine8,
     [GFX_SLOT_READPIXELARRAY8]         = graphics_ReadPixelArray8,
@@ -2421,7 +2844,9 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETOUTLINEPEN]           = graphics_SetOutlinePen,
     [GFX_SLOT_SETWRITEMASK]            = graphics_SetWriteMask,
     [GFX_SLOT_SETMAXPEN]               = graphics_SetMaxPen,
+    [GFX_SLOT_SETRGB32CM]              = graphics_SetRGB32CM,
     [GFX_SLOT_SCROLLRASTERBF]          = graphics_ScrollRasterBF,
+    [GFX_SLOT_FINDCOLOR]               = graphics_FindColor,
     [GFX_SLOT_WRITECHUNKYPIXELS]         = graphics_WriteChunkyPixels,
 };
 

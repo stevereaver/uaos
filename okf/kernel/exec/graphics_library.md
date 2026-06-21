@@ -54,7 +54,7 @@ timestamp: 2026-06-21T12:00:00Z
 | `WaitBlit` | Implemented | No-op; host has no custom blitter. |
 | `WaitBOVP` | Implemented | No-op; no beam sync hardware. |
 | `VBeamPos` | Implemented | Returns 0. |
-| `SetRGB4` | Implemented | No-op; fixed 32-bit palette. |
+| `SetRGB4` | Implemented | Sets a `ViewPort` palette entry from 4-bit RGB components. |
 
 ### Drawing primitives
 
@@ -137,6 +137,26 @@ timestamp: 2026-06-21T12:00:00Z
 | `ScrollRaster` | Implemented | Copies a rectangle by `(dx,dy)` without filling exposed area. |
 | `ScrollRasterBF` | Implemented | Copies a rectangle by `(dx,dy)` and fills exposed area with `BgPen`. |
 
+### ColorMap / palette state
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `GetColorMap` | Implemented | Allocates a `ColorMap` with a 32-bit RGB colour table. |
+| `FreeColorMap` | Implemented | Frees a `ColorMap`, its colour table, and any `PalExtra`. |
+| `AttachPalExtra` | Implemented | Allocates a `PalExtra` (pen ref counts / alloc bitmap) for a `ColorMap`. |
+| `SetRGB4` | Implemented | Sets a `ViewPort` palette entry from 4-bit RGB components. |
+| `LoadRGB4` | Implemented | Loads a `ViewPort` palette from a packed RGB4 table. |
+| `GetRGB4` | Implemented | Returns a `ViewPort` palette entry as packed RGB4. |
+| `SetRGB4CM` | Implemented | Sets a `ColorMap` entry from 4-bit RGB components. |
+| `SetRGB32` | Implemented | Sets a `ViewPort` palette entry from 32-bit RGB components. |
+| `LoadRGB32` | Implemented | Loads a `ViewPort` palette from a 32-bit RGB table. |
+| `GetRGB32` | Implemented | Reads a `ColorMap` entry as 32-bit RGB. |
+| `SetRGB32CM` | Implemented | Sets a `ColorMap` entry from 32-bit RGB components. |
+| `FindColor` | Implemented | Finds the closest `ColorMap` entry within a tolerance. |
+| `ObtainPen` | Implemented | Obtains (or reuses) a `ColorMap` pen for a colour. |
+| `ReleasePen` | Implemented | Releases a `ColorMap` pen obtained by `ObtainPen`. |
+| `ObtainBestPenA` | Implemented | Returns the best matching pen in a `ColorMap`. |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -150,7 +170,7 @@ timestamp: 2026-06-21T12:00:00Z
 ### Still stubbed
 
 - `LoadView`, `WaitTOF` — no copper/display hardware.
-- `LoadRGB4`, `LoadRGB32`, `GetColorMap`, `FreeColorMap`, `SetRGB32CM`, `GetRGB32` — palette/colourmap not wired to framebuffer.
+- Palette/colourmap state is maintained, but no copper/hardware register loading is performed.
 
 ## LVO dispatch
 
@@ -193,7 +213,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 29 | -174 | InitGMasks | Stub |
 | 30 | -180 | DrawEllipse | Implemented |
 | 31 | -186 | AreaEllipse | Implemented |
-| 32 | -192 | LoadRGB4 | Stub |
+| 32 | -192 | LoadRGB4 | Implemented |
 | 33 | -198 | InitRastPort | Implemented |
 | 34 | -204 | InitVPort | Implemented |
 | 35 | -210 | MrgCop | Stub |
@@ -256,9 +276,9 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 92 | -552 | ClipBlit | Implemented |
 | 93 | -558 | XorRectRegion | Implemented |
 | 94 | -564 | FreeCprList | Stub |
-| 95 | -570 | GetColorMap | Stub |
-| 96 | -576 | FreeColorMap | Stub |
-| 97 | -582 | GetRGB4 | Stub |
+| 95 | -570 | GetColorMap | Implemented |
+| 96 | -576 | FreeColorMap | Implemented |
+| 97 | -582 | GetRGB4 | Implemented |
 | 98 | -588 | ScrollVPort | Stub |
 | 99 | -594 | UCopperListInit | Stub |
 | 100 | -600 | FreeGBuffers | Stub |
@@ -266,7 +286,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 102 | -612 | OrRegionRegion | Implemented |
 | 103 | -618 | XorRegionRegion | Implemented |
 | 104 | -624 | AndRegionRegion | Implemented |
-| 105 | -630 | SetRGB4CM | Stub |
+| 105 | -630 | SetRGB4CM | Implemented |
 | 106 | -636 | BltMaskBitMapRastPort | Implemented |
 | 107 | -642 | *reserved* | No-op |
 | 108 | -648 | *reserved* | No-op |
@@ -300,18 +320,18 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 136 | -816 | ExtendFont | Implemented |
 | 137 | -822 | StripFont | Implemented |
 | 138 | -828 | CalcIVG | Stub |
-| 139 | -834 | AttachPalExtra | Stub |
-| 140 | -840 | ObtainBestPenA | Stub |
+| 139 | -834 | AttachPalExtra | Implemented |
+| 140 | -840 | ObtainBestPenA | Implemented |
 | 141 | -846 | *reserved* | No-op |
-| 142 | -852 | SetRGB32 | Stub |
+| 142 | -852 | SetRGB32 | Implemented |
 | 143 | -858 | GetAPen | Implemented |
 | 144 | -864 | GetBPen | Implemented |
 | 145 | -870 | GetDrMd | Implemented |
 | 146 | -876 | GetOutlinePen | Implemented |
-| 147 | -882 | LoadRGB32 | Stub |
+| 147 | -882 | LoadRGB32 | Implemented |
 | 148 | -888 | SetChipRev | Stub |
 | 149 | -894 | SetABPenDrMd | Implemented |
-| 150 | -900 | GetRGB32 | Stub |
+| 150 | -900 | GetRGB32 | Implemented |
 | 151 | -906 | *reserved* | No-op |
 | 152 | -912 | *reserved* | No-op |
 | 153 | -918 | AllocBitMap | Implemented |
@@ -319,17 +339,17 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 155 | -930 | GetExtSpriteA | Stub |
 | 156 | -936 | CoerceMode | Stub |
 | 157 | -942 | ChangeVPBitMap | Stub |
-| 158 | -948 | ReleasePen | Stub |
-| 159 | -954 | ObtainPen | Stub |
+| 158 | -948 | ReleasePen | Implemented |
+| 159 | -954 | ObtainPen | Implemented |
 | 160 | -960 | GetBitMapAttr | Implemented |
 | 161 | -966 | AllocDBufInfo | Stub |
 | 162 | -972 | FreeDBufInfo | Stub |
 | 163 | -978 | SetOutlinePen | Implemented |
 | 164 | -984 | SetWriteMask | Implemented |
 | 165 | -990 | SetMaxPen | Implemented |
-| 166 | -996 | SetRGB32CM | Stub |
+| 166 | -996 | SetRGB32CM | Implemented |
 | 167 | -1002 | ScrollRasterBF | Implemented |
-| 168 | -1008 | FindColor | Stub |
+| 168 | -1008 | FindColor | Implemented |
 | 169 | -1014 | *reserved* | No-op |
 | 170 | -1020 | AllocSpriteDataA | Stub |
 | 171 | -1026 | ChangeExtSpriteA | Stub |
