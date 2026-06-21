@@ -172,6 +172,16 @@ timestamp: 2026-06-21T12:00:00Z
 | `CoerceMode` | Implemented | Returns the mode ID if known, else the first known mode. |
 | `VideoControl` | Implemented | No-op (no hardware video control). |
 
+### Layer / Intuition helpers
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `LockLayerRom` | Implemented | No-op; returns success (UAOS has no real layer lock). |
+| `UnlockLayerRom` | Implemented | No-op. |
+| `AttemptLockLayerRom` | Implemented | No-op; returns success. |
+| `SyncSBitMap` | Implemented | No-op (no super-bitmap state). |
+| `CopySBitMap` | Implemented | No-op (no super-bitmap state). |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -268,10 +278,10 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 69 | -414 | FreeSprite | Stub |
 | 70 | -420 | ChangeSprite | Stub |
 | 71 | -426 | MoveSprite | Stub |
-| 72 | -432 | LockLayerRom | Stub |
-| 73 | -438 | UnlockLayerRom | Stub |
-| 74 | -444 | SyncSBitMap | Stub |
-| 75 | -450 | CopySBitMap | Stub |
+| 72 | -432 | LockLayerRom | Implemented |
+| 73 | -438 | UnlockLayerRom | Implemented |
+| 74 | -444 | SyncSBitMap | Implemented |
+| 75 | -450 | CopySBitMap | Implemented |
 | 76 | -456 | OwnBlitter | Stub |
 | 77 | -462 | DisownBlitter | Stub |
 | 78 | -468 | InitTmpRas | Implemented |
@@ -305,7 +315,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 106 | -636 | BltMaskBitMapRastPort | Implemented |
 | 107 | -642 | *reserved* | No-op |
 | 108 | -648 | *reserved* | No-op |
-| 109 | -654 | AttemptLockLayerRom | Stub |
+| 109 | -654 | AttemptLockLayerRom | Implemented |
 | 110 | -660 | GfxNew | Stub |
 | 111 | -666 | GfxFree | Stub |
 | 112 | -672 | GfxAssociate | Stub |

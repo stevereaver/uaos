@@ -2977,6 +2977,46 @@ static void graphics_VideoControl(void)
     (void)m68k_get_reg(NULL, M68K_REG_A1);
 }
 
+static void graphics_LockLayerRom(void)
+{
+    /* LockLayerRom(layer) — A0 = layer
+     * UAOS has no real layer locking; return success.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+static void graphics_UnlockLayerRom(void)
+{
+    /* UnlockLayerRom(layer) — A0 = layer */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+}
+
+static void graphics_AttemptLockLayerRom(void)
+{
+    /* AttemptLockLayerRom(layer) — A0 = layer
+     * Always succeeds on UAOS.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+static void graphics_SyncSBitMap(void)
+{
+    /* SyncSBitMap(layer) — A0 = layer
+     * No-op: no super-bitmap state to sync.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+}
+
+static void graphics_CopySBitMap(void)
+{
+    /* CopySBitMap(layer) — A0 = layer
+     * No-op: no super-bitmap state to copy.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+}
+
 static void graphics_WaitBlit(void)
 {
     /* WaitBlit() — host framebuffer has no blitter to wait for */
@@ -3029,6 +3069,10 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETRGB4]                 = graphics_SetRGB4,
     [GFX_SLOT_BLTPATTERN]              = graphics_BltPattern,
     [GFX_SLOT_BLTCLEAR]                = graphics_BltClear,
+    [GFX_SLOT_LOCKLAYERROM]            = graphics_LockLayerRom,
+    [GFX_SLOT_UNLOCKLAYERROM]          = graphics_UnlockLayerRom,
+    [GFX_SLOT_SYNCSBITMAP]             = graphics_SyncSBitMap,
+    [GFX_SLOT_COPYSBITMAP]             = graphics_CopySBitMap,
     [GFX_SLOT_ANDRECTREGION]           = graphics_AndRectRegion,
     [GFX_SLOT_ORRECTREGION]            = graphics_OrRectRegion,
     [GFX_SLOT_NEWREGION]               = graphics_NewRegion,
@@ -3072,6 +3116,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_ATTACHPALEXTRA]          = graphics_AttachPalExtra,
     [GFX_SLOT_OBTAINBESTPENA]          = graphics_ObtainBestPenA,
     [GFX_SLOT_VIDEOCONTROL]            = graphics_VideoControl,
+    [GFX_SLOT_ATTEMPTLOCKLAYERROM]     = graphics_AttemptLockLayerRom,
     [GFX_SLOT_OPENMONITOR]             = graphics_OpenMonitor,
     [GFX_SLOT_CLOSEMONITOR]            = graphics_CloseMonitor,
     [GFX_SLOT_FINDDISPLAYINFO]         = graphics_FindDisplayInfo,
