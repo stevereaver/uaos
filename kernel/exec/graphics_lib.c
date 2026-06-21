@@ -282,6 +282,183 @@ static void draw_line(int x0, int y0, int x1, int y1, uint32_t colour)
 }
 
 /* =========================================================================
+ * Ellipse drawing helper
+ * ========================================================================= */
+
+static void plot_ellipse_points(int cx, int cy, int x, int y, uint32_t col, int fill)
+{
+    if (fill) {
+        if (x >= 0) {
+            draw_line(cx - x, cy + y, cx + x, cy + y, col);
+            draw_line(cx - x, cy - y, cx + x, cy - y, col);
+        }
+    } else {
+        FB_PutPixel(cx + x, cy + y, col);
+        FB_PutPixel(cx - x, cy + y, col);
+        FB_PutPixel(cx + x, cy - y, col);
+        FB_PutPixel(cx - x, cy - y, col);
+    }
+}
+
+static void draw_ellipse(int cx, int cy, int rx, int ry, uint32_t col, int fill)
+{
+    if (rx < 0) rx = 0;
+    if (ry < 0) ry = 0;
+    if (rx == 0 && ry == 0) { FB_PutPixel(cx, cy, col); return; }
+    if (rx == 0) {
+        for (int y = -ry; y <= ry; y++) FB_PutPixel(cx, cy + y, col);
+        return;
+    }
+    if (ry == 0) {
+        for (int x = -rx; x <= rx; x++) FB_PutPixel(cx + x, cy, col);
+        return;
+    }
+
+    long long rx2 = (long long)rx * rx;
+    long long ry2 = (long long)ry * ry;
+    long long two_rx2 = 2 * rx2;
+    long long two_ry2 = 2 * ry2;
+
+    int x = 0, y = ry;
+    long long dx = two_ry2 * x;
+    long long dy = two_rx2 * y;
+    long long p1 = ry2 - rx2 * ry + rx2 / 4;
+
+    while (dx < dy) {
+        plot_ellipse_points(cx, cy, x, y, col, fill);
+        x++;
+        dx += two_ry2;
+        if (p1 < 0) {
+            p1 += ry2 + dx;
+        } else {
+            y--;
+            dy -= two_rx2;
+            p1 += ry2 + dx - dy;
+        }
+    }
+
+    long long p2 = ry2 * ((long long)x * x + x) + rx2 * ((long long)y * y - y) - rx2 * ry2;
+    while (y >= 0) {
+        plot_ellipse_points(cx, cy, x, y, col, fill);
+        y--;
+        dy -= two_rx2;
+        if (p2 > 0) {
+            p2 += rx2 - dy;
+        } else {
+            x++;
+            dx += two_ry2;
+            p2 += rx2 - dy + dx;
+        }
+    }
+}
+
+/* =========================================================================
+ * Polygon state for AreaMove / AreaDraw / AreaEnd
+ * ========================================================================= */
+
+#define MAX_POLY_POINTS 64
+#define MAX_POLYGONS    16
+
+typedef struct {
+    uint32_t rp_key;
+    int count;
+    int points[MAX_POLY_POINTS][2];
+} PolygonState;
+
+static PolygonState g_polygons[MAX_POLYGONS];
+
+static PolygonState *poly_get(uint32_t rp)
+{
+    if (!rp) return NULL;
+    for (int i = 0; i < MAX_POLYGONS; i++)
+        if (g_polygons[i].rp_key == rp) return &g_polygons[i];
+    for (int i = 0; i < MAX_POLYGONS; i++) {
+        if (g_polygons[i].rp_key == 0) {
+            g_polygons[i].rp_key = rp;
+            g_polygons[i].count = 0;
+            return &g_polygons[i];
+        }
+    }
+    return NULL;
+}
+
+static void poly_reset(uint32_t rp)
+{
+    PolygonState *p = poly_get(rp);
+    if (p) p->count = 0;
+}
+
+static void fill_polygon(PolygonState *p, uint32_t col)
+{
+    if (!p || p->count < 3) return;
+
+    int min_y = p->points[0][1], max_y = p->points[0][1];
+    for (int i = 1; i < p->count; i++) {
+        if (p->points[i][1] < min_y) min_y = p->points[i][1];
+        if (p->points[i][1] > max_y) max_y = p->points[i][1];
+    }
+
+    int xs[MAX_POLY_POINTS];
+    for (int y = min_y; y <= max_y; y++) {
+        int n = 0;
+        for (int i = 0; i < p->count; i++) {
+            int j = (i + 1) % p->count;
+            int y1 = p->points[i][1];
+            int y2 = p->points[j][1];
+            if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
+                int x1 = p->points[i][0];
+                int x2 = p->points[j][0];
+                int x = x1 + (int)(((long long)(y - y1) * (x2 - x1)) / (y2 - y1));
+                if (n < MAX_POLY_POINTS) xs[n++] = x;
+            }
+        }
+        for (int i = 0; i < n - 1; i++)
+            for (int j = i + 1; j < n; j++)
+                if (xs[i] > xs[j]) { int t = xs[i]; xs[i] = xs[j]; xs[j] = t; }
+        for (int i = 0; i < n; i += 2)
+            if (i + 1 < n)
+                draw_line(xs[i], y, xs[i + 1], y, col);
+    }
+}
+
+/* =========================================================================
+ * Flood-fill helper
+ * ========================================================================= */
+
+static void flood_fill(int sx, int sy, uint32_t target, uint32_t fill)
+{
+    if (sx < 0 || sx >= (int)g_fb.width || sy < 0 || sy >= (int)g_fb.height) return;
+    if (FB_GetPixel(sx, sy) != target) return;
+
+    int stack_x[1024], stack_y[1024];
+    int sp = 0;
+    stack_x[sp] = sx; stack_y[sp] = sy; sp++;
+
+    while (sp > 0) {
+        sp--;
+        int x = stack_x[sp], y = stack_y[sp];
+        if (x < 0 || x >= (int)g_fb.width || y < 0 || y >= (int)g_fb.height) continue;
+        if (FB_GetPixel(x, y) != target) continue;
+
+        int left = x;
+        while (left > 0 && FB_GetPixel(left - 1, y) == target) left--;
+        int right = x;
+        while (right < (int)g_fb.width - 1 && FB_GetPixel(right + 1, y) == target) right++;
+
+        for (int i = left; i <= right; i++) FB_PutPixel(i, y, fill);
+
+        for (int i = left; i <= right; i++) {
+            if (y > 0 && FB_GetPixel(i, y - 1) == target) {
+                if (sp < 1024) { stack_x[sp] = i; stack_y[sp] = y - 1; sp++; }
+            }
+            if (y < (int)g_fb.height - 1 && FB_GetPixel(i, y + 1) == target) {
+                if (sp < 1024) { stack_x[sp] = i; stack_y[sp] = y + 1; sp++; }
+            }
+        }
+    }
+}
+
+/* =========================================================================
  * Default no-op for unimplemented LVOs
  * ========================================================================= */
 
@@ -464,6 +641,201 @@ static void graphics_RectFill(void)
     uint32_t col = current_fg(rp);
     /* FB_FillRect takes x, y, w, h */
     FB_FillRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1, col);
+}
+
+static void graphics_EraseRect(void)
+{
+    /* EraseRect(rp, xMin, yMin, xMax, yMax)
+     * A1 = rp, D0 = xMin, D1 = yMin, D2 = xMax, D3 = yMax
+     * Fills the rectangle with the background pen.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int x2 = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int y2 = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t bg = current_bg(rp);
+    FB_FillRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1, bg);
+}
+
+static void graphics_ClearEOL(void)
+{
+    /* ClearEOL(rp) — A1 = rp
+     * Clears from the current pen position to the right edge of the line.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!rp || !g_fb.valid) return;
+    int x = (int)rp_s16(rp, RP_OFF_CP_X);
+    int y = (int)rp_s16(rp, RP_OFF_CP_Y);
+    uint32_t bg = current_bg(rp);
+    FB_FillRect(x, y, (int)g_fb.width - x, FB_CharHeight(), bg);
+}
+
+static void graphics_ClearScreen(void)
+{
+    /* ClearScreen(rp) — A1 = rp
+     * Clears the entire screen with the background pen.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!g_fb.valid) return;
+    uint32_t bg = current_bg(rp);
+    FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, bg);
+}
+
+static void graphics_DrawEllipse(void)
+{
+    /* DrawEllipse(rp, x, y, rx, ry)
+     * A1 = rp, D0 = x, D1 = y, D2 = rx, D3 = ry
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int cx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int cy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int rx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int ry = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t col = current_fg(rp);
+    draw_ellipse(cx, cy, rx, ry, col, 0);
+}
+
+static void graphics_AreaEllipse(void)
+{
+    /* AreaEllipse(rp, x, y, rx, ry)
+     * A1 = rp, D0 = x, D1 = y, D2 = rx, D3 = ry
+     * Filled ellipse; also records the outline for area-fill if used.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int cx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int cy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int rx = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int ry = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t col = current_fg(rp);
+    draw_ellipse(cx, cy, rx, ry, col, 1);
+}
+
+static void graphics_PolyDraw(void)
+{
+    /* PolyDraw(rp, count, array)
+     * A1 = rp, D0 = count, A0 = array of XY WORDs
+     * Draws lines from the current pen position to the first point, then
+     * between successive points, and updates the pen position.
+     */
+    uint32_t rp  = m68k_get_reg(NULL, M68K_REG_A1);
+    int      cnt = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t arr = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!rp || cnt < 1 || !arr) return;
+
+    int x0 = (int)rp_s16(rp, RP_OFF_CP_X);
+    int y0 = (int)rp_s16(rp, RP_OFF_CP_Y);
+    uint32_t col = current_fg(rp);
+
+    for (int i = 0; i < cnt; i++) {
+        int x1 = (int)m68k_read_memory_16(arr + i * 4);
+        int y1 = (int)m68k_read_memory_16(arr + i * 4 + 2);
+        draw_line(x0, y0, x1, y1, col);
+        x0 = x1; y0 = y1;
+    }
+
+    rp_w_s16(rp, RP_OFF_CP_X, (int16_t)x0);
+    rp_w_s16(rp, RP_OFF_CP_Y, (int16_t)y0);
+}
+
+static void graphics_Flood(void)
+{
+    /* Flood(rp, x, y)
+     * A1 = rp, D0 = x, D1 = y
+     * 4-way flood fill starting at (x,y), replacing the colour under the
+     * start point with the foreground pen.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    if (!rp) return;
+    uint32_t target = FB_GetPixel(x, y);
+    uint32_t fill = current_fg(rp);
+    if (target != fill) flood_fill(x, y, target, fill);
+}
+
+static void graphics_BltClear(void)
+{
+    /* BltClear(mem, byteSize, flags)
+     * A0 = memory, D0 = byteSize, D1 = flags
+     * Zeroes the supplied memory block.  Flags are ignored.
+     */
+    uint32_t mem = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+    if (!mem || size == 0) return;
+    for (uint32_t i = 0; i < size; i++)
+        m68k_write_memory_8(mem + i, 0);
+}
+
+static void graphics_InitArea(void)
+{
+    /* InitArea(areaInfo, buffer, maxPoints)
+     * A0 = areaInfo, A1 = buffer, D0 = maxPoints
+     * UAOS keeps polygon state internally keyed by RastPort, so this is a
+     * no-op beyond validating arguments.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+}
+
+static void graphics_AreaMove(void)
+{
+    /* AreaMove(rp, x, y) — A1 = rp, D0 = x, D1 = y
+     * Starts a new polygon path.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    PolygonState *p = poly_get(rp);
+    if (!p) return;
+    p->count = 0;
+    if (p->count < MAX_POLY_POINTS) {
+        p->points[p->count][0] = x;
+        p->points[p->count][1] = y;
+        p->count++;
+    }
+}
+
+static void graphics_AreaDraw(void)
+{
+    /* AreaDraw(rp, x, y) — A1 = rp, D0 = x, D1 = y
+     * Adds a line to the current polygon path and draws it.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    PolygonState *p = poly_get(rp);
+    if (!p || p->count == 0) return;
+
+    int x0 = p->points[p->count - 1][0];
+    int y0 = p->points[p->count - 1][1];
+    draw_line(x0, y0, x, y, current_fg(rp));
+
+    if (p->count < MAX_POLY_POINTS) {
+        p->points[p->count][0] = x;
+        p->points[p->count][1] = y;
+        p->count++;
+    }
+}
+
+static void graphics_AreaEnd(void)
+{
+    /* AreaEnd(rp) — A1 = rp
+     * Closes the polygon path and fills the interior with the foreground pen.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    PolygonState *p = poly_get(rp);
+    if (!p || p->count < 3) return;
+
+    int x0 = p->points[p->count - 1][0];
+    int y0 = p->points[p->count - 1][1];
+    int x1 = p->points[0][0];
+    int y1 = p->points[0][1];
+    draw_line(x0, y0, x1, y1, current_fg(rp));
+    fill_polygon(p, current_fg(rp));
+    p->count = 0;
 }
 
 static void graphics_SetRast(void)
@@ -749,6 +1121,8 @@ static void graphics_VBeamPos(void)
 static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_BLITBITMAP]              = graphics_BltBitMap,
     [GFX_SLOT_BLTTEMPLATE]             = graphics_BltTemplate,
+    [GFX_SLOT_CLEAREOL]                = graphics_ClearEOL,
+    [GFX_SLOT_CLEARSCREEN]             = graphics_ClearScreen,
     [GFX_SLOT_TEXTLENGTH]              = graphics_TextLength,
     [GFX_SLOT_TEXT]                    = graphics_Text,
     [GFX_SLOT_SETFONT]                 = graphics_SetFont,
@@ -760,15 +1134,24 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETRAST]                 = graphics_SetRast,
     [GFX_SLOT_MOVE]                    = graphics_Move,
     [GFX_SLOT_DRAW]                    = graphics_Draw,
+    [GFX_SLOT_AREAMOVE]                = graphics_AreaMove,
+    [GFX_SLOT_AREADRAW]                = graphics_AreaDraw,
+    [GFX_SLOT_AREAEND]                 = graphics_AreaEnd,
     [GFX_SLOT_WAITTOF]                 = graphics_WaitTOF,
+    [GFX_SLOT_INITAREA]                = graphics_InitArea,
     [GFX_SLOT_SETRGB4]                 = graphics_SetRGB4,
+    [GFX_SLOT_BLTCLEAR]                = graphics_BltClear,
     [GFX_SLOT_RECTFILL]                = graphics_RectFill,
+    [GFX_SLOT_FLOOD]                   = graphics_Flood,
+    [GFX_SLOT_POLYDRAW]                = graphics_PolyDraw,
     [GFX_SLOT_READPIXEL]               = graphics_ReadPixel,
     [GFX_SLOT_WRITEPIXEL]              = graphics_WritePixel,
     [GFX_SLOT_SETAPEN]                 = graphics_SetAPen,
     [GFX_SLOT_SETBPEN]                 = graphics_SetBPen,
     [GFX_SLOT_SETDRMD]                 = graphics_SetDrMd,
     [GFX_SLOT_INITVIEW]                = graphics_InitView,
+    [GFX_SLOT_DRAWELLIPSE]             = graphics_DrawEllipse,
+    [GFX_SLOT_AREAELLIPSE]             = graphics_AreaEllipse,
     [GFX_SLOT_VBEAMPOS]                = graphics_VBeamPos,
     [GFX_SLOT_INITBITMAP]              = graphics_InitBitMap,
     [GFX_SLOT_WAITBOVP]                = graphics_WaitBOVP,
@@ -786,6 +1169,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
+    [GFX_SLOT_ERASERECT]               = graphics_EraseRect,
     [GFX_SLOT_SETOUTLINEPEN]           = graphics_SetOutlinePen,
     [GFX_SLOT_SETWRITEMASK]            = graphics_SetWriteMask,
     [GFX_SLOT_SETMAXPEN]               = graphics_SetMaxPen,

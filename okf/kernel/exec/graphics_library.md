@@ -62,20 +62,27 @@ timestamp: 2026-06-21T12:00:00Z
 |----------|--------|-------|
 | `InitRastPort` | Implemented | Zeroes RastPort and sets default pens. |
 | `Move` / `Draw` | Implemented | Bresenham line drawing via `FB_PutPixel`. |
+| `PolyDraw` | Implemented | Draws connected line segments from an XY array. |
 | `RectFill` | Implemented | Filled rectangle via `FB_FillRect`. |
+| `EraseRect` | Implemented | Fills rectangle with background pen. |
+| `ClearEOL` | Implemented | Clears from pen position to right edge of line. |
+| `ClearScreen` | Implemented | Clears entire screen with background pen. |
 | `Text` | Implemented | 8×16 font rendering. |
 | `TextLength` | Implemented | Returns pixel width. |
 | `SetRast` | Implemented | Clears screen to background pen. |
 | `ReadPixel` / `WritePixel` | Implemented | Framebuffer pixel read/write. |
+| `DrawEllipse` | Implemented | Midpoint ellipse outline via `FB_PutPixel`. |
+| `AreaEllipse` | Implemented | Filled ellipse via horizontal scanlines. |
+| `Flood` | Implemented | 4-way scanline flood fill from start point. |
+| `BltClear` | Implemented | Zeroes a guest memory block. |
+| `InitArea` / `AreaMove` / `AreaDraw` / `AreaEnd` | Implemented | Polygon path + scanline fill (internal state keyed by RastPort). |
 
 ### Still stubbed
 
 - `LoadView`, `WaitTOF` — no copper/display hardware.
-- `BltBitMap`, `BltTemplate`, `BltClear`, `BltPattern` — complex drawing; not yet implemented.
-- `Polygon`, `Ellipse`, `Flood` — complex drawing; not yet implemented.
+- `BltBitMap`, `BltTemplate`, `BltPattern`, `BltBitMapRastPort`, `BltMaskBitMapRastPort` — complex blitter/memory operations; not yet implemented.
 - `AllocBitMap`, `FreeBitMap` — no off-screen bitmap allocation yet.
-- `LoadRGB4`, `LoadRGB32`, `GetColorMap` — palette/colourmap not wired to framebuffer.
-- `GetColorMap`, `FreeColorMap`, `SetRGB32CM`, `GetRGB32` — colourmap helpers not wired.
+- `LoadRGB4`, `LoadRGB32`, `GetColorMap`, `FreeColorMap`, `SetRGB32CM`, `GetRGB32` — palette/colourmap not wired to framebuffer.
 
 ## LVO dispatch
 
@@ -93,8 +100,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 |------|-----|----------|--------|
 | 5 | -30 | BltBitMap | Stub |
 | 6 | -36 | BltTemplate | Stub |
-| 7 | -42 | ClearEOL | Stub |
-| 8 | -48 | ClearScreen | Stub |
+| 7 | -42 | ClearEOL | Implemented |
+| 8 | -48 | ClearScreen | Implemented |
 | 9 | -54 | TextLength | Implemented |
 | 10 | -60 | Text | Implemented |
 | 11 | -66 | SetFont | Implemented |
@@ -116,8 +123,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 27 | -162 | Animate | Stub |
 | 28 | -168 | GetGBuffers | Stub |
 | 29 | -174 | InitGMasks | Stub |
-| 30 | -180 | DrawEllipse | Stub |
-| 31 | -186 | AreaEllipse | Stub |
+| 30 | -180 | DrawEllipse | Implemented |
+| 31 | -186 | AreaEllipse | Implemented |
 | 32 | -192 | LoadRGB4 | Stub |
 | 33 | -198 | InitRastPort | Implemented |
 | 34 | -204 | InitVPort | Implemented |
@@ -128,21 +135,21 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 39 | -234 | SetRast | Implemented |
 | 40 | -240 | Move | Implemented |
 | 41 | -246 | Draw | Implemented |
-| 42 | -252 | AreaMove | Stub |
-| 43 | -258 | AreaDraw | Stub |
-| 44 | -264 | AreaEnd | Stub |
+| 42 | -252 | AreaMove | Implemented |
+| 43 | -258 | AreaDraw | Implemented |
+| 44 | -264 | AreaEnd | Implemented |
 | 45 | -270 | WaitTOF | Stub |
 | 46 | -276 | QBlit | Stub |
-| 47 | -282 | InitArea | Stub |
+| 47 | -282 | InitArea | Implemented |
 | 48 | -288 | SetRGB4 | Implemented |
 | 49 | -294 | QBSBlit | Stub |
-| 50 | -300 | BltClear | Stub |
+| 50 | -300 | BltClear | Implemented |
 | 51 | -306 | RectFill | Implemented |
 | 52 | -312 | BltPattern | Stub |
 | 53 | -318 | ReadPixel | Implemented |
 | 54 | -324 | WritePixel | Implemented |
-| 55 | -330 | Flood | Stub |
-| 56 | -336 | PolyDraw | Stub |
+| 55 | -330 | Flood | Implemented |
+| 56 | -336 | PolyDraw | Implemented |
 | 57 | -342 | SetAPen | Implemented |
 | 58 | -348 | SetBPen | Implemented |
 | 59 | -354 | SetDrMd | Implemented |
@@ -221,7 +228,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 132 | -792 | GetVPModeID | Implemented |
 | 133 | -798 | ModeNotAvailable | Stub |
 | 134 | -804 | WeighTAMatch | Stub |
-| 135 | -810 | EraseRect | Stub |
+| 135 | -810 | EraseRect | Implemented |
 | 136 | -816 | ExtendFont | Stub |
 | 137 | -822 | StripFont | Stub |
 | 138 | -828 | CalcIVG | Stub |
