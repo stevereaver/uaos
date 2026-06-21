@@ -67,8 +67,11 @@ timestamp: 2026-06-21T12:00:00Z
 | `EraseRect` | Implemented | Fills rectangle with background pen. |
 | `ClearEOL` | Implemented | Clears from pen position to right edge of line. |
 | `ClearScreen` | Implemented | Clears entire screen with background pen. |
-| `Text` | Implemented | 8×16 font rendering. |
+| `Text` | Implemented | 8×16 font rendering; JAM1 now draws transparent background. |
 | `TextLength` | Implemented | Returns pixel width. |
+| `TextExtent` | Implemented | Fills `TextExtent` from the current font/metrics. |
+| `TextFit` | Implemented | Returns characters that fit in a width constraint. |
+| `FontExtent` | Implemented | Fills `TextExtent` from a font. |
 | `SetRast` | Implemented | Clears screen to background pen. |
 | `ReadPixel` / `WritePixel` | Implemented | Framebuffer pixel read/write. |
 | `DrawEllipse` | Implemented | Midpoint ellipse outline via `FB_PutPixel`. |
@@ -76,6 +79,21 @@ timestamp: 2026-06-21T12:00:00Z
 | `Flood` | Implemented | 4-way scanline flood fill from start point. |
 | `BltClear` | Implemented | Zeroes a guest memory block. |
 | `InitArea` / `AreaMove` / `AreaDraw` / `AreaEnd` | Implemented | Polygon path + scanline fill (internal state keyed by RastPort). |
+
+### Font / text subsystem
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `OpenFont` | Implemented | Returns a built-in `TextFont` (topaz, 8×16, baseline 12); other names fail. |
+| `CloseFont` | Implemented | No-op for the shared built-in font. |
+| `SetFont` | Implemented | Sets `rp->Font` pointer; returns previous font. |
+| `AskFont` | Implemented | Returns `rp->Font` pointer in D0. |
+| `AddFont` | Implemented | No-op; only the built-in font is tracked. |
+| `RemFont` | Implemented | No-op; only the built-in font is tracked. |
+| `AskSoftStyle` | Implemented | Returns current `rp->SoftStyle`. |
+| `SetSoftStyle` | Implemented | Updates `rp->SoftStyle` under enable mask; returns old style. |
+| `ExtendFont` | Implemented | Returns TRUE for the built-in font. |
+| `StripFont` | Implemented | No-op for the built-in font. |
 
 ### Chunky pixel I/O
 
@@ -115,10 +133,10 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 9 | -54 | TextLength | Implemented |
 | 10 | -60 | Text | Implemented |
 | 11 | -66 | SetFont | Implemented |
-| 12 | -72 | OpenFont | Stub |
-| 13 | -78 | CloseFont | Stub |
-| 14 | -84 | AskSoftStyle | Stub |
-| 15 | -90 | SetSoftStyle | Stub |
+| 12 | -72 | OpenFont | Implemented |
+| 13 | -78 | CloseFont | Implemented |
+| 14 | -84 | AskSoftStyle | Implemented |
+| 15 | -90 | SetSoftStyle | Implemented |
 | 16 | -96 | AddBob | Stub |
 | 17 | -102 | AddVSprite | Stub |
 | 18 | -108 | DoCollision | Stub |
@@ -183,8 +201,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 77 | -462 | DisownBlitter | Stub |
 | 78 | -468 | InitTmpRas | Stub |
 | 79 | -474 | AskFont | Implemented |
-| 80 | -480 | AddFont | Stub |
-| 81 | -486 | RemFont | Stub |
+| 80 | -480 | AddFont | Implemented |
+| 81 | -486 | RemFont | Implemented |
 | 82 | -492 | AllocRaster | Stub |
 | 83 | -498 | FreeRaster | Stub |
 | 84 | -504 | AndRectRegion | Stub |
@@ -218,7 +236,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 112 | -672 | GfxAssociate | Stub |
 | 113 | -678 | BitMapScale | Stub |
 | 114 | -684 | ScalerDiv | Stub |
-| 115 | -690 | TextExtent | Stub |
+| 115 | -690 | TextExtent | Implemented |
 | 116 | -696 | TextFit | Implemented |
 | 117 | -702 | GfxLookUp | Stub |
 | 118 | -708 | VideoControl | Stub |
@@ -230,7 +248,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 124 | -744 | *reserved* | No-op |
 | 125 | -750 | *reserved* | No-op |
 | 126 | -756 | GetDisplayInfoData | Stub |
-| 127 | -762 | FontExtent | Stub |
+| 127 | -762 | FontExtent | Implemented |
 | 128 | -768 | ReadPixelLine8 | Implemented |
 | 129 | -774 | WritePixelLine8 | Implemented |
 | 130 | -780 | ReadPixelArray8 | Implemented |
@@ -239,8 +257,8 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 133 | -798 | ModeNotAvailable | Stub |
 | 134 | -804 | WeighTAMatch | Stub |
 | 135 | -810 | EraseRect | Implemented |
-| 136 | -816 | ExtendFont | Stub |
-| 137 | -822 | StripFont | Stub |
+| 136 | -816 | ExtendFont | Implemented |
+| 137 | -822 | StripFont | Implemented |
 | 138 | -828 | CalcIVG | Stub |
 | 139 | -834 | AttachPalExtra | Stub |
 | 140 | -840 | ObtainBestPenA | Stub |

@@ -28,9 +28,49 @@
 #define RP_OFF_AOLPEN       28
 #define RP_OFF_OLNPEN       29
 #define RP_OFF_FONT         30
+#define RP_OFF_SOFTSTYLE    44   /* soft font style (JAM1/JAM2 etc.) */
 #define RP_OFF_MASK         40   /* write mask (V39) */
 #define RP_OFF_MAXPEN       41   /* max pen used in RastPort (V39) */
 #define RP_SIZE_MIN         64   /* enough to cover fields we touch */
+
+/* TextFont structure offsets */
+#define TF_OFF_NODE          0
+#define TF_OFF_YSIZE        14
+#define TF_OFF_STYLE        16
+#define TF_OFF_FLAGS        17
+#define TF_OFF_XSIZE        18
+#define TF_OFF_BASELINE     20
+#define TF_OFF_BOLDSMEAR    22
+#define TF_OFF_ACCESSORS    24
+#define TF_OFF_LOCHAR       26
+#define TF_OFF_HICHAR       27
+#define TF_OFF_CHARDATA     28
+#define TF_OFF_MODULO       32
+#define TF_OFF_CHARSPACE    34
+#define TF_OFF_CHARKERN     38
+#define TF_SIZE             42
+
+/* TextAttr structure offsets */
+#define TA_OFF_NAME          0
+#define TA_OFF_YSIZE         4
+#define TA_OFF_STYLE         6
+#define TA_OFF_FLAGS         7
+#define TA_SIZE              8
+
+/* TextExtent structure offsets */
+#define TE_OFF_EXTENT_X      0
+#define TE_OFF_EXTENT_Y      2
+#define TE_OFF_EXTENT_WIDTH  4
+#define TE_OFF_EXTENT_HEIGHT 6
+#define TE_OFF_WIDTH         8
+#define TE_OFF_HEIGHT       10
+#define TE_SIZE             12
+
+/* Font style flags */
+#define FSF_BOLD        0x01
+#define FSF_ITALIC      0x02
+#define FSF_UNDERLINE   0x04
+#define FSF_EXTENDED    0x08
 
 /* BitMap offsets */
 #define BM_OFF_BYTESPERROW   0
