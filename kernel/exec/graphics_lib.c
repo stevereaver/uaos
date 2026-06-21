@@ -2725,6 +2725,258 @@ static void graphics_SetRGB4(void)
     cm_set_color(cm, index, rgb4_to_rgb32(r, g, b));
 }
 
+/* =========================================================================
+ * Display-mode database (static lookup tables)
+ * ========================================================================= */
+
+#define DTAG_DISP_DIM  0x80000001
+#define DTAG_NAME      0x80000002
+#define DTAG_MNTR      0x80000003
+#define DTAG_VEC       0x80000004
+
+#define DI_MODEID      0
+#define DI_WIDTH       4
+#define DI_HEIGHT      6
+#define DI_DEPTH       8
+#define DI_FLAGS       9
+#define DI_NAME        10
+#define DI_SIZE        14
+
+#define DIM_MAXWIDTH   0
+#define DIM_MAXHEIGHT  2
+#define DIM_MAXDEPTH   4
+#define DIM_STDIMGWIDTH  6
+#define DIM_STDIMGHEIGHT 8
+#define DIM_SIZE       10
+
+#define MONITOR_NAME    0
+#define MONITOR_SIZE    32
+
+typedef struct {
+    uint32_t mode_id;
+    uint16_t width;
+    uint16_t height;
+    uint8_t  depth;
+    const char *name;
+} UaosDisplayMode;
+
+static const UaosDisplayMode uaos_modes[] = {
+    { 0x00011000,  320,  256, 8, "PAL" },
+    { 0x00011001,  320,  200, 8, "NTSC" },
+    { 0x00011002,  640,  256, 8, "DBLPAL" },
+    { 0x00011003,  640,  400, 8, "DBLNTSC" },
+    { 0x00011004,  640,  512, 8, "SUPER72" },
+    { 0x00011005,  800,  600, 8, "EURO72" },
+    { 0x00011006, 1024,  768, 8, "EURO36" },
+    { 0x00011007, 1280,  720, 8, "VESA" },
+};
+#define UAOS_MODE_COUNT (sizeof(uaos_modes) / sizeof(uaos_modes[0]))
+
+static uint32_t g_disp_table = 0;
+static uint32_t g_monitor = 0;
+
+static void disp_init_table(void)
+{
+    if (g_disp_table) return;
+
+    uint32_t names_size = 0;
+    for (size_t i = 0; i < UAOS_MODE_COUNT; i++)
+        names_size += (uint32_t)strlen(uaos_modes[i].name) + 1;
+
+    uint32_t table_size = (uint32_t)(UAOS_MODE_COUNT * DI_SIZE) + names_size;
+    uint32_t table = 0;
+    dos_AllocMem_glue(table_size, 0, &table);
+    if (!table) return;
+
+    for (uint32_t i = 0; i < table_size; i++) m68k_write_memory_8(table + i, 0);
+
+    uint32_t name_ptr = table + (uint32_t)(UAOS_MODE_COUNT * DI_SIZE);
+    for (size_t i = 0; i < UAOS_MODE_COUNT; i++) {
+        uint32_t entry = table + (uint32_t)(i * DI_SIZE);
+        m68k_write_memory_32(entry + DI_MODEID, uaos_modes[i].mode_id);
+        m68k_write_memory_16(entry + DI_WIDTH, uaos_modes[i].width);
+        m68k_write_memory_16(entry + DI_HEIGHT, uaos_modes[i].height);
+        m68k_write_memory_8(entry + DI_DEPTH, uaos_modes[i].depth);
+        m68k_write_memory_8(entry + DI_FLAGS, 0);
+        m68k_write_memory_32(entry + DI_NAME, name_ptr);
+        for (size_t j = 0; j <= strlen(uaos_modes[i].name); j++)
+            m68k_write_memory_8(name_ptr + j, (uint8_t)uaos_modes[i].name[j]);
+        name_ptr += (uint32_t)strlen(uaos_modes[i].name) + 1;
+    }
+
+    g_disp_table = table;
+}
+
+static void disp_init_monitor(void)
+{
+    if (g_monitor) return;
+    uint32_t mon = 0;
+    dos_AllocMem_glue(MONITOR_SIZE, 0, &mon);
+    if (!mon) return;
+    for (int i = 0; i < MONITOR_SIZE; i++) m68k_write_memory_8(mon + i, 0);
+    m68k_write_memory_32(mon + MONITOR_NAME, 0);
+    g_monitor = mon;
+}
+
+static uint32_t disp_find_mode(uint32_t mode_id)
+{
+    disp_init_table();
+    if (!g_disp_table) return 0;
+    for (size_t i = 0; i < UAOS_MODE_COUNT; i++) {
+        if (m68k_read_memory_32(g_disp_table + (uint32_t)(i * DI_SIZE) + DI_MODEID) == mode_id)
+            return g_disp_table + (uint32_t)(i * DI_SIZE);
+    }
+    return 0;
+}
+
+static uint32_t disp_next_mode(uint32_t mode_id)
+{
+    disp_init_table();
+    if (!g_disp_table) return 0;
+    int found = 0;
+    for (size_t i = 0; i < UAOS_MODE_COUNT; i++) {
+        uint32_t id = m68k_read_memory_32(g_disp_table + (uint32_t)(i * DI_SIZE) + DI_MODEID);
+        if (found) return id;
+        if (id == mode_id) found = 1;
+    }
+    if (!found && UAOS_MODE_COUNT > 0)
+        return m68k_read_memory_32(g_disp_table + DI_MODEID);
+    return 0;
+}
+
+static void graphics_OpenMonitor(void)
+{
+    /* OpenMonitor(name, ver) — A1 = name, D0 = version
+     * Returns a MonitorSpec pointer in D0.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    disp_init_monitor();
+    m68k_set_reg(M68K_REG_D0, g_monitor);
+}
+
+static void graphics_CloseMonitor(void)
+{
+    /* CloseMonitor(monitorSpec) — A0 = monitorSpec */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+}
+
+static void graphics_FindDisplayInfo(void)
+{
+    /* FindDisplayInfo(modeID) — D0 = modeID
+     * Returns a DisplayInfo pointer in D0.
+     */
+    uint32_t mode_id = m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, disp_find_mode(mode_id));
+}
+
+static void graphics_NextDisplayInfo(void)
+{
+    /* NextDisplayInfo(modeID) — D0 = modeID
+     * Returns the next mode ID in D0.
+     */
+    uint32_t mode_id = m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, disp_next_mode(mode_id));
+}
+
+static void graphics_GetDisplayInfoData(void)
+{
+    /* GetDisplayInfoData(displayInfo, buf, size, tagID, monitorSpec)
+     * A0 = displayInfo, A1 = buf, D0 = size, D1 = tagID, A2 = monitorSpec
+     */
+    uint32_t di = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t buf = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t tag = m68k_get_reg(NULL, M68K_REG_D1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    if (!di || !buf || size == 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t written = 0;
+    switch (tag) {
+        case DTAG_DISP_DIM: {
+            if (size < DIM_SIZE) { m68k_set_reg(M68K_REG_D0, 0); return; }
+            uint16_t w = m68k_read_memory_16(di + DI_WIDTH);
+            uint16_t h = m68k_read_memory_16(di + DI_HEIGHT);
+            uint8_t d = m68k_read_memory_8(di + DI_DEPTH);
+            m68k_write_memory_16(buf + DIM_MAXWIDTH, w);
+            m68k_write_memory_16(buf + DIM_MAXHEIGHT, h);
+            m68k_write_memory_16(buf + DIM_MAXDEPTH, (uint16_t)d);
+            m68k_write_memory_16(buf + DIM_STDIMGWIDTH, w);
+            m68k_write_memory_16(buf + DIM_STDIMGHEIGHT, h);
+            written = DIM_SIZE;
+            break;
+        }
+        case DTAG_NAME: {
+            uint32_t name = m68k_read_memory_32(di + DI_NAME);
+            if (!name) { m68k_set_reg(M68K_REG_D0, 0); return; }
+            uint32_t i = 0;
+            while (i < size - 1) {
+                uint8_t c = m68k_read_memory_8(name + i);
+                m68k_write_memory_8(buf + i, c);
+                if (c == 0) break;
+                i++;
+            }
+            m68k_write_memory_8(buf + i, 0);
+            written = i + 1;
+            break;
+        }
+        default:
+            break;
+    }
+    m68k_set_reg(M68K_REG_D0, written);
+}
+
+static void graphics_ModeNotAvailable(void)
+{
+    /* ModeNotAvailable(modeID) — D0 = modeID
+     * Returns 0 if available, non-zero if not.
+     */
+    uint32_t mode_id = m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, disp_find_mode(mode_id) ? 0 : 1);
+}
+
+static void graphics_BestModeIDA(void)
+{
+    /* BestModeIDA(tags) — A0 = tags
+     * Returns a suitable mode ID in D0.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    disp_init_table();
+    uint32_t id = 0;
+    if (UAOS_MODE_COUNT > 0 && g_disp_table)
+        id = m68k_read_memory_32(g_disp_table + DI_MODEID);
+    m68k_set_reg(M68K_REG_D0, id);
+}
+
+static void graphics_CoerceMode(void)
+{
+    /* CoerceMode(modeID, flags, monitorSpec)
+     * D0 = modeID, D1 = flags, A0 = monitorSpec
+     * Returns coerced mode ID in D0.
+     */
+    uint32_t mode_id = m68k_get_reg(NULL, M68K_REG_D0);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    if (disp_find_mode(mode_id)) {
+        m68k_set_reg(M68K_REG_D0, mode_id);
+    } else {
+        disp_init_table();
+        uint32_t id = 0;
+        if (UAOS_MODE_COUNT > 0 && g_disp_table)
+            id = m68k_read_memory_32(g_disp_table + DI_MODEID);
+        m68k_set_reg(M68K_REG_D0, id);
+    }
+}
+
+static void graphics_VideoControl(void)
+{
+    /* VideoControl(colorMap, tags) — A0 = colorMap, A1 = tags
+     * No-op: no hardware video control to perform.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+}
+
 static void graphics_WaitBlit(void)
 {
     /* WaitBlit() — host framebuffer has no blitter to wait for */
@@ -2816,8 +3068,15 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_ANDREGIONREGION]         = graphics_AndRegionRegion,
     [GFX_SLOT_BLTBITMAPRASTPORT]       = graphics_BltBitMapRastPort,
     [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
+    [GFX_SLOT_MODENOTAVAILABLE]        = graphics_ModeNotAvailable,
     [GFX_SLOT_ATTACHPALEXTRA]          = graphics_AttachPalExtra,
     [GFX_SLOT_OBTAINBESTPENA]          = graphics_ObtainBestPenA,
+    [GFX_SLOT_VIDEOCONTROL]            = graphics_VideoControl,
+    [GFX_SLOT_OPENMONITOR]             = graphics_OpenMonitor,
+    [GFX_SLOT_CLOSEMONITOR]            = graphics_CloseMonitor,
+    [GFX_SLOT_FINDDISPLAYINFO]         = graphics_FindDisplayInfo,
+    [GFX_SLOT_NEXTDISPLAYINFO]         = graphics_NextDisplayInfo,
+    [GFX_SLOT_GETDISPLAYINFODATA]      = graphics_GetDisplayInfoData,
     [GFX_SLOT_SETRGB32]                = graphics_SetRGB32,
     [GFX_SLOT_GETAPEN]                 = graphics_GetAPen,
     [GFX_SLOT_GETBPEN]                 = graphics_GetBPen,
@@ -2827,6 +3086,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_GETRGB32]                = graphics_GetRGB32,
     [GFX_SLOT_SETABPENDRMD]            = graphics_SetABPenDrMd,
     [GFX_SLOT_BLTMASKBITMAPRASTPORT]   = graphics_BltMaskBitMapRastPort,
+    [GFX_SLOT_COERCEMODE]              = graphics_CoerceMode,
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
@@ -2845,6 +3105,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETWRITEMASK]            = graphics_SetWriteMask,
     [GFX_SLOT_SETMAXPEN]               = graphics_SetMaxPen,
     [GFX_SLOT_SETRGB32CM]              = graphics_SetRGB32CM,
+    [GFX_SLOT_BESTMODEIDA]             = graphics_BestModeIDA,
     [GFX_SLOT_SCROLLRASTERBF]          = graphics_ScrollRasterBF,
     [GFX_SLOT_FINDCOLOR]               = graphics_FindColor,
     [GFX_SLOT_WRITECHUNKYPIXELS]         = graphics_WriteChunkyPixels,

@@ -157,6 +157,21 @@ timestamp: 2026-06-21T12:00:00Z
 | `ReleasePen` | Implemented | Releases a `ColorMap` pen obtained by `ObtainPen`. |
 | `ObtainBestPenA` | Implemented | Returns the best matching pen in a `ColorMap`. |
 
+### Display-mode database
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `OpenMonitor` | Implemented | Returns a built-in `MonitorSpec` (dummy). |
+| `CloseMonitor` | Implemented | No-op. |
+| `FindDisplayInfo` | Implemented | Returns a `DisplayInfo` record for a known mode ID. |
+| `NextDisplayInfo` | Implemented | Iterates the built-in mode ID table. |
+| `GetDisplayInfoData` | Implemented | Returns `DTAG_DISP_DIM` (dimensions) or `DTAG_NAME` data. |
+| `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID`. |
+| `ModeNotAvailable` | Implemented | Returns 0 for known modes, 1 otherwise. |
+| `BestModeIDA` | Implemented | Returns the first known mode ID. |
+| `CoerceMode` | Implemented | Returns the mode ID if known, else the first known mode. |
+| `VideoControl` | Implemented | No-op (no hardware video control). |
+
 ### Chunky pixel I/O
 
 | Function | Status | Notes |
@@ -299,22 +314,22 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 115 | -690 | TextExtent | Implemented |
 | 116 | -696 | TextFit | Implemented |
 | 117 | -702 | GfxLookUp | Stub |
-| 118 | -708 | VideoControl | Stub |
-| 119 | -714 | OpenMonitor | Stub |
-| 120 | -720 | CloseMonitor | Stub |
-| 121 | -726 | FindDisplayInfo | Stub |
-| 122 | -732 | NextDisplayInfo | Stub |
+| 118 | -708 | VideoControl | Implemented |
+| 119 | -714 | OpenMonitor | Implemented |
+| 120 | -720 | CloseMonitor | Implemented |
+| 121 | -726 | FindDisplayInfo | Implemented |
+| 122 | -732 | NextDisplayInfo | Implemented |
 | 123 | -738 | *reserved* | No-op |
 | 124 | -744 | *reserved* | No-op |
 | 125 | -750 | *reserved* | No-op |
-| 126 | -756 | GetDisplayInfoData | Stub |
+| 126 | -756 | GetDisplayInfoData | Implemented |
 | 127 | -762 | FontExtent | Implemented |
 | 128 | -768 | ReadPixelLine8 | Implemented |
 | 129 | -774 | WritePixelLine8 | Implemented |
 | 130 | -780 | ReadPixelArray8 | Implemented |
 | 131 | -786 | WritePixelArray8 | Implemented |
 | 132 | -792 | GetVPModeID | Implemented |
-| 133 | -798 | ModeNotAvailable | Stub |
+| 133 | -798 | ModeNotAvailable | Implemented |
 | 134 | -804 | WeighTAMatch | Stub |
 | 135 | -810 | EraseRect | Implemented |
 | 136 | -816 | ExtendFont | Implemented |
@@ -337,7 +352,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 153 | -918 | AllocBitMap | Implemented |
 | 154 | -924 | FreeBitMap | Implemented |
 | 155 | -930 | GetExtSpriteA | Stub |
-| 156 | -936 | CoerceMode | Stub |
+| 156 | -936 | CoerceMode | Implemented |
 | 157 | -942 | ChangeVPBitMap | Stub |
 | 158 | -948 | ReleasePen | Implemented |
 | 159 | -954 | ObtainPen | Implemented |
@@ -356,7 +371,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 172 | -1032 | FreeSpriteData | Stub |
 | 173 | -1038 | SetRPAttrsA | Stub |
 | 174 | -1044 | GetRPAttrsA | Stub |
-| 175 | -1050 | BestModeIDA | Stub |
+| 175 | -1050 | BestModeIDA | Implemented |
 | 176 | -1056 | WriteChunkyPixels | Implemented |
 
 ### Function index encoding
