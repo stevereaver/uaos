@@ -381,38 +381,6 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_SET_CONSOLE_TASK 55
 #define DOS_CREATE_SEG_LIST 56
 
-/* graphics.library function indices (must match graphics_lib.c) */
-#define GFX_OPEN_LIBRARY      1
-#define GFX_CLOSE_LIBRARY     2
-#define GFX_INIT_RASTPORT     3
-#define GFX_INIT_VIEW         4
-#define GFX_LOAD_VIEW         5
-#define GFX_WAITTOF           6
-#define GFX_RASTPORT          7
-#define GFX_TEXT              8
-#define GFX_TEXTFIT           9
-#define GFX_TEXT_LENGTH       10
-#define GFX_MOVE              11
-#define GFX_DRAW              12
-#define GFX_RECTFILL          13
-#define GFX_POLYGON           14
-#define GFX_ELLIPSE           15
-#define GFX_SET_RAST          16
-#define GFX_SET_APEN          17
-#define GFX_SET_BPEN          18
-#define GFX_SET_DRMD          19
-#define GFX_SET_OPEN          20
-#define GFX_SET_WRITE_MASK    21
-#define GFX_BLIT              22
-#define GFX_READ_PIXEL        23
-#define GFX_WRITE_PIXEL       24
-#define GFX_GET_BITMAP        25
-#define GFX_ALLOC_BITMAP      26
-#define GFX_FREE_BITMAP       27
-#define GFX_LOAD_RGB4         28
-#define GFX_LOAD_RGB32        29
-#define GFX_GET_COLOR_MAP     30
-
 /* intuition.library function indices */
 #define INTUITION_OPEN_LIBRARY      1
 #define INTUITION_CLOSE_LIBRARY     2
@@ -484,8 +452,8 @@ static void install_stub(int lib_id, int func_idx)
 /* Fake library bases */
 #define DOS_BASE       0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
 #define BSD_BASE       0x3000  /* bsdsocket.library base — clear of DOS range */
-#define GRAPHICS_BASE  0x4000  /* graphics.library base — clear of BSD range */
-#define INTUITION_BASE 0x5000  /* intuition.library base — clear of graphics range */
+#define GRAPHICS_BASE  0x8000  /* graphics.library base — room for LVOs -30..-1056 */
+#define INTUITION_BASE 0x9000  /* intuition.library base — clear of graphics range */
 
 /* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
 #define LVO_BSD_SOCKET        (-30)
@@ -569,26 +537,6 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_GET_CONSOLE_TASK (-294)
 #define LVO_DOS_SET_CONSOLE_TASK (-288)
 
-/* graphics.library LVO offsets (AmigaOS standard) */
-#define LVO_GFX_INIT_RASTPORT  (-30)
-#define LVO_GFX_INIT_VIEW     (-36)
-#define LVO_GFX_LOAD_VIEW     (-42)
-#define LVO_GFX_WAITTOF       (-48)
-#define LVO_GFX_SET_RAST      (-54)
-#define LVO_GFX_MOVE          (-60)
-#define LVO_GFX_DRAW          (-66)
-#define LVO_GFX_SET_OPEN      (-126)
-#define LVO_GFX_SET_APEN      (-132)
-#define LVO_GFX_SET_BPEN      (-138)
-#define LVO_GFX_SET_DRMD      (-144)
-#define LVO_GFX_TEXT          (-150)
-#define LVO_GFX_TEXT_LENGTH   (-156)
-#define LVO_GFX_TEXTFIT       (-162)
-#define LVO_GFX_RECTFILL      (-216)
-#define LVO_GFX_BLIT          (-228)
-#define LVO_GFX_READ_PIXEL    (-234)
-#define LVO_GFX_WRITE_PIXEL   (-240)
-
 /* intuition.library LVO offsets */
 #define LVO_INTUITION_OPEN_LIBRARY       (-30)
 #define LVO_INTUITION_CLOSE_LIBRARY      (-36)
@@ -670,27 +618,6 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_UNLOCK_RECORD:  return (uint32_t)((int)DOS_BASE + LVO_DOS_UNLOCK_RECORD);
             case DOS_GET_CONSOLE_TASK: return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_CONSOLE_TASK);
             case DOS_SET_CONSOLE_TASK: return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_CONSOLE_TASK);
-        }
-    } else if (lib_id == LIB_GRAPHICS) {
-        switch (func_idx) {
-            case GFX_INIT_RASTPORT: return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_INIT_RASTPORT);
-            case GFX_INIT_VIEW:     return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_INIT_VIEW);
-            case GFX_LOAD_VIEW:     return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_LOAD_VIEW);
-            case GFX_WAITTOF:       return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_WAITTOF);
-            case GFX_SET_RAST:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_RAST);
-            case GFX_MOVE:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_MOVE);
-            case GFX_DRAW:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_DRAW);
-            case GFX_SET_OPEN:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_OPEN);
-            case GFX_SET_APEN:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_APEN);
-            case GFX_SET_BPEN:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_BPEN);
-            case GFX_SET_DRMD:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_SET_DRMD);
-            case GFX_TEXT:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_TEXT);
-            case GFX_TEXT_LENGTH:   return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_TEXT_LENGTH);
-            case GFX_TEXTFIT:       return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_TEXTFIT);
-            case GFX_RECTFILL:      return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_RECTFILL);
-            case GFX_BLIT:          return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_BLIT);
-            case GFX_READ_PIXEL:    return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_READ_PIXEL);
-            case GFX_WRITE_PIXEL:   return (uint32_t)((int)GRAPHICS_BASE + LVO_GFX_WRITE_PIXEL);
         }
     } else if (lib_id == LIB_INTUITION) {
         switch (func_idx) {
@@ -826,32 +753,22 @@ void install_library_tables(void)
     install_lvo(BSD_BASE, LVO_BSD_INET_NTOA,     LIB_BSDSOCKET, BSD_FN_INET_NTOA);
     install_lvo(BSD_BASE, LVO_BSD_GETHOSTBYNAME, LIB_BSDSOCKET, BSD_FN_GETHOSTBYNAME);
 
-    /* graphics.library at GRAPHICS_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
-    for (int lvo = -6; lvo >= -240; lvo -= 6) {
+    /* graphics.library at GRAPHICS_BASE — full AmigaOS LVO range -30 .. -1056.
+     * Pre-fill every slot with a safe MOVEQ #0,D0 + RTS, then install an
+     * ILLEGAL dispatch stub for every slot so unimplemented calls fall back to
+     * graphics_Unimplemented() in graphics_lib.c.
+     *
+     * LVO slot = |LVO| / 6.  Valid slots are 5..176 (LVO -30..-1056). */
+    for (int lvo = -30; lvo >= -1056; lvo -= 6) {
         uint32_t addr = (uint32_t)((int)GRAPHICS_BASE + lvo);
-        if (addr < GUEST_RAM_SIZE - 4) {
-            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
-            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
-        }
+        if (addr >= GUEST_RAM_SIZE - 4) continue;
+        g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
+        g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
     }
-    install_lvo(GRAPHICS_BASE, LVO_GFX_INIT_RASTPORT, LIB_GRAPHICS, GFX_INIT_RASTPORT);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_INIT_VIEW,     LIB_GRAPHICS, GFX_INIT_VIEW);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_LOAD_VIEW,     LIB_GRAPHICS, GFX_LOAD_VIEW);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_WAITTOF,       LIB_GRAPHICS, GFX_WAITTOF);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_RAST,      LIB_GRAPHICS, GFX_SET_RAST);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_MOVE,          LIB_GRAPHICS, GFX_MOVE);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_DRAW,          LIB_GRAPHICS, GFX_DRAW);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_OPEN,      LIB_GRAPHICS, GFX_SET_OPEN);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_APEN,      LIB_GRAPHICS, GFX_SET_APEN);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_BPEN,      LIB_GRAPHICS, GFX_SET_BPEN);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_SET_DRMD,      LIB_GRAPHICS, GFX_SET_DRMD);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_TEXT,          LIB_GRAPHICS, GFX_TEXT);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_TEXT_LENGTH,   LIB_GRAPHICS, GFX_TEXT_LENGTH);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_TEXTFIT,       LIB_GRAPHICS, GFX_TEXTFIT);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_RECTFILL,      LIB_GRAPHICS, GFX_RECTFILL);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_BLIT,          LIB_GRAPHICS, GFX_BLIT);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_READ_PIXEL,    LIB_GRAPHICS, GFX_READ_PIXEL);
-    install_lvo(GRAPHICS_BASE, LVO_GFX_WRITE_PIXEL,   LIB_GRAPHICS, GFX_WRITE_PIXEL);
+    for (int lvo = -30; lvo >= -1056; lvo -= 6) {
+        int slot = (-lvo) / 6;
+        install_lvo(GRAPHICS_BASE, lvo, LIB_GRAPHICS, slot);
+    }
 
     /* intuition.library at INTUITION_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -300; lvo -= 6) {
@@ -958,7 +875,7 @@ typedef struct {
 
 static GlueLoadableLib g_glue_libs[MAX_GLUE_LOADABLE_LIBS];
 static int             g_glue_lib_count = 0;
-static uint32_t        g_next_loadable_base = 0x6000;
+static uint32_t        g_next_loadable_base = 0xA000;
 
 void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
                                   uint32_t size, uint32_t *out_base)

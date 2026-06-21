@@ -28,6 +28,7 @@
 #define RP_OFF_AOLPEN       28
 #define RP_OFF_OLNPEN       29
 #define RP_OFF_FONT         30
+#define RP_OFF_MASK         40   /* write mask (V39) */
 #define RP_SIZE_MIN         64   /* enough to cover fields we touch */
 
 /* Drawing modes */
