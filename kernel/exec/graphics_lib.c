@@ -36,6 +36,8 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 #define M68K_REG_D3  3
 #define M68K_REG_A0  8
 #define M68K_REG_A1  9
+#define M68K_REG_A2 10
+#define M68K_REG_A3 11
 
 /* =========================================================================
  * LVO slot table for graphics.library
@@ -252,6 +254,15 @@ static int current_mode(uint32_t rp)
 {
     if (!rp) return JAM1;
     return (int)rp_u8(rp, RP_OFF_DRAWMODE);
+}
+
+/* Helper: 32-bit 0x00RRGGBB → 8-bit greyscale */
+static uint8_t rgb_to_grey8(uint32_t rgb)
+{
+    uint8_t r = (uint8_t)((rgb >> 16) & 0xFF);
+    uint8_t g = (uint8_t)((rgb >> 8) & 0xFF);
+    uint8_t b = (uint8_t)(rgb & 0xFF);
+    return (uint8_t)((r + g + b) / 3);
 }
 
 /* Bresenham line — clipped per-pixel by FB_PutPixel */
@@ -918,6 +929,116 @@ static void graphics_WritePixel(void)
     FB_PutPixel(x, y, col);
 }
 
+static void graphics_ReadPixelLine8(void)
+{
+    /* ReadPixelLine8(rp, x, y, width, array)
+     * A1 = rp, D0 = x, D1 = y, D2 = width, A0 = array
+     * Reads a horizontal line of 32-bit framebuffer pixels, converts each
+     * to 8-bit greyscale, and writes them to the chunky array.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t array = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)rp;
+    if (!array || w <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (int i = 0; i < w; i++)
+        m68k_write_memory_8(array + i, rgb_to_grey8(FB_GetPixel(x + i, y)));
+    m68k_set_reg(M68K_REG_D0, (unsigned int)w);
+}
+
+static void graphics_WritePixelLine8(void)
+{
+    /* WritePixelLine8(rp, x, y, width, array, temp)
+     * A1 = rp, D0 = x, D1 = y, D2 = width, A0 = array, A2 = temp
+     * Writes a horizontal line of chunky pixels to the framebuffer by
+     * expanding each UBYTE through the classic Amiga pen palette.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t array = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t temp = m68k_get_reg(NULL, M68K_REG_A2);
+    (void)rp; (void)temp;
+    if (!array || w <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (int i = 0; i < w; i++) {
+        uint8_t pen = (uint8_t)m68k_read_memory_8(array + i);
+        FB_PutPixel(x + i, y, amiga_pen_to_rgb(pen));
+    }
+    m68k_set_reg(M68K_REG_D0, (unsigned int)w);
+}
+
+static void graphics_ReadPixelArray8(void)
+{
+    /* ReadPixelArray8(rp, x, y, xSize, ySize, array, arrayBytesPerRow)
+     * A1 = rp, D0 = x, D1 = y, D2 = xSize, D3 = ySize, A0 = array, A2 = arrayBytesPerRow
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t array = m68k_get_reg(NULL, M68K_REG_A0);
+    int bpr = (int)m68k_get_reg(NULL, M68K_REG_A2);
+    (void)rp;
+    if (!array || w <= 0 || h <= 0 || bpr <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            uint8_t v = rgb_to_grey8(FB_GetPixel(x + col, y + row));
+            m68k_write_memory_8(array + row * bpr + col, v);
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, (unsigned int)(w * h));
+}
+
+static void graphics_WritePixelArray8(void)
+{
+    /* WritePixelArray8(rp, x, y, xSize, ySize, array, arrayBytesPerRow)
+     * A1 = rp, D0 = x, D1 = y, D2 = xSize, D3 = ySize, A0 = array, A2 = arrayBytesPerRow
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t array = m68k_get_reg(NULL, M68K_REG_A0);
+    int bpr = (int)m68k_get_reg(NULL, M68K_REG_A2);
+    (void)rp;
+    if (!array || w <= 0 || h <= 0 || bpr <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            uint8_t pen = (uint8_t)m68k_read_memory_8(array + row * bpr + col);
+            FB_PutPixel(x + col, y + row, amiga_pen_to_rgb(pen));
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, (unsigned int)(w * h));
+}
+
+static void graphics_WriteChunkyPixels(void)
+{
+    /* WriteChunkyPixels(rp, x, y, xSize, ySize, array, arrayBytesPerRow)
+     * A1 = rp, D0 = x, D1 = y, D2 = xSize, D3 = ySize, A0 = array, A2 = arrayBytesPerRow
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    int x = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int y = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t array = m68k_get_reg(NULL, M68K_REG_A0);
+    int bpr = (int)m68k_get_reg(NULL, M68K_REG_A2);
+    (void)rp;
+    if (!array || w <= 0 || h <= 0 || bpr <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            uint8_t pen = (uint8_t)m68k_read_memory_8(array + row * bpr + col);
+            FB_PutPixel(x + col, y + row, amiga_pen_to_rgb(pen));
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, (unsigned int)(w * h));
+}
+
 static void graphics_AllocBitMap(void)
 {
     /* AllocBitMap — stub */
@@ -1169,10 +1290,15 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
+    [GFX_SLOT_READPIXELLINE8]          = graphics_ReadPixelLine8,
+    [GFX_SLOT_WRITEPIXELLINE8]         = graphics_WritePixelLine8,
+    [GFX_SLOT_READPIXELARRAY8]         = graphics_ReadPixelArray8,
+    [GFX_SLOT_WRITEPIXELARRAY8]        = graphics_WritePixelArray8,
     [GFX_SLOT_ERASERECT]               = graphics_EraseRect,
     [GFX_SLOT_SETOUTLINEPEN]           = graphics_SetOutlinePen,
     [GFX_SLOT_SETWRITEMASK]            = graphics_SetWriteMask,
     [GFX_SLOT_SETMAXPEN]               = graphics_SetMaxPen,
+    [GFX_SLOT_WRITECHUNKYPIXELS]         = graphics_WriteChunkyPixels,
 };
 
 /* =========================================================================

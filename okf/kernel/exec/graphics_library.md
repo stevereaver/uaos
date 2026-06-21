@@ -77,6 +77,16 @@ timestamp: 2026-06-21T12:00:00Z
 | `BltClear` | Implemented | Zeroes a guest memory block. |
 | `InitArea` / `AreaMove` / `AreaDraw` / `AreaEnd` | Implemented | Polygon path + scanline fill (internal state keyed by RastPort). |
 
+### Chunky pixel I/O
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `ReadPixelLine8` | Implemented | Reads a line of framebuffer pixels into an 8-bit chunky array (greyscale). |
+| `WritePixelLine8` | Implemented | Writes a line of 8-bit chunky pen indices to the framebuffer. |
+| `ReadPixelArray8` | Implemented | Reads a rectangular region into an 8-bit chunky array (greyscale). |
+| `WritePixelArray8` | Implemented | Writes a rectangular 8-bit chunky pen array to the framebuffer. |
+| `WriteChunkyPixels` | Implemented | Writes a rectangular 8-bit chunky pen array to the framebuffer. |
+
 ### Still stubbed
 
 - `LoadView`, `WaitTOF` — no copper/display hardware.
@@ -221,10 +231,10 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 125 | -750 | *reserved* | No-op |
 | 126 | -756 | GetDisplayInfoData | Stub |
 | 127 | -762 | FontExtent | Stub |
-| 128 | -768 | ReadPixelLine8 | Stub |
-| 129 | -774 | WritePixelLine8 | Stub |
-| 130 | -780 | ReadPixelArray8 | Stub |
-| 131 | -786 | WritePixelArray8 | Stub |
+| 128 | -768 | ReadPixelLine8 | Implemented |
+| 129 | -774 | WritePixelLine8 | Implemented |
+| 130 | -780 | ReadPixelArray8 | Implemented |
+| 131 | -786 | WritePixelArray8 | Implemented |
 | 132 | -792 | GetVPModeID | Implemented |
 | 133 | -798 | ModeNotAvailable | Stub |
 | 134 | -804 | WeighTAMatch | Stub |
@@ -269,7 +279,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 173 | -1038 | SetRPAttrsA | Stub |
 | 174 | -1044 | GetRPAttrsA | Stub |
 | 175 | -1050 | BestModeIDA | Stub |
-| 176 | -1056 | WriteChunkyPixels | Stub |
+| 176 | -1056 | WriteChunkyPixels | Implemented |
 
 ### Function index encoding
 
