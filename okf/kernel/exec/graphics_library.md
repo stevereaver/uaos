@@ -32,8 +32,20 @@ timestamp: 2026-06-21T12:00:00Z
 | `GetOutlinePen` | Implemented | Returns `OlPen` in D0. |
 | `SetOutlinePen` | Implemented | Writes `OlPen`, returns old pen in D0. |
 | `SetWriteMask` | Implemented | Stores `Mask` in guest RastPort; currently no effect on drawing. |
-| `SetMaxPen` | Implemented | No-op on truecolour framebuffer. |
+| `SetMaxPen` | Implemented | Stores `MaxPen` in guest RastPort; no effect on drawing. |
 | `SetABPenDrMd` | Implemented | Atomic FgPen/BgPen/DrawMode update. |
+| `SetFont` | Implemented | Sets `rp->Font` pointer; returns previous font. |
+| `AskFont` | Implemented | Returns `rp->Font` pointer in D0. |
+
+### View/ViewPort/BitMap initialisation
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `InitView` | Implemented | Zeroes the guest `View` structure. |
+| `InitVPort` | Implemented | Zeroes the guest `ViewPort` structure. |
+| `InitBitMap` | Implemented | Sets `BytesPerRow`, `Rows`, `Depth`, `Flags`, and clears plane pointers. |
+| `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID` from A0. |
+| `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES` from A0. |
 
 ### Hardware/viewport no-ops
 
@@ -58,10 +70,12 @@ timestamp: 2026-06-21T12:00:00Z
 
 ### Still stubbed
 
-- `InitView`, `LoadView`, `WaitTOF` — no copper/display hardware.
-- `Polygon`, `Ellipse`, `Blit` — complex drawing; not yet implemented.
-- `AllocBitMap`, `FreeBitMap`, `GetBitMap` — no off-screen bitmap allocation yet.
+- `LoadView`, `WaitTOF` — no copper/display hardware.
+- `BltBitMap`, `BltTemplate`, `BltClear`, `BltPattern` — complex drawing; not yet implemented.
+- `Polygon`, `Ellipse`, `Flood` — complex drawing; not yet implemented.
+- `AllocBitMap`, `FreeBitMap` — no off-screen bitmap allocation yet.
 - `LoadRGB4`, `LoadRGB32`, `GetColorMap` — palette/colourmap not wired to framebuffer.
+- `GetColorMap`, `FreeColorMap`, `SetRGB32CM`, `GetRGB32` — colourmap helpers not wired.
 
 ## LVO dispatch
 
@@ -83,7 +97,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 8 | -48 | ClearScreen | Stub |
 | 9 | -54 | TextLength | Implemented |
 | 10 | -60 | Text | Implemented |
-| 11 | -66 | SetFont | Stub |
+| 11 | -66 | SetFont | Implemented |
 | 12 | -72 | OpenFont | Stub |
 | 13 | -78 | CloseFont | Stub |
 | 14 | -84 | AskSoftStyle | Stub |
@@ -106,7 +120,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 31 | -186 | AreaEllipse | Stub |
 | 32 | -192 | LoadRGB4 | Stub |
 | 33 | -198 | InitRastPort | Implemented |
-| 34 | -204 | InitVPort | Stub |
+| 34 | -204 | InitVPort | Implemented |
 | 35 | -210 | MrgCop | Stub |
 | 36 | -216 | MakeVPort | Stub |
 | 37 | -222 | LoadView | Stub |
@@ -132,12 +146,12 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 57 | -342 | SetAPen | Implemented |
 | 58 | -348 | SetBPen | Implemented |
 | 59 | -354 | SetDrMd | Implemented |
-| 60 | -360 | InitView | Stub |
+| 60 | -360 | InitView | Implemented |
 | 61 | -366 | CBump | Stub |
 | 62 | -372 | CMove | Stub |
 | 63 | -378 | CWait | Stub |
 | 64 | -384 | VBeamPos | Implemented |
-| 65 | -390 | InitBitMap | Stub |
+| 65 | -390 | InitBitMap | Implemented |
 | 66 | -396 | ScrollRaster | Stub |
 | 67 | -402 | WaitBOVP | Implemented |
 | 68 | -408 | GetSprite | Stub |
@@ -151,7 +165,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 76 | -456 | OwnBlitter | Stub |
 | 77 | -462 | DisownBlitter | Stub |
 | 78 | -468 | InitTmpRas | Stub |
-| 79 | -474 | AskFont | Stub |
+| 79 | -474 | AskFont | Implemented |
 | 80 | -480 | AddFont | Stub |
 | 81 | -486 | RemFont | Stub |
 | 82 | -492 | AllocRaster | Stub |
@@ -204,7 +218,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 129 | -774 | WritePixelLine8 | Stub |
 | 130 | -780 | ReadPixelArray8 | Stub |
 | 131 | -786 | WritePixelArray8 | Stub |
-| 132 | -792 | GetVPModeID | Stub |
+| 132 | -792 | GetVPModeID | Implemented |
 | 133 | -798 | ModeNotAvailable | Stub |
 | 134 | -804 | WeighTAMatch | Stub |
 | 135 | -810 | EraseRect | Stub |
@@ -232,7 +246,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 157 | -942 | ChangeVPBitMap | Stub |
 | 158 | -948 | ReleasePen | Stub |
 | 159 | -954 | ObtainPen | Stub |
-| 160 | -960 | GetBitMapAttr | Stub |
+| 160 | -960 | GetBitMapAttr | Implemented |
 | 161 | -966 | AllocDBufInfo | Stub |
 | 162 | -972 | FreeDBufInfo | Stub |
 | 163 | -978 | SetOutlinePen | Implemented |

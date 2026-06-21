@@ -311,7 +311,45 @@ static void graphics_InitRastPort(void)
 
 static void graphics_InitView(void)
 {
-    /* InitView — stub, we have no copper/display hardware */
+    /* InitView(view) — A1 = view
+     * Zero the View structure and mark it as empty.
+     */
+    uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!view) return;
+    for (int i = 0; i < 64; i++)
+        m68k_write_memory_8(view + i, 0);
+}
+
+static void graphics_InitVPort(void)
+{
+    /* InitVPort(vport) — A1 = vport
+     * Zero the ViewPort structure.
+     */
+    uint32_t vport = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!vport) return;
+    for (int i = 0; i < 80; i++)
+        m68k_write_memory_8(vport + i, 0);
+}
+
+static void graphics_InitBitMap(void)
+{
+    /* InitBitMap(bm, width, height, depth)
+     * A1 = bm, D0 = width, D1 = height, D2 = depth
+     * Set up the BitMap header and clear plane pointers.
+     */
+    uint32_t bm = m68k_get_reg(NULL, M68K_REG_A1);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int d = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    if (!bm) return;
+    uint16_t bytes_per_row = (uint16_t)(((w + 15) / 16) * 2);
+    if (bytes_per_row < 2) bytes_per_row = 2;
+    m68k_write_memory_16(bm + BM_OFF_BYTESPERROW, bytes_per_row);
+    m68k_write_memory_16(bm + BM_OFF_ROWS, (uint16_t)h);
+    m68k_write_memory_8(bm + BM_OFF_FLAGS, 0);
+    m68k_write_memory_8(bm + BM_OFF_DEPTH, (uint8_t)d);
+    for (int i = 0; i < 8; i++)
+        m68k_write_memory_32(bm + BM_OFF_PLANES + i * 4, 0);
 }
 
 static void graphics_LoadView(void)
@@ -508,12 +546,6 @@ static void graphics_WritePixel(void)
     FB_PutPixel(x, y, col);
 }
 
-static void graphics_GetBitMapAttr(void)
-{
-    /* GetBitMapAttr — stub */
-    m68k_set_reg(M68K_REG_D0, 0);
-}
-
 static void graphics_AllocBitMap(void)
 {
     /* AllocBitMap — stub */
@@ -589,10 +621,81 @@ static void graphics_SetOutlinePen(void)
 static void graphics_SetMaxPen(void)
 {
     /* SetMaxPen(rp, maxpen) — A1 = rp, D0 = maxpen
-     * No-op on our truecolour framebuffer; kept as a safe stub.
+     * Store the max pen in the RastPort; drawing is unaffected on our
+     * truecolour framebuffer.
      */
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
-    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint8_t maxpen = (uint8_t)m68k_get_reg(NULL, M68K_REG_D0);
+    if (rp) rp_w_u8(rp, RP_OFF_MAXPEN, maxpen);
+}
+
+static void graphics_SetFont(void)
+{
+    /* SetFont(rp, font) — A1 = rp, A0 = font
+     * Returns the previous font pointer in D0.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t font = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!rp) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    uint32_t old = m68k_read_memory_32(rp + RP_OFF_FONT);
+    m68k_write_memory_32(rp + RP_OFF_FONT, font);
+    m68k_set_reg(M68K_REG_D0, old);
+}
+
+static void graphics_AskFont(void)
+{
+    /* AskFont(rp) — A1 = rp
+     * Returns the current font pointer in D0.
+     */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t font = rp ? m68k_read_memory_32(rp + RP_OFF_FONT) : 0;
+    m68k_set_reg(M68K_REG_D0, font);
+}
+
+static void graphics_GetVPModeID(void)
+{
+    /* GetVPModeID(vp) — A0 = vp
+     * Returns the ViewPort DisplayID in D0.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t modeid = vp ? m68k_read_memory_32(vp + VP_OFF_DISPLAYID) : 0;
+    m68k_set_reg(M68K_REG_D0, modeid);
+}
+
+static void graphics_GetBitMapAttr(void)
+{
+    /* GetBitMapAttr(bm, attr) — A0 = bm, D1 = attr
+     * Returns the requested BitMap attribute in D0.
+     */
+    uint32_t bm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t attr = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t val = 0;
+    if (bm) {
+        switch (attr) {
+            case BMA_WIDTH:
+                val = (uint32_t)m68k_read_memory_16(bm + BM_OFF_BYTESPERROW) * 8;
+                break;
+            case BMA_HEIGHT:
+                val = (uint32_t)m68k_read_memory_16(bm + BM_OFF_ROWS);
+                break;
+            case BMA_DEPTH:
+                val = (uint32_t)m68k_read_memory_8(bm + BM_OFF_DEPTH);
+                break;
+            case BMA_FLAGS:
+                val = (uint32_t)m68k_read_memory_8(bm + BM_OFF_FLAGS);
+                break;
+            case BMA_BASE:
+                val = m68k_read_memory_32(bm + BM_OFF_PLANES);
+                break;
+            case BMA_ROWBYTES:
+                val = (uint32_t)m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
+                break;
+            default:
+                val = 0;
+                break;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, val);
 }
 
 static void graphics_SetABPenDrMd(void)
@@ -648,8 +751,10 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_BLTTEMPLATE]             = graphics_BltTemplate,
     [GFX_SLOT_TEXTLENGTH]              = graphics_TextLength,
     [GFX_SLOT_TEXT]                    = graphics_Text,
+    [GFX_SLOT_SETFONT]                 = graphics_SetFont,
     [GFX_SLOT_LOADRGB4]                = graphics_LoadRGB4,
     [GFX_SLOT_INITRASTPORT]            = graphics_InitRastPort,
+    [GFX_SLOT_INITVPORT]               = graphics_InitVPort,
     [GFX_SLOT_LOADVIEW]                = graphics_LoadView,
     [GFX_SLOT_WAITBLIT]                = graphics_WaitBlit,
     [GFX_SLOT_SETRAST]                 = graphics_SetRast,
@@ -665,9 +770,12 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_SETDRMD]                 = graphics_SetDrMd,
     [GFX_SLOT_INITVIEW]                = graphics_InitView,
     [GFX_SLOT_VBEAMPOS]                = graphics_VBeamPos,
+    [GFX_SLOT_INITBITMAP]              = graphics_InitBitMap,
     [GFX_SLOT_WAITBOVP]                = graphics_WaitBOVP,
     [GFX_SLOT_GETCOLORMAP]             = graphics_GetColorMap,
+    [GFX_SLOT_ASKFONT]                 = graphics_AskFont,
     [GFX_SLOT_TEXTFIT]                 = graphics_TextFit,
+    [GFX_SLOT_GETVPMODEID]             = graphics_GetVPModeID,
     [GFX_SLOT_SETRGB32]                = graphics_LoadRGB32,
     [GFX_SLOT_GETAPEN]                 = graphics_GetAPen,
     [GFX_SLOT_GETBPEN]                 = graphics_GetBPen,

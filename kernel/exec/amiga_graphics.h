@@ -29,7 +29,35 @@
 #define RP_OFF_OLNPEN       29
 #define RP_OFF_FONT         30
 #define RP_OFF_MASK         40   /* write mask (V39) */
+#define RP_OFF_MAXPEN       41   /* max pen used in RastPort (V39) */
 #define RP_SIZE_MIN         64   /* enough to cover fields we touch */
+
+/* BitMap offsets */
+#define BM_OFF_BYTESPERROW   0
+#define BM_OFF_ROWS          2
+#define BM_OFF_FLAGS         4
+#define BM_OFF_DEPTH         5
+#define BM_OFF_PLANES        8
+
+/* BitMap attribute tags for GetBitMapAttr */
+#define BMA_WIDTH            0
+#define BMA_HEIGHT           1
+#define BMA_DEPTH            2
+#define BMA_FLAGS            3
+#define BMA_BASE             4
+#define BMA_ROWBYTES         5
+
+/* ViewPort offsets */
+#define VP_OFF_RASINFO      14
+#define VP_OFF_COLORMAP     18
+#define VP_OFF_DWIDTH       22
+#define VP_OFF_DHEIGHT      24
+#define VP_OFF_DXOFFSET     26
+#define VP_OFF_DYOFFSET     28
+#define VP_OFF_MODES        30
+#define VP_OFF_SPRITE       32
+#define VP_OFF_COLORSET     34
+#define VP_OFF_DISPLAYID    36
 
 /* Drawing modes */
 #define JAM1        0
