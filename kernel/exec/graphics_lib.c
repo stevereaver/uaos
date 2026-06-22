@@ -705,6 +705,51 @@ static void rp_put_pixel(uint32_t rp, int x, int y, uint32_t pen)
     blit_surface_put(&s, x, y, pen);
 }
 
+static void planar_fill_rect(BlitSurface *s, int x, int y, int w, int h, uint32_t pen)
+{
+    if (w <= 0 || h <= 0) return;
+    int x1 = x;
+    int y1 = y;
+    int x2 = x + w - 1;
+    int y2 = y + h - 1;
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 >= s->width) x2 = s->width - 1;
+    if (y2 >= s->height) y2 = s->height - 1;
+    if (x1 > x2 || y1 > y2) return;
+
+    int start_byte = x1 / 8;
+    int end_byte = x2 / 8;
+    int start_bit = 7 - (x1 & 7);
+    int end_bit = 7 - (x2 & 7);
+
+    for (int p = 0; p < s->depth; p++) {
+        uint32_t base = s->planes[p];
+        if (!base) continue;
+        uint8_t bit_val = (uint8_t)((pen >> p) & 1);
+        for (int yy = y1; yy <= y2; yy++) {
+            uint32_t row = base + (uint32_t)yy * s->bpr;
+            for (int b = start_byte; b <= end_byte; b++) {
+                uint8_t mask;
+                if (b == start_byte && b == end_byte) {
+                    mask = (uint8_t)(((1 << (start_bit + 1)) - 1) & ~((1 << end_bit) - 1));
+                } else if (b == start_byte) {
+                    mask = (uint8_t)((1 << (start_bit + 1)) - 1);
+                } else if (b == end_byte) {
+                    mask = (uint8_t)(~((1 << end_bit) - 1));
+                } else {
+                    mask = 0xFF;
+                }
+                uint8_t old = m68k_read_memory_8(row + b);
+                uint8_t new_val;
+                if (bit_val) new_val = old | mask;
+                else new_val = old & ~mask;
+                m68k_write_memory_8(row + b, new_val);
+            }
+        }
+    }
+}
+
 static void rp_fill_rect(uint32_t rp, int x, int y, int w, int h, uint32_t pen)
 {
     if (w <= 0 || h <= 0) return;
@@ -714,9 +759,7 @@ static void rp_fill_rect(uint32_t rp, int x, int y, int w, int h, uint32_t pen)
         FB_FillRect(x, y, w, h, rp_pen_to_rgb(rp, pen));
         return;
     }
-    for (int yy = y; yy < y + h; yy++)
-        for (int xx = x; xx < x + w; xx++)
-            blit_surface_put(&s, xx, yy, pen);
+    planar_fill_rect(&s, x, y, w, h, pen);
 }
 
 static int text_baseline(uint32_t rp)
@@ -1193,9 +1236,58 @@ static void graphics_InitBitMap(void)
         m68k_write_memory_32(bm + BM_OFF_PLANES + i * 4, 0);
 }
 
+static uint32_t cmap_lookup_rgb(uint32_t cmap, uint32_t pen)
+{
+    if (!cmap) return amiga_pen_to_rgb((uint8_t)pen);
+    uint32_t table = m68k_read_memory_32(cmap + CM_OFF_COLORTABLE);
+    uint32_t count = (uint32_t)m68k_read_memory_16(cmap + CM_OFF_COUNT);
+    if (!table || pen >= count) return amiga_pen_to_rgb((uint8_t)pen);
+    return m68k_read_memory_32(table + pen * 4);
+}
+
+static void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int dy, int w, int h)
+{
+    if (!bm || !g_fb.valid) return;
+    BlitSurface s;
+    blit_surface_from_bitmap(&s, bm);
+    if (s.is_fb) return;
+
+    for (int y = 0; y < h && y < s.height; y++) {
+        for (int x = 0; x < w && x < s.width; x++) {
+            uint32_t pen = 0;
+            if (!blit_surface_get(&s, x, y, &pen)) continue;
+            uint32_t rgb = cmap_lookup_rgb(cmap, pen);
+            FB_PutPixel(dx + x, dy + y, rgb);
+        }
+    }
+}
+
 static void graphics_LoadView(void)
 {
-    /* LoadView — stub */
+    /* LoadView(view) — A1 = view
+     * Render the first ViewPort's BitMap into the host linear framebuffer.
+     * LoadView(NULL) blanks the screen.
+     */
+    uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!view) {
+        FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, 0);
+        return;
+    }
+
+    uint32_t vp = m68k_read_memory_32(view + VIEW_OFF_VIEWPORT);
+    if (!vp) return;
+
+    uint32_t rasinfo = m68k_read_memory_32(vp + VP_OFF_RASINFO);
+    uint32_t cmap    = m68k_read_memory_32(vp + VP_OFF_COLORMAP);
+    if (!rasinfo) return;
+
+    uint32_t bm = m68k_read_memory_32(rasinfo + RI_OFF_BITMAP);
+    int dx = (int)m68k_read_memory_16(vp + VP_OFF_DXOFFSET);
+    int dy = (int)m68k_read_memory_16(vp + VP_OFF_DYOFFSET);
+    int w  = (int)m68k_read_memory_16(vp + VP_OFF_DWIDTH);
+    int h  = (int)m68k_read_memory_16(vp + VP_OFF_DHEIGHT);
+
+    render_bitmap_to_framebuffer(bm, cmap, dx, dy, w, h);
 }
 
 static void graphics_WaitTOF(void)

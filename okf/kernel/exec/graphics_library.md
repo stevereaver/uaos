@@ -4,7 +4,7 @@ title: graphics.library
 description: UAOS native implementation of the AmigaOS graphics.library for emulated M68k tasks.
 resource: /kernel/exec/graphics_lib.c
 tags: [graphics, library, m68k, thunking, rastport]
-timestamp: 2026-06-22T12:00:00Z
+timestamp: 2026-06-22T14:00:00Z
 ---
 
 # graphics.library
@@ -46,6 +46,7 @@ timestamp: 2026-06-22T12:00:00Z
 | `InitView` | Implemented | Zeroes the guest `View` structure. |
 | `InitVPort` | Implemented | Zeroes the guest `ViewPort` structure. |
 | `InitBitMap` | Implemented | Sets `BytesPerRow`, `Rows`, `Depth`, `Flags`, and clears plane pointers. |
+| `LoadView` | Implemented | Renders the first `ViewPort`'s planar `BitMap` into the host linear framebuffer using its `ColorMap`; `LoadView(NULL)` blanks the screen. |
 | `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID` from A0. |
 | `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES` from A0. |
 
@@ -63,13 +64,13 @@ timestamp: 2026-06-22T12:00:00Z
 | Function | Status | Notes |
 |----------|--------|-------|
 | `InitRastPort` | Implemented | Zeroes RastPort and sets default pens. |
-| `Move` / `Draw` | Implemented | Bresenham line drawing on the RastPort surface. |
-| `PolyDraw` | Implemented | Draws connected line segments from an XY array. |
-| `RectFill` | Implemented | Filled rectangle on the RastPort surface. |
-| `EraseRect` | Implemented | Fills rectangle with background pen. |
+| `Move` / `Draw` | Implemented | Bresenham line drawing on the RastPort surface (planar BitMap or framebuffer). |
+| `PolyDraw` | Implemented | Draws connected line segments from an XY array on the RastPort surface. |
+| `RectFill` | Implemented | Filled rectangle on the RastPort surface; planar fills use per-plane byte masks. |
+| `EraseRect` | Implemented | Fills rectangle with background pen on the RastPort surface. |
 | `ClearEOL` | Implemented | Clears from pen position to right edge of the surface. |
 | `ClearScreen` | Implemented | Clears the entire RastPort surface with background pen. |
-| `Text` | Implemented | 8×16 font rendering; spacing and metrics come from the current `rp->Font`. |
+| `Text` | Implemented | 8×16 font rendering on the RastPort surface; spacing and metrics come from the current `rp->Font`. |
 | `TextLength` | Implemented | Returns pixel width based on current font character width. |
 | `TextExtent` | Implemented | Fills `TextExtent` from the current font/metrics. |
 | `TextFit` | Implemented | Returns characters that fit in a width constraint. |
@@ -77,10 +78,10 @@ timestamp: 2026-06-22T12:00:00Z
 | `SetRast` | Implemented | Fills the RastPort surface to the given pen. |
 | `ReadPixel` / `WritePixel` | Implemented | Pixel read/write on the RastPort surface; returns/writes pen indices for planar BitMaps. |
 | `DrawEllipse` | Implemented | Midpoint ellipse outline on the RastPort surface. |
-| `AreaEllipse` | Implemented | Filled ellipse via horizontal scanlines. |
-| `Flood` | Implemented | 4-way scanline flood fill from start point. |
+| `AreaEllipse` | Implemented | Filled ellipse via horizontal scanlines on the RastPort surface. |
+| `Flood` | Implemented | 4-way scanline flood fill from start point on the RastPort surface. |
 | `BltClear` | Implemented | Zeroes a guest memory block. |
-| `InitArea` / `AreaMove` / `AreaDraw` / `AreaEnd` | Implemented | Polygon path + scanline fill (internal state keyed by RastPort). |
+| `InitArea` / `AreaMove` / `AreaDraw` / `AreaEnd` | Implemented | Polygon path + scanline fill on the RastPort surface (internal state keyed by RastPort). |
 
 ### Font / text subsystem
 
@@ -122,6 +123,7 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 - Drawing operations (`Draw`, `RectFill`, `Text`, `WritePixel`, etc.) and blitting (`BltBitMap`, `ClipBlt`, `BltBitMapRastPort`) work on the RastPort's surface, whether that is a planar BitMap or the screen framebuffer.
 - When writing to a screen RastPort, pen indices are converted to 32-bit RGB using the default Amiga palette; when writing to a planar BitMap, pen indices are written directly into the bitplanes.
 - Mixed planar↔framebuffer blits convert colours between pen indices and RGB as needed so the destination colour space is preserved.
+- `LoadView` translates a planar `BitMap` into the linear host framebuffer, converting pen indices through the `ViewPort`'s `ColorMap` (or the default palette if none).
 
 ### Region operations
 

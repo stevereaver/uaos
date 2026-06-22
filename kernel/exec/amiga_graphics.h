@@ -118,6 +118,12 @@
 #define BMA_BASE             4
 #define BMA_ROWBYTES         5
 
+/* View offsets */
+#define VIEW_OFF_VIEWPORT    0
+#define VIEW_OFF_DX          8
+#define VIEW_OFF_DY          10
+#define VIEW_OFF_FLAGS       12
+
 /* ViewPort offsets */
 #define VP_OFF_RASINFO      14
 #define VP_OFF_COLORMAP     18
@@ -129,6 +135,12 @@
 #define VP_OFF_SPRITE       32
 #define VP_OFF_COLORSET     34
 #define VP_OFF_DISPLAYID    36
+
+/* RasInfo offsets */
+#define RI_OFF_BITMAP        0
+#define RI_OFF_NEXT          4
+#define RI_OFF_RXOFFSET      8
+#define RI_OFF_RYOFFSET      10
 
 /* ColorMap offsets */
 #define CM_OFF_TYPE          0
