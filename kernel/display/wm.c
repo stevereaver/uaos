@@ -51,11 +51,26 @@ static int g_btn_right_prev = 0;
 /* Handle of the window currently being painted by WM_Redraw/repaint_window. */
 int WM_CurrentDrawHandle = -1;
 
+/* Forward declaration — focus notification helper used by mouse/raise/lower/close. */
+static void wm_notify_focus_change(int old_focus, int new_focus);
+
+static void wm_notify_gadget_event(int wh, int event_type, int gadget_id, int mx, int my)
+{
+    if (wh < 0 || wh >= WM_MAX_WINDOWS) return;
+    WmWindow *w = &g_wins[wh];
+    if (w->active && w->on_event)
+        w->on_event(wh, event_type, gadget_id, mx, my);
+}
+
 /* Scrollbar drag state */
 static int g_scroll_drag_win  = -1;  /* window whose thumb is being dragged */
 static int g_scroll_drag_axis = 0;   /* 0=vert, 1=horiz */
 static int g_scroll_drag_base = 0;   /* scroll value at drag start */
 static int g_scroll_drag_mbase = 0;  /* mouse coord at drag start  */
+
+/* Active gadget press tracking for IDCMP_GADGETDOWN/UP */
+static int g_gadget_win  = -1;
+static int g_gadget_id   = 0;
 
 /* =========================================================================
  * Helpers
@@ -535,6 +550,7 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     win->on_click   = (WM_ClickFn)0;
     win->on_move    = (WM_MouseMoveFn)0;
     win->on_release = (WM_MouseReleaseFn)0;
+    win->on_event   = (WM_EventFn)0;
     win->scroll_x   = 0;
     win->scroll_y   = 0;
     win->content_w  = 0;
@@ -562,6 +578,12 @@ void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release)
     g_wins[handle].on_release = on_release;
 }
 
+void WM_SetEventHandler(int handle, WM_EventFn on_event)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    g_wins[handle].on_event = on_event;
+}
+
 void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 {
     int btn_left_pressed  = (btn_left && !g_btn_left_prev);
@@ -581,64 +603,94 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             Desktop_MouseEvent(mx, my, 1, 0);
             return;
         }
+        if (wh >= WM_MAX_WINDOWS) return;
         WM_LOG("[WM] Hit window "); WM_LOG_DEC(wh); WM_LOG("\n");
-        if (wh >= 0) {
-            /* Cancel pending double-click state in all browsers except the
-             * one being clicked.  A stale first-click in a background browser
-             * could otherwise complete as a spurious double-click the next
-             * time that browser's on_click fires (e.g. clicking Clock in
-             * Tools opens DEVS in the Workbench: browser underneath). */
-            FileBrowser_CancelClicks(wh);
+        /* Cancel pending double-click state in all browsers except the
+         * one being clicked.  A stale first-click in a background browser
+         * could otherwise complete as a spurious double-click the next
+         * time that browser's on_click fires (e.g. clicking Clock in
+         * Tools opens DEVS in the Workbench: browser underneath). */
+        FileBrowser_CancelClicks(wh);
 
-            /* Close gadget takes priority */
-            if (hit_close_gadget(wh, mx, my)) {
+        /* Close gadget takes priority. If the window has an event hook,
+         * let it veto the close (e.g. Intuition windows need IDCMP_CLOSEWINDOW). */
+        if (hit_close_gadget(wh, mx, my)) {
+            g_gadget_win = wh;
+            g_gadget_id  = WM_GADGET_CLOSE;
+            wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_CLOSE, mx, my);
+            int allow_close = 1;
+            if (g_wins[wh].on_event) {
+                allow_close = g_wins[wh].on_event(wh, WM_EVT_CLOSE_REQUEST, 0, 0, 0);
+            }
+            if (allow_close) {
                 WM_CloseWindow(wh);
-                return;
             }
-
-            /* Zoom gadget */
-            if (hit_zoom_gadget(wh, mx, my)) {
-                zoom_window(wh);
-                WM_Redraw();
-                return;
-            }
-
-            /* Depth gadget — check before focus/raise */
-            if (hit_depth_gadget(wh, mx, my)) {
-                depth_window(wh);
-                WM_Redraw();
-                return;
-            }
-
-            /* Focus and raise */
-            int was_focused = (wh == g_focus);
-            g_focus = wh;
-            raise_window(wh);
-            if (!was_focused)
-                WM_Redraw();
-
-            if (hit_resize_grip(wh, mx, my)) {
-                g_resize_handle  = wh;
-                g_resize_base_w  = g_wins[wh].w;
-                g_resize_base_h  = g_wins[wh].h;
-                g_resize_orig_mx = mx;
-                g_resize_orig_my = my;
-            } else if (hit_titlebar(wh, mx, my)) {
-                g_drag_handle = wh;
-                g_drag_off_x  = mx - g_wins[wh].x;
-                g_drag_off_y  = my - g_wins[wh].y;
-            } else if (hit_scrollbars(wh, mx, my)) {
-                /* consumed by scrollbar */
-            } else if (g_wins[wh].on_click) {
-                /* Save focus before the click handler; the handler may open
-                 * a new window which changes g_focus.  We must return after
-                 * on_click so the new window layout isn't immediately hit-tested
-                 * against the same button-press event (which could spuriously
-                 * trigger the new window's close gadget or other gadgets). */
-                g_wins[wh].on_click(wh, mx, my);
-                return;
-            }
+            return;
         }
+
+        /* Zoom gadget (UAOS extension, no standard IDCMP class). */
+        if (hit_zoom_gadget(wh, mx, my)) {
+            zoom_window(wh);
+            WM_Redraw();
+            return;
+        }
+
+        /* Depth gadget — check before focus/raise */
+        if (hit_depth_gadget(wh, mx, my)) {
+            g_gadget_win = wh;
+            g_gadget_id  = WM_GADGET_DEPTH;
+            wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_DEPTH, mx, my);
+            depth_window(wh);
+            WM_Redraw();
+            return;
+        }
+
+        /* Focus and raise */
+        int was_focused = (wh == g_focus);
+        int old_focus = g_focus;
+        g_focus = wh;
+        raise_window(wh);
+        if (!was_focused) {
+            WM_Redraw();
+            wm_notify_focus_change(old_focus, g_focus);
+        }
+
+        if (hit_resize_grip(wh, mx, my)) {
+            g_gadget_win = wh;
+            g_gadget_id  = WM_GADGET_SIZE;
+            wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_SIZE, mx, my);
+            g_resize_handle  = wh;
+            g_resize_base_w  = g_wins[wh].w;
+            g_resize_base_h  = g_wins[wh].h;
+            g_resize_orig_mx = mx;
+            g_resize_orig_my = my;
+        } else if (hit_titlebar(wh, mx, my)) {
+            g_gadget_win = wh;
+            g_gadget_id  = WM_GADGET_DRAG;
+            wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_DRAG, mx, my);
+            g_drag_handle = wh;
+            g_drag_off_x  = mx - g_wins[wh].x;
+            g_drag_off_y  = my - g_wins[wh].y;
+        } else if (hit_scrollbars(wh, mx, my)) {
+            /* consumed by scrollbar */
+        } else if (g_wins[wh].on_event) {
+            g_wins[wh].on_event(wh, WM_EVT_MOUSE_DOWN, 0, mx, my);
+        } else if (g_wins[wh].on_click) {
+            /* Save focus before the click handler; the handler may open
+             * a new window which changes g_focus.  We must return after
+             * on_click so the new window layout isn't immediately hit-tested
+             * against the same button-press event (which could spuriously
+             * trigger the new window's close gadget or other gadgets). */
+            g_wins[wh].on_click(wh, mx, my);
+            return;
+        }
+    }
+
+    /* Right mouse button press over a window */
+    if (btn_right_pressed) {
+        int wh = hit_test(mx, my);
+        if (wh >= 0 && g_wins[wh].on_event)
+            g_wins[wh].on_event(wh, WM_EVT_MOUSE_DOWN, 1, mx, my);
     }
 
     /* Right-click on the desktop (not over any window) — handled by desktop
@@ -687,6 +739,8 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             w->w = new_w;
             w->h = new_h;
             WM_Redraw();
+            if (w->on_event)
+                w->on_event(g_resize_handle, WM_EVT_RESIZE, new_w, new_h, 0);
         }
     }
 
@@ -733,13 +787,20 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
         }
     }
 
-    /* Window client-area mouse move */
+    /* Window client-area mouse move (drag) */
     if (btn_left && g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0) {
         if (g_focus >= 0) {
             WmWindow *w = &g_wins[g_focus];
             if (w->active && w->on_move)
                 w->on_move(g_focus, mx, my);
         }
+    }
+
+    /* General window mouse move for IDCMP forwarding */
+    if (g_focus >= 0) {
+        WmWindow *w = &g_wins[g_focus];
+        if (w->active && w->on_event)
+            w->on_event(g_focus, WM_EVT_MOUSE_MOVE, mx, my, 0);
     }
 
     /* Desktop icon drag — only when this gesture started on the desktop */
@@ -753,6 +814,13 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             WmWindow *w = &g_wins[g_focus];
             if (w->active && w->on_release)
                 w->on_release(g_focus, mx, my);
+            if (w->active && w->on_event)
+                w->on_event(g_focus, WM_EVT_MOUSE_UP, 0, mx, my);
+        }
+        if (g_gadget_win >= 0) {
+            wm_notify_gadget_event(g_gadget_win, WM_EVT_GADGET_UP, g_gadget_id, mx, my);
+            g_gadget_win = -1;
+            g_gadget_id  = 0;
         }
         g_drag_handle      = -1;
         g_resize_handle    = -1;
@@ -766,11 +834,18 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
         g_press_was_desktop = 0;
     }
 
-    /* Right-button release: close the desktop menu and trigger the highlighted
-     * item (Amiga-style press-and-drag menu behaviour).  This is always handled
-     * by the desktop regardless of whether the cursor is over a window, so that
-     * releasing the right button dismisses an open menu. */
+    /* Right-button release: notify window event hook first, then desktop menu. */
     if (btn_right_released) {
+        if (g_focus >= 0) {
+            WmWindow *w = &g_wins[g_focus];
+            if (w->active && w->on_event)
+                w->on_event(g_focus, WM_EVT_MOUSE_UP, 1, mx, my);
+        }
+        if (g_gadget_win >= 0) {
+            wm_notify_gadget_event(g_gadget_win, WM_EVT_GADGET_UP, g_gadget_id, mx, my);
+            g_gadget_win = -1;
+            g_gadget_id  = 0;
+        }
         Desktop_RightButtonRelease(mx, my);
     }
 
@@ -789,6 +864,8 @@ void WM_KeyEvent(char c)
     WmWindow *w = &g_wins[g_focus];
     if (w->active && w->on_key)
         w->on_key(c);
+    if (w->active && w->on_event)
+        w->on_event(g_focus, WM_EVT_KEY, (int)(unsigned char)c, 0, 0);
 }
 
 void WM_Redraw(void)
@@ -822,16 +899,32 @@ int WM_GetFocus(void)
     return g_focus;
 }
 
+static void wm_notify_focus_change(int old_focus, int new_focus)
+{
+    if (old_focus == new_focus) return;
+    if (old_focus >= 0 && old_focus < WM_MAX_WINDOWS &&
+        g_wins[old_focus].active && g_wins[old_focus].on_event) {
+        g_wins[old_focus].on_event(old_focus, WM_EVT_FOCUS, 0, 0, 0);
+    }
+    if (new_focus >= 0 && new_focus < WM_MAX_WINDOWS &&
+        g_wins[new_focus].active && g_wins[new_focus].on_event) {
+        g_wins[new_focus].on_event(new_focus, WM_EVT_FOCUS, 1, 0, 0);
+    }
+}
+
 void WM_RequestFocus(int handle)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
     if (!g_wins[handle].active) return;
-    
+
     int was_focused = (handle == g_focus);
+    int old_focus = g_focus;
     g_focus = handle;
     raise_window(handle);
-    if (!was_focused)
+    if (!was_focused) {
         WM_Redraw();
+        wm_notify_focus_change(old_focus, g_focus);
+    }
 }
 
 void WM_CloseWindow(int handle)
@@ -842,6 +935,8 @@ void WM_CloseWindow(int handle)
 
     /* Save footprint before deactivating */
     int ox = w->x, oy = w->y, ow = w->w, oh = w->h;
+
+    int old_focus = g_focus;
 
     /* Remove from z-order array */
     int pos = -1;
@@ -854,12 +949,13 @@ void WM_CloseWindow(int handle)
         g_nwins--;
     }
 
-    /* Free the slot */
-    w->active = 0;
-
-    /* Update focus to the new top window */
+    /* Update focus to the new top window before deactivating so that
+     * any focus notification hook can still read the closing window. */
     if (g_focus == handle)
         g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
+
+    /* Free the slot */
+    w->active = 0;
 
     /* Erase window footprint and repaint everything below it */
     Cursor_Hide();
@@ -869,6 +965,8 @@ void WM_CloseWindow(int handle)
         if (g_wins[wh].active) repaint_window(wh);
     }
     Cursor_Redraw();
+
+    wm_notify_focus_change(old_focus, g_focus);
 }
 
 void WM_SetClickHandler(int handle, WM_ClickFn on_click)
@@ -961,8 +1059,10 @@ void WM_RaiseWindow(int handle)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
     if (!g_wins[handle].active) return;
+    int old_focus = g_focus;
     raise_window(handle);
     g_focus = handle;
+    wm_notify_focus_change(old_focus, g_focus);
 }
 
 void WM_LowerWindow(int handle)
@@ -983,9 +1083,11 @@ void WM_LowerWindow(int handle)
         g_zorder[0] = handle;
     }
 
+    int old_focus = g_focus;
     /* Focus stays with the now-topmost window */
     g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
     WM_Redraw();
+    wm_notify_focus_change(old_focus, g_focus);
 }
 
 void WM_RepaintWindow(int handle)

@@ -40,4 +40,7 @@ unsigned int Desktop_GetTick(void);
  * The main event loop calls Desktop_FlushClockRedraw() each iteration. */
 void Desktop_FlushClockRedraw(void);
 
+/* Screen title display — controlled by intuition.library ShowTitle() */
+void Desktop_SetScreenTitle(const char *title, int show);
+
 #endif

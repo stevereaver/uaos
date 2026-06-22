@@ -99,6 +99,10 @@ static void current_time_str(char *buf)
     buf[5] = '\0';
 }
 
+/* Screen title state (updated by intuition.library ShowTitle()) */
+static char g_screen_title[64] = "";
+static int  g_show_screen_title = 0;
+
 /* Forward declarations */
 extern void WM_Redraw(void);
 
@@ -408,6 +412,17 @@ static void draw_menubar(int W)
         int len = 0;
         for (const char *p = menus[i]; *p; p++) len++;
         mx += len * 8 + 16;
+    }
+
+    /* Screen title — drawn between menus and clock when requested */
+    if (g_show_screen_title && g_screen_title[0]) {
+        int title_w = 0;
+        for (const char *p = g_screen_title; *p; p++) title_w += 8;
+        int title_x = mx + 16;
+        if (title_x + title_w > W - 58)
+            title_x = W - 58 - title_w;
+        if (title_x > mx && title_w > 0)
+            FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
 
     /* Clock — show current local time (not hardcoded 00:00:00) */
@@ -734,6 +749,22 @@ void Desktop_MarkWorkbenchLoaded(void)
 int Desktop_IsWorkbenchLoaded(void)
 {
     return g_workbench_loaded;
+}
+
+void Desktop_SetScreenTitle(const char *title, int show)
+{
+    g_show_screen_title = show;
+    if (title) {
+        int i = 0;
+        while (i < (int)sizeof(g_screen_title) - 1 && title[i]) {
+            g_screen_title[i] = title[i];
+            i++;
+        }
+        g_screen_title[i] = '\0';
+    } else {
+        g_screen_title[0] = '\0';
+    }
+    WM_Redraw();
 }
 
 /* =========================================================================

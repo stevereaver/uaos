@@ -21,6 +21,26 @@ typedef void (*WM_ClickFn)(int win_handle, int mx, int my);
 typedef void (*WM_MouseMoveFn)(int win_handle, int mx, int my);
 typedef void (*WM_MouseReleaseFn)(int win_handle, int mx, int my);
 
+/* Generic event callback for IDCMP-style forwarding.
+ * Returns 1 for WM_EVT_CLOSE_REQUEST to allow the close, 0 to veto it.
+ * Other events should return 0. */
+typedef int (*WM_EventFn)(int win_handle, int event_type, int p1, int p2, int p3);
+
+#define WM_EVT_CLOSE_REQUEST 1
+#define WM_EVT_MOUSE_DOWN    2
+#define WM_EVT_MOUSE_UP      3
+#define WM_EVT_MOUSE_MOVE    4
+#define WM_EVT_KEY           5
+#define WM_EVT_RESIZE        6
+#define WM_EVT_FOCUS         7
+#define WM_EVT_GADGET_DOWN   8
+#define WM_EVT_GADGET_UP     9
+
+#define WM_GADGET_CLOSE 1
+#define WM_GADGET_DRAG  2
+#define WM_GADGET_DEPTH 3
+#define WM_GADGET_SIZE  4
+
 typedef struct {
     int        x, y, w, h;
     char       title[32];
@@ -29,6 +49,7 @@ typedef struct {
     WM_ClickFn on_click;  /* called on client-area mouse press (may be 0)  */
     WM_MouseMoveFn on_move;   /* called while mouse is held inside window   */
     WM_MouseReleaseFn on_release; /* called on mouse release inside window */
+    WM_EventFn  on_event; /* generic event hook for Intuition IDCMP forwarding */
     int        active;    /* 1 = registered, 0 = slot free                */
     /* Scroll state — set by window content via WM_SetScrollInfo */
     int        scroll_x;      /* current horizontal scroll offset (pixels) */
@@ -49,6 +70,9 @@ int  WM_AddWindow(int x, int y, int w, int h, const char *title,
 void WM_SetClickHandler(int handle, WM_ClickFn on_click);
 void WM_SetMouseMoveHandler(int handle, WM_MouseMoveFn on_move);
 void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release);
+
+/* Set the generic event hook for Intuition IDCMP forwarding */
+void WM_SetEventHandler(int handle, WM_EventFn on_event);
 
 /* Tell the WM the total content size and visible viewport height so scrollbars
  * can be proportional and scroll clamping is correct.

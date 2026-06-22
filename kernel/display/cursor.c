@@ -143,9 +143,40 @@ static const uint8_t cur_48x48[48][48] = {
 };
 
 
+/* 16x16 busy pointer (hourglass-ish) */
+static const uint8_t cur_busy_16x16[16][16] = {
+/*       0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 */
+/* r0 */ _, _, _, _, B, B, B, B, B, B, _, _, _, _, _, _,
+/* r1 */ _, _, _, B, W, W, W, W, W, W, B, _, _, _, _, _,
+/* r2 */ _, _, B, W, W, _, _, _, _, W, W, B, _, _, _, _,
+/* r3 */ _, B, W, W, _, _, _, _, _, _, W, W, B, _, _, _,
+/* r4 */ B, W, W, _, _, _, W, W, _, _, _, W, W, B, _, _,
+/* r5 */ B, W, _, _, _, W, W, W, W, _, _, _, W, B, _, _,
+/* r6 */ B, W, _, _, W, W, B, B, W, W, _, _, W, B, _, _,
+/* r7 */ B, W, _, _, W, W, B, B, W, W, _, _, W, B, _, _,
+/* r8 */ B, W, _, _, _, W, W, W, W, _, _, _, W, B, _, _,
+/* r9 */ B, W, W, _, _, _, W, W, _, _, _, W, W, B, _, _,
+/*r10 */ _, B, W, W, _, _, _, _, _, _, W, W, B, _, _, _,
+/*r11 */ _, _, B, W, W, _, _, _, _, W, W, B, _, _, _, _,
+/*r12 */ _, _, _, B, W, W, W, W, W, W, B, _, _, _, _, _,
+/*r13 */ _, _, _, _, B, W, W, W, W, B, _, _, _, _, _, _,
+/*r14 */ _, _, _, _, _, B, W, W, B, _, _, _, _, _, _, _,
+/*r15 */ _, _, _, _, _, _, B, B, _, _, _, _, _, _, _, _,
+};
+
 #undef _
 #undef B
 #undef W
+
+/* =========================================================================
+ * Custom cursor state
+ * ========================================================================= */
+
+static uint8_t cur_custom[CUR_MAX_W * CUR_MAX_H];
+static int     cur_custom_w = 0;
+static int     cur_custom_h = 0;
+static int     cur_custom_active = 0;
+static int     cur_busy = 0;
 
 /* =========================================================================
  * Cursor settings
@@ -177,6 +208,8 @@ static int      cur_drawn = 0;   /* 1 if cursor is currently on screen */
 
 static int get_cursor_size(void)
 {
+    if (cur_custom_active) return cur_custom_h;
+    if (cur_busy) return 16;
     switch (g_cursor_settings.size) {
         case CURSOR_SIZE_16x16: return 16;
         case CURSOR_SIZE_32x32: return 32;
@@ -185,8 +218,16 @@ static int get_cursor_size(void)
     }
 }
 
+static int get_cursor_width(void)
+{
+    if (cur_custom_active) return cur_custom_w;
+    return get_cursor_size();
+}
+
 static const uint8_t* get_cursor_sprite(void)
 {
+    if (cur_custom_active) return cur_custom;
+    if (cur_busy) return (const uint8_t*)cur_busy_16x16;
     switch (g_cursor_settings.size) {
         case CURSOR_SIZE_16x16: return (const uint8_t*)cur_16x16;
         case CURSOR_SIZE_32x32: return (const uint8_t*)cur_32x32;
@@ -203,11 +244,12 @@ static void cursor_save_bg(int x, int y)
 {
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
-    int cur_size = get_cursor_size();
+    int cur_h = get_cursor_size();
+    int cur_w = get_cursor_width();
 
-    for (int row = 0; row < cur_size; row++) {
+    for (int row = 0; row < cur_h; row++) {
         int py = y + row;
-        for (int col = 0; col < cur_size; col++) {
+        for (int col = 0; col < cur_w; col++) {
             int px = x + col;
             if (px < 0 || px >= W || py < 0 || py >= H)
                 bg_save[row * CUR_MAX_W + col] = 0;
@@ -222,12 +264,13 @@ static void cursor_restore_bg(int x, int y)
     if (FB_IsDrawing()) return;  /* back buffer — full frame redrawn anyway */
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
-    int cur_size = get_cursor_size();
-    
-    for (int row = 0; row < cur_size; row++) {
+    int cur_h = get_cursor_size();
+    int cur_w = get_cursor_width();
+
+    for (int row = 0; row < cur_h; row++) {
         int py = y + row;
         if (py < 0 || py >= H) continue;
-        for (int col = 0; col < cur_size; col++) {
+        for (int col = 0; col < cur_w; col++) {
             int px = x + col;
             if (px < 0 || px >= W) continue;
             FB_PutPixel(px, py, bg_save[row * CUR_MAX_W + col]);
@@ -243,27 +286,28 @@ static void cursor_draw(int x, int y)
 {
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
-    int cur_size = get_cursor_size();
+    int cur_h = get_cursor_size();
+    int cur_w = get_cursor_width();
     const uint8_t *sprite = get_cursor_sprite();
     uint32_t body_col = g_cursor_settings.colors.body_color;
     uint32_t shadow_col = g_cursor_settings.colors.shadow_color;
     int double_pixel = g_cursor_settings.double_pixel;
 
-    for (int row = 0; row < cur_size; row++) {
+    for (int row = 0; row < cur_h; row++) {
         int py = y + row;
         if (py < 0 || py >= H) continue;
-        for (int col = 0; col < cur_size; col++) {
+        for (int col = 0; col < cur_w; col++) {
             int px = x + col;
             if (px < 0 || px >= W) continue;
-            uint8_t p = sprite[row * cur_size + col];
-            
+            uint8_t p = sprite[row * cur_w + col];
+
             if (p == 1) {
                 FB_PutPixel(px, py, shadow_col);
-                if (double_pixel && col + 1 < cur_size && px + 1 < W)
+                if (double_pixel && col + 1 < cur_w && px + 1 < W)
                     FB_PutPixel(px + 1, py, shadow_col);
             } else if (p == 2) {
                 FB_PutPixel(px, py, body_col);
-                if (double_pixel && col + 1 < cur_size && px + 1 < W)
+                if (double_pixel && col + 1 < cur_w && px + 1 < W)
                     FB_PutPixel(px + 1, py, body_col);
             }
             /* p == 0: transparent — leave background as-is */
@@ -358,13 +402,78 @@ void Cursor_ApplySettings(void)
         cursor_restore_bg(cur_x, cur_y);
         cur_drawn = 0;
     }
-    
+
     /* Clear background save buffer to prevent artifacts from size changes */
     for (int i = 0; i < CUR_MAX_W * CUR_MAX_H; i++) {
         bg_save[i] = 0;
     }
-    
+
     /* Save new background and draw cursor with new settings */
+    cursor_save_bg(cur_x, cur_y);
+    cursor_draw(cur_x, cur_y);
+    cur_drawn = 1;
+}
+
+/* =========================================================================
+ * Custom sprite and busy cursor support
+ * ========================================================================= */
+
+void Cursor_SetCustomSprite(const uint8_t *data, int w, int h)
+{
+    if (!data || w <= 0 || h <= 0) return;
+    if (w > CUR_MAX_W) w = CUR_MAX_W;
+    if (h > CUR_MAX_H) h = CUR_MAX_H;
+
+    if (cur_drawn) {
+        cursor_restore_bg(cur_x, cur_y);
+        cur_drawn = 0;
+    }
+
+    memset(cur_custom, 0, sizeof(cur_custom));
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            cur_custom[row * w + col] = data[row * w + col];
+        }
+    }
+    cur_custom_w = w;
+    cur_custom_h = h;
+    cur_custom_active = 1;
+    cur_busy = 0;
+
+    cursor_save_bg(cur_x, cur_y);
+    cursor_draw(cur_x, cur_y);
+    cur_drawn = 1;
+}
+
+void Cursor_ClearCustomSprite(void)
+{
+    if (cur_drawn) {
+        cursor_restore_bg(cur_x, cur_y);
+        cur_drawn = 0;
+    }
+
+    cur_custom_active = 0;
+    cur_custom_w = 0;
+    cur_custom_h = 0;
+
+    cursor_save_bg(cur_x, cur_y);
+    cursor_draw(cur_x, cur_y);
+    cur_drawn = 1;
+}
+
+void Cursor_SetBusy(int busy)
+{
+    if (!!cur_busy == !!busy) return;
+
+    if (cur_drawn) {
+        cursor_restore_bg(cur_x, cur_y);
+        cur_drawn = 0;
+    }
+
+    cur_busy = busy ? 1 : 0;
+    if (cur_busy)
+        cur_custom_active = 0;
+
     cursor_save_bg(cur_x, cur_y);
     cursor_draw(cur_x, cur_y);
     cur_drawn = 1;

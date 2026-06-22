@@ -55,4 +55,9 @@ CursorSettings Cursor_GetSettings(void);
 /* Apply cursor settings (redraws cursor) */
 void Cursor_ApplySettings(void);
 
+/* Custom sprite / busy cursor support */
+void Cursor_SetCustomSprite(const uint8_t *data, int w, int h);
+void Cursor_ClearCustomSprite(void);
+void Cursor_SetBusy(int busy);
+
 #endif

@@ -34,6 +34,7 @@
 #include "dos/dospacket.h"
 #include "dos/amiga_dos_types.h"
 #include "exec/rom_modules.h"
+#include "exec/task.h"
 
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
@@ -304,6 +305,15 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define EXEC_ALLOC_MEM      3
 #define EXEC_FREE_MEM       4
 #define EXEC_FIND_TASK      5
+#define EXEC_WAIT           6
+#define EXEC_SIGNAL         7
+#define EXEC_SETSIGNAL      8
+#define EXEC_ALLOC_SIGNAL   9
+#define EXEC_FREE_SIGNAL   10
+#define EXEC_PUT_MSG       11
+#define EXEC_GET_MSG       12
+#define EXEC_REPLY_MSG     13
+#define EXEC_WAIT_PORT     14
 
 /* bsdsocket.library function indices */
 #define BSD_FN_SOCKET        1
@@ -400,6 +410,33 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_DRAW_BORDER       16
 #define INTUITION_DRAW_IMAGE        17
 #define INTUITION_PRINT_I_TEXT      18
+#define INTUITION_AUTO_REQUEST      19
+#define INTUITION_BUILD_SYS_REQUEST 20
+#define INTUITION_FREE_SYS_REQUEST  21
+#define INTUITION_EASY_REQUEST_ARGS 22
+#define INTUITION_OPEN_SCREEN       23
+#define INTUITION_CLOSE_SCREEN      24
+#define INTUITION_MOVE_SCREEN       25
+#define INTUITION_SCREEN_TO_FRONT   26
+#define INTUITION_SCREEN_TO_BACK    27
+#define INTUITION_SHOW_TITLE        28
+#define INTUITION_OPEN_SCREEN_TAGS  29
+#define INTUITION_SET_MENU_STRIP    30
+#define INTUITION_CLEAR_MENU_STRIP  31
+#define INTUITION_RESET_MENU_STRIP  32
+#define INTUITION_ITEM_ADDRESS      33
+#define INTUITION_LOCK_PUB_SCREEN     34
+#define INTUITION_UNLOCK_PUB_SCREEN   35
+#define INTUITION_LOCK_PUB_SCREEN_LIST   36
+#define INTUITION_UNLOCK_PUB_SCREEN_LIST 37
+#define INTUITION_SET_POINTER            38
+#define INTUITION_CLEAR_POINTER          39
+#define INTUITION_SET_WINDOW_POINTER_A   40
+#define INTUITION_GET_DEF_PREFS          41
+#define INTUITION_GET_PREFS              42
+#define INTUITION_SET_PREFS              43
+#define INTUITION_LOCK_GUI_PREFS         44
+#define INTUITION_UNLOCK_GUI_PREFS       45
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -542,6 +579,17 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_GET_CONSOLE_TASK (-294)
 #define LVO_DOS_SET_CONSOLE_TASK (-288)
 
+/* exec.library LVO offsets */
+#define LVO_WAIT            (-318)
+#define LVO_SIGNAL          (-324)
+#define LVO_SETSIGNAL       (-306)
+#define LVO_ALLOC_SIGNAL    (-330)
+#define LVO_FREE_SIGNAL     (-336)
+#define LVO_PUT_MSG         (-366)
+#define LVO_GET_MSG         (-372)
+#define LVO_REPLY_MSG       (-378)
+#define LVO_WAIT_PORT       (-384)
+
 /* intuition.library LVO offsets */
 #define LVO_INTUITION_OPEN_LIBRARY       (-30)
 #define LVO_INTUITION_CLOSE_LIBRARY      (-36)
@@ -561,6 +609,33 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_DRAW_IMAGE        (-114)
 #define LVO_INTUITION_PRINT_I_TEXT      (-216)
 #define LVO_INTUITION_OPEN_WORKBENCH    (-210)
+#define LVO_INTUITION_AUTO_REQUEST      (-348)
+#define LVO_INTUITION_BUILD_SYS_REQUEST (-360)
+#define LVO_INTUITION_FREE_SYS_REQUEST  (-372)
+#define LVO_INTUITION_EASY_REQUEST_ARGS (-588)
+#define LVO_INTUITION_OPEN_SCREEN       (-198)
+#define LVO_INTUITION_CLOSE_SCREEN      (-66)
+#define LVO_INTUITION_MOVE_SCREEN       (-162)
+#define LVO_INTUITION_SCREEN_TO_FRONT   (-252)
+#define LVO_INTUITION_SCREEN_TO_BACK    (-246)
+#define LVO_INTUITION_SHOW_TITLE        (-282)
+#define LVO_INTUITION_OPEN_SCREEN_TAGS  (-612)
+#define LVO_INTUITION_SET_MENU_STRIP    (-264)
+#define LVO_INTUITION_CLEAR_MENU_STRIP  (-54)
+#define LVO_INTUITION_RESET_MENU_STRIP  (-582)
+#define LVO_INTUITION_ITEM_ADDRESS      (-144)
+#define LVO_INTUITION_LOCK_PUB_SCREEN       (-510)
+#define LVO_INTUITION_UNLOCK_PUB_SCREEN     (-516)
+#define LVO_INTUITION_LOCK_PUB_SCREEN_LIST  (-522)
+#define LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST (-528)
+#define LVO_INTUITION_SET_POINTER            (-270)
+#define LVO_INTUITION_CLEAR_POINTER          (-60)
+#define LVO_INTUITION_SET_WINDOW_POINTER_A   (-816)
+#define LVO_INTUITION_GET_DEF_PREFS          (-144)
+#define LVO_INTUITION_GET_PREFS              (-150)
+#define LVO_INTUITION_SET_PREFS              (-420)
+#define LVO_INTUITION_LOCK_GUI_PREFS         (-858)
+#define LVO_INTUITION_UNLOCK_GUI_PREFS       (-864)
 
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
@@ -571,6 +646,15 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case EXEC_ALLOC_MEM:     return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_MEM);
             case EXEC_FREE_MEM:      return (uint32_t)((int)EXEC_BASE + LVO_FREE_MEM);
             case EXEC_FIND_TASK:     return (uint32_t)((int)EXEC_BASE + LVO_FIND_TASK);
+            case EXEC_WAIT:          return (uint32_t)((int)EXEC_BASE + LVO_WAIT);
+            case EXEC_SIGNAL:        return (uint32_t)((int)EXEC_BASE + LVO_SIGNAL);
+            case EXEC_SETSIGNAL:     return (uint32_t)((int)EXEC_BASE + LVO_SETSIGNAL);
+            case EXEC_ALLOC_SIGNAL:  return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_SIGNAL);
+            case EXEC_FREE_SIGNAL:   return (uint32_t)((int)EXEC_BASE + LVO_FREE_SIGNAL);
+            case EXEC_PUT_MSG:       return (uint32_t)((int)EXEC_BASE + LVO_PUT_MSG);
+            case EXEC_GET_MSG:       return (uint32_t)((int)EXEC_BASE + LVO_GET_MSG);
+            case EXEC_REPLY_MSG:     return (uint32_t)((int)EXEC_BASE + LVO_REPLY_MSG);
+            case EXEC_WAIT_PORT:     return (uint32_t)((int)EXEC_BASE + LVO_WAIT_PORT);
         }
     } else if (lib_id == LIB_DOS) {
         switch (func_idx) {
@@ -649,6 +733,33 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_DRAW_BORDER:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_BORDER);
             case INTUITION_DRAW_IMAGE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_IMAGE);
             case INTUITION_PRINT_I_TEXT:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_PRINT_I_TEXT);
+            case INTUITION_AUTO_REQUEST:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_AUTO_REQUEST);
+            case INTUITION_BUILD_SYS_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_BUILD_SYS_REQUEST);
+            case INTUITION_FREE_SYS_REQUEST:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SYS_REQUEST);
+            case INTUITION_EASY_REQUEST_ARGS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_EASY_REQUEST_ARGS);
+            case INTUITION_OPEN_SCREEN:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN);
+            case INTUITION_CLOSE_SCREEN:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_SCREEN);
+            case INTUITION_MOVE_SCREEN:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_SCREEN);
+            case INTUITION_SCREEN_TO_FRONT:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_TO_FRONT);
+            case INTUITION_SCREEN_TO_BACK:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_TO_BACK);
+            case INTUITION_SHOW_TITLE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SHOW_TITLE);
+            case INTUITION_OPEN_SCREEN_TAGS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN_TAGS);
+            case INTUITION_SET_MENU_STRIP:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_MENU_STRIP);
+            case INTUITION_CLEAR_MENU_STRIP:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_MENU_STRIP);
+            case INTUITION_RESET_MENU_STRIP:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_RESET_MENU_STRIP);
+            case INTUITION_ITEM_ADDRESS:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ITEM_ADDRESS);
+            case INTUITION_LOCK_PUB_SCREEN:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_PUB_SCREEN);
+            case INTUITION_UNLOCK_PUB_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_PUB_SCREEN);
+            case INTUITION_LOCK_PUB_SCREEN_LIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_PUB_SCREEN_LIST);
+            case INTUITION_UNLOCK_PUB_SCREEN_LIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST);
+            case INTUITION_SET_POINTER:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_POINTER);
+            case INTUITION_CLEAR_POINTER:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_POINTER);
+            case INTUITION_SET_WINDOW_POINTER_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_POINTER_A);
+            case INTUITION_GET_DEF_PREFS:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_DEF_PREFS);
+            case INTUITION_GET_PREFS:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_PREFS);
+            case INTUITION_SET_PREFS:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_PREFS);
+            case INTUITION_LOCK_GUI_PREFS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_GUI_PREFS);
+            case INTUITION_UNLOCK_GUI_PREFS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_GUI_PREFS);
         }
     }
     return JMPTAB_BASE;
@@ -686,6 +797,15 @@ void install_library_tables(void)
     install_lvo(EXEC_BASE, LVO_ALLOC_MEM,     LIB_EXEC, EXEC_ALLOC_MEM);
     install_lvo(EXEC_BASE, LVO_FREE_MEM,      LIB_EXEC, EXEC_FREE_MEM);
     install_lvo(EXEC_BASE, LVO_FIND_TASK,     LIB_EXEC, EXEC_FIND_TASK);
+    install_lvo(EXEC_BASE, LVO_WAIT,          LIB_EXEC, EXEC_WAIT);
+    install_lvo(EXEC_BASE, LVO_SIGNAL,        LIB_EXEC, EXEC_SIGNAL);
+    install_lvo(EXEC_BASE, LVO_SETSIGNAL,     LIB_EXEC, EXEC_SETSIGNAL);
+    install_lvo(EXEC_BASE, LVO_ALLOC_SIGNAL,  LIB_EXEC, EXEC_ALLOC_SIGNAL);
+    install_lvo(EXEC_BASE, LVO_FREE_SIGNAL,   LIB_EXEC, EXEC_FREE_SIGNAL);
+    install_lvo(EXEC_BASE, LVO_PUT_MSG,       LIB_EXEC, EXEC_PUT_MSG);
+    install_lvo(EXEC_BASE, LVO_GET_MSG,       LIB_EXEC, EXEC_GET_MSG);
+    install_lvo(EXEC_BASE, LVO_REPLY_MSG,     LIB_EXEC, EXEC_REPLY_MSG);
+    install_lvo(EXEC_BASE, LVO_WAIT_PORT,     LIB_EXEC, EXEC_WAIT_PORT);
 
     /* dos.library at DOS_BASE */
     install_lvo(DOS_BASE, LVO_DOS_OUTPUT,   LIB_DOS, DOS_OUTPUT);
@@ -811,6 +931,33 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_BORDER,       LIB_INTUITION, INTUITION_DRAW_BORDER);
     install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_IMAGE,        LIB_INTUITION, INTUITION_DRAW_IMAGE);
     install_lvo(INTUITION_BASE, LVO_INTUITION_PRINT_I_TEXT,      LIB_INTUITION, INTUITION_PRINT_I_TEXT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_AUTO_REQUEST,      LIB_INTUITION, INTUITION_AUTO_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_BUILD_SYS_REQUEST, LIB_INTUITION, INTUITION_BUILD_SYS_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SYS_REQUEST,  LIB_INTUITION, INTUITION_FREE_SYS_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_EASY_REQUEST_ARGS, LIB_INTUITION, INTUITION_EASY_REQUEST_ARGS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN,       LIB_INTUITION, INTUITION_OPEN_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_SCREEN,      LIB_INTUITION, INTUITION_CLOSE_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_SCREEN,       LIB_INTUITION, INTUITION_MOVE_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_TO_FRONT,   LIB_INTUITION, INTUITION_SCREEN_TO_FRONT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_TO_BACK,    LIB_INTUITION, INTUITION_SCREEN_TO_BACK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SHOW_TITLE,        LIB_INTUITION, INTUITION_SHOW_TITLE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN_TAGS,  LIB_INTUITION, INTUITION_OPEN_SCREEN_TAGS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_MENU_STRIP,    LIB_INTUITION, INTUITION_SET_MENU_STRIP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_MENU_STRIP,  LIB_INTUITION, INTUITION_CLEAR_MENU_STRIP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_RESET_MENU_STRIP,  LIB_INTUITION, INTUITION_RESET_MENU_STRIP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ITEM_ADDRESS,      LIB_INTUITION, INTUITION_ITEM_ADDRESS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_PUB_SCREEN,    LIB_INTUITION, INTUITION_LOCK_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_PUB_SCREEN,  LIB_INTUITION, INTUITION_UNLOCK_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_PUB_SCREEN_LIST,  LIB_INTUITION, INTUITION_LOCK_PUB_SCREEN_LIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST, LIB_INTUITION, INTUITION_UNLOCK_PUB_SCREEN_LIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_POINTER,        LIB_INTUITION, INTUITION_SET_POINTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_POINTER,      LIB_INTUITION, INTUITION_CLEAR_POINTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_POINTER_A, LIB_INTUITION, INTUITION_SET_WINDOW_POINTER_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_DEF_PREFS,      LIB_INTUITION, INTUITION_GET_DEF_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_PREFS,          LIB_INTUITION, INTUITION_GET_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_PREFS,          LIB_INTUITION, INTUITION_SET_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_GUI_PREFS,     LIB_INTUITION, INTUITION_LOCK_GUI_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_GUI_PREFS,   LIB_INTUITION, INTUITION_UNLOCK_GUI_PREFS);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -1025,6 +1172,193 @@ static void exec_FindTask(void)
 {
     /* Return pointer to our fake Process struct */
     m68k_set_reg(M68K_REG_D0, FAKE_PROCESS_ADDR);
+}
+
+/* -------------------------------------------------------------------------
+ * Guest memory helpers for exec message-port functions
+ * ------------------------------------------------------------------------- */
+#define glue_r8(a)   ((uint32_t)m68k_read_memory_8(a))
+#define glue_r16(a)  ((uint32_t)m68k_read_memory_16(a))
+#define glue_r32(a)  ((uint32_t)m68k_read_memory_32(a))
+#define glue_w8(a,v)  m68k_write_memory_8((a),(v))
+#define glue_w16(a,v) m68k_write_memory_16((a),(v))
+#define glue_w32(a,v) m68k_write_memory_32((a),(v))
+
+/* Guest List/MinList offsets (AmigaOS standard) */
+#define LH_HEAD        0
+#define LH_TAIL        4
+#define LH_TAILPRED    8
+#define LH_TYPE       12
+#define LN_SUCC        0
+#define LN_PRED        4
+#define LN_TYPE        8
+#define LN_PRI         9
+#define LN_NAME       10
+
+/* Guest MsgPort offsets */
+#define MP_FLAGS      14
+#define MP_SIGBIT     15
+#define MP_SIGTASK    16
+#define MP_MSGLIST    20
+
+/* Guest Message offsets */
+#define MN_LENGTH     14
+#define MN_REPLYPORT  16
+#define MN_DATA       20
+
+static int glue_list_empty(uint32_t list)
+{
+    uint32_t head = glue_r32(list + LH_HEAD);
+    uint32_t tail = list + LH_TAIL;
+    return head == tail;
+}
+
+static uint32_t glue_list_remove_head(uint32_t list)
+{
+    uint32_t head = glue_r32(list + LH_HEAD);
+    uint32_t tail = list + LH_TAIL;
+    if (head == tail) return 0;
+
+    uint32_t succ = glue_r32(head + LN_SUCC);
+    uint32_t pred = glue_r32(head + LN_PRED);
+
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+    return head;
+}
+
+static void glue_list_add_tail(uint32_t list, uint32_t node)
+{
+    uint32_t tailpred = glue_r32(list + LH_TAILPRED);
+
+    glue_w32(node + LN_SUCC, list + LH_TAIL);
+    glue_w32(node + LN_PRED, tailpred);
+    glue_w32(tailpred + LN_SUCC, node);
+    glue_w32(list + LH_TAILPRED, node);
+}
+
+/* -------------------------------------------------------------------------
+ * exec.library signal / message primitives (guest-memory compatible)
+ * ------------------------------------------------------------------------- */
+
+static void exec_Wait(void)
+{
+    uint32_t sigmask = m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, Wait(sigmask));
+}
+
+static void exec_Signal(void)
+{
+    uint32_t task_addr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t sigmask   = m68k_get_reg(NULL, M68K_REG_D0);
+    UaosTask *t = Task_FindByM68kAddr(task_addr);
+    if (!t) t = Task_Current();
+    if (t) Signal(t, sigmask);
+}
+
+static void exec_SetSignal(void)
+{
+    uint32_t newsigs = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t sigmask = m68k_get_reg(NULL, M68K_REG_D1);
+    m68k_set_reg(M68K_REG_D0, SetSignal(newsigs, sigmask));
+}
+
+static void exec_AllocSignal(void)
+{
+    int32_t signal_num = (int32_t)m68k_get_reg(NULL, M68K_REG_D0);
+    UaosTask *t = Task_Current();
+    if (!t) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
+
+    if (signal_num == -1) {
+        uint32_t alloc_mask = t->tc_SigAlloc;
+        for (int i = 0; i < 32; i++) {
+            if ((alloc_mask >> i) & 1) {
+                t->tc_SigAlloc &= ~(1U << i);
+                m68k_set_reg(M68K_REG_D0, (uint32_t)i);
+                return;
+            }
+        }
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+    } else if (signal_num >= 0 && signal_num < 32) {
+        if ((t->tc_SigAlloc >> signal_num) & 1) {
+            t->tc_SigAlloc &= ~(1U << signal_num);
+            m68k_set_reg(M68K_REG_D0, (uint32_t)signal_num);
+        } else {
+            m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        }
+    } else {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+    }
+}
+
+static void exec_FreeSignal(void)
+{
+    uint32_t signal_num = m68k_get_reg(NULL, M68K_REG_D0);
+    UaosTask *t = Task_Current();
+    if (!t) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
+
+    if (signal_num < 32) {
+        t->tc_SigAlloc |= (1U << signal_num);
+        m68k_set_reg(M68K_REG_D0, 0);
+    } else {
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+    }
+}
+
+static void exec_PutMsg(void)
+{
+    /* PutMsg(port, message) — A0 = port, A1 = message */
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t msg  = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!port || !msg) return;
+
+    glue_list_add_tail(port + MP_MSGLIST, msg);
+
+    uint32_t sigtask = glue_r32(port + MP_SIGTASK);
+    UaosTask *t = Task_FindByM68kAddr(sigtask);
+    if (t) {
+        uint32_t sigbit = glue_r8(port + MP_SIGBIT);
+        Signal(t, 1U << sigbit);
+    }
+}
+
+static void exec_GetMsg(void)
+{
+    /* GetMsg(port) — A0 = port, returns message in D0 */
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t msg  = 0;
+    if (port) msg = glue_list_remove_head(port + MP_MSGLIST);
+    m68k_set_reg(M68K_REG_D0, msg);
+}
+
+static void exec_ReplyMsg(void)
+{
+    /* ReplyMsg(message) — A1 = message */
+    uint32_t msg = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!msg) return;
+    uint32_t reply_port = glue_r32(msg + MN_REPLYPORT);
+    if (reply_port) {
+        glue_list_add_tail(reply_port + MP_MSGLIST, msg);
+        uint32_t sigtask = glue_r32(reply_port + MP_SIGTASK);
+        UaosTask *t = Task_FindByM68kAddr(sigtask);
+        if (t) {
+            uint32_t sigbit = glue_r8(reply_port + MP_SIGBIT);
+            Signal(t, 1U << sigbit);
+        }
+    }
+}
+
+static void exec_WaitPort(void)
+{
+    /* WaitPort(port) — A0 = port, returns port in D0 */
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!port) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t sigbit = glue_r8(port + MP_SIGBIT);
+    while (glue_list_empty(port + MP_MSGLIST)) {
+        Wait(1U << sigbit);
+    }
+    m68k_set_reg(M68K_REG_D0, port);
 }
 
 /* =========================================================================
@@ -1735,6 +2069,15 @@ int m68k_illg_instr_callback(int opcode)
             case EXEC_ALLOC_MEM:     exec_AllocMem();     break;
             case EXEC_FREE_MEM:      exec_FreeMem();      break;
             case EXEC_FIND_TASK:     exec_FindTask();     break;
+            case EXEC_WAIT:          exec_Wait();         break;
+            case EXEC_SIGNAL:        exec_Signal();       break;
+            case EXEC_SETSIGNAL:     exec_SetSignal();    break;
+            case EXEC_ALLOC_SIGNAL:  exec_AllocSignal();  break;
+            case EXEC_FREE_SIGNAL:   exec_FreeSignal();   break;
+            case EXEC_PUT_MSG:       exec_PutMsg();       break;
+            case EXEC_GET_MSG:       exec_GetMsg();       break;
+            case EXEC_REPLY_MSG:     exec_ReplyMsg();     break;
+            case EXEC_WAIT_PORT:     exec_WaitPort();     break;
             default: {
                 char msg[40] = "[exec] unknown fn=";
                 char n[4]; u32_dec(fn, n, 4);
