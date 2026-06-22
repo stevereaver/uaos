@@ -4,12 +4,12 @@ title: graphics.library
 description: UAOS native implementation of the AmigaOS graphics.library for emulated M68k tasks.
 resource: /kernel/exec/graphics_lib.c
 tags: [graphics, library, m68k, thunking, rastport]
-timestamp: 2026-06-21T12:00:00Z
+timestamp: 2026-06-22T12:00:00Z
 ---
 
 # graphics.library
 
-`graphics.library` provides the classic AmigaOS graphics API to emulated M68k tasks. The UAOS implementation is a thin, native thunk layer that reads M68k registers and writes to the linear framebuffer via the internal display driver.
+`graphics.library` provides the classic AmigaOS graphics API to emulated M68k tasks. The UAOS implementation is a native thunk layer that reads M68k registers and writes to either the host linear framebuffer (screen RastPort) or a planar Amiga-style `BitMap` attached to a `RastPort`.
 
 ## Key files
 
@@ -63,20 +63,20 @@ timestamp: 2026-06-21T12:00:00Z
 | Function | Status | Notes |
 |----------|--------|-------|
 | `InitRastPort` | Implemented | Zeroes RastPort and sets default pens. |
-| `Move` / `Draw` | Implemented | Bresenham line drawing via `FB_PutPixel`. |
+| `Move` / `Draw` | Implemented | Bresenham line drawing on the RastPort surface. |
 | `PolyDraw` | Implemented | Draws connected line segments from an XY array. |
-| `RectFill` | Implemented | Filled rectangle via `FB_FillRect`. |
+| `RectFill` | Implemented | Filled rectangle on the RastPort surface. |
 | `EraseRect` | Implemented | Fills rectangle with background pen. |
-| `ClearEOL` | Implemented | Clears from pen position to right edge of line. |
-| `ClearScreen` | Implemented | Clears entire screen with background pen. |
+| `ClearEOL` | Implemented | Clears from pen position to right edge of the surface. |
+| `ClearScreen` | Implemented | Clears the entire RastPort surface with background pen. |
 | `Text` | Implemented | 8×16 font rendering; spacing and metrics come from the current `rp->Font`. |
 | `TextLength` | Implemented | Returns pixel width based on current font character width. |
 | `TextExtent` | Implemented | Fills `TextExtent` from the current font/metrics. |
 | `TextFit` | Implemented | Returns characters that fit in a width constraint. |
 | `FontExtent` | Implemented | Fills `TextExtent` from a font. |
-| `SetRast` | Implemented | Clears screen to background pen. |
-| `ReadPixel` / `WritePixel` | Implemented | Framebuffer pixel read/write. |
-| `DrawEllipse` | Implemented | Midpoint ellipse outline via `FB_PutPixel`. |
+| `SetRast` | Implemented | Fills the RastPort surface to the given pen. |
+| `ReadPixel` / `WritePixel` | Implemented | Pixel read/write on the RastPort surface; returns/writes pen indices for planar BitMaps. |
+| `DrawEllipse` | Implemented | Midpoint ellipse outline on the RastPort surface. |
 | `AreaEllipse` | Implemented | Filled ellipse via horizontal scanlines. |
 | `Flood` | Implemented | 4-way scanline flood fill from start point. |
 | `BltClear` | Implemented | Zeroes a guest memory block. |
@@ -102,14 +102,26 @@ timestamp: 2026-06-21T12:00:00Z
 | Function | Status | Notes |
 |----------|--------|-------|
 | `InitBitMap` | Implemented | Initialises a `BitMap` header and clears plane pointers. |
-| `AllocBitMap` | Implemented | Allocates a `BitMap` + chunky 32-bit pixel buffer; honours `BMF_CLEAR`. |
-| `FreeBitMap` | Implemented | Frees `BitMap` and pixel buffer allocated by `AllocBitMap`. |
+| `AllocBitMap` | Implemented | Allocates a `BitMap` plus `depth` planar bitplanes (`BytesPerRow = ((width+15)/16)*2`); honours `BMF_CLEAR`. |
+| `FreeBitMap` | Implemented | Frees all planar bitplanes and the `BitMap` header. |
 | `GetBitMap` | Implemented | Returns `rp->BitMap` pointer in D0 (internal helper). |
-| `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES`; width computed from chunky row bytes. |
+| `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES`; `BMA_WIDTH` = `BytesPerRow * 8`. |
 | `AllocRaster` | Implemented | Allocates a planar raster buffer, zeroed. |
 | `FreeRaster` | Implemented | Frees a raster buffer allocated by `AllocRaster`. |
 | `InitTmpRas` | Implemented | Initialises a `TmpRas` structure with buffer and size. |
-| `SetRast` | Implemented | Clears the RastPort's `BitMap` with a pen; falls back to clearing the screen. |
+| `SetRast` | Implemented | Fills the RastPort's surface (`BitMap` or screen) with a pen. |
+
+### Planar BitMap representation
+
+UAOS now stores `BitMap`s in real Amiga planar format:
+
+- `BytesPerRow` is the number of bytes per scanline in each plane, rounded to a 16-bit (2-byte) boundary: `((width + 15) / 16) * 2`.
+- `Depth` bitplanes are allocated separately; `Planes[0..Depth-1]` point to each plane.
+- A pixel at `(x, y)` is formed by combining bit `7 - (x % 8)` of byte `y * BytesPerRow + x/8` from each plane.
+- `GetBitMapAttr(bm, BMA_WIDTH)` returns `BytesPerRow * 8` (the true pixel width of a planar BitMap).
+- Drawing operations (`Draw`, `RectFill`, `Text`, `WritePixel`, etc.) and blitting (`BltBitMap`, `ClipBlt`, `BltBitMapRastPort`) work on the RastPort's surface, whether that is a planar BitMap or the screen framebuffer.
+- When writing to a screen RastPort, pen indices are converted to 32-bit RGB using the default Amiga palette; when writing to a planar BitMap, pen indices are written directly into the bitplanes.
+- Mixed planar↔framebuffer blits convert colours between pen indices and RGB as needed so the destination colour space is preserved.
 
 ### Region operations
 
@@ -194,7 +206,7 @@ timestamp: 2026-06-21T12:00:00Z
 | `GfxLookUp` | Implemented | Returns the associated pointer from a node. |
 | `SetRPAttrsA` | Implemented | Sets `RastPort` attributes from a tag list (FgPen/BgPen/DrawMode/BitMap). |
 | `GetRPAttrsA` | Implemented | Reads `RastPort` attributes into a tag list. |
-| `CalcIVG` | Implemented | Returns 0 (not meaningful for chunky BitMaps). |
+| `CalcIVG` | Implemented | Returns 0 (not meaningful for UAOS display). |
 | `AllocDBufInfo` | Implemented | Allocates a dummy `DBufInfo` structure. |
 | `FreeDBufInfo` | Implemented | Frees a `DBufInfo` structure. |
 | `WeightAMatch` | Implemented | Returns 0 (single font). |
