@@ -395,6 +395,11 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_MODIFY_IDCMP      11
 #define INTUITION_SET_WINDOW_TITLES 12
 #define INTUITION_OPEN_WINDOW_TAGS  13
+#define INTUITION_OPEN_WORKBENCH    14
+#define INTUITION_CLOSE_WORKBENCH   15
+#define INTUITION_DRAW_BORDER       16
+#define INTUITION_DRAW_IMAGE        17
+#define INTUITION_PRINT_I_TEXT      18
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -551,6 +556,11 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_MODIFY_IDCMP     (-174)
 #define LVO_INTUITION_SET_WINDOW_TITLES (-276)
 #define LVO_INTUITION_OPEN_WINDOW_TAGS (-294)
+#define LVO_INTUITION_CLOSE_WORKBENCH   (-78)
+#define LVO_INTUITION_DRAW_BORDER       (-108)
+#define LVO_INTUITION_DRAW_IMAGE        (-114)
+#define LVO_INTUITION_PRINT_I_TEXT      (-216)
+#define LVO_INTUITION_OPEN_WORKBENCH    (-210)
 
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
@@ -634,6 +644,11 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_MODIFY_IDCMP:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MODIFY_IDCMP);
             case INTUITION_SET_WINDOW_TITLES: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_TITLES);
             case INTUITION_OPEN_WINDOW_TAGS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW_TAGS);
+            case INTUITION_OPEN_WORKBENCH:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WORKBENCH);
+            case INTUITION_CLOSE_WORKBENCH:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_WORKBENCH);
+            case INTUITION_DRAW_BORDER:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_BORDER);
+            case INTUITION_DRAW_IMAGE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_IMAGE);
+            case INTUITION_PRINT_I_TEXT:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_PRINT_I_TEXT);
         }
     }
     return JMPTAB_BASE;
@@ -791,6 +806,11 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_MODIFY_IDCMP,       LIB_INTUITION, INTUITION_MODIFY_IDCMP);
     install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_TITLES,  LIB_INTUITION, INTUITION_SET_WINDOW_TITLES);
     install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW_TAGS,   LIB_INTUITION, INTUITION_OPEN_WINDOW_TAGS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WORKBENCH,    LIB_INTUITION, INTUITION_OPEN_WORKBENCH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_WORKBENCH,   LIB_INTUITION, INTUITION_CLOSE_WORKBENCH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_BORDER,       LIB_INTUITION, INTUITION_DRAW_BORDER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_IMAGE,        LIB_INTUITION, INTUITION_DRAW_IMAGE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_PRINT_I_TEXT,      LIB_INTUITION, INTUITION_PRINT_I_TEXT);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).

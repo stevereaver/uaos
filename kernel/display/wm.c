@@ -965,6 +965,49 @@ void WM_RaiseWindow(int handle)
     g_focus = handle;
 }
 
+void WM_LowerWindow(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    if (!g_wins[handle].active) return;
+
+    /* Find the window in z-order and move it to the back */
+    int pos = -1;
+    for (int i = 0; i < g_nwins; i++) {
+        if (g_zorder[i] == handle) { pos = i; break; }
+    }
+    if (pos < 0) return;
+
+    if (pos > 0) {
+        for (int i = pos; i > 0; i--)
+            g_zorder[i] = g_zorder[i - 1];
+        g_zorder[0] = handle;
+    }
+
+    /* Focus stays with the now-topmost window */
+    g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
+    WM_Redraw();
+}
+
+void WM_RepaintWindow(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    if (!g_wins[handle].active) return;
+
+    /* Repaint the affected window chrome and any overlapping windows.
+     * A full redraw is simplest and guarantees correct overlap. */
+    WM_Redraw();
+}
+
+void WM_SetWindowTitle(int handle, const char *title)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    if (!g_wins[handle].active) return;
+    if (!title) return;
+
+    str_copy(g_wins[handle].title, title, 32);
+    WM_Redraw();
+}
+
 void WM_MoveWindow(int handle, int new_x, int new_y)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;

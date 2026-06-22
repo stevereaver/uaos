@@ -25,6 +25,9 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 ### Key Features
 - **Z-Order Management**: Windows are stacked, with the top window receiving focus.
 - **Click-to-Focus**: Clicking a window title bar or client area raises it to the top.
+- **Raise / Lower**: `WM_RaiseWindow` brings a window to the front; `WM_LowerWindow` sends it to the back.
+- **Repaint Requests**: `WM_RepaintWindow` requests a chrome/content redraw of a window (currently performed as a full-scene redraw to handle overlap correctly).
+- **Title Changes**: `WM_SetWindowTitle` updates the title string stored in the `WmWindow` and triggers a full redraw so the title bar is refreshed.
 - **Dragging & Resizing**: Title bars can be dragged to move windows, and some windows support resizing.
 - **Event Routing**: Mouse and keyboard events are routed to the active window's callbacks.
 

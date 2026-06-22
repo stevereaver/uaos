@@ -101,6 +101,34 @@ typedef struct {
 #define IDCMP_INTUITICKS     0x4000
 #define IDCMP_ACTIVEWINDOW   0x8000
 
+/* -------------------------------------------------------------------------
+ * TagItem for OpenWindowTagList() tag parsing
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    uint32_t ti_Tag;
+    uint32_t ti_Data;
+} AmigaTagItem;
+
+#define TAG_DONE  0
+#define TAG_USER  0x80000000
+
+#define WA_Dummy       (TAG_USER + 99)  /* 0x80000063 */
+#define WA_Left        (WA_Dummy + 0x01)
+#define WA_Top         (WA_Dummy + 0x02)
+#define WA_Width       (WA_Dummy + 0x03)
+#define WA_Height      (WA_Dummy + 0x04)
+#define WA_DetailPen   (WA_Dummy + 0x05)
+#define WA_BlockPen    (WA_Dummy + 0x06)
+#define WA_IDCMP       (WA_Dummy + 0x07)
+#define WA_Flags       (WA_Dummy + 0x08)
+#define WA_Gadgets     (WA_Dummy + 0x09)
+#define WA_Checkmark   (WA_Dummy + 0x0A)
+#define WA_Title       (WA_Dummy + 0x0B)
+#define WA_MinWidth    (WA_Dummy + 0x0F)
+#define WA_MinHeight   (WA_Dummy + 0x10)
+#define WA_MaxWidth    (WA_Dummy + 0x11)
+#define WA_MaxHeight   (WA_Dummy + 0x12)
+
 /* Dispatch entry point called from uaos_m68k_glue.c */
 void UAOS_Intuition_Dispatch(uint32_t fn);
 

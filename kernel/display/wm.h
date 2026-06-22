@@ -87,6 +87,15 @@ void WM_MoveWindow(int handle, int new_x, int new_y);
 /* Raise a window to the top of the z-order and give it focus */
 void WM_RaiseWindow(int handle);
 
+/* Lower a window to the bottom of the z-order and redraw */
+void WM_LowerWindow(int handle);
+
+/* Request a repaint of a window's chrome (and full scene) */
+void WM_RepaintWindow(int handle);
+
+/* Set the title of an active window and repaint its chrome */
+void WM_SetWindowTitle(int handle, const char *title);
+
 /* Close (destroy) a window by handle — repaints desktop */
 void WM_CloseWindow(int handle);
 
