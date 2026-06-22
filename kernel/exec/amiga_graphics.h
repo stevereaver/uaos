@@ -125,6 +125,7 @@
 #define VIEW_OFF_FLAGS       12
 
 /* ViewPort offsets */
+#define VP_OFF_NEXT          0
 #define VP_OFF_RASINFO      14
 #define VP_OFF_COLORMAP     18
 #define VP_OFF_DWIDTH       22

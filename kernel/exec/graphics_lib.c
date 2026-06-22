@@ -1252,12 +1252,21 @@ static void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int
     blit_surface_from_bitmap(&s, bm);
     if (s.is_fb) return;
 
-    for (int y = 0; y < h && y < s.height; y++) {
-        for (int x = 0; x < w && x < s.width; x++) {
+    /* Source bounds */
+    int sx1 = 0, sy1 = 0;
+    int sx2 = (w < s.width) ? w - 1 : (int)s.width - 1;
+    int sy2 = (h < s.height) ? h - 1 : (int)s.height - 1;
+
+    for (int y = sy1; y <= sy2; y++) {
+        int dst_y = dy + y;
+        if (dst_y < 0 || dst_y >= (int)g_fb.height) continue;
+        for (int x = sx1; x <= sx2; x++) {
+            int dst_x = dx + x;
+            if (dst_x < 0 || dst_x >= (int)g_fb.width) continue;
             uint32_t pen = 0;
             if (!blit_surface_get(&s, x, y, &pen)) continue;
             uint32_t rgb = cmap_lookup_rgb(cmap, pen);
-            FB_PutPixel(dx + x, dy + y, rgb);
+            FB_PutPixel(dst_x, dst_y, rgb);
         }
     }
 }
@@ -1265,8 +1274,9 @@ static void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int
 static void graphics_LoadView(void)
 {
     /* LoadView(view) — A1 = view
-     * Render the first ViewPort's BitMap into the host linear framebuffer.
-     * LoadView(NULL) blanks the screen.
+     * Render all ViewPorts in the View's list into the host linear
+     * framebuffer, compositing them in list order and clipping each to the
+     * screen and its own DWidth/DHeight.  LoadView(NULL) blanks the screen.
      */
     uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
     if (!view) {
@@ -1274,20 +1284,19 @@ static void graphics_LoadView(void)
         return;
     }
 
-    uint32_t vp = m68k_read_memory_32(view + VIEW_OFF_VIEWPORT);
-    if (!vp) return;
+    for (uint32_t vp = m68k_read_memory_32(view + VIEW_OFF_VIEWPORT); vp; vp = m68k_read_memory_32(vp + VP_OFF_NEXT)) {
+        uint32_t rasinfo = m68k_read_memory_32(vp + VP_OFF_RASINFO);
+        uint32_t cmap    = m68k_read_memory_32(vp + VP_OFF_COLORMAP);
+        if (!rasinfo) continue;
 
-    uint32_t rasinfo = m68k_read_memory_32(vp + VP_OFF_RASINFO);
-    uint32_t cmap    = m68k_read_memory_32(vp + VP_OFF_COLORMAP);
-    if (!rasinfo) return;
+        uint32_t bm = m68k_read_memory_32(rasinfo + RI_OFF_BITMAP);
+        int dx = (int)m68k_read_memory_16(vp + VP_OFF_DXOFFSET);
+        int dy = (int)m68k_read_memory_16(vp + VP_OFF_DYOFFSET);
+        int w  = (int)m68k_read_memory_16(vp + VP_OFF_DWIDTH);
+        int h  = (int)m68k_read_memory_16(vp + VP_OFF_DHEIGHT);
 
-    uint32_t bm = m68k_read_memory_32(rasinfo + RI_OFF_BITMAP);
-    int dx = (int)m68k_read_memory_16(vp + VP_OFF_DXOFFSET);
-    int dy = (int)m68k_read_memory_16(vp + VP_OFF_DYOFFSET);
-    int w  = (int)m68k_read_memory_16(vp + VP_OFF_DWIDTH);
-    int h  = (int)m68k_read_memory_16(vp + VP_OFF_DHEIGHT);
-
-    render_bitmap_to_framebuffer(bm, cmap, dx, dy, w, h);
+        render_bitmap_to_framebuffer(bm, cmap, dx, dy, w, h);
+    }
 }
 
 static void graphics_WaitTOF(void)

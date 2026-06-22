@@ -4,7 +4,7 @@ title: graphics.library
 description: UAOS native implementation of the AmigaOS graphics.library for emulated M68k tasks.
 resource: /kernel/exec/graphics_lib.c
 tags: [graphics, library, m68k, thunking, rastport]
-timestamp: 2026-06-22T16:00:00Z
+timestamp: 2026-06-22T17:00:00Z
 ---
 
 # graphics.library
@@ -46,7 +46,7 @@ timestamp: 2026-06-22T16:00:00Z
 | `InitView` | Implemented | Zeroes the guest `View` structure. |
 | `InitVPort` | Implemented | Zeroes the guest `ViewPort` structure. |
 | `InitBitMap` | Implemented | Sets `BytesPerRow`, `Rows`, `Depth`, `Flags`, and clears plane pointers. |
-| `LoadView` | Implemented | Renders the first `ViewPort`'s planar `BitMap` into the host linear framebuffer using its `ColorMap`; `LoadView(NULL)` blanks the screen. |
+| `LoadView` | Implemented | Iterates the `View`'s `ViewPort` list, compositing each planar `BitMap` into the host linear framebuffer using its `ColorMap`, clipped to `DWidth/DHeight/DxOffset/DyOffset`; `LoadView(NULL)` blanks the screen. |
 | `ChangeVPBitMap` | Implemented | Swaps the `BitMap` pointer in the `ViewPort`'s `RasInfo` (or supplied `RasInfo`) without rebuilding the display. |
 | `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID` from A0. |
 | `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES` from A0. |
@@ -124,7 +124,7 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 - Drawing operations (`Draw`, `RectFill`, `Text`, `WritePixel`, etc.) and blitting (`BltBitMap`, `ClipBlt`, `BltBitMapRastPort`) work on the RastPort's surface, whether that is a planar BitMap or the screen framebuffer.
 - When writing to a screen RastPort, pen indices are converted to 32-bit RGB using the default Amiga palette; when writing to a planar BitMap, pen indices are written directly into the bitplanes.
 - Mixed planar↔framebuffer blits convert colours between pen indices and RGB as needed so the destination colour space is preserved.
-- `LoadView` translates a planar `BitMap` into the linear host framebuffer, converting pen indices through the `ViewPort`'s `ColorMap` (or the default palette if none).
+- `LoadView` translates planar `BitMap`s into the linear host framebuffer. It walks the `View`'s linked `ViewPort` list, converting pen indices through each `ViewPort`'s `ColorMap` (or the default palette if none) and compositing/clipping each viewport to its `DWidth/DHeight/DxOffset/DyOffset`.
 
 ### Region operations
 
