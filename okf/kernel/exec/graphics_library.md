@@ -69,8 +69,8 @@ timestamp: 2026-06-21T12:00:00Z
 | `EraseRect` | Implemented | Fills rectangle with background pen. |
 | `ClearEOL` | Implemented | Clears from pen position to right edge of line. |
 | `ClearScreen` | Implemented | Clears entire screen with background pen. |
-| `Text` | Implemented | 8×16 font rendering; JAM1 now draws transparent background. |
-| `TextLength` | Implemented | Returns pixel width. |
+| `Text` | Implemented | 8×16 font rendering; spacing and metrics come from the current `rp->Font`. |
+| `TextLength` | Implemented | Returns pixel width based on current font character width. |
 | `TextExtent` | Implemented | Fills `TextExtent` from the current font/metrics. |
 | `TextFit` | Implemented | Returns characters that fit in a width constraint. |
 | `FontExtent` | Implemented | Fills `TextExtent` from a font. |
@@ -86,15 +86,15 @@ timestamp: 2026-06-21T12:00:00Z
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `OpenFont` | Implemented | Returns a built-in `TextFont` (topaz, 8×16, baseline 12); other names fail. |
-| `CloseFont` | Implemented | No-op for the shared built-in font. |
+| `OpenFont` | Implemented | Matches a font by name/size/style and returns a `TextFont`. |
+| `CloseFont` | Implemented | Decrements the matched font's reference count. |
 | `SetFont` | Implemented | Sets `rp->Font` pointer; returns previous font. |
 | `AskFont` | Implemented | Returns `rp->Font` pointer in D0. |
-| `AddFont` | Implemented | No-op; only the built-in font is tracked. |
-| `RemFont` | Implemented | No-op; only the built-in font is tracked. |
+| `AddFont` | Implemented | No-op for already-known fonts. |
+| `RemFont` | Implemented | No-op; static fonts are never removed. |
 | `AskSoftStyle` | Implemented | Returns current `rp->SoftStyle`. |
 | `SetSoftStyle` | Implemented | Updates `rp->SoftStyle` under enable mask; returns old style. |
-| `ExtendFont` | Implemented | Returns TRUE for the built-in font. |
+| `ExtendFont` | Implemented | Returns TRUE for any known font. |
 | `StripFont` | Implemented | No-op for the built-in font. |
 
 ### BitMap / RastPort allocation and management

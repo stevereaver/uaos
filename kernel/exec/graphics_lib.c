@@ -300,7 +300,32 @@ static uint8_t rgb_to_grey8(uint32_t rgb)
  * Font / text metric helpers
  * ========================================================================= */
 
-static uint32_t g_builtin_font = 0;
+typedef struct {
+    const char *name;
+    uint16_t    ySize;
+    uint16_t    xSize;
+    uint16_t    baseline;
+    uint8_t     style;
+    uint8_t     flags;
+    uint32_t    font_addr;   /* guest TextFont instance */
+    uint32_t    bitmap_addr; /* guest char bitmap */
+    uint32_t    ref_count;
+} UaosFontEntry;
+
+static UaosFontEntry font_entries[] = {
+    {"topaz.font",     8,  8, 16, 12, 0, 0, 0, 0},
+    {"topaz.font",    11,  8, 11,  8, 0, 0, 0, 0},
+    {"topaz.font",    13,  8, 13, 10, 0, 0, 0, 0},
+    {"emerald.font",   8,  8, 16, 12, 0, 0, 0, 0},
+    {"sapphire.font",  8,  8, 16, 12, 0, 0, 0, 0},
+    {"ruby.font",      8,  8, 16, 12, 0, 0, 0, 0},
+    {"garnet.font",    8,  8, 16, 12, 0, 0, 0, 0},
+    {"crystal.font",    11,  8, 11,  8, 0, 0, 0, 0},
+    {"diamond.font",    11,  8, 11,  8, 0, 0, 0, 0},
+    {"platinum.font",   8,  8, 16, 12, 0, 0, 0, 0},
+    {"tiffany.font",    8,  8, 16, 12, 0, 0, 0, 0},
+};
+#define UAOS_FONT_COUNT (sizeof(font_entries) / sizeof(font_entries[0]))
 
 static int match_font_name(const char *name, const char *expected)
 {
@@ -314,57 +339,126 @@ static int match_font_name(const char *name, const char *expected)
     }
 }
 
-static uint32_t create_builtin_font(void)
+static uint32_t create_font_bitmap(UaosFontEntry *e)
 {
-    if (g_builtin_font) return g_builtin_font;
+    if (e->bitmap_addr) return e->bitmap_addr;
 
-    uint32_t font_addr = 0, bitmap_addr = 0;
-    dos_AllocMem_glue(TF_SIZE, 0, &font_addr);
-    if (!font_addr) return 0;
-
+    uint32_t bitmap_addr = 0;
     dos_AllocMem_glue(95 * 16, 0, &bitmap_addr);
-    if (!bitmap_addr) {
-        dos_FreeMem_glue(font_addr, TF_SIZE);
-        return 0;
-    }
+    if (!bitmap_addr) return 0;
 
-    /* Copy the host 8×16 bitmap into guest RAM so CharData is readable. */
     for (int i = 0; i < 95 * 16; i++) {
         int ch = i / 16;
         int row = i % 16;
         m68k_write_memory_8(bitmap_addr + i, g_font8x16[ch][row]);
     }
+    e->bitmap_addr = bitmap_addr;
+    return bitmap_addr;
+}
+
+static uint32_t create_font_instance(UaosFontEntry *e)
+{
+    if (e->font_addr) return e->font_addr;
+
+    uint32_t bitmap = create_font_bitmap(e);
+    if (!bitmap) return 0;
+
+    uint32_t font_addr = 0;
+    dos_AllocMem_glue(TF_SIZE, 0, &font_addr);
+    if (!font_addr) return 0;
 
     for (int i = 0; i < TF_SIZE; i++)
         m68k_write_memory_8(font_addr + i, 0);
 
-    m68k_write_memory_16(font_addr + TF_OFF_YSIZE,     16);
-    m68k_write_memory_8 (font_addr + TF_OFF_STYLE,      0);
-    m68k_write_memory_8 (font_addr + TF_OFF_FLAGS,      0);
-    m68k_write_memory_16(font_addr + TF_OFF_XSIZE,      8);
-    m68k_write_memory_16(font_addr + TF_OFF_BASELINE,   12);
-    m68k_write_memory_16(font_addr + TF_OFF_BOLDSMEAR,  1);
-    m68k_write_memory_16(font_addr + TF_OFF_ACCESSORS,  1);
-    m68k_write_memory_8 (font_addr + TF_OFF_LOCHAR,   0x20);
-    m68k_write_memory_8 (font_addr + TF_OFF_HICHAR,   0x7E);
-    m68k_write_memory_32(font_addr + TF_OFF_CHARDATA,  bitmap_addr);
-    m68k_write_memory_16(font_addr + TF_OFF_MODULO,     1);
-    m68k_write_memory_32(font_addr + TF_OFF_CHARSPACE,  0);
-    m68k_write_memory_32(font_addr + TF_OFF_CHARKERN,   0);
+    m68k_write_memory_16(font_addr + TF_OFF_YSIZE,     e->ySize);
+    m68k_write_memory_8 (font_addr + TF_OFF_STYLE,     e->style);
+    m68k_write_memory_8 (font_addr + TF_OFF_FLAGS,     e->flags);
+    m68k_write_memory_16(font_addr + TF_OFF_XSIZE,     e->xSize);
+    m68k_write_memory_16(font_addr + TF_OFF_BASELINE,  e->baseline);
+    m68k_write_memory_16(font_addr + TF_OFF_BOLDSMEAR, 1);
+    m68k_write_memory_16(font_addr + TF_OFF_ACCESSORS, 1);
+    m68k_write_memory_8 (font_addr + TF_OFF_LOCHAR,  0x20);
+    m68k_write_memory_8 (font_addr + TF_OFF_HICHAR,  0x7E);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARDATA, bitmap);
+    m68k_write_memory_16(font_addr + TF_OFF_MODULO,    1);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARSPACE, 0);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARKERN, 0);
 
-    g_builtin_font = font_addr;
+    e->font_addr = font_addr;
     return font_addr;
+}
+
+static UaosFontEntry *font_find_entry(const char *name, uint16_t ySize,
+                                      uint8_t style, uint8_t flags)
+{
+    (void)style; (void)flags;
+    if (!name || name[0] == 0) return NULL;
+
+    UaosFontEntry *best = NULL;
+    int best_diff = 0x7FFFFFFF;
+
+    for (size_t i = 0; i < UAOS_FONT_COUNT; i++) {
+        if (!match_font_name(name, font_entries[i].name)) continue;
+        int target = (ySize == 0) ? (int)font_entries[i].ySize : (int)ySize;
+        int diff = (int)font_entries[i].ySize - target;
+        if (diff < 0) diff = -diff;
+        if (diff < best_diff) {
+            best_diff = diff;
+            best = &font_entries[i];
+        }
+    }
+    return best;
+}
+
+static uint32_t font_open(const char *name, uint16_t ySize,
+                          uint8_t style, uint8_t flags)
+{
+    UaosFontEntry *e = font_find_entry(name, ySize, style, flags);
+    if (!e) return 0;
+    uint32_t font = create_font_instance(e);
+    if (font) e->ref_count++;
+    return font;
+}
+
+static int font_is_known(uint32_t font)
+{
+    for (size_t i = 0; i < UAOS_FONT_COUNT; i++)
+        if (font_entries[i].font_addr == font) return 1;
+    return 0;
+}
+
+static UaosFontEntry *font_entry_by_addr(uint32_t font)
+{
+    for (size_t i = 0; i < UAOS_FONT_COUNT; i++)
+        if (font_entries[i].font_addr == font) return &font_entries[i];
+    return NULL;
+}
+
+static void font_close(uint32_t font)
+{
+    UaosFontEntry *e = font_entry_by_addr(font);
+    if (!e || e->ref_count == 0) return;
+    e->ref_count--;
+}
+
+static uint32_t create_builtin_font(void)
+{
+    return font_open("topaz.font", 8, 0, 0);
 }
 
 static int text_char_width(uint32_t rp)
 {
-    (void)rp;
+    if (!rp) return FB_CharWidth();
+    uint32_t font = m68k_read_memory_32(rp + RP_OFF_FONT);
+    if (font) return (int)m68k_read_memory_16(font + TF_OFF_XSIZE);
     return FB_CharWidth();
 }
 
 static int text_char_height(uint32_t rp)
 {
-    (void)rp;
+    if (!rp) return FB_CharHeight();
+    uint32_t font = m68k_read_memory_32(rp + RP_OFF_FONT);
+    if (font) return (int)m68k_read_memory_16(font + TF_OFF_YSIZE);
     return FB_CharHeight();
 }
 
@@ -377,15 +471,14 @@ static int text_baseline(uint32_t rp)
 
 static int text_width(uint32_t rp, uint32_t str, int len)
 {
-    (void)rp; (void)str;
+    (void)str;
     if (len < 0) len = 0;
-    return len * FB_CharWidth();
+    return len * text_char_width(rp);
 }
 
 static int text_height(uint32_t rp)
 {
-    (void)rp;
-    return FB_CharHeight();
+    return text_char_height(rp);
 }
 
 static void fill_text_extent(uint32_t te, int x, int y, int w, int h, int baseline)
@@ -1039,6 +1132,7 @@ static void graphics_Text(void)
     int mode    = current_mode(rp);
     int outline = (mode & OUTLINE) ? 1 : 0;
 
+    int cw = text_char_width(rp);
     for (int i = 0; i < len; i++) {
         char ch = (char)m68k_read_memory_8(str + i);
         if (outline) {
@@ -1052,7 +1146,7 @@ static void graphics_Text(void)
             }
         }
         draw_text_char(x, y, ch, fg, mode, bg);
-        x += FB_CharWidth();
+        x += cw;
     }
 
     rp_w_s16(rp, RP_OFF_CP_X, (int16_t)x);
@@ -1077,14 +1171,14 @@ static void graphics_TextFit(void)
     (void)rp; (void)str; (void)ce; (void)dir; (void)h;
 
     if (len < 0) len = 0;
-    int cw = FB_CharWidth();
+    int cw = text_char_width(rp);
     int fit = (w / cw);
     if (fit > len) fit = len;
     if (fit < 0) fit = 0;
 
     if (te) {
         int baseline = text_baseline(rp);
-        fill_text_extent(te, 0, -baseline, fit * cw, FB_CharHeight(), baseline);
+        fill_text_extent(te, 0, -baseline, fit * cw, text_char_height(rp), baseline);
     }
 
     m68k_set_reg(M68K_REG_D0, (unsigned int)fit);
@@ -1096,9 +1190,10 @@ static void graphics_TextLength(void)
      * A1 = rp, A0 = string, D0 = length
      * Returns pixel width in D0.
      */
+    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
     int len = (int)m68k_get_reg(NULL, M68K_REG_D0);
     if (len < 0) len = 0;
-    m68k_set_reg(M68K_REG_D0, (unsigned int)(len * FB_CharWidth()));
+    m68k_set_reg(M68K_REG_D0, (unsigned int)(len * text_char_width(rp)));
 }
 
 static void graphics_OpenFont(void)
@@ -1124,39 +1219,36 @@ static void graphics_OpenFont(void)
         }
     }
 
-    /* Accept any name that is empty or matches "topaz.font" (case-insensitive). */
-    if (name[0] && !match_font_name(name, "topaz.font")) {
-        m68k_set_reg(M68K_REG_D0, 0);
-        return;
-    }
-
-    (void)ySize; (void)style; (void)flags;
-    m68k_set_reg(M68K_REG_D0, create_builtin_font());
+    m68k_set_reg(M68K_REG_D0, font_open(name, ySize, style, flags));
 }
 
 static void graphics_CloseFont(void)
 {
     /* CloseFont(font)
      * A1 = font
-     * The built-in font is shared, so we never free it here.
      */
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t font = m68k_get_reg(NULL, M68K_REG_A1);
+    font_close(font);
 }
 
 static void graphics_AddFont(void)
 {
     /* AddFont(font) — A1 = font
-     * Only the built-in font exists; registering another is a no-op.
+     * Registers a font in the database.  UAOS keeps a static database, so
+     * this is only a no-op if the font is already known.
      */
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t font = m68k_get_reg(NULL, M68K_REG_A1);
+    if (font && font_is_known(font)) return;
+    (void)font;
 }
 
 static void graphics_RemFont(void)
 {
     /* RemFont(font) — A1 = font
-     * Only the built-in font exists; removing is a no-op.
+     * Removes a font from the database.  Static fonts are never removed.
      */
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t font = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)font;
 }
 
 static void graphics_TextExtent(void)
@@ -1224,16 +1316,12 @@ static void graphics_SetSoftStyle(void)
 static void graphics_ExtendFont(void)
 {
     /* ExtendFont(font, tags) — A0 = font, A1 = tags
-     * Returns TRUE (1) for the built-in font, FALSE (0) on failure.
+     * Returns TRUE (1) for any known font, FALSE (0) on failure.
      */
     uint32_t font = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t tags = m68k_get_reg(NULL, M68K_REG_A1);
     (void)tags;
-    if (font && font == g_builtin_font) {
-        m68k_set_reg(M68K_REG_D0, 1);
-        return;
-    }
-    m68k_set_reg(M68K_REG_D0, 0);
+    m68k_set_reg(M68K_REG_D0, font_is_known(font) ? 1 : 0);
 }
 
 static void graphics_StripFont(void)
@@ -1319,7 +1407,7 @@ static void graphics_ClearEOL(void)
     int x = (int)rp_s16(rp, RP_OFF_CP_X);
     int y = (int)rp_s16(rp, RP_OFF_CP_Y);
     uint32_t bg = current_bg(rp);
-    FB_FillRect(x, y, (int)g_fb.width - x, FB_CharHeight(), bg);
+    FB_FillRect(x, y, (int)g_fb.width - x, text_char_height(rp), bg);
 }
 
 static void graphics_ClearScreen(void)
