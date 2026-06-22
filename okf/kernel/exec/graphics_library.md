@@ -4,7 +4,7 @@ title: graphics.library
 description: UAOS native implementation of the AmigaOS graphics.library for emulated M68k tasks.
 resource: /kernel/exec/graphics_lib.c
 tags: [graphics, library, m68k, thunking, rastport]
-timestamp: 2026-06-22T15:00:00Z
+timestamp: 2026-06-22T16:00:00Z
 ---
 
 # graphics.library
@@ -187,7 +187,7 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 | `ModeNotAvailable` | Implemented | Returns 0 for known modes, 1 otherwise. |
 | `BestModeIDA` | Implemented | Returns the first known mode ID. |
 | `CoerceMode` | Implemented | Returns the mode ID if known, else the first known mode. |
-| `VideoControl` | Implemented | No-op (no hardware video control). |
+| `VideoControl` | Implemented | Parses tag list and updates `ColorMap` extension attributes (attached viewport, ViewPortExtra, display handles, border blank, chroma key, chroma pen, bitplane key, user clip, playfield/sprite base offsets). |
 
 ### Layer / Intuition helpers
 

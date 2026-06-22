@@ -3372,10 +3372,152 @@ static void graphics_CoerceMode(void)
 static void graphics_VideoControl(void)
 {
     /* VideoControl(colorMap, tags) — A0 = colorMap, A1 = tags
-     * No-op: no hardware video control to perform.
+     * Parse the tag list and update the ColorMap/viewport extension
+     * attributes stored in the ColorMap. Returns 0 in D0 on success.
      */
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t cm = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A1);
+
+    if (!cm || !tags) {
+        m68k_set_reg(M68K_REG_D0, 1);
+        return;
+    }
+
+    for (uint32_t p = tags; ; p += 8) {
+        uint32_t tag = m68k_read_memory_32(p);
+        uint32_t data = m68k_read_memory_32(p + 4);
+        if (tag == 0) break; /* TAG_DONE / VTAG_END_CM */
+
+        switch (tag) {
+            case VTAG_ATTACH_CM_SET:
+                m68k_write_memory_32(cm + CM_OFF_VP, data);
+                break;
+            case VTAG_ATTACH_CM_GET:
+                m68k_write_memory_32(data, m68k_read_memory_32(cm + CM_OFF_VP));
+                break;
+            case VTAG_VIEWPORTEXTRA_SET:
+                m68k_write_memory_32(cm + CM_OFF_VPE, data);
+                break;
+            case VTAG_VIEWPORTEXTRA_GET:
+                m68k_write_memory_32(data, m68k_read_memory_32(cm + CM_OFF_VPE));
+                break;
+            case VTAG_NORMAL_DISP_SET:
+                m68k_write_memory_32(cm + CM_OFF_NORMAL_DISP, data);
+                break;
+            case VTAG_NORMAL_DISP_GET:
+                m68k_write_memory_32(data, m68k_read_memory_32(cm + CM_OFF_NORMAL_DISP));
+                break;
+            case VTAG_COERCE_DISP_SET:
+                m68k_write_memory_32(cm + CM_OFF_COERCE_DISP, data);
+                break;
+            case VTAG_COERCE_DISP_GET:
+                m68k_write_memory_32(data, m68k_read_memory_32(cm + CM_OFF_COERCE_DISP));
+                break;
+            case VTAG_VPMODEID_SET:
+                m68k_write_memory_32(cm + CM_OFF_VPMODEID, data);
+                break;
+            case VTAG_VPMODEID_GET:
+                m68k_write_memory_32(data, m68k_read_memory_32(cm + CM_OFF_VPMODEID));
+                break;
+            case VTAG_VPMODEID_CLR:
+                m68k_write_memory_32(cm + CM_OFF_VPMODEID, 0);
+                break;
+            case VTAG_BORDERBLANK_SET:
+                m68k_write_memory_8(cm + CM_OFF_BORDERBLANK, 1);
+                break;
+            case VTAG_BORDERBLANK_CLR:
+                m68k_write_memory_8(cm + CM_OFF_BORDERBLANK, 0);
+                break;
+            case VTAG_BORDERBLANK_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_BORDERBLANK));
+                break;
+            case VTAG_CHROMAKEY_SET:
+                m68k_write_memory_8(cm + CM_OFF_CHROMAKEY, 1);
+                break;
+            case VTAG_CHROMAKEY_CLR:
+                m68k_write_memory_8(cm + CM_OFF_CHROMAKEY, 0);
+                break;
+            case VTAG_CHROMAKEY_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_CHROMAKEY));
+                break;
+            case VTAG_BITPLANEKEY_SET:
+                m68k_write_memory_8(cm + CM_OFF_BITPLANEKEY, 1);
+                break;
+            case VTAG_BITPLANEKEY_CLR:
+                m68k_write_memory_8(cm + CM_OFF_BITPLANEKEY, 0);
+                break;
+            case VTAG_BITPLANEKEY_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_BITPLANEKEY));
+                break;
+            case VTAG_CHROMA_PEN_SET:
+                m68k_write_memory_8(cm + CM_OFF_CHROMA_PEN, (uint8_t)data);
+                break;
+            case VTAG_CHROMA_PEN_CLR:
+                m68k_write_memory_8(cm + CM_OFF_CHROMA_PEN, 0);
+                break;
+            case VTAG_CHROMA_PEN_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_CHROMA_PEN));
+                break;
+            case VTAG_USERCLIP_SET:
+                m68k_write_memory_8(cm + CM_OFF_USERCLIP, 1);
+                break;
+            case VTAG_USERCLIP_CLR:
+                m68k_write_memory_8(cm + CM_OFF_USERCLIP, 0);
+                break;
+            case VTAG_USERCLIP_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_USERCLIP));
+                break;
+            case VTAG_PF1_BASE_SET:
+                m68k_write_memory_8(cm + CM_OFF_PF1_BASE, (uint8_t)data);
+                break;
+            case VTAG_PF1_BASE_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_PF1_BASE));
+                break;
+            case VTAG_PF2_BASE_SET:
+                m68k_write_memory_8(cm + CM_OFF_PF2_BASE, (uint8_t)data);
+                break;
+            case VTAG_PF2_BASE_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_PF2_BASE));
+                break;
+            case VTAG_SPEVEN_BASE_SET:
+                m68k_write_memory_8(cm + CM_OFF_SPEVEN_BASE, (uint8_t)data);
+                break;
+            case VTAG_SPEVEN_BASE_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_SPEVEN_BASE));
+                break;
+            case VTAG_SPODD_BASE_SET:
+                m68k_write_memory_8(cm + CM_OFF_SPODD_BASE, (uint8_t)data);
+                break;
+            case VTAG_SPODD_BASE_GET:
+                m68k_write_memory_32(data, m68k_read_memory_8(cm + CM_OFF_SPODD_BASE));
+                break;
+            /* V39+ batch and sprite tags are accepted but not acted upon */
+            case VTAG_NEXTBUF_CM:
+            case VTAG_BATCH_CM_SET:
+            case VTAG_BATCH_CM_CLR:
+            case VTAG_BATCH_ITEMS_SET:
+            case VTAG_BATCH_ITEMS_GET:
+            case VTAG_BATCH_ITEMS_ADD:
+            case VTAG_BORDERNOTRANS_SET:
+            case VTAG_BORDERNOTRANS_CLR:
+            case VTAG_BORDERNOTRANS_GET:
+            case VTAG_BORDERSPRITE_SET:
+            case VTAG_BORDERSPRITE_CLR:
+            case VTAG_BORDERSPRITE_GET:
+            case VTAG_SPRITERESN_SET:
+            case VTAG_SPRITERESN_GET:
+            case VTAG_PF1_TO_SPRITEPRI_SET:
+            case VTAG_PF1_TO_SPRITEPRI_GET:
+            case VTAG_PF2_TO_SPRITEPRI_SET:
+            case VTAG_PF2_TO_SPRITEPRI_GET:
+            case VTAG_CHROMA_PLANE_SET:
+            case VTAG_CHROMA_PLANE_GET:
+            default:
+                break;
+        }
+    }
+
+    m68k_set_reg(M68K_REG_D0, 0);
 }
 
 static void graphics_LockLayerRom(void)
