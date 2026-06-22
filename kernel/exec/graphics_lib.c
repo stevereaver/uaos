@@ -254,16 +254,31 @@ static inline void rp_w_s16(uint32_t rp, int off, int16_t  v)
  * Helpers: pen -> RGB, line drawing
  * ========================================================================= */
 
+static uint8_t rp_pen_clamped(uint32_t rp, int off)
+{
+    if (!rp) return 0;
+    uint8_t pen = rp_u8(rp, off);
+    uint8_t max = rp_u8(rp, RP_OFF_MAXPEN);
+    if (max > 0 && pen > max) pen = max;
+    return pen;
+}
+
 static uint32_t current_fg(uint32_t rp)
 {
     if (!rp) return amiga_pen_to_rgb(1); /* default white */
-    return amiga_pen_to_rgb(rp_u8(rp, RP_OFF_FGPEN));
+    return amiga_pen_to_rgb(rp_pen_clamped(rp, RP_OFF_FGPEN));
 }
 
 static uint32_t current_bg(uint32_t rp)
 {
     if (!rp) return amiga_pen_to_rgb(0); /* default black */
-    return amiga_pen_to_rgb(rp_u8(rp, RP_OFF_BGPEN));
+    return amiga_pen_to_rgb(rp_pen_clamped(rp, RP_OFF_BGPEN));
+}
+
+static uint32_t current_outline(uint32_t rp)
+{
+    if (!rp) return amiga_pen_to_rgb(0);
+    return amiga_pen_to_rgb(rp_pen_clamped(rp, RP_OFF_OLNPEN));
 }
 
 static int current_mode(uint32_t rp)
@@ -692,7 +707,18 @@ typedef struct {
     uint16_t  width;
     uint16_t  height;
     uint8_t   is_fb;
+    uint32_t  rp;
 } BlitSurface;
+
+static uint32_t apply_write_mask(uint32_t rp, uint32_t dst, uint32_t src)
+{
+    if (!rp) return src;
+    uint8_t mask = rp_u8(rp, RP_OFF_MASK);
+    if (mask == 0xFF) return src;
+    if (mask == 0) return dst;
+    uint32_t mask32 = mask | (mask << 8) | (mask << 16) | (mask << 24);
+    return (dst & ~mask32) | (src & mask32);
+}
 
 static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
 {
@@ -702,6 +728,7 @@ static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
         s->bpr = 0;
         s->width = (uint16_t)g_fb.width;
         s->height = (uint16_t)g_fb.height;
+        s->rp = 0;
         return;
     }
     s->is_fb = 0;
@@ -709,10 +736,12 @@ static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
     s->bpr = m68k_read_memory_16(bm + BM_OFF_BYTESPERROW);
     s->width = s->bpr / 4;
     s->height = m68k_read_memory_16(bm + BM_OFF_ROWS);
+    s->rp = 0;
 }
 
 static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
 {
+    s->rp = rp;
     if (!rp) {
         s->is_fb = 1;
         s->base = 0;
@@ -730,6 +759,7 @@ static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
         s->height = (uint16_t)g_fb.height;
     } else {
         blit_surface_from_bitmap(s, bm);
+        s->rp = rp;
     }
 }
 
@@ -749,11 +779,14 @@ static int blit_surface_put(BlitSurface *s, int x, int y, uint32_t pixel)
 {
     if (s->is_fb) {
         if (x < 0 || x >= (int)g_fb.width || y < 0 || y >= (int)g_fb.height) return 0;
-        FB_PutPixel(x, y, pixel);
+        uint32_t dst = FB_GetPixel(x, y);
+        FB_PutPixel(x, y, apply_write_mask(s->rp, dst, pixel));
         return 1;
     }
     if (!s->base || x < 0 || y < 0 || x >= s->width || y >= s->height) return 0;
-    m68k_write_memory_32(s->base + (uint32_t)y * s->bpr + (uint32_t)x * 4, pixel);
+    uint32_t dst = m68k_read_memory_32(s->base + (uint32_t)y * s->bpr + (uint32_t)x * 4);
+    m68k_write_memory_32(s->base + (uint32_t)y * s->bpr + (uint32_t)x * 4,
+                         apply_write_mask(s->rp, dst, pixel));
     return 1;
 }
 
@@ -1002,10 +1035,22 @@ static void graphics_Text(void)
 
     uint32_t fg = current_fg(rp);
     uint32_t bg = current_bg(rp);
+    uint32_t ol = current_outline(rp);
     int mode    = current_mode(rp);
+    int outline = (mode & OUTLINE) ? 1 : 0;
 
     for (int i = 0; i < len; i++) {
         char ch = (char)m68k_read_memory_8(str + i);
+        if (outline) {
+            /* Draw a simple outline: render the character shifted to all 8
+             * neighbours with the outline pen, then draw the glyph normally. */
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int ox = -1; ox <= 1; ox++) {
+                    if (ox == 0 && oy == 0) continue;
+                    draw_text_char(x + ox, y + oy, ch, ol, JAM1, bg);
+                }
+            }
+        }
         draw_text_char(x, y, ch, fg, mode, bg);
         x += FB_CharWidth();
     }
@@ -3283,6 +3328,26 @@ static void graphics_ScalerDiv(void)
     m68k_set_reg(M68K_REG_D0, (factor * numer) / denom);
 }
 
+static void graphics_SetChipRev(void)
+{
+    /* SetChipRev(rev) — D0 = requested revision
+     * Returns the actual chip revision in D0.
+     * UAOS reports ECS (2) with no special flags.
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, 2);
+}
+
+static void graphics_GetExtSpriteA(void)
+{
+    /* GetExtSpriteA(sprite, tags) — A0 = sprite, A1 = tags
+     * Returns 0 in D0 (no extended sprite data).
+     */
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
 /* =========================================================================
  * Function table indexed by LVO slot (|LVO| / 6).
  *
@@ -3388,6 +3453,8 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_GETRGB32]                = graphics_GetRGB32,
     [GFX_SLOT_SETABPENDRMD]            = graphics_SetABPenDrMd,
     [GFX_SLOT_BLTMASKBITMAPRASTPORT]   = graphics_BltMaskBitMapRastPort,
+    [GFX_SLOT_SETCHIPREV]              = graphics_SetChipRev,
+    [GFX_SLOT_GETEXTSPRITEA]           = graphics_GetExtSpriteA,
     [GFX_SLOT_COERCEMODE]              = graphics_CoerceMode,
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,

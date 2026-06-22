@@ -30,10 +30,12 @@ timestamp: 2026-06-21T12:00:00Z
 | `GetBPen` | Implemented | Returns `BgPen` in D0. |
 | `GetDrMd` | Implemented | Returns `DrawMode` in D0. |
 | `GetOutlinePen` | Implemented | Returns `OlPen` in D0. |
-| `SetOutlinePen` | Implemented | Writes `OlPen`, returns old pen in D0. |
-| `SetWriteMask` | Implemented | Stores `Mask` in guest RastPort; currently no effect on drawing. |
-| `SetMaxPen` | Implemented | Stores `MaxPen` in guest RastPort; no effect on drawing. |
+| `SetOutlinePen` | Implemented | Writes `OlPen`; used as outline colour when `OUTLINE` draw mode is set. |
+| `SetWriteMask` | Implemented | Stores `Mask`; applied to all writes through a `RastPort` surface. |
+| `SetMaxPen` | Implemented | Stores `MaxPen`; `FgPen`/`BgPen` are clamped to this value. |
 | `SetABPenDrMd` | Implemented | Atomic FgPen/BgPen/DrawMode update. |
+| `SetChipRev` | Implemented | Reports ECS revision (2). |
+| `GetExtSpriteA` | Implemented | Returns 0 (no extended sprite data). |
 | `SetFont` | Implemented | Sets `rp->Font` pointer; returns previous font. |
 | `AskFont` | Implemented | Returns `rp->Font` pointer in D0. |
 
@@ -371,14 +373,14 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 145 | -870 | GetDrMd | Implemented |
 | 146 | -876 | GetOutlinePen | Implemented |
 | 147 | -882 | LoadRGB32 | Implemented |
-| 148 | -888 | SetChipRev | Stub |
+| 148 | -888 | SetChipRev | Implemented |
 | 149 | -894 | SetABPenDrMd | Implemented |
 | 150 | -900 | GetRGB32 | Implemented |
 | 151 | -906 | *reserved* | No-op |
 | 152 | -912 | *reserved* | No-op |
 | 153 | -918 | AllocBitMap | Implemented |
 | 154 | -924 | FreeBitMap | Implemented |
-| 155 | -930 | GetExtSpriteA | Stub |
+| 155 | -930 | GetExtSpriteA | Implemented |
 | 156 | -936 | CoerceMode | Implemented |
 | 157 | -942 | ChangeVPBitMap | Stub |
 | 158 | -948 | ReleasePen | Implemented |

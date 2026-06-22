@@ -144,6 +144,7 @@
 #define JAM2        1
 #define COMPLEMENT  2
 #define INVERSVID   3
+#define OUTLINE     8
 
 /* -------------------------------------------------------------------------
  * Classic Amiga 4-bit pen → 0x00RRGGBB palette (OCS/ECS default)
