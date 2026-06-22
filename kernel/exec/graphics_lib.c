@@ -1295,6 +1295,24 @@ static void graphics_WaitTOF(void)
     /* WaitTOF — stub, host display has no hardware VBlank to wait for */
 }
 
+static void graphics_ChangeVPBitMap(void)
+{
+    /* ChangeVPBitMap(vp, bm, rasinfo)
+     * A0 = vp, A1 = bm, A2 = rasinfo
+     * Swap the RasInfo bitmap pointer in a ViewPort without rebuilding the
+     * whole display.  If rasinfo is NULL the ViewPort's current RasInfo is
+     * used.  The new BitMap is assumed to have the same depth/geometry as
+     * the old one.
+     */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t bm = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t ri = m68k_get_reg(NULL, M68K_REG_A2);
+    if (!vp || !bm) return;
+    if (!ri) ri = m68k_read_memory_32(vp + VP_OFF_RASINFO);
+    if (!ri) return;
+    m68k_write_memory_32(ri + RI_OFF_BITMAP, bm);
+}
+
 /* Render a single character from the built-in 8×16 font.
  * For JAM1 only foreground pixels are drawn (transparent background).
  * For JAM2 the cell is opaque. */
@@ -3796,6 +3814,7 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_COERCEMODE]              = graphics_CoerceMode,
     [GFX_SLOT_ALLOCBITMAP]             = graphics_AllocBitMap,
     [GFX_SLOT_FREEBITMAP]              = graphics_FreeBitMap,
+    [GFX_SLOT_CHANGEVPBITMAP]          = graphics_ChangeVPBitMap,
     [GFX_SLOT_GETBITMAPATTR]           = graphics_GetBitMapAttr,
     [GFX_SLOT_ALLOCDBUFINFO]           = graphics_AllocDBufInfo,
     [GFX_SLOT_FREEDBUFINFO]            = graphics_FreeDBufInfo,

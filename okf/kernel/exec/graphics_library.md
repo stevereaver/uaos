@@ -4,7 +4,7 @@ title: graphics.library
 description: UAOS native implementation of the AmigaOS graphics.library for emulated M68k tasks.
 resource: /kernel/exec/graphics_lib.c
 tags: [graphics, library, m68k, thunking, rastport]
-timestamp: 2026-06-22T14:00:00Z
+timestamp: 2026-06-22T15:00:00Z
 ---
 
 # graphics.library
@@ -47,6 +47,7 @@ timestamp: 2026-06-22T14:00:00Z
 | `InitVPort` | Implemented | Zeroes the guest `ViewPort` structure. |
 | `InitBitMap` | Implemented | Sets `BytesPerRow`, `Rows`, `Depth`, `Flags`, and clears plane pointers. |
 | `LoadView` | Implemented | Renders the first `ViewPort`'s planar `BitMap` into the host linear framebuffer using its `ColorMap`; `LoadView(NULL)` blanks the screen. |
+| `ChangeVPBitMap` | Implemented | Swaps the `BitMap` pointer in the `ViewPort`'s `RasInfo` (or supplied `RasInfo`) without rebuilding the display. |
 | `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID` from A0. |
 | `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES` from A0. |
 
