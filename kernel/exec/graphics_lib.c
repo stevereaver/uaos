@@ -11,7 +11,9 @@
 
 #include "rom_modules.h"
 #include "amiga_graphics.h"
+#include "intuition_lib.h"
 #include "../display/framebuffer.h"
+#include "../display/wm.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -474,6 +476,7 @@ typedef struct {
     uint8_t   depth;   /* 0 = framebuffer (chunky), 1-8 = planar BitMap */
     uint8_t   is_fb;
     uint32_t  rp;
+    int       dx, dy;  /* UAOS: window offset applied to framebuffer coords */
 } BlitSurface;
 
 static uint32_t rp_pen_to_rgb(uint32_t rp, uint32_t pen)
@@ -544,6 +547,8 @@ static void planar_pixel_put(BlitSurface *s, int x, int y, uint32_t pen)
 
 static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
 {
+    s->dx = 0;
+    s->dy = 0;
     if (!bm) {
         s->is_fb = 1;
         s->bpr = 0;
@@ -569,6 +574,8 @@ static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
 static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
 {
     s->rp = rp;
+    s->dx = 0;
+    s->dy = 0;
     if (!rp) {
         s->is_fb = 1;
         s->bpr = 0;
@@ -586,6 +593,23 @@ static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
         s->height = (uint16_t)g_fb.height;
         s->depth = 0;
         for (int i = 0; i < 8; i++) s->planes[i] = 0;
+
+        /* If the RastPort's Layer field points to a UAOS Window, add the
+         * window's screen position (plus GimmeZeroZero border offset) so that
+         * guest drawing operations are relative to the window content area. */
+        uint32_t win = m68k_read_memory_32(rp + RP_OFF_LAYER);
+        if (win) {
+            int wx = (int)(int16_t)m68k_read_memory_16(win + WIN_OFF_LEFTEDGE);
+            int wy = (int)(int16_t)m68k_read_memory_16(win + WIN_OFF_TOPEDGE);
+            uint32_t flags = m68k_read_memory_32(win + WIN_OFF_FLAGS);
+            int bx = 0, by = 0;
+            if (flags & WFLG_GIMMEZEROZERO) {
+                bx = WM_BORDER;
+                by = WM_TITLEBAR_H;
+            }
+            s->dx = wx + bx;
+            s->dy = wy + by;
+        }
     } else {
         blit_surface_from_bitmap(s, bm);
         s->rp = rp;
@@ -594,6 +618,8 @@ static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
 
 static int blit_surface_get(BlitSurface *s, int x, int y, uint32_t *pixel)
 {
+    x += s->dx;
+    y += s->dy;
     if (s->is_fb) {
         if (x < 0 || x >= (int)g_fb.width || y < 0 || y >= (int)g_fb.height) return 0;
         *pixel = FB_GetPixel(x, y);
@@ -606,6 +632,8 @@ static int blit_surface_get(BlitSurface *s, int x, int y, uint32_t *pixel)
 
 static int blit_surface_put(BlitSurface *s, int x, int y, uint32_t pixel)
 {
+    x += s->dx;
+    y += s->dy;
     if (s->is_fb) {
         if (x < 0 || x >= (int)g_fb.width || y < 0 || y >= (int)g_fb.height) return 0;
         uint32_t dst = FB_GetPixel(x, y);
@@ -756,7 +784,7 @@ static void rp_fill_rect(uint32_t rp, int x, int y, int w, int h, uint32_t pen)
     BlitSurface s;
     blit_surface_from_rastport(&s, rp);
     if (s.is_fb) {
-        FB_FillRect(x, y, w, h, rp_pen_to_rgb(rp, pen));
+        FB_FillRect(x + s.dx, y + s.dy, w, h, rp_pen_to_rgb(rp, pen));
         return;
     }
     planar_fill_rect(&s, x, y, w, h, pen);

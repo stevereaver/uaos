@@ -14,10 +14,14 @@
 #include "../display/desktop.h"
 #include "../display/cursor.h"
 #include "task.h"
+#include "irq/rtc.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+extern volatile uint64_t g_pit_ticks;
 
 /* =========================================================================
  * Guest RAM accessor (provided by uaos_m68k_glue.c)
@@ -124,25 +128,87 @@ static char *local_strchr(const char *s, int c)
 
 #define INTUITION_HEAP_BASE  0x1E0000
 #define INTUITION_HEAP_SIZE  0x010000
-static uint32_t intu_heap_ptr = INTUITION_HEAP_BASE;
+
+/* Each allocation is preceded by an 8-byte header:
+ *   +0: total block size (including header)
+ *   +4: 0 when in use, otherwise next free block address
+ * The data pointer returned to callers is block + 8. */
+static uint32_t intu_heap_top = INTUITION_HEAP_BASE;
+static uint32_t intu_free_list = 0;
 
 static uint32_t intu_alloc(uint32_t size)
 {
-    size = (size + 3) & ~3u;
-    if (intu_heap_ptr + size > INTUITION_HEAP_BASE + INTUITION_HEAP_SIZE)
+    size = (size + 7) & ~7u;
+    if (size < 8) size = 8;
+    uint32_t total = size + 8;
+
+    /* Search the free list for a block that fits. */
+    uint32_t prev = 0;
+    uint32_t cur = intu_free_list;
+    while (cur) {
+        uint32_t bsize = mem_u32(cur);
+        uint32_t next = mem_u32(cur + 4);
+        if (bsize >= total) {
+            if (prev) mem_w32(prev + 4, next);
+            else      intu_free_list = next;
+
+            /* Split if the remainder would be useful. */
+            if (bsize >= total + 16) {
+                uint32_t rem = cur + total;
+                uint32_t rem_size = bsize - total;
+                mem_w32(rem, rem_size);
+                mem_w32(rem + 4, intu_free_list);
+                intu_free_list = rem;
+                bsize = total;
+            }
+            mem_w32(cur, bsize);
+            mem_w32(cur + 4, 0);
+            for (uint32_t i = 8; i < bsize; i++) g_ram[cur + i] = 0;
+            return cur + 8;
+        }
+        prev = cur;
+        cur = next;
+    }
+
+    if (intu_heap_top + total > INTUITION_HEAP_BASE + INTUITION_HEAP_SIZE)
         return 0;
-    uint32_t addr = intu_heap_ptr;
-    intu_heap_ptr += size;
-    for (uint32_t i = 0; i < size; i++) g_ram[addr + i] = 0;
-    return addr;
+    uint32_t block = intu_heap_top;
+    intu_heap_top += total;
+    mem_w32(block, total);
+    mem_w32(block + 4, 0);
+    for (uint32_t i = 8; i < total; i++) g_ram[block + i] = 0;
+    return block + 8;
 }
 
-static void init_guest_rastport(uint32_t rp)
+static void intu_free(uint32_t user_addr)
+{
+    if (!user_addr) return;
+    if (user_addr < INTUITION_HEAP_BASE + 8 ||
+        user_addr >= INTUITION_HEAP_BASE + INTUITION_HEAP_SIZE)
+        return;
+    uint32_t block = user_addr - 8;
+    uint32_t size = mem_u32(block);
+    if (size < 16 || size > INTUITION_HEAP_SIZE) return;
+
+    /* If this is the topmost allocated block, lower the heap top instead
+     * of adding to the free list. */
+    if (block + size == intu_heap_top) {
+        intu_heap_top = block;
+        return;
+    }
+
+    /* Otherwise, add it to the free list. */
+    mem_w32(block + 4, intu_free_list);
+    intu_free_list = block;
+}
+
+static void init_guest_rastport(uint32_t rp, uint32_t win_ptr)
 {
     for (int i = 0; i < RP_SIZE_MIN; i++) g_ram[rp + i] = 0;
     g_ram[rp + RP_OFF_FGPEN]    = 1;   /* white */
     g_ram[rp + RP_OFF_BGPEN]    = 0;   /* black */
     g_ram[rp + RP_OFF_DRAWMODE] = JAM2;
+    mem_w32(rp + RP_OFF_LAYER, win_ptr);
 }
 
 /* =========================================================================
@@ -164,6 +230,38 @@ typedef struct {
     uint32_t gad_drag;
     uint32_t gad_depth;
     uint32_t gad_size;
+    /* Tag storage for SetWindowAttrsA / GetWindowAttrsA */
+    uint32_t pub_screen;
+    uint32_t super_bitmap;
+    uint32_t zoom;
+    uint32_t backfill;
+    uint32_t colors;
+    uint32_t window_name;
+    uint32_t error_code_ptr;
+    uint32_t help_group;
+    uint32_t help_group_window;
+    uint16_t mouse_queue;
+    uint16_t rpt_queue;
+    uint8_t  new_look_menus;
+    uint8_t  tablet_messages;
+    uint8_t  auto_adjust;
+    uint8_t  menu_help;
+    uint32_t screen_title;
+    uint32_t pub_screen_name;
+    uint8_t  pub_screen_fallback;
+    uint16_t inner_width;
+    uint16_t inner_height;
+    uint32_t amiga_key;
+    uint8_t  notify_depth;
+
+    /* Refresh / damage state */
+    uint8_t  refreshing;        /* inside BeginRefresh ... EndRefresh pair */
+    uint8_t  simple_refresh;    /* 1 = SimpleRefresh, 0 = SmartRefresh */
+    int16_t  damage_x, damage_y, damage_w, damage_h;
+
+    /* GimmeZeroZero border offsets */
+    uint8_t  gimme_zero_zero;
+    int16_t  border_left, border_top, border_right, border_bottom;
 } IntuitionSlot;
 
 static IntuitionSlot g_intu_wins[MAX_INTUITION_WINS];
@@ -208,6 +306,39 @@ static void free_slot(IntuitionSlot *slot)
         slot->gad_drag = 0;
         slot->gad_depth = 0;
         slot->gad_size = 0;
+        slot->pub_screen = 0;
+        slot->super_bitmap = 0;
+        slot->zoom = 0;
+        slot->backfill = 0;
+        slot->colors = 0;
+        slot->window_name = 0;
+        slot->error_code_ptr = 0;
+        slot->help_group = 0;
+        slot->help_group_window = 0;
+        slot->mouse_queue = 0;
+        slot->rpt_queue = 0;
+        slot->new_look_menus = 0;
+        slot->tablet_messages = 0;
+        slot->auto_adjust = 0;
+        slot->menu_help = 0;
+        slot->screen_title = 0;
+        slot->pub_screen_name = 0;
+        slot->pub_screen_fallback = 0;
+        slot->inner_width = 0;
+        slot->inner_height = 0;
+        slot->amiga_key = 0;
+        slot->notify_depth = 0;
+        slot->refreshing = 0;
+        slot->simple_refresh = 0;
+        slot->damage_x = 0;
+        slot->damage_y = 0;
+        slot->damage_w = 0;
+        slot->damage_h = 0;
+        slot->gimme_zero_zero = 0;
+        slot->border_left = 0;
+        slot->border_top = 0;
+        slot->border_right = 0;
+        slot->border_bottom = 0;
     }
 }
 
@@ -289,6 +420,42 @@ static uint32_t guest_list_remove_head(uint32_t list)
     return head;
 }
 
+static void free_port_messages(uint32_t port)
+{
+    if (!port) return;
+    uint32_t list = port + MP_OFF_MSGLIST;
+    while (1) {
+        uint32_t head = mem_u32(list + LH_OFF_HEAD);
+        uint32_t tail = list + LH_OFF_TAIL;
+        if (head == tail) break;
+        uint32_t msg = guest_list_remove_head(list);
+        if (!msg) break;
+        intu_free(msg);
+    }
+}
+
+static void free_window_idcmp(uint32_t win_ptr)
+{
+    if (!win_ptr) return;
+    uint32_t user_port = mem_u32(win_ptr + WIN_OFF_USERPORT);
+    uint32_t window_port = mem_u32(win_ptr + WIN_OFF_WINDOWPORT);
+    free_port_messages(user_port);
+    free_port_messages(window_port);
+    intu_free(user_port);
+    intu_free(window_port);
+    mem_w32(win_ptr + WIN_OFF_USERPORT, 0);
+    mem_w32(win_ptr + WIN_OFF_WINDOWPORT, 0);
+}
+
+static void free_gadget_list(uint32_t gad)
+{
+    while (gad) {
+        uint32_t next = mem_u32(gad + GAD_OFF_NEXTGADGET);
+        intu_free(gad);
+        gad = next;
+    }
+}
+
 static void init_guest_message(uint32_t msg, uint16_t length, uint32_t reply_port, uint32_t data)
 {
     mem_w32(msg + MSG_OFF_LN_SUCC, 0);
@@ -319,6 +486,41 @@ static IntuitionSlot *get_slot_from_handle(int wm_handle)
     return NULL;
 }
 
+static int count_port_messages_by_class(uint32_t port, uint32_t class_mask)
+{
+    if (!port) return 0;
+    uint32_t list = port + MP_OFF_MSGLIST;
+    int count = 0;
+    uint32_t node = mem_u32(list + LH_OFF_HEAD);
+    uint32_t tail = list + LH_OFF_TAIL;
+    while (node && node != tail) {
+        uint32_t node_class = mem_u32(node + IM_OFF_CLASS);
+        if (node_class & class_mask) count++;
+        node = mem_u32(node + MSG_OFF_LN_SUCC);
+    }
+    return count;
+}
+
+static void remove_oldest_port_message_by_class(uint32_t port, uint32_t class_mask)
+{
+    if (!port) return;
+    uint32_t list = port + MP_OFF_MSGLIST;
+    uint32_t node = mem_u32(list + LH_OFF_HEAD);
+    uint32_t tail = list + LH_OFF_TAIL;
+    while (node && node != tail) {
+        uint32_t node_class = mem_u32(node + IM_OFF_CLASS);
+        if (node_class & class_mask) {
+            uint32_t pred = mem_u32(node + MSG_OFF_LN_PRED);
+            uint32_t succ = mem_u32(node + MSG_OFF_LN_SUCC);
+            mem_w32(pred + MSG_OFF_LN_SUCC, succ);
+            mem_w32(succ + MSG_OFF_LN_PRED, pred);
+            intu_free(node);
+            return;
+        }
+        node = mem_u32(node + MSG_OFF_LN_SUCC);
+    }
+}
+
 static void post_intui_message(uint32_t win_ptr, uint32_t class, uint16_t code, uint16_t qualifier, int16_t mouse_x, int16_t mouse_y, uint32_t iaddress)
 {
     if (!win_ptr) return;
@@ -327,6 +529,19 @@ static void post_intui_message(uint32_t win_ptr, uint32_t class, uint16_t code, 
 
     uint32_t user_port = mem_u32(win_ptr + WIN_OFF_USERPORT);
     if (!user_port) return;
+
+    /* Enforce WA_MouseQueue / WA_RptQueue limits.  Mouse moves are limited by
+     * mouse_queue; mouse button events are limited by rpt_queue. */
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (slot) {
+        if (class == IDCMP_MOUSEMOVE && slot->mouse_queue > 0) {
+            while (count_port_messages_by_class(user_port, IDCMP_MOUSEMOVE) >= (int)slot->mouse_queue)
+                remove_oldest_port_message_by_class(user_port, IDCMP_MOUSEMOVE);
+        } else if (class == IDCMP_MOUSEBUTTONS && slot->rpt_queue > 0) {
+            while (count_port_messages_by_class(user_port, IDCMP_MOUSEBUTTONS) >= (int)slot->rpt_queue)
+                remove_oldest_port_message_by_class(user_port, IDCMP_MOUSEBUTTONS);
+        }
+    }
 
     uint32_t msg = intu_alloc(IM_SIZE);
     if (!msg) return;
@@ -404,6 +619,73 @@ static void create_system_gadgets(IntuitionSlot *slot, int16_t win_w, int16_t wi
     mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, close_gad);
 }
 
+/* Convert window-relative mouse coordinates into content-relative
+ * coordinates for GimmeZeroZero windows.  System gadgets remain in the
+ * border area and are handled separately by the WM. */
+static void gzz_mouse_to_content(IntuitionSlot *slot, int *x, int *y)
+{
+    if (slot && slot->gimme_zero_zero) {
+        *x -= slot->border_left;
+        *y -= slot->border_top;
+    }
+}
+
+/* Determine the gadget type id and whether it behaves as a checkbox or
+ * radio button. */
+static int gad_type_id(uint32_t gad)
+{
+    return (int)(mem_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F);
+}
+
+static int gad_is_checkbox_or_radio(uint32_t gad)
+{
+    if (gad_type_id(gad) != GTYP_BOOLGADGET) return 0;
+    uint16_t activation = mem_u16(gad + GAD_OFF_ACTIVATION);
+    if (activation & GACT_TOGGLESELECT) return 1;
+    if (mem_u32(gad + GAD_OFF_MUTUALEXCLUDE)) return 1;
+    return 0;
+}
+
+static int gad_is_listview(uint32_t gad)
+{
+    return gad_type_id(gad) == GTYP_LISTVIEW;
+}
+
+/* For a radio-button gadget, clear GFLG_SELECTED on all other gadgets that
+ * share any mutual-exclude bit. */
+static void radio_clear_others(uint32_t win_ptr, uint32_t sel_gad)
+{
+    uint32_t mutual = mem_u32(sel_gad + GAD_OFF_MUTUALEXCLUDE);
+    if (!mutual) return;
+    uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    while (gad) {
+        if (gad != sel_gad) {
+            uint32_t m = mem_u32(gad + GAD_OFF_MUTUALEXCLUDE);
+            if (m & mutual) {
+                uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+                if (flags & GFLG_SELECTED) {
+                    flags &= ~GFLG_SELECTED;
+                    mem_w16(gad + GAD_OFF_FLAGS, flags);
+                }
+            }
+        }
+        gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+    }
+}
+
+/* Hit-test a listview: return the clicked item index or -1. */
+static int listview_hit(uint32_t gad, int mx, int my)
+{
+    uint32_t lv = mem_u32(gad + GAD_OFF_SPECIALINFO);
+    if (!lv) return -1;
+    int top = (int)mem_u32(lv + LV_OFF_TOP);
+    int row_h = 16;
+    int row = (my - 2) / row_h + top;
+    int count = (int)mem_u32(lv + LV_OFF_COUNT);
+    if (row < 0 || row >= count) return -1;
+    return row;
+}
+
 static uint32_t gadget_by_id(IntuitionSlot *slot, uint16_t id)
 {
     switch (id) {
@@ -414,6 +696,9 @@ static uint32_t gadget_by_id(IntuitionSlot *slot, uint16_t id)
     }
     return 0;
 }
+
+/* Forward declaration for custom gadget hit-testing */
+static uint32_t gadget_at(uint32_t win_ptr, int mx, int my);
 
 static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, int p3)
 {
@@ -426,6 +711,7 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
     int wx = 0, wy = 0, ww = 0, wh = 0;
     (void)ww; (void)wh;
     WM_GetWindowRect(wm_handle, &wx, &wy, &ww, &wh);
+    IntuitionSlot *slot = get_slot_from_handle(wm_handle);
 
     switch (event_type) {
         case WM_EVT_CLOSE_REQUEST:
@@ -436,7 +722,6 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
             return 1;
 
         case WM_EVT_GADGET_DOWN: {
-            IntuitionSlot *slot = get_slot_from_handle(wm_handle);
             uint32_t gad = slot ? gadget_by_id(slot, (uint16_t)p1) : 0;
             if (idcmp & IDCMP_GADGETDOWN)
                 post_intui_message(win_ptr, IDCMP_GADGETDOWN, 0, 0, 0, 0, gad);
@@ -444,30 +729,97 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
         }
 
         case WM_EVT_GADGET_UP: {
-            IntuitionSlot *slot = get_slot_from_handle(wm_handle);
             uint32_t gad = slot ? gadget_by_id(slot, (uint16_t)p1) : 0;
             if (idcmp & IDCMP_GADGETUP)
                 post_intui_message(win_ptr, IDCMP_GADGETUP, 0, 0, 0, 0, gad);
             return 0;
         }
 
-        case WM_EVT_MOUSE_DOWN:
-            if (idcmp & IDCMP_MOUSEBUTTONS)
+        case WM_EVT_MOUSE_DOWN: {
+            int relx = p2 - wx;
+            int rely = p3 - wy;
+            gzz_mouse_to_content(slot, &relx, &rely);
+            uint32_t gad = gadget_at(win_ptr, relx, rely);
+            if (gad && !(mem_u16(gad + GAD_OFF_FLAGS) & GFLG_DISABLED)) {
+                if (gad_is_listview(gad)) {
+                    int item = listview_hit(gad, relx - mem_s16(gad + GAD_OFF_LEFTEDGE),
+                                                  rely - mem_s16(gad + GAD_OFF_TOPEDGE));
+                    if (item >= 0) {
+                        uint32_t lv = mem_u32(gad + GAD_OFF_SPECIALINFO);
+                        if (lv) mem_w32(lv + LV_OFF_SELECTED, (uint32_t)item);
+                    }
+                } else if (!gad_is_checkbox_or_radio(gad)) {
+                    uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+                    flags |= GFLG_SELECTED;
+                    mem_w16(gad + GAD_OFF_FLAGS, flags);
+                }
+                if (idcmp & IDCMP_GADGETDOWN)
+                    post_intui_message(win_ptr, IDCMP_GADGETDOWN, 0, 0, 0, 0, gad);
+                WM_Redraw();
+            } else if (idcmp & IDCMP_MOUSEBUTTONS) {
                 post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS, (uint16_t)p1, 0,
-                                   (int16_t)(p2 - wx), (int16_t)(p3 - wy), 0);
+                                   (int16_t)relx, (int16_t)rely, 0);
+            }
             return 0;
+        }
 
-        case WM_EVT_MOUSE_UP:
-            if (idcmp & IDCMP_MOUSEBUTTONS)
+        case WM_EVT_MOUSE_UP: {
+            int relx = p2 - wx;
+            int rely = p3 - wy;
+            gzz_mouse_to_content(slot, &relx, &rely);
+            uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+            uint32_t hit_gad = gadget_at(win_ptr, relx, rely);
+            int redraw = 0;
+
+            if (hit_gad && gad_is_checkbox_or_radio(hit_gad) &&
+                !(mem_u16(hit_gad + GAD_OFF_FLAGS) & GFLG_DISABLED)) {
+                uint16_t flags = mem_u16(hit_gad + GAD_OFF_FLAGS);
+                uint32_t mutual = mem_u32(hit_gad + GAD_OFF_MUTUALEXCLUDE);
+                if (mutual) {
+                    /* Radio button: select this one and clear the group. */
+                    if (!(flags & GFLG_SELECTED)) {
+                        flags |= GFLG_SELECTED;
+                        mem_w16(hit_gad + GAD_OFF_FLAGS, flags);
+                        radio_clear_others(win_ptr, hit_gad);
+                        redraw = 1;
+                    }
+                } else {
+                    /* Checkbox: toggle the selected state. */
+                    flags ^= GFLG_SELECTED;
+                    mem_w16(hit_gad + GAD_OFF_FLAGS, flags);
+                    redraw = 1;
+                }
+                if (idcmp & IDCMP_GADGETUP)
+                    post_intui_message(win_ptr, IDCMP_GADGETUP, 0, 0, 0, 0, hit_gad);
+            }
+
+            while (gad) {
+                uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+                if (flags & GFLG_SELECTED) {
+                    flags &= ~GFLG_SELECTED;
+                    mem_w16(gad + GAD_OFF_FLAGS, flags);
+                    redraw = 1;
+                    if (hit_gad == gad && (idcmp & IDCMP_GADGETUP))
+                        post_intui_message(win_ptr, IDCMP_GADGETUP, 0, 0, 0, 0, gad);
+                }
+                gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+            }
+            if (!hit_gad && (idcmp & IDCMP_MOUSEBUTTONS))
                 post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS, (uint16_t)(0x100 + p1), 0,
-                                   (int16_t)(p2 - wx), (int16_t)(p3 - wy), 0);
+                                   (int16_t)relx, (int16_t)rely, 0);
+            if (redraw) WM_Redraw();
             return 0;
+        }
 
-        case WM_EVT_MOUSE_MOVE:
+        case WM_EVT_MOUSE_MOVE: {
+            int relx = p1 - wx;
+            int rely = p2 - wy;
+            gzz_mouse_to_content(slot, &relx, &rely);
             if (idcmp & IDCMP_MOUSEMOVE)
                 post_intui_message(win_ptr, IDCMP_MOUSEMOVE, 0, 0,
-                                   (int16_t)(p1 - wx), (int16_t)(p2 - wy), 0);
+                                   (int16_t)relx, (int16_t)rely, 0);
             return 0;
+        }
 
         case WM_EVT_KEY:
             if (idcmp & IDCMP_RAWKEY)
@@ -479,6 +831,8 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
         case WM_EVT_RESIZE:
             if (idcmp & IDCMP_NEWSIZE)
                 post_intui_message(win_ptr, IDCMP_NEWSIZE, 0, 0, 0, 0, 0);
+            if (slot && slot->simple_refresh && (idcmp & IDCMP_REFRESHWINDOW))
+                post_intui_message(win_ptr, IDCMP_REFRESHWINDOW, 0, 0, 0, 0, 0);
             return 0;
 
         case WM_EVT_FOCUS:
@@ -493,9 +847,593 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
 }
 
 /* Empty draw callback — m68k app should handle rendering via IDCMP */
+static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h);
+
+/* =========================================================================
+ * Custom gadget support
+ * ========================================================================= */
+
+static uint32_t insert_gadget_at(uint32_t first, uint32_t gad, int position)
+{
+    if (!gad) return first;
+    if (!first || position <= 0) {
+        mem_w32(gad + GAD_OFF_NEXTGADGET, first);
+        return gad;
+    }
+    uint32_t prev = first;
+    int pos = 1;
+    while (pos < position && mem_u32(prev + GAD_OFF_NEXTGADGET)) {
+        prev = mem_u32(prev + GAD_OFF_NEXTGADGET);
+        pos++;
+    }
+    uint32_t next = mem_u32(prev + GAD_OFF_NEXTGADGET);
+    mem_w32(prev + GAD_OFF_NEXTGADGET, gad);
+    mem_w32(gad + GAD_OFF_NEXTGADGET, next);
+    return first;
+}
+
+static int count_gadgets(uint32_t first)
+{
+    int n = 0;
+    while (first) {
+        n++;
+        first = mem_u32(first + GAD_OFF_NEXTGADGET);
+    }
+    return n;
+}
+
+static uint32_t remove_gadget_from_list(uint32_t first, uint32_t gad)
+{
+    if (!first || !gad) return first;
+    if (first == gad) {
+        return mem_u32(first + GAD_OFF_NEXTGADGET);
+    }
+    uint32_t prev = first;
+    while (prev) {
+        uint32_t next = mem_u32(prev + GAD_OFF_NEXTGADGET);
+        if (next == gad) {
+            mem_w32(prev + GAD_OFF_NEXTGADGET, mem_u32(gad + GAD_OFF_NEXTGADGET));
+            return first;
+        }
+        prev = next;
+    }
+    return first;
+}
+
+static uint32_t remove_gadgets_from_list(uint32_t first, uint32_t gad, int num)
+{
+    if (!first || !gad || num <= 0) return first;
+    /* Find the predecessor of gad in the list. */
+    uint32_t prev = 0;
+    uint32_t cur = first;
+    while (cur && cur != gad) {
+        prev = cur;
+        cur = mem_u32(cur + GAD_OFF_NEXTGADGET);
+    }
+    if (!cur) return first;
+
+    /* Walk num gadgets starting from gad and detach the chain. */
+    uint32_t end = gad;
+    int removed = 1;
+    while (removed < num && end) {
+        end = mem_u32(end + GAD_OFF_NEXTGADGET);
+        removed++;
+    }
+    uint32_t after = end ? mem_u32(end + GAD_OFF_NEXTGADGET) : 0;
+    if (prev) {
+        mem_w32(prev + GAD_OFF_NEXTGADGET, after);
+        return first;
+    }
+    return after;
+}
+
+static int gadget_position_in_list(uint32_t first, uint32_t gad)
+{
+    int pos = 0;
+    while (first) {
+        if (first == gad) return pos;
+        first = mem_u32(first + GAD_OFF_NEXTGADGET);
+        pos++;
+    }
+    return -1;
+}
+
+static int add_gadget_list(uint32_t win_ptr, uint32_t first_gad, int position, int num)
+{
+    if (!win_ptr || !first_gad) return -1;
+    uint32_t first = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    if (position < 0) {
+        /* -1 means append. */
+        position = count_gadgets(first);
+    }
+    if (num < 0) {
+        /* Count gadgets in the linked list starting at first_gad. */
+        num = count_gadgets(first_gad);
+    }
+    if (num <= 0) return position;
+
+    /* Detach the first num gadgets from the source list. */
+    uint32_t tail = first_gad;
+    for (int i = 1; i < num && tail; i++)
+        tail = mem_u32(tail + GAD_OFF_NEXTGADGET);
+    if (tail) {
+        uint32_t rest = mem_u32(tail + GAD_OFF_NEXTGADGET);
+        (void)rest;
+        mem_w32(tail + GAD_OFF_NEXTGADGET, 0);
+    }
+
+    first = insert_gadget_at(first, first_gad, position);
+    mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, first);
+    return position;
+}
+
+/* AddGadget(window, gadget, position) — A0, A1, D0; returns position in D0 */
+static void intuition_AddGadget(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t gad     = m68k_get_reg(NULL, M68K_REG_A1);
+    int      pos     = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int result = add_gadget_list(win_ptr, gad, pos, 1);
+    m68k_set_reg(M68K_REG_D0, (result < 0) ? 0 : (uint32_t)result);
+}
+
+/* AddGList(window, gadget, position, numGad, requester) — A0, A1, D0, D1, A2 */
+static void intuition_AddGList(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t gad     = m68k_get_reg(NULL, M68K_REG_A1);
+    int      pos     = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int      num     = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    int result = add_gadget_list(win_ptr, gad, pos, num);
+    m68k_set_reg(M68K_REG_D0, (result < 0) ? 0 : (uint32_t)result);
+}
+
+/* RemoveGadget(window, gadget) — A0, A1; returns position in D0 */
+static void intuition_RemoveGadget(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t gad     = m68k_get_reg(NULL, M68K_REG_A1);
+    int result = -1;
+    if (win_ptr && gad) {
+        uint32_t first = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+        result = gadget_position_in_list(first, gad);
+        first = remove_gadget_from_list(first, gad);
+        mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, first);
+    }
+    m68k_set_reg(M68K_REG_D0, (result < 0) ? 0xFFFF : (uint32_t)result);
+}
+
+/* RemoveGList(window, gadget, numGad) — A0, A1, D0; returns position in D0 */
+static void intuition_RemoveGList(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t gad     = m68k_get_reg(NULL, M68K_REG_A1);
+    int      num     = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int result = -1;
+    if (win_ptr && gad) {
+        uint32_t first = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+        result = gadget_position_in_list(first, gad);
+        first = remove_gadgets_from_list(first, gad, num);
+        mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, first);
+    }
+    m68k_set_reg(M68K_REG_D0, (result < 0) ? 0xFFFF : (uint32_t)result);
+}
+
+/* RefreshGList(gadgets, window, requester, numGad) — A0, A1, A2, D0 */
+static void intuition_RefreshGList(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    WM_Redraw();
+}
+
+/* RefreshGadgets(gadgets, window, requester, numGad) — A0, A1, A2, D0
+ * Older Intuition entry point that performs the same work as RefreshGList. */
+static void intuition_RefreshGadgets(void)
+{
+    intuition_RefreshGList();
+}
+
+/* Static helper: read a gadget's state/value.  info_id selects the field:
+ *   0 = type id, 1 = flags, 2 = selected, 3 = integer value,
+ *   4 = string buffer, 5 = listview selected index,
+ *   6 = prop HorizPot, 7 = prop VertPot. */
+static uint32_t GetGadgetInfo(uint32_t gad, uint32_t info_id)
+{
+    if (!gad) return 0;
+    uint16_t type = mem_u16(gad + GAD_OFF_GADGETTYPE);
+    int type_id = type & 0x000F;
+    uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+    uint32_t special = mem_u32(gad + GAD_OFF_SPECIALINFO);
+
+    switch (info_id) {
+        case 0: return (uint32_t)type_id;
+        case 1: return (uint32_t)flags;
+        case 2: return (flags & GFLG_SELECTED) ? 1 : 0;
+        case 3:
+            if (type_id == GTYP_INTGADGET && special) {
+                uint32_t buf = mem_u32(special + SI_OFF_BUFFER);
+                if (buf) {
+                    char text[32];
+                    guest_str(text, buf, sizeof(text));
+                    char *p = text;
+                    while (*p == ' ') p++;
+                    return (uint32_t)(int)strtol(p, NULL, 10);
+                }
+            }
+            return 0;
+        case 4:
+            if ((type_id == GTYP_STRGADGET || type_id == GTYP_INTGADGET) && special)
+                return mem_u32(special + SI_OFF_BUFFER);
+            return 0;
+        case 5:
+            if (type_id == GTYP_LISTVIEW && special)
+                return mem_u32(special + LV_OFF_SELECTED);
+            return 0;
+        case 6:
+            if (type_id == GTYP_PROPGADGET && special)
+                return mem_u16(special + PROP_OFF_HORIZPOT);
+            return 0;
+        case 7:
+            if (type_id == GTYP_PROPGADGET && special)
+                return mem_u16(special + PROP_OFF_VERTPOT);
+            return 0;
+    }
+    return 0;
+}
+
+/* OnGadget(gadget, window, requester) — A0, A1, A2 */
+static void intuition_OnGadget(void)
+{
+    uint32_t gad = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    if (gad) {
+        uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        flags &= ~GFLG_DISABLED;
+        mem_w16(gad + GAD_OFF_FLAGS, flags);
+    }
+    WM_Redraw();
+}
+
+/* OffGadget(gadget, window, requester) — A0, A1, A2 */
+static void intuition_OffGadget(void)
+{
+    uint32_t gad = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    if (gad) {
+        uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        flags |= GFLG_DISABLED;
+        mem_w16(gad + GAD_OFF_FLAGS, flags);
+    }
+    WM_Redraw();
+}
+
+/* ModifyProp(gadget, window, requester, flags, horizPot, vertPot, horizBody, vertBody)
+ * A0, A1, A2, D0, D1, D2, D3, D4 */
+static void intuition_ModifyProp(void)
+{
+    uint32_t gad = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    uint16_t flags = (uint16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    uint16_t hpot  = (uint16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint16_t vpot  = (uint16_t)m68k_get_reg(NULL, M68K_REG_D2);
+    uint16_t hbody = (uint16_t)m68k_get_reg(NULL, M68K_REG_D3);
+    uint16_t vbody = (uint16_t)m68k_get_reg(NULL, M68K_REG_D4);
+    if (gad) {
+        uint16_t type = mem_u16(gad + GAD_OFF_GADGETTYPE);
+        if ((type & 0x000F) == GTYP_PROPGADGET) {
+            uint32_t prop = mem_u32(gad + GAD_OFF_SPECIALINFO);
+            if (prop) {
+                mem_w16(prop + PROP_OFF_FLAGS, flags);
+                mem_w16(prop + PROP_OFF_HORIZPOT, hpot);
+                mem_w16(prop + PROP_OFF_VERTPOT, vpot);
+                mem_w16(prop + PROP_OFF_HORIZBODY, hbody);
+                mem_w16(prop + PROP_OFF_VERTBODY, vbody);
+            }
+        }
+    }
+    WM_Redraw();
+}
+
+/* NewModifyProp(gadget, window, requester, flags, attr, hpot, vpot, hbody, vbody)
+ * A0, A1, A2, D0, D1, D2, D3, D4, A3
+ * In OS3.0 this is the same as ModifyProp but with extra flags argument. */
+static void intuition_NewModifyProp(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A3);
+    intuition_ModifyProp();
+}
+
+/* ActivateGadget(gadget, window, requester) — A0, A1, A2; returns BOOL in D0 */
+static void intuition_ActivateGadget(void)
+{
+    uint32_t gad     = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    int ok = 0;
+    if (gad && win_ptr) {
+        uint16_t type = mem_u16(gad + GAD_OFF_GADGETTYPE);
+        if ((type & 0x000F) == GTYP_STRGADGET) {
+            /* Mark the gadget as the active string gadget and focus the window. */
+            IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+            if (slot) WM_RequestFocus(slot->wm_handle);
+            ok = 1;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, ok ? 1 : 0);
+}
+
+/* Find the topmost custom gadget at window-relative coordinates. */
+static uint32_t gadget_at(uint32_t win_ptr, int mx, int my)
+{
+    uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    while (gad) {
+        uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        if (flags & GFLG_DISABLED) {
+            gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+            continue;
+        }
+        int16_t left = mem_s16(gad + GAD_OFF_LEFTEDGE);
+        int16_t top  = mem_s16(gad + GAD_OFF_TOPEDGE);
+        int16_t w    = mem_s16(gad + GAD_OFF_WIDTH);
+        int16_t h    = mem_s16(gad + GAD_OFF_HEIGHT);
+        if (mx >= left && mx < left + w && my >= top && my < top + h)
+            return gad;
+        gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+    }
+    return 0;
+}
+
+/* Read a gadget's label text into buf (max bytes). Returns 1 if a label was found. */
+static int gadget_label_text(uint32_t gad, char *buf, int max)
+{
+    uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+    buf[0] = '\0';
+    if (flags & GFLG_LABELITEXT) {
+        uint32_t label = mem_u32(gad + GAD_OFF_GADGETTEXT);
+        if (label) {
+            uint32_t text_ptr = mem_u32(label + ITEXT_OFF_ITEXT);
+            if (text_ptr) {
+                guest_str(buf, text_ptr, max);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Draw a small checkbox or radio button with an optional label.
+ * mutual = non-zero => radio circle; otherwise checkbox square. */
+static void draw_checkbox_or_radio(int gx, int gy, int w, int h, uint32_t fg, uint32_t bg,
+                                   int selected, int mutual, const char *label)
+{
+    int box = (h < 20) ? h - 2 : 18;
+    if (box < 8) box = 8;
+    int by = gy + (h - box) / 2;
+
+    if (mutual) {
+        FB_FillRect(gx + 1, by + 1, box - 2, box - 2, bg);
+        FB_DrawRect(gx, by, box, box, fg);
+        if (selected) {
+            int dot = box / 4;
+            if (dot < 3) dot = 3;
+            int cx = gx + box / 2;
+            int cy = by + box / 2;
+            FB_FillRect(cx - dot / 2, cy - dot / 2, dot, dot, fg);
+        }
+    } else {
+        FB_FillRect(gx, by, box, box, bg);
+        FB_DrawRect(gx, by, box, box, fg);
+        if (selected) {
+            int cx = gx + box / 2;
+            int cy = by + box / 2;
+            FB_DrawRect(cx - box / 4, cy - box / 4, box / 2, box / 2, fg);
+            FB_DrawRect(cx - box / 4 + 1, cy - box / 4 + 1, box / 2 - 2, box / 2 - 2, fg);
+        }
+    }
+
+    if (label && label[0]) {
+        int tx = gx + box + 4;
+        int ty = gy + (h - 16) / 2;
+        FB_PutStr(tx, ty, label, fg, bg);
+    }
+}
+
+/* Draw a string or integer gadget input box showing the current buffer text. */
+static void draw_string_like_gadget(int gx, int gy, int w, int h, uint32_t fg, uint32_t bg,
+                                    uint32_t si, int is_int)
+{
+    FB_FillRect(gx, gy, w, h, WB_WHITE);
+    FB_DrawRect(gx, gy, w, h, fg);
+    if (si) {
+        uint32_t buf = mem_u32(si + SI_OFF_BUFFER);
+        if (buf) {
+            char text[64];
+            guest_str(text, buf, sizeof(text));
+            if (is_int) {
+                /* Integer gadgets may contain leading spaces or signs; trim. */
+                char *p = text;
+                while (*p == ' ') p++;
+                FB_PutStr(gx + 4, gy + (h - 16) / 2, p, fg, bg);
+            } else {
+                FB_PutStr(gx + 4, gy + (h - 16) / 2, text, fg, bg);
+            }
+        }
+    }
+}
+
+/* Draw a simple listview: a box with visible items and a scrollbar. */
+static void draw_listview_gadget(int gx, int gy, int w, int h, uint32_t fg, uint32_t bg,
+                                   uint32_t lv)
+{
+    FB_FillRect(gx, gy, w, h, WB_WHITE);
+    FB_DrawRect(gx, gy, w, h, fg);
+    if (!lv) return;
+
+    int count    = (int)mem_u32(lv + LV_OFF_COUNT);
+    int selected = (int)mem_u32(lv + LV_OFF_SELECTED);
+    int visible  = (int)mem_u32(lv + LV_OFF_VISIBLE);
+    int top      = (int)mem_u32(lv + LV_OFF_TOP);
+    if (visible <= 0) visible = 4;
+    if (top < 0) top = 0;
+    if (top > count - visible) top = count - visible;
+    if (top < 0) top = 0;
+
+    uint32_t items = mem_u32(lv + LV_OFF_ITEMS);
+    int row_h = 16;
+    int inner_w = w - 2;
+    int scroll_w = 12;
+    if (count > visible) inner_w -= scroll_w;
+    if (inner_w < 4) inner_w = 4;
+
+    for (int i = 0; i < visible && (top + i) < count; i++) {
+        int idx = top + i;
+        uint32_t item_ptr = 0;
+        if (items) item_ptr = mem_u32(items + (uint32_t)idx * 4);
+        char text[64] = "";
+        if (item_ptr) guest_str(text, item_ptr, sizeof(text));
+        int ry = gy + 2 + i * row_h;
+        uint32_t row_bg = (idx == selected) ? WB_BLUE : WB_WHITE;
+        uint32_t row_fg = (idx == selected) ? WB_WHITE : fg;
+        FB_FillRect(gx + 1, ry, inner_w - 1, row_h - 1, row_bg);
+        FB_PutStr(gx + 4, ry + (row_h - 16) / 2, text, row_fg, row_bg);
+    }
+
+    if (count > visible) {
+        int sx = gx + w - scroll_w - 1;
+        FB_DrawRect(sx, gy + 1, scroll_w, h - 2, fg);
+        int sh = (h - 4) * visible / count;
+        if (sh < 4) sh = 4;
+        int sy = gy + 2 + (h - 4 - sh) * top / (count - visible);
+        FB_FillRect(sx + 1, sy, scroll_w - 2, sh, WB_GREY);
+    }
+}
+
+/* Render the window's custom gadget list.  Boolean gadgets are rendered as
+ * buttons, checkboxes, or radio buttons depending on activation flags; integer
+ * gadgets show their numeric value; listviews show a scrollable item list; and
+ * string gadgets show their buffer text.  The guest application is still
+ * expected to draw its own complex imagery via the RastPort and to call
+ * RefreshGList() when gadget visuals change. */
+static void render_custom_gadgets(int win_x, int win_y, int off_x, int off_y, uint32_t win_ptr)
+{
+    uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    while (gad) {
+        uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        int16_t left   = mem_s16(gad + GAD_OFF_LEFTEDGE);
+        int16_t top    = mem_s16(gad + GAD_OFF_TOPEDGE);
+        int16_t w      = mem_s16(gad + GAD_OFF_WIDTH);
+        int16_t h      = mem_s16(gad + GAD_OFF_HEIGHT);
+        uint16_t type  = mem_u16(gad + GAD_OFF_GADGETTYPE);
+        int type_id = type & 0x000F;
+        uint16_t activation = mem_u16(gad + GAD_OFF_ACTIVATION);
+        uint32_t special = mem_u32(gad + GAD_OFF_SPECIALINFO);
+
+        uint32_t bg = (flags & GFLG_SELECTED) ? WB_BLUE : WB_GREY;
+        uint32_t fg = WB_BLACK;
+        if (flags & GFLG_DISABLED) { fg = WB_DARK_GREY; bg = WB_LIGHT_GREY; }
+
+        int gx = win_x + off_x + left;
+        int gy = win_y + off_y + top;
+
+        if (type_id == GTYP_PROPGADGET) {
+            uint32_t prop = special;
+            if (prop) {
+                uint16_t hpot = mem_u16(prop + PROP_OFF_HORIZPOT);
+                uint16_t vpot = mem_u16(prop + PROP_OFF_VERTPOT);
+                uint16_t hbody = mem_u16(prop + PROP_OFF_HORIZBODY);
+                uint16_t vbody = mem_u16(prop + PROP_OFF_VERTBODY);
+                FB_FillRect(gx, gy, w, h, WB_LIGHT_GREY);
+                FB_DrawRect(gx, gy, w, h, WB_BLACK);
+                if (w > h) {
+                    int kw = (int)(w * hbody / 0xFFFF);
+                    if (kw < 4) kw = 4;
+                    int kx = gx + (int)(w * hpot / 0xFFFF) - kw / 2;
+                    if (kx < gx) kx = gx;
+                    if (kx + kw > gx + w) kx = gx + w - kw;
+                    FB_FillRect(kx, gy + 2, kw, h - 4, WB_BLUE);
+                } else {
+                    int kh = (int)(h * vbody / 0xFFFF);
+                    if (kh < 4) kh = 4;
+                    int ky = gy + (int)(h * vpot / 0xFFFF) - kh / 2;
+                    if (ky < gy) ky = gy;
+                    if (ky + kh > gy + h) ky = gy + h - kh;
+                    FB_FillRect(gx + 2, ky, w - 4, kh, WB_BLUE);
+                }
+            }
+        } else if (type_id == GTYP_STRGADGET) {
+            draw_string_like_gadget(gx, gy, w, h, fg, bg, special, 0);
+        } else if (type_id == GTYP_INTGADGET) {
+            draw_string_like_gadget(gx, gy, w, h, fg, bg, special, 1);
+        } else if (type_id == GTYP_LISTVIEW) {
+            draw_listview_gadget(gx, gy, w, h, fg, bg, special);
+        } else if (type_id == GTYP_BOOLGADGET) {
+            char label[64];
+            gadget_label_text(gad, label, sizeof(label));
+            int mutual = mem_u32(gad + GAD_OFF_MUTUALEXCLUDE) ? 1 : 0;
+            int toggle = (activation & GACT_TOGGLESELECT) ? 1 : 0;
+            if (mutual || toggle) {
+                draw_checkbox_or_radio(gx, gy, w, h, fg, bg,
+                                       (flags & GFLG_SELECTED) ? 1 : 0,
+                                       mutual, label);
+            } else {
+                /* Plain push button */
+                FB_FillRect(gx, gy, w, h, bg);
+                FB_DrawRect(gx, gy, w, h, fg);
+                if (label[0])
+                    FB_PutStr(gx + 4, gy + (h - 16) / 2, label, fg, bg);
+            }
+        } else {
+            /* Custom / fallback gadget */
+            FB_FillRect(gx, gy, w, h, bg);
+            FB_DrawRect(gx, gy, w, h, fg);
+
+            char label[64];
+            if (gadget_label_text(gad, label, sizeof(label))) {
+                FB_PutStr(gx + 4, gy + (h - 16) / 2, label, fg, bg);
+            }
+        }
+
+        gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+    }
+}
+
+/* Window draw callback: render custom gadgets on top of whatever the
+ * guest application has drawn into the window.  For SimpleRefresh windows
+ * an IDCMP_REFRESHWINDOW is posted so the guest can redraw damaged areas.
+ * GimmeZeroZero content is offset by the border sizes. */
 static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
 {
-    (void)win_x; (void)win_y; (void)win_w; (void)win_h;
+    (void)win_w; (void)win_h;
+    int wh = WM_CurrentDrawHandle;
+    if (wh < 0) return;
+    uint32_t win_ptr = get_guest_window_from_handle(wh);
+    if (!win_ptr) return;
+
+    IntuitionSlot *slot = get_slot_from_handle(wh);
+    int off_x = (slot && slot->gimme_zero_zero) ? slot->border_left : 0;
+    int off_y = (slot && slot->gimme_zero_zero) ? slot->border_top : 0;
+
+    render_custom_gadgets(win_x, win_y, off_x, off_y, win_ptr);
+
+    if (slot && slot->simple_refresh && !slot->refreshing) {
+        uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
+        if (idcmp & IDCMP_REFRESHWINDOW) {
+            slot->damage_x = win_x + off_x;
+            slot->damage_y = win_y + off_y;
+            slot->damage_w = win_w - off_x - (slot ? slot->border_right : 0);
+            if (slot->damage_w < 0) slot->damage_w = 0;
+            slot->damage_h = win_h - off_y - (slot ? slot->border_bottom : 0);
+            if (slot->damage_h < 0) slot->damage_h = 0;
+            post_intui_message(win_ptr, IDCMP_REFRESHWINDOW, 0, 0, 0, 0, 0);
+        }
+    }
 }
 
 /* =========================================================================
@@ -690,7 +1628,13 @@ static void free_requester_internal(void)
 {
     if (!g_req_slot.active) return;
     if (g_req_slot.wm_handle >= 0) WM_CloseWindow(g_req_slot.wm_handle);
-    /* Guest window memory is not reclaimed by intu_alloc(). */
+    if (g_req_slot.guest_win) {
+        free_window_idcmp(g_req_slot.guest_win);
+        free_gadget_list(mem_u32(g_req_slot.guest_win + WIN_OFF_FIRSTGADGET));
+        uint32_t rport = mem_u32(g_req_slot.guest_win + WIN_OFF_RPORT);
+        intu_free(rport);
+        intu_free(g_req_slot.guest_win);
+    }
     clear_req_slot();
 }
 
@@ -702,6 +1646,299 @@ static int wait_requester_internal(void)
         if (sigs & g_req_slot.sigmask) break;
     }
     return g_req_slot.result;
+}
+
+/* =========================================================================
+ * Alert support (DisplayAlert / TimedDisplayAlert)
+ * ========================================================================= */
+
+#define ALERT_MAX_SUBSTRINGS  8
+#define ALERT_SUBSTRING_TEXT_SIZE 80
+
+typedef struct {
+    uint16_t x;
+    uint16_t y;
+    char     text[ALERT_SUBSTRING_TEXT_SIZE];
+} AlertSubstring;
+
+typedef struct {
+    int      wm_handle;
+    uint32_t guest_win;
+    uint8_t  sigbit;
+    uint32_t sigmask;
+    UaosTask *task;
+    int      result;
+    uint8_t  active;
+    uint32_t color;          /* border/text colour */
+    uint32_t timeout_frames; /* 0 = no timeout */
+    uint64_t timeout_start;  /* PIT tick at which alert was shown */
+    int      num_substrings;
+    AlertSubstring substrings[ALERT_MAX_SUBSTRINGS];
+} AlertSlot;
+
+static AlertSlot g_alert_slot;
+
+static void clear_alert_slot(void)
+{
+    if (g_alert_slot.active && g_alert_slot.sigbit) {
+        free_intuition_signal(g_alert_slot.sigbit);
+    }
+    g_alert_slot.active = 0;
+    g_alert_slot.wm_handle = -1;
+    g_alert_slot.guest_win = 0;
+    g_alert_slot.sigbit = 0;
+    g_alert_slot.sigmask = 0;
+    g_alert_slot.task = NULL;
+    g_alert_slot.result = 0;
+    g_alert_slot.num_substrings = 0;
+    g_alert_slot.timeout_frames = 0;
+    g_alert_slot.timeout_start = 0;
+}
+
+static void alert_set_result(int result)
+{
+    g_alert_slot.result = result;
+    if (g_alert_slot.task && g_alert_slot.sigmask) {
+        Signal(g_alert_slot.task, g_alert_slot.sigmask);
+    }
+}
+
+static void alert_draw_fn(int win_x, int win_y, int win_w, int win_h)
+{
+    if (!g_alert_slot.active) return;
+
+    /* Black background */
+    FB_FillRect(win_x, win_y, win_w, win_h, WB_BLACK);
+    /* Coloured border */
+    FB_DrawRect(win_x, win_y, win_w, win_h, g_alert_slot.color);
+    FB_DrawRect(win_x + 1, win_y + 1, win_w - 2, win_h - 2, g_alert_slot.color);
+
+    /* Render substrings */
+    for (int i = 0; i < g_alert_slot.num_substrings; i++) {
+        AlertSubstring *s = &g_alert_slot.substrings[i];
+        int x = win_x + (int)s->x;
+        int y = win_y + (int)s->y;
+        if (s->text[0]) {
+            FB_PutStr(x, y, s->text, WB_WHITE, WB_BLACK);
+        }
+    }
+}
+
+static int alert_event_handler(int wh, int event_type, int p1, int p2, int p3)
+{
+    (void)p2;
+    (void)p3;
+    if (!g_alert_slot.active || g_alert_slot.wm_handle != wh) return 1;
+
+    if (event_type == WM_EVT_CLOSE_REQUEST) {
+        alert_set_result(0);
+        return 0;
+    }
+
+    if (event_type == WM_EVT_MOUSE_DOWN) {
+        /* p1 = 0 for left button, 1 for right button */
+        alert_set_result(p1 == 0 ? 1 : 0);
+        return 0;
+    }
+
+    if (event_type == WM_EVT_MOUSE_UP) {
+        /* p1 = 0 for left button, 1 for right button */
+        alert_set_result(p1 == 0 ? 1 : 0);
+        return 0;
+    }
+
+    return 0;
+}
+
+static int create_alert_window(int x, int y, int w, int h)
+{
+    int wh = WM_AddWindow(x, y, w, h, "Alert", alert_draw_fn, NULL);
+    if (wh < 0) return -1;
+    WM_SetEventHandler(wh, alert_event_handler);
+    WM_RequestFocus(wh);
+    return wh;
+}
+
+static void build_alert_guest_window(uint32_t win_ptr)
+{
+    if (!win_ptr) return;
+    memset(&g_ram[win_ptr], 0, sizeof(AmigaWindow));
+    mem_w32(win_ptr + WIN_OFF_FLAGS, WFLG_ACTIVATE);
+    mem_w16(win_ptr + WIN_OFF_WIDTH, 400);
+    mem_w16(win_ptr + WIN_OFF_HEIGHT, 150);
+}
+
+static int parse_alert_string(uint32_t str_ptr)
+{
+    g_alert_slot.num_substrings = 0;
+    if (!str_ptr) return 0;
+
+    while (g_alert_slot.num_substrings < ALERT_MAX_SUBSTRINGS) {
+        if (str_ptr + 4 >= GUEST_RAM_SIZE) break;
+        uint16_t x = (uint16_t)mem_u16(str_ptr);
+        uint16_t y = (uint16_t)mem_u8(str_ptr + 2);
+        str_ptr += 3;
+
+        /* Read text until null terminator */
+        char *dst = g_alert_slot.substrings[g_alert_slot.num_substrings].text;
+        int i = 0;
+        while (i < ALERT_SUBSTRING_TEXT_SIZE - 1 && str_ptr < GUEST_RAM_SIZE) {
+            uint8_t c = mem_u8(str_ptr);
+            str_ptr++;
+            if (c == 0) break;
+            dst[i++] = (char)c;
+        }
+        dst[i] = '\0';
+
+        g_alert_slot.substrings[g_alert_slot.num_substrings].x = x;
+        g_alert_slot.substrings[g_alert_slot.num_substrings].y = y;
+        g_alert_slot.num_substrings++;
+
+        if (str_ptr >= GUEST_RAM_SIZE) break;
+        uint8_t cont = mem_u8(str_ptr);
+        str_ptr++;
+        if (cont == 0) break;
+    }
+    return g_alert_slot.num_substrings;
+}
+
+static uint32_t build_alert_internal(uint32_t alert_str, uint32_t alert_num,
+                                     int height, int width, uint32_t timeout)
+{
+    if (g_alert_slot.active) return 0;
+
+    clear_alert_slot();
+
+    int sig = alloc_intuition_signal();
+    if (sig < 0) return 0;
+
+    /* Determine alert colour */
+    if (alert_num & DEADEND_ALERT)
+        g_alert_slot.color = WB_RED;
+    else
+        g_alert_slot.color = WB_ORANGE;
+
+    /* Parse alert substrings */
+    parse_alert_string(alert_str);
+
+    /* Alert window size */
+    if (width < 300) width = 300;
+    if (height < 80) height = 80;
+    if (width > (int)g_fb.width) width = (int)g_fb.width;
+    if (height > (int)g_fb.height) height = (int)g_fb.height;
+
+    int x = ((int)g_fb.width - width) / 2;
+    int y = ((int)g_fb.height - height) / 2;
+
+    int wh = create_alert_window(x, y, width, height);
+    if (wh < 0) {
+        free_intuition_signal(sig);
+        return 0;
+    }
+
+    uint32_t guest_win = intu_alloc(sizeof(AmigaWindow));
+    if (!guest_win) {
+        WM_CloseWindow(wh);
+        free_intuition_signal(sig);
+        return 0;
+    }
+    build_alert_guest_window(guest_win);
+
+    g_alert_slot.active = 1;
+    g_alert_slot.wm_handle = wh;
+    g_alert_slot.guest_win = guest_win;
+    g_alert_slot.sigbit = (uint8_t)sig;
+    g_alert_slot.sigmask = 1U << sig;
+    g_alert_slot.task = Task_Current();
+    g_alert_slot.timeout_frames = timeout;
+    g_alert_slot.timeout_start = g_pit_ticks;
+
+    WM_Redraw();
+    return guest_win;
+}
+
+static void free_alert_internal(void)
+{
+    if (!g_alert_slot.active) return;
+    if (g_alert_slot.wm_handle >= 0) WM_CloseWindow(g_alert_slot.wm_handle);
+    if (g_alert_slot.guest_win) {
+        free_window_idcmp(g_alert_slot.guest_win);
+        free_gadget_list(mem_u32(g_alert_slot.guest_win + WIN_OFF_FIRSTGADGET));
+        uint32_t rport = mem_u32(g_alert_slot.guest_win + WIN_OFF_RPORT);
+        intu_free(rport);
+        intu_free(g_alert_slot.guest_win);
+    }
+    clear_alert_slot();
+}
+
+static int wait_alert_internal(void)
+{
+    if (!g_alert_slot.active || !g_alert_slot.task || !g_alert_slot.sigmask) return 0;
+    while (g_alert_slot.active) {
+        if (g_alert_slot.timeout_frames) {
+            uint64_t elapsed = g_pit_ticks - g_alert_slot.timeout_start;
+            /* Approximate 50 fps PAL: frames * 2 ticks */
+            if (elapsed > (uint64_t)g_alert_slot.timeout_frames * 2) {
+                alert_set_result(0);
+                break;
+            }
+        }
+        uint32_t sigs = Wait(g_alert_slot.sigmask);
+        if (sigs & g_alert_slot.sigmask) break;
+    }
+    return g_alert_slot.result;
+}
+
+/* DisplayAlert(alertNumber, string, height)
+ * D0, A0, D1; returns BOOL in D0 */
+static void intuition_DisplayAlert(void)
+{
+    uint32_t alert_num = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t alert_str = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t height    = m68k_get_reg(NULL, M68K_REG_D1);
+    int width = 400;
+
+    uint32_t win = build_alert_internal(alert_str, alert_num, (int)height, width, 0);
+    if (!win) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    if (alert_num & DEADEND_ALERT) {
+        /* Deadend alerts display but return immediately with FALSE */
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    int result = wait_alert_internal();
+    free_alert_internal();
+    m68k_set_reg(M68K_REG_D0, result ? 1 : 0);
+}
+
+/* TimedDisplayAlert(alertNumber, string, height, time)
+ * D0, A0, D1, A1; returns BOOL in D0 */
+static void intuition_TimedDisplayAlert(void)
+{
+    uint32_t alert_num = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t alert_str = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t height    = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t timeout   = m68k_get_reg(NULL, M68K_REG_A1);
+    int width = 400;
+
+    uint32_t win = build_alert_internal(alert_str, alert_num, (int)height, width, timeout);
+    if (!win) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    if (alert_num & DEADEND_ALERT) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    int result = wait_alert_internal();
+    free_alert_internal();
+    m68k_set_reg(M68K_REG_D0, result ? 1 : 0);
 }
 
 /* =========================================================================
@@ -722,6 +1959,30 @@ typedef struct {
     uint8_t  show_title;
     uint8_t  is_front;
     int      lock_count;
+    /* Tag storage for SetScreenAttrsA / GetScreenAttrsA */
+    uint32_t display_id;
+    uint32_t bitmap;
+    uint32_t colormap;
+    uint32_t colors;
+    uint32_t colors32;
+    uint32_t sys_font;
+    uint32_t pens;
+    uint32_t error_code_ptr;
+    uint32_t parent;
+    uint32_t backfill;
+    uint32_t dclip;
+    uint32_t overscan;
+    uint32_t pub_sig;
+    uint32_t pub_task;
+    uint16_t color_map_entries;
+    uint8_t  depth;
+    uint8_t  full_palette;
+    uint8_t  draggable;
+    uint8_t  exclusive;
+    uint8_t  share_pens;
+    uint8_t  interleaved;
+    uint8_t  like_workbench;
+    uint8_t  minimize_isg;
 } ScreenSlot;
 
 static ScreenSlot g_intu_screens[MAX_INTUITION_SCREENS];
@@ -746,7 +2007,7 @@ static ScreenSlot *alloc_screen_slot(void)
     return NULL;
 }
 
-static void init_guest_screen(uint32_t scr, ScreenSlot *slot)
+static void init_guest_screen(uint32_t scr, ScreenSlot *slot, uint16_t type_flags)
 {
     memset(&g_ram[scr], 0, SCR_SIZE);
     mem_w16(scr + SCR_OFF_LEFTEDGE,  slot->left);
@@ -755,9 +2016,13 @@ static void init_guest_screen(uint32_t scr, ScreenSlot *slot)
     mem_w16(scr + SCR_OFF_HEIGHT,    slot->height);
     mem_w32(scr + SCR_OFF_TITLE,     (uint32_t)0);
     mem_w32(scr + SCR_OFF_DEFAULTTITLE, (uint32_t)0);
-    mem_w16(scr + SCR_OFF_FLAGS,     slot->show_title ? SHOWTITLE : 0);
+    mem_w16(scr + SCR_OFF_FLAGS,     type_flags);
     mem_w32(scr + SCR_OFF_FIRSTWINDOW, 0);
     mem_w32(scr + SCR_OFF_NEXTSCREEN,  0);
+    mem_w8(scr + SCR_OFF_DEPTH,      slot->depth);
+    mem_w32(scr + SCR_OFF_BITMA,     slot->bitmap);
+    mem_w32(scr + SCR_OFF_DISPLAYID, slot->display_id);
+    mem_w32(scr + SCR_OFF_COLORS,    slot->colors);
 }
 
 static void update_desktop_title(void)
@@ -776,13 +2041,21 @@ static void update_desktop_title(void)
     }
 }
 
+static void signal_pub_screen(ScreenSlot *slot);
+
 static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_ptr)
 {
     int16_t left = 0, top = 0, width = 0, height = 0, depth = 2;
     uint8_t detail_pen = 0, block_pen = 1;
     uint32_t title_ptr = 0, font_ptr = 0, pub_name_ptr = 0;
+    uint32_t bitmap_ptr = 0, display_id = 0, colors_ptr = 0, colors32_ptr = 0;
+    uint32_t sys_font = 0, pens_ptr = 0, error_code_ptr = 0, parent_ptr = 0;
+    uint32_t backfill_ptr = 0, dclip_ptr = 0, overscan = 0;
+    uint32_t pub_sig = 0, pub_task = 0;
+    uint16_t color_map_entries = 0;
+    uint8_t show_title = 1, full_palette = 0, draggable = 1, exclusive = 0;
+    uint8_t share_pens = 0, interleaved = 0, like_workbench = 0, minimize_isg = 0;
     uint16_t type = CUSTOMSCREEN;
-    uint8_t show_title = 1;
 
     /* Parse NewScreen defaults if provided */
     if (new_screen_ptr) {
@@ -820,9 +2093,53 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
                 case SA_ShowTitle:  show_title = data ? 1 : 0; break;
                 case SA_Quiet:      if (data) type |= QUIET; break;
                 case SA_Behind:     if (data) type |= BEHIND; break;
+                case SA_AutoScroll: if (data) type |= AUTOSCROLL; break;
                 case SA_PubName:    pub_name_ptr = data; break;
+                case SA_BitMap:     bitmap_ptr = data; if (data) type |= CUSTOMBITMAP; break;
+                case SA_DisplayID:  display_id = data; break;
+                case SA_Colors:     colors_ptr = data; break;
+                case SA_Colors32:   colors32_ptr = data; break;
+                case SA_SysFont:    sys_font = data; break;
+                case SA_Pens:       pens_ptr = data; break;
+                case SA_ErrorCode:  error_code_ptr = data; break;
+                case SA_Parent:     parent_ptr = data; break;
+                case SA_BackFill:   backfill_ptr = data; break;
+                case SA_DClip:      dclip_ptr = data; break;
+                case SA_Overscan:   overscan = data; break;
+                case SA_PubSig:     pub_sig = data; break;
+                case SA_PubTask:    pub_task = data; break;
+                case SA_FullPalette: full_palette = data ? 1 : 0; break;
+                case SA_ColorMapEntries: color_map_entries = (uint16_t)data; break;
+                case SA_Draggable:  draggable = data ? 1 : 0; break;
+                case SA_Exclusive:  exclusive = data ? 1 : 0; break;
+                case SA_SharePens:  share_pens = data ? 1 : 0; break;
+                case SA_Interleaved: interleaved = data ? 1 : 0; break;
+                case SA_LikeWorkbench: like_workbench = data ? 1 : 0; break;
+                case SA_MinimizeISG: minimize_isg = data ? 1 : 0; break;
                 default: break;
             }
+        }
+    }
+
+    if (dclip_ptr) {
+        int16_t minx = mem_s16(dclip_ptr + 0);
+        int16_t miny = mem_s16(dclip_ptr + 2);
+        int16_t maxx = mem_s16(dclip_ptr + 4);
+        int16_t maxy = mem_s16(dclip_ptr + 6);
+        left   = minx;
+        top    = miny;
+        width  = maxx - minx + 1;
+        height = maxy - miny + 1;
+    } else if (overscan) {
+        /* Overscan overrides explicit dimensions.  OSCAN_TEXT uses a centred
+         * 90% area; all other overscan types use the full framebuffer. */
+        width  = (int16_t)g_fb.width;
+        height = (int16_t)g_fb.height;
+        if (overscan == 1) {
+            width  = (int16_t)(width * 0.9);
+            height = (int16_t)(height * 0.9);
+            left = (g_fb.width - width) / 2;
+            top  = (g_fb.height - height) / 2;
         }
     }
 
@@ -853,12 +2170,38 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     if (pub_name_ptr)
         guest_str(slot->pub_name, pub_name_ptr, sizeof(slot->pub_name));
 
-    init_guest_screen(guest_screen, slot);
+    slot->display_id       = display_id;
+    slot->bitmap           = bitmap_ptr;
+    slot->colormap         = 0;
+    slot->colors           = colors_ptr;
+    slot->colors32         = colors32_ptr;
+    slot->sys_font         = sys_font;
+    slot->pens             = pens_ptr;
+    slot->error_code_ptr    = error_code_ptr;
+    slot->parent            = parent_ptr;
+    slot->backfill          = backfill_ptr;
+    slot->dclip             = dclip_ptr;
+    slot->overscan          = overscan;
+    slot->pub_sig           = pub_sig;
+    slot->pub_task          = pub_task;
+    slot->color_map_entries = color_map_entries;
+    slot->depth             = (uint8_t)depth;
+    slot->full_palette      = full_palette;
+    slot->draggable         = draggable;
+    slot->exclusive         = exclusive;
+    slot->share_pens        = share_pens;
+    slot->interleaved       = interleaved;
+    slot->like_workbench    = like_workbench;
+    slot->minimize_isg      = minimize_isg;
+
+    uint16_t screen_flags = type | (show_title ? SHOWTITLE : 0);
+    init_guest_screen(guest_screen, slot, screen_flags);
     if (title_ptr)
         mem_w32(guest_screen + SCR_OFF_TITLE, title_ptr);
     if (font_ptr)
         mem_w32(guest_screen + SCR_OFF_FONT, font_ptr);
-    (void)depth; (void)detail_pen; (void)block_pen;
+    mem_w8(guest_screen + SCR_OFF_DETAILPEN, detail_pen);
+    mem_w8(guest_screen + SCR_OFF_BLOCKPEN, block_pen);
 
     /* Mark this screen as the front screen; others go behind */
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
@@ -866,6 +2209,7 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
             g_intu_screens[i].is_front = 0;
     }
     update_desktop_title();
+    if (pub_name_ptr) signal_pub_screen(slot);
     return guest_screen;
 }
 
@@ -882,6 +2226,14 @@ static uint32_t find_pub_screen_by_name(const char *name)
             return g_intu_screens[i].guest_screen;
     }
     return 0;
+}
+
+/* Signal the public screen's notification task when its status changes. */
+static void signal_pub_screen(ScreenSlot *slot)
+{
+    if (!slot || !slot->pub_task || !slot->pub_sig) return;
+    UaosTask *t = Task_FindByM68kAddr(slot->pub_task);
+    if (t) Signal(t, slot->pub_sig);
 }
 
 static uint32_t get_default_pub_screen(void)
@@ -948,6 +2300,29 @@ static uint32_t get_default_pub_screen(void)
 #define INTUITION_SET_PREFS              43
 #define INTUITION_LOCK_GUI_PREFS         44
 #define INTUITION_UNLOCK_GUI_PREFS       45
+#define INTUITION_QUERY_OVERSCAN         46
+#define INTUITION_GET_DISPLAY_INFO_DATA  47
+#define INTUITION_NEXT_DISPLAY_INFO      48
+#define INTUITION_CURRENT_TIME           49
+#define INTUITION_DOUBLE_CLICK           50
+#define INTUITION_REPORT_MOUSE           51
+#define INTUITION_DISPLAY_BEEP           52
+#define INTUITION_INIT_REQUESTER         53
+#define INTUITION_END_REQUEST            54
+#define INTUITION_REQUEST                55
+#define INTUITION_VIEW_ADDRESS           56
+#define INTUITION_VIEW_PORT_ADDRESS      57
+#define INTUITION_GET_SCREEN_DATA        58
+#define INTUITION_NEXT_PUB_SCREEN        59
+#define INTUITION_SET_DEFAULT_PUB_SCREEN 60
+#define INTUITION_LOCK_IBASE             61
+#define INTUITION_UNLOCK_IBASE           62
+#define INTUITION_SHOW_WINDOW            63
+#define INTUITION_HIDE_WINDOW            64
+#define INTUITION_WINDOW_LIMITS          65
+#define INTUITION_CHANGE_WINDOW_BOX      66
+#define INTUITION_GET_SCREEN_DRAW_INFO   67
+#define INTUITION_FREE_SCREEN_DRAW_INFO  68
 
 /* =========================================================================
  * Implementation
@@ -964,10 +2339,11 @@ static void intuition_CloseLibrary(void)
 }
 
 /* Parse OpenWindowTagList() tag list and update window parameters.
- * Only the basic WA_* tags requested are handled. */
+ * Handles the full WA_* tag set; boolean tags update the corresponding
+ * WFLG_* bit in the accumulated flags word. */
 static void parse_window_tags(uint32_t tag_list,
     int16_t *left, int16_t *top, int16_t *width, int16_t *height,
-    uint16_t *flags, uint32_t *idcmp, uint32_t *title_ptr,
+    uint32_t *flags, uint32_t *idcmp, uint32_t *title_ptr,
     int16_t *min_w, int16_t *min_h, int16_t *max_w, int16_t *max_h,
     uint32_t *pub_screen_ptr, uint32_t *pub_screen_name_ptr,
     uint8_t *pub_screen_fallback)
@@ -981,16 +2357,36 @@ static void parse_window_tags(uint32_t tag_list,
             case WA_Top:       *top       = (int16_t)(int32_t)data; break;
             case WA_Width:     *width     = (int16_t)(int32_t)data; break;
             case WA_Height:    *height    = (int16_t)(int32_t)data; break;
-            case WA_Flags:     *flags     = (uint16_t)data; break;
+            case WA_Flags:     *flags     = data; break;
             case WA_IDCMP:     *idcmp     = data; break;
             case WA_Title:     *title_ptr = data; break;
             case WA_MinWidth:  *min_w     = (int16_t)(int32_t)data; break;
             case WA_MinHeight: *min_h     = (int16_t)(int32_t)data; break;
             case WA_MaxWidth:  *max_w     = (int16_t)(int32_t)data; break;
             case WA_MaxHeight: *max_h     = (int16_t)(int32_t)data; break;
-            case WA_PubScreen:       *pub_screen_ptr      = data; break;
+            case WA_PubScreen:
+            case WA_CustomScreen:
+                *pub_screen_ptr = data; break;
             case WA_PubScreenName:   *pub_screen_name_ptr = data; break;
             case WA_PubScreenFallBack: *pub_screen_fallback = data ? 1 : 0; break;
+            case WA_SizeGadget:  if (data) *flags |= WFLG_SIZEGADGET;  else *flags &= ~WFLG_SIZEGADGET; break;
+            case WA_DragBar:     if (data) *flags |= WFLG_DRAGBAR;     else *flags &= ~WFLG_DRAGBAR; break;
+            case WA_DepthGadget: if (data) *flags |= WFLG_DEPTHGADGET; else *flags &= ~WFLG_DEPTHGADGET; break;
+            case WA_CloseGadget: if (data) *flags |= WFLG_CLOSEGADGET; else *flags &= ~WFLG_CLOSEGADGET; break;
+            case WA_Backdrop:    if (data) *flags |= WFLG_BACKDROP;    else *flags &= ~WFLG_BACKDROP; break;
+            case WA_ReportMouse: if (data) *flags |= WFLG_REPORTMOUSE; else *flags &= ~WFLG_REPORTMOUSE; break;
+            case WA_NoCareRefresh: if (data) *flags |= WFLG_NOCAREREFRESH; else *flags &= ~WFLG_NOCAREREFRESH; break;
+            case WA_Borderless:  if (data) *flags |= WFLG_BORDERLESS;  else *flags &= ~WFLG_BORDERLESS; break;
+            case WA_GimmeZeroZero: if (data) *flags |= WFLG_GIMMEZEROZERO; else *flags &= ~WFLG_GIMMEZEROZERO; break;
+            case WA_Activate:    if (data) *flags |= WFLG_ACTIVATE;    else *flags &= ~WFLG_ACTIVATE; break;
+            case WA_RMBTrap:     if (data) *flags |= WFLG_RMBTRAP;     else *flags &= ~WFLG_RMBTRAP; break;
+            case WA_SimpleRefresh: if (data) *flags = (*flags & ~WFLG_REFRESHBITS) | WFLG_SIMPLE_REFRESH; break;
+            case WA_SmartRefresh: if (data) *flags = (*flags & ~WFLG_REFRESHBITS) | WFLG_SMART_REFRESH; break;
+            case WA_SuperBitMap: if (data) *flags = (*flags & ~WFLG_REFRESHBITS) | WFLG_SUPER_BITMAP; break;
+            case WA_SizeBRight:  if (data) *flags |= WFLG_SIZEBRIGHT;  else *flags &= ~WFLG_SIZEBRIGHT; break;
+            case WA_SizeBBottom: if (data) *flags |= WFLG_SIZEBBOTTOM; else *flags &= ~WFLG_SIZEBBOTTOM; break;
+            case WA_NewLookMenus: if (data) *flags |= WFLG_NEWLOOKMENUS; else *flags &= ~WFLG_NEWLOOKMENUS; break;
+            case WA_Gadgets:     /* not wired in this path */ break;
         }
         tag_list += sizeof(AmigaTagItem);
     }
@@ -1006,7 +2402,7 @@ static void intuition_OpenWindowTagList(void)
     uint32_t win_ptr   = 0;
 
     int16_t  left = 0, top = 0, width = 320, height = 200;
-    uint16_t flags = 0;
+    uint32_t flags = 0;
     uint32_t idcmp = 0;
     uint32_t title_ptr = 0;
     int16_t  min_w = 0, min_h = 0, max_w = 0, max_h = 0;
@@ -1096,7 +2492,7 @@ static void intuition_OpenWindowTagList(void)
     }
 
     uint32_t rp_ptr = intu_alloc(RP_SIZE_MIN);
-    if (rp_ptr) init_guest_rastport(rp_ptr);
+    if (rp_ptr) init_guest_rastport(rp_ptr, win_ptr);
 
     /* Build an AmigaOS-compatible Window structure. */
     memset(&g_ram[win_ptr], 0, sizeof(AmigaWindow));
@@ -1130,6 +2526,20 @@ static void intuition_OpenWindowTagList(void)
     slot->min_h     = min_h;
     slot->max_w     = max_w;
     slot->max_h     = max_h;
+
+    /* Refresh mode: SmartRefresh is the default.  SuperBitMap disables
+     * simple refresh, since the application provides its own bitmap. */
+    slot->simple_refresh = (flags & WFLG_SIMPLE_REFRESH) ? 1 : 0;
+    if (flags & WFLG_SUPER_BITMAP) slot->simple_refresh = 0;
+    slot->gimme_zero_zero = (flags & WFLG_GIMMEZEROZERO) ? 1 : 0;
+    if (flags & WFLG_BORDERLESS) {
+        slot->border_left = slot->border_top = slot->border_right = slot->border_bottom = 0;
+    } else {
+        slot->border_left   = WM_BORDER;
+        slot->border_top    = WM_TITLEBAR_H;
+        slot->border_right  = WM_BORDER;
+        slot->border_bottom = WM_BORDER;
+    }
 
     if (idcmp) {
         int sig = alloc_intuition_signal();
@@ -1174,7 +2584,13 @@ static void intuition_CloseWindow(void)
 
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
     if (slot) {
-        WM_CloseWindow(slot->wm_handle);
+        int wm_handle = slot->wm_handle;
+        free_window_idcmp(win_ptr);
+        free_gadget_list(mem_u32(win_ptr + WIN_OFF_FIRSTGADGET));
+        uint32_t rport = mem_u32(win_ptr + WIN_OFF_RPORT);
+        intu_free(rport);
+        intu_free(win_ptr);
+        WM_CloseWindow(wm_handle);
         free_slot(slot);
     }
 }
@@ -1280,6 +2696,44 @@ static void intuition_RefreshWindowFrame(void)
     if (slot) WM_RepaintWindow(slot->wm_handle);
 }
 
+/* BeginRefresh(window) — A0 = window
+ * Marks the start of a refresh cycle.  The damage region is the window
+ * content area; the guest can now redraw only the damaged portion. */
+static void intuition_BeginRefresh(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (!slot) return;
+
+    slot->refreshing = 1;
+    int wx = (int)mem_s16(win_ptr + WIN_OFF_LEFTEDGE);
+    int wy = (int)mem_s16(win_ptr + WIN_OFF_TOPEDGE);
+    int ww = (int)mem_s16(win_ptr + WIN_OFF_WIDTH);
+    int wh = (int)mem_s16(win_ptr + WIN_OFF_HEIGHT);
+    slot->damage_x = wx + slot->border_left;
+    slot->damage_y = wy + slot->border_top;
+    slot->damage_w = ww - slot->border_left - slot->border_right;
+    if (slot->damage_w < 0) slot->damage_w = 0;
+    slot->damage_h = wh - slot->border_top - slot->border_bottom;
+    if (slot->damage_h < 0) slot->damage_h = 0;
+}
+
+/* EndRefresh(window, complete) — A0 = window, D0 = complete
+ * Clears the refresh state.  If complete is non-zero the damage region
+ * is discarded. */
+static void intuition_EndRefresh(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t complete = m68k_get_reg(NULL, M68K_REG_D0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (!slot) return;
+
+    slot->refreshing = 0;
+    if (complete) {
+        slot->damage_x = slot->damage_y = slot->damage_w = slot->damage_h = 0;
+    }
+}
+
 /* ModifyIDCMP(window, flags) — A0 = window, D0 = flags */
 static void intuition_ModifyIDCMP(void)
 {
@@ -1331,25 +2785,681 @@ static void intuition_SetWindowTitles(void)
     }
 }
 
+/* Set/clear a single WFLG_* bit in Window.Flags from a boolean WA_* tag. */
+static void wa_set_flag(uint32_t win_ptr, uint32_t data, uint32_t flag)
+{
+    uint32_t flags = mem_u32(win_ptr + WIN_OFF_FLAGS);
+    if (data) flags |= flag;
+    else      flags &= ~flag;
+    mem_w32(win_ptr + WIN_OFF_FLAGS, flags);
+}
+
+/* SetWindowAttrsA(window, tagList) — A0, A1; returns success in D0 */
+static void intuition_SetWindowAttrsA(void)
+{
+    uint32_t win_ptr  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!win_ptr) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    int moved = 0, resized = 0, redraw = 0;
+
+    for (uint32_t t = tag_list; t; t += 8) {
+        uint32_t tag  = mem_u32(t + 0);
+        uint32_t data = mem_u32(t + 4);
+        if (tag == TAG_DONE) break;
+
+        uint32_t flags = mem_u32(win_ptr + WIN_OFF_FLAGS);
+        switch (tag) {
+            case WA_Left:
+                mem_w16(win_ptr + WIN_OFF_LEFTEDGE, (int16_t)data);
+                moved = 1;
+                break;
+            case WA_Top:
+                mem_w16(win_ptr + WIN_OFF_TOPEDGE, (int16_t)data);
+                moved = 1;
+                break;
+            case WA_Width:
+                mem_w16(win_ptr + WIN_OFF_WIDTH, (int16_t)data);
+                resized = 1;
+                break;
+            case WA_Height:
+                mem_w16(win_ptr + WIN_OFF_HEIGHT, (int16_t)data);
+                resized = 1;
+                break;
+            case WA_Title:
+                mem_w32(win_ptr + WIN_OFF_TITLE, data);
+                if (slot && data) {
+                    char title[32];
+                    guest_str(title, data, sizeof(title));
+                    WM_SetWindowTitle(slot->wm_handle, title);
+                }
+                break;
+            case WA_ScreenTitle:
+                if (slot) slot->screen_title = data;
+                break;
+            case WA_IDCMP:
+                mem_w32(win_ptr + WIN_OFF_IDCMPFLAGS, data);
+                break;
+            case WA_Flags:
+                mem_w32(win_ptr + WIN_OFF_FLAGS, data);
+                break;
+            case WA_MinWidth:
+                if (slot) slot->min_w = (int16_t)data;
+                break;
+            case WA_MinHeight:
+                if (slot) slot->min_h = (int16_t)data;
+                break;
+            case WA_MaxWidth:
+                if (slot) slot->max_w = (int16_t)data;
+                break;
+            case WA_MaxHeight:
+                if (slot) slot->max_h = (int16_t)data;
+                break;
+            case WA_Gadgets:
+                mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, data);
+                redraw = 1;
+                break;
+            case WA_Checkmark:
+                /* not implemented, stored as a slot pointer for retrieval */
+                if (slot) slot->amiga_key = data;
+                break;
+            case WA_DetailPen:
+                mem_w8(win_ptr + WIN_OFF_DETAILPEN, (uint8_t)data);
+                break;
+            case WA_BlockPen:
+                mem_w8(win_ptr + WIN_OFF_BLOCKPEN, (uint8_t)data);
+                break;
+            case WA_InnerWidth:
+                if (slot) slot->inner_width = (uint16_t)data;
+                break;
+            case WA_InnerHeight:
+                if (slot) slot->inner_height = (uint16_t)data;
+                break;
+            case WA_PubScreen:
+            case WA_CustomScreen:
+                mem_w32(win_ptr + WIN_OFF_WSCREEN, data);
+                if (slot) slot->pub_screen = data;
+                break;
+            case WA_PubScreenName:
+                if (slot && data) {
+                    char name[64];
+                    guest_str(name, data, sizeof(name));
+                    slot->pub_screen_name = data;
+                    uint32_t ps = find_pub_screen_by_name(name);
+                    if (ps) {
+                        mem_w32(win_ptr + WIN_OFF_WSCREEN, ps);
+                        slot->pub_screen = ps;
+                    } else if (slot->pub_screen_fallback) {
+                        ps = get_default_pub_screen();
+                        if (ps) {
+                            mem_w32(win_ptr + WIN_OFF_WSCREEN, ps);
+                            slot->pub_screen = ps;
+                        }
+                    }
+                }
+                break;
+            case WA_PubScreenFallBack:
+                if (slot) slot->pub_screen_fallback = data ? 1 : 0;
+                break;
+            case WA_WindowName:
+                if (slot) slot->window_name = data;
+                break;
+            case WA_Colors:
+                if (slot) slot->colors = data;
+                break;
+            case WA_Zoom:
+                if (slot) slot->zoom = data;
+                break;
+            case WA_MouseQueue:
+                if (slot) slot->mouse_queue = (uint16_t)data;
+                break;
+            case WA_BackFill:
+                if (slot) slot->backfill = data;
+                break;
+            case WA_RptQueue:
+                if (slot) slot->rpt_queue = (uint16_t)data;
+                break;
+            case WA_SizeGadget:
+                wa_set_flag(win_ptr, data, WFLG_SIZEGADGET); redraw = 1; break;
+            case WA_DragBar:
+                wa_set_flag(win_ptr, data, WFLG_DRAGBAR); redraw = 1; break;
+            case WA_DepthGadget:
+                wa_set_flag(win_ptr, data, WFLG_DEPTHGADGET); redraw = 1; break;
+            case WA_CloseGadget:
+                wa_set_flag(win_ptr, data, WFLG_CLOSEGADGET); redraw = 1; break;
+            case WA_Backdrop:
+                wa_set_flag(win_ptr, data, WFLG_BACKDROP); redraw = 1; break;
+            case WA_ReportMouse:
+                wa_set_flag(win_ptr, data, WFLG_REPORTMOUSE); break;
+            case WA_NoCareRefresh:
+                wa_set_flag(win_ptr, data, WFLG_NOCAREREFRESH); break;
+            case WA_Borderless:
+                wa_set_flag(win_ptr, data, WFLG_BORDERLESS); redraw = 1;
+                if (slot) {
+                    if (data) {
+                        slot->border_left = slot->border_top = slot->border_right = slot->border_bottom = 0;
+                    } else {
+                        slot->border_left = slot->border_right = slot->border_bottom = WM_BORDER;
+                        slot->border_top = WM_TITLEBAR_H;
+                    }
+                }
+                break;
+            case WA_GimmeZeroZero:
+                wa_set_flag(win_ptr, data, WFLG_GIMMEZEROZERO); redraw = 1;
+                if (slot) slot->gimme_zero_zero = data ? 1 : 0;
+                break;
+            case WA_Activate:
+                wa_set_flag(win_ptr, data, WFLG_ACTIVATE); break;
+            case WA_RMBTrap:
+                wa_set_flag(win_ptr, data, WFLG_RMBTRAP); break;
+            case WA_WBenchWindow:
+                wa_set_flag(win_ptr, data, WFLG_WBENCHWINDOW); break;
+            case WA_SimpleRefresh:
+                if (data) {
+                    mem_w32(win_ptr + WIN_OFF_FLAGS, (flags & ~WFLG_REFRESHBITS) | WFLG_SIMPLE_REFRESH);
+                    if (slot) slot->simple_refresh = 1;
+                }
+                break;
+            case WA_SmartRefresh:
+                if (data) {
+                    mem_w32(win_ptr + WIN_OFF_FLAGS, (flags & ~WFLG_REFRESHBITS) | WFLG_SMART_REFRESH);
+                    if (slot) slot->simple_refresh = 0;
+                }
+                break;
+            case WA_SizeBRight:
+                wa_set_flag(win_ptr, data, WFLG_SIZEBRIGHT); redraw = 1; break;
+            case WA_SizeBBottom:
+                wa_set_flag(win_ptr, data, WFLG_SIZEBBOTTOM); redraw = 1; break;
+            case WA_AutoAdjust:
+                if (slot) slot->auto_adjust = data ? 1 : 0;
+                break;
+            case WA_MenuHelp:
+                if (slot) slot->menu_help = data ? 1 : 0;
+                break;
+            case WA_NewLookMenus:
+                wa_set_flag(win_ptr, data, WFLG_NEWLOOKMENUS); break;
+            case WA_AmigaKey:
+                if (slot) slot->amiga_key = data;
+                break;
+            case WA_NotifyDepth:
+                if (slot) slot->notify_depth = data ? 1 : 0;
+                break;
+            case WA_SuperBitMap:
+                if (slot) {
+                    slot->super_bitmap = data;
+                    slot->simple_refresh = 0;
+                }
+                mem_w32(win_ptr + WIN_OFF_FLAGS, (flags & ~WFLG_REFRESHBITS) | WFLG_SUPER_BITMAP);
+                break;
+            case WA_Pointer:
+            case WA_BusyPointer:
+            case WA_PointerDelay:
+                /* Handled by SetWindowPointerA; SetWindowAttrsA accepts but ignores them. */
+                break;
+            case WA_TabletMessages:
+                if (slot) slot->tablet_messages = data ? 1 : 0;
+                break;
+            case WA_HelpGroup:
+                if (slot) slot->help_group = data;
+                break;
+            case WA_HelpGroupWindow:
+                if (slot) slot->help_group_window = data;
+                break;
+        }
+    }
+
+    if (slot) {
+        if (moved) {
+            int x = (int)mem_s16(win_ptr + WIN_OFF_LEFTEDGE);
+            int y = (int)mem_s16(win_ptr + WIN_OFF_TOPEDGE);
+            WM_MoveWindow(slot->wm_handle, x, y);
+        }
+        if (resized) {
+            int w = (int)mem_s16(win_ptr + WIN_OFF_WIDTH);
+            int h = (int)mem_s16(win_ptr + WIN_OFF_HEIGHT);
+            if (slot->min_w > 0 && w < slot->min_w) w = slot->min_w;
+            if (slot->min_h > 0 && h < slot->min_h) h = slot->min_h;
+            if (slot->max_w > 0 && w > slot->max_w) w = slot->max_w;
+            if (slot->max_h > 0 && h > slot->max_h) h = slot->max_h;
+            if (w < 32) w = 32;
+            if (h < 32) h = 32;
+            WM_CloseWindow(slot->wm_handle);
+            char title[32] = "Window";
+            uint32_t title_ptr = mem_u32(win_ptr + WIN_OFF_TITLE);
+            if (title_ptr) guest_str(title, title_ptr, sizeof(title));
+            int new_wh = WM_AddWindow(
+                (int)mem_s16(win_ptr + WIN_OFF_LEFTEDGE),
+                (int)mem_s16(win_ptr + WIN_OFF_TOPEDGE),
+                w, h, title, intu_draw_fn, NULL);
+            if (new_wh >= 0) {
+                slot->wm_handle = new_wh;
+                mem_w16(win_ptr + WIN_OFF_WIDTH,  (int16_t)w);
+                mem_w16(win_ptr + WIN_OFF_HEIGHT, (int16_t)h);
+                WM_SetEventHandler(new_wh, intu_wm_event_handler);
+                create_system_gadgets(slot, (int16_t)w, (int16_t)h);
+                if (mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS) & IDCMP_NEWSIZE)
+                    post_intui_message(win_ptr, IDCMP_NEWSIZE, 0, 0, 0, 0, 0);
+            } else {
+                free_slot(slot);
+            }
+        }
+    }
+    if (moved || resized || redraw) WM_Redraw();
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* GetWindowAttrsA(window, tagList) — A0, A1; returns success in D0 */
+static void intuition_GetWindowAttrsA(void)
+{
+    uint32_t win_ptr  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!win_ptr || !tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    uint32_t flags = mem_u32(win_ptr + WIN_OFF_FLAGS);
+
+    for (uint32_t t = tag_list; t; t += 8) {
+        uint32_t tag = mem_u32(t + 0);
+        if (tag == TAG_DONE) break;
+
+        uint32_t data = 0;
+        switch (tag) {
+            case WA_Left:      data = (uint32_t)(uint16_t)mem_u16(win_ptr + WIN_OFF_LEFTEDGE); break;
+            case WA_Top:       data = (uint32_t)(uint16_t)mem_u16(win_ptr + WIN_OFF_TOPEDGE); break;
+            case WA_Width:     data = (uint32_t)(uint16_t)mem_u16(win_ptr + WIN_OFF_WIDTH); break;
+            case WA_Height:    data = (uint32_t)(uint16_t)mem_u16(win_ptr + WIN_OFF_HEIGHT); break;
+            case WA_Title:     data = mem_u32(win_ptr + WIN_OFF_TITLE); break;
+            case WA_ScreenTitle: data = slot ? slot->screen_title : 0; break;
+            case WA_IDCMP:     data = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS); break;
+            case WA_Flags:     data = flags; break;
+            case WA_Gadgets:   data = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET); break;
+            case WA_Checkmark: data = slot ? slot->amiga_key : 0; break;
+            case WA_DetailPen: data = mem_u8(win_ptr + WIN_OFF_DETAILPEN); break;
+            case WA_BlockPen:  data = mem_u8(win_ptr + WIN_OFF_BLOCKPEN); break;
+            case WA_MinWidth:  data = slot ? (uint32_t)(uint16_t)slot->min_w : 0; break;
+            case WA_MinHeight: data = slot ? (uint32_t)(uint16_t)slot->min_h : 0; break;
+            case WA_MaxWidth:  data = slot ? (uint32_t)(uint16_t)slot->max_w : 0; break;
+            case WA_MaxHeight: data = slot ? (uint32_t)(uint16_t)slot->max_h : 0; break;
+            case WA_InnerWidth: data = slot ? slot->inner_width : 0; break;
+            case WA_InnerHeight: data = slot ? slot->inner_height : 0; break;
+            case WA_PubScreen:
+            case WA_CustomScreen: data = mem_u32(win_ptr + WIN_OFF_WSCREEN); break;
+            case WA_PubScreenName: data = slot ? slot->pub_screen_name : 0; break;
+            case WA_PubScreenFallBack: data = slot ? slot->pub_screen_fallback : 0; break;
+            case WA_WindowName: data = slot ? slot->window_name : 0; break;
+            case WA_Colors:     data = slot ? slot->colors : 0; break;
+            case WA_Zoom:       data = slot ? slot->zoom : 0; break;
+            case WA_MouseQueue: data = slot ? slot->mouse_queue : 0; break;
+            case WA_BackFill:   data = slot ? slot->backfill : 0; break;
+            case WA_RptQueue:   data = slot ? slot->rpt_queue : 0; break;
+            case WA_SizeGadget: data = (flags & WFLG_SIZEGADGET) ? 1 : 0; break;
+            case WA_DragBar:    data = (flags & WFLG_DRAGBAR) ? 1 : 0; break;
+            case WA_DepthGadget: data = (flags & WFLG_DEPTHGADGET) ? 1 : 0; break;
+            case WA_CloseGadget: data = (flags & WFLG_CLOSEGADGET) ? 1 : 0; break;
+            case WA_Backdrop:   data = (flags & WFLG_BACKDROP) ? 1 : 0; break;
+            case WA_ReportMouse: data = (flags & WFLG_REPORTMOUSE) ? 1 : 0; break;
+            case WA_NoCareRefresh: data = (flags & WFLG_NOCAREREFRESH) ? 1 : 0; break;
+            case WA_Borderless: data = (flags & WFLG_BORDERLESS) ? 1 : 0; break;
+            case WA_GimmeZeroZero: data = (flags & WFLG_GIMMEZEROZERO) ? 1 : 0; break;
+            case WA_Activate:   data = (flags & WFLG_ACTIVATE) ? 1 : 0; break;
+            case WA_RMBTrap:    data = (flags & WFLG_RMBTRAP) ? 1 : 0; break;
+            case WA_WBenchWindow: data = (flags & WFLG_WBENCHWINDOW) ? 1 : 0; break;
+            case WA_SimpleRefresh: data = ((flags & WFLG_REFRESHBITS) == WFLG_SIMPLE_REFRESH) ? 1 : 0; break;
+            case WA_SmartRefresh: data = ((flags & WFLG_REFRESHBITS) == WFLG_SMART_REFRESH) ? 1 : 0; break;
+            case WA_SizeBRight: data = (flags & WFLG_SIZEBRIGHT) ? 1 : 0; break;
+            case WA_SizeBBottom: data = (flags & WFLG_SIZEBBOTTOM) ? 1 : 0; break;
+            case WA_AutoAdjust: data = slot ? slot->auto_adjust : 0; break;
+            case WA_MenuHelp:   data = slot ? slot->menu_help : 0; break;
+            case WA_NewLookMenus: data = (flags & WFLG_NEWLOOKMENUS) ? 1 : 0; break;
+            case WA_AmigaKey:   data = slot ? slot->amiga_key : 0; break;
+            case WA_NotifyDepth: data = slot ? slot->notify_depth : 0; break;
+            case WA_SuperBitMap: data = slot ? slot->super_bitmap : 0; break;
+            case WA_Pointer:
+            case WA_BusyPointer:
+            case WA_PointerDelay: data = 0; break;
+            case WA_TabletMessages: data = slot ? slot->tablet_messages : 0; break;
+            case WA_HelpGroup:  data = slot ? slot->help_group : 0; break;
+            case WA_HelpGroupWindow: data = slot ? slot->help_group_window : 0; break;
+        }
+        mem_w32(t + 4, data);
+    }
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* Set/clear a single screen flag bit in Screen.Flags from a boolean SA_* tag. */
+static void sa_set_flag(uint32_t screen_ptr, uint32_t data, uint32_t flag)
+{
+    uint32_t flags = mem_u16(screen_ptr + SCR_OFF_FLAGS);
+    if (data) flags |= flag;
+    else      flags &= ~flag;
+    mem_w16(screen_ptr + SCR_OFF_FLAGS, (uint16_t)flags);
+}
+
+/* SetScreenAttrsA(screen, tagList) — A0, A1; returns success in D0 */
+static void intuition_SetScreenAttrsA(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list   = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!screen_ptr) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+
+    for (uint32_t t = tag_list; t; t += 8) {
+        uint32_t tag  = mem_u32(t + 0);
+        uint32_t data = mem_u32(t + 4);
+        if (tag == TAG_DONE) break;
+
+        switch (tag) {
+            case SA_Left:
+                mem_w16(screen_ptr + SCR_OFF_LEFTEDGE, (int16_t)data);
+                if (slot) slot->left = (int16_t)data;
+                break;
+            case SA_Top:
+                mem_w16(screen_ptr + SCR_OFF_TOPEDGE, (int16_t)data);
+                if (slot) slot->top = (int16_t)data;
+                break;
+            case SA_Width:
+                mem_w16(screen_ptr + SCR_OFF_WIDTH, (int16_t)data);
+                if (slot) slot->width = (int16_t)data;
+                break;
+            case SA_Height:
+                mem_w16(screen_ptr + SCR_OFF_HEIGHT, (int16_t)data);
+                if (slot) slot->height = (int16_t)data;
+                break;
+            case SA_Depth:
+                mem_w8(screen_ptr + SCR_OFF_DEPTH, (uint8_t)data);
+                if (slot) slot->depth = (uint8_t)data;
+                break;
+            case SA_DetailPen:
+                mem_w8(screen_ptr + SCR_OFF_DETAILPEN, (uint8_t)data);
+                break;
+            case SA_BlockPen:
+                mem_w8(screen_ptr + SCR_OFF_BLOCKPEN, (uint8_t)data);
+                break;
+            case SA_Title:
+                mem_w32(screen_ptr + SCR_OFF_TITLE, data);
+                if (slot && data) {
+                    char title[64];
+                    guest_str(title, data, sizeof(title));
+                    local_str_copy(slot->title, title, sizeof(slot->title));
+                    update_desktop_title();
+                }
+                break;
+            case SA_Font:
+                mem_w32(screen_ptr + SCR_OFF_FONT, data);
+                if (slot) slot->sys_font = 0; /* explicit font overrides sys font */
+                break;
+            case SA_SysFont:
+                if (slot) slot->sys_font = data;
+                break;
+            case SA_Type:
+                mem_w16(screen_ptr + SCR_OFF_FLAGS, (uint16_t)data);
+                break;
+            case SA_BitMap:
+                mem_w32(screen_ptr + SCR_OFF_BITMA, data);
+                if (slot) slot->bitmap = data;
+                if (data) sa_set_flag(screen_ptr, 1, CUSTOMBITMAP);
+                break;
+            case SA_DisplayID:
+                mem_w32(screen_ptr + SCR_OFF_DISPLAYID, data);
+                if (slot) slot->display_id = data;
+                break;
+            case SA_Colors:
+                mem_w32(screen_ptr + SCR_OFF_COLORS, data);
+                if (slot) slot->colors = data;
+                break;
+            case SA_Colors32:
+                if (slot) slot->colors32 = data;
+                break;
+            case SA_Pens:
+                if (slot) slot->pens = data;
+                break;
+            case SA_ErrorCode:
+                if (slot) slot->error_code_ptr = data;
+                break;
+            case SA_Parent:
+                if (slot) slot->parent = data;
+                break;
+            case SA_BackFill:
+                if (slot) slot->backfill = data;
+                break;
+            case SA_DClip:
+                if (slot) slot->dclip = data;
+                break;
+            case SA_Overscan:
+                if (slot) slot->overscan = data;
+                break;
+            case SA_PubSig:
+                if (slot) slot->pub_sig = data;
+                break;
+            case SA_PubTask:
+                if (slot) slot->pub_task = data;
+                break;
+            case SA_ShowTitle:
+                sa_set_flag(screen_ptr, data, SHOWTITLE);
+                if (slot) {
+                    slot->show_title = data ? 1 : 0;
+                    update_desktop_title();
+                }
+                break;
+            case SA_Behind:
+                sa_set_flag(screen_ptr, data, BEHIND);
+                break;
+            case SA_Quiet:
+                sa_set_flag(screen_ptr, data, QUIET);
+                break;
+            case SA_AutoScroll:
+                sa_set_flag(screen_ptr, data, AUTOSCROLL);
+                break;
+            case SA_FullPalette:
+                if (slot) slot->full_palette = data ? 1 : 0;
+                break;
+            case SA_ColorMapEntries:
+                if (slot) slot->color_map_entries = (uint16_t)data;
+                break;
+            case SA_Draggable:
+                if (slot) slot->draggable = data ? 1 : 0;
+                break;
+            case SA_Exclusive:
+                if (slot) slot->exclusive = data ? 1 : 0;
+                break;
+            case SA_SharePens:
+                if (slot) slot->share_pens = data ? 1 : 0;
+                break;
+            case SA_Interleaved:
+                if (slot) slot->interleaved = data ? 1 : 0;
+                break;
+            case SA_LikeWorkbench:
+                if (slot) slot->like_workbench = data ? 1 : 0;
+                break;
+            case SA_MinimizeISG:
+                if (slot) slot->minimize_isg = data ? 1 : 0;
+                break;
+            case SA_PubName:
+                if (slot && data) {
+                    char name[64];
+                    guest_str(name, data, sizeof(name));
+                    local_str_copy(slot->pub_name, name, sizeof(slot->pub_name));
+                }
+                break;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* GetScreenAttrsA(screen, tagList) — A0, A1; returns success in D0 */
+static void intuition_GetScreenAttrsA(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list   = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!screen_ptr || !tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    uint16_t flags = mem_u16(screen_ptr + SCR_OFF_FLAGS);
+
+    for (uint32_t t = tag_list; t; t += 8) {
+        uint32_t tag = mem_u32(t + 0);
+        if (tag == TAG_DONE) break;
+
+        uint32_t data = 0;
+        switch (tag) {
+            case SA_Left:     data = (uint32_t)(uint16_t)mem_u16(screen_ptr + SCR_OFF_LEFTEDGE); break;
+            case SA_Top:      data = (uint32_t)(uint16_t)mem_u16(screen_ptr + SCR_OFF_TOPEDGE); break;
+            case SA_Width:    data = (uint32_t)(uint16_t)mem_u16(screen_ptr + SCR_OFF_WIDTH); break;
+            case SA_Height:   data = (uint32_t)(uint16_t)mem_u16(screen_ptr + SCR_OFF_HEIGHT); break;
+            case SA_Depth:    data = mem_u8(screen_ptr + SCR_OFF_DEPTH); break;
+            case SA_DetailPen: data = mem_u8(screen_ptr + SCR_OFF_DETAILPEN); break;
+            case SA_BlockPen: data = mem_u8(screen_ptr + SCR_OFF_BLOCKPEN); break;
+            case SA_Title:    data = mem_u32(screen_ptr + SCR_OFF_TITLE); break;
+            case SA_Font:     data = mem_u32(screen_ptr + SCR_OFF_FONT); break;
+            case SA_SysFont:  data = slot ? slot->sys_font : 0; break;
+            case SA_Type:     data = flags; break;
+            case SA_BitMap:   data = mem_u32(screen_ptr + SCR_OFF_BITMA); break;
+            case SA_DisplayID: data = mem_u32(screen_ptr + SCR_OFF_DISPLAYID); break;
+            case SA_Colors:   data = mem_u32(screen_ptr + SCR_OFF_COLORS); break;
+            case SA_Colors32: data = slot ? slot->colors32 : 0; break;
+            case SA_Pens:     data = slot ? slot->pens : 0; break;
+            case SA_ErrorCode: data = slot ? slot->error_code_ptr : 0; break;
+            case SA_Parent:   data = slot ? slot->parent : 0; break;
+            case SA_BackFill: data = slot ? slot->backfill : 0; break;
+            case SA_DClip:    data = slot ? slot->dclip : 0; break;
+            case SA_Overscan: data = slot ? slot->overscan : 0; break;
+            case SA_PubSig:   data = slot ? slot->pub_sig : 0; break;
+            case SA_PubTask:  data = slot ? slot->pub_task : 0; break;
+            case SA_ShowTitle: data = (flags & SHOWTITLE) ? 1 : 0; break;
+            case SA_Behind:   data = (flags & BEHIND) ? 1 : 0; break;
+            case SA_Quiet:    data = (flags & QUIET) ? 1 : 0; break;
+            case SA_AutoScroll: data = (flags & AUTOSCROLL) ? 1 : 0; break;
+            case SA_FullPalette: data = slot ? slot->full_palette : 0; break;
+            case SA_ColorMapEntries: data = slot ? slot->color_map_entries : 0; break;
+            case SA_Draggable: data = slot ? slot->draggable : 0; break;
+            case SA_Exclusive: data = slot ? slot->exclusive : 0; break;
+            case SA_SharePens: data = slot ? slot->share_pens : 0; break;
+            case SA_Interleaved: data = slot ? slot->interleaved : 0; break;
+            case SA_LikeWorkbench: data = slot ? slot->like_workbench : 0; break;
+            case SA_MinimizeISG: data = slot ? slot->minimize_isg : 0; break;
+            case SA_PubName:  data = 0; break; /* host-side string; not exposed as guest pointer */
+        }
+        mem_w32(t + 4, data);
+    }
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
 /* =========================================================================
- * Workbench screen stubs
+ * Workbench screen
  * ========================================================================= */
 
-static uint8_t g_workbench_open = 0;
+static uint32_t g_workbench_screen = 0;
+
+static uint32_t open_workbench_internal(void)
+{
+    ScreenSlot *slot = alloc_screen_slot();
+    if (!slot) return 0;
+
+    uint32_t guest_screen = intu_alloc(SCR_SIZE);
+    uint32_t rport = intu_alloc(RP_SIZE_MIN);
+    if (!guest_screen || !rport) {
+        intu_free(guest_screen);
+        intu_free(rport);
+        slot->active = 0;
+        return 0;
+    }
+
+    init_guest_rastport(rport, 0);
+    memset(&g_ram[guest_screen], 0, SCR_SIZE);
+    mem_w16(guest_screen + SCR_OFF_LEFTEDGE, 0);
+    mem_w16(guest_screen + SCR_OFF_TOPEDGE, 0);
+    mem_w16(guest_screen + SCR_OFF_WIDTH, (int16_t)g_fb.width);
+    mem_w16(guest_screen + SCR_OFF_HEIGHT, (int16_t)g_fb.height);
+    mem_w16(guest_screen + SCR_OFF_FLAGS, (uint16_t)(WBENCHSCREEN | PUBLICSCREEN | SHOWTITLE));
+    mem_w32(guest_screen + SCR_OFF_TITLE, 0);
+    mem_w32(guest_screen + SCR_OFF_DEFAULTTITLE, 0);
+    mem_w32(guest_screen + SCR_OFF_FONT, 0);
+    mem_w32(guest_screen + SCR_OFF_RASTPORT, rport);
+    mem_w32(guest_screen + SCR_OFF_VIEWPORT, 0);
+    mem_w8(guest_screen + SCR_OFF_DETAILPEN, 0);
+    mem_w8(guest_screen + SCR_OFF_BLOCKPEN, 1);
+
+    slot->guest_screen = guest_screen;
+    slot->left = 0;
+    slot->top = 0;
+    slot->width = (int16_t)g_fb.width;
+    slot->height = (int16_t)g_fb.height;
+    slot->show_title = 1;
+    slot->is_front = 1;
+    slot->lock_count = 0;
+    slot->title[0] = '\0';
+    local_str_copy(slot->pub_name, "Workbench", sizeof(slot->pub_name));
+    slot->depth = 2;
+    slot->display_id = 0;
+    slot->bitmap = 0;
+    slot->colormap = 0;
+    slot->colors = 0;
+    slot->colors32 = 0;
+    slot->sys_font = 0;
+    slot->pens = 0;
+    slot->error_code_ptr = 0;
+    slot->parent = 0;
+    slot->backfill = 0;
+    slot->dclip = 0;
+    slot->overscan = 0;
+    slot->pub_sig = 0;
+    slot->pub_task = 0;
+    slot->color_map_entries = 0;
+    slot->full_palette = 0;
+    slot->draggable = 1;
+    slot->exclusive = 0;
+    slot->share_pens = 0;
+    slot->interleaved = 0;
+    slot->like_workbench = 1;
+    slot->minimize_isg = 0;
+    mem_w8(guest_screen + SCR_OFF_DEPTH, slot->depth);
+    mem_w32(guest_screen + SCR_OFF_BITMA, 0);
+    mem_w32(guest_screen + SCR_OFF_DISPLAYID, 0);
+    mem_w32(guest_screen + SCR_OFF_COLORS, 0);
+
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        if (g_intu_screens[i].active && &g_intu_screens[i] != slot)
+            g_intu_screens[i].is_front = 0;
+    }
+    update_desktop_title();
+    return guest_screen;
+}
 
 /* OpenWorkbench() — returns Workbench screen pointer in D0 */
 static void intuition_OpenWorkbench(void)
 {
-    g_workbench_open = 1;
-    /* Return a synthetic non-zero screen pointer; UAOS has no guest Screen. */
-    m68k_set_reg(M68K_REG_D0, 0x00001000);
+    if (!g_workbench_screen)
+        g_workbench_screen = open_workbench_internal();
+    m68k_set_reg(M68K_REG_D0, g_workbench_screen);
 }
 
 /* CloseWorkBench() — returns BOOL in D0 */
 static void intuition_CloseWorkbench(void)
 {
-    if (g_workbench_open) {
-        g_workbench_open = 0;
+    if (g_workbench_screen) {
+        ScreenSlot *slot = find_screen_slot(g_workbench_screen);
+        if (slot) {
+            uint32_t rport = mem_u32(g_workbench_screen + SCR_OFF_RASTPORT);
+            intu_free(rport);
+            intu_free(g_workbench_screen);
+            slot->active = 0;
+            update_desktop_title();
+        }
+        g_workbench_screen = 0;
         m68k_set_reg(M68K_REG_D0, 1);
     } else {
         m68k_set_reg(M68K_REG_D0, 0);
@@ -1374,6 +3484,11 @@ extern void UAOS_Graphics_Dispatch(uint32_t fn);
 #define GFX_SLOT_SETBPEN             58
 #define GFX_SLOT_SETDRMD             59
 #define GFX_SLOT_BLTBITMAPRASTPORT  101
+#define GFX_SLOT_FINDDISPLAYINFO   121
+#define GFX_SLOT_NEXTDISPLAYINFO   122
+#define GFX_SLOT_GETDISPLAYINFODATA 126
+#define GFX_SLOT_MODENOTAVAILABLE   133
+#define GFX_SLOT_BESTMODEIDA        175
 
 /* Image structure offsets */
 #define IMG_OFF_LEFTEDGE    0
@@ -1726,6 +3841,16 @@ static void intuition_EasyRequestArgs(void)
     m68k_set_reg(M68K_REG_D0, (uint32_t)amiga_result);
 }
 
+/* EasyRequest(window, easyStruct, idcmpPtr, arg1, ...)
+ * A0/A1/A2 plus varargs passed as a pointer in A3.
+ * Varargs wrapper for EasyRequestArgs(); on m68k the compiler stub
+ * packages the arguments and passes the first argument's address in A3,
+ * so we can simply forward to the EasyRequestArgs implementation. */
+static void intuition_EasyRequest(void)
+{
+    intuition_EasyRequestArgs();
+}
+
 /* OpenScreen(newScreen) — A0 = NewScreen*; returns Screen* in D0 */
 static void intuition_OpenScreen(void)
 {
@@ -1801,6 +3926,73 @@ static void intuition_ScreenToBack(void)
     }
 }
 
+/* ScreenDepth(screen, flags, reserved) — A0, D0, A1
+ * V39 depth-arrangement: SDEPTH_TOFRONT / SDEPTH_TOBACK */
+static void intuition_ScreenDepth(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t flags      = m68k_get_reg(NULL, M68K_REG_D0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    if (!slot) return;
+
+    if (flags & SDEPTH_TOBACK) {
+        slot->is_front = 0;
+        for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+            if (g_intu_screens[i].active && &g_intu_screens[i] != slot) {
+                g_intu_screens[i].is_front = 1;
+                break;
+            }
+        }
+    } else {
+        for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
+            g_intu_screens[i].is_front = 0;
+        slot->is_front = 1;
+    }
+    update_desktop_title();
+}
+
+/* ScreenPosition(screen, flags, x1, y1, x2, y2) — A0, D0, D1, D2, D3, D4
+ * V39 screen positioning: SPOS_RELATIVE / SPOS_ABSOLUTE / SPOS_MAKEVISIBLE */
+static void intuition_ScreenPosition(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t flags      = m68k_get_reg(NULL, M68K_REG_D0);
+    int32_t  x1         = (int32_t)m68k_get_reg(NULL, M68K_REG_D1);
+    int32_t  y1         = (int32_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int32_t  x2         = (int32_t)m68k_get_reg(NULL, M68K_REG_D3);
+    int32_t  y2         = (int32_t)m68k_get_reg(NULL, M68K_REG_D4);
+    (void)x2; (void)y2;
+
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    if (!slot) return;
+
+    if (flags & SPOS_ABSOLUTE) {
+        slot->left = (int16_t)x1;
+        slot->top  = (int16_t)y1;
+    } else if (flags & SPOS_MAKEVISIBLE) {
+        /* Simple autoscroll: keep (x1,y1)-(x2,y2) visible by clamping screen
+         * position so the rectangle is inside the display. */
+        int rect_w = (x2 > x1) ? (x2 - x1) : 0;
+        int rect_h = (y2 > y1) ? (y2 - y1) : 0;
+        if (x1 + slot->left < 0) slot->left = (int16_t)(-x1);
+        if (y1 + slot->top  < 0) slot->top  = (int16_t)(-y1);
+        if (x1 + slot->left + rect_w > (int)g_fb.width)
+            slot->left = (int16_t)((int)g_fb.width - x1 - rect_w);
+        if (y1 + slot->top  + rect_h > (int)g_fb.height)
+            slot->top  = (int16_t)((int)g_fb.height - y1 - rect_h);
+    } else {
+        /* SPOS_RELATIVE (default) */
+        slot->left += (int16_t)x1;
+        slot->top  += (int16_t)y1;
+    }
+
+    mem_w16(screen_ptr + SCR_OFF_LEFTEDGE, slot->left);
+    mem_w16(screen_ptr + SCR_OFF_TOPEDGE,  slot->top);
+    update_desktop_title();
+}
+
 /* ShowTitle(screen, showIt) — A0, D0 */
 static void intuition_ShowTitle(void)
 {
@@ -1813,6 +4005,82 @@ static void intuition_ShowTitle(void)
                 (mem_u16(screen_ptr + SCR_OFF_FLAGS) & ~SHOWTITLE) |
                 (slot->show_title ? SHOWTITLE : 0));
         update_desktop_title();
+    }
+}
+
+/* Minimal VisualInfo state used by GadTools-style menu/layout code.
+ * In real AmigaOS these are in gadtools.library; here they are provided
+ * through intuition.library for convenience. */
+#define MAX_VISUAL_INFOS 8
+
+/* Allocate a DrawInfo for a screen.  This is a helper reused by
+ * GetScreenDrawInfo and GetVisualInfoA. */
+static uint32_t alloc_screen_draw_info(uint32_t screen)
+{
+    if (!screen) return 0;
+    uint32_t dri = intu_alloc(DRINFO_SIZE);
+    if (!dri) return 0;
+    for (int i = 0; i < DRINFO_SIZE; i++) mem_w8(dri + i, 0);
+
+    uint8_t detail = mem_u8(screen + SCR_OFF_DETAILPEN);
+    uint8_t block  = mem_u8(screen + SCR_OFF_BLOCKPEN);
+    uint32_t font  = mem_u32(screen + SCR_OFF_FONT);
+
+    static const uint16_t default_pens[DRINFO_PEN_COUNT] = {
+        0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1
+    };
+
+    mem_w16(dri + DRINFO_OFF_VERSION, 1);
+    mem_w16(dri + DRINFO_OFF_NUMPENS, DRINFO_PEN_COUNT);
+    for (int i = 0; i < DRINFO_PEN_COUNT; i++) {
+        uint16_t pen = default_pens[i];
+        if (pen == 0) pen = detail;
+        else if (pen == 1) pen = block;
+        mem_w16(dri + DRINFO_OFF_PENS + i * 2, pen);
+    }
+    mem_w32(dri + DRINFO_OFF_FONT, font);
+    mem_w8(dri + DRINFO_OFF_DEPTH, 2);
+    mem_w16(dri + DRINFO_OFF_RESX, 72);
+    mem_w16(dri + DRINFO_OFF_RESY, 72);
+    mem_w32(dri + DRINFO_OFF_FLAGS, 0);
+    return dri;
+}
+
+/* GetVisualInfoA(screen, tagList) — A0, A1; returns VisualInfo* in D0
+ * Allocates a real guest VisualInfo structure tied to the supplied screen. */
+#define VI_SIZE        16
+#define VI_OFF_SCREEN  0
+#define VI_OFF_DRAWINFO 4
+#define VI_OFF_FONT     8
+#define VI_OFF_FLAGS   12
+
+static void intuition_GetVisualInfoA(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t result = 0;
+    if (screen_ptr) {
+        uint32_t vi = intu_alloc(VI_SIZE);
+        if (vi) {
+            for (int i = 0; i < VI_SIZE; i++) mem_w8(vi + i, 0);
+            mem_w32(vi + VI_OFF_SCREEN, screen_ptr);
+            uint32_t dri = alloc_screen_draw_info(screen_ptr);
+            mem_w32(vi + VI_OFF_DRAWINFO, dri);
+            mem_w32(vi + VI_OFF_FONT, mem_u32(screen_ptr + SCR_OFF_FONT));
+            result = vi;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, result);
+}
+
+/* FreeVisualInfo(visualInfo) — A0 */
+static void intuition_FreeVisualInfo(void)
+{
+    uint32_t vi = m68k_get_reg(NULL, M68K_REG_A0);
+    if (vi) {
+        uint32_t dri = mem_u32(vi + VI_OFF_DRAWINFO);
+        if (dri) intu_free(dri);
+        intu_free(vi);
     }
 }
 
@@ -1877,6 +4145,183 @@ static void intuition_ItemAddress(void)
     m68k_set_reg(M68K_REG_D0, result);
 }
 
+/* Enable or disable a menu item addressed by a packed menu number. */
+static void set_menu_item_enabled(uint32_t menu_strip, uint32_t menu_number, int enabled)
+{
+    if (!menu_strip || menu_number == MENUNULL) return;
+    int menu_idx = MENUNUM(menu_number);
+    int item_idx = ITEMNUM(menu_number);
+    int sub_idx  = SUBNUM(menu_number);
+
+    uint32_t menu = menu_strip;
+    for (int m = 0; menu && m < menu_idx; m++)
+        menu = mem_u32(menu + MENU_OFF_NEXTMENU);
+    if (!menu) return;
+
+    uint32_t item = mem_u32(menu + MENU_OFF_FIRSTITEM);
+    for (int i = 0; item && i < item_idx; i++)
+        item = mem_u32(item + MENUITEM_OFF_NEXTITEM);
+    if (!item) return;
+
+    if (sub_idx != NOSUB) {
+        uint32_t sub = mem_u32(item + MENUITEM_OFF_SUBITEM);
+        for (int s = 0; sub && s < sub_idx; s++)
+            sub = mem_u32(sub + MENUITEM_OFF_NEXTITEM);
+        item = sub;
+    }
+
+    if (item) {
+        uint16_t flags = mem_u16(item + MENUITEM_OFF_FLAGS);
+        if (enabled) flags |= ITEMENABLED;
+        else         flags &= ~ITEMENABLED;
+        mem_w16(item + MENUITEM_OFF_FLAGS, flags);
+    }
+}
+
+/* OnMenu(window, menuNumber) — A0, D0 */
+static void intuition_OnMenu(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t menu_num = m68k_get_reg(NULL, M68K_REG_D0);
+    if (win_ptr)
+        set_menu_item_enabled(mem_u32(win_ptr + WIN_OFF_MENUSTRIP), menu_num, 1);
+}
+
+/* OffMenu(window, menuNumber) — A0, D0 */
+static void intuition_OffMenu(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t menu_num = m68k_get_reg(NULL, M68K_REG_D0);
+    if (win_ptr)
+        set_menu_item_enabled(mem_u32(win_ptr + WIN_OFF_MENUSTRIP), menu_num, 0);
+}
+
+/* -------------------------------------------------------------------------
+ * Menu helpers exported to desktop.c
+ * ------------------------------------------------------------------------- */
+
+/* Return the menu strip pointer of the currently focused WM window, or 0. */
+uint32_t Intuition_GetActiveWindowMenuStrip(void)
+{
+    int focus = WM_GetFocus();
+    if (focus < 0) return 0;
+    uint32_t win_ptr = get_guest_window_from_handle(focus);
+    if (!win_ptr) return 0;
+    return mem_u32(win_ptr + WIN_OFF_MENUSTRIP);
+}
+
+/* Post an IDCMP_MENUPICK message to the focused WM window. */
+void Intuition_PostMenuPick(uint32_t menu_number)
+{
+    int focus = WM_GetFocus();
+    if (focus < 0) return;
+    uint32_t win_ptr = get_guest_window_from_handle(focus);
+    if (!win_ptr) return;
+    post_intui_message(win_ptr, IDCMP_MENUPICK, (uint16_t)menu_number, 0, 0, 0, 0);
+}
+
+/* Small pool of host submenus used while parsing a guest menu strip.
+ * Submenus are ephemeral and reparsed whenever the focused window changes. */
+#define HOST_MENU_SUB_MAX 32
+static HostMenu g_submenu_pool[HOST_MENU_SUB_MAX];
+static int      g_submenu_pool_count = 0;
+
+static HostMenu *alloc_host_submenu(void)
+{
+    if (g_submenu_pool_count >= HOST_MENU_SUB_MAX) return NULL;
+    HostMenu *m = &g_submenu_pool[g_submenu_pool_count++];
+    m->item_count = 0;
+    m->label[0] = '\0';
+    return m;
+}
+
+static void reset_host_submenu_pool(void)
+{
+    g_submenu_pool_count = 0;
+}
+
+static int parse_host_menu_items(uint32_t first_item, HostMenuItem *items, int max_items)
+{
+    int count = 0;
+    uint32_t item = first_item;
+    while (item && count < max_items) {
+        HostMenuItem *mi = &items[count];
+        mi->label[0] = '\0';
+        mi->enabled = 1;
+        mi->has_checkmark = 0;
+        mi->checked = 0;
+        mi->toggle = 0;
+        mi->command_key = 0;
+        mi->has_submenu = 0;
+        mi->submenu = NULL;
+        mi->guest_item = item;
+
+        uint16_t flags = mem_u16(item + MENUITEM_OFF_FLAGS);
+        if (!(flags & ITEMENABLED)) mi->enabled = 0;
+        if (flags & CHECKIT) { mi->has_checkmark = 1; mi->checked = 1; }
+        if (flags & MENUTOGGLE) mi->toggle = 1;
+        if (flags & COMMSEQ) mi->command_key = (char)mem_u8(item + MENUITEM_OFF_COMMAND);
+
+        uint32_t item_fill = mem_u32(item + MENUITEM_OFF_ITEMFILL);
+        if (item_fill && (flags & ITEMTEXT)) {
+            uint32_t text_ptr = mem_u32(item_fill + ITEXT_OFF_ITEXT);
+            guest_str(mi->label, text_ptr, HOST_MENU_LABEL_SIZE);
+        }
+
+        uint32_t subitem = mem_u32(item + MENUITEM_OFF_SUBITEM);
+        if (subitem) {
+            HostMenu *sm = alloc_host_submenu();
+            if (sm) {
+                sm->item_count = parse_host_menu_items(subitem, sm->items, HOST_MENU_ITEM_MAX);
+                mi->submenu = sm;
+                mi->has_submenu = 1;
+            }
+        }
+
+        count++;
+        item = mem_u32(item + MENUITEM_OFF_NEXTITEM);
+    }
+    return count;
+}
+
+/* Parse the guest menu strip into host-friendly HostMenu structures.
+ * Returns the number of top-level menus parsed. */
+int Intuition_GetHostMenuStrip(uint32_t menu_strip, HostMenu *menus, int max_menus)
+{
+    if (!menus || max_menus <= 0) return 0;
+    if (!menu_strip) return 0;
+
+    reset_host_submenu_pool();
+
+    int count = 0;
+    uint32_t menu = menu_strip;
+    while (menu && count < max_menus) {
+        uint32_t name_ptr = mem_u32(menu + MENU_OFF_MENUNAME);
+        guest_str(menus[count].label, name_ptr, HOST_MENU_LABEL_SIZE);
+        menus[count].item_count = 0;
+
+        uint32_t item = mem_u32(menu + MENU_OFF_FIRSTITEM);
+        menus[count].item_count = parse_host_menu_items(item, menus[count].items, HOST_MENU_ITEM_MAX);
+
+        count++;
+        menu = mem_u32(menu + MENU_OFF_NEXTMENU);
+    }
+    return count;
+}
+
+/* Toggle/set a guest MenuItem's CHECKIT state after it has been selected.
+ * For MENUTOGGLE items the state is toggled; for plain CHECKIT items it is set. */
+void Intuition_UpdateMenuItemCheck(uint32_t guest_item, int toggle)
+{
+    if (!guest_item) return;
+    uint16_t flags = mem_u16(guest_item + MENUITEM_OFF_FLAGS);
+    if (flags & CHECKIT) {
+        if (toggle) flags ^= CHECKIT;
+        else        flags |= CHECKIT;
+        mem_w16(guest_item + MENUITEM_OFF_FLAGS, flags);
+    }
+}
+
 /* LockPubScreen(name) — A0 = name; returns Screen* in D0 */
 static void intuition_LockPubScreen(void)
 {
@@ -1909,46 +4354,90 @@ static void intuition_UnlockPubScreen(void)
     if (slot && slot->lock_count > 0) slot->lock_count--;
 }
 
-/* LockPubScreenList() — returns List* in D0 */
+/* LockPubScreenList() — returns List* in D0
+ * Builds a real exec List containing a node for every active public screen.
+ * Each node has ln_Name pointing to the screen's public name and the guest
+ * Screen* stored after the standard Node header. */
+#define PSNODE_OFF_SCREEN 14
+#define PSNODE_SIZE       20
+
+static void free_pub_screen_list(uint32_t list)
+{
+    if (!list) return;
+    uint32_t node = mem_u32(list + LH_OFF_HEAD);
+    uint32_t tail = list + LH_OFF_TAIL;
+    while (node && node != tail) {
+        uint32_t succ = mem_u32(node + MSG_OFF_LN_SUCC);
+        uint32_t name = mem_u32(node + MSG_OFF_LN_NAME);
+        if (name) intu_free(name);
+        intu_free(node);
+        node = succ;
+    }
+    intu_free(list);
+}
+
 static void intuition_LockPubScreenList(void)
 {
-    /* Allocate a minimal exec List; callers iterate with NextPubScreen(). */
     uint32_t list = intu_alloc(16);
-    if (list) {
-        mem_w32(list + 0, 0);  /* lh_Head */
-        mem_w32(list + 4, 0);  /* lh_Tail */
-        mem_w32(list + 8, 0);  /* lh_TailPred */
-        mem_w16(list + 12, 0); /* lh_Type + pad */
+    if (!list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
     }
+    init_guest_list(list);
+    mem_w8(list + LH_OFF_TYPE, 0);
+
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        if (!g_intu_screens[i].active) continue;
+        if (g_intu_screens[i].pub_name[0] == '\0') continue;
+
+        const char *name = g_intu_screens[i].pub_name;
+        int name_len = 0;
+        while (name[name_len] && name_len < 63) name_len++;
+        uint32_t guest_name = intu_alloc(name_len + 1);
+        if (!guest_name) continue;
+        for (int j = 0; j <= name_len; j++)
+            mem_w8(guest_name + j, (uint8_t)name[j]);
+
+        uint32_t node = intu_alloc(PSNODE_SIZE);
+        if (!node) {
+            intu_free(guest_name);
+            continue;
+        }
+        for (int j = 0; j < PSNODE_SIZE; j++) mem_w8(node + j, 0);
+        mem_w32(node + MSG_OFF_LN_NAME, guest_name);
+        mem_w32(node + PSNODE_OFF_SCREEN, g_intu_screens[i].guest_screen);
+
+        guest_list_add_tail(list, node);
+    }
+
     m68k_set_reg(M68K_REG_D0, list);
 }
 
 /* UnlockPubScreenList() */
 static void intuition_UnlockPubScreenList(void)
 {
-    /* no-op; list memory is not reclaimed by intu_alloc(). */
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    free_pub_screen_list(list);
 }
 
-/* SetPointer(window, pointer, height, width, xOffset, yOffset)
- * A0, A1, D0, D1, D2, D3 */
-static void intuition_SetPointer(void)
+/* Decode a SetPointer-style sprite data buffer into a cursor sprite.
+ * Amiga sprite data layout: 2 reserved words, then height rows of 2 words
+ * (one per bitplane), then 2 reserved words. */
+static void decode_pointer_sprite(uint32_t pointer, int height, int width,
+                                  int xoff, int yoff)
 {
-    uint32_t pointer = m68k_get_reg(NULL, M68K_REG_A1);
-    int16_t  height  = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
-    int16_t  width   = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
-
     if (width <= 0)  width = 16;
-    if (width > 16)  width = 16;
+    if (width > 48)  width = 48;
     if (height <= 0) height = 16;
-    if (height > 16) height = 16;
+    if (height > 48) height = 48;
 
-    uint8_t sprite[16 * 16];
+    uint8_t sprite[48 * 48];
     memset(sprite, 0, sizeof(sprite));
 
     if (pointer) {
         for (int row = 0; row < height; row++) {
-            uint16_t p0 = mem_u16(pointer + row * 4);
-            uint16_t p1 = mem_u16(pointer + row * 4 + 2);
+            uint16_t p0 = mem_u16(pointer + 4 + row * 4);
+            uint16_t p1 = mem_u16(pointer + 4 + row * 4 + 2);
             for (int col = 0; col < width; col++) {
                 int bit = 15 - col;
                 int v = 0;
@@ -1965,7 +4454,119 @@ static void intuition_SetPointer(void)
         }
     }
 
-    Cursor_SetCustomSprite(sprite, width, height);
+    Cursor_SetCustomSprite(sprite, width, height, xoff, yoff);
+}
+
+/* BitMap structure offsets */
+#define BM_OFF_BYTESPERROW 0
+#define BM_OFF_ROWS        2
+#define BM_OFF_FLAGS       4
+#define BM_OFF_DEPTH       5
+#define BM_OFF_PLANES      8
+
+/* Check if a guest pointer looks like a valid struct BitMap. */
+static int is_valid_bitmap(uint32_t bm)
+{
+    if (!bm || bm + 16 > GUEST_RAM_SIZE) return 0;
+    uint16_t bpr = mem_u16(bm + BM_OFF_BYTESPERROW);
+    uint16_t rows = mem_u16(bm + BM_OFF_ROWS);
+    uint8_t  depth = mem_u8(bm + BM_OFF_DEPTH);
+    return (bpr > 0 && bpr <= 8 && rows > 0 && rows <= 48 &&
+            (depth == 1 || depth == 2));
+}
+
+/* Decode a graphics.library BitMap (up to 2 planes) into a cursor sprite. */
+static void decode_pointer_bitmap(uint32_t bm, int xoff, int yoff)
+{
+    if (!is_valid_bitmap(bm)) {
+        Cursor_ClearCustomSprite();
+        return;
+    }
+
+    uint16_t bpr   = mem_u16(bm + BM_OFF_BYTESPERROW);
+    uint16_t rows  = mem_u16(bm + BM_OFF_ROWS);
+    uint8_t  depth = mem_u8(bm + BM_OFF_DEPTH);
+    int width = bpr * 8;
+    int height = rows;
+
+    if (width > 48)  width = 48;
+    if (height > 48) height = 48;
+
+    uint32_t plane0 = mem_u32(bm + BM_OFF_PLANES);
+    uint32_t plane1 = mem_u32(bm + BM_OFF_PLANES + 4);
+
+    uint8_t sprite[48 * 48];
+    memset(sprite, 0, sizeof(sprite));
+
+    for (int row = 0; row < height; row++) {
+        for (int col = 0; col < width; col++) {
+            int byte = col / 8;
+            int bit  = 7 - (col % 8);
+            int v = 0;
+            if (plane0 && plane0 + row * bpr + byte < GUEST_RAM_SIZE) {
+                if (mem_u8(plane0 + row * bpr + byte) & (1 << bit)) v |= 1;
+            }
+            if (depth > 1 && plane1 && plane1 + row * bpr + byte < GUEST_RAM_SIZE) {
+                if (mem_u8(plane1 + row * bpr + byte) & (1 << bit)) v |= 2;
+            }
+            uint8_t px = 0;
+            if (v == 1) px = 1;
+            else if (v == 2) px = 2;
+            else if (v == 3) px = 1;
+            sprite[row * width + col] = px;
+        }
+    }
+
+    Cursor_SetCustomSprite(sprite, width, height, xoff, yoff);
+}
+
+/* Try to extract a pointer image from a WA_Pointer value. The value may be:
+ *  - a SetPointer-style sprite data buffer
+ *  - a pointer to a struct BitMap
+ *  - a pointerclass BOOPSI object whose first valid pointer is a BitMap
+ * Heuristic detection is used; pointerclass object layout is not guaranteed. */
+static void set_pointer_from_wa_pointer(uint32_t ptr, int xoff, int yoff)
+{
+    if (!ptr) {
+        Cursor_ClearCustomSprite();
+        return;
+    }
+
+    /* Sprite data buffer: first two words are reserved zeros. */
+    if (ptr + 4 < GUEST_RAM_SIZE && mem_u32(ptr) == 0) {
+        decode_pointer_sprite(ptr, 16, 16, xoff, yoff);
+        return;
+    }
+
+    /* Direct struct BitMap pointer. */
+    if (is_valid_bitmap(ptr)) {
+        decode_pointer_bitmap(ptr, xoff, yoff);
+        return;
+    }
+
+    /* pointerclass BOOPSI object: scan likely offsets for a BitMap pointer. */
+    for (int off = 0; off <= 32; off += 4) {
+        uint32_t cand = mem_u32(ptr + off);
+        if (is_valid_bitmap(cand)) {
+            decode_pointer_bitmap(cand, xoff, yoff);
+            return;
+        }
+    }
+
+    Cursor_ClearCustomSprite();
+}
+
+/* SetPointer(window, pointer, height, width, xOffset, yOffset)
+ * A0, A1, D0, D1, D2, D3 */
+static void intuition_SetPointer(void)
+{
+    uint32_t pointer = m68k_get_reg(NULL, M68K_REG_A1);
+    int16_t  height  = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int16_t  width   = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    int16_t  xoff    = (int16_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int16_t  yoff    = (int16_t)m68k_get_reg(NULL, M68K_REG_D3);
+
+    decode_pointer_sprite(pointer, height, width, xoff, yoff);
 }
 
 /* ClearPointer(window) — A0 */
@@ -1981,6 +4582,9 @@ static void intuition_SetWindowPointerA(void)
     uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
     int busy = 0;
     int got_busy = 0;
+    uint32_t wa_pointer = 0;
+    int got_pointer = 0;
+    int got_delay = 0;
 
     if (tag_list) {
         uint32_t p = tag_list;
@@ -1991,15 +4595,25 @@ static void intuition_SetWindowPointerA(void)
             if (tag == WA_BusyPointer) {
                 got_busy = 1;
                 busy = data ? 1 : 0;
+            } else if (tag == WA_Pointer) {
+                got_pointer = 1;
+                wa_pointer = data;
+            } else if (tag == WA_PointerDelay) {
+                got_delay = data ? 1 : 0;
             }
             p += 8;
         }
     }
 
-    if (got_busy)
+    (void)got_delay; /* delays are ignored for now; pointer changes immediately */
+
+    if (got_busy) {
         Cursor_SetBusy(busy);
-    else
+    } else if (got_pointer) {
+        set_pointer_from_wa_pointer(wa_pointer, 0, 0);
+    } else {
         Cursor_ClearCustomSprite();
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -2010,6 +4624,13 @@ static uint8_t g_intu_prefs[PREF_SIZE];
 static uint8_t g_intu_def_prefs[PREF_SIZE];
 static uint32_t g_gui_lock = 0xDEADBEEF;
 static int      g_prefs_inited = 0;
+
+static void apply_prefs(void);
+
+static uint16_t read_host_u16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
 
 static void write_host_u16(uint8_t *p, uint16_t v)
 {
@@ -2049,6 +4670,68 @@ static void init_prefs(void)
     g_intu_def_prefs[PREF_OFF_WBDEPTH]         = 2;
 
     memcpy(g_intu_prefs, g_intu_def_prefs, PREF_SIZE);
+
+    apply_prefs();
+}
+
+/* Convert a 12-bit Amiga colour word (O RGB) to 24-bit RGB. */
+static uint32_t amiga_color_to_rgb(uint16_t amiga)
+{
+    uint8_t r = ((amiga >> 8) & 0x0F) * 17;
+    uint8_t g = ((amiga >> 4) & 0x0F) * 17;
+    uint8_t b = (amiga        & 0x0F) * 17;
+    return FB_RGB(r, g, b);
+}
+
+/* Scale an RGB colour by num/den (integer, no floating point). */
+static uint32_t scale_rgb(uint32_t rgb, int num, int den)
+{
+    uint32_t r = (rgb >> 16) & 0xFF;
+    uint32_t g = (rgb >> 8)  & 0xFF;
+    uint32_t b = rgb         & 0xFF;
+    r = (r * num) / den; if (r > 255) r = 255;
+    g = (g * num) / den; if (g > 255) g = 255;
+    b = (b * num) / den; if (b > 255) b = 255;
+    return FB_RGB(r, g, b);
+}
+
+/* Globals holding the live values from SetPrefs. */
+static int  g_intu_font_height = 8;
+static int  g_intu_wb_width    = 640;
+static int  g_intu_wb_height   = 200;
+static int  g_intu_wb_depth    = 2;
+
+/* Apply the current internal Preferences snapshot to the running system.
+ * Colours are mapped to the Workbench palette, font/dimensions are stored
+ * for callers, and the desktop is repainted. */
+static void apply_prefs(void)
+{
+    uint16_t c0 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR0]);
+    uint16_t c1 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR1]);
+    uint16_t c2 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR2]);
+    uint16_t c3 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR3]);
+
+    WB_GREY       = amiga_color_to_rgb(c0);
+    WB_BLACK      = amiga_color_to_rgb(c1);
+    WB_WHITE      = amiga_color_to_rgb(c2);
+    WB_BLUE       = amiga_color_to_rgb(c3);
+    WB_DARK_GREY  = scale_rgb(WB_GREY, 1, 2);
+    WB_LIGHT_GREY = scale_rgb(WB_GREY, 3, 2);
+    WB_LIGHT_BLUE = scale_rgb(WB_BLUE, 3, 2);
+    WB_CREAM      = (WB_WHITE == FB_RGB(0,0,0)) ? FB_RGB(0xFF,0xFF,0xCC) : WB_WHITE;
+
+    g_intu_font_height = (int)g_intu_prefs[PREF_OFF_FONTHEIGHT];
+    if (g_intu_font_height <= 0) g_intu_font_height = 8;
+
+    g_intu_wb_width  = (int)read_host_u16(&g_intu_prefs[PREF_OFF_WBWIDTH]);
+    g_intu_wb_height = (int)read_host_u16(&g_intu_prefs[PREF_OFF_WBHEIGHT]);
+    g_intu_wb_depth  = (int)g_intu_prefs[PREF_OFF_WBDEPTH];
+    if (g_intu_wb_width  <= 0) g_intu_wb_width  = 640;
+    if (g_intu_wb_height <= 0) g_intu_wb_height = 200;
+    if (g_intu_wb_depth  <= 0) g_intu_wb_depth  = 2;
+
+    extern void WM_Redraw(void);
+    WM_Redraw();
 }
 
 static void copy_prefs_to_guest(uint32_t dst, uint32_t size)
@@ -2097,6 +4780,8 @@ static void intuition_SetPrefs(void)
         for (uint32_t i = 0; i < size; i++)
             g_intu_prefs[i] = mem_u8(buf + i);
     }
+
+    apply_prefs();
 }
 
 /* LockGUIPrefs(reserved) — D0; returns lock in D0 */
@@ -2110,6 +4795,541 @@ static void intuition_LockGUIPrefs(void)
 static void intuition_UnlockGUIPrefs(void)
 {
     (void)m68k_get_reg(NULL, M68K_REG_A0);
+}
+
+/* QueryOverscan(displayID, rect, oScanType) — D0, A0, D1; returns 0 in D0 */
+static void intuition_QueryOverscan(void)
+{
+    uint32_t display_id = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t rect_ptr   = m68k_get_reg(NULL, M68K_REG_A0);
+    int16_t  oscan_type = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    (void)display_id; (void)oscan_type;
+
+    if (rect_ptr) {
+        mem_w16(rect_ptr + 0, 0);
+        mem_w16(rect_ptr + 2, 0);
+        mem_w16(rect_ptr + 4, (int16_t)(g_fb.width  - 1));
+        mem_w16(rect_ptr + 6, (int16_t)(g_fb.height - 1));
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* GetDisplayInfoData(handle, buf, size, tagID, displayID)
+ * A0, A1, D0, D1, A2 — delegates to graphics.library. */
+static void intuition_GetDisplayInfoData(void)
+{
+    UAOS_Graphics_Dispatch(GFX_SLOT_GETDISPLAYINFODATA);
+}
+
+/* NextDisplayInfo(displayID) — D0; delegates to graphics.library. */
+static void intuition_NextDisplayInfo(void)
+{
+    UAOS_Graphics_Dispatch(GFX_SLOT_NEXTDISPLAYINFO);
+}
+
+/* -------------------------------------------------------------------------
+ * Missing utility functions
+ * ------------------------------------------------------------------------- */
+
+static char     g_default_pub_screen[32] = "Workbench";
+
+/* CurrentTime(seconds, micros) — A0, A1
+ * Returns the host wall-clock time in AmigaOS format:
+ * seconds since 1978-01-01 00:00:00 and microseconds. */
+static int current_time_is_leap(int y)
+{
+    return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+}
+
+static int32_t current_time_days_since_1978(uint16_t year, uint8_t month, uint8_t day)
+{
+    int32_t days = 0;
+    for (int y = 1978; y < year; y++)
+        days += current_time_is_leap(y) ? 366 : 365;
+    static const int mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    for (int m = 1; m < month; m++) {
+        days += mdays[m - 1];
+        if (m == 2 && current_time_is_leap(year)) days++;
+    }
+    days += day - 1;
+    return days;
+}
+
+static void intuition_CurrentTime(void)
+{
+    uint32_t sec_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t mic_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+
+    RtcDateTime dt = RTC_ReadDateTime();
+    int32_t days = current_time_days_since_1978(dt.year, dt.month, dt.day);
+    uint32_t seconds = (uint32_t)(days * 86400LL +
+                                  dt.hour * 3600LL +
+                                  dt.min   * 60LL +
+                                  dt.sec);
+    /* PIT ticks at 100 Hz give sub-second resolution: 1 tick = 10 ms. */
+    uint32_t micros = (uint32_t)((g_pit_ticks % 100) * 10000ULL);
+
+    if (sec_ptr) mem_w32(sec_ptr, seconds);
+    if (mic_ptr) mem_w32(mic_ptr, micros);
+}
+
+/* DoubleClick(sSeconds, sMicros, cSeconds, cMicros) — D0/D1/D2/D3; returns BOOL in D0 */
+static void intuition_DoubleClick(void)
+{
+    uint32_t s_sec = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t s_mic = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t c_sec = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t c_mic = m68k_get_reg(NULL, M68K_REG_D3);
+
+    uint32_t diff_sec  = (c_sec > s_sec) ? (c_sec - s_sec) : (s_sec - c_sec);
+    uint32_t diff_mic  = (c_mic > s_mic) ? (c_mic - s_mic) : (s_mic - c_mic);
+    uint32_t diff      = diff_sec * 1000000 + diff_mic;
+
+    m68k_set_reg(M68K_REG_D0, diff < 500000 ? 1 : 0);
+}
+
+/* ReportMouse(flag, window) — D0, A0 */
+static void intuition_ReportMouse(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t flag    = m68k_get_reg(NULL, M68K_REG_D0);
+    if (!win_ptr) return;
+
+    uint32_t flags = mem_u32(win_ptr + WIN_OFF_FLAGS);
+    if (flag)
+        flags |= WFLG_REPORTMOUSE;
+    else
+        flags &= ~WFLG_REPORTMOUSE;
+    mem_w32(win_ptr + WIN_OFF_FLAGS, flags);
+}
+
+/* DisplayBeep(screen) — A0
+ * Flash the active desktop background briefly.  The screen argument is
+ * ignored because UAOS maps all screens onto a single desktop backdrop. */
+static void intuition_DisplayBeep(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+
+    Desktop_DisplayBeepFlash(WB_WHITE);
+    WM_Redraw();
+    uint64_t until = g_pit_ticks + 5;  /* 50 ms flash at 100 Hz */
+    while (g_pit_ticks < until) __asm__ __volatile__("pause");
+    Desktop_DisplayBeepFlash(0);
+    WM_Redraw();
+}
+
+/* InitRequester(requester) — A0 */
+static void intuition_InitRequester(void)
+{
+    uint32_t req = m68k_get_reg(NULL, M68K_REG_A0);
+    if (req) {
+        for (int i = 0; i < REQ_SIZE; i++) mem_w8(req + i, 0);
+    }
+}
+
+/* EndRequest(requester, window) — A0, A1
+ * The requester window is already closed when Request() returns, so this
+ * only has to ensure no active requester is left behind. */
+static void intuition_EndRequest(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    if (g_req_slot.active) free_requester_internal();
+}
+
+/* Request(requester, window) — A0, A1; returns BOOL in D0
+ * Implements a synchronous modal requester.  Body text is read from
+ * req_Text and the caller's gadget list is used for button labels. */
+static void intuition_Request(void)
+{
+    uint32_t req = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t win = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)win;
+
+    if (!req) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    if (g_req_slot.active) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    char body[256] = "";
+    uint32_t text_ptr = mem_u32(req + REQ_OFF_REQTEXT);
+    if (text_ptr) {
+        /* Treat it as an IntuiText* first, then fall back to raw text. */
+        uint32_t itext = mem_u32(text_ptr + ITEXT_OFF_ITEXT);
+        if (itext) guest_str(body, itext, sizeof(body));
+        else       guest_str(body, text_ptr, sizeof(body));
+    }
+
+    const char *buttons[REQ_MAX_BUTTONS];
+    int num_buttons = 0;
+    char btn_labels[REQ_MAX_BUTTONS][32];
+
+    uint32_t gad = mem_u32(req + REQ_OFF_REQGADGETS);
+    while (gad && num_buttons < REQ_MAX_BUTTONS) {
+        btn_labels[num_buttons][0] = '\0';
+        uint32_t label = mem_u32(gad + GAD_OFF_GADGETTEXT);
+        if (label) {
+            uint32_t label_text = mem_u32(label + ITEXT_OFF_ITEXT);
+            if (label_text)
+                guest_str(btn_labels[num_buttons], label_text, sizeof(btn_labels[num_buttons]));
+        }
+        if (!btn_labels[num_buttons][0])
+            local_str_copy(btn_labels[num_buttons], "OK", sizeof(btn_labels[num_buttons]));
+        buttons[num_buttons] = btn_labels[num_buttons];
+        num_buttons++;
+        gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+    }
+    if (num_buttons == 0) {
+        local_str_copy(btn_labels[0], "OK", sizeof(btn_labels[0]));
+        buttons[0] = btn_labels[0];
+        num_buttons = 1;
+    }
+
+    uint32_t req_win = build_requester_internal(win, "Request", body, num_buttons, buttons,
+                                               (int16_t)mem_u16(req + REQ_OFF_WIDTH),
+                                               (int16_t)mem_u16(req + REQ_OFF_HEIGHT));
+    if (!req_win) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    int result = wait_requester_internal();
+    free_requester_internal();
+
+    /* Rightmost gadget is FALSE (0), others are TRUE (1). */
+    m68k_set_reg(M68K_REG_D0, result == (num_buttons - 1) ? 0 : 1);
+}
+
+/* ViewAddress() — returns View in D0 */
+static void intuition_ViewAddress(void)
+{
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* ViewPortAddress(window) — A0; returns ViewPort* in D0 */
+static void intuition_ViewPortAddress(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!win_ptr) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t screen = mem_u32(win_ptr + WIN_OFF_WSCREEN);
+    if (screen) {
+        m68k_set_reg(M68K_REG_D0, screen + SCR_OFF_VIEWPORT);
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+    }
+}
+
+/* GetScreenData(buffer, size, type, screen) — A0, D0, D1, A1
+ *
+ * Type is an AmigaOS screen type flag:
+ *   CUSTOMSCREEN (0)     -> use the supplied Screen pointer
+ *   WBENCHSCREEN (1)     -> copy from the Workbench screen
+ *   PUBLICSCREEN (2)     -> copy from the default public screen
+ * Other types zero the buffer. */
+static void intuition_GetScreenData(void)
+{
+    uint32_t buf   = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size  = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t type  = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t screen = m68k_get_reg(NULL, M68K_REG_A1);
+
+    if (!buf) return;
+    if (size > 256) size = 256;
+
+    uint32_t src = 0;
+    switch (type) {
+        case CUSTOMSCREEN:
+            src = screen;
+            break;
+        case WBENCHSCREEN:
+            src = find_pub_screen_by_name("Workbench");
+            break;
+        case PUBLICSCREEN:
+            src = get_default_pub_screen();
+            break;
+        default:
+            src = 0;
+            break;
+    }
+
+    if (src) {
+        for (uint32_t i = 0; i < size; i++)
+            mem_w8(buf + i, mem_u8(src + i));
+    } else {
+        memset(g_ram + buf, 0, size);
+    }
+}
+
+/* NextPubScreen(screen, namebuf) — A0, A1; returns next Screen* in D0.
+ * Walks the public-screen list in order.  A0 = NULL starts at the first
+ * public screen; A0 = a previously returned screen returns the one after it. */
+static void intuition_NextPubScreen(void)
+{
+    uint32_t screen = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t namebuf = m68k_get_reg(NULL, M68K_REG_A1);
+
+    int start = 0;
+    if (screen) {
+        ScreenSlot *slot = find_screen_slot(screen);
+        if (!slot) {
+            m68k_set_reg(M68K_REG_D0, 0);
+            return;
+        }
+        start = (int)(slot - g_intu_screens) + 1;
+    }
+
+    uint32_t next = 0;
+    const char *name = NULL;
+    for (int i = start; i < MAX_INTUITION_SCREENS; i++) {
+        if (g_intu_screens[i].active && g_intu_screens[i].pub_name[0]) {
+            next = g_intu_screens[i].guest_screen;
+            name = g_intu_screens[i].pub_name;
+            break;
+        }
+    }
+
+    if (namebuf && name) {
+        int i = 0;
+        while (i < 64 && name[i]) {
+            mem_w8(namebuf + i, (uint8_t)name[i]);
+            i++;
+        }
+        mem_w8(namebuf + i, 0);
+    }
+
+    m68k_set_reg(M68K_REG_D0, next);
+}
+
+/* SetDefaultPubScreen(name) — A0 */
+static void intuition_SetDefaultPubScreen(void)
+{
+    uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    if (name_ptr) {
+        guest_str(g_default_pub_screen, name_ptr, sizeof(g_default_pub_screen));
+    }
+}
+
+/* GetDefaultPubScreen(nameBuffer) — A0; returns Screen* in D0 */
+static void intuition_GetDefaultPubScreen(void)
+{
+    uint32_t namebuf = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t screen = get_default_pub_screen();
+    const char *name = "Workbench";
+
+    if (screen) {
+        ScreenSlot *slot = find_screen_slot(screen);
+        if (slot && slot->pub_name[0]) name = slot->pub_name;
+    }
+
+    if (namebuf) {
+        int i = 0;
+        while (i < 31 && name[i]) {
+            mem_w8(namebuf + i, (uint8_t)name[i]);
+            i++;
+        }
+        mem_w8(namebuf + i, 0);
+    }
+
+    m68k_set_reg(M68K_REG_D0, screen);
+}
+
+/* PubScreenStatus(screen, statusFlags) — A0, D0
+ * statusFlags: PS_OPENED, PS_PUBLIC, PS_PRIVATE, PS_NOTIFY. */
+#define PS_OPENED  1
+#define PS_PUBLIC  2
+#define PS_PRIVATE 4
+#define PS_NOTIFY  8
+
+static void intuition_PubScreenStatus(void)
+{
+    uint32_t screen = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t status = m68k_get_reg(NULL, M68K_REG_D0);
+    int result = 0;
+
+    if (screen) {
+        ScreenSlot *slot = find_screen_slot(screen);
+        if (slot) {
+            if (status & PS_PUBLIC) {
+                if (slot->pub_name[0] == '\0') {
+                    uint32_t title_ptr = mem_u32(screen + SCR_OFF_TITLE);
+                    if (title_ptr) {
+                        guest_str(slot->pub_name, title_ptr, sizeof(slot->pub_name));
+                    }
+                    if (slot->pub_name[0] == '\0') {
+                        const char *defname = "PubScreen";
+                        int dn = 0;
+                        while (dn < (int)sizeof(slot->pub_name) - 1 && defname[dn]) {
+                            slot->pub_name[dn] = defname[dn];
+                            dn++;
+                        }
+                        slot->pub_name[dn] = '\0';
+                    }
+                }
+                signal_pub_screen(slot);
+            } else if (status & PS_PRIVATE) {
+                slot->pub_name[0] = '\0';
+                signal_pub_screen(slot);
+            } else if (status & PS_NOTIFY) {
+                signal_pub_screen(slot);
+            }
+            result = 1;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, result ? 1 : 0);
+}
+
+/* SysReqHandler(window, idcmpPtr, waitInput) — A0, A1, D0
+ * Returns the IDCMP class of the next requester message in the window's
+ * UserPort.  If waitInput is non-zero, polls briefly for a message to arrive.
+ * The caller is responsible for retrieving and freeing the actual message. */
+static void intuition_SysReqHandler(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t idcmp_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    int wait_input = (int)m68k_get_reg(NULL, M68K_REG_D0);
+
+    if (!win_ptr) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    uint32_t user_port = mem_u32(win_ptr + WIN_OFF_USERPORT);
+    if (!user_port) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    uint32_t list = user_port + MP_OFF_MSGLIST;
+    uint32_t msg = 0;
+
+    if (wait_input) {
+        for (int i = 0; i < 1000 && !msg; i++) {
+            uint32_t head = mem_u32(list + LH_OFF_HEAD);
+            uint32_t tail = list + LH_OFF_TAIL;
+            if (head != tail) msg = guest_list_remove_head(list);
+            if (!msg) {
+                Task_Yield();
+            }
+        }
+    } else {
+        uint32_t head = mem_u32(list + LH_OFF_HEAD);
+        uint32_t tail = list + LH_OFF_TAIL;
+        if (head != tail) msg = guest_list_remove_head(list);
+    }
+
+    uint32_t result = 0;
+    if (msg) {
+        result = mem_u32(msg + IM_OFF_CLASS);
+        if (idcmp_ptr) mem_w32(idcmp_ptr, result);
+        intu_free(msg);
+    }
+    m68k_set_reg(M68K_REG_D0, result);
+}
+
+/* LockIBase(dontknow) — D0; returns lock in D0
+ * A real recursive-style lock: a non-zero counter is returned and incremented.
+ * The caller passes the previous value to UnlockIBase. */
+static uint32_t g_ibase_lock_count = 0;
+
+static void intuition_LockIBase(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    g_ibase_lock_count++;
+    m68k_set_reg(M68K_REG_D0, g_ibase_lock_count);
+}
+
+/* UnlockIBase(ibLock) — A0 */
+static void intuition_UnlockIBase(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    if (g_ibase_lock_count > 0) g_ibase_lock_count--;
+}
+
+/* ShowWindow(window) — A0 */
+static void intuition_ShowWindow(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (slot) WM_RaiseWindow(slot->wm_handle);
+}
+
+/* HideWindow(window) — A0 */
+static void intuition_HideWindow(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (slot) WM_LowerWindow(slot->wm_handle);
+}
+
+/* WindowLimits(window, widthMin, heightMin, widthMax, heightMax)
+ * A0, D0, D1, D2, D3; returns BOOL in D0 */
+static void intuition_WindowLimits(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    int16_t  min_w   = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int16_t  min_h   = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    int16_t  max_w   = (int16_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int16_t  max_h   = (int16_t)m68k_get_reg(NULL, M68K_REG_D3);
+
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (!slot) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    slot->min_w = min_w;
+    slot->min_h = min_h;
+    slot->max_w = max_w;
+    slot->max_h = max_h;
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* ChangeWindowBox(window, left, top, width, height)
+ * A0, D0, D1, D2, D3 */
+static void intuition_ChangeWindowBox(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    int16_t  left    = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int16_t  top     = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    int16_t  width   = (int16_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int16_t  height  = (int16_t)m68k_get_reg(NULL, M68K_REG_D3);
+
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (!slot) return;
+
+    if (width  < 64) width  = 64;
+    if (height < 32) height = 32;
+
+    mem_w16(win_ptr + WIN_OFF_LEFTEDGE, left);
+    mem_w16(win_ptr + WIN_OFF_TOPEDGE,  top);
+    mem_w16(win_ptr + WIN_OFF_WIDTH,    width);
+    mem_w16(win_ptr + WIN_OFF_HEIGHT,   height);
+
+    WM_MoveWindow(slot->wm_handle, left, top);
+    WM_RepaintWindow(slot->wm_handle);
+}
+
+/* GetScreenDrawInfo(screen) — A0; returns DrawInfo* in D0
+ * Builds a real DrawInfo that mirrors the screen's font and pens. */
+static void intuition_GetScreenDrawInfo(void)
+{
+    uint32_t screen = m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, alloc_screen_draw_info(screen));
+}
+
+/* FreeScreenDrawInfo(screen, drawInfo) — A0, A1 */
+static void intuition_FreeScreenDrawInfo(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t dri = m68k_get_reg(NULL, M68K_REG_A1);
+    intu_free(dri);
 }
 
 /* =========================================================================
@@ -2138,7 +5358,7 @@ static void *intuition_funcs[] = {
     intuition_AutoRequest,
     intuition_BuildSysRequest,
     intuition_FreeSysRequest,
-    intuition_EasyRequestArgs,
+    intuition_EasyRequest,
     intuition_OpenScreen,
     intuition_CloseScreen,
     intuition_MoveScreen,
@@ -2162,6 +5382,57 @@ static void *intuition_funcs[] = {
     intuition_SetPrefs,
     intuition_LockGUIPrefs,
     intuition_UnlockGUIPrefs,
+    intuition_QueryOverscan,
+    intuition_GetDisplayInfoData,
+    intuition_NextDisplayInfo,
+    intuition_CurrentTime,
+    intuition_DoubleClick,
+    intuition_ReportMouse,
+    intuition_DisplayBeep,
+    intuition_InitRequester,
+    intuition_EndRequest,
+    intuition_Request,
+    intuition_ViewAddress,
+    intuition_ViewPortAddress,
+    intuition_GetScreenData,
+    intuition_NextPubScreen,
+    intuition_SetDefaultPubScreen,
+    intuition_LockIBase,
+    intuition_UnlockIBase,
+    intuition_ShowWindow,
+    intuition_HideWindow,
+    intuition_WindowLimits,
+    intuition_ChangeWindowBox,
+    intuition_GetScreenDrawInfo,
+    intuition_FreeScreenDrawInfo,
+    intuition_DisplayAlert,
+    intuition_TimedDisplayAlert,
+    intuition_ScreenDepth,
+    intuition_ScreenPosition,
+    intuition_AddGadget,
+    intuition_AddGList,
+    intuition_RemoveGadget,
+    intuition_RemoveGList,
+    intuition_RefreshGList,
+    intuition_OnGadget,
+    intuition_OffGadget,
+    intuition_ModifyProp,
+    intuition_NewModifyProp,
+    intuition_ActivateGadget,
+    intuition_SetWindowAttrsA,
+    intuition_GetWindowAttrsA,
+    intuition_SetScreenAttrsA,
+    intuition_GetScreenAttrsA,
+    intuition_GetVisualInfoA,
+    intuition_FreeVisualInfo,
+    intuition_BeginRefresh,
+    intuition_EndRefresh,
+    intuition_RefreshGadgets,
+    intuition_OnMenu,
+    intuition_OffMenu,
+    intuition_SysReqHandler,
+    intuition_PubScreenStatus,
+    intuition_GetDefaultPubScreen,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)

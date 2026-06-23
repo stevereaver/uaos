@@ -16,6 +16,37 @@
 FbState g_fb = { 0, 0, 0, 0, 0, 0 };
 
 /* =========================================================================
+ * Workbench 3.x palette — runtime variables
+ * ========================================================================= */
+
+uint32_t WB_GREY       = 0;
+uint32_t WB_LIGHT_GREY = 0;
+uint32_t WB_DARK_GREY  = 0;
+uint32_t WB_BLACK      = 0;
+uint32_t WB_WHITE      = 0;
+uint32_t WB_BLUE       = 0;
+uint32_t WB_LIGHT_BLUE = 0;
+uint32_t WB_ORANGE     = 0;
+uint32_t WB_CREAM      = 0;
+uint32_t WB_RED        = 0;
+uint32_t WB_GREEN      = 0;
+
+void WB_InitPalette(void)
+{
+    WB_GREY       = FB_RGB(0xAA,0xAA,0xAA);
+    WB_LIGHT_GREY = FB_RGB(0xCC,0xCC,0xCC);
+    WB_DARK_GREY  = FB_RGB(0x55,0x55,0x55);
+    WB_BLACK      = FB_RGB(0x00,0x00,0x00);
+    WB_WHITE      = FB_RGB(0xFF,0xFF,0xFF);
+    WB_BLUE       = FB_RGB(0x00,0x55,0xAA);
+    WB_LIGHT_BLUE = FB_RGB(0x00,0x88,0xFF);
+    WB_ORANGE     = FB_RGB(0xFF,0x88,0x00);
+    WB_CREAM      = FB_RGB(0xFF,0xFF,0xCC);
+    WB_RED        = FB_RGB(0xCC,0x00,0x00);
+    WB_GREEN      = FB_RGB(0x00,0xAA,0x00);
+}
+
+/* =========================================================================
  * Back buffer for flicker-free double buffering
  * Max 1280×1024 @ 32bpp = 5 MB in BSS
  * ========================================================================= */
@@ -136,6 +167,8 @@ void FB_Init(uint32_t mb2_info_phys)
         uint32_t aligned = (tag->size + 7) & ~7U;
         p += aligned ? aligned : 8;
     }
+
+    WB_InitPalette();
 }
 
 /* =========================================================================

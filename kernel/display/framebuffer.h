@@ -12,18 +12,21 @@
 /* RGB colour helpers -------------------------------------------------------- */
 #define FB_RGB(r,g,b)   (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 
-/* Workbench 3.x palette */
-#define WB_GREY         FB_RGB(0xAA,0xAA,0xAA)   /* backdrop grey            */
-#define WB_LIGHT_GREY   FB_RGB(0xCC,0xCC,0xCC)   /* scrollbar thumb          */
-#define WB_DARK_GREY    FB_RGB(0x55,0x55,0x55)   /* shadow / borders         */
-#define WB_BLACK        FB_RGB(0x00,0x00,0x00)
-#define WB_WHITE        FB_RGB(0xFF,0xFF,0xFF)
-#define WB_BLUE         FB_RGB(0x00,0x55,0xAA)   /* title bar / selection    */
-#define WB_LIGHT_BLUE   FB_RGB(0x00,0x88,0xFF)   /* active title bar         */
-#define WB_ORANGE       FB_RGB(0xFF,0x88,0x00)   /* disk icon colour         */
-#define WB_CREAM        FB_RGB(0xFF,0xFF,0xCC)   /* text on dark             */
-#define WB_RED          FB_RGB(0xCC,0x00,0x00)   /* error / alert            */
-#define WB_GREEN        FB_RGB(0x00,0xAA,0x00)   /* success                  */
+/* Workbench 3.x palette — runtime variables so SetPrefs can change them */
+extern uint32_t WB_GREY;         /* backdrop grey            */
+extern uint32_t WB_LIGHT_GREY;   /* scrollbar thumb          */
+extern uint32_t WB_DARK_GREY;    /* shadow / borders         */
+extern uint32_t WB_BLACK;
+extern uint32_t WB_WHITE;
+extern uint32_t WB_BLUE;         /* title bar / selection    */
+extern uint32_t WB_LIGHT_BLUE;   /* active title bar         */
+extern uint32_t WB_ORANGE;       /* disk icon colour         */
+extern uint32_t WB_CREAM;        /* text on dark             */
+extern uint32_t WB_RED;          /* error / alert            */
+extern uint32_t WB_GREEN;        /* success                  */
+
+/* (Re-)initialise the Workbench palette to the default values. */
+void WB_InitPalette(void);
 
 /* Framebuffer state --------------------------------------------------------- */
 typedef struct {

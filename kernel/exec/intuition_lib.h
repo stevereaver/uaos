@@ -106,23 +106,28 @@ typedef struct {
 #define WIN_OFF_DETAILPEN   98
 #define WIN_OFF_BLOCKPEN    99
 
-/* Window flags */
+/* Window flags (AmigaOS 3.x compatible) */
 #define WFLG_CLOSEGADGET     0x0001
 #define WFLG_DRAGBAR         0x0002
 #define WFLG_DEPTHGADGET     0x0004
 #define WFLG_SIZEGADGET      0x0008
 #define WFLG_SIZEBRIGHT      0x0010
 #define WFLG_SIZEBBOTTOM     0x0020
+#define WFLG_REFRESHBITS     0x00C0
+#define WFLG_SMART_REFRESH   0x0000
 #define WFLG_SIMPLE_REFRESH  0x0040
-#define WFLG_SMART_REFRESH   0x0080
-#define WFLG_ACTIVATE        0x0100
-#define WFLG_GIMMEZEROZERO   0x0200
-#define WFLG_NOCAREREFRESH   0x0400
-#define WFLG_NW_EXTENDED     0x0800
-#define WFLG_NEWLOOKMENUS    0x1000
-#define WFLG_BORDERLESS      0x2000
-#define WFLG_BACKDROP        0x4000
-#define WFLG_REPORTMOUSE     0x8000
+#define WFLG_SUPER_BITMAP    0x0080
+#define WFLG_OTHER_REFRESH   0x00C0
+#define WFLG_BACKDROP        0x0100
+#define WFLG_REPORTMOUSE     0x0200
+#define WFLG_GIMMEZEROZERO   0x0400
+#define WFLG_BORDERLESS      0x0800
+#define WFLG_ACTIVATE        0x1000
+#define WFLG_NOCAREREFRESH   0x2000
+#define WFLG_NW_EXTENDED     0x4000
+#define WFLG_NEWLOOKMENUS    0x8000
+#define WFLG_RMBTRAP         0x00010000
+#define WFLG_WBENCHWINDOW    0x02000000
 
 /* IDCMP flags */
 #define IDCMP_SIZEVERIFY     0x00000001
@@ -216,9 +221,65 @@ typedef struct {
 #define GFLG_SELECTED      0x0040
 #define GFLG_GADGETUP      0x0001
 #define GFLG_GADGETDOWN    0x0002
+#define GFLG_DISABLED      0x0080
+#define GFLG_RELBOTTOM     0x0008
+#define GFLG_RIGHTBORDER   0x0010
+#define GFLG_LEFTBORDER    0x0020
+#define GFLG_TOPBORDER     0x0100
+#define GFLG_BOTTOMBORDER  0x0200
+#define GFLG_STRINGEXTEND  0x0400
+#define GFLG_IMAGEDISABLE  0x0800
+#define GFLG_LABELITEXT    0x1000
+#define GFLG_LABELIMAGE    0x4000
+#define GFLG_LABELSTRING   0x6000
 
 #define GACT_IMMEDIATE     0x0001
 #define GACT_RELVERIFY     0x0002
+#define GACT_TOGGLESELECT  0x0004
+#define GACT_INTUITICKS    0x0040
+#define GACT_STRINGLEFT    0x0000
+#define GACT_STRINGRIGHT   0x0008
+#define GACT_STRINGCENTER  0x0010
+#define GACT_STRINGLONGEST 0x0018
+#define GACT_RELTOP        0x0020
+
+/* AmigaOS PropInfo structure offsets */
+#define PROP_OFF_FLAGS       0
+#define PROP_OFF_HORIZPOT    2
+#define PROP_OFF_VERTPOT     4
+#define PROP_OFF_HORIZBODY   6
+#define PROP_OFF_VERTBODY    8
+#define PROP_OFF_WIDTH       10
+#define PROP_OFF_HEIGHT      12
+#define PROP_OFF_HORIZSIG    14
+#define PROP_OFF_VERTSIG     16
+#define PROP_SIZE            18
+
+/* AmigaOS StringInfo structure offsets (minimal) */
+#define SI_OFF_BUFFER        0
+#define SI_OFF_UNDOBUFFER    4
+#define SI_OFF_BUFFERPOS      8
+#define SI_OFF_MAXCHARS      10
+#define SI_OFF_DISPPOS       12
+#define SI_OFF_NUMCHARS      16
+#define SI_SIZE              20
+
+/* UAOS simple ListView gadget extension (stored in SpecialInfo) */
+#define LV_OFF_ITEMS         0
+#define LV_OFF_COUNT         4
+#define LV_OFF_SELECTED      8
+#define LV_OFF_VISIBLE      12
+#define LV_OFF_TOP          16
+#define LV_SIZE             20
+
+#define PROP_FLAGS_AUTOKNOB  0x0001
+#define PROP_FLAGS_FREEVERT  0x0002
+#define PROP_FLAGS_FREEHORIZ  0x0004
+#define PROP_FLAGS_PROPBORDERLESS 0x0008
+#define PROP_FLAGS_KNOBHIT   0x0100
+#define PROP_FLAGS_DRAWRELX  0x0200
+#define PROP_FLAGS_DRAWRELY  0x0400
+
 
 #define GTYP_SYSGADGET     0x8000
 #define GTYP_SIZER          0x0000
@@ -227,6 +288,11 @@ typedef struct {
 #define GTYP_WCLOSE         0x0004
 #define GTYP_WZOOM          0x0008
 #define GTYP_BOOLGADGET     0x0001
+#define GTYP_PROPGADGET     0x0002
+#define GTYP_INTGADGET      0x0003
+#define GTYP_STRGADGET      0x0004
+#define GTYP_CUSTOMGADGET   0x0005
+#define GTYP_LISTVIEW       0x0006   /* UAOS simple listview as custom gadget subtype */
 
 #define SYSGAD_CLOSE        1
 #define SYSGAD_DRAG         2
@@ -279,6 +345,28 @@ typedef struct {
 #define ITEMNUM(n)  (((n) >> 5) & 0x003F)
 #define SUBNUM(n)   (((n) >> 11) & 0x001F)
 
+/* MenuItem flags */
+#define ITEMTEXT     0x0001
+#define ITEMENABLED  0x0002
+#define COMMSEQ      0x0004
+#define CHECKIT      0x0008
+#define MENUTOGGLE   0x0010
+#define ITEMEXTENDED 0x0020
+/* -------------------------------------------------------------------------
+ * AmigaOS Requester structure offsets (packed, partial)
+ * ------------------------------------------------------------------------- */
+#define REQ_OFF_OLDERREQUEST  0
+#define REQ_OFF_REQTITLE      4
+#define REQ_OFF_REQTEXT       8
+#define REQ_OFF_LEFTEDGE     12
+#define REQ_OFF_TOPEDGE      14
+#define REQ_OFF_WIDTH        16
+#define REQ_OFF_HEIGHT       18
+#define REQ_OFF_FLAGS        20
+#define REQ_OFF_REQGADGET    22
+#define REQ_OFF_REQGADGETS   24
+#define REQ_SIZE             40
+
 /* -------------------------------------------------------------------------
  * AmigaOS NewScreen structure offsets
  * ------------------------------------------------------------------------- */
@@ -321,7 +409,28 @@ typedef struct {
 #define SCR_OFF_WBORBOTTOM  40
 #define SCR_OFF_FONT         42
 #define SCR_OFF_VIEWPORT     46
+#define SCR_OFF_DETAILPEN    70
+#define SCR_OFF_BLOCKPEN     71
+#define SCR_OFF_RASTPORT     80
+#define SCR_OFF_DEPTH        84
+#define SCR_OFF_BITMA        88
+#define SCR_OFF_DISPLAYID    92
+#define SCR_OFF_COLORS       96
 #define SCR_SIZE            256
+
+/* -------------------------------------------------------------------------
+ * AmigaOS DrawInfo structure offsets (packed, partial)
+ * ------------------------------------------------------------------------- */
+#define DRINFO_OFF_VERSION   0
+#define DRINFO_OFF_NUMPENS   2
+#define DRINFO_OFF_PENS      4
+#define DRINFO_PEN_COUNT    16
+#define DRINFO_OFF_FONT     36
+#define DRINFO_OFF_DEPTH    40
+#define DRINFO_OFF_RESX     42
+#define DRINFO_OFF_RESY     44
+#define DRINFO_OFF_FLAGS    48
+#define DRINFO_SIZE         64
 
 /* -------------------------------------------------------------------------
  * Screen attribute tags (SA_*)
@@ -335,22 +444,46 @@ typedef struct {
 #define SA_DetailPen     (SA_Dummy + 0x0006)
 #define SA_BlockPen      (SA_Dummy + 0x0007)
 #define SA_Title         (SA_Dummy + 0x0008)
-#define SA_BitMap        (SA_Dummy + 0x0009)
-#define SA_Behind        (SA_Dummy + 0x000A)
-#define SA_Quiet         (SA_Dummy + 0x000B)
-#define SA_ShowTitle     (SA_Dummy + 0x000C)
+#define SA_Colors        (SA_Dummy + 0x0009)
+#define SA_ErrorCode     (SA_Dummy + 0x000A)
+#define SA_Font          (SA_Dummy + 0x000B)
+#define SA_SysFont       (SA_Dummy + 0x000C)
 #define SA_Type          (SA_Dummy + 0x000D)
-#define SA_AutoScroll    (SA_Dummy + 0x000E)
+#define SA_BitMap        (SA_Dummy + 0x000E)
 #define SA_PubName       (SA_Dummy + 0x000F)
-#define SA_Font          (SA_Dummy + 0x001B)
+#define SA_PubSig        (SA_Dummy + 0x0010)
+#define SA_PubTask       (SA_Dummy + 0x0011)
+#define SA_DisplayID     (SA_Dummy + 0x0012)
+#define SA_DClip         (SA_Dummy + 0x0013)
+#define SA_Overscan      (SA_Dummy + 0x0014)
+#define SA_Obsolete1     (SA_Dummy + 0x0015)
+#define SA_ShowTitle     (SA_Dummy + 0x0016)
+#define SA_Behind        (SA_Dummy + 0x0017)
+#define SA_Quiet         (SA_Dummy + 0x0018)
+#define SA_AutoScroll    (SA_Dummy + 0x0019)
+#define SA_Pens          (SA_Dummy + 0x001A)
+#define SA_FullPalette   (SA_Dummy + 0x001B)
+#define SA_ColorMapEntries (SA_Dummy + 0x001C)
+#define SA_Parent        (SA_Dummy + 0x001D)
+#define SA_Draggable     (SA_Dummy + 0x001E)
+#define SA_Exclusive     (SA_Dummy + 0x001F)
+#define SA_SharePens     (SA_Dummy + 0x0020)
+#define SA_BackFill      (SA_Dummy + 0x0021)
+#define SA_Interleaved   (SA_Dummy + 0x0022)
+#define SA_Colors32      (SA_Dummy + 0x0023)
+#define SA_LikeWorkbench (SA_Dummy + 0x0027)
+#define SA_Reserved      (SA_Dummy + 0x0028)
+#define SA_MinimizeISG   (SA_Dummy + 0x0029)
 
 /* Screen type / flag bits */
 #define CUSTOMSCREEN     0x0000
 #define WBENCHSCREEN     0x0001
 #define PUBLICSCREEN     0x0002
+#define CUSTOMBITMAP     0x0008
 #define SHOWTITLE        0x0010
 #define BEHIND           0x0020
 #define QUIET            0x0040
+#define AUTOSCROLL       0x0080
 
 /* -------------------------------------------------------------------------
  * TagItem for OpenWindowTagList() tag parsing
@@ -375,16 +508,80 @@ typedef struct {
 #define WA_Gadgets     (WA_Dummy + 0x09)
 #define WA_Checkmark   (WA_Dummy + 0x0A)
 #define WA_Title       (WA_Dummy + 0x0B)
+#define WA_ScreenTitle (WA_Dummy + 0x0C)
+#define WA_CustomScreen (WA_Dummy + 0x0D)
+#define WA_SuperBitMap (WA_Dummy + 0x0E)
 #define WA_MinWidth    (WA_Dummy + 0x0F)
 #define WA_MinHeight   (WA_Dummy + 0x10)
 #define WA_MaxWidth    (WA_Dummy + 0x11)
 #define WA_MaxHeight   (WA_Dummy + 0x12)
+#define WA_InnerWidth  (WA_Dummy + 0x13)
+#define WA_InnerHeight (WA_Dummy + 0x14)
+#define WA_PubScreenName   (WA_Dummy + 0x15)
 #define WA_PubScreen       (WA_Dummy + 0x16)
-#define WA_PubScreenName   (WA_Dummy + 0x17)
-#define WA_PubScreenFallBack (WA_Dummy + 0x18)
-#define WA_Pointer         (WA_Dummy + 0x34)
-#define WA_BusyPointer     (WA_Dummy + 0x35)
-#define WA_PointerDelay    (WA_Dummy + 0x36)
+#define WA_PubScreenFallBack (WA_Dummy + 0x17)
+#define WA_WindowName  (WA_Dummy + 0x18)
+#define WA_Colors      (WA_Dummy + 0x19)
+#define WA_Zoom        (WA_Dummy + 0x1A)
+#define WA_MouseQueue  (WA_Dummy + 0x1B)
+#define WA_BackFill    (WA_Dummy + 0x1C)
+#define WA_RptQueue    (WA_Dummy + 0x1D)
+#define WA_SizeGadget  (WA_Dummy + 0x1E)
+#define WA_DragBar     (WA_Dummy + 0x1F)
+#define WA_DepthGadget (WA_Dummy + 0x20)
+#define WA_CloseGadget (WA_Dummy + 0x21)
+#define WA_Backdrop    (WA_Dummy + 0x22)
+#define WA_ReportMouse (WA_Dummy + 0x23)
+#define WA_NoCareRefresh (WA_Dummy + 0x24)
+#define WA_Borderless  (WA_Dummy + 0x25)
+#define WA_Activate    (WA_Dummy + 0x26)
+#define WA_RMBTrap     (WA_Dummy + 0x27)
+#define WA_WBenchWindow (WA_Dummy + 0x28)
+#define WA_SimpleRefresh (WA_Dummy + 0x29)
+#define WA_SmartRefresh (WA_Dummy + 0x2A)
+#define WA_SizeBRight  (WA_Dummy + 0x2B)
+#define WA_SizeBBottom (WA_Dummy + 0x2C)
+#define WA_AutoAdjust  (WA_Dummy + 0x2D)
+#define WA_GimmeZeroZero (WA_Dummy + 0x2E)
+#define WA_MenuHelp    (WA_Dummy + 0x2F)
+#define WA_NewLookMenus (WA_Dummy + 0x30)
+#define WA_AmigaKey    (WA_Dummy + 0x31)
+#define WA_NotifyDepth (WA_Dummy + 0x32)
+#define WA_Pointer     (WA_Dummy + 0x34)
+#define WA_BusyPointer (WA_Dummy + 0x35)
+#define WA_PointerDelay (WA_Dummy + 0x36)
+#define WA_TabletMessages (WA_Dummy + 0x37)
+#define WA_HelpGroup   (WA_Dummy + 0x38)
+#define WA_HelpGroupWindow (WA_Dummy + 0x39)
+
+/* -------------------------------------------------------------------------
+ * pointerclass attributes (used for WA_Pointer custom pointer objects)
+ * ------------------------------------------------------------------------- */
+#define POINTERA_Dummy       (TAG_USER + 0x39000)
+#define POINTERA_BitMap      (POINTERA_Dummy + 0x01)
+#define POINTERA_XOffset     (POINTERA_Dummy + 0x02)
+#define POINTERA_YOffset     (POINTERA_Dummy + 0x03)
+#define POINTERA_WordWidth   (POINTERA_Dummy + 0x04)
+#define POINTERA_XResolution (POINTERA_Dummy + 0x05)
+#define POINTERA_YResolution (POINTERA_Dummy + 0x06)
+
+/* -------------------------------------------------------------------------
+ * Alert types
+ * ------------------------------------------------------------------------- */
+#define RECOVERY_ALERT 0x00000001
+#define DEADEND_ALERT  0x80000000
+
+/* -------------------------------------------------------------------------
+ * Screen depth/position flags
+ * ------------------------------------------------------------------------- */
+#define SDEPTH_TOFRONT  0
+#define SDEPTH_TOBACK   1
+#define SDEPTH_INFAMILY 2
+
+#define SPOS_RELATIVE    0
+#define SPOS_ABSOLUTE    1
+#define SPOS_MAKEVISIBLE 2
+#define SPOS_FORCEDRAG   4
 
 /* -------------------------------------------------------------------------
  * AmigaOS Preferences structure offsets

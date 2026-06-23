@@ -103,6 +103,11 @@ static void current_time_str(char *buf)
 static char g_screen_title[64] = "";
 static int  g_show_screen_title = 0;
 
+/* DisplayBeep flash state */
+static uint32_t g_beep_flash_color = 0;
+static uint64_t g_beep_flash_until = 0;
+extern volatile uint64_t g_pit_ticks;
+
 /* Forward declarations */
 extern void WM_Redraw(void);
 
@@ -308,12 +313,23 @@ static const MenuItem * const g_menus[] = {
 #define NUM_MENUS (sizeof(g_menus) / sizeof(g_menus[0]))
 
 /* Open menu state */
-static int      g_menu_index = -1;  /* -1 = none, 0 = Workbench, 1 = Window, 2 = Icons, 3 = Tools, 4 = Shell, 5 = UAOS */
-static int      g_menu_hover = -1;  /* item index under pointer, -1 = none */
-static int      g_menu_x     = 0;   /* dropdown screen x */
-static int      g_menu_y     = 0;   /* dropdown screen y */
-static int      g_menu_w     = 0;   /* dropdown width */
-static int      g_menu_h     = 0;   /* dropdown height */
+static int      g_menu_index = -1;   /* -1 = none */
+static int      g_menu_hover = -1;   /* item index under pointer, -1 = none */
+static int      g_menu_x     = 0;    /* dropdown screen x */
+static int      g_menu_y     = 0;    /* dropdown screen y */
+static int      g_menu_w     = 0;    /* dropdown width */
+static int      g_menu_h     = 0;    /* dropdown height */
+static int      g_submenu_item = -1; /* top-level item with open submenu, -1 = none */
+static int      g_submenu_hover = -1;/* submenu item under pointer, -1 = none */
+static int      g_submenu_x  = 0;  /* submenu screen x */
+static int      g_submenu_y  = 0;  /* submenu screen y */
+static int      g_submenu_w  = 0;  /* submenu width */
+static int      g_submenu_h  = 0;  /* submenu height */
+
+/* Active guest menu strip (parsed from the focused window) */
+static HostMenu  g_active_menus[HOST_MENU_MAX];
+static int       g_active_menu_count = 0;
+static int       g_guest_menu_active = 0;  /* 1 = use g_active_menus, post IDCMP_MENUPICK */
 
 static int menu_item_count(const MenuItem *items)
 {
@@ -322,7 +338,24 @@ static int menu_item_count(const MenuItem *items)
     return n;
 }
 
-/* Compute the screen width of the longest menu label. */
+/* Refresh the active menu strip from the focused guest window.
+ * Falls back to the hardcoded desktop menu when no guest strip is present. */
+static void refresh_active_menus(void)
+{
+    uint32_t strip = Intuition_GetActiveWindowMenuStrip();
+    if (strip) {
+        int n = Intuition_GetHostMenuStrip(strip, g_active_menus, HOST_MENU_MAX);
+        if (n > 0) {
+            g_active_menu_count = n;
+            g_guest_menu_active = 1;
+            return;
+        }
+    }
+    g_active_menu_count = 0;
+    g_guest_menu_active = 0;
+}
+
+/* Compute the screen width of the longest menu label in a fallback MenuItem list. */
 static int menu_max_label_width(const MenuItem *items)
 {
     int max = 0;
@@ -335,21 +368,176 @@ static int menu_max_label_width(const MenuItem *items)
     return max;
 }
 
+/* Compute the screen width of the longest menu label in an active HostMenu. */
+static int host_menu_max_label_width(const HostMenu *menu)
+{
+    int max = 0;
+    for (int i = 0; i < menu->item_count; i++) {
+        if (!menu->items[i].label[0]) continue;
+        int len = 0;
+        for (const char *p = menu->items[i].label; *p; p++) len++;
+        if (len * 8 > max) max = len * 8;
+    }
+    return max;
+}
+
+/* Return the title of the Nth menu, either from the active guest strip or
+ * the hardcoded fallback titles. */
+static const char *menu_title(int index)
+{
+    if (g_guest_menu_active && index >= 0 && index < g_active_menu_count)
+        return g_active_menus[index].label;
+    const char *fallback[] = { "Workbench", "Window", "Icons", "Tools" };
+    if (index >= 0 && index < (int)(sizeof(fallback) / sizeof(fallback[0])))
+        return fallback[index];
+    return NULL;
+}
+
 /* Compute the x coordinate of the left edge of the Nth menu title. */
 static int menu_title_x(int index)
 {
-    const char *menus[] = { "Workbench", "Window", "Icons", "Tools", "Shell", "UAOS", NULL };
     int x = 8;
-    for (int i = 0; menus[i] && i < index; i++) {
+    for (int i = 0; i < index; i++) {
+        const char *title = menu_title(i);
+        if (!title) break;
         int len = 0;
-        for (const char *p = menus[i]; *p; p++) len++;
+        for (const char *p = title; *p; p++) len++;
         x += len * 8 + 16;
     }
     return x;
 }
 
+static void draw_host_menu_item(const HostMenuItem *item, int x, int y, int w,
+                                int item_h, int pad_x, int is_hover)
+{
+    uint32_t bg = is_hover ? WB_BLUE : WB_GREY;
+    uint32_t fg = is_hover ? WB_WHITE : WB_BLACK;
+    if (!item->enabled) {
+        fg = WB_DARK_GREY;
+        bg = WB_GREY;
+    }
+
+    int cx = x + pad_x;
+    int cy = y + (item_h - 16) / 2;
+
+    /* Highlight bar */
+    FB_FillRect(x + 2, y, w - 4, item_h, bg);
+
+    /* Checkmark box for CHECKIT items (column is always reserved). */
+    int box = 10;
+    int bx = cx;
+    int by = y + (item_h - box) / 2;
+    if (item->has_checkmark) {
+        FB_DrawRect(bx, by, box, box, fg);
+        if (item->checked) {
+            FB_FillRect(bx + 2, by + 2, box - 4, box - 4, fg);
+        }
+    }
+    cx += 14;
+
+    /* Label */
+    FB_PutStr(cx, cy, item->label, fg, bg);
+
+    /* Right-side extras: command key or submenu arrow */
+    int rx = x + w - pad_x - 8;
+    if (item->has_submenu) {
+        FB_PutStr(rx - 4, cy, ">", fg, bg);
+    } else if (item->command_key) {
+        char key[2] = { item->command_key, '\0' };
+        FB_PutStr(rx, cy, key, fg, bg);
+    }
+}
+
+static int host_menu_item_width(const HostMenuItem *item)
+{
+    int len = 0;
+    for (const char *p = item->label; *p; p++) len++;
+    int w = 8 * 2 + 14 + len * 8; /* left+right margins + checkmark column + label */
+    if (item->has_submenu || item->command_key) w += 16;
+    return w;
+}
+
+static int host_menu_dropdown_width(const HostMenu *menu)
+{
+    int max = 0;
+    for (int i = 0; i < menu->item_count; i++) {
+        int w = host_menu_item_width(&menu->items[i]);
+        if (w > max) max = w;
+    }
+    return max;
+}
+
+static void draw_host_submenu(const HostMenu *submenu, int x, int y, int W)
+{
+    int item_h = 16;
+    int pad_x = 8;
+    int pad_y = 2;
+    int n = submenu->item_count;
+    if (n <= 0) return;
+
+    int label_w = host_menu_dropdown_width(submenu);
+    int w = label_w + pad_x * 2;
+    int h = n * item_h + pad_y * 2;
+
+    if (x + w > W) x = W - w;
+    if (y + h > (int)g_fb.height) y = (int)g_fb.height - h;
+    if (y < 0) y = 0;
+
+    g_submenu_x = x;
+    g_submenu_y = y;
+    g_submenu_w = w;
+    g_submenu_h = h;
+
+    FB_FillRect(g_submenu_x + 4, g_submenu_y + 4, w, h, WB_DARK_GREY);
+    FB_FillRect(g_submenu_x, g_submenu_y, w, h, WB_GREY);
+    draw_bevel_box(g_submenu_x, g_submenu_y, w, h, 1);
+
+    for (int i = 0; i < n; i++) {
+        int iy = g_submenu_y + pad_y + i * item_h;
+        draw_host_menu_item(&submenu->items[i], g_submenu_x, iy, w,
+                            item_h, pad_x, i == g_submenu_hover);
+    }
+}
+
 static void draw_menu_dropdown(int W)
 {
+    if (g_guest_menu_active) {
+        if (g_menu_index < 0 || g_menu_index >= g_active_menu_count) return;
+        const HostMenu *menu = &g_active_menus[g_menu_index];
+        int n = menu->item_count;
+        if (n <= 0) return;
+        int item_h = 16;
+        int pad_x  = 8;
+        int pad_y  = 2;
+        int label_w = host_menu_dropdown_width(menu);
+        int w = label_w + pad_x * 2;
+        int h = n * item_h + pad_y * 2;
+
+        g_menu_x = menu_title_x(g_menu_index);
+        g_menu_y = MENUBAR_H;
+        g_menu_w = w;
+        g_menu_h = h;
+
+        if (g_menu_x + w > W) g_menu_x = W - w;
+
+        FB_FillRect(g_menu_x + 4, g_menu_y + 4, w, h, WB_DARK_GREY);
+        FB_FillRect(g_menu_x, g_menu_y, w, h, WB_GREY);
+        draw_bevel_box(g_menu_x, g_menu_y, w, h, 1);
+
+        for (int i = 0; i < n; i++) {
+            int iy = g_menu_y + pad_y + i * item_h;
+            draw_host_menu_item(&menu->items[i], g_menu_x, iy, w,
+                                item_h, pad_x, i == g_menu_hover);
+        }
+
+        if (g_submenu_item >= 0 && g_submenu_item < n && menu->items[g_submenu_item].has_submenu) {
+            int sx = g_menu_x + g_menu_w - 2;
+            int sy = g_menu_y + pad_y + g_submenu_item * item_h;
+            draw_host_submenu(menu->items[g_submenu_item].submenu, sx, sy, W);
+        }
+        return;
+    }
+
     if (g_menu_index < 0 || g_menu_index >= (int)NUM_MENUS) return;
 
     const MenuItem *items = g_menus[g_menu_index];
@@ -395,6 +583,9 @@ static void draw_menu_dropdown(int W)
 
 static void draw_menubar(int W)
 {
+    /* Update the active menu strip from the focused guest window. */
+    refresh_active_menus();
+
     /* Solid dark-blue background */
     FB_FillRect(0, 0, W, MENUBAR_H, WB_BLUE);
 
@@ -403,14 +594,15 @@ static void draw_menubar(int W)
     FB_DrawHLine(0, MENUBAR_H - 2, W, WB_LIGHT_BLUE);
 
     /* Menu titles */
-    const char *menus[] = { "Workbench", "Window", "Icons", "Tools", "Shell", "UAOS", NULL };
     int mx = 8;
-    for (int i = 0; menus[i]; i++) {
+    for (int i = 0; ; i++) {
+        const char *title = menu_title(i);
+        if (!title) break;
         /* Highlight the active menu title. */
         uint32_t bg = (g_menu_index == i) ? WB_LIGHT_BLUE : WB_BLUE;
-        FB_PutStr(mx, 2, menus[i], WB_WHITE, bg);
+        FB_PutStr(mx, 2, title, WB_WHITE, bg);
         int len = 0;
-        for (const char *p = menus[i]; *p; p++) len++;
+        for (const char *p = title; *p; p++) len++;
         mx += len * 8 + 16;
     }
 
@@ -510,7 +702,10 @@ static void draw_backdrop(int W, int H)
 {
     /* Clear the full screen first so no stale window chrome survives
      * in the menubar / statusbar bands after a resize or move */
-    FB_FillRect(0, 0, W, H, WB_GREY);
+    uint32_t bg = WB_GREY;
+    if (g_beep_flash_color && g_beep_flash_until && g_pit_ticks < g_beep_flash_until)
+        bg = g_beep_flash_color;
+    FB_FillRect(0, 0, W, H, bg);
 }
 
 /* =========================================================================
@@ -767,6 +962,17 @@ void Desktop_SetScreenTitle(const char *title, int show)
     WM_Redraw();
 }
 
+void Desktop_DisplayBeepFlash(uint32_t color)
+{
+    if (color) {
+        g_beep_flash_color = color;
+        g_beep_flash_until = g_pit_ticks + 5;  /* 50 ms at 100 Hz */
+    } else {
+        g_beep_flash_color = 0;
+        g_beep_flash_until = 0;
+    }
+}
+
 /* =========================================================================
  * Tick counter — incremented by Desktop_UpdateClock (once per second)
  * Used for double-click timing: two clicks within 2 ticks = double-click
@@ -774,16 +980,23 @@ void Desktop_SetScreenTitle(const char *title, int show)
 
 static volatile uint32_t g_tick = 0;
 
+/* Return the number of available menus (guest strip or fallback). */
+static int active_menu_count(void)
+{
+    return g_guest_menu_active ? g_active_menu_count : (int)NUM_MENUS;
+}
+
 /* Hit-test the menubar and return which menu index was clicked (-1 = none).
  * Replicates the layout logic from draw_menubar. */
 static int menubar_hit(int mx, int my)
 {
     if (my < 0 || my >= MENUBAR_H) return -1;
-    const char *menus[] = { "Workbench", "Window", "Icons", "Tools", "Shell", "UAOS", NULL };
     int x = 8;
-    for (int i = 0; menus[i]; i++) {
+    for (int i = 0; i < active_menu_count(); i++) {
+        const char *title = menu_title(i);
+        if (!title) break;
         int len = 0;
-        for (const char *p = menus[i]; *p; p++) len++;
+        for (const char *p = title; *p; p++) len++;
         int x1 = x + len * 8 + 8;  /* right edge of hit zone */
         if (mx >= x - 4 && mx < x1)
             return i;
@@ -792,29 +1005,64 @@ static int menubar_hit(int mx, int my)
     return -1;
 }
 
-/* Return the item index under (mx,my) when the Workbench menu is open,
+/* Return the item index under (mx,my) when a menu is open,
  * or -1 if the point is outside the dropdown. */
 static int dropdown_hit(int mx, int my)
 {
-    if (g_menu_index < 0 || g_menu_index >= (int)NUM_MENUS) return -1;
+    if (g_menu_index < 0 || g_menu_index >= active_menu_count()) return -1;
     if (mx < g_menu_x || mx >= g_menu_x + g_menu_w ||
         my < g_menu_y || my >= g_menu_y + g_menu_h)
         return -1;
 
-    const MenuItem *items = g_menus[g_menu_index];
     int item_h = 16;
     int pad_y  = 2;
     int ry = my - g_menu_y - pad_y;
     if (ry < 0) return -1;
     int idx = ry / item_h;
+
+    if (g_guest_menu_active) {
+        const HostMenu *menu = &g_active_menus[g_menu_index];
+        if (idx < 0 || idx >= menu->item_count) return -1;
+        if (!menu->items[idx].enabled) return -1;
+        return idx;
+    }
+
+    const MenuItem *items = g_menus[g_menu_index];
     if (idx < 0 || idx >= menu_item_count(items)) return -1;
     if (items[idx].is_divider) return -1;
     return idx;
 }
 
+/* Return the submenu item index under (mx,my) when a submenu is open,
+ * or -1 if the point is outside the submenu. */
+static int submenu_hit(int mx, int my)
+{
+    if (g_submenu_item < 0) return -1;
+    if (mx < g_submenu_x || mx >= g_submenu_x + g_submenu_w ||
+        my < g_submenu_y || my >= g_submenu_y + g_submenu_h)
+        return -1;
+
+    int item_h = 16;
+    int pad_y  = 2;
+    int ry = my - g_submenu_y - pad_y;
+    if (ry < 0) return -1;
+    int idx = ry / item_h;
+
+    if (g_guest_menu_active) {
+        const HostMenu *menu = &g_active_menus[g_menu_index];
+        if (g_submenu_item < 0 || g_submenu_item >= menu->item_count) return -1;
+        const HostMenu *sm = menu->items[g_submenu_item].submenu;
+        if (!sm) return -1;
+        if (idx < 0 || idx >= sm->item_count) return -1;
+        if (!sm->items[idx].enabled) return -1;
+        return idx;
+    }
+    return -1;
+}
+
 /* Update menu hover state and request a redraw if it changed.
  * Also switches to a different menu title if the cursor moves over it while
- * a menu is already open. */
+ * a menu is already open, and opens submenus for items that have them. */
 static void menu_update_hover(int mx, int my)
 {
     if (g_menu_index < 0) return;
@@ -822,10 +1070,23 @@ static void menu_update_hover(int mx, int my)
     /* Switch menus if the cursor moves over another menu title. */
     if (my >= 0 && my < MENUBAR_H) {
         int menu = menubar_hit(mx, my);
-        if (menu >= 0 && menu < (int)NUM_MENUS && menu != g_menu_index) {
+        if (menu >= 0 && menu < active_menu_count() && menu != g_menu_index) {
             g_menu_index = menu;
             g_menu_hover = -1;
+            g_submenu_item = -1;
+            g_submenu_hover = -1;
             WM_Redraw();
+            return;
+        }
+    }
+
+    if (g_guest_menu_active) {
+        int sub_hover = submenu_hit(mx, my);
+        if (sub_hover >= 0) {
+            if (sub_hover != g_submenu_hover) {
+                g_submenu_hover = sub_hover;
+                WM_Redraw();
+            }
             return;
         }
     }
@@ -833,6 +1094,14 @@ static void menu_update_hover(int mx, int my)
     int new_hover = dropdown_hit(mx, my);
     if (new_hover != g_menu_hover) {
         g_menu_hover = new_hover;
+        g_submenu_hover = -1;
+        if (g_guest_menu_active && g_menu_hover >= 0 &&
+            g_menu_hover < g_active_menus[g_menu_index].item_count &&
+            g_active_menus[g_menu_index].items[g_menu_hover].has_submenu) {
+            g_submenu_item = g_menu_hover;
+        } else {
+            g_submenu_item = -1;
+        }
         WM_Redraw();
     }
 }
@@ -844,14 +1113,21 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     /* ── Right-click on menubar: open the selected menu ───── */
     if (right_pressed && my >= 0 && my < MENUBAR_H) {
         int menu = menubar_hit(mx, my);
-        if (menu >= 0 && menu < (int)NUM_MENUS) {
+        if (menu >= 0 && menu < active_menu_count()) {
             g_menu_index = menu;
             g_menu_hover = -1;
+            g_submenu_item = -1;
+            g_submenu_hover = -1;
             menu_update_hover(mx, my);
             WM_Redraw();
             return 1;
         }
         /* Right-click on empty menu bar area: close any open menu. */
+        g_menu_index = -1;
+        g_menu_hover = -1;
+        g_submenu_item = -1;
+        g_submenu_hover = -1;
+        WM_Redraw();
         return 1;
     }
 
@@ -860,6 +1136,8 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     if (left_pressed && g_menu_index >= 0) {
         g_menu_index = -1;
         g_menu_hover = -1;
+        g_submenu_item = -1;
+        g_submenu_hover = -1;
         WM_Redraw();
         return 1;
     }
@@ -952,14 +1230,38 @@ void Desktop_RightButtonRelease(int mx, int my)
 
     if (g_menu_index < 0) return;
 
-    if (g_menu_hover >= 0) {
-        const MenuItem *items = g_menus[g_menu_index];
-        if (items[g_menu_hover].action)
-            items[g_menu_hover].action();
+    if (g_guest_menu_active) {
+        HostMenuItem *mi = NULL;
+        uint32_t menu_number = 0;
+        if (g_submenu_item >= 0 && g_submenu_hover >= 0) {
+            const HostMenu *menu = &g_active_menus[g_menu_index];
+            if (g_submenu_item < menu->item_count && menu->items[g_submenu_item].submenu) {
+                mi = &menu->items[g_submenu_item].submenu->items[g_submenu_hover];
+                menu_number = (uint32_t)((g_menu_index & 0x1F) |
+                                         ((g_submenu_item & 0x3F) << 5) |
+                                         ((g_submenu_hover & 0x1F) << 11));
+            }
+        } else if (g_menu_hover >= 0) {
+            mi = &g_active_menus[g_menu_index].items[g_menu_hover];
+            menu_number = (uint32_t)((g_menu_index & 0x1F) |
+                                     ((g_menu_hover & 0x3F) << 5));
+        }
+        if (mi) {
+            Intuition_UpdateMenuItemCheck(mi->guest_item, mi->toggle);
+            Intuition_PostMenuPick(menu_number);
+        }
+    } else {
+        if (g_menu_hover >= 0) {
+            const MenuItem *items = g_menus[g_menu_index];
+            if (items[g_menu_hover].action)
+                items[g_menu_hover].action();
+        }
     }
 
     g_menu_index = -1;
     g_menu_hover = -1;
+    g_submenu_item = -1;
+    g_submenu_hover = -1;
     WM_Redraw();
 }
 

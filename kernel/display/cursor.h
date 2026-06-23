@@ -56,7 +56,7 @@ CursorSettings Cursor_GetSettings(void);
 void Cursor_ApplySettings(void);
 
 /* Custom sprite / busy cursor support */
-void Cursor_SetCustomSprite(const uint8_t *data, int w, int h);
+void Cursor_SetCustomSprite(const uint8_t *data, int w, int h, int xoff, int yoff);
 void Cursor_ClearCustomSprite(void);
 void Cursor_SetBusy(int busy);
 

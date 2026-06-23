@@ -175,6 +175,8 @@ static const uint8_t cur_busy_16x16[16][16] = {
 static uint8_t cur_custom[CUR_MAX_W * CUR_MAX_H];
 static int     cur_custom_w = 0;
 static int     cur_custom_h = 0;
+static int     cur_custom_x = 0;
+static int     cur_custom_y = 0;
 static int     cur_custom_active = 0;
 static int     cur_busy = 0;
 
@@ -246,11 +248,13 @@ static void cursor_save_bg(int x, int y)
     int H = (int)g_fb.height;
     int cur_h = get_cursor_size();
     int cur_w = get_cursor_width();
+    int off_x = cur_custom_active ? cur_custom_x : 0;
+    int off_y = cur_custom_active ? cur_custom_y : 0;
 
     for (int row = 0; row < cur_h; row++) {
-        int py = y + row;
+        int py = y + off_y + row;
         for (int col = 0; col < cur_w; col++) {
-            int px = x + col;
+            int px = x + off_x + col;
             if (px < 0 || px >= W || py < 0 || py >= H)
                 bg_save[row * CUR_MAX_W + col] = 0;
             else
@@ -266,12 +270,14 @@ static void cursor_restore_bg(int x, int y)
     int H = (int)g_fb.height;
     int cur_h = get_cursor_size();
     int cur_w = get_cursor_width();
+    int off_x = cur_custom_active ? cur_custom_x : 0;
+    int off_y = cur_custom_active ? cur_custom_y : 0;
 
     for (int row = 0; row < cur_h; row++) {
-        int py = y + row;
+        int py = y + off_y + row;
         if (py < 0 || py >= H) continue;
         for (int col = 0; col < cur_w; col++) {
-            int px = x + col;
+            int px = x + off_x + col;
             if (px < 0 || px >= W) continue;
             FB_PutPixel(px, py, bg_save[row * CUR_MAX_W + col]);
         }
@@ -292,12 +298,14 @@ static void cursor_draw(int x, int y)
     uint32_t body_col = g_cursor_settings.colors.body_color;
     uint32_t shadow_col = g_cursor_settings.colors.shadow_color;
     int double_pixel = g_cursor_settings.double_pixel;
+    int off_x = cur_custom_active ? cur_custom_x : 0;
+    int off_y = cur_custom_active ? cur_custom_y : 0;
 
     for (int row = 0; row < cur_h; row++) {
-        int py = y + row;
+        int py = y + off_y + row;
         if (py < 0 || py >= H) continue;
         for (int col = 0; col < cur_w; col++) {
-            int px = x + col;
+            int px = x + off_x + col;
             if (px < 0 || px >= W) continue;
             uint8_t p = sprite[row * cur_w + col];
 
@@ -418,7 +426,7 @@ void Cursor_ApplySettings(void)
  * Custom sprite and busy cursor support
  * ========================================================================= */
 
-void Cursor_SetCustomSprite(const uint8_t *data, int w, int h)
+void Cursor_SetCustomSprite(const uint8_t *data, int w, int h, int xoff, int yoff)
 {
     if (!data || w <= 0 || h <= 0) return;
     if (w > CUR_MAX_W) w = CUR_MAX_W;
@@ -437,6 +445,8 @@ void Cursor_SetCustomSprite(const uint8_t *data, int w, int h)
     }
     cur_custom_w = w;
     cur_custom_h = h;
+    cur_custom_x = xoff;
+    cur_custom_y = yoff;
     cur_custom_active = 1;
     cur_busy = 0;
 
@@ -455,6 +465,8 @@ void Cursor_ClearCustomSprite(void)
     cur_custom_active = 0;
     cur_custom_w = 0;
     cur_custom_h = 0;
+    cur_custom_x = 0;
+    cur_custom_y = 0;
 
     cursor_save_bg(cur_x, cur_y);
     cursor_draw(cur_x, cur_y);
