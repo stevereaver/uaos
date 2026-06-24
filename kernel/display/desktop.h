@@ -79,5 +79,6 @@ uint32_t Intuition_GetActiveWindowMenuStrip(void);
 void     Intuition_PostMenuPick(uint32_t menu_number);
 int      Intuition_GetHostMenuStrip(uint32_t menu_strip, HostMenu *menus, int max_menus);
 void     Intuition_UpdateMenuItemCheck(uint32_t guest_item, int toggle);
+int      Intuition_InvokeCommandKey(char c);
 
 #endif

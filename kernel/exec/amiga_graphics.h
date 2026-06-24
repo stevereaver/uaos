@@ -118,6 +118,11 @@
 #define BMA_BASE             4
 #define BMA_ROWBYTES         5
 
+/* Render a guest BitMap to the host framebuffer using the supplied ColorMap
+ * (or the default Amiga 4-bit palette if cmap is NULL). */
+extern void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap,
+                                          int dx, int dy, int w, int h);
+
 /* View offsets */
 #define VIEW_OFF_VIEWPORT    0
 #define VIEW_OFF_DX          8

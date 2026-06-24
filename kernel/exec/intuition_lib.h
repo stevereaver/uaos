@@ -15,6 +15,15 @@
  * ------------------------------------------------------------------------- */
 void UAOS_INTUITION_Register(void);
 
+/* Render the front Intuition screen's custom BitMap into the host framebuffer.
+ * Returns 1 if a screen bitmap was rendered, 0 otherwise. */
+int UAOS_Intuition_RenderScreenBackdrop(void);
+
+/* Apply the frontmost screen's SA_Colors/SA_Colors32/SA_Pens palette to the
+ * host Workbench palette globals.  Falls back to the default palette if no
+ * front screen has custom colors. */
+void UAOS_Intuition_ApplyFrontScreenPalette(void);
+
 /* -------------------------------------------------------------------------
  * Minimal AmigaOS NewWindow struct (classic layout)
  * ------------------------------------------------------------------------- */
@@ -150,6 +159,7 @@ typedef struct {
 #define IDCMP_DISKINSERTED   0x00020000
 #define IDCMP_DISKREMOVED    0x00040000
 #define IDCMP_WBENCHMESSAGE  0x00080000
+#define IDCMP_HELP           0x00100000
 #define IDCMP_VANILLAKEY     0x00200000
 
 /* -------------------------------------------------------------------------
@@ -262,7 +272,9 @@ typedef struct {
 #define SI_OFF_MAXCHARS      10
 #define SI_OFF_DISPPOS       12
 #define SI_OFF_NUMCHARS      16
-#define SI_SIZE              20
+#define SI_OFF_MIN           20
+#define SI_OFF_MAX           24
+#define SI_SIZE              28
 
 /* UAOS simple ListView gadget extension (stored in SpecialInfo) */
 #define LV_OFF_ITEMS         0
@@ -270,7 +282,9 @@ typedef struct {
 #define LV_OFF_SELECTED      8
 #define LV_OFF_VISIBLE      12
 #define LV_OFF_TOP          16
-#define LV_SIZE             20
+#define LV_OFF_MULTI_SELECT 20
+#define LV_OFF_SELECTED_MASK 24
+#define LV_SIZE             28
 
 #define PROP_FLAGS_AUTOKNOB  0x0001
 #define PROP_FLAGS_FREEVERT  0x0002
@@ -456,6 +470,13 @@ typedef struct {
 #define SA_DisplayID     (SA_Dummy + 0x0012)
 #define SA_DClip         (SA_Dummy + 0x0013)
 #define SA_Overscan      (SA_Dummy + 0x0014)
+
+/* Overscan types for SA_Overscan */
+#define OSCAN_TEXT       1
+#define OSCAN_STANDARD   2
+#define OSCAN_MAX        3
+#define OSCAN_VIDEO      4
+
 #define SA_Obsolete1     (SA_Dummy + 0x0015)
 #define SA_ShowTitle     (SA_Dummy + 0x0016)
 #define SA_Behind        (SA_Dummy + 0x0017)
@@ -474,6 +495,28 @@ typedef struct {
 #define SA_LikeWorkbench (SA_Dummy + 0x0027)
 #define SA_Reserved      (SA_Dummy + 0x0028)
 #define SA_MinimizeISG   (SA_Dummy + 0x0029)
+
+/* ColorSpec offsets for SA_Colors (classic AmigaOS format) */
+#define CS_OFF_BUFFER    0
+#define CS_OFF_RED       2
+#define CS_OFF_GREEN     4
+#define CS_OFF_BLUE      6
+#define CS_SIZE          8
+
+/* DrawInfo pen indices for SA_Pens */
+#define DRI_FILLPEN           0
+#define DRI_TEXTPEN           1
+#define DRI_SHINEPEN          2
+#define DRI_SHADOWPEN           3
+#define DRI_FILLTEXTPEN        4
+#define DRI_BACKGROUNDPEN       5
+#define DRI_HIGHLIGHTTEXTPEN    6
+#define DRI_BARDETAILPEN        7
+#define DRI_BARBLOCKPEN         8
+#define DRI_BARTRIMPEN          9
+#define DRI_MENUOVPEN          10
+#define DRI_AMIGAOVERPEN       11
+#define DRI_PEN_MAX            12
 
 /* Screen type / flag bits */
 #define CUSTOMSCREEN     0x0000

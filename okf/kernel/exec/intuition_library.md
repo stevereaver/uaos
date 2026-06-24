@@ -25,7 +25,7 @@ timestamp: 2026-06-22T17:00:00Z
 | Function | Status | Notes |
 |----------|--------|-------|
 | `OpenWindow` | Implemented | Translates a guest `NewWindow` into a host WM window and allocates a guest `Window` + `RastPort`. Width/height are clamped to the `NewWindow` `MinWidth/MinHeight` and `MaxWidth/MaxHeight` bounds. |
-| `OpenWindowTagList` | Implemented | Parses the full `WA_*` tag set, including geometry, title, flags, system gadgets, refresh mode, public/custom screen, and min/max bounds, and uses the `NewWindow` pointer as defaults when supplied. |
+| `OpenWindowTagList` | Implemented | Parses the full `WA_*` tag set, including geometry, title, flags, system gadgets, refresh mode, public/custom screen, min/max bounds, and stored miscellaneous tags (`WA_Colors`, `WA_Checkmark`, `WA_AmigaKey`, `WA_MenuHelp`, `WA_TabletMessages`, `WA_AutoAdjust`, `WA_NotifyDepth`), and uses the `NewWindow` pointer as defaults when supplied. |
 | `CloseWindow` | Implemented | Destroys the host window and frees the guest slot, plus any `UserPort`/`WindowPort` pending messages, the gadget list, the `RastPort`, and the `Window` structure. |
 
 ### Window ordering and focus
@@ -35,6 +35,7 @@ timestamp: 2026-06-22T17:00:00Z
 | `WindowToFront` | Implemented | Calls `WM_RaiseWindow` to bring the window to the top and focus it. |
 | `WindowToBack` | Implemented | Calls `WM_LowerWindow` to send the window to the bottom of the z-order. |
 | `ActivateWindow` | Implemented | Calls `WM_RequestFocus` to focus the window. |
+| `MoveWindowInFrontOf` | Implemented | Raises the source window with `WM_RaiseWindow`. (Precise z-order placement behind another window is not yet supported.) |
 
 ### Window geometry and chrome
 
@@ -52,7 +53,7 @@ timestamp: 2026-06-22T17:00:00Z
 | `BeginRefresh` | Implemented | Marks the start of a refresh cycle for the supplied `Window`. The internal `IntuitionSlot` damage rectangle is set to the window content area. |
 | `EndRefresh` | Implemented | Ends the refresh cycle; if `complete` is non-zero the damage rectangle is cleared. |
 
-SimpleRefresh windows receive `IDCMP_REFRESHWINDOW` when the host WM repaints the window or when a resize occurs. SmartRefresh windows rely on the host WM to preserve their contents; Intuition redraws the gadgets and borders on top. The refresh mode is stored in the `IntuitionSlot` and can be changed via `WA_SimpleRefresh` / `WA_SmartRefresh` / `WA_SuperBitMap`.
+SimpleRefresh windows receive `IDCMP_REFRESHWINDOW` when the host WM repaints the window or when a resize occurs. SmartRefresh windows rely on the host WM to preserve their contents; Intuition redraws the gadgets and borders on top. The refresh mode is stored in the `IntuitionSlot` and can be changed via `WA_SimpleRefresh` / `WA_SmartRefresh` / `WA_SuperBitMap`. During `BeginRefresh`/`EndRefresh` the `IntuitionSlot` damage rectangle is set; the host WM draw callback now clips gadget rendering to that rectangle, so host-side gadgets are only redrawn inside the damaged area.
 
 ### Workbench screen
 
@@ -89,21 +90,45 @@ SimpleRefresh windows receive `IDCMP_REFRESHWINDOW` when the host WM repaints th
 | `OffGadget` | Implemented | Sets `GFLG_DISABLED` on the gadget and redraws. |
 | `ModifyProp` / `NewModifyProp` | Implemented | Updates the `PropInfo` fields of a proportional gadget and redraws. |
 | `ActivateGadget` | Implemented | Focuses the window for string gadgets; returns `TRUE` for string gadgets, `FALSE` otherwise. |
+| `SetEditHook` | Implemented | Stores the new edit hook in the gadget's `UserData` and returns the previous hook in D0. |
+| `ObtainGIRPort` / `ReleaseGIRPort` | Implemented | Allocates a temporary guest `RastPort` for gadget rendering and frees it. The returned port is a minimal `RastPort` suitable for the host's rendering helpers. |
 
-Custom gadgets are rendered as simple bevelled boxes (boolean), tracks with knobs (proportional), or input boxes (string). Integer gadgets show the numeric contents of their `StringInfo` buffer; listview gadgets render a scrollable list of items with a selected row; boolean gadgets with `GACT_TOGGLESELECT` render as checkboxes and those with a non-zero `MutualExclude` mask render as radio buttons (mutual exclusion is enforced on mouse-up). Mouse presses on a non-disabled custom gadget post `IDCMP_GADGETDOWN` and set `GFLG_SELECTED`; releases over the same gadget post `IDCMP_GADGETUP`. The internal `GetGadgetInfo(gad, info_id)` helper can read type, flags, selected state, integer value, string buffer, listview selection, or proportional pot values. The guest application is still responsible for complex imagery via the RastPort and for calling `RefreshGList()` / `RefreshGadgets()` after changing gadget visuals.
+Custom gadgets are rendered as simple bevelled boxes (boolean), tracks with knobs (proportional), or input boxes (string). Integer gadgets show the numeric contents of their `StringInfo` buffer; listview gadgets render a scrollable list of items with a selected row; boolean gadgets with `GACT_TOGGLESELECT` render as checkboxes and those with a non-zero `MutualExclude` mask render as radio buttons (mutual exclusion is enforced on mouse-up). Mouse presses on a non-disabled custom gadget post `IDCMP_GADGETDOWN` and set `GFLG_SELECTED`; releases over the same gadget post `IDCMP_GADGETUP`. String and integer gadgets are now editable: clicking a string gadget activates it and places a cursor at the click position; subsequent keystrokes insert/delete characters, move the cursor (arrows), jump to the start/end (up/down), and are committed with Return/Tab (which posts `IDCMP_GADGETUP` and deactivates the gadget). Shift+arrow keys or Shift+click extend a selection; Ctrl+A selects all; typing or backspace/delete replaces the selection. The selected range is highlighted in blue. Focus loss or clicking outside the gadget also deactivates it.
+
+Proportional gadgets (`GTYP_PROPGADGET`) are now interactive: clicking inside the knob and dragging updates the `HorizPot`/`VertPot` values in real time; clicking on the track outside the knob jumps the knob to the click position. The drag is committed on mouse-up with an `IDCMP_GADGETUP` message. Listview gadgets (`GTYP_LISTVIEW`) support their own scrollbar: dragging the scrollbar thumb scrolls the visible items, and clicking an item selects it. If the listview's `MultiSelect` flag is non-zero, holding Shift or Ctrl while clicking toggles the item's selection using a 32-bit `SelectedMask` bitmask; `GetGadgetInfo(gad, 5)` returns this bitmask in multi-select mode or the single selected index otherwise. Integer gadgets (`GTYP_INTGADGET`) validate their value on commit: the buffer is parsed as a signed integer, clamped to `Min`/`Max` bounds stored at `StringInfo` offsets 20 and 24, and rewritten with the validated value. If both bounds are zero the default range is -32768 to 32767. The internal `GetGadgetInfo(gad, info_id)` helper can read type, flags, selected state, integer value, string buffer, listview selection/mask, or proportional pot values. The guest application is still responsible for complex imagery via the RastPort and for calling `RefreshGList()` / `RefreshGadgets()` after changing gadget visuals.
+
+### BOOPSI helpers
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `NewObjectA` | Stub | Returns `NULL`. Full BOOPSI class/object instantiation is not implemented. |
+| `DisposeObject` | Stub | Returns 0. |
+| `SetAttrsA` | Stub | Returns 0. |
+| `GetAttr` | Stub | Returns 0. |
+| `DoMethodA` | Stub | Returns 0. |
+| `DoSuperMethodA` | Stub | Returns 0. |
+| `CoerceMethodA` | Stub | Returns 0. |
+| `MakeClass` | Stub | Returns 0. |
+| `FreeClass` | Stub | Returns 0. |
+
+These LVOs are installed so that M68k programs that import them can link and call them without crashing; they do not yet create or dispatch real BOOPSI objects.
 
 ### Window/screen attribute tags
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `SetWindowAttrsA` | Implemented | Full `WA_*` tag coverage: geometry, title, screen title, IDCMP, flags, system/border/backdrop/refresh flags (`WA_SizeGadget`, `WA_DragBar`, `WA_DepthGadget`, `WA_CloseGadget`, `WA_Backdrop`, `WA_ReportMouse`, `WA_Borderless`, `WA_GimmeZeroZero`, `WA_Activate`, `WA_RMBTrap`, `WA_SimpleRefresh`, `WA_SmartRefresh`, `WA_SuperBitMap`, etc.), gadgets, min/max bounds, public/custom screen, `WA_PubScreenName`, `WA_PubScreenFallBack`, `WA_InnerWidth/Height`, `WA_MouseQueue`, `WA_RptQueue`, `WA_NewLookMenus`, `WA_MenuHelp`, `WA_AmigaKey`, `WA_NotifyDepth`, `WA_HelpGroup`, `WA_TabletMessages`, and storage tags. `WA_MouseQueue` and `WA_RptQueue` are enforced by dropping the oldest queued message of the corresponding class when the limit is reached. `WA_SuperBitMap` forces the refresh mode to super-bitmap. Moves/resizes the native WM window as needed. |
+| `SetWindowAttrsA` | Implemented | Full `WA_*` tag coverage: geometry, title, screen title, IDCMP, flags, system/border/backdrop/refresh flags (`WA_SizeGadget`, `WA_DragBar`, `WA_DepthGadget`, `WA_CloseGadget`, `WA_Backdrop`, `WA_ReportMouse`, `WA_Borderless`, `WA_GimmeZeroZero`, `WA_Activate`, `WA_RMBTrap`, `WA_SimpleRefresh`, `WA_SmartRefresh`, `WA_SuperBitMap`, etc.), gadgets, min/max bounds, public/custom screen, `WA_PubScreenName`, `WA_PubScreenFallBack`, `WA_InnerWidth/Height`, `WA_MouseQueue`, `WA_RptQueue`, `WA_NewLookMenus`, `WA_MenuHelp`, `WA_AmigaKey`, `WA_NotifyDepth`, `WA_HelpGroup`, `WA_TabletMessages`, `WA_Colors`, `WA_Checkmark`, and storage tags. `WA_MouseQueue` and `WA_RptQueue` are enforced by dropping the oldest queued message of the corresponding class when the limit is reached. `WA_SuperBitMap` now updates the window `RastPort` bitmap and redraws the window from the backing `BitMap`. `WA_BackFill` is stored and used for a solid-pen fallback (full m68k Hook dispatch is not yet implemented). Moves/resizes the native WM window as needed. |
 | `GetWindowAttrsA` | Implemented | Reads back the corresponding live window fields, flags, and stored tag values. |
-| `SetScreenAttrsA` | Implemented | Full `SA_*` tag coverage: geometry, depth, detail/block pens, title, font, type, bitmap, display ID, colors, pens, behind/quiet/autoscroll/showtitle flags, full palette, color map entries, parent, draggable/exclusive/share-pens/interleaved/like-workbench/minimize-ISG, and other storage tags. `SA_DClip` and `SA_Overscan` are used to determine the screen dimensions when opening or resizing a screen. `SA_PubSig`/`SA_PubTask` are used to signal the owning task when a screen's public status changes. Refreshes the desktop title when needed. |
+| `SetScreenAttrsA` | Implemented | Full `SA_*` tag coverage: geometry, depth, detail/block pens, title, font, type, bitmap, display ID, colors, pens, behind/quiet/autoscroll/showtitle flags, full palette, color map entries, parent, draggable/exclusive/share-pens/interleaved/like-workbench/minimize-ISG, and other storage tags. `SA_DClip` and `SA_Overscan` are now enforced as positioning constraints: they define the allowed display rectangle (`SA_DClip` directly, `SA_Overscan` via `OSCAN_TEXT`/`OSCAN_STANDARD`/`OSCAN_MAX`/`OSCAN_VIDEO` percentages) and the screen's position/size is clamped to stay inside that rectangle. Changing either tag recomputes the screen geometry and redraws. `SA_Colors`, `SA_Colors32`, and `SA_Pens` are parsed into a 16-entry RGB palette and applied to the host `WB_*` globals so the desktop and window chrome render with the guest screen's colours. `SA_PubSig`/`SA_PubTask` are used to signal the owning task when a screen's public status changes. `SA_BitMap` and `SA_BackFill` changes also trigger a desktop redraw; the custom screen `BitMap` is rendered into the desktop backdrop. Full m68k Hook dispatch for `SA_BackFill` is not yet implemented. Refreshes the desktop title when needed. |
 | `GetScreenAttrsA` | Implemented | Reads back the corresponding live screen fields, flags, and stored tag values. |
 | `GetVisualInfoA` | Implemented | Allocates a real guest `VisualInfo` structure tied to the supplied screen, including a freshly allocated `DrawInfo`. |
 | `FreeVisualInfo` | Implemented | Frees the `DrawInfo` and the `VisualInfo` structure. |
 
-`WA_*` and `SA_*` tag values, `WFLG_*` window flags, and screen type flags now match the AmigaOS 3.x definitions. Tags that don't have a live effect (e.g., `WA_Colors`, `WA_Zoom`, `WA_BackFill`, `WA_HelpGroup`, `WA_HelpGroupWindow`, `SA_Parent`, `SA_BackFill`, `SA_FullPalette`) are stored in the internal `IntuitionSlot` / `ScreenSlot` so they can be read back with `GetWindowAttrsA` / `GetScreenAttrsA`. The most actionable tags (mouse/repeat queues, super-bitmap refresh mode, display clip/overscan, and public-screen notification signals) are now enforced.
+`WA_*` and `SA_*` tag values, `WFLG_*` window flags, and screen type flags now match the AmigaOS 3.x definitions. Tags that only need to be readable (e.g., `WA_Colors`, `WA_BackFill`, `SA_BackFill`, `SA_FullPalette`) are stored in the internal `IntuitionSlot` / `ScreenSlot` so they can be read back with `GetWindowAttrsA` / `GetScreenAttrsA`. `WA_Zoom` is now enforced: the existing WM zoom gadget toggles the window between the two rectangles in the zoom array. `WA_HelpGroup` / `WA_HelpGroupWindow` are enforced: the F1 key posts an `IDCMP_HELP` message to the focused window or to the designated help-group window. `SA_Parent` is enforced when opening a screen by inheriting the parent screen's dimensions and default pens if the child did not supply them. `SA_DClip` and `SA_Overscan` now define an active constraint rectangle for each screen: `SA_DClip` uses the supplied `Rectangle` directly, while `SA_Overscan` maps to a centred rectangle (`OSCAN_TEXT` 90%, `OSCAN_STANDARD` 95%, `OSCAN_MAX` 98%, `OSCAN_VIDEO` 105%) of the framebuffer. When a screen is opened, `MoveScreen()` is called, or `ScreenPosition()` is invoked, the screen's `LeftEdge`/`TopEdge`/`Width`/`Height` are clamped to remain within this rectangle. `SA_PubSig` and `SA_PubTask` are already enforced as described above.
+
+**Backing semantics:** `WA_SuperBitMap` is now wired end-to-end: the supplied guest `BitMap` pointer is stored in the `IntuitionSlot`, the window `RastPort` is pointed at that `BitMap`, and the WM draw callback renders the backing bitmap into the window client area before host-side gadgets are drawn. `SA_BitMap` is rendered by the desktop backdrop path: `Desktop_Draw()` calls `UAOS_Intuition_RenderScreenBackdrop()`, which uses the existing `render_bitmap_to_framebuffer()` helper to blit the screen's custom planar `BitMap` through its `ViewPort` `ColorMap` into the host framebuffer. `WA_BackFill` / `SA_BackFill` hooks are still stored as pointers; full m68k Hook dispatch is not yet implemented. As a fallback, a small hook value (less than 256) is treated as a pen index and the corresponding window client area or full desktop is filled with that pen's RGB colour.
+
+**Palette semantics:** `SA_Colors` (classic `ColorSpec` array), `SA_Colors32` (32-bit `LoadRGB32`-style table), and `SA_Pens` (DrawInfo pen index array) are parsed and applied to the host `WB_*` palette globals. `Desktop_Draw()` applies the front screen's palette before rendering the desktop chrome, and the WM calls an intuition-supplied palette callback before drawing each window's chrome so the window adopts the colours of the screen it lives on. The default mapping uses screen colours 0-3 for `WB_GREY`/`WB_BLACK`/`WB_WHITE`/`WB_BLUE`; `SA_Pens` entries override these roles (`DRI_BACKGROUNDPEN`, `DRI_TEXTPEN`, `DRI_SHINEPEN`, `DRI_SHADOWPEN`, `DRI_FILLPEN`, `DRI_FILLTEXTPEN`). Screens without custom colours fall back to the default Workbench 3.x palette.
 
 ### IDCMP event injection
 
@@ -111,11 +136,16 @@ Custom gadgets are rendered as simple bevelled boxes (boolean), tracks with knob
 |-------------|--------|-------|
 | `IDCMP_MOUSEBUTTONS` | Implemented | Mouse button press/release on the window client area is converted to window-relative coordinates and posted to the `UserPort`. |
 | `IDCMP_MOUSEMOVE` | Implemented | Mouse moves over the focused window are posted with window-relative coordinates. |
-| `IDCMP_RAWKEY` / `IDCMP_VANILLAKEY` | Implemented | WM keystrokes are posted as raw/vanilla key events. |
+| `IDCMP_RAWKEY` / `IDCMP_VANILLAKEY` | Implemented | WM keystrokes are posted as raw/vanilla key events unless they are consumed by an active string gadget (character insertion, backspace, cursor movement, selection, etc.). |
 | `IDCMP_CLOSEWINDOW` | Implemented | Clicking the window close gadget is vetoed at the WM level and posted as an `IDCMP_CLOSEWINDOW` message; the guest must call `CloseWindow()` to actually close it. |
 | `IDCMP_GADGETDOWN` / `IDCMP_GADGETUP` | Implemented | The WM's existing system gadgets (close, drag, depth, size) are exposed as guest `Gadget` structures and linked into `Window.FirstGadget`. Pressing and releasing a system gadget posts the corresponding `IDCMP_GADGETDOWN`/`IDCMP_GADGETUP` message with the gadget pointer in `IAddress`. |
 | `IDCMP_NEWSIZE` | Implemented | Posted when the window is resized via the resize grip or via `SizeWindow()`. |
 | `IDCMP_ACTIVEWINDOW` / `IDCMP_INACTIVEWINDOW` | Implemented | Focus changes (raise/lower/close/click-to-focus) are posted to the `UserPort`. |
+| `IDCMP_HELP` | Implemented | The F1 key is mapped to a help keystroke and posts an `IDCMP_HELP` message; if `WA_HelpGroupWindow` is set, the message is sent to that window instead of the focused window. |
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `StripIntuiMessages` | Implemented | Walks the supplied `MsgPort` and removes every `IntuiMessage` whose class matches the supplied IDCMP mask, returning the number of removed messages. |
 
 When a window is opened with non-zero IDCMP flags, Intuition allocates a guest `MsgPort` for `UserPort`, a reply `MsgPort` for `WindowPort`, and an `AllocSignal()` signal bit. WM events are packaged as guest `IntuiMessage` structures and queued on the `UserPort`; the owning M68k task is then signalled so a guest `WaitPort()`/`GetMsg()` loop can receive them. The guest can reply messages via `ReplyMsg()`; replies are returned to the guest `WindowPort`.
 
@@ -144,14 +174,14 @@ Requesters are rendered using the native WM: a grey window with a title bar, bod
 | `OpenScreen` | Implemented | Parses a `NewScreen` and the full `SA_*` tag set (geometry, depth, detail/block pens, title, font, type, bitmap, display ID, colors, overscan, behind/quiet/autoscroll/showtitle flags, full palette, etc.) and allocates a guest `Screen` structure. Defaults to the framebuffer dimensions. The active screen title is displayed in the desktop menu bar. |
 | `OpenScreenTagList` | Implemented | Same as `OpenScreen` but merges `SA_*` tags from the supplied tag list. |
 | `CloseScreen` | Implemented | Releases the guest `Screen` slot and clears the desktop title if the closed screen was active. |
-| `MoveScreen` | Implemented | Updates the guest `Screen` `LeftEdge`/`TopEdge` fields. |
+| `MoveScreen` | Implemented | Updates the guest `Screen` `LeftEdge`/`TopEdge` fields and clamps the new position to the screen's `SA_DClip` / `SA_Overscan` constraint rectangle, if any. |
 | `ScreenToFront` | Implemented | Marks the screen as the active screen and refreshes the desktop title. |
 | `ScreenToBack` | Implemented | Marks the screen as behind and picks another active screen for the title. |
 | `ScreenDepth` | Implemented | V39 depth-arrangement: `SDEPTH_TOFRONT`/`SDEPTH_TOBACK` adjust the front/back flag. |
-| `ScreenPosition` | Implemented | V39 screen positioning: `SPOS_RELATIVE` moves by `(x1,y1)`, `SPOS_ABSOLUTE` sets position, `SPOS_MAKEVISIBLE` clamps a rectangle into view. |
+| `ScreenPosition` | Implemented | V39 screen positioning: `SPOS_RELATIVE` moves by `(x1,y1)`, `SPOS_ABSOLUTE` sets position, `SPOS_MAKEVISIBLE` clamps a rectangle into view. Final position is clamped to the `SA_DClip` / `SA_Overscan` constraint rectangle. |
 | `ShowTitle` | Implemented | Toggles the `SHOWTITLE` flag and shows/hides the screen title in the desktop menu bar. |
 
-Screens are mapped to the single UAOS desktop. Multiple screens are tracked in a small internal table; the frontmost screen with `SHOWTITLE` set controls the title displayed in the native desktop menu bar.
+Screens are mapped to the single UAOS desktop. Multiple screens are tracked in a small internal table; the frontmost screen with `SHOWTITLE` set controls the title displayed in the native desktop menu bar. `SA_DClip` and `SA_Overscan` define a constraint rectangle that controls the screen's initial geometry and limits subsequent moves via `MoveScreen()` and `ScreenPosition()`. `SA_Colors`, `SA_Colors32`, and `SA_Pens` are parsed into a host RGB palette and applied to the desktop and window chrome. If a screen is opened with `SA_BitMap`, or `SA_BitMap` is later changed via `SetScreenAttrsA()`, the custom planar `BitMap` is rendered into the desktop backdrop through the screen's `ViewPort` `ColorMap`.
 
 ### Public screens and visitor windows
 
@@ -210,9 +240,9 @@ The underlying `graphics.library` display database already provides `FindDisplay
 | `InitRequester` | Implemented | Zeroes the guest `Requester` structure. |
 | `EndRequest` | Implemented | Ensures any active requester window is closed. |
 | `Request` | Implemented | Builds a synchronous modal requester from `req_Text` and `req_Gadgets`; waits for a click and returns `TRUE`/`FALSE`. |
-| `ViewAddress` | Implemented | Returns NULL. |
+| `ViewAddress` | Implemented | Returns a pointer to a single guest `View` structure allocated in the Intuition heap and zeroed on first use. |
 | `ViewPortAddress` | Implemented | Returns a pointer to the screen's `ViewPort` (uses `Window.WScreen`). |
-| `GetScreenData` | Implemented | Copies up to 256 bytes from the appropriate screen: `CUSTOMSCREEN` (type 0) uses the supplied `Screen` pointer; `WBENCHSCREEN` uses the Workbench screen; `PUBLICSCREEN` uses the default public screen. Unknown types zero the buffer. |
+| `GetScreenData` | Implemented | Copies up to 256 bytes from the appropriate screen: `CUSTOMSCREEN` (type 0) uses the supplied `Screen` pointer; `WBENCHSCREEN` uses the Workbench screen; `PUBLICSCREEN` uses the default public screen. Any other type value falls back to the supplied `Screen` pointer if it is non-zero and within guest RAM; otherwise the buffer is zeroed. |
 | `NextPubScreen` | Implemented | Walks the public-screen list and returns the next public screen, writing its name into the supplied buffer. |
 | `SetDefaultPubScreen` | Implemented | Stores the name in an internal global. |
 | `GetDefaultPubScreen` | Implemented | Copies the current default public screen name into the supplied buffer and returns the screen pointer in D0. |
@@ -235,7 +265,7 @@ The underlying `graphics.library` display database already provides `FindDisplay
 
 Menu structures are kept in guest memory; the Intuition library only maintains the `Window.MenuStrip` pointer for the caller. `ItemAddress`, `OnMenu`, and `OffMenu` follow `Menu.NextMenu`, `Menu.FirstItem`, `MenuItem.NextItem`, and `MenuItem.SubItem` chains.
 
-The desktop menu bar now renders the active guest window's `MenuStrip`. When a guest window is focused, its `Menu` titles are parsed and drawn in the menu bar; opening a menu and selecting an enabled item posts an `IDCMP_MENUPICK` message with the classic packed menu number `(menu | item << 5 | sub << 11)`. Submenus are parsed from `MenuItem.SubItem` and drawn as cascading menus. Items with `CHECKIT` show a check box that is filled when checked; `MENUTOGGLE` items toggle their checked state on selection, while plain `CHECKIT` items are set. `COMMSEQ` command-key shortcuts are displayed next to the item label. Disabled items (`ITEMENABLED` clear) are greyed out and cannot be selected. When no guest window has a menu strip, the desktop falls back to the built-in Workbench menu.
+The desktop menu bar now renders the active guest window's `MenuStrip`. When a guest window is focused, its `Menu` titles are parsed and drawn in the menu bar; opening a menu and selecting an enabled item posts an `IDCMP_MENUPICK` message with the classic packed menu number `(menu | item << 5 | sub << 11)`. Submenus are parsed from `MenuItem.SubItem` and drawn as cascading menus. Items with `CHECKIT` show a check box that is filled when checked; `MENUTOGGLE` items toggle their checked state on selection, while plain `CHECKIT` items are set. `COMMSEQ` command-key shortcuts are parsed, displayed next to the item label, and now invoked from the keyboard: pressing the command key (or Ctrl+letter as a Right-Amiga substitute) for an enabled item updates its check state and posts `IDCMP_MENUPICK` to the focused window. Disabled items (`ITEMENABLED` clear) are greyed out and cannot be selected. When no guest window has a menu strip, the desktop falls back to the built-in Workbench menu.
 
 Mouse and repeat queues are enforced: `WA_MouseQueue` limits pending `IDCMP_MOUSEMOVE` messages, and `WA_RptQueue` limits pending `IDCMP_MOUSEBUTTONS` messages. When a new message would exceed the queue limit, the oldest queued message of that class is removed before the new one is added. A limit of 0 means no restriction.
 
@@ -252,7 +282,7 @@ The guest `Screen` structure now includes `DetailPen`/`BlockPen` (offsets 70/71)
 
 Intuition uses a dedicated 64 KiB guest heap (below the stack) for small allocations such as `Window`, `Screen`, `RastPort`, `MsgPort`, `IntuiMessage`, and `DrawInfo` structures. The heap is now a free-list allocator with block headers, so `CloseWindow`, `FreeSysRequest`, `CloseWorkBench`, and `FreeScreenDrawInfo` reclaim the memory they allocate.
 
-The `IntuitionSlot` and `ScreenSlot` host structures cache tag values that have no direct live effect (e.g., `WA_Colors`, `WA_Zoom`, `SA_BackFill`, `SA_Parent`) so that `GetWindowAttrsA` and `GetScreenAttrsA` can return the values supplied by the guest.
+The `IntuitionSlot` and `ScreenSlot` host structures cache tag values that have no direct live effect (e.g., `WA_Colors`, `WA_Checkmark`, `WA_AmigaKey`, `WA_MenuHelp`, `WA_TabletMessages`, `WA_AutoAdjust`, `WA_NotifyDepth`, `WA_Zoom`, `SA_ErrorCode`, `SA_FullPalette`, `SA_ColorMapEntries`, `SA_Interleaved`, `SA_SharePens`, `SA_Exclusive`, `SA_Draggable`, `SA_LikeWorkbench`, `SA_MinimizeISG`, `SA_BackFill`, `SA_Parent`) so that `GetWindowAttrsA` and `GetScreenAttrsA` can return the values supplied by the guest.
 
 `GimmeZeroZero` windows store their border sizes in the `IntuitionSlot` and report content-relative mouse coordinates in `IDCMP` messages. The window `RastPort` stores the guest `Window*` pointer in its `Layer` field (`RP_OFF_LAYER`), and `graphics.library` adds the window's screen position plus the GimmeZeroZero border offset to all framebuffer drawing operations so that guest drawing commands are relative to the window content area.
 
@@ -267,4 +297,4 @@ The Intuition library keeps a small internal table (`IntuitionSlot`) that maps g
 
 ## LVO offsets
 
-Intuition LVO offsets in `emulation/uaos_m68k_glue.c` match the AmigaOS 3.x `intuition_lib.fd` file. Recent additions and corrections include `OnMenu` (-114), `OffMenu` (-108), `ViewAddress` (-126), `ViewPortAddress` (-132), `GetScreenData` (-306), `LockIBase` (-294), `UnlockIBase` (-300), `LockPubScreen` (-384), `UnlockPubScreen` (-390), `LockPubScreenList` (-396), `UnlockPubScreenList` (-402), `NextPubScreen` (-408), `SetDefaultPubScreen` (-420), `PubScreenStatus` (-426), `GetDefaultPubScreen` (-432), `SysReqHandler` (-450), `GetVisualInfoA` (-630), and `FreeVisualInfo` (-636).
+Intuition LVO offsets in `emulation/uaos_m68k_glue.c` match the AmigaOS 3.x `intuition_lib.fd` file. Recent additions and corrections include `OnMenu` (-114), `OffMenu` (-108), `ViewAddress` (-126), `ViewPortAddress` (-132), `GetScreenData` (-306), `LockIBase` (-294), `UnlockIBase` (-300), `LockPubScreen` (-384), `UnlockPubScreen` (-390), `LockPubScreenList` (-396), `UnlockPubScreenList` (-402), `NextPubScreen` (-408), `SetDefaultPubScreen` (-420), `PubScreenStatus` (-426), `GetDefaultPubScreen` (-432), `SysReqHandler` (-450), `GetVisualInfoA` (-630), and `FreeVisualInfo` (-636). Additional LVOs now installed: `MoveWindowInFrontOf` (-516), `SetEditHook` (-510), `ObtainGIRPort` (-456), `ReleaseGIRPort` (-492), `StripIntuiMessages` (-504), `NewObjectA` (-48), `DisposeObject` (-168), `SetAttrsA` (-180), `GetAttr` (-192), `DoMethodA` (-258), `DoSuperMethodA` (-288), `CoerceMethodA` (-312), `MakeClass` (-330), and `FreeClass` (-336). These new LVOs use the same function indices as the internal dispatch table in `kernel/exec/intuition_lib.c` (indices 97–110).

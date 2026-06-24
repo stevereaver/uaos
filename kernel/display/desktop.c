@@ -11,6 +11,7 @@
 #include "desktop.h"
 #include "framebuffer.h"
 #include "filebrowser.h"
+#include "../exec/intuition_lib.h"
 #include "about_win.h"
 #include "shell_win.h"
 #include "icon_render.h"
@@ -706,6 +707,11 @@ static void draw_backdrop(int W, int H)
     if (g_beep_flash_color && g_beep_flash_until && g_pit_ticks < g_beep_flash_until)
         bg = g_beep_flash_color;
     FB_FillRect(0, 0, W, H, bg);
+
+    /* If the front Intuition screen has a custom SA_BitMap, render it as
+     * the desktop backdrop.  Windows and the menu/status bars are drawn on
+     * top by the WM. */
+    UAOS_Intuition_RenderScreenBackdrop();
 }
 
 /* =========================================================================
@@ -912,6 +918,9 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
 void Desktop_Draw(void)
 {
     if (!g_fb.valid) return;
+
+    /* Use the front Intuition screen's palette for desktop chrome. */
+    UAOS_Intuition_ApplyFrontScreenPalette();
 
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;

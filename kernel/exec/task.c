@@ -474,9 +474,12 @@ void Task_IdleEntry(void *arg)
             }
         }
 
-        /* Keyboard -> WM */
-        while (PS2Kbd_HasChar())
-            WM_KeyEvent(PS2Kbd_GetChar());
+        /* Keyboard -> WM (command-key shortcuts first, then regular keys) */
+        while (PS2Kbd_HasChar()) {
+            char c = PS2Kbd_GetChar();
+            if (!Intuition_InvokeCommandKey(c))
+                WM_KeyEvent(c);
+        }
 
         /* Clock redraw */
         Desktop_FlushClockRedraw();

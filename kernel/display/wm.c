@@ -51,6 +51,9 @@ static int g_btn_right_prev = 0;
 /* Handle of the window currently being painted by WM_Redraw/repaint_window. */
 int WM_CurrentDrawHandle = -1;
 
+/* Optional palette callback invoked before each window's chrome is drawn. */
+static WM_PaletteFn g_palette_fn = NULL;
+
 /* Forward declaration — focus notification helper used by mouse/raise/lower/close. */
 static void wm_notify_focus_change(int old_focus, int new_focus);
 
@@ -224,6 +227,7 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
 /* Draw a single window chrome (title bar + borders + scrollbars) */
 static void draw_chrome(int wh)
 {
+    if (g_palette_fn) g_palette_fn(wh);
     WmWindow *w = &g_wins[wh];
     int focused = (wh == g_focus);
     uint32_t tbar_col = focused ? WB_LIGHT_BLUE : WB_BLUE;
@@ -584,6 +588,11 @@ void WM_SetEventHandler(int handle, WM_EventFn on_event)
     g_wins[handle].on_event = on_event;
 }
 
+void WM_SetPaletteFn(WM_PaletteFn fn)
+{
+    g_palette_fn = fn;
+}
+
 void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 {
     int btn_left_pressed  = (btn_left && !g_btn_left_prev);
@@ -628,10 +637,13 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             return;
         }
 
-        /* Zoom gadget (UAOS extension, no standard IDCMP class). */
+        /* Zoom gadget (UAOS extension, no standard IDCMP class).
+         * Notify the window's event handler so it can apply the stored WA_Zoom
+         * geometry rather than a hardcoded maximise. */
         if (hit_zoom_gadget(wh, mx, my)) {
-            zoom_window(wh);
-            WM_Redraw();
+            g_gadget_win = wh;
+            g_gadget_id  = WM_GADGET_ZOOM;
+            wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_ZOOM, mx, my);
             return;
         }
 
@@ -1117,6 +1129,29 @@ void WM_MoveWindow(int handle, int new_x, int new_y)
     g_wins[handle].x = new_x;
     g_wins[handle].y = new_y;
     WM_Redraw();
+}
+
+void WM_SetWindowGeometry(int handle, int x, int y, int width, int height)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    WmWindow *w = &g_wins[handle];
+    if (!w->active) return;
+    if (width < 200) width = 200;
+    if (height < 100) height = 100;
+    w->x = x;
+    w->y = y;
+    w->w = width;
+    w->h = height;
+    WM_Redraw();
+    if (w->on_event)
+        w->on_event(handle, WM_EVT_RESIZE, w->w, w->h, 0);
+}
+
+void WM_SetWindowZoomed(int handle, int zoomed)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    if (!g_wins[handle].active) return;
+    g_wins[handle].zoomed = zoomed ? 1 : 0;
 }
 
 int WM_GetWindowTitle(int handle, char *out, int max)

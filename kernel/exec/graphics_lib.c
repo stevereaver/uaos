@@ -1273,7 +1273,7 @@ static uint32_t cmap_lookup_rgb(uint32_t cmap, uint32_t pen)
     return m68k_read_memory_32(table + pen * 4);
 }
 
-static void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int dy, int w, int h)
+void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int dy, int w, int h)
 {
     if (!bm || !g_fb.valid) return;
     BlitSurface s;

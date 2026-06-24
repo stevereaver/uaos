@@ -26,6 +26,10 @@ typedef void (*WM_MouseReleaseFn)(int win_handle, int mx, int my);
  * Other events should return 0. */
 typedef int (*WM_EventFn)(int win_handle, int event_type, int p1, int p2, int p3);
 
+/* Optional palette callback: invoked before drawing each window's chrome so
+ * the caller can update the host WB_* palette from the window's screen. */
+typedef void (*WM_PaletteFn)(int win_handle);
+
 #define WM_EVT_CLOSE_REQUEST 1
 #define WM_EVT_MOUSE_DOWN    2
 #define WM_EVT_MOUSE_UP      3
@@ -40,6 +44,7 @@ typedef int (*WM_EventFn)(int win_handle, int event_type, int p1, int p2, int p3
 #define WM_GADGET_DRAG  2
 #define WM_GADGET_DEPTH 3
 #define WM_GADGET_SIZE  4
+#define WM_GADGET_ZOOM  5
 
 typedef struct {
     int        x, y, w, h;
@@ -74,6 +79,10 @@ void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release);
 /* Set the generic event hook for Intuition IDCMP forwarding */
 void WM_SetEventHandler(int handle, WM_EventFn on_event);
 
+/* Set a global palette callback invoked before each window's chrome is drawn.
+ * Pass NULL to disable. */
+void WM_SetPaletteFn(WM_PaletteFn fn);
+
 /* Tell the WM the total content size and visible viewport height so scrollbars
  * can be proportional and scroll clamping is correct.
  * view_h: the actual visible content area height (may differ from client ch
@@ -107,6 +116,12 @@ void WM_RequestFocus(int handle);
 
 /* Move a window to a new position and repaint */
 void WM_MoveWindow(int handle, int new_x, int new_y);
+
+/* Set a window's full geometry (position and size) and repaint */
+void WM_SetWindowGeometry(int handle, int x, int y, int w, int h);
+
+/* Update the WM's internal zoomed-state flag (used for the zoom gadget icon) */
+void WM_SetWindowZoomed(int handle, int zoomed);
 
 /* Raise a window to the top of the z-order and give it focus */
 void WM_RaiseWindow(int handle);
