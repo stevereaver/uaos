@@ -179,6 +179,18 @@ static uint32_t guest_read_be32(uint32_t addr)
          | ((uint32_t)g_ram[addr + 3]      );
 }
 
+static void guest_write_be16(uint32_t addr, uint16_t val)
+{
+    g_ram[addr + 0] = (uint8_t)(val >> 8);
+    g_ram[addr + 1] = (uint8_t)(val     );
+}
+
+static uint16_t guest_read_be16(uint32_t addr)
+{
+    return ((uint16_t)g_ram[addr + 0] << 8)
+         | ((uint16_t)g_ram[addr + 1]     );
+}
+
 /* Allocate a FileLock in guest RAM and return its BPTR.
  * On failure returns 0 (no free store). */
 static uint32_t guest_alloc_filelock(uint32_t handle, int32_t access)
@@ -502,6 +514,12 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_COERCE_METHOD_A        108
 #define INTUITION_MAKE_CLASS             109
 #define INTUITION_FREE_CLASS             110
+#define INTUITION_ADD_CLASS              111
+#define INTUITION_REMOVE_CLASS          112
+#define INTUITION_NEXT_OBJECT           113
+#define INTUITION_GET_ATTRS_A           114
+#define INTUITION_SET_SUPER_ATTRS_A     115
+#define INTUITION_DO_GADGET_METHOD_A    116
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -766,6 +784,12 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_COERCE_METHOD_A          (-312)
 #define LVO_INTUITION_MAKE_CLASS                (-330)
 #define LVO_INTUITION_FREE_CLASS                (-336)
+#define LVO_INTUITION_ADD_CLASS                 (-198)
+#define LVO_INTUITION_REMOVE_CLASS              (-210)
+#define LVO_INTUITION_NEXT_OBJECT               (-216)
+#define LVO_INTUITION_GET_ATTRS_A               (-204)
+#define LVO_INTUITION_SET_SUPER_ATTRS_A         (-228)
+#define LVO_INTUITION_DO_GADGET_METHOD_A        (-222)
 
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
@@ -955,6 +979,12 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_COERCE_METHOD_A:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_COERCE_METHOD_A);
             case INTUITION_MAKE_CLASS:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MAKE_CLASS);
             case INTUITION_FREE_CLASS:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_CLASS);
+            case INTUITION_ADD_CLASS:            return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_CLASS);
+            case INTUITION_REMOVE_CLASS:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_CLASS);
+            case INTUITION_NEXT_OBJECT:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEXT_OBJECT);
+            case INTUITION_GET_ATTRS_A:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTRS_A);
+            case INTUITION_SET_SUPER_ATTRS_A:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SUPER_ATTRS_A);
+            case INTUITION_DO_GADGET_METHOD_A:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_GADGET_METHOD_A);
         }
     }
     return JMPTAB_BASE;
@@ -1218,6 +1248,12 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_COERCE_METHOD_A,     LIB_INTUITION, INTUITION_COERCE_METHOD_A);
     install_lvo(INTUITION_BASE, LVO_INTUITION_MAKE_CLASS,          LIB_INTUITION, INTUITION_MAKE_CLASS);
     install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_CLASS,          LIB_INTUITION, INTUITION_FREE_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_CLASS,           LIB_INTUITION, INTUITION_ADD_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_CLASS,       LIB_INTUITION, INTUITION_REMOVE_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEXT_OBJECT,        LIB_INTUITION, INTUITION_NEXT_OBJECT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTRS_A,        LIB_INTUITION, INTUITION_GET_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SUPER_ATTRS_A,  LIB_INTUITION, INTUITION_SET_SUPER_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_GADGET_METHOD_A, LIB_INTUITION, INTUITION_DO_GADGET_METHOD_A);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -2295,6 +2331,88 @@ static void dos_IoErr(void)
 }
 
 /* =========================================================================
+ * M68k Hook invocation helper
+ * =========================================================================
+ *
+ * AmigaOS Hook layout (after the MinNode):
+ *   +8  h_Entry
+ *   +12 h_SubEntry
+ *   +16 h_Data
+ *
+ * The standard calling convention used by Intuition backfill hooks is:
+ *   A0 = struct Hook *       (the hook itself)
+ *   A2 = APTR                (object: RastPort for backfill)
+ *   A1 = APTR                (message: Rectangle for backfill)
+ *
+ * We support a small nesting depth so a hook may itself call library
+ * functions that may eventually trigger another hook. */
+
+#define HOOK_OFF_ENTRY      8
+#define HOOK_OFF_SUBENTRY  12
+#define HOOK_OFF_DATA      16
+
+#define HOOK_RETURN_TRAP_ADDR 0x1EF000u
+#define HOOK_RETURN_TRAP_LIB  0xFF
+#define HOOK_RETURN_TRAP_FN   0xFF
+
+#define MAX_NESTED_HOOKS 4
+
+static uint8_t g_hook_saved_context[MAX_NESTED_HOOKS][1024];
+static int     g_hook_nest_level = 0;
+static uint8_t g_hook_return_detected[MAX_NESTED_HOOKS] = {0};
+
+uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2)
+{
+    if (!hook_ptr || hook_ptr + HOOK_OFF_DATA + 4 > GUEST_RAM_SIZE) return 0;
+    if (g_hook_nest_level >= MAX_NESTED_HOOKS) return 0;
+
+    uint32_t entry = guest_read_be32(hook_ptr + HOOK_OFF_ENTRY);
+    if (!entry) return 0;
+
+    /* Save current CPU context for restoration after the hook returns. */
+    unsigned int ctx_size = m68k_context_size();
+    if (ctx_size > sizeof(g_hook_saved_context[0])) ctx_size = sizeof(g_hook_saved_context[0]);
+    int level = g_hook_nest_level;
+    m68k_get_context(g_hook_saved_context[level]);
+    g_hook_return_detected[level] = 0;
+    g_hook_nest_level++;
+
+    /* Install the hook return trap (ILLEGAL + special dispatch word). */
+    if (HOOK_RETURN_TRAP_ADDR + 4 <= GUEST_RAM_SIZE) {
+        g_ram[HOOK_RETURN_TRAP_ADDR + 0] = 0x4A;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 1] = 0xFC;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 2] = HOOK_RETURN_TRAP_LIB;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 3] = HOOK_RETURN_TRAP_FN;
+    }
+
+    /* Push return address onto the M68k stack. */
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 4;
+    if (sp + 4 <= GUEST_RAM_SIZE) {
+        guest_write_be32(sp, HOOK_RETURN_TRAP_ADDR);
+    }
+    m68k_set_reg(M68K_REG_A7, sp);
+
+    /* Set up the hook arguments and jump to the entry point. */
+    m68k_set_reg(M68K_REG_A0, a0);
+    m68k_set_reg(M68K_REG_A1, a1);
+    m68k_set_reg(M68K_REG_A2, a2);
+    m68k_set_reg(M68K_REG_PC, entry);
+
+    while (!g_hook_return_detected[level]) {
+        m68k_execute(1000);
+    }
+
+    uint32_t d0 = m68k_get_reg(NULL, M68K_REG_D0);
+
+    /* Restore the saved CPU context and return the hook's D0. */
+    g_hook_nest_level--;
+    m68k_set_context(g_hook_saved_context[level]);
+
+    return d0;
+}
+
+/* =========================================================================
  * ILLEGAL opcode callback — dispatches library calls
  * ========================================================================= */
 
@@ -2321,6 +2439,18 @@ int m68k_illg_instr_callback(int opcode)
 
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);
+
+    if (lib == HOOK_RETURN_TRAP_LIB && fn == HOOK_RETURN_TRAP_FN) {
+        /* Hook return trap: the m68k hook has RTS'd back to the stub we
+         * pushed.  Stop execution so UAOS_InvokeM68kHook() can restore the
+         * saved caller context and return the hook's D0.  Use the current
+         * nest level to index the per-level completion flag. */
+        int level = g_hook_nest_level - 1;
+        if (level >= 0 && level < MAX_NESTED_HOOKS)
+            g_hook_return_detected[level] = 1;
+        m68k_end_timeslice();
+        return 1;
+    }
 
     if (lib == LIB_EXEC) {
         switch (fn) {

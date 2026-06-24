@@ -686,6 +686,65 @@ typedef struct {
 #define PREF_OFF_WBDEPTH     232
 #define PREF_OFF_EXTSIZE     233
 
+/* -------------------------------------------------------------------------
+ * BOOPSI structures and constants (minimal AmigaOS-compatible subset)
+ * ------------------------------------------------------------------------- */
+
+/* Object header (struct _Object) — precedes the instance data in memory. */
+#define OBJ_OFF_LN_SUCC   0
+#define OBJ_OFF_LN_PRED   4
+#define OBJ_OFF_CLASS     8
+#define OBJ_HEADER_SIZE   12
+
+/* IClass field offsets (struct IClass) */
+#define CLASS_OFF_DISPATCHER   0   /* struct Hook h_Entry at offset 8 within */
+#define CLASS_OFF_DISPATCHER_ENTRY (CLASS_OFF_DISPATCHER + 8)
+#define CLASS_OFF_SUBENTRY    12
+#define CLASS_OFF_DATA        16
+#define CLASS_OFF_RESERVED    20
+#define CLASS_OFF_SUPER       24
+#define CLASS_OFF_ID          28
+#define CLASS_OFF_INST_OFFSET 32
+#define CLASS_OFF_INST_SIZE   34
+#define CLASS_OFF_USERDATA    36
+#define CLASS_OFF_SUBCLASS_COUNT 40
+#define CLASS_OFF_OBJECT_COUNT   44
+#define CLASS_OFF_FLAGS       48
+#define CLASS_SIZE            52
+
+/* BOOPSI root methods */
+#define OM_NEW         1
+#define OM_DISPOSE     2
+#define OM_SET         3
+#define OM_GET         4
+#define OM_ADDTAIL     5
+#define OM_REMOVE      6
+#define OM_ADDMEMBER   7
+#define OM_REMMEMBER   8
+#define OM_NOTIFY      9
+#define OM_UPDATE      10
+
+/* Gadget methods (GM_*) */
+#define GM_HITTEST      0x64
+#define GM_RENDER       0x65
+#define GM_GOACTIVE     0x66
+#define GM_HANDLEINPUT  0x67
+#define GM_GOINACTIVE   0x68
+
+/* BOOPSI messages (field offsets within the guest message block) */
+#define MSG_OFF_METHODID   0
+
+#define OPNEW_OFF_METHODID 0
+#define OPNEW_OFF_ATTRLIST 4
+
+#define OPSET_OFF_METHODID  0
+#define OPSET_OFF_ATTRLIST  4
+#define OPSET_OFF_GINFO     8
+
+#define OPGET_OFF_METHODID  0
+#define OPGET_OFF_ATTRID    4
+#define OPGET_OFF_STORAGE   8
+
 /* Dispatch entry point called from uaos_m68k_glue.c */
 void UAOS_Intuition_Dispatch(uint32_t fn);
 

@@ -37,6 +37,7 @@ extern uint8_t *g_ram;
 
 extern unsigned int m68k_get_reg(void *context, int reg);
 extern void         m68k_set_reg(int reg, unsigned int value);
+extern uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2);
 
 #define M68K_REG_D0  0
 #define M68K_REG_D1  1
@@ -50,6 +51,8 @@ extern void         m68k_set_reg(int reg, unsigned int value);
 #define M68K_REG_A1  9
 #define M68K_REG_A2  10
 #define M68K_REG_A3  11
+#define M68K_REG_A7  15
+#define M68K_REG_SP  15
 
 /* =========================================================================
  * Guest memory helpers
@@ -2122,11 +2125,30 @@ static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
                                      win_x + 1, win_y + WM_TITLEBAR_H,
                                      win_w - 1 - WM_SCROLLBAR_W,
                                      win_h - WM_TITLEBAR_H - WM_SCROLLBAR_W);
-    } else if (slot && slot->backfill && slot->backfill < 256) {
-        /* Simple fallback for WA_BackFill: treat small values as a pen index.
-         * Real m68k Hook callbacks are not yet invoked. */
-        fill_window_client_area(win_x, win_y, win_w, win_h,
-                                amiga_pen_to_rgb((uint8_t)slot->backfill));
+    } else if (slot && slot->backfill) {
+        if (slot->backfill < 256) {
+            /* Pen-index fallback for WA_BackFill. */
+            fill_window_client_area(win_x, win_y, win_w, win_h,
+                                    amiga_pen_to_rgb((uint8_t)slot->backfill));
+        } else {
+            /* Real m68k Hook callback: fill the window client area.
+             * A0 = hook, A2 = window RastPort, A1 = Rectangle in RastPort coords. */
+            uint32_t rport = mem_u32(win_ptr + WIN_OFF_RPORT);
+            if (rport) {
+                int cx = win_x + 1;
+                int cy = win_y + WM_TITLEBAR_H;
+                int cw = win_w - 1 - WM_SCROLLBAR_W;
+                int ch = win_h - WM_TITLEBAR_H - WM_SCROLLBAR_W;
+                if (cw > 0 && ch > 0) {
+                    const uint32_t rect = 0x1EF100u;
+                    mem_w16(rect + 0, 0);
+                    mem_w16(rect + 2, 0);
+                    mem_w16(rect + 4, (int16_t)(cw - 1));
+                    mem_w16(rect + 6, (int16_t)(ch - 1));
+                    UAOS_InvokeM68kHook(slot->backfill, slot->backfill, rect, rport);
+                }
+            }
+        }
     }
 
     int clip_x = win_x, clip_y = win_y, clip_w = win_w, clip_h = win_h;
@@ -2781,11 +2803,33 @@ int UAOS_Intuition_RenderScreenBackdrop(void)
                                          slot->width, slot->height);
             return 1;
         }
-        /* SA_BackFill fallback: small values are treated as a pen index.
-         * Real m68k Hook callbacks are not yet invoked. */
-        if (slot->backfill && slot->backfill < 256) {
-            uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
-            FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, rgb);
+        if (slot->backfill) {
+            if (slot->backfill < 256) {
+                /* Pen-index fallback for SA_BackFill. */
+                uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
+                FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, rgb);
+            } else {
+                /* Real m68k Hook callback: fill the screen backdrop.
+                 * A0 = hook, A2 = screen RastPort, A1 = full-screen Rectangle.
+                 * Non-Workbench screens do not have a persistent RastPort, so
+                 * allocate a temporary one for the hook call. */
+                uint32_t rport = mem_u32(screen + SCR_OFF_RASTPORT);
+                uint32_t tmp_rport = 0;
+                if (!rport) {
+                    tmp_rport = intu_alloc(RP_SIZE_MIN);
+                    if (tmp_rport) init_guest_rastport(tmp_rport, 0);
+                    rport = tmp_rport;
+                }
+                if (rport) {
+                    const uint32_t rect = 0x1EF100u;
+                    mem_w16(rect + 0, (int16_t)slot->left);
+                    mem_w16(rect + 2, (int16_t)slot->top);
+                    mem_w16(rect + 4, (int16_t)(slot->left + slot->width - 1));
+                    mem_w16(rect + 6, (int16_t)(slot->top + slot->height - 1));
+                    UAOS_InvokeM68kHook(slot->backfill, slot->backfill, rect, rport);
+                    if (tmp_rport) intu_free(tmp_rport);
+                }
+            }
             return 1;
         }
         return 0;
@@ -3494,6 +3538,7 @@ static void intuition_OpenWindowTagList(void)
         idcmp        = mem_u16(nw_ptr + 10);
         flags        = mem_u16(nw_ptr + 12);
         first_gadget = mem_u32(nw_ptr + 14);
+        checkmark    = mem_u32(nw_ptr + 18);
         title_ptr    = mem_u32(nw_ptr + 22);
         min_w        = mem_s16(nw_ptr + 34);
         min_h        = mem_s16(nw_ptr + 36);
@@ -6618,43 +6663,435 @@ static void intuition_StripIntuiMessages(void)
     m68k_set_reg(M68K_REG_D0, (uint32_t)removed);
 }
 
-/* BOOPSI helper stubs — full object/class dispatch is not implemented, but
- * these LVOs are present so programs that link against them can call them. */
+/* =========================================================================
+ * BOOPSI — real object/class registry, attribute and method dispatch
+ * ========================================================================= */
+
+#define MAX_BOOPSI_CLASSES 32
+#define MAX_BOOPSI_NEST    8
+
+typedef struct {
+    uint32_t class_ptr;
+    uint8_t  active;
+} BoopsiClassEntry;
+
+static BoopsiClassEntry g_boopsi_classes[MAX_BOOPSI_CLASSES];
+static uint32_t         g_boopsi_class_stack[MAX_BOOPSI_NEST];
+static int              g_boopsi_nest = 0;
+
+/* Get the class pointer from an object's header. The _Object header is
+ * immediately before the object (instance-data) pointer. */
+static uint32_t boopsi_object_class(uint32_t object)
+{
+    if (!object || object < OBJ_HEADER_SIZE) return 0;
+    return mem_u32(object - OBJ_HEADER_SIZE + OBJ_OFF_CLASS);
+}
+
+static void boopsi_set_object_class(uint32_t object, uint32_t cls)
+{
+    if (object >= OBJ_HEADER_SIZE)
+        mem_w32(object - OBJ_HEADER_SIZE + OBJ_OFF_CLASS, cls);
+}
+
+static int class_id_matches(uint32_t wanted, uint32_t cls_id)
+{
+    if (!wanted || !cls_id) return 0;
+    if (wanted == cls_id) return 1;
+    /* ClassID may be a string pointer; compare the string contents. */
+    if (wanted < GUEST_RAM_SIZE && cls_id < GUEST_RAM_SIZE) {
+        char a[64], b[64];
+        guest_str(a, wanted, sizeof(a));
+        guest_str(b, cls_id, sizeof(b));
+        int i = 0;
+        while (a[i] && b[i] && a[i] == b[i]) i++;
+        if (a[i] == '\0' && b[i] == '\0') return 1;
+    }
+    return 0;
+}
+
+static uint32_t find_public_class(uint32_t class_id)
+{
+    if (!class_id) return 0;
+    for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
+        if (!g_boopsi_classes[i].active || !g_boopsi_classes[i].class_ptr)
+            continue;
+        uint32_t id = mem_u32(g_boopsi_classes[i].class_ptr + CLASS_OFF_ID);
+        if (class_id_matches(class_id, id))
+            return g_boopsi_classes[i].class_ptr;
+    }
+    return 0;
+}
+
+static void push_stack_msg(uint32_t addr, uint32_t method,
+                           uint32_t p1, uint32_t p2)
+{
+    mem_w32(addr + 0, method);
+    mem_w32(addr + 4, p1);
+    mem_w32(addr + 8, p2);
+}
+
+static uint32_t alloc_stack_msg(uint32_t method, uint32_t p1, uint32_t p2)
+{
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 12;
+    push_stack_msg(sp, method, p1, p2);
+    m68k_set_reg(M68K_REG_A7, sp);
+    return sp;
+}
+
+static uint32_t alloc_stack_msg_4(uint32_t method)
+{
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 4;
+    mem_w32(sp, method);
+    m68k_set_reg(M68K_REG_A7, sp);
+    return sp;
+}
+
+static void free_stack_msg(uint32_t size)
+{
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp += size;
+    m68k_set_reg(M68K_REG_A7, sp);
+}
+
+/* Dispatch a BOOPSI method. start_class is the class whose dispatcher is
+ * invoked; if zero the object's own class is used. Returns the dispatcher's
+ * D0 result. */
+static uint32_t boopsi_dispatch(uint32_t object, uint32_t method,
+                                uint32_t msg, uint32_t start_class)
+{
+    if (!object) return 0;
+    uint32_t cls = start_class ? start_class : boopsi_object_class(object);
+    if (!cls) return 0;
+    uint32_t entry = mem_u32(cls + CLASS_OFF_DISPATCHER_ENTRY);
+    if (!entry) return 0;
+
+    if (g_boopsi_nest >= MAX_BOOPSI_NEST) return 0;
+    g_boopsi_class_stack[g_boopsi_nest++] = cls;
+
+    uint32_t use_msg = msg;
+    if (!use_msg) {
+        /* Method with no parameters: push a one-longword message. */
+        use_msg = alloc_stack_msg_4(method);
+    }
+
+    uint32_t result = UAOS_InvokeM68kHook(entry, cls, object, use_msg);
+
+    g_boopsi_nest--;
+    return result;
+}
+
+/* Call the superclass of the class currently handling a method. */
+static uint32_t boopsi_super_dispatch(uint32_t object, uint32_t method,
+                                      uint32_t msg)
+{
+    if (g_boopsi_nest <= 0) return 0;
+    uint32_t current = g_boopsi_class_stack[g_boopsi_nest - 1];
+    uint32_t super = mem_u32(current + CLASS_OFF_SUPER);
+    if (!super) return 0;
+    return boopsi_dispatch(object, method, msg, super);
+}
+
+static uint32_t alloc_boopsi_object(uint32_t cls)
+{
+    if (!cls) return 0;
+    uint16_t inst_offset = mem_u16(cls + CLASS_OFF_INST_OFFSET);
+    uint16_t inst_size = mem_u16(cls + CLASS_OFF_INST_SIZE);
+    uint32_t total = OBJ_HEADER_SIZE + inst_offset + inst_size;
+    if (total < OBJ_HEADER_SIZE) return 0;
+    uint32_t base = intu_alloc(total);
+    if (!base) return 0;
+    memset(&g_ram[base], 0, total);
+    return base + OBJ_HEADER_SIZE;
+}
+
+static void free_boopsi_object(uint32_t object)
+{
+    if (!object || object < OBJ_HEADER_SIZE) return;
+    intu_free(object - OBJ_HEADER_SIZE);
+}
+
+/* NewObjectA(classPtr, classID, tagList) — A0, A1, A2
+ * Returns object pointer in D0. */
 static void intuition_NewObjectA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t class_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t class_id  = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t tag_list  = m68k_get_reg(NULL, M68K_REG_A2);
+
+    uint32_t cls = class_ptr ? class_ptr : find_public_class(class_id);
+    if (!cls) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    uint32_t object = alloc_boopsi_object(cls);
+    if (!object) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    boopsi_set_object_class(object, cls);
+
+    uint32_t msg = alloc_stack_msg(OM_NEW, tag_list, 0);
+    uint32_t result = boopsi_dispatch(object, OM_NEW, msg, cls);
+    free_stack_msg(12);
+
+    if (!result) {
+        free_boopsi_object(object);
+        object = 0;
+    }
+    m68k_set_reg(M68K_REG_D0, object);
 }
+
+/* DisposeObject(object) — A0 */
 static void intuition_DisposeObject(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!object) return;
+    boopsi_dispatch(object, OM_DISPOSE, 0, 0);
+    free_boopsi_object(object);
 }
+
+/* SetAttrsA(object, tagList, ginfo) — A0, A1, A2 */
 static void intuition_SetAttrsA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t object   = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t ginfo    = m68k_get_reg(NULL, M68K_REG_A2);
+    if (!object) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t msg = alloc_stack_msg(OM_SET, tag_list, ginfo);
+    uint32_t result = boopsi_dispatch(object, OM_SET, msg, 0);
+    free_stack_msg(12);
+    m68k_set_reg(M68K_REG_D0, result);
 }
+
+/* GetAttr(attrID, object, storagePtr) — D0, A0, A1 */
 static void intuition_GetAttr(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t attr_id = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t object  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t storage = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!object || !storage) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t msg = alloc_stack_msg(OM_GET, attr_id, storage);
+    uint32_t result = boopsi_dispatch(object, OM_GET, msg, 0);
+    free_stack_msg(12);
+    m68k_set_reg(M68K_REG_D0, result);
 }
+
+/* GetAttrsA(object, tagList) — A0, A1 */
+static void intuition_GetAttrsA(void)
+{
+    uint32_t object   = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!object || !tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t success = 1;
+    uint32_t p = tag_list;
+    while (p + 8 <= GUEST_RAM_SIZE) {
+        uint32_t tag = mem_u32(p);
+        if (tag == TAG_DONE) break;
+        uint32_t storage = mem_u32(p + 4);
+        if (storage) {
+            uint32_t msg = alloc_stack_msg(OM_GET, tag, storage);
+            uint32_t rc = boopsi_dispatch(object, OM_GET, msg, 0);
+            free_stack_msg(12);
+            if (!rc) success = 0;
+        }
+        p += 8;
+    }
+    m68k_set_reg(M68K_REG_D0, success);
+}
+
+/* SetSuperAttrsA(object, tagList, ginfo) — A0, A1, A2 */
+static void intuition_SetSuperAttrsA(void)
+{
+    uint32_t object   = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t ginfo    = m68k_get_reg(NULL, M68K_REG_A2);
+    if (!object) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t msg = alloc_stack_msg(OM_SET, tag_list, ginfo);
+    uint32_t result = boopsi_super_dispatch(object, OM_SET, msg);
+    free_stack_msg(12);
+    m68k_set_reg(M68K_REG_D0, result);
+}
+
+/* DoMethodA(object, method, msg) — A0, D0, A1 */
 static void intuition_DoMethodA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t msg    = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!object) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t result = boopsi_dispatch(object, method, msg, 0);
+    m68k_set_reg(M68K_REG_D0, result);
 }
+
+/* DoSuperMethodA(object, method, msg) — A0, D0, A1 */
 static void intuition_DoSuperMethodA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t msg    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t result = boopsi_super_dispatch(object, method, msg);
+    m68k_set_reg(M68K_REG_D0, result);
 }
+
+/* CoerceMethodA(class, object, method, msg) — A0, A1, D0, A2 */
 static void intuition_CoerceMethodA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t cls    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t msg    = m68k_get_reg(NULL, M68K_REG_A2);
+    if (!cls || !object) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t result = boopsi_dispatch(object, method, msg, cls);
+    m68k_set_reg(M68K_REG_D0, result);
 }
+
+/* DoGadgetMethodA(gadget, window, requester, method, msg) — A0, A1, A2, D0, A3 */
+static void intuition_DoGadgetMethodA(void)
+{
+    uint32_t gad    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t msg    = m68k_get_reg(NULL, M68K_REG_A3);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);
+    if (!gad) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t result = boopsi_dispatch(gad, method, msg, 0);
+    m68k_set_reg(M68K_REG_D0, result);
+}
+
+/* MakeClass(classID, superClassID, superClassPtr, instanceSize, flags)
+ * A0, A1, A2, D0, D1 — returns class pointer in D0. */
 static void intuition_MakeClass(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t class_id = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t super_id = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t super_ptr = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t inst_size = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t flags = m68k_get_reg(NULL, M68K_REG_D1);
+
+    if (!super_ptr && super_id) {
+        super_ptr = find_public_class(super_id);
+        /* If no public class matched, try matching against the raw ClassID or
+         * a private class pointer. */
+        if (!super_ptr) {
+            for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
+                if (!g_boopsi_classes[i].active) continue;
+                uint32_t ptr = g_boopsi_classes[i].class_ptr;
+                if (ptr == super_id || class_id_matches(super_id, mem_u32(ptr + CLASS_OFF_ID))) {
+                    super_ptr = ptr;
+                    break;
+                }
+            }
+        }
+    }
+
+    uint32_t cls = intu_alloc(CLASS_SIZE);
+    if (!cls) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    memset(&g_ram[cls], 0, CLASS_SIZE);
+
+    uint16_t inst_offset = 0;
+    if (super_ptr) {
+        uint16_t super_offset = mem_u16(super_ptr + CLASS_OFF_INST_OFFSET);
+        uint16_t super_size = mem_u16(super_ptr + CLASS_OFF_INST_SIZE);
+        inst_offset = super_offset + super_size;
+    }
+
+    mem_w32(cls + CLASS_OFF_ID, class_id);
+    mem_w32(cls + CLASS_OFF_SUPER, super_ptr);
+    mem_w16(cls + CLASS_OFF_INST_OFFSET, inst_offset);
+    mem_w16(cls + CLASS_OFF_INST_SIZE, (uint16_t)inst_size);
+    mem_w32(cls + CLASS_OFF_FLAGS, flags);
+
+    m68k_set_reg(M68K_REG_D0, cls);
 }
+
+/* FreeClass(class) — A0; returns BOOL in D0. */
 static void intuition_FreeClass(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t cls = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!cls) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
+        if (g_boopsi_classes[i].active && g_boopsi_classes[i].class_ptr == cls) {
+            g_boopsi_classes[i].active = 0;
+            g_boopsi_classes[i].class_ptr = 0;
+        }
+    }
+    intu_free(cls);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* AddClass(class) — A0; returns nothing useful. */
+static void intuition_AddClass(void)
+{
+    uint32_t cls = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!cls) return;
+    for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
+        if (!g_boopsi_classes[i].active) {
+            g_boopsi_classes[i].active = 1;
+            g_boopsi_classes[i].class_ptr = cls;
+            return;
+        }
+    }
+}
+
+/* RemoveClass(class) — A0; returns nothing useful. */
+static void intuition_RemoveClass(void)
+{
+    uint32_t cls = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!cls) return;
+    for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
+        if (g_boopsi_classes[i].active && g_boopsi_classes[i].class_ptr == cls) {
+            g_boopsi_classes[i].active = 0;
+            g_boopsi_classes[i].class_ptr = 0;
+        }
+    }
+}
+
+/* NextObject(objectPtrPtr) — A0; returns next object in D0. */
+static void intuition_NextObject(void)
+{
+    uint32_t ptrptr = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!ptrptr || ptrptr + 4 > GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t cur = mem_u32(ptrptr);
+    if (!cur) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    uint32_t next = mem_u32(cur + OBJ_OFF_LN_SUCC);
+    mem_w32(ptrptr, next);
+    m68k_set_reg(M68K_REG_D0, next);
 }
 
 /* =========================================================================
@@ -6772,6 +7209,12 @@ static void *intuition_funcs[] = {
     intuition_CoerceMethodA,
     intuition_MakeClass,
     intuition_FreeClass,
+    intuition_AddClass,
+    intuition_RemoveClass,
+    intuition_NextObject,
+    intuition_GetAttrsA,
+    intuition_SetSuperAttrsA,
+    intuition_DoGadgetMethodA,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)
