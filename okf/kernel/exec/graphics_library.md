@@ -4,7 +4,7 @@ title: graphics.library
 description: UAOS native implementation of the AmigaOS graphics.library for emulated M68k tasks.
 resource: /kernel/exec/graphics_lib.c
 tags: [graphics, library, m68k, thunking, rastport]
-timestamp: 2026-06-22T17:00:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # graphics.library
@@ -397,7 +397,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 154 | -924 | FreeBitMap | Implemented |
 | 155 | -930 | GetExtSpriteA | Implemented |
 | 156 | -936 | CoerceMode | Implemented |
-| 157 | -942 | ChangeVPBitMap | Stub |
+| 157 | -942 | ChangeVPBitMap | Implemented |
 | 158 | -948 | ReleasePen | Implemented |
 | 159 | -954 | ObtainPen | Implemented |
 | 160 | -960 | GetBitMapAttr | Implemented |

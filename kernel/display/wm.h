@@ -126,6 +126,10 @@ void WM_SetWindowZoomed(int handle, int zoomed);
 /* Raise a window to the top of the z-order and give it focus */
 void WM_RaiseWindow(int handle);
 
+/* Move a window directly in front of another window in the z-order.
+ * If 'behind' is invalid, the source window is raised to the front. */
+void WM_MoveWindowInFrontOf(int src, int behind);
+
 /* Lower a window to the bottom of the z-order and redraw */
 void WM_LowerWindow(int handle);
 

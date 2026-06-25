@@ -1,9 +1,9 @@
 ---
 type: Kernel Subsystem
 title: UAOS Kernel
-description: Overview of the UAOS Kernel architecture, entry points, and initialization.
+description: Overview of the UAOS Kernel architecture, entry points, initialization, and subsystems including networking.
 tags: [kernel, x86_64, boot]
-timestamp: 2026-06-18T10:00:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # UAOS Kernel
@@ -18,12 +18,14 @@ The UAOS kernel is a bare-metal x86_64 kernel that boots via GRUB2 Multiboot2. I
    - `IDT_Init()`: Sets up the Interrupt Descriptor Table and PIC.
    - `VFS_Init()`: Initializes the Virtual File System and RAM disk.
    - `UAOS_ROM_RegisterAll()`: Registers native implementations of Amiga libraries.
-   - `Desktop_Draw()`: Renders the initial workbench.
-   - **Event Loop**: Handles mouse and keyboard interrupts, routing them to the Window Manager.
+   - `Desktop_Draw()`: Renders the initial workbench backdrop and menu bar.
+   - `S:Startup-Sequence` / `C:LoadWB`: Loads the full Workbench desktop.
+   - **Event Loop**: Handles mouse and keyboard interrupts, routing them to the Window Manager and desktop.
 
 ## Subsystems
 
-- [Exec Library](/kernel/exec/index.md): Task management, memory allocation, and IPC.
+- [Exec Library](/kernel/exec/index.md): Task management, memory allocation, IPC, and AmigaOS-compatible library thunks.
 - [DOS Library](/kernel/dos/index.md): File system operations and handler management.
 - [Display & WM](/kernel/display/index.md): Framebuffer management and windowing system.
 - [IRQ & Drivers](/kernel/irq/index.md): Interrupt handling and hardware abstraction.
+- [TCP/IP Network Stack](/kernel/net/index.md): IPv4 networking, DHCP, DNS, NTP, and socket API.

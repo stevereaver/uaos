@@ -310,6 +310,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_BSDSOCKET   3
 #define LIB_GRAPHICS    4
 #define LIB_INTUITION   5
+#define LIB_GADTOOLS    6
 
 /* exec.library function indices */
 #define EXEC_OPEN_LIBRARY   1
@@ -520,6 +521,48 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_GET_ATTRS_A           114
 #define INTUITION_SET_SUPER_ATTRS_A     115
 #define INTUITION_DO_GADGET_METHOD_A    116
+#define INTUITION_HELP_CONTROL          117
+#define INTUITION_START_SCREEN_NOTIFY   118
+#define INTUITION_END_SCREEN_NOTIFY     119
+#define INTUITION_GET_WINDOW_ATTR       120
+#define INTUITION_SET_WINDOW_ATTR       121
+#define INTUITION_GET_SCREEN_ATTR       122
+#define INTUITION_SET_SCREEN_ATTR       123
+#define INTUITION_NEW_OBJECT            124
+#define INTUITION_SET_ATTRS             125
+#define INTUITION_GET_ATTRS             126
+#define INTUITION_DO_METHOD             127
+#define INTUITION_DO_SUPER_METHOD       128
+#define INTUITION_COERCE_METHOD         129
+#define INTUITION_SET_GADGET_ATTRS      130
+#define INTUITION_SET_SUPER_ATTRS       131
+#define INTUITION_SET_WINDOW_POINTER    132
+#define INTUITION_OPEN_WINDOW_TAGS_V    133
+#define INTUITION_OPEN_SCREEN_TAGS_V    134
+#define INTUITION_DO_GADGET_METHOD       135
+
+/* gadtools.library function indices */
+#define GADTOOLS_OPEN_LIBRARY          1
+#define GADTOOLS_CLOSE_LIBRARY         2
+#define GADTOOLS_CREATE_GADGET_A       3
+#define GADTOOLS_FREE_GADGETS          4
+#define GADTOOLS_GT_SET_GADGET_ATTRS_A 5
+#define GADTOOLS_CREATE_MENUS_A        6
+#define GADTOOLS_FREE_MENUS            7
+#define GADTOOLS_LAYOUT_MENU_ITEMS_A   8
+#define GADTOOLS_LAYOUT_MENUS_A        9
+#define GADTOOLS_GT_GET_IMSG          10
+#define GADTOOLS_GT_REPLY_IMSG         11
+#define GADTOOLS_GT_REFRESH_WINDOW     12
+#define GADTOOLS_GT_BEGIN_REFRESH      13
+#define GADTOOLS_GT_END_REFRESH        14
+#define GADTOOLS_GT_FILTER_IMSG       15
+#define GADTOOLS_GT_POST_FILTER_IMSG   16
+#define GADTOOLS_CREATE_CONTEXT        17
+#define GADTOOLS_DRAW_BEVEL_BOX_A      18
+#define GADTOOLS_GET_VISUAL_INFO_A     19
+#define GADTOOLS_FREE_VISUAL_INFO       20
+#define GADTOOLS_GT_GET_GADGET_ATTRS_A 21
 
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
@@ -579,6 +622,7 @@ static void install_stub(int lib_id, int func_idx)
 #define BSD_BASE       0x3000  /* bsdsocket.library base — clear of DOS range */
 #define GRAPHICS_BASE  0x8000  /* graphics.library base — room for LVOs -30..-1056 */
 #define INTUITION_BASE 0x9000  /* intuition.library base — clear of graphics range */
+#define GADTOOLS_BASE  0xA000  /* gadtools.library base — clear of intuition range */
 
 /* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
 #define LVO_BSD_SOCKET        (-30)
@@ -790,6 +834,46 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_GET_ATTRS_A               (-204)
 #define LVO_INTUITION_SET_SUPER_ATTRS_A         (-228)
 #define LVO_INTUITION_DO_GADGET_METHOD_A        (-222)
+#define LVO_INTUITION_HELP_CONTROL              (-828)
+#define LVO_INTUITION_START_SCREEN_NOTIFY       (-900)
+#define LVO_INTUITION_END_SCREEN_NOTIFY         (-906)
+#define LVO_INTUITION_GET_WINDOW_ATTR           (-912)
+#define LVO_INTUITION_SET_WINDOW_ATTR           (-918)
+#define LVO_INTUITION_GET_SCREEN_ATTR           (-924)
+#define LVO_INTUITION_SET_SCREEN_ATTR           (-930)
+#define LVO_INTUITION_NEW_OBJECT                (-936)
+#define LVO_INTUITION_SET_ATTRS                 (-942)
+#define LVO_INTUITION_GET_ATTRS                 (-948)
+#define LVO_INTUITION_DO_METHOD                 (-954)
+#define LVO_INTUITION_DO_SUPER_METHOD           (-960)
+#define LVO_INTUITION_COERCE_METHOD             (-966)
+#define LVO_INTUITION_SET_GADGET_ATTRS          (-972)
+#define LVO_INTUITION_SET_SUPER_ATTRS           (-978)
+#define LVO_INTUITION_SET_WINDOW_POINTER        (-984)
+#define LVO_INTUITION_OPEN_WINDOW_TAGS_V        (-990)
+#define LVO_INTUITION_OPEN_SCREEN_TAGS_V        (-996)
+#define LVO_INTUITION_DO_GADGET_METHOD          (-1044)
+
+/* gadtools.library LVO offsets (AmigaOS 3.x) */
+#define LVO_GADTOOLS_CREATE_GADGET_A       (-30)
+#define LVO_GADTOOLS_FREE_GADGETS            (-36)
+#define LVO_GADTOOLS_GT_SET_GADGET_ATTRS_A   (-42)
+#define LVO_GADTOOLS_CREATE_MENUS_A          (-48)
+#define LVO_GADTOOLS_FREE_MENUS              (-54)
+#define LVO_GADTOOLS_LAYOUT_MENU_ITEMS_A     (-60)
+#define LVO_GADTOOLS_LAYOUT_MENUS_A           (-66)
+#define LVO_GADTOOLS_GT_GET_IMSG             (-72)
+#define LVO_GADTOOLS_GT_REPLY_IMSG            (-78)
+#define LVO_GADTOOLS_GT_REFRESH_WINDOW        (-84)
+#define LVO_GADTOOLS_GT_BEGIN_REFRESH         (-90)
+#define LVO_GADTOOLS_GT_END_REFRESH            (-96)
+#define LVO_GADTOOLS_GT_FILTER_IMSG          (-102)
+#define LVO_GADTOOLS_GT_POST_FILTER_IMSG      (-108)
+#define LVO_GADTOOLS_CREATE_CONTEXT          (-114)
+#define LVO_GADTOOLS_DRAW_BEVEL_BOX_A         (-120)
+#define LVO_GADTOOLS_GET_VISUAL_INFO_A         (-126)
+#define LVO_GADTOOLS_FREE_VISUAL_INFO          (-132)
+#define LVO_GADTOOLS_GT_GET_GADGET_ATTRS_A    (-174)
 
 static uint32_t stub_addr(int lib_id, int func_idx)
 {
@@ -985,6 +1069,48 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_GET_ATTRS_A:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTRS_A);
             case INTUITION_SET_SUPER_ATTRS_A:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SUPER_ATTRS_A);
             case INTUITION_DO_GADGET_METHOD_A:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_GADGET_METHOD_A);
+            case INTUITION_HELP_CONTROL:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_HELP_CONTROL);
+            case INTUITION_START_SCREEN_NOTIFY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_START_SCREEN_NOTIFY);
+            case INTUITION_END_SCREEN_NOTIFY:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_SCREEN_NOTIFY);
+            case INTUITION_GET_WINDOW_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_WINDOW_ATTR);
+            case INTUITION_SET_WINDOW_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_ATTR);
+            case INTUITION_GET_SCREEN_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_ATTR);
+            case INTUITION_SET_SCREEN_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SCREEN_ATTR);
+            case INTUITION_NEW_OBJECT:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_OBJECT);
+            case INTUITION_SET_ATTRS:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_ATTRS);
+            case INTUITION_GET_ATTRS:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTRS);
+            case INTUITION_DO_METHOD:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_METHOD);
+            case INTUITION_DO_SUPER_METHOD:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_SUPER_METHOD);
+            case INTUITION_COERCE_METHOD:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_COERCE_METHOD);
+            case INTUITION_SET_GADGET_ATTRS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_GADGET_ATTRS);
+            case INTUITION_SET_SUPER_ATTRS:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SUPER_ATTRS);
+            case INTUITION_SET_WINDOW_POINTER:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_POINTER);
+            case INTUITION_OPEN_WINDOW_TAGS_V:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW_TAGS_V);
+            case INTUITION_OPEN_SCREEN_TAGS_V:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN_TAGS_V);
+            case INTUITION_DO_GADGET_METHOD:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_GADGET_METHOD);
+        }
+    } else if (lib_id == LIB_GADTOOLS) {
+        switch (func_idx) {
+            case GADTOOLS_OPEN_LIBRARY:          return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_CREATE_GADGET_A - 6);
+            case GADTOOLS_CREATE_GADGET_A:       return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_CREATE_GADGET_A);
+            case GADTOOLS_FREE_GADGETS:          return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_FREE_GADGETS);
+            case GADTOOLS_GT_SET_GADGET_ATTRS_A: return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_SET_GADGET_ATTRS_A);
+            case GADTOOLS_CREATE_MENUS_A:        return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_CREATE_MENUS_A);
+            case GADTOOLS_FREE_MENUS:            return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_FREE_MENUS);
+            case GADTOOLS_LAYOUT_MENU_ITEMS_A:   return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_LAYOUT_MENU_ITEMS_A);
+            case GADTOOLS_LAYOUT_MENUS_A:          return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_LAYOUT_MENUS_A);
+            case GADTOOLS_GT_GET_IMSG:           return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_GET_IMSG);
+            case GADTOOLS_GT_REPLY_IMSG:         return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_REPLY_IMSG);
+            case GADTOOLS_GT_REFRESH_WINDOW:     return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_REFRESH_WINDOW);
+            case GADTOOLS_GT_BEGIN_REFRESH:      return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_BEGIN_REFRESH);
+            case GADTOOLS_GT_END_REFRESH:        return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_END_REFRESH);
+            case GADTOOLS_GT_FILTER_IMSG:        return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_FILTER_IMSG);
+            case GADTOOLS_GT_POST_FILTER_IMSG:   return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_POST_FILTER_IMSG);
+            case GADTOOLS_CREATE_CONTEXT:        return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_CREATE_CONTEXT);
+            case GADTOOLS_DRAW_BEVEL_BOX_A:      return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_DRAW_BEVEL_BOX_A);
+            case GADTOOLS_GET_VISUAL_INFO_A:     return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GET_VISUAL_INFO_A);
+            case GADTOOLS_FREE_VISUAL_INFO:      return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_FREE_VISUAL_INFO);
+            case GADTOOLS_GT_GET_GADGET_ATTRS_A: return (uint32_t)((int)GADTOOLS_BASE + LVO_GADTOOLS_GT_GET_GADGET_ATTRS_A);
         }
     }
     return JMPTAB_BASE;
@@ -1254,6 +1380,46 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTRS_A,        LIB_INTUITION, INTUITION_GET_ATTRS_A);
     install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SUPER_ATTRS_A,  LIB_INTUITION, INTUITION_SET_SUPER_ATTRS_A);
     install_lvo(INTUITION_BASE, LVO_INTUITION_DO_GADGET_METHOD_A, LIB_INTUITION, INTUITION_DO_GADGET_METHOD_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_HELP_CONTROL,        LIB_INTUITION, INTUITION_HELP_CONTROL);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_START_SCREEN_NOTIFY, LIB_INTUITION, INTUITION_START_SCREEN_NOTIFY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_END_SCREEN_NOTIFY,  LIB_INTUITION, INTUITION_END_SCREEN_NOTIFY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_WINDOW_ATTR,    LIB_INTUITION, INTUITION_GET_WINDOW_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_ATTR,    LIB_INTUITION, INTUITION_SET_WINDOW_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_ATTR,    LIB_INTUITION, INTUITION_GET_SCREEN_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SCREEN_ATTR,    LIB_INTUITION, INTUITION_SET_SCREEN_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_OBJECT,         LIB_INTUITION, INTUITION_NEW_OBJECT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_ATTRS,          LIB_INTUITION, INTUITION_SET_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTRS,          LIB_INTUITION, INTUITION_GET_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_METHOD,          LIB_INTUITION, INTUITION_DO_METHOD);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_SUPER_METHOD,    LIB_INTUITION, INTUITION_DO_SUPER_METHOD);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_COERCE_METHOD,      LIB_INTUITION, INTUITION_COERCE_METHOD);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_GADGET_ATTRS,   LIB_INTUITION, INTUITION_SET_GADGET_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SUPER_ATTRS,    LIB_INTUITION, INTUITION_SET_SUPER_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_POINTER, LIB_INTUITION, INTUITION_SET_WINDOW_POINTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW_TAGS_V,  LIB_INTUITION, INTUITION_OPEN_WINDOW_TAGS_V);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN_TAGS_V,  LIB_INTUITION, INTUITION_OPEN_SCREEN_TAGS_V);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_GADGET_METHOD,   LIB_INTUITION, INTUITION_DO_GADGET_METHOD);
+
+    /* gadtools.library at GADTOOLS_BASE */
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_SET_GADGET_ATTRS_A,   LIB_GADTOOLS, GADTOOLS_GT_SET_GADGET_ATTRS_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_MENUS_A,          LIB_GADTOOLS, GADTOOLS_CREATE_MENUS_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_MENUS,              LIB_GADTOOLS, GADTOOLS_FREE_MENUS);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_LAYOUT_MENU_ITEMS_A,     LIB_GADTOOLS, GADTOOLS_LAYOUT_MENU_ITEMS_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_LAYOUT_MENUS_A,         LIB_GADTOOLS, GADTOOLS_LAYOUT_MENUS_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_GET_IMSG,             LIB_GADTOOLS, GADTOOLS_GT_GET_IMSG);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_REPLY_IMSG,           LIB_GADTOOLS, GADTOOLS_GT_REPLY_IMSG);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_REFRESH_WINDOW,       LIB_GADTOOLS, GADTOOLS_GT_REFRESH_WINDOW);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_BEGIN_REFRESH,          LIB_GADTOOLS, GADTOOLS_GT_BEGIN_REFRESH);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_END_REFRESH,            LIB_GADTOOLS, GADTOOLS_GT_END_REFRESH);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_FILTER_IMSG,            LIB_GADTOOLS, GADTOOLS_GT_FILTER_IMSG);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_POST_FILTER_IMSG,     LIB_GADTOOLS, GADTOOLS_GT_POST_FILTER_IMSG);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_CONTEXT,          LIB_GADTOOLS, GADTOOLS_CREATE_CONTEXT);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_DRAW_BEVEL_BOX_A,        LIB_GADTOOLS, GADTOOLS_DRAW_BEVEL_BOX_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GET_VISUAL_INFO_A,       LIB_GADTOOLS, GADTOOLS_GET_VISUAL_INFO_A);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_VISUAL_INFO,        LIB_GADTOOLS, GADTOOLS_FREE_VISUAL_INFO);
+    install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_GET_GADGET_ATTRS_A,   LIB_GADTOOLS, GADTOOLS_GT_GET_GADGET_ATTRS_A);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -1421,6 +1587,12 @@ static void exec_OpenLibrary(void)
     for (int j = 0; intuition_name[j]; j++)
         if (name[j] != intuition_name[j]) { intuition_match = 0; break; }
     if (intuition_match) result = INTUITION_BASE;
+
+    const char *gadtools_name = "gadtools.library";
+    int gadtools_match = 1;
+    for (int j = 0; gadtools_name[j]; j++)
+        if (name[j] != gadtools_name[j]) { gadtools_match = 0; break; }
+    if (gadtools_match) result = GADTOOLS_BASE;
 
     /* Check loadable libraries (real M68k binaries loaded from disk) */
     if (result == FAKE_LIB_BASE) {
@@ -1655,6 +1827,27 @@ static void exec_WaitPort(void)
         Wait(1U << sigbit);
     }
     m68k_set_reg(M68K_REG_D0, port);
+}
+
+/* Public exec dispatcher for use by other host library code (e.g. gadtools). */
+void UAOS_Exec_Dispatch(uint32_t fn)
+{
+    switch (fn) {
+        case EXEC_OPEN_LIBRARY:  exec_OpenLibrary();  break;
+        case EXEC_CLOSE_LIBRARY: exec_CloseLibrary(); break;
+        case EXEC_ALLOC_MEM:     exec_AllocMem();     break;
+        case EXEC_FREE_MEM:      exec_FreeMem();      break;
+        case EXEC_FIND_TASK:     exec_FindTask();     break;
+        case EXEC_WAIT:          exec_Wait();         break;
+        case EXEC_SIGNAL:        exec_Signal();       break;
+        case EXEC_SETSIGNAL:     exec_SetSignal();    break;
+        case EXEC_ALLOC_SIGNAL:  exec_AllocSignal();  break;
+        case EXEC_FREE_SIGNAL:   exec_FreeSignal();   break;
+        case EXEC_PUT_MSG:       exec_PutMsg();       break;
+        case EXEC_GET_MSG:       exec_GetMsg();       break;
+        case EXEC_REPLY_MSG:     exec_ReplyMsg();     break;
+        case EXEC_WAIT_PORT:     exec_WaitPort();     break;
+    }
 }
 
 /* =========================================================================
@@ -2540,6 +2733,9 @@ int m68k_illg_instr_callback(int opcode)
     } else if (lib == LIB_INTUITION) {
         extern void UAOS_Intuition_Dispatch(uint32_t fn);
         UAOS_Intuition_Dispatch((uint32_t)fn);
+    } else if (lib == LIB_GADTOOLS) {
+        extern void UAOS_GADTOOLS_Dispatch(uint32_t fn);
+        UAOS_GADTOOLS_Dispatch((uint32_t)fn);
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);

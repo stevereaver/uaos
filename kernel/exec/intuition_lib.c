@@ -142,7 +142,7 @@ static char *local_strchr(const char *s, int c)
 static uint32_t intu_heap_top = INTUITION_HEAP_BASE;
 static uint32_t intu_free_list = 0;
 
-static uint32_t intu_alloc(uint32_t size)
+uint32_t intu_alloc(uint32_t size)
 {
     size = (size + 7) & ~7u;
     if (size < 8) size = 8;
@@ -186,7 +186,7 @@ static uint32_t intu_alloc(uint32_t size)
     return block + 8;
 }
 
-static void intu_free(uint32_t user_addr)
+void intu_free(uint32_t user_addr)
 {
     if (!user_addr) return;
     if (user_addr < INTUITION_HEAP_BASE + 8 ||
@@ -261,6 +261,8 @@ typedef struct {
     uint16_t inner_height;
     uint32_t amiga_key;
     uint8_t  notify_depth;
+    uint32_t pointer_delay;     /* WA_PointerDelay: stored but ignored */
+    uint8_t  help_enabled;      /* HC_GADGETHELP state for this window */
 
     /* Refresh / damage state */
     uint8_t  refreshing;        /* inside BeginRefresh ... EndRefresh pair */
@@ -352,6 +354,8 @@ static void free_slot(IntuitionSlot *slot)
         slot->inner_height = 0;
         slot->amiga_key = 0;
         slot->notify_depth = 0;
+        slot->pointer_delay = 0;
+        slot->help_enabled = 0;
         slot->refreshing = 0;
         slot->simple_refresh = 0;
         slot->damage_x = 0;
@@ -2102,9 +2106,9 @@ static void fill_window_client_area(int win_x, int win_y, int win_w, int win_h,
  * During BeginRefresh/EndRefresh, gadget rendering is clipped to the damage
  * region so host-side gadgets don't redraw outside the damaged area.
  *
- * WA_SuperBitMap windows are rendered from their backing BitMap; WA_BackFill
- * hooks are handled by a solid-pen fallback (full m68k hook invocation is not
- * yet implemented). */
+ * WA_SuperBitMap windows are rendered from their backing BitMap. WA_BackFill
+ * hooks are dispatched via UAOS_InvokeM68kHook(); values below 256 still use
+ * the solid-pen fallback. */
 static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
 {
     int wh = WM_CurrentDrawHandle;
@@ -3449,7 +3453,7 @@ static void parse_window_tags(uint32_t tag_list,
     uint8_t *pub_screen_fallback, uint32_t *super_bitmap_ptr,
     uint32_t *colors, uint32_t *checkmark, uint32_t *amiga_key,
     uint8_t *menu_help, uint8_t *tablet_messages, uint8_t *auto_adjust,
-    uint8_t *notify_depth)
+    uint8_t *notify_depth, uint32_t *pointer_delay)
 {
     while (tag_list && tag_list + 8 <= GUEST_RAM_SIZE) {
         uint32_t tag  = mem_u32(tag_list);
@@ -3504,6 +3508,7 @@ static void parse_window_tags(uint32_t tag_list,
             case WA_TabletMessages:  if (tablet_messages) *tablet_messages = data ? 1 : 0; break;
             case WA_AutoAdjust:      if (auto_adjust)     *auto_adjust     = data ? 1 : 0; break;
             case WA_NotifyDepth:     if (notify_depth)    *notify_depth    = data ? 1 : 0; break;
+            case WA_PointerDelay:    if (pointer_delay)   *pointer_delay   = data; break;
         }
         tag_list += sizeof(AmigaTagItem);
     }
@@ -3527,7 +3532,7 @@ static void intuition_OpenWindowTagList(void)
     uint32_t pub_screen_ptr = 0, pub_screen_name_ptr = 0;
     uint8_t  pub_screen_fallback = 0;
     uint32_t super_bitmap = 0;
-    uint32_t colors = 0, checkmark = 0, amiga_key = 0;
+    uint32_t colors = 0, checkmark = 0, amiga_key = 0, pointer_delay = 0;
     uint8_t  menu_help = 0, tablet_messages = 0, auto_adjust = 0, notify_depth = 0;
 
     if (nw_ptr) {
@@ -3554,7 +3559,7 @@ static void intuition_OpenWindowTagList(void)
                           &pub_screen_fallback, &super_bitmap,
                           &colors, &checkmark, &amiga_key,
                           &menu_help, &tablet_messages, &auto_adjust,
-                          &notify_depth);
+                          &notify_depth, &pointer_delay);
     }
 
     /* Resolve public screen for visitor windows. */
@@ -3666,6 +3671,7 @@ static void intuition_OpenWindowTagList(void)
     slot->tablet_messages  = tablet_messages;
     slot->auto_adjust      = auto_adjust;
     slot->notify_depth     = notify_depth;
+    slot->pointer_delay    = pointer_delay;
 
     /* Refresh mode: SmartRefresh is the default.  SuperBitMap disables
      * simple refresh, since the application provides its own bitmap. */
@@ -4141,8 +4147,10 @@ static void intuition_SetWindowAttrsA(void)
                 break;
             case WA_Pointer:
             case WA_BusyPointer:
-            case WA_PointerDelay:
                 /* Handled by SetWindowPointerA; SetWindowAttrsA accepts but ignores them. */
+                break;
+            case WA_PointerDelay:
+                if (slot) slot->pointer_delay = data;
                 break;
             case WA_TabletMessages:
                 if (slot) slot->tablet_messages = data ? 1 : 0;
@@ -4267,7 +4275,8 @@ static void intuition_GetWindowAttrsA(void)
             case WA_SuperBitMap: data = slot ? slot->super_bitmap : 0; break;
             case WA_Pointer:
             case WA_BusyPointer:
-            case WA_PointerDelay: data = 0; break;
+                data = 0; break;
+            case WA_PointerDelay: data = slot ? slot->pointer_delay : 0; break;
             case WA_TabletMessages: data = slot ? slot->tablet_messages : 0; break;
             case WA_HelpGroup:  data = slot ? slot->help_group : 0; break;
             case WA_HelpGroupWindow: data = slot ? slot->help_group_window : 0; break;
@@ -5780,8 +5789,13 @@ static void decode_pointer_bitmap(uint32_t bm, int xoff, int yoff)
 /* Try to extract a pointer image from a WA_Pointer value. The value may be:
  *  - a SetPointer-style sprite data buffer
  *  - a pointer to a struct BitMap
- *  - a pointerclass BOOPSI object whose first valid pointer is a BitMap
- * Heuristic detection is used; pointerclass object layout is not guaranteed. */
+ *  - a pointerclass BOOPSI object (explicit class check first)
+ */
+extern int UAOS_BOOPSI_IsPointerClass(uint32_t obj);
+extern uint32_t UAOS_BOOPSI_PointerBitMap(uint32_t obj);
+extern uint32_t UAOS_BOOPSI_PointerXOffset(uint32_t obj);
+extern uint32_t UAOS_BOOPSI_PointerYOffset(uint32_t obj);
+
 static void set_pointer_from_wa_pointer(uint32_t ptr, int xoff, int yoff)
 {
     if (!ptr) {
@@ -5801,7 +5815,18 @@ static void set_pointer_from_wa_pointer(uint32_t ptr, int xoff, int yoff)
         return;
     }
 
-    /* pointerclass BOOPSI object: scan likely offsets for a BitMap pointer. */
+    /* pointerclass BOOPSI object: use the explicit class fields. */
+    if (UAOS_BOOPSI_IsPointerClass(ptr)) {
+        uint32_t bm = UAOS_BOOPSI_PointerBitMap(ptr);
+        if (bm && is_valid_bitmap(bm)) {
+            int16_t px = (int16_t)UAOS_BOOPSI_PointerXOffset(ptr);
+            int16_t py = (int16_t)UAOS_BOOPSI_PointerYOffset(ptr);
+            decode_pointer_bitmap(bm, xoff + px, yoff + py);
+            return;
+        }
+    }
+
+    /* Final fallback: scan likely offsets for a BitMap pointer. */
     for (int off = 0; off <= 32; off += 4) {
         uint32_t cand = mem_u32(ptr + off);
         if (is_valid_bitmap(cand)) {
@@ -5836,11 +5861,13 @@ static void intuition_ClearPointer(void)
 /* SetWindowPointerA(window, tagList) — A0, A1 */
 static void intuition_SetWindowPointerA(void)
 {
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A1);
     int busy = 0;
     int got_busy = 0;
     uint32_t wa_pointer = 0;
     int got_pointer = 0;
+    uint32_t delay = 0;
     int got_delay = 0;
 
     if (tag_list) {
@@ -5856,13 +5883,17 @@ static void intuition_SetWindowPointerA(void)
                 got_pointer = 1;
                 wa_pointer = data;
             } else if (tag == WA_PointerDelay) {
-                got_delay = data ? 1 : 0;
+                got_delay = 1;
+                delay = data;
             }
             p += 8;
         }
     }
 
-    (void)got_delay; /* delays are ignored for now; pointer changes immediately */
+    if (got_delay) {
+        IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+        if (slot) slot->pointer_delay = delay;
+    }
 
     if (got_busy) {
         Cursor_SetBusy(busy);
@@ -6596,14 +6627,18 @@ static void intuition_FreeScreenDrawInfo(void)
 }
 
 /* MoveWindowInFrontOf(window, behind) — A0, A1
- * Moves 'window' in front of 'behind'.  If behind is NULL, move to front.
- * UAOS only supports a single front/back layer, so this raises the window. */
+ * Moves 'window' directly in front of 'behind'.  If behind is NULL, move to front. */
 static void intuition_MoveWindowInFrontOf(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
-    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
-    if (slot) WM_RaiseWindow(slot->wm_handle);
+    uint32_t behind_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    IntuitionSlot *src_slot = find_slot_by_guest(win_ptr);
+    IntuitionSlot *behind_slot = behind_ptr ? find_slot_by_guest(behind_ptr) : NULL;
+    if (src_slot) {
+        int src_handle = src_slot->wm_handle;
+        int behind_handle = behind_slot ? behind_slot->wm_handle : -1;
+        WM_MoveWindowInFrontOf(src_handle, behind_handle);
+    }
 }
 
 /* SetEditHook(gadget, hook) — A0, A1; returns old hook in D0 */
@@ -6764,8 +6799,6 @@ static uint32_t boopsi_dispatch(uint32_t object, uint32_t method,
     if (!object) return 0;
     uint32_t cls = start_class ? start_class : boopsi_object_class(object);
     if (!cls) return 0;
-    uint32_t entry = mem_u32(cls + CLASS_OFF_DISPATCHER_ENTRY);
-    if (!entry) return 0;
 
     if (g_boopsi_nest >= MAX_BOOPSI_NEST) return 0;
     g_boopsi_class_stack[g_boopsi_nest++] = cls;
@@ -6776,7 +6809,26 @@ static uint32_t boopsi_dispatch(uint32_t object, uint32_t method,
         use_msg = alloc_stack_msg_4(method);
     }
 
-    uint32_t result = UAOS_InvokeM68kHook(entry, cls, object, use_msg);
+    uint32_t result = 0;
+    uint32_t flags = mem_u32(cls + CLASS_OFF_FLAGS);
+    int native_dispatcher = (flags & CLASS_FLAG_NATIVE) ? 1 : 0;
+    if (native_dispatcher) {
+        uint32_t native = mem_u32(cls + CLASS_OFF_NATIVE_DISPATCHER);
+        if (native) {
+            typedef uint32_t (*NativeDispatcher)(uint32_t cls, uint32_t obj, uint32_t msg);
+            result = ((NativeDispatcher)(uintptr_t)native)(cls, object, use_msg);
+        }
+    } else {
+        uint32_t entry = mem_u32(cls + CLASS_OFF_DISPATCHER_ENTRY);
+        if (entry) {
+            result = UAOS_InvokeM68kHook(entry, cls, object, use_msg);
+        }
+    }
+
+    /* The auto-allocated one-longword message must be freed only for native
+     * dispatchers. M68k dispatchers restore the entire CPU context, so the
+     * stack pointer is already back to the pre-allocation value. */
+    if (!msg && native_dispatcher) free_stack_msg(4);
 
     g_boopsi_nest--;
     return result;
@@ -7049,10 +7101,18 @@ static void intuition_FreeClass(void)
     m68k_set_reg(M68K_REG_D0, 1);
 }
 
+extern void UAOS_BOOPSI_RegisterClass(uint32_t cls);
+
 /* AddClass(class) — A0; returns nothing useful. */
 static void intuition_AddClass(void)
 {
     uint32_t cls = m68k_get_reg(NULL, M68K_REG_A0);
+    UAOS_BOOPSI_RegisterClass(cls);
+}
+
+/* Public registration helper for built-in classes. */
+void UAOS_BOOPSI_RegisterClass(uint32_t cls)
+{
     if (!cls) return;
     for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
         if (!g_boopsi_classes[i].active) {
@@ -7092,6 +7152,423 @@ static void intuition_NextObject(void)
     uint32_t next = mem_u32(cur + OBJ_OFF_LN_SUCC);
     mem_w32(ptrptr, next);
     m68k_set_reg(M68K_REG_D0, next);
+}
+
+/* -------------------------------------------------------------------------
+ * Helpers for singular-attribute and varargs wrapper LVOs
+ * ------------------------------------------------------------------------- */
+
+/* Build a two-item TagItem array on the guest stack for singular Attr calls. */
+static uint32_t alloc_stack_taglist(uint32_t tag, uint32_t data)
+{
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 16;
+    if (sp + 16 > GUEST_RAM_SIZE) return 0;
+    mem_w32(sp, tag);
+    mem_w32(sp + 4, data);
+    mem_w32(sp + 8, TAG_DONE);
+    mem_w32(sp + 12, 0);
+    m68k_set_reg(M68K_REG_A7, sp);
+    return sp;
+}
+
+static void restore_stack(uint32_t sp)
+{
+    m68k_set_reg(M68K_REG_A7, sp);
+}
+
+/* Build a variable-length TagItem array from the varargs on the guest stack.
+ * Fixed arguments are in registers; the first vararg is at the return
+ * address + 4.  The list is forcibly terminated with TAG_DONE.
+ * Returns the new stack pointer pointing at the tag list, or 0 on failure. */
+static uint32_t build_varargs_taglist(uint32_t old_sp, uint32_t max_pairs)
+{
+    uint32_t read = old_sp + 4; /* skip return address */
+    uint32_t pairs = 0;
+    int done = 0;
+
+    while (read + 8 <= GUEST_RAM_SIZE && pairs < max_pairs) {
+        uint32_t tag = mem_u32(read);
+        pairs++;
+        if (tag == TAG_DONE) { done = 1; break; }
+        read += 8;
+    }
+
+    if (!done) pairs++; /* force TAG_DONE termination */
+
+    uint32_t size = pairs * 8;
+    if (size > old_sp) return 0;
+    uint32_t new_sp = old_sp - size;
+
+    read = old_sp + 4;
+    uint32_t write = new_sp;
+    for (uint32_t i = 0; i < pairs; i++) {
+        uint32_t tag  = mem_u32(read);
+        uint32_t data = 0;
+        if (tag == TAG_DONE) {
+            data = 0;
+        } else if (i == pairs - 1 && !done) {
+            tag = TAG_DONE;
+        } else {
+            data = mem_u32(read + 4);
+        }
+        mem_w32(write, tag);
+        mem_w32(write + 4, data);
+        write += 8;
+        read += 8;
+    }
+
+    m68k_set_reg(M68K_REG_A7, new_sp);
+    return new_sp;
+}
+
+/* Build a 12-byte BOOPSI method message on the guest stack from the varargs
+ * following the method ID. */
+static uint32_t build_varargs_method_msg(uint32_t method, uint32_t old_sp)
+{
+    if (old_sp + 8 > GUEST_RAM_SIZE) return 0;
+    uint32_t new_sp = old_sp - 12;
+    if (new_sp + 12 > GUEST_RAM_SIZE) return 0;
+    mem_w32(new_sp, method);
+    mem_w32(new_sp + 4, mem_u32(old_sp + 4));
+    mem_w32(new_sp + 8, mem_u32(old_sp + 8));
+    m68k_set_reg(M68K_REG_A7, new_sp);
+    return new_sp;
+}
+
+/* -------------------------------------------------------------------------
+ * New LVOs: HelpControl, screen notify, singular attr calls, varargs wrappers
+ * ------------------------------------------------------------------------- */
+
+/* HelpControl(window, flags) — A0, D0
+ * Enable/disable gadget help for the window and its help group. */
+static void intuition_HelpControl(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t flags   = m68k_get_reg(NULL, M68K_REG_D0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (slot) slot->help_enabled = (flags & HC_GADGETHELP) ? 1 : 0;
+    /* TODO: propagate HC_GADGETHELP to other windows in the same help-group. */
+}
+
+/* StartScreenNotifyTagList(tagList) — A0; returns handle in D0. */
+static void intuition_StartScreenNotifyTagList(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* EndScreenNotify(handle) — A0; returns success in D0. */
+static void intuition_EndScreenNotify(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* GetWindowAttr(window, attrID, data, size) — A0, D0, A1, D1 */
+static void intuition_GetWindowAttr(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t attr_id = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t storage = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = alloc_stack_taglist(attr_id, storage);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, win_ptr);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_GetWindowAttrsA();
+    restore_stack(old_sp);
+}
+
+/* SetWindowAttr(window, attrID, data, size) — A0, D0, A1, D1 */
+static void intuition_SetWindowAttr(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t attr_id = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t data    = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = alloc_stack_taglist(attr_id, data);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, win_ptr);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    m68k_set_reg(M68K_REG_A2, 0);
+    intuition_SetWindowAttrsA();
+    restore_stack(old_sp);
+}
+
+/* GetScreenAttr(screen, attrID, data, size) — A0, D0, A1, D1 */
+static void intuition_GetScreenAttr(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t attr_id    = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t storage    = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = alloc_stack_taglist(attr_id, storage);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, screen_ptr);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_GetScreenAttrsA();
+    restore_stack(old_sp);
+}
+
+/* SetScreenAttr(screen, attrID, data, size) — A0, D0, A1, D1 */
+static void intuition_SetScreenAttr(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t attr_id    = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t data       = m68k_get_reg(NULL, M68K_REG_A1);
+    (void)m68k_get_reg(NULL, M68K_REG_D1);
+
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = alloc_stack_taglist(attr_id, data);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, screen_ptr);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_SetScreenAttrsA();
+    restore_stack(old_sp);
+}
+
+/* SetGadgetAttrsA(gadget, window, requester, tagList) — A0, A1, A2, A3 */
+static void intuition_SetGadgetAttrsA(void)
+{
+    uint32_t gadget    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t window    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t requester = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t tag_list  = m68k_get_reg(NULL, M68K_REG_A3);
+    (void)requester;
+
+    /* Minimal implementation: pass the window pointer as the GadgetInfo to
+     * the generic OM_SET dispatcher. */
+    m68k_set_reg(M68K_REG_A0, gadget);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    m68k_set_reg(M68K_REG_A2, window);
+    intuition_SetAttrsA();
+}
+
+/* NewObject(classPtr, classID, tag1, ...) — A0, A1 + varargs on stack */
+static void intuition_NewObject(void)
+{
+    uint32_t class_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t class_id  = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t old_sp    = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list  = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, class_ptr);
+    m68k_set_reg(M68K_REG_A1, class_id);
+    m68k_set_reg(M68K_REG_A2, tag_list);
+    intuition_NewObjectA();
+    restore_stack(old_sp);
+}
+
+/* SetAttrs(object, tag1, ...) — A0 + varargs on stack */
+static void intuition_SetAttrs(void)
+{
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, object);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    m68k_set_reg(M68K_REG_A2, 0);
+    intuition_SetAttrsA();
+    restore_stack(old_sp);
+}
+
+/* GetAttrs(object, tag1, ...) — A0 + varargs on stack */
+static void intuition_GetAttrs(void)
+{
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, object);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_GetAttrsA();
+    restore_stack(old_sp);
+}
+
+/* DoMethod(object, method, ...) — A0, D0 + varargs on stack */
+static void intuition_DoMethod(void)
+{
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t msg = build_varargs_method_msg(method, old_sp);
+    if (!msg) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, object);
+    m68k_set_reg(M68K_REG_A1, msg);
+    intuition_DoMethodA();
+    restore_stack(old_sp);
+}
+
+/* DoSuperMethod(object, method, ...) — A0, D0 + varargs on stack */
+static void intuition_DoSuperMethod(void)
+{
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t msg = build_varargs_method_msg(method, old_sp);
+    if (!msg) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, object);
+    m68k_set_reg(M68K_REG_A1, msg);
+    intuition_DoSuperMethodA();
+    restore_stack(old_sp);
+}
+
+/* CoerceMethod(class, object, method, ...) — A0, A1, D0 + varargs on stack */
+static void intuition_CoerceMethod(void)
+{
+    uint32_t cls    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t msg = build_varargs_method_msg(method, old_sp);
+    if (!msg) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, cls);
+    m68k_set_reg(M68K_REG_A1, object);
+    m68k_set_reg(M68K_REG_A2, msg);
+    intuition_CoerceMethodA();
+    restore_stack(old_sp);
+}
+
+/* SetGadgetAttrs(gadget, window, requester, tag1, ...) — A0, A1, A2 + varargs */
+static void intuition_SetGadgetAttrs(void)
+{
+    uint32_t gadget    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t window    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t requester = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t old_sp    = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list  = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, gadget);
+    m68k_set_reg(M68K_REG_A1, window);
+    m68k_set_reg(M68K_REG_A2, requester);
+    m68k_set_reg(M68K_REG_A3, tag_list);
+    intuition_SetGadgetAttrsA();
+    restore_stack(old_sp);
+}
+
+/* SetSuperAttrs(class, object, tag1, ...) — A0, A1 + varargs on stack */
+static void intuition_SetSuperAttrs(void)
+{
+    uint32_t cls    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    (void)cls;
+    m68k_set_reg(M68K_REG_A0, object);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    m68k_set_reg(M68K_REG_A2, 0);
+    intuition_SetSuperAttrsA();
+    restore_stack(old_sp);
+}
+
+/* SetWindowPointer(window, tag1, ...) — A0 + varargs on stack */
+static void intuition_SetWindowPointer(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t old_sp  = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, win_ptr);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_SetWindowPointerA();
+    restore_stack(old_sp);
+}
+
+/* OpenWindowTags(newWindow, tag1, ...) — A0 + varargs on stack */
+static void intuition_OpenWindowTags(void)
+{
+    uint32_t new_window = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t old_sp     = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list   = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, new_window);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_OpenWindowTagList();
+    restore_stack(old_sp);
+}
+
+/* OpenScreenTags(newScreen, tag1, ...) — A0 + varargs on stack */
+static void intuition_OpenScreenTags(void)
+{
+    uint32_t new_screen = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t old_sp     = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t tag_list   = build_varargs_taglist(old_sp, 32);
+    if (!tag_list) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, new_screen);
+    m68k_set_reg(M68K_REG_A1, tag_list);
+    intuition_OpenScreenTagList();
+    restore_stack(old_sp);
+}
+
+/* DoGadgetMethod(gadget, window, requester, method, ...) — A0, A1, A2, D0 + varargs */
+static void intuition_DoGadgetMethod(void)
+{
+    uint32_t gadget = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t method = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t old_sp = m68k_get_reg(NULL, M68K_REG_A7);
+    uint32_t msg = build_varargs_method_msg(method, old_sp);
+    if (!msg) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    m68k_set_reg(M68K_REG_A0, gadget);
+    m68k_set_reg(M68K_REG_A3, msg);
+    intuition_DoGadgetMethodA();
+    restore_stack(old_sp);
 }
 
 /* =========================================================================
@@ -7215,6 +7692,25 @@ static void *intuition_funcs[] = {
     intuition_GetAttrsA,
     intuition_SetSuperAttrsA,
     intuition_DoGadgetMethodA,
+    intuition_HelpControl,
+    intuition_StartScreenNotifyTagList,
+    intuition_EndScreenNotify,
+    intuition_GetWindowAttr,
+    intuition_SetWindowAttr,
+    intuition_GetScreenAttr,
+    intuition_SetScreenAttr,
+    intuition_NewObject,
+    intuition_SetAttrs,
+    intuition_GetAttrs,
+    intuition_DoMethod,
+    intuition_DoSuperMethod,
+    intuition_CoerceMethod,
+    intuition_SetGadgetAttrsA,
+    intuition_SetSuperAttrs,
+    intuition_SetWindowPointer,
+    intuition_OpenWindowTags,
+    intuition_OpenScreenTags,
+    intuition_DoGadgetMethod,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)
@@ -7237,4 +7733,7 @@ void UAOS_INTUITION_Register(void)
                       (uint16_t)(sizeof(intuition_funcs) / sizeof(intuition_funcs[0])),
                       intuition_funcs);
     WM_SetPaletteFn(intuition_apply_window_palette);
+
+    extern void UAOS_BOOPSI_RegisterBuiltinClasses(void);
+    UAOS_BOOPSI_RegisterBuiltinClasses();
 }

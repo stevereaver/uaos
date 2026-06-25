@@ -4,7 +4,7 @@ title: intuition.library
 description: UAOS native implementation of the AmigaOS intuition.library for emulated M68k tasks.
 resource: /kernel/exec/intuition_lib.c
 tags: [intuition, library, m68k, thunking, window, wm]
-timestamp: 2026-06-22T17:00:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # intuition.library
@@ -14,7 +14,9 @@ timestamp: 2026-06-22T17:00:00Z
 ## Key files
 
 - `kernel/exec/intuition_lib.c` — native implementations and function table.
-- `kernel/exec/intuition_lib.h` — minimal guest `Window` / `NewWindow` structures and flags.
+- `kernel/exec/intuition_lib.h` — minimal guest `Window` / `NewWindow` structures and flags, plus BOOPSI class/object offsets and attribute/method IDs.
+- `kernel/exec/boopsi_builtin.c` — native dispatchers for the built-in BOOPSI classes.
+- `kernel/exec/boopsi_builtin.h` — built-in class registration prototype.
 - `kernel/display/wm.h` — host window manager API.
 - `emulation/uaos_m68k_glue.c` — M68k LVO stub installation and dispatch.
 
@@ -25,7 +27,7 @@ timestamp: 2026-06-22T17:00:00Z
 | Function | Status | Notes |
 |----------|--------|-------|
 | `OpenWindow` | Implemented | Translates a guest `NewWindow` into a host WM window and allocates a guest `Window` + `RastPort`. Width/height are clamped to the `NewWindow` `MinWidth/MinHeight` and `MaxWidth/MaxHeight` bounds. |
-| `OpenWindowTagList` | Implemented | Parses the full `WA_*` tag set, including geometry, title, flags, system gadgets, refresh mode, public/custom screen, min/max bounds, and stored miscellaneous tags (`WA_Colors`, `WA_Checkmark`, `WA_AmigaKey`, `WA_MenuHelp`, `WA_TabletMessages`, `WA_AutoAdjust`, `WA_NotifyDepth`). Uses the `NewWindow` pointer as defaults when supplied, including `NewWindow.CheckMark` as the default for `WA_Checkmark`. |
+| `OpenWindowTagList` | Implemented | Parses the full `WA_*` tag set, including geometry, title, flags, system gadgets, refresh mode, public/custom screen, min/max bounds, and stored miscellaneous tags (`WA_Colors`, `WA_Checkmark`, `WA_AmigaKey`, `WA_MenuHelp`, `WA_TabletMessages`, `WA_AutoAdjust`, `WA_NotifyDepth`, `WA_PointerDelay`). Uses the `NewWindow` pointer as defaults when supplied, including `NewWindow.CheckMark` as the default for `WA_Checkmark`. |
 | `CloseWindow` | Implemented | Destroys the host window and frees the guest slot, plus any `UserPort`/`WindowPort` pending messages, the gadget list, the `RastPort`, and the `Window` structure. |
 
 ### Window ordering and focus
@@ -35,7 +37,7 @@ timestamp: 2026-06-22T17:00:00Z
 | `WindowToFront` | Implemented | Calls `WM_RaiseWindow` to bring the window to the top and focus it. |
 | `WindowToBack` | Implemented | Calls `WM_LowerWindow` to send the window to the bottom of the z-order. |
 | `ActivateWindow` | Implemented | Calls `WM_RequestFocus` to focus the window. |
-| `MoveWindowInFrontOf` | Implemented | Raises the source window with `WM_RaiseWindow`. (Precise z-order placement behind another window is not yet supported.) |
+| `MoveWindowInFrontOf` | Implemented | Repositions the source window directly in front of the `behind` window in the WM's back-to-front z-order array. If `behind` is `NULL` (or an invalid window), the source window is raised to the top. The focused window is left unchanged, and the scene is redrawn. |
 
 ### Window geometry and chrome
 
@@ -111,6 +113,7 @@ Proportional gadgets (`GTYP_PROPGADGET`) are now interactive: clicking inside th
 | `DoSuperMethodA` | Implemented | Dispatches an arbitrary method to the superclass of the currently active class during a dispatcher call. |
 | `CoerceMethodA` | Implemented | Dispatches an arbitrary method to a specific class's dispatcher as if the object were of that class. |
 | `DoGadgetMethodA` | Implemented | Dispatches a gadget method to the BOOPSI gadget's class dispatcher. |
+| `SetGadgetAttrsA` | Implemented | Gadget-specific `OM_SET` dispatch. The window pointer is passed as a minimal `GadgetInfo` substitute to the generic `SetAttrsA` dispatcher. |
 | `MakeClass` | Implemented | Allocates and initializes an `IClass` structure, computes `cl_InstOffset` from the superclass, and returns the class pointer. |
 | `FreeClass` | Implemented | Removes the class from the public registry and frees the `IClass` structure. |
 | `AddClass` | Implemented | Adds an `IClass` to the internal public-class registry. |
@@ -119,11 +122,42 @@ Proportional gadgets (`GTYP_PROPGADGET`) are now interactive: clicking inside th
 
 BOOPSI dispatch uses the host `UAOS_InvokeM68kHook()` helper to call the guest class dispatcher hook with the AmigaOS convention `A0 = IClass`, `A2 = Object`, `A1 = Msg`. The dispatcher is invoked for `OM_NEW`, `OM_DISPOSE`, `OM_SET`, `OM_GET`, and any class-specific or gadget method. `DoSuperMethodA` and `SetSuperAttrsA` determine the superclass from the class that is currently on the dispatch stack, so nested dispatcher calls work correctly. Object memory layout follows the AmigaOS model: the `_Object` header (12 bytes) precedes the instance data, and the object pointer returned by `NewObjectA` points to the start of the instance data, with the class stored at offset -12. Classes are matched by their 32-bit `cl_ID` value in the public registry.
 
+### Non-A varargs wrappers
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `NewObject` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `NewObjectA`. |
+| `SetAttrs` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `SetAttrsA`. |
+| `GetAttrs` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `GetAttrsA`. |
+| `DoMethod` | Implemented | Builds a 12-byte method message from the method ID and the first two varargs on the guest stack, then calls `DoMethodA`. |
+| `DoSuperMethod` | Implemented | Same as `DoMethod` but calls `DoSuperMethodA`. |
+| `CoerceMethod` | Implemented | Builds a 12-byte method message from the method ID and the first two varargs on the guest stack, then calls `CoerceMethodA`. |
+| `SetGadgetAttrs` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `SetGadgetAttrsA`. |
+| `SetSuperAttrs` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `SetSuperAttrsA` with `GadgetInfo` set to `NULL`. |
+| `SetWindowPointer` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `SetWindowPointerA`. |
+| `OpenWindowTags` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `OpenWindowTagList`. |
+| `OpenScreenTags` | Implemented | Builds a `TagItem` array from the varargs on the guest stack and calls `OpenScreenTagList`. |
+| `DoGadgetMethod` | Implemented | Builds a 12-byte method message from the method ID and the first two varargs on the guest stack, then calls `DoGadgetMethodA`. |
+
+The varargs wrappers read tag/value pairs from the guest stack starting at the return address + 4, up to `TAG_DONE` or a hard limit of 32 pairs. They allocate the resulting `TagItem` array on the guest stack, invoke the corresponding A-suffix LVO, and restore the stack pointer. Method wrappers use a fixed 12-byte message (`MethodID` + two parameters) which covers the common BOOPSI message sizes; larger method-specific messages must still be dispatched through the A-suffix variants.
+
+### Help control, screen notify, and singular attribute calls
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `HelpControl` | Implemented | Stores the `HC_GADGETHELP` enable/disable state in the window's `IntuitionSlot`. |
+| `StartScreenNotifyTagList` | Stub | Always returns `NULL`; no live notification channel is implemented. |
+| `EndScreenNotify` | Stub | Always returns `TRUE`. |
+| `GetWindowAttr` | Implemented | Builds a one-tag `TagItem` list from the supplied `attrID` and `storage` pointer, then calls `GetWindowAttrsA`. |
+| `SetWindowAttr` | Implemented | Builds a one-tag `TagItem` list from the supplied `attrID` and `data` value, then calls `SetWindowAttrsA`. |
+| `GetScreenAttr` | Implemented | Builds a one-tag `TagItem` list from the supplied `attrID` and `storage` pointer, then calls `GetScreenAttrsA`. |
+| `SetScreenAttr` | Implemented | Builds a one-tag `TagItem` list from the supplied `attrID` and `data` value, then calls `SetScreenAttrsA`. |
+
 ### Window/screen attribute tags
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `SetWindowAttrsA` | Implemented | Full `WA_*` tag coverage: geometry, title, screen title, IDCMP, flags, system/border/backdrop/refresh flags (`WA_SizeGadget`, `WA_DragBar`, `WA_DepthGadget`, `WA_CloseGadget`, `WA_Backdrop`, `WA_ReportMouse`, `WA_Borderless`, `WA_GimmeZeroZero`, `WA_Activate`, `WA_RMBTrap`, `WA_SimpleRefresh`, `WA_SmartRefresh`, `WA_SuperBitMap`, etc.), gadgets, min/max bounds, public/custom screen, `WA_PubScreenName`, `WA_PubScreenFallBack`, `WA_InnerWidth/Height`, `WA_MouseQueue`, `WA_RptQueue`, `WA_NewLookMenus`, `WA_MenuHelp`, `WA_AmigaKey`, `WA_NotifyDepth`, `WA_HelpGroup`, `WA_TabletMessages`, `WA_Colors`, `WA_Checkmark`, and storage tags. `WA_MouseQueue` and `WA_RptQueue` are enforced by dropping the oldest queued message of the corresponding class when the limit is reached. `WA_SuperBitMap` now updates the window `RastPort` bitmap and redraws the window from the backing `BitMap`. `WA_BackFill` is stored; if the value is a real guest `Hook` pointer it is invoked during WM redraws with A0=Hook, A2=window `RastPort`, A1=window-client `Rectangle`, otherwise values below 256 are still treated as a pen-index fallback. Moves/resizes the native WM window as needed. |
+| `SetWindowAttrsA` | Implemented | Full `WA_*` tag coverage: geometry, title, screen title, IDCMP, flags, system/border/backdrop/refresh flags (`WA_SizeGadget`, `WA_DragBar`, `WA_DepthGadget`, `WA_CloseGadget`, `WA_Backdrop`, `WA_ReportMouse`, `WA_Borderless`, `WA_GimmeZeroZero`, `WA_Activate`, `WA_RMBTrap`, `WA_SimpleRefresh`, `WA_SmartRefresh`, `WA_SuperBitMap`, etc.), gadgets, min/max bounds, public/custom screen, `WA_PubScreenName`, `WA_PubScreenFallBack`, `WA_InnerWidth/Height`, `WA_MouseQueue`, `WA_RptQueue`, `WA_NewLookMenus`, `WA_MenuHelp`, `WA_AmigaKey`, `WA_NotifyDepth`, `WA_HelpGroup`, `WA_TabletMessages`, `WA_Colors`, `WA_Checkmark`, `WA_PointerDelay`, and storage tags. `WA_MouseQueue` and `WA_RptQueue` are enforced by dropping the oldest queued message of the corresponding class when the limit is reached. `WA_SuperBitMap` now updates the window `RastPort` bitmap and redraws the window from the backing `BitMap`. `WA_BackFill` is stored; if the value is a real guest `Hook` pointer it is invoked during WM redraws with A0=Hook, A2=window `RastPort`, A1=window-client `Rectangle`, otherwise values below 256 are still treated as a pen-index fallback. `WA_PointerDelay` is stored but has no live effect on pointer timing. Moves/resizes the native WM window as needed. |
 | `GetWindowAttrsA` | Implemented | Reads back the corresponding live window fields, flags, and stored tag values. |
 | `SetScreenAttrsA` | Implemented | Full `SA_*` tag coverage: geometry, depth, detail/block pens, title, font, type, bitmap, display ID, colors, pens, behind/quiet/autoscroll/showtitle flags, full palette, color map entries, parent, draggable/exclusive/share-pens/interleaved/like-workbench/minimize-ISG, and other storage tags. `SA_DClip` and `SA_Overscan` are now enforced as positioning constraints: they define the allowed display rectangle (`SA_DClip` directly, `SA_Overscan` via `OSCAN_TEXT`/`OSCAN_STANDARD`/`OSCAN_MAX`/`OSCAN_VIDEO` percentages) and the screen's position/size is clamped to stay inside that rectangle. Changing either tag recomputes the screen geometry and redraws. `SA_Colors`, `SA_Colors32`, and `SA_Pens` are parsed into a 16-entry RGB palette and applied to the host `WB_*` globals so the desktop and window chrome render with the guest screen's colours. `SA_PubSig`/`SA_PubTask` are used to signal the owning task when a screen's public status changes. `SA_BitMap` and `SA_BackFill` changes also trigger a desktop redraw; the custom screen `BitMap` is rendered into the desktop backdrop. `SA_BackFill` is stored; if the value is a real guest `Hook` pointer it is invoked during desktop redraws with A0=Hook, A2=screen `RastPort` (a temporary one is allocated if the screen does not have a persistent `RastPort`), A1=screen `Rectangle`, otherwise values below 256 are still treated as a pen-index fallback. Refreshes the desktop title when needed. |
 | `GetScreenAttrsA` | Implemented | Reads back the corresponding live screen fields, flags, and stored tag values. |
@@ -207,7 +241,7 @@ Public screens are registered via `SA_PubName` when opening a screen. `OpenWindo
 |----------|--------|-------|
 | `SetPointer` | Implemented | Reads a 16-bit-wide Amiga sprite definition from guest memory and installs it as a custom native cursor. Up to 16×16 pixels; sprite planes are mapped to body/shadow colours. |
 | `ClearPointer` | Implemented | Restores the default native arrow cursor. |
-| `SetWindowPointerA` | Implemented | Supports `WA_BusyPointer` (TRUE installs a busy/hourglass cursor, FALSE restores the default), `WA_Pointer` (renders the custom pointer), and `WA_PointerDelay` (accepted, currently changes immediately). A tag-list with no tags clears the custom pointer. |
+| `SetWindowPointerA` | Implemented | Supports `WA_BusyPointer` (TRUE installs a busy/hourglass cursor, FALSE restores the default), `WA_Pointer` (renders the custom pointer), and `WA_PointerDelay` (stored in the `IntuitionSlot` for `GetWindowAttrsA` but otherwise ignored; pointer changes immediately). A tag-list with no tags clears the custom pointer. |
 
 The native cursor subsystem gained custom-sprite support: a per-window custom pointer can replace the default arrow, and a busy pointer can be activated when the active window requests it. `WA_Pointer` objects are rendered by heuristically detecting a SetPointer-style sprite buffer, a `struct BitMap`, or a `pointerclass` BOOPSI object whose first valid pointer is a BitMap. `SetPointer()` now correctly skips the Amiga sprite reserved words and passes the caller's x/y hotspot offsets to the cursor renderer.
 
@@ -275,6 +309,23 @@ The desktop menu bar now renders the active guest window's `MenuStrip`. When a g
 
 Mouse and repeat queues are enforced: `WA_MouseQueue` limits pending `IDCMP_MOUSEMOVE` messages, and `WA_RptQueue` limits pending `IDCMP_MOUSEBUTTONS` messages. When a new message would exceed the queue limit, the oldest queued message of that class is removed before the new one is added. A limit of 0 means no restriction.
 
+## BOOPSI — built-in classes
+
+The BOOPSI registry and dispatch code (`NewObjectA`, `DisposeObject`, `SetAttrsA`, `GetAttr`, `GetAttrsA`, `DoMethodA`, `DoSuperMethodA`, `MakeClass`, `AddClass`, `FreeClass`, `RemoveClass`) are implemented. A `CLASS_FLAG_NATIVE` flag lets a class store a host C dispatcher instead of an M68k hook entry, and the dispatcher supports `DoSuperMethodA` by walking the class superclass chain.
+
+At boot, the following standard built-in classes are registered automatically:
+
+| Class | Super class | Notes |
+|-------|-------------|-------|
+| `rootclass` | — | Base `OM_NEW`/`OM_DISPOSE`/`OM_SET`/`OM_GET`/`OM_ADDTAIL`/`OM_REMOVE` support. |
+| `gadgetclass` | `rootclass` | Handles `GA_Left`, `GA_Top`, `GA_Width`, `GA_Height`, `GA_Text`, `GA_Label`, `GA_Image`, `GA_ID`, `GA_UserData`, `GA_Disabled`, `GA_Selected`, `GA_Immediate`, `GA_RelVerify`, `GA_ToggleSelect`. `GM_*` methods are stubs that return success. |
+| `imageclass` | `rootclass` | Handles `IA_Width`, `IA_Height`, `IA_FGPen`, `IA_BGPen`, `IA_Data`, `IA_Left`, `IA_Top`, plus `IM_BitMap`. |
+| `pointerclass` | `imageclass` | Handles `POINTERA_BitMap`, `POINTERA_XOffset`, `POINTERA_YOffset`, `POINTERA_WordWidth`, `POINTERA_XResolution`, `POINTERA_YResolution`, `POINTERA_Flags`. `WA_Pointer` now checks for a pointerclass object first and reads its BitMap/offsets directly instead of relying on the old heuristic scan. |
+| `menuclass` | `rootclass` | Minimal rootclass subclass; full menu BOOPSI support is not yet implemented. |
+| `windowclass` | `rootclass` | Minimal rootclass subclass; full window BOOPSI support is not yet implemented. |
+
+Built-in classes are created in `kernel/exec/boopsi_builtin.c` and registered from `UAOS_INTUITION_Register()`. The class structures are stored in the same public registry used by `MakeClass`/`AddClass`, so `NewObject(NULL, "gadgetclass", ...)` finds them by string ID.
+
 ## Guest data structures
 
 The guest `Window` structure is kept AmigaOS 3.x-compatible at the offsets used by typical M68k binaries:
@@ -288,7 +339,7 @@ The guest `Screen` structure now includes `DetailPen`/`BlockPen` (offsets 70/71)
 
 Intuition uses a dedicated 64 KiB guest heap (below the stack) for small allocations such as `Window`, `Screen`, `RastPort`, `MsgPort`, `IntuiMessage`, and `DrawInfo` structures. The heap is now a free-list allocator with block headers, so `CloseWindow`, `FreeSysRequest`, `CloseWorkBench`, and `FreeScreenDrawInfo` reclaim the memory they allocate.
 
-The `IntuitionSlot` and `ScreenSlot` host structures cache tag values that have no direct live effect (e.g., `WA_Colors`, `WA_Checkmark`, `WA_AmigaKey`, `WA_MenuHelp`, `WA_TabletMessages`, `WA_AutoAdjust`, `WA_NotifyDepth`, `WA_Zoom`, `SA_ErrorCode`, `SA_FullPalette`, `SA_ColorMapEntries`, `SA_Interleaved`, `SA_SharePens`, `SA_Exclusive`, `SA_Draggable`, `SA_LikeWorkbench`, `SA_MinimizeISG`, `SA_BackFill`, `SA_Parent`) so that `GetWindowAttrsA` and `GetScreenAttrsA` can return the values supplied by the guest.
+The `IntuitionSlot` and `ScreenSlot` host structures cache tag values that have no direct live effect (e.g., `WA_Colors`, `WA_Checkmark`, `WA_AmigaKey`, `WA_MenuHelp`, `WA_TabletMessages`, `WA_AutoAdjust`, `WA_NotifyDepth`, `WA_PointerDelay`, `WA_Zoom`, `SA_ErrorCode`, `SA_FullPalette`, `SA_ColorMapEntries`, `SA_Interleaved`, `SA_SharePens`, `SA_Exclusive`, `SA_Draggable`, `SA_LikeWorkbench`, `SA_MinimizeISG`, `SA_BackFill`, `SA_Parent`) so that `GetWindowAttrsA` and `GetScreenAttrsA` can return the values supplied by the guest.
 
 `GimmeZeroZero` windows store their border sizes in the `IntuitionSlot` and report content-relative mouse coordinates in `IDCMP` messages. The window `RastPort` stores the guest `Window*` pointer in its `Layer` field (`RP_OFF_LAYER`), and `graphics.library` adds the window's screen position plus the GimmeZeroZero border offset to all framebuffer drawing operations so that guest drawing commands are relative to the window content area.
 
@@ -303,4 +354,6 @@ The Intuition library keeps a small internal table (`IntuitionSlot`) that maps g
 
 ## LVO offsets
 
-Intuition LVO offsets in `emulation/uaos_m68k_glue.c` match the AmigaOS 3.x `intuition_lib.fd` file. Recent additions and corrections include `OnMenu` (-114), `OffMenu` (-108), `ViewAddress` (-126), `ViewPortAddress` (-132), `GetScreenData` (-306), `LockIBase` (-294), `UnlockIBase` (-300), `LockPubScreen` (-384), `UnlockPubScreen` (-390), `LockPubScreenList` (-396), `UnlockPubScreenList` (-402), `NextPubScreen` (-408), `SetDefaultPubScreen` (-420), `PubScreenStatus` (-426), `GetDefaultPubScreen` (-432), `SysReqHandler` (-450), `GetVisualInfoA` (-630), and `FreeVisualInfo` (-636). Additional LVOs now installed: `MoveWindowInFrontOf` (-516), `SetEditHook` (-510), `ObtainGIRPort` (-456), `ReleaseGIRPort` (-492), `StripIntuiMessages` (-504), `NewObjectA` (-48), `DisposeObject` (-168), `SetAttrsA` (-180), `GetAttr` (-192), `AddClass` (-198), `GetAttrsA` (-204), `RemoveClass` (-210), `NextObject` (-216), `DoGadgetMethodA` (-222), `SetSuperAttrsA` (-228), `DoMethodA` (-258), `DoSuperMethodA` (-288), `CoerceMethodA` (-312), `MakeClass` (-330), and `FreeClass` (-336). These new LVOs use the same function indices as the internal dispatch table in `kernel/exec/intuition_lib.c` (indices 97–116).
+Intuition LVO offsets in `emulation/uaos_m68k_glue.c` match the AmigaOS 3.x `intuition_lib.fd` file for the classic functions. Recent additions and corrections include `OnMenu` (-114), `OffMenu` (-108), `ViewAddress` (-126), `ViewPortAddress` (-132), `GetScreenData` (-306), `LockIBase` (-294), `UnlockIBase` (-300), `LockPubScreen` (-384), `UnlockPubScreen` (-390), `LockPubScreenList` (-396), `UnlockPubScreenList` (-402), `NextPubScreen` (-408), `SetDefaultPubScreen` (-420), `PubScreenStatus` (-426), `GetDefaultPubScreen` (-432), `SysReqHandler` (-450), `GetVisualInfoA` (-630), and `FreeVisualInfo` (-636). Additional LVOs now installed: `MoveWindowInFrontOf` (-516), `SetEditHook` (-510), `ObtainGIRPort` (-456), `ReleaseGIRPort` (-492), `StripIntuiMessages` (-504), `NewObjectA` (-48), `DisposeObject` (-168), `SetAttrsA` (-180), `GetAttr` (-192), `AddClass` (-198), `GetAttrsA` (-204), `RemoveClass` (-210), `NextObject` (-216), `DoGadgetMethodA` (-222), `SetSuperAttrsA` (-228), `DoMethodA` (-258), `DoSuperMethodA` (-288), `CoerceMethodA` (-312), `MakeClass` (-330), and `FreeClass` (-336). These LVOs use the same function indices as the internal dispatch table in `kernel/exec/intuition_lib.c` (indices 97–116).
+
+Newly wired LVOs in this session: `HelpControl` at the AmigaOS 3.x offset `-828`; `StartScreenNotifyTagList` (-900), `EndScreenNotify` (-906), `GetWindowAttr` (-912), `SetWindowAttr` (-918), `GetScreenAttr` (-924), `SetScreenAttr` (-930), `NewObject` (-936), `SetAttrs` (-942), `GetAttrs` (-948), `DoMethod` (-954), `DoSuperMethod` (-960), `CoerceMethod` (-966), `SetGadgetAttrs` (-972), `SetSuperAttrs` (-978), `SetWindowPointer` (-984), `OpenWindowTags` (-990), `OpenScreenTags` (-996), and `DoGadgetMethod` (-1044). The varargs wrappers are not standard AmigaOS 3.x LVOs (they are normally provided by `amiga.lib`); they are assigned custom LVO slots in the unused range and are wired to the internal dispatch table indices 117–135. `SetGadgetAttrsA` is also wired and shares the existing `SetAttrsA` dispatcher path.

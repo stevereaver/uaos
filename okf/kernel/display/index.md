@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-06-21T12:40:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # Display and Window Manager
@@ -117,3 +117,19 @@ Desktop icons can be selected with a single click. The selected icon is rendered
 2. **Inverse/video fallback**: If no selected image is present, the normal icon is drawn with inverted RGB colours (preserving transparency).
 
 The `IconImage` structure tracks whether a selected planar image was actually loaded (`has_selected`). The renderer (`icon_render.c`) chooses the appropriate method, and the desktop (`desktop.c`) tracks which icon is currently selected and requests a redraw when the selection changes.
+
+## Application Windows
+
+The display layer includes several Workbench-style application windows in addition to the file browser and shell:
+
+- **About window (`about_win.c`)**: Shows UAOS version, build date, display resolution, and memory size.
+- **Calculator (`calc_win.c`)**: Amiga-style four-function calculator with double-precision arithmetic.
+- **Clock (`clock_win.c`)**: Digital time and date display, updated once per second from the RTC.
+- **Network Info (`netinfo_win.c`)**: Displays interface IP, MAC, gateway, DNS, and DHCP status.
+- **Vim Editor (`vim_win.c`)**: Modal text editor with Normal/Insert/Visual/Command modes, search, undo, and `S:vim.conf` configuration.
+- **Pointer Preferences (`pointer_prefs.c`)**: Cursor size, double-pixel mode, and acceleration settings.
+- **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-3 programs that use the GUI syscall interface.
+
+## Shell Window
+
+`shell_win.c` implements the graphical CLI window. It provides scrollable history, input line editing, output buffering, and synchronous child tracking. It can host multiple independent shell instances and dispatches commands to the native command table, resident commands, external ELF64 userspace programs, or embedded M68k binaries.

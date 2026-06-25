@@ -3,7 +3,7 @@ type: Concept
 title: Thunking and LVOs
 description: The mechanism for calling native x86_64 functions from emulated M68k code.
 tags: [thunking, lvo, traps, interop]
-timestamp: 2026-06-18T10:00:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # Thunking and LVOs
@@ -16,7 +16,7 @@ In AmigaOS, libraries are accessed via a jump table at negative offsets from a l
 - `Open` is usually at `-30`.
 - `Close` is usually at `-36`.
 
-UAOS emulates this by placing special trap opcodes at these offsets in the emulated memory.
+UAOS emulates this by placing small trap stubs at these offsets in the emulated memory. Each stub is a 4-byte `ILLEGAL` opcode (`0x4AFC`) followed by a 16-bit library/function identifier that tells the dispatcher which native function to run.
 
 ## The Thunking Process
 

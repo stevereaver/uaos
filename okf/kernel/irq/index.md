@@ -4,7 +4,7 @@ title: Interrupts and Hardware Abstraction
 description: Low-level interrupt handling, IDT management, and basic hardware drivers.
 resource: /kernel/irq/
 tags: [irq, idt, pic, drivers]
-timestamp: 2026-06-18T10:00:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # Interrupts and Hardware Abstraction
@@ -19,10 +19,14 @@ The kernel sets up a 256-vector IDT in 64-bit mode.
 
 ## Core Hardware Drivers
 
-- **PS/2 Keyboard (IRQ1)**: Handles scancode translation and provides a ring buffer for keystrokes.
-- **PS/2 Mouse (IRQ12)**: Handles relative motion packets and updates the software cursor.
-- **RTC (IRQ8)**: CMOS Real-Time Clock for system time and periodic interrupts (used by `timer.device`).
-- **VirtIO Block**: Basic driver for VirtIO-compliant storage devices.
+- **PS/2 Keyboard (`ps2kbd.c`, IRQ1)**: Handles scancode set 1 translation and provides a ring buffer for keystrokes, including extended scancodes and modifier keys.
+- **PS/2 Mouse (`ps2mouse.c`, IRQ12)**: Handles relative motion packets and updates the software cursor.
+- **VMware Mouse (`vmmouse.c`)**: Optional absolute mouse driver using the VMware backdoor port (`0x5658`), enabled when running under QEMU/VMware.
+- **RTC (`rtc.c`, IRQ8)**: CMOS Real-Time Clock for system time and periodic interrupts (used by `timer.device`).
+- **VirtIO Block (`virtio_blk.c`)**: Basic driver for VirtIO-compliant storage devices.
+- **Intel e1000 (`kernel/drivers/e1000.c`)**: Intel 82540EM Gigabit Ethernet driver.
+- **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: VirtIO legacy network device driver.
+- **IDE (`kernel/drivers/ide.c`)**: ATA/ATAPI block device driver for CD-ROM and hard disks.
 
 ## Interrupt Handlers
 

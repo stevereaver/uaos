@@ -24,6 +24,13 @@ int UAOS_Intuition_RenderScreenBackdrop(void);
  * front screen has custom colors. */
 void UAOS_Intuition_ApplyFrontScreenPalette(void);
 
+/* Guest heap allocator shared by intuition.library and gadtools.library. */
+uint32_t intu_alloc(uint32_t size);
+void     intu_free(uint32_t user_addr);
+
+/* Dispatch entry point for m68k Intuition calls (used by gadtools wrappers). */
+void UAOS_Intuition_Dispatch(uint32_t fn);
+
 /* -------------------------------------------------------------------------
  * Minimal AmigaOS NewWindow struct (classic layout)
  * ------------------------------------------------------------------------- */
@@ -597,6 +604,75 @@ typedef struct {
 #define WA_HelpGroup   (WA_Dummy + 0x38)
 #define WA_HelpGroupWindow (WA_Dummy + 0x39)
 
+/* HelpControl() flags */
+#define HC_GADGETHELP 0x00000001
+
+/* -------------------------------------------------------------------------
+ * BOOPSI gadget attributes (GA_*)
+ * ------------------------------------------------------------------------- */
+#define GA_Dummy             (TAG_USER + 0x30000)
+#define GA_Left              (GA_Dummy + 1)
+#define GA_RelRight          (GA_Dummy + 2)
+#define GA_Top               (GA_Dummy + 3)
+#define GA_RelBottom         (GA_Dummy + 4)
+#define GA_Width             (GA_Dummy + 5)
+#define GA_RelWidth          (GA_Dummy + 6)
+#define GA_Height            (GA_Dummy + 7)
+#define GA_RelHeight         (GA_Dummy + 8)
+#define GA_Text              (GA_Dummy + 9)
+#define GA_IntuiText         (GA_Dummy + 10)
+#define GA_Label             (GA_Dummy + 11)
+#define GA_LabelImage        (GA_Dummy + 12)
+#define GA_Image             (GA_Dummy + 13)
+#define GA_Border            (GA_Dummy + 14)
+#define GA_Title             (GA_Dummy + 15)
+#define GA_GadgetPrint       (GA_Dummy + 16)
+#define GA_SpecialInfo       (GA_Dummy + 17)
+#define GA_ID                (GA_Dummy + 18)
+#define GA_UserData          (GA_Dummy + 19)
+#define GA_Next              (GA_Dummy + 20)
+#define GA_Previous          (GA_Dummy + 21)
+#define GA_DrawInfo          (GA_Dummy + 22)
+#define GA_DisplayHook       (GA_Dummy + 23)
+#define GA_HintControl       (GA_Dummy + 24)
+#define GA_HintInfo          (GA_Dummy + 25)
+#define GA_GZZGadgetsOnly    (GA_Dummy + 26)
+#define GA_RelSpecial        (GA_Dummy + 27)
+#define GA_Disabled          (GA_Dummy + 28)
+#define GA_EndSlot           (GA_Dummy + 29)
+#define GA_TabCycle          (GA_Dummy + 30)
+#define GA_Highlight         (GA_Dummy + 31)
+#define GA_Screen            (GA_Dummy + 32)
+#define GA_Font              (GA_Dummy + 33)
+#define GA_Underscore        (GA_Dummy + 34)
+#define GA_ActivateKey       (GA_Dummy + 35)
+#define GA_Immediate         (GA_Dummy + 36)
+#define GA_RelVerify         (GA_Dummy + 37)
+#define GA_Unique            (GA_Dummy + 38)
+#define GA_ToggleSelect      (GA_Dummy + 39)
+#define GA_SysGType          (GA_Dummy + 40)
+#define GA_SysGadget         (GA_Dummy + 41)
+#define GA_FrontGadget       (GA_Dummy + 42)
+#define GA_BottomGadget      (GA_Dummy + 43)
+#define GA_RightBorder       (GA_Dummy + 44)
+#define GA_LeftBorder        (GA_Dummy + 45)
+#define GA_TopBorder         (GA_Dummy + 46)
+#define GA_BottomBorder      (GA_Dummy + 47)
+#define GA_SysGadgetExtend   (GA_Dummy + 48)
+#define GA_UserInput         (GA_Dummy + 49)
+#define GA_HelpNode          (GA_Dummy + 50)
+#define GA_HelpLine          (GA_Dummy + 51)
+#define GA_MousePoint        (GA_Dummy + 52)
+#define GA_Invalid           (GA_Dummy + 53)
+#define GA_Selected          (GA_Dummy + 54)
+#define GA_SysGadgetType     (GA_Dummy + 55)
+#define GA_ViewGadget        (GA_Dummy + 56)
+#define GA_Iconified         (GA_Dummy + 57)
+#define GA_IconifyAfterOpen  (GA_Dummy + 58)
+#define GA_IconifyAfterClose (GA_Dummy + 59)
+#define GA_InCenterX        (GA_Dummy + 60)
+#define GA_InCenterY        (GA_Dummy + 61)
+
 /* -------------------------------------------------------------------------
  * pointerclass attributes (used for WA_Pointer custom pointer objects)
  * ------------------------------------------------------------------------- */
@@ -607,6 +683,24 @@ typedef struct {
 #define POINTERA_WordWidth   (POINTERA_Dummy + 0x04)
 #define POINTERA_XResolution (POINTERA_Dummy + 0x05)
 #define POINTERA_YResolution (POINTERA_Dummy + 0x06)
+#define POINTERA_Flags       (POINTERA_Dummy + 0x07)
+
+/* -------------------------------------------------------------------------
+ * imageclass attributes (IA_*)
+ * ------------------------------------------------------------------------- */
+#define IA_Dummy       (TAG_USER + 0x40000)
+#define IA_Left        (IA_Dummy + 0x01)
+#define IA_Top         (IA_Dummy + 0x02)
+#define IA_Width       (IA_Dummy + 0x03)
+#define IA_Height      (IA_Dummy + 0x04)
+#define IA_FGPen       (IA_Dummy + 0x05)
+#define IA_BGPen       (IA_Dummy + 0x06)
+#define IA_Data        (IA_Dummy + 0x07)
+#define IA_Mode        (IA_Dummy + 0x08)
+#define IA_SupportsDisable (IA_Dummy + 0x09)
+#define IA_Normalize   (IA_Dummy + 0x0A)
+/* IM_BitMap is used by some apps to pass a BitMap to imageclass */
+#define IM_BitMap      (TAG_USER + 0x40010)
 
 /* -------------------------------------------------------------------------
  * Alert types
@@ -710,7 +804,11 @@ typedef struct {
 #define CLASS_OFF_SUBCLASS_COUNT 40
 #define CLASS_OFF_OBJECT_COUNT   44
 #define CLASS_OFF_FLAGS       48
-#define CLASS_SIZE            52
+#define CLASS_OFF_NATIVE_DISPATCHER 52
+#define CLASS_SIZE            56
+
+/* CLASS_OFF_FLAGS bits */
+#define CLASS_FLAG_NATIVE     0x0001
 
 /* BOOPSI root methods */
 #define OM_NEW         1

@@ -340,6 +340,8 @@ for src in \
     "${REPO_ROOT}/kernel/exec/dos_lib.c" \
     "${REPO_ROOT}/kernel/exec/workbench_lib.c" \
     "${REPO_ROOT}/kernel/exec/intuition_lib.c" \
+    "${REPO_ROOT}/kernel/exec/gadtools_lib.c" \
+    "${REPO_ROOT}/kernel/exec/boopsi_builtin.c" \
     "${REPO_ROOT}/kernel/exec/loadable_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
@@ -621,6 +623,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/dos_lib.o" \
     "${BUILD_DIR}/obj/workbench_lib.o" \
     "${BUILD_DIR}/obj/intuition_lib.o" \
+    "${BUILD_DIR}/obj/gadtools_lib.o" \
+    "${BUILD_DIR}/obj/boopsi_builtin.o" \
     "${BUILD_DIR}/obj/loadable_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \

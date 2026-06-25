@@ -8,6 +8,7 @@
  */
 
 #include "rom_modules.h"
+#include "exec/gadtools_lib.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -172,4 +173,7 @@ void UAOS_ROM_RegisterAll(void)
 
     /* Register intuition.library */
     UAOS_INTUITION_Register();
+
+    /* Register gadtools.library */
+    UAOS_GADTOOLS_Register();
 }

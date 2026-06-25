@@ -346,6 +346,42 @@ static void raise_window(int wh)
     g_zorder[g_nwins - 1] = wh;
 }
 
+/* Move window 'src' directly in front of window 'behind' in the z-order.
+ * If 'behind' is not active or invalid, raise 'src' to the front instead. */
+static void move_in_front_of(int src, int behind)
+{
+    if (src < 0 || src >= WM_MAX_WINDOWS) return;
+    if (!g_wins[src].active) return;
+
+    int src_pos = -1, behind_pos = -1;
+    for (int i = 0; i < g_nwins; i++) {
+        if (g_zorder[i] == src) src_pos = i;
+        if (g_zorder[i] == behind) behind_pos = i;
+    }
+    if (src_pos < 0) return;
+
+    if (behind_pos < 0 || !g_wins[behind].active) {
+        raise_window(src);
+        return;
+    }
+
+    int target = behind_pos + 1;
+    if (target >= g_nwins) target = g_nwins - 1;
+    if (src_pos == target) return;
+
+    /* Remove src from its current position. */
+    for (int i = src_pos; i < g_nwins - 1; i++)
+        g_zorder[i] = g_zorder[i + 1];
+
+    /* If src was before target, the target index shifts down by one. */
+    if (src_pos < target) target--;
+
+    /* Insert src at target. */
+    for (int i = g_nwins - 1; i > target; i--)
+        g_zorder[i] = g_zorder[i - 1];
+    g_zorder[target] = src;
+}
+
 /* Hit-test: returns window handle at (mx,my) in z-order (topmost first) */
 static int hit_test(int mx, int my)
 {
@@ -1075,6 +1111,14 @@ void WM_RaiseWindow(int handle)
     raise_window(handle);
     g_focus = handle;
     wm_notify_focus_change(old_focus, g_focus);
+}
+
+void WM_MoveWindowInFrontOf(int src, int behind)
+{
+    if (src < 0 || src >= WM_MAX_WINDOWS) return;
+    if (!g_wins[src].active) return;
+    move_in_front_of(src, behind);
+    WM_Redraw();
 }
 
 void WM_LowerWindow(int handle)
