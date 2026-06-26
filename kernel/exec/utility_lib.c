@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include "../../emulation/uaos_emu.h"
 
 /* =========================================================================
  * utility.library function indices (must match AmigaOS LVO offsets)
@@ -66,7 +67,6 @@ static char to_upper(char c)
  * The addresses in CPU registers are guest addresses that need
  * to be accessed through g_ram */
 extern uint8_t *g_ram;
-#define GUEST_RAM_SIZE (4 * 1024 * 1024)  /* 4MB guest RAM */
 #define M68K_TO_HOST(addr) ((void *)(g_ram + (addr)))
 
 /* =========================================================================

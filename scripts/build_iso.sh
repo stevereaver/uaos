@@ -345,6 +345,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/loadable_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
+    "${REPO_ROOT}/kernel/chipset/chip_emu.c" \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
     "${REPO_ROOT}/kernel/dos/ramfs.c" \
     "${REPO_ROOT}/kernel/dos/vfs.c" \
@@ -459,10 +460,6 @@ done
 # so the freestanding link resolves all symbols for this validation build.
 cat > "${BUILD_DIR}/obj/stubs.c" <<'STUBEOF'
 #include <stdint.h>
-
-/* Chip emulator interface stubs */
-void     chip_emu_write(uint32_t o, uint32_t v, int w) { (void)o;(void)v;(void)w; }
-uint32_t chip_emu_read (uint32_t o, int w)             { (void)o;(void)w; return 0; }
 
 /* Screen size for PS/2 mouse clamp — populated by kernel before PS2Mouse_Init */
 unsigned int g_fb_width_irq  = 1024;
@@ -628,6 +625,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/loadable_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
+    "${BUILD_DIR}/obj/chip_emu.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
     "${BUILD_DIR}/obj/ramfs.o" \
     "${BUILD_DIR}/obj/vfs.o" \

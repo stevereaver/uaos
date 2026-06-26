@@ -26,7 +26,6 @@ extern void m68k_set_reg(int reg, unsigned int val);
 /* From uaos_m68k_glue.c — guest RAM and binary loader */
 #include "../../emulation/uaos_emu.h"
 extern uint8_t *g_ram;
-#define GUEST_RAM_SIZE  (2 * 1024 * 1024)
 extern int g_emu_halted;
 extern uint32_t g_uaos_heap_ptr;
 extern uint32_t heap_alloc(uint32_t size);
@@ -42,7 +41,7 @@ extern void UAOS_Emu_SetCwd(const char *cwd);
 
 /* Per-task M68k RAM pool */
 #define MAX_M68K_TASKS  4
-static uint8_t g_ram_pool[MAX_M68K_TASKS][GUEST_RAM_SIZE];
+static uint8_t g_ram_pool[MAX_M68K_TASKS][GUEST_RAM_SIZE] __attribute__((section(".guest_ram"), aligned(4096)));
 static uint8_t g_ram_used[MAX_M68K_TASKS] = {0};
 
 /* Musashi cycle globals (needed for context save/restore) */

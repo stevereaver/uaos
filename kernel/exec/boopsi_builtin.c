@@ -17,6 +17,7 @@
 #include "exec/amiga_graphics.h"
 #include "display/framebuffer.h"
 #include <string.h>
+#include "../../emulation/uaos_emu.h"
 
 /* Guest RAM access (mirrors intuition_lib.c helpers for fast local use) */
 extern uint8_t *g_ram;
@@ -28,8 +29,6 @@ extern void         intu_free(uint32_t user_addr);
 extern void         FB_FillRect(int x, int y, int w, int h, uint32_t colour);
 extern void         FB_DrawRect(int x, int y, int w, int h, uint32_t colour);
 extern void         FB_PutStr(int x, int y, const char *s, uint32_t fg, uint32_t bg);
-
-#define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
 /* GM_* message offsets (AmigaOS 3.x) */
 #define GMHT_OFF_GINFO   4

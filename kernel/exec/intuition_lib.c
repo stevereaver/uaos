@@ -9,6 +9,7 @@
 #include "rom_modules.h"
 #include "intuition_lib.h"
 #include "amiga_graphics.h"
+#include "../../emulation/uaos_emu.h"
 #include "../display/wm.h"
 #include "../display/framebuffer.h"
 #include "../display/desktop.h"
@@ -29,7 +30,6 @@ extern volatile uint64_t g_pit_ticks;
  * ========================================================================= */
 
 extern uint8_t *g_ram;
-#define GUEST_RAM_SIZE  (2 * 1024 * 1024)
 
 /* =========================================================================
  * Musashi register access

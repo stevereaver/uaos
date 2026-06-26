@@ -27,13 +27,14 @@ The primary build script is `scripts/build_iso.sh`.
 3. **M68k Library Generation**: Generates loadable Amiga `.library` wrappers (e.g., `powerpacker.library`) in `system/LIBS/`.
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
 5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/src/musashi/m68kops.c`) if it is missing.
-6. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`.
-7. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
-8. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
-9. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
-10. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`) into `SYS_ROOT`.
-11. **GRUB Config**: Injects `scripts/grub.cfg` and the AROS kickstart configuration.
-12. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
+6. **Chipset Emulator**: Compiles the real AGA/ECS custom chip emulator (`kernel/chipset/chip_emu.c`) and links it into the kernel.
+7. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`.
+8. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
+9. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
+10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
+11. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`) into `SYS_ROOT`.
+12. **GRUB Config**: Injects `scripts/grub.cfg` and the AROS kickstart configuration.
+13. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
 
 ## Helper Scripts
 

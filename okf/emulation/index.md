@@ -22,18 +22,18 @@ The emulation layer provides the infrastructure to execute Motorola 68000 binary
 
 ## Execution Model
 
-Emulated tasks are created as `UaosTask` objects with an M68k context. When the scheduler switches to an M68k task, it invokes the Musashi `m68k_execute()` function. The scheduler supports multiple M68k tasks, each with its own 2 MB guest RAM pool.
+Emulated tasks are created as `UaosTask` objects with an M68k context. When the scheduler switches to an M68k task, it invokes the Musashi `m68k_execute()` function. The scheduler supports multiple M68k tasks, each with its own 16 MB guest RAM pool (8 MB chip + 8 MB fast).
 
 ## Guest Memory Layout (Musashi Build)
 
-Each M68k task receives a 2 MB guest RAM window mapped into the host address space:
+Each M68k task receives a 16 MB guest RAM window mapped into the host address space. The first 8 MB are chip RAM and the second 8 MB are fast RAM:
 
 | Region | Address Range | Purpose |
 |---|---|---|
 | Exception vectors | `0x000000`–`0x000100` | SSP at 0, PC at 4, plus initial stack pointer. |
 | Library jump table | `0x000100`–`0x000200` | 4-byte `ILLEGAL` + `lib_id` stubs for LVO dispatch. |
 | Stack | `0x000200`–`0x001000` | Initial stack grows down from `0x001000`. |
-| Program segments | `0x001000`–`0x1FFFFF` | Loaded Amiga Hunk code/data/BSS segments. |
+| Program segments | `0x001000`–`0xFFFFFF` | Loaded Amiga Hunk code/data/BSS segments. |
 
 ## Trap System
 

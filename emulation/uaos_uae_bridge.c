@@ -37,6 +37,7 @@ typedef struct {
 
 extern int  UAOS_HandleThunk(M68kCPUState *cpu);
 extern void UAOS_SetRamBase(uint8_t *base);
+extern void UAOS_Glue_SetRamBase(uint8_t *base);
 
 /* rom_modules.c */
 extern void UAOS_ROM_RegisterAll(void);
@@ -98,8 +99,9 @@ int UAOS_Bridge_Init(void)
             (void *)uaos_guest_ram,
             (void *)(uaos_guest_ram + UAOS_GUEST_RAM_SIZE - 1));
 
-    /* Pass RAM base to the thunk translation layer                        */
+    /* Pass RAM base to the thunk translation layer and the M68k glue      */
     UAOS_SetRamBase(uaos_guest_ram);
+    UAOS_Glue_SetRamBase(uaos_guest_ram);
 
     /* Register all built-in ROM library modules                           */
     UAOS_ROM_RegisterAll();

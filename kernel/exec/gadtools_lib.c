@@ -12,10 +12,10 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include "../../emulation/uaos_emu.h"
 
 /* Guest RAM (provided by uaos_m68k_glue.c) */
 extern uint8_t *g_ram;
-#define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
 /* Musashi register access (provided by uaos_m68k_glue.c) */
 extern unsigned int m68k_get_reg(void *context, int reg);

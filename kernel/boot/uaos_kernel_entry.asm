@@ -99,6 +99,9 @@ stack_top:
 
 section .text progbits alloc exec nowrite align=16
 
+extern __guest_ram_start
+extern __guest_ram_end
+
 global _start
 _start:
     cli
@@ -120,6 +123,20 @@ _start:
 
     ; ---- Set up the bootstrap stack ----
     mov     esp, stack_top
+
+    ; ================================================================
+    ; ZERO THE GUEST RAM SECTION (NOLOAD — bootloader may not clear it)
+    ; ================================================================
+    push    edi
+    push    esi
+    mov     edi, __guest_ram_start
+    mov     ecx, __guest_ram_end
+    sub     ecx, edi
+    shr     ecx, 2              ; dwords
+    xor     eax, eax
+    rep     stosd
+    pop     esi
+    pop     edi
 
     ; ================================================================
     ; BUILD IDENTITY-MAP PAGE TABLES (in 32-bit mode, paging OFF)

@@ -28,7 +28,7 @@ For the low-level native ABI used by some ROM patches, see [Thunking](/concepts/
 
 ## Memory Mapping
 
-The M68k address space is mapped into the x86_64 address space. The bare-metal build gives each M68k task a private 2 MB guest RAM pool; the UAE bridge path allocates a 4 GB guest physical window. The first 2 MB of both layouts follow the same exception-vector / jump-table / stack / program layout so that Hunk binaries and library stubs can run in either environment.
+The M68k address space is mapped into the x86_64 address space. The bare-metal build gives each M68k task a private 16 MB guest RAM pool (8 MB chip + 8 MB fast); the UAE bridge path allocates a 4 GB guest physical window and points the glue layer at offset 0. The first 16 MB of both layouts follow the same exception-vector / jump-table / stack / program layout so that Hunk binaries and library stubs can run in either environment.
 
 ## Binary Loading
 

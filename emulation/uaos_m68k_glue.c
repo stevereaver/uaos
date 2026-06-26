@@ -1,7 +1,7 @@
 /* uaos_m68k_glue.c — UAOS Musashi integration layer
  *
  * Provides:
- *   - Flat 2 MB guest RAM with a simple bump allocator
+ *   - Flat 16 MB guest RAM (8 MB chip + 8 MB fast) with a simple bump allocator
  *   - Musashi memory read/write callbacks
  *   - ILLEGAL opcode handler → AmigaOS library vector dispatch
  *   - TRAP #1 handler → DOS I/O (Write/Output etc.)
@@ -10,11 +10,12 @@
  *   - Minimal dos.library stubs (Output, Write, Open, Close, Read, Exit)
  *   - Public API: UAOS_Emu_LoadAndRun(binary, size, argv, shell_print_fn)
  *
- * Memory map (within the 2 MB guest window):
+ * Memory map (within the 16 MB guest window):
  *   0x000000–0x000100   Exception vectors (minimal: SSP at 0, PC at 4)
  *   0x000100–0x000200   Library jump table stubs (ILLEGAL + lib_id word)
  *   0x000200–0x001000   Stack (grows down from 0x001000)
- *   0x001000–0x1FFFFF   Program segments loaded by Hunk loader
+ *   0x001000–0xFFFFFF   Program segments loaded by Hunk loader
+ *                       First 8 MB = chip RAM, second 8 MB = fast RAM
  *
  * Library dispatch:
  *   Each library function is represented by a 4-byte stub at a fixed address:
@@ -28,6 +29,7 @@
 #include "src/musashi/m68k.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "uaos_emu.h"
 #include "dos/vfs.h"
 #include "dos/handler.h"
 #include "dos/handle_table.h"
@@ -58,7 +60,6 @@ static void emu_print(const char *s)
 
 /* Guest memory base for BPTR-to-native conversion */
 extern uint8_t *g_ram;
-#define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
 /* Convert BSTR BPTR to native C string into dst[max].
  * Returns length or 0 if invalid. */
@@ -129,11 +130,18 @@ static void u32_dec(uint32_t v, char *buf, int max) {
  * Guest RAM
  * ========================================================================= */
 
-#define GUEST_RAM_SIZE  (2 * 1024 * 1024)   /* 2 MB */
+/* Guest RAM layout (GUEST_RAM_SIZE is defined in uaos_emu.h as 16 MB):
+ *   0x000000–0x000100   Exception vectors (minimal: SSP at 0, PC at 4)
+ *   0x000100–0x000200   Library jump table stubs (ILLEGAL + lib_id word)
+ *   0x000200–0x001000   Stack (grows down from 0x001000)
+ *   0x001000–0x7FFFFF   Program segments loaded by Hunk loader
+ *                       First 8 MB (0x000000–0x7FFFFF) are chip RAM;
+ *                       remaining 8 MB (0x800000–0xFFFFFF) are fast RAM.
+ */
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
 #define PROG_BASE       0x001000  /* program hunks load here */
 
-static uint8_t g_default_ram[GUEST_RAM_SIZE];
+static uint8_t g_default_ram[GUEST_RAM_SIZE] __attribute__((section(".guest_ram"), aligned(4096)));
 uint8_t *g_ram = g_default_ram;
 int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
@@ -141,6 +149,15 @@ uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */
 uint32_t g_uaos_heap_ptr = PROG_BASE;
+
+/* Allow the UAE bridge to point the glue layer at the 4 GB guest physical
+ * window.  A NULL base is ignored so the static default RAM remains in use
+ * when the bridge is unavailable (e.g. during freestanding validation builds). */
+void UAOS_Glue_SetRamBase(uint8_t *base)
+{
+    if (base != NULL)
+        g_ram = base;
+}
 
 static uint32_t heap_alloc(uint32_t size)
 {

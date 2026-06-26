@@ -5,11 +5,18 @@
 
 #include <stdint.h>
 
-#define GUEST_RAM_SIZE (2 * 1024 * 1024)
+/* Guest RAM layout: 8 MB chip RAM at guest address 0x00000000 followed by
+ * 8 MB fast RAM.  Total guest RAM visible to the M68k emulation layer. */
+#define GUEST_RAM_SIZE (16 * 1024 * 1024)
 
 /* Guest RAM base — shared with ROM stubs so dos.library (and future
  * libraries) can read/write guest memory without backend-specific APIs.
- * This is a pointer so each M68k task can have its own guest RAM. */
+ * This is a pointer so each M68k task can have its own guest RAM.
+ *
+ * When the UAE bridge is available, the bridge initialisation calls
+ * UAOS_Glue_SetRamBase() to make g_ram point into the 4 GB guest physical
+ * window at offset 0.  Otherwise it falls back to the static default RAM
+ * buffer in uaos_m68k_glue.c. */
 extern uint8_t *g_ram;
 
 /* Print callback for M68k stdout output */
@@ -52,6 +59,11 @@ void UAOS_Emu_SetCwd(const char *cwd);
  * copies it into g_ram).  out_base receives the assigned guest address. */
 void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
                                   uint32_t size, uint32_t *out_base);
+
+/* Set the guest RAM base used by the M68k glue layer.  Called by the UAE
+ * bridge after allocating the 4 GB guest physical window.  Passing NULL
+ * leaves the current base unchanged. */
+void UAOS_Glue_SetRamBase(uint8_t *base);
 
 /* Internal helpers used by the M68k task wrapper (exec_task.c) */
 void install_library_tables(void);

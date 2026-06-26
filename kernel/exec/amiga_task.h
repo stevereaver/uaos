@@ -1,8 +1,9 @@
 /* amiga_task.h — AmigaOS 3.1 Task/Process struct layouts (guest-RAM offsets)
  *
- * These are the exact big-endian layouts used inside the 2 MB M68k guest
- * address space.  Host code that sets up a Process struct must write
- * each field with the correct offset and byte order.
+ * These are the exact big-endian layouts used inside the M68k guest
+ * address space (now 16 MB: 8 MB chip + 8 MB fast).  Host code that sets
+ * up a Process struct must write each field with the correct offset and
+ * byte order.
  *
  * Offsets are verified against the AmigaOS 3.1 NDK include files.
  */

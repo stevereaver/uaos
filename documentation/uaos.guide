@@ -119,19 +119,20 @@
 
   @{b}Memory Address Map@{ub}
 
-    0x00000000 – 0x001FFFFF   Chip RAM  (2 MB)
-    0x00200000 – 0x009FFFFF   Fast RAM  (8 MB lower window)
-    0x00A00000 – 0x00AFFFFF   Slow RAM / ranger  (1 MB)
+    0x00000000 – 0x007FFFFF   Chip RAM  (8 MB)
+    0x00800000 – 0x00AFFFFF   Fast RAM  (3 MB lower window)
     0x00B00000 – 0x00DFFFFF   @{b}Custom chip / CIA registers@{ub} (MMU-trapped)
     0x00E00000 – 0x00EFFFFF   Extended ROM / card space  (1 MB)
     0x00F80000 – 0x00FFFFFF   Kickstart ROM mirror  (512 KB)
     0x01000000 – 0x7FFFFFFF   Extended Fast RAM (up to 2 GB)
     0x80000000 – 0xFFFFFFFF   x86_64 kernel and driver space
 
-  The address window 0x00B00000–0x00DFFFFF is intentionally left
-  non-present in the paging tables.  Any access triggers a #PF which
-  is intercepted by the UAOS page fault handler and forwarded to the
-  custom chip emulator.  See @{"Kernel Subsystems" LINK KERNEL}.
+  The emulated M68k guest RAM is wired into the 4 GB bridge buffer at
+  guest physical 0x00000000.  The first 8 MB are chip RAM and the next
+  8 MB (and beyond) are fast RAM.  The address window 0x00B00000–0x00DFFFFF
+  is intentionally left non-present in the paging tables; any access
+  triggers a #PF which is intercepted by the UAOS page fault handler and
+  forwarded to the custom chip emulator.  See @{"Kernel Subsystems" LINK KERNEL}.
 
   @{b}Supported Video Hardware@{ub}
 
@@ -282,11 +283,20 @@
 
     • Reads @{b}CR2@{ub} for the fault address.
     • If outside the chip window, halts (unrecoverable fault).
-    • @{b}Write fault:@{ub} forwards RAX + chip offset to @{b}chip_emu_write()@{ub}.
+    • @{b}Write fault:@{ub} forwards RAX + chip offset to @{b}chip_emu_write()@{ub} in
+      @{b}kernel/chipset/chip_emu.c@{ub}.
     • @{b}Read fault:@{ub}  decodes the faulting MOV instruction's ModRM byte,
       queries @{b}chip_emu_read()@{ub}, injects the result into the destination
       register slot on the interrupt stack, then advances RIP past the
       faulting instruction before executing @{b}IRETQ@{ub}.
+
+  @{b}Custom Chip Emulator (kernel/chipset/chip_emu.c)@{ub}
+
+  @{b}chip_emu_read()@{ub} and @{b}chip_emu_write()@{ub} implement a sparse AGA/ECS
+  register dispatch table for the classic 0xDFF000 register area.  Tier 1
+  provides harmless reads (returning the last written value or zero) and
+  swallows writes without side effects, so register-poking boot code does
+  not crash the kernel.
 
   @{b}ROM Module Registry (kernel/exec/rom_modules.c)@{ub}
 

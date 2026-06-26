@@ -40,7 +40,7 @@
 
 /* Amiga custom chip / CIA hardware register window                        */
 #define CHIP_WINDOW_START     0x00B00000ULL
-#define CHIP_WINDOW_END       0x00DFFFFULL   /* inclusive upper bound       */
+#define CHIP_WINDOW_END       0x00DFFFFFULL  /* inclusive upper bound       */
 
 /* -----------------------------------------------------------------------
  * Page table structures — aligned to 4 KB (one table = 512 × 8-byte PDEs)

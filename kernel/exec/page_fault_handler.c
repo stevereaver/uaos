@@ -26,26 +26,19 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "syscall_table.h"
+#include "chipset/chip_emu.h"
 
 /* -----------------------------------------------------------------------
  * Amiga hardware register window boundaries
  * ----------------------------------------------------------------------- */
 
 #define CHIP_WINDOW_START  0x00B00000ULL
-#define CHIP_WINDOW_END    0x00DFFFFULL   /* inclusive                       */
+#define CHIP_WINDOW_END    0x00DFFFFFULL  /* inclusive                       */
 
 static inline int is_chip_address(uint64_t addr)
 {
     return (addr >= CHIP_WINDOW_START) && (addr <= CHIP_WINDOW_END);
 }
-
-/* -----------------------------------------------------------------------
- * Chip emulator interface — stub declarations.
- * Replace these with the real emulation engine calls once integrated.
- * ----------------------------------------------------------------------- */
-
-extern void   chip_emu_write(uint32_t offset, uint32_t value, int width_bytes);
-extern uint32_t chip_emu_read(uint32_t offset, int width_bytes);
 
 /* -----------------------------------------------------------------------
  * x86_64 instruction prefix / opcode decode helpers

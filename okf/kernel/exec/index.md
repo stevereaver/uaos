@@ -32,6 +32,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
 - `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.
+- `chip_emu.c` (in `kernel/chipset/`): AGA/ECS custom chip emulator with a sparse register dispatch table for the 0xDFF000 register area.
 - `rom_modules.c`: Registers the built-in AmigaOS-compatible libraries at boot.
 - `thunk_handler.c`: Native ABI thunk translator for `ILLEGAL` opcode breakout from M68k code.
 
@@ -59,3 +60,12 @@ Key details:
 ## M68k Integration
 
 Exec provides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call native C functions.
+
+## Guest Memory Layout
+
+The emulated M68k guest RAM is wired into the 4 GB guest physical window at offset `0x00000000`.  `GUEST_RAM_SIZE` is defined as 16 MB, split into:
+
+- **Chip RAM**: `0x00000000–0x007FFFFF` (8 MB)
+- **Fast RAM**: `0x00800000–0x00FFFFFF` (8 MB)
+
+The first 8 MB are always present and writable in the MMU sandbox.  The Amiga custom chip / CIA register window at `0x00B00000–0x00DFFFFF` is mapped non-present; accesses from M68k code fault to the page fault handler and are forwarded to the chip emulator in `kernel/chipset/chip_emu.c`.
