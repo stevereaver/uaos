@@ -759,23 +759,313 @@ static void gadtools_DrawBevelBoxA(void)
 }
 
 /* =========================================================================
- * Menu stubs
+ * Menus
  * ========================================================================= */
+
+static uint32_t alloc_menu(void)
+{
+    uint32_t m = intu_alloc(MENU_OFF_SIZE);
+    if (m) {
+        for (int i = 0; i < MENU_OFF_SIZE; i++) gt_w8(m + i, 0);
+    }
+    return m;
+}
+
+static uint32_t alloc_menuitem(void)
+{
+    uint32_t mi = intu_alloc(MENUITEM_OFF_SIZE);
+    if (mi) {
+        for (int i = 0; i < MENUITEM_OFF_SIZE; i++) gt_w8(mi + i, 0);
+    }
+    return mi;
+}
+
+static uint32_t alloc_intuitext(const char *text)
+{
+    if (!text || !text[0]) return 0;
+    uint32_t len = 0;
+    while (text[len]) len++;
+    uint32_t str = intu_alloc(len + 1);
+    if (!str) return 0;
+    for (uint32_t i = 0; i <= len; i++) gt_w8(str + i, (uint8_t)text[i]);
+
+    uint32_t it = intu_alloc(ITEXT_SIZE);
+    if (!it) { intu_free(str); return 0; }
+    for (int i = 0; i < ITEXT_SIZE; i++) gt_w8(it + i, 0);
+    gt_w8(it + ITEXT_OFF_FRONTPEN, 1); /* text pen */
+    gt_w8(it + ITEXT_OFF_BACKPEN, 0);  /* bg pen */
+    gt_w8(it + ITEXT_OFF_DRAWMODE, 1); /* JAM1 */
+    gt_w32(it + ITEXT_OFF_ITEXT, str);
+    return it;
+}
+
+static void free_intuitext(uint32_t it)
+{
+    if (!it) return;
+    uint32_t str = gt_u32(it + ITEXT_OFF_ITEXT);
+    if (str) intu_free(str);
+    intu_free(it);
+}
+
+static void free_menuitem_chain(uint32_t mi)
+{
+    while (mi) {
+        uint32_t next = gt_u32(mi + MENUITEM_OFF_NEXTITEM);
+        uint32_t sub = gt_u32(mi + MENUITEM_OFF_SUBITEM);
+        if (sub) free_menuitem_chain(sub);
+        uint32_t fill = gt_u32(mi + MENUITEM_OFF_ITEMFILL);
+        if (fill && (gt_u16(mi + MENUITEM_OFF_FLAGS) & ITEMTEXT))
+            free_intuitext(fill);
+        uint32_t selfill = gt_u32(mi + MENUITEM_OFF_SELECTFILL);
+        if (selfill && (gt_u16(mi + MENUITEM_OFF_FLAGS) & ITEMTEXT))
+            free_intuitext(selfill);
+        intu_free(mi);
+        mi = next;
+    }
+}
+
+static void free_menu_chain(uint32_t menu)
+{
+    while (menu) {
+        uint32_t next = gt_u32(menu + MENU_OFF_NEXTMENU);
+        uint32_t name = gt_u32(menu + MENU_OFF_MENUNAME);
+        if (name) free_intuitext(name);
+        uint32_t items = gt_u32(menu + MENU_OFF_FIRSTITEM);
+        if (items) free_menuitem_chain(items);
+        intu_free(menu);
+        menu = next;
+    }
+}
+
+static uint32_t read_newmenu_type(uint32_t nm)
+{
+    if (!nm) return NM_END;
+    return gt_u8(nm + NM_OFF_TYPE);
+}
+
+static uint32_t read_newmenu_label(uint32_t nm)
+{
+    if (!nm) return 0;
+    return gt_u32(nm + NM_OFF_LABEL);
+}
+
+static uint32_t read_newmenu_key(uint32_t nm)
+{
+    if (!nm) return 0;
+    return gt_u32(nm + NM_OFF_COMMKEY);
+}
+
+static uint16_t read_newmenu_flags(uint32_t nm)
+{
+    if (!nm) return 0;
+    return gt_u16(nm + NM_OFF_FLAGS);
+}
+
+static uint32_t read_newmenu_mutual(uint32_t nm)
+{
+    if (!nm) return 0;
+    return gt_u32(nm + NM_OFF_MUTUALEXCLUDE);
+}
+
+static uint32_t read_newmenu_userdata(uint32_t nm)
+{
+    if (!nm) return 0;
+    return gt_u32(nm + NM_OFF_USERDATA);
+}
+
+static uint32_t create_menuitem_from_newmenu(uint32_t nm, uint32_t *sub_item_head)
+{
+    *sub_item_head = 0;
+    uint32_t label = read_newmenu_label(nm);
+    if (!label) return 0;
+
+    char text[64] = "";
+    gt_guest_str(text, label, sizeof(text));
+
+    uint32_t mi = alloc_menuitem();
+    if (!mi) return 0;
+
+    uint16_t flags = read_newmenu_flags(nm);
+    flags |= ITEMTEXT | ITEMENABLED;
+    gt_w16(mi + MENUITEM_OFF_FLAGS, flags);
+    gt_w32(mi + MENUITEM_OFF_MUTUALEX, read_newmenu_mutual(nm));
+
+    uint32_t it = alloc_intuitext(text);
+    if (it) gt_w32(mi + MENUITEM_OFF_ITEMFILL, it);
+
+    uint32_t key = read_newmenu_key(nm);
+    if (key && (flags & COMMSEQ)) {
+        char kbuf[8] = "";
+        gt_guest_str(kbuf, key, sizeof(kbuf));
+        if (kbuf[0]) gt_w8(mi + MENUITEM_OFF_COMMAND, (uint8_t)kbuf[0]);
+    }
+
+    return mi;
+}
+
+static uint32_t create_menus_from_newmenu(uint32_t newmenu)
+{
+    if (!newmenu) return 0;
+
+    uint32_t head_menu = 0;
+    uint32_t cur_menu = 0;
+    uint32_t cur_item = 0;
+    uint32_t cur_sub = 0;
+
+    uint32_t p = newmenu;
+    while (p + NM_SIZE <= GUEST_RAM_SIZE) {
+        uint32_t type = read_newmenu_type(p);
+        if (type == NM_END) break;
+
+        uint32_t label = read_newmenu_label(p);
+        if (type == NM_TITLE) {
+            char text[64] = "";
+            gt_guest_str(text, label, sizeof(text));
+            uint32_t m = alloc_menu();
+            if (!m) break;
+            uint32_t it = alloc_intuitext(text);
+            if (it) gt_w32(m + MENU_OFF_MENUNAME, it);
+            gt_w16(m + MENU_OFF_FLAGS, MENUENABLED);
+            if (!head_menu) head_menu = m;
+            if (cur_menu) gt_w32(cur_menu + MENU_OFF_NEXTMENU, m);
+            cur_menu = m;
+            cur_item = 0;
+            cur_sub = 0;
+        } else if (type == NM_ITEM && cur_menu) {
+            uint32_t mi = create_menuitem_from_newmenu(p, &cur_sub);
+            if (!mi) break;
+            if (!cur_item) {
+                gt_w32(cur_menu + MENU_OFF_FIRSTITEM, mi);
+            } else {
+                gt_w32(cur_item + MENUITEM_OFF_NEXTITEM, mi);
+            }
+            cur_item = mi;
+            cur_sub = 0;
+        } else if (type == NM_SUB && cur_item) {
+            uint32_t mi = create_menuitem_from_newmenu(p, &cur_sub);
+            if (!mi) break;
+            if (!gt_u32(cur_item + MENUITEM_OFF_SUBITEM)) {
+                gt_w32(cur_item + MENUITEM_OFF_SUBITEM, mi);
+            } else {
+                gt_w32(cur_sub + MENUITEM_OFF_NEXTITEM, mi);
+            }
+            cur_sub = mi;
+        }
+        p += NM_SIZE;
+        if (p > newmenu + 4096) break; /* sanity limit */
+    }
+
+    return head_menu;
+}
+
 static void gadtools_CreateMenusA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t newmenu = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1); /* tags */
+
+    uint32_t menu = create_menus_from_newmenu(newmenu);
+    m68k_set_reg(M68K_REG_D0, menu);
 }
+
 static void gadtools_FreeMenus(void)
 {
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t menu = m68k_get_reg(NULL, M68K_REG_A0);
+    if (menu) free_menu_chain(menu);
 }
+
+/* Layout helpers: measure text using the fixed 8x16 host font. */
+#define MENU_H_PAD 16
+#define MENU_V_PAD 4
+#define MENU_ITEM_H 20
+#define MENU_TITLE_H 20
+#define MENU_SEPARATOR_H 8
+
+static int gt_label_width(uint32_t itext)
+{
+    if (!itext) return 0;
+    uint32_t str = gt_u32(itext + ITEXT_OFF_ITEXT);
+    if (!str) return 0;
+    int len = 0;
+    while (str + len < GUEST_RAM_SIZE && g_ram[str + len] && len < 256) len++;
+    return len * 8;
+}
+
+static int layout_item_chain(uint32_t first, int x, int y, int *max_w)
+{
+    int h = 0;
+    uint32_t mi = first;
+    while (mi) {
+        uint32_t it = gt_u32(mi + MENUITEM_OFF_ITEMFILL);
+        int w = gt_label_width(it);
+        int cmd = gt_u8(mi + MENUITEM_OFF_COMMAND);
+        if (cmd) w += 24; /* room for command key */
+        if (gt_u32(mi + MENUITEM_OFF_SUBITEM)) w += 16; /* submenu arrow */
+        if (w < 64) w = 64;
+        w += MENU_H_PAD;
+        if (w > *max_w) *max_w = w;
+
+        gt_w16(mi + MENUITEM_OFF_LEFTEDGE, (uint16_t)(int16_t)x);
+        gt_w16(mi + MENUITEM_OFF_TOPEDGE, (uint16_t)(int16_t)y);
+        gt_w16(mi + MENUITEM_OFF_WIDTH, (uint16_t)(int16_t)w);
+        gt_w16(mi + MENUITEM_OFF_HEIGHT, (uint16_t)(int16_t)MENU_ITEM_H);
+
+        y += MENU_ITEM_H;
+        h += MENU_ITEM_H;
+
+        uint32_t sub = gt_u32(mi + MENUITEM_OFF_SUBITEM);
+        if (sub) {
+            int sub_max = 0;
+            int sub_h = layout_item_chain(sub, x + w, y - MENU_ITEM_H, &sub_max);
+            (void)sub_h;
+        }
+        mi = gt_u32(mi + MENUITEM_OFF_NEXTITEM);
+    }
+    return h;
+}
+
 static void gadtools_LayoutMenuItemsA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t first = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1); /* vi */
+    (void)m68k_get_reg(NULL, M68K_REG_A2); /* tags */
+
+    int max_w = 0;
+    layout_item_chain(first, 0, 0, &max_w);
+    m68k_set_reg(M68K_REG_D0, 1);
 }
+
 static void gadtools_LayoutMenusA(void)
 {
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t menu = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1); /* vi */
+    (void)m68k_get_reg(NULL, M68K_REG_A2); /* tags */
+
+    int x = 8;
+    int y = 0;
+    uint32_t m = menu;
+    while (m) {
+        uint32_t name = gt_u32(m + MENU_OFF_MENUNAME);
+        int w = gt_label_width(name) + MENU_H_PAD;
+        if (w < 64) w = 64;
+        gt_w16(m + MENU_OFF_LEFTEDGE, (uint16_t)(int16_t)x);
+        gt_w16(m + MENU_OFF_TOPEDGE, (uint16_t)(int16_t)y);
+        gt_w16(m + MENU_OFF_WIDTH, (uint16_t)(int16_t)w);
+        gt_w16(m + MENU_OFF_HEIGHT, (uint16_t)(int16_t)MENU_TITLE_H);
+
+        uint32_t items = gt_u32(m + MENU_OFF_FIRSTITEM);
+        if (items) {
+            int max_w = 0;
+            layout_item_chain(items, 0, MENU_TITLE_H, &max_w);
+            /* Set menu width to fit the widest item if needed. */
+            int item_w = max_w + 8;
+            if (item_w > w) gt_w16(m + MENU_OFF_WIDTH, (uint16_t)(int16_t)item_w);
+        }
+
+        x += w + 8;
+        m = gt_u32(m + MENU_OFF_NEXTMENU);
+    }
+
+    m68k_set_reg(M68K_REG_D0, 1);
 }
 
 /* =========================================================================

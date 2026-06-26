@@ -117,16 +117,14 @@ static char *local_strchr(const char *s, int c)
     return NULL;
 }
 
-/* IntuiText structure offsets (packed AmigaOS layout) */
-#define ITEXT_OFF_FRONTPEN   0
-#define ITEXT_OFF_BACKPEN    1
-#define ITEXT_OFF_DRAWMODE   2
-#define ITEXT_OFF_LEFTEDGE   3
-#define ITEXT_OFF_TOPEDGE    5
-#define ITEXT_OFF_ITEXTFONT  7
-#define ITEXT_OFF_ITEXT      11
-#define ITEXT_OFF_NEXTTEXT   15
-#define ITEXT_SIZE           19
+/* IntuiText structure offsets are defined in intuition_lib.h. */
+
+/* BitMap structure offsets (used by SA_Interleaved and custom pointers). */
+#define BM_OFF_BYTESPERROW 0
+#define BM_OFF_ROWS        2
+#define BM_OFF_FLAGS       4
+#define BM_OFF_DEPTH       5
+#define BM_OFF_PLANES      8
 
 /* =========================================================================
  * Intuition heap allocator (dedicated region below stack)
@@ -289,6 +287,16 @@ typedef struct {
 
 static IntuitionSlot g_intu_wins[MAX_INTUITION_WINS];
 static uint32_t      g_intu_view = 0;      /* single guest View for ViewAddress() */
+
+/* Pending WA_PointerDelay pointer change.  The cursor is global, so only one
+ * delayed change can be outstanding at a time. */
+static uint32_t g_pending_pointer = 0;
+static uint32_t g_pending_pointer_xoff = 0;
+static uint32_t g_pending_pointer_yoff = 0;
+static uint64_t g_pending_pointer_target = 0;
+static uint8_t  g_pending_pointer_active = 0;
+static uint8_t  g_pending_pointer_busy = 0;
+static uint8_t  g_pending_pointer_busy_state = 0;
 
 static IntuitionSlot *alloc_slot(void)
 {
@@ -868,6 +876,35 @@ static uint32_t gadget_by_id(IntuitionSlot *slot, uint16_t id)
         case SYSGAD_SIZE:  return slot->gad_size;
     }
     return 0;
+}
+
+/* Clamp a window's left/top so it fits inside its screen (or the framebuffer
+ * if no screen is supplied).  Used for WA_AutoAdjust. */
+static void auto_adjust_window_geometry(int16_t *left, int16_t *top, int16_t width, int16_t height, uint32_t wscreen)
+{
+    int screen_left = 0, screen_top = 0;
+    int screen_width = (int)g_fb.width;
+    int screen_height = (int)g_fb.height;
+
+    if (wscreen && wscreen + SCR_OFF_HEIGHT + 2 <= GUEST_RAM_SIZE) {
+        screen_left  = mem_s16(wscreen + SCR_OFF_LEFTEDGE);
+        screen_top   = mem_s16(wscreen + SCR_OFF_TOPEDGE);
+        screen_width = mem_s16(wscreen + SCR_OFF_WIDTH);
+        screen_height = mem_s16(wscreen + SCR_OFF_HEIGHT);
+    }
+
+    if (width > screen_width) width = (int16_t)screen_width;
+    if (height > screen_height) height = (int16_t)screen_height;
+
+    if (*left < screen_left) *left = (int16_t)screen_left;
+    if (*top < screen_top) *top = (int16_t)screen_top;
+    if (*left + width > screen_left + screen_width)
+        *left = (int16_t)(screen_left + screen_width - width);
+    if (*top + height > screen_top + screen_height)
+        *top = (int16_t)(screen_top + screen_height - height);
+
+    if (*left < screen_left) *left = (int16_t)screen_left;
+    if (*top < screen_top) *top = (int16_t)screen_top;
 }
 
 /* Forward declaration for custom gadget hit-testing */
@@ -2694,7 +2731,7 @@ static void intuition_TimedDisplayAlert(void)
 
 #define MAX_INTUITION_SCREENS 4
 
-typedef struct {
+typedef struct ScreenSlot {
     uint32_t guest_screen;
     uint8_t  active;
     char     title[64];
@@ -2908,8 +2945,20 @@ static void clamp_screen_to_constraints(ScreenSlot *slot, int cx, int cy, int cw
 /* Forward declaration — defined later near the SetPrefs implementation. */
 static uint32_t scale_rgb(uint32_t rgb, int num, int den);
 
+/* Determine how many palette entries a screen should expose, honouring
+ * SA_FullPalette and SA_ColorMapEntries.  Capped at 32 entries. */
+static int screen_palette_count(ScreenSlot *slot)
+{
+    int count = 16;
+    if (slot->full_palette) count = 32;
+    if (slot->color_map_entries > 0 && slot->color_map_entries < count)
+        count = slot->color_map_entries;
+    if (count > 32) count = 32;
+    return count;
+}
+
 /* Extract the screen's palette from SA_Colors and SA_Colors32 into a
- * local 16-entry RGB table.  Unspecified pens keep the default Amiga palette. */
+ * local RGB table.  Unspecified pens keep the default Amiga palette. */
 static void extract_screen_palette(ScreenSlot *slot, uint32_t *palette, int max_colors)
 {
     for (int i = 0; i < max_colors; i++)
@@ -2956,8 +3005,9 @@ static void apply_screen_palette(ScreenSlot *slot)
 {
     if (!slot) return;
 
-    uint32_t palette[16];
-    extract_screen_palette(slot, palette, 16);
+    int count = screen_palette_count(slot);
+    uint32_t palette[32];
+    extract_screen_palette(slot, palette, count);
 
     uint32_t grey  = palette[0];
     uint32_t black = palette[1];
@@ -3031,6 +3081,7 @@ static void apply_parent_screen_defaults(uint32_t parent_screen,
                                          int16_t *width, int16_t *height,
                                          int16_t *depth,
                                          uint8_t *detail_pen, uint8_t *block_pen);
+static uint32_t find_pub_screen_by_name(const char *name);
 
 static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_ptr)
 {
@@ -3184,12 +3235,29 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
         }
     }
 
+    /* Reject a public-screen name that is already in use. */
+    if (pub_name_ptr && pub_name_ptr < GUEST_RAM_SIZE) {
+        char test_name[64] = "";
+        guest_str(test_name, pub_name_ptr, sizeof(test_name));
+        if (find_pub_screen_by_name(test_name)) {
+            if (error_code_ptr && error_code_ptr + 4 <= GUEST_RAM_SIZE)
+                mem_w32(error_code_ptr, 5); /* OSERR_PUBNOTUNIQUE */
+            return 0;
+        }
+    }
+
     ScreenSlot *slot = alloc_screen_slot();
-    if (!slot) return 0;
+    if (!slot) {
+        if (error_code_ptr && error_code_ptr + 4 <= GUEST_RAM_SIZE)
+            mem_w32(error_code_ptr, 3); /* OSERR_NOMEM */
+        return 0;
+    }
 
     uint32_t guest_screen = intu_alloc(SCR_SIZE);
     if (!guest_screen) {
         slot->active = 0;
+        if (error_code_ptr && error_code_ptr + 4 <= GUEST_RAM_SIZE)
+            mem_w32(error_code_ptr, 3); /* OSERR_NOMEM */
         return 0;
     }
 
@@ -3210,6 +3278,10 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
 
     slot->display_id       = display_id;
     slot->bitmap           = bitmap_ptr;
+    /* If SA_Interleaved is requested with a custom bitmap, set the
+     * BMF_INTERLEAVED bit (0x01) in the guest BitMap flags. */
+    if (bitmap_ptr && interleaved && bitmap_ptr + BM_OFF_FLAGS < GUEST_RAM_SIZE)
+        mem_w8(bitmap_ptr + BM_OFF_FLAGS, (uint8_t)(mem_u8(bitmap_ptr + BM_OFF_FLAGS) | 1));
     slot->colormap         = 0;
     slot->colors           = colors_ptr;
     slot->colors32         = colors32_ptr;
@@ -3561,6 +3633,8 @@ static void intuition_OpenWindowTagList(void)
                           &menu_help, &tablet_messages, &auto_adjust,
                           &notify_depth, &pointer_delay);
     }
+    if (tablet_messages) idcmp |= IDCMP_TABLET;
+    if (menu_help) idcmp |= IDCMP_MENUHELP;
 
     /* Resolve public screen for visitor windows. */
     uint32_t wscreen = 0;
@@ -3598,6 +3672,10 @@ static void intuition_OpenWindowTagList(void)
 
     if (width < 64) width = 64;
     if (height < 32) height = 32;
+
+    if (auto_adjust) {
+        auto_adjust_window_geometry(&left, &top, width, height, wscreen);
+    }
 
     IntuitionSlot *slot = alloc_slot();
     if (!slot) {
@@ -3951,6 +4029,7 @@ static void intuition_SetWindowAttrsA(void)
     }
 
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
     int moved = 0, resized = 0, redraw = 0;
 
     for (uint32_t t = tag_list; t; t += 8) {
@@ -4120,10 +4199,32 @@ static void intuition_SetWindowAttrsA(void)
             case WA_SizeBBottom:
                 wa_set_flag(win_ptr, data, WFLG_SIZEBBOTTOM); redraw = 1; break;
             case WA_AutoAdjust:
-                if (slot) slot->auto_adjust = data ? 1 : 0;
+                if (slot) {
+                    slot->auto_adjust = data ? 1 : 0;
+                    if (slot->auto_adjust) {
+                        int16_t wleft = mem_s16(win_ptr + WIN_OFF_LEFTEDGE);
+                        int16_t wtop  = mem_s16(win_ptr + WIN_OFF_TOPEDGE);
+                        int16_t wwidth = mem_s16(win_ptr + WIN_OFF_WIDTH);
+                        int16_t wheight = mem_s16(win_ptr + WIN_OFF_HEIGHT);
+                        uint32_t wscreen = mem_u32(win_ptr + WIN_OFF_WSCREEN);
+                        auto_adjust_window_geometry(&wleft, &wtop, wwidth, wheight, wscreen);
+                        if (wleft != mem_s16(win_ptr + WIN_OFF_LEFTEDGE) ||
+                            wtop != mem_s16(win_ptr + WIN_OFF_TOPEDGE)) {
+                            mem_w16(win_ptr + WIN_OFF_LEFTEDGE, wleft);
+                            mem_w16(win_ptr + WIN_OFF_TOPEDGE, wtop);
+                            WM_MoveWindow(slot->wm_handle, wleft, wtop);
+                            redraw = 1;
+                        }
+                    }
+                }
                 break;
             case WA_MenuHelp:
-                if (slot) slot->menu_help = data ? 1 : 0;
+                if (slot) {
+                    slot->menu_help = data ? 1 : 0;
+                    if (data) idcmp |= IDCMP_MENUHELP;
+                    else      idcmp &= ~IDCMP_MENUHELP;
+                    mem_w32(win_ptr + WIN_OFF_IDCMPFLAGS, idcmp);
+                }
                 break;
             case WA_NewLookMenus:
                 wa_set_flag(win_ptr, data, WFLG_NEWLOOKMENUS); break;
@@ -4153,7 +4254,12 @@ static void intuition_SetWindowAttrsA(void)
                 if (slot) slot->pointer_delay = data;
                 break;
             case WA_TabletMessages:
-                if (slot) slot->tablet_messages = data ? 1 : 0;
+                if (slot) {
+                    slot->tablet_messages = data ? 1 : 0;
+                    if (data) idcmp |= IDCMP_TABLET;
+                    else      idcmp &= ~IDCMP_TABLET;
+                    mem_w32(win_ptr + WIN_OFF_IDCMPFLAGS, idcmp);
+                }
                 break;
             case WA_HelpGroup:
                 if (slot) slot->help_group = data;
@@ -4428,10 +4534,16 @@ static void intuition_SetScreenAttrsA(void)
                 sa_set_flag(screen_ptr, data, AUTOSCROLL);
                 break;
             case SA_FullPalette:
-                if (slot) slot->full_palette = data ? 1 : 0;
+                if (slot) {
+                    slot->full_palette = data ? 1 : 0;
+                    redraw = 1;
+                }
                 break;
             case SA_ColorMapEntries:
-                if (slot) slot->color_map_entries = (uint16_t)data;
+                if (slot) {
+                    slot->color_map_entries = (uint16_t)data;
+                    redraw = 1;
+                }
                 break;
             case SA_Draggable:
                 if (slot) slot->draggable = data ? 1 : 0;
@@ -4443,7 +4555,16 @@ static void intuition_SetScreenAttrsA(void)
                 if (slot) slot->share_pens = data ? 1 : 0;
                 break;
             case SA_Interleaved:
-                if (slot) slot->interleaved = data ? 1 : 0;
+                if (slot) {
+                    slot->interleaved = data ? 1 : 0;
+                    uint32_t bm = mem_u32(screen_ptr + SCR_OFF_BITMA);
+                    if (bm && bm + BM_OFF_FLAGS < GUEST_RAM_SIZE) {
+                        uint8_t flags = mem_u8(bm + BM_OFF_FLAGS);
+                        if (data) flags |= 1;
+                        else      flags &= ~1;
+                        mem_w8(bm + BM_OFF_FLAGS, flags);
+                    }
+                }
                 break;
             case SA_LikeWorkbench:
                 if (slot) slot->like_workbench = data ? 1 : 0;
@@ -4481,7 +4602,11 @@ static void intuition_SetScreenAttrsA(void)
         }
     }
 
-    if (redraw) WM_Redraw();
+    if (redraw) {
+        if (slot && slot->is_front)
+            apply_screen_palette(slot);
+        WM_Redraw();
+    }
     m68k_set_reg(M68K_REG_D0, 1);
 }
 
@@ -4837,7 +4962,7 @@ static void intuition_PrintIText(void)
         uint8_t  draw_mode = mem_u8(itext + ITEXT_OFF_DRAWMODE);
         int16_t  left      = mem_s16(itext + ITEXT_OFF_LEFTEDGE);
         int16_t  top       = mem_s16(itext + ITEXT_OFF_TOPEDGE);
-        uint32_t font_attr = mem_u32(itext + ITEXT_OFF_ITEXTFONT);
+        uint32_t font_attr = mem_u32(itext + ITEXT_OFF_FONT);
         uint32_t text      = mem_u32(itext + ITEXT_OFF_ITEXT);
         uint32_t next_text = mem_u32(itext + ITEXT_OFF_NEXTTEXT);
 
@@ -5723,13 +5848,6 @@ static void decode_pointer_sprite(uint32_t pointer, int height, int width,
     Cursor_SetCustomSprite(sprite, width, height, xoff, yoff);
 }
 
-/* BitMap structure offsets */
-#define BM_OFF_BYTESPERROW 0
-#define BM_OFF_ROWS        2
-#define BM_OFF_FLAGS       4
-#define BM_OFF_DEPTH       5
-#define BM_OFF_PLANES      8
-
 /* Check if a guest pointer looks like a valid struct BitMap. */
 static int is_valid_bitmap(uint32_t bm)
 {
@@ -5895,13 +6013,59 @@ static void intuition_SetWindowPointerA(void)
         if (slot) slot->pointer_delay = delay;
     }
 
-    if (got_busy) {
-        Cursor_SetBusy(busy);
-    } else if (got_pointer) {
-        set_pointer_from_wa_pointer(wa_pointer, 0, 0);
+    if (got_busy || got_pointer) {
+        if (delay > 0) {
+            /* Schedule the pointer change after the requested delay.
+             * g_pit_ticks runs at 100 Hz, so 1 tick = 10 ms. */
+            g_pending_pointer_active = 1;
+            g_pending_pointer_target = g_pit_ticks + (delay + 9) / 10;
+            g_pending_pointer_busy = got_busy ? 1 : 0;
+            g_pending_pointer_busy_state = busy ? 1 : 0;
+            g_pending_pointer = wa_pointer;
+            g_pending_pointer_xoff = 0;
+            g_pending_pointer_yoff = 0;
+        } else {
+            g_pending_pointer_active = 0;
+            if (got_busy) {
+                Cursor_SetBusy(busy);
+            } else {
+                set_pointer_from_wa_pointer(wa_pointer, 0, 0);
+            }
+        }
     } else {
+        g_pending_pointer_active = 0;
         Cursor_ClearCustomSprite();
     }
+}
+
+/* Apply any delayed pointer change whose time has arrived.  Called from the
+ * cursor module on mouse movement / redraw so that WA_PointerDelay is honoured. */
+void UAOS_Intuition_CheckPendingPointer(void)
+{
+    if (!g_pending_pointer_active) return;
+    if (g_pit_ticks < g_pending_pointer_target) return;
+
+    g_pending_pointer_active = 0;
+    if (g_pending_pointer_busy) {
+        Cursor_SetBusy(g_pending_pointer_busy_state);
+    } else {
+        set_pointer_from_wa_pointer(g_pending_pointer,
+                                  (int)g_pending_pointer_xoff,
+                                  (int)g_pending_pointer_yoff);
+    }
+}
+
+/* Post IDCMP_NEWSIZE to a window if it has WA_NotifyDepth set and the IDCMP
+ * flag is enabled.  Called from the WM whenever the window's z-order changes. */
+void UAOS_Intuition_NotifyDepthChange(int wm_handle)
+{
+    uint32_t win_ptr = get_guest_window_from_handle(wm_handle);
+    if (!win_ptr) return;
+    IntuitionSlot *slot = get_slot_from_handle(wm_handle);
+    if (!slot || !slot->notify_depth) return;
+    uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
+    if (idcmp & IDCMP_NEWSIZE)
+        post_intui_message(win_ptr, IDCMP_NEWSIZE, 0, 0, 0, 0, 0);
 }
 
 /* -------------------------------------------------------------------------
@@ -7110,6 +7274,12 @@ static void intuition_AddClass(void)
     UAOS_BOOPSI_RegisterClass(cls);
 }
 
+/* Public dispatch helper for built-in classes. */
+uint32_t UAOS_BOOPSI_Dispatch(uint32_t object, uint32_t method, uint32_t msg, uint32_t start_class)
+{
+    return boopsi_dispatch(object, method, msg, start_class);
+}
+
 /* Public registration helper for built-in classes. */
 void UAOS_BOOPSI_RegisterClass(uint32_t cls)
 {
@@ -7711,6 +7881,7 @@ static void *intuition_funcs[] = {
     intuition_OpenWindowTags,
     intuition_OpenScreenTags,
     intuition_DoGadgetMethod,
+    intuition_SetGadgetAttrs,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)

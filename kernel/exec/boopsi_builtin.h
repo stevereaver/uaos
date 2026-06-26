@@ -18,4 +18,7 @@ void UAOS_BOOPSI_RegisterBuiltinClasses(void);
 /* Public helper to register a single class with the BOOPSI registry. */
 void UAOS_BOOPSI_RegisterClass(uint32_t cls);
 
+/* Public BOOPSI dispatch helper (used by built-in class disposal). */
+uint32_t UAOS_BOOPSI_Dispatch(uint32_t object, uint32_t method, uint32_t msg, uint32_t start_class);
+
 #endif /* UAOS_BOOPSI_BUILTIN_H */

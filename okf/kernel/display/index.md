@@ -25,7 +25,7 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 ### Key Features
 - **Z-Order Management**: Windows are stacked, with the top window receiving focus.
 - **Click-to-Focus**: Clicking a window title bar or client area raises it to the top.
-- **Raise / Lower**: `WM_RaiseWindow` brings a window to the front; `WM_LowerWindow` sends it to the back.
+- **Raise / Lower**: `WM_RaiseWindow` brings a window to the front; `WM_LowerWindow` sends it to the back. `WM_MoveWindowInFrontOf` and the depth gadget also reorder the z-stack. Whenever the z-order of a window changes, `UAOS_Intuition_NotifyDepthChange()` is called so windows with `WA_NotifyDepth` can receive `IDCMP_NEWSIZE`.
 - **Repaint Requests**: `WM_RepaintWindow` requests a chrome/content redraw of a window (currently performed as a full-scene redraw to handle overlap correctly).
 - **Title Changes**: `WM_SetWindowTitle` updates the title string stored in the `WmWindow` and triggers a full redraw so the title bar is refreshed.
 - **Dragging & Resizing**: Title bars can be dragged to move windows, and some windows support resizing.

@@ -14,6 +14,8 @@
 
 #include "exec/boopsi_builtin.h"
 #include "exec/intuition_lib.h"
+#include "exec/amiga_graphics.h"
+#include "display/framebuffer.h"
 #include <string.h>
 
 /* Guest RAM access (mirrors intuition_lib.c helpers for fast local use) */
@@ -23,8 +25,36 @@ extern void         m68k_set_reg(int reg, unsigned int value);
 extern uint32_t     UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2);
 extern uint32_t     intu_alloc(uint32_t size);
 extern void         intu_free(uint32_t user_addr);
+extern void         FB_FillRect(int x, int y, int w, int h, uint32_t colour);
+extern void         FB_DrawRect(int x, int y, int w, int h, uint32_t colour);
+extern void         FB_PutStr(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 
 #define GUEST_RAM_SIZE (2 * 1024 * 1024)
+
+/* GM_* message offsets (AmigaOS 3.x) */
+#define GMHT_OFF_GINFO   4
+#define GMHT_OFF_MOUSEX  8
+#define GMHT_OFF_MOUSEY  10
+#define GMHT_OFF_FLAGS   12
+
+#define GMR_OFF_GINFO    4
+#define GMR_OFF_RPORT    8
+#define GMR_OFF_REDRAW   12
+
+#define GMI_OFF_GINFO    4
+#define GMI_OFF_IEVENT   8
+#define GMI_OFF_TERM     12
+#define GMI_OFF_MOUSEX   16
+#define GMI_OFF_MOUSEY   18
+#define GMI_OFF_TABLET   20
+#define GMI_OFF_FLAGS    24
+
+#define GMGI_OFF_GINFO   4
+#define GMGI_OFF_ABORT   8
+
+#define GMR_NOREUSE   0
+#define GMR_REUSE     1
+#define GMR_MEACTIVE  2
 
 static inline uint32_t mem_u32(uint32_t a)
 {
@@ -133,68 +163,158 @@ static uint32_t rootclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 
 /* =========================================================================
  * gadgetclass
+ *
+ * The gadgetclass object is laid out as a real AmigaOS Gadget structure so it
+ * can be added directly to a window's FirstGadget list. The instance size is
+ * GAD_SIZE (44) and the instance offset is 0.
  * ========================================================================= */
-#define BGAD_OFF_LEFT        0
-#define BGAD_OFF_TOP         4
-#define BGAD_OFF_WIDTH       8
-#define BGAD_OFF_HEIGHT      12
-#define BGAD_OFF_FLAGS       16
-#define BGAD_OFF_ACTIVATION  20
-#define BGAD_OFF_TEXT        24
-#define BGAD_OFF_ID          28
-#define BGAD_OFF_USERDATA    32
-#define BGAD_OFF_SPECIALINFO 36
-#define BGAD_OFF_TYPE        40
-#define BGAD_OFF_MUTUAL      44
-#define BGAD_OFF_IMAGE       48
-#define BGAD_OFF_LABEL       52
-#define BGAD_INST_SIZE       56
+
+static uint32_t create_intuitext(const char *text, uint32_t text_attr)
+{
+    (void)text_attr;
+    if (!text || !text[0]) return 0;
+    uint32_t len = (uint32_t)strlen(text) + 1;
+    uint32_t str = intu_alloc(len);
+    if (!str) return 0;
+    for (uint32_t i = 0; i < len; i++) g_ram[str + i] = (uint8_t)text[i];
+
+    uint32_t it = intu_alloc(ITEXT_SIZE);
+    if (!it) { intu_free(str); return 0; }
+    for (int i = 0; i < ITEXT_SIZE; i++) g_ram[it + i] = 0;
+    g_ram[it + ITEXT_OFF_FRONTPEN] = 1; /* text pen */
+    g_ram[it + ITEXT_OFF_BACKPEN] = 0;  /* bg pen */
+    g_ram[it + ITEXT_OFF_DRAWMODE] = 1; /* JAM1 */
+    mem_w32(it + ITEXT_OFF_ITEXT, str);
+    return it;
+}
 
 static int gadget_set_tag(uint32_t tag, uint32_t data, void *ctx)
 {
     uint32_t obj = (uint32_t)(uintptr_t)ctx;
     switch (tag) {
-        case GA_Left:       mem_w32(obj + BGAD_OFF_LEFT, (uint32_t)(int32_t)(int16_t)data); break;
+        case GA_Left:       mem_w16(obj + GAD_OFF_LEFTEDGE, (uint16_t)(int16_t)data); break;
         case GA_RelRight:   break;
-        case GA_Top:        mem_w32(obj + BGAD_OFF_TOP, (uint32_t)(int32_t)(int16_t)data); break;
+        case GA_Top:        mem_w16(obj + GAD_OFF_TOPEDGE, (uint16_t)(int16_t)data); break;
         case GA_RelBottom:  break;
-        case GA_Width:      mem_w32(obj + BGAD_OFF_WIDTH, (uint32_t)(int32_t)(int16_t)data); break;
+        case GA_Width:      mem_w16(obj + GAD_OFF_WIDTH, (uint16_t)(int16_t)data); break;
         case GA_RelWidth:   break;
-        case GA_Height:     mem_w32(obj + BGAD_OFF_HEIGHT, (uint32_t)(int32_t)(int16_t)data); break;
+        case GA_Height:     mem_w16(obj + GAD_OFF_HEIGHT, (uint16_t)(int16_t)data); break;
         case GA_RelHeight:  break;
-        case GA_Text:       mem_w32(obj + BGAD_OFF_TEXT, data); break;
-        case GA_Label:      mem_w32(obj + BGAD_OFF_LABEL, data); break;
-        case GA_Image:      mem_w32(obj + BGAD_OFF_IMAGE, data); break;
-        case GA_ID:         mem_w32(obj + BGAD_OFF_ID, data); break;
-        case GA_UserData:   mem_w32(obj + BGAD_OFF_USERDATA, data); break;
-        case GA_Disabled:   mem_w32(obj + BGAD_OFF_FLAGS, data ? 0x00000200 : 0); break;
-        case GA_Selected:   {
-            uint32_t f = mem_u32(obj + BGAD_OFF_FLAGS);
-            if (data) f |= 0x00000001;
-            else f &= ~0x00000001;
-            mem_w32(obj + BGAD_OFF_FLAGS, f);
+        case GA_Text:
+        case GA_Label: {
+            char text[80] = "";
+            guest_str(text, data, sizeof(text));
+            uint32_t it = create_intuitext(text, 0);
+            if (it) {
+                mem_w32(obj + GAD_OFF_GADGETTEXT, it);
+                uint16_t f = mem_u16(obj + GAD_OFF_FLAGS);
+                f &= ~(GFLG_LABELITEXT | GFLG_LABELSTRING | GFLG_LABELIMAGE);
+                f |= GFLG_LABELITEXT;
+                mem_w16(obj + GAD_OFF_FLAGS, f);
+            }
             break;
         }
-        case GA_Immediate:  {
-            uint32_t a = mem_u32(obj + BGAD_OFF_ACTIVATION);
-            if (data) a |= 0x0002; else a &= ~0x0002;
-            mem_w32(obj + BGAD_OFF_ACTIVATION, a);
+        case GA_Image: {
+            mem_w32(obj + GAD_OFF_GADGETRENDER, data);
             break;
         }
-        case GA_RelVerify:  {
-            uint32_t a = mem_u32(obj + BGAD_OFF_ACTIVATION);
-            if (data) a |= 0x0001; else a &= ~0x0001;
-            mem_w32(obj + BGAD_OFF_ACTIVATION, a);
+        case GA_ID:         mem_w16(obj + GAD_OFF_GADGETID, (uint16_t)data); break;
+        case GA_UserData:   mem_w32(obj + GAD_OFF_USERDATA, data); break;
+        case GA_Disabled: {
+            uint16_t f = mem_u16(obj + GAD_OFF_FLAGS);
+            if (data) f |= GFLG_DISABLED;
+            else f &= ~GFLG_DISABLED;
+            mem_w16(obj + GAD_OFF_FLAGS, f);
+            break;
+        }
+        case GA_Selected: {
+            uint16_t f = mem_u16(obj + GAD_OFF_FLAGS);
+            if (data) f |= GFLG_SELECTED;
+            else f &= ~GFLG_SELECTED;
+            mem_w16(obj + GAD_OFF_FLAGS, f);
+            break;
+        }
+        case GA_Immediate: {
+            uint16_t a = mem_u16(obj + GAD_OFF_ACTIVATION);
+            if (data) a |= GACT_IMMEDIATE; else a &= ~GACT_IMMEDIATE;
+            mem_w16(obj + GAD_OFF_ACTIVATION, a);
+            break;
+        }
+        case GA_RelVerify: {
+            uint16_t a = mem_u16(obj + GAD_OFF_ACTIVATION);
+            if (data) a |= GACT_RELVERIFY; else a &= ~GACT_RELVERIFY;
+            mem_w16(obj + GAD_OFF_ACTIVATION, a);
             break;
         }
         case GA_ToggleSelect: {
-            uint32_t a = mem_u32(obj + BGAD_OFF_ACTIVATION);
-            if (data) a |= 0x0004; else a &= ~0x0004;
-            mem_w32(obj + BGAD_OFF_ACTIVATION, a);
+            uint16_t a = mem_u16(obj + GAD_OFF_ACTIVATION);
+            if (data) a |= GACT_TOGGLESELECT; else a &= ~GACT_TOGGLESELECT;
+            mem_w16(obj + GAD_OFF_ACTIVATION, a);
             break;
         }
     }
     return 1;
+}
+
+static int gadget_point_inside(uint32_t obj, int16_t mx, int16_t my)
+{
+    /* GM_HITTEST/GM_HANDLEINPUT mouse coordinates are relative to the
+     * gadget's upper-left corner. */
+    int16_t w = mem_s16(obj + GAD_OFF_WIDTH);
+    int16_t h = mem_s16(obj + GAD_OFF_HEIGHT);
+    return (mx >= 0 && mx < w && my >= 0 && my < h) ? 1 : 0;
+}
+
+static void rp_window_offset(uint32_t rport, int *wx, int *wy)
+{
+    *wx = 0; *wy = 0;
+    if (!rport) return;
+    uint32_t win = mem_u32(rport + RP_OFF_LAYER);
+    if (!win) return;
+    *wx = (int)mem_s16(win + WIN_OFF_LEFTEDGE);
+    *wy = (int)mem_s16(win + WIN_OFF_TOPEDGE);
+}
+
+static void gadget_render(uint32_t obj, uint32_t rport, uint32_t redraw)
+{
+    (void)redraw;
+    int16_t left = mem_s16(obj + GAD_OFF_LEFTEDGE);
+    int16_t top  = mem_s16(obj + GAD_OFF_TOPEDGE);
+    int16_t w    = mem_s16(obj + GAD_OFF_WIDTH);
+    int16_t h    = mem_s16(obj + GAD_OFF_HEIGHT);
+    uint16_t flags = mem_u16(obj + GAD_OFF_FLAGS);
+    uint16_t activation = mem_u16(obj + GAD_OFF_ACTIVATION);
+
+    int wx, wy;
+    rp_window_offset(rport, &wx, &wy);
+    int sx = wx + left;
+    int sy = wy + top;
+
+    uint32_t bg = (flags & GFLG_SELECTED) ? WB_BLUE : WB_GREY;
+    uint32_t fg = (flags & GFLG_SELECTED) ? WB_WHITE : WB_BLACK;
+    uint32_t dis = (flags & GFLG_DISABLED) ? 1 : 0;
+    if (dis) { bg = WB_GREY; fg = WB_DARK_GREY; }
+
+    FB_FillRect(sx, sy, w, h, bg);
+    FB_DrawRect(sx, sy, w, h, fg);
+
+    uint32_t label = mem_u32(obj + GAD_OFF_GADGETTEXT);
+    if (label && (flags & GFLG_LABELITEXT)) {
+        uint32_t text = mem_u32(label + ITEXT_OFF_ITEXT);
+        if (text) {
+            char buf[64] = "";
+            guest_str(buf, text, sizeof(buf));
+            FB_PutStr(sx + 4, sy + (h - 16) / 2, buf, fg, bg);
+        }
+    }
+
+    if (activation & GACT_TOGGLESELECT) {
+        int box = (h < 20) ? h - 4 : 16;
+        int by = sy + (h - box) / 2;
+        FB_DrawRect(sx + 2, by, box, box, fg);
+        if (flags & GFLG_SELECTED)
+            FB_FillRect(sx + 4, by + 2, box - 4, box - 4, fg);
+    }
 }
 
 static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
@@ -203,12 +323,22 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     switch (method) {
         case OM_NEW: {
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            memset(&g_ram[obj], 0, BGAD_INST_SIZE);
+            memset(&g_ram[obj], 0, GAD_SIZE);
+            /* Default to a boolean push-button gadget. */
+            mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_BOOLGADGET);
+            mem_w16(obj + GAD_OFF_ACTIVATION, GACT_IMMEDIATE | GACT_RELVERIFY);
             walk_tags(tags, gadget_set_tag, (void*)(uintptr_t)obj);
             return 1;
         }
-        case OM_DISPOSE:
+        case OM_DISPOSE: {
+            uint32_t label = mem_u32(obj + GAD_OFF_GADGETTEXT);
+            if (label) {
+                uint32_t text = mem_u32(label + ITEXT_OFF_ITEXT);
+                if (text) intu_free(text);
+                intu_free(label);
+            }
             return 1;
+        }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, gadget_set_tag, (void*)(uintptr_t)obj);
@@ -220,29 +350,64 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             if (!store) return 0;
             uint32_t value = 0;
             switch (attr) {
-                case GA_Left:      value = mem_u32(obj + BGAD_OFF_LEFT); break;
-                case GA_Top:       value = mem_u32(obj + BGAD_OFF_TOP); break;
-                case GA_Width:     value = mem_u32(obj + BGAD_OFF_WIDTH); break;
-                case GA_Height:    value = mem_u32(obj + BGAD_OFF_HEIGHT); break;
-                case GA_Text:      value = mem_u32(obj + BGAD_OFF_TEXT); break;
-                case GA_Label:     value = mem_u32(obj + BGAD_OFF_LABEL); break;
-                case GA_Image:     value = mem_u32(obj + BGAD_OFF_IMAGE); break;
-                case GA_ID:        value = mem_u32(obj + BGAD_OFF_ID); break;
-                case GA_UserData:  value = mem_u32(obj + BGAD_OFF_USERDATA); break;
-                case GA_Disabled:  value = (mem_u32(obj + BGAD_OFF_FLAGS) & 0x00000200) ? 1 : 0; break;
-                case GA_Selected:  value = (mem_u32(obj + BGAD_OFF_FLAGS) & 0x00000001) ? 1 : 0; break;
+                case GA_Left:      value = (uint32_t)(int32_t)mem_s16(obj + GAD_OFF_LEFTEDGE); break;
+                case GA_Top:       value = (uint32_t)(int32_t)mem_s16(obj + GAD_OFF_TOPEDGE); break;
+                case GA_Width:     value = (uint32_t)(int32_t)mem_s16(obj + GAD_OFF_WIDTH); break;
+                case GA_Height:    value = (uint32_t)(int32_t)mem_s16(obj + GAD_OFF_HEIGHT); break;
+                case GA_Text:      value = mem_u32(obj + GAD_OFF_GADGETTEXT); break;
+                case GA_Label:     value = mem_u32(obj + GAD_OFF_GADGETTEXT); break;
+                case GA_Image:     value = mem_u32(obj + GAD_OFF_GADGETRENDER); break;
+                case GA_ID:        value = mem_u16(obj + GAD_OFF_GADGETID); break;
+                case GA_UserData:  value = mem_u32(obj + GAD_OFF_USERDATA); break;
+                case GA_Disabled:  value = (mem_u16(obj + GAD_OFF_FLAGS) & GFLG_DISABLED) ? 1 : 0; break;
+                case GA_Selected:  value = (mem_u16(obj + GAD_OFF_FLAGS) & GFLG_SELECTED) ? 1 : 0; break;
                 default: return 0;
             }
             mem_w32(store, value);
             return 1;
         }
-        case GM_HITTEST:
-            return 1; /* inside */
-        case GM_RENDER:
-        case GM_GOACTIVE:
-        case GM_HANDLEINPUT:
-        case GM_GOINACTIVE:
+        case GM_HITTEST: {
+            int16_t mx = mem_s16(msg + GMHT_OFF_MOUSEX);
+            int16_t my = mem_s16(msg + GMHT_OFF_MOUSEY);
+            return gadget_point_inside(obj, mx, my) ? 1 : 0;
+        }
+        case GM_RENDER: {
+            uint32_t rport = mem_u32(msg + GMR_OFF_RPORT);
+            uint32_t redraw = mem_u32(msg + GMR_OFF_REDRAW);
+            gadget_render(obj, rport, redraw);
             return 1;
+        }
+        case GM_GOACTIVE: {
+            uint16_t flags = mem_u16(obj + GAD_OFF_FLAGS);
+            uint16_t activation = mem_u16(obj + GAD_OFF_ACTIVATION);
+            if (activation & GACT_TOGGLESELECT) {
+                flags ^= GFLG_SELECTED;
+            } else {
+                flags |= GFLG_SELECTED;
+            }
+            mem_w16(obj + GAD_OFF_FLAGS, flags);
+            return GMR_MEACTIVE;
+        }
+        case GM_HANDLEINPUT: {
+            int16_t mx = mem_s16(msg + GMI_OFF_MOUSEX);
+            int16_t my = mem_s16(msg + GMI_OFF_MOUSEY);
+            if (!gadget_point_inside(obj, mx, my)) {
+                uint16_t flags = mem_u16(obj + GAD_OFF_FLAGS);
+                flags &= ~GFLG_SELECTED;
+                mem_w16(obj + GAD_OFF_FLAGS, flags);
+                return GMR_NOREUSE;
+            }
+            return GMR_MEACTIVE;
+        }
+        case GM_GOINACTIVE: {
+            uint16_t flags = mem_u16(obj + GAD_OFF_FLAGS);
+            uint16_t activation = mem_u16(obj + GAD_OFF_ACTIVATION);
+            if (!(activation & GACT_TOGGLESELECT)) {
+                flags &= ~GFLG_SELECTED;
+            }
+            mem_w16(obj + GAD_OFF_FLAGS, flags);
+            return GMR_NOREUSE;
+        }
         default:
             return 0;
     }
@@ -396,15 +561,203 @@ static uint32_t pointerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 }
 
 /* =========================================================================
- * menuclass / windowclass — rootclass subclasses with no extra data
+ * menuclass — real menu node with children and sibling list
  * ========================================================================= */
+#define BMENU_OFF_TYPE      0
+#define BMENU_OFF_LABEL     4
+#define BMENU_OFF_KEY       8
+#define BMENU_OFF_DISABLED  12
+#define BMENU_OFF_CHECKED   16
+#define BMENU_OFF_CHILDREN  20
+#define BMENU_OFF_NEXT      24
+#define BMENU_OFF_PARENT    28
+#define BMENU_INST_SIZE     32
+
+static int menu_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case MA_Type:       mem_w32(obj + BMENU_OFF_TYPE, data); break;
+        case MA_Label:      mem_w32(obj + BMENU_OFF_LABEL, data); break;
+        case MA_Key:        mem_w32(obj + BMENU_OFF_KEY, data); break;
+        case MA_Disabled:   mem_w32(obj + BMENU_OFF_DISABLED, data ? 1 : 0); break;
+        case MA_Checked:    mem_w32(obj + BMENU_OFF_CHECKED, data ? 1 : 0); break;
+        default:
+            /* Unknown menu tag: store as a user-data slot. */
+            break;
+    }
+    return 1;
+}
+
 static uint32_t menuclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 {
-    return rootclass_dispatch(cls, obj, msg);
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            memset(&g_ram[obj], 0, BMENU_INST_SIZE);
+            walk_tags(tags, menu_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_DISPOSE: {
+            /* Dispose children and siblings. */
+            uint32_t child = mem_u32(obj + BMENU_OFF_CHILDREN);
+            while (child) {
+                uint32_t next = mem_u32(child + BMENU_OFF_NEXT);
+                UAOS_BOOPSI_Dispatch(child, OM_DISPOSE, 0, 0);
+                intu_free(child - OBJ_HEADER_SIZE);
+                child = next;
+            }
+            uint32_t sibling = mem_u32(obj + BMENU_OFF_NEXT);
+            while (sibling) {
+                uint32_t next = mem_u32(sibling + BMENU_OFF_NEXT);
+                UAOS_BOOPSI_Dispatch(sibling, OM_DISPOSE, 0, 0);
+                intu_free(sibling - OBJ_HEADER_SIZE);
+                sibling = next;
+            }
+            return 1;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, menu_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            uint32_t value = 0;
+            switch (attr) {
+                case MA_Type:      value = mem_u32(obj + BMENU_OFF_TYPE); break;
+                case MA_Label:     value = mem_u32(obj + BMENU_OFF_LABEL); break;
+                case MA_Key:       value = mem_u32(obj + BMENU_OFF_KEY); break;
+                case MA_Disabled:  value = mem_u32(obj + BMENU_OFF_DISABLED); break;
+                case MA_Checked:   value = mem_u32(obj + BMENU_OFF_CHECKED); break;
+                case MA_AddChild:  value = mem_u32(obj + BMENU_OFF_CHILDREN); break;
+                default: return 0;
+            }
+            mem_w32(store, value);
+            return 1;
+        }
+        case OM_ADDMEMBER: {
+            uint32_t member = mem_u32(msg + 4); /* OM_ADDMEMBER passes member in message[1] */
+            if (!member) return 0;
+            /* Add to the head of the children list. */
+            uint32_t old = mem_u32(obj + BMENU_OFF_CHILDREN);
+            mem_w32(obj + BMENU_OFF_CHILDREN, member);
+            mem_w32(member + BMENU_OFF_PARENT, obj);
+            mem_w32(member + BMENU_OFF_NEXT, old);
+            return 1;
+        }
+        case OM_REMMEMBER: {
+            uint32_t member = mem_u32(msg + 4);
+            if (!member) return 0;
+            uint32_t prev = 0;
+            uint32_t cur = mem_u32(obj + BMENU_OFF_CHILDREN);
+            while (cur) {
+                if (cur == member) {
+                    uint32_t next = mem_u32(cur + BMENU_OFF_NEXT);
+                    if (prev) mem_w32(prev + BMENU_OFF_NEXT, next);
+                    else mem_w32(obj + BMENU_OFF_CHILDREN, next);
+                    mem_w32(cur + BMENU_OFF_PARENT, 0);
+                    mem_w32(cur + BMENU_OFF_NEXT, 0);
+                    return 1;
+                }
+                prev = cur;
+                cur = mem_u32(cur + BMENU_OFF_NEXT);
+            }
+            return 0;
+        }
+        default:
+            return rootclass_dispatch(cls, obj, msg);
+    }
+    (void)cls;
 }
+
+/* =========================================================================
+ * windowclass — real window attribute storage
+ * ========================================================================= */
+#define BWIN_OFF_LEFT       0
+#define BWIN_OFF_TOP        4
+#define BWIN_OFF_WIDTH      8
+#define BWIN_OFF_HEIGHT     12
+#define BWIN_OFF_TITLE      16
+#define BWIN_OFF_FLAGS      20
+#define BWIN_OFF_IDCMP      24
+#define BWIN_OFF_SCREEN     28
+#define BWIN_OFF_MINWIDTH   32
+#define BWIN_OFF_MINHEIGHT  36
+#define BWIN_OFF_MAXWIDTH   40
+#define BWIN_OFF_MAXHEIGHT  44
+#define BWIN_INST_SIZE      48
+
+static int win_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case WA_Left:        mem_w32(obj + BWIN_OFF_LEFT, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_Top:         mem_w32(obj + BWIN_OFF_TOP, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_Width:       mem_w32(obj + BWIN_OFF_WIDTH, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_Height:      mem_w32(obj + BWIN_OFF_HEIGHT, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_Title:       mem_w32(obj + BWIN_OFF_TITLE, data); break;
+        case WA_Flags:       mem_w32(obj + BWIN_OFF_FLAGS, data); break;
+        case WA_IDCMP:       mem_w32(obj + BWIN_OFF_IDCMP, data); break;
+        case WA_CustomScreen:
+        case WA_PubScreen:   mem_w32(obj + BWIN_OFF_SCREEN, data); break;
+        case WA_MinWidth:    mem_w32(obj + BWIN_OFF_MINWIDTH, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_MinHeight:   mem_w32(obj + BWIN_OFF_MINHEIGHT, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_MaxWidth:    mem_w32(obj + BWIN_OFF_MAXWIDTH, (uint32_t)(int32_t)(int16_t)data); break;
+        case WA_MaxHeight:   mem_w32(obj + BWIN_OFF_MAXHEIGHT, (uint32_t)(int32_t)(int16_t)data); break;
+        default: break;
+    }
+    return 1;
+}
+
 static uint32_t windowclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 {
-    return rootclass_dispatch(cls, obj, msg);
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            memset(&g_ram[obj], 0, BWIN_INST_SIZE);
+            walk_tags(tags, win_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_DISPOSE:
+            return 1;
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, win_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            uint32_t value = 0;
+            switch (attr) {
+                case WA_Left:      value = mem_u32(obj + BWIN_OFF_LEFT); break;
+                case WA_Top:       value = mem_u32(obj + BWIN_OFF_TOP); break;
+                case WA_Width:     value = mem_u32(obj + BWIN_OFF_WIDTH); break;
+                case WA_Height:    value = mem_u32(obj + BWIN_OFF_HEIGHT); break;
+                case WA_Title:     value = mem_u32(obj + BWIN_OFF_TITLE); break;
+                case WA_Flags:     value = mem_u32(obj + BWIN_OFF_FLAGS); break;
+                case WA_IDCMP:     value = mem_u32(obj + BWIN_OFF_IDCMP); break;
+                case WA_CustomScreen:
+                case WA_PubScreen: value = mem_u32(obj + BWIN_OFF_SCREEN); break;
+                case WA_MinWidth:  value = mem_u32(obj + BWIN_OFF_MINWIDTH); break;
+                case WA_MinHeight: value = mem_u32(obj + BWIN_OFF_MINHEIGHT); break;
+                case WA_MaxWidth:  value = mem_u32(obj + BWIN_OFF_MAXWIDTH); break;
+                case WA_MaxHeight: value = mem_u32(obj + BWIN_OFF_MAXHEIGHT); break;
+                default: return 0;
+            }
+            mem_w32(store, value);
+            return 1;
+        }
+        default:
+            return rootclass_dispatch(cls, obj, msg);
+    }
+    (void)cls;
 }
 
 /* =========================================================================
@@ -448,7 +801,7 @@ void UAOS_BOOPSI_RegisterBuiltinClasses(void)
     g_rootclass = make_builtin_class("rootclass", NULL, 0, 0, 0, rootclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_rootclass);
 
-    g_gadgetclass = make_builtin_class("gadgetclass", "rootclass", g_rootclass, 0, BGAD_INST_SIZE, gadgetclass_dispatch);
+    g_gadgetclass = make_builtin_class("gadgetclass", "rootclass", g_rootclass, 0, GAD_SIZE, gadgetclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_gadgetclass);
 
     g_imageclass = make_builtin_class("imageclass", "rootclass", g_rootclass, 0, BIMG_INST_SIZE, imageclass_dispatch);
@@ -457,10 +810,10 @@ void UAOS_BOOPSI_RegisterBuiltinClasses(void)
     g_pointerclass = make_builtin_class("pointerclass", "imageclass", g_imageclass, 0, BPTR_INST_SIZE, pointerclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_pointerclass);
 
-    g_menuclass = make_builtin_class("menuclass", "rootclass", g_rootclass, 0, 0, menuclass_dispatch);
+    g_menuclass = make_builtin_class("menuclass", "rootclass", g_rootclass, 0, BMENU_INST_SIZE, menuclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_menuclass);
 
-    g_windowclass = make_builtin_class("windowclass", "rootclass", g_rootclass, 0, 0, windowclass_dispatch);
+    g_windowclass = make_builtin_class("windowclass", "rootclass", g_rootclass, 0, BWIN_INST_SIZE, windowclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_windowclass);
 }
 

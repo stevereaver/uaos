@@ -10,6 +10,7 @@
 
 /* On-screen debug from filebrowser */
 extern void dbg_add_line(const char *msg);
+extern void UAOS_Intuition_NotifyDepthChange(int wm_handle);
 
 /* Debug output */
 #define WM_DEBUG 1
@@ -347,7 +348,11 @@ static void raise_window(int wh)
 }
 
 /* Move window 'src' directly in front of window 'behind' in the z-order.
- * If 'behind' is not active or invalid, raise 'src' to the front instead. */
+ * If 'behind' is not active or invalid, raise 'src' to the front instead.
+ *
+ * g_zorder[0] is the backmost window and g_zorder[g_nwins-1] is the frontmost.
+ * "in front of behind" therefore means one slot closer to the front than behind,
+ * i.e. at index behind_pos + 1 in the final array. */
 static void move_in_front_of(int src, int behind)
 {
     if (src < 0 || src >= WM_MAX_WINDOWS) return;
@@ -365,16 +370,22 @@ static void move_in_front_of(int src, int behind)
         return;
     }
 
+    /* Already directly in front of behind? */
+    if (src_pos == behind_pos + 1) return;
+
+    /* Desired position in the final array. */
     int target = behind_pos + 1;
+
+    /* Removing src shifts everything after src_pos down by one. If src was
+     * before the target position, the target shifts down by one too. */
+    if (src_pos < target) target--;
+
+    /* Clamp to the frontmost slot. */
     if (target >= g_nwins) target = g_nwins - 1;
-    if (src_pos == target) return;
 
     /* Remove src from its current position. */
     for (int i = src_pos; i < g_nwins - 1; i++)
         g_zorder[i] = g_zorder[i + 1];
-
-    /* If src was before target, the target index shifts down by one. */
-    if (src_pos < target) target--;
 
     /* Insert src at target. */
     for (int i = g_nwins - 1; i > target; i--)
@@ -482,6 +493,7 @@ static void depth_window(int wh)
 
     /* Focus shifts to the new topmost window */
     g_focus = g_zorder[g_nwins - 1];
+    UAOS_Intuition_NotifyDepthChange(wh);
 }
 
 /* Hit-test resize grip (bottom-right SB×SB square) */
@@ -1111,6 +1123,7 @@ void WM_RaiseWindow(int handle)
     raise_window(handle);
     g_focus = handle;
     wm_notify_focus_change(old_focus, g_focus);
+    UAOS_Intuition_NotifyDepthChange(handle);
 }
 
 void WM_MoveWindowInFrontOf(int src, int behind)
@@ -1119,6 +1132,7 @@ void WM_MoveWindowInFrontOf(int src, int behind)
     if (!g_wins[src].active) return;
     move_in_front_of(src, behind);
     WM_Redraw();
+    UAOS_Intuition_NotifyDepthChange(src);
 }
 
 void WM_LowerWindow(int handle)
@@ -1144,6 +1158,7 @@ void WM_LowerWindow(int handle)
     g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
     WM_Redraw();
     wm_notify_focus_change(old_focus, g_focus);
+    UAOS_Intuition_NotifyDepthChange(handle);
 }
 
 void WM_RepaintWindow(int handle)

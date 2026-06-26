@@ -19,7 +19,8 @@ UAOS provides a native host implementation of `gadtools.library` that builds sta
 - Get and set gadget attributes at runtime: `GT_SetGadgetAttrsA()` / `GT_GetGadgetAttrsA()`.
 - Provide screen-specific drawing information: `GetVisualInfoA()` / `FreeVisualInfo()`.
 - Relay Intuition/Exec message helpers to the existing host implementations: `GT_GetIMsg()`, `GT_ReplyIMsg()`, `GT_BeginRefresh()`, `GT_EndRefresh()`.
-- Menu and bevel-box functions are currently stubbed: `CreateMenusA()`, `FreeMenus()`, `LayoutMenuItemsA()`, `LayoutMenusA()`, `DrawBevelBoxA()`.
+- Create GadTools menu trees from `NewMenu` arrays: `CreateMenusA()` / `FreeMenus()`, `LayoutMenuItemsA()`, `LayoutMenusA()`.
+- Bevel-box function is currently stubbed: `DrawBevelBoxA()`.
 
 ## Implemented gadget kinds
 
@@ -43,6 +44,7 @@ All AmigaOS-compatible offsets and tag values are defined in `kernel/exec/gadtoo
 - `NG_*` flag bits (`NG_LOWLABEL`, `NG_TOGGLE`, `NG_DISABLED`, etc.).
 - Gadget kind numbers (`BUTTON_KIND`, `CHECKBOX_KIND`, etc.).
 - GadTools tag base and per-kind tags (`GT_TagBase`, `GTST_String`, `GTLV_Labels`, `GTSL_Min`, etc.).
+- `NewMenu` structure offsets (`NM_OFF_*`) and type constants (`NM_TITLE`, `NM_ITEM`, `NM_SUB`, `NM_END`).
 - BOOPSI gadget attributes (`GA_*`), including `GA_Disabled`.
 - `VisualInfo` layout (`GTVI_*`).
 - Function indices (`GADTOOLS_OPEN_LIBRARY` through `GADTOOLS_GT_GET_GADGET_ATTRS_A`).
@@ -72,9 +74,24 @@ These are used for gadget structures, `StringInfo`, `IntuiText` labels, and the 
 - `UAOS_Exec_Dispatch()` for `GT_GetIMsg()` and `GT_ReplyIMsg()` (Exec message port functions).
 - Host `g_ram` accessors and guest string helpers replicated locally to avoid pulling in large Intuition private headers.
 
+## GadTools menus
+
+`CreateMenusA(newmenu, tags)` walks a `NewMenu` array (22-byte packed AmigaOS layout) and builds a classic `Menu`/`MenuItem` tree in guest memory:
+
+- `NM_TITLE` entries allocate a `Menu` with an `IntuiText` menu name and `MENUENABLED`.
+- `NM_ITEM` entries allocate `MenuItem` nodes linked under the current menu.
+- `NM_SUB` entries allocate `MenuItem` nodes linked as the `SubItem` chain of the current item.
+- `NM_END` terminates the walk.
+- Each item stores the `NewMenu` flags (`ITEMTEXT`, `ITEMENABLED`, `COMMSEQ`, `CHECKIT`, `MENUTOGGLE`), `MutualExclude`, and creates an `IntuiText` label. A command key is written to `MenuItem.Command` when `COMMSEQ` is set.
+
+`FreeMenus(menu)` walks the `Menu`/`MenuItem` tree (including sub-item chains) and frees the `IntuiText` labels plus the structures via the guest heap.
+
+`LayoutMenuItemsA(firstItem, vi, tags)` measures each item's label using the host 8x16 font and sets `MenuItem.LeftEdge/TopEdge/Width/Height` with a vertical item layout. Sub-items are laid out recursively to the right of their parent item.
+
+`LayoutMenusA(firstMenu, vi, tags)` lays out menu titles horizontally across the menu bar and calls `LayoutMenuItemsA` for each menu's first item. Each menu width is expanded to fit the widest item if necessary.
+
 ## Current limitations
 
-- `CreateMenusA()` / `FreeMenus()` / `LayoutMenuItemsA()` / `LayoutMenusA()` are stubs; real GadTools menu layout is not yet implemented.
 - `DrawBevelBoxA()` is a stub; bevel boxes are not rendered.
 - `GT_FilterIMsg()` / `GT_PostFilterIMsg()` are pass-throughs; no keyboard/mouse filtering is applied.
 - `NUMBER_KIND` and `TEXT_KIND` are rendered as non-interactive boolean gadgets (a visual placeholder).

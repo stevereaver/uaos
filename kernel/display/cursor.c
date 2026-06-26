@@ -338,8 +338,12 @@ void Cursor_Init(int x, int y)
     cur_drawn = 1;
 }
 
+/* Intuition may have scheduled a delayed pointer change via WA_PointerDelay. */
+extern void UAOS_Intuition_CheckPendingPointer(void);
+
 void Cursor_Move(int x, int y)
 {
+    UAOS_Intuition_CheckPendingPointer();
     if (!g_fb.valid) return;
     if (cur_drawn)
         cursor_restore_bg(cur_x, cur_y);
@@ -352,6 +356,7 @@ void Cursor_Move(int x, int y)
 
 void Cursor_Redraw(void)
 {
+    UAOS_Intuition_CheckPendingPointer();
     if (!g_fb.valid) return;
     if (cur_drawn)
         cursor_restore_bg(cur_x, cur_y);

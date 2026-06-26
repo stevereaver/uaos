@@ -52,17 +52,19 @@ void UAOS_GADTOOLS_Register(void);
 #define NG_OFF_USERDATA     26
 #define NG_SIZE             30
 
-/* IntuiText structure offsets */
-#define ITEXT_OFF_FRONTPEN   0
-#define ITEXT_OFF_BACKPEN    1
-#define ITEXT_OFF_DRAWMODE   2
-#define ITEXT_OFF_PAD        3
-#define ITEXT_OFF_LEFTEDGE   4
-#define ITEXT_OFF_TOPEDGE    6
-#define ITEXT_OFF_FONT       8
-#define ITEXT_OFF_ITEXT      12
-#define ITEXT_OFF_NEXTTEXT   16
-#define ITEXT_SIZE           20
+/* NewMenu structure offsets (AmigaOS 3.x packed layout) */
+#define NM_OFF_TYPE          0
+#define NM_OFF_LABEL         4
+#define NM_OFF_COMMKEY       8
+#define NM_OFF_FLAGS          12
+#define NM_OFF_MUTUALEXCLUDE  14
+#define NM_OFF_USERDATA       18
+#define NM_SIZE               22
+
+#define NM_TITLE  1
+#define NM_ITEM   2
+#define NM_SUB    3
+#define NM_END    0
 
 /* NewGadget.ng_Flags bits */
 #define NG_LOWLABEL     0x0001  /* label drawn below the gadget */

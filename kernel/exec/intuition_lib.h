@@ -168,6 +168,8 @@ typedef struct {
 #define IDCMP_WBENCHMESSAGE  0x00080000
 #define IDCMP_HELP           0x00100000
 #define IDCMP_VANILLAKEY     0x00200000
+#define IDCMP_MENUHELP       0x20000000
+#define IDCMP_TABLET         0x40000000
 
 /* -------------------------------------------------------------------------
  * Exec MsgPort / Message / IntuiMessage offsets
@@ -213,6 +215,20 @@ typedef struct {
 #define IM_SIZE           56
 
 #define NT_MSGPORT         4
+
+/* -------------------------------------------------------------------------
+ * AmigaOS IntuiText structure offsets
+ * ------------------------------------------------------------------------- */
+#define ITEXT_OFF_FRONTPEN   0
+#define ITEXT_OFF_BACKPEN    1
+#define ITEXT_OFF_DRAWMODE   2
+#define ITEXT_OFF_PAD        3
+#define ITEXT_OFF_LEFTEDGE   4
+#define ITEXT_OFF_TOPEDGE    6
+#define ITEXT_OFF_FONT       8
+#define ITEXT_OFF_ITEXT      12
+#define ITEXT_OFF_NEXTTEXT   16
+#define ITEXT_SIZE           20
 
 /* -------------------------------------------------------------------------
  * AmigaOS Gadget structure offsets
@@ -373,6 +389,9 @@ typedef struct {
 #define CHECKIT      0x0008
 #define MENUTOGGLE   0x0010
 #define ITEMEXTENDED 0x0020
+
+/* Menu flags */
+#define MENUENABLED  0x0001
 /* -------------------------------------------------------------------------
  * AmigaOS Requester structure offsets (packed, partial)
  * ------------------------------------------------------------------------- */
@@ -684,6 +703,23 @@ typedef struct {
 #define POINTERA_XResolution (POINTERA_Dummy + 0x05)
 #define POINTERA_YResolution (POINTERA_Dummy + 0x06)
 #define POINTERA_Flags       (POINTERA_Dummy + 0x07)
+
+/* -------------------------------------------------------------------------
+ * menuclass attributes (MA_*)
+ * ------------------------------------------------------------------------- */
+#define MA_Dummy       (TAG_USER + 0x41000)
+#define MA_Type        (MA_Dummy + 0x01)
+#define MA_Label       (MA_Dummy + 0x02)
+#define MA_Key         (MA_Dummy + 0x03)
+#define MA_Command     (MA_Dummy + 0x04)
+#define MA_Sub         (MA_Dummy + 0x05)
+#define MA_ToggleTitle (MA_Dummy + 0x06)
+#define MA_Checked     (MA_Dummy + 0x07)
+#define MA_Disabled    (MA_Dummy + 0x08)
+#define MA_Separator   (MA_Dummy + 0x09)
+#define MA_AddChild    (MA_Dummy + 0x0A)
+#define MA_RemChild    (MA_Dummy + 0x0B)
+#define MA_ID          (MA_Dummy + 0x0C)
 
 /* -------------------------------------------------------------------------
  * imageclass attributes (IA_*)
