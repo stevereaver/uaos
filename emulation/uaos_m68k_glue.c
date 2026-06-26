@@ -3036,10 +3036,13 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     m68k_set_reg(M68K_REG_D0, (uint32_t)cmdlen);  /* command line length */
 
 
+    extern void UAOS_Intuition_PostIntuiTicks(void);
+
     /* Run in 1M-cycle slices until the program calls Exit or we time out */
     int slices = 0;
     while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
         m68k_execute(1000000);
+        UAOS_Intuition_PostIntuiTicks();
         slices++;
     }
     (void)slices;

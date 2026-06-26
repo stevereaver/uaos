@@ -2736,6 +2736,7 @@ typedef struct ScreenSlot {
     uint8_t  active;
     char     title[64];
     char     pub_name[64];
+    uint32_t pub_name_guest;     /* guest pointer to the pub name string */
     int16_t  left;
     int16_t  top;
     int16_t  width;
@@ -3082,6 +3083,9 @@ static void apply_parent_screen_defaults(uint32_t parent_screen,
                                          int16_t *depth,
                                          uint8_t *detail_pen, uint8_t *block_pen);
 static uint32_t find_pub_screen_by_name(const char *name);
+static void set_pointer_from_wa_pointer(uint32_t ptr, int xoff, int yoff);
+static void schedule_pointer_change(int got_busy, int busy, int got_pointer, uint32_t pointer, uint32_t delay);
+static void screen_notify_event(uint32_t screen_ptr, uint32_t type);
 
 static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_ptr)
 {
@@ -3271,10 +3275,18 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     slot->lock_count   = 0;
     slot->title[0]     = '\0';
     slot->pub_name[0]  = '\0';
+    slot->pub_name_guest = 0;
     if (title_ptr)
         guest_str(slot->title, title_ptr, sizeof(slot->title));
-    if (pub_name_ptr)
+    if (pub_name_ptr) {
         guest_str(slot->pub_name, pub_name_ptr, sizeof(slot->pub_name));
+        size_t len = strlen(slot->pub_name) + 1;
+        slot->pub_name_guest = intu_alloc(len);
+        if (slot->pub_name_guest) {
+            for (size_t i = 0; i < len; i++)
+                mem_w8(slot->pub_name_guest + i, slot->pub_name[i]);
+        }
+    }
 
     slot->display_id       = display_id;
     slot->bitmap           = bitmap_ptr;
@@ -3525,7 +3537,14 @@ static void parse_window_tags(uint32_t tag_list,
     uint8_t *pub_screen_fallback, uint32_t *super_bitmap_ptr,
     uint32_t *colors, uint32_t *checkmark, uint32_t *amiga_key,
     uint8_t *menu_help, uint8_t *tablet_messages, uint8_t *auto_adjust,
-    uint8_t *notify_depth, uint32_t *pointer_delay)
+    uint8_t *notify_depth, uint32_t *pointer_delay,
+    uint8_t *detail_pen, uint8_t *block_pen,
+    uint16_t *inner_width, uint16_t *inner_height,
+    uint32_t *screen_title, uint32_t *zoom,
+    uint16_t *mouse_queue, uint16_t *rpt_queue,
+    uint32_t *backfill, uint32_t *help_group,
+    uint32_t *help_group_window, uint32_t *pointer,
+    int *busy_pointer, uint8_t *wbench_window)
 {
     while (tag_list && tag_list + 8 <= GUEST_RAM_SIZE) {
         uint32_t tag  = mem_u32(tag_list);
@@ -3581,6 +3600,21 @@ static void parse_window_tags(uint32_t tag_list,
             case WA_AutoAdjust:      if (auto_adjust)     *auto_adjust     = data ? 1 : 0; break;
             case WA_NotifyDepth:     if (notify_depth)    *notify_depth    = data ? 1 : 0; break;
             case WA_PointerDelay:    if (pointer_delay)   *pointer_delay   = data; break;
+
+            case WA_DetailPen:       if (detail_pen)      *detail_pen      = (uint8_t)data; break;
+            case WA_BlockPen:        if (block_pen)       *block_pen       = (uint8_t)data; break;
+            case WA_InnerWidth:      if (inner_width)     *inner_width     = (uint16_t)data; break;
+            case WA_InnerHeight:     if (inner_height)    *inner_height    = (uint16_t)data; break;
+            case WA_ScreenTitle:      if (screen_title)    *screen_title    = data; break;
+            case WA_Zoom:            if (zoom)            *zoom            = data; break;
+            case WA_MouseQueue:      if (mouse_queue)     *mouse_queue     = (uint16_t)data; break;
+            case WA_RptQueue:        if (rpt_queue)       *rpt_queue       = (uint16_t)data; break;
+            case WA_BackFill:        if (backfill)        *backfill        = data; break;
+            case WA_HelpGroup:       if (help_group)      *help_group      = data; break;
+            case WA_HelpGroupWindow: if (help_group_window) *help_group_window = data; break;
+            case WA_Pointer:         if (pointer)         *pointer         = data; break;
+            case WA_BusyPointer:     if (busy_pointer)    *busy_pointer    = data ? 1 : 0; break;
+            case WA_WBenchWindow:    if (wbench_window)   *wbench_window   = data ? 1 : 0; break;
         }
         tag_list += sizeof(AmigaTagItem);
     }
@@ -3606,6 +3640,13 @@ static void intuition_OpenWindowTagList(void)
     uint32_t super_bitmap = 0;
     uint32_t colors = 0, checkmark = 0, amiga_key = 0, pointer_delay = 0;
     uint8_t  menu_help = 0, tablet_messages = 0, auto_adjust = 0, notify_depth = 0;
+    uint8_t  detail_pen = 1, block_pen = 0;
+    uint16_t inner_width = 0, inner_height = 0;
+    uint32_t screen_title = 0, zoom = 0, backfill = 0;
+    uint16_t mouse_queue = 0, rpt_queue = 0;
+    uint32_t help_group = 0, help_group_window = 0, wa_pointer = 0;
+    int      busy_pointer = -1;
+    uint8_t  wbench_window = 0;
 
     if (nw_ptr) {
         left         = mem_s16(nw_ptr + 0);
@@ -3631,7 +3672,12 @@ static void intuition_OpenWindowTagList(void)
                           &pub_screen_fallback, &super_bitmap,
                           &colors, &checkmark, &amiga_key,
                           &menu_help, &tablet_messages, &auto_adjust,
-                          &notify_depth, &pointer_delay);
+                          &notify_depth, &pointer_delay,
+                          &detail_pen, &block_pen,
+                          &inner_width, &inner_height, &screen_title, &zoom,
+                          &mouse_queue, &rpt_queue, &backfill,
+                          &help_group, &help_group_window, &wa_pointer,
+                          &busy_pointer, &wbench_window);
     }
     if (tablet_messages) idcmp |= IDCMP_TABLET;
     if (menu_help) idcmp |= IDCMP_MENUHELP;
@@ -3763,6 +3809,32 @@ static void intuition_OpenWindowTagList(void)
         slot->border_top    = WM_TITLEBAR_H;
         slot->border_right  = WM_BORDER;
         slot->border_bottom = WM_BORDER;
+    }
+
+    /* Apply additional WA_* tags parsed during creation. */
+    mem_w8(win_ptr + WIN_OFF_DETAILPEN, detail_pen);
+    mem_w8(win_ptr + WIN_OFF_BLOCKPEN,  block_pen);
+    slot->inner_width      = inner_width;
+    slot->inner_height     = inner_height;
+    slot->screen_title     = screen_title;
+    slot->zoom             = zoom;
+    slot->mouse_queue      = mouse_queue;
+    slot->rpt_queue        = rpt_queue;
+    slot->backfill         = backfill;
+    slot->help_group       = help_group;
+    slot->help_group_window = help_group_window;
+    if (wbench_window) {
+        uint32_t wflags = mem_u32(win_ptr + WIN_OFF_FLAGS);
+        mem_w32(win_ptr + WIN_OFF_FLAGS, wflags | WFLG_WBENCHWINDOW);
+    }
+    if (help_group_window) {
+        IntuitionSlot *group_slot = find_slot_by_guest(help_group_window);
+        if (group_slot) slot->help_group = group_slot->help_group;
+    }
+    if (busy_pointer >= 0) {
+        Cursor_SetBusy(busy_pointer);
+    } else if (wa_pointer) {
+        set_pointer_from_wa_pointer(wa_pointer, 0, 0);
     }
 
     if (idcmp) {
@@ -4032,6 +4104,9 @@ static void intuition_SetWindowAttrsA(void)
     uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
     int moved = 0, resized = 0, redraw = 0;
 
+    int swa_got_busy = 0, swa_busy = 0, swa_got_pointer = 0, swa_got_delay = 0;
+    uint32_t swa_pointer = 0, swa_delay = 0;
+
     for (uint32_t t = tag_list; t; t += 8) {
         uint32_t tag  = mem_u32(t + 0);
         uint32_t data = mem_u32(t + 4);
@@ -4247,11 +4322,17 @@ static void intuition_SetWindowAttrsA(void)
                 redraw = 1;
                 break;
             case WA_Pointer:
+                swa_got_pointer = 1;
+                swa_pointer = data;
+                break;
             case WA_BusyPointer:
-                /* Handled by SetWindowPointerA; SetWindowAttrsA accepts but ignores them. */
+                swa_got_busy = 1;
+                swa_busy = data ? 1 : 0;
                 break;
             case WA_PointerDelay:
                 if (slot) slot->pointer_delay = data;
+                swa_got_delay = 1;
+                swa_delay = data;
                 break;
             case WA_TabletMessages:
                 if (slot) {
@@ -4268,6 +4349,11 @@ static void intuition_SetWindowAttrsA(void)
                 if (slot) slot->help_group_window = data;
                 break;
         }
+    }
+
+    if (swa_got_busy || swa_got_pointer) {
+        schedule_pointer_change(swa_got_busy, swa_busy, swa_got_pointer, swa_pointer,
+                                swa_got_delay ? swa_delay : 0);
     }
 
     if (slot) {
@@ -4573,10 +4659,26 @@ static void intuition_SetScreenAttrsA(void)
                 if (slot) slot->minimize_isg = data ? 1 : 0;
                 break;
             case SA_PubName:
-                if (slot && data) {
-                    char name[64];
-                    guest_str(name, data, sizeof(name));
-                    local_str_copy(slot->pub_name, name, sizeof(slot->pub_name));
+                if (slot) {
+                    if (data) {
+                        char name[64];
+                        guest_str(name, data, sizeof(name));
+                        local_str_copy(slot->pub_name, name, sizeof(slot->pub_name));
+                    } else {
+                        slot->pub_name[0] = '\0';
+                    }
+                    if (slot->pub_name_guest) {
+                        intu_free(slot->pub_name_guest);
+                        slot->pub_name_guest = 0;
+                    }
+                    if (slot->pub_name[0]) {
+                        size_t len = strlen(slot->pub_name) + 1;
+                        slot->pub_name_guest = intu_alloc(len);
+                        if (slot->pub_name_guest) {
+                            for (size_t i = 0; i < len; i++)
+                                mem_w8(slot->pub_name_guest + i, slot->pub_name[i]);
+                        }
+                    }
                 }
                 break;
         }
@@ -4664,7 +4766,7 @@ static void intuition_GetScreenAttrsA(void)
             case SA_Interleaved: data = slot ? slot->interleaved : 0; break;
             case SA_LikeWorkbench: data = slot ? slot->like_workbench : 0; break;
             case SA_MinimizeISG: data = slot ? slot->minimize_isg : 0; break;
-            case SA_PubName:  data = 0; break; /* host-side string; not exposed as guest pointer */
+            case SA_PubName:  data = slot ? slot->pub_name_guest : 0; break;
         }
         mem_w32(t + 4, data);
     }
@@ -4716,6 +4818,7 @@ static uint32_t open_workbench_internal(void)
     slot->lock_count = 0;
     slot->title[0] = '\0';
     local_str_copy(slot->pub_name, "Workbench", sizeof(slot->pub_name));
+    slot->pub_name_guest = 0;
     slot->depth = 2;
     slot->display_id = 0;
     slot->bitmap = 0;
@@ -5169,6 +5272,10 @@ static void intuition_OpenScreen(void)
 {
     uint32_t new_screen = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t screen = open_screen_internal(new_screen, 0);
+    if (screen) {
+        screen_notify_event(screen, SNOTIFY_TYPE_OPEN);
+        screen_notify_event(screen, SNOTIFY_TYPE_DEPTH);
+    }
     m68k_set_reg(M68K_REG_D0, screen);
 }
 
@@ -5178,6 +5285,10 @@ static void intuition_OpenScreenTagList(void)
     uint32_t new_screen = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t tag_list   = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t screen = open_screen_internal(new_screen, tag_list);
+    if (screen) {
+        screen_notify_event(screen, SNOTIFY_TYPE_OPEN);
+        screen_notify_event(screen, SNOTIFY_TYPE_DEPTH);
+    }
     m68k_set_reg(M68K_REG_D0, screen);
 }
 
@@ -5187,6 +5298,11 @@ static void intuition_CloseScreen(void)
     uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     ScreenSlot *slot = find_screen_slot(screen_ptr);
     if (slot) {
+        screen_notify_event(screen_ptr, SNOTIFY_TYPE_CLOSE);
+        if (slot->pub_name_guest) {
+            intu_free(slot->pub_name_guest);
+            slot->pub_name_guest = 0;
+        }
         slot->active = 0;
         update_desktop_title();
     }
@@ -5221,6 +5337,7 @@ static void intuition_ScreenToFront(void)
             g_intu_screens[i].is_front = 0;
         slot->is_front = 1;
         update_desktop_title();
+        screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
     }
 }
 
@@ -5239,6 +5356,7 @@ static void intuition_ScreenToBack(void)
             }
         }
         update_desktop_title();
+        screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
     }
 }
 
@@ -5267,6 +5385,7 @@ static void intuition_ScreenDepth(void)
         slot->is_front = 1;
     }
     update_desktop_title();
+    screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
 }
 
 /* ScreenPosition(screen, flags, x1, y1, x2, y2) — A0, D0, D1, D2, D3, D4
@@ -5976,6 +6095,29 @@ static void intuition_ClearPointer(void)
     Cursor_ClearCustomSprite();
 }
 
+/* Schedule or apply a WA_Pointer / WA_BusyPointer change. */
+static void schedule_pointer_change(int got_busy, int busy, int got_pointer, uint32_t pointer, uint32_t delay)
+{
+    if (delay > 0) {
+        /* Schedule the pointer change after the requested delay.
+         * g_pit_ticks runs at 100 Hz, so 1 tick = 10 ms. */
+        g_pending_pointer_active = 1;
+        g_pending_pointer_target = g_pit_ticks + (delay + 9) / 10;
+        g_pending_pointer_busy = got_busy ? 1 : 0;
+        g_pending_pointer_busy_state = busy ? 1 : 0;
+        g_pending_pointer = pointer;
+        g_pending_pointer_xoff = 0;
+        g_pending_pointer_yoff = 0;
+    } else {
+        g_pending_pointer_active = 0;
+        if (got_busy) {
+            Cursor_SetBusy(busy);
+        } else {
+            set_pointer_from_wa_pointer(pointer, 0, 0);
+        }
+    }
+}
+
 /* SetWindowPointerA(window, tagList) — A0, A1 */
 static void intuition_SetWindowPointerA(void)
 {
@@ -6014,24 +6156,7 @@ static void intuition_SetWindowPointerA(void)
     }
 
     if (got_busy || got_pointer) {
-        if (delay > 0) {
-            /* Schedule the pointer change after the requested delay.
-             * g_pit_ticks runs at 100 Hz, so 1 tick = 10 ms. */
-            g_pending_pointer_active = 1;
-            g_pending_pointer_target = g_pit_ticks + (delay + 9) / 10;
-            g_pending_pointer_busy = got_busy ? 1 : 0;
-            g_pending_pointer_busy_state = busy ? 1 : 0;
-            g_pending_pointer = wa_pointer;
-            g_pending_pointer_xoff = 0;
-            g_pending_pointer_yoff = 0;
-        } else {
-            g_pending_pointer_active = 0;
-            if (got_busy) {
-                Cursor_SetBusy(busy);
-            } else {
-                set_pointer_from_wa_pointer(wa_pointer, 0, 0);
-            }
-        }
+        schedule_pointer_change(got_busy, busy, got_pointer, wa_pointer, got_delay ? delay : 0);
     } else {
         g_pending_pointer_active = 0;
         Cursor_ClearCustomSprite();
@@ -6052,6 +6177,24 @@ void UAOS_Intuition_CheckPendingPointer(void)
         set_pointer_from_wa_pointer(g_pending_pointer,
                                   (int)g_pending_pointer_xoff,
                                   (int)g_pending_pointer_yoff);
+    }
+}
+
+/* Post IDCMP_INTUITICKS to every active window whose IDCMP has the flag set.
+ * Called periodically (10 Hz) from the main emulation loop. */
+static uint64_t g_last_intuiticks_ticks = 0;
+
+void UAOS_Intuition_PostIntuiTicks(void)
+{
+    if (g_pit_ticks - g_last_intuiticks_ticks < 10) return;
+    g_last_intuiticks_ticks = g_pit_ticks;
+
+    for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+        IntuitionSlot *slot = &g_intu_wins[i];
+        if (!slot->active || !slot->guest_win) continue;
+        uint32_t idcmp = mem_u32(slot->guest_win + WIN_OFF_IDCMPFLAGS);
+        if (idcmp & IDCMP_INTUITICKS)
+            post_intui_message(slot->guest_win, IDCMP_INTUITICKS, 0, 0, 0, 0, 0);
     }
 }
 
@@ -7407,6 +7550,67 @@ static uint32_t build_varargs_method_msg(uint32_t method, uint32_t old_sp)
 }
 
 /* -------------------------------------------------------------------------
+ * Screen notification support (StartScreenNotifyTagList / EndScreenNotify)
+ * ------------------------------------------------------------------------- */
+
+#define MAX_SCREEN_NOTIFY 8
+
+typedef struct {
+    uint32_t active;
+    uint32_t types;
+    uint32_t flags;
+    uint32_t user_data;
+    uint32_t signal_task;
+    uint32_t signal_bit;
+    char     name[64];
+} ScreenNotifyEntry;
+
+static ScreenNotifyEntry g_screen_notify[MAX_SCREEN_NOTIFY];
+
+static void free_screen_notify_entry(ScreenNotifyEntry *entry)
+{
+    if (entry) {
+        entry->active = 0;
+        entry->types = 0;
+        entry->flags = 0;
+        entry->user_data = 0;
+        entry->signal_task = 0;
+        entry->signal_bit = 0;
+        entry->name[0] = '\0';
+    }
+}
+
+static ScreenNotifyEntry *find_screen_notify_entry(uint32_t handle)
+{
+    if (handle == 0 || handle > MAX_SCREEN_NOTIFY) return NULL;
+    ScreenNotifyEntry *entry = &g_screen_notify[handle - 1];
+    return entry->active ? entry : NULL;
+}
+
+/* Signal all matching screen notifications for the given event type.
+ * screen_ptr is the guest Screen pointer; name_filter may be NULL for all. */
+static void screen_notify_event(uint32_t screen_ptr, uint32_t type)
+{
+    ScreenSlot *slot = screen_ptr ? find_screen_slot(screen_ptr) : NULL;
+    for (int i = 0; i < MAX_SCREEN_NOTIFY; i++) {
+        ScreenNotifyEntry *entry = &g_screen_notify[i];
+        if (!entry->active) continue;
+        if (!(entry->types & type)) continue;
+        if (entry->name[0]) {
+            if (!slot || slot->pub_name[0] == '\0') continue;
+            int j = 0;
+            while (entry->name[j] && slot->pub_name[j] &&
+                   entry->name[j] == slot->pub_name[j]) j++;
+            if (entry->name[j] != '\0' || slot->pub_name[j] != '\0') continue;
+        }
+        if (entry->signal_task && entry->signal_bit) {
+            UaosTask *t = Task_FindByM68kAddr(entry->signal_task);
+            if (t) Signal(t, entry->signal_bit);
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------
  * New LVOs: HelpControl, screen notify, singular attr calls, varargs wrappers
  * ------------------------------------------------------------------------- */
 
@@ -7417,21 +7621,73 @@ static void intuition_HelpControl(void)
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t flags   = m68k_get_reg(NULL, M68K_REG_D0);
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
-    if (slot) slot->help_enabled = (flags & HC_GADGETHELP) ? 1 : 0;
-    /* TODO: propagate HC_GADGETHELP to other windows in the same help-group. */
+    if (!slot) return;
+
+    uint8_t enabled = (flags & HC_GADGETHELP) ? 1 : 0;
+    slot->help_enabled = enabled;
+
+    /* Propagate HC_GADGETHELP to every other window in the same help-group. */
+    if (slot->help_group) {
+        for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+            IntuitionSlot *other = &g_intu_wins[i];
+            if (other->active && other != slot &&
+                other->help_group == slot->help_group) {
+                other->help_enabled = enabled;
+            }
+        }
+    }
 }
 
 /* StartScreenNotifyTagList(tagList) — A0; returns handle in D0. */
 static void intuition_StartScreenNotifyTagList(void)
 {
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
-    m68k_set_reg(M68K_REG_D0, 0);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A0);
+
+    ScreenNotifyEntry *entry = NULL;
+    for (int i = 0; i < MAX_SCREEN_NOTIFY; i++) {
+        if (!g_screen_notify[i].active) {
+            entry = &g_screen_notify[i];
+            break;
+        }
+    }
+    if (!entry) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    free_screen_notify_entry(entry);
+    entry->active = 1;
+    entry->types = SNOTIFY_TYPE_ALL;
+
+    if (tag_list) {
+        uint32_t p = tag_list;
+        while (p + 8 <= GUEST_RAM_SIZE) {
+            uint32_t tag = mem_u32(p);
+            uint32_t data = mem_u32(p + 4);
+            if (tag == TAG_DONE) break;
+            switch (tag) {
+                case SN_Type:       entry->types = data; break;
+                case SN_Flags:      entry->flags = data; break;
+                case SN_UserData:   entry->user_data = data; break;
+                case SN_SignalTask: entry->signal_task = data; break;
+                case SN_SignalBit:  entry->signal_bit = data; break;
+                case SN_Name:
+                    if (data) guest_str(entry->name, data, sizeof(entry->name));
+                    break;
+            }
+            p += 8;
+        }
+    }
+
+    m68k_set_reg(M68K_REG_D0, (uint32_t)((entry - g_screen_notify) + 1));
 }
 
 /* EndScreenNotify(handle) — A0; returns success in D0. */
 static void intuition_EndScreenNotify(void)
 {
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t handle = m68k_get_reg(NULL, M68K_REG_A0);
+    ScreenNotifyEntry *entry = find_screen_notify_entry(handle);
+    if (entry) free_screen_notify_entry(entry);
     m68k_set_reg(M68K_REG_D0, 1);
 }
 

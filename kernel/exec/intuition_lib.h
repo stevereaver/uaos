@@ -626,6 +626,29 @@ typedef struct {
 /* HelpControl() flags */
 #define HC_GADGETHELP 0x00000001
 
+/* ScreenNotify tags (StartScreenNotifyTagList) */
+#define SN_Dummy       (TAG_USER + 0x50000)
+#define SN_Type        (SN_Dummy + 0x01)
+#define SN_Flags       (SN_Dummy + 0x02)
+#define SN_Priority    (SN_Dummy + 0x03)
+#define SN_UserData    (SN_Dummy + 0x04)
+#define SN_SignalTask  (SN_Dummy + 0x05)
+#define SN_SignalBit   (SN_Dummy + 0x06)
+#define SN_Name        (SN_Dummy + 0x07)
+
+#define SNOTIFY_TYPE_OPEN       0x00000001
+#define SNOTIFY_TYPE_CLOSE      0x00000002
+#define SNOTIFY_TYPE_DEPTH      0x00000004
+#define SNOTIFY_TYPE_LOCKED     0x00000008
+#define SNOTIFY_TYPE_SCREENTITLE 0x00000010
+#define SNOTIFY_TYPE_ALL        0x0000001F
+
+#define SNOTIFY_WAIT_REPLY 0x00000001
+#define SNOTIFY_BEFORE_OPEN  0x00000002
+#define SNOTIFY_AFTER_OPEN   0x00000004
+#define SNOTIFY_BEFORE_CLOSE 0x00000008
+#define SNOTIFY_AFTER_CLOSE  0x00000010
+
 /* -------------------------------------------------------------------------
  * BOOPSI gadget attributes (GA_*)
  * ------------------------------------------------------------------------- */
