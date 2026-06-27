@@ -12,6 +12,7 @@
 #include "rom_modules.h"
 #include "amiga_graphics.h"
 #include "intuition_lib.h"
+#include "chipset/chip_emu.h"
 #include "../display/framebuffer.h"
 #include "../display/wm.h"
 #include <stdint.h>
@@ -56,6 +57,24 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern const uint8_t g_font8x16[95][16];
+
+/* AmigaOS memory-type flags (forward definition; full set lives in dos_lib.c). */
+#define MEMF_PUBLIC 0x00000001u
+#define MEMF_CHIP   0x00000002u
+#define MEMF_FAST   0x00000004u
+
+/* Forward display-mode database layout used by Tier 3 copper builder. */
+#define AGA_FLAG 0x80000000u
+
+#define DI_MODEID      0
+#define DI_WIDTH       4
+#define DI_HEIGHT      6
+#define DI_DEPTH       8
+#define DI_FLAGS       9
+#define DI_NAME       10
+#define DI_SIZE       14
+
+static uint32_t disp_find_mode(uint32_t mode_id);
 
 /* =========================================================================
  * LVO slot table for graphics.library
@@ -1299,12 +1318,231 @@ void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int dy, in
     }
 }
 
+/* =========================================================================
+ * Tier 3 — Copper list construction (MakeVPort / MrgCop / LoadView)
+ * ========================================================================= */
+
+/* Amiga custom register offsets (relative to 0xDFF000) used in copper MOVEs. */
+#define COP_DMACON   0x096
+#define COP_BPLCON0  0x100
+#define COP_BPLCON1  0x102
+#define COP_BPLCON2  0x104
+#define COP_BPLCON3  0x106
+#define COP_BPLCON4  0x10C
+#define COP_BPL1MOD  0x108
+#define COP_BPL2MOD  0x10A
+#define COP_DIWSTART 0x08E
+#define COP_DIWSTOP  0x090
+#define COP_DDFSTART 0x092
+#define COP_DDFSTOP  0x094
+#define COP_BPL1PT   0x0E0
+#define COP_BPL2PT   0x0E4
+#define COP_BPL3PT   0x0E8
+#define COP_BPL4PT   0x0EC
+#define COP_BPL5PT   0x0F0
+#define COP_BPL6PT   0x0F4
+#define COP_COLOR00  0x180
+
+/* Write one big-endian 16-bit copper word. */
+static void cop_w16(uint32_t addr, uint16_t v)
+{
+    m68k_write_memory_16(addr, v);
+}
+
+/* Write a copper MOVE instruction (4 bytes). */
+static void cop_move(uint32_t *p, uint16_t reg, uint16_t data)
+{
+    cop_w16(*p, reg & 0xFFFEu);
+    cop_w16(*p + 2, data);
+    *p += 4;
+}
+
+/* Write a copper WAIT instruction. */
+static void cop_wait(uint32_t *p, uint16_t vp, uint16_t hp, uint16_t mask)
+{
+    cop_w16(*p, (uint16_t)(0x0001u | ((vp & 0xFFu) << 8) | ((hp & 0x7Fu) << 1)));
+    cop_w16(*p + 2, (uint16_t)(0x0001u | ((mask & 0xFFu) << 8) | ((mask & 0x7Fu) << 1)));
+    *p += 4;
+}
+
+/* End-of-copper-list: WAIT $FFFEFFFE. */
+static void cop_end(uint32_t *p)
+{
+    cop_w16(*p, 0xFFFEu);
+    cop_w16(*p + 2, 0xFFFEu);
+    *p += 4;
+}
+
+#define MAX_VIEWPORTS 8
+#define MAX_COPPER_SIZE 512
+
+static uint32_t s_vp_copper[MAX_VIEWPORTS];
+static uint32_t s_view_copper = 0;
+
+static int vp_index(uint32_t vp)
+{
+    for (int i = 0; i < MAX_VIEWPORTS; i++)
+        if (s_vp_copper[i] == vp) return i;
+    for (int i = 0; i < MAX_VIEWPORTS; i++) {
+        if (s_vp_copper[i] == 0) { s_vp_copper[i] = vp; return i; }
+    }
+    return -1;
+}
+
+/* Build a copper list for a single ViewPort.  Returns guest address or 0. */
+static uint32_t build_viewport_copper(uint32_t vp)
+{
+    if (!vp) return 0;
+    uint32_t rasinfo = m68k_read_memory_32(vp + VP_OFF_RASINFO);
+    if (!rasinfo) return 0;
+    uint32_t bm = m68k_read_memory_32(rasinfo + RI_OFF_BITMAP);
+    if (!bm) return 0;
+
+    uint32_t cmap = m68k_read_memory_32(vp + VP_OFF_COLORMAP);
+    uint32_t mode_id = m68k_read_memory_32(vp + VP_OFF_MODES);
+    uint32_t di = disp_find_mode(mode_id);
+
+    int depth = (int)m68k_read_memory_8(bm + BM_OFF_DEPTH);
+    if (depth < 1 || depth > 8) depth = 5;
+    int width  = (int)m68k_read_memory_16(vp + VP_OFF_DWIDTH);
+    int height = (int)m68k_read_memory_16(vp + VP_OFF_DHEIGHT);
+    if (width <= 0)  width = di ? (int)m68k_read_memory_16(di + DI_WIDTH)  : 320;
+    if (height <= 0) height = di ? (int)m68k_read_memory_16(di + DI_HEIGHT) : 256;
+
+    /* Allocate chip RAM for the copper list. */
+    uint32_t copper = 0;
+    dos_AllocMem_glue(MAX_COPPER_SIZE, MEMF_CHIP, &copper);
+    if (!copper) return 0;
+    for (uint32_t i = 0; i < MAX_COPPER_SIZE; i++) m68k_write_memory_8(copper + i, 0);
+
+    uint32_t p = copper;
+
+    /* Enable bitplane DMA. */
+    cop_move(&p, COP_DMACON, 0x8100);
+
+    /* BPLCON0: bitplane depth. */
+    uint16_t bplcon0 = (uint16_t)((depth & 0x7) << 12);
+    if (mode_id & AGA_FLAG) bplcon0 |= 0x8000; /* HIRES placeholder for AGA modes */
+    cop_move(&p, COP_BPLCON0, bplcon0);
+
+    cop_move(&p, COP_BPLCON1, 0);
+    cop_move(&p, COP_BPLCON2, 0);
+    cop_move(&p, COP_BPLCON3, 0);
+    cop_move(&p, COP_BPLCON4, 0);
+
+    /* Display window. */
+    cop_move(&p, COP_DIWSTART, (uint16_t)((26 << 8) | 0x81));
+    cop_move(&p, COP_DIWSTOP,  (uint16_t)((((26 + height) & 0xFF) << 8) | 0xC1));
+    cop_move(&p, COP_DDFSTART, 0x38);
+    cop_move(&p, COP_DDFSTOP,  0xD0);
+
+    /* Modulos: default 0. */
+    cop_move(&p, COP_BPL1MOD, 0);
+    cop_move(&p, COP_BPL2MOD, 0);
+
+    /* Bitplane pointers. */
+    for (int i = 0; i < depth && i < 8; i++) {
+        uint32_t pt = m68k_read_memory_32(bm + BM_OFF_PLANES + i * 4);
+        cop_move(&p, COP_BPL1PT + i * 4, (uint16_t)(pt >> 16));
+        cop_move(&p, COP_BPL1PT + i * 4 + 2, (uint16_t)(pt & 0xFFFFu));
+    }
+
+    /* Colour registers from the ColorMap. */
+    if (cmap) {
+        uint32_t table = m68k_read_memory_32(cmap + CM_OFF_COLORTABLE);
+        uint32_t count = m68k_read_memory_16(cmap + CM_OFF_COUNT);
+        if (table) {
+            for (uint32_t i = 0; i < count && i < 32; i++) {
+                uint32_t rgb = m68k_read_memory_32(table + i * 4);
+                uint32_t r = (rgb >> 16) & 0xFF;
+                uint32_t g = (rgb >> 8) & 0xFF;
+                uint32_t b = rgb & 0xFF;
+                uint16_t aga = (uint16_t)(((r & 0xF0) << 4) | (g & 0xF0) | ((b & 0xF0) >> 4));
+                cop_move(&p, COP_COLOR00 + i * 2, aga);
+            }
+        }
+    }
+
+    cop_end(&p);
+    (void)width;
+    return copper;
+}
+
+static void graphics_MakeVPort(void)
+{
+    /* MakeVPort(view, vp) — A0 = view, A1 = vp
+     * Build a copper list for this ViewPort and remember it. */
+    uint32_t vp = m68k_get_reg(NULL, M68K_REG_A1);
+    int idx = vp_index(vp);
+    if (idx < 0) return;
+
+    /* Free any previous copper list. */
+    if (s_vp_copper[idx] & 1) {
+        /* We stored address+1 in the table to distinguish from 0. */
+        uint32_t old = s_vp_copper[idx] & ~1u;
+        dos_FreeMem_glue(old, MAX_COPPER_SIZE);
+    }
+
+    uint32_t copper = build_viewport_copper(vp);
+    if (copper)
+        s_vp_copper[idx] = copper | 1u; /* mark as allocated */
+    else
+        s_vp_copper[idx] = vp | 1u;
+}
+
+static void graphics_MrgCop(void)
+{
+    /* MrgCop(view) — A1 = view
+     * Merge all ViewPort copper lists into one master list for the View. */
+    uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!view) return;
+
+    if (s_view_copper) {
+        dos_FreeMem_glue(s_view_copper, MAX_COPPER_SIZE);
+        s_view_copper = 0;
+    }
+
+    uint32_t copper = 0;
+    dos_AllocMem_glue(MAX_COPPER_SIZE, MEMF_CHIP, &copper);
+    if (!copper) return;
+    for (uint32_t i = 0; i < MAX_COPPER_SIZE; i++) m68k_write_memory_8(copper + i, 0);
+
+    uint32_t p = copper;
+
+    for (uint32_t vp = m68k_read_memory_32(view + VIEW_OFF_VIEWPORT); vp; vp = m68k_read_memory_32(vp + VP_OFF_NEXT)) {
+        int idx = vp_index(vp);
+        if (idx < 0) continue;
+        uint32_t vp_copper = s_vp_copper[idx] & ~1u;
+        if (!vp_copper) continue;
+
+        /* Copy the ViewPort copper list into the master list.
+         * Stop when we hit the end WAIT ($FFFE,$FFFE). */
+        uint32_t src = vp_copper;
+        for (uint32_t n = 0; n < MAX_COPPER_SIZE / 4; n++) {
+            uint16_t w1 = (uint16_t)m68k_read_memory_16(src);
+            uint16_t w2 = (uint16_t)m68k_read_memory_16(src + 2);
+            cop_w16(p, w1);
+            cop_w16(p + 2, w2);
+            p += 4;
+            src += 4;
+            if (w1 == 0xFFFEu && w2 == 0xFFFEu) break;
+        }
+    }
+
+    if (p == copper) {
+        /* No ViewPorts: just an end instruction. */
+        cop_end(&p);
+    }
+
+    s_view_copper = copper;
+}
+
 static void graphics_LoadView(void)
 {
     /* LoadView(view) — A1 = view
-     * Render all ViewPorts in the View's list into the host linear
-     * framebuffer, compositing them in list order and clipping each to the
-     * screen and its own DWidth/DHeight.  LoadView(NULL) blanks the screen.
+     * If a merged copper list has been built for this View, execute it through
+     * the AGA chipset emulator and render the resulting display state.  If not,
+     * fall back to the CPU-drawn bitmap path.
      */
     uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
     if (!view) {
@@ -1312,6 +1550,14 @@ static void graphics_LoadView(void)
         return;
     }
 
+    /* If MrgCop has built a copper list, use the chipset renderer. */
+    if (s_view_copper) {
+        chip_emu_copper_jump(1, s_view_copper); /* sets COP1LC and executes it */
+        chip_emu_render_frame();
+        return;
+    }
+
+    /* Fallback CPU-drawn path for Views without a copper list. */
     for (uint32_t vp = m68k_read_memory_32(view + VIEW_OFF_VIEWPORT); vp; vp = m68k_read_memory_32(vp + VP_OFF_NEXT)) {
         uint32_t rasinfo = m68k_read_memory_32(vp + VP_OFF_RASINFO);
         uint32_t cmap    = m68k_read_memory_32(vp + VP_OFF_COLORMAP);
@@ -3172,14 +3418,6 @@ static void graphics_SetRGB4(void)
 #define DTAG_MNTR      0x80000003
 #define DTAG_VEC       0x80000004
 
-#define DI_MODEID      0
-#define DI_WIDTH       4
-#define DI_HEIGHT      6
-#define DI_DEPTH       8
-#define DI_FLAGS       9
-#define DI_NAME        10
-#define DI_SIZE        14
-
 #define DIM_MAXWIDTH   0
 #define DIM_MAXHEIGHT  2
 #define DIM_MAXDEPTH   4
@@ -3198,15 +3436,34 @@ typedef struct {
     const char *name;
 } UaosDisplayMode;
 
+/* Mode ID layout (AmigaOS 3.x compatible):
+ *   bit 31: AGA flag
+ *   bits 28-30: reserved
+ *   bits 16-27: monitor/mode index (upper nibble = monitor, lower = mode)
+ *   bits 12-15: reserved
+ *   bits  8-11: depth flags (HAM/EHB/24-bit)
+ *   bits  0-7:  depth in bitplanes
+ */
+
 static const UaosDisplayMode uaos_modes[] = {
-    { 0x00011000,  320,  256, 8, "PAL" },
-    { 0x00011001,  320,  200, 8, "NTSC" },
-    { 0x00011002,  640,  256, 8, "DBLPAL" },
-    { 0x00011003,  640,  400, 8, "DBLNTSC" },
-    { 0x00011004,  640,  512, 8, "SUPER72" },
-    { 0x00011005,  800,  600, 8, "EURO72" },
-    { 0x00011006, 1024,  768, 8, "EURO36" },
-    { 0x00011007, 1280,  720, 8, "VESA" },
+    /* OCS/ECS modes */
+    { 0x00011000,  320,  256, 5, "PAL:320x256" },
+    { 0x00011001,  320,  200, 5, "NTSC:320x200" },
+    { 0x00011002,  640,  256, 4, "DBLPAL:640x256" },
+    { 0x00011003,  640,  400, 4, "DBLNTSC:640x400" },
+    { 0x00011004,  640,  512, 4, "SUPER72:640x512" },
+    { 0x00011005,  800,  600, 4, "EURO72:800x600" },
+    { 0x00011006, 1024,  768, 4, "EURO36:1024x768" },
+    { 0x00011007, 1280,  720, 4, "VESA:1280x720" },
+    /* AGA modes (same geometry, up to 8 bitplanes / 256 colours / 24-bit palette) */
+    { 0x80011000,  320,  256, 8, "AGA:PAL:320x256" },
+    { 0x80011001,  320,  200, 8, "AGA:NTSC:320x200" },
+    { 0x80011002,  640,  256, 8, "AGA:DBLPAL:640x256" },
+    { 0x80011003,  640,  400, 8, "AGA:DBLNTSC:640x400" },
+    { 0x80011004,  640,  512, 8, "AGA:SUPER72:640x512" },
+    { 0x80011005,  800,  600, 8, "AGA:EURO72:800x600" },
+    { 0x80011006, 1024,  768, 8, "AGA:EURO36:1024x768" },
+    { 0x80011007, 1280,  720, 8, "AGA:VESA:1280x720" },
 };
 #define UAOS_MODE_COUNT (sizeof(uaos_modes) / sizeof(uaos_modes[0]))
 
@@ -3235,7 +3492,9 @@ static void disp_init_table(void)
         m68k_write_memory_16(entry + DI_WIDTH, uaos_modes[i].width);
         m68k_write_memory_16(entry + DI_HEIGHT, uaos_modes[i].height);
         m68k_write_memory_8(entry + DI_DEPTH, uaos_modes[i].depth);
-        m68k_write_memory_8(entry + DI_FLAGS, 0);
+        uint8_t flags = 0;
+        if (uaos_modes[i].mode_id & AGA_FLAG) flags |= 0x01;
+        m68k_write_memory_8(entry + DI_FLAGS, flags);
         m68k_write_memory_32(entry + DI_NAME, name_ptr);
         for (size_t j = 0; j <= strlen(uaos_modes[i].name); j++)
             m68k_write_memory_8(name_ptr + j, (uint8_t)uaos_modes[i].name[j]);
@@ -3905,6 +4164,8 @@ static void *graphics_funcs[GFX_SLOT_MAX + 1] = {
     [GFX_SLOT_LOADRGB4]                = graphics_LoadRGB4,
     [GFX_SLOT_INITRASTPORT]            = graphics_InitRastPort,
     [GFX_SLOT_INITVPORT]               = graphics_InitVPort,
+    [GFX_SLOT_MRGCOP]                  = graphics_MrgCop,
+    [GFX_SLOT_MAKEVPORT]               = graphics_MakeVPort,
     [GFX_SLOT_LOADVIEW]                = graphics_LoadView,
     [GFX_SLOT_WAITBLIT]                = graphics_WaitBlit,
     [GFX_SLOT_SETRAST]                 = graphics_SetRast,

@@ -134,9 +134,9 @@ static void u32_dec(uint32_t v, char *buf, int max) {
  *   0x000000–0x000100   Exception vectors (minimal: SSP at 0, PC at 4)
  *   0x000100–0x000200   Library jump table stubs (ILLEGAL + lib_id word)
  *   0x000200–0x001000   Stack (grows down from 0x001000)
- *   0x001000–0x7FFFFF   Program segments loaded by Hunk loader
- *                       First 8 MB (0x000000–0x7FFFFF) are chip RAM;
- *                       remaining 8 MB (0x800000–0xFFFFFF) are fast RAM.
+ *   0x001000–0x7F0000   Program segments + AllocMem(MEMF_CHIP) pool
+ *                       (chip RAM, accessible by custom chips)
+ *   0x800000–0xFF0000   AllocMem(MEMF_FAST) pool (fast RAM)
  */
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
 #define PROG_BASE       0x001000  /* program hunks load here */
@@ -161,9 +161,9 @@ void UAOS_Glue_SetRamBase(uint8_t *base)
 
 static uint32_t heap_alloc(uint32_t size)
 {
-    /* Align to 4 bytes */
+    /* Align to 4 bytes; program hunks stay in chip RAM (0x001000-0x7F0000). */
     size = (size + 3) & ~3u;
-    if (g_uaos_heap_ptr + size > GUEST_RAM_SIZE) return 0;
+    if (g_uaos_heap_ptr + size > 0x007F0000u) return 0;
     uint32_t addr = g_uaos_heap_ptr;
     g_uaos_heap_ptr += size;
     emu_memset(g_ram + addr, 0, size);

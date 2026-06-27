@@ -91,47 +91,77 @@ static uint32_t guest_read_be32(uint32_t addr)
  * initialise it to cover all RAM above the current bump pointer.
  * ========================================================================= */
 
+/* AmigaOS exec.library AllocMem memory-type requirements */
+#define MEMF_PUBLIC     0x00000001u
+#define MEMF_CHIP       0x00000002u
+#define MEMF_FAST       0x00000004u
+#define MEMF_LOCAL      0x00000008u
+#define MEMF_24BITDMA   0x00000010u
+#define MEMF_DMA        0x00000010u
+#define MEMF_CLEAR      0x00010000u
+#define MEMF_EXPUNGE    0x80000000u
+
 #define HEAP_HDR        8u           /* header size in bytes             */
 #define HEAP_MAGIC      0x80000000u  /* marks an allocated block         */
 #define HEAP_FREE_BASE  0x020000u    /* permanent start of free-list pool */
-#define HEAP_FREE_END   (GUEST_RAM_SIZE - 0x10000u) /* leave top 64 KB   */
 
-/* Address in guest RAM of the free-list head (a single BPTR word) */
-#define HEAP_LIST_SLOT  0x0200u      /* sits in the reserved 0x200-0x2FF area */
+/* Guest RAM layout: 8 MB chip (0x000000–0x7FFFFF) + 8 MB fast (0x800000–0xFFFFFF).
+ * The free-list pools keep a 64 KB guard at the top of each region. */
+#define HEAP_CHIP_END   0x007F0000u
+#define HEAP_FAST_START 0x00800000u
+#define HEAP_FAST_END   0x00FF0000u
+#define HEAP_ANY_END    HEAP_FAST_END
+
+/* Address in guest RAM of the free-list heads (BPTR words) in reserved 0x200-0x2FF */
+#define HEAP_LIST_SLOT_CHIP 0x0200u
+#define HEAP_LIST_SLOT_FAST 0x0204u
 
 static int g_heap_ready = 0;
+static int g_fast_heap_ready = 0;
+
+static void heap_freelist_init_pool(uint32_t list_slot, uint32_t pool_start, uint32_t pool_end,
+                                    int *ready_flag)
+{
+    if (*ready_flag) return;
+    *ready_flag = 1;
+
+    uint32_t start = pool_start;
+    start = (start + 3u) & ~3u;
+    if (start < HEAP_FREE_BASE) start = HEAP_FREE_BASE;
+    if (start + HEAP_HDR >= pool_end) return; /* no room */
+
+    uint32_t blk_size = pool_end - start;
+
+    /* Write the single initial free block */
+    guest_write_be32(start + 0, blk_size); /* size (no magic) */
+    guest_write_be32(start + 4, 0);         /* next = NULL     */
+
+    /* Store its BPTR in the list-head slot */
+    guest_write_be32(list_slot, start >> 2);
+}
 
 static void heap_freelist_init(void)
 {
-    if (g_heap_ready) return;
-    g_heap_ready = 1;
-
-    /* Carve the remaining bump-pointer space into the free list */
-    uint32_t start = g_uaos_heap_ptr;
-    start = (start + 3u) & ~3u;
-    if (start < HEAP_FREE_BASE) start = HEAP_FREE_BASE;
-    if (start + HEAP_HDR >= HEAP_FREE_END) return; /* no room */
-
-    uint32_t blk_size = HEAP_FREE_END - start;
-
-    /* Write the single initial free block */
-    guest_write_be32(start + 0, blk_size);    /* size (no magic) */
-    guest_write_be32(start + 4, 0);            /* next = NULL     */
-
-    /* Store its BPTR in the list-head slot */
-    guest_write_be32(HEAP_LIST_SLOT, start >> 2);
+    /* Chip pool covers the remaining bump-pointer space up to the 8 MB line. */
+    heap_freelist_init_pool(HEAP_LIST_SLOT_CHIP, g_uaos_heap_ptr, HEAP_CHIP_END,
+                            &g_heap_ready);
 }
 
-/* Allocate 'size' bytes from the free list.  Returns guest addr or 0. */
-static uint32_t heap_alloc_fl(uint32_t size)
+static void heap_freelist_init_fast(void)
 {
-    heap_freelist_init();
+    /* Fast pool covers the upper 8 MB of guest RAM. */
+    heap_freelist_init_pool(HEAP_LIST_SLOT_FAST, HEAP_FAST_START, HEAP_FAST_END,
+                            &g_fast_heap_ready);
+}
 
+/* Allocate 'size' bytes from a specific free list.  Returns guest addr or 0. */
+static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
+{
     size = (size + 3u) & ~3u;
     uint32_t need = size + HEAP_HDR;
 
-    uint32_t prev_slot = HEAP_LIST_SLOT;  /* address of the pointer to current */
-    uint32_t cur_bptr  = guest_read_be32(HEAP_LIST_SLOT);
+    uint32_t prev_slot = list_slot;  /* address of the pointer to current */
+    uint32_t cur_bptr  = guest_read_be32(list_slot);
 
     while (cur_bptr) {
         uint32_t cur = cur_bptr << 2;
@@ -169,11 +199,10 @@ static uint32_t heap_alloc_fl(uint32_t size)
     return 0; /* out of memory */
 }
 
-/* Free a block previously returned by heap_alloc_fl.
- * Returns it to the front of the free list. */
-static void heap_free_fl(uint32_t addr)
+/* Free a block previously returned by heap_alloc_fl_pool.
+ * Returns it to the front of the given free list. */
+static void heap_free_fl_pool(uint32_t addr, uint32_t list_slot)
 {
-    heap_freelist_init();
     if (addr < HEAP_HDR || addr >= GUEST_RAM_SIZE) return;
 
     uint32_t blk = addr - HEAP_HDR;
@@ -182,16 +211,50 @@ static void heap_free_fl(uint32_t addr)
 
     uint32_t blk_size = magic_size & ~HEAP_MAGIC;
     guest_write_be32(blk + 0, blk_size);                        /* clear magic */
-    guest_write_be32(blk + 4, guest_read_be32(HEAP_LIST_SLOT)); /* prepend     */
-    guest_write_be32(HEAP_LIST_SLOT, blk >> 2);
+    guest_write_be32(blk + 4, guest_read_be32(list_slot));     /* prepend     */
+    guest_write_be32(list_slot, blk >> 2);
+}
+
+/* Allocate 'size' bytes from the chip free list. */
+static uint32_t heap_alloc_fl_chip(uint32_t size)
+{
+    heap_freelist_init();
+    return heap_alloc_fl_pool(size, HEAP_LIST_SLOT_CHIP);
+}
+
+/* Allocate 'size' bytes from the fast free list. */
+static uint32_t heap_alloc_fl_fast(uint32_t size)
+{
+    heap_freelist_init_fast();
+    return heap_alloc_fl_pool(size, HEAP_LIST_SLOT_FAST);
+}
+
+/* Legacy single-pool allocator: defaults to fast with chip fallback.
+ * Preserves old callers until they are updated to pass requirements. */
+static uint32_t heap_alloc_fl(uint32_t size)
+{
+    uint32_t addr = heap_alloc_fl_fast(size);
+    if (!addr) addr = heap_alloc_fl_chip(size);
+    return addr;
+}
+
+/* Free a block previously returned by any heap_alloc_fl_* variant.
+ * Returns it to the correct pool based on its guest address. */
+static void heap_free_fl(uint32_t addr)
+{
+    if (addr >= HEAP_FAST_START)
+        heap_free_fl_pool(addr, HEAP_LIST_SLOT_FAST);
+    else
+        heap_free_fl_pool(addr, HEAP_LIST_SLOT_CHIP);
 }
 
 /* Legacy bump allocator — still used for internal structures that are never
- * freed (FileLocks, library tables, etc.) and for the initial program load. */
+ * freed (FileLocks, library tables, etc.) and for the initial program load.
+ * Program hunks must live in chip RAM, so cap the bump pointer there. */
 static uint32_t heap_alloc(uint32_t size)
 {
     size = (size + 3) & ~3u;
-    if (g_uaos_heap_ptr + size > GUEST_RAM_SIZE) return 0;
+    if (g_uaos_heap_ptr + size > HEAP_CHIP_END) return 0;
     uint32_t addr = g_uaos_heap_ptr;
     g_uaos_heap_ptr += size;
     for (uint32_t i = 0; i < size; i++) g_ram[addr + i] = 0;
@@ -211,9 +274,20 @@ static void dos_AllocMem(M68kCPUState *cpu)
 {
     /* AmigaOS: D0=byteSize, D1=requirements → D0=APTR or NULL */
     uint32_t size = cpu->d[0];
-    /* requirements (D1) — ignore attribute bits; we only have one pool */
+    uint32_t reqs = cpu->d[1];
     if (size == 0) { cpu->d[0] = 0; return; }
-    uint32_t addr = heap_alloc_fl(size);
+
+    uint32_t addr = 0;
+    if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA)) {
+        addr = heap_alloc_fl_chip(size);
+    } else if (reqs & MEMF_FAST) {
+        addr = heap_alloc_fl_fast(size);
+    } else {
+        /* Default / MEMF_PUBLIC: prefer fast, fallback to chip. */
+        addr = heap_alloc_fl_fast(size);
+        if (!addr) addr = heap_alloc_fl_chip(size);
+    }
+
     if (!addr) SetIoErr(ERROR_NO_FREE_STORE);
     cpu->d[0] = addr;
 }
@@ -2521,8 +2595,20 @@ void UAOS_DOS_Register(void)
 
 void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr)
 {
-    (void)reqs; /* attribute bits — we have a single pool */
-    *out_addr = size ? heap_alloc_fl(size) : 0;
+    if (size == 0) { *out_addr = 0; return; }
+
+    uint32_t addr = 0;
+    if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA)) {
+        addr = heap_alloc_fl_chip(size);
+    } else if (reqs & MEMF_FAST) {
+        addr = heap_alloc_fl_fast(size);
+    } else {
+        addr = heap_alloc_fl_fast(size);
+        if (!addr) addr = heap_alloc_fl_chip(size);
+    }
+
+    if (!addr) SetIoErr(ERROR_NO_FREE_STORE);
+    *out_addr = addr;
 }
 
 void dos_FreeMem_glue(uint32_t addr, uint32_t size)
