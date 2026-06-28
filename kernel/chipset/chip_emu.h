@@ -19,4 +19,19 @@ uint32_t chip_emu_read (uint32_t offset, int width_bytes);
 void     chip_emu_copper_jump(int list, uint32_t addr);
 void     chip_emu_render_frame(void);
 
+/* Reset and timing */
+void     chip_emu_reset(void);
+int      chip_emu_power_led(void);
+
+/* Tier 4: VBlank timing */
+void     chip_emu_vblank(void);
+uint32_t chip_emu_vblank_count(void);
+void     chip_emu_beam_tick(uint32_t tick_counter);
+
+/* Tier 5: CIA timers */
+void     chip_emu_cia_tick(void);
+
+/* Tier 5: Paula audio */
+void     chip_emu_audio_tick(void);
+
 #endif /* UAOS_CHIP_EMU_H */

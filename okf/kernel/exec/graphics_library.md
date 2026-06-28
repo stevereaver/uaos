@@ -233,7 +233,8 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 | `MakeVPort` | Implemented | Builds a chip-RAM copper list for a `ViewPort` (DMACON, BPLCON, display window, bitplane pointers, COLORxx). |
 | `MrgCop` | Implemented | Merges per-`ViewPort` copper lists into one master list for the `View`. |
 | `LoadView` | Implemented | Executes the merged copper list through the AGA chipset emulator and renders the display. Falls back to CPU bitmap rendering if no copper list exists. |
-| `WaitTOF` | Stub | Host display has no hardware VBlank to wait for. |
+| `WaitTOF` | Implemented | Waits for the next VBlank tick from the chipset emulator. |
+| `WaitBOVP` | Implemented | Waits for the next VBlank tick (approximating bottom-of-ViewPort). |
 
 ## LVO dispatch
 

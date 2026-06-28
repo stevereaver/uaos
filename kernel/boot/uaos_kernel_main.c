@@ -300,6 +300,7 @@ extern void UAOS_ROM_RegisterAll(void);
 extern int  UAOS_Bridge_Init(void);
 extern void UAOS_LoadableLib_Init(void);
 extern void FB_Init(uint32_t mb2_info_phys);
+extern void chip_emu_reset(void);
 extern void Desktop_Draw(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
 extern unsigned int g_fb_width_irq;
@@ -345,6 +346,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     } else {
         kprint("[BOOT] WARNING: No framebuffer from bootloader.\n");
     }
+
+    /* Reset AGA chipset state to hardware-correct defaults */
+    kprint("[BOOT] Resetting AGA chipset state...\n");
+    chip_emu_reset();
 
     /* Initialise MMU sandbox — bare-metal only */
     kprint("[BOOT] Initialising MMU sandbox...\n");

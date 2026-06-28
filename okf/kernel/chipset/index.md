@@ -109,9 +109,111 @@ For unknown instructions, the handler falls back to a 32-bit read/write and adva
 
 The display-mode database (`graphics_lib.c`) includes AGA variants of each mode (bit 31 set) so `MakeVPort` can pick AGA depth and timing parameters.
 
-## Future Work (Tier 4+)
+## Tier 1 — Accuracy for Games and Productivity
 
-- Real sprite DMA rendering using `SPR0PT`–`SPR7PT`.
-- Per-scanline copper execution for mid-frame effects (current emulator runs the whole list once per frame).
-- Accurate `VPOSR`/`VHPOSR` beam counters and vertical-blank interrupt timing.
-- Interleaved bitplane layout and precise modulo handling.
+### Per-scanline Copper
+
+The copper no longer runs only once at the start of `chip_emu_render_frame()`.  Instead, the render loop resets the copper PC to `COP1LC` at the top of each frame and then runs `copper_run_to_beam(vpos, 0)` before rendering every scanline.  `WAIT` instructions compare the masked beam position and stall the copper until the target line is reached, so raster-bar colour changes, mid-frame pointer updates, and other copper effects now take effect on the correct line.  `SKIP` is evaluated using the same beam comparison.
+
+`COPCON` bit 0 (the "dangerous" bit) is now enforced: the copper can only write to the Blitter register block (`0x040`–`0x058`) when the dangerous bit is set, matching hardware behavior.
+
+### Bitplane Layout, BPLMOD, and Horizontal Scrolling
+
+`bpl_line_ptr()` now uses the real hardware fetch width and the correct per-plane modulo:
+
+- Odd-numbered planes (1, 3, 5, 7) use `BPL1MOD`.
+- Even-numbered planes (2, 4, 6, 8) use `BPL2MOD`.
+- The interleaved/non-interleaved distinction is handled by the separate plane base pointers and moduli exactly as real Amiga software sets them up.
+
+`render_scanline()` applies the horizontal scroll offsets from `BPLCON1`: `PF1H` (bits 3–0) and `PF2H` (bits 7–4).  In dual-playfield mode the even/odd planes use the appropriate playfield scroll; in single-playfield mode all planes use `PF1H`.
+
+### Blitter
+
+The AGA Blitter is triggered by writes to `BLTSIZE` (`0x058`).  It supports area-mode rectangle copies/fills with:
+
+- A/B/C/D channel enable bits from `BLTCON0`.
+- 8-bit minterms from `BLTCON0`/`BLTCON1`.
+- A/B barrel shifts (`ASH`/`BSH` in `BLTCON0`/`BLTCON1`).
+- First/last word masks (`BLTAFWM`/`BLTALWM`).
+- Source and destination modulo (`BLTAMOD`/`BLTBMOD`/`BLTCMOD`/`BLTDMOD`).
+- Descending address mode (`BLTCON1` `DESC`).
+
+Blitter busy timing is now implemented: `BLTSIZE` sets the busy flag and a PIT-tick counter, and `DMACONR` (register `0x002`) reflects `BLITZ` (bit 14) while the blitter is active.  The busy duration is scaled to the blit size (clamped to a few PIT ticks) so that software polling `DMACONR` sees the expected delay.  True slot-by-slot DMA contention is not yet modelled.
+
+**Line mode and area-fill mode** — `blitter_execute()` now has a basic Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and a per-row fill state for `BLTCON1` bits 3–4 (`IFEFE`/`EFE`).  These are approximations: the real line-mode delta/octant encoding and polygon edge-fill semantics are simplified.
+
+
+### Hardware Sprites
+
+Sprites are now fetched from `SPRxPT` by DMA each scanline rather than drawn from manually loaded data registers.  The sprite DMA pointer is reset to `SPRxPT` at the start of each frame and advances by the line's data size.  AGA 64-pixel wide sprites are supported when `BPLCON3` bit 10 is set; otherwise 16-pixel OCS/ECS sprites are used.  Attached pairs give 32 colours (palette entries 16–31).  AGA 32-colour palette banking is selected via `BPLCON3` bits 13–15; the attached pair index is expanded to 5 bits in this mode, giving sprite colours 16–47.
+
+Sprite collision detection is now implemented: `CLXDAT` (`0x00E`) is read-and-clear, and `CLXCON` (`0x016`) accepts the control mask.  A frame-level bounding-box test detects overlapping sprite pairs and sets the corresponding `CLXDAT` bits.  Bitplane-sprite and bitplane-bitplane collisions are not yet detected.
+
+### Beam Timing and Display Window
+
+`VPOSR` and `VHPOSR` are now updated each PIT tick by `chip_emu_beam_tick()`.  PAL mode uses 312 lines per frame and NTSC mode uses 262 lines, with a fractional advance approximation tied to the 100 Hz PIT.
+
+The display window derivation has been improved:
+
+- `DIWSTRT`/`DIWSTOP` horizontal values are in low-resolution pixels with the usual `$80` origin.
+- `DIWSTOP` horizontal stop is written with the high bit stripped; the hardware implies `$100` for the right-hand side.
+- `DIWSTOP` vertical stop uses the hardware quirk that forces bit 8 to the complement of bit 7, allowing PAL wrap-around without `DIWHIGH`.
+- `DDFSTART`/`DDFSTOP` derive the fetch width using the hardware formula: words = `(DDFSTOP - DDFSTART) / 4 + 2`, giving 8 lores pixels or 16 hires pixels per word.  This matches the standard `$38`–`$D0` fetch producing a 320-pixel low-res line.
+
+### Dual-Playfield and Interlace
+
+**Dual-playfield** rendering (`BPLCON0` `DBLPF`) is now implemented.  Even planes form playfield 1 and odd planes form playfield 2.  Each playfield uses its own `BPLCON1` horizontal scroll (`PF1H`/`PF2H`), and `BPLCON2` priority bits (`PF2P0-PF2P2` vs `PF1P0-PF1P2`) decide which playfield is drawn when both are non-transparent.  Playfield 1 indexes palette entries 0–15; playfield 2 uses palette entries 8–15 for 6-plane modes or 16–31 for 8-plane AGA modes.
+
+**Interlace** mode (`BPLCON0` `LACE`) is approximated by doubling the vertical display range and fetching bitplanes from line `y/2`.  Long/short fields are not modelled yet, but the vertical resolution doubling is in place.
+
+### Interrupt Delivery
+
+The chip emulator now computes the highest enabled M68k interrupt level from `INTREQ` & `INTENA` and calls `m68k_set_irq()`:
+
+- INTREQ bits 0–4 → level 1
+- INTREQ bits 5–8 → level 2
+- INTREQ bits 9–12 → level 3
+- INTREQ bits 13–14 → level 4
+
+VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive the Musashi interrupt line.  CIA-A timers map to `TIMERA`/`TIMERB` (bits 13/14); CIA-B timers are mapped to `EXTER` (level 1) until a dedicated level-6 path is added.
+
+### Reset State and LEDs
+
+`chip_emu_reset()` is called from `uaos_kernel_main()` at boot and initializes all chipset registers to hardware-correct defaults, including `DIWSTRT`/`DIWSTOP`, `DDFSTART`/`DDFSTOP`, `BPLCON4`, first/last word masks, and CIAA port A pull-ups.  The power LED state is tracked through CIAA `PRA` bit 3 (active low) and exposed via `chip_emu_power_led()`.
+
+## Tier 5 — Audio, CIA, and Disk
+
+### Paula Audio
+
+Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_tick()` advances the DMA pointer each time the period counter expires, emulating sample fetch.  There is no host audio output driver yet, so the fetched samples are available in the `AUDxDAT` registers only.
+
+### CIA-A and CIA-B
+
+`CIA-A` (`0xBFE001`) and `CIA-B` (`0xBFD000`) are now decoded by the chip emulator.  Implemented:
+
+- Timer A and Timer B with latches, counters, and `CRA`/`CRB` control (start/stop, one-shot/continuous, force-load).
+- `ICR` read clears pending interrupt status; writing `ICR` sets/clear interrupt masks.
+- Basic 24-bit TOD counter registers.
+- Port A/B data and direction registers are maintained; keyboard serial data is not yet routed to the PS/2 driver.
+
+### Paula Disk/Serial
+
+Paula disk (`DSKLEN`, `DSKDAT`, `DSKSYNC) and serial (`SERDAT`, `SERPER`) registers are not yet emulated.  The existing DOS handler system can be wired in once disk DMA is implemented.
+
+## What Remains for 100% / UAE-Level Compatibility
+
+True 100% AGA compatibility is a multi-year project (UAE has ~30 years of accumulated work).  The major remaining items not implemented here are:
+
+- **Cycle-accurate DMA arbitration** and refresh-slot allocation.
+- **Exact PAL/NTSC/interlace timing**, including interlace long/short fields and correct field offsets.
+- **Blitter line/area-fill exact semantics**, overlapping source/destination edge cases, and slot-by-slot cycle counts.
+- **Bitplane-sprite and bitplane-bitplane collision detection** in `CLXDAT`.
+- **Full AGA sprite control** bits (true 32-colour mode, exact resolution selection, HAM sprite interactions).
+- **Paula audio output** to a host driver (HDAC/AC97/PC speaker), LED filter, and anti-aliasing.
+- **CIA keyboard serial** integration with the PS/2 driver and CIA-B level-6 interrupt delivery.
+- **Paula disk/serial DMA** and ADF integration.
+- **CPU/chipset timing lock** and cycle-accurate memory contention.
+- **CPU cache synchronization** around chipset DMA boundaries (currently relies on the host CPU's normal coherency for the same guest RAM buffer).
+- **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences).
+- **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC, PCMCIA, and genlock.
+- **Self-modifying code edge cases** in chip RAM and copper exception/interrupt behaviour.

@@ -8,6 +8,7 @@
 
 #include "rom_modules.h"
 #include "task.h"
+#include "chipset/chip_emu.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -173,6 +174,16 @@ static TimerQueueEntry_t *timer_find_by_request(uint32_t request_addr)
 void timer_ProcessTicks(void)
 {
     g_tick_counter++;
+
+    /* Advance chipset beam position and subsystems every PIT tick. */
+    chip_emu_beam_tick(g_tick_counter);
+    chip_emu_audio_tick();
+    chip_emu_cia_tick();
+
+    /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */
+    if ((g_tick_counter & 1u) == 0) {
+        chip_emu_vblank();
+    }
 
     TimerQueueEntry_t *current = g_timer_queue_head;
     TimerQueueEntry_t *prev = NULL;

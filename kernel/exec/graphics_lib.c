@@ -57,6 +57,7 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern const uint8_t g_font8x16[95][16];
+extern void Task_Yield(void);
 
 /* AmigaOS memory-type flags (forward definition; full set lives in dos_lib.c). */
 #define MEMF_PUBLIC 0x00000001u
@@ -1575,7 +1576,11 @@ static void graphics_LoadView(void)
 
 static void graphics_WaitTOF(void)
 {
-    /* WaitTOF — stub, host display has no hardware VBlank to wait for */
+    /* WaitTOF — wait for the next VBlank tick from the chipset emulator. */
+    uint32_t start = chip_emu_vblank_count();
+    while (chip_emu_vblank_count() == start) {
+        Task_Yield();
+    }
 }
 
 static void graphics_ChangeVPBitMap(void)
@@ -3863,8 +3868,13 @@ static void graphics_WaitBlit(void)
 
 static void graphics_WaitBOVP(void)
 {
-    /* WaitBOVP(vp) — A0 = vp; no hardware beam sync */
+    /* WaitBOVP(vp) — A0 = vp; wait until the beam passes the bottom of the
+     * ViewPort, approximated by the next VBlank tick. */
     (void)m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t start = chip_emu_vblank_count();
+    while (chip_emu_vblank_count() == start) {
+        Task_Yield();
+    }
 }
 
 static void graphics_VBeamPos(void)
