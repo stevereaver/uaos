@@ -31,8 +31,12 @@
 #include "dos/partition.h"
 #include "drivers/ide.h"
 #include "dos/iso9660.h"
+#include "drivers/floppy_blk.h"
 #include "exec/task.h"
 #include "exec/syscall_table.h"
+#include "chipset/floppy.h"
+#include "chipset/chip_emu.h"
+#include "uaos_emu.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -260,6 +264,9 @@ volatile uint64_t g_pit_ticks = 0;
 
 extern void Task_ScheduleFromIRQ(void);
 extern void timer_ProcessTicks(void);
+extern int FloppyBlockDev_Init(void);
+extern BlockDev *BlockDev_Find(const char *name);
+extern int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors);
 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
@@ -305,7 +312,11 @@ extern void chip_emu_reset(void);
 extern void audio_init(void);
 extern void audio_sine_test(void);
 extern void audio_pattern_test(void);
+extern void floppy_make_test_adf(void);
+extern int chip_emu_disk_dma_test(void);
+extern int floppy_block_device_test(void);
 extern int chip_emu_dma_test(void);
+extern uint16_t g_intreq;
 extern int chip_emu_line_test(void);
 extern int chip_emu_fill_test(void);
 extern int chip_emu_raster_test(void);
@@ -390,6 +401,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running audio pattern test...\n");
     audio_pattern_test();
 
+    kprint("[BOOT] Initialising floppy subsystem...\n");
+    floppy_make_test_adf();
+    kprint("[BOOT] Running disk DMA test...\n");
+    int disk_test = chip_emu_disk_dma_test();
+    kprint(disk_test ? "[BOOT] Disk DMA test PASSED\n" : "[BOOT] Disk DMA test FAILED\n");
+
     /* Run DMA slot-arbitration test */
     kprint("[BOOT] Running DMA slot test...\n");
     int dma_test = chip_emu_dma_test();
@@ -425,8 +442,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] WARNING: Bridge init returned ");
         kprinthex((uint64_t)rc);
         kprint(" — emulation unavailable.\n");
+        chip_emu_set_keyboard_route(0); /* native shell keeps keyboard input */
     } else {
         kprint("[BOOT] M68k emulation bridge ready.\n");
+        chip_emu_set_keyboard_route(1); /* route to CIA-A SDR for M68k input */
     }
 
     kprint("\n[BOOT] UAOS kernel initialisation complete.\n");
@@ -440,6 +459,17 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Initialising block device layer...\n");
     BlockDev_Init();
     kprint("[BOOT] Block device layer initialised.\n");
+
+    kprint("[BOOT] Registering floppy block device...\n");
+    if (FloppyBlockDev_Init() == 0) {
+        kprint("[BOOT] Floppy block device DF0: registered.\n");
+    } else {
+        kprint("[BOOT] Floppy block device registration failed.\n");
+    }
+
+    kprint("[BOOT] Running floppy block-device test...\n");
+    int floppy_blk_test = floppy_block_device_test();
+    kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
 
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");
@@ -666,4 +696,50 @@ halt:
     for (;;) {
         __asm__ volatile ("cli; hlt");
     }
+}
+
+int chip_emu_disk_dma_test(void)
+{
+    uint32_t dst = 0x18000u;
+    if (dst + 1024 > GUEST_RAM_SIZE) return 0;
+
+    /* Ensure the virtual drive is spinning. */
+    floppy_set_motor(1);
+
+    /* Set disk DMA pointer. */
+    chip_emu_write(0x020, (dst >> 16) & 0xFFFFu, 2); /* DSKPTH */
+    chip_emu_write(0x022, dst & 0xFFFFu, 2); /* DSKPTL */
+    chip_emu_write(0x07E, 0x4489, 2); /* DSKSYNC */
+
+    /* Start read of 32 words (one sector) with DMAEN. */
+    chip_emu_write(0x024, 0x8020, 2); /* DSKLEN = 32 words, read, DMAEN */
+
+    /* Wait up to 50 ticks for the DMA to complete. */
+    for (int i = 0; i < 50; i++) {
+        floppy_tick();
+        if ((g_intreq & 0x0002u) != 0) break;
+    }
+
+    if ((g_intreq & 0x0002u) == 0) return 0;
+
+    /* Check that the sector data contains the test signature. */
+    for (int i = 0; i < 16; i++) {
+        if (g_ram[dst + i] != (uint8_t)"UAOS ADF TEST BOOT"[i]) return 0;
+    }
+    return 1;
+}
+
+int floppy_block_device_test(void)
+{
+    BlockDev *dev = BlockDev_Find("floppy0");
+    if (!dev) return 0;
+
+    uint8_t buf[512];
+    if (BlockDev_Read(dev, 1, buf, 1) != 0) return 0;
+
+    for (int i = 0; i < 256; i++) {
+        if (buf[i * 2 + 0] != (uint8_t)i) return 0;
+        if (buf[i * 2 + 1] != (uint8_t)(0xFF - i)) return 0;
+    }
+    return 1;
 }

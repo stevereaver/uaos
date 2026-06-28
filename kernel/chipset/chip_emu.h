@@ -13,6 +13,15 @@
 void     chip_emu_write(uint32_t offset, uint32_t value, int width_bytes);
 uint32_t chip_emu_read (uint32_t offset, int width_bytes);
 
+/* Guest RAM helpers used by the floppy DMA path and other chipset subsystems. */
+uint8_t  chip_read_u8(uint32_t addr);
+void     chip_write_u8(uint32_t addr, uint8_t v);
+uint16_t chip_read_u16(uint32_t addr);
+void     chip_write_u16(uint32_t addr, uint16_t v);
+
+/* Raise INTREQ bits and update the M68k IRQ level. */
+void     chip_emu_raise_intreq(uint16_t bits);
+
 /* Tier 3: execute a copper list and render the resulting display state.
  * chip_emu_copper_jump(list, addr): if addr != 0 it becomes the active
  * copper list for that list, then the copper is executed. */
@@ -23,6 +32,7 @@ void     chip_emu_render_frame(void);
 void     chip_emu_reset(void);
 int      chip_emu_power_led(void);
 void     chip_emu_poll_ps2_keyboard(void);
+void     chip_emu_set_keyboard_route(int to_cia);
 uint64_t chip_emu_m68k_cycles(void);
 int      chip_emu_dma_test(void);
 int      chip_emu_line_test(void);

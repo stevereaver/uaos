@@ -9,6 +9,7 @@
 #include "rom_modules.h"
 #include "task.h"
 #include "chipset/chip_emu.h"
+#include "chipset/floppy.h"
 #include "audio/audio.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -180,6 +181,7 @@ void timer_ProcessTicks(void)
      * Paula audio DMA is advanced internally by the 48 kHz mixer. */
     chip_emu_beam_tick(g_tick_counter);
     chip_emu_cia_tick();
+    floppy_tick();
     audio_tick();
     chip_emu_poll_ps2_keyboard();
 

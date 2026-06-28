@@ -346,6 +346,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/kernel/chipset/chip_emu.c" \
+    "${REPO_ROOT}/kernel/chipset/floppy.c" \
     "${REPO_ROOT}/kernel/audio/audio.c" \
     "${REPO_ROOT}/kernel/audio/pc_speaker.c" \
     "${REPO_ROOT}/kernel/audio/ac97.c" \
@@ -371,6 +372,7 @@ for src in \
     "${REPO_ROOT}/kernel/dos/iso9660.c" \
     "${REPO_ROOT}/kernel/dos/icon_loader.c" \
     "${REPO_ROOT}/kernel/drivers/ide.c" \
+    "${REPO_ROOT}/kernel/drivers/floppy_blk.c" \
     "${REPO_ROOT}/kernel/display/pointer_prefs.c" \
     "${REPO_ROOT}/kernel/shell/native_cmd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_template.c" \
@@ -630,6 +632,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/chip_emu.o" \
+    "${BUILD_DIR}/obj/floppy.o" \
     "${BUILD_DIR}/obj/audio.o" \
     "${BUILD_DIR}/obj/pc_speaker.o" \
     "${BUILD_DIR}/obj/ac97.o" \
@@ -655,6 +658,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/iso9660.o" \
     "${BUILD_DIR}/obj/icon_loader.o" \
     "${BUILD_DIR}/obj/ide.o" \
+    "${BUILD_DIR}/obj/floppy_blk.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
     "${BUILD_DIR}/obj/native_cmd.o" \
     "${BUILD_DIR}/obj/cmd_template.o" \

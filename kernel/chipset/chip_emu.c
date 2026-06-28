@@ -12,6 +12,7 @@
  */
 
 #include "chipset/chip_emu.h"
+#include "chipset/floppy.h"
 #include "display/framebuffer.h"
 #include "uaos_emu.h"
 #include <stdint.h>
@@ -224,7 +225,7 @@ static uint32_t regoff_to_index(uint32_t regoff)
 
 static uint16_t g_dmacon;   /* DMA control */
 static uint16_t g_intena;   /* interrupt enable */
-static uint16_t g_intreq;   /* interrupt request */
+uint16_t g_intreq;          /* interrupt request */
 static uint16_t g_adkcon;   /* audio/disk control */
 
 static uint32_t g_cop1lc;   /* copper list 1 pointer */
@@ -276,6 +277,7 @@ static int g_cia_b_irq;
 static uint8_t g_kbd_sdr_buf[KBD_SDR_SIZE];
 static int g_kbd_sdr_head = 0;
 static int g_kbd_sdr_tail = 0;
+static int g_kbd_route_to_cia = 0; /* route PS/2 keys to CIA-A SDR only when M68k bridge is active */
 
 /* Beam / VBlank state */
 static uint32_t g_frame_counter; /* increments every VBlank */
@@ -477,7 +479,7 @@ uint64_t chip_emu_m68k_cycles(void)
 /* Deliver the highest enabled M68k interrupt level based on INTREQ/INTENA and
  * external CIA sources.  Amiga level mapping: bits 0-4 -> 1, 5-8 -> 2,
  * 9-12 -> 3, 13-14 -> 4.  CIA-B is routed to level 6. */
-static void chip_emu_update_irq(void)
+void chip_emu_update_irq(void)
 {
     int level = 0;
     uint16_t pending = g_intreq & g_intena & 0x7FFFu;
@@ -536,16 +538,22 @@ static void aga_color_write(uint32_t color_index, uint16_t value)
  * ----------------------------------------------------------------------- */
 
 static void blitter_execute(uint16_t size);
-static uint8_t chip_read_u8(uint32_t addr);
-static void chip_write_u8(uint32_t addr, uint8_t v);
-static uint16_t chip_read_u16(uint32_t addr);
-static void chip_write_u16(uint32_t addr, uint16_t v);
+uint8_t chip_read_u8(uint32_t addr);
+void chip_write_u8(uint32_t addr, uint8_t v);
+uint16_t chip_read_u16(uint32_t addr);
+void chip_write_u16(uint32_t addr, uint16_t v);
 
 struct CIA_State;
 static int cia_offset_to_reg(uint32_t offset, int *cia_id);
 static struct CIA_State *cia_state(int id);
 static void cia_write(struct CIA_State *cia, int reg, uint32_t value, int width_bytes);
 static uint32_t cia_read(struct CIA_State *cia, int reg, int width_bytes);
+
+void chip_emu_raise_intreq(uint16_t bits)
+{
+    g_intreq |= bits;
+    chip_emu_update_irq();
+}
 
 void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
 {
@@ -555,9 +563,12 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         return;
     }
 
-    uint32_t regoff = offset_to_regoff(offset);
-    if (regoff >= 0x1000u)
+    uint32_t regoff = offset;
+    if (offset >= AGA_REG_BASE_OFF) {
+        regoff = offset_to_regoff(offset);
+    } else if (offset >= 0x1000u) {
         return; /* outside AGA register area: swallow */
+    }
 
     /* Handle byte and half-word writes to the register backing store first.
      * Special registers below may override the simple mirroring. */
@@ -590,36 +601,17 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_DSKLEN: {
             g_dsklen = (uint16_t)value;
             if (value & 0x8000u) { /* DMAEN */
-                uint32_t words = (uint32_t)(value & 0x3FFFu);
-                uint32_t bytes = words * 2;
-                if (bytes == 0) bytes = 0x8000u; /* 0 length = 32768 words */
                 if (value & 0x4000u) {
-                    /* Write mode: chip RAM -> disk buffer */
-                    for (uint32_t i = 0; i < bytes && i < sizeof(g_dsk_buffer); i++) {
-                        g_dsk_buffer[g_dsk_index] = chip_read_u8(g_dskpt + i);
-                        g_dsk_index = (g_dsk_index + 1) % sizeof(g_dsk_buffer);
-                    }
+                    floppy_dma_write(g_dskpt, (uint16_t)value);
                 } else {
-                    /* Read mode: disk buffer -> chip RAM */
-                    for (uint32_t i = 0; i < bytes && i < sizeof(g_dsk_buffer); i++) {
-                        chip_write_u8(g_dskpt + i, g_dsk_buffer[g_dsk_index]);
-                        g_dsk_index = (g_dsk_index + 1) % sizeof(g_dsk_buffer);
-                    }
+                    floppy_dma_read(g_dskpt, (uint16_t)value, g_dsk_sync);
                 }
-                /* DSKBLK interrupt when done. */
-                g_intreq |= 0x0002u;
-                chip_emu_update_irq();
             }
             break;
         }
         case REG_DSKDAT: {
             g_dskdat = (uint16_t)value;
-            if (g_dsklen & 0x8000u) {
-                /* Single-word write. */
-                g_dsk_buffer[g_dsk_index] = (uint8_t)(value >> 8);
-                g_dsk_buffer[(g_dsk_index + 1) % sizeof(g_dsk_buffer)] = (uint8_t)value;
-                g_dsk_index = (g_dsk_index + 2) % sizeof(g_dsk_buffer);
-            }
+            floppy_dskdat_write((uint16_t)value);
             break;
         }
         case REG_DSKSYNC: g_dsk_sync = (uint16_t)value; break;
@@ -766,9 +758,12 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
         return cia_read(cia_state(cia_id), cia_reg, width_bytes);
     }
 
-    uint32_t regoff = offset_to_regoff(offset);
-    if (regoff >= 0x1000u)
+    uint32_t regoff = offset;
+    if (offset >= AGA_REG_BASE_OFF) {
+        regoff = offset_to_regoff(offset);
+    } else if (offset >= 0x1000u) {
         return 0; /* outside AGA register area: harmless zero */
+    }
 
     uint32_t value = 0;
 
@@ -787,10 +782,7 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
         case REG_DSKPTH: value = (g_dskpt >> 16) & 0xFFFFu; break;
         case REG_DSKDAT: {
             if (g_dsklen & 0x8000u) {
-                /* Single-word read from the synthetic disk buffer. */
-                g_dskdat = (uint16_t)(((uint16_t)g_dsk_buffer[g_dsk_index] << 8) |
-                                      g_dsk_buffer[(g_dsk_index + 1) % sizeof(g_dsk_buffer)]);
-                g_dsk_index = (g_dsk_index + 2) % sizeof(g_dsk_buffer);
+                g_dskdat = floppy_dskdat_read();
             }
             value = g_dskdat;
             break;
@@ -958,25 +950,25 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
  * Tier 4 — Blitter
  * ========================================================================= */
 
-static uint8_t chip_read_u8(uint32_t addr)
+uint8_t chip_read_u8(uint32_t addr)
 {
     if (addr >= GUEST_RAM_SIZE) return 0;
     return g_ram[addr];
 }
 
-static void chip_write_u8(uint32_t addr, uint8_t v)
+void chip_write_u8(uint32_t addr, uint8_t v)
 {
     if (addr >= GUEST_RAM_SIZE) return;
     g_ram[addr] = v;
 }
 
-static uint16_t chip_read_u16(uint32_t addr)
+uint16_t chip_read_u16(uint32_t addr)
 {
     if (addr + 2 > GUEST_RAM_SIZE) return 0;
     return (uint16_t)((g_ram[addr] << 8) | g_ram[addr + 1]);
 }
 
-static void chip_write_u16(uint32_t addr, uint16_t v)
+void chip_write_u16(uint32_t addr, uint16_t v)
 {
     if (addr + 2 > GUEST_RAM_SIZE) return;
     g_ram[addr]     = (uint8_t)(v >> 8);
@@ -1253,6 +1245,7 @@ static int kbd_sdr_pop(void)
  * Called from the PIT tick path. */
 void chip_emu_poll_ps2_keyboard(void)
 {
+    if (!g_kbd_route_to_cia) return;
     while (PS2Kbd_HasChar()) {
         char c = PS2Kbd_GetChar();
         if (c == 0) continue;
@@ -1261,6 +1254,11 @@ void chip_emu_poll_ps2_keyboard(void)
          * for a first pass. */
         kbd_sdr_push((uint8_t)c);
     }
+}
+
+void chip_emu_set_keyboard_route(int to_cia)
+{
+    g_kbd_route_to_cia = to_cia ? 1 : 0;
 }
 
 static int cia_offset_to_reg(uint32_t offset, int *cia_id)
@@ -2067,7 +2065,6 @@ void chip_emu_reset(void)
     g_dsk_sync = 0;
     g_dskpt = 0;
     g_dsk_index = 0;
-    for (size_t i = 0; i < sizeof(g_dsk_buffer); i++) g_dsk_buffer[i] = 0;
 
     g_bplcon0 = 0;
     g_bplcon1 = 0;

@@ -32,6 +32,7 @@ The UAOS kernel is a bare-metal x86_64 kernel that boots via GRUB2 Multiboot2. I
 - [DOS Library](/kernel/dos/index.md): File system operations and handler management.
 - [Display & WM](/kernel/display/index.md): Framebuffer management and windowing system.
 - [Chipset Emulator](/kernel/chipset/index.md): AGA/ECS custom chip register emulation and color palette.
+- [Floppy & Disk DMA](/kernel/chipset/index.md): MFM floppy controller, ADF loading, Paula DSKLEN/DSKDAT, and DF0: block device.
 - [Audio Subsystem](/kernel/audio/index.md): Paula mixer, ring buffer, AC97, and PC speaker fallback.
 - [IRQ & Drivers](/kernel/irq/index.md): Interrupt handling and hardware abstraction.
 - [TCP/IP Network Stack](/kernel/net/index.md): IPv4 networking, DHCP, DNS, NTP, and socket API.

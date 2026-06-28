@@ -211,9 +211,19 @@ A host audio subsystem in `kernel/audio/` provides a 48 kHz stereo mixer and a p
 
 **Serial port** — `SERDAT` writes now transmit the low byte to the host COM1 UART (`0x3F8`).  `SERDATR` reads poll COM1 for received bytes and return the byte with the receive-buffer-full bit set.  `SERPER` is stored but does not affect the baud rate yet.
 
-**Parallel port** — CIA-B `PRB` writes are forwarded to the host LPT1 data port (`0x378`) with a brief strobe pulse on the control port (`0x37A`).
+**Keyboard routing** — The PS/2 keyboard interrupt handler stores translated ASCII characters in the host PS/2 ring buffer (`kernel/irq/ps2kbd.c`).  The 100 Hz PIT tick path drains that buffer into the CIA-A SDR queue only when the M68k emulation bridge is active (`chip_emu_set_keyboard_route(1)`).  When the bridge is unavailable, the routing flag is left at 0 so the native shell/idle task keeps keyboard input instead of losing it to the unused CIA-A SDR queue.
 
-**Disk DMA** — `DSKLEN` now performs a basic DMA burst when its DMA-enable bit (bit 15) is set.  `DSKPT` (registers `0x020`/`0x022`) is the chip-RAM transfer address, `DSKLEN` bits 0–13 give the word count, and bit 14 selects read vs write.  A synthetic 880 KiB ADF buffer is copied to or from chip RAM, and the `DSKBLK` interrupt (`INTREQ` bit 1) is raised on completion.  `DSKSYNC` is stored but not yet used as a sync trigger.  `DSKDAT` single-word reads/writes also advance through the synthetic buffer.  This is enough for software that only needs data to appear after issuing a disk DMA command, but it is not an accurate MFM floppy controller.
+**Disk DMA** — A real MFM floppy controller is implemented in `kernel/chipset/floppy.c`:
+- ADF images are loaded into an 880 KiB buffer (`80 cylinders × 2 heads × 11 sectors × 512 bytes`).
+- Tracks are encoded on demand to raw MFM bitstreams using the Amiga sector format: header sync (`0x4489`), 4 bytes of info + 16 bytes of label + 4 bytes of header CRC, data sync (`0x4489`), 512 bytes of data + 4 bytes of data CRC.  All bytes are MFM-encoded; sync words are inserted raw.
+- `DSKSYNC` sets the sync pattern.  When `DSKLEN` is written with `DMAEN`, the controller waits for the next sync mark, then transfers `DSKLEN` words into chip RAM at `DSKPT` as the virtual disk rotates.
+- Disk rotation is modelled at one track per ~1/11 second.  `floppy_tick()` is called from the 100 Hz PIT path to advance the bit position and continue any active DMA transfer.
+- When the transfer completes, `INTREQ` bit 1 (`DSKBLK`) is raised.
+- `DSKDAT` single-word reads also stream from the current MFM track position.
+- A DOS handler integration wraps the floppy as a block device (`floppy0` / `DF0:`) in `kernel/drivers/floppy_blk.c`, so higher-level filesystem handlers can use it.
+- Boot-time tests `chip_emu_disk_dma_test()` and `floppy_block_device_test()` verify both the Paula DMA path and the DOS block-device path.
+
+**Parallel port** — `POTGO`/`POTGOR` and `SERDAT`/`SERDATR` are the only registers currently wired; full bidirectional parallel-port emulation is not yet implemented.
 
 ### Sprite Collision Detection
 
@@ -336,12 +346,10 @@ The PC speaker stop-gap has been replaced with a real PCM DAC backend and an abs
 - **Accurate DMA slot table** aligned with the real Agnus slot layout (bitplane/Copper/sprite/audio/disk slots at specific horizontal positions, refresh slot timing, and DMA-off cycles).
 - **Blitter line/area-fill remaining edge cases** such as real line-mode texture/B channel usage, exact `BLTAPTL` accumulator loading, and per-pixel DMA slot timing for the actual data transfer.
 - **AGA sprite fine details** such as exact superhires pixel scaling, border sprites, and sprite-to-sprite priority ordering.
-- **Real MFM floppy controller** emulation, `DSKSYNC`-based transfer start, and loading ADF images from disk.
 - **Host parallel port** bidirectional I/O and full Amiga serial port emulation (baud-rate control, break, status bits).
 - **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.
 - **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
 - **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.
-- **Real MFM floppy controller** emulation, `DSKSYNC`-based transfer start, and loading ADF images from disk.
 - **Host parallel port** bidirectional I/O and full Amiga serial port emulation (baud-rate control, break, status bits).
 - **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.
 - **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
