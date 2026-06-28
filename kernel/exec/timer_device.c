@@ -177,13 +177,15 @@ void timer_ProcessTicks(void)
 {
     g_tick_counter++;
 
-    /* Advance chipset beam position and subsystems every PIT tick.
-     * Paula audio DMA is advanced internally by the 48 kHz mixer. */
+    /* Keep PIT only for host audio/video timing.  Beam and subsystems are
+     * advanced from the M68k cycle counter via chip_emu_beam_tick(); audio
+     * DMA is advanced by the scheduler and mixed by the 48 kHz audio path. */
     chip_emu_beam_tick(g_tick_counter);
     chip_emu_cia_tick();
     floppy_tick();
     audio_tick();
     chip_emu_poll_ps2_keyboard();
+    chip_emu_serial_poll();
 
     /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */
     if ((g_tick_counter & 1u) == 0) {

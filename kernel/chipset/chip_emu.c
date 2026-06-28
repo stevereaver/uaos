@@ -22,10 +22,8 @@
 extern void m68k_set_irq(unsigned int int_level);
 extern char PS2Kbd_GetChar(void);
 extern int  PS2Kbd_HasChar(void);
-
-/* Host COM1 (0x3F8) UART backend for Paula serial port. */
-#define COM1_DATA 0x3F8
-#define COM1_LSR  0x3FD
+extern void kprint(const char *s);
+extern void kprinthex(uint64_t v);
 
 static inline void io_outb(uint16_t port, uint8_t val)
 {
@@ -39,6 +37,16 @@ static inline uint8_t io_inb(uint16_t port)
     return v;
 }
 
+/* -----------------------------------------------------------------------
+ * Host COM1 (0x3F8) 16550A UART backend for Paula serial port
+ * ----------------------------------------------------------------------- */
+#define COM1_DATA 0x3F8
+#define COM1_IER  0x3F9
+#define COM1_LCR  0x3FB
+#define COM1_LSR  0x3FD
+
+static int g_com1_present = 0; /* set after probing */
+
 static int com1_can_send(void)
 {
     return (io_inb(COM1_LSR) & 0x20u) != 0; /* THRE */
@@ -49,32 +57,129 @@ static int com1_can_recv(void)
     return (io_inb(COM1_LSR) & 0x01u) != 0; /* DR */
 }
 
-static void com1_send(uint8_t c)
+static void com1_probe(void)
+{
+    uint8_t lsr = io_inb(COM1_LSR);
+    g_com1_present = (lsr != 0xFFu) ? 1 : 0;
+}
+
+static void com1_send_raw(uint8_t c)
 {
     int spins = 1000;
     while (spins-- > 0 && !com1_can_send()) {}
     io_outb(COM1_DATA, c);
 }
 
-static int com1_recv(uint8_t *c)
+static int com1_recv_raw(uint8_t *c)
 {
     if (!com1_can_recv()) return 0;
     *c = io_inb(COM1_DATA);
     return 1;
 }
 
-/* Host LPT1 (0x378) backend for CIA-B parallel port. */
+/* Paula serial port state. */
+typedef struct {
+    uint16_t serper;      /* baud rate / control */
+    uint16_t tx_shift;    /* byte currently transmitting */
+    uint16_t rx_shift;    /* byte received */
+    uint8_t  tx_buf;      /* pending transmit byte */
+    int      tx_pending;  /* tx_buf valid */
+    int      rx_full;     /* rx_shift has a byte */
+    int      break_det;   /* break detected */
+    int      framing;     /* framing error detected */
+    int      overrun;     /* receiver overrun */
+    uint32_t bit_divider; /* host COM1 divisor */
+} PaulaSerial;
+
+static PaulaSerial g_paula_serial;
+
+static void serial_console_passthrough(uint8_t c)
+{
+    char buf[8];
+    const char *prefix = "[SER] 0x";
+    kprint(prefix);
+    static const char hex[] = "0123456789ABCDEF";
+    buf[0] = hex[(c >> 4) & 0xF];
+    buf[1] = hex[c & 0xF];
+    buf[2] = '\n';
+    buf[3] = '\0';
+    kprint(buf);
+}
+
+static void serial_set_baud(uint16_t serper)
+{
+    uint16_t period = serper & 0x7FFFu;
+    if (period == 0) period = 1; /* avoid division by zero */
+    /* Amiga PAL master clock / period = baud rate. */
+    uint32_t baud = 3546895u / period;
+    /* 16550 divisor: 1843200 / baud. */
+    uint16_t divisor = (uint16_t)(1843200u / baud);
+    if (divisor < 1) divisor = 1;
+
+    g_paula_serial.serper = serper;
+    g_paula_serial.bit_divider = divisor;
+
+    if (!g_com1_present) return;
+
+    /* Set DLAB, write divisor, clear DLAB. */
+    io_outb(COM1_LCR, 0x80u); /* DLAB */
+    io_outb(COM1_DATA, (uint8_t)(divisor & 0xFFu));     /* DLL */
+    io_outb(COM1_IER,  (uint8_t)((divisor >> 8) & 0xFFu)); /* DLM */
+    io_outb(COM1_LCR, 0x03u); /* 8N1, clear DLAB */
+}
+
+static void serial_transmit(uint8_t c)
+{
+    if (g_com1_present) {
+        com1_send_raw(c);
+    } else {
+        serial_console_passthrough(c);
+    }
+    g_paula_serial.tx_shift = c;
+    /* The byte has been moved to the shift register (or sent directly to the
+     * host console passthrough), so the transmit buffer is now empty. */
+    g_paula_serial.tx_pending = 0;
+}
+
+/* -----------------------------------------------------------------------
+ * Host LPT1 (0x378) backend for CIA-B parallel port
+ * ----------------------------------------------------------------------- */
 #define LPT1_DATA 0x378
+#define LPT1_STAT 0x379
 #define LPT1_CTRL 0x37A
+
+static int g_lpt1_present = 0;   /* set after probing */
+static uint8_t g_lpt1_loopback = 0; /* stub loopback value */
+
+static void lpt1_probe(void)
+{
+    /* On real hardware, attempt a harmless read of the status port.
+     * In QEMU or without a port this returns 0xFF, so we treat that as absent. */
+    uint8_t s = io_inb(LPT1_STAT);
+    g_lpt1_present = (s != 0xFFu) ? 1 : 0;
+}
 
 static void lpt1_send(uint8_t c)
 {
-    int spins = 1000;
-    io_outb(LPT1_DATA, c);
-    /* Brief strobe pulse. */
-    io_outb(LPT1_CTRL, 0x0Du); /* strobe low, auto LF, IRQ disabled */
-    while (spins-- > 0) {}
-    io_outb(LPT1_CTRL, 0x0Cu); /* strobe high */
+    if (g_lpt1_present) {
+        int spins = 1000;
+        io_outb(LPT1_DATA, c);
+        io_outb(LPT1_CTRL, 0x0Du); /* strobe low */
+        while (spins-- > 0) {}
+        io_outb(LPT1_CTRL, 0x0Cu); /* strobe high */
+    }
+    g_lpt1_loopback = c;
+}
+
+static int lpt1_recv(uint8_t *c)
+{
+    if (g_lpt1_present) {
+        /* Many PC parallel ports are output-only; read data port anyway. */
+        *c = io_inb(LPT1_DATA);
+        return 1;
+    }
+    *c = g_lpt1_loopback;
+    return 1;
 }
 
 /* -----------------------------------------------------------------------
@@ -331,14 +436,27 @@ static void beam_position_from_cycles(uint64_t cycles, int *vpos, int *hpos)
 }
 
 /* =========================================================================
- * Cycle-accurate DMA slot arbitration (first pass)
+ * DMA slot table — position-specific Agnus layout
  *
- * PAL has ~226 DMA slots per line; NTSC has fewer.  The table below is a
- * simplified model: one slot per word transfer.  Channels are allocated in
- * priority order (refresh > bitplane > copper > sprite > audio > disk >
- * blitter > CPU).  When a channel cannot get enough slots it stalls.
+ * PAL: 312 lines per frame, 227 DMA slots per line.
+ * NTSC: 262 lines per frame, 227 slots per line for now.
+ * One DMA slot = 4 color clocks = one chip RAM word transfer.
+ *
+ * Fixed per-line slots (position-specific):
+ *   slots 0-3:   memory refresh (4 slots)
+ *   slots 4-6:   disk DMA (3 slots)
+ *   slots 7-10:  audio DMA (4 slots, one per channel)
+ *   slots 11-26: sprite DMA (16 slots, 2 per sprite for 8 sprites)
+ *
+ * Bitplane DMA starts at max(DDFSTRT/4, 24) and continues until DDFSTOP/4.
+ * DDFSTRT/DDFSTOP are in color clocks; divide by 4 to get slot numbers.
+ *
+ * DMA priority: bitplane/sprite/disk/refresh (in their own regions) >
+ * Copper > Blitter > CPU.  Copper uses only odd-numbered free slots.
+ * Blitter yields every fourth free slot to the CPU when DMACON BLTPRI is clear.
+ * CPU uses the remaining free slots.
  * ========================================================================= */
-#define DMA_SLOTS_PER_LINE_PAL 226
+#define DMA_SLOTS_PER_LINE_PAL 227
 #define DMA_SLOTS_PER_LINE_NTSC 227
 #define DMA_REFRESH_SLOTS_PER_LINE 4
 
@@ -357,20 +475,24 @@ typedef enum {
 static uint8_t  g_dma_slots[DMA_SLOTS_PER_LINE_PAL]; /* channel id or DMA_CHAN_COUNT for free */
 static int      g_dma_slots_per_line;
 static uint64_t g_cpu_stolen_cycles; /* cumulative CPU cycles stolen by DMA */
+static uint64_t g_last_scheduled_cycle; /* last cycle the scheduler ran to */
 
 static void dma_slot_reset(void)
 {
     g_dma_slots_per_line = (g_chip_mode == CHIP_MODE_NTSC) ? DMA_SLOTS_PER_LINE_NTSC : DMA_SLOTS_PER_LINE_PAL;
     for (int i = 0; i < DMA_SLOTS_PER_LINE_PAL; i++) g_dma_slots[i] = DMA_CHAN_COUNT;
 
-    /* Refresh always gets its fixed slots, spread across the line. */
-    int refresh = DMA_REFRESH_SLOTS_PER_LINE;
-    for (int i = 0; i < g_dma_slots_per_line && refresh > 0; i += g_dma_slots_per_line / refresh) {
-        if (g_dma_slots[i] == DMA_CHAN_COUNT) {
-            g_dma_slots[i] = DMA_CHAN_REFRESH;
-            refresh--;
-        }
-    }
+    /* Memory refresh: slots 0-3 (fixed). */
+    for (int i = 0; i < 4 && i < g_dma_slots_per_line; i++) g_dma_slots[i] = DMA_CHAN_REFRESH;
+
+    /* Disk DMA: slots 4-6 (fixed). */
+    for (int i = 4; i <= 6 && i < g_dma_slots_per_line; i++) g_dma_slots[i] = DMA_CHAN_DISK;
+
+    /* Audio DMA: slots 7-10 (fixed, one per channel). */
+    for (int i = 7; i <= 10 && i < g_dma_slots_per_line; i++) g_dma_slots[i] = DMA_CHAN_AUDIO;
+
+    /* Sprite DMA: slots 11-26 (fixed, 2 slots per sprite). */
+    for (int i = 11; i <= 26 && i < g_dma_slots_per_line; i++) g_dma_slots[i] = DMA_CHAN_SPRITE;
 }
 
 /* Allocate `count` consecutive free slots for `channel`, starting search from
@@ -406,6 +528,95 @@ static int dma_slot_count(DMA_Channel channel)
         if (g_dma_slots[i] == (uint8_t)channel) n++;
     }
     return n;
+}
+
+/* Forward declarations for helpers defined below the display-variable block. */
+static int bpl_hires(void);
+static uint16_t g_ddfstart;
+static uint16_t g_ddfstop;
+
+/* Release all fixed slots owned by `channel` if its DMACON enable bit is clear. */
+static void dma_slot_release_if_disabled(DMA_Channel channel, uint16_t dmacon_bit)
+{
+    if (!(g_dmacon & dmacon_bit)) {
+        for (int i = 0; i < g_dma_slots_per_line; i++) {
+            if (g_dma_slots[i] == (uint8_t)channel) g_dma_slots[i] = DMA_CHAN_COUNT;
+        }
+    }
+}
+
+/* Allocate bitplane slots according to DDFSTRT/DDFSTOP and the low/hi-res fetch
+ * pattern.  Only marks free slots; fixed slots are never overwritten. */
+static void dma_slot_alloc_bitplanes(void)
+{
+    if (!(g_dmacon & 0x0100u)) return; /* BPLEN */
+
+    int bpu = (int)((g_bplcon0 >> 12) & 0x0Fu);
+    if (bpu <= 0) return;
+    if (bpu > 6) bpu = 6;
+
+    int hires = bpl_hires();
+    int start_slot = (int)(g_ddfstart / 4u);
+    if (start_slot < 24) start_slot = 24; /* Agnus hardware limit */
+    int stop_slot = (int)(g_ddfstop / 4u);
+    if (stop_slot > g_dma_slots_per_line) stop_slot = g_dma_slots_per_line;
+    if (stop_slot <= start_slot) return;
+
+    int pattern_len = hires ? 4 : 8;
+    int plane_map[8];
+    if (hires) {
+        plane_map[0] = 3; plane_map[1] = 1; plane_map[2] = 2; plane_map[3] = 0;
+    } else {
+        plane_map[0] = -1; plane_map[1] = 3; plane_map[2] = 5; plane_map[3] = 1;
+        plane_map[4] = -1; plane_map[5] = 2; plane_map[6] = 4; plane_map[7] = 0;
+    }
+
+    for (int slot = start_slot; slot < stop_slot; slot++) {
+        int idx = (slot - start_slot) % pattern_len;
+        int plane = plane_map[idx];
+        if (plane < 0) continue;
+        if (plane >= bpu) continue;
+        if (g_dma_slots[slot] == DMA_CHAN_COUNT) {
+            g_dma_slots[slot] = DMA_CHAN_BITPLANE;
+        }
+    }
+}
+
+/* Allocate up to `max_slots` odd-numbered free slots to the Copper. */
+static void dma_slot_alloc_copper(int max_slots)
+{
+    if (!(g_dmacon & 0x0080u)) return; /* COPEN */
+    int allocated = 0;
+    for (int i = 0; i < g_dma_slots_per_line; i++) {
+        if (g_dma_slots[i] != DMA_CHAN_COUNT) continue;
+        if ((i & 1) == 0) continue; /* Copper uses odd slots only */
+        g_dma_slots[i] = DMA_CHAN_COPPER;
+        if (++allocated >= max_slots) break;
+    }
+}
+
+/* Allocate remaining free slots to the Blitter.  When DMACON BLTPRI is clear,
+ * every fourth free slot is yielded to the CPU (left as DMA_CHAN_COUNT). */
+static void dma_slot_alloc_blitter(void)
+{
+    if (!g_blitter_busy) return;
+    int yield = 0;
+    for (int i = 0; i < g_dma_slots_per_line && g_blitter_words_remaining > 0; i++) {
+        if (g_dma_slots[i] != DMA_CHAN_COUNT) continue;
+        if (!(g_dmacon & 0x0400u)) { /* BLTPRI clear */
+            if ((yield % 4) == 3) { /* every 4th free slot goes to CPU */
+                yield++;
+                continue;
+            }
+        }
+        g_dma_slots[i] = DMA_CHAN_BLITTER;
+        g_blitter_words_remaining--;
+        yield++;
+    }
+    if (g_blitter_words_remaining <= 0) {
+        g_blitter_busy = 0;
+        g_blitter_words_remaining = 0;
+    }
 }
 
 static uint16_t g_diwstart; /* display window start */
@@ -542,6 +753,8 @@ uint8_t chip_read_u8(uint32_t addr);
 void chip_write_u8(uint32_t addr, uint8_t v);
 uint16_t chip_read_u16(uint32_t addr);
 void chip_write_u16(uint32_t addr, uint16_t v);
+static int bpl_hires(void);
+static int copper_run_to_beam(int copper_slots);
 
 struct CIA_State;
 static int cia_offset_to_reg(uint32_t offset, int *cia_id);
@@ -553,6 +766,24 @@ void chip_emu_raise_intreq(uint16_t bits)
 {
     g_intreq |= bits;
     chip_emu_update_irq();
+}
+
+/* Poll the host COM1 UART for received bytes.  Called every PIT tick. */
+void chip_emu_serial_poll(void)
+{
+    uint8_t lsr;
+    if (g_com1_present) {
+        lsr = io_inb(COM1_LSR);
+        if (lsr & 0x01u) {
+            uint8_t c = io_inb(COM1_DATA);
+            g_paula_serial.rx_shift = c;
+            g_paula_serial.rx_full = 1;
+            chip_emu_raise_intreq(0x0800u); /* Paula serial receive interrupt */
+        }
+        if (lsr & 0x10u) g_paula_serial.break_det = 1; /* break */
+        if (lsr & 0x08u) g_paula_serial.framing = 1;   /* framing error */
+        if (lsr & 0x02u) g_paula_serial.overrun = 1;   /* receiver overrun */
+    }
 }
 
 void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
@@ -592,10 +823,16 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_CLXCON: g_clxcon = (uint16_t)value; break;
         case REG_SERDAT: {
             g_serdat = (uint16_t)value;
-            com1_send((uint8_t)(value & 0xFFu)); /* transmit to host COM1 */
+            g_paula_serial.tx_buf = (uint8_t)(value & 0xFFu);
+            g_paula_serial.tx_pending = 1;
+            serial_transmit(g_paula_serial.tx_buf);
             break;
         }
-        case REG_SERPER: g_serper = (uint16_t)value; break;
+        case REG_SERPER: {
+            g_serper = (uint16_t)value;
+            serial_set_baud(g_serper);
+            break;
+        }
         case REG_DSKPTL: g_dskpt = (g_dskpt & 0xFFFF0000u) | (value & 0xFFFFu); break;
         case REG_DSKPTH: g_dskpt = (g_dskpt & 0x0000FFFFu) | ((uint32_t)value << 16); break;
         case REG_DSKLEN: {
@@ -770,12 +1007,27 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
     /* Special register read behavior. */
     switch (regoff) {
         case REG_SERDATR: {
-            uint8_t c = 0;
-            int rd = com1_recv(&c);
-            /* SERDATR layout: bits 0-7 = received data, bit 8 = overrun,
-             * bit 9 = register full, bit 11 = break, bit 12 = transmit buff empty,
-             * bit 13 = transmit shift reg empty, bit 14 = receive irq, bit 15 = STP. */
-            value = rd ? ((uint32_t)c | 0x0100u) : 0x0000u;
+            /* SERDATR status layout:
+             *   bit  8: RBF   (receive buffer full)
+             *   bit  9: overrun (receiver overrun)
+             *   bit 10: framing (framing error)
+             *   bit 11: break (break detected)
+             *   bit 12: TBE   (transmit buffer empty)
+             *   bit 13: TSRE  (transmit shift register empty)
+             * Lower 8 bits hold the received byte when RBF is set.
+             * Sticky error flags are cleared after they are reported. */
+            uint16_t status = 0;
+            if (g_paula_serial.rx_full) {
+                status |= (g_paula_serial.rx_shift & 0xFFu);     /* data */
+                status |= 0x0100u;                               /* RBF - register buffer full */
+                g_paula_serial.rx_full = 0;
+            }
+            if (g_paula_serial.break_det) { status |= 0x0800u; g_paula_serial.break_det = 0; }
+            if (g_paula_serial.framing)   { status |= 0x0400u; g_paula_serial.framing = 0; }
+            if (g_paula_serial.overrun)   { status |= 0x0200u; g_paula_serial.overrun = 0; }
+            if (!g_paula_serial.tx_pending) status |= 0x1000u;    /* TBE - transmit buffer empty */
+            status |= 0x2000u;                                     /* TSRE - transmit shift empty */
+            value = (uint32_t)status;
             break;
         }
         case REG_DSKPTL: value = g_dskpt & 0xFFFFu; break;
@@ -1139,6 +1391,81 @@ static void update_color_clock_params(void)
     g_cycles_per_frame = g_cycles_per_line * (uint32_t)lines;
 }
 
+/* Run the chipset scheduler up to the target M68k cycle count, processing
+ * Copper, Blitter, and audio DMA events as cycles elapse. */
+void chip_emu_run_to_cycle(uint64_t target_cycles)
+{
+    if (target_cycles <= g_last_scheduled_cycle) return;
+
+    int start_v, start_h;
+    beam_position_from_cycles(g_last_scheduled_cycle - g_cycles_at_frame_start, &start_v, &start_h);
+    int end_v, end_h;
+    beam_position_from_cycles(target_cycles - g_cycles_at_frame_start, &end_v, &end_h);
+
+    /* Process each scanline between the last scheduled beam and the target. */
+    for (int y = start_v; y <= end_v && y < (int)PAL_LINES_PER_FRAME; y++) {
+        dma_slot_reset();
+        dma_slot_release_if_disabled(DMA_CHAN_DISK,   0x0010u); /* DSKEN */
+        dma_slot_release_if_disabled(DMA_CHAN_AUDIO,  0x0200u); /* AUDEN */
+        dma_slot_release_if_disabled(DMA_CHAN_SPRITE, 0x0020u); /* SPREN */
+        dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u); /* BPLEN */
+        dma_slot_release_if_disabled(DMA_CHAN_COPPER, 0x0080u); /* COPEN */
+        dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0008u); /* BLTEN */
+
+        dma_slot_alloc_bitplanes();
+        dma_slot_alloc_copper(32);
+        int copper_slots = dma_slot_count(DMA_CHAN_COPPER);
+        dma_slot_alloc_blitter();
+
+        /* Audio DMA: schedule sample fetches based on audio periods. */
+        if (g_dmacon & 0x0200u) {
+            chip_emu_audio_advance(g_cycles_per_line);
+        }
+
+        /* Mark remaining slots as CPU slots and count stolen cycles. */
+        int cpu_slots = 0;
+        for (int i = 0; i < g_dma_slots_per_line; i++) {
+            if (g_dma_slots[i] == DMA_CHAN_COUNT) {
+                g_dma_slots[i] = DMA_CHAN_CPU;
+                cpu_slots++;
+            }
+        }
+        g_cpu_stolen_cycles += (uint64_t)(g_dma_slots_per_line - cpu_slots) * 4; /* each slot ≈ 4 CPU cycles */
+
+        g_vposr = (uint16_t)y;
+        g_vhposr = 0;
+        copper_run_to_beam(copper_slots);
+    }
+
+    /* Update beam position to the target. */
+    int v, h;
+    beam_position_from_cycles(target_cycles - g_cycles_at_frame_start, &v, &h);
+    g_vposr = (uint16_t)(v & 0xFFu);
+    g_vhposr = (uint16_t)(h & 0xFFu);
+
+    g_last_scheduled_cycle = target_cycles;
+}
+
+/* Return the cumulative CPU cycles stolen by DMA. */
+uint64_t chip_emu_stolen_cycles(void)
+{
+    return g_cpu_stolen_cycles;
+}
+
+/* CPU wait-state hook for chip RAM accesses.  Keeps the scheduler in sync with
+ * the M68k cycle counter and approximates one wait state when DMA is active. */
+void chip_emu_cpu_chipram_access(uint32_t addr, int is_write)
+{
+    (void)addr; (void)is_write;
+    extern uint64_t g_m68k_cycles;
+    chip_emu_run_to_cycle(g_m68k_cycles);
+    /* Approximate one wait state per access if any DMA channel is active. */
+    if (g_dmacon & 0x02FFu) {
+        g_m68k_cycles += 2;
+        g_cpu_stolen_cycles += 2;
+    }
+}
+
 void chip_emu_vblank(void)
 {
     g_vblank_count++;
@@ -1152,7 +1479,9 @@ void chip_emu_vblank(void)
     /* Recompute color-clock parameters after field change. */
     update_color_clock_params();
     /* Align frame start to the color-clock boundary. */
-    g_cycles_at_frame_start = chip_emu_m68k_cycles();
+    uint64_t frame_cycle = chip_emu_m68k_cycles();
+    g_cycles_at_frame_start = frame_cycle;
+    g_last_scheduled_cycle = frame_cycle;
     /* Set VBlank interrupt request (INTREQ bit 5). */
     g_intreq |= 0x0020u;
     /* At VBlank, beam is at the top of the display. */
@@ -1162,15 +1491,12 @@ void chip_emu_vblank(void)
 }
 
 /* Update beam position from the PIT tick path.  Called every PIT tick.
- * With color-clock timing, the beam is derived on demand from the M68k
- * cycle counter; this function just keeps the legacy variables in sync. */
+ * With color-clock timing, the beam is advanced from the M68k cycle counter;
+ * the PIT only keeps host audio/video timing. */
 void chip_emu_beam_tick(uint32_t tick_counter)
 {
     (void)tick_counter;
-    int v, h;
-    beam_position_from_cycles(beam_cycles_now(), &v, &h);
-    g_vposr = (uint16_t)(v & 0xFFu);
-    g_vhposr = (uint16_t)(h & 0xFFu);
+    chip_emu_run_to_cycle(chip_emu_m68k_cycles());
 }
 
 uint32_t chip_emu_vblank_count(void)
@@ -1295,7 +1621,12 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
     (void)width_bytes;
     switch (reg) {
         case CIA_REG_PRA:  return cia->pra;
-        case CIA_REG_PRB:  return cia->prb;
+        case CIA_REG_PRB: {
+            uint8_t c = 0;
+            lpt1_recv(&c);
+            /* Output bits return the last written value; input bits read the host. */
+            return (cia->prb & cia->ddrb) | (c & ~cia->ddrb);
+        }
         case CIA_REG_DDRA: return cia->ddra;
         case CIA_REG_DDRB: return cia->ddrb;
         case CIA_REG_TALO: return cia_read_timer(&cia->ta) & 0xFFu;
@@ -1335,11 +1666,25 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         case CIA_REG_PRA:  cia->pra  = v; break;
         case CIA_REG_PRB: {
             cia->prb = v;
-            if (cia == &g_cia_b) lpt1_send(v); /* parallel port data */
+            if (cia == &g_cia_b) {
+                /* Only drive the bits that are configured as outputs. */
+                uint8_t out = v & cia->ddrb;
+                lpt1_send(out);
+            }
             break;
         }
         case CIA_REG_DDRA: cia->ddra = v; break;
-        case CIA_REG_DDRB: cia->ddrb = v; break;
+        case CIA_REG_DDRB: {
+            uint8_t changed = cia->ddrb ^ v;
+            cia->ddrb = v;
+            if (cia == &g_cia_b && (changed & ~v) != 0) {
+                /* Bits changed to input: re-read the host port. */
+                uint8_t c = 0;
+                lpt1_recv(&c);
+                (void)c;
+            }
+            break;
+        }
         case CIA_REG_TALO: cia_write_timer_lo(&cia->ta, v); break;
         case CIA_REG_TAHI: cia_write_timer_hi(&cia->ta, v); break;
         case CIA_REG_TBLO: cia_write_timer_lo(&cia->tb, v); break;
@@ -1985,41 +2330,17 @@ void chip_emu_render_frame(void)
 
         /* Build the DMA slot table for this scanline. */
         dma_slot_reset();
-        int copper_slots = 32; /* default copper budget per line */
-        if (g_dmacon & 0x0100u) {
-            int bpl_words = (bytes_per_row + 1) / 2;
-            if (bpl_words < 1) bpl_words = 1;
-            dma_slot_alloc(DMA_CHAN_BITPLANE, 0, bpl_words);
-        }
-        if (g_dmacon & 0x0020u) {
-            int spr_words = 0;
-            for (int s = 0; s < SPRITE_COUNT; s++) {
-                int vs = (g_spr_pos[s] >> 8) & 0xFF;
-                int ve = (g_spr_ctl[s] >> 8) & 0xFF;
-                if (ve < vs) ve += 0x100;
-                if (beam_y >= vs && beam_y < ve) spr_words += 2;
-            }
-            if (spr_words > 0) dma_slot_alloc(DMA_CHAN_SPRITE, 0, spr_words);
-        }
-        /* Any slots left after refresh are given to the copper. */
-        int free_slots = dma_slot_count(DMA_CHAN_COUNT);
-        if (free_slots < copper_slots) copper_slots = free_slots;
-        if (copper_slots > 0) dma_slot_alloc(DMA_CHAN_COPPER, 0, copper_slots);
+        dma_slot_release_if_disabled(DMA_CHAN_DISK,   0x0010u); /* DSKEN */
+        dma_slot_release_if_disabled(DMA_CHAN_AUDIO,  0x0200u); /* AUDEN */
+        dma_slot_release_if_disabled(DMA_CHAN_SPRITE, 0x0020u); /* SPREN */
+        dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u); /* BPLEN */
+        dma_slot_release_if_disabled(DMA_CHAN_COPPER, 0x0080u); /* COPEN */
+        dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0008u); /* BLTEN */
 
-        /* Blitter slot consumption: if the blitter is still busy, give it any
-         * remaining slots and decrement the outstanding word count. */
-        if (g_blitter_busy && g_blitter_words_remaining > 0) {
-            int blit_slots = dma_slot_count(DMA_CHAN_COUNT);
-            if (blit_slots > g_blitter_words_remaining) blit_slots = g_blitter_words_remaining;
-            if (blit_slots > 0) {
-                dma_slot_alloc(DMA_CHAN_BLITTER, 0, blit_slots);
-                g_blitter_words_remaining -= blit_slots;
-            }
-            if (g_blitter_words_remaining <= 0) {
-                g_blitter_busy = 0;
-                g_blitter_words_remaining = 0;
-            }
-        }
+        dma_slot_alloc_bitplanes();
+        dma_slot_alloc_copper(32);
+        int copper_slots = dma_slot_count(DMA_CHAN_COPPER);
+        dma_slot_alloc_blitter();
 
         /* Mark remaining slots as CPU slots and count stolen cycles. */
         int cpu_slots = 0;
@@ -2060,6 +2381,8 @@ void chip_emu_reset(void)
     g_cia_b_irq = 0;
     g_serdat = 0;
     g_serper = 0;
+    memset(&g_paula_serial, 0, sizeof(g_paula_serial));
+    g_lpt1_loopback = 0;
     g_dsklen = 0;
     g_dskdat = 0;
     g_dsk_sync = 0;
@@ -2150,6 +2473,10 @@ void chip_emu_reset(void)
     g_cycles_per_frame = g_cycles_per_line * PAL_LINES_PER_FRAME;
     g_cycles_at_vblank = 0;
     g_cycles_at_frame_start = 0;
+    g_last_scheduled_cycle = 0;
+
+    com1_probe();
+    lpt1_probe();
 }
 
 /* Return the current power-LED state (1 = on, 0 = off).
@@ -2160,37 +2487,59 @@ int chip_emu_power_led(void)
 }
 
 /* Test helper for the DMA slot allocator: build a copper list with more MOVE
- * instructions than the per-line slot budget allows, run one frame, and
- * return 1 if the copper stalled before reaching the end-of-list WAIT.
+ * instructions than one line can service, run exactly one scanline, and
+ * return 1 if the copper stalls before reaching the end-of-list WAIT.
  * This uses a scratch area at guest RAM offset 0x10000. */
 int chip_emu_dma_test(void)
 {
     uint32_t list_addr = 0x10000u;
     if (list_addr + 512 > GUEST_RAM_SIZE) return 0;
 
-    for (int i = 0; i < 120; i++) {
+    /* Build a copper list with 50 MOVE instructions. Each MOVE needs 2 slots,
+     * so 50 MOVEs need 100 slots — more than one line can provide. */
+    for (int i = 0; i < 50; i++) {
         g_ram[list_addr + i * 4 + 0] = 0x01;
         g_ram[list_addr + i * 4 + 1] = 0x80; /* COLOR00 register */
         g_ram[list_addr + i * 4 + 2] = (uint8_t)(i & 0xFF);
         g_ram[list_addr + i * 4 + 3] = 0;
     }
     /* End-of-list impossible WAIT. */
-    g_ram[list_addr + 120 * 4 + 0] = 0xFF;
-    g_ram[list_addr + 120 * 4 + 1] = 0xFE;
-    g_ram[list_addr + 120 * 4 + 2] = 0xFF;
-    g_ram[list_addr + 120 * 4 + 3] = 0xFE;
+    g_ram[list_addr + 50 * 4 + 0] = 0xFF;
+    g_ram[list_addr + 50 * 4 + 1] = 0xFE;
+    g_ram[list_addr + 50 * 4 + 2] = 0xFF;
+    g_ram[list_addr + 50 * 4 + 3] = 0xFE;
 
+    /* Set up a classic PAL display so the bitplane fetch occupies the
+     * expected Agnus slots and the copper gets only the remaining odd slots. */
+    g_chip_mode = CHIP_MODE_PAL;
+    g_ddfstart = 0x0038u;
+    g_ddfstop  = 0x00D0u;
+    g_bplcon0  = (4u << 12); /* 4 bitplanes, low-res, no other bits */
+    g_diwstart = 0x2C81u;
+    g_diwstop  = 0xF4C1u;
+    g_dmacon   = 0x03FFu;   /* all DMA on */
+    update_color_clock_params();
+
+    /* Reset scheduler state to the top of the frame. */
+    g_last_scheduled_cycle = 0;
+    g_cycles_at_frame_start = 0;
+    g_cycles_at_vblank = 0;
+    g_vposr = 0;
+    g_vhposr = 0;
+
+    /* Point the copper at the start of the list. */
     g_cop1lc = list_addr;
     g_copper_pc = list_addr;
-    g_dmacon |= 0x0080u; /* enable copper DMA */
 
-    uint32_t pc_before = g_copper_pc;
-    chip_emu_render_frame();
+    /* Run exactly one scanline. */
+    chip_emu_run_to_cycle(g_cycles_per_line);
+
+    uint32_t pc_before = list_addr;
     uint32_t pc_after = g_copper_pc;
+    uint32_t pc_end = list_addr + 50 * 4;
 
-    /* The copper should have advanced, but it must not have reached the end
-     * of the 121-instruction list in a single 32-slot line. */
-    return (pc_after > pc_before) && (pc_after < list_addr + 120 * 4);
+    /* The copper should have advanced, but 50 MOVEs cannot fit in one line. */
+    return (pc_after > pc_before) && (pc_after < pc_end);
 }
 
 /* Test helper for Blitter line mode: draw a diagonal line from (10,10) to
@@ -2352,4 +2701,106 @@ int chip_emu_sprite_test(void)
 
     /* The fetched DATA word should be all set. */
     return (g_spr_data[0][0] == 0xFFFFu && g_spr_datb[0][0] == 0x0000u);
+}
+
+/* Test helper for the CIA-B parallel port: drive all bits out, write a known
+ * pattern to PRB, and read it back.  Returns 1 on success. */
+int chip_emu_parallel_test(void)
+{
+    /* Write to CIA-B DDRB to make all bits output, then write PRB and read back. */
+    chip_emu_write(0xBFD003, 0xFF, 1); /* DDRB all output */
+    chip_emu_write(0xBFD001, 0xA5, 1); /* PRB */
+    uint32_t v = chip_emu_read(0xBFD001, 1);
+    return (v & 0xFFu) == 0xA5;
+}
+
+/* Test helper for the Paula serial port: set a reasonable baud rate, send a
+ * byte, and verify that the UART reports it transmitted (TBE/TSRE).  This test
+ * does not require an external loopback.  Returns 1 on success. */
+int chip_emu_serial_test(void)
+{
+    /* chip_emu_write/read take offsets relative to the chip window base
+     * (0xB00000); 0x2FF000 maps to the Amiga custom register base 0xDFF000. */
+    const uint32_t serdatr_off = 0x2FF000u + REG_SERDATR;
+    const uint32_t serdat_off  = 0x2FF000u + REG_SERDAT;
+    const uint32_t serper_off  = 0x2FF000u + REG_SERPER;
+
+    /* Set a reasonable baud rate and send a byte. */
+    chip_emu_write(serper_off, 0x0171, 2); /* SERPER ≈ 9600 baud */
+    chip_emu_write(serdat_off, 0x55, 2);    /* SERDAT = 0x55 */
+
+    /* Poll for a moment and then read status. */
+    for (int i = 0; i < 100; i++)
+        chip_emu_serial_poll();
+
+    uint32_t r = chip_emu_read(serdatr_off, 2); /* SERDATR */
+    /* Transmit buffer empty and transmit shift register empty mean the
+     * byte was accepted by the UART (or console passthrough). */
+    return (r & 0x3000u) == 0x3000u;
+}
+
+/* Test helper for the CPU/chipset timing lock: simulate M68k cycle advancement
+ * and verify that the scheduler advances the beam by at least the requested
+ * number of scanlines.  Returns 1 on success. */
+int chip_emu_timing_lock_test(void)
+{
+    extern uint64_t g_m68k_cycles;
+    uint64_t base = chip_emu_m68k_cycles();
+    uint64_t target = base + g_cycles_per_line * 10; /* advance 10 scanlines */
+    g_m68k_cycles = target;
+    chip_emu_run_to_cycle(target);
+    int v = (int)(g_vposr & 0xFFu);
+    return v >= 10; /* beam should have advanced at least 10 lines */
+}
+
+/* Test helper for the position-specific Agnus DMA slot table: verify the fixed
+ * refresh/disk/audio/sprite positions, bitplane start at/after slot 24, and the
+ * DMA-off cycle behavior.  Returns 1 on success. */
+int chip_emu_agnus_slot_test(void)
+{
+    /* Reset to PAL defaults and set DMACON to enable all DMA. */
+    g_chip_mode = CHIP_MODE_PAL;
+    g_dmacon = 0x03FFu; /* all DMA on */
+    g_ddfstart = 0x0038u; /* classic DDFSTRT */
+    g_ddfstop  = 0x00D0u; /* classic DDFSTOP */
+    g_bplcon0 = (4u << 12); /* 4 bitplanes, low-res */
+    g_blitter_busy = 0;
+    dma_slot_reset();
+    dma_slot_alloc_bitplanes();
+    dma_slot_alloc_copper(32);
+    dma_slot_alloc_blitter();
+
+    int errors = 0;
+
+    /* Refresh slots 0-3. */
+    for (int i = 0; i < 4; i++) if (g_dma_slots[i] != DMA_CHAN_REFRESH) errors++;
+
+    /* Disk slots 4-6. */
+    for (int i = 4; i <= 6; i++) if (g_dma_slots[i] != DMA_CHAN_DISK) errors++;
+
+    /* Audio slots 7-10. */
+    for (int i = 7; i <= 10; i++) if (g_dma_slots[i] != DMA_CHAN_AUDIO) errors++;
+
+    /* Sprite slots 11-26. */
+    for (int i = 11; i <= 26; i++) if (g_dma_slots[i] != DMA_CHAN_SPRITE) errors++;
+
+    /* Bitplane fetch starts no earlier than slot 24. */
+    int first_bpl = -1;
+    for (int i = 0; i < g_dma_slots_per_line; i++) {
+        if (g_dma_slots[i] == DMA_CHAN_BITPLANE) { first_bpl = i; break; }
+    }
+    if (first_bpl < 24) errors++;
+
+    /* DMA-off test: disable bitplane DMA, bitplane slots should be free. */
+    g_dmacon &= ~0x0100u;
+    dma_slot_reset();
+    dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u);
+    dma_slot_alloc_bitplanes(); /* should allocate nothing */
+    dma_slot_alloc_copper(32);
+    dma_slot_alloc_blitter();
+    for (int i = 24; i < g_dma_slots_per_line; i++) {
+        if (g_dma_slots[i] == DMA_CHAN_BITPLANE) errors++;
+    }
+
+    return errors == 0;
 }

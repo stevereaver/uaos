@@ -20,10 +20,13 @@
 #include "exec/amiga_task.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "chipset/chip_emu.h"
 #include "irq/rtc.h"
 #include "net/ntp.h"
 
 extern volatile uint64_t g_pit_ticks;
+extern uint64_t g_m68k_cycles;
+extern unsigned int m68k_cycles_run(void);
 
 /* =========================================================================
  * Console output helpers
@@ -1857,6 +1860,8 @@ static void dos_RunCommand(M68kCPUState *cpu)
     /* Execute until Exit() is called (or until something else terminates) */
     while (!g_emu_halted) {
         m68k_execute(10000);
+        g_m68k_cycles += (uint64_t)m68k_cycles_run();
+        chip_emu_run_to_cycle(g_m68k_cycles);
     }
 
     /* Retrieve the return code that Exit() was called with.

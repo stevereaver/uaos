@@ -15,6 +15,7 @@ extern unsigned int m68k_context_size(void);
 extern unsigned int m68k_get_context(void *dst);
 extern void m68k_set_context(void *src);
 extern int m68k_execute(int num_cycles);
+extern unsigned int m68k_cycles_run(void);
 extern void m68k_end_timeslice(void);
 extern void m68k_init(void);
 extern void m68k_set_cpu_type(int type);
@@ -25,9 +26,11 @@ extern void m68k_set_reg(int reg, unsigned int val);
 
 /* From uaos_m68k_glue.c — guest RAM and binary loader */
 #include "../../emulation/uaos_emu.h"
+#include "chipset/chip_emu.h"
 extern uint8_t *g_ram;
 extern int g_emu_halted;
 extern uint32_t g_uaos_heap_ptr;
+extern uint64_t g_m68k_cycles;
 extern uint32_t heap_alloc(uint32_t size);
 
 /* Forward declarations from uaos_m68k_glue.c */
@@ -236,6 +239,8 @@ static void m68k_wrapper_entry(void *arg)
     while (!task->m68k_halted) {
         /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles */
         m68k_execute(10000);
+        g_m68k_cycles += (uint64_t)m68k_cycles_run();
+        chip_emu_run_to_cycle(g_m68k_cycles);
 
         /* Check if the binary called Exit */
         if (g_emu_halted) {

@@ -32,6 +32,7 @@ void     chip_emu_render_frame(void);
 void     chip_emu_reset(void);
 int      chip_emu_power_led(void);
 void     chip_emu_poll_ps2_keyboard(void);
+void     chip_emu_serial_poll(void);
 void     chip_emu_set_keyboard_route(int to_cia);
 uint64_t chip_emu_m68k_cycles(void);
 int      chip_emu_dma_test(void);
@@ -39,11 +40,18 @@ int      chip_emu_line_test(void);
 int      chip_emu_fill_test(void);
 int      chip_emu_raster_test(void);
 int      chip_emu_sprite_test(void);
+int      chip_emu_parallel_test(void);
+int      chip_emu_serial_test(void);
+int      chip_emu_agnus_slot_test(void);
 
-/* Tier 4: VBlank timing */
+/* Tier 4: VBlank timing and cycle-driven scheduler */
 void     chip_emu_vblank(void);
 uint32_t chip_emu_vblank_count(void);
 void     chip_emu_beam_tick(uint32_t tick_counter);
+void     chip_emu_run_to_cycle(uint64_t target_cycles);
+uint64_t chip_emu_stolen_cycles(void);
+void     chip_emu_cpu_chipram_access(uint32_t addr, int is_write);
+int      chip_emu_timing_lock_test(void);
 
 /* Tier 5: CIA timers */
 void     chip_emu_cia_tick(void);

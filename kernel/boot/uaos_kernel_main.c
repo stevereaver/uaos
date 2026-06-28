@@ -321,6 +321,10 @@ extern int chip_emu_line_test(void);
 extern int chip_emu_fill_test(void);
 extern int chip_emu_raster_test(void);
 extern int chip_emu_sprite_test(void);
+extern int chip_emu_parallel_test(void);
+extern int chip_emu_serial_test(void);
+extern int chip_emu_timing_lock_test(void);
+extern int chip_emu_agnus_slot_test(void);
 extern void Desktop_Draw(void);
 extern void uaos_page_fault_isr(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
@@ -470,6 +474,22 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running floppy block-device test...\n");
     int floppy_blk_test = floppy_block_device_test();
     kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
+
+    kprint("[BOOT] Running parallel port test...\n");
+    int parallel_test = chip_emu_parallel_test();
+    kprint(parallel_test ? "[BOOT] Parallel port test PASSED\n" : "[BOOT] Parallel port test FAILED\n");
+
+    kprint("[BOOT] Running serial port test...\n");
+    int serial_test = chip_emu_serial_test();
+    kprint(serial_test ? "[BOOT] Serial port test PASSED\n" : "[BOOT] Serial port test FAILED\n");
+
+    kprint("[BOOT] Running CPU/chipset timing-lock test...\n");
+    int timing_lock_test = chip_emu_timing_lock_test();
+    kprint(timing_lock_test ? "[BOOT] Timing-lock test PASSED\n" : "[BOOT] Timing-lock test FAILED\n");
+
+    kprint("[BOOT] Running Agnus slot table test...\n");
+    int agnus_test = chip_emu_agnus_slot_test();
+    kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
 
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");

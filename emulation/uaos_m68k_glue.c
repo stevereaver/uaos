@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "uaos_emu.h"
+#include "chipset/chip_emu.h"
 #include "dos/vfs.h"
 #include "dos/handler.h"
 #include "dos/handle_table.h"
@@ -240,24 +241,31 @@ static int guest_read_filelock(uint32_t lock_bptr,
 
 unsigned int m68k_read_memory_8(unsigned int addr)
 {
-    if (addr < GUEST_RAM_SIZE) return g_ram[addr];
+    if (addr < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
+        return g_ram[addr];
+    }
     return 0xFF;
 }
 
 unsigned int m68k_read_memory_16(unsigned int addr)
 {
-    if (addr + 1 < GUEST_RAM_SIZE)
+    if (addr + 1 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr] << 8) | g_ram[addr+1];
+    }
     return 0xFFFF;
 }
 
 unsigned int m68k_read_memory_32(unsigned int addr)
 {
-    if (addr + 3 < GUEST_RAM_SIZE)
+    if (addr + 3 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr]   << 24) |
                ((unsigned int)g_ram[addr+1] << 16) |
                ((unsigned int)g_ram[addr+2] <<  8) |
                 (unsigned int)g_ram[addr+3];
+    }
     return 0xFFFFFFFF;
 }
 
@@ -270,13 +278,17 @@ unsigned int m68k_read_memory_32(unsigned int addr)
 
 void m68k_write_memory_8(unsigned int addr, unsigned int val)
 {
-    if (addr < GUEST_RAM_SIZE) g_ram[addr] = (uint8_t)val;
+    if (addr < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
+        g_ram[addr] = (uint8_t)val;
+    }
     GUEST_WRITE_BARRIER();
 }
 
 void m68k_write_memory_16(unsigned int addr, unsigned int val)
 {
     if (addr + 1 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr]   = (uint8_t)(val >> 8);
         g_ram[addr+1] = (uint8_t)(val);
     }
@@ -286,6 +298,7 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
 {
     if (addr + 3 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         /* Fix: SAS/C startup writes a bad stack limit to 0x89EC because the
          * stack size parameter on the stack is 0. Override with a safe limit.
          * limit should be low enough that SP > limit. Use SPLower + 0x80. */
@@ -3071,6 +3084,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
         m68k_execute(1000000);
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
+        chip_emu_run_to_cycle(g_m68k_cycles);
         UAOS_Intuition_PostIntuiTicks();
         slices++;
     }
