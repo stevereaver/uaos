@@ -260,9 +260,14 @@ unsigned int m68k_read_memory_32(unsigned int addr)
     return 0xFFFFFFFF;
 }
 
+/* Compiler barrier to ensure M68k writes to guest RAM are visible to the
+ * chipset emulator and instruction fetch before any subsequent reads. */
+#define GUEST_WRITE_BARRIER() __asm__ volatile("" ::: "memory")
+
 void m68k_write_memory_8(unsigned int addr, unsigned int val)
 {
     if (addr < GUEST_RAM_SIZE) g_ram[addr] = (uint8_t)val;
+    GUEST_WRITE_BARRIER();
 }
 
 void m68k_write_memory_16(unsigned int addr, unsigned int val)
@@ -271,6 +276,7 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
         g_ram[addr]   = (uint8_t)(val >> 8);
         g_ram[addr+1] = (uint8_t)(val);
     }
+    GUEST_WRITE_BARRIER();
 }
 
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
@@ -301,6 +307,7 @@ void m68k_write_memory_32(unsigned int addr, unsigned int val)
         g_ram[addr+2] = (uint8_t)(val >>  8);
         g_ram[addr+3] = (uint8_t)(val);
     }
+    GUEST_WRITE_BARRIER();
 }
 
 /* Disassembler uses these — just alias to the main ones */

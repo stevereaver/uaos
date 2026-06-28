@@ -185,7 +185,9 @@ VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive th
 
 ### Paula Audio
 
-Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_tick()` advances the DMA pointer each time the period counter expires, emulating sample fetch.  There is no host audio output driver yet, so the fetched samples are available in the `AUDxDAT` registers only.
+Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_tick()` advances the DMA pointer each time the period counter expires, emulating sample fetch.
+
+A new host audio subsystem lives in `kernel/audio/`.  `audio_init()` sets up the PC speaker backend, and `audio_tick()` (called every PIT tick) mixes the Paula channels, applies a one-pole LED-style low-pass filter to each channel, and drives the PC speaker with a square wave derived from the loudest active channel.  The PC speaker is low-fidelity and cannot reproduce real waveforms; it is a stop-gap until an HDAC/AC97/Intel HDA backend is added.
 
 ### CIA-A and CIA-B
 
@@ -194,26 +196,61 @@ Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxV
 - Timer A and Timer B with latches, counters, and `CRA`/`CRB` control (start/stop, one-shot/continuous, force-load).
 - `ICR` read clears pending interrupt status; writing `ICR` sets/clear interrupt masks.
 - Basic 24-bit TOD counter registers.
-- Port A/B data and direction registers are maintained; keyboard serial data is not yet routed to the PS/2 driver.
+- Port A/B data and direction registers are maintained; power LED is tracked through CIAA `PRA` bit 3.
+- CIA-B interrupts now drive M68k level 6 (the real Amiga routing).  CIA-A timers continue to use `INTREQ` bits 13/14 (level 4); keyboard serial data uses `INTREQ` bit 3 (level 1).
+- CIA-A `SDR` is wired to the PS/2 keyboard driver: `chip_emu_poll_ps2_keyboard()` drains the PS/2 ring buffer every PIT tick and pushes translated bytes into the CIA-A SDR queue, raising the keyboard interrupt.  Reading CIAA `SDR` pops the next byte.  CIA-A SDR writes (keyboard commands) are accepted and ignored for now.
 
-### Paula Disk/Serial
+### Paula Disk/Serial/Parallel
 
-Paula disk (`DSKLEN`, `DSKDAT`, `DSKSYNC) and serial (`SERDAT`, `SERPER`) registers are not yet emulated.  The existing DOS handler system can be wired in once disk DMA is implemented.
+**Serial port** — `SERDAT` writes now transmit the low byte to the host COM1 UART (`0x3F8`).  `SERDATR` reads poll COM1 for received bytes and return the byte with the receive-buffer-full bit set.  `SERPER` is stored but does not affect the baud rate yet.
 
-## What Remains for 100% / UAE-Level Compatibility
+**Parallel port** — CIA-B `PRB` writes are forwarded to the host LPT1 data port (`0x378`) with a brief strobe pulse on the control port (`0x37A`).
 
-True 100% AGA compatibility is a multi-year project (UAE has ~30 years of accumulated work).  The major remaining items not implemented here are:
+**Disk DMA** — `DSKLEN` now performs a basic DMA burst when its DMA-enable bit (bit 15) is set.  `DSKPT` (registers `0x020`/`0x022`) is the chip-RAM transfer address, `DSKLEN` bits 0–13 give the word count, and bit 14 selects read vs write.  A synthetic 880 KiB ADF buffer is copied to or from chip RAM, and the `DSKBLK` interrupt (`INTREQ` bit 1) is raised on completion.  `DSKSYNC` is stored but not yet used as a sync trigger.  `DSKDAT` single-word reads/writes also advance through the synthetic buffer.  This is enough for software that only needs data to appear after issuing a disk DMA command, but it is not an accurate MFM floppy controller.
+
+### Sprite Collision Detection
+
+`CLXDAT` now detects three kinds of overlap on each scanline:
+- **Bit 0** — even bitplane vs odd bitplane collision (or playfield 1 vs playfield 2 in dual-playfield mode).
+- **Bits 1–8** — bitplane vs sprite 0–7 collisions.
+- **Bits 8+** — sprite-sprite bounding-box collisions (existing coarse frame-level test).
+
+`CLXCON` is still accepted but not yet used to mask individual collision classes.
+
+## Tier 4 — Expert / UAE-Level Compatibility
+
+A subset of the hardest items has been implemented; the rest is the long tail that makes UAE-level accuracy a multi-year project.
+
+### CPU / Chip RAM Coherency
+
+`m68k_write_memory_8/16/32()` in `emulation/uaos_m68k_glue.c` now issue a compiler barrier (`GUEST_WRITE_BARRIER()`) after every guest RAM write.  This prevents the compiler from reordering stores and ensures that self-modifying code and CPU-to-chipset writes are visible to subsequent reads as soon as possible.
+
+### Copper Interrupts
+
+`copper_run_to_beam()` now raises the `COPER` interrupt (`INTREQ` bit 6) when the copper reaches the end-of-list `WAIT $FFFEFFFE`.  Copper `MOVE` instructions that write to `INTREQ` already drive `chip_emu_update_irq()` through the normal register path.
+
+### Chipset Identification
+
+- `VPOSR` (`0x004`) reads return the dynamic beam position with the AGA identifier bit (bit 15) set.
+- `DENISEID` (`0x07C`) reads return `0x00F8` (AGA Denise/Lisa ID).
+
+### Genlock and Sprite Priority
+
+`BPLCON2` genlock/external-sync bits are preserved in the register state.  The dual-playfield priority logic uses `BPLCON2` bits 0–5 (`PF2P`/`PF1P`).  Full genlock video-mixing and external sync are not implemented because there is no external video input.
+
+### Advanced Sprite Features
+
+Sprite rendering now supports an AGA super-hires heuristic (selected via `BPLCON3` bit 9), where each sprite pixel maps to one low-resolution framebuffer pixel instead of two.  The 32-colour bank selection and 64-pixel wide modes remain in place.  Full AGA sprite control bits, sprite-vs-playfield priority, and HAM sprite interactions are not yet implemented.
+
+### What Remains for True 100% / UAE-Level Compatibility
 
 - **Cycle-accurate DMA arbitration** and refresh-slot allocation.
-- **Exact PAL/NTSC/interlace timing**, including interlace long/short fields and correct field offsets.
+- **Exact PAL/NTSC/interlace timing**, including long/short fields and correct field offsets.
 - **Blitter line/area-fill exact semantics**, overlapping source/destination edge cases, and slot-by-slot cycle counts.
-- **Bitplane-sprite and bitplane-bitplane collision detection** in `CLXDAT`.
-- **Full AGA sprite control** bits (true 32-colour mode, exact resolution selection, HAM sprite interactions).
-- **Paula audio output** to a host driver (HDAC/AC97/PC speaker), LED filter, and anti-aliasing.
-- **CIA keyboard serial** integration with the PS/2 driver and CIA-B level-6 interrupt delivery.
-- **Paula disk/serial DMA** and ADF integration.
+- **Full AGA sprite control** bits (exact resolution selection, HAM sprite interactions, sprite-vs-playfield priority).
+- **High-quality Paula audio output** via HDAC/AC97/Intel HDA instead of the PC speaker stop-gap.
+- **Real MFM floppy controller** emulation, DSKSYNC-based transfer start, and loading ADF images from disk.
+- **Host parallel port** bidirectional I/O and full Amiga serial port emulation (baud-rate control, break, status bits).
 - **CPU/chipset timing lock** and cycle-accurate memory contention.
-- **CPU cache synchronization** around chipset DMA boundaries (currently relies on the host CPU's normal coherency for the same guest RAM buffer).
-- **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences).
-- **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC, PCMCIA, and genlock.
-- **Self-modifying code edge cases** in chip RAM and copper exception/interrupt behaviour.
+- **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
+- **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.

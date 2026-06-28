@@ -22,6 +22,7 @@ void     chip_emu_render_frame(void);
 /* Reset and timing */
 void     chip_emu_reset(void);
 int      chip_emu_power_led(void);
+void     chip_emu_poll_ps2_keyboard(void);
 
 /* Tier 4: VBlank timing */
 void     chip_emu_vblank(void);
@@ -33,5 +34,6 @@ void     chip_emu_cia_tick(void);
 
 /* Tier 5: Paula audio */
 void     chip_emu_audio_tick(void);
+uint16_t chip_emu_audio_sample(int ch);
 
 #endif /* UAOS_CHIP_EMU_H */

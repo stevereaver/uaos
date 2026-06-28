@@ -19,6 +19,62 @@
 #include <string.h>
 
 extern void m68k_set_irq(unsigned int int_level);
+extern char PS2Kbd_GetChar(void);
+extern int  PS2Kbd_HasChar(void);
+
+/* Host COM1 (0x3F8) UART backend for Paula serial port. */
+#define COM1_DATA 0x3F8
+#define COM1_LSR  0x3FD
+
+static inline void io_outb(uint16_t port, uint8_t val)
+{
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t io_inb(uint16_t port)
+{
+    uint8_t v;
+    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+
+static int com1_can_send(void)
+{
+    return (io_inb(COM1_LSR) & 0x20u) != 0; /* THRE */
+}
+
+static int com1_can_recv(void)
+{
+    return (io_inb(COM1_LSR) & 0x01u) != 0; /* DR */
+}
+
+static void com1_send(uint8_t c)
+{
+    int spins = 1000;
+    while (spins-- > 0 && !com1_can_send()) {}
+    io_outb(COM1_DATA, c);
+}
+
+static int com1_recv(uint8_t *c)
+{
+    if (!com1_can_recv()) return 0;
+    *c = io_inb(COM1_DATA);
+    return 1;
+}
+
+/* Host LPT1 (0x378) backend for CIA-B parallel port. */
+#define LPT1_DATA 0x378
+#define LPT1_CTRL 0x37A
+
+static void lpt1_send(uint8_t c)
+{
+    int spins = 1000;
+    io_outb(LPT1_DATA, c);
+    /* Brief strobe pulse. */
+    io_outb(LPT1_CTRL, 0x0Du); /* strobe low, auto LF, IRQ disabled */
+    while (spins-- > 0) {}
+    io_outb(LPT1_CTRL, 0x0Cu); /* strobe high */
+}
 
 /* -----------------------------------------------------------------------
  * Register window geometry
@@ -62,6 +118,15 @@ static uint32_t regoff_to_index(uint32_t regoff)
  * Tier 2 control register state machines
  * ----------------------------------------------------------------------- */
 
+#define REG_SERDATR  0x018
+#define REG_DSKDAT   0x026
+#define REG_DSKLEN   0x024
+#define REG_DSKPTH   0x020
+#define REG_DSKPTL   0x022
+#define REG_SERDAT   0x030
+#define REG_SERPER   0x032
+#define REG_DSKSYNC  0x07E
+#define REG_DENISEID 0x07C
 #define REG_CLXDAT   0x00E
 #define REG_CLXCON   0x016
 #define REG_DMACONR  0x002
@@ -200,6 +265,16 @@ static uint32_t g_blitter_busy_ticks; /* PIT ticks remaining for busy */
 static uint16_t g_clxdat;   /* collision data (read and clear) */
 static uint16_t g_clxcon;   /* collision control */
 
+/* CIA-B IRQ: real Amiga routes CIA-B interrupts to M68k level 6. */
+static int g_cia_b_irq;
+
+/* CIA-A keyboard serial buffer: PS/2 keyboard bytes are translated to
+ * Amiga keyboard protocol bytes and fed to the CIA-A SDR. */
+#define KBD_SDR_SIZE 32
+static uint8_t g_kbd_sdr_buf[KBD_SDR_SIZE];
+static int g_kbd_sdr_head = 0;
+static int g_kbd_sdr_tail = 0;
+
 /* Beam / VBlank state */
 static uint32_t g_frame_counter; /* increments every VBlank */
 static uint32_t g_vblank_count;  /* VBlank ticks */
@@ -230,6 +305,11 @@ static uint16_t g_spr_ctl[SPRITE_COUNT];
 static uint16_t g_spr_data[SPRITE_COUNT][SPRITE_WORDS];
 static uint16_t g_spr_datb[SPRITE_COUNT][SPRITE_WORDS];
 
+/* Per-scanline collision tracking.  Only the low-resolution X range is tracked. */
+#define COLLISION_WIDTH 1024
+static uint8_t g_bp_even[COLLISION_WIDTH];
+static uint8_t g_bp_odd[COLLISION_WIDTH];
+
 /* Paula audio channel state */
 #define AUDIO_CHANNELS 4
 typedef struct {
@@ -243,6 +323,16 @@ typedef struct {
 } AudioChannel;
 static AudioChannel g_audio[AUDIO_CHANNELS];
 
+/* Paula serial and disk state */
+static uint16_t g_serdat;   /* serial data */
+static uint16_t g_serper;   /* serial period/control */
+static uint16_t g_dsklen;   /* disk length/control */
+static uint16_t g_dskdat;   /* disk data */
+static uint16_t g_dsk_sync; /* disk sync word */
+static uint32_t g_dskpt;    /* disk DMA pointer */
+static uint32_t g_dsk_index; /* current offset in the synthetic disk buffer */
+static uint8_t  g_dsk_buffer[901120]; /* synthetic 880 KiB ADF buffer */
+
 /* AGA 256-entry color palette (host 0x00RRGGBB format). */
 #define AGA_PALETTE_SIZE 256
 static uint32_t g_aga_palette[AGA_PALETTE_SIZE];
@@ -255,19 +345,22 @@ static uint16_t update_setclr(uint16_t state, uint16_t value)
     return (uint16_t)(state & ~(value & 0x7FFFu));
 }
 
-/* Deliver the highest enabled M68k interrupt level based on INTREQ/INTENA.
- * Amiga level mapping: bits 0-4 -> 1, 5-8 -> 2, 9-12 -> 3, 13-14 -> 4. */
+/* Deliver the highest enabled M68k interrupt level based on INTREQ/INTENA and
+ * external CIA sources.  Amiga level mapping: bits 0-4 -> 1, 5-8 -> 2,
+ * 9-12 -> 3, 13-14 -> 4.  CIA-B is routed to level 6. */
 static void chip_emu_update_irq(void)
 {
+    int level = 0;
     uint16_t pending = g_intreq & g_intena & 0x7FFFu;
-    if (!pending) {
-        m68k_set_irq(0);
-        return;
+    if (pending) {
+        if (pending & 0xE000u) level = 4;       /* bits 13-14 */
+        else if (pending & 0x1E00u) level = 3;   /* bits 9-12 */
+        else if (pending & 0x01E0u) level = 2;   /* bits 5-8 */
+        else level = 1;
     }
-    int level = 1;
-    if (pending & 0xE000u) level = 4;      /* bits 13-14 */
-    else if (pending & 0x1E00u) level = 3; /* bits 9-12 */
-    else if (pending & 0x01E0u) level = 2;   /* bits 5-8 */
+    if (g_cia_b_irq) {
+        if (level < 6) level = 6;
+    }
     m68k_set_irq((unsigned int)level);
 }
 
@@ -314,6 +407,10 @@ static void aga_color_write(uint32_t color_index, uint16_t value)
  * ----------------------------------------------------------------------- */
 
 static void blitter_execute(uint16_t size);
+static uint8_t chip_read_u8(uint32_t addr);
+static void chip_write_u8(uint32_t addr, uint8_t v);
+static uint16_t chip_read_u16(uint32_t addr);
+static void chip_write_u16(uint32_t addr, uint16_t v);
 
 struct CIA_State;
 static int cia_offset_to_reg(uint32_t offset, int *cia_id);
@@ -353,6 +450,50 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
     /* Special register handling. */
     switch (regoff) {
         case REG_CLXCON: g_clxcon = (uint16_t)value; break;
+        case REG_SERDAT: {
+            g_serdat = (uint16_t)value;
+            com1_send((uint8_t)(value & 0xFFu)); /* transmit to host COM1 */
+            break;
+        }
+        case REG_SERPER: g_serper = (uint16_t)value; break;
+        case REG_DSKPTL: g_dskpt = (g_dskpt & 0xFFFF0000u) | (value & 0xFFFFu); break;
+        case REG_DSKPTH: g_dskpt = (g_dskpt & 0x0000FFFFu) | ((uint32_t)value << 16); break;
+        case REG_DSKLEN: {
+            g_dsklen = (uint16_t)value;
+            if (value & 0x8000u) { /* DMAEN */
+                uint32_t words = (uint32_t)(value & 0x3FFFu);
+                uint32_t bytes = words * 2;
+                if (bytes == 0) bytes = 0x8000u; /* 0 length = 32768 words */
+                if (value & 0x4000u) {
+                    /* Write mode: chip RAM -> disk buffer */
+                    for (uint32_t i = 0; i < bytes && i < sizeof(g_dsk_buffer); i++) {
+                        g_dsk_buffer[g_dsk_index] = chip_read_u8(g_dskpt + i);
+                        g_dsk_index = (g_dsk_index + 1) % sizeof(g_dsk_buffer);
+                    }
+                } else {
+                    /* Read mode: disk buffer -> chip RAM */
+                    for (uint32_t i = 0; i < bytes && i < sizeof(g_dsk_buffer); i++) {
+                        chip_write_u8(g_dskpt + i, g_dsk_buffer[g_dsk_index]);
+                        g_dsk_index = (g_dsk_index + 1) % sizeof(g_dsk_buffer);
+                    }
+                }
+                /* DSKBLK interrupt when done. */
+                g_intreq |= 0x0002u;
+                chip_emu_update_irq();
+            }
+            break;
+        }
+        case REG_DSKDAT: {
+            g_dskdat = (uint16_t)value;
+            if (g_dsklen & 0x8000u) {
+                /* Single-word write. */
+                g_dsk_buffer[g_dsk_index] = (uint8_t)(value >> 8);
+                g_dsk_buffer[(g_dsk_index + 1) % sizeof(g_dsk_buffer)] = (uint8_t)value;
+                g_dsk_index = (g_dsk_index + 2) % sizeof(g_dsk_buffer);
+            }
+            break;
+        }
+        case REG_DSKSYNC: g_dsk_sync = (uint16_t)value; break;
         case REG_DMACON: g_dmacon = update_setclr(g_dmacon, (uint16_t)value); break;
         case REG_INTENA: g_intena = update_setclr(g_intena, (uint16_t)value); chip_emu_update_irq(); break;
         case REG_INTREQ: g_intreq = update_setclr(g_intreq, (uint16_t)value); chip_emu_update_irq(); break;
@@ -498,6 +639,27 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
 
     /* Special register read behavior. */
     switch (regoff) {
+        case REG_SERDATR: {
+            uint8_t c = 0;
+            int rd = com1_recv(&c);
+            /* SERDATR layout: bits 0-7 = received data, bit 8 = overrun,
+             * bit 9 = register full, bit 11 = break, bit 12 = transmit buff empty,
+             * bit 13 = transmit shift reg empty, bit 14 = receive irq, bit 15 = STP. */
+            value = rd ? ((uint32_t)c | 0x0100u) : 0x0000u;
+            break;
+        }
+        case REG_DSKPTL: value = g_dskpt & 0xFFFFu; break;
+        case REG_DSKPTH: value = (g_dskpt >> 16) & 0xFFFFu; break;
+        case REG_DSKDAT: {
+            if (g_dsklen & 0x8000u) {
+                /* Single-word read from the synthetic disk buffer. */
+                g_dskdat = (uint16_t)(((uint16_t)g_dsk_buffer[g_dsk_index] << 8) |
+                                      g_dsk_buffer[(g_dsk_index + 1) % sizeof(g_dsk_buffer)]);
+                g_dsk_index = (g_dsk_index + 2) % sizeof(g_dsk_buffer);
+            }
+            value = g_dskdat;
+            break;
+        }
         case REG_CLXDAT: {
             value = g_clxdat;
             g_clxdat = 0; /* read and clear */
@@ -513,8 +675,9 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
         case REG_INTREQ: value = g_intreq; break;
         case REG_ADKCON: value = g_adkcon; break;
 
-        case REG_VPOSR:  value = g_vposr;  break;
-        case REG_VHPOSR: value = g_vhposr; break;
+        case REG_VPOSR:   value = g_vposr | 0x8000u; break; /* AGA identifier in bit 15 */
+        case REG_VHPOSR:  value = g_vhposr; break;
+        case REG_DENISEID: value = 0x00F8u; break;          /* AGA Denise/Lisa ID */
 
         case REG_BPLCON0: value = g_bplcon0; break;
         case REG_BPLCON1: value = g_bplcon1; break;
@@ -649,6 +812,18 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
 /* =========================================================================
  * Tier 4 — Blitter
  * ========================================================================= */
+
+static uint8_t chip_read_u8(uint32_t addr)
+{
+    if (addr >= GUEST_RAM_SIZE) return 0;
+    return g_ram[addr];
+}
+
+static void chip_write_u8(uint32_t addr, uint8_t v)
+{
+    if (addr >= GUEST_RAM_SIZE) return;
+    g_ram[addr] = v;
+}
 
 static uint16_t chip_read_u16(uint32_t addr)
 {
@@ -866,6 +1041,41 @@ typedef struct CIA_State {
 
 static CIA_State g_cia_a, g_cia_b;
 
+/* Push an Amiga keyboard byte into the CIA-A SDR buffer and raise the
+ * keyboard interrupt (CIA-A ICR bit 3, mapped to INTREQ PORTS). */
+static void kbd_sdr_push(uint8_t c)
+{
+    int next = (g_kbd_sdr_tail + 1) % KBD_SDR_SIZE;
+    if (next == g_kbd_sdr_head) return; /* drop if full */
+    g_kbd_sdr_buf[g_kbd_sdr_tail] = c;
+    g_kbd_sdr_tail = next;
+    g_cia_a.icr |= 0x08u; /* keyboard serial interrupt */
+    g_intreq |= 0x0008u;  /* PORTS level-1 interrupt */
+    chip_emu_update_irq();
+}
+
+static int kbd_sdr_pop(void)
+{
+    if (g_kbd_sdr_head == g_kbd_sdr_tail) return -1;
+    uint8_t c = g_kbd_sdr_buf[g_kbd_sdr_head];
+    g_kbd_sdr_head = (g_kbd_sdr_head + 1) % KBD_SDR_SIZE;
+    return (int)c;
+}
+
+/* Poll the PS/2 driver and feed translated bytes to the CIA-A SDR buffer.
+ * Called from the PIT tick path. */
+void chip_emu_poll_ps2_keyboard(void)
+{
+    while (PS2Kbd_HasChar()) {
+        char c = PS2Kbd_GetChar();
+        if (c == 0) continue;
+        /* Simple identity mapping: PS/2 ASCII -> Amiga keyboard raw byte.
+         * A full translation would map Amiga keycodes; this is sufficient
+         * for a first pass. */
+        kbd_sdr_push((uint8_t)c);
+    }
+}
+
 static int cia_offset_to_reg(uint32_t offset, int *cia_id)
 {
     if ((offset & ~0x0F00u) == CIA_A_BASE_OFF) { *cia_id = 0; return (int)((offset >> 8) & 0xF); }
@@ -910,9 +1120,20 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
         case CIA_REG_TOD_LO: return cia->tod & 0xFFu;
         case CIA_REG_TOD_MID: return (cia->tod >> 8) & 0xFFu;
         case CIA_REG_TOD_HI: return (cia->tod >> 16) & 0xFFu;
+        case CIA_REG_SDR: {
+            if (cia == &g_cia_a) {
+                int v = kbd_sdr_pop();
+                return (v >= 0) ? (uint32_t)v : 0;
+            }
+            return 0;
+        }
         case CIA_REG_ICR: {
             uint32_t v = cia->icr;
             cia->icr = 0;
+            if (cia == &g_cia_b) {
+                g_cia_b_irq = 0;
+                chip_emu_update_irq();
+            }
             return v;
         }
         case CIA_REG_CRA: return cia->ta.cra;
@@ -927,7 +1148,11 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
     uint8_t v = (uint8_t)(value & 0xFFu);
     switch (reg) {
         case CIA_REG_PRA:  cia->pra  = v; break;
-        case CIA_REG_PRB:  cia->prb  = v; break;
+        case CIA_REG_PRB: {
+            cia->prb = v;
+            if (cia == &g_cia_b) lpt1_send(v); /* parallel port data */
+            break;
+        }
         case CIA_REG_DDRA: cia->ddra = v; break;
         case CIA_REG_DDRB: cia->ddrb = v; break;
         case CIA_REG_TALO: cia_write_timer_lo(&cia->ta, v); break;
@@ -937,7 +1162,12 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         case CIA_REG_TOD_LO: cia->tod = (cia->tod & 0xFFFF00u) | v; break;
         case CIA_REG_TOD_MID: cia->tod = (cia->tod & 0xFF00FFu) | ((uint32_t)v << 8); break;
         case CIA_REG_TOD_HI: cia->tod = (cia->tod & 0x00FFFFu) | ((uint32_t)v << 16); break;
-        case CIA_REG_SDR: break; /* not implemented */
+        case CIA_REG_SDR: {
+            /* CIAA SDR writes are keyboard commands; CIAB SDR writes are
+             * external serial.  Both are accepted and ignored for now. */
+            (void)v;
+            break;
+        }
         case CIA_REG_ICR: {
             if (v & 0x80u) cia->icr_mask |= (v & 0x7Fu);
             else cia->icr_mask &= ~(v & 0x7Fu);
@@ -955,6 +1185,13 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         }
         default: break;
     }
+}
+
+/* Return the most recent sample value for a Paula audio channel. */
+uint16_t chip_emu_audio_sample(int ch)
+{
+    if (ch < 0 || ch >= AUDIO_CHANNELS) return 0;
+    return g_audio[ch].dat;
 }
 
 /* Advance Paula audio DMA. Called from the PIT tick path. */
@@ -1010,8 +1247,11 @@ void chip_emu_cia_tick(void)
                 }
                 /* set timer interrupt */
                 cia->icr |= (t == 0) ? 0x01u : 0x02u;
-                if (i == 0) g_intreq |= (t == 0) ? 0x2000u : 0x4000u; /* CIA-A TIMERA/TIMERB */
-                else          g_intreq |= 0x0004u; /* CIA-B mapped to EXTER (level 1) */
+                if (i == 0) {
+                    g_intreq |= (t == 0) ? 0x2000u : 0x4000u; /* CIA-A TIMERA/TIMERB */
+                } else {
+                    g_cia_b_irq = 1; /* CIA-B uses M68k level 6 */
+                }
                 chip_emu_update_irq();
             }
         }
@@ -1072,6 +1312,9 @@ static int copper_run_to_beam(int vpos, int hpos)
             /* WAIT */
             if ((w1 & 0xFFFEu) == 0xFFFEu && (w2 & 0xFFFEu) == 0xFFFEu) {
                 g_copper_pc = pc;
+                /* Copper end-of-list interrupt request (COPER, bit 6). */
+                g_intreq |= 0x0040u;
+                chip_emu_update_irq();
                 return 1; /* end of list */
             }
             int target_v = (w1 >> 8) & 0xFF;
@@ -1193,6 +1436,12 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
     int fb_h = (int)g_fb.height;
     if (y < 0 || y >= fb_h) return;
 
+    /* Clear per-scanline collision occupancy for this line. */
+    for (int i = 0; i < COLLISION_WIDTH; i++) {
+        g_bp_even[i] = 0;
+        g_bp_odd[i] = 0;
+    }
+
     /* Horizontal scroll: PF1H in bits 3-0, PF2H in bits 7-4. */
     int pf1_scroll = g_bplcon1 & 0xF;
     int pf2_scroll = (g_bplcon1 >> 4) & 0xF;
@@ -1238,6 +1487,10 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
             } else {
                 idx = (idx1 != 0) ? idx1 : (pf2_base + idx2);
             }
+            if (x < COLLISION_WIDTH) {
+                g_bp_even[x] = (idx1 != 0);
+                g_bp_odd[x] = (idx2 != 0);
+            }
             rgb = pixel_to_rgb(idx, prev_rgb);
         } else {
             int index = 0;
@@ -1251,9 +1504,17 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
                 if (planes[p] && (planes[p][byte] & (1 << bit)))
                     index |= (1 << p);
             }
+            if (x < COLLISION_WIDTH) {
+                g_bp_even[x] = ((index & 0x55u) != 0);
+                g_bp_odd[x] = ((index & 0xAAu) != 0);
+            }
             rgb = pixel_to_rgb(index, prev_rgb);
         }
         prev_rgb = rgb;
+
+        if (x < COLLISION_WIDTH && g_bp_even[x] && g_bp_odd[x]) {
+            g_clxdat |= 0x0001u; /* even/odd bitplane collision */
+        }
 
         int dst_x = x_start + x * pix_scale;
         for (int s = 0; s < pix_scale && (dst_x + s) < fb_w; s++) {
@@ -1284,6 +1545,11 @@ static void render_sprite_strip(int spr, int y, int x_start)
     int aga_bank = (g_bplcon3 >> 13) & 0x7u;
     int palette_base = 16 + aga_bank * 16;
     int aga_32col = aga_wide && ((g_bplcon3 >> 15) & 1u); /* heuristic 32-colour flag */
+    /* Super-hires sprites: BPLCON3 bit 9 heuristic halves the on-screen
+     * pixel width (1 low-res pixel per sprite pixel instead of 2). */
+    int super_hires = (g_bplcon3 >> 9) & 1u;
+    int pix_scale = super_hires ? 1 : 2;
+    int display_width = width / pix_scale;
 
     for (int bit = 0; bit < width; bit++) {
         int w = bit / 16;
@@ -1298,9 +1564,15 @@ static void render_sprite_strip(int spr, int y, int x_start)
                 idx |= ((spr >> 1) & 1u) << 4; /* pair bit expands to 32 colours */
             }
         }
-        int x = x_start + (hstart + bit) * 2; /* low-res sprites are 2x wide */
+        int x = x_start + (hstart + bit) * pix_scale;
+        int bx = hstart + bit;
+        if (bx >= 0 && bx < COLLISION_WIDTH && (g_bp_even[bx] || g_bp_odd[bx])) {
+            g_clxdat |= (uint16_t)(1u << (spr + 1)); /* bitplane-sprite collision */
+        }
         if (x >= 0 && x < fb_w) FB_PutPixel(x, y, g_aga_palette[(palette_base + idx) & 0xFF]);
-        if (x + 1 >= 0 && x + 1 < fb_w) FB_PutPixel(x + 1, y, g_aga_palette[(palette_base + idx) & 0xFF]);
+        if (!super_hires && (x + 1 >= 0 && x + 1 < fb_w)) {
+            FB_PutPixel(x + 1, y, g_aga_palette[(palette_base + idx) & 0xFF]);
+        }
     }
 }
 
@@ -1451,6 +1723,15 @@ void chip_emu_reset(void)
     g_adkcon = 0;
     g_clxdat = 0;
     g_clxcon = 0;
+    g_cia_b_irq = 0;
+    g_serdat = 0;
+    g_serper = 0;
+    g_dsklen = 0;
+    g_dskdat = 0;
+    g_dsk_sync = 0;
+    g_dskpt = 0;
+    g_dsk_index = 0;
+    for (size_t i = 0; i < sizeof(g_dsk_buffer); i++) g_dsk_buffer[i] = 0;
 
     g_bplcon0 = 0;
     g_bplcon1 = 0;

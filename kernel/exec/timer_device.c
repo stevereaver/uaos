@@ -9,6 +9,7 @@
 #include "rom_modules.h"
 #include "task.h"
 #include "chipset/chip_emu.h"
+#include "audio/audio.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -179,6 +180,8 @@ void timer_ProcessTicks(void)
     chip_emu_beam_tick(g_tick_counter);
     chip_emu_audio_tick();
     chip_emu_cia_tick();
+    audio_tick();
+    chip_emu_poll_ps2_keyboard();
 
     /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */
     if ((g_tick_counter & 1u) == 0) {
