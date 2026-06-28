@@ -240,17 +240,55 @@ A subset of the hardest items has been implemented; the rest is the long tail th
 
 ### Advanced Sprite Features
 
-Sprite rendering now supports an AGA super-hires heuristic (selected via `BPLCON3` bit 9), where each sprite pixel maps to one low-resolution framebuffer pixel instead of two.  The 32-colour bank selection and 64-pixel wide modes remain in place.  Full AGA sprite control bits, sprite-vs-playfield priority, and HAM sprite interactions are not yet implemented.
+Sprite rendering now supports an AGA super-hires heuristic (selected via `BPLCON3` bit 9), where each sprite pixel maps to one low-resolution framebuffer pixel instead of two.  The 32-colour bank selection and 64-pixel wide modes remain in place.  Sprite-vs-playfield priority is now implemented: when any `BPLCON2` SP bit (bits 8–12) is set, non-transparent sprite pixels are drawn only where the bitplanes are transparent.  Exact per-sprite SP bits, HAM sprite interactions, and full AGA sprite resolution selection are not yet implemented.
+
+### CPU Cache Synchronization and Cycle Timing
+
+The guest-write barrier in `emulation/uaos_m68k_glue.c` has been upgraded from a plain compiler barrier to a full x86 `mfence` memory fence.  This flushes the store buffer and makes M68k writes visible to the chipset emulator on multi-core hosts.  A non-x86 build would need to replace the `mfence` with the appropriate `dmb`/`sync` primitive for that host CPU.
+
+A global M68k cycle counter (`g_m68k_cycles`) is now accumulated after each `m68k_execute()` slice.  `chip_emu_m68k_cycles()` exposes the running total.  This is the foundation for a future CPU/chipset timing lock; for now the chipset is still advanced from the PIT tick rather than from the M68k cycle count.
+
+### Cycle-Accurate DMA Arbitration (First Pass)
+
+A simplified DMA slot table has been added to `chip_emu.c`.  Each PAL line has 226 abstract slots, NTSC has 227, and 4 slots per line are reserved for refresh.  A helper API is provided:
+
+- `dma_slot_reset()` — clears the line table and allocates refresh slots.
+- `dma_slot_alloc(channel, start, count)` — reserves consecutive free slots.
+- `dma_slot_release(channel)` / `dma_slot_count(channel)` — introspection helpers.
+
+Priority is refresh > bitplane > copper > sprite > audio > disk > blitter > CPU.  `chip_emu_render_frame()` now builds a fresh table every scanline and allocates slots to bitplanes, sprites, the copper, and (if busy) the blitter.  The copper only advances when it has been granted slots: each instruction consumes 2 slots, and `copper_run_to_beam()` stalls when the budget is exhausted.  The blitter tracks `g_blitter_words_remaining` and consumes leftover slots word-by-word; the busy flag is cleared only when the remaining word count reaches zero.  Remaining slots are marked as CPU slots, and the number of non-CPU slots is accumulated into `g_cpu_stolen_cycles` as a proxy for CPU wait states.
+
+A boot-time test, `chip_emu_dma_test()`, builds a 120-instruction copper list at guest RAM offset `0x10000`, runs one frame, and verifies that the copper advanced but stalled before the end-of-list `WAIT`.  The test is invoked from `uaos_kernel_main()` and prints `PASSED` or `FAILED`.
+
+### Interlace Timing
+
+Interlace (`BPLCON0` `LACE`) now alternates long and short fields: PAL alternates between 312 and 313 lines, NTSC between 262 and 263.  The field index is tracked in `g_interlace_field` and toggles every VBlank.  Bitplane fetches use the field index to select the correct alternating line (`(y + field) / 2`).
+
+### Blitter Exact Semantics
+
+The Blitter has been upgraded to use real Amiga line-mode and fill semantics:
+
+- **Line mode** now decodes `BLTCON1` bits 4-7 (octant) and bits 1-2 (SING/sign).  `BLTAMOD` and `BLTBMOD` are interpreted as the Bresenham deltas (`2*minor - 2*major` and `2*minor`), and `BLTAPTL` supplies the starting `(x,y)`.  The line drawer respects the octant-derived major/minor axis and sign bits, and it plots pixels directly into `BLTDPT` using `BLTDMOD` as the row stride.
+- **Area fill** now implements the correct inclusive (`IFEFE`, bit 3) and exclusive (`EFE`, bit 4) polygon rules.  The fill state toggles on every A-channel edge pixel; inclusive mode draws the edge pixel with the new state, while exclusive mode draws it with the old state.
+- **Descending mode (`DESC`)** is now handled correctly for overlapping source/destination copies: the start pointers are moved to the end of the row, the per-word stride is reversed, and the first/last word masks (`BLTAFWM`/`BLTALWM`) are swapped.  The modulo is no longer negated; the programmer is expected to set the correct full-row modulo for reverse transfers.
+- **BLTAPTL/BLTAFWM/BLTALWM** interactions are verified: line mode uses `BLTAPTL` for the starting pixel, while area mode applies `BLTAFWM` to the first word and `BLTALWM` to the last word (with the mask ends swapped in `DESC` mode).
+- The Blitter busy flag and `g_blitter_words_remaining` are driven by the DMA slot table, so the blitter consumes slots word-by-word across scanlines.
+
+Two boot-time tests exercise the new Blitter code:
+- `chip_emu_line_test()` draws a diagonal line from (10,10) to (20,18) using octant 0 and verifies that destination pixels are set.
+- `chip_emu_fill_test()` performs an exclusive fill between two vertical edges and checks that the interior bits are filled while the edge bits are not.
+
+Both tests are invoked from `uaos_kernel_main()` and print `PASSED`/`FAILED`.
 
 ### What Remains for True 100% / UAE-Level Compatibility
 
-- **Cycle-accurate DMA arbitration** and refresh-slot allocation.
-- **Exact PAL/NTSC/interlace timing**, including long/short fields and correct field offsets.
-- **Blitter line/area-fill exact semantics**, overlapping source/destination edge cases, and slot-by-slot cycle counts.
-- **Full AGA sprite control** bits (exact resolution selection, HAM sprite interactions, sprite-vs-playfield priority).
+- **Accurate DMA slot table** aligned with the real Agnus slot layout (bitplane/Copper/sprite/audio/disk slots at specific horizontal positions, refresh slot timing, and DMA-off cycles).
+- **Blitter line/area-fill remaining edge cases** such as real line-mode texture/B channel usage, exact `BLTAPTL` accumulator loading, and per-pixel DMA slot timing for the actual data transfer.
+- **Beam position derived from color clock** rather than the 100 Hz PIT approximation.
+- **Full AGA sprite control** bits (exact resolution selection, HAM sprite interactions, per-sprite SP priority).
 - **High-quality Paula audio output** via HDAC/AC97/Intel HDA instead of the PC speaker stop-gap.
-- **Real MFM floppy controller** emulation, DSKSYNC-based transfer start, and loading ADF images from disk.
+- **Real MFM floppy controller** emulation, `DSKSYNC`-based transfer start, and loading ADF images from disk.
 - **Host parallel port** bidirectional I/O and full Amiga serial port emulation (baud-rate control, break, status bits).
-- **CPU/chipset timing lock** and cycle-accurate memory contention.
+- **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention.
 - **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
 - **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.

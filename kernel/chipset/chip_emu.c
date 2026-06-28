@@ -255,11 +255,13 @@ static uint16_t g_bltamod;  /* modulo for A */
 static uint16_t g_bltbmod;  /* modulo for B */
 static uint16_t g_bltcmod;  /* modulo for C */
 static uint16_t g_bltdmod;  /* modulo for D */
+static uint16_t g_bltsize;  /* last written BLTSIZE */
 static uint16_t g_bltadat;  /* A data register */
 static uint16_t g_bltbdat;  /* B data register */
 static uint16_t g_bltcdat;  /* C data register */
 static uint8_t  g_blitter_busy; /* blitter status */
 static uint32_t g_blitter_busy_ticks; /* PIT ticks remaining for busy */
+static int      g_blitter_words_remaining; /* words left for slot-based execution */
 
 /* Sprite collision state */
 static uint16_t g_clxdat;   /* collision data (read and clear) */
@@ -285,6 +287,87 @@ static uint16_t g_vhposr;        /* horizontal beam position */
 static int g_chip_mode;
 #define CHIP_MODE_PAL  0
 #define CHIP_MODE_NTSC 1
+
+/* Interlace field tracking: 0 = long field, 1 = short field. */
+static int g_interlace_field;
+
+/* =========================================================================
+ * Cycle-accurate DMA slot arbitration (first pass)
+ *
+ * PAL has ~226 DMA slots per line; NTSC has fewer.  The table below is a
+ * simplified model: one slot per word transfer.  Channels are allocated in
+ * priority order (refresh > bitplane > copper > sprite > audio > disk >
+ * blitter > CPU).  When a channel cannot get enough slots it stalls.
+ * ========================================================================= */
+#define DMA_SLOTS_PER_LINE_PAL 226
+#define DMA_SLOTS_PER_LINE_NTSC 227
+#define DMA_REFRESH_SLOTS_PER_LINE 4
+
+typedef enum {
+    DMA_CHAN_REFRESH = 0,
+    DMA_CHAN_BITPLANE,
+    DMA_CHAN_COPPER,
+    DMA_CHAN_SPRITE,
+    DMA_CHAN_AUDIO,
+    DMA_CHAN_DISK,
+    DMA_CHAN_BLITTER,
+    DMA_CHAN_CPU,
+    DMA_CHAN_COUNT
+} DMA_Channel;
+
+static uint8_t  g_dma_slots[DMA_SLOTS_PER_LINE_PAL]; /* channel id or DMA_CHAN_COUNT for free */
+static int      g_dma_slots_per_line;
+static uint64_t g_cpu_stolen_cycles; /* cumulative CPU cycles stolen by DMA */
+
+static void dma_slot_reset(void)
+{
+    g_dma_slots_per_line = (g_chip_mode == CHIP_MODE_NTSC) ? DMA_SLOTS_PER_LINE_NTSC : DMA_SLOTS_PER_LINE_PAL;
+    for (int i = 0; i < DMA_SLOTS_PER_LINE_PAL; i++) g_dma_slots[i] = DMA_CHAN_COUNT;
+
+    /* Refresh always gets its fixed slots, spread across the line. */
+    int refresh = DMA_REFRESH_SLOTS_PER_LINE;
+    for (int i = 0; i < g_dma_slots_per_line && refresh > 0; i += g_dma_slots_per_line / refresh) {
+        if (g_dma_slots[i] == DMA_CHAN_COUNT) {
+            g_dma_slots[i] = DMA_CHAN_REFRESH;
+            refresh--;
+        }
+    }
+}
+
+/* Allocate `count` consecutive free slots for `channel`, starting search from
+ * `start`.  Returns the first slot index on success, -1 on failure. */
+static int dma_slot_alloc(DMA_Channel channel, int start, int count)
+{
+    if (count <= 0) return 0;
+    for (int i = start; i + count <= g_dma_slots_per_line; i++) {
+        int ok = 1;
+        for (int j = 0; j < count; j++) {
+            if (g_dma_slots[i + j] != DMA_CHAN_COUNT) { ok = 0; break; }
+        }
+        if (ok) {
+            for (int j = 0; j < count; j++) g_dma_slots[i + j] = (uint8_t)channel;
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Release all slots owned by a channel. */
+static void dma_slot_release(DMA_Channel channel)
+{
+    for (int i = 0; i < g_dma_slots_per_line; i++) {
+        if (g_dma_slots[i] == (uint8_t)channel) g_dma_slots[i] = DMA_CHAN_COUNT;
+    }
+}
+
+static int dma_slot_count(DMA_Channel channel)
+{
+    int n = 0;
+    for (int i = 0; i < g_dma_slots_per_line; i++) {
+        if (g_dma_slots[i] == (uint8_t)channel) n++;
+    }
+    return n;
+}
 
 static uint16_t g_diwstart; /* display window start */
 static uint16_t g_diwstop;  /* display window stop */
@@ -343,6 +426,14 @@ static uint16_t update_setclr(uint16_t state, uint16_t value)
     if (value & SETCLR_BIT)
         return (uint16_t)(state | (value & 0x7FFFu));
     return (uint16_t)(state & ~(value & 0x7FFFu));
+}
+
+/* Return the cumulative M68k cycles executed so far.  This is the foundation
+ * for a future CPU/chipset timing lock; for now it is only collected. */
+uint64_t chip_emu_m68k_cycles(void)
+{
+    extern uint64_t g_m68k_cycles;
+    return g_m68k_cycles;
 }
 
 /* Deliver the highest enabled M68k interrupt level based on INTREQ/INTENA and
@@ -530,6 +621,12 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_BLTCDAT: g_bltcdat = (uint16_t)value; break;
         case REG_BLTSIZE: {
             uint16_t size = (uint16_t)value;
+            g_bltsize = size;
+            int w = (size >> 6) & 0x3FF;
+            int h = size & 0x3F;
+            if (w == 0) w = 1024;
+            if (h == 0) h = 64;
+            g_blitter_words_remaining = w * h;
             blitter_execute(size);
             break;
         }
@@ -859,36 +956,50 @@ static void blitter_execute(uint16_t size)
     int fill_mode = (g_bltcon1 >> 3) & 0x3u; /* bits 3-4: inclusive/exclusive fill */
 
     if (line_mode) {
-        /* Basic Bresenham line mode.  The real Amiga encodes deltas and
-         * octants in BLTCON1/BLTAMOD/BLTBMOD; we approximate with a line
-         * from BLTAPTL (x0,y0) to BLTBPT (x1,y1) into the BLTDPT bitmap. */
-        int x0 = g_bltapt & 0xFF;
-        int y0 = (g_bltapt >> 8) & 0xFF;
-        int x1 = g_bltbpt & 0xFF;
-        int y1 = (g_bltbpt >> 8) & 0xFF;
-        int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
-        int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
-        int sx = (x0 < x1) ? 1 : -1;
-        int sy = (y0 < y1) ? 1 : -1;
-        int err = dx - dy;
-        int line_stride = 40; /* standard low-res bitmap row */
+        /* Amiga line mode.  BLTCON1 bits 4-7 are the octant, bits 1-2 are
+         * SING/sign.  BLTAMOD = 2*minor - 2*major, BLTBMOD = 2*minor.
+         * BLTAPTL holds the starting (x,y).  The line is drawn into BLTDPT. */
+        int octant = (g_bltcon1 >> 4) & 0xFu;
+        int sx = (octant & 1u) ? -1 : 1;
+        int sy = (octant & 2u) ? -1 : 1;
+        int swap = (octant & 4u) ? 1 : 0;
+        int singular = (g_bltcon1 & 0x02u) ? 1 : 0;
 
-        for (int i = 0; i < 4096; i++) {
-            uint32_t off = g_bltdpt + (uint32_t)(y0 * line_stride) + ((uint32_t)x0 / 16u) * 2u;
+        int amod = (int)(int16_t)g_bltamod;
+        int bmod = (int)(int16_t)g_bltbmod;
+        int minor = (bmod < 0 ? -bmod : bmod) / 2;
+        int major = ((bmod - amod) < 0 ? -(bmod - amod) : (bmod - amod)) / 2;
+        if (major < minor) { int t = major; major = minor; minor = t; }
+        if (major <= 0) major = 1;
+
+        int err = 2 * minor - major;
+        int x = g_bltapt & 0xFF;
+        int y = (g_bltapt >> 8) & 0xFF;
+        int line_stride = (int)(int16_t)g_bltdmod;
+        if (line_stride <= 0) line_stride = 40;
+
+        int steps = singular ? 1 : (major + 1);
+        for (int i = 0; i < steps; i++) {
+            uint32_t off = g_bltdpt + (uint32_t)(y * line_stride) + ((uint32_t)x / 16u) * 2u;
             if (off + 1 < GUEST_RAM_SIZE) {
                 uint16_t v = chip_read_u16(off);
-                v |= (uint16_t)(1u << (15 - (x0 & 15)));
+                v |= (uint16_t)(1u << (15 - (x & 15)));
                 chip_write_u16(off, v);
             }
-            if (x0 == x1 && y0 == y1) break;
-            int e2 = 2 * err;
-            if (e2 > -dy) { err -= dy; x0 += sx; }
-            if (e2 < dx)  { err += dx; y0 += sy; }
+            if (i + 1 >= steps) break;
+            if (err >= 0) {
+                if (swap) x += sx;
+                else      y += sy;
+                err += amod; /* 2*minor - 2*major */
+            } else {
+                err += bmod; /* 2*minor */
+            }
+            if (swap) y += sy;
+            else      x += sx;
         }
         g_blitter_busy = 1;
-        uint32_t word_count = (uint32_t)(dx + dy + 1);
-        g_blitter_busy_ticks = word_count / 1000 + 1;
-        if (g_blitter_busy_ticks > 10) g_blitter_busy_ticks = 10;
+        g_blitter_words_remaining = steps;
+        g_blitter_busy_ticks = 0;
         return;
     }
 
@@ -898,10 +1009,20 @@ static void blitter_execute(uint16_t size)
     uint32_t dpt = g_bltdpt;
 
     int stride = desc ? -2 : 2;
-    int amod = desc ? -(int)(int16_t)g_bltamod : (int)(int16_t)g_bltamod;
-    int bmod = desc ? -(int)(int16_t)g_bltbmod : (int)(int16_t)g_bltbmod;
-    int cmod = desc ? -(int)(int16_t)g_bltcmod : (int)(int16_t)g_bltcmod;
-    int dmod = desc ? -(int)(int16_t)g_bltdmod : (int)(int16_t)g_bltdmod;
+    /* In DESC mode the programmer is responsible for setting the correct modulo
+     * (full row width, not padding); the hardware does not negate it. */
+    int amod = (int)(int16_t)g_bltamod;
+    int bmod = (int)(int16_t)g_bltbmod;
+    int cmod = (int)(int16_t)g_bltcmod;
+    int dmod = (int)(int16_t)g_bltdmod;
+
+    if (desc) {
+        uint32_t offset = (uint32_t)(width - 1) * 2u;
+        if (useA) apt += offset;
+        if (useB) bpt += offset;
+        if (useC) cpt += offset;
+        if (useD) dpt += offset;
+    }
 
     g_blitter_busy = 1;
 
@@ -912,8 +1033,9 @@ static void blitter_execute(uint16_t size)
             uint16_t b = useB ? chip_read_u16(bpt) : g_bltbdat;
             uint16_t c = useC ? chip_read_u16(cpt) : g_bltcdat;
 
-            if (x == 0)       a &= g_bltafwm;
-            if (x == width - 1) a &= g_bltalwm;
+            int x_fwd = desc ? (width - 1 - x) : x;
+            if (x_fwd == 0)       a &= g_bltafwm;
+            if (x_fwd == width - 1) a &= g_bltalwm;
 
             if (ash) a = (uint16_t)((a >> ash) | (a << (16 - ash)));
             if (bsh) b = (uint16_t)((b >> bsh) | (b << (16 - bsh)));
@@ -927,16 +1049,17 @@ static void blitter_execute(uint16_t size)
                 int bit_out = (minterm & (1u << idx)) ? 1 : 0;
 
                 if (fill_mode) {
-                    if (abit) {
-                        if (fill_mode & 1) {
-                            /* inclusive fill: set fill state */
-                            fill_state = 1;
-                        } else {
-                            /* exclusive fill: toggle fill state */
-                            fill_state ^= 1;
-                        }
+                    /* Polygon edge-fill: crossing an A-channel edge toggles
+                     * the fill state.  Inclusive mode fills the edge pixel
+                     * itself; exclusive mode leaves it unfilled. */
+                    if (abit) fill_state ^= 1;
+                    if (fill_mode & 1u) {
+                        /* inclusive (IFEFE) */
+                        bit_out = fill_state;
+                    } else {
+                        /* exclusive (EFE): edge pixel uses old state */
+                        bit_out = abit ? (fill_state ^ 1) : fill_state;
                     }
-                    bit_out = fill_state;
                 }
                 if (bit_out)
                     d |= (uint16_t)(1u << bit);
@@ -959,11 +1082,8 @@ static void blitter_execute(uint16_t size)
     }
 
     g_blitter_busy = 1;
-    /* Rough busy duration: Amiga blitter takes ~4 cycles per word.  At 100 Hz
-     * PIT ticks the timing is coarse, so we clamp to a realistic range. */
-    uint32_t word_count = (uint32_t)width * (uint32_t)height;
-    g_blitter_busy_ticks = word_count / 1000 + 1;
-    if (g_blitter_busy_ticks > 10) g_blitter_busy_ticks = 10;
+    g_blitter_words_remaining = width * height;
+    g_blitter_busy_ticks = 0;
 }
 
 /* =========================================================================
@@ -974,6 +1094,12 @@ void chip_emu_vblank(void)
 {
     g_vblank_count++;
     g_frame_counter++;
+    /* Toggle interlace field every VBlank when LACE is enabled. */
+    if (g_bplcon0 & 0x0004u) {
+        g_interlace_field ^= 1;
+    } else {
+        g_interlace_field = 0;
+    }
     /* Set VBlank interrupt request (INTREQ bit 5). */
     g_intreq |= 0x0020u;
     /* At VBlank, beam is at the top of the display. */
@@ -985,7 +1111,9 @@ void chip_emu_vblank(void)
 /* Update beam position from the PIT tick path.  Called every PIT tick. */
 void chip_emu_beam_tick(uint32_t tick_counter)
 {
-    int lines_per_frame = (g_chip_mode == CHIP_MODE_NTSC) ? 262 : 312;
+    int base_lines = (g_chip_mode == CHIP_MODE_NTSC) ? 262 : 312;
+    /* Interlace alternates long/short fields: PAL 312/313, NTSC 262/263. */
+    int lines_per_frame = base_lines + ((g_bplcon0 & 0x0004u) ? g_interlace_field : 0);
     /* PIT is 100 Hz.  PAL frame = 20 ms = 2 ticks.  NTSC frame = ~16.67 ms = 5/3 ticks. */
     uint32_t ticks_per_frame = (g_chip_mode == CHIP_MODE_NTSC) ? 5u : 2u;
     uint32_t tick_within_frame = tick_counter % ticks_per_frame;
@@ -1229,6 +1357,7 @@ void chip_emu_cia_tick(void)
         g_blitter_busy_ticks--;
         if (g_blitter_busy_ticks == 0) g_blitter_busy = 0;
     }
+    /* If the blitter ran out of words it is cleared in the scanline loop. */
 
     CIA_State *cias[2] = { &g_cia_a, &g_cia_b };
     for (int i = 0; i < 2; i++) {
@@ -1283,13 +1412,21 @@ static int copper_wait_satisfied(int target_v, int target_h, int mask_v, int mas
 
 /* Execute copper instructions until a WAIT that cannot be satisfied at the
  * supplied beam position is reached.  Returns 1 if the copper reached the
- * end-of-list impossible WAIT. */
-static int copper_run_to_beam(int vpos, int hpos)
+ * end-of-list impossible WAIT.  `copper_slots` is the number of DMA slots
+ * the copper has been granted this line; each instruction consumes 2 slots. */
+static int copper_run_to_beam(int vpos, int hpos, int copper_slots)
 {
     uint32_t pc = g_copper_pc;
     if (!pc) return 0;
 
     for (int i = 0; i < COPPER_MOVE_LIMIT; i++) {
+        if (copper_slots < 2) {
+            /* Copper has run out of DMA slots for this line; stall here. */
+            g_copper_pc = pc;
+            return 0;
+        }
+        copper_slots -= 2;
+
         if (pc + 4 >= GUEST_RAM_SIZE) {
             g_copper_pc = pc;
             return 0;
@@ -1350,12 +1487,12 @@ void chip_emu_copper_jump(int list, uint32_t addr)
         if (addr) g_cop1lc = addr;
         g_copjmp1 = 1;
         g_copper_pc = g_cop1lc;
-        copper_run_to_beam(0, 0);
+        copper_run_to_beam(0, 0, 100); /* allow a burst at copper restart */
     } else if (list == 2) {
         if (addr) g_cop2lc = addr;
         g_copjmp2 = 1;
         g_copper_pc = g_cop2lc;
-        copper_run_to_beam(0, 0);
+        copper_run_to_beam(0, 0, 100);
     }
 }
 
@@ -1550,6 +1687,11 @@ static void render_sprite_strip(int spr, int y, int x_start)
     int super_hires = (g_bplcon3 >> 9) & 1u;
     int pix_scale = super_hires ? 1 : 2;
     int display_width = width / pix_scale;
+    /* Sprite-vs-playfield priority: BPLCON2 bits 8-12 (SP0-SP4) request that
+     * sprites be drawn behind the playfields.  We apply a global "behind"
+     * mode when any SP bit is set; per-sprite SP bits require AGA-specific
+     * priority logic that is not yet implemented. */
+    int sprite_behind = ((g_bplcon2 >> 8) & 0x1Fu) != 0;
 
     for (int bit = 0; bit < width; bit++) {
         int w = bit / 16;
@@ -1566,9 +1708,11 @@ static void render_sprite_strip(int spr, int y, int x_start)
         }
         int x = x_start + (hstart + bit) * pix_scale;
         int bx = hstart + bit;
-        if (bx >= 0 && bx < COLLISION_WIDTH && (g_bp_even[bx] || g_bp_odd[bx])) {
+        int bp_present = (bx >= 0 && bx < COLLISION_WIDTH && (g_bp_even[bx] || g_bp_odd[bx]));
+        if (bp_present) {
             g_clxdat |= (uint16_t)(1u << (spr + 1)); /* bitplane-sprite collision */
         }
+        if (sprite_behind && bp_present) continue; /* sprite behind playfield */
         if (x >= 0 && x < fb_w) FB_PutPixel(x, y, g_aga_palette[(palette_base + idx) & 0xFF]);
         if (!super_hires && (x + 1 >= 0 && x + 1 < fb_w)) {
             FB_PutPixel(x + 1, y, g_aga_palette[(palette_base + idx) & 0xFF]);
@@ -1687,23 +1831,71 @@ void chip_emu_render_frame(void)
     int y_end   = diw_v_stop;
 
     /* Interlace: BPLCON0 LACE bit doubles the vertical display area and
-     * fetches bitplanes from alternating line pairs.  We approximate by
-     * rendering each hardware line twice and using y/2 for the bitplane
-     * fetch.  Long/short fields are not modelled yet. */
+     * fetches bitplanes from alternating line pairs.  Long/short field
+     * alternation is tracked in g_interlace_field. */
     int lace = (g_bplcon0 >> 2) & 1u;
-    int y_step = lace ? 1 : 1;
     int y_display_end = lace ? y_end * 2 : y_end;
     if (y_display_end > (int)g_fb.height) y_display_end = (int)g_fb.height;
 
-    for (int y = y_start; y < y_display_end; y += y_step) {
+    for (int y = y_start; y < y_display_end; y++) {
         /* Copper and beam are still in hardware line coordinates. */
         int beam_y = lace ? (y / 2) : y;
+
+        /* Build the DMA slot table for this scanline. */
+        dma_slot_reset();
+        int copper_slots = 32; /* default copper budget per line */
+        if (g_dmacon & 0x0100u) {
+            int bpl_words = (bytes_per_row + 1) / 2;
+            if (bpl_words < 1) bpl_words = 1;
+            dma_slot_alloc(DMA_CHAN_BITPLANE, 0, bpl_words);
+        }
+        if (g_dmacon & 0x0020u) {
+            int spr_words = 0;
+            for (int s = 0; s < SPRITE_COUNT; s++) {
+                int vs = (g_spr_pos[s] >> 8) & 0xFF;
+                int ve = (g_spr_ctl[s] >> 8) & 0xFF;
+                if (ve < vs) ve += 0x100;
+                if (beam_y >= vs && beam_y < ve) spr_words += 2;
+            }
+            if (spr_words > 0) dma_slot_alloc(DMA_CHAN_SPRITE, 0, spr_words);
+        }
+        /* Any slots left after refresh are given to the copper. */
+        int free_slots = dma_slot_count(DMA_CHAN_COUNT);
+        if (free_slots < copper_slots) copper_slots = free_slots;
+        if (copper_slots > 0) dma_slot_alloc(DMA_CHAN_COPPER, 0, copper_slots);
+
+        /* Blitter slot consumption: if the blitter is still busy, give it any
+         * remaining slots and decrement the outstanding word count. */
+        if (g_blitter_busy && g_blitter_words_remaining > 0) {
+            int blit_slots = dma_slot_count(DMA_CHAN_COUNT);
+            if (blit_slots > g_blitter_words_remaining) blit_slots = g_blitter_words_remaining;
+            if (blit_slots > 0) {
+                dma_slot_alloc(DMA_CHAN_BLITTER, 0, blit_slots);
+                g_blitter_words_remaining -= blit_slots;
+            }
+            if (g_blitter_words_remaining <= 0) {
+                g_blitter_busy = 0;
+                g_blitter_words_remaining = 0;
+            }
+        }
+
+        /* Mark remaining slots as CPU slots and count stolen cycles. */
+        int cpu_slots = 0;
+        for (int i = 0; i < g_dma_slots_per_line; i++) {
+            if (g_dma_slots[i] == DMA_CHAN_COUNT) {
+                g_dma_slots[i] = DMA_CHAN_CPU;
+                cpu_slots++;
+            }
+        }
+        g_cpu_stolen_cycles += (uint64_t)(g_dma_slots_per_line - cpu_slots); /* each stolen slot is ~4 CPU cycles */
+
         g_vposr = (uint16_t)beam_y;
         g_vhposr = 0;
-        copper_run_to_beam(beam_y, 0);
+        copper_run_to_beam(beam_y, 0, copper_slots);
 
         if (g_dmacon & 0x0100u) {
-            render_scanline(y, beam_y, x_start, fetch_pixels, bytes_per_row);
+            int fetch_y = lace ? ((y + g_interlace_field) / 2) : y;
+            render_scanline(y, fetch_y, x_start, fetch_pixels, bytes_per_row);
         }
         render_sprites_on_scanline(y, bytes_per_row);
     }
@@ -1769,6 +1961,7 @@ void chip_emu_reset(void)
 
     g_bltcon0 = 0;
     g_bltcon1 = 0;
+    g_bltsize = 0;
     g_bltafwm = 0xFFFFu;
     g_bltalwm = 0xFFFFu;
     g_bltapt = 0;
@@ -1784,6 +1977,7 @@ void chip_emu_reset(void)
     g_bltcdat = 0;
     g_blitter_busy = 0;
     g_blitter_busy_ticks = 0;
+    g_blitter_words_remaining = 0;
 
     for (int i = 0; i < AUDIO_CHANNELS; i++) {
         g_audio[i].ptr = 0;
@@ -1810,6 +2004,7 @@ void chip_emu_reset(void)
     g_vblank_count = 0;
     g_frame_counter = 0;
     g_chip_mode = CHIP_MODE_PAL;
+    g_interlace_field = 0;
 }
 
 /* Return the current power-LED state (1 = on, 0 = off).
@@ -1817,4 +2012,128 @@ void chip_emu_reset(void)
 int chip_emu_power_led(void)
 {
     return (g_cia_a.ddra & 0x08u) ? (((g_cia_a.pra >> 3) & 1u) == 0) : 1;
+}
+
+/* Test helper for the DMA slot allocator: build a copper list with more MOVE
+ * instructions than the per-line slot budget allows, run one frame, and
+ * return 1 if the copper stalled before reaching the end-of-list WAIT.
+ * This uses a scratch area at guest RAM offset 0x10000. */
+int chip_emu_dma_test(void)
+{
+    uint32_t list_addr = 0x10000u;
+    if (list_addr + 512 > GUEST_RAM_SIZE) return 0;
+
+    for (int i = 0; i < 120; i++) {
+        g_ram[list_addr + i * 4 + 0] = 0x01;
+        g_ram[list_addr + i * 4 + 1] = 0x80; /* COLOR00 register */
+        g_ram[list_addr + i * 4 + 2] = (uint8_t)(i & 0xFF);
+        g_ram[list_addr + i * 4 + 3] = 0;
+    }
+    /* End-of-list impossible WAIT. */
+    g_ram[list_addr + 120 * 4 + 0] = 0xFF;
+    g_ram[list_addr + 120 * 4 + 1] = 0xFE;
+    g_ram[list_addr + 120 * 4 + 2] = 0xFF;
+    g_ram[list_addr + 120 * 4 + 3] = 0xFE;
+
+    g_cop1lc = list_addr;
+    g_copper_pc = list_addr;
+    g_dmacon |= 0x0080u; /* enable copper DMA */
+
+    uint32_t pc_before = g_copper_pc;
+    chip_emu_render_frame();
+    uint32_t pc_after = g_copper_pc;
+
+    /* The copper should have advanced, but it must not have reached the end
+     * of the 121-instruction list in a single 32-slot line. */
+    return (pc_after > pc_before) && (pc_after < list_addr + 120 * 4);
+}
+
+/* Test helper for Blitter line mode: draw a diagonal line from (10,10) to
+ * (20,18) using the Amiga octant/delta encoding and check that the destination
+ * word contains some set bits.  Returns 1 on success. */
+int chip_emu_line_test(void)
+{
+    uint32_t dst = 0x11000u;
+    if (dst + 1024 > GUEST_RAM_SIZE) return 0;
+
+    /* Clear destination bitmap. */
+    for (int i = 0; i < 1024; i++) g_ram[dst + i] = 0;
+
+    /* Line (10,10) -> (20,18): dx=10, dy=8, octant 0 (positive x, positive y,
+     * x major).  BLTBMOD = 2*dy = 16, BLTAMOD = 2*dy - 2*dx = -4. */
+    g_bltapt = (uint32_t)((10u << 8) | 10u);
+    g_bltdpt = dst;
+    g_bltdmod = 40;
+    g_bltamod = (uint16_t)(int16_t)(-4);
+    g_bltbmod = 16;
+    g_bltcon0 = 0x0B00u; /* use D only, minterm irrelevant */
+    g_bltcon1 = 0x0011u; /* LINE=1, octant 0 */
+    g_bltsize = 0;
+    g_blitter_words_remaining = 0;
+    g_blitter_busy = 0;
+
+    /* Trigger the blitter via BLTSIZE. */
+    chip_emu_write(REG_BLTSIZE, 0, 2); /* dummy BLTSIZE - line mode ignores size */
+
+    /* Wait for slot-based blitter to finish. */
+    for (int i = 0; i < 1000 && g_blitter_busy; i++) {
+        chip_emu_render_frame();
+    }
+
+    /* Check that at least one bit was set in the destination. */
+    for (int i = 0; i < 1024; i++) {
+        if (g_ram[dst + i] != 0) return 1;
+    }
+    return 0;
+}
+
+/* Test helper for Blitter exclusive fill mode: fill between two vertical edges.
+ * A row with left edge at bit 4 and right edge at bit 12 should produce filled
+ * bits 5-11 (exclusive fill leaves the edge bits unset).  Returns 1 on success. */
+int chip_emu_fill_test(void)
+{
+    uint32_t src = 0x12000u;
+    uint32_t dst = 0x12100u;
+    if (src + 512 > GUEST_RAM_SIZE || dst + 512 > GUEST_RAM_SIZE) return 0;
+
+    /* One source row: edge at bit 4 and bit 12. */
+    g_ram[src + 0] = 0x00; g_ram[src + 1] = 0x00;
+    g_ram[src + 2] = 0x0F; g_ram[src + 3] = 0x00; /* bits 12-15 set */
+    /* Wait, bit 4 is in the low byte?  Let's use bit 4 in first word. */
+    g_ram[src + 0] = 0x10; /* bit 4 */
+    g_ram[src + 1] = 0x00;
+    g_ram[src + 2] = 0x0F; /* bits 12-15 */
+    g_ram[src + 3] = 0x00;
+
+    /* Clear destination. */
+    for (int i = 0; i < 16; i++) g_ram[dst + i] = 0;
+
+    g_bltapt = src;
+    g_bltdpt = dst;
+    g_bltamod = 0;
+    g_bltdmod = 0;
+    g_bltafwm = 0xFFFFu;
+    g_bltalwm = 0xFFFFu;
+    g_bltcon0 = 0x0F00u; /* use A, B, C, D? For fill we need A only */
+    g_bltcon0 = 0x0900u; /* use A and D */
+    g_bltcon1 = 0x0010u; /* EFE exclusive fill */
+    g_bltsize = 0;
+    g_blitter_words_remaining = 0;
+    g_blitter_busy = 0;
+
+    /* Width=2 words, height=1 line. */
+    chip_emu_write(REG_BLTSIZE, (2 << 6) | 1, 2);
+
+    for (int i = 0; i < 1000 && g_blitter_busy; i++) {
+        chip_emu_render_frame();
+    }
+
+    /* In exclusive fill, the edge bits (4 and 12-15) should be unset and the
+     * interior bits (5-11) should be set. */
+    uint16_t d0 = (uint16_t)((g_ram[dst + 0] << 8) | g_ram[dst + 1]);
+    uint16_t d1 = (uint16_t)((g_ram[dst + 2] << 8) | g_ram[dst + 3]);
+    /* d0 should have bits 5-15 set (interior up to bit 15), d1 should have
+     * bits 0-11 set.  Because the edge at bit 12 is in d1, the interior in d1
+     * is bits 0-11. */
+    return (d0 == 0xFFE0u && d1 == 0x0FFFu);
 }

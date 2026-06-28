@@ -23,6 +23,10 @@ void     chip_emu_render_frame(void);
 void     chip_emu_reset(void);
 int      chip_emu_power_led(void);
 void     chip_emu_poll_ps2_keyboard(void);
+uint64_t chip_emu_m68k_cycles(void);
+int      chip_emu_dma_test(void);
+int      chip_emu_line_test(void);
+int      chip_emu_fill_test(void);
 
 /* Tier 4: VBlank timing */
 void     chip_emu_vblank(void);

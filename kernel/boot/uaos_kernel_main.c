@@ -302,6 +302,9 @@ extern void UAOS_LoadableLib_Init(void);
 extern void FB_Init(uint32_t mb2_info_phys);
 extern void chip_emu_reset(void);
 extern void audio_init(void);
+extern int chip_emu_dma_test(void);
+extern int chip_emu_line_test(void);
+extern int chip_emu_fill_test(void);
 extern void Desktop_Draw(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
 extern unsigned int g_fb_width_irq;
@@ -355,6 +358,19 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Initialise host audio subsystem */
     kprint("[BOOT] Initialising audio subsystem...\n");
     audio_init();
+
+    /* Run DMA slot-arbitration test */
+    kprint("[BOOT] Running DMA slot test...\n");
+    int dma_test = chip_emu_dma_test();
+    kprint(dma_test ? "[BOOT] DMA slot test PASSED\n" : "[BOOT] DMA slot test FAILED\n");
+
+    /* Run Blitter line and fill tests */
+    kprint("[BOOT] Running Blitter line test...\n");
+    int line_test = chip_emu_line_test();
+    kprint(line_test ? "[BOOT] Blitter line test PASSED\n" : "[BOOT] Blitter line test FAILED\n");
+    kprint("[BOOT] Running Blitter fill test...\n");
+    int fill_test = chip_emu_fill_test();
+    kprint(fill_test ? "[BOOT] Blitter fill test PASSED\n" : "[BOOT] Blitter fill test FAILED\n");
 
     /* Initialise MMU sandbox — bare-metal only */
     kprint("[BOOT] Initialising MMU sandbox...\n");

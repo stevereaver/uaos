@@ -145,6 +145,7 @@ static uint8_t g_default_ram[GUEST_RAM_SIZE] __attribute__((section(".guest_ram"
 uint8_t *g_ram = g_default_ram;
 int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
+uint64_t g_m68k_cycles  = 0;  /* cumulative M68k cycles executed */
 
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */
@@ -260,9 +261,12 @@ unsigned int m68k_read_memory_32(unsigned int addr)
     return 0xFFFFFFFF;
 }
 
-/* Compiler barrier to ensure M68k writes to guest RAM are visible to the
- * chipset emulator and instruction fetch before any subsequent reads. */
-#define GUEST_WRITE_BARRIER() __asm__ volatile("" ::: "memory")
+/* Memory barrier to ensure M68k writes to guest RAM are visible to the
+ * chipset emulator and instruction fetch before any subsequent reads.
+ * On x86 this uses a full memory fence (mfence); for other host CPUs the
+ * macro would need to be replaced with the appropriate cache-coherence
+ * primitive. */
+#define GUEST_WRITE_BARRIER() __asm__ volatile("mfence" ::: "memory")
 
 void m68k_write_memory_8(unsigned int addr, unsigned int val)
 {
@@ -3066,6 +3070,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     int slices = 0;
     while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
         m68k_execute(1000000);
+        g_m68k_cycles += (uint64_t)m68k_cycles_run();
         UAOS_Intuition_PostIntuiTicks();
         slices++;
     }
