@@ -185,9 +185,16 @@ VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive th
 
 ### Paula Audio
 
-Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_tick()` advances the DMA pointer each time the period counter expires, emulating sample fetch.
+Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_advance()` advances the DMA pointer by a configurable number of Amiga master-clock cycles, fetching the next 16-bit word when the period counter expires so the high byte is played first, then the low byte.
 
-A new host audio subsystem lives in `kernel/audio/`.  `audio_init()` sets up the PC speaker backend, and `audio_tick()` (called every PIT tick) mixes the Paula channels, applies a one-pole LED-style low-pass filter to each channel, and drives the PC speaker with a square wave derived from the loudest active channel.  The PC speaker is low-fidelity and cannot reproduce real waveforms; it is a stop-gap until an HDAC/AC97/Intel HDA backend is added.
+A host audio subsystem in `kernel/audio/` provides a 48 kHz stereo mixer and a pluggable backend interface (`AudioBackend`).
+
+- `audio_init()` probes backends in order: AC97 first, PC speaker as a fallback.
+- `audio_tick()` (called every PIT tick) generates 480 stereo frames per tick and writes them to a lock-free ring buffer.  The active backend's `service()` routine consumes from the ring buffer.
+- The mixer resamples the four Paula channels to a fixed 48 kHz output, applies per-channel `AUDxVOL` (0–64), applies the one-pole LED-style low-pass filter, and pans channels 0/2 to the left and 1/3 to the right.  Output is clamped to signed 16-bit.
+- The AC97 backend (`kernel/audio/ac97.c`) uses the Intel ICH AC97 controller (PCI class 0x04/0x01/0x00), double-buffered DMA descriptors, and a 48 kHz 16-bit stereo stream.
+- The PC speaker backend (`kernel/audio/pc_speaker.c`) remains as a low-fidelity fallback.
+- Boot-time tests `audio_sine_test()` and `audio_pattern_test()` set up a Paula channel with a sine wave and verify the mixer path is active.
 
 ### CIA-A and CIA-B
 
@@ -280,15 +287,62 @@ Two boot-time tests exercise the new Blitter code:
 
 Both tests are invoked from `uaos_kernel_main()` and print `PASSED`/`FAILED`.
 
+### Beam Position Derived from Color Clock
+
+`VPOSR`/`VHPOSR` reads and the Copper `WAIT` logic now derive the beam position from the M68k cycle counter, which is treated as the Amiga color clock:
+
+- PAL color clock is ~7.09 MHz, NTSC is ~7.16 MHz.  These are the same frequencies as the M68k CPU on real Amigas.
+- `beam_cycles_now()` returns the elapsed M68k cycles since the start of the current frame.
+- `beam_position_from_cycles()` converts the elapsed color-clock ticks into a vertical line (`VPOSR`) and horizontal counter (`VHPOSR`).
+- `VPOSR` reads return the vertical line with the AGA identifier in bit 15.
+- `VHPOSR` reads return the horizontal counter and the extra vertical bit.
+- `copper_run_to_beam()` now queries the color-clock beam position internally, so `WAIT` comparisons happen against the real color-clock beam rather than the 100 Hz PIT approximation.
+- `chip_emu_vblank()` recomputes the color-clock parameters after any field change and resets the frame-start cycle counter, so the next frame is aligned to the color-clock boundary.
+- Horizontal blanking and display-region boundaries are not yet modelled; the beam counter runs continuously across the entire line.
+
+A boot-time test, `chip_emu_raster_test()`, builds a small copper list that `WAIT`s for line 100 and line 110, changes `COLOR00` each time, and verifies that the second color was written.  The test is invoked from `uaos_kernel_main()` and prints `PASSED` or `FAILED`.
+
+### Full AGA Sprite Control
+
+Sprite rendering has been upgraded to support AGA resolution, colour bank, and priority semantics:
+
+- **Sprite resolution** is decoded from `BPLCON3` bits 10-12 (`SPRES`):
+  - `000` = ECS/OCS lores (16 sprite pixels, 2 lores pixels each)
+  - `001` = lores (same as ECS/OCS)
+  - `010` = hires (32 sprite pixels, 1 lores pixel each)
+  - `011` = superhires (64 sprite pixels, 1 lores pixel each)
+- **Sprite colour bank** is selected by `BPLCON3` bits 13-15, giving the sprite palette base `16 + bank * 16`.
+- **Per-sprite playfield priority** is implemented from `BPLCON2` bits 8-12, mapped to sprite pairs (SP0 -> pair 0, SP1 -> pair 1, ...).  When a pair's SP bit is set, those sprites are drawn behind the bitplanes.
+- **Attached-pair colour expansion** now uses the correct even/odd pair member (e.g. sprite 0 attaches to sprite 1, sprite 2 to sprite 3, etc.).  In AGA superhires/attached mode, a fifth bit is added from the pair index to reach 32 colours.
+- **Sprite transparency** is honoured: pixels with `DATA`/`DATB` index `0` are skipped (transparent) unless the sprite is attached.  Sprite pixels are drawn with the normal palette lookup, so they remain visible against HAM and EHB backgrounds.
+- **Sprite DMA fetch control** reads `DATA`/`DATB` words only between the sprite's vertical start and vertical stop.  The DMA pointer is reset to `SPRnPT` at the start of each frame.
+- **Display-window clipping** clips sprite pixels to the DIW horizontal bounds.
+
+A boot-time test, `chip_emu_sprite_test()`, sets up a low-res sprite with a known `DATA`/`DATB` pattern, enables sprite DMA, renders one line, and verifies the DMA-fetched data.  It is invoked from `uaos_kernel_main()` and prints `PASSED` or `FAILED`.
+
+### High-Quality Paula Audio Output
+
+The PC speaker stop-gap has been replaced with a real PCM DAC backend and an abstracted audio pipeline:
+
+- `kernel/audio/audio.h` defines the `AudioBackend` interface (`init`, `service`, `shutdown`, `name`).
+- `audio_init()` probes `audio_backend_ac97` first; if the Intel ICH AC97 controller (PCI class 0x04/0x01/0x00) is not found, it falls back to `audio_backend_pcspk`.
+- `audio.c` produces a fixed 48 kHz stereo mix into a 16384-frame ring buffer.  The mixer advances the Paula DMA state with the exact PAL Amiga master-clock delta per sample (≈73.9 cycles/sample) and applies volume, LED filtering, and panning.
+- `kernel/audio/ac97.c` uses double-buffered bus-master descriptors (two 2048-sample halves) so the mixer can fill one half while the hardware plays the other.
+- `kernel/audio/pc_speaker.c` remains as a low-fidelity fallback that drives the PIT channel 2 square wave at the 100 Hz tick rate.
+- `audio_sine_test()` and `audio_pattern_test()` are invoked from `uaos_kernel_main()` after `audio_init()` to verify the Paula→mixer→backend path.
+
 ### What Remains for True 100% / UAE-Level Compatibility
 
 - **Accurate DMA slot table** aligned with the real Agnus slot layout (bitplane/Copper/sprite/audio/disk slots at specific horizontal positions, refresh slot timing, and DMA-off cycles).
 - **Blitter line/area-fill remaining edge cases** such as real line-mode texture/B channel usage, exact `BLTAPTL` accumulator loading, and per-pixel DMA slot timing for the actual data transfer.
-- **Beam position derived from color clock** rather than the 100 Hz PIT approximation.
-- **Full AGA sprite control** bits (exact resolution selection, HAM sprite interactions, per-sprite SP priority).
-- **High-quality Paula audio output** via HDAC/AC97/Intel HDA instead of the PC speaker stop-gap.
+- **AGA sprite fine details** such as exact superhires pixel scaling, border sprites, and sprite-to-sprite priority ordering.
 - **Real MFM floppy controller** emulation, `DSKSYNC`-based transfer start, and loading ADF images from disk.
 - **Host parallel port** bidirectional I/O and full Amiga serial port emulation (baud-rate control, break, status bits).
-- **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention.
+- **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.
+- **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
+- **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.
+- **Real MFM floppy controller** emulation, `DSKSYNC`-based transfer start, and loading ADF images from disk.
+- **Host parallel port** bidirectional I/O and full Amiga serial port emulation (baud-rate control, break, status bits).
+- **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.
 - **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
 - **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.

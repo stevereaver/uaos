@@ -176,9 +176,9 @@ void timer_ProcessTicks(void)
 {
     g_tick_counter++;
 
-    /* Advance chipset beam position and subsystems every PIT tick. */
+    /* Advance chipset beam position and subsystems every PIT tick.
+     * Paula audio DMA is advanced internally by the 48 kHz mixer. */
     chip_emu_beam_tick(g_tick_counter);
-    chip_emu_audio_tick();
     chip_emu_cia_tick();
     audio_tick();
     chip_emu_poll_ps2_keyboard();

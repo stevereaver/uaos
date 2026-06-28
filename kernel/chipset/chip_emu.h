@@ -27,6 +27,8 @@ uint64_t chip_emu_m68k_cycles(void);
 int      chip_emu_dma_test(void);
 int      chip_emu_line_test(void);
 int      chip_emu_fill_test(void);
+int      chip_emu_raster_test(void);
+int      chip_emu_sprite_test(void);
 
 /* Tier 4: VBlank timing */
 void     chip_emu_vblank(void);
@@ -37,7 +39,11 @@ void     chip_emu_beam_tick(uint32_t tick_counter);
 void     chip_emu_cia_tick(void);
 
 /* Tier 5: Paula audio */
-void     chip_emu_audio_tick(void);
-uint16_t chip_emu_audio_sample(int ch);
+void     chip_emu_audio_tick(void);          /* legacy one-tick stub */
+void     chip_emu_audio_advance(uint32_t amiga_cycles);
+int8_t   chip_emu_audio_sample_8bit(int ch);
+uint8_t  chip_emu_audio_volume(int ch);
+void     chip_emu_audio_set_channel(int ch, uint32_t ptr, uint16_t len, uint16_t per, uint16_t vol);
+void     chip_emu_audio_set_dmacon(uint16_t dmacon);
 
 #endif /* UAOS_CHIP_EMU_H */

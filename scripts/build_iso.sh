@@ -348,6 +348,8 @@ for src in \
     "${REPO_ROOT}/kernel/chipset/chip_emu.c" \
     "${REPO_ROOT}/kernel/audio/audio.c" \
     "${REPO_ROOT}/kernel/audio/pc_speaker.c" \
+    "${REPO_ROOT}/kernel/audio/ac97.c" \
+    "${REPO_ROOT}/kernel/audio/audio_test.c" \
     "${REPO_ROOT}/emulation/uaos_uae_bridge.c" \
     "${REPO_ROOT}/kernel/dos/ramfs.c" \
     "${REPO_ROOT}/kernel/dos/vfs.c" \
@@ -630,6 +632,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/chip_emu.o" \
     "${BUILD_DIR}/obj/audio.o" \
     "${BUILD_DIR}/obj/pc_speaker.o" \
+    "${BUILD_DIR}/obj/ac97.o" \
+    "${BUILD_DIR}/obj/audio_test.o" \
     "${BUILD_DIR}/obj/uaos_uae_bridge.o" \
     "${BUILD_DIR}/obj/ramfs.o" \
     "${BUILD_DIR}/obj/vfs.o" \

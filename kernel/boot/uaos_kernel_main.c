@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include "../display/framebuffer.h"
 #include "../display/desktop.h"
+#include "../audio/audio.h"
 #include "../display/cursor.h"
 #include "../display/shell_win.h"
 #include "../display/user_window.h"
@@ -302,10 +303,15 @@ extern void UAOS_LoadableLib_Init(void);
 extern void FB_Init(uint32_t mb2_info_phys);
 extern void chip_emu_reset(void);
 extern void audio_init(void);
+extern void audio_sine_test(void);
+extern void audio_pattern_test(void);
 extern int chip_emu_dma_test(void);
 extern int chip_emu_line_test(void);
 extern int chip_emu_fill_test(void);
+extern int chip_emu_raster_test(void);
+extern int chip_emu_sprite_test(void);
 extern void Desktop_Draw(void);
+extern void uaos_page_fault_isr(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
 extern unsigned int g_fb_width_irq;
 extern unsigned int g_fb_height_irq;
@@ -355,9 +361,34 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Resetting AGA chipset state...\n");
     chip_emu_reset();
 
+    /* Initialise MMU sandbox — bare-metal only.
+     *
+     * Must be active before any code touches the linear framebuffer, because
+     * the Multiboot2-provided framebuffer address can sit above the first
+     * 1 GB (e.g. VirtualBox maps the VGA LFB at 0x80000000) while the
+     * bootstrap page tables only identity-map the first 1 GB.  Installing the
+     * sandbox here gives us a full 4 GB identity map including the FB region. */
+    kprint("[BOOT] Initialising MMU sandbox...\n");
+    UAOS_MMU_Init();
+    kprint("[BOOT] MMU sandbox active.\n");
+
     /* Initialise host audio subsystem */
     kprint("[BOOT] Initialising audio subsystem...\n");
     audio_init();
+    const char *backend_name = audio_backend_name();
+    if (backend_name) {
+        kprint("[BOOT] Audio backend: ");
+        kprint(backend_name);
+        kprint("\n");
+    } else {
+        kprint("[BOOT] WARNING: no audio backend available.\n");
+    }
+
+    /* Run audio subsystem tests */
+    kprint("[BOOT] Running audio sine-wave test...\n");
+    audio_sine_test();
+    kprint("[BOOT] Running audio pattern test...\n");
+    audio_pattern_test();
 
     /* Run DMA slot-arbitration test */
     kprint("[BOOT] Running DMA slot test...\n");
@@ -372,10 +403,15 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     int fill_test = chip_emu_fill_test();
     kprint(fill_test ? "[BOOT] Blitter fill test PASSED\n" : "[BOOT] Blitter fill test FAILED\n");
 
-    /* Initialise MMU sandbox — bare-metal only */
-    kprint("[BOOT] Initialising MMU sandbox...\n");
-    UAOS_MMU_Init();
-    kprint("[BOOT] MMU sandbox active.\n");
+    /* Run color-clock raster test */
+    kprint("[BOOT] Running color-clock raster test...\n");
+    int raster_test = chip_emu_raster_test();
+    kprint(raster_test ? "[BOOT] Color-clock raster test PASSED\n" : "[BOOT] Color-clock raster test FAILED\n");
+
+    /* Run AGA sprite test */
+    kprint("[BOOT] Running AGA sprite test...\n");
+    int sprite_test = chip_emu_sprite_test();
+    kprint(sprite_test ? "[BOOT] AGA sprite test PASSED\n" : "[BOOT] AGA sprite test FAILED\n");
 
     /* Register all built-in ROM library modules */
     kprint("[BOOT] Registering ROM modules...\n");
@@ -538,6 +574,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Initialising PIC...\n");
     PIC_Init();
     /* PIT is programmed and unmasked later, after its handler is registered */
+
+    /* Register the custom chip-window page fault handler (vector 14).
+     * The generic stub is replaced so M68k accesses to 0x00B00000-0x00DFFFFF
+     * are decoded and forwarded to the AGA/ECS emulator. */
+    IDT_SetRawHandler(14, uaos_page_fault_isr);
 
     /* Register VirtIO interrupt handler (must be after IDT/PIC init) */
     kprint("[BOOT] Registering VirtIO IRQ...\n");

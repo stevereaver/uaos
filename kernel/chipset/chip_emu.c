@@ -292,6 +292,43 @@ static int g_chip_mode;
 static int g_interlace_field;
 
 /* =========================================================================
+ * Color-clock beam position
+ *
+ * The Amiga color clock is the same frequency as the M68k CPU clock:
+ *   PAL  ~7.093790 MHz  ->  454.0 color clocks per line,  312/313 lines/frame
+ *   NTSC ~7.159545 MHz  ->  455.0 color clocks per line,  262/263 lines/frame
+ * We treat the M68k cycle counter as color-clock ticks and derive the beam
+ * position from the elapsed cycles since the last VBlank.
+ * ========================================================================= */
+#define COLOR_CLOCK_PAL_HZ  7093790u
+#define COLOR_CLOCK_NTSC_HZ 7159545u
+#define PAL_LINES_PER_FRAME 312
+#define NTSC_LINES_PER_FRAME 262
+
+static uint32_t g_cycles_per_line;      /* color clocks per scanline */
+static uint32_t g_cycles_per_frame;     /* color clocks per frame */
+static uint64_t g_cycles_at_vblank;      /* M68k cycle count at last VBlank */
+static uint64_t g_cycles_at_frame_start; /* M68k cycle count at current frame start */
+
+/* Return the current beam position in color-clock ticks relative to the start
+ * of the current frame. */
+static uint64_t beam_cycles_now(void)
+{
+    uint64_t now = chip_emu_m68k_cycles();
+    if (now < g_cycles_at_frame_start) return 0;
+    return now - g_cycles_at_frame_start;
+}
+
+/* Compute (vpos, hpos) from color-clock ticks. */
+static void beam_position_from_cycles(uint64_t cycles, int *vpos, int *hpos)
+{
+    if (g_cycles_per_line == 0) { *vpos = 0; *hpos = 0; return; }
+    uint64_t c = cycles % (uint64_t)g_cycles_per_frame;
+    *vpos = (int)(c / g_cycles_per_line);
+    *hpos = (int)(c % g_cycles_per_line);
+}
+
+/* =========================================================================
  * Cycle-accurate DMA slot arbitration (first pass)
  *
  * PAL has ~226 DMA slots per line; NTSC has fewer.  The table below is a
@@ -402,6 +439,7 @@ typedef struct {
     uint16_t vol;
     uint16_t dat;
     uint16_t counter;
+    uint8_t  byte_sel;  /* 0 = high byte of dat, 1 = low byte */
     uint8_t  dma_on;
 } AudioChannel;
 static AudioChannel g_audio[AUDIO_CHANNELS];
@@ -772,8 +810,18 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
         case REG_INTREQ: value = g_intreq; break;
         case REG_ADKCON: value = g_adkcon; break;
 
-        case REG_VPOSR:   value = g_vposr | 0x8000u; break; /* AGA identifier in bit 15 */
-        case REG_VHPOSR:  value = g_vhposr; break;
+        case REG_VPOSR: {
+            int v, h;
+            beam_position_from_cycles(beam_cycles_now(), &v, &h);
+            value = ((uint32_t)(v & 0xFF) << 8) | 0x8000u; /* AGA id + vertical */
+            break;
+        }
+        case REG_VHPOSR: {
+            int v, h;
+            beam_position_from_cycles(beam_cycles_now(), &v, &h);
+            value = (uint32_t)(v & 0x100u) | ((uint32_t)(h & 0xFF) << 0);
+            break;
+        }
         case REG_DENISEID: value = 0x00F8u; break;          /* AGA Denise/Lisa ID */
 
         case REG_BPLCON0: value = g_bplcon0; break;
@@ -1090,6 +1138,15 @@ static void blitter_execute(uint16_t size)
  * Tier 4 — VBlank / beam timing
  * ========================================================================= */
 
+static void update_color_clock_params(void)
+{
+    int lines = (g_chip_mode == CHIP_MODE_NTSC) ? NTSC_LINES_PER_FRAME : PAL_LINES_PER_FRAME;
+    if (g_bplcon0 & 0x0004u) lines += 1; /* interlace short field */
+    uint32_t hz = (g_chip_mode == CHIP_MODE_NTSC) ? COLOR_CLOCK_NTSC_HZ : COLOR_CLOCK_PAL_HZ;
+    g_cycles_per_line = hz / 50 / lines;
+    g_cycles_per_frame = g_cycles_per_line * (uint32_t)lines;
+}
+
 void chip_emu_vblank(void)
 {
     g_vblank_count++;
@@ -1100,6 +1157,10 @@ void chip_emu_vblank(void)
     } else {
         g_interlace_field = 0;
     }
+    /* Recompute color-clock parameters after field change. */
+    update_color_clock_params();
+    /* Align frame start to the color-clock boundary. */
+    g_cycles_at_frame_start = chip_emu_m68k_cycles();
     /* Set VBlank interrupt request (INTREQ bit 5). */
     g_intreq |= 0x0020u;
     /* At VBlank, beam is at the top of the display. */
@@ -1108,18 +1169,16 @@ void chip_emu_vblank(void)
     chip_emu_update_irq();
 }
 
-/* Update beam position from the PIT tick path.  Called every PIT tick. */
+/* Update beam position from the PIT tick path.  Called every PIT tick.
+ * With color-clock timing, the beam is derived on demand from the M68k
+ * cycle counter; this function just keeps the legacy variables in sync. */
 void chip_emu_beam_tick(uint32_t tick_counter)
 {
-    int base_lines = (g_chip_mode == CHIP_MODE_NTSC) ? 262 : 312;
-    /* Interlace alternates long/short fields: PAL 312/313, NTSC 262/263. */
-    int lines_per_frame = base_lines + ((g_bplcon0 & 0x0004u) ? g_interlace_field : 0);
-    /* PIT is 100 Hz.  PAL frame = 20 ms = 2 ticks.  NTSC frame = ~16.67 ms = 5/3 ticks. */
-    uint32_t ticks_per_frame = (g_chip_mode == CHIP_MODE_NTSC) ? 5u : 2u;
-    uint32_t tick_within_frame = tick_counter % ticks_per_frame;
-    uint32_t lines = (uint32_t)lines_per_frame * tick_within_frame / ticks_per_frame;
-    g_vposr = (uint16_t)lines;
-    g_vhposr = 0;
+    (void)tick_counter;
+    int v, h;
+    beam_position_from_cycles(beam_cycles_now(), &v, &h);
+    g_vposr = (uint16_t)(v & 0xFFu);
+    g_vhposr = (uint16_t)(h & 0xFFu);
 }
 
 uint32_t chip_emu_vblank_count(void)
@@ -1315,15 +1374,57 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
     }
 }
 
-/* Return the most recent sample value for a Paula audio channel. */
-uint16_t chip_emu_audio_sample(int ch)
+/* Return the current 8-bit signed sample for a Paula audio channel.
+ * The high byte of the current 16-bit DMA word is played first, then the
+ * low byte. */
+int8_t chip_emu_audio_sample_8bit(int ch)
 {
     if (ch < 0 || ch >= AUDIO_CHANNELS) return 0;
-    return g_audio[ch].dat;
+    const AudioChannel *a = &g_audio[ch];
+    uint16_t word = a->dat;
+    if (a->byte_sel == 0) {
+        return (int8_t)((word >> 8) & 0xFFu);
+    } else {
+        return (int8_t)(word & 0xFFu);
+    }
 }
 
-/* Advance Paula audio DMA. Called from the PIT tick path. */
-void chip_emu_audio_tick(void)
+/* Return the current volume (0-64) for a Paula audio channel. */
+uint8_t chip_emu_audio_volume(int ch)
+{
+    if (ch < 0 || ch >= AUDIO_CHANNELS) return 0;
+    return (uint8_t)(g_audio[ch].vol & 0x3Fu);
+}
+
+/* Directly configure a Paula audio channel (used by tests that run before the
+ * chip-window page fault handler is installed). */
+void chip_emu_audio_set_channel(int ch, uint32_t ptr, uint16_t len, uint16_t per, uint16_t vol)
+{
+    if (ch < 0 || ch >= AUDIO_CHANNELS) return;
+    AudioChannel *a = &g_audio[ch];
+    a->ptr = ptr;
+    a->len = len;
+    a->per = per;
+    a->counter = per;
+    a->vol = (uint16_t)(vol & 0x3Fu);
+    a->byte_sel = 0;
+    /* Fetch the first word so the channel starts immediately. */
+    if (a->ptr + 1 < GUEST_RAM_SIZE) {
+        a->dat = chip_read_u16(a->ptr);
+    }
+}
+
+/* Directly set the audio DMA control word (master enable + channel enables). */
+void chip_emu_audio_set_dmacon(uint16_t dmacon)
+{
+    g_dmacon = dmacon;
+}
+
+/* Advance Paula audio DMA by a given number of Amiga master-clock cycles.
+ * Each channel counts down its period; when it expires the next byte of the
+ * current DMA word is played, and after the low byte the next word is fetched.
+ */
+void chip_emu_audio_advance(uint32_t amiga_cycles)
 {
     if (!(g_dmacon & 0x0200u)) return; /* master DMA disabled */
 
@@ -1332,22 +1433,42 @@ void chip_emu_audio_tick(void)
         AudioChannel *a = &g_audio[ch];
         if (!a->per || a->len == 0) continue;
 
-        if (a->counter > 0) a->counter--;
-        if (a->counter == 0) {
-            a->counter = a->per;
-            if (a->ptr + 1 < GUEST_RAM_SIZE) {
-                a->dat = chip_read_u16(a->ptr);
+        uint32_t remaining = amiga_cycles;
+        while (remaining > 0) {
+            if (a->counter > remaining) {
+                a->counter -= (uint16_t)remaining;
+                break;
             }
-            a->ptr += 2;
-            if (a->len > 0) a->len--;
-            if (a->len == 0) {
-                /* DMA restart: in real Paula this triggers an interrupt and reloads */
-                g_intreq |= (uint16_t)(0x0200u << ch); /* AUD0..AUD3 bits 9-12 */
-                chip_emu_update_irq();
-                a->len = 0;
+            remaining -= a->counter;
+            a->counter = a->per;
+
+            /* Toggle byte select.  After the low byte finishes, fetch the next word. */
+            if (a->byte_sel == 0) {
+                a->byte_sel = 1;
+            } else {
+                a->byte_sel = 0;
+                if (a->ptr + 1 < GUEST_RAM_SIZE) {
+                    a->dat = chip_read_u16(a->ptr);
+                }
+                a->ptr += 2;
+                if (a->len > 0) a->len--;
+                if (a->len == 0) {
+                    /* DMA restart: in real Paula this triggers an interrupt and reloads */
+                    g_intreq |= (uint16_t)(0x0200u << ch); /* AUD0..AUD3 bits 9-12 */
+                    chip_emu_update_irq();
+                }
             }
         }
     }
+}
+
+/* Legacy one-tick advance.  A tick is no longer tied to a fixed host rate,
+ * so this is kept only for callers that have not yet been converted. */
+void chip_emu_audio_tick(void)
+{
+    /* Approximate: one host PIT tick historically corresponded to one chip
+     * cycle in this stub, but real audio generation is now done by the mixer
+     * calling chip_emu_audio_advance() with the correct Amiga-clock delta. */
 }
 
 /* Advance CIA timers. Called from the PIT tick path. */
@@ -1414,8 +1535,11 @@ static int copper_wait_satisfied(int target_v, int target_h, int mask_v, int mas
  * supplied beam position is reached.  Returns 1 if the copper reached the
  * end-of-list impossible WAIT.  `copper_slots` is the number of DMA slots
  * the copper has been granted this line; each instruction consumes 2 slots. */
-static int copper_run_to_beam(int vpos, int hpos, int copper_slots)
+static int copper_run_to_beam(int copper_slots)
 {
+    int vpos, hpos;
+    beam_position_from_cycles(beam_cycles_now(), &vpos, &hpos);
+
     uint32_t pc = g_copper_pc;
     if (!pc) return 0;
 
@@ -1487,12 +1611,12 @@ void chip_emu_copper_jump(int list, uint32_t addr)
         if (addr) g_cop1lc = addr;
         g_copjmp1 = 1;
         g_copper_pc = g_cop1lc;
-        copper_run_to_beam(0, 0, 100); /* allow a burst at copper restart */
+        copper_run_to_beam(100); /* allow a burst at copper restart */
     } else if (list == 2) {
         if (addr) g_cop2lc = addr;
         g_copjmp2 = 1;
         g_copper_pc = g_cop2lc;
-        copper_run_to_beam(0, 0, 100);
+        copper_run_to_beam(100);
     }
 }
 
@@ -1661,7 +1785,7 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
 }
 
 /* Render one sprite strip for a single sprite on a scanline.
- * AGA sprites can be 16 or 64 pixels wide depending on BPLCON3. */
+ * AGA sprite resolution is selected by BPLCON3 bits 10-12 (SPRES). */
 static void render_sprite_strip(int spr, int y, int x_start)
 {
     int vstart = (g_spr_pos[spr] >> 8) & 0xFF;
@@ -1675,47 +1799,66 @@ static void render_sprite_strip(int spr, int y, int x_start)
     if (y < 0 || y >= fb_h) return;
 
     int attached = (g_spr_ctl[spr] >> 7) & 1u;
-    int aga_wide = (g_bplcon3 >> 10) & 1u; /* AGA 64-pixel enable heuristic */
-    int width = aga_wide ? 64 : 16;
-    int words = aga_wide ? 4 : 1;
+    int pair = spr / 2;
+    int attached_pair = (spr & 1u) ? (spr - 1) : (spr + 1);
+    /* AGA sprite resolution from BPLCON3 bits 10-12.
+     * 000 = ECS/OCS, 001 = lores (16 px), 010 = hires (32 px),
+     * 011 = superhires (64 px). */
+    int spres = (g_bplcon3 >> 10) & 0x7u;
+    int width, words, pix_scale;
+    switch (spres) {
+        case 2:  width = 32; words = 2; pix_scale = 1; break; /* hires */
+        case 3:  width = 64; words = 4; pix_scale = 1; break; /* superhires */
+        case 1:
+        case 0:
+        default: width = 16; words = 1; pix_scale = 2; break; /* lores / ECS */
+    }
     /* AGA 32-colour mode: BPLCON3 bits 13-15 select a 16-colour bank. */
     int aga_bank = (g_bplcon3 >> 13) & 0x7u;
     int palette_base = 16 + aga_bank * 16;
-    int aga_32col = aga_wide && ((g_bplcon3 >> 15) & 1u); /* heuristic 32-colour flag */
-    /* Super-hires sprites: BPLCON3 bit 9 heuristic halves the on-screen
-     * pixel width (1 low-res pixel per sprite pixel instead of 2). */
-    int super_hires = (g_bplcon3 >> 9) & 1u;
-    int pix_scale = super_hires ? 1 : 2;
-    int display_width = width / pix_scale;
-    /* Sprite-vs-playfield priority: BPLCON2 bits 8-12 (SP0-SP4) request that
-     * sprites be drawn behind the playfields.  We apply a global "behind"
-     * mode when any SP bit is set; per-sprite SP bits require AGA-specific
-     * priority logic that is not yet implemented. */
-    int sprite_behind = ((g_bplcon2 >> 8) & 0x1Fu) != 0;
+    int aga_32col = (spres == 3) && attached;
+    /* Per-sprite playfield priority: BPLCON2 bits 8-12 map to sprite pairs
+     * (SP0 -> pair 0, SP1 -> pair 1, ...).  When set, this sprite pair is
+     * drawn behind the playfields. */
+    int sprite_behind = (g_bplcon2 >> (8 + pair)) & 1u;
+
+    /* Display window clipping. */
+    int diw_x = (g_diwstart & 0xFF) - 0x80;
+    int diw_x_stop = (g_diwstop & 0xFF) + 0x80;
+    if (diw_x_stop < diw_x) diw_x_stop += 0x100;
 
     for (int bit = 0; bit < width; bit++) {
         int w = bit / 16;
         int b = 15 - (bit & 15);
         int idx = (g_spr_data[spr][w] >> b) & 1u;
         idx |= ((g_spr_datb[spr][w] >> b) & 1u) << 1;
-        if (idx == 0 && !attached) continue;
+        if (idx == 0 && !attached) continue; /* transparent pixel */
         if (attached) {
-            idx |= ((g_spr_data[spr ^ 1][w] >> b) & 1u) << 2;
-            idx |= ((g_spr_datb[spr ^ 1][w] >> b) & 1u) << 3;
+            /* Attached pair: combine this sprite with its pair member.
+             * Sprites are always even/odd pairs (0+1, 2+3, ...). */
+            idx |= ((g_spr_data[attached_pair][w] >> b) & 1u) << 2;
+            idx |= ((g_spr_datb[attached_pair][w] >> b) & 1u) << 3;
             if (aga_32col) {
-                idx |= ((spr >> 1) & 1u) << 4; /* pair bit expands to 32 colours */
+                idx |= (pair & 1u) << 4;
             }
         }
-        int x = x_start + (hstart + bit) * pix_scale;
+
+        int lores_x = x_start + (hstart + bit) * pix_scale;
         int bx = hstart + bit;
         int bp_present = (bx >= 0 && bx < COLLISION_WIDTH && (g_bp_even[bx] || g_bp_odd[bx]));
         if (bp_present) {
             g_clxdat |= (uint16_t)(1u << (spr + 1)); /* bitplane-sprite collision */
         }
-        if (sprite_behind && bp_present) continue; /* sprite behind playfield */
-        if (x >= 0 && x < fb_w) FB_PutPixel(x, y, g_aga_palette[(palette_base + idx) & 0xFF]);
-        if (!super_hires && (x + 1 >= 0 && x + 1 < fb_w)) {
-            FB_PutPixel(x + 1, y, g_aga_palette[(palette_base + idx) & 0xFF]);
+        if (sprite_behind && bp_present) continue;
+
+        /* Clip to display window and framebuffer. */
+        if (lores_x < diw_x || lores_x >= diw_x_stop) continue;
+
+        for (int dx = 0; dx < pix_scale; dx++) {
+            int x = lores_x + dx;
+            if (x >= 0 && x < fb_w) {
+                FB_PutPixel(x, y, g_aga_palette[(palette_base + idx) & 0xFF]);
+            }
         }
     }
 }
@@ -1732,7 +1875,8 @@ static void update_sprite_collisions(void)
         int vs0 = (g_spr_ctl[i] >> 8) & 0xFF;
         if (vs0 < vi0) vs0 += 0x100;
         int hi0 = (g_spr_pos[i] & 0xFF) - 0x80;
-        int width0 = 16 * 2; /* low-res sprite width in pixels */
+        int spres = (g_bplcon3 >> 10) & 0x7u;
+        int width0 = (spres == 2) ? 32 : (spres == 3) ? 64 : 32; /* lores pixels */
 
         for (int j = i + 1; j < SPRITE_COUNT; j++) {
             int vi1 = (g_spr_pos[j] >> 8) & 0xFF;
@@ -1755,8 +1899,8 @@ static void render_sprites_on_scanline(int y, int bytes_per_row)
 {
     (void)bytes_per_row;
     if (!(g_dmacon & 0x0020u)) return; /* sprite DMA not enabled */
-    int aga_wide = (g_bplcon3 >> 10) & 1u;
-    int words = aga_wide ? 4 : 1;
+    int spres = (g_bplcon3 >> 10) & 0x7u;
+    int words = (spres == 2) ? 2 : (spres == 3) ? 4 : 1;
     for (int spr = 0; spr < SPRITE_COUNT; spr++) {
         int vstart = (g_spr_pos[spr] >> 8) & 0xFF;
         int vstop  = (g_spr_ctl[spr] >> 8) & 0xFF;
@@ -1891,7 +2035,7 @@ void chip_emu_render_frame(void)
 
         g_vposr = (uint16_t)beam_y;
         g_vhposr = 0;
-        copper_run_to_beam(beam_y, 0, copper_slots);
+        copper_run_to_beam(copper_slots);
 
         if (g_dmacon & 0x0100u) {
             int fetch_y = lace ? ((y + g_interlace_field) / 2) : y;
@@ -2005,6 +2149,10 @@ void chip_emu_reset(void)
     g_frame_counter = 0;
     g_chip_mode = CHIP_MODE_PAL;
     g_interlace_field = 0;
+    g_cycles_per_line = COLOR_CLOCK_PAL_HZ / 50 / PAL_LINES_PER_FRAME;
+    g_cycles_per_frame = g_cycles_per_line * PAL_LINES_PER_FRAME;
+    g_cycles_at_vblank = 0;
+    g_cycles_at_frame_start = 0;
 }
 
 /* Return the current power-LED state (1 = on, 0 = off).
@@ -2136,4 +2284,75 @@ int chip_emu_fill_test(void)
      * bits 0-11 set.  Because the edge at bit 12 is in d1, the interior in d1
      * is bits 0-11. */
     return (d0 == 0xFFE0u && d1 == 0x0FFFu);
+}
+
+/* Test helper for color-clock beam position / raster bars: build a copper
+ * list that WAITs for line 100 and changes COLOR00, then waits for line 110
+ * and changes it again.  Run the copper and verify that the second color
+ * value was written, proving the WAIT was satisfied by the color-clock beam.
+ * Returns 1 on success. */
+int chip_emu_raster_test(void)
+{
+    uint32_t list_addr = 0x13000u;
+    if (list_addr + 64 > GUEST_RAM_SIZE) return 0;
+
+    /* WAIT for line 100, horizontal position ignored (mask 0). */
+    g_ram[list_addr + 0] = 0x00;  g_ram[list_addr + 1] = 0x64 * 2; /* v=100 */
+    g_ram[list_addr + 2] = 0x00;  g_ram[list_addr + 3] = 0xFF;     /* h mask=0, v mask=0xFF */
+    /* MOVE COLOR00 = red. */
+    g_ram[list_addr + 4] = 0x01;  g_ram[list_addr + 5] = 0x80;
+    g_ram[list_addr + 6] = 0xF0;  g_ram[list_addr + 7] = 0x00;
+    /* WAIT for line 110. */
+    g_ram[list_addr + 8] = 0x00;  g_ram[list_addr + 9] = 0x6E * 2; /* v=110 */
+    g_ram[list_addr + 10] = 0x00; g_ram[list_addr + 11] = 0xFF;
+    /* MOVE COLOR00 = blue. */
+    g_ram[list_addr + 12] = 0x01; g_ram[list_addr + 13] = 0x80;
+    g_ram[list_addr + 14] = 0x00; g_ram[list_addr + 15] = 0xF0;
+    /* End-of-list WAIT. */
+    g_ram[list_addr + 16] = 0xFF; g_ram[list_addr + 17] = 0xFE;
+    g_ram[list_addr + 18] = 0xFF; g_ram[list_addr + 19] = 0xFE;
+
+    /* Fake that the current beam is at line 120 so the WAITs are satisfied. */
+    g_cycles_at_frame_start = chip_emu_m68k_cycles() - (120u * g_cycles_per_line);
+
+    g_cop1lc = list_addr;
+    g_copper_pc = list_addr;
+    g_dmacon |= 0x0080u;
+
+    chip_emu_render_frame();
+
+    /* The copper should have executed both MOVEs and stopped at the EOL WAIT. */
+    return (g_aga_palette[0] == 0x0000F0u);
+}
+
+/* Test helper for AGA sprite control: set up a 16-pixel low-res sprite at
+ * (80,50) with a simple pattern, enable sprite DMA, render the line, and
+ * verify the DMA-fetched data and the sprite palette base from BPLCON3.
+ * Returns 1 on success. */
+int chip_emu_sprite_test(void)
+{
+    uint32_t spr_data = 0x14000u;
+    if (spr_data + 16 > GUEST_RAM_SIZE) return 0;
+
+    /* Sprite data: two control words (position + control) followed by
+     * DATA and DATB for one line.  We set the DMA pointer to the DATA words. */
+    g_ram[spr_data + 0] = 0x00; g_ram[spr_data + 1] = 0x00; /* control: pos */
+    g_ram[spr_data + 2] = 0x00; g_ram[spr_data + 3] = 0x00; /* control: ctl */
+    g_ram[spr_data + 4] = 0xFF; g_ram[spr_data + 5] = 0xFF; /* DATA: all set */
+    g_ram[spr_data + 6] = 0x00; g_ram[spr_data + 7] = 0x00; /* DATB: all clear */
+
+    /* Sprite position: vstart=50, vstop=60, hstart=80. */
+    g_spr_pos[0] = (uint16_t)((50u << 8) | (80u + 0x80u));
+    g_spr_ctl[0] = (uint16_t)((60u << 8) | 0x00u);
+    g_spr_pt[0] = spr_data + 4; /* point to DATA words */
+    g_spr_dma_ptr[0] = g_spr_pt[0];
+    g_bplcon3 = 0x0000u; /* bank 0, lores resolution */
+    g_bplcon2 = 0x0000u; /* sprite in front of playfield */
+    g_dmacon |= 0x0020u; /* enable sprite DMA */
+
+    /* Render the sprite line. */
+    render_sprites_on_scanline(55, 40);
+
+    /* The fetched DATA word should be all set. */
+    return (g_spr_data[0][0] == 0xFFFFu && g_spr_datb[0][0] == 0x0000u);
 }

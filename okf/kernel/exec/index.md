@@ -4,7 +4,7 @@ title: Exec Library
 description: The core system library for task management, memory, and signals.
 resource: /kernel/exec/
 tags: [exec, tasks, memory, ipc]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-06-28T17:47:00Z
 ---
 
 # Exec Library
@@ -31,7 +31,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
-- `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.
+- `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Installed at IDT vector 14 after `IDT_Init()` so that M68k accesses to the non-present `0x00B00000-0x00DFFFFF` window are emulated rather than raising an unhandled #PF.
 - `chip_emu.c` (in `kernel/chipset/`): AGA/ECS custom chip emulator with a sparse register dispatch table for the 0xDFF000 register area.  See [Chipset Emulator](/kernel/chipset/index.md).
 - `rom_modules.c`: Registers the built-in AmigaOS-compatible libraries at boot.
 - `thunk_handler.c`: Native ABI thunk translator for `ILLEGAL` opcode breakout from M68k code.
