@@ -319,6 +319,7 @@ extern int chip_emu_dma_test(void);
 extern uint16_t g_intreq;
 extern int chip_emu_line_test(void);
 extern int chip_emu_fill_test(void);
+extern int chip_emu_fill_complex_test(void);
 extern int chip_emu_raster_test(void);
 extern int chip_emu_sprite_test(void);
 extern int chip_emu_parallel_test(void);
@@ -423,6 +424,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running Blitter fill test...\n");
     int fill_test = chip_emu_fill_test();
     kprint(fill_test ? "[BOOT] Blitter fill test PASSED\n" : "[BOOT] Blitter fill test FAILED\n");
+
+    kprint("[BOOT] Running Blitter complex fill test...\n");
+    int fill_complex_test = chip_emu_fill_complex_test();
+    kprint(fill_complex_test ? "[BOOT] Blitter complex fill test PASSED\n" : "[BOOT] Blitter complex fill test FAILED\n");
 
     /* Run color-clock raster test */
     kprint("[BOOT] Running color-clock raster test...\n");

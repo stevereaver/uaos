@@ -369,6 +369,21 @@ static uint8_t  g_blitter_busy; /* blitter status */
 static uint32_t g_blitter_busy_ticks; /* PIT ticks remaining for busy */
 static int      g_blitter_words_remaining; /* words left for slot-based execution */
 
+/* Persistent state for line-mode blits (one pixel per DMA slot). */
+typedef struct {
+    int active;
+    int x, y;           /* current position relative to line start */
+    int bit;            /* current bit within the word (0..15) */
+    int acc;            /* Bresenham accumulator */
+    int amod;           /* accumulator decrement on major+minor step */
+    int bmod;           /* accumulator increment on major-only step */
+    int sx, sy, swap;   /* octant direction/swap */
+    int steps;          /* total pixels to draw */
+    int remaining;      /* pixels left */
+    int texture_bit;    /* current bit in B texture */
+} BlitterLineState;
+static BlitterLineState g_line_state;
+
 /* Sprite collision state */
 static uint16_t g_clxdat;   /* collision data (read and clear) */
 static uint16_t g_clxcon;   /* collision control */
@@ -582,6 +597,8 @@ static void dma_slot_alloc_bitplanes(void)
     }
 }
 
+static void blitter_line_step(void);
+
 /* Allocate up to `max_slots` odd-numbered free slots to the Copper. */
 static void dma_slot_alloc_copper(int max_slots)
 {
@@ -610,6 +627,9 @@ static void dma_slot_alloc_blitter(void)
             }
         }
         g_dma_slots[i] = DMA_CHAN_BLITTER;
+        if (g_line_state.active) {
+            blitter_line_step();
+        }
         g_blitter_words_remaining--;
         yield++;
     }
@@ -1227,6 +1247,69 @@ void chip_write_u16(uint32_t addr, uint16_t v)
     g_ram[addr + 1] = (uint8_t)v;
 }
 
+/* Step the line-mode Blitter by one pixel.  Called once per allocated DMA slot.
+ * The line state is persistent across slots/scanlines. */
+static void blitter_line_step(void)
+{
+    if (!g_line_state.active || g_line_state.remaining <= 0) return;
+
+    BlitterLineState *ls = &g_line_state;
+
+    int pixel_x = ls->x + ls->bit;
+    int word_dx = pixel_x / 16;
+    int bit = pixel_x % 16;
+
+    uint32_t off = (uint32_t)(g_bltdpt
+        + (uint32_t)(ls->y * (int)(int16_t)g_bltdmod)
+        + (uint32_t)(word_dx * 2));
+    if (off + 1 < GUEST_RAM_SIZE) {
+        uint16_t mask = (uint16_t)(1u << (15 - bit));
+        uint16_t c = chip_read_u16(off);
+        uint16_t a = mask;
+        uint16_t b = g_bltbdat; /* line texture */
+
+        /* Apply the minterm from BLTCON0.  For line mode the standard solid
+         * line minterm is 0xCA (texture where A is set, otherwise C). */
+        uint16_t d = 0;
+        int useA = (g_bltcon0 >> 11) & 1u;
+        int useB = (g_bltcon0 >> 10) & 1u;
+        int useC = (g_bltcon0 >> 9) & 1u;
+        int minterm = g_bltcon0 & 0xFFu;
+        if (useA || useB || useC) {
+            for (int bit = 0; bit < 16; bit++) {
+                int abit = (a >> bit) & 1u;
+                int bbit = (b >> bit) & 1u;
+                int cbit = (c >> bit) & 1u;
+                int idx = (abit << 2) | (bbit << 1) | cbit;
+                if (minterm & (1u << idx)) d |= (uint16_t)(1u << bit);
+            }
+        } else {
+            d = c | mask; /* fallback if no source channels */
+        }
+        chip_write_u16(off, d);
+    }
+
+    ls->remaining--;
+    if (ls->remaining == 0) {
+        ls->active = 0;
+        g_blitter_busy = 0;
+        g_blitter_words_remaining = 0;
+        return;
+    }
+
+    if (ls->acc < 0) {
+        ls->acc += ls->bmod;
+    } else {
+        ls->acc += ls->amod;
+        if (ls->swap) ls->x += ls->sx;
+        else          ls->y += ls->sy;
+    }
+    if (ls->swap) ls->y += ls->sy;
+    else          ls->x += ls->sx;
+
+    ls->texture_bit = (ls->texture_bit + 1) & 0xFu;
+}
+
 /* Execute an area blit triggered by a write to BLTSIZE.
  * Width is in words (bits 15-6 of size), height in lines (bits 5-0). */
 static void blitter_execute(uint16_t size)
@@ -1248,9 +1331,10 @@ static void blitter_execute(uint16_t size)
     int fill_mode = (g_bltcon1 >> 3) & 0x3u; /* bits 3-4: inclusive/exclusive fill */
 
     if (line_mode) {
-        /* Amiga line mode.  BLTCON1 bits 4-7 are the octant, bits 1-2 are
-         * SING/sign.  BLTAMOD = 2*minor - 2*major, BLTBMOD = 2*minor.
-         * BLTAPTL holds the starting (x,y).  The line is drawn into BLTDPT. */
+        /* Amiga line mode: set up a persistent line state and draw one pixel
+         * per allocated DMA slot.  BLTCON1 bits 4-7 are the octant, bit 1 is
+         * SING.  BLTAPTL is the initial Bresenham accumulator; BLTDPT is the
+         * word containing the start pixel.  ASH is the starting bit. */
         int octant = (g_bltcon1 >> 4) & 0xFu;
         int sx = (octant & 1u) ? -1 : 1;
         int sy = (octant & 2u) ? -1 : 1;
@@ -1259,38 +1343,30 @@ static void blitter_execute(uint16_t size)
 
         int amod = (int)(int16_t)g_bltamod;
         int bmod = (int)(int16_t)g_bltbmod;
-        int minor = (bmod < 0 ? -bmod : bmod) / 2;
-        int major = ((bmod - amod) < 0 ? -(bmod - amod) : (bmod - amod)) / 2;
-        if (major < minor) { int t = major; major = minor; minor = t; }
-        if (major <= 0) major = 1;
+        int minor = (bmod < 0 ? -bmod : bmod) / 4;
+        int major = (int)(width - 1);
+        if (minor > major) { int t = major; major = minor; minor = t; }
+        if (major < 1) major = 1;
 
-        int err = 2 * minor - major;
-        int x = g_bltapt & 0xFF;
-        int y = (g_bltapt >> 8) & 0xFF;
-        int line_stride = (int)(int16_t)g_bltdmod;
-        if (line_stride <= 0) line_stride = 40;
+        int acc = (int)(int16_t)(g_bltapt & 0xFFFFu);
+        int ash = (g_bltcon0 >> 12) & 0xFu;
 
-        int steps = singular ? 1 : (major + 1);
-        for (int i = 0; i < steps; i++) {
-            uint32_t off = g_bltdpt + (uint32_t)(y * line_stride) + ((uint32_t)x / 16u) * 2u;
-            if (off + 1 < GUEST_RAM_SIZE) {
-                uint16_t v = chip_read_u16(off);
-                v |= (uint16_t)(1u << (15 - (x & 15)));
-                chip_write_u16(off, v);
-            }
-            if (i + 1 >= steps) break;
-            if (err >= 0) {
-                if (swap) x += sx;
-                else      y += sy;
-                err += amod; /* 2*minor - 2*major */
-            } else {
-                err += bmod; /* 2*minor */
-            }
-            if (swap) y += sy;
-            else      x += sx;
-        }
+        g_line_state.active = 1;
+        g_line_state.x = 0;
+        g_line_state.y = 0;
+        g_line_state.bit = ash;
+        g_line_state.acc = acc;
+        g_line_state.amod = amod;
+        g_line_state.bmod = bmod;
+        g_line_state.sx = sx;
+        g_line_state.sy = sy;
+        g_line_state.swap = swap;
+        g_line_state.steps = singular ? 1 : (major + 1);
+        g_line_state.remaining = g_line_state.steps;
+        g_line_state.texture_bit = 0;
+
         g_blitter_busy = 1;
-        g_blitter_words_remaining = steps;
+        g_blitter_words_remaining = g_line_state.steps;
         g_blitter_busy_ticks = 0;
         return;
     }
@@ -1317,6 +1393,7 @@ static void blitter_execute(uint16_t size)
     }
 
     g_blitter_busy = 1;
+    g_line_state.active = 0;
 
     for (int y = 0; y < height; y++) {
         int fill_state = 0;
@@ -1333,7 +1410,7 @@ static void blitter_execute(uint16_t size)
             if (bsh) b = (uint16_t)((b >> bsh) | (b << (16 - bsh)));
 
             uint16_t d = 0;
-            for (int bit = 0; bit < 16; bit++) {
+            for (int bit = 15; bit >= 0; bit--) {
                 int abit = (a >> bit) & 1u;
                 int bbit = (b >> bit) & 1u;
                 int cbit = (c >> bit) & 1u;
@@ -2550,24 +2627,37 @@ int chip_emu_line_test(void)
     uint32_t dst = 0x11000u;
     if (dst + 1024 > GUEST_RAM_SIZE) return 0;
 
-    /* Clear destination bitmap. */
+    /* Clear destination bitmap (40 bytes per line). */
     for (int i = 0; i < 1024; i++) g_ram[dst + i] = 0;
 
     /* Line (10,10) -> (20,18): dx=10, dy=8, octant 0 (positive x, positive y,
-     * x major).  BLTBMOD = 2*dy = 16, BLTAMOD = 2*dy - 2*dx = -4. */
-    g_bltapt = (uint32_t)((10u << 8) | 10u);
-    g_bltdpt = dst;
+     * x major).  Amiga line-mode setup:
+     *   BLTAMOD = 4*(dy - dx) = -8
+     *   BLTBMOD = 4*dy        = 32
+     *   BLTAPT  = 4*dy - 2*dx = 12  (accumulator)
+     *   BLTCON0 ASH = 10 (starting bit within first word)
+     *   BLTCON0 channels: use A, C, D; SRCB=0; minterm=0xCA (solid line)
+     *   BLTCON1 = LINE | octant 0
+     *   BLTDMOD = 40 (bitplane width)
+     *   BLTADAT = 0x8000
+     *   BLTBDAT = 0xFFFF (solid texture)
+     */
+    g_bltapt = (uint32_t)(int16_t)(12);   /* accumulator */
+    g_bltdpt = dst + (10 * 40) + ((10 / 16) * 2); /* word containing (10,10) */
     g_bltdmod = 40;
-    g_bltamod = (uint16_t)(int16_t)(-4);
-    g_bltbmod = 16;
-    g_bltcon0 = 0x0B00u; /* use D only, minterm irrelevant */
-    g_bltcon1 = 0x0011u; /* LINE=1, octant 0 */
+    g_bltamod = (uint16_t)(int16_t)(-8);
+    g_bltbmod = 32;
+    g_bltadat = 0x8000u;
+    g_bltbdat = 0xFFFFu;
+    g_bltcon0 = 0x0BCAu | (10u << 12); /* minterm 0xCA, ASH=10, useA+useC+useD */
+    g_bltcon1 = 0x0011u;               /* LINE=1, octant 0 */
     g_bltsize = 0;
     g_blitter_words_remaining = 0;
     g_blitter_busy = 0;
+    g_line_state.active = 0;
 
-    /* Trigger the blitter via BLTSIZE. */
-    chip_emu_write(REG_BLTSIZE, 0, 2); /* dummy BLTSIZE - line mode ignores size */
+    /* Trigger the blitter via BLTSIZE.  Width is the line length (major + 1). */
+    chip_emu_write(REG_BLTSIZE, (11 << 6) | 1, 2);
 
     /* Wait for slot-based blitter to finish. */
     for (int i = 0; i < 1000 && g_blitter_busy; i++) {
@@ -2590,14 +2680,12 @@ int chip_emu_fill_test(void)
     uint32_t dst = 0x12100u;
     if (src + 512 > GUEST_RAM_SIZE || dst + 512 > GUEST_RAM_SIZE) return 0;
 
-    /* One source row: edge at bit 4 and bit 12. */
-    g_ram[src + 0] = 0x00; g_ram[src + 1] = 0x00;
-    g_ram[src + 2] = 0x0F; g_ram[src + 3] = 0x00; /* bits 12-15 set */
-    /* Wait, bit 4 is in the low byte?  Let's use bit 4 in first word. */
-    g_ram[src + 0] = 0x10; /* bit 4 */
-    g_ram[src + 1] = 0x00;
-    g_ram[src + 2] = 0x0F; /* bits 12-15 */
-    g_ram[src + 3] = 0x00;
+    /* One source row: single-pixel edges at bit 4 and bit 12.
+     * chip_read_u16 is big-endian, so word 0 uses bytes 1/0 (low/high). */
+    g_ram[src + 0] = 0x00; /* word 0 high byte */
+    g_ram[src + 1] = 0x10; /* word 0 low byte -> bit 4 of word 0 */
+    g_ram[src + 2] = 0x10; /* word 1 high byte -> bit 12 of word 1 */
+    g_ram[src + 3] = 0x00; /* word 1 low byte */
 
     /* Clear destination. */
     for (int i = 0; i < 16; i++) g_ram[dst + i] = 0;
@@ -2608,12 +2696,12 @@ int chip_emu_fill_test(void)
     g_bltdmod = 0;
     g_bltafwm = 0xFFFFu;
     g_bltalwm = 0xFFFFu;
-    g_bltcon0 = 0x0F00u; /* use A, B, C, D? For fill we need A only */
     g_bltcon0 = 0x0900u; /* use A and D */
     g_bltcon1 = 0x0010u; /* EFE exclusive fill */
     g_bltsize = 0;
     g_blitter_words_remaining = 0;
     g_blitter_busy = 0;
+    g_line_state.active = 0;
 
     /* Width=2 words, height=1 line. */
     chip_emu_write(REG_BLTSIZE, (2 << 6) | 1, 2);
@@ -2622,14 +2710,69 @@ int chip_emu_fill_test(void)
         chip_emu_render_frame();
     }
 
-    /* In exclusive fill, the edge bits (4 and 12-15) should be unset and the
-     * interior bits (5-11) should be set. */
+    /* Area fill now scans each word from MSB (bit 15) to LSB (bit 0) and carries
+     * the fill state across words.  Starting outside (fill_state=0), the edge
+     * at bit 4 toggles the state to 1; bits 0-3 of word 0 are therefore filled.
+     * The state persists into word 1, where bits 15-12 are filled.  The edge at
+     * bit 12 toggles the state back to 0, leaving bits 11-0 of word 1 unfilled.
+     * In exclusive fill, the edge pixel itself uses the old state: bit 4 is
+     * unfilled (old state was 0) and bit 12 is filled (old state was 1). */
     uint16_t d0 = (uint16_t)((g_ram[dst + 0] << 8) | g_ram[dst + 1]);
     uint16_t d1 = (uint16_t)((g_ram[dst + 2] << 8) | g_ram[dst + 3]);
-    /* d0 should have bits 5-15 set (interior up to bit 15), d1 should have
-     * bits 0-11 set.  Because the edge at bit 12 is in d1, the interior in d1
-     * is bits 0-11. */
-    return (d0 == 0xFFE0u && d1 == 0x0FFFu);
+    return (d0 == 0x000Fu && d1 == 0xF000u);
+}
+
+/* Test helper for Blitter self-intersecting polygon fill: a bowtie with four
+ * vertical edges.  The fill state must toggle at each edge and carry across
+ * word boundaries.  Returns 1 on success. */
+int chip_emu_fill_complex_test(void)
+{
+    uint32_t src = 0x15000u;
+    uint32_t dst = 0x15100u;
+    if (src + 512 > GUEST_RAM_SIZE || dst + 512 > GUEST_RAM_SIZE) return 0;
+
+    /* Clear source and destination. */
+    for (int i = 0; i < 16; i++) {
+        g_ram[src + i] = 0;
+        g_ram[dst + i] = 0;
+    }
+
+    /* Four edges forming a bowtie: bits 4, 12, 20, 28 of the row. */
+    g_ram[src + 1] = 0x10; /* word 0, bit 4 */
+    g_ram[src + 2] = 0x10; /* word 1, bit 12 */
+    g_ram[src + 5] = 0x10; /* word 2, bit 20 */
+    g_ram[src + 6] = 0x10; /* word 3, bit 28 */
+
+    g_bltapt = src;
+    g_bltdpt = dst;
+    g_bltamod = 0;
+    g_bltdmod = 0;
+    g_bltafwm = 0xFFFFu;
+    g_bltalwm = 0xFFFFu;
+    g_bltcon0 = 0x0900u; /* use A and D */
+    g_bltcon1 = 0x0010u; /* EFE exclusive fill */
+    g_bltsize = 0;
+    g_blitter_words_remaining = 0;
+    g_blitter_busy = 0;
+    g_line_state.active = 0;
+
+    /* Width=4 words, height=1 line. */
+    chip_emu_write(REG_BLTSIZE, (4 << 6) | 1, 2);
+
+    for (int i = 0; i < 1000 && g_blitter_busy; i++) {
+        chip_emu_render_frame();
+    }
+
+    /* In exclusive fill, scanning MSB to LSB with state carrying across words:
+     *   edge at bit 4:  outside->inside, edge bit unfilled, bits 0-3 filled.
+     *   edge at bit 12: inside->outside, edge bit filled, bits 0-11 unfilled.
+     *   edge at bit 20: outside->inside, edge bit unfilled, bits 0-3 filled.
+     *   edge at bit 28: inside->outside, edge bit filled, bits 0-11 unfilled. */
+    uint16_t w0 = (uint16_t)((g_ram[dst + 0] << 8) | g_ram[dst + 1]);
+    uint16_t w1 = (uint16_t)((g_ram[dst + 2] << 8) | g_ram[dst + 3]);
+    uint16_t w2 = (uint16_t)((g_ram[dst + 4] << 8) | g_ram[dst + 5]);
+    uint16_t w3 = (uint16_t)((g_ram[dst + 6] << 8) | g_ram[dst + 7]);
+    return (w0 == 0x000Fu && w1 == 0xF000u && w2 == 0x000Fu && w3 == 0xF000u);
 }
 
 /* Test helper for color-clock beam position / raster bars: build a copper

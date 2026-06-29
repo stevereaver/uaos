@@ -38,6 +38,7 @@ uint64_t chip_emu_m68k_cycles(void);
 int      chip_emu_dma_test(void);
 int      chip_emu_line_test(void);
 int      chip_emu_fill_test(void);
+int      chip_emu_fill_complex_test(void);
 int      chip_emu_raster_test(void);
 int      chip_emu_sprite_test(void);
 int      chip_emu_parallel_test(void);

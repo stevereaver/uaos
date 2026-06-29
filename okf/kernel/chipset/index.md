@@ -140,7 +140,11 @@ The AGA Blitter is triggered by writes to `BLTSIZE` (`0x058`).  It supports area
 
 Blitter busy timing is now implemented: `BLTSIZE` sets the busy flag and a PIT-tick counter, and `DMACONR` (register `0x002`) reflects `BLITZ` (bit 14) while the blitter is active.  The busy duration is scaled to the blit size (clamped to a few PIT ticks) so that software polling `DMACONR` sees the expected delay.  True slot-by-slot DMA contention is not yet modelled.
 
-**Line mode and area-fill mode** — `blitter_execute()` now has a basic Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and a per-row fill state for `BLTCON1` bits 3–4 (`IFEFE`/`EFE`).  These are approximations: the real line-mode delta/octant encoding and polygon edge-fill semantics are simplified.
+**Line mode and area-fill mode** — `blitter_execute()` now has a stateful Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and a per-row fill state for `BLTCON1` bits 3–4 (`IFEFE`/`EFE`).
+
+- Line mode uses `BLTAPTL` as the Bresenham accumulator, applies the B-channel texture (`BLTBDAT`) through the `BLTCON0` minterm, honours the `SING` bit, and draws exactly one pixel per allocated Blitter DMA slot.
+- Area-fill mode now processes each word from MSB (bit 15) to LSB (bit 0), matching the Amiga's left-to-right screen layout, and carries the fill state across words within the same row.
+- A dedicated `chip_emu_fill_complex_test()` exercises a self-intersecting polygon (bowtie) to verify that the fill state toggles at each edge and carries across word boundaries.
 
 
 ### Hardware Sprites
