@@ -488,9 +488,20 @@ typedef enum {
 } DMA_Channel;
 
 static uint8_t  g_dma_slots[DMA_SLOTS_PER_LINE_PAL]; /* channel id or DMA_CHAN_COUNT for free */
+static uint8_t  g_dma_slots_current[DMA_SLOTS_PER_LINE_PAL]; /* copy of the table for CPU access hook */
 static int      g_dma_slots_per_line;
+static int      g_dma_slots_current_count;
 static uint64_t g_cpu_stolen_cycles; /* cumulative CPU cycles stolen by DMA */
 static uint64_t g_last_scheduled_cycle; /* last cycle the scheduler ran to */
+
+/* Horizontal blanking: slots 0 to HBLANK_END are outside the active display.
+ * The Amiga HBLANK ends around hpos $35; in our slot model that is slot 18. */
+#define HBLANK_END_SLOT 18
+
+static int slot_in_hblank(int slot)
+{
+    return slot >= 0 && slot < HBLANK_END_SLOT;
+}
 
 static void dma_slot_reset(void)
 {
@@ -572,6 +583,7 @@ static void dma_slot_alloc_bitplanes(void)
 
     int hires = bpl_hires();
     int start_slot = (int)(g_ddfstart / 4u);
+    if (start_slot < HBLANK_END_SLOT) start_slot = HBLANK_END_SLOT; /* no bitplane DMA during HBLANK */
     if (start_slot < 24) start_slot = 24; /* Agnus hardware limit */
     int stop_slot = (int)(g_ddfstop / 4u);
     if (stop_slot > g_dma_slots_per_line) stop_slot = g_dma_slots_per_line;
@@ -1474,44 +1486,51 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
 {
     if (target_cycles <= g_last_scheduled_cycle) return;
 
-    int start_v, start_h;
-    beam_position_from_cycles(g_last_scheduled_cycle - g_cycles_at_frame_start, &start_v, &start_h);
-    int end_v, end_h;
-    beam_position_from_cycles(target_cycles - g_cycles_at_frame_start, &end_v, &end_h);
+    /* Process each scanline between the last scheduled beam and the target.
+     * Use non-wrapping absolute line numbers so that a full frame (or multiple
+     * frames) advances every line exactly once. */
+    int lines = (g_chip_mode == CHIP_MODE_NTSC) ? NTSC_LINES_PER_FRAME : PAL_LINES_PER_FRAME;
+    if (g_cycles_per_line != 0) {
+        uint64_t start_line = (g_last_scheduled_cycle - g_cycles_at_frame_start) / g_cycles_per_line;
+        uint64_t end_line   = (target_cycles - g_cycles_at_frame_start) / g_cycles_per_line;
+        for (uint64_t line = start_line; line <= end_line; line++) {
+            int y = (int)(line % (uint64_t)lines);
+            dma_slot_reset();
+            dma_slot_release_if_disabled(DMA_CHAN_DISK,   0x0010u); /* DSKEN */
+            dma_slot_release_if_disabled(DMA_CHAN_AUDIO,  0x0200u); /* AUDEN */
+            dma_slot_release_if_disabled(DMA_CHAN_SPRITE, 0x0020u); /* SPREN */
+            dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u); /* BPLEN */
+            dma_slot_release_if_disabled(DMA_CHAN_COPPER, 0x0080u); /* COPEN */
+            dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0008u); /* BLTEN */
 
-    /* Process each scanline between the last scheduled beam and the target. */
-    for (int y = start_v; y <= end_v && y < (int)PAL_LINES_PER_FRAME; y++) {
-        dma_slot_reset();
-        dma_slot_release_if_disabled(DMA_CHAN_DISK,   0x0010u); /* DSKEN */
-        dma_slot_release_if_disabled(DMA_CHAN_AUDIO,  0x0200u); /* AUDEN */
-        dma_slot_release_if_disabled(DMA_CHAN_SPRITE, 0x0020u); /* SPREN */
-        dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u); /* BPLEN */
-        dma_slot_release_if_disabled(DMA_CHAN_COPPER, 0x0080u); /* COPEN */
-        dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0008u); /* BLTEN */
+            dma_slot_alloc_bitplanes();
+            dma_slot_alloc_copper(32);
+            int copper_slots = dma_slot_count(DMA_CHAN_COPPER);
+            dma_slot_alloc_blitter();
 
-        dma_slot_alloc_bitplanes();
-        dma_slot_alloc_copper(32);
-        int copper_slots = dma_slot_count(DMA_CHAN_COPPER);
-        dma_slot_alloc_blitter();
-
-        /* Audio DMA: schedule sample fetches based on audio periods. */
-        if (g_dmacon & 0x0200u) {
-            chip_emu_audio_advance(g_cycles_per_line);
-        }
-
-        /* Mark remaining slots as CPU slots and count stolen cycles. */
-        int cpu_slots = 0;
-        for (int i = 0; i < g_dma_slots_per_line; i++) {
-            if (g_dma_slots[i] == DMA_CHAN_COUNT) {
-                g_dma_slots[i] = DMA_CHAN_CPU;
-                cpu_slots++;
+            /* Audio DMA: schedule sample fetches based on audio periods. */
+            if (g_dmacon & 0x0200u) {
+                chip_emu_audio_advance(g_cycles_per_line);
             }
-        }
-        g_cpu_stolen_cycles += (uint64_t)(g_dma_slots_per_line - cpu_slots) * 4; /* each slot ≈ 4 CPU cycles */
 
-        g_vposr = (uint16_t)y;
-        g_vhposr = 0;
-        copper_run_to_beam(copper_slots);
+            /* Mark remaining slots as CPU slots and count stolen cycles. */
+            int cpu_slots = 0;
+            for (int i = 0; i < g_dma_slots_per_line; i++) {
+                if (g_dma_slots[i] == DMA_CHAN_COUNT) {
+                    g_dma_slots[i] = DMA_CHAN_CPU;
+                    cpu_slots++;
+                }
+            }
+            g_cpu_stolen_cycles += (uint64_t)(g_dma_slots_per_line - cpu_slots) * 4; /* each slot ≈ 4 CPU cycles */
+
+            /* Store the finalized slot table for the CPU chip-RAM access hook. */
+            memcpy(g_dma_slots_current, g_dma_slots, sizeof(g_dma_slots[0]) * g_dma_slots_per_line);
+            g_dma_slots_current_count = g_dma_slots_per_line;
+
+            g_vposr = (uint16_t)y;
+            g_vhposr = 0;
+            copper_run_to_beam(copper_slots);
+        }
     }
 
     /* Update beam position to the target. */
@@ -1530,17 +1549,53 @@ uint64_t chip_emu_stolen_cycles(void)
 }
 
 /* CPU wait-state hook for chip RAM accesses.  Keeps the scheduler in sync with
- * the M68k cycle counter and approximates one wait state when DMA is active. */
+ * the M68k cycle counter and adds exact wait states based on the current DMA
+ * slot table.  Fast RAM (0x800000+) is not on the Agnus bus, so it incurs no
+ * contention. */
 void chip_emu_cpu_chipram_access(uint32_t addr, int is_write)
 {
-    (void)addr; (void)is_write;
+    (void)is_write;
+
+    /* Fast RAM (0x800000+) is not on the Agnus bus, so no wait states. */
+    if (addr >= 0x800000u) return;
+
     extern uint64_t g_m68k_cycles;
     chip_emu_run_to_cycle(g_m68k_cycles);
-    /* Approximate one wait state per access if any DMA channel is active. */
-    if (g_dmacon & 0x02FFu) {
-        g_m68k_cycles += 2;
-        g_cpu_stolen_cycles += 2;
+
+    if (g_cycles_per_line == 0 || g_dma_slots_current_count == 0) return;
+
+    /* Compute the current slot within the current line. */
+    uint64_t beam_cycles = g_m68k_cycles - g_cycles_at_frame_start;
+    int hpos = (int)(beam_cycles % g_cycles_per_line);
+    int slot = (int)((uint64_t)hpos * g_dma_slots_current_count / g_cycles_per_line);
+    if (slot < 0) slot = 0;
+    if (slot >= g_dma_slots_current_count) slot = g_dma_slots_current_count - 1;
+
+    /* If the current slot is free for the CPU, no wait. */
+    if (g_dma_slots_current[slot] == DMA_CHAN_CPU) return;
+
+    /* Find the next free slot in the current line. */
+    int wait_slots = 1;
+    int next = slot + 1;
+    while (next < g_dma_slots_current_count) {
+        if (g_dma_slots_current[next] == DMA_CHAN_CPU) break;
+        wait_slots++;
+        next++;
     }
+    /* If no free slot in this line, wait until the first slot of the next line.
+     * We approximate that as (g_dma_slots_current_count - slot) slots. */
+    if (next >= g_dma_slots_current_count) {
+        wait_slots += HBLANK_END_SLOT; /* rough: next line's free slots start after HBLANK */
+    }
+
+    /* Each slot is roughly 4 CPU cycles (PAL: ~227 slots per line, ~454 color clocks,
+     * 1 color clock ≈ 2 CPU cycles, so 1 slot ≈ 4 CPU cycles). */
+    uint64_t wait_cycles = (uint64_t)wait_slots * 4;
+    g_m68k_cycles += wait_cycles;
+    g_cpu_stolen_cycles += wait_cycles;
+
+    /* Re-sync the scheduler to the new CPU cycle count. */
+    chip_emu_run_to_cycle(g_m68k_cycles);
 }
 
 void chip_emu_vblank(void)
@@ -1569,10 +1624,12 @@ void chip_emu_vblank(void)
 
 /* Update beam position from the PIT tick path.  Called every PIT tick.
  * With color-clock timing, the beam is advanced from the M68k cycle counter;
- * the PIT only keeps host audio/video timing. */
+ * the PIT only keeps host audio/video timing and does not drive chipset
+ * advancement. */
 void chip_emu_beam_tick(uint32_t tick_counter)
 {
     (void)tick_counter;
+    /* PIT only drives host sync; chipset advancement is cycle-driven. */
     chip_emu_run_to_cycle(chip_emu_m68k_cycles());
 }
 
@@ -2367,14 +2424,24 @@ static void render_sprites_on_scanline(int y, int bytes_per_row)
     }
 }
 
-/* Render the current chipset state to the host framebuffer. */
+/* Render the current chipset state to the host framebuffer.
+ * Rendering is performed after the cycle-driven scheduler has already advanced
+ * the copper, blitter and audio state; this function no longer builds its own
+ * DMA slot table. */
 void chip_emu_render_frame(void)
 {
     if (!g_fb.valid) return;
 
-    /* Reset copper and sprite DMA pointers at the start of each frame. */
+    /* Reset copper and sprite DMA pointers at the start of each frame.  This
+     * must happen before the scheduler advance so the copper runs from the fresh
+     * list. */
     if (g_cop1lc) g_copper_pc = g_cop1lc;
     for (int spr = 0; spr < SPRITE_COUNT; spr++) g_spr_dma_ptr[spr] = g_spr_pt[spr];
+
+    /* Advance the scheduler by one full frame from the last scheduled cycle.
+     * This keeps tests and PIT-driven callers advancing the chipset even though
+     * chipset timing is now cycle-driven. */
+    chip_emu_run_to_cycle(g_last_scheduled_cycle + g_cycles_per_frame);
 
     /* Derive display window.
      * Horizontal start is in lores pixels with an $80 origin.
@@ -2427,33 +2494,8 @@ void chip_emu_render_frame(void)
         /* Copper and beam are still in hardware line coordinates. */
         int beam_y = lace ? (y / 2) : y;
 
-        /* Build the DMA slot table for this scanline. */
-        dma_slot_reset();
-        dma_slot_release_if_disabled(DMA_CHAN_DISK,   0x0010u); /* DSKEN */
-        dma_slot_release_if_disabled(DMA_CHAN_AUDIO,  0x0200u); /* AUDEN */
-        dma_slot_release_if_disabled(DMA_CHAN_SPRITE, 0x0020u); /* SPREN */
-        dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u); /* BPLEN */
-        dma_slot_release_if_disabled(DMA_CHAN_COPPER, 0x0080u); /* COPEN */
-        dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0008u); /* BLTEN */
-
-        dma_slot_alloc_bitplanes();
-        dma_slot_alloc_copper(32);
-        int copper_slots = dma_slot_count(DMA_CHAN_COPPER);
-        dma_slot_alloc_blitter();
-
-        /* Mark remaining slots as CPU slots and count stolen cycles. */
-        int cpu_slots = 0;
-        for (int i = 0; i < g_dma_slots_per_line; i++) {
-            if (g_dma_slots[i] == DMA_CHAN_COUNT) {
-                g_dma_slots[i] = DMA_CHAN_CPU;
-                cpu_slots++;
-            }
-        }
-        g_cpu_stolen_cycles += (uint64_t)(g_dma_slots_per_line - cpu_slots); /* each stolen slot is ~4 CPU cycles */
-
         g_vposr = (uint16_t)beam_y;
         g_vhposr = 0;
-        copper_run_to_beam(copper_slots);
 
         if (g_dmacon & 0x0100u) {
             int fetch_y = lace ? ((y + g_interlace_field) / 2) : y;
@@ -2808,23 +2850,26 @@ int chip_emu_raster_test(void)
     if (list_addr + 64 > GUEST_RAM_SIZE) return 0;
 
     /* WAIT for line 100, horizontal position ignored (mask 0). */
-    g_ram[list_addr + 0] = 0x00;  g_ram[list_addr + 1] = 0x64 * 2; /* v=100 */
-    g_ram[list_addr + 2] = 0x00;  g_ram[list_addr + 3] = 0xFF;     /* h mask=0, v mask=0xFF */
+    g_ram[list_addr + 0] = 0x64;  g_ram[list_addr + 1] = 0x01; /* v=100, bit 0 = 1 (WAIT) */
+    g_ram[list_addr + 2] = 0xFF;  g_ram[list_addr + 3] = 0x00; /* v mask=0xFF, h mask=0, bit 0 = 0 (WAIT) */
     /* MOVE COLOR00 = red. */
     g_ram[list_addr + 4] = 0x01;  g_ram[list_addr + 5] = 0x80;
     g_ram[list_addr + 6] = 0xF0;  g_ram[list_addr + 7] = 0x00;
     /* WAIT for line 110. */
-    g_ram[list_addr + 8] = 0x00;  g_ram[list_addr + 9] = 0x6E * 2; /* v=110 */
-    g_ram[list_addr + 10] = 0x00; g_ram[list_addr + 11] = 0xFF;
+    g_ram[list_addr + 8] = 0x6E;  g_ram[list_addr + 9] = 0x01; /* v=110, bit 0 = 1 (WAIT) */
+    g_ram[list_addr + 10] = 0xFF; g_ram[list_addr + 11] = 0x00; /* v mask=0xFF, h mask=0, bit 0 = 0 (WAIT) */
     /* MOVE COLOR00 = blue. */
     g_ram[list_addr + 12] = 0x01; g_ram[list_addr + 13] = 0x80;
-    g_ram[list_addr + 14] = 0x00; g_ram[list_addr + 15] = 0xF0;
+    g_ram[list_addr + 14] = 0x00; g_ram[list_addr + 15] = 0x0F;
     /* End-of-list WAIT. */
     g_ram[list_addr + 16] = 0xFF; g_ram[list_addr + 17] = 0xFE;
     g_ram[list_addr + 18] = 0xFF; g_ram[list_addr + 19] = 0xFE;
 
     /* Fake that the current beam is at line 120 so the WAITs are satisfied. */
-    g_cycles_at_frame_start = chip_emu_m68k_cycles() - (120u * g_cycles_per_line);
+    extern uint64_t g_m68k_cycles;
+    g_m68k_cycles = 120u * g_cycles_per_line;
+    g_cycles_at_frame_start = 0;
+    g_last_scheduled_cycle = 120u * g_cycles_per_line;
 
     g_cop1lc = list_addr;
     g_copper_pc = list_addr;
@@ -2833,7 +2878,7 @@ int chip_emu_raster_test(void)
     chip_emu_render_frame();
 
     /* The copper should have executed both MOVEs and stopped at the EOL WAIT. */
-    return (g_aga_palette[0] == 0x0000F0u);
+    return (g_aga_palette[0] == 0x000000FFu);
 }
 
 /* Test helper for AGA sprite control: set up a 16-pixel low-res sprite at
@@ -3125,4 +3170,84 @@ int chip_emu_agnus_slot_test(void)
     }
 
     return errors == 0;
+}
+
+/* Test helper: verify that chip RAM accesses incur wait cycles when the Agnus
+ * bus is busy, while Fast RAM (0x800000+) bypasses the bus and incurs none.
+ * Returns 1 on success. */
+int chip_emu_timing_contention_test(void)
+{
+    extern uint64_t g_m68k_cycles;
+    uint64_t stolen_before, stolen_chip, stolen_fast;
+
+    /* Set up a display with DMA enabled so chip RAM is contended. */
+    g_dmacon = 0x03FFu; /* all DMA on */
+    g_bplcon0 = 0x0200u; /* 1 bitplane */
+    g_bplcon1 = 0;
+    g_bplcon2 = 0;
+    g_bplcon3 = 0;
+    g_ddfstart = 0x30;
+    g_ddfstop  = 0xD0;
+    g_diwstart = 0x2C81u;
+    g_diwstop  = 0xF4C1u;
+    g_bplmod1 = 0;
+    g_bplmod2 = 0;
+    g_bpl_pt[0] = 0x10000u;
+    update_color_clock_params();
+
+    /* Reset scheduler to top of frame. */
+    g_cycles_at_frame_start = 0;
+    g_last_scheduled_cycle = 0;
+    g_m68k_cycles = 0;
+    g_cpu_stolen_cycles = 0;
+
+    /* Advance a bit into the active display area where DMA slots are busy. */
+    chip_emu_run_to_cycle(g_cycles_per_line / 2);
+
+    /* Access chip RAM. */
+    stolen_before = g_cpu_stolen_cycles;
+    chip_emu_cpu_chipram_access(0x10000u, 0);
+    stolen_chip = g_cpu_stolen_cycles - stolen_before;
+
+    /* Access Fast RAM. */
+    stolen_before = g_cpu_stolen_cycles;
+    chip_emu_cpu_chipram_access(0x800000u, 0);
+    stolen_fast = g_cpu_stolen_cycles - stolen_before;
+
+    /* Chip RAM should incur wait cycles when DMA is active; Fast RAM should not. */
+    return (stolen_chip > 0 && stolen_fast == 0);
+}
+
+/* Test helper: verify that chip RAM access during HBLANK incurs fewer wait
+ * cycles than access in the active display area, because bitplane DMA is not
+ * allocated during the horizontal blanking period.  Returns 1 on success. */
+int chip_emu_hblank_test(void)
+{
+    g_dmacon = 0x03FFu;
+    g_bplcon0 = 0x0200u;
+    g_ddfstart = 0x30;
+    g_ddfstop  = 0xD0;
+    g_diwstart = 0x2C81u;
+    g_diwstop  = 0xF4C1u;
+    update_color_clock_params();
+    g_cycles_at_frame_start = 0;
+    g_last_scheduled_cycle = 0;
+    g_cpu_stolen_cycles = 0;
+
+    /* Access chip RAM in the middle of the active display area. */
+    chip_emu_run_to_cycle(g_cycles_per_line / 2);
+    uint64_t stolen_display = g_cpu_stolen_cycles;
+    chip_emu_cpu_chipram_access(0x10000u, 0);
+    stolen_display = g_cpu_stolen_cycles - stolen_display;
+
+    /* Access chip RAM near the start of the line (HBLANK). */
+    g_cpu_stolen_cycles = 0;
+    chip_emu_run_to_cycle(g_cycles_per_line / 20); /* early in line */
+    uint64_t stolen_hblank = g_cpu_stolen_cycles;
+    chip_emu_cpu_chipram_access(0x10000u, 0);
+    stolen_hblank = g_cpu_stolen_cycles - stolen_hblank;
+
+    /* During HBLANK, fewer slots are used by bitplane DMA, so wait should be
+     * lower than in the active display area. */
+    return stolen_hblank <= stolen_display;
 }

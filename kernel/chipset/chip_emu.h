@@ -48,6 +48,8 @@ int      chip_emu_sprite_subpixel_test(void);
 int      chip_emu_parallel_test(void);
 int      chip_emu_serial_test(void);
 int      chip_emu_agnus_slot_test(void);
+int      chip_emu_timing_contention_test(void);
+int      chip_emu_hblank_test(void);
 
 /* Tier 4: VBlank timing and cycle-driven scheduler */
 void     chip_emu_vblank(void);

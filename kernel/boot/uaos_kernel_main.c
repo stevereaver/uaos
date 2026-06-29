@@ -325,6 +325,8 @@ extern int chip_emu_sprite_test(void);
 extern int chip_emu_parallel_test(void);
 extern int chip_emu_serial_test(void);
 extern int chip_emu_timing_lock_test(void);
+extern int chip_emu_timing_contention_test(void);
+extern int chip_emu_hblank_test(void);
 extern int chip_emu_agnus_slot_test(void);
 extern int chip_emu_sprite_border_test(void);
 extern int chip_emu_sprite_priority_test(void);
@@ -511,6 +513,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running CPU/chipset timing-lock test...\n");
     int timing_lock_test = chip_emu_timing_lock_test();
     kprint(timing_lock_test ? "[BOOT] Timing-lock test PASSED\n" : "[BOOT] Timing-lock test FAILED\n");
+
+    kprint("[BOOT] Running chip RAM timing-contention test...\n");
+    int timing_contention_test = chip_emu_timing_contention_test();
+    kprint(timing_contention_test ? "[BOOT] Timing-contention test PASSED\n" : "[BOOT] Timing-contention test FAILED\n");
+
+    kprint("[BOOT] Running horizontal-blanking timing test...\n");
+    int hblank_test = chip_emu_hblank_test();
+    kprint(hblank_test ? "[BOOT] H-blanking test PASSED\n" : "[BOOT] H-blanking test FAILED\n");
 
     kprint("[BOOT] Running Agnus slot table test...\n");
     int agnus_test = chip_emu_agnus_slot_test();

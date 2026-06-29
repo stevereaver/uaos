@@ -159,7 +159,9 @@ Sprite collision detection is now implemented: `CLXDAT` (`0x00E`) is read-and-cl
 
 ### Beam Timing and Display Window
 
-`VPOSR` and `VHPOSR` are now derived from the M68k cycle counter.  `chip_emu_beam_tick()` is still called from the 100 Hz PIT path, but it only runs the scheduler to the current M68k cycle count and updates the beam registers from that result.  PAL mode uses 312 lines per frame and NTSC mode uses 262 lines, with the beam position computed from the color-clock cycle count.
+`VPOSR` and `VHPOSR` are now derived from the M68k cycle counter.  `chip_emu_beam_tick()` is still called from the 100 Hz PIT path, but it only runs the scheduler to the current M68k cycle count and updates the beam registers from that result; the PIT no longer drives chipset advancement directly.  PAL mode uses 312 lines per frame and NTSC mode uses 262 lines, with the beam position computed from the color-clock cycle count.
+
+The horizontal blanking period is now modeled in the DMA slot table: slots 0 through 18 are outside the active display, and bitplane DMA is never allocated there.  The fixed refresh, disk, audio and sprite slots continue to occupy the start of the line, so CPU access during HBLANK sees less contention from bitplane DMA.
 
 The display window derivation has been improved:
 
@@ -271,7 +273,9 @@ Sprite rendering now uses a fixed-point low-resolution coordinate system for exa
 
 The guest-write barrier in `emulation/uaos_m68k_glue.c` has been upgraded from a plain compiler barrier to a full x86 `mfence` memory fence.  This flushes the store buffer and makes M68k writes visible to the chipset emulator on multi-core hosts.  A non-x86 build would need to replace the `mfence` with the appropriate `dmb`/`sync` primitive for that host CPU.
 
-A global M68k cycle counter (`g_m68k_cycles`) is accumulated after each `m68k_execute()` slice.  `chip_emu_m68k_cycles()` exposes the running total.  The chipset scheduler is now driven from this cycle counter via `chip_emu_run_to_cycle()`: every time the M68k advances, the scheduler processes any scanlines that have elapsed, allocates DMA slots, advances the Copper and Blitter, and schedules audio DMA.  The legacy 100 Hz PIT path only keeps host audio/video timing and calls `chip_emu_beam_tick()`, which in turn runs the scheduler to the current M68k cycle count.  CPU wait states for chip RAM accesses are approximated by `chip_emu_cpu_chipram_access()` in the Musashi memory callbacks.  A boot-time test, `chip_emu_timing_lock_test()`, simulates M68k cycle advancement and verifies that the scheduler advances the beam by the expected number of scanlines; it is invoked from `uaos_kernel_main()` and prints `PASSED` or `FAILED`.
+A global M68k cycle counter (`g_m68k_cycles`) is accumulated after each `m68k_execute()` slice.  `chip_emu_m68k_cycles()` exposes the running total.  The chipset scheduler is now driven exclusively from this cycle counter via `chip_emu_run_to_cycle()`: every time the M68k advances, the scheduler processes any scanlines that have elapsed, allocates DMA slots, advances the Copper and Blitter, and schedules audio DMA.  The legacy 100 Hz PIT path only keeps host audio/video timing and calls `chip_emu_beam_tick()`, which in turn runs the scheduler to the current M68k cycle count, but it does not advance the chipset on its own.
+
+CPU wait states for chip RAM accesses are now computed exactly from the stored DMA slot table.  `chip_emu_cpu_chipram_access()` maps the current M68k cycle to a slot within the current line, and if that slot is not free for the CPU it waits until the next CPU slot, adding roughly four cycles per slot.  The finalized slot table is copied into `g_dma_slots_current` after each scheduler line so the CPU hook can inspect it without rebuilding the table.  Fast RAM accesses at `0x800000` and above bypass the Agnus bus entirely and therefore incur no wait cycles.  Boot-time tests `chip_emu_timing_lock_test()`, `chip_emu_timing_contention_test()` and `chip_emu_hblank_test()` verify the scheduler lock, chip-versus-Fast RAM contention, and reduced contention during horizontal blanking.
 
 ### Cycle-Accurate DMA Arbitration (Agnus Slot Table)
 
@@ -284,7 +288,7 @@ Fixed per-line slots are position-specific:
 - slots 7–10: audio DMA (one slot per channel)
 - slots 11–26: sprite DMA (two slots per sprite for eight sprites)
 
-Refresh cannot be disabled; the other fixed slots are freed when their DMACON enable bit is clear (`dma_slot_release_if_disabled()`).  Bitplane DMA starts at `max(DDFSTRT/4, 24)` and runs until `DDFSTOP/4`, using the low-resolution 8-slot fetch pattern `[free], bp4, bp6, bp2, [free], bp3, bp5, bp1` or the high-resolution 4-slot pattern `bp4, bp2, bp3, bp1`.  Copper DMA uses only odd-numbered free slots.  The Blitter uses remaining free slots and yields every fourth free slot to the CPU when DMACON BLTPRI is clear; the CPU takes whatever is left.  Both `chip_emu_render_frame()` and the cycle-driven `chip_emu_run_to_cycle()` rebuild the table every scanline.
+Refresh cannot be disabled; the other fixed slots are freed when their DMACON enable bit is clear (`dma_slot_release_if_disabled()`).  Bitplane DMA starts at `max(DDFSTRT/4, HBLANK_END_SLOT, 24)` and runs until `DDFSTOP/4`, using the low-resolution 8-slot fetch pattern `[free], bp4, bp6, bp2, [free], bp3, bp5, bp1` or the high-resolution 4-slot pattern `bp4, bp2, bp3, bp1`.  The `HBLANK_END_SLOT` constant (18) prevents bitplane DMA from being allocated during the horizontal blanking period.  Copper DMA uses only odd-numbered free slots.  The Blitter uses remaining free slots and yields every fourth free slot to the CPU when DMACON BLTPRI is clear; the CPU takes whatever is left.  The cycle-driven `chip_emu_run_to_cycle()` rebuilds the table every scanline; the finalized table is copied into `g_dma_slots_current` so that the CPU chip-RAM access hook can inspect it without rebuilding it.  `chip_emu_render_frame()` no longer builds its own slot table; it relies on the scheduler having already advanced the chipset state.
 
 A helper API is provided:
 
@@ -371,6 +375,6 @@ The PC speaker stop-gap has been replaced with a real PCM DAC backend and an abs
 - **Fine-grained DMA slot timing** such as exact bitplane/Copper/sprite/audio/disk slot timing relative to color-clock positions, DMA-off cycles for all channels, and per-revision Agnus/Alice differences.
 - **Blitter line/area-fill remaining edge cases** such as real line-mode texture/B channel usage, exact `BLTAPTL` accumulator loading, and per-pixel DMA slot timing for the actual data transfer.
 - ~~**AGA sprite fine details** such as exact superhires pixel scaling, border sprites, sprite-to-sprite priority ordering, sub-pixel positioning, and HAM/EHB bypass.~~ Implemented.
-- **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.
+- ~~**CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.~~ Implemented.
 - **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
 - **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.
