@@ -151,7 +151,11 @@ Blitter busy timing is now implemented: `BLTSIZE` sets the busy flag and a PIT-t
 
 Sprites are now fetched from `SPRxPT` by DMA each scanline rather than drawn from manually loaded data registers.  The sprite DMA pointer is reset to `SPRxPT` at the start of each frame and advances by the line's data size.  AGA 64-pixel wide sprites are supported when `BPLCON3` bit 10 is set; otherwise 16-pixel OCS/ECS sprites are used.  Attached pairs give 32 colours (palette entries 16–31).  AGA 32-colour palette banking is selected via `BPLCON3` bits 13–15; the attached pair index is expanded to 5 bits in this mode, giving sprite colours 16–47.
 
-Sprite collision detection is now implemented: `CLXDAT` (`0x00E`) is read-and-clear, and `CLXCON` (`0x016`) accepts the control mask.  A frame-level bounding-box test detects overlapping sprite pairs and sets the corresponding `CLXDAT` bits.  Bitplane-sprite and bitplane-bitplane collisions are not yet detected.
+Sprite rendering uses a fixed-point low-resolution coordinate system (`SPR_FP_UNIT = 1/8` lores pixel) so that the `SPRxPOS` horizontal value (in colour clocks) is converted correctly to lores pixels.  This gives exact superhires scaling (64 superhires pixels span 16 lores pixels) and sub-pixel horizontal positioning to half-lores-pixel precision.
+
+Lower-numbered sprites have higher priority: they are rendered after higher-numbered sprites so that their pixels overwrite the overlapping region.  Sprites are clipped to the `DIWSTRT`/`DIWSTOP` display window, so border sprites that start partially outside the window are drawn only where they are visible.  Sprite colours are always read directly from the AGA palette entries and never reinterpreted through HAM/EHB decode, even when the playfield is in HAM or EHB mode.
+
+Sprite collision detection is now implemented: `CLXDAT` (`0x00E`) is read-and-clear, and `CLXCON` (`0x016`) accepts the control mask.  A frame-level bounding-box test detects overlapping sprite pairs and sets the corresponding `CLXDAT` bits.  Bitplane-sprite collisions are detected during scanline rendering, and bitplane-bitplane collisions are detected in the bitplane render path.
 
 ### Beam Timing and Display Window
 
@@ -261,7 +265,7 @@ A subset of the hardest items has been implemented; the rest is the long tail th
 
 ### Advanced Sprite Features
 
-Sprite rendering now supports an AGA super-hires heuristic (selected via `BPLCON3` bit 9), where each sprite pixel maps to one low-resolution framebuffer pixel instead of two.  The 32-colour bank selection and 64-pixel wide modes remain in place.  Sprite-vs-playfield priority is now implemented: when any `BPLCON2` SP bit (bits 8–12) is set, non-transparent sprite pixels are drawn only where the bitplanes are transparent.  Exact per-sprite SP bits, HAM sprite interactions, and full AGA sprite resolution selection are not yet implemented.
+Sprite rendering now uses a fixed-point low-resolution coordinate system for exact AGA super-hires scaling (64 superhires pixels = 16 lores pixels) and sub-pixel horizontal positioning via `SPRxPOS` colour-clock precision.  The 32-colour bank selection and 64-pixel wide modes remain in place.  Sprite-vs-playfield priority is implemented per pair through `BPLCON2` SP bits (bits 8–12): when a sprite pair's SP bit is set, non-transparent pixels are drawn only where the bitplanes are transparent.  Border sprites are clipped to the `DIWSTRT`/`DIWSTOP` display window, and sprite-to-sprite priority is enforced so lower-numbered sprites overwrite higher-numbered ones.  Sprites always bypass HAM/EHB decode and read their colours directly from the AGA palette bank selected by `BPLCON3`.
 
 ### CPU Cache Synchronization and Cycle Timing
 
@@ -366,7 +370,7 @@ The PC speaker stop-gap has been replaced with a real PCM DAC backend and an abs
 
 - **Fine-grained DMA slot timing** such as exact bitplane/Copper/sprite/audio/disk slot timing relative to color-clock positions, DMA-off cycles for all channels, and per-revision Agnus/Alice differences.
 - **Blitter line/area-fill remaining edge cases** such as real line-mode texture/B channel usage, exact `BLTAPTL` accumulator loading, and per-pixel DMA slot timing for the actual data transfer.
-- **AGA sprite fine details** such as exact superhires pixel scaling, border sprites, and sprite-to-sprite priority ordering.
+- ~~**AGA sprite fine details** such as exact superhires pixel scaling, border sprites, sprite-to-sprite priority ordering, sub-pixel positioning, and HAM/EHB bypass.~~ Implemented.
 - **CPU/chipset timing lock** that advances the beam and subsystems from the M68k cycle counter rather than from PIT ticks, with cycle-accurate memory contention and horizontal blanking modelling.
 - **Undocumented register behaviors, hardware quirks, and chipset revisions** (OCS/ECS/AGA differences, Alice/Lisa variants, A1200 vs A4000).
 - **Zorro III / AutoConfig**, A4000 Gayle IDE, RTC (MSM6242/RP5C01), PCMCIA, and full genlock.

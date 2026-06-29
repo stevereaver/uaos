@@ -2204,6 +2204,20 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
     }
 }
 
+/* Sprite rendering uses a fixed-point lores coordinate system.  SPRxPOS
+ * horizontal values are in colour clocks (2 per lores pixel), so the raw
+ * value is converted to 1/8 lores pixel units to give sub-pixel precision.
+ */
+#define SPR_FP_SHIFT 3
+#define SPR_FP_UNIT  (1 << SPR_FP_SHIFT)
+
+/* Sprite colours are always read directly from the AGA palette; they never
+ * pass through HAM/EHB decoding, even when the playfield is in HAM or EHB mode. */
+static uint32_t sprite_color(int idx, int palette_base)
+{
+    return g_aga_palette[(palette_base + idx) & 0xFF];
+}
+
 /* Render one sprite strip for a single sprite on a scanline.
  * AGA sprite resolution is selected by BPLCON3 bits 10-12 (SPRES). */
 static void render_sprite_strip(int spr, int y, int x_start)
@@ -2213,10 +2227,12 @@ static void render_sprite_strip(int spr, int y, int x_start)
     if (vstop < vstart) vstop += 0x100;
     if (y < vstart || y >= vstop) return;
 
-    int hstart = (g_spr_pos[spr] & 0xFF) - 0x80;
+    int hstart_raw = (g_spr_pos[spr] & 0xFF) - 0x80;
+    int hstart_fp = hstart_raw * (SPR_FP_UNIT / 2);
     int fb_w = (int)g_fb.width;
     int fb_h = (int)g_fb.height;
     if (y < 0 || y >= fb_h) return;
+    (void)x_start;
 
     int attached = (g_spr_ctl[spr] >> 7) & 1u;
     int pair = spr / 2;
@@ -2225,14 +2241,16 @@ static void render_sprite_strip(int spr, int y, int x_start)
      * 000 = ECS/OCS, 001 = lores (16 px), 010 = hires (32 px),
      * 011 = superhires (64 px). */
     int spres = (g_bplcon3 >> 10) & 0x7u;
-    int width, words, pix_scale;
+    int words;
+    int bit_width_fp;
     switch (spres) {
-        case 2:  width = 32; words = 2; pix_scale = 1; break; /* hires */
-        case 3:  width = 64; words = 4; pix_scale = 1; break; /* superhires */
+        case 2:  words = 2; bit_width_fp = SPR_FP_UNIT / 2; break; /* hires */
+        case 3:  words = 4; bit_width_fp = SPR_FP_UNIT / 4; break; /* superhires */
         case 1:
         case 0:
-        default: width = 16; words = 1; pix_scale = 2; break; /* lores / ECS */
+        default: words = 1; bit_width_fp = SPR_FP_UNIT;     break; /* lores / ECS */
     }
+    int width = words * 16;
     /* AGA 32-colour mode: BPLCON3 bits 13-15 select a 16-colour bank. */
     int aga_bank = (g_bplcon3 >> 13) & 0x7u;
     int palette_base = 16 + aga_bank * 16;
@@ -2263,8 +2281,14 @@ static void render_sprite_strip(int spr, int y, int x_start)
             }
         }
 
-        int lores_x = x_start + (hstart + bit) * pix_scale;
-        int bx = hstart + bit;
+        int x_fp = hstart_fp + bit * bit_width_fp;
+        int x0 = x_fp >> SPR_FP_SHIFT;
+        int x1 = (x_fp + bit_width_fp - 1) >> SPR_FP_SHIFT;
+        if (bit_width_fp < SPR_FP_UNIT) {
+            x1 = x0; /* smaller than a lores pixel: map to the nearest lores pixel */
+        }
+
+        int bx = x0;
         int bp_present = (bx >= 0 && bx < COLLISION_WIDTH && (g_bp_even[bx] || g_bp_odd[bx]));
         if (bp_present) {
             g_clxdat |= (uint16_t)(1u << (spr + 1)); /* bitplane-sprite collision */
@@ -2272,13 +2296,10 @@ static void render_sprite_strip(int spr, int y, int x_start)
         if (sprite_behind && bp_present) continue;
 
         /* Clip to display window and framebuffer. */
-        if (lores_x < diw_x || lores_x >= diw_x_stop) continue;
-
-        for (int dx = 0; dx < pix_scale; dx++) {
-            int x = lores_x + dx;
-            if (x >= 0 && x < fb_w) {
-                FB_PutPixel(x, y, g_aga_palette[(palette_base + idx) & 0xFF]);
-            }
+        for (int x = x0; x <= x1; x++) {
+            if (x < 0 || x >= fb_w) continue;
+            if (x < diw_x || x >= diw_x_stop) continue;
+            FB_PutPixel(x, y, sprite_color(idx, palette_base));
         }
     }
 }
@@ -2294,9 +2315,8 @@ static void update_sprite_collisions(void)
         int vi0 = (g_spr_pos[i] >> 8) & 0xFF;
         int vs0 = (g_spr_ctl[i] >> 8) & 0xFF;
         if (vs0 < vi0) vs0 += 0x100;
-        int hi0 = (g_spr_pos[i] & 0xFF) - 0x80;
-        int spres = (g_bplcon3 >> 10) & 0x7u;
-        int width0 = (spres == 2) ? 32 : (spres == 3) ? 64 : 32; /* lores pixels */
+        int hi0 = ((g_spr_pos[i] & 0xFF) - 0x80) / 2;
+        int width0 = 16; /* all sprite resolutions span 16 lores pixels */
 
         for (int j = i + 1; j < SPRITE_COUNT; j++) {
             int vi1 = (g_spr_pos[j] >> 8) & 0xFF;
@@ -2321,7 +2341,9 @@ static void render_sprites_on_scanline(int y, int bytes_per_row)
     if (!(g_dmacon & 0x0020u)) return; /* sprite DMA not enabled */
     int spres = (g_bplcon3 >> 10) & 0x7u;
     int words = (spres == 2) ? 2 : (spres == 3) ? 4 : 1;
-    for (int spr = 0; spr < SPRITE_COUNT; spr++) {
+    /* Lower-numbered sprites have higher priority, so render them last so they
+     * overwrite the pixels drawn by higher-numbered sprites. */
+    for (int spr = SPRITE_COUNT - 1; spr >= 0; spr--) {
         int vstart = (g_spr_pos[spr] >> 8) & 0xFF;
         int vstop  = (g_spr_ctl[spr] >> 8) & 0xFF;
         if (vstop < vstart) vstop += 0x100;
@@ -2844,6 +2866,163 @@ int chip_emu_sprite_test(void)
 
     /* The fetched DATA word should be all set. */
     return (g_spr_data[0][0] == 0xFFFFu && g_spr_datb[0][0] == 0x0000u);
+}
+
+/* Test helper: a sprite that starts partially off the left edge of the
+ * display window is clipped correctly and its visible pixels are drawn.
+ * Returns 1 on success. */
+int chip_emu_sprite_border_test(void)
+{
+    uint32_t spr_data = 0x16000u;
+    if (spr_data + 16 > GUEST_RAM_SIZE) return 0;
+
+    /* Sprite 0 data: 16 pixels, all set in DATA, all clear in DATB -> color 1. */
+    g_ram[spr_data + 0] = 0xFF; g_ram[spr_data + 1] = 0xFF;
+    g_ram[spr_data + 2] = 0;    g_ram[spr_data + 3] = 0;
+
+    /* Position: starts at hstart = -8 (raw value 0x78), vstart=50, vstop=60.
+     * In colour clocks, -8 colour clocks = -4 lores pixels. So the left half
+     * of the sprite is off-screen, but the right half should be visible. */
+    g_spr_pos[0] = (uint16_t)(((50u & 0xFF) << 8) | (0x78u & 0xFF));
+    g_spr_ctl[0] = (uint16_t)(((60u & 0xFF) << 8) | 0);
+    g_spr_pt[0] = spr_data;
+    g_spr_dma_ptr[0] = spr_data;
+    g_dmacon |= 0x0020u;
+
+    /* Set sprite palette colour 17 (base 16 + idx 1) to red. */
+    g_aga_palette[17] = 0x00FF0000u;
+
+    /* Display window starts at lores x=0 so the clipped sprite is visible. */
+    g_diwstart = 0x2C80u;
+
+    /* Clear a small framebuffer area. */
+    for (int y = 0; y < 200; y++) {
+        for (int x = 0; x < 320; x++) {
+            FB_PutPixel(x, y, 0);
+        }
+    }
+
+    render_sprites_on_scanline(55, 40);
+
+    /* Check that some pixels near the left edge (x=0..4) are red. */
+    int found_red = 0;
+    for (int x = 0; x < 8; x++) {
+        if (FB_GetPixel(x, 55) == 0x00FF0000u) found_red = 1;
+    }
+    return found_red;
+}
+
+/* Test helper: overlapping sprites. Lower-numbered sprites have higher
+ * priority, so sprite 0 must overwrite sprite 1 at the overlap.
+ * Returns 1 on success. */
+int chip_emu_sprite_priority_test(void)
+{
+    uint32_t spr_data = 0x17000u;
+    if (spr_data + 32 > GUEST_RAM_SIZE) return 0;
+
+    /* Sprite 0 and 1 both at the same position, same size, different colours.
+     * Sprite 0 uses DATA only (colour index 1); sprite 1 uses DATB only
+     * (colour index 2) so the two sprites hit different palette entries. */
+    for (int i = 0; i < 2; i++) {
+        g_spr_pos[i] = (uint16_t)(((50u & 0xFF) << 8) | 0x80u);
+        g_spr_ctl[i] = (uint16_t)(((60u & 0xFF) << 8) | 0);
+        g_spr_pt[i] = spr_data + i * 16;
+        g_spr_dma_ptr[i] = spr_data + i * 16;
+    }
+    g_ram[spr_data + 0] = 0xFF; g_ram[spr_data + 1] = 0xFF;
+    g_ram[spr_data + 2] = 0;    g_ram[spr_data + 3] = 0;
+    g_ram[spr_data + 16 + 0] = 0;    g_ram[spr_data + 16 + 1] = 0;
+    g_ram[spr_data + 16 + 2] = 0xFF; g_ram[spr_data + 16 + 3] = 0xFF;
+    g_aga_palette[17] = 0x0000FF00u; /* sprite 0 colour (index 1) */
+    g_aga_palette[18] = 0x000000FFu; /* sprite 1 colour (index 2) */
+    g_dmacon |= 0x0020u;
+
+    /* Display window starts at lores x=0 so the overlapping region is visible. */
+    g_diwstart = 0x2C80u;
+
+    for (int y = 0; y < 200; y++)
+        for (int x = 0; x < 320; x++)
+            FB_PutPixel(x, y, 0);
+
+    render_sprites_on_scanline(55, 40);
+
+    /* Sprite 0 (lower number) is higher priority, so it should win.
+     * Colour index for sprite 0 is 1 -> palette[17]. */
+    return FB_GetPixel(0, 55) == 0x0000FF00u;
+}
+
+/* Test helper: a 64-pixel superhires sprite spans exactly 16 lores pixels.
+ * Returns 1 on success. */
+int chip_emu_sprite_superhires_test(void)
+{
+    uint32_t spr_data = 0x18000u;
+    if (spr_data + 32 > GUEST_RAM_SIZE) return 0;
+
+    /* Set BPLCON3 for superhires sprites (SPRES = 3). */
+    g_bplcon3 = (3u << 10);
+    g_bplcon4 = 0;
+
+    /* Display window starts at lores x=0 so the full sprite is visible. */
+    g_diwstart = 0x2C80u;
+
+    /* 64-pixel superhires sprite: all pixels set. */
+    for (int i = 0; i < 4; i++) {
+        g_ram[spr_data + i * 8 + 0] = 0xFF;
+        g_ram[spr_data + i * 8 + 1] = 0xFF;
+        g_ram[spr_data + i * 8 + 2] = 0;
+        g_ram[spr_data + i * 8 + 3] = 0;
+    }
+    g_spr_pos[0] = (uint16_t)(((50u & 0xFF) << 8) | 0x80u);
+    g_spr_ctl[0] = (uint16_t)(((60u & 0xFF) << 8) | 0);
+    g_spr_pt[0] = spr_data;
+    g_spr_dma_ptr[0] = spr_data;
+    g_dmacon |= 0x0020u;
+    g_aga_palette[17] = 0x00FF0000u;
+
+    for (int y = 0; y < 200; y++)
+        for (int x = 0; x < 320; x++)
+            FB_PutPixel(x, y, 0);
+
+    render_sprites_on_scanline(55, 40);
+
+    /* Superhires sprite should span 16 lores pixels (64/4). */
+    int red_pixels = 0;
+    for (int x = 0; x < 32; x++) {
+        if (FB_GetPixel(x, 55) == 0x00FF0000u) red_pixels++;
+    }
+    return red_pixels >= 8 && red_pixels <= 16;
+}
+
+/* Test helper: SPRxPOS supports half-lores-pixel (colour-clock) horizontal
+ * positioning. With hstart = 0x81 the sprite should appear at lores x = 0.5.
+ * Returns 1 on success. */
+int chip_emu_sprite_subpixel_test(void)
+{
+    uint32_t spr_data = 0x19000u;
+    if (spr_data + 16 > GUEST_RAM_SIZE) return 0;
+
+    /* Sprite with hstart = 0x81 (1 colour clock = 0.5 lores pixel). */
+    g_ram[spr_data + 0] = 0xFF; g_ram[spr_data + 1] = 0xFF;
+    g_ram[spr_data + 2] = 0;    g_ram[spr_data + 3] = 0;
+    g_spr_pos[0] = (uint16_t)(((50u & 0xFF) << 8) | 0x81u);
+    g_spr_ctl[0] = (uint16_t)(((60u & 0xFF) << 8) | 0);
+    g_spr_pt[0] = spr_data;
+    g_spr_dma_ptr[0] = spr_data;
+    g_dmacon |= 0x0020u;
+    g_aga_palette[17] = 0x00FF0000u;
+
+    /* Display window starts at lores x=0 so sub-pixel placement is visible. */
+    g_diwstart = 0x2C80u;
+
+    for (int y = 0; y < 200; y++)
+        for (int x = 0; x < 320; x++)
+            FB_PutPixel(x, y, 0);
+
+    render_sprites_on_scanline(55, 40);
+
+    /* With hstart=0x81, the sprite starts at lores x=0.5, so it should
+     * appear at x=0 and x=1 (rounded coverage). */
+    return FB_GetPixel(0, 55) == 0x00FF0000u || FB_GetPixel(1, 55) == 0x00FF0000u;
 }
 
 /* Test helper for the CIA-B parallel port: drive all bits out, write a known

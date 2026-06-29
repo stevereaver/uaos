@@ -326,6 +326,10 @@ extern int chip_emu_parallel_test(void);
 extern int chip_emu_serial_test(void);
 extern int chip_emu_timing_lock_test(void);
 extern int chip_emu_agnus_slot_test(void);
+extern int chip_emu_sprite_border_test(void);
+extern int chip_emu_sprite_priority_test(void);
+extern int chip_emu_sprite_superhires_test(void);
+extern int chip_emu_sprite_subpixel_test(void);
 extern void Desktop_Draw(void);
 extern void uaos_page_fault_isr(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
@@ -434,10 +438,26 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     int raster_test = chip_emu_raster_test();
     kprint(raster_test ? "[BOOT] Color-clock raster test PASSED\n" : "[BOOT] Color-clock raster test FAILED\n");
 
-    /* Run AGA sprite test */
+    /* Run AGA sprite tests */
     kprint("[BOOT] Running AGA sprite test...\n");
     int sprite_test = chip_emu_sprite_test();
     kprint(sprite_test ? "[BOOT] AGA sprite test PASSED\n" : "[BOOT] AGA sprite test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite border test...\n");
+    int sprite_border_test = chip_emu_sprite_border_test();
+    kprint(sprite_border_test ? "[BOOT] AGA sprite border test PASSED\n" : "[BOOT] AGA sprite border test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite priority test...\n");
+    int sprite_priority_test = chip_emu_sprite_priority_test();
+    kprint(sprite_priority_test ? "[BOOT] AGA sprite priority test PASSED\n" : "[BOOT] AGA sprite priority test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite superhires test...\n");
+    int sprite_superhires_test = chip_emu_sprite_superhires_test();
+    kprint(sprite_superhires_test ? "[BOOT] AGA sprite superhires test PASSED\n" : "[BOOT] AGA sprite superhires test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite subpixel test...\n");
+    int sprite_subpixel_test = chip_emu_sprite_subpixel_test();
+    kprint(sprite_subpixel_test ? "[BOOT] AGA sprite subpixel test PASSED\n" : "[BOOT] AGA sprite subpixel test FAILED\n");
 
     /* Register all built-in ROM library modules */
     kprint("[BOOT] Registering ROM modules...\n");
