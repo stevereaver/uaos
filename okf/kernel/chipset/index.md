@@ -4,7 +4,7 @@ title: AGA/ECS Custom Chipset Emulator
 description: Sparse register emulator for the Amiga AGA/ECS custom chip and CIA window at 0xDFF000.
 resource: /kernel/chipset/
 tags: [aga, ecs, chipset, chip_emu, copper, dma, palette]
-timestamp: 2026-06-26T17:00:00Z
+timestamp: 2026-07-01T00:30:00Z
 ---
 
 # AGA/ECS Custom Chipset Emulator
@@ -54,15 +54,16 @@ The copper emulator fetches instructions from `COP1LC`/`COP2LC`, executes `MOVE`
 
 | Register | Offset | Purpose |
 |---|---|---|
-| `BPLCON0` | `0x100` | Bitplane depth, HIRES, HAM, DBLPF. |
+| `BPLCON0` | `0x100` | Bitplane depth (`BPU0`–`BPU3`; bit 4 is `BPU3` on AGA), HIRES, HAM, DBLPF. |
 | `BPLCON1` | `0x102` | Horizontal scroll. |
-| `BPLCON2` | `0x104` | Playfield priorities. |
+| `BPLCON2` | `0x104` | Playfield priorities; bit 9 (`KILLEHB`) selects 64-colour mode on AGA. |
 | `BPLCON3` | `0x106` | AGA bank/LOCT / sprite resolution. |
 | `BPLCON4` | `0x10C` | AGA color-bank lower bits. |
 | `BPL1MOD` | `0x108` | Bitplane modulo (odd planes). |
 | `BPL2MOD` | `0x10A` | Bitplane modulo (even planes). |
 | `DIWSTART`| `0x08E` | Display window start. |
 | `DIWSTOP` | `0x090` | Display window stop. |
+| `DIWHIGH` | `0x1E4` | Display window high bits (AGA). |
 | `DDFSTART`| `0x092` | Data fetch start. |
 | `DDFSTOP` | `0x094` | Data fetch stop. |
 | `BPL1PT`–`BPL6PT` | `0x0E0`–`0x0F4` | Bitplane DMA pointers (OCS/ECS). |
@@ -82,12 +83,14 @@ The resulting 256-entry palette is stored internally as host `0x00RRGGBB` values
 
 `chip_emu_render_frame()` executes the primary copper list (if any), then renders the active chipset state to the host linear framebuffer using `FB_PutPixel`.  It supports:
 
-- 1–8 bitplanes with palette lookup.
+- 1–8 bitplanes with palette lookup; AGA uses `BPLCON0` bits 12–14 plus bit 4 (`BPU3`) to encode 8-bitplane depth.
 - HAM6 (6 bitplanes, `HOMOD=1`): upper 2 bits select palette/modify-red/modify-green/modify-blue.
+- HAM8 (8 bitplanes, `HOMOD=1`): upper 2 bits (6–7) are control, lower 6 bits (0–5) are data.
 - EHB (6 bitplanes, `HOMOD=0`, `DBLPF=0`): colours 32–63 are half-brightness versions of colours 0–31.
-- HAM8 and AGA 8-bit/24-bit palette modes via the 256-entry palette.
+- 64-colour direct palette mode (6 bitplanes, `BPLCON2` bit 9 `KILLEHB` set): indices 0–63 are taken directly from the palette.
+- AGA 8-bit/24-bit palette modes via the 256-entry palette.
 
-`BPLCON0` selects the depth and mode, `DIWSTART`/`DIWSTOP` define the display window, and `DDFSTART`/`DDFSTOP` help derive the fetch width.
+`BPLCON0` selects the depth and mode, `DIWSTART`/`DIWSTOP` define the display window, `DIWHIGH` (`0x1E4`) extends the window beyond 512 lines, and `DDFSTART`/`DDFSTOP` help derive the fetch width.
 
 ## Page Fault Decoder
 
@@ -108,6 +111,18 @@ For unknown instructions, the handler falls back to a 32-bit read/write and adva
 - `LoadView(view)` passes the merged copper list to `chip_emu_copper_jump()` and then calls `chip_emu_render_frame()`.  Views without a merged copper list still use the CPU-drawn bitmap fallback.
 
 The display-mode database (`graphics_lib.c`) includes AGA variants of each mode (bit 31 set) so `MakeVPort` can pick AGA depth and timing parameters.
+
+## Demo: CopperBars
+
+The M68k demo `system/Demos/CopperBars.s` is a worked example of using `graphics.library` to create a `View`/`ViewPort` and then replacing the merged copper list with a custom one to draw animated horizontal raster bars. It is built automatically by `scripts/build_iso.sh` and installed into `SYS_ROOT/Demos/CopperBars`. The program:
+
+1. Opens `graphics.library` and `intuition.library`.
+2. Allocates a `View`, `ViewPort`, `RasInfo`, dummy `BitMap` and `ColorMap`.
+3. Calls `MakeVPort`, `MrgCop`, and `LoadView` to establish a valid copper list.
+4. Reads the copper list address from `COP1LC` and overwrites it with `MOVE COLOR00, colour` instructions gated by `WAIT` instructions.
+5. Opens an Intuition window with `IDCMP_CLOSEWINDOW` and loops, updating the bar positions and calling `LoadView`/`WaitTOF` each frame until the window is closed.
+
+This demonstrates that M68k code can read back the copper-list pointer and rewrite it safely while the chipset emulator is active.
 
 ## Tier 1 — Accuracy for Games and Productivity
 
@@ -138,13 +153,14 @@ The AGA Blitter is triggered by writes to `BLTSIZE` (`0x058`).  It supports area
 - Source and destination modulo (`BLTAMOD`/`BLTBMOD`/`BLTCMOD`/`BLTDMOD`).
 - Descending address mode (`BLTCON1` `DESC`).
 
-Blitter busy timing is now implemented: `BLTSIZE` sets the busy flag and a PIT-tick counter, and `DMACONR` (register `0x002`) reflects `BLITZ` (bit 14) while the blitter is active.  The busy duration is scaled to the blit size (clamped to a few PIT ticks) so that software polling `DMACONR` sees the expected delay.  True slot-by-slot DMA contention is not yet modelled.
+Blitter execution is now slot-driven for both line and area modes.  Writing `BLTSIZE` sets the busy flag and initialises persistent line or area state; each allocated Blitter DMA slot advances the state by one pixel (line mode) or one word (area mode).  `DMACONR` (register `0x002`) reflects `BLITZ` (bit 14) while the blitter is active, and the busy flag is only cleared when the last slot completes, so polling software sees the real completion time.  The live pointer registers (`BLTAPT`, `BLTBPT`, `BLTCPT`, `BLTDPT`) are updated after each word, so mid-blit reads return the correct current values.
 
-**Line mode and area-fill mode** — `blitter_execute()` now has a stateful Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and a per-row fill state for `BLTCON1` bits 3–4 (`IFEFE`/`EFE`).
+**Line mode and area-fill mode** — `blitter_execute()` has a stateful Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and a persistent per-row fill state for `BLTCON1` bits 3–4 (`IFEFE`/`EFE`).
 
 - Line mode uses `BLTAPTL` as the Bresenham accumulator, applies the B-channel texture (`BLTBDAT`) through the `BLTCON0` minterm, honours the `SING` bit, and draws exactly one pixel per allocated Blitter DMA slot.
-- Area-fill mode now processes each word from MSB (bit 15) to LSB (bit 0), matching the Amiga's left-to-right screen layout, and carries the fill state across words within the same row.
+- Area mode processes each word from MSB (bit 15) to LSB (bit 0), matching the Amiga's left-to-right screen layout, and carries the fill state across words within the same row.
 - A dedicated `chip_emu_fill_complex_test()` exercises a self-intersecting polygon (bowtie) to verify that the fill state toggles at each edge and carries across word boundaries.
+- `chip_emu_blitter_busy_test()` and `chip_emu_blitter_desc_test()` verify that large area blits complete across multiple frames and that descending-mode overlapping copies work word-by-word.
 
 
 ### Hardware Sprites

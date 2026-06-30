@@ -4,7 +4,7 @@ title: UAOS Build System
 description: Details of the toolchain and process used to build UAOS.
 resource: /scripts/
 tags: [build, gcc, nasm, grub, iso]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-07-01T00:30:00Z
 ---
 
 # UAOS Build System
@@ -14,8 +14,8 @@ UAOS uses a custom build pipeline to produce a hybrid BIOS/UEFI bootable ISO ima
 ## Toolchain
 
 - **Compiler**: `gcc` (targetting `x86_64-elf` or host with `-ffreestanding`).
-- **Assembler**: `nasm` for bootloader and interrupt stubs.
-- **Linker**: `ld` with a custom linker script (`uaos_kernel.ld`).
+- **Assembler**: `nasm` for bootloader and interrupt stubs; `vasm` (Motorola syntax) for M68k demos.
+- **Linker**: `ld` with a custom linker script (`uaos_kernel.ld`); `vlink` for Amiga Hunk M68k executables.
 - **ISO Creation**: `grub-mkrescue` and `xorriso`.
 
 ## Build Process
@@ -32,9 +32,10 @@ The primary build script is `scripts/build_iso.sh`.
 8. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
 9. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
 10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
-11. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`) into `SYS_ROOT`.
-12. **GRUB Config**: Injects `scripts/grub.cfg` and the AROS kickstart configuration.
-13. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
+11. **M68k Demos**: Assembles M68k assembly demos in `system/Demos/` (e.g., `CopperBars.s`) with `vasm` (Motorola syntax), links them into Amiga Hunk executables with `vlink`, and wraps the resulting binaries with `gen_uaos_m68k` for `SYS_ROOT/Demos/`.
+12. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`) into `SYS_ROOT`.
+13. **GRUB Config**: Injects `scripts/grub.cfg` and the AROS kickstart configuration.
+14. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
 
 ## Helper Scripts
 

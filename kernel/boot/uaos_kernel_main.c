@@ -323,6 +323,8 @@ extern uint16_t g_intreq;
 extern int chip_emu_line_test(void);
 extern int chip_emu_fill_test(void);
 extern int chip_emu_fill_complex_test(void);
+extern int chip_emu_blitter_busy_test(void);
+extern int chip_emu_blitter_desc_test(void);
 extern int chip_emu_raster_test(void);
 extern int chip_emu_sprite_test(void);
 extern int chip_emu_parallel_test(void);
@@ -330,6 +332,9 @@ extern int chip_emu_serial_test(void);
 extern int chip_emu_timing_lock_test(void);
 extern int chip_emu_timing_contention_test(void);
 extern int chip_emu_hblank_test(void);
+extern int chip_emu_ham8_test(void);
+extern int chip_emu_64color_test(void);
+extern int chip_emu_diwhigh_test(void);
 extern int chip_emu_agnus_slot_test(void);
 extern int chip_emu_sprite_border_test(void);
 extern int chip_emu_sprite_priority_test(void);
@@ -438,6 +443,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     int fill_complex_test = chip_emu_fill_complex_test();
     kprint(fill_complex_test ? "[BOOT] Blitter complex fill test PASSED\n" : "[BOOT] Blitter complex fill test FAILED\n");
 
+    kprint("[BOOT] Running Blitter large-blit busy test...\n");
+    int blitter_busy_test = chip_emu_blitter_busy_test();
+    kprint(blitter_busy_test ? "[BOOT] Blitter large-blit busy test PASSED\n" : "[BOOT] Blitter large-blit busy test FAILED\n");
+
+    kprint("[BOOT] Running Blitter descending overlap test...\n");
+    int blitter_desc_test = chip_emu_blitter_desc_test();
+    kprint(blitter_desc_test ? "[BOOT] Blitter descending overlap test PASSED\n" : "[BOOT] Blitter descending overlap test FAILED\n");
+
     /* Run color-clock raster test */
     kprint("[BOOT] Running color-clock raster test...\n");
     int raster_test = chip_emu_raster_test();
@@ -536,6 +549,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running horizontal-blanking timing test...\n");
     int hblank_test = chip_emu_hblank_test();
     kprint(hblank_test ? "[BOOT] H-blanking test PASSED\n" : "[BOOT] H-blanking test FAILED\n");
+
+    kprint("[BOOT] Running AGA HAM8 display test...\n");
+    int ham8_test = chip_emu_ham8_test();
+    kprint(ham8_test ? "[BOOT] HAM8 test PASSED\n" : "[BOOT] HAM8 test FAILED\n");
+
+    kprint("[BOOT] Running AGA 64-colour display test...\n");
+    int color64_test = chip_emu_64color_test();
+    kprint(color64_test ? "[BOOT] 64-colour test PASSED\n" : "[BOOT] 64-colour test FAILED\n");
+
+    kprint("[BOOT] Running AGA DIWHIGH register test...\n");
+    int diwhigh_test = chip_emu_diwhigh_test();
+    kprint(diwhigh_test ? "[BOOT] DIWHIGH test PASSED\n" : "[BOOT] DIWHIGH test FAILED\n");
 
     kprint("[BOOT] Running Agnus slot table test...\n");
     int agnus_test = chip_emu_agnus_slot_test();

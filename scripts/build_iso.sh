@@ -907,6 +907,54 @@ else
 fi
 
 # -------------------------------------------------------------------------
+# Step 2g — Build M68k CopperBars demo for SYS_ROOT/Demos
+# -------------------------------------------------------------------------
+
+info "Step 2g: Building M68k CopperBars demo"
+
+COPPERBARS_SRC="${REPO_ROOT}/system/Demos/CopperBars.s"
+if [[ -f "${COPPERBARS_SRC}" ]]; then
+    # Ensure vasm and vlink are available.
+    VASM_DIR="${BUILD_DIR}/vasm"
+    VASM_BIN="${VASM_DIR}/vasmm68k_mot"
+    VLINK_BIN="${VASM_DIR}/vlink/vlink"
+    if [[ ! -f "${VASM_BIN}" || ! -f "${VLINK_BIN}" ]]; then
+        info "  Downloading and building vasm-m68k + vlink"
+        mkdir -p "${VASM_DIR}"
+        if [[ ! -f "${VASM_DIR}/vasm.tar.gz" ]]; then
+            wget -q -O "${VASM_DIR}/vasm.tar.gz" http://sun.hasenbraten.de/vasm/release/vasm.tar.gz \
+                || fatal "Failed to download vasm source"
+        fi
+        if [[ ! -f "${VASM_DIR}/vlink.tar.gz" ]]; then
+            wget -q -O "${VASM_DIR}/vlink.tar.gz" http://sun.hasenbraten.de/vlink/release/vlink.tar.gz \
+                || fatal "Failed to download vlink source"
+        fi
+        cd "${VASM_DIR}"
+        tar xzf vasm.tar.gz
+        tar xzf vlink.tar.gz
+        cd "${VASM_DIR}/vasm"
+        make CPU=m68k SYNTAX=mot >/dev/null 2>&1 || fatal "Failed to build vasm"
+        cd "${VASM_DIR}/vlink"
+        make >/dev/null 2>&1 || fatal "Failed to build vlink"
+        cp "${VASM_DIR}/vasm/vasmm68k_mot" "${VASM_BIN}"
+        ok "  Built: vasm-m68k + vlink"
+    fi
+
+    DEMOS_STAGING="${ISO_STAGING}/SYS_ROOT/Demos"
+    mkdir -p "${DEMOS_STAGING}"
+
+    "${VASM_BIN}" -Fhunk -o "${BUILD_DIR}/CopperBars.o" "${COPPERBARS_SRC}" \
+        || fatal "Failed to assemble CopperBars.s"
+    "${VLINK_BIN}" -bamigahunk -o "${BUILD_DIR}/CopperBars.hunk" "${BUILD_DIR}/CopperBars.o" \
+        || fatal "Failed to link CopperBars"
+    "${BUILD_DIR}/gen_uaos_m68k" "CopperBars" "${BUILD_DIR}/CopperBars.hunk" "${DEMOS_STAGING}/CopperBars" \
+        || fatal "Failed to wrap CopperBars"
+    ok "  Built: SYS_ROOT/Demos/CopperBars"
+else
+    ok "  No CopperBars source found (system/Demos/CopperBars.s)"
+fi
+
+# -------------------------------------------------------------------------
 # Step 3 — Install GRUB configuration
 # -------------------------------------------------------------------------
 
@@ -1012,6 +1060,16 @@ if [[ -d "${SYSTEM_DIR}" ]]; then
     if [[ -d "${SYSTEM_DIR}/Tools" ]]; then
         cp -r "${SYSTEM_DIR}/Tools/"* "${ISO_STAGING}/SYS_ROOT/Tools/" 2>/dev/null || true
         ok "  Copied: system/Tools/ -> sys-root/Tools/"
+    fi
+    
+    # Copy any Demos files (built binaries and icons), excluding assembly sources
+    if [[ -d "${SYSTEM_DIR}/Demos" ]]; then
+        mkdir -p "${ISO_STAGING}/SYS_ROOT/Demos"
+        for f in "${SYSTEM_DIR}/Demos"/*; do
+            [[ -f "$f" && "$f" != *.s ]] || continue
+            cp "$f" "${ISO_STAGING}/SYS_ROOT/Demos/"
+        done
+        ok "  Copied: system/Demos/ -> SYS_ROOT/Demos/"
     fi
 fi
 

@@ -3,7 +3,7 @@ type: System Layout
 title: UAOS System Layout
 description: Overview of the Amiga-style system directory structure in UAOS.
 tags: [layout, filesystem, workbench]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-07-01T00:30:00Z
 ---
 
 # UAOS System Layout
@@ -18,6 +18,7 @@ UAOS follows the classic AmigaOS directory structure to maintain compatibility a
 - **`LIBS:` (Libraries)**: Shared libraries.
 - **`S:` (Scripts)**: System scripts, including `Startup-Sequence`.
 - **`SYS:` (System Utilities)**: Core system tools and the Workbench itself.
+- **`Demos:` (Demonstrations)**: Example M68k programs shipped with the system, such as `CopperBars`, which exercises the custom chipset and Amiga libraries.
 
 ## Special Assigns
 
@@ -45,6 +46,12 @@ The following programs are compiled as x86-64 ELF64 PIE binaries, wrapped with a
 - `strings` — extract printable strings (`-n` for minimum length).
 - `find` — recursive directory search with `-name` and `-type` filters.
 - `Guide` — AmigaGuide viewer using the GUI syscall interface.
+
+## M68k Demo Programs (`system/Demos/`)
+
+Programs written in M68k assembly are assembled with `vasm` (Motorola syntax), linked into standard Amiga Hunk executables with `vlink`, and wrapped with the `UAOS` header by `gen_uaos_m68k`. They are staged into `SYS_ROOT/Demos/`:
+
+- `CopperBars` — opens an Intuition window and renders animated horizontal raster bars by writing a custom Copper list to the chipset emulator. It demonstrates the use of `graphics.library` (`MakeVPort`, `MrgCop`, `LoadView`, `WaitTOF`) and `intuition.library` (`OpenWindow`, `CloseWindow`, `ModifyIDCMP`), and exits cleanly when the window is closed.
 
 ## Startup Sequence
 

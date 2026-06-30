@@ -289,6 +289,7 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_DIWSTOP  0x090
 #define REG_DDFSTART 0x092
 #define REG_DDFSTOP  0x094
+#define REG_DIWHIGH  0x1E4
 #define REG_COPCON   0x02E
 
 #define REG_SPR0PT   0x120
@@ -383,6 +384,22 @@ typedef struct {
     int texture_bit;    /* current bit in B texture */
 } BlitterLineState;
 static BlitterLineState g_line_state;
+
+/* Persistent state for area-mode blits (one word per DMA slot). */
+typedef struct {
+    int active;
+    int width;          /* original BLTSIZE width in words */
+    int height;         /* original BLTSIZE height in lines */
+    int x;              /* current word within the row */
+    int y;              /* current row */
+    int fill_state;     /* per-row polygon fill state */
+    uint32_t apt;       /* current A pointer */
+    uint32_t bpt;       /* current B pointer */
+    uint32_t cpt;       /* current C pointer */
+    uint32_t dpt;       /* current D pointer */
+    int words_remaining; /* words left in this blit */
+} BlitterAreaState;
+static BlitterAreaState g_area_state;
 
 /* Sprite collision state */
 static uint16_t g_clxdat;   /* collision data (read and clear) */
@@ -557,6 +574,7 @@ static int dma_slot_count(DMA_Channel channel)
 }
 
 /* Forward declarations for helpers defined below the display-variable block. */
+static int bpl_depth(void);
 static int bpl_hires(void);
 static uint16_t g_ddfstart;
 static uint16_t g_ddfstop;
@@ -577,9 +595,9 @@ static void dma_slot_alloc_bitplanes(void)
 {
     if (!(g_dmacon & 0x0100u)) return; /* BPLEN */
 
-    int bpu = (int)((g_bplcon0 >> 12) & 0x0Fu);
+    int bpu = bpl_depth();
     if (bpu <= 0) return;
-    if (bpu > 6) bpu = 6;
+    if (bpu > 8) bpu = 8;
 
     int hires = bpl_hires();
     int start_slot = (int)(g_ddfstart / 4u);
@@ -592,10 +610,11 @@ static void dma_slot_alloc_bitplanes(void)
     int pattern_len = hires ? 4 : 8;
     int plane_map[8];
     if (hires) {
-        plane_map[0] = 3; plane_map[1] = 1; plane_map[2] = 2; plane_map[3] = 0;
+        int map[8] = {0, 2, 1, 3, 4, 6, 5, 7}; /* hires fetch order */
+        for (int p = 0; p < 8; p++) plane_map[p] = map[p];
     } else {
-        plane_map[0] = -1; plane_map[1] = 3; plane_map[2] = 5; plane_map[3] = 1;
-        plane_map[4] = -1; plane_map[5] = 2; plane_map[6] = 4; plane_map[7] = 0;
+        int map[8] = {0, 4, 2, 6, 1, 5, 3, 7}; /* lores fetch order */
+        for (int p = 0; p < 8; p++) plane_map[p] = map[p];
     }
 
     for (int slot = start_slot; slot < stop_slot; slot++) {
@@ -610,6 +629,7 @@ static void dma_slot_alloc_bitplanes(void)
 }
 
 static void blitter_line_step(void);
+static void blitter_area_step(void);
 
 /* Allocate up to `max_slots` odd-numbered free slots to the Copper. */
 static void dma_slot_alloc_copper(int max_slots)
@@ -641,11 +661,13 @@ static void dma_slot_alloc_blitter(void)
         g_dma_slots[i] = DMA_CHAN_BLITTER;
         if (g_line_state.active) {
             blitter_line_step();
+        } else if (g_area_state.active) {
+            blitter_area_step();
         }
         g_blitter_words_remaining--;
         yield++;
     }
-    if (g_blitter_words_remaining <= 0) {
+    if (g_blitter_words_remaining <= 0 && !g_line_state.active && !g_area_state.active) {
         g_blitter_busy = 0;
         g_blitter_words_remaining = 0;
     }
@@ -653,6 +675,7 @@ static void dma_slot_alloc_blitter(void)
 
 static uint16_t g_diwstart; /* display window start */
 static uint16_t g_diwstop;  /* display window stop */
+static uint16_t g_diwhigh;  /* display window high bits (AGA) */
 static uint16_t g_ddfstart; /* display data fetch start */
 static uint16_t g_ddfstop;  /* display data fetch stop */
 static uint16_t g_copcon;   /* copper control (dangerous bits) */
@@ -941,6 +964,7 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
 
         case REG_DIWSTART: g_diwstart = (uint16_t)value; break;
         case REG_DIWSTOP:  g_diwstop  = (uint16_t)value; break;
+        case REG_DIWHIGH:  g_diwhigh  = (uint16_t)value; break;
         case REG_DDFSTART: g_ddfstart = (uint16_t)value; break;
         case REG_DDFSTOP:  g_ddfstop  = (uint16_t)value; break;
         case REG_COPCON:   g_copcon   = (uint16_t)value; break;
@@ -1135,6 +1159,7 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
 
         case REG_DIWSTART: value = g_diwstart; break;
         case REG_DIWSTOP:  value = g_diwstop;  break;
+        case REG_DIWHIGH:  value = g_diwhigh;  break;
         case REG_DDFSTART: value = g_ddfstart; break;
         case REG_DDFSTOP:  value = g_ddfstop;  break;
         case REG_COPCON:   value = g_copcon;   break;
@@ -1325,6 +1350,115 @@ static void blitter_line_step(void)
     ls->texture_bit = (ls->texture_bit + 1) & 0xFu;
 }
 
+/* Step the area-mode Blitter by one word.  Called once per allocated DMA slot.
+ * The area state is persistent across slots/scanlines and updates the live
+ * pointer registers so mid-blit reads return the correct values. */
+static void blitter_area_step(void)
+{
+    if (!g_area_state.active || g_area_state.words_remaining <= 0) return;
+
+    int width  = g_area_state.width;
+    int height = g_area_state.height;
+    int x = g_area_state.x;
+    int y = g_area_state.y;
+
+    int desc = (g_bltcon1 >> 1) & 1u;
+    int useA = (g_bltcon0 >> 11) & 1u;
+    int useB = (g_bltcon0 >> 10) & 1u;
+    int useC = (g_bltcon0 >> 9) & 1u;
+    int useD = (g_bltcon0 >> 8) & 1u;
+    int minterm = g_bltcon0 & 0xFFu;
+    int ash = (g_bltcon0 >> 12) & 0xFu;
+    int bsh = (g_bltcon1 >> 12) & 0xFu;
+    int fill_mode = (g_bltcon1 >> 3) & 0x3u;
+
+    uint32_t apt = g_area_state.apt;
+    uint32_t bpt = g_area_state.bpt;
+    uint32_t cpt = g_area_state.cpt;
+    uint32_t dpt = g_area_state.dpt;
+
+    int stride = desc ? -2 : 2;
+    int amod = (int)(int16_t)g_bltamod;
+    int bmod = (int)(int16_t)g_bltbmod;
+    int cmod = (int)(int16_t)g_bltcmod;
+    int dmod = (int)(int16_t)g_bltdmod;
+
+    uint16_t a = useA ? chip_read_u16(apt) : g_bltadat;
+    uint16_t b = useB ? chip_read_u16(bpt) : g_bltbdat;
+    uint16_t c = useC ? chip_read_u16(cpt) : g_bltcdat;
+
+    int x_fwd = desc ? (width - 1 - x) : x;
+    if (x_fwd == 0)       a &= g_bltafwm;
+    if (x_fwd == width - 1) a &= g_bltalwm;
+
+    if (ash) a = (uint16_t)((a >> ash) | (a << (16 - ash)));
+    if (bsh) b = (uint16_t)((b >> bsh) | (b << (16 - bsh)));
+
+    uint16_t d = 0;
+    for (int bit = 15; bit >= 0; bit--) {
+        int abit = (a >> bit) & 1u;
+        int bbit = (b >> bit) & 1u;
+        int cbit = (c >> bit) & 1u;
+        int idx = (abit << 2) | (bbit << 1) | cbit;
+        int bit_out = (minterm & (1u << idx)) ? 1 : 0;
+
+        if (fill_mode) {
+            if (abit) g_area_state.fill_state ^= 1;
+            if (fill_mode & 1u) {
+                bit_out = g_area_state.fill_state;
+            } else {
+                bit_out = abit ? (g_area_state.fill_state ^ 1) : g_area_state.fill_state;
+            }
+        }
+        if (bit_out)
+            d |= (uint16_t)(1u << bit);
+    }
+
+    if (useD) chip_write_u16(dpt, d);
+
+    if (useA) apt = (uint32_t)((int32_t)apt + stride);
+    if (useB) bpt = (uint32_t)((int32_t)bpt + stride);
+    if (useC) cpt = (uint32_t)((int32_t)cpt + stride);
+    if (useD) dpt = (uint32_t)((int32_t)dpt + stride);
+
+    g_area_state.apt = apt;
+    g_area_state.bpt = bpt;
+    g_area_state.cpt = cpt;
+    g_area_state.dpt = dpt;
+
+    /* Update live registers so mid-blit reads see current pointers. */
+    g_bltapt = apt;
+    g_bltbpt = bpt;
+    g_bltcpt = cpt;
+    g_bltdpt = dpt;
+
+    x++;
+    g_area_state.x = x;
+    g_area_state.words_remaining--;
+    if (x >= width) {
+        g_area_state.x = 0;
+        g_area_state.y = y + 1;
+        g_area_state.fill_state = 0; /* fill state resets per row */
+        if (y + 1 < height) {
+            if (useA) g_area_state.apt = (uint32_t)((int32_t)apt + amod);
+            if (useB) g_area_state.bpt = (uint32_t)((int32_t)bpt + bmod);
+            if (useC) g_area_state.cpt = (uint32_t)((int32_t)cpt + cmod);
+            if (useD) g_area_state.dpt = (uint32_t)((int32_t)dpt + dmod);
+            /* Update live registers again after modulo. */
+            g_bltapt = g_area_state.apt;
+            g_bltbpt = g_area_state.bpt;
+            g_bltcpt = g_area_state.cpt;
+            g_bltdpt = g_area_state.dpt;
+        }
+    }
+
+    if (g_area_state.words_remaining <= 0) {
+        g_area_state.active = 0;
+        g_blitter_busy = 0;
+        g_blitter_words_remaining = 0;
+    }
+}
+
 /* Execute an area blit triggered by a write to BLTSIZE.
  * Width is in words (bits 15-6 of size), height in lines (bits 5-0). */
 static void blitter_execute(uint16_t size)
@@ -1386,85 +1520,28 @@ static void blitter_execute(uint16_t size)
         return;
     }
 
-    uint32_t apt = g_bltapt;
-    uint32_t bpt = g_bltbpt;
-    uint32_t cpt = g_bltcpt;
-    uint32_t dpt = g_bltdpt;
+    g_area_state.active = 1;
+    g_area_state.width = width;
+    g_area_state.height = height;
+    g_area_state.x = 0;
+    g_area_state.y = 0;
+    g_area_state.fill_state = 0;
+    g_area_state.words_remaining = width * height;
 
-    int stride = desc ? -2 : 2;
-    /* In DESC mode the programmer is responsible for setting the correct modulo
-     * (full row width, not padding); the hardware does not negate it. */
-    int amod = (int)(int16_t)g_bltamod;
-    int bmod = (int)(int16_t)g_bltbmod;
-    int cmod = (int)(int16_t)g_bltcmod;
-    int dmod = (int)(int16_t)g_bltdmod;
+    g_area_state.apt = g_bltapt;
+    g_area_state.bpt = g_bltbpt;
+    g_area_state.cpt = g_bltcpt;
+    g_area_state.dpt = g_bltdpt;
 
     if (desc) {
         uint32_t offset = (uint32_t)(width - 1) * 2u;
-        if (useA) apt += offset;
-        if (useB) bpt += offset;
-        if (useC) cpt += offset;
-        if (useD) dpt += offset;
+        if (useA) g_area_state.apt += offset;
+        if (useB) g_area_state.bpt += offset;
+        if (useC) g_area_state.cpt += offset;
+        if (useD) g_area_state.dpt += offset;
     }
 
-    g_blitter_busy = 1;
     g_line_state.active = 0;
-
-    for (int y = 0; y < height; y++) {
-        int fill_state = 0;
-        for (int x = 0; x < width; x++) {
-            uint16_t a = useA ? chip_read_u16(apt) : g_bltadat;
-            uint16_t b = useB ? chip_read_u16(bpt) : g_bltbdat;
-            uint16_t c = useC ? chip_read_u16(cpt) : g_bltcdat;
-
-            int x_fwd = desc ? (width - 1 - x) : x;
-            if (x_fwd == 0)       a &= g_bltafwm;
-            if (x_fwd == width - 1) a &= g_bltalwm;
-
-            if (ash) a = (uint16_t)((a >> ash) | (a << (16 - ash)));
-            if (bsh) b = (uint16_t)((b >> bsh) | (b << (16 - bsh)));
-
-            uint16_t d = 0;
-            for (int bit = 15; bit >= 0; bit--) {
-                int abit = (a >> bit) & 1u;
-                int bbit = (b >> bit) & 1u;
-                int cbit = (c >> bit) & 1u;
-                int idx  = (abit << 2) | (bbit << 1) | cbit;
-                int bit_out = (minterm & (1u << idx)) ? 1 : 0;
-
-                if (fill_mode) {
-                    /* Polygon edge-fill: crossing an A-channel edge toggles
-                     * the fill state.  Inclusive mode fills the edge pixel
-                     * itself; exclusive mode leaves it unfilled. */
-                    if (abit) fill_state ^= 1;
-                    if (fill_mode & 1u) {
-                        /* inclusive (IFEFE) */
-                        bit_out = fill_state;
-                    } else {
-                        /* exclusive (EFE): edge pixel uses old state */
-                        bit_out = abit ? (fill_state ^ 1) : fill_state;
-                    }
-                }
-                if (bit_out)
-                    d |= (uint16_t)(1u << bit);
-            }
-
-            if (useD) chip_write_u16(dpt, d);
-
-            if (useA) apt = (uint32_t)((int32_t)apt + stride);
-            if (useB) bpt = (uint32_t)((int32_t)bpt + stride);
-            if (useC) cpt = (uint32_t)((int32_t)cpt + stride);
-            if (useD) dpt = (uint32_t)((int32_t)dpt + stride);
-        }
-
-        if (y + 1 < height) {
-            if (useA) apt = (uint32_t)((int32_t)apt + amod);
-            if (useB) bpt = (uint32_t)((int32_t)bpt + bmod);
-            if (useC) cpt = (uint32_t)((int32_t)cpt + cmod);
-            if (useD) dpt = (uint32_t)((int32_t)dpt + dmod);
-        }
-    }
-
     g_blitter_busy = 1;
     g_blitter_words_remaining = width * height;
     g_blitter_busy_ticks = 0;
@@ -2118,15 +2195,22 @@ static uint8_t *bpl_line_ptr(int plane, int y, int bytes_per_row)
 }
 
 /* Mode helpers from BPLCON0. */
-static int bpl_depth(void)    { return (g_bplcon0 >> 12) & 0x7; }
+static int bpl_depth(void)
+{
+    int d = (g_bplcon0 >> 12) & 0x7;
+    if (g_bplcon0 & 0x0010u) d |= 0x8; /* BPU3 */
+    return d;
+}
 static int bpl_ham(void)      { return (g_bplcon0 >> 11) & 1; }
 static int bpl_dblpf(void)    { return (g_bplcon0 >> 10) & 1; }
 static int bpl_hires(void)    { return (g_bplcon0 >> 15) & 1; }
 
+static int kill_ehb(void)     { return (g_bplcon2 >> 9) & 1; }
+
 static int ehb_active(void)
 {
     int d = bpl_depth();
-    return (d == 6) && !bpl_ham() && !bpl_dblpf();
+    return (d == 6) && !bpl_ham() && !bpl_dblpf() && !kill_ehb();
 }
 
 static int ham_active(void)
@@ -2139,16 +2223,25 @@ static int ham_active(void)
 static uint32_t pixel_to_rgb(int index, int prev_rgb)
 {
     if (ham_active()) {
-        int control = (index >> 4) & 0x3; /* HAM6: upper 2 bits of 6-bit pixel */
-        int value   = index & 0xF;
+        int d = bpl_depth();
+        int control, value;
+        if (d == 8) {
+            /* HAM8: control bits 6-7, value bits 0-5 */
+            control = (index >> 6) & 0x3;
+            value   = index & 0x3F;
+        } else {
+            /* HAM6: control bits 4-5, value bits 0-3 */
+            control = (index >> 4) & 0x3;
+            value   = index & 0xF;
+        }
         int r = (prev_rgb >> 16) & 0xFF;
         int g = (prev_rgb >> 8)  & 0xFF;
         int b = prev_rgb & 0xFF;
         switch (control) {
-            case 0: return g_aga_palette[value & 0x1F];      /* palette index */
-            case 1: b = (value << 4) | value; break;         /* modify blue  */
-            case 2: r = (value << 4) | value; break;         /* modify red   */
-            case 3: g = (value << 4) | value; break;         /* modify green */
+            case 0: return g_aga_palette[value & 0xFF]; /* palette index */
+            case 1: b = (d == 8) ? ((value << 2) | (value >> 4)) : ((value << 4) | value); break; /* modify blue  */
+            case 2: r = (d == 8) ? ((value << 2) | (value >> 4)) : ((value << 4) | value); break; /* modify red   */
+            case 3: g = (d == 8) ? ((value << 2) | (value >> 4)) : ((value << 4) | value); break; /* modify green */
         }
         return (uint32_t)((r << 16) | (g << 8) | b);
     }
@@ -2320,10 +2413,12 @@ static void render_sprite_strip(int spr, int y, int x_start)
      * drawn behind the playfields. */
     int sprite_behind = (g_bplcon2 >> (8 + pair)) & 1u;
 
-    /* Display window clipping. */
-    int diw_x = (g_diwstart & 0xFF) - 0x80;
-    int diw_x_stop = (g_diwstop & 0xFF) + 0x80;
-    if (diw_x_stop < diw_x) diw_x_stop += 0x100;
+    /* Display window clipping.  Use DIWHIGH high bits for the horizontal range. */
+    int diw_h_start_hi = (g_diwhigh >> 4) & 0x1;
+    int diw_h_stop_hi  = (g_diwhigh >> 5) & 0x1;
+    int diw_x = ((diw_h_start_hi & 1) << 8) | ((g_diwstart & 0xFF) - 0x80);
+    int diw_x_stop = ((diw_h_stop_hi & 1) << 8) | ((g_diwstop & 0xFF) + 0x80);
+    if (diw_x_stop < diw_x) diw_x_stop += 0x200;
 
     for (int bit = 0; bit < width; bit++) {
         int w = bit / 16;
@@ -2448,21 +2543,30 @@ void chip_emu_render_frame(void)
 
     /* Derive display window.
      * Horizontal start is in lores pixels with an $80 origin.
-     * Horizontal stop is written with the high bit stripped (H8=1 implied).
-     * Vertical stop uses the hardware quirk that forces bit 8 to the
-     * complement of bit 7, allowing wrap-around without DIWHIGH. */
-    int diw_y = (g_diwstart >> 8) & 0xFF;
+     * Vertical stop uses the low 8 bits from DIWSTOP plus high bits from
+     * DIWHIGH.  DIWHIGH uses a simplified mapping here:
+     *   bits 0-2: VSTART bits 8-10
+     *   bits 3-5: VSTOP bits 8-10
+     *   bit 4:    HSTART bit 8 (simplified)
+     *   bit 5:    HSTOP bit 8 (simplified)
+     * This is not the exact Amiga DIWHIGH layout, but it extends the window
+     * beyond 512 lines and supports wide HSTOP values. */
+    int diw_v_start = (g_diwstart >> 8) & 0xFF;
     int diw_v_stop_raw = (g_diwstop >> 8) & 0xFF;
-    int diw_h_stop_raw = g_diwstop & 0xFF;  /* HSTOP written without high bit */
+    int diw_h_stop_raw = g_diwstop & 0xFF;
 
-    /* Hardware VSTOP: bit 8 = ~bit 7 */
-    int diw_v_stop = diw_v_stop_raw;
-    if (((diw_v_stop >> 7) & 1) == 0) diw_v_stop |= 0x100;
-    if (diw_v_stop < diw_y) diw_v_stop += 0x100;
+    int diw_v_start_hi = (g_diwhigh >> 0) & 0x7; /* VSTART bits 8-10 */
+    int diw_v_stop_hi  = (g_diwhigh >> 3) & 0x7; /* VSTOP bits 8-10 */
+    int diw_h_start_hi = (g_diwhigh >> 4) & 0x1; /* HSTART bit 8 */
+    int diw_h_stop_hi  = (g_diwhigh >> 5) & 0x1; /* HSTOP bit 8 */
 
-    int diw_x = (g_diwstart & 0xFF) - 0x80; /* HSTART in lores pixels */
-    int diw_x_stop = diw_h_stop_raw + 0x80; /* HSTOP has implied $100 high bit */
-    if (diw_x_stop < diw_x) diw_x_stop += 0x100;
+    int diw_v_start_full = (diw_v_start_hi << 8) | diw_v_start;
+    int diw_v_stop_full  = (diw_v_stop_hi  << 8) | diw_v_stop_raw;
+    if (diw_v_stop_full < diw_v_start_full) diw_v_stop_full += 0x800;
+
+    int diw_x = ((diw_h_start_hi & 1) << 8) | ((g_diwstart & 0xFF) - 0x80);
+    int diw_x_stop = ((diw_h_stop_hi & 1) << 8) | (diw_h_stop_raw + 0x80);
+    if (diw_x_stop < diw_x) diw_x_stop += 0x200;
     int diw_width = diw_x_stop - diw_x;
     if (diw_width <= 0) diw_width = 320;
 
@@ -2483,8 +2587,8 @@ void chip_emu_render_frame(void)
     if (bytes_per_row < 1) bytes_per_row = 1;
 
     int x_start = diw_x < 0 ? 0 : diw_x;
-    int y_start = diw_y;
-    int y_end   = diw_v_stop;
+    int y_start = diw_v_start_full;
+    int y_end   = diw_v_stop_full;
 
     /* Interlace: BPLCON0 LACE bit doubles the vertical display area and
      * fetches bitplanes from alternating line pairs.  Long/short field
@@ -2542,6 +2646,7 @@ void chip_emu_reset(void)
     g_bplmod2 = 0;
     g_diwstart = 0x2C81u;
     g_diwstop  = 0xF4C1u;
+    g_diwhigh  = 0;
     g_ddfstart = 0x0038u;
     g_ddfstop  = 0x00D0u;
     g_copcon = 0;
@@ -2840,6 +2945,96 @@ int chip_emu_fill_complex_test(void)
     uint16_t w2 = (uint16_t)((g_ram[dst + 4] << 8) | g_ram[dst + 5]);
     uint16_t w3 = (uint16_t)((g_ram[dst + 6] << 8) | g_ram[dst + 7]);
     return (w0 == 0x000Fu && w1 == 0xF000u && w2 == 0x000Fu && w3 == 0xF000u);
+}
+
+/* Test helper for large Blitter area copies: verify that a multi-frame blit
+ * completes via slot-driven execution and copies the source data correctly.
+ * Returns 1 on success. */
+int chip_emu_blitter_busy_test(void)
+{
+    uint32_t src = 0x1A000u;
+    uint32_t dst = 0x1B000u;
+    if (src + 4096 > GUEST_RAM_SIZE || dst + 4096 > GUEST_RAM_SIZE) return 0;
+
+    /* Fill source with a checkerboard pattern. */
+    for (int i = 0; i < 4096; i++) g_ram[src + i] = (uint8_t)((i & 1) ? 0xAA : 0x55);
+    memset(g_ram + dst, 0, 4096);
+
+    g_bltapt = src;
+    g_bltdpt = dst;
+    g_bltamod = 0;
+    g_bltdmod = 0;
+    g_bltafwm = 0xFFFFu;
+    g_bltalwm = 0xFFFFu;
+    g_bltcon0 = 0x09F0u; /* use A and D, minterm A -> D */
+    g_bltcon1 = 0;
+    g_bltsize = 0;
+    g_blitter_words_remaining = 0;
+    g_blitter_busy = 0;
+    g_area_state.active = 0;
+    g_line_state.active = 0;
+
+    /* 16 words x 16 lines = 256 words = 512 bytes. */
+    chip_emu_write(REG_BLTSIZE, (16 << 6) | 16, 2);
+
+    if (!g_blitter_busy) return 0;
+
+    int loops = 0;
+    while (g_blitter_busy && loops < 5000) {
+        chip_emu_render_frame();
+        loops++;
+    }
+    if (g_blitter_busy) return 0;
+
+    /* Verify the copied region of the destination. */
+    for (int i = 0; i < 512; i++) {
+        if (g_ram[dst + i] != g_ram[src + i]) return 0;
+    }
+    return 1;
+}
+
+/* Test helper for Blitter descending-mode overlap copy: source and destination
+ * are the same buffer.  In descending mode with D=A, the copy should still work
+ * correctly word-by-word because the Blitter advances backwards.
+ * Returns 1 on success. */
+int chip_emu_blitter_desc_test(void)
+{
+    /* Overlapping copy: source and destination are the same buffer.
+     * In descending mode with D=A, the copy should still work correctly
+     * word-by-word because the Blitter advances backwards. */
+    uint32_t buf = 0x1C000u;
+    if (buf + 4096 > GUEST_RAM_SIZE) return 0;
+
+    for (int i = 0; i < 4096; i++) g_ram[buf + i] = (uint8_t)(i & 0xFFu);
+
+    g_bltapt = buf;
+    g_bltdpt = buf;
+    g_bltamod = 0;
+    g_bltdmod = 0;
+    g_bltafwm = 0xFFFFu;
+    g_bltalwm = 0xFFFFu;
+    g_bltcon0 = 0x09F0u; /* use A and D, minterm A -> D */
+    g_bltcon1 = 0x0002u; /* DESC=1 */
+    g_bltsize = 0;
+    g_blitter_words_remaining = 0;
+    g_blitter_busy = 0;
+    g_area_state.active = 0;
+    g_line_state.active = 0;
+
+    chip_emu_write(REG_BLTSIZE, (8 << 6) | 8, 2);
+
+    int loops = 0;
+    while (g_blitter_busy && loops < 5000) {
+        chip_emu_render_frame();
+        loops++;
+    }
+    if (g_blitter_busy) return 0;
+
+    /* The data should still match the original pattern (copy to same location). */
+    for (int i = 0; i < 4096; i++) {
+        if (g_ram[buf + i] != (uint8_t)(i & 0xFFu)) return 0;
+    }
+    return 1;
 }
 
 /* Test helper for color-clock beam position / raster bars: build a copper
@@ -3253,4 +3448,105 @@ int chip_emu_hblank_test(void)
     /* During HBLANK, fewer slots are used by bitplane DMA, so wait should be
      * lower than in the active display area. */
     return stolen_hblank <= stolen_display;
+}
+
+/* Test helper: render a 320x1 HAM8 line and verify the HAM8 decode logic.
+ * Returns 1 on success. */
+int chip_emu_ham8_test(void)
+{
+    uint32_t base = 0x30000u;
+    if (base + 8 * 40 > GUEST_RAM_SIZE) return 0;
+
+    for (int p = 0; p < 8; p++) {
+        g_bpl_pt[p] = base + p * 40;
+        memset(g_ram + g_bpl_pt[p], 0, 40);
+    }
+
+    /* Pixel 0: palette index 5 -> planes 0-5 = 000101, planes 6-7 = 00 */
+    int pix0 = 0x05;
+    for (int p = 0; p < 8; p++) {
+        if (pix0 & (1 << p)) g_ram[g_bpl_pt[p] + 0] |= 0x80;
+    }
+    /* Pixel 1: modify blue, value 0x3F -> planes 0-5 = 111111, planes 6-7 = 01 */
+    int pix1 = 0x7F; /* 01 111111 */
+    for (int p = 0; p < 8; p++) {
+        if (pix1 & (1 << p)) g_ram[g_bpl_pt[p] + 0] |= 0x40;
+    }
+    /* Pixel 2: modify red, value 0x20 -> planes 0-5 = 100000, planes 6-7 = 10 */
+    int pix2 = 0xA0; /* 10 100000 */
+    for (int p = 0; p < 8; p++) {
+        if (pix2 & (1 << p)) g_ram[g_bpl_pt[p] + 0] |= 0x20;
+    }
+
+    g_aga_palette[5] = 0x00FF0000u;
+
+    /* 8 bitplanes via BPU3 (bit 4), HAM (bit 11). */
+    g_bplcon0 = 0x0810u;
+    g_bplcon1 = 0;
+    g_bplcon2 = 0;
+    g_bplcon3 = 0;
+    g_ddfstart = 0x30;
+    g_ddfstop  = 0xD0;
+    g_diwstart = 0x0081u;
+    g_diwstop  = 0x01C1u;
+    g_bplmod1 = 0;
+    g_bplmod2 = 0;
+    g_dmacon = 0x0100u; /* BPLEN */
+
+    chip_emu_render_frame();
+
+    /* The display window starts at lores x = 1, and low-res pixels are doubled,
+     * so pixel 0 is drawn at x = 1, pixel 1 at x = 3, pixel 2 at x = 5. */
+    uint32_t c0 = FB_GetPixel(1, 0);
+    uint32_t c1 = FB_GetPixel(3, 0);
+    uint32_t c2 = FB_GetPixel(5, 0);
+
+    return (c0 == 0x00FF0000u &&
+            (c1 & 0xFFu) == 0xFFu &&
+            ((c2 >> 16) & 0xFFu) == 0x82u);
+}
+
+/* Test helper: verify AGA 64-colour mode (6 bitplanes with KILLEHB set).
+ * Returns 1 on success. */
+int chip_emu_64color_test(void)
+{
+    uint32_t base = 0x31000u;
+    if (base + 6 * 40 > GUEST_RAM_SIZE) return 0;
+
+    for (int p = 0; p < 6; p++) {
+        g_bpl_pt[p] = base + p * 40;
+        memset(g_ram + g_bpl_pt[p], 0, 40);
+    }
+    /* Set pixel 0 to palette index 63. */
+    for (int p = 0; p < 6; p++) {
+        if (63 & (1 << p)) g_ram[g_bpl_pt[p] + 0] |= 0x80;
+    }
+    g_aga_palette[63] = 0x0000FF00u; /* green */
+
+    g_bplcon0 = (6u << 12); /* 6 bitplanes */
+    g_bplcon1 = 0;
+    g_bplcon2 = 0x0200u; /* KILLEHB set */
+    g_bplcon3 = 0;
+    g_ddfstart = 0x30;
+    g_ddfstop  = 0xD0;
+    g_diwstart = 0x0081u;
+    g_diwstop  = 0x01C1u;
+    g_bplmod1 = 0;
+    g_bplmod2 = 0;
+    g_dmacon = 0x0100u;
+
+    chip_emu_render_frame();
+
+    return FB_GetPixel(1, 0) == 0x0000FF00u;
+}
+
+/* Test helper: verify the DIWHIGH register read/write path.
+ * Returns 1 on success. */
+int chip_emu_diwhigh_test(void)
+{
+    const uint32_t diwhigh_off = 0x2FF000u + REG_DIWHIGH;
+
+    chip_emu_write(diwhigh_off, 0x1234u, 2);
+    uint32_t v = chip_emu_read(diwhigh_off, 2);
+    return (v & 0xFFFFu) == 0x1234u;
 }
