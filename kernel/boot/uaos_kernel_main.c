@@ -315,6 +315,9 @@ extern void audio_pattern_test(void);
 extern void floppy_make_test_adf(void);
 extern int chip_emu_disk_dma_test(void);
 extern int floppy_block_device_test(void);
+extern int floppy_block_device_write_test(void);
+extern int floppy_write_protect_test(void);
+extern int floppy_dma_write_test(void);
 extern int chip_emu_dma_test(void);
 extern uint16_t g_intreq;
 extern int chip_emu_line_test(void);
@@ -501,6 +504,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running floppy block-device test...\n");
     int floppy_blk_test = floppy_block_device_test();
     kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
+
+    kprint("[BOOT] Running floppy block-device write test...\n");
+    int floppy_write_test = floppy_block_device_write_test();
+    kprint(floppy_write_test ? "[BOOT] Floppy block-device write test PASSED\n" : "[BOOT] Floppy block-device write test FAILED\n");
+
+    kprint("[BOOT] Running floppy write-protect test...\n");
+    int wp_test = floppy_write_protect_test();
+    kprint(wp_test ? "[BOOT] Floppy write-protect test PASSED\n" : "[BOOT] Floppy write-protect test FAILED\n");
+
+    kprint("[BOOT] Running floppy DMA write test...\n");
+    int dma_write_test = floppy_dma_write_test();
+    kprint(dma_write_test ? "[BOOT] Floppy DMA write test PASSED\n" : "[BOOT] Floppy DMA write test FAILED\n");
 
     kprint("[BOOT] Running parallel port test...\n");
     int parallel_test = chip_emu_parallel_test();

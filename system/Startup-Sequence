@@ -44,7 +44,7 @@ C:NetStart >NIL:
 
 ; Start NTP background sync
 ;echo "Starting NTP sync..."
-run >NIL: ntpd
+run >NIL: C:ntpd
 
 ; Welcome message
 ;echo "Ultimate Amiga OS - Live Workbench Environment"

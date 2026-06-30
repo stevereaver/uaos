@@ -871,7 +871,10 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
             g_dsklen = (uint16_t)value;
             if (value & 0x8000u) { /* DMAEN */
                 if (value & 0x4000u) {
-                    floppy_dma_write(g_dskpt, (uint16_t)value);
+                    if (!floppy_dma_write(g_dskpt, (uint16_t)value)) {
+                        /* Write-protected or no disk; don't leave DMA active. */
+                        g_floppy.dma_active = 0;
+                    }
                 } else {
                     floppy_dma_read(g_dskpt, (uint16_t)value, g_dsk_sync);
                 }

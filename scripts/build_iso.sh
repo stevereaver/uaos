@@ -516,6 +516,15 @@ void *memcpy(void *d, const void *s, unsigned long n) {
     while (n--) *dp++ = *sp++;
     return d;
 }
+int memcmp(const void *a, const void *b, unsigned long n) {
+    const unsigned char *ap = (const unsigned char *)a;
+    const unsigned char *bp = (const unsigned char *)b;
+    while (n--) {
+        if (*ap != *bp) return (int)*ap - (int)*bp;
+        ap++; bp++;
+    }
+    return 0;
+}
 int strcmp(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
     return (unsigned char)*a - (unsigned char)*b;

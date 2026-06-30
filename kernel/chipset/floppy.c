@@ -7,6 +7,7 @@
 
 #include "chipset/floppy.h"
 #include "chipset/chip_emu.h"
+#include "uaos_emu.h"
 #include <string.h>
 
 /* -------------------------------------------------------------------------
@@ -320,6 +321,12 @@ static void write_chip_word(uint32_t addr, uint16_t value)
     chip_write_u16(addr, value);
 }
 
+static uint16_t read_chip_word(uint32_t addr)
+{
+    if (addr + 2 > 0x01000000u) return 0;
+    return chip_read_u16(addr);
+}
+
 /* Transfer words from the MFM bitstream to chip RAM. */
 static void dma_transfer_words(uint32_t bits_per_tick)
 {
@@ -380,6 +387,56 @@ static void dma_transfer_words(uint32_t bits_per_tick)
     }
 }
 
+/* Transfer raw MFM words from chip RAM back into the MFM bitstream. */
+static void dma_write_words(uint32_t bits_per_tick)
+{
+    if (!g_floppy.dma_sync_found) {
+        /* For a write, we wait until the current bit position reaches the
+         * next sync word.  In a real Amiga the write gate is enabled after
+         * DSKSYNC; we approximate by starting the write at the next sync. */
+        uint32_t search_end = g_floppy.bit_pos + bits_per_tick;
+        if (search_end > g_floppy.mfm_bits) search_end = g_floppy.mfm_bits;
+        for (uint32_t p = g_floppy.bit_pos; p + 16 <= search_end; p++) {
+            if (bits_read_word(g_floppy.mfm_track, p) == g_floppy.dma_sync) {
+                g_floppy.dma_sync_found = 1;
+                g_floppy.bit_pos = p + 16;
+                break;
+            }
+        }
+        if (!g_floppy.dma_sync_found) return;
+    }
+
+    uint32_t bits_to_consume = g_floppy.bit_pos + bits_per_tick;
+    if (bits_to_consume > g_floppy.mfm_bits) bits_to_consume = g_floppy.mfm_bits;
+    while (g_floppy.dma_words > 0 && g_floppy.bit_pos + 16 <= bits_to_consume) {
+        uint16_t w = read_chip_word(g_floppy.dma_ptr);
+        bits_write_word(g_floppy.mfm_track, g_floppy.bit_pos, w);
+        g_floppy.dma_ptr += 2;
+        g_floppy.bit_pos += 16;
+        g_floppy.dma_words--;
+    }
+
+    if (g_floppy.dma_words == 0) {
+        g_floppy.dma_active = 0;
+        /* Decode the modified track and update the ADF buffer. */
+        uint8_t sectors[FLOPPY_SECTORS][FLOPPY_SECTOR_SIZE];
+        int decoded = floppy_decode_track(g_floppy.mfm_track, g_floppy.mfm_bits, sectors);
+        if (decoded > 0) {
+            int track = g_floppy.cyl * FLOPPY_HEADS + g_floppy.head;
+            for (int s = 0; s < FLOPPY_SECTORS; s++) {
+                /* Only update sectors that were successfully decoded and differ
+                 * from the current ADF contents, to avoid corrupting unwritten
+                 * sectors due to alignment issues. */
+                uint8_t *cur = g_floppy.adf + track * FLOPPY_TRACK_SIZE + s * FLOPPY_SECTOR_SIZE;
+                if (memcmp(cur, sectors[s], FLOPPY_SECTOR_SIZE) != 0) {
+                    memcpy(cur, sectors[s], FLOPPY_SECTOR_SIZE);
+                }
+            }
+        }
+        chip_emu_raise_intreq(FLOPPY_INTREQ_BIT);
+    }
+}
+
 /* -------------------------------------------------------------------------
  * Rotation / tick
  * ------------------------------------------------------------------------- */
@@ -394,7 +451,11 @@ void floppy_tick(void)
     if (bits_per_tick == 0) bits_per_tick = 1;
 
     if (g_floppy.dma_active) {
-        dma_transfer_words(bits_per_tick);
+        if (g_floppy.dma_write) {
+            dma_write_words(bits_per_tick);
+        } else {
+            dma_transfer_words(bits_per_tick);
+        }
     }
 
     /* Advance rotation. */
@@ -418,14 +479,23 @@ int floppy_dma_read(uint32_t dskpt, uint16_t dsklen, uint16_t dsk_sync)
     g_floppy.dma_sync = dsk_sync ? dsk_sync : SYNC_WORD;
     g_floppy.dma_sync_found = 0;
     g_floppy.dma_active = 1;
+    g_floppy.dma_write = 0;
     return 1;
 }
 
 int floppy_dma_write(uint32_t dskpt, uint16_t dsklen)
 {
-    (void)dskpt;
-    (void)dsklen;
-    return 0; /* not implemented for real ADF */
+    if (!g_floppy.adf_loaded) return 0;
+    if (g_floppy.write_protect) return 0;
+    uint16_t words = dsklen & 0x3FFFu;
+    if (words == 0) words = 0x8000u;
+    g_floppy.dma_ptr = dskpt;
+    g_floppy.dma_words = words;
+    g_floppy.dma_sync = SYNC_WORD;
+    g_floppy.dma_sync_found = 0;
+    g_floppy.dma_active = 1;
+    g_floppy.dma_write = 1;
+    return 1;
 }
 
 uint16_t floppy_dskdat_read(void)
@@ -443,8 +513,30 @@ uint16_t floppy_dskdat_read(void)
 
 void floppy_dskdat_write(uint16_t value)
 {
-    (void)value;
-    /* Write path not implemented for real ADF. */
+    if (!g_floppy.adf_loaded || !g_floppy.dma_active || !g_floppy.dma_write) return;
+    if (g_floppy.write_protect) return;
+    if (g_floppy.bit_pos + 16 > g_floppy.mfm_bits) return;
+
+    bits_write_word(g_floppy.mfm_track, g_floppy.bit_pos, value);
+    g_floppy.dma_ptr += 2;
+    g_floppy.bit_pos += 16;
+    g_floppy.dma_words--;
+
+    if (g_floppy.dma_words == 0) {
+        g_floppy.dma_active = 0;
+        uint8_t sectors[FLOPPY_SECTORS][FLOPPY_SECTOR_SIZE];
+        int decoded = floppy_decode_track(g_floppy.mfm_track, g_floppy.mfm_bits, sectors);
+        if (decoded > 0) {
+            int track = g_floppy.cyl * FLOPPY_HEADS + g_floppy.head;
+            for (int s = 0; s < FLOPPY_SECTORS; s++) {
+                uint8_t *cur = g_floppy.adf + track * FLOPPY_TRACK_SIZE + s * FLOPPY_SECTOR_SIZE;
+                if (memcmp(cur, sectors[s], FLOPPY_SECTOR_SIZE) != 0) {
+                    memcpy(cur, sectors[s], FLOPPY_SECTOR_SIZE);
+                }
+            }
+        }
+        chip_emu_raise_intreq(FLOPPY_INTREQ_BIT);
+    }
 }
 
 /* Direct decoded sector read, useful for DOS handlers and diagnostics. */
@@ -455,5 +547,99 @@ int floppy_read_sector(int track, int sector, uint8_t *out)
     if (sector < 0 || sector >= FLOPPY_SECTORS) return 0;
     memcpy(out, g_floppy.adf + track * FLOPPY_TRACK_SIZE + sector * FLOPPY_SECTOR_SIZE,
            FLOPPY_SECTOR_SIZE);
+    return 1;
+}
+
+/* Direct decoded sector write.  Returns 1 on success, 0 on failure. */
+int floppy_write_sector(int track, int sector, const uint8_t *data)
+{
+    if (!g_floppy.adf_loaded) return 0;
+    if (g_floppy.write_protect) return 0;
+    if (track < 0 || track >= FLOPPY_TRACKS * FLOPPY_HEADS) return 0;
+    if (sector < 0 || sector >= FLOPPY_SECTORS) return 0;
+    uint8_t *sec = g_floppy.adf + track * FLOPPY_TRACK_SIZE + sector * FLOPPY_SECTOR_SIZE;
+    memcpy(sec, data, FLOPPY_SECTOR_SIZE);
+    if (g_floppy.cyl * FLOPPY_HEADS + g_floppy.head == track) {
+        regenerate_track();
+    }
+    return 1;
+}
+
+/* Enable or disable the virtual write-protect tab. */
+void floppy_set_write_protect(int wp)
+{
+    g_floppy.write_protect = wp ? 1 : 0;
+}
+
+/* Verify that write-protected disks reject direct sector writes. */
+int floppy_write_protect_test(void)
+{
+    if (!g_floppy.adf_loaded) return 0;
+    floppy_set_write_protect(1);
+    uint8_t buf[512];
+    memset(buf, 0x77, 512);
+    int ok = !floppy_write_sector(0, 0, buf);
+    floppy_set_write_protect(0);
+    return ok;
+}
+
+/* Verify the DMA write path by writing an MFM-encoded sector into chip RAM
+ * and streaming it back onto the virtual track. */
+int floppy_dma_write_test(void)
+{
+    if (!g_floppy.adf_loaded) return 0;
+    if (g_ram == NULL) return 0;
+
+    /* Use the current track (cylinder 0, head 0) and sector 0. */
+    floppy_set_motor(1);
+    floppy_seek(0, 0);
+
+    /* Build the payload and its CRC. */
+    uint8_t data[512];
+    for (int i = 0; i < 512; i++) data[i] = (uint8_t)(i ^ 0x5A);
+    uint16_t crc = crc16_ccitt(data, 512);
+    uint8_t crc_hi = (uint8_t)(crc >> 8);
+    uint8_t crc_lo = (uint8_t)(crc & 0xFFu);
+
+    /* Encode the data + CRC into chip RAM as MFM words.  The write will start
+     * at the sector's data sync, so the sync itself is left in place and the
+     * first chip-RAM word is the MFM encoding of data[0]. */
+    uint32_t addr = 0x20000u;
+    if (addr + 2 * 514 > GUEST_RAM_SIZE) return 0;
+    uint32_t pos = 0;
+    uint8_t prev_bit = 1;
+    for (int i = 0; i < 512; i++) {
+        uint16_t mfm = mfm_encode_byte(data[i], &prev_bit);
+        bits_write_word(g_ram + addr, pos, mfm);
+        pos += 16;
+    }
+    bits_write_word(g_ram + addr, pos, mfm_encode_byte(crc_hi, &prev_bit));
+    pos += 16;
+    bits_write_word(g_ram + addr, pos, mfm_encode_byte(crc_lo, &prev_bit));
+    pos += 16;
+
+    /* Position the write at the data sync for sector 0. */
+    int32_t header_sync = find_sync(g_floppy.mfm_track, g_floppy.mfm_bits, 0);
+    if (header_sync < 0) return 0;
+    int32_t data_sync = find_sync(g_floppy.mfm_track, g_floppy.mfm_bits,
+                                  (uint32_t)(header_sync + 16 + 24 * 16));
+    if (data_sync < 0) return 0;
+    g_floppy.bit_pos = (uint32_t)data_sync;
+
+    /* Start the DMA write of 512 data bytes + 2 CRC bytes. */
+    floppy_dma_write(addr, 514);
+
+    /* Run the tick loop until the DMA completes. */
+    for (int i = 0; i < 100 && g_floppy.dma_active; i++) {
+        floppy_tick();
+    }
+    if (g_floppy.dma_active) return 0;
+
+    /* Read back the sector and verify it. */
+    uint8_t out[512];
+    if (!floppy_read_sector(0, 0, out)) return 0;
+    for (int i = 0; i < 512; i++) {
+        if (out[i] != (uint8_t)(i ^ 0x5A)) return 0;
+    }
     return 1;
 }

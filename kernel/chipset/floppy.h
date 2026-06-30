@@ -50,6 +50,7 @@ typedef struct {
 
     /* DMA transfer state. */
     int      dma_active;
+    int      dma_write;      /* 1 if this is a write DMA, 0 if read */
     uint32_t dma_ptr;        /* chip RAM destination */
     uint16_t dma_words;      /* words remaining to transfer */
     uint16_t dma_sync;       /* sync word expected before transfer */
@@ -89,5 +90,13 @@ int floppy_decode_track(const uint8_t *mfm_bits, uint32_t bits_len,
 
 /* Direct decoded sector read, useful for DOS handlers and diagnostics. */
 int floppy_read_sector(int track, int sector, uint8_t *out);
+
+/* Direct decoded sector write. */
+int floppy_write_sector(int track, int sector, const uint8_t *data);
+
+/* Write-protect control and diagnostics. */
+void floppy_set_write_protect(int wp);
+int floppy_write_protect_test(void);
+int floppy_dma_write_test(void);
 
 #endif /* UAOS_FLOPPY_H */

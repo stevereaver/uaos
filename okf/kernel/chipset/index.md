@@ -230,8 +230,11 @@ A host audio subsystem in `kernel/audio/` provides a 48 kHz stereo mixer and a p
 - Disk rotation is modelled at one track per ~1/11 second.  `floppy_tick()` is called from the 100 Hz PIT path to advance the bit position and continue any active DMA transfer.
 - When the transfer completes, `INTREQ` bit 1 (`DSKBLK`) is raised.
 - `DSKDAT` single-word reads also stream from the current MFM track position.
-- A DOS handler integration wraps the floppy as a block device (`floppy0` / `DF0:`) in `kernel/drivers/floppy_blk.c`, so higher-level filesystem handlers can use it.
-- Boot-time tests `chip_emu_disk_dma_test()` and `floppy_block_device_test()` verify both the Paula DMA path and the DOS block-device path.
+- A DOS handler integration wraps the floppy as a block device (`floppy0` / `DF0:`) in `kernel/drivers/floppy_blk.c`, so higher-level filesystem handlers can use it.  `floppy0` now supports sector writes via `floppy_write_sector()`.
+- The DMA write path streams raw MFM words from chip RAM back onto the current track.  After a write completes the modified track is re-decoded and the ADF buffer is updated.
+- CRCs are recalculated automatically when the track is regenerated on the next read or write to the same cylinder/head.
+- Write-protected disks reject DMA writes, `DSKDAT` writes, and direct sector writes; `floppy_set_write_protect()` toggles the virtual write-protect tab.
+- Boot-time tests `chip_emu_disk_dma_test()` and `floppy_block_device_test()` verify both the Paula DMA path and the DOS block-device path.  Additional tests `floppy_block_device_write_test()`, `floppy_write_protect_test()`, and `floppy_dma_write_test()` cover the new write paths.
 
 **Parallel port** — CIA-B `PRB` (`0xBFD001`) is wired to the host LPT1 data port (`0x378`).  Writes to `PRB` only drive the bits that are marked as outputs in `DDRB` (`0xBFD003`); input bits are ignored.  Reads of `PRB` combine the last value written for output bits with the value sampled from the host data port for input bits.  `DDRB` writes that change bits from output to input trigger a fresh host port read.  At reset `lpt1_probe()` checks the LPT1 status port (`0x379`); if it reads `0xFF` the port is treated as absent and a loopback value is used so software tests still pass.  Boot-time tests `chip_emu_parallel_test()` and `chip_emu_serial_test()` verify both I/O paths.
 
