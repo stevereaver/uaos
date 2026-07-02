@@ -190,6 +190,12 @@ void timer_ProcessTicks(void)
     /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */
     if ((g_tick_counter & 1u) == 0) {
         chip_emu_vblank();
+        /* Wake any M68k task blocked inside graphics.library/WaitTOF(). */
+        extern UaosTask *g_wait_tof_task;
+        if (g_wait_tof_task && g_wait_tof_task->m68k_vblank_sig >= 0) {
+            Signal(g_wait_tof_task,
+                   (1u << (unsigned int)g_wait_tof_task->m68k_vblank_sig));
+        }
     }
 
     TimerQueueEntry_t *current = g_timer_queue_head;

@@ -3603,9 +3603,27 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                 }
             }
             m68k_argv[argc] = NULL;
+            int slot = (int)(s - g_shells);
             UAOS_Emu_SetCwd(s->cwd);
-            UAOS_Emu_LoadAndRun(g_bin_payload, payload_size,
-                                m68k_argv, s, (UAOS_PrintFn)inst_print);
+            UaosTask *t = Task_CreateM68k(bin_name, 0,
+                                          g_bin_payload, payload_size,
+                                          m68k_argv,
+                                          (slot >= 0 && slot < MAX_SHELLS)
+                                              ? raw_m68k_print[slot]
+                                              : NULL);
+            if (!t) {
+                inst_print(s, "M68K binary: failed to create task");
+                return -2;
+            }
+            /* Wait for the foreground M68k command to finish before
+             * returning to the prompt, so output appears before the
+             * next prompt line. When the shell is not running as a
+             * scheduled task (e.g. during the pre-scheduler startup
+             * sequence), there is no parent task context to wait in. */
+            UaosTask *cur = Task_Current();
+            if (cur) {
+                Wait(SIGF_CHILD);
+            }
             return 0;
         }
 

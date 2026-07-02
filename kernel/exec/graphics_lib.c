@@ -15,6 +15,7 @@
 #include "chipset/chip_emu.h"
 #include "../display/framebuffer.h"
 #include "../display/wm.h"
+#include "task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -1576,10 +1577,28 @@ static void graphics_LoadView(void)
 
 static void graphics_WaitTOF(void)
 {
-    /* WaitTOF — wait for the next VBlank tick from the chipset emulator. */
+    /* WaitTOF — wait for the next VBlank tick from the chipset emulator.
+     * M68k tasks get a dedicated VBlank signal bit so they can block on
+     * Wait() instead of busy-waiting and starving the idle/WM task.
+     * After waking, trigger a WM redraw so any bitmap changes made by
+     * the guest (e.g. WritePixelArray8 into a SuperBitMap) are rendered
+     * to the framebuffer on the next vertical blank. */
+    UaosTask *t = Task_Current();
+    if (t && t->type == TASK_TYPE_M68K && t->m68k_vblank_sig >= 0) {
+        uint32_t sigmask = (1u << (unsigned int)t->m68k_vblank_sig);
+        /* Clear any already-pending VBlank signal so we wait for the next one. */
+        t->tc_SigRecvd &= ~sigmask;
+        g_wait_tof_task = t;
+        Wait(sigmask);
+        g_wait_tof_task = NULL;
+        WM_Redraw();
+        return;
+    }
+
+    /* Fallback for native callers / tasks without a VBlank signal bit. */
     uint32_t start = chip_emu_vblank_count();
     while (chip_emu_vblank_count() == start) {
-        Task_Yield();
+        __asm__ volatile ("pause");
     }
 }
 

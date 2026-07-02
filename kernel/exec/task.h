@@ -114,6 +114,10 @@ typedef struct UaosTask {
     uint32_t time_slice_ticks;
     uint32_t ticks_remaining;
 
+    /* Per-M68k-task signal bit used by graphics.library/WaitTOF to block until
+     * the next VBlank.  -1 means no signal bit was allocated. */
+    int8_t   m68k_vblank_sig;
+
     /* Parent task (for SIGF_CHILD notification on exit). */
     struct UaosTask *parent;
 
@@ -195,6 +199,10 @@ void Task_StartFirst(void);
 /* Global used by assembly ISR to perform context switch */
 extern UaosTask *Task_SwitchNext;
 extern UaosTask *Task_SwitchPrev;
+
+/* Task currently blocked inside graphics.library/WaitTOF, signalled by the
+ * VBlank path in timer_ProcessTicks(). */
+extern UaosTask *g_wait_tof_task;
 
 /* -------------------------------------------------------------------------
  * Signal / Wait / Critical sections

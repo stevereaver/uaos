@@ -907,17 +907,32 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Step 2g — Build M68k CopperBars demo for SYS_ROOT/Demos
+# Step 2g — Build M68k assembly demos for SYS_ROOT/Demos
 # -------------------------------------------------------------------------
 
-info "Step 2g: Building M68k CopperBars demo"
+info "Step 2g: Building M68k assembly demos"
 
-COPPERBARS_SRC="${REPO_ROOT}/system/Demos/CopperBars.s"
-if [[ -f "${COPPERBARS_SRC}" ]]; then
-    # Ensure vasm and vlink are available.
-    VASM_DIR="${BUILD_DIR}/vasm"
-    VASM_BIN="${VASM_DIR}/vasmm68k_mot"
-    VLINK_BIN="${VASM_DIR}/vlink/vlink"
+DEMOS_STAGING="${ISO_STAGING}/SYS_ROOT/Demos"
+mkdir -p "${DEMOS_STAGING}"
+
+# List of demos to build (basename without extension). Each must have a
+# corresponding source file at system/Demos/<name>.s.
+M68K_DEMOS=(CopperBars AGATest)
+
+VASM_DIR="${BUILD_DIR}/vasm"
+VASM_BIN="${VASM_DIR}/vasmm68k_mot"
+VLINK_BIN="${VASM_DIR}/vlink/vlink"
+
+# Ensure vasm and vlink are available if any demo source exists.
+need_toolchain=0
+for demo in "${M68K_DEMOS[@]}"; do
+    if [[ -f "${REPO_ROOT}/system/Demos/${demo}.s" ]]; then
+        need_toolchain=1
+        break
+    fi
+done
+
+if [[ ${need_toolchain} -eq 1 ]]; then
     if [[ ! -f "${VASM_BIN}" || ! -f "${VLINK_BIN}" ]]; then
         info "  Downloading and building vasm-m68k + vlink"
         mkdir -p "${VASM_DIR}"
@@ -940,18 +955,22 @@ if [[ -f "${COPPERBARS_SRC}" ]]; then
         ok "  Built: vasm-m68k + vlink"
     fi
 
-    DEMOS_STAGING="${ISO_STAGING}/SYS_ROOT/Demos"
-    mkdir -p "${DEMOS_STAGING}"
-
-    "${VASM_BIN}" -Fhunk -o "${BUILD_DIR}/CopperBars.o" "${COPPERBARS_SRC}" \
-        || fatal "Failed to assemble CopperBars.s"
-    "${VLINK_BIN}" -bamigahunk -o "${BUILD_DIR}/CopperBars.hunk" "${BUILD_DIR}/CopperBars.o" \
-        || fatal "Failed to link CopperBars"
-    "${BUILD_DIR}/gen_uaos_m68k" "CopperBars" "${BUILD_DIR}/CopperBars.hunk" "${DEMOS_STAGING}/CopperBars" \
-        || fatal "Failed to wrap CopperBars"
-    ok "  Built: SYS_ROOT/Demos/CopperBars"
+    for demo in "${M68K_DEMOS[@]}"; do
+        DEMO_SRC="${REPO_ROOT}/system/Demos/${demo}.s"
+        if [[ ! -f "${DEMO_SRC}" ]]; then
+            ok "  No ${demo} source found (${DEMO_SRC})"
+            continue
+        fi
+        "${VASM_BIN}" -Fhunk -o "${BUILD_DIR}/${demo}.o" "${DEMO_SRC}" \
+            || fatal "Failed to assemble ${demo}.s"
+        "${VLINK_BIN}" -bamigahunk -o "${BUILD_DIR}/${demo}.hunk" "${BUILD_DIR}/${demo}.o" \
+            || fatal "Failed to link ${demo}"
+        "${BUILD_DIR}/gen_uaos_m68k" "${demo}" "${BUILD_DIR}/${demo}.hunk" "${DEMOS_STAGING}/${demo}" \
+            || fatal "Failed to wrap ${demo}"
+        ok "  Built: SYS_ROOT/Demos/${demo}"
+    done
 else
-    ok "  No CopperBars source found (system/Demos/CopperBars.s)"
+    ok "  No M68k demo sources found"
 fi
 
 # -------------------------------------------------------------------------

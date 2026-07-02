@@ -51,7 +51,7 @@ The following programs are compiled as x86-64 ELF64 PIE binaries, wrapped with a
 
 Programs written in M68k assembly are assembled with `vasm` (Motorola syntax), linked into standard Amiga Hunk executables with `vlink`, and wrapped with the `UAOS` header by `gen_uaos_m68k`. They are staged into `SYS_ROOT/Demos/`:
 
-- `CopperBars` — opens an Intuition window and renders animated horizontal raster bars by writing a custom Copper list to the chipset emulator. It demonstrates the use of `graphics.library` (`MakeVPort`, `MrgCop`, `LoadView`, `WaitTOF`) and `intuition.library` (`OpenWindow`, `CloseWindow`, `ModifyIDCMP`), and exits cleanly when the window is closed.
+- `CopperBars` — opens an Intuition window (with `WFLG_GIMMEZEROZERO`) and renders animated horizontal colour bars using `graphics.library` `RectFill` within the window's RastPort. Six bars in fixed Amiga palette colours bounce vertically inside the content area. It demonstrates `graphics.library` (`SetAPen`, `SetDrMd`, `RectFill`, `WaitTOF`) and `intuition.library` (`OpenWindow`, `CloseWindow`, `ModifyIDCMP`), and exits cleanly when the close gadget is clicked. The demo draws directly to the window RastPort instead of taking over the Copper, so it coexists with the desktop without starving the idle/WM task.
 
 ## Startup Sequence
 

@@ -35,6 +35,10 @@ Each M68k task receives a 16 MB guest RAM window mapped into the host address sp
 | Stack | `0x000200`–`0x001000` | Initial stack grows down from `0x001000`. |
 | Program segments | `0x001000`–`0xFFFFFF` | Loaded Amiga Hunk code/data/BSS segments. |
 
+Note: the upper 16 MB address range also contains the Amiga custom chip/CIA window at `0xB00000`–`0xDFFFFF`.  Accesses to this range are not satisfied from the guest RAM array; instead, the Musashi memory callbacks in `uaos_m68k_glue.c` route them to the chipset emulator (`chip_emu_read`/`chip_emu_write`), using the same entry points as the native x86_64 page fault handler.  This allows M68k code to read and write Amiga hardware registers directly.
+
+M68k tasks are given a private VBlank signal bit (`UaosTask.m68k_vblank_sig`) so that `graphics.library/WaitTOF()` can block on `Wait()` instead of busy-waiting.  The VBlank path in `timer_ProcessTicks()` signals the waiting task, keeping the idle/WM task responsive while M68k animations run at ~50 Hz.
+
 ## Trap System
 
 The emulation layer uses the `ILLEGAL` opcode to implement system calls (Traps). When the emulator encounters an `ILLEGAL` instruction, the glue logic checks the address to determine which LVO is being called. `TRAP #1` is used for simple DOS-style I/O (Write/Output, etc.).

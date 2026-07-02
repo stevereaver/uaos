@@ -1061,6 +1061,15 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
         return 0; /* outside AGA register area: harmless zero */
     }
 
+    /* 32-bit reads combine the upper and lower halves of the addressed register.
+     * This is needed for long reads of COP1LC, BPLxPT, SPRxPT, etc. by the
+     * M68k emulator and native code. */
+    if (width_bytes >= 4) {
+        uint32_t hi = chip_emu_read(offset, 2);
+        uint32_t lo = chip_emu_read(offset + 2, 2);
+        return (hi << 16) | lo;
+    }
+
     uint32_t value = 0;
 
     /* Special register read behavior. */

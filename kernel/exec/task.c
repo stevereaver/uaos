@@ -37,6 +37,8 @@ static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
 UaosTask *Task_SwitchPrev = NULL;
 
+UaosTask *g_wait_tof_task = NULL;
+
 /* Ready queues: one doubly-linked list per priority level */
 static UaosTask g_ready_heads[256];  /* index 0 = pri -128 */
 static int      g_ready_mask = 0;    /* bit i set if ready queue at pri i-128 is non-empty */
@@ -404,6 +406,13 @@ void Task_Exit(void)
      * Signal the parent so a shell (or other task) waiting via SIGF_CHILD
      * knows the foreground command has finished. */
     if (g_current) {
+        /* If this task is the one blocked in WaitTOF(), clear the global. */
+        if (g_wait_tof_task == g_current) g_wait_tof_task = NULL;
+        /* Free the M68k VBlank signal bit if one was allocated. */
+        if (g_current->type == TASK_TYPE_M68K && g_current->m68k_vblank_sig >= 0) {
+            g_current->tc_SigAlloc |= (1u << (unsigned int)g_current->m68k_vblank_sig);
+            g_current->m68k_vblank_sig = -1;
+        }
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);

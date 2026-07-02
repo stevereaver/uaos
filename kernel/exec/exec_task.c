@@ -295,6 +295,18 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     t->tc_UserData = (void *)binary;  /* binary pointer for wrapper */
     t->m68k_print_fn = (void *)print_fn;
 
+    /* Allocate a private signal bit for WaitTOF() so M68k demos can block
+     * on VBlank instead of busy-waiting and starving the idle/WM task. */
+    t->m68k_vblank_sig = -1;
+    uint32_t alloc_mask = t->tc_SigAlloc;
+    for (int i = 0; i < 32; i++) {
+        if ((alloc_mask >> i) & 1u) {
+            t->tc_SigAlloc &= ~(1u << i);
+            t->m68k_vblank_sig = (int8_t)i;
+            break;
+        }
+    }
+
     /* Copy task name into a persistent per-task buffer. */
     {
         int i = 0;

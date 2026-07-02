@@ -30,6 +30,10 @@ For the low-level native ABI used by some ROM patches, see [Thunking](/concepts/
 
 The M68k address space is mapped into the x86_64 address space. The bare-metal build gives each M68k task a private 16 MB guest RAM pool (8 MB chip + 8 MB fast); the UAE bridge path allocates a 4 GB guest physical window and points the glue layer at offset 0. The first 16 MB of both layouts follow the same exception-vector / jump-table / stack / program layout so that Hunk binaries and library stubs can run in either environment.
 
+Accesses to the Amiga custom chip/CIA window at guest physical `0x00B00000–0x00DFFFFF` are not satisfied from guest RAM. The Musashi memory callbacks in `emulation/uaos_m68k_glue.c` detect this range and forward reads and writes to the chipset emulator (`kernel/chipset/chip_emu.c`), using the same `chip_emu_read`/`chip_emu_write` entry points as the native x86_64 page fault handler. This lets M68k code read registers such as `COP1LC` and write `DMACON`/`COLOR00` directly, which is required for copper-list based demos and games.
+
+M68k tasks also receive a dedicated VBlank signal bit at creation (`UaosTask.m68k_vblank_sig`). `graphics.library/WaitTOF()` uses this signal to block the M68k task until the next VBlank instead of busy-waiting, preventing it from starving the lower-priority idle/WM task.
+
 ## Binary Loading
 
 `uaos_m68k_glue.c` includes a minimal Amiga Hunk loader that supports `HUNK_CODE`, `HUNK_DATA`, `HUNK_BSS`, and `HUNK_RELOC32`. It loads each segment into the guest RAM program area and applies relocations so that raw Amiga binaries can be executed from the shell or from `dos.library/LoadSeg`.

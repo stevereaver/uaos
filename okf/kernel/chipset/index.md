@@ -9,14 +9,14 @@ timestamp: 2026-07-01T00:30:00Z
 
 # AGA/ECS Custom Chipset Emulator
 
-The chipset emulator (`kernel/chipset/chip_emu.c`) is reached from the x86_64 page fault handler whenever M68k code touches the Amiga hardware register window at guest physical `0x00B00000–0x00DFFFFF`.  It presents the classic 0xDFF000 register block to the guest and keeps enough state to keep boot code, ROM sets, and Copper-list setup happy without yet performing real DMA rendering.
+The chipset emulator (`kernel/chipset/chip_emu.c`) is reached whenever M68k code touches the Amiga hardware register window at guest physical `0x00B00000–0x00DFFFFF`.  For native x86_64 code this happens via the x86_64 page fault handler; for emulated M68k code the Musashi memory callbacks in `emulation/uaos_m68k_glue.c` detect the same range and forward the access directly to the chipset emulator.  It presents the classic 0xDFF000 register block to the guest and keeps enough state to keep boot code, ROM sets, and Copper-list setup happy without yet performing real DMA rendering.
 
 ## Entry Points
 
 - `chip_emu_read(offset, width_bytes)` — emulates a read from a chip register.
 - `chip_emu_write(offset, value, width_bytes)` — emulates a write to a chip register.
 
-`offset` is relative to the start of the chip window (`0x00B00000`).  Widths 1, 2 and 4 are handled.  Amiga custom registers are 16-bit, so 32-bit accesses fill two consecutive 16-bit registers in big-endian order.
+`offset` is relative to the start of the chip window (`0x00B00000`).  Widths 1, 2 and 4 are handled.  Amiga custom registers are 16-bit, so 32-bit accesses fill two consecutive 16-bit registers in big-endian order.  Long reads return the combined upper and lower halves (e.g. a 32-bit read of `COP1LC` returns the full copper-list pointer).
 
 ## Tier 2 Register Behaviour
 
@@ -119,10 +119,10 @@ The M68k demo `system/Demos/CopperBars.s` is a worked example of using `graphics
 1. Opens `graphics.library` and `intuition.library`.
 2. Allocates a `View`, `ViewPort`, `RasInfo`, dummy `BitMap` and `ColorMap`.
 3. Calls `MakeVPort`, `MrgCop`, and `LoadView` to establish a valid copper list.
-4. Reads the copper list address from `COP1LC` and overwrites it with `MOVE COLOR00, colour` instructions gated by `WAIT` instructions.
+4. Reads the copper list address from `COP1LC` and overwrites it with a fresh list that enables copper DMA (`DMACON`), disables bitplanes (`BPLCON0`), sets the display window (`DIWSTART`/`DIWSTOP`), and then emits `MOVE COLOR00, colour` instructions gated by `WAIT` instructions for the bars.
 5. Opens an Intuition window with `IDCMP_CLOSEWINDOW` and loops, updating the bar positions and calling `LoadView`/`WaitTOF` each frame until the window is closed.
 
-This demonstrates that M68k code can read back the copper-list pointer and rewrite it safely while the chipset emulator is active.
+This demonstrates that M68k code can read back the copper-list pointer and rewrite it safely while the chipset emulator is active, and that the copper list itself must carry the essential display setup (`DMACON` copper-enable, `BPLCON0`, and the display window) because the merged list is replaced in place.
 
 ## Tier 1 — Accuracy for Games and Productivity
 

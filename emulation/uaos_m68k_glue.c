@@ -239,8 +239,22 @@ static int guest_read_filelock(uint32_t lock_bptr,
  * Musashi memory callbacks
  * ========================================================================= */
 
+/* Route accesses to the Amiga custom chip/CIA window (0xB00000-0xDFFFFF)
+ * through the chipset emulator.  This is the same range handled by the x86_64
+ * page fault handler for native code; M68k code must use it too, since the
+ * Musashi emulator does not trigger host page faults. */
+#define CHIP_WINDOW_START 0x00B00000u
+#define CHIP_WINDOW_END   0x00DFFFFFu
+
+static inline int is_chip_window(unsigned int addr)
+{
+    return addr >= CHIP_WINDOW_START && addr <= CHIP_WINDOW_END;
+}
+
 unsigned int m68k_read_memory_8(unsigned int addr)
 {
+    if (is_chip_window(addr))
+        return chip_emu_read(addr - CHIP_WINDOW_START, 1);
     if (addr < GUEST_RAM_SIZE) {
         if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return g_ram[addr];
@@ -250,6 +264,8 @@ unsigned int m68k_read_memory_8(unsigned int addr)
 
 unsigned int m68k_read_memory_16(unsigned int addr)
 {
+    if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END)
+        return chip_emu_read(addr - CHIP_WINDOW_START, 2);
     if (addr + 1 < GUEST_RAM_SIZE) {
         if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr] << 8) | g_ram[addr+1];
@@ -259,6 +275,8 @@ unsigned int m68k_read_memory_16(unsigned int addr)
 
 unsigned int m68k_read_memory_32(unsigned int addr)
 {
+    if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END)
+        return chip_emu_read(addr - CHIP_WINDOW_START, 4);
     if (addr + 3 < GUEST_RAM_SIZE) {
         if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr]   << 24) |
@@ -278,6 +296,11 @@ unsigned int m68k_read_memory_32(unsigned int addr)
 
 void m68k_write_memory_8(unsigned int addr, unsigned int val)
 {
+    if (is_chip_window(addr)) {
+        chip_emu_write(addr - CHIP_WINDOW_START, val, 1);
+        GUEST_WRITE_BARRIER();
+        return;
+    }
     if (addr < GUEST_RAM_SIZE) {
         if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr] = (uint8_t)val;
@@ -287,6 +310,11 @@ void m68k_write_memory_8(unsigned int addr, unsigned int val)
 
 void m68k_write_memory_16(unsigned int addr, unsigned int val)
 {
+    if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END) {
+        chip_emu_write(addr - CHIP_WINDOW_START, val, 2);
+        GUEST_WRITE_BARRIER();
+        return;
+    }
     if (addr + 1 < GUEST_RAM_SIZE) {
         if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr]   = (uint8_t)(val >> 8);
@@ -297,6 +325,11 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
 
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
 {
+    if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END) {
+        chip_emu_write(addr - CHIP_WINDOW_START, val, 4);
+        GUEST_WRITE_BARRIER();
+        return;
+    }
     if (addr + 3 < GUEST_RAM_SIZE) {
         if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         /* Fix: SAS/C startup writes a bad stack limit to 0x89EC because the

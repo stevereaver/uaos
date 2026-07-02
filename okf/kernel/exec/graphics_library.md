@@ -46,7 +46,7 @@ timestamp: 2026-06-24T17:00:00Z
 | `InitView` | Implemented | Zeroes the guest `View` structure. |
 | `InitVPort` | Implemented | Zeroes the guest `ViewPort` structure. |
 | `InitBitMap` | Implemented | Sets `BytesPerRow`, `Rows`, `Depth`, `Flags`, and clears plane pointers. |
-| `LoadView` | Implemented | Iterates the `View`'s `ViewPort` list, compositing each planar `BitMap` into the host linear framebuffer using its `ColorMap`, clipped to `DWidth/DHeight/DxOffset/DyOffset`; `LoadView(NULL)` blanks the screen. |
+| `LoadView` | Implemented | Executes the merged copper list via the chipset emulator and renders the display; `LoadView(NULL)` blanks the screen. |
 | `ChangeVPBitMap` | Implemented | Swaps the `BitMap` pointer in the `ViewPort`'s `RasInfo` (or supplied `RasInfo`) without rebuilding the display. |
 | `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID` from A0. |
 | `GetBitMapAttr` | Implemented | Returns `BMA_WIDTH/HEIGHT/DEPTH/FLAGS/BASE/ROWBYTES` from A0. |
@@ -124,7 +124,7 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 - Drawing operations (`Draw`, `RectFill`, `Text`, `WritePixel`, etc.) and blitting (`BltBitMap`, `ClipBlt`, `BltBitMapRastPort`) work on the RastPort's surface, whether that is a planar BitMap or the screen framebuffer.
 - When writing to a screen RastPort, pen indices are converted to 32-bit RGB using the default Amiga palette; when writing to a planar BitMap, pen indices are written directly into the bitplanes.
 - Mixed planar↔framebuffer blits convert colours between pen indices and RGB as needed so the destination colour space is preserved.
-- `LoadView` translates planar `BitMap`s into the linear host framebuffer. It walks the `View`'s linked `ViewPort` list, converting pen indices through each `ViewPort`'s `ColorMap` (or the default palette if none) and compositing/clipping each viewport to its `DWidth/DHeight/DxOffset/DyOffset`.
+- `LoadView` executes the merged copper list through the chipset emulator and renders the resulting display state. If no copper list is present it falls back to translating planar `BitMap`s into the linear host framebuffer.
 
 ### Region operations
 
@@ -233,7 +233,7 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 | `MakeVPort` | Implemented | Builds a chip-RAM copper list for a `ViewPort` (DMACON, BPLCON, display window, bitplane pointers, COLORxx). |
 | `MrgCop` | Implemented | Merges per-`ViewPort` copper lists into one master list for the `View`. |
 | `LoadView` | Implemented | Executes the merged copper list through the AGA chipset emulator and renders the display. Falls back to CPU bitmap rendering if no copper list exists. |
-| `WaitTOF` | Implemented | Waits for the next VBlank tick from the chipset emulator. |
+| `WaitTOF` | Implemented | For M68k tasks, blocks on a dedicated per-task VBlank signal instead of busy-waiting, so the idle/WM task keeps running. Native callers fall back to polling `chip_emu_vblank_count()`. |
 | `WaitBOVP` | Implemented | Waits for the next VBlank tick (approximating bottom-of-ViewPort). |
 
 ## LVO dispatch
@@ -280,9 +280,9 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 32 | -192 | LoadRGB4 | Implemented |
 | 33 | -198 | InitRastPort | Implemented |
 | 34 | -204 | InitVPort | Implemented |
-| 35 | -210 | MrgCop | Stub |
-| 36 | -216 | MakeVPort | Stub |
-| 37 | -222 | LoadView | Stub |
+| 35 | -210 | MrgCop | Implemented |
+| 36 | -216 | MakeVPort | Implemented |
+| 37 | -222 | LoadView | Implemented |
 | 38 | -228 | WaitBlit | Implemented |
 | 39 | -234 | SetRast | Implemented |
 | 40 | -240 | Move | Implemented |
@@ -290,7 +290,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 42 | -252 | AreaMove | Implemented |
 | 43 | -258 | AreaDraw | Implemented |
 | 44 | -264 | AreaEnd | Implemented |
-| 45 | -270 | WaitTOF | Stub |
+| 45 | -270 | WaitTOF | Implemented |
 | 46 | -276 | QBlit | Stub |
 | 47 | -282 | InitArea | Implemented |
 | 48 | -288 | SetRGB4 | Implemented |
