@@ -188,8 +188,8 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
             /* Mark allocated */
             guest_write_be32(cur + 0, blk_size | HEAP_MAGIC);
 
-            /* Zero payload */
-            for (uint32_t i = HEAP_HDR; i < blk_size && cur + i < GUEST_RAM_SIZE; i++)
+            /* Zero only the allocated portion's payload, not the remainder block */
+            for (uint32_t i = HEAP_HDR; i < need && cur + i < GUEST_RAM_SIZE; i++)
                 g_ram[cur + i] = 0;
 
             return cur + HEAP_HDR;  /* return pointer past header */

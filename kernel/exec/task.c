@@ -37,7 +37,7 @@ static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
 UaosTask *Task_SwitchPrev = NULL;
 
-UaosTask *g_wait_tof_task = NULL;
+/* g_wait_tof_task defined in graphics_lib.c (extern in task.h) */
 
 /* Ready queues: one doubly-linked list per priority level */
 static UaosTask g_ready_heads[256];  /* index 0 = pri -128 */

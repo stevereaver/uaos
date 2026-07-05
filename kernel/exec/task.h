@@ -201,7 +201,7 @@ extern UaosTask *Task_SwitchNext;
 extern UaosTask *Task_SwitchPrev;
 
 /* Task currently blocked inside graphics.library/WaitTOF, signalled by the
- * VBlank path in timer_ProcessTicks(). */
+ * VBlank path in timer_ProcessTicks().  Defined in graphics_lib.c. */
 extern UaosTask *g_wait_tof_task;
 
 /* -------------------------------------------------------------------------

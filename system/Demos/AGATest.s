@@ -290,7 +290,7 @@ vp_clr:
         ; Main animation loop
         ; ------------------------------------------------------------------
 main_loop:
-        ; --- Drain IDCMP messages; exit on mouse button / close ---------
+        ; --- Drain IDCMP messages; exit on close-window request only ---
         movea.l exec_base,a6
         movea.l window,a0
         movea.l WIN_OFF_USERPORT(a0),a0
@@ -302,9 +302,6 @@ main_loop:
         move.l  a0,a1                  ; a1 = message for ReplyMsg
         movea.l exec_base,a6
         jsr     LVO_ReplyMsg(a6)
-        move.l  d1,d2
-        and.l   #IDCMP_MOUSEBUTTONS,d2
-        bne.w   do_exit
         move.l  d1,d2
         and.l   #IDCMP_CLOSEWINDOW,d2
         bne.w   do_exit

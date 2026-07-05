@@ -341,6 +341,8 @@ Click the **UAOS Shell** title bar to focus it, then type commands:
 
 ## Architecture Overview
 
+For a full interactive diagram see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ```
 GRUB2 Multiboot2
     └── uaos_kernel_entry.asm   (32-bit protected → 64-bit long mode)

@@ -101,15 +101,17 @@ section .text progbits alloc exec nowrite align=16
 
 extern __guest_ram_start
 extern __guest_ram_end
+extern __bss_start
+extern __bss_end
 
 global _start
 _start:
     cli
 
     ; ---- Save multiboot2 parameters in callee-saved registers ----
-    ; EBX = mb2 info ptr,  EAX = mb2 magic
-    mov     edi, eax            ; save magic  in EDI (survives mode switch)
-    mov     esi, ebx            ; save info   in ESI
+    ; EAX = mb2 magic, EBX = mb2 info ptr (set by GRUB)
+    mov     ebp, eax            ; save magic  in EBP (survives BSS zeroing)
+    ; EBX already holds the info pointer
 
     ; ---- Load our 32-bit GDT so segments are definitely flat ----
     lgdt    [gdt32_ptr]
@@ -121,22 +123,35 @@ _start:
     mov     fs, ax
     mov     gs, ax
 
-    ; ---- Set up the bootstrap stack ----
-    mov     esp, stack_top
+    ; ================================================================
+    ; ZERO THE BSS SECTION (GRUB may not zero all 32+ MB of it)
+    ; Must happen BEFORE setting up the stack — the stack and page
+    ; tables live in .bss and will be (re)initialised below.
+    ; rep stosd clobbers EAX, ECX, EDI — EBP and EBX are safe.
+    ; ================================================================
+    mov     edi, __bss_start
+    mov     ecx, __bss_end
+    sub     ecx, edi
+    shr     ecx, 2              ; dwords
+    xor     eax, eax
+    rep     stosd
 
     ; ================================================================
     ; ZERO THE GUEST RAM SECTION (NOLOAD — bootloader may not clear it)
     ; ================================================================
-    push    edi
-    push    esi
     mov     edi, __guest_ram_start
     mov     ecx, __guest_ram_end
     sub     ecx, edi
     shr     ecx, 2              ; dwords
     xor     eax, eax
     rep     stosd
-    pop     esi
-    pop     edi
+
+    ; ---- Restore multiboot2 parameters ----
+    mov     edi, ebp            ; magic  → EDI (survives mode switch)
+    mov     esi, ebx            ; info   → ESI
+
+    ; ---- Set up the bootstrap stack (in .bss, now zeroed) ----
+    mov     esp, stack_top
 
     ; ================================================================
     ; BUILD IDENTITY-MAP PAGE TABLES (in 32-bit mode, paging OFF)

@@ -1642,6 +1642,13 @@ static void exec_OpenLibrary(void)
 
     /* Match known libraries */
     uint32_t result = FAKE_LIB_BASE; /* default: return a stub base for unknown libs */
+
+    const char *exec_name = "exec.library";
+    int exec_match = 1;
+    for (int j = 0; exec_name[j]; j++)
+        if (name[j] != exec_name[j]) { exec_match = 0; break; }
+    if (exec_match) result = EXEC_BASE;
+
     const char *dos_name = "dos.library";
     int dos_match = 1;
     for (int j = 0; dos_name[j]; j++)
@@ -1688,6 +1695,15 @@ static void exec_OpenLibrary(void)
     }
 
     m68k_set_reg(M68K_REG_D0, result);
+
+    /* Update the Z flag in SR so caller's beq/bne tests work correctly.
+     * The ILLEGAL-instruction callback bypasses normal instruction execution,
+     * so flags from before the jsr (e.g. moveq #0,d0 setting Z=1) persist.
+     * Z flag is bit 2 (0x0004) of the status register. */
+    uint16_t sr = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+    if (result == 0) sr |= 0x0004;   /* set Z */
+    else             sr &= ~0x0004;  /* clear Z */
+    m68k_set_reg(M68K_REG_SR, sr);
 }
 
 static void exec_CloseLibrary(void) { /* no-op */ }
@@ -1874,6 +1890,7 @@ static void exec_GetMsg(void)
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t msg  = 0;
     if (port) msg = glue_list_remove_head(port + MP_MSGLIST);
+    (void)msg;
     m68k_set_reg(M68K_REG_D0, msg);
 }
 
@@ -2696,17 +2713,6 @@ int m68k_illg_instr_callback(int opcode)
     uint32_t pc  = m68k_get_reg(NULL, M68K_REG_PC);
     uint8_t  lib = g_ram[pc];     /* pc already advanced past ILLEGAL word */
     uint8_t  fn  = g_ram[pc + 1];
-
-    /* [C] trace disabled — re-enable by uncommenting for debugging */
-    /*{
-        char msg[48] = "[C] ";
-        char n[4]; int i = 4, j = 0;
-        u32_dec(lib, n, 4); while(n[j]&&i<46) msg[i++]=n[j++];
-        msg[i++]='.';
-        u32_dec(fn,  n, 4); j=0; while(n[j]&&i<46) msg[i++]=n[j++];
-        msg[i++]='\n'; msg[i]=0;
-        emu_print(msg);
-    }*/
 
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);

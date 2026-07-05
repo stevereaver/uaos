@@ -13,6 +13,8 @@
 /* Musashi context size — queried at runtime */
 extern unsigned int m68k_context_size(void);
 extern unsigned int m68k_get_context(void *dst);
+extern unsigned int m68k_get_reg(void *context, int reg);
+#define M68K_REG_PC_S 16  /* Musashi M68K_REG_PC enum value */
 extern void m68k_set_context(void *src);
 extern int m68k_execute(int num_cycles);
 extern unsigned int m68k_cycles_run(void);
@@ -145,6 +147,10 @@ static void m68k_wrapper_entry(void *arg)
         kprint("[M68K] hunk_load failed, exiting\n");
         Task_Exit();
     }
+    {
+        extern void kprint(const char *);
+        kprint("[M68K] hunk loaded, entry point\n");
+    }
 
     /* Build command line in guest RAM (matches UAOS_Emu_LoadAndRun_Internal) */
     uint32_t sp = STACK_TOP;
@@ -211,6 +217,10 @@ static void m68k_wrapper_entry(void *arg)
     /* Set up M68k CPU */
     m68k_init();
     m68k_set_cpu_type(1);  /* M68K_CPU_TYPE_68000 */
+    /* Re-register the ILLEGAL instruction callback — m68k_init() clears it. */
+    extern int m68k_illg_instr_callback(int opcode);
+    extern void m68k_set_illg_instr_callback(int (*cb)(int));
+    m68k_set_illg_instr_callback(m68k_illg_instr_callback);
 
     /* Patch reset vectors */
     m68k_write_memory_32(0, sp);

@@ -3516,7 +3516,9 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                                const char *args)
 {
     VfsFile fh;
-    if (!VFS_Open(&fh, full_path, VFS_READ)) return -1;
+    if (!VFS_Open(&fh, full_path, VFS_READ)) {
+        return -1;
+    }
 
     uint32_t file_size = VFS_Size(&fh);
     if (file_size < 4) {
@@ -3605,7 +3607,7 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             m68k_argv[argc] = NULL;
             int slot = (int)(s - g_shells);
             UAOS_Emu_SetCwd(s->cwd);
-            UaosTask *t = Task_CreateM68k(bin_name, 0,
+            UaosTask *t = Task_CreateM68k(bin_name, -128,
                                           g_bin_payload, payload_size,
                                           m68k_argv,
                                           (slot >= 0 && slot < MAX_SHELLS)
@@ -3759,7 +3761,7 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
 
         int slot = (int)(s - g_shells);
         UAOS_Emu_SetCwd(s->cwd);
-        UaosTask *t = Task_CreateM68k(bin_name, 0,
+        UaosTask *t = Task_CreateM68k(bin_name, -128,
                                       g_bin_payload, file_size,
                                       m68k_argv,
                                       (slot >= 0 && slot < MAX_SHELLS)

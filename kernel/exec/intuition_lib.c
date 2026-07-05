@@ -24,6 +24,9 @@
 #include <string.h>
 
 extern volatile uint64_t g_pit_ticks;
+extern void kprint(const char *);
+extern void kprinthex(uint64_t);
+extern void kprintdec(uint32_t);
 
 /* =========================================================================
  * Guest RAM accessor (provided by uaos_m68k_glue.c)
@@ -3753,7 +3756,6 @@ static void intuition_OpenWindowTagList(void)
             slot->super_bitmap = super_bitmap;
         }
     }
-
     /* Build an AmigaOS-compatible Window structure. */
     memset(&g_ram[win_ptr], 0, sizeof(AmigaWindow));
     mem_w32(win_ptr + WIN_OFF_NEXTWINDOW,   0);
@@ -8014,7 +8016,7 @@ static void *intuition_funcs[] = {
     intuition_RefreshWindowFrame,
     intuition_ModifyIDCMP,
     intuition_SetWindowTitles,
-    intuition_OpenWindowTagList,
+    intuition_OpenWindowTags,
     intuition_OpenWorkbench,
     intuition_CloseWorkbench,
     intuition_DrawBorder,
@@ -8030,7 +8032,7 @@ static void *intuition_funcs[] = {
     intuition_ScreenToFront,
     intuition_ScreenToBack,
     intuition_ShowTitle,
-    intuition_OpenScreenTagList,
+    intuition_OpenScreenTags,
     intuition_SetMenuStrip,
     intuition_ClearMenuStrip,
     intuition_ResetMenuStrip,
@@ -8134,8 +8136,8 @@ static void *intuition_funcs[] = {
     intuition_SetGadgetAttrsA,
     intuition_SetSuperAttrs,
     intuition_SetWindowPointer,
-    intuition_OpenWindowTags,
-    intuition_OpenScreenTags,
+    intuition_OpenWindowTagList,
+    intuition_OpenScreenTagList,
     intuition_DoGadgetMethod,
     intuition_SetGadgetAttrs,
 };
@@ -8146,6 +8148,7 @@ void UAOS_Intuition_Dispatch(uint32_t fn)
         fprintf(stderr, "[INTUITION] unknown fn=%u\n", fn);
         return;
     }
+    static uint32_t int_call_count = 0;
     void (*f)(void) = (void (*)(void))intuition_funcs[fn - 1];
     f();
 }

@@ -113,7 +113,7 @@ typedef struct {
 #define WIN_OFF_TITLE       32
 #define WIN_OFF_FIRSTREQUEST 36
 #define WIN_OFF_REQCOUNT    44
-#define WIN_OFF_WSCREEN     48
+#define WIN_OFF_WSCREEN     46
 #define WIN_OFF_RPORT       50
 #define WIN_OFF_FIRSTGADGET 62
 #define WIN_OFF_USERPORT    86

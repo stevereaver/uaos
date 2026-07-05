@@ -47,9 +47,11 @@ SECTIONS
     /* Uninitialised data (BSS) — zeroed by the entry stub */
     .bss : ALIGN(0x1000)
     {
+        __bss_start = .;
         *(COMMON)
         *(.bss)
         *(.bss.*)
+        __bss_end = .;
     }
 
     /* Guest RAM (M68k chip/fast RAM) — placed after regular BSS and above the

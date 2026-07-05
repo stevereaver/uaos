@@ -15,11 +15,17 @@
 #include "chipset/chip_emu.h"
 #include "../display/framebuffer.h"
 #include "../display/wm.h"
+#include "../boot/kprint.h"
 #include "task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+
+/* g_wait_tof_task — defined here (in graphics_lib.c) rather than in task.c
+ * to avoid shifting Task_SwitchPrev/Task_SwitchNext in BSS, which for reasons
+ * not yet understood causes a system-wide freeze.  Declared extern in task.h. */
+UaosTask *g_wait_tof_task = NULL;
 
 /* =========================================================================
  * Musashi register access (provided by emulation/uaos_m68k_glue.c)
