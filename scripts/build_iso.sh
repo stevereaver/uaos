@@ -346,7 +346,6 @@ for src in \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/kernel/chipset/chip_emu.c" \
-    "${REPO_ROOT}/kernel/chipset/floppy.c" \
     "${REPO_ROOT}/kernel/audio/audio.c" \
     "${REPO_ROOT}/kernel/audio/pc_speaker.c" \
     "${REPO_ROOT}/kernel/audio/ac97.c" \
@@ -372,7 +371,6 @@ for src in \
     "${REPO_ROOT}/kernel/dos/iso9660.c" \
     "${REPO_ROOT}/kernel/dos/icon_loader.c" \
     "${REPO_ROOT}/kernel/drivers/ide.c" \
-    "${REPO_ROOT}/kernel/drivers/floppy_blk.c" \
     "${REPO_ROOT}/kernel/display/pointer_prefs.c" \
     "${REPO_ROOT}/kernel/shell/native_cmd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_template.c" \
@@ -516,15 +514,6 @@ void *memcpy(void *d, const void *s, unsigned long n) {
     while (n--) *dp++ = *sp++;
     return d;
 }
-int memcmp(const void *a, const void *b, unsigned long n) {
-    const unsigned char *ap = (const unsigned char *)a;
-    const unsigned char *bp = (const unsigned char *)b;
-    while (n--) {
-        if (*ap != *bp) return (int)*ap - (int)*bp;
-        ap++; bp++;
-    }
-    return 0;
-}
 int strcmp(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
     return (unsigned char)*a - (unsigned char)*b;
@@ -641,7 +630,6 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/chip_emu.o" \
-    "${BUILD_DIR}/obj/floppy.o" \
     "${BUILD_DIR}/obj/audio.o" \
     "${BUILD_DIR}/obj/pc_speaker.o" \
     "${BUILD_DIR}/obj/ac97.o" \
@@ -667,7 +655,6 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/iso9660.o" \
     "${BUILD_DIR}/obj/icon_loader.o" \
     "${BUILD_DIR}/obj/ide.o" \
-    "${BUILD_DIR}/obj/floppy_blk.o" \
     "${BUILD_DIR}/obj/pointer_prefs.o" \
     "${BUILD_DIR}/obj/native_cmd.o" \
     "${BUILD_DIR}/obj/cmd_template.o" \
@@ -907,73 +894,6 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Step 2g — Build M68k assembly demos for SYS_ROOT/Demos
-# -------------------------------------------------------------------------
-
-info "Step 2g: Building M68k assembly demos"
-
-DEMOS_STAGING="${ISO_STAGING}/SYS_ROOT/Demos"
-mkdir -p "${DEMOS_STAGING}"
-
-# List of demos to build (basename without extension). Each must have a
-# corresponding source file at system/Demos/<name>.s.
-M68K_DEMOS=(CopperBars AGATest)
-
-VASM_DIR="${BUILD_DIR}/vasm"
-VASM_BIN="${VASM_DIR}/vasmm68k_mot"
-VLINK_BIN="${VASM_DIR}/vlink/vlink"
-
-# Ensure vasm and vlink are available if any demo source exists.
-need_toolchain=0
-for demo in "${M68K_DEMOS[@]}"; do
-    if [[ -f "${REPO_ROOT}/system/Demos/${demo}.s" ]]; then
-        need_toolchain=1
-        break
-    fi
-done
-
-if [[ ${need_toolchain} -eq 1 ]]; then
-    if [[ ! -f "${VASM_BIN}" || ! -f "${VLINK_BIN}" ]]; then
-        info "  Downloading and building vasm-m68k + vlink"
-        mkdir -p "${VASM_DIR}"
-        if [[ ! -f "${VASM_DIR}/vasm.tar.gz" ]]; then
-            wget -q -O "${VASM_DIR}/vasm.tar.gz" http://sun.hasenbraten.de/vasm/release/vasm.tar.gz \
-                || fatal "Failed to download vasm source"
-        fi
-        if [[ ! -f "${VASM_DIR}/vlink.tar.gz" ]]; then
-            wget -q -O "${VASM_DIR}/vlink.tar.gz" http://sun.hasenbraten.de/vlink/release/vlink.tar.gz \
-                || fatal "Failed to download vlink source"
-        fi
-        cd "${VASM_DIR}"
-        tar xzf vasm.tar.gz
-        tar xzf vlink.tar.gz
-        cd "${VASM_DIR}/vasm"
-        make CPU=m68k SYNTAX=mot >/dev/null 2>&1 || fatal "Failed to build vasm"
-        cd "${VASM_DIR}/vlink"
-        make >/dev/null 2>&1 || fatal "Failed to build vlink"
-        cp "${VASM_DIR}/vasm/vasmm68k_mot" "${VASM_BIN}"
-        ok "  Built: vasm-m68k + vlink"
-    fi
-
-    for demo in "${M68K_DEMOS[@]}"; do
-        DEMO_SRC="${REPO_ROOT}/system/Demos/${demo}.s"
-        if [[ ! -f "${DEMO_SRC}" ]]; then
-            ok "  No ${demo} source found (${DEMO_SRC})"
-            continue
-        fi
-        "${VASM_BIN}" -Fhunk -o "${BUILD_DIR}/${demo}.o" "${DEMO_SRC}" \
-            || fatal "Failed to assemble ${demo}.s"
-        "${VLINK_BIN}" -bamigahunk -o "${BUILD_DIR}/${demo}.hunk" "${BUILD_DIR}/${demo}.o" \
-            || fatal "Failed to link ${demo}"
-        "${BUILD_DIR}/gen_uaos_m68k" "${demo}" "${BUILD_DIR}/${demo}.hunk" "${DEMOS_STAGING}/${demo}" \
-            || fatal "Failed to wrap ${demo}"
-        ok "  Built: SYS_ROOT/Demos/${demo}"
-    done
-else
-    ok "  No M68k demo sources found"
-fi
-
-# -------------------------------------------------------------------------
 # Step 3 — Install GRUB configuration
 # -------------------------------------------------------------------------
 
@@ -1080,16 +1000,6 @@ if [[ -d "${SYSTEM_DIR}" ]]; then
         cp -r "${SYSTEM_DIR}/Tools/"* "${ISO_STAGING}/SYS_ROOT/Tools/" 2>/dev/null || true
         ok "  Copied: system/Tools/ -> sys-root/Tools/"
     fi
-    
-    # Copy any Demos files (built binaries and icons), excluding assembly sources
-    if [[ -d "${SYSTEM_DIR}/Demos" ]]; then
-        mkdir -p "${ISO_STAGING}/SYS_ROOT/Demos"
-        for f in "${SYSTEM_DIR}/Demos"/*; do
-            [[ -f "$f" && "$f" != *.s ]] || continue
-            cp "$f" "${ISO_STAGING}/SYS_ROOT/Demos/"
-        done
-        ok "  Copied: system/Demos/ -> SYS_ROOT/Demos/"
-    fi
 fi
 
 ok "Dynamic sys-root populated from system files"
@@ -1179,4 +1089,10 @@ if [[ -f "${ISO_OUTPUT}" ]]; then
     ok "Test with: qemu-system-x86_64 -cdrom '${ISO_OUTPUT}' -m 512M -boot d"
 else
     fatal "grub-mkrescue finished but ISO not found at ${ISO_OUTPUT}"
+fi
+else
+    fatal "grub-mkrescue finished but ISO not found at ${ISO_OUTPUT}"
+fi
+    fatal "grub-mkrescue finished but ISO not found at ${ISO_OUTPUT}"
+fi
 fi

@@ -4,7 +4,7 @@ title: UAOS Build System
 description: Details of the toolchain and process used to build UAOS.
 resource: /scripts/
 tags: [build, gcc, nasm, grub, iso]
-timestamp: 2026-07-01T00:30:00Z
+timestamp: 2026-06-24T17:17:70Z
 ---
 
 # UAOS Build System
@@ -14,8 +14,8 @@ UAOS uses a custom build pipeline to produce a hybrid BIOS/UEFI bootable ISO ima
 ## Toolchain
 
 - **Compiler**: `gcc` (targetting `x86_64-elf` or host with `-ffreestanding`).
-- **Assembler**: `nasm` for bootloader and interrupt stubs; `vasm` (Motorola syntax) for M68k demos.
-- **Linker**: `ld` with a custom linker script (`uaos_kernel.ld`); `vlink` for Amiga Hunk M68k executables.
+- **Assembler**: `nasm` for bootloader and interrupt stubs
+- **Linker**: `ld` with a custom linker script (`uaos_kernel.ld`)
 - **ISO Creation**: `grub-mkrescue` and `xorriso`.
 
 ## Build Process
@@ -28,17 +28,13 @@ The primary build script is `scripts/build_iso.sh`.
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
 5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/src/musashi/m68kops.c`) if it is missing.
 6. **Chipset Emulator**: Compiles the real AGA/ECS custom chip emulator (`kernel/chipset/chip_emu.c`) and links it into the kernel.
-7. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`.
-8. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
-9. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
-10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
-11. **M68k Demos**: Assembles M68k assembly demos in `system/Demos/` (e.g., `CopperBars.s`) with `vasm` (Motorola syntax), links them into Amiga Hunk executables with `vlink`, and wraps the resulting binaries with `gen_uaos_m68k` for `SYS_ROOT/Demos/`.
-12. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`) into `SYS_ROOT`.
-13. **GRUB Config**: Injects `scripts/grub.cfg` and the AROS kickstart configuration.
-14. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
-
-## Helper Scripts
-
+7. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
+8. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
+8. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
+9. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`) into `SYS_ROOT`.
+10.Gti
+#2 Helper Scripts
+3
 - `scripts/embed_binary.sh` — converts an Amiga Hunk binary into a C byte array for embedding.
 - `scripts/create_disk.sh` — creates a QEMU `qcow2` disk image.
 - `scripts/run_with_disk.sh` — launches UAOS in QEMU with optional disk and network modes.

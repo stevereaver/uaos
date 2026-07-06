@@ -229,10 +229,6 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
 static void draw_chrome(int wh)
 {
     if (g_palette_fn) g_palette_fn(wh);
-    /* Always use the default host Workbench chrome palette so window borders,
-     * title bars, and gadget boxes are consistent regardless of any custom
-     * screen palette that may have been installed. */
-    WB_InitPalette();
     WmWindow *w = &g_wins[wh];
     int focused = (wh == g_focus);
     uint32_t tbar_col = focused ? WB_LIGHT_BLUE : WB_BLUE;
@@ -940,11 +936,6 @@ void WM_Redraw(void)
     if (Desktop_IsWorkbenchLoaded())
         Desktop_Draw();
 
-    /* The desktop may have applied a custom Intuition screen palette. Reset
-     * to the default Workbench chrome palette before drawing window borders,
-     * title bars and gadgets so every window (native or Intuition) matches. */
-    WB_InitPalette();
-
     /* Paint windows back-to-front */
     for (int i = 0; i < g_nwins; i++) {
         int wh = g_zorder[i];
@@ -1233,4 +1224,14 @@ int WM_GetWindowTitle(int handle, char *out, int max)
     }
     out[i] = '\0';
     return 1;
+}
+    }
+    out[i] = '\0';
+    return 1;
+}
+    out[i] = '\0';
+    return 1;
+}
+    return 1;
+}
 }

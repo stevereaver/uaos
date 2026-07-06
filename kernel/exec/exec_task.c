@@ -13,14 +13,8 @@
 /* Musashi context size — queried at runtime */
 extern unsigned int m68k_context_size(void);
 extern unsigned int m68k_get_context(void *dst);
-extern unsigned int m68k_get_reg(void *context, int reg);
-#define M68K_REG_PC_S 16  /* Musashi M68K_REG_PC enum value */
-extern void m68k_set_context(void *src);
-extern int m68k_execute(int num_cycles);
-extern unsigned int m68k_cycles_run(void);
-extern void m68k_end_timeslice(void);
+extern oid m68k_end_timeslice(void);
 extern void m68k_init(void);
-extern void m68k_set_cpu_type(int type);
 extern void m68k_pulse_reset(void);
 extern unsigned int m68k_read_memory_32(unsigned int addr);
 extern void m68k_write_memory_32(unsigned int addr, unsigned int val);
@@ -28,17 +22,13 @@ extern void m68k_set_reg(int reg, unsigned int val);
 
 /* From uaos_m68k_glue.c — guest RAM and binary loader */
 #include "../../emulation/uaos_emu.h"
-#include "chipset/chip_emu.h"
 extern uint8_t *g_ram;
 extern int g_emu_halted;
-extern uint32_t g_uaos_heap_ptr;
-extern uint64_t g_m68k_cycles;
-extern uint32_t heap_alloc(uint32_t size);
+extern uint32_t g_uaos_heap_ptlloc(uint32_t size);
 
 /* Forward declarations from uaos_m68k_glue.c */
 extern void install_library_tables(void);
-extern uint32_t hunk_load(const uint8_t *binary, uint32_t bin_size);
-extern void UAOS_Emu_SetCwd(const char *cwd);
+extern uint UAOS_Emu_SetCwd(const char *cwd);
 
 /* Stack top for M68k guest */
 #define STACK_TOP  0x1F0000
@@ -46,7 +36,7 @@ extern void UAOS_Emu_SetCwd(const char *cwd);
 
 /* Per-task M68k RAM pool */
 #define MAX_M68K_TASKS  4
-static uint8_t g_ram_pool[MAX_M68K_TASKS][GUEST_RAM_SIZE] __attribute__((section(".guest_ram"), aligned(4096)));
+static uint8_t g_ram_pool[MAX_M68K_TASKS][GUEST_RAM_SIZE];
 static uint8_t g_ram_used[MAX_M68K_TASKS] = {0};
 
 /* Musashi cycle globals (needed for context save/restore) */
@@ -147,18 +137,10 @@ static void m68k_wrapper_entry(void *arg)
         kprint("[M68K] hunk_load failed, exiting\n");
         Task_Exit();
     }
-    {
-        extern void kprint(const char *);
-        kprint("[M68K] hunk loaded, entry point\n");
-    }
 
     /* Build command line in guest RAM (matches UAOS_Emu_LoadAndRun_Internal) */
     uint32_t sp = STACK_TOP;
-    char cmdline[256];
-    int cmdlen = 0;
-    const char **argv = task->m68k_argv;
-    if (argv) {
-        for (int i = 1; argv[i] && cmdlen < 254; i++) {
+    char cmdlin in++) {
             if (i > 1 && cmdlen < 254) cmdline[cmdlen++] = ' ';
             for (int j = 0; argv[i][j] && cmdlen < 254; j++)
                 cmdline[cmdlen++] = argv[i][j];
@@ -217,10 +199,6 @@ static void m68k_wrapper_entry(void *arg)
     /* Set up M68k CPU */
     m68k_init();
     m68k_set_cpu_type(1);  /* M68K_CPU_TYPE_68000 */
-    /* Re-register the ILLEGAL instruction callback — m68k_init() clears it. */
-    extern int m68k_illg_instr_callback(int opcode);
-    extern void m68k_set_illg_instr_callback(int (*cb)(int));
-    m68k_set_illg_instr_callback(m68k_illg_instr_callback);
 
     /* Patch reset vectors */
     m68k_write_memory_32(0, sp);
@@ -229,11 +207,7 @@ static void m68k_wrapper_entry(void *arg)
     m68k_write_memory_32(4, EXEC_BASE);
 
     /* CLI entry registers per Amiga CLI convention */
-    m68k_set_reg(0, cmdline_ptr);        /* A0 = command line pointer */
-    m68k_set_reg(8, (unsigned int)cmdlen); /* D0 = command line length */
-
-    /* Run in time-sliced chunks */
-    g_emu_halted = 0;
+    m68k_set_reg(0, cmdline_ptr);        /* A0 =  
     task->m68k_halted = 0;
     task->m68k_entry = entry;
     task->m68k_stack_top = sp;
@@ -249,8 +223,6 @@ static void m68k_wrapper_entry(void *arg)
     while (!task->m68k_halted) {
         /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles */
         m68k_execute(10000);
-        g_m68k_cycles += (uint64_t)m68k_cycles_run();
-        chip_emu_run_to_cycle(g_m68k_cycles);
 
         /* Check if the binary called Exit */
         if (g_emu_halted) {
@@ -263,9 +235,7 @@ static void m68k_wrapper_entry(void *arg)
     }
 
     Task_Exit();
-}
-
-/* -------------------------------------------------------------------------
+}---------------------------------
  * Public API
  * ------------------------------------------------------------------------- */
 
@@ -277,13 +247,7 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     int slot = alloc_m68k_ram_slot();
     if (slot < 0) return NULL;
 
-    /* Allocate Musashi context buffer */
-    unsigned int ctx_size = m68k_context_size();
-    void *ctx_buf = NULL;
-    if (ctx_size > 0) {
-        /* Use a static pool for context buffers */
-        static uint8_t ctx_pool[MAX_M68K_TASKS][4096];
-        ctx_buf = ctx_pool[slot];
+   c    ctx_buf = ctx_pool[slot];
     }
 
     Forbid();
@@ -305,18 +269,6 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     t->tc_UserData = (void *)binary;  /* binary pointer for wrapper */
     t->m68k_print_fn = (void *)print_fn;
 
-    /* Allocate a private signal bit for WaitTOF() so M68k demos can block
-     * on VBlank instead of busy-waiting and starving the idle/WM task. */
-    t->m68k_vblank_sig = -1;
-    uint32_t alloc_mask = t->tc_SigAlloc;
-    for (int i = 0; i < 32; i++) {
-        if ((alloc_mask >> i) & 1u) {
-            t->tc_SigAlloc &= ~(1u << i);
-            t->m68k_vblank_sig = (int8_t)i;
-            break;
-        }
-    }
-
     /* Copy task name into a persistent per-task buffer. */
     {
         int i = 0;
@@ -336,22 +288,7 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
             const char *src = argv[argc];
             int len = 0;
             while (src[len] && ai + len < 255) {
-                t->m68k_argv_store[ai + len] = src[len];
-                len++;
-            }
-            t->m68k_argv_store[ai + len] = '\0';
-            t->m68k_argv[argc] = &t->m68k_argv_store[ai];
-            ai += len + 1;
-            argc++;
-            if (ai >= 256) break;
-        }
-        t->m68k_argv[argc] = NULL;
-    } else {
-        t->m68k_argv[0] = NULL;
-    }
-
-    /* Patch the synthetic interrupt frame so the first time the task
-     * is switched to via Task_SwitchContext, RDI receives the task pointer. */
+                t->m68k_argv_store[ai  [* is switched to via Task_SwitchContext, RDI receives the task pointer. */
     uint64_t *frame = (uint64_t *)t->native_rsp;
     frame[9] = (uint64_t)t;           /* RDI slot */
 

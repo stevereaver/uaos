@@ -1,0 +1,242 @@
+; HelloWorld.s - Minimal Intuition window test for UAOS
+;
+; Opens a simple visitor window on the default public (Workbench) screen
+; with a close gadget, drag bar, depth gadget and title, then renders the
+; text "Hello World" into the window's RastPort and waits for the user to
+; click the close gadget before exiting.
+;
+; This demo deliberately avoids custom screens, SuperBitMap windows and
+; custom palettes so it can be used to verify that plain Intuition windows
+; render with the correct chrome (blue title bar + white gadgets).
+;
+; Assemble: vasmm68k_mot -Fhunk -o HelloWorld.o HelloWorld.s
+; Link:     vlink -bamigahunk -o HelloWorld.hunk HelloWorld.o
+;
+
+; ---------------------------------------------------------------------------
+; Library bases returned by OpenLibrary
+; ---------------------------------------------------------------------------
+EXEC_BASE       equ $00000300
+DOS_BASE        equ $00000800
+
+; ---------------------------------------------------------------------------
+; Exec LVOs (standard AmigaOS offsets)
+; ---------------------------------------------------------------------------
+LVO_OpenLibrary  equ -552
+LVO_CloseLibrary equ -414
+LVO_GetMsg       equ -372
+LVO_ReplyMsg     equ -378
+LVO_WaitPort     equ -384
+
+; ---------------------------------------------------------------------------
+; Graphics LVOs (slot = |LVO|/6)
+; ---------------------------------------------------------------------------
+LVO_Move    equ -240    ; slot 40
+LVO_Text    equ -60     ; slot 10
+LVO_SetAPen equ -342    ; slot 57
+LVO_SetBPen equ -348    ; slot 58
+
+; ---------------------------------------------------------------------------
+; Intuition LVOs
+; ---------------------------------------------------------------------------
+LVO_OpenWindowTags  equ -606
+LVO_CloseWindow     equ -72
+
+; ---------------------------------------------------------------------------
+; DOS LVO
+; ---------------------------------------------------------------------------
+LVO_DOS_Exit        equ -144
+
+; ---------------------------------------------------------------------------
+; Tag base values
+; ---------------------------------------------------------------------------
+TAG_DONE            equ $00000000
+TAG_USER            equ $80000000
+
+WA_Dummy            equ (TAG_USER+99)
+WA_Left             equ (WA_Dummy+$01)
+WA_Top              equ (WA_Dummy+$02)
+WA_Width            equ (WA_Dummy+$03)
+WA_Height           equ (WA_Dummy+$04)
+WA_IDCMP            equ (WA_Dummy+$07)
+WA_Title            equ (WA_Dummy+$0B)
+WA_DragBar          equ (WA_Dummy+$1F)
+WA_DepthGadget      equ (WA_Dummy+$20)
+WA_CloseGadget      equ (WA_Dummy+$21)
+WA_Activate         equ (WA_Dummy+$26)
+
+; ---------------------------------------------------------------------------
+; IDCMP flags
+; ---------------------------------------------------------------------------
+IDCMP_CLOSEWINDOW   equ $00000100
+
+; ---------------------------------------------------------------------------
+; Window structure offsets
+; ---------------------------------------------------------------------------
+WIN_OFF_RPORT       equ 50
+WIN_OFF_USERPORT    equ 86
+IM_OFF_CLASS        equ 24
+
+; ---------------------------------------------------------------------------
+; RastPort pen indices (AmigaOS standard)
+; ---------------------------------------------------------------------------
+PEN_BLACK   equ 0
+PEN_WHITE   equ 1
+
+; ---------------------------------------------------------------------------
+; Window geometry
+; ---------------------------------------------------------------------------
+WIN_W       equ 320
+WIN_H       equ 120
+
+        section bss,bss
+
+exec_base:      ds.l 1
+intuition_base: ds.l 1
+graphics_base:  ds.l 1
+window:         ds.l 1
+rport:          ds.l 1
+userport:       ds.l 1
+
+        section code,code
+
+start:
+        ; --- Open exec.library ------------------------------------------
+        move.l  #libname_exec,a1
+        moveq   #0,d0
+        movea.l #EXEC_BASE,a6
+        jsr     LVO_OpenLibrary(a6)
+        movea.l d0,a6
+        beq.w   exit
+        move.l  a6,exec_base
+
+        ; --- Open intuition.library -------------------------------------
+        move.l  #libname_intuition,a1
+        moveq   #0,d0
+        jsr     LVO_OpenLibrary(a6)
+        move.l  d0,intuition_base
+        beq.w   exit
+
+        ; --- Open graphics.library --------------------------------------
+        move.l  #libname_graphics,a1
+        moveq   #0,d0
+        jsr     LVO_OpenLibrary(a6)
+        move.l  d0,graphics_base
+        beq.w   close_intuition
+
+        ; --- OpenWindowTags ---------------------------------------------
+        ; A0 = 0 (no NewWindow struct); all params via tag list.
+        suba.l  a0,a0
+        move.l  #0,-(sp)                       ; TAG_DONE data
+        move.l  #TAG_DONE,-(sp)                ; TAG_DONE
+        move.l  #1,-(sp)                       ; WA_Activate = TRUE
+        move.l  #WA_Activate,-(sp)
+        move.l  #(IDCMP_CLOSEWINDOW),-(sp)     ; WA_IDCMP
+        move.l  #WA_IDCMP,-(sp)
+        move.l  #1,-(sp)                       ; WA_CloseGadget = TRUE
+        move.l  #WA_CloseGadget,-(sp)
+        move.l  #1,-(sp)                       ; WA_DepthGadget = TRUE
+        move.l  #WA_DepthGadget,-(sp)
+        move.l  #1,-(sp)                       ; WA_DragBar = TRUE
+        move.l  #WA_DragBar,-(sp)
+        pea     win_title                      ; WA_Title
+        move.l  #WA_Title,-(sp)
+        move.l  #WIN_H,-(sp)                   ; WA_Height
+        move.l  #WA_Height,-(sp)
+        move.l  #WIN_W,-(sp)                   ; WA_Width
+        move.l  #WA_Width,-(sp)
+        move.l  #40,-(sp)                      ; WA_Top
+        move.l  #WA_Top,-(sp)
+        move.l  #40,-(sp)                      ; WA_Left
+        move.l  #WA_Left,-(sp)
+        movea.l intuition_base,a6
+        jsr     LVO_OpenWindowTags(a6)
+        lea     96(sp),sp                      ; 12 tag pairs = 96 bytes
+        move.l  d0,window
+        beq.w   close_graphics
+
+        ; --- Grab the window RastPort and UserPort ----------------------
+        movea.l window,a0
+        move.l  WIN_OFF_RPORT(a0),d0
+        move.l  d0,rport
+        move.l  WIN_OFF_USERPORT(a0),d0
+        move.l  d0,userport
+
+        ; --- Render "Hello World" into the window -----------------------
+        ; SetAPen(rp, 1)  - white foreground pen
+        movea.l rport,a1
+        moveq   #PEN_WHITE,d0
+        movea.l graphics_base,a6
+        jsr     LVO_SetAPen(a6)
+
+        ; SetBPen(rp, 0)  - black background pen
+        movea.l rport,a1
+        moveq   #PEN_BLACK,d0
+        jsr     LVO_SetBPen(a6)
+
+        ; Move(rp, 20, 60) - position the text cursor
+        movea.l rport,a1
+        moveq   #20,d0
+        moveq   #60,d1
+        jsr     LVO_Move(a6)
+
+        ; Text(rp, "Hello World", 11)
+        movea.l rport,a1
+        move.l  #hello_str,a0
+        moveq   #11,d0
+        jsr     LVO_Text(a6)
+
+        ; --- Wait for the close-window message --------------------------
+wait_loop:
+        movea.l exec_base,a6
+        movea.l userport,a0
+        jsr     LVO_WaitPort(a6)
+        movea.l exec_base,a6
+        movea.l userport,a0
+        jsr     LVO_GetMsg(a6)
+        tst.l   d0
+        beq.s   wait_loop
+        move.l  d0,a0                  ; a0 = IntuiMessage
+        move.l  IM_OFF_CLASS(a0),d1    ; d1 = message class
+        move.l  a0,a1                  ; a1 = message for ReplyMsg
+        movea.l exec_base,a6
+        jsr     LVO_ReplyMsg(a6)
+        move.l  d1,d2
+        and.l   #IDCMP_CLOSEWINDOW,d2
+        beq.s   wait_loop
+
+        ; --- Cleanup ----------------------------------------------------
+close_window:
+        movea.l intuition_base,a6
+        movea.l window,a0
+        jsr     LVO_CloseWindow(a6)
+close_graphics:
+        movea.l exec_base,a6
+        movea.l graphics_base,a1
+        jsr     LVO_CloseLibrary(a6)
+close_intuition:
+        movea.l exec_base,a6
+        movea.l intuition_base,a1
+        jsr     LVO_CloseLibrary(a6)
+exit:
+        movea.l #DOS_BASE,a6
+        jsr     LVO_DOS_Exit(a6)
+        bra     exit
+
+; ---------------------------------------------------------------------------
+; Data
+; ---------------------------------------------------------------------------
+        section data,data
+
+libname_exec:       dc.b "exec.library",0
+        even
+libname_intuition:  dc.b "intuition.library",0
+        even
+libname_graphics:   dc.b "graphics.library",0
+        even
+win_title:          dc.b "Hello World",0
+        even
+hello_str:          dc.b "Hello World"
+        even
+
+        end
