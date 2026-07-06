@@ -3066,18 +3066,14 @@ void UAOS_Intuition_ApplyFrontScreenPalette(void)
         WB_InitPalette();
 }
 
-/* WM palette callback: apply the palette of the screen the window lives on. */
+/* WM palette callback: keep the host Workbench chrome palette.
+ * Intuition windows (including SuperBitMap screens) should render with the
+ * same default blue title-bar/gadget colours as native WM windows so the
+ * window chrome is always visible and consistent. */
 static void intuition_apply_window_palette(int wm_handle)
 {
-    uint32_t win_ptr = get_guest_window_from_handle(wm_handle);
-    if (!win_ptr) return;
-    uint32_t screen = mem_u32(win_ptr + WIN_OFF_WSCREEN);
-    if (!screen) return;
-    ScreenSlot *slot = find_screen_slot(screen);
-    if (slot && (slot->colors || slot->colors32 || slot->pens))
-        apply_screen_palette(slot);
-    else
-        WB_InitPalette();
+    (void)wm_handle;
+    WB_InitPalette();
 }
 
 static void signal_pub_screen(ScreenSlot *slot);
