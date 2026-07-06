@@ -197,6 +197,12 @@ static void m68k_wrapper_entry(void *arg)
     guest_memset(proc_addr, 0, 0x100);
     guest_memset(cli_addr,  0, 0x80);
 
+    /* Link the Process struct to the host-side task so that
+     * Task_FindByM68kAddr() can locate this task when Intuition needs to
+     * signal it (e.g. IDCMP_CLOSEWINDOW).  Without this, m68k_task_struct
+     * stays 0 and every M68k task collides on the same lookup key. */
+    task->m68k_task_struct = proc_addr;
+
     /* pr_CLI = BPTR to CLI */
     guest_w32(proc_addr + PR_CLI_OFFSET, cli_addr >> 2);
     /* pr_CIS = stdin BPTR */

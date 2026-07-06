@@ -917,7 +917,7 @@ mkdir -p "${DEMOS_STAGING}"
 
 # List of demos to build (basename without extension). Each must have a
 # corresponding source file at system/Demos/<name>.s.
-M68K_DEMOS=(CopperBars AGATest)
+M68K_DEMOS=(CopperBars AGATest HelloWorld)
 
 VASM_DIR="${BUILD_DIR}/vasm"
 VASM_BIN="${VASM_DIR}/vasmm68k_mot"
