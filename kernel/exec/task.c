@@ -465,8 +465,6 @@ void Task_IdleEntry(void *arg)
     int last_mx = -1, last_my = -1, last_btn = -1, last_btn_right = -1;
 
     for (;;) {
-        __asm__ volatile ("pause" ::: "memory");
-
         /* --- Protected section: WM + input + network + jobs --- */
         Forbid();
 
@@ -502,6 +500,15 @@ void Task_IdleEntry(void *arg)
 
         Permit();
         /* --- End protected section --- */
+
+        /* Halt until the next interrupt (timer tick, mouse, keyboard, NIC).
+         * This is critical: after Permit() the scheduler nesting count is
+         * zero, so the timer ISR's do_schedule(1) can switch to a task that
+         * was just signaled (e.g. an Intuition window's IDCMP_CLOSEWINDOW
+         * message waking the guest m68k task).  Without this halt the loop
+         * would re-enter Forbid() before the timer has a chance to fire,
+         * starving any signaled task and making the close gadget unreliable. */
+        __asm__ volatile ("hlt" ::: "memory");
     }
 }
 
