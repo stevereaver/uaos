@@ -795,146 +795,146 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_REPLY_MSG       (-378)
 #define LVO_WAIT_PORT       (-384)
 
-/* intuition.library LVO offsets */
-#define LVO_INTUITION_OPEN_LIBRARY       (-30)
-#define LVO_INTUITION_CLOSE_LIBRARY      (-36)
-#define LVO_INTUITION_OPEN_WINDOW        (-204)
-#define LVO_INTUITION_CLOSE_WINDOW       (-72)
-#define LVO_INTUITION_WINDOW_TO_FRONT  (-126)
-#define LVO_INTUITION_WINDOW_TO_BACK   (-132)
-#define LVO_INTUITION_ACTIVATE_WINDOW  (-450)
-#define LVO_INTUITION_MOVE_WINDOW      (-150)
-#define LVO_INTUITION_SIZE_WINDOW      (-156)
-#define LVO_INTUITION_REFRESH_WINDOW   (-162)
-#define LVO_INTUITION_MODIFY_IDCMP     (-174)
-#define LVO_INTUITION_SET_WINDOW_TITLES (-276)
-#define LVO_INTUITION_OPEN_WINDOW_TAGS (-606)
-#define LVO_INTUITION_CLOSE_WORKBENCH   (-78)
-#define LVO_INTUITION_DRAW_BORDER       (-108)
-#define LVO_INTUITION_DRAW_IMAGE        (-114)
-#define LVO_INTUITION_PRINT_I_TEXT      (-216)
-#define LVO_INTUITION_OPEN_WORKBENCH    (-210)
-#define LVO_INTUITION_AUTO_REQUEST      (-348)
-#define LVO_INTUITION_BUILD_SYS_REQUEST (-360)
-#define LVO_INTUITION_FREE_SYS_REQUEST  (-372)
-#define LVO_INTUITION_EASY_REQUEST      (-588)
-#define LVO_INTUITION_OPEN_SCREEN       (-198)
-#define LVO_INTUITION_CLOSE_SCREEN      (-66)
-#define LVO_INTUITION_MOVE_SCREEN       (-162)
-#define LVO_INTUITION_SCREEN_TO_FRONT   (-252)
-#define LVO_INTUITION_SCREEN_TO_BACK    (-246)
-#define LVO_INTUITION_SHOW_TITLE        (-282)
-#define LVO_INTUITION_OPEN_SCREEN_TAGS  (-612)
-#define LVO_INTUITION_SET_MENU_STRIP    (-264)
-#define LVO_INTUITION_CLEAR_MENU_STRIP  (-54)
-#define LVO_INTUITION_RESET_MENU_STRIP  (-582)
-#define LVO_INTUITION_ITEM_ADDRESS      (-144)
-#define LVO_INTUITION_LOCK_PUB_SCREEN       (-384)
-#define LVO_INTUITION_UNLOCK_PUB_SCREEN     (-390)
-#define LVO_INTUITION_LOCK_PUB_SCREEN_LIST  (-396)
-#define LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST (-402)
-#define LVO_INTUITION_SET_POINTER            (-270)
-#define LVO_INTUITION_CLEAR_POINTER          (-60)
-#define LVO_INTUITION_SET_WINDOW_POINTER_A   (-816)
-#define LVO_INTUITION_GET_DEF_PREFS          (-144)
-#define LVO_INTUITION_GET_PREFS              (-150)
-#define LVO_INTUITION_SET_PREFS              (-324)
-#define LVO_INTUITION_LOCK_GUI_PREFS         (-858)
-#define LVO_INTUITION_UNLOCK_GUI_PREFS       (-864)
-#define LVO_INTUITION_QUERY_OVERSCAN         (-474)
-#define LVO_INTUITION_GET_DISPLAY_INFO_DATA  (-870)
-#define LVO_INTUITION_NEXT_DISPLAY_INFO      (-876)
-#define LVO_INTUITION_CURRENT_TIME           (-84)
-#define LVO_INTUITION_DOUBLE_CLICK           (-102)
-#define LVO_INTUITION_REPORT_MOUSE           (-234)
-#define LVO_INTUITION_DISPLAY_BEEP           (-96)
-#define LVO_INTUITION_INIT_REQUESTER         (-138)
-#define LVO_INTUITION_END_REQUEST            (-120)
-#define LVO_INTUITION_REQUEST                (-240)
-#define LVO_INTUITION_VIEW_ADDRESS           (-126)
-#define LVO_INTUITION_VIEW_PORT_ADDRESS      (-132)
-#define LVO_INTUITION_GET_SCREEN_DATA        (-306)
-#define LVO_INTUITION_NEXT_PUB_SCREEN        (-408)
-#define LVO_INTUITION_SET_DEFAULT_PUB_SCREEN (-420)
-#define LVO_INTUITION_LOCK_IBASE             (-294)
-#define LVO_INTUITION_UNLOCK_IBASE           (-300)
-#define LVO_INTUITION_SHOW_WINDOW            (-1002)
-#define LVO_INTUITION_HIDE_WINDOW            (-1008)
-#define LVO_INTUITION_WINDOW_LIMITS          (-318)
-#define LVO_INTUITION_CHANGE_WINDOW_BOX      (-486)
-#define LVO_INTUITION_GET_SCREEN_DRAW_INFO   (-690)
-#define LVO_INTUITION_FREE_SCREEN_DRAW_INFO  (-696)
-#define LVO_INTUITION_DISPLAY_ALERT            (-90)
-#define LVO_INTUITION_TIMED_DISPLAY_ALERT      (-822)
-#define LVO_INTUITION_SCREEN_DEPTH             (-786)
-#define LVO_INTUITION_SCREEN_POSITION          (-792)
-#define LVO_INTUITION_ADD_GADGET               (-42)
-#define LVO_INTUITION_ADD_GLIST                (-438)
-#define LVO_INTUITION_REMOVE_GADGET            (-228)
-#define LVO_INTUITION_REMOVE_GLIST             (-444)
-#define LVO_INTUITION_REFRESH_GLIST            (-432)
-#define LVO_INTUITION_ON_GADGET                (-186)
-#define LVO_INTUITION_OFF_GADGET               (-174)
-#define LVO_INTUITION_MODIFY_PROP              (-156)
-#define LVO_INTUITION_NEW_MODIFY_PROP          (-468)
-#define LVO_INTUITION_ACTIVATE_GADGET          (-462)
-#define LVO_INTUITION_SET_WINDOW_ATTRS         (-1014)
-#define LVO_INTUITION_GET_WINDOW_ATTRS         (-1020)
-#define LVO_INTUITION_SET_SCREEN_ATTRS         (-1026)
-#define LVO_INTUITION_GET_SCREEN_ATTRS         (-1032)
-#define LVO_INTUITION_GET_VISUAL_INFO          (-630)
-#define LVO_INTUITION_FREE_VISUAL_INFO         (-636)
-#define LVO_INTUITION_BEGIN_REFRESH            (-354)
-#define LVO_INTUITION_END_REFRESH              (-366)
-#define LVO_INTUITION_REFRESH_GADGETS          (-222)
-#define LVO_INTUITION_ON_MENU                  (-114)
-#define LVO_INTUITION_OFF_MENU                 (-108)
-#define LVO_INTUITION_SYS_REQ_HANDLER          (-450)
-#define LVO_INTUITION_PUB_SCREEN_STATUS        (-426)
-#define LVO_INTUITION_GET_DEFAULT_PUB_SCREEN   (-432)
-#define LVO_INTUITION_MOVE_WINDOW_IN_FRONT_OF (-516)
-#define LVO_INTUITION_SET_EDIT_HOOK            (-510)
-#define LVO_INTUITION_OBTAIN_GIR_PORT          (-456)
-#define LVO_INTUITION_RELEASE_GIR_PORT         (-492)
-#define LVO_INTUITION_STRIP_INTUI_MESSAGES     (-504)
-#define LVO_INTUITION_NEW_OBJECT_A             (-48)
-#define LVO_INTUITION_DISPOSE_OBJECT           (-168)
-#define LVO_INTUITION_SET_ATTRS_A              (-180)
-#define LVO_INTUITION_GET_ATTR                  (-192)
-#define LVO_INTUITION_DO_METHOD_A              (-258)
-#define LVO_INTUITION_DO_SUPER_METHOD_A        (-288)
-#define LVO_INTUITION_COERCE_METHOD_A          (-312)
-#define LVO_INTUITION_MAKE_CLASS                (-330)
-#define LVO_INTUITION_FREE_CLASS                (-336)
-#define LVO_INTUITION_ADD_CLASS                 (-198)
-#define LVO_INTUITION_REMOVE_CLASS              (-210)
-#define LVO_INTUITION_NEXT_OBJECT               (-216)
-#define LVO_INTUITION_GET_ATTRS_A               (-204)
-#define LVO_INTUITION_SET_SUPER_ATTRS_A         (-228)
-#define LVO_INTUITION_DO_GADGET_METHOD_A        (-222)
-#define LVO_INTUITION_HELP_CONTROL              (-828)
-#define LVO_INTUITION_START_SCREEN_NOTIFY       (-900)
-#define LVO_INTUITION_END_SCREEN_NOTIFY         (-906)
-#define LVO_INTUITION_GET_WINDOW_ATTR           (-912)
-#define LVO_INTUITION_SET_WINDOW_ATTR           (-918)
-#define LVO_INTUITION_GET_SCREEN_ATTR           (-924)
-#define LVO_INTUITION_SET_SCREEN_ATTR           (-930)
-#define LVO_INTUITION_NEW_OBJECT                (-936)
-#define LVO_INTUITION_SET_ATTRS                 (-942)
-#define LVO_INTUITION_GET_ATTRS                 (-948)
-#define LVO_INTUITION_DO_METHOD                 (-954)
-#define LVO_INTUITION_DO_SUPER_METHOD           (-960)
-#define LVO_INTUITION_COERCE_METHOD             (-966)
-#define LVO_INTUITION_SET_GADGET_ATTRS_A        (-972)
-#define LVO_INTUITION_SET_SUPER_ATTRS           (-978)
-#define LVO_INTUITION_SET_WINDOW_POINTER        (-984)
-#define LVO_INTUITION_OPEN_WINDOW_TAGS_V        (-990)
-#define LVO_INTUITION_OPEN_SCREEN_TAGS_V        (-996)
-#define LVO_INTUITION_DO_GADGET_METHOD          (-1044)
-#define LVO_INTUITION_SET_GADGET_ATTRS          (-1050)
-#define LVO_INTUITION_ALLOC_SCREEN_BUFFER       (-768)
-#define LVO_INTUITION_FREE_SCREEN_BUFFER        (-774)
-#define LVO_INTUITION_CHANGE_SCREEN_BUFFER      (-780)
+/* intuition.library LVO offsets — official AmigaOS 3.1 (V39) and V40 values.
+
+ * Verified against the AmigaOS NDK intuition_lib.i include file.
+
+ * Functions not in the official LVO table (amiga.lib link-time
+
+ * functions, gadtools/graphics functions) have NO LVO stub installed. */
+#define LVO_INTUITION_OPEN_LIBRARY                 (  -30)  /* OpenIntuition */
+#define LVO_INTUITION_CLOSE_LIBRARY                (  -36)  /* Intuition */
+#define LVO_INTUITION_OPEN_WINDOW                  ( -204)  /* OpenWindow */
+#define LVO_INTUITION_CLOSE_WINDOW                 (  -72)  /* CloseWindow */
+#define LVO_INTUITION_WINDOW_TO_FRONT              ( -312)  /* WindowToFront */
+#define LVO_INTUITION_WINDOW_TO_BACK               ( -306)  /* WindowToBack */
+#define LVO_INTUITION_ACTIVATE_WINDOW              ( -450)  /* ActivateWindow */
+#define LVO_INTUITION_MOVE_WINDOW                  ( -168)  /* MoveWindow */
+#define LVO_INTUITION_SIZE_WINDOW                  ( -288)  /* SizeWindow */
+#define LVO_INTUITION_REFRESH_WINDOW               ( -456)  /* RefreshWindowFrame */
+#define LVO_INTUITION_MODIFY_IDCMP                 ( -150)  /* ModifyIDCMP */
+#define LVO_INTUITION_SET_WINDOW_TITLES            ( -276)  /* SetWindowTitles */
+#define LVO_INTUITION_OPEN_WINDOW_TAGS             ( -606)  /* OpenWindowTagList */
+#define LVO_INTUITION_OPEN_WORKBENCH               ( -210)  /* OpenWorkBench */
+#define LVO_INTUITION_CLOSE_WORKBENCH              (  -78)  /* CloseWorkBench */
+#define LVO_INTUITION_DRAW_BORDER                  ( -108)  /* DrawBorder */
+#define LVO_INTUITION_DRAW_IMAGE                   ( -114)  /* DrawImage */
+#define LVO_INTUITION_PRINT_I_TEXT                 ( -216)  /* PrintIText */
+#define LVO_INTUITION_AUTO_REQUEST                 ( -348)  /* AutoRequest */
+#define LVO_INTUITION_BUILD_SYS_REQUEST            ( -360)  /* BuildSysRequest */
+#define LVO_INTUITION_FREE_SYS_REQUEST             ( -372)  /* FreeSysRequest */
+#define LVO_INTUITION_EASY_REQUEST                 ( -588)  /* EasyRequestArgs */
+#define LVO_INTUITION_OPEN_SCREEN                  ( -198)  /* OpenScreen */
+#define LVO_INTUITION_CLOSE_SCREEN                 (  -66)  /* CloseScreen */
+#define LVO_INTUITION_MOVE_SCREEN                  ( -162)  /* MoveScreen */
+#define LVO_INTUITION_SCREEN_TO_FRONT              ( -252)  /* ScreenToFront */
+#define LVO_INTUITION_SCREEN_TO_BACK               ( -246)  /* ScreenToBack */
+#define LVO_INTUITION_SHOW_TITLE                   ( -282)  /* ShowTitle */
+#define LVO_INTUITION_OPEN_SCREEN_TAGS             ( -612)  /* OpenScreenTagList */
+#define LVO_INTUITION_SET_MENU_STRIP               ( -264)  /* SetMenuStrip */
+#define LVO_INTUITION_CLEAR_MENU_STRIP             (  -54)  /* ClearMenuStrip */
+#define LVO_INTUITION_RESET_MENU_STRIP             ( -702)  /* ResetMenuStrip */
+#define LVO_INTUITION_ITEM_ADDRESS                 ( -144)  /* ItemAddress */
+#define LVO_INTUITION_LOCK_PUB_SCREEN              ( -510)  /* LockPubScreen */
+#define LVO_INTUITION_UNLOCK_PUB_SCREEN            ( -516)  /* UnlockPubScreen */
+#define LVO_INTUITION_LOCK_PUB_SCREEN_LIST         ( -522)  /* LockPubScreenList */
+#define LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST       ( -528)  /* UnlockPubScreenList */
+#define LVO_INTUITION_SET_POINTER                  ( -270)  /* SetPointer */
+#define LVO_INTUITION_CLEAR_POINTER                (  -60)  /* ClearPointer */
+#define LVO_INTUITION_SET_WINDOW_POINTER_A         ( -816)  /* SetWindowPointerA */
+#define LVO_INTUITION_GET_DEF_PREFS                ( -126)  /* GetDefPrefs */
+#define LVO_INTUITION_GET_PREFS                    ( -132)  /* GetPrefs */
+#define LVO_INTUITION_SET_PREFS                    ( -324)  /* SetPrefs */
+#define LVO_INTUITION_LOCK_GUI_PREFS               ( -852)  /* LockGUIPrefs */
+#define LVO_INTUITION_UNLOCK_GUI_PREFS             ( -858)  /* UnlockGUIPrefs */
+#define LVO_INTUITION_QUERY_OVERSCAN               ( -474)  /* QueryOverscan */
+#define LVO_INTUITION_CURRENT_TIME                 (  -84)  /* CurrentTime */
+#define LVO_INTUITION_DOUBLE_CLICK                 ( -102)  /* DoubleClick */
+#define LVO_INTUITION_REPORT_MOUSE                 ( -234)  /* ReportMouse */
+#define LVO_INTUITION_DISPLAY_BEEP                 (  -96)  /* DisplayBeep */
+#define LVO_INTUITION_INIT_REQUESTER               ( -138)  /* InitRequester */
+#define LVO_INTUITION_END_REQUEST                  ( -120)  /* EndRequest */
+#define LVO_INTUITION_REQUEST                      ( -240)  /* Request */
+#define LVO_INTUITION_VIEW_ADDRESS                 ( -294)  /* ViewAddress */
+#define LVO_INTUITION_VIEW_PORT_ADDRESS            ( -300)  /* ViewPortAddress */
+#define LVO_INTUITION_GET_SCREEN_DATA              ( -426)  /* GetScreenData */
+#define LVO_INTUITION_NEXT_PUB_SCREEN              ( -534)  /* NextPubScreen */
+#define LVO_INTUITION_SET_DEFAULT_PUB_SCREEN       ( -540)  /* SetDefaultPubScreen */
+#define LVO_INTUITION_LOCK_IBASE                   ( -414)  /* LockIBase */
+#define LVO_INTUITION_UNLOCK_IBASE                 ( -420)  /* UnlockIBase */
+#define LVO_INTUITION_SHOW_WINDOW                  ( -834)  /* ShowWindow */
+#define LVO_INTUITION_HIDE_WINDOW                  ( -840)  /* HideWindow */
+#define LVO_INTUITION_WINDOW_LIMITS                ( -318)  /* WindowLimits */
+#define LVO_INTUITION_CHANGE_WINDOW_BOX            ( -486)  /* ChangeWindowBox */
+#define LVO_INTUITION_GET_SCREEN_DRAW_INFO         ( -690)  /* GetScreenDrawInfo */
+#define LVO_INTUITION_FREE_SCREEN_DRAW_INFO        ( -696)  /* FreeScreenDrawInfo */
+#define LVO_INTUITION_DISPLAY_ALERT                (  -90)  /* DisplayAlert */
+#define LVO_INTUITION_TIMED_DISPLAY_ALERT          ( -822)  /* TimedDisplayAlert */
+#define LVO_INTUITION_SCREEN_DEPTH                 ( -786)  /* ScreenDepth */
+#define LVO_INTUITION_SCREEN_POSITION              ( -792)  /* ScreenPosition */
+#define LVO_INTUITION_ADD_GADGET                   (  -42)  /* AddGadget */
+#define LVO_INTUITION_ADD_GLIST                    ( -438)  /* AddGList */
+#define LVO_INTUITION_REMOVE_GADGET                ( -228)  /* RemoveGadget */
+#define LVO_INTUITION_REMOVE_GLIST                 ( -444)  /* RemoveGList */
+#define LVO_INTUITION_REFRESH_GLIST                ( -432)  /* RefreshGList */
+#define LVO_INTUITION_ON_GADGET                    ( -186)  /* OnGadget */
+#define LVO_INTUITION_OFF_GADGET                   ( -174)  /* OffGadget */
+#define LVO_INTUITION_MODIFY_PROP                  ( -156)  /* ModifyProp */
+#define LVO_INTUITION_NEW_MODIFY_PROP              ( -468)  /* NewModifyProp */
+#define LVO_INTUITION_ACTIVATE_GADGET              ( -462)  /* ActivateGadget */
+#define LVO_INTUITION_SET_WINDOW_ATTRS             ( -954)  /* SetWindowAttrsA */
+#define LVO_INTUITION_GET_WINDOW_ATTRS             ( -948)  /* GetWindowAttrsA */
+#define LVO_INTUITION_SET_SCREEN_ATTRS             ( -996)  /* SetScreenAttrsA */
+#define LVO_INTUITION_GET_SCREEN_ATTRS             ( -990)  /* GetScreenAttrsA */
+#define LVO_INTUITION_BEGIN_REFRESH                ( -354)  /* BeginRefresh */
+#define LVO_INTUITION_END_REFRESH                  ( -366)  /* EndRefresh */
+#define LVO_INTUITION_REFRESH_GADGETS              ( -222)  /* RefreshGadgets */
+#define LVO_INTUITION_ON_MENU                      ( -192)  /* OnMenu */
+#define LVO_INTUITION_OFF_MENU                     ( -180)  /* OffMenu */
+#define LVO_INTUITION_SYS_REQ_HANDLER              ( -600)  /* SysReqHandler */
+#define LVO_INTUITION_PUB_SCREEN_STATUS            ( -552)  /* PubScreenStatus */
+#define LVO_INTUITION_GET_DEFAULT_PUB_SCREEN       ( -582)  /* GetDefaultPubScreen */
+#define LVO_INTUITION_MOVE_WINDOW_IN_FRONT_OF      ( -480)  /* MoveWindowInFrontOf */
+#define LVO_INTUITION_SET_EDIT_HOOK                ( -492)  /* SetEditHook */
+#define LVO_INTUITION_OBTAIN_GIR_PORT              ( -558)  /* ObtainGIRPort */
+#define LVO_INTUITION_RELEASE_GIR_PORT             ( -564)  /* ReleaseGIRPort */
+#define LVO_INTUITION_STRIP_INTUI_MESSAGES         ( -972)  /* StripIntuiMessages */
+#define LVO_INTUITION_NEW_OBJECT_A                 ( -636)  /* NewObjectA */
+#define LVO_INTUITION_DISPOSE_OBJECT               ( -642)  /* DisposeObject */
+#define LVO_INTUITION_SET_ATTRS_A                  ( -648)  /* SetAttrsA */
+#define LVO_INTUITION_GET_ATTR                     ( -654)  /* GetAttr */
+#define LVO_INTUITION_MAKE_CLASS                   ( -678)  /* MakeClass */
+#define LVO_INTUITION_FREE_CLASS                   ( -714)  /* FreeClass */
+#define LVO_INTUITION_ADD_CLASS                    ( -684)  /* AddClass */
+#define LVO_INTUITION_REMOVE_CLASS                 ( -708)  /* RemoveClass */
+#define LVO_INTUITION_NEXT_OBJECT                  ( -666)  /* NextObject */
+#define LVO_INTUITION_GET_ATTRS_A                  ( -846)  /* GetAttrsA */
+#define LVO_INTUITION_DO_GADGET_METHOD_A           ( -810)  /* DoGadgetMethodA */
+#define LVO_INTUITION_HELP_CONTROL                 ( -828)  /* HelpControl */
+#define LVO_INTUITION_START_SCREEN_NOTIFY          (-1218)  /* StartScreenNotifyTagList */
+#define LVO_INTUITION_END_SCREEN_NOTIFY            (-1224)  /* EndScreenNotify */
+#define LVO_INTUITION_GET_WINDOW_ATTR              ( -960)  /* GetWindowAttr */
+#define LVO_INTUITION_SET_WINDOW_ATTR              ( -966)  /* SetWindowAttr */
+#define LVO_INTUITION_GET_SCREEN_ATTR              (-1002)  /* GetScreenAttr */
+#define LVO_INTUITION_SET_SCREEN_ATTR              (-1008)  /* SetScreenAttr */
+#define LVO_INTUITION_SET_GADGET_ATTRS_A           ( -660)  /* SetGadgetAttrsA */
+#define LVO_INTUITION_ALLOC_SCREEN_BUFFER          ( -768)  /* AllocScreenBuffer */
+#define LVO_INTUITION_FREE_SCREEN_BUFFER           ( -774)  /* FreeScreenBuffer */
+#define LVO_INTUITION_CHANGE_SCREEN_BUFFER         ( -780)  /* ChangeScreenBuffer */
+
+/* Non-LVO functions (amiga.lib / gadtools / graphics.library):
+ *   GetDisplayInfoData(47), NextDisplayInfo(48) — graphics.library
+ *   GetVisualInfoA(87), FreeVisualInfo(88) — gadtools.library
+ *   DoMethodA(106), DoSuperMethodA(107), CoerceMethodA(108),
+ *   SetSuperAttrsA(115) — amiga.lib (not intuition LVO)
+ * Varargs stubs share LVO with A-suffix counterparts:
+ *   NewObject(124)→NewObjectA, SetAttrs(125)→SetAttrsA,
+ *   GetAttrs(126)→GetAttrsA, DoMethod(127)→DoMethodA,
+ *   DoSuperMethod(128)→DoSuperMethodA, CoerceMethod(129)→CoerceMethodA,
+ *   SetSuperAttrs(131)→SetSuperAttrsA, SetWindowPointer(132)→SetWindowPointerA,
+ *   OpenWindowTags_V(133)→OpenWindowTagList, OpenScreenTags_V(134)→OpenScreenTagList,
+ *   DoGadgetMethod(135)→DoGadgetMethodA, SetGadgetAttrs(136)→SetGadgetAttrsA */
+
 
 /* gadtools.library LVO offsets (AmigaOS 3.x) */
 #define LVO_GADTOOLS_CREATE_GADGET_A       (-30)
@@ -1035,144 +1035,124 @@ static uint32_t stub_addr(int lib_id, int func_idx)
         }
     } else if (lib_id == LIB_INTUITION) {
         switch (func_idx) {
-            case INTUITION_OPEN_LIBRARY:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_LIBRARY);
-            case INTUITION_CLOSE_LIBRARY:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_LIBRARY);
-            case INTUITION_OPEN_WINDOW:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW);
-            case INTUITION_CLOSE_WINDOW:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_WINDOW);
-            case INTUITION_WINDOW_TO_FRONT:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_TO_FRONT);
-            case INTUITION_WINDOW_TO_BACK:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_TO_BACK);
-            case INTUITION_ACTIVATE_WINDOW:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ACTIVATE_WINDOW);
-            case INTUITION_MOVE_WINDOW:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_WINDOW);
-            case INTUITION_SIZE_WINDOW:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SIZE_WINDOW);
-            case INTUITION_REFRESH_WINDOW:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_WINDOW);
-            case INTUITION_MODIFY_IDCMP:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MODIFY_IDCMP);
+            case INTUITION_OPEN_LIBRARY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_LIBRARY);
+            case INTUITION_CLOSE_LIBRARY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_LIBRARY);
+            case INTUITION_OPEN_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW);
+            case INTUITION_CLOSE_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_WINDOW);
+            case INTUITION_WINDOW_TO_FRONT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_TO_FRONT);
+            case INTUITION_WINDOW_TO_BACK: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_TO_BACK);
+            case INTUITION_ACTIVATE_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ACTIVATE_WINDOW);
+            case INTUITION_MOVE_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_WINDOW);
+            case INTUITION_SIZE_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SIZE_WINDOW);
+            case INTUITION_REFRESH_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_WINDOW);
+            case INTUITION_MODIFY_IDCMP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MODIFY_IDCMP);
             case INTUITION_SET_WINDOW_TITLES: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_TITLES);
-            case INTUITION_OPEN_WINDOW_TAGS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW_TAGS);
-            case INTUITION_OPEN_WORKBENCH:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WORKBENCH);
-            case INTUITION_CLOSE_WORKBENCH:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_WORKBENCH);
-            case INTUITION_DRAW_BORDER:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_BORDER);
-            case INTUITION_DRAW_IMAGE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_IMAGE);
-            case INTUITION_PRINT_I_TEXT:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_PRINT_I_TEXT);
-            case INTUITION_AUTO_REQUEST:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_AUTO_REQUEST);
+            case INTUITION_OPEN_WINDOW_TAGS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW_TAGS);
+            case INTUITION_OPEN_WORKBENCH: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WORKBENCH);
+            case INTUITION_CLOSE_WORKBENCH: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_WORKBENCH);
+            case INTUITION_DRAW_BORDER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_BORDER);
+            case INTUITION_DRAW_IMAGE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_IMAGE);
+            case INTUITION_PRINT_I_TEXT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_PRINT_I_TEXT);
+            case INTUITION_AUTO_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_AUTO_REQUEST);
             case INTUITION_BUILD_SYS_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_BUILD_SYS_REQUEST);
-            case INTUITION_FREE_SYS_REQUEST:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SYS_REQUEST);
-            case INTUITION_EASY_REQUEST:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_EASY_REQUEST);
-            case INTUITION_OPEN_SCREEN:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN);
-            case INTUITION_CLOSE_SCREEN:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_SCREEN);
-            case INTUITION_MOVE_SCREEN:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_SCREEN);
-            case INTUITION_SCREEN_TO_FRONT:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_TO_FRONT);
-            case INTUITION_SCREEN_TO_BACK:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_TO_BACK);
-            case INTUITION_SHOW_TITLE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SHOW_TITLE);
-            case INTUITION_OPEN_SCREEN_TAGS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN_TAGS);
-            case INTUITION_SET_MENU_STRIP:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_MENU_STRIP);
-            case INTUITION_CLEAR_MENU_STRIP:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_MENU_STRIP);
-            case INTUITION_RESET_MENU_STRIP:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_RESET_MENU_STRIP);
-            case INTUITION_ITEM_ADDRESS:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ITEM_ADDRESS);
-            case INTUITION_LOCK_PUB_SCREEN:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_PUB_SCREEN);
+            case INTUITION_FREE_SYS_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SYS_REQUEST);
+            case INTUITION_EASY_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_EASY_REQUEST);
+            case INTUITION_OPEN_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN);
+            case INTUITION_CLOSE_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_SCREEN);
+            case INTUITION_MOVE_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_SCREEN);
+            case INTUITION_SCREEN_TO_FRONT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_TO_FRONT);
+            case INTUITION_SCREEN_TO_BACK: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_TO_BACK);
+            case INTUITION_SHOW_TITLE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SHOW_TITLE);
+            case INTUITION_OPEN_SCREEN_TAGS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN_TAGS);
+            case INTUITION_SET_MENU_STRIP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_MENU_STRIP);
+            case INTUITION_CLEAR_MENU_STRIP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_MENU_STRIP);
+            case INTUITION_RESET_MENU_STRIP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_RESET_MENU_STRIP);
+            case INTUITION_ITEM_ADDRESS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ITEM_ADDRESS);
+            case INTUITION_LOCK_PUB_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_PUB_SCREEN);
             case INTUITION_UNLOCK_PUB_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_PUB_SCREEN);
             case INTUITION_LOCK_PUB_SCREEN_LIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_PUB_SCREEN_LIST);
             case INTUITION_UNLOCK_PUB_SCREEN_LIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST);
-            case INTUITION_SET_POINTER:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_POINTER);
-            case INTUITION_CLEAR_POINTER:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_POINTER);
+            case INTUITION_SET_POINTER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_POINTER);
+            case INTUITION_CLEAR_POINTER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_POINTER);
             case INTUITION_SET_WINDOW_POINTER_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_POINTER_A);
-            case INTUITION_GET_DEF_PREFS:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_DEF_PREFS);
-            case INTUITION_GET_PREFS:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_PREFS);
-            case INTUITION_SET_PREFS:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_PREFS);
-            case INTUITION_LOCK_GUI_PREFS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_GUI_PREFS);
-            case INTUITION_UNLOCK_GUI_PREFS:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_GUI_PREFS);
-            case INTUITION_QUERY_OVERSCAN:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_QUERY_OVERSCAN);
-            case INTUITION_GET_DISPLAY_INFO_DATA: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_DISPLAY_INFO_DATA);
-            case INTUITION_NEXT_DISPLAY_INFO: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEXT_DISPLAY_INFO);
-            case INTUITION_CURRENT_TIME:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CURRENT_TIME);
-            case INTUITION_DOUBLE_CLICK:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DOUBLE_CLICK);
-            case INTUITION_REPORT_MOUSE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REPORT_MOUSE);
-            case INTUITION_DISPLAY_BEEP:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPLAY_BEEP);
-            case INTUITION_INIT_REQUESTER:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_INIT_REQUESTER);
-            case INTUITION_END_REQUEST:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_REQUEST);
-            case INTUITION_REQUEST:             return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REQUEST);
-            case INTUITION_VIEW_ADDRESS:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_VIEW_ADDRESS);
-            case INTUITION_VIEW_PORT_ADDRESS:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_VIEW_PORT_ADDRESS);
-            case INTUITION_GET_SCREEN_DATA:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_DATA);
-            case INTUITION_NEXT_PUB_SCREEN:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEXT_PUB_SCREEN);
+            case INTUITION_GET_DEF_PREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_DEF_PREFS);
+            case INTUITION_GET_PREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_PREFS);
+            case INTUITION_SET_PREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_PREFS);
+            case INTUITION_LOCK_GUI_PREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_GUI_PREFS);
+            case INTUITION_UNLOCK_GUI_PREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_GUI_PREFS);
+            case INTUITION_QUERY_OVERSCAN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_QUERY_OVERSCAN);
+            case INTUITION_CURRENT_TIME: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CURRENT_TIME);
+            case INTUITION_DOUBLE_CLICK: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DOUBLE_CLICK);
+            case INTUITION_REPORT_MOUSE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REPORT_MOUSE);
+            case INTUITION_DISPLAY_BEEP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPLAY_BEEP);
+            case INTUITION_INIT_REQUESTER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_INIT_REQUESTER);
+            case INTUITION_END_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_REQUEST);
+            case INTUITION_REQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REQUEST);
+            case INTUITION_VIEW_ADDRESS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_VIEW_ADDRESS);
+            case INTUITION_VIEW_PORT_ADDRESS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_VIEW_PORT_ADDRESS);
+            case INTUITION_GET_SCREEN_DATA: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_DATA);
+            case INTUITION_NEXT_PUB_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEXT_PUB_SCREEN);
             case INTUITION_SET_DEFAULT_PUB_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_DEFAULT_PUB_SCREEN);
-            case INTUITION_LOCK_IBASE:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_IBASE);
-            case INTUITION_UNLOCK_IBASE:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_IBASE);
-            case INTUITION_SHOW_WINDOW:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SHOW_WINDOW);
-            case INTUITION_HIDE_WINDOW:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_HIDE_WINDOW);
-            case INTUITION_WINDOW_LIMITS:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_LIMITS);
-            case INTUITION_CHANGE_WINDOW_BOX:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CHANGE_WINDOW_BOX);
+            case INTUITION_LOCK_IBASE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_IBASE);
+            case INTUITION_UNLOCK_IBASE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_IBASE);
+            case INTUITION_SHOW_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SHOW_WINDOW);
+            case INTUITION_HIDE_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_HIDE_WINDOW);
+            case INTUITION_WINDOW_LIMITS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WINDOW_LIMITS);
+            case INTUITION_CHANGE_WINDOW_BOX: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CHANGE_WINDOW_BOX);
             case INTUITION_GET_SCREEN_DRAW_INFO: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_DRAW_INFO);
             case INTUITION_FREE_SCREEN_DRAW_INFO: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SCREEN_DRAW_INFO);
-            case INTUITION_DISPLAY_ALERT:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPLAY_ALERT);
+            case INTUITION_DISPLAY_ALERT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPLAY_ALERT);
             case INTUITION_TIMED_DISPLAY_ALERT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_TIMED_DISPLAY_ALERT);
-            case INTUITION_SCREEN_DEPTH:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_DEPTH);
-            case INTUITION_SCREEN_POSITION:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_POSITION);
-            case INTUITION_ADD_GADGET:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_GADGET);
-            case INTUITION_ADD_GLIST:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_GLIST);
-            case INTUITION_REMOVE_GADGET:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_GADGET);
-            case INTUITION_REMOVE_GLIST:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_GLIST);
-            case INTUITION_REFRESH_GLIST:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_GLIST);
-            case INTUITION_ON_GADGET:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ON_GADGET);
-            case INTUITION_OFF_GADGET:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OFF_GADGET);
-            case INTUITION_MODIFY_PROP:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MODIFY_PROP);
-            case INTUITION_NEW_MODIFY_PROP:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_MODIFY_PROP);
-            case INTUITION_ACTIVATE_GADGET:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ACTIVATE_GADGET);
-            case INTUITION_SET_WINDOW_ATTRS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_ATTRS);
-            case INTUITION_GET_WINDOW_ATTRS:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_WINDOW_ATTRS);
-            case INTUITION_SET_SCREEN_ATTRS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SCREEN_ATTRS);
-            case INTUITION_GET_SCREEN_ATTRS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_ATTRS);
-            case INTUITION_GET_VISUAL_INFO:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_VISUAL_INFO);
-            case INTUITION_FREE_VISUAL_INFO:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_VISUAL_INFO);
-            case INTUITION_BEGIN_REFRESH:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_BEGIN_REFRESH);
-            case INTUITION_END_REFRESH:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_REFRESH);
-            case INTUITION_REFRESH_GADGETS:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_GADGETS);
-            case INTUITION_ON_MENU:             return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ON_MENU);
-            case INTUITION_OFF_MENU:            return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OFF_MENU);
-            case INTUITION_SYS_REQ_HANDLER:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SYS_REQ_HANDLER);
-            case INTUITION_PUB_SCREEN_STATUS:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_PUB_SCREEN_STATUS);
+            case INTUITION_SCREEN_DEPTH: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_DEPTH);
+            case INTUITION_SCREEN_POSITION: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCREEN_POSITION);
+            case INTUITION_ADD_GADGET: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_GADGET);
+            case INTUITION_ADD_GLIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_GLIST);
+            case INTUITION_REMOVE_GADGET: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_GADGET);
+            case INTUITION_REMOVE_GLIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_GLIST);
+            case INTUITION_REFRESH_GLIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_GLIST);
+            case INTUITION_ON_GADGET: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ON_GADGET);
+            case INTUITION_OFF_GADGET: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OFF_GADGET);
+            case INTUITION_MODIFY_PROP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MODIFY_PROP);
+            case INTUITION_NEW_MODIFY_PROP: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_MODIFY_PROP);
+            case INTUITION_ACTIVATE_GADGET: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ACTIVATE_GADGET);
+            case INTUITION_SET_WINDOW_ATTRS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_ATTRS);
+            case INTUITION_GET_WINDOW_ATTRS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_WINDOW_ATTRS);
+            case INTUITION_SET_SCREEN_ATTRS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SCREEN_ATTRS);
+            case INTUITION_GET_SCREEN_ATTRS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_ATTRS);
+            case INTUITION_BEGIN_REFRESH: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_BEGIN_REFRESH);
+            case INTUITION_END_REFRESH: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_REFRESH);
+            case INTUITION_REFRESH_GADGETS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_GADGETS);
+            case INTUITION_ON_MENU: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ON_MENU);
+            case INTUITION_OFF_MENU: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OFF_MENU);
+            case INTUITION_SYS_REQ_HANDLER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SYS_REQ_HANDLER);
+            case INTUITION_PUB_SCREEN_STATUS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_PUB_SCREEN_STATUS);
             case INTUITION_GET_DEFAULT_PUB_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_DEFAULT_PUB_SCREEN);
             case INTUITION_MOVE_WINDOW_IN_FRONT_OF: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MOVE_WINDOW_IN_FRONT_OF);
-            case INTUITION_SET_EDIT_HOOK:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_EDIT_HOOK);
-            case INTUITION_OBTAIN_GIR_PORT:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OBTAIN_GIR_PORT);
-            case INTUITION_RELEASE_GIR_PORT:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_RELEASE_GIR_PORT);
+            case INTUITION_SET_EDIT_HOOK: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_EDIT_HOOK);
+            case INTUITION_OBTAIN_GIR_PORT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OBTAIN_GIR_PORT);
+            case INTUITION_RELEASE_GIR_PORT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_RELEASE_GIR_PORT);
             case INTUITION_STRIP_INTUI_MESSAGES: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_STRIP_INTUI_MESSAGES);
-            case INTUITION_NEW_OBJECT_A:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_OBJECT_A);
-            case INTUITION_DISPOSE_OBJECT:      return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPOSE_OBJECT);
-            case INTUITION_SET_ATTRS_A:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_ATTRS_A);
-            case INTUITION_GET_ATTR:            return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTR);
-            case INTUITION_DO_METHOD_A:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_METHOD_A);
-            case INTUITION_DO_SUPER_METHOD_A:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_SUPER_METHOD_A);
-            case INTUITION_COERCE_METHOD_A:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_COERCE_METHOD_A);
-            case INTUITION_MAKE_CLASS:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MAKE_CLASS);
-            case INTUITION_FREE_CLASS:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_CLASS);
-            case INTUITION_ADD_CLASS:            return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_CLASS);
-            case INTUITION_REMOVE_CLASS:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_CLASS);
-            case INTUITION_NEXT_OBJECT:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEXT_OBJECT);
-            case INTUITION_GET_ATTRS_A:         return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTRS_A);
-            case INTUITION_SET_SUPER_ATTRS_A:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SUPER_ATTRS_A);
-            case INTUITION_DO_GADGET_METHOD_A:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_GADGET_METHOD_A);
-            case INTUITION_HELP_CONTROL:        return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_HELP_CONTROL);
+            case INTUITION_NEW_OBJECT_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_OBJECT_A);
+            case INTUITION_DISPOSE_OBJECT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPOSE_OBJECT);
+            case INTUITION_SET_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_ATTRS_A);
+            case INTUITION_GET_ATTR: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTR);
+            case INTUITION_MAKE_CLASS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MAKE_CLASS);
+            case INTUITION_FREE_CLASS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_CLASS);
+            case INTUITION_ADD_CLASS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ADD_CLASS);
+            case INTUITION_REMOVE_CLASS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMOVE_CLASS);
+            case INTUITION_NEXT_OBJECT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEXT_OBJECT);
+            case INTUITION_GET_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTRS_A);
+            case INTUITION_DO_GADGET_METHOD_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_GADGET_METHOD_A);
+            case INTUITION_HELP_CONTROL: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_HELP_CONTROL);
             case INTUITION_START_SCREEN_NOTIFY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_START_SCREEN_NOTIFY);
-            case INTUITION_END_SCREEN_NOTIFY:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_SCREEN_NOTIFY);
-            case INTUITION_GET_WINDOW_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_WINDOW_ATTR);
-            case INTUITION_SET_WINDOW_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_ATTR);
-            case INTUITION_GET_SCREEN_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_ATTR);
-            case INTUITION_SET_SCREEN_ATTR:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SCREEN_ATTR);
-            case INTUITION_NEW_OBJECT:          return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_OBJECT);
-            case INTUITION_SET_ATTRS:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_ATTRS);
-            case INTUITION_GET_ATTRS:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_ATTRS);
-            case INTUITION_DO_METHOD:           return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_METHOD);
-            case INTUITION_DO_SUPER_METHOD:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_SUPER_METHOD);
-            case INTUITION_COERCE_METHOD:       return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_COERCE_METHOD);
-            case INTUITION_SET_GADGET_ATTRS_A:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_GADGET_ATTRS_A);
-            case INTUITION_SET_SUPER_ATTRS:     return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SUPER_ATTRS);
-            case INTUITION_SET_WINDOW_POINTER:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_POINTER);
-            case INTUITION_OPEN_WINDOW_TAGS_V:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_WINDOW_TAGS_V);
-            case INTUITION_OPEN_SCREEN_TAGS_V:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_SCREEN_TAGS_V);
-            case INTUITION_DO_GADGET_METHOD:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DO_GADGET_METHOD);
-            case INTUITION_SET_GADGET_ATTRS:    return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_GADGET_ATTRS);
-            case INTUITION_ALLOC_SCREEN_BUFFER:  return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ALLOC_SCREEN_BUFFER);
-            case INTUITION_FREE_SCREEN_BUFFER:   return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SCREEN_BUFFER);
+            case INTUITION_END_SCREEN_NOTIFY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_END_SCREEN_NOTIFY);
+            case INTUITION_GET_WINDOW_ATTR: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_WINDOW_ATTR);
+            case INTUITION_SET_WINDOW_ATTR: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_WINDOW_ATTR);
+            case INTUITION_GET_SCREEN_ATTR: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_SCREEN_ATTR);
+            case INTUITION_SET_SCREEN_ATTR: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_SCREEN_ATTR);
+            case INTUITION_SET_GADGET_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_GADGET_ATTRS_A);
+            case INTUITION_ALLOC_SCREEN_BUFFER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ALLOC_SCREEN_BUFFER);
+            case INTUITION_FREE_SCREEN_BUFFER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SCREEN_BUFFER);
             case INTUITION_CHANGE_SCREEN_BUFFER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CHANGE_SCREEN_BUFFER);
         }
     } else if (lib_id == LIB_GADTOOLS) {
@@ -1342,154 +1322,126 @@ void install_library_tables(void)
         install_lvo(GRAPHICS_BASE, lvo, LIB_GRAPHICS, slot);
     }
 
-    /* intuition.library at INTUITION_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
-    for (int lvo = -6; lvo >= -1044; lvo -= 6) {
-        uint32_t addr = (uint32_t)((int)INTUITION_BASE + lvo);
-        if (addr < GUEST_RAM_SIZE - 4) {
-            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
-            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
-        }
-    }
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_LIBRARY,       LIB_INTUITION, INTUITION_OPEN_LIBRARY);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_LIBRARY,      LIB_INTUITION, INTUITION_CLOSE_LIBRARY);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW,        LIB_INTUITION, INTUITION_OPEN_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_WINDOW,       LIB_INTUITION, INTUITION_CLOSE_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_TO_FRONT,    LIB_INTUITION, INTUITION_WINDOW_TO_FRONT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_TO_BACK,     LIB_INTUITION, INTUITION_WINDOW_TO_BACK);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ACTIVATE_WINDOW,    LIB_INTUITION, INTUITION_ACTIVATE_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_WINDOW,        LIB_INTUITION, INTUITION_MOVE_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SIZE_WINDOW,        LIB_INTUITION, INTUITION_SIZE_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_WINDOW,     LIB_INTUITION, INTUITION_REFRESH_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_MODIFY_IDCMP,       LIB_INTUITION, INTUITION_MODIFY_IDCMP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_TITLES,  LIB_INTUITION, INTUITION_SET_WINDOW_TITLES);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW_TAGS,   LIB_INTUITION, INTUITION_OPEN_WINDOW_TAGS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WORKBENCH,    LIB_INTUITION, INTUITION_OPEN_WORKBENCH);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_WORKBENCH,   LIB_INTUITION, INTUITION_CLOSE_WORKBENCH);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_BORDER,       LIB_INTUITION, INTUITION_DRAW_BORDER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_IMAGE,        LIB_INTUITION, INTUITION_DRAW_IMAGE);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_PRINT_I_TEXT,      LIB_INTUITION, INTUITION_PRINT_I_TEXT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_AUTO_REQUEST,      LIB_INTUITION, INTUITION_AUTO_REQUEST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_BUILD_SYS_REQUEST, LIB_INTUITION, INTUITION_BUILD_SYS_REQUEST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SYS_REQUEST,  LIB_INTUITION, INTUITION_FREE_SYS_REQUEST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_EASY_REQUEST,      LIB_INTUITION, INTUITION_EASY_REQUEST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN,       LIB_INTUITION, INTUITION_OPEN_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_SCREEN,      LIB_INTUITION, INTUITION_CLOSE_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_SCREEN,       LIB_INTUITION, INTUITION_MOVE_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_TO_FRONT,   LIB_INTUITION, INTUITION_SCREEN_TO_FRONT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_TO_BACK,    LIB_INTUITION, INTUITION_SCREEN_TO_BACK);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SHOW_TITLE,        LIB_INTUITION, INTUITION_SHOW_TITLE);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN_TAGS,  LIB_INTUITION, INTUITION_OPEN_SCREEN_TAGS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_MENU_STRIP,    LIB_INTUITION, INTUITION_SET_MENU_STRIP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_MENU_STRIP,  LIB_INTUITION, INTUITION_CLEAR_MENU_STRIP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_RESET_MENU_STRIP,  LIB_INTUITION, INTUITION_RESET_MENU_STRIP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ITEM_ADDRESS,      LIB_INTUITION, INTUITION_ITEM_ADDRESS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_PUB_SCREEN,    LIB_INTUITION, INTUITION_LOCK_PUB_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_PUB_SCREEN,  LIB_INTUITION, INTUITION_UNLOCK_PUB_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_PUB_SCREEN_LIST,  LIB_INTUITION, INTUITION_LOCK_PUB_SCREEN_LIST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST, LIB_INTUITION, INTUITION_UNLOCK_PUB_SCREEN_LIST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_POINTER,        LIB_INTUITION, INTUITION_SET_POINTER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_POINTER,      LIB_INTUITION, INTUITION_CLEAR_POINTER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_POINTER_A, LIB_INTUITION, INTUITION_SET_WINDOW_POINTER_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_DEF_PREFS,      LIB_INTUITION, INTUITION_GET_DEF_PREFS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_PREFS,          LIB_INTUITION, INTUITION_GET_PREFS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_PREFS,          LIB_INTUITION, INTUITION_SET_PREFS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_GUI_PREFS,     LIB_INTUITION, INTUITION_LOCK_GUI_PREFS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_GUI_PREFS,   LIB_INTUITION, INTUITION_UNLOCK_GUI_PREFS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_QUERY_OVERSCAN,     LIB_INTUITION, INTUITION_QUERY_OVERSCAN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_DISPLAY_INFO_DATA, LIB_INTUITION, INTUITION_GET_DISPLAY_INFO_DATA);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_NEXT_DISPLAY_INFO,  LIB_INTUITION, INTUITION_NEXT_DISPLAY_INFO);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CURRENT_TIME,       LIB_INTUITION, INTUITION_CURRENT_TIME);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DOUBLE_CLICK,     LIB_INTUITION, INTUITION_DOUBLE_CLICK);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REPORT_MOUSE,     LIB_INTUITION, INTUITION_REPORT_MOUSE);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPLAY_BEEP,     LIB_INTUITION, INTUITION_DISPLAY_BEEP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_INIT_REQUESTER,   LIB_INTUITION, INTUITION_INIT_REQUESTER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_END_REQUEST,        LIB_INTUITION, INTUITION_END_REQUEST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REQUEST,            LIB_INTUITION, INTUITION_REQUEST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_VIEW_ADDRESS,       LIB_INTUITION, INTUITION_VIEW_ADDRESS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_VIEW_PORT_ADDRESS,  LIB_INTUITION, INTUITION_VIEW_PORT_ADDRESS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_DATA,    LIB_INTUITION, INTUITION_GET_SCREEN_DATA);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_NEXT_PUB_SCREEN,    LIB_INTUITION, INTUITION_NEXT_PUB_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_DEFAULT_PUB_SCREEN, LIB_INTUITION, INTUITION_SET_DEFAULT_PUB_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_IBASE,         LIB_INTUITION, INTUITION_LOCK_IBASE);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_IBASE,       LIB_INTUITION, INTUITION_UNLOCK_IBASE);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SHOW_WINDOW,        LIB_INTUITION, INTUITION_SHOW_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_HIDE_WINDOW,        LIB_INTUITION, INTUITION_HIDE_WINDOW);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_LIMITS,    LIB_INTUITION, INTUITION_WINDOW_LIMITS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CHANGE_WINDOW_BOX,  LIB_INTUITION, INTUITION_CHANGE_WINDOW_BOX);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_DRAW_INFO, LIB_INTUITION, INTUITION_GET_SCREEN_DRAW_INFO);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SCREEN_DRAW_INFO, LIB_INTUITION, INTUITION_FREE_SCREEN_DRAW_INFO);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPLAY_ALERT,       LIB_INTUITION, INTUITION_DISPLAY_ALERT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_TIMED_DISPLAY_ALERT, LIB_INTUITION, INTUITION_TIMED_DISPLAY_ALERT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_DEPTH,        LIB_INTUITION, INTUITION_SCREEN_DEPTH);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_POSITION,     LIB_INTUITION, INTUITION_SCREEN_POSITION);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_GADGET,          LIB_INTUITION, INTUITION_ADD_GADGET);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_GLIST,           LIB_INTUITION, INTUITION_ADD_GLIST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_GADGET,       LIB_INTUITION, INTUITION_REMOVE_GADGET);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_GLIST,        LIB_INTUITION, INTUITION_REMOVE_GLIST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_GLIST,       LIB_INTUITION, INTUITION_REFRESH_GLIST);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ON_GADGET,           LIB_INTUITION, INTUITION_ON_GADGET);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OFF_GADGET,          LIB_INTUITION, INTUITION_OFF_GADGET);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_MODIFY_PROP,         LIB_INTUITION, INTUITION_MODIFY_PROP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_MODIFY_PROP,     LIB_INTUITION, INTUITION_NEW_MODIFY_PROP);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ACTIVATE_GADGET,     LIB_INTUITION, INTUITION_ACTIVATE_GADGET);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_ATTRS,    LIB_INTUITION, INTUITION_SET_WINDOW_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_WINDOW_ATTRS,     LIB_INTUITION, INTUITION_GET_WINDOW_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SCREEN_ATTRS,    LIB_INTUITION, INTUITION_SET_SCREEN_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_ATTRS,    LIB_INTUITION, INTUITION_GET_SCREEN_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_VISUAL_INFO,     LIB_INTUITION, INTUITION_GET_VISUAL_INFO);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_VISUAL_INFO,    LIB_INTUITION, INTUITION_FREE_VISUAL_INFO);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_BEGIN_REFRESH,       LIB_INTUITION, INTUITION_BEGIN_REFRESH);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_END_REFRESH,         LIB_INTUITION, INTUITION_END_REFRESH);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_GADGETS,     LIB_INTUITION, INTUITION_REFRESH_GADGETS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ON_MENU,             LIB_INTUITION, INTUITION_ON_MENU);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OFF_MENU,            LIB_INTUITION, INTUITION_OFF_MENU);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SYS_REQ_HANDLER,     LIB_INTUITION, INTUITION_SYS_REQ_HANDLER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_PUB_SCREEN_STATUS,   LIB_INTUITION, INTUITION_PUB_SCREEN_STATUS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_DEFAULT_PUB_SCREEN, LIB_INTUITION, INTUITION_GET_DEFAULT_PUB_SCREEN);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_WINDOW_IN_FRONT_OF, LIB_INTUITION, INTUITION_MOVE_WINDOW_IN_FRONT_OF);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_EDIT_HOOK,       LIB_INTUITION, INTUITION_SET_EDIT_HOOK);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OBTAIN_GIR_PORT,     LIB_INTUITION, INTUITION_OBTAIN_GIR_PORT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_RELEASE_GIR_PORT,    LIB_INTUITION, INTUITION_RELEASE_GIR_PORT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_STRIP_INTUI_MESSAGES, LIB_INTUITION, INTUITION_STRIP_INTUI_MESSAGES);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_OBJECT_A,        LIB_INTUITION, INTUITION_NEW_OBJECT_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPOSE_OBJECT,      LIB_INTUITION, INTUITION_DISPOSE_OBJECT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_ATTRS_A,         LIB_INTUITION, INTUITION_SET_ATTRS_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTR,            LIB_INTUITION, INTUITION_GET_ATTR);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_METHOD_A,         LIB_INTUITION, INTUITION_DO_METHOD_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_SUPER_METHOD_A,   LIB_INTUITION, INTUITION_DO_SUPER_METHOD_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_COERCE_METHOD_A,     LIB_INTUITION, INTUITION_COERCE_METHOD_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_MAKE_CLASS,          LIB_INTUITION, INTUITION_MAKE_CLASS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_CLASS,          LIB_INTUITION, INTUITION_FREE_CLASS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_CLASS,           LIB_INTUITION, INTUITION_ADD_CLASS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_CLASS,       LIB_INTUITION, INTUITION_REMOVE_CLASS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_NEXT_OBJECT,        LIB_INTUITION, INTUITION_NEXT_OBJECT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTRS_A,        LIB_INTUITION, INTUITION_GET_ATTRS_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SUPER_ATTRS_A,  LIB_INTUITION, INTUITION_SET_SUPER_ATTRS_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_GADGET_METHOD_A, LIB_INTUITION, INTUITION_DO_GADGET_METHOD_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_HELP_CONTROL,        LIB_INTUITION, INTUITION_HELP_CONTROL);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_START_SCREEN_NOTIFY, LIB_INTUITION, INTUITION_START_SCREEN_NOTIFY);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_END_SCREEN_NOTIFY,  LIB_INTUITION, INTUITION_END_SCREEN_NOTIFY);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_WINDOW_ATTR,    LIB_INTUITION, INTUITION_GET_WINDOW_ATTR);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_ATTR,    LIB_INTUITION, INTUITION_SET_WINDOW_ATTR);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_ATTR,    LIB_INTUITION, INTUITION_GET_SCREEN_ATTR);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SCREEN_ATTR,    LIB_INTUITION, INTUITION_SET_SCREEN_ATTR);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_OBJECT,         LIB_INTUITION, INTUITION_NEW_OBJECT);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_ATTRS,          LIB_INTUITION, INTUITION_SET_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTRS,          LIB_INTUITION, INTUITION_GET_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_METHOD,          LIB_INTUITION, INTUITION_DO_METHOD);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_SUPER_METHOD,    LIB_INTUITION, INTUITION_DO_SUPER_METHOD);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_COERCE_METHOD,      LIB_INTUITION, INTUITION_COERCE_METHOD);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_GADGET_ATTRS_A,  LIB_INTUITION, INTUITION_SET_GADGET_ATTRS_A);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SUPER_ATTRS,    LIB_INTUITION, INTUITION_SET_SUPER_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_POINTER, LIB_INTUITION, INTUITION_SET_WINDOW_POINTER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW_TAGS_V,  LIB_INTUITION, INTUITION_OPEN_WINDOW_TAGS_V);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN_TAGS_V,  LIB_INTUITION, INTUITION_OPEN_SCREEN_TAGS_V);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_GADGET_METHOD,   LIB_INTUITION, INTUITION_DO_GADGET_METHOD);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_GADGET_ATTRS,  LIB_INTUITION, INTUITION_SET_GADGET_ATTRS);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_ALLOC_SCREEN_BUFFER, LIB_INTUITION, INTUITION_ALLOC_SCREEN_BUFFER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SCREEN_BUFFER,  LIB_INTUITION, INTUITION_FREE_SCREEN_BUFFER);
-    install_lvo(INTUITION_BASE, LVO_INTUITION_CHANGE_SCREEN_BUFFER, LIB_INTUITION, INTUITION_CHANGE_SCREEN_BUFFER);
-
+    /* intuition.library at INTUITION_BASE */
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_LIBRARY                              , LIB_INTUITION, INTUITION_OPEN_LIBRARY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_LIBRARY                             , LIB_INTUITION, INTUITION_CLOSE_LIBRARY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW                               , LIB_INTUITION, INTUITION_OPEN_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_WINDOW                              , LIB_INTUITION, INTUITION_CLOSE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_TO_FRONT                           , LIB_INTUITION, INTUITION_WINDOW_TO_FRONT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_TO_BACK                            , LIB_INTUITION, INTUITION_WINDOW_TO_BACK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ACTIVATE_WINDOW                           , LIB_INTUITION, INTUITION_ACTIVATE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_WINDOW                               , LIB_INTUITION, INTUITION_MOVE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SIZE_WINDOW                               , LIB_INTUITION, INTUITION_SIZE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_WINDOW                            , LIB_INTUITION, INTUITION_REFRESH_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MODIFY_IDCMP                              , LIB_INTUITION, INTUITION_MODIFY_IDCMP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_TITLES                         , LIB_INTUITION, INTUITION_SET_WINDOW_TITLES);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW_TAGS                          , LIB_INTUITION, INTUITION_OPEN_WINDOW_TAGS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WORKBENCH                            , LIB_INTUITION, INTUITION_OPEN_WORKBENCH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_WORKBENCH                           , LIB_INTUITION, INTUITION_CLOSE_WORKBENCH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_BORDER                               , LIB_INTUITION, INTUITION_DRAW_BORDER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_IMAGE                                , LIB_INTUITION, INTUITION_DRAW_IMAGE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_PRINT_I_TEXT                              , LIB_INTUITION, INTUITION_PRINT_I_TEXT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_AUTO_REQUEST                              , LIB_INTUITION, INTUITION_AUTO_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_BUILD_SYS_REQUEST                         , LIB_INTUITION, INTUITION_BUILD_SYS_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SYS_REQUEST                          , LIB_INTUITION, INTUITION_FREE_SYS_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_EASY_REQUEST                              , LIB_INTUITION, INTUITION_EASY_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN                               , LIB_INTUITION, INTUITION_OPEN_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_SCREEN                              , LIB_INTUITION, INTUITION_CLOSE_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_SCREEN                               , LIB_INTUITION, INTUITION_MOVE_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_TO_FRONT                           , LIB_INTUITION, INTUITION_SCREEN_TO_FRONT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_TO_BACK                            , LIB_INTUITION, INTUITION_SCREEN_TO_BACK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SHOW_TITLE                                , LIB_INTUITION, INTUITION_SHOW_TITLE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_SCREEN_TAGS                          , LIB_INTUITION, INTUITION_OPEN_SCREEN_TAGS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_MENU_STRIP                            , LIB_INTUITION, INTUITION_SET_MENU_STRIP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_MENU_STRIP                          , LIB_INTUITION, INTUITION_CLEAR_MENU_STRIP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_RESET_MENU_STRIP                          , LIB_INTUITION, INTUITION_RESET_MENU_STRIP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ITEM_ADDRESS                              , LIB_INTUITION, INTUITION_ITEM_ADDRESS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_PUB_SCREEN                           , LIB_INTUITION, INTUITION_LOCK_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_PUB_SCREEN                         , LIB_INTUITION, INTUITION_UNLOCK_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_PUB_SCREEN_LIST                      , LIB_INTUITION, INTUITION_LOCK_PUB_SCREEN_LIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_PUB_SCREEN_LIST                    , LIB_INTUITION, INTUITION_UNLOCK_PUB_SCREEN_LIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_POINTER                               , LIB_INTUITION, INTUITION_SET_POINTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_POINTER                             , LIB_INTUITION, INTUITION_CLEAR_POINTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_POINTER_A                      , LIB_INTUITION, INTUITION_SET_WINDOW_POINTER_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_DEF_PREFS                             , LIB_INTUITION, INTUITION_GET_DEF_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_PREFS                                 , LIB_INTUITION, INTUITION_GET_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_PREFS                                 , LIB_INTUITION, INTUITION_SET_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_GUI_PREFS                            , LIB_INTUITION, INTUITION_LOCK_GUI_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_GUI_PREFS                          , LIB_INTUITION, INTUITION_UNLOCK_GUI_PREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_QUERY_OVERSCAN                            , LIB_INTUITION, INTUITION_QUERY_OVERSCAN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CURRENT_TIME                              , LIB_INTUITION, INTUITION_CURRENT_TIME);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DOUBLE_CLICK                              , LIB_INTUITION, INTUITION_DOUBLE_CLICK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REPORT_MOUSE                              , LIB_INTUITION, INTUITION_REPORT_MOUSE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPLAY_BEEP                              , LIB_INTUITION, INTUITION_DISPLAY_BEEP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_INIT_REQUESTER                            , LIB_INTUITION, INTUITION_INIT_REQUESTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_END_REQUEST                               , LIB_INTUITION, INTUITION_END_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REQUEST                                   , LIB_INTUITION, INTUITION_REQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_VIEW_ADDRESS                              , LIB_INTUITION, INTUITION_VIEW_ADDRESS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_VIEW_PORT_ADDRESS                         , LIB_INTUITION, INTUITION_VIEW_PORT_ADDRESS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_DATA                           , LIB_INTUITION, INTUITION_GET_SCREEN_DATA);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEXT_PUB_SCREEN                           , LIB_INTUITION, INTUITION_NEXT_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_DEFAULT_PUB_SCREEN                    , LIB_INTUITION, INTUITION_SET_DEFAULT_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_IBASE                                , LIB_INTUITION, INTUITION_LOCK_IBASE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_IBASE                              , LIB_INTUITION, INTUITION_UNLOCK_IBASE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SHOW_WINDOW                               , LIB_INTUITION, INTUITION_SHOW_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_HIDE_WINDOW                               , LIB_INTUITION, INTUITION_HIDE_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WINDOW_LIMITS                             , LIB_INTUITION, INTUITION_WINDOW_LIMITS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CHANGE_WINDOW_BOX                         , LIB_INTUITION, INTUITION_CHANGE_WINDOW_BOX);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_DRAW_INFO                      , LIB_INTUITION, INTUITION_GET_SCREEN_DRAW_INFO);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SCREEN_DRAW_INFO                     , LIB_INTUITION, INTUITION_FREE_SCREEN_DRAW_INFO);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPLAY_ALERT                             , LIB_INTUITION, INTUITION_DISPLAY_ALERT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_TIMED_DISPLAY_ALERT                       , LIB_INTUITION, INTUITION_TIMED_DISPLAY_ALERT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_DEPTH                              , LIB_INTUITION, INTUITION_SCREEN_DEPTH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCREEN_POSITION                           , LIB_INTUITION, INTUITION_SCREEN_POSITION);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_GADGET                                , LIB_INTUITION, INTUITION_ADD_GADGET);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_GLIST                                 , LIB_INTUITION, INTUITION_ADD_GLIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_GADGET                             , LIB_INTUITION, INTUITION_REMOVE_GADGET);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_GLIST                              , LIB_INTUITION, INTUITION_REMOVE_GLIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_GLIST                             , LIB_INTUITION, INTUITION_REFRESH_GLIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ON_GADGET                                 , LIB_INTUITION, INTUITION_ON_GADGET);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OFF_GADGET                                , LIB_INTUITION, INTUITION_OFF_GADGET);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MODIFY_PROP                               , LIB_INTUITION, INTUITION_MODIFY_PROP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_MODIFY_PROP                           , LIB_INTUITION, INTUITION_NEW_MODIFY_PROP);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ACTIVATE_GADGET                           , LIB_INTUITION, INTUITION_ACTIVATE_GADGET);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_ATTRS                          , LIB_INTUITION, INTUITION_SET_WINDOW_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_WINDOW_ATTRS                          , LIB_INTUITION, INTUITION_GET_WINDOW_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SCREEN_ATTRS                          , LIB_INTUITION, INTUITION_SET_SCREEN_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_ATTRS                          , LIB_INTUITION, INTUITION_GET_SCREEN_ATTRS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_BEGIN_REFRESH                             , LIB_INTUITION, INTUITION_BEGIN_REFRESH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_END_REFRESH                               , LIB_INTUITION, INTUITION_END_REFRESH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_GADGETS                           , LIB_INTUITION, INTUITION_REFRESH_GADGETS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ON_MENU                                   , LIB_INTUITION, INTUITION_ON_MENU);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OFF_MENU                                  , LIB_INTUITION, INTUITION_OFF_MENU);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SYS_REQ_HANDLER                           , LIB_INTUITION, INTUITION_SYS_REQ_HANDLER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_PUB_SCREEN_STATUS                         , LIB_INTUITION, INTUITION_PUB_SCREEN_STATUS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_DEFAULT_PUB_SCREEN                    , LIB_INTUITION, INTUITION_GET_DEFAULT_PUB_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MOVE_WINDOW_IN_FRONT_OF                   , LIB_INTUITION, INTUITION_MOVE_WINDOW_IN_FRONT_OF);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_EDIT_HOOK                             , LIB_INTUITION, INTUITION_SET_EDIT_HOOK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OBTAIN_GIR_PORT                           , LIB_INTUITION, INTUITION_OBTAIN_GIR_PORT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_RELEASE_GIR_PORT                          , LIB_INTUITION, INTUITION_RELEASE_GIR_PORT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_STRIP_INTUI_MESSAGES                      , LIB_INTUITION, INTUITION_STRIP_INTUI_MESSAGES);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_OBJECT_A                              , LIB_INTUITION, INTUITION_NEW_OBJECT_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPOSE_OBJECT                            , LIB_INTUITION, INTUITION_DISPOSE_OBJECT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_ATTRS_A                               , LIB_INTUITION, INTUITION_SET_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTR                                  , LIB_INTUITION, INTUITION_GET_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MAKE_CLASS                                , LIB_INTUITION, INTUITION_MAKE_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_CLASS                                , LIB_INTUITION, INTUITION_FREE_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ADD_CLASS                                 , LIB_INTUITION, INTUITION_ADD_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REMOVE_CLASS                              , LIB_INTUITION, INTUITION_REMOVE_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEXT_OBJECT                               , LIB_INTUITION, INTUITION_NEXT_OBJECT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_ATTRS_A                               , LIB_INTUITION, INTUITION_GET_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DO_GADGET_METHOD_A                        , LIB_INTUITION, INTUITION_DO_GADGET_METHOD_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_HELP_CONTROL                              , LIB_INTUITION, INTUITION_HELP_CONTROL);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_START_SCREEN_NOTIFY                       , LIB_INTUITION, INTUITION_START_SCREEN_NOTIFY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_END_SCREEN_NOTIFY                         , LIB_INTUITION, INTUITION_END_SCREEN_NOTIFY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_WINDOW_ATTR                           , LIB_INTUITION, INTUITION_GET_WINDOW_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_WINDOW_ATTR                           , LIB_INTUITION, INTUITION_SET_WINDOW_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_SCREEN_ATTR                           , LIB_INTUITION, INTUITION_GET_SCREEN_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_SCREEN_ATTR                           , LIB_INTUITION, INTUITION_SET_SCREEN_ATTR);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_GADGET_ATTRS_A                        , LIB_INTUITION, INTUITION_SET_GADGET_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ALLOC_SCREEN_BUFFER                       , LIB_INTUITION, INTUITION_ALLOC_SCREEN_BUFFER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SCREEN_BUFFER                        , LIB_INTUITION, INTUITION_FREE_SCREEN_BUFFER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CHANGE_SCREEN_BUFFER                      , LIB_INTUITION, INTUITION_CHANGE_SCREEN_BUFFER);
     /* gadtools.library at GADTOOLS_BASE */
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);
