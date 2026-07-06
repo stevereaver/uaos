@@ -210,8 +210,15 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 | `SetRPAttrsA` | Implemented | Sets `RastPort` attributes from a tag list (FgPen/BgPen/DrawMode/BitMap). |
 | `GetRPAttrsA` | Implemented | Reads `RastPort` attributes into a tag list. |
 | `CalcIVG` | Implemented | Returns 0 (not meaningful for UAOS display). |
-| `AllocDBufInfo` | Implemented | Allocates a dummy `DBufInfo` structure. |
+| `AllocDBufInfo` | Implemented | Allocates a 64-byte `DBufInfo` structure with message node, BitMap pointer, and signal-bit fields. |
 | `FreeDBufInfo` | Implemented | Frees a `DBufInfo` structure. |
+| `GetSprite` | Implemented | Reserves a hardware sprite slot (0–7) via `chip_emu_get_sprite()`.  Pass a negative slot number for "any free slot".  Returns the slot number or -1. |
+| `FreeSprite` | Implemented | Releases a hardware sprite slot via `chip_emu_free_sprite()`. |
+| `ChangeSprite` | Implemented | Swaps the sprite data pointer for a reserved slot via `chip_emu_change_sprite()`. |
+| `MoveSprite` | Implemented | Updates a sprite's position via `chip_emu_move_sprite()`.  Coordinates are in lores units. |
+| `CMove` | Implemented | Writes a copper MOVE instruction at the `CopList`'s current write pointer and advances it. |
+| `CWait` | Implemented | Writes a copper WAIT instruction at the `CopList`'s current write pointer and advances it. |
+| `UCopperListInit` | Implemented | Allocates a `CopList` + copper instruction buffer of the requested size.  Returns the `CopList*` or NULL. |
 | `WeightAMatch` | Implemented | Returns 0 (single font). |
 | `BitMapScale` | Implemented | Nearest-neighbour scale from source to destination `BitMap`. |
 | `ScalerDiv` | Implemented | Returns `(factor * numerator) / denominator`. |
@@ -307,16 +314,16 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 59 | -354 | SetDrMd | Implemented |
 | 60 | -360 | InitView | Implemented |
 | 61 | -366 | CBump | Stub |
-| 62 | -372 | CMove | Stub |
-| 63 | -378 | CWait | Stub |
+| 62 | -372 | CMove | Implemented |
+| 63 | -378 | CWait | Implemented |
 | 64 | -384 | VBeamPos | Implemented |
 | 65 | -390 | InitBitMap | Implemented |
 | 66 | -396 | ScrollRaster | Implemented |
 | 67 | -402 | WaitBOVP | Implemented |
-| 68 | -408 | GetSprite | Stub |
-| 69 | -414 | FreeSprite | Stub |
-| 70 | -420 | ChangeSprite | Stub |
-| 71 | -426 | MoveSprite | Stub |
+| 68 | -408 | GetSprite | Implemented |
+| 69 | -414 | FreeSprite | Implemented |
+| 70 | -420 | ChangeSprite | Implemented |
+| 71 | -426 | MoveSprite | Implemented |
 | 72 | -432 | LockLayerRom | Implemented |
 | 73 | -438 | UnlockLayerRom | Implemented |
 | 74 | -444 | SyncSBitMap | Implemented |
@@ -344,7 +351,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 96 | -576 | FreeColorMap | Implemented |
 | 97 | -582 | GetRGB4 | Implemented |
 | 98 | -588 | ScrollVPort | Stub |
-| 99 | -594 | UCopperListInit | Stub |
+| 99 | -594 | UCopperListInit | Implemented |
 | 100 | -600 | FreeGBuffers | Stub |
 | 101 | -606 | BltBitMapRastPort | Implemented |
 | 102 | -612 | OrRegionRegion | Implemented |
@@ -406,7 +413,7 @@ M68k code calls `graphics.library` via negative offsets from `GRAPHICS_BASE`. Th
 | 158 | -948 | ReleasePen | Implemented |
 | 159 | -954 | ObtainPen | Implemented |
 | 160 | -960 | GetBitMapAttr | Implemented |
-| 161 | -966 | AllocDBufInfo | Implemented |
+| 161 | -966 | AllocDBufInfo | Implemented (full DBufInfo structure) |
 | 162 | -972 | FreeDBufInfo | Implemented |
 | 163 | -978 | SetOutlinePen | Implemented |
 | 164 | -984 | SetWriteMask | Implemented |

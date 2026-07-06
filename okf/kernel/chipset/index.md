@@ -59,6 +59,7 @@ The copper emulator fetches instructions from `COP1LC`/`COP2LC`, executes `MOVE`
 | `BPLCON2` | `0x104` | Playfield priorities; bit 9 (`KILLEHB`) selects 64-colour mode on AGA. |
 | `BPLCON3` | `0x106` | AGA bank/LOCT / sprite resolution. |
 | `BPLCON4` | `0x10C` | AGA color-bank lower bits. |
+| `FMODE`   | `0x1FC` | AGA fetch mode: bits 0-1 = bitplane fetch width (0=OCS/16-bit, 1=ECS/32-bit, 2=AGA/64-bit), bits 2-3 = sprite fetch width (same encoding), bit 6 = BSCAN3 scanline-doubled mode. |
 | `BPL1MOD` | `0x108` | Bitplane modulo (odd planes). |
 | `BPL2MOD` | `0x10A` | Bitplane modulo (even planes). |
 | `DIWSTART`| `0x08E` | Display window start. |
@@ -377,6 +378,17 @@ Sprite rendering has been upgraded to support AGA resolution, colour bank, and p
 - **Display-window clipping** clips sprite pixels to the DIW horizontal bounds.
 
 A boot-time test, `chip_emu_sprite_test()`, sets up a low-res sprite with a known `DATA`/`DATB` pattern, enables sprite DMA, renders one line, and verifies the DMA-fetched data.  It is invoked from `uaos_kernel_main()` and prints `PASSED` or `FAILED`.
+
+### Hardware Sprite Management API
+
+The chipset emulator exposes a set of C functions for `graphics.library`'s `GetSprite`/`FreeSprite`/`ChangeSprite`/`MoveSprite` to reserve and manage hardware sprite DMA channels:
+
+- `chip_emu_get_sprite(slot, sprite_ptr)` — reserves slot 0–7 and points `SPRxPT` at the sprite image.  Returns the slot or -1 if already in use.
+- `chip_emu_free_sprite(slot)` — releases a reserved slot and clears its DMA pointer.
+- `chip_emu_move_sprite(slot, x, y)` — updates `SPRxPOS`/`SPRxCTL` for a reserved sprite.  Coordinates are in lores units with the standard 0x80 horizontal bias.
+- `chip_emu_change_sprite(slot, sprite_ptr)` — swaps the sprite data pointer for a reserved slot.
+- `chip_emu_sprite_in_use(slot)` — returns whether a slot is currently reserved.
+- `chip_emu_fmode()` / `chip_emu_bpl_fetch_width()` / `chip_emu_spr_fetch_width()` — expose the AGA `FMODE` register state and derived fetch widths (2, 4, or 8 bytes for OCS, ECS, or AGA modes).
 
 ### High-Quality Paula Audio Output
 

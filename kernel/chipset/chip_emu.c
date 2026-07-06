@@ -310,6 +310,13 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_SPRxDATA(x) (REG_SPR0DATA + (x) * 8)
 #define REG_SPRxDATB(x) (REG_SPR0DATB + (x) * 8)
 
+/* AGA FMODE (fetch mode) register at 0x1FC.
+ * Bits 0-1 select bitplane fetch mode:
+ *   0 = OCS (16-bit), 1 = ECS (32-bit), 2 = AGA (64-bit), 3 = reserved
+ * Bits 2-3 select sprite fetch mode (same encoding).
+ * Bit 6 = BSCAN3 (scanline-doubled mode). */
+#define REG_FMODE    0x1FC
+
 /* Paula audio registers */
 #define REG_AUD0LCH  0x0A0
 #define REG_AUD0LCL  0x0A2
@@ -345,6 +352,7 @@ static uint16_t g_bplcon1;  /* horizontal scroll / modulos */
 static uint16_t g_bplcon2;  /* playfield priorities / genlock */
 static uint16_t g_bplcon3;  /* AGA bank/LOCT / sprite resolution */
 static uint16_t g_bplcon4;  /* AGA color bank lower bits / sprite bank */
+static uint16_t g_fmode;    /* AGA fetch mode: bitplane/sprite fetch width */
 
 static uint16_t g_bplmod1;  /* bitplane modulo (odd planes) */
 static uint16_t g_bplmod2;  /* bitplane modulo (even planes) */
@@ -690,6 +698,7 @@ static uint32_t g_spr_pt[8];
 #define SPRITE_WORDS 4
 static uint16_t g_spr_pos[SPRITE_COUNT];
 static uint16_t g_spr_ctl[SPRITE_COUNT];
+static int      g_spr_in_use[SPRITE_COUNT];
 static uint16_t g_spr_data[SPRITE_COUNT][SPRITE_WORDS];
 static uint16_t g_spr_datb[SPRITE_COUNT][SPRITE_WORDS];
 
@@ -958,6 +967,7 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_BPLCON2: g_bplcon2 = (uint16_t)value; break;
         case REG_BPLCON3: g_bplcon3 = (uint16_t)value; break;
         case REG_BPLCON4: g_bplcon4 = (uint16_t)value; break;
+        case REG_FMODE:   g_fmode   = (uint16_t)value; break;
 
         case REG_BPLMOD1: g_bplmod1 = (uint16_t)value; break;
         case REG_BPLMOD2: g_bplmod2 = (uint16_t)value; break;
@@ -1162,6 +1172,7 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
         case REG_BLTSIZE:  value = 0; break; /* write-only trigger; returns 0 */
         case REG_BPLCON3: value = g_bplcon3; break;
         case REG_BPLCON4: value = g_bplcon4; break;
+        case REG_FMODE:   value = g_fmode; break;
 
         case REG_BPLMOD1: value = g_bplmod1; break;
         case REG_BPLMOD2: value = g_bplmod2; break;
@@ -2651,6 +2662,7 @@ void chip_emu_reset(void)
     g_bplcon2 = 0;
     g_bplcon3 = 0;
     g_bplcon4 = 0x0011u; /* AGA default colour bank bits */
+    g_fmode   = 0;        /* OCS fetch mode (16-bit) */
     g_bplmod1 = 0;
     g_bplmod2 = 0;
     g_diwstart = 0x2C81u;
@@ -2670,6 +2682,7 @@ void chip_emu_reset(void)
         g_bpl_pt[i] = 0;
         g_spr_pt[i] = 0;
         g_spr_dma_ptr[i] = 0;
+        g_spr_in_use[i] = 0;
     }
     for (int i = 0; i < SPRITE_COUNT; i++) {
         g_spr_pos[i] = 0;
@@ -3558,4 +3571,104 @@ int chip_emu_diwhigh_test(void)
     chip_emu_write(diwhigh_off, 0x1234u, 2);
     uint32_t v = chip_emu_read(diwhigh_off, 2);
     return (v & 0xFFFFu) == 0x1234u;
+}
+
+/* =========================================================================
+ * Tier 6: Hardware sprite management for graphics.library GetSprite /
+ * FreeSprite / MoveSprite / ChangeSprite.
+ *
+ * Each of the 8 hardware sprite channels has a DMA pointer (SPRxPT) and a
+ * pair of position registers (SPRxPOS / SPRxCTL) that the copper or CPU
+ * programs.  g_spr_in_use[] tracks whether a slot has been claimed by a
+ * guest GetSprite() call so that subsequent GetSprite() calls for the same
+ * slot fail (returning -1) until FreeSprite() releases it.
+ * ========================================================================= */
+
+int chip_emu_get_sprite(int slot, uint32_t sprite_ptr)
+{
+    if (slot < 0 || slot >= SPRITE_COUNT) return -1;
+    if (g_spr_in_use[slot]) return -1;
+
+    g_spr_in_use[slot] = 1;
+    g_spr_pt[slot] = sprite_ptr;
+    /* Prime the DMA fetch pointer so the next render picks up the new data. */
+    g_spr_dma_ptr[slot] = sprite_ptr;
+
+    /* Read the sprite header's VSTART/HSTART to seed SPRxPOS/CTL.  The first
+     * two words of a sprite image are the position/control words; the rest
+     * are DATA/DATB pairs.  This lets MoveSprite later just patch POS/CTL. */
+    if (sprite_ptr && sprite_ptr + 4 <= GUEST_RAM_SIZE) {
+        g_spr_pos[slot] = chip_read_u16(sprite_ptr);
+        g_spr_ctl[slot] = chip_read_u16(sprite_ptr + 2);
+    }
+    return slot;
+}
+
+void chip_emu_free_sprite(int slot)
+{
+    if (slot < 0 || slot >= SPRITE_COUNT) return;
+    g_spr_in_use[slot] = 0;
+    g_spr_pt[slot] = 0;
+    g_spr_dma_ptr[slot] = 0;
+    g_spr_pos[slot] = 0;
+    g_spr_ctl[slot] = 0;
+}
+
+void chip_emu_move_sprite(int slot, int16_t x, int16_t y)
+{
+    if (slot < 0 || slot >= SPRITE_COUNT) return;
+    /* Amiga sprite coordinates are in lores units with a horizontal bias of
+     * 0x80 (the display window starts at HSTART=0x81 in lores).  Vertical
+     * start is the scanline; the stop line is VSTART + sprite height (16 for
+     * a standard sprite).  Control word bit 0x80 marks "attach to previous
+     * sprite" for AGA 64-colour sprites; preserve it across moves. */
+    uint16_t hstart = (uint16_t)(x + 0x80);
+    uint16_t vstart = (uint16_t)y;
+    uint16_t vstop  = (uint16_t)(y + 16);
+    uint16_t attach = g_spr_ctl[slot] & 0x0080u;
+    g_spr_pos[slot] = (vstart << 8) | (hstart >> 1);
+    g_spr_ctl[slot] = (vstop  << 8) | (hstart >> 1) | attach;
+}
+
+void chip_emu_change_sprite(int slot, uint32_t sprite_ptr)
+{
+    if (slot < 0 || slot >= SPRITE_COUNT) return;
+    g_spr_pt[slot] = sprite_ptr;
+    g_spr_dma_ptr[slot] = sprite_ptr;
+    if (sprite_ptr && sprite_ptr + 4 <= GUEST_RAM_SIZE) {
+        g_spr_pos[slot] = chip_read_u16(sprite_ptr);
+        g_spr_ctl[slot] = chip_read_u16(sprite_ptr + 2);
+    }
+}
+
+int chip_emu_sprite_in_use(int slot)
+{
+    if (slot < 0 || slot >= SPRITE_COUNT) return 0;
+    return g_spr_in_use[slot];
+}
+
+uint16_t chip_emu_fmode(void) { return g_fmode; }
+
+int chip_emu_bpl_fetch_width(void)
+{
+    /* Bits 0-1 of FMODE select bitplane fetch mode:
+     *   0 = OCS  (16-bit / 2 bytes)
+     *   1 = ECS  (32-bit / 4 bytes)
+     *   2 = AGA  (64-bit / 8 bytes)
+     *   3 = reserved (treat as AGA) */
+    switch (g_fmode & 0x0003u) {
+        case 0:  return 2;
+        case 1:  return 4;
+        default: return 8;
+    }
+}
+
+int chip_emu_spr_fetch_width(void)
+{
+    /* Bits 2-3 of FMODE select sprite fetch mode (same encoding). */
+    switch ((g_fmode >> 2) & 0x0003u) {
+        case 0:  return 2;
+        case 1:  return 4;
+        default: return 8;
+    }
 }

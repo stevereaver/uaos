@@ -5325,6 +5325,126 @@ static void intuition_CloseScreen(void)
     m68k_set_reg(M68K_REG_D0, 1);  /* success */
 }
 
+/* =========================================================================
+ * ScreenBuffer double-buffering: AllocScreenBuffer / FreeScreenBuffer /
+ * ChangeScreenBuffer.
+ *
+ * A ScreenBuffer is an Intuition-level wrapper around a BitMap and a
+ * graphics.library DBufInfo.  It tracks the offscreen buffer for a
+ * double-buffered screen and signals the guest task when the buffer swap
+ * is safe/complete.
+ * ========================================================================= */
+
+/* ScreenBuffer structure offsets (partial, matches AmigaOS). */
+#define SBUFF_OFF_EXECMSG     0    /* struct Message (20 bytes) */
+#define SBUFF_OFF_SCREEN     20    /* struct Screen * */
+#define SBUFF_OFF_BITMAP     24    /* struct BitMap * */
+#define SBUFF_OFF_DBUFINFO   28    /* struct DBufInfo * */
+#define SBUFF_OFF_FLAGS      32    /* ULONG — SB_COPY_BITMAP / SB_SCREEN_BITMAP */
+#define SBUFF_SIZE           40
+
+/* AllocScreenBuffer(screen, bitmap, flags) — A0, A1, D0
+ * Returns a ScreenBuffer* in D0, or NULL on failure.
+ * SB_COPY_BITMAP (0) means allocate a new BitMap matching the screen.
+ * SB_SCREEN_BITMAP (1) means use the screen's existing BitMap. */
+static void intuition_AllocScreenBuffer(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t bitmap     = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t flags      = m68k_get_reg(NULL, M68K_REG_D0);
+
+    uint32_t sb = 0;
+    dos_AllocMem_glue(SBUFF_SIZE, 0, &sb);
+    if (!sb) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (int i = 0; i < SBUFF_SIZE; i++) m68k_write_memory_8(sb + i, 0);
+
+    /* LN_TYPE = NT_MESSAGE (6) so the OS can reply it. */
+    m68k_write_memory_8(sb + 8, 6);
+    m68k_write_memory_32(sb + SBUFF_OFF_SCREEN, screen_ptr);
+
+    if (flags & 0x00000001u) {
+        /* SB_SCREEN_BITMAP: use the screen's current BitMap. */
+        bitmap = mem_u32(screen_ptr + SCR_OFF_BITMA);
+    } else if (!bitmap) {
+        /* SB_COPY_BITMAP: allocate a new BitMap matching the screen. */
+        int16_t w = mem_s16(screen_ptr + SCR_OFF_WIDTH);
+        int16_t h = mem_s16(screen_ptr + SCR_OFF_HEIGHT);
+        uint8_t d = mem_u8(screen_ptr + SCR_OFF_DEPTH);
+        if (w > 0 && h > 0 && d > 0) {
+            uint32_t bm = 0;
+            dos_AllocMem_glue(40, 0, &bm);
+            if (bm) {
+                for (int i = 0; i < 40; i++) m68k_write_memory_8(bm + i, 0);
+                m68k_write_memory_16(bm + 8,  (uint16_t)w);   /* BM_BYTESPERROW */
+                m68k_write_memory_16(bm + 10, (uint16_t)h);   /* BM_ROWS */
+                m68k_write_memory_16(bm + 12, (uint16_t)d);   /* BM_DEPTH */
+                bitmap = bm;
+            }
+        }
+    }
+    m68k_write_memory_32(sb + SBUFF_OFF_BITMAP, bitmap);
+    m68k_write_memory_32(sb + SBUFF_OFF_FLAGS, flags);
+
+    /* Allocate a DBufInfo via graphics.library's AllocDBufInfo.  The
+     * ViewPort is at SCR_OFF_VIEWPORT in the Screen structure. */
+    uint32_t vp = mem_u32(screen_ptr + SCR_OFF_VIEWPORT);
+    uint32_t dbi = 0;
+    dos_AllocMem_glue(64, 0, &dbi);
+    if (dbi) {
+        for (int i = 0; i < 64; i++) m68k_write_memory_8(dbi + i, 0);
+        m68k_write_memory_8(dbi + 8, 6);  /* NT_MESSAGE */
+        m68k_write_memory_32(dbi + 28, bitmap);  /* BufferRastPort → BitMap */
+    }
+    m68k_write_memory_32(sb + SBUFF_OFF_DBUFINFO, dbi);
+    (void)vp;
+
+    m68k_set_reg(M68K_REG_D0, sb);
+}
+
+/* FreeScreenBuffer(screenBuffer) — A0 = ScreenBuffer* */
+static void intuition_FreeScreenBuffer(void)
+{
+    uint32_t sb = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!sb) return;
+
+    uint32_t dbi = mem_u32(sb + SBUFF_OFF_DBUFINFO);
+    if (dbi) dos_FreeMem_glue(dbi, 64);
+
+    uint32_t flags  = mem_u32(sb + SBUFF_OFF_FLAGS);
+    uint32_t bitmap = mem_u32(sb + SBUFF_OFF_BITMAP);
+    /* Only free the BitMap if we allocated it (SB_COPY_BITMAP). */
+    if (bitmap && !(flags & 0x00000001u)) {
+        dos_FreeMem_glue(bitmap, 40);
+    }
+    dos_FreeMem_glue(sb, SBUFF_SIZE);
+}
+
+/* ChangeScreenBuffer(screen, screenBuffer, flags) — A0, A1, D0
+ * Returns TRUE in D0 if the buffer swap was scheduled. */
+static void intuition_ChangeScreenBuffer(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t sb         = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t flags      = m68k_get_reg(NULL, M68K_REG_D0);
+    (void)flags;
+
+    if (!screen_ptr || !sb) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    /* Swap the screen's BitMap to the ScreenBuffer's BitMap.  This is a
+     * simplified immediate swap — real AmigaOS defers to the next VBlank
+     * via ChangeVPBitMap, but UAOS renders synchronously. */
+    uint32_t new_bm = mem_u32(sb + SBUFF_OFF_BITMAP);
+    if (new_bm) {
+        mem_w32(screen_ptr + SCR_OFF_BITMA, new_bm);
+        ScreenSlot *slot = find_screen_slot(screen_ptr);
+        if (slot) slot->bitmap = new_bm;
+    }
+
+    /* Trigger a redraw so the new bitmap is rendered to the framebuffer. */
+    WM_Redraw();
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
 /* MoveScreen(screen, dx, dy) — A0, D0/D1 */
 static void intuition_MoveScreen(void)
 {
@@ -8154,6 +8274,9 @@ static void *intuition_funcs[] = {
     intuition_OpenScreenTagList,
     intuition_DoGadgetMethod,
     intuition_SetGadgetAttrs,
+    intuition_AllocScreenBuffer,
+    intuition_FreeScreenBuffer,
+    intuition_ChangeScreenBuffer,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)

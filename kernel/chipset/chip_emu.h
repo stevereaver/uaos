@@ -76,4 +76,28 @@ uint8_t  chip_emu_audio_volume(int ch);
 void     chip_emu_audio_set_channel(int ch, uint32_t ptr, uint16_t len, uint16_t per, uint16_t vol);
 void     chip_emu_audio_set_dmacon(uint16_t dmacon);
 
+/* Tier 6: Hardware sprite management.
+ *
+ * GetSprite() reserves a hardware sprite slot (0..7) and points its DMA
+ * pointer at the supplied sprite data.  Returns the slot number on success
+ * or -1 if the slot is already in use.  Pass SPRITE_RESERVED to mark a slot
+ * as in-use without installing new data (used by GetSprite's "steal" path).
+ * FreeSprite() releases a previously reserved slot.
+ * MoveSprite() updates a sprite's vertical/horizontal position registers.
+ * ChangeSprite() swaps the sprite data pointer for an already-reserved slot.
+ * The sprite pointer is a guest RAM address of a 16-word sprite image:
+ *   [0]=VSTART<<8|HSTART, [1]=VSTOP<<8|control, [2..]=DATA/DATB pairs. */
+#define SPRITE_COUNT 8
+int      chip_emu_get_sprite(int slot, uint32_t sprite_ptr);
+void     chip_emu_free_sprite(int slot);
+void     chip_emu_move_sprite(int slot, int16_t x, int16_t y);
+void     chip_emu_change_sprite(int slot, uint32_t sprite_ptr);
+int      chip_emu_sprite_in_use(int slot);
+
+/* Tier 6: FMODE / AGA fetch mode.  Returns the current FMODE register value
+ * and exposes the bitplane/sprite fetch width in bytes (2, 4, or 8). */
+uint16_t chip_emu_fmode(void);
+int      chip_emu_bpl_fetch_width(void);
+int      chip_emu_spr_fetch_width(void);
+
 #endif /* UAOS_CHIP_EMU_H */
