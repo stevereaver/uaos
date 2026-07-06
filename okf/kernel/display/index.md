@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-06-28T17:47:00Z
+timestamp: 2026-06-24T17:00:00Z
 ---
 
 # Display and Window Manager
@@ -13,9 +13,7 @@ UAOS provides a graphical user interface (GUI) inspired by the Amiga Workbench. 
 
 ## Linear Framebuffer
 
-The framebuffer is initialized during boot via Multiboot2 tags. The `framebuffer_addr` field reported by the bootloader is stored as a physical address and is dereferenced directly, which requires the region to be identity-mapped in the MMU sandbox. Bootloaders may place the framebuffer above the first 1 GB (for example, VirtualBox exposes the VGA LFB at `0x80000000`), so `UAOS_MMU_Init()` must be active before any pixel write.
-
-UAOS supports 32-bit color (BGRA/RGBA) and provides primitives for:
+The framebuffer is initialized during boot via Multiboot2 tags. UAOS supports 32-bit color (BGRA/RGBA) and provides primitives for:
 - Drawing pixels, lines, and rectangles.
 - Rendering bitmaps and icons.
 - Font rendering (8x16 bitmap fonts).

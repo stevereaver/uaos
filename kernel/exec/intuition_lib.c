@@ -326,7 +326,10 @@ static void free_intuition_signal(int sig);
 static void free_slot(IntuitionSlot *slot)
 {
     if (slot) {
-        if (slot->idcmp_sigbit) free_intuition_signal(slot->idcmp_sigbit);
+        /* Signal 0 is a valid signal bit — don't skip it.  The slot stores
+         * 0 when no IDCMP port was allocated, so check user_port instead. */
+        if (slot->user_port)
+            free_intuition_signal(slot->idcmp_sigbit);
         slot->active    = 0;
         slot->guest_win = 0;
         slot->wm_handle = -1;
@@ -612,8 +615,14 @@ static void post_intui_message(uint32_t win_ptr, uint32_t class, uint16_t code, 
 
     guest_list_add_tail(user_port + MP_OFF_MSGLIST, msg);
 
+    /* Signal the task that owns the port (MP_SIGTASK), not Task_Current().
+     * When a mouse click triggers an IDCMP message, the current task is the
+     * WM/kernel task — the guest m68k task that opened the window is blocked
+     * in WaitPort() and must be explicitly woken via its stored SigTask. */
     uint8_t sigbit = mem_u8(user_port + MP_OFF_SIGBIT);
-    UaosTask *t = Task_Current();
+    uint32_t sigtask_addr = mem_u32(user_port + MP_OFF_SIGTASK);
+    UaosTask *t = Task_FindByM68kAddr(sigtask_addr);
+    if (!t) t = Task_Current();
     if (t) Signal(t, 1U << sigbit);
 }
 
@@ -2025,11 +2034,20 @@ static void render_custom_gadgets(int win_x, int win_y, int off_x, int off_y, ui
     uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
     while (gad) {
         uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        uint16_t type  = mem_u16(gad + GAD_OFF_GADGETTYPE);
+
+        /* System gadgets (close, drag, depth, size) are rendered by the WM's
+         * draw_chrome — skip them here so they don't overwrite the title bar
+         * and gadget imagery with a plain grey fill. */
+        if (type & GTYP_SYSGADGET) {
+            gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+            continue;
+        }
+
         int16_t left   = mem_s16(gad + GAD_OFF_LEFTEDGE);
         int16_t top    = mem_s16(gad + GAD_OFF_TOPEDGE);
         int16_t w      = mem_s16(gad + GAD_OFF_WIDTH);
         int16_t h      = mem_s16(gad + GAD_OFF_HEIGHT);
-        uint16_t type  = mem_u16(gad + GAD_OFF_GADGETTYPE);
         int type_id = type & 0x000F;
         uint16_t activation = mem_u16(gad + GAD_OFF_ACTIVATION);
         uint32_t special = mem_u32(gad + GAD_OFF_SPECIALINFO);
