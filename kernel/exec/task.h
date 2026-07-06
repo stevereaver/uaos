@@ -169,6 +169,9 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
                            const char **argv,
                            void (*print_fn)(const char *));
 
+/* Release an M68k task's guest RAM slot (called by Task_Exit) */
+void Task_ReleaseM68kRam(UaosTask *t);
+
 /* Current task yields CPU voluntarily */
 void Task_Yield(void);
 

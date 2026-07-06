@@ -413,6 +413,8 @@ void Task_Exit(void)
             g_current->tc_SigAlloc |= (1u << (unsigned int)g_current->m68k_vblank_sig);
             g_current->m68k_vblank_sig = -1;
         }
+        /* Release M68k guest RAM so the slot can be reused. */
+        Task_ReleaseM68kRam(g_current);
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);

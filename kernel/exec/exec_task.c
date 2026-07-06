@@ -78,6 +78,16 @@ static void free_m68k_ram_slot(uint8_t *ram)
     }
 }
 
+/* Public wrapper called by Task_Exit() to release a dying M68k task's
+ * guest RAM slot so it can be reused by future Task_CreateM68k calls. */
+void Task_ReleaseM68kRam(UaosTask *t)
+{
+    if (t && t->type == TASK_TYPE_M68K && t->m68k_ram) {
+        free_m68k_ram_slot(t->m68k_ram);
+        t->m68k_ram = NULL;
+    }
+}
+
 /* Big-endian helpers for guest RAM */
 static void guest_w32(uint32_t addr, uint32_t val)
 {
