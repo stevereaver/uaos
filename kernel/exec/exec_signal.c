@@ -21,8 +21,7 @@ UaosTask *Task_FindByM68kAddr(uint32_t guest_addr)
 {
     for (int i = 0; i < g_task_count; i++) {
         if (g_tasks[i].type == TASK_TYPE_M68K &&
-            g_tasks[i].m68k_task_struct == guest_addr &&
-            g_tasks[i].tc_State != TASK_REMOVED)
+            g_tasks[i].m68k_task_struct == guest_addr)
             return &g_tasks[i];
     }
     return NULL;

@@ -20,10 +20,13 @@
 #include "exec/amiga_task.h"
 #include <stdint.h>
 #include <stddef.h>
+#include "chipset/chip_emu.h"
 #include "irq/rtc.h"
 #include "net/ntp.h"
 
 extern volatile uint64_t g_pit_ticks;
+extern uint64_t g_m68k_cycles;
+extern unsigned int m68k_cycles_run(void);
 
 /* =========================================================================
  * Console output helpers
@@ -185,8 +188,8 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
             /* Mark allocated */
             guest_write_be32(cur + 0, blk_size | HEAP_MAGIC);
 
-            /* Zero payload */
-            for (uint32_t i = HEAP_HDR; i < blk_size && cur + i < GUEST_RAM_SIZE; i++)
+            /* Zero only the allocated portion's payload, not the remainder block */
+            for (uint32_t i = HEAP_HDR; i < need && cur + i < GUEST_RAM_SIZE; i++)
                 g_ram[cur + i] = 0;
 
             return cur + HEAP_HDR;  /* return pointer past header */
@@ -1857,6 +1860,8 @@ static void dos_RunCommand(M68kCPUState *cpu)
     /* Execute until Exit() is called (or until something else terminates) */
     while (!g_emu_halted) {
         m68k_execute(10000);
+        g_m68k_cycles += (uint64_t)m68k_cycles_run();
+        chip_emu_run_to_cycle(g_m68k_cycles);
     }
 
     /* Retrieve the return code that Exit() was called with.

@@ -9,6 +9,7 @@
 #include "rom_modules.h"
 #include "task.h"
 #include "chipset/chip_emu.h"
+#include "chipset/floppy.h"
 #include "audio/audio.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -176,16 +177,25 @@ void timer_ProcessTicks(void)
 {
     g_tick_counter++;
 
-    /* Advance chipset beam position and subsystems every PIT tick.
-     * Paula audio DMA is advanced internally by the 48 kHz mixer. */
+    /* Keep PIT only for host audio/video timing.  Beam and subsystems are
+     * advanced from the M68k cycle counter via chip_emu_beam_tick(); audio
+     * DMA is advanced by the scheduler and mixed by the 48 kHz audio path. */
     chip_emu_beam_tick(g_tick_counter);
     chip_emu_cia_tick();
+    floppy_tick();
     audio_tick();
     chip_emu_poll_ps2_keyboard();
+    chip_emu_serial_poll();
 
     /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */
     if ((g_tick_counter & 1u) == 0) {
         chip_emu_vblank();
+        /* Wake any M68k task blocked inside graphics.library/WaitTOF(). */
+        extern UaosTask *g_wait_tof_task;
+        if (g_wait_tof_task && g_wait_tof_task->m68k_vblank_sig >= 0) {
+            Signal(g_wait_tof_task,
+                   (1u << (unsigned int)g_wait_tof_task->m68k_vblank_sig));
+        }
     }
 
     TimerQueueEntry_t *current = g_timer_queue_head;

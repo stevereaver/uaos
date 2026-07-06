@@ -4,7 +4,7 @@ title: Exec Library
 description: The core system library for task management, memory, and signals.
 resource: /kernel/exec/
 tags: [exec, tasks, memory, ipc]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-06-28T17:47:00Z
 ---
 
 # Exec Library
@@ -16,7 +16,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - **Task Management**: Creating, scheduling, and switching between tasks (both native x86_64 and emulated M68k).
 - **Userspace Execution**: Running Ring-3 native x86-64 ELF64 tasks with memory protection (MMU sandboxing), parent-child hierarchy, and per-task current working directory.
 - **System Calls**: Software interrupt `INT 0x80` register-based dispatcher facilitating kernel services for userspace programs.
-- **Memory Allocation**: Managing the system memory map and providing allocation services.  `AllocMem` routes `MEMF_CHIP` to the 0–8 MB chip RAM range and `MEMF_FAST` to the 8–16 MB fast RAM range.  `AllocMem` routes `MEMF_CHIP` to the 0–8 MB chip RAM range and `MEMF_FAST` to the 8–16 MB fast RAM range.  `AllocMem` routes `MEMF_CHIP` to the 0–8 MB chip RAM range and `MEMF_FAST` to the 8–16 MB fast RAM range.
+- **Memory Allocation**: Managing the system memory map and providing allocation services.  `AllocMem` routes `MEMF_CHIP` to the 0–8 MB chip RAM range and `MEMF_FAST` to the 8–16 MB fast RAM range.
 - **IPC (Inter-Process Communication)**: Message ports and signals for communication between tasks (including `SIGF_CHILD` for parent notification).
 - **Library Loading**: Dynamic loading of native and emulated libraries.
 - **MMU Sandboxing**: 4-level paging and memory protection.
@@ -31,8 +31,10 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
-- `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.
-- `chip_emu.c` (in `kernel/chipset/`): AGA/ECS custom chip emulator with a sparse register dispatch table for the 0xDFF000 register area. eSNi [CABI thtl ` opco](/krmn l/pe/indxmd).
+- `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Installed at IDT vector 14 after `IDT_Init()` so that M68k accesses to the non-present `0x00B00000-0x00DFFFFF` window are emulated rather than raising an unhandled #PF.
+- `chip_emu.c` (in `kernel/chipset/`): AGA/ECS custom chip emulator with a sparse register dispatch table for the 0xDFF000 register area.  See [Chipset Emulator](/kernel/chipset/index.md).
+- `rom_modules.c`: Registers the built-in AmigaOS-compatible libraries at boot.
+- `thunk_handler.c`: Native ABI thunk translator for `ILLEGAL` opcode breakout from M68k code.
 
 ## AmigaOS-Compatible Libraries and Devices
 
@@ -57,21 +59,19 @@ Key details:
 
 ## M68k Integration
 
-
-
-ExEcxprovides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call native ec provides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call nativExec provides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call native C functions.
+Exec provides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call native C functions.
 
 ## Guest Memory Layout
 
-The emulated M68k guest RAM is wired into the 4 GB guest physical window at offset `0x00000000`.  `GUEST_RAM_SIZE` is defineeed  a s 16 MB, split into:
+The emulated M68k guest RAM is wired into the 4 GB guest physical window at offset `0x00000000`.  `GUEST_RAM_SIZE` is defined as 16 MB, split into:
 
-- **CCChip RAM**: `0x00000000–0x000000F F ` B minus a 64 K( guard8 MB)
+- **Chip RAM**: `0x00000000–0x007F0000` (8 MB minus a 64 KB guard)
 - **Fast RAM**: `0x00800000–0x00FF0000` (8 MB minus a 64 KB guard)
 
-`exec.library` `AllocMem` honours the fequeir flags:
+`exec.library` `AllocMem` honours the request flags:
 
-- `MEMF_CHIP` / `MEMF_DMA`s/ `ME8F_24 ITDMA`MallocBte f om chip RAM.
-- `MEMF_FAST`rel oclteayf om fare RAM.
--nU specifiea / `MEMF_PUBLIC`nilaocateo s preferifasnhRA M sa fall nack tdxchip.RAM.
+- `MEMF_CHIP` / `MEMF_DMA` / `MEMF_24BITDMA` allocate from chip RAM.
+- `MEMF_FAST` allocates from fast RAM.
+- Unspecified / `MEMF_PUBLIC` allocations prefer fast RAM and fall back to chip RAM.
 
-  The Amigau ucustom chip / CIA register window at `0x00B00000–0x00DFFFFF` is mapped non-pnrensent; accesses fromc M6c8k code fault to the page fault handler and are forwatrdedti to tiheo chip oemnulator snin `kersnel/c
+The Amiga custom chip / CIA register window at `0x00B00000–0x00DFFFFF` is mapped non-present; accesses from M68k code fault to the page fault handler and are forwarded to the chip emulator in `kernel/chipset/chip_emu.c`.

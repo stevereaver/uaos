@@ -99,44 +99,77 @@ stack_top:
 
 section .text progbits alloc exec nowrite align=16
 
+extern __guest_ram_start
+extern __guest_ram_end
+extern __bss_start
+extern __bss_end
+
 global _start
 _start:
+    cli
 
-    ; EBX = mb2 info ptr,  EAX = mb2 magic
-    mov     edi, eax            ; save magic  in EDI (survives mode switch)
-    mov     esi, ebx            ; save info   in ESI
+    ; ---- Save multiboot2 parameters in callee-saved registers ----
+    ; EAX = mb2 magic, EBX = mb2 info ptr (set by GRUB)
+    mov     ebp, eax            ; save magic  in EBP (survives BSS zeroing)
+    ; EBX already holds the info pointer
 
     ; ---- Load our 32-bit GDT so segments are definitely flat ----
-    lgd,EAX = m2magic
-    mov     adi 0x10DImde swtch
-    movo    esi, sbx            ;xav   ESI
+    lgdt    [gdt32_ptr]
+    mov     ax, 0x10
+    mov     ds, ax
     mov     es, ax
     mov     ss, ax
     xor     ax, ax
     mov     fs, ax
     mov     gs, ax
 
-    ; ---- Set up the bootstrap stack ----
+    ; ================================================================
+    ; ZERO THE BSS SECTION (GRUB may not zero all 32+ MB of it)
+    ; Must happen BEFORE setting up the stack — the stack and page
+    ; tables live in .bss and will be (re)initialised below.
+    ; rep stosd clobbers EAX, ECX, EDI — EBP and EBX are safe.
+    ; ================================================================
+    mov     edi, __bss_start
+    mov     ecx, __bss_end
+    sub     ecx, edi
+    shr     ecx, 2              ; dwords
+    xor     eax, eax
+    rep     stosd
+
+    ; ================================================================
+    ; ZERO THE GUEST RAM SECTION (NOLOAD — bootloader may not clear it)
+    ; ================================================================
+    mov     edi, __guest_ram_start
+    mov     ecx, __guest_ram_end
+    sub     ecx, edi
+    shr     ecx, 2              ; dwords
+    xor     eax, eax
+    rep     stosd
+
+    ; ---- Restore multiboot2 parameters ----
+    mov     edi, ebp            ; magic  → EDI (survives mode switch)
+    mov     esi, ebx            ; info   → ESI
+
+    ; ---- Set up the bootstrap stack (in .bss, now zeroed) ----
     mov     esp, stack_top
 
-    ; ============    ; ZERO THE GUEST RAM SECTION (NOLOAD — bootloader may not clear it)
-
-    pu---- uhsbooro  k----
-    shr     esp,    aketo
     ; ================================================================
     ; BUILD IDENTITY-MAP PAGE TABLES (in 32-bit mode, paging OFF)
     ;
     ; PML4[0]  → pdpt_table   (0–512 GB)
-    push    edi
-    push    esi
     ; PDPT[0]  → pd_table     (0–1 GB)
     ; PD[0..N] → 2 MB huge pages identity-mapped
     ; ================================================================
 
     ; PML4[0] = &pdpt_table | PRESENT | WRITABLE
     mov     eax, pdpt_table
-    ,op
-     li
+    or      eax, 0x03
+    mov     dword [pml4_table],     eax
+    mov     dword [pml4_table + 4], 0
+
+    ; PDPT[0] = &pd_table | PRESENT | WRITABLE
+    mov     eax, pd_table
+    or      eax, 0x03
     mov     dword [pdpt_table],     eax
     mov     dword [pdpt_table + 4], 0
 

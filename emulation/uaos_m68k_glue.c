@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "uaos_emu.h"
+#include "chipset/chip_emu.h"
 #include "dos/vfs.h"
 #include "dos/handler.h"
 #include "dos/handle_table.h"
@@ -238,26 +239,51 @@ static int guest_read_filelock(uint32_t lock_bptr,
  * Musashi memory callbacks
  * ========================================================================= */
 
+/* Route accesses to the Amiga custom chip/CIA window (0xB00000-0xDFFFFF)
+ * through the chipset emulator.  This is the same range handled by the x86_64
+ * page fault handler for native code; M68k code must use it too, since the
+ * Musashi emulator does not trigger host page faults. */
+#define CHIP_WINDOW_START 0x00B00000u
+#define CHIP_WINDOW_END   0x00DFFFFFu
+
+static inline int is_chip_window(unsigned int addr)
+{
+    return addr >= CHIP_WINDOW_START && addr <= CHIP_WINDOW_END;
+}
+
 unsigned int m68k_read_memory_8(unsigned int addr)
 {
-    if (addr < GUEST_RAM_SIZE) return g_ram[addr];
+    if (is_chip_window(addr))
+        return chip_emu_read(addr - CHIP_WINDOW_START, 1);
+    if (addr < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
+        return g_ram[addr];
+    }
     return 0xFF;
 }
 
 unsigned int m68k_read_memory_16(unsigned int addr)
 {
-    if (addr + 1 < GUEST_RAM_SIZE)
+    if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END)
+        return chip_emu_read(addr - CHIP_WINDOW_START, 2);
+    if (addr + 1 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr] << 8) | g_ram[addr+1];
+    }
     return 0xFFFF;
 }
 
 unsigned int m68k_read_memory_32(unsigned int addr)
 {
-    if (addr + 3 < GUEST_RAM_SIZE)
+    if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END)
+        return chip_emu_read(addr - CHIP_WINDOW_START, 4);
+    if (addr + 3 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr]   << 24) |
                ((unsigned int)g_ram[addr+1] << 16) |
                ((unsigned int)g_ram[addr+2] <<  8) |
                 (unsigned int)g_ram[addr+3];
+    }
     return 0xFFFFFFFF;
 }
 
@@ -270,13 +296,27 @@ unsigned int m68k_read_memory_32(unsigned int addr)
 
 void m68k_write_memory_8(unsigned int addr, unsigned int val)
 {
-    if (addr < GUEST_RAM_SIZE) g_ram[addr] = (uint8_t)val;
+    if (is_chip_window(addr)) {
+        chip_emu_write(addr - CHIP_WINDOW_START, val, 1);
+        GUEST_WRITE_BARRIER();
+        return;
+    }
+    if (addr < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
+        g_ram[addr] = (uint8_t)val;
+    }
     GUEST_WRITE_BARRIER();
 }
 
 void m68k_write_memory_16(unsigned int addr, unsigned int val)
 {
+    if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END) {
+        chip_emu_write(addr - CHIP_WINDOW_START, val, 2);
+        GUEST_WRITE_BARRIER();
+        return;
+    }
     if (addr + 1 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr]   = (uint8_t)(val >> 8);
         g_ram[addr+1] = (uint8_t)(val);
     }
@@ -285,7 +325,13 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
 
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
 {
+    if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END) {
+        chip_emu_write(addr - CHIP_WINDOW_START, val, 4);
+        GUEST_WRITE_BARRIER();
+        return;
+    }
     if (addr + 3 < GUEST_RAM_SIZE) {
+        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
         /* Fix: SAS/C startup writes a bad stack limit to 0x89EC because the
          * stack size parameter on the stack is 0. Override with a safe limit.
          * limit should be low enough that SP > limit. Use SPLower + 0x80. */
@@ -1596,6 +1642,13 @@ static void exec_OpenLibrary(void)
 
     /* Match known libraries */
     uint32_t result = FAKE_LIB_BASE; /* default: return a stub base for unknown libs */
+
+    const char *exec_name = "exec.library";
+    int exec_match = 1;
+    for (int j = 0; exec_name[j]; j++)
+        if (name[j] != exec_name[j]) { exec_match = 0; break; }
+    if (exec_match) result = EXEC_BASE;
+
     const char *dos_name = "dos.library";
     int dos_match = 1;
     for (int j = 0; dos_name[j]; j++)
@@ -1642,6 +1695,15 @@ static void exec_OpenLibrary(void)
     }
 
     m68k_set_reg(M68K_REG_D0, result);
+
+    /* Update the Z flag in SR so caller's beq/bne tests work correctly.
+     * The ILLEGAL-instruction callback bypasses normal instruction execution,
+     * so flags from before the jsr (e.g. moveq #0,d0 setting Z=1) persist.
+     * Z flag is bit 2 (0x0004) of the status register. */
+    uint16_t sr = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+    if (result == 0) sr |= 0x0004;   /* set Z */
+    else             sr &= ~0x0004;  /* clear Z */
+    m68k_set_reg(M68K_REG_SR, sr);
 }
 
 static void exec_CloseLibrary(void) { /* no-op */ }
@@ -1828,6 +1890,7 @@ static void exec_GetMsg(void)
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t msg  = 0;
     if (port) msg = glue_list_remove_head(port + MP_MSGLIST);
+    (void)msg;
     m68k_set_reg(M68K_REG_D0, msg);
 }
 
@@ -2651,17 +2714,6 @@ int m68k_illg_instr_callback(int opcode)
     uint8_t  lib = g_ram[pc];     /* pc already advanced past ILLEGAL word */
     uint8_t  fn  = g_ram[pc + 1];
 
-    /* [C] trace disabled — re-enable by uncommenting for debugging */
-    /*{
-        char msg[48] = "[C] ";
-        char n[4]; int i = 4, j = 0;
-        u32_dec(lib, n, 4); while(n[j]&&i<46) msg[i++]=n[j++];
-        msg[i++]='.';
-        u32_dec(fn,  n, 4); j=0; while(n[j]&&i<46) msg[i++]=n[j++];
-        msg[i++]='\n'; msg[i]=0;
-        emu_print(msg);
-    }*/
-
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);
 
@@ -3071,34 +3123,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
         m68k_execute(1000000);
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
-        UAOS_Intuition_PostIntuiTicks();
-        slices++;
-    }
-    (void)slices;
-    return 0;
-}
-
-    /* Run in 1M-cycle slices until the program calls Exit or we time out */
-    int slices = 0;
-    while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
-        m68k_execute(1000000);
-        UAOS_Intuition_PostIntuiTicks();
-        slices++;
-    }
-    (void)slices;
-    return 0;
-}
-    /* Run in 1M-cycle slices until the program calls Exit or we time out */
-    int slices = 0;
-    while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
-        m68k_execute(1000000);
-        UAOS_Intuition_PostIntuiTicks();
-        slices++;
-    }
-    (void)slices;
-    return 0;
-}
-        m68k_execute(1000000);
+        chip_emu_run_to_cycle(g_m68k_cycles);
         UAOS_Intuition_PostIntuiTicks();
         slices++;
     }

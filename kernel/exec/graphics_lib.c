@@ -15,10 +15,17 @@
 #include "chipset/chip_emu.h"
 #include "../display/framebuffer.h"
 #include "../display/wm.h"
+#include "../boot/kprint.h"
+#include "task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+
+/* g_wait_tof_task — defined here (in graphics_lib.c) rather than in task.c
+ * to avoid shifting Task_SwitchPrev/Task_SwitchNext in BSS, which for reasons
+ * not yet understood causes a system-wide freeze.  Declared extern in task.h. */
+UaosTask *g_wait_tof_task = NULL;
 
 /* =========================================================================
  * Musashi register access (provided by emulation/uaos_m68k_glue.c)
@@ -1576,10 +1583,28 @@ static void graphics_LoadView(void)
 
 static void graphics_WaitTOF(void)
 {
-    /* WaitTOF — wait for the next VBlank tick from the chipset emulator. */
+    /* WaitTOF — wait for the next VBlank tick from the chipset emulator.
+     * M68k tasks get a dedicated VBlank signal bit so they can block on
+     * Wait() instead of busy-waiting and starving the idle/WM task.
+     * After waking, trigger a WM redraw so any bitmap changes made by
+     * the guest (e.g. WritePixelArray8 into a SuperBitMap) are rendered
+     * to the framebuffer on the next vertical blank. */
+    UaosTask *t = Task_Current();
+    if (t && t->type == TASK_TYPE_M68K && t->m68k_vblank_sig >= 0) {
+        uint32_t sigmask = (1u << (unsigned int)t->m68k_vblank_sig);
+        /* Clear any already-pending VBlank signal so we wait for the next one. */
+        t->tc_SigRecvd &= ~sigmask;
+        g_wait_tof_task = t;
+        Wait(sigmask);
+        g_wait_tof_task = NULL;
+        WM_Redraw();
+        return;
+    }
+
+    /* Fallback for native callers / tasks without a VBlank signal bit. */
     uint32_t start = chip_emu_vblank_count();
     while (chip_emu_vblank_count() == start) {
-        Task_Yield();
+        __asm__ volatile ("pause");
     }
 }
 
@@ -4314,15 +4339,6 @@ void UAOS_Graphics_Dispatch(uint32_t fn)
 
 void UAOS_GRAPHICS_Register(void)
 {
-    UAOS_ROM_Register("graphics.library", 40, 0x000000C0,
-                      (uint16_t)(sizeof(graphics_funcs) / sizeof(graphics_funcs[0])),
-                      graphics_funcs);
-}
-{
-    UAOS_ROM_Register("graphics.library", 40, 0x000000C0,
-                      (uint16_t)(sizeof(graphics_funcs) / sizeof(graphics_funcs[0])),
-                      graphics_funcs);
-}
     UAOS_ROM_Register("graphics.library", 40, 0x000000C0,
                       (uint16_t)(sizeof(graphics_funcs) / sizeof(graphics_funcs[0])),
                       graphics_funcs);

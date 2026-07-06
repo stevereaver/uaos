@@ -24,6 +24,9 @@
 #include <string.h>
 
 extern volatile uint64_t g_pit_ticks;
+extern void kprint(const char *);
+extern void kprinthex(uint64_t);
+extern void kprintdec(uint32_t);
 
 /* =========================================================================
  * Guest RAM accessor (provided by uaos_m68k_glue.c)
@@ -3063,18 +3066,14 @@ void UAOS_Intuition_ApplyFrontScreenPalette(void)
         WB_InitPalette();
 }
 
-/* WM palette callback: apply the palette of the screen the window lives on. */
+/* WM palette callback: keep the host Workbench chrome palette.
+ * Intuition windows (including SuperBitMap screens) should render with the
+ * same default blue title-bar/gadget colours as native WM windows so the
+ * window chrome is always visible and consistent. */
 static void intuition_apply_window_palette(int wm_handle)
 {
-    uint32_t win_ptr = get_guest_window_from_handle(wm_handle);
-    if (!win_ptr) return;
-    uint32_t screen = mem_u32(win_ptr + WIN_OFF_WSCREEN);
-    if (!screen) return;
-    ScreenSlot *slot = find_screen_slot(screen);
-    if (slot && (slot->colors || slot->colors32 || slot->pens))
-        apply_screen_palette(slot);
-    else
-        WB_InitPalette();
+    (void)wm_handle;
+    WB_InitPalette();
 }
 
 static void signal_pub_screen(ScreenSlot *slot);
@@ -3753,7 +3752,6 @@ static void intuition_OpenWindowTagList(void)
             slot->super_bitmap = super_bitmap;
         }
     }
-
     /* Build an AmigaOS-compatible Window structure. */
     memset(&g_ram[win_ptr], 0, sizeof(AmigaWindow));
     mem_w32(win_ptr + WIN_OFF_NEXTWINDOW,   0);
@@ -8014,7 +8012,7 @@ static void *intuition_funcs[] = {
     intuition_RefreshWindowFrame,
     intuition_ModifyIDCMP,
     intuition_SetWindowTitles,
-    intuition_OpenWindowTagList,
+    intuition_OpenWindowTags,
     intuition_OpenWorkbench,
     intuition_CloseWorkbench,
     intuition_DrawBorder,
@@ -8030,7 +8028,7 @@ static void *intuition_funcs[] = {
     intuition_ScreenToFront,
     intuition_ScreenToBack,
     intuition_ShowTitle,
-    intuition_OpenScreenTagList,
+    intuition_OpenScreenTags,
     intuition_SetMenuStrip,
     intuition_ClearMenuStrip,
     intuition_ResetMenuStrip,
@@ -8134,8 +8132,8 @@ static void *intuition_funcs[] = {
     intuition_SetGadgetAttrsA,
     intuition_SetSuperAttrs,
     intuition_SetWindowPointer,
-    intuition_OpenWindowTags,
-    intuition_OpenScreenTags,
+    intuition_OpenWindowTagList,
+    intuition_OpenScreenTagList,
     intuition_DoGadgetMethod,
     intuition_SetGadgetAttrs,
 };
@@ -8146,6 +8144,7 @@ void UAOS_Intuition_Dispatch(uint32_t fn)
         fprintf(stderr, "[INTUITION] unknown fn=%u\n", fn);
         return;
     }
+    static uint32_t int_call_count = 0;
     void (*f)(void) = (void (*)(void))intuition_funcs[fn - 1];
     f();
 }

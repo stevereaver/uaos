@@ -31,8 +31,12 @@
 #include "dos/partition.h"
 #include "drivers/ide.h"
 #include "dos/iso9660.h"
+#include "drivers/floppy_blk.h"
 #include "exec/task.h"
 #include "exec/syscall_table.h"
+#include "chipset/floppy.h"
+#include "chipset/chip_emu.h"
+#include "uaos_emu.h"
 
 /* -----------------------------------------------------------------------
  * Multiboot2 constants
@@ -260,6 +264,9 @@ volatile uint64_t g_pit_ticks = 0;
 
 extern void Task_ScheduleFromIRQ(void);
 extern void timer_ProcessTicks(void);
+extern int FloppyBlockDev_Init(void);
+extern BlockDev *BlockDev_Find(const char *name);
+extern int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors);
 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
@@ -305,11 +312,34 @@ extern void chip_emu_reset(void);
 extern void audio_init(void);
 extern void audio_sine_test(void);
 extern void audio_pattern_test(void);
+extern void floppy_make_test_adf(void);
+extern int chip_emu_disk_dma_test(void);
+extern int floppy_block_device_test(void);
+extern int floppy_block_device_write_test(void);
+extern int floppy_write_protect_test(void);
+extern int floppy_dma_write_test(void);
 extern int chip_emu_dma_test(void);
+extern uint16_t g_intreq;
 extern int chip_emu_line_test(void);
 extern int chip_emu_fill_test(void);
+extern int chip_emu_fill_complex_test(void);
+extern int chip_emu_blitter_busy_test(void);
+extern int chip_emu_blitter_desc_test(void);
 extern int chip_emu_raster_test(void);
 extern int chip_emu_sprite_test(void);
+extern int chip_emu_parallel_test(void);
+extern int chip_emu_serial_test(void);
+extern int chip_emu_timing_lock_test(void);
+extern int chip_emu_timing_contention_test(void);
+extern int chip_emu_hblank_test(void);
+extern int chip_emu_ham8_test(void);
+extern int chip_emu_64color_test(void);
+extern int chip_emu_diwhigh_test(void);
+extern int chip_emu_agnus_slot_test(void);
+extern int chip_emu_sprite_border_test(void);
+extern int chip_emu_sprite_priority_test(void);
+extern int chip_emu_sprite_superhires_test(void);
+extern int chip_emu_sprite_subpixel_test(void);
 extern void Desktop_Draw(void);
 extern void uaos_page_fault_isr(void);
 /* screen-size globals used by PS/2 mouse clamp (defined in stubs.c) */
@@ -390,6 +420,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running audio pattern test...\n");
     audio_pattern_test();
 
+    kprint("[BOOT] Initialising floppy subsystem...\n");
+    floppy_make_test_adf();
+    kprint("[BOOT] Running disk DMA test...\n");
+    int disk_test = chip_emu_disk_dma_test();
+    kprint(disk_test ? "[BOOT] Disk DMA test PASSED\n" : "[BOOT] Disk DMA test FAILED\n");
+
     /* Run DMA slot-arbitration test */
     kprint("[BOOT] Running DMA slot test...\n");
     int dma_test = chip_emu_dma_test();
@@ -403,15 +439,43 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     int fill_test = chip_emu_fill_test();
     kprint(fill_test ? "[BOOT] Blitter fill test PASSED\n" : "[BOOT] Blitter fill test FAILED\n");
 
+    kprint("[BOOT] Running Blitter complex fill test...\n");
+    int fill_complex_test = chip_emu_fill_complex_test();
+    kprint(fill_complex_test ? "[BOOT] Blitter complex fill test PASSED\n" : "[BOOT] Blitter complex fill test FAILED\n");
+
+    kprint("[BOOT] Running Blitter large-blit busy test...\n");
+    int blitter_busy_test = chip_emu_blitter_busy_test();
+    kprint(blitter_busy_test ? "[BOOT] Blitter large-blit busy test PASSED\n" : "[BOOT] Blitter large-blit busy test FAILED\n");
+
+    kprint("[BOOT] Running Blitter descending overlap test...\n");
+    int blitter_desc_test = chip_emu_blitter_desc_test();
+    kprint(blitter_desc_test ? "[BOOT] Blitter descending overlap test PASSED\n" : "[BOOT] Blitter descending overlap test FAILED\n");
+
     /* Run color-clock raster test */
     kprint("[BOOT] Running color-clock raster test...\n");
     int raster_test = chip_emu_raster_test();
     kprint(raster_test ? "[BOOT] Color-clock raster test PASSED\n" : "[BOOT] Color-clock raster test FAILED\n");
 
-    /* Run AGA sprite test */
+    /* Run AGA sprite tests */
     kprint("[BOOT] Running AGA sprite test...\n");
     int sprite_test = chip_emu_sprite_test();
     kprint(sprite_test ? "[BOOT] AGA sprite test PASSED\n" : "[BOOT] AGA sprite test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite border test...\n");
+    int sprite_border_test = chip_emu_sprite_border_test();
+    kprint(sprite_border_test ? "[BOOT] AGA sprite border test PASSED\n" : "[BOOT] AGA sprite border test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite priority test...\n");
+    int sprite_priority_test = chip_emu_sprite_priority_test();
+    kprint(sprite_priority_test ? "[BOOT] AGA sprite priority test PASSED\n" : "[BOOT] AGA sprite priority test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite superhires test...\n");
+    int sprite_superhires_test = chip_emu_sprite_superhires_test();
+    kprint(sprite_superhires_test ? "[BOOT] AGA sprite superhires test PASSED\n" : "[BOOT] AGA sprite superhires test FAILED\n");
+
+    kprint("[BOOT] Running AGA sprite subpixel test...\n");
+    int sprite_subpixel_test = chip_emu_sprite_subpixel_test();
+    kprint(sprite_subpixel_test ? "[BOOT] AGA sprite subpixel test PASSED\n" : "[BOOT] AGA sprite subpixel test FAILED\n");
 
     /* Register all built-in ROM library modules */
     kprint("[BOOT] Registering ROM modules...\n");
@@ -425,8 +489,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] WARNING: Bridge init returned ");
         kprinthex((uint64_t)rc);
         kprint(" — emulation unavailable.\n");
+        chip_emu_set_keyboard_route(0); /* native shell keeps keyboard input */
     } else {
         kprint("[BOOT] M68k emulation bridge ready.\n");
+        chip_emu_set_keyboard_route(1); /* route to CIA-A SDR for M68k input */
     }
 
     kprint("\n[BOOT] UAOS kernel initialisation complete.\n");
@@ -440,6 +506,65 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Initialising block device layer...\n");
     BlockDev_Init();
     kprint("[BOOT] Block device layer initialised.\n");
+
+    kprint("[BOOT] Registering floppy block device...\n");
+    if (FloppyBlockDev_Init() == 0) {
+        kprint("[BOOT] Floppy block device DF0: registered.\n");
+    } else {
+        kprint("[BOOT] Floppy block device registration failed.\n");
+    }
+
+    kprint("[BOOT] Running floppy block-device test...\n");
+    int floppy_blk_test = floppy_block_device_test();
+    kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
+
+    kprint("[BOOT] Running floppy block-device write test...\n");
+    int floppy_write_test = floppy_block_device_write_test();
+    kprint(floppy_write_test ? "[BOOT] Floppy block-device write test PASSED\n" : "[BOOT] Floppy block-device write test FAILED\n");
+
+    kprint("[BOOT] Running floppy write-protect test...\n");
+    int wp_test = floppy_write_protect_test();
+    kprint(wp_test ? "[BOOT] Floppy write-protect test PASSED\n" : "[BOOT] Floppy write-protect test FAILED\n");
+
+    kprint("[BOOT] Running floppy DMA write test...\n");
+    int dma_write_test = floppy_dma_write_test();
+    kprint(dma_write_test ? "[BOOT] Floppy DMA write test PASSED\n" : "[BOOT] Floppy DMA write test FAILED\n");
+
+    kprint("[BOOT] Running parallel port test...\n");
+    int parallel_test = chip_emu_parallel_test();
+    kprint(parallel_test ? "[BOOT] Parallel port test PASSED\n" : "[BOOT] Parallel port test FAILED\n");
+
+    kprint("[BOOT] Running serial port test...\n");
+    int serial_test = chip_emu_serial_test();
+    kprint(serial_test ? "[BOOT] Serial port test PASSED\n" : "[BOOT] Serial port test FAILED\n");
+
+    kprint("[BOOT] Running CPU/chipset timing-lock test...\n");
+    int timing_lock_test = chip_emu_timing_lock_test();
+    kprint(timing_lock_test ? "[BOOT] Timing-lock test PASSED\n" : "[BOOT] Timing-lock test FAILED\n");
+
+    kprint("[BOOT] Running chip RAM timing-contention test...\n");
+    int timing_contention_test = chip_emu_timing_contention_test();
+    kprint(timing_contention_test ? "[BOOT] Timing-contention test PASSED\n" : "[BOOT] Timing-contention test FAILED\n");
+
+    kprint("[BOOT] Running horizontal-blanking timing test...\n");
+    int hblank_test = chip_emu_hblank_test();
+    kprint(hblank_test ? "[BOOT] H-blanking test PASSED\n" : "[BOOT] H-blanking test FAILED\n");
+
+    kprint("[BOOT] Running AGA HAM8 display test...\n");
+    int ham8_test = chip_emu_ham8_test();
+    kprint(ham8_test ? "[BOOT] HAM8 test PASSED\n" : "[BOOT] HAM8 test FAILED\n");
+
+    kprint("[BOOT] Running AGA 64-colour display test...\n");
+    int color64_test = chip_emu_64color_test();
+    kprint(color64_test ? "[BOOT] 64-colour test PASSED\n" : "[BOOT] 64-colour test FAILED\n");
+
+    kprint("[BOOT] Running AGA DIWHIGH register test...\n");
+    int diwhigh_test = chip_emu_diwhigh_test();
+    kprint(diwhigh_test ? "[BOOT] DIWHIGH test PASSED\n" : "[BOOT] DIWHIGH test FAILED\n");
+
+    kprint("[BOOT] Running Agnus slot table test...\n");
+    int agnus_test = chip_emu_agnus_slot_test();
+    kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
 
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");
@@ -667,419 +792,49 @@ halt:
         __asm__ volatile ("cli; hlt");
     }
 }
-        IDT_SetHandler(33, PS2Kbd_IRQHandler);
-        PS2Kbd_Init();
-        PIC_UnmaskIRQ(1);
-        kprint("[BOOT] PS/2 keyboard active.\n");
 
-        kprint("[BOOT] Initialising RTC clock...\n");
-        IDT_SetHandler(40, RTC_IRQHandler);  /* IRQ8 = vector 40 */
-        RTC_Init();
-        PIC_UnmaskIRQ(8);
-        Desktop_UpdateClock();               /* initial draw from CMOS */
-        kprint("[BOOT] RTC active.\n");
+int chip_emu_disk_dma_test(void)
+{
+    uint32_t dst = 0x18000u;
+    if (dst + 1024 > GUEST_RAM_SIZE) return 0;
+
+    /* Ensure the virtual drive is spinning. */
+    floppy_set_motor(1);
+
+    /* Set disk DMA pointer. */
+    chip_emu_write(0x020, (dst >> 16) & 0xFFFFu, 2); /* DSKPTH */
+    chip_emu_write(0x022, dst & 0xFFFFu, 2); /* DSKPTL */
+    chip_emu_write(0x07E, 0x4489, 2); /* DSKSYNC */
+
+    /* Start read of 32 words (one sector) with DMAEN. */
+    chip_emu_write(0x024, 0x8020, 2); /* DSKLEN = 32 words, read, DMAEN */
+
+    /* Wait up to 50 ticks for the DMA to complete. */
+    for (int i = 0; i < 50; i++) {
+        floppy_tick();
+        if ((g_intreq & 0x0002u) != 0) break;
     }
 
-    /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
-    APIC_Init();
+    if ((g_intreq & 0x0002u) == 0) return 0;
 
-    kprint("[BOOT] Detecting vmmouse...\n");
-    VMMouse_Init();
-    if (VMMouse_Detect())
-        kprint("[BOOT] vmmouse active (absolute mode).\n");
-    else
-        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
-
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
-
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
+    /* Check that the sector data contains the test signature. */
+    for (int i = 0; i < 16; i++) {
+        if (g_ram[dst + i] != (uint8_t)"UAOS ADF TEST BOOT"[i]) return 0;
     }
-}
-        RTC_Init();
-        PIC_UnmaskIRQ(8);
-        Desktop_UpdateClock();               /* initial draw from CMOS */
-        kprint("[BOOT] RTC active.\n");
-    }
-
-    /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
-    APIC_Init();
-
-    kprint("[BOOT] Detecting vmmouse...\n");
-    VMMouse_Init();
-    if (VMMouse_Detect())
-        kprint("[BOOT] vmmouse active (absolute mode).\n");
-    else
-        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
-
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
-
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-    APIC_Init();
-
-    kprint("[BOOT] Detecting vmmouse...\n");
-    VMMouse_Init();
-    if (VMMouse_Detect())
-        kprint("[BOOT] vmmouse active (absolute mode).\n");
-    else
-        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
-
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
-
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-    kprint("[BOOT] Detecting vmmouse...\n");
-    VMMouse_Init();
-    if (VMMouse_Detect())
-        kprint("[BOOT] vmmouse active (absolute mode).\n");
-    else
-        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
-
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
-
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
-
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
-
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
+    return 1;
 }
 
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
+int floppy_block_device_test(void)
+{
+    BlockDev *dev = BlockDev_Find("floppy0");
+    if (!dev) return 0;
 
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
+    uint8_t buf[512];
+    if (BlockDev_Read(dev, 1, buf, 1) != 0) return 0;
 
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
+    for (int i = 0; i < 256; i++) {
+        if (buf[i * 2 + 0] != (uint8_t)i) return 0;
+        if (buf[i * 2 + 1] != (uint8_t)(0xFF - i)) return 0;
     }
-}
-    VMMouse_Init();
-    if (VMMouse_Detect())
-        kprint("[BOOT] vmmouse active (absolute mode).\n");
-    else
-        kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
-
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
-
-    /* Init scheduler BEFORE creating any tasks */
-    TaskScheduler_Init();
-
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-    /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
-     * The raw assembly entry passes the full interrupt frame to
-     * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
-    IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-    /* Create system idle task (runs the former event loop) */
-    extern void Task_IdleEntry(void *arg);
-    Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
-
-    kprint("[BOOT] Initialising userspace GUI windows...\n");
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-    UserWindow_Init();
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-
-    kprint("[BOOT] Opening shell window...\n");
-    ShellWin_Init();
-
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
-
-    /* Start the first task with interrupts off */
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-    __asm__ volatile ("cli");
-    Task_StartFirst();
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
-
-halt:
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
-}
+    return 1;
 }
