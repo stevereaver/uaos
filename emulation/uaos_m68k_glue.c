@@ -618,6 +618,17 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_ALLOC_SCREEN_BUFFER  137
 #define INTUITION_FREE_SCREEN_BUFFER   138
 #define INTUITION_CHANGE_SCREEN_BUFFER 139
+#define INTUITION_WBENCH_TO_BACK       140
+#define INTUITION_WBENCH_TO_FRONT      141
+#define INTUITION_MAKE_SCREEN          142
+#define INTUITION_REMAKE_DISPLAY       143
+#define INTUITION_RETHINK_DISPLAY      144
+#define INTUITION_CLEAR_DMREQUEST      145
+#define INTUITION_SET_DMREQUEST        146
+#define INTUITION_SET_MOUSE_QUEUE      147
+#define INTUITION_SET_PUB_SCREEN_MODES 148
+#define INTUITION_LEND_MENUS           149
+#define INTUITION_GADGET_MOUSE         150
 
 /* gadtools.library function indices */
 #define GADTOOLS_OPEN_LIBRARY          1
@@ -921,6 +932,17 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_ALLOC_SCREEN_BUFFER          ( -768)  /* AllocScreenBuffer */
 #define LVO_INTUITION_FREE_SCREEN_BUFFER           ( -774)  /* FreeScreenBuffer */
 #define LVO_INTUITION_CHANGE_SCREEN_BUFFER         ( -780)  /* ChangeScreenBuffer */
+#define LVO_INTUITION_WBENCH_TO_BACK               ( -336)  /* WBenchToBack */
+#define LVO_INTUITION_WBENCH_TO_FRONT              ( -342)  /* WBenchToFront */
+#define LVO_INTUITION_MAKE_SCREEN                  ( -378)  /* MakeScreen */
+#define LVO_INTUITION_REMAKE_DISPLAY               ( -384)  /* RemakeDisplay */
+#define LVO_INTUITION_RETHINK_DISPLAY              ( -390)  /* RethinkDisplay */
+#define LVO_INTUITION_CLEAR_DMREQUEST              (  -48)  /* ClearDMRequest */
+#define LVO_INTUITION_SET_DMREQUEST                ( -258)  /* SetDMRequest */
+#define LVO_INTUITION_SET_MOUSE_QUEUE              ( -498)  /* SetMouseQueue */
+#define LVO_INTUITION_SET_PUB_SCREEN_MODES         ( -546)  /* SetPubScreenModes */
+#define LVO_INTUITION_LEND_MENUS                   ( -804)  /* LendMenus */
+#define LVO_INTUITION_GADGET_MOUSE                 ( -570)  /* GadgetMouse */
 
 /* Non-LVO functions (amiga.lib / gadtools / graphics.library):
  *   GetDisplayInfoData(47), NextDisplayInfo(48) — graphics.library
@@ -1154,6 +1176,17 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_ALLOC_SCREEN_BUFFER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ALLOC_SCREEN_BUFFER);
             case INTUITION_FREE_SCREEN_BUFFER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_SCREEN_BUFFER);
             case INTUITION_CHANGE_SCREEN_BUFFER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CHANGE_SCREEN_BUFFER);
+            case INTUITION_WBENCH_TO_BACK: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WBENCH_TO_BACK);
+            case INTUITION_WBENCH_TO_FRONT: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_WBENCH_TO_FRONT);
+            case INTUITION_MAKE_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_MAKE_SCREEN);
+            case INTUITION_REMAKE_DISPLAY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REMAKE_DISPLAY);
+            case INTUITION_RETHINK_DISPLAY: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_RETHINK_DISPLAY);
+            case INTUITION_CLEAR_DMREQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLEAR_DMREQUEST);
+            case INTUITION_SET_DMREQUEST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_DMREQUEST);
+            case INTUITION_SET_MOUSE_QUEUE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_MOUSE_QUEUE);
+            case INTUITION_SET_PUB_SCREEN_MODES: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_PUB_SCREEN_MODES);
+            case INTUITION_LEND_MENUS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LEND_MENUS);
+            case INTUITION_GADGET_MOUSE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GADGET_MOUSE);
         }
     } else if (lib_id == LIB_GADTOOLS) {
         switch (func_idx) {
@@ -1442,6 +1475,17 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_ALLOC_SCREEN_BUFFER                       , LIB_INTUITION, INTUITION_ALLOC_SCREEN_BUFFER);
     install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_SCREEN_BUFFER                        , LIB_INTUITION, INTUITION_FREE_SCREEN_BUFFER);
     install_lvo(INTUITION_BASE, LVO_INTUITION_CHANGE_SCREEN_BUFFER                      , LIB_INTUITION, INTUITION_CHANGE_SCREEN_BUFFER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WBENCH_TO_BACK                            , LIB_INTUITION, INTUITION_WBENCH_TO_BACK);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_WBENCH_TO_FRONT                           , LIB_INTUITION, INTUITION_WBENCH_TO_FRONT);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_MAKE_SCREEN                               , LIB_INTUITION, INTUITION_MAKE_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REMAKE_DISPLAY                            , LIB_INTUITION, INTUITION_REMAKE_DISPLAY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_RETHINK_DISPLAY                           , LIB_INTUITION, INTUITION_RETHINK_DISPLAY);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLEAR_DMREQUEST                           , LIB_INTUITION, INTUITION_CLEAR_DMREQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_DMREQUEST                             , LIB_INTUITION, INTUITION_SET_DMREQUEST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_MOUSE_QUEUE                           , LIB_INTUITION, INTUITION_SET_MOUSE_QUEUE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_PUB_SCREEN_MODES                      , LIB_INTUITION, INTUITION_SET_PUB_SCREEN_MODES);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LEND_MENUS                                , LIB_INTUITION, INTUITION_LEND_MENUS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GADGET_MOUSE                              , LIB_INTUITION, INTUITION_GADGET_MOUSE);
     /* gadtools.library at GADTOOLS_BASE */
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);

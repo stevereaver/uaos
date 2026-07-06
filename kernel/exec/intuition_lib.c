@@ -5445,6 +5445,146 @@ static void intuition_ChangeScreenBuffer(void)
     m68k_set_reg(M68K_REG_D0, 1);
 }
 
+/* =========================================================================
+ * Tier 1 trivial functions — no-ops on single-display UAOS or simple
+ * field writes.
+ * ========================================================================= */
+
+/* DMRequest is at offset 40 in the official AmigaOS Window structure
+ * (after FirstRequest at 36, before ReqCount at 44). */
+#define WIN_OFF_DMREQUEST  40
+
+/* Global pub-screen mode flags (PSMF_* in AmigaOS).  Stored but not
+ * actively used since UAOS has a single desktop. */
+static uint32_t g_pub_screen_modes = 0;
+
+/* The window that currently lends its menus to other windows. */
+static uint32_t g_lend_menus_window = 0;
+
+/* WBenchToBack() — no args
+ * Send the Workbench screen to the back.  On single-display UAOS this
+ * is a no-op; return TRUE for success. */
+static void intuition_WBenchToBack(void)
+{
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* WBenchToFront() — no args
+ * Bring the Workbench screen to the front.  No-op on single-display. */
+static void intuition_WBenchToFront(void)
+{
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* MakeScreen(screen) — A0 = screen
+ * Rebuild a screen's display.  No-op on single-display UAOS. */
+static void intuition_MakeScreen(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* RemakeDisplay() — no args
+ * Rebuild the entire display.  No-op on single-display UAOS. */
+static void intuition_RemakeDisplay(void)
+{
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* RethinkDisplay() — no args
+ * Reconcile display changes.  No-op on single-display UAOS. */
+static void intuition_RethinkDisplay(void)
+{
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* ClearDMRequest(window) — A0 = window
+ * Clear the Window.DMRequest field (set to NULL).  Returns TRUE. */
+static void intuition_ClearDMRequest(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    if (win_ptr)
+        mem_w32(win_ptr + WIN_OFF_DMREQUEST, 0);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* SetDMRequest(window, requester) — A0 = window, A1 = requester
+ * Set the Window.DMRequest field to the supplied requester pointer.
+ * Returns TRUE on success. */
+static void intuition_SetDMRequest(void)
+{
+    uint32_t win_ptr  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t req_ptr  = m68k_get_reg(NULL, M68K_REG_A1);
+    if (win_ptr) {
+        /* AmigaOS returns FALSE if there's already an active DMRequest. */
+        if (mem_u32(win_ptr + WIN_OFF_DMREQUEST)) {
+            m68k_set_reg(M68K_REG_D0, 0);
+            return;
+        }
+        mem_w32(win_ptr + WIN_OFF_DMREQUEST, req_ptr);
+        m68k_set_reg(M68K_REG_D0, 1);
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+    }
+}
+
+/* SetMouseQueue(window, queue_length) — A0 = window, D0 = queue_length
+ * Set the mouse movement queue limit.  The IntuitionSlot stores this
+ * and post_intui_message() enforces it.  Returns the previous limit. */
+static void intuition_SetMouseQueue(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t new_len = m68k_get_reg(NULL, M68K_REG_D0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    uint32_t old = slot ? slot->mouse_queue : 0;
+    if (slot)
+        slot->mouse_queue = (uint16_t)new_len;
+    m68k_set_reg(M68K_REG_D0, old);
+}
+
+/* SetPubScreenModes(flags) — D0 = flags
+ * Set global pub-screen mode flags (PSMF_*)).  Stored globally but
+ * not actively used on single-display UAOS.  Returns old flags. */
+static void intuition_SetPubScreenModes(void)
+{
+    uint32_t new_flags = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t old = g_pub_screen_modes;
+    g_pub_screen_modes = new_flags;
+    m68k_set_reg(M68K_REG_D0, old);
+}
+
+/* LendMenus(window, requester) — A0 = window, A1 = borrower
+ * Record which window lends its menus.  On UAOS menus are handled by
+ * the desktop, so this is informational only.  Returns TRUE. */
+static void intuition_LendMenus(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    g_lend_menus_window = win_ptr;
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* GadgetMouse(gadget, window, mouse_point) — A0 = gadget, A1 = window, A2 = Point*
+ * Store the mouse coordinates relative to the gadget's top-left corner
+ * into the Point structure at A2.  The Point struct is { WORD X, WORD Y }. */
+static void intuition_GadgetMouse(void)
+{
+    uint32_t gad    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t win    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t point  = m68k_get_reg(NULL, M68K_REG_A2);
+    if (!gad || !win || !point) return;
+
+    /* Window.MouseX/MouseY are at NDK offsets 14/12. */
+    int16_t mx = (int16_t)mem_u16(win + 14);
+    int16_t my = (int16_t)mem_u16(win + 12);
+    int16_t gx = (int16_t)mem_s16(gad + GAD_OFF_LEFTEDGE);
+    int16_t gy = (int16_t)mem_s16(gad + GAD_OFF_TOPEDGE);
+
+    /* Point is { WORD X, WORD Y } — X at offset 0, Y at offset 2. */
+    mem_w16(point,     (uint16_t)(mx - gx));
+    mem_w16(point + 2, (uint16_t)(my - gy));
+}
+
 /* MoveScreen(screen, dx, dy) — A0, D0/D1 */
 static void intuition_MoveScreen(void)
 {
@@ -8277,6 +8417,17 @@ static void *intuition_funcs[] = {
     intuition_AllocScreenBuffer,
     intuition_FreeScreenBuffer,
     intuition_ChangeScreenBuffer,
+    intuition_WBenchToBack,
+    intuition_WBenchToFront,
+    intuition_MakeScreen,
+    intuition_RemakeDisplay,
+    intuition_RethinkDisplay,
+    intuition_ClearDMRequest,
+    intuition_SetDMRequest,
+    intuition_SetMouseQueue,
+    intuition_SetPubScreenModes,
+    intuition_LendMenus,
+    intuition_GadgetMouse,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)
