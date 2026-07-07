@@ -910,6 +910,406 @@ static uint32_t windowclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 }
 
 /* =========================================================================
+ * modelclass — broadcasts OM_NOTIFY to dependent gadgets via ICA_TARGET
+ * ========================================================================= */
+#define BMODEL_OFF_TARGET    0    /* ICA_TARGET: object to notify */
+#define BMODEL_OFF_MAP       4    /* ICA_MAP: tag-mapping table (unused) */
+#define BMODEL_OFF_CHILDREN  8    /* head of dependent list */
+#define BMODEL_OFF_NEXT     12    /* next in model chain */
+#define BMODEL_INST_SIZE    16
+
+static int model_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case ICA_TARGET: mem_w32(obj + BMODEL_OFF_TARGET, data); break;
+        case ICA_MAP:    mem_w32(obj + BMODEL_OFF_MAP, data); break;
+        default: break;
+    }
+    return 1;
+}
+
+static uint32_t modelclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            memset(&g_ram[obj], 0, BMODEL_INST_SIZE);
+            walk_tags(tags, model_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, model_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_NOTIFY: {
+            /* Broadcast OM_UPDATE to the ICA_TARGET object (if any).
+             * The real AmigaOS modelclass also applies ICA_MAP to
+             * translate tag IDs.  We forward the message unchanged. */
+            uint32_t target = mem_u32(obj + BMODEL_OFF_TARGET);
+            if (target) {
+                /* Rewrite MethodID to OM_UPDATE and dispatch to target. */
+                mem_w32(msg + MSG_OFF_METHODID, OM_UPDATE);
+                UAOS_BOOPSI_Dispatch(target, OM_UPDATE, msg, 0);
+                mem_w32(msg + MSG_OFF_METHODID, OM_NOTIFY);
+            }
+            return 1;
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            switch (attr) {
+                case ICA_TARGET: mem_w32(store, mem_u32(obj + BMODEL_OFF_TARGET)); return 1;
+                case ICA_MAP:    mem_w32(store, mem_u32(obj + BMODEL_OFF_MAP)); return 1;
+                default: return 0;
+            }
+        }
+        default:
+            return gadgetclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
+ * frbuttonclass — boolean button gadget (subclass of gadgetclass)
+ * ========================================================================= */
+/* Instance data piggybacks on the gadget's own GAD_OFF_* fields.
+ * We store the checked state in GFLG_SELECTED, and the label/image
+ * in GAD_OFF_GADGETTEXT / GAD_OFF_GADGETRENDER (already defined). */
+#define BFRBTN_INST_SIZE  0  /* no extra instance data beyond gadgetclass */
+
+static int frbutton_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case BOOLGADGET_Checked: {
+            uint16_t flags = mem_u16(obj + GAD_OFF_FLAGS);
+            if (data) flags |= GFLG_SELECTED;
+            else      flags &= ~GFLG_SELECTED;
+            mem_w16(obj + GAD_OFF_FLAGS, flags);
+            break;
+        }
+        case BOOLGADGET_Text:
+            /* Store as gadget label (IntuiText pointer). */
+            mem_w32(obj + GAD_OFF_GADGETTEXT, data);
+            break;
+        case BOOLGADGET_Image:
+            mem_w32(obj + GAD_OFF_GADGETRENDER, data);
+            break;
+        case BOOLGADGET_SelImage:
+            mem_w32(obj + GAD_OFF_SELECTRENDER, data);
+            break;
+        default:
+            break;
+    }
+    return 1;
+}
+
+static uint32_t frbuttonclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            /* Let gadgetclass handle GA_* first. */
+            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
+            if (!r) return 0;
+            /* Apply BOOLGADGET_* tags. */
+            walk_tags(tags, frbutton_set_tag, (void*)(uintptr_t)obj);
+            mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_BOOLGADGET);
+            return r;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, frbutton_set_tag, (void*)(uintptr_t)obj);
+            /* Also let gadgetclass handle GA_* tags. */
+            return gadgetclass_dispatch(cls, obj, msg);
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            switch (attr) {
+                case BOOLGADGET_Checked:
+                    mem_w32(store, (mem_u16(obj + GAD_OFF_FLAGS) & GFLG_SELECTED) ? 1 : 0);
+                    return 1;
+                case BOOLGADGET_Text:
+                    mem_w32(store, mem_u32(obj + GAD_OFF_GADGETTEXT));
+                    return 1;
+                default:
+                    return gadgetclass_dispatch(cls, obj, msg);
+            }
+        }
+        default:
+            return gadgetclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
+ * bevelbox — bevel box image (subclass of imageclass)
+ * ========================================================================= */
+#define BBBOX_OFF_DRAWINFO  0
+#define BBBOX_OFF_FRAME     4   /* IBox: Left, Top, Width, Height (8 bytes) */
+#define BBBOX_OFF_RECESSED 12
+#define BBBOX_OFF_SUNKEN   13
+#define BBBOX_INST_SIZE   16
+
+static int bevelbox_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case BVS_DRAWINFO: mem_w32(obj + BBBOX_OFF_DRAWINFO, data); break;
+        case BVS_RECESSED: g_ram[obj + BBBOX_OFF_RECESSED] = (uint8_t)(data ? 1 : 0); break;
+        case BVS_SUNKEN:   g_ram[obj + BBBOX_OFF_SUNKEN]   = (uint8_t)(data ? 1 : 0); break;
+        case BVS_LEFT:     mem_w16(obj + BBBOX_OFF_FRAME, (uint16_t)(int16_t)data); break;
+        case BVS_TOP:      mem_w16(obj + BBBOX_OFF_FRAME + 2, (uint16_t)(int16_t)data); break;
+        case BVS_WIDTH:    mem_w16(obj + BBBOX_OFF_FRAME + 4, (uint16_t)(int16_t)data); break;
+        case BVS_HEIGHT:   mem_w16(obj + BBBOX_OFF_FRAME + 6, (uint16_t)(int16_t)data); break;
+        default:
+            /* Let imageclass handle IA_* tags. */
+            image_set_tag(tag, data, ctx);
+            break;
+    }
+    return 1;
+}
+
+static uint32_t bevelbox_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            memset(&g_ram[obj], 0, BBBOX_INST_SIZE);
+            walk_tags(tags, bevelbox_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, bevelbox_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case IM_DRAW:
+        case IM_DRAWFRAME: {
+            /* Draw a raised or sunken bevel rectangle using FB_DrawRect. */
+            uint32_t rport = (method == IM_DRAW) ?
+                mem_u32(msg + IMDRAW_OFF_RPORT) :
+                mem_u32(msg + IMDRAWFRAME_OFF_RPORT);
+            (void)rport;
+            int32_t xoff = (method == IM_DRAW) ?
+                (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETX) :
+                (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETX);
+            int32_t yoff = (method == IM_DRAW) ?
+                (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETY) :
+                (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETY);
+
+            int16_t left   = mem_s16(obj + BBBOX_OFF_FRAME);
+            int16_t top    = mem_s16(obj + BBBOX_OFF_FRAME + 2);
+            int16_t width  = mem_s16(obj + BBBOX_OFF_FRAME + 4);
+            int16_t height = mem_s16(obj + BBBOX_OFF_FRAME + 6);
+            int sunken = g_ram[obj + BBBOX_OFF_SUNKEN];
+
+            if (width > 0 && height > 0) {
+                int x = xoff + left;
+                int y = yoff + top;
+                /* Draw outer rect (dark) and inner rect (light) for raised;
+                 * reverse for sunken.  Use WB palette colours. */
+                extern uint32_t WB_DARK_GREY, WB_LIGHT_GREY;
+                FB_DrawRect(x, y, width, height, sunken ? WB_LIGHT_GREY : WB_DARK_GREY);
+                FB_DrawRect(x + 1, y + 1, width - 2, height - 2,
+                            sunken ? WB_DARK_GREY : WB_LIGHT_GREY);
+            }
+            return 1;
+        }
+        case IM_ERASE:
+        case IM_ERASEFRAME: {
+            /* Fill the bevel box area with the background pen. */
+            int32_t xoff = (method == IM_ERASE) ?
+                (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETX) :
+                (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETX);
+            int32_t yoff = (method == IM_ERASE) ?
+                (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETY) :
+                (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETY);
+            int16_t left   = mem_s16(obj + BBBOX_OFF_FRAME);
+            int16_t top    = mem_s16(obj + BBBOX_OFF_FRAME + 2);
+            int16_t width  = mem_s16(obj + BBBOX_OFF_FRAME + 4);
+            int16_t height = mem_s16(obj + BBBOX_OFF_FRAME + 6);
+            if (width > 0 && height > 0) {
+                extern uint32_t WB_GREY;
+                FB_FillRect(xoff + left, yoff + top, width, height, WB_GREY);
+            }
+            return 1;
+        }
+        default:
+            return imageclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
+ * menuitemclass — companion to menuclass for individual menu items
+ * ========================================================================= */
+#define BMITEM_OFF_LABEL    0    /* MA_Label string/IntuiText */
+#define BMITEM_OFF_COMMAND  4    /* command key */
+#define BMITEM_OFF_CHECKED  8    /* checked state */
+#define BMITEM_OFF_DISABLED 9
+#define BMITEM_OFF_NEXT    10    /* next item in chain */
+#define BMITEM_OFF_SUB     14    /* submenu (menuclass child) */
+#define BMITEM_OFF_PARENT  18
+#define BMITEM_INST_SIZE   22
+
+static int menuitem_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case MA_Label:     mem_w32(obj + BMITEM_OFF_LABEL, data); break;
+        case MA_Command:   g_ram[obj + BMITEM_OFF_COMMAND] = (uint8_t)data; break;
+        case MA_Checked:   g_ram[obj + BMITEM_OFF_CHECKED] = (uint8_t)(data ? 1 : 0); break;
+        case MA_Disabled:  g_ram[obj + BMITEM_OFF_DISABLED] = (uint8_t)(data ? 1 : 0); break;
+        case MA_Sub:       mem_w32(obj + BMITEM_OFF_SUB, data); break;
+        default: break;
+    }
+    return 1;
+}
+
+static uint32_t menuitemclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            memset(&g_ram[obj], 0, BMITEM_INST_SIZE);
+            walk_tags(tags, menuitem_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, menuitem_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            switch (attr) {
+                case MA_Label:    mem_w32(store, mem_u32(obj + BMITEM_OFF_LABEL)); return 1;
+                case MA_Command:  mem_w32(store, g_ram[obj + BMITEM_OFF_COMMAND]); return 1;
+                case MA_Checked:  mem_w32(store, g_ram[obj + BMITEM_OFF_CHECKED] ? 1 : 0); return 1;
+                case MA_Disabled: mem_w32(store, g_ram[obj + BMITEM_OFF_DISABLED] ? 1 : 0); return 1;
+                case MA_Sub:      mem_w32(store, mem_u32(obj + BMITEM_OFF_SUB)); return 1;
+                default: return 0;
+            }
+        }
+        default:
+            return menuclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
+ * fillrectclass — backfill hook class (subclass of rootclass)
+ * ========================================================================= */
+#define BFILL_OFF_HOOK   0    /* guest Hook* for backfill */
+#define BFILL_OFF_TYPE   4    /* fill type */
+#define BFILL_INST_SIZE  8
+
+static int fillrect_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case FILLRECT_FillHook: mem_w32(obj + BFILL_OFF_HOOK, data); break;
+        case FILLRECT_FillType: mem_w32(obj + BFILL_OFF_TYPE, data); break;
+        default: break;
+    }
+    return 1;
+}
+
+static uint32_t fillrectclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            memset(&g_ram[obj], 0, BFILL_INST_SIZE);
+            walk_tags(tags, fillrect_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, fillrect_set_tag, (void*)(uintptr_t)obj);
+            return 1;
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            switch (attr) {
+                case FILLRECT_FillHook: mem_w32(store, mem_u32(obj + BFILL_OFF_HOOK)); return 1;
+                case FILLRECT_FillType: mem_w32(store, mem_u32(obj + BFILL_OFF_TYPE)); return 1;
+                default: return 0;
+            }
+        }
+        default:
+            return rootclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
+ * sysgclass — system gadget class (subclass of gadgetclass)
+ * ========================================================================= */
+/* SYSIA_Which is stored in the gadget's SpecialInfo field.
+ * No extra instance data needed. */
+#define BSYSG_INST_SIZE  0
+
+static int sysg_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj = (uint32_t)(uintptr_t)ctx;
+    switch (tag) {
+        case SYSIA_Which:
+            mem_w32(obj + GAD_OFF_SPECIALINFO, data);
+            break;
+        case SYSIA_DrawInfo:
+            /* DrawInfo is not stored per-gadget in UAOS; ignore. */
+            break;
+        default:
+            break;
+    }
+    return 1;
+}
+
+static uint32_t sysgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            /* Let gadgetclass handle GA_* first. */
+            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
+            if (!r) return 0;
+            walk_tags(tags, sysg_set_tag, (void*)(uintptr_t)obj);
+            mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_SYSGADGET | GTYP_BOOLGADGET);
+            return r;
+        }
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            walk_tags(tags, sysg_set_tag, (void*)(uintptr_t)obj);
+            return gadgetclass_dispatch(cls, obj, msg);
+        }
+        case OM_GET: {
+            uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            if (attr == SYSIA_Which) {
+                mem_w32(store, mem_u32(obj + GAD_OFF_SPECIALINFO));
+                return 1;
+            }
+            return gadgetclass_dispatch(cls, obj, msg);
+        }
+        default:
+            return gadgetclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
  * Class creation helper
  * ========================================================================= */
 static uint32_t make_builtin_class(const char *id, const char *super_id,
@@ -943,7 +1343,10 @@ static uint32_t make_builtin_class(const char *id, const char *super_id,
 /* =========================================================================
  * Public registration
  * ========================================================================= */
-static uint32_t g_rootclass, g_gadgetclass, g_imageclass, g_pointerclass, g_menuclass, g_windowclass;
+static uint32_t g_rootclass, g_gadgetclass, g_imageclass, g_pointerclass,
+                g_menuclass, g_windowclass,
+                g_modelclass, g_frbuttonclass, g_bevelbox,
+                g_menuitemclass, g_fillrectclass, g_sysgclass;
 
 void UAOS_BOOPSI_RegisterBuiltinClasses(void)
 {
@@ -964,6 +1367,31 @@ void UAOS_BOOPSI_RegisterBuiltinClasses(void)
 
     g_windowclass = make_builtin_class("windowclass", "rootclass", g_rootclass, 0, BWIN_INST_SIZE, windowclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_windowclass);
+
+    /* Tier 5 — additional built-in classes */
+    g_modelclass = make_builtin_class("modelclass", "gadgetclass", g_gadgetclass,
+                                       GAD_SIZE, BMODEL_INST_SIZE, modelclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_modelclass);
+
+    g_frbuttonclass = make_builtin_class("frbuttonclass", "gadgetclass", g_gadgetclass,
+                                          GAD_SIZE, BFRBTN_INST_SIZE, frbuttonclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_frbuttonclass);
+
+    g_bevelbox = make_builtin_class("bevelbox", "imageclass", g_imageclass,
+                                     BIMG_INST_SIZE, BBBOX_INST_SIZE, bevelbox_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_bevelbox);
+
+    g_menuitemclass = make_builtin_class("menuitemclass", "menuclass", g_menuclass,
+                                          BMENU_INST_SIZE, BMITEM_INST_SIZE, menuitemclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_menuitemclass);
+
+    g_fillrectclass = make_builtin_class("fillrectclass", "rootclass", g_rootclass,
+                                          0, BFILL_INST_SIZE, fillrectclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_fillrectclass);
+
+    g_sysgclass = make_builtin_class("sysgclass", "gadgetclass", g_gadgetclass,
+                                      GAD_SIZE, BSYSG_INST_SIZE, sysgclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_sysgclass);
 }
 
 /* =========================================================================

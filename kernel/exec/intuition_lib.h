@@ -762,6 +762,83 @@ typedef struct {
 #define IM_BitMap      (TAG_USER + 0x40010)
 
 /* -------------------------------------------------------------------------
+ * SYSIA_* — system gadget/image attributes (sysgclass / SYSIA_Which values)
+ * ------------------------------------------------------------------------- */
+#define SYSIA_Dummy       (TAG_USER + 0x40020)
+#define SYSIA_Which       (SYSIA_Dummy + 0x01)
+#define SYSIA_DrawInfo    (SYSIA_Dummy + 0x02)
+#define SYSIA_Left        (SYSIA_Dummy + 0x03)
+#define SYSIA_Top         (SYSIA_Dummy + 0x04)
+#define SYSIA_Width       (SYSIA_Dummy + 0x05)
+#define SYSIA_Height      (SYSIA_Dummy + 0x06)
+#define SYSIA_ReferenceFont (SYSIA_Dummy + 0x07)
+#define SYSIA_UserBuffer  (SYSIA_Dummy + 0x08)
+#define SYSIA_Pens        (SYSIA_Dummy + 0x09)
+
+/* SYSIA_Which values */
+#define SYSISIZE     0
+#define SYSIDRAG     1
+#define SYSIDEPTH    2
+#define SYSICLOSE    3
+#define SYSIZOOM     4
+#define SYSIMENU     5
+#define SYSIARROWS   6
+#define SYSICHECK    7
+#define SYSIMX       8
+#define SYSIMY       9
+#define SYSISIZECHECK 10
+
+/* -------------------------------------------------------------------------
+ * ICA_* — inter-object communication attributes (modelclass)
+ * ------------------------------------------------------------------------- */
+#define ICA_Dummy     (TAG_USER + 0x40030)
+#define ICA_TARGET    (ICA_Dummy + 0x01)
+#define ICA_MAP       (ICA_Dummy + 0x02)
+#define ICS_SPECIAL   (0x00000100)
+
+/* -------------------------------------------------------------------------
+ * BOOLGADGET_* — frbuttonclass attributes
+ * ------------------------------------------------------------------------- */
+#define BOOLGADGET_Dummy    (TAG_USER + 0x40040)
+#define BOOLGADGET_Checked  (BOOLGADGET_Dummy + 0x01)
+#define BOOLGADGET_Label    (BOOLGADGET_Dummy + 0x02)
+#define BOOLGADGET_LabelItext (BOOLGADGET_Dummy + 0x03)
+#define BOOLGADGET_LabelImage (BOOLGADGET_Dummy + 0x04)
+#define BOOLGADGET_Image    (BOOLGADGET_Dummy + 0x05)
+#define BOOLGADGET_SelImage (BOOLGADGET_Dummy + 0x06)
+#define BOOLGADGET_Disabled (BOOLGADGET_Dummy + 0x07)
+#define BOOLGADGET_Pressed  (BOOLGADGET_Dummy + 0x08)
+#define BOOLGADGET_Rollover (BOOLGADGET_Dummy + 0x09)
+#define BOOLGADGET_Text     (BOOLGADGET_Dummy + 0x0A)
+
+/* -------------------------------------------------------------------------
+ * BVS_* — bevelbox attributes (bevelbox class)
+ * ------------------------------------------------------------------------- */
+#define BVS_Dummy       (TAG_USER + 0x40050)
+#define BVS_DRAWINFO    (BVS_Dummy + 0x01)
+#define BVS_WIDTH       (BVS_Dummy + 0x02)
+#define BVS_HEIGHT      (BVS_Dummy + 0x03)
+#define BVS_LEFT        (BVS_Dummy + 0x04)
+#define BVS_TOP         (BVS_Dummy + 0x05)
+#define BVS_RIGHT       (BVS_Dummy + 0x06)
+#define BVS_BOTTOM      (BVS_Dummy + 0x07)
+#define BVS_FRAME       (BVS_Dummy + 0x08)
+#define BVS_RECESSED    (BVS_Dummy + 0x09)
+#define BVS_SUNKEN      (BVS_Dummy + 0x0A)
+#define BVS_RAISED      (BVS_Dummy + 0x0B)
+#define BVS_STYLE       (BVS_Dummy + 0x0C)
+#define BVS_INFO        (BVS_Dummy + 0x0D)
+#define BVS_FRAMETYPE   (BVS_Dummy + 0x0E)
+#define BVS_HITTEST     (BVS_Dummy + 0x0F)
+
+/* -------------------------------------------------------------------------
+ * FILLRECT_* — fillrectclass attributes
+ * ------------------------------------------------------------------------- */
+#define FILLRECT_Dummy    (TAG_USER + 0x40060)
+#define FILLRECT_FillHook (FILLRECT_Dummy + 0x01)
+#define FILLRECT_FillType (FILLRECT_Dummy + 0x02)
+
+/* -------------------------------------------------------------------------
  * Alert types
  * ------------------------------------------------------------------------- */
 #define RECOVERY_ALERT 0x00000001
