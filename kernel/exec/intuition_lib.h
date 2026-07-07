@@ -887,6 +887,14 @@ typedef struct {
 #define GM_GOACTIVE     0x66
 #define GM_HANDLEINPUT  0x67
 #define GM_GOINACTIVE   0x68
+#define GM_LAYOUT       0x69
+#define GM_DOMAIN       0x6A
+
+/* Image methods (IM_*) — method IDs for imageclass dispatch */
+#define IM_DRAW         0x202
+#define IM_ERASE        0x203
+#define IM_DRAWFRAME    0x204
+#define IM_ERASEFRAME   0x205
 
 /* BOOPSI messages (field offsets within the guest message block) */
 #define MSG_OFF_METHODID   0
@@ -901,6 +909,46 @@ typedef struct {
 #define OPGET_OFF_METHODID  0
 #define OPGET_OFF_ATTRID    4
 #define OPGET_OFF_STORAGE   8
+
+/* GM_LAYOUT message (gpLayout): { MethodID, GInfo, Initial } */
+#define GMLAYOUT_OFF_GINFO    4
+#define GMLAYOUT_OFF_INITIAL  8
+
+/* GM_DOMAIN message (gpDomain): { MethodID, GInfo, IBox* } */
+#define GMDOMAIN_OFF_GINFO    4
+#define GMDOMAIN_OFF_DOMAIN   8
+
+/* IBox structure: { WORD Left, Top; WORD Width, Height; } — 8 bytes */
+#define IBOX_OFF_LEFT    0
+#define IBOX_OFF_TOP     2
+#define IBOX_OFF_WIDTH   4
+#define IBOX_OFF_HEIGHT  6
+
+/* IM_DRAW message (impDraw): { MethodID, RPort, OffsetX, OffsetY, State } */
+#define IMDRAW_OFF_RPORT    4
+#define IMDRAW_OFF_OFFSETX  8
+#define IMDRAW_OFF_OFFSETY  12
+#define IMDRAW_OFF_STATE    16
+
+/* IM_ERASE message (impErase): { MethodID, RPort, OffsetX, OffsetY } */
+#define IMERASE_OFF_RPORT    4
+#define IMERASE_OFF_OFFSETX  8
+#define IMERASE_OFF_OFFSETY  12
+
+/* IM_DRAWFRAME message (impDrawFrame):
+ * { MethodID, RPort, IBox* Frame, OffsetX, OffsetY, State } */
+#define IMDRAWFRAME_OFF_RPORT    4
+#define IMDRAWFRAME_OFF_FRAME    8
+#define IMDRAWFRAME_OFF_OFFSETX  12
+#define IMDRAWFRAME_OFF_OFFSETY  16
+#define IMDRAWFRAME_OFF_STATE    20
+
+/* IM_ERASEFRAME message (impEraseFrame):
+ * { MethodID, RPort, IBox* Frame, OffsetX, OffsetY } */
+#define IMERASEFRAME_OFF_RPORT    4
+#define IMERASEFRAME_OFF_FRAME    8
+#define IMERASEFRAME_OFF_OFFSETX  12
+#define IMERASEFRAME_OFF_OFFSETY  16
 
 /* Dispatch entry point called from uaos_m68k_glue.c */
 void UAOS_Intuition_Dispatch(uint32_t fn);

@@ -28,6 +28,7 @@ extern void         intu_free(uint32_t user_addr);
 extern void         FB_FillRect(int x, int y, int w, int h, uint32_t colour);
 extern void         FB_DrawRect(int x, int y, int w, int h, uint32_t colour);
 extern void         FB_PutStr(int x, int y, const char *s, uint32_t fg, uint32_t bg);
+extern void         UAOS_Graphics_Dispatch(uint32_t fn);
 
 #define GUEST_RAM_SIZE (2 * 1024 * 1024)
 
@@ -408,6 +409,30 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             mem_w16(obj + GAD_OFF_FLAGS, flags);
             return GMR_NOREUSE;
         }
+        case GM_LAYOUT: {
+            /* Layout the gadget after a window resize.  For the base
+             * gadgetclass there is nothing to do — subclasses with
+             * GFLG_RELRIGHT/RELBOTTOM/RELWIDTH/RELHEIGHT would recompute
+             * their geometry here.  Return 1 for success. */
+            return 1;
+        }
+        case GM_DOMAIN: {
+            /* Return the gadget's domain rectangle in the IBox* at
+             * GMDOMAIN_OFF_DOMAIN.  For the base gadgetclass the domain
+             * is the gadget's own LeftEdge/TopEdge/Width/Height. */
+            uint32_t domain = mem_u32(msg + GMDOMAIN_OFF_DOMAIN);
+            if (domain) {
+                int16_t left  = mem_s16(obj + GAD_OFF_LEFTEDGE);
+                int16_t top   = mem_s16(obj + GAD_OFF_TOPEDGE);
+                int16_t width = mem_s16(obj + GAD_OFF_WIDTH);
+                int16_t height = mem_s16(obj + GAD_OFF_HEIGHT);
+                mem_w16(domain + IBOX_OFF_LEFT,   (uint16_t)left);
+                mem_w16(domain + IBOX_OFF_TOP,    (uint16_t)top);
+                mem_w16(domain + IBOX_OFF_WIDTH,  (uint16_t)width);
+                mem_w16(domain + IBOX_OFF_HEIGHT, (uint16_t)height);
+            }
+            return 1;
+        }
         default:
             return 0;
     }
@@ -484,6 +509,130 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 default: return 0;
             }
             mem_w32(store, value);
+            return 1;
+        }
+        case IM_DRAW: {
+            /* impDraw: { MethodID, RPort, OffsetX, OffsetY, State }
+             * Build a temporary Image structure from the instance data
+             * and blit it to the RastPort. */
+            uint32_t rport   = mem_u32(msg + IMDRAW_OFF_RPORT);
+            int32_t  xoff    = (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETX);
+            int32_t  yoff    = (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETY);
+            uint32_t state   = mem_u32(msg + IMDRAW_OFF_STATE);
+            (void)state;
+
+            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            uint32_t data = mem_u32(obj + BIMG_OFF_DATA);
+
+            if (data && w > 0 && h > 0 && rport) {
+                int bpr = ((w + 15) / 16) * 2;
+                /* BltTemplate(src, xSrc, srcMod, destRP, xDest, yDest, xSize, ySize) */
+                extern unsigned int m68k_get_reg(void *, int);
+                extern void m68k_set_reg(int, unsigned int);
+                m68k_set_reg(0 /* A0 */, data);
+                m68k_set_reg(0 /* D0 */, 0);
+                m68k_set_reg(1 /* D1 */, (unsigned int)bpr);
+                m68k_set_reg(1 /* A1 */, rport);
+                /* Use register constants matching the Musashi API:
+                 * M68K_REG_A0=8, M68K_REG_A1=9, M68K_REG_D0=0, etc. */
+                /* We need to use the real register enum values.  Since
+                 * boopsi_builtin.c already uses m68k_get_reg/m68k_set_reg
+                 * with raw int constants, match the Musashi numbering:
+                 * D0=0..D7=7, A0=8..A7=15. */
+                extern void m68k_set_reg(int reg, unsigned int value);
+                /* A0 = 8, A1 = 9, D0 = 0, D1 = 1, D2 = 2, D3 = 3, D4 = 4, D5 = 5 */
+                m68k_set_reg(8, data);        /* A0 = source */
+                m68k_set_reg(0, 0);           /* D0 = xSrc */
+                m68k_set_reg(1, (unsigned int)bpr); /* D1 = srcMod */
+                m68k_set_reg(9, rport);       /* A1 = destRP */
+                m68k_set_reg(2, (unsigned int)(xoff + il)); /* D2 = xDest */
+                m68k_set_reg(3, (unsigned int)(yoff + it)); /* D3 = yDest */
+                m68k_set_reg(4, (unsigned int)w);           /* D4 = xSize */
+                m68k_set_reg(5, (unsigned int)h);           /* D5 = ySize */
+                UAOS_Graphics_Dispatch(6);    /* GFX_SLOT_BLTTEMPLATE = 6 */
+            }
+            return 1;
+        }
+        case IM_ERASE: {
+            /* impErase: { MethodID, RPort, OffsetX, OffsetY }
+             * Fill the image rectangle with the RastPort's background pen. */
+            uint32_t rport = mem_u32(msg + IMERASE_OFF_RPORT);
+            int32_t  xoff  = (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETX);
+            int32_t  yoff  = (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETY);
+            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            if (w > 0 && h > 0 && rport) {
+                /* RectFill(rp, xMin, yMin, xMax, yMax)
+                 * A1=rp, D0=xMin, D1=yMin, D2=xMax, D3=yMax */
+                extern void m68k_set_reg(int reg, unsigned int value);
+                m68k_set_reg(9, rport);
+                m68k_set_reg(0, (unsigned int)(xoff + il));
+                m68k_set_reg(1, (unsigned int)(yoff + it));
+                m68k_set_reg(2, (unsigned int)(xoff + il + w - 1));
+                m68k_set_reg(3, (unsigned int)(yoff + it + h - 1));
+                UAOS_Graphics_Dispatch(51);   /* GFX_SLOT_RECTFILL = 51 */
+            }
+            return 1;
+        }
+        case IM_DRAWFRAME: {
+            /* impDrawFrame: { MethodID, RPort, IBox* Frame, OffsetX, OffsetY, State }
+             * Like IM_DRAW but clipped to the frame rectangle.  We draw
+             * the image normally; the caller is responsible for setting
+             * up the clipping layer. */
+            uint32_t rport = mem_u32(msg + IMDRAWFRAME_OFF_RPORT);
+            int32_t  xoff  = (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETX);
+            int32_t  yoff  = (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETY);
+            uint32_t state = mem_u32(msg + IMDRAWFRAME_OFF_STATE);
+            (void)state;
+            (void)mem_u32(msg + IMDRAWFRAME_OFF_FRAME); /* clip frame — layers handle this */
+
+            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            uint32_t data = mem_u32(obj + BIMG_OFF_DATA);
+
+            if (data && w > 0 && h > 0 && rport) {
+                int bpr = ((w + 15) / 16) * 2;
+                extern void m68k_set_reg(int reg, unsigned int value);
+                m68k_set_reg(8, data);
+                m68k_set_reg(0, 0);
+                m68k_set_reg(1, (unsigned int)bpr);
+                m68k_set_reg(9, rport);
+                m68k_set_reg(2, (unsigned int)(xoff + il));
+                m68k_set_reg(3, (unsigned int)(yoff + it));
+                m68k_set_reg(4, (unsigned int)w);
+                m68k_set_reg(5, (unsigned int)h);
+                UAOS_Graphics_Dispatch(6);    /* GFX_SLOT_BLTTEMPLATE */
+            }
+            return 1;
+        }
+        case IM_ERASEFRAME: {
+            /* impEraseFrame: { MethodID, RPort, IBox* Frame, OffsetX, OffsetY }
+             * Like IM_ERASE but clipped to the frame rectangle. */
+            uint32_t rport = mem_u32(msg + IMERASEFRAME_OFF_RPORT);
+            int32_t  xoff  = (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETX);
+            int32_t  yoff  = (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETY);
+            (void)mem_u32(msg + IMERASEFRAME_OFF_FRAME);
+
+            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            if (w > 0 && h > 0 && rport) {
+                extern void m68k_set_reg(int reg, unsigned int value);
+                m68k_set_reg(9, rport);
+                m68k_set_reg(0, (unsigned int)(xoff + il));
+                m68k_set_reg(1, (unsigned int)(yoff + it));
+                m68k_set_reg(2, (unsigned int)(xoff + il + w - 1));
+                m68k_set_reg(3, (unsigned int)(yoff + it + h - 1));
+                UAOS_Graphics_Dispatch(51);   /* GFX_SLOT_RECTFILL */
+            }
             return 1;
         }
         default:
