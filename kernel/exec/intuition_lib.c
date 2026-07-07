@@ -4906,6 +4906,9 @@ extern void UAOS_Graphics_Dispatch(uint32_t fn);
 
 /* Forward declarations for functions defined later in the file. */
 static void intuition_SetGadgetAttrsA(void);
+static void intuition_DrawImage(void);
+static void intuition_NewObjectA(void);
+static void intuition_DisposeObject(void);
 
 /* Graphics LVO slots used by the wrappers (|LVO| / 6). */
 #define GFX_SLOT_TEXT                10
@@ -5801,6 +5804,227 @@ static void intuition_BuildEasyRequestArgs(void)
     uint32_t req_win = build_requester_internal(win_ptr, title, body,
                                                  num_buttons, buttons, 300, 120);
     m68k_set_reg(M68K_REG_D0, req_win);
+}
+
+/* =========================================================================
+ * Tier 3 — Moderate functions.
+ * ========================================================================= */
+
+/* Image draw states (IDS_*). */
+#define IDS_NORMAL     0
+#define IDS_SELECTED   1
+#define IDS_DISABLED   2
+#define IDS_HIGHLIGHTED 3
+
+/* DrawImageState(rp, image, leftOffset, topOffset, state, drawInfo)
+ * A0 = rp, A1 = image, D0 = leftOffset, D1 = topOffset, D2 = state, A2 = drawInfo
+ * Draws an image with state-aware rendering:
+ *   IDS_NORMAL   — same as DrawImage
+ *   IDS_SELECTED — draw with complemented (inverted) pens
+ *   IDS_DISABLED — draw greyed out
+ * For plain Image structures (no custom class), we handle the states
+ * directly.  For BOOPSI image objects, we'd dispatch IM_DRAW to the
+ * class, but UAOS images are plain structures. */
+static void intuition_DrawImageState(void)
+{
+    uint32_t rp     = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t image  = m68k_get_reg(NULL, M68K_REG_A1);
+    int xoff        = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int yoff        = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t state  = m68k_get_reg(NULL, M68K_REG_D2);
+    (void)m68k_get_reg(NULL, M68K_REG_A2);  /* drawInfo — unused for plain images */
+
+    if (!rp || !image) return;
+
+    switch (state) {
+        case IDS_NORMAL:
+            /* Forward to DrawImage directly. */
+            m68k_set_reg(M68K_REG_A0, rp);
+            m68k_set_reg(M68K_REG_A1, image);
+            m68k_set_reg(M68K_REG_D0, xoff);
+            m68k_set_reg(M68K_REG_D1, yoff);
+            intuition_DrawImage();
+            break;
+
+        case IDS_SELECTED: {
+            /* Invert the drawing mode for the duration of the draw.
+             * Save and restore SetDrMd so the RastPort isn't left
+             * in a complemented state. */
+            uint8_t old_drmd = mem_u8(rp + 28);  /* RP_OFF_DRMD (NDK) */
+            /* SetDrMd(rp, INVERSVID|JAM2) — complement mode */
+            m68k_set_reg(M68K_REG_A1, rp);
+            m68k_set_reg(M68K_REG_D0, 0x0004 | 0x0002);  /* INVERSVID | JAM2 */
+            UAOS_Graphics_Dispatch(GFX_SLOT_SETDRMD);
+            /* Draw the image */
+            m68k_set_reg(M68K_REG_A0, rp);
+            m68k_set_reg(M68K_REG_A1, image);
+            m68k_set_reg(M68K_REG_D0, xoff);
+            m68k_set_reg(M68K_REG_D1, yoff);
+            intuition_DrawImage();
+            /* Restore draw mode */
+            m68k_set_reg(M68K_REG_A1, rp);
+            m68k_set_reg(M68K_REG_D0, old_drmd);
+            UAOS_Graphics_Dispatch(GFX_SLOT_SETDRMD);
+            break;
+        }
+
+        case IDS_DISABLED: {
+            /* Draw the image, then overlay a grey pattern by
+             * filling the image rectangles with a 50% stipple
+             * using RectFill in complement mode.  This is a
+             * simplified version of the AmigaOS disabled look. */
+            m68k_set_reg(M68K_REG_A0, rp);
+            m68k_set_reg(M68K_REG_A1, image);
+            m68k_set_reg(M68K_REG_D0, xoff);
+            m68k_set_reg(M68K_REG_D1, yoff);
+            intuition_DrawImage();
+
+            /* Overlay each image rectangle with a light grey fill. */
+            uint32_t img = image;
+            while (img && img + IMG_SIZE <= GUEST_RAM_SIZE) {
+                int16_t left   = mem_s16(img + IMG_OFF_LEFTEDGE);
+                int16_t top    = mem_s16(img + IMG_OFF_TOPEDGE);
+                int16_t width  = mem_s16(img + IMG_OFF_WIDTH);
+                int16_t height = mem_s16(img + IMG_OFF_HEIGHT);
+                uint32_t next  = mem_u32(img + IMG_OFF_NEXTIMAGE);
+                if (width > 0 && height > 0) {
+                    /* RectFill with a dimmed pen (pen 2 = grey in WB palette). */
+                    m68k_set_reg(M68K_REG_A1, rp);
+                    m68k_set_reg(M68K_REG_D0, xoff + left);
+                    m68k_set_reg(M68K_REG_D1, yoff + top);
+                    m68k_set_reg(M68K_REG_D2, xoff + left + width - 1);
+                    m68k_set_reg(M68K_REG_D3, yoff + top + height - 1);
+                    UAOS_Graphics_Dispatch(GFX_SLOT_RECTFILL);
+                }
+                img = next;
+            }
+            break;
+        }
+
+        default:
+            /* IDS_HIGHLIGHTED or unknown — treat as normal. */
+            m68k_set_reg(M68K_REG_A0, rp);
+            m68k_set_reg(M68K_REG_A1, image);
+            m68k_set_reg(M68K_REG_D0, xoff);
+            m68k_set_reg(M68K_REG_D1, yoff);
+            intuition_DrawImage();
+            break;
+    }
+}
+
+/* Remember structure: { struct Remember *Next; APTR Memory; ULONG RememberSize; }
+ * Size = 12 bytes. */
+#define REM_OFF_NEXT    0
+#define REM_OFF_MEMORY  4
+#define REM_OFF_SIZE    8
+#define REM_SIZE        12
+
+/* AllocRemember(rememberKey, size, flags) — A0 = &rememberKey, D0 = size, D1 = flags
+ * Allocates `size` bytes with `flags` via AllocMem, creates a Remember node
+ * tracking the allocation, and links it into the list at *rememberKey.
+ * Returns the allocated memory pointer in D0, or NULL on failure. */
+static void intuition_AllocRemember(void)
+{
+    uint32_t key_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size    = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t flags   = m68k_get_reg(NULL, M68K_REG_D1);
+    if (!key_ptr || !size) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    /* Allocate the user data. */
+    uint32_t mem = 0;
+    dos_AllocMem_glue(size, flags, &mem);
+    if (!mem) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    /* Allocate a Remember node to track it. */
+    uint32_t node = 0;
+    dos_AllocMem_glue(REM_SIZE, flags, &node);
+    if (!node) {
+        dos_FreeMem_glue(mem, size);
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    /* Link the node into the head of the list at *key_ptr. */
+    uint32_t old_head = mem_u32(key_ptr);
+    mem_w32(node + REM_OFF_NEXT,   old_head);
+    mem_w32(node + REM_OFF_MEMORY, mem);
+    mem_w32(node + REM_OFF_SIZE,   size);
+    mem_w32(key_ptr, node);
+
+    m68k_set_reg(M68K_REG_D0, mem);
+}
+
+/* FreeRemember(rememberKey, reallyForget) — A0 = &rememberKey, D0 = reallyForget
+ * Walks the Remember list at *rememberKey.
+ * If reallyForget is TRUE: free both the Remember nodes AND the data they track.
+ * If reallyForget is FALSE: free only the Remember nodes, keeping the data.
+ * Always clears *rememberKey to NULL. */
+static void intuition_FreeRemember(void)
+{
+    uint32_t key_ptr      = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t really_forget = m68k_get_reg(NULL, M68K_REG_D0);
+    if (!key_ptr) return;
+
+    uint32_t node = mem_u32(key_ptr);
+    while (node) {
+        uint32_t next = mem_u32(node + REM_OFF_NEXT);
+        uint32_t mem  = mem_u32(node + REM_OFF_MEMORY);
+        uint32_t sz   = mem_u32(node + REM_OFF_SIZE);
+
+        if (really_forget && mem && sz)
+            dos_FreeMem_glue(mem, sz);
+
+        dos_FreeMem_glue(node, REM_SIZE);
+        node = next;
+    }
+    mem_w32(key_ptr, 0);
+}
+
+/* NewImageA(tagList) — A0 = tagList
+ * V40: Allocates an imageclass BOOPSI object via NewObjectA(NULL, "imageclass", tags).
+ * Returns the object pointer in D0, or NULL on failure. */
+static void intuition_NewImageA(void)
+{
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A0);
+
+    /* Forward to NewObjectA(classPtr=NULL, classID="imageclass", tagList). */
+    m68k_set_reg(M68K_REG_A0, 0);
+    /* Build the class ID string "imageclass" in guest RAM. */
+    static uint32_t imageclass_str = 0;
+    if (!imageclass_str) {
+        imageclass_str = intu_alloc(11);
+        if (imageclass_str) {
+            const char *s = "imageclass";
+            for (int i = 0; i < 11; i++)
+                g_ram[imageclass_str + i] = (uint8_t)s[i];
+        }
+    }
+    m68k_set_reg(M68K_REG_A1, imageclass_str);
+    m68k_set_reg(M68K_REG_A2, tag_list);
+    intuition_NewObjectA();
+}
+
+/* DisposeImage(image) — A0 = image
+ * V40: Disposes a BOOPSI image object via DisposeObject(). */
+static void intuition_DisposeImage(void)
+{
+    uint32_t image = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!image) return;
+    m68k_set_reg(M68K_REG_A0, image);
+    intuition_DisposeObject();
+}
+
+/* SetIPrefs(prefsData, size, type) — A0 = prefsData, D0 = size, D1 = type
+ * V40: Sets extended Intuition preferences.  The `type` selects which
+ * preferences category to update (IPREFS_TYPE_ICONTROL, IPREFS_TYPE_SCREENMODE,
+ * etc.).  UAOS has a single desktop with no IPrefs program, so we accept
+ * the data silently and return 0 (success). */
+static void intuition_SetIPrefs(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);  /* prefsData */
+    (void)m68k_get_reg(NULL, M68K_REG_D0);  /* size */
+    (void)m68k_get_reg(NULL, M68K_REG_D1);  /* type */
+    m68k_set_reg(M68K_REG_D0, 0);
 }
 
 /* MoveScreen(screen, dx, dy) — A0, D0/D1 */
@@ -8653,6 +8877,12 @@ static void *intuition_funcs[] = {
     intuition_RefreshSetGadgetAttrsA,
     intuition_ScrollWindowRaster,
     intuition_BuildEasyRequestArgs,
+    intuition_DrawImageState,
+    intuition_AllocRemember,
+    intuition_FreeRemember,
+    intuition_NewImageA,
+    intuition_DisposeImage,
+    intuition_SetIPrefs,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)

@@ -636,6 +636,12 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_REFRESH_SET_GADGET_ATTRS_A 155
 #define INTUITION_SCROLL_WINDOW_RASTER 156
 #define INTUITION_BUILD_EASY_REQUEST_ARGS 157
+#define INTUITION_DRAW_IMAGE_STATE       158
+#define INTUITION_ALLOC_REMEMBER         159
+#define INTUITION_FREE_REMEMBER          160
+#define INTUITION_NEW_IMAGE_A            161
+#define INTUITION_DISPOSE_IMAGE          162
+#define INTUITION_SET_IPREFS             163
 
 /* gadtools.library function indices */
 #define GADTOOLS_OPEN_LIBRARY          1
@@ -957,6 +963,12 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_REFRESH_SET_GADGET_ATTRS_A   ( -888)  /* RefreshSetGadgetAttrsA */
 #define LVO_INTUITION_SCROLL_WINDOW_RASTER         ( -798)  /* ScrollWindowRaster */
 #define LVO_INTUITION_BUILD_EASY_REQUEST_ARGS      ( -594)  /* BuildEasyRequestArgs */
+#define LVO_INTUITION_DRAW_IMAGE_STATE             ( -618)  /* DrawImageState */
+#define LVO_INTUITION_ALLOC_REMEMBER               ( -396)  /* AllocRemember */
+#define LVO_INTUITION_FREE_REMEMBER                ( -408)  /* FreeRemember */
+#define LVO_INTUITION_NEW_IMAGE_A                  ( -744)  /* NewImageA (V40) */
+#define LVO_INTUITION_DISPOSE_IMAGE                ( -750)  /* DisposeImage (V40) */
+#define LVO_INTUITION_SET_IPREFS                   ( -756)  /* SetIPrefs (V40) */
 
 /* Non-LVO functions (amiga.lib / gadtools / graphics.library):
  *   GetDisplayInfoData(47), NextDisplayInfo(48) — graphics.library
@@ -1208,6 +1220,12 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_REFRESH_SET_GADGET_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_SET_GADGET_ATTRS_A);
             case INTUITION_SCROLL_WINDOW_RASTER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCROLL_WINDOW_RASTER);
             case INTUITION_BUILD_EASY_REQUEST_ARGS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_BUILD_EASY_REQUEST_ARGS);
+            case INTUITION_DRAW_IMAGE_STATE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DRAW_IMAGE_STATE);
+            case INTUITION_ALLOC_REMEMBER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ALLOC_REMEMBER);
+            case INTUITION_FREE_REMEMBER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_FREE_REMEMBER);
+            case INTUITION_NEW_IMAGE_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_IMAGE_A);
+            case INTUITION_DISPOSE_IMAGE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPOSE_IMAGE);
+            case INTUITION_SET_IPREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_IPREFS);
         }
     } else if (lib_id == LIB_GADTOOLS) {
         switch (func_idx) {
@@ -1514,6 +1532,12 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_SET_GADGET_ATTRS_A                , LIB_INTUITION, INTUITION_REFRESH_SET_GADGET_ATTRS_A);
     install_lvo(INTUITION_BASE, LVO_INTUITION_SCROLL_WINDOW_RASTER                      , LIB_INTUITION, INTUITION_SCROLL_WINDOW_RASTER);
     install_lvo(INTUITION_BASE, LVO_INTUITION_BUILD_EASY_REQUEST_ARGS                   , LIB_INTUITION, INTUITION_BUILD_EASY_REQUEST_ARGS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DRAW_IMAGE_STATE                          , LIB_INTUITION, INTUITION_DRAW_IMAGE_STATE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ALLOC_REMEMBER                            , LIB_INTUITION, INTUITION_ALLOC_REMEMBER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_FREE_REMEMBER                             , LIB_INTUITION, INTUITION_FREE_REMEMBER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_IMAGE_A                               , LIB_INTUITION, INTUITION_NEW_IMAGE_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_DISPOSE_IMAGE                             , LIB_INTUITION, INTUITION_DISPOSE_IMAGE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_IPREFS                                , LIB_INTUITION, INTUITION_SET_IPREFS);
     /* gadtools.library at GADTOOLS_BASE */
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);
