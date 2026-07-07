@@ -629,6 +629,13 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_SET_PUB_SCREEN_MODES 148
 #define INTUITION_LEND_MENUS           149
 #define INTUITION_GADGET_MOUSE         150
+#define INTUITION_INTUITEXT_LENGTH     151
+#define INTUITION_POINT_IN_IMAGE       152
+#define INTUITION_ERASE_IMAGE          153
+#define INTUITION_ZIP_WINDOW           154
+#define INTUITION_REFRESH_SET_GADGET_ATTRS_A 155
+#define INTUITION_SCROLL_WINDOW_RASTER 156
+#define INTUITION_BUILD_EASY_REQUEST_ARGS 157
 
 /* gadtools.library function indices */
 #define GADTOOLS_OPEN_LIBRARY          1
@@ -943,6 +950,13 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_SET_PUB_SCREEN_MODES         ( -546)  /* SetPubScreenModes */
 #define LVO_INTUITION_LEND_MENUS                   ( -804)  /* LendMenus */
 #define LVO_INTUITION_GADGET_MOUSE                 ( -570)  /* GadgetMouse */
+#define LVO_INTUITION_INTUITEXT_LENGTH             ( -330)  /* IntuiTextLength */
+#define LVO_INTUITION_POINT_IN_IMAGE               ( -624)  /* PointInImage */
+#define LVO_INTUITION_ERASE_IMAGE                  ( -630)  /* EraseImage */
+#define LVO_INTUITION_ZIP_WINDOW                   ( -504)  /* ZipWindow */
+#define LVO_INTUITION_REFRESH_SET_GADGET_ATTRS_A   ( -888)  /* RefreshSetGadgetAttrsA */
+#define LVO_INTUITION_SCROLL_WINDOW_RASTER         ( -798)  /* ScrollWindowRaster */
+#define LVO_INTUITION_BUILD_EASY_REQUEST_ARGS      ( -594)  /* BuildEasyRequestArgs */
 
 /* Non-LVO functions (amiga.lib / gadtools / graphics.library):
  *   GetDisplayInfoData(47), NextDisplayInfo(48) — graphics.library
@@ -1187,6 +1201,13 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_SET_PUB_SCREEN_MODES: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_PUB_SCREEN_MODES);
             case INTUITION_LEND_MENUS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LEND_MENUS);
             case INTUITION_GADGET_MOUSE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GADGET_MOUSE);
+            case INTUITION_INTUITEXT_LENGTH: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_INTUITEXT_LENGTH);
+            case INTUITION_POINT_IN_IMAGE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_POINT_IN_IMAGE);
+            case INTUITION_ERASE_IMAGE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ERASE_IMAGE);
+            case INTUITION_ZIP_WINDOW: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ZIP_WINDOW);
+            case INTUITION_REFRESH_SET_GADGET_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_REFRESH_SET_GADGET_ATTRS_A);
+            case INTUITION_SCROLL_WINDOW_RASTER: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SCROLL_WINDOW_RASTER);
+            case INTUITION_BUILD_EASY_REQUEST_ARGS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_BUILD_EASY_REQUEST_ARGS);
         }
     } else if (lib_id == LIB_GADTOOLS) {
         switch (func_idx) {
@@ -1486,6 +1507,13 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_SET_PUB_SCREEN_MODES                      , LIB_INTUITION, INTUITION_SET_PUB_SCREEN_MODES);
     install_lvo(INTUITION_BASE, LVO_INTUITION_LEND_MENUS                                , LIB_INTUITION, INTUITION_LEND_MENUS);
     install_lvo(INTUITION_BASE, LVO_INTUITION_GADGET_MOUSE                              , LIB_INTUITION, INTUITION_GADGET_MOUSE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_INTUITEXT_LENGTH                          , LIB_INTUITION, INTUITION_INTUITEXT_LENGTH);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_POINT_IN_IMAGE                            , LIB_INTUITION, INTUITION_POINT_IN_IMAGE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ERASE_IMAGE                               , LIB_INTUITION, INTUITION_ERASE_IMAGE);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ZIP_WINDOW                                , LIB_INTUITION, INTUITION_ZIP_WINDOW);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_REFRESH_SET_GADGET_ATTRS_A                , LIB_INTUITION, INTUITION_REFRESH_SET_GADGET_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SCROLL_WINDOW_RASTER                      , LIB_INTUITION, INTUITION_SCROLL_WINDOW_RASTER);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_BUILD_EASY_REQUEST_ARGS                   , LIB_INTUITION, INTUITION_BUILD_EASY_REQUEST_ARGS);
     /* gadtools.library at GADTOOLS_BASE */
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);

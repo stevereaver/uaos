@@ -4904,6 +4904,9 @@ static void intuition_CloseWorkbench(void)
 
 extern void UAOS_Graphics_Dispatch(uint32_t fn);
 
+/* Forward declarations for functions defined later in the file. */
+static void intuition_SetGadgetAttrsA(void);
+
 /* Graphics LVO slots used by the wrappers (|LVO| / 6). */
 #define GFX_SLOT_TEXT                10
 #define GFX_SLOT_SETFONT             11
@@ -4916,6 +4919,8 @@ extern void UAOS_Graphics_Dispatch(uint32_t fn);
 #define GFX_SLOT_SETBPEN             58
 #define GFX_SLOT_SETDRMD             59
 #define GFX_SLOT_BLTBITMAPRASTPORT  101
+#define GFX_SLOT_SCROLLRASTER        66
+#define GFX_SLOT_TEXTLENGTH           9
 #define GFX_SLOT_FINDDISPLAYINFO   121
 #define GFX_SLOT_NEXTDISPLAYINFO   122
 #define GFX_SLOT_GETDISPLAYINFODATA 126
@@ -5583,6 +5588,219 @@ static void intuition_GadgetMouse(void)
     /* Point is { WORD X, WORD Y } — X at offset 0, Y at offset 2. */
     mem_w16(point,     (uint16_t)(mx - gx));
     mem_w16(point + 2, (uint16_t)(my - gy));
+}
+
+/* =========================================================================
+ * Tier 2 — Simple wrappers.
+ * ========================================================================= */
+
+/* IntuiTextLength(intuiText) — A0 = IntuiText*
+ * Returns the pixel width of the IntuiText's string in the IntuiText's
+ * font.  Opens the font (if specified), measures the string, closes the
+ * font, and returns the width in D0. */
+static void intuition_IntuiTextLength(void)
+{
+    uint32_t itext = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!itext) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t font_attr = mem_u32(itext + ITEXT_OFF_FONT);
+    uint32_t text      = mem_u32(itext + ITEXT_OFF_ITEXT);
+    if (!text) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    int len = 0;
+    while (len < 256 && text + len < GUEST_RAM_SIZE && g_ram[text + len] != 0)
+        len++;
+
+    int width = 0;
+    if (font_attr) {
+        /* OpenFont(textAttr) → D0 = font */
+        m68k_set_reg(M68K_REG_A0, font_attr);
+        UAOS_Graphics_Dispatch(GFX_SLOT_OPENFONT);
+        uint32_t font = m68k_get_reg(NULL, M68K_REG_D0);
+        if (font) {
+            /* TextFont.XSize is at TF_OFF_XSIZE.  Use it directly. */
+            width = len * (int)mem_u16(font + TF_OFF_XSIZE);
+        } else {
+            width = len * FB_CharWidth();
+        }
+    } else {
+        /* No font specified — use the system default width. */
+        width = len * FB_CharWidth();
+    }
+    m68k_set_reg(M68K_REG_D0, (uint32_t)width);
+}
+
+/* PointInImage(x, y, image) — D0 = x, D1 = y, A0 = image*
+ * Returns TRUE in D0 if (x, y) is inside the image's bounding rectangle.
+ * The image list is walked; each image has LeftEdge/TopEdge/Width/Height
+ * defining its bounding box relative to the origin. */
+static void intuition_PointInImage(void)
+{
+    int16_t  x     = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int16_t  y     = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t image = m68k_get_reg(NULL, M68K_REG_A0);
+
+    while (image && image + IMG_SIZE <= GUEST_RAM_SIZE) {
+        int16_t  left   = mem_s16(image + IMG_OFF_LEFTEDGE);
+        int16_t  top    = mem_s16(image + IMG_OFF_TOPEDGE);
+        int16_t  width  = mem_s16(image + IMG_OFF_WIDTH);
+        int16_t  height = mem_s16(image + IMG_OFF_HEIGHT);
+        uint32_t next   = mem_u32(image + IMG_OFF_NEXTIMAGE);
+
+        if (x >= left && x < left + width &&
+            y >= top  && y < top  + height) {
+            m68k_set_reg(M68K_REG_D0, 1);
+            return;
+        }
+        image = next;
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* EraseImage(rp, image, xOff, yOff) — A0 = rp, A1 = image, D0 = xOff, D1 = yOff
+ * Fill each image rectangle with the RastPort's background pen.
+ * This is the inverse of DrawImage — it erases the image area. */
+static void intuition_EraseImage(void)
+{
+    uint32_t rp    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t image = m68k_get_reg(NULL, M68K_REG_A1);
+    int xoff       = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int yoff       = (int)m68k_get_reg(NULL, M68K_REG_D1);
+
+    while (image && image + IMG_SIZE <= GUEST_RAM_SIZE) {
+        int16_t  left   = mem_s16(image + IMG_OFF_LEFTEDGE);
+        int16_t  top    = mem_s16(image + IMG_OFF_TOPEDGE);
+        int16_t  width  = mem_s16(image + IMG_OFF_WIDTH);
+        int16_t  height = mem_s16(image + IMG_OFF_HEIGHT);
+        uint32_t next   = mem_u32(image + IMG_OFF_NEXTIMAGE);
+
+        if (width > 0 && height > 0) {
+            /* RectFill(rp, xMin, yMin, xMax, yMax) — A1=rp, D0-D3 */
+            m68k_set_reg(M68K_REG_A1, rp);
+            m68k_set_reg(M68K_REG_D0, xoff + left);
+            m68k_set_reg(M68K_REG_D1, yoff + top);
+            m68k_set_reg(M68K_REG_D2, xoff + left + width - 1);
+            m68k_set_reg(M68K_REG_D3, yoff + top + height - 1);
+            UAOS_Graphics_Dispatch(GFX_SLOT_RECTFILL);
+        }
+        image = next;
+    }
+}
+
+/* ZipWindow(window) — A0 = window
+ * Toggle the window's zoom state.  The WA_Zoom geometry is stored in
+ * the IntuitionSlot; apply_window_zoom() does the actual work. */
+static void intuition_ZipWindow(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    if (slot && slot->zoom && slot->wm_handle >= 0) {
+        apply_window_zoom(slot, slot->wm_handle, win_ptr);
+    }
+}
+
+/* RefreshSetGadgetAttrsA(gadget, window, requester, tagList)
+ * A0 = gadget, A1 = window, A2 = requester, A3 = tagList
+ * Calls SetGadgetAttrsA then triggers a redraw of the gadget. */
+static void intuition_RefreshSetGadgetAttrsA(void)
+{
+    uint32_t gadget    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t window    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t requester = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t tag_list  = m68k_get_reg(NULL, M68K_REG_A3);
+
+    /* Forward to SetGadgetAttrsA */
+    m68k_set_reg(M68K_REG_A0, gadget);
+    m68k_set_reg(M68K_REG_A1, window);
+    m68k_set_reg(M68K_REG_A2, requester);
+    m68k_set_reg(M68K_REG_A3, tag_list);
+    intuition_SetGadgetAttrsA();
+
+    /* Trigger a window redraw so the gadget's new appearance is visible. */
+    IntuitionSlot *slot = find_slot_by_guest(window);
+    if (slot && slot->wm_handle >= 0)
+        WM_Redraw();
+}
+
+/* ScrollWindowRaster(window, dx, dy, xMin, yMin, xMax, yMax)
+ * A0 = window, D0 = dx, D1 = dy, D2 = xMin, D3 = yMin, D4 = xMax, D5 = yMax
+ * Wrapper around graphics.library/ScrollRaster on the window's RastPort. */
+static void intuition_ScrollWindowRaster(void)
+{
+    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    int dx = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int dy = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int x1 = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    int y1 = (int)m68k_get_reg(NULL, M68K_REG_D3);
+    int x2 = (int)m68k_get_reg(NULL, M68K_REG_D4);
+    int y2 = (int)m68k_get_reg(NULL, M68K_REG_D5);
+
+    if (!win_ptr) return;
+    uint32_t rp = mem_u32(win_ptr + WIN_OFF_RPORT);
+    if (!rp) return;
+
+    /* ScrollRaster(rp, dx, dy, xMin, yMin, xMax, yMax)
+     * A1 = rp, D0-D5 = scroll params */
+    m68k_set_reg(M68K_REG_A1, rp);
+    m68k_set_reg(M68K_REG_D0, dx);
+    m68k_set_reg(M68K_REG_D1, dy);
+    m68k_set_reg(M68K_REG_D2, x1);
+    m68k_set_reg(M68K_REG_D3, y1);
+    m68k_set_reg(M68K_REG_D4, x2);
+    m68k_set_reg(M68K_REG_D5, y2);
+    UAOS_Graphics_Dispatch(GFX_SLOT_SCROLLRASTER);
+}
+
+/* BuildEasyRequestArgs(window, easyStruct, idcmpPtr, args)
+ * A0 = window, A1 = easyStruct, A2 = idcmpPtr, A3 = args
+ * Async variant of EasyRequestArgs — builds the requester but does NOT
+ * block.  Returns the requester window pointer in D0 so the caller can
+ * poll SysReqHandler.  When the caller is done, they call FreeSysRequest. */
+static void intuition_BuildEasyRequestArgs(void)
+{
+    uint32_t win_ptr  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t easy_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t idcmp_ptr = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t args_ptr = m68k_get_reg(NULL, M68K_REG_A3);
+    (void)idcmp_ptr; (void)args_ptr;
+
+    char title[32]    = "Request";
+    char body[256]    = "";
+    char gad_fmt[128] = "OK";
+    if (easy_ptr) {
+        uint32_t t = mem_u32(easy_ptr + ES_OFF_TITLE);
+        uint32_t b = mem_u32(easy_ptr + ES_OFF_TEXTFORMAT);
+        uint32_t g = mem_u32(easy_ptr + ES_OFF_GADGETFORMAT);
+        if (t) guest_str(title, t, sizeof(title));
+        if (b) guest_str(body, b, sizeof(body));
+        if (g) guest_str(gad_fmt, g, sizeof(gad_fmt));
+    }
+
+    const char *buttons[REQ_MAX_BUTTONS];
+    int num_buttons = 0;
+    char gad_buf[128];
+    local_str_copy(gad_buf, gad_fmt, sizeof(gad_buf));
+
+    char *p = gad_buf;
+    while (num_buttons < REQ_MAX_BUTTONS && *p) {
+        buttons[num_buttons++] = p;
+        char *sep = local_strchr(p, '|');
+        if (!sep) break;
+        *sep = '\0';
+        p = sep + 1;
+    }
+    if (num_buttons == 0) {
+        buttons[0] = "OK";
+        num_buttons = 1;
+    }
+
+    /* Build the requester but do NOT call wait_requester_internal().
+     * The caller will use SysReqHandler to poll for the result, then
+     * FreeSysRequest to tear it down.  Return the guest window pointer
+     * so the caller can pass it to SysReqHandler. */
+    uint32_t req_win = build_requester_internal(win_ptr, title, body,
+                                                 num_buttons, buttons, 300, 120);
+    m68k_set_reg(M68K_REG_D0, req_win);
 }
 
 /* MoveScreen(screen, dx, dy) — A0, D0/D1 */
@@ -8428,6 +8646,13 @@ static void *intuition_funcs[] = {
     intuition_SetPubScreenModes,
     intuition_LendMenus,
     intuition_GadgetMouse,
+    intuition_IntuiTextLength,
+    intuition_PointInImage,
+    intuition_EraseImage,
+    intuition_ZipWindow,
+    intuition_RefreshSetGadgetAttrsA,
+    intuition_ScrollWindowRaster,
+    intuition_BuildEasyRequestArgs,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)
