@@ -5810,11 +5810,7 @@ static void intuition_BuildEasyRequestArgs(void)
  * Tier 3 — Moderate functions.
  * ========================================================================= */
 
-/* Image draw states (IDS_*). */
-#define IDS_NORMAL     0
-#define IDS_SELECTED   1
-#define IDS_DISABLED   2
-#define IDS_HIGHLIGHTED 3
+/* Image draw states (IDS_*) are now defined in intuition_lib.h. */
 
 /* DrawImageState(rp, image, leftOffset, topOffset, state, drawInfo)
  * A0 = rp, A1 = image, D0 = leftOffset, D1 = topOffset, D2 = state, A2 = drawInfo
@@ -6014,17 +6010,362 @@ static void intuition_DisposeImage(void)
     intuition_DisposeObject();
 }
 
+/* Global IControl preferences state. */
+static struct {
+    uint32_t amiga_key;     /* ICONTROLA_AmigaKey: Amiga key shortcut bitmap */
+    uint32_t menu_ctrl;     /* ICONTROLA_MenuCtrl: menu control flags */
+    uint32_t scr_font;      /* ICONTROLA_ScrFont: screen font pointer */
+    uint32_t front_font;    /* ICONTROLA_FrontFont: frontmost screen font */
+    uint32_t req_font;      /* ICONTROLA_ReqFont: requester font */
+    uint16_t timeout;       /* ICONTROLA_Timeout: input timeout (ticks) */
+} g_icontrol_prefs;
+
 /* SetIPrefs(prefsData, size, type) — A0 = prefsData, D0 = size, D1 = type
  * V40: Sets extended Intuition preferences.  The `type` selects which
  * preferences category to update (IPREFS_TYPE_ICONTROL, IPREFS_TYPE_SCREENMODE,
- * etc.).  UAOS has a single desktop with no IPrefs program, so we accept
- * the data silently and return 0 (success). */
+ * etc.).  For IPREFS_TYPE_ICONTROL, the prefsData may be either a raw
+ * IControlPrefs struct or a taglist of ICONTROLA_* tags.  We parse the
+ * ICONTROLA_* tags and store the relevant fields.  Other types are accepted
+ * silently (UAOS has a single desktop with no IPrefs program). */
 static void intuition_SetIPrefs(void)
 {
-    (void)m68k_get_reg(NULL, M68K_REG_A0);  /* prefsData */
-    (void)m68k_get_reg(NULL, M68K_REG_D0);  /* size */
-    (void)m68k_get_reg(NULL, M68K_REG_D1);  /* type */
+    uint32_t prefs_data = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size       = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t type       = m68k_get_reg(NULL, M68K_REG_D1);
+
+    if (!prefs_data || size == 0) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    switch (type) {
+        case IPREFS_TYPE_ICONTROL: {
+            /* Check if the data looks like a taglist (first tag is an
+             * ICONTROLA_* value) or a raw IControlPrefs struct.  The
+             * IControlPrefs struct starts with a 32-bit ic_Req field
+             * (MN_SIZE | NT_MESSAGE) which is never a valid tag, so
+             * this heuristic is safe. */
+            uint32_t first_tag = mem_u32(prefs_data);
+            if (first_tag >= ICONTROLA_Dummy && first_tag < ICONTROLA_Dummy + 0x100) {
+                /* Taglist form: walk ICONTROLA_* tags. */
+                uint32_t p = prefs_data;
+                while (p + 8 <= prefs_data + size && p + 8 <= GUEST_RAM_SIZE) {
+                    uint32_t tag = mem_u32(p);
+                    uint32_t data = mem_u32(p + 4);
+                    if (tag == TAG_DONE) break;
+                    switch (tag) {
+                        case ICONTROLA_AmigaKey:  g_icontrol_prefs.amiga_key  = data; break;
+                        case ICONTROLA_MenuCtrl:  g_icontrol_prefs.menu_ctrl  = data; break;
+                        case ICONTROLA_ScrFont:   g_icontrol_prefs.scr_font   = data; break;
+                        case ICONTROLA_FrontFont: g_icontrol_prefs.front_font = data; break;
+                        case ICONTROLA_ReqFont:   g_icontrol_prefs.req_font   = data; break;
+                        case ICONTROLA_Timeout:   g_icontrol_prefs.timeout    = (uint16_t)data; break;
+                        case ICONTROLA_Prefs: {
+                            /* Raw IControlPrefs struct pointer — copy fields. */
+                            if (data && data + 8 <= GUEST_RAM_SIZE) {
+                                g_icontrol_prefs.amiga_key = mem_u32(data);
+                                g_icontrol_prefs.menu_ctrl = mem_u32(data + 4);
+                            }
+                            break;
+                        }
+                        default: break;
+                    }
+                    p += 8;
+                }
+            } else {
+                /* Raw IControlPrefs struct: copy the first few fields. */
+                if (prefs_data + 8 <= GUEST_RAM_SIZE) {
+                    g_icontrol_prefs.amiga_key = mem_u32(prefs_data);
+                    g_icontrol_prefs.menu_ctrl = mem_u32(prefs_data + 4);
+                }
+            }
+            break;
+        }
+        case IPREFS_TYPE_FONT: {
+            /* FontPrefs struct: first field is the font pointer. */
+            if (prefs_data + 4 <= GUEST_RAM_SIZE)
+                g_icontrol_prefs.scr_font = mem_u32(prefs_data);
+            break;
+        }
+        default:
+            /* Other types: accept silently. */
+            break;
+    }
+
     m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* =========================================================================
+ * Tier 2 — V39/V40 missing functions.
+ * ========================================================================= */
+
+/* Forward declaration — defined in the BOOPSI section below. */
+static uint32_t find_public_class(uint32_t class_id);
+
+/* GetHalfPens(drawInfo, halfPens) — A0 = DrawInfo*, A1 = uint16* halfPens[12]
+ * V39: Returns the half-tone pen patterns for the screen's DrawInfo.
+ * The halfPens array is 12 UWORDs indexed by DRI_* pen index.  We fill
+ * it with the standard AmigaOS half-tone pen values derived from the
+ * DrawInfo's pen table.  For each pen, the half-tone pen is the same
+ * value (UAOS has no real half-tone rendering, so we return the same
+ * pen numbers).  Returns TRUE in D0. */
+static void intuition_GetHalfPens(void)
+{
+    uint32_t dri      = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t halfpens = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!halfpens || halfpens + 24 > GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    /* If we have a DrawInfo, copy its pen table; otherwise use defaults. */
+    if (dri && dri + DRINFO_OFF_PENS + 24 <= GUEST_RAM_SIZE) {
+        for (int i = 0; i < DRI_PEN_MAX; i++) {
+            uint16_t pen = mem_u16(dri + DRINFO_OFF_PENS + i * 2);
+            mem_w16(halfpens + i * 2, pen);
+        }
+    } else {
+        /* Default half-tone pens: 0..11 mapping to standard pens. */
+        static const uint16_t def_pens[DRI_PEN_MAX] = {
+            0, 1, 2, 3, 1, 0, 1, 2, 1, 3, 3, 2
+        };
+        for (int i = 0; i < DRI_PEN_MAX; i++)
+            mem_w16(halfpens + i * 2, def_pens[i]);
+    }
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* GadgetBox(window, gadget, requestbox, left, top) —
+ * A0 = window, A1 = gadget, A2 = IBox*, D0 = left, D1 = top
+ * V39: Fills the IBox at A2 with the bounding box of the gadget
+ * relative to the window's content area, accounting for relative
+ * positioning flags (GFLG_RELRIGHT, GFLG_RELWIDTH, GFLG_RELBOTTOM,
+ * GFLG_RELHEIGHT).  Returns nothing useful. */
+static void intuition_GadgetBox(void)
+{
+    uint32_t win  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t gad  = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t ibox = m68k_get_reg(NULL, M68K_REG_A2);
+    int16_t  left_off = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int16_t  top_off  = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+
+    if (!gad || !ibox || ibox + 8 > GUEST_RAM_SIZE) return;
+
+    int16_t g_left = mem_s16(gad + GAD_OFF_LEFTEDGE);
+    int16_t g_top  = mem_s16(gad + GAD_OFF_TOPEDGE);
+    int16_t g_w    = mem_s16(gad + GAD_OFF_WIDTH);
+    int16_t g_h    = mem_s16(gad + GAD_OFF_HEIGHT);
+    uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+
+    /* Window dimensions for relative positioning. */
+    int16_t win_w = 0, win_h = 0;
+    if (win) {
+        win_w = mem_s16(win + WIN_OFF_WIDTH);
+        win_h = mem_s16(win + WIN_OFF_HEIGHT);
+    }
+
+    /* GFLG_RELRIGHT (0x0010): LeftEdge is offset from right edge. */
+    if (flags & 0x0010)
+        g_left = (int16_t)(win_w + g_left);
+    /* GFLG_RELBOTTOM (0x0008): TopEdge is offset from bottom edge. */
+    if (flags & 0x0008)
+        g_top = (int16_t)(win_h + g_top);
+    /* GFLG_RELWIDTH (0x0020): Width is relative to window width. */
+    if (flags & 0x0020)
+        g_w = (int16_t)(win_w + g_w);
+    /* GFLG_BOTTOMBORDER (0x0200): Height is relative to window height. */
+    if (flags & 0x0200)
+        g_h = (int16_t)(win_h + g_h);
+
+    /* Apply the additional offset and store into the IBox. */
+    mem_w16(ibox + IBOX_OFF_LEFT,   (uint16_t)(g_left + left_off));
+    mem_w16(ibox + IBOX_OFF_TOP,    (uint16_t)(g_top + top_off));
+    mem_w16(ibox + IBOX_OFF_WIDTH,  (uint16_t)g_w);
+    mem_w16(ibox + IBOX_OFF_HEIGHT, (uint16_t)g_h);
+}
+
+/* SetGUIAttrsA(drawInfo, taglist) — A0 = DrawInfo*, A1 = TagItem*
+ * V39: Set GUI preference attributes.  UAOS has no GUI prefs system,
+ * so we accept all tags silently and return TRUE. */
+static void intuition_SetGUIAttrsA(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* GetGUIAttrsA(drawInfo, taglist) — A0 = DrawInfo*, A1 = TagItem*
+ * V39: Get GUI preference attributes.  Fills the taglist with default
+ * values.  Since UAOS has no GUI prefs system, we fill all requested
+ * tags with 0 (default) and return TRUE. */
+static void intuition_GetGUIAttrsA(void)
+{
+    uint32_t taglist = m68k_get_reg(NULL, M68K_REG_A1);
+    if (taglist && taglist + 8 <= GUEST_RAM_SIZE) {
+        uint32_t p = taglist;
+        while (p + 8 <= GUEST_RAM_SIZE) {
+            uint32_t tag = mem_u32(p);
+            if (tag == TAG_DONE) break;
+            uint32_t store = mem_u32(p + 4);
+            if (store && store + 4 <= GUEST_RAM_SIZE)
+                mem_w32(store, 0);
+            p += 8;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* OpenClass(classId) — A0 = uint32 classId (string pointer or numeric)
+ * V40: Opens a BOOPSI class by name.  Looks up the class in the public
+ * registry and returns the class pointer in D0, or NULL if not found.
+ * In real AmigaOS this also increments a usage count; UAOS classes are
+ * always resident so we just return the pointer. */
+static void intuition_OpenClass(void)
+{
+    uint32_t class_id = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t cls = find_public_class(class_id);
+    m68k_set_reg(M68K_REG_D0, cls);
+}
+
+/* CloseClass(class) — A0 = IClass*
+ * V40: Closes a BOOPSI class.  Counterpart to OpenClass; in real AmigaOS
+ * this decrements the usage count and may free the class.  UAOS classes
+ * are always resident, so this is a no-op.  Returns TRUE in D0. */
+static void intuition_CloseClass(void)
+{
+    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* =========================================================================
+ * Tier 3 — V40 Intuition-owned BOOPSI dispatch + screen locking.
+ * ========================================================================= */
+
+/* Forward declarations — defined in the BOOPSI section below. */
+static void intuition_DoMethodA(void);
+static void intuition_DoSuperMethodA(void);
+static void intuition_CoerceMethodA(void);
+static void intuition_SetSuperAttrsA(void);
+
+/* IDoMethodA(object, msg) — A0 = object, A1 = msg
+ * V40: Intuition-owned DoMethodA.  Same as DoMethodA but dispatched
+ * through Intuition's internal class table instead of amiga.lib.
+ * The implementation is identical — we just call the existing dispatcher. */
+static void intuition_IDoMethodA(void)
+{
+    intuition_DoMethodA();
+}
+
+/* IDoSuperMethodA(object, msg) — A0 = object, A1 = msg
+ * V40: Intuition-owned DoSuperMethodA.  Same as DoSuperMethodA. */
+static void intuition_IDoSuperMethodA(void)
+{
+    intuition_DoSuperMethodA();
+}
+
+/* ICoerceMethodA(class, object, msg) — A0 = class, A1 = object, A2 = msg
+ * V40: Intuition-owned CoerceMethodA.  Same as CoerceMethodA. */
+static void intuition_ICoerceMethodA(void)
+{
+    intuition_CoerceMethodA();
+}
+
+/* ISetSuperAttrsA(object, tagList, ginfo) — A0, A1, A2
+ * V40: Intuition-owned SetSuperAttrsA.  Same as SetSuperAttrsA. */
+static void intuition_ISetSuperAttrsA(void)
+{
+    intuition_SetSuperAttrsA();
+}
+
+/* Global screen-list lock counter. */
+static uint32_t g_screen_list_lock_count = 0;
+
+/* LockScreen(screen, lockType) — A0 = screen, D0 = lockType
+ * V40: Locks a screen for exclusive modification.  Increments the
+ * per-screen lock_count in the ScreenSlot.  Returns TRUE on success,
+ * FALSE if the screen is not found.  lockType is currently ignored
+ * (all locks are exclusive). */
+static void intuition_LockScreen(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    (void)m68k_get_reg(NULL, M68K_REG_D0);
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    if (!slot) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    slot->lock_count++;
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* UnlockScreen(screen) — A0 = screen
+ * V40: Unlocks a screen previously locked with LockScreen.  Decrements
+ * the per-screen lock_count.  Returns TRUE on success. */
+static void intuition_UnlockScreen(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    if (!slot) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    if (slot->lock_count > 0) slot->lock_count--;
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* LockScreenList() — no args
+ * V40: Locks the global screen list for safe iteration.  Returns a
+ * pointer to the first screen in D0 (or NULL if no screens are open).
+ * The lock is a simple counter like LockIBase. */
+static void intuition_LockScreenList(void)
+{
+    g_screen_list_lock_count++;
+    /* Return the first active screen. */
+    uint32_t first = 0;
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        if (g_intu_screens[i].active) {
+            first = g_intu_screens[i].guest_screen;
+            break;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, first);
+}
+
+/* UnlockScreenList() — no args
+ * V40: Unlocks the global screen list. */
+static void intuition_UnlockScreenList(void)
+{
+    if (g_screen_list_lock_count > 0) g_screen_list_lock_count--;
+}
+
+/* LockScreenGI(screen) — A0 = screen
+ * V40: Locks a screen's graphics info (ViewPort/ColorMap) for exclusive
+ * modification.  Uses the same per-screen lock_count as LockScreen;
+ * in real AmigaOS this is a separate counter, but UAOS uses a single
+ * counter for simplicity.  Returns TRUE on success. */
+static void intuition_LockScreenGI(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    if (!slot) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    slot->lock_count++;
+    m68k_set_reg(M68K_REG_D0, 1);
+}
+
+/* UnlockScreenGI(screen) — A0 = screen
+ * V40: Unlocks a screen's graphics info.  Decrements the lock_count. */
+static void intuition_UnlockScreenGI(void)
+{
+    uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    ScreenSlot *slot = find_screen_slot(screen_ptr);
+    if (!slot) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    if (slot->lock_count > 0) slot->lock_count--;
+    m68k_set_reg(M68K_REG_D0, 1);
 }
 
 /* MoveScreen(screen, dx, dy) — A0, D0/D1 */
@@ -8883,6 +9224,22 @@ static void *intuition_funcs[] = {
     intuition_NewImageA,
     intuition_DisposeImage,
     intuition_SetIPrefs,
+    intuition_GetHalfPens,
+    intuition_GadgetBox,
+    intuition_SetGUIAttrsA,
+    intuition_GetGUIAttrsA,
+    intuition_OpenClass,
+    intuition_CloseClass,
+    intuition_IDoMethodA,
+    intuition_IDoSuperMethodA,
+    intuition_ICoerceMethodA,
+    intuition_ISetSuperAttrsA,
+    intuition_LockScreen,
+    intuition_UnlockScreen,
+    intuition_LockScreenList,
+    intuition_UnlockScreenList,
+    intuition_LockScreenGI,
+    intuition_UnlockScreenGI,
 };
 
 void UAOS_Intuition_Dispatch(uint32_t fn)

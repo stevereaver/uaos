@@ -810,6 +810,7 @@ typedef struct {
 #define BOOLGADGET_Pressed  (BOOLGADGET_Dummy + 0x08)
 #define BOOLGADGET_Rollover (BOOLGADGET_Dummy + 0x09)
 #define BOOLGADGET_Text     (BOOLGADGET_Dummy + 0x0A)
+#define BOOLGADGET_Toggle   (BOOLGADGET_Dummy + 0x0B)  /* toggle on press/release */
 
 /* -------------------------------------------------------------------------
  * BVS_* — bevelbox attributes (bevelbox class)
@@ -830,6 +831,8 @@ typedef struct {
 #define BVS_INFO        (BVS_Dummy + 0x0D)
 #define BVS_FRAMETYPE   (BVS_Dummy + 0x0E)
 #define BVS_HITTEST     (BVS_Dummy + 0x0F)
+#define BVS_OFFSET      (BVS_Dummy + 0x10)  /* frame offset for bevel rendering */
+#define BVS_DrawInfo    BVS_DRAWINFO         /* camelCase alias */
 
 /* -------------------------------------------------------------------------
  * FILLRECT_* — fillrectclass attributes
@@ -837,6 +840,295 @@ typedef struct {
 #define FILLRECT_Dummy    (TAG_USER + 0x40060)
 #define FILLRECT_FillHook (FILLRECT_Dummy + 0x01)
 #define FILLRECT_FillType (FILLRECT_Dummy + 0x02)
+
+/* -------------------------------------------------------------------------
+ * GROUPG_* — groupgclass attributes
+ * ------------------------------------------------------------------------- */
+#define GROUPG_Dummy      (TAG_USER + 0x40070)
+#define GROUPG_Children   (GROUPG_Dummy + 0x01)  /* read-only: head of child list */
+#define GROUPG_Active     (GROUPG_Dummy + 0x02)  /* active child gadget */
+#define GROUPG_Labels     (GROUPG_Dummy + 0x03)  /* array of labels for children */
+#define GROUPG_ActiveKey  (GROUPG_Dummy + 0x04)  /* keyboard shortcut for active child */
+
+/* -------------------------------------------------------------------------
+ * PGA_* — propgclass attributes
+ * ------------------------------------------------------------------------- */
+#define PGA_Dummy         (TAG_USER + 0x40080)
+#define PGA_Top           (PGA_Dummy + 0x01)
+#define PGA_Total         (PGA_Dummy + 0x02)
+#define PGA_Visible       (PGA_Dummy + 0x03)
+#define PGA_NewLook       (PGA_Dummy + 0x04)
+#define PGA_Freedom       (PGA_Dummy + 0x05)
+#define PGA_Borderless    (PGA_Dummy + 0x06)
+#define PGA_HorizPot      (PGA_Dummy + 0x07)
+#define PGA_VertPot       (PGA_Dummy + 0x08)
+#define PGA_HorizBody     (PGA_Dummy + 0x09)
+#define PGA_VertBody      (PGA_Dummy + 0x0A)
+#define PGA_HorizSpacing  (PGA_Dummy + 0x0B)
+#define PGA_VertSpacing   (PGA_Dummy + 0x0C)
+#define PGA_Notify        (PGA_Dummy + 0x0D)
+#define PGA_Trigger       (PGA_Dummy + 0x0E)
+#define PGA_RenderTB      (PGA_Dummy + 0x0F)  /* render title bar */
+#define PGA_TopBorder     (PGA_Dummy + 0x10)  /* draw a top border line */
+
+/* PGA_Freedom values */
+#define PGA_FREENONE     0
+#define PGA_FREEHORIZ    1
+#define PGA_FREEVERT     2
+#define PGA_FREEBOTH     3
+
+/* -------------------------------------------------------------------------
+ * STRINGA_* — strgclass attributes
+ * ------------------------------------------------------------------------- */
+#define STRINGA_Dummy      (TAG_USER + 0x40090)
+#define STRINGA_TextVal    (STRINGA_Dummy + 0x01)
+#define STRINGA_MaxChars   (STRINGA_Dummy + 0x02)
+#define STRINGA_Buffer     (STRINGA_Dummy + 0x03)
+#define STRINGA_BufferPos  (STRINGA_Dummy + 0x04)
+#define STRINGA_DispPos    (STRINGA_Dummy + 0x05)
+#define STRINGA_AltKeyMap  (STRINGA_Dummy + 0x06)
+#define STRINGA_EditHook   (STRINGA_Dummy + 0x07)
+#define STRINGA_Workspace  (STRINGA_Dummy + 0x08)
+#define STRINGA_MaxCharsOk (STRINGA_Dummy + 0x09)
+#define STRINGA_Justification (STRINGA_Dummy + 0x0A)
+#define STRINGA_ReplaceMode (STRINGA_Dummy + 0x0B)
+#define STRINGA_FixedFieldMode (STRINGA_Dummy + 0x0C)
+#define STRINGA_LongVal    (STRINGA_Dummy + 0x0D)
+#define STRINGA_IntegerVal (STRINGA_Dummy + 0x0E)
+#define STRINGA_ExitChar   (STRINGA_Dummy + 0x0F)
+#define STRINGA_EditModes  (STRINGA_Dummy + 0x10)
+
+/* STRINGA_Justification values */
+#define STRING_LEFT   0
+#define STRING_RIGHT  1
+#define STRING_CENTER 2
+
+/* -------------------------------------------------------------------------
+ * ICM_* — icclass method IDs (inter-object communication)
+ * ------------------------------------------------------------------------- */
+#define ICM_Dummy      (TAG_USER + 0x40031)
+#define ICM_SET        (ICM_Dummy + 0x01)
+#define ICM_GET        (ICM_Dummy + 0x02)
+#define ICM_INVOKE     (ICM_Dummy + 0x03)
+#define ICM_CHECKNOTIFY (ICM_Dummy + 0x04)
+
+/* -------------------------------------------------------------------------
+ * BTNF_* — buttongclass attributes (Reaction/gadtools button gadget)
+ * ------------------------------------------------------------------------- */
+#define BTNF_Dummy       (TAG_USER + 0x400A0)
+#define BTNF_Title       (BTNF_Dummy + 0x01)
+#define BTNF_Highlight   (BTNF_Dummy + 0x02)
+#define BTNF_Disabled    (BTNF_Dummy + 0x03)
+#define BTNF_Pushed      (BTNF_Dummy + 0x04)
+#define BTNF_BevelStyle  (BTNF_Dummy + 0x05)
+#define BTNF_Image       (BTNF_Dummy + 0x06)
+#define BTNF_SelImage    (BTNF_Dummy + 0x07)
+#define BTNF_Text        (BTNF_Dummy + 0x08)
+#define BTNF_Justification (BTNF_Dummy + 0x09)
+
+/* -------------------------------------------------------------------------
+ * SLIDER_* — slidergclass attributes
+ * ------------------------------------------------------------------------- */
+#define SLIDER_Dummy       (TAG_USER + 0x400B0)
+#define SLIDER_Top         (SLIDER_Dummy + 0x01)
+#define SLIDER_Max         (SLIDER_Dummy + 0x02)
+#define SLIDER_Min         (SLIDER_Dummy + 0x03)
+#define SLIDER_Level       (SLIDER_Dummy + 0x04)
+#define SLIDER_Orientation (SLIDER_Dummy + 0x05)
+#define SLIDER_Invisible   (SLIDER_Dummy + 0x06)
+#define SLIDER_Justification (SLIDER_Dummy + 0x07)
+#define SLIDER_KnobPixels  (SLIDER_Dummy + 0x08)
+
+/* SLIDER_Orientation values */
+#define SLD_ORIENT_VERT  0
+#define SLD_ORIENT_HORIZ 1
+
+/* -------------------------------------------------------------------------
+ * SCROLLER_* — scrollbarclass attributes
+ * ------------------------------------------------------------------------- */
+#define SCROLLER_Dummy       (TAG_USER + 0x400C0)
+#define SCROLLER_Top         (SCROLLER_Dummy + 0x01)
+#define SCROLLER_Total       (SCROLLER_Dummy + 0x02)
+#define SCROLLER_Visible     (SCROLLER_Dummy + 0x03)
+#define SCROLLER_Orientation (SCROLLER_Dummy + 0x04)
+#define SCROLLER_Invisible   (SCROLLER_Dummy + 0x05)
+
+/* SCROLLER_Orientation values */
+#define SCR_ORIENT_VERT  0
+#define SCR_ORIENT_HORIZ 1
+
+/* -------------------------------------------------------------------------
+ * ICONTROLA_* — Intuition control preferences attributes (SetIPrefs)
+ * ------------------------------------------------------------------------- */
+#define ICONTROLA_Dummy      (TAG_USER + 0x400D0)
+#define ICONTROLA_AmigaKey   (ICONTROLA_Dummy + 0x01)  /* Amiga key shortcut prefs */
+#define ICONTROLA_MenuCtrl   (ICONTROLA_Dummy + 0x02)  /* menu control behaviour */
+#define ICONTROLA_Prefs      (ICONTROLA_Dummy + 0x03)  /* raw IControlPrefs struct */
+#define ICONTROLA_ScrFont    (ICONTROLA_Dummy + 0x04)  /* screen font preference */
+#define ICONTROLA_FrontFont  (ICONTROLA_Dummy + 0x05)  /* frontmost screen font */
+#define ICONTROLA_ReqFont    (ICONTROLA_Dummy + 0x06)  /* requester font */
+#define ICONTROLA_Timeout    (ICONTROLA_Dummy + 0x07)  /* input timeout */
+
+/* ICONTROLA_Prefs flags (ICFlag_*) */
+#define ICFLAG_AMIGAKEY     0x00000001
+#define ICFLAG_MENUCTRL     0x00000002
+#define ICFLAG_SCRFONT      0x00000004
+
+/* -------------------------------------------------------------------------
+ * IDS_* — image draw states (DrawImageState)
+ * ------------------------------------------------------------------------- */
+#define IDS_NORMAL        0
+#define IDS_SELECTED      1
+#define IDS_DISABLED      2
+#define IDS_HALFSELECTED  3
+#define IDS_HIGHLIGHTED   IDS_HALFSELECTED  /* alias */
+#define IDS_INACTIVE      4
+#define IDS_INACTIVENORMAL  5
+#define IDS_INACTIVESELECTED 6
+#define IDS_INACTIVEDISABLED 7
+
+/* -------------------------------------------------------------------------
+ * SGA_* — string gadget actions (returned by GM_HANDLEINPUT)
+ * ------------------------------------------------------------------------- */
+#define SGA_NONE       0
+#define SGA_USE        0  /* same as SGA_NONE — use the current value */
+#define SGA_EXIT       1  /* exit the string gadget */
+#define SGA_NEXT       2  /* move to next string gadget */
+#define SGA_PREV       3  /* move to previous string gadget */
+#define SGA_REDISPLAY  4  /* redraw the string gadget */
+#define SGA_ACTIVE     5  /* gadget became active */
+#define SGA_END        0x8000  /* OR with action to signal completion */
+
+/* -------------------------------------------------------------------------
+ * InputEvent structure offsets (for GM_HANDLEINPUT)
+ * ------------------------------------------------------------------------- */
+#define IE_OFF_NEXT     0    /* struct InputEvent *ie_NextEvent */
+#define IE_OFF_CLASS    4    /* UWORD ie_Class */
+#define IE_OFF_SUBCLASS 6    /* UWORD ie_SubClass */
+#define IE_OFF_CODE     8    /* UWORD ie_Code */
+#define IE_OFF_QUAL     10   /* UWORD ie_Qualifier */
+
+/* InputEvent classes */
+#define IECLASS_RAWKEY     0x11
+#define IECLASS_RAWMOUSE   0x12
+#define IECLASS_TIMER      0x1F
+
+/* Raw key codes (ie_Code for IECLASS_RAWKEY, pressed) */
+#define IEKEY_RETURN    0x44
+#define IEKEY_TAB       0x42
+#define IEKEY_ESCAPE    0x45
+#define IEKEY_UP        0x4C
+#define IEKEY_DOWN      0x4D
+#define IEKEY_LEFT      0x4F
+#define IEKEY_RIGHT     0x4E
+#define IEKEY_BACKSPACE 0x41
+#define IEKEY_DELETE    0x46
+
+/* -------------------------------------------------------------------------
+ * IPREFS_TYPE_* — SetIPrefs type codes
+ * ------------------------------------------------------------------------- */
+#define IPREFS_TYPE_ICONTROL    0
+#define IPREFS_TYPE_SCREENMODE  1
+#define IPREFS_TYPE_FONT        2
+#define IPREFS_TYPE_PALETTE     3
+#define IPREFS_TYPE_POINTER     4
+#define IPREFS_TYPE_PREFS       5
+#define IPREFS_TYPE_I18N        6
+
+/* -------------------------------------------------------------------------
+ * BUTTONA_* / BTNG_* — buttongclass attributes (AmigaOS 3.2 Reaction)
+ * These are aliases/alternatives to BTNF_* used by the 3.2 Reaction
+ * button.gadget.  buttongclass accepts both families.
+ * ------------------------------------------------------------------------- */
+#define BUTTONA_Dummy       (TAG_USER + 0x400E0)
+#define BUTTONA_Title       (BUTTONA_Dummy + 0x01)  /* text label */
+#define BUTTONA_Text        (BUTTONA_Dummy + 0x02)  /* alternate text label */
+#define BUTTONA_Image       (BUTTONA_Dummy + 0x03)  /* image for normal state */
+#define BUTTONA_SelImage    (BUTTONA_Dummy + 0x04)  /* image for selected state */
+#define BUTTONA_Disabled    (BUTTONA_Dummy + 0x05)  /* disabled flag */
+#define BUTTONA_Pushed      (BUTTONA_Dummy + 0x06)  /* pushed/checked flag */
+#define BUTTONA_Highlight   (BUTTONA_Dummy + 0x07)  /* highlight mode */
+#define BUTTONA_BevelStyle  (BUTTONA_Dummy + 0x08)  /* bevel style */
+#define BUTTONA_Justification (BUTTONA_Dummy + 0x09) /* text justification */
+#define BUTTONA_TextPen     (BUTTONA_Dummy + 0x0A)  /* text pen colour */
+#define BUTTONA_FillPen     (BUTTONA_Dummy + 0x0B)  /* fill pen colour */
+#define BUTTONA_Pressed     BUTTONA_Pushed           /* alias */
+
+/* BTNG_* — alternate prefix used by some NDK versions */
+#define BTNG_Dummy          BUTTONA_Dummy
+#define BTNG_Title          BUTTONA_Title
+#define BTNG_Text           BUTTONA_Text
+#define BTNG_Image          BUTTONA_Image
+#define BTNG_SelImage       BUTTONA_SelImage
+#define BTNG_Disabled       BUTTONA_Disabled
+#define BTNG_Pushed         BUTTONA_Pushed
+#define BTNG_Highlight      BUTTONA_Highlight
+#define BTNG_BevelStyle     BUTTONA_BevelStyle
+#define BTNG_Justification  BUTTONA_Justification
+
+/* BUTTONA_Highlight values */
+#define BUTTONH_NONE        0
+#define BUTTONH_TEXT        1
+#define BUTTONH_IMAGE       2
+#define BUTTONH_BOTH        3
+
+/* BUTTONA_BevelStyle values */
+#define BUTTONB_NONE        0
+#define BUTTONB_BEVEL       1
+#define BUTTONB_THIN        2
+#define BUTTONB_ROUND       3
+
+/* -------------------------------------------------------------------------
+ * SCROLLBARA_* — scrollbarclass attributes (AmigaOS 3.2 Reaction)
+ * These are aliases/alternatives to SCROLLER_* used by the 3.2 Reaction
+ * scrollbar.gadget.  scrollbarclass accepts both families.
+ * ------------------------------------------------------------------------- */
+#define SCROLLBARA_Dummy        (TAG_USER + 0x400F0)
+#define SCROLLBARA_Top          (SCROLLBARA_Dummy + 0x01)  /* top position */
+#define SCROLLBARA_Total        (SCROLLBARA_Dummy + 0x02)  /* total items */
+#define SCROLLBARA_Visible      (SCROLLBARA_Dummy + 0x03)  /* visible items */
+#define SCROLLBARA_Orientation  (SCROLLBARA_Dummy + 0x04)  /* orientation */
+#define SCROLLBARA_Invisible    (SCROLLBARA_Dummy + 0x05)  /* borderless */
+#define SCROLLBARA_Decrement    (SCROLLBARA_Dummy + 0x06)  /* decrement arrow image */
+#define SCROLLBARA_Increment    (SCROLLBARA_Dummy + 0x07)  /* increment arrow image */
+#define SCROLLBARA_Knob         (SCROLLBARA_Dummy + 0x08)  /* knob image */
+#define SCROLLBARA_Slider       (SCROLLBARA_Dummy + 0x09)  /* slider body image */
+
+/* -------------------------------------------------------------------------
+ * PAGERA_* — pagerclass attributes (V40 Reaction tab/page gadget)
+ * ------------------------------------------------------------------------- */
+#define PAGERA_Dummy        (TAG_USER + 0x40100)
+#define PAGERA_Active       (PAGERA_Dummy + 0x01)  /* active page index */
+#define PAGERA_Total        (PAGERA_Dummy + 0x02)  /* total number of pages */
+#define PAGERA_Labels       (PAGERA_Dummy + 0x03)  /* array of page label strings */
+#define PAGERA_LabelType    (PAGERA_Dummy + 0x04)  /* label type (text/image) */
+#define PAGERA_Orientation  (PAGERA_Dummy + 0x05)  /* horizontal/vertical tabs */
+#define PAGERA_Style        (PAGERA_Dummy + 0x06)  /* tab style */
+#define PAGERA_Spacing      (PAGERA_Dummy + 0x07)  /* spacing between tabs */
+
+/* PAGERA_Orientation values */
+#define PAGEORIENT_HORIZ    0
+#define PAGEORIENT_VERT     1
+
+/* PAGERA_LabelType values */
+#define PAGELABEL_TEXT      0
+#define PAGELABEL_IMAGE     1
+
+/* -------------------------------------------------------------------------
+ * LVGA_* — listviewgclass attributes (V40 BOOPSI listview gadget)
+ * ------------------------------------------------------------------------- */
+#define LVGA_Dummy          (TAG_USER + 0x40110)
+#define LVGA_Top            (LVGA_Dummy + 0x01)  /* top visible item index */
+#define LVGA_Visible        (LVGA_Dummy + 0x02)  /* number of visible items */
+#define LVGA_Total          (LVGA_Dummy + 0x03)  /* total number of items */
+#define LVGA_Selected       (LVGA_Dummy + 0x04)  /* selected item index */
+#define LVGA_ItemText       (LVGA_Dummy + 0x05)  /* array of item text strings */
+#define LVGA_ItemLabels     (LVGA_Dummy + 0x06)  /* alias for LVGA_ItemText */
+#define LVGA_MultiSelect    (LVGA_Dummy + 0x07)  /* multi-select flag */
+#define LVGA_ShowSelected   (LVGA_Dummy + 0x08)  /* show selected item highlighted */
+#define LVGA_Labels         (LVGA_Dummy + 0x09)  /* label array (like ItemText) */
+#define LVGA_ReadOnly       (LVGA_Dummy + 0x0A)  /* read-only flag */
+#define LVGA_Spacing        (LVGA_Dummy + 0x0B)  /* spacing between items */
 
 /* -------------------------------------------------------------------------
  * Alert types

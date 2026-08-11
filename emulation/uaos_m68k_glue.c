@@ -642,6 +642,22 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define INTUITION_NEW_IMAGE_A            161
 #define INTUITION_DISPOSE_IMAGE          162
 #define INTUITION_SET_IPREFS             163
+#define INTUITION_GET_HALF_PENS          164
+#define INTUITION_GADGET_BOX             165
+#define INTUITION_SET_GUI_ATTRS_A        166
+#define INTUITION_GET_GUI_ATTRS_A        167
+#define INTUITION_OPEN_CLASS             168
+#define INTUITION_CLOSE_CLASS            169
+#define INTUITION_IDO_METHOD_A           170
+#define INTUITION_IDO_SUPER_METHOD_A     171
+#define INTUITION_ICOERCE_METHOD_A       172
+#define INTUITION_ISET_SUPER_ATTRS_A     173
+#define INTUITION_LOCK_SCREEN            174
+#define INTUITION_UNLOCK_SCREEN          175
+#define INTUITION_LOCK_SCREEN_LIST       176
+#define INTUITION_UNLOCK_SCREEN_LIST     177
+#define INTUITION_LOCK_SCREEN_GI         178
+#define INTUITION_UNLOCK_SCREEN_GI       179
 
 /* gadtools.library function indices */
 #define GADTOOLS_OPEN_LIBRARY          1
@@ -969,6 +985,22 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_INTUITION_NEW_IMAGE_A                  ( -744)  /* NewImageA (V40) */
 #define LVO_INTUITION_DISPOSE_IMAGE                ( -750)  /* DisposeImage (V40) */
 #define LVO_INTUITION_SET_IPREFS                   ( -756)  /* SetIPrefs (V40) */
+#define LVO_INTUITION_SET_GUI_ATTRS_A              ( -864)  /* SetGUIAttrsA (V39) */
+#define LVO_INTUITION_GET_GUI_ATTRS_A              ( -870)  /* GetGUIAttrsA (V39) */
+#define LVO_INTUITION_GET_HALF_PENS                ( -876)  /* GetHalfPens (V39) */
+#define LVO_INTUITION_GADGET_BOX                   ( -882)  /* GadgetBox (V39) */
+#define LVO_INTUITION_OPEN_CLASS                   ( -918)  /* OpenClass (V40) */
+#define LVO_INTUITION_CLOSE_CLASS                  ( -924)  /* CloseClass (V40) */
+#define LVO_INTUITION_LOCK_SCREEN                  ( -936)  /* LockScreen (V40) */
+#define LVO_INTUITION_UNLOCK_SCREEN                ( -942)  /* UnlockScreen (V40) */
+#define LVO_INTUITION_IDO_SUPER_METHOD_A           ( -894)  /* IDoSuperMethodA (V40) */
+#define LVO_INTUITION_ISET_SUPER_ATTRS_A           ( -900)  /* ISetSuperAttrsA (V40) */
+#define LVO_INTUITION_ICOERCE_METHOD_A             ( -906)  /* ICoerceMethodA (V40) */
+#define LVO_INTUITION_IDO_METHOD_A                 ( -912)  /* IDoMethodA (V40) */
+#define LVO_INTUITION_LOCK_SCREEN_LIST             ( -1014) /* LockScreenList (V40) */
+#define LVO_INTUITION_UNLOCK_SCREEN_LIST           ( -1020) /* UnlockScreenList (V40) */
+#define LVO_INTUITION_LOCK_SCREEN_GI               ( -1026) /* LockScreenGI (V40) */
+#define LVO_INTUITION_UNLOCK_SCREEN_GI             ( -1032) /* UnlockScreenGI (V40) */
 
 /* Non-LVO functions (amiga.lib / gadtools / graphics.library):
  *   GetDisplayInfoData(47), NextDisplayInfo(48) — graphics.library
@@ -1226,6 +1258,22 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case INTUITION_NEW_IMAGE_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_NEW_IMAGE_A);
             case INTUITION_DISPOSE_IMAGE: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_DISPOSE_IMAGE);
             case INTUITION_SET_IPREFS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_IPREFS);
+            case INTUITION_GET_HALF_PENS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_HALF_PENS);
+            case INTUITION_GADGET_BOX: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GADGET_BOX);
+            case INTUITION_SET_GUI_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_SET_GUI_ATTRS_A);
+            case INTUITION_GET_GUI_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_GET_GUI_ATTRS_A);
+            case INTUITION_OPEN_CLASS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_OPEN_CLASS);
+            case INTUITION_CLOSE_CLASS: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_CLOSE_CLASS);
+            case INTUITION_IDO_METHOD_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_IDO_METHOD_A);
+            case INTUITION_IDO_SUPER_METHOD_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_IDO_SUPER_METHOD_A);
+            case INTUITION_ICOERCE_METHOD_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ICOERCE_METHOD_A);
+            case INTUITION_ISET_SUPER_ATTRS_A: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_ISET_SUPER_ATTRS_A);
+            case INTUITION_LOCK_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_SCREEN);
+            case INTUITION_UNLOCK_SCREEN: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_SCREEN);
+            case INTUITION_LOCK_SCREEN_LIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_SCREEN_LIST);
+            case INTUITION_UNLOCK_SCREEN_LIST: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_SCREEN_LIST);
+            case INTUITION_LOCK_SCREEN_GI: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_LOCK_SCREEN_GI);
+            case INTUITION_UNLOCK_SCREEN_GI: return (uint32_t)((int)INTUITION_BASE + LVO_INTUITION_UNLOCK_SCREEN_GI);
         }
     } else if (lib_id == LIB_GADTOOLS) {
         switch (func_idx) {
@@ -1538,6 +1586,22 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_NEW_IMAGE_A                               , LIB_INTUITION, INTUITION_NEW_IMAGE_A);
     install_lvo(INTUITION_BASE, LVO_INTUITION_DISPOSE_IMAGE                             , LIB_INTUITION, INTUITION_DISPOSE_IMAGE);
     install_lvo(INTUITION_BASE, LVO_INTUITION_SET_IPREFS                                , LIB_INTUITION, INTUITION_SET_IPREFS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_HALF_PENS                             , LIB_INTUITION, INTUITION_GET_HALF_PENS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GADGET_BOX                                , LIB_INTUITION, INTUITION_GADGET_BOX);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_SET_GUI_ATTRS_A                           , LIB_INTUITION, INTUITION_SET_GUI_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_GET_GUI_ATTRS_A                           , LIB_INTUITION, INTUITION_GET_GUI_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_CLASS                                , LIB_INTUITION, INTUITION_OPEN_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_CLASS                               , LIB_INTUITION, INTUITION_CLOSE_CLASS);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_IDO_METHOD_A                              , LIB_INTUITION, INTUITION_IDO_METHOD_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_IDO_SUPER_METHOD_A                        , LIB_INTUITION, INTUITION_IDO_SUPER_METHOD_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ICOERCE_METHOD_A                          , LIB_INTUITION, INTUITION_ICOERCE_METHOD_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_ISET_SUPER_ATTRS_A                        , LIB_INTUITION, INTUITION_ISET_SUPER_ATTRS_A);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_SCREEN                               , LIB_INTUITION, INTUITION_LOCK_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_SCREEN                             , LIB_INTUITION, INTUITION_UNLOCK_SCREEN);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_SCREEN_LIST                          , LIB_INTUITION, INTUITION_LOCK_SCREEN_LIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_SCREEN_LIST                        , LIB_INTUITION, INTUITION_UNLOCK_SCREEN_LIST);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_SCREEN_GI                            , LIB_INTUITION, INTUITION_LOCK_SCREEN_GI);
+    install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_SCREEN_GI                          , LIB_INTUITION, INTUITION_UNLOCK_SCREEN_GI);
     /* gadtools.library at GADTOOLS_BASE */
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);

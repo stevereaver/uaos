@@ -4,7 +4,7 @@ title: intuition.library
 description: UAOS native implementation of the AmigaOS intuition.library for emulated M68k tasks.
 resource: /kernel/exec/intuition_lib.c
 tags: [intuition, library, m68k, thunking, window, wm]
-timestamp: 2026-06-26T17:00:00Z
+timestamp: 2026-07-07T13:00:00Z
 ---
 
 # intuition.library
@@ -297,6 +297,28 @@ The underlying `graphics.library` display database already provides `FindDisplay
 | `ChangeWindowBox` | Implemented | Updates the guest `Window` position/size and moves the native WM window. |
 | `GetScreenDrawInfo` / `FreeScreenDrawInfo` | Implemented | Allocates a real `DrawInfo` matching the screen's font and detail/block pens, and frees it on release. |
 
+### V39/V40 utility functions
+
+| Function | LVO | Status | Notes |
+|----------|-----|--------|-------|
+| `IntuiTextLength` | -330 | Implemented | LVO wiring verified: `LVO_INTUITION_INTUITEXT_LENGTH` define, `stub_addr` case, and `install_lvo` call are all present in `uaos_m68k_glue.c`. Returns the pixel width of the `IntuiText`'s string in its font. |
+| `GetHalfPens` | -876 | Implemented | V39. Fills a 12-element `uint16` array with the half-tone pen values from the `DrawInfo` pen table, or default pens if no `DrawInfo` is supplied. |
+| `GadgetBox` | -882 | Implemented | V39. Fills an `IBox` with the gadget's bounding box relative to the window, accounting for `GFLG_RELRIGHT`/`GFLG_RELBOTTOM`/`GFLG_RELWIDTH`/`GFLG_RELHEIGHT` relative positioning flags. |
+| `SetGUIAttrsA` | -864 | Implemented | V39. Stub that accepts all GUI preference tags silently and returns `TRUE`. |
+| `GetGUIAttrsA` | -870 | Implemented | V39. Fills the taglist with default values (0) for all requested GUI preference attributes and returns `TRUE`. |
+| `OpenClass` | -918 | Implemented | V40. Looks up a BOOPSI class by name in the public registry via `find_public_class` and returns the class pointer in D0, or NULL if not found. |
+| `CloseClass` | -924 | Implemented | V40. No-op counterpart to `OpenClass`; UAOS classes are always resident. Returns `TRUE`. |
+| `IDoMethodA` | -912 | Implemented | V40. Intuition-owned `DoMethodA`; delegates directly to the existing `DoMethodA` implementation. |
+| `IDoSuperMethodA` | -894 | Implemented | V40. Intuition-owned `DoSuperMethodA`; delegates to the existing `DoSuperMethodA` implementation. |
+| `ICoerceMethodA` | -906 | Implemented | V40. Intuition-owned `CoerceMethodA`; delegates to the existing `CoerceMethodA` implementation. |
+| `ISetSuperAttrsA` | -900 | Implemented | V40. Intuition-owned `SetSuperAttrsA`; delegates to the existing `SetSuperAttrsA` implementation. |
+| `LockScreen` | -936 | Implemented | V40. Locks a screen for exclusive modification by incrementing the per-screen `lock_count` in the `ScreenSlot`. Returns `TRUE` if the screen is found. |
+| `UnlockScreen` | -942 | Implemented | V40. Unlocks a screen by decrementing the per-screen `lock_count`. Returns `TRUE` if the screen is found. |
+| `LockScreenList` | -1014 | Implemented | V40. Locks the global screen list (counter-based, like `LockIBase`) and returns a pointer to the first active screen in D0, or NULL if no screens are open. |
+| `UnlockScreenList` | -1020 | Implemented | V40. Unlocks the global screen list by decrementing the lock counter. |
+| `LockScreenGI` | -1026 | Implemented | V40. Locks a screen's graphics info (ViewPort/ColorMap) by incrementing the per-screen `lock_count`. Returns `TRUE` if the screen is found. |
+| `UnlockScreenGI` | -1032 | Implemented | V40. Unlocks a screen's graphics info by decrementing the per-screen `lock_count`. Returns `TRUE` if the screen is found. |
+
 ### Menu strips
 
 | Function | Status | Notes |
@@ -327,8 +349,61 @@ At boot, the following standard built-in classes are registered automatically:
 | `pointerclass` | `imageclass` | Handles `POINTERA_BitMap`, `POINTERA_XOffset`, `POINTERA_YOffset`, `POINTERA_WordWidth`, `POINTERA_XResolution`, `POINTERA_YResolution`, `POINTERA_Flags`. `WA_Pointer` now checks for a pointerclass object first and reads its BitMap/offsets directly instead of relying on the old heuristic scan. |
 | `menuclass` | `rootclass` | Real menu node structure with `MA_Type`, `MA_Label`, `MA_Key`, `MA_Disabled`, `MA_Checked`, plus `MA_AddChild`/`MA_RemChild`. `OM_ADDMEMBER`/`OM_REMMEMBER` manage a linked list of child menu nodes, and `OM_DISPOSE` recursively disposes children and siblings. |
 | `windowclass` | `rootclass` | Real window attribute storage: `WA_Left`, `WA_Top`, `WA_Width`, `WA_Height`, `WA_Title`, `WA_Flags`, `WA_IDCMP`, `WA_CustomScreen`/`WA_PubScreen`, and min/max bounds. `OM_GET`/`OM_SET` read and write these attributes. |
+| `modelclass` | `gadgetclass` | Broadcasts `OM_NOTIFY` to a dependent object via `ICA_TARGET`. Stores `ICA_TARGET` and `ICA_MAP`; `OM_NOTIFY` rewrites the MethodID to `OM_UPDATE` and dispatches to the target. |
+| `frbuttonclass` | `gadgetclass` | Boolean button gadget using `BOOLGADGET_*` tags. Checked state in `GFLG_SELECTED`, label in `GAD_OFF_GADGETTEXT`, images in `GAD_OFF_GADGETRENDER`/`GAD_OFF_SELECTRENDER`. `BOOLGADGET_Toggle` sets `GACT_TOGGLESELECT`. |
+| `bevelbox` | `imageclass` | Bevel box image with `BVS_*` tags (`BVS_DRAWINFO`, `BVS_FRAME`, `BVS_RECESSED`, `BVS_SUNKEN`, `BVS_LEFT`/`TOP`/`WIDTH`/`HEIGHT`, `BVS_OFFSET`, `BVS_FRAMETYPE`). `IM_DRAW`/`IM_DRAWFRAME` render a raised or sunken bevel. `OM_GET` returns all `BVS_*` attributes. |
+| `menuitemclass` | `menuclass` | Menu item node with `MNI_*` attributes. `OM_ADDMEMBER`/`OM_REMMEMBER` manage sub-item lists. |
+| `fillrectclass` | `rootclass` | Fill rectangle class with `FILLRECT_FillHook` and `FILLRECT_FillType`. |
+| `sysgclass` | `gadgetclass` | System image gadget for built-in system images (`SYSICLOSE`, `SYSIDRAG`, `SYSIDEPTH`, `SYSIZOOM`, `SYSIMENU`, `SYSIARROWS`, `SYSICHECK`, etc.). Uses `SYSIA_Which`, `SYSIA_DrawInfo`, `SYSIA_ReferenceFont`. |
+| `groupgclass` | `gadgetclass` | Group gadget for layout and mutual exclusion. `GROUPG_Children`/`GROUPG_Active`/`GROUPG_Labels`/`GROUPG_ActiveKey` attributes. `OM_ADDMEMBER`/`OM_REMMEMBER` manage the child gadget list; `OM_NOTIFY` broadcasts `OM_UPDATE` to all children. |
+| `propgclass` | `gadgetclass` | Full BOOPSI proportional gadget. Allocates a `PropInfo` in guest RAM and points `Gadget.SpecialInfo` at it. `PGA_*` tags set Pot/Body/Flags fields. `PGA_Top` sets both `HorizPot` and `VertPot`; `PGA_Freedom` controls `FREEHORIZ`/`FREEVERT` flags; `PGA_NewLook`/`PGA_Borderless` set `PROPNEWLOOK`/`PROPBORDERLESS`; `PGA_TopBorder` sets a top-border flag in `Gadget.Flags`. |
+| `strgclass` | `gadgetclass` | Full BOOPSI string gadget. Allocates a `StringInfo` in guest RAM with buffer and undo buffer. `STRINGA_TextVal` copies the guest string into the buffer; `STRINGA_MaxChars` allocates the buffer; `STRINGA_BufferPos`/`STRINGA_DispPos` set cursor positions; `STRINGA_EditHook` stores the edit hook in `Gadget.UserData`. `OM_DISPOSE` frees the buffer, undo buffer, and `StringInfo`. `GM_GOACTIVE`/`GM_HANDLEINPUT`/`GM_GOINACTIVE` process keyboard input and return `SGA_*` action codes (`SGA_EXIT` on Return, `SGA_NEXT` on Tab, `SGA_REDISPLAY` on key input). |
+| `icclass` | `rootclass` | Interconnection class for `OM_NOTIFY`/`OM_UPDATE` broadcast. Stores `ICA_TARGET` and `ICA_MAP`; `OM_NOTIFY` rewrites to `OM_UPDATE` and dispatches to the target and all `OM_ADDMEMBER` dependents. `ICM_INVOKE` dispatches an arbitrary method to the target; `ICM_SET` forwards `OM_SET`. |
+| `buttongclass` | `gadgetclass` | Button gadget using `BTNF_*`, `BOOLGADGET_*`, and `BUTTONA_*`/`BTNG_*` tags. `BTNF_Title`/`BTNF_Text`/`BUTTONA_Title`/`BUTTONA_Text` create an `IntuiText` label; `BTNF_Image`/`BUTTONA_Image` set render images; `BTNF_Pushed`/`BOOLGADGET_Checked`/`BUTTONA_Pushed` toggle `GFLG_SELECTED`. `BTNG_*` are `#define` aliases for `BUTTONA_*`. Delegates `GM_*` methods to `gadgetclass`. |
+| `slidergclass` | `gadgetclass` | Slider gadget with `SLIDER_*` attributes (`SLIDER_Min`, `SLIDER_Max`, `SLIDER_Level`/`SLIDER_Top`, `SLIDER_Orientation`, `SLIDER_KnobPixels`). Allocates a `PropInfo` and converts integer Min/Max/Level to Pot/Body values. `slider_recalc_body` computes the knob size and pot position from the current level. |
+| `scrollbarclass` | `propgclass` | Scroll bar gadget with `SCROLLER_*` and `SCROLLBARA_*` attributes (`SCROLLER_Top`/`SCROLLBARA_Top`, `SCROLLER_Total`/`SCROLLBARA_Total`, `SCROLLER_Visible`/`SCROLLBARA_Visible`, `SCROLLER_Orientation`/`SCROLLBARA_Orientation`). Converts Top/Total/Visible to PropInfo Pot/Body values via `scroller_recalc`. Also accepts `PGA_Top` as an alias for `SCROLLER_Top`. Delegates `OM_NEW`/`OM_DISPOSE`/`GM_*` to `propgclass`. |
+| `pagerclass` | `gadgetclass` | V40 pager/tab gadget with `PAGERA_*` attributes (`PAGERA_Active`, `PAGERA_Total`, `PAGERA_Labels`, `PAGERA_Orientation`, `PAGERA_Style`, `PAGERA_Spacing`). `GM_GOACTIVE` determines which tab was clicked by dividing the gadget width/height by the total page count and sets `PAGERA_Active` accordingly. Sets `GTYP_CUSTOMGADGET`. |
+| `listviewgclass` | `gadgetclass` | V40 BOOPSI listview gadget with `LVGA_*` attributes (`LVGA_Top`, `LVGA_Visible`, `LVGA_Total`, `LVGA_Selected`, `LVGA_ItemText`/`LVGA_Labels`, `LVGA_MultiSelect`, `LVGA_ReadOnly`, `LVGA_Spacing`). `GM_GOACTIVE` determines which item was clicked by dividing the gadget height by the visible count and sets `LVGA_Selected` accordingly. Sets `GTYP_CUSTOMGADGET`. |
 
 Built-in classes are created in `kernel/exec/boopsi_builtin.c` and registered from `UAOS_INTUITION_Register()`. The class structures are stored in the same public registry used by `MakeClass`/`AddClass`, so `NewObject(NULL, "gadgetclass", ...)` finds them by string ID.
+
+## BOOPSI attribute tag families
+
+All standard AmigaOS BOOPSI attribute tag families are defined in `kernel/exec/intuition_lib.h` with `TAG_USER`-based base values. The following families are implemented:
+
+| Family | Base | Tags | Used by |
+|--------|------|------|---------|
+| `IA_*` | `TAG_USER+0x40000` | `IA_Width`, `IA_Height`, `IA_FGPen`, `IA_BGPen`, `IA_Data`, `IA_Left`, `IA_Top` | `imageclass` |
+| `IM_*` | `TAG_USER+0x40010` | `IM_BitMap` | `imageclass` method IDs |
+| `SYSIA_*` | `TAG_USER+0x40020` | `SYSIA_Which`, `SYSIA_DrawInfo`, `SYSIA_ReferenceFont`, `SYSIA_Left`/`Top`/`Width`/`Height`, `SYSIA_Pens` | `sysgclass`, `DrawImageState` |
+| `ICA_*` | `TAG_USER+0x40030` | `ICA_TARGET`, `ICA_MAP` | `modelclass`, `icclass`, all gadget classes |
+| `ICM_*` | `TAG_USER+0x40031` | `ICM_SET`, `ICM_GET`, `ICM_INVOKE`, `ICM_CHECKNOTIFY` | `icclass` method IDs |
+| `BOOLGADGET_*` | `TAG_USER+0x40040` | `BOOLGADGET_Checked`, `BOOLGADGET_Label`, `BOOLGADGET_Image`, `BOOLGADGET_SelImage`, `BOOLGADGET_Disabled`, `BOOLGADGET_Pressed`, `BOOLGADGET_Toggle`, `BOOLGADGET_Text` | `frbuttonclass`, `buttongclass` |
+| `BVS_*` | `TAG_USER+0x40050` | `BVS_DRAWINFO`, `BVS_LEFT`/`TOP`/`WIDTH`/`HEIGHT`, `BVS_FRAME`, `BVS_RECESSED`, `BVS_SUNKEN`, `BVS_RAISED`, `BVS_FRAMETYPE`, `BVS_OFFSET`, `BVS_HITTEST` | `bevelbox` |
+| `FILLRECT_*` | `TAG_USER+0x40060` | `FILLRECT_FillHook`, `FILLRECT_FillType` | `fillrectclass` |
+| `GROUPG_*` | `TAG_USER+0x40070` | `GROUPG_Children`, `GROUPG_Active`, `GROUPG_Labels`, `GROUPG_ActiveKey` | `groupgclass` |
+| `PGA_*` | `TAG_USER+0x40080` | `PGA_Top`, `PGA_Total`, `PGA_Visible`, `PGA_NewLook`, `PGA_Freedom`, `PGA_Borderless`, `PGA_TopBorder`, `PGA_HorizPot`/`VertPot`, `PGA_HorizBody`/`VertBody`, `PGA_Notify`, `PGA_Trigger`, `PGA_RenderTB` | `propgclass`, `scrollbarclass` |
+| `STRINGA_*` | `TAG_USER+0x40090` | `STRINGA_TextVal`, `STRINGA_MaxChars`, `STRINGA_Buffer`, `STRINGA_BufferPos`, `STRINGA_DispPos`, `STRINGA_AltKeyMap`, `STRINGA_EditHook`, `STRINGA_Workspace`, `STRINGA_Justification`, `STRINGA_LongVal`/`IntegerVal`, `STRINGA_ExitChar` | `strgclass` |
+| `BTNF_*` | `TAG_USER+0x400A0` | `BTNF_Title`, `BTNF_Highlight`, `BTNF_Disabled`, `BTNF_Pushed`, `BTNF_Image`, `BTNF_SelImage`, `BTNF_Text` | `buttongclass` |
+| `SLIDER_*` | `TAG_USER+0x400B0` | `SLIDER_Top`, `SLIDER_Max`, `SLIDER_Min`, `SLIDER_Level`, `SLIDER_Orientation`, `SLIDER_KnobPixels` | `slidergclass` |
+| `SCROLLER_*` | `TAG_USER+0x400C0` | `SCROLLER_Top`, `SCROLLER_Total`, `SCROLLER_Visible`, `SCROLLER_Orientation` | `scrollbarclass` |
+| `ICONTROLA_*` | `TAG_USER+0x400D0` | `ICONTROLA_AmigaKey`, `ICONTROLA_MenuCtrl`, `ICONTROLA_Prefs`, `ICONTROLA_ScrFont`, `ICONTROLA_FrontFont`, `ICONTROLA_ReqFont`, `ICONTROLA_Timeout` | `SetIPrefs` |
+| `BUTTONA_*` / `BTNG_*` | `TAG_USER+0x400E0` | `BUTTONA_Title`, `BUTTONA_Text`, `BUTTONA_Image`, `BUTTONA_SelImage`, `BUTTONA_Disabled`, `BUTTONA_Pushed`/`Pressed`, `BUTTONA_Highlight`, `BUTTONA_BevelStyle`, `BUTTONA_Justification`, `BUTTONA_TextPen`, `BUTTONA_FillPen`. `BTNG_*` are `#define` aliases. | `buttongclass` |
+| `SCROLLBARA_*` | `TAG_USER+0x400F0` | `SCROLLBARA_Top`, `SCROLLBARA_Total`, `SCROLLBARA_Visible`, `SCROLLBARA_Orientation`, `SCROLLBARA_Invisible`, `SCROLLBARA_Decrement`, `SCROLLBARA_Increment`, `SCROLLBARA_Knob`, `SCROLLBARA_Slider` | `scrollbarclass` |
+| `PAGERA_*` | `TAG_USER+0x40100` | `PAGERA_Active`, `PAGERA_Total`, `PAGERA_Labels`, `PAGERA_LabelType`, `PAGERA_Orientation`, `PAGERA_Style`, `PAGERA_Spacing` | `pagerclass` |
+| `LVGA_*` | `TAG_USER+0x40110` | `LVGA_Top`, `LVGA_Visible`, `LVGA_Total`, `LVGA_Selected`, `LVGA_ItemText`/`ItemLabels`/`Labels`, `LVGA_MultiSelect`, `LVGA_ShowSelected`, `LVGA_ReadOnly`, `LVGA_Spacing` | `listviewgclass` |
+
+Non-tag constants are also defined:
+
+| Family | Values | Used by |
+|--------|--------|---------|
+| `IDS_*` | `IDS_NORMAL` (0), `IDS_SELECTED` (1), `IDS_DISABLED` (2), `IDS_HALFSELECTED` (3), `IDS_INACTIVE` (4) | `DrawImageState` |
+| `SGA_*` | `SGA_USE` (0), `SGA_EXIT` (1), `SGA_NEXT` (2), `SGA_PREV` (3), `SGA_REDISPLAY` (4), `SGA_ACTIVE` (5), `SGA_END` (0x8000) | `strgclass` `GM_HANDLEINPUT` return codes |
+| `IPREFS_TYPE_*` | `IPREFS_TYPE_ICONTROL` (0), `IPREFS_TYPE_SCREENMODE` (1), `IPREFS_TYPE_FONT` (2), `IPREFS_TYPE_PALETTE` (3), `IPREFS_TYPE_POINTER` (4), `IPREFS_TYPE_PREFS` (5), `IPREFS_TYPE_I18N` (6) | `SetIPrefs` type parameter |
+| `IECLASS_*` | `IECLASS_RAWKEY` (0x11), `IECLASS_RAWMOUSE` (0x12), `IECLASS_TIMER` (0x1F) | `InputEvent` class field |
+| `IEKEY_*` | `IEKEY_RETURN`, `IEKEY_TAB`, `IEKEY_ESCAPE`, `IEKEY_UP`/`DOWN`/`LEFT`/`RIGHT`, `IEKEY_BACKSPACE`, `IEKEY_DELETE` | Raw key codes for `GM_HANDLEINPUT` |
+
+`SetIPrefs` now parses `IPREFS_TYPE_ICONTROL` data: if the first 4 bytes look like an `ICONTROLA_*` tag, the data is treated as a taglist and each `ICONTROLA_*` tag is stored in the global `g_icontrol_prefs` structure. Otherwise the data is treated as a raw `IControlPrefs` struct. `IPREFS_TYPE_FONT` stores the screen font pointer. Other types are accepted silently.
 
 ## Guest data structures
 
