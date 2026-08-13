@@ -11,9 +11,23 @@
 #define UAOS_WM_H
 
 #define WM_MAX_WINDOWS  16
-#define WM_TITLEBAR_H   20
+
+/* Title bar height: 1px raised top edge + 9px interior (Topaz/8 glyph
+ * height 8 + 1, per the AmigaOS Intuition formula
+ * topborder = WBorTop + Font->ta_YSize + 1, WBorTop=1) + 1px bottom
+ * divider = 11px, matching genuine AmigaOS 3.1 measurements. */
+#define WM_TITLEBAR_H   11
+/* Width of the close/zoom/depth system-gadget cell, measured from a
+ * genuine unscaled AmigaOS 3.1 screenshot. */
+#define WM_GADGET_W     19
 #define WM_BORDER       4    /* border thickness on left/right/bottom */
-#define WM_SCROLLBAR_W  16   /* width of right scrollbar / height of bottom scrollbar */
+/* Scrollbar well width/height: matches the measured AmigaOS 3.x window
+ * right-border "sizing gadget well" (1px white + 16px well + 1px black). */
+#define WM_SCROLLBAR_W  18
+/* Length of each arrow button along the scrollbar's long axis, measured
+ * from a genuine screenshot (white top bevel + 9 interior rows + shared
+ * black divider/bottom border). */
+#define WM_ARROW_LEN    11
 
 typedef void (*WM_DrawFn)(int win_x, int win_y, int win_w, int win_h);
 typedef void (*WM_KeyFn)(char c);

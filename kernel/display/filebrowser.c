@@ -916,7 +916,7 @@ void FileBrowser_Open(const char *volume)
             if (wx > max_x) wx = max_x;
             if (wx < 0) wx = 0;
             if (wy > max_y) wy = max_y;
-            if (wy < 20) wy = 20;  /* MENUBAR_H */
+            if (wy < MENUBAR_H) wy = MENUBAR_H;
             int reuse_handle = WM_AddWindow(wx, wy, 320, 240, volume,
                                             k_draw_shims[i], browser_key);
             /* CRITICAL FIX: Check if another browser slot already has this handle.
@@ -1004,7 +1004,7 @@ void FileBrowser_Open(const char *volume)
     if (wx > max_x) wx = max_x;
     if (wx < 0) wx = 0;
     if (wy > max_y) wy = max_y;
-    if (wy < 20) wy = 20;  /* MENUBAR_H */
+    if (wy < MENUBAR_H) wy = MENUBAR_H;
 
     int new_handle = WM_AddWindow(wx, wy, 320, 240, volume,
                                   k_draw_shims[idx], browser_key);

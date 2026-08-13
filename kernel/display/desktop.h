@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#define MENUBAR_H      11
+
 void Desktop_Draw(void);          /* render full desktop (call once after FB_Init) */
 void Desktop_UpdateClock(void);   /* redraw clock area in menu bar                 */
 void Desktop_RedrawRect(int rx, int ry, int rw, int rh); /* repaint backdrop rect */

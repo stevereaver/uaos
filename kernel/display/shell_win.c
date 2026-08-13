@@ -57,7 +57,7 @@ static void inst_print_wrapper(const char *line)
 
 #define TITLEBAR_H      WM_TITLEBAR_H
 #define INPUTBAR_H      18
-#define BORDER_L        1                  /* left: just the outline */
+#define BORDER_L        WM_BORDER          /* left: white/blue/black bevel */
 #define BORDER_R        WM_SCROLLBAR_W     /* right: scrollbar width */
 #define BORDER          BORDER_L           /* legacy alias for top inset */
 #define MAX_HIST_LINES  1000
@@ -279,17 +279,17 @@ static void inst_draw_contents(ShellInstance *s)
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
 
     int body_w = ww - BORDER_L - BORDER_R;
-    int body_y  = wy + TITLEBAR_H + 1;
-    int body_h  = wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W - 1;
+    int body_y  = wy + TITLEBAR_H;
+    int body_h  = wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W;
 
-    /* History area */
+    /* History / body area (fills client up to the input bar). */
     FB_FillRect(wx+BORDER_L, body_y, body_w, body_h, WB_BLACK);
 
     /* Separator */
-    FB_DrawHLine(wx+BORDER_L, body_y + body_h, body_w, WB_DARK_GREY);
+    FB_DrawHLine(wx+BORDER_L, body_y + body_h - 1, body_w, WB_DARK_GREY);
 
     /* Input bar */
-    FB_FillRect(wx+BORDER_L, body_y + body_h + 1,
+    FB_FillRect(wx+BORDER_L, body_y + body_h,
                 body_w, INPUTBAR_H, WB_BLACK);
 }
 
@@ -388,7 +388,7 @@ static void inst_draw_input(ShellInstance *s)
     if (s->vim_mode) return;
 
     int ix = wx + BORDER_L + 4;
-    int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W - 2;
+    int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W;
 
     /* Build Amiga-style prompt from current volume, or use ask prompt if in ask mode */
     char prompt[80];
@@ -4895,7 +4895,7 @@ static void open_shell(int stagger)
     s->number     = idx + 1;
     s->index      = idx;
     s->wx         = 24 + stagger * 28;
-    s->wy         = 28 + stagger * 28;
+    s->wy         = MENUBAR_H + stagger * 28;
     s->ww         = 600;
     s->wh         = 340;
     s->hist_count = 0;

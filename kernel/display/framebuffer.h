@@ -67,4 +67,13 @@ int  FB_CharHeight(void);   /* always 16                                       *
 void FB_PutStrCentred(int rx, int ry, int rw, int rh,
                       const char *s, uint32_t fg, uint32_t bg);
 
+/* Compact 8x8 font — used for authentic-scale window chrome (title bars).
+ * See framebuffer.c for details on how glyphs are derived. */
+void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg);
+void FB_PutStrSmall(int x, int y, const char *s, uint32_t fg, uint32_t bg);
+void FB_PutStrSmallCentred(int rx, int ry, int rw, int rh,
+                           const char *s, uint32_t fg, uint32_t bg);
+int  FB_CharWidthSmall(void);   /* always 8 */
+int  FB_CharHeightSmall(void);  /* always 8 */
+
 #endif /* UAOS_FRAMEBUFFER_H */

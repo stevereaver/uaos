@@ -52,7 +52,7 @@ static int str_eq(const char *a, const char *b)
  * Layout constants
  * ========================================================================= */
 
-#define MENUBAR_H      20
+/* MENUBAR_H is defined in desktop.h */
 #define STATUSBAR_H    18
 #define ICON_W         48
 #define ICON_H         56   /* 40px bitmap + 16px label */
@@ -587,21 +587,22 @@ static void draw_menubar(int W)
     /* Update the active menu strip from the focused guest window. */
     refresh_active_menus();
 
-    /* Solid dark-blue background */
-    FB_FillRect(0, 0, W, MENUBAR_H, WB_BLUE);
+    /* Top bevel: black outer, white inner (K+W+B+...) */
+    FB_DrawHLine(0, 0, W, WB_BLACK);
+    FB_DrawHLine(0, 1, W, WB_WHITE);
+    /* Blue fill between the white highlight and the black bottom */
+    FB_FillRect(0, 2, W, MENUBAR_H - 3, WB_BLUE);
+    /* Black bottom edge */
+    FB_DrawHLine(0, MENUBAR_H - 1, W, WB_BLACK);
 
-    /* Bevel bottom edge */
-    FB_DrawHLine(0, MENUBAR_H - 1, W, WB_DARK_GREY);
-    FB_DrawHLine(0, MENUBAR_H - 2, W, WB_LIGHT_BLUE);
-
-    /* Menu titles */
+    /* Menu titles (Topaz 8, vertically fills the 8px blue area y=2..9) */
     int mx = 8;
     for (int i = 0; ; i++) {
         const char *title = menu_title(i);
         if (!title) break;
-        /* Highlight the active menu title. */
-        uint32_t bg = (g_menu_index == i) ? WB_LIGHT_BLUE : WB_BLUE;
-        FB_PutStr(mx, 2, title, WB_WHITE, bg);
+        /* Highlight the active menu title with a black bar, white text. */
+        uint32_t bg = (g_menu_index == i) ? WB_BLACK : WB_BLUE;
+        FB_PutStrSmall(mx, 2, title, WB_WHITE, bg);
         int len = 0;
         for (const char *p = title; *p; p++) len++;
         mx += len * 8 + 16;
@@ -615,13 +616,13 @@ static void draw_menubar(int W)
         if (title_x + title_w > W - 58)
             title_x = W - 58 - title_w;
         if (title_x > mx && title_w > 0)
-            FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
+            FB_PutStrSmall(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
 
     /* Clock — show current local time (not hardcoded 00:00:00) */
     char buf[9];
     current_time_str(buf);
-    FB_PutStr(W - 50, 2, buf, WB_CREAM, WB_BLUE);
+    FB_PutStrSmall(W - 50, 2, buf, WB_CREAM, WB_BLUE);
 }
 
 /* =========================================================================
