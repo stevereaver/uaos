@@ -21,13 +21,17 @@
  * ========================================================================= */
 
 /* Forward-declared — defined in generated binaries/<Name>_bin.c files.
- * If no binary has been embedded yet, a stub array is used. */
-
-extern const uint8_t  g_bin_Lha[];
-extern const uint32_t g_bin_Lha_size;
+ * The build script (build_iso.sh) auto-generates the extern declarations
+ * and the k_programs[] table from whatever raw binaries are present in
+ * emulation/binaries/ at build time, replacing the section below. */
 
 /* =========================================================================
  * Program table
+ *
+ * NOTE: The entries below are placeholders.  build_iso.sh regenerates this
+ * file's first 44 lines from the contents of emulation/binaries/ at build
+ * time, producing real extern declarations and k_programs[] entries for
+ * each embedded binary.  When no binaries are present the table is empty.
  * ========================================================================= */
 
 typedef struct {
@@ -37,8 +41,6 @@ typedef struct {
 } EmbeddedProgram;
 
 static const EmbeddedProgram k_programs[] = {
-    { "Lha",  g_bin_Lha,  53576 },
-    { "lha",  g_bin_Lha,  53576 },
     { NULL, NULL, 0 }
 };
 

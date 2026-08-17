@@ -1,2 +1,7 @@
 build
 sys-root
+
+# Embedded Amiga binaries — test-only, auto-processed by build_iso.sh
+# Raw binaries (no extension) and their generated _bin.c / _bin.h wrappers
+emulation/binaries/*
+!emulation/binaries/.gitkeep
