@@ -5,7 +5,7 @@
 ; Assemble: vasmm68k_mot -Fhunk -o rom_traps.o rom_traps.s
 ;           (or: m68k-amigaos-as -o rom_traps.o rom_traps.s)
 ;
-; Each stub is a 6-byte breakout sequence inserted into the AROS replacement
+; Each stub is a 6-byte breakout sequence inserted into the UAOS
 ; ROM jump table in place of the original Exec library vector.  When the
 ; M68k JIT core executes the ILLEGAL opcode it calls the host-side handler
 ; UAOS_Bridge_IllegalOpcode(), which validates the $414D signature token and

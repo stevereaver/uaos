@@ -78,7 +78,7 @@ interactive shell.
 
 ### M68k Thunk Dispatch
 
-The thunk mechanism replaces selected Exec jump-table vectors in the AROS ROM
+The thunk mechanism replaces selected Exec jump-table vectors in the ROM
 with 8-byte breakout stubs using the `MK_THUNK` macro in
 `emulation/rom_patches/rom_traps.s`:
 
@@ -1137,7 +1137,7 @@ Output: `build/Ultimate_Amiga_OS.iso`
 | 7 | Wraps embedded M68k binaries from `emulation/binaries/` and Amiga `.library` files |
 | 8 | Builds native x86-64 Ring-3 userspace programs from `system/userspace/` |
 | 9 | Stages the `system/` skeleton into `SYS_ROOT` (C:, S:, LIBS:, DEVS:, L:, SYS, Tools) |
-| 10 | Injects `grub.cfg` and the AROS kickstart configuration |
+| 10 | Injects `grub.cfg` and the kickstart configuration |
 | 11 | Produces hybrid BIOS+EFI ISO with `grub-mkrescue` |
 
 ### GCC Flags

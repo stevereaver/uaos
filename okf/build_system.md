@@ -34,7 +34,7 @@ The primary build script is `scripts/build_iso.sh`.
 10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
 11. **M68k Demos**: Assembles M68k assembly demos in `system/Demos/` (e.g., `CopperBars.s`) with `vasm` (Motorola syntax), links them into Amiga Hunk executables with `vlink`, and wraps the resulting binaries with `gen_uaos_m68k` for `SYS_ROOT/Demos/`.
 12. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`) into `SYS_ROOT`.
-13. **GRUB Config**: Injects `scripts/grub.cfg` and the AROS kickstart configuration.
+13. **GRUB Config**: Injects `scripts/grub.cfg` and the kickstart configuration.
 14. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
 
 ## Helper Scripts

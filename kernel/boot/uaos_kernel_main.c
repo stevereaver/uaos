@@ -294,7 +294,7 @@ static void print_banner(void)
     kprint("\n");
     kprint("  +----------------------------------------------------------+\n");
     kprint("  |         ULTIMATE AMIGA OS  (UAOS)  v0.1.0-dev           |\n");
-    kprint("  |    x86_64 AROS-derived microkernel + M68k JIT sandbox    |\n");
+    kprint("  |       x86_64 microkernel + M68k JIT sandbox              |\n");
     kprint("  +----------------------------------------------------------+\n");
     kprint("\n");
 }

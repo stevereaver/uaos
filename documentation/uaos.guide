@@ -1,7 +1,7 @@
 @DATABASE uaos.guide
 @$VER: uaos.guide 1.0 (23.05.2026)
 @AUTHOR "UAOS Development Team"
-@(C) "2026 UAOS Project — Released under the AROS Public License"
+@(C) "2026 UAOS Project"
 @WORDWRAP
 
 @NODE MAIN "Ultimate Amiga OS — Documentation Index"
@@ -112,7 +112,7 @@
   Pass on the kernel command line (edit grub.cfg or press @{b}e@{ub} at menu):
 
     @{b}sysroot=@{ub}/boot/uaos-sysroot.img   Path to the sysroot archive module.
-    @{b}config=@{ub}/boot/aros_kickstart.conf  Path to the AROS ROM configuration.
+    @{b}config=@{ub}/boot/kickstart.conf  Path to the ROM configuration.
     @{b}loglevel=@{ub}[debug|info|warn|error]  Kernel log verbosity.
     @{b}vga=@{ub}0x0318                        VESA mode 1024×768 32 bpp.
     @{b}console=@{ub}ttyS0,115200              Redirect console to serial port.
@@ -218,11 +218,11 @@
   UAOS runs a headless M68k emulator core (Musashi) inside a 4 GB virtual
   address sandbox.  Amiga Hunk binaries execute unmodified through the
   Musashi interpreter; the emulator is reset per run and loaded from the
-  AROS kickstart stub.
+  UAOS kickstart stub.
 
   @{b}Thunk Dispatch Mechanism@{ub}
 
-  Every intercepted Exec library call is replaced in the AROS ROM with a
+  Every intercepted Exec library call is replaced in the ROM with a
   8-byte breakout sequence assembled by the @{b}MK_THUNK@{ub} macro in
   @{i}emulation/rom_patches/rom_traps.s@{ui}:
 
@@ -243,7 +243,7 @@
 
   @{b}ROM Patch Configuration@{ub}
 
-  @{i}emulation/rom_patches/aros_kickstart.conf@{ui} is the AROS ROM configuration
+  @{i}emulation/rom_patches/kickstart.conf@{ui} is the ROM configuration
   loaded at boot.  Native binaries in @{i}emulation/binaries/@{ui} are wrapped
   into the ISO image.
 
@@ -582,7 +582,7 @@
 
     The 0x414D signature word was not present after 0x4AFC.  The guest
     has executed a genuine illegal instruction.  Enable
-    @{b}break_on_illegal = yes@{ub} in aros_kickstart.conf to trap it in the
+    @{b}break_on_illegal = yes@{ub} in kickstart.conf to trap it in the
     debugger and inspect the guest PC and surrounding memory.
 
   @{"  Back to Index  " LINK MAIN}

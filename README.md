@@ -135,7 +135,7 @@ build/Ultimate_Amiga_OS.iso
 | 7 | Wraps embedded M68k binaries from `emulation/binaries/` and Amiga `.library` files |
 | 8 | Builds native x86-64 Ring-3 userspace programs from `system/userspace/` |
 | 9 | Stages the `system/` Amiga filesystem skeleton into `SYS_ROOT` (C:, S:, LIBS:, DEVS:, L:, SYS, Tools) |
-| 10 | Injects `grub.cfg` and the AROS kickstart configuration |
+| 10 | Injects `grub.cfg` and the kickstart configuration |
 | 11 | Produces a hybrid BIOS+EFI ISO with `grub-mkrescue` |
 
 ---

@@ -17,7 +17,7 @@ The emulation layer provides the infrastructure to execute Motorola 68000 binary
 - **`uaos_emu_registry.c`**: Manages embedded Amiga binaries (e.g., `Lha`) and exposes `UAOS_Emu_RunByName()` for the shell.
 - **`uaos_uae_bridge.c`**: UAE-compatible bridge that wires ILLEGAL callbacks and initializes the 4 GB guest physical RAM window used by some emulator builds.
 - **`uaos_m68kconf.h`**: Musashi configuration tuned for M68000-only emulation with ILLEGAL/TRAP callbacks and no FPU/PMMU.
-- **`rom_patches/`**: Contains assembly stubs (`rom_traps.s`) and the AROS kickstart configuration (`aros_kickstart.conf`).
+- **`rom_patches/`**: Contains assembly stubs (`rom_traps.s`) and the kickstart configuration (`kickstart.conf`).
 - **`binaries/`**: Embedded Amiga binaries converted to C byte arrays (e.g., `Lha`).
 
 ## Execution Model

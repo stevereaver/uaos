@@ -58,12 +58,10 @@
     \rule{\linewidth}{0.5pt}\\[1em]
     {\normalsize
         UAOS is a standalone, bare-metal 64-bit operating system for x86\_64 platforms.\\
-        It is derived from the AROS open-source Amiga replacement kernel and features\\
-        transparent M68k JIT emulation and native GNU tool integration.
+        It features transparent M68k JIT emulation and native GNU tool integration.
     }
     \vfill
-    {\small Copyright \textcopyright\ 2026 UAOS Development Team.
-     Released under the AROS Public License (APL).}
+    {\small Copyright \textcopyright\ 2026 UAOS Development Team.}
 \end{titlepage}
 
 \tableofcontents
@@ -81,7 +79,7 @@ designed to provide a native Amiga-compatible environment on modern hardware
 without requiring any host operating system.  It achieves this through:
 
 \begin{itemize}
-    \item An extended AROS microkernel providing Exec, DOS, and Intuition
+    \item A native microkernel providing Exec, DOS, and Intuition
           semantics on 64-bit hardware.
     \item A transparent M68k JIT emulation sandbox that executes legacy
           Amiga ``Hunk'' binaries inside a 4~GB virtual address space.
@@ -97,12 +95,12 @@ without requiring any host operating system.  It achieves this through:
 
 \begin{enumerate}
     \item \textbf{No Linux kernel.}  UAOS boots directly into its own
-          x86\_64 AROS-derived microkernel.  No Linux, no POSIX kernel layer.
+          x86\_64 microkernel.  No Linux, no POSIX kernel layer.
 
     \item \textbf{Trap-based thunking.}  M68k Hunk binaries are loaded into
           the 4~GB sandbox.  System calls are intercepted via
           \texttt{ILLEGAL + \$414D} magic-token sequences routed to native
-          64-bit AROS libraries.
+          64-bit native libraries.
 
     \item \textbf{MMU hardware virtualisation.}  x86\_64 page tables map the
           sandbox with 2~MB huge pages.  The Amiga hardware register window
@@ -112,9 +110,8 @@ without requiring any host operating system.  It achieves this through:
           handlers resolve Amiga assigns (\texttt{SYS:}, \texttt{S:},
           \texttt{C:}, \texttt{RAM:}) alongside POSIX translation paths.
 
-    \item \textbf{AROS Kickstart firmware.}  The open-source AROS replacement
-          ROM is used as the modular firmware base with vectors patched at
-          build time.
+    \item \textbf{Kickstart firmware.}  A modular firmware base with
+          vectors patched at build time.
 \end{enumerate}
 
 % =========================================================================
@@ -153,7 +150,7 @@ without requiring any host operating system.  It achieves this through:
 
 \section{M68k Thunk Dispatch}
 
-The thunk mechanism replaces selected Exec jump-table vectors in the AROS ROM
+The thunk mechanism replaces selected Exec jump-table vectors in the ROM
 with 8-byte breakout stubs assembled by the \texttt{MK\_THUNK} macro in
 \texttt{emulation/rom\_patches/rom\_traps.s}:
 

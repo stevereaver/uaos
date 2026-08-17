@@ -24,7 +24,7 @@ ISO_STAGING="${BUILD_DIR}/iso-staging"
 ISO_OUTPUT="${BUILD_DIR}/Ultimate_Amiga_OS.iso"
 SYS_ROOT="${REPO_ROOT}/sys-root"
 GRUB_CFG="${REPO_ROOT}/scripts/grub.cfg"
-KICKSTART_CONF="${REPO_ROOT}/emulation/rom_patches/aros_kickstart.conf"
+KICKSTART_CONF="${REPO_ROOT}/emulation/rom_patches/kickstart.conf"
 KERNEL_ASM="${REPO_ROOT}/kernel/boot/uaos_kernel_entry.asm"
 KERNEL_MAIN="${REPO_ROOT}/kernel/boot/uaos_kernel_main.c"
 KERNEL_LD="${REPO_ROOT}/kernel/boot/uaos_kernel.ld"
@@ -987,17 +987,17 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Step 4 — Install AROS kickstart configuration module
+# Step 4 — Install kickstart configuration module
 # -------------------------------------------------------------------------
 
 info "Step 4: Installing kickstart configuration module"
 
 if [[ -f "${KICKSTART_CONF}" ]]; then
-    cp "${KICKSTART_CONF}" "${ISO_STAGING}/boot/aros_kickstart.conf"
-    ok "aros_kickstart.conf installed"
+    cp "${KICKSTART_CONF}" "${ISO_STAGING}/boot/kickstart.conf"
+    ok "kickstart.conf installed"
 else
-    warn "aros_kickstart.conf not found — creating placeholder"
-    echo "# placeholder" > "${ISO_STAGING}/boot/aros_kickstart.conf"
+    warn "kickstart.conf not found — creating placeholder"
+    echo "# placeholder" > "${ISO_STAGING}/boot/kickstart.conf"
 fi
 
 # -------------------------------------------------------------------------
@@ -1104,7 +1104,7 @@ REQUIRED_FILES=(
     "boot/grub/grub.cfg"
     "boot/uaos-kernel.bin"
     "boot/uaos-sysroot.img"
-    "boot/aros_kickstart.conf"
+    "boot/kickstart.conf"
     "SYS_ROOT/S/Startup-Sequence"
 )
 

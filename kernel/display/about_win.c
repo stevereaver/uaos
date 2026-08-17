@@ -149,10 +149,6 @@ static void about_draw(int wx, int wy, int ww, int wh)
     const char *copy = "Copyright 2026 UAOS Development Team";
     int cl = 0; while (copy[cl]) cl++;
     FB_PutStr(cx + (cw - cl * 8) / 2, y, copy, WB_DARK_GREY, bg);
-    y += LINE_H;
-    const char *lic = "Released under the AROS Public License (APL)";
-    int ll = 0; while (lic[ll]) ll++;
-    FB_PutStr(cx + (cw - ll * 8) / 2, y, lic, WB_DARK_GREY, bg);
     y += LINE_H + PAD;
 
     /* ── OK button ─────────────────────────────────────────── */

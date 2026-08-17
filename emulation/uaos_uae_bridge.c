@@ -1,9 +1,8 @@
 /*
  * uaos_uae_bridge.c — UAOS Emulation-to-Native Kernel Lifecycle Bridge
  *
- * This module sits between the headless M68k emulator core (derived from
- * UAE / FS-UAE) and the UAOS native kernel subsystems.  It is responsible
- * for:
+ * This module sits between the headless M68k emulator core (Musashi)
+ * and the UAOS native kernel subsystems.  It is responsible for:
  *
  *   1. Allocating and managing the 4 GB guest physical RAM window.
  *   2. Loading ROM patches from rom_traps.s into the guest address space.
@@ -11,7 +10,7 @@
  *   4. Starting the emulator run-loop and handling clean shutdown.
  *
  * Integration contract:
- *   - The caller must provide a UAE-compatible emulator context struct via
+ *   - The caller must provide an emulator context struct via
  *     UAOS_Bridge_SetEmulatorCtx().
  *   - The emulator must invoke UAOS_Bridge_IllegalOpcode() on every ILLEGAL
  *     opcode it decodes instead of raising an unhandled exception.

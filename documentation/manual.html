@@ -337,7 +337,7 @@ and TSS</li>
 </ol>
 <h3 id="m68k-thunk-dispatch">M68k Thunk Dispatch</h3>
 <p>The thunk mechanism replaces selected Exec jump-table vectors in the
-AROS ROM with 8-byte breakout stubs using the <code>MK_THUNK</code>
+ROM with 8-byte breakout stubs using the <code>MK_THUNK</code>
 macro in <code>emulation/rom_patches/rom_traps.s</code>:</p>
 <pre class="asm"><code>MK_THUNK MACRO
         ILLEGAL             ; $4AFC — triggers JIT breakout
@@ -2303,7 +2303,7 @@ and Amiga <code>.library</code> files</td>
 </tr>
 <tr class="even">
 <td>10</td>
-<td>Injects <code>grub.cfg</code> and the AROS kickstart
+<td>Injects <code>grub.cfg</code> and the kickstart
 configuration</td>
 </tr>
 <tr class="odd">
