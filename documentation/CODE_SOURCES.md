@@ -18,9 +18,9 @@ in the repository.
 | SoftFloat 2b | John R. Hauser (via MAME) | Hauser/ICSI non-warranty | `emulation/src/musashi/softfloat/` |
 | M68k PMMU (`m68kmmu.h`) | R. Belmont / MAME Team | MAME license | `emulation/src/musashi/m68kmmu.h` |
 | Musashi example/test harness | Karl Stenerud (upstream) | MIT | `emulation/src/musashi/example/`, `emulation/src/musashi/test/` |
-| UAOS kernel + AmigaOS libraries | UAOS Development Team (clean-room) | None declared (see §"License Status") | `kernel/**`, `emulation/uaos_*.c` |
-| `powerpacker.library` | UAOS-generated stub wrapper (not real PowerPacker) | UAOS | `system/LIBS/powerpacker.library` |
-| Build scripts, tools, docs | UAOS Development Team | UAOS | `scripts/`, `tools/`, `documentation/` |
+| UAOS kernel + AmigaOS libraries | UAOS Development Team (clean-room) | MIT | `kernel/**`, `emulation/uaos_*.c` |
+| `powerpacker.library` | UAOS-generated stub wrapper (not real PowerPacker) | MIT | `system/LIBS/powerpacker.library` |
+| Build scripts, tools, docs | UAOS Development Team | MIT | `scripts/`, `tools/`, `documentation/` |
 
 **No source code from the AROS project is present in this repository.**
 **No source code from original AmigaOS 3.1 (Commodore) is present.**
@@ -183,34 +183,30 @@ attribution is present).
 
 ## 4. License Status
 
-The repository currently has **no license applied**. The `README.md`
-states: *"This project is a personal research and hobby project. No
-licence is currently applied."* There is no `LICENSE` file in the
-repository root.
+UAOS-original code is released under the **MIT License**. The full text
+is in `LICENSE` at the repository root. The `README.md` license section
+links to it.
 
-**Recommendation:** Pick a license, apply it consistently, and add a
-`LICENSE` file to the repository root. MIT or BSD-2-Clause would be
-appropriate for UAOS-original code and would be compatible with the
-Musashi MIT license and the SoftFloat / MAME licenses of the bundled
-third-party code.
+Third-party code (Musashi, SoftFloat, M68k PMMU) is licensed under its
+own terms, which are compatible with the MIT License. See
+`THIRD_PARTY_NOTICES.md` at the repository root for a summary of each
+third-party component, its license, and its upstream URL.
 
 ---
 
-## 5. Attribution Gaps
+## 5. Attribution
 
-The following third-party material is present but lacks a top-level
-attribution or license file:
+Third-party attribution is provided in `THIRD_PARTY_NOTICES.md` at the
+repository root. It lists:
 
-1. **SoftFloat** — the in-file notices are preserved, but there is no
-   top-level `THIRD_PARTY_NOTICES` or equivalent summarizing that
-   SoftFloat 2b (Hauser/ICSI) is bundled.
-2. **MAME PMMU** (`m68kmmu.h`) — same: in-file notice preserved, no
-   top-level summary.
-3. **Musashi** — in-file notices preserved, no top-level summary.
+1. **Musashi** — MIT license, upstream URL, location in the tree.
+2. **SoftFloat 2b** — Hauser/ICSI non-warranty license, upstream URL,
+   location in the tree.
+3. **M68k PMMU** (`m68kmmu.h`) — MAME license, upstream URL, location
+   in the tree.
 
-**Recommendation:** Add a `THIRD_PARTY_NOTICES.md` (or similar) to the
-repository root listing Musashi, SoftFloat, and the MAME PMMU code with
-their respective licenses and upstream URLs.
+In-file license notices are also preserved verbatim in each third-party
+source file.
 
 ---
 
@@ -231,9 +227,8 @@ the codebase:
 2. **AROS Public License (APL) claim.** `manual.tex` and `about_win.c`
    previously asserted "Released under the AROS Public License (APL)."
    This was inappropriate since UAOS contains no AROS code. The APL
-   claim has been removed from both files. The repository now
-   consistently states that no license is currently applied (matching
-   `README.md`).
+   claim has been removed from both files. The repository is now
+   licensed under the MIT License (see `LICENSE`).
 
 3. **AROS kickstart configuration.** The file
    `emulation/rom_patches/aros_kickstart.conf` and all references to it

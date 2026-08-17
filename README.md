@@ -399,4 +399,8 @@ GRUB2 Multiboot2
 
 ## License
 
-This project is a personal research and hobby project. No licence is currently applied.
+UAOS-original code is released under the [MIT License](LICENSE).
+
+Third-party code bundled in this repository (Musashi, SoftFloat, M68k PMMU)
+is licensed under their own terms — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+for details.
