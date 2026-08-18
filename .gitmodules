@@ -1,0 +1,3 @@
+[submodule "emulation/src/musashi"]
+	path = emulation/src/musashi
+	url = https://github.com/stevereaver/Musashi.git
