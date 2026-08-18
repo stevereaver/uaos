@@ -401,6 +401,14 @@ GRUB2 Multiboot2
 
 UAOS-original code is released under the [MIT License](LICENSE).
 
-Third-party code bundled in this repository (Musashi, SoftFloat, M68k PMMU)
-is licensed under their own terms — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-for details.
+The UAOS kernel and system files are MIT-licensed.  The bootable ISO
+image also contains [GNU GRUB](https://www.gnu.org/software/grub/)
+(GPL-3.0-or-later) as the bootloader — GRUB is a separate work loaded
+via the multiboot2 protocol and is not linked into the UAOS kernel.
+
+Third-party source code bundled in this repository (Musashi M68k
+emulator, SoftFloat 2b, M68k PMMU) is licensed under their own terms.
+SoftFloat 2b and the M68k PMMU file are retained in the source tree
+for reference but are **not compiled into the kernel**.  See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for full details
+including build tool licenses.

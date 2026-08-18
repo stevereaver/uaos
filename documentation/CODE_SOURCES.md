@@ -4,9 +4,18 @@ This document is a code audit of the Ultimate Amiga OS (UAOS) repository,
 cataloguing the origin of every piece of third-party or externally-derived
 code.
 
-The audit was performed by inspecting copyright headers, license blocks,
-README files, build scripts, and the actual content of every source file
-in the repository.
+The audit was performed in two phases:
+
+1. **Phase 1 — Manual audit:** Inspecting copyright headers, license
+   blocks, README files, build scripts, and the actual content of every
+   source file in the repository.
+2. **Phase 2 — Automated scan with ScanCode Toolkit v32.5.0:** A
+   comprehensive automated license, copyright, and package scan of the
+   entire repository using [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit).
+   The scan checked all 533 source files for license expressions,
+   copyright holders, package manifests, emails, and URLs.  Results are
+   in `scancode_report.json` and `scancode_report.md` at the repository
+   root.
 
 ---
 
@@ -187,10 +196,36 @@ UAOS-original code is released under the **MIT License**. The full text
 is in `LICENSE` at the repository root. The `README.md` license section
 links to it.
 
-Third-party code (Musashi, SoftFloat, M68k PMMU) is licensed under its
-own terms, which are compatible with the MIT License. See
-`THIRD_PARTY_NOTICES.md` at the repository root for a summary of each
-third-party component, its license, and its upstream URL.
+**Files compiled into the UAOS kernel:** Only MIT-licensed code is
+compiled into the kernel binary.  This was verified by:
+
+- ScanCode Toolkit scan of all source files
+- `nm` symbol analysis of `build/uaos-kernel.elf` (no SoftFloat, MAME,
+  or non-MIT symbols present)
+- `strings` analysis of the kernel binary (no third-party license text
+  embedded)
+- ISO content inspection (no source files or third-party license files
+  in the distributed image, except GRUB bootloader — see below)
+
+**SoftFloat 2b and M68k PMMU are not compiled into the kernel.**  FPU
+emulation is disabled in `uaos_m68kconf.h` (`M68K_EMULATE_FPOINT = OFF`),
+and the SoftFloat and PMMU source files are excluded from the build via
+`#if M68K_EMULATE_FPOINT` guards in `m68kcpu.h` and `m68kcpu.c`.  The
+source files are retained in the tree for reference only.
+
+**GRUB bootloader (GPL-3.0-or-later):** The bootable ISO image contains
+GNU GRUB 2.12 as the bootloader.  GRUB is a separate work loaded via
+the multiboot2 protocol and is not linked into the UAOS kernel.  The
+GPL-3.0 applies to the GRUB bootloader components only; the MIT license
+applies to the UAOS kernel and system files.  See
+`THIRD_PARTY_NOTICES.md` §4 for full GRUB attribution.
+
+**Build tools (GCC, NASM, vasm, vlink, xorriso, etc.):** These are used
+at build time only and are not distributed in the ISO.  See
+`THIRD_PARTY_NOTICES.md` §5 for the full build tool license table.
+
+See `THIRD_PARTY_NOTICES.md` at the repository root for a summary of
+each third-party component, its license, and its upstream URL.
 
 ---
 
@@ -200,10 +235,16 @@ Third-party attribution is provided in `THIRD_PARTY_NOTICES.md` at the
 repository root. It lists:
 
 1. **Musashi** — MIT license, upstream URL, location in the tree.
+   Compiled into the kernel.
 2. **SoftFloat 2b** — Hauser/ICSI non-warranty license, upstream URL,
-   location in the tree.
-3. **M68k PMMU** (`m68kmmu.h`) — MAME license, upstream URL, location
-   in the tree.
+   location in the tree. **Not compiled into the kernel.**
+3. **M68k PMMU** (`m68kmmu.h`) — MAME license (pre-2016, non-commercial
+   restriction), upstream URL, location in the tree. **Not compiled
+   into the kernel.**
+4. **GNU GRUB** — GPL-3.0-or-later.  Distributed in the bootable ISO
+   as the bootloader (separate work, not linked into the kernel).
+5. **Build tools** — GCC, NASM, vasm, vlink, xorriso, binutils, xxd.
+   Build-time only, not distributed in the ISO.
 
 In-file license notices are also preserved verbatim in each third-party
 source file.

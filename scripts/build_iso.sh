@@ -150,18 +150,18 @@ nasm -f elf64 \
 ok "  Assembled: task_switch.asm"
 
 # Compile Musashi M68k core (suppress its own warnings — not our code)
+# Note: softfloat.c and m68kfpu.c are excluded — FPU emulation is disabled
+# in uaos_m68kconf.h (M68K_EMULATE_FPOINT = OFF), so the SoftFloat 2b
+# library is not compiled into the kernel.
 for msrc in \
-    "${MUSASHI_DIR}/softfloat/softfloat.c" \
     "${MUSASHI_DIR}/m68kcpu.c" \
     "${MUSASHI_DIR}/m68kops.c"
 do
     base="$(basename "${msrc}" .c)"
     gcc ${GCC_FLAGS} -w \
         -DMUSASHI_CNF='"uaos_m68kconf.h"' \
-        -DFLOATX80 -DFLOAT128 \
         -I"${REPO_ROOT}/emulation" \
         -I"${MUSASHI_DIR}" \
-        -I"${MUSASHI_DIR}/softfloat" \
         -c "${msrc}" -o "${BUILD_DIR}/obj/${base}.o"
     ok "  Compiled:  ${msrc##*/}"
 done
@@ -258,7 +258,7 @@ REGEOF2
 REGEOF3
 
     # Append the rest of the registry boilerplate (lookup + RunByName)
-    tail -n +45 "${REPO_ROOT}/emulation/uaos_emu_registry.c"
+    tail -n +46 "${REPO_ROOT}/emulation/uaos_emu_registry.c"
 } > "${REGISTRY_C}"
 
 # Compile emulation layer
@@ -589,7 +589,6 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/clock_win.o" \
     "${BUILD_DIR}/obj/netinfo_win.o" \
     "${BUILD_DIR}/obj/user_window.o" \
-    "${BUILD_DIR}/obj/softfloat.o" \
     "${BUILD_DIR}/obj/m68kcpu.o" \
     "${BUILD_DIR}/obj/m68kops.o" \
     "${BUILD_DIR}/obj/uaos_m68k_glue.o" \
