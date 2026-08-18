@@ -25,10 +25,10 @@
         "--url": true
       },
       "notice": "Generated with ScanCode and provided on an \"AS IS\" BASIS, WITHOUT WARRANTIES\nOR CONDITIONS OF ANY KIND, either express or implied. No content created from\nScanCode should be considered or used as legal advice. Consult an Attorney\nfor any legal advice.\nScanCode is a free software code scanning tool from nexB Inc. and others.\nVisit https://github.com/nexB/scancode-toolkit/ for support and download.",
-      "start_timestamp": "2026-08-18T131634.653776",
-      "end_timestamp": "2026-08-18T131732.385014",
+      "start_timestamp": "2026-08-18T135134.227433",
+      "end_timestamp": "2026-08-18T135231.439733",
       "output_format_version": "4.1.0",
-      "duration": 57.73125863075256,
+      "duration": 57.212321281433105,
       "message": null,
       "errors": [],
       "warnings": [],
@@ -41,19 +41,19 @@
           "python_version": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]"
         },
         "spdx_license_list_version": "3.27",
-        "files_count": 535
+        "files_count": 527
       }
     }
   ],
   "summary": {
-    "declared_license_expression": "mit AND unknown-license-reference",
+    "declared_license_expression": "(mit AND gpl-3.0-plus) AND unknown-license-reference",
     "license_clarity_score": {
-      "score": 80,
+      "score": 100,
       "declared_license": true,
       "identification_precision": true,
       "has_license_text": true,
       "declared_copyrights": true,
-      "conflicting_license_categories": true,
+      "conflicting_license_categories": false,
       "ambiguous_compound_licensing": false
     },
     "declared_holder": "UAOS Development Team",
@@ -61,64 +61,84 @@
     "other_license_expressions": [
       {
         "value": null,
-        "count": 514
-      },
-      {
-        "value": "proprietary-license",
-        "count": 41
+        "count": 513
       },
       {
         "value": "mit",
-        "count": 33
-      },
-      {
-        "value": "unknown-license-reference",
-        "count": 10
-      },
-      {
-        "value": "softfloat AND proprietary-license",
-        "count": 7
+        "count": 16
       },
       {
         "value": "bsd-new",
-        "count": 5
+        "count": 3
       },
       {
-        "value": "proprietary-license AND bsd-new",
+        "value": "commercial-license",
         "count": 2
       },
       {
-        "value": "scancode-acknowledgment",
+        "value": "bsd-new AND proprietary-license AND gpl-2.0-plus",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0 AND gpl-2.0 AND proprietary-license",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0-plus",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0-plus AND gpl-3.0 AND mit",
+        "count": 1
+      },
+      {
+        "value": "mit AND gpl-3.0-plus",
+        "count": 1
+      },
+      {
+        "value": "mit AND proprietary-license AND gpl-3.0-plus",
+        "count": 1
+      },
+      {
+        "value": "proprietary-license",
+        "count": 1
+      },
+      {
+        "value": "unknown-license-reference",
         "count": 1
       }
     ],
     "other_holders": [
       {
         "value": null,
-        "count": 513
+        "count": 507
       },
       {
         "value": "Karl Stenerud",
-        "count": 30
+        "count": 14
       },
       {
         "value": "Nicola Salmoria and the MAME Team",
-        "count": 7
+        "count": 2
       },
       {
         "value": "Table",
-        "count": 3
+        "count": 1
       },
       {
         "value": "UAOS Project",
-        "count": 3
+        "count": 1
       },
       {
         "value": "extcopyright UAOS Development Team",
-        "count": 3
-      },
-      {
-        "value": "Count",
         "count": 1
       }
     ],
@@ -179,53 +199,45 @@
       ]
     },
     {
-      "identifier": "bsd_new-49052ff0-b02f-8508-3e29-6e5f25d6ad80",
-      "license_expression": "bsd-new",
-      "license_expression_spdx": "BSD-3-Clause",
+      "identifier": "bsd_new_and_proprietary_license_and_gpl_2_0_plus-534fef2d-a638-8f47-edad-fc2e5fd23801",
+      "license_expression": "bsd-new AND proprietary-license AND gpl-2.0-plus",
+      "license_expression_spdx": "BSD-3-Clause AND LicenseRef-scancode-proprietary-license AND GPL-2.0-or-later",
       "detection_count": 1,
       "reference_matches": [
         {
           "license_expression": "bsd-new",
           "license_expression_spdx": "BSD-3-Clause",
           "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-          "start_line": 120,
-          "end_line": 120,
+          "start_line": 121,
+          "end_line": 121,
           "matcher": "2-aho",
-          "score": 90.0,
+          "score": 99.0,
+          "matched_length": 4,
+          "match_coverage": 100.0,
+          "rule_relevance": 99,
+          "rule_identifier": "bsd-new_1102.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_1102.RULE"
+        },
+        {
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 121,
+          "end_line": 122,
+          "matcher": "2-aho",
+          "score": 100.0,
           "matched_length": 3,
           "match_coverage": 100.0,
-          "rule_relevance": 90,
-          "rule_identifier": "bsd-new_625.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_625.RULE"
+          "rule_relevance": 100,
+          "rule_identifier": "proprietary_non-commercial4.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary_non-commercial4.RULE"
         },
         {
           "license_expression": "bsd-new",
           "license_expression_spdx": "BSD-3-Clause",
           "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-          "start_line": 120,
-          "end_line": 120,
-          "matcher": "2-aho",
-          "score": 90.0,
-          "matched_length": 3,
-          "match_coverage": 100.0,
-          "rule_relevance": 90,
-          "rule_identifier": "bsd-new_required_phrase_12.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_required_phrase_12.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "bsd_new-50fa5753-f24d-ec04-33a1-36bb8ac0492c",
-      "license_expression": "bsd-new",
-      "license_expression_spdx": "BSD-3-Clause",
-      "detection_count": 1,
-      "reference_matches": [
-        {
-          "license_expression": "bsd-new",
-          "license_expression_spdx": "BSD-3-Clause",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 177,
-          "end_line": 177,
+          "start_line": 122,
+          "end_line": 122,
           "matcher": "2-aho",
           "score": 100.0,
           "matched_length": 3,
@@ -233,28 +245,354 @@
           "rule_relevance": 100,
           "rule_identifier": "bsd-new_10.RULE",
           "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
+        },
+        {
+          "license_expression": "gpl-2.0-plus",
+          "license_expression_spdx": "GPL-2.0-or-later",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 122,
+          "end_line": 122,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "spdx_license_id_gpl-2.0+_for_gpl-2.0-plus.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-2.0+_for_gpl-2.0-plus.RULE"
         }
       ]
     },
     {
-      "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929",
-      "license_expression": "mit",
-      "license_expression_spdx": "MIT",
-      "detection_count": 13,
+      "identifier": "gpl_3_0_and_gpl_2_0_and_proprietary_license-cf06275a-31eb-497f-f119-a1ed3b9bdad9",
+      "license_expression": "gpl-3.0 AND gpl-2.0 AND proprietary-license",
+      "license_expression_spdx": "GPL-3.0-only AND GPL-2.0-only AND LicenseRef-scancode-proprietary-license",
+      "detection_count": 1,
       "reference_matches": [
         {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 134,
-          "end_line": 134,
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 176,
+          "end_line": 176,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_6.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_6.RULE"
+        },
+        {
+          "license_expression": "gpl-2.0",
+          "license_expression_spdx": "GPL-2.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 177,
+          "end_line": 177,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-2.0_52.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-2.0_52.RULE"
+        },
+        {
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 179,
+          "end_line": 179,
           "matcher": "2-aho",
           "score": 100.0,
           "matched_length": 2,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "mit_14.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
+          "rule_identifier": "proprietary-license_544.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+        },
+        {
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 180,
+          "end_line": 180,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 2,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "proprietary-license_271.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_271.RULE"
+        }
+      ]
+    },
+    {
+      "identifier": "gpl_3_0_with_gcc_exception_3_1_and_bsd_simplified_and_gpl_3_0_and_proprietary_license-ec1bee21-3f2c-af3e-d39c-90856a711951",
+      "license_expression": "gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license",
+      "license_expression_spdx": "GPL-3.0-only WITH GCC-exception-3.1 AND BSD-2-Clause AND GPL-3.0-only AND LicenseRef-scancode-proprietary-license",
+      "detection_count": 1,
+      "reference_matches": [
+        {
+          "license_expression": "gpl-3.0 WITH gcc-exception-3.1",
+          "license_expression_spdx": "GPL-3.0-only WITH GCC-exception-3.1",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 170,
+          "end_line": 170,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 6,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_with_gcc-exception-3.1_9.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_with_gcc-exception-3.1_9.RULE"
+        },
+        {
+          "license_expression": "bsd-simplified",
+          "license_expression_spdx": "BSD-2-Clause",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 171,
+          "end_line": 171,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "spdx_license_id_bsd-2-clause_for_bsd-simplified.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_bsd-2-clause_for_bsd-simplified.RULE"
+        },
+        {
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 172,
+          "end_line": 172,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_6.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_6.RULE"
+        },
+        {
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 173,
+          "end_line": 173,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_6.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_6.RULE"
+        },
+        {
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 174,
+          "end_line": 174,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 2,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "proprietary-license_544.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+        }
+      ]
+    },
+    {
+      "identifier": "gpl_3_0_plus-ed0f7331-ef04-9729-bd83-68e31b8526fd",
+      "license_expression": "gpl-3.0-plus",
+      "license_expression_spdx": "GPL-3.0-or-later",
+      "detection_count": 1,
+      "reference_matches": [
+        {
+          "license_expression": "gpl-3.0-plus",
+          "license_expression_spdx": "GPL-3.0-or-later",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 134,
+          "end_line": 134,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 6,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0-plus_525.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0-plus_525.RULE"
+        }
+      ]
+    },
+    {
+      "identifier": "gpl_3_0_plus_and_gpl_1_0_plus_and_gpl_3_0_and_mit-a5551f95-5f95-dd98-a12a-d4b429f1ad12",
+      "license_expression": "gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit",
+      "license_expression_spdx": "GPL-3.0-or-later AND GPL-1.0-or-later AND GPL-3.0-only AND MIT",
+      "detection_count": 1,
+      "reference_matches": [
+        {
+          "license_expression": "gpl-3.0-plus",
+          "license_expression_spdx": "GPL-3.0-or-later",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 145,
+          "end_line": 148,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 40,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0-plus_98.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0-plus_98.RULE"
+        },
+        {
+          "license_expression": "gpl-1.0-plus",
+          "license_expression_spdx": "GPL-1.0-or-later",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 150,
+          "end_line": 150,
+          "matcher": "2-aho",
+          "score": 90.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 90,
+          "rule_identifier": "gpl-1.0-plus_350.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-1.0-plus_350.RULE"
+        },
+        {
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 150,
+          "end_line": 150,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 4,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_396.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_396.RULE"
+        },
+        {
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 151,
+          "end_line": 151,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 9,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_218.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_218.RULE"
+        },
+        {
+          "license_expression": "gpl-1.0-plus",
+          "license_expression_spdx": "GPL-1.0-or-later",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 153,
+          "end_line": 153,
+          "matcher": "2-aho",
+          "score": 50.0,
+          "matched_length": 1,
+          "match_coverage": 100.0,
+          "rule_relevance": 50,
+          "rule_identifier": "gpl_bare_word_only.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl_bare_word_only.RULE"
+        },
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 153,
+          "end_line": 154,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "mit_258.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_258.RULE"
+        },
+        {
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 157,
+          "end_line": 157,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 4,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_396.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_396.RULE"
+        },
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 158,
+          "end_line": 158,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "mit_27.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_27.RULE"
+        }
+      ]
+    },
+    {
+      "identifier": "gpl_3_0_plus_and_gpl_3_0_and_mit-71ddd68d-fc90-37ae-4706-d1ae4435fa16",
+      "license_expression": "gpl-3.0-plus AND gpl-3.0 AND mit",
+      "license_expression_spdx": "GPL-3.0-or-later AND GPL-3.0-only AND MIT",
+      "detection_count": 1,
+      "reference_matches": [
+        {
+          "license_expression": "gpl-3.0-plus",
+          "license_expression_spdx": "GPL-3.0-or-later",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 216,
+          "end_line": 216,
+          "matcher": "2-aho",
+          "score": 50.0,
+          "matched_length": 5,
+          "match_coverage": 100.0,
+          "rule_relevance": 50,
+          "rule_identifier": "spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE"
+        },
+        {
+          "license_expression": "gpl-3.0",
+          "license_expression_spdx": "GPL-3.0-only",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 218,
+          "end_line": 219,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 4,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "gpl-3.0_396.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_396.RULE"
+        },
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 219,
+          "end_line": 219,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 3,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "mit_27.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_27.RULE"
         }
       ]
     },
@@ -281,29 +619,7 @@
       ]
     },
     {
-      "identifier": "mit-b6581844-7aef-89bf-3a49-ebfebd6ea2ad",
-      "license_expression": "mit",
-      "license_expression_spdx": "MIT",
-      "detection_count": 3,
-      "reference_matches": [
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "from_file": "uaos/README.md",
-          "start_line": 402,
-          "end_line": 402,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 6,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "mit_43.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_43.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "mit-3fce6ea2-8abd-6c6b-3ede-a37af7c6efee",
+      "identifier": "mit-1ed2c6fa-a922-7bec-0184-88381dc33752",
       "license_expression": "mit",
       "license_expression_spdx": "MIT",
       "detection_count": 2,
@@ -311,16 +627,44 @@
         {
           "license_expression": "mit",
           "license_expression_spdx": "MIT",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 25,
-          "end_line": 25,
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 8,
+          "end_line": 8,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 7,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "mit_1336.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_1336.RULE"
+        },
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/LICENSE",
+          "start_line": 1,
+          "end_line": 1,
           "matcher": "2-aho",
           "score": 100.0,
           "matched_length": 2,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "mit_30.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_30.RULE"
+          "rule_identifier": "mit_14.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
+        },
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/LICENSE",
+          "start_line": 5,
+          "end_line": 21,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 161,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "mit.LICENSE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/licenses/mit.LICENSE"
         }
       ]
     },
@@ -361,7 +705,7 @@
       ]
     },
     {
-      "identifier": "mit-1ed2c6fa-a922-7bec-0184-88381dc33752",
+      "identifier": "mit-3fce6ea2-8abd-6c6b-3ede-a37af7c6efee",
       "license_expression": "mit",
       "license_expression_spdx": "MIT",
       "detection_count": 1,
@@ -370,101 +714,51 @@
           "license_expression": "mit",
           "license_expression_spdx": "MIT",
           "from_file": "uaos/documentation/CODE_SOURCES.md",
-          "start_line": 231,
-          "end_line": 231,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 7,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "mit_1336.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_1336.RULE"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "from_file": "uaos/LICENSE",
-          "start_line": 1,
-          "end_line": 1,
+          "start_line": 66,
+          "end_line": 66,
           "matcher": "2-aho",
           "score": 100.0,
           "matched_length": 2,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "mit_14.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
+          "rule_identifier": "mit_30.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_30.RULE"
+        }
+      ]
+    },
+    {
+      "identifier": "mit-a1a74e09-56b6-4527-ac1b-15ec907bd322",
+      "license_expression": "mit",
+      "license_expression_spdx": "MIT",
+      "detection_count": 1,
+      "reference_matches": [
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 195,
+          "end_line": 195,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 6,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "mit_43.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_43.RULE"
         },
         {
           "license_expression": "mit",
           "license_expression_spdx": "MIT",
-          "from_file": "uaos/LICENSE",
-          "start_line": 5,
-          "end_line": 21,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 161,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "mit.LICENSE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/licenses/mit.LICENSE"
-        }
-      ]
-    },
-    {
-      "identifier": "mit-9f1a0c7c-499e-41c0-10d8-b6f6a967cf34",
-      "license_expression": "mit",
-      "license_expression_spdx": "MIT",
-      "detection_count": 1,
-      "reference_matches": [
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 107,
-          "end_line": 107,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 3,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "mit_623.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_623.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "mit-b9828f43-a91b-0b50-3861-3158e952cb25",
-      "license_expression": "mit",
-      "license_expression_spdx": "MIT",
-      "detection_count": 1,
-      "reference_matches": [
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
           "from_file": "uaos/documentation/CODE_SOURCES.md",
-          "start_line": 190,
-          "end_line": 190,
+          "start_line": 199,
+          "end_line": 199,
           "matcher": "2-aho",
-          "score": 50.0,
+          "score": 100.0,
           "matched_length": 2,
           "match_coverage": 100.0,
-          "rule_relevance": 50,
-          "rule_identifier": "license-intro_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-intro_2.RULE"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "from_file": "uaos/documentation/CODE_SOURCES.md",
-          "start_line": 191,
-          "end_line": 191,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 3,
-          "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "mit_27.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_27.RULE"
+          "rule_identifier": "mit_126.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_126.RULE"
         }
       ]
     },
@@ -505,184 +799,124 @@
       ]
     },
     {
-      "identifier": "mit-e3221597-7052-e133-effa-27f1ac06dfcf",
-      "license_expression": "mit",
-      "license_expression_spdx": "MIT",
-      "detection_count": 1,
+      "identifier": "mit_and_gpl_3_0_plus-b020be93-a60d-5c77-c03b-5fbf9c8617b6",
+      "license_expression": "mit AND gpl-3.0-plus",
+      "license_expression_spdx": "MIT AND GPL-3.0-or-later",
+      "detection_count": 2,
       "reference_matches": [
         {
           "license_expression": "mit",
           "license_expression_spdx": "MIT",
-          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-          "start_line": 8,
-          "end_line": 8,
-          "matcher": "3-seq",
-          "score": 56.25,
-          "matched_length": 9,
-          "match_coverage": 56.25,
+          "from_file": "uaos/README.md",
+          "start_line": 402,
+          "end_line": 402,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 6,
+          "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "mit_478.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_478.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "proprietary_license_and_bsd_new-7dbeabbb-5882-f35e-6dcd-80de359a37b0",
-      "license_expression": "proprietary-license AND bsd-new",
-      "license_expression_spdx": "LicenseRef-scancode-proprietary-license AND BSD-3-Clause",
-      "detection_count": 2,
-      "reference_matches": [
+          "rule_identifier": "mit_43.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_43.RULE"
+        },
         {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 109,
-          "end_line": 109,
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/README.md",
+          "start_line": 404,
+          "end_line": 404,
           "matcher": "2-aho",
           "score": 100.0,
           "matched_length": 2,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
+          "rule_identifier": "mit_126.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_126.RULE"
         },
         {
-          "license_expression": "bsd-new",
-          "license_expression_spdx": "BSD-3-Clause",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 109,
-          "end_line": 109,
+          "license_expression": "gpl-3.0-plus",
+          "license_expression_spdx": "GPL-3.0-or-later",
+          "from_file": "uaos/README.md",
+          "start_line": 406,
+          "end_line": 406,
+          "matcher": "2-aho",
+          "score": 50.0,
+          "matched_length": 5,
+          "match_coverage": 100.0,
+          "rule_relevance": 50,
+          "rule_identifier": "spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE"
+        }
+      ]
+    },
+    {
+      "identifier": "mit_and_proprietary_license_and_gpl_3_0_plus-db54e162-5f0e-6530-35a2-e3f841c450b8",
+      "license_expression": "mit AND proprietary-license AND gpl-3.0-plus",
+      "license_expression_spdx": "MIT AND LicenseRef-scancode-proprietary-license AND GPL-3.0-or-later",
+      "detection_count": 1,
+      "reference_matches": [
+        {
+          "license_expression": "mit",
+          "license_expression_spdx": "MIT",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 237,
+          "end_line": 237,
           "matcher": "2-aho",
           "score": 100.0,
-          "matched_length": 3,
+          "matched_length": 2,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "bsd-new_10.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
+          "rule_identifier": "mit_14.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
         },
         {
-          "license_expression": "bsd-new",
-          "license_expression_spdx": "BSD-3-Clause",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 110,
-          "end_line": 110,
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 241,
+          "end_line": 241,
           "matcher": "2-aho",
           "score": 100.0,
-          "matched_length": 3,
+          "matched_length": 2,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "bsd-new_10.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "scancode_acknowledgment-a4730774-3c9e-1534-23db-64fea4b486bc",
-      "license_expression": "scancode-acknowledgment",
-      "license_expression_spdx": "LicenseRef-scancode-scancode-acknowledgment",
-      "detection_count": 1,
-      "reference_matches": [
+          "rule_identifier": "proprietary-license_544.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+        },
         {
-          "license_expression": "scancode-acknowledgment",
-          "license_expression_spdx": "LicenseRef-scancode-scancode-acknowledgment",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 359,
-          "end_line": 359,
+          "license_expression": "gpl-3.0-plus",
+          "license_expression_spdx": "GPL-3.0-or-later",
+          "from_file": "uaos/documentation/CODE_SOURCES.md",
+          "start_line": 244,
+          "end_line": 244,
           "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 64,
+          "score": 85.71,
+          "matched_length": 6,
           "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "scancode-acknowledgment.LICENSE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/licenses/scancode-acknowledgment.LICENSE"
+          "rule_identifier": "gpl-3.0-plus_69.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0-plus_69.RULE"
         }
       ]
     },
     {
-      "identifier": "softfloat_and_proprietary_license-62282915-6f21-e816-3a05-b6c435c97214",
-      "license_expression": "softfloat AND proprietary-license",
-      "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "detection_count": 4,
-      "reference_matches": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/emulation/src/musashi/softfloat/milieu.h",
-          "start_line": 7,
-          "end_line": 26,
-          "matcher": "3-seq",
-          "score": 84.29,
-          "matched_length": 177,
-          "match_coverage": 84.29,
-          "rule_relevance": 100,
-          "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "softfloat_and_proprietary_license-0b92c86e-8f08-ea89-a53f-5c23660df32b",
-      "license_expression": "softfloat AND proprietary-license",
-      "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
+      "identifier": "proprietary_license-c6a32c86-c1b9-39ae-0881-23f79f294711",
+      "license_expression": "proprietary-license",
+      "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
       "detection_count": 1,
       "reference_matches": [
         {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/emulation/src/musashi/softfloat/README.txt",
-          "start_line": 48,
-          "end_line": 68,
-          "matcher": "3-seq",
-          "score": 92.86,
-          "matched_length": 195,
-          "match_coverage": 92.86,
-          "rule_relevance": 100,
-          "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "softfloat_and_proprietary_license-3b082cb9-45c4-37ff-e0b8-dd935fb1e04c",
-      "license_expression": "softfloat AND proprietary-license",
-      "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "detection_count": 1,
-      "reference_matches": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/emulation/src/musashi/softfloat/softfloat-macros",
-          "start_line": 7,
-          "end_line": 26,
-          "matcher": "3-seq",
-          "score": 83.81,
-          "matched_length": 176,
-          "match_coverage": 83.81,
-          "rule_relevance": 100,
-          "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-        }
-      ]
-    },
-    {
-      "identifier": "softfloat_and_proprietary_license-4af79b48-365e-c8fa-f0ec-132868094c78",
-      "license_expression": "softfloat AND proprietary-license",
-      "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "detection_count": 1,
-      "reference_matches": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
           "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-          "start_line": 75,
-          "end_line": 92,
-          "matcher": "3-seq",
-          "score": 84.29,
-          "matched_length": 177,
-          "match_coverage": 84.29,
+          "start_line": 175,
+          "end_line": 175,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 2,
+          "match_coverage": 100.0,
           "rule_relevance": 100,
-          "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
+          "rule_identifier": "proprietary-license_544.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
         }
       ]
     },
@@ -696,8 +930,8 @@
           "license_expression": "unknown-license-reference",
           "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
           "from_file": "uaos/README.md",
-          "start_line": 405,
-          "end_line": 405,
+          "start_line": 410,
+          "end_line": 410,
           "matcher": "2-aho",
           "score": 50.0,
           "matched_length": 2,
@@ -713,117 +947,133 @@
     "detected_license_expression": [
       {
         "value": null,
-        "count": 514
-      },
-      {
-        "value": "proprietary-license",
-        "count": 41
+        "count": 513
       },
       {
         "value": "mit",
-        "count": 33
-      },
-      {
-        "value": "unknown-license-reference",
-        "count": 10
-      },
-      {
-        "value": "softfloat AND proprietary-license",
-        "count": 7
+        "count": 16
       },
       {
         "value": "bsd-new",
-        "count": 5
+        "count": 3
       },
       {
-        "value": "proprietary-license AND bsd-new",
+        "value": "commercial-license",
         "count": 2
       },
       {
-        "value": "scancode-acknowledgment",
+        "value": "bsd-new AND proprietary-license AND gpl-2.0-plus",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0 AND gpl-2.0 AND proprietary-license",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0-plus",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit",
+        "count": 1
+      },
+      {
+        "value": "gpl-3.0-plus AND gpl-3.0 AND mit",
+        "count": 1
+      },
+      {
+        "value": "mit AND gpl-3.0-plus",
+        "count": 1
+      },
+      {
+        "value": "mit AND proprietary-license AND gpl-3.0-plus",
+        "count": 1
+      },
+      {
+        "value": "proprietary-license",
+        "count": 1
+      },
+      {
+        "value": "unknown-license-reference",
         "count": 1
       }
     ],
     "copyrights": [
       {
         "value": null,
-        "count": 513
+        "count": 507
       },
       {
         "value": "Copyright (c) Karl Stenerud",
-        "count": 25
+        "count": 12
       },
       {
         "value": "Copyright (c) UAOS Development Team",
-        "count": 11
-      },
-      {
-        "value": "Copyright Nicola Salmoria and the MAME Team",
-        "count": 7
-      },
-      {
-        "value": "Copyright Karl Stenerud (kstenerud@gmail.com)",
         "count": 5
       },
       {
+        "value": "Copyright Karl Stenerud (kstenerud@gmail.com)",
+        "count": 2
+      },
+      {
+        "value": "Copyright Nicola Salmoria and the MAME Team",
+        "count": 2
+      },
+      {
         "value": "(c) Table C",
-        "count": 3
+        "count": 1
       },
       {
         "value": "(c) UAOS Project",
-        "count": 3
+        "count": 1
       },
       {
         "value": "Copyright extcopyright UAOS Development Team",
-        "count": 3
-      },
-      {
-        "value": "Copyrights Copyright Count",
         "count": 1
       }
     ],
     "holders": [
       {
         "value": null,
-        "count": 513
+        "count": 507
       },
       {
         "value": "Karl Stenerud",
-        "count": 30
+        "count": 14
       },
       {
         "value": "UAOS Development Team",
-        "count": 11
+        "count": 5
       },
       {
         "value": "Nicola Salmoria and the MAME Team",
-        "count": 7
+        "count": 2
       },
       {
         "value": "Table",
-        "count": 3
+        "count": 1
       },
       {
         "value": "UAOS Project",
-        "count": 3
+        "count": 1
       },
       {
         "value": "extcopyright UAOS Development Team",
-        "count": 3
-      },
-      {
-        "value": "Count",
         "count": 1
       }
     ],
     "authors": [
       {
         "value": null,
-        "count": 526
+        "count": 524
       },
       {
-        "value": "John R. Hauser",
-        "count": 6
+        "value": "Free Software Foundation",
+        "count": 1
       },
       {
         "value": "GfxNew'. GfxAssociate Implemented Stores",
@@ -831,6 +1081,10 @@
       },
       {
         "value": "Henk Kelder",
+        "count": 1
+      },
+      {
+        "value": "John R. Hauser",
         "count": 1
       },
       {
@@ -844,16 +1098,12 @@
       {
         "value": "R. Belmont",
         "count": 1
-      },
-      {
-        "value": "me, John R. Hauser",
-        "count": 1
       }
     ],
     "programming_language": [
       {
         "value": "C",
-        "count": 285
+        "count": 280
       },
       {
         "value": "GAS",
@@ -925,9 +1175,59 @@
       "authors": [],
       "emails": [],
       "urls": [],
-      "files_count": 535,
-      "dirs_count": 110,
-      "size_count": 8643906,
+      "files_count": 527,
+      "dirs_count": 109,
+      "size_count": 8396709,
+      "scan_errors": []
+    },
+    {
+      "path": "uaos/.gitmodules",
+      "type": "file",
+      "name": ".gitmodules",
+      "base_name": ".gitmodules",
+      "extension": "",
+      "size": 116,
+      "date": "2026-08-18",
+      "sha1": "c614526d407327c126d68aa7c648b18091e3ef87",
+      "md5": "e51e981bf5a95f16c536700d0b5bee13",
+      "sha256": "1790766f8757e72e99a2c75b1af1c138cc863fe53fafed4183441fb5e4343e6f",
+      "sha1_git": "bd5fbcc3f63848e8546927b70781fa3b81ec8cea",
+      "mime_type": "text/plain",
+      "file_type": "ASCII text",
+      "programming_language": null,
+      "is_binary": false,
+      "is_text": true,
+      "is_archive": false,
+      "is_media": false,
+      "is_source": false,
+      "is_script": false,
+      "is_legal": false,
+      "is_manifest": false,
+      "is_readme": false,
+      "is_top_level": true,
+      "is_key_file": false,
+      "is_community": false,
+      "package_data": [],
+      "for_packages": [],
+      "detected_license_expression": null,
+      "detected_license_expression_spdx": null,
+      "license_detections": [],
+      "license_clues": [],
+      "percentage_of_license_text": 0,
+      "copyrights": [],
+      "holders": [],
+      "authors": [],
+      "emails": [],
+      "urls": [
+        {
+          "url": "https://github.com/stevereaver/Musashi.git",
+          "start_line": 3,
+          "end_line": 3
+        }
+      ],
+      "files_count": 0,
+      "dirs_count": 0,
+      "size_count": 0,
       "scan_errors": []
     },
     {
@@ -1118,8 +1418,8 @@
           "vcs_url": null,
           "copyright": null,
           "holder": null,
-          "declared_license_expression": "mit AND unknown-license-reference",
-          "declared_license_expression_spdx": "MIT AND LicenseRef-scancode-unknown-license-reference",
+          "declared_license_expression": "mit AND (mit AND gpl-3.0-plus) AND unknown-license-reference",
+          "declared_license_expression_spdx": "MIT AND (MIT AND GPL-3.0-or-later) AND LicenseRef-scancode-unknown-license-reference",
           "license_detections": [
             {
               "license_expression": "mit",
@@ -1157,8 +1457,8 @@
               "identifier": "mit-ac40beba-5702-f54d-755f-333441314bb0"
             },
             {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
+              "license_expression": "mit AND gpl-3.0-plus",
+              "license_expression_spdx": "MIT AND GPL-3.0-or-later",
               "matches": [
                 {
                   "license_expression": "mit",
@@ -1173,9 +1473,37 @@
                   "rule_relevance": 100,
                   "rule_identifier": "mit_43.RULE",
                   "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_43.RULE"
+                },
+                {
+                  "license_expression": "mit",
+                  "license_expression_spdx": "MIT",
+                  "from_file": "uaos/README.md",
+                  "start_line": 404,
+                  "end_line": 404,
+                  "matcher": "2-aho",
+                  "score": 100.0,
+                  "matched_length": 2,
+                  "match_coverage": 100.0,
+                  "rule_relevance": 100,
+                  "rule_identifier": "mit_126.RULE",
+                  "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_126.RULE"
+                },
+                {
+                  "license_expression": "gpl-3.0-plus",
+                  "license_expression_spdx": "GPL-3.0-or-later",
+                  "from_file": "uaos/README.md",
+                  "start_line": 406,
+                  "end_line": 406,
+                  "matcher": "2-aho",
+                  "score": 50.0,
+                  "matched_length": 5,
+                  "match_coverage": 100.0,
+                  "rule_relevance": 50,
+                  "rule_identifier": "spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE",
+                  "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE"
                 }
               ],
-              "identifier": "mit-b6581844-7aef-89bf-3a49-ebfebd6ea2ad"
+              "identifier": "mit_and_gpl_3_0_plus-b020be93-a60d-5c77-c03b-5fbf9c8617b6"
             },
             {
               "license_expression": "unknown-license-reference",
@@ -1185,8 +1513,8 @@
                   "license_expression": "unknown-license-reference",
                   "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
                   "from_file": "uaos/README.md",
-                  "start_line": 405,
-                  "end_line": 405,
+                  "start_line": 410,
+                  "end_line": 410,
                   "matcher": "2-aho",
                   "score": 50.0,
                   "matched_length": 2,
@@ -1285,12 +1613,12 @@
       "name": "README.md",
       "base_name": "README",
       "extension": ".md",
-      "size": 19249,
-      "date": "2026-08-17",
-      "sha1": "b9d703ba5e02ba8743c4b7eae00b97e3ecf88dc1",
-      "md5": "e7ba7d649da16d31371a609db5b81acd",
-      "sha256": "e167721351b2276079d105047f4e45524892584455515e31537ef8f7121d9046",
-      "sha1_git": "08a4ad6b9ab96668aaa7fe6a59e05d8c7dd7de0d",
+      "size": 19707,
+      "date": "2026-08-18",
+      "sha1": "12ed5df1e218d81beca14e4335887e81f479daa4",
+      "md5": "9de81d915c348facc491c27a9ac71f52",
+      "sha256": "3b4aa415f0509fb7cb63cd651a8422eb93a39398bb5874cb3d7baa19187aca2f",
+      "sha1_git": "2b022698e2bc1c0179d57ab7e0d399338a6f0a49",
       "mime_type": "text/plain",
       "file_type": "UTF-8 Unicode text, with very long lines",
       "programming_language": null,
@@ -1308,12 +1636,12 @@
       "is_community": false,
       "package_data": [],
       "for_packages": [],
-      "detected_license_expression": "mit AND unknown-license-reference",
-      "detected_license_expression_spdx": "MIT AND LicenseRef-scancode-unknown-license-reference",
+      "detected_license_expression": "(mit AND gpl-3.0-plus) AND unknown-license-reference",
+      "detected_license_expression_spdx": "(MIT AND GPL-3.0-or-later) AND LicenseRef-scancode-unknown-license-reference",
       "license_detections": [
         {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
+          "license_expression": "mit AND gpl-3.0-plus",
+          "license_expression_spdx": "MIT AND GPL-3.0-or-later",
           "matches": [
             {
               "license_expression": "mit",
@@ -1328,9 +1656,37 @@
               "rule_relevance": 100,
               "rule_identifier": "mit_43.RULE",
               "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_43.RULE"
+            },
+            {
+              "license_expression": "mit",
+              "license_expression_spdx": "MIT",
+              "from_file": "uaos/README.md",
+              "start_line": 404,
+              "end_line": 404,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "mit_126.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_126.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0-plus",
+              "license_expression_spdx": "GPL-3.0-or-later",
+              "from_file": "uaos/README.md",
+              "start_line": 406,
+              "end_line": 406,
+              "matcher": "2-aho",
+              "score": 50.0,
+              "matched_length": 5,
+              "match_coverage": 100.0,
+              "rule_relevance": 50,
+              "rule_identifier": "spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE"
             }
           ],
-          "identifier": "mit-b6581844-7aef-89bf-3a49-ebfebd6ea2ad"
+          "identifier": "mit_and_gpl_3_0_plus-b020be93-a60d-5c77-c03b-5fbf9c8617b6"
         },
         {
           "license_expression": "unknown-license-reference",
@@ -1340,8 +1696,8 @@
               "license_expression": "unknown-license-reference",
               "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
               "from_file": "uaos/README.md",
-              "start_line": 405,
-              "end_line": 405,
+              "start_line": 410,
+              "end_line": 410,
               "matcher": "2-aho",
               "score": 50.0,
               "matched_length": 2,
@@ -1355,7 +1711,7 @@
         }
       ],
       "license_clues": [],
-      "percentage_of_license_text": 0.34,
+      "percentage_of_license_text": 0.61,
       "copyrights": [],
       "holders": [],
       "authors": [],
@@ -1365,1590 +1721,11 @@
           "url": "https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e",
           "start_line": 398,
           "end_line": 398
-        }
-      ],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/scancode_report.md",
-      "type": "file",
-      "name": "scancode_report.md",
-      "base_name": "scancode_report",
-      "extension": ".md",
-      "size": 17179,
-      "date": "2026-08-18",
-      "sha1": "3b288c6785ecf2ee074c6f6c17fcf76d3cbe2f45",
-      "md5": "9301face4f4593cd74f498d9ee059dcb",
-      "sha256": "8570dc7599247462f5a87e949049f68ccc8a81e80b68caf8f8382e41770c51d6",
-      "sha1_git": "ae5b895ceffeada33c34d2271544e533cfaf57e3",
-      "mime_type": "text/plain",
-      "file_type": "UTF-8 Unicode text, with very long lines",
-      "programming_language": null,
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": false,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": true,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "mit AND (proprietary-license AND bsd-new) AND bsd-new AND scancode-acknowledgment",
-      "detected_license_expression_spdx": "MIT AND (LicenseRef-scancode-proprietary-license AND BSD-3-Clause) AND BSD-3-Clause AND LicenseRef-scancode-scancode-acknowledgment",
-      "license_detections": [
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 25,
-              "end_line": 25,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_30.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_30.RULE"
-            }
-          ],
-          "identifier": "mit-3fce6ea2-8abd-6c6b-3ede-a37af7c6efee"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 107,
-              "end_line": 107,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 3,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_623.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_623.RULE"
-            }
-          ],
-          "identifier": "mit-9f1a0c7c-499e-41c0-10d8-b6f6a967cf34"
-        },
-        {
-          "license_expression": "proprietary-license AND bsd-new",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license AND BSD-3-Clause",
-          "matches": [
-            {
-              "license_expression": "proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 109,
-              "end_line": 109,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "license-clue_proprietary-license_2.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-            },
-            {
-              "license_expression": "bsd-new",
-              "license_expression_spdx": "BSD-3-Clause",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 109,
-              "end_line": 109,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 3,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "bsd-new_10.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
-            },
-            {
-              "license_expression": "bsd-new",
-              "license_expression_spdx": "BSD-3-Clause",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 110,
-              "end_line": 110,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 3,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "bsd-new_10.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
-            }
-          ],
-          "identifier": "proprietary_license_and_bsd_new-7dbeabbb-5882-f35e-6dcd-80de359a37b0"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 134,
-              "end_line": 134,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 159,
-              "end_line": 159,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "proprietary-license AND bsd-new",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license AND BSD-3-Clause",
-          "matches": [
-            {
-              "license_expression": "proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 162,
-              "end_line": 162,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "license-clue_proprietary-license_2.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-            },
-            {
-              "license_expression": "bsd-new",
-              "license_expression_spdx": "BSD-3-Clause",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 164,
-              "end_line": 164,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 3,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "bsd-new_10.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
-            },
-            {
-              "license_expression": "bsd-new",
-              "license_expression_spdx": "BSD-3-Clause",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 167,
-              "end_line": 167,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 3,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "bsd-new_10.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
-            }
-          ],
-          "identifier": "proprietary_license_and_bsd_new-7dbeabbb-5882-f35e-6dcd-80de359a37b0"
-        },
-        {
-          "license_expression": "bsd-new",
-          "license_expression_spdx": "BSD-3-Clause",
-          "matches": [
-            {
-              "license_expression": "bsd-new",
-              "license_expression_spdx": "BSD-3-Clause",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 177,
-              "end_line": 177,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 3,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "bsd-new_10.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
-            }
-          ],
-          "identifier": "bsd_new-50fa5753-f24d-ec04-33a1-36bb8ac0492c"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 193,
-              "end_line": 193,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 199,
-              "end_line": 199,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 205,
-              "end_line": 205,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 211,
-              "end_line": 211,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 217,
-              "end_line": 217,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 223,
-              "end_line": 223,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 229,
-              "end_line": 229,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 235,
-              "end_line": 235,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 241,
-              "end_line": 241,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "mit",
-              "license_expression_spdx": "MIT",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 247,
-              "end_line": 247,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "mit_14.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
-            }
-          ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
-        },
-        {
-          "license_expression": "scancode-acknowledgment",
-          "license_expression_spdx": "LicenseRef-scancode-scancode-acknowledgment",
-          "matches": [
-            {
-              "license_expression": "scancode-acknowledgment",
-              "license_expression_spdx": "LicenseRef-scancode-scancode-acknowledgment",
-              "from_file": "uaos/scancode_report.md",
-              "start_line": 359,
-              "end_line": 359,
-              "matcher": "2-aho",
-              "score": 100.0,
-              "matched_length": 64,
-              "match_coverage": 100.0,
-              "rule_relevance": 100,
-              "rule_identifier": "scancode-acknowledgment.LICENSE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/licenses/scancode-acknowledgment.LICENSE"
-            }
-          ],
-          "identifier": "scancode_acknowledgment-a4730774-3c9e-1534-23db-64fea4b486bc"
-        }
-      ],
-      "license_clues": [
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 25,
-          "end_line": 25,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 49,
-          "end_line": 49,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 51,
-          "end_line": 51,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 108,
-          "end_line": 108,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 108,
-          "end_line": 108,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 109,
-          "end_line": 109,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 120,
-          "end_line": 120,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 120,
-          "end_line": 120,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 121,
-          "end_line": 121,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 121,
-          "end_line": 121,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 122,
-          "end_line": 122,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 122,
-          "end_line": 122,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 123,
-          "end_line": 123,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 123,
-          "end_line": 123,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 124,
-          "end_line": 124,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 124,
-          "end_line": 124,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 125,
-          "end_line": 125,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 125,
-          "end_line": 125,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 141,
-          "end_line": 141,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 142,
-          "end_line": 142,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 143,
-          "end_line": 143,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 152,
-          "end_line": 152,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 160,
-          "end_line": 160,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 161,
-          "end_line": 161,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 162,
-          "end_line": 162,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "unknown-license-reference",
-          "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 184,
-          "end_line": 184,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_unknown-license-reference_4.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_unknown-license-reference_4.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 251,
-          "end_line": 251,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 252,
-          "end_line": 252,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 253,
-          "end_line": 253,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 253,
-          "end_line": 253,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 257,
-          "end_line": 257,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 258,
-          "end_line": 258,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 259,
-          "end_line": 259,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 259,
-          "end_line": 259,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 263,
-          "end_line": 263,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 264,
-          "end_line": 264,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 265,
-          "end_line": 265,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 265,
-          "end_line": 265,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 269,
-          "end_line": 269,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 270,
-          "end_line": 270,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 271,
-          "end_line": 271,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 271,
-          "end_line": 271,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 275,
-          "end_line": 275,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 276,
-          "end_line": 276,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 277,
-          "end_line": 277,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 277,
-          "end_line": 277,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 281,
-          "end_line": 281,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 282,
-          "end_line": 282,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 283,
-          "end_line": 283,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        },
-        {
-          "license_expression": "proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
-          "from_file": "uaos/scancode_report.md",
-          "start_line": 283,
-          "end_line": 283,
-          "matcher": "2-aho",
-          "score": 100.0,
-          "matched_length": 2,
-          "match_coverage": 100.0,
-          "rule_relevance": 100,
-          "rule_identifier": "license-clue_proprietary-license_2.RULE",
-          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_proprietary-license_2.RULE"
-        }
-      ],
-      "percentage_of_license_text": 9.15,
-      "copyrights": [
-        {
-          "copyright": "Copyrights Copyright Count",
-          "start_line": 53,
-          "end_line": 55
-        },
-        {
-          "copyright": "Copyright (c) Karl Stenerud",
-          "start_line": 58,
-          "end_line": 58
-        },
-        {
-          "copyright": "Copyright (c) UAOS Development Team",
-          "start_line": 59,
-          "end_line": 59
-        },
-        {
-          "copyright": "Copyright Nicola Salmoria and the MAME Team",
-          "start_line": 60,
-          "end_line": 60
-        },
-        {
-          "copyright": "Copyright Karl Stenerud (kstenerud@gmail.com)",
-          "start_line": 61,
-          "end_line": 61
-        },
-        {
-          "copyright": "(c) Table C",
-          "start_line": 62,
-          "end_line": 62
-        },
-        {
-          "copyright": "(c) UAOS Project",
-          "start_line": 63,
-          "end_line": 63
-        },
-        {
-          "copyright": "Copyright extcopyright UAOS Development Team",
-          "start_line": 64,
-          "end_line": 64
-        },
-        {
-          "copyright": "Copyright (c) 2026 UAOS Development Team",
-          "start_line": 289,
-          "end_line": 289
-        },
-        {
-          "copyright": "Copyright (c) 1998-2001 Karl Stenerud",
-          "start_line": 290,
-          "end_line": 290
-        },
-        {
-          "copyright": "Copyright Nicola Salmoria and the MAME Team",
-          "start_line": 291,
-          "end_line": 291
-        },
-        {
-          "copyright": "Copyright (c) 1998-2001 Karl Stenerud",
-          "start_line": 292,
-          "end_line": 292
-        },
-        {
-          "copyright": "Copyright Nicola Salmoria and the MAME Team",
-          "start_line": 293,
-          "end_line": 293
-        },
-        {
-          "copyright": "Copyright (c) 2026 UAOS Development Team",
-          "start_line": 294,
-          "end_line": 294
-        },
-        {
-          "copyright": "Copyright (c) 2026 UAOS Development Team",
-          "start_line": 295,
-          "end_line": 295
-        },
-        {
-          "copyright": "Copyright 2026 UAOS Development Team",
-          "start_line": 296,
-          "end_line": 296
-        },
-        {
-          "copyright": "Copyright extcopyright 2026 UAOS Development Team",
-          "start_line": 297,
-          "end_line": 297
-        },
-        {
-          "copyright": "(c) 2026 UAOS Project",
-          "start_line": 298,
-          "end_line": 298
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 299,
-          "end_line": 299
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 300,
-          "end_line": 300
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 301,
-          "end_line": 301
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 302,
-          "end_line": 302
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 303,
-          "end_line": 303
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 304,
-          "end_line": 304
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 305,
-          "end_line": 305
-        },
-        {
-          "copyright": "Copyright Karl Stenerud (kstenerud@gmail.com)",
-          "start_line": 306,
-          "end_line": 306
-        },
-        {
-          "copyright": "Copyright Karl Stenerud",
-          "start_line": 307,
-          "end_line": 307
-        },
-        {
-          "copyright": "Copyright Karl Stenerud (kstenerud@gmail.com)",
-          "start_line": 308,
-          "end_line": 308
-        },
-        {
-          "copyright": "Copyright Nicola Salmoria and the MAME Team",
-          "start_line": 309,
-          "end_line": 309
-        },
-        {
-          "copyright": "Copyright 1998-2002 Karl Stenerud",
-          "start_line": 310,
-          "end_line": 310
-        },
-        {
-          "copyright": "Copyright (c) 1998-2001 Karl Stenerud",
-          "start_line": 311,
-          "end_line": 311
-        },
-        {
-          "copyright": "Copyright 2026 UAOS Development Team",
-          "start_line": 312,
-          "end_line": 312
-        },
-        {
-          "copyright": "(c) Table C",
-          "start_line": 313,
-          "end_line": 313
-        }
-      ],
-      "holders": [
-        {
-          "holder": "Count",
-          "start_line": 55,
-          "end_line": 55
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 58,
-          "end_line": 58
-        },
-        {
-          "holder": "UAOS Development Team",
-          "start_line": 59,
-          "end_line": 59
-        },
-        {
-          "holder": "Nicola Salmoria and the MAME Team",
-          "start_line": 60,
-          "end_line": 60
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 61,
-          "end_line": 61
-        },
-        {
-          "holder": "Table",
-          "start_line": 62,
-          "end_line": 62
-        },
-        {
-          "holder": "UAOS Project",
-          "start_line": 63,
-          "end_line": 63
-        },
-        {
-          "holder": "extcopyright UAOS Development Team",
-          "start_line": 64,
-          "end_line": 64
-        },
-        {
-          "holder": "UAOS Development Team",
-          "start_line": 289,
-          "end_line": 289
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 290,
-          "end_line": 290
-        },
-        {
-          "holder": "Nicola Salmoria and the MAME Team",
-          "start_line": 291,
-          "end_line": 291
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 292,
-          "end_line": 292
-        },
-        {
-          "holder": "Nicola Salmoria and the MAME Team",
-          "start_line": 293,
-          "end_line": 293
-        },
-        {
-          "holder": "UAOS Development Team",
-          "start_line": 294,
-          "end_line": 294
-        },
-        {
-          "holder": "UAOS Development Team",
-          "start_line": 295,
-          "end_line": 295
-        },
-        {
-          "holder": "UAOS Development Team",
-          "start_line": 296,
-          "end_line": 296
-        },
-        {
-          "holder": "extcopyright UAOS Development Team",
-          "start_line": 297,
-          "end_line": 297
-        },
-        {
-          "holder": "UAOS Project",
-          "start_line": 298,
-          "end_line": 298
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 299,
-          "end_line": 299
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 300,
-          "end_line": 300
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 301,
-          "end_line": 301
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 302,
-          "end_line": 302
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 303,
-          "end_line": 303
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 304,
-          "end_line": 304
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 305,
-          "end_line": 305
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 306,
-          "end_line": 306
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 307,
-          "end_line": 307
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 308,
-          "end_line": 308
-        },
-        {
-          "holder": "Nicola Salmoria and the MAME Team",
-          "start_line": 309,
-          "end_line": 309
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 310,
-          "end_line": 310
-        },
-        {
-          "holder": "Karl Stenerud",
-          "start_line": 311,
-          "end_line": 311
-        },
-        {
-          "holder": "UAOS Development Team",
-          "start_line": 312,
-          "end_line": 312
-        },
-        {
-          "holder": "Table",
-          "start_line": 313,
-          "end_line": 313
-        }
-      ],
-      "authors": [],
-      "emails": [
-        {
-          "email": "kstenerud@gmail.com",
-          "start_line": 61,
-          "end_line": 61
-        }
-      ],
-      "urls": [
-        {
-          "url": "https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e",
-          "start_line": 327,
-          "end_line": 327
-        },
-        {
-          "url": "https://github.com/kstenerud/Musashi",
-          "start_line": 328,
-          "end_line": 328
-        },
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/arithmetic/SoftFloat.html",
-          "start_line": 329,
-          "end_line": 329
-        },
-        {
-          "url": "http://mamedev.org/",
-          "start_line": 330,
-          "end_line": 330
-        },
-        {
-          "url": "http://mamedev.org/LICENSE.md",
-          "start_line": 331,
-          "end_line": 331
-        },
-        {
-          "url": "http://dynarec.com/~bart/files/68knotes.txt",
-          "start_line": 335,
-          "end_line": 335
-        },
-        {
-          "url": "http://www.mame.net/",
-          "start_line": 338,
-          "end_line": 338
-        },
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/",
-          "start_line": 341,
-          "end_line": 341
-        },
-        {
-          "url": "http://www.google.com/",
-          "start_line": 346,
-          "end_line": 346
-        },
-        {
-          "url": "http://howardhinnant.github.io/date_algorithms.html",
-          "start_line": 347,
-          "end_line": 347
-        },
-        {
-          "url": "http://sun.hasenbraten.de/vasm/release/vasm.tar.gz",
-          "start_line": 348,
-          "end_line": 348
-        },
-        {
-          "url": "http://sun.hasenbraten.de/vlink/release/vlink.tar.gz",
-          "start_line": 349,
-          "end_line": 349
         },
         {
-          "url": "https://github.com/nexB/scancode-toolkit/",
-          "start_line": 359,
-          "end_line": 359
+          "url": "https://www.gnu.org/software/grub",
+          "start_line": 405,
+          "end_line": 405
         }
       ],
       "files_count": 0,
@@ -2962,12 +1739,12 @@
       "name": "THIRD_PARTY_NOTICES.md",
       "base_name": "THIRD_PARTY_NOTICES",
       "extension": ".md",
-      "size": 5154,
+      "size": 8045,
       "date": "2026-08-18",
-      "sha1": "6bece63486510a276ddda397c8f550dde134cd37",
-      "md5": "7c49aea80c49c6f0c7917fb64c4ceccd",
-      "sha256": "8af4218bcb982f010423aacf171df43e39a3a230e42f807283b75a09751a3599",
-      "sha1_git": "7f9e0a8b846745d5ce23d2d4e6dc446a77c7eb21",
+      "sha1": "fa31986b890f671d5817ed0fbdbbb15207d9a157",
+      "md5": "6feb58969574d22540d8668aadef1e10",
+      "sha256": "0781abced687c40219af9b7c62affc49da48f55e05337132fe0b0d89c67ecbf3",
+      "sha1_git": "2bf59797ec5eb3ce75f302b2403379e324560a19",
       "mime_type": "text/plain",
       "file_type": "UTF-8 Unicode text",
       "programming_language": null,
@@ -2985,8 +1762,8 @@
       "is_community": false,
       "package_data": [],
       "for_packages": [],
-      "detected_license_expression": "mit AND (softfloat AND proprietary-license) AND bsd-new",
-      "detected_license_expression_spdx": "MIT AND (LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license) AND BSD-3-Clause",
+      "detected_license_expression": "mit AND bsd-new AND (bsd-new AND proprietary-license AND gpl-2.0-plus) AND gpl-3.0-plus AND (gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit) AND (gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license) AND proprietary-license AND (gpl-3.0 AND gpl-2.0 AND proprietary-license)",
+      "detected_license_expression_spdx": "MIT AND BSD-3-Clause AND (BSD-3-Clause AND LicenseRef-scancode-proprietary-license AND GPL-2.0-or-later) AND GPL-3.0-or-later AND (GPL-3.0-or-later AND GPL-1.0-or-later AND GPL-3.0-only AND MIT) AND (GPL-3.0-only WITH GCC-exception-3.1 AND BSD-2-Clause AND GPL-3.0-only AND LicenseRef-scancode-proprietary-license) AND LicenseRef-scancode-proprietary-license AND (GPL-3.0-only AND GPL-2.0-only AND LicenseRef-scancode-proprietary-license)",
       "license_detections": [
         {
           "license_expression": "mit",
@@ -2998,16 +1775,47 @@
               "from_file": "uaos/THIRD_PARTY_NOTICES.md",
               "start_line": 8,
               "end_line": 8,
-              "matcher": "3-seq",
-              "score": 56.25,
-              "matched_length": 9,
-              "match_coverage": 56.25,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 7,
+              "match_coverage": 100.0,
               "rule_relevance": 100,
-              "rule_identifier": "mit_478.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_478.RULE"
+              "rule_identifier": "mit_1336.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_1336.RULE"
+            },
+            {
+              "license_expression": "mit",
+              "license_expression_spdx": "MIT",
+              "from_file": "uaos/LICENSE",
+              "start_line": 1,
+              "end_line": 1,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "mit_14.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
+            },
+            {
+              "license_expression": "mit",
+              "license_expression_spdx": "MIT",
+              "from_file": "uaos/LICENSE",
+              "start_line": 5,
+              "end_line": 21,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 161,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "mit.LICENSE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/licenses/mit.LICENSE"
             }
           ],
-          "identifier": "mit-e3221597-7052-e133-effa-27f1ac06dfcf"
+          "identifier": "mit-1ed2c6fa-a922-7bec-0184-88381dc33752",
+          "detection_log": [
+            "unknown-reference-to-local-file"
+          ]
         },
         {
           "license_expression": "mit",
@@ -3066,27 +1874,6 @@
           "identifier": "mit-cacd5c0c-204a-85c2-affc-e4c125b2492a"
         },
         {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-              "start_line": 75,
-              "end_line": 92,
-              "matcher": "3-seq",
-              "score": 84.29,
-              "matched_length": 177,
-              "match_coverage": 84.29,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-4af79b48-365e-c8fa-f0ec-132868094c78"
-        },
-        {
           "license_expression": "bsd-new",
           "license_expression_spdx": "BSD-3-Clause",
           "matches": [
@@ -3108,43 +1895,401 @@
           "identifier": "bsd_new-6d8e1700-5877-d971-0a04-5f59c700e3ca"
         },
         {
-          "license_expression": "bsd-new",
-          "license_expression_spdx": "BSD-3-Clause",
+          "license_expression": "bsd-new AND proprietary-license AND gpl-2.0-plus",
+          "license_expression_spdx": "BSD-3-Clause AND LicenseRef-scancode-proprietary-license AND GPL-2.0-or-later",
           "matches": [
             {
               "license_expression": "bsd-new",
               "license_expression_spdx": "BSD-3-Clause",
               "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-              "start_line": 120,
-              "end_line": 120,
+              "start_line": 121,
+              "end_line": 121,
               "matcher": "2-aho",
-              "score": 90.0,
+              "score": 99.0,
+              "matched_length": 4,
+              "match_coverage": 100.0,
+              "rule_relevance": 99,
+              "rule_identifier": "bsd-new_1102.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_1102.RULE"
+            },
+            {
+              "license_expression": "proprietary-license",
+              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 121,
+              "end_line": 122,
+              "matcher": "2-aho",
+              "score": 100.0,
               "matched_length": 3,
               "match_coverage": 100.0,
-              "rule_relevance": 90,
-              "rule_identifier": "bsd-new_625.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_625.RULE"
+              "rule_relevance": 100,
+              "rule_identifier": "proprietary_non-commercial4.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary_non-commercial4.RULE"
             },
             {
               "license_expression": "bsd-new",
               "license_expression_spdx": "BSD-3-Clause",
               "from_file": "uaos/THIRD_PARTY_NOTICES.md",
-              "start_line": 120,
-              "end_line": 120,
+              "start_line": 122,
+              "end_line": 122,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "bsd-new_10.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_10.RULE"
+            },
+            {
+              "license_expression": "gpl-2.0-plus",
+              "license_expression_spdx": "GPL-2.0-or-later",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 122,
+              "end_line": 122,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "spdx_license_id_gpl-2.0+_for_gpl-2.0-plus.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-2.0+_for_gpl-2.0-plus.RULE"
+            }
+          ],
+          "identifier": "bsd_new_and_proprietary_license_and_gpl_2_0_plus-534fef2d-a638-8f47-edad-fc2e5fd23801"
+        },
+        {
+          "license_expression": "gpl-3.0-plus",
+          "license_expression_spdx": "GPL-3.0-or-later",
+          "matches": [
+            {
+              "license_expression": "gpl-3.0-plus",
+              "license_expression_spdx": "GPL-3.0-or-later",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 134,
+              "end_line": 134,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 6,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0-plus_525.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0-plus_525.RULE"
+            }
+          ],
+          "identifier": "gpl_3_0_plus-ed0f7331-ef04-9729-bd83-68e31b8526fd"
+        },
+        {
+          "license_expression": "gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit",
+          "license_expression_spdx": "GPL-3.0-or-later AND GPL-1.0-or-later AND GPL-3.0-only AND MIT",
+          "matches": [
+            {
+              "license_expression": "gpl-3.0-plus",
+              "license_expression_spdx": "GPL-3.0-or-later",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 145,
+              "end_line": 148,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 40,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0-plus_98.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0-plus_98.RULE"
+            },
+            {
+              "license_expression": "gpl-1.0-plus",
+              "license_expression_spdx": "GPL-1.0-or-later",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 150,
+              "end_line": 150,
               "matcher": "2-aho",
               "score": 90.0,
               "matched_length": 3,
               "match_coverage": 100.0,
               "rule_relevance": 90,
-              "rule_identifier": "bsd-new_required_phrase_12.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/bsd-new_required_phrase_12.RULE"
+              "rule_identifier": "gpl-1.0-plus_350.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-1.0-plus_350.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 150,
+              "end_line": 150,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 4,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_396.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_396.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 151,
+              "end_line": 151,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 9,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_218.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_218.RULE"
+            },
+            {
+              "license_expression": "gpl-1.0-plus",
+              "license_expression_spdx": "GPL-1.0-or-later",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 153,
+              "end_line": 153,
+              "matcher": "2-aho",
+              "score": 50.0,
+              "matched_length": 1,
+              "match_coverage": 100.0,
+              "rule_relevance": 50,
+              "rule_identifier": "gpl_bare_word_only.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl_bare_word_only.RULE"
+            },
+            {
+              "license_expression": "mit",
+              "license_expression_spdx": "MIT",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 153,
+              "end_line": 154,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "mit_258.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_258.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 157,
+              "end_line": 157,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 4,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_396.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_396.RULE"
+            },
+            {
+              "license_expression": "mit",
+              "license_expression_spdx": "MIT",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 158,
+              "end_line": 158,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "mit_27.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_27.RULE"
             }
           ],
-          "identifier": "bsd_new-49052ff0-b02f-8508-3e29-6e5f25d6ad80"
+          "identifier": "gpl_3_0_plus_and_gpl_1_0_plus_and_gpl_3_0_and_mit-a5551f95-5f95-dd98-a12a-d4b429f1ad12"
+        },
+        {
+          "license_expression": "gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license",
+          "license_expression_spdx": "GPL-3.0-only WITH GCC-exception-3.1 AND BSD-2-Clause AND GPL-3.0-only AND LicenseRef-scancode-proprietary-license",
+          "matches": [
+            {
+              "license_expression": "gpl-3.0 WITH gcc-exception-3.1",
+              "license_expression_spdx": "GPL-3.0-only WITH GCC-exception-3.1",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 170,
+              "end_line": 170,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 6,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_with_gcc-exception-3.1_9.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_with_gcc-exception-3.1_9.RULE"
+            },
+            {
+              "license_expression": "bsd-simplified",
+              "license_expression_spdx": "BSD-2-Clause",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 171,
+              "end_line": 171,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "spdx_license_id_bsd-2-clause_for_bsd-simplified.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_bsd-2-clause_for_bsd-simplified.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 172,
+              "end_line": 172,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_6.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_6.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 173,
+              "end_line": 173,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_6.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_6.RULE"
+            },
+            {
+              "license_expression": "proprietary-license",
+              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 174,
+              "end_line": 174,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "proprietary-license_544.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+            }
+          ],
+          "identifier": "gpl_3_0_with_gcc_exception_3_1_and_bsd_simplified_and_gpl_3_0_and_proprietary_license-ec1bee21-3f2c-af3e-d39c-90856a711951"
+        },
+        {
+          "license_expression": "proprietary-license",
+          "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+          "matches": [
+            {
+              "license_expression": "proprietary-license",
+              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 175,
+              "end_line": 175,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "proprietary-license_544.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+            }
+          ],
+          "identifier": "proprietary_license-c6a32c86-c1b9-39ae-0881-23f79f294711"
+        },
+        {
+          "license_expression": "gpl-3.0 AND gpl-2.0 AND proprietary-license",
+          "license_expression_spdx": "GPL-3.0-only AND GPL-2.0-only AND LicenseRef-scancode-proprietary-license",
+          "matches": [
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 176,
+              "end_line": 176,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_6.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_6.RULE"
+            },
+            {
+              "license_expression": "gpl-2.0",
+              "license_expression_spdx": "GPL-2.0-only",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 177,
+              "end_line": 177,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 3,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-2.0_52.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-2.0_52.RULE"
+            },
+            {
+              "license_expression": "proprietary-license",
+              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 179,
+              "end_line": 179,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "proprietary-license_544.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+            },
+            {
+              "license_expression": "proprietary-license",
+              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+              "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+              "start_line": 180,
+              "end_line": 180,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "proprietary-license_271.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_271.RULE"
+            }
+          ],
+          "identifier": "gpl_3_0_and_gpl_2_0_and_proprietary_license-cf06275a-31eb-497f-f119-a1ed3b9bdad9"
         }
       ],
-      "license_clues": [],
-      "percentage_of_license_text": 46.5,
+      "license_clues": [
+        {
+          "license_expression": "commercial-license",
+          "license_expression_spdx": "LicenseRef-scancode-commercial-license",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 174,
+          "end_line": 174,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 2,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "license-clue_commercial-license_1.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_commercial-license_1.RULE"
+        },
+        {
+          "license_expression": "commercial-license",
+          "license_expression_spdx": "LicenseRef-scancode-commercial-license",
+          "from_file": "uaos/THIRD_PARTY_NOTICES.md",
+          "start_line": 175,
+          "end_line": 175,
+          "matcher": "2-aho",
+          "score": 100.0,
+          "matched_length": 2,
+          "match_coverage": 100.0,
+          "rule_relevance": 100,
+          "rule_identifier": "license-clue_commercial-license_1.RULE",
+          "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-clue_commercial-license_1.RULE"
+        }
+      ],
+      "percentage_of_license_text": 23.41,
       "copyrights": [
         {
           "copyright": "Copyright (c) 1998-2001 Karl Stenerud",
@@ -3189,6 +2334,11 @@
           "author": "R. Belmont",
           "start_line": 103,
           "end_line": 103
+        },
+        {
+          "author": "Free Software Foundation, Inc.",
+          "start_line": 133,
+          "end_line": 133
         }
       ],
       "emails": [],
@@ -3209,9 +2359,14 @@
           "end_line": 102
         },
         {
-          "url": "http://mamedev.org/LICENSE.md",
-          "start_line": 121,
-          "end_line": 121
+          "url": "https://www.gnu.org/software/grub/",
+          "start_line": 132,
+          "end_line": 132
+        },
+        {
+          "url": "https://www.gnu.org/licenses/gpl-3.0.txt",
+          "start_line": 151,
+          "end_line": 151
         }
       ],
       "files_count": 0,
@@ -5944,7 +5099,7 @@
       "urls": [],
       "files_count": 17,
       "dirs_count": 0,
-      "size_count": 817871,
+      "size_count": 820073,
       "scan_errors": []
     },
     {
@@ -5997,12 +5152,12 @@
       "name": "CODE_SOURCES.md",
       "base_name": "CODE_SOURCES",
       "extension": ".md",
-      "size": 11005,
-      "date": "2026-08-17",
-      "sha1": "e273f6c0527fd0d64ac6b920bd40872f066360e4",
-      "md5": "cf312430d67df95a62202e0f43c79a2a",
-      "sha256": "d0254814b959b1fcaf580c62be8a8e4eaf1b9e3eaa70438283ad96f2ff6f3eca",
-      "sha1_git": "d073ca28c4d10ce45adfa123c912acf3e2ea1f47",
+      "size": 13207,
+      "date": "2026-08-18",
+      "sha1": "b418e0cf157cbe5980063a49b94fe506ade3dd67",
+      "md5": "00d91569e01d0ded8b542572b2356b04",
+      "sha256": "eab66b8a92c6d59d754aea2ef0de92baa9285d6619ef8d0dbf2d25043a3ed277",
+      "sha1_git": "1f5808d5bfe832ee81c3e1c48948ad5611266d90",
       "mime_type": "text/plain",
       "file_type": "UTF-8 Unicode text",
       "programming_language": null,
@@ -6020,8 +5175,8 @@
       "is_community": false,
       "package_data": [],
       "for_packages": [],
-      "detected_license_expression": "mit AND bsd-new",
-      "detected_license_expression_spdx": "MIT AND BSD-3-Clause",
+      "detected_license_expression": "mit AND bsd-new AND (gpl-3.0-plus AND gpl-3.0 AND mit) AND (mit AND proprietary-license AND gpl-3.0-plus)",
+      "detected_license_expression_spdx": "MIT AND BSD-3-Clause AND (GPL-3.0-or-later AND GPL-3.0-only AND MIT) AND (MIT AND LicenseRef-scancode-proprietary-license AND GPL-3.0-or-later)",
       "license_detections": [
         {
           "license_expression": "mit",
@@ -6031,8 +5186,8 @@
               "license_expression": "mit",
               "license_expression_spdx": "MIT",
               "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 57,
-              "end_line": 57,
+              "start_line": 66,
+              "end_line": 66,
               "matcher": "2-aho",
               "score": 100.0,
               "matched_length": 2,
@@ -6052,8 +5207,8 @@
               "license_expression": "bsd-new",
               "license_expression_spdx": "BSD-3-Clause",
               "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 126,
-              "end_line": 126,
+              "start_line": 135,
+              "end_line": 135,
               "matcher": "2-aho",
               "score": 90.0,
               "matched_length": 3,
@@ -6073,8 +5228,8 @@
               "license_expression": "mit",
               "license_expression_spdx": "MIT",
               "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 186,
-              "end_line": 186,
+              "start_line": 195,
+              "end_line": 195,
               "matcher": "2-aho",
               "score": 100.0,
               "matched_length": 6,
@@ -6082,34 +5237,62 @@
               "rule_relevance": 100,
               "rule_identifier": "mit_43.RULE",
               "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_43.RULE"
-            }
-          ],
-          "identifier": "mit-b6581844-7aef-89bf-3a49-ebfebd6ea2ad"
-        },
-        {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
-          "matches": [
-            {
-              "license_expression": "unknown-license-reference",
-              "license_expression_spdx": "LicenseRef-scancode-unknown-license-reference",
-              "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 190,
-              "end_line": 190,
-              "matcher": "2-aho",
-              "score": 50.0,
-              "matched_length": 2,
-              "match_coverage": 100.0,
-              "rule_relevance": 50,
-              "rule_identifier": "license-intro_2.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/license-intro_2.RULE"
             },
             {
               "license_expression": "mit",
               "license_expression_spdx": "MIT",
               "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 191,
-              "end_line": 191,
+              "start_line": 199,
+              "end_line": 199,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "mit_126.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_126.RULE"
+            }
+          ],
+          "identifier": "mit-a1a74e09-56b6-4527-ac1b-15ec907bd322"
+        },
+        {
+          "license_expression": "gpl-3.0-plus AND gpl-3.0 AND mit",
+          "license_expression_spdx": "GPL-3.0-or-later AND GPL-3.0-only AND MIT",
+          "matches": [
+            {
+              "license_expression": "gpl-3.0-plus",
+              "license_expression_spdx": "GPL-3.0-or-later",
+              "from_file": "uaos/documentation/CODE_SOURCES.md",
+              "start_line": 216,
+              "end_line": 216,
+              "matcher": "2-aho",
+              "score": 50.0,
+              "matched_length": 5,
+              "match_coverage": 100.0,
+              "rule_relevance": 50,
+              "rule_identifier": "spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0",
+              "license_expression_spdx": "GPL-3.0-only",
+              "from_file": "uaos/documentation/CODE_SOURCES.md",
+              "start_line": 218,
+              "end_line": 219,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 4,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0_396.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0_396.RULE"
+            },
+            {
+              "license_expression": "mit",
+              "license_expression_spdx": "MIT",
+              "from_file": "uaos/documentation/CODE_SOURCES.md",
+              "start_line": 219,
+              "end_line": 219,
               "matcher": "2-aho",
               "score": 100.0,
               "matched_length": 3,
@@ -6119,18 +5302,18 @@
               "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_27.RULE"
             }
           ],
-          "identifier": "mit-b9828f43-a91b-0b50-3861-3158e952cb25"
+          "identifier": "gpl_3_0_plus_and_gpl_3_0_and_mit-71ddd68d-fc90-37ae-4706-d1ae4435fa16"
         },
         {
-          "license_expression": "mit",
-          "license_expression_spdx": "MIT",
+          "license_expression": "mit AND proprietary-license AND gpl-3.0-plus",
+          "license_expression_spdx": "MIT AND LicenseRef-scancode-proprietary-license AND GPL-3.0-or-later",
           "matches": [
             {
               "license_expression": "mit",
               "license_expression_spdx": "MIT",
               "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 202,
-              "end_line": 202,
+              "start_line": 237,
+              "end_line": 237,
               "matcher": "2-aho",
               "score": 100.0,
               "matched_length": 2,
@@ -6138,9 +5321,37 @@
               "rule_relevance": 100,
               "rule_identifier": "mit_14.RULE",
               "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/mit_14.RULE"
+            },
+            {
+              "license_expression": "proprietary-license",
+              "license_expression_spdx": "LicenseRef-scancode-proprietary-license",
+              "from_file": "uaos/documentation/CODE_SOURCES.md",
+              "start_line": 241,
+              "end_line": 241,
+              "matcher": "2-aho",
+              "score": 100.0,
+              "matched_length": 2,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "proprietary-license_544.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/proprietary-license_544.RULE"
+            },
+            {
+              "license_expression": "gpl-3.0-plus",
+              "license_expression_spdx": "GPL-3.0-or-later",
+              "from_file": "uaos/documentation/CODE_SOURCES.md",
+              "start_line": 244,
+              "end_line": 244,
+              "matcher": "2-aho",
+              "score": 85.71,
+              "matched_length": 6,
+              "match_coverage": 100.0,
+              "rule_relevance": 100,
+              "rule_identifier": "gpl-3.0-plus_69.RULE",
+              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/gpl-3.0-plus_69.RULE"
             }
           ],
-          "identifier": "mit-9967e727-165e-9bb5-f090-7de5e47a3929"
+          "identifier": "mit_and_proprietary_license_and_gpl_3_0_plus-db54e162-5f0e-6530-35a2-e3f841c450b8"
         },
         {
           "license_expression": "mit",
@@ -6150,8 +5361,8 @@
               "license_expression": "mit",
               "license_expression_spdx": "MIT",
               "from_file": "uaos/documentation/CODE_SOURCES.md",
-              "start_line": 231,
-              "end_line": 231,
+              "start_line": 272,
+              "end_line": 272,
               "matcher": "2-aho",
               "score": 100.0,
               "matched_length": 7,
@@ -6196,43 +5407,48 @@
         }
       ],
       "license_clues": [],
-      "percentage_of_license_text": 1.59,
+      "percentage_of_license_text": 2.19,
       "copyrights": [
         {
           "copyright": "Copyright (c) 1998-2001 Karl Stenerud",
-          "start_line": 58,
-          "end_line": 58
+          "start_line": 67,
+          "end_line": 67
         },
         {
           "copyright": "Copyright Nicola Salmoria and the MAME Team",
-          "start_line": 123,
-          "end_line": 123
+          "start_line": 132,
+          "end_line": 132
         }
       ],
       "holders": [
         {
           "holder": "Karl Stenerud",
-          "start_line": 58,
-          "end_line": 58
+          "start_line": 67,
+          "end_line": 67
         },
         {
           "holder": "Nicola Salmoria and the MAME Team",
-          "start_line": 123,
-          "end_line": 123
+          "start_line": 132,
+          "end_line": 132
         }
       ],
       "authors": [],
       "emails": [],
       "urls": [
         {
+          "url": "https://github.com/aboutcode-org/scancode-toolkit",
+          "start_line": 14,
+          "end_line": 14
+        },
+        {
           "url": "https://github.com/kstenerud/Musashi",
-          "start_line": 37,
-          "end_line": 37
+          "start_line": 46,
+          "end_line": 46
         },
         {
           "url": "http://mamedev.org/",
-          "start_line": 124,
-          "end_line": 124
+          "start_line": 133,
+          "end_line": 133
         }
       ],
       "files_count": 0,
@@ -7181,9 +6397,9 @@
       "authors": [],
       "emails": [],
       "urls": [],
-      "files_count": 202,
-      "dirs_count": 9,
-      "size_count": 2281765,
+      "files_count": 194,
+      "dirs_count": 8,
+      "size_count": 2046080,
       "scan_errors": []
     },
     {
@@ -7709,9 +6925,9 @@
       "authors": [],
       "emails": [],
       "urls": [],
-      "files_count": 193,
-      "dirs_count": 6,
-      "size_count": 2094044,
+      "files_count": 185,
+      "dirs_count": 5,
+      "size_count": 1858359,
       "scan_errors": []
     },
     {
@@ -7753,9 +6969,9 @@
       "authors": [],
       "emails": [],
       "urls": [],
-      "files_count": 193,
-      "dirs_count": 5,
-      "size_count": 2094044,
+      "files_count": 185,
+      "dirs_count": 4,
+      "size_count": 1858359,
       "scan_errors": []
     },
     {
@@ -8132,14 +7348,14 @@
       "name": "m68kcpu.h",
       "base_name": "m68kcpu",
       "extension": ".h",
-      "size": 72175,
+      "size": 72390,
       "date": "2026-08-18",
-      "sha1": "05f66b4fa8676aa9b2f9ba7fcac6254c9a6a3b29",
-      "md5": "cf7d7472cb553bbd4e84aade2db69519",
-      "sha256": "d485c131e07d94f9f66496e0b075951507bf1fe859af48239d229ba350084bde",
-      "sha1_git": "8d72766823902d9192b68aa2d94a913a93f34a6e",
+      "sha1": "f0af364d8728a2ef392fabab5bb4c2ffeb77e3e2",
+      "md5": "86fc9f3c371d64331e54d3ef5c5773c7",
+      "sha256": "b158ef3349a3a4231db8d921b8ad3be96760130c45d5040bc2bc6624d02cc5b2",
+      "sha1_git": "7ef0f96db6a44be29673da1d6a91c122316ed5fb",
       "mime_type": "text/x-c",
-      "file_type": "C source, ASCII text",
+      "file_type": "C source, UTF-8 Unicode text",
       "programming_language": "C",
       "is_binary": false,
       "is_text": true,
@@ -8477,68 +7693,6 @@
         }
       ],
       "urls": [],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/m68kmmu.h",
-      "type": "file",
-      "name": "m68kmmu.h",
-      "base_name": "m68kmmu",
-      "extension": ".h",
-      "size": 9002,
-      "date": "2026-05-24",
-      "sha1": "83ed195ff0e79f1c5c1e3c5a2b15bf032ef742de",
-      "md5": "2a53d79740ac81360e2bb72b23c576ec",
-      "sha256": "66bdbef424dc672c79d316cad6060d487a9cd574b0c12d008e82505a4a27df89",
-      "sha1_git": "b6d90986cff80f0a8f752e8b89cdb839294161ae",
-      "mime_type": "text/plain",
-      "file_type": "ASCII text",
-      "programming_language": "C",
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": true,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": null,
-      "detected_license_expression_spdx": null,
-      "license_detections": [],
-      "license_clues": [],
-      "percentage_of_license_text": 0,
-      "copyrights": [
-        {
-          "copyright": "Copyright Nicola Salmoria and the MAME Team",
-          "start_line": 6,
-          "end_line": 6
-        }
-      ],
-      "holders": [
-        {
-          "holder": "Nicola Salmoria and the MAME Team",
-          "start_line": 6,
-          "end_line": 6
-        }
-      ],
-      "authors": [],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://mamedev.org/",
-          "start_line": 7,
-          "end_line": 7
-        }
-      ],
       "files_count": 0,
       "dirs_count": 0,
       "size_count": 0,
@@ -9250,562 +8404,6 @@
       "authors": [],
       "emails": [],
       "urls": [],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat",
-      "type": "directory",
-      "name": "softfloat",
-      "base_name": "softfloat",
-      "extension": "",
-      "size": 0,
-      "date": null,
-      "sha1": null,
-      "md5": null,
-      "sha256": null,
-      "sha1_git": null,
-      "mime_type": null,
-      "file_type": null,
-      "programming_language": null,
-      "is_binary": false,
-      "is_text": false,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": false,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": null,
-      "detected_license_expression_spdx": null,
-      "license_detections": [],
-      "license_clues": [],
-      "percentage_of_license_text": 0,
-      "copyrights": [],
-      "holders": [],
-      "authors": [],
-      "emails": [],
-      "urls": [],
-      "files_count": 7,
-      "dirs_count": 0,
-      "size_count": 226898,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/mamesf.h",
-      "type": "file",
-      "name": "mamesf.h",
-      "base_name": "mamesf",
-      "extension": ".h",
-      "size": 2856,
-      "date": "2026-05-24",
-      "sha1": "46245480d05e734c3b80254641ba917cf37c84a1",
-      "md5": "f7ac3a499ef9dbb0206bd1787cb14e6a",
-      "sha256": "0060a07e2a2292bb98a79917a8ddd02ae3225173ce37d919eb7e76a8cc661aac",
-      "sha1_git": "c4195039486dc26129df41dfc71b96aa0b04d17d",
-      "mime_type": "text/x-c",
-      "file_type": "C source, ASCII text",
-      "programming_language": "C",
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": true,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": null,
-      "detected_license_expression_spdx": null,
-      "license_detections": [],
-      "license_clues": [],
-      "percentage_of_license_text": 0,
-      "copyrights": [],
-      "holders": [],
-      "authors": [],
-      "emails": [],
-      "urls": [],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/milieu.h",
-      "type": "file",
-      "name": "milieu.h",
-      "base_name": "milieu",
-      "extension": ".h",
-      "size": 2232,
-      "date": "2026-05-24",
-      "sha1": "f9be543429852ff7b6d5bf4c0bd1de2ce3c2d3b6",
-      "md5": "be9d5f102e89f55d827ece54e8e688e3",
-      "sha256": "48da7850cbd2481c3d87f7bde42815d0e64d08a2772afb847b5f91d90afcf9be",
-      "sha1_git": "10687b755d0deba0ad8aa0841e210cb8d91f2f5c",
-      "mime_type": "text/x-c",
-      "file_type": "C source, ASCII text",
-      "programming_language": "C",
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": true,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "softfloat AND proprietary-license",
-      "detected_license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "license_detections": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/emulation/src/musashi/softfloat/milieu.h",
-              "start_line": 7,
-              "end_line": 26,
-              "matcher": "3-seq",
-              "score": 84.29,
-              "matched_length": 177,
-              "match_coverage": 84.29,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-62282915-6f21-e816-3a05-b6c435c97214"
-        }
-      ],
-      "license_clues": [],
-      "percentage_of_license_text": 65.31,
-      "copyrights": [],
-      "holders": [],
-      "authors": [
-        {
-          "author": "John R. Hauser",
-          "start_line": 7,
-          "end_line": 7
-        }
-      ],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/",
-          "start_line": 14,
-          "end_line": 14
-        }
-      ],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/README.txt",
-      "type": "file",
-      "name": "README.txt",
-      "base_name": "README",
-      "extension": ".txt",
-      "size": 3450,
-      "date": "2026-05-24",
-      "sha1": "db460a5142abb7fbbb2b2d4e27cb21fbb31ac433",
-      "md5": "0183ed8323be47455c5f15a678ed4dc1",
-      "sha256": "c71e555b87858bcbd6629ca2a1b181babaf8fe129172c15489a9eeeb56a6dc1f",
-      "sha1_git": "9500d25e8a3c605a5bd474779de9872b098a39fb",
-      "mime_type": "text/plain",
-      "file_type": "ASCII text",
-      "programming_language": null,
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": false,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": true,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "softfloat AND proprietary-license",
-      "detected_license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "license_detections": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/emulation/src/musashi/softfloat/README.txt",
-              "start_line": 48,
-              "end_line": 68,
-              "matcher": "3-seq",
-              "score": 92.86,
-              "matched_length": 195,
-              "match_coverage": 92.86,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-0b92c86e-8f08-ea89-a53f-5c23660df32b"
-        }
-      ],
-      "license_clues": [],
-      "percentage_of_license_text": 40.46,
-      "copyrights": [],
-      "holders": [],
-      "authors": [
-        {
-          "author": "me, John R. Hauser",
-          "start_line": 48,
-          "end_line": 48
-        }
-      ],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/arithmetic/SoftFloat.html",
-          "start_line": 76,
-          "end_line": 76
-        }
-      ],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/softfloat-macros",
-      "type": "file",
-      "name": "softfloat-macros",
-      "base_name": "softfloat-macros",
-      "extension": "",
-      "size": 24993,
-      "date": "2026-05-24",
-      "sha1": "226074d35c59cb94263b9ee9c260e4eea2ba0b8c",
-      "md5": "2792add241765e506385ed31309f48c8",
-      "sha256": "003fd1da7dac65e74c3129af0a45a2fb238140d281ccf456b2f3d18ac633e840",
-      "sha1_git": "5de9031de545e9674f9cf64295c2b4d9a50e0344",
-      "mime_type": "text/plain",
-      "file_type": "ASCII text",
-      "programming_language": null,
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": false,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "softfloat AND proprietary-license",
-      "detected_license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "license_detections": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/emulation/src/musashi/softfloat/softfloat-macros",
-              "start_line": 7,
-              "end_line": 26,
-              "matcher": "3-seq",
-              "score": 83.81,
-              "matched_length": 176,
-              "match_coverage": 83.81,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-3b082cb9-45c4-37ff-e0b8-dd935fb1e04c"
-        }
-      ],
-      "license_clues": [],
-      "percentage_of_license_text": 5.67,
-      "copyrights": [],
-      "holders": [],
-      "authors": [
-        {
-          "author": "John R. Hauser",
-          "start_line": 7,
-          "end_line": 7
-        }
-      ],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/",
-          "start_line": 14,
-          "end_line": 14
-        }
-      ],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/softfloat-specialize",
-      "type": "file",
-      "name": "softfloat-specialize",
-      "base_name": "softfloat-specialize",
-      "extension": "",
-      "size": 16695,
-      "date": "2026-05-24",
-      "sha1": "a77cbf3360aa23621ab5ceb757ae44fd0ee43063",
-      "md5": "8f73e0695b9216d255e30c2a6d99412e",
-      "sha256": "ec8df128b1ebd711215e39d35ac62c8bde59f8bcd0cf88718d8fa5d18a475d72",
-      "sha1_git": "a3113badfda7c2873bb30afcfae24e1599022ce7",
-      "mime_type": "text/plain",
-      "file_type": "ASCII text",
-      "programming_language": null,
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": false,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "softfloat AND proprietary-license",
-      "detected_license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "license_detections": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/emulation/src/musashi/softfloat/softfloat-specialize",
-              "start_line": 7,
-              "end_line": 26,
-              "matcher": "3-seq",
-              "score": 84.29,
-              "matched_length": 177,
-              "match_coverage": 84.29,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-62282915-6f21-e816-3a05-b6c435c97214"
-        }
-      ],
-      "license_clues": [],
-      "percentage_of_license_text": 12.28,
-      "copyrights": [],
-      "holders": [],
-      "authors": [
-        {
-          "author": "John R. Hauser",
-          "start_line": 7,
-          "end_line": 7
-        }
-      ],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/",
-          "start_line": 14,
-          "end_line": 14
-        }
-      ],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/softfloat.c",
-      "type": "file",
-      "name": "softfloat.c",
-      "base_name": "softfloat",
-      "extension": ".c",
-      "size": 158817,
-      "date": "2026-05-24",
-      "sha1": "e4c973712ad0d70fd31ca721d41899e971993654",
-      "md5": "82876a31ed42a856869fe5c2ffcb9f74",
-      "sha256": "a9249098c1be64f346a20d72250be47e779764819afed2c6ecce7f8687476db6",
-      "sha1_git": "400fd593fdca4c299c935caaabaf54e5b0049b2e",
-      "mime_type": "text/x-c",
-      "file_type": "C source, ASCII text",
-      "programming_language": "C",
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": true,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "softfloat AND proprietary-license",
-      "detected_license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "license_detections": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/emulation/src/musashi/softfloat/softfloat.c",
-              "start_line": 7,
-              "end_line": 26,
-              "matcher": "3-seq",
-              "score": 84.29,
-              "matched_length": 177,
-              "match_coverage": 84.29,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-62282915-6f21-e816-3a05-b6c435c97214"
-        }
-      ],
-      "license_clues": [],
-      "percentage_of_license_text": 1.09,
-      "copyrights": [],
-      "holders": [],
-      "authors": [
-        {
-          "author": "John R. Hauser",
-          "start_line": 7,
-          "end_line": 7
-        }
-      ],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/",
-          "start_line": 14,
-          "end_line": 14
-        }
-      ],
-      "files_count": 0,
-      "dirs_count": 0,
-      "size_count": 0,
-      "scan_errors": []
-    },
-    {
-      "path": "uaos/emulation/src/musashi/softfloat/softfloat.h",
-      "type": "file",
-      "name": "softfloat.h",
-      "base_name": "softfloat",
-      "extension": ".h",
-      "size": 17855,
-      "date": "2026-05-24",
-      "sha1": "9fe74c90d422b9d920522fbe4ff909b7f4cbc912",
-      "md5": "403fdd7d23e84a2c717501c51d9dc09a",
-      "sha256": "5cf048506ee233be66e1ec0ce7f15e0184e3758c14c41829a7f3ab0195f7b509",
-      "sha1_git": "92135e6634818e11a9e3d076de4ada5428ed2e10",
-      "mime_type": "text/x-c",
-      "file_type": "C source, ASCII text",
-      "programming_language": "C",
-      "is_binary": false,
-      "is_text": true,
-      "is_archive": false,
-      "is_media": false,
-      "is_source": true,
-      "is_script": false,
-      "is_legal": false,
-      "is_manifest": false,
-      "is_readme": false,
-      "is_top_level": false,
-      "is_key_file": false,
-      "is_community": false,
-      "package_data": [],
-      "for_packages": [],
-      "detected_license_expression": "softfloat AND proprietary-license",
-      "detected_license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-      "license_detections": [
-        {
-          "license_expression": "softfloat AND proprietary-license",
-          "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-          "matches": [
-            {
-              "license_expression": "softfloat AND proprietary-license",
-              "license_expression_spdx": "LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license",
-              "from_file": "uaos/emulation/src/musashi/softfloat/softfloat.h",
-              "start_line": 7,
-              "end_line": 26,
-              "matcher": "3-seq",
-              "score": 84.29,
-              "matched_length": 177,
-              "match_coverage": 84.29,
-              "rule_relevance": 100,
-              "rule_identifier": "softfloat_and_proprietary-license_1.RULE",
-              "rule_url": "https://github.com/nexB/scancode-toolkit/tree/develop/src/licensedcode/data/rules/softfloat_and_proprietary-license_1.RULE"
-            }
-          ],
-          "identifier": "softfloat_and_proprietary_license-62282915-6f21-e816-3a05-b6c435c97214"
-        }
-      ],
-      "license_clues": [],
-      "percentage_of_license_text": 9.6,
-      "copyrights": [],
-      "holders": [],
-      "authors": [
-        {
-          "author": "John R. Hauser",
-          "start_line": 7,
-          "end_line": 7
-        }
-      ],
-      "emails": [],
-      "urls": [
-        {
-          "url": "http://www.cs.berkeley.edu/~jhauser/",
-          "start_line": 14,
-          "end_line": 14
-        }
-      ],
       "files_count": 0,
       "dirs_count": 0,
       "size_count": 0,

@@ -1,15 +1,15 @@
 # ScanCode Report — UAOS
 
-_Generated 2026-08-18 22:55 from `scancode_report.json`_
+_Generated 2026-08-18 23:52 from `scancode_report.json`_
 
 ## Scan Metadata
 
 - **Tool:** ScanCode Toolkit v32.5.0
 - **Output format version:** 4.1.0
 - **SPDX license list version:** 3.27
-- **Scan start:** 2026-08-18T124820.633209
-- **Scan end:** 2026-08-18T124918.474984
-- **Duration:** 57.841796875s
+- **Scan start:** 2026-08-18T135134.227433
+- **Scan end:** 2026-08-18T135231.439733
+- **Duration:** 57.212321281433105s
 - **Platform:** Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39 (linux)
 - **Python:** 3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]
 - **Errors:** 0  |  **Warnings:** 0
@@ -22,20 +22,20 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 
 ## Executive Summary
 
-- **Declared license:** `mit AND unknown-license-reference`
+- **Declared license:** `(mit AND gpl-3.0-plus) AND unknown-license-reference`
 - **Declared copyright holder:** UAOS Development Team
 - **Primary language:** C
-- **License clarity score:** 80/100
-  - (declared_license=True, identification_precision=True, has_license_text=True, declared_copyrights=True, conflicting_license_categories=True, ambiguous_compound_licensing=False)
+- **License clarity score:** 100/100
+  - (declared_license=True, identification_precision=True, has_license_text=True, declared_copyrights=True, conflicting_license_categories=False, ambiguous_compound_licensing=False)
 
-- **Files scanned:** 533
-- **Directories scanned:** 111
-- **Total size:** 8.22 MB
-- **Files with license detections:** 19 (3.6%)
-- **Files with copyright detections:** 21 (3.9%)
+- **Files scanned:** 527
+- **Directories scanned:** 110
+- **Total size:** 8.01 MB
+- **Files with license detections:** 13 (2.5%)
+- **Files with copyright detections:** 20 (3.8%)
 - **Files with package data:** 1
 - **Files with emails:** 3
-- **Files with URLs:** 17
+- **Files with URLs:** 11
 - **Files with scan errors:** 0
 
 ## Tallies
@@ -45,20 +45,29 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 | License expression | Count |
 | --- | ---: |
 | _(none)_ | 513 |
-| mit | 20 |
-| softfloat AND proprietary-license | 7 |
-| bsd-new | 4 |
+| mit | 16 |
+| bsd-new | 3 |
+| commercial-license | 2 |
+| bsd-new AND proprietary-license AND gpl-2.0-plus | 1 |
+| gpl-3.0 AND gpl-2.0 AND proprietary-license | 1 |
+| gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license | 1 |
+| gpl-3.0-plus | 1 |
+| gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit | 1 |
+| gpl-3.0-plus AND gpl-3.0 AND mit | 1 |
+| mit AND gpl-3.0-plus | 1 |
+| mit AND proprietary-license AND gpl-3.0-plus | 1 |
+| proprietary-license | 1 |
 | unknown-license-reference | 1 |
 
 ### Copyrights
 
 | Copyright | Count |
 | --- | ---: |
-| _(none)_ | 512 |
+| _(none)_ | 507 |
 | Copyright (c) Karl Stenerud | 12 |
 | Copyright (c) UAOS Development Team | 5 |
-| Copyright Nicola Salmoria and the MAME Team | 3 |
 | Copyright Karl Stenerud (kstenerud@gmail.com) | 2 |
+| Copyright Nicola Salmoria and the MAME Team | 2 |
 | (c) Table C | 1 |
 | (c) UAOS Project | 1 |
 | Copyright extcopyright UAOS Development Team | 1 |
@@ -67,10 +76,10 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 
 | Holder | Count |
 | --- | ---: |
-| _(none)_ | 512 |
+| _(none)_ | 507 |
 | Karl Stenerud | 14 |
 | UAOS Development Team | 5 |
-| Nicola Salmoria and the MAME Team | 3 |
+| Nicola Salmoria and the MAME Team | 2 |
 | Table | 1 |
 | UAOS Project | 1 |
 | extcopyright UAOS Development Team | 1 |
@@ -80,24 +89,25 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 | Author | Count |
 | --- | ---: |
 | _(none)_ | 524 |
-| John R. Hauser | 6 |
+| Free Software Foundation | 1 |
 | GfxNew'. GfxAssociate Implemented Stores | 1 |
 | Henk Kelder | 1 |
+| John R. Hauser | 1 |
 | John R. Hauser (International Computer Science Institute) | 1 |
 | Karl Stenerud | 1 |
 | R. Belmont | 1 |
-| me, John R. Hauser | 1 |
 
 ### Programming languages
 
 | Language | Count |
 | --- | ---: |
-| C | 285 |
+| C | 280 |
 | GAS | 83 |
 | Bash | 6 |
 | NASM | 3 |
 | HTML | 2 |
 | CSS | 1 |
+| Python | 1 |
 | verilog | 1 |
 
 ## Files with License Detections
@@ -105,9 +115,9 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 | File | Detected License | SPDX | Detections |
 | --- | --- | --- | ---: |
 | `uaos/LICENSE` | mit | MIT | 1 |
-| `uaos/README.md` | mit AND unknown-license-reference | MIT AND LicenseRef-scancode-unknown-license-reference | 2 |
-| `uaos/THIRD_PARTY_NOTICES.md` | mit AND (softfloat AND proprietary-license) AND bsd-new | MIT AND (LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license) AND BSD-3-Clause | 7 |
-| `uaos/documentation/CODE_SOURCES.md` | mit AND bsd-new | MIT AND BSD-3-Clause | 6 |
+| `uaos/README.md` | (mit AND gpl-3.0-plus) AND unknown-license-reference | (MIT AND GPL-3.0-or-later) AND LicenseRef-scancode-unknown-license-reference | 2 |
+| `uaos/THIRD_PARTY_NOTICES.md` | mit AND bsd-new AND (bsd-new AND proprietary-license AND gpl-2.0-plus) AND gpl-3.0-plus AND (gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit) AND (gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license) AND proprietary-license AND (gpl-3.0 AND gpl-2.0 AND proprietary-license) | MIT AND BSD-3-Clause AND (BSD-3-Clause AND LicenseRef-scancode-proprietary-license AND GPL-2.0-or-later) AND GPL-3.0-or-later AND (GPL-3.0-or-later AND GPL-1.0-or-later AND GPL-3.0-only AND MIT) AND (GPL-3.0-only WITH GCC-exception-3.1 AND BSD-2-Clause AND GPL-3.0-only AND LicenseRef-scancode-proprietary-license) AND LicenseRef-scancode-proprietary-license AND (GPL-3.0-only AND GPL-2.0-only AND LicenseRef-scancode-proprietary-license) | 10 |
+| `uaos/documentation/CODE_SOURCES.md` | mit AND bsd-new AND (gpl-3.0-plus AND gpl-3.0 AND mit) AND (mit AND proprietary-license AND gpl-3.0-plus) | MIT AND BSD-3-Clause AND (GPL-3.0-or-later AND GPL-3.0-only AND MIT) AND (MIT AND LicenseRef-scancode-proprietary-license AND GPL-3.0-or-later) | 6 |
 | `uaos/emulation/src/musashi/example/m68kconf.h` | mit | MIT | 1 |
 | `uaos/emulation/src/musashi/m68k.h` | mit | MIT | 1 |
 | `uaos/emulation/src/musashi/m68k_in.c` | mit | MIT | 1 |
@@ -117,12 +127,6 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 | `uaos/emulation/src/musashi/m68kdasm.c` | mit | MIT | 1 |
 | `uaos/emulation/src/musashi/m68kmake.c` | mit | MIT | 1 |
 | `uaos/emulation/src/musashi/readme.txt` | mit | MIT | 1 |
-| `uaos/emulation/src/musashi/softfloat/README.txt` | softfloat AND proprietary-license | LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license | 1 |
-| `uaos/emulation/src/musashi/softfloat/milieu.h` | softfloat AND proprietary-license | LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license | 1 |
-| `uaos/emulation/src/musashi/softfloat/softfloat-macros` | softfloat AND proprietary-license | LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license | 1 |
-| `uaos/emulation/src/musashi/softfloat/softfloat-specialize` | softfloat AND proprietary-license | LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license | 1 |
-| `uaos/emulation/src/musashi/softfloat/softfloat.c` | softfloat AND proprietary-license | LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license | 1 |
-| `uaos/emulation/src/musashi/softfloat/softfloat.h` | softfloat AND proprietary-license | LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license | 1 |
 
 ### License detection details
 
@@ -135,60 +139,93 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 
 #### `uaos/README.md`
 
-- **Expression:** `mit`  
-  - SPDX: `MIT`  
+- **Expression:** `mit AND gpl-3.0-plus`  
+  - SPDX: `MIT AND GPL-3.0-or-later`  
   - Match: `mit` (lines 402-402, score 100.0, coverage 100.0%, rule `mit_43.RULE`, relevance 100)
+  - Match: `mit` (lines 404-404, score 100.0, coverage 100.0%, rule `mit_126.RULE`, relevance 100)
+  - Match: `gpl-3.0-plus` (lines 406-406, score 50.0, coverage 100.0%, rule `spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE`, relevance 50)
 - **Expression:** `unknown-license-reference`  
   - SPDX: `LicenseRef-scancode-unknown-license-reference`  
-  - Match: `unknown-license-reference` (lines 405-405, score 50.0, coverage 100.0%, rule `license-intro_2.RULE`, relevance 50)
+  - Match: `unknown-license-reference` (lines 410-410, score 50.0, coverage 100.0%, rule `license-intro_2.RULE`, relevance 50)
 
 #### `uaos/THIRD_PARTY_NOTICES.md`
 
 - **Expression:** `mit`  
   - SPDX: `MIT`  
-  - Match: `mit` (lines 8-8, score 56.25, coverage 56.25%, rule `mit_478.RULE`, relevance 100)
+  - Match: `mit` (lines 8-8, score 100.0, coverage 100.0%, rule `mit_1336.RULE`, relevance 100)
+  - Match: `mit` (lines 1-1, score 100.0, coverage 100.0%, rule `mit_14.RULE`, relevance 100)
+  - Match: `mit` (lines 5-21, score 100.0, coverage 100.0%, rule `mit.LICENSE`, relevance 100)
 - **Expression:** `mit`  
   - SPDX: `MIT`  
   - Match: `unknown-license-reference` (lines 9-9, score 50.0, coverage 100.0%, rule `license-intro_2.RULE`, relevance 50)
-  - Match: `mit` (lines 10-10, score 100.0, coverage 100.0%, rule `mit_27.RULE`, relevance 100)
+  - Match: `mit` (lines 20-20, score 100.0, coverage 100.0%, rule `mit_30.RULE`, relevance 100)
 - **Expression:** `mit`  
   - SPDX: `MIT`  
-  - Match: `mit` (lines 18-18, score 100.0, coverage 100.0%, rule `mit_30.RULE`, relevance 100)
-- **Expression:** `mit`  
-  - SPDX: `MIT`  
-  - Match: `mit` (lines 31-47, score 100.0, coverage 100.0%, rule `mit.LICENSE`, relevance 100)
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 67-84, score 84.29, coverage 84.29%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
+  - Match: `mit` (lines 36-52, score 100.0, coverage 100.0%, rule `mit.LICENSE`, relevance 100)
 - **Expression:** `bsd-new`  
   - SPDX: `BSD-3-Clause`  
-  - Match: `bsd-new` (lines 96-96, score 90.0, coverage 100.0%, rule `bsd-new_417.RULE`, relevance 90)
-- **Expression:** `bsd-new`  
-  - SPDX: `BSD-3-Clause`  
-  - Match: `bsd-new` (lines 111-111, score 90.0, coverage 100.0%, rule `bsd-new_625.RULE`, relevance 90)
-  - Match: `bsd-new` (lines 111-111, score 90.0, coverage 100.0%, rule `bsd-new_required_phrase_12.RULE`, relevance 90)
+  - Match: `bsd-new` (lines 104-104, score 90.0, coverage 100.0%, rule `bsd-new_417.RULE`, relevance 90)
+- **Expression:** `bsd-new AND proprietary-license AND gpl-2.0-plus`  
+  - SPDX: `BSD-3-Clause AND LicenseRef-scancode-proprietary-license AND GPL-2.0-or-later`  
+  - Match: `bsd-new` (lines 121-121, score 99.0, coverage 100.0%, rule `bsd-new_1102.RULE`, relevance 99)
+  - Match: `proprietary-license` (lines 121-122, score 100.0, coverage 100.0%, rule `proprietary_non-commercial4.RULE`, relevance 100)
+  - Match: `bsd-new` (lines 122-122, score 100.0, coverage 100.0%, rule `bsd-new_10.RULE`, relevance 100)
+  - Match: `gpl-2.0-plus` (lines 122-122, score 100.0, coverage 100.0%, rule `spdx_license_id_gpl-2.0+_for_gpl-2.0-plus.RULE`, relevance 100)
+- **Expression:** `gpl-3.0-plus`  
+  - SPDX: `GPL-3.0-or-later`  
+  - Match: `gpl-3.0-plus` (lines 134-134, score 100.0, coverage 100.0%, rule `gpl-3.0-plus_525.RULE`, relevance 100)
+- **Expression:** `gpl-3.0-plus AND gpl-1.0-plus AND gpl-3.0 AND mit`  
+  - SPDX: `GPL-3.0-or-later AND GPL-1.0-or-later AND GPL-3.0-only AND MIT`  
+  - Match: `gpl-3.0-plus` (lines 145-148, score 100.0, coverage 100.0%, rule `gpl-3.0-plus_98.RULE`, relevance 100)
+  - Match: `gpl-1.0-plus` (lines 150-150, score 90.0, coverage 100.0%, rule `gpl-1.0-plus_350.RULE`, relevance 90)
+  - Match: `gpl-3.0` (lines 150-150, score 100.0, coverage 100.0%, rule `gpl-3.0_396.RULE`, relevance 100)
+  - Match: `gpl-3.0` (lines 151-151, score 100.0, coverage 100.0%, rule `gpl-3.0_218.RULE`, relevance 100)
+  - Match: `gpl-1.0-plus` (lines 153-153, score 50.0, coverage 100.0%, rule `gpl_bare_word_only.RULE`, relevance 50)
+  - Match: `mit` (lines 153-154, score 100.0, coverage 100.0%, rule `mit_258.RULE`, relevance 100)
+  - Match: `gpl-3.0` (lines 157-157, score 100.0, coverage 100.0%, rule `gpl-3.0_396.RULE`, relevance 100)
+  - Match: `mit` (lines 158-158, score 100.0, coverage 100.0%, rule `mit_27.RULE`, relevance 100)
+- **Expression:** `gpl-3.0 WITH gcc-exception-3.1 AND bsd-simplified AND gpl-3.0 AND proprietary-license`  
+  - SPDX: `GPL-3.0-only WITH GCC-exception-3.1 AND BSD-2-Clause AND GPL-3.0-only AND LicenseRef-scancode-proprietary-license`  
+  - Match: `gpl-3.0 WITH gcc-exception-3.1` (lines 170-170, score 100.0, coverage 100.0%, rule `gpl-3.0_with_gcc-exception-3.1_9.RULE`, relevance 100)
+  - Match: `bsd-simplified` (lines 171-171, score 100.0, coverage 100.0%, rule `spdx_license_id_bsd-2-clause_for_bsd-simplified.RULE`, relevance 100)
+  - Match: `gpl-3.0` (lines 172-172, score 100.0, coverage 100.0%, rule `gpl-3.0_6.RULE`, relevance 100)
+  - Match: `gpl-3.0` (lines 173-173, score 100.0, coverage 100.0%, rule `gpl-3.0_6.RULE`, relevance 100)
+  - Match: `proprietary-license` (lines 174-174, score 100.0, coverage 100.0%, rule `proprietary-license_544.RULE`, relevance 100)
+- **Expression:** `proprietary-license`  
+  - SPDX: `LicenseRef-scancode-proprietary-license`  
+  - Match: `proprietary-license` (lines 175-175, score 100.0, coverage 100.0%, rule `proprietary-license_544.RULE`, relevance 100)
+- **Expression:** `gpl-3.0 AND gpl-2.0 AND proprietary-license`  
+  - SPDX: `GPL-3.0-only AND GPL-2.0-only AND LicenseRef-scancode-proprietary-license`  
+  - Match: `gpl-3.0` (lines 176-176, score 100.0, coverage 100.0%, rule `gpl-3.0_6.RULE`, relevance 100)
+  - Match: `gpl-2.0` (lines 177-177, score 100.0, coverage 100.0%, rule `gpl-2.0_52.RULE`, relevance 100)
+  - Match: `proprietary-license` (lines 179-179, score 100.0, coverage 100.0%, rule `proprietary-license_544.RULE`, relevance 100)
+  - Match: `proprietary-license` (lines 180-180, score 100.0, coverage 100.0%, rule `proprietary-license_271.RULE`, relevance 100)
 
 #### `uaos/documentation/CODE_SOURCES.md`
 
 - **Expression:** `mit`  
   - SPDX: `MIT`  
-  - Match: `mit` (lines 57-57, score 100.0, coverage 100.0%, rule `mit_30.RULE`, relevance 100)
+  - Match: `mit` (lines 66-66, score 100.0, coverage 100.0%, rule `mit_30.RULE`, relevance 100)
 - **Expression:** `bsd-new`  
   - SPDX: `BSD-3-Clause`  
-  - Match: `bsd-new` (lines 126-126, score 90.0, coverage 100.0%, rule `bsd-new_417.RULE`, relevance 90)
+  - Match: `bsd-new` (lines 135-135, score 90.0, coverage 100.0%, rule `bsd-new_417.RULE`, relevance 90)
 - **Expression:** `mit`  
   - SPDX: `MIT`  
-  - Match: `mit` (lines 186-186, score 100.0, coverage 100.0%, rule `mit_43.RULE`, relevance 100)
+  - Match: `mit` (lines 195-195, score 100.0, coverage 100.0%, rule `mit_43.RULE`, relevance 100)
+  - Match: `mit` (lines 199-199, score 100.0, coverage 100.0%, rule `mit_126.RULE`, relevance 100)
+- **Expression:** `gpl-3.0-plus AND gpl-3.0 AND mit`  
+  - SPDX: `GPL-3.0-or-later AND GPL-3.0-only AND MIT`  
+  - Match: `gpl-3.0-plus` (lines 216-216, score 50.0, coverage 100.0%, rule `spdx_license_id_gpl-3.0-or-later_for_gpl-3.0-plus.RULE`, relevance 50)
+  - Match: `gpl-3.0` (lines 218-219, score 100.0, coverage 100.0%, rule `gpl-3.0_396.RULE`, relevance 100)
+  - Match: `mit` (lines 219-219, score 100.0, coverage 100.0%, rule `mit_27.RULE`, relevance 100)
+- **Expression:** `mit AND proprietary-license AND gpl-3.0-plus`  
+  - SPDX: `MIT AND LicenseRef-scancode-proprietary-license AND GPL-3.0-or-later`  
+  - Match: `mit` (lines 237-237, score 100.0, coverage 100.0%, rule `mit_14.RULE`, relevance 100)
+  - Match: `proprietary-license` (lines 241-241, score 100.0, coverage 100.0%, rule `proprietary-license_544.RULE`, relevance 100)
+  - Match: `gpl-3.0-plus` (lines 244-244, score 85.71, coverage 100.0%, rule `gpl-3.0-plus_69.RULE`, relevance 100)
 - **Expression:** `mit`  
   - SPDX: `MIT`  
-  - Match: `unknown-license-reference` (lines 190-190, score 50.0, coverage 100.0%, rule `license-intro_2.RULE`, relevance 50)
-  - Match: `mit` (lines 191-191, score 100.0, coverage 100.0%, rule `mit_27.RULE`, relevance 100)
-- **Expression:** `mit`  
-  - SPDX: `MIT`  
-  - Match: `mit` (lines 202-202, score 100.0, coverage 100.0%, rule `mit_14.RULE`, relevance 100)
-- **Expression:** `mit`  
-  - SPDX: `MIT`  
-  - Match: `mit` (lines 231-231, score 100.0, coverage 100.0%, rule `mit_1336.RULE`, relevance 100)
+  - Match: `mit` (lines 272-272, score 100.0, coverage 100.0%, rule `mit_1336.RULE`, relevance 100)
   - Match: `mit` (lines 1-1, score 100.0, coverage 100.0%, rule `mit_14.RULE`, relevance 100)
   - Match: `mit` (lines 5-21, score 100.0, coverage 100.0%, rule `mit.LICENSE`, relevance 100)
 
@@ -246,51 +283,15 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
   - SPDX: `MIT`  
   - Match: `mit` (lines 31-47, score 100.0, coverage 100.0%, rule `mit.LICENSE`, relevance 100)
 
-#### `uaos/emulation/src/musashi/softfloat/README.txt`
-
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 48-68, score 92.86, coverage 92.86%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
-
-#### `uaos/emulation/src/musashi/softfloat/milieu.h`
-
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 7-26, score 84.29, coverage 84.29%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
-
-#### `uaos/emulation/src/musashi/softfloat/softfloat-macros`
-
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 7-26, score 83.81, coverage 83.81%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
-
-#### `uaos/emulation/src/musashi/softfloat/softfloat-specialize`
-
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 7-26, score 84.29, coverage 84.29%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
-
-#### `uaos/emulation/src/musashi/softfloat/softfloat.c`
-
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 7-26, score 84.29, coverage 84.29%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
-
-#### `uaos/emulation/src/musashi/softfloat/softfloat.h`
-
-- **Expression:** `softfloat AND proprietary-license`  
-  - SPDX: `LicenseRef-scancode-softfloat AND LicenseRef-scancode-proprietary-license`  
-  - Match: `softfloat AND proprietary-license` (lines 7-26, score 84.29, coverage 84.29%, rule `softfloat_and_proprietary-license_1.RULE`, relevance 100)
-
 ## Files with Copyright Detections
 
 | File | Copyright | Lines |
 | --- | --- | --- |
 | `uaos/LICENSE` | Copyright (c) 2026 UAOS Development Team | 3-3 |
-| `uaos/THIRD_PARTY_NOTICES.md` | Copyright (c) 1998-2001 Karl Stenerud | 29-29 |
-| `uaos/THIRD_PARTY_NOTICES.md` | Copyright Nicola Salmoria and the MAME Team | 107-107 |
-| `uaos/documentation/CODE_SOURCES.md` | Copyright (c) 1998-2001 Karl Stenerud | 58-58 |
-| `uaos/documentation/CODE_SOURCES.md` | Copyright Nicola Salmoria and the MAME Team | 123-123 |
+| `uaos/THIRD_PARTY_NOTICES.md` | Copyright (c) 1998-2001 Karl Stenerud | 34-34 |
+| `uaos/THIRD_PARTY_NOTICES.md` | Copyright Nicola Salmoria and the MAME Team | 116-116 |
+| `uaos/documentation/CODE_SOURCES.md` | Copyright (c) 1998-2001 Karl Stenerud | 67-67 |
+| `uaos/documentation/CODE_SOURCES.md` | Copyright Nicola Salmoria and the MAME Team | 132-132 |
 | `uaos/documentation/manual.html` | Copyright (c) 2026 UAOS Development Team | 2483-2483 |
 | `uaos/documentation/manual.md` | Copyright (c) 2026 UAOS Development Team | 1257-1257 |
 | `uaos/documentation/manual.pdf` | Copyright 2026 UAOS Development Team | 13-13 |
@@ -306,7 +307,6 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 | `uaos/emulation/src/musashi/m68kmake` | Copyright Karl Stenerud (kstenerud@gmail.com) | 88-88 |
 | `uaos/emulation/src/musashi/m68kmake.c` | Copyright Karl Stenerud | 9-9 |
 | `uaos/emulation/src/musashi/m68kmake.c` | Copyright Karl Stenerud (kstenerud@gmail.com) | 1242-1242 |
-| `uaos/emulation/src/musashi/m68kmmu.h` | Copyright Nicola Salmoria and the MAME Team | 6-6 |
 | `uaos/emulation/src/musashi/readme.txt` | Copyright 1998-2002 Karl Stenerud | 7-7 |
 | `uaos/emulation/src/musashi/readme.txt` | Copyright (c) 1998-2001 Karl Stenerud | 29-29 |
 | `uaos/kernel/display/about_win.c` | Copyright 2026 UAOS Development Team | 149-149 |
@@ -324,29 +324,26 @@ _Generated 2026-08-18 22:55 from `scancode_report.json`_
 
 | File | URL | Lines |
 | --- | --- | --- |
+| `uaos/.gitmodules` | https://github.com/stevereaver/Musashi.git | 3-3 |
 | `uaos/README.md` | https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e | 398-398 |
-| `uaos/THIRD_PARTY_NOTICES.md` | https://github.com/kstenerud/Musashi | 16-16 |
-| `uaos/THIRD_PARTY_NOTICES.md` | http://www.cs.berkeley.edu/~jhauser/arithmetic/SoftFloat.html | 54-54 |
-| `uaos/THIRD_PARTY_NOTICES.md` | http://mamedev.org/ | 94-94 |
-| `uaos/THIRD_PARTY_NOTICES.md` | http://mamedev.org/LICENSE.md | 112-112 |
-| `uaos/documentation/CODE_SOURCES.md` | https://github.com/kstenerud/Musashi | 37-37 |
-| `uaos/documentation/CODE_SOURCES.md` | http://mamedev.org/ | 124-124 |
+| `uaos/README.md` | https://www.gnu.org/software/grub | 405-405 |
+| `uaos/THIRD_PARTY_NOTICES.md` | https://github.com/kstenerud/Musashi | 18-18 |
+| `uaos/THIRD_PARTY_NOTICES.md` | http://www.cs.berkeley.edu/~jhauser/arithmetic/SoftFloat.html | 59-59 |
+| `uaos/THIRD_PARTY_NOTICES.md` | http://mamedev.org/ | 102-102 |
+| `uaos/THIRD_PARTY_NOTICES.md` | https://www.gnu.org/software/grub/ | 132-132 |
+| `uaos/THIRD_PARTY_NOTICES.md` | https://www.gnu.org/licenses/gpl-3.0.txt | 151-151 |
+| `uaos/documentation/CODE_SOURCES.md` | https://github.com/aboutcode-org/scancode-toolkit | 14-14 |
+| `uaos/documentation/CODE_SOURCES.md` | https://github.com/kstenerud/Musashi | 46-46 |
+| `uaos/documentation/CODE_SOURCES.md` | http://mamedev.org/ | 133-133 |
 | `uaos/documentation/index.html` | https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e | 1040-1040 |
 | `uaos/emulation/src/musashi/history.txt` | http://dynarec.com/~bart/files/68knotes.txt | 18-18 |
 | `uaos/emulation/src/musashi/m68k_in.c` | http://dynarec.com/~bart/files/68knotes.txt | 38-38 |
-| `uaos/emulation/src/musashi/m68kmmu.h` | http://mamedev.org/ | 7-7 |
 | `uaos/emulation/src/musashi/readme.txt` | http://www.mame.net/ | 21-21 |
 | `uaos/emulation/src/musashi/readme.txt` | https://github.com/kstenerud/Musashi | 54-54 |
-| `uaos/emulation/src/musashi/softfloat/README.txt` | http://www.cs.berkeley.edu/~jhauser/arithmetic/SoftFloat.html | 76-76 |
-| `uaos/emulation/src/musashi/softfloat/milieu.h` | http://www.cs.berkeley.edu/~jhauser/ | 14-14 |
-| `uaos/emulation/src/musashi/softfloat/softfloat-macros` | http://www.cs.berkeley.edu/~jhauser/ | 14-14 |
-| `uaos/emulation/src/musashi/softfloat/softfloat-specialize` | http://www.cs.berkeley.edu/~jhauser/ | 14-14 |
-| `uaos/emulation/src/musashi/softfloat/softfloat.c` | http://www.cs.berkeley.edu/~jhauser/ | 14-14 |
-| `uaos/emulation/src/musashi/softfloat/softfloat.h` | http://www.cs.berkeley.edu/~jhauser/ | 14-14 |
 | `uaos/kernel/net/dns.h` | http://www.google.com/ | 42-42 |
 | `uaos/kernel/net/ntp.c` | http://howardhinnant.github.io/date_algorithms.html | 105-105 |
-| `uaos/scripts/build_iso.sh` | http://sun.hasenbraten.de/vasm/release/vasm.tar.gz | 940-940 |
-| `uaos/scripts/build_iso.sh` | http://sun.hasenbraten.de/vlink/release/vlink.tar.gz | 944-944 |
+| `uaos/scripts/build_iso.sh` | http://sun.hasenbraten.de/vasm/release/vasm.tar.gz | 939-939 |
+| `uaos/scripts/build_iso.sh` | http://sun.hasenbraten.de/vlink/release/vlink.tar.gz | 943-943 |
 
 ## Scan Errors
 

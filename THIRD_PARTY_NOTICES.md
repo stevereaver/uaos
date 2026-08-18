@@ -23,10 +23,17 @@ reference but excluded from the build.
 A portable Motorola M680x0 processor emulation engine.  Used as the
 M68k CPU core for UAOS's M68k emulation subsystem.  UAOS supplies a
 project-specific configuration via `emulation/uaos_m68kconf.h` using
-Musashi's `-DMUSASHI_CNF` mechanism.  Two minor `#if` guards have been
-added to the upstream source to exclude FPU and PMMU code from the
-build (see sections 2 and 3 below); all other Musashi files are
-unmodified.
+Musashi's `-DMUSASHI_CNF` mechanism.  The following changes have been
+made to the upstream Musashi source:
+
+- `#if M68K_EMULATE_FPOINT` guards added to `m68kcpu.c` and `m68kcpu.h`
+  to exclude FPU and PMMU code from the build
+- SoftFloat 2b source files (`softfloat/` directory) **deleted** — see §2
+- MAME `m68kmmu.h` **deleted** — see §3
+- `int8`/`int16`/`int32` typedefs (previously provided by SoftFloat's
+  `milieu.h`) defined locally in `m68kcpu.h`
+
+All other Musashi files are unmodified.
 
 ### License
 
@@ -54,76 +61,38 @@ THE SOFTWARE.
 
 ---
 
-## 2. SoftFloat 2b
+## 2. SoftFloat 2b (removed)
 
 - **Upstream:** <http://www.cs.berkeley.edu/~jhauser/arithmetic/SoftFloat.html>
 - **Author:** John R. Hauser (International Computer Science Institute)
-- **License:** Hauser/ICSI non-warranty license (see below)
-- **Location:** `emulation/src/musashi/softfloat/`
+- **License:** Hauser/ICSI non-warranty license (non-OSI, GPL-incompatible)
+- **Status:** **Removed from the repository.**
 
-An IEC/IEEE-conformant software floating-point arithmetic package.
-Bundled as part of the Musashi distribution (MAME-repackaged version).
-**Not compiled into the kernel.**  FPU emulation is disabled in
-`uaos_m68kconf.h` (`M68K_EMULATE_FPOINT = OFF`), and the SoftFloat
-sources are excluded from the build via `#if M68K_EMULATE_FPOINT`
-guards in `m68kcpu.h` and `m68kcpu.c`.  The source files are retained
-in the tree for reference only.
-
-### License
-
-```
-Written by John R. Hauser.  This work was made possible in part by the
-International Computer Science Institute, located at Suite 600, 1947 Center
-Street, Berkeley, California 94704.  Funding was partially provided by the
-National Science Foundation under grant MIP-9311980.  The original version
-of this code was written as part of a project to build a fixed-point vector
-processor in collaboration with the University of California at Berkeley,
-overseen by Profs. Nelson Morgan and John Wawrzynek.
-
-THIS SOFTWARE IS DISTRIBUTED AS IS, FOR FREE.  Although reasonable effort has
-been made to avoid it, THIS SOFTWARE MAY CONTAIN FAULTS THAT WILL AT TIMES
-RESULT IN INCORRECT BEHAVIOR.  USE OF THIS SOFTWARE IS RESTRICTED TO PERSONS
-AND ORGANIZATIONS WHO CAN AND WILL TAKE FULL RESPONSIBILITY FOR ALL LOSSES,
-COSTS, OR OTHER PROBLEMS THEY INCUR DUE TO THE SOFTWARE, AND WHO FURTHERMORE
-EFFECTIVELY INDEMNIFY JOHN HAUSER AND THE INTERNATIONAL COMPUTER SCIENCE
-INSTITUTE (possibly via similar legal warning) AGAINST ALL LOSSES, COSTS, OR
-OTHER PROBLEMS INCURRED BY THEIR CUSTOMERS AND CLIENTS DUE TO THE SOFTWARE.
-
-Derivative works are acceptable, even for commercial purposes, so long as
-(1) the source code for the derivative work includes prominent notice that
-the work is derivative, and (2) the source code includes prominent notice with
-these four paragraphs for those parts of this code that are retained.
-```
+SoftFloat 2b was previously bundled as part of the Musashi distribution.
+Its license includes a use restriction and an indemnification clause that
+makes it GPL-incompatible (per the FSF) and not OSI-approved.  The
+SoftFloat source files have been **deleted** from the repository.  FPU
+emulation is disabled in `uaos_m68kconf.h` (`M68K_EMULATE_FPOINT = OFF`),
+and the `int8`/`int16`/`int32` typedefs that SoftFloat provided are now
+defined locally in `m68kcpu.h`.
 
 ---
 
-## 3. M68k PMMU
+## 3. M68k PMMU (removed)
 
 - **Upstream:** MAME (<http://mamedev.org>)
 - **Author:** R. Belmont
-- **License:** MAME license (BSD-like)
-- **Location:** `emulation/src/musashi/m68kmmu.h`
+- **License:** Pre-2016 MAME license (non-commercial restriction)
+- **Status:** **Removed from the repository.**
 
-PMMU implementation for 68851/68030/68040.  Ships as part of the
-Musashi distribution from the MAME fork lineage.  **Not compiled into
-the kernel.**  The `#include "m68kmmu.h"` in `m68kcpu.c` is guarded by
-`#if M68K_EMULATE_FPOINT` and excluded from the build.  030/040
-emulation and PMMU are disabled in `uaos_m68kconf.h`.
-
-### License
-
-```
-Copyright Nicola Salmoria and the MAME Team.
-Visit http://mamedev.org for licensing and usage restrictions.
-```
-
-The file header references "usage restrictions," which is the phrasing
-of the pre-2016 MAME license (a BSD-like license with a non-commercial
-use restriction).  MAME was re-licensed to BSD-3-Clause / GPL-2.0+ in
-March 2016, but this file's header was never updated in the upstream
-Musashi repository.  Because the file is **not compiled into the UAOS
-kernel**, its license terms do not apply to the distributed binary.
-The source is retained in the tree for reference only.
+The `m68kmmu.h` file was previously part of the Musashi distribution.
+Its header referenced "usage restrictions," the phrasing of the
+pre-2016 MAME license which included a non-commercial use clause
+("Redistributions may not be sold, nor may they be used in a
+commercial product or activity").  The FSF and Debian classified this
+as non-free.  The file has been **deleted** from the repository.  The
+`#include "m68kmmu.h"` in `m68kcpu.c` is guarded by
+`#if M68K_EMULATE_FPOINT` (disabled in `uaos_m68kconf.h`).
 
 ---
 
