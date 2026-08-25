@@ -1005,9 +1005,14 @@ void Desktop_Draw(void)
 
     /* Lasso rectangle on top of icons, below menu dropdown */
     draw_lasso(W, H);
+}
 
-    /* Workbench dropdown menu, drawn on top of the desktop backdrop. */
-    draw_menu_dropdown(W);
+/* Draw the open Workbench menu dropdown on top of everything else.
+ * Called by WM_Redraw after all windows have been painted. */
+void Desktop_DrawMenuDropdown(void)
+{
+    if (!g_fb.valid) return;
+    draw_menu_dropdown((int)g_fb.width);
 }
 
 /* Workbench load control - prevents desktop from showing before LoadWB */

@@ -1147,6 +1147,9 @@ void WM_Redraw(void)
         }
     }
 
+    /* Workbench menu dropdown must float above all windows. */
+    Desktop_DrawMenuDropdown();
+
     /* Cursor on top, then flip entire frame to screen in one blit */
     Cursor_Redraw();
     FB_Flip();
