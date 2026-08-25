@@ -25,6 +25,11 @@ Assign >NIL: REXX: S:
 Assign >NIL: PRINTERS: DEVS:Printers
 Assign >NIL: KEYMAPS: DEVS:Keymaps
 
+; GNU POSIX compatibility layer — gnu: maps to Workbench:gnu
+; Contains /usr/bin, /bin, /usr/local/bin with GNU coreutils and
+; other OSS tools that take GNU-style flags.
+Assign >NIL: gnu: Workbench:gnu
+
 ; Extend LIBS: with additional class directories (searched after SYS:Libs)
 Assign >NIL: LIBS: SYS:Classes ADD
 

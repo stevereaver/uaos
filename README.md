@@ -67,6 +67,8 @@ uaos/
 ├── system/             # Amiga-style filesystem skeleton (C, S, LIBS, L, DEVS, SYS, Tools)
 │   ├── libuaos/        # Userspace C library headers and startup code
 │   ├── userspace/      # Native x86-64 Ring-3 ELF64 programs (pwd, file, strings, find, Guide, ...)
+│   ├── gnusrc/         # GNU coreutils (cat, wc, sort, ls, cp, chmod, md5sum, ...)
+│   ├── gnu/            # POSIX directory skeleton exposed via the `gnu:` assign
 │   └── S/              # Startup-Sequence, network, NTP, timezone configs
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
@@ -165,6 +167,52 @@ Current userspace tools:
 
 The syscall numbers are defined in `kernel/exec/syscall_table.h` (kernel) and
 `system/libuaos/uaos_syscall.h` (userspace).
+
+---
+
+## GNU Core Utilities (`gnu:` layer)
+
+UAOS ships the complete GNU coreutils suite (86 utilities) alongside the
+AmigaDOS-style commands.  The GNU tools use GNU-style flags (`--long`,
+`-s`, `-n 5`) parsed by `system/libuaos/uaos_getopt.h`, a freestanding
+`getopt_long` implementation.  The existing AmigaDOS commands in `C:`
+(e.g. `sort`, `join`) are kept unchanged; the GNU equivalents live under
+the `gnu:` assign, which `S:Startup-Sequence` maps to `Workbench:gnu`.
+
+### Directory layout
+
+```
+gnu:
+├── bin/              # symlink-style bin directory
+├── usr/
+│   └── bin/          # GNU coreutils binaries (cat, wc, sort, md5sum, ...)
+└── usr/local/bin/    # reserved for user-installed tools
+```
+
+### Available utilities (86 tools)
+
+Sources live in `system/gnusrc/` and are compiled by Step 2ga of
+`scripts/build_iso.sh`:
+
+| Category | Tools |
+|----------|-------|
+| Core text | `cat` `tac` `nl` `wc` `head` `tail` `cut` `tr` `uniq` `fold` `expand` `unexpand` |
+| Advanced text | `paste` `comm` `fmt` `sort` `seq` `tsort` `shuf` `split` `csplit` |
+| Encoding | `base32` `base64` `basenc` `od` |
+| Checksums | `sum` `cksum` `md5sum` `sha1sum` `sha256sum` `sha512sum` `b2sum` |
+| Other text | `pr` `numfmt` `ptx` |
+| File listing/info | `ls` `dir` `vdir` `stat` `df` `du` `basename` `dirname` `realpath` `pathchk` `mktemp` |
+| File manipulation | `cp` `mv` `rm` `mkdir` `rmdir` `install` `touch` `truncate` `shred` `unlink` `dd` |
+| Shell basics | `echo` `printf` `yes` `true` `false` `test` `expr` `factor` `sleep` `tee` `date` `env` `printenv` |
+| System info | `uname` `arch` `nproc` `hostname` `hostid` `tty` `whoami` `logname` `id` `groups` `who` `users` `pinky` |
+| User/group | `chmod` `chown` `chgrp` |
+
+The checksum tools use `system/libuaos/uaos_hash.h`, a freestanding
+implementation of MD5, SHA-1, SHA-256, SHA-512, BLAKE2b, and CRC32.
+
+`chmod` maps POSIX octal/symbolic permission modes to AmigaDOS `FIBF_*`
+protection bits.  `chown` and `chgrp` accept arguments but are no-ops on
+the single-user UAOS system.
 
 ---
 

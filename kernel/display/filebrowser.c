@@ -251,8 +251,8 @@ typedef struct {
     /* Double-click tracking for icon cells */
     int              last_click_icon; /* index of last clicked icon, -1 = none */
     unsigned int     last_click_tick;
-    /* Single-click selection */
-    int              selected_icon;   /* index of currently selected icon, -1 = none */
+    /* Multi-selection state — selected[i] = 1 if icon i is selected */
+    int              selected[MAX_BROWSER_ENTRIES];
     /* Cached window geometry (updated every draw call) */
     int              win_x, win_y, win_w, win_h;
     /* Icon drag state */
@@ -261,6 +261,11 @@ typedef struct {
     int              drag_off_x, drag_off_y; /* offset from icon top-left at press */
     int              drag_x, drag_y;  /* current screen position of dragged icon */
     int              drag_start_x, drag_start_y; /* mouse position at press */
+    /* Lasso (rubber-band) selection state — screen coordinates */
+    int              lasso_active;
+    int              lasso_start_x, lasso_start_y;
+    int              lasso_cur_x, lasso_cur_y;
+    int              lasso_moved;
 } Browser;
 
 static Browser g_browsers[MAX_BROWSERS];
@@ -334,6 +339,7 @@ static void browser_key(char c)
             g_browsers[i].volume[0] = '\0';
             g_browsers[i].drag_icon   = -1;
             g_browsers[i].drag_active = 0;
+            g_browsers[i].lasso_active = 0;
             return;
         }
     }
@@ -443,18 +449,25 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             FileBrowser_Open(par);
         }
         b->last_click_icon = -1;
-        b->selected_icon = -1;
+        for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
         b->drag_icon = -1;
+        b->lasso_active = 0;
         return;
     }
 
     int icon = browser_icon_hit(b, b->win_x, b->win_y, b->win_w, b->win_h,
                                 mx, my);
     if (icon < 0) {
-        /* Missed all icons — reset double-click state, selection, and cancel drag */
+        /* Missed all icons — clear selection, cancel drag, start lasso */
         b->last_click_icon = -1;
-        b->selected_icon = -1;
+        for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
         b->drag_icon = -1;
+        b->lasso_active  = 1;
+        b->lasso_start_x = mx;
+        b->lasso_start_y = my;
+        b->lasso_cur_x   = mx;
+        b->lasso_cur_y   = my;
+        b->lasso_moved   = 0;
         return;
     }
 
@@ -465,6 +478,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
         /* Double-click: open folder (DIR) or launch file */
         b->last_click_icon = -1;
         b->drag_icon = -1;
+        b->lasso_active = 0;
         const FileEntry *e = b->entries;
         if (e && e[icon].name && e[icon].type[0] == 'D') {
             /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS, Tools) */
@@ -502,9 +516,11 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
         }
     } else {
         /* First click — select icon, record for double-click detection and start drag */
-        b->selected_icon = icon;
+        for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
+        b->selected[icon] = 1;
         b->last_click_icon = icon;
         b->last_click_tick = now;
+        b->lasso_active = 0;
 
         int n_entries = 0;
         while (b->entries && b->entries[n_entries].name) n_entries++;
@@ -536,7 +552,50 @@ static void browser_mouse_move(int wh, int mx, int my)
 {
     for (int i = 0; i < MAX_BROWSERS; i++) {
         Browser *b = &g_browsers[i];
-        if (b->wm_handle == wh && b->drag_icon >= 0) {
+        if (b->wm_handle != wh) continue;
+
+        /* Lasso (rubber-band) selection — update rectangle and select icons */
+        if (b->lasso_active) {
+            if (mx == b->lasso_cur_x && my == b->lasso_cur_y) return;
+            b->lasso_cur_x = mx;
+            b->lasso_cur_y = my;
+            b->lasso_moved = 1;
+
+            /* Normalise lasso rectangle */
+            int lx0 = b->lasso_start_x < b->lasso_cur_x ? b->lasso_start_x : b->lasso_cur_x;
+            int ly0 = b->lasso_start_y < b->lasso_cur_y ? b->lasso_start_y : b->lasso_cur_y;
+            int lx1 = b->lasso_start_x < b->lasso_cur_x ? b->lasso_cur_x   : b->lasso_start_x;
+            int ly1 = b->lasso_start_y < b->lasso_cur_y ? b->lasso_cur_y   : b->lasso_start_y;
+
+            /* Compute icon grid layout (must match browser_draw_impl) */
+            int cx = b->win_x + 1;
+            int cy = b->win_y + WM_TITLEBAR_H;
+            int cw = b->win_w - 1 - WM_SCROLLBAR_W;
+            int usable = cw - 8;
+            int cols   = usable / ICON_COL_W;
+            if (cols < 1) cols = 1;
+            int cell_w = (cols == 1) ? usable : ICON_COL_W;
+            int path_h = 20;
+            int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+            int grid_base = cy + path_h - scroll_y;
+
+            const FileEntry *e = b->entries;
+            for (int j = 0; e && e[j].name; j++) {
+                int col = j % cols;
+                int row = j / cols;
+                int cell_x = cx + 4 + col * cell_w;
+                int iy     = grid_base + row * ICON_ROW_H;
+                /* AABB intersection: cell bounds vs lasso rect */
+                int hit = !(cell_x + cell_w <= lx0 || cell_x >= lx1 + 1 ||
+                            iy + ICON_ROW_H <= ly0 || iy >= ly1 + 1);
+                if (b->selected[j] != hit)
+                    b->selected[j] = hit;
+            }
+            WM_Redraw();
+            return;
+        }
+
+        if (b->drag_icon >= 0) {
             if (!b->drag_active) {
                 int dx = mx - b->drag_start_x;
                 int dy = my - b->drag_start_y;
@@ -557,7 +616,16 @@ static void browser_mouse_release(int wh, int mx, int my)
 {
     for (int i = 0; i < MAX_BROWSERS; i++) {
         Browser *b = &g_browsers[i];
-        if (b->wm_handle == wh && b->drag_icon >= 0) {
+        if (b->wm_handle != wh) continue;
+
+        /* End lasso — selection is retained */
+        if (b->lasso_active) {
+            b->lasso_active = 0;
+            WM_Redraw();
+            return;
+        }
+
+        if (b->drag_icon >= 0) {
             int target = browser_cell_at_pos(b, b->win_x, b->win_y,
                                               b->win_w, b->win_h, mx, my);
             int n_entries = 0;
@@ -574,6 +642,56 @@ static void browser_mouse_release(int wh, int mx, int my)
             return;
         }
     }
+}
+
+/* Dashed line helpers for lasso rectangle (1px on / 1px off, black). */
+static void fb_dashed_hline(int x, int y, int len)
+{
+    for (int i = 0; i < len; i += 2)
+        FB_PutPixel(x + i, y, WB_BLACK);
+}
+
+static void fb_dashed_vline(int x, int y, int len)
+{
+    for (int i = 0; i < len; i += 2)
+        FB_PutPixel(x, y + i, WB_BLACK);
+}
+
+/* Draw the lasso rectangle if active, clipped to the browser client area. */
+static void browser_draw_lasso(Browser *b, int wx, int wy, int ww, int wh)
+{
+    if (!b->lasso_active) return;
+
+    int cx = wx + 1;
+    int cy = wy + WM_TITLEBAR_H;
+    int cw = ww - 1 - WM_SCROLLBAR_W;
+    int ch = wh - WM_TITLEBAR_H - WM_SCROLLBAR_W;
+    int path_h = 20;
+
+    /* Lasso only applies below the path bar */
+    int clip_top = cy + path_h;
+    int clip_bottom = cy + ch;
+
+    /* Normalise rectangle */
+    int x0 = b->lasso_start_x < b->lasso_cur_x ? b->lasso_start_x : b->lasso_cur_x;
+    int y0 = b->lasso_start_y < b->lasso_cur_y ? b->lasso_start_y : b->lasso_cur_y;
+    int x1 = b->lasso_start_x < b->lasso_cur_x ? b->lasso_cur_x   : b->lasso_start_x;
+    int y1 = b->lasso_start_y < b->lasso_cur_y ? b->lasso_cur_y   : b->lasso_start_y;
+
+    /* Clip to client area (below path bar) */
+    if (y0 < clip_top)     y0 = clip_top;
+    if (y1 >= clip_bottom) y1 = clip_bottom - 1;
+    if (x0 < cx)           x0 = cx;
+    if (x1 >= cx + cw)     x1 = cx + cw - 1;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    int w = x1 - x0 + 1;
+    int h = y1 - y0 + 1;
+
+    fb_dashed_hline(x0, y0, w);
+    fb_dashed_hline(x0, y1, w);
+    fb_dashed_vline(x0, y0, h);
+    fb_dashed_vline(x1, y0, h);
 }
 
 /* =========================================================================
@@ -641,7 +759,7 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
         /* Draw only when the entire icon+label fits within the clip zone */
         if (icon_top1 >= icon_top && label_bot <= icon_bottom) {
             if (ix >= cx && cell_x + cell_w <= cx + cw) {
-                int is_selected = (b->selected_icon == i);
+                int is_selected = b->selected[i];
                 uint32_t icol = (e[i].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
                 draw_small_icon(ix, icon_top1, e[i].type, icol, is_selected);
                 uint32_t label_fg = is_selected ? (WB_BLACK ^ 0x00FFFFFF) : WB_BLACK;
@@ -672,6 +790,9 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
                                e[b->drag_icon].name, WB_WHITE, WB_DARK_GREY);
         }
     }
+
+    /* Lasso rectangle on top of icons, below the path bar */
+    browser_draw_lasso(b, wx, wy, ww, wh);
 
     /* Path bar drawn last so it always appears on top of any icon overflow */
     FB_FillRect(cx, cy, cw, path_h, WB_WHITE);
@@ -903,7 +1024,8 @@ void FileBrowser_Open(const char *volume)
             b->scroll = 0;
             b->last_click_icon = -1;
             b->last_click_tick = 0;
-            b->selected_icon = -1;
+            for (int j = 0; j < MAX_BROWSER_ENTRIES; j++) b->selected[j] = 0;
+            b->lasso_active = 0;
             b->win_x = b->win_y = b->win_w = b->win_h = 0;
             b->entries = load_entries_for_browser(volume, &b->entry_buffer);
 
@@ -988,7 +1110,8 @@ void FileBrowser_Open(const char *volume)
     b->scroll           = 0;
     b->last_click_icon  = -1;
     b->last_click_tick  = 0;
-    b->selected_icon    = -1;
+    for (int j = 0; j < MAX_BROWSER_ENTRIES; j++) b->selected[j] = 0;
+    b->lasso_active     = 0;
     b->win_x = b->win_y = b->win_w = b->win_h = 0;
 
     /* Load entries into this browser's private buffer */

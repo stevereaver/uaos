@@ -1,8 +1,8 @@
 ---
 type: OS Architecture
 title: Ultimate Amiga OS (UAOS) Architecture
-description: A comprehensive guide to the architecture of UAOS, a hobby operating system inspired by AmigaOS.
-tags: [architecture, uaos, overview]
+description: A comprehensive guide to the architecture of UAOS, a hobby operating system inspired by AmigaOS, including a GNU coreutils layer.
+tags: [architecture, uaos, overview, gnu, coreutils]
 timestamp: 2026-06-24T17:00:00Z
 ---
 
@@ -32,7 +32,7 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 - `kernel/`: Core OS components (Exec, DOS, Display, IRQ, Net, Shell, Drivers).
 - `emulation/`: M68k CPU emulation and glue logic.
 - `drivers/`: Hardware-specific drivers (network, IDE, VirtIO).
-- `system/`: System layout (Amiga-style `S:`, `L:`, `LIBS:`, userspace programs, and libuaos).
+- `system/`: System layout (Amiga-style `S:`, `L:`, `LIBS:`, userspace programs, and libuaos). Also contains `gnusrc/` (the complete 86-utility GNU coreutils suite) and the `gnu/` POSIX directory skeleton exposed via the `gnu:` assign.
 
 ## Key Principles
 

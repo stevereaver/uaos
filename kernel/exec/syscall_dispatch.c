@@ -208,11 +208,22 @@ static int sys_read(uint64_t rdi, uint64_t rsi, uint64_t rdx)
                 if (i > 0) i--;
                 continue;
             }
-            if (c >= 32 && c < 127 && i + 1 < max) {
+            if (c >= 32 && c < 127 && i < max) {
                 buf[i++] = c;
             }
         }
-        __asm__ volatile ("pause");
+        /* Halt the CPU until the next interrupt.  With the trap-gate
+         * IDT entry for vector 0x80, interrupts remain enabled during
+         * syscalls, so the timer ISR (100 Hz) fires here, calls
+         * Task_ScheduleFromIRQ(), and switches to other tasks (shell,
+         * idle/desktop, network poll).  When this task is scheduled
+         * again, it resumes from the hlt and re-checks for input.
+         *
+         * We must NOT call Task_ScheduleFromSyscall() here: it changes
+         * g_current without performing the actual RSP switch (that
+         * only happens in the ISR epilogue), which would corrupt the
+         * scheduler state if called in a loop. */
+        __asm__ volatile ("hlt");
     }
 }
 
@@ -651,12 +662,13 @@ static int sys_readkey(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     (void)rdi; (void)rsi; (void)rdx;
 
-    /* Block until a key is available, yielding so the desktop / WM and
-     * other tasks stay responsive under the cooperative scheduler. */
+    /* Block until a key is available.  With the trap-gate IDT entry
+     * for vector 0x80, interrupts remain enabled during syscalls, so
+     * hlt lets the timer ISR fire and switch to other tasks. */
     for (;;) {
         if (PS2Kbd_HasChar())
             return (int)(unsigned char)PS2Kbd_GetChar();
-        Task_Yield();
+        __asm__ volatile ("hlt");
     }
 }
 

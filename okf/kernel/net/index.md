@@ -36,6 +36,7 @@ Maintains a small ARP cache with simple LRU eviction. Sends ARP requests and rep
 - Drops fragmented packets (no reassembly).
 - Handles local delivery, broadcast, and gateway routing.
 - Dispatches to ICMP, UDP, or TCP based on the protocol field.
+- Serial debug output is limited to errors only (bad length, bad checksum, fragments). Per-packet "rx proto" and "dispatching" logging was removed because it produced ~180k lines of blocking serial output at 115200 baud (~20 min of CPU time), which starved the PS/2 mouse IRQ (IRQ 12, lower priority than E1000's IRQ 11 on the slave 8259A PIC) and froze the UI.
 
 ### ICMP (`icmp.c`)
 

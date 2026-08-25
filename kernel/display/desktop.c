@@ -742,6 +742,17 @@ static int      g_icon_drag_moved = 0;
 static int      g_icon_drag_orig_x = 0;
 static int      g_icon_drag_orig_y = 0;
 
+/* Desktop lasso (rubber-band) selection state.
+ * Active when the user presses the left button on empty desktop backdrop
+ * and drags — a dashed rectangle follows the cursor and any icon whose
+ * bounding box intersects it is selected.  Classic Workbench behaviour. */
+static int g_lasso_active  = 0;
+static int g_lasso_start_x = 0;
+static int g_lasso_start_y = 0;
+static int g_lasso_cur_x   = 0;
+static int g_lasso_cur_y   = 0;
+static int g_lasso_moved   = 0;  /* 1 once the cursor moved during the drag */
+
 /* Desktop background double-click state */
 static int       g_desktop_pressed = 0;
 static uint32_t  g_desktop_last_tick = 0;
@@ -878,6 +889,56 @@ static void draw_icon_state(const IconState *ic)
 }
 
 /* =========================================================================
+ * Lasso (rubber-band) selection rectangle
+ * ========================================================================= */
+
+/* Draw a dashed horizontal line — 1px on / 1px off, black.
+ * Approximates the Workbench marquee selection border. */
+static void draw_dashed_hline(int x, int y, int len)
+{
+    for (int i = 0; i < len; i += 2)
+        FB_PutPixel(x + i, y, WB_BLACK);
+}
+
+/* Draw a dashed vertical line — 1px on / 1px off, black. */
+static void draw_dashed_vline(int x, int y, int len)
+{
+    for (int i = 0; i < len; i += 2)
+        FB_PutPixel(x, y + i, WB_BLACK);
+}
+
+/* Draw the lasso rectangle if active.  Clipped to the desktop backdrop
+ * area (between menu bar and status bar) so it never overdraws chrome. */
+static void draw_lasso(int W, int H)
+{
+    if (!g_lasso_active) return;
+
+    int top    = MENUBAR_H;
+    int bottom = H - STATUSBAR_H;
+
+    /* Normalise the rectangle regardless of drag direction */
+    int x0 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_start_x : g_lasso_cur_x;
+    int y0 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_start_y : g_lasso_cur_y;
+    int x1 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_cur_x   : g_lasso_start_x;
+    int y1 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_cur_y   : g_lasso_start_y;
+
+    /* Clip to desktop backdrop */
+    if (y0 < top)    y0 = top;
+    if (y1 >= bottom) y1 = bottom - 1;
+    if (x0 < 0)      x0 = 0;
+    if (x1 >= W)     x1 = W - 1;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    int w = x1 - x0 + 1;
+    int h = y1 - y0 + 1;
+
+    draw_dashed_hline(x0, y0, w);
+    draw_dashed_hline(x0, y1, w);
+    draw_dashed_vline(x0, y0, h);
+    draw_dashed_vline(x1, y0, h);
+}
+
+/* =========================================================================
  * Public entry
  * ========================================================================= */
 
@@ -911,6 +972,9 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
         }
     }
 
+    /* Lasso rectangle on top of icons, below bars */
+    draw_lasso(W, H);
+
     /* Always repaint bars — a window may have overlapped them */
     draw_menubar(W);
     draw_statusbar(W, H);
@@ -938,6 +1002,9 @@ void Desktop_Draw(void)
             draw_icon_state(&icons[i]);
         }
     }
+
+    /* Lasso rectangle on top of icons, below menu dropdown */
+    draw_lasso(W, H);
 
     /* Workbench dropdown menu, drawn on top of the desktop backdrop. */
     draw_menu_dropdown(W);
@@ -1211,10 +1278,12 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
             g_icon_drag_orig_y = ic->y;
             g_icon_drag_moved  = 0;
             g_desktop_pressed  = 0;
+            g_lasso_active     = 0;
             return 1;
         }
     }
-    /* Missed all icons — deselect all and mark as desktop background press */
+    /* Missed all icons — deselect all, start a lasso for potential drag
+     * selection, and mark as desktop background press for double-click. */
     {
         int changed = 0;
         for (int j = 0; j < n; j++) {
@@ -1226,6 +1295,12 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
         if (changed) WM_Redraw();
     }
     g_desktop_pressed = 1;
+    g_lasso_active  = 1;
+    g_lasso_start_x = mx;
+    g_lasso_start_y = my;
+    g_lasso_cur_x   = mx;
+    g_lasso_cur_y   = my;
+    g_lasso_moved   = 0;
     return 0;
 }
 
@@ -1281,6 +1356,40 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
 
     /* Menu hover tracking while the button is held. */
     menu_update_hover(mx, my);
+
+    /* Lasso (rubber-band) selection — update the drag rectangle and
+     * select every icon whose bounding box intersects it. */
+    if (g_lasso_active) {
+        if (mx == g_lasso_cur_x && my == g_lasso_cur_y) return;
+        g_lasso_cur_x = mx;
+        g_lasso_cur_y = my;
+        g_lasso_moved = 1;
+
+        /* Normalise lasso rectangle (drag may go any direction) */
+        int lx0 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_start_x : g_lasso_cur_x;
+        int ly0 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_start_y : g_lasso_cur_y;
+        int lx1 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_cur_x   : g_lasso_start_x;
+        int ly1 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_cur_y   : g_lasso_start_y;
+
+        int n;
+        IconState *icons = get_icons(&n);
+        int changed = 0;
+        for (int i = 0; i < n; i++) {
+            IconState *ic = &icons[i];
+            /* AABB intersection: icon bbox vs lasso rect */
+            int hit = !(ic->x + ICON_W <= lx0 || ic->x >= lx1 + 1 ||
+                        ic->y + ICON_H <= ly0 || ic->y >= ly1 + 1);
+            if (ic->is_selected != hit) {
+                ic->is_selected = hit;
+                changed = 1;
+            }
+        }
+        /* Always redraw — the lasso rectangle itself moved even if no
+         * icon selection changed. */
+        WM_Redraw();
+        (void)changed;
+        return;
+    }
 
     if (g_icon_drag_idx < 0) return;
 
@@ -1342,17 +1451,25 @@ void Desktop_MouseRelease(int mx, int my)
         return;
     }
 
-    /* Desktop background double-click opens a new Shell */
+    /* Desktop background double-click opens a new Shell.
+     * A lasso drag (cursor moved) is NOT a click — suppress double-click.
+     * Also ends lasso selection — the current selection is kept. */
     if (g_desktop_pressed) {
-        uint32_t now = g_tick;
-        if (g_desktop_click_count > 0 && (now - g_desktop_last_tick) <= DBLCLICK_TICKS) {
-            g_desktop_click_count = 0;
-            ShellWin_Open();
-        } else {
-            g_desktop_click_count = 1;
-            g_desktop_last_tick = now;
+        if (!g_lasso_moved) {
+            uint32_t now = g_tick;
+            if (g_desktop_click_count > 0 && (now - g_desktop_last_tick) <= DBLCLICK_TICKS) {
+                g_desktop_click_count = 0;
+                ShellWin_Open();
+            } else {
+                g_desktop_click_count = 1;
+                g_desktop_last_tick = now;
+            }
         }
         g_desktop_pressed = 0;
+    }
+    if (g_lasso_active) {
+        g_lasso_active = 0;
+        WM_Redraw();
     }
 }
 

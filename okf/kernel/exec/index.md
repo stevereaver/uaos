@@ -31,7 +31,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
-- `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Installed at IDT vector 14 after `IDT_Init()` so that M68k accesses to the non-present `0x00B00000-0x00DFFFFF` window are emulated rather than raising an unhandled #PF.
+- `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Installed at IDT vector 14 after `IDT_Init()` so that M68k accesses to the non-present `0x00B00000-0x00DFFFFF` window are emulated rather than raising an unhandled #PF.  Non-chip page faults from X64 userspace tasks kill the task gracefully instead of halting the system.
 - `chip_emu.c` (in `kernel/chipset/`): AGA/ECS custom chip emulator with a sparse register dispatch table for the 0xDFF000 register area.  See [Chipset Emulator](/kernel/chipset/index.md).
 - `rom_modules.c`: Registers the built-in AmigaOS-compatible libraries at boot.
 - `thunk_handler.c`: Native ABI thunk translator for `ILLEGAL` opcode breakout from M68k code.
@@ -56,6 +56,22 @@ Key details:
 - Per-task kernel stacks are declared with `__attribute__((aligned(8)))`.
 - Synthetic frames are 176 bytes for Ring-3 tasks (X64 ELF64) and 160 bytes for Ring-0 native tasks, matching the `iretq` pop count.
 - `isr_common` and `uaos_syscall_isr` use the same frame layout for both the interrupted task and the task being switched to; no padding is inserted into the synthetic frame, keeping the layout identical to a CPU-generated interrupt frame.
+
+## X64 Syscall Dispatch
+
+X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, and GUI window operations.
+
+### stdin read (`sys_read`, fd=0)
+
+`sys_read` blocks until a newline is received from the PS/2 keyboard. When no key is available, it executes `hlt` to halt the CPU until the next interrupt. The timer ISR (100 Hz) then fires, calls `Task_ScheduleFromIRQ()`, and switches to other tasks (shell, desktop/WM, network poll). When this task is scheduled again, it resumes from the `hlt` and re-checks for input.
+
+### Trap Gate for Vector 0x80
+
+The INT 0x80 syscall gate is configured as a **trap gate** (IDT type 0xEF), not an interrupt gate (0xEE). A trap gate does not clear IF on entry, so interrupts remain enabled during syscall handlers. This is essential: `sys_read` and `sys_readkey` loop waiting for keyboard input and rely on the timer ISR to preempt them. With an interrupt gate, the timer ISR could not fire during a blocking syscall, freezing the entire UI.
+
+### CPU Exception Handling (ISR_Dispatch)
+
+`ISR_Dispatch` in `irq/idt.c` handles all IDT vectors. For CPU exceptions (vectors 0-31) with no registered handler, it checks whether the faulting task is an X64 userspace task. If so, the task is killed via `Task_Exit()` (printing a diagnostic message first) and the scheduler picks the next runnable task. This prevents a single buggy userspace command (e.g. a GNU coreutils binary that triggers a GPF) from locking up the entire OS. Kernel-mode exceptions still halt the system as a fatal panic.
 
 ## M68k Integration
 

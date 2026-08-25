@@ -891,6 +891,69 @@ else
 fi
 
 # -------------------------------------------------------------------------
+# Step 2ga — Build GNU coreutils for SYS_ROOT/gnu/usr/bin
+# -------------------------------------------------------------------------
+#
+# The gnu: assign (Workbench:gnu) provides a POSIX compatibility layer.
+# Source files in system/gnusrc/ are compiled as x86-64 ELF64 PIE binaries
+# using the same freestanding toolchain, linked against uaos_start.o, and
+# wrapped with gen_uaos_x64 into SYS_ROOT/gnu/usr/bin/.
+# These tools take GNU-style flags (parsed via uaos_getopt.h).
+# The full GNU coreutils set is built: text utils, file utils, shell utils,
+# system info utils, and user/group utils.
+# -------------------------------------------------------------------------
+
+info "Step 2ga: Building GNU coreutils"
+
+GNUSRC_DIR="${REPO_ROOT}/system/gnusrc"
+GNU_STAGING="${ISO_STAGING}/SYS_ROOT/gnu/usr/bin"
+if [[ -d "${GNUSRC_DIR}" ]]; then
+    mkdir -p "${GNU_STAGING}"
+    mkdir -p "${ISO_STAGING}/SYS_ROOT/gnu/bin"
+    mkdir -p "${ISO_STAGING}/SYS_ROOT/gnu/usr/local/bin"
+    GEN_X64="${BUILD_DIR}/gen_uaos_x64"
+
+    # uaos_start.o is already compiled in Step 2e; compile it if Step 2e was skipped.
+    if [[ ! -f "${BUILD_DIR}/obj/uaos_start.o" ]]; then
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE \
+            -fcf-protection=none \
+            -m64 -O2 -std=c11 \
+            -I"${REPO_ROOT}/system/libuaos" \
+            -c "${REPO_ROOT}/system/libuaos/uaos_start.c" \
+            -o "${BUILD_DIR}/obj/uaos_start.o"
+        ok "  Compiled: uaos_start.o"
+    fi
+
+    gnu_count=0
+    for src in "${GNUSRC_DIR}"/*.c; do
+        [[ -f "${src}" ]] || continue
+        base="$(basename "${src}" .c)"
+        elf_out="${BUILD_DIR}/userspace/gnu_${base}"
+        bin_out="${GNU_STAGING}/${base}"
+
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie \
+            -fcf-protection=none \
+            -m64 -O2 -std=c11 \
+            -I"${REPO_ROOT}/system/libuaos" \
+            -c "${src}" -o "${BUILD_DIR}/userspace/gnu_${base}.o"
+        ok "  Compiled: gnusrc/${base}.c"
+
+        gcc -nostdlib -fPIE -pie -m64 -fcf-protection=none \
+            -o "${elf_out}" \
+            "${BUILD_DIR}/obj/uaos_start.o" \
+            "${BUILD_DIR}/userspace/gnu_${base}.o"
+        ok "  Linked:   gnu/${base}"
+
+        "${GEN_X64}" "${base}" "${elf_out}" "${bin_out}"
+        ok "  Wrapped:  gnu/usr/bin/${base}  (x86-64 ELF64)"
+        gnu_count=$((gnu_count + 1))
+    done
+    ok "  Built ${gnu_count} GNU coreutils"
+else
+    ok "  No GNU coreutils sources found (system/gnusrc/ not found)"
+fi
+
+# -------------------------------------------------------------------------
 # Step 2g — Build M68k assembly demos for SYS_ROOT/Demos
 # -------------------------------------------------------------------------
 
@@ -1073,6 +1136,14 @@ if [[ -d "${SYSTEM_DIR}" ]]; then
             cp "$f" "${ISO_STAGING}/SYS_ROOT/Demos/"
         done
         ok "  Copied: system/Demos/ -> SYS_ROOT/Demos/"
+    fi
+
+    # Copy GNU POSIX layer skeleton (static files only; binaries are built
+    # in Step 2ga).  This ensures empty dirs like gnu/bin exist even if
+    # no coreutils sources are present.
+    if [[ -d "${SYSTEM_DIR}/gnu" ]]; then
+        cp -r "${SYSTEM_DIR}/gnu/"* "${ISO_STAGING}/SYS_ROOT/gnu/" 2>/dev/null || true
+        ok "  Copied: system/gnu/ -> sys-root/gnu/"
     fi
 fi
 

@@ -52,11 +52,10 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
     uint8_t  ihl      = (h->ver_ihl & 0x0F) * 4;
     uint16_t tot_len  = net_ntohs(h->tot_len);
 
-    _ip_puts("[IP] rx proto="); _ip_phex(h->protocol);
-    _ip_puts(" tot_len="); _ip_phex(tot_len);
-    _ip_puts(" len="); _ip_phex(len);
-    _ip_puts(" ihl="); _ip_phex(ihl);
-    _ip_putc('\n');
+    /* Per-packet serial debug removed — it produced ~180k lines of output
+     * that blocked the CPU for ~20 minutes at 115200 baud, starving the
+     * PS/2 mouse IRQ (IRQ 12, lower priority than E1000's IRQ 11 on the
+     * slave PIC) and freezing the UI.  Only errors are logged now. */
 
     if (tot_len > len || ihl < IP_HDR_LEN) {
         _ip_puts("[IP] rx: bad length\n");
@@ -88,8 +87,6 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
     ipv4_t src_ip = net_ntohl(h->src);
     const uint8_t *payload = pkt + ihl;
     uint16_t plen = (uint16_t)(tot_len - ihl);
-
-    _ip_puts("[IP] rx: dispatching proto="); _ip_phex(h->protocol); _ip_putc('\n');
 
     switch (h->protocol) {
     case IP_PROTO_ICMP:

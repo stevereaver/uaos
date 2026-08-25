@@ -1,6 +1,7 @@
 /* idt.c — UAOS x86_64 IDT initialisation and 8259A PIC driver */
 
 #include "idt.h"
+#include "../exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -339,8 +340,14 @@ void IDT_SetRawHandler(uint8_t vector, void (*handler)(void))
 
 void IDT_SetRawHandlerDPL3(uint8_t vector, void (*handler)(void))
 {
-    /* 0xEE = present, DPL=3, 64-bit interrupt gate — callable from ring 3 */
-    idt_set_entry_dpl(vector, handler, 0xEE);
+    /* 0xEF = present, DPL=3, 64-bit trap gate — callable from ring 3.
+     * A trap gate (unlike an interrupt gate) does not clear IF on entry,
+     * so interrupts remain enabled during the syscall handler.  This is
+     * essential: sys_read and sys_readkey loop waiting for keyboard input
+     * and rely on the timer ISR to preempt them and switch to other tasks.
+     * With an interrupt gate (0xEE), the timer ISR could not fire during
+     * a blocking syscall, freezing the entire UI. */
+    idt_set_entry_dpl(vector, handler, 0xEF);
 }
 
 /* =========================================================================
@@ -364,7 +371,28 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip)
     if (g_handlers[vector]) {
         g_handlers[vector](vector, error_code);
     } else if (vector < 32) {
-        /* Unhandled CPU exception — halt */
+        /* Unhandled CPU exception.
+         *
+         * If the faulting task is an X64 userspace task, kill it gracefully
+         * instead of halting the entire system.  This prevents a single
+         * buggy userspace command (e.g. a GNU coreutils binary that
+         * triggers a GPF) from locking up the OS.
+         *
+         * For kernel-mode faults (no current task, or current task is not
+         * an X64 task), treat it as a fatal kernel panic. */
+        UaosTask *cur = Task_Current();
+        if (cur && cur->type == TASK_TYPE_X64) {
+            kprint("[EXC] exception ");
+            kprinthex(vector);
+            kprint(" in X64 task '");
+            kprint(cur->ln_Name ? cur->ln_Name : "(null)");
+            kprint("' at rip=");
+            kprinthex(rip);
+            kprint(" — killing task\n");
+            Task_Exit();
+            __builtin_unreachable();
+        }
+        /* Kernel-mode exception — panic */
         kprint("[EXC] unhandled exception vector="); kprinthex(vector);
         kprint(" error_code="); kprinthex(error_code);
         kprint(" rip="); kprinthex(rip);
