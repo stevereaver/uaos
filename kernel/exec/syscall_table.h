@@ -43,6 +43,21 @@
 #define SYSCALL_GUI_PRESENT        0x17   /* present(handle)                    */
 #define SYSCALL_GUI_GET_EVENT      0x18   /* get_event(handle, event)         */
 
+/* Filesystem mutation / metadata syscalls for userspace C: commands */
+#define SYSCALL_MKDIR          0x20   /* sys_mkdir(path)                     */
+#define SYSCALL_DELETE         0x21   /* sys_delete(path)                    */
+#define SYSCALL_RENAME         0x22   /* sys_rename(old, new)                */
+#define SYSCALL_SETPROTECTION  0x23   /* sys_setprotection(path, prot)       */
+#define SYSCALL_GETPROTECTION  0x24   /* sys_getprotection(path)             */
+#define SYSCALL_GETCOMMENT     0x25   /* sys_getcomment(path, buf, max)      */
+#define SYSCALL_SETCOMMENT     0x26   /* sys_setcomment(path, comment)       */
+#define SYSCALL_GETVOLUMEINFO  0x27   /* sys_getvolumeinfo(path, &tot, &used)*/
+#define SYSCALL_READKEY        0x28   /* sys_readkey() -> single key (yield) */
+#define SYSCALL_GETATTRS       0x29   /* sys_getattrs(path)                  */
+#define SYSCALL_SETATTRS       0x2A   /* sys_setattrs(path, attrs)           */
+#define SYSCALL_GETMOUNTCOUNT  0x2B   /* sys_getmountcount()                 */
+#define SYSCALL_GETMOUNTNAME   0x2C   /* sys_getmountname(idx, buf, max)     */
+
 #define SYSCALL_SCHEDULE    0xFF   /* reserved: yield/reschedule         */
 
 /* -------------------------------------------------------------------------

@@ -51,6 +51,23 @@
 #define UAOS_SYSCALL_GUI_DRAW_RECT      0x16
 #define UAOS_SYSCALL_GUI_PRESENT        0x17
 #define UAOS_SYSCALL_GUI_GET_EVENT      0x18
+
+/* Filesystem mutation / metadata syscalls (must stay in sync with
+ * kernel/exec/syscall_table.h) */
+#define UAOS_SYSCALL_MKDIR          0x20
+#define UAOS_SYSCALL_DELETE         0x21
+#define UAOS_SYSCALL_RENAME         0x22
+#define UAOS_SYSCALL_SETPROTECTION  0x23
+#define UAOS_SYSCALL_GETPROTECTION  0x24
+#define UAOS_SYSCALL_GETCOMMENT     0x25
+#define UAOS_SYSCALL_SETCOMMENT     0x26
+#define UAOS_SYSCALL_GETVOLUMEINFO  0x27
+#define UAOS_SYSCALL_READKEY        0x28
+#define UAOS_SYSCALL_GETATTRS       0x29
+#define UAOS_SYSCALL_SETATTRS       0x2A
+#define UAOS_SYSCALL_GETMOUNTCOUNT  0x2B
+#define UAOS_SYSCALL_GETMOUNTNAME   0x2C
+
 #define UAOS_SYSCALL_SCHEDULE           0xFF
 
 /* GUI event types (must stay in sync with kernel/display/user_window.h) */
@@ -89,7 +106,8 @@ struct uaos_dirent {
     uint32_t size;       /* file size in bytes (0 for directories) */
     uint8_t  is_dir;     /* 1 = directory, 0 = file */
     uint8_t  attrs;      /* volume attribute flags */
-    uint8_t  reserved[2];
+    uint16_t protection; /* AmigaDOS FIBF_* protection bits */
+    uint32_t mtime;      /* modification time (Unix epoch seconds) */
 };
 
 /* -------------------------------------------------------------------------
@@ -99,7 +117,8 @@ struct uaos_stat {
     uint32_t size;       /* file size in bytes (0 for directories) */
     uint8_t  is_dir;     /* 1 = directory, 0 = file */
     uint8_t  attrs;      /* volume attribute flags */
-    uint16_t reserved;
+    uint16_t protection; /* AmigaDOS FIBF_* protection bits */
+    uint32_t mtime;      /* modification time (Unix epoch seconds) */
 };
 
 /* -------------------------------------------------------------------------
@@ -240,6 +259,91 @@ static inline long uaos_closedir(int dd)
 static inline long uaos_stat(const char *path, struct uaos_stat *st)
 {
     return uaos_syscall2(UAOS_SYSCALL_STAT, (long)path, (long)st);
+}
+
+/* -------------------------------------------------------------------------
+ * Filesystem mutation / metadata syscall wrappers
+ * ------------------------------------------------------------------------- */
+
+/* AmigaDOS FIBF_* protection bits (must stay in sync with
+ * kernel/dos/amiga_dos_types.h).  Note the inverted logic: a bit SET
+ * means the corresponding action is DISALLOWED. */
+#define UAOS_FIBF_SCRIPT     (1 << 0)
+#define UAOS_FIBF_PURE       (1 << 1)
+#define UAOS_FIBF_ARCHIVE    (1 << 2)
+#define UAOS_FIBF_READ       (1 << 3)
+#define UAOS_FIBF_WRITE      (1 << 4)
+#define UAOS_FIBF_EXECUTE    (1 << 5)
+#define UAOS_FIBF_DELETE     (1 << 6)
+#define UAOS_FIBF_HOLD       (1 << 7)
+
+/* RAMFS attribute flags (must stay in sync with kernel/dos/ramfs.h) */
+#define UAOS_ATTR_READONLY   0x01
+#define UAOS_ATTR_HIDDEN     0x02
+
+static inline long uaos_mkdir(const char *path)
+{
+    return uaos_syscall1(UAOS_SYSCALL_MKDIR, (long)path);
+}
+
+static inline long uaos_delete(const char *path)
+{
+    return uaos_syscall1(UAOS_SYSCALL_DELETE, (long)path);
+}
+
+static inline long uaos_rename(const char *oldp, const char *newp)
+{
+    return uaos_syscall2(UAOS_SYSCALL_RENAME, (long)oldp, (long)newp);
+}
+
+static inline long uaos_setprotection(const char *path, uint16_t prot)
+{
+    return uaos_syscall2(UAOS_SYSCALL_SETPROTECTION, (long)path, (long)prot);
+}
+
+static inline long uaos_getprotection(const char *path)
+{
+    return uaos_syscall1(UAOS_SYSCALL_GETPROTECTION, (long)path);
+}
+
+static inline long uaos_getcomment(const char *path, char *buf, long max)
+{
+    return uaos_syscall3(UAOS_SYSCALL_GETCOMMENT, (long)path, (long)buf, max);
+}
+
+static inline long uaos_setcomment(const char *path, const char *comment)
+{
+    return uaos_syscall2(UAOS_SYSCALL_SETCOMMENT, (long)path, (long)comment);
+}
+
+static inline long uaos_getvolumeinfo(const char *path, uint32_t *total, uint32_t *used)
+{
+    return uaos_syscall3(UAOS_SYSCALL_GETVOLUMEINFO, (long)path, (long)total, (long)used);
+}
+
+static inline long uaos_readkey(void)
+{
+    return uaos_syscall0(UAOS_SYSCALL_READKEY);
+}
+
+static inline long uaos_getattrs(const char *path)
+{
+    return uaos_syscall1(UAOS_SYSCALL_GETATTRS, (long)path);
+}
+
+static inline long uaos_setattrs(const char *path, uint8_t attrs)
+{
+    return uaos_syscall2(UAOS_SYSCALL_SETATTRS, (long)path, (long)attrs);
+}
+
+static inline long uaos_getmountcount(void)
+{
+    return uaos_syscall0(UAOS_SYSCALL_GETMOUNTCOUNT);
+}
+
+static inline long uaos_getmountname(int idx, char *buf, long max)
+{
+    return uaos_syscall3(UAOS_SYSCALL_GETMOUNTNAME, (long)idx, (long)buf, max);
 }
 
 /* -------------------------------------------------------------------------

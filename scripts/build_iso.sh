@@ -382,15 +382,6 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_libs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clear.c" \
     "${REPO_ROOT}/kernel/shell/cmd_reboot.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_dir.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_makedir.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_delete.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_type.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_copy.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_rename.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_echo.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_protect.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_attr.c" \
     "${REPO_ROOT}/kernel/shell/cmd_info.c" \
     "${REPO_ROOT}/kernel/shell/cmd_date.c" \
     "${REPO_ROOT}/kernel/shell/cmd_which.c" \
@@ -412,18 +403,12 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_netstop.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
     "${REPO_ROOT}/kernel/shell/cmd_netinfo.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_grep.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_more.c" \
     "${REPO_ROOT}/kernel/shell/cmd_vim.c" \
     "${REPO_ROOT}/kernel/shell/cmd_newcli.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ask.c" \
     "${REPO_ROOT}/kernel/shell/resident_cmd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_resident.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ps.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_list.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_search.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_sort.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_join.c" \
     "${REPO_ROOT}/kernel/shell/cmd_wait.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prompt.c" \
     "${REPO_ROOT}/kernel/shell/cmd_stack.c" \
@@ -431,7 +416,6 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_failat.c" \
     "${REPO_ROOT}/kernel/shell/cmd_quit.c" \
     "${REPO_ROOT}/kernel/shell/cmd_endcli.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_filenote.c" \
     "${REPO_ROOT}/kernel/shell/cmd_relabel.c" \
     "${REPO_ROOT}/kernel/shell/cmd_avail.c" \
     "${REPO_ROOT}/kernel/shell/cmd_mount.c" \
@@ -775,10 +759,11 @@ info "Step 2b: Generating UAOS NATIVE binaries for C:"
 C_STAGING="${ISO_STAGING}/SYS_ROOT/C"
 GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
-for cmd in version mem libs clear reboot dir makedir delete type copy rename \
-           pwd echo protect attr info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop grep more vim ps netinfo \
-           list search sort join wait prompt stack why failat quit endcli filenote relabel \
+for cmd in version mem libs clear reboot \
+           pwd \
+           info date which disks fdisk format pointer \
+           run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop vim ps netinfo \
+           wait prompt stack why failat quit endcli relabel \
            avail getenv unset jobs \
            install diskchange addbuffers requestchoice requestfile changetaskpri status \
            strace; do

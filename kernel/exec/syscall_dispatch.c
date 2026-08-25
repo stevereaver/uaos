@@ -422,7 +422,8 @@ struct UaosUserDirent {
     uint32_t size;
     uint8_t  is_dir;
     uint8_t  attrs;
-    uint8_t  reserved[2];
+    uint16_t protection;
+    uint32_t mtime;
 };
 
 /* Userspace-visible stat result (matches uaos_syscall.h). */
@@ -430,7 +431,8 @@ struct UaosUserStat {
     uint32_t size;
     uint8_t  is_dir;
     uint8_t  attrs;
-    uint16_t reserved;
+    uint16_t protection;
+    uint32_t mtime;
 };
 
 static int sys_opendir(uint64_t rdi, uint64_t rsi, uint64_t rdx)
@@ -476,8 +478,8 @@ static int sys_readdir(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     ent->size    = node->size;
     ent->is_dir  = (node->type == RAMFS_TYPE_DIR) ? 1 : 0;
     ent->attrs   = node->attrs;
-    ent->reserved[0] = 0;
-    ent->reserved[1] = 0;
+    ent->protection = node->protection;
+    ent->mtime   = node->mtime;
 
     g_dir_table[dd] = node->next_sibling;
     return 1;
@@ -514,7 +516,8 @@ static int sys_stat(uint64_t rdi, uint64_t rsi, uint64_t rdx)
         st->size    = 0;
         st->is_dir  = 1;
         st->attrs   = dir->attrs;
-        st->reserved = 0;
+        st->protection = dir->protection;
+        st->mtime   = dir->mtime;
         return 0;
     }
 
@@ -526,9 +529,178 @@ static int sys_stat(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     st->size    = VFS_Size(&fh);
     st->is_dir  = 0;
     st->attrs   = 0;
-    st->reserved = 0;
+    st->protection = 0;
+    st->mtime   = 0;
     VFS_Close(&fh);
     return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Filesystem mutation / metadata syscalls
+ * ------------------------------------------------------------------------- */
+static int sys_mkdir(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    (void)rsi; (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_MkDir(abs_path);
+}
+
+static int sys_delete(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    (void)rsi; (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_Delete(abs_path);
+}
+
+static int sys_rename(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *oldp = (const char *)(uintptr_t)rdi;
+    const char *newp = (const char *)(uintptr_t)rsi;
+    (void)rdx;
+
+    UaosTask *t = Task_Current();
+    const char *cwd = t ? t->task_cwd : "";
+    char abs_old[UAOS_PATH_MAX], abs_new[UAOS_PATH_MAX];
+    make_abs_path(cwd, oldp, abs_old, sizeof(abs_old));
+    make_abs_path(cwd, newp, abs_new, sizeof(abs_new));
+
+    return VFS_Rename(abs_old, abs_new);
+}
+
+static int sys_setprotection(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    uint16_t prot = (uint16_t)rsi;
+    (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_SetProtection(abs_path, prot);
+}
+
+static int sys_getprotection(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    (void)rsi; (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return (int)VFS_GetProtection(abs_path);
+}
+
+static int sys_getcomment(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    char *buf = (char *)(uintptr_t)rsi;
+    int max = (int)rdx;
+
+    if (!buf || max <= 0)
+        return -1;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_GetComment(abs_path, buf, max);
+}
+
+static int sys_setcomment(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    const char *comment = (const char *)(uintptr_t)rsi;
+    (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_SetComment(abs_path, comment);
+}
+
+static int sys_getvolumeinfo(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    uint32_t *total = (uint32_t *)(uintptr_t)rsi;
+    uint32_t *used  = (uint32_t *)(uintptr_t)rdx;
+
+    if (!total || !used)
+        return -1;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_GetVolumeInfo(abs_path, total, used);
+}
+
+static int sys_readkey(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdi; (void)rsi; (void)rdx;
+
+    /* Block until a key is available, yielding so the desktop / WM and
+     * other tasks stay responsive under the cooperative scheduler. */
+    for (;;) {
+        if (PS2Kbd_HasChar())
+            return (int)(unsigned char)PS2Kbd_GetChar();
+        Task_Yield();
+    }
+}
+
+static int sys_getattrs(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    (void)rsi; (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return (int)VFS_GetAttrs(abs_path);
+}
+
+static int sys_setattrs(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    const char *path = (const char *)(uintptr_t)rdi;
+    uint8_t attrs = (uint8_t)rsi;
+    (void)rdx;
+
+    UaosTask *t = Task_Current();
+    char abs_path[UAOS_PATH_MAX];
+    make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
+
+    return VFS_SetAttrs(abs_path, attrs);
+}
+
+static int sys_getmountcount(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdi; (void)rsi; (void)rdx;
+    return VFS_GetMountCount();
+}
+
+static int sys_getmountname(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int idx = (int)rdi;
+    char *buf = (char *)(uintptr_t)rsi;
+    int max = (int)rdx;
+
+    if (!buf || max <= 0)
+        return 0;
+
+    return VFS_GetMountName(idx, buf, max);
 }
 
 /* -------------------------------------------------------------------------
@@ -657,6 +829,19 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_GUI_DRAW_RECT:      ret = sys_gui_draw_rect(rdi, rsi, rdx); break;
     case SYSCALL_GUI_PRESENT:        ret = sys_gui_present(rdi, rsi, rdx); break;
     case SYSCALL_GUI_GET_EVENT:      ret = sys_gui_get_event(rdi, rsi, rdx); break;
+    case SYSCALL_MKDIR:          ret = sys_mkdir(rdi, rsi, rdx); break;
+    case SYSCALL_DELETE:         ret = sys_delete(rdi, rsi, rdx); break;
+    case SYSCALL_RENAME:         ret = sys_rename(rdi, rsi, rdx); break;
+    case SYSCALL_SETPROTECTION:  ret = sys_setprotection(rdi, rsi, rdx); break;
+    case SYSCALL_GETPROTECTION:  ret = sys_getprotection(rdi, rsi, rdx); break;
+    case SYSCALL_GETCOMMENT:     ret = sys_getcomment(rdi, rsi, rdx); break;
+    case SYSCALL_SETCOMMENT:     ret = sys_setcomment(rdi, rsi, rdx); break;
+    case SYSCALL_GETVOLUMEINFO:  ret = sys_getvolumeinfo(rdi, rsi, rdx); break;
+    case SYSCALL_READKEY:        ret = sys_readkey(rdi, rsi, rdx); break;
+    case SYSCALL_GETATTRS:       ret = sys_getattrs(rdi, rsi, rdx); break;
+    case SYSCALL_SETATTRS:       ret = sys_setattrs(rdi, rsi, rdx); break;
+    case SYSCALL_GETMOUNTCOUNT:  ret = sys_getmountcount(rdi, rsi, rdx); break;
+    case SYSCALL_GETMOUNTNAME:   ret = sys_getmountname(rdi, rsi, rdx); break;
     case SYSCALL_SCHEDULE:
     default:
         /* Reserved / legacy voluntary yield. */
