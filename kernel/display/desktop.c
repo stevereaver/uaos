@@ -595,14 +595,14 @@ static void draw_menubar(int W)
     /* Black bottom edge */
     FB_DrawHLine(0, MENUBAR_H - 1, W, WB_BLACK);
 
-    /* Menu titles (Topaz 8, vertically fills the 8px blue area y=2..9) */
+    /* Menu titles (clean 8x16 system font, centred in the 20px bar) */
     int mx = 8;
     for (int i = 0; ; i++) {
         const char *title = menu_title(i);
         if (!title) break;
         /* Highlight the active menu title with a black bar, white text. */
         uint32_t bg = (g_menu_index == i) ? WB_BLACK : WB_BLUE;
-        FB_PutStrSmall(mx, 2, title, WB_WHITE, bg);
+        FB_PutStr(mx, 2, title, WB_WHITE, bg);
         int len = 0;
         for (const char *p = title; *p; p++) len++;
         mx += len * 8 + 16;
@@ -616,13 +616,13 @@ static void draw_menubar(int W)
         if (title_x + title_w > W - 58)
             title_x = W - 58 - title_w;
         if (title_x > mx && title_w > 0)
-            FB_PutStrSmall(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
+            FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
 
     /* Clock — show current local time (not hardcoded 00:00:00) */
     char buf[9];
     current_time_str(buf);
-    FB_PutStrSmall(W - 50, 2, buf, WB_CREAM, WB_BLUE);
+    FB_PutStr(W - 50, 2, buf, WB_CREAM, WB_BLUE);
 }
 
 /* =========================================================================
