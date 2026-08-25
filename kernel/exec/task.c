@@ -263,11 +263,22 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
 {
     Forbid();
 
-    if (g_task_count >= MAX_TASKS) { Permit(); return NULL; }
+    /* Find a free task slot — prefer reusing REMOVED tasks, then append. */
+    int slot = -1;
+    for (int i = 0; i < g_task_count; i++) {
+        if (g_tasks[i].tc_State == TASK_REMOVED) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (g_task_count >= MAX_TASKS) { Permit(); return NULL; }
+        slot = g_task_count;
+        g_task_count++;
+    }
 
-    UaosTask *t = &g_tasks[g_task_count];
-    uint8_t *stack = g_task_stacks[g_task_count];
-    g_task_count++;
+    UaosTask *t = &g_tasks[slot];
+    uint8_t *stack = g_task_stacks[slot];
 
     for (int i = 0; i < (int)sizeof(UaosTask); i++)
         ((uint8_t *)t)[i] = 0;
@@ -310,10 +321,10 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     sp[15] = 0;                                 /* vector */
     sp[16] = 0;                                 /* error_code */
     sp[17] = entry_rip;                         /* RIP */
-    sp[18] = 0x1B;                              /* CS  — user code  (0x18 | RPL=3) */
+    sp[18] = 0x08;                              /* CS  — kernel code (ring 0)   */
     sp[19] = 0x202;                             /* RFLAGS: IF=1 */
-    sp[20] = initial_rsp;                       /* RSP (user stack) */
-    sp[21] = 0x23;                              /* SS  — user data  (0x20 | RPL=3) */
+    sp[20] = initial_rsp;                       /* RSP (user stack)            */
+    sp[21] = 0x10;                              /* SS  — kernel data (ring 0)   */
 
     t->native_rsp = (uint64_t)sp;  /* kernel stack frame pointer */
 
@@ -418,6 +429,11 @@ void Task_Exit(void)
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);
+        /* Reclaim x64 heap if this was the last live X64 task. */
+        if (g_current->type == TASK_TYPE_X64) {
+            extern void ELF64_ReclaimHeap(void);
+            ELF64_ReclaimHeap();
+        }
     }
     for (;;) __asm__ volatile ("sti; hlt");
 }

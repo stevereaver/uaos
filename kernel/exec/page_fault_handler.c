@@ -27,6 +27,11 @@
 #include <stddef.h>
 #include "syscall_table.h"
 #include "chipset/chip_emu.h"
+#include "task.h"
+
+/* Forward declarations — defined in kernel/boot/uaos_kernel_main.c */
+extern void kprint(const char *s);
+extern void kprinthex(uint64_t v);
 
 /* -----------------------------------------------------------------------
  * Amiga hardware register window boundaries
@@ -275,7 +280,32 @@ void UAOS_PageFaultHandler(InterruptFrame *frame, SavedRegs *regs)
     __asm__ volatile ("mov %%cr2, %0" : "=r"(fault_addr));
 
     if (!is_chip_address(fault_addr)) {
-        /* Not our fault — panic or chain to general handler               */
+        /* Non-chip page fault.
+         *
+         * If the faulting task is an X64 userspace task, kill it gracefully
+         * instead of halting the entire system.  This prevents a single
+         * buggy userspace command from locking up the OS.
+         *
+         * For kernel-mode faults (no current task, or current task is not
+         * an X64 task), treat it as a fatal kernel panic. */
+        UaosTask *cur = Task_Current();
+        if (cur && cur->type == TASK_TYPE_X64) {
+            kprint("[PF] page fault in X64 task '");
+            kprint(cur->ln_Name ? cur->ln_Name : "(null)");
+            kprint("' at rip=");
+            kprinthex(frame->rip);
+            kprint(" fault_addr=");
+            kprinthex(fault_addr);
+            kprint(" — killing task\n");
+            Task_Exit();
+            __builtin_unreachable();
+        }
+        /* Kernel-mode fault — panic */
+        kprint("[PF] kernel page fault at rip=");
+        kprinthex(frame->rip);
+        kprint(" fault_addr=");
+        kprinthex(fault_addr);
+        kprint("\n");
         __asm__ volatile ("cli; hlt");
         __builtin_unreachable();
     }

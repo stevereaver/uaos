@@ -6,6 +6,7 @@
 
 #include "elf64_loader.h"
 #include "boot/kprint.h"
+#include "exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -104,6 +105,38 @@ uint32_t ELF64_HeapUsed(void)
 void *ELF64_HeapAlloc(uint32_t size, uint32_t align)
 {
     return x64_heap_alloc(size, align);
+}
+
+/* -------------------------------------------------------------------------
+ * Heap reclamation
+ *
+ * The x64 heap is a bump allocator — individual allocations cannot be
+ * freed.  However, when no X64 userspace tasks are alive (all have exited
+ * and are marked TASK_REMOVED), the entire heap can be safely reset to
+ * zero, reclaiming all memory used by finished commands.
+ *
+ * Called from Task_Exit() after the current task is marked REMOVED.
+ * ------------------------------------------------------------------------- */
+void ELF64_ReclaimHeap(void)
+{
+    /* Scan the global task table for any live X64 task. */
+    extern UaosTask g_tasks[];
+    extern int      g_task_count;
+
+    for (int i = 0; i < g_task_count; i++) {
+        if (g_tasks[i].type == TASK_TYPE_X64 &&
+            g_tasks[i].tc_State != TASK_REMOVED) {
+            return;  /* at least one X64 task is still alive */
+        }
+    }
+
+    /* No live X64 tasks — safe to reset the heap. */
+    if (g_x64_heap_used > 0) {
+        kprint("[ELF64] reclaiming x64 heap (");
+        kprintdec(g_x64_heap_used / 1024);
+        kprint("KB freed)\n");
+        g_x64_heap_used = 0;
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -331,12 +364,6 @@ int ELF64_Load(const uint8_t *data, uint32_t size,
         return out->error;
     }
 
-    kprint("[ELF64] loading ");
-    kprint((eh->e_type == ET_DYN) ? "PIE" : "ET_EXEC");
-    kprint(" x86-64 binary, ");
-    kprintdec((uint32_t)size);
-    kprint(" bytes\n");
-
     uint64_t image_base = 0, image_size = 0;
     int rc = load_segments(eh, data, size, &image_base, &image_size);
     if (rc != ELF64_OK) {
@@ -362,29 +389,6 @@ int ELF64_Load(const uint8_t *data, uint32_t size,
                                             : eh->e_entry;
     out->initial_rsp = rsp;
     out->error = ELF64_OK;
-
-    kprint("[ELF64] entry=0x");
-    kprinthex((uint32_t)(out->entry_rip >> 32));
-    kprinthex((uint32_t)out->entry_rip);
-    kprint(" rsp=0x");
-    kprinthex((uint32_t)(out->initial_rsp >> 32));
-    kprinthex((uint32_t)out->initial_rsp);
-    kprint(" heap=");
-    kprintdec(g_x64_heap_used / 1024);
-    kprint("KB\n");
-
-    kprint("[ELF64] bytes @ entry: ");
-    const uint8_t *ep = (const uint8_t *)out->entry_rip;
-    for (int i = 0; i < 16; i++) {
-        static const char hx[] = "0123456789ABCDEF";
-        char buf[3];
-        buf[0] = hx[ep[i] >> 4];
-        buf[1] = hx[ep[i] & 0xF];
-        buf[2] = 0;
-        kprint(buf);
-        kprint(" ");
-    }
-    kprint("\n");
 
     return ELF64_OK;
 }

@@ -765,7 +765,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     TaskScheduler_Init();
 
     /* Wire INT 0x80 to the syscall table dispatcher before the scheduler
-     * starts.  DPL=3 so ring-3 userspace can execute INT 0x80 without #GP.
+     * starts.  DPL=3 so the gate is callable from any privilege level.
+     * X64 userspace tasks currently run in ring 0 for VirtualBox NEM
+     * compatibility, but the DPL=3 gate is kept for future ring-3 support.
      * The raw assembly entry passes the full interrupt frame to
      * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
     IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);

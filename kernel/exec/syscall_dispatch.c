@@ -797,13 +797,6 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     uint64_t rdx = regs->rdx;
     int64_t ret;
 
-    kprint("[SYSCALL] rip="); kprinthex(frame->rip);
-    kprint(" rax="); kprinthex(n);
-    kprint(" rdi="); kprinthex(rdi);
-    kprint(" rsi="); kprinthex(rsi);
-    kprint(" rdx="); kprinthex(rdx);
-    kprint("\n");
-
     switch (n) {
     case SYSCALL_WRITE:      ret = sys_write(rdi, rsi, rdx); break;
     case SYSCALL_READ:     ret = sys_read(rdi, rsi, rdx); break;

@@ -26,7 +26,7 @@ Commands in UAOS can be:
 - **Resident**: Compiled into the kernel but executed as separate logic (e.g., `mem`, `libs`, `version`).
 - **External**: Loaded from disk. This includes:
   - **M68k Amiga Hunk binaries** wrapped with a custom 32-byte UAOS header and executed via the CPU emulator.
-  - **Native x86-64 ELF64 binaries** compiled using the `-nostdlib` flag and executed as Ring-3 tasks. These use the `INT 0x80` syscall ABI to interact with the kernel.
+  - **Native x86-64 ELF64 binaries** compiled using the `-nostdlib` flag and executed as ring-0 tasks (for VirtualBox NEM compatibility). These use the `INT 0x80` syscall ABI to interact with the kernel.
 - **Native C: commands**: Executed in-place by the kernel command dispatcher (`cmd_*.c` in `kernel/shell/`).
 
 > [!NOTE]

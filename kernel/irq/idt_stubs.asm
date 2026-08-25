@@ -76,8 +76,9 @@ isr_common:
     ; -----------------------------------------------------------------
     ; All task types (including X64 ELF64) use the same iretq-based
     ; restore path.  Task_CreateX64 builds a synthetic interrupt frame
-    ; with user-mode CS (0x1B) and SS (0x23) so iretq automatically
-    ; transitions to ring 3.  No special first-launch branch needed.
+    ; with kernel-mode CS (0x08) and SS (0x10) so iretq resumes the
+    ; task in ring 0.  Running X64 userspace tasks in ring 0 avoids
+    ; broken ring-3 transitions in VirtualBox NEM (Hyper-V) mode.
     ; -----------------------------------------------------------------
 
 .normal_switch:

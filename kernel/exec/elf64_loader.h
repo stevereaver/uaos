@@ -154,4 +154,8 @@ uint32_t ELF64_HeapUsed(void);
  * The heap is a single bump arena; allocations are never freed. */
 void *ELF64_HeapAlloc(uint32_t size, uint32_t align);
 
+/* Reclaim the x64 heap when no X64 tasks are alive.
+ * Called from Task_Exit() after marking the current task REMOVED. */
+void ELF64_ReclaimHeap(void);
+
 #endif /* UAOS_ELF64_LOADER_H */
