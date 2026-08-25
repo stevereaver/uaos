@@ -16,6 +16,7 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh); /* repaint backdrop rec
 /* Workbench load control - desktop only draws after LoadWB is called */
 void Desktop_MarkWorkbenchLoaded(void);  /* call from LoadWB */
 int  Desktop_IsWorkbenchLoaded(void);  /* check before drawing desktop */
+int  Desktop_IsMenuOpen(void);       /* true when a Workbench menu dropdown is active */
 
 /* Feed a mouse event to the desktop (icon hit-test / double-click / menu).
  * Call this from WM_MouseEvent when no window was hit.

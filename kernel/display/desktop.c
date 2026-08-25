@@ -1028,6 +1028,11 @@ int Desktop_IsWorkbenchLoaded(void)
     return g_workbench_loaded;
 }
 
+int Desktop_IsMenuOpen(void)
+{
+    return g_menu_index >= 0;
+}
+
 void Desktop_SetScreenTitle(const char *title, int show)
 {
     g_show_screen_title = show;

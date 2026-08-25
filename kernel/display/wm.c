@@ -843,6 +843,29 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
     g_btn_left_prev = btn_left;
     g_btn_right_prev = btn_right;
 
+    /* When a Workbench menu is open the desktop owns all mouse input, even
+     * if the dropdown overlaps a window. Without this the window hit-test
+     * swallows the events and menu items stop highlighting/activating. */
+    if (Desktop_IsMenuOpen()) {
+        if (btn_left_pressed) {
+            g_press_was_desktop = 1;
+            Desktop_MouseEvent(mx, my, 1, 0);
+        }
+        if (btn_right_pressed)
+            Desktop_MouseEvent(mx, my, 0, 1);
+        if (btn_left_released) {
+            if (g_press_was_desktop)
+                Desktop_MouseRelease(mx, my);
+            g_press_was_desktop = 0;
+        }
+        if (btn_right_released)
+            Desktop_RightButtonRelease(mx, my);
+        if (!btn_left &&
+            g_drag_handle < 0 && g_resize_handle < 0 && g_scroll_drag_win < 0)
+            Desktop_MouseHover(mx, my);
+        return;
+    }
+
     if (btn_left_pressed) {
         WM_LOG("[WM] Mouse press at "); WM_LOG_DEC(mx); WM_LOG(","); WM_LOG_DEC(my); WM_LOG("\n");
         int wh = hit_test(mx, my);
