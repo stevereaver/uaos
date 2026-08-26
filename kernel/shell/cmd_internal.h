@@ -93,6 +93,18 @@ static inline void cmd_make_abs(const char *cwd, const char *arg,
         cmd_scopy(out, arg, max);
         return;
     }
+    /* Root-relative "/..." goes to the root of the current volume. */
+    if (arg[0] == '/') {
+        const char *colon = cwd;
+        while (*colon && *colon != ':') colon++;
+        int vol_len = (int)(colon - cwd) + 1; /* include ':' */
+        if (vol_len >= max) vol_len = max - 1;
+        int i = 0;
+        for (; i < vol_len && i < max - 1; i++) out[i] = cwd[i];
+        out[i] = '\0';
+        cmd_scat(out, arg, max);
+        return;
+    }
     cmd_scopy(out, cwd, max);
     int cl = cmd_slen(out);
     if (cl > 0 && out[cl-1] != ':' && out[cl-1] != '/') {

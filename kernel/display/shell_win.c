@@ -908,7 +908,9 @@ static void inst_cmd_reboot(ShellInstance *s)
  * ========================================================================= */
 
 /* Build an absolute VFS path from cwd + user-supplied arg.
- * If arg already contains ':', treat as absolute. */
+ * If arg already contains ':', treat as absolute.
+ * If arg is root-relative (starts with '/'), anchor it at the current
+ * volume root so "cd /" from "workbench:gnu" produces "workbench:". */
 static void make_abs_path(ShellInstance *s, const char *arg,
                            char *out, int max)
 {
@@ -917,6 +919,18 @@ static void make_abs_path(ShellInstance *s, const char *arg,
     while (*p && *p != ':') p++;
     if (*p == ':') {
         scopy(out, arg, max);
+        return;
+    }
+    /* Root-relative "/..." goes to the root of the current volume. */
+    if (arg && arg[0] == '/') {
+        const char *colon = s->cwd;
+        while (*colon && *colon != ':') colon++;
+        int vol_len = (int)(colon - s->cwd) + 1; /* include ':' */
+        if (vol_len >= max) vol_len = max - 1;
+        int i = 0;
+        for (; i < vol_len && i < max - 1; i++) out[i] = s->cwd[i];
+        out[i] = '\0';
+        scat(out, arg, max);
         return;
     }
     /* Relative: prepend cwd */

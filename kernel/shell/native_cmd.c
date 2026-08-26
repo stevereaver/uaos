@@ -31,6 +31,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("libs",       Cmd_Libs     ),
     CMD ("clear",      Cmd_Clear    ),
     CMD ("reboot",     Cmd_Reboot   ),
+    CMD ("pwd",        Cmd_Pwd      ),
     CMD ("info",       Cmd_Info     ),
     CMD ("date",       Cmd_Date     ),
     CMD ("which",      Cmd_Which    ),

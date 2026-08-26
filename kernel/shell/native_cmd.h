@@ -168,6 +168,7 @@ void Cmd_Mem     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Libs    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Clear   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Reboot  (NativeCmdCtx *ctx, const char *args);
+void Cmd_Pwd     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Info    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Date    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Which   (NativeCmdCtx *ctx, const char *args);

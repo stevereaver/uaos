@@ -382,6 +382,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_libs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clear.c" \
     "${REPO_ROOT}/kernel/shell/cmd_reboot.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_pwd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_info.c" \
     "${REPO_ROOT}/kernel/shell/cmd_date.c" \
     "${REPO_ROOT}/kernel/shell/cmd_which.c" \
@@ -660,6 +661,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_libs.o" \
     "${BUILD_DIR}/obj/cmd_clear.o" \
     "${BUILD_DIR}/obj/cmd_reboot.o" \
+    "${BUILD_DIR}/obj/cmd_pwd.o" \
     "${BUILD_DIR}/obj/cmd_dir.o" \
     "${BUILD_DIR}/obj/cmd_makedir.o" \
     "${BUILD_DIR}/obj/cmd_delete.o" \
