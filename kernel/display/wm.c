@@ -13,7 +13,7 @@ extern void dbg_add_line(const char *msg);
 extern void UAOS_Intuition_NotifyDepthChange(int wm_handle);
 
 /* Debug output */
-#define WM_DEBUG 1
+#define WM_DEBUG 0
 #if WM_DEBUG
     #define WM_LOG(msg) do { extern void kprint(const char *); kprint(msg); } while(0)
     #define WM_LOG_DEC(v) do { extern void kprintdec(uint32_t); kprintdec((uint32_t)(v)); } while(0)
@@ -685,7 +685,12 @@ static void depth_window(int wh)
     }
 
     /* Focus shifts to the new topmost window */
+    int old_focus = g_focus;
     g_focus = g_zorder[g_nwins - 1];
+    /* B6: notify Intuition of the focus change so IDCMP_ACTIVEWINDOW /
+     * INACTIVEWINDOW are sent (WM_LowerWindow already did this; depth_window
+     * was setting g_focus directly and skipping the notification). */
+    wm_notify_focus_change(old_focus, g_focus);
     UAOS_Intuition_NotifyDepthChange(wh);
 }
 
@@ -965,15 +970,12 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
     /* Right mouse button press over a window */
     if (btn_right_pressed) {
         int wh = hit_test(mx, my);
-        if (wh >= 0 && g_wins[wh].on_event)
+        if (wh >= 0 && g_wins[wh].on_event) {
             g_wins[wh].on_event(wh, WM_EVT_MOUSE_DOWN, 1, mx, my);
-    }
-
-    /* Right-click on the desktop (not over any window) — handled by desktop
-     * for Amiga-style menu activation. */
-    if (btn_right_pressed) {
-        int wh = hit_test(mx, my);
-        if (wh < 0) {
+        } else if (wh < 0) {
+            /* Right-click on the desktop (not over any window) — handled by
+             * desktop for Amiga-style menu activation.  P6: single hit_test
+             * for the right-press path instead of two. */
             Desktop_MouseEvent(mx, my, 0, 1);
             return;
         }
@@ -1241,14 +1243,11 @@ void WM_CloseWindow(int handle)
     /* Free the slot */
     w->active = 0;
 
-    /* Erase window footprint and repaint everything below it */
-    Cursor_Hide();
-    Desktop_RedrawRect(ox, oy, ow + 2, oh + 2);
-    for (int i = 0; i < g_nwins; i++) {
-        int wh = g_zorder[i];
-        if (g_wins[wh].active) repaint_window(wh);
-    }
-    Cursor_Redraw();
+    /* B3: repaint via the double-buffered WM_Redraw path instead of drawing
+     * straight to VRAM (which flickered on close and skipped the menu
+     * dropdown layer).  WM_Redraw repaints the desktop + every remaining
+     * window + cursor in one back-buffered flip. */
+    WM_Redraw();
 
     wm_notify_focus_change(old_focus, g_focus);
 }

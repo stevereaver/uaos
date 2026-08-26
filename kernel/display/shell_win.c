@@ -282,8 +282,11 @@ static void inst_draw_contents(ShellInstance *s)
     int body_y  = wy + TITLEBAR_H;
     int body_h  = wh - TITLEBAR_H - INPUTBAR_H - WM_SCROLLBAR_W;
 
-    /* History / body area (fills client up to the input bar). */
-    FB_FillRect(wx+BORDER_L, body_y, body_w, body_h, WB_BLACK);
+    /* P6: inst_draw_history fills the text area (inset 4px) with WB_BLACK,
+     * so here we only fill the 4px top/bottom margins that it doesn't cover,
+     * avoiding a redundant double fill of the text area on every repaint. */
+    FB_FillRect(wx+BORDER_L, body_y, body_w, 4, WB_BLACK);
+    FB_FillRect(wx+BORDER_L, body_y + body_h - 4, body_w, 4, WB_BLACK);
 
     /* Separator */
     FB_DrawHLine(wx+BORDER_L, body_y + body_h - 1, body_w, WB_DARK_GREY);

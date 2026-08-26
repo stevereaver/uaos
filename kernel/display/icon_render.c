@@ -9,16 +9,6 @@
 #include <stdint.h>
 
 /* =========================================================================
- * Blit one ARGB pixel with simple alpha (0 = skip, >0 = opaque)
- * ========================================================================= */
-
-static inline void blit_pixel(int sx, int sy, uint32_t argb)
-{
-    if ((argb >> 24) == 0) return;          /* fully transparent */
-    FB_PutPixel(sx, sy, argb & 0x00FFFFFF);
-}
-
-/* =========================================================================
  * Public
  * ========================================================================= */
 
@@ -29,13 +19,10 @@ void Icon_Draw(const ParsedIcon *icon, int x, int y)
     uint16_t w = icon->image.width;
     uint16_t h = icon->image.height;
 
+    /* P1: use FB_BlitARGB row blit instead of per-pixel FB_PutPixel. */
     for (uint16_t row = 0; row < h; row++) {
-        for (uint16_t col = 0; col < w; col++) {
-            uint32_t px = icon->image.normal[row * ICON_MAX_WIDTH + col];
-            if ((px >> 24) != 0) {
-                FB_PutPixel(x + col, y + row, px & 0x00FFFFFF);
-            }
-        }
+        FB_BlitARGB(x, y + row, w,
+                    &icon->image.normal[row * ICON_MAX_WIDTH], 0);
     }
 }
 
@@ -49,25 +36,14 @@ void Icon_DrawSelected(const ParsedIcon *icon, int x, int y)
     if (icon->image.has_selected) {
         /* Use the selected planar image embedded in the .info file */
         for (uint16_t row = 0; row < h; row++) {
-            for (uint16_t col = 0; col < w; col++) {
-                uint32_t px = icon->image.selected[row * ICON_MAX_WIDTH + col];
-                if ((px >> 24) != 0) {
-                    FB_PutPixel(x + col, y + row, px & 0x00FFFFFF);
-                }
-            }
+            FB_BlitARGB(x, y + row, w,
+                        &icon->image.selected[row * ICON_MAX_WIDTH], 0);
         }
     } else {
         /* No selected image: draw the normal icon with inverse/video colors. */
         for (uint16_t row = 0; row < h; row++) {
-            for (uint16_t col = 0; col < w; col++) {
-                uint32_t px = icon->image.normal[row * ICON_MAX_WIDTH + col];
-                if ((px >> 24) != 0) {
-                    /* Invert RGB channels while preserving alpha; mask to 24-bit colour */
-                    uint32_t rgb = px & 0x00FFFFFF;
-                    uint32_t inv = rgb ^ 0x00FFFFFF;
-                    FB_PutPixel(x + col, y + row, inv);
-                }
-            }
+            FB_BlitARGB(x, y + row, w,
+                        &icon->image.normal[row * ICON_MAX_WIDTH], 1);
         }
     }
 }

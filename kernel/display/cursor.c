@@ -52,95 +52,37 @@ static const uint8_t cur_16x16[16][16] = {
 /*r15 */ _, _, _, _, _, _, _, _, B, B, _, _, _, _, _, _,
 };
 
-/* 32x32 scaled arrow pointer (2x scale of 16x16) */
-static const uint8_t cur_32x32[32][32] = {
-/*       0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 */
-/* r0 */ W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r1 */ W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r2 */ W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r3 */ W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r4 */ W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r5 */ W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r6 */ W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r7 */ W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r8 */ W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r9 */ W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r10 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r11 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r12 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r13 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r14 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r15 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r16 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _,
-/*r17 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, _, _, _, _, _, _, _, _, _, _,
-/*r18 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B, _, _, _, _, _, _, _, _, _, _,
-/*r19 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, B, B, B, B, B, _, _, _, _, _, _, _, _, _, _,
-/*r20 */ W, W, W, W, W, W, W, W, B, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r21 */ W, W, W, W, W, W, W, W, B, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r22 */ W, W, W, W, W, W, B, B, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r23 */ W, W, W, W, W, W, B, B, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r24 */ W, W, W, W, B, B, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r25 */ W, W, W, W, B, B, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r26 */ W, W, B, B, _, _, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r27 */ W, W, B, B, _, _, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r28 */ B, B, _, _, _, _, _, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r29 */ B, B, _, _, _, _, _, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r30 */ _, _, _, _, _, _, _, _, _, _, _, _, B, W, W, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r31 */ _, _, _, _, _, _, _, _, _, _, _, _, B, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _,
-};
+/* 32x32 and 48x48 arrow pointers - generated at boot by integer-scaling
+ * the (correct) 16x16 map above.  The previous hand-typed tables here had
+ * wrong per-row element counts (hidden by -Wno-missing-braces), which
+ * shifted every row left and produced skewed/garbage sprites.  Scaling the
+ * verified 16x16 source guarantees a clean pixel-doubled / pixel-tripled
+ * arrow.  See B1 in the framebuffer-perf plan. */
+static uint8_t cur_32x32[32 * 32];
+static uint8_t cur_48x48[48 * 48];
+static int     cur_sprites_scaled = 0;
 
-/* 48x48 scaled arrow pointer (3x scale of 16x16) */
-static const uint8_t cur_48x48[48][48] = {
-/*       0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 */
-/* r0 */ W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r1 */ W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r2 */ W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r3 */ W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r4 */ W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r5 */ W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r6 */ W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r7 */ W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r8 */ W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/* r9 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r10 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r11 */ W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r12 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r13 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r14 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-/*r15 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _, _,
-/*r16 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _, _,
-/*r17 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _, _, _, _, _,
-/*r18 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _, _,
-/*r19 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _, _,
-/*r20 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B, _, _,
-/*r21 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r22 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r23 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r24 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r25 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r26 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r27 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r28 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r29 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r30 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r31 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r32 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r33 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r34 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r35 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r36 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r37 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r38 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r39 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r40 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r41 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r42 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r43 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r44 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r45 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r46 */ W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, W, B, B, B,
-/*r47 */ _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-};
+static void scale_sprite(const uint8_t src[16][16], uint8_t *dst, int scale)
+{
+    int dim = 16 * scale;
+    for (int row = 0; row < 16; row++) {
+        for (int col = 0; col < 16; col++) {
+            uint8_t p = src[row][col];
+            for (int dy = 0; dy < scale; dy++)
+                for (int dx = 0; dx < scale; dx++)
+                    dst[(row * scale + dy) * dim + (col * scale + dx)] = p;
+        }
+    }
+}
+
+static void ensure_sprites_scaled(void)
+{
+    if (cur_sprites_scaled) return;
+    scale_sprite(cur_16x16, cur_32x32, 2);
+    scale_sprite(cur_16x16, cur_48x48, 3);
+    cur_sprites_scaled = 1;
+}
+
 
 
 /* 16x16 busy pointer (hourglass-ish) */
@@ -232,8 +174,8 @@ static const uint8_t* get_cursor_sprite(void)
     if (cur_busy) return (const uint8_t*)cur_busy_16x16;
     switch (g_cursor_settings.size) {
         case CURSOR_SIZE_16x16: return (const uint8_t*)cur_16x16;
-        case CURSOR_SIZE_32x32: return (const uint8_t*)cur_32x32;
-        case CURSOR_SIZE_48x48: return (const uint8_t*)cur_48x48;
+        case CURSOR_SIZE_32x32: ensure_sprites_scaled(); return (const uint8_t*)cur_32x32;
+        case CURSOR_SIZE_48x48: ensure_sprites_scaled(); return (const uint8_t*)cur_48x48;
         default: return (const uint8_t*)cur_16x16;
     }
 }
@@ -345,6 +287,18 @@ void Cursor_Move(int x, int y)
 {
     UAOS_Intuition_CheckPendingPointer();
     if (!g_fb.valid) return;
+    /* B2: Cursor_Move runs at IRQ time from PS2Mouse_IRQHandler.  If a
+     * back-buffered frame is in progress (FB_BeginDraw..FB_Flip), drawing
+     * the cursor here would pollute the half-painted back buffer and the
+     * save/restore pair would capture cursor pixels into bg_save, leaving
+     * a ghost cursor on the next restore.  The frame-end Cursor_Redraw
+     * paints the cursor at the new position anyway, so while drawing is
+     * active we only update the stored position. */
+    if (FB_IsDrawing()) {
+        cur_x = x;
+        cur_y = y;
+        return;
+    }
     if (cur_drawn)
         cursor_restore_bg(cur_x, cur_y);
     cur_x = x;

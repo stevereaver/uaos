@@ -8,6 +8,7 @@
 #include "framebuffer.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>   /* memcpy for dirty-rect flip */
 
 /* =========================================================================
  * Global framebuffer state
@@ -60,9 +61,51 @@ void WB_InitPalette(void)
 static uint32_t g_backbuf[BB_MAX_H][BB_MAX_W];
 static int g_drawing = 0;  /* 1 = drawing to back buffer, 0 = direct */
 
+/* Dirty rectangle (in back-buffer space) accumulated between FB_BeginDraw
+ * and FB_Flip.  FB_Flip memcpy's only these rows to VRAM.  Invalid (empty)
+ * when dirty_x1 < dirty_x0.  Coordinates are clamped to BB_MAX_W/H. */
+static int g_dirty_x0, g_dirty_y0, g_dirty_x1, g_dirty_y1;
+
+static inline void dirty_reset(void)
+{
+    g_dirty_x0 = 1; g_dirty_y0 = 1;
+    g_dirty_x1 = 0; g_dirty_y1 = 0;
+}
+
+static inline int dirty_empty(void)
+{
+    return g_dirty_x1 < g_dirty_x0 || g_dirty_y1 < g_dirty_y0;
+}
+
+/* Mark [x0,x1) × [y0,y1) (half-open, back-buffer coords) as changed. */
+static inline void dirty_add(int x0, int y0, int x1, int y1)
+{
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > BB_MAX_W) x1 = BB_MAX_W;
+    if (y1 > BB_MAX_H) y1 = BB_MAX_H;
+    if (x0 >= x1 || y0 >= y1) return;
+    if (dirty_empty()) {
+        g_dirty_x0 = x0; g_dirty_y0 = y0;
+        g_dirty_x1 = x1; g_dirty_y1 = y1;
+    } else {
+        if (x0 < g_dirty_x0) g_dirty_x0 = x0;
+        if (y0 < g_dirty_y0) g_dirty_y0 = y0;
+        if (x1 > g_dirty_x1) g_dirty_x1 = x1;
+        if (y1 > g_dirty_y1) g_dirty_y1 = y1;
+    }
+}
+
+void FB_DirtyInclude(int x, int y, int w, int h)
+{
+    if (!g_drawing) return;
+    dirty_add(x, y, x + w, y + h);
+}
+
 void FB_BeginDraw(void)
 {
     g_drawing = 1;
+    dirty_reset();
 }
 
 int FB_IsDrawing(void)
@@ -72,9 +115,16 @@ int FB_IsDrawing(void)
 
 uint32_t FB_GetPixel(int x, int y)
 {
-    if ((unsigned)x >= BB_MAX_W || (unsigned)y >= BB_MAX_H) return 0;
-    if (g_drawing) return g_backbuf[y][x];
+    if (g_drawing) {
+        /* Back-buffer space is BB_MAX_W × BB_MAX_H; the WM-visible region
+         * may be smaller (clamped in FB_Init) but the back buffer always
+         * covers the full BB_MAX grid, so bounds-check against BB_MAX. */
+        if ((unsigned)x >= BB_MAX_W || (unsigned)y >= BB_MAX_H) return 0;
+        return g_backbuf[y][x];
+    }
     if (!g_fb.valid) return 0;
+    /* Direct mode: bounds-check against the actual framebuffer. */
+    if ((unsigned)x >= g_fb.width || (unsigned)y >= g_fb.height) return 0;
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
         uint32_t *p = (uint32_t *)(base + (uint32_t)y * g_fb.pitch + (uint32_t)x * 4);
@@ -89,24 +139,41 @@ void FB_Flip(void)
 {
     if (!g_fb.valid || !g_drawing) return;
     uint8_t *dst = (uint8_t *)(uintptr_t)g_fb.phys_addr;
-    uint32_t W = g_fb.width  < BB_MAX_W ? g_fb.width  : BB_MAX_W;
-    uint32_t H = g_fb.height < BB_MAX_H ? g_fb.height : BB_MAX_H;
-    if (g_fb.bpp == 32) {
-        for (uint32_t y = 0; y < H; y++) {
-            uint32_t *row_dst = (uint32_t *)(dst + y * g_fb.pitch);
-            uint32_t *row_src = g_backbuf[y];
-            for (uint32_t x = 0; x < W; x++)
-                row_dst[x] = row_src[x];
-        }
-    } else {
-        for (uint32_t y = 0; y < H; y++) {
-            uint8_t *row_dst = dst + y * g_fb.pitch;
-            uint32_t *row_src = g_backbuf[y];
-            for (uint32_t x = 0; x < W; x++) {
-                uint32_t c = row_src[x];
-                row_dst[x*3+0] = (uint8_t)(c & 0xFF);
-                row_dst[x*3+1] = (uint8_t)((c >> 8) & 0xFF);
-                row_dst[x*3+2] = (uint8_t)((c >> 16) & 0xFF);
+
+    if (dirty_empty()) {
+        /* Nothing changed this frame — still leave back-buffer mode. */
+        g_drawing = 0;
+        return;
+    }
+
+    /* Clamp dirty box to the visible (possibly clamped) framebuffer region. */
+    int W = (int)g_fb.width;
+    int H = (int)g_fb.height;
+    int x0 = g_dirty_x0, y0 = g_dirty_y0;
+    int x1 = g_dirty_x1, y1 = g_dirty_y1;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+
+    if (x0 < x1 && y0 < y1) {
+        if (g_fb.bpp == 32) {
+            for (int y = y0; y < y1; y++) {
+                uint8_t *row_dst = dst + (uint32_t)y * g_fb.pitch + (uint32_t)x0 * 4;
+                memcpy(row_dst, &g_backbuf[y][x0],
+                       (size_t)(x1 - x0) * 4);
+            }
+        } else {
+            for (int y = y0; y < y1; y++) {
+                uint8_t *row_dst = dst + (uint32_t)y * g_fb.pitch + (uint32_t)x0 * 3;
+                uint32_t *row_src = &g_backbuf[y][x0];
+                int n = x1 - x0;
+                for (int i = 0; i < n; i++) {
+                    uint32_t c = row_src[i];
+                    row_dst[i*3+0] = (uint8_t)(c & 0xFF);
+                    row_dst[i*3+1] = (uint8_t)((c >> 8) & 0xFF);
+                    row_dst[i*3+2] = (uint8_t)((c >> 16) & 0xFF);
+                }
             }
         }
     }
@@ -164,6 +231,14 @@ void FB_Init(uint32_t mb2_info_phys)
                 g_fb.pitch     = fb->framebuffer_pitch;
                 g_fb.bpp       = fb->framebuffer_bpp;
                 g_fb.valid     = 1;
+
+                /* B7: the back buffer is BB_MAX_W × BB_MAX_H.  A mode larger
+                 * than that would leave regions permanently undrawn and let
+                 * primitives write past the back buffer.  Clamp the
+                 * WM-visible width/height so the desktop lays out inside
+                 * the drawable region; the extra VRAM rows stay untouched. */
+                if (g_fb.width  > BB_MAX_W) g_fb.width  = BB_MAX_W;
+                if (g_fb.height > BB_MAX_H) g_fb.height = BB_MAX_H;
             }
             break;
         }
@@ -178,6 +253,10 @@ void FB_Init(uint32_t mb2_info_phys)
 
 /* =========================================================================
  * Internal pixel write helpers
+ *
+ * The hot primitives below resolve the target row pointer once and run a
+ * tight loop, hoisting the g_drawing / bpp branches out of the per-pixel
+ * path.  In back-buffer mode they also extend the dirty rectangle.
  * ========================================================================= */
 
 static inline void put_pixel32(uint8_t *base, uint32_t pitch,
@@ -217,51 +296,114 @@ void FB_PutPixel(int x, int y, uint32_t colour)
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, x, y, colour);
     else                put_pixel24(base, g_fb.pitch, x, y, colour);
+    if (g_drawing) dirty_add(x, y, x + 1, y + 1);
 }
 
 void FB_DrawHLine(int x, int y, int len, uint32_t colour)
 {
-    if (!g_fb.valid) return;
+    if (!g_fb.valid || len <= 0) return;
     if (y < 0 || (unsigned)y >= g_fb.height) return;
-    /* Clip x range to [0, width) */
     int x0 = x < 0 ? 0 : x;
     int x1 = x + len;
     if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
     if (x0 >= x1) return;
+
+    if (g_drawing) {
+        if ((unsigned)y < BB_MAX_H) {
+            uint32_t *row = g_backbuf[y];
+            for (int px = x0; px < x1; px++)
+                if ((unsigned)px < BB_MAX_W) row[px] = colour;
+        }
+        dirty_add(x0, y, x1, y + 1);
+        return;
+    }
+
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
-    for (int px = x0; px < x1; px++) {
-        if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, px, y, colour);
-        else                put_pixel24(base, g_fb.pitch, px, y, colour);
+    if (g_fb.bpp == 32) {
+        uint32_t *row = (uint32_t *)(base + (uint32_t)y * g_fb.pitch);
+        for (int px = x0; px < x1; px++) row[px] = colour;
+    } else {
+        uint8_t *row = base + (uint32_t)y * g_fb.pitch;
+        for (int px = x0; px < x1; px++) {
+            uint8_t *p = row + px * 3;
+            p[0] = (uint8_t)(colour & 0xFF);
+            p[1] = (uint8_t)((colour >> 8) & 0xFF);
+            p[2] = (uint8_t)((colour >> 16) & 0xFF);
+        }
     }
 }
 
 void FB_DrawVLine(int x, int y, int len, uint32_t colour)
 {
-    if (!g_fb.valid) return;
+    if (!g_fb.valid || len <= 0) return;
     if (x < 0 || (unsigned)x >= g_fb.width) return;
-    /* Clip y range to [0, height) */
     int y0 = y < 0 ? 0 : y;
     int y1 = y + len;
     if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
     if (y0 >= y1) return;
+
+    if (g_drawing) {
+        if ((unsigned)x < BB_MAX_W) {
+            for (int py = y0; py < y1; py++)
+                if ((unsigned)py < BB_MAX_H) g_backbuf[py][x] = colour;
+        }
+        dirty_add(x, y0, x + 1, y1);
+        return;
+    }
+
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
-    for (int py = y0; py < y1; py++) {
-        if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, x, py, colour);
-        else                put_pixel24(base, g_fb.pitch, x, py, colour);
+    if (g_fb.bpp == 32) {
+        for (int py = y0; py < y1; py++) {
+            uint32_t *p = (uint32_t *)(base + (uint32_t)py * g_fb.pitch + (uint32_t)x * 4);
+            *p = colour;
+        }
+    } else {
+        for (int py = y0; py < y1; py++) {
+            uint8_t *p = base + (uint32_t)py * g_fb.pitch + (uint32_t)x * 3;
+            p[0] = (uint8_t)(colour & 0xFF);
+            p[1] = (uint8_t)((colour >> 8) & 0xFF);
+            p[2] = (uint8_t)((colour >> 16) & 0xFF);
+        }
     }
 }
 
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour)
 {
     if (!g_fb.valid || w <= 0 || h <= 0) return;
-    /* Clip rect to framebuffer bounds */
     int x0 = x < 0 ? 0 : x;
     int y0 = y < 0 ? 0 : y;
     int x1 = x + w; if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
     int y1 = y + h; if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
     if (x0 >= x1 || y0 >= y1) return;
-    for (int row = y0; row < y1; row++)
-        FB_DrawHLine(x0, row, x1 - x0, colour);
+
+    if (g_drawing) {
+        int bx1 = x1 < BB_MAX_W ? x1 : BB_MAX_W;
+        int by1 = y1 < BB_MAX_H ? y1 : BB_MAX_H;
+        for (int py = y0; py < by1; py++) {
+            uint32_t *row = g_backbuf[py];
+            for (int px = x0; px < bx1; px++) row[px] = colour;
+        }
+        dirty_add(x0, y0, x1, y1);
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        for (int py = y0; py < y1; py++) {
+            uint32_t *row = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
+            for (int px = x0; px < x1; px++) row[px] = colour;
+        }
+    } else {
+        for (int py = y0; py < y1; py++) {
+            uint8_t *row = base + (uint32_t)py * g_fb.pitch;
+            for (int px = x0; px < x1; px++) {
+                uint8_t *p = row + px * 3;
+                p[0] = (uint8_t)(colour & 0xFF);
+                p[1] = (uint8_t)((colour >> 8) & 0xFF);
+                p[2] = (uint8_t)((colour >> 16) & 0xFF);
+            }
+        }
+    }
 }
 
 void FB_DrawRect(int x, int y, int w, int h, uint32_t colour)
@@ -270,6 +412,63 @@ void FB_DrawRect(int x, int y, int w, int h, uint32_t colour)
     FB_DrawHLine(x,         y + h - 1, w, colour);
     FB_DrawVLine(x,         y,         h, colour);
     FB_DrawVLine(x + w - 1, y,         h, colour);
+}
+
+/* =========================================================================
+ * ARGB row blit — used by icon_render.c instead of per-pixel FB_PutPixel.
+ * alpha==0 skips the pixel; invert XORs the RGB channels with 0xFFFFFF.
+ * ========================================================================= */
+void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert)
+{
+    if (!g_fb.valid || w <= 0) return;
+    if (y < 0 || (unsigned)y >= g_fb.height) return;
+    int x0 = x < 0 ? 0 : x;
+    int skip = x0 - x;
+    int x1 = x + w;
+    if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
+    if (x0 >= x1) return;
+    const uint32_t *src = argb + skip;
+    int n = x1 - x0;
+
+    if (g_drawing) {
+        if ((unsigned)y < BB_MAX_H) {
+            uint32_t *row = g_backbuf[y];
+            for (int i = 0; i < n; i++) {
+                uint32_t a = src[i] >> 24;
+                if (a == 0) continue;
+                uint32_t c = src[i] & 0x00FFFFFF;
+                if (invert) c ^= 0x00FFFFFF;
+                int px = x0 + i;
+                if ((unsigned)px < BB_MAX_W) row[px] = c;
+            }
+        }
+        dirty_add(x0, y, x1, y + 1);
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        uint32_t *row = (uint32_t *)(base + (uint32_t)y * g_fb.pitch);
+        for (int i = 0; i < n; i++) {
+            uint32_t a = src[i] >> 24;
+            if (a == 0) continue;
+            uint32_t c = src[i] & 0x00FFFFFF;
+            if (invert) c ^= 0x00FFFFFF;
+            row[x0 + i] = c;
+        }
+    } else {
+        uint8_t *row = base + (uint32_t)y * g_fb.pitch;
+        for (int i = 0; i < n; i++) {
+            uint32_t a = src[i] >> 24;
+            if (a == 0) continue;
+            uint32_t c = src[i] & 0x00FFFFFF;
+            if (invert) c ^= 0x00FFFFFF;
+            uint8_t *p = row + (x0 + i) * 3;
+            p[0] = (uint8_t)(c & 0xFF);
+            p[1] = (uint8_t)((c >> 8) & 0xFF);
+            p[2] = (uint8_t)((c >> 16) & 0xFF);
+        }
+    }
 }
 
 /* =========================================================================
@@ -389,11 +588,51 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
     uint8_t c = (uint8_t)ch;
     if (c < 0x20 || c > 0x7E) c = '?';
     const uint8_t *glyph = g_font8x16[c - 0x20];
-    for (int row = 0; row < 16; row++) {
-        uint8_t bits = glyph[row];
-        for (int col = 0; col < 8; col++) {
-            uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
-            FB_PutPixel(x + col, y + row, colour);
+
+    if (g_drawing) {
+        for (int row = 0; row < 16; row++) {
+            int py = y + row;
+            if ((unsigned)py >= BB_MAX_H) break;
+            uint8_t bits = glyph[row];
+            uint32_t *dst = g_backbuf[py];
+            for (int col = 0; col < 8; col++) {
+                int px = x + col;
+                if ((unsigned)px < BB_MAX_W)
+                    dst[px] = (bits & (0x80 >> col)) ? fg : bg;
+            }
+        }
+        dirty_add(x, y, x + 8, y + 16);
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        for (int row = 0; row < 16; row++) {
+            int py = y + row;
+            if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            uint8_t bits = glyph[row];
+            uint32_t *dst = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
+            for (int col = 0; col < 8; col++) {
+                int px = x + col;
+                if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                dst[px] = (bits & (0x80 >> col)) ? fg : bg;
+            }
+        }
+    } else {
+        for (int row = 0; row < 16; row++) {
+            int py = y + row;
+            if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            uint8_t bits = glyph[row];
+            uint8_t *dst = base + (uint32_t)py * g_fb.pitch;
+            for (int col = 0; col < 8; col++) {
+                int px = x + col;
+                if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
+                uint8_t *p = dst + px * 3;
+                p[0] = (uint8_t)(colour & 0xFF);
+                p[1] = (uint8_t)((colour >> 8) & 0xFF);
+                p[2] = (uint8_t)((colour >> 16) & 0xFF);
+            }
         }
     }
 }
@@ -413,11 +652,16 @@ void FB_PutStrCentred(int rx, int ry, int rw, int rh,
 {
     int len = 0;
     for (const char *p = s; *p; p++) len++;
+    /* B5: truncate to the rect so long titles don't overdraw neighbours. */
+    int max_chars = rw / 8;
+    if (max_chars <= 0) return;
+    if (len > max_chars) len = max_chars;
     int tw = len * 8;
     int th = 16;
     int tx = rx + (rw - tw) / 2;
     int ty = ry + (rh - th) / 2;
-    FB_PutStr(tx, ty, s, fg, bg);
+    for (int i = 0; i < len; i++)
+        FB_PutChar(tx + i * 8, ty, s[i], fg, bg);
 }
 
 /* =========================================================================
@@ -539,11 +783,51 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
     uint8_t c = (uint8_t)ch;
     if (c < 0x20 || c > 0x7E) c = '?';
     const uint8_t *glyph = g_font_small[c - 0x20];
-    for (int row = 0; row < 8; row++) {
-        uint8_t bits = glyph[row];
-        for (int col = 0; col < 8; col++) {
-            uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
-            FB_PutPixel(x + col, y + row, colour);
+
+    if (g_drawing) {
+        for (int row = 0; row < 8; row++) {
+            int py = y + row;
+            if ((unsigned)py >= BB_MAX_H) break;
+            uint8_t bits = glyph[row];
+            uint32_t *dst = g_backbuf[py];
+            for (int col = 0; col < 8; col++) {
+                int px = x + col;
+                if ((unsigned)px < BB_MAX_W)
+                    dst[px] = (bits & (0x80 >> col)) ? fg : bg;
+            }
+        }
+        dirty_add(x, y, x + 8, y + 8);
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        for (int row = 0; row < 8; row++) {
+            int py = y + row;
+            if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            uint8_t bits = glyph[row];
+            uint32_t *dst = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
+            for (int col = 0; col < 8; col++) {
+                int px = x + col;
+                if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                dst[px] = (bits & (0x80 >> col)) ? fg : bg;
+            }
+        }
+    } else {
+        for (int row = 0; row < 8; row++) {
+            int py = y + row;
+            if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            uint8_t bits = glyph[row];
+            uint8_t *dst = base + (uint32_t)py * g_fb.pitch;
+            for (int col = 0; col < 8; col++) {
+                int px = x + col;
+                if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
+                uint8_t *p = dst + px * 3;
+                p[0] = (uint8_t)(colour & 0xFF);
+                p[1] = (uint8_t)((colour >> 8) & 0xFF);
+                p[2] = (uint8_t)((colour >> 16) & 0xFF);
+            }
         }
     }
 }
@@ -563,10 +847,16 @@ void FB_PutStrSmallCentred(int rx, int ry, int rw, int rh,
 {
     int len = 0;
     for (const char *p = s; *p; p++) len++;
+    /* B5: truncate to the rect so long titles don't overdraw the zoom/depth
+     * gadgets or bleed past the window edge. */
+    int max_chars = rw / 8;
+    if (max_chars <= 0) return;
+    if (len > max_chars) len = max_chars;
     int tw = len * 8;
     int th = 8;
     int tx = rx + (rw - tw) / 2;
     int ty = ry + (rh - th) / 2;
     if (tx < rx) tx = rx;
-    FB_PutStrSmall(tx, ty, s, fg, bg);
+    for (int i = 0; i < len; i++)
+        FB_PutCharSmall(tx + i * 8, ty, s[i], fg, bg);
 }

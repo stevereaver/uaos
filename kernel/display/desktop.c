@@ -26,7 +26,7 @@
 #include <string.h>
 
 /* Debug output */
-#define DT_DEBUG 1
+#define DT_DEBUG 0
 #if DT_DEBUG
     #define DT_LOG(msg) do { extern void kprint(const char *); kprint(msg); } while(0)
     #define DT_LOG_DEC(v) do { extern void kprintdec(uint32_t); kprintdec((uint32_t)(v)); } while(0)
@@ -98,6 +98,25 @@ static void current_time_str(char *buf)
     buf[2] = ':';
     buf[3] = (char)('0' + m / 10); buf[4] = (char)('0' + m % 10);
     buf[5] = '\0';
+}
+
+/* Return the current displayed minute as h*60+m.  The menubar clock only
+ * shows HH:MM, so a redraw is only needed when this value changes. */
+static int current_minute(void)
+{
+    uint8_t h, m, s;
+    uint32_t epoch = ntp_get_epoch();
+    if (epoch) {
+        const TzInfo *tz = tz_get_current();
+        int32_t  off     = tz_offset_min(tz, epoch);
+        uint32_t local   = (uint32_t)((int64_t)epoch + (int64_t)off * 60);
+        uint16_t yr; uint8_t mo, dy;
+        ntp_unix_to_datetime(local, &yr, &mo, &dy, &h, &m, &s);
+    } else {
+        RtcTime t = RTC_ReadTime();
+        h = t.hour; m = t.min;
+    }
+    return (int)h * 60 + (int)m;
 }
 
 /* Screen title state (updated by intuition.library ShowTitle()) */
@@ -763,12 +782,22 @@ static uint32_t  g_clock_last_tick = 0;
 static int       g_clock_click_count = 0;
 
 /* Build the desktop icon list from real mounted volumes (VFS).
- * click_count / last_tick persist across calls by matching on volume name. */
+ * click_count / last_tick persist across calls by matching on volume name.
+ *
+ * P3: the icon list (including the expensive Icon_Load / .info decode) is
+ * cached and only rebuilt when the VFS mount table changes (mount count or
+ * any mount name differs from the cached fingerprint).  This avoids
+ * reloading every .info from VFS on every frame / mouse event. */
 static IconState *get_icons(int *count)
 {
     static IconState icons[MAX_ICONS];
     static char vol_labels[MAX_ICONS][32];
     static int initialised = 0;
+
+    /* Mount-table fingerprint for cache invalidation. */
+    static int  cache_mount_count = -1;
+    static char cache_mount_names[MAX_ICONS][32];
+    static int  cache_count = 0;
 
     if (!initialised) {
         for (int i = 0; i < MAX_ICONS; i++) {
@@ -782,7 +811,34 @@ static IconState *get_icons(int *count)
         initialised = 1;
     }
 
-    /* Snapshot old click state so we can restore it after rebuilding.
+    /* ── Check whether the VFS mount table has changed ── */
+    int mount_count = VFS_GetMountCount();
+    int changed = (mount_count != cache_mount_count);
+
+    if (!changed) {
+        for (int mi = 0; mi < mount_count && !changed; mi++) {
+            char mname[32];
+            if (!VFS_GetMountName(mi, mname, 32)) { changed = 1; break; }
+            /* Compare against cached fingerprint */
+            int diff = 0;
+            for (int k = 0; k < 32; k++) {
+                if (cache_mount_names[mi][k] != mname[k]) { diff = 1; break; }
+                if (mname[k] == '\0') break;
+            }
+            if (diff) changed = 1;
+        }
+    }
+
+    if (!changed) {
+        /* Cache is valid — return the existing icon list as-is.  Click /
+         * selection state already lives in the icons[] array, so no copy
+         * or VFS reload is needed. */
+        *count = cache_count;
+        return icons;
+    }
+
+    /* ── Cache miss: rebuild from VFS ──
+     * Snapshot old click state so we can restore it after rebuilding.
      * Must be static — ParsedIcon is huge (~32 KB) and 10 of them on the
      * kernel stack would overflow it. */
     static IconState old_icons[MAX_ICONS];
@@ -794,8 +850,21 @@ static IconState *get_icons(int *count)
 
     int n = 0;
 
+    /* Update the fingerprint */
+    cache_mount_count = mount_count;
+    for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
+        char mname[32];
+        if (VFS_GetMountName(mi, mname, 32)) {
+            for (int k = 0; k < 32; k++) {
+                cache_mount_names[mi][k] = mname[k];
+                if (mname[k] == '\0') break;
+            }
+        } else {
+            cache_mount_names[mi][0] = '\0';
+        }
+    }
+
     /* ── VFS-mounted volumes (RAM:, Workbench:, etc.) ── */
-    int mount_count = VFS_GetMountCount();
     for (int mi = 0; mi < mount_count && n < MAX_ICONS; mi++) {
         char mname[32];
         if (!VFS_GetMountName(mi, mname, 32)) continue;
@@ -863,6 +932,7 @@ static IconState *get_icons(int *count)
         icons[i].label  = NULL;
     }
 
+    cache_count = n;
     *count = n;
     return icons;
 }
@@ -1495,6 +1565,10 @@ unsigned int Desktop_GetTick(void)
 
 /* Set by Desktop_UpdateClock (IRQ context) — consumed by the main loop */
 static volatile int g_clock_redraw_pending = 0;
+/* P5: last displayed minute (h*60+m).  The menubar clock shows only HH:MM,
+ * so a full-screen repaint is only needed when the minute changes, not every
+ * second.  Initialised to -1 so the first tick always triggers a draw. */
+static volatile int g_clock_last_minute = -1;
 
 void Desktop_UpdateClock(void)
 {
@@ -1503,8 +1577,15 @@ void Desktop_UpdateClock(void)
      * WM_Redraw() takes >100 ms (full framebuffer repaint), which starves
      * the PIT IRQ while IF=0, causing g_pit_ticks to jump in a burst when
      * the IRQ returns.  That falsely advances the ntp_tick_epoch guard,
-     * letting queued UIE bursts slip through and making the clock fast. */
-    g_clock_redraw_pending = 1;
+     * letting queued UIE bursts slip through and making the clock fast.
+     *
+     * P5: only request a redraw when the displayed minute (HH:MM) actually
+     * changes, instead of every second. */
+    int min = current_minute();
+    if (min != g_clock_last_minute) {
+        g_clock_last_minute = min;
+        g_clock_redraw_pending = 1;
+    }
     g_tick++;
 }
 

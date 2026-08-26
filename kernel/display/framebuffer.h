@@ -43,11 +43,18 @@ extern FbState g_fb;
 /* Initialise from Multiboot2 info struct */
 void FB_Init(uint32_t mb2_info_phys);
 
-/* Double buffering — call BeginDraw before any drawing, Flip to push to screen */
+/* Double buffering — call BeginDraw before any drawing, Flip to push to screen.
+ * While drawing is active, all primitives paint into a back buffer and track
+ * a dirty bounding rectangle; FB_Flip memcpy's only that rectangle to VRAM. */
 void     FB_BeginDraw(void);
 void     FB_Flip(void);
 int      FB_IsDrawing(void);   /* returns 1 while back buffer is active */
 uint32_t FB_GetPixel(int x, int y); /* reads from back buf if drawing, physical fb otherwise */
+
+/* Extend the dirty rectangle (no-op when not drawing). Used by callers that
+ * touch VRAM directly while a back-buffer frame is in progress (e.g. the
+ * cursor sprite drawn at frame end) so FB_Flip will copy those pixels too. */
+void     FB_DirtyInclude(int x, int y, int w, int h);
 
 /* Primitive drawing --------------------------------------------------------- */
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour);
@@ -55,6 +62,12 @@ void FB_DrawRect(int x, int y, int w, int h, uint32_t colour);   /* outline   */
 void FB_DrawHLine(int x, int y, int len, uint32_t colour);
 void FB_DrawVLine(int x, int y, int len, uint32_t colour);
 void FB_PutPixel(int x, int y, uint32_t colour);
+
+/* Blit a horizontal run of ARGB pixels (alpha in high byte; alpha==0 skips
+ * the pixel).  Clipped to the framebuffer.  If `invert` is non-zero the RGB
+ * channels are XORed with 0xFFFFFF before writing.  Hoisted branch version
+ * of the per-pixel loops in icon_render.c. */
+void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert);
 
 /* Text rendering — 8×16 bitmap font ---------------------------------------- */
 extern const uint8_t g_font8x16[95][16];

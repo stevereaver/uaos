@@ -35,7 +35,7 @@ GCC_FLAGS="-ffreestanding -fno-stack-protector -fno-pie -fno-PIE \
            -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
            -Wall -Wextra \
            -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
-           -Wno-address-of-packed-member -Wno-missing-braces"
+           -Wno-address-of-packed-member"
 
 # -------------------------------------------------------------------------
 # Helpers

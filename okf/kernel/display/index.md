@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-08-26T12:00:00Z
 ---
 
 # Display and Window Manager
@@ -16,7 +16,30 @@ UAOS provides a graphical user interface (GUI) inspired by the Amiga Workbench. 
 The framebuffer is initialized during boot via Multiboot2 tags. UAOS supports 32-bit color (BGRA/RGBA) and provides primitives for:
 - Drawing pixels, lines, and rectangles.
 - Rendering bitmaps and icons.
-- Font rendering (8x16 bitmap fonts).
+- Font rendering (8x16 and 8x8 bitmap fonts).
+
+### Double Buffering and Dirty-Rect Tracking
+
+All WM-driven rendering goes through a back buffer (`g_backbuf`, 1280×1024 max in BSS). The pipeline is:
+
+1. `FB_BeginDraw()` — switches primitives to back-buffer mode and resets the dirty rectangle.
+2. Primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`, `FB_BlitARGB`, `FB_PutPixel`) paint into the back buffer and extend a bounding-box dirty rectangle (`g_dirty_x0/y0/x1/y1`).
+3. `Cursor_Redraw()` draws the cursor sprite into the back buffer (its pixels are included in the dirty rect automatically).
+4. `FB_Flip()` — `memcpy`s only the dirty rows from the back buffer to VRAM (32bpp uses row `memcpy`; 24bpp uses a per-pixel loop). If nothing changed, the flip is a no-op.
+
+Direct-mode drawing (when `FB_IsDrawing()` is false) writes straight to VRAM and bypasses dirty tracking. `FB_DirtyInclude()` lets callers that touch VRAM directly during a back-buffered frame extend the dirty box.
+
+### Fast Row-Based Primitives
+
+The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`) hoist the `g_drawing` and `bpp` branches out of the per-pixel loop, resolve the target row pointer once, and run a tight inner loop. `FB_BlitARGB` provides a clipped ARGB row blit (alpha-keyed, optional colour inversion) used by `icon_render.c` instead of per-pixel `FB_PutPixel` calls.
+
+### Mode-Size Clamp
+
+`FB_Init` clamps `g_fb.width`/`g_fb.height` to the back-buffer dimensions (`BB_MAX_W` × `BB_MAX_H` = 1280×1024) so the desktop always lays out inside the drawable region even if GRUB selects a larger mode.
+
+### String Clipping
+
+`FB_PutStrCentred` and `FB_PutStrSmallCentred` truncate the string to fit the target rectangle (character-granular), preventing long window titles from overdrawing the zoom/depth gadgets or bleeding past the window edge.
 
 ## Window Manager (WM)
 
@@ -37,10 +60,30 @@ Each window provides callbacks for:
 - `on_key`: Handling keystrokes.
 - `on_click`: Handling mouse clicks in the client area.
 
+### Close and Depth Gadgets
+
+`WM_CloseWindow` repaints via the double-buffered `WM_Redraw()` path (no flicker). The depth gadget (`depth_window`) reorders the z-stack and notifies Intuition of the focus change via `wm_notify_focus_change()` so `IDCMP_ACTIVEWINDOW`/`INACTIVEWINDOW` are sent.
+
+## Software Cursor
+
+The software cursor (`cursor.c`) uses save/restore of background pixels for flicker-free movement. Key rules:
+
+- **IRQ-time moves**: `Cursor_Move` is called from `PS2Mouse_IRQHandler`. If a back-buffered frame is in progress (`FB_IsDrawing()`), it only updates the stored position — the frame-end `Cursor_Redraw` paints the cursor at the new position. This prevents back-buffer pollution and ghost-cursor artifacts.
+- **Sprite scaling**: The 32×32 and 48×48 arrow pointers are generated at boot by integer-scaling the verified 16×16 sprite (2× and 3× respectively). The previous hand-typed tables had wrong per-row element counts and produced skewed sprites.
+- **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` (back buffer when drawing, VRAM otherwise — both authoritative after the last flip). `cursor_restore_bg` is a no-op during back-buffered drawing since the full frame is repainted.
+
 ## Workbench Elements
 - **Backdrop**: Solid Amiga grey (`WB_GREY`, R:170 G:170 B:170).
 - **Menu Bar**: Fixed at the top of the screen.
 - **Icons**: Desktop icons representing disks and tools.
+
+### Icon Cache
+
+The desktop icon list (including `.info` file loading and planar decoding) is cached in `get_icons()` and only rebuilt when the VFS mount table changes (mount count or any mount name differs from the cached fingerprint). This avoids reloading every `.info` from VFS on every frame and mouse event. Click/selection state persists in the cached `icons[]` array across calls.
+
+### Clock Redraw
+
+The menubar clock displays `HH:MM`. `Desktop_UpdateClock` (called once per second from IRQ context) only sets the redraw-pending flag when the displayed minute changes, not every second. `Desktop_FlushClockRedraw` (called from the main loop) consumes the flag and calls `WM_Redraw()`.
 
 ### Menu Bar
 
@@ -143,3 +186,13 @@ The display layer includes several Workbench-style application windows in additi
 ## Shell Window
 
 `shell_win.c` implements the graphical CLI window. It provides scrollable history, input line editing, output buffering, and synchronous child tracking. It can host multiple independent shell instances and dispatches commands to the native command table, resident commands, external ELF64 userspace programs, or embedded M68k binaries.
+
+## Debug Logging
+
+Hot-path serial logging is compile-time gated to avoid UART busy-wait overhead (each char causes a TCG vmexit) and PIT tick skew (logs run at IRQ time with IF=0):
+
+- `WM_DEBUG` (in `wm.c`, default 0) — gates `WM_LOG`/`WM_LOG_DEC`.
+- `DT_DEBUG` (in `desktop.c`, default 0) — gates `DT_LOG`/`DT_LOG_DEC`.
+- `MOUSE_DEBUG` (in `ps2mouse.c`, default 0) — gates the per-packet serial dump in `PS2Mouse_IRQHandler`.
+
+Set any to 1 to re-enable the corresponding debug output. Boot-time logs and shell serial mirroring are unaffected.

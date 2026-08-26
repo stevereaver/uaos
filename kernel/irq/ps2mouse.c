@@ -11,6 +11,13 @@
 #include "../display/cursor.h"
 #include <stdint.h>
 
+/* P4: set to 1 to re-enable the per-packet serial dump in the IRQ handler.
+ * Default 0 — the dump floods the serial log and costs ~40 UART busy-waits
+ * per mouse packet at IRQ time (IF=0), skewing PIT ticks. */
+#ifndef MOUSE_DEBUG
+#define MOUSE_DEBUG 0
+#endif
+
 /* =========================================================================
  * i8042 port constants
  * ========================================================================= */
@@ -241,7 +248,10 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
     g_mouse.btn_right  = (flags & 0x02) ? 1 : 0;
     g_mouse.btn_middle = (flags & 0x04) ? 1 : 0;
 
-    /* Debug: log raw packet + decoded values to serial */
+    /* P4: per-packet serial dump gated behind MOUSE_DEBUG (default 0).
+     * Each char busy-waits on UART LSR and causes a TCG vmexit; with IF=0
+     * this also skews PIT ticks.  Set MOUSE_DEBUG=1 to re-enable. */
+#if MOUSE_DEBUG
     _ser_puts("M["); _ser_hex8(pkt[0]); _ser_putc(' ');
     _ser_hex8(pkt[1]); _ser_putc(' '); _ser_hex8(pkt[2]);
     _ser_puts("] dx="); _ser_int(dx);
@@ -249,6 +259,7 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
     _ser_puts(" x="); _ser_int(new_x);
     _ser_puts(" y="); _ser_int(new_y);
     _ser_putc('\n');
+#endif
 
     Cursor_Move(new_x, new_y);
 
