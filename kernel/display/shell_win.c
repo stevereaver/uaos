@@ -504,7 +504,7 @@ static void inst_push_scroll_to_wm(ShellInstance *s)
 }
 
 /* Forward declaration — defined below after inst_dispatch */
-typedef struct { void *shell; VfsFile fh; int active; } RedirCtx;
+typedef struct { void *shell; VfsFile fh; int active; int null; } RedirCtx;
 static RedirCtx g_redir;
 
 /* -------------------------------------------------------------------------
@@ -720,6 +720,7 @@ static void inst_print(ShellInstance *s, const char *line)
 
     /* If stdout is redirected, write to file instead of shell history */
     if (g_redir.active) {
+        if (g_redir.null) return;
         VFS_Write(&g_redir.fh, (const uint8_t *)line, (uint32_t)slen(line));
         uint8_t nl = '\n';
         VFS_Write(&g_redir.fh, &nl, 1);
@@ -4268,12 +4269,20 @@ static void expand_vars(ShellInstance *s, const char *src, char *dst, int max)
 
             char vname[MAX_ENV_NAME];
             int vi = 0;
-            while (*src && (*src == '_' ||
-                   (*src >= 'A' && *src <= 'Z') ||
-                   (*src >= 'a' && *src <= 'z') ||
-                   (*src >= '0' && *src <= '9')) && vi < MAX_ENV_NAME - 1)
-                vname[vi++] = *src++;
-            vname[vi] = '\0';
+            if (*src == '{') {
+                src++;
+                while (*src && *src != '}' && vi < MAX_ENV_NAME - 1)
+                    vname[vi++] = *src++;
+                if (*src == '}') src++;
+                vname[vi] = '\0';
+            } else {
+                while (*src && (*src == '_' ||
+                       (*src >= 'A' && *src <= 'Z') ||
+                       (*src >= 'a' && *src <= 'z') ||
+                       (*src >= '0' && *src <= '9')) && vi < MAX_ENV_NAME - 1)
+                    vname[vi++] = *src++;
+                vname[vi] = '\0';
+            }
             if (!vi) { if (di < max - 1) dst[di++] = '$'; continue; }
             /* Look up in local store first */
             const char *val = NULL;
@@ -4334,6 +4343,7 @@ static void inst_dispatch(ShellInstance *s, const char *line)
     while (*line == ' ') line++;
     if (!*line) return;
     if (*line == ';') return; /* skip comment lines */
+    g_redir.null = 0;
 
     /* Detect background operator (&) before redirect parsing */
     int bg = 0;
@@ -4377,24 +4387,28 @@ static void inst_dispatch(ShellInstance *s, const char *line)
 
     /* stdout redirect (> or >>) */
     if (redir_mode == 1 || redir_mode == 2) {
-        int flags = VFS_WRITE | VFS_CREATE | (redir_mode == 1 ? VFS_TRUNC : 0);
-        if (!VFS_Open(&g_redir.fh, redir_path, flags)) {
-            char msg[MAX_LINE_LEN];
-            scopy(msg, "Cannot open for write: ", MAX_LINE_LEN);
-            scat(msg, redir_path, MAX_LINE_LEN);
-            inst_print(s, msg);
-            return;
+        g_redir.null = (redir_path[0] != '\0' && seq_ci(redir_path, "nil:"));
+        if (!g_redir.null) {
+            int flags = VFS_WRITE | VFS_CREATE | (redir_mode == 1 ? VFS_TRUNC : 0);
+            if (!VFS_Open(&g_redir.fh, redir_path, flags)) {
+                char msg[MAX_LINE_LEN];
+                scopy(msg, "Cannot open for write: ", MAX_LINE_LEN);
+                scat(msg, redir_path, MAX_LINE_LEN);
+                inst_print(s, msg);
+                return;
+            }
+            /* For append, seek to end */
+            if (redir_mode == 2)
+                VFS_Seek(&g_redir.fh, VFS_Size(&g_redir.fh));
         }
-        /* For append, seek to end */
-        if (redir_mode == 2)
-            VFS_Seek(&g_redir.fh, VFS_Size(&g_redir.fh));
 
         g_redir.shell  = s;
         g_redir.active = 1;
         run_cmd(s, cmd_only);
         g_redir.active = 0;
         check_failat(s);
-        VFS_Close(&g_redir.fh);
+        if (!g_redir.null)
+            VFS_Close(&g_redir.fh);
         return;
     }
 
@@ -5105,6 +5119,11 @@ void ShellWin_RunStartupSequence(void)
     uint32_t nread = VFS_Read(&fh, (uint8_t *)buf, size);
     buf[nread] = '\0';
     VFS_Close(&fh);
+
+    /* Pre-populate the startup variables described in the manual.
+     * Startup-Sequence later uses SetEnv/UnSet on these. */
+    script_set_var(s, "Workbench", "Workbench:");
+    script_set_var(s, "Kickstart", "47.1");
 
     run_script_text(s, buf);
     script_release_buf();

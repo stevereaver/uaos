@@ -43,27 +43,34 @@ void Cmd_Info(NativeCmdCtx *ctx, const char *args)
         while (*p && *p != ' ' && i < 31) { devname[i++] = *p++; }
         devname[i] = '\0';
 
-        /* Handle RAM: special case */
-        if (cmd_seq(devname, "RAM") || cmd_seq(devname, "RAM:")) {
-            uint32_t total = 0, used = 0;
-            VFS_GetVolumeInfo("RAM:", &total, &used);
-            uint32_t free = total - used;
-            char sz[16], usz[16], fsz[16];
-            sz[0] = usz[0] = fsz[0] = '\0';
-            format_cap(total, sz, 16);
-            format_cap(used, usz, 16);
-            format_cap(free, fsz, 16);
+        /* Handle logical volume name (e.g., RAM:, Workbench:) */
+        {
+            char vol_path[48];
+            cmd_scopy(vol_path, devname, sizeof(vol_path));
+            if (cmd_slen(vol_path) > 0 && vol_path[cmd_slen(vol_path) - 1] != ':')
+                cmd_scat(vol_path, ":", sizeof(vol_path));
 
-            char msg[CMD_MAX_LINE];
-            cmd_scopy(msg, "Unit: RAM:", CMD_MAX_LINE); PRINT(msg);
-            cmd_scopy(msg, "Size: ", CMD_MAX_LINE);
-            cmd_scat(msg, sz, CMD_MAX_LINE); PRINT(msg);
-            cmd_scopy(msg, "Used: ", CMD_MAX_LINE);
-            cmd_scat(msg, usz, CMD_MAX_LINE); PRINT(msg);
-            cmd_scopy(msg, "Free: ", CMD_MAX_LINE);
-            cmd_scat(msg, fsz, CMD_MAX_LINE); PRINT(msg);
-            cmd_scopy(msg, "Status: Read/Write", CMD_MAX_LINE); PRINT(msg);
-            return;
+            uint32_t total = 0, used = 0;
+            if (VFS_GetVolumeInfo(vol_path, &total, &used) == 0) {
+                uint32_t free = (total > used) ? (total - used) : 0;
+                char sz[16], usz[16], fsz[16];
+                sz[0] = usz[0] = fsz[0] = '\0';
+                format_cap(total, sz, 16);
+                format_cap(used, usz, 16);
+                format_cap(free, fsz, 16);
+
+                char msg[CMD_MAX_LINE];
+                cmd_scopy(msg, "Unit: ", CMD_MAX_LINE);
+                cmd_scat(msg, vol_path, CMD_MAX_LINE); PRINT(msg);
+                cmd_scopy(msg, "Size: ", CMD_MAX_LINE);
+                cmd_scat(msg, sz, CMD_MAX_LINE); PRINT(msg);
+                cmd_scopy(msg, "Used: ", CMD_MAX_LINE);
+                cmd_scat(msg, usz, CMD_MAX_LINE); PRINT(msg);
+                cmd_scopy(msg, "Free: ", CMD_MAX_LINE);
+                cmd_scat(msg, fsz, CMD_MAX_LINE); PRINT(msg);
+                cmd_scopy(msg, "Status: Read/Write", CMD_MAX_LINE); PRINT(msg);
+                return;
+            }
         }
 
         BlockDev *dev = BlockDev_Find(devname);
