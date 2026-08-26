@@ -9,6 +9,12 @@ void ShellWin_Init(void);
 /* Open a new independent shell window (up to MAX_SHELLS) */
 void ShellWin_Open(void);
 
+/* Open a new shell window and optionally execute a startup script in it.
+ * The script path must be an absolute VFS path (e.g. resolved by the
+ * caller relative to the invoking shell's cwd).  Pass NULL to just open
+ * a shell with no startup script — equivalent to ShellWin_Open(). */
+void ShellWin_OpenWithScript(const char *script_path);
+
 /* Feed one ASCII character into the focused shell (from keyboard IRQ) */
 void ShellWin_HandleKey(char c);
 

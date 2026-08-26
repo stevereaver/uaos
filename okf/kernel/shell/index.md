@@ -59,4 +59,4 @@ Double-clicking an icon in the Workbench file browser (`filebrowser.c`) calls `E
 
 ## Scripting
 
-The shell supports basic scripting via `S:Startup-Sequence` and the `execute` command, allowing for automated system initialization.
+The shell supports basic scripting via `S:Startup-Sequence` and the `execute` command, allowing for automated system initialization. The `newcli`/`newshell` command accepts an optional `from <script>` argument: `ShellWin_OpenWithScript()` opens a new shell window and synchronously runs the named script in it (resolved relative to the invoking shell's cwd), reusing the same `run_script_text` runner and 4 KB script buffer pool as `execute` and the boot `Startup-Sequence`.

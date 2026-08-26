@@ -577,10 +577,14 @@ UAOS> vim RAM:T/notes.txt
 ```
 
 #### `newcli` / `newshell`
-Open a new shell window.
+Open a new shell window. The optional `from <script>` runs a startup
+script in the newly opened shell (resolved relative to the invoking
+shell's current directory), mirroring the `S:Startup-Sequence` mechanism
+used at boot.
 
 ```
 UAOS> newcli
+UAOS> newcli from S:MySetup
 ```
 
 ---

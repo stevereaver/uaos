@@ -4960,10 +4960,10 @@ static void shell_task_entry(void *arg)
  * Internal: open one shell instance
  * ========================================================================= */
 
-static void open_shell(int stagger)
+static ShellInstance *open_shell(int stagger)
 {
-    if (g_n_shells >= MAX_SHELLS) return;
-    if (!g_fb.valid) return;
+    if (g_n_shells >= MAX_SHELLS) return NULL;
+    if (!g_fb.valid) return NULL;
 
     int idx = g_n_shells++;
     ShellInstance *s = &g_shells[idx];
@@ -5015,6 +5015,7 @@ static void open_shell(int stagger)
     s->kb_tail = 0;
     Task_CreateNative("Shell", -128, shell_task_entry, s);
     WM_Redraw();
+    return s;
 }
 
 /* =========================================================================
@@ -5029,16 +5030,60 @@ void ShellWin_Init(void)
 
 void ShellWin_Open(void)
 {
+    ShellWin_OpenWithScript(NULL);
+}
+
+void ShellWin_OpenWithScript(const char *script_path)
+{
+    ShellInstance *s = NULL;
+
     /* Find a free slot — also allow re-use of a closed slot */
     for (int i = 0; i < g_n_shells; i++) {
         if (!WM_IsWindowActive(g_shells[i].wm_handle)) {
             /* Reclaim this slot */
             g_n_shells = i;
-            open_shell(i);
-            return;
+            s = open_shell(i);
+            break;
         }
     }
-    open_shell(g_n_shells);
+    if (!s) s = open_shell(g_n_shells);
+    if (!s) return;
+
+    /* Optionally execute a startup script in the new shell, mirroring
+     * the S:Startup-Sequence path used at boot.  The script runs
+     * synchronously from the caller's task context — the new shell's
+     * own task is idle (no keys queued) until we return, so there is
+     * no contention on the shell instance state. */
+    if (!script_path || !*script_path) return;
+
+    VfsFile fh;
+    if (!VFS_Open(&fh, script_path, VFS_READ)) {
+        inst_print(s, "newcli: cannot open startup script");
+        return;
+    }
+
+    uint32_t size = VFS_Size(&fh);
+    if (size == 0 || size >= MAX_SCRIPT_SIZE) {
+        inst_print(s, "newcli: startup script empty or too large (max 4KB)");
+        VFS_Close(&fh);
+        return;
+    }
+
+    char *buf = script_acquire_buf();
+    if (!buf) {
+        inst_print(s, "newcli: script nesting too deep");
+        VFS_Close(&fh);
+        return;
+    }
+
+    uint32_t nread = VFS_Read(&fh, (uint8_t *)buf, size);
+    buf[nread] = '\0';
+    VFS_Close(&fh);
+
+    inst_print(s, "Executing startup script...");
+    run_script_text(s, buf);
+    script_release_buf();
+    inst_print(s, "Startup script complete.");
 }
 
 void ShellWin_Redraw(void)
