@@ -57,6 +57,7 @@
 #define SYSCALL_SETATTRS       0x2A   /* sys_setattrs(path, attrs)           */
 #define SYSCALL_GETMOUNTCOUNT  0x2B   /* sys_getmountcount()                 */
 #define SYSCALL_GETMOUNTNAME   0x2C   /* sys_getmountname(idx, buf, max)     */
+#define SYSCALL_MEMINFO        0x2D   /* sys_meminfo(struct uaos_meminfo *)  */
 
 #define SYSCALL_SCHEDULE    0xFF   /* reserved: yield/reschedule         */
 

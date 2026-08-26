@@ -30,7 +30,7 @@ Commands in UAOS can be:
 - **Native C: commands**: Executed in-place by the kernel command dispatcher (`cmd_*.c` in `kernel/shell/`).
 
 > [!NOTE]
-> As of Phase 7, the following DOS commands have been migrated from kernel-resident native C: stubs to on-disk x86-64 ELF64 userspace binaries: `echo`, `type`, `dir`, `list`, `makedir`, `delete`, `rename`, `copy`, `protect`, `attr`, `grep`, `sort`, `join`, `search`, `filenote`, `more`. These binaries live in `system/userspace/` and use the shared helpers in `system/libuaos/uaos_cmd.h`, `uaos_template.h`, and `uaos_syscall.h`. New VFS syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C) were added to support them.
+> As of Phase 7, the following DOS commands have been migrated from kernel-resident native C: stubs to on-disk x86-64 ELF64 userspace binaries: `echo`, `type`, `dir`, `list`, `makedir`, `delete`, `rename`, `copy`, `protect`, `attr`, `grep`, `sort`, `join`, `search`, `filenote`, `more`. These binaries live in `system/userspace/` and use the shared helpers in `system/libuaos/uaos_cmd.h`, `uaos_template.h`, and `uaos_syscall.h`. New VFS syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C) were added to support them. `avail` was likewise migrated off its hardcoded native stub to a userspace binary that queries real memory statistics via `SYSCALL_MEMINFO` (0x2D); the kernel `C:mem` command now uses the same `Mem_GetInfo()` helper.
 
 ## Command Reference
 
@@ -39,7 +39,7 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | Category | Commands |
 |---|---|
 | **Volume / Disk** | `info`, `disks`, `diskchange`, `mount`, `format`, `fdisk`, `addbuffers`, `relabel`, `install` |
-| **System** | `version`, `mem`, `avail`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `strace` |
+| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `strace` |
 | **Network** | `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo` |
 | **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `requestchoice`, `requestfile` |
 | **Utilities** | `date`, `ask`, `which`, `getenv`, `unset`, `clear`, `reboot` |
@@ -49,7 +49,7 @@ The following commands are now on-disk x86-64 ELF64 userspace binaries in `syste
 | Category | Commands |
 |---|---|
 | **Filesystem** | `dir`, `list`, `copy`, `delete`, `rename`, `makedir`, `type`, `more`, `protect`, `attr`, `filenote`, `search`, `sort`, `join`, `grep` |
-| **Utilities** | `echo`, `pwd`, `find`, `file`, `strings` |
+| **Utilities** | `echo`, `pwd`, `find`, `file`, `strings`, `avail` |
 
 For full syntax and examples, see the `README.md` and `documentation/Dos_Manual.md` in the repository root.
 

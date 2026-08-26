@@ -7,6 +7,7 @@
 
 #include "syscall_table.h"
 #include "task.h"
+#include "mem_info.h"
 #include "../dos/vfs.h"
 #include "elf64_loader.h"
 #include "../irq/ps2kbd.h"
@@ -715,6 +716,43 @@ static int sys_getmountname(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     return VFS_GetMountName(idx, buf, max);
 }
 
+/* Userspace-visible memory info (matches struct uaos_meminfo in
+ * system/libuaos/uaos_syscall.h and struct UaosMemInfo in mem_info.h). */
+struct UaosMemInfoUser {
+    uint32_t x64_total;
+    uint32_t x64_used;
+    uint32_t x64_free;
+    uint32_t m68k_ram_total;
+    uint16_t m68k_slots_total;
+    uint16_t m68k_slots_used;
+    uint16_t tasks_total;
+    uint16_t tasks_running;
+    uint16_t tasks_waiting;
+    uint16_t reserved;
+};
+
+static int sys_meminfo(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rsi; (void)rdx;
+    struct UaosMemInfoUser *out = (struct UaosMemInfoUser *)(uintptr_t)rdi;
+    if (!out)
+        return -1;
+
+    struct UaosMemInfo info;
+    Mem_GetInfo(&info);
+    out->x64_total        = info.x64_total;
+    out->x64_used         = info.x64_used;
+    out->x64_free         = info.x64_free;
+    out->m68k_ram_total   = info.m68k_ram_total;
+    out->m68k_slots_total = info.m68k_slots_total;
+    out->m68k_slots_used  = info.m68k_slots_used;
+    out->tasks_total      = info.tasks_total;
+    out->tasks_running    = info.tasks_running;
+    out->tasks_waiting    = info.tasks_waiting;
+    out->reserved         = 0;
+    return 0;
+}
+
 /* -------------------------------------------------------------------------
  * GUI / user-window syscalls
  * ------------------------------------------------------------------------- */
@@ -847,6 +885,7 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_SETATTRS:       ret = sys_setattrs(rdi, rsi, rdx); break;
     case SYSCALL_GETMOUNTCOUNT:  ret = sys_getmountcount(rdi, rsi, rdx); break;
     case SYSCALL_GETMOUNTNAME:   ret = sys_getmountname(rdi, rsi, rdx); break;
+    case SYSCALL_MEMINFO:        ret = sys_meminfo(rdi, rsi, rdx); break;
     case SYSCALL_SCHEDULE:
     default:
         /* Reserved / legacy voluntary yield. */

@@ -149,6 +149,9 @@ int ELF64_Load(const uint8_t *data, uint32_t size,
 /* Return the amount of heap currently in use (bytes). */
 uint32_t ELF64_HeapUsed(void);
 
+/* Return the total size of the x64 heap arena (bytes). */
+uint32_t ELF64_HeapSize(void);
+
 /* Allocate size bytes from the x64 heap with the given alignment.
  * Returns a valid kernel pointer or NULL on exhaustion.
  * The heap is a single bump arena; allocations are never freed. */

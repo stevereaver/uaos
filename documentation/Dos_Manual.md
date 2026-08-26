@@ -777,11 +777,15 @@ Show stack usage.
 UAOS> stack
 ```
 
-#### `avail`
-Show available memory.
+#### `avail [BYTES] [K]`
+Show available system memory, queried live from the kernel memory API
+(`SYSCALL_MEMINFO`). Reports the x86-64 userspace heap (total/used/free),
+the emulated M68k guest RAM slot usage, and a scheduler task summary.
+`BYTES` prints raw byte counts; `K` (the default) prints kilobytes/megabytes.
 
 ```
 UAOS> avail
+UAOS> avail BYTES
 ```
 
 ---
@@ -1123,7 +1127,7 @@ echo "Scan saved to RAM:dirlog.txt"
 | `endcli` | `endcli` | Close shell |
 | `getenv` | `getenv <name>` | Read variable |
 | `status` | `status [FULL] [TCB] [CLI]` | System status |
-| `avail` | `avail` | Available memory |
+| `avail` | `avail [BYTES] [K]` | Available memory |
 | `requestchoice` | `requestchoice <t> <b> <btn...>` | Choice dialog |
 | `requestfile` | `requestfile [options]` | File requester |
 

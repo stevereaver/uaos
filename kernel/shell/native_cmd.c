@@ -67,7 +67,6 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("quit",       Cmd_Quit     ),
     CMD ("endcli",     Cmd_EndCLI   ),
     CMD ("relabel",    Cmd_Relabel  ),
-    CMD ("avail",      Cmd_Avail    ),
     CMD ("getenv",          Cmd_GetEnv        ),
     CMD ("unset",           Cmd_UnSet         ),
     CMD ("jobs",            Cmd_Jobs          ),

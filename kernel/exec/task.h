@@ -239,6 +239,9 @@ UaosTask *Task_FindByName(const char *name);
 /* Query scheduler state for status bar */
 void Task_GetCounts(int *out_total, int *out_running, int *out_waiting);
 
+/* Report emulated M68k guest RAM slot usage (per-task RAM pools). */
+void Task_M68kSlotCount(int *total, int *used);
+
 /* Test helper: spawn UART-printing tasks */
 void Task_TestSpawn(void);
 

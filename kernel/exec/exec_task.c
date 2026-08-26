@@ -88,6 +88,17 @@ void Task_ReleaseM68kRam(UaosTask *t)
     }
 }
 
+/* Report M68k guest RAM slot usage to callers outside exec_task.c
+ * (used by the kernel memory query API). */
+void Task_M68kSlotCount(int *total, int *used)
+{
+    int u = 0;
+    for (int i = 0; i < MAX_M68K_TASKS; i++)
+        if (g_ram_used[i]) u++;
+    if (total) *total = MAX_M68K_TASKS;
+    if (used)  *used  = u;
+}
+
 /* Big-endian helpers for guest RAM */
 static void guest_w32(uint32_t addr, uint32_t val)
 {

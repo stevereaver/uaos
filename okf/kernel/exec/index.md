@@ -28,6 +28,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `exec_signal.c`: Task lookup helpers for M68k guest process structures.
 - `exec_ipc.c`: Message port and message passing implementation (`NewPort`, `PutMsg`, `GetMsg`, `WaitPort`, `ReplyMsg`).
 - `syscall_dispatch.c`: Handling register-based system call routing and implementation for Ring-3 userspace programs.
+- `mem_info.c` / `mem_info.h`: Kernel-exported memory query API (`Mem_GetInfo()`), backing both the resident `C:mem` command and the `SYSCALL_MEMINFO` (0x2D) syscall consumed by the on-disk `C:avail` userspace command.
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
@@ -59,7 +60,17 @@ Key details:
 
 ## X64 Syscall Dispatch
 
-X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, and GUI window operations.
+X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations, and the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C).
+
+### Memory Query API (`SYSCALL_MEMINFO`, 0x2D)
+
+`sys_meminfo` fills a `struct uaos_meminfo` (kernel side: `struct UaosMemInfo` in `mem_info.h`) with a point-in-time snapshot of the live memory arenas. It is a thin wrapper over the in-kernel `Mem_GetInfo()` helper in `mem_info.c`, which gathers:
+
+- **x86-64 userspace heap** — total/used/free from the ELF64 loader bump arena (`ELF64_HeapSize()` / `ELF64_HeapUsed()`). This arena backs ELF64 segment loading and `sys_alloc`; it is reclaimed only when no X64 tasks are alive (`ELF64_ReclaimHeap()`).
+- **Emulated M68k guest RAM slots** — per-task RAM pool count from `Task_M68kSlotCount()` and the per-slot size (`GUEST_RAM_SIZE`).
+- **Scheduler task table** — total/running/waiting counts from `Task_GetCounts()`.
+
+The same `Mem_GetInfo()` helper is consumed directly by the resident `C:mem` command, so kernel and userspace memory reports stay consistent. The on-disk `C:avail` userspace command queries this API to render real memory statistics.
 
 ### stdin read (`sys_read`, fd=0)
 

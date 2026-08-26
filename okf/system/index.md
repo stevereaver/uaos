@@ -35,7 +35,7 @@ Native Ring-3 programs are built against a minimal freestanding library in `syst
 
 - **`uaos_start.c`**: Entry point (`_start`) that parses arguments and calls `main`.
 - **`uaos_libc.h`**: Header-only static-inline implementations of `strlen`, `strcmp`, `strcpy`, `memcpy`, `memset`, `strlcat`, and character helpers.
-- **`uaos_syscall.h`**: Inline wrappers for every `INT 0x80` syscall and the `uaos_gui_event`, `uaos_dirent`, and `uaos_stat` structures. Extended in Phase 7 with VFS mutation/metadata syscalls (0x20–0x2C): `mkdir`, `delete`, `rename`, `setprotection`, `getprotection`, `getcomment`, `setcomment`, `getvolumeinfo`, `readkey`, `getattrs`, `setattrs`, `getmountcount`, `getmountname`. Also defines AmigaDOS `FIBF_*` protection bit constants and `UAOS_ATTR_*` flags.
+- **`uaos_syscall.h`**: Inline wrappers for every `INT 0x80` syscall and the `uaos_gui_event`, `uaos_dirent`, `uaos_stat`, and `uaos_meminfo` structures. Extended in Phase 7 with VFS mutation/metadata syscalls (0x20–0x2C): `mkdir`, `delete`, `rename`, `setprotection`, `getprotection`, `getcomment`, `setcomment`, `getvolumeinfo`, `readkey`, `getattrs`, `setattrs`, `getmountcount`, `getmountname`. `SYSCALL_MEMINFO` (0x2D) exposes the kernel memory query API (`uaos_meminfo()`), used by `C:avail`. Also defines AmigaDOS `FIBF_*` protection bit constants and `UAOS_ATTR_*` flags.
 - **`uaos_template.h`**: Header-only AmigaDOS-style command template parser (ported from `kernel/shell/cmd_template.c`). Supports `/A`, `/K`, `/S`, `/N`, `/M`, `/F` qualifiers with `uaos_tmpl_parse()`, `uaos_tmpl_match()`, and query helpers (`uaos_tmpl_switch()`, `uaos_tmpl_string()`, `uaos_tmpl_int()`, `uaos_tmpl_count()`, `uaos_tmpl_multi()`).
 - **`uaos_cmd.h`**: Shared helpers for userspace C: command binaries — output (`put_s`, `put_c`, `put_line`), argument reconstruction (`cmd_build_args`), path resolution (`cmd_make_abs`, `cmd_join_path`, `cmd_split_path_pat`), AmigaDOS pattern matching (`cmd_pattern_match` with `#?`, `?`, `*`, `%` wildcards), keyword helpers (`cmd_kw_find`, `cmd_kw_strip`), numeric formatting, and date formatting (`cmd_fmt_mtime`).
 - **`uaos_getopt.h`**: Freestanding GNU-style `getopt_long` parser for the `gnu:` coreutils layer. Supports short options, long options (`--name`, `--name=value`, `--name value`), `no_argument`/`required_argument`/`optional_argument` modes, automatic `--` terminator handling, and the `UAOS_GO_LONG + N` sentinel for long-only options. Exposes `uaos_getopt_long()`, `uaos_operands_count()`, `uaos_operand()`, `uaos_optarg_long()`, and the global `g_optarg`/`g_optind`.
@@ -67,6 +67,7 @@ The following programs are compiled as x86-64 ELF64 PIE binaries, wrapped with a
 - `search` — search files for text (`PATTERN/A,FILE,ALL/S,FROM/K,FILEPAT/K,CI/S`).
 - `filenote` — set or show a file's comment (`FILE/A,COMMENT/F`).
 - `more` — paginate file output one screen at a time.
+- `avail` — show available system memory (`BYTES/S`, `K/S`). Queries the kernel memory API via `SYSCALL_MEMINFO` and reports x86-64 heap total/used/free, M68k guest RAM slot usage, and scheduler task counts.
 
 ## GNU Core Utilities (`system/gnusrc/`)
 

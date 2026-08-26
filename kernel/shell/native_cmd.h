@@ -204,7 +204,6 @@ void Cmd_Quit     (NativeCmdCtx *ctx, const char *args);
 void Cmd_EndCLI   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Jobs     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Relabel  (NativeCmdCtx *ctx, const char *args);
-void Cmd_Avail    (NativeCmdCtx *ctx, const char *args);
 void Cmd_GetEnv          (NativeCmdCtx *ctx, const char *args);
 void Cmd_UnSet           (NativeCmdCtx *ctx, const char *args);
 void Cmd_Install         (NativeCmdCtx *ctx, const char *args);

@@ -102,6 +102,11 @@ uint32_t ELF64_HeapUsed(void)
     return g_x64_heap_used;
 }
 
+uint32_t ELF64_HeapSize(void)
+{
+    return X64_HEAP_SIZE;
+}
+
 void *ELF64_HeapAlloc(uint32_t size, uint32_t align)
 {
     return x64_heap_alloc(size, align);

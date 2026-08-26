@@ -67,6 +67,7 @@
 #define UAOS_SYSCALL_SETATTRS       0x2A
 #define UAOS_SYSCALL_GETMOUNTCOUNT  0x2B
 #define UAOS_SYSCALL_GETMOUNTNAME   0x2C
+#define UAOS_SYSCALL_MEMINFO        0x2D
 
 #define UAOS_SYSCALL_SCHEDULE           0xFF
 
@@ -119,6 +120,25 @@ struct uaos_stat {
     uint8_t  attrs;      /* volume attribute flags */
     uint16_t protection; /* AmigaDOS FIBF_* protection bits */
     uint32_t mtime;      /* modification time (Unix epoch seconds) */
+};
+
+/* -------------------------------------------------------------------------
+ * Memory statistics returned by uaos_meminfo()
+ *
+ * Layout must stay in sync with struct UaosMemInfo in
+ * kernel/exec/mem_info.h.
+ * ------------------------------------------------------------------------- */
+struct uaos_meminfo {
+    uint32_t x64_total;        /* x86-64 userspace heap total (bytes)  */
+    uint32_t x64_used;         /* x86-64 userspace heap used  (bytes)  */
+    uint32_t x64_free;         /* x64_total - x64_used                 */
+    uint32_t m68k_ram_total;   /* one M68k guest RAM slot  (bytes)     */
+    uint16_t m68k_slots_total; /* total M68k RAM slots                  */
+    uint16_t m68k_slots_used;  /* M68k RAM slots in use                 */
+    uint16_t tasks_total;      /* registered tasks                      */
+    uint16_t tasks_running;    /* tasks in RUN/READY state              */
+    uint16_t tasks_waiting;    /* tasks blocked on a signal             */
+    uint16_t reserved;
 };
 
 /* -------------------------------------------------------------------------
@@ -344,6 +364,13 @@ static inline long uaos_getmountcount(void)
 static inline long uaos_getmountname(int idx, char *buf, long max)
 {
     return uaos_syscall3(UAOS_SYSCALL_GETMOUNTNAME, (long)idx, (long)buf, max);
+}
+
+/* Query a snapshot of system memory statistics.  Returns 0 on success,
+ * negative on error.  The kernel fills *info in place. */
+static inline long uaos_meminfo(struct uaos_meminfo *info)
+{
+    return uaos_syscall1(UAOS_SYSCALL_MEMINFO, (long)info);
 }
 
 /* -------------------------------------------------------------------------
