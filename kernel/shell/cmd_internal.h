@@ -78,7 +78,13 @@ static inline void cmd_uint_to_dec(uint32_t v, char *buf, int max)
 
 /* -------------------------------------------------------------------------
  * Path helper — build absolute VFS path from cwd + user argument
- * If arg contains ':' it is already absolute.
+ * AmigaDOS-style rules:
+ *   NAME:...       absolute volume reference
+ *   :              root of current volume
+ *   :dir           relative to root of current volume
+ *   /              parent directory (one level up)
+ *   //             two levels up
+ *   /foo           parent directory, then into "foo"
  * ------------------------------------------------------------------------- */
 
 #define CMD_MAX_PATH  64
@@ -87,14 +93,23 @@ static inline void cmd_uint_to_dec(uint32_t v, char *buf, int max)
 static inline void cmd_make_abs(const char *cwd, const char *arg,
                                  char *out, int max)
 {
-    const char *p = arg;
-    while (*p && *p != ':') p++;
-    if (*p == ':') {
-        cmd_scopy(out, arg, max);
+    if (!arg || !*arg) {
+        cmd_scopy(out, cwd, max);
         return;
     }
-    /* Root-relative "/..." goes to the root of the current volume. */
-    if (arg[0] == '/') {
+
+    /* Absolute volume reference: NAME:... (NAME is non-empty) */
+    if (arg[0] != ':' && arg[0] != '/') {
+        const char *p = arg;
+        while (*p && *p != ':') p++;
+        if (*p == ':') {
+            cmd_scopy(out, arg, max);
+            return;
+        }
+    }
+
+    /* Root-relative on current volume: ":" or ":dir" */
+    if (arg[0] == ':') {
         const char *colon = cwd;
         while (*colon && *colon != ':') colon++;
         int vol_len = (int)(colon - cwd) + 1; /* include ':' */
@@ -102,9 +117,43 @@ static inline void cmd_make_abs(const char *cwd, const char *arg,
         int i = 0;
         for (; i < vol_len && i < max - 1; i++) out[i] = cwd[i];
         out[i] = '\0';
-        cmd_scat(out, arg, max);
+        cmd_scat(out, arg + 1, max);
         return;
     }
+
+    /* Parent navigation: leading "/" goes up N levels, then appends. */
+    if (arg[0] == '/') {
+        const char *colon = cwd;
+        while (*colon && *colon != ':') colon++;
+        int vol_len = (int)(colon - cwd) + 1; /* include ':' */
+
+        int up = 0;
+        while (arg[up] == '/') up++;
+
+        cmd_scopy(out, cwd, max);
+        int len = cmd_slen(out);
+
+        for (int i = 0; i < up && len > vol_len; i++) {
+            while (len > vol_len && out[len - 1] == '/')
+                out[--len] = '\0';
+            while (len > vol_len && out[len - 1] != '/')
+                out[--len] = '\0';
+            while (len > vol_len && out[len - 1] == '/')
+                out[--len] = '\0';
+        }
+
+        const char *rest = arg + up;
+        if (*rest) {
+            if (len > 0 && out[len - 1] != ':' && len < max - 1) {
+                out[len] = '/';
+                out[len + 1] = '\0';
+                len++;
+            }
+            cmd_scat(out, rest, max);
+        }
+        return;
+    }
+
     cmd_scopy(out, cwd, max);
     int cl = cmd_slen(out);
     if (cl > 0 && out[cl-1] != ':' && out[cl-1] != '/') {

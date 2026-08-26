@@ -908,21 +908,36 @@ static void inst_cmd_reboot(ShellInstance *s)
  * ========================================================================= */
 
 /* Build an absolute VFS path from cwd + user-supplied arg.
- * If arg already contains ':', treat as absolute.
- * If arg is root-relative (starts with '/'), anchor it at the current
- * volume root so "cd /" from "workbench:gnu" produces "workbench:". */
+ *
+ * AmigaDOS-style rules:
+ *   NAME:...       absolute volume reference
+ *   :              root of current volume
+ *   :dir           relative to root of current volume
+ *   /              parent directory (one level up)
+ *   //             two levels up
+ *   /foo           parent directory, then into "foo"
+ *   foo            relative to cwd
+ */
 static void make_abs_path(ShellInstance *s, const char *arg,
                            char *out, int max)
 {
-    /* Check for volume prefix (contains ':') */
-    const char *p = arg;
-    while (*p && *p != ':') p++;
-    if (*p == ':') {
-        scopy(out, arg, max);
+    if (!arg || !*arg) {
+        scopy(out, s->cwd, max);
         return;
     }
-    /* Root-relative "/..." goes to the root of the current volume. */
-    if (arg && arg[0] == '/') {
+
+    /* Absolute volume reference: NAME:... (NAME is non-empty) */
+    if (arg[0] != ':' && arg[0] != '/') {
+        const char *p = arg;
+        while (*p && *p != ':') p++;
+        if (*p == ':') {
+            scopy(out, arg, max);
+            return;
+        }
+    }
+
+    /* Root-relative on current volume: ":" or ":dir" */
+    if (arg[0] == ':') {
         const char *colon = s->cwd;
         while (*colon && *colon != ':') colon++;
         int vol_len = (int)(colon - s->cwd) + 1; /* include ':' */
@@ -930,9 +945,43 @@ static void make_abs_path(ShellInstance *s, const char *arg,
         int i = 0;
         for (; i < vol_len && i < max - 1; i++) out[i] = s->cwd[i];
         out[i] = '\0';
-        scat(out, arg, max);
+        scat(out, arg + 1, max);
         return;
     }
+
+    /* Parent navigation: leading "/" goes up N levels, then appends. */
+    if (arg[0] == '/') {
+        const char *colon = s->cwd;
+        while (*colon && *colon != ':') colon++;
+        int vol_len = (int)(colon - s->cwd) + 1; /* include ':' */
+
+        int up = 0;
+        while (arg[up] == '/') up++;
+
+        scopy(out, s->cwd, max);
+        int len = slen(out);
+
+        for (int i = 0; i < up && len > vol_len; i++) {
+            while (len > vol_len && out[len - 1] == '/')
+                out[--len] = '\0';
+            while (len > vol_len && out[len - 1] != '/')
+                out[--len] = '\0';
+            while (len > vol_len && out[len - 1] == '/')
+                out[--len] = '\0';
+        }
+
+        const char *rest = arg + up;
+        if (*rest) {
+            if (len > 0 && out[len - 1] != ':' && len < max - 1) {
+                out[len] = '/';
+                out[len + 1] = '\0';
+                len++;
+            }
+            scat(out, rest, max);
+        }
+        return;
+    }
+
     /* Relative: prepend cwd */
     scopy(out, s->cwd, max);
     /* Ensure cwd ends with '/' unless it ends with ':' */
