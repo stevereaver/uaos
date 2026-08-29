@@ -1278,6 +1278,7 @@ static int      g_icon_drag_off_y = 0;
 static int      g_icon_drag_moved = 0;
 static int      g_icon_drag_orig_x = 0;
 static int      g_icon_drag_orig_y = 0;
+static int      g_drop_target_idx = -1;  /* highlighted drop target during drag */
 
 /* Desktop lasso (rubber-band) selection state.
  * Active when the user presses the left button on empty desktop backdrop
@@ -1777,6 +1778,22 @@ static void draw_icon_state(const IconState *ic)
     }
 }
 
+/* Draw a highlight border around the current drop-target icon during a
+ * drag-to-copy operation.  A 2px white rectangle with a 1px dark outline
+ * makes the target clearly visible against the grey backdrop. */
+static void draw_drop_target_highlight(IconState *icons, int n)
+{
+    if (g_drop_target_idx < 0 || g_drop_target_idx >= n) return;
+    IconState *ic = &icons[g_drop_target_idx];
+    int lbl_x = ic->x + (ICON_W - LABEL_W) / 2;
+    if (lbl_x < 0) lbl_x = 0;
+    int hw = LABEL_W;
+    int hh = ICON_H;
+    /* Outer dark outline + inner white highlight */
+    FB_DrawRect(lbl_x - 1, ic->y - 1, hw + 2, hh + 2, WB_BLACK);
+    FB_DrawRect(lbl_x,     ic->y,     hw,     hh,     WB_WHITE);
+}
+
 /* =========================================================================
  * Lasso (rubber-band) selection rectangle
  * ========================================================================= */
@@ -1860,6 +1877,7 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
         for (int i = 0; i < n; i++) {
             draw_icon_state(&icons[i]);
         }
+        draw_drop_target_highlight(icons, n);
     }
 
     /* Lasso rectangle on top of icons, below bars */
@@ -1890,6 +1908,7 @@ void Desktop_Draw(void)
         for (int i = 0; i < n; i++) {
             draw_icon_state(&icons[i]);
         }
+        draw_drop_target_highlight(icons, n);
     }
 
     /* Lasso rectangle on top of icons, below menu dropdown */
@@ -2336,6 +2355,9 @@ void Desktop_RightButtonRelease(int mx, int my)
     WM_Redraw();
 }
 
+/* Forward declaration — used by Desktop_MouseMove and draw_drop_target_highlight. */
+static int icon_at_pos(IconState *icons, int n, int mx, int my, int exclude);
+
 void Desktop_MouseMove(int mx, int my, int btn_left)
 {
     (void)btn_left;
@@ -2406,7 +2428,128 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
             g_icon_drag_moved = 1;
         ic->x = new_x;
         ic->y = new_y;
-        WM_Redraw();
+    }
+
+    /* Track drop target for highlight.  Use the mouse position (not the
+     * icon top-left) to determine which icon the cursor is hovering over. */
+    int prev_target = g_drop_target_idx;
+    int new_target = icon_at_pos(icons, n, mx, my, g_icon_drag_idx);
+    /* Only highlight valid copy targets (a volume icon, not trashcan,
+     * not the source itself, not an appicon). */
+    if (new_target >= 0) {
+        IconState *dst = &icons[new_target];
+        if (!dst->volume || dst->is_trashcan || dst->is_appicon)
+            new_target = -1;
+    }
+    if (new_target != prev_target) {
+        g_drop_target_idx = new_target;
+    }
+    WM_Redraw();
+}
+
+/* =========================================================================
+ * Drag-to-copy: drop a volume/drawer icon onto another volume to copy
+ * ========================================================================= */
+
+/* Find which icon (other than the one being dragged) is at screen pos.
+ * Returns icon index or -1. */
+static int icon_at_pos(IconState *icons, int n, int mx, int my, int exclude)
+{
+    for (int i = 0; i < n; i++) {
+        if (i == exclude) continue;
+        IconState *ic = &icons[i];
+        int lbl_x = ic->x + (ICON_W - LABEL_W) / 2;
+        if (lbl_x < 0) lbl_x = 0;
+        if (mx >= lbl_x && mx < lbl_x + LABEL_W &&
+            my >= ic->y && my < ic->y + ICON_H)
+            return i;
+    }
+    return -1;
+}
+
+/* Copy a single file from src to dst via VFS.  Returns bytes copied or -1. */
+static int desktop_copy_file(const char *src, const char *dst)
+{
+    VfsFile fsrc, fdst;
+    if (!VFS_Open(&fsrc, src, VFS_READ)) return -1;
+    if (!VFS_Open(&fdst, dst, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
+        VFS_Close(&fsrc);
+        return -1;
+    }
+    uint8_t buf[512];
+    int total = 0;
+    uint32_t n;
+    while ((n = VFS_Read(&fsrc, buf, sizeof(buf))) > 0) {
+        VFS_Write(&fdst, buf, n);
+        total += (int)n;
+    }
+    VFS_Close(&fsrc);
+    VFS_Close(&fdst);
+    return total;
+}
+
+/* Recursively copy a directory from src to dst. */
+static void desktop_copy_dir(const char *src, const char *dst)
+{
+    VFS_MkDir(dst);
+    RamFsNode *dir = VFS_ResolveDir(src);
+    if (!dir) return;
+
+    RamFsNode *child = dir->first_child;
+    while (child) {
+        char ssub[160], dsub[160];
+        int sl = 0, dl = 0;
+
+        /* Build src sub-path */
+        const char *p = src;
+        while (*p && sl < 158) ssub[sl++] = *p++;
+        if (sl > 0 && ssub[sl - 1] != ':' && ssub[sl - 1] != '/')
+            ssub[sl++] = '/';
+        p = child->name;
+        while (*p && sl < 159) ssub[sl++] = *p++;
+        ssub[sl] = '\0';
+
+        /* Build dst sub-path */
+        p = dst;
+        while (*p && dl < 158) dsub[dl++] = *p++;
+        if (dl > 0 && dsub[dl - 1] != ':' && dsub[dl - 1] != '/')
+            dsub[dl++] = '/';
+        p = child->name;
+        while (*p && dl < 159) dsub[dl++] = *p++;
+        dsub[dl] = '\0';
+
+        if (child->type == RAMFS_TYPE_DIR) {
+            desktop_copy_dir(ssub, dsub);
+        } else {
+            desktop_copy_file(ssub, dsub);
+        }
+        child = child->next_sibling;
+    }
+}
+
+/* Perform the drag-to-copy operation: copy src_path (file or dir) into
+ * the destination volume.  dst_vol is the volume root path (e.g. "RAM:").
+ * The item is copied as dst_vol/name. */
+static void desktop_do_copy(const char *src_path, const char *name,
+                            const char *dst_vol)
+{
+    /* Build destination path: dst_vol/name */
+    char dst_path[160];
+    int di = 0;
+    const char *p = dst_vol;
+    while (*p && di < 158) dst_path[di++] = *p++;
+    if (di > 0 && dst_path[di - 1] != ':' && dst_path[di - 1] != '/')
+        dst_path[di++] = '/';
+    p = name;
+    while (*p && di < 159) dst_path[di++] = *p++;
+    dst_path[di] = '\0';
+
+    /* Check if source is a directory */
+    RamFsNode *src_dir = VFS_ResolveDir(src_path);
+    if (src_dir) {
+        desktop_copy_dir(src_path, dst_path);
+    } else {
+        desktop_copy_file(src_path, dst_path);
     }
 }
 
@@ -2448,7 +2591,49 @@ void Desktop_MouseRelease(int mx, int my)
                 ic->click_count = 1;
                 ic->last_tick   = now;
             }
+        } else if (g_icon_drag_idx < n && g_icon_drag_moved) {
+            /* Icon was dragged — check for drag-to-copy drop target. */
+            IconState *src = &icons[g_icon_drag_idx];
+            int target = icon_at_pos(icons, n, mx, my, g_icon_drag_idx);
+            if (target >= 0) {
+                IconState *dst = &icons[target];
+
+                /* Determine source path and name. */
+                const char *src_path = NULL;
+                const char *src_name = NULL;
+                if (src->is_leaveout && src->leaveout_path) {
+                    src_path = src->leaveout_path;
+                    src_name = src->label;
+                } else if (src->volume && !src->is_trashcan) {
+                    src_path = src->volume;
+                    src_name = src->label;
+                }
+
+                /* Determine destination volume. */
+                const char *dst_vol = NULL;
+                if (dst->volume && !dst->is_trashcan) {
+                    dst_vol = dst->volume;
+                }
+
+                if (src_path && src_name && dst_vol &&
+                    !str_eq(src_path, dst_vol)) {
+                    DT_LOG("[DT] Drag-copy '");
+                    DT_LOG(src_name);
+                    DT_LOG("' from '");
+                    DT_LOG(src_path);
+                    DT_LOG("' to '");
+                    DT_LOG(dst_vol);
+                    DT_LOG("'\n");
+                    desktop_do_copy(src_path, src_name, dst_vol);
+                    WM_Redraw();
+                }
+            }
+            /* Snap icon back to original position (drag-to-copy doesn't
+             * move the icon — it copies the content). */
+            src->x = g_icon_drag_orig_x;
+            src->y = g_icon_drag_orig_y;
         }
+        g_drop_target_idx = -1;
         g_icon_drag_idx = -1;
         g_desktop_pressed = 0;
         return;

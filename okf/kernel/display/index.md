@@ -174,6 +174,14 @@ This matches classic Workbench 3.x behaviour. The lasso state is tracked in `des
 ### File Browser Lasso Selection
 Lasso selection is also available inside drawer windows (`filebrowser.c`). Dragging the left mouse button on empty space within a browser's icon grid area (below the path bar) activates a lasso rectangle. Any icon cell that intersects the lasso is selected. The browser uses a per-icon `selected[]` array for multi-selection, replacing the previous single-`selected_icon` model. Single-clicking an icon selects only that icon and cancels any active lasso. The lasso rectangle is clipped to the browser's client area below the path bar.
 
+### Drag-to-Copy (Icon Drag and Drop)
+Dragging a desktop icon (volume or leave-out shortcut) onto another volume icon copies the source's contents into the destination volume. This mirrors the classic Workbench behaviour of dragging a disk/drawer icon onto another disk to copy files.
+
+- **Source**: Any volume icon (e.g. `RAM:`, `Workbench:`) or leave-out shortcut icon (file or directory). The Trashcan and AppIcons are not valid drag sources.
+- **Target**: Any volume icon that is not the source and not the Trashcan. AppIcons are not valid drop targets.
+- **Operation**: On release, `desktop_do_copy()` recursively copies the source path into `dst_vol/name` using `desktop_copy_dir()` for directories (which walks `RamFsNode->first_child` / `next_sibling`) and `desktop_copy_file()` for files (VFS open/read/write loop with a 512-byte buffer). The dragged icon snaps back to its original position — drag-to-copy does not move the icon, only copies content.
+- **Visual feedback**: While dragging, the icon under the cursor that would be the drop target is highlighted with a 2px white outline (with a 1px dark border). The highlight is drawn by `draw_drop_target_highlight()` in both `Desktop_Draw` and the dirty-rect repaint path. The drop target index (`g_drop_target_idx`) is updated in `Desktop_MouseMove` via `icon_at_pos()`.
+
 ## Application Windows
 
 The display layer includes several Workbench-style application windows in addition to the file browser and shell:
