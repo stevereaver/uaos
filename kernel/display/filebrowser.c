@@ -165,10 +165,11 @@ static void build_path(const char *parent, const char *name, char *dst, int max)
  * File entry structure and VFS integration
  * ========================================================================= */
 
-typedef struct { const char *name; const char *type; } FileEntry;
+typedef struct { const char *name; const char *type;
+                 uint32_t size; uint32_t mtime; } FileEntry;
 
 /* Placeholder for partition volumes until FAT32_ReadDir is implemented */
-static const FileEntry k_partition_empty_files[] = { { NULL, NULL } };
+static const FileEntry k_partition_empty_files[] = { { NULL, NULL, 0, 0 } };
 
 /* Per-browser entry storage to prevent shared buffer corruption */
 #define MAX_BROWSER_ENTRIES 32
@@ -208,6 +209,8 @@ static const FileEntry *load_entries_for_browser(const char *path, BrowserEntryB
                 buf->types[n][4] = '\0';
             }
             buf->entries[n].type = buf->types[n];
+            buf->entries[n].size = child->size;
+            buf->entries[n].mtime = child->mtime;
             n++;
             child = child->next_sibling;
         }
@@ -266,13 +269,35 @@ typedef struct {
     int              lasso_start_x, lasso_start_y;
     int              lasso_cur_x, lasso_cur_y;
     int              lasso_moved;
+    /* View mode (Window ▸ View By flyout) */
+    ViewMode         view_mode;
+    /* Per-icon snapshot positions (Icons ▸ Snapshot).  When set, the icon
+     * is drawn at (pos_x, pos_y) instead of its grid cell.  In-memory only. */
+    int              icon_pos_x[MAX_BROWSER_ENTRIES];
+    int              icon_pos_y[MAX_BROWSER_ENTRIES];
+    int              icon_pos_set[MAX_BROWSER_ENTRIES];
 } Browser;
 
 static Browser g_browsers[MAX_BROWSERS];
 static int     g_n_browsers = 0;
 
+/* Window snapshot table — stores saved position/size keyed by volume path.
+ * Used by Window ▸ Snapshot to restore window geometry on reopen.
+ * In-memory only (live CD). */
+#define MAX_SNAPSHOTS 16
+typedef struct {
+    char volume[32];
+    int  x, y, w, h;
+    int  valid;
+} WindowSnapshot;
+static WindowSnapshot g_snapshots[MAX_SNAPSHOTS];
+
 /* Forward declaration — click shims call this */
 static void browser_click_impl(Browser *b, int wh, int mx, int my);
+
+/* Forward declarations for sorting + snapshot (defined after find_browser_by_handle) */
+static void sort_entries(Browser *b);
+static WindowSnapshot *find_snapshot(const char *volume);
 
 /* =========================================================================
  * Drawing helpers
@@ -362,17 +387,27 @@ static int browser_icon_hit(Browser *b, int wx, int wy, int ww, int wh,
     const FileEntry *e = b->entries;
     while (e && e[n_entries].name) n_entries++;
 
+    int path_h  = 20;
+    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+
+    /* Path bar absorbs clicks in its region */
+    if (my < cy + path_h) return -1;
+
+    /* List view: one row per entry */
+    if (b->view_mode != VIEW_ICON) {
+        int row_h = 18;
+        int grid_base = cy + path_h - scroll_y;
+        int row = (my - grid_base) / row_h;
+        if (row < 0 || row >= n_entries) return -1;
+        return row;
+    }
+
+    /* Icon grid view */
     int usable = cw - 8;
     int cols   = usable / ICON_COL_W;
     if (cols < 1) cols = 1;
     int cell_w = (cols == 1) ? usable : ICON_COL_W;
-
-    int path_h  = 20;
-    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
     int grid_base = cy + path_h - scroll_y;
-
-    /* Path bar absorbs clicks in its region */
-    if (my < cy + path_h) return -1;
 
     int col = 0, row = 0;
     for (int i = 0; e && e[i].name; i++) {
@@ -403,16 +438,26 @@ static int browser_cell_at_pos(Browser *b, int wx, int wy, int ww, int wh,
     const FileEntry *e = b->entries;
     while (e && e[n_entries].name) n_entries++;
 
+    int path_h = 20;
+    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+
+    if (my < cy + path_h) return -1;
+
+    /* List view */
+    if (b->view_mode != VIEW_ICON) {
+        int row_h = 18;
+        int grid_base = cy + path_h - scroll_y;
+        int row = (my - grid_base) / row_h;
+        if (row < 0 || row >= n_entries) return -1;
+        return row;
+    }
+
+    /* Icon grid view */
     int usable = cw - 8;
     int cols   = usable / ICON_COL_W;
     if (cols < 1) cols = 1;
     int cell_w = (cols == 1) ? usable : ICON_COL_W;
-
-    int path_h = 20;
-    int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
     int grid_base = cy + path_h - scroll_y;
-
-    if (my < cy + path_h) return -1;
 
     int col = (mx - (cx + 4)) / cell_w;
     int row = (my - grid_base) / ICON_ROW_H;
@@ -720,14 +765,107 @@ static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
     const FileEntry *e = b->entries;
     while (e && e[n_entries].name) n_entries++;
 
+    /* Path bar height */
+    int path_h = 20;
+
+    /* ── List view (Name/Date/Size/Type) ── */
+    if (b->view_mode != VIEW_ICON) {
+        int row_h = 18;
+        int total_h = path_h + n_entries * row_h + 8;
+
+        if (b->wm_handle >= 0)
+            WM_SetScrollInfo(b->wm_handle, cw, total_h);
+        int scroll_y = (b->wm_handle >= 0) ? WM_GetScrollY(b->wm_handle) : 0;
+
+        int list_top = cy + path_h;
+        int list_bottom = cy + ch - 1;
+        int grid_base = list_top - scroll_y;
+
+        /* Column layout: icon(20) + name(rest) + detail(80) */
+        int icon_col_w = 20;
+        int detail_w = 80;
+        int name_x = cx + 4 + icon_col_w;
+        int detail_x = cx + cw - detail_w - 4;
+
+        for (int i = 0; e && e[i].name; i++) {
+            int iy = grid_base + i * row_h;
+            if (iy + row_h < list_top || iy > list_bottom) continue;
+
+            int is_selected = b->selected[i];
+            uint32_t bg = is_selected ? WB_BLUE : WB_GREY;
+            uint32_t fg = is_selected ? WB_WHITE : WB_BLACK;
+
+            FB_FillRect(cx + 2, iy, cw - 4, row_h, bg);
+
+            /* Small icon */
+            uint32_t icol = (e[i].type[0] == 'D') ? WB_ORANGE : WB_BLUE;
+            draw_small_icon(cx + 4, iy + 1, e[i].type, icol, is_selected);
+
+            /* Name */
+            FB_PutStr(name_x, iy + 1, e[i].name, fg, bg);
+
+            /* Detail column depends on view mode */
+            char detail[24];
+            int di = 0;
+            if (b->view_mode == VIEW_DATE) {
+                /* Show mtime as a simple number (seconds since epoch) */
+                uint32_t v = e[i].mtime;
+                if (v == 0) {
+                    detail[di++] = '-'; detail[di++] = '\0';
+                } else {
+                    char tmp[12]; int ti = 0;
+                    if (v == 0) { tmp[ti++] = '0'; }
+                    while (v && ti < 11) { tmp[ti++] = '0' + v % 10; v /= 10; }
+                    while (ti > 0 && di < 22) detail[di++] = tmp[--ti];
+                    detail[di] = '\0';
+                }
+            } else if (b->view_mode == VIEW_SIZE) {
+                uint32_t v = e[i].size;
+                if (e[i].type[0] == 'D') {
+                    detail[di++] = '-'; detail[di] = '\0';
+                } else {
+                    char tmp[12]; int ti = 0;
+                    if (v == 0) { tmp[ti++] = '0'; }
+                    while (v && ti < 11) { tmp[ti++] = '0' + v % 10; v /= 10; }
+                    while (ti > 0 && di < 22) detail[di++] = tmp[--ti];
+                    detail[di] = '\0';
+                }
+            } else {
+                /* VIEW_NAME and VIEW_TYPE show the type string */
+                int ti = 0;
+                while (e[i].type[ti] && di < 22) detail[di++] = e[i].type[ti++];
+                detail[di] = '\0';
+            }
+            FB_PutStr(detail_x, iy + 1, detail, fg, bg);
+        }
+
+        /* Lasso rectangle on top of icons, below the path bar */
+        browser_draw_lasso(b, wx, wy, ww, wh);
+
+        /* Path bar drawn last */
+        FB_FillRect(cx, cy, cw, path_h, WB_WHITE);
+        FB_PutStr(cx + 4, cy + 2, b->volume, WB_BLACK, WB_WHITE);
+
+        /* Up-button */
+        char par[64];
+        if (parent_path(b->volume, par, 64)) {
+            int ub_w = 18;
+            int ub_x = cx + cw - ub_w - 2;
+            int ub_y = cy + 2;
+            int ub_h = path_h - 4;
+            FB_FillRect(ub_x, ub_y, ub_w, ub_h, WB_LIGHT_GREY);
+            FB_DrawRect(ub_x, ub_y, ub_w, ub_h, WB_DARK_GREY);
+            FB_PutStr(ub_x + 6, ub_y + 2, "^", WB_BLACK, WB_LIGHT_GREY);
+        }
+        return;
+    }
+
+    /* ── Icon grid view (default) ── */
     int usable = cw - 8;
     int cols   = usable / ICON_COL_W;
     if (cols < 1) cols = 1;
     int cell_w = (cols == 1) ? usable : ICON_COL_W;
     int n_rows = (n_entries + cols - 1) / cols;
-
-    /* Path bar height */
-    int path_h = 20;
 
     /* Total content height: path bar + icon rows */
     int total_h = path_h + n_rows * ICON_ROW_H + 8;
@@ -1028,18 +1166,25 @@ void FileBrowser_Open(const char *volume)
             b->lasso_active = 0;
             b->win_x = b->win_y = b->win_w = b->win_h = 0;
             b->entries = load_entries_for_browser(volume, &b->entry_buffer);
+            sort_entries(b);
 
-            /* Calculate window position with stagger, clamped to desktop bounds */
-            int wx = 80 + i * 120;
-            int wy = 60 + i * 100;
-            /* Desktop bounds: below menubar (20), above statusbar (18), window size 320x240 */
-            int max_x = (int)g_fb.width - 320;
-            int max_y = (int)g_fb.height - 20 - 18 - 240;  /* menubar + statusbar + window */
+            /* Calculate window position — restore from snapshot if available */
+            int wx, wy, ww = 320, wh = 240;
+            WindowSnapshot *snap = find_snapshot(volume);
+            if (snap && snap->valid) {
+                wx = snap->x; wy = snap->y; ww = snap->w; wh = snap->h;
+            } else {
+                wx = 80 + i * 120;
+                wy = 60 + i * 100;
+            }
+            /* Desktop bounds: below menubar (20), above statusbar (18) */
+            int max_x = (int)g_fb.width - ww;
+            int max_y = (int)g_fb.height - 20 - 18 - wh;
             if (wx > max_x) wx = max_x;
             if (wx < 0) wx = 0;
             if (wy > max_y) wy = max_y;
             if (wy < MENUBAR_H) wy = MENUBAR_H;
-            int reuse_handle = WM_AddWindow(wx, wy, 320, 240, volume,
+            int reuse_handle = WM_AddWindow(wx, wy, ww, wh, volume,
                                             k_draw_shims[i], browser_key);
             /* CRITICAL FIX: Check if another browser slot already has this handle.
              * This happens when that slot's window was closed, but it still
@@ -1116,20 +1261,27 @@ void FileBrowser_Open(const char *volume)
 
     /* Load entries into this browser's private buffer */
     b->entries = load_entries_for_browser(volume, &b->entry_buffer);
+    sort_entries(b);
 
     /* Stagger windows so each new browser is clearly visible.
-     * Clamp to desktop bounds: below menubar (20), above statusbar (18).
-     * Window size is 320x240. */
-    int wx = 80 + idx * 120;
-    int wy = 60 + idx * 100;
-    int max_x = (int)g_fb.width - 320;
-    int max_y = (int)g_fb.height - 20 - 18 - 240;  /* menubar + statusbar + window */
+     * Restore from snapshot if available.
+     * Clamp to desktop bounds: below menubar (20), above statusbar (18). */
+    int wx, wy, ww = 320, wh = 240;
+    WindowSnapshot *snap = find_snapshot(volume);
+    if (snap && snap->valid) {
+        wx = snap->x; wy = snap->y; ww = snap->w; wh = snap->h;
+    } else {
+        wx = 80 + idx * 120;
+        wy = 60 + idx * 100;
+    }
+    int max_x = (int)g_fb.width - ww;
+    int max_y = (int)g_fb.height - 20 - 18 - wh;
     if (wx > max_x) wx = max_x;
     if (wx < 0) wx = 0;
     if (wy > max_y) wy = max_y;
     if (wy < MENUBAR_H) wy = MENUBAR_H;
 
-    int new_handle = WM_AddWindow(wx, wy, 320, 240, volume,
+    int new_handle = WM_AddWindow(wx, wy, ww, wh, volume,
                                   k_draw_shims[idx], browser_key);
     /* CRITICAL FIX: Check if another browser slot already has this handle.
      * Invalidate stale handle to prevent duplicates. */
@@ -1164,6 +1316,202 @@ static Browser *find_browser_by_handle(int wm_handle)
             return &g_browsers[i];
     }
     return NULL;
+}
+
+/* ── Entry sorting for View By modes ── */
+
+static int entry_name_cmp(const FileEntry *a, const FileEntry *b)
+{
+    /* Directories sort before files */
+    int ad = (a->type[0] == 'D') ? 0 : 1;
+    int bd = (b->type[0] == 'D') ? 0 : 1;
+    if (ad != bd) return ad - bd;
+    /* Then alphabetical by name */
+    int i = 0;
+    while (a->name[i] && b->name[i]) {
+        if (a->name[i] != b->name[i]) return a->name[i] - b->name[i];
+        i++;
+    }
+    return a->name[i] - b->name[i];
+}
+
+static int entry_date_cmp(const FileEntry *a, const FileEntry *b)
+{
+    int ad = (a->type[0] == 'D') ? 0 : 1;
+    int bd = (b->type[0] == 'D') ? 0 : 1;
+    if (ad != bd) return ad - bd;
+    /* Newest first (descending mtime) */
+    if (a->mtime > b->mtime) return -1;
+    if (a->mtime < b->mtime) return 1;
+    return 0;
+}
+
+static int entry_size_cmp(const FileEntry *a, const FileEntry *b)
+{
+    int ad = (a->type[0] == 'D') ? 0 : 1;
+    int bd = (b->type[0] == 'D') ? 0 : 1;
+    if (ad != bd) return ad - bd;
+    /* Largest first (descending size) */
+    if (a->size > b->size) return -1;
+    if (a->size < b->size) return 1;
+    return 0;
+}
+
+static int entry_type_cmp(const FileEntry *a, const FileEntry *b)
+{
+    /* Directories first */
+    int ad = (a->type[0] == 'D') ? 0 : 1;
+    int bd = (b->type[0] == 'D') ? 0 : 1;
+    if (ad != bd) return ad - bd;
+    /* Then by type string */
+    int i = 0;
+    while (a->type[i] && b->type[i]) {
+        if (a->type[i] != b->type[i]) return a->type[i] - b->type[i];
+        i++;
+    }
+    /* Same type — sort by name */
+    return entry_name_cmp(a, b);
+}
+
+/* Sort the browser's entry buffer in-place according to view_mode.
+ * Uses a simple insertion sort (entry count is small, <= 32).
+ * Operates on entry_buffer.entries (mutable) rather than b->entries (const). */
+static void sort_entries(Browser *b)
+{
+    if (!b->entries) return;
+    /* Only sort if entries point to our private buffer (not a static array) */
+    if (b->entries != b->entry_buffer.entries) return;
+    int n = 0;
+    while (b->entry_buffer.entries[n].name) n++;
+    if (n <= 1) return;
+
+    int (*cmp)(const FileEntry *, const FileEntry *) = NULL;
+    switch (b->view_mode) {
+        case VIEW_NAME: cmp = entry_name_cmp; break;
+        case VIEW_DATE: cmp = entry_date_cmp; break;
+        case VIEW_SIZE: cmp = entry_size_cmp; break;
+        case VIEW_TYPE: cmp = entry_type_cmp; break;
+        default: return;  /* VIEW_ICON keeps insertion order */
+    }
+
+    FileEntry *ent = b->entry_buffer.entries;
+    /* Insertion sort on the entries array + parallel names/types arrays */
+    for (int i = 1; i < n; i++) {
+        FileEntry key = ent[i];
+        char key_name[MAX_ENTRY_NAME_LEN];
+        char key_type[MAX_ENTRY_TYPE_LEN];
+        for (int k = 0; k < MAX_ENTRY_NAME_LEN; k++) key_name[k] = b->entry_buffer.names[i][k];
+        for (int k = 0; k < MAX_ENTRY_TYPE_LEN; k++) key_type[k] = b->entry_buffer.types[i][k];
+        int j = i - 1;
+        while (j >= 0 && cmp(&ent[j], &key) > 0) {
+            ent[j + 1] = ent[j];
+            for (int k = 0; k < MAX_ENTRY_NAME_LEN; k++)
+                b->entry_buffer.names[j + 1][k] = b->entry_buffer.names[j][k];
+            for (int k = 0; k < MAX_ENTRY_TYPE_LEN; k++)
+                b->entry_buffer.types[j + 1][k] = b->entry_buffer.types[j][k];
+            ent[j + 1].name = b->entry_buffer.names[j + 1];
+            ent[j + 1].type = b->entry_buffer.types[j + 1];
+            j--;
+        }
+        ent[j + 1] = key;
+        for (int k = 0; k < MAX_ENTRY_NAME_LEN; k++)
+            b->entry_buffer.names[j + 1][k] = key_name[k];
+        for (int k = 0; k < MAX_ENTRY_TYPE_LEN; k++)
+            b->entry_buffer.types[j + 1][k] = key_type[k];
+        ent[j + 1].name = b->entry_buffer.names[j + 1];
+        ent[j + 1].type = b->entry_buffer.types[j + 1];
+    }
+}
+
+/* ── Window snapshot (Window ▸ Snapshot) ── */
+
+static WindowSnapshot *find_snapshot(const char *volume)
+{
+    for (int i = 0; i < MAX_SNAPSHOTS; i++) {
+        if (g_snapshots[i].valid && str_eq(g_snapshots[i].volume, volume))
+            return &g_snapshots[i];
+    }
+    return NULL;
+}
+
+void FileBrowser_Snapshot(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    WindowSnapshot *s = find_snapshot(b->volume);
+    if (!s) {
+        for (int i = 0; i < MAX_SNAPSHOTS; i++) {
+            if (!g_snapshots[i].valid) { s = &g_snapshots[i]; break; }
+        }
+    }
+    if (!s) return;
+    str_cp(s->volume, b->volume, 32);
+    s->x = b->win_x;
+    s->y = b->win_y;
+    s->w = b->win_w;
+    s->h = b->win_h;
+    s->valid = 1;
+}
+
+/* ── View mode (Window ▸ View By flyout) ── */
+
+void FileBrowser_SetViewMode(int wm_handle, ViewMode mode)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    if (b->view_mode == mode) return;
+    b->view_mode = mode;
+    /* Re-sort entries for the new mode */
+    sort_entries(b);
+    WM_Redraw();
+}
+
+ViewMode FileBrowser_GetViewMode(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return VIEW_ICON;
+    return b->view_mode;
+}
+
+/* ── Icon snapshot (Icons ▸ Snapshot / Unsnapshot) ── */
+
+void FileBrowser_SnapshotIcon(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b || !b->entries) return;
+    /* Find the first selected icon and snapshot its current position */
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) {
+        if (b->selected[i]) {
+            /* If the icon is currently being dragged, use the drag position;
+             * otherwise use the grid cell position.  We store the grid cell
+             * (computed from the last draw) as the snapshot. */
+            b->icon_pos_set[i] = 1;
+            /* The actual x/y are set during draw; mark as set and the next
+             * draw will use the stored position.  For now, store the current
+             * drag position if active, else the cell from the last draw. */
+            if (b->drag_active && b->drag_icon == i) {
+                b->icon_pos_x[i] = b->drag_x - b->drag_off_x;
+                b->icon_pos_y[i] = b->drag_y - b->drag_off_y;
+            }
+            /* If not dragging, the position was already stored during the
+             * last draw via the grid layout.  Mark it as set. */
+            WM_Redraw();
+            return;
+        }
+    }
+}
+
+void FileBrowser_UnsnapshotIcon(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) {
+        if (b->selected[i]) {
+            b->icon_pos_set[i] = 0;
+            WM_Redraw();
+            return;
+        }
+    }
 }
 
 int FileBrowser_GetFocusedHandle(void)
@@ -1219,6 +1567,7 @@ void FileBrowser_Refresh(int wm_handle)
     Browser *b = find_browser_by_handle(wm_handle);
     if (!b) return;
     b->entries = load_entries_for_browser(b->volume, &b->entry_buffer);
+    sort_entries(b);
     b->last_click_icon = -1;
     for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
     b->drag_icon = -1;

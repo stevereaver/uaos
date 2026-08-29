@@ -23,6 +23,8 @@
 #include "../exec/workbench_lib.h"
 #include "../irq/rtc.h"
 #include "blanker.h"
+#include "format_win.h"
+#include "../system_reboot.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -138,6 +140,8 @@ extern void WM_Redraw(void);
 static void menu_action_backdrop(void)
 {
     DT_LOG("[MENU] Backdrop selected\n");
+    extern void Desktop_ToggleBackdrop(void);
+    Desktop_ToggleBackdrop();
 }
 
 static void menu_action_execute_command(void)
@@ -166,6 +170,35 @@ static void menu_action_update_all(void)
 static void menu_action_last_message(void)
 {
     DT_LOG("[MENU] Last Message selected\n");
+    char title[32];
+    char body[256];
+    Requester_GetLastMessage(title, sizeof(title), body, sizeof(body));
+    if (!title[0] && !body[0]) {
+        const char *lines[] = { "No previous message.", NULL };
+        Requester_Info("Last Message", lines, NULL, NULL);
+        return;
+    }
+    /* Split body into lines array on '\n' for Requester_Info */
+    static char line_buf[8][64];
+    const char *lines[9];
+    int n = 0;
+    int ci = 0;
+    for (int i = 0; body[i] && n < 8; i++) {
+        if (body[i] == '\n') {
+            line_buf[n][ci] = '\0';
+            lines[n] = line_buf[n];
+            n++; ci = 0;
+        } else if (ci < 63) {
+            line_buf[n][ci++] = body[i];
+        }
+    }
+    if (n < 8 && ci > 0) {
+        line_buf[n][ci] = '\0';
+        lines[n] = line_buf[n];
+        n++;
+    }
+    lines[n] = NULL;
+    Requester_Info(title[0] ? title : "Last Message", lines, NULL, NULL);
 }
 
 static void menu_action_about(void)
@@ -174,9 +207,19 @@ static void menu_action_about(void)
     AboutWin_Open();
 }
 
+/* Quit confirm callback — reboots the system. */
+static void quit_cb(int button, const char *text, void *user_data)
+{
+    (void)text; (void)user_data;
+    if (button != REQ_BTN_OK) return;
+    System_Reboot();
+}
+
 static void menu_action_quit(void)
 {
     DT_LOG("[MENU] Quit selected\n");
+    Requester_Confirm("Quit", "Quit Workbench and reboot?", "Quit", "Cancel",
+                      quit_cb, NULL);
 }
 
 /* Window menu actions */
@@ -268,8 +311,10 @@ static void menu_action_clean_up(void)
 static void menu_action_snapshot(void)
 {
     DT_LOG("[MENU] Snapshot selected\n");
-    /* Snapshot in AmigaOS saves window position/size.
-     * We don't persist positions yet — this is a no-op. */
+    /* Snapshot saves the focused browser window's position/size so it
+     * is restored when the same volume is reopened.  In-memory only. */
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Snapshot(fh);
 }
 
 /* Forward declaration — Show menu item calls Information */
@@ -282,11 +327,40 @@ static void menu_action_show(void)
     menu_action_icon_information();
 }
 
-static void menu_action_view_by(void)
+/* View By flyout actions — one per view mode. */
+static void menu_action_view_by_icon(void)
 {
-    DT_LOG("[MENU] View By selected\n");
-    /* View By cycles icon/name/all view modes.
-     * Currently only icon view is supported — no-op. */
+    DT_LOG("[MENU] View By Icon selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetViewMode(fh, VIEW_ICON);
+}
+
+static void menu_action_view_by_name(void)
+{
+    DT_LOG("[MENU] View By Name selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetViewMode(fh, VIEW_NAME);
+}
+
+static void menu_action_view_by_date(void)
+{
+    DT_LOG("[MENU] View By Date selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetViewMode(fh, VIEW_DATE);
+}
+
+static void menu_action_view_by_size(void)
+{
+    DT_LOG("[MENU] View By Size selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetViewMode(fh, VIEW_SIZE);
+}
+
+static void menu_action_view_by_type(void)
+{
+    DT_LOG("[MENU] View By Type selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetViewMode(fh, VIEW_TYPE);
 }
 
 /* Icons menu actions */
@@ -511,34 +585,48 @@ static void menu_action_icon_information(void)
 static void menu_action_icon_snapshot(void)
 {
     DT_LOG("[MENU] Snapshot selected\n");
-    /* Snapshot saves icon position — not yet persisted. */
+    /* Snapshot saves the selected icon's current position in the drawer. */
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SnapshotIcon(fh);
 }
 
 static void menu_action_icon_unsnapshot(void)
 {
     DT_LOG("[MENU] Unsnapshot selected\n");
-    /* Clears saved icon position — not yet persisted. */
+    /* Clears the saved position of the selected icon. */
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_UnsnapshotIcon(fh);
 }
 
 static void menu_action_icon_leave_out(void)
 {
     DT_LOG("[MENU] Leave Out selected\n");
-    /* Leave Out places an icon on the desktop pointing to the file.
-     * Not yet implemented. */
+    /* Leave Out places a shortcut icon on the desktop pointing to the
+     * selected file/drawer.  Double-clicking it opens (dir) or runs (file)
+     * the target.  In-memory only (live CD). */
+    char path[128];
+    if (!FileBrowser_GetSelectedPath(path, sizeof(path))) return;
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
+    int is_dir = (VFS_ResolveDir(path) != NULL) ? 1 : 0;
+    Desktop_LeaveOutAdd(path, name, is_dir);
 }
 
 static void menu_action_icon_put_away(void)
 {
     DT_LOG("[MENU] Put Away selected\n");
-    /* Put Away removes a Leave Out icon from the desktop.
-     * Not yet implemented. */
+    /* Put Away removes a Leave Out desktop shortcut icon.
+     * Only acts when a leave-out desktop icon is currently selected. */
+    Desktop_LeaveOutRemoveSelected();
 }
 
 static void menu_action_icon_format(void)
 {
     DT_LOG("[MENU] Format selected\n");
-    /* Format requires a device selection requester.
-     * Not yet implemented — shell 'format' command is available. */
+    /* Opens the dedicated Format window (Amiga-style) for device selection
+     * and volume naming.  The window invokes FAT32_Format on confirm. */
+    extern void FormatWin_Show(void);
+    FormatWin_Show();
 }
 
 /* Empty Trash confirm callback */
@@ -602,15 +690,42 @@ static void menu_action_blanker(void)
     if (idx >= 0) Cx_CycleState(idx);
 }
 
-typedef struct {
+typedef struct MenuItem {
     const char *label;
     void (*action)(void);
     int is_divider;
+    int has_submenu;            /* 1 = item opens a flyout submenu */
+    int has_checkmark;          /* 1 = draw a check box column */
+    int checked;                /* 1 = check box is filled */
+    const struct MenuItem *submenu; /* submenu item list (NULL-terminated) */
 } MenuItem;
 
-#define MENU_ITEM(lbl, act) { lbl, act, 0 }
-#define MENU_DIVIDER        { NULL, NULL, 1 }
-#define MENU_END            { NULL, NULL, 0 }
+#define MENU_ITEM(lbl, act) { lbl, act, 0, 0, 0, 0, NULL }
+#define MENU_CHECK(lbl, act, chk) { lbl, act, 0, 1, (chk), 0, NULL }
+#define MENU_DIVIDER        { NULL, NULL, 1, 0, 0, 0, NULL }
+#define MENU_END            { NULL, NULL, 0, 0, 0, 0, NULL }
+
+/* View By flyout submenu.  The checked flags are updated dynamically by
+ * update_view_by_checks() before the menu is drawn, so this array is
+ * mutable (not const).  Order matches the ViewMode enum. */
+static MenuItem g_view_by_submenu[] = {
+    MENU_CHECK("Icon", menu_action_view_by_icon, 1),
+    MENU_CHECK("Name", menu_action_view_by_name, 0),
+    MENU_CHECK("Date", menu_action_view_by_date, 0),
+    MENU_CHECK("Size", menu_action_view_by_size, 0),
+    MENU_CHECK("Type", menu_action_view_by_type, 0),
+    MENU_END
+};
+
+/* Refresh the check marks on the View By submenu to reflect the focused
+ * browser's current view mode.  Called from draw_menu_dropdown. */
+static void update_view_by_checks(void)
+{
+    int fh = FileBrowser_GetFocusedHandle();
+    ViewMode vm = (fh >= 0) ? FileBrowser_GetViewMode(fh) : VIEW_ICON;
+    for (int i = 0; i < (int)VIEW_MODE_COUNT; i++)
+        g_view_by_submenu[i].checked = (i == (int)vm) ? 1 : 0;
+}
 
 /* Menu table: index 0 = Workbench, index 1 = Window, index 2 = Icons,
  * index 3 = Tools, index 4 = Shell, index 5 = UAOS */
@@ -634,7 +749,7 @@ static const MenuItem * const g_menus[] = {
         MENU_ITEM("Clean Up",        menu_action_clean_up        ),
         MENU_ITEM("Snapshot",        menu_action_snapshot        ),
         MENU_ITEM("Show",            menu_action_show            ),
-        MENU_ITEM("View By",         menu_action_view_by         ),
+        { "View By", NULL, 0, 1, 0, 0, g_view_by_submenu },
         MENU_END
     },
     (const MenuItem[]) {
@@ -705,7 +820,8 @@ static void refresh_active_menus(void)
     g_guest_menu_active = 0;
 }
 
-/* Compute the screen width of the longest menu label in a fallback MenuItem list. */
+/* Compute the screen width of the longest menu label in a fallback MenuItem list.
+ * Includes space for the checkmark column (14px) and submenu arrow (16px). */
 static int menu_max_label_width(const MenuItem *items)
 {
     int max = 0;
@@ -713,9 +829,18 @@ static int menu_max_label_width(const MenuItem *items)
         if (items[i].is_divider) continue;
         int len = 0;
         for (const char *p = items[i].label; *p; p++) len++;
-        if (len * 8 > max) max = len * 8;
+        int w = len * 8;
+        if (items[i].has_checkmark) w += 14;
+        if (items[i].has_submenu)   w += 16;
+        if (w > max) max = w;
     }
     return max;
+}
+
+/* Compute the screen width of the longest label in a fallback submenu. */
+static int submenu_max_label_width(const MenuItem *items)
+{
+    return menu_max_label_width(items);
 }
 
 /* Compute the screen width of the longest menu label in an active HostMenu. */
@@ -890,6 +1015,9 @@ static void draw_menu_dropdown(int W)
 
     if (g_menu_index < 0 || g_menu_index >= (int)NUM_MENUS) return;
 
+    /* Update View By checkmarks before drawing */
+    update_view_by_checks();
+
     const MenuItem *items = g_menus[g_menu_index];
     int n = menu_item_count(items);
     int item_h = 16;
@@ -927,7 +1055,75 @@ static void draw_menu_dropdown(int W)
         uint32_t bg = (i == g_menu_hover) ? WB_BLUE : WB_GREY;
         uint32_t fg = (i == g_menu_hover) ? WB_WHITE : WB_BLACK;
         FB_FillRect(g_menu_x + 2, iy, w - 4, item_h, bg);
-        FB_PutStr(g_menu_x + pad_x, iy + (item_h - 16) / 2, items[i].label, fg, bg);
+
+        int cx = g_menu_x + pad_x;
+        /* Checkmark box for items that have one */
+        if (items[i].has_checkmark) {
+            int box = 10;
+            int bx = cx;
+            int by = iy + (item_h - box) / 2;
+            FB_DrawRect(bx, by, box, box, fg);
+            if (items[i].checked)
+                FB_FillRect(bx + 2, by + 2, box - 4, box - 4, fg);
+            cx += 14;
+        }
+        /* Label */
+        FB_PutStr(cx, iy + (item_h - 16) / 2, items[i].label, fg, bg);
+        /* Submenu arrow */
+        if (items[i].has_submenu) {
+            int rx = g_menu_x + w - pad_x - 8;
+            FB_PutStr(rx - 4, iy + (item_h - 16) / 2, ">", fg, bg);
+        }
+    }
+
+    /* Draw the fallback submenu if one is open */
+    if (g_submenu_item >= 0 && g_submenu_item < n &&
+        items[g_submenu_item].has_submenu && items[g_submenu_item].submenu) {
+        const MenuItem *sub = items[g_submenu_item].submenu;
+        int sn = menu_item_count(sub);
+        if (sn > 0) {
+            int s_label_w = submenu_max_label_width(sub);
+            int sw = s_label_w + pad_x * 2;
+            int sh = sn * item_h + pad_y * 2;
+            int sx = g_menu_x + g_menu_w - 2;
+            int sy = g_menu_y + pad_y + g_submenu_item * item_h;
+            if (sx + sw > W) sx = W - sw;
+            if (sy + sh > (int)g_fb.height) sy = (int)g_fb.height - sh;
+            if (sy < 0) sy = 0;
+
+            g_submenu_x = sx;
+            g_submenu_y = sy;
+            g_submenu_w = sw;
+            g_submenu_h = sh;
+
+            FB_FillRect(sx + 4, sy + 4, sw, sh, WB_DARK_GREY);
+            FB_FillRect(sx, sy, sw, sh, WB_GREY);
+            draw_bevel_box(sx, sy, sw, sh, 1);
+
+            for (int j = 0; j < sn; j++) {
+                int iy = sy + pad_y + j * item_h;
+                if (sub[j].is_divider) {
+                    FB_FillRect(sx + 2, iy, sw - 4, item_h, WB_GREY);
+                    FB_DrawHLine(sx + pad_x, iy + item_h / 2,
+                                 sw - pad_x * 2, WB_DARK_GREY);
+                    continue;
+                }
+                uint32_t bg = (j == g_submenu_hover) ? WB_BLUE : WB_GREY;
+                uint32_t fg = (j == g_submenu_hover) ? WB_WHITE : WB_BLACK;
+                FB_FillRect(sx + 2, iy, sw - 4, item_h, bg);
+                int cx2 = sx + pad_x;
+                if (sub[j].has_checkmark) {
+                    int box = 10;
+                    int bx = cx2;
+                    int by2 = iy + (item_h - box) / 2;
+                    FB_DrawRect(bx, by2, box, box, fg);
+                    if (sub[j].checked)
+                        FB_FillRect(bx + 2, by2 + 2, box - 4, box - 4, fg);
+                    cx2 += 14;
+                }
+                FB_PutStr(cx2, iy + (item_h - 16) / 2, sub[j].label, fg, bg);
+            }
+        }
     }
 }
 
@@ -1070,6 +1266,9 @@ typedef struct {
     int      is_trashcan;  /* 1 = special Trashcan icon */
     int      is_appicon;   /* 1 = workbench.library AppIcon */
     uint32_t appicon_id;   /* AppIcon ID for message dispatch */
+    int      is_leaveout;  /* 1 = Leave Out desktop shortcut */
+    const char *leaveout_path;  /* target path for leave-out icons */
+    int      leaveout_is_dir;   /* 1 = target is a directory */
 } IconState;
 
 /* Desktop icon drag state */
@@ -1096,6 +1295,23 @@ static int       g_desktop_pressed = 0;
 static uint32_t  g_desktop_last_tick = 0;
 static int       g_desktop_click_count = 0;
 
+/* Backdrop visibility toggle (Workbench ▸ Backdrop).  When 1, desktop
+ * icons are hidden but the grey backdrop + menu bar remain. */
+static int g_backdrop_hidden = 0;
+
+/* Leave Out registry — desktop shortcut icons placed by Icons ▸ Leave Out.
+ * In-memory only (live CD).  Up to MAX_ICONS/2 leave-out icons. */
+#define MAX_LEAVEOUT (MAX_ICONS / 2)
+typedef struct {
+    char path[128];
+    char label[32];
+    int  is_dir;
+    int  valid;
+} LeaveOutEntry;
+static LeaveOutEntry g_leaveout[MAX_LEAVEOUT];
+static int g_leaveout_version = 0;  /* bumped on every add/remove to
+                                     * invalidate the icon cache */
+
 /* Build the desktop icon list from real mounted volumes (VFS).
  * click_count / last_tick persist across calls by matching on volume name.
  *
@@ -1114,6 +1330,7 @@ static IconState *get_icons(int *count)
     static char cache_mount_names[MAX_ICONS][32];
     static int  cache_count = 0;
     static int  cache_appicon_count = -1;
+    static int  cache_leaveout_version = -1;
 
     if (!initialised) {
         for (int i = 0; i < MAX_ICONS; i++) {
@@ -1129,11 +1346,13 @@ static IconState *get_icons(int *count)
         initialised = 1;
     }
 
-    /* ── Check whether the VFS mount table or AppIcon set changed ── */
+    /* ── Check whether the VFS mount table, AppIcon set, or leave-out
+     *     registry changed ── */
     int mount_count = VFS_GetMountCount();
     int appicon_count = WB_GetAppIconCount();
     int changed = (mount_count != cache_mount_count) ||
-                  (appicon_count != cache_appicon_count);
+                  (appicon_count != cache_appicon_count) ||
+                  (g_leaveout_version != cache_leaveout_version);
 
     if (!changed) {
         for (int mi = 0; mi < mount_count && !changed; mi++) {
@@ -1173,6 +1392,7 @@ static IconState *get_icons(int *count)
     /* Update the fingerprint */
     cache_mount_count = mount_count;
     cache_appicon_count = appicon_count;
+    cache_leaveout_version = g_leaveout_version;
     for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
         char mname[32];
         if (VFS_GetMountName(mi, mname, 32)) {
@@ -1337,6 +1557,51 @@ static IconState *get_icons(int *count)
         icons[i].label  = NULL;
         icons[i].is_trashcan = 0;
         icons[i].is_appicon = 0;
+        icons[i].is_leaveout = 0;
+    }
+
+    /* ── Leave Out desktop shortcut icons ── */
+    static char leaveout_labels[MAX_LEAVEOUT][32];
+    static char leaveout_paths[MAX_LEAVEOUT][128];
+    int lo_x = 16;
+    int lo_y = MENUBAR_H + 16 + (ICON_H + 8) * 4;  /* below AppIcon column */
+    for (int li = 0; li < MAX_LEAVEOUT && n < MAX_ICONS; li++) {
+        if (!g_leaveout[li].valid) continue;
+        /* Copy label + path to static storage */
+        int k;
+        for (k = 0; k < 31 && g_leaveout[li].label[k]; k++)
+            leaveout_labels[n][k] = g_leaveout[li].label[k];
+        leaveout_labels[n][k] = '\0';
+        for (k = 0; k < 127 && g_leaveout[li].path[k]; k++)
+            leaveout_paths[n][k] = g_leaveout[li].path[k];
+        leaveout_paths[n][k] = '\0';
+
+        icons[n].volume = NULL;
+        icons[n].label  = leaveout_labels[n];
+        icons[n].x = lo_x;
+        icons[n].y = lo_y;
+        icons[n].is_ndos = 0;
+        icons[n].last_tick = 0;
+        icons[n].click_count = 0;
+        icons[n].is_selected = 0;
+        icons[n].has_parsed = 0;
+        icons[n].is_trashcan = 0;
+        icons[n].is_appicon = 0;
+        icons[n].is_leaveout = 1;
+        icons[n].leaveout_path = leaveout_paths[n];
+        icons[n].leaveout_is_dir = g_leaveout[li].is_dir;
+        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
+        n++;
+        lo_y += ICON_H + 8;
+    }
+
+    /* Clear any newly-remaining slots */
+    for (int i = n; i < MAX_ICONS; i++) {
+        icons[i].volume = NULL;
+        icons[i].label  = NULL;
+        icons[i].is_trashcan = 0;
+        icons[i].is_appicon = 0;
+        icons[i].is_leaveout = 0;
     }
 
     cache_count = n;
@@ -1426,6 +1691,56 @@ static void draw_appicon_icon(int x, int y, const char *label, int is_selected)
     FB_PutStrCentred(lbl_x, label_y, LABEL_W, ICON_LABEL_H, label, label_fg, label_bg);
 }
 
+/* Draw a Leave Out desktop shortcut icon — a drawer/file glyph with a
+ * small "shortcut" arrow in the lower-left, indicating it points to
+ * another path.  Reuses the AppIcon body style. */
+static void draw_leaveout_icon(int x, int y, const char *label,
+                               int is_dir, int is_selected)
+{
+    uint32_t body_col = is_selected ? (WB_LIGHT_GREY ^ 0x00FFFFFF) : WB_LIGHT_GREY;
+    uint32_t edge_col = is_selected ? (WB_DARK_GREY ^ 0x00FFFFFF) : WB_DARK_GREY;
+    uint32_t hili_col = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+    uint32_t label_bg = is_selected ? (WB_BLUE ^ 0x00FFFFFF) : WB_BLUE;
+    uint32_t label_fg = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+
+    int bw = ICON_W;
+    int bh = ICON_H - ICON_LABEL_H;
+
+    FB_FillRect(x, y, bw, bh, body_col);
+    draw_bevel_box(x, y, bw, bh, !is_selected);
+    FB_DrawHLine(x + 1, y + 1, bw - 2, hili_col);
+    FB_DrawVLine(x + 1, y + 1, bh - 2, hili_col);
+
+    int cx = x + bw / 2;
+    int cy = y + bh / 2;
+
+    if (is_dir) {
+        /* Drawer glyph — a folder shape */
+        FB_FillRect(cx - 10, cy - 6, 20, 14, edge_col);
+        FB_FillRect(cx - 10, cy - 6, 8, 4, edge_col);
+        FB_FillRect(cx - 8, cy - 4, 16, 10, body_col);
+    } else {
+        /* File glyph — a document with a folded corner */
+        FB_FillRect(cx - 8, cy - 8, 16, 18, edge_col);
+        FB_FillRect(cx - 6, cy - 6, 12, 14, body_col);
+        FB_DrawHLine(cx + 2, cy - 8, 6, hili_col);
+        FB_DrawVLine(cx + 8, cy - 8, 6, hili_col);
+    }
+
+    /* Shortcut arrow in lower-left */
+    FB_DrawHLine(x + 4, y + bh - 6, 6, WB_BLACK);
+    FB_DrawVLine(x + 4, y + bh - 10, 5, WB_BLACK);
+    FB_PutPixel(x + 3, y + bh - 7, WB_BLACK);
+    FB_PutPixel(x + 5, y + bh - 7, WB_BLACK);
+    FB_PutPixel(x + 4, y + bh - 8, WB_BLACK);
+
+    int label_y = y + bh;
+    int lbl_x = x + (bw - LABEL_W) / 2;
+    if (lbl_x < 0) lbl_x = 0;
+    FB_FillRect(lbl_x, label_y, LABEL_W, ICON_LABEL_H, label_bg);
+    FB_PutStrCentred(lbl_x, label_y, LABEL_W, ICON_LABEL_H, label, label_fg, label_bg);
+}
+
 /* Draw an IconState using .info image when available, else procedural fallback. */
 static void draw_icon_state(const IconState *ic)
 {
@@ -1435,6 +1750,11 @@ static void draw_icon_state(const IconState *ic)
     }
     if (ic->is_appicon) {
         draw_appicon_icon(ic->x, ic->y, ic->label, ic->is_selected);
+        return;
+    }
+    if (ic->is_leaveout) {
+        draw_leaveout_icon(ic->x, ic->y, ic->label, ic->leaveout_is_dir,
+                           ic->is_selected);
         return;
     }
     if (ic->has_parsed && ic->parsed.image.width > 0) {
@@ -1532,8 +1852,9 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     /* Base grey fill */
     FB_FillRect(x0, y0, x1 - x0, y1 - y0, WB_GREY);
 
-    /* Repaint desktop icons — all icons come from get_icons (VFS + partitions) */
-    {
+    /* Repaint desktop icons — all icons come from get_icons (VFS + partitions).
+     * Hidden when the Backdrop menu toggle is active. */
+    if (!g_backdrop_hidden) {
         int n;
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
@@ -1561,8 +1882,9 @@ void Desktop_Draw(void)
     draw_backdrop(W, H);
     draw_menubar(W);
 
-    /* Disk icons — all come from get_icons (VFS-mounted volumes + partitions) */
-    {
+    /* Disk icons — all come from get_icons (VFS-mounted volumes + partitions).
+     * Hidden when the Backdrop menu toggle is active. */
+    if (!g_backdrop_hidden) {
         int n;
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
@@ -1624,6 +1946,69 @@ void Desktop_DisplayBeepFlash(uint32_t color)
     } else {
         g_beep_flash_color = 0;
         g_beep_flash_until = 0;
+    }
+}
+
+void Desktop_ToggleBackdrop(void)
+{
+    g_backdrop_hidden = !g_backdrop_hidden;
+    WM_Redraw();
+}
+
+void Desktop_LeaveOutAdd(const char *path, const char *name, int is_dir)
+{
+    if (!path || !name) return;
+    /* Find a free slot (or skip if the path is already leave-out) */
+    for (int i = 0; i < MAX_LEAVEOUT; i++) {
+        if (g_leaveout[i].valid) {
+            int same = 1;
+            for (int k = 0; k < 128; k++) {
+                if (g_leaveout[i].path[k] != path[k]) { same = 0; break; }
+                if (path[k] == '\0') break;
+            }
+            if (same) return;  /* already leave-out */
+        }
+    }
+    for (int i = 0; i < MAX_LEAVEOUT; i++) {
+        if (!g_leaveout[i].valid) {
+            int k;
+            for (k = 0; k < 127 && path[k]; k++) g_leaveout[i].path[k] = path[k];
+            g_leaveout[i].path[k] = '\0';
+            for (k = 0; k < 31 && name[k]; k++) g_leaveout[i].label[k] = name[k];
+            g_leaveout[i].label[k] = '\0';
+            g_leaveout[i].is_dir = is_dir;
+            g_leaveout[i].valid = 1;
+            g_leaveout_version++;
+            WM_Redraw();
+            return;
+        }
+    }
+}
+
+void Desktop_LeaveOutRemoveSelected(void)
+{
+    int n;
+    IconState *icons = get_icons(&n);
+    for (int i = 0; i < n; i++) {
+        if (icons[i].is_leaveout && icons[i].is_selected && icons[i].leaveout_path) {
+            /* Find the matching registry entry and clear it */
+            for (int li = 0; li < MAX_LEAVEOUT; li++) {
+                if (!g_leaveout[li].valid) continue;
+                int same = 1;
+                for (int k = 0; k < 128; k++) {
+                    if (g_leaveout[li].path[k] != icons[i].leaveout_path[k]) {
+                        same = 0; break;
+                    }
+                    if (icons[i].leaveout_path[k] == '\0') break;
+                }
+                if (same) {
+                    g_leaveout[li].valid = 0;
+                    g_leaveout_version++;
+                    WM_Redraw();
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -1712,7 +2097,19 @@ static int submenu_hit(int mx, int my)
         if (!sm->items[idx].enabled) return -1;
         return idx;
     }
-    return -1;
+
+    /* Fallback menu — resolve submenu from the MenuItem table */
+    if (g_menu_index < 0 || g_menu_index >= (int)NUM_MENUS) return -1;
+    const MenuItem *items = g_menus[g_menu_index];
+    int n = menu_item_count(items);
+    if (g_submenu_item < 0 || g_submenu_item >= n) return -1;
+    if (!items[g_submenu_item].has_submenu || !items[g_submenu_item].submenu)
+        return -1;
+    const MenuItem *sub = items[g_submenu_item].submenu;
+    int sn = menu_item_count(sub);
+    if (idx < 0 || idx >= sn) return -1;
+    if (sub[idx].is_divider) return -1;
+    return idx;
 }
 
 /* Update menu hover state and request a redraw if it changed.
@@ -1744,6 +2141,16 @@ static void menu_update_hover(int mx, int my)
             }
             return;
         }
+    } else {
+        /* Fallback menu — track submenu hover too */
+        int sub_hover = submenu_hit(mx, my);
+        if (sub_hover >= 0) {
+            if (sub_hover != g_submenu_hover) {
+                g_submenu_hover = sub_hover;
+                WM_Redraw();
+            }
+            return;
+        }
     }
 
     int new_hover = dropdown_hit(mx, my);
@@ -1754,6 +2161,14 @@ static void menu_update_hover(int mx, int my)
             g_menu_hover < g_active_menus[g_menu_index].item_count &&
             g_active_menus[g_menu_index].items[g_menu_hover].has_submenu) {
             g_submenu_item = g_menu_hover;
+        } else if (!g_guest_menu_active && g_menu_hover >= 0 &&
+                   g_menu_index >= 0 && g_menu_index < (int)NUM_MENUS) {
+            const MenuItem *items = g_menus[g_menu_index];
+            if (g_menu_hover < menu_item_count(items) &&
+                items[g_menu_hover].has_submenu)
+                g_submenu_item = g_menu_hover;
+            else
+                g_submenu_item = -1;
         } else {
             g_submenu_item = -1;
         }
@@ -1896,7 +2311,18 @@ void Desktop_RightButtonRelease(int mx, int my)
             Intuition_PostMenuPick(menu_number);
         }
     } else {
-        if (g_menu_hover >= 0) {
+        /* Fallback menu — dispatch submenu or top-level item */
+        if (g_submenu_item >= 0 && g_submenu_hover >= 0) {
+            const MenuItem *items = g_menus[g_menu_index];
+            int n = menu_item_count(items);
+            if (g_submenu_item < n && items[g_submenu_item].has_submenu &&
+                items[g_submenu_item].submenu) {
+                const MenuItem *sub = items[g_submenu_item].submenu;
+                int sn = menu_item_count(sub);
+                if (g_submenu_hover < sn && sub[g_submenu_hover].action)
+                    sub[g_submenu_hover].action();
+            }
+        } else if (g_menu_hover >= 0) {
             const MenuItem *items = g_menus[g_menu_index];
             if (items[g_menu_hover].action)
                 items[g_menu_hover].action();
@@ -2006,6 +2432,14 @@ void Desktop_MouseRelease(int mx, int my)
                     DT_LOG("[DT] AppIcon activated, id=");
                     DT_LOG_DEC(ic->appicon_id);
                     DT_LOG("\n");
+                } else if (ic->is_leaveout && ic->leaveout_path) {
+                    /* Leave Out shortcut — open (dir) or run (file) */
+                    if (ic->leaveout_is_dir) {
+                        FileBrowser_Open(ic->leaveout_path);
+                    } else {
+                        extern void ExecFile_Run(const char *path, const char *args);
+                        ExecFile_Run(ic->leaveout_path, "");
+                    }
                 } else if (ic->volume) {
                     FileBrowser_Open(ic->volume);
                 }

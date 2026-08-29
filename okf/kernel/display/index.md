@@ -73,13 +73,13 @@ The software cursor (`cursor.c`) uses save/restore of background pixels for flic
 - **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` (back buffer when drawing, VRAM otherwise — both authoritative after the last flip). `cursor_restore_bg` is a no-op during back-buffered drawing since the full frame is repainted.
 
 ## Workbench Elements
-- **Backdrop**: Solid Amiga grey (`WB_GREY`, R:170 G:170 B:170).
+- **Backdrop**: Solid Amiga grey (`WB_GREY`, R:170 G:170 B:170). Can be toggled via Workbench ▸ Backdrop to hide/show desktop icons.
 - **Menu Bar**: Fixed at the top of the screen.
-- **Icons**: Desktop icons representing disks and tools.
+- **Icons**: Desktop icons representing disks, tools, and leave-out shortcuts (placed by Icons ▸ Leave Out). Leave-out icons show a small shortcut arrow and open/run their target on double-click.
 
 ### Icon Cache
 
-The desktop icon list (including `.info` file loading and planar decoding) is cached in `get_icons()` and only rebuilt when the VFS mount table changes (mount count or any mount name differs from the cached fingerprint). This avoids reloading every `.info` from VFS on every frame and mouse event. Click/selection state persists in the cached `icons[]` array across calls.
+The desktop icon list (including `.info` file loading and planar decoding) is cached in `get_icons()` and only rebuilt when the VFS mount table, AppIcon set, or leave-out registry changes (mount count, any mount name, AppIcon count, or `g_leaveout_version` differs from the cached fingerprint). This avoids reloading every `.info` from VFS on every frame and mouse event. Click/selection state persists in the cached `icons[]` array across calls.
 
 ### Clock and Memory Display
 
@@ -101,47 +101,47 @@ The `Workbench` menu contains the following items:
 
 | Item | Action |
 |------|--------|
-| Backdrop | Stub — intended to control backdrop visibility. |
+| Backdrop | Toggles desktop icon visibility (hides/shows icons; backdrop + menu bar remain). |
 | Execute Command | Opens the Shell window. |
 | Redraw All | Requests a full desktop/window repaint. |
-| Update All | Stub — intended to refresh all desktop icons. |
-| Last Message | Stub — intended to replay the last system message. |
+| Update All | Refreshes all open browser windows. |
+| Last Message | Replays the title and body of the last requester shown (confirm/string/info). |
 | About | Opens the About window. |
-| Quit | Stub — intended to shut down the Workbench session. |
+| Quit | Shows a confirm requester; on confirmation, warm-reboots the system via the keyboard controller. |
 
 #### Window Drop-down Menu
 
-The `Window` menu contains the following items (currently all stubbed):
+The `Window` menu contains the following items:
 
 | Item | Action |
 |------|--------|
-| New Drawer | Stub — intended to create a new drawer. |
-| Open Drawer | Stub — intended to open the selected drawer. |
-| Close | Stub — intended to close the active window. |
-| Update | Stub — intended to refresh the active window. |
-| Select Contents | Stub — intended to select all items in a window. |
-| Clean Up | Stub — intended to tidy icon positions. |
-| Snapshot | Stub — intended to save window/icon positions. |
-| Show | Stub — intended to show hidden items. |
-| View By | Stub — intended to change the window view mode. |
+| New Drawer | Prompts for a name and creates a new directory in the focused browser. |
+| Open Drawer | Opens the selected directory in a new browser window. |
+| Close | Closes the focused browser window. |
+| Update | Refreshes the focused browser's entries. |
+| Select Contents | Selects all entries in the focused browser. |
+| Clean Up | Clears drag offsets and redraws the focused browser. |
+| Snapshot | Saves the focused browser's window position/size (in-memory); restored on reopen. |
+| Show | Shows information about the selected icon (same as Icons ▸ Information). |
+| View By ▸ | **Flyout submenu** with checkmark items: Icon (grid), Name (list, alphabetical), Date (list, newest first), Size (list, largest first), Type (list, by type then name). Switches the focused browser's view mode and re-sorts entries. |
 
 #### Icons Drop-down Menu
 
-The `Icons` menu (opened with a right-click on the `Icons` title) contains the following items. A horizontal divider separates the upper icon-management items from the lower destructive/utility items. All items are currently stubbed.
+The `Icons` menu (opened with a right-click on the `Icons` title) contains the following items. A horizontal divider separates the upper icon-management items from the lower destructive/utility items.
 
 | Item | Action |
 |------|--------|
-| Copy | Stub — intended to copy selected icons. |
-| Rename | Stub — intended to rename selected icons. |
-| Information | Stub — intended to show icon information. |
-| Snapshot | Stub — intended to save icon positions. |
-| Unsnapshot | Stub — intended to remove saved icon positions. |
-| Leave Out | Stub — intended to leave icons on the desktop. |
-| Put Away | Stub — intended to put icons back in their drawers. |
+| Copy | Copies the selected file to `RAM:`. |
+| Rename | Prompts for a new name and renames the selected entry. |
+| Information | Shows an information requester with name, type, size, protection flags, and path. |
+| Snapshot | Saves the selected icon's current position in the drawer (in-memory). |
+| Unsnapshot | Clears the saved position of the selected icon. |
+| Leave Out | Places a desktop shortcut icon pointing to the selected file/drawer. Double-clicking opens (dir) or runs (file) the target. |
+| Put Away | Removes the currently-selected leave-out desktop shortcut icon. |
 | *divider* | Horizontal separator. |
-| Delete | Stub — intended to delete selected icons. |
-| Format | Stub — intended to format a disk. |
-| Empty Trash | Stub — intended to empty the trash. |
+| Delete | Confirms and moves the selected file to `RAM:/Trash/`. |
+| Format | Opens the Format window for device selection and FAT32 formatting. |
+| Empty Trash | Confirms and deletes all files in `RAM:/Trash/`. |
 
 #### Tools Drop-down Menu
 
@@ -154,7 +154,7 @@ The `Tools` menu contains the following items:
 | *divider* | Horizontal separator. |
 | Reset WB | Closes all browser windows and redraws the desktop. |
 
-The menus are rendered by `desktop.c` and managed through a small internal state (`g_menu_index`, `g_menu_hover`, etc.). Menu items support a divider flag (`is_divider`) for separator lines. The window manager tracks both left and right mouse buttons and forwards desktop events and hover tracking to highlight items and dispatch the selected action.
+The menus are rendered by `desktop.c` and managed through a small internal state (`g_menu_index`, `g_menu_hover`, etc.). Menu items support a divider flag (`is_divider`) for separator lines, a checkmark column (`has_checkmark`/`checked` for toggle items like View By modes), and a flyout submenu pointer (`has_submenu`/`submenu`). The fallback desktop menu now supports flyout submenus (e.g., View By) with the same press-and-drag behaviour as the guest Intuition menu strip: hover tracking opens the flyout, `submenu_hit` resolves the hovered flyout item, and `Desktop_RightButtonRelease` dispatches the selected flyout action. The window manager tracks both left and right mouse buttons and forwards desktop events and hover tracking to highlight items and dispatch the selected action.
 
 ### Icon Selection State
 Desktop icons can be selected with a single click or by lasso (rubber-band) drag. The selected icon is rendered using one of two methods:
@@ -191,6 +191,7 @@ The display layer includes several Workbench-style application windows in additi
 - **Commodities Framework (`commodities.h/c`)**: Broker registry for commodities — background tools that can be controlled from Exchange. Supports up to 16 brokers with Active/Sleeping/Disabled states and enable/disable/sleep/wake callbacks.
 - **Exchange Window (`exchange_win.c`)**: GUI window listing all registered commodity brokers with status indicators and Enable/Disable/Sleep/Wake/Cycle controls.
 - **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity.
+- **Format Window (`format_win.c`)**: AmigaOS-style Format window opened from Icons ▸ Format. Lists formattable block devices in a cycle gadget, a volume name text field, and a Format button that confirms via requester then invokes `FAT32_Format()` and auto-mounts the result via `VFS_MountPartition()`.
 - **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-3 programs that use the GUI syscall interface.
 
 ## Shell Window

@@ -315,6 +315,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/commodities.c" \
     "${REPO_ROOT}/kernel/display/exchange_win.c" \
     "${REPO_ROOT}/kernel/display/blanker.c" \
+    "${REPO_ROOT}/kernel/display/format_win.c" \
     "${REPO_ROOT}/kernel/display/early_startup.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
@@ -769,6 +770,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/commodities.o" \
     "${BUILD_DIR}/obj/exchange_win.o" \
     "${BUILD_DIR}/obj/blanker.o" \
+    "${BUILD_DIR}/obj/format_win.o" \
     "${BUILD_DIR}/obj/early_startup.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"

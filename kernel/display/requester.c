@@ -85,6 +85,34 @@ typedef struct {
 
 static Requester g_req;
 
+/* Last-message storage — recorded whenever a requester is opened so the
+ * Workbench ▸ Last Message menu item can replay it. */
+static char g_last_title[32];
+static char g_last_body[256];
+static int  g_last_valid = 0;
+
+/* Record the current requester's title + body into the last-message store. */
+static void record_last_message(void)
+{
+    int ti = 0;
+    while (ti < (int)sizeof(g_last_title) - 1 && g_req.title[ti]) {
+        g_last_title[ti] = g_req.title[ti]; ti++;
+    }
+    g_last_title[ti] = '\0';
+
+    int bi = 0;
+    for (int li = 0; li < g_req.n_lines && bi < (int)sizeof(g_last_body) - 2; li++) {
+        if (li > 0 && bi < (int)sizeof(g_last_body) - 2)
+            g_last_body[bi++] = '\n';
+        int ci = 0;
+        while (g_req.body_lines[li][ci] && bi < (int)sizeof(g_last_body) - 2) {
+            g_last_body[bi++] = g_req.body_lines[li][ci++];
+        }
+    }
+    g_last_body[bi] = '\0';
+    g_last_valid = 1;
+}
+
 /* =========================================================================
  * Layout constants
  * ========================================================================= */
@@ -436,6 +464,7 @@ void Requester_Confirm(const char *title, const char *body,
     WM_SetClickHandler(g_req.wm_handle, req_click);
     WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
     WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);
+    record_last_message();
     WM_RaiseWindow(g_req.wm_handle);
     WM_Redraw();
 }
@@ -484,6 +513,7 @@ void Requester_String(const char *title, const char *prompt,
     WM_SetClickHandler(g_req.wm_handle, req_click);
     WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
     WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);
+    record_last_message();
     WM_RaiseWindow(g_req.wm_handle);
     WM_Redraw();
 }
@@ -524,6 +554,7 @@ void Requester_Info(const char *title, const char **lines,
     WM_SetClickHandler(g_req.wm_handle, req_click);
     WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
     WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);
+    record_last_message();
     WM_RaiseWindow(g_req.wm_handle);
     WM_Redraw();
 }
@@ -544,4 +575,24 @@ void Requester_Close(void)
 int Requester_IsActive(void)
 {
     return (g_req.wm_handle >= 0 && WM_IsWindowActive(g_req.wm_handle)) ? 1 : 0;
+}
+
+void Requester_GetLastMessage(char *title_out, int title_max,
+                              char *body_out, int body_max)
+{
+    if (!g_last_valid || !title_out || !body_out) {
+        if (title_out && title_max > 0) title_out[0] = '\0';
+        if (body_out && body_max > 0) body_out[0] = '\0';
+        return;
+    }
+    int i = 0;
+    while (i < title_max - 1 && g_last_title[i]) {
+        title_out[i] = g_last_title[i]; i++;
+    }
+    title_out[i] = '\0';
+    i = 0;
+    while (i < body_max - 1 && g_last_body[i]) {
+        body_out[i] = g_last_body[i]; i++;
+    }
+    body_out[i] = '\0';
 }

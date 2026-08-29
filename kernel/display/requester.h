@@ -59,4 +59,10 @@ void Requester_Close(void);
 /* Returns 1 if a requester is currently active. */
 int  Requester_IsActive(void);
 
+/* Retrieve the title and body of the last shown requester (for the
+ * Workbench ▸ Last Message menu item).  Copies into the caller's
+ * buffers; returns with empty strings if no requester has been shown. */
+void Requester_GetLastMessage(char *title_out, int title_max,
+                              char *body_out, int body_max);
+
 #endif /* UAOS_REQUESTER_H */

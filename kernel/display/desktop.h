@@ -54,6 +54,16 @@ void Desktop_SetScreenTitle(const char *title, int show);
  * Pass 0 to clear the flash.  The caller is responsible for redrawing. */
 void Desktop_DisplayBeepFlash(uint32_t color);
 
+/* Workbench ▸ Backdrop — toggle desktop icon visibility. */
+void Desktop_ToggleBackdrop(void);
+
+/* Icons ▸ Leave Out — add a desktop shortcut icon pointing to path.
+ * name is the icon label; is_dir selects the icon glyph.  In-memory only. */
+void Desktop_LeaveOutAdd(const char *path, const char *name, int is_dir);
+
+/* Icons ▸ Put Away — remove the currently-selected leave-out desktop icon. */
+void Desktop_LeaveOutRemoveSelected(void);
+
 /* Active window menu helpers provided by intuition.library */
 #define HOST_MENU_MAX      16
 #define HOST_MENU_ITEM_MAX 32
