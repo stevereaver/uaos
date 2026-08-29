@@ -200,7 +200,7 @@ The display layer includes several Workbench-style application windows in additi
 - **Exchange Window (`exchange_win.c`)**: GUI window listing all registered commodity brokers with status indicators and Enable/Disable/Sleep/Wake/Cycle controls.
 - **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity.
 - **Format Window (`format_win.c`)**: AmigaOS-style Format window opened from Icons ▸ Format. Lists formattable block devices in a cycle gadget, a volume name text field, and a Format button that confirms via requester then invokes `FAT32_Format()` and auto-mounts the result via `VFS_MountPartition()`.
-- **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-3 programs that use the GUI syscall interface.
+- **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-0 userspace programs that use the GUI syscall interface.
 
 ## Shell Window
 

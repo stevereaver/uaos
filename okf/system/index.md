@@ -31,7 +31,7 @@ UAOS uses "Assigns" to create logical device names:
 
 ## Userspace Library (`system/libuaos/`)
 
-Native Ring-3 programs are built against a minimal freestanding library in `system/libuaos/`:
+Native Ring-0 userspace programs are built against a minimal freestanding library in `system/libuaos/`:
 
 - **`uaos_start.c`**: Entry point (`_start`) that parses arguments and calls `main`.
 - **`uaos_libc.h`**: Header-only static-inline implementations of `strlen`, `strcmp`, `strcpy`, `memcpy`, `memset`, `strlcat`, and character helpers.

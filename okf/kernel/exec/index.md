@@ -14,7 +14,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 ## Key Responsibilities
 
 - **Task Management**: Creating, scheduling, and switching between tasks (both native x86_64 and emulated M68k).
-- **Userspace Execution**: Running Ring-3 native x86-64 ELF64 tasks with memory protection (MMU sandboxing), parent-child hierarchy, and per-task current working directory.
+- **Userspace Execution**: Running Ring-0 native x86-64 ELF64 tasks with memory protection (MMU sandboxing), parent-child hierarchy, and per-task current working directory. (Tasks run in Ring 0 for VirtualBox NEM compatibility; the `INT 0x80` gate keeps `DPL=3` for future Ring-3 re-enablement — see [Userspace & Syscalls](/concepts/userspace_syscalls.md).)
 - **System Calls**: Software interrupt `INT 0x80` register-based dispatcher facilitating kernel services for userspace programs.
 - **Memory Allocation**: Managing the system memory map and providing allocation services.  `AllocMem` routes `MEMF_CHIP` to the 0–8 MB chip RAM range and `MEMF_FAST` to the 8–16 MB fast RAM range.
 - **IPC (Inter-Process Communication)**: Message ports and signals for communication between tasks (including `SIGF_CHILD` for parent notification).
@@ -27,7 +27,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `exec_task.c`: AmigaOS-compatible `AddTask`/`FindTask`/`SetTaskPri` helpers for M68k tasks.
 - `exec_signal.c`: Task lookup helpers for M68k guest process structures.
 - `exec_ipc.c`: Message port and message passing implementation (`NewPort`, `PutMsg`, `GetMsg`, `WaitPort`, `ReplyMsg`).
-- `syscall_dispatch.c`: Handling register-based system call routing and implementation for Ring-3 userspace programs.
+- `syscall_dispatch.c`: Handling register-based system call routing and implementation for Ring-0 userspace programs.
 - `mem_info.c` / `mem_info.h`: Kernel-exported memory query API (`Mem_GetInfo()`), backing both the resident `C:mem` command and the `SYSCALL_MEMINFO` (0x2D) syscall consumed by the on-disk `C:avail` userspace command.
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
@@ -65,7 +65,7 @@ The x86-64 SysV ABI requires the stack pointer to be 16-byte aligned *before* a 
 
 Key details:
 - Per-task kernel stacks are declared with `__attribute__((aligned(8)))`.
-- Synthetic frames are 176 bytes for Ring-3 tasks (X64 ELF64) and 160 bytes for Ring-0 native tasks, matching the `iretq` pop count.
+- Synthetic frames are 176 bytes for X64 userspace tasks (ELF64, now Ring 0) and 160 bytes for Ring-0 native tasks, matching the `iretq` pop count. (X64 tasks use kernel CS/SS `0x08`/`0x10`; the 176-byte frame still includes the SS slot since `iretq` pops it when returning to the same ring.)
 - `isr_common` and `uaos_syscall_isr` use the same frame layout for both the interrupted task and the task being switched to; no padding is inserted into the synthetic frame, keeping the layout identical to a CPU-generated interrupt frame.
 
 ## X64 Syscall Dispatch
