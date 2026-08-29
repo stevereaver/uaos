@@ -51,6 +51,8 @@ typedef struct NativeCmdCtx {
                                 struct BlockDev *dev);
     /* For vim: open inline editor in the shell window */
     void      (*set_vim_mode)(void *shell_extra, const char *filename);
+    /* For ed: open inline ED editor in the shell window */
+    void      (*set_ed_mode)(void *shell_extra, const char *filename);
     /* For loadwb: launch the desktop */
     void      (*loadwb)(void);
     /* For clear: wipe shell history */
@@ -213,5 +215,33 @@ void Cmd_RequestChoice   (NativeCmdCtx *ctx, const char *args);
 void Cmd_RequestFile     (NativeCmdCtx *ctx, const char *args);
 void Cmd_ChangeTaskPri   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Status          (NativeCmdCtx *ctx, const char *args);
+
+/* Prefs editors (stubs — Phase 3) */
+void Cmd_ScreenMode      (NativeCmdCtx *ctx, const char *args);
+void Cmd_Font            (NativeCmdCtx *ctx, const char *args);
+void Cmd_IControl        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Input           (NativeCmdCtx *ctx, const char *args);
+void Cmd_Palette         (NativeCmdCtx *ctx, const char *args);
+void Cmd_WBPattern       (NativeCmdCtx *ctx, const char *args);
+void Cmd_Serial          (NativeCmdCtx *ctx, const char *args);
+void Cmd_Printer         (NativeCmdCtx *ctx, const char *args);
+void Cmd_PrefsTime       (NativeCmdCtx *ctx, const char *args);
+void Cmd_PrefsLocale     (NativeCmdCtx *ctx, const char *args);
+
+/* Tools & Commodities */
+void Cmd_Exchange        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Blanker         (NativeCmdCtx *ctx, const char *args);
+
+/* Printing */
+void Cmd_Print           (NativeCmdCtx *ctx, const char *args);
+
+/* CrossDOS */
+void Cmd_CrossDOS        (NativeCmdCtx *ctx, const char *args);
+
+/* Editor */
+void Cmd_Ed              (NativeCmdCtx *ctx, const char *args);
+
+/* Help */
+void Cmd_Guide           (NativeCmdCtx *ctx, const char *args);
 
 #endif /* UAOS_NATIVE_CMD_H */

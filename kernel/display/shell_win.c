@@ -18,6 +18,7 @@
 #include "pointer_prefs.h"
 #include "wm.h"
 #include "vim_win.h"
+#include "ed_win.h"
 #include "../../emulation/uaos_emu.h"
 #include "dos/vfs.h"
 #include "dos/ramfs.h"
@@ -134,6 +135,10 @@ struct ShellInstance {
     /* Vim inline mode */
     int          vim_mode;      /* 0 = normal, 1 = vim inline */
     int          vim_slot;      /* slot in g_vims */
+
+    /* ED inline mode */
+    int          ed_mode;       /* 0 = normal, 1 = ed inline */
+    int          ed_slot;       /* slot in g_eds */
 
     /* Ask mode - for interactive input prompts */
     int          ask_mode;      /* 0 = normal, 1 = waiting for ask input */
@@ -304,6 +309,10 @@ static void inst_draw_history(ShellInstance *s)
         VimWin_DrawInline(s->vim_slot, wx, wy, ww, wh);
         return;
     }
+    if (s->ed_mode) {
+        EdWin_DrawInline(s->ed_slot, wx, wy, ww, wh);
+        return;
+    }
 
     int hx = wx + BORDER_L + 4;
     int hy = wy + TITLEBAR_H + 4;
@@ -389,6 +398,7 @@ static void inst_draw_input(ShellInstance *s)
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
 
     if (s->vim_mode) return;
+    if (s->ed_mode) return;
 
     int ix = wx + BORDER_L + 4;
     int iy = wy + wh - INPUTBAR_H - WM_SCROLLBAR_W;
@@ -3148,6 +3158,14 @@ static void shell_vim_quit(void *shell_extra)
     s->vim_slot = -1;
 }
 
+/* Quit callback for inline ed */
+static void shell_ed_quit(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    s->ed_mode = 0;
+    s->ed_slot = -1;
+}
+
 /* Activate vim inline mode on this shell instance */
 static void shell_set_vim_mode(void *shell_extra, const char *filename)
 {
@@ -3161,12 +3179,37 @@ static void shell_set_vim_mode(void *shell_extra, const char *filename)
     s->vim_slot = slot;
 }
 
+/* Activate ed inline mode on this shell instance */
+static void shell_set_ed_mode(void *shell_extra, const char *filename)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    int slot = EdWin_OpenInline(filename, s, shell_ed_quit);
+    if (slot < 0) {
+        inst_print(s, "ed: failed to open editor");
+        return;
+    }
+    s->ed_mode = 1;
+    s->ed_slot = slot;
+}
+
 /* Launch Workbench desktop */
+static int g_shell_only_mode = 0;
+
+void ShellWin_SetShellOnlyMode(int mode) { g_shell_only_mode = mode; }
+
 static void shell_loadwb(void)
 {
+    if (g_shell_only_mode) {
+        ShellInstance *s = &g_shells[0];
+        inst_print(s, "loadwb: Workbench disabled (shell-only boot mode)");
+        return;
+    }
     Desktop_MarkWorkbenchLoaded();
     Desktop_Draw();
     WM_Redraw();
+    /* Register the screen blanker commodity */
+    extern void Blanker_Init(void);
+    Blanker_Init();
 }
 
 /* Clear shell history buffer */
@@ -3529,6 +3572,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.shell_extra    = s;
     ctx.set_fdisk_mode = shell_set_fdisk_mode;
     ctx.set_vim_mode   = shell_set_vim_mode;
+    ctx.set_ed_mode    = shell_set_ed_mode;
     ctx.loadwb         = shell_loadwb;
     ctx.clear_history  = shell_clear_history;
     ctx.is_builtin     = shell_is_builtin;
@@ -4763,6 +4807,17 @@ static void inst_handle_key(ShellInstance *s, char c)
         inst_draw_input(s);
         return;
     }
+    if (s->ed_mode) {
+        EdWin_KeyInline(s->ed_slot, c);
+        if (!EdWin_IsActive(s->ed_slot)) {
+            s->ed_mode = 0;
+            s->ed_slot = -1;
+        }
+        inst_draw_contents(s);
+        inst_draw_history(s);
+        inst_draw_input(s);
+        return;
+    }
 
     /* Ask mode handles input in its own polling loop - skip here */
     if (s->ask_mode) {
@@ -4987,6 +5042,8 @@ static ShellInstance *open_shell(int stagger)
     memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
     s->vim_mode = 0;
     s->vim_slot = -1;
+    s->ed_mode = 0;
+    s->ed_slot = -1;
     s->ask_mode = 0;
     s->ask_prompt[0] = '\0';
     s->ask_result[0] = '\0';
@@ -4999,7 +5056,7 @@ static ShellInstance *open_shell(int stagger)
     /* Default AmigaDOS-style search path */
     /* Default AmigaDOS search path.  SYS: is the boot volume root,
      * so SYS:Tools resolves to Workbench:Tools/ etc. */
-    scopy(s->path, "C: S: SYS:Tools", 256);
+    scopy(s->path, "C: S: SYS:Tools SYS:Utilities SYS:Prefs", 256);
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[idx][i][0] = 0;
 
     char title[32];

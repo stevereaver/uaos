@@ -43,6 +43,16 @@
 #define SYSCALL_GUI_PRESENT        0x17   /* present(handle)                    */
 #define SYSCALL_GUI_GET_EVENT      0x18   /* get_event(handle, event)         */
 
+/* Extended GUI drawing syscalls for userspace widget toolkit */
+#define SYSCALL_GUI_DRAW_LINE      0x30   /* draw_line(handle, x1, y1, x2, y2, col) */
+#define SYSCALL_GUI_FILL_RECT      0x31   /* fill_rect(handle, x, y, w, h, col)     */
+#define SYSCALL_GUI_DRAW_3DBORDER  0x32   /* draw_3d_border(handle, x, y, w, h, raised, col) */
+#define SYSCALL_GUI_DRAW_PIXEL     0x33   /* draw_pixel(handle, x, y, col)          */
+#define SYSCALL_GUI_DRAW_TEXT_BG   0x34   /* draw_text_bg(handle, x, y, text, fg, bg) */
+#define SYSCALL_GUI_GET_WINSIZE    0x35   /* get_window_size(handle, &w, &h)        */
+#define SYSCALL_GUI_SET_TITLE      0x36   /* set_window_title(handle, title)        */
+#define SYSCALL_GUI_DRAW_ELLIPSE   0x37   /* draw_ellipse(handle, cx, cy, rx, ry, col) */
+
 /* Filesystem mutation / metadata syscalls for userspace C: commands */
 #define SYSCALL_MKDIR          0x20   /* sys_mkdir(path)                     */
 #define SYSCALL_DELETE         0x21   /* sys_delete(path)                    */

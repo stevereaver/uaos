@@ -19,7 +19,7 @@
 #include <stddef.h>
 
 /* Debug output - prints to screen for debugging */
-#define FB_DEBUG 1
+#define FB_DEBUG 0
 #if FB_DEBUG
     #define FB_LOG(msg) do { extern void kprint(const char *); kprint(msg); } while(0)
     #define FB_LOG_DEC(v) do { extern void kprintdec(uint32_t); kprintdec((uint32_t)(v)); } while(0)
@@ -1149,5 +1149,118 @@ void FileBrowser_Open(const char *volume)
     WM_SetMouseReleaseHandler(b->wm_handle, browser_mouse_release);
     WM_RaiseWindow(b->wm_handle);
 
+    WM_Redraw();
+}
+
+/* =========================================================================
+ * Menu action support functions
+ * ========================================================================= */
+
+static Browser *find_browser_by_handle(int wm_handle)
+{
+    for (int i = 0; i < g_n_browsers && i < MAX_BROWSERS; i++) {
+        if (g_browsers[i].wm_handle == wm_handle &&
+            WM_IsWindowActive(wm_handle))
+            return &g_browsers[i];
+    }
+    return NULL;
+}
+
+int FileBrowser_GetFocusedHandle(void)
+{
+    int fh = WM_GetFocus();
+    if (fh < 0) return -1;
+    for (int i = 0; i < g_n_browsers && i < MAX_BROWSERS; i++) {
+        if (g_browsers[i].wm_handle == fh && WM_IsWindowActive(fh))
+            return fh;
+    }
+    return -1;
+}
+
+const char *FileBrowser_GetFocusedPath(void)
+{
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh < 0) return NULL;
+    Browser *b = find_browser_by_handle(fh);
+    if (!b) return NULL;
+    return b->volume;
+}
+
+const char *FileBrowser_GetSelectedName(void)
+{
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh < 0) return NULL;
+    Browser *b = find_browser_by_handle(fh);
+    if (!b || !b->entries) return NULL;
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) {
+        if (b->selected[i] && b->entries[i].name)
+            return b->entries[i].name;
+    }
+    return NULL;
+}
+
+int FileBrowser_GetSelectedPath(char *dst, int max)
+{
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh < 0) return 0;
+    Browser *b = find_browser_by_handle(fh);
+    if (!b || !b->entries) return 0;
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) {
+        if (b->selected[i] && b->entries[i].name) {
+            build_path(b->volume, b->entries[i].name, dst, max);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void FileBrowser_Refresh(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    b->entries = load_entries_for_browser(b->volume, &b->entry_buffer);
+    b->last_click_icon = -1;
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
+    b->drag_icon = -1;
+    b->lasso_active = 0;
+    WM_Redraw();
+}
+
+void FileBrowser_SelectAll(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b || !b->entries) return;
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) {
+        if (b->entries[i].name)
+            b->selected[i] = 1;
+        else
+            b->selected[i] = 0;
+    }
+    WM_Redraw();
+}
+
+void FileBrowser_Close(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    WM_CloseWindow(wm_handle);
+    b->wm_handle = -1;
+    b->volume[0] = '\0';
+    b->drag_icon = -1;
+    b->drag_active = 0;
+    b->lasso_active = 0;
+}
+
+void FileBrowser_CleanUp(int wm_handle)
+{
+    /* Clean Up in AmigaOS re-arranges icons to a neat grid.
+     * Since our browser already draws icons in a grid layout,
+     * this is primarily a no-op visual refresh.  We clear any
+     * drag offset and selection, and redraw. */
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    b->drag_icon = -1;
+    b->drag_active = 0;
+    b->lasso_active = 0;
     WM_Redraw();
 }

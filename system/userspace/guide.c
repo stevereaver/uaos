@@ -32,6 +32,7 @@
  * ------------------------------------------------------------------------- */
 typedef struct {
     char target[32];
+    int  is_system;  /* 1 = SYSTEM link (execute command), 0 = LINK (navigate) */
     int x, y, w, h;
 } Link;
 
@@ -204,9 +205,10 @@ static void render_text_line(int win, int y, const char *s, uint32_t color)
     uaos_gui_draw_text(win, 4, y, s, color);
 }
 
-static int parse_link(const char *p, char *label, char *target, const char **end)
+static int parse_link(const char *p, char *label, char *target, int *is_system, const char **end)
 {
-    /* @{"label" LINK target} */
+    /* @{"label" LINK target}  or  @{"label" SYSTEM command} */
+    *is_system = 0;
     if (p[0] != '@' || p[1] != '{')
         return 0;
     p += 2;
@@ -223,16 +225,28 @@ static int parse_link(const char *p, char *label, char *target, const char **end
         return 0;
     p++;
     skip_ws(&p);
-    if (!starts_with(p, "LINK "))
+    if (starts_with(p, "LINK ")) {
+        p += 5;
+        skip_ws(&p);
+        int ti = 0;
+        while (*p && *p != '}' && !isspace(*p) && ti < 31) {
+            target[ti++] = *p;
+            p++;
+        }
+        target[ti] = '\0';
+    } else if (starts_with(p, "SYSTEM ")) {
+        p += 7;
+        skip_ws(&p);
+        *is_system = 1;
+        int ti = 0;
+        while (*p && *p != '}' && ti < 31) {
+            target[ti++] = *p;
+            p++;
+        }
+        target[ti] = '\0';
+    } else {
         return 0;
-    p += 5;
-    skip_ws(&p);
-    int ti = 0;
-    while (*p && *p != '}' && !isspace(*p) && ti < 31) {
-        target[ti++] = *p;
-        p++;
     }
-    target[ti] = '\0';
     while (*p && *p != '}')
         p++;
     if (*p == '}')
@@ -352,8 +366,9 @@ static void render_node(int win, int node_idx)
             while (line[col_off]) {
                 /* Check for link */
                 char label[64], target[32];
+                int is_sys = 0;
                 const char *endp;
-                if (line[col_off] == '@' && parse_link(&line[col_off], label, target, &endp)) {
+                if (line[col_off] == '@' && parse_link(&line[col_off], label, target, &is_sys, &endp)) {
                     /* Draw any pending text before link */
                     if (col_off > 0) {
                         int k = 0;
@@ -374,6 +389,7 @@ static void render_node(int win, int node_idx)
                     if (g_link_count < MAX_LINKS) {
                         Link *lk = &g_links[g_link_count++];
                         uaos_strcpy(lk->target, target);
+                        lk->is_system = is_sys;
                         lk->x = cx;
                         lk->y = y;
                         lk->w = uaos_strlen(label) * CHAR_W;
@@ -429,7 +445,18 @@ static void handle_click(int win, int mx, int my)
         Link *lk = &g_links[i];
         if (mx >= lk->x && mx < lk->x + lk->w &&
             my + g_scroll_y >= lk->y && my + g_scroll_y < lk->y + lk->h) {
-            goto_node(win, lk->target);
+            if (lk->is_system) {
+                /* SYSTEM link: display command (can't execute from userspace) */
+                char msg[80];
+                uaos_strcpy(msg, "System: ");
+                int ml = 8;
+                int ti = 0;
+                while (lk->target[ti] && ml < 79) { msg[ml++] = lk->target[ti++]; }
+                msg[ml] = '\0';
+                uaos_gui_draw_text(win, 4, 2, msg, UAOS_WB_BLUE);
+            } else {
+                goto_node(win, lk->target);
+            }
             return;
         }
     }

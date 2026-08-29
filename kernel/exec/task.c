@@ -13,6 +13,8 @@
 #include "../display/wm.h"
 #include "../net/stack.h"
 #include "../display/shell_win.h"
+#include "../display/blanker.h"
+#include "intuition_lib.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -495,13 +497,43 @@ void Task_IdleEntry(void *arg)
                 btn_left != last_btn || btn_right != last_btn_right) {
                 last_mx = mx; last_my = my;
                 last_btn = btn_left; last_btn_right = btn_right;
+                Blanker_OnInput();
                 WM_MouseEvent(mx, my, btn_left, btn_right);
             }
         }
 
-        /* Keyboard -> WM (command-key shortcuts first, then regular keys) */
+        /* Keyboard -> WM (Amiga key combos first, then command-key
+         * shortcuts, then regular keys) */
         while (PS2Kbd_HasChar()) {
             char c = PS2Kbd_GetChar();
+            unsigned char uc = (unsigned char)c;
+            Blanker_OnInput();
+
+            /* LAmiga+M/N — screen cycling */
+            if (uc == (unsigned char)AMIGA_LM) {
+                UAOS_Intuition_CycleScreen(1);
+                continue;
+            }
+            if (uc == (unsigned char)AMIGA_LN) {
+                UAOS_Intuition_CycleScreen(-1);
+                continue;
+            }
+            /* LAmiga+V/B — requester Verify/Cancel (future: route to
+             * active requester).  For now, consume so they don't leak
+             * into text input. */
+            if (uc == (unsigned char)AMIGA_LV ||
+                uc == (unsigned char)AMIGA_LB)
+                continue;
+
+            /* RAmiga+letter — menu shortcut via Intuition command key */
+            if (IS_AMIGA_RKEY(c)) {
+                char letter = AMIGA_RLETTER(c);
+                if (!Intuition_InvokeCommandKey(letter))
+                    WM_KeyEvent(c);
+                continue;
+            }
+
+            /* Regular key — try command key first, then WM */
             if (!Intuition_InvokeCommandKey(c))
                 WM_KeyEvent(c);
         }

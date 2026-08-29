@@ -9,6 +9,7 @@
  */
 
 #include "rom_modules.h"
+#include "workbench_lib.h"
 #include "icon_def.h"
 #include "../display/framebuffer.h"
 #include "../dos/vfs.h"
@@ -352,4 +353,41 @@ void UAOS_WORKBENCH_Register(void)
     UAOS_ROM_Register("workbench.library", 45, 0x00000000,
                       (uint16_t)(sizeof(workbench_funcs) / sizeof(workbench_funcs[0])),
                       workbench_funcs);
+}
+
+/* =========================================================================
+ * AppIcon query API — used by desktop.c to render AppIcons on the desktop
+ * ========================================================================= */
+
+int WB_GetAppIconCount(void)
+{
+    int count = 0;
+    for (int i = 0; i < MAX_APP_ICONS; i++) {
+        if (g_app_icons[i].active)
+            count++;
+    }
+    return count;
+}
+
+int WB_GetAppIcon(int index, AppIconInfo *out)
+{
+    if (!out) return 0;
+    int seen = 0;
+    for (int i = 0; i < MAX_APP_ICONS; i++) {
+        if (!g_app_icons[i].active) continue;
+        if (seen == index) {
+            out->id       = g_app_icons[i].id;
+            out->msg_port = g_app_icons[i].msg_port;
+            out->disk_obj = g_app_icons[i].disk_obj;
+            /* Copy label */
+            for (int k = 0; k < APPICON_MAX_LABEL; k++) {
+                out->label[k] = g_app_icons[i].label[k];
+                if (g_app_icons[i].label[k] == '\0') break;
+            }
+            out->label[APPICON_MAX_LABEL - 1] = '\0';
+            return 1;
+        }
+        seen++;
+    }
+    return 0;
 }

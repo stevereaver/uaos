@@ -14,4 +14,31 @@ void FileBrowser_Open(const char *volume);
  * complete as spurious double-clicks later. */
 void FileBrowser_CancelClicks(int wm_handle_keep);
 
+/* Return the volume/path of the browser that owns the focused WM window.
+ * Returns NULL if no browser is focused. */
+const char *FileBrowser_GetFocusedPath(void);
+
+/* Return the WM handle of the focused browser, or -1 if none. */
+int FileBrowser_GetFocusedHandle(void);
+
+/* Get the name of the first selected entry in the focused browser.
+ * Returns NULL if no browser focused or no entry selected. */
+const char *FileBrowser_GetSelectedName(void);
+
+/* Build the full path of the first selected entry in the focused browser.
+ * Writes to dst[max]. Returns 1 on success, 0 on failure. */
+int FileBrowser_GetSelectedPath(char *dst, int max);
+
+/* Refresh entries for the browser owning wm_handle (re-read from VFS). */
+void FileBrowser_Refresh(int wm_handle);
+
+/* Select all entries in the browser owning wm_handle. */
+void FileBrowser_SelectAll(int wm_handle);
+
+/* Close the browser owning wm_handle. */
+void FileBrowser_Close(int wm_handle);
+
+/* Clean Up: re-arrange icons in a grid for the browser owning wm_handle. */
+void FileBrowser_CleanUp(int wm_handle);
+
 #endif

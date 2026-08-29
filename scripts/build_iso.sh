@@ -66,11 +66,20 @@ mkdir -p "${ISO_STAGING}/boot/grub"
 mkdir -p "${ISO_STAGING}/boot/uaos"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/C"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/DEVS"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/DEVS/Printers"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/DEVS/Keymaps"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/L"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/LIBS"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/S"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/SYS"
 mkdir -p "${ISO_STAGING}/SYS_ROOT/Tools"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Utilities"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Prefs"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Classes"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Fonts"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Locale"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Storage"
+mkdir -p "${ISO_STAGING}/SYS_ROOT/Demos"
 mkdir -p "${ISO_STAGING}/documentation"
 
 ok "Staging directories created at ${ISO_STAGING}"
@@ -295,11 +304,18 @@ for src in \
     "${REPO_ROOT}/kernel/display/wm.c" \
     "${REPO_ROOT}/kernel/display/filebrowser.c" \
     "${REPO_ROOT}/kernel/display/about_win.c" \
+    "${REPO_ROOT}/kernel/display/requester.c" \
     "${REPO_ROOT}/kernel/display/calc_win.c" \
     "${REPO_ROOT}/kernel/display/clock_win.c" \
     "${REPO_ROOT}/kernel/display/netinfo_win.c" \
     "${REPO_ROOT}/kernel/display/user_window.c" \
     "${REPO_ROOT}/kernel/display/vim_win.c" \
+    "${REPO_ROOT}/kernel/display/ed_win.c" \
+    "${REPO_ROOT}/kernel/display/prefs_win.c" \
+    "${REPO_ROOT}/kernel/display/commodities.c" \
+    "${REPO_ROOT}/kernel/display/exchange_win.c" \
+    "${REPO_ROOT}/kernel/display/blanker.c" \
+    "${REPO_ROOT}/kernel/display/early_startup.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
@@ -341,6 +357,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/dos_lib.c" \
     "${REPO_ROOT}/kernel/exec/workbench_lib.c" \
     "${REPO_ROOT}/kernel/exec/intuition_lib.c" \
+    "${REPO_ROOT}/kernel/exec/prefs_lib.c" \
     "${REPO_ROOT}/kernel/exec/gadtools_lib.c" \
     "${REPO_ROOT}/kernel/exec/boopsi_builtin.c" \
     "${REPO_ROOT}/kernel/exec/loadable_lib.c" \
@@ -362,8 +379,10 @@ for src in \
     "${REPO_ROOT}/kernel/dos/device_handler.c" \
     "${REPO_ROOT}/kernel/dos/aux_handler.c" \
     "${REPO_ROOT}/kernel/dos/port_handler.c" \
+    "${REPO_ROOT}/kernel/dos/print_handler.c" \
     "${REPO_ROOT}/kernel/dos/ram_handler.c" \
     "${REPO_ROOT}/kernel/dos/fat_handler.c" \
+    "${REPO_ROOT}/kernel/dos/crossdos_handler.c" \
     "${REPO_ROOT}/kernel/dos/blockdev.c" \
     "${REPO_ROOT}/kernel/dos/partition.c" \
     "${REPO_ROOT}/kernel/dos/dma.c" \
@@ -406,6 +425,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
     "${REPO_ROOT}/kernel/shell/cmd_netinfo.c" \
     "${REPO_ROOT}/kernel/shell/cmd_vim.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ed.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_guide.c" \
     "${REPO_ROOT}/kernel/shell/cmd_newcli.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ask.c" \
     "${REPO_ROOT}/kernel/shell/resident_cmd.c" \
@@ -430,7 +451,12 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_requestfile.c" \
     "${REPO_ROOT}/kernel/shell/cmd_changetaskpri.c" \
     "${REPO_ROOT}/kernel/shell/cmd_status.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_strace.c"
+    "${REPO_ROOT}/kernel/shell/cmd_strace.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_prefs.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_blanker.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_print.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_crossdos.c"
 do
     base="$(basename "${src}" .c)"
     if [ "${src##*/}" = "ntp.c" ]; then
@@ -570,6 +596,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/wm.o" \
     "${BUILD_DIR}/obj/filebrowser.o" \
     "${BUILD_DIR}/obj/about_win.o" \
+    "${BUILD_DIR}/obj/requester.o" \
     "${BUILD_DIR}/obj/calc_win.o" \
     "${BUILD_DIR}/obj/clock_win.o" \
     "${BUILD_DIR}/obj/netinfo_win.o" \
@@ -620,6 +647,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/dos_lib.o" \
     "${BUILD_DIR}/obj/workbench_lib.o" \
     "${BUILD_DIR}/obj/intuition_lib.o" \
+    "${BUILD_DIR}/obj/prefs_lib.o" \
     "${BUILD_DIR}/obj/gadtools_lib.o" \
     "${BUILD_DIR}/obj/boopsi_builtin.o" \
     "${BUILD_DIR}/obj/loadable_lib.o" \
@@ -641,8 +669,10 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/device_handler.o" \
     "${BUILD_DIR}/obj/aux_handler.o" \
     "${BUILD_DIR}/obj/port_handler.o" \
+    "${BUILD_DIR}/obj/print_handler.o" \
     "${BUILD_DIR}/obj/ram_handler.o" \
     "${BUILD_DIR}/obj/fat_handler.o" \
+    "${BUILD_DIR}/obj/crossdos_handler.o" \
     "${BUILD_DIR}/obj/blockdev.o" \
     "${BUILD_DIR}/obj/partition.o" \
     "${BUILD_DIR}/obj/dma.o" \
@@ -696,6 +726,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_grep.o" \
     "${BUILD_DIR}/obj/cmd_more.o" \
     "${BUILD_DIR}/obj/cmd_vim.o" \
+    "${BUILD_DIR}/obj/cmd_ed.o" \
+    "${BUILD_DIR}/obj/cmd_guide.o" \
     "${BUILD_DIR}/obj/cmd_newcli.o" \
     "${BUILD_DIR}/obj/cmd_ask.o" \
     "${BUILD_DIR}/obj/resident_cmd.o" \
@@ -726,7 +758,18 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_changetaskpri.o" \
     "${BUILD_DIR}/obj/cmd_status.o" \
     "${BUILD_DIR}/obj/cmd_strace.o" \
+    "${BUILD_DIR}/obj/cmd_prefs.o" \
+    "${BUILD_DIR}/obj/cmd_exchange.o" \
+    "${BUILD_DIR}/obj/cmd_blanker.o" \
+    "${BUILD_DIR}/obj/cmd_print.o" \
+    "${BUILD_DIR}/obj/cmd_crossdos.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
+    "${BUILD_DIR}/obj/ed_win.o" \
+    "${BUILD_DIR}/obj/prefs_win.o" \
+    "${BUILD_DIR}/obj/commodities.o" \
+    "${BUILD_DIR}/obj/exchange_win.o" \
+    "${BUILD_DIR}/obj/blanker.o" \
+    "${BUILD_DIR}/obj/early_startup.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -764,26 +807,58 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 for cmd in version mem libs clear reboot \
            pwd \
            info date which disks fdisk format pointer \
-           run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop vim ps netinfo \
+           run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop vim ed ps netinfo \
            wait prompt stack why failat quit endcli relabel \
            getenv unset jobs \
            install diskchange addbuffers requestchoice requestfile changetaskpri status \
-           strace; do
+           strace print crossdos ed guide; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done
 
 # Generate Tools: binaries
-info "Step 2d: Generating Tools: binaries (Calculator, Clock, NetInfo, Pointer)"
+info "Step 2d: Generating Tools:, Utilities:, and Prefs: binaries"
+
+# Tools: — UAOS-specific tools and utilities
 TOOLS_STAGING="${ISO_STAGING}/SYS_ROOT/Tools"
-"${GEN_NATIVE}" "calculator" "${TOOLS_STAGING}/Calculator"
-ok "  Generated: Tools:Calculator  (32-byte NATIVE binary)"
-"${GEN_NATIVE}" "clock"      "${TOOLS_STAGING}/Clock"
-ok "  Generated: Tools:Clock       (32-byte NATIVE binary)"
 "${GEN_NATIVE}" "netinfo"    "${TOOLS_STAGING}/NetInfo"
 ok "  Generated: Tools:NetInfo     (32-byte NATIVE binary)"
-"${GEN_NATIVE}" "pointer"    "${TOOLS_STAGING}/Pointer"
-ok "  Generated: Tools:Pointer    (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "exchange"   "${TOOLS_STAGING}/Exchange"
+ok "  Generated: Tools:Exchange    (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "blanker"    "${TOOLS_STAGING}/Blanker"
+ok "  Generated: Tools:Blanker     (32-byte NATIVE binary)"
+
+# Utilities: — AmigaOS utility programs
+UTILS_STAGING="${ISO_STAGING}/SYS_ROOT/Utilities"
+"${GEN_NATIVE}" "calculator" "${UTILS_STAGING}/Calculator"
+ok "  Generated: Utilities:Calculator  (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "clock"      "${UTILS_STAGING}/Clock"
+ok "  Generated: Utilities:Clock       (32-byte NATIVE binary)"
+
+# Prefs: — Preferences editors (stubs for Phase 3)
+PREFS_STAGING="${ISO_STAGING}/SYS_ROOT/Prefs"
+"${GEN_NATIVE}" "pointer"    "${PREFS_STAGING}/Pointer"
+ok "  Generated: Prefs:Pointer        (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "screenmode" "${PREFS_STAGING}/ScreenMode"
+ok "  Generated: Prefs:ScreenMode     (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "font"       "${PREFS_STAGING}/Font"
+ok "  Generated: Prefs:Font           (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "icontrol"   "${PREFS_STAGING}/IControl"
+ok "  Generated: Prefs:IControl       (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "input"      "${PREFS_STAGING}/Input"
+ok "  Generated: Prefs:Input          (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "palette"    "${PREFS_STAGING}/Palette"
+ok "  Generated: Prefs:Palette        (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "wbpattern"  "${PREFS_STAGING}/WBPattern"
+ok "  Generated: Prefs:WBPattern      (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "serial"     "${PREFS_STAGING}/Serial"
+ok "  Generated: Prefs:Serial         (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "printer"    "${PREFS_STAGING}/Printer"
+ok "  Generated: Prefs:Printer        (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "time"       "${PREFS_STAGING}/Time"
+ok "  Generated: Prefs:Time           (32-byte NATIVE binary)"
+"${GEN_NATIVE}" "locale"     "${PREFS_STAGING}/Locale"
+ok "  Generated: Prefs:Locale         (32-byte NATIVE binary)"
 
 # -------------------------------------------------------------------------
 # Step 2c — Wrap any Amiga Hunk binaries in emulation/binaries/ with UAOS header
@@ -1128,6 +1203,42 @@ if [[ -d "${SYSTEM_DIR}" ]]; then
     if [[ -d "${SYSTEM_DIR}/Tools" ]]; then
         cp -r "${SYSTEM_DIR}/Tools/"* "${ISO_STAGING}/SYS_ROOT/Tools/" 2>/dev/null || true
         ok "  Copied: system/Tools/ -> sys-root/Tools/"
+    fi
+    
+    # Copy any Utilities files
+    if [[ -d "${SYSTEM_DIR}/Utilities" ]]; then
+        cp -r "${SYSTEM_DIR}/Utilities/"* "${ISO_STAGING}/SYS_ROOT/Utilities/" 2>/dev/null || true
+        ok "  Copied: system/Utilities/ -> sys-root/Utilities/"
+    fi
+    
+    # Copy any Prefs files
+    if [[ -d "${SYSTEM_DIR}/Prefs" ]]; then
+        cp -r "${SYSTEM_DIR}/Prefs/"* "${ISO_STAGING}/SYS_ROOT/Prefs/" 2>/dev/null || true
+        ok "  Copied: system/Prefs/ -> sys-root/Prefs/"
+    fi
+    
+    # Copy any Classes files
+    if [[ -d "${SYSTEM_DIR}/Classes" ]]; then
+        cp -r "${SYSTEM_DIR}/Classes/"* "${ISO_STAGING}/SYS_ROOT/Classes/" 2>/dev/null || true
+        ok "  Copied: system/Classes/ -> sys-root/Classes/"
+    fi
+    
+    # Copy any Fonts files
+    if [[ -d "${SYSTEM_DIR}/Fonts" ]]; then
+        cp -r "${SYSTEM_DIR}/Fonts/"* "${ISO_STAGING}/SYS_ROOT/Fonts/" 2>/dev/null || true
+        ok "  Copied: system/Fonts/ -> sys-root/Fonts/"
+    fi
+    
+    # Copy any Locale files
+    if [[ -d "${SYSTEM_DIR}/Locale" ]]; then
+        cp -r "${SYSTEM_DIR}/Locale/"* "${ISO_STAGING}/SYS_ROOT/Locale/" 2>/dev/null || true
+        ok "  Copied: system/Locale/ -> sys-root/Locale/"
+    fi
+    
+    # Copy any Storage files
+    if [[ -d "${SYSTEM_DIR}/Storage" ]]; then
+        cp -r "${SYSTEM_DIR}/Storage/"* "${ISO_STAGING}/SYS_ROOT/Storage/" 2>/dev/null || true
+        ok "  Copied: system/Storage/ -> sys-root/Storage/"
     fi
     
     # Copy any Demos files (built binaries and icons), excluding assembly sources

@@ -3,12 +3,16 @@
 ;
 ; Phase 1 (ROM fallback) has already been performed by the kernel when the
 ; boot volume was identified:
-;   SYS:    -> boot volume root (Workbench:)
-;   LIBS:   -> SYS:Libs  (Workbench:Libs)
-;   C:      -> SYS:C     (Workbench:C)
-;   S:      -> SYS:S     (Workbench:S)
-;   DEVS:   -> SYS:Devs  (Workbench:Devs)
-;   L:      -> SYS:L     (Workbench:L)
+;   SYS:        -> boot volume root (Workbench:)
+;   LIBS:       -> SYS:Libs      (Workbench:Libs)
+;   C:          -> SYS:C         (Workbench:C)
+;   S:          -> SYS:S         (Workbench:S)
+;   DEVS:       -> SYS:Devs      (Workbench:Devs)
+;   L:          -> SYS:L         (Workbench:L)
+;   Tools:      -> SYS:Tools     (Workbench:Tools)
+;   Utilities:  -> SYS:Utilities (Workbench:Utilities, deferred)
+;   Classes:    -> SYS:Classes   (Workbench:Classes, deferred)
+;   FONTS:      -> SYS:Fonts     (Workbench:Fonts, deferred)
 ;
 ; This script now refines and extends those fallback assigns, exactly as
 ; AmigaDOS does after Kickstart hooks up the pre-assigns.
@@ -24,6 +28,9 @@ Assign >NIL: REXX: S:
 ; Device sub-directory assigns
 Assign >NIL: PRINTERS: DEVS:Printers
 Assign >NIL: KEYMAPS: DEVS:Keymaps
+
+; System directory assigns
+Assign >NIL: REXXC: S:REXXc
 
 ; GNU POSIX compatibility layer — gnu: maps to Workbench:gnu
 ; Contains /usr/bin, /bin, /usr/local/bin with GNU coreutils and

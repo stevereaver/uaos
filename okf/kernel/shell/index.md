@@ -41,7 +41,11 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | **Volume / Disk** | `info`, `disks`, `diskchange`, `mount`, `format`, `fdisk`, `addbuffers`, `relabel`, `install` |
 | **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `strace` |
 | **Network** | `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo` |
-| **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `requestchoice`, `requestfile` |
+| **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `ed`, `guide`, `requestchoice`, `requestfile` |
+| **Preferences** | `screenmode`, `font`, `icontrol`, `input`, `palette`, `wbpattern`, `serial`, `printer`, `time`, `locale` |
+| **Tools & Commodities** | `exchange`, `blanker` |
+| **Printing & CrossDOS** | `print`, `crossdos` |
+| **Editors & Help** | `vim`, `ed`, `guide` |
 | **Utilities** | `date`, `ask`, `which`, `getenv`, `unset`, `clear`, `reboot` |
 
 The following commands are now on-disk x86-64 ELF64 userspace binaries in `system/userspace/`:

@@ -39,6 +39,9 @@
   @{" Troubleshooting         " LINK TROUBLE}
      Common problems and diagnostic procedures.
 
+  @{" Editors & Early Startup " LINK EDITORS}
+     ED editor, Vim, AmigaGuide help system, and boot menu.
+
 @ENDNODE
 
 
@@ -584,6 +587,64 @@
     has executed a genuine illegal instruction.  Enable
     @{b}break_on_illegal = yes@{ub} in kickstart.conf to trap it in the
     debugger and inspect the guest PC and surrounding memory.
+
+  @{"  Back to Index  " LINK MAIN}
+
+@ENDNODE
+
+
+@NODE EDITORS "Editors and Early Startup"
+@TITLE "UAOS — Editors and Early Startup"
+@PREV TROUBLE
+@NEXT MAIN
+
+  @{b}Editors and Early Startup@{ub}
+  ─────────────────────────────────────────────────────────────────────────
+
+  @{b}ED Editor@{ub}
+
+    The @{b}ed@{ub} command launches a simple AmigaED-style line editor.
+    In @{i}edit mode@{ui}, type text freely.  Press @{b}ESC@{ub} to enter
+    @{i}command mode@{ui}:
+
+    @{b}w@{ub}     — save file
+    @{b}q@{ub}     — quit (refuses if modified)
+    @{b}q!@{ub}    — force quit (discard changes)
+    @{b}wq@{ub}    — save and quit
+    @{b}/pat@{ub}  — search forward for pattern
+    @{b}?pat@{ub}  — search backward for pattern
+    @{b}n@{ub}     — repeat last search
+    @{b}N@{ub}     — repeat search in reverse
+    @{b}123@{ub}   — go to line 123
+    @{b}d@{ub}     — delete current line
+    @{b}h@{ub}     — help
+
+    Press @{b}ESC@{ub} again to return to edit mode.
+
+  @{b}Vim Editor@{ub}
+
+    The @{b}vim@{ub} command launches a full modal editor with Normal,
+    Insert, Visual, and Command-line modes.  See @{b}S:vim.conf@{ub} for
+    configuration options.
+
+  @{b}AmigaGuide Help System@{ub}
+
+    The @{b}guide@{ub} command (or @{b}Tools:Guide@{ub}) opens the
+    AmigaGuide viewer, which renders this documentation file.  Use
+    @{b}b@{ub} (back), @{b}n@{ub} (next), and click on @{b}blue links@{ub}
+    to navigate between nodes.
+
+  @{b}Early Startup Control@{ub}
+
+    During boot, a brief 2-second countdown appears.  Press any key to
+    access the Early Startup Control menu:
+
+    @{b}1@{ub} — Normal Boot (default)
+    @{b}2@{ub} — Boot without Startup-Sequence
+    @{b}3@{ub} — Boot to Shell only (no Workbench)
+    @{b}4@{ub} — Display System Information
+
+    If no key is pressed, the system boots normally after 2 seconds.
 
   @{"  Back to Index  " LINK MAIN}
 

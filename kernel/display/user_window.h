@@ -41,4 +41,14 @@ int UserWindow_DrawRect(int handle, int x, int y, int w, int h, uint32_t color);
 int UserWindow_Present(int handle);
 int UserWindow_GetEvent(int handle, struct uaos_gui_event *event);
 
+/* Extended drawing primitives for widget toolkit */
+int UserWindow_DrawLine(int handle, int x1, int y1, int x2, int y2, uint32_t color);
+int UserWindow_FillRect(int handle, int x, int y, int w, int h, uint32_t color);
+int UserWindow_Draw3DBorder(int handle, int x, int y, int w, int h, int raised, uint32_t base_color);
+int UserWindow_DrawPixel(int handle, int x, int y, uint32_t color);
+int UserWindow_DrawTextBg(int handle, int x, int y, const char *text, uint32_t fg, uint32_t bg);
+int UserWindow_GetWinSize(int handle, int *w, int *h);
+int UserWindow_SetTitle(int handle, const char *title);
+int UserWindow_DrawEllipse(int handle, int cx, int cy, int rx, int ry, uint32_t color);
+
 #endif /* UAOS_USER_WINDOW_H */

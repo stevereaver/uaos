@@ -24,6 +24,9 @@ void ShellWin_Redraw(void);
 /* Execute S:Startup-Sequence in the first shell instance */
 void ShellWin_RunStartupSequence(void);
 
+/* Set shell-only mode (disables LoadWB — for Early Startup Control) */
+void ShellWin_SetShellOnlyMode(int mode);
+
 /* Poll background job queue — call from the main event loop.
  * Runs one queued job to completion (commands that yield will
  * still pump UI/network during their execution). */

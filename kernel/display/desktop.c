@@ -2,25 +2,27 @@
  *
  * Draws a complete Workbench-inspired graphical desktop on the linear
  * framebuffer:
- *   - Menu bar (top, 20px high) with Workbench menus and clock
+ *   - Menu bar (top, 20px high) with Workbench menus and memory display
  *   - Desktop backdrop (solid Amiga grey)
  *   - Disk icons (VFS-mounted volumes, discovered dynamically)
- *   - Status bar (bottom, 18px)
  */
 
 #include "desktop.h"
 #include "framebuffer.h"
+#include "wm.h"
 #include "filebrowser.h"
+#include "requester.h"
 #include "../exec/intuition_lib.h"
 #include "about_win.h"
 #include "shell_win.h"
 #include "icon_render.h"
-#include "../irq/rtc.h"
-#include "../net/ntp.h"
-#include "../net/timezone.h"
-#include "clock_win.h"
+#include "../exec/mem_info.h"
 #include "../dos/vfs.h"
+#include "../dos/ramfs.h"
 #include "../dos/icon_loader.h"
+#include "../exec/workbench_lib.h"
+#include "../irq/rtc.h"
+#include "blanker.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -53,10 +55,10 @@ static int str_eq(const char *a, const char *b)
  * ========================================================================= */
 
 /* MENUBAR_H is defined in desktop.h */
-#define STATUSBAR_H    18
 #define ICON_W         48
 #define ICON_H         56   /* 40px bitmap + 16px label */
 #define ICON_LABEL_H   16
+#define LABEL_W        80   /* label background wider than icon (10 chars at 8px) */
 
 /* =========================================================================
  * Amiga-style 3-D bevel helpers
@@ -78,45 +80,44 @@ static void draw_bevel_box(int x, int y, int w, int h, int raised)
  * Menu bar
  * ========================================================================= */
 
-/* Fill buf[6] with the current local time as "HH:MM\0".
- * Uses the NTP epoch + timezone when synced, falls back to CMOS UTC. */
-static void current_time_str(char *buf)
+/* Build a "NNNK Free" string for the menubar memory display.
+ * Shows the total free memory (x64 heap free + M68k guest RAM free slots). */
+static void mem_free_str(char *buf, int max)
 {
-    uint8_t h, m, s;
-    uint32_t epoch = ntp_get_epoch();
-    if (epoch) {
-        const TzInfo *tz = tz_get_current();
-        int32_t  off     = tz_offset_min(tz, epoch);
-        uint32_t local   = (uint32_t)((int64_t)epoch + (int64_t)off * 60);
-        uint16_t yr; uint8_t mo, dy;
-        ntp_unix_to_datetime(local, &yr, &mo, &dy, &h, &m, &s);
-    } else {
-        RtcTime t = RTC_ReadTime();
-        h = t.hour; m = t.min;
-    }
-    buf[0] = (char)('0' + h / 10); buf[1] = (char)('0' + h % 10);
-    buf[2] = ':';
-    buf[3] = (char)('0' + m / 10); buf[4] = (char)('0' + m % 10);
-    buf[5] = '\0';
-}
+    struct UaosMemInfo mi;
+    Mem_GetInfo(&mi);
 
-/* Return the current displayed minute as h*60+m.  The menubar clock only
- * shows HH:MM, so a redraw is only needed when this value changes. */
-static int current_minute(void)
-{
-    uint8_t h, m, s;
-    uint32_t epoch = ntp_get_epoch();
-    if (epoch) {
-        const TzInfo *tz = tz_get_current();
-        int32_t  off     = tz_offset_min(tz, epoch);
-        uint32_t local   = (uint32_t)((int64_t)epoch + (int64_t)off * 60);
-        uint16_t yr; uint8_t mo, dy;
-        ntp_unix_to_datetime(local, &yr, &mo, &dy, &h, &m, &s);
+    uint32_t free_bytes = mi.x64_free;
+    /* Add free M68k guest RAM slots */
+    if (mi.m68k_slots_total > mi.m68k_slots_used)
+        free_bytes += (mi.m68k_slots_total - mi.m68k_slots_used) * mi.m68k_ram_total;
+
+    uint32_t free_kb = free_bytes / 1024;
+
+    int i = 0;
+    if (free_kb >= 10000) {
+        /* Show as NNK for large values */
+        if (free_kb >= 100000) {
+            buf[i++] = (char)('0' + (free_kb / 100000) % 10);
+            buf[i++] = (char)('0' + (free_kb / 10000) % 10);
+            buf[i++] = (char)('0' + (free_kb / 1000) % 10);
+            buf[i++] = (char)('0' + (free_kb / 100) % 10);
+        } else if (free_kb >= 10000) {
+            buf[i++] = (char)('0' + (free_kb / 10000) % 10);
+            buf[i++] = (char)('0' + (free_kb / 1000) % 10);
+            buf[i++] = (char)('0' + (free_kb / 100) % 10);
+            buf[i++] = (char)('0' + (free_kb / 10) % 10);
+        }
     } else {
-        RtcTime t = RTC_ReadTime();
-        h = t.hour; m = t.min;
+        if (free_kb >= 1000) buf[i++] = (char)('0' + (free_kb / 1000) % 10);
+        if (free_kb >= 100)  buf[i++] = (char)('0' + (free_kb / 100) % 10);
+        if (free_kb >= 10)   buf[i++] = (char)('0' + (free_kb / 10) % 10);
+        buf[i++] = (char)('0' + free_kb % 10);
     }
-    return (int)h * 60 + (int)m;
+    if (i < max - 7) {
+        buf[i++] = 'K'; buf[i++] = ' '; buf[i++] = 'F'; buf[i++] = 'r'; buf[i++] = 'e'; buf[i++] = 'e';
+    }
+    buf[i] = '\0';
 }
 
 /* Screen title state (updated by intuition.library ShowTitle()) */
@@ -154,6 +155,12 @@ static void menu_action_redraw_all(void)
 static void menu_action_update_all(void)
 {
     DT_LOG("[MENU] Update All selected\n");
+    /* Refresh all open browser windows */
+    for (int i = 0; i < 16; i++) {
+        if (WM_IsWindowActive(i)) {
+            FileBrowser_Refresh(i);
+        }
+    }
 }
 
 static void menu_action_last_message(void)
@@ -173,106 +180,426 @@ static void menu_action_quit(void)
 }
 
 /* Window menu actions */
+
+/* New Drawer callback — creates the directory after string input */
+static void new_drawer_cb(int button, const char *text, void *user_data)
+{
+    (void)user_data;
+    if (button != REQ_BTN_OK || !text || !text[0]) return;
+
+    const char *path = FileBrowser_GetFocusedPath();
+    if (!path) return;
+
+    char full_path[128];
+    /* Build path: volume/newname */
+    int vi = 0;
+    while (vi < 126 && path[vi]) { full_path[vi] = path[vi]; vi++; }
+    int last = (vi > 0) ? path[vi - 1] : 0;
+    if (last != ':' && last != '/') {
+        if (vi < 127) full_path[vi++] = '/';
+    }
+    int ti = 0;
+    while (vi < 127 && text[ti]) { full_path[vi++] = text[ti++]; }
+    full_path[vi] = '\0';
+
+    VFS_MkDir(full_path);
+
+    /* Refresh the current browser */
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Refresh(fh);
+}
+
 static void menu_action_new_drawer(void)
 {
     DT_LOG("[MENU] New Drawer selected\n");
+    if (!FileBrowser_GetFocusedPath()) return;
+    Requester_String("New Drawer", "Enter new drawer name:",
+                     "", 30, new_drawer_cb, NULL);
 }
 
 static void menu_action_open_drawer(void)
 {
     DT_LOG("[MENU] Open Drawer selected\n");
+    const char *name = FileBrowser_GetSelectedName();
+    const char *path = FileBrowser_GetFocusedPath();
+    if (!name || !path) return;
+    /* Open the selected directory */
+    char child_path[128];
+    int vi = 0;
+    while (vi < 126 && path[vi]) { child_path[vi] = path[vi]; vi++; }
+    int last = (vi > 0) ? path[vi - 1] : 0;
+    if (last != ':' && last != '/') {
+        if (vi < 127) child_path[vi++] = '/';
+    }
+    int ni = 0;
+    while (vi < 127 && name[ni]) { child_path[vi++] = name[ni++]; }
+    child_path[vi] = '\0';
+    FileBrowser_Open(child_path);
 }
 
 static void menu_action_close(void)
 {
     DT_LOG("[MENU] Close selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Close(fh);
 }
 
 static void menu_action_update(void)
 {
     DT_LOG("[MENU] Update selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Refresh(fh);
 }
 
 static void menu_action_select_contents(void)
 {
     DT_LOG("[MENU] Select Contents selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SelectAll(fh);
 }
 
 static void menu_action_clean_up(void)
 {
     DT_LOG("[MENU] Clean Up selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_CleanUp(fh);
 }
 
 static void menu_action_snapshot(void)
 {
     DT_LOG("[MENU] Snapshot selected\n");
+    /* Snapshot in AmigaOS saves window position/size.
+     * We don't persist positions yet — this is a no-op. */
 }
+
+/* Forward declaration — Show menu item calls Information */
+static void menu_action_icon_information(void);
 
 static void menu_action_show(void)
 {
     DT_LOG("[MENU] Show selected\n");
+    /* Show .info for selected icon — opens Information requester */
+    menu_action_icon_information();
 }
 
 static void menu_action_view_by(void)
 {
     DT_LOG("[MENU] View By selected\n");
+    /* View By cycles icon/name/all view modes.
+     * Currently only icon view is supported — no-op. */
 }
 
 /* Icons menu actions */
+
 static void menu_action_icon_copy(void)
 {
     DT_LOG("[MENU] Copy selected\n");
+    /* Copy requires a destination — in AmigaOS this opens a file requester.
+     * For now, copy to RAM: as a simple destination. */
+    char src[128];
+    if (!FileBrowser_GetSelectedPath(src, sizeof(src))) return;
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
+
+    /* Build dest path: RAM:/name */
+    char dst[128];
+    int di = 0;
+    dst[di++] = 'R'; dst[di++] = 'A'; dst[di++] = 'M'; dst[di++] = ':';
+    dst[di++] = '/';
+    int ni = 0;
+    while (name[ni] && di < 126) dst[di++] = name[ni++];
+    dst[di] = '\0';
+
+    /* Read source file and write to dest */
+    VfsFile fh_src, fh_dst;
+    if (!VFS_Open(&fh_src, src, VFS_READ)) return;
+    if (!VFS_Open(&fh_dst, dst, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
+        VFS_Close(&fh_src);
+        return;
+    }
+    uint8_t buf[512];
+    uint32_t n;
+    while ((n = VFS_Read(&fh_src, buf, sizeof(buf))) > 0)
+        VFS_Write(&fh_dst, buf, n);
+    VFS_Close(&fh_src);
+    VFS_Close(&fh_dst);
+
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Refresh(fh);
+}
+
+/* Rename callback — performs the rename after string input */
+static void rename_cb(int button, const char *text, void *user_data)
+{
+    (void)user_data;
+    if (button != REQ_BTN_OK || !text || !text[0]) return;
+
+    char old_path[128];
+    if (!FileBrowser_GetSelectedPath(old_path, sizeof(old_path))) return;
+
+    const char *path = FileBrowser_GetFocusedPath();
+    if (!path) return;
+
+    /* Build new path: volume/newname */
+    char new_path[128];
+    int vi = 0;
+    while (vi < 126 && path[vi]) { new_path[vi] = path[vi]; vi++; }
+    int last = (vi > 0) ? path[vi - 1] : 0;
+    if (last != ':' && last != '/') {
+        if (vi < 127) new_path[vi++] = '/';
+    }
+    int ti = 0;
+    while (vi < 127 && text[ti]) { new_path[vi++] = text[ti++]; }
+    new_path[vi] = '\0';
+
+    VFS_Rename(old_path, new_path);
+
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Refresh(fh);
 }
 
 static void menu_action_icon_rename(void)
 {
     DT_LOG("[MENU] Rename selected\n");
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
+    Requester_String("Rename", "Enter new name:",
+                     name, 30, rename_cb, NULL);
 }
 
-static void menu_action_icon_information(void)
+/* Delete confirm callback — moves file to Trashcan (RAM:/Trash) */
+static void delete_cb(int button, const char *text, void *user_data)
 {
-    DT_LOG("[MENU] Information selected\n");
-}
+    (void)text; (void)user_data;
+    if (button != REQ_BTN_OK) return;
 
-static void menu_action_icon_snapshot(void)
-{
-    DT_LOG("[MENU] Snapshot selected\n");
-}
+    char path[128];
+    if (!FileBrowser_GetSelectedPath(path, sizeof(path))) return;
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
 
-static void menu_action_icon_unsnapshot(void)
-{
-    DT_LOG("[MENU] Unsnapshot selected\n");
-}
+    /* Build trash path: RAM:/Trash/name */
+    char trash_path[128];
+    int di = 0;
+    const char *p = "RAM:/Trash/";
+    while (*p && di < 126) trash_path[di++] = *p++;
+    int ni = 0;
+    while (name[ni] && di < 126) trash_path[di++] = name[ni++];
+    trash_path[di] = '\0';
 
-static void menu_action_icon_leave_out(void)
-{
-    DT_LOG("[MENU] Leave Out selected\n");
-}
+    /* Try to rename (move) to trash. If rename fails (cross-volume),
+     * fall back to copy+delete. */
+    if (VFS_Rename(path, trash_path) == 0) {
+        /* Success — file moved to trash */
+    } else {
+        /* Cross-volume or other rename failure — copy then delete */
+        VfsFile fh_src, fh_dst;
+        if (VFS_Open(&fh_src, path, VFS_READ)) {
+            if (VFS_Open(&fh_dst, trash_path, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
+                uint8_t buf[512];
+                uint32_t n;
+                while ((n = VFS_Read(&fh_src, buf, sizeof(buf))) > 0)
+                    VFS_Write(&fh_dst, buf, n);
+                VFS_Close(&fh_dst);
+            }
+            VFS_Close(&fh_src);
+            VFS_Delete(path);
+        }
+    }
 
-static void menu_action_icon_put_away(void)
-{
-    DT_LOG("[MENU] Put Away selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_Refresh(fh);
 }
 
 static void menu_action_icon_delete(void)
 {
     DT_LOG("[MENU] Delete selected\n");
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
+
+    char body[80];
+    int bi = 0;
+    const char *p = "Delete '";
+    while (*p && bi < 70) body[bi++] = *p++;
+    int ni = 0;
+    while (name[ni] && bi < 70) body[bi++] = name[ni++];
+    p = "'?";
+    while (*p && bi < 78) body[bi++] = *p++;
+    body[bi] = '\0';
+
+    Requester_Confirm("Delete", body, "Delete", "Cancel",
+                      delete_cb, NULL);
+}
+
+static void menu_action_icon_information(void)
+{
+    DT_LOG("[MENU] Information selected\n");
+    char path[128];
+    if (!FileBrowser_GetSelectedPath(path, sizeof(path))) return;
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
+
+    /* Gather file info */
+    uint32_t total = 0, used = 0;
+    VFS_GetVolumeInfo(path, &total, &used);
+    uint16_t prot = VFS_GetProtection(path);
+
+    /* Check if it's a directory */
+    int is_dir = (VFS_ResolveDir(path) != NULL) ? 1 : 0;
+
+    /* Build info lines */
+    static char line1[64], line2[64], line3[64], line4[64], line5[64];
+
+    /* Line 1: Name */
+    int li = 0;
+    const char *p = "Name: ";
+    while (*p && li < 62) line1[li++] = *p++;
+    int ni = 0;
+    while (name[ni] && li < 62) line1[li++] = name[ni++];
+    line1[li] = '\0';
+
+    /* Line 2: Type */
+    if (is_dir)
+        scpy(line2, "Type: Drawer", 64);
+    else
+        scpy(line2, "Type: File", 64);
+
+    /* Line 3: Size */
+    VfsFile fh;
+    uint32_t size = 0;
+    if (VFS_Open(&fh, path, VFS_READ)) {
+        size = VFS_Size(&fh);
+        VFS_Close(&fh);
+    }
+    li = 0;
+    p = "Size: ";
+    while (*p && li < 62) line3[li++] = *p++;
+    /* Convert size to decimal */
+    char num[12];
+    int ni2 = 0;
+    uint32_t sv = size;
+    if (sv == 0) { num[ni2++] = '0'; }
+    while (sv && ni2 < 11) { num[ni2++] = '0' + sv % 10; sv /= 10; }
+    while (ni2 > 0 && li < 62) line3[li++] = num[--ni2];
+    p = " bytes";
+    while (*p && li < 62) line3[li++] = *p++;
+    line3[li] = '\0';
+
+    /* Line 4: Protection flags */
+    li = 0;
+    p = "Flags: ";
+    while (*p && li < 62) line4[li++] = *p++;
+    /* Amiga protection: dweasprw */
+    const char *pbits = "------rw";
+    for (int i = 0; i < 8 && li < 62; i++) {
+        line4[li++] = (prot & (1 << i)) ? pbits[i] : '-';
+    }
+    line4[li] = '\0';
+
+    /* Line 5: Path */
+    li = 0;
+    p = "Path: ";
+    while (*p && li < 62) line5[li++] = *p++;
+    int pi = 0;
+    while (path[pi] && li < 62) line5[li++] = path[pi++];
+    line5[li] = '\0';
+
+    const char *lines[] = { line1, line2, line3, line4, line5, NULL };
+    Requester_Info("Information", lines, NULL, NULL);
+}
+
+static void menu_action_icon_snapshot(void)
+{
+    DT_LOG("[MENU] Snapshot selected\n");
+    /* Snapshot saves icon position — not yet persisted. */
+}
+
+static void menu_action_icon_unsnapshot(void)
+{
+    DT_LOG("[MENU] Unsnapshot selected\n");
+    /* Clears saved icon position — not yet persisted. */
+}
+
+static void menu_action_icon_leave_out(void)
+{
+    DT_LOG("[MENU] Leave Out selected\n");
+    /* Leave Out places an icon on the desktop pointing to the file.
+     * Not yet implemented. */
+}
+
+static void menu_action_icon_put_away(void)
+{
+    DT_LOG("[MENU] Put Away selected\n");
+    /* Put Away removes a Leave Out icon from the desktop.
+     * Not yet implemented. */
 }
 
 static void menu_action_icon_format(void)
 {
     DT_LOG("[MENU] Format selected\n");
+    /* Format requires a device selection requester.
+     * Not yet implemented — shell 'format' command is available. */
+}
+
+/* Empty Trash confirm callback */
+static void empty_trash_cb(int button, const char *text, void *user_data)
+{
+    (void)text; (void)user_data;
+    if (button != REQ_BTN_OK) return;
+
+    /* Delete all files in RAM:Trash */
+    RamFsNode *trash_dir = VFS_ResolveDir("RAM:/Trash");
+    if (!trash_dir) return;
+    RamFsNode *child = RamFS_FirstChild(trash_dir);
+    while (child) {
+        char path[64];
+        int pi = 0;
+        const char *p = "RAM:/Trash/";
+        while (*p && pi < 62) path[pi++] = *p++;
+        int ni = 0;
+        while (child->name[ni] && pi < 62) path[pi++] = child->name[ni++];
+        path[pi] = '\0';
+        RamFsNode *next = child->next_sibling;
+        VFS_Delete(path);
+        child = next;
+    }
 }
 
 static void menu_action_icon_empty_trash(void)
 {
     DT_LOG("[MENU] Empty Trash selected\n");
+    Requester_Confirm("Empty Trash", "Empty the Trash?", "OK", "Cancel",
+                      empty_trash_cb, NULL);
 }
 
 /* Tools menu actions */
 static void menu_action_reset_wb(void)
 {
     DT_LOG("[MENU] Reset WB selected\n");
+    /* Reset Workbench: close all browser windows and redraw desktop */
+    for (int i = 0; i < 16; i++) {
+        if (WM_IsWindowActive(i)) {
+            FileBrowser_Close(i);
+        }
+    }
+    WM_Redraw();
+}
+
+static void menu_action_exchange(void)
+{
+    DT_LOG("[MENU] Exchange selected\n");
+    extern void ExchangeWin_Show(void);
+    ExchangeWin_Show();
+}
+
+static void menu_action_blanker(void)
+{
+    DT_LOG("[MENU] Blanker selected\n");
+    /* Toggle blanker between active and sleeping */
+    extern int Cx_FindByName(const char *);
+    extern void Cx_CycleState(int);
+    int idx = Cx_FindByName("Blanker");
+    if (idx >= 0) Cx_CycleState(idx);
 }
 
 typedef struct {
@@ -325,7 +652,10 @@ static const MenuItem * const g_menus[] = {
         MENU_END
     },
     (const MenuItem[]) {
-        MENU_ITEM("Reset WB",        menu_action_reset_wb          ),
+        MENU_ITEM("Exchange",       menu_action_exchange          ),
+        MENU_ITEM("Blanker",        menu_action_blanker           ),
+        MENU_DIVIDER,
+        MENU_ITEM("Reset WB",       menu_action_reset_wb          ),
         MENU_END
     }
 };
@@ -632,16 +962,40 @@ static void draw_menubar(int W)
         int title_w = 0;
         for (const char *p = g_screen_title; *p; p++) title_w += 8;
         int title_x = mx + 16;
-        if (title_x + title_w > W - 58)
-            title_x = W - 58 - title_w;
+        if (title_x + title_w > W - 120)
+            title_x = W - 120 - title_w;
         if (title_x > mx && title_w > 0)
             FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
 
-    /* Clock — show current local time (not hardcoded 00:00:00) */
-    char buf[9];
-    current_time_str(buf);
-    FB_PutStr(W - 50, 2, buf, WB_CREAM, WB_BLUE);
+    /* Clock display — HH:MM:SS on the far right of the menubar */
+    char clock_buf[16];
+    {
+        RtcTime t = RTC_ReadTime();
+        int ci = 0;
+        clock_buf[ci++] = (char)('0' + (t.hour / 10) % 10);
+        clock_buf[ci++] = (char)('0' + t.hour % 10);
+        clock_buf[ci++] = ':';
+        clock_buf[ci++] = (char)('0' + (t.min / 10) % 10);
+        clock_buf[ci++] = (char)('0' + t.min % 10);
+        clock_buf[ci++] = ':';
+        clock_buf[ci++] = (char)('0' + (t.sec / 10) % 10);
+        clock_buf[ci++] = (char)('0' + t.sec % 10);
+        clock_buf[ci] = '\0';
+    }
+    int clk_len = 0;
+    for (const char *p = clock_buf; *p; p++) clk_len++;
+    int clk_x = W - clk_len * 8 - 8;
+    FB_PutStr(clk_x, 2, clock_buf, WB_WHITE, WB_BLUE);
+
+    /* Memory display — show free memory just left of the clock */
+    {
+        char buf[24];
+        mem_free_str(buf, (int)sizeof(buf));
+        int mlen = 0;
+        for (const char *p = buf; *p; p++) mlen++;
+        FB_PutStr(clk_x - mlen * 8 - 16, 2, buf, WB_CREAM, WB_BLUE);
+    }
 }
 
 /* =========================================================================
@@ -670,49 +1024,11 @@ static void draw_disk_icon(int x, int y, const char *label, uint32_t colour, int
     FB_FillRect(bx + 6, by + bh - 10, bw - 12, 5, slot_col);
     FB_DrawHLine(bx + 7, by + bh - 9, bw - 14, slot_line);
 
-    /* Label background */
-    FB_FillRect(bx, by + bh, bw, ICON_LABEL_H, label_bg);
-    FB_PutStrCentred(bx, by + bh, bw, ICON_LABEL_H, label, label_fg, label_bg);
-}
-
-/* =========================================================================
- * Status bar
- * ========================================================================= */
-
-static void draw_statusbar(int W, int H)
-{
-    int y = H - STATUSBAR_H;
-    FB_FillRect(0, y, W, STATUSBAR_H, WB_DARK_GREY);
-    FB_DrawHLine(0, y, W, WB_WHITE);
-
-    int total = 0, running = 0, waiting = 0;
-    extern void Task_GetCounts(int *, int *, int *);
-    Task_GetCounts(&total, &running, &waiting);
-
-    char buf[80];
-    /* Simple sprintf replacement */
-    {
-        const char *prefix = "Tasks: ";
-        const char *sep1   = " run / ";
-        const char *sep2   = " wait / ";
-        const char *suffix = " total";
-        int pi = 0, bi = 0;
-        while (prefix[pi] && bi < 79) buf[bi++] = prefix[pi++];
-        /* running */
-        if (running >= 10) buf[bi++] = (char)('0' + running / 10);
-        if (running > 0 || bi == 0) buf[bi++] = (char)('0' + running % 10);
-        pi = 0; while (sep1[pi] && bi < 79) buf[bi++] = sep1[pi++];
-        /* waiting */
-        if (waiting >= 10) buf[bi++] = (char)('0' + waiting / 10);
-        if (waiting > 0 || bi == 0) buf[bi++] = (char)('0' + waiting % 10);
-        pi = 0; while (sep2[pi] && bi < 79) buf[bi++] = sep2[pi++];
-        /* total */
-        if (total >= 10) buf[bi++] = (char)('0' + total / 10);
-        buf[bi++] = (char)('0' + total % 10);
-        pi = 0; while (suffix[pi] && bi < 79) buf[bi++] = suffix[pi++];
-        buf[bi] = '\0';
-    }
-    FB_PutStr(8, y + 1, buf, WB_CREAM, WB_DARK_GREY);
+    /* Label background — wider than icon, centred under it */
+    int lx = bx + (bw - LABEL_W) / 2;
+    if (lx < 0) lx = 0;
+    FB_FillRect(lx, by + bh, LABEL_W, ICON_LABEL_H, label_bg);
+    FB_PutStrCentred(lx, by + bh, LABEL_W, ICON_LABEL_H, label, label_fg, label_bg);
 }
 
 /* =========================================================================
@@ -722,14 +1038,14 @@ static void draw_statusbar(int W, int H)
 static void draw_backdrop(int W, int H)
 {
     /* Clear the full screen first so no stale window chrome survives
-     * in the menubar / statusbar bands after a resize or move */
+     * in the menubar band after a resize or move */
     uint32_t bg = WB_GREY;
     if (g_beep_flash_color && g_beep_flash_until && g_pit_ticks < g_beep_flash_until)
         bg = g_beep_flash_color;
     FB_FillRect(0, 0, W, H, bg);
 
     /* If the front Intuition screen has a custom SA_BitMap, render it as
-     * the desktop backdrop.  Windows and the menu/status bars are drawn on
+     * the desktop backdrop.  Windows and the menu bar are drawn on
      * top by the WM. */
     UAOS_Intuition_RenderScreenBackdrop();
 }
@@ -739,7 +1055,7 @@ static void draw_backdrop(int W, int H)
  * ========================================================================= */
 
 #define DBLCLICK_TICKS  2   /* max seconds between two clicks for double-click */
-#define MAX_ICONS 10
+#define MAX_ICONS 16
 
 typedef struct {
     int      x, y;         /* icon top-left on desktop */
@@ -751,6 +1067,9 @@ typedef struct {
     int      click_count;  /* clicks within window */
     ParsedIcon parsed;    /* loaded .info icon (zeroed if none) */
     int      has_parsed;    /* 1 if parsed icon is valid */
+    int      is_trashcan;  /* 1 = special Trashcan icon */
+    int      is_appicon;   /* 1 = workbench.library AppIcon */
+    uint32_t appicon_id;   /* AppIcon ID for message dispatch */
 } IconState;
 
 /* Desktop icon drag state */
@@ -777,10 +1096,6 @@ static int       g_desktop_pressed = 0;
 static uint32_t  g_desktop_last_tick = 0;
 static int       g_desktop_click_count = 0;
 
-/* Clock double-click state */
-static uint32_t  g_clock_last_tick = 0;
-static int       g_clock_click_count = 0;
-
 /* Build the desktop icon list from real mounted volumes (VFS).
  * click_count / last_tick persist across calls by matching on volume name.
  *
@@ -798,6 +1113,7 @@ static IconState *get_icons(int *count)
     static int  cache_mount_count = -1;
     static char cache_mount_names[MAX_ICONS][32];
     static int  cache_count = 0;
+    static int  cache_appicon_count = -1;
 
     if (!initialised) {
         for (int i = 0; i < MAX_ICONS; i++) {
@@ -807,13 +1123,17 @@ static IconState *get_icons(int *count)
             icons[i].is_selected = 0;
             icons[i].last_tick = 0;
             icons[i].click_count = 0;
+            icons[i].is_trashcan = 0;
+            icons[i].is_appicon = 0;
         }
         initialised = 1;
     }
 
-    /* ── Check whether the VFS mount table has changed ── */
+    /* ── Check whether the VFS mount table or AppIcon set changed ── */
     int mount_count = VFS_GetMountCount();
-    int changed = (mount_count != cache_mount_count);
+    int appicon_count = WB_GetAppIconCount();
+    int changed = (mount_count != cache_mount_count) ||
+                  (appicon_count != cache_appicon_count);
 
     if (!changed) {
         for (int mi = 0; mi < mount_count && !changed; mi++) {
@@ -839,7 +1159,7 @@ static IconState *get_icons(int *count)
 
     /* ── Cache miss: rebuild from VFS ──
      * Snapshot old click state so we can restore it after rebuilding.
-     * Must be static — ParsedIcon is huge (~32 KB) and 10 of them on the
+     * Must be static — ParsedIcon is huge (~32 KB) and 16 of them on the
      * kernel stack would overflow it. */
     static IconState old_icons[MAX_ICONS];
     for (int i = 0; i < MAX_ICONS; i++) old_icons[i] = icons[i];
@@ -852,6 +1172,7 @@ static IconState *get_icons(int *count)
 
     /* Update the fingerprint */
     cache_mount_count = mount_count;
+    cache_appicon_count = appicon_count;
     for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
         char mname[32];
         if (VFS_GetMountName(mi, mname, 32)) {
@@ -864,10 +1185,17 @@ static IconState *get_icons(int *count)
         }
     }
 
-    /* ── VFS-mounted volumes (RAM:, Workbench:, etc.) ── */
+    /* ── VFS-mounted volumes (RAM:, Workbench:, etc.) ──
+     * Only show RAM: and Workbench: on the desktop — other mounts
+     * (CD, partitions, etc.) are accessible via the shell but should
+     * not clutter the Workbench screen. */
     for (int mi = 0; mi < mount_count && n < MAX_ICONS; mi++) {
         char mname[32];
         if (!VFS_GetMountName(mi, mname, 32)) continue;
+
+        /* Filter: only RAM and Workbench appear as desktop icons */
+        if (!str_eq(mname, "RAM") && !str_eq(mname, "Workbench"))
+            continue;
 
         /* Build the volume string (same format that will be stored in icons[n].volume) */
         const char *vol_str;
@@ -926,10 +1254,89 @@ static IconState *get_icons(int *count)
         n++;
     }
 
+    /* ── Trashcan icon (always present, bottom-right) ── */
+    if (n < MAX_ICONS) {
+        /* Position at bottom-right of desktop */
+        int trash_x = W - ICON_W - 16;
+        int trash_y = (int)g_fb.height - ICON_H - 24;
+
+        /* Preserve state from previous build */
+        uint32_t old_tick = 0;
+        int old_clicks = 0;
+        int old_selected = 0;
+        for (int j = 0; j < MAX_ICONS; j++) {
+            if (old_icons[j].volume && str_eq(old_icons[j].volume, "RAM:/Trash")) {
+                old_tick = old_icons[j].last_tick;
+                old_clicks = old_icons[j].click_count;
+                old_selected = old_icons[j].is_selected;
+                trash_x = old_icons[j].x;
+                trash_y = old_icons[j].y;
+                break;
+            }
+        }
+
+        icons[n].volume = "RAM:/Trash";
+        icons[n].label  = "Trashcan";
+        icons[n].x = trash_x;
+        icons[n].y = trash_y;
+        icons[n].is_ndos = 0;
+        icons[n].last_tick   = old_tick;
+        icons[n].click_count = old_clicks;
+        icons[n].is_selected = old_selected;
+        icons[n].has_parsed  = 0;
+        icons[n].is_trashcan = 1;
+        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
+        n++;
+    }
+
     /* Clear any leftover slots */
     for (int i = n; i < MAX_ICONS; i++) {
         icons[i].volume = NULL;
         icons[i].label  = NULL;
+        icons[i].is_trashcan = 0;
+        icons[i].is_appicon = 0;
+    }
+
+    /* ── AppIcons from workbench.library ── */
+    static char appicon_labels[MAX_ICONS][APPICON_MAX_LABEL];
+    int n_appicons = WB_GetAppIconCount();
+    int ai_x = 16;
+    int ai_y = MENUBAR_H + 16;
+
+    for (int ai = 0; ai < n_appicons && n < MAX_ICONS; ai++) {
+        AppIconInfo info;
+        if (!WB_GetAppIcon(ai, &info)) break;
+
+        /* Copy label to static storage */
+        for (int k = 0; k < APPICON_MAX_LABEL; k++) {
+            appicon_labels[n][k] = info.label[k];
+            if (info.label[k] == '\0') break;
+        }
+        appicon_labels[n][APPICON_MAX_LABEL - 1] = '\0';
+
+        icons[n].volume = NULL;  /* AppIcons don't open a volume */
+        icons[n].label  = appicon_labels[n];
+        icons[n].x = ai_x;
+        icons[n].y = ai_y;
+        icons[n].is_ndos = 0;
+        icons[n].last_tick = 0;
+        icons[n].click_count = 0;
+        icons[n].is_selected = 0;
+        icons[n].has_parsed = 0;
+        icons[n].is_trashcan = 0;
+        icons[n].is_appicon = 1;
+        icons[n].appicon_id = info.id;
+        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
+        n++;
+        ai_y += ICON_H + 8;
+    }
+
+    /* Clear remaining slots */
+    for (int i = n; i < MAX_ICONS; i++) {
+        icons[i].volume = NULL;
+        icons[i].label  = NULL;
+        icons[i].is_trashcan = 0;
+        icons[i].is_appicon = 0;
     }
 
     cache_count = n;
@@ -937,9 +1344,99 @@ static IconState *get_icons(int *count)
     return icons;
 }
 
+/* Draw a trashcan icon — AmigaOS-style cylindrical trashcan */
+static void draw_trashcan_icon(int x, int y, int is_selected)
+{
+    uint32_t body_col = is_selected ? (WB_GREY ^ 0x00FFFFFF) : WB_GREY;
+    uint32_t edge_col = is_selected ? (WB_DARK_GREY ^ 0x00FFFFFF) : WB_DARK_GREY;
+    uint32_t hili_col = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+    uint32_t label_bg = is_selected ? (WB_BLUE ^ 0x00FFFFFF) : WB_BLUE;
+    uint32_t label_fg = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+
+    int bw = ICON_W;
+    int bh = ICON_H - ICON_LABEL_H;  /* 40px icon area */
+    int lx = x;
+    int ly = y;
+
+    /* Lid (top rectangle) */
+    int lid_h = 6;
+    FB_FillRect(lx + 4, ly, bw - 8, lid_h, body_col);
+    draw_bevel_box(lx + 4, ly, bw - 8, lid_h, !is_selected);
+
+    /* Handle on lid */
+    FB_DrawHLine(lx + 16, ly + 2, bw - 32, edge_col);
+
+    /* Body (trapezoidal cylinder — approximated with rect) */
+    int body_y = ly + lid_h;
+    int body_h = bh - lid_h;
+    FB_FillRect(lx + 6, body_y, bw - 12, body_h, body_col);
+    draw_bevel_box(lx + 6, body_y, bw - 12, body_h, !is_selected);
+
+    /* Vertical ribs on the body */
+    for (int rx = 12; rx < bw - 12; rx += 6) {
+        FB_DrawVLine(lx + rx, body_y + 2, body_h - 4, edge_col);
+    }
+
+    /* Highlight on left edge */
+    FB_DrawVLine(lx + 7, body_y + 1, body_h - 2, hili_col);
+
+    /* Label — wider than icon, centred under it */
+    int label_y = ly + bh;
+    int lbl_x = lx + (bw - LABEL_W) / 2;
+    if (lbl_x < 0) lbl_x = 0;
+    FB_FillRect(lbl_x, label_y, LABEL_W, ICON_LABEL_H, label_bg);
+    FB_PutStrCentred(lbl_x, label_y, LABEL_W, ICON_LABEL_H, "Trashcan", label_fg, label_bg);
+}
+
+/* Draw an AppIcon — a tool-style icon with a small gadget appearance */
+static void draw_appicon_icon(int x, int y, const char *label, int is_selected)
+{
+    uint32_t body_col = is_selected ? (WB_LIGHT_GREY ^ 0x00FFFFFF) : WB_LIGHT_GREY;
+    uint32_t edge_col = is_selected ? (WB_DARK_GREY ^ 0x00FFFFFF) : WB_DARK_GREY;
+    uint32_t hili_col = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+    uint32_t label_bg = is_selected ? (WB_BLUE ^ 0x00FFFFFF) : WB_BLUE;
+    uint32_t label_fg = is_selected ? (WB_WHITE ^ 0x00FFFFFF) : WB_WHITE;
+
+    int bw = ICON_W;
+    int bh = ICON_H - ICON_LABEL_H;
+
+    /* Body — rounded rectangle look */
+    FB_FillRect(x, y, bw, bh, body_col);
+    draw_bevel_box(x, y, bw, bh, !is_selected);
+
+    /* Inner highlight */
+    FB_DrawHLine(x + 1, y + 1, bw - 2, hili_col);
+    FB_DrawVLine(x + 1, y + 1, bh - 2, hili_col);
+
+    /* Draw a small "tool" glyph in the centre — a diamond shape */
+    int cx = x + bw / 2;
+    int cy = y + bh / 2;
+    int r = 8;
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = r - (dy < 0 ? -dy : dy);
+        if (dx < 0) dx = 0;
+        FB_DrawHLine(cx - dx, cy + dy, dx * 2 + 1, edge_col);
+    }
+
+    /* Label — wider than icon, centred under it */
+    int label_y = y + bh;
+    int lbl_x = x + (bw - LABEL_W) / 2;
+    if (lbl_x < 0) lbl_x = 0;
+    FB_FillRect(lbl_x, label_y, LABEL_W, ICON_LABEL_H, label_bg);
+    FB_PutStrCentred(lbl_x, label_y, LABEL_W, ICON_LABEL_H, label, label_fg, label_bg);
+}
+
 /* Draw an IconState using .info image when available, else procedural fallback. */
 static void draw_icon_state(const IconState *ic)
 {
+    if (ic->is_trashcan) {
+        draw_trashcan_icon(ic->x, ic->y, ic->is_selected);
+        return;
+    }
+    if (ic->is_appicon) {
+        draw_appicon_icon(ic->x, ic->y, ic->label, ic->is_selected);
+        return;
+    }
     if (ic->has_parsed && ic->parsed.image.width > 0) {
         int img_h = ic->parsed.image.height;
         int img_w = ic->parsed.image.width;
@@ -951,7 +1448,9 @@ static void draw_icon_state(const IconState *ic)
         } else {
             Icon_Draw(&ic->parsed, ix, iy);
         }
-        Icon_DrawLabel(&ic->parsed, ic->x, ic->y + ICON_H - ICON_LABEL_H, ICON_W);
+        int lbl_x = ic->x + (ICON_W - LABEL_W) / 2;
+        if (lbl_x < 0) lbl_x = 0;
+        Icon_DrawLabel(&ic->parsed, lbl_x, ic->y + ICON_H - ICON_LABEL_H, LABEL_W);
     } else {
         uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
         draw_disk_icon(ic->x, ic->y, ic->label, colour, ic->is_selected);
@@ -978,13 +1477,13 @@ static void draw_dashed_vline(int x, int y, int len)
 }
 
 /* Draw the lasso rectangle if active.  Clipped to the desktop backdrop
- * area (between menu bar and status bar) so it never overdraws chrome. */
+ * area (below the menu bar) so it never overdraws chrome. */
 static void draw_lasso(int W, int H)
 {
     if (!g_lasso_active) return;
 
     int top    = MENUBAR_H;
-    int bottom = H - STATUSBAR_H;
+    int bottom = H;
 
     /* Normalise the rectangle regardless of drag direction */
     int x0 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_start_x : g_lasso_cur_x;
@@ -1021,7 +1520,7 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
     int top    = MENUBAR_H;
-    int bottom = H - STATUSBAR_H;
+    int bottom = H;
 
     /* Clip to backdrop area */
     int x0 = rx < 0 ? 0 : rx;
@@ -1045,9 +1544,8 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     /* Lasso rectangle on top of icons, below bars */
     draw_lasso(W, H);
 
-    /* Always repaint bars — a window may have overlapped them */
+    /* Always repaint menubar — a window may have overlapped it */
     draw_menubar(W);
-    draw_statusbar(W, H);
 }
 
 void Desktop_Draw(void)
@@ -1062,7 +1560,6 @@ void Desktop_Draw(void)
 
     draw_backdrop(W, H);
     draw_menubar(W);
-    draw_statusbar(W, H);
 
     /* Disk icons — all come from get_icons (VFS-mounted volumes + partitions) */
     {
@@ -1136,6 +1633,7 @@ void Desktop_DisplayBeepFlash(uint32_t color)
  * ========================================================================= */
 
 static volatile uint32_t g_tick = 0;
+static volatile int g_clock_dirty = 0;
 
 /* Return the number of available menus (guest strip or fallback). */
 static int active_menu_count(void)
@@ -1299,30 +1797,9 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
         return 1;
     }
 
-    /* ── Clock area double-click (top-right, 80px wide) ─── */
-    int W_scr = (int)g_fb.width;
-    if (left_pressed && my >= 0 && my < MENUBAR_H && mx >= W_scr - 50) {
-        uint32_t now = g_tick;
-        if (now - g_clock_last_tick <= DBLCLICK_TICKS)
-            g_clock_click_count++;
-        else
-            g_clock_click_count = 1;
-        g_clock_last_tick = now;
-        if (g_clock_click_count >= 2) {
-            g_clock_click_count = 0;
-            ClockWin_Open();
-        }
-        return 1;
-    }
-
     /* ── Left-click on menubar ──────────────────────────── */
     int menu = menubar_hit(mx, my);
     if (left_pressed && menu >= 0) {
-        if (menu == 4) {
-            ShellWin_Open();   /* Shell menu */
-        } else if (menu == 5) {
-            AboutWin_Open();   /* UAOS menu  */
-        }
         return 1;
     }
 
@@ -1334,7 +1811,10 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
 
     for (int i = 0; i < n; i++) {
         IconState *ic = &icons[i];
-        if (mx >= ic->x && mx < ic->x + ICON_W &&
+        /* Hit-test includes the wider label area (LABEL_W > ICON_W) */
+        int lbl_x = ic->x + (ICON_W - LABEL_W) / 2;
+        if (lbl_x < 0) lbl_x = 0;
+        if (mx >= lbl_x && mx < lbl_x + LABEL_W &&
             my >= ic->y && my < ic->y + ICON_H) {
 
             DT_LOG("[DT] Icon "); DT_LOG_DEC(i); DT_LOG(" press, volume='");
@@ -1488,7 +1968,7 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
     int top = MENUBAR_H;
-    int bottom = H - STATUSBAR_H;
+    int bottom = H;
 
     if (new_x < 0) new_x = 0;
     if (new_x > W - ICON_W) new_x = W - ICON_W;
@@ -1517,9 +1997,18 @@ void Desktop_MouseRelease(int mx, int my)
             uint32_t now = g_tick;
             if (ic->click_count > 0 && (now - ic->last_tick) <= DBLCLICK_TICKS) {
                 DT_LOG("[DT] Double-click icon "); DT_LOG_DEC(g_icon_drag_idx);
-                DT_LOG(" vol='"); DT_LOG(ic->volume); DT_LOG("'\n");
+                DT_LOG(" vol='"); DT_LOG(ic->volume ? ic->volume : "(null)");
+                DT_LOG("'\n");
                 ic->click_count = 0;
-                FileBrowser_Open(ic->volume);
+                if (ic->is_appicon) {
+                    /* AppIcon double-click — would send AppMessage to
+                     * the registered msg port.  For now, log it. */
+                    DT_LOG("[DT] AppIcon activated, id=");
+                    DT_LOG_DEC(ic->appicon_id);
+                    DT_LOG("\n");
+                } else if (ic->volume) {
+                    FileBrowser_Open(ic->volume);
+                }
             } else {
                 DT_LOG("[DT] First click (release)\n");
                 ic->click_count = 1;
@@ -1563,35 +2052,18 @@ unsigned int Desktop_GetTick(void)
     return (unsigned int)g_tick;
 }
 
-/* Set by Desktop_UpdateClock (IRQ context) — consumed by the main loop */
-static volatile int g_clock_redraw_pending = 0;
-/* P5: last displayed minute (h*60+m).  The menubar clock shows only HH:MM,
- * so a full-screen repaint is only needed when the minute changes, not every
- * second.  Initialised to -1 so the first tick always triggers a draw. */
-static volatile int g_clock_last_minute = -1;
-
 void Desktop_UpdateClock(void)
 {
-    if (!g_fb.valid) return;
-    /* Only set a flag here — do NOT call WM_Redraw() from IRQ context.
-     * WM_Redraw() takes >100 ms (full framebuffer repaint), which starves
-     * the PIT IRQ while IF=0, causing g_pit_ticks to jump in a burst when
-     * the IRQ returns.  That falsely advances the ntp_tick_epoch guard,
-     * letting queued UIE bursts slip through and making the clock fast.
-     *
-     * P5: only request a redraw when the displayed minute (HH:MM) actually
-     * changes, instead of every second. */
-    int min = current_minute();
-    if (min != g_clock_last_minute) {
-        g_clock_last_minute = min;
-        g_clock_redraw_pending = 1;
-    }
     g_tick++;
+    g_clock_dirty = 1;
+    Blanker_Tick();
 }
 
 void Desktop_FlushClockRedraw(void)
 {
-    if (!g_clock_redraw_pending) return;
-    g_clock_redraw_pending = 0;
-    WM_Redraw();
+    if (g_clock_dirty) {
+        g_clock_dirty = 0;
+        WM_Redraw();
+    }
 }
+

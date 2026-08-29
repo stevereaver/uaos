@@ -6400,6 +6400,42 @@ static void intuition_ScreenToFront(void)
     }
 }
 
+/* Cycle to the next (direction=1) or previous (direction=-1) active screen.
+ * Called by LAmiga+M (next) / LAmiga+N (previous). */
+void UAOS_Intuition_CycleScreen(int direction)
+{
+    /* Collect active screen indices */
+    int indices[MAX_INTUITION_SCREENS];
+    int count = 0;
+    int front_idx = -1;
+
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        if (g_intu_screens[i].active) {
+            indices[count] = i;
+            if (g_intu_screens[i].is_front)
+                front_idx = count;
+            count++;
+        }
+    }
+
+    if (count <= 1) return;  /* nothing to cycle */
+
+    if (front_idx < 0) front_idx = 0;
+
+    int next_idx = front_idx + direction;
+    if (next_idx >= count) next_idx = 0;
+    if (next_idx < 0) next_idx = count - 1;
+
+    /* Bring the selected screen to front */
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
+        g_intu_screens[i].is_front = 0;
+    g_intu_screens[indices[next_idx]].is_front = 1;
+
+    update_desktop_title();
+    screen_notify_event(g_intu_screens[indices[next_idx]].guest_screen,
+                        SNOTIFY_TYPE_DEPTH);
+}
+
 /* ScreenToBack(screen) — A0 */
 static void intuition_ScreenToBack(void)
 {

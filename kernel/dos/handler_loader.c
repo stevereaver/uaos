@@ -87,6 +87,7 @@ static LHandlerEntry *find_by_device(const char *device_name)
  * ------------------------------------------------------------------------- */
 extern Handler *AuxHandler_Create(const char *name);
 extern Handler *PortHandler_Create(const char *name);
+extern Handler *PrintHandler_Create(const char *name);
 
 /* -------------------------------------------------------------------------
  * Public API
@@ -276,6 +277,8 @@ LHandlerEntry *HandlerLoader_Load(const char *name)
         h = AuxHandler_Create("aux-handler");
     } else if (hcmp(name, "port-handler")) {
         h = PortHandler_Create("port-handler");
+    } else if (hcmp(name, "print-handler")) {
+        h = PrintHandler_Create("print-handler");
     }
 
     if (h) {

@@ -31,6 +31,10 @@ void     intu_free(uint32_t user_addr);
 /* Dispatch entry point for m68k Intuition calls (used by gadtools wrappers). */
 void UAOS_Intuition_Dispatch(uint32_t fn);
 
+/* Cycle to the next (direction=1) or previous (direction=-1) active Intuition
+ * screen, bringing it to the front.  Called by LAmiga+M / LAmiga+N. */
+void UAOS_Intuition_CycleScreen(int direction);
+
 /* -------------------------------------------------------------------------
  * Minimal AmigaOS NewWindow struct (classic layout)
  * ------------------------------------------------------------------------- */

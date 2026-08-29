@@ -171,8 +171,16 @@ void VFS_Init(void)
     /* Standard AmigaDOS RAM disk directories */
     RamFS_MkDir(ram, "RAM:T");
     RamFS_MkDir(ram, "RAM:ENV");
+    RamFS_MkDir(ram, "RAM:ENVARC");
     RamFS_MkDir(ram, "RAM:CLIPS");
     RamFS_MkDir(ram, "RAM:S");
+    RamFS_MkDir(ram, "RAM:Trash");
+
+    /* ENV: and ENVARC: assigns (AmigaOS semantics):
+     * ENV:     = volatile runtime prefs (RAM:)
+     * ENVARC:  = persistent prefs (would be on writable SYS: in real Amiga) */
+    VFS_AddAssign("ENV", "RAM:ENV", 0, 0);
+    VFS_AddAssign("ENVARC", "RAM:ENVARC", 0, 0);
 }
 
 /* Setup default Workbench assigns after Workbench: is mounted */
@@ -197,6 +205,10 @@ void VFS_SetupWorkbenchAssigns(void)
     /* SYS: is the boot volume root (AmigaOS semantics) */
     if (VFS_AddAssign("SYS", "Workbench:", 0, 0) == 0) kprint("[VFS]  SYS: -> Workbench:\n");
     if (VFS_AddAssign("Tools", "Workbench:Tools", 0, 0) == 0) kprint("[VFS]  Tools: -> Workbench:Tools\n");
+    if (VFS_AddAssign("Utilities", "Workbench:Utilities", 0, 1) == 0) kprint("[VFS]  Utilities: -> Workbench:Utilities (deferred)\n");
+    if (VFS_AddAssign("Classes", "Workbench:Classes", 0, 1) == 0) kprint("[VFS]  Classes: -> Workbench:Classes (deferred)\n");
+    /* FONTS: assign for bitmap font support */
+    if (VFS_AddAssign("FONTS", "Workbench:Fonts", 0, 1) == 0) kprint("[VFS]  FONTS: -> Workbench:Fonts (deferred)\n");
 }
 
 /* =========================================================================

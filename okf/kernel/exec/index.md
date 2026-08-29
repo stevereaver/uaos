@@ -49,6 +49,16 @@ UAOS provides native thunk implementations of classic AmigaOS libraries and devi
 - [bsdsocket.library](bsdsocket_library.md) — BSD socket API mapped to the native TCP/IP stack.
 - [Other Libraries & Devices](other_libraries.md) — `utility.library`, `mathffp.library`, `locale.library`, `ixemul.library`, `console.device`, `keyboard.device`, `timer.device`.
 
+## Preferences Persistence (`prefs_lib.c`)
+
+The preferences library implements AmigaOS IFF PREF file format for `ENV:` and `ENVARC:` preference persistence.
+
+- **IFF PREF format**: `FORM xxxx PREF` containing a `PRHD` (Preference Header) chunk with `do_Type`, followed by type-specific chunks. All chunks use 4-byte type tags + big-endian length + data padded to even.
+- **ENV:** — volatile runtime prefs (RAM:ENV), already used by `SetEnv`/`UnSet` shell commands.
+- **ENVARC:** — persistent prefs (RAM:ENVARC), survives within a session.
+- **API**: `Prefs_Load`/`Prefs_Save` for IFF PREF read/write; `Prefs_FindChunk`/`Prefs_SetChunk`/`Prefs_RemoveChunk` for chunk manipulation; `Prefs_LoadToEnv`/`Prefs_SaveToEnvarc` for ENV:↔ENVARC: copying; `Prefs_NotifyChange`/`Prefs_RegisterNotify` for change broadcast.
+- **Prefs types**: `PREFS_WB`, `PREFS_SCREEN`, `PREFS_PALETTE`, `PREFS_POINTER`, `PREFS_INPUT`, `PREFS_FONT`, `PREFS_TIME`, `PREFS_IControl`, `PREFS_SERIAL`, `PREFS_SOUND`, `PREFS_OVERSCAN`, `PREFS_PRINTER`, `PREFS_PGFX`, `PREFS_PPS`, `PREFS_LOCALE`, `PREFS_WBPATTERN`.
+
 ## Task Stack Alignment
 
 The x86-64 SysV ABI requires the stack pointer to be 16-byte aligned *before* a `CALL` instruction, which means a function is entered with `%rsp` 8-byte misaligned (the return address pushed by `CALL` makes it 16-byte aligned). To preserve this invariant across context switches, the kernel stacks are aligned to 8-byte boundaries (not 16-byte), and the synthetic interrupt frames built by `Task_CreateNative()` and `Task_CreateX64()` are sized so that the `iretq` epilogue leaves the new task with the ABI-required 8-byte misaligned `%rsp`.
@@ -60,7 +70,7 @@ Key details:
 
 ## X64 Syscall Dispatch
 
-X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations, and the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C).
+X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations (0x11–0x18), extended GUI drawing primitives (0x30–0x37), and the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C).
 
 ### Memory Query API (`SYSCALL_MEMINFO`, 0x2D)
 
@@ -71,6 +81,26 @@ X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_
 - **Scheduler task table** — total/running/waiting counts from `Task_GetCounts()`.
 
 The same `Mem_GetInfo()` helper is consumed directly by the resident `C:mem` command, so kernel and userspace memory reports stay consistent. The on-disk `C:avail` userspace command queries this API to render real memory statistics.
+
+### Userspace GUI Widget Toolkit (`uaos_gui.h`)
+
+Native x86-64 userspace tasks have access to a Workbench-style widget toolkit via `system/libuaos/uaos_gui.h`. This header-only library provides AmigaOS 3.1 GadTools-compatible gadget classes built on the syscall drawing primitives.
+
+**Widget types**: Button, Checkbox, Radio button, Slider, String gadget, Integer gadget, Label, Listview.
+
+**Extended drawing syscalls** (0x30–0x37) back the toolkit:
+- `SYSCALL_GUI_DRAW_LINE` (0x30) — Bresenham line drawing.
+- `SYSCALL_GUI_FILL_RECT` (0x31) — Filled rectangle.
+- `SYSCALL_GUI_DRAW_3DBORDER` (0x32) — Raised/recessed 3D bevel with auto-shading.
+- `SYSCALL_GUI_DRAW_PIXEL` (0x33) — Single pixel.
+- `SYSCALL_GUI_DRAW_TEXT_BG` (0x34) — Text with foreground and background colors.
+- `SYSCALL_GUI_GET_WINSIZE` (0x35) — Query window client area dimensions.
+- `SYSCALL_GUI_SET_TITLE` (0x36) — Update window title bar text.
+- `SYSCALL_GUI_DRAW_ELLIPSE` (0x37) — Ellipse outline (midpoint algorithm).
+
+**Kernel-side implementation**: `kernel/display/user_window.c` implements all drawing primitives using a per-window backing buffer. The 3D border helper auto-computes highlight/shadow colors from a base color. The ellipse renderer uses the midpoint ellipse algorithm with 4-way symmetry.
+
+**Userspace API**: `uaos_gui_init()` binds a GUI context to a window handle. `uaos_gui_create_gadget()` allocates widgets from a `uaos_newgadget_t` descriptor. `uaos_gui_handle_event()` dispatches mouse/keyboard events to the appropriate widget (button press, checkbox toggle, radio group selection, slider drag, string cursor/edit). `uaos_gui_poll()` is a combined event-loop helper that polls, handles, and redraws. `uaos_gui_get_int()`/`uaos_gui_set_int()` and `uaos_gui_get_str()`/`uaos_gui_set_str()` query and update widget state. `uaos_gui_draw_group()` renders a recessed frame with title text for visual grouping.
 
 ### stdin read (`sys_read`, fd=0)
 

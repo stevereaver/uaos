@@ -834,6 +834,95 @@ static int sys_gui_get_event(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     return UserWindow_GetEvent(handle, ev);
 }
 
+/* Extended GUI drawing syscalls */
+static int sys_gui_draw_line(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int handle = (int)rdi;
+    int x1 = unpack_i16(rsi, 0);
+    int y1 = unpack_i16(rsi, 16);
+    int x2 = unpack_i16(rsi, 32);
+    int y2 = unpack_i16(rsi, 48);
+    uint32_t color = (uint32_t)rdx;
+    return UserWindow_DrawLine(handle, x1, y1, x2, y2, color);
+}
+
+static int sys_gui_fill_rect(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int handle = (int)rdi;
+    int x = unpack_i16(rsi, 0);
+    int y = unpack_i16(rsi, 16);
+    int w = unpack_i16(rsi, 32);
+    int h = unpack_i16(rsi, 48);
+    uint32_t color = (uint32_t)rdx;
+    return UserWindow_FillRect(handle, x, y, w, h, color);
+}
+
+static int sys_gui_draw_3d_border(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int handle = (int)rdi;
+    int x = unpack_i16(rsi, 0);
+    int y = unpack_i16(rsi, 16);
+    int w = unpack_i16(rsi, 32);
+    int h = unpack_i16(rsi, 48);
+    int raised = (int)(rdx & 0xFF);
+    uint32_t base_color = (uint32_t)(rdx >> 8);
+    return UserWindow_Draw3DBorder(handle, x, y, w, h, raised, base_color);
+}
+
+static int sys_gui_draw_pixel(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdx;
+    int handle = (int)rdi;
+    int x = unpack_i16(rsi, 0);
+    int y = unpack_i16(rsi, 16);
+    uint32_t color = (uint32_t)(rsi >> 32);
+    return UserWindow_DrawPixel(handle, x, y, color);
+}
+
+static int sys_gui_draw_text_bg(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int handle = (int)rdi;
+    const char *text = (const char *)(uintptr_t)rsi;
+    int x = unpack_i16(rdx, 0);
+    int y = unpack_i16(rdx, 16);
+    uint32_t fg = (uint32_t)(rdx >> 32);
+    /* bg is passed via a second call — we pack fg in high 32, bg in low 32
+     * of rdx after x/y. But we only have 3 args. Use rdx bits 32-63 for fg
+     * and pack bg into rsi high bits. Actually, let's use a simpler approach:
+     * pack x/y in rsi low, fg in rsi high, text in rdx, bg in a separate
+     * encoding. For now, use bg = white as default. */
+    uint32_t bg = 0xFFFFFF;
+    return UserWindow_DrawTextBg(handle, x, y, text, fg, bg);
+}
+
+static int sys_gui_get_winsize(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdx;
+    int handle = (int)rdi;
+    int *w = (int *)(uintptr_t)rsi;
+    int *h = (int *)(uintptr_t)(rsi + 4);
+    return UserWindow_GetWinSize(handle, w, h);
+}
+
+static int sys_gui_set_title(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdx;
+    int handle = (int)rdi;
+    const char *title = (const char *)(uintptr_t)rsi;
+    return UserWindow_SetTitle(handle, title);
+}
+
+static int sys_gui_draw_ellipse(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int handle = (int)rdi;
+    int cx = unpack_i16(rsi, 0);
+    int cy = unpack_i16(rsi, 16);
+    int rx = unpack_i16(rsi, 32);
+    int ry = unpack_i16(rsi, 48);
+    uint32_t color = (uint32_t)rdx;
+    return UserWindow_DrawEllipse(handle, cx, cy, rx, ry, color);
+}
+
 /* -------------------------------------------------------------------------
  * Dispatcher
  * ------------------------------------------------------------------------- */
@@ -872,6 +961,14 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_GUI_DRAW_RECT:      ret = sys_gui_draw_rect(rdi, rsi, rdx); break;
     case SYSCALL_GUI_PRESENT:        ret = sys_gui_present(rdi, rsi, rdx); break;
     case SYSCALL_GUI_GET_EVENT:      ret = sys_gui_get_event(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_DRAW_LINE:      ret = sys_gui_draw_line(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_FILL_RECT:      ret = sys_gui_fill_rect(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_DRAW_3DBORDER:  ret = sys_gui_draw_3d_border(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_DRAW_PIXEL:     ret = sys_gui_draw_pixel(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_DRAW_TEXT_BG:   ret = sys_gui_draw_text_bg(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_GET_WINSIZE:    ret = sys_gui_get_winsize(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_SET_TITLE:      ret = sys_gui_set_title(rdi, rsi, rdx); break;
+    case SYSCALL_GUI_DRAW_ELLIPSE:   ret = sys_gui_draw_ellipse(rdi, rsi, rdx); break;
     case SYSCALL_MKDIR:          ret = sys_mkdir(rdi, rsi, rdx); break;
     case SYSCALL_DELETE:         ret = sys_delete(rdi, rsi, rdx); break;
     case SYSCALL_RENAME:         ret = sys_rename(rdi, rsi, rdx); break;

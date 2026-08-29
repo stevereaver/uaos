@@ -147,6 +147,16 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
 
     if (extended) {
         extended = 0;
+        /* Left Super/Windows key → LAmiga (E0 5B make / E0 DB break) */
+        if (key == 0x5B) {
+            g_kbd_mods.super_left = !is_break;
+            PIC_SendEOI(1); return;
+        }
+        /* Right Super/Windows key → RAmiga (E0 5C make / E0 DC break) */
+        if (key == 0x5C) {
+            g_kbd_mods.super_right = !is_break;
+            PIC_SendEOI(1); return;
+        }
         if (!is_break) {
             if (key == 0x49) { kbuf_push(0x01); } /* Page Up   → VKEY_PGUP */
             if (key == 0x51) { kbuf_push(0x02); } /* Page Down → VKEY_PGDN */
@@ -196,8 +206,30 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
     else if (g_kbd_mods.ctrl && ascii >= 'A' && ascii <= 'Z')
         ascii = (char)(ascii - 'A' + 1);
 
-    if (ascii)
+    if (ascii) {
+        /* Amiga key mapping: Super/Windows → Amiga */
+        if (g_kbd_mods.super_right) {
+            /* RAmiga + letter → menu shortcut (0x80 | uppercase) */
+            char upper = ascii;
+            if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
+            if (upper >= 'A' && upper <= 'Z') {
+                kbuf_push((char)(0x80 | (unsigned char)upper));
+                PIC_SendEOI(1); return;
+            }
+        }
+        if (g_kbd_mods.super_left) {
+            /* LAmiga + V/B/M/N → special requester/screen codes */
+            char upper = ascii;
+            if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
+            switch (upper) {
+                case 'V': kbuf_push(AMIGA_LV); PIC_SendEOI(1); return;
+                case 'B': kbuf_push(AMIGA_LB); PIC_SendEOI(1); return;
+                case 'M': kbuf_push(AMIGA_LM); PIC_SendEOI(1); return;
+                case 'N': kbuf_push(AMIGA_LN); PIC_SendEOI(1); return;
+            }
+        }
         kbuf_push(ascii);
+    }
 
     PIC_SendEOI(1);
 }

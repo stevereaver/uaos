@@ -52,6 +52,16 @@
 #define UAOS_SYSCALL_GUI_PRESENT        0x17
 #define UAOS_SYSCALL_GUI_GET_EVENT      0x18
 
+/* Extended GUI drawing syscalls */
+#define UAOS_SYSCALL_GUI_DRAW_LINE      0x30
+#define UAOS_SYSCALL_GUI_FILL_RECT      0x31
+#define UAOS_SYSCALL_GUI_DRAW_3DBORDER  0x32
+#define UAOS_SYSCALL_GUI_DRAW_PIXEL     0x33
+#define UAOS_SYSCALL_GUI_DRAW_TEXT_BG   0x34
+#define UAOS_SYSCALL_GUI_GET_WINSIZE    0x35
+#define UAOS_SYSCALL_GUI_SET_TITLE      0x36
+#define UAOS_SYSCALL_GUI_DRAW_ELLIPSE   0x37
+
 /* Filesystem mutation / metadata syscalls (must stay in sync with
  * kernel/exec/syscall_table.h) */
 #define UAOS_SYSCALL_MKDIR          0x20
@@ -430,6 +440,58 @@ static inline long uaos_gui_present(int handle)
 static inline long uaos_gui_get_event(int handle, struct uaos_gui_event *event)
 {
     return uaos_syscall2(UAOS_SYSCALL_GUI_GET_EVENT, (long)handle, (long)event);
+}
+
+static inline long uaos_gui_draw_line(int handle, int x1, int y1, int x2, int y2, uint32_t color)
+{
+    uint64_t args = UAOS_PACK_I16_4(x1, y1, x2, y2);
+    return uaos_syscall3(UAOS_SYSCALL_GUI_DRAW_LINE, (long)handle, (long)args, (long)color);
+}
+
+static inline long uaos_gui_fill_rect(int handle, int x, int y, int w, int h, uint32_t color)
+{
+    uint64_t geo = UAOS_PACK_I16_4(x, y, w, h);
+    return uaos_syscall3(UAOS_SYSCALL_GUI_FILL_RECT, (long)handle, (long)geo, (long)color);
+}
+
+static inline long uaos_gui_draw_3d_border(int handle, int x, int y, int w, int h,
+                                           int raised, uint32_t base_color)
+{
+    uint64_t geo = UAOS_PACK_I16_4(x, y, w, h);
+    uint64_t extra = ((uint64_t)(uint32_t)base_color << 8) | (uint64_t)(uint8_t)raised;
+    return uaos_syscall3(UAOS_SYSCALL_GUI_DRAW_3DBORDER, (long)handle, (long)geo, (long)extra);
+}
+
+static inline long uaos_gui_draw_pixel(int handle, int x, int y, uint32_t color)
+{
+    uint64_t args = UAOS_PACK_XY_COL(x, y, color);
+    return uaos_syscall2(UAOS_SYSCALL_GUI_DRAW_PIXEL, (long)handle, (long)args);
+}
+
+static inline long uaos_gui_draw_text_bg(int handle, int x, int y,
+                                         const char *text, uint32_t fg, uint32_t bg)
+{
+    uint64_t args = UAOS_PACK_XY_COL(x, y, fg);
+    return uaos_syscall3(UAOS_SYSCALL_GUI_DRAW_TEXT_BG, (long)handle, (long)text, (long)args);
+}
+
+static inline long uaos_gui_get_winsize(int handle, int *w, int *h)
+{
+    struct { int w, h; } sz;
+    long ret = uaos_syscall2(UAOS_SYSCALL_GUI_GET_WINSIZE, (long)handle, (long)&sz);
+    if (ret == 0) { if (w) *w = sz.w; if (h) *h = sz.h; }
+    return ret;
+}
+
+static inline long uaos_gui_set_title(int handle, const char *title)
+{
+    return uaos_syscall2(UAOS_SYSCALL_GUI_SET_TITLE, (long)handle, (long)title);
+}
+
+static inline long uaos_gui_draw_ellipse(int handle, int cx, int cy, int rx, int ry, uint32_t color)
+{
+    uint64_t args = UAOS_PACK_I16_4(cx, cy, rx, ry);
+    return uaos_syscall3(UAOS_SYSCALL_GUI_DRAW_ELLIPSE, (long)handle, (long)args, (long)color);
 }
 
 #endif /* UAOS_SYSCALL_H */

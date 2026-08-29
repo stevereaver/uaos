@@ -77,6 +77,27 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("requestfile",     Cmd_RequestFile,   "TITLE/K,DRAWER/K,FILE/K,PATTERN/K,PUBSCREEN/K" ),
     CMDT("changetaskpri",   Cmd_ChangeTaskPri, "PRI/A/N,TASK/K" ),
     CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
+    /* Prefs editors (stubs — Phase 3) */
+    CMD ("screenmode",      Cmd_ScreenMode  ),
+    CMD ("font",            Cmd_Font        ),
+    CMD ("icontrol",        Cmd_IControl    ),
+    CMD ("input",           Cmd_Input       ),
+    CMD ("palette",         Cmd_Palette     ),
+    CMD ("wbpattern",       Cmd_WBPattern   ),
+    CMD ("serial",          Cmd_Serial      ),
+    CMD ("printer",         Cmd_Printer     ),
+    CMD ("time",            Cmd_PrefsTime   ),
+    CMD ("locale",          Cmd_PrefsLocale ),
+    /* Tools & Commodities */
+    CMD ("exchange",        Cmd_Exchange    ),
+    CMD ("blanker",         Cmd_Blanker     ),
+    /* Printing & CrossDOS */
+    CMD ("print",           Cmd_Print       ),
+    CMD ("crossdos",        Cmd_CrossDOS    ),
+    /* Editor */
+    CMD ("ed",              Cmd_Ed          ),
+    /* Help */
+    CMD ("guide",           Cmd_Guide       ),
     { NULL, NULL, NULL }
 };
 

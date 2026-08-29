@@ -121,6 +121,106 @@ static void buf_put_str(UserWindow *u, int x, int y, const char *s, uint32_t fg,
     }
 }
 
+static void buf_draw_line(UserWindow *u, int x1, int y1, int x2, int y2, uint32_t c)
+{
+    int dx = x2 - x1; if (dx < 0) dx = -dx;
+    int dy = y2 - y1; if (dy < 0) dy = -dy;
+    int sx = (x2 >= x1) ? 1 : -1;
+    int sy = (y2 >= y1) ? 1 : -1;
+    int err = dx - dy;
+    int x = x1, y = y1;
+    for (;;) {
+        buf_pixel(u, x, y, c);
+        if (x == x2 && y == y2) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x += sx; }
+        if (e2 < dx)  { err += dx; y += sy; }
+    }
+}
+
+static uint32_t shade(uint32_t c, int factor)
+{
+    if (factor <= 0) return c;
+    int r = (c >> 16) & 0xFF;
+    int g = (c >> 8) & 0xFF;
+    int b = c & 0xFF;
+    r += ((255 - r) * factor) / 4;
+    g += ((255 - g) * factor) / 4;
+    b += ((255 - b) * factor) / 4;
+    if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static uint32_t darken(uint32_t c, int factor)
+{
+    int r = (c >> 16) & 0xFF;
+    int g = (c >> 8) & 0xFF;
+    int b = c & 0xFF;
+    r -= (r * factor) / 4;
+    g -= (g * factor) / 4;
+    b -= (b * factor) / 4;
+    if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+static void buf_draw_3d_border(UserWindow *u, int x, int y, int w, int h,
+                               int raised, uint32_t base)
+{
+    uint32_t hi = shade(base, 3);
+    uint32_t lo = darken(base, 3);
+    uint32_t top_c, bot_c, left_c, right_c;
+    if (raised) {
+        top_c = left_c = hi;
+        bot_c = right_c = lo;
+    } else {
+        top_c = left_c = lo;
+        bot_c = right_c = hi;
+    }
+    /* Top and bottom edges */
+    buf_draw_line(u, x, y, x + w - 1, y, top_c);
+    buf_draw_line(u, x, y + h - 1, x + w - 1, y + h - 1, bot_c);
+    /* Left and right edges */
+    buf_draw_line(u, x, y, x, y + h - 1, left_c);
+    buf_draw_line(u, x + w - 1, y, x + w - 1, y + h - 1, right_c);
+    /* Inner highlight (1px inset) for raised */
+    if (raised && w > 2 && h > 2) {
+        buf_draw_line(u, x + 1, y + 1, x + w - 2, y + 1, shade(base, 2));
+        buf_draw_line(u, x + 1, y + 1, x + 1, y + h - 2, shade(base, 2));
+    }
+}
+
+static void buf_draw_ellipse(UserWindow *u, int cx, int cy, int rx, int ry, uint32_t c)
+{
+    if (rx <= 0 || ry <= 0) return;
+    long rx2 = (long)rx * rx;
+    long ry2 = (long)ry * ry;
+    int x = 0, y = ry;
+    long dx = 0, dy = 2 * rx2 * y;
+    long err = ry2 - 2 * ry * rx2 + rx2;
+    while (dx <= dy) {
+        buf_pixel(u, cx + x, cy + y, c);
+        buf_pixel(u, cx - x, cy + y, c);
+        buf_pixel(u, cx + x, cy - y, c);
+        buf_pixel(u, cx - x, cy - y, c);
+        if (err >= 0) {
+            y--; dy -= 2 * rx2; err -= dy;
+        }
+        x++; dx += 2 * ry2; err += dx + ry2;
+    }
+    x = rx; y = 0; dx = 2 * ry2 * x; dy = 0;
+    err = rx2 - 2 * rx * ry2 + ry2;
+    while (dy <= dx) {
+        buf_pixel(u, cx + x, cy + y, c);
+        buf_pixel(u, cx - x, cy + y, c);
+        buf_pixel(u, cx + x, cy - y, c);
+        buf_pixel(u, cx - x, cy - y, c);
+        if (err >= 0) {
+            x--; dx -= 2 * ry2; err -= dx;
+        }
+        y++; dy += 2 * rx2; err += dy + rx2;
+    }
+}
+
 /* -------------------------------------------------------------------------
  * Window manager draw callback
  * ------------------------------------------------------------------------- */
@@ -426,4 +526,88 @@ int UserWindow_GetEvent(int handle, struct uaos_gui_event *event)
     u->ev_head = (u->ev_head + 1) % UWIN_MAX_EVENT;
     u->ev_count--;
     return 1;
+}
+
+/* -------------------------------------------------------------------------
+ * Extended drawing primitives
+ * ------------------------------------------------------------------------- */
+
+int UserWindow_DrawLine(int handle, int x1, int y1, int x2, int y2, uint32_t color)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active)
+        return -1;
+    buf_draw_line(&g_uwins[handle], x1, y1, x2, y2, color);
+    g_uwins[handle].dirty = 1;
+    return 0;
+}
+
+int UserWindow_FillRect(int handle, int x, int y, int w, int h, uint32_t color)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active)
+        return -1;
+    if (w <= 0 || h <= 0) return 0;
+    buf_fill_rect(&g_uwins[handle], x, y, w, h, color);
+    g_uwins[handle].dirty = 1;
+    return 0;
+}
+
+int UserWindow_Draw3DBorder(int handle, int x, int y, int w, int h,
+                            int raised, uint32_t base_color)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active)
+        return -1;
+    if (w < 2 || h < 2) return 0;
+    buf_draw_3d_border(&g_uwins[handle], x, y, w, h, raised, base_color);
+    g_uwins[handle].dirty = 1;
+    return 0;
+}
+
+int UserWindow_DrawPixel(int handle, int x, int y, uint32_t color)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active)
+        return -1;
+    buf_pixel(&g_uwins[handle], x, y, color);
+    g_uwins[handle].dirty = 1;
+    return 0;
+}
+
+int UserWindow_DrawTextBg(int handle, int x, int y, const char *text,
+                          uint32_t fg, uint32_t bg)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active || !text)
+        return -1;
+    buf_put_str(&g_uwins[handle], x, y, text, fg, bg);
+    g_uwins[handle].dirty = 1;
+    return 0;
+}
+
+int UserWindow_GetWinSize(int handle, int *w, int *h)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active)
+        return -1;
+    UserWindow *u = &g_uwins[handle];
+    if (w) *w = u->buf_w;
+    if (h) *h = u->buf_h;
+    return 0;
+}
+
+int UserWindow_SetTitle(int handle, const char *title)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active || !title)
+        return -1;
+    UserWindow *u = &g_uwins[handle];
+    char short_title[UWIN_MAX_TITLE];
+    str16_copy(short_title, title, UWIN_MAX_TITLE);
+    WM_SetWindowTitle(u->wm_handle, short_title);
+    WM_Redraw();
+    return 0;
+}
+
+int UserWindow_DrawEllipse(int handle, int cx, int cy, int rx, int ry, uint32_t color)
+{
+    if (handle < 0 || handle >= UWIN_MAX_WINDOWS || !g_uwins[handle].active)
+        return -1;
+    buf_draw_ellipse(&g_uwins[handle], cx, cy, rx, ry, color);
+    g_uwins[handle].dirty = 1;
+    return 0;
 }

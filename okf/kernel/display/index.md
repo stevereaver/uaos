@@ -81,13 +81,13 @@ The software cursor (`cursor.c`) uses save/restore of background pixels for flic
 
 The desktop icon list (including `.info` file loading and planar decoding) is cached in `get_icons()` and only rebuilt when the VFS mount table changes (mount count or any mount name differs from the cached fingerprint). This avoids reloading every `.info` from VFS on every frame and mouse event. Click/selection state persists in the cached `icons[]` array across calls.
 
-### Clock Redraw
+### Clock and Memory Display
 
-The menubar clock displays `HH:MM`. `Desktop_UpdateClock` (called once per second from IRQ context) only sets the redraw-pending flag when the displayed minute changes, not every second. `Desktop_FlushClockRedraw` (called from the main loop) consumes the flag and calls `WM_Redraw()`.
+The menubar shows a clock (`HH:MM:SS` in white on blue) on the far right, read from `RTC_ReadTime()` each frame. Just to the left of the clock is a free-memory readout (e.g. `512K Free` in cream on blue), computed from `Mem_GetInfo()` (x64 heap free + M68k guest RAM free slots). `Desktop_UpdateClock` (called once per second from IRQ context) increments the double-click tick counter and sets a dirty flag; `Desktop_FlushClockRedraw` checks the flag and triggers `WM_Redraw()` to update the menubar.
 
 ### Menu Bar
 
-The menu bar displays the Workbench 3.x-style menu titles (`Workbench`, `Window`, `Icons`, `Tools`, `Shell`, `UAOS`) plus a clock on the right. The menus follow the classic Amiga press-and-drag behaviour:
+The menu bar displays the Workbench 3.1-style menu titles (`Workbench`, `Window`, `Icons`, `Tools`) plus a free-memory display on the right. The `Shell` and `UAOS` menus have been removed for OS 3.1 fidelity. The menus follow the classic Amiga press-and-drag behaviour:
 
 1. **Press and hold** the right mouse button on a menu title to open its drop-down.
 2. **Drag** the cursor over the items to highlight them; the highlight updates as the cursor moves.
@@ -145,11 +145,14 @@ The `Icons` menu (opened with a right-click on the `Icons` title) contains the f
 
 #### Tools Drop-down Menu
 
-The `Tools` menu (between `Icons` and `Shell`) contains the following item:
+The `Tools` menu contains the following items:
 
 | Item | Action |
 |------|--------|
-| Reset WB | Stub — intended to reset the Workbench session. |
+| Exchange | Opens the Commodities Exchange window for managing commodity brokers. |
+| Blanker | Cycles the screen blanker commodity state (active → sleeping → disabled). |
+| *divider* | Horizontal separator. |
+| Reset WB | Closes all browser windows and redraws the desktop. |
 
 The menus are rendered by `desktop.c` and managed through a small internal state (`g_menu_index`, `g_menu_hover`, etc.). Menu items support a divider flag (`is_divider`) for separator lines. The window manager tracks both left and right mouse buttons and forwards desktop events and hover tracking to highlight items and dispatch the selected action.
 
@@ -166,7 +169,7 @@ Dragging the left mouse button on the empty desktop backdrop activates lasso sel
 
 A lasso drag (where the cursor moved) is not counted as a desktop click, so it does not contribute to the double-click-to-open-Shell counter. Only a click on empty desktop without dragging counts toward the double-click.
 
-This matches classic Workbench 3.x behaviour. The lasso state is tracked in `desktop.c` (`g_lasso_active`, `g_lasso_start_x/y`, `g_lasso_cur_x/y`, `g_lasso_moved`) and the dashed border is drawn by `draw_lasso()` after icons but before the menu dropdown and bars, clipped to the desktop backdrop area (between the menu bar and status bar).
+This matches classic Workbench 3.x behaviour. The lasso state is tracked in `desktop.c` (`g_lasso_active`, `g_lasso_start_x/y`, `g_lasso_cur_x/y`, `g_lasso_moved`) and the dashed border is drawn by `draw_lasso()` after icons but before the menu dropdown and bars, clipped to the desktop backdrop area (below the menu bar).
 
 ### File Browser Lasso Selection
 Lasso selection is also available inside drawer windows (`filebrowser.c`). Dragging the left mouse button on empty space within a browser's icon grid area (below the path bar) activates a lasso rectangle. Any icon cell that intersects the lasso is selected. The browser uses a per-icon `selected[]` array for multi-selection, replacing the previous single-`selected_icon` model. Single-clicking an icon selects only that icon and cancels any active lasso. The lasso rectangle is clipped to the browser's client area below the path bar.
@@ -180,7 +183,14 @@ The display layer includes several Workbench-style application windows in additi
 - **Clock (`clock_win.c`)**: Digital time and date display, updated once per second from the RTC.
 - **Network Info (`netinfo_win.c`)**: Displays interface IP, MAC, gateway, DNS, and DHCP status.
 - **Vim Editor (`vim_win.c`)**: Modal text editor with Normal/Insert/Visual/Command modes, search, undo, and `S:vim.conf` configuration.
+- **ED Editor (`ed_win.c`)**: AmigaED-style line editor with edit mode (type text, cursor movement) and command mode (ESC for commands: `w` save, `q` quit, `wq` save+quit, `/pat` search, `N` goto line). Supports both standalone WM windows and inline shell integration. Simpler than Vim — no modal confusion.
+- **AmigaGuide Viewer (`system/userspace/guide.c`)**: Userspace x86-64 binary that parses and renders `.guide` files. Supports `@NODE`/`@ENDNODE`/`@PREV`/`@NEXT`/`@TITLE` directives, `@{"label" LINK target}` navigation links, `@{"label" SYSTEM command}` sensitivity links, bold/italic text attributes, word wrap, scrolling, and keyboard navigation. Launched via `C:guide` or `Tools:Guide`.
+- **Early Startup Control (`early_startup.c`)**: Boot-time menu that appears during a 2-second countdown after kernel initialization. If a key is pressed, presents options: Normal Boot, Boot without Startup-Sequence, Boot to Shell only (no Workbench), and Display System Information. Uses the framebuffer directly (pre-scheduler, pre-WM). Sets `ShellWin_SetShellOnlyMode()` to prevent `LoadWB` in shell-only mode.
 - **Pointer Preferences (`pointer_prefs.c`)**: Cursor size, double-pixel mode, and acceleration settings.
+- **Preferences Suite (`prefs_win.c`)**: GUI editors for all AmigaOS 3.x Prefs programs — Palette, Time, IControl, Input, ScreenMode, WBPattern, Font, Serial, Printer, Locale. Each opens a WM window with AmigaOS-style gadgets (buttons, cycle gadgets, sliders, checkboxes). Palette editor persists to `ENVARC:Sys/palette.prefs` via IFF PREF format. Time editor reads/writes the RTC via `RTC_ReadDateTime()`/`RTC_SetDateTime()`.
+- **Commodities Framework (`commodities.h/c`)**: Broker registry for commodities — background tools that can be controlled from Exchange. Supports up to 16 brokers with Active/Sleeping/Disabled states and enable/disable/sleep/wake callbacks.
+- **Exchange Window (`exchange_win.c`)**: GUI window listing all registered commodity brokers with status indicators and Enable/Disable/Sleep/Wake/Cycle controls.
+- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity.
 - **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-3 programs that use the GUI syscall interface.
 
 ## Shell Window
@@ -193,6 +203,7 @@ Hot-path serial logging is compile-time gated to avoid UART busy-wait overhead (
 
 - `WM_DEBUG` (in `wm.c`, default 0) — gates `WM_LOG`/`WM_LOG_DEC`.
 - `DT_DEBUG` (in `desktop.c`, default 0) — gates `DT_LOG`/`DT_LOG_DEC`.
+- `FB_DEBUG` (in `filebrowser.c`, default 0) — gates `FB_LOG` and the on-screen debug overlay.
 - `MOUSE_DEBUG` (in `ps2mouse.c`, default 0) — gates the per-packet serial dump in `PS2Mouse_IRQHandler`.
 
 Set any to 1 to re-enable the corresponding debug output. Boot-time logs and shell serial mirroring are unaffected.

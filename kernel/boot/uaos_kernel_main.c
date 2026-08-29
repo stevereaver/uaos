@@ -779,11 +779,30 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Initialising userspace GUI windows...\n");
     UserWindow_Init();
 
+    /* Early Startup Control — brief countdown for boot options */
+    kprint("[BOOT] Early Startup Control...\n");
+    extern int EarlyStartup_Run(void);
+    int boot_mode = EarlyStartup_Run();
+    kprint("[BOOT] Boot mode: ");
+    kprinthex((uint64_t)boot_mode);
+    kprint("\n");
+
     kprint("[BOOT] Opening shell window...\n");
     ShellWin_Init();
 
-    kprint("[BOOT] Running Startup-Sequence...\n");
-    ShellWin_RunStartupSequence();
+    /* Set shell-only mode before Startup-Sequence runs */
+    if (boot_mode == 2) {
+        kprint("[BOOT] Shell-only mode — Workbench will not be loaded.\n");
+        extern void ShellWin_SetShellOnlyMode(int mode);
+        ShellWin_SetShellOnlyMode(1);
+    }
+
+    if (boot_mode != 1) {
+        kprint("[BOOT] Running Startup-Sequence...\n");
+        ShellWin_RunStartupSequence();
+    } else {
+        kprint("[BOOT] Skipping Startup-Sequence (user requested).\n");
+    }
 
     /* Start the first task with interrupts off */
     __asm__ volatile ("cli");
