@@ -1930,6 +1930,16 @@ static void glue_list_add_tail(uint32_t list, uint32_t node)
 static void exec_Wait(void)
 {
     uint32_t sigmask = m68k_get_reg(NULL, M68K_REG_D0);
+    /* Diagnostic: trace Wait calls to diagnose hangs */
+    {
+        char buf[48] = "[trace] Wait sigmask=0x";
+        char hex[12];
+        u32_hex(sigmask, hex);
+        int i = emu_strlen(buf), j = 0;
+        while (hex[j] && i < 46) buf[i++] = hex[j++];
+        buf[i++]='\n'; buf[i]='\0';
+        emu_print(buf);
+    }
     m68k_set_reg(M68K_REG_D0, Wait(sigmask));
 }
 
@@ -2726,12 +2736,7 @@ static void dos_CreateDir(void)
 static void dos_Exit(void)
 {
     uint32_t rc = m68k_get_reg(NULL, M68K_REG_D1);
-    char buf[32] = "[emu] Process exited, rc=";
-    char num[12]; u32_dec(rc, num, 12);
-    int i = emu_strlen(buf), j = 0;
-    while (num[j] && i < 30) buf[i++] = num[j++];
-    buf[i++] = '\n'; buf[i] = '\0';
-    (void)buf; /* suppress exit message for clean output */
+    (void)rc;
     /* Stop the execute loop */
     g_emu_halted = 1;
     m68k_end_timeslice();
@@ -2842,6 +2847,27 @@ int m68k_illg_instr_callback(int opcode)
     uint32_t pc  = m68k_get_reg(NULL, M68K_REG_PC);
     uint8_t  lib = g_ram[pc];     /* pc already advanced past ILLEGAL word */
     uint8_t  fn  = g_ram[pc + 1];
+
+    /* Diagnostic: trace library calls to diagnose hangs */
+    {
+        static uint32_t g_thunk_count = 0;
+        static uint32_t g_last_lib = 0xFF, g_last_fn = 0xFF;
+        g_thunk_count++;
+        /* Print first 50 calls, then every 1000th, and always on lib/fn change to unknown */
+        if (g_thunk_count <= 50 || (g_thunk_count % 10000) == 0) {
+            char buf[64] = "[trace] #";
+            char n[12]; u32_dec(g_thunk_count, n, 12);
+            int i = emu_strlen(buf), j = 0;
+            while (n[j] && i < 60) buf[i++] = n[j++];
+            buf[i++]=' '; buf[i++]='l'; buf[i++]='i'; buf[i++]='b';
+            buf[i++]='='; u32_dec(lib, n, 12); j=0; while (n[j]&&i<60) buf[i++]=n[j++];
+            buf[i++]=' '; buf[i++]='f'; buf[i++]='n'; buf[i++]='=';
+            u32_dec(fn, n, 12); j=0; while (n[j]&&i<60) buf[i++]=n[j++];
+            buf[i++]='\n'; buf[i]='\0';
+            emu_print(buf);
+        }
+        g_last_lib = lib; g_last_fn = fn;
+    }
 
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);
@@ -2979,6 +3005,12 @@ static uint32_t be32(const uint8_t *p)
            ((uint32_t)p[2]<<8)|(uint32_t)p[3];
 }
 
+/* Big-endian 16-bit read from a byte buffer */
+static uint16_t be16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0]<<8)|(uint16_t)p[1]);
+}
+
 #define HUNK_HEADER   0x3F3
 #define HUNK_CODE     0x3E9
 #define HUNK_DATA     0x3EA
@@ -2987,6 +3019,8 @@ static uint32_t be32(const uint8_t *p)
 #define HUNK_END      0x3F2
 #define HUNK_SYMBOL   0x3F0
 #define HUNK_DEBUG    0x3F1
+#define HUNK_DREL32      0x3F7   /* data-relative 16-bit relocations (like RELOC32SHORT) */
+#define HUNK_RELOC32SHORT 0x3FE  /* compact 16-bit relocations */
 
 #define MAX_HUNKS  32
 
@@ -3067,6 +3101,35 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
                     }
                 }
             }
+            continue; /* don't advance cur */
+
+        } else if (type == HUNK_DREL32 || type == HUNK_RELOC32SHORT) {
+            /* Compact 16-bit relocations. Format: series of blocks
+             *   count (u16)     — 0 terminates
+             *   target_hunk (u16)
+             *   count offsets (u16 each)
+             * Apply relocations the same way as HUNK_RELOC32.
+             * After the terminator, align p to the next 4-byte boundary
+             * because hunk type words are always 32-bit. */
+            while (p + 2 <= end) {
+                uint16_t n_offsets = be16(p); p += 2;
+                if (!n_offsets) break;
+                if (p + 2 > end) break;
+                uint16_t ref_hunk = be16(p); p += 2;
+                if (ref_hunk >= n_hunks) { p += n_offsets * 2; continue; }
+                uint32_t base = g_hunk_base[ref_hunk];
+                for (uint16_t r = 0; r < n_offsets; r++) {
+                    if (p + 2 > end) break;
+                    uint32_t offset = (uint32_t)be16(p); p += 2;
+                    uint32_t patch_addr = g_hunk_base[cur] + offset;
+                    if (patch_addr + 4 <= GUEST_RAM_SIZE) {
+                        uint32_t old_val = m68k_read_memory_32(patch_addr);
+                        m68k_write_memory_32(patch_addr, old_val + base);
+                    }
+                }
+            }
+            /* Align to 4-byte boundary (16-bit data may leave p unaligned) */
+            p = (const uint8_t *)(((uintptr_t)p + 3) & ~3u);
             continue; /* don't advance cur */
 
         } else if (type == HUNK_SYMBOL || type == HUNK_DEBUG) {

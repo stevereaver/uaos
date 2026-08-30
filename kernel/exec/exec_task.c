@@ -145,7 +145,6 @@ static void guest_memcpy(uint32_t dst, const uint8_t *src, uint32_t n)
 static void m68k_wrapper_entry(void *arg)
 {
     UaosTask *task = (UaosTask *)arg;
-    const uint8_t *binary = (const uint8_t *)task->tc_UserData;
 
     /* Switch to this task's guest RAM */
     g_ram = task->m68k_ram;
@@ -153,24 +152,25 @@ static void m68k_wrapper_entry(void *arg)
     /* Set output callback */
     g_print = (GluePrintFn)task->m68k_print_fn;
 
-    /* Clear and initialise this task's RAM */
-    for (uint32_t i = 0; i < GUEST_RAM_SIZE; i++)
+    /* The binary was copied into the tail of guest RAM by Task_CreateM68k.
+     * Save the offset before we clear the lower portion of guest RAM. */
+    uint32_t bin_save = task->m68k_bin_save_off;
+    uint32_t bin_size = task->m68k_bin_size;
+
+    /* Clear guest RAM (only the area below the saved binary) */
+    for (uint32_t i = 0; i < bin_save; i++)
         g_ram[i] = 0;
 
     /* Install library jump tables (per-task) */
     install_library_tables();
 
-    /* Load binary */
+    /* Load binary — use the saved copy in guest RAM. */
     g_uaos_heap_ptr = PROG_BASE;
-    uint32_t entry = hunk_load(binary, task->m68k_bin_size);
+    uint32_t entry = hunk_load(g_ram + bin_save, bin_size);
     if (!entry) {
         extern void kprint(const char *);
         kprint("[M68K] hunk_load failed, exiting\n");
         Task_Exit();
-    }
-    {
-        extern void kprint(const char *);
-        kprint("[M68K] hunk loaded, entry point\n");
     }
 
     /* Build command line in guest RAM (matches UAOS_Emu_LoadAndRun_Internal) */
@@ -241,6 +241,15 @@ static void m68k_wrapper_entry(void *arg)
     /* Store SysBase at absolute address 4 */
     guest_w32(4, EXEC_BASE);
 
+    /* Push return address — DOS Exit stub so RTS ends execution.
+     * The stub address = DOS_BASE + LVO_DOS_EXIT = 0x800 + (-144) = 0x770.
+     * When the program does RTS at the end, it returns to the Exit stub
+     * which triggers the illegal instruction handler and halts. */
+    #define DOS_BASE_LOCAL  0x0800
+    #define LVO_DOS_EXIT_LOCAL (-144)
+    sp -= 4;
+    guest_w32(sp, (uint32_t)((int)DOS_BASE_LOCAL + LVO_DOS_EXIT_LOCAL));
+
     /* Set up M68k CPU */
     m68k_init();
     m68k_set_cpu_type(2);  /* M68K_CPU_TYPE_68020 */
@@ -255,9 +264,14 @@ static void m68k_wrapper_entry(void *arg)
     m68k_pulse_reset();
     m68k_write_memory_32(4, EXEC_BASE);
 
-    /* CLI entry registers per Amiga CLI convention */
-    m68k_set_reg(0, cmdline_ptr);        /* A0 = command line pointer */
-    m68k_set_reg(8, (unsigned int)cmdlen); /* D0 = command line length */
+    /* CLI entry registers per Amiga CLI convention.
+     * In Musashi: M68K_REG_D0=0, M68K_REG_A0=8, M68K_REG_A6=14.
+     * A0 = command line pointer, D0 = command line length.
+     * A6 = SysBase (ExecBase) — many programs expect this to be pre-set
+     * by the loader, especially ACE-compiled binaries. */
+    m68k_set_reg(8, cmdline_ptr);        /* A0 = command line pointer */
+    m68k_set_reg(0, (unsigned int)cmdlen); /* D0 = command line length */
+    m68k_set_reg(14, 0x0300);           /* A6 = EXEC_BASE (SysBase) */
 
     /* Run in time-sliced chunks */
     g_emu_halted = 0;
@@ -283,6 +297,12 @@ static void m68k_wrapper_entry(void *arg)
         if (g_emu_halted) {
             task->m68k_halted = 1;
             break;
+        }
+
+        /* Diagnostic: print if task has been running for a long time */
+        if ((g_m68k_cycles & 0x3FFFFFF) == 0 && g_m68k_cycles > 0) {
+            extern void kprint(const char *);
+            kprint("[m68k] still running (64M+ cycles)\n");
         }
 
         /* Voluntary yield — lets the timer ISR preempt us cleanly */
@@ -329,8 +349,22 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     t->m68k_bin_size = bin_size;
     t->m68k_context_buf = ctx_buf;
     t->native_arg = t;                /* pass task pointer to wrapper */
-    t->tc_UserData = (void *)binary;  /* binary pointer for wrapper */
     t->m68k_print_fn = (void *)print_fn;
+
+    /* Copy the binary payload into the tail of the task's guest RAM NOW,
+     * before the task starts running.  The caller's static buffer
+     * (g_bin_payload) may be overwritten by other tasks or by the guest
+     * RAM clear loop in m68k_wrapper_entry.  By copying here while we
+     * still have the original pointer, we guarantee the data survives.
+     * The wrapper task will read from this saved copy. */
+    {
+        uint32_t save_off = GUEST_RAM_SIZE - bin_size;
+        save_off &= ~0xFu;  /* 16-byte align */
+        t->m68k_bin_save_off = save_off;
+        uint8_t *dst = g_ram_pool[slot] + save_off;
+        for (uint32_t i = 0; i < bin_size; i++)
+            dst[i] = binary[i];
+    }
 
     /* Allocate a private signal bit for WaitTOF() so M68k demos can block
      * on VBlank instead of busy-waiting and starving the idle/WM task. */

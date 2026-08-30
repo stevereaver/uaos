@@ -38,4 +38,15 @@ M68k tasks also receive a dedicated VBlank signal bit at creation (`UaosTask.m68
 
 ## Binary Loading
 
-`uaos_m68k_glue.c` includes a minimal Amiga Hunk loader that supports `HUNK_CODE`, `HUNK_DATA`, `HUNK_BSS`, and `HUNK_RELOC32`. It loads each segment into the guest RAM program area and applies relocations so that raw Amiga binaries can be executed from the shell or from `dos.library/LoadSeg`.
+`uaos_m68k_glue.c` includes a minimal Amiga Hunk loader that supports `HUNK_CODE`, `HUNK_DATA`, `HUNK_BSS`, `HUNK_RELOC32`, `HUNK_RELOC16`, `HUNK_RELOC8`, `HUNK_SYMBOL`, `HUNK_DEBUG`, `HUNK_DREL32`, and `HUNK_RELOC32SHORT`. It loads each segment into the guest RAM program area and applies relocations so that raw Amiga binaries can be executed from the shell or from `dos.library/LoadSeg`.
+
+The `HUNK_DREL32` and `HUNK_RELOC32SHORT` types use compact 16-bit relocation entries (count, target hunk, and offsets are all 16-bit). After processing these sections, the parser aligns to the next 4-byte boundary because subsequent hunk type words are always 32-bit.
+
+## Per-Task Binary Loading (exec_task.c)
+
+When the shell launches an M68k binary via `Task_CreateM68k`, the binary payload is copied into the tail of the task's guest RAM **before** the task starts running. This prevents the static `g_bin_payload` buffer from being overwritten by other tasks or by the guest RAM clear loop. The wrapper task (`m68k_wrapper_entry`) then clears the lower portion of guest RAM, installs library tables, and calls `hunk_load` with the saved copy.
+
+Key startup conventions for per-task M68k execution:
+- **A6** is pre-set to `EXEC_BASE` (0x300) — many programs (especially ACE-compiled binaries) expect SysBase in A6 without explicitly loading it from address 4.
+- **A0** = command line pointer, **D0** = command line length (Amiga CLI convention).
+- A **DOS_EXIT stub** return address is pushed onto the stack so that when the program does RTS at the end, it returns to the Exit handler and halts cleanly.

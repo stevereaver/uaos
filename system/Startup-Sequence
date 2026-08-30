@@ -75,6 +75,11 @@ IF EXISTS S:User-Startup
   execute S:User-Startup
 ENDIF
 
+; ACE Basic test — run ace compiler to verify it loads and exits cleanly
+echo "Testing ACE: running ace:bin/ace..."
+ace:bin/ace
+echo "ACE test complete (rc=$?)"
+
 ; Load Workbench desktop
 echo ""
 echo "Starting Workbench..."

@@ -99,6 +99,7 @@ typedef struct UaosTask {
     uint32_t m68k_entry;          /* guest PC entry point */
     uint32_t m68k_stack_top;      /* guest SP */
     uint32_t m68k_bin_size;       /* size of loaded binary */
+    uint32_t m68k_bin_save_off;   /* offset of saved binary copy in guest RAM */
     int      m68k_initial_cycles; /* saved m68ki_initial_cycles */
     int      m68k_remaining_cycles; /* saved m68ki_remaining_cycles */
     uint8_t  m68k_halted;       /* set when dos_Exit called */
