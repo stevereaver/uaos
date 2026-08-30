@@ -861,6 +861,60 @@ ENDFOR
 
 Note: Conditions are evaluated left-to-right. Variable references with `$var` are expanded before the condition is tested.
 
+### Script Arguments (`.key` and `<argname>`)
+
+A script can declare named template arguments with a `.key` directive, then reference them with `<argname>`:
+
+```
+.key name/A,age/N
+echo Hello <name>, you are <age> years old
+```
+
+Run it with `execute S:myscript Alice 42` and `<name>` expands to `Alice`, `<age>` to `42`.
+
+The `.key` line uses the same AmigaDOS template syntax as command templates. Qualifiers are fully honoured by `execute` when binding arguments:
+
+| Qualifier | Behaviour in scripts |
+|-----------|---------------------|
+| `/A` | Required — `execute` reports an error if the argument is missing |
+| `/K` | Keyword — must be passed as `name=value` or `name value` (order-independent) |
+| `/S` | Switch — `<argname>` expands to `1` if present, empty if absent |
+| `/N` | Numeric — value is expected to be a number |
+| `/M` | Multiple — `<argname>` expands to all collected values joined by spaces |
+| `/F` | Free-form — absorbs all remaining tokens into one string |
+
+With `/K` keyword args, the order of arguments on the command line doesn't matter:
+
+```
+.key name/A/K,age/K/N
+echo Hello <name>, you are <age> years old
+```
+
+All of these are equivalent:
+```
+execute S:myscript name=Alice age=42
+execute S:myscript age=42 name=Alice
+execute S:myscript name Alice age 42
+```
+
+When a `.key` template is present, `$1`..`$9` are set in **template-item order** (matching the order names appear in the `.key` line), not raw token order. This ensures `<argname>` (which maps names to positions) always resolves to the correct value. When there is no `.key` declaration, `$1`..`$9` fall back to raw positional tokens as before.
+
+- `<argname>` is only substituted when the name matches a declared key; otherwise `<` is left untouched (so input redirection like `cmd < file` still works).
+- Outside a script with a `.key` declaration, `<...>` is never treated as an argument reference.
+- `$*` always expands to the full raw argument string.
+- If template matching fails (e.g. a missing `/A` arg), `execute` prints a warning and falls back to raw positional assignment so the script still runs.
+
+### Backtick Command Substitution
+
+Text enclosed in backticks (`` `command` ``) is replaced by the output of running `command`, with a single trailing newline stripped:
+
+```
+echo Today is `date`
+echo You have `dir RAM: ALL | wc -l` entries
+```
+
+Backtick substitution happens during variable expansion, so it works in command lines, `echo` arguments, and `IF` condition strings. Nested backticks and `$var` references inside the backtick command are expanded as normal.
+
 ---
 
 ## Environment Variables
@@ -898,10 +952,16 @@ Use `$name` or `${name}` (simple prefix expansion is supported). Variables are e
 - In `IF` condition strings
 - In general command lines before execution
 
+In addition to `$name` variables, the shell supports:
+- `$[expr]` — arithmetic expansion (e.g. `echo $[2+3]`).
+- `<argname>` — script template argument reference (see [Script Arguments](#script-arguments-key-and-argname)).
+- `` `command` `` — backtick command substitution (see [Backtick Command Substitution](#backtick-command-substitution)).
+
 ```
 Set user "Alice"
 echo "Hello, $user"
 IF EXISTS ENV:Language THEN echo "Language is set"
+echo "2 + 3 = $[2+3]"
 ```
 
 ---

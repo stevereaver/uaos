@@ -1,0 +1,13 @@
+; ArgsTest — demonstrate .key / <argname> and backtick substitution
+;
+; Usage (positional):   execute S:ArgsTest Alice 42
+; Usage (keyword /K):   execute S:ArgsTest name=Alice age=42
+; Usage (keyword /K):   execute S:ArgsTest age=42 name=Alice
+;
+; All three forms produce the same output because the .key template
+; declares name and age as keyword args (/K), so the order doesn't matter.
+.key name/A/K,age/K/N
+echo Hello <name>, you are <age> years old.
+echo Today is `date`
+echo The first positional arg ($1) is: $1
+echo The second positional arg ($2) is: $2

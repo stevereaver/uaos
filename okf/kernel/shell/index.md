@@ -3,8 +3,8 @@ type: Kernel Subsystem
 title: UAOS Shell
 description: The command-line interface for UAOS.
 resource: /kernel/shell/
-tags: [shell, cli, commands]
-timestamp: 2026-06-24T17:00:00Z
+tags: [shell, cli, commands, scripting, template, backtick]
+timestamp: 2026-08-30T00:00:00Z
 ---
 
 # UAOS Shell
@@ -64,3 +64,30 @@ Double-clicking an icon in the Workbench file browser (`filebrowser.c`) calls `E
 ## Scripting
 
 The shell supports basic scripting via `S:Startup-Sequence` and the `execute` command, allowing for automated system initialization. The `newcli`/`newshell` command accepts an optional `from <script>` argument: `ShellWin_OpenWithScript()` opens a new shell window and synchronously runs the named script in it (resolved relative to the invoking shell's cwd), reusing the same `run_script_text` runner and 4 KB script buffer pool as `execute` and the boot `Startup-Sequence`.
+
+### Script Template Arguments (`.key` / `<argname>`)
+
+AmigaDOS-style script template arguments are implemented across two files:
+
+- **`C:execute` (`kernel/shell/cmd_execute.c`)**: After loading the script, `Cmd_Execute()` scans for a `.key` declaration via `exec_find_key()`. If found, the template spec is parsed with `CmdTemplate_Parse()` and the raw argument string is matched with `CmdTemplate_MatchArgs()`. This honours all AmigaDOS qualifiers:
+  - `/A` — required (missing args produce a warning)
+  - `/K` — keyword args, passed as `name=value` or `name value` (order-independent)
+  - `/S` — switch (`<argname>` expands to `1` if present, empty if absent)
+  - `/N` — numeric
+  - `/M` — multiple values (`<argname>` expands to all values joined by spaces)
+  - `/F` — free-form (absorbs all remaining tokens)
+  
+  When a `.key` template is present, `$1`..`$9` are set in **template-item order** (the order names appear in the `.key` line), not raw token order. This ensures `<argname>` resolves correctly even when `/K` keyword args are passed out of order. If template matching fails, `execute` prints a warning and falls back to raw positional assignment. When there is no `.key` declaration, `$1`..`$9` remain raw positional tokens (backward compatible). `$*` always holds the full raw argument string.
+
+- **`shell_win.c` (script runner)**: `run_script_text()` pre-scans for the first `.key` line and populates a per-nest-level key map (`g_script_keys[]`) via `script_parse_keys()`. At most 16 names are recorded per script; nested `execute` scripts get their own key map. `expand_vars()` then resolves `<argname>` references by looking up the name in the active key map, mapping it to its positional index, and reading the corresponding `$n` variable. `<argname>` only fires when the name matches a declared key and is terminated by `>`; otherwise `<` is emitted literally so I/O redirection (`< file`) still works. Outside a script (no active key map), `<...>` is never consumed.
+
+### Backtick Command Substitution
+
+`` `command` `` runs `command` and splices its captured stdout in place, with a single trailing newline stripped. This is handled in `expand_vars()` via `run_backtick()`, which:
+
+1. Creates a unique temp file `T:bt<N>`,
+2. Saves the current `g_redir`/`g_capture_mode` state, routes command output to the temp file, and sets `g_capture_mode = 1` to suppress the prompt echo inside `inst_dispatch()`,
+3. Dispatches the command normally (so `$var` expansion, pipes, and nested backticks all work),
+4. Restores the saved redirect state, reads the temp file back, strips trailing CR/LF, and deletes it.
+
+Backtick substitution applies everywhere `expand_vars()` runs — command lines, `echo` arguments, and `IF` condition strings — but not in the prompt string (`expand_prompt()` is separate).

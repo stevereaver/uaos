@@ -520,6 +520,12 @@ static void inst_push_scroll_to_wm(ShellInstance *s)
 typedef struct { void *shell; VfsFile fh; int active; int null; } RedirCtx;
 static RedirCtx g_redir;
 
+/* Backtick command-substitution capture state.
+ * g_capture_mode suppresses the prompt echo inside inst_dispatch so that
+ * `command` output is captured cleanly to a temp file via g_redir. */
+static int g_capture_mode = 0;
+static int g_bt_idx = 0;
+
 /* -------------------------------------------------------------------------
  * Pipe support
  * ------------------------------------------------------------------------- */
@@ -1823,6 +1829,7 @@ static void inst_cmd_assign(ShellInstance *s, const char *arg)
 
 /* Forward declaration — defined below after run_cmd */
 static void expand_vars(ShellInstance *s, const char *src, char *dst, int max);
+static int  run_backtick(ShellInstance *s, const char *cmd, char *dst, int max);
 
 /* -------------------------------------------------------------------------
  * Script flow-control runner
@@ -1840,6 +1847,17 @@ static struct {
     int pc;
 } g_script_labels[MAX_SCRIPT_LABELS];
 static int g_script_label_count = 0;
+
+/* Script template-argument key map, indexed by script nest level.
+ * Populated from ".key name/A,age/N,..." directives so that <name>,
+ * <age>, ... references in the script body resolve to the positional
+ * arguments $1, $2, ... supplied by the execute command. */
+#define MAX_SCRIPT_KEYS    16
+#define MAX_SCRIPT_KEY_LEN 16
+static struct {
+    char name[MAX_SCRIPT_KEYS][MAX_SCRIPT_KEY_LEN];
+    int  count;
+} g_script_keys[MAX_SCRIPT_NEST];
 
 static char *script_acquire_buf(void)
 {
@@ -1886,6 +1904,65 @@ static int script_parse_int(const char *p, int *out)
     }
     *out = neg ? -v : v;
     return 1;
+}
+
+/* Return a pointer just past a leading ".key " directive on a script line,
+ * or NULL if the line is not a .key declaration.  Matching is case-
+ * insensitive and tolerates leading whitespace. */
+static const char *script_key_line(const char *line)
+{
+    const char *p = script_skip_sp(line);
+    if (*p != '.') return NULL;
+    p++;
+    const char *kw = "key";
+    while (*kw) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != *kw) return NULL;
+        p++; kw++;
+    }
+    if (*p != ' ' && *p != '\t' && *p != '\0') return NULL;
+    return script_skip_sp(p);
+}
+
+/* Parse a ".key name/A,age/N,..." declaration into the key map for the
+ * given script nest level.  Only the item names (before any '/') are
+ * stored; qualifiers are accepted but ignored for argument mapping since
+ * the positional $1..$9 values are already supplied by the execute
+ * command.  At most MAX_SCRIPT_KEYS names are recorded. */
+static void script_parse_keys(int nest, const char *spec)
+{
+    if (nest < 0 || nest >= MAX_SCRIPT_NEST) return;
+    g_script_keys[nest].count = 0;
+    if (!spec) return;
+
+    const char *p = spec;
+    while (*p && g_script_keys[nest].count < MAX_SCRIPT_KEYS) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+
+        /* Read the item name (up to '/', ',', space, or end). */
+        const char *start = p;
+        while (*p && *p != '/' && *p != ',' && *p != ' ' && *p != '\t') p++;
+        int len = (int)(p - start);
+        if (len == 0) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == ',') p++;
+            continue;
+        }
+        if (len >= MAX_SCRIPT_KEY_LEN) len = MAX_SCRIPT_KEY_LEN - 1;
+
+        int idx = g_script_keys[nest].count;
+        int i;
+        for (i = 0; i < len; i++)
+            g_script_keys[nest].name[idx][i] = start[i];
+        g_script_keys[nest].name[idx][i] = '\0';
+        g_script_keys[nest].count++;
+
+        /* Skip qualifiers (everything until the next comma). */
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+    }
 }
 
 static void script_set_var(ShellInstance *s, const char *name, const char *value)
@@ -1998,6 +2075,10 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
 
     const char *lp = script_skip_sp(line);
     if (!*lp || *lp == ';' || *lp == '*') return pc;
+
+    /* .key template declarations are parsed during the pre-scan in
+     * run_script_text; treat them as no-ops at run time. */
+    if (script_key_line(line)) return pc;
 
     /* IF block */
     if (script_kw_match(line, "if")) {
@@ -2250,6 +2331,24 @@ static void run_script_text(ShellInstance *s, char *text)
             g_script_labels[g_script_label_count].name[j] = '\0';
             g_script_labels[g_script_label_count].pc = i;
             g_script_label_count++;
+        }
+    }
+
+    /* Pre-scan for a .key template declaration.  The first .key line found
+     * defines the argument-name -> position map used to resolve <argname>
+     * references in the script body.  The map is scoped to this script's
+     * nest level so nested execute scripts get their own key map. */
+    {
+        int nest = g_script_nest_level - 1;
+        if (nest < 0) nest = 0;
+        if (nest >= MAX_SCRIPT_NEST) nest = MAX_SCRIPT_NEST - 1;
+        g_script_keys[nest].count = 0;
+        for (int i = 0; i < line_count; i++) {
+            const char *spec = script_key_line(lines[i]);
+            if (spec) {
+                script_parse_keys(nest, spec);
+                break;  /* only the first .key line is honoured */
+            }
         }
     }
 
@@ -3896,6 +3995,12 @@ static void run_cmd(ShellInstance *s, const char *line)
 {
     const char *lp = script_skip_sp(line);
 
+    /* .key is a script-only directive; ignore it at the prompt. */
+    if (script_key_line(lp)) {
+        inst_print(s, ".key is only valid inside a script.");
+        return;
+    }
+
     /* Single-line IF at the interactive prompt */
     if (script_kw_match(lp, "if")) {
         const char *cond = script_skip_sp(lp + 2);
@@ -4288,13 +4393,158 @@ static int arith_itoa(int v, char *buf, int max)
     return di;
 }
 
+/* Run <cmd> via the normal dispatcher with its stdout captured to a temp
+ * file, then copy the captured output (with a single trailing newline
+ * stripped) into dst[max].  Returns the number of bytes written.  The
+ * prompt echo is suppressed via g_capture_mode so only the command's own
+ * output is captured.  Nested backticks work because g_redir is saved and
+ * restored around each invocation. */
+static int run_backtick(ShellInstance *s, const char *cmd, char *dst, int max)
+{
+    dst[0] = '\0';
+    if (!cmd || !*cmd || max < 2) return 0;
+
+    /* Create a unique temp capture file in T: */
+    char path[24];
+    scopy(path, "T:bt", 24);
+    char num[8];
+    uint_to_dec_s((uint32_t)g_bt_idx++, num, 8);
+    scat(path, num, 24);
+
+    VfsFile bt_fh;
+    if (!VFS_Open(&bt_fh, path, VFS_WRITE | VFS_CREATE | VFS_TRUNC))
+        return 0;
+
+    /* Save redirect/capture state, route output to the capture file. */
+    RedirCtx saved_redir = g_redir;
+    int saved_capture = g_capture_mode;
+    g_redir.shell  = s;
+    g_redir.fh     = bt_fh;
+    g_redir.active = 1;
+    g_redir.null   = 0;
+    g_capture_mode = 1;
+
+    inst_dispatch(s, cmd);
+
+    /* Close the capture file before restoring the caller's redirect state
+     * (inst_dispatch may have left g_redir.fh pointing at a different,
+     * already-closed handle if the inner command used its own redirect). */
+    VFS_Close(&bt_fh);
+    g_redir      = saved_redir;
+    g_capture_mode = saved_capture;
+
+    /* Read the captured output back. */
+    int written = 0;
+    VfsFile rf;
+    if (VFS_Open(&rf, path, VFS_READ)) {
+        uint32_t n = VFS_Read(&rf, (uint8_t *)dst, (uint32_t)(max - 1));
+        dst[n] = '\0';
+        VFS_Close(&rf);
+        written = (int)n;
+        /* Strip a single trailing newline (and optional CR) so that
+         * `echo foo` substitutes as "foo" rather than "foo\n". */
+        while (written > 0 && (dst[written - 1] == '\n' || dst[written - 1] == '\r'))
+            dst[--written] = '\0';
+    }
+    VFS_Delete(path);
+    return written;
+}
+
 /* Expand $VarName references in src into dst[max].  Reads local env store.
  * Also reads ENV:<name> file as fallback for vars not in local store.
- * Supports $[<expr>] arithmetic expansion. */
+ * Supports $[<expr>] arithmetic expansion, <argname> script template
+ * argument references (after a .key declaration), and `command` backtick
+ * command substitution. */
 static void expand_vars(ShellInstance *s, const char *src, char *dst, int max)
 {
     int di = 0;
     while (*src && di < max - 1) {
+        /* `command` — backtick command substitution.  Run the embedded
+         * command and splice its captured stdout into the output. */
+        if (*src == '`') {
+            src++;
+            char cmd[MAX_LINE_LEN];
+            int ci = 0;
+            while (*src && *src != '`' && ci < MAX_LINE_LEN - 1)
+                cmd[ci++] = *src++;
+            cmd[ci] = '\0';
+            if (*src == '`') src++;
+            char cap[MAX_LINE_LEN];
+            run_backtick(s, cmd, cap, MAX_LINE_LEN);
+            const char *cp = cap;
+            while (*cp && di < max - 1) dst[di++] = *cp++;
+            continue;
+        }
+
+        /* <argname> — script template argument reference.  Only active
+         * when a .key declaration is in scope for the running script; the
+         * name must match a declared key.  Otherwise the '<' is passed
+         * through literally (so I/O redirection still works). */
+        if (*src == '<') {
+            int nest = g_script_nest_level - 1;
+            if (nest >= 0 && nest < MAX_SCRIPT_NEST &&
+                g_script_keys[nest].count > 0) {
+                /* Peek ahead for a matching '>' within the key-name limit
+                 * and verify the enclosed name is a declared key. */
+                const char *peek = src + 1;
+                int plen = 0;
+                while (peek[plen] && peek[plen] != '>' &&
+                       peek[plen] != ' ' && peek[plen] != '\t' &&
+                       plen < MAX_SCRIPT_KEY_LEN)
+                    plen++;
+                if (peek[plen] == '>') {
+                    char kname[MAX_SCRIPT_KEY_LEN];
+                    int ki;
+                    for (ki = 0; ki < plen && ki < MAX_SCRIPT_KEY_LEN - 1; ki++)
+                        kname[ki] = peek[ki];
+                    kname[ki] = '\0';
+
+                    int idx = -1;
+                    for (int i = 0; i < g_script_keys[nest].count; i++) {
+                        if (seq_ci(g_script_keys[nest].name[i], kname)) {
+                            idx = i;
+                            break;
+                        }
+                    }
+                    if (idx >= 0 && idx < 9) {
+                        /* Resolve to the positional argument $(idx+1). */
+                        char vname[3];
+                        vname[0] = (char)('1' + idx);
+                        vname[1] = '\0';
+                        const char *val = NULL;
+                        for (int i = 0; i < s->env_count; i++) {
+                            if (seq_ci(s->env_names[i], vname)) {
+                                val = s->env_values[i];
+                                break;
+                            }
+                        }
+                        if (!val) {
+                            static char arg_file_buf[MAX_ENV_VAL];
+                            char env_path[64];
+                            scopy(env_path, "ENV:", 64);
+                            scat(env_path, vname, 64);
+                            VfsFile fh;
+                            if (VFS_Open(&fh, env_path, VFS_READ)) {
+                                uint32_t nrd = VFS_Read(&fh,
+                                    (uint8_t *)arg_file_buf, MAX_ENV_VAL - 1);
+                                arg_file_buf[nrd] = '\0';
+                                VFS_Close(&fh);
+                                val = arg_file_buf;
+                            }
+                        }
+                        src = peek + plen + 1; /* skip past '>' */
+                        if (val) {
+                            while (*val && di < max - 1) dst[di++] = *val++;
+                        }
+                        continue;
+                    }
+                }
+            }
+            /* Not a template arg reference — emit '<' literally. */
+            dst[di++] = *src++;
+            continue;
+        }
+
         if (*src == '$') {
             src++;
 
@@ -4378,8 +4628,9 @@ static void inst_dispatch(ShellInstance *s, const char *line)
     expand_vars(s, line, expanded_line, MAX_LINE_LEN);
     line = expanded_line;
 
-    /* Echo prompt (skip when dispatching a queued background job) */
-    if (!g_bg_running) {
+    /* Echo prompt (skip when dispatching a queued background job, or
+     * when capturing output for backtick command substitution) */
+    if (!g_bg_running && !g_capture_mode) {
         char echo_line[MAX_LINE_LEN];
         scopy(echo_line, s->cwd, MAX_LINE_LEN);
         scat(echo_line, "> ", MAX_LINE_LEN);
