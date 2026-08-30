@@ -1,7 +1,7 @@
 /* uaos_m68kconf.h — UAOS-specific Musashi configuration
  *
  * Include this as MUSASHI_CNF to override the defaults in m68kconf.h.
- * We target M68000 only (Amiga programs are 68000/68020 at most).
+ * We target M68020 (Amiga programs are 68000/68020 at most).
  * We enable the ILLEGAL and TRAP callbacks so UAOS can intercept them
  * for library dispatch instead of patching ROM vectors.
  */
@@ -13,10 +13,12 @@
 #define M68K_OPT_ON              1
 #define M68K_OPT_SPECIFY_HANDLER 2
 
-/* Only build 68000 — keeps code size manageable for a freestanding build */
+/* Build 68020 — Amiga programs are 68000/68020 at most.  The 020 core also
+ * services 68000 code (the 68000 is a strict subset), so we compile only
+ * the 020 variant to keep code size manageable for a freestanding build. */
 #define M68K_EMULATE_010            M68K_OPT_OFF
 #define M68K_EMULATE_EC020          M68K_OPT_OFF
-#define M68K_EMULATE_020            M68K_OPT_OFF
+#define M68K_EMULATE_020            M68K_OPT_ON
 #define M68K_EMULATE_030            M68K_OPT_OFF
 #define M68K_EMULATE_040            M68K_OPT_OFF
 

@@ -4,7 +4,7 @@ title: M68k Emulation Layer
 description: Integration of the Musashi M68k emulator and the UAOS kernel.
 resource: /emulation/
 tags: [m68k, musashi, glue]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-08-30T15:00:00Z
 ---
 
 # M68k Emulation Layer
@@ -16,7 +16,7 @@ The emulation layer provides the infrastructure to execute Motorola 68000 binary
 - **`uaos_m68k_glue.c`**: The primary interface between the Musashi emulator and the kernel. It handles CPU initialization, memory access callbacks, opcode trapping, and the Amiga Hunk binary loader.
 - **`uaos_emu_registry.c`**: Manages embedded Amiga binaries (e.g., `Lha`) and exposes `UAOS_Emu_RunByName()` for the shell.
 - **`uaos_uae_bridge.c`**: UAE-compatible bridge that wires ILLEGAL callbacks and initializes the 4 GB guest physical RAM window used by some emulator builds.
-- **`uaos_m68kconf.h`**: Musashi configuration tuned for M68000-only emulation with ILLEGAL/TRAP callbacks and no FPU/PMMU.
+- **`uaos_m68kconf.h`**: Musashi configuration tuned for M68020 emulation (the 68020 core is a superset of the 68000, so 68000 code runs unmodified) with ILLEGAL/TRAP callbacks and no FPU/PMMU. The CPU type is selected at runtime in `uaos_m68k_glue.c` via `m68k_set_cpu_type(M68K_CPU_TYPE_68020)`.
 - **`rom_patches/`**: Contains assembly stubs (`rom_traps.s`) and the kickstart configuration (`kickstart.conf`).
 - **`binaries/`**: Embedded Amiga binaries converted to C byte arrays (e.g., `Lha`).
 

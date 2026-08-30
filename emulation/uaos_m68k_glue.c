@@ -3222,7 +3222,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
 
     /* Initialise CPU — MUST call pulse_reset before setting registers */
     m68k_init();
-    m68k_set_cpu_type(M68K_CPU_TYPE_68000);
+    m68k_set_cpu_type(M68K_CPU_TYPE_68020);
     m68k_set_illg_instr_callback(m68k_illg_instr_callback);
 
     /* Patch reset vectors so pulse_reset loads our entry/stack:
