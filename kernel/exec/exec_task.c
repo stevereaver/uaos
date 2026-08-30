@@ -243,7 +243,7 @@ static void m68k_wrapper_entry(void *arg)
 
     /* Set up M68k CPU */
     m68k_init();
-    m68k_set_cpu_type(1);  /* M68K_CPU_TYPE_68000 */
+    m68k_set_cpu_type(2);  /* M68K_CPU_TYPE_68020 */
     /* Re-register the ILLEGAL instruction callback — m68k_init() clears it. */
     extern int m68k_illg_instr_callback(int opcode);
     extern void m68k_set_illg_instr_callback(int (*cb)(int));

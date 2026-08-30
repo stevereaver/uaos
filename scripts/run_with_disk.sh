@@ -16,7 +16,7 @@
 
 set -e
 
-DISK_PATH=${1:-/home/reaver/uaos/build/uaos_disk.qcow2}
+DISK_PATH=${1:-/home/reaver/workspaces/uaos/uaos/build/uaos_disk.qcow2}
 OVMF_VARS=/tmp/ovmf_vars.fd
 NET=${NET:-user}
 TAP=${TAP:-tap0}
@@ -53,7 +53,7 @@ qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file="$OVMF_VARS" \
   -device piix3-ide,id=ide \
-  -drive if=none,id=cdrom,media=cdrom,file=/home/reaver/uaos/build/Ultimate_Amiga_OS.iso \
+  -drive if=none,id=cdrom,media=cdrom,file=/home/reaver/workspaces/uaos/uaos/build/Ultimate_Amiga_OS.iso \
   -device ide-cd,drive=cdrom,bus=ide.0 \
   -device virtio-blk-pci,disable-modern=on,drive=blk0 \
   -drive id=blk0,file="$DISK_PATH",if=none,format=qcow2 \

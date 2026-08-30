@@ -33,9 +33,11 @@ The primary build script is `scripts/build_iso.sh`.
 9. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
 10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`.
 11. **M68k Demos**: Assembles M68k assembly demos in `system/Demos/` (e.g., `CopperBars.s`) with `vasm` (Motorola syntax), links them into Amiga Hunk executables with `vlink`, and wraps the resulting binaries with `gen_uaos_m68k` for `SYS_ROOT/Demos/`.
-12. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`) into `SYS_ROOT`.
-13. **GRUB Config**: Injects `scripts/grub.cfg` and the kickstart configuration.
-14. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
+12. **Regina Rexx**: Downloads Regina Rexx 0.08i from Aminet, extracts the `rexx` binary, wraps it with `gen_uaos_m68k`, and stages it into `SYS_ROOT/REXX/`.
+13. **ACE Basic**: Downloads ACE Basic 3.0.1 from GitHub, extracts and wraps the tool binaries (`ace`, `yap`, `vasmm68k_mot`, `vlink`, `parseusing`) into `SYS_ROOT/ACE/bin/`, stages support files (`lib/`, `bmaps/`, `include/`, `submods/`), and downloads the `bas` script into `SYS_ROOT/C/`.
+14. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`, `REXX:`, `ACE:`) into `SYS_ROOT`.
+15. **GRUB Config**: Injects `scripts/grub.cfg` and the kickstart configuration.
+16. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
 
 ## Helper Scripts
 

@@ -147,6 +147,12 @@ void UAOS_ROM_RegisterAll(void)
     /* Register mathffp.library */
     UAOS_MATHFFP_Register();
 
+    /* Register mathieeesingbas.library (IEEE single-precision basic math) */
+    UAOS_MATHIEEESINGBAS_Register();
+
+    /* Register mathtrans.library (IEEE single-precision transcendentals) */
+    UAOS_MATHTRANS_Register();
+
     /* Register locale.library */
     UAOS_LOCALE_Register();
 

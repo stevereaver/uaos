@@ -1560,10 +1560,23 @@ static void inst_cmd_set(ShellInstance *s, const char *arg)
 
     if (!name[0]) { inst_print(s, "Usage: Set <name> [<value>]"); return; }
 
+    /* Strip one layer of surrounding double-quotes from the value so that
+     * AmigaDOS-style "SET var \"value\"" stores the unquoted value. */
+    char setval[MAX_ENV_VAL];
+    scopy(setval, arg, MAX_ENV_VAL);
+    {
+        int vlen = slen(setval);
+        if (vlen >= 2 && setval[0] == '"' && setval[vlen - 1] == '"') {
+            setval[vlen - 1] = '\0';
+            /* Left-shift by 1 to remove leading quote (no memmove in freestanding) */
+            for (int qi = 0; qi < vlen - 1; qi++) setval[qi] = setval[qi + 1];
+        }
+    }
+
     /* Check if env var already exists — update silently */
     for (int i = 0; i < s->env_count; i++) {
         if (seq_ci(s->env_names[i], name)) {
-            scopy(s->env_values[i], arg, MAX_ENV_VAL);
+            scopy(s->env_values[i], setval, MAX_ENV_VAL);
             return;
         }
     }
@@ -1574,7 +1587,7 @@ static void inst_cmd_set(ShellInstance *s, const char *arg)
         return;
     }
     scopy(s->env_names[s->env_count], name, MAX_ENV_NAME);
-    scopy(s->env_values[s->env_count], arg, MAX_ENV_VAL);
+    scopy(s->env_values[s->env_count], setval, MAX_ENV_VAL);
     s->env_count++;
 }
 
@@ -4901,7 +4914,7 @@ static void inst_tab_complete(ShellInstance *s)
             "delete","type","copy","rename","pwd","echo","protect","attr",
             "info","date","which","disks","fdisk","format","pointer","run",
             "assign","execute","loadwb","calculator","ifconfig","ping",
-            "route","nslookup","ntpd","clock","grep","more", NULL
+            "route","nslookup","ntpd","clock","grep","more","rx", NULL
         };
         for (int i = 0; natcmds[i]; i++) {
             if (tc_has_prefix(natcmds[i], prefix, pfx_len))

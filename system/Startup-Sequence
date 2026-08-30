@@ -23,7 +23,7 @@ C:Version >NIL:
 Assign >NIL: ENV: RAM:ENV
 Assign >NIL: T: RAM:T
 Assign >NIL: Clips: RAM:Clipboards
-Assign >NIL: REXX: S:
+Assign >NIL: REXX: SYS:REXX
 
 ; Device sub-directory assigns
 Assign >NIL: PRINTERS: DEVS:Printers
@@ -36,6 +36,13 @@ Assign >NIL: REXXC: S:REXXc
 ; Contains /usr/bin, /bin, /usr/local/bin with GNU coreutils and
 ; other OSS tools that take GNU-style flags.
 Assign >NIL: gnu: Workbench:gnu
+
+; ACE Basic compiler — ACE: points to the compiler installation
+Assign >NIL: ACE: SYS:ACE
+Assign >NIL: ACElib: ACE:lib
+Assign >NIL: ACEbmaps: ACE:bmaps
+Assign >NIL: ACEinclude: ACE:include
+Assign >NIL: ACEsubmods: ACE:submods
 
 ; Extend LIBS: with additional class directories (searched after SYS:Libs)
 Assign >NIL: LIBS: SYS:Classes ADD

@@ -1,8 +1,8 @@
 ---
 type: Concept
 title: M68k Emulation in UAOS
-description: How UAOS executes classic Motorola 68000 code on an x86_64 host.
-tags: [m68k, emulation, musashi, thunking]
+description: How UAOS executes classic Motorola 68020 code on an x86_64 host.
+tags: [m68k, emulation, musashi, thunking, 68020]
 timestamp: 2026-06-24T17:00:00Z
 ---
 
@@ -12,7 +12,9 @@ UAOS is designed to run emulated M68k code seamlessly alongside native x86_64 co
 
 ## CPU Emulator: Musashi
 
-UAOS uses the **Musashi** M68k emulator core. It is integrated into the kernel and runs emulated tasks within their own context. The Musashi configuration (`emulation/uaos_m68kconf.h`) targets plain M68000 with ILLEGAL and TRAP callbacks enabled and the FPU/PMMU disabled.
+UAOS uses the **Musashi** M68k emulator core. It is integrated into the kernel and runs emulated tasks within their own context. The Musashi configuration (`emulation/uaos_m68kconf.h`) targets the **Motorola 68020** CPU (with `M68K_EMULATE_020` enabled) and ILLEGAL/TRAP callbacks enabled. The FPU and PMMU remain disabled. The CPU type is set to `M68K_CPU_TYPE_68020` in both `uaos_m68k_glue.c` (for the global emulator context) and `exec_task.c` (for each per-task M68k context).
+
+The 68020 enables 32-bit multiply/divide instructions (`mulsl`, `mulul`, `divsl`, `divul`) used by the ACE Basic toolchain (`vasmm68k_mot`, `vlink`, `ace`). All 68000 instructions are a subset of 68020, so existing M68k demos continue to run without modification.
 
 ## LVO Stubs and Thunking
 

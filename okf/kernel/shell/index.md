@@ -39,7 +39,7 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | Category | Commands |
 |---|---|
 | **Volume / Disk** | `info`, `disks`, `diskchange`, `mount`, `format`, `fdisk`, `addbuffers`, `relabel`, `install` |
-| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `strace` |
+| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `strace`, `rx` |
 | **Network** | `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo` |
 | **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `ed`, `guide`, `requestchoice`, `requestfile` |
 | **Preferences** | `screenmode`, `font`, `icontrol`, `input`, `palette`, `wbpattern`, `serial`, `printer`, `time`, `locale` |
@@ -91,3 +91,16 @@ AmigaDOS-style script template arguments are implemented across two files:
 4. Restores the saved redirect state, reads the temp file back, strips trailing CR/LF, and deletes it.
 
 Backtick substitution applies everywhere `expand_vars()` runs — command lines, `echo` arguments, and `IF` condition strings — but not in the prompt string (`expand_prompt()` is separate).
+
+### Quote Stripping
+
+The template tokenizer (`tokenise()` in `cmd_template.c`) and the `SET` built-in (`inst_cmd_set` in `shell_win.c`) strip one layer of surrounding double-quotes from argument values. This matches AmigaDOS conventions where `SET foo "bar"` stores `bar` (not `"bar"`) and `copy T:file ""` uses the empty string (current directory). Only tokens where the first AND last character are both `"` are stripped; partial quotes inside a token are preserved.
+
+### `rx` Command (`kernel/shell/cmd_rx.c`)
+
+The native `rx` command wraps the Regina Rexx interpreter (`REXX:rexx`) to provide ARexx-compatible scripting. It supports two forms:
+
+- **Inline program**: `rx "say 'Hello'"` — writes the quoted string to `T:rx_temp.rexx`, dispatches `REXX:rexx T:rx_temp.rexx`, then cleans up.
+- **File-based program**: `rx myscript arg1` — dispatches `REXX:rexx <filename> [args]`. Bare names (no path/extension) are searched in `REXX:` with `.rexx` appended automatically.
+
+The return code from the dispatched `rexx` command is propagated back through the shell's `get_last_rc`/`set_rc` callbacks.

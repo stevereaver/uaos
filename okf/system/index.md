@@ -28,6 +28,8 @@ UAOS uses "Assigns" to create logical device names:
 - **`ENV:`**: Environment variables.
 - **`CLIPS:`**: Clipboard data.
 - **`gnu:`**: POSIX-style directory tree providing GNU core utilities (`gnu/usr/bin`, `gnu/bin`, `gnu/usr/local/bin`). Created by `S:Startup-Sequence` and mapped to `Workbench:gnu`.
+- **`REXX:`**: Regina Rexx interpreter and scripts, mapped to `SYS:REXX`.
+- **`ACE:`**: ACE Basic compiler installation, mapped to `SYS:ACE`. Sub-assigns: `ACElib:`, `ACEbmaps:`, `ACEinclude:`, `ACEsubmods:`.
 
 ## Userspace Library (`system/libuaos/`)
 
@@ -182,6 +184,28 @@ The complete GNU coreutils set (86 utilities) is built as x86-64 ELF64 PIE binar
 Programs written in M68k assembly are assembled with `vasm` (Motorola syntax), linked into standard Amiga Hunk executables with `vlink`, and wrapped with the `UAOS` header by `gen_uaos_m68k`. They are staged into `SYS_ROOT/Demos/`:
 
 - `CopperBars` — opens an Intuition window (with `WFLG_GIMMEZEROZERO`) and renders animated horizontal colour bars using `graphics.library` `RectFill` within the window's RastPort. Six bars in fixed Amiga palette colours bounce vertically inside the content area. It demonstrates `graphics.library` (`SetAPen`, `SetDrMd`, `RectFill`, `WaitTOF`) and `intuition.library` (`OpenWindow`, `CloseWindow`, `ModifyIDCMP`), and exits cleanly when the close gadget is clicked. The demo draws directly to the window RastPort instead of taking over the Copper, so it coexists with the desktop without starving the idle/WM task.
+
+## Development Tools
+
+### ACE Basic (`SYS:ACE/`)
+
+ACE Basic 3.0.1 (GPL v2/v3) is a BASIC-to-M68k assembly compiler that ships as pre-built Amiga Hunk binaries. It is downloaded and staged at build time by `scripts/build_iso.sh` (Step 2i). The `bas` script in `C:` orchestrates compilation by invoking the ACE tools (`ace`, `yap`, `vasmm68k_mot`, `vlink`, `parseusing`) with the correct options and library paths.
+
+- **`ACE:`** — points to `SYS:ACE` (the compiler installation root)
+- **`ACElib:`** — points to `ACE:lib` (runtime library stubs)
+- **`ACEbmaps:`** — points to `ACE:bmaps` (browser maps for intuition/graphics)
+- **`ACEinclude:`** — points to `ACE:include` (header files)
+- **`ACEsubmods:`** — points to `ACE:submods` (submodule stubs)
+
+Usage: `bas hello.b` compiles `hello.b` to a native M68k executable. The compiled program runs directly under UAOS's 68020 emulation.
+
+### Regina Rexx (`SYS:REXX/`)
+
+Regina Rexx 0.08i (LGPL v2) is an ARexx-compatible interpreter that ships as a pure 68000 Amiga Hunk binary. It is downloaded and staged at build time by `scripts/build_iso.sh` (Step 2h). The native `C:rx` command wraps the interpreter, supporting both inline programs (`rx "say 'Hello'"`) and file-based programs (`rx myscript`).
+
+- **`REXX:`** — points to `SYS:REXX` (interpreter binary and script directory)
+
+The `bas` script uses `rx` for inline string manipulation (checking prefixes, translating characters, detecting option patterns).
 
 ## Startup Sequence
 

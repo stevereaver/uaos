@@ -61,6 +61,12 @@ void UAOS_CONSOLE_Register(void);
 /* Register mathffp.library */
 void UAOS_MATHFFP_Register(void);
 
+/* Register mathieeesingbas.library */
+void UAOS_MATHIEEESINGBAS_Register(void);
+
+/* Register mathtrans.library */
+void UAOS_MATHTRANS_Register(void);
+
 /* Register locale.library */
 void UAOS_LOCALE_Register(void);
 

@@ -2824,6 +2824,11 @@ uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32
     return d0;
 }
 
+/* Stub for 68881 PMMU ops — referenced by generated m68kops.c when
+ * 68020 emulation is enabled, but PMMU is disabled in uaos_m68kconf.h.
+ * This stub satisfies the linker; it should never be called at runtime. */
+void m68881_mmu_ops(void) { }
+
 /* =========================================================================
  * ILLEGAL opcode callback — dispatches library calls
  * ========================================================================= */

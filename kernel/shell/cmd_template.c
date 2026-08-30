@@ -145,6 +145,20 @@ static void tokenise(const char *args, TokArray *ta)
         int len = (int)(p - start);
         if (len >= CMD_MAX_TEMPLATE_VAL) len = CMD_MAX_TEMPLATE_VAL - 1;
         ct_scopy_n(ta->tok[ta->n], start, len, CMD_MAX_TEMPLATE_VAL);
+        /* Strip one layer of surrounding double-quotes so that AmigaDOS-style
+         * quoted arguments (e.g. copy T:file "", SET foo "bar") resolve to
+         * the unquoted value.  Only strips when the first AND last character
+         * are both '"', so partial quotes inside a token are preserved. */
+        {
+            int tlen = ct_slen(ta->tok[ta->n]);
+            if (tlen >= 2 &&
+                ta->tok[ta->n][0] == '"' &&
+                ta->tok[ta->n][tlen - 1] == '"') {
+                ta->tok[ta->n][tlen - 1] = '\0';
+                ct_scopy(ta->tok[ta->n], ta->tok[ta->n] + 1,
+                         CMD_MAX_TEMPLATE_VAL);
+            }
+        }
         ta->used[ta->n] = 0;
         ta->n++;
     }

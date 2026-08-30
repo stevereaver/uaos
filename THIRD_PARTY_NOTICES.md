@@ -151,3 +151,65 @@ provided that the target CPU is M68k and the target OS is AmigaOS."
 UAOS uses vasm/vlink exclusively to assemble M68k AmigaOS demo
 binaries, so the commercial exception applies.  These tools are build-
 time only and are not distributed in the ISO.
+
+---
+
+## 6. Regina Rexx (distributed in the ISO)
+
+- **Upstream:** <https://github.com/markhobley/regina-rexx> (Amiga build via Aminet)
+- **Author:** Mark Hessling (original Regina author); Amiga port contributors
+- **License:** LGPL-2.0-or-later
+- **Location:** `SYS_ROOT/REXX/rexx` (wrapped Amiga Hunk binary)
+
+Regina Rexx 0.08i is an ARexx-compatible interpreter that ships as a
+pure 68000 Amiga Hunk binary.  It is downloaded from Aminet
+(`http://aminet.net/dev/lang/Regina.lha`) at ISO build time, extracted,
+wrapped with the UAOS M68k header by `gen_uaos_m68k`, and staged into
+`SYS_ROOT/REXX/`.  The native `C:rx` command dispatches inline and
+file-based Rexx programs to this interpreter.
+
+### License
+
+Regina Rexx is free software; you can redistribute it and/or modify it
+under the terms of the GNU Library General Public License as published
+by the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+The complete text of the LGPL-2.0 is available at
+<https://www.gnu.org/licenses/old-licenses/lgpl-2.0.txt>.
+
+---
+
+## 7. ACE Basic (distributed in the ISO)
+
+- **Upstream:** <https://github.com/mdbergmann/ACEBasic>
+- **Author:** Michael Bergmann
+- **License:** GPL-2.0-or-later
+- **Location:** `SYS_ROOT/ACE/` (compiler binaries and support files),
+  `SYS_ROOT/C/bas` (compilation script)
+
+ACE Basic 3.0.1 is a BASIC-to-M68k assembly compiler that ships as
+pre-built Amiga Hunk binaries (`ace`, `yap`, `vasmm68k_mot`, `vlink`,
+`parseusing`) plus support files (`lib/`, `bmaps/`, `include/`,
+`submods/`).  It is downloaded from GitHub
+(`https://github.com/mdbergmann/ACEBasic/releases/download/3.0.1/ace-basic.lha`)
+at ISO build time, extracted, wrapped with the UAOS M68k header, and
+staged into `SYS_ROOT/ACE/`.  The `bas` compilation script is
+downloaded separately from the GitHub raw URL because the copy in the
+LHA archive has a corrupted filename (null bytes from Windows metadata).
+
+### License
+
+ACE Basic is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation; either version 2 of the License, or (at your
+option) any later version.
+
+The complete text of the GPL-2.0 is available at
+<https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt>.
+
+**Note on GPL and the UAOS kernel:** The UAOS kernel itself is MIT-
+licensed and is *not* a derivative work of ACE Basic.  ACE Basic is a
+separate, pre-built M68k binary that runs under UAOS's M68k emulation
+layer.  The GPL-2.0 applies to the ACE Basic components only; the MIT
+license applies to the UAOS kernel and system files.

@@ -77,6 +77,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("requestfile",     Cmd_RequestFile,   "TITLE/K,DRAWER/K,FILE/K,PATTERN/K,PUBSCREEN/K" ),
     CMDT("changetaskpri",   Cmd_ChangeTaskPri, "PRI/A/N,TASK/K" ),
     CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
+    CMD ("rx",              Cmd_Rx             ),
     /* Prefs editors (stubs — Phase 3) */
     CMD ("screenmode",      Cmd_ScreenMode  ),
     CMD ("font",            Cmd_Font        ),

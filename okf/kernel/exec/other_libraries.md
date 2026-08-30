@@ -1,9 +1,9 @@
 ---
 type: Kernel Library
 title: Other AmigaOS Libraries and Devices
-description: Native thunk implementations of utility.library, mathffp.library, locale.library, ixemul.library, and device stubs in UAOS.
+description: Native thunk implementations of utility.library, mathffp.library, mathieeesingbas.library, mathtrans.library, locale.library, ixemul.library, and device stubs in UAOS.
 resource: /kernel/exec/
-tags: [utility, mathffp, locale, ixemul, console, keyboard, timer, m68k, thunking]
+tags: [utility, mathffp, mathieeesingbas, mathtrans, locale, ixemul, console, keyboard, timer, m68k, thunking]
 timestamp: 2026-06-24T17:00:00Z
 ---
 
@@ -36,6 +36,37 @@ Software single-precision floating-point library.
 | `SPCmp`, `SPNeg`, `SPAbs` | Implemented | Comparison and sign operations. |
 | `SPFix`, `SPFlt` | Implemented | Float↔integer conversion. |
 | `SPSqrt`, `SPLog`, `SPExp`, `SPSin`, `SPCos`, `SPTan`, `SPAtan`, `SPAsin`, `SPAcos` | Stub | Return NaN or infinity because freestanding UAOS has no math library. |
+
+## mathieeesingbas.library (`kernel/exec/mathieeesingbas_lib.c`)
+
+IEEE 754 single-precision basic floating-point operations. Required by ACE Basic, which opens this library unconditionally at startup.
+
+| Function | Status | Notes |
+|---|---|---|
+| `SPFix`, `SPFlt` | Implemented | Float↔integer conversion (round toward zero). |
+| `SPCmp`, `SPTst` | Implemented | Compare two floats / test against zero. Returns -1/0/+1. |
+| `SPAbs`, `SPNeg` | Implemented | Absolute value and negation via sign-bit manipulation. |
+| `SPAdd`, `SPSub`, `SPMul`, `SPDiv` | Implemented | Basic IEEE 754 arithmetic using native C float. |
+
+Registered at base address `0x00000070`. Uses the same IEEE 754 conversion helpers as mathffp.library.
+
+## mathtrans.library (`kernel/exec/mathtrans_lib.c`)
+
+IEEE 754 single-precision transcendental functions. Required by ACE Basic, which opens this library unconditionally at startup. All functions are implemented with freestanding C (no `<math.h>`) using Taylor series and Newton-Raphson iterations.
+
+| Function | Status | Notes |
+|---|---|---|
+| `SPSin`, `SPCos`, `SPTan` | Implemented | Taylor series with angle reduction to [-π, π]. |
+| `SPSincos` | Implemented | Returns sin in D0, stores cos at A0 pointer. |
+| `SPAsin`, `SPAcos`, `SPAtan` | Implemented | Taylor series; asin/acos use atan fallback for |x| > 0.5. |
+| `SPExp` | Implemented | Taylor series with range reduction via `e^x = 2^k * e^r`. |
+| `SPLog` | Implemented | Natural log via artanh series with mantissa range reduction. |
+| `SPLog10` | Implemented | `SPLog * log10(e)`. |
+| `SPSqrt` | Implemented | Newton-Raphson iteration: `x_{n+1} = 0.5*(x_n + S/x_n)`. |
+| `SPFloor`, `SPCeil` | Implemented | Integer cast with correction for negative values. |
+| `SPPow` | Implemented | `SPExp(exp * SPLog(base))` with negative-base handling. |
+
+Registered at base address `0x00000080`.
 
 ## locale.library (`kernel/exec/locale_lib.c`)
 
@@ -90,4 +121,4 @@ When a queued timer request expires, the device signals the requesting task so i
 
 ## ROM Module Registration
 
-All of the above libraries and devices are registered at boot by `kernel/exec/rom_modules.c` via `UAOS_ROM_RegisterAll()`. The ROM module table supports up to 64 modules and maps names to version, base, and native function tables. The registered set also includes `exec.library`, `dos.library`, `graphics.library`, `intuition.library`, `bsdsocket.library`, and `workbench.library`.
+All of the above libraries and devices are registered at boot by `kernel/exec/rom_modules.c` via `UAOS_ROM_RegisterAll()`. The ROM module table supports up to 64 modules and maps names to version, base, and native function tables. The registered set also includes `exec.library`, `dos.library`, `graphics.library`, `intuition.library`, `bsdsocket.library`, `workbench.library`, `mathieeesingbas.library`, and `mathtrans.library`.

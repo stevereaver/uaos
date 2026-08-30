@@ -349,6 +349,8 @@ for src in \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \
     "${REPO_ROOT}/kernel/exec/console_device.c" \
     "${REPO_ROOT}/kernel/exec/mathffp_lib.c" \
+    "${REPO_ROOT}/kernel/exec/mathieeesingbas_lib.c" \
+    "${REPO_ROOT}/kernel/exec/mathtrans_lib.c" \
     "${REPO_ROOT}/kernel/exec/locale_lib.c" \
     "${REPO_ROOT}/kernel/exec/ixemul_lib.c" \
     "${REPO_ROOT}/kernel/exec/timer_device.c" \
@@ -452,6 +454,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_requestfile.c" \
     "${REPO_ROOT}/kernel/shell/cmd_changetaskpri.c" \
     "${REPO_ROOT}/kernel/shell/cmd_status.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_rx.c" \
     "${REPO_ROOT}/kernel/shell/cmd_strace.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prefs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
@@ -639,6 +642,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/utility_lib.o" \
     "${BUILD_DIR}/obj/console_device.o" \
     "${BUILD_DIR}/obj/mathffp_lib.o" \
+    "${BUILD_DIR}/obj/mathieeesingbas_lib.o" \
+    "${BUILD_DIR}/obj/mathtrans_lib.o" \
     "${BUILD_DIR}/obj/locale_lib.o" \
     "${BUILD_DIR}/obj/ixemul_lib.o" \
     "${BUILD_DIR}/obj/timer_device.o" \
@@ -758,6 +763,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_requestfile.o" \
     "${BUILD_DIR}/obj/cmd_changetaskpri.o" \
     "${BUILD_DIR}/obj/cmd_status.o" \
+    "${BUILD_DIR}/obj/cmd_rx.o" \
     "${BUILD_DIR}/obj/cmd_strace.o" \
     "${BUILD_DIR}/obj/cmd_prefs.o" \
     "${BUILD_DIR}/obj/cmd_exchange.o" \
@@ -812,7 +818,7 @@ for cmd in version mem libs clear reboot \
            run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop vim ed ps netinfo \
            wait prompt stack why failat quit endcli relabel \
            getenv unset jobs \
-           install diskchange addbuffers requestchoice requestfile changetaskpri status \
+           install diskchange addbuffers requestchoice requestfile changetaskpri status rx \
            strace print crossdos ed guide; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
@@ -1097,6 +1103,117 @@ if [[ ${need_toolchain} -eq 1 ]]; then
     done
 else
     ok "  No M68k demo sources found"
+fi
+
+# -------------------------------------------------------------------------
+# Step 2h — Download and stage Regina Rexx interpreter
+# -------------------------------------------------------------------------
+# Regina Rexx 0.08i (LGPL v2) is a pure 68000 Amiga Hunk binary that
+# provides ARexx-compatible scripting.  It is used by the ACE Basic
+# `bas` script for inline string manipulation via the `rx` command.
+# -------------------------------------------------------------------------
+
+info "Step 2h: Downloading and staging Regina Rexx"
+
+REXX_STAGING="${ISO_STAGING}/SYS_ROOT/REXX"
+mkdir -p "${REXX_STAGING}"
+
+REGINA_LHA="${BUILD_DIR}/Regina.lha"
+REGINA_DIR="${BUILD_DIR}/regina-0.08i"
+
+if [[ ! -f "${REXX_STAGING}/rexx" ]]; then
+    if [[ ! -f "${REGINA_LHA}" ]]; then
+        info "  Downloading Regina.lha from Aminet"
+        wget -q -O "${REGINA_LHA}" http://aminet.net/dev/lang/Regina.lha \
+            || fatal "Failed to download Regina.lha"
+    fi
+    if [[ ! -d "${REGINA_DIR}" ]]; then
+        cd "${BUILD_DIR}"
+        lha x Regina.lha >/dev/null 2>&1 || fatal "Failed to extract Regina.lha"
+        cd "${REPO_ROOT}"
+    fi
+    # Find the rexx binary inside the extracted directory
+    REGINA_BIN=$(find "${REGINA_DIR}" -name "rexx" -type f | head -1)
+    if [[ -z "${REGINA_BIN}" ]]; then
+        fatal "Regina rexx binary not found in ${REGINA_DIR}"
+    fi
+    "${GEN_M68K}" rexx "${REGINA_BIN}" "${REXX_STAGING}/rexx" \
+        || fatal "Failed to wrap Regina rexx"
+    ok "  Built: SYS_ROOT/REXX/rexx"
+else
+    ok "  Regina Rexx already staged"
+fi
+
+# -------------------------------------------------------------------------
+# Step 2i — Download and stage ACE Basic compiler
+# -------------------------------------------------------------------------
+# ACE Basic 3.0.1 (GPL v2/v3) is a BASIC-to-M68k assembly compiler.
+# It ships as pre-built Amiga Hunk binaries (ace, vasmm68k_mot, vlink,
+# yap, parseusing) plus support files (lib/, bmaps/, include/,
+# submods/).  The `bas` script in C: orchestrates compilation.
+# -------------------------------------------------------------------------
+
+info "Step 2i: Downloading and staging ACE Basic compiler"
+
+ACE_STAGING="${ISO_STAGING}/SYS_ROOT/ACE"
+mkdir -p "${ACE_STAGING}/bin" "${ACE_STAGING}/lib" "${ACE_STAGING}/bmaps"
+mkdir -p "${ACE_STAGING}/include" "${ACE_STAGING}/submods"
+
+ACE_LHA="${BUILD_DIR}/ace-basic.lha"
+ACE_DIR="${BUILD_DIR}/ace-basic"
+
+if [[ ! -f "${ACE_STAGING}/bin/ace" ]]; then
+    if [[ ! -f "${ACE_LHA}" ]]; then
+        info "  Downloading ace-basic.lha from GitHub"
+        wget -q -O "${ACE_LHA}" https://github.com/mdbergmann/ACEBasic/releases/download/3.0.1/ace-basic.lha \
+            || fatal "Failed to download ace-basic.lha"
+    fi
+    if [[ ! -d "${ACE_DIR}" ]]; then
+        cd "${BUILD_DIR}"
+        lha x ace-basic.lha >/dev/null 2>&1 || fatal "Failed to extract ace-basic.lha"
+        cd "${REPO_ROOT}"
+    fi
+
+    # Stage support files (lib, bmaps, include, submods)
+    for subdir in lib bmaps include submods; do
+        if [[ -d "${ACE_DIR}/${subdir}" ]]; then
+            cp -r "${ACE_DIR}/${subdir}/"* "${ACE_STAGING}/${subdir}/" 2>/dev/null || true
+        fi
+    done
+
+    # Wrap and stage each ACE tool binary
+    for tool in ace yap vasmm68k_mot vlink parseusing; do
+        TOOL_BIN=$(find "${ACE_DIR}" -name "${tool}" -type f | head -1)
+        if [[ -z "${TOOL_BIN}" ]]; then
+            info "  ACE tool not found in archive: ${tool}"
+            continue
+        fi
+        "${GEN_M68K}" "${tool}" "${TOOL_BIN}" "${ACE_STAGING}/bin/${tool}" \
+            || fatal "Failed to wrap ACE tool: ${tool}"
+        ok "  Built: SYS_ROOT/ACE/bin/${tool}"
+    done
+
+    # Copy license file if present
+    for lic in LICENSE COPYING COPYING-LIB; do
+        if [[ -f "${ACE_DIR}/${lic}" ]]; then
+            cp "${ACE_DIR}/${lic}" "${ACE_STAGING}/${lic}"
+            break
+        fi
+    done
+else
+    ok "  ACE Basic already staged"
+fi
+
+# Download the bas script from GitHub (the LHA copy has a corrupted filename)
+C_STAGING="${ISO_STAGING}/SYS_ROOT/C"
+if [[ ! -f "${C_STAGING}/bas" ]]; then
+    info "  Downloading bas script from GitHub"
+    wget -q -O "${C_STAGING}/bas" \
+        https://raw.githubusercontent.com/mdbergmann/ACEBasic/master/bin/bas \
+        || fatal "Failed to download bas script"
+    ok "  Built: SYS_ROOT/C/bas"
+else
+    ok "  bas script already staged"
 fi
 
 # -------------------------------------------------------------------------
