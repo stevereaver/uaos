@@ -191,6 +191,7 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     t->native_stack_size = TASK_STACK_SIZE;
     t->native_entry = entry;
     t->native_arg = arg;
+    t->parent = Task_Current();
     copy_cwd(t->task_cwd, "");
 
     /* Build initial stack frame that looks like what the timer ISR pushes:
@@ -636,14 +637,19 @@ uint32_t Wait(uint32_t sigmask)
     while ((g_current->tc_SigRecvd & sigmask) == 0) {
         g_current->tc_State = TASK_WAITING;
         wait_enqueue(g_current);
-        /* RAX = SYSCALL_SCHEDULE (0xFF) so the new syscall dispatcher
-         * treats this as a voluntary yield rather than dispatching by
-         * whatever value the compiler left in RAX. */
-        __asm__ volatile (
-            "mov $0xFF, %%rax\n"
-            "int $0x80"
-            ::: "rax", "memory"
-        );
+        /* Enable interrupts and halt until the timer ISR fires.
+         * The timer ISR will call do_schedule(1) which switches to
+         * another task.  When that task signals us, the scheduler
+         * will put us back in the ready queue and eventually resume
+         * execution here.
+         *
+         * We cannot use int $0x80 for yielding because sti on x86
+         * delays interrupt delivery until after the next instruction,
+         * so sti; int $0x80 would prevent the timer ISR from firing.
+         * hlt is safe because it halts the CPU until the next
+         * interrupt, giving the timer ISR a chance to run. */
+        __asm__ volatile ("sti; hlt" ::: "memory");
+        __asm__ volatile ("cli");
     }
 
     result = g_current->tc_SigRecvd & sigmask;
@@ -652,6 +658,14 @@ uint32_t Wait(uint32_t sigmask)
     __asm__ volatile ("sti");
 
     return result;
+}
+
+void Task_ClearSig(uint32_t sigmask)
+{
+    __asm__ volatile ("cli");
+    if (g_current)
+        g_current->tc_SigRecvd &= ~sigmask;
+    __asm__ volatile ("sti");
 }
 
 uint32_t SetSignal(uint32_t newsignals, uint32_t sigmask)

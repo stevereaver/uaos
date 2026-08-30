@@ -50,3 +50,20 @@ Key startup conventions for per-task M68k execution:
 - **A6** is pre-set to `EXEC_BASE` (0x300) — many programs (especially ACE-compiled binaries) expect SysBase in A6 without explicitly loading it from address 4.
 - **A0** = command line pointer, **D0** = command line length (Amiga CLI convention).
 - A **DOS_EXIT stub** return address is pushed onto the stack so that when the program does RTS at the end, it returns to the Exit handler and halts cleanly.
+
+## Chipset Sync Isolation
+
+The chipset emulator (`chip_emu.c`) uses global blitter/copper state shared across all tasks. When a per-task M68k program accesses chip RAM (addresses < 0x800000), the memory callbacks in `uaos_m68k_glue.c` normally call `chip_emu_cpu_chipram_access()` to synchronize the chipset. However, during per-task M68k execution, this synchronization is disabled via the `g_chipset_sync_disabled` flag (set in `m68k_wrapper_entry`, cleared on exit). Without this, the blitter could operate on the wrong task's `g_ram` using addresses set up by another task, causing kernel page faults (e.g., when running `vlink` after the Workbench).
+
+## Task Scheduling and Wait/Signal
+
+M68k wrapper tasks run at priority -128 (same as the shell and idle tasks), allowing the scheduler to round-robin between them. When the shell launches an M68k binary, it calls `Wait(SIGF_CHILD)` to block until the child exits. Key implementation details:
+
+- **`Wait()` uses `sti; hlt`** (not `sti; int $0x80`) because x86 `sti` delays interrupt delivery until after the next instruction — `sti; int $0x80` would prevent the timer ISR from firing, causing a deadlock.
+- **`Task_ClearSig(SIGF_CHILD)`** is called before `Wait()` to clear any stale signal from a previous child exit, ensuring `Wait()` blocks until the current child actually exits.
+- **`Task_Exit()`** signals the parent task with `SIGF_CHILD`, waking the shell.
+- The M68k wrapper has a cycle budget timeout (100M cycles) to prevent infinite loops (e.g., Workbench tools that wait for WBStartup messages when run from CLI).
+
+## DOS Print Functions
+
+DOS output functions (`dos_VFPrintf`, `dos_FPuts`, `dos_PutStr`, `dos_VPrintf`) use the per-task `g_print` callback (set to the shell's print function) instead of `kprint`. This ensures M68k program output appears in the correct shell window rather than only on the serial console.

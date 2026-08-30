@@ -152,6 +152,16 @@ static void m68k_wrapper_entry(void *arg)
     /* Set output callback */
     g_print = (GluePrintFn)task->m68k_print_fn;
 
+    /* Disable chipset sync during per-task M68k execution.
+     * The chipset emulator uses global blitter/copper state that is
+     * shared across all tasks.  Calling chip_emu_run_to_cycle() from
+     * per-task memory accesses would cause the blitter to operate on
+     * this task's g_ram with addresses set up by another task, causing
+     * kernel page faults.  The chipset is driven by the global timer
+     * ISR instead. */
+    extern int g_chipset_sync_disabled;
+    g_chipset_sync_disabled = 1;
+
     /* The binary was copied into the tail of guest RAM by Task_CreateM68k.
      * Save the offset before we clear the lower portion of guest RAM. */
     uint32_t bin_save = task->m68k_bin_save_off;
@@ -273,11 +283,15 @@ static void m68k_wrapper_entry(void *arg)
     m68k_set_reg(0, (unsigned int)cmdlen); /* D0 = command line length */
     m68k_set_reg(14, 0x0300);           /* A6 = EXEC_BASE (SysBase) */
 
-    /* Run in time-sliced chunks */
+    /* Run in time-sliced chunks.
+     * A cycle budget prevents runaway programs from locking the system
+     * forever — if the binary doesn't call dos_Exit within 500M cycles
+     * (~70 seconds at 7 MHz), we abort it. */
     g_emu_halted = 0;
     task->m68k_halted = 0;
     task->m68k_entry = entry;
     task->m68k_stack_top = sp;
+    uint64_t cycle_budget = 100000000ULL;  /* 100M cycles (~14s at 7MHz) */
 
     /* Save initial context so ISR can restore it on first switch */
     unsigned int ctx_size = m68k_context_size();
@@ -291,10 +305,24 @@ static void m68k_wrapper_entry(void *arg)
         /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles */
         m68k_execute(10000);
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
-        chip_emu_run_to_cycle(g_m68k_cycles);
+        /* Note: chip_emu_run_to_cycle() is NOT called here because the
+         * chipset emulator uses global blitter/copper state that is
+         * shared across all tasks.  Driving it from a per-task M68k
+         * loop causes the blitter to access the wrong g_ram (this
+         * task's guest RAM) when processing operations queued by
+         * other tasks or the Workbench.  The chipset emulator is
+         * driven by the global timer ISR instead. */
 
         /* Check if the binary called Exit */
         if (g_emu_halted) {
+            task->m68k_halted = 1;
+            break;
+        }
+
+        /* Timeout: abort if the binary exceeds the cycle budget */
+        if (g_m68k_cycles >= cycle_budget) {
+            extern void kprint(const char *);
+            kprint("[m68k] cycle budget exceeded, aborting task\n");
             task->m68k_halted = 1;
             break;
         }
@@ -305,9 +333,14 @@ static void m68k_wrapper_entry(void *arg)
             kprint("[m68k] still running (64M+ cycles)\n");
         }
 
-        /* Voluntary yield — lets the timer ISR preempt us cleanly */
+        /* Yield to other tasks — the timer ISR preempts us during
+         * m68k_execute() and round-robins to the shell/idle tasks. */
         __asm__ volatile ("pause");
     }
+
+    /* Re-enable chipset sync before exiting */
+    extern int g_chipset_sync_disabled;
+    g_chipset_sync_disabled = 0;
 
     Task_Exit();
 }

@@ -213,6 +213,7 @@ extern UaosTask *g_wait_tof_task;
  * ------------------------------------------------------------------------- */
 
 uint32_t Wait(uint32_t sigmask);
+void Task_ClearSig(uint32_t sigmask);
 void     Signal(UaosTask *task, uint32_t sigmask);
 uint32_t SetSignal(uint32_t newsignals, uint32_t sigmask);
 void     Forbid(void);

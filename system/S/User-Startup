@@ -1,7 +1,4 @@
-; Ultimate Amiga OS — User-Startup
-; Place personal startup commands here.
-; This script is executed automatically at the end of Startup-Sequence
-; (before Workbench loads) only if the file exists.
+; User-Startup — runs after scheduler is active
+; ACE and vlink can be tested interactively from the shell prompt.
 
-; Alias vi to vim
-alias vi vim
+echo "User-Startup complete. Try: ace:bin/ace or ace:bin/vlink"

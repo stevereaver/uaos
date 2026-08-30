@@ -3847,6 +3847,9 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
              * sequence), there is no parent task context to wait in. */
             UaosTask *cur = Task_Current();
             if (cur) {
+                /* Clear any stale SIGF_CHILD from a previous child exit
+                 * so that Wait() blocks until THIS child actually exits. */
+                Task_ClearSig(SIGF_CHILD);
                 Wait(SIGF_CHILD);
             }
             return 0;

@@ -36,6 +36,11 @@ extern char g_uaos_cwd[64];
 /* Emulation halt flag — set by dos_Exit to break the execute loop */
 extern int g_emu_halted;
 
+/* When non-zero, chipset sync (chip_emu_cpu_chipram_access) is skipped
+ * during M68k memory accesses.  Set during per-task M68k execution to
+ * prevent the global blitter/copper from operating on the wrong g_ram. */
+extern int g_chipset_sync_disabled;
+
 /* Callback type for printing output to the shell history */
 typedef void (*UAOS_PrintFn)(void *shell, const char *line);
 

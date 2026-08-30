@@ -147,6 +147,7 @@ uint8_t *g_ram = g_default_ram;
 int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 uint64_t g_m68k_cycles  = 0;  /* cumulative M68k cycles executed */
+int      g_chipset_sync_disabled = 0;  /* set during per-task M68k exec */
 
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */
@@ -256,7 +257,7 @@ unsigned int m68k_read_memory_8(unsigned int addr)
     if (is_chip_window(addr))
         return chip_emu_read(addr - CHIP_WINDOW_START, 1);
     if (addr < GUEST_RAM_SIZE) {
-        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
+        if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 0);
         return g_ram[addr];
     }
     return 0xFF;
@@ -267,7 +268,7 @@ unsigned int m68k_read_memory_16(unsigned int addr)
     if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END)
         return chip_emu_read(addr - CHIP_WINDOW_START, 2);
     if (addr + 1 < GUEST_RAM_SIZE) {
-        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
+        if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr] << 8) | g_ram[addr+1];
     }
     return 0xFFFF;
@@ -278,7 +279,7 @@ unsigned int m68k_read_memory_32(unsigned int addr)
     if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END)
         return chip_emu_read(addr - CHIP_WINDOW_START, 4);
     if (addr + 3 < GUEST_RAM_SIZE) {
-        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 0);
+        if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr]   << 24) |
                ((unsigned int)g_ram[addr+1] << 16) |
                ((unsigned int)g_ram[addr+2] <<  8) |
@@ -302,7 +303,7 @@ void m68k_write_memory_8(unsigned int addr, unsigned int val)
         return;
     }
     if (addr < GUEST_RAM_SIZE) {
-        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
+        if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr] = (uint8_t)val;
     }
     GUEST_WRITE_BARRIER();
@@ -316,7 +317,7 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
         return;
     }
     if (addr + 1 < GUEST_RAM_SIZE) {
-        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
+        if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr]   = (uint8_t)(val >> 8);
         g_ram[addr+1] = (uint8_t)(val);
     }
@@ -331,7 +332,7 @@ void m68k_write_memory_32(unsigned int addr, unsigned int val)
         return;
     }
     if (addr + 3 < GUEST_RAM_SIZE) {
-        if (addr < 0x00800000u) chip_emu_cpu_chipram_access(addr, 1);
+        if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 1);
         /* Fix: SAS/C startup writes a bad stack limit to 0x89EC because the
          * stack size parameter on the stack is 0. Override with a safe limit.
          * limit should be low enough that SP > limit. Use SPLower + 0x80. */
@@ -1930,16 +1931,6 @@ static void glue_list_add_tail(uint32_t list, uint32_t node)
 static void exec_Wait(void)
 {
     uint32_t sigmask = m68k_get_reg(NULL, M68K_REG_D0);
-    /* Diagnostic: trace Wait calls to diagnose hangs */
-    {
-        char buf[48] = "[trace] Wait sigmask=0x";
-        char hex[12];
-        u32_hex(sigmask, hex);
-        int i = emu_strlen(buf), j = 0;
-        while (hex[j] && i < 46) buf[i++] = hex[j++];
-        buf[i++]='\n'; buf[i]='\0';
-        emu_print(buf);
-    }
     m68k_set_reg(M68K_REG_D0, Wait(sigmask));
 }
 
@@ -2047,15 +2038,23 @@ static void exec_ReplyMsg(void)
 
 static void exec_WaitPort(void)
 {
-    /* WaitPort(port) — A0 = port, returns port in D0 */
+    /* WaitPort(port) — A0 = port, returns port in D0.
+     * In a real Amiga, this blocks until a message arrives.  In UAOS,
+     * we don't have real message ports for most operations, so blocking
+     * would hang the M68k task forever.  Instead, return immediately:
+     * if a message is already in the list, return the port; otherwise
+     * return 0 (no message).  This prevents ACE-compiled binaries and
+     * other CLI tools from hanging when they try to wait for console
+     * input or device replies that never arrive. */
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     if (!port) { m68k_set_reg(M68K_REG_D0, 0); return; }
 
-    uint32_t sigbit = glue_r8(port + MP_SIGBIT);
-    while (glue_list_empty(port + MP_MSGLIST)) {
-        Wait(1U << sigbit);
+    if (glue_list_empty(port + MP_MSGLIST)) {
+        /* No message available — return 0 instead of blocking */
+        m68k_set_reg(M68K_REG_D0, 0);
+    } else {
+        m68k_set_reg(M68K_REG_D0, port);
     }
-    m68k_set_reg(M68K_REG_D0, port);
 }
 
 /* Public exec dispatcher for use by other host library code (e.g. gadtools). */
