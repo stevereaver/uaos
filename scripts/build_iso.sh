@@ -323,6 +323,7 @@ for src in \
     "${REPO_ROOT}/kernel/irq/vmmouse.c" \
     "${REPO_ROOT}/kernel/irq/rtc.c" \
     "${REPO_ROOT}/kernel/irq/virtio_blk.c" \
+    "${REPO_ROOT}/kernel/irq/virtio_scsi.c" \
     "${REPO_ROOT}/kernel/drivers/virtio_net.c" \
     "${REPO_ROOT}/kernel/drivers/e1000.c" \
     "${REPO_ROOT}/kernel/net/eth.c" \
@@ -616,6 +617,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/vmmouse.o" \
     "${BUILD_DIR}/obj/rtc.o" \
     "${BUILD_DIR}/obj/virtio_blk.o" \
+    "${BUILD_DIR}/obj/virtio_scsi.o" \
     "${BUILD_DIR}/obj/virtio_net.o" \
     "${BUILD_DIR}/obj/e1000.o" \
     "${BUILD_DIR}/obj/eth.o" \

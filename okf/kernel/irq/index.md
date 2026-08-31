@@ -23,7 +23,8 @@ The kernel sets up a 256-vector IDT in 64-bit mode.
 - **PS/2 Mouse (`ps2mouse.c`, IRQ12)**: Handles relative motion packets and updates the software cursor.
 - **VMware Mouse (`vmmouse.c`)**: Optional absolute mouse driver using the VMware backdoor port (`0x5658`), enabled when running under QEMU/VMware.
 - **RTC (`rtc.c`, IRQ8)**: CMOS Real-Time Clock for system time and periodic interrupts (used by `timer.device`).
-- **VirtIO Block (`virtio_blk.c`)**: Basic driver for VirtIO-compliant storage devices.
+- **VirtIO Block (`virtio_blk.c`)**: Basic driver for VirtIO-compliant storage devices (legacy PCI 1af4:1001).
+- **VirtIO-SCSI (`virtio_scsi.c`)**: VirtIO-SCSI block device driver supporting both the modern virtio 1.0+ transport (PCI 1af4:1048, used by VirtualBox's virtio-scsi controller) and the legacy transport (PCI 1af4:1004, used by older QEMU). Walks PCI vendor capabilities for the modern MMIO transport (common/notify/ISR/device config) or uses the legacy BAR0 I/O interface. Issues SCSI READ(10)/WRITE(10)/READ CAPACITY(10) over the command virtqueue and registers the disk as `virtio0`, enabling the existing partition/mount/assign boot flow. Disables MSI/MSI-X to use legacy INTx.
 - **Intel e1000 (`kernel/drivers/e1000.c`)**: Intel 82540EM Gigabit Ethernet driver.
 - **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: VirtIO legacy network device driver.
 - **IDE (`kernel/drivers/ide.c`)**: ATA/ATAPI block device driver for CD-ROM and hard disks.

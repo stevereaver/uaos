@@ -22,6 +22,7 @@
 #include "../irq/vmmouse.h"
 #include "../irq/rtc.h"
 #include "../irq/virtio_blk.h"
+#include "../irq/virtio_scsi.h"
 #include "../drivers/virtio_net.h"
 #include "../net/stack.h"
 #include "../exec/bsdsocket_lib.h"
@@ -603,6 +604,38 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
                 }
             }
         }
+    } else if (virtio_scsi_init() == 0) {
+        /* Fall back to VirtIO-SCSI (VirtualBox virtio-scsi controller) */
+        kprint("[BOOT] VirtIO-SCSI block device detected and registered.\n");
+        BlockDev *vdev = BlockDev_Find("virtio0");
+        if (vdev) {
+            PartitionTable pt;
+            if (partition_read(vdev, &pt) == 0 && pt.valid && pt.scheme == PART_SCHEME_MBR) {
+                for (int i = 0; i < MBR_PART_COUNT; i++) {
+                    if (pt.mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
+                        char namebuf[16];
+                        const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
+                        BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
+                            pt.mbr.partitions[i].lba_start,
+                            pt.mbr.partitions[i].sector_count, dname);
+                        if (pdev && BlockDev_CheckFormatted(pdev)) {
+                            char mnt_name[16];
+                            int ni = 0, si = 0;
+                            while (si < 15 && dname[si] && dname[si] != ':')
+                                mnt_name[ni++] = dname[si++];
+                            mnt_name[ni] = '\0';
+
+                            char fat_label[16];
+                            if (BlockDev_ReadVolLabel(pdev, fat_label, sizeof(fat_label))) {
+                                VFS_MountPartition(fat_label);
+                            } else if (mnt_name[0]) {
+                                VFS_MountPartition(mnt_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     } else {
         kprint("[BOOT] No VirtIO block device found (this is OK if no disk attached).\n");
     }
@@ -708,6 +741,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Register VirtIO interrupt handler (must be after IDT/PIC init) */
     kprint("[BOOT] Registering VirtIO IRQ...\n");
     virtio_blk_setup_irq();
+    if (virtio_scsi_is_active())
+        virtio_scsi_setup_irq();
 
     /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
      * kernel timing (network poll pacing, yield_ms, ntp guards) and must
