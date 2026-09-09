@@ -443,7 +443,7 @@ GRUB2 Multiboot2
 - **Clock display uses RTC time** — full timezone, calendar arithmetic, and date/time formatting integration are still being completed.
 
 ---
-<img width="1413" height="1069" alt="image" src="https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e" />
+<img width="1230" height="922" alt="image" src="https://github.com/user-attachments/assets/cd9f836a-e78a-40dc-993d-5f59b2e8fad1" />
 
 ## License
 
