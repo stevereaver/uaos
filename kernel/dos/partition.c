@@ -16,6 +16,11 @@ static void scat(char *dst, const char *src, int max);
  * Helper Functions
  * ========================================================================= */
 
+/* DMA-safe static buffer for partition sector reads/writes.
+ * The VirtIO driver requires DMA-accessible buffers; stack buffers
+ * are not guaranteed to be 4K-aligned or in a DMA-accessible region. */
+static uint8_t part_sector_buf[512] __attribute__((aligned(4096)));
+
 static void uint_to_str(uint32_t v, char *buf, int max)
 {
     int i = 0;
@@ -96,16 +101,15 @@ int mbr_read(BlockDev *dev, PartitionTable *pt)
 {
     if (!dev || !pt) return -1;
 
-    uint8_t sector[512];
-    memset(sector, 0, 512);
+    memset(part_sector_buf, 0, 512);
 
-    int ret = BlockDev_Read(dev, 0, sector, 1);
+    int ret = BlockDev_Read(dev, 0, part_sector_buf, 1);
     if (ret != 0) {
         return -1;
     }
 
     /* Check boot signature */
-    uint16_t sig = sector[510] | (sector[511] << 8);
+    uint16_t sig = part_sector_buf[510] | (part_sector_buf[511] << 8);
     if (sig != MBR_BOOT_SIG) {
         /* No valid MBR - treat as empty */
         memset(&pt->mbr, 0, sizeof(MbrSector));
@@ -120,7 +124,7 @@ int mbr_read(BlockDev *dev, PartitionTable *pt)
     }
 
     /* Copy MBR data */
-    memcpy(&pt->mbr, sector, sizeof(MbrSector));
+    memcpy(&pt->mbr, part_sector_buf, sizeof(MbrSector));
     pt->valid = 1;
     pt->scheme = PART_SCHEME_MBR;
     pt->disk_sectors = dev->num_sectors;
@@ -135,7 +139,7 @@ int mbr_read(BlockDev *dev, PartitionTable *pt)
     }
 
     /* Extract disk ID from boot code area (bytes 440-443) */
-    pt->disk_id = *(uint32_t*)&sector[440];
+    pt->disk_id = *(uint32_t*)&part_sector_buf[440];
 
     return 0;
 }
@@ -144,20 +148,19 @@ int mbr_write(BlockDev *dev, PartitionTable *pt)
 {
     if (!dev || !pt || !pt->valid) return -10;
 
-    uint8_t sector[512];
-    memset(sector, 0, 512);
+    memset(part_sector_buf, 0, 512);
 
     /* Copy boot code if present, otherwise leave zeros */
-    memcpy(sector, pt->mbr.boot_code, 446);
+    memcpy(part_sector_buf, pt->mbr.boot_code, 446);
 
     /* Copy partition table */
-    memcpy(sector + 446, pt->mbr.partitions, sizeof(MbrPartEntry) * 4);
+    memcpy(part_sector_buf + 446, pt->mbr.partitions, sizeof(MbrPartEntry) * 4);
 
     /* Boot signature */
-    sector[510] = 0x55;
-    sector[511] = 0xAA;
+    part_sector_buf[510] = 0x55;
+    part_sector_buf[511] = 0xAA;
 
-    int ret = BlockDev_Write(dev, 0, sector, 1);
+    int ret = BlockDev_Write(dev, 0, part_sector_buf, 1);
     if (ret != 0) {
         return -20;
     }
@@ -500,14 +503,13 @@ int uaos_meta_read(BlockDev *dev, UaosPartMeta *meta)
 {
     if (!dev || !meta) return -1;
 
-    uint8_t sector[512];
-    memset(sector, 0, 512);
+    memset(part_sector_buf, 0, 512);
 
-    if (BlockDev_Read(dev, 1, sector, 1) != 0) {
+    if (BlockDev_Read(dev, 1, part_sector_buf, 1) != 0) {
         return -1;
     }
 
-    memcpy(meta, sector, sizeof(UaosPartMeta));
+    memcpy(meta, part_sector_buf, sizeof(UaosPartMeta));
 
     if (meta->magic != UAOS_PART_META_MAGIC) {
         /* No valid metadata — initialise defaults */
@@ -533,11 +535,10 @@ int uaos_meta_write(BlockDev *dev, UaosPartMeta *meta)
     meta->version = UAOS_PART_META_VER;
     meta->checksum = uaos_meta_checksum(meta);
 
-    uint8_t sector[512];
-    memset(sector, 0, 512);
-    memcpy(sector, meta, sizeof(UaosPartMeta));
+    memset(part_sector_buf, 0, 512);
+    memcpy(part_sector_buf, meta, sizeof(UaosPartMeta));
 
-    return BlockDev_Write(dev, 1, sector, 1);
+    return BlockDev_Write(dev, 1, part_sector_buf, 1);
 }
 
 const char *uaos_meta_get_name(UaosPartMeta *meta, int part_index, char *buf, int buf_len)

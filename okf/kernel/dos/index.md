@@ -39,12 +39,20 @@ The VFS layer (`kernel/dos/vfs.c`) provides a unified interface for multiple fil
 - **EXT4**: Read-only EXT4 support (`kernel/dos/ext4.c`).
 - **ISO9660**: CD-ROM read support (`kernel/dos/iso9660.c`).
 
+### RAMFS Data Pool
+
+RAMFS uses a shared bump-allocator data pool (`g_pool` in `kernel/dos/ramfs.c`) for all file content across all volumes. The pool is 8 MB. `VFS_Write` pre-allocates a 4 KB block per file on first write (`VFS_BLOCK_SZ` in `vfs.c`); writes beyond the block are truncated. The bump allocator does not reclaim freed memory when files are deleted, so the pool can still be exhausted under heavy file churn. If `RamFS_AllocPool` returns NULL, `VFS_Write` returns 0 (silent write failure — the file remains empty).
+
 ## Block Devices and Partitioning
 
 - **Block device layer (`blockdev.c`)**: Unified interface for storage devices.
 - **Partition table (`partition.c`)**: MBR parsing and partition registration.
 - **IDE driver (`kernel/drivers/ide.c`)**: ATA/ATAPI PIO access for hard disks and CD-ROMs.
 - **VirtIO Block (`virtio_blk.c`)**: VirtIO-compliant block device driver.
+
+### Block I/O Serialization and DMA Buffers
+
+`BlockDev_Read`/`BlockDev_Write` serialize all block I/O with `cli`/`sti` — the VirtIO drivers keep a single set of global request/response/data buffers and one in-flight descriptor, so concurrent I/O from different tasks (e.g. desktop polling vs. shell `format`/`makedir`) would otherwise corrupt the in-flight transaction. `blockdev.c` and `partition.c` use 4K-aligned static sector buffers (`blockdev_boot_sector`, `part_sector_buf`) for boot-sector, MBR, and UAOS-meta I/O because the VirtIO driver requires DMA-accessible buffers — stack buffers are not safe. `BlockDev_ReadVolLabel` strips only *trailing* spaces from the 11-byte FAT label so labels with internal spaces (e.g. "MY DISK") read correctly.
 
 ## Dynamic Handler Loading
 

@@ -390,14 +390,17 @@ static int virtio_setup_queue(void)
 
 static inline void memory_barrier(void)
 {
-    /* x86 memory barrier - ensures all memory operations are complete */
-    __asm__ volatile("" ::: "memory");
+    /* Full x86 memory fence — ensures all prior stores are globally visible
+     * before any subsequent store or I/O.  This is critical before notifying
+     * the VirtIO device: without it the CPU store buffer may still hold the
+     * avail_idx / descriptor updates, and the device sees stale data. */
+    __asm__ volatile("mfence" ::: "memory");
 }
 
 static inline void io_barrier(void)
 {
-    /* x86 I/O barrier - ensures all I/O operations are complete */
-    __asm__ volatile("" ::: "memory");
+    /* x86 I/O barrier — serialises I/O operations */
+    __asm__ volatile("mfence" ::: "memory");
 }
 
 /* =========================================================================
@@ -514,7 +517,7 @@ static int virtio_wait_completion(uint16_t desc_idx, uint32_t timeout_ms)
         if ((iterations % 500) == 0) {
             (void)inb(0x80);   /* dummy I/O → TCG block exit → QEMU events run */
         }
-        
+
         /* Simple timeout check (TODO: implement proper timer) */
         iterations++;
         if (iterations > 20000000) {
@@ -569,10 +572,13 @@ static int virtio_blk_read_op(BlockDev *dev, uint64_t sector, void *buffer, uint
         kprint("[VIRTIO] Failed to submit request\n");
         return -1;
     }
-    
+
     /* Wait for completion */
     if (virtio_wait_completion(desc_idx, 1000) != 0) {
         kprint("[VIRTIO] Request failed or timed out\n");
+        /* Reset descriptor index even on failure so the next I/O
+         * doesn't start at a stale descriptor index. */
+        g_virtq_free_idx = 0;
         return -1;
     }
 
@@ -627,6 +633,7 @@ static int virtio_blk_write_op(BlockDev *dev, uint64_t sector, const void *buffe
     /* Wait for completion */
     if (virtio_wait_completion(desc_idx, 1000) != 0) {
         kprint("[VIRTIO] Request failed or timed out\n");
+        g_virtq_free_idx = 0;
         return -6;
     }
 

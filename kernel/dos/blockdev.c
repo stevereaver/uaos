@@ -109,42 +109,54 @@ BlockDev *BlockDev_GetList(void)
  * Block Device I/O Operations
  * ========================================================================= */
 
+/* Serialize all block-device I/O.  The VirtIO drivers use a single set of
+ * global request/response/data buffers and a single in-flight descriptor,
+ * so concurrent read/write from different tasks (e.g. desktop polling + shell
+ * format/makedir) collides and corrupts the single in-flight transaction.
+ * cli/sti is a sufficient global lock on the single x86-64 CPU this kernel
+ * runs on. */
+static inline void bd_cli(void) { __asm__ volatile("cli"); }
+static inline void bd_sti(void) { __asm__ volatile("sti"); }
+
 int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors)
 {
+    bd_cli();
+    int rc = -1;
+
     if (!dev || !dev->ops || !dev->ops->read) {
         printf("[BLOCKDEV] Invalid device or read operation\n");
-        return -1;
-    }
-
-    if (sector + num_sectors > dev->num_sectors) {
+    } else if (sector + num_sectors > dev->num_sectors) {
         printf("[BLOCKDEV] Read beyond device capacity\n");
-        return -1;
+    } else {
+        rc = dev->ops->read(dev, sector + dev->part_offset, buffer, num_sectors);
     }
 
-    return dev->ops->read(dev, sector + dev->part_offset, buffer, num_sectors);
+    bd_sti();
+    return rc;
 }
 
 int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors)
 {
+    bd_cli();
+    int rc = -1;
+
     if (!dev) {
         printf("[BLOCKDEV] Write: dev is NULL\n");
-        return -1;
-    }
-    if (!dev->ops) {
+    } else if (!dev->ops) {
         printf("[BLOCKDEV] Write: ops is NULL\n");
-        return -2;
-    }
-    if (!dev->ops->write) {
+        rc = -2;
+    } else if (!dev->ops->write) {
         printf("[BLOCKDEV] Write: ops->write is NULL\n");
-        return -3;
-    }
-
-    if (sector + num_sectors > dev->num_sectors) {
+        rc = -3;
+    } else if (sector + num_sectors > dev->num_sectors) {
         printf("[BLOCKDEV] Write beyond device capacity\n");
-        return -4;
+        rc = -4;
+    } else {
+        rc = dev->ops->write(dev, sector + dev->part_offset, buffer, num_sectors);
     }
 
-    return dev->ops->write(dev, sector + dev->part_offset, buffer, num_sectors);
+    bd_sti();
+    return rc;
 }
 
 uint64_t BlockDev_GetCapacity(BlockDev *dev)
@@ -221,27 +233,29 @@ BlockDev *BlockDev_RegisterPartition(BlockDev *parent, int part_index, uint32_t 
     return BlockDev_Find(part_names[pi]);
 }
 
+/* 4K-aligned buffer for format-probe reads — must be DMA-safe for virtio-blk */
+static uint8_t blockdev_boot_sector[512] __attribute__((aligned(4096)));
+
 int BlockDev_CheckFormatted(BlockDev *dev)
 {
     if (!dev) return 0;
 
-    uint8_t sector[512];
-    memset(sector, 0, 512);
+    memset(blockdev_boot_sector, 0, 512);
 
-    if (BlockDev_Read(dev, 0, sector, 1) != 0) {
+    if (BlockDev_Read(dev, 0, blockdev_boot_sector, 1) != 0) {
         return 0;
     }
 
     /* Check boot signature 0x55AA at offset 510 */
-    uint16_t sig = sector[510] | (sector[511] << 8);
+    uint16_t sig = blockdev_boot_sector[510] | (blockdev_boot_sector[511] << 8);
     if (sig != 0xAA55) {
         return 0;
     }
 
     /* Also check for FAT32 signature in the BPB */
     /* bytes_per_sec should be 512, and sec_per_clus should be power of 2 */
-    uint16_t bps = sector[11] | (sector[12] << 8);
-    uint8_t spc = sector[13];
+    uint16_t bps = blockdev_boot_sector[11] | (blockdev_boot_sector[12] << 8);
+    uint8_t spc = blockdev_boot_sector[13];
     if (bps != 512 || spc == 0 || (spc & (spc - 1)) != 0) {
         return 0;  /* Not a valid FAT BPB */
     }
@@ -253,21 +267,27 @@ int BlockDev_ReadVolLabel(BlockDev *dev, char *buf, int max)
 {
     if (!dev || max < 2) return 0;
 
-    uint8_t sector[512];
-    memset(sector, 0, 512);
+    /* Use the DMA-safe static buffer (blockdev_boot_sector) instead of a
+     * stack buffer — the VirtIO driver requires DMA-accessible buffers. */
+    memset(blockdev_boot_sector, 0, 512);
 
-    if (BlockDev_Read(dev, 0, sector, 1) != 0)
+    if (BlockDev_Read(dev, 0, blockdev_boot_sector, 1) != 0)
         return 0;
 
-    if (sector[510] != 0x55 || sector[511] != 0xAA)
+    if (blockdev_boot_sector[510] != 0x55 || blockdev_boot_sector[511] != 0xAA)
         return 0;
 
-    /* FAT32 volume label at offset 71, 11 bytes, space-padded */
+    /* FAT32 volume label at offset 71, 11 bytes, space-padded.
+     * Strip trailing spaces (don't stop at the first space, since
+     * labels like "MY DISK" contain internal spaces). */
+    int last_non_space = -1;
+    for (int i = 0; i < 11; i++) {
+        uint8_t c = blockdev_boot_sector[71 + i];
+        if (c != ' ') last_non_space = i;
+    }
     int n = 0;
-    for (int i = 0; i < 11 && n < max - 1; i++) {
-        uint8_t c = sector[71 + i];
-        if (c == ' ') break;  /* stop at first space (padding) */
-        buf[n++] = c;
+    for (int i = 0; i <= last_non_space && n < max - 1; i++) {
+        buf[n++] = blockdev_boot_sector[71 + i];
     }
     buf[n] = '\0';
     return n > 0 ? 1 : 0;

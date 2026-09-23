@@ -17,7 +17,7 @@ The Shell window (`shell_win.c`) is a graphical window managed by the WM. It pro
 - Scrollable history.
 - Line-editing for input.
 - Output redirection to the framebuffer (with line buffering and background flushing).
-- Synchronous child execution tracking (blocking on `SIGF_CHILD` when running foreground tasks).
+- Synchronous child execution tracking (blocking on `SIGF_CHILD` when running foreground tasks). `Task_ClearSig(SIGF_CHILD)` is called immediately before `Wait()` in both `inst_exec_uaos_bin()` and `sys_wait()` (`syscall_dispatch.c`) so a stale child-exit signal can't make `Wait()` return early — that race sent redirected output to the shell window instead of the target file.
 
 ## Command Execution
 
@@ -47,6 +47,8 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | **Printing & CrossDOS** | `print`, `crossdos` |
 | **Editors & Help** | `vim`, `ed`, `guide` |
 | **Utilities** | `date`, `ask`, `which`, `getenv`, `unset`, `clear`, `reboot` |
+
+`format` reports per-stage FAT32 errors (e.g. "FAT32: failed to write FSINFO") instead of a bare "Format failed."; the same return-code switch lives in `inst_cmd_format` (`shell_win.c`) and `Cmd_Format` (`cmd_format.c`).
 
 The following commands are now on-disk x86-64 ELF64 userspace binaries in `system/userspace/`:
 

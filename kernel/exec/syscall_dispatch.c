@@ -392,6 +392,10 @@ static int sys_spawn(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 static int sys_wait(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     (void)rdi; (void)rsi; (void)rdx;
+    /* Clear any stale SIGF_CHILD so Wait() blocks until a child that has
+     * not yet exited actually signals, rather than returning immediately
+     * on a signal left over from a previous child exit. */
+    Task_ClearSig(SIGF_CHILD);
     return (int)Wait(SIGF_CHILD);
 }
 

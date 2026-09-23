@@ -131,7 +131,21 @@ void Cmd_Format(NativeCmdCtx *ctx, const char *args)
                 }
             }
         } else {
+            const char *errmsg;
+            switch (ret) {
+                case -1:  errmsg = "FAT32: invalid block device"; break;
+                case -2:  errmsg = "FAT32: zero capacity device"; break;
+                case -3:  errmsg = "FAT32: failed to zero reserved area"; break;
+                case -4:  errmsg = "FAT32: failed to write boot sector"; break;
+                case -5:  errmsg = "FAT32: failed to write FSINFO"; break;
+                case -6:  errmsg = "FAT32: failed to zero FAT"; break;
+                case -7:  errmsg = "FAT32: failed to write initial FAT"; break;
+                case -8:  errmsg = "FAT32: failed to zero root dir"; break;
+                case -9:  errmsg = "FAT32: failed to write backup boot"; break;
+                default:  errmsg = "FAT32: unknown format error"; break;
+            }
             PRINT("Format failed.");
+            PRINT(errmsg);
         }
     } else {
         PRINT("Unsupported filesystem.");

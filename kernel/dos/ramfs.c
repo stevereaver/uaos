@@ -18,7 +18,7 @@ extern unsigned int g_canary_after;
  * ========================================================================= */
 
 static RamFsNode  g_nodes[RAMFS_MAX_NODES];
-static uint8_t    g_pool[1024 * 1024]; /* 1 MB shared data pool */
+static uint8_t    g_pool[8 * 1024 * 1024]; /* 8 MB shared data pool */
 static uint32_t   g_pool_top = 0;                /* bump allocator cursor   */
 
 #define MAX_VOLS  16
