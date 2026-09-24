@@ -640,6 +640,13 @@ Wait for background jobs to complete.
 UAOS> wait
 ```
 
+#### `runback <command> [args]`
+Run a command line as a background job, returning to the prompt immediately. Equivalent to appending `&` to the command.
+
+```
+UAOS> runback dir Workbench:
+```
+
 #### `changetaskpri <priority> [task]`
 Change the priority of a task.
 
@@ -699,6 +706,14 @@ Manage resident commands kept in memory.
 ```
 UAOS> resident C:dir
 UAOS> resident
+```
+
+#### `resload <command> [pure|remove]`
+Shorthand for `resident <cmd>` — loads a command into the resident list so later invocations skip disk access. With no arguments, lists resident commands.
+
+```
+UAOS> resload dir
+UAOS> resload dir pure
 ```
 
 ---
@@ -1175,10 +1190,12 @@ echo "Scan saved to RAM:dirlog.txt"
 | `vim` | `vim <file>` | Text editor |
 | `newcli` | `newcli` / `newshell` | New shell window |
 | `run` | `run <cmd>` | Run command in new CLI |
+| `runback` | `runback <cmd>` | Run command in background |
 | `assign` | `assign [name: tgt]` | Create/list assigns |
 | `execute` | `execute <script>` | Run script file |
 | `ask` | `ask <prompt>` | Prompt user |
 | `resident` | `resident` | Manage resident commands |
+| `resload` | `resload <cmd>` | Load command resident |
 | `ps` | `ps` | List tasks |
 | `jobs` | `jobs` | List jobs |
 | `wait` | `wait` | Wait for jobs |
@@ -1212,6 +1229,8 @@ echo "Scan saved to RAM:dirlog.txt"
 |---------|--------|
 | `IF` | `IF <cond> THEN <cmd>` or block with `ELSE` / `ENDIF` |
 | `FOR` | `FOR <v> = <a> TO <b> [STEP <s>] ... ENDFOR` |
+| `LAB` | `LAB <name>` — label marker (SKIP target) |
+| `SKIP` | `SKIP <label>` or `SKIP [<n>] [BACK]` — jump to label / skip lines |
 | Comments | `; comment` or `* comment` |
 
 ---

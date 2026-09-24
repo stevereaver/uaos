@@ -21,6 +21,11 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 - [TCP/IP Network Stack](/kernel/net/index.md) - IPv4 networking, DHCP, DNS, NTP, and socket API.
 - [Build System](/build_system.md) - How the OS is compiled and packaged.
 
+## Documentation
+
+- [Dos Manual.pdf](/documentation/dos_manual_pdf.md) - DOS & Scripting Manual, generated from `Dos_Manual.md` via pandoc/pdfTeX.
+- [manual.pdf](/documentation/manual_pdf.md) - Technical Reference Manual, compiled from `manual.tex` via pdfLaTeX.
+
 ## Cross-Cutting Concepts
 
 - [Icons](/concepts/icons.md) - Amiga `.info` icon loading, selected-state rendering, and desktop selection interaction.

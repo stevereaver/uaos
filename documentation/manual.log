@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.14)  20 JUN 2026 16:28
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.14)  24 SEP 2026 14:25
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -527,17 +527,17 @@ File: lstlang2.sty 2023/02/27 1.9 listings language file
 File: lstlang3.sty 2023/02/27 1.9 listings language file
 )
 Package hyperref Info: bookmark level for unknown lstlisting defaults to 0 on i
-nput line 160.
+nput line 157.
  [6
 
 ]
-Overfull \hbox (29.44522pt too wide) in paragraph at lines 206--210
+Overfull \hbox (29.44522pt too wide) in paragraph at lines 203--207
 \T1/cmr/m/n/10.95 Any ac-cess faults to this re-gion are caught by the #PF han-
 dler in \T1/cmtt/m/n/10.95 kernel/exec/page_fault_handler.c
  []
 
 LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <14.4> not available
-(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 211.
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 208.
 
 Package fancyhdr Warning: \headheight is too small (12.0pt): 
 (fancyhdr)                Make it at least 13.59999pt, for example:
@@ -547,7 +547,7 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
 [7]
-Overfull \hbox (0.99345pt too wide) in paragraph at lines 223--224
+Overfull \hbox (0.99345pt too wide) in paragraph at lines 220--221
 \T1/cmr/m/n/10.95 man-age-ment (\T1/cmtt/m/n/10.95 sys_spawn\T1/cmr/m/n/10.95 ,
  \T1/cmtt/m/n/10.95 sys_wait\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 sys_exit\T1/
 cmr/m/n/10.95 ), VFS file/di-rec-tory in-ter-faces (\T1/cmtt/m/n/10.95 sys_getc
@@ -555,7 +555,7 @@ wd\T1/cmr/m/n/10.95 ,
  []
 
 
-Overfull \hbox (50.92798pt too wide) in paragraph at lines 223--224
+Overfull \hbox (50.92798pt too wide) in paragraph at lines 220--221
 \T1/cmtt/m/n/10.95 sys_opendir\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 sys_readdi
 r\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 sys_closedir\T1/cmr/m/n/10.95 , \T1/cmt
 t/m/n/10.95 sys_stat\T1/cmr/m/n/10.95 ), and GUI win-dow-ing syscalls (\T1/cmtt
@@ -563,7 +563,7 @@ t/m/n/10.95 sys_stat\T1/cmr/m/n/10.95 ), and GUI win-dow-ing syscalls (\T1/cmtt
  []
 
 
-Overfull \hbox (26.59013pt too wide) in paragraph at lines 223--224
+Overfull \hbox (26.59013pt too wide) in paragraph at lines 220--221
 \T1/cmtt/m/n/10.95 destroy_window\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 draw_te
 xt\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 draw_rect\T1/cmr/m/n/10.95 , \T1/cmtt/
 m/n/10.95 present\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 get_event\T1/cmr/m/n/10
@@ -589,7 +589,7 @@ File: lstmisc.sty 2023/02/27 1.9 (Carsten Heinz)
 ) [9
 
 ]
-Overfull \hbox (47.26384pt too wide) in paragraph at lines 340--344
+Overfull \hbox (47.26384pt too wide) in paragraph at lines 337--341
 []\T1/cmr/bx/n/10.95 VFS Op-er-a-tions \T1/cmr/m/n/10.95 in-clude \T1/cmtt/m/n/
 10.95 VFS_Open\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 VFS_Read\T1/cmr/m/n/10.95 
 , \T1/cmtt/m/n/10.95 VFS_Write\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 VFS_MkDir\
@@ -598,7 +598,7 @@ n/10.95 VFS_ResolveDir\T1/cmr/m/n/10.95 ,
  []
 
 
-Overfull \hbox (1.3211pt too wide) in paragraph at lines 351--353
+Overfull \hbox (1.3211pt too wide) in paragraph at lines 348--350
 []\T1/cmtt/m/n/10.95 BlockDev_RegisterPartition(parent, idx, start, count, name
 ) \T1/cmr/m/n/10.95 --- cre-ates child par-
  []
@@ -641,7 +641,7 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 [13]
 Chapter 5.
 
-Overfull \hbox (10.72395pt too wide) in paragraph at lines 431--435
+Overfull \hbox (10.72395pt too wide) in paragraph at lines 428--432
 []\T1/cmr/m/n/10.95 All draw-ing prim-i-tives (\T1/cmtt/m/n/10.95 FB_FillRect\T
 1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 FB_DrawHLine\T1/cmr/m/n/10.95 , \T1/cmtt/m
 /n/10.95 FB_DrawVLine\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 FB_PutPixel\T1/cmr/
@@ -662,7 +662,7 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 [15]
 Chapter 6.
 
-Overfull \hbox (42.4632pt too wide) in paragraph at lines 568--618
+Overfull \hbox (42.4632pt too wide) in paragraph at lines 563--613
  [][] 
  []
 
@@ -704,7 +704,7 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 [19]
 Chapter 7.
 LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <12> not available
-(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 687.
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 682.
 [20
 
 ]
@@ -729,14 +729,14 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 (fancyhdr)                \addtolength{\topmargin}{-1.59999pt}.
 
 [22]
-Overfull \hbox (18.83945pt too wide) in paragraph at lines 892--896
+Overfull \hbox (18.83945pt too wide) in paragraph at lines 887--891
 []\T1/cmr/bx/n/10.95 IRQ path \T1/cmr/m/n/10.95 --- the NIC fires an in-ter-rup
 t; the han-dler calls \T1/cmtt/m/n/10.95 e1000_poll() \T1/cmr/m/n/10.95 / \T1/c
 mtt/m/n/10.95 virtio_net_poll()\T1/cmr/m/n/10.95 ,
  []
 
 
-Overfull \hbox (3.3989pt too wide) in paragraph at lines 892--896
+Overfull \hbox (3.3989pt too wide) in paragraph at lines 887--891
 \T1/cmr/m/n/10.95 which in-vokes the RX call-back, which drives \T1/cmtt/m/n/10
 .95 eth_rx() $\OMS/cmsy/m/n/10.95 !$ \T1/cmtt/m/n/10.95 arp_rx() \T1/cmr/m/n/10
 .95 / \T1/cmtt/m/n/10.95 ip_rx() $\OMS/cmsy/m/n/10.95 !$ \T1/cmr/m/n/10.95 TCP/
@@ -769,7 +769,7 @@ Package fancyhdr Warning: \headheight is too small (12.0pt):
 [24]
 Chapter 8.
 
-Overfull \hbox (20.63011pt too wide) in paragraph at lines 981--984
+Overfull \hbox (20.63011pt too wide) in paragraph at lines 976--979
 \T1/cmr/m/n/10.95 This er-ror means GRUB re-ceived a file that is not a valid E
 LF64 ex-e-cutable. En-sure \T1/cmtt/m/n/10.95 uaos-kernel.elf
  []
@@ -817,9 +817,9 @@ k/ljfour/jknappen/ec/ecti1440.600pk> </home/reaver/.texlive2023/texmf-var/fonts
 /pk/ljfour/jknappen/ec/ecbx2488.600pk></usr/share/texlive/texmf-dist/fonts/type
 1/public/amsfonts/cm/cmr10.pfb></usr/share/texlive/texmf-dist/fonts/type1/publi
 c/amsfonts/cm/cmsy10.pfb>
-Output written on manual.pdf (27 pages, 286245 bytes).
+Output written on manual.pdf (27 pages, 284763 bytes).
 PDF statistics:
- 1377 PDF objects out of 1440 (max. 8388607)
+ 1372 PDF objects out of 1440 (max. 8388607)
  685 compressed objects within 7 object streams
  243 named destinations out of 1000 (max. 500000)
  473 words of extra memory for PDF output out of 10000 (max. 10000000)
