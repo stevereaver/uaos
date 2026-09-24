@@ -83,7 +83,8 @@ typedef struct {
     int tf_x, tf_y, tf_w, tf_h;
 } Requester;
 
-static Requester g_req;
+static Requester g_req = { .wm_handle = -1 };  /* -1 = no requester active;
+ * BSS-zeroed 0 would trip the "already active" guard on the first open. */
 
 /* Last-message storage — recorded whenever a requester is opened so the
  * Workbench ▸ Last Message menu item can replay it. */
@@ -277,17 +278,21 @@ static void req_key(char c)
 {
     if (g_req.type == REQ_TYPE_STRING && g_req.text_focused) {
         if (c == '\n' || c == '\r') {
-            /* Enter = OK */
-            if (g_req.callback)
-                g_req.callback(REQ_BTN_OK, g_req.text, g_req.user_data);
+            /* Enter = OK — close before the callback so focus returns to
+             * the window that opened the requester (matches req_release). */
+            ReqCallback cb = g_req.callback;
+            const char *text = g_req.text;
+            void *ud = g_req.user_data;
             Requester_Close();
+            if (cb) cb(REQ_BTN_OK, text, ud);
             return;
         }
         if (c == 27) {
             /* Escape = Cancel */
-            if (g_req.callback)
-                g_req.callback(REQ_BTN_CANCEL, NULL, g_req.user_data);
+            ReqCallback cb = g_req.callback;
+            void *ud = g_req.user_data;
             Requester_Close();
+            if (cb) cb(REQ_BTN_CANCEL, NULL, ud);
             return;
         }
         if (c == '\b') {
@@ -333,17 +338,20 @@ static void req_key(char c)
             return;
         }
     } else {
-        /* Non-string requester: Enter = first button, Esc = cancel/close */
+        /* Non-string requester: Enter = first button, Esc = cancel/close.
+         * Close before the callback so focus returns first. */
         if (c == '\n' || c == '\r') {
-            if (g_req.callback)
-                g_req.callback(REQ_BTN_OK, NULL, g_req.user_data);
+            ReqCallback cb = g_req.callback;
+            void *ud = g_req.user_data;
             Requester_Close();
+            if (cb) cb(REQ_BTN_OK, NULL, ud);
             return;
         }
         if (c == 27) {
-            if (g_req.n_buttons > 1 && g_req.callback)
-                g_req.callback(REQ_BTN_CANCEL, NULL, g_req.user_data);
+            ReqCallback cb = (g_req.n_buttons > 1) ? g_req.callback : NULL;
+            void *ud = g_req.user_data;
             Requester_Close();
+            if (cb) cb(REQ_BTN_CANCEL, NULL, ud);
             return;
         }
     }
@@ -427,6 +435,23 @@ static void req_release(int handle, int mx, int my)
     WM_Redraw();
 }
 
+/* Event handler — catches close-gadget clicks (WM_EVT_CLOSE_REQUEST) which
+ * would otherwise bypass Requester_Close and leave g_req.wm_handle stale,
+ * blocking all future requesters.  Treated as Cancel (same as Escape). */
+static int req_event(int handle, int event, int a, int b, int c)
+{
+    (void)handle; (void)a; (void)b; (void)c;
+    if (event == WM_EVT_CLOSE_REQUEST) {
+        ReqCallback cb = g_req.callback;
+        void *ud = g_req.user_data;
+        int fire_cancel = (g_req.type == REQ_TYPE_STRING || g_req.n_buttons > 1);
+        Requester_Close();
+        if (cb && fire_cancel) cb(REQ_BTN_CANCEL, NULL, ud);
+        return 0;   /* veto the WM's own close — already closed */
+    }
+    return 1;
+}
+
 /* =========================================================================
  * Public API
  * ========================================================================= */
@@ -435,7 +460,10 @@ void Requester_Confirm(const char *title, const char *body,
                        const char *btn1, const char *btn2,
                        ReqCallback cb, void *user_data)
 {
-    if (g_req.wm_handle >= 0) return;  /* already active */
+    /* Already active?  A stale handle (window closed via the close gadget
+     * or reused by another window) must not block a new requester. */
+    if (g_req.wm_handle >= 0 &&
+        WM_GetDrawFn(g_req.wm_handle) == req_draw) return;
 
     memset(&g_req, 0, sizeof(g_req));
     g_req.type = REQ_TYPE_CONFIRM;
@@ -461,6 +489,7 @@ void Requester_Confirm(const char *title, const char *body,
 
     g_req.wm_handle = WM_AddWindow(wx, wy, w, h, g_req.title, req_draw, req_key);
     if (g_req.wm_handle < 0) return;
+    WM_SetEventHandler(g_req.wm_handle, req_event);
     WM_SetClickHandler(g_req.wm_handle, req_click);
     WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
     WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);
@@ -473,7 +502,8 @@ void Requester_String(const char *title, const char *prompt,
                       const char *initial, int max_chars,
                       ReqCallback cb, void *user_data)
 {
-    if (g_req.wm_handle >= 0) return;
+    if (g_req.wm_handle >= 0 &&
+        WM_GetDrawFn(g_req.wm_handle) == req_draw) return;
 
     memset(&g_req, 0, sizeof(g_req));
     g_req.type = REQ_TYPE_STRING;
@@ -510,6 +540,7 @@ void Requester_String(const char *title, const char *prompt,
 
     g_req.wm_handle = WM_AddWindow(wx, wy, w, h, g_req.title, req_draw, req_key);
     if (g_req.wm_handle < 0) return;
+    WM_SetEventHandler(g_req.wm_handle, req_event);
     WM_SetClickHandler(g_req.wm_handle, req_click);
     WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
     WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);
@@ -521,7 +552,8 @@ void Requester_String(const char *title, const char *prompt,
 void Requester_Info(const char *title, const char **lines,
                     ReqCallback cb, void *user_data)
 {
-    if (g_req.wm_handle >= 0) return;
+    if (g_req.wm_handle >= 0 &&
+        WM_GetDrawFn(g_req.wm_handle) == req_draw) return;
 
     memset(&g_req, 0, sizeof(g_req));
     g_req.type = REQ_TYPE_INFO;
@@ -551,6 +583,7 @@ void Requester_Info(const char *title, const char **lines,
 
     g_req.wm_handle = WM_AddWindow(wx, wy, w, h, g_req.title, req_draw, req_key);
     if (g_req.wm_handle < 0) return;
+    WM_SetEventHandler(g_req.wm_handle, req_event);
     WM_SetClickHandler(g_req.wm_handle, req_click);
     WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
     WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);

@@ -16,10 +16,10 @@
  * height 8 + 1, per the AmigaOS Intuition formula
  * topborder = WBorTop + Font->ta_YSize + 1, WBorTop=1) + 1px bottom
  * divider = 11px, matching genuine AmigaOS 3.1 measurements. */
-#define WM_TITLEBAR_H   11
+#define WM_TITLEBAR_H   20
 /* Width of the close/zoom/depth system-gadget cell, measured from a
  * genuine unscaled AmigaOS 3.1 screenshot. */
-#define WM_GADGET_W     19
+#define WM_GADGET_W     (WM_TITLEBAR_H - 2)
 #define WM_BORDER       4    /* border thickness on left/right/bottom */
 /* Scrollbar well width/height: matches the measured AmigaOS 3.x window
  * right-border "sizing gadget well" (1px white + 16px well + 1px black). */
@@ -43,6 +43,11 @@ typedef int (*WM_EventFn)(int win_handle, int event_type, int p1, int p2, int p3
 /* Optional palette callback: invoked before drawing each window's chrome so
  * the caller can update the host WB_* palette from the window's screen. */
 typedef void (*WM_PaletteFn)(int win_handle);
+
+/* Optional vacate callback: invoked with a window's old screen rectangle just
+ * before that rectangle is vacated (move, resize, zoom, close).  Intuition
+ * uses this to erase stale pixels from the screen's planar BitMap. */
+typedef void (*WM_VacateFn)(int win_handle, int x, int y, int w, int h);
 
 #define WM_EVT_CLOSE_REQUEST 1
 #define WM_EVT_MOUSE_DOWN    2
@@ -96,6 +101,10 @@ void WM_SetEventHandler(int handle, WM_EventFn on_event);
 /* Set a global palette callback invoked before each window's chrome is drawn.
  * Pass NULL to disable. */
 void WM_SetPaletteFn(WM_PaletteFn fn);
+
+/* Set a global vacate callback invoked just before a window vacates its
+ * screen rectangle (move, resize, zoom, close).  Pass NULL to disable. */
+void WM_SetVacateFn(WM_VacateFn fn);
 
 /* Tell the WM the total content size and visible viewport height so scrollbars
  * can be proportional and scroll clamping is correct.

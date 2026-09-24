@@ -55,6 +55,17 @@ int WM_CurrentDrawHandle = -1;
 /* Optional palette callback invoked before each window's chrome is drawn. */
 static WM_PaletteFn g_palette_fn = NULL;
 
+/* Optional vacate callback invoked just before a window vacates its current
+ * screen rectangle (move, resize, zoom, close). */
+static WM_VacateFn g_vacate_fn = NULL;
+
+/* Notify the vacate hook that a window is about to vacate (x,y,w,h). */
+static void wm_vacate(int wh, int x, int y, int w, int h)
+{
+    if (g_vacate_fn && w > 0 && h > 0)
+        g_vacate_fn(wh, x, y, w, h);
+}
+
 /* Forward declaration — focus notification helper used by mouse/raise/lower/close. */
 static void wm_notify_focus_change(int old_focus, int new_focus);
 
@@ -320,8 +331,8 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
 
 static void draw_close_gadget_image(int cell_x, int cell_y, int active)
 {
-    int bx = cell_x + CLOSE_BOX_X;
-    int by = cell_y + CLOSE_BOX_Y;
+    int bx = cell_x + (WM_GADGET_W - CLOSE_BOX_S) / 2;
+    int by = cell_y + (WM_TITLEBAR_H - 2 - CLOSE_BOX_S) / 2;
     FB_DrawRect(bx, by, CLOSE_BOX_S, CLOSE_BOX_S, WB_BLACK);
     if (active)
         FB_FillRect(bx + 1, by + 1, CLOSE_BOX_S - 2, CLOSE_BOX_S - 2, WB_WHITE);
@@ -334,28 +345,29 @@ static void draw_close_gadget_image(int cell_x, int cell_y, int active)
  * Intuition behaviour), '.'=always background. Each row is 16 characters
  * wide, 7 rows tall, anchored at cell-relative (3,1). */
 static const char *const ZOOM_GLYPH[7] = {
-    "KKKKKKKKKKKKK",
-    "KKWWWKK.....K",
-    "KKWWWKK.....K",
-    "KKKKKKK.....K",
-    "K...........K",
-    "K...........K",
-    "KKKKKKKKKKKKK",
+    "KKKKKKKKKKK",
+    "KWWWK.....K",
+    "KWWWK.....K",
+    "KKKKK.....K",
+    "K.........K",
+    "K.........K",
+    "KKKKKKKKKKK",
 };
 static const char *const DEPTH_GLYPH[7] = {
-    "KKKKKKKKKKK....",
-    "KGGGGGGGGGK....",
-    "KGGGKKKKKKKKKKK",
-    "KGGGKWWWWWWWWWK",
-    "KKKKKWWWWWWWWWK",
-    "....KWWWWWWWWWK",
-    "....KKKKKKKKKKK",
+    "KKKKKKK....",
+    "KGGGGGK....",
+    "KGGKKKKKKKK",
+    "KGGKWWWWWWK",
+    "KKKKWWWWWWK",
+    "...KWWWWWWK",
+    "...KKKKKKKK",
 };
 
 static void draw_glyph_rows(const char *const *glyph, int rows, int cell_x, int cell_y,
                             int active, uint32_t bg, char fill_char, uint32_t fill_col)
 {
-    int x0 = cell_x + 3, y0 = cell_y + 1;
+    int x0 = cell_x + (WM_GADGET_W - 11) / 2;
+    int y0 = cell_y + (WM_TITLEBAR_H - 2 - rows) / 2;
     for (int r = 0; r < rows; r++) {
         const char *row = glyph[r];
         for (int c = 0; row[c]; c++) {
@@ -399,6 +411,10 @@ static void draw_chrome(int wh)
      * show outline only — matches genuine AmigaOS 3.1 behaviour. */
     uint32_t tbar_col = focused ? WB_BLUE : WB_GREY;
     uint32_t text_col = WB_BLACK;
+    int close_pressed = (g_gadget_win == wh && g_gadget_id == WM_GADGET_CLOSE);
+    int zoom_pressed = (g_gadget_win == wh && g_gadget_id == WM_GADGET_ZOOM);
+    int depth_pressed = (g_gadget_win == wh && g_gadget_id == WM_GADGET_DEPTH);
+    int size_pressed = (g_gadget_win == wh && g_gadget_id == WM_GADGET_SIZE);
 
     /* Outer window frame: raised bevel — white top/left, black bottom/right. */
     FB_DrawHLine(w->x, w->y, w->w, WB_WHITE);
@@ -418,7 +434,14 @@ static void draw_chrome(int wh)
     int cg_y = w->y + 1;
     FB_FillRect(cg_x, cg_y, WM_GADGET_W, WM_TITLEBAR_H - 2, tbar_col);
     FB_DrawVLine(cg_x + WM_GADGET_W - 1, cg_y, WM_TITLEBAR_H - 2, WB_BLACK);
-    draw_close_gadget_image(cg_x, cg_y, focused);
+    if (close_pressed) {
+        FB_DrawHLine(cg_x, cg_y, WM_GADGET_W, WB_BLACK);
+        FB_DrawVLine(cg_x, cg_y, WM_TITLEBAR_H - 2, WB_BLACK);
+        FB_DrawHLine(cg_x, cg_y + WM_TITLEBAR_H - 3, WM_GADGET_W, WB_WHITE);
+        draw_close_gadget_image(cg_x + 1, cg_y + 1, focused);
+    } else {
+        draw_close_gadget_image(cg_x, cg_y, focused);
+    }
 
     /* Depth + zoom gadget cells — flush to the window's right edge. Each
      * cell's divider is its own rightmost column. */
@@ -427,18 +450,29 @@ static void draw_chrome(int wh)
     int zg_x = dg_x - WM_GADGET_W;
     int zg_y = w->y + 1;
     FB_FillRect(zg_x, zg_y, WM_GADGET_W * 2, WM_TITLEBAR_H - 2, tbar_col);
+    FB_DrawVLine(zg_x, zg_y, WM_TITLEBAR_H - 2, WB_BLACK);
     FB_DrawVLine(zg_x + WM_GADGET_W - 1, zg_y, WM_TITLEBAR_H - 2, WB_BLACK);
     FB_DrawVLine(dg_x + WM_GADGET_W - 1, dg_y, WM_TITLEBAR_H - 2, WB_BLACK);
-    draw_zoom_gadget_image(zg_x, zg_y, focused, tbar_col);
-    draw_depth_gadget_image(dg_x, dg_y, focused, tbar_col);
+    if (zoom_pressed) {
+        FB_DrawHLine(zg_x, zg_y, WM_GADGET_W, WB_BLACK);
+        FB_DrawVLine(zg_x, zg_y, WM_TITLEBAR_H - 2, WB_BLACK);
+        FB_DrawHLine(zg_x, zg_y + WM_TITLEBAR_H - 3, WM_GADGET_W, WB_WHITE);
+    }
+    if (depth_pressed) {
+        FB_DrawHLine(dg_x, dg_y, WM_GADGET_W, WB_BLACK);
+        FB_DrawVLine(dg_x, dg_y, WM_TITLEBAR_H - 2, WB_BLACK);
+        FB_DrawHLine(dg_x, dg_y + WM_TITLEBAR_H - 3, WM_GADGET_W, WB_WHITE);
+    }
+    draw_zoom_gadget_image(zg_x + zoom_pressed, zg_y + zoom_pressed, focused, tbar_col);
+    draw_depth_gadget_image(dg_x + depth_pressed, dg_y + depth_pressed, focused, tbar_col);
 
     /* Title text — vertically centred in the 8px-tall Topaz-scale interior,
      * horizontally centred between the close and zoom/depth gadget cells. */
     int title_x0 = cg_x + WM_GADGET_W;
     int title_x1 = zg_x;
     if (title_x1 > title_x0) {
-        FB_PutStrSmallCentred(title_x0, w->y + 1, title_x1 - title_x0,
-                              WM_TITLEBAR_H - 2, w->title, text_col, tbar_col);
+        FB_PutStrCentred(title_x0, w->y + 1, title_x1 - title_x0,
+                         WM_TITLEBAR_H - 2, w->title, text_col, tbar_col);
     }
 
     /* Left content border: white outer edge (already drawn above) + 2px
@@ -461,10 +495,11 @@ static void draw_chrome(int wh)
     /* Right scrollbar */
     int rx, ry, rw, rh;
     sb_right_rect(w, &rx, &ry, &rw, &rh);
-    int sv = w->content_h > ch ? w->content_h : ch + 1;
+    int vh = (w->view_h > 0) ? w->view_h : ch;
+    int sv = w->content_h > vh ? w->content_h : vh + 1;
     if (w->scroll_y < 0) w->scroll_y = 0;
     draw_scrollbar(rx, ry, rw, rh, WM_ARROW_LEN,
-                   w->scroll_y, sv, ch, 0, tbar_col);
+                   w->scroll_y, sv, vh, 0, tbar_col);
 
     /* Bottom scrollbar */
     int bx, by, bw, bh;
@@ -502,13 +537,13 @@ static void draw_chrome(int wh)
         int gx = w->x + w->w - SB;
         int gy = w->y + w->h - SB;
         FB_FillRect(gx, gy, SB, SB, tbar_col);
-        FB_DrawHLine(gx, gy, SB, WB_WHITE);
-        FB_DrawVLine(gx, gy, SB, WB_WHITE);
-        FB_DrawHLine(gx, gy + SB - 1, SB, WB_BLACK);
-        FB_DrawVLine(gx + SB - 1, gy, SB, WB_BLACK);
+        FB_DrawHLine(gx, gy, SB, size_pressed ? WB_BLACK : WB_WHITE);
+        FB_DrawVLine(gx, gy, SB, size_pressed ? WB_BLACK : WB_WHITE);
+        FB_DrawHLine(gx, gy + SB - 1, SB, size_pressed ? WB_WHITE : WB_BLACK);
+        FB_DrawVLine(gx + SB - 1, gy, SB, size_pressed ? WB_WHITE : WB_BLACK);
         /* Draw the white fill first, then the black outline on top. */
         int wellw = SB - 2, wellh = SB - 2;
-        int by0 = gy + 1 + (wellh - 8);
+        int by0 = gy + 1 + (wellh - 8) + size_pressed;
         for (int pass = 0; pass < 2; pass++) {
             uint32_t col = (pass == 0) ? WB_WHITE : WB_BLACK;
             char match = (pass == 0) ? 'W' : 'B';
@@ -516,7 +551,7 @@ static void draw_chrome(int wh)
                 const char *line = GRABBER_ROWS[row];
                 for (int c = 0; c < wellw && line[c]; c++) {
                     if (line[c] == match)
-                        FB_PutPixel(gx + 1 + c, by0 + row, col);
+                        FB_PutPixel(gx + 1 + c + size_pressed, by0 + row, col);
                 }
             }
         }
@@ -632,6 +667,7 @@ static int hit_zoom_gadget(int wh, int mx, int my)
 static void zoom_window(int wh)
 {
     WmWindow *w = &g_wins[wh];
+    wm_vacate(wh, w->x, w->y, w->w, w->h);
     if (w->zoomed) {
         /* Restore */
         w->x = w->restore_x;
@@ -839,6 +875,11 @@ void WM_SetPaletteFn(WM_PaletteFn fn)
     g_palette_fn = fn;
 }
 
+void WM_SetVacateFn(WM_VacateFn fn)
+{
+    g_vacate_fn = fn;
+}
+
 void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 {
     int btn_left_pressed  = (btn_left && !g_btn_left_prev);
@@ -896,13 +937,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_CLOSE;
             wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_CLOSE, mx, my);
-            int allow_close = 1;
-            if (g_wins[wh].on_event) {
-                allow_close = g_wins[wh].on_event(wh, WM_EVT_CLOSE_REQUEST, 0, 0, 0);
-            }
-            if (allow_close) {
-                WM_CloseWindow(wh);
-            }
+            WM_Redraw();
             return;
         }
 
@@ -913,6 +948,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_ZOOM;
             wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_ZOOM, mx, my);
+            WM_Redraw();
             return;
         }
 
@@ -921,7 +957,6 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_DEPTH;
             wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_DEPTH, mx, my);
-            depth_window(wh);
             WM_Redraw();
             return;
         }
@@ -945,6 +980,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_resize_base_h  = g_wins[wh].h;
             g_resize_orig_mx = mx;
             g_resize_orig_my = my;
+            WM_Redraw();
         } else if (hit_titlebar(wh, mx, my)) {
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_DRAG;
@@ -994,6 +1030,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
         /* no bottom clamp — allow window to go off the bottom */
 
         if (new_x != w->x || new_y != w->y) {
+            wm_vacate(g_drag_handle, w->x, w->y, w->w, w->h);
             w->x = new_x;
             w->y = new_y;
             WM_Redraw();
@@ -1014,6 +1051,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
         if (new_h > max_h) new_h = max_h;
 
         if (new_w != w->w || new_h != w->h) {
+            wm_vacate(g_resize_handle, w->x, w->y, w->w, w->h);
             w->w = new_w;
             w->h = new_h;
             WM_Redraw();
@@ -1032,34 +1070,49 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
         if (g_scroll_drag_axis == 0) { /* vertical */
             int rx, ry, rw, rh;
             sb_right_rect(w, &rx, &ry, &rw, &rh);
-            int track_h = rh - SB * 2;
+            /* Pointer delta must map over the thumb's travel range
+             * (track minus thumb), not the whole track — same geometry
+             * draw_scrollbar uses — or the thumb lags the pointer. */
+            int track_h = rh - WM_ARROW_LEN * 2;
             int vh = (w->view_h > 0) ? w->view_h : ch;
             int sv = (w->content_h > 0) ? w->content_h : vh;
-            if (track_h > 0 && sv > vh) {
-                int dm = my - g_scroll_drag_mbase;
-                int max_s = sv - vh;
-                int new_s = g_scroll_drag_base + dm * max_s / track_h;
-                if (new_s < 0) new_s = 0;
-                if (new_s > max_s) new_s = max_s;
-                if (new_s != w->scroll_y) {
-                    w->scroll_y = new_s;
-                    WM_Redraw();
+            int max_s = sv - vh;
+            if (track_h > 0 && max_s > 0) {
+                int thumb_h = track_h * vh / sv;
+                if (thumb_h < 8) thumb_h = 8;
+                if (thumb_h > track_h) thumb_h = track_h;
+                int travel = track_h - thumb_h;
+                if (travel > 0) {
+                    int dm = my - g_scroll_drag_mbase;
+                    int new_s = g_scroll_drag_base + dm * max_s / travel;
+                    if (new_s < 0) new_s = 0;
+                    if (new_s > max_s) new_s = max_s;
+                    if (new_s != w->scroll_y) {
+                        w->scroll_y = new_s;
+                        WM_Redraw();
+                    }
                 }
             }
         } else { /* horizontal */
             int bx, by, bw, bh;
             sb_bottom_rect(w, &bx, &by, &bw, &bh);
-            int track_w = bw - SB * 2;
+            int track_w = bw - WM_ARROW_LEN * 2;
             int sh = (w->content_w > 0) ? w->content_w : cw;
-            if (track_w > 0 && sh > cw) {
-                int dm = mx - g_scroll_drag_mbase;
-                int max_s = sh - cw;
-                int new_s = g_scroll_drag_base + dm * max_s / track_w;
-                if (new_s < 0) new_s = 0;
-                if (new_s > max_s) new_s = max_s;
-                if (new_s != w->scroll_x) {
-                    w->scroll_x = new_s;
-                    WM_Redraw();
+            int max_s = sh - cw;
+            if (track_w > 0 && max_s > 0) {
+                int thumb_w = track_w * cw / sh;
+                if (thumb_w < 8) thumb_w = 8;
+                if (thumb_w > track_w) thumb_w = track_w;
+                int travel = track_w - thumb_w;
+                if (travel > 0) {
+                    int dm = mx - g_scroll_drag_mbase;
+                    int new_s = g_scroll_drag_base + dm * max_s / travel;
+                    if (new_s < 0) new_s = 0;
+                    if (new_s > max_s) new_s = max_s;
+                    if (new_s != w->scroll_x) {
+                        w->scroll_x = new_s;
+                        WM_Redraw();
+                    }
                 }
             }
         }
@@ -1088,7 +1141,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
     }
 
     if (btn_left_released) {
-        if (g_focus >= 0) {
+        if (g_gadget_win < 0 && g_focus >= 0) {
             WmWindow *w = &g_wins[g_focus];
             if (w->active && w->on_release)
                 w->on_release(g_focus, mx, my);
@@ -1096,9 +1149,38 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
                 w->on_event(g_focus, WM_EVT_MOUSE_UP, 0, mx, my);
         }
         if (g_gadget_win >= 0) {
-            wm_notify_gadget_event(g_gadget_win, WM_EVT_GADGET_UP, g_gadget_id, mx, my);
+            int gadget_win = g_gadget_win;
+            int gadget_id = g_gadget_id;
+            int activate = gadget_win < WM_MAX_WINDOWS && g_wins[gadget_win].active;
+            if (activate && gadget_id == WM_GADGET_CLOSE)
+                activate = hit_close_gadget(gadget_win, mx, my);
+            else if (activate && gadget_id == WM_GADGET_ZOOM)
+                activate = hit_zoom_gadget(gadget_win, mx, my);
+            else if (activate && gadget_id == WM_GADGET_DEPTH)
+                activate = hit_depth_gadget(gadget_win, mx, my);
+            else if (activate && gadget_id == WM_GADGET_SIZE)
+                activate = hit_resize_grip(gadget_win, mx, my);
             g_gadget_win = -1;
             g_gadget_id  = 0;
+            wm_notify_gadget_event(gadget_win, WM_EVT_GADGET_UP, gadget_id, mx, my);
+            if (activate && gadget_id == WM_GADGET_CLOSE) {
+                int allow_close = 1;
+                if (g_wins[gadget_win].on_event)
+                    allow_close = g_wins[gadget_win].on_event(gadget_win, WM_EVT_CLOSE_REQUEST, 0, 0, 0);
+                if (allow_close)
+                    WM_CloseWindow(gadget_win);
+            } else if (activate && gadget_id == WM_GADGET_ZOOM) {
+                zoom_window(gadget_win);
+                if (g_wins[gadget_win].on_event)
+                    g_wins[gadget_win].on_event(gadget_win, WM_EVT_RESIZE,
+                                                g_wins[gadget_win].w, g_wins[gadget_win].h, 0);
+                WM_Redraw();
+            } else if (activate && gadget_id == WM_GADGET_DEPTH) {
+                depth_window(gadget_win);
+                WM_Redraw();
+            } else {
+                WM_Redraw();
+            }
         }
         g_drag_handle      = -1;
         g_resize_handle    = -1;
@@ -1221,6 +1303,7 @@ void WM_CloseWindow(int handle)
 
     /* Save footprint before deactivating */
     int ox = w->x, oy = w->y, ow = w->w, oh = w->h;
+    wm_vacate(handle, ox, oy, ow, oh);
 
     int old_focus = g_focus;
 
@@ -1407,9 +1490,11 @@ void WM_SetWindowTitle(int handle, const char *title)
 void WM_MoveWindow(int handle, int new_x, int new_y)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
-    if (!g_wins[handle].active) return;
-    g_wins[handle].x = new_x;
-    g_wins[handle].y = new_y;
+    WmWindow *w = &g_wins[handle];
+    if (!w->active) return;
+    wm_vacate(handle, w->x, w->y, w->w, w->h);
+    w->x = new_x;
+    w->y = new_y;
     WM_Redraw();
 }
 
@@ -1420,6 +1505,7 @@ void WM_SetWindowGeometry(int handle, int x, int y, int width, int height)
     if (!w->active) return;
     if (width < 200) width = 200;
     if (height < 100) height = 100;
+    wm_vacate(handle, w->x, w->y, w->w, w->h);
     w->x = x;
     w->y = y;
     w->w = width;

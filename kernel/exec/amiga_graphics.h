@@ -123,6 +123,13 @@
 extern void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap,
                                           int dx, int dy, int w, int h);
 
+/* Render a sub-rectangle of a guest BitMap: source (sx,sy) of size (w,h)
+ * is drawn at framebuffer position (dx,dy). */
+extern void render_bitmap_region_to_framebuffer(uint32_t bm, uint32_t cmap,
+                                                 int sx, int sy,
+                                                 int dx, int dy,
+                                                 int w, int h);
+
 /* View offsets */
 #define VIEW_OFF_VIEWPORT    0
 #define VIEW_OFF_DX          8

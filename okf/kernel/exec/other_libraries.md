@@ -4,7 +4,7 @@ title: Other AmigaOS Libraries and Devices
 description: Native thunk implementations of utility.library, mathffp.library, mathieeesingbas.library, mathtrans.library, locale.library, ixemul.library, and device stubs in UAOS.
 resource: /kernel/exec/
 tags: [utility, mathffp, mathieeesingbas, mathtrans, locale, ixemul, console, keyboard, timer, m68k, thunking]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-09-23T23:35:38Z
 ---
 
 # Other AmigaOS Libraries and Devices
@@ -35,7 +35,7 @@ Software single-precision floating-point library.
 | `SPAdd`, `SPSub`, `SPMul`, `SPDiv` | Implemented | Basic IEEE 754 arithmetic. |
 | `SPCmp`, `SPNeg`, `SPAbs` | Implemented | Comparison and sign operations. |
 | `SPFix`, `SPFlt` | Implemented | Float↔integer conversion. |
-| `SPSqrt`, `SPLog`, `SPExp`, `SPSin`, `SPCos`, `SPTan`, `SPAtan`, `SPAsin`, `SPAcos` | Stub | Return NaN or infinity because freestanding UAOS has no math library. |
+| `SPSqrt`, `SPLog`, `SPExp`, `SPSin`, `SPCos`, `SPTan`, `SPAtan`, `SPAsin`, `SPAcos` | Implemented | Call the shared freestanding helpers in `float_math.c` (same code as `mathtrans.library`). `SPLog` is the natural logarithm (ln). |
 
 ## mathieeesingbas.library (`kernel/exec/mathieeesingbas_lib.c`)
 
@@ -52,7 +52,7 @@ Registered at base address `0x00000070`. Uses the same IEEE 754 conversion helpe
 
 ## mathtrans.library (`kernel/exec/mathtrans_lib.c`)
 
-IEEE 754 single-precision transcendental functions. Required by ACE Basic, which opens this library unconditionally at startup. All functions are implemented with freestanding C (no `<math.h>`) using Taylor series and Newton-Raphson iterations.
+IEEE 754 single-precision transcendental functions. Required by ACE Basic, which opens this library unconditionally at startup. The function bodies live in the shared freestanding module `float_math.c` / `float_math.h` (exported as `uaos_sinf`, `uaos_cosf`, `uaos_tanf`, `uaos_sqrtf`, `uaos_expf`, `uaos_logf`, `uaos_asinf`, `uaos_acosf`, `uaos_atanf`, `uaos_floorf`, `uaos_ceilf`, `uaos_powf`), implemented without `<math.h>` using Taylor series and Newton-Raphson iterations. `mathffp.library` calls the same helpers.
 
 | Function | Status | Notes |
 |---|---|---|

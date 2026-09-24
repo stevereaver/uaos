@@ -80,6 +80,7 @@ typedef struct {
     uint32_t  bytes_per_sec;  /* Bytes per sector */
     uint32_t  sec_per_clus;   /* Sectors per cluster */
     uint32_t  cluster_size;   /* Cluster size in bytes */
+    uint32_t  total_clusters; /* Total data clusters */
     uint8_t  *fat_cache;      /* FAT cache (simplified) */
     uint32_t  fat_cache_sec;  /* Cached FAT sector */
 } Fat32FS;
@@ -87,11 +88,19 @@ typedef struct {
 /* File handle */
 typedef struct {
     Fat32FS    *fs;           /* Filesystem */
-    uint32_t    cluster;      /* Current cluster */
-    uint32_t    offset;       /* Offset within cluster */
-    uint32_t    pos;          /* Current position */
-    uint32_t    size;         /* File size */
+    uint32_t    start_cluster;/* First cluster of file (0 = empty file) */
+    uint32_t    cluster;      /* Current cluster in chain */
+    uint32_t    offset;       /* Offset within current cluster */
+    uint32_t    pos;          /* Current absolute position */
+    uint32_t    size;         /* File size in bytes */
     uint8_t     is_dir;       /* Is directory */
+    uint8_t     in_use;       /* Allocation flag for pool management */
+    /* Directory entry location (for updating file_size on close/write) */
+    uint32_t    dir_sector;   /* Sector containing the dir entry for this file */
+    uint32_t    dir_offset;   /* Byte offset within that sector */
+    /* For directory iteration (ReadDir / ExamineNext) */
+    uint32_t    iter_cluster; /* Current cluster being scanned */
+    uint32_t    iter_offset;  /* Byte offset within current cluster */
 } Fat32File;
 
 /* Mount a FAT32 filesystem on a block device */
@@ -100,16 +109,21 @@ Fat32FS *FAT32_Mount(BlockDev *bdev);
 /* Unmount a FAT32 filesystem */
 void FAT32_Unmount(Fat32FS *fs);
 
-/* Open a file/directory */
+/* Open a file/directory by path (e.g. "WB:dir/file" or "dir/file").
+ * The volume prefix (e.g. "WB:") is stripped automatically.
+ * Returns a Fat32File* (from a static pool) or NULL on error. */
 Fat32File *FAT32_Open(Fat32FS *fs, const char *path);
 
-/* Close a file */
+/* Create a new file (truncate if exists). Returns Fat32File* or NULL. */
+Fat32File *FAT32_CreateFile(Fat32FS *fs, const char *path);
+
+/* Close a file (returns it to the pool; flushes size to dir entry). */
 void FAT32_Close(Fat32File *file);
 
 /* Read from a file */
 uint32_t FAT32_Read(Fat32File *file, void *buffer, uint32_t len);
 
-/* Write to a file */
+/* Write to a file (allocates clusters as needed, updates dir entry size) */
 uint32_t FAT32_Write(Fat32File *file, const void *buffer, uint32_t len);
 
 /* Seek to position */
@@ -118,8 +132,19 @@ void FAT32_Seek(Fat32File *file, uint32_t pos);
 /* Get file size */
 uint32_t FAT32_Size(Fat32File *file);
 
-/* Read directory entry */
+/* Read next directory entry. Call repeatedly until it returns 0.
+ * Skips LFN, volume label, deleted, and . / .. entries.
+ * Returns 1 on success (entry found), 0 on end-of-directory. */
 int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir);
+
+/* Create a directory at the given path. Returns 0 on success, -1 on error. */
+int FAT32_CreateDir(Fat32FS *fs, const char *path);
+
+/* Delete a file or empty directory. Returns 0 on success, -1 on error. */
+int FAT32_Delete(Fat32FS *fs, const char *path);
+
+/* Get volume statistics (total/used bytes). */
+void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_bytes);
 
 /* Format a block device with FAT32.  vol_label: optional 11-char volume name */
 int FAT32_Format(BlockDev *bdev, const char *vol_label);

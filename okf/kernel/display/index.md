@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-08-26T12:00:00Z
+timestamp: 2026-09-24T00:00:00Z
 ---
 
 # Display and Window Manager
@@ -62,7 +62,15 @@ Each window provides callbacks for:
 
 ### Close and Depth Gadgets
 
-`WM_CloseWindow` repaints via the double-buffered `WM_Redraw()` path (no flicker). The depth gadget (`depth_window`) reorders the z-stack and notifies Intuition of the focus change via `wm_notify_focus_change()` so `IDCMP_ACTIVEWINDOW`/`INACTIVEWINDOW` are sent.
+`WM_CloseWindow` repaints via the double-buffered `WM_Redraw()` path (no flicker). The title bar is 20 pixels high and uses the full 8×16 font; its close, zoom, and depth cells are square and have explicit separating edges. The zoom and depth glyphs use compact 11×7 imagery centered with at least three pixels of horizontal padding. Close, zoom, and depth actions are armed on mouse-down, rendered with an inset bevel and shifted glyph, and committed only when the left button is released over the same gadget. Releasing elsewhere cancels the action. The zoom gadget toggles between the full usable screen and the window's saved original geometry, then emits a resize event so Intuition's guest `Window` geometry stays synchronized. The depth gadget (`depth_window`) reorders the z-stack and notifies Intuition of the focus change via `wm_notify_focus_change()` so `IDCMP_ACTIVEWINDOW`/`INACTIVEWINDOW` are sent. The square bottom-right sizing gadget uses the same pressed bevel while its drag updates window geometry and emits resize events.
+
+### Vacate hook
+
+`WM_SetVacateFn()` registers an optional `WM_VacateFn` callback invoked with a window's old screen rectangle just before that rectangle is vacated (title-bar drag, `WM_MoveWindow`, `WM_SetWindowGeometry`, zoom toggle, resize drag, and `WM_CloseWindow`). Intuition registers `intu_screen_vacate`, which erases the vacated rectangle in the parent screen's planar `BitMap` (pen 0) so the next backdrop render does not resurrect stale window pixels — needed now that window `RastPort`s draw into the screen `BitMap` rather than directly into the framebuffer.
+
+### Scrollbars
+
+Every window gets an always-on right (vertical) and bottom (horizontal) scrollbar: an `WM_ARROW_LEN` (11px) arrow button at each end, a dithered track between them, and a hollow raised-bevel thumb sized proportionally to `view/content` (minimum 8px). The thumb top travels `track_len - thumb_len` pixels over the scroll range `[0, content - view]`. Thumb drags map pointer delta to scroll delta through **that same travel range** (`dm * max_s / travel`) so the thumb tracks the pointer 1:1 — the drag handler must replicate `draw_scrollbar`'s geometry exactly (track = rect − `WM_ARROW_LEN`×2, same thumb clamp). `view` is `WmWindow.view_h` when set via `WM_SetScrollInfoEx` (shell/ed/vim reserve a status bar), else the client height; `draw_chrome`, `scroll_by`, `WM_SetScrollY`, and the drag handler all use it consistently so the drawn thumb position, the scroll clamp, and the drag inverse all agree.
 
 ## Software Cursor
 
@@ -83,7 +91,7 @@ The desktop icon list (including `.info` file loading and planar decoding) is ca
 
 ### Clock and Memory Display
 
-The menubar shows a clock (`HH:MM:SS` in white on blue) on the far right, read from `RTC_ReadTime()` each frame. Just to the left of the clock is a free-memory readout (e.g. `512K Free` in cream on blue), computed from `Mem_GetInfo()` (x64 heap free + M68k guest RAM free slots). `Desktop_UpdateClock` (called once per second from IRQ context) increments the double-click tick counter and sets a dirty flag; `Desktop_FlushClockRedraw` checks the flag and triggers `WM_Redraw()` to update the menubar.
+The menubar shows a clock (`HH:MM:SS` in white on blue) on the far right, read from `RTC_ReadTime()` each frame. Just to the left of the clock is a free-memory readout (e.g. `512K Free` in cream on blue), computed from `Mem_GetInfo()` (x64 heap free + M68k guest RAM free slots). `Desktop_UpdateClock` (called once per second from IRQ context) increments the double-click tick counter and sets a dirty flag; `Desktop_FlushClockRedraw` checks the flag and triggers `WM_Redraw()` to update the menubar. Double-clicking the clock text opens the Clock window (`ClockWin_Open()`): `menubar_clock_hit()` replicates the draw layout to hit-test the clock area, and the press/release pair uses the same `g_tick`/`DBLCLICK_TICKS` double-click timing as icons and the desktop backdrop.
 
 ### Menu Bar
 
@@ -115,7 +123,7 @@ The `Window` menu contains the following items:
 
 | Item | Action |
 |------|--------|
-| New Drawer | Prompts for a name and creates a new directory in the focused browser. |
+| New Drawer | Prompts for a name and creates a new directory in the focused browser. The target browser path + handle are stashed in `g_pending_mkdir` when the requester opens, so the callback works regardless of focus. |
 | Open Drawer | Opens the selected directory in a new browser window. |
 | Close | Closes the focused browser window. |
 | Update | Refreshes the focused browser's entries. |
@@ -156,6 +164,10 @@ The `Tools` menu contains the following items:
 
 The menus are rendered by `desktop.c` and managed through a small internal state (`g_menu_index`, `g_menu_hover`, etc.). Menu items support a divider flag (`is_divider`) for separator lines, a checkmark column (`has_checkmark`/`checked` for toggle items like View By modes), and a flyout submenu pointer (`has_submenu`/`submenu`). The fallback desktop menu now supports flyout submenus (e.g., View By) with the same press-and-drag behaviour as the guest Intuition menu strip: hover tracking opens the flyout, `submenu_hit` resolves the hovered flyout item, and `Desktop_RightButtonRelease` dispatches the selected flyout action. The window manager tracks both left and right mouse buttons and forwards desktop events and hover tracking to highlight items and dispatch the selected action.
 
+### Requesters
+
+`requester.c` implements modal confirm/string/info requesters as real WM windows (`WM_AddWindow` + `WM_RaiseWindow`), so a requester holds WM focus while open. `g_req.wm_handle` is initialized to -1 at declaration — the "already active" guard in every `Requester_*` open relies on that sentinel, and a BSS-zeroed 0 would block the first open forever. The guard also verifies `WM_GetDrawFn(handle) == req_draw` so a stale handle (closed or reused slot) can't wedge the requester. Close-gadget clicks are routed through `req_event` (registered via `WM_SetEventHandler`), which vetoes the WM's own close and runs `Requester_Close` + a Cancel callback — otherwise `WM_CloseWindow` would bypass `Requester_Close` and leave `wm_handle` stale. Completion callbacks are always invoked **after** `Requester_Close()` — in `req_release` (mouse) and in `req_key` (Enter/Escape) — so focus has already returned to the window that opened the requester when the callback runs. Callbacks that need a target captured before the requester opened should stash it at dispatch time (e.g. `g_pending_delete`, `g_pending_mkdir` in `desktop.c`) rather than re-querying `WM_GetFocus`.
+
 ### Icon Selection State
 Desktop icons can be selected with a single click or by lasso (rubber-band) drag. The selected icon is rendered using one of two methods:
 
@@ -171,15 +183,20 @@ A lasso drag (where the cursor moved) is not counted as a desktop click, so it d
 
 This matches classic Workbench 3.x behaviour. The lasso state is tracked in `desktop.c` (`g_lasso_active`, `g_lasso_start_x/y`, `g_lasso_cur_x/y`, `g_lasso_moved`) and the dashed border is drawn by `draw_lasso()` after icons but before the menu dropdown and bars, clipped to the desktop backdrop area (below the menu bar).
 
+### File Browser Listing and Refresh
+Browser windows (`filebrowser.c`) enumerate their directory through `VFS_ReadDir`, which works for both RAMFS and handler-backed (FAT32) volumes — so DH0: windows list real disk contents, not just RAMFS volumes. Each browser holds a private snapshot buffer (`entry_buffer`, up to 32 entries, 31-char names). Because the snapshot is loaded once, browsers watch the VFS change counter: `browser_draw_impl` compares `VFS_ChangeSeq()` against the browser's `seen_seq` and calls `browser_reload()` when they differ, clearing selection/drag/lasso state since entry indices are stale after re-sorting. This makes directories created by shell commands (`makedir`) or guest `dos.library` calls appear automatically on the next redraw — Window ▸ Update (`FileBrowser_Refresh`) remains as a manual reload.
+
 ### File Browser Lasso Selection
 Lasso selection is also available inside drawer windows (`filebrowser.c`). Dragging the left mouse button on empty space within a browser's icon grid area (below the path bar) activates a lasso rectangle. Any icon cell that intersects the lasso is selected. The browser uses a per-icon `selected[]` array for multi-selection, replacing the previous single-`selected_icon` model. Single-clicking an icon selects only that icon and cancels any active lasso. The lasso rectangle is clipped to the browser's client area below the path bar.
 
-### Drag-to-Copy (Icon Drag and Drop)
-Dragging a desktop icon (volume or leave-out shortcut) onto another volume icon copies the source's contents into the destination volume. This mirrors the classic Workbench behaviour of dragging a disk/drawer icon onto another disk to copy files.
+### Icon Drag and Drop (Drag-to-Copy / Drag-to-Trash)
+Dragging a desktop icon (volume or leave-out shortcut) onto another volume icon copies the source's contents into the destination volume. This mirrors the classic Workbench behaviour of dragging a disk/drawer icon onto another disk to copy files. Dropping an icon onto the Trashcan deletes it instead.
 
 - **Source**: Any volume icon (e.g. `RAM:`, `Workbench:`) or leave-out shortcut icon (file or directory). The Trashcan and AppIcons are not valid drag sources.
-- **Target**: Any volume icon that is not the source and not the Trashcan. AppIcons are not valid drop targets.
-- **Operation**: On release, `desktop_do_copy()` recursively copies the source path into `dst_vol/name` using `desktop_copy_dir()` for directories (which walks `RamFsNode->first_child` / `next_sibling`) and `desktop_copy_file()` for files (VFS open/read/write loop with a 512-byte buffer). The dragged icon snaps back to its original position — drag-to-copy does not move the icon, only copies content.
+- **Target**: Any volume icon that is not the source (drag-to-copy), or the Trashcan (drag-to-delete). AppIcons are not valid drop targets. The Trashcan only highlights when the dragged icon is a valid source (volume or leave-out).
+- **Copy operation**: On release onto a volume, `desktop_do_copy()` recursively copies the source path into `dst_vol/name` using `desktop_copy_dir()` for directories (which walks `RamFsNode->first_child` / `next_sibling`) and `desktop_copy_file()` for files (VFS open/read/write loop with a 512-byte buffer).
+- **Trash operation**: On release onto the Trashcan, `desktop_confirm_delete()` opens the same "Delete 'name'?" confirm requester as Icons ▸ Delete; on confirm, `desktop_move_to_trash()` moves the source path to `RAM:/Trash/name` (same-volume `VFS_Rename`, or copy+delete fallback for cross-volume). This is the same code path as `menu_action_icon_delete` — the pending target is stashed in `g_pending_delete` so both entry points share `delete_cb`.
+- **Snap-back**: The dragged icon snaps back to its original position in both cases — drag-to-copy and drag-to-trash do not move the icon itself.
 - **Visual feedback**: While dragging, the icon under the cursor that would be the drop target is highlighted with a 2px white outline (with a 1px dark border). The highlight is drawn by `draw_drop_target_highlight()` in both `Desktop_Draw` and the dirty-rect repaint path. The drop target index (`g_drop_target_idx`) is updated in `Desktop_MouseMove` via `icon_at_pos()`.
 
 ## Application Windows
@@ -188,7 +205,7 @@ The display layer includes several Workbench-style application windows in additi
 
 - **About window (`about_win.c`)**: Shows UAOS version, build date, display resolution, and memory size.
 - **Calculator (`calc_win.c`)**: Amiga-style four-function calculator with double-precision arithmetic.
-- **Clock (`clock_win.c`)**: Digital time and date display, updated once per second from the RTC.
+- **Clock (`clock_win.c`)**: Digital time and date display, updated once per second from the RTC. Opened by double-clicking the menubar clock or via the `clock` shell command.
 - **Network Info (`netinfo_win.c`)**: Displays interface IP, MAC, gateway, DNS, and DHCP status.
 - **Vim Editor (`vim_win.c`)**: Modal text editor with Normal/Insert/Visual/Command modes, search, undo, and `S:vim.conf` configuration.
 - **ED Editor (`ed_win.c`)**: AmigaED-style line editor with edit mode (type text, cursor movement) and command mode (ESC for commands: `w` save, `q` quit, `wq` save+quit, `/pat` search, `N` goto line). Supports both standalone WM windows and inline shell integration. Simpler than Vim — no modal confusion.

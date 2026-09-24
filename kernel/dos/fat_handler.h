@@ -14,6 +14,11 @@
  * Handler system and register it under 'name' (e.g. "FAT").
  * Returns the handler on success, NULL on failure.
  * Use &handler->port to get the MsgPort*. */
+struct VfsDirEnt;
+
 Handler *FatHandler_Create(const char *name, Fat32FS *fs);
+int FatHandler_Is(const Handler *handler);
+int FatHandler_ReadDir(Handler *handler, const char *path,
+                       struct VfsDirEnt *entries, int max);
 
 #endif

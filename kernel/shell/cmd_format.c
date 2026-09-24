@@ -119,13 +119,11 @@ void Cmd_Format(NativeCmdCtx *ctx, const char *args)
                 mnt_name[ni++] = dname[si++];
             mnt_name[ni] = '\0';
 
-            /* Mount by volume label if provided, else fall back to device name */
-            const char *vol_mnt = volname[0] ? volname : mnt_name;
-            if (vol_mnt[0]) {
-                if (VFS_MountPartition(vol_mnt) == 0) {
+            if (mnt_name[0]) {
+                if (VFS_RemountPartition(mnt_name) == 0) {
                     char msg2[CMD_MAX_LINE];
                     cmd_scopy(msg2, "Mounted as ", CMD_MAX_LINE);
-                    cmd_scat(msg2, vol_mnt, CMD_MAX_LINE);
+                    cmd_scat(msg2, mnt_name, CMD_MAX_LINE);
                     cmd_scat(msg2, ":", CMD_MAX_LINE);
                     PRINT(msg2);
                 }

@@ -37,8 +37,8 @@ Handler *Handler_Create(const char *name, void *private,
  * Returns dp_Res1 (the primary result).
  * On failure (port NULL) returns 0 and sets global IoErr. */
 int32_t DoPkt(MsgPort *port, int32_t action,
-              int32_t arg1, int32_t arg2, int32_t arg3,
-              int32_t arg4, int32_t arg5);
+              intptr_t arg1, intptr_t arg2, intptr_t arg3,
+              intptr_t arg4, intptr_t arg5);
 
 /* Get handler pointer from its embedded port pointer.
  * Useful when you only have a MsgPort* (e.g. from DosList). */

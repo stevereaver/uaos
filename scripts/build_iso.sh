@@ -349,6 +349,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/exec_ipc.c" \
     "${REPO_ROOT}/kernel/exec/utility_lib.c" \
     "${REPO_ROOT}/kernel/exec/console_device.c" \
+    "${REPO_ROOT}/kernel/exec/float_math.c" \
     "${REPO_ROOT}/kernel/exec/mathffp_lib.c" \
     "${REPO_ROOT}/kernel/exec/mathieeesingbas_lib.c" \
     "${REPO_ROOT}/kernel/exec/mathtrans_lib.c" \
@@ -461,7 +462,14 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
     "${REPO_ROOT}/kernel/shell/cmd_blanker.c" \
     "${REPO_ROOT}/kernel/shell/cmd_print.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_crossdos.c"
+    "${REPO_ROOT}/kernel/shell/cmd_crossdos.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_runback.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_alias.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_unalias.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_path.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_skip.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_lab.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_resload.c"
 do
     base="$(basename "${src}" .c)"
     if [ "${src##*/}" = "ntp.c" ]; then
@@ -643,6 +651,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/exec_ipc.o" \
     "${BUILD_DIR}/obj/utility_lib.o" \
     "${BUILD_DIR}/obj/console_device.o" \
+    "${BUILD_DIR}/obj/float_math.o" \
     "${BUILD_DIR}/obj/mathffp_lib.o" \
     "${BUILD_DIR}/obj/mathieeesingbas_lib.o" \
     "${BUILD_DIR}/obj/mathtrans_lib.o" \
@@ -772,6 +781,13 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_blanker.o" \
     "${BUILD_DIR}/obj/cmd_print.o" \
     "${BUILD_DIR}/obj/cmd_crossdos.o" \
+    "${BUILD_DIR}/obj/cmd_runback.o" \
+    "${BUILD_DIR}/obj/cmd_alias.o" \
+    "${BUILD_DIR}/obj/cmd_unalias.o" \
+    "${BUILD_DIR}/obj/cmd_path.o" \
+    "${BUILD_DIR}/obj/cmd_skip.o" \
+    "${BUILD_DIR}/obj/cmd_lab.o" \
+    "${BUILD_DIR}/obj/cmd_resload.o" \
     "${BUILD_DIR}/obj/vim_win.o" \
     "${BUILD_DIR}/obj/ed_win.o" \
     "${BUILD_DIR}/obj/prefs_win.o" \
@@ -821,7 +837,8 @@ for cmd in version mem libs clear reboot \
            wait prompt stack why failat quit endcli relabel \
            getenv unset jobs \
            install diskchange addbuffers requestchoice requestfile changetaskpri status rx \
-           strace print crossdos ed guide; do
+           strace print crossdos ed guide \
+           runback alias unalias path skip lab resload; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
 done
@@ -910,7 +927,7 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
     mkdir -p "${BUILD_DIR}/userspace"
     GEN_X64="${BUILD_DIR}/gen_uaos_x64"
 
-    gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE \
+    gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -mno-red-zone \
         -fcf-protection=none \
         -m64 -O2 -std=c11 \
         -I"${REPO_ROOT}/system/libuaos" \
@@ -926,7 +943,7 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
         elf_out="${BUILD_DIR}/userspace/${base}"
         bin_out="${C_STAGING}/${base}"
 
-        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie \
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie -mno-red-zone \
             -fcf-protection=none \
             -m64 -O2 -std=c11 \
             -I"${REPO_ROOT}/system/libuaos" \
@@ -951,7 +968,7 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
     if [[ -f "${GUIDE_SRC}" ]]; then
         mkdir -p "${BUILD_DIR}/userspace"
         mkdir -p "${ISO_STAGING}/SYS_ROOT/Tools"
-        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie \
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie -mno-red-zone \
             -fcf-protection=none \
             -m64 -O2 -std=c11 \
             -I"${REPO_ROOT}/system/libuaos" \
@@ -1002,7 +1019,7 @@ if [[ -d "${GNUSRC_DIR}" ]]; then
 
     # uaos_start.o is already compiled in Step 2e; compile it if Step 2e was skipped.
     if [[ ! -f "${BUILD_DIR}/obj/uaos_start.o" ]]; then
-        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE \
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -mno-red-zone \
             -fcf-protection=none \
             -m64 -O2 -std=c11 \
             -I"${REPO_ROOT}/system/libuaos" \
@@ -1018,7 +1035,7 @@ if [[ -d "${GNUSRC_DIR}" ]]; then
         elf_out="${BUILD_DIR}/userspace/gnu_${base}"
         bin_out="${GNU_STAGING}/${base}"
 
-        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie \
+        gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie -mno-red-zone \
             -fcf-protection=none \
             -m64 -O2 -std=c11 \
             -I"${REPO_ROOT}/system/libuaos" \

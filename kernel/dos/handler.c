@@ -7,6 +7,27 @@
 /* Strace forward declaration for DOS packet tracing */
 extern void Strace_DosPacket(int32_t action, int32_t arg1, int32_t arg2,
                              int32_t result, int32_t ioerr);
+/* VFS change counter — bumped for packets that mutate directory contents
+ * so file browsers can auto-refresh (covers guest dos.library calls too) */
+extern void VFS_NoteChange(void);
+
+static void note_fs_mutation(int32_t action)
+{
+    switch (action) {
+    case ACTION_CREATE_DIR:
+    case ACTION_DELETE_OBJECT:
+    case ACTION_RENAME_OBJECT:
+    case ACTION_RENAME_DISK:
+    case ACTION_FINDOUTPUT:
+    case ACTION_FINDUPDATE:
+    case ACTION_WRITE:
+    case ACTION_SET_FILE_SIZE:
+        VFS_NoteChange();
+        break;
+    default:
+        break;
+    }
+}
 
 /* -------------------------------------------------------------------------
  * Static handler pool
@@ -57,8 +78,8 @@ Handler *Handler_FromPort(MsgPort *port)
  * DoPkt — synchronous dispatch
  * ------------------------------------------------------------------------- */
 int32_t DoPkt(MsgPort *port, int32_t action,
-              int32_t arg1, int32_t arg2, int32_t arg3,
-              int32_t arg4, int32_t arg5)
+              intptr_t arg1, intptr_t arg2, intptr_t arg3,
+              intptr_t arg4, intptr_t arg5)
 {
     if (!port || !port->mp_Name) {
         g_dos_last_ioerr = ERROR_DEVICE_NOT_MOUNTED;
@@ -85,6 +106,7 @@ int32_t DoPkt(MsgPort *port, int32_t action,
             g_dos_last_ioerr = pkt.dp_Res2;
         else
             g_dos_last_ioerr = 0;
+        note_fs_mutation(action);
     } else {
         pkt.dp_Res1 = DOSFALSE;
         pkt.dp_Res2 = ERROR_ACTION_NOT_KNOWN;
@@ -137,6 +159,7 @@ void Handler_CheckReplies(void)
                 g_dos_last_ioerr = pkt->dp_Res2;
             else
                 g_dos_last_ioerr = 0;
+            note_fs_mutation(pkt->dp_Type);
         } else if (pkt) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;

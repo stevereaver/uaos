@@ -503,8 +503,11 @@ typedef struct {
     uint8_t   depth;   /* 0 = framebuffer (chunky), 1-8 = planar BitMap */
     uint8_t   is_fb;
     uint32_t  rp;
-    int       dx, dy;  /* UAOS: window offset applied to framebuffer coords */
+    uint32_t  bm;      /* guest BitMap pointer, 0 for framebuffer surfaces */
+    int       dx, dy;  /* UAOS: window offset applied to surface coords */
 } BlitSurface;
+
+static void bm_note_dirty(BlitSurface *s, int x0, int y0, int x1, int y1);
 
 static uint32_t rp_pen_to_rgb(uint32_t rp, uint32_t pen)
 {
@@ -576,6 +579,7 @@ static void blit_surface_from_bitmap(BlitSurface *s, uint32_t bm)
 {
     s->dx = 0;
     s->dy = 0;
+    s->bm = bm;
     if (!bm) {
         s->is_fb = 1;
         s->bpr = 0;
@@ -603,6 +607,7 @@ static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
     s->rp = rp;
     s->dx = 0;
     s->dy = 0;
+    s->bm = 0;
     if (!rp) {
         s->is_fb = 1;
         s->bpr = 0;
@@ -640,6 +645,31 @@ static void blit_surface_from_rastport(BlitSurface *s, uint32_t rp)
     } else {
         blit_surface_from_bitmap(s, bm);
         s->rp = rp;
+
+        /* A window RastPort that points at its screen's planar BitMap draws
+         * in window-relative coordinates; translate them into screen-bitmap
+         * space (window position relative to the screen origin, plus the
+         * GimmeZeroZero border offset).  RastPorts on any other BitMap keep
+         * bitmap-relative coordinates. */
+        uint32_t win = m68k_read_memory_32(rp + RP_OFF_LAYER);
+        if (win) {
+            uint32_t scr = m68k_read_memory_32(win + WIN_OFF_WSCREEN);
+            uint32_t scr_bm = scr ? m68k_read_memory_32(scr + SCR_OFF_BITMA) : 0;
+            if (scr && scr_bm == bm) {
+                int wx = (int)(int16_t)m68k_read_memory_16(win + WIN_OFF_LEFTEDGE);
+                int wy = (int)(int16_t)m68k_read_memory_16(win + WIN_OFF_TOPEDGE);
+                int sl = (int)(int16_t)m68k_read_memory_16(scr + SCR_OFF_LEFTEDGE);
+                int st = (int)(int16_t)m68k_read_memory_16(scr + SCR_OFF_TOPEDGE);
+                uint32_t flags = m68k_read_memory_32(win + WIN_OFF_FLAGS);
+                int bx = 0, by = 0;
+                if (flags & WFLG_GIMMEZEROZERO) {
+                    bx = WM_BORDER;
+                    by = WM_TITLEBAR_H;
+                }
+                s->dx = wx + bx - sl;
+                s->dy = wy + by - st;
+            }
+        }
     }
 }
 
@@ -672,7 +702,55 @@ static int blit_surface_put(BlitSurface *s, int x, int y, uint32_t pixel)
     uint32_t dst = planar_pixel_get(s, x, y);
     uint32_t out = apply_write_mask(s->rp, dst, pixel);
     planar_pixel_put(s, x, y, out);
+    bm_note_dirty(s, x, y, x, y);
     return 1;
+}
+
+/* -------------------------------------------------------------------------
+ * Dirty tracking for screen BitMaps.
+ *
+ * When a drawing operation writes into a planar BitMap that backs an
+ * Intuition screen (or a WA_SuperBitMap window), the new pixels are not
+ * visible until the next WM redraw translates them to the linear
+ * framebuffer.  To preserve the immediate feedback the old chunky path
+ * provided, every planar write expands a bounding box; at the end of each
+ * graphics.library dispatch the dirtied rectangle is re-rendered straight
+ * to the framebuffer (or back buffer) via UAOS_Intuition_FlushScreenBitmap.
+ * ------------------------------------------------------------------------- */
+static uint32_t g_dirty_bm = 0;
+static int g_dirty_x0 = 0, g_dirty_y0 = 0, g_dirty_x1 = -1, g_dirty_y1 = -1;
+
+/* Defined in intuition_lib.c — re-renders a dirty rect of a screen (or
+ * super-bitmap window) BitMap into the host framebuffer. */
+extern void UAOS_Intuition_FlushScreenBitmap(uint32_t bm,
+                                             int x0, int y0, int x1, int y1);
+
+static void bm_flush_dirty(void)
+{
+    if (!g_dirty_bm) return;
+    UAOS_Intuition_FlushScreenBitmap(g_dirty_bm,
+                                     g_dirty_x0, g_dirty_y0,
+                                     g_dirty_x1, g_dirty_y1);
+    g_dirty_bm = 0;
+    g_dirty_x1 = g_dirty_y1 = -1;
+}
+
+static void bm_note_dirty(BlitSurface *s, int x0, int y0, int x1, int y1)
+{
+    if (!s || !s->bm || s->is_fb) return;
+    if (g_dirty_bm && g_dirty_bm != s->bm)
+        bm_flush_dirty();           /* different bitmap — flush previous first */
+    g_dirty_bm = s->bm;
+    if (x1 < x0 || y1 < y0) return;
+    if (g_dirty_x1 < 0) {
+        g_dirty_x0 = x0; g_dirty_y0 = y0;
+        g_dirty_x1 = x1; g_dirty_y1 = y1;
+    } else {
+        if (x0 < g_dirty_x0) g_dirty_x0 = x0;
+        if (y0 < g_dirty_y0) g_dirty_y0 = y0;
+        if (x1 > g_dirty_x1) g_dirty_x1 = x1;
+        if (y1 > g_dirty_y1) g_dirty_y1 = y1;
+    }
 }
 
 static int planar_mask_get(uint32_t mask_base, int mask_bpr, int x, int y)
@@ -763,6 +841,8 @@ static void rp_put_pixel(uint32_t rp, int x, int y, uint32_t pen)
 static void planar_fill_rect(BlitSurface *s, int x, int y, int w, int h, uint32_t pen)
 {
     if (w <= 0 || h <= 0) return;
+    x += s->dx;
+    y += s->dy;
     int x1 = x;
     int y1 = y;
     int x2 = x + w - 1;
@@ -803,6 +883,7 @@ static void planar_fill_rect(BlitSurface *s, int x, int y, int w, int h, uint32_
             }
         }
     }
+    bm_note_dirty(s, x1, y1, x2, y2);
 }
 
 static void rp_fill_rect(uint32_t rp, int x, int y, int w, int h, uint32_t pen)
@@ -1242,10 +1323,12 @@ static void graphics_InitRastPort(void)
     if (!rp) return;
     for (int i = 0; i < RP_SIZE_MIN; i++)
         m68k_write_memory_8(rp + i, 0);
-    /* Default pen = 1 (white), draw mode = JAM2 (Workbench default) */
+    /* Default pen = 1 (white), draw mode = JAM2 (Workbench default).
+     * Mask = 0xFF — all bitplanes writable (AmigaOS InitRastPort default). */
     rp_w_u8(rp, RP_OFF_FGPEN, 1);
     rp_w_u8(rp, RP_OFF_BGPEN, 0);
     rp_w_u8(rp, RP_OFF_DRAWMODE, JAM2);
+    rp_w_u8(rp, RP_OFF_MASK, 0xFF);
 }
 
 static void graphics_InitView(void)
@@ -1300,30 +1383,41 @@ static uint32_t cmap_lookup_rgb(uint32_t cmap, uint32_t pen)
     return m68k_read_memory_32(table + pen * 4);
 }
 
-void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int dy, int w, int h)
+void render_bitmap_region_to_framebuffer(uint32_t bm, uint32_t cmap,
+                                         int sx, int sy, int dx, int dy,
+                                         int w, int h)
 {
-    if (!bm || !g_fb.valid) return;
+    if (!bm || !g_fb.valid || w <= 0 || h <= 0) return;
     BlitSurface s;
     blit_surface_from_bitmap(&s, bm);
     if (s.is_fb) return;
 
-    /* Source bounds */
-    int sx1 = 0, sy1 = 0;
-    int sx2 = (w < s.width) ? w - 1 : (int)s.width - 1;
-    int sy2 = (h < s.height) ? h - 1 : (int)s.height - 1;
+    /* Clip the source rect to the bitmap, adjusting the destination. */
+    if (sx < 0) { dx -= sx; w += sx; sx = 0; }
+    if (sy < 0) { dy -= sy; h += sy; sy = 0; }
+    if (sx + w > (int)s.width)  w = (int)s.width  - sx;
+    if (sy + h > (int)s.height) h = (int)s.height - sy;
 
-    for (int y = sy1; y <= sy2; y++) {
-        int dst_y = dy + y;
-        if (dst_y < 0 || dst_y >= (int)g_fb.height) continue;
-        for (int x = sx1; x <= sx2; x++) {
-            int dst_x = dx + x;
-            if (dst_x < 0 || dst_x >= (int)g_fb.width) continue;
+    /* Clip the destination rect to the framebuffer, adjusting the source. */
+    if (dx < 0) { sx -= dx; w += dx; dx = 0; }
+    if (dy < 0) { sy -= dy; h += dy; dy = 0; }
+    if (dx + w > (int)g_fb.width)  w = (int)g_fb.width  - dx;
+    if (dy + h > (int)g_fb.height) h = (int)g_fb.height - dy;
+    if (w <= 0 || h <= 0) return;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
             uint32_t pen = 0;
-            if (!blit_surface_get(&s, x, y, &pen)) continue;
+            if (!blit_surface_get(&s, sx + x, sy + y, &pen)) continue;
             uint32_t rgb = cmap_lookup_rgb(cmap, pen);
-            FB_PutPixel(dst_x, dst_y, rgb);
+            FB_PutPixel(dx + x, dy + y, rgb);
         }
     }
+}
+
+void render_bitmap_to_framebuffer(uint32_t bm, uint32_t cmap, int dx, int dy, int w, int h)
+{
+    render_bitmap_region_to_framebuffer(bm, cmap, 0, 0, dx, dy, w, h);
 }
 
 /* =========================================================================
@@ -4528,6 +4622,10 @@ void UAOS_Graphics_Dispatch(uint32_t fn)
     void (*fp)(void) = graphics_funcs[fn];
     if (fp) fp();
     else graphics_Unimplemented();
+    /* If the operation wrote into a planar BitMap backing a screen or a
+     * super-bitmap window, re-render the dirtied rectangle to the linear
+     * framebuffer so the change is visible immediately. */
+    bm_flush_dirty();
 }
 
 /* =========================================================================

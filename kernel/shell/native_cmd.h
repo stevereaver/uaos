@@ -245,4 +245,14 @@ void Cmd_Ed              (NativeCmdCtx *ctx, const char *args);
 /* Help */
 void Cmd_Guide           (NativeCmdCtx *ctx, const char *args);
 
+/* Shell-state commands — thin native wrappers that forward to the shell
+ * built-ins, script engine, or resident list via dispatch_line. */
+void Cmd_RunBack         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Alias           (NativeCmdCtx *ctx, const char *args);
+void Cmd_UnAlias         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Path            (NativeCmdCtx *ctx, const char *args);
+void Cmd_Skip            (NativeCmdCtx *ctx, const char *args);
+void Cmd_Lab             (NativeCmdCtx *ctx, const char *args);
+void Cmd_ResLoad         (NativeCmdCtx *ctx, const char *args);
+
 #endif /* UAOS_NATIVE_CMD_H */

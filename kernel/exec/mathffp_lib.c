@@ -7,6 +7,7 @@
  */
 
 #include "rom_modules.h"
+#include "float_math.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -165,64 +166,55 @@ static void mathffp_SPFlt(M68kCPUState *cpu)
     cpu->d[0] = float_to_bits((float)i);
 }
 
-/* Advanced math functions (sqrt, log, exp, trig) are not implemented
- * in this freestanding kernel environment. The math library provides
- * only basic arithmetic: Add, Sub, Mul, Div, Neg, Abs, Fix, Flt.
- * Applications requiring advanced math should use software implementations.
+/* Transcendental functions are provided by the shared freestanding
+ * implementations in float_math.c (also used by mathtrans.library).
+ * All take their IEEE 754 operand in D0 and return the result in D0.
  */
 
 static void mathffp_SPSqrt(M68kCPUState *cpu)
 {
-    /* SPSqrt - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_sqrtf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPLog(M68kCPUState *cpu)
 {
-    /* SPLog - not implemented in freestanding environment */
-    cpu->d[0] = 0xFF800000;  /* -Infinity */
+    /* SPLog - natural logarithm (ln) */
+    cpu->d[0] = float_to_bits(uaos_logf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPExp(M68kCPUState *cpu)
 {
-    /* SPExp - not implemented in freestanding environment */
-    cpu->d[0] = 0x7F800000;  /* +Infinity */
+    cpu->d[0] = float_to_bits(uaos_expf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPSin(M68kCPUState *cpu)
 {
-    /* SPSin - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_sinf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPCos(M68kCPUState *cpu)
 {
-    /* SPCos - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_cosf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPTan(M68kCPUState *cpu)
 {
-    /* SPTan - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_tanf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPAtan(M68kCPUState *cpu)
 {
-    /* SPAtan - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_atanf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPAsin(M68kCPUState *cpu)
 {
-    /* SPAsin - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_asinf(bits_to_float(cpu->d[0])));
 }
 
 static void mathffp_SPAcos(M68kCPUState *cpu)
 {
-    /* SPAcos - not implemented in freestanding environment */
-    cpu->d[0] = 0x7FC00000;  /* NaN */
+    cpu->d[0] = float_to_bits(uaos_acosf(bits_to_float(cpu->d[0])));
 }
 
 /* =========================================================================

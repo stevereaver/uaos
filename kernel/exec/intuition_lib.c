@@ -40,7 +40,11 @@ extern uint8_t *g_ram;
 
 extern unsigned int m68k_get_reg(void *context, int reg);
 extern void         m68k_set_reg(int reg, unsigned int value);
+extern void         m68k_write_memory_8(unsigned int addr, unsigned int val);
+extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2);
+extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
+extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 
 #define M68K_REG_D0  0
 #define M68K_REG_D1  1
@@ -215,6 +219,7 @@ static void init_guest_rastport(uint32_t rp, uint32_t win_ptr)
     g_ram[rp + RP_OFF_FGPEN]    = 1;   /* white */
     g_ram[rp + RP_OFF_BGPEN]    = 0;   /* black */
     g_ram[rp + RP_OFF_DRAWMODE] = JAM2;
+    g_ram[rp + RP_OFF_MASK]     = 0xFF;/* all bitplanes writable */
     mem_w32(rp + RP_OFF_LAYER, win_ptr);
 }
 
@@ -240,6 +245,7 @@ typedef struct {
     /* Tag storage for SetWindowAttrsA / GetWindowAttrsA */
     uint32_t pub_screen;
     uint32_t super_bitmap;
+    uint32_t screen;            /* guest Screen this window is on */
     uint32_t zoom;
     uint8_t  zoomed;
     uint32_t backfill;
@@ -371,6 +377,7 @@ static void free_slot(IntuitionSlot *slot)
         slot->pointer_delay = 0;
         slot->help_enabled = 0;
         slot->refreshing = 0;
+        slot->screen = 0;
         slot->simple_refresh = 0;
         slot->damage_x = 0;
         slot->damage_y = 0;
@@ -970,11 +977,15 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
     if (!win_ptr) return 1;
 
     uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
-    if (!idcmp) return 1;
-
     int wx = 0, wy = 0, ww = 0, wh = 0;
-    (void)ww; (void)wh;
     WM_GetWindowRect(wm_handle, &wx, &wy, &ww, &wh);
+    if (event_type == WM_EVT_RESIZE) {
+        mem_w16(win_ptr + WIN_OFF_LEFTEDGE, (uint16_t)wx);
+        mem_w16(win_ptr + WIN_OFF_TOPEDGE, (uint16_t)wy);
+        mem_w16(win_ptr + WIN_OFF_WIDTH, (uint16_t)ww);
+        mem_w16(win_ptr + WIN_OFF_HEIGHT, (uint16_t)wh);
+    }
+    if (!idcmp) return 1;
     IntuitionSlot *slot = get_slot_from_handle(wm_handle);
 
     switch (event_type) {
@@ -986,10 +997,6 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
             return 1;
 
         case WM_EVT_GADGET_DOWN: {
-            if (p1 == WM_GADGET_ZOOM) {
-                apply_window_zoom(slot, wm_handle, win_ptr);
-                return 0;
-            }
             uint32_t gad = slot ? gadget_by_id(slot, (uint16_t)p1) : 0;
             if (idcmp & IDCMP_GADGETDOWN)
                 post_intui_message(win_ptr, IDCMP_GADGETDOWN, 0, 0, 0, 0, gad);
@@ -2136,6 +2143,14 @@ static void render_custom_gadgets(int win_x, int win_y, int off_x, int off_y, ui
 }
 
 /* Return the ColorMap of the screen a window lives on, or 0. */
+/* graphics.library LVO slots invoked from this file (|LVO| / 6). */
+extern void UAOS_Graphics_Dispatch(uint32_t fn);
+#define GFX_SLOT_ALLOCBITMAP  153
+#define GFX_SLOT_FREEBITMAP   154
+#define GFX_SLOT_SETRAST       39
+#define GFX_SLOT_RECTFILL      51
+#define GFX_SLOT_SETAPEN       57
+
 static uint32_t get_window_colormap(uint32_t win_ptr)
 {
     uint32_t screen = mem_u32(win_ptr + WIN_OFF_WSCREEN);
@@ -2187,29 +2202,70 @@ static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
                                      win_x + 1, win_y + WM_TITLEBAR_H,
                                      win_w - 1 - WM_SCROLLBAR_W,
                                      win_h - WM_TITLEBAR_H - WM_SCROLLBAR_W);
-    } else if (slot && slot->backfill) {
-        if (slot->backfill < 256) {
-            /* Pen-index fallback for WA_BackFill. */
-            fill_window_client_area(win_x, win_y, win_w, win_h,
-                                    amiga_pen_to_rgb((uint8_t)slot->backfill));
-        } else {
-            /* Real m68k Hook callback: fill the window client area.
-             * A0 = hook, A2 = window RastPort, A1 = Rectangle in RastPort coords. */
-            uint32_t rport = mem_u32(win_ptr + WIN_OFF_RPORT);
-            if (rport) {
-                int cx = win_x + 1;
-                int cy = win_y + WM_TITLEBAR_H;
+    } else {
+        /* The window's RastPort points into the parent screen's planar
+         * BitMap (set at OpenWindow).  Read the screen's BitMap and origin
+         * straight from the guest Screen structure. */
+        uint32_t scr = slot ? slot->screen : 0;
+        uint32_t scr_bm = scr ? mem_u32(scr + SCR_OFF_BITMA) : 0;
+
+        if (slot && slot->backfill) {
+            if (slot->backfill < 256) {
+                /* Pen-index fallback for WA_BackFill: fill the client area
+                 * in the screen BitMap when the window draws on one, else
+                 * fall back to a direct framebuffer fill. */
+                uint32_t rport = mem_u32(win_ptr + WIN_OFF_RPORT);
                 int cw = win_w - 1 - WM_SCROLLBAR_W;
                 int ch = win_h - WM_TITLEBAR_H - WM_SCROLLBAR_W;
-                if (cw > 0 && ch > 0) {
-                    const uint32_t rect = 0x1EF100u;
-                    mem_w16(rect + 0, 0);
-                    mem_w16(rect + 2, 0);
-                    mem_w16(rect + 4, (int16_t)(cw - 1));
-                    mem_w16(rect + 6, (int16_t)(ch - 1));
-                    UAOS_InvokeM68kHook(slot->backfill, slot->backfill, rect, rport);
+                if (rport && scr_bm && cw > 0 && ch > 0) {
+                    m68k_set_reg(M68K_REG_A1, rport);
+                    m68k_set_reg(M68K_REG_D0, slot->backfill);
+                    UAOS_Graphics_Dispatch(GFX_SLOT_SETAPEN);
+                    int off = (slot->gimme_zero_zero) ? 0 : WM_TITLEBAR_H;
+                    m68k_set_reg(M68K_REG_A1, rport);
+                    m68k_set_reg(M68K_REG_D0, slot->gimme_zero_zero ? 0 : 1);
+                    m68k_set_reg(M68K_REG_D1, (uint32_t)off);
+                    m68k_set_reg(M68K_REG_D2, (uint32_t)(slot->gimme_zero_zero ? cw - 1 : cw));
+                    m68k_set_reg(M68K_REG_D3, (uint32_t)(off + ch - 1));
+                    UAOS_Graphics_Dispatch(GFX_SLOT_RECTFILL);
+                } else {
+                    fill_window_client_area(win_x, win_y, win_w, win_h,
+                                            amiga_pen_to_rgb((uint8_t)slot->backfill));
+                }
+            } else {
+                /* Real m68k Hook callback: fill the window client area.
+                 * A0 = hook, A2 = window RastPort, A1 = Rectangle in RastPort coords. */
+                uint32_t rport = mem_u32(win_ptr + WIN_OFF_RPORT);
+                if (rport) {
+                    int cx = win_x + 1;
+                    int cy = win_y + WM_TITLEBAR_H;
+                    int cw = win_w - 1 - WM_SCROLLBAR_W;
+                    int ch = win_h - WM_TITLEBAR_H - WM_SCROLLBAR_W;
+                    if (cw > 0 && ch > 0) {
+                        const uint32_t rect = 0x1EF100u;
+                        mem_w16(rect + 0, 0);
+                        mem_w16(rect + 2, 0);
+                        mem_w16(rect + 4, (int16_t)(cw - 1));
+                        mem_w16(rect + 6, (int16_t)(ch - 1));
+                        UAOS_InvokeM68kHook(slot->backfill, slot->backfill, rect, rport);
+                    }
                 }
             }
+        }
+
+        /* Paint the screen BitMap region covering this window's client
+         * area over the WM's chrome fill so guest drawing is visible. */
+        if (scr_bm && scr) {
+            int cx = win_x + 1;
+            int cy = win_y + WM_TITLEBAR_H;
+            int cw = win_w - 1 - WM_SCROLLBAR_W;
+            int ch = win_h - WM_TITLEBAR_H - WM_SCROLLBAR_W;
+            int sl = mem_s16(scr + SCR_OFF_LEFTEDGE);
+            int st = mem_s16(scr + SCR_OFF_TOPEDGE);
+            render_bitmap_region_to_framebuffer(scr_bm,
+                get_window_colormap(win_ptr),
+                cx - sl, cy - st,
+                cx, cy, cw, ch);
         }
     }
 
@@ -2789,9 +2845,15 @@ typedef struct ScreenSlot {
     uint8_t  interleaved;
     uint8_t  like_workbench;
     uint8_t  minimize_isg;
+    uint8_t  owns_bitmap;   /* 1 = screen BitMap was allocated by us */
+    uint8_t  owns_colormap; /* 1 = ColorMap was allocated by us */
+    uint32_t rastport;      /* guest Screen.RastPort */
+    uint32_t viewport;      /* guest ViewPort (carries the ColorMap) */
 } ScreenSlot;
 
 static ScreenSlot g_intu_screens[MAX_INTUITION_SCREENS];
+
+static uint32_t screen_colormap(ScreenSlot *slot);
 
 static ScreenSlot *find_screen_slot(uint32_t screen_ptr)
 {
@@ -2847,9 +2909,10 @@ static void update_desktop_title(void)
     }
 }
 
-/* Render the front Intuition screen's custom BitMap into the host framebuffer.
- * Returns 1 if a screen bitmap was rendered, 0 otherwise (caller should fall
- * back to its own background). */
+/* Render the front Intuition screen's BitMap into the host framebuffer.
+ * SA_BackFill runs first so the hook/pen fill lands inside the screen
+ * BitMap (or directly on the framebuffer when the screen has none).
+ * Returns 1 if a screen was rendered, 0 otherwise. */
 int UAOS_Intuition_RenderScreenBackdrop(void)
 {
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
@@ -2858,46 +2921,114 @@ int UAOS_Intuition_RenderScreenBackdrop(void)
         uint32_t screen = slot->guest_screen;
         if (!screen) continue;
         uint32_t bm = slot->bitmap;
-        if (bm) {
-            uint32_t cmap = 0;
-            uint32_t vp = mem_u32(screen + SCR_OFF_VIEWPORT);
-            if (vp) cmap = mem_u32(vp + VP_OFF_COLORMAP);
-            render_bitmap_to_framebuffer(bm, cmap, slot->left, slot->top,
-                                         slot->width, slot->height);
-            return 1;
-        }
+
         if (slot->backfill) {
+            uint32_t rport = slot->rastport
+                             ? slot->rastport
+                             : mem_u32(screen + SCR_OFF_RASTPORT);
             if (slot->backfill < 256) {
                 /* Pen-index fallback for SA_BackFill. */
-                uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
-                FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, rgb);
+                if (bm && rport) {
+                    /* Fill the screen BitMap with the pen index so the
+                     * colour comes out through the screen's ColorMap. */
+                    m68k_set_reg(M68K_REG_A1, rport);
+                    m68k_set_reg(M68K_REG_D0, slot->backfill);
+                    UAOS_Graphics_Dispatch(GFX_SLOT_SETRAST);
+                } else {
+                    uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
+                    FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, rgb);
+                }
             } else {
                 /* Real m68k Hook callback: fill the screen backdrop.
-                 * A0 = hook, A2 = screen RastPort, A1 = full-screen Rectangle.
-                 * Non-Workbench screens do not have a persistent RastPort, so
-                 * allocate a temporary one for the hook call. */
-                uint32_t rport = mem_u32(screen + SCR_OFF_RASTPORT);
+                 * A0 = hook, A2 = screen RastPort, A1 = Rectangle in
+                 * RastPort (BitMap) coordinates. */
                 uint32_t tmp_rport = 0;
                 if (!rport) {
                     tmp_rport = intu_alloc(RP_SIZE_MIN);
-                    if (tmp_rport) init_guest_rastport(tmp_rport, 0);
+                    if (tmp_rport) {
+                        init_guest_rastport(tmp_rport, 0);
+                        mem_w32(tmp_rport + RP_OFF_BITMAP, bm);
+                    }
                     rport = tmp_rport;
                 }
                 if (rport) {
                     const uint32_t rect = 0x1EF100u;
-                    mem_w16(rect + 0, (int16_t)slot->left);
-                    mem_w16(rect + 2, (int16_t)slot->top);
-                    mem_w16(rect + 4, (int16_t)(slot->left + slot->width - 1));
-                    mem_w16(rect + 6, (int16_t)(slot->top + slot->height - 1));
+                    mem_w16(rect + 0, 0);
+                    mem_w16(rect + 2, 0);
+                    mem_w16(rect + 4, (int16_t)(slot->width - 1));
+                    mem_w16(rect + 6, (int16_t)(slot->height - 1));
                     UAOS_InvokeM68kHook(slot->backfill, slot->backfill, rect, rport);
                     if (tmp_rport) intu_free(tmp_rport);
                 }
             }
+        }
+
+        if (bm) {
+            render_bitmap_to_framebuffer(bm, screen_colormap(slot),
+                                         slot->left, slot->top,
+                                         slot->width, slot->height);
             return 1;
         }
-        return 0;
+        return slot->backfill ? 1 : 0;
     }
     return 0;
+}
+
+/* Re-render a dirty rectangle of a screen (or WA_SuperBitMap window)
+ * BitMap into the host framebuffer.  Called by graphics.library at the
+ * end of each dispatch that wrote planar pixels so drawing is visible
+ * immediately rather than only on the next WM redraw.  The rectangle is
+ * in BitMap coordinates. */
+void UAOS_Intuition_FlushScreenBitmap(uint32_t bm, int x0, int y0, int x1, int y1)
+{
+    if (!bm || x1 < x0 || y1 < y0 || !g_fb.valid) return;
+
+    /* Front screen's BitMap: map bitmap coords through the screen origin. */
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (!slot->active || !slot->is_front || slot->bitmap != bm) continue;
+        render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
+            x0, y0, slot->left + x0, slot->top + y0,
+            x1 - x0 + 1, y1 - y0 + 1);
+        return;
+    }
+
+    /* WA_SuperBitMap windows: map bitmap coords into the window's client
+     * area position on the host framebuffer. */
+    for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+        IntuitionSlot *slot = &g_intu_wins[i];
+        if (!slot->active || slot->super_bitmap != bm) continue;
+        int wx, wy, ww, wh;
+        if (!WM_GetWindowRect(slot->wm_handle, &wx, &wy, &ww, &wh)) return;
+        render_bitmap_region_to_framebuffer(bm,
+            get_window_colormap(slot->guest_win),
+            x0, y0, wx + 1 + x0, wy + WM_TITLEBAR_H + y0,
+            x1 - x0 + 1, y1 - y0 + 1);
+        return;
+    }
+}
+
+/* WM vacate hook: when a window moves, resizes, zooms, or closes, erase
+ * the vacated rectangle in the parent screen's BitMap (pen 0 backdrop)
+ * so the next backdrop render does not resurrect stale pixels. */
+static void intu_screen_vacate(int wh, int x, int y, int w, int h)
+{
+    IntuitionSlot *slot = get_slot_from_handle(wh);
+    if (!slot || !slot->screen) return;
+    ScreenSlot *sslot = find_screen_slot(slot->screen);
+    if (!sslot || !sslot->bitmap || !sslot->rastport) return;
+
+    int x0 = x - sslot->left;
+    int y0 = y - sslot->top;
+    m68k_set_reg(M68K_REG_A1, sslot->rastport);
+    m68k_set_reg(M68K_REG_D0, 0);
+    UAOS_Graphics_Dispatch(GFX_SLOT_SETAPEN);
+    m68k_set_reg(M68K_REG_A1, sslot->rastport);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)x0);
+    m68k_set_reg(M68K_REG_D1, (uint32_t)y0);
+    m68k_set_reg(M68K_REG_D2, (uint32_t)(x0 + w - 1));
+    m68k_set_reg(M68K_REG_D3, (uint32_t)(y0 + h - 1));
+    UAOS_Graphics_Dispatch(GFX_SLOT_RECTFILL);
 }
 
 /* Compute the allowed display rectangle for a screen based on its stored
@@ -2983,8 +3114,18 @@ static int screen_palette_count(ScreenSlot *slot)
  * local RGB table.  Unspecified pens keep the default Amiga palette. */
 static void extract_screen_palette(ScreenSlot *slot, uint32_t *palette, int max_colors)
 {
+    /* Unspecified pens default to the Workbench screen palette
+     * (grey/black/white/blue) for the first four entries — pen 0 is the
+     * screen backdrop — and the OCS palette for the rest. */
+    static const uint32_t wb_defaults[4] = {
+        FB_RGB(0xAA, 0xAA, 0xAA), /* pen 0: backdrop grey */
+        FB_RGB(0x00, 0x00, 0x00), /* pen 1: text black    */
+        FB_RGB(0xFF, 0xFF, 0xFF), /* pen 2: shine white   */
+        FB_RGB(0x66, 0x88, 0xBB), /* pen 3: WB blue       */
+    };
     for (int i = 0; i < max_colors; i++)
-        palette[i] = amiga_pen_to_rgb((uint8_t)i);
+        palette[i] = (i < 4) ? wb_defaults[i]
+                             : amiga_pen_to_rgb((uint8_t)i);
 
     if (slot->colors) {
         /* SA_Colors: ColorSpec array (cs_Buffer, cs_UnRed, cs_UnGreen, cs_UnBlue).
@@ -3103,6 +3244,96 @@ static uint32_t find_pub_screen_by_name(const char *name);
 static void set_pointer_from_wa_pointer(uint32_t ptr, int xoff, int yoff);
 static void schedule_pointer_change(int got_busy, int busy, int got_pointer, uint32_t pointer, uint32_t delay);
 static void screen_notify_event(uint32_t screen_ptr, uint32_t type);
+
+/* -------------------------------------------------------------------------
+ * Planar screen BitMap support
+ *
+ * Every Intuition screen is backed by a real Amiga planar BitMap (1–8
+ * bitplanes).  Screen and window RastPorts point at it, so all guest
+ * drawing lands on bitplanes; the desktop render path translates the
+ * planes through the screen's ColorMap into the linear framebuffer.
+ * ------------------------------------------------------------------------- */
+
+/* Allocate a cleared planar BitMap via graphics.library AllocBitMap(). */
+static uint32_t alloc_screen_bitmap(int w, int h, int depth)
+{
+    if (w <= 0 || h <= 0) return 0;
+    if (depth < 1) depth = 1;
+    if (depth > 8) depth = 8;
+    m68k_set_reg(M68K_REG_D0, (uint32_t)w);
+    m68k_set_reg(M68K_REG_D1, (uint32_t)h);
+    m68k_set_reg(M68K_REG_D2, (uint32_t)depth);
+    m68k_set_reg(M68K_REG_D3, BMF_CLEAR);
+    m68k_set_reg(M68K_REG_A0, 0);
+    UAOS_Graphics_Dispatch(GFX_SLOT_ALLOCBITMAP);
+    return m68k_get_reg(NULL, M68K_REG_D0);
+}
+
+static void free_screen_bitmap(uint32_t bm)
+{
+    if (!bm) return;
+    m68k_set_reg(M68K_REG_A1, bm);
+    UAOS_Graphics_Dispatch(GFX_SLOT_FREEBITMAP);
+}
+
+/* Build a guest ColorMap for a screen: 1<<depth entries seeded with the
+ * default Amiga palette, then overridden by SA_Colors / SA_Colors32. */
+static uint32_t build_screen_colormap(ScreenSlot *slot)
+{
+    int entries = 1 << (slot->depth > 0 ? slot->depth : 1);
+    if (entries > 256) entries = 256;
+
+    uint32_t cm = intu_alloc(CM_SIZE);
+    if (!cm) return 0;
+    uint32_t table = intu_alloc((uint32_t)entries * 4);
+    if (!table) { intu_free(cm); return 0; }
+
+    memset(&g_ram[cm], 0, CM_SIZE);
+    mem_w16(cm + CM_OFF_COUNT, (uint16_t)entries);
+    mem_w32(cm + CM_OFF_COLORTABLE, table);
+
+    uint32_t palette[32];
+    extract_screen_palette(slot, palette, entries < 32 ? entries : 32);
+    for (int i = 0; i < entries; i++) {
+        uint32_t rgb = (i < 32) ? palette[i]
+                                : amiga_pen_to_rgb((uint8_t)(i & 15));
+        mem_w32(table + i * 4, rgb);
+    }
+    return cm;
+}
+
+static void free_screen_colormap(uint32_t cm)
+{
+    if (!cm) return;
+    uint32_t table = mem_u32(cm + CM_OFF_COLORTABLE);
+    if (table) intu_free(table);
+    intu_free(cm);
+}
+
+/* Resolve the ColorMap used to translate a screen's BitMap to RGB:
+ * the ViewPort's ColorMap if present, else the one built at OpenScreen. */
+static uint32_t screen_colormap(ScreenSlot *slot)
+{
+    uint32_t vp = mem_u32(slot->guest_screen + SCR_OFF_VIEWPORT);
+    uint32_t cmap = vp ? mem_u32(vp + VP_OFF_COLORMAP) : 0;
+    return cmap ? cmap : slot->colormap;
+}
+
+/* Allocate a minimal guest ViewPort for a screen so GetVPColorMap /
+ * ViewPortAddress and the window colormap lookup resolve the screen's
+ * ColorMap. */
+#define VP_ALLOC_SIZE 40
+static uint32_t alloc_screen_viewport(ScreenSlot *slot)
+{
+    uint32_t vp = intu_alloc(VP_ALLOC_SIZE);
+    if (!vp) return 0;
+    memset(&g_ram[vp], 0, VP_ALLOC_SIZE);
+    mem_w32(vp + VP_OFF_COLORMAP, slot->colormap);
+    mem_w16(vp + VP_OFF_DWIDTH,  (uint16_t)slot->width);
+    mem_w16(vp + VP_OFF_DHEIGHT, (uint16_t)slot->height);
+    mem_w32(vp + VP_OFF_DISPLAYID, slot->display_id);
+    return vp;
+}
 
 static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_ptr)
 {
@@ -3332,9 +3563,32 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     slot->interleaved       = interleaved;
     slot->like_workbench    = like_workbench;
     slot->minimize_isg      = minimize_isg;
+    slot->owns_bitmap       = 0;
+    slot->owns_colormap     = 0;
+    slot->rastport          = 0;
+
+    /* Every screen is backed by a real planar BitMap.  If the guest did
+     * not supply one via SA_BitMap, allocate one matching the screen
+     * geometry and depth so all RastPort drawing lands on bitplanes. */
+    if (!slot->bitmap) {
+        slot->bitmap = alloc_screen_bitmap(width, height, depth);
+        slot->owns_bitmap = slot->bitmap ? 1 : 0;
+    }
+    slot->colormap = build_screen_colormap(slot);
+    slot->owns_colormap = slot->colormap ? 1 : 0;
+
+    /* Screen.RastPort draws into the screen BitMap. */
+    slot->rastport = intu_alloc(RP_SIZE_MIN);
+    if (slot->rastport) {
+        init_guest_rastport(slot->rastport, 0);
+        mem_w32(slot->rastport + RP_OFF_BITMAP, slot->bitmap);
+    }
+    slot->viewport = alloc_screen_viewport(slot);
 
     uint16_t screen_flags = type | (show_title ? SHOWTITLE : 0);
     init_guest_screen(guest_screen, slot, screen_flags);
+    mem_w32(guest_screen + SCR_OFF_RASTPORT, slot->rastport);
+    mem_w32(guest_screen + SCR_OFF_VIEWPORT, slot->viewport);
     if (title_ptr)
         mem_w32(guest_screen + SCR_OFF_TITLE, title_ptr);
     if (font_ptr)
@@ -3764,10 +4018,16 @@ static void intuition_OpenWindowTagList(void)
     uint32_t rp_ptr = intu_alloc(RP_SIZE_MIN);
     if (rp_ptr) {
         init_guest_rastport(rp_ptr, win_ptr);
-        /* WA_SuperBitMap: the window renders into its own backing BitMap. */
+        /* WA_SuperBitMap: the window renders into its own backing BitMap.
+         * Otherwise the window RastPort draws into the parent screen's
+         * planar BitMap (translated to the framebuffer at render time). */
         if (super_bitmap) {
             mem_w32(rp_ptr + RP_OFF_BITMAP, super_bitmap);
             slot->super_bitmap = super_bitmap;
+        } else {
+            ScreenSlot *sslot = wscreen ? find_screen_slot(wscreen) : NULL;
+            if (sslot && sslot->bitmap)
+                mem_w32(rp_ptr + RP_OFF_BITMAP, sslot->bitmap);
         }
     }
     /* Build an AmigaOS-compatible Window structure. */
@@ -3798,6 +4058,7 @@ static void intuition_OpenWindowTagList(void)
 
     slot->guest_win = win_ptr;
     slot->wm_handle = wh;
+    slot->screen    = wscreen;
     slot->min_w     = min_w;
     slot->min_h     = min_h;
     slot->max_w     = max_w;
@@ -4820,7 +5081,6 @@ static uint32_t open_workbench_internal(void)
     mem_w32(guest_screen + SCR_OFF_DEFAULTTITLE, 0);
     mem_w32(guest_screen + SCR_OFF_FONT, 0);
     mem_w32(guest_screen + SCR_OFF_RASTPORT, rport);
-    mem_w32(guest_screen + SCR_OFF_VIEWPORT, 0);
     mem_w8(guest_screen + SCR_OFF_DETAILPEN, 0);
     mem_w8(guest_screen + SCR_OFF_BLOCKPEN, 1);
 
@@ -4858,8 +5118,23 @@ static uint32_t open_workbench_internal(void)
     slot->interleaved = 0;
     slot->like_workbench = 1;
     slot->minimize_isg = 0;
+
+    /* The Workbench screen is backed by a planar BitMap too, so windows
+     * and the screen RastPort draw on real bitplanes.  Pen 0 is the
+     * backdrop and maps to Workbench grey via the screen ColorMap. */
+    slot->bitmap = alloc_screen_bitmap((int)g_fb.width, (int)g_fb.height,
+                                       slot->depth > 0 ? slot->depth : 2);
+    slot->owns_bitmap = slot->bitmap ? 1 : 0;
+    slot->colormap = build_screen_colormap(slot);
+    slot->owns_colormap = slot->colormap ? 1 : 0;
+    slot->rastport = rport;
+    if (rport)
+        mem_w32(rport + RP_OFF_BITMAP, slot->bitmap);
+    slot->viewport = alloc_screen_viewport(slot);
+
     mem_w8(guest_screen + SCR_OFF_DEPTH, slot->depth);
-    mem_w32(guest_screen + SCR_OFF_BITMA, 0);
+    mem_w32(guest_screen + SCR_OFF_BITMA, slot->bitmap);
+    mem_w32(guest_screen + SCR_OFF_VIEWPORT, slot->viewport);
     mem_w32(guest_screen + SCR_OFF_DISPLAYID, 0);
     mem_w32(guest_screen + SCR_OFF_COLORS, 0);
 
@@ -4887,6 +5162,14 @@ static void intuition_CloseWorkbench(void)
         if (slot) {
             uint32_t rport = mem_u32(g_workbench_screen + SCR_OFF_RASTPORT);
             intu_free(rport);
+            if (slot->viewport) {
+                intu_free(slot->viewport);
+                slot->viewport = 0;
+            }
+            if (slot->owns_bitmap)   free_screen_bitmap(slot->bitmap);
+            if (slot->owns_colormap) free_screen_colormap(slot->colormap);
+            slot->bitmap = 0;
+            slot->colormap = 0;
             intu_free(g_workbench_screen);
             slot->active = 0;
             update_desktop_title();
@@ -4917,8 +5200,6 @@ static void intuition_DisposeObject(void);
 #define GFX_SLOT_BLTTEMPLATE          6
 #define GFX_SLOT_MOVE                40
 #define GFX_SLOT_DRAW                41
-#define GFX_SLOT_RECTFILL            51
-#define GFX_SLOT_SETAPEN             57
 #define GFX_SLOT_SETBPEN             58
 #define GFX_SLOT_SETDRMD             59
 #define GFX_SLOT_BLTBITMAPRASTPORT  101
@@ -5327,6 +5608,18 @@ static void intuition_CloseScreen(void)
             intu_free(slot->pub_name_guest);
             slot->pub_name_guest = 0;
         }
+        if (slot->rastport) {
+            intu_free(slot->rastport);
+            slot->rastport = 0;
+        }
+        if (slot->viewport) {
+            intu_free(slot->viewport);
+            slot->viewport = 0;
+        }
+        if (slot->owns_bitmap)   free_screen_bitmap(slot->bitmap);
+        if (slot->owns_colormap) free_screen_colormap(slot->colormap);
+        slot->bitmap = 0;
+        slot->colormap = 0;
         slot->active = 0;
         update_desktop_title();
     }
@@ -5374,21 +5667,12 @@ static void intuition_AllocScreenBuffer(void)
         /* SB_SCREEN_BITMAP: use the screen's current BitMap. */
         bitmap = mem_u32(screen_ptr + SCR_OFF_BITMA);
     } else if (!bitmap) {
-        /* SB_COPY_BITMAP: allocate a new BitMap matching the screen. */
+        /* SB_COPY_BITMAP: allocate a planar BitMap matching the screen
+         * via graphics.library AllocBitMap() so plane memory is real. */
         int16_t w = mem_s16(screen_ptr + SCR_OFF_WIDTH);
         int16_t h = mem_s16(screen_ptr + SCR_OFF_HEIGHT);
         uint8_t d = mem_u8(screen_ptr + SCR_OFF_DEPTH);
-        if (w > 0 && h > 0 && d > 0) {
-            uint32_t bm = 0;
-            dos_AllocMem_glue(40, 0, &bm);
-            if (bm) {
-                for (int i = 0; i < 40; i++) m68k_write_memory_8(bm + i, 0);
-                m68k_write_memory_16(bm + 8,  (uint16_t)w);   /* BM_BYTESPERROW */
-                m68k_write_memory_16(bm + 10, (uint16_t)h);   /* BM_ROWS */
-                m68k_write_memory_16(bm + 12, (uint16_t)d);   /* BM_DEPTH */
-                bitmap = bm;
-            }
-        }
+        bitmap = alloc_screen_bitmap((int)w, (int)h, (int)d);
     }
     m68k_write_memory_32(sb + SBUFF_OFF_BITMAP, bitmap);
     m68k_write_memory_32(sb + SBUFF_OFF_FLAGS, flags);
@@ -5422,7 +5706,7 @@ static void intuition_FreeScreenBuffer(void)
     uint32_t bitmap = mem_u32(sb + SBUFF_OFF_BITMAP);
     /* Only free the BitMap if we allocated it (SB_COPY_BITMAP). */
     if (bitmap && !(flags & 0x00000001u)) {
-        dos_FreeMem_glue(bitmap, 40);
+        free_screen_bitmap(bitmap);
     }
     dos_FreeMem_glue(sb, SBUFF_SIZE);
 }
@@ -9299,6 +9583,7 @@ void UAOS_INTUITION_Register(void)
                       (uint16_t)(sizeof(intuition_funcs) / sizeof(intuition_funcs[0])),
                       intuition_funcs);
     WM_SetPaletteFn(intuition_apply_window_palette);
+    WM_SetVacateFn(intu_screen_vacate);
 
     extern void UAOS_BOOPSI_RegisterBuiltinClasses(void);
     UAOS_BOOPSI_RegisterBuiltinClasses();

@@ -11,7 +11,7 @@
  *     Uses the simple BAR0 I/O register interface, identical to the
  *     existing virtio_blk / virtio_net legacy drivers.
  *
- * The disk (target 0, LUN 0) is registered as block device "virtio0"
+ * The disk (port 0, LUN 0) is registered as block device "virtio0"
  * so the existing partition / MBR / mount / assign boot flow in
  * uaos_kernel_main.c works unchanged.
  *
@@ -190,7 +190,10 @@ static inline void mmio_w16(uint64_t addr, uint16_t val) {
 }
 
 static inline void memory_barrier(void) {
-    __asm__ volatile("" ::: "memory");
+    /* Full x86 memory fence — ensures all prior stores are globally visible
+     * before notifying the VirtIO device.  Without this the device can see
+     * a stale avail_idx and miss the request, causing a 3-second timeout. */
+    __asm__ volatile("mfence" ::: "memory");
 }
 
 /* =========================================================================
@@ -310,6 +313,7 @@ typedef struct __attribute__((aligned(4096))) {
 
 /* Static virtqueue memory (BSS, page-aligned) */
 static vio_virtq_t g_vq[VIO_NUM_QUEUES];
+static uint16_t g_command_last_used;
 
 /* =========================================================================
  * VirtIO-SCSI request / response structures
@@ -335,6 +339,7 @@ typedef struct __attribute__((packed)) {
 
 /* SCSI CDB opcodes */
 #define SCSI_TEST_UNIT_READY    0x00
+#define SCSI_INQUIRY            0x12
 #define SCSI_READ_CAPACITY_10   0x25
 #define SCSI_READ_10            0x28
 #define SCSI_WRITE_10           0x2A
@@ -342,9 +347,34 @@ typedef struct __attribute__((packed)) {
 /* SCSI response codes */
 #define VIO_SCSI_RESP_OK        0
 #define VIO_SCSI_RESP_CHECK     2
+#define VIO_SCSI_RESP_BUSY      0x0A
 
 /* SCSI status codes */
 #define SCSI_STATUS_GOOD        0
+#define SCSI_STATUS_CHECK_COND  0x02
+
+/* SCSI peripheral device types (INQUIRY byte 0, bits 4-0) */
+#define SCSI_PERIPH_DIRECT      0x00  /* Direct-access block (hard disk) */
+#define SCSI_PERIPH_CDROM       0x05  /* CD/DVD-ROM */
+#define SCSI_PERIPH_UNKNOWN     0x1F  /* Unknown/no device */
+
+/* Maximum number of targets to scan */
+#define VIO_SCSI_MAX_PORTS      8
+#define VIO_SCSI_MAX_LUN        1  /* LUNs per port to scan */
+
+/* =========================================================================
+ * Per-device state
+ * ========================================================================= */
+
+typedef struct {
+    int       active;
+    int       port;
+    int       lun;        /* SCSI port */
+    int       is_cdrom;      /* 1 if CD/DVD-ROM, 0 if hard disk */
+    uint32_t  sector_size;   /* 512 for hard disk, 2048 for CD-ROM */
+    uint64_t  capacity;      /* in sector_size-byte sectors */
+    BlockDev  bdev;
+} vio_scsi_device_t;
 
 /* =========================================================================
  * Driver state
@@ -356,8 +386,10 @@ static uint8_t     g_pci_bus     = 0;
 static uint8_t     g_pci_dev     = 0;
 static uint8_t     g_pci_fn      = 0;
 static int         g_irq_line    = -1;
-static int         g_active      = 0;
-static uint64_t    g_capacity    = 0;       /* in 512-byte sectors */
+static int         g_active      = 0;       /* controller initialised */
+
+static vio_scsi_device_t g_devices[VIO_SCSI_MAX_PORTS];
+static int g_num_devices = 0;
 
 /* Modern transport capability locations */
 static vio_cap_t g_common_cap;
@@ -372,9 +404,6 @@ static volatile int g_irq_pending = 0;
 static vio_scsi_req_t  g_scsi_req  __attribute__((aligned(4096)));
 static vio_scsi_resp_t g_scsi_resp __attribute__((aligned(4096)));
 static uint8_t g_data_buffer[65536] __attribute__((aligned(4096)));
-
-/* Block device structure */
-static BlockDev g_virtio_scsi_dev;
 
 /* =========================================================================
  * Transport accessors
@@ -431,6 +460,8 @@ static uint16_t vio_queue_size_read(void) {
 /* --- Queue notify --- */
 static void vio_queue_notify(uint16_t idx) {
     if (g_transport == VIO_SCSI_LEGACY) {
+        /* Legacy: select the queue before notifying */
+        outw(g_legacy_io + VIO_LEGACY_QUEUE_SEL, idx);
         outw(g_legacy_io + VIO_LEGACY_QUEUE_NOTIFY, idx);
         return;
     }
@@ -518,6 +549,7 @@ static int vio_setup_queue(uint16_t qidx) {
     for (int i = 0; i < VIO_SCSI_QSIZE; i++) vq->avail_ring[i] = 0;
     vq->used_flags  = 0;
     vq->used_idx    = 0;
+    if (qidx == VIO_Q_COMMAND) g_command_last_used = 0;
 
     kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
     kprint(" setup OK (size="); kprinthex((uint64_t)qsize); kprint(")\n");
@@ -529,9 +561,22 @@ static int vio_setup_queue(uint16_t qidx) {
  * ========================================================================= */
 
 static int vio_device_init(void) {
-    /* 1. Reset */
+    /* 1. Reset — the virtio spec requires the driver to wait until
+     * device_status reads back 0 before reinitialising the device.
+     * A fixed delay can race the device model's reset processing and
+     * leave the status/queue state inconsistent (intermittent init
+     * failures on VirtualBox), so poll with a bounded spin. */
     vio_status_write(VIRTIO_STATUS_RESET);
-    for (volatile int i = 0; i < 1000; i++); /* brief delay */
+    {
+        int reset_ok = 0;
+        for (volatile int i = 0; i < 1000000; i++) {
+            if (vio_status_read() == VIRTIO_STATUS_RESET) { reset_ok = 1; break; }
+        }
+        if (!reset_ok) {
+            kprint("[VIO-SCSI] Device did not complete reset\n");
+            return -1;
+        }
+    }
 
     /* 2. Acknowledge + Driver */
     vio_status_write(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
@@ -728,26 +773,36 @@ static int vio_find_device(void) {
  * SCSI command submission and completion
  * ========================================================================= */
 
-/* Build a SCSI LUN field for target 0, LUN 0:
- *   byte 0 = 0x01 (single-level LUN, reporting method 0)
- *   byte 1 = 0x00 (LUN number) */
-static void vio_scsi_set_lun(uint8_t lun[8]) {
+/* Build a SCSI LUN field for the given port and LUN.
+ * This matches the encoding used by the Linux kernel virtio_scsi driver:
+ *   lun[0] = 1
+ *   lun[1] = target (port)
+ *   lun[2] = (LUN >> 8) | 0x40
+ *   lun[3] = LUN & 0xFF
+ *   lun[4..7] = 0 */
+static void vio_scsi_set_lun(uint8_t lun[8], int port, int lun_num) {
     for (int i = 0; i < 8; i++) lun[i] = 0;
     lun[0] = 0x01;
+    lun[1] = (uint8_t)(port & 0xFF);
+    lun[2] = (uint8_t)(((lun_num >> 8) & 0x3F) | 0x40);
+    lun[3] = (uint8_t)(lun_num & 0xFF);
 }
 
-/* Submit a SCSI command on the command virtqueue (queue 2).
+static uint64_t g_scsi_req_id = 1;  /* monotonic request identifier */
+
+/* Submit a SCSI command on the command virtqueue (queue 2) to the given port.
  * data_phys / data_len describe the data buffer (0 if no data).
  * is_write = 1 for WRITE (data is device-readable),
  *            0 for READ  (data is device-writable).
  * Returns 0 on success. */
-static int vio_scsi_submit(const uint8_t cdb[32], uint64_t data_phys, uint32_t data_len,
+static int vio_scsi_submit(const uint8_t cdb[32], int port, int lun_num,
+                           uint64_t data_phys, uint32_t data_len,
                            int is_write) {
     vio_virtq_t *vq = &g_vq[VIO_Q_COMMAND];
 
     /* Build request header */
-    vio_scsi_set_lun(g_scsi_req.lun);
-    g_scsi_req.id         = 1;  /* simple monotonic ID */
+    vio_scsi_set_lun(g_scsi_req.lun, port, lun_num);
+    g_scsi_req.id         = g_scsi_req_id++;
     g_scsi_req.task_attr  = 0;  /* simple */
     g_scsi_req.prio       = 0;
     g_scsi_req.crn        = 0;
@@ -766,31 +821,55 @@ static int vio_scsi_submit(const uint8_t cdb[32], uint64_t data_phys, uint32_t d
         return -1;
     }
 
-    /* Descriptor 0: request header (device-readable) */
-    vq->desc[0].addr  = req_phys;
-    vq->desc[0].len   = sizeof(vio_scsi_req_t);
-    vq->desc[0].flags = VIO_DESC_F_NEXT;
-    vq->desc[0].next  = 1;
+    /* Build descriptor chain per virtio-scsi spec:
+     *   READ:  request (out) → response (in) → data (in)
+     *   WRITE: request (out) → data (out) → response (in)
+     *   NONE:  request (out) → response (in)
+     * The response buffer must always be the FIRST writable descriptor. */
+    if (data_len > 0 && !is_write) {
+        /* READ: request → response → data */
+        vq->desc[0].addr  = req_phys;
+        vq->desc[0].len   = sizeof(vio_scsi_req_t);
+        vq->desc[0].flags = VIO_DESC_F_NEXT;
+        vq->desc[0].next  = 1;
 
-    /* Descriptor 1: data buffer (if data phase present) */
-    int resp_desc;
-    if (data_len > 0) {
+        vq->desc[1].addr  = resp_phys;
+        vq->desc[1].len   = sizeof(vio_scsi_resp_t);
+        vq->desc[1].flags = VIO_DESC_F_NEXT | VIO_DESC_F_WRITE;
+        vq->desc[1].next  = 2;
+
+        vq->desc[2].addr  = data_phys;
+        vq->desc[2].len   = data_len;
+        vq->desc[2].flags = VIO_DESC_F_WRITE;
+        vq->desc[2].next  = 0;
+    } else if (data_len > 0 && is_write) {
+        /* WRITE: request → data → response */
+        vq->desc[0].addr  = req_phys;
+        vq->desc[0].len   = sizeof(vio_scsi_req_t);
+        vq->desc[0].flags = VIO_DESC_F_NEXT;
+        vq->desc[0].next  = 1;
+
         vq->desc[1].addr  = data_phys;
         vq->desc[1].len   = data_len;
-        vq->desc[1].flags = VIO_DESC_F_NEXT | (is_write ? 0 : VIO_DESC_F_WRITE);
+        vq->desc[1].flags = VIO_DESC_F_NEXT;  /* device-readable */
         vq->desc[1].next  = 2;
-        resp_desc = 2;
-    } else {
-        /* No data phase — chain desc 0 directly to response at desc 1 */
-        vq->desc[0].next = 1;
-        resp_desc = 1;
-    }
 
-    /* Response descriptor (device-writable, end of chain) */
-    vq->desc[resp_desc].addr  = resp_phys;
-    vq->desc[resp_desc].len   = sizeof(vio_scsi_resp_t);
-    vq->desc[resp_desc].flags = VIO_DESC_F_WRITE;
-    vq->desc[resp_desc].next  = 0;
+        vq->desc[2].addr  = resp_phys;
+        vq->desc[2].len   = sizeof(vio_scsi_resp_t);
+        vq->desc[2].flags = VIO_DESC_F_WRITE;
+        vq->desc[2].next  = 0;
+    } else {
+        /* No data phase: request → response */
+        vq->desc[0].addr  = req_phys;
+        vq->desc[0].len   = sizeof(vio_scsi_req_t);
+        vq->desc[0].flags = VIO_DESC_F_NEXT;
+        vq->desc[0].next  = 1;
+
+        vq->desc[1].addr  = resp_phys;
+        vq->desc[1].len   = sizeof(vio_scsi_resp_t);
+        vq->desc[1].flags = VIO_DESC_F_WRITE;
+        vq->desc[1].next  = 0;
+    }
 
     memory_barrier();
 
@@ -807,26 +886,28 @@ static int vio_scsi_submit(const uint8_t cdb[32], uint64_t data_phys, uint32_t d
 }
 
 /* Wait for the command virtqueue to report completion.
- * Returns 0 on success (response OK + SCSI status GOOD). */
-static int vio_scsi_wait_completion(void) {
+ * Returns 0 on success (response OK + SCSI status GOOD).
+ * Returns -1 on error or timeout.  *out_response is set to the virtio-scsi
+ * response code so callers can distinguish BUSY from other failures. */
+static int vio_scsi_wait_completion_ext(uint8_t *out_response) {
     vio_virtq_t *vq = &g_vq[VIO_Q_COMMAND];
-    uint16_t initial_used = vq->used_idx;
 
     uint32_t iterations = 0;
     while (1) {
         memory_barrier();
 
-        if (vq->used_idx != initial_used) {
+        if (vq->used_idx != g_command_last_used) {
+            g_command_last_used = vq->used_idx;
             memory_barrier();
-            /* Check response */
+            if (out_response) *out_response = g_scsi_resp.response;
             if (g_scsi_resp.response != VIO_SCSI_RESP_OK) {
-                kprint("[VIO-SCSI] SCSI response error: ");
-                kprinthex((uint64_t)g_scsi_resp.response); kprint("\n");
+                kprint("[VIO-SCSI] resp="); kprinthex((uint64_t)g_scsi_resp.response);
+                kprint(" status="); kprinthex((uint64_t)g_scsi_resp.status); kprint("\n");
                 return -1;
             }
             if (g_scsi_resp.status != SCSI_STATUS_GOOD) {
-                kprint("[VIO-SCSI] SCSI status error: ");
-                kprinthex((uint64_t)g_scsi_resp.status); kprint("\n");
+                kprint("[VIO-SCSI] SCSI status="); kprinthex((uint64_t)g_scsi_resp.status);
+                kprint("\n");
                 return -1;
             }
             return 0;
@@ -838,55 +919,198 @@ static int vio_scsi_wait_completion(void) {
 
         iterations++;
         if (iterations > 20000000) {
+            if (out_response) *out_response = 0xFF;
             kprint("[VIO-SCSI] Timeout waiting for completion\n");
             return -1;
         }
     }
 }
 
+static int vio_scsi_wait_completion(void) {
+    return vio_scsi_wait_completion_ext(NULL);
+}
+
+/* =========================================================================
+ * SCSI probe operations
+ * ========================================================================= */
+
+/* INQUIRY — returns the peripheral device type (bits 4-0 of byte 0).
+ * Returns the device type on success, or -1 on failure. */
+static int vio_scsi_inquiry(int port) {
+    kprint("[VIO-SCSI] Sending INQUIRY to port "); kprinthex((uint64_t)port); kprint("\n");
+
+    uint8_t cdb[32];
+    uint64_t data_phys = DMA_VirtToPhys(g_data_buffer);
+    if (!data_phys) return -1;
+
+    /* Retry a few times on timeout — a single stalled request here would
+     * otherwise drop the whole disk for this boot. */
+    uint8_t inq_resp = 0;
+    int ok = 0;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        for (int i = 0; i < 32; i++) cdb[i] = 0;
+        cdb[0] = SCSI_INQUIRY;
+        cdb[1] = 0;        /* EVPD=0, standard inquiry */
+        cdb[2] = 0;        /* page code */
+        cdb[3] = 0;        /* (MSB of allocation length) */
+        cdb[4] = 36;       /* allocation length — standard inquiry */
+
+        if (vio_scsi_submit(cdb, port, 0, data_phys, 36, 0) != 0) return -1;
+        if (vio_scsi_wait_completion_ext(&inq_resp) == 0) { ok = 1; break; }
+
+        /* Only retry on transport timeout; a real device response means
+         * the target genuinely can't answer INQUIRY. */
+        if (inq_resp != 0xFF) break;
+        kprint("[VIO-SCSI] INQUIRY timed out for port ");
+        kprinthex((uint64_t)port); kprint(", retrying\n");
+    }
+    if (!ok) {
+        kprint("[VIO-SCSI] INQUIRY wait failed for port "); kprinthex((uint64_t)port);
+        kprint(" (resp="); kprinthex((uint64_t)inq_resp); kprint(")\n");
+        return -1;
+    }
+
+    /* Validate INQUIRY data — if all zeros, DMA didn't work */
+    int all_zero = 1;
+    for (int i = 0; i < 8; i++) if (g_data_buffer[i] != 0) { all_zero = 0; break; }
+    if (all_zero) {
+        kprint("[VIO-SCSI] INQUIRY returned all-zero data (DMA issue?), treating as no device\n");
+        return -1;
+    }
+
+    kprint("[VIO-SCSI] INQUIRY data[0]="); kprinthex((uint64_t)g_data_buffer[0]);
+    kprint(" type="); kprinthex((uint64_t)(g_data_buffer[0] & 0x1F)); kprint("\n");
+    /* Byte 0: bits 4-0 = peripheral device type */
+    return g_data_buffer[0] & 0x1F;
+}
+
+/* TEST UNIT READY — returns 0 if the unit is ready, -1 if not ready/error.
+ * For CD-ROMs, this may need to be retried while the media spins up. */
+static int vio_scsi_test_unit_ready(int port) {
+    uint8_t cdb[32];
+    for (int i = 0; i < 32; i++) cdb[i] = 0;
+    cdb[0] = SCSI_TEST_UNIT_READY;
+
+    /* No data phase — just request + response */
+    if (vio_scsi_submit(cdb, port, 0, 0, 0, 0) != 0) return -1;
+    return vio_scsi_wait_completion();
+}
+
+/* TEST UNIT READY with retries — waits for a CD-ROM to spin up.
+ * Returns 0 if the unit reports SCSI GOOD status, -1 if not ready. */
+static int vio_scsi_wait_unit_ready(int port, int max_retries) {
+    for (int i = 0; i < max_retries; i++) {
+        uint8_t resp = 0;
+        uint8_t cdb[32];
+        for (int j = 0; j < 32; j++) cdb[j] = 0;
+        cdb[0] = SCSI_TEST_UNIT_READY;
+
+        if (vio_scsi_submit(cdb, port, 0, 0, 0, 0) != 0) return -1;
+        if (vio_scsi_wait_completion_ext(&resp) == 0) return 0;
+
+        if (resp == 0xFF) {
+            continue;
+        }
+
+        /* BUSY or CHECK CONDITION (resp OK but status not GOOD) is normal
+         * for not-ready media.  Retry after a longer delay to give the
+         * CD-ROM time to spin up. */
+        if (resp == VIO_SCSI_RESP_BUSY || resp == VIO_SCSI_RESP_OK) {
+            kprint("[VIO-SCSI] TUR not ready, retry "); kprinthex((uint64_t)i);
+            kprint(" (resp="); kprinthex((uint64_t)resp); kprint(")\n");
+            for (volatile int d = 0; d < 500000; d++);
+            continue;
+        }
+        /* Other errors — device probably doesn't exist */
+        return -1;
+    }
+    return -1;
+}
+
 /* =========================================================================
  * SCSI operations
  * ========================================================================= */
 
-/* READ CAPACITY(10) — returns capacity in 512-byte sectors.
- * Response: 8 bytes = max_lba (4 BE) + block_size (4 BE) */
-static int vio_scsi_read_capacity(uint64_t *out_sectors) {
+/* READ CAPACITY(10) — returns capacity in the device's native sector size.
+ * Response: 8 bytes = max_lba (4 BE) + block_size (4 BE)
+ * *out_blk_size receives the block size (512 for disk, 2048 for CD-ROM). */
+static int vio_scsi_read_capacity(int port, uint64_t *out_sectors,
+                                  uint32_t *out_blk_size) {
     uint8_t cdb[32];
-    for (int i = 0; i < 32; i++) cdb[i] = 0;
-    cdb[0] = SCSI_READ_CAPACITY_10;
-
-    /* Response buffer (8 bytes) — use the start of g_data_buffer */
     uint64_t data_phys = DMA_VirtToPhys(g_data_buffer);
     if (!data_phys) return -1;
 
-    if (vio_scsi_submit(cdb, data_phys, 8, 0) != 0) return -1;
-    if (vio_scsi_wait_completion() != 0) return -1;
+    /* Retry READ CAPACITY up to 30 times — CD-ROMs may return BUSY
+     * (response=0x0A) while the media is spinning up.  Use a long
+     * timeout because the virtio-scsi host may hold the request while
+     * waiting for the port to become ready. */
+    for (int attempt = 0; attempt < 30; attempt++) {
+        for (int i = 0; i < 32; i++) cdb[i] = 0;
+        cdb[0] = SCSI_READ_CAPACITY_10;
 
-    /* Parse response: max LBA (big-endian u32) + block size (big-endian u32) */
-    uint8_t *r = g_data_buffer;
-    uint32_t max_lba = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16)
-                     | ((uint32_t)r[2] << 8) | r[3];
-    uint32_t blk_size = ((uint32_t)r[4] << 24) | ((uint32_t)r[5] << 16)
-                      | ((uint32_t)r[6] << 8) | r[7];
+        if (vio_scsi_submit(cdb, port, 0, data_phys, 8, 0) != 0) return -1;
+        uint8_t rc_resp = 0;
+        if (vio_scsi_wait_completion_ext(&rc_resp) == 0) {
+            /* Success — parse response */
+            uint8_t *r = g_data_buffer;
+            uint32_t max_lba = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16)
+                             | ((uint32_t)r[2] << 8) | r[3];
+            uint32_t blk_size = ((uint32_t)r[4] << 24) | ((uint32_t)r[5] << 16)
+                              | ((uint32_t)r[6] << 8) | r[7];
+            if (blk_size == 0) blk_size = 512;
+            *out_sectors = (uint64_t)(max_lba + 1);
+            if (out_blk_size) *out_blk_size = blk_size;
 
-    if (blk_size == 0) blk_size = 512;
-    *out_sectors = ((uint64_t)(max_lba + 1) * blk_size) / 512;
+            kprint("[VIO-SCSI] READ CAPACITY (port "); kprinthex((uint64_t)port);
+            kprint("): max_lba="); kprinthex((uint64_t)max_lba);
+            kprint(" blk_size="); kprinthex((uint64_t)blk_size);
+            kprint(" sectors="); kprinthex(*out_sectors); kprint("\n");
+            return 0;
+        }
 
-    kprint("[VIO-SCSI] READ CAPACITY: max_lba="); kprinthex((uint64_t)max_lba);
-    kprint(" blk_size="); kprinthex((uint64_t)blk_size);
-    kprint(" sectors(512)="); kprinthex(*out_sectors); kprint("\n");
-    return 0;
+        if (rc_resp == 0xFF) {
+            continue;
+        }
+
+        /* BUSY or CHECK CONDITION — wait and retry */
+        if (rc_resp == VIO_SCSI_RESP_BUSY || rc_resp == VIO_SCSI_RESP_OK) {
+            if (attempt < 29) {
+                if (attempt % 5 == 0) {
+                    kprint("[VIO-SCSI] READ CAPACITY BUSY (resp=");
+                    kprinthex((uint64_t)rc_resp);
+                    kprint("), retrying "); kprinthex((uint64_t)attempt);
+                    kprint("/30...\n");
+                }
+                for (volatile int d = 0; d < 1000000; d++);
+                continue;
+            }
+        }
+
+        kprint("[VIO-SCSI] READ CAPACITY: response=");
+        kprinthex((uint64_t)rc_resp);
+        kprint(" status="); kprinthex((uint64_t)g_scsi_resp.status);
+        kprint("\n");
+        return -1;
+    }
+
+    kprint("[VIO-SCSI] READ CAPACITY exhausted retries\n");
+    return -1;
 }
 
 /* =========================================================================
  * BlockDevOps implementation
+ *
+ * The private_data field of each BlockDev points to the vio_scsi_device_t
+ * so the read/write/capacity callbacks know which port to address.
  * ========================================================================= */
 
 static int vio_scsi_bdev_read(BlockDev *bdev, uint64_t sector, void *buffer,
                               uint32_t num_sectors) {
-    (void)bdev;
-    if (!g_active) return -1;
-    if (num_sectors * 512 > sizeof(g_data_buffer)) {
+    if (!g_active || !bdev || !bdev->private_data) return -1;
+    vio_scsi_device_t *dev = (vio_scsi_device_t *)bdev->private_data;
+    uint32_t ss = dev->sector_size;
+
+    if (num_sectors * ss > sizeof(g_data_buffer)) {
         kprint("[VIO-SCSI] Read too large\n");
         return -1;
     }
@@ -902,40 +1126,57 @@ static int vio_scsi_bdev_read(BlockDev *bdev, uint64_t sector, void *buffer,
     cdb[7] = (uint8_t)((num_sectors >> 8) & 0xFF);
     cdb[8] = (uint8_t)(num_sectors & 0xFF);
 
-    /* Use bounce buffer for DMA, then copy to caller's buffer */
     uint64_t data_phys = DMA_VirtToPhys(g_data_buffer);
     if (!data_phys) {
-        /* Fall back: try caller's buffer directly if DMA-accessible */
         if (DMA_IsAccessible(buffer)) {
             data_phys = DMA_VirtToPhys(buffer);
-            if (vio_scsi_submit(cdb, data_phys, num_sectors * 512, 0) != 0) return -1;
+            if (vio_scsi_submit(cdb, dev->port, dev->lun, data_phys, num_sectors * ss, 0) != 0)
+                return -1;
             return vio_scsi_wait_completion();
         }
         kprint("[VIO-SCSI] No DMA-accessible buffer\n");
         return -1;
     }
 
-    if (vio_scsi_submit(cdb, data_phys, num_sectors * 512, 0) != 0) return -1;
-    if (vio_scsi_wait_completion() != 0) return -1;
-
-    /* Copy from bounce buffer to caller */
-    uint8_t *dst = (uint8_t *)buffer;
-    for (uint32_t i = 0; i < num_sectors * 512; i++)
-        dst[i] = g_data_buffer[i];
-
-    return 0;
+    /* Retry reads up to 3 times — a single timed-out request during
+     * probing or auto-mount drops the whole disk for that boot. */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (vio_scsi_submit(cdb, dev->port, dev->lun, data_phys, num_sectors * ss, 0) != 0) {
+            for (volatile int d = 0; d < 100000; d++);
+            continue;
+        }
+        if (vio_scsi_wait_completion() == 0) {
+            uint8_t *dst = (uint8_t *)buffer;
+            for (uint32_t i = 0; i < num_sectors * ss; i++)
+                dst[i] = g_data_buffer[i];
+            return 0;
+        }
+        kprint("[VIO-SCSI] READ retry "); kprinthex((uint64_t)(attempt + 1));
+        kprint("/3 (sector="); kprinthex(sector); kprint(")\n");
+        for (volatile int d = 0; d < 1000000; d++);
+    }
+    kprint("[VIO-SCSI] READ exhausted retries (sector="); kprinthex(sector);
+    kprint(" nsec="); kprinthex((uint64_t)num_sectors); kprint(")\n");
+    return -1;
 }
 
 static int vio_scsi_bdev_write(BlockDev *bdev, uint64_t sector, const void *buffer,
                                uint32_t num_sectors) {
-    (void)bdev;
-    if (!g_active) return -1;
-    if (num_sectors * 512 > sizeof(g_data_buffer)) {
+    if (!g_active || !bdev || !bdev->private_data) return -1;
+    vio_scsi_device_t *dev = (vio_scsi_device_t *)bdev->private_data;
+    uint32_t ss = dev->sector_size;
+
+    /* CD-ROMs are read-only */
+    if (dev->is_cdrom) {
+        kprint("[VIO-SCSI] Write to read-only CD-ROM\n");
+        return -1;
+    }
+
+    if (num_sectors * ss > sizeof(g_data_buffer)) {
         kprint("[VIO-SCSI] Write too large\n");
         return -1;
     }
 
-    /* Build WRITE(10) CDB */
     uint8_t cdb[32];
     for (int i = 0; i < 32; i++) cdb[i] = 0;
     cdb[0] = SCSI_WRITE_10;
@@ -946,29 +1187,47 @@ static int vio_scsi_bdev_write(BlockDev *bdev, uint64_t sector, const void *buff
     cdb[7] = (uint8_t)((num_sectors >> 8) & 0xFF);
     cdb[8] = (uint8_t)(num_sectors & 0xFF);
 
-    /* Copy caller's data to bounce buffer */
     const uint8_t *src = (const uint8_t *)buffer;
-    for (uint32_t i = 0; i < num_sectors * 512; i++)
+    for (uint32_t i = 0; i < num_sectors * ss; i++)
         g_data_buffer[i] = src[i];
 
     uint64_t data_phys = DMA_VirtToPhys(g_data_buffer);
     if (!data_phys) {
         if (DMA_IsAccessible((void *)buffer)) {
             data_phys = DMA_VirtToPhys((void *)buffer);
-            if (vio_scsi_submit(cdb, data_phys, num_sectors * 512, 1) != 0) return -1;
+            if (vio_scsi_submit(cdb, dev->port, dev->lun, data_phys, num_sectors * ss, 1) != 0)
+                return -1;
             return vio_scsi_wait_completion();
         }
         kprint("[VIO-SCSI] No DMA-accessible buffer\n");
         return -1;
     }
 
-    if (vio_scsi_submit(cdb, data_phys, num_sectors * 512, 1) != 0) return -1;
-    return vio_scsi_wait_completion();
+    /* Retry writes up to 3 times — the device may need a brief recovery
+     * time after many large sequential writes (e.g. FAT zeroing). */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (vio_scsi_submit(cdb, dev->port, dev->lun, data_phys, num_sectors * ss, 1) != 0) {
+            kprint("[VIO-SCSI] WRITE submit failed (sector="); kprinthex(sector); kprint(")\n");
+            /* Brief delay before retry */
+            for (volatile int d = 0; d < 100000; d++);
+            continue;
+        }
+        int rc = vio_scsi_wait_completion();
+        if (rc == 0) return 0;
+        kprint("[VIO-SCSI] WRITE retry "); kprinthex((uint64_t)(attempt + 1));
+        kprint("/3 (sector="); kprinthex(sector); kprint(")\n");
+        /* Brief delay before retry */
+        for (volatile int d = 0; d < 1000000; d++);
+    }
+    kprint("[VIO-SCSI] WRITE exhausted retries (sector="); kprinthex(sector);
+    kprint(" nsec="); kprinthex((uint64_t)num_sectors); kprint(")\n");
+    return -1;
 }
 
 static uint64_t vio_scsi_bdev_capacity(BlockDev *bdev) {
-    (void)bdev;
-    return g_capacity;
+    if (!bdev || !bdev->private_data) return 0;
+    vio_scsi_device_t *dev = (vio_scsi_device_t *)bdev->private_data;
+    return dev->capacity;
 }
 
 static const BlockDevOps vio_scsi_ops = {
@@ -991,6 +1250,214 @@ static void vio_scsi_irq_handler(uint64_t vector, uint64_t error_code) {
 }
 
 /* =========================================================================
+ * Target scanning and device registration
+ * ========================================================================= */
+
+/* Scan a single port: probe with TEST UNIT READY + INQUIRY, then register
+ * the appropriate block device.  Returns 1 if a device was registered. */
+static int vio_scsi_probe_port(int port) {
+    kprint("[VIO-SCSI] Probing port "); kprinthex((uint64_t)port); kprint("...\n");
+
+    /* Wait for the unit to become ready (CD-ROMs need spin-up time).
+     * Use a generous retry count to handle slow spin-ups. */
+    if (vio_scsi_wait_unit_ready(port, 20) != 0) {
+        kprint("[VIO-SCSI] Target "); kprinthex((uint64_t)port);
+        kprint(" not ready, skipping\n");
+        return 0;
+    }
+
+    /* Identify the device type via INQUIRY */
+    int periph_type = vio_scsi_inquiry(port);
+    if (periph_type < 0) {
+        kprint("[VIO-SCSI] INQUIRY failed for port ");
+        kprinthex((uint64_t)port); kprint("\n");
+        return 0;
+    }
+
+    kprint("[VIO-SCSI] Target "); kprinthex((uint64_t)port);
+    kprint(" peripheral type="); kprinthex((uint64_t)periph_type); kprint("\n");
+
+    if (g_num_devices >= VIO_SCSI_MAX_PORTS) {
+        kprint("[VIO-SCSI] Max devices reached, skipping port ");
+        kprinthex((uint64_t)port); kprint("\n");
+        return 0;
+    }
+
+    vio_scsi_device_t *dev = &g_devices[g_num_devices];
+    dev->active = 1;
+    dev->port = port;
+    dev->lun = 0;
+
+    if (periph_type == SCSI_PERIPH_CDROM) {
+        /* CD/DVD-ROM: 2048-byte sectors, read-only */
+        dev->is_cdrom    = 1;
+        dev->sector_size = 2048;
+
+        uint64_t capacity;
+        uint32_t blk_size;
+        if (vio_scsi_read_capacity(port, &capacity, &blk_size) != 0) {
+            kprint("[VIO-SCSI] READ CAPACITY failed for CD-ROM port ");
+            kprinthex((uint64_t)port); kprint("\n");
+            dev->active = 0;
+            return 0;
+        }
+        dev->capacity = capacity;
+
+        /* Register as "vio_cd0" so the boot code can find it for ISO9660 */
+        dev->bdev.name         = "vio_cd0";
+        dev->bdev.display_name = "CD0:";
+        dev->bdev.sector_size  = 2048;
+        dev->bdev.num_sectors  = capacity;
+        dev->bdev.part_offset  = 0;
+        dev->bdev.formatted    = 0;
+        dev->bdev.private_data = dev;
+        dev->bdev.ops          = &vio_scsi_ops;
+        dev->bdev.next         = NULL;
+
+        if (BlockDev_Register(&dev->bdev) != 0) {
+            kprint("[VIO-SCSI] Failed to register CD-ROM block device\n");
+            dev->active = 0;
+            return 0;
+        }
+
+        kprint("[VIO-SCSI] Registered CD-ROM vio_cd0 (");
+        kprinthex(capacity); kprint(" sectors, 2048-byte)\n");
+        g_num_devices++;
+        return 1;
+
+    } else if (periph_type == SCSI_PERIPH_DIRECT) {
+        /* Hard disk: 512-byte sectors, read/write.
+         * But VirtualBox's virtio-scsi may report a DVD as type 0 (direct
+         * access) instead of type 5 (CD-ROM).  If READ CAPACITY fails, try
+         * a test read with 2048-byte sectors to detect this case. */
+        dev->is_cdrom    = 0;
+        dev->sector_size = 512;
+
+        uint64_t capacity;
+        uint32_t blk_size;
+        if (vio_scsi_read_capacity(port, &capacity, &blk_size) != 0) {
+            kprint("[VIO-SCSI] READ CAPACITY failed for type-0 port ");
+            kprinthex((uint64_t)port);
+            kprint(", trying CD-ROM fallback (2048-byte)...\n");
+
+            /* Try reading the ISO 9660 PVD at sector 16 with 2048-byte
+             * sectors.  Retry a few times in case the device is still
+             * spinning up.  If the data contains the "CD001" magic,
+             * this is actually a CD-ROM. */
+            uint64_t data_phys = DMA_VirtToPhys(g_data_buffer);
+
+            for (int read_attempt = 0; read_attempt < 10; read_attempt++) {
+                uint8_t cdb[32];
+                for (int i = 0; i < 32; i++) cdb[i] = 0;
+                cdb[0] = SCSI_READ_10;
+                cdb[2] = 0; cdb[3] = 0; cdb[4] = 0; cdb[5] = 16;  /* LBA 16 */
+                cdb[7] = 0; cdb[8] = 1;                             /* 1 sector */
+
+                uint8_t resp = 0;
+                if (!data_phys) break;
+                if (vio_scsi_submit(cdb, port, 0, data_phys, 2048, 0) != 0) break;
+                if (vio_scsi_wait_completion_ext(&resp) != 0) {
+                    if (resp == 0xFF) {
+                        continue;
+                    }
+                    /* BUSY — wait and retry */
+                    if (resp == VIO_SCSI_RESP_BUSY || resp == VIO_SCSI_RESP_OK) {
+                        for (volatile int d = 0; d < 1000000; d++);
+                        continue;
+                    }
+                    break;
+                }
+
+                /* Check for ISO 9660 magic at offset 1: "CD001" */
+                if (g_data_buffer[0] == 0x01 &&
+                    g_data_buffer[1] == 'C' && g_data_buffer[2] == 'D' &&
+                    g_data_buffer[3] == '0' && g_data_buffer[4] == '0' &&
+                    g_data_buffer[5] == '1') {
+                    kprint("[VIO-SCSI] ISO 9660 magic found — treating as CD-ROM\n");
+                    dev->is_cdrom    = 1;
+                    dev->sector_size = 2048;
+                    /* Volume space size at PVD offset 80 (LE) or 84 (BE) */
+                    uint32_t vol_size = ((uint32_t)g_data_buffer[84] << 24) |
+                                        ((uint32_t)g_data_buffer[85] << 16) |
+                                        ((uint32_t)g_data_buffer[86] << 8)  |
+                                        (uint32_t)g_data_buffer[87];
+                    if (vol_size == 0)
+                        vol_size = ((uint32_t)g_data_buffer[80] << 0)  |
+                                   ((uint32_t)g_data_buffer[81] << 8)  |
+                                   ((uint32_t)g_data_buffer[82] << 16) |
+                                   ((uint32_t)g_data_buffer[83] << 24);
+                    if (vol_size == 0) vol_size = 332800;  /* fallback ~650MB */
+                    dev->capacity = vol_size;
+
+                    dev->bdev.name         = "vio_cd0";
+                    dev->bdev.display_name = "CD0:";
+                    dev->bdev.sector_size  = 2048;
+                    dev->bdev.num_sectors  = vol_size;
+                    dev->bdev.part_offset  = 0;
+                    dev->bdev.formatted    = 0;
+                    dev->bdev.private_data = dev;
+                    dev->bdev.ops          = &vio_scsi_ops;
+                    dev->bdev.next         = NULL;
+
+                    if (BlockDev_Register(&dev->bdev) != 0) {
+                        kprint("[VIO-SCSI] Failed to register CD-ROM block device\n");
+                        dev->active = 0;
+                        return 0;
+                    }
+
+                    kprint("[VIO-SCSI] Registered CD-ROM vio_cd0 (");
+                    kprinthex((uint64_t)vol_size); kprint(" sectors, 2048-byte)\n");
+                    g_num_devices++;
+                    return 1;
+                }
+
+                kprint("[VIO-SCSI] Read succeeded but no ISO 9660 magic (attempt ");
+                kprinthex((uint64_t)read_attempt); kprint(")\n");
+                /* Dump first 8 bytes for debugging */
+                kprint("[VIO-SCSI]   data[0..7]=");
+                for (int b = 0; b < 8; b++) { kprinthex((uint64_t)g_data_buffer[b]); kprint(" "); }
+                kprint("\n");
+            }
+
+            kprint("[VIO-SCSI] CD-ROM fallback failed for port ");
+            kprinthex((uint64_t)port); kprint("\n");
+            dev->active = 0;
+            return 0;
+        }
+        /* Convert to 512-byte sectors for the block device layer */
+        dev->capacity = (capacity * blk_size) / 512;
+
+        dev->bdev.name         = "virtio0";
+        dev->bdev.display_name = "DH0:";
+        dev->bdev.sector_size  = 512;
+        dev->bdev.num_sectors  = dev->capacity;
+        dev->bdev.part_offset  = 0;
+        dev->bdev.formatted    = 0;
+        dev->bdev.private_data = dev;
+        dev->bdev.ops          = &vio_scsi_ops;
+        dev->bdev.next         = NULL;
+
+        if (BlockDev_Register(&dev->bdev) != 0) {
+            kprint("[VIO-SCSI] Failed to register disk block device\n");
+            dev->active = 0;
+            return 0;
+        }
+
+        kprint("[VIO-SCSI] Registered disk virtio0 (");
+        kprinthex(dev->capacity); kprint(" sectors, 512-byte)\n");
+        g_num_devices++;
+        return 1;
+
+    } else {
+        kprint("[VIO-SCSI] Unsupported peripheral type ");
+        kprinthex((uint64_t)periph_type); kprint(" at port ");
+        kprinthex((uint64_t)port); kprint(", skipping\n");
+        dev->active = 0;
+        return 0;
+    }
+}
+
+/* =========================================================================
  * Public API
  * ========================================================================= */
 
@@ -1008,31 +1475,21 @@ int virtio_scsi_init(void) {
     }
     kprint("[VIO-SCSI] Device initialized successfully\n");
 
-    /* Read disk capacity */
-    if (vio_scsi_read_capacity(&g_capacity) != 0) {
-        kprint("[VIO-SCSI] READ CAPACITY failed\n");
+    g_active = 1;  /* controller is live — bdev callbacks can now use it */
+
+    /* Scan ports 0..VIO_SCSI_MAX_PORTS-1 (LUN 0) for hard disks and CD-ROMs */
+    int found = 0;
+    for (int t = 0; t < VIO_SCSI_MAX_PORTS; t++) {
+        if (vio_scsi_probe_port(t))
+            found++;
+    }
+
+    if (found == 0) {
+        kprint("[VIO-SCSI] No usable devices found on virtio-scsi controller\n");
+        g_active = 0;
         return -1;
     }
 
-    /* Register as block device "virtio0" */
-    g_virtio_scsi_dev.name         = "virtio0";
-    g_virtio_scsi_dev.display_name = "DH0:";
-    g_virtio_scsi_dev.sector_size  = 512;
-    g_virtio_scsi_dev.num_sectors  = g_capacity;
-    g_virtio_scsi_dev.part_offset  = 0;
-    g_virtio_scsi_dev.formatted    = 0;
-    g_virtio_scsi_dev.private_data = NULL;
-    g_virtio_scsi_dev.ops          = &vio_scsi_ops;
-    g_virtio_scsi_dev.next         = NULL;
-
-    if (BlockDev_Register(&g_virtio_scsi_dev) != 0) {
-        kprint("[VIO-SCSI] Failed to register block device\n");
-        return -1;
-    }
-
-    g_active = 1;
-    kprint("[VIO-SCSI] Registered block device virtio0 (");
-    kprinthex(g_capacity); kprint(" sectors)\n");
     return 0;
 }
 
@@ -1057,14 +1514,38 @@ int virtio_scsi_is_active(void) {
     return g_active;
 }
 
+int virtio_scsi_has_cdrom(void) {
+    for (int i = 0; i < g_num_devices; i++) {
+        if (g_devices[i].active && g_devices[i].is_cdrom)
+            return 1;
+    }
+    return 0;
+}
+
 int virtio_scsi_read(uint64_t sector, void *buffer, uint32_t num_sectors) {
-    return vio_scsi_bdev_read(NULL, sector, buffer, num_sectors);
+    /* Legacy API: use the first registered device */
+    for (int i = 0; i < g_num_devices; i++) {
+        if (g_devices[i].active && !g_devices[i].is_cdrom) {
+            return vio_scsi_bdev_read(&g_devices[i].bdev, sector, buffer, num_sectors);
+        }
+    }
+    return -1;
 }
 
 int virtio_scsi_write(uint64_t sector, const void *buffer, uint32_t num_sectors) {
-    return vio_scsi_bdev_write(NULL, sector, buffer, num_sectors);
+    for (int i = 0; i < g_num_devices; i++) {
+        if (g_devices[i].active && !g_devices[i].is_cdrom) {
+            return vio_scsi_bdev_write(&g_devices[i].bdev, sector, buffer, num_sectors);
+        }
+    }
+    return -1;
 }
 
 uint64_t virtio_scsi_get_capacity(void) {
-    return g_capacity;
+    for (int i = 0; i < g_num_devices; i++) {
+        if (g_devices[i].active && !g_devices[i].is_cdrom) {
+            return g_devices[i].capacity;
+        }
+    }
+    return 0;
 }

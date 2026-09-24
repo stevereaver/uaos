@@ -19,6 +19,13 @@ void UAOS_INTUITION_Register(void);
  * Returns 1 if a screen bitmap was rendered, 0 otherwise. */
 int UAOS_Intuition_RenderScreenBackdrop(void);
 
+/* Re-render a dirty rectangle of a screen (or WA_SuperBitMap window) BitMap
+ * into the host framebuffer.  Called by graphics.library after drawing
+ * operations that modified a planar surface; the rectangle is in BitMap
+ * coordinates. */
+void UAOS_Intuition_FlushScreenBitmap(uint32_t bm,
+                                      int x0, int y0, int x1, int y1);
+
 /* Apply the frontmost screen's SA_Colors/SA_Colors32/SA_Pens palette to the
  * host Workbench palette globals.  Falls back to the default palette if no
  * front screen has custom colors. */

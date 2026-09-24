@@ -12,7 +12,7 @@ The UAOS Handler System is a powerful abstraction for I/O, modeled after AmigaOS
 
 ## Architecture
 
-A **Handler** is an entity that processes `DosPacket` structures sent to its `MsgPort`.
+A **Handler** is an entity that processes `DosPacket` structures sent to its `MsgPort`. Native packet arguments (`dp_Arg1`–`dp_Arg7` and `DoPkt` arguments) use `intptr_t` so x86-64 paths, buffers, and `FileInfoBlock` pointers are preserved; action codes, results, handles, and M68k-visible values remain 32-bit.
 
 ```c
 typedef struct Handler {

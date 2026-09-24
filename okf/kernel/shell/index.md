@@ -30,7 +30,7 @@ Commands in UAOS can be:
 - **Native C: commands**: Executed in-place by the kernel command dispatcher (`cmd_*.c` in `kernel/shell/`).
 
 > [!NOTE]
-> As of Phase 7, the following DOS commands have been migrated from kernel-resident native C: stubs to on-disk x86-64 ELF64 userspace binaries: `echo`, `type`, `dir`, `list`, `makedir`, `delete`, `rename`, `copy`, `protect`, `attr`, `grep`, `sort`, `join`, `search`, `filenote`, `more`. These binaries live in `system/userspace/` and use the shared helpers in `system/libuaos/uaos_cmd.h`, `uaos_template.h`, and `uaos_syscall.h`. New VFS syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C) were added to support them. `avail` was likewise migrated off its hardcoded native stub to a userspace binary that queries real memory statistics via `SYSCALL_MEMINFO` (0x2D); the kernel `C:mem` command now uses the same `Mem_GetInfo()` helper.
+> As of Phase 7, the following DOS commands have been migrated from kernel-resident native C: stubs to on-disk x86-64 ELF64 userspace binaries: `echo`, `type`, `dir`, `list`, `makedir`, `delete`, `rename`, `copy`, `protect`, `attr`, `grep`, `sort`, `join`, `search`, `filenote`, `more`. These binaries live in `system/userspace/` and use the shared helpers in `system/libuaos/uaos_cmd.h`, `uaos_template.h`, and `uaos_syscall.h`. New VFS syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C) were added to support them. The native `dir` backend uses a static 256-entry `VfsDirEnt` workspace rather than an approximately 18KB command-stack array, avoiding kernel task stack corruption during enumeration. `avail` was likewise migrated off its hardcoded native stub to a userspace binary that queries real memory statistics via `SYSCALL_MEMINFO` (0x2D); the kernel `C:mem` command now uses the same `Mem_GetInfo()` helper.
 
 ## Command Reference
 
@@ -39,7 +39,7 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | Category | Commands |
 |---|---|
 | **Volume / Disk** | `info`, `disks`, `diskchange`, `mount`, `format`, `fdisk`, `addbuffers`, `relabel`, `install` |
-| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `strace`, `rx` |
+| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `resload`, `runback`, `strace`, `rx` |
 | **Network** | `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo` |
 | **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `ed`, `guide`, `requestchoice`, `requestfile` |
 | **Preferences** | `screenmode`, `font`, `icontrol`, `input`, `palette`, `wbpattern`, `serial`, `printer`, `time`, `locale` |
@@ -47,6 +47,7 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | **Printing & CrossDOS** | `print`, `crossdos` |
 | **Editors & Help** | `vim`, `ed`, `guide` |
 | **Utilities** | `date`, `ask`, `which`, `getenv`, `unset`, `clear`, `reboot` |
+| **Shell-state wrappers** | `alias`, `unalias`, `path` (forward to the shell built-ins via `dispatch_line`); `skip`, `lab` (script keywords — native entries exist so `C:skip`/`C:lab` resolve; `skip` prints a note, `lab` is a no-op) |
 
 `format` reports per-stage FAT32 errors (e.g. "FAT32: failed to write FSINFO") instead of a bare "Format failed."; the same return-code switch lives in `inst_cmd_format` (`shell_win.c`) and `Cmd_Format` (`cmd_format.c`).
 

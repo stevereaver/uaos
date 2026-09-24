@@ -59,8 +59,8 @@ The system call dispatcher (`Syscall_Dispatch` in `kernel/exec/syscall_dispatch.
 | `0x0A` | `sys_wait` | Blocks or yields CPU execution. |
 | `0x0B` | `sys_alloc` | Allocates memory pages for the calling task. |
 | `0x0C` | `sys_getcwd` | Retrieves the task's current working directory (`task_cwd`). |
-| `0x0D` | `sys_opendir` | Opens a directory handle for listing its contents. |
-| `0x0E` | `sys_readdir` | Reads the next entry in a directory handle into a `uaos_dirent`. |
+| `0x0D` | `sys_opendir` | Opens a directory handle for listing its contents. RAMFS handles iterate linked nodes; handler-backed filesystems cache generic `VfsDirEnt` results from `VFS_ReadDir`. |
+| `0x0E` | `sys_readdir` | Reads the next RAMFS or handler-backed entry into a `uaos_dirent`. |
 | `0x0F` | `sys_closedir` | Closes an active directory iteration handle. |
 | `0x10` | `sys_stat` | Retrieves size, directory status, and attributes of a file/directory path. |
 
@@ -131,6 +131,8 @@ Back the userspace widget toolkit (`uaos_gui.h`); implemented in `kernel/display
 
 To run without linking a host standard C library:
 - `uaos_start.c`: The startup object (`uaos_start.o`) providing the entry point (`_start`) that wraps parameter parsing and invokes userspace `main`.
+
+**Stack red zone**: all userspace code MUST be compiled `-mno-red-zone`. Tasks execute in ring 0, so `INT 0x80` entry (and any IRQ that fires while userspace runs) pushes the CPU frame + saved-GPR frame (~160 bytes) directly onto the user stack, clobbering the 128-byte SysV red zone below `%rsp`. Compilers may legally place locals there; e.g. `makedir`'s `path` buffer once straddled `rsp-0x78..rsp+0x87`, so the syscall saw an empty string and every `makedir` failed while `New Drawer` (a direct kernel `VFS_MkDir` call) worked.
 - `uaos_libc.h`: A header-only minimal libc providing freestanding implementations of `strlen`, `strcmp`, `strcpy`, `strncpy`, `strlcat`, `memcpy`, `memset`, `memcmp`, `strchr`, `isdigit`, `isprint`, `isspace`, `toupper`, and `tolower`.
 - `uaos_syscall.h`: Syscall inline wrappers (`uaos_open`, `uaos_getcwd`, `uaos_readdir`, `uaos_gui_create_window`, etc.) mapping standard actions to `INT 0x80`.
 

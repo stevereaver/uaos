@@ -108,16 +108,26 @@ static void fd_free(int fd)
  * Directory handle table
  * ------------------------------------------------------------------------- */
 #define MAX_DIR_FD  16
+#define MAX_DIR_ENTRIES 256
 
-static RamFsNode *g_dir_table[MAX_DIR_FD];
-static int        g_dir_used[MAX_DIR_FD];
+typedef struct {
+    RamFsNode *ram_next;
+    VfsDirEnt entries[MAX_DIR_ENTRIES];
+    int count;
+    int index;
+} SysDirHandle;
+
+static SysDirHandle g_dir_table[MAX_DIR_FD];
+static int          g_dir_used[MAX_DIR_FD];
 
 static int dir_alloc(void)
 {
     for (int i = 0; i < MAX_DIR_FD; i++) {
         if (!g_dir_used[i]) {
             g_dir_used[i] = 1;
-            g_dir_table[i] = NULL;
+            g_dir_table[i].ram_next = NULL;
+            g_dir_table[i].count = 0;
+            g_dir_table[i].index = 0;
             return i;
         }
     }
@@ -128,7 +138,9 @@ static void dir_free(int dd)
 {
     if (dd >= 0 && dd < MAX_DIR_FD) {
         g_dir_used[dd] = 0;
-        g_dir_table[dd] = NULL;
+        g_dir_table[dd].ram_next = NULL;
+        g_dir_table[dd].count = 0;
+        g_dir_table[dd].index = 0;
     }
 }
 
@@ -461,14 +473,20 @@ static int sys_opendir(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
 
     RamFsNode *dir = VFS_ResolveDir(abs_path);
-    if (!dir)
+    if (!dir && !VFS_IsDir(abs_path))
         return -1;
 
     int dd = dir_alloc();
     if (dd < 0)
         return -1;
 
-    g_dir_table[dd] = dir->first_child;
+    if (dir) {
+        g_dir_table[dd].ram_next = dir->first_child;
+    } else {
+        g_dir_table[dd].count = VFS_ReadDir(abs_path,
+                                            g_dir_table[dd].entries,
+                                            MAX_DIR_ENTRIES);
+    }
     return dd;
 }
 
@@ -481,23 +499,37 @@ static int sys_readdir(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     if (dd < 0 || dd >= MAX_DIR_FD || !g_dir_used[dd] || !ent)
         return -1;
 
-    RamFsNode *node = g_dir_table[dd];
-    if (!node)
-        return 0;   /* end of directory */
+    SysDirHandle *handle = &g_dir_table[dd];
+    if (handle->ram_next) {
+        RamFsNode *node = handle->ram_next;
+        size_t n = 0;
+        while (n < sizeof(ent->name) - 1 && node->name[n]) {
+            ent->name[n] = node->name[n];
+            n++;
+        }
+        ent->name[n] = '\0';
+        ent->size = node->size;
+        ent->is_dir = (node->type == RAMFS_TYPE_DIR) ? 1 : 0;
+        ent->attrs = node->attrs;
+        ent->protection = node->protection;
+        ent->mtime = node->mtime;
+        handle->ram_next = node->next_sibling;
+        return 1;
+    }
 
+    if (handle->index >= handle->count) return 0;
+    VfsDirEnt *entry = &handle->entries[handle->index++];
     size_t n = 0;
-    while (n < sizeof(ent->name) - 1 && node->name[n]) {
-        ent->name[n] = node->name[n];
+    while (n < sizeof(ent->name) - 1 && entry->name[n]) {
+        ent->name[n] = entry->name[n];
         n++;
     }
     ent->name[n] = '\0';
-    ent->size    = node->size;
-    ent->is_dir  = (node->type == RAMFS_TYPE_DIR) ? 1 : 0;
-    ent->attrs   = node->attrs;
-    ent->protection = node->protection;
-    ent->mtime   = node->mtime;
-
-    g_dir_table[dd] = node->next_sibling;
+    ent->size = entry->size;
+    ent->is_dir = entry->is_dir;
+    ent->attrs = 0;
+    ent->protection = 0;
+    ent->mtime = 0;
     return 1;
 }
 

@@ -15,6 +15,7 @@
 #include "../exec/intuition_lib.h"
 #include "about_win.h"
 #include "shell_win.h"
+#include "clock_win.h"
 #include "icon_render.h"
 #include "../exec/mem_info.h"
 #include "../dos/vfs.h"
@@ -224,38 +225,54 @@ static void menu_action_quit(void)
 
 /* Window menu actions */
 
+/* Pending new-drawer target — captured when the string requester is
+ * opened so the callback does not depend on WM focus (the requester
+ * window holds focus while it is open). */
+static struct {
+    char path[128];     /* browser volume/path to create the drawer in */
+    int  browser;       /* wm handle of the browser to refresh */
+} g_pending_mkdir;
+
 /* New Drawer callback — creates the directory after string input */
 static void new_drawer_cb(int button, const char *text, void *user_data)
 {
     (void)user_data;
     if (button != REQ_BTN_OK || !text || !text[0]) return;
 
-    const char *path = FileBrowser_GetFocusedPath();
-    if (!path) return;
-
-    char full_path[128];
+    char full_path[160];
     /* Build path: volume/newname */
     int vi = 0;
-    while (vi < 126 && path[vi]) { full_path[vi] = path[vi]; vi++; }
-    int last = (vi > 0) ? path[vi - 1] : 0;
+    while (vi < 126 && g_pending_mkdir.path[vi]) {
+        full_path[vi] = g_pending_mkdir.path[vi]; vi++;
+    }
+    int last = (vi > 0) ? g_pending_mkdir.path[vi - 1] : 0;
     if (last != ':' && last != '/') {
         if (vi < 127) full_path[vi++] = '/';
     }
     int ti = 0;
-    while (vi < 127 && text[ti]) { full_path[vi++] = text[ti++]; }
+    while (vi < 159 && text[ti]) { full_path[vi++] = text[ti++]; }
     full_path[vi] = '\0';
 
     VFS_MkDir(full_path);
 
-    /* Refresh the current browser */
-    int fh = FileBrowser_GetFocusedHandle();
-    if (fh >= 0) FileBrowser_Refresh(fh);
+    /* Refresh the browser the drawer was created in */
+    if (g_pending_mkdir.browser >= 0)
+        FileBrowser_Refresh(g_pending_mkdir.browser);
 }
 
 static void menu_action_new_drawer(void)
 {
     DT_LOG("[MENU] New Drawer selected\n");
-    if (!FileBrowser_GetFocusedPath()) return;
+    const char *path = FileBrowser_GetFocusedPath();
+    int fh = FileBrowser_GetFocusedHandle();
+    if (!path || fh < 0) return;
+    int i = 0;
+    while (i < (int)sizeof(g_pending_mkdir.path) - 1 && path[i]) {
+        g_pending_mkdir.path[i] = path[i];
+        i++;
+    }
+    g_pending_mkdir.path[i] = '\0';
+    g_pending_mkdir.browser = fh;
     Requester_String("New Drawer", "Enter new drawer name:",
                      "", 30, new_drawer_cb, NULL);
 }
@@ -441,17 +458,10 @@ static void menu_action_icon_rename(void)
                      name, 30, rename_cb, NULL);
 }
 
-/* Delete confirm callback — moves file to Trashcan (RAM:/Trash) */
-static void delete_cb(int button, const char *text, void *user_data)
+/* Move a file to the Trashcan (RAM:/Trash/name).  Tries a same-volume
+ * rename first; falls back to copy+delete for cross-volume moves. */
+static void desktop_move_to_trash(const char *path, const char *name)
 {
-    (void)text; (void)user_data;
-    if (button != REQ_BTN_OK) return;
-
-    char path[128];
-    if (!FileBrowser_GetSelectedPath(path, sizeof(path))) return;
-    const char *name = FileBrowser_GetSelectedName();
-    if (!name) return;
-
     /* Build trash path: RAM:/Trash/name */
     char trash_path[128];
     int di = 0;
@@ -480,16 +490,44 @@ static void delete_cb(int button, const char *text, void *user_data)
             VFS_Delete(path);
         }
     }
+}
+
+/* Pending delete target — captured when the Delete confirm requester is
+ * opened so Icons ▸ Delete and drag-to-trash share one callback. */
+static struct {
+    char path[160];
+    char name[64];
+} g_pending_delete;
+
+/* Delete confirm callback — moves the pending path to Trashcan (RAM:/Trash) */
+static void delete_cb(int button, const char *text, void *user_data)
+{
+    (void)text; (void)user_data;
+    if (button != REQ_BTN_OK) return;
+
+    desktop_move_to_trash(g_pending_delete.path, g_pending_delete.name);
 
     int fh = FileBrowser_GetFocusedHandle();
     if (fh >= 0) FileBrowser_Refresh(fh);
 }
 
-static void menu_action_icon_delete(void)
+/* Ask the user to confirm deleting path/name ("Delete 'name'?"), then
+ * move it to RAM:/Trash/ on confirm.  Shared by Icons ▸ Delete and by
+ * dropping a desktop icon onto the Trashcan. */
+static void desktop_confirm_delete(const char *path, const char *name)
 {
-    DT_LOG("[MENU] Delete selected\n");
-    const char *name = FileBrowser_GetSelectedName();
-    if (!name) return;
+    int i = 0;
+    while (i < (int)sizeof(g_pending_delete.path) - 1 && path[i]) {
+        g_pending_delete.path[i] = path[i];
+        i++;
+    }
+    g_pending_delete.path[i] = '\0';
+    i = 0;
+    while (i < (int)sizeof(g_pending_delete.name) - 1 && name[i]) {
+        g_pending_delete.name[i] = name[i];
+        i++;
+    }
+    g_pending_delete.name[i] = '\0';
 
     char body[80];
     int bi = 0;
@@ -503,6 +541,16 @@ static void menu_action_icon_delete(void)
 
     Requester_Confirm("Delete", body, "Delete", "Cancel",
                       delete_cb, NULL);
+}
+
+static void menu_action_icon_delete(void)
+{
+    DT_LOG("[MENU] Delete selected\n");
+    const char *name = FileBrowser_GetSelectedName();
+    if (!name) return;
+    char path[128];
+    if (!FileBrowser_GetSelectedPath(path, sizeof(path))) return;
+    desktop_confirm_delete(path, name);
 }
 
 static void menu_action_icon_information(void)
@@ -1296,6 +1344,11 @@ static int       g_desktop_pressed = 0;
 static uint32_t  g_desktop_last_tick = 0;
 static int       g_desktop_click_count = 0;
 
+/* Menubar clock double-click state */
+static int       g_clock_pressed = 0;
+static uint32_t  g_clock_last_tick = 0;
+static int       g_clock_click_count = 0;
+
 /* Backdrop visibility toggle (Workbench ▸ Backdrop).  When 1, desktop
  * icons are hidden but the grey backdrop + menu bar remain. */
 static int g_backdrop_hidden = 0;
@@ -1406,17 +1459,13 @@ static IconState *get_icons(int *count)
         }
     }
 
-    /* ── VFS-mounted volumes (RAM:, Workbench:, etc.) ──
-     * Only show RAM: and Workbench: on the desktop — other mounts
-     * (CD, partitions, etc.) are accessible via the shell but should
-     * not clutter the Workbench screen. */
+    /* ── VFS-mounted volumes (RAM:, Workbench:, FAT32 partitions, etc.) ──
+     * All mounted volumes appear as desktop icons.  Volumes with a
+     * .info file show their custom icon; others fall back to the
+     * generic orange disk icon (or grey "???" for unformatted/NDOS). */
     for (int mi = 0; mi < mount_count && n < MAX_ICONS; mi++) {
         char mname[32];
         if (!VFS_GetMountName(mi, mname, 32)) continue;
-
-        /* Filter: only RAM and Workbench appear as desktop icons */
-        if (!str_eq(mname, "RAM") && !str_eq(mname, "Workbench"))
-            continue;
 
         /* Build the volume string (same format that will be stored in icons[n].volume) */
         const char *vol_str;
@@ -1469,6 +1518,10 @@ static IconState *get_icons(int *count)
             if (icons[n].parsed.label[0]) {
                 icons[n].label = icons[n].parsed.label;
             }
+        } else {
+            /* No .info found — mark as NDOS so the fallback draws a
+             * grey "???" style icon instead of the orange disk. */
+            icons[n].is_ndos = 1;
         }
 
         DT_LOG("[DT] VFS icon "); DT_LOG_DEC(n); DT_LOG(" mname='"); DT_LOG(mname); DT_LOG("' vol_str='"); DT_LOG(vol_str); DT_LOG("'\n");
@@ -1773,6 +1826,9 @@ static void draw_icon_state(const IconState *ic)
         if (lbl_x < 0) lbl_x = 0;
         Icon_DrawLabel(&ic->parsed, lbl_x, ic->y + ICON_H - ICON_LABEL_H, LABEL_W);
     } else {
+        /* Volumes without a .info still display their volume name as the
+         * label; the colour distinguishes NDOS/unformatted (grey) from
+         * normal mounted volumes (orange). */
         uint32_t colour = ic->is_ndos ? WB_DARK_GREY : WB_ORANGE;
         draw_disk_icon(ic->x, ic->y, ic->label, colour, ic->is_selected);
     }
@@ -2064,6 +2120,15 @@ static int menubar_hit(int mx, int my)
     return -1;
 }
 
+/* Hit-test the menubar clock — the HH:MM:SS text at the far right.
+ * Replicates the layout logic from draw_menubar. */
+static int menubar_clock_hit(int mx, int my)
+{
+    if (my < 0 || my >= MENUBAR_H) return 0;
+    int clk_x = (int)g_fb.width - 8 * 8 - 8;  /* 8 chars + 8px right margin */
+    return mx >= clk_x - 4;
+}
+
 /* Return the item index under (mx,my) when a menu is open,
  * or -1 if the point is outside the dropdown. */
 static int dropdown_hit(int mx, int my)
@@ -2234,6 +2299,12 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     /* ── Left-click on menubar ──────────────────────────── */
     int menu = menubar_hit(mx, my);
     if (left_pressed && menu >= 0) {
+        return 1;
+    }
+
+    /* ── Left-press on the menubar clock: arm double-click ── */
+    if (left_pressed && menubar_clock_hit(mx, my)) {
+        g_clock_pressed = 1;
         return 1;
     }
 
@@ -2434,12 +2505,19 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
      * icon top-left) to determine which icon the cursor is hovering over. */
     int prev_target = g_drop_target_idx;
     int new_target = icon_at_pos(icons, n, mx, my, g_icon_drag_idx);
-    /* Only highlight valid copy targets (a volume icon, not trashcan,
-     * not the source itself, not an appicon). */
+    /* Only highlight valid drop targets: another volume icon for
+     * drag-to-copy, or the Trashcan for drag-to-delete.  The Trashcan
+     * accepts the same sources as drag-to-copy (volume and leave-out
+     * icons); AppIcons are never valid targets. */
     if (new_target >= 0) {
         IconState *dst = &icons[new_target];
-        if (!dst->volume || dst->is_trashcan || dst->is_appicon)
+        if (dst->is_trashcan) {
+            int src_ok = (ic->is_leaveout && ic->leaveout_path) ||
+                         (ic->volume && !ic->is_trashcan);
+            if (!src_ok) new_target = -1;
+        } else if (!dst->volume || dst->is_appicon) {
             new_target = -1;
+        }
     }
     if (new_target != prev_target) {
         g_drop_target_idx = new_target;
@@ -2609,23 +2687,36 @@ void Desktop_MouseRelease(int mx, int my)
                     src_name = src->label;
                 }
 
-                /* Determine destination volume. */
-                const char *dst_vol = NULL;
-                if (dst->volume && !dst->is_trashcan) {
-                    dst_vol = dst->volume;
-                }
+                if (dst->is_trashcan) {
+                    /* Drop on the Trashcan — confirm, then move to
+                     * RAM:/Trash/ exactly like Icons ▸ Delete. */
+                    if (src_path && src_name) {
+                        DT_LOG("[DT] Drag-to-trash '");
+                        DT_LOG(src_name);
+                        DT_LOG("' from '");
+                        DT_LOG(src_path);
+                        DT_LOG("'\n");
+                        desktop_confirm_delete(src_path, src_name);
+                    }
+                } else {
+                    /* Determine destination volume. */
+                    const char *dst_vol = NULL;
+                    if (dst->volume) {
+                        dst_vol = dst->volume;
+                    }
 
-                if (src_path && src_name && dst_vol &&
-                    !str_eq(src_path, dst_vol)) {
-                    DT_LOG("[DT] Drag-copy '");
-                    DT_LOG(src_name);
-                    DT_LOG("' from '");
-                    DT_LOG(src_path);
-                    DT_LOG("' to '");
-                    DT_LOG(dst_vol);
-                    DT_LOG("'\n");
-                    desktop_do_copy(src_path, src_name, dst_vol);
-                    WM_Redraw();
+                    if (src_path && src_name && dst_vol &&
+                        !str_eq(src_path, dst_vol)) {
+                        DT_LOG("[DT] Drag-copy '");
+                        DT_LOG(src_name);
+                        DT_LOG("' from '");
+                        DT_LOG(src_path);
+                        DT_LOG("' to '");
+                        DT_LOG(dst_vol);
+                        DT_LOG("'\n");
+                        desktop_do_copy(src_path, src_name, dst_vol);
+                        WM_Redraw();
+                    }
                 }
             }
             /* Snap icon back to original position (drag-to-copy doesn't
@@ -2636,6 +2727,23 @@ void Desktop_MouseRelease(int mx, int my)
         g_drop_target_idx = -1;
         g_icon_drag_idx = -1;
         g_desktop_pressed = 0;
+        return;
+    }
+
+    /* Menubar clock double-click opens the Clock window.  The press must
+     * also release inside the clock area to count. */
+    if (g_clock_pressed) {
+        g_clock_pressed = 0;
+        if (menubar_clock_hit(mx, my)) {
+            uint32_t now = g_tick;
+            if (g_clock_click_count > 0 && (now - g_clock_last_tick) <= DBLCLICK_TICKS) {
+                g_clock_click_count = 0;
+                ClockWin_Open();
+            } else {
+                g_clock_click_count = 1;
+                g_clock_last_tick   = now;
+            }
+        }
         return;
     }
 

@@ -435,54 +435,13 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
                 kprint("[ISO9660] RamFS_MountVol Workbench failed\n");
             }
 
-            /* Also mount individual sub-volumes from SYS-ROOT */
-            kprint("[ISO9660] Mounting sub-volumes...\n");
-            uint8_t sys_buf[ISO_SECTOR_SIZE];
-            uint32_t sectors = (sys_size + ISO_SECTOR_SIZE - 1) / ISO_SECTOR_SIZE;
-            for (uint32_t s = 0; s < sectors; s++) {
-                if (iso_read_sector(bdev, sys_lba + s, sys_buf) != 0) break;
-                int offset = 0;
-                while (offset + 33 < ISO_SECTOR_SIZE) {
-                    uint8_t rec_len = sys_buf[offset + DIRREC_LEN];
-                    if (rec_len == 0) break;
-                    if (offset + rec_len > ISO_SECTOR_SIZE) break;
-                    uint8_t local_rec[256];
-                    for (int i = 0; i < rec_len && i < 256; i++)
-                        local_rec[i] = sys_buf[offset + i];
-                    uint8_t flags = local_rec[DIRREC_FILE_FLAGS];
-                    int name_len = local_rec[DIRREC_NAME_LEN];
-                    char entry_name[128];
-                    iso_copy_name(&local_rec[DIRREC_NAME], name_len, entry_name, sizeof(entry_name));
-                    if (name_len == 1 && (local_rec[DIRREC_NAME] == 0 || local_rec[DIRREC_NAME] == 1)) {
-                        offset += rec_len;
-                        continue;
-                    }
-                    if (entry_name[0]) {
-                        if (flags & FLAG_DIRECTORY) {
-                            uint32_t sub_lba = read_both32(&local_rec[DIRREC_EXTENT_LBA]);
-                            uint32_t sub_size = read_both32(&local_rec[DIRREC_EXTENT_SIZE]);
-                            /* Lowercase the volume name for Amiga style */
-                            char sub_vol[16];
-                            int vi = 0;
-                            while (entry_name[vi] && vi < 15) {
-                                char c = entry_name[vi];
-                                if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
-                                sub_vol[vi] = c;
-                                vi++;
-                            }
-                            sub_vol[vi] = '\0';
-                            if (is_assign_dir(sub_vol)) {
-                                kprint("[ISO9660]   Skipping assign dir "); kprint(sub_vol); kprint("/\n");
-                            } else if (iso_mount_subvol(bdev, sub_lba, sub_size, sub_vol) == 0) {
-                                kprint("[ISO9660]   Mounted "); kprint(sub_vol); kprint(":\n");
-                                CHECK_IRQ("after_mount_subvol");
-                            }
-                        }
-                    }
-                    offset += rec_len;
-                }
-            }
-            CHECK_IRQ("after_subvol_loop");
+            /* Sub-volumes from SYS-ROOT are already traversed into the
+             * Workbench: volume above (iso_traverse_dir with proxy=1),
+             * so they appear as Workbench:C, Workbench:S, etc.  We no
+             * longer mount them as separate top-level volumes — doing
+             * so created redundant desktop icons for every SYS-ROOT
+             * subdirectory.  Assigns (C:, S:, L:, DEVS:, LIBS:, ...)
+             * are created later by VFS_SetupWorkbenchAssigns(). */
             return 0;
         }
     }

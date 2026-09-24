@@ -26,18 +26,24 @@ Common actions include:
 - `ACTION_EXAMINE_NEXT`: Read the next directory entry.
 - `ACTION_FINDUPDATE`: Open an existing file for read/write.
 - `ACTION_DELETE`: Delete a file or directory.
-- `ACTION_CREATE_DIR`: Create a directory.
+- `ACTION_CREATE_DIR`: Create a directory. Handler-backed filesystems return a lock handle on success (not `DOSTRUE`); `VFS_MkDir` releases that lock before reporting success.
 
 ## Virtual File System (VFS)
 
 The VFS layer (`kernel/dos/vfs.c`) provides a unified interface for multiple filesystems and the AmigaDOS assign system. Supported filesystems:
 
 - **RAMFS**: An in-memory filesystem mounted at boot with `ENV:`, `T:`, `Clips:`, and `REXX:`.
-- **FAT32**: Read/write support for physical disk partitions (`kernel/dos/fat32.c`, `fat_handler.c`).
+- **FAT32**: Read/write support for physical disk partitions (`kernel/dos/fat32.c`, `fat_handler.c`). Nested file/directory creation resolves the parent path to the found directory entry's own cluster (not the cluster containing that entry) and verifies the parent has the directory attribute. `VFS_ReadDir` uses the FAT handler's direct enumeration API (`FatHandler_ReadDir`) rather than the generic packet EXAMINE sequence. `FAT32_Mount` validates the BPB is genuinely FAT32 — OEM signature not "EXFAT", `root_ent_cnt==0`, `fat_sz16==0`, `fat_sz32>=1`, `root_clus>=2`, `bytes_per_sec` in 512..4096, `sec_per_clus` a power of two ≤128, `num_fats>0`, `total_sectors>0` — so FAT12/16, exFAT, and malformed media are rejected at mount instead of mounting and failing on every operation.
 - **CrossDOS (FAT12/16)**: Read-only support for PC-format floppy disks and small partitions (`kernel/dos/crossdos_handler.c`). Probes boot sector to distinguish FAT12 from FAT16, reads root directory and file cluster chains. Mounted via `crossdos` shell command.
 - **PFS3**: Professional File System 3 support (`kernel/dos/pfs3.c`).
 - **EXT4**: Read-only EXT4 support (`kernel/dos/ext4.c`).
 - **ISO9660**: CD-ROM read support (`kernel/dos/iso9660.c`).
+
+### Filesystem Change Counter
+
+`g_vfs_change_seq` in `vfs.c` is bumped by `VFS_NoteChange()` whenever directory-visible content changes: the `VFS_*` functions bump it on their direct RAMFS paths (`VFS_MkDir`/`VFS_Delete`/`VFS_Rename`/`VFS_RenameVol`/`VFS_Open` create+truncate), and `DoPkt()`/`Handler_CheckReplies()` in `handler.c` bump it for mutating packet actions (`CREATE_DIR`, `DELETE_OBJECT`, `RENAME_OBJECT`, `RENAME_DISK`, `FINDOUTPUT`, `FINDUPDATE`, `WRITE`, `SET_FILE_SIZE`) — the DoPkt hook also catches guest M68k `dos.library` calls, which dispatch packets straight to handler ports and bypass the VFS API. UI code (the file browser) snapshots `VFS_ChangeSeq()` after enumerating and re-reads the directory when it differs.
+
+`VfsDirEnt` carries an `mtime` field (Unix epoch seconds): the RAMFS branch of `VFS_ReadDir` fills it from `RamFsNode.mtime`, the generic EXAMINE path converts `fib_Date` (same `ds_Days - 2922` convention as `locale_lib.c`), and `FatHandler_ReadDir` reports 0 since `FAT32_ReadDir` doesn't surface dates yet.
 
 ### RAMFS Data Pool
 
@@ -47,6 +53,7 @@ RAMFS uses a shared bump-allocator data pool (`g_pool` in `kernel/dos/ramfs.c`) 
 
 - **Block device layer (`blockdev.c`)**: Unified interface for storage devices.
 - **Partition table (`partition.c`)**: MBR parsing and partition registration.
+- **Boot auto-mount**: `boot_automount_partitions()` in `uaos_kernel_main.c` is shared by the virtio-blk and virtio-scsi paths — both mount every formatted MBR partition under its display name (DH0:, DH1:) without requiring the UAOS-meta `automount` flag. Formatting a mounted partition calls `VFS_RemountPartition()` under that same display name to refresh the handler's cached FAT32 geometry; `Name=` remains only the on-disk FAT volume label.
 - **IDE driver (`kernel/drivers/ide.c`)**: ATA/ATAPI PIO access for hard disks and CD-ROMs.
 - **VirtIO Block (`virtio_blk.c`)**: VirtIO-compliant block device driver.
 

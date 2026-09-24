@@ -16,21 +16,30 @@
 
 /* -------------------------------------------------------------------------
  * File handle (returned by VFS_Open)
+ *
+ * A VfsFile can be backed by either:
+ *   - a RAMFS node (node != NULL, handler_port == NULL), or
+ *   - a packet handler (node == NULL, handler_port != NULL, handle_id = the
+ *     handler's file-handle returned by ACTION_FINDINPUT/OUTPUT/UPDATE).
+ * This allows VFS_Read / VFS_Write / VFS_Seek / VFS_Size to transparently
+ * dispatch to the correct backend for any filesystem type.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    RamFsNode *node;     /* NULL = invalid / not open */
-    uint32_t   pos;      /* current read/write position */
-    int        nil;      /* 1 = NIL: handle (discard writes, EOF on read) */
-    uint32_t   handle_id;/* global HandleTable ID (0 = not tracked) */
+    RamFsNode *node;          /* RAMFS node (NULL for handler-backed files) */
+    uint32_t   pos;           /* current read/write position */
+    int        nil;           /* 1 = NIL: handle (discard writes, EOF on read) */
+    uint32_t   handle_id;     /* handler file-handle (0 = RAMFS or not tracked) */
+    MsgPort   *handler_port;  /* handler port for DoPkt dispatch (NULL = RAMFS) */
 } VfsFile;
 
 /* -------------------------------------------------------------------------
  * Directory entry (filled by VFS_ReadDir)
  * ------------------------------------------------------------------------- */
-typedef struct {
+typedef struct VfsDirEnt {
     char    name[RAMFS_MAX_NAME];
     uint8_t is_dir;     /* 1 = directory, 0 = file */
     uint32_t size;      /* file size (0 for dirs) */
+    uint32_t mtime;     /* modification time, Unix epoch seconds (0 = unknown) */
 } VfsDirEnt;
 
 /* -------------------------------------------------------------------------
@@ -58,6 +67,7 @@ void VFS_SetupWorkbenchAssigns(void);
  * Creates an empty RAMFS backing volume so cd/dir work.
  * Returns 0 on success, -1 if mount table full or name too long. */
 int VFS_MountPartition(const char *name);
+int VFS_RemountPartition(const char *name);
 
 /* Register an existing RAMFS volume with the VFS mount table.
  * Used when a volume is already populated (e.g. ISO9660 sub-volume).
@@ -97,12 +107,30 @@ int  VFS_Delete(const char *path);
 
 /* Open a directory for reading.  Returns the first child node or NULL.
  * NOTE: returns NULL for empty directories — use VFS_ResolveDir to check
- * existence of a directory without caring about its contents. */
+ * existence of a directory without caring about its contents.
+ * This is RAMFS-only; for handler-backed volumes use VFS_ReadDir. */
 RamFsNode *VFS_OpenDir(const char *path);
 
 /* Resolve a path to its directory node (returns the node itself, not children).
- * Returns NULL if path does not exist or is not a directory. */
+ * Returns NULL if path does not exist or is not a directory.
+ * This is RAMFS-only; for handler-backed volumes use VFS_IsDir. */
 RamFsNode *VFS_ResolveDir(const char *path);
+
+/* Return 1 if path exists and is a directory, 0 otherwise.
+ * Works for both RAMFS and handler-backed (FAT32) volumes. */
+int VFS_IsDir(const char *path);
+
+/* Read a directory into an array of VfsDirEnt.  Works for both RAMFS and
+ * handler-backed (FAT32) volumes.  Returns number of entries (0..max). */
+int VFS_ReadDir(const char *path, VfsDirEnt *ents, int max);
+
+/* Directory-content change counter — incremented whenever a mutating
+ * filesystem operation runs (create/mkdir/delete/rename/write), whether
+ * issued through the VFS_* API or straight to a handler via DoPkt (guest
+ * dos.library calls).  UI code snapshots VFS_ChangeSeq() after enumerating
+ * and re-reads the directory when it differs. */
+uint32_t VFS_ChangeSeq(void);
+void     VFS_NoteChange(void);
 
 /* Returns the volume root node for "RAM:" (for direct tree walking). */
 RamFsNode *VFS_GetRoot(const char *vol_name);

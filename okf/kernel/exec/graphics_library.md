@@ -126,7 +126,15 @@ UAOS now stores `BitMap`s in real Amiga planar format:
 - Mixed planar↔framebuffer blits convert colours between pen indices and RGB as needed so the destination colour space is preserved.
 - `LoadView` executes the merged copper list through the chipset emulator and renders the resulting display state. If no copper list is present it falls back to translating planar `BitMap`s into the linear host framebuffer.
 
-### Region operations
+### Planar dirty tracking and framebuffer flush
+
+All planar writes funnel through `blit_surface_put()` and `planar_fill_rect()`, which extend a per-BitMap dirty bounding box (`bm_note_dirty`). At the end of every `UAOS_Graphics_Dispatch()` call, `bm_flush_dirty()` passes the accumulated rectangle to `UAOS_Intuition_FlushScreenBitmap()` (in `intuition_lib.c`), which re-renders just that region through the owning screen's `ColorMap` into the host framebuffer. This preserves immediate drawing feedback now that screen/window `RastPort`s draw into planar bitplanes instead of the framebuffer directly.
+
+- `BlitSurface` carries the guest `BitMap` pointer (`bm`) so dirty regions can be attributed to a specific `BitMap`; writing to a different `BitMap` flushes the previous box first.
+- A window `RastPort` whose `BitMap` is its screen's planar `BitMap` gets `dx`/`dy` set to the window's position relative to the screen origin (plus the GimmeZeroZero border offset), so window-relative drawing lands at the right place in the screen `BitMap`.
+- `render_bitmap_region_to_framebuffer(bm, cmap, sx, sy, dx, dy, w, h)` translates a source rectangle of a planar `BitMap` to a framebuffer destination rectangle with two-sided clipping; `render_bitmap_to_framebuffer` is the whole-bitmap convenience wrapper.
+- Direct M68k writes into bitplane memory bypass the dirty tracker; they become visible on the next `WM_Redraw`, which re-renders the full screen `BitMap`.
+- The `RastPort` write mask (`Mask`, offset 40) is honoured on every put: `0xFF` means all planes writable, `0` drops the write. `InitRastPort` and intuition's rastport init default it to `0xFF`, matching AmigaOS.
 
 | Function | Status | Notes |
 |----------|--------|-------|

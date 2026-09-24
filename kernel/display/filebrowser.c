@@ -173,7 +173,7 @@ static const FileEntry k_partition_empty_files[] = { { NULL, NULL, 0, 0 } };
 
 /* Per-browser entry storage to prevent shared buffer corruption */
 #define MAX_BROWSER_ENTRIES 32
-#define MAX_ENTRY_NAME_LEN 16
+#define MAX_ENTRY_NAME_LEN 32   /* matches RAMFS_MAX_NAME / FAT32 name buf */
 #define MAX_ENTRY_TYPE_LEN 8
 
 typedef struct {
@@ -182,37 +182,36 @@ typedef struct {
     char types[MAX_BROWSER_ENTRIES][MAX_ENTRY_TYPE_LEN];
 } BrowserEntryBuffer;
 
-/* Load entries from path into a specific browser's buffer */
+/* Load entries from path into a specific browser's buffer.
+ * VFS_ReadDir works for both RAMFS and handler-backed (FAT32) volumes;
+ * the result is a snapshot — callers reload when VFS_ChangeSeq() moves. */
 static const FileEntry *load_entries_for_browser(const char *path, BrowserEntryBuffer *buf)
 {
     if (!buf) return NULL;
 
-    /* Try VFS first — if the path resolves to a mounted volume, enumerate it */
-    RamFsNode *child = VFS_OpenDir(path);
-    if (child) {
-        int n = 0;
-        while (child && n < MAX_BROWSER_ENTRIES) {
+    VfsDirEnt ents[MAX_BROWSER_ENTRIES];
+    int n = VFS_ReadDir(path, ents, MAX_BROWSER_ENTRIES);
+    if (n > 0 || VFS_IsDir(path)) {
+        for (int i = 0; i < n; i++) {
             int ni = 0;
-            while (ni < MAX_ENTRY_NAME_LEN - 1 && child->name[ni]) {
-                buf->names[n][ni] = child->name[ni];
+            while (ni < MAX_ENTRY_NAME_LEN - 1 && ents[i].name[ni]) {
+                buf->names[i][ni] = ents[i].name[ni];
                 ni++;
             }
-            buf->names[n][ni] = '\0';
-            buf->entries[n].name = buf->names[n];
+            buf->names[i][ni] = '\0';
+            buf->entries[i].name = buf->names[i];
 
-            if (child->type == RAMFS_TYPE_DIR) {
-                buf->types[n][0] = 'D'; buf->types[n][1] = 'I';
-                buf->types[n][2] = 'R'; buf->types[n][3] = '\0';
+            if (ents[i].is_dir) {
+                buf->types[i][0] = 'D'; buf->types[i][1] = 'I';
+                buf->types[i][2] = 'R'; buf->types[i][3] = '\0';
             } else {
-                buf->types[n][0] = 'F'; buf->types[n][1] = 'I';
-                buf->types[n][2] = 'L'; buf->types[n][3] = 'E';
-                buf->types[n][4] = '\0';
+                buf->types[i][0] = 'F'; buf->types[i][1] = 'I';
+                buf->types[i][2] = 'L'; buf->types[i][3] = 'E';
+                buf->types[i][4] = '\0';
             }
-            buf->entries[n].type = buf->types[n];
-            buf->entries[n].size = child->size;
-            buf->entries[n].mtime = child->mtime;
-            n++;
-            child = child->next_sibling;
+            buf->entries[i].type = buf->types[i];
+            buf->entries[i].size = ents[i].size;
+            buf->entries[i].mtime = ents[i].mtime;
         }
         buf->entries[n].name = NULL;
         buf->entries[n].type = NULL;
@@ -271,6 +270,9 @@ typedef struct {
     int              lasso_moved;
     /* View mode (Window ▸ View By flyout) */
     ViewMode         view_mode;
+    /* VFS change counter value when entries were last loaded — draw
+     * reloads the listing when it differs (shell/guest-side changes). */
+    uint32_t         seen_seq;
     /* Per-icon snapshot positions (Icons ▸ Snapshot).  When set, the icon
      * is drawn at (pos_x, pos_y) instead of its grid cell.  In-memory only. */
     int              icon_pos_x[MAX_BROWSER_ENTRIES];
@@ -298,6 +300,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my);
 /* Forward declarations for sorting + snapshot (defined after find_browser_by_handle) */
 static void sort_entries(Browser *b);
 static WindowSnapshot *find_snapshot(const char *volume);
+static void browser_reload(Browser *b);
 
 /* =========================================================================
  * Drawing helpers
@@ -748,7 +751,20 @@ static void browser_draw_lasso(Browser *b, int wx, int wy, int ww, int wh)
 static void browser_draw_impl(Browser *b, int wx, int wy, int ww, int wh)
 {
     /* Cache geometry so the click handler can use it without a separate API */
-    if (b) { b->win_x = wx; b->win_y = wy; b->win_w = ww; b->win_h = wh; }
+    if (b) {
+        b->win_x = wx; b->win_y = wy; b->win_w = ww; b->win_h = wh;
+
+        /* Auto-reload when the filesystem changed underneath us (e.g. a
+         * shell makedir).  The listing is a snapshot, so selection and
+         * drag indices are stale afterwards. */
+        if (VFS_ChangeSeq() != b->seen_seq) {
+            browser_reload(b);
+            b->last_click_icon = -1;
+            for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
+            b->drag_icon = -1;
+            b->lasso_active = 0;
+        }
+    }
 
     /* Client area: 1px left outline, right = scrollbar, bottom = scrollbar */
     int cx = wx + 1;
@@ -1165,8 +1181,7 @@ void FileBrowser_Open(const char *volume)
             for (int j = 0; j < MAX_BROWSER_ENTRIES; j++) b->selected[j] = 0;
             b->lasso_active = 0;
             b->win_x = b->win_y = b->win_w = b->win_h = 0;
-            b->entries = load_entries_for_browser(volume, &b->entry_buffer);
-            sort_entries(b);
+            browser_reload(b);
 
             /* Calculate window position — restore from snapshot if available */
             int wx, wy, ww = 320, wh = 240;
@@ -1260,8 +1275,7 @@ void FileBrowser_Open(const char *volume)
     b->win_x = b->win_y = b->win_w = b->win_h = 0;
 
     /* Load entries into this browser's private buffer */
-    b->entries = load_entries_for_browser(volume, &b->entry_buffer);
-    sort_entries(b);
+    browser_reload(b);
 
     /* Stagger windows so each new browser is clearly visible.
      * Restore from snapshot if available.
@@ -1423,6 +1437,14 @@ static void sort_entries(Browser *b)
     }
 }
 
+/* Reload a browser's listing from VFS and stamp the change counter. */
+static void browser_reload(Browser *b)
+{
+    b->entries = load_entries_for_browser(b->volume, &b->entry_buffer);
+    sort_entries(b);
+    b->seen_seq = VFS_ChangeSeq();
+}
+
 /* ── Window snapshot (Window ▸ Snapshot) ── */
 
 static WindowSnapshot *find_snapshot(const char *volume)
@@ -1566,8 +1588,7 @@ void FileBrowser_Refresh(int wm_handle)
 {
     Browser *b = find_browser_by_handle(wm_handle);
     if (!b) return;
-    b->entries = load_entries_for_browser(b->volume, &b->entry_buffer);
-    sort_entries(b);
+    browser_reload(b);
     b->last_click_icon = -1;
     for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
     b->drag_icon = -1;

@@ -99,6 +99,16 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("ed",              Cmd_Ed          ),
     /* Help */
     CMD ("guide",           Cmd_Guide       ),
+    /* Shell-state commands — alias/unalias/path/skip/lab are normally
+     * intercepted as built-ins or script keywords before the native
+     * table; these entries let the C: binaries resolve too. */
+    CMD ("runback",         Cmd_RunBack     ),
+    CMD ("alias",           Cmd_Alias       ),
+    CMD ("unalias",         Cmd_UnAlias     ),
+    CMD ("path",            Cmd_Path        ),
+    CMD ("skip",            Cmd_Skip        ),
+    CMD ("lab",             Cmd_Lab         ),
+    CMD ("resload",         Cmd_ResLoad     ),
     { NULL, NULL, NULL }
 };
 

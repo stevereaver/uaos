@@ -25,13 +25,13 @@ typedef struct DosPacket {
     int32_t           dp_Type;      /* action code */
     int32_t           dp_Res1;      /* primary result (success/count/handle) */
     int32_t           dp_Res2;      /* secondary result / IoErr code */
-    int32_t           dp_Arg1;
-    int32_t           dp_Arg2;
-    int32_t           dp_Arg3;
-    int32_t           dp_Arg4;
-    int32_t           dp_Arg5;
-    int32_t           dp_Arg6;
-    int32_t           dp_Arg7;
+    intptr_t          dp_Arg1;
+    intptr_t          dp_Arg2;
+    intptr_t          dp_Arg3;
+    intptr_t          dp_Arg4;
+    intptr_t          dp_Arg5;
+    intptr_t          dp_Arg6;
+    intptr_t          dp_Arg7;
 } DosPacket;
 
 /* -------------------------------------------------------------------------

@@ -31,6 +31,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `mem_info.c` / `mem_info.h`: Kernel-exported memory query API (`Mem_GetInfo()`), backing both the resident `C:mem` command and the `SYSCALL_MEMINFO` (0x2D) syscall consumed by the on-disk `C:avail` userspace command.
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
+- `float_math.c` / `float_math.h`: Shared freestanding IEEE 754 single-precision transcendental helpers (`uaos_sinf`, `uaos_sqrtf`, `uaos_expf`, ...) used by `mathffp.library` and `mathtrans.library`.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
 - `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Installed at IDT vector 14 after `IDT_Init()` so that M68k accesses to the non-present `0x00B00000-0x00DFFFFF` window are emulated rather than raising an unhandled #PF.  Non-chip page faults from X64 userspace tasks kill the task gracefully instead of halting the system.
 - `chip_emu.c` (in `kernel/chipset/`): AGA/ECS custom chip emulator with a sparse register dispatch table for the 0xDFF000 register area.  See [Chipset Emulator](/kernel/chipset/index.md).

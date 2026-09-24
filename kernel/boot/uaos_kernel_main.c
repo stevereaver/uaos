@@ -348,6 +348,54 @@ extern unsigned int g_fb_width_irq;
 extern unsigned int g_fb_height_irq;
 
 /* -----------------------------------------------------------------------
+ * boot_automount_partitions — register MBR partitions on a block device
+ * and auto-mount every formatted one under its display name (e.g. "DH0").
+ *
+ * Always mounts formatted partitions at boot so they appear on the
+ * desktop and in info — shared by the virtio-blk and virtio-scsi paths.
+ * ----------------------------------------------------------------------- */
+static void boot_automount_partitions(BlockDev *vdev)
+{
+    if (!vdev) return;
+
+    PartitionTable pt;
+    if (partition_read(vdev, &pt) != 0 || !pt.valid || pt.scheme != PART_SCHEME_MBR)
+        return;
+
+    for (int i = 0; i < MBR_PART_COUNT; i++) {
+        if (pt.mbr.partitions[i].type_code == PART_TYPE_EMPTY)
+            continue;
+
+        char namebuf[16];
+        const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
+        BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
+            pt.mbr.partitions[i].lba_start,
+            pt.mbr.partitions[i].sector_count, dname);
+        if (!pdev || !BlockDev_CheckFormatted(pdev))
+            continue;
+
+        /* Strip trailing colon for VFS mount name */
+        char mnt_name[16];
+        int ni = 0, si = 0;
+        while (si < 15 && dname[si] && dname[si] != ':')
+            mnt_name[ni++] = dname[si++];
+        mnt_name[ni] = '\0';
+
+        if (mnt_name[0]) {
+            if (VFS_MountPartition(mnt_name) == 0) {
+                kprint("[BOOT] Auto-mounted ");
+                kprint(mnt_name);
+                kprint(":\n");
+            } else {
+                kprint("[BOOT] Failed to auto-mount ");
+                kprint(mnt_name);
+                kprint(":\n");
+            }
+        }
+    }
+}
+
+/* -----------------------------------------------------------------------
  * uaos_kernel_main — C entry point
  *
  * Parameters (passed by uaos_kernel_entry.asm via SysV ABI):
@@ -572,70 +620,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     if (virtio_blk_init() == 0) {
         kprint("[BOOT] VirtIO block device detected and registered.\n");
         /* Auto-detect partitions on virtio0 */
-        BlockDev *vdev = BlockDev_Find("virtio0");
-        if (vdev) {
-            PartitionTable pt;
-            if (partition_read(vdev, &pt) == 0 && pt.valid && pt.scheme == PART_SCHEME_MBR) {
-                for (int i = 0; i < MBR_PART_COUNT; i++) {
-                    if (pt.mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
-                        char namebuf[16];
-                        const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
-                        BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
-                            pt.mbr.partitions[i].lba_start,
-                            pt.mbr.partitions[i].sector_count, dname);
-                        if (pdev && BlockDev_CheckFormatted(pdev)) {
-                            /* Strip trailing colon for VFS mount name */
-                            char mnt_name[16];
-                            int ni = 0, si = 0;
-                            while (si < 15 && dname[si] && dname[si] != ':')
-                                mnt_name[ni++] = dname[si++];
-                            mnt_name[ni] = '\0';
-
-                            /* Mount by FAT32 volume label if available,
-                             * otherwise fall back to the device name (DH0 etc.) */
-                            char fat_label[16];
-                            if (BlockDev_ReadVolLabel(pdev, fat_label, sizeof(fat_label))) {
-                                VFS_MountPartition(fat_label);
-                            } else if (mnt_name[0]) {
-                                VFS_MountPartition(mnt_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        boot_automount_partitions(BlockDev_Find("virtio0"));
     } else if (virtio_scsi_init() == 0) {
         /* Fall back to VirtIO-SCSI (VirtualBox virtio-scsi controller) */
         kprint("[BOOT] VirtIO-SCSI block device detected and registered.\n");
-        BlockDev *vdev = BlockDev_Find("virtio0");
-        if (vdev) {
-            PartitionTable pt;
-            if (partition_read(vdev, &pt) == 0 && pt.valid && pt.scheme == PART_SCHEME_MBR) {
-                for (int i = 0; i < MBR_PART_COUNT; i++) {
-                    if (pt.mbr.partitions[i].type_code != PART_TYPE_EMPTY) {
-                        char namebuf[16];
-                        const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
-                        BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
-                            pt.mbr.partitions[i].lba_start,
-                            pt.mbr.partitions[i].sector_count, dname);
-                        if (pdev && BlockDev_CheckFormatted(pdev)) {
-                            char mnt_name[16];
-                            int ni = 0, si = 0;
-                            while (si < 15 && dname[si] && dname[si] != ':')
-                                mnt_name[ni++] = dname[si++];
-                            mnt_name[ni] = '\0';
-
-                            char fat_label[16];
-                            if (BlockDev_ReadVolLabel(pdev, fat_label, sizeof(fat_label))) {
-                                VFS_MountPartition(fat_label);
-                            } else if (mnt_name[0]) {
-                                VFS_MountPartition(mnt_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        boot_automount_partitions(BlockDev_Find("virtio0"));
     } else {
         kprint("[BOOT] No VirtIO block device found (this is OK if no disk attached).\n");
     }
@@ -680,6 +669,26 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
                         kprint("[BOOT] ISO 9660 mount failed.\n");
                     }
                 }
+            }
+        }
+    }
+
+    /* Also check for a CD-ROM on the VirtIO-SCSI controller (VirtualBox
+     * attaches the DVD to virtio-scsi when that is the storage controller).
+     * The virtio_scsi driver registers it as "vio_cd0" with 2048-byte
+     * sectors.  Only mount if Workbench: isn't already mounted from IDE. */
+    if (virtio_scsi_has_cdrom()) {
+        BlockDev *vio_cd = BlockDev_Find("vio_cd0");
+        if (vio_cd) {
+            if (!VFS_FindVol("Workbench")) {
+                kprint("[BOOT] Mounting ISO 9660 from virtio-scsi CD-ROM (vio_cd0)...\n");
+                if (ISO9660_MountCD(vio_cd, "Workbench") == 0) {
+                    kprint("[BOOT] Workbench: mounted from virtio-scsi CD-ROM.\n");
+                } else {
+                    kprint("[BOOT] virtio-scsi ISO 9660 mount failed.\n");
+                }
+            } else {
+                kprint("[BOOT] Workbench: already mounted, skipping virtio-scsi CD-ROM.\n");
             }
         }
     }

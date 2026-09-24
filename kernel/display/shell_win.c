@@ -790,6 +790,8 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  format <dev> [fs]  format a partition");
     inst_print(s, "  pointer            open pointer preferences");
     inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
+    inst_print(s, "  runback <cmd>      run a command in the background");
+    inst_print(s, "  resload <cmd>      load command into resident list");
     inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
     inst_print(s, "  mount <dev> [from] mount a handler device");
     inst_print(s, "  execute <script>   run a script file");
@@ -1075,10 +1077,9 @@ static void inst_cmd_cd(ShellInstance *s, const char *arg)
     char path[64];
     make_abs_path(s, arg, path, 64);
 
-    /* Resolve the node directly — VFS_OpenDir returns first_child which is
-     * NULL for empty dirs, so we can't use it to check existence. */
-    RamFsNode *node = VFS_ResolveDir(path);
-    if (!node) {
+    /* Use VFS_IsDir so that handler-backed volumes (FAT32) are also
+     * recognised as valid directories. */
+    if (!VFS_IsDir(path)) {
         char msg[MAX_LINE_LEN];
         scopy(msg, "Not found: ", MAX_LINE_LEN);
         scat(msg, path, MAX_LINE_LEN);
@@ -3140,13 +3141,11 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
                 mnt_name[ni++] = dname[si++];
             mnt_name[ni] = '\0';
 
-            /* Mount by volume label if provided, else fall back to device name */
-            const char *vol_mnt = volname[0] ? volname : mnt_name;
-            if (vol_mnt[0]) {
-                if (VFS_MountPartition(vol_mnt) == 0) {
+            if (mnt_name[0]) {
+                if (VFS_RemountPartition(mnt_name) == 0) {
                     char msg2[MAX_LINE_LEN];
                     scopy(msg2, "Mounted as ", MAX_LINE_LEN);
-                    scat(msg2, vol_mnt, MAX_LINE_LEN);
+                    scat(msg2, mnt_name, MAX_LINE_LEN);
                     scat(msg2, ":", MAX_LINE_LEN);
                     inst_print(s, msg2);
                 }
