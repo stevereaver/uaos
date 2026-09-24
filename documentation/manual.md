@@ -214,9 +214,13 @@ at boot via `netdev_probe()`.
 
 - **PCI**: vendor `0x1AF4`, device `0x1000` (legacy VirtIO 0.9) or `0x1041` (modern)
 - **Interface**: I/O-port or MMIO BAR0; split virtqueue ring protocol
-- **Queue size**: 256 descriptors each for RX and TX (matches QEMU default)
+- **Queue size**: honours the device-reported QUEUE_SIZE at init (QEMU = 256,
+  VirtualBox = 1024) and lays out the desc/avail/used rings accordingly;
+  up to VIRTQ_MAX_SIZE (1024) entries are supported while only 256 RX
+  buffers are posted
 - **MSI-X**: present in device but kept disabled; uses 8259A PIC IRQ
-- **Used by**: QEMU (`-device virtio-net-pci,disable-modern=on`)
+- **Used by**: QEMU (`-device virtio-net-pci,disable-modern=on`) and
+  VirtualBox virtio-net NICs (transitional device 1af4:1000, legacy I/O path)
 
 #### Intel 82540EM e1000 (`e1000.c`)
 

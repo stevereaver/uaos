@@ -2,6 +2,11 @@
 
 ## 2026-09-24
 
+* **Fixed**: `kernel/drivers/virtio_net.c` — virtio-net was completely dead on VirtualBox (init succeeded, DHCP timed out, no TX/RX). Root cause: the driver hardcoded the virtqueue layout for 256 entries and ignored the read-only legacy `QUEUE_SIZE` register; VirtualBox's VirtioCore fixes every virtqueue at `VIRTQ_SIZE = 1024` and derives `GCPhysVirtqAvail`/`GCPhysVirtqUsed` from it (avail at base+16K, used at the next 4K boundary), so the device read avail entries from memory past the 16KB queue buffer and never saw posted descriptors. The driver now reads `QUEUE_SIZE` per queue (up to `VIRTQ_MAX_SIZE` = 1024), lays out desc/avail/used rings at the reported size, and posts up to `VNET_RX_BUFS` = 256 RX buffers. (UAOS-38)
+* **Updated**: `documentation/manual.md` and `okf/kernel/net/index.md` — documented the device-reported queue size handling. (UAOS-38)
+
+## 2026-09-24
+
 * **Updated**: `documentation/Dos Manual.pdf` — regenerated from `Dos_Manual.md` via `pandoc --pdf-engine=pdflatex --toc --toc-depth=2 -V geometry:margin=1in`; was stale since 2026-06-14 and now includes `runback`, `resload`, and `LAB`/`SKIP` docs. (UAOS-37)
 * **Updated**: `documentation/manual.pdf` — recompiled from `manual.tex` with two `pdflatex` passes; was stale since 2026-06-20 and still contained the AROS references removed in 83e97a2. (UAOS-37)
 * **Created**: `okf/documentation/` category — concept files for both PDF manuals with their regeneration commands. (UAOS-37)

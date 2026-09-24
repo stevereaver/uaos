@@ -22,10 +22,14 @@
 /* Receive buffer size: one header + one max frame */
 #define VIRTIO_NET_RX_BUFSZ     (VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MTU + 2)
 
-/* Number of descriptors per virtqueue.
- * Must match or exceed what the device reports via QUEUE_SIZE.
- * QEMU virtio-net-pci reports 256 — we must allocate for that. */
-#define VIRTQ_SIZE              256
+/* Maximum number of descriptors per virtqueue we can host.
+ * The legacy interface fixes the queue size on the device side and the
+ * guest must lay out the rings at exactly the reported size:
+ *   QEMU virtio-net-pci reports 256, VirtualBox reports 1024. */
+#define VIRTQ_MAX_SIZE          1024
+
+/* Number of RX buffers actually posted to the device (<= queue size). */
+#define VNET_RX_BUFS            256
 
 /* MAC address length */
 #define ETH_ALEN                6

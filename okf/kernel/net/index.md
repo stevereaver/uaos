@@ -90,7 +90,7 @@ The device layer pads Ethernet frames to the minimum 60 bytes and exposes the MA
 ## Drivers
 
 - **Intel e1000 (`kernel/drivers/e1000.c`)**: 82540EM "PRO/1000 MT Desktop" driver. Uses 128 KB MMIO BAR0, legacy TX/RX descriptor rings, and ICR-based IRQ handling.
-- **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: Legacy VirtIO network device (PCI vendor `0x1AF4`, device `0x1000`). Uses I/O-port registers and split virtqueues for RX and TX, with INTx support.
+- **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: Legacy VirtIO network device (PCI vendor `0x1AF4`, device `0x1000`). Uses I/O-port registers and split virtqueues for RX and TX, with INTx support. The legacy `QUEUE_SIZE` register is read-only, so the driver honours the device-reported queue size when laying out rings (QEMU = 256, VirtualBox = 1024; hardcoding 256 placed the avail/used rings at wrong offsets under VirtualBox and broke all TX/RX). Up to 1024-entry queues are supported; at most 256 RX buffers are posted.
 
 ## Shell Integration
 

@@ -19,6 +19,12 @@
  *     +0x12  DEVICE_STATUS     (R/W)
  *     +0x13  ISR_STATUS        (R, clears on read)
  *     +0x14  device-specific config (MAC[0..5], status)
+ *
+ * NOTE: the legacy QUEUE_SIZE register is read-only — the device dictates
+ * the virtqueue size and the guest must lay out desc/avail/used rings at
+ * exactly that size.  QEMU reports 256, VirtualBox reports 1024.  This
+ * driver sizes the ring memory for VIRTQ_MAX_SIZE and computes all ring
+ * offsets from the device-reported size at init time.
  */
 
 #include "virtio_net.h"
@@ -169,7 +175,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint16_t flags;
     uint16_t idx;
-    uint16_t ring[VIRTQ_SIZE];
+    uint16_t ring[VIRTQ_MAX_SIZE];
     uint16_t used_event;
 } VirtqAvail;
 
@@ -183,7 +189,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint16_t flags;
     uint16_t idx;
-    VirtqUsedElem ring[VIRTQ_SIZE];
+    VirtqUsedElem ring[VIRTQ_MAX_SIZE];
     uint16_t avail_event;
 } VirtqUsed;
 
@@ -191,7 +197,7 @@ typedef struct __attribute__((packed)) {
 #define VIRTQ_ALIGN     4096
 /* Each virtqueue needs enough space for all three parts, aligned to 4K */
 /* Size = desc_table(16*N) + avail(6+2*N) padded to 4K + used(6+8*N) padded */
-#define VIRTQ_BYTES     16384  /* 4 pages — enough for N=256 (QEMU default) */
+#define VIRTQ_BYTES     32768  /* 8 pages — enough for N=1024 (VirtualBox) */
 
 /* VirtIO net header (legacy, 10 bytes) */
 typedef struct __attribute__((packed)) {
@@ -216,15 +222,18 @@ static VirtqAvail *g_rxq_avail;
 static VirtqUsed  *g_rxq_used;
 static uint16_t    g_rxq_last_used;
 static uint16_t    g_rxq_free_head;
+static uint16_t    g_rx_qsize;      /* device-reported RX queue size */
+static uint16_t    g_rx_nbufs;      /* RX descriptors posted (<= VNET_RX_BUFS) */
 
 static VirtqDesc  *g_txq_desc;
 static VirtqAvail *g_txq_avail;
 static VirtqUsed  *g_txq_used;
 static uint16_t    g_txq_last_used;
 static uint16_t    g_txq_free_head;
+static uint16_t    g_tx_qsize;      /* device-reported TX queue size */
 
-/* RX packet buffers (one per descriptor slot) */
-static uint8_t g_rx_bufs[VIRTQ_SIZE][VIRTIO_NET_RX_BUFSZ] __attribute__((aligned(16)));
+/* RX packet buffers (one per posted descriptor) */
+static uint8_t g_rx_bufs[VNET_RX_BUFS][VIRTIO_NET_RX_BUFSZ] __attribute__((aligned(16)));
 
 /* TX bounce buffer (one at a time) */
 static uint8_t g_tx_hdr_buf[VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MTU + 2] __attribute__((aligned(16)));
@@ -246,25 +255,30 @@ static volatile uint8_t g_poll_lock = 0;
  * Virtqueue helpers
  * ------------------------------------------------------------------------- */
 
-static void vq_init_ptrs(int qidx, VirtqDesc **desc, VirtqAvail **avail, VirtqUsed **used)
+static int vq_init_ptrs(int qidx, uint16_t qsize,
+                        VirtqDesc **desc, VirtqAvail **avail, VirtqUsed **used)
 {
     uint8_t *base = g_vq_mem[qidx];
     /* Descriptor table starts at offset 0 */
     *desc  = (VirtqDesc *)base;
     /* Available ring immediately after descriptor table, no alignment needed beyond 2 */
-    uint32_t avail_off = VIRTQ_SIZE * sizeof(VirtqDesc);
+    uint32_t avail_off = (uint32_t)qsize * sizeof(VirtqDesc);
     *avail = (VirtqAvail *)(base + avail_off);
-    /* Used ring at next 4K boundary after avail */
-    uint32_t used_off = (avail_off + sizeof(VirtqAvail) + 4095) & ~4095U;
-    if (used_off + sizeof(VirtqUsed) > VIRTQ_BYTES)
-        used_off = VIRTQ_BYTES - sizeof(VirtqUsed);
+    /* Used ring at next 4K boundary after avail (flags+idx+ring[qsize]) */
+    uint32_t avail_bytes = 6 + (uint32_t)qsize * 2;
+    uint32_t used_off = (avail_off + avail_bytes + 4095) & ~4095U;
+    uint32_t used_bytes = 6 + (uint32_t)qsize * 8;
+    if (used_off + used_bytes > VIRTQ_BYTES)
+        return 0;
     *used  = (VirtqUsed *)(base + used_off);
+    return 1;
 }
 
 /* Clear the virtqueue memory and reset indices */
-static void vq_reset(VirtqDesc *desc, VirtqAvail *avail, VirtqUsed *used)
+static void vq_reset(VirtqDesc *desc, VirtqAvail *avail, VirtqUsed *used,
+                     uint16_t qsize)
 {
-    for (int i = 0; i < VIRTQ_SIZE; i++) {
+    for (int i = 0; i < qsize; i++) {
         desc[i].addr  = 0;
         desc[i].len   = 0;
         desc[i].flags = 0;
@@ -272,15 +286,18 @@ static void vq_reset(VirtqDesc *desc, VirtqAvail *avail, VirtqUsed *used)
     }
     avail->flags = 0;
     avail->idx   = 0;
-    for (int i = 0; i < VIRTQ_SIZE; i++) avail->ring[i] = 0;
+    for (int i = 0; i < qsize; i++) avail->ring[i] = 0;
     used->flags  = 0;
     used->idx    = 0;
 }
 
-/* Push all RX descriptors into the available ring so the device can fill them */
+/* Push RX descriptors into the available ring so the device can fill them.
+ * We post VNET_RX_BUFS buffers at most, even if the device queue is bigger —
+ * the avail ring simply holds fewer entries than its capacity. */
 static void rxq_refill_all(void)
 {
-    for (int i = 0; i < VIRTQ_SIZE; i++) {
+    g_rx_nbufs = g_rx_qsize < VNET_RX_BUFS ? g_rx_qsize : VNET_RX_BUFS;
+    for (int i = 0; i < g_rx_nbufs; i++) {
         g_rxq_desc[i].addr  = (uint64_t)(uintptr_t)g_rx_bufs[i];
         g_rxq_desc[i].len   = VIRTIO_NET_RX_BUFSZ;
         g_rxq_desc[i].flags = VIRTQ_DESC_F_WRITE;
@@ -289,7 +306,7 @@ static void rxq_refill_all(void)
     }
     /* Memory barrier before updating idx */
     __asm__ volatile("mfence" ::: "memory");
-    g_rxq_avail->idx = VIRTQ_SIZE;
+    g_rxq_avail->idx = g_rx_nbufs;
     g_rxq_free_head  = 0;
     g_rxq_last_used  = 0;
 }
@@ -426,15 +443,33 @@ int virtio_net_init(void)
         g_mac[3] = 0x12; g_mac[4] = 0x34; g_mac[5] = 0x56;
     }
 
-    /* 5. Setup RX virtqueue (queue 0) */
-    vq_init_ptrs(0, &g_rxq_desc, &g_rxq_avail, &g_rxq_used);
-    vq_reset(g_rxq_desc, g_rxq_avail, g_rxq_used);
+    /* 5. Setup RX virtqueue (queue 0) — honour the device-reported queue
+     * size: VirtualBox reports 1024, QEMU 256.  The ring layout must match
+     * the reported size exactly or the device reads/writes the wrong pages. */
+    outw(iobase + VIRTIO_PCI_QUEUE_SEL, 0);
+    g_rx_qsize = inw(iobase + VIRTIO_PCI_QUEUE_SIZE);
+    _vn_ps("[VNET] rx queue size="); _vn_ph(g_rx_qsize); _vn_ps("\n");
+    if (g_rx_qsize == 0 || g_rx_qsize > VIRTQ_MAX_SIZE
+        || !vq_init_ptrs(0, g_rx_qsize, &g_rxq_desc, &g_rxq_avail, &g_rxq_used)) {
+        _vn_ps("[VNET] unsupported rx queue size\n");
+        outb(iobase + VIRTIO_PCI_STATUS, VIRTIO_STATUS_RESET);
+        return 0;
+    }
+    vq_reset(g_rxq_desc, g_rxq_avail, g_rxq_used, g_rx_qsize);
     vq_register(iobase, 0, g_vq_mem[0]);
     rxq_refill_all();
 
     /* 6. Setup TX virtqueue (queue 1) */
-    vq_init_ptrs(1, &g_txq_desc, &g_txq_avail, &g_txq_used);
-    vq_reset(g_txq_desc, g_txq_avail, g_txq_used);
+    outw(iobase + VIRTIO_PCI_QUEUE_SEL, 1);
+    g_tx_qsize = inw(iobase + VIRTIO_PCI_QUEUE_SIZE);
+    _vn_ps("[VNET] tx queue size="); _vn_ph(g_tx_qsize); _vn_ps("\n");
+    if (g_tx_qsize == 0 || g_tx_qsize > VIRTQ_MAX_SIZE
+        || !vq_init_ptrs(1, g_tx_qsize, &g_txq_desc, &g_txq_avail, &g_txq_used)) {
+        _vn_ps("[VNET] unsupported tx queue size\n");
+        outb(iobase + VIRTIO_PCI_STATUS, VIRTIO_STATUS_RESET);
+        return 0;
+    }
+    vq_reset(g_txq_desc, g_txq_avail, g_txq_used, g_tx_qsize);
     vq_register(iobase, 1, g_vq_mem[1]);
     g_txq_free_head = 0;
     g_txq_last_used = 0;
@@ -497,7 +532,7 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
     g_txq_desc[0].flags = 0;
     g_txq_desc[0].next  = 0;
 
-    g_txq_avail->ring[g_txq_avail->idx % VIRTQ_SIZE] = 0;
+    g_txq_avail->ring[g_txq_avail->idx % g_tx_qsize] = 0;
     __asm__ volatile("mfence" ::: "memory");
     g_txq_avail->idx++;
     __asm__ volatile("mfence" ::: "memory");
@@ -523,24 +558,26 @@ void virtio_net_poll(void)
 
     /* Drain used RX ring */
     while (g_rxq_last_used != g_rxq_used->idx) {
-        uint16_t ui = g_rxq_last_used % VIRTQ_SIZE;
+        uint16_t ui = g_rxq_last_used % g_rx_qsize;
         uint32_t received_len = g_rxq_used->ring[ui].len;
-        uint16_t desc_id      = (uint16_t)(g_rxq_used->ring[ui].id % VIRTQ_SIZE);
+        uint16_t desc_id      = (uint16_t)g_rxq_used->ring[ui].id;
 
-        if (received_len > VIRTIO_NET_HDR_SIZE) {
-            uint16_t frame_len = (uint16_t)(received_len - VIRTIO_NET_HDR_SIZE);
-            const uint8_t *frame = g_rx_bufs[desc_id] + VIRTIO_NET_HDR_SIZE;
-            if (g_rx_cb)
-                g_rx_cb(frame, frame_len);
+        if (desc_id < g_rx_nbufs) {
+            if (received_len > VIRTIO_NET_HDR_SIZE) {
+                uint16_t frame_len = (uint16_t)(received_len - VIRTIO_NET_HDR_SIZE);
+                const uint8_t *frame = g_rx_bufs[desc_id] + VIRTIO_NET_HDR_SIZE;
+                if (g_rx_cb)
+                    g_rx_cb(frame, frame_len);
+            }
+
+            /* Re-add descriptor to available ring */
+            g_rxq_desc[desc_id].addr  = (uint64_t)(uintptr_t)g_rx_bufs[desc_id];
+            g_rxq_desc[desc_id].len   = VIRTIO_NET_RX_BUFSZ;
+            g_rxq_desc[desc_id].flags = VIRTQ_DESC_F_WRITE;
+            g_rxq_avail->ring[g_rxq_avail->idx % g_rx_qsize] = desc_id;
+            __asm__ volatile("mfence" ::: "memory");
+            g_rxq_avail->idx++;
         }
-
-        /* Re-add descriptor to available ring */
-        g_rxq_desc[desc_id].addr  = (uint64_t)(uintptr_t)g_rx_bufs[desc_id];
-        g_rxq_desc[desc_id].len   = VIRTIO_NET_RX_BUFSZ;
-        g_rxq_desc[desc_id].flags = VIRTQ_DESC_F_WRITE;
-        g_rxq_avail->ring[g_rxq_avail->idx % VIRTQ_SIZE] = desc_id;
-        __asm__ volatile("mfence" ::: "memory");
-        g_rxq_avail->idx++;
 
         g_rxq_last_used++;
     }
