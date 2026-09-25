@@ -78,6 +78,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("changetaskpri",   Cmd_ChangeTaskPri, "PRI/A/N,TASK/K" ),
     CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
     CMD ("rx",              Cmd_Rx             ),
+    CMDT("telnetd",         Cmd_Telnetd,       "PORT/K/N" ),
     /* Prefs editors (stubs — Phase 3) */
     CMD ("screenmode",      Cmd_ScreenMode  ),
     CMD ("font",            Cmd_Font        ),

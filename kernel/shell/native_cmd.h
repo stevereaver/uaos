@@ -216,6 +216,7 @@ void Cmd_RequestFile     (NativeCmdCtx *ctx, const char *args);
 void Cmd_ChangeTaskPri   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Status          (NativeCmdCtx *ctx, const char *args);
 void Cmd_Rx              (NativeCmdCtx *ctx, const char *args);
+void Cmd_Telnetd         (NativeCmdCtx *ctx, const char *args);
 
 /* Prefs editors (stubs — Phase 3) */
 void Cmd_ScreenMode      (NativeCmdCtx *ctx, const char *args);

@@ -16,11 +16,14 @@
 
 /* Maximum Ethernet frame size (excluding VirtIO net header) */
 #define VIRTIO_NET_MTU          1514
-/* VirtIO net header size (legacy) */
+/* VirtIO net header sizes: 10 bytes legacy, 12 bytes virtio-1.0
+ * (adds the num_buffers field).  Buffers are sized for the v1 header
+ * so they are large enough on either transport. */
 #define VIRTIO_NET_HDR_SIZE     10
+#define VIRTIO_NET_HDR_V1_SIZE  12
 
 /* Receive buffer size: one header + one max frame */
-#define VIRTIO_NET_RX_BUFSZ     (VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MTU + 2)
+#define VIRTIO_NET_RX_BUFSZ     (VIRTIO_NET_HDR_V1_SIZE + VIRTIO_NET_MTU + 2)
 
 /* Maximum number of descriptors per virtqueue we can host.
  * The legacy interface fixes the queue size on the device side and the

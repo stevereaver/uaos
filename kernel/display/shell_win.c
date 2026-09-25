@@ -31,6 +31,7 @@
 #include "exec/uaos_binary.h"
 #include "exec/elf64_loader.h"
 #include "../net/stack.h"
+#include "../net/tcp.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
 #include "../exec/task.h"
@@ -65,15 +66,18 @@ static void inst_print_wrapper(const char *line)
 #define MAX_LINE_LEN    96
 #define MAX_INPUT       80
 #define MAX_SHELLS      4
+#define MAX_REMOTE_SHELLS 4                    /* telnet sessions (no WM window) */
+#define TOTAL_SHELLS    (MAX_SHELLS + MAX_REMOTE_SHELLS)
 #define SCROLL_LINES    4    /* lines per Page-Up/Down tick */
 
-/* Special virtual keys injected by kbd driver for scroll/history */
+/* Special virtual keys injected by kbd driver for scroll/history.
+ * The arrow codes are shared with ShellWin_RemoteFeed (see shell_win.h). */
 #define VKEY_PGUP  0x01
 #define VKEY_PGDN  0x02
-#define VKEY_UP    0x03
-#define VKEY_DOWN  0x04
-#define VKEY_LEFT  0x05
-#define VKEY_RIGHT 0x06
+#define VKEY_UP    SHELL_VKEY_UP
+#define VKEY_DOWN  SHELL_VKEY_DOWN
+#define VKEY_LEFT  SHELL_VKEY_LEFT
+#define VKEY_RIGHT SHELL_VKEY_RIGHT
 
 #define MAX_CMD_HIST  64   /* command history entries per shell */
 #define MAX_ALIASES   32   /* max aliases per shell */
@@ -158,18 +162,27 @@ struct ShellInstance {
     /* Script quit flag (set by QUIT command) */
     int          quit_flag;
 
-    /* Keyboard ring buffer — fed by WM/idle task, consumed by shell task */
+    /* Keyboard ring buffer — fed by WM/idle task (or the telnet daemon
+     * for remote sessions), consumed by shell task */
 #define SHELL_KB_BUFSIZE 64
     char         kb_buf[SHELL_KB_BUFSIZE];
     int          kb_head;
     int          kb_tail;
+
+    /* Remote (telnet) session — remote shells live in slots
+     * MAX_SHELLS..TOTAL_SHELLS-1 and have wm_handle == -1. */
+    int          remote;         /* 1 = remote session, not a WM window */
+    int          remote_sock;    /* TCP socket index, -1 when detached */
+    volatile int remote_dead;    /* 1 = session over; task should exit */
+    volatile int remote_inuse;   /* 1 = remote slot allocated */
 };
 typedef struct ShellInstance ShellInstance;
 
-/* History storage in BSS (not on stack) — 1000×96 × 4 shells = 384 KB */
-static char g_hist_buf[MAX_SHELLS][MAX_HIST_LINES][MAX_LINE_LEN];
+/* History storage in BSS (not on stack) — 1000×96 × 8 shells = 768 KB
+ * (remote slots keep a buffer so every indexed accessor stays in range) */
+static char g_hist_buf[TOTAL_SHELLS][MAX_HIST_LINES][MAX_LINE_LEN];
 
-static ShellInstance g_shells[MAX_SHELLS];
+static ShellInstance g_shells[TOTAL_SHELLS];
 static int           g_n_shells = 0;
 
 /* -------------------------------------------------------------------------
@@ -252,6 +265,40 @@ static int seq_ci(const char *a, const char *b)
 }
 
 /* =========================================================================
+ * Remote (telnet) session output helpers
+ *
+ * Remote shells have wm_handle == -1 and no framebuffer presence.  All
+ * output goes through remote_send() which pushes bytes to the session's
+ * TCP socket; if the connection is gone the session is marked dead so
+ * the shell task can exit and the slot can be reused.
+ * ========================================================================= */
+
+static void remote_send(ShellInstance *s, const char *data, int len)
+{
+    if (!s->remote || s->remote_dead || s->remote_sock < 0) return;
+    while (len > 0) {
+        int chunk = len > 1400 ? 1400 : len;   /* stay under one segment */
+        int sent = tcp_send(s->remote_sock, (const uint8_t *)data,
+                            (uint16_t)chunk);
+        if (sent <= 0) {
+            if (tcp_state(s->remote_sock) != TCP_ESTABLISHED) {
+                s->remote_dead = 1;
+                return;
+            }
+            net_stack_poll();
+            continue;
+        }
+        data += sent;
+        len  -= sent;
+    }
+}
+
+static void remote_send_str(ShellInstance *s, const char *str)
+{
+    remote_send(s, str, slen(str));
+}
+
+/* =========================================================================
  * Per-instance rendering
  * ========================================================================= */
 
@@ -281,6 +328,7 @@ static inline void _ser_putd(int v) {
 
 static void inst_draw_contents(ShellInstance *s)
 {
+    if (s->remote) return;
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
 
     int body_w = ww - BORDER_L - BORDER_R;
@@ -303,6 +351,7 @@ static void inst_draw_contents(ShellInstance *s)
 
 static void inst_draw_history(ShellInstance *s)
 {
+    if (s->remote) return;
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
 
     if (s->vim_mode) {
@@ -393,8 +442,69 @@ static void expand_prompt(const ShellInstance *s, const char *src,
     dst[di] = '\0';
 }
 
+/* Build the prompt text for shell s (ask-mode prompt, PROMPT custom
+ * string, or the default "VOL:> " volume prompt).  Shared by the
+ * framebuffer input bar and the remote-session prompt. */
+static void build_prompt(const ShellInstance *s, char *prompt, int max)
+{
+    int pi = 0;
+    prompt[0] = '\0';
+
+    if (s->ask_mode && s->ask_prompt[0]) {
+        /* Use custom ask prompt */
+        while (s->ask_prompt[pi] && pi < max - 3) {
+            prompt[pi] = s->ask_prompt[pi];
+            pi++;
+        }
+        /* Add ": " if there's room */
+        if (pi < max - 2) { prompt[pi++] = ':'; prompt[pi++] = ' '; }
+    } else if (s->custom_prompt[0]) {
+        /* Use PROMPT command string, expanding AmigaDOS escapes */
+        expand_prompt(s, s->custom_prompt, prompt, max);
+        return;
+    } else {
+        /* Build normal prompt from current volume */
+        char vol[32];
+        extract_vol_prompt(s->cwd, vol, sizeof(vol));
+        /* Copy volume name */
+        int vi = 0;
+        while (vol[vi] && pi < max - 3) {
+            prompt[pi++] = vol[vi++];
+        }
+        /* Add "> " */
+        if (pi < max - 2) { prompt[pi++] = '>'; prompt[pi++] = ' '; }
+    }
+    prompt[pi] = '\0';
+}
+
+/* Send the current prompt to a remote session (no trailing newline). */
+static void remote_send_prompt(ShellInstance *s)
+{
+    char prompt[80];
+    build_prompt(s, prompt, sizeof(prompt));
+    remote_send_str(s, prompt);
+}
+
+/* Repaint the input line on a remote terminal: carriage return +
+ * erase-line, then prompt + input text, then reposition the cursor. */
+static void remote_refresh_line(ShellInstance *s)
+{
+    remote_send_str(s, "\r\x1b[2K");
+    remote_send_prompt(s);
+    if (s->input_len > 0)
+        remote_send(s, s->input_buf, s->input_len);
+    if (s->input_cur < s->input_len) {
+        remote_send_str(s, "\r");
+        remote_send_prompt(s);
+        if (s->input_cur > 0)
+            remote_send(s, s->input_buf, s->input_cur);
+    }
+}
+
 static void inst_draw_input(ShellInstance *s)
 {
+    if (s->remote) { remote_refresh_line(s); return; }
+
     int wx=s->wx, wy=s->wy, ww=s->ww, wh=s->wh;
 
     if (s->vim_mode) return;
@@ -405,34 +515,8 @@ static void inst_draw_input(ShellInstance *s)
 
     /* Build Amiga-style prompt from current volume, or use ask prompt if in ask mode */
     char prompt[80];
-    int pi = 0;
-
-    if (s->ask_mode && s->ask_prompt[0]) {
-        /* Use custom ask prompt */
-        while (s->ask_prompt[pi] && pi < 75) {
-            prompt[pi] = s->ask_prompt[pi];
-            pi++;
-        }
-        /* Add ": " if there's room */
-        if (pi < 77) { prompt[pi++] = ':'; prompt[pi++] = ' '; }
-    } else if (s->custom_prompt[0]) {
-        /* Use PROMPT command string, expanding AmigaDOS escapes */
-        expand_prompt(s, s->custom_prompt, prompt, sizeof(prompt));
-        pi = slen(prompt);
-    } else {
-        /* Build normal prompt from current volume */
-        char vol[32];
-        extract_vol_prompt(s->cwd, vol, sizeof(vol));
-        /* Copy volume name */
-        int vi = 0;
-        while (vol[vi] && pi < 35) {
-            prompt[pi++] = vol[vi++];
-        }
-        /* Add "> " */
-        if (pi < 38) { prompt[pi++] = '>'; prompt[pi++] = ' '; }
-    }
-    prompt[pi] = '\0';
-    int plen = pi;
+    build_prompt(s, prompt, sizeof(prompt));
+    int plen = slen(prompt);
 
     int right_edge = wx + ww - BORDER_R;  /* pixel x of right clip boundary */
 
@@ -745,6 +829,12 @@ static void inst_print(ShellInstance *s, const char *line)
         VFS_Write(&g_redir.fh, &nl, 1);
         return;
     }
+    /* Remote session: ship the line over the socket (telnet CRLF) */
+    if (s->remote) {
+        remote_send(s, line, slen(line));
+        remote_send_str(s, "\r\n");
+        return;
+    }
     int slot = s->hist_count % MAX_HIST_LINES;
     scopy(g_hist_buf[s->index][slot], line, MAX_LINE_LEN);
     s->hist_count++;
@@ -796,6 +886,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  mount <dev> [from] mount a handler device");
     inst_print(s, "  execute <script>   run a script file");
     inst_print(s, "  loadwb             launch Workbench desktop");
+    inst_print(s, "  telnetd [PORT=n]   start telnet debug shell service");
     inst_print(s, "  ps                 list running tasks");
     inst_print(s, "");
     inst_print(s, "Script flow control:");
@@ -3295,6 +3386,10 @@ static void shell_ed_quit(void *shell_extra)
 static void shell_set_vim_mode(void *shell_extra, const char *filename)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
+    if (s->remote) {
+        inst_print(s, "vim: full-screen editor is not available on remote shells");
+        return;
+    }
     int slot = VimWin_OpenInline(filename, s, shell_vim_quit);
     if (slot < 0) {
         inst_print(s, "vim: failed to open editor");
@@ -3308,6 +3403,10 @@ static void shell_set_vim_mode(void *shell_extra, const char *filename)
 static void shell_set_ed_mode(void *shell_extra, const char *filename)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
+    if (s->remote) {
+        inst_print(s, "ed: full-screen editor is not available on remote shells");
+        return;
+    }
     int slot = EdWin_OpenInline(filename, s, shell_ed_quit);
     if (slot < 0) {
         inst_print(s, "ed: failed to open editor");
@@ -3341,6 +3440,11 @@ static void shell_loadwb(void)
 static void shell_clear_history(void *shell_extra)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
+    if (s->remote) {
+        /* ANSI: clear screen + home cursor */
+        remote_send_str(s, "\x1b[2J\x1b[H");
+        return;
+    }
     s->hist_count  = 0;
     s->hist_scroll = 0;
     for (int i = 0; i < MAX_HIST_LINES; i++) g_hist_buf[s->index][i][0] = 0;
@@ -3352,6 +3456,10 @@ static void shell_print_raw(void *shell_extra, const char *text)
     ShellInstance *s = (ShellInstance *)shell_extra;
     if (!s || !text) return;
     _ser_puts(text);
+    if (s->remote) {
+        remote_send(s, text, slen(text));
+        return;
+    }
     if (s->hist_count > 0) {
         int slot = (s->hist_count - 1) % MAX_HIST_LINES;
         char *last = g_hist_buf[s->index][slot];
@@ -3426,6 +3534,8 @@ static char shell_read_key(void *shell_extra)
     ShellInstance *s = (ShellInstance *)shell_extra;
     for (;;) {
         char c;
+        if (s->remote && s->remote_dead)
+            return 0;
         if (shell_kb_dequeue(s, &c))
             return c;
         Task_Yield();
@@ -3464,9 +3574,12 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
 
     for (;;) {
         char c;
+        if (s->remote && s->remote_dead)
+            return 0;
         if (shell_kb_dequeue(s, &c)) {
             /* Handle Enter - line complete */
             if (c == '\r' || c == '\n') {
+                if (s->remote) remote_send_str(s, "\r\n");
                 s->ask_result[s->input_len] = '\0';
                 s->ask_result_ready = 1;
                 s->ask_mode = 0;  /* Exit ask mode */
@@ -3488,6 +3601,7 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                     s->input_len--;
                     s->input_cur--;
                     s->input_buf[s->input_len] = '\0';
+                    if (s->remote) remote_send_str(s, "\b \b");
                 }
                 continue;
             }
@@ -3497,6 +3611,7 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                 s->input_buf[s->input_len++] = c;
                 s->input_cur++;
                 s->input_buf[s->input_len] = '\0';
+                if (s->remote) remote_send(s, &c, 1);
                 /* Copy to result buffer */
                 s->ask_result[s->input_len] = '\0';
                 for (int i = 0; i < s->input_len; i++) {
@@ -3515,15 +3630,16 @@ static int shell_enum_tasks(void *shell_extra, int idx, char *out, int max)
     (void)shell_extra;
     int n = 0;
 
-    /* Shell CLI instances */
-    for (int i = 0; i < g_n_shells; i++) {
+    /* Shell CLI instances (window shells + live remote sessions) */
+    for (int i = 0; i < TOTAL_SHELLS; i++) {
+        if (i >= g_n_shells && !g_shells[i].remote_inuse) continue;
         if (n++ == idx) {
             char msg[96];
             scopy(msg, "CLI #", 96);
             char num[8];
             uint_to_dec_s((uint32_t)g_shells[i].number, num, sizeof(num));
             scat(msg, num, 96);
-            scat(msg, "   Shell  ", 96);
+            scat(msg, g_shells[i].remote ? "   Telnet " : "   Shell  ", 96);
             scat(msg, g_shells[i].cwd, 96);
             if (g_shells[i].vim_mode) {
                 scat(msg, "  (vim)", 96);
@@ -3577,6 +3693,12 @@ static void shell_set_prompt(void *shell_extra, const char *prompt)
 static void shell_close_shell(void *shell_extra)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
+    if (s->remote) {
+        /* ENDCLI on a remote session — flag it so the shell task exits;
+         * the daemon closes the socket once the slot is released. */
+        s->remote_dead = 1;
+        return;
+    }
     if (s->wm_handle >= 0) {
         WM_CloseWindow(s->wm_handle);
     }
@@ -3740,12 +3862,23 @@ static uint8_t g_bin_payload[UAOS_MAX_BIN_PAYLOAD];
 /* Print adapters for raw M68k binaries launched as background tasks.
  * Each adapter is bound to a fixed shell slot so the task keeps its output
  * routed to the correct shell even after concurrent launches. */
-static void raw_m68k_print_0(const char *line) { if (g_shells[0].wm_handle) inst_print(&g_shells[0], line); }
-static void raw_m68k_print_1(const char *line) { if (g_shells[1].wm_handle) inst_print(&g_shells[1], line); }
-static void raw_m68k_print_2(const char *line) { if (g_shells[2].wm_handle) inst_print(&g_shells[2], line); }
-static void raw_m68k_print_3(const char *line) { if (g_shells[3].wm_handle) inst_print(&g_shells[3], line); }
-static void (*raw_m68k_print[4])(const char *) = {
-    raw_m68k_print_0, raw_m68k_print_1, raw_m68k_print_2, raw_m68k_print_3
+#define MAKE_RAW_PRINT(N) \
+static void raw_m68k_print_##N(const char *line) { \
+    ShellInstance *sp = &g_shells[N]; \
+    if (sp->remote ? sp->remote_inuse : (sp->wm_handle >= 0)) \
+        inst_print(sp, line); \
+}
+MAKE_RAW_PRINT(0)
+MAKE_RAW_PRINT(1)
+MAKE_RAW_PRINT(2)
+MAKE_RAW_PRINT(3)
+MAKE_RAW_PRINT(4)
+MAKE_RAW_PRINT(5)
+MAKE_RAW_PRINT(6)
+MAKE_RAW_PRINT(7)
+static void (*raw_m68k_print[TOTAL_SHELLS])(const char *) = {
+    raw_m68k_print_0, raw_m68k_print_1, raw_m68k_print_2, raw_m68k_print_3,
+    raw_m68k_print_4, raw_m68k_print_5, raw_m68k_print_6, raw_m68k_print_7
 };
 
 static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
@@ -3846,7 +3979,7 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             UaosTask *t = Task_CreateM68k(bin_name, -128,
                                           g_bin_payload, payload_size,
                                           m68k_argv,
-                                          (slot >= 0 && slot < MAX_SHELLS)
+                                          (slot >= 0 && slot < TOTAL_SHELLS)
                                               ? raw_m68k_print[slot]
                                               : NULL);
             if (!t) {
@@ -4010,7 +4143,7 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
         UaosTask *t = Task_CreateM68k(bin_name, -128,
                                       g_bin_payload, file_size,
                                       m68k_argv,
-                                      (slot >= 0 && slot < MAX_SHELLS)
+                                      (slot >= 0 && slot < TOTAL_SHELLS)
                                           ? raw_m68k_print[slot]
                                           : NULL);
         (void)t;
@@ -4666,7 +4799,7 @@ static void inst_dispatch(ShellInstance *s, const char *line)
 
     /* Echo prompt (skip when dispatching a queued background job, or
      * when capturing output for backtick command substitution) */
-    if (!g_bg_running && !g_capture_mode) {
+    if (!g_bg_running && !g_capture_mode && !s->remote) {
         char echo_line[MAX_LINE_LEN];
         scopy(echo_line, s->cwd, MAX_LINE_LEN);
         scat(echo_line, "> ", MAX_LINE_LEN);
@@ -5078,8 +5211,123 @@ show_all:
  * Key handler (operates on a specific instance)
  * ========================================================================= */
 
+/* Remote-session key handler — same line editing as the window shell but
+ * with terminal output (echo via ANSI line refresh) instead of FB draw. */
+static void inst_handle_key_remote(ShellInstance *s, char c)
+{
+    /* GUI-only modes consume input on the framebuffer; nothing sensible
+     * to forward to a terminal — ignore keys while they are active. */
+    if (s->vim_mode || s->ed_mode) return;
+
+    /* Ask mode consumes input via shell_read_line — skip here */
+    if (s->ask_mode) return;
+
+    if (c == '\t') {
+        if (!s->fdisk_mode) {
+            inst_tab_complete(s);
+            remote_refresh_line(s);
+        }
+        return;
+    }
+    if (c == VKEY_LEFT) {
+        if (s->input_cur > 0) s->input_cur--;
+        remote_refresh_line(s);
+        return;
+    }
+    if (c == VKEY_RIGHT) {
+        if (s->input_cur < s->input_len) s->input_cur++;
+        remote_refresh_line(s);
+        return;
+    }
+    if (c == VKEY_UP) {
+        if (s->cmd_hist_count == 0) return;
+        if (s->cmd_hist_nav == 0)
+            scopy(s->input_saved, s->input_buf, MAX_INPUT + 1);
+        if (s->cmd_hist_nav < s->cmd_hist_count)
+            s->cmd_hist_nav++;
+        int idx = (s->cmd_hist_count - s->cmd_hist_nav) % MAX_CMD_HIST;
+        scopy(s->input_buf, s->cmd_hist[idx], MAX_INPUT + 1);
+        s->input_len = 0;
+        while (s->input_buf[s->input_len]) s->input_len++;
+        s->input_cur = s->input_len;
+        remote_refresh_line(s);
+        return;
+    }
+    if (c == VKEY_DOWN) {
+        if (s->cmd_hist_nav == 0) return;
+        s->cmd_hist_nav--;
+        if (s->cmd_hist_nav == 0) {
+            scopy(s->input_buf, s->input_saved, MAX_INPUT + 1);
+        } else {
+            int idx = (s->cmd_hist_count - s->cmd_hist_nav) % MAX_CMD_HIST;
+            scopy(s->input_buf, s->cmd_hist[idx], MAX_INPUT + 1);
+        }
+        s->input_len = 0;
+        while (s->input_buf[s->input_len]) s->input_len++;
+        s->input_cur = s->input_len;
+        remote_refresh_line(s);
+        return;
+    }
+    if (c == '\n' || c == '\r') {
+        s->input_buf[s->input_len] = 0;
+        remote_send_str(s, "\r\n");
+        if (s->fdisk_mode) {
+            g_fdisk_shell = s;
+            fdisk_handle_cmd(s, s->input_buf);
+            g_fdisk_shell = NULL;
+            if (s->fdisk_mode) {
+                inst_print(s, "Command (m for help):");
+            }
+        } else {
+            /* Save non-empty command to cmd_hist */
+            if (s->input_len > 0) {
+                int slot = s->cmd_hist_count % MAX_CMD_HIST;
+                scopy(s->cmd_hist[slot], s->input_buf, MAX_INPUT + 1);
+                s->cmd_hist_count++;
+            }
+            s->cmd_hist_nav = 0;
+            s->input_saved[0] = 0;
+            inst_dispatch(s, s->input_buf);
+        }
+        s->input_len = 0;
+        s->input_cur = 0;
+        s->input_buf[0] = 0;
+        if (s->remote_dead) return;      /* e.g. 'endcli' just ran */
+        remote_send_prompt(s);
+        return;
+    }
+    if (c == '\b') {
+        s->cmd_hist_nav = 0;
+        if (s->input_cur > 0) {
+            int i = s->input_cur - 1;
+            while (i < s->input_len - 1) {
+                s->input_buf[i] = s->input_buf[i+1]; i++;
+            }
+            s->input_len--;
+            s->input_cur--;
+            s->input_buf[s->input_len] = 0;
+        }
+        remote_refresh_line(s);
+        return;
+    }
+    if (c >= 0x20 && c < 0x7F) {
+        s->cmd_hist_nav = 0;
+        if (s->input_len < MAX_INPUT) {
+            for (int i = s->input_len; i > s->input_cur; i--)
+                s->input_buf[i] = s->input_buf[i-1];
+            s->input_buf[s->input_cur] = c;
+            s->input_len++;
+            s->input_cur++;
+            s->input_buf[s->input_len] = 0;
+        }
+        remote_refresh_line(s);
+        return;
+    }
+}
+
 static void inst_handle_key(ShellInstance *s, char c)
 {
+    if (s->remote) { inst_handle_key_remote(s, c); return; }
     if (!g_fb.valid) return;
 
     /* Skip normal handling in special modes (handled by their own loops) */
@@ -5294,6 +5542,13 @@ static void shell_task_entry(void *arg)
     ShellInstance *s = (ShellInstance *)arg;
     for (;;) {
         char c;
+        /* Remote session ended (peer disconnect or ENDCLI) — release
+         * the slot so the daemon can hand it to a new connection. */
+        if (s->remote && s->remote_dead) {
+            s->remote_inuse = 0;
+            s->remote_sock  = -1;
+            Task_Exit();
+        }
         if (shell_kb_dequeue(s, &c)) {
             inst_handle_key(s, c);
         }
@@ -5339,6 +5594,9 @@ static ShellInstance *open_shell(int stagger)
     s->last_rc = 0;
     s->failat_threshold = 10;
     s->quit_flag = 0;
+    s->remote = 0;
+    s->remote_sock = -1;
+    s->remote_dead = 0;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
     /* Default AmigaDOS search path.  SYS: is the boot volume root,
@@ -5363,6 +5621,73 @@ static ShellInstance *open_shell(int stagger)
     Task_CreateNative("Shell", -128, shell_task_entry, s);
     WM_Redraw();
     return s;
+}
+
+/* =========================================================================
+ * Internal: open one remote (telnet) shell instance
+ *
+ * Remote shells occupy slots MAX_SHELLS..TOTAL_SHELLS-1 so the window
+ * shell allocator (g_n_shells + WM_IsWindowActive reclaim) never sees
+ * them.  The socket must already be connected; the banner and prompt
+ * are sent synchronously from the caller's context.
+ * ========================================================================= */
+
+static ShellInstance *open_remote_shell(int sock)
+{
+    for (int i = MAX_SHELLS; i < TOTAL_SHELLS; i++) {
+        ShellInstance *s = &g_shells[i];
+        if (s->remote_inuse) continue;
+
+        s->wm_handle  = -1;
+        s->number     = i + 1;
+        s->index      = i;
+        s->remote     = 1;
+        s->remote_sock= sock;
+        s->remote_dead= 0;
+        s->remote_inuse = 1;
+        s->wx = s->wy = 0;
+        s->ww = 640; s->wh = 400;   /* nominal 80x25-ish geometry */
+        s->hist_count = 0;
+        s->hist_scroll= 0;
+        s->cmd_hist_count = 0;
+        s->cmd_hist_nav   = 0;
+        s->alias_count = 0;
+        s->env_count   = 0;
+        s->input_len   = 0;
+        s->input_cur   = 0;
+        s->input_buf[0]   = 0;
+        s->input_saved[0] = 0;
+        s->auto_scroll = 0;
+        s->fdisk_mode = 0;
+        s->fdisk_dev  = NULL;
+        memset(&s->fdisk_pt, 0, sizeof(PartitionTable));
+        s->vim_mode = 0;
+        s->vim_slot = -1;
+        s->ed_mode = 0;
+        s->ed_slot = -1;
+        s->ask_mode = 0;
+        s->ask_prompt[0] = '\0';
+        s->ask_result[0] = '\0';
+        s->ask_result_ready = 0;
+        s->custom_prompt[0] = '\0';
+        s->last_rc = 0;
+        s->failat_threshold = 10;
+        s->quit_flag = 0;
+        scopy(s->cwd, "RAM:", 64);
+        scopy(s->path, "C: S: SYS:Tools SYS:Utilities SYS:Prefs", 256);
+        for (int j = 0; j < MAX_HIST_LINES; j++) g_hist_buf[i][j][0] = 0;
+        s->kb_head = 0;
+        s->kb_tail = 0;
+
+        inst_print(s, "UAOS Shell  v0.1 - remote session");
+        inst_print(s, "Type 'help' for commands, 'endcli' to disconnect.");
+        inst_print(s, "");
+        remote_send_prompt(s);
+
+        Task_CreateNative("Shell", -128, shell_task_entry, s);
+        return s;
+    }
+    return NULL;
 }
 
 /* =========================================================================
@@ -5527,4 +5852,34 @@ void ShellWin_DispatchLine(const char *line)
     if (g_n_shells == 0 || !line || !*line) return;
     ShellInstance *s = &g_shells[0];
     inst_dispatch(s, line);
+}
+
+/* =========================================================================
+ * Remote (telnet) session API
+ * ========================================================================= */
+
+void *ShellWin_RemoteOpen(int tcp_sock)
+{
+    return open_remote_shell(tcp_sock);
+}
+
+void ShellWin_RemoteFeed(void *session, char c)
+{
+    ShellInstance *s = (ShellInstance *)session;
+    if (!s || !s->remote || !s->remote_inuse || s->remote_dead) return;
+    shell_kb_enqueue(s, c);
+}
+
+int ShellWin_RemoteIsDead(void *session)
+{
+    ShellInstance *s = (ShellInstance *)session;
+    if (!s) return 1;
+    return !s->remote_inuse;
+}
+
+void ShellWin_RemoteKill(void *session)
+{
+    ShellInstance *s = (ShellInstance *)session;
+    if (!s) return;
+    s->remote_dead = 1;
 }

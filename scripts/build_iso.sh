@@ -338,6 +338,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/timezone.c" \
     "${REPO_ROOT}/kernel/net/stack.c" \
     "${REPO_ROOT}/kernel/net/net_device.c" \
+    "${REPO_ROOT}/kernel/net/telnetd.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/task.c" \
@@ -457,6 +458,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_changetaskpri.c" \
     "${REPO_ROOT}/kernel/shell/cmd_status.c" \
     "${REPO_ROOT}/kernel/shell/cmd_rx.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_telnetd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_strace.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prefs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
@@ -640,6 +642,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/timezone.o" \
     "${BUILD_DIR}/obj/stack.o" \
     "${BUILD_DIR}/obj/net_device.o" \
+    "${BUILD_DIR}/obj/telnetd.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/task.o" \
@@ -775,6 +778,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_changetaskpri.o" \
     "${BUILD_DIR}/obj/cmd_status.o" \
     "${BUILD_DIR}/obj/cmd_rx.o" \
+    "${BUILD_DIR}/obj/cmd_telnetd.o" \
     "${BUILD_DIR}/obj/cmd_strace.o" \
     "${BUILD_DIR}/obj/cmd_prefs.o" \
     "${BUILD_DIR}/obj/cmd_exchange.o" \
@@ -837,7 +841,7 @@ for cmd in version mem libs clear reboot \
            wait prompt stack why failat quit endcli relabel \
            getenv unset jobs \
            install diskchange addbuffers requestchoice requestfile changetaskpri status rx \
-           strace print crossdos ed guide \
+           telnetd strace print crossdos ed guide \
            runback alias unalias path skip lab resload; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"

@@ -4,7 +4,7 @@ title: TCP/IP Network Stack
 description: The native IPv4 networking stack, device drivers, and higher-level protocols in UAOS.
 resource: /kernel/net/
 tags: [network, tcp, udp, ip, dhcp, dns, ntp]
-timestamp: 2026-06-24T17:00:00Z
+timestamp: 2026-09-25T00:10:10Z
 ---
 
 # TCP/IP Network Stack
@@ -57,6 +57,13 @@ Full TCP state machine including:
 - Send/receive with ACK handling and ring buffers.
 - Retransmit timer with exponential backoff (10 Hz tick).
 - Connect timeout, half-open cleanup, and `TIME_WAIT` expiry.
+- Duplicate-SYN handling: a retransmitted SYN matching a `SYN_RECEIVED`
+  socket replays the saved SYN-ACK segment.  This matters because the
+  first SYN-ACK is dropped by `ip_send` whenever the ARP cache is cold
+  (the packet is discarded while the ARP request resolves); without the
+  replay the half-open connection could never complete.  `SYN_RECEIVED`
+  sockets also have a `conn_timer` timeout so dead half-opens do not
+  leak socket slots.
 
 ## Higher-Level Protocols
 
@@ -90,11 +97,64 @@ The device layer pads Ethernet frames to the minimum 60 bytes and exposes the MA
 ## Drivers
 
 - **Intel e1000 (`kernel/drivers/e1000.c`)**: 82540EM "PRO/1000 MT Desktop" driver. Uses 128 KB MMIO BAR0, legacy TX/RX descriptor rings, and ICR-based IRQ handling.
-- **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: Legacy VirtIO network device (PCI vendor `0x1AF4`, device `0x1000`). Uses I/O-port registers and split virtqueues for RX and TX, with INTx support. The legacy `QUEUE_SIZE` register is read-only, so the driver honours the device-reported queue size when laying out rings (QEMU = 256, VirtualBox = 1024; hardcoding 256 placed the avail/used rings at wrong offsets under VirtualBox and broke all TX/RX). Up to 1024-entry queues are supported; at most 256 RX buffers are posted.
+- **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: VirtIO network device supporting both transports: legacy/transitional `1af4:1000` (BAR0 I/O-port registers) and modern non-transitional `1af4:1041` (virtio-1.0 vendor-capability transport — common config, notify, ISR and device-config regions; `VIRTIO_F_VERSION_1` + `VIRTIO_NET_F_MAC` negotiated, 12-byte `virtio_net_hdr`). Modern regions are accessed by MMIO dereference when the BAR maps inside the identity-mapped 4 GB, or via the `VIRTIO_PCI_CAP_PCI_CFG` config-space window when firmware places the BAR above 4 GB (OVMF on q35 puts the 64-bit BAR at ~768 GB). Split virtqueues for RX and TX, with INTx support. The legacy `QUEUE_SIZE` register is read-only, so the driver honours the device-reported queue size when laying out rings (QEMU = 256, VirtualBox = 1024; hardcoding 256 placed the avail/used rings at wrong offsets under VirtualBox and broke all TX/RX). Up to 1024-entry queues are supported; at most 256 RX buffers are posted.
 
 ## Shell Integration
 
-Network commands in `kernel/shell/` include `netstart`, `netstop`, `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, and `netinfo` (opens the network info window). Configuration is read from `S:net.conf`.
+Network commands in `kernel/shell/` include `netstart`, `netstop`, `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netinfo` (opens the network info window), and `telnetd`. Configuration is read from `S:net.conf`.
+
+## Telnet Daemon (`telnetd.c`)
+
+`kernel/net/telnetd.c` implements an unauthenticated remote-shell service
+(`C:telnetd`, default TCP port 23, `PORT=` override).  A dedicated
+`telnetd` task runs `tcp_listen()`/`tcp_accept()`; each accepted socket is
+bridged to a remote `ShellInstance` (see the "Remote Shell Sessions"
+section of [Display](/kernel/display/index.md)).  It is a debugging
+facility — anyone who can reach the port lands directly in a shell with
+no login.
+
+Telnet protocol handling is deliberately small:
+
+- On connect the daemon sends `WILL ECHO`, `WILL SGA`, `DO SGA`
+  (server-echo, character-at-a-time mode).
+- An NVT state machine in the pump strips `IAC` command sequences,
+  consumes sub-negotiations (`SB ... SE`), refuses `DO`/`WILL` for
+  options it did not offer, maps `IAC IAC` to a literal `0xFF`, and
+  translates `CR`, `CR NUL`, and `LF` to a single line-feed for the shell.
+- `ESC [` / `ESC O` final bytes `A`/`B`/`C`/`D` are mapped to the shell's
+  virtual cursor-key codes so command history works over the wire.
+
+Sessions are pumped cooperatively: the task calls `tcp_recv()`,
+`net_stack_poll()`, and `Task_Yield()` in a loop, exits when the socket
+leaves `ESTABLISHED`/`CLOSE_WAIT`, when the peer half-closes with a
+drained RX buffer, or when the shell session ends (`endcli`).  On exit
+it sends a closing banner and calls `tcp_close()`.
+
+## VirtIO-Net TX Serialization
+
+`virtio_net_send()` uses a single TX descriptor (slot 0) over a shared
+`g_tx_hdr_buf`.  Because the scheduler is preemptive and the NIC IRQ
+handler can also inject sends (TCP ACKs from `tcp_rx` inside
+`virtio_net_poll`), the function wraps the whole claim/fill/notify
+sequence in `Disable()`/`Enable()` (cli/sti with nesting).  Without this,
+concurrent senders overwrote each other's frames mid-flight; corrupted
+segments failed the peer's checksum, left sequence holes the
+single-segment TCP retransmit model cannot fill, and stalled
+connections.  Found and verified during the telnetd work.
+
+Before overwriting the shared buffer the send path waits for the
+previous submission to be *outstanding-consumed*: it spins while
+`avail->idx - used->idx != 0` (bounded, ~200k pauses).  Device models
+differ here: VirtualBox posts TX used entries promptly, while QEMU
+consumes the avail ring without posting used entries, so a full
+timeout with no used-ring progress latches `g_tx_no_used` and the wait
+is skipped thereafter.  The earlier check (`last_used != used->idx`)
+was inverted — it spun while the device had *already returned*
+descriptors and could never clear — which made every send after the
+first burn the entire spin bound with IRQs disabled under VirtualBox,
+freezing the machine on the first telnet burst.  `virtio_net_poll()`
+also only rings the RX doorbell when it actually re-added descriptors;
+the doorbell write is a VM exit and callers poll in tight loops.
 
 ## Emulated BSD Socket API
 

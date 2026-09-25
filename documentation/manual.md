@@ -212,14 +212,24 @@ at boot via `netdev_probe()`.
 
 #### VirtIO-Net (`virtio_net.c`)
 
-- **PCI**: vendor `0x1AF4`, device `0x1000` (legacy VirtIO 0.9) or `0x1041` (modern)
-- **Interface**: I/O-port or MMIO BAR0; split virtqueue ring protocol
+- **PCI**: vendor `0x1AF4`, device `0x1000` (legacy/transitional) or `0x1041`
+  (modern non-transitional)
+- **Interface**: legacy devices use the BAR0 I/O-port register block;
+  modern devices use the virtio-1.0 capability transport (common config,
+  notify, ISR and device-config vendor capabilities). Regions are reached
+  by MMIO dereference when the BAR is mapped inside the identity-mapped
+  low 4 GB, or through the `VIRTIO_PCI_CAP_PCI_CFG` config-space window
+  when the BAR sits above 4 GB (e.g. OVMF's 64-bit BAR allocation on q35).
+  Negotiates `VIRTIO_F_VERSION_1` + `VIRTIO_NET_F_MAC` on modern and uses
+  the 12-byte `virtio_net_hdr` (10 bytes on legacy). Split virtqueue ring
+  protocol on both transports.
 - **Queue size**: honours the device-reported QUEUE_SIZE at init (QEMU = 256,
   VirtualBox = 1024) and lays out the desc/avail/used rings accordingly;
   up to VIRTQ_MAX_SIZE (1024) entries are supported while only 256 RX
   buffers are posted
 - **MSI-X**: present in device but kept disabled; uses 8259A PIC IRQ
-- **Used by**: QEMU (`-device virtio-net-pci,disable-modern=on`) and
+- **Used by**: QEMU (`-device virtio-net-pci`, transitional or
+  `disable-legacy=on` for the pure-modern 1af4:1041 device) and
   VirtualBox virtio-net NICs (transitional device 1af4:1000, legacy I/O path)
 
 #### Intel 82540EM e1000 (`e1000.c`)

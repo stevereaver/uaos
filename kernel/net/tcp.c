@@ -17,6 +17,8 @@
 static TcpSocket g_socks[TCP_MAX_SOCKETS];
 static uint32_t  g_isn_counter = 0x12345678;  /* initial seq number seed */
 
+static void tcp_retransmit(TcpSocket *s);   /* defined below tcp_rx */
+
 /* -------------------------------------------------------------------------
  * Ring buffer helpers
  * ------------------------------------------------------------------------- */
@@ -230,6 +232,11 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
     case TCP_SYN_RECEIVED:
         if (flags & TCP_ACK) {
             s->state = TCP_ESTABLISHED;
+        } else if (flags & TCP_SYN) {
+            /* Duplicate SYN — our SYN-ACK was lost (e.g. dropped while
+             * ARP resolved).  Replay the saved segment so the handshake
+             * can still complete. */
+            tcp_retransmit(s);
         }
         break;
 
@@ -416,8 +423,15 @@ void tcp_tick(void)
             /* Fall through to retransmit logic for SYN retry */
             /* fall through */
 
-        /* ── States with retransmittable data ───────────────────────────── */
+        /* ── SYN_RECEIVED: half-open — reap if the peer never completes
+         * the handshake (duplicate SYNs re-send SYN-ACK via tcp_rx). ── */
         case TCP_SYN_RECEIVED:
+            s->conn_timer++;
+            if (s->conn_timer >= TCP_CONN_TIMEOUT_TICKS)
+                s->state = TCP_CLOSED;
+            break;
+
+        /* ── States with retransmittable data ───────────────────────────── */
         case TCP_ESTABLISHED:
         case TCP_FIN_WAIT_1:
         case TCP_LAST_ACK:

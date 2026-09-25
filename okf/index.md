@@ -18,7 +18,7 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 - [M68k Emulation](/concepts/m68k_emulation.md) - How UAOS runs classic Amiga binaries.
 - [Handler System](/kernel/dos/handler_system.md) - Packet-based I/O and filesystem architecture.
 - [Window Manager](/kernel/display/index.md) - The graphical user interface and desktop.
-- [TCP/IP Network Stack](/kernel/net/index.md) - IPv4 networking, DHCP, DNS, NTP, and socket API.
+- [TCP/IP Network Stack](/kernel/net/index.md) - IPv4 networking, DHCP, DNS, NTP, socket API, and the telnetd remote-shell daemon.
 - [Build System](/build_system.md) - How the OS is compiled and packaged.
 
 ## Documentation

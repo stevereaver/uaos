@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-09-24T00:00:00Z
+timestamp: 2026-09-25T00:11:16Z
 ---
 
 # Display and Window Manager
@@ -222,6 +222,33 @@ The display layer includes several Workbench-style application windows in additi
 ## Shell Window
 
 `shell_win.c` implements the graphical CLI window. It provides scrollable history, input line editing, output buffering, and synchronous child tracking. It can host multiple independent shell instances and dispatches commands to the native command table, resident commands, external ELF64 userspace programs, or embedded M68k binaries.
+
+### Remote Shell Sessions
+
+The same `ShellInstance` machinery also backs headless remote shells for
+`C:telnetd`.  Slots `MAX_SHELLS..TOTAL_SHELLS-1` (4 remote shells) are
+reserved so the window-shell allocator and the `WM_IsWindowActive`
+reclaim path never see them; a remote instance has `wm_handle == -1`,
+`remote == 1`, and owns a TCP socket index.
+
+- `ShellWin_RemoteOpen(sock)` initialises a slot, sends the banner and
+  prompt, and spawns the usual `shell_task_entry` task — so command
+  dispatch, aliases, env vars, pipes, background jobs and `NativeCmdCtx`
+  callbacks behave identically to a window shell.
+- Output: `inst_print`/`shell_print_raw` route through `remote_send()`,
+  which pushes bytes with `tcp_send()` and marks the session dead if the
+  socket dies.  `clear` sends ANSI clear-screen; `endcli` sets
+  `remote_dead` via the existing `close_shell` callback, which makes the
+  session task exit and releases the slot.
+- Input: `ShellWin_RemoteFeed()` enqueues NVT-decoded bytes into the
+  instance's normal key ring.  `inst_handle_key` dispatches to a remote
+  line editor that mirrors the window editor (history recall, cursor
+  keys, tab completion, backspace) but repaints with
+  `\r` + `ESC[2K` + prompt + buffer instead of the framebuffer input bar.
+- Full-screen inline editors (`vim`, `ed`) and other WM-only modes are
+  refused on remote sessions.
+- `ShellWin_RemoteIsDead`/`ShellWin_RemoteKill` let the daemon detect a
+  finished session and force-terminate one whose peer went away.
 
 ## Debug Logging
 
