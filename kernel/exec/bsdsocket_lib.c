@@ -219,7 +219,21 @@ static void bsd_send(void)
         m68k_set_reg(M68K_REG_D0, (unsigned int)-1); return;
     }
     if (len > 1460) len = 1460;
-    int n = tcp_send(g_fds[fd].sock_idx, g_ram + buf, (uint16_t)len);
+    /* tcp_send returns 0 while a segment is still unacked or the peer
+     * window is closed — poll and retry so send() keeps its blocking
+     * flavour for emulated programs (bounded: a dead or permanently
+     * zero-windowed peer eventually fails). */
+    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
+    uint64_t start = g_pit_ticks;
+    int n = 0;
+    for (;;) {
+        n = tcp_send(g_fds[fd].sock_idx, g_ram + buf, (uint16_t)len);
+        if (n > 0) break;
+        TcpState t = tcp_state(g_fds[fd].sock_idx);
+        if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) { n = -1; break; }
+        if (g_pit_ticks - start > 6000) { n = -1; break; }   /* ~60 s */
+        net_stack_poll();
+    }
     m68k_set_reg(M68K_REG_D0, (unsigned int)n);
 }
 

@@ -96,7 +96,7 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
         udp_rx(src_ip, payload, plen);
         break;
     case IP_PROTO_TCP:
-        tcp_rx(src_ip, payload, plen);
+        tcp_rx(src_ip, net_ntohl(h->dst), payload, plen);
         break;
     default:
         break;

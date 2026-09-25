@@ -8,8 +8,12 @@
  *   - Connection teardown (FIN/FIN-ACK)
  *   - Retransmit timer with exponential backoff (tcp_tick, called at 10 Hz)
  *   - Connect timeout (SYN_SENT), TIME_WAIT expiry, half-open cleanup
+ *   - Peer-window enforcement and a single-segment in-flight limit on send
+ *   - RFC 793 RST generation for segments that match no socket
  *
- * Single-segment send (no Nagle, no window splitting).
+ * Single-segment send (no Nagle, no window splitting): at most one
+ * seq-carrying segment is in flight per socket, so the single retx_buf
+ * always holds exactly the segment that needs replaying.
  */
 #include "tcp.h"
 #include "ip.h"
@@ -18,6 +22,10 @@ static TcpSocket g_socks[TCP_MAX_SOCKETS];
 static uint32_t  g_isn_counter = 0x12345678;  /* initial seq number seed */
 
 static void tcp_retransmit(TcpSocket *s);   /* defined below tcp_rx */
+
+/* TCP sequence comparison (wraparound-safe) */
+static inline int seq_gt(uint32_t a, uint32_t b)
+{ return (int32_t)(a - b) > 0; }
 
 /* -------------------------------------------------------------------------
  * Ring buffer helpers
@@ -90,8 +98,8 @@ static uint16_t tcp_checksum(ipv4_t src_ip, ipv4_t dst_ip,
 static void tcp_send_seg(TcpSocket *s, uint8_t flags,
                           const uint8_t *data, uint16_t data_len)
 {
-    uint8_t seg[TCP_HDR_LEN + 1460];
-    if (data_len > 1460) data_len = 1460;
+    uint8_t seg[TCP_HDR_LEN + TCP_MSS];
+    if (data_len > TCP_MSS) data_len = TCP_MSS;
     uint16_t seg_len = (uint16_t)(TCP_HDR_LEN + data_len);
 
     TcpHdr *h = (TcpHdr *)seg;
@@ -136,6 +144,30 @@ static void tcp_send_seg(TcpSocket *s, uint8_t flags,
         if (s->retx_count == 0)
             s->retx_timer = TCP_RETX_TICKS_INIT;
     }
+}
+
+/* -------------------------------------------------------------------------
+ * Send a RST for a segment that matched no socket (RFC 793).
+ * Caller supplies seq/ack: for an incoming segment carrying ACK the RST is
+ * seq=SEG.ACK; otherwise seq=0 with RST|ACK acking SEG.SEQ+SEG.LEN.
+ * ------------------------------------------------------------------------- */
+static void tcp_send_reset(ipv4_t dst_ip, uint16_t dst_port,
+                           uint16_t src_port, uint32_t seq, uint32_t ack,
+                           uint8_t flags)
+{
+    uint8_t seg[TCP_HDR_LEN];
+    TcpHdr *h = (TcpHdr *)seg;
+    h->src_port = net_htons(src_port);
+    h->dst_port = net_htons(dst_port);
+    h->seq      = net_htonl(seq);
+    h->ack      = net_htonl(ack);
+    h->data_off = (TCP_HDR_LEN / 4) << 4;
+    h->flags    = flags;
+    h->window   = 0;
+    h->checksum = 0;
+    h->urgent   = 0;
+    h->checksum = tcp_checksum(ip_get_local(), dst_ip, seg, TCP_HDR_LEN);
+    ip_send(dst_ip, IP_PROTO_TCP, seg, TCP_HDR_LEN);
 }
 
 /* -------------------------------------------------------------------------
@@ -200,7 +232,7 @@ static void tcp_rx_data(TcpSocket *s, uint32_t seq,
 /* -------------------------------------------------------------------------
  * RX handler
  * ------------------------------------------------------------------------- */
-void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
+void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
 {
     if (len < TCP_HDR_LEN) return;
     const TcpHdr *h = (const TcpHdr *)pkt;
@@ -224,19 +256,36 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
             if (s) {
                 /* Spawn new socket for this connection */
                 TcpSocket *ns = alloc_sock();
-                if (!ns) return;
-                net_memset(ns, 0, sizeof(*ns));
-                ns->state       = TCP_SYN_RECEIVED;
-                ns->local_ip    = ip_get_local();
-                ns->local_port  = dst_port;
-                ns->remote_ip   = src_ip;
-                ns->remote_port = src_port;
-                ns->rcv_nxt     = seq + 1;
-                ns->snd_nxt     = g_isn_counter;
-                ns->snd_una     = g_isn_counter;
-                g_isn_counter  += 0x10000;
-                tcp_send_seg(ns, TCP_SYN | TCP_ACK, 0, 0);
-                ns->snd_una = ns->snd_nxt;
+                if (ns) {
+                    net_memset(ns, 0, sizeof(*ns));
+                    ns->state       = TCP_SYN_RECEIVED;
+                    ns->local_ip    = ip_get_local();
+                    ns->local_port  = dst_port;
+                    ns->remote_ip   = src_ip;
+                    ns->remote_port = src_port;
+                    ns->rcv_nxt     = seq + 1;
+                    ns->snd_nxt     = g_isn_counter;
+                    ns->snd_una     = g_isn_counter;
+                    g_isn_counter  += 0x10000;
+                    tcp_send_seg(ns, TCP_SYN | TCP_ACK, 0, 0);
+                    ns->snd_una = ns->snd_nxt;
+                    return;
+                }
+                /* Socket table full — fall through and refuse the SYN */
+            }
+        }
+        /* RFC 793: a segment addressed to us that matches no socket gets
+         * a RST, so the peer sees "connection refused" instead of a
+         * filtered port.  Never answer a RST with a RST. */
+        if (!(flags & TCP_RST) && dst_ip == ip_get_local()) {
+            if (flags & TCP_ACK) {
+                tcp_send_reset(src_ip, src_port, dst_port,
+                               ack_num, 0, TCP_RST);
+            } else {
+                tcp_send_reset(src_ip, src_port, dst_port, 0,
+                               seq + data_len +
+                               ((flags & (TCP_SYN | TCP_FIN)) ? 1u : 0u),
+                               TCP_RST | TCP_ACK);
             }
         }
         return;
@@ -244,13 +293,17 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
 
     /* Update ACK / window */
     if (flags & TCP_ACK) {
-        /* If new data was ACKed, clear the retransmit state */
-        if (ack_num != s->snd_una) {
+        /* Only an ACK inside (snd_una, snd_nxt] may advance snd_una:
+         * a stale or reordered ACK must not rewind it, and an ACK for
+         * sequence space we never sent is ignored.  The advertised
+         * window is still taken from any ACK (dup ACKs carry fresh
+         * window information). */
+        if (seq_gt(ack_num, s->snd_una) && !seq_gt(ack_num, s->snd_nxt)) {
+            s->snd_una    = ack_num;
             s->retx_timer = 0;
             s->retx_count = 0;
             s->retx_len   = 0;
         }
-        s->snd_una = ack_num;
         s->snd_wnd = net_ntohs(h->window);
     }
 
@@ -388,7 +441,21 @@ int tcp_send(int sock, const uint8_t *data, uint16_t len)
 {
     if (sock < 0 || sock >= TCP_MAX_SOCKETS) return 0;
     TcpSocket *s = &g_socks[sock];
-    if (s->state != TCP_ESTABLISHED) return 0;
+    if (s->state != TCP_ESTABLISHED && s->state != TCP_CLOSE_WAIT) return 0;
+    if (len == 0 || s->fin_pending) return 0;   /* close already requested */
+
+    /* One seq-carrying segment in flight at a time: retx_buf can hold
+     * only a single segment, so sending while the previous one is still
+     * unacked would leave a hole no retransmit could fill.  Return 0 and
+     * let the caller poll/retry. */
+    if (s->snd_una != s->snd_nxt) return 0;
+
+    /* Honor the peer's advertised receive window. */
+    uint32_t wnd = s->snd_wnd;
+    if (wnd == 0) return 0;
+    if (len > wnd)     len = (uint16_t)wnd;
+    if (len > TCP_MSS) len = TCP_MSS;
+
     tcp_send_seg(s, TCP_PSH | TCP_ACK, data, len);
     return len;
 }
@@ -413,11 +480,17 @@ void tcp_close(int sock)
 {
     if (sock < 0 || sock >= TCP_MAX_SOCKETS) return;
     TcpSocket *s = &g_socks[sock];
-    if (s->state == TCP_ESTABLISHED || s->state == TCP_SYN_RECEIVED) {
-        s->state = TCP_FIN_WAIT_1;
-        tcp_send_seg(s, TCP_FIN | TCP_ACK, 0, 0);
-    } else if (s->state == TCP_CLOSE_WAIT) {
-        s->state = TCP_LAST_ACK;
+    if (s->state == TCP_ESTABLISHED || s->state == TCP_SYN_RECEIVED ||
+        s->state == TCP_CLOSE_WAIT) {
+        /* If a seq-carrying segment is still unacked, defer the FIN —
+         * sending it now would overwrite the retx state of the in-flight
+         * segment.  tcp_tick releases it once snd_una catches up. */
+        if (s->snd_una != s->snd_nxt) {
+            s->fin_pending = 1;
+            return;
+        }
+        s->state = (s->state == TCP_CLOSE_WAIT) ? TCP_LAST_ACK
+                                              : TCP_FIN_WAIT_1;
         tcp_send_seg(s, TCP_FIN | TCP_ACK, 0, 0);
     } else {
         s->state = TCP_CLOSED;
@@ -492,6 +565,18 @@ void tcp_tick(void)
         case TCP_FIN_WAIT_1:
         case TCP_LAST_ACK:
         case TCP_CLOSE_WAIT:
+            /* A FIN deferred by tcp_close while data was in flight goes
+             * out once the peer has acknowledged everything.  While
+             * still waiting, fall through to normal retransmit handling
+             * for the outstanding segment. */
+            if (s->fin_pending && s->snd_una == s->snd_nxt &&
+                (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT)) {
+                s->fin_pending = 0;
+                s->state = (s->state == TCP_CLOSE_WAIT) ? TCP_LAST_ACK
+                                                      : TCP_FIN_WAIT_1;
+                tcp_send_seg(s, TCP_FIN | TCP_ACK, 0, 0);
+                break;
+            }
             /* Only retransmit if there is actually unacked data/control */
             if (s->retx_timer == 0) break;       /* nothing armed */
             if (s->snd_una == s->snd_nxt) {      /* everything acked */

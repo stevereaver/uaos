@@ -48,6 +48,9 @@ typedef enum {
 #define TCP_TX_BUF_SIZE     4096
 #define TCP_RX_BUF_SIZE     4096
 
+/* Max payload per segment (Ethernet MTU 1500 - IP hdr 20 - TCP hdr 20) */
+#define TCP_MSS             1460
+
 /* Retransmit tuning (tcp_tick runs at 10 Hz)
  *
  *  TCP_RETX_TICKS_INIT   — initial RTO: 10 ticks = 1 s
@@ -89,11 +92,12 @@ typedef struct {
     uint32_t  retx_seq;    /* snd_nxt at the time the segment was sent       */
     uint16_t  retx_timer;  /* ticks until next retransmit (counts down)      */
     uint8_t   retx_count;  /* number of retransmits already attempted        */
+    uint8_t   fin_pending; /* tcp_close deferred while data is unacked       */
     uint16_t  conn_timer;  /* general connection timer (TIME_WAIT, SYN wait) */
 } TcpSocket;
 
 /* Handle incoming TCP segment */
-void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len);
+void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len);
 
 /* Open a TCP connection (active). Returns socket index or -1. */
 int  tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port);
@@ -104,7 +108,9 @@ int  tcp_listen(uint16_t local_port);
 /* Accept an incoming connection on a listening socket. Returns new socket or -1. */
 int  tcp_accept(int listen_sock);
 
-/* Send data over a TCP socket. Returns bytes queued. */
+/* Send data over a TCP socket.  Returns bytes sent; 0 when the socket is
+ * busy (a segment is still unacked) or the peer window is closed — the
+ * caller should poll the stack and retry. */
 int  tcp_send(int sock, const uint8_t *data, uint16_t len);
 
 /* Receive data from a TCP socket (non-blocking). Returns bytes read or 0. */

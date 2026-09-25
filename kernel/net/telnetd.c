@@ -68,7 +68,15 @@ static volatile int g_running = 0;
 static void send_neg(int sock, uint8_t cmd, uint8_t opt)
 {
     uint8_t b[3] = { TN_IAC, cmd, opt };
-    tcp_send(sock, b, 3);
+    /* tcp_send allows only one in-flight segment per socket and returns
+     * 0 while busy — poll briefly so back-to-back negotiation bytes
+     * (e.g. the greeting) are not silently dropped. */
+    for (int i = 0; i < 400; i++) {
+        if (tcp_send(sock, b, 3) > 0) return;
+        TcpState t = tcp_state(sock);
+        if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) return;
+        net_stack_poll();
+    }
 }
 
 /* One-shot initial negotiation — ask the client to let us echo and to

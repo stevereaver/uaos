@@ -276,18 +276,28 @@ static int seq_ci(const char *a, const char *b)
 static void remote_send(ShellInstance *s, const char *data, int len)
 {
     if (!s->remote || s->remote_dead || s->remote_sock < 0) return;
+    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
+    uint64_t stall_start = g_pit_ticks;
     while (len > 0) {
         int chunk = len > 1400 ? 1400 : len;   /* stay under one segment */
         int sent = tcp_send(s->remote_sock, (const uint8_t *)data,
                             (uint16_t)chunk);
         if (sent <= 0) {
-            if (tcp_state(s->remote_sock) != TCP_ESTABLISHED) {
+            TcpState t = tcp_state(s->remote_sock);
+            if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) {
+                s->remote_dead = 1;
+                return;
+            }
+            /* Bounded wait: a peer that never reopens its window (or
+             * whose ACKs never arrive) must not wedge the shell task. */
+            if (g_pit_ticks - stall_start > 6000) {   /* ~60 s */
                 s->remote_dead = 1;
                 return;
             }
             net_stack_poll();
             continue;
         }
+        stall_start = g_pit_ticks;
         data += sent;
         len  -= sent;
     }

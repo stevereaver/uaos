@@ -75,6 +75,22 @@ Full TCP state machine including:
   `CLOSE_WAIT` (pre-FIN retransmits; dup FINs are re-ACKed).  `tcp_recv`
   pushes a window-update ACK when draining reopens a previously full
   ring, so the peer does not sit out its zero-window persist backoff.
+- Send flow control (UAOS-55): `tcp_send` enforces the peer's advertised
+  receive window (`snd_wnd`) and allows only **one seq-carrying segment
+  in flight** per socket — `retx_buf` holds a single segment, so a second
+  send while the first is unacked would leave a hole retransmit could
+  never fill.  It returns 0 when busy or when the window is closed, and
+  callers (`remote_send`, `bsd_send`, telnetd `send_neg`) poll the stack
+  and retry.  `tcp_close` defers its FIN (`fin_pending`) while data is
+  unacked so the FIN cannot clobber the outstanding segment's retx
+  state; `tcp_tick` releases it once `snd_una` catches up.  `snd_una`
+  only advances on ACKs inside `(snd_una, snd_nxt]` — stale/reordered or
+  out-of-range ACKs can no longer rewind it — while `snd_wnd` is still
+  taken from any ACK (dup ACKs carry fresh window information, e.g. a
+  reopened zero window).  Segments that match no socket get an RFC 793
+  RST (`tcp_send_reset`) so closed ports refuse connections instead of
+  silently dropping; RSTs are never answered with RST, and only segments
+  actually addressed to the local IP are answered.
 
 ## Higher-Level Protocols
 
@@ -147,9 +163,10 @@ connections TCP-connect but receive no data (the "busy" banner is
 unreachable); CR LF produces two newlines; non-arrow CSI sequences leak
 literal bytes; raw Ctrl-C collides with `SHELL_VKEY_UP`; output is not
 IAC-escaped; `netstop` wedges the daemon permanently; no dead-peer/idle
-timeout.  TCP-layer gaps that hit telnetd directly: peer send window
-ignored, single-segment retransmit (RX overflow dropped-but-ACKed fixed
-in UAOS-56).
+timeout.  The TCP-layer gaps that hit telnetd directly were fixed:
+RX overflow dropped-but-ACKed in UAOS-56, and peer-window enforcement,
+single-segment-in-flight send, `snd_una` validation, and RST generation
+in UAOS-55.
 
 ## VirtIO-Net TX Serialization
 

@@ -237,7 +237,9 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   callbacks behave identically to a window shell.
 - Output: `inst_print`/`shell_print_raw` route through `remote_send()`,
   which pushes bytes with `tcp_send()` and marks the session dead if the
-  socket dies.  `clear` sends ANSI clear-screen; `endcli` sets
+  socket dies.  `tcp_send` returns 0 while a segment is still unacked or
+  the peer window is closed (UAOS-55), so `remote_send` polls the stack
+  and retries with a ~60 s `g_pit_ticks` stall bound.  `clear` sends ANSI clear-screen; `endcli` sets
   `remote_dead` via the existing `close_shell` callback, which makes the
   session task exit and releases the slot.
 - Input: `ShellWin_RemoteFeed()` enqueues NVT-decoded bytes into the
