@@ -108,6 +108,10 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
 
     int sent = 0, received = 0;
     for (int seq = 1; seq <= count; seq++) {
+        if (CMD_BREAK(ctx)) {
+            PRINT("***Break");
+            return;
+        }
         icmp_clear_reply();
         _ps("[ping] sending ICMP\n");
         icmp_ping(dst, (uint16_t)seq);
@@ -117,6 +121,10 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
         int got = 0;
         for (int t = 0; t < 10; t++) {
             CMD_YIELD(ctx, 100);
+            if (CMD_BREAK(ctx)) {
+                PRINT("***Break");
+                return;
+            }
             if (icmp_got_reply()) { got = 1; break; }
         }
         _ps("[ping] reply="); _pc(got ? '1' : '0'); _ps("\n");

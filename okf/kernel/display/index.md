@@ -234,7 +234,13 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
 - `ShellWin_RemoteOpen(sock)` initialises a slot, sends the banner and
   prompt, and spawns the usual `shell_task_entry` task — so command
   dispatch, aliases, env vars, pipes, background jobs and `NativeCmdCtx`
-  callbacks behave identically to a window shell.
+  callbacks behave identically to a window shell.  It returns an opaque
+  handle: the slot index in the low 16 bits plus a per-open token in the
+  high bits (`remote_token`, never 0).  `RemoteIsDead`/`RemoteKill`/
+  `RemoteFeed` decode the handle and refuse it when the slot was
+  released or reopened under a new token, so a telnetd pump task from an
+  old session can never write into a different session that reused the
+  slot (UAOS-53).
 - Output: `inst_print`/`shell_print_raw` route through `remote_send()`,
   which pushes bytes with `tcp_send()` and marks the session dead if the
   socket dies.  `tcp_send` returns 0 while a segment is still unacked or
@@ -247,6 +253,13 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   line editor that mirrors the window editor (history recall, cursor
   keys, tab completion, backspace) but repaints with
   `\r` + `ESC[2K` + prompt + buffer instead of the framebuffer input bar.
+  Feeding `0x03` (Ctrl-C — also produced by Telnet `IAC IP`/`IAC AO`)
+  sets the instance's `break_req` flag and signals the session task
+  with `SIGF_BREAKF` so command waits, `read_line`/`read_key` and
+  `Wait(SIGF_CHILD)` wake early; the flag is consumed by the dispatch
+  loop, script runner and `FOR` loops, which abort with `***Break`,
+  and a `dispatch_broken` marker propagates consumed breaks to
+  enclosing loops (UAOS-50).
 - Full-screen inline editors (`vim`, `ed`) and other WM-only modes are
   refused on remote sessions.
 - `ShellWin_RemoteIsDead`/`ShellWin_RemoteKill` let the daemon detect a

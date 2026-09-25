@@ -1761,7 +1761,7 @@ static int string_gadget_handle_key(uint32_t gad, uint16_t *cursor,
         *sel_start = 0;
         *sel_end = numchars;
         return 1;
-    } else if (c == 0x05) { /* VKEY_LEFT */
+    } else if (c == KBD_VKEY_LEFT) {
         int shift = g_kbd_mods.shift;
         if (pos > 0) {
             *cursor = pos - 1;
@@ -1773,7 +1773,7 @@ static int string_gadget_handle_key(uint32_t gad, uint16_t *cursor,
             }
         }
         return 1;
-    } else if (c == 0x06) { /* VKEY_RIGHT */
+    } else if (c == KBD_VKEY_RIGHT) {
         int shift = g_kbd_mods.shift;
         if (pos < numchars) {
             *cursor = pos + 1;
@@ -1785,7 +1785,7 @@ static int string_gadget_handle_key(uint32_t gad, uint16_t *cursor,
             }
         }
         return 1;
-    } else if (c == 0x03) { /* VKEY_UP -> Home */
+    } else if (c == KBD_VKEY_UP) { /* -> Home */
         int shift = g_kbd_mods.shift;
         *cursor = 0;
         if (shift) {
@@ -1795,7 +1795,7 @@ static int string_gadget_handle_key(uint32_t gad, uint16_t *cursor,
             *sel_start = *sel_end = 0;
         }
         return 1;
-    } else if (c == 0x04) { /* VKEY_DOWN -> End */
+    } else if (c == KBD_VKEY_DOWN) { /* -> End */
         int shift = g_kbd_mods.shift;
         *cursor = numchars;
         if (shift) {

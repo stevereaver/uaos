@@ -9,6 +9,7 @@
 #include "framebuffer.h"
 #include "../dos/vfs.h"
 #include "../shell/cmd_internal.h"
+#include "../irq/ps2kbd.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -26,13 +27,13 @@
 #define VIM_STATUS_H      20
 #define VIM_LNUM_W        (5 * 8)
 
-/* Virtual key codes from ps2kbd.c */
-#define VKEY_PGUP   0x01
-#define VKEY_PGDN   0x02
-#define VKEY_UP     0x03
-#define VKEY_DOWN   0x04
-#define VKEY_LEFT   0x05
-#define VKEY_RIGHT  0x06
+/* Virtual key codes produced by ps2kbd.c (KBD_VKEY_*) */
+#define VKEY_PGUP   KBD_VKEY_PGUP
+#define VKEY_PGDN   KBD_VKEY_PGDN
+#define VKEY_UP     KBD_VKEY_UP
+#define VKEY_DOWN   KBD_VKEY_DOWN
+#define VKEY_LEFT   KBD_VKEY_LEFT
+#define VKEY_RIGHT  KBD_VKEY_RIGHT
 
 typedef enum {
     VIM_MODE_NORMAL = 0,

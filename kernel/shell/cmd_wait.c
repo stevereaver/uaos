@@ -34,5 +34,9 @@ void Cmd_Wait(NativeCmdCtx *ctx, const char *args)
 
     for (int i = 0; i < seconds; i++) {
         CMD_YIELD(ctx, 1000);
+        if (CMD_BREAK(ctx)) {
+            PRINT("***Break");
+            return;
+        }
     }
 }

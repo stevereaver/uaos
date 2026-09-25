@@ -81,7 +81,7 @@ void Cmd_More(NativeCmdCtx *ctx, const char *args)
             /* Erase the --More-- line from history by printing an empty line */
             PRINT("");
 
-            if (k == 'q' || k == 'Q' || k == 27 /* ESC */) {
+            if (k == 'q' || k == 'Q' || k == 27 /* ESC */ || k == 0x03 /* Ctrl-C */) {
                 VFS_Close(&fh);
                 return;
             } else if (k == '\r' || k == '\n') {

@@ -39,6 +39,7 @@ static void exec_kprint_line(void *shell, const char *line)
 static NativeCmdCtx exec_make_ctx(void)
 {
     NativeCmdCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
     ctx.shell          = NULL;
     ctx.print          = exec_nop_print;
     ctx.cwd            = "";
@@ -59,6 +60,7 @@ static NativeCmdCtx exec_make_ctx(void)
     ctx.enum_tasks     = NULL;
     ctx.set_env        = NULL;
     ctx.change_task_pri = NULL;
+    ctx.break_pending  = NULL;
     return ctx;
 }
 

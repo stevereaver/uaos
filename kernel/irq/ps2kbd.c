@@ -107,7 +107,7 @@ static void kbuf_push(char c)
  * Modifier state
  * ========================================================================= */
 
-KbdMods g_kbd_mods = { 0, 0, 0, 0 };
+KbdMods g_kbd_mods = { 0, 0, 0, 0, 0, 0 };
 
 /* =========================================================================
  * PS2Kbd_Init
@@ -158,12 +158,12 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             PIC_SendEOI(1); return;
         }
         if (!is_break) {
-            if (key == 0x49) { kbuf_push(0x01); } /* Page Up   → VKEY_PGUP */
-            if (key == 0x51) { kbuf_push(0x02); } /* Page Down → VKEY_PGDN */
-            if (key == 0x48) { kbuf_push(0x03); } /* Up arrow  → VKEY_UP    */
-            if (key == 0x50) { kbuf_push(0x04); } /* Down arrow→ VKEY_DOWN  */
-            if (key == 0x4B) { kbuf_push(0x05); } /* Left arrow→ VKEY_LEFT  */
-            if (key == 0x4D) { kbuf_push(0x06); } /* Right arrow→VKEY_RIGHT */
+            if (key == 0x49) { kbuf_push(KBD_VKEY_PGUP);  } /* Page Up   */
+            if (key == 0x51) { kbuf_push(KBD_VKEY_PGDN);  } /* Page Down */
+            if (key == 0x48) { kbuf_push(KBD_VKEY_UP);    } /* Up arrow  */
+            if (key == 0x50) { kbuf_push(KBD_VKEY_DOWN);  } /* Down arrow*/
+            if (key == 0x4B) { kbuf_push(KBD_VKEY_LEFT);  } /* Left arrow*/
+            if (key == 0x4D) { kbuf_push(KBD_VKEY_RIGHT); } /* Right arrow*/
         }
         PIC_SendEOI(1); return;
     }

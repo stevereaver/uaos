@@ -44,6 +44,18 @@ extern KbdMods g_kbd_mods;
 #define AMIGA_LM   ((char)0xF7)   /* LAmiga+M — next screen           */
 #define AMIGA_LN   ((char)0xF8)   /* LAmiga+N — previous screen       */
 
+/* Virtual cursor/function keys pushed for E0-prefixed scan codes
+ * (arrows, PageUp/PageDown).  They live above the ASCII/control range
+ * and outside the Amiga-key byte space so real control bytes — above
+ * all Ctrl-C (0x03) — always reach consumers as data, never as cursor
+ * keys.  Same codes a telnet session feeds via SHELL_VKEY_*. */
+#define KBD_VKEY_PGUP   ((char)0xF9)
+#define KBD_VKEY_PGDN   ((char)0xFA)
+#define KBD_VKEY_UP     ((char)0xFB)
+#define KBD_VKEY_DOWN   ((char)0xFC)
+#define KBD_VKEY_LEFT   ((char)0xFD)
+#define KBD_VKEY_RIGHT  ((char)0xFE)
+
 /* Mask to extract the letter from a RAmiga+letter byte */
 #define AMIGA_RMASK  0x80
 #define AMIGA_RLETTER(c) ((char)((unsigned char)(c) & 0x7F))

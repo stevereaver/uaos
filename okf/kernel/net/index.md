@@ -159,23 +159,47 @@ Telnet protocol handling is deliberately small:
   translates `CR`, `CR NUL`, and `LF` to a single line-feed for the shell.
 - `ESC [` / `ESC O` final bytes `A`/`B`/`C`/`D` are mapped to the shell's
   virtual cursor-key codes so command history works over the wire.
+- A raw `0x03` byte (Ctrl-C) and the Telnet `IAC IP` / `IAC AO` commands
+  are all fed to the shell as a break request (UAOS-50).  They are no
+  longer mapped to backspace or cursor keys: the shell's virtual-key
+  codes moved out of the ASCII control range, so ETX reaches the
+  session as a real interrupt and cannot be misread as `SHELL_VKEY_UP`
+  (which previously recalled history and could re-execute a command).
 
-Sessions are pumped cooperatively: the task calls `tcp_recv()`,
-`net_stack_poll()`, and `Task_Yield()` in a loop, exits when the socket
-leaves `ESTABLISHED`/`CLOSE_WAIT`, when the peer half-closes with a
-drained RX buffer, when the shell session ends (`endcli`), when the
-daemon is stopping, or when the net stack goes down.  On exit it sends
-a closing banner and calls `tcp_close()` — unless the stack is already
-down, in which case it calls `tcp_abort()` instead (a FIN could never
-be answered, and `tcp_tick` no longer runs to retire the socket, so a
-graceful close would leak the slot in `FIN_WAIT_1`).
+Sessions are served concurrently (UAOS-53): the `telnetd` listener task
+only accepts — each accepted socket is handed to its own
+`telnetd-session` pump task so `tcp_accept()` keeps running while
+sessions are active.  Up to `MAX_REMOTE_SHELLS` (4) remote shells can be
+live at once; a connection arriving when no slot (or pump context) is
+free gets a "no remote shell slots free" banner and a clean close
+instead of completing the handshake onto a silent socket.
+
+Each pump task calls `tcp_recv()`, `net_stack_poll()`, and `Task_Yield()`
+in a loop, exits when the socket leaves `ESTABLISHED`/`CLOSE_WAIT`, when
+the peer half-closes with a drained RX buffer, when the shell session
+ends (`endcli`), when the daemon is stopping (its `PumpCtx.gen` no
+longer matches `g_generation`), or when the net stack goes down.  On
+exit it sends a closing banner and calls `tcp_close()` — unless the
+stack is already down, in which case it calls `tcp_abort()` instead (a
+FIN could never be answered, and `tcp_tick` no longer runs to retire
+the socket, so a graceful close would leak the slot in `FIN_WAIT_1`).
+`g_pump_count` tracks live pumps so `Telnetd_Stop()` can wait for them;
+the counter updates are cli/sti-guarded because `++` in the listener and
+`--` in pump tasks would otherwise race.
+
+Remote session handles are tokenized: `ShellWin_RemoteOpen()` stamps a
+monotonically increasing token into the opaque handle alongside the slot
+index, so a pump task can never feed input to a different session that
+later reuses the same remote slot (see the "Remote Shell Sessions"
+section of [Display](/kernel/display/index.md)).
 
 Lifecycle (UAOS-54): `telnetd STOP` maps to `Telnetd_Stop()`, which sets
 a `g_stop` flag the daemon checks every loop iteration — the accept loop
 and any in-progress session pump both unwind, the listener is
 `tcp_close()`d, `g_running` clears, and the task exits.  `Telnetd_Stop`
-waits for `g_running` to clear by polling on the 100 Hz PIT tick with a
-~1 s deadline (Task_Yield is a bare `pause` and Wait() has no timeout);
+waits for `g_running` and `g_pump_count` to drain by polling on the 100
+Hz PIT tick with a ~1 s deadline (Task_Yield is a bare `pause` and
+Wait() has no timeout);
 the wait relies on timer preemption, so in contexts where the scheduler
 cannot run — Startup-Sequence executes in kernel-main context before
 `Task_StartFirst()`, and `&` background jobs run under the idle task's
@@ -191,13 +215,12 @@ cannot leave the service permanently "running".
 `tcp_close()`: it forces the socket to `TCP_CLOSED` unconditionally,
 for teardown when the peer can no longer be reached.
 
-Known issues (live audit, 2026-09-25 — tracked under UAOS-47): only one
-session is served at a time despite `MAX_REMOTE_SHELLS` = 4 — extra
-connections now get a busy banner and a clean close from the drain in
-`pump_session` (previously they TCP-connected to a silent socket);
-CR LF produces two newlines; non-arrow CSI sequences leak
-literal bytes; raw Ctrl-C collides with `SHELL_VKEY_UP`; output is not
-IAC-escaped; no dead-peer/idle timeout.  The TCP-layer gaps that hit telnetd directly were fixed:
+Known issues (live audit, 2026-09-25 — tracked under UAOS-47; updated
+after UAOS-50/53): CR LF produces two newlines; non-arrow CSI sequences
+leak literal bytes; output is not IAC-escaped; no dead-peer/idle
+timeout.  Concurrency (per-session pump tasks, tokenized handles, busy
+banner) landed in UAOS-53 and remote interrupt handling (Ctrl-C /
+IAC IP / IAC AO → real shell break) in UAOS-50.  The TCP-layer gaps that hit telnetd directly were fixed:
 RX overflow dropped-but-ACKed in UAOS-56, and peer-window enforcement,
 single-segment-in-flight send, `snd_una` validation, and RST generation
 in UAOS-55.

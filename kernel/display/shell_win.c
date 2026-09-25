@@ -71,9 +71,11 @@ static void inst_print_wrapper(const char *line)
 #define SCROLL_LINES    4    /* lines per Page-Up/Down tick */
 
 /* Special virtual keys injected by kbd driver for scroll/history.
- * The arrow codes are shared with ShellWin_RemoteFeed (see shell_win.h). */
-#define VKEY_PGUP  0x01
-#define VKEY_PGDN  0x02
+ * The codes are shared with ShellWin_RemoteFeed (see shell_win.h); they
+ * sit above the ASCII range so real control bytes are never mistaken
+ * for cursor keys. */
+#define VKEY_PGUP  SHELL_VKEY_PGUP
+#define VKEY_PGDN  SHELL_VKEY_PGDN
 #define VKEY_UP    SHELL_VKEY_UP
 #define VKEY_DOWN  SHELL_VKEY_DOWN
 #define VKEY_LEFT  SHELL_VKEY_LEFT
@@ -176,6 +178,20 @@ struct ShellInstance {
     int          remote_sock;    /* TCP socket index, -1 when detached */
     volatile int remote_dead;    /* 1 = session over; task should exit */
     volatile int remote_inuse;   /* 1 = remote slot allocated */
+    uint32_t     remote_token;   /* stamped into the opaque session handle
+                                  * so a stale handle on a re-used slot is
+                                  * rejected by the Remote* API */
+
+    /* Break (Ctrl-C / telnet IAC IP) — set at feed time so it is noticed
+     * even while a command runs, consumed by the dispatch loop, the
+     * script runner and the blocking input reads. */
+    volatile int break_req;
+    /* Set by inst_dispatch when it refuses a command on a pending break —
+     * a break that lands between a loop's own break check and the
+     * dispatch entry check would otherwise be consumed without the loop
+     * ever noticing, so callers re-check this after each dispatch. */
+    volatile int dispatch_broken;
+    UaosTask    *task;           /* the shell task running this instance */
 };
 typedef struct ShellInstance ShellInstance;
 
@@ -186,12 +202,21 @@ static char g_hist_buf[TOTAL_SHELLS][MAX_HIST_LINES][MAX_LINE_LEN];
 static ShellInstance g_shells[TOTAL_SHELLS];
 static int           g_n_shells = 0;
 
+/* Generation counter stamped into remote-session handles — see the
+ * Remote (telnet) session API section below. */
+static uint32_t      g_remote_token_next = 1;   /* never handed out as 0 */
+
 /* -------------------------------------------------------------------------
  * Keyboard ring buffer helpers (interrupt-safe)
  * ------------------------------------------------------------------------- */
 static int shell_kb_enqueue(ShellInstance *s, char c)
 {
     __asm__ volatile ("cli");
+    /* Ctrl-C raises the break flag at feed time — it must be visible to a
+     * running command even though the queued byte is only consumed once
+     * the task loop returns to it.  Set it before the full-queue check so
+     * a break still lands when the input queue is saturated. */
+    if (c == 0x03) s->break_req = 1;
     int next = (s->kb_tail + 1) % SHELL_KB_BUFSIZE;
     if (next == s->kb_head) {
         __asm__ volatile ("sti");
@@ -199,6 +224,25 @@ static int shell_kb_enqueue(ShellInstance *s, char c)
     }
     s->kb_buf[s->kb_tail] = c;
     s->kb_tail = next;
+    __asm__ volatile ("sti");
+    /* Wake a shell parked in Wait(SIGF_CHILD|SIGF_BREAKF) while a
+     * foreground binary runs.  Done outside the cli section: Signal()
+     * brackets its own critical section and would re-enable interrupts
+     * early if nested inside ours. */
+    if (c == 0x03 && s->task) Signal(s->task, SIGF_BREAKF);
+    return 1;
+}
+
+/* Consume a pending break request: clears the flag and drops every
+ * queued input byte.  Flushing matters for safety — input typed while a
+ * command ran (including the Ctrl-C itself) must not be executed after
+ * the break.  Returns 1 if a break was pending. */
+static int shell_take_break(ShellInstance *s)
+{
+    if (!s->break_req) return 0;
+    s->break_req = 0;
+    __asm__ volatile ("cli");
+    s->kb_head = s->kb_tail;
     __asm__ volatile ("sti");
     return 1;
 }
@@ -2184,7 +2228,13 @@ static int script_run_block(ShellInstance *s, const char **lines, int line_count
 {
     int pc = start;
     while (pc < end && !s->quit_flag) {
+        if (shell_take_break(s)) {
+            inst_print(s, "***Break");
+            break;
+        }
         pc = script_run_line(s, lines, line_count, pc);
+        /* inst_dispatch consumed a break — unwind through every block. */
+        if (s->dispatch_broken) break;
     }
     return pc;
 }
@@ -2397,6 +2447,10 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
 
         /* Execute loop body */
         for (int v = start_val; (step_val > 0) ? (v <= end_val) : (v >= end_val); v += step_val) {
+            if (shell_take_break(s)) {
+                inst_print(s, "***Break");
+                break;
+            }
             char valstr[16];
             int n = v, neg = 0;
             if (n < 0) { neg = 1; n = -n; }
@@ -2409,6 +2463,7 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
 
             script_set_var(s, varname, valstr);
             script_run_block(s, lines, line_count, pc, endfor_pc);
+            if (s->dispatch_broken) { s->dispatch_broken = 0; break; }
         }
         return endfor_pc + 1;
     }
@@ -2439,6 +2494,7 @@ static void run_script_text(ShellInstance *s, char *text)
     }
 
     s->quit_flag = 0;
+    s->dispatch_broken = 0;
 
     /* Pre-scan for labels */
     g_script_label_count = 0;
@@ -2476,6 +2532,7 @@ static void run_script_text(ShellInstance *s, char *text)
 
     script_run_block(s, lines, line_count, 0, line_count);
     s->quit_flag = 0;
+    s->dispatch_broken = 0;
 }
 
 static void shell_run_script(void *shell_extra, const char *text)
@@ -3529,19 +3586,32 @@ static int shell_is_builtin(const char *name)
  * the idle task handles mouse, keyboard, and network polling. */
 static void shell_yield_ms(void *shell_extra, uint32_t ms)
 {
-    (void)shell_extra;
+    ShellInstance *s = (ShellInstance *)shell_extra;
     /* PIT runs at 100 Hz → 1 tick = 10 ms.  Convert ms to ticks.
      * Poll the network stack each iteration so that while the shell
      * task is waiting, incoming packets (DNS replies, ICMP, NTP, …)
-     * still get processed even if the idle task hasn't run yet. */
+     * still get processed even if the idle task hasn't run yet.  A
+     * pending break cuts the wait short so commands polling
+     * ctx->break_pending react promptly. */
     extern volatile uint64_t g_pit_ticks;
     uint64_t ticks = ms / 10;
     if (ticks == 0) ticks = 1;
     uint64_t start = g_pit_ticks;
-    while (g_pit_ticks - start < ticks) {
+    while (g_pit_ticks - start < ticks && !(s && s->break_req)) {
         net_stack_poll();
         __asm__ volatile ("pause");
     }
+}
+
+/* Pollable break check for long-running commands (ctx->break_pending):
+ * consumes the flag — returns 1 once per user break request.  The
+ * dispatch marker propagates the abort to enclosing loops. */
+static int shell_break_pending(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    if (!shell_take_break(s)) return 0;
+    s->dispatch_broken = 1;
+    return 1;
 }
 
 /* Blocking key read — waits for a key in the shell's keyboard buffer,
@@ -3553,6 +3623,14 @@ static char shell_read_key(void *shell_extra)
         char c;
         if (s->remote && s->remote_dead)
             return 0;
+        /* Break while a command waits on a key — hand ETX back so the
+         * caller (pager etc.) can quit on it, and mark the dispatch so
+         * an enclosing loop stops too. */
+        if (shell_take_break(s)) {
+            s->dispatch_broken = 1;
+            inst_print(s, "***Break");
+            return 0x03;
+        }
         if (shell_kb_dequeue(s, &c))
             return c;
         Task_Yield();
@@ -3593,6 +3671,13 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
         char c;
         if (s->remote && s->remote_dead)
             return 0;
+        /* Break cancels the prompt — caller gets an empty line; mark the
+         * dispatch so an enclosing loop stops too. */
+        if (shell_take_break(s)) {
+            s->dispatch_broken = 1;
+            inst_print(s, "***Break");
+            return 0;
+        }
         if (shell_kb_dequeue(s, &c)) {
             /* Handle Enter - line complete */
             if (c == '\r' || c == '\n') {
@@ -3865,6 +3950,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.set_env        = shell_set_env;
     ctx.change_task_pri = shell_change_task_pri;
     ctx.quit_script    = shell_quit_script;
+    ctx.break_pending  = shell_break_pending;
     ctx.pipe_file      = g_pipe_in_active ? g_pipe_in_file : NULL;
     return ctx;
 }
@@ -4019,8 +4105,19 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             if (cur) {
                 /* Clear any stale SIGF_CHILD from a previous child exit
                  * so that Wait() blocks until THIS child actually exits. */
-                Task_ClearSig(SIGF_CHILD);
-                Wait(SIGF_CHILD);
+                Task_ClearSig(SIGF_CHILD | SIGF_BREAKF);
+                for (;;) {
+                    uint32_t got = Wait(SIGF_CHILD | SIGF_BREAKF);
+                    if (got & SIGF_CHILD) break;
+                    /* Ctrl-C while a foreground binary runs: forward the
+                     * break to the child — AmigaOS semantics, programs
+                     * poll CheckSignal(SIGBREAKF_CTRL_C) and abort.  The
+                     * break_req flag is left set on purpose: the enclosing
+                     * FOR/script/dispatch loop consumes it, prints
+                     * "***Break" once and stops — consuming it here would
+                     * let the loop keep running past a user interrupt. */
+                    Signal(t, SIGF_BREAKF);
+                }
             }
             return 0;
         }
@@ -4095,8 +4192,14 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                  * task that exited) causes Wait() to return immediately,
                  * before the X64 task has run — redirect output then goes
                  * to the shell window instead of the redirect file. */
-                Task_ClearSig(SIGF_CHILD);
-                Wait(SIGF_CHILD);
+                Task_ClearSig(SIGF_CHILD | SIGF_BREAKF);
+                for (;;) {
+                    uint32_t got = Wait(SIGF_CHILD | SIGF_BREAKF);
+                    if (got & SIGF_CHILD) break;
+                    /* Ctrl-C — forward the break to the child task; the
+                     * flag stays set so the enclosing loop stops too. */
+                    Signal(t, SIGF_BREAKF);
+                }
             }
             return 0;
         }
@@ -4260,6 +4363,10 @@ static void run_cmd(ShellInstance *s, const char *line)
         rest = script_skip_sp(rest + 2);
 
         for (int v = start_val; (step_val > 0) ? (v <= end_val) : (v >= end_val); v += step_val) {
+            if (shell_take_break(s)) {
+                inst_print(s, "***Break");
+                break;
+            }
             char valstr[16];
             int n = v, neg = 0;
             if (n < 0) { neg = 1; n = -n; }
@@ -4271,6 +4378,7 @@ static void run_cmd(ShellInstance *s, const char *line)
             valstr[di] = '\0';
             script_set_var(s, varname, valstr);
             inst_dispatch(s, rest);
+            if (s->dispatch_broken) { s->dispatch_broken = 0; break; }
         }
         return;
     for_prompt_err:
@@ -4824,6 +4932,16 @@ static void strip_trailing_ampersand(char *s)
 
 static void inst_dispatch(ShellInstance *s, const char *line)
 {
+    /* A break raised between commands (or carried over from a loop that
+     * did not consume it) aborts this dispatch instead of running.
+     * dispatch_broken tells an enclosing FOR/script loop — which already
+     * passed its own break check — to stop too. */
+    if (shell_take_break(s)) {
+        s->dispatch_broken = 1;
+        inst_print(s, "***Break");
+        return;
+    }
+
     /* Expand $variables before anything else */
     char expanded_line[MAX_LINE_LEN];
     expand_vars(s, line, expanded_line, MAX_LINE_LEN);
@@ -5300,6 +5418,16 @@ static void inst_handle_key_remote(ShellInstance *s, char c)
         remote_refresh_line(s);
         return;
     }
+    if (c == 0x03) {     /* Ctrl-C — cancel the input line */
+        shell_take_break(s);
+        s->input_len = 0;
+        s->input_cur = 0;
+        s->input_buf[0] = 0;
+        s->cmd_hist_nav = 0;
+        inst_print(s, "^C");
+        remote_refresh_line(s);
+        return;
+    }
     if (c == '\n' || c == '\r') {
         s->input_buf[s->input_len] = 0;
         remote_send_str(s, "\r\n");
@@ -5458,6 +5586,17 @@ static void inst_handle_key(ShellInstance *s, char c)
         s->input_len = 0;
         while (s->input_buf[s->input_len]) s->input_len++;
         s->input_cur = s->input_len;
+        inst_draw_input(s);
+        return;
+    }
+    if (c == 0x03) {     /* Ctrl-C — cancel the input line */
+        shell_take_break(s);
+        s->input_len = 0;
+        s->input_cur = 0;
+        s->input_buf[0] = 0;
+        s->cmd_hist_nav = 0;
+        inst_print(s, "^C");
+        inst_draw_history(s);
         inst_draw_input(s);
         return;
     }
@@ -5630,6 +5769,11 @@ static ShellInstance *open_shell(int stagger)
     s->remote = 0;
     s->remote_sock = -1;
     s->remote_dead = 0;
+    s->remote_inuse = 0;
+    s->remote_token = 0;
+    s->break_req = 0;
+    s->dispatch_broken = 0;
+    s->task = NULL;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
     /* Default AmigaDOS search path.  SYS: is the boot volume root,
@@ -5651,7 +5795,7 @@ static ShellInstance *open_shell(int stagger)
                                 k_key_shims[idx]);
     s->kb_head = 0;
     s->kb_tail = 0;
-    Task_CreateNative("Shell", -128, shell_task_entry, s);
+    s->task = Task_CreateNative("Shell", -128, shell_task_entry, s);
     WM_Redraw();
     return s;
 }
@@ -5677,6 +5821,8 @@ static ShellInstance *open_remote_shell(int sock)
         s->remote     = 1;
         s->remote_sock= sock;
         s->remote_dead= 0;
+        s->remote_token = g_remote_token_next++;
+        if (!g_remote_token_next) g_remote_token_next = 1;
         s->remote_inuse = 1;
         s->wx = s->wy = 0;
         s->ww = 640; s->wh = 400;   /* nominal 80x25-ish geometry */
@@ -5707,6 +5853,9 @@ static ShellInstance *open_remote_shell(int sock)
         s->prev_rc = 0;
         s->failat_threshold = 10;
         s->quit_flag = 0;
+        s->break_req = 0;
+        s->dispatch_broken = 0;
+        s->task = NULL;
         scopy(s->cwd, "RAM:", 64);
         scopy(s->path, "C: S: SYS:Tools SYS:Utilities SYS:Prefs", 256);
         for (int j = 0; j < MAX_HIST_LINES; j++) g_hist_buf[i][j][0] = 0;
@@ -5718,7 +5867,7 @@ static ShellInstance *open_remote_shell(int sock)
         inst_print(s, "");
         remote_send_prompt(s);
 
-        Task_CreateNative("Shell", -128, shell_task_entry, s);
+        s->task = Task_CreateNative("Shell", -128, shell_task_entry, s);
         return s;
     }
     return NULL;
@@ -5890,30 +6039,49 @@ void ShellWin_DispatchLine(const char *line)
 
 /* =========================================================================
  * Remote (telnet) session API
+ *
+ * The opaque handle handed to the daemon encodes the slot index plus a
+ * generation token stamped at open time.  Slots are recycled, and with
+ * concurrent sessions a pump can legitimately outlive its own session
+ * (peer disconnect vs. ENDCLI teardown order); decoding the handle and
+ * re-validating the token keeps a stale handle from feeding, killing or
+ * misreporting a *different* session that now owns the slot.
  * ========================================================================= */
+
+static ShellInstance *remote_from_handle(void *h)
+{
+    uintptr_t v = (uintptr_t)h;
+    int idx = (int)(v & 0xFFFFu) - 1;
+    if (idx < MAX_SHELLS || idx >= TOTAL_SHELLS) return NULL;
+    ShellInstance *s = &g_shells[idx];
+    if (!s->remote_inuse || (uint32_t)(v >> 16) != s->remote_token)
+        return NULL;
+    return s;
+}
 
 void *ShellWin_RemoteOpen(int tcp_sock)
 {
-    return open_remote_shell(tcp_sock);
+    ShellInstance *s = open_remote_shell(tcp_sock);
+    if (!s) return NULL;
+    return (void *)(uintptr_t)(((uintptr_t)s->remote_token << 16) |
+                               (uintptr_t)(s->index + 1));
 }
 
 void ShellWin_RemoteFeed(void *session, char c)
 {
-    ShellInstance *s = (ShellInstance *)session;
-    if (!s || !s->remote || !s->remote_inuse || s->remote_dead) return;
+    ShellInstance *s = remote_from_handle(session);
+    if (!s || s->remote_dead) return;
     shell_kb_enqueue(s, c);
 }
 
 int ShellWin_RemoteIsDead(void *session)
 {
-    ShellInstance *s = (ShellInstance *)session;
-    if (!s) return 1;
-    return !s->remote_inuse;
+    return remote_from_handle(session) == NULL;
 }
 
 void ShellWin_RemoteKill(void *session)
 {
-    ShellInstance *s = (ShellInstance *)session;
+    ShellInstance *s = remote_from_handle(session);
     if (!s) return;
     s->remote_dead = 1;
 }

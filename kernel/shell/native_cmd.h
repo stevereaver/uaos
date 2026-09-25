@@ -135,6 +135,11 @@ typedef struct NativeCmdCtx {
      * Optional rc is stored as the script return code. */
     void      (*quit_script)(void *shell_extra, int rc);
 
+    /* Break poll — returns 1 once each time the user has requested a
+     * break (Ctrl-C).  Long-running commands should poll it inside their
+     * wait loops and abort early.  May be NULL. */
+    int       (*break_pending)(void *shell_extra);
+
     /* For piping: path to a temp file containing the previous command's
      * output.  Commands that read from a file should use this when no
      * explicit file argument is given. */
@@ -150,6 +155,10 @@ typedef struct NativeCmdCtx {
 
 /* Convenience macro — blocking read of one key from inside a Cmd_* function */
 #define CMD_READ_KEY(ctx)  ((ctx)->read_key ? (ctx)->read_key((ctx)->shell_extra) : (char)0)
+
+/* Convenience macro — poll whether the user requested a break (Ctrl-C).
+ * Consumes the request: returns 1 once per break. */
+#define CMD_BREAK(ctx)  ((ctx)->break_pending && (ctx)->break_pending((ctx)->shell_extra))
 
 /* Convenience macro — emit one line from inside a Cmd_* function */
 #define CMD_PRINT(ctx, msg)  (ctx)->print((ctx)->shell, (msg))

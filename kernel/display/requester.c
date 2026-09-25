@@ -7,6 +7,7 @@
 #include "requester.h"
 #include "wm.h"
 #include "framebuffer.h"
+#include "../irq/ps2kbd.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -317,22 +318,22 @@ static void req_key(char c)
             return;
         }
         /* Arrow keys */
-        if (c == 0x05 && g_req.cursor_pos > 0) {
+        if (c == KBD_VKEY_LEFT && g_req.cursor_pos > 0) {
             g_req.cursor_pos--;
             WM_Redraw();
             return;
         }
-        if (c == 0x06 && g_req.cursor_pos < g_req.text_len) {
+        if (c == KBD_VKEY_RIGHT && g_req.cursor_pos < g_req.text_len) {
             g_req.cursor_pos++;
             WM_Redraw();
             return;
         }
-        if (c == 0x03) {
+        if (c == KBD_VKEY_UP) {
             g_req.cursor_pos = 0;
             WM_Redraw();
             return;
         }
-        if (c == 0x04) {
+        if (c == KBD_VKEY_DOWN) {
             g_req.cursor_pos = g_req.text_len;
             WM_Redraw();
             return;

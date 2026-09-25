@@ -3,6 +3,8 @@
 #ifndef UAOS_SHELL_WIN_H
 #define UAOS_SHELL_WIN_H
 
+#include "../irq/ps2kbd.h"   /* KBD_VKEY_* — shared key byte space */
+
 /* Open the first shell window at boot */
 void ShellWin_Init(void);
 
@@ -50,11 +52,17 @@ void ShellWin_DispatchLine(const char *line);
  * ------------------------------------------------------------------------- */
 
 /* Virtual key codes accepted by ShellWin_RemoteFeed for non-ASCII input
- * (same codes the local line editor receives for cursor keys). */
-#define SHELL_VKEY_UP    0x03
-#define SHELL_VKEY_DOWN  0x04
-#define SHELL_VKEY_LEFT  0x05
-#define SHELL_VKEY_RIGHT 0x06
+ * (same codes the local line editor receives for cursor keys).
+ * Canonical definitions live with the keyboard driver — KBD_VKEY_* in
+ * ps2kbd.h — outside the ASCII control range and the Amiga-key byte
+ * space so a real Ctrl-C (0x03) reaches the shell as a break instead
+ * of being mistaken for the Up arrow. */
+#define SHELL_VKEY_PGUP   KBD_VKEY_PGUP
+#define SHELL_VKEY_PGDN   KBD_VKEY_PGDN
+#define SHELL_VKEY_UP     KBD_VKEY_UP
+#define SHELL_VKEY_DOWN   KBD_VKEY_DOWN
+#define SHELL_VKEY_LEFT   KBD_VKEY_LEFT
+#define SHELL_VKEY_RIGHT  KBD_VKEY_RIGHT
 
 /* Open a remote shell session bound to an accepted TCP socket index.
  * Sends the banner and prompt immediately, then spawns the session task.
@@ -62,7 +70,10 @@ void ShellWin_DispatchLine(const char *line);
 void *ShellWin_RemoteOpen(int tcp_sock);
 
 /* Feed one character into the session's input queue (NVT-decoded by the
- * caller: printable ASCII, '\r', '\b', '\t', or SHELL_VKEY_*). */
+ * caller: printable ASCII, '\r', '\b', '\t', or SHELL_VKEY_*).  Feeding
+ * 0x03 (ETX / Ctrl-C) additionally requests a break: the flag is checked
+ * by the command-dispatch loop, script runner and input waits, and the
+ * session task is signalled so a foreground child wait wakes early. */
 void  ShellWin_RemoteFeed(void *session, char c);
 
 /* Returns 1 once the session slot has been released (disconnect handled,
