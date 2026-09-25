@@ -4,7 +4,7 @@ title: TCP/IP Network Stack
 description: The native IPv4 networking stack, device drivers, and higher-level protocols in UAOS.
 resource: /kernel/net/
 tags: [network, tcp, udp, ip, dhcp, dns, ntp]
-timestamp: 2026-09-25T00:10:10Z
+timestamp: 2026-09-25T01:20:00Z
 ---
 
 # TCP/IP Network Stack
@@ -64,6 +64,17 @@ Full TCP state machine including:
   replay the half-open connection could never complete.  `SYN_RECEIVED`
   sockets also have a `conn_timer` timeout so dead half-opens do not
   leak socket slots.
+- Receive flow control: every outgoing segment advertises the RX ring's
+  actual free space (0-window when full).  `tcp_rx_data` accepts only
+  in-order bytes — retransmit overlap is trimmed, a segment ahead of
+  `rcv_nxt` is dropped with a dup-ACK — and `rcv_nxt` advances only by
+  bytes actually queued, so a full ring drop-and-NACKs the tail for the
+  peer to retransmit instead of silently losing it (UAOS-56).  A FIN is
+  consumed only once all preceding data has been delivered.  Data is
+  accepted in `ESTABLISHED`, `FIN_WAIT_1`, `FIN_WAIT_2` (half-close) and
+  `CLOSE_WAIT` (pre-FIN retransmits; dup FINs are re-ACKed).  `tcp_recv`
+  pushes a window-update ACK when draining reopens a previously full
+  ring, so the peer does not sit out its zero-window persist backoff.
 
 ## Higher-Level Protocols
 
@@ -129,6 +140,16 @@ Sessions are pumped cooperatively: the task calls `tcp_recv()`,
 leaves `ESTABLISHED`/`CLOSE_WAIT`, when the peer half-closes with a
 drained RX buffer, or when the shell session ends (`endcli`).  On exit
 it sends a closing banner and calls `tcp_close()`.
+
+Known issues (live audit, 2026-09-25 — tracked under UAOS-47): only one
+session is served at a time despite `MAX_REMOTE_SHELLS` = 4; extra
+connections TCP-connect but receive no data (the "busy" banner is
+unreachable); CR LF produces two newlines; non-arrow CSI sequences leak
+literal bytes; raw Ctrl-C collides with `SHELL_VKEY_UP`; output is not
+IAC-escaped; `netstop` wedges the daemon permanently; no dead-peer/idle
+timeout.  TCP-layer gaps that hit telnetd directly: peer send window
+ignored, single-segment retransmit (RX overflow dropped-but-ACKed fixed
+in UAOS-56).
 
 ## VirtIO-Net TX Serialization
 

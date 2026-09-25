@@ -22,15 +22,17 @@ static void tcp_retransmit(TcpSocket *s);   /* defined below tcp_rx */
 /* -------------------------------------------------------------------------
  * Ring buffer helpers
  * ------------------------------------------------------------------------- */
-static void rbuf_put(uint8_t *buf, uint16_t *tail, uint16_t *head,
-                     uint16_t size, const uint8_t *data, uint16_t len)
+static uint16_t rbuf_put(uint8_t *buf, uint16_t *tail, uint16_t *head,
+                         uint16_t size, const uint8_t *data, uint16_t len)
 {
-    for (uint16_t i = 0; i < len; i++) {
+    uint16_t n = 0;
+    while (n < len) {
         uint16_t next = (uint16_t)((*tail + 1) % size);
-        if (next == *head) return;
-        buf[*tail] = data[i];
+        if (next == *head) break;
+        buf[*tail] = data[n++];
         *tail = next;
     }
+    return n;
 }
 static int rbuf_get(uint8_t *buf, uint16_t *head, uint16_t *tail,
                     uint16_t size, uint8_t *out, uint16_t maxlen)
@@ -45,6 +47,10 @@ static int rbuf_get(uint8_t *buf, uint16_t *head, uint16_t *tail,
 static uint16_t rbuf_used(uint16_t head, uint16_t tail, uint16_t size)
 {
     return (uint16_t)((tail - head + size) % size);
+}
+static uint16_t rbuf_free(uint16_t head, uint16_t tail, uint16_t size)
+{
+    return (uint16_t)(size - 1 - rbuf_used(head, tail, size));
 }
 
 /* -------------------------------------------------------------------------
@@ -95,7 +101,8 @@ static void tcp_send_seg(TcpSocket *s, uint8_t flags,
     h->ack       = (flags & TCP_ACK) ? net_htonl(s->rcv_nxt) : 0;
     h->data_off  = (TCP_HDR_LEN / 4) << 4;
     h->flags     = flags;
-    h->window    = net_htons((uint16_t)(TCP_RX_BUF_SIZE - 1));
+    h->window    = net_htons(rbuf_free(s->rx_head, s->rx_tail,
+                                       TCP_RX_BUF_SIZE));
     h->checksum  = 0;
     h->urgent    = 0;
 
@@ -159,6 +166,36 @@ static TcpSocket *alloc_sock(void)
 }
 
 static int sock_idx(TcpSocket *s) { return (int)(s - g_socks); }
+
+/* -------------------------------------------------------------------------
+ * Queue inbound stream data.
+ *
+ * Only in-order bytes are accepted: a leading overlap (retransmit of bytes
+ * we already have) is trimmed off, a segment ahead of rcv_nxt is dropped
+ * whole, and a full ring takes only what fits.  rcv_nxt advances by bytes
+ * actually queued, so the ACK sent here covers only delivered data — a
+ * full ring drop-and-NACKs the tail for the peer to retransmit.
+ * ------------------------------------------------------------------------- */
+static void tcp_rx_data(TcpSocket *s, uint32_t seq,
+                        const uint8_t *data, uint16_t data_len)
+{
+    int32_t ahead = (int32_t)(seq - s->rcv_nxt);
+    if (ahead < 0) {
+        uint32_t skip = (uint32_t)-ahead;
+        if (skip >= data_len) {                 /* pure duplicate */
+            tcp_send_seg(s, TCP_ACK, 0, 0);
+            return;
+        }
+        data     += skip;
+        data_len -= (uint16_t)skip;
+    } else if (ahead > 0) {                     /* gap — keep nothing */
+        tcp_send_seg(s, TCP_ACK, 0, 0);
+        return;
+    }
+    s->rcv_nxt += rbuf_put(s->rx_buf, &s->rx_tail, &s->rx_head,
+                           TCP_RX_BUF_SIZE, data, data_len);
+    tcp_send_seg(s, TCP_ACK, 0, 0);
+}
 
 /* -------------------------------------------------------------------------
  * RX handler
@@ -242,14 +279,11 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
 
     case TCP_ESTABLISHED:
         if (flags & TCP_RST) { s->state = TCP_CLOSED; break; }
-        /* Queue received data */
-        if (data_len > 0) {
-            rbuf_put(s->rx_buf, &s->rx_tail, &s->rx_head,
-                     TCP_RX_BUF_SIZE, data, data_len);
-            s->rcv_nxt += data_len;
-            tcp_send_seg(s, TCP_ACK, 0, 0);
-        }
-        if (flags & TCP_FIN) {
+        /* Queue received data; the FIN only counts once every byte
+         * before it has actually been delivered to the ring. */
+        if (data_len > 0)
+            tcp_rx_data(s, seq, data, data_len);
+        if ((flags & TCP_FIN) && seq + data_len == s->rcv_nxt) {
             s->rcv_nxt++;
             s->state = TCP_CLOSE_WAIT;
             tcp_send_seg(s, TCP_ACK, 0, 0);
@@ -257,8 +291,10 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_FIN_WAIT_1:
+        if (data_len > 0)
+            tcp_rx_data(s, seq, data, data_len);
         if (flags & TCP_ACK) s->state = TCP_FIN_WAIT_2;
-        if (flags & TCP_FIN) {
+        if ((flags & TCP_FIN) && seq + data_len == s->rcv_nxt) {
             s->rcv_nxt++;
             tcp_send_seg(s, TCP_ACK, 0, 0);
             s->state      = TCP_TIME_WAIT;
@@ -267,12 +303,24 @@ void tcp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_FIN_WAIT_2:
-        if (flags & TCP_FIN) {
+        if (data_len > 0)
+            tcp_rx_data(s, seq, data, data_len);
+        if ((flags & TCP_FIN) && seq + data_len == s->rcv_nxt) {
             s->rcv_nxt++;
             tcp_send_seg(s, TCP_ACK, 0, 0);
             s->state      = TCP_TIME_WAIT;
             s->conn_timer = 0;
         }
+        break;
+
+    case TCP_CLOSE_WAIT:
+        /* The peer's stream already ended at its FIN — anything still
+         * arriving is a retransmit of pre-FIN data (e.g. recovering a
+         * tail we dropped while the ring was full).  Re-ACK it. */
+        if (data_len > 0)
+            tcp_rx_data(s, seq, data, data_len);
+        else if (flags & TCP_FIN)
+            tcp_send_seg(s, TCP_ACK, 0, 0);
         break;
 
     case TCP_LAST_ACK:
@@ -349,8 +397,16 @@ int tcp_recv(int sock, uint8_t *buf, uint16_t maxlen)
 {
     if (sock < 0 || sock >= TCP_MAX_SOCKETS) return 0;
     TcpSocket *s = &g_socks[sock];
-    return rbuf_get(s->rx_buf, &s->rx_head, &s->rx_tail,
-                    TCP_RX_BUF_SIZE, buf, maxlen);
+    uint16_t free_before = rbuf_free(s->rx_head, s->rx_tail, TCP_RX_BUF_SIZE);
+    int n = rbuf_get(s->rx_buf, &s->rx_head, &s->rx_tail,
+                     TCP_RX_BUF_SIZE, buf, maxlen);
+    /* Ring was full: the last ACK advertised a zero window and the peer is
+     * parked in its persist probe.  Push a window update now that draining
+     * reopened space instead of waiting out the probe backoff. */
+    if (n > 0 && free_before == 0 &&
+        s->state != TCP_CLOSED && s->state != TCP_LISTEN)
+        tcp_send_seg(s, TCP_ACK, 0, 0);
+    return n;
 }
 
 void tcp_close(int sock)
