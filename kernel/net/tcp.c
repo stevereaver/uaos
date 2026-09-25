@@ -407,6 +407,7 @@ int tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port)
     s->local_port  = local_port ? local_port : (uint16_t)(49152 + sock_idx(s));
     s->remote_ip   = dst_ip;
     s->remote_port = dst_port;
+    s->accepted    = 1;   /* outbound socket — never a pending accept      */
     s->snd_nxt     = g_isn_counter;
     s->snd_una     = g_isn_counter;
     g_isn_counter += 0x10000;
@@ -427,12 +428,17 @@ int tcp_listen(uint16_t local_port)
 
 int tcp_accept(int listen_sock)
 {
-    (void)listen_sock;
-    /* Find the first SYN_RECEIVED or ESTABLISHED socket not in LISTEN */
+    if (listen_sock < 0 || listen_sock >= TCP_MAX_SOCKETS) return -1;
+    if (g_socks[listen_sock].state != TCP_LISTEN) return -1;
+    /* Return the first connection that completed its handshake and has
+     * not been claimed yet.  Without the accepted mark an active session
+     * socket — also ESTABLISHED on this port — would be returned again. */
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
-        if (g_socks[i].state == TCP_ESTABLISHED &&
-            g_socks[i].local_port == g_socks[listen_sock].local_port)
+        if (g_socks[i].state == TCP_ESTABLISHED && !g_socks[i].accepted &&
+            g_socks[i].local_port == g_socks[listen_sock].local_port) {
+            g_socks[i].accepted = 1;
             return i;
+        }
     }
     return -1;
 }
@@ -495,6 +501,12 @@ void tcp_close(int sock)
     } else {
         s->state = TCP_CLOSED;
     }
+}
+
+void tcp_abort(int sock)
+{
+    if (sock < 0 || sock >= TCP_MAX_SOCKETS) return;
+    g_socks[sock].state = TCP_CLOSED;
 }
 
 TcpState tcp_state(int sock)

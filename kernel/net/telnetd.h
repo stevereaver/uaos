@@ -17,6 +17,11 @@
  * or daemon already running).  The daemon runs as its own native task. */
 int Telnetd_Start(uint16_t port);
 
+/* Ask the daemon to stop: it closes the listener, drops any active
+ * session, and exits its task.  Returns once the task has wound down.
+ * No-op if the daemon is not running. */
+void Telnetd_Stop(void);
+
 /* Report whether the daemon task is currently running. */
 int Telnetd_IsRunning(void);
 

@@ -103,10 +103,16 @@ typedef struct NativeCmdCtx {
     /* For endcli: close the current shell window. */
     void      (*close_shell)(void *shell_extra);
 
-    /* For why: get the last command return code. Returns 0 if unavailable. */
+    /* For rx: get the return code of the command just dispatched in this
+     * shell.  Returns 0 if unavailable. */
     int       (*get_last_rc)(void *shell_extra);
 
-    /* For why: set the last command return code. */
+    /* For why: get the return code of the previously completed command.
+     * last_rc is already cleared for the in-flight command when handlers
+     * run, so WHY reads this snapshot instead. */
+    int       (*get_prev_rc)(void *shell_extra);
+
+    /* For commands: set the last command return code. */
     void      (*set_rc)(void *shell_extra, int rc);
 
     /* For failat: get/set the failure threshold (default 10). */

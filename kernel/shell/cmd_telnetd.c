@@ -1,45 +1,8 @@
-/* cmd_telnetd.c — C:telnetd — start the remote shell service */
+/* cmd_telnetd.c — C:telnetd — start/stop the remote shell service */
 
 #include "cmd_internal.h"
 #include "../net/telnetd.h"
 #include "../net/stack.h"
-
-static int ci_prefix(const char *s, const char *kw)
-{
-    while (*kw) {
-        char a = *s, b = *kw;
-        if (a >= 'A' && a <= 'Z') a += 32;
-        if (b >= 'A' && b <= 'Z') b += 32;
-        if (a != b) return 0;
-        s++; kw++;
-    }
-    return 1;
-}
-
-static int parse_port(const char *args, uint16_t *out)
-{
-    *out = TELNETD_DEFAULT_PORT;
-    if (!args || !*args) return 1;
-
-    /* Accept: PORT=2323 / PORT 2323 / 2323 (case-insensitive keyword) */
-    const char *p = args;
-    while (*p == ' ' || *p == '\t') p++;
-    if (ci_prefix(p, "PORT")) {
-        p += 4;
-        while (*p == ' ' || *p == '\t' || *p == '=') p++;
-    }
-    if (*p < '0' || *p > '9') return 0;
-
-    unsigned v = 0;
-    while (*p >= '0' && *p <= '9') {
-        v = v * 10 + (unsigned)(*p - '0');
-        if (v > 65535) return 0;
-        p++;
-    }
-    if (v == 0) return 0;
-    *out = (uint16_t)v;
-    return 1;
-}
 
 static void set_rc(NativeCmdCtx *ctx, int rc)
 {
@@ -48,12 +11,37 @@ static void set_rc(NativeCmdCtx *ctx, int rc)
 
 void Cmd_Telnetd(NativeCmdCtx *ctx, const char *args)
 {
-    uint16_t port;
-    if (!parse_port(args, &port)) {
-        PRINT("telnetd: bad arguments — usage: telnetd [PORT=n]");
-        set_rc(ctx, 20);
+    (void)args;  /* parsed via ctx->template ("PORT/K/N,STOP/S") */
+
+    /* STOP is handled first so it still works while the stack is down. */
+    if (ctx->template &&
+        CmdTemplate_GetSwitch(ctx->template, "STOP")) {
+        if (!Telnetd_IsRunning()) {
+            PRINT("telnetd: not running");
+            set_rc(ctx, 10);
+            return;
+        }
+        /* Print before stopping: on a remote session the daemon teardown
+         * kills our own socket, so a message printed after would never
+         * reach the client. */
+        PRINT("telnetd: stopping");
+        Telnetd_Stop();
         return;
     }
+
+    int port = TELNETD_DEFAULT_PORT;
+    if (ctx->template &&
+        CmdTemplate_GetString(ctx->template, "PORT")) {
+        int v;
+        if (!CmdTemplate_GetInt(ctx->template, "PORT", &v) ||
+            v <= 0 || v > 65535) {
+            PRINT("telnetd: bad arguments — usage: telnetd [PORT=n] [STOP]");
+            set_rc(ctx, 20);
+            return;
+        }
+        port = v;
+    }
+
     if (!net_stack_is_up()) {
         PRINT("telnetd: network stack is down (run net-start first)");
         set_rc(ctx, 20);
@@ -64,16 +52,16 @@ void Cmd_Telnetd(NativeCmdCtx *ctx, const char *args)
         set_rc(ctx, 10);
         return;
     }
-    if (!Telnetd_Start(port)) {
+    if (!Telnetd_Start((uint16_t)port)) {
         PRINT("telnetd: failed to start (listener unavailable)");
         set_rc(ctx, 20);
         return;
     }
-    char msg[48];
+    char msg[64];
     cmd_scopy(msg, "telnetd: listening on port ", sizeof(msg));
     char num[8];
-    cmd_uint_to_dec(port, num, sizeof(num));
+    cmd_uint_to_dec((uint32_t)port, num, sizeof(num));
     cmd_scat(msg, num, sizeof(msg));
-    cmd_scat(msg, " — no login required", sizeof(msg));
+    cmd_scat(msg, " - no login required", sizeof(msg));
     PRINT(msg);
 }

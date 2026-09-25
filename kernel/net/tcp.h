@@ -93,6 +93,7 @@ typedef struct {
     uint16_t  retx_timer;  /* ticks until next retransmit (counts down)      */
     uint8_t   retx_count;  /* number of retransmits already attempted        */
     uint8_t   fin_pending; /* tcp_close deferred while data is unacked       */
+    uint8_t   accepted;    /* claimed by tcp_accept — never handed out twice */
     uint16_t  conn_timer;  /* general connection timer (TIME_WAIT, SYN wait) */
 } TcpSocket;
 
@@ -118,6 +119,11 @@ int  tcp_recv(int sock, uint8_t *buf, uint16_t maxlen);
 
 /* Close a TCP socket (sends FIN). */
 void tcp_close(int sock);
+
+/* Abort a TCP socket without transmitting anything.  For teardown after
+ * the stack has been shut down, where a FIN could never be answered and
+ * tcp_tick no longer runs to retire the closing socket. */
+void tcp_abort(int sock);
 
 /* Query socket state */
 TcpState tcp_state(int sock);

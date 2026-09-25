@@ -9,8 +9,9 @@
  *                  consumes the shell key queue the daemon feeds.
  *
  * Only one session is served at a time: remote shell slots are scarce
- * (MAX_REMOTE_SHELLS) and the TCP layer allows 8 sockets.  Extra
- * connections are rejected with a polite banner until a slot frees.
+ * (MAX_REMOTE_SHELLS) and the TCP layer allows 8 sockets.  Connections
+ * that arrive while a session is live — or while no shell slot is free —
+ * are answered with a busy banner and closed, never left silent.
  *
  * Telnet protocol
  * ---------------
@@ -63,29 +64,45 @@ enum {
     NVT_CSI,            /* ESC [ seen — expect final byte */
 };
 
-static volatile int g_running = 0;
+static volatile int g_running = 0;   /* daemon task is alive */
+static volatile int g_stop    = 0;   /* stop requested via Telnetd_Stop() */
 
-static void send_neg(int sock, uint8_t cmd, uint8_t opt)
+static int send_buf(int sock, const uint8_t *b, int len)
 {
-    uint8_t b[3] = { TN_IAC, cmd, opt };
+    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
     /* tcp_send allows only one in-flight segment per socket and returns
-     * 0 while busy — poll briefly so back-to-back negotiation bytes
-     * (e.g. the greeting) are not silently dropped. */
-    for (int i = 0; i < 400; i++) {
-        if (tcp_send(sock, b, 3) > 0) return;
+     * 0 while busy — keep retrying so negotiation bytes are not dropped,
+     * but bound the wait (~250 ms) so a dead peer cannot wedge us. */
+    uint64_t deadline = g_pit_ticks + 25;
+    for (;;) {
+        if (tcp_send(sock, b, (uint16_t)len) > 0) return 1;
         TcpState t = tcp_state(sock);
-        if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) return;
+        if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) return 0;
+        if (g_pit_ticks >= deadline) return 0;
         net_stack_poll();
     }
 }
 
+static void send_neg(int sock, uint8_t cmd, uint8_t opt)
+{
+    uint8_t b[3] = { TN_IAC, cmd, opt };
+    send_buf(sock, b, 3);
+}
+
 /* One-shot initial negotiation — ask the client to let us echo and to
- * suppress go-ahead (character-at-a-time mode). */
+ * suppress go-ahead (character-at-a-time mode).  All nine bytes go out
+ * in a single segment: sent one WILL/DO at a time, the first send could
+ * still be in flight when the next arrives and tcp_send would drop it —
+ * a client that sees WILL ECHO but not WILL SGA switches off local echo
+ * yet stays in line mode, so typed keys stay invisible until Enter. */
 static void send_greeting_neg(int sock)
 {
-    send_neg(sock, TN_WILL, TN_OPT_ECHO);
-    send_neg(sock, TN_WILL, TN_OPT_SGA);
-    send_neg(sock, TN_DO,   TN_OPT_SGA);
+    static const uint8_t neg[] = {
+        TN_IAC, TN_WILL, TN_OPT_ECHO,
+        TN_IAC, TN_WILL, TN_OPT_SGA,
+        TN_IAC, TN_DO,   TN_OPT_SGA
+    };
+    send_buf(sock, neg, (int)sizeof(neg));
 }
 
 /* Feed a data byte through the NVT filter into the shell.
@@ -165,8 +182,11 @@ static int nvt_filter(void *sess, uint8_t *st, uint8_t c, int sock)
 }
 
 /* Session pump: bridge one accepted socket to a remote shell session.
- * Runs until the peer disconnects, the shell ENDCLIs, or the socket dies. */
-static void pump_session(int sock)
+ * Runs until the peer disconnects, the shell ENDCLIs, or the socket dies.
+ * While a session is live the daemon never loops back to tcp_accept(), so
+ * a second client would complete its handshake yet see nothing at all —
+ * drain the listener here and turn extras away with a busy banner. */
+static void pump_session(int lsock, int sock)
 {
     void *sess = ShellWin_RemoteOpen(sock);
     if (!sess) {
@@ -182,10 +202,25 @@ static void pump_session(int sock)
     uint8_t buf[256];
 
     for (;;) {
+        /* Daemon asked to stop, or the net stack was shut down (netstop).
+         * net_stack_shutdown() leaves the socket table untouched, so the
+         * socket state alone cannot tell us the stack is gone. */
+        if (g_stop || !net_stack_is_up())
+            break;
+
         /* Socket gone (peer closed / RST) */
         TcpState t = tcp_state(sock);
         if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT)
             break;
+
+        /* One session at a time — refuse extra connections politely. */
+        int extra = tcp_accept(lsock);
+        if (extra >= 0) {
+            static const char busy[] =
+                "\r\nUAOS: another telnet session is active, try later\r\n";
+            send_buf(extra, (const uint8_t *)busy, (int)sizeof(busy) - 1);
+            tcp_close(extra);
+        }
 
         int n = tcp_recv(sock, buf, sizeof(buf));
         /* Half-close: peer sent FIN and RX buffer is drained */
@@ -210,13 +245,17 @@ static void pump_session(int sock)
         Task_Yield();
     }
 
-    /* Notify the shell side and drop the connection. */
+    /* Notify the shell side and drop the connection.  When the stack is
+     * already down a FIN could never be answered and tcp_tick no longer
+     * runs to retire the socket — abort instead so the slot is freed. */
     ShellWin_RemoteKill(sess);
-    {
+    if (net_stack_is_up()) {
         static const char bye[] = "\r\n[session closed]\r\n";
         tcp_send(sock, (const uint8_t *)bye, (uint16_t)sizeof(bye) - 1);
+        tcp_close(sock);
+    } else {
+        tcp_abort(sock);
     }
-    tcp_close(sock);
 }
 
 static void telnetd_task(void *arg)
@@ -232,16 +271,20 @@ static void telnetd_task(void *arg)
     kprintdec(port);
     kprint("\n");
 
-    while (g_running) {
+    /* Run until STOP is requested or the stack goes down; the latter
+     * lets a fresh telnetd start cleanly after the next netstart. */
+    while (!g_stop && net_stack_is_up()) {
         int csock = tcp_accept(lsock);
         if (csock >= 0) {
             send_greeting_neg(csock);
-            pump_session(csock);
+            pump_session(lsock, csock);
         }
         net_stack_poll();
         Task_Yield();
     }
     tcp_close(lsock);
+    g_running = 0;
+    kprint("telnetd: stopped\n");
     Task_Exit();
 }
 
@@ -250,10 +293,31 @@ int Telnetd_Start(uint16_t port)
     if (g_running) return 0;
     if (port == 0) port = TELNETD_DEFAULT_PORT;
     if (!net_stack_is_up()) return 0;
+    /* Set the flags before spawning: if the new task runs first and
+     * tcp_listen fails it clears g_running itself. */
+    g_stop    = 0;
     g_running = 1;
-    Task_CreateNative("telnetd", -128, telnetd_task,
-                      (void *)(uintptr_t)port);
+    if (!Task_CreateNative("telnetd", -128, telnetd_task,
+                           (void *)(uintptr_t)port)) {
+        g_running = 0;
+        return 0;
+    }
     return 1;
+}
+
+void Telnetd_Stop(void)
+{
+    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
+    if (!g_running) return;
+    g_stop = 1;
+    /* Wait for the daemon task to notice g_stop, close its sockets and
+     * clear g_running.  Task_Yield() does not reschedule (a bare pause)
+     * and Wait() has no timeout, so poll on the PIT tick with a ~1 s
+     * deadline — the timer ISR preempts us and lets the daemon run.
+     * hlt keeps the CPU idle between checks. */
+    uint64_t deadline = g_pit_ticks + 100;
+    while (g_running && g_pit_ticks < deadline)
+        __asm__ volatile ("sti; hlt" ::: "memory");
 }
 
 int Telnetd_IsRunning(void)

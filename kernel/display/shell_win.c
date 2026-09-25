@@ -155,6 +155,7 @@ struct ShellInstance {
 
     /* Last command return code (set by WHY-compatible commands) */
     int          last_rc;
+    int          prev_rc;
 
     /* FAILAT threshold — minimum return code treated as failure (default 10) */
     int          failat_threshold;
@@ -896,7 +897,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  mount <dev> [from] mount a handler device");
     inst_print(s, "  execute <script>   run a script file");
     inst_print(s, "  loadwb             launch Workbench desktop");
-    inst_print(s, "  telnetd [PORT=n]   start telnet debug shell service");
+    inst_print(s, "  telnetd [PORT=n|STOP]  start/stop telnet debug shell service");
     inst_print(s, "  ps                 list running tasks");
     inst_print(s, "");
     inst_print(s, "Script flow control:");
@@ -2161,11 +2162,11 @@ static int script_eval_cond(ShellInstance *s, const char *cond)
 
     /* WARN / ERROR / FAIL — check last command return code */
     if (script_kw_match(cond, "warn"))
-        return s->last_rc >= 5;
+        return s->prev_rc >= 5;
     if (script_kw_match(cond, "error"))
-        return s->last_rc >= 10;
+        return s->prev_rc >= 10;
     if (script_kw_match(cond, "fail"))
-        return s->last_rc >= 20;
+        return s->prev_rc >= 20;
 
     /* Bare word: true if non-empty */
     return *cond ? 1 : 0;
@@ -3721,6 +3722,12 @@ static int shell_get_last_rc(void *shell_extra)
     return s->last_rc;
 }
 
+static int shell_get_prev_rc(void *shell_extra)
+{
+    ShellInstance *s = (ShellInstance *)shell_extra;
+    return s->prev_rc;
+}
+
 /* Set last command return code */
 static void shell_set_rc(void *shell_extra, int rc)
 {
@@ -3844,6 +3851,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.set_prompt     = shell_set_prompt;
     ctx.close_shell    = shell_close_shell;
     ctx.get_last_rc    = shell_get_last_rc;
+    ctx.get_prev_rc    = shell_get_prev_rc;
     ctx.set_rc         = shell_set_rc;
     ctx.get_failat     = shell_get_failat;
     ctx.set_failat     = shell_set_failat;
@@ -4173,6 +4181,14 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
 static void run_cmd(ShellInstance *s, const char *line)
 {
     const char *lp = script_skip_sp(line);
+
+    /* Each command starts with a clean return code: one that does not
+     * explicitly set rc counts as success.  The previous command's code
+     * is kept in prev_rc so WHY and IF WARN/ERROR/FAIL can still inspect
+     * it.  Without this, a stale nonzero rc makes every later command
+     * re-trigger the FAILAT warning. */
+    s->prev_rc = s->last_rc;
+    s->last_rc = 0;
 
     /* .key is a script-only directive; ignore it at the prompt. */
     if (script_key_line(lp)) {
@@ -5602,6 +5618,7 @@ static ShellInstance *open_shell(int stagger)
     s->ask_result_ready = 0;
     s->custom_prompt[0] = '\0';
     s->last_rc = 0;
+    s->prev_rc = 0;
     s->failat_threshold = 10;
     s->quit_flag = 0;
     s->remote = 0;
@@ -5681,6 +5698,7 @@ static ShellInstance *open_remote_shell(int sock)
         s->ask_result_ready = 0;
         s->custom_prompt[0] = '\0';
         s->last_rc = 0;
+        s->prev_rc = 0;
         s->failat_threshold = 10;
         s->quit_flag = 0;
         scopy(s->cwd, "RAM:", 64);

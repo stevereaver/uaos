@@ -32,6 +32,19 @@ Commands in UAOS can be:
 > [!NOTE]
 > As of Phase 7, the following DOS commands have been migrated from kernel-resident native C: stubs to on-disk x86-64 ELF64 userspace binaries: `echo`, `type`, `dir`, `list`, `makedir`, `delete`, `rename`, `copy`, `protect`, `attr`, `grep`, `sort`, `join`, `search`, `filenote`, `more`. These binaries live in `system/userspace/` and use the shared helpers in `system/libuaos/uaos_cmd.h`, `uaos_template.h`, and `uaos_syscall.h`. New VFS syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C) were added to support them. The native `dir` backend uses a static 256-entry `VfsDirEnt` workspace rather than an approximately 18KB command-stack array, avoiding kernel task stack corruption during enumeration. `avail` was likewise migrated off its hardcoded native stub to a userspace binary that queries real memory statistics via `SYSCALL_MEMINFO` (0x2D); the kernel `C:mem` command now uses the same `Mem_GetInfo()` helper.
 
+### Return Codes (`last_rc` / `prev_rc`)
+
+Each command dispatched through `run_cmd()` starts with `last_rc = 0` —
+a command that does not call `set_rc` counts as success (AmigaDOS
+convention).  Before the reset, the previous value is copied into
+`prev_rc`, which is what `WHY` (`ctx->get_prev_rc`) and the `IF
+WARN`/`ERROR`/`FAIL` script conditions inspect.  `check_failat()`
+therefore only prints `FAILAT: return code N >= threshold M` when the
+command that just ran actually failed — previously a stale nonzero
+`last_rc` survived across successful commands and the warning repeated
+after every command until the shell was closed.  `rx` still reads the
+just-dispatched command's rc through `get_last_rc` for propagation.
+
 ## Command Reference
 
 The following native C: commands are still implemented in `kernel/shell/`:

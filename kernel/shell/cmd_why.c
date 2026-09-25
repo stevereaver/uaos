@@ -6,7 +6,9 @@ void Cmd_Why(NativeCmdCtx *ctx, const char *args)
 {
     (void)args;
     int rc = 0;
-    if (ctx->get_last_rc) {
+    if (ctx->get_prev_rc) {
+        rc = ctx->get_prev_rc(ctx->shell_extra);
+    } else if (ctx->get_last_rc) {
         rc = ctx->get_last_rc(ctx->shell_extra);
     }
 

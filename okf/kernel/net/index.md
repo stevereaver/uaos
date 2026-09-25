@@ -53,7 +53,12 @@ Implements echo request/reply (ping). The `ping` shell command uses this layer a
 Full TCP state machine including:
 
 - `CLOSED`, `LISTEN`, `SYN_SENT`, `SYN_RECEIVED`, `ESTABLISHED`, `FIN_WAIT_1`, `FIN_WAIT_2`, `CLOSING`, `TIME_WAIT`, `CLOSE_WAIT`, `LAST_ACK`.
-- Active `connect()`, passive `listen()`/`accept()`.
+- Active `connect()`, passive `listen()`/`accept()`.  `tcp_accept`
+  returns only unclaimed `ESTABLISHED` sockets on the listen port and
+  marks each with `accepted` on the way out — without the mark, a live
+  session socket (also `ESTABLISHED` on that port) would be handed out
+  again to the next caller.  Outbound `tcp_connect` sockets are born
+  `accepted` so they can never be mistaken for pending accepts.
 - Send/receive with ACK handling and ring buffers.
 - Retransmit timer with exponential backoff (10 Hz tick).
 - Connect timeout, half-open cleanup, and `TIME_WAIT` expiry.
@@ -80,7 +85,7 @@ Full TCP state machine including:
   in flight** per socket — `retx_buf` holds a single segment, so a second
   send while the first is unacked would leave a hole retransmit could
   never fill.  It returns 0 when busy or when the window is closed, and
-  callers (`remote_send`, `bsd_send`, telnetd `send_neg`) poll the stack
+  callers (`remote_send`, `bsd_send`, telnetd `send_buf`) poll the stack
   and retry.  `tcp_close` defers its FIN (`fin_pending`) while data is
   unacked so the FIN cannot clobber the outstanding segment's retx
   state; `tcp_tick` releases it once `snd_una` catches up.  `snd_una`
@@ -143,7 +148,11 @@ no login.
 Telnet protocol handling is deliberately small:
 
 - On connect the daemon sends `WILL ECHO`, `WILL SGA`, `DO SGA`
-  (server-echo, character-at-a-time mode).
+  (server-echo, character-at-a-time mode) as **one** 9-byte segment.
+  Sending each option separately risked tearing: `tcp_send` accepts only
+  one in-flight segment, so `WILL SGA` could be dropped when `WILL ECHO`
+  was still unacked — leaving the client in line mode with local echo
+  off and typed keys invisible until Enter.
 - An NVT state machine in the pump strips `IAC` command sequences,
   consumes sub-negotiations (`SB ... SE`), refuses `DO`/`WILL` for
   options it did not offer, maps `IAC IAC` to a literal `0xFF`, and
@@ -154,16 +163,41 @@ Telnet protocol handling is deliberately small:
 Sessions are pumped cooperatively: the task calls `tcp_recv()`,
 `net_stack_poll()`, and `Task_Yield()` in a loop, exits when the socket
 leaves `ESTABLISHED`/`CLOSE_WAIT`, when the peer half-closes with a
-drained RX buffer, or when the shell session ends (`endcli`).  On exit
-it sends a closing banner and calls `tcp_close()`.
+drained RX buffer, when the shell session ends (`endcli`), when the
+daemon is stopping, or when the net stack goes down.  On exit it sends
+a closing banner and calls `tcp_close()` — unless the stack is already
+down, in which case it calls `tcp_abort()` instead (a FIN could never
+be answered, and `tcp_tick` no longer runs to retire the socket, so a
+graceful close would leak the slot in `FIN_WAIT_1`).
+
+Lifecycle (UAOS-54): `telnetd STOP` maps to `Telnetd_Stop()`, which sets
+a `g_stop` flag the daemon checks every loop iteration — the accept loop
+and any in-progress session pump both unwind, the listener is
+`tcp_close()`d, `g_running` clears, and the task exits.  `Telnetd_Stop`
+waits for `g_running` to clear by polling on the 100 Hz PIT tick with a
+~1 s deadline (Task_Yield is a bare `pause` and Wait() has no timeout);
+the wait relies on timer preemption, so in contexts where the scheduler
+cannot run — Startup-Sequence executes in kernel-main context before
+`Task_StartFirst()`, and `&` background jobs run under the idle task's
+`Forbid()` — it simply times out and the daemon exits on its first
+timeslice.  The daemon also exits on its own when the net stack goes
+down: `net_stack_shutdown()` does not tear down TCP sockets, so the task
+watches `net_stack_is_up()` rather than the listener's `tcp_state()`.
+After `netstart` a fresh `telnetd` binds cleanly.  `Telnetd_Start()`
+rolls `g_running` back if `Task_CreateNative()` fails so a failed spawn
+cannot leave the service permanently "running".
+
+`tcp_abort(sock)` (tcp.c) is the non-transmitting counterpart to
+`tcp_close()`: it forces the socket to `TCP_CLOSED` unconditionally,
+for teardown when the peer can no longer be reached.
 
 Known issues (live audit, 2026-09-25 — tracked under UAOS-47): only one
-session is served at a time despite `MAX_REMOTE_SHELLS` = 4; extra
-connections TCP-connect but receive no data (the "busy" banner is
-unreachable); CR LF produces two newlines; non-arrow CSI sequences leak
+session is served at a time despite `MAX_REMOTE_SHELLS` = 4 — extra
+connections now get a busy banner and a clean close from the drain in
+`pump_session` (previously they TCP-connected to a silent socket);
+CR LF produces two newlines; non-arrow CSI sequences leak
 literal bytes; raw Ctrl-C collides with `SHELL_VKEY_UP`; output is not
-IAC-escaped; `netstop` wedges the daemon permanently; no dead-peer/idle
-timeout.  The TCP-layer gaps that hit telnetd directly were fixed:
+IAC-escaped; no dead-peer/idle timeout.  The TCP-layer gaps that hit telnetd directly were fixed:
 RX overflow dropped-but-ACKed in UAOS-56, and peer-window enforcement,
 single-segment-in-flight send, `snd_una` validation, and RST generation
 in UAOS-55.
