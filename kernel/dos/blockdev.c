@@ -115,12 +115,24 @@ BlockDev *BlockDev_GetList(void)
  * format/makedir) collides and corrupts the single in-flight transaction.
  * cli/sti is a sufficient global lock on the single x86-64 CPU this kernel
  * runs on. */
-static inline void bd_cli(void) { __asm__ volatile("cli"); }
-static inline void bd_sti(void) { __asm__ volatile("sti"); }
+/* Save IF before masking; restore it afterwards.  An unconditional sti
+ * would enable interrupts for early-boot callers that run before
+ * IDT_Init() (e.g. the floppy block-device test) — an IRQ landing in
+ * that window faults against a null IDT and triple-faults. */
+static inline uint64_t bd_cli(void)
+{
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+static inline void bd_sti(uint64_t flags)
+{
+    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+}
 
 int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors)
 {
-    bd_cli();
+    uint64_t bd_flags = bd_cli();
     int rc = -1;
 
     if (!dev || !dev->ops || !dev->ops->read) {
@@ -131,13 +143,13 @@ int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sec
         rc = dev->ops->read(dev, sector + dev->part_offset, buffer, num_sectors);
     }
 
-    bd_sti();
+    bd_sti(bd_flags);
     return rc;
 }
 
 int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t num_sectors)
 {
-    bd_cli();
+    uint64_t bd_flags = bd_cli();
     int rc = -1;
 
     if (!dev) {
@@ -155,7 +167,7 @@ int BlockDev_Write(BlockDev *dev, uint64_t sector, const void *buffer, uint32_t 
         rc = dev->ops->write(dev, sector + dev->part_offset, buffer, num_sectors);
     }
 
-    bd_sti();
+    bd_sti(bd_flags);
     return rc;
 }
 

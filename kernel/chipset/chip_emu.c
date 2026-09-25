@@ -12,6 +12,7 @@
  */
 
 #include "chipset/chip_emu.h"
+#include "chipset/chiptrace.h"
 #include "chipset/floppy.h"
 #include "display/framebuffer.h"
 #include "uaos_emu.h"
@@ -852,6 +853,8 @@ void chip_emu_serial_poll(void)
 
 void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
 {
+    Chiptrace_Hit(offset, value, width_bytes, 1);
+
     int cia_id, cia_reg = cia_offset_to_reg(offset, &cia_id);
     if (cia_reg >= 0) {
         cia_write(cia_state(cia_id), cia_reg, value, width_bytes);
@@ -1057,7 +1060,7 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
     }
 }
 
-uint32_t chip_emu_read(uint32_t offset, int width_bytes)
+static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
 {
     int cia_id, cia_reg = cia_offset_to_reg(offset, &cia_id);
     if (cia_reg >= 0) {
@@ -1075,8 +1078,8 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
      * This is needed for long reads of COP1LC, BPLxPT, SPRxPT, etc. by the
      * M68k emulator and native code. */
     if (width_bytes >= 4) {
-        uint32_t hi = chip_emu_read(offset, 2);
-        uint32_t lo = chip_emu_read(offset + 2, 2);
+        uint32_t hi = chip_emu_read_impl(offset, 2);
+        uint32_t lo = chip_emu_read_impl(offset + 2, 2);
         return (hi << 16) | lo;
     }
 
@@ -1276,6 +1279,13 @@ uint32_t chip_emu_read(uint32_t offset, int width_bytes)
     }
 
     return (uint32_t)(value & 0xFFFFu);
+}
+
+uint32_t chip_emu_read(uint32_t offset, int width_bytes)
+{
+    uint32_t value = chip_emu_read_impl(offset, width_bytes);
+    Chiptrace_Hit(offset, value, width_bytes, 0);
+    return value;
 }
 
 /* =========================================================================

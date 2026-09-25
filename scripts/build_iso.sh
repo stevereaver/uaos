@@ -31,7 +31,7 @@ KERNEL_LD="${REPO_ROOT}/kernel/boot/uaos_kernel.ld"
 KERNEL_ELF="${BUILD_DIR}/uaos-kernel.elf"
 
 GCC_FLAGS="-ffreestanding -fno-stack-protector -fno-pie -fno-PIE \
-           -mno-red-zone -nostdlib -m64 -O2 -std=c11 \
+           -mno-red-zone -nostdlib -m64 -O2 -std=c11 -g \
            -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
            -Wall -Wextra \
            -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
@@ -164,10 +164,11 @@ ok "  Assembled: task_switch.asm"
 # library is not compiled into the kernel.
 for msrc in \
     "${MUSASHI_DIR}/m68kcpu.c" \
+    "${MUSASHI_DIR}/m68kdasm.c" \
     "${MUSASHI_DIR}/m68kops.c"
 do
     base="$(basename "${msrc}" .c)"
-    gcc ${GCC_FLAGS} -w \
+    gcc ${GCC_FLAGS} -w -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
         -DMUSASHI_CNF='"uaos_m68kconf.h"' \
         -I"${REPO_ROOT}/emulation" \
         -I"${MUSASHI_DIR}" \
@@ -296,6 +297,8 @@ ok "  Compiled:  uaos_emu_registry (auto-generated)"
 # Compile C kernel sources (freestanding — no libc)
 for src in \
     "${KERNEL_MAIN}" \
+    "${REPO_ROOT}/kernel/klog/uart.c" \
+    "${REPO_ROOT}/kernel/klog/klog.c" \
     "${REPO_ROOT}/kernel/display/framebuffer.c" \
     "${REPO_ROOT}/kernel/display/desktop.c" \
     "${REPO_ROOT}/kernel/display/icon_render.c" \
@@ -370,6 +373,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/kernel/chipset/chip_emu.c" \
+    "${REPO_ROOT}/kernel/chipset/chiptrace.c" \
     "${REPO_ROOT}/kernel/chipset/floppy.c" \
     "${REPO_ROOT}/kernel/audio/audio.c" \
     "${REPO_ROOT}/kernel/audio/pc_speaker.c" \
@@ -460,6 +464,12 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_rx.c" \
     "${REPO_ROOT}/kernel/shell/cmd_telnetd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_strace.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_klog.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_dmesg.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_irqstat.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_crash.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_memcheck.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_chiptrace.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prefs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
     "${REPO_ROOT}/kernel/shell/cmd_blanker.c" \
@@ -511,8 +521,81 @@ extern FILE2 *stderr;
 int vfprintf(FILE2 *f, const char *fmt, va_list ap) {
     (void)f; (void)fmt; (void)ap; return 0;
 }
+
+/* Minimal vsprintf core for Musashi's disassembler.
+ * Supports: %s %c %d %i %u %x %X %p %% and %-Ns / %0Nu widths. */
+static int _u2a(unsigned long v, char *out, int base, int upper) {
+    char tmp[32]; int n = 0, i = 0;
+    const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    if (!v) { out[0] = '0'; return 1; }
+    while (v) { tmp[n++] = dig[v % (unsigned)base]; v /= (unsigned)base; }
+    while (n) out[i++] = tmp[--n];
+    return i;
+}
+static int _vsfmt(char *buf, const char *fmt, va_list ap) {
+    char *o = buf;
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') { *o++ = *fmt; continue; }
+        fmt++;
+        int left = 0, width = 0, pad0 = 0;
+        if (*fmt == '-') { left = 1; fmt++; }
+        if (*fmt == '0' && !left) { pad0 = 1; fmt++; }
+        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+        if (*fmt == 'l') fmt++;              /* swallow %l* — we always use 32-bit */
+        if (*fmt == 'l') fmt++;
+        switch (*fmt) {
+        case 's': {
+            const char *s = va_arg(ap, const char *);
+            if (!s) s = "(null)";
+            int len = 0; while (s[len]) len++;
+            int pad = width > len ? width - len : 0;
+            if (!left) while (pad--) *o++ = ' ';
+            while (*s) *o++ = *s++;
+            if (left) while (pad--) *o++ = ' ';
+            break;
+        }
+        case 'c': *o++ = (char)va_arg(ap, int); break;
+        case 'd': case 'i': {
+            long v = va_arg(ap, int);
+            if (v < 0) { *o++ = '-'; v = -v; }
+            char tmp[32]; int len = _u2a((unsigned long)v, tmp, 10, 0);
+            while (width > len) { *o++ = pad0 ? '0' : ' '; width--; }
+            for (int i = 0; i < len; i++) *o++ = tmp[i];
+            break;
+        }
+        case 'u': {
+            unsigned long v = va_arg(ap, unsigned int);
+            char tmp[32]; int len = _u2a(v, tmp, 10, 0);
+            while (width > len) { *o++ = pad0 ? '0' : ' '; width--; }
+            for (int i = 0; i < len; i++) *o++ = tmp[i];
+            break;
+        }
+        case 'x': case 'X': {
+            unsigned long v = va_arg(ap, unsigned int);
+            char tmp[32]; int len = _u2a(v, tmp, 16, *fmt == 'X');
+            while (width > len) { *o++ = pad0 ? '0' : ' '; width--; }
+            for (int i = 0; i < len; i++) *o++ = tmp[i];
+            break;
+        }
+        case 'p': {
+            unsigned long v = (unsigned long)va_arg(ap, void *);
+            char tmp[32]; int len = _u2a(v, tmp, 16, 0);
+            *o++ = '0'; *o++ = 'x';
+            for (int i = 0; i < len; i++) *o++ = tmp[i];
+            break;
+        }
+        case '%': *o++ = '%'; break;
+        default:  *o++ = '%'; if (*fmt) *o++ = *fmt; break;
+        }
+    }
+    *o = '\0';
+    return (int)(o - buf);
+}
 int sprintf(char *buf, const char *fmt, ...) {
-    (void)buf; (void)fmt; return 0;
+    va_list ap; va_start(ap, fmt);
+    int n = _vsfmt(buf, fmt, ap);
+    va_end(ap);
+    return n;
 }
 int sscanf(const char *s, const char *fmt, ...) {
     (void)s; (void)fmt; return 0;
@@ -560,6 +643,34 @@ unsigned long strlen(const char *s) {
     while (*s++) n++;
     return n;
 }
+char *strcpy(char *d, const char *s) {
+    char *r = d;
+    while ((*d++ = *s++)) {}
+    return r;
+}
+char *strcat(char *d, const char *s) {
+    char *r = d;
+    while (*d) d++;
+    while ((*d++ = *s++)) {}
+    return r;
+}
+/* Simple insertion-sort qsort for Musashi's disassembler opcode table. */
+void qsort(void *base, unsigned long nmemb, unsigned long size,
+           int (*compar)(const void *, const void *)) {
+    unsigned char *b = (unsigned char *)base;
+    unsigned char tmp[64];
+    if (size > sizeof(tmp)) return;   /* disasm entries are small */
+    for (unsigned long i = 1; i < nmemb; i++) {
+        memcpy(tmp, b + i * size, size);
+        long j = (long)i - 1;
+        while (j >= 0 && compar(b + (unsigned long)j * size, tmp) > 0) {
+            memcpy(b + ((unsigned long)j + 1) * size,
+                   b + (unsigned long)j * size, size);
+            j--;
+        }
+        memcpy(b + ((unsigned long)j + 1) * size, tmp, size);
+    }
+}
 
 /* Serial UART output used by the kernel in place of fprintf */
 static inline void _uart_putc(char c) {
@@ -603,6 +714,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/idt_stubs.o" \
     "${BUILD_DIR}/obj/task_switch.o" \
     "${BUILD_DIR}/obj/uaos_kernel_main.o" \
+    "${BUILD_DIR}/obj/uart.o" \
+    "${BUILD_DIR}/obj/klog.o" \
     "${BUILD_DIR}/obj/framebuffer.o" \
     "${BUILD_DIR}/obj/desktop.o" \
     "${BUILD_DIR}/obj/icon_render.o" \
@@ -617,6 +730,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/netinfo_win.o" \
     "${BUILD_DIR}/obj/user_window.o" \
     "${BUILD_DIR}/obj/m68kcpu.o" \
+    "${BUILD_DIR}/obj/m68kdasm.o" \
     "${BUILD_DIR}/obj/m68kops.o" \
     "${BUILD_DIR}/obj/uaos_m68k_glue.o" \
     "${BUILD_DIR}/obj/uaos_emu_registry.o" \
@@ -674,6 +788,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/chip_emu.o" \
+    "${BUILD_DIR}/obj/chiptrace.o" \
     "${BUILD_DIR}/obj/floppy.o" \
     "${BUILD_DIR}/obj/audio.o" \
     "${BUILD_DIR}/obj/pc_speaker.o" \
@@ -780,6 +895,12 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_rx.o" \
     "${BUILD_DIR}/obj/cmd_telnetd.o" \
     "${BUILD_DIR}/obj/cmd_strace.o" \
+    "${BUILD_DIR}/obj/cmd_klog.o" \
+    "${BUILD_DIR}/obj/cmd_dmesg.o" \
+    "${BUILD_DIR}/obj/cmd_irqstat.o" \
+    "${BUILD_DIR}/obj/cmd_crash.o" \
+    "${BUILD_DIR}/obj/cmd_memcheck.o" \
+    "${BUILD_DIR}/obj/cmd_chiptrace.o" \
     "${BUILD_DIR}/obj/cmd_prefs.o" \
     "${BUILD_DIR}/obj/cmd_exchange.o" \
     "${BUILD_DIR}/obj/cmd_blanker.o" \
@@ -842,6 +963,7 @@ for cmd in version mem libs clear reboot \
            getenv unset jobs \
            install diskchange addbuffers requestchoice requestfile changetaskpri status rx \
            telnetd strace print crossdos ed guide \
+           klog debug dmesg irqstat crash memcheck chiptrace \
            runback alias unalias path skip lab resload; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"
@@ -1072,7 +1194,7 @@ mkdir -p "${DEMOS_STAGING}"
 
 # List of demos to build (basename without extension). Each must have a
 # corresponding source file at system/Demos/<name>.s.
-M68K_DEMOS=(CopperBars AGATest HelloWorld)
+M68K_DEMOS=(CopperBars AGATest HelloWorld ChipPoke)
 
 VASM_DIR="${BUILD_DIR}/vasm"
 VASM_BIN="${VASM_DIR}/vasmm68k_mot"

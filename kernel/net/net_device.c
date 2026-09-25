@@ -20,25 +20,7 @@
 #include "net_device.h"
 #include "../drivers/virtio_net.h"
 #include "../drivers/e1000.h"
-
-/* -------------------------------------------------------------------------
- * Serial debug helpers (COM1 = 0x3F8) — mirrors the ones in e1000.c
- * ------------------------------------------------------------------------- */
-static inline void _nd_outb(uint16_t p, uint8_t v)
-{
-    __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p));
-}
-static inline uint8_t _nd_inb(uint16_t p)
-{
-    uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v;
-}
-static void _nd_putc(char c)
-{
-    while ((_nd_inb(0x3FD) & 0x20) == 0) {}
-    _nd_outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { while ((_nd_inb(0x3FD) & 0x20) == 0) {} _nd_outb(0x3F8, '\r'); }
-}
-static void _nd_puts(const char *s) { while (*s) _nd_putc(*s++); }
+#include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
  * Global registry
@@ -120,9 +102,9 @@ void netdev_shutdown(void)
 {
     if (!g_netdev) return;
 
-    _nd_puts("[NETDEV] shutting down ");
-    _nd_puts(g_netdev->name);
-    _nd_puts("...\n");
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "shutting down ");
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, g_netdev->name);
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "...\n");
 
     /* Mark as down first to prevent new operations */
     g_up = 0;
@@ -276,20 +258,20 @@ void netdev_register_e1000(void)
 void netdev_probe(void)
 {
     /* Try e1000 first. */
-    _nd_puts("[NETDEV] probing e1000...\n");
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "probing e1000...\n");
     netdev_register(&g_e1000_device);
     if (netdev_init()) {
-        _nd_puts("[NETDEV] e1000 selected\n");
+        klog_puts(KLOG_NETDEV, KLOG_DEBUG, "e1000 selected\n");
         return;
     }
 
     /* Fall back to VirtIO-Net — must call netdev_init() here too. */
-    _nd_puts("[NETDEV] e1000 not found, trying virtio-net...\n");
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "e1000 not found, trying virtio-net...\n");
     netdev_register(&g_virtio_net_device);
     if (netdev_init()) {
-        _nd_puts("[NETDEV] virtio-net selected\n");
+        klog_puts(KLOG_NETDEV, KLOG_DEBUG, "virtio-net selected\n");
         return;
     }
 
-    _nd_puts("[NETDEV] no network device found\n");
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "no network device found\n");
 }

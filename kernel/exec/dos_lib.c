@@ -21,8 +21,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "chipset/chip_emu.h"
+#include "chipset/chiptrace.h"
 #include "irq/rtc.h"
 #include "net/ntp.h"
+#include "klog/klog.h"
 
 extern volatile uint64_t g_pit_ticks;
 extern uint64_t g_m68k_cycles;
@@ -119,6 +121,16 @@ static uint32_t guest_read_be32(uint32_t addr)
 #define HEAP_LIST_SLOT_CHIP 0x0200u
 #define HEAP_LIST_SLOT_FAST 0x0204u
 
+/* memcheck (UAOS-69) constants — defined early so heap_free_fl_pool can
+ * poison freed blocks.  See the "memcheck" section below for details. */
+#define MC_GUARD_WORD 0xC0FFEE42u   /* guard signature (stored big-endian) */
+#define MC_FREE_SIG   0xFEEDFACEu   /* marks a poisoned free block         */
+#define MC_POISON     0xABu         /* fill byte for freed block payloads  */
+#define MC_ALLOC_FILL 0xDEu         /* fill byte for non-MEMF_CLEAR allocs */
+#define MC_MAX_RECS   192
+
+static int g_memcheck_on = 0;
+
 static int g_heap_ready = 0;
 static int g_fast_heap_ready = 0;
 
@@ -180,6 +192,11 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
                 guest_write_be32(rem + 4, next_bptr);
                 /* Link split block in place of cur */
                 guest_write_be32(prev_slot, rem >> 2);
+                /* The header must record the allocated span (need), not
+                 * the original free-block size — otherwise a later free
+                 * returns a block that overlaps the remainder still on
+                 * the free list (heap corruption found via memcheck). */
+                blk_size = need;
             } else {
                 /* Use whole block — unlink cur */
                 guest_write_be32(prev_slot, next_bptr);
@@ -213,9 +230,31 @@ static void heap_free_fl_pool(uint32_t addr, uint32_t list_slot)
     if (!(magic_size & HEAP_MAGIC)) return;   /* not a valid alloc header */
 
     uint32_t blk_size = magic_size & ~HEAP_MAGIC;
+    /* Sanity-check the size: a wild free landing mid-payload can see a
+     * fake "allocated" header (e.g. memcheck poison 0xABABABAB) — without
+     * a bound it would relink/poison a huge bogus block. */
+    if (blk_size < HEAP_HDR + 4u || blk_size > GUEST_RAM_SIZE ||
+        blk + blk_size > GUEST_RAM_SIZE) {
+        KLOG(KLOG_EXEC, KLOG_WARN,
+             "[heap] FreeMem(0x%x): implausible block size 0x%x — ignored\n",
+             (unsigned)addr, (unsigned)blk_size);
+        return;
+    }
     guest_write_be32(blk + 0, blk_size);                        /* clear magic */
     guest_write_be32(blk + 4, guest_read_be32(list_slot));     /* prepend     */
     guest_write_be32(list_slot, blk >> 2);
+
+    /* memcheck: sign + poison the freed payload so use-after-free writes
+     * corrupt MC_POISON and are caught by the next free-list scan.  The
+     * signature lets the scan distinguish poisoned blocks from blocks
+     * freed while memcheck was off.  Bounded to keep free cheap. */
+    if (g_memcheck_on && blk_size >= HEAP_HDR + 8u) {
+        guest_write_be32(blk + HEAP_HDR, MC_FREE_SIG);
+        uint32_t n = blk_size - HEAP_HDR - 4u;
+        if (n > 262144u) n = 262144u;
+        for (uint32_t i = 0; i < n && blk + HEAP_HDR + 4 + i < GUEST_RAM_SIZE; i++)
+            g_ram[blk + HEAP_HDR + 4 + i] = MC_POISON;
+    }
 }
 
 /* Allocate 'size' bytes from the chip free list. */
@@ -251,6 +290,277 @@ static void heap_free_fl(uint32_t addr)
         heap_free_fl_pool(addr, HEAP_LIST_SLOT_CHIP);
 }
 
+/* =========================================================================
+ * memcheck — Mungwall-style heap debugging (UAOS-69)
+ *
+ * When enabled, exec.library AllocMem adds a 4-byte guard word before and
+ * after the payload, poison-fills freed blocks, and records every live
+ * allocation (addr/size/allocating task) in a host-side table.
+ *
+ *   - FreeMem validates both guard words and reports the culprit task.
+ *   - Freeing an untracked address is reported (double-free / wild free).
+ *   - Memcheck_Scan() walks live allocations and both free lists,
+ *     reporting corrupted guard bands and modified free blocks.
+ * ========================================================================= */
+
+typedef struct {
+    uint32_t payload;   /* guest address returned to the caller */
+    uint32_t size;      /* requested payload size               */
+    uint32_t blk;       /* block base: guest addr of heap header */
+    char     task[20];  /* allocating task name                  */
+} MemchkRec;
+
+static MemchkRec g_mc[MC_MAX_RECS];
+
+static const char *mc_task_name(void)
+{
+    extern UaosTask *Task_Current(void);
+    UaosTask *t = Task_Current();
+    if (t && t->ln_Name) return t->ln_Name;
+    return "(boot/kernel)";
+}
+
+static void mc_record(uint32_t payload, uint32_t size, uint32_t blk)
+{
+    for (int i = 0; i < MC_MAX_RECS; i++) {
+        if (!g_mc[i].payload) {
+            const char *n = mc_task_name();
+            g_mc[i].payload = payload;
+            g_mc[i].size    = size;
+            g_mc[i].blk     = blk;
+            int j = 0;
+            while (n[j] && j < 19) { g_mc[i].task[j] = n[j]; j++; }
+            g_mc[i].task[j] = '\0';
+            return;
+        }
+    }
+    KLOG(KLOG_EXEC, KLOG_WARN, "[memchk] tracking table full — %u-byte alloc at 0x%x not tracked\n",
+         (unsigned)size, (unsigned)payload);
+}
+
+static MemchkRec *mc_find(uint32_t payload)
+{
+    for (int i = 0; i < MC_MAX_RECS; i++)
+        if (g_mc[i].payload == payload) return &g_mc[i];
+    return 0;
+}
+
+static int mc_check_guards(const MemchkRec *r, const char *what)
+{
+    int bad = 0;
+    if (guest_read_be32(r->payload - 4) != MC_GUARD_WORD) {
+        KLOG(KLOG_EXEC, KLOG_ERR,
+             "[memchk] %s block @0x%x (%u bytes, alloc by '%s'): FRONT guard corrupted\n",
+             what, (unsigned)r->payload, (unsigned)r->size, r->task);
+        bad = 1;
+    }
+    if (guest_read_be32(r->payload + r->size) != MC_GUARD_WORD) {
+        KLOG(KLOG_EXEC, KLOG_ERR,
+             "[memchk] %s block @0x%x (%u bytes, alloc by '%s'): TAIL guard corrupted\n",
+             what, (unsigned)r->payload, (unsigned)r->size, r->task);
+        bad = 1;
+    }
+    return bad;
+}
+
+static uint32_t mc_alloc(uint32_t size, uint32_t reqs)
+{
+    if (!g_memcheck_on) {
+        if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA))
+            return heap_alloc_fl_chip(size);
+        if (reqs & MEMF_FAST)
+            return heap_alloc_fl_fast(size);
+        uint32_t a = heap_alloc_fl_fast(size);
+        if (!a) a = heap_alloc_fl_chip(size);
+        return a;
+    }
+
+    uint32_t raw = 0;
+    if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA))
+        raw = heap_alloc_fl_chip(size + 8);
+    else if (reqs & MEMF_FAST)
+        raw = heap_alloc_fl_fast(size + 8);
+    else {
+        raw = heap_alloc_fl_fast(size + 8);
+        if (!raw) raw = heap_alloc_fl_chip(size + 8);
+    }
+    if (!raw) return 0;
+
+    /* The pool already zeroed the block; write guards over the slack. */
+    guest_write_be32(raw + 0, MC_GUARD_WORD);            /* front guard  */
+    guest_write_be32(raw + 4 + size, MC_GUARD_WORD);     /* tail guard   */
+    if (!(reqs & MEMF_CLEAR)) {
+        for (uint32_t i = 0; i < size && raw + 4 + i < GUEST_RAM_SIZE; i++)
+            g_ram[raw + 4 + i] = MC_ALLOC_FILL;
+    }
+    mc_record(raw + 4, size, raw - HEAP_HDR);
+    return raw + 4;
+}
+
+static void mc_free(uint32_t addr)
+{
+    if (!g_memcheck_on) { heap_free_fl(addr); return; }
+
+    MemchkRec *r = mc_find(addr);
+    if (!r) {
+        KLOG(KLOG_EXEC, KLOG_ERR,
+             "[memchk] FreeMem(0x%x) by '%s': not a tracked allocation (wild/double free?)\n",
+             (unsigned)addr, mc_task_name());
+        /* Still attempt the free — pre-enable allocations are untracked
+         * but valid.  The pool sanity check rejects bogus headers. */
+        heap_free_fl(addr);
+        return;
+    }
+    mc_check_guards(r, "freed");
+    heap_free_fl(r->payload - 4);   /* gross payload → real heap header */
+    r->payload = 0;                 /* drop tracking */
+}
+
+/* Public API for C:memcheck ------------------------------------------------ */
+
+int Memcheck_IsEnabled(void)          { return g_memcheck_on; }
+void Memcheck_SetEnabled(int on)
+{
+    g_memcheck_on = !!on;
+    KLOG(KLOG_EXEC, KLOG_INFO, "[memchk] %s\n", on ? "enabled" : "disabled");
+}
+
+int Memcheck_LiveCount(void)
+{
+    int n = 0;
+    for (int i = 0; i < MC_MAX_RECS; i++)
+        if (g_mc[i].payload) n++;
+    return n;
+}
+
+/* Walk one free list verifying block structure and (when enabled) poison. */
+static uint32_t mc_scan_freelist(uint32_t list_slot, const char *pool_name)
+{
+    uint32_t bad = 0;
+    uint32_t bptr = guest_read_be32(list_slot);
+    int guard = 8192;   /* loop bound against corrupt next pointers */
+    while (bptr && guard-- > 0) {
+        uint32_t cur = bptr << 2;
+        if (cur + HEAP_HDR > GUEST_RAM_SIZE) {
+            KLOG(KLOG_EXEC, KLOG_ERR,
+                 "[memchk] %s free list: next ptr 0x%x out of range\n",
+                 pool_name, (unsigned)cur);
+            bad++; break;
+        }
+        uint32_t hdr = guest_read_be32(cur + 0);
+        if (hdr & HEAP_MAGIC) {
+            KLOG(KLOG_EXEC, KLOG_ERR,
+                 "[memchk] %s free list: block @0x%x still marked allocated\n",
+                 pool_name, (unsigned)cur);
+            bad++;
+        }
+        uint32_t blk_size = hdr & ~HEAP_MAGIC;
+        /* Only verify poison on blocks we poisoned (MC_FREE_SIG at the
+         * first payload dword).  Blocks freed while memcheck was off are
+         * skipped — otherwise they'd be false positives. */
+        if (blk_size >= HEAP_HDR + 8u &&
+            guest_read_be32(cur + HEAP_HDR) == MC_FREE_SIG) {
+            uint32_t n = blk_size - HEAP_HDR - 4u;
+            if (n > 64) n = 64;
+            for (uint32_t i = 0; i < n && cur + HEAP_HDR + 4 + i < GUEST_RAM_SIZE; i++) {
+                if (g_ram[cur + HEAP_HDR + 4 + i] != MC_POISON) {
+                    KLOG(KLOG_EXEC, KLOG_ERR,
+                         "[memchk] %s free block @0x%x modified while free (off +%u)\n",
+                         pool_name, (unsigned)cur, (unsigned)(4 + i));
+                    bad++;
+                    break;
+                }
+            }
+        }
+        bptr = guest_read_be32(cur + 4);
+    }
+    if (guard <= 0) {
+        KLOG(KLOG_EXEC, KLOG_ERR, "[memchk] %s free list: corrupt (loop)\n", pool_name);
+        bad++;
+    }
+    return bad;
+}
+
+/* Scan live tracked allocs + both free lists.  Returns violation count.
+ * Runs under cli so preempted tasks can't alloc/free mid-walk — otherwise
+ * a transient split-block header looks like corruption. */
+uint32_t Memcheck_Scan(void)
+{
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+
+    uint32_t bad = 0;
+    for (int i = 0; i < MC_MAX_RECS; i++)
+        if (g_mc[i].payload)
+            bad += mc_check_guards(&g_mc[i], "live");
+    bad += mc_scan_freelist(HEAP_LIST_SLOT_CHIP, "chip");
+    bad += mc_scan_freelist(HEAP_LIST_SLOT_FAST, "fast");
+
+    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+    return bad;
+}
+
+/* Debug: dump one free list's chain via emit() (for C:memcheck dump). */
+static void mc_hex32(uint32_t v, char *out)
+{
+    const char *h = "0123456789ABCDEF";
+    out[0] = '0'; out[1] = 'x';
+    for (int s = 28; s >= 0; s -= 4)
+        out[2 + (28 - s) / 4] = h[(v >> s) & 0xF];
+    out[10] = '\0';
+}
+
+void Memcheck_DumpList(uint32_t which, void (*emit)(const char *line))
+{
+    char buf[80], a[11], b[11], c[11];
+    uint32_t list_slot = which ? HEAP_LIST_SLOT_FAST : HEAP_LIST_SLOT_CHIP;
+    uint32_t bptr = guest_read_be32(list_slot);
+    int guard = 32;
+    while (bptr && guard-- > 0) {
+        uint32_t cur = bptr << 2;
+        uint32_t sz = 0, nx = 0;
+        if (cur + 8 <= GUEST_RAM_SIZE) {
+            sz = guest_read_be32(cur + 0);
+            nx = guest_read_be32(cur + 4);
+        }
+        mc_hex32(cur, a); mc_hex32(sz, b); mc_hex32(nx, c);
+        /* "  blk 0x........  size 0x........  next 0x........" */
+        int l = 0;
+        const char *p1 = "  blk ", *p2 = "  size ", *p3 = "  next ";
+        while (*p1) buf[l++] = *p1++;
+        for (int i = 0; a[i]; i++) buf[l++] = a[i];
+        while (*p2) buf[l++] = *p2++;
+        for (int i = 0; b[i]; i++) buf[l++] = b[i];
+        while (*p3) buf[l++] = *p3++;
+        for (int i = 0; c[i]; i++) buf[l++] = c[i];
+        buf[l] = '\0';
+        emit(buf);
+        bptr = nx;
+    }
+}
+
+/* Self-test: deliberate tail overwrite of a tracked alloc.  Returns the
+ * number of violations the scan reports (>=1 when working).  The block is
+ * freed afterwards; the free path reports the clobber too. */
+uint32_t Memcheck_SelfTest(void)
+{
+    int was_on = g_memcheck_on;
+    if (!was_on) g_memcheck_on = 1;
+
+    uint32_t addr = mc_alloc(64, MEMF_FAST | MEMF_CLEAR);
+    if (!addr) { g_memcheck_on = was_on; return 0; }
+    guest_write_be32(addr + 64, 0x12345678);   /* clobber tail guard */
+
+    uint32_t bad = Memcheck_Scan();
+    KLOG(KLOG_EXEC, KLOG_INFO,
+         "[memchk] self-test: deliberate overwrite at 0x%x+64, scan reported %u violation(s)\n",
+         (unsigned)addr, (unsigned)bad);
+
+    mc_free(addr);
+    g_memcheck_on = was_on;
+    return bad;
+}
+
 /* Legacy bump allocator — still used for internal structures that are never
  * freed (FileLocks, library tables, etc.) and for the initial program load.
  * Program hunks must live in chip RAM, so cap the bump pointer there. */
@@ -280,16 +590,7 @@ static void dos_AllocMem(M68kCPUState *cpu)
     uint32_t reqs = cpu->d[1];
     if (size == 0) { cpu->d[0] = 0; return; }
 
-    uint32_t addr = 0;
-    if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA)) {
-        addr = heap_alloc_fl_chip(size);
-    } else if (reqs & MEMF_FAST) {
-        addr = heap_alloc_fl_fast(size);
-    } else {
-        /* Default / MEMF_PUBLIC: prefer fast, fallback to chip. */
-        addr = heap_alloc_fl_fast(size);
-        if (!addr) addr = heap_alloc_fl_chip(size);
-    }
+    uint32_t addr = mc_alloc(size, reqs);
 
     if (!addr) SetIoErr(ERROR_NO_FREE_STORE);
     cpu->d[0] = addr;
@@ -299,7 +600,7 @@ static void dos_FreeMem(M68kCPUState *cpu)
 {
     /* AmigaOS: A1=memoryBlock, D0=byteSize */
     uint32_t addr = cpu->a[1];
-    heap_free_fl(addr);
+    mc_free(addr);
 }
 
 /* Allocate a FileLock in guest RAM and return its BPTR */
@@ -1860,6 +2161,7 @@ static void dos_RunCommand(M68kCPUState *cpu)
     /* Execute until Exit() is called (or until something else terminates) */
     while (!g_emu_halted) {
         m68k_execute(10000);
+        Chiptrace_PcSample();
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
         chip_emu_run_to_cycle(g_m68k_cycles);
     }
@@ -2602,16 +2904,7 @@ void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr)
 {
     if (size == 0) { *out_addr = 0; return; }
 
-    uint32_t addr = 0;
-    if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA)) {
-        addr = heap_alloc_fl_chip(size);
-    } else if (reqs & MEMF_FAST) {
-        addr = heap_alloc_fl_fast(size);
-    } else {
-        addr = heap_alloc_fl_fast(size);
-        if (!addr) addr = heap_alloc_fl_chip(size);
-    }
-
+    uint32_t addr = mc_alloc(size, reqs);
     if (!addr) SetIoErr(ERROR_NO_FREE_STORE);
     *out_addr = addr;
 }
@@ -2619,5 +2912,5 @@ void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr)
 void dos_FreeMem_glue(uint32_t addr, uint32_t size)
 {
     (void)size; /* our free-list tracks block sizes internally */
-    heap_free_fl(addr);
+    mc_free(addr);
 }

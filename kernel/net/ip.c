@@ -8,6 +8,7 @@
 #include "udp.h"
 #include "tcp.h"
 #include "net_device.h"
+#include "../klog/klog.h"
 
 static ipv4_t   g_my_ip   = 0;
 static ipv4_t   g_gateway = 0;
@@ -27,23 +28,6 @@ ipv4_t ip_get_local(void)   { return g_my_ip;   }
 ipv4_t ip_get_gateway(void) { return g_gateway; }
 ipv4_t ip_get_netmask(void) { return g_netmask; }
 
-/* Serial debug helpers */
-static inline void _ip_outb(uint16_t p, uint8_t v)
-{ __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
-static inline uint8_t _ip_inb(uint16_t p)
-{ uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
-static void _ip_putc(char c) {
-    while ((_ip_inb(0x3FD) & 0x20) == 0) {}
-    _ip_outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { while ((_ip_inb(0x3FD) & 0x20) == 0) {} _ip_outb(0x3F8, '\r'); }
-}
-static void _ip_puts(const char *s) { while (*s) _ip_putc(*s++); }
-static void _ip_phex(uint32_t v) {
-    static const char h[] = "0123456789ABCDEF";
-    _ip_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) _ip_putc(h[(v >> i) & 0xF]);
-}
-
 void ip_rx(const uint8_t *pkt, uint16_t len)
 {
     if (len < IP_HDR_LEN) return;
@@ -58,7 +42,7 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
      * slave PIC) and freezing the UI.  Only errors are logged now. */
 
     if (tot_len > len || ihl < IP_HDR_LEN) {
-        _ip_puts("[IP] rx: bad length\n");
+        klog_puts(KLOG_NET, KLOG_DEBUG, "rx: bad length\n");
         return;
     }
 
@@ -72,15 +56,15 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
     uint16_t calc = net_htons(inet_cksum(h, ihl));
     ((IpHdr *)h)->checksum = saved;
     if (calc != saved) {
-        _ip_puts("[IP] rx: bad cksum calc="); _ip_phex(calc);
-        _ip_puts(" saved="); _ip_phex(saved); _ip_putc('\n');
+        klog_puts(KLOG_NET, KLOG_DEBUG, "rx: bad cksum calc="); klog_appendf(KLOG_NET, KLOG_DEBUG, "0x%08X", calc);
+        klog_puts(KLOG_NET, KLOG_DEBUG, " saved="); klog_appendf(KLOG_NET, KLOG_DEBUG, "0x%08X", saved); klog_putc(KLOG_NET, KLOG_DEBUG, '\n');
         return;
     }
 
     /* Drop fragments */
     uint16_t frag = net_ntohs(h->frag_off);
     if (frag & 0x3FFF) {
-        _ip_puts("[IP] rx: fragment dropped\n");
+        klog_puts(KLOG_NET, KLOG_DEBUG, "rx: fragment dropped\n");
         return;
     }
 

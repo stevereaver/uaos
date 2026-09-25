@@ -25,24 +25,7 @@
 #include "udp.h"
 #include "stack.h"
 #include "net.h"
-
-/* -------------------------------------------------------------------------
- * Serial debug (COM1)
- * ------------------------------------------------------------------------- */
-static inline void _nt_outb(uint16_t p, uint8_t v)
-{ __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
-static inline uint8_t _nt_inb(uint16_t p)
-{ uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
-static void _nt_putc(char c) {
-    while ((_nt_inb(0x3FD) & 0x20) == 0) {}
-    _nt_outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { while ((_nt_inb(0x3FD) & 0x20) == 0) {} _nt_outb(0x3F8, '\r'); }
-}
-static void _nt_puts(const char *s) { while (*s) _nt_putc(*s++); }
-static void _nt_phex32(uint32_t v) {
-    static const char h[] = "0123456789ABCDEF";
-    for (int i = 28; i >= 0; i -= 4) _nt_putc(h[(v >> i) & 0xF]);
-}
+#include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
  * Epoch keeper — live UTC Unix seconds, ticked by RTC IRQ
@@ -150,7 +133,7 @@ int ntp_query(ipv4_t server_ip, uint32_t *out_unix,
 
     int sock = udp_open(0);
     if (sock < 0) {
-        _nt_puts("[NTP] no UDP socket\n");
+        klog_puts(KLOG_NTP, KLOG_DEBUG, "no UDP socket\n");
         return 0;
     }
 
@@ -160,7 +143,7 @@ int ntp_query(ipv4_t server_ip, uint32_t *out_unix,
     int result = 0;
 
     while (elapsed < timeout_ms && !result) {
-        _nt_puts("[NTP] sending query to "); _nt_phex32(server_ip); _nt_putc('\n');
+        klog_puts(KLOG_NTP, KLOG_DEBUG, "sending query to "); klog_appendf(KLOG_NTP, KLOG_DEBUG, "%08X", server_ip); klog_putc(KLOG_NTP, KLOG_DEBUG, '\n');
         udp_send(sock, server_ip, NTP_PORT, pkt, NTP_PACKET_LEN);
 
         uint32_t waited = 0;
@@ -192,21 +175,21 @@ int ntp_query(ipv4_t server_ip, uint32_t *out_unix,
                                     ((uint32_t)rbuf[42] <<  8) |
                                      (uint32_t)rbuf[43];
 
-                _nt_puts("[NTP] rx ntp_secs="); _nt_phex32(ntp_secs); _nt_putc('\n');
+                klog_puts(KLOG_NTP, KLOG_DEBUG, "rx ntp_secs="); klog_appendf(KLOG_NTP, KLOG_DEBUG, "%08X", ntp_secs); klog_putc(KLOG_NTP, KLOG_DEBUG, '\n');
 
                 if (ntp_secs < NTP_EPOCH_DELTA) {
-                    _nt_puts("[NTP] bad timestamp (before 1970)\n");
+                    klog_puts(KLOG_NTP, KLOG_DEBUG, "bad timestamp (before 1970)\n");
                     continue;
                 }
 
                 *out_unix = ntp_secs - (uint32_t)NTP_EPOCH_DELTA;
-                _nt_puts("[NTP] unix="); _nt_phex32(*out_unix); _nt_putc('\n');
+                klog_puts(KLOG_NTP, KLOG_DEBUG, "unix="); klog_appendf(KLOG_NTP, KLOG_DEBUG, "%08X", *out_unix); klog_putc(KLOG_NTP, KLOG_DEBUG, '\n');
                 result = 1;
             }
         }
     }
 
     udp_close(sock);
-    if (!result) _nt_puts("[NTP] timed out\n");
+    if (!result) klog_puts(KLOG_NTP, KLOG_DEBUG, "timed out\n");
     return result;
 }

@@ -37,6 +37,7 @@
 #include "exec/syscall_table.h"
 #include "chipset/floppy.h"
 #include "chipset/chip_emu.h"
+#include "klog/klog.h"
 #include "uaos_emu.h"
 
 /* -----------------------------------------------------------------------
@@ -109,10 +110,8 @@ static void vga_puthex(uint64_t v)
 }
 
 /* -----------------------------------------------------------------------
- * Serial UART (16550A, COM1 = 0x3F8)
+ * Port I/O helpers (PIT etc. — UART lives in kernel/klog/uart.c)
  * ----------------------------------------------------------------------- */
-
-#define UART_BASE  0x3F8
 
 static inline void outb(uint16_t port, uint8_t val)
 {
@@ -180,61 +179,37 @@ static void APIC_Init(void)
     kprint("[APIC] APIC initialised.\n");
 }
 
-static void uart_init(void)
-{
-    outb(UART_BASE + 1, 0x00);  /* Disable interrupts                      */
-    outb(UART_BASE + 3, 0x80);  /* Enable DLAB                             */
-    outb(UART_BASE + 0, 0x03);  /* 38400 baud (divisor lo)                 */
-    outb(UART_BASE + 1, 0x00);  /* divisor hi                              */
-    outb(UART_BASE + 3, 0x03);  /* 8N1                                     */
-    outb(UART_BASE + 2, 0xC7);  /* FIFO enable, clear, 14-byte threshold   */
-    outb(UART_BASE + 4, 0x0B);  /* RTS/DSR                                 */
-}
-
-static void uart_putchar(char ch)
-{
-    while ((inb(UART_BASE + 5) & 0x20) == 0) {}
-    outb(UART_BASE, (uint8_t)ch);
-    if (ch == '\n') uart_putchar('\r');
-}
-
-static void uart_puts(const char *s)
-{
-    while (*s) uart_putchar(*s++);
-}
-
-static void uart_write(const char *s, size_t len)
-{
-    for (size_t i = 0; i < len; i++)
-        uart_putchar(s[i]);
-}
-
 /* -----------------------------------------------------------------------
  * Combined console output
+ *
+ * kprint keeps its original behaviour (VGA text mode + UART).  It also
+ * feeds the klog ring buffer so boot messages are visible via dmesg.
  * ----------------------------------------------------------------------- */
 
 /* Simple VGA text-mode console output */
 void kprint(const char *s)
 {
+    klog_raw_feed(KLOG_KERN, KLOG_INFO, s);
     vga_puts(s);
     uart_puts(s);
 }
 
 void kprintbuf(const char *s, size_t len)
 {
+    klog_raw_feedn(KLOG_KERN, KLOG_INFO, s, len);
     vga_write(s, len);
     uart_write(s, len);
 }
 
 void kprinthex(uint64_t v)
 {
-    vga_puthex(v);
     static const char hex[] = "0123456789ABCDEF";
-    uart_puts("0x");
-    char buf[17]; buf[16] = 0;
+    char buf[19];
+    buf[0] = '0'; buf[1] = 'x';
     for (int i = 0; i < 16; i++)
-        buf[15-i] = hex[(v >> (i*4)) & 0xF];
-    uart_puts(buf);
+        buf[2 + i] = hex[(v >> ((15 - i) * 4)) & 0xF];
+    buf[18] = '\0';
+    kprint(buf);
 }
 
 void kprintdec(uint32_t v)

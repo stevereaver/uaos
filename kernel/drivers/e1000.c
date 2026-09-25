@@ -18,33 +18,7 @@
 
 #include "e1000.h"
 #include "../irq/idt.h"    /* IDT_SetHandler, PIC_UnmaskIRQ, PIC_SendEOI */
-
-/* -------------------------------------------------------------------------
- * Serial debug helpers (COM1 = 0x3F8) — freestanding, no printf
- * ------------------------------------------------------------------------- */
-static inline void _e_outb(uint16_t p, uint8_t v)
-{
-    __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p));
-}
-static inline uint8_t _e_inb(uint16_t p)
-{
-    uint8_t v;
-    __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p));
-    return v;
-}
-static void _e_putc(char c)
-{
-    while ((_e_inb(0x3FD) & 0x20) == 0) {}
-    _e_outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { while ((_e_inb(0x3FD) & 0x20) == 0) {} _e_outb(0x3F8, '\r'); }
-}
-static void _e_puts(const char *s) { while (*s) _e_putc(*s++); }
-static void _e_phex(uint32_t v)
-{
-    static const char h[] = "0123456789ABCDEF";
-    _e_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) _e_putc(h[(v >> i) & 0xF]);
-}
+#include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
  * PCI config-space access (I/O port CF8/CFC)
@@ -275,9 +249,9 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
 
                 /* Log every Intel device so we can diagnose missed matches */
                 if (vendor == 0x8086) {
-                    _e_puts("[E1000] Intel PCI dev="); _e_phex(device);
-                    _e_puts(" bus="); _e_phex(bus);
-                    _e_puts(" slot="); _e_phex(dev); _e_puts("\n");
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, "Intel PCI dev="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", device);
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, " bus="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bus);
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, " slot="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", dev); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
                 }
 
                 if (vendor != 0x8086) continue;
@@ -286,7 +260,7 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
                     if (device == k_e1000_devids[k]) { match = 1; break; }
                 if (!match) continue;
 
-                _e_puts("[E1000] matched dev="); _e_phex(device); _e_puts("\n");
+                klog_puts(KLOG_E1000, KLOG_DEBUG, "matched dev="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", device); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
                 /* Read all BARs — we want the first memory BAR (MMIO).
                  * On the 82540EM, BAR0 is a 32-bit memory BAR.
@@ -295,22 +269,22 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
                 uint32_t mmio_base = 0;
                 for (uint8_t bar_off = 0x10; bar_off <= 0x18; bar_off += 4) {
                     uint32_t bar = pci_read32((uint8_t)bus, dev, fn, bar_off);
-                    _e_puts("[E1000] BAR@"); _e_phex(bar_off);
-                    _e_puts("="); _e_phex(bar); _e_puts("\n");
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, "BAR@"); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bar_off);
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, "="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bar); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
                     if (!(bar & 1) && (bar & 0xFFFFFFF0U)) {
                         mmio_base = bar & 0xFFFFFFF0U;
                         break;
                     }
                 }
                 if (!mmio_base) {
-                    _e_puts("[E1000] no usable MMIO BAR found, skipping\n");
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, "no usable MMIO BAR found, skipping\n");
                     continue;
                 }
-                _e_puts("[E1000] MMIO base="); _e_phex(mmio_base); _e_puts("\n");
+                klog_puts(KLOG_E1000, KLOG_DEBUG, "MMIO base="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", mmio_base); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
                 /* IRQ line */
                 uint8_t irq = (uint8_t)(pci_read32((uint8_t)bus, dev, fn, 0x3C) & 0xFF);
-                _e_puts("[E1000] IRQ="); _e_phex(irq); _e_puts("\n");
+                klog_puts(KLOG_E1000, KLOG_DEBUG, "IRQ="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
                 /* Enable bus-master + memory space */
                 uint16_t cmd = pci_read16((uint8_t)bus, dev, fn, 0x04);
@@ -327,7 +301,7 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
             next_dev:;
         }
     }
-    _e_puts("[E1000] PCI scan complete, device not found\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "PCI scan complete, device not found\n");
     return 0;
 }
 
@@ -375,8 +349,8 @@ static void read_mac(void)
     uint32_t ral = mmio_r32(g_bar0, E1000_RAL0);
     uint32_t rah = mmio_r32(g_bar0, E1000_RAH0);
 
-    _e_puts("[E1000] RAL0="); _e_phex(ral);
-    _e_puts(" RAH0="); _e_phex(rah); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "RAL0="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", ral);
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " RAH0="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", rah); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
     /* Check that RAH has the Address Valid bit and RAL is not all-zero */
     if ((rah & E1000_RAH_AV) && (ral != 0)) {
@@ -386,32 +360,32 @@ static void read_mac(void)
         g_mac[3] = (uint8_t)((ral >> 24) & 0xFF);
         g_mac[4] = (uint8_t)( rah        & 0xFF);
         g_mac[5] = (uint8_t)((rah >>  8) & 0xFF);
-        _e_puts("[E1000] MAC from RAL/RAH: ");
+        klog_puts(KLOG_E1000, KLOG_DEBUG, "MAC from RAL/RAH: ");
     } else {
         /* Fallback: read directly from EEPROM via EERD */
-        _e_puts("[E1000] RAL/RAH empty, trying EERD\n");
+        klog_puts(KLOG_E1000, KLOG_DEBUG, "RAL/RAH empty, trying EERD\n");
         uint16_t w0 = eeprom_read(0);
         uint16_t w1 = eeprom_read(1);
         uint16_t w2 = eeprom_read(2);
-        _e_puts("[E1000] EERD w0="); _e_phex(w0);
-        _e_puts(" w1="); _e_phex(w1);
-        _e_puts(" w2="); _e_phex(w2); _e_puts("\n");
+        klog_puts(KLOG_E1000, KLOG_DEBUG, "EERD w0="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", w0);
+        klog_puts(KLOG_E1000, KLOG_DEBUG, " w1="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", w1);
+        klog_puts(KLOG_E1000, KLOG_DEBUG, " w2="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", w2); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
         g_mac[0] = (uint8_t)(w0 & 0xFF);
         g_mac[1] = (uint8_t)(w0 >> 8);
         g_mac[2] = (uint8_t)(w1 & 0xFF);
         g_mac[3] = (uint8_t)(w1 >> 8);
         g_mac[4] = (uint8_t)(w2 & 0xFF);
         g_mac[5] = (uint8_t)(w2 >> 8);
-        _e_puts("[E1000] MAC from EERD: ");
+        klog_puts(KLOG_E1000, KLOG_DEBUG, "MAC from EERD: ");
     }
 
     /* Log final MAC */
     static const char h[] = "0123456789ABCDEF";
     for (int i = 0; i < 6; i++) {
-        _e_putc(h[g_mac[i] >> 4]); _e_putc(h[g_mac[i] & 0xF]);
-        if (i < 5) _e_putc(':');
+        klog_putc(KLOG_E1000, KLOG_DEBUG, h[g_mac[i] >> 4]); klog_putc(KLOG_E1000, KLOG_DEBUG, h[g_mac[i] & 0xF]);
+        if (i < 5) klog_putc(KLOG_E1000, KLOG_DEBUG, ':');
     }
-    _e_putc('\n');
+    klog_putc(KLOG_E1000, KLOG_DEBUG, '\n');
 }
 
 /* -------------------------------------------------------------------------
@@ -433,8 +407,8 @@ static void rx_init(void)
     mmio_w32(g_bar0, E1000_RDT, (uint32_t)(E1000_NUM_RX_DESC - 1));
     g_rx_tail = 0;
 
-    _e_puts("[E1000] rx_init rdbal="); _e_phex(base);
-    _e_puts(" rdlen="); _e_phex(E1000_NUM_RX_DESC * 16); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "rx_init rdbal="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", base);
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " rdlen="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", E1000_NUM_RX_DESC * 16); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -455,8 +429,8 @@ static void tx_init(void)
     mmio_w32(g_bar0, E1000_TDT, 0);
     g_tx_tail = 0;
 
-    _e_puts("[E1000] tx_init tdbal="); _e_phex(base);
-    _e_puts(" tdlen="); _e_phex(E1000_NUM_TX_DESC * 16); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "tx_init tdbal="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", base);
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " tdlen="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", E1000_NUM_TX_DESC * 16); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -482,15 +456,15 @@ int e1000_init(void)
     uint32_t bar0;
 
     if (!pci_find_e1000(&bus, &dev, &fn, &irq, &bar0)) {
-        _e_puts("[E1000] not found\n");
+        klog_puts(KLOG_E1000, KLOG_DEBUG, "not found\n");
         return 0;
     }
 
     g_bar0 = bar0;
     g_irq  = irq;
 
-    _e_puts("[E1000] bar0_base="); _e_phex(bar0);
-    _e_puts(" irq="); _e_phex(irq); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "bar0_base="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bar0);
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " irq="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
     /* 1. Disable all interrupts */
     mmio_w32(g_bar0, E1000_IMC, 0xFFFFFFFFU);
@@ -555,19 +529,19 @@ int e1000_init(void)
              E1000_ICR_RXT0 | E1000_ICR_RXDMT0 | E1000_ICR_RXO | E1000_ICR_LSC);
 
     /* 13. Wait for link — poll STATUS.LU for up to ~2 s */
-    _e_puts("[E1000] waiting for link...\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "waiting for link...\n");
     for (int i = 0; i < 200; i++) {
         if (mmio_r32(g_bar0, E1000_STATUS) & E1000_STATUS_LU) break;
         msdelay(10);
     }
     uint32_t status = mmio_r32(g_bar0, E1000_STATUS);
-    _e_puts("[E1000] STATUS="); _e_phex(status); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "STATUS="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", status); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
     if (!(status & E1000_STATUS_LU)) {
-        _e_puts("[E1000] WARNING: link not up after reset\n");
+        klog_puts(KLOG_E1000, KLOG_DEBUG, "WARNING: link not up after reset\n");
     }
 
     g_up = 1;
-    _e_puts("[E1000] init OK\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "init OK\n");
     return 1;
 }
 
@@ -590,7 +564,7 @@ int e1000_send(const uint8_t *data, uint16_t len)
     while (!(g_tx_desc[slot].sta & E1000_DESC_DD)) {
         __asm__ volatile("pause" ::: "memory");
         if (++spin > 1000000) {
-            _e_puts("[E1000] TX timeout waiting for DD\n");
+            klog_puts(KLOG_E1000, KLOG_DEBUG, "TX timeout waiting for DD\n");
             return 0;
         }
     }
@@ -619,11 +593,11 @@ int e1000_send(const uint8_t *data, uint16_t len)
     while (!(g_tx_desc[slot].sta & E1000_DESC_DD)) {
         __asm__ volatile("pause" ::: "memory");
         if (++spin2 > 1000000) {
-            _e_puts("[E1000] TX no DD — frame not sent\n");
+            klog_puts(KLOG_E1000, KLOG_DEBUG, "TX no DD — frame not sent\n");
             return 0;
         }
     }
-    _e_puts("[E1000] TX done sta="); _e_phex(g_tx_desc[slot].sta); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "TX done sta="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", g_tx_desc[slot].sta); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
     return 1;
 }
 
@@ -664,7 +638,7 @@ void e1000_set_rx_callback(e1000_rx_cb cb)
 void e1000_setup_irq(void)
 {
     if (!g_up) return;
-    _e_puts("[E1000] setup_irq line="); _e_phex(g_irq); _e_puts("\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, "setup_irq line="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", g_irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
     IDT_SetHandler((uint8_t)(32 + g_irq), e1000_irq_handler);
     PIC_UnmaskIRQ((int)g_irq);
 }

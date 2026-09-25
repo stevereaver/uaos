@@ -16,26 +16,7 @@
 #include "net.h"
 #include "eth.h"
 #include "net_device.h"
-
-/* -------------------------------------------------------------------------
- * Serial debug (COM1 = 0x3F8)
- * ------------------------------------------------------------------------- */
-static inline void _dh_outb(uint16_t p, uint8_t v)
-{ __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
-static inline uint8_t _dh_inb(uint16_t p)
-{ uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
-static void _dh_putc(char c)
-{
-    while ((_dh_inb(0x3FD) & 0x20) == 0) {}
-    _dh_outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { while ((_dh_inb(0x3FD) & 0x20) == 0) {} _dh_outb(0x3F8, '\r'); }
-}
-static void _dh_puts(const char *s) { while (*s) _dh_putc(*s++); }
-static void _dh_phex(uint32_t v) {
-    static const char h[] = "0123456789ABCDEF";
-    _dh_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) _dh_putc(h[(v >> i) & 0xF]);
-}
+#include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
  * DHCP packet layout (RFC 2131)
@@ -145,8 +126,8 @@ static void dhcp_calibrate_tsc(void)
 
     uint64_t diff = t1 - t0;   /* ticks in ~50 ms */
     g_tsc_hz = diff * 20;      /* extrapolate to 1 second */
-    _dh_puts("[DHCP] TSC Hz="); _dh_phex((uint32_t)(g_tsc_hz >> 32));
-    _dh_phex((uint32_t)g_tsc_hz); _dh_putc('\n');
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "TSC Hz="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", (uint32_t)(g_tsc_hz >> 32));
+    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", (uint32_t)g_tsc_hz); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
 }
 
 static void dhcp_delay_ms(uint32_t ms)
@@ -168,53 +149,53 @@ static void dhcp_delay_ms(uint32_t ms)
 static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
 {
     /* Log every frame seen during DHCP with first 32 bytes as hex */
-    _dh_puts("[DHCP] rx frame len="); _dh_phex(len);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx frame len="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", len);
     uint16_t et = (uint16_t)((frame[12]<<8)|frame[13]);
-    _dh_puts(" et="); _dh_phex(et);
-    _dh_puts(" hdr=");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " et="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", et);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " hdr=");
     {
         static const char hx[] = "0123456789ABCDEF";
         uint16_t dump = len < 32 ? len : 32;
         for (uint16_t i = 0; i < dump; i++) {
-            _dh_putc(hx[frame[i]>>4]); _dh_putc(hx[frame[i]&0xF]);
-            _dh_putc(' ');
+            klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[frame[i]>>4]); klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[frame[i]&0xF]);
+            klog_putc(KLOG_DHCP, KLOG_DEBUG, ' ');
         }
     }
-    _dh_putc('\n');
+    klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
 
     /* Minimum size: ETH + IP + UDP + DHCP header (without full options) */
     uint16_t min_len = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + 240;
-    if (len < min_len) { _dh_puts("[DHCP] rx: too short\n"); return; }
-    if (et != 0x0800)  { _dh_puts("[DHCP] rx: not IP\n"); return; }
+    if (len < min_len) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: too short\n"); return; }
+    if (et != 0x0800)  { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not IP\n"); return; }
 
     const uint8_t *ip = frame + ETH_HDR_LEN;
-    if ((ip[0] >> 4) != 4) { _dh_puts("[DHCP] rx: not IPv4\n"); return; }
+    if ((ip[0] >> 4) != 4) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not IPv4\n"); return; }
     uint8_t ihl = (ip[0] & 0xF) * 4;
-    if (ip[9] != 17) { _dh_puts("[DHCP] rx: not UDP (proto="); _dh_phex(ip[9]); _dh_puts(")\n"); return; }
+    if (ip[9] != 17) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not UDP (proto="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", ip[9]); klog_puts(KLOG_DHCP, KLOG_DEBUG, ")\n"); return; }
 
     const uint8_t *udp = ip + ihl;
     uint16_t src_port = (uint16_t)((udp[0]<<8)|udp[1]);
     uint16_t dst_port = (uint16_t)((udp[2]<<8)|udp[3]);
     if (src_port != 67 || dst_port != 68) {
-        _dh_puts("[DHCP] rx: wrong ports src="); _dh_phex(src_port);
-        _dh_puts(" dst="); _dh_phex(dst_port); _dh_putc('\n');
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: wrong ports src="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", src_port);
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, " dst="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", dst_port); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
         return;
     }
 
     const uint8_t *payload = udp + UDP_HDR_LEN;
     uint16_t payload_len = (uint16_t)(len - ETH_HDR_LEN - ihl - UDP_HDR_LEN);
-    if (payload_len < 240) { _dh_puts("[DHCP] rx: payload too short\n"); return; }
+    if (payload_len < 240) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: payload too short\n"); return; }
 
     const DhcpPkt *p = (const DhcpPkt *)payload;
-    if (p->op != 2) { _dh_puts("[DHCP] rx: not BOOTREPLY\n"); return; }
-    if (net_ntohl(p->magic) != DHCP_MAGIC) { _dh_puts("[DHCP] rx: bad magic\n"); return; }
+    if (p->op != 2) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not BOOTREPLY\n"); return; }
+    if (net_ntohl(p->magic) != DHCP_MAGIC) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: bad magic\n"); return; }
     if (net_ntohl(p->xid) != g_dhcp_xid) {
-        _dh_puts("[DHCP] rx: xid mismatch got="); _dh_phex(net_ntohl(p->xid));
-        _dh_puts(" want="); _dh_phex(g_dhcp_xid); _dh_putc('\n');
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: xid mismatch got="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", net_ntohl(p->xid));
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, " want="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", g_dhcp_xid); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
         return;
     }
 
-    _dh_puts("[DHCP] rx: valid OFFER/ACK\n");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: valid OFFER/ACK\n");
     /* Copy only as much as the packet contains, zero the rest */
     uint16_t copy_len = payload_len < (uint16_t)sizeof(g_dhcp_reply)
                       ? payload_len : (uint16_t)sizeof(g_dhcp_reply);
@@ -357,29 +338,29 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     frame[12] = 0x08; frame[13] = 0x00;
 
     uint16_t total = (uint16_t)(ETH_HDR_LEN + ip_tot);
-    _dh_puts("[DHCP] send len="); _dh_phex(total);
-    _dh_puts(" src=");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "send len="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", total);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " src=");
     for (int i = 0; i < 6; i++) {
         static const char hx[] = "0123456789ABCDEF";
-        _dh_putc(hx[frame[6+i]>>4]); _dh_putc(hx[frame[6+i]&0xF]);
-        if (i<5) _dh_putc(':');
+        klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[frame[6+i]>>4]); klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[frame[6+i]&0xF]);
+        if (i<5) klog_putc(KLOG_DHCP, KLOG_DEBUG, ':');
     }
-    _dh_puts(" dst=FF:FF:FF:FF:FF:FF");
-    _dh_puts(" xid="); _dh_phex(g_dhcp_xid);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " dst=FF:FF:FF:FF:FF:FF");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " xid="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", g_dhcp_xid);
     /* Dump the full DHCP options section so we can verify magic cookie +
      * option bytes. Start at offset 42 (ETH+IP+UDP) + 236 (DHCP fixed hdr
      * without options) = byte 278 in the frame, dump 32 bytes of options. */
-    _dh_puts("\n[DHCP] opts: ");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "\nopts: ");
     {
         static const char hx[] = "0123456789ABCDEF";
         uint16_t start = ETH_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + 236;
         uint16_t end   = start + 32 < total ? start + 32 : total;
         for (uint16_t i = start; i < end; i++) {
-            _dh_putc(hx[frame[i]>>4]); _dh_putc(hx[frame[i]&0xF]);
-            _dh_putc(' ');
+            klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[frame[i]>>4]); klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[frame[i]&0xF]);
+            klog_putc(KLOG_DHCP, KLOG_DEBUG, ' ');
         }
     }
-    _dh_putc('\n');
+    klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
     netdev_send(frame, total);
 }
 
@@ -452,13 +433,13 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
         if (!g_dhcp_xid) g_dhcp_xid = 0x12345678;  /* never zero */
     }
 
-    _dh_puts("[DHCP] starting, MAC=");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "starting, MAC=");
     static const char hx[] = "0123456789ABCDEF";
     for (int i = 0; i < 6; i++) {
-        _dh_putc(hx[g_dhcp_mac[i] >> 4]); _dh_putc(hx[g_dhcp_mac[i] & 0xF]);
-        if (i < 5) _dh_putc(':');
+        klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[g_dhcp_mac[i] >> 4]); klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[g_dhcp_mac[i] & 0xF]);
+        if (i < 5) klog_putc(KLOG_DHCP, KLOG_DEBUG, ':');
     }
-    _dh_puts(" timeout_ms="); _dh_phex(timeout_ms); _dh_putc('\n');
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " timeout_ms="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", timeout_ms); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
 
     /* Register temporary RX callback */
     netdev_set_rx_callback(dhcp_rx_cb);
@@ -473,7 +454,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     uint32_t next_discover = 0;  /* send immediately on first iteration */
     while (!g_dhcp_got && waited < timeout_ms) {
         if (waited >= next_discover) {
-            _dh_puts("[DHCP] sending DISCOVER (t="); _dh_phex(waited); _dh_puts(")\n");
+            klog_puts(KLOG_DHCP, KLOG_DEBUG, "sending DISCOVER (t="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", waited); klog_puts(KLOG_DHCP, KLOG_DEBUG, ")\n");
             dhcp_send(DHCPDISCOVER, 0, 0);
             next_discover = waited + 1500;  /* retry every 1.5 s */
         }
@@ -482,10 +463,10 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
         waited += 10;
     }
     if (!g_dhcp_got) {
-        _dh_puts("[DHCP] no OFFER received\n");
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, "no OFFER received\n");
         return 0;
     }
-    _dh_puts("[DHCP] OFFER received\n");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "OFFER received\n");
 
     /* Check it's an OFFER */
     {
@@ -506,12 +487,12 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     parse_offer(&g_dhcp_reply, lease);
     ipv4_t offered_ip = lease->ip;
 
-    _dh_puts("[DHCP] offered IP="); _dh_phex(offered_ip);
-    _dh_puts(" gw="); _dh_phex(lease->gateway); _dh_putc('\n');
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "offered IP="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", offered_ip);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " gw="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", lease->gateway); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
 
     /* --- Phase 2: REQUEST --- */
     g_dhcp_got = 0;
-    _dh_puts("[DHCP] sending REQUEST\n");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "sending REQUEST\n");
     dhcp_send(DHCPREQUEST, offered_ip, g_server_ip);
 
     waited = 0;
@@ -521,7 +502,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
         waited += 10;
     }
     if (!g_dhcp_got) {
-        _dh_puts("[DHCP] no ACK received\n");
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, "no ACK received\n");
         return 0;
     }
 
@@ -534,18 +515,18 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
             if (code == 0) continue;
             uint8_t olen = *opt++;
             if (code == OPT_MSG_TYPE && olen == 1) {
-                if (*opt == DHCPNAK) { _dh_puts("[DHCP] NAK\n"); return 0; }
+                if (*opt == DHCPNAK) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "NAK\n"); return 0; }
                 if (*opt == DHCPACK) {
                     parse_offer(&g_dhcp_reply, lease);
-                    _dh_puts("[DHCP] ACK, IP="); _dh_phex(lease->ip);
-                    _dh_puts(" gw="); _dh_phex(lease->gateway); _dh_putc('\n');
+                    klog_puts(KLOG_DHCP, KLOG_DEBUG, "ACK, IP="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", lease->ip);
+                    klog_puts(KLOG_DHCP, KLOG_DEBUG, " gw="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", lease->gateway); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
                     return 1;
                 }
             }
             opt += olen;
         }
     }
-    _dh_puts("[DHCP] no ACK msg type in reply\n");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "no ACK msg type in reply\n");
     return 0;
 }
 
@@ -575,11 +556,11 @@ void dhcp_release(ipv4_t client_ip, ipv4_t server_ip)
 {
     if (!client_ip || !server_ip) return;
 
-    _dh_puts("[DHCP] sending RELEASE for ");
-    _dh_phex(client_ip);
-    _dh_puts(" to server ");
-    _dh_phex(server_ip);
-    _dh_puts("\n");
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "sending RELEASE for ");
+    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", client_ip);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " to server ");
+    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", server_ip);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "\n");
 
     /* Temporarily set the server IP for the dhcp_send function */
     ipv4_t saved_server_ip = g_server_ip;

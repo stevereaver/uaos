@@ -223,6 +223,13 @@ void Cmd_ChangeTaskPri   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Status          (NativeCmdCtx *ctx, const char *args);
 void Cmd_Rx              (NativeCmdCtx *ctx, const char *args);
 void Cmd_Telnetd         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Strace          (NativeCmdCtx *ctx, const char *args);
+void Cmd_Klog            (NativeCmdCtx *ctx, const char *args);
+void Cmd_Dmesg           (NativeCmdCtx *ctx, const char *args);
+void Cmd_Irqstat         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Crash           (NativeCmdCtx *ctx, const char *args);
+void Cmd_Memcheck        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Chiptrace       (NativeCmdCtx *ctx, const char *args);
 
 /* Prefs editors (stubs — Phase 3) */
 void Cmd_ScreenMode      (NativeCmdCtx *ctx, const char *args);

@@ -328,6 +328,30 @@ void GDT_InitTSS(void)
     kprint("\n");
 }
 
+/* Per-vector dispatch counters.  Every vector that reaches ISR_Dispatch
+ * increments its slot — C:irqstat reads these to answer "is the RTC or
+ * virtio IRQ firing?" without instrumenting drivers by hand. */
+static uint64_t g_vector_counts[256];
+
+void IDT_SnapshotCounts(uint64_t *out)
+{
+    /* Copy under cli so a mid-copy interrupt can't produce torn deltas. */
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    for (int i = 0; i < 256; i++)
+        out[i] = g_vector_counts[i];
+    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+}
+
+void IDT_ClearCounts(void)
+{
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    for (int i = 0; i < 256; i++)
+        g_vector_counts[i] = 0;
+    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+}
+
 void IDT_SetHandler(uint8_t vector, ISRHandler handler)
 {
     g_handlers[vector] = handler;
@@ -359,7 +383,78 @@ void IDT_SetRawHandlerDPL3(uint8_t vector, void (*handler)(void))
  * whether ISR_Dispatch was entered at all. */
 static volatile uint32_t *const g_isr_mailbox = (volatile uint32_t *)0x90000;
 
-void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip)
+static const char *const k_exc_names[32] = {
+    "#DE divide-error",  "#DB debug",       "NMI",            "#BP breakpoint",
+    "#OF overflow",      "#BR bound",       "#UD invalid-op", "#NM no-fpu",
+    "#DF double-fault",  "coproc-seg",      "#TS invalid-tss","#NP seg-absent",
+    "#SS stack-fault",   "#GP gen-prot",    "#PF page-fault", "reserved-15",
+    "#MF fpu-error",     "#AC align-check", "#MC machine-chk","#XM simd",
+    "#VE virt",          "#CP ctrl-prot",   "reserved-22",    "reserved-23",
+    "reserved-24",       "reserved-25",     "reserved-26",    "reserved-27",
+    "reserved-28",       "reserved-29",     "reserved-30",    "reserved-31",
+};
+
+static void pd_hex(const char *name, uint64_t v)
+{
+    kprint(name); kprint("="); kprinthex(v);
+}
+
+/* Dump full register + stack context for an unhandled exception.
+ * Output goes through kprint (UART + VGA + klog ring), which is safe in
+ * this context.  The stack dump only reads plausible RAM addresses — a
+ * garbage RSP must not trigger a nested fault on the way out. */
+static void exc_dump(const IsrFrame *f, const UaosTask *cur)
+{
+    uint64_t cr2;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+
+    kprint("\n================ EXCEPTION DUMP ================\n");
+    pd_hex("vector", f->vector);
+    if (f->vector < 32) { kprint(" "); kprint(k_exc_names[f->vector]); }
+    pd_hex("  error_code", f->error_code);
+    if (cur) {
+        kprint("  task='"); kprint(cur->ln_Name ? cur->ln_Name : "?"); kprint("'");
+    }
+    kprint("\n");
+    pd_hex("RIP", f->rip);   pd_hex("  CS", f->cs);
+    pd_hex("  RFLAGS", f->rflags); kprint("\n");
+    pd_hex("RSP", f->rsp);   pd_hex("  SS", f->ss);
+    pd_hex("  CR2", cr2);    kprint("\n");
+    pd_hex("RAX", f->rax);   pd_hex("  RBX", f->rbx);
+    pd_hex("  RCX", f->rcx); kprint("\n");
+    pd_hex("RDX", f->rdx);   pd_hex("  RSI", f->rsi);
+    pd_hex("  RDI", f->rdi); kprint("\n");
+    pd_hex("RBP", f->rbp);   pd_hex("  R8 ", f->r8);
+    pd_hex("  R9 ", f->r9);  kprint("\n");
+    pd_hex("R10", f->r10);   pd_hex("  R11", f->r11);
+    pd_hex("  R12", f->r12); kprint("\n");
+    pd_hex("R13", f->r13);   pd_hex("  R14", f->r14);
+    pd_hex("  R15", f->r15); kprint("\n");
+
+    /* Stack dump: 8 lines x 4 qwords at the interrupted RSP.
+     * Guard against a garbage pointer — the kernel is identity-mapped and
+     * QEMU RAM tops out at 0x20000000 for -m 512M. */
+    uint64_t sp = f->rsp & ~7ULL;
+    if (sp >= 0x1000 && sp < 0x20000000) {
+        kprint("Stack @RSP:\n");
+        for (int row = 0; row < 8 && sp + 32 <= 0x20000000; row++) {
+            kprint("  +"); kprinthex((uint64_t)(row * 32));
+            kprint(": ");
+            const volatile uint64_t *p = (const volatile uint64_t *)sp;
+            for (int i = 0; i < 4; i++) {
+                kprinthex(p[i]); kprint(" ");
+            }
+            kprint("\n");
+            sp += 32;
+        }
+    } else {
+        pd_hex("Stack @RSP", f->rsp); kprint(" out of range — skipped\n");
+    }
+    kprint("================================================\n");
+}
+
+void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
+                  IsrFrame *frame)
 {
     /* Write a rotating magic value to the mailbox */
     static volatile uint32_t mailbox_seq = 0;
@@ -368,7 +463,10 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip)
     g_isr_mailbox[1] = (uint32_t)vector;
     g_isr_mailbox[2] = seq;
 
-    if (g_handlers[vector]) {
+    if (vector < 256)
+        g_vector_counts[vector]++;
+
+    if (vector < 256 && g_handlers[vector]) {
         g_handlers[vector](vector, error_code);
     } else if (vector < 32) {
         /* Unhandled CPU exception.
@@ -381,22 +479,16 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip)
          * For kernel-mode faults (no current task, or current task is not
          * an X64 task), treat it as a fatal kernel panic. */
         UaosTask *cur = Task_Current();
+        exc_dump(frame, cur);
         if (cur && cur->type == TASK_TYPE_X64) {
-            kprint("[EXC] exception ");
-            kprinthex(vector);
-            kprint(" in X64 task '");
+            kprint("[EXC] killing X64 task '");
             kprint(cur->ln_Name ? cur->ln_Name : "(null)");
-            kprint("' at rip=");
-            kprinthex(rip);
-            kprint(" — killing task\n");
+            kprint("'\n");
             Task_Exit();
             __builtin_unreachable();
         }
         /* Kernel-mode exception — panic */
-        kprint("[EXC] unhandled exception vector="); kprinthex(vector);
-        kprint(" error_code="); kprinthex(error_code);
-        kprint(" rip="); kprinthex(rip);
-        kprint("\n");
+        kprint("[PANIC] unhandled kernel exception — halting.\n");
         __asm__ volatile ("cli; hlt");
     }
     /* Send EOI to PIC for all hardware IRQs (vectors 32-47) */

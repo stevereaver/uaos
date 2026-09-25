@@ -18,26 +18,7 @@
 #include "udp.h"
 #include "stack.h"
 #include "net.h"
-
-/* -------------------------------------------------------------------------
- * Serial debug (COM1) — same pattern as rest of net stack
- * ------------------------------------------------------------------------- */
-static inline void _dn_outb(uint16_t p, uint8_t v)
-{ __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
-static inline uint8_t _dn_inb(uint16_t p)
-{ uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
-static void _dn_putc(char c) {
-    while ((_dn_inb(0x3FD) & 0x20) == 0) {}
-    _dn_outb(0x3F8, (uint8_t)c);
-    if (c == '\n') { while ((_dn_inb(0x3FD) & 0x20) == 0) {} _dn_outb(0x3F8, '\r'); }
-}
-static void _dn_puts(const char *s) { while (*s) _dn_putc(*s++); }
-static void _dn_phex8(uint8_t v) {
-    static const char h[] = "0123456789ABCDEF";
-    _dn_putc(h[v >> 4]); _dn_putc(h[v & 0xF]);
-}
-static void _dn_phex16(uint16_t v) { _dn_phex8((uint8_t)(v >> 8)); _dn_phex8((uint8_t)v); }
-static void _dn_phex32(uint32_t v) { _dn_phex16((uint16_t)(v >> 16)); _dn_phex16((uint16_t)v); }
+#include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
  * Build DNS query packet.
@@ -118,10 +99,10 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
     uint16_t ancount = net_ntohs(hdr->ancount);
     uint16_t qdcount = net_ntohs(hdr->qdcount);
 
-    _dn_puts("[DNS] rx id="); _dn_phex16(rid);
-    _dn_puts(" flags="); _dn_phex16(flags);
-    _dn_puts(" an="); _dn_phex8((uint8_t)ancount);
-    _dn_putc('\n');
+    klog_puts(KLOG_DNS, KLOG_DEBUG, "rx id="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%04X", rid);
+    klog_puts(KLOG_DNS, KLOG_DEBUG, " flags="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%04X", flags);
+    klog_puts(KLOG_DNS, KLOG_DEBUG, " an="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%02X", (uint8_t)ancount);
+    klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
 
     if (rid != txid) return 0;                     /* not our reply */
     if (!(flags & DNS_FLAG_QR)) return 0;          /* not a response */
@@ -148,8 +129,8 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
         uint16_t rdlen  = (uint16_t)((buf[off+8] << 8) | buf[off+9]);
         off += 10;
 
-        _dn_puts("[DNS] RR type="); _dn_phex16(rtype);
-        _dn_puts(" rdlen="); _dn_phex8((uint8_t)rdlen); _dn_putc('\n');
+        klog_puts(KLOG_DNS, KLOG_DEBUG, "RR type="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%04X", rtype);
+        klog_puts(KLOG_DNS, KLOG_DEBUG, " rdlen="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%02X", (uint8_t)rdlen); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
 
         if (rtype == DNS_TYPE_A && rdlen == 4 && off + 4 <= len) {
             /* Found an A record */
@@ -158,7 +139,7 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
                         ((uint32_t)buf[off+2] <<  8) |
                          (uint32_t)buf[off+3];
             *out_ip = ip;
-            _dn_puts("[DNS] A record ip="); _dn_phex32(ip); _dn_putc('\n');
+            klog_puts(KLOG_DNS, KLOG_DEBUG, "A record ip="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%08X", ip); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
             return 1;
         }
         /* Skip this RR's RDATA */
@@ -179,12 +160,12 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
 
     ipv4_t dns_server = net_stack_get_dns();
     if (!dns_server) {
-        _dn_puts("[DNS] no DNS server configured\n");
+        klog_puts(KLOG_DNS, KLOG_DEBUG, "no DNS server configured\n");
         return 0;
     }
 
-    _dn_puts("[DNS] resolve: "); _dn_puts(hostname); _dn_putc('\n');
-    _dn_puts("[DNS] server="); _dn_phex32(dns_server); _dn_putc('\n');
+    klog_puts(KLOG_DNS, KLOG_DEBUG, "resolve: "); klog_puts(KLOG_DNS, KLOG_DEBUG, hostname); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
+    klog_puts(KLOG_DNS, KLOG_DEBUG, "server="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%08X", dns_server); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
 
     /* Use a fixed transaction ID derived from the hostname for simplicity */
     uint16_t txid = 0xAB00;
@@ -196,14 +177,14 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
     uint8_t qbuf[280];
     uint16_t qlen = dns_build_query(qbuf, (uint16_t)sizeof(qbuf), txid, hostname);
     if (!qlen) {
-        _dn_puts("[DNS] query build failed (hostname too long?)\n");
+        klog_puts(KLOG_DNS, KLOG_DEBUG, "query build failed (hostname too long?)\n");
         return 0;
     }
 
     /* Open ephemeral UDP socket */
     int sock = udp_open(0);
     if (sock < 0) {
-        _dn_puts("[DNS] no UDP socket available\n");
+        klog_puts(KLOG_DNS, KLOG_DEBUG, "no UDP socket available\n");
         return 0;
     }
 
@@ -214,7 +195,7 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
     int result = 0;
 
     while (elapsed < timeout_ms && !result) {
-        _dn_puts("[DNS] sending query txid="); _dn_phex16(txid); _dn_putc('\n');
+        klog_puts(KLOG_DNS, KLOG_DEBUG, "sending query txid="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%04X", txid); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
         udp_send(sock, dns_server, DNS_PORT, qbuf, qlen);
 
         /* Wait up to RETRY_MS for a response, polling in SLICE_MS slices */
@@ -246,6 +227,6 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
 
     udp_close(sock);
 
-    if (!result) _dn_puts("[DNS] resolve timed out\n");
+    if (!result) klog_puts(KLOG_DNS, KLOG_DEBUG, "resolve timed out\n");
     return result;
 }

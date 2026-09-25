@@ -899,6 +899,12 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  loadwb             launch Workbench desktop");
     inst_print(s, "  telnetd [PORT=n|STOP]  start/stop telnet debug shell service");
     inst_print(s, "  ps                 list running tasks");
+    inst_print(s, "  klog [s,l=level]   set/show kernel log levels");
+    inst_print(s, "  dmesg [subsys|lvl] dump kernel log ring buffer");
+    inst_print(s, "  irqstat [sec|NOW]  per-vector interrupt counts + rates");
+    inst_print(s, "  crash              trigger test kernel panic (destroys session)");
+    inst_print(s, "  memcheck [on|off|test]  heap guard/poison debugging");
+    inst_print(s, "  chiptrace [on|off|<class>|pc]  custom-chip/CIA access tracer");
     inst_print(s, "");
     inst_print(s, "Script flow control:");
     inst_print(s, "  IF <c> THEN <cmd>                    single-line conditional");

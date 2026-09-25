@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include "uaos_emu.h"
 #include "chipset/chip_emu.h"
+#include "chipset/chiptrace.h"
 #include "dos/vfs.h"
 #include "dos/handler.h"
 #include "dos/handle_table.h"
@@ -38,6 +39,13 @@
 #include "dos/amiga_dos_types.h"
 #include "exec/rom_modules.h"
 #include "exec/task.h"
+
+/* strace hooks (kernel/shell/cmd_strace.c) — emit M68k libcall records into
+ * klog when a trace window is active.  Cheap gate: IsEnabled() returns a
+ * static flag, so this costs one function call per ILLEGAL dispatch. */
+extern int  Strace_IsEnabled(void);
+extern void Strace_M68kEntry(uint8_t lib, uint8_t fn, M68kCPUState *cpu);
+extern void Strace_M68kExit(uint8_t lib, uint8_t fn, int32_t result);
 
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
@@ -362,6 +370,7 @@ void m68k_write_memory_32(unsigned int addr, unsigned int val)
 }
 
 /* Disassembler uses these — just alias to the main ones */
+unsigned int m68k_read_disassembler_8 (unsigned int addr) { return m68k_read_memory_8(addr); }
 unsigned int m68k_read_disassembler_16(unsigned int addr) { return m68k_read_memory_16(addr); }
 unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_memory_32(addr); }
 
@@ -2817,6 +2826,7 @@ uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32
 
     while (!g_hook_return_detected[level]) {
         m68k_execute(1000);
+        Chiptrace_PcSample();
     }
 
     uint32_t d0 = m68k_get_reg(NULL, M68K_REG_D0);
@@ -2881,6 +2891,19 @@ int m68k_illg_instr_callback(int opcode)
             g_hook_return_detected[level] = 1;
         m68k_end_timeslice();
         return 1;
+    }
+
+    /* strace: emit the entry record (klog/ring+UART) while tracing */
+    int strace_on = Strace_IsEnabled();
+    M68kCPUState scpu;
+    if (strace_on) {
+        for (int i = 0; i < 8; i++) {
+            scpu.d[i] = (uint32_t)m68k_get_reg(NULL, M68K_REG_D0 + i);
+            scpu.a[i] = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0 + i);
+        }
+        scpu.pc = (uint32_t)m68k_get_reg(NULL, M68K_REG_PC);
+        scpu.sr = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+        Strace_M68kEntry(lib, fn, &scpu);
     }
 
     if (lib == LIB_EXEC) {
@@ -2982,6 +3005,9 @@ int m68k_illg_instr_callback(int opcode)
         msg[i++]='\n'; msg[i]='\0';
         emu_print(msg);
     }
+
+    if (strace_on)
+        Strace_M68kExit(lib, fn, (int32_t)m68k_get_reg(NULL, M68K_REG_D0));
 
     return 1; /* handled — continue execution */
 }
@@ -3313,6 +3339,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     int slices = 0;
     while (!g_emu_halted && slices < 200) {  /* max 200M cycles total */
         m68k_execute(1000000);
+        Chiptrace_PcSample();
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
         chip_emu_run_to_cycle(g_m68k_cycles);
         UAOS_Intuition_PostIntuiTicks();

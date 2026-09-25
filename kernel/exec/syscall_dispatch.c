@@ -16,6 +16,12 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* strace hook (kernel/shell/cmd_strace.c) — emits x64 syscall records into
+ * klog while a trace window is active.  Cheap gate: first statement checks
+ * a static flag and returns when tracing is off. */
+extern void Strace_Syscall(uint32_t num, uint64_t a1, uint64_t a2,
+                           uint64_t a3, int64_t result);
+
 /* -------------------------------------------------------------------------
  * Console output helper
  *
@@ -1026,6 +1032,9 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
         ret = 0;
         break;
     }
+
+    /* strace hook — emits the completed call into klog when tracing */
+    Strace_Syscall((uint32_t)n, rdi, rsi, rdx, ret);
 
     /* sys_exit does not return; all others write their return value back
      * into the saved RAX slot so the interrupted task sees it. */

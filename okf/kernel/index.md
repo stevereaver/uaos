@@ -36,3 +36,5 @@ The UAOS kernel is a bare-metal x86_64 kernel that boots via GRUB2 Multiboot2. I
 - [Audio Subsystem](/kernel/audio/index.md): Paula mixer, ring buffer, AC97, and PC speaker fallback.
 - [IRQ & Drivers](/kernel/irq/index.md): Interrupt handling and hardware abstraction.
 - [TCP/IP Network Stack](/kernel/net/index.md): IPv4 networking, DHCP, DNS, NTP, and socket API.
+- [Kernel Logging](/kernel/klog/index.md): Unified klog subsystem — KLOG emit API, per-subsystem runtime masks, ~47 KB ring buffer, and the `klog`/`dmesg` commands.
+- Diagnostics toolkit (UAOS-63): `C:strace` (syscall/thunk tracing through klog), `C:irqstat` (per-vector interrupt counters), `C:chiptrace` ([chipset register access tracer](/kernel/chipset/index.md) with M68k PC + disassembly), `C:memcheck` (Mungwall-style AllocMem guards/poison), kernel panic dump + `tools/symbolize.sh`, and `scripts/debug_qemu.sh` (QEMU GDB stub).

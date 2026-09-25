@@ -311,10 +311,7 @@ int UAOS_HandleThunk(M68kCPUState *cpu)
         return -1;
     }
 
-    /* DEBUG: Strace disabled to test for lockups
-     * Strace_ThunkEntry((uint32_t)func_idx, cpu);
-     */
-    (void)func_idx; (void)cpu;
+    Strace_ThunkEntry((uint32_t)func_idx, cpu);
 
     /* Save D0 for result capture (some stubs modify it) */
     uint32_t d0_before = cpu->d[0];
@@ -341,9 +338,7 @@ int UAOS_HandleThunk(M68kCPUState *cpu)
             return -2;
     }
 
-    /* DEBUG: Strace disabled to test for lockups
-     * Strace_ThunkExit((uint32_t)func_idx, cpu->d[0], 0);
-     */
+    Strace_ThunkExit((uint32_t)func_idx, cpu->d[0], 0);
 
     /* Advance guest PC past the entire 6-byte breakout sequence.
      * The RTS at the end of the stub is handled by the normal flow.        */

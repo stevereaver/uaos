@@ -7,6 +7,7 @@
 
 #include "task.h"
 #include "amiga_task.h"
+#include "chipset/chiptrace.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -304,6 +305,7 @@ static void m68k_wrapper_entry(void *arg)
     while (!task->m68k_halted) {
         /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles */
         m68k_execute(10000);
+        Chiptrace_PcSample();
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
         /* Note: chip_emu_run_to_cycle() is NOT called here because the
          * chipset emulator uses global blitter/copper state that is

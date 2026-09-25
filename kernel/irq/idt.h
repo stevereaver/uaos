@@ -35,6 +35,22 @@ void IDT_SetRawHandler(uint8_t vector, void (*handler)(void));
 void IDT_SetRawHandlerDPL3(uint8_t vector, void (*handler)(void));
 
 /* C dispatch entry (called from idt_stubs.asm isr_common) */
-void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip);
+/* Full interrupt frame as built by isr_common in idt_stubs.asm:
+ * 15 saved GPRs (r15 first = lowest address), then vector, error_code,
+ * and the CPU-pushed rip/cs/rflags/rsp/ss.  Passed to ISR_Dispatch so the
+ * exception path can dump a full register+stack context on panic. */
+typedef struct {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t vector, error_code;
+    uint64_t rip, cs, rflags, rsp, ss;
+} IsrFrame;
+
+void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
+                  IsrFrame *frame);
+
+/* Per-vector interrupt counters (256 entries) — for C:irqstat. */
+void IDT_SnapshotCounts(uint64_t *out);
+void IDT_ClearCounts(void);
 
 #endif

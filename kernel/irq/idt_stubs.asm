@@ -12,9 +12,9 @@ section .text
 ; -------------------------------------------------------------------------
 ; isr_common — saves all GPRs, calls C dispatcher, restores, iretq
 ; C prototype: void ISR_Dispatch(uint64_t vector, uint64_t error_code,
-;                                uint64_t rip, uint64_t cs,
-;                                uint64_t rflags, uint64_t rsp, uint64_t ss)
-; We pass the vector and error code in RDI/RSI (SysV ABI).
+;                                uint64_t rip, IsrFrame *frame)
+; We pass the vector in RDI, error code in RSI, rip in RDX, and a pointer
+; to the saved-GPR frame (the IsrFrame struct) in RCX.
 ; -------------------------------------------------------------------------
 
 extern ISR_Dispatch
@@ -59,6 +59,7 @@ isr_common:
     mov     rdi, [rsp + 15*8]   ; vector
     mov     rsi, [rsp + 16*8]   ; error_code
     mov     rdx, [rsp + 17*8]   ; rip
+    mov     rcx, rsp            ; frame: saved GPRs + cpu frame (IsrFrame)
     call    ISR_Dispatch
 
     ; -----------------------------------------------------------------

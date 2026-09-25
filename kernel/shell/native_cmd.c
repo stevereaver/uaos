@@ -79,6 +79,14 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
     CMD ("rx",              Cmd_Rx             ),
     CMDT("telnetd",         Cmd_Telnetd,       "PORT/K/N,STOP/S" ),
+    CMD ("strace",          Cmd_Strace         ),
+    CMD ("klog",            Cmd_Klog           ),
+    CMD ("debug",           Cmd_Klog           ),  /* alias */
+    CMD ("dmesg",           Cmd_Dmesg          ),
+    CMD ("irqstat",         Cmd_Irqstat        ),
+    CMD ("crash",           Cmd_Crash          ),
+    CMD ("memcheck",        Cmd_Memcheck       ),
+    CMD ("chiptrace",       Cmd_Chiptrace      ),
     /* Prefs editors (stubs — Phase 3) */
     CMD ("screenmode",      Cmd_ScreenMode  ),
     CMD ("font",            Cmd_Font        ),

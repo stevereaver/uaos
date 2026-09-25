@@ -103,6 +103,18 @@ The page fault handler (`kernel/exec/page_fault_handler.c`) decodes the x86_64 i
 
 For unknown instructions, the handler falls back to a 32-bit read/write and advances past the instruction so the guest does not crash.
 
+## Chiptrace — Register Access Tracer
+
+`kernel/chipset/chiptrace.c` instruments `chip_emu_read`/`chip_emu_write` so every access that reaches the emulator — from M68k memory callbacks or the page-fault decoder — can be logged through klog (`[chip]` lines on serial + the `dmesg` ring).  The write path is hooked at the top of `chip_emu_write`; reads are observed by a thin `chip_emu_read` wrapper around `chip_emu_read_impl` so the logged value is the value actually returned.
+
+- **Classes** (`chiptrace <class> [on|off]`): `chip` (all custom registers), `cia` (CIA-A/B at `$BFE`/`$BFD`), `paula` (`AUD0-3`, regoffs `0x0A0–0x0DF`), `disk` (`DSK*`, `DSKBYTR`, `DSKSYNC`).  `chiptrace on` enables all; the class test is a bitmask on the raw window offset so the hot path stays cheap.
+- **Decoded output**: `W DFF180 COLOR00 = 0xf0f` / `R BFD200 CIA-B.DDRA -> 0x55`.  A static table covers the well-known registers and range decoders produce `AUDx{LC,LEN,PER,VOL,DAT}`, `BPLxPT{H,L}`, `SPRx*`, `COLORnn`, `CIA-A/B.<reg>` names.  Unknown offsets print the absolute address with `?`.
+- **Repeat folding**: consecutive identical (op, offset, value) accesses collapse into one `xN` line (e.g. an 8× `DENISEID` read), and total output is capped at 400 lines/second with an over-cap `dropped` counter.
+- **Guest PC**: when the current task is `TASK_TYPE_M68K`, the Musashi `M68K_REG_PC` is appended (`pc=00100C`).
+- **PC disassembly**: `chiptrace pc [N]` enables sampled instruction tracing — `Chiptrace_PcSample()` runs after each `m68k_execute()` slice (exec_task.c, dos_lib.c, uaos_m68k_glue.c) and emits `PC 00114A  jsr (-$180,A6)` via Musashi's `m68k_disassemble` at most once per N 10 ms ticks.  `m68kdasm.c` is linked into the kernel; the build's `stubs.c` supplies real `sprintf`/`strcat`/`strcpy`/`qsort` for it.
+- **Commands**: `chiptrace` (status), `on`/`off`, `<class> [on|off]`, `pc [N|off]`, `test` (emits one access per class through `chip_emu` — safe registers only), `clear` (zero counters).  Counters reset on each `on`.
+- **Verification demo**: `system/Demos/ChipPoke.s` pokes one register per class then exits — `chiptrace on ; Demos/ChipPoke ; chiptrace off` prints the full decoded sequence with guest PCs.
+
 ## Integration with graphics.library
 
 `graphics.library` now builds real copper lists:

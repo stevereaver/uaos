@@ -113,9 +113,7 @@ int32_t DoPkt(MsgPort *port, int32_t action,
         g_dos_last_ioerr = pkt.dp_Res2;
     }
 
-    /* DEBUG: Strace disabled to test for lockups
-     * Strace_DosPacket(action, arg1, arg2, pkt.dp_Res1, pkt.dp_Res2);
-     */
+    Strace_DosPacket(action, arg1, arg2, pkt.dp_Res1, pkt.dp_Res2);
 
     return pkt.dp_Res1;
 }

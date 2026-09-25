@@ -283,6 +283,31 @@ Or log to a file:
   -serial file:/tmp/uaos_serial.log
 ```
 
+### Kernel debugging with GDB
+
+`scripts/debug_qemu.sh` boots the ISO under QEMU's built-in GDB stub
+(`-gdb tcp::1234 -S`): the CPU starts halted so you can set breakpoints
+before the first kernel instruction runs.
+
+```bash
+./scripts/build_iso.sh            # build the ISO first
+./scripts/debug_qemu.sh           # QEMU waits on :1234
+
+gdb build/uaos-kernel.elf
+(gdb) target remote :1234
+(gdb) hbreak uaos_kernel_main     # hardware breakpoint — see notes
+(gdb) continue
+```
+
+Notes:
+
+- The kernel runs in long mode on a 4 GB identity map, so ELF symbol
+  addresses match guest addresses directly.
+- Prefer `hbreak` over `break` — software breakpoints need write access
+  to the code page.
+- Serial debug output still goes to `/tmp/uaos_serial.log` (override
+  with `SERIAL_LOG=`); the stub port can be changed with `GDB_PORT=`.
+
 ---
 
 ## Using the Desktop
