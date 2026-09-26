@@ -27,6 +27,7 @@
 #include "dos/fat32.h"
 #include "exec/rom_modules.h"
 #include "shell/native_cmd.h"
+#include "../system_reboot.h"
 #include "shell/resident_cmd.h"
 #include "exec/uaos_binary.h"
 #include "exec/elf64_loader.h"
@@ -1066,15 +1067,7 @@ static void inst_cmd_reboot(ShellInstance *s)
     inst_print(s, "Rebooting...");
     inst_draw_history(s);
     inst_draw_input(s);
-    __asm__ volatile (
-        "1: inb  $0x64, %%al\n"
-        "   testb $0x02, %%al\n"
-        "   jnz 1b\n"
-        "   movb $0xFE, %%al\n"
-        "   outb %%al, $0x64\n"
-        :: : "eax"
-    );
-    for (;;) __asm__ volatile ("hlt");
+    System_Reboot();
 }
 
 /* =========================================================================
@@ -1486,19 +1479,38 @@ static void pad_field(char *dst, const char *src, int max, int width)
 
 static void format_cap(uint64_t bytes, char *out, int max)
 {
+    /* Show one decimal place when the value is below 10 of the unit so
+     * a 2047 MiB partition reports "2.0G" rather than truncating to "1G"
+     * (which looked like a sizing bug next to fdisk's 2047M). */
+    uint64_t unit;
+    char suffix;
     if (bytes < 1024) {
         uint_to_dec_s((uint32_t)bytes, out, max);
         scat(out, "B", max);
+        return;
     } else if (bytes < 1024 * 1024) {
-        uint_to_dec_s((uint32_t)(bytes / 1024), out, max);
-        scat(out, "K", max);
+        unit = 1024;
+        suffix = 'K';
     } else if (bytes < 1024ULL * 1024 * 1024) {
-        uint_to_dec_s((uint32_t)(bytes / (1024 * 1024)), out, max);
-        scat(out, "M", max);
+        unit = 1024 * 1024;
+        suffix = 'M';
     } else {
-        uint_to_dec_s((uint32_t)(bytes / (1024ULL * 1024 * 1024)), out, max);
-        scat(out, "G", max);
+        unit = 1024ULL * 1024 * 1024;
+        suffix = 'G';
     }
+
+    uint32_t whole = (uint32_t)(bytes / unit);
+    if (whole >= 10) {
+        uint_to_dec_s(whole, out, max);
+    } else {
+        uint32_t frac = (uint32_t)(((bytes % unit) * 10) / unit);
+        uint_to_dec_s(whole, out, max);
+        scat(out, ".", max);
+        char fd[2] = { (char)('0' + frac), '\0' };
+        scat(out, fd, max);
+    }
+    char suf[2] = { suffix, '\0' };
+    scat(out, suf, max);
 }
 
 static void inst_cmd_info(ShellInstance *s, const char *arg)
@@ -1572,13 +1584,33 @@ static void inst_cmd_info(ShellInstance *s, const char *arg)
             BlockDev_ReadVolLabel(dev, vol_label, sizeof(vol_label));
             const char *vol_name = vol_label[0] ? vol_label : name;
 
+            /* Query the mounted filesystem for real used/free figures;
+             * falls back to capacity/0 when the volume is not mounted. */
+            uint32_t vol_total = 0, vol_used = 0;
+            int have_stats = (VFS_GetVolumeInfo(name,
+                                                &vol_total, &vol_used) == 0);
+            char used_sz[16] = "0", free_sz[16] = "0", pct[8] = "0%";
+            if (have_stats) {
+                uint32_t vol_free =
+                    (vol_total > vol_used) ? vol_total - vol_used : 0;
+                format_cap(vol_used, used_sz, 16);
+                format_cap(vol_free, free_sz, 16);
+                uint32_t p = vol_total
+                    ? (uint32_t)((vol_used * 100ULL) / vol_total) : 0;
+                pct[0] = '\0';
+                uint_to_dec_s(p, pct, 8);
+                scat(pct, "%", 8);
+            } else {
+                format_cap(bytes, free_sz, 16);
+            }
+
             char line[MAX_LINE_LEN];
             line[0] = '\0';
             pad_field(line, name,         MAX_LINE_LEN, 10);
             pad_field(line, sz,           MAX_LINE_LEN, 11);
-            pad_field(line, "0",          MAX_LINE_LEN, 11);
-            pad_field(line, sz,           MAX_LINE_LEN, 11);
-            pad_field(line, "0%",         MAX_LINE_LEN, 6);
+            pad_field(line, used_sz,      MAX_LINE_LEN, 11);
+            pad_field(line, free_sz,      MAX_LINE_LEN, 11);
+            pad_field(line, pct,          MAX_LINE_LEN, 6);
             pad_field(line, "0",          MAX_LINE_LEN, 5);
             pad_field(line, "Read/Write", MAX_LINE_LEN, 14);
             pad_field(line, vol_name,     MAX_LINE_LEN, 10);
@@ -6067,11 +6099,11 @@ void *ShellWin_RemoteOpen(int tcp_sock)
                                (uintptr_t)(s->index + 1));
 }
 
-void ShellWin_RemoteFeed(void *session, char c)
+int ShellWin_RemoteFeed(void *session, char c)
 {
     ShellInstance *s = remote_from_handle(session);
-    if (!s || s->remote_dead) return;
-    shell_kb_enqueue(s, c);
+    if (!s || s->remote_dead) return 0;
+    return shell_kb_enqueue(s, c);
 }
 
 int ShellWin_RemoteIsDead(void *session)

@@ -518,9 +518,14 @@ static int virtio_wait_completion(uint16_t desc_idx, uint32_t timeout_ms)
             (void)inb(0x80);   /* dummy I/O → TCG block exit → QEMU events run */
         }
 
-        /* Simple timeout check (TODO: implement proper timer) */
+        /* Simple timeout check (TODO: implement proper timer).
+         * Iteration budget must be generous: under QEMU TCG on slow
+         * hosts (WSL) a qcow2-backed read can legitimately take well
+         * over a second, and ~20M pause-loop iterations is only a few
+         * hundred ms — too short, caused spurious I/O failures during
+         * bulk scans like FAT free-space counting. */
         iterations++;
-        if (iterations > 20000000) {
+        if (iterations > 400000000) {
             kprint("[VIRTIO] Timeout waiting for completion\n");
             return -1;
         }

@@ -81,6 +81,7 @@ typedef struct {
     uint32_t  sec_per_clus;   /* Sectors per cluster */
     uint32_t  cluster_size;   /* Cluster size in bytes */
     uint32_t  total_clusters; /* Total data clusters */
+    int32_t   free_clusters;  /* Cached free-cluster count (-1 = unknown) */
     uint8_t  *fat_cache;      /* FAT cache (simplified) */
     uint32_t  fat_cache_sec;  /* Cached FAT sector */
 } Fat32FS;
@@ -145,6 +146,10 @@ int FAT32_Delete(Fat32FS *fs, const char *path);
 
 /* Get volume statistics (total/used bytes). */
 void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_bytes);
+
+/* Copy the volume label (BPB vol_label, space-padded) into dst[max] with
+ * trailing spaces stripped.  Returns label length, 0 if none/invalid. */
+int FAT32_VolumeLabel(Fat32FS *fs, char *dst, int max);
 
 /* Format a block device with FAT32.  vol_label: optional 11-char volume name */
 int FAT32_Format(BlockDev *bdev, const char *vol_label);

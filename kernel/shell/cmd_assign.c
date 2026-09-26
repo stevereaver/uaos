@@ -21,7 +21,7 @@ void Cmd_Assign(NativeCmdCtx *ctx, const char *args)
 {
     if (!args || !*args) {
         /* List current assigns */
-        char buf[512];
+        char buf[1024];
         int n = VFS_ListAssigns(buf, sizeof(buf));
         if (n > 0) {
             PRINT("Current assigns:");

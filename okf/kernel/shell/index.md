@@ -91,7 +91,7 @@ AmigaDOS-style script template arguments are implemented across two files:
   - `/K` — keyword args, passed as `name=value` or `name value` (order-independent)
   - `/S` — switch (`<argname>` expands to `1` if present, empty if absent)
   - `/N` — numeric
-  - `/M` — multiple values (`<argname>` expands to all values joined by spaces)
+  - `/M` — multiple values (`<argname>` expands to all values joined by spaces). Positional `/M` matching reserves enough remaining tokens to satisfy later positional items — `FROM/M,TO/A` with `copy a b` assigns `FROM=a`, `TO=b` rather than letting `/M` swallow `b`. The same rule is implemented in the userspace template parser `system/libuaos/uaos_template.h` used by on-disk commands like `C:copy`.
   - `/F` — free-form (absorbs all remaining tokens)
   
   When a `.key` template is present, `$1`..`$9` are set in **template-item order** (the order names appear in the `.key` line), not raw token order. This ensures `<argname>` resolves correctly even when `/K` keyword args are passed out of order. If template matching fails, `execute` prints a warning and falls back to raw positional assignment. When there is no `.key` declaration, `$1`..`$9` remain raw positional tokens (backward compatible). `$*` always holds the full raw argument string.

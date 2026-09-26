@@ -81,6 +81,16 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             }
         }
 
+        /* Open() on a directory is an error in AmigaDOS — without this
+         * check a dir opened for read looks like an empty 0-byte file
+         * (which made `copy dir dst` create a file, not a directory). */
+        int was_dir = 0;
+        if (file && file->is_dir) {
+            FAT32_Close(file);
+            file = NULL;
+            was_dir = 1;
+        }
+
         if (file) {
             uint32_t handle = fat_alloc_file_handle(file);
             pkt->dp_Res1 = (int32_t)handle;
@@ -90,7 +100,8 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             }
         } else {
             pkt->dp_Res1 = 0;
-            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+            pkt->dp_Res2 = was_dir ? ERROR_OBJECT_WRONG_TYPE
+                                   : ERROR_OBJECT_NOT_FOUND;
         }
         break;
     }

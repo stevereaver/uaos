@@ -279,6 +279,25 @@ static inline void uaos_tmpl_match(UaosTmpl *out, const char *args)
             if (it->sw || it->keyword) continue;
             if (it->present && !it->multiple && !it->free_arg) continue;
 
+            /* A /M (multiple) item must not starve positional args that
+             * follow it: AmigaDOS only lets it absorb tokens while enough
+             * remain to fill the later positional items.  e.g. with
+             * "FROM/M,TO/A", `copy a b` must leave 'b' for TO. */
+            if (it->multiple) {
+                int needed = 0;
+                for (int k = j + 1; k < out->count; k++) {
+                    UaosTmplItem *later = &out->items[k];
+                    if (later->sw || later->keyword) continue;
+                    if (later->present) continue;
+                    needed++;
+                }
+                int free_toks = 0;
+                for (int k = i; k < ta.n; k++) {
+                    if (!ta.used[k]) free_toks++;
+                }
+                if (free_toks <= needed) continue;
+            }
+
             if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULTI) {
                 uaos_tmpl_scopy(it->values[it->value_count], ta.tok[i],
                                 UAOS_TMPL_MAX_VAL);

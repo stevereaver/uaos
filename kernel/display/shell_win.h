@@ -73,8 +73,12 @@ void *ShellWin_RemoteOpen(int tcp_sock);
  * caller: printable ASCII, '\r', '\b', '\t', or SHELL_VKEY_*).  Feeding
  * 0x03 (ETX / Ctrl-C) additionally requests a break: the flag is checked
  * by the command-dispatch loop, script runner and input waits, and the
- * session task is signalled so a foreground child wait wakes early. */
-void  ShellWin_RemoteFeed(void *session, char c);
+ * session task is signalled so a foreground child wait wakes early.
+ * Returns 1 if the byte was queued, 0 if the input queue was full (or the
+ * session is gone) — the caller should retry shortly rather than drop the
+ * byte, or a burst of input can lose the newline that terminates the
+ * current command and wedge the session. */
+int   ShellWin_RemoteFeed(void *session, char c);
 
 /* Returns 1 once the session slot has been released (disconnect handled,
  * endcli, or task exit) — the caller should close the socket then. */

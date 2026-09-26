@@ -34,6 +34,10 @@ The VFS layer (`kernel/dos/vfs.c`) provides a unified interface for multiple fil
 
 - **RAMFS**: An in-memory filesystem mounted at boot with `ENV:`, `T:`, `Clips:`, and `REXX:`.
 - **FAT32**: Read/write support for physical disk partitions (`kernel/dos/fat32.c`, `fat_handler.c`). Nested file/directory creation resolves the parent path to the found directory entry's own cluster (not the cluster containing that entry) and verifies the parent has the directory attribute. `VFS_ReadDir` uses the FAT handler's direct enumeration API (`FatHandler_ReadDir`) rather than the generic packet EXAMINE sequence. `FAT32_Mount` validates the BPB is genuinely FAT32 — OEM signature not "EXFAT", `root_ent_cnt==0`, `fat_sz16==0`, `fat_sz32>=1`, `root_clus>=2`, `bytes_per_sec` in 512..4096, `sec_per_clus` a power of two ≤128, `num_fats>0`, `total_sectors>0` — so FAT12/16, exFAT, and malformed media are rejected at mount instead of mounting and failing on every operation.
+  - **Format geometry**: `FAT32_Format` iterates the `fat_sz` ↔ cluster-count dependency to convergence (up to 16 passes) so the FAT always covers every data cluster — a fixed two-pass estimate could leave tail clusters with no FAT entries, which then scan as permanently "used". FATs are zeroed in ≤128-sector (64 KiB) batches sized to the VirtIO DMA buffer / `g_cluster_buf`.
+  - **Mount clamp**: `fs->total_clusters` is clamped to `fat_sz32 * (bytes_per_sec/4) - 2` at mount, so volumes written by a non-converged formatter can't report phantom used tail clusters or walk past the FAT end.
+  - **Volume statistics**: `FAT32_GetVolumeStats` caches the free-cluster count in `fs->free_clusters` (`-1` = unknown). The one-time FAT scan reads in `FAT32_MAX_CLUSTER_SECS` chunks (one sector per read made `info`/`dir` look hung on multi-GB volumes and could trip VirtIO timeouts); a partial/erroring scan is never cached. `fat32_alloc_cluster`/`fat32_free_chain` keep the cache exact on allocate/free, and all cluster-chain walks are bounded by `total_clusters` so a corrupt/cyclic chain can't loop forever.
+  - **Handler open**: the FAT handler refuses `FINDINPUT`/`FINDUPDATE` on directories (`ERROR_OBJECT_WRONG_TYPE`), so `open("DH0:dir")` can't create a handle that later stats as a 0-byte file.
 - **CrossDOS (FAT12/16)**: Read-only support for PC-format floppy disks and small partitions (`kernel/dos/crossdos_handler.c`). Probes boot sector to distinguish FAT12 from FAT16, reads root directory and file cluster chains. Mounted via `crossdos` shell command.
 - **PFS3**: Professional File System 3 support (`kernel/dos/pfs3.c`).
 - **EXT4**: Read-only EXT4 support (`kernel/dos/ext4.c`).
@@ -45,6 +49,10 @@ The VFS layer (`kernel/dos/vfs.c`) provides a unified interface for multiple fil
 
 `VfsDirEnt` carries an `mtime` field (Unix epoch seconds): the RAMFS branch of `VFS_ReadDir` fills it from `RamFsNode.mtime`, the generic EXAMINE path converts `fib_Date` (same `ds_Days - 2922` convention as `locale_lib.c`), and `FatHandler_ReadDir` reports 0 since `FAT32_ReadDir` doesn't surface dates yet.
 
+### Assigns
+
+`g_assigns[MAX_ASSIGNS]` (64 slots, ~line 1177 of `vfs.c`) holds the assign table; each entry allows up to `ASSIGN_MAX_TARGETS` (8) multi-assign targets. `resolve_assign_path()` fully expands *chained* assigns (e.g. `ACElib:` → `ACE:lib` → `SYS:ACE/lib` → `Workbench:ACE/lib`) with a depth cap of 8 — the same helper resolves non-DEFER targets inside `VFS_AddAssign`, so assigns may be rooted at other assigns, and each expanded target in the multi-assign loops (`VFS_Open`/`VFS_OpenDir`/`VFS_ResolveDir`) is re-resolved for the same reason. Capacity drops are not silent: `VFS_AddAssign` emits a `kprint("[VFS] WARN: ...")` on a full table or max-targets so `Assign >NIL:` redirects in Startup-Sequence can't hide them.
+
 ### RAMFS Data Pool
 
 RAMFS uses a shared bump-allocator data pool (`g_pool` in `kernel/dos/ramfs.c`) for all file content across all volumes. The pool is 8 MB. `VFS_Write` pre-allocates a 4 KB block per file on first write (`VFS_BLOCK_SZ` in `vfs.c`); writes beyond the block are truncated. The bump allocator does not reclaim freed memory when files are deleted, so the pool can still be exhausted under heavy file churn. If `RamFS_AllocPool` returns NULL, `VFS_Write` returns 0 (silent write failure — the file remains empty).
@@ -53,7 +61,8 @@ RAMFS uses a shared bump-allocator data pool (`g_pool` in `kernel/dos/ramfs.c`) 
 
 - **Block device layer (`blockdev.c`)**: Unified interface for storage devices.
 - **Partition table (`partition.c`)**: MBR parsing and partition registration.
-- **Boot auto-mount**: `boot_automount_partitions()` in `uaos_kernel_main.c` is shared by the virtio-blk and virtio-scsi paths — both mount every formatted MBR partition under its display name (DH0:, DH1:) without requiring the UAOS-meta `automount` flag. Formatting a mounted partition calls `VFS_RemountPartition()` under that same display name to refresh the handler's cached FAT32 geometry; `Name=` remains only the on-disk FAT volume label.
+- **Boot auto-mount**: `boot_automount_partitions()` in `uaos_kernel_main.c` is shared by the virtio-blk and virtio-scsi paths — both mount every formatted MBR partition under its display name (DH0:, DH1:) without requiring the UAOS-meta `automount` flag. Formatting a mounted partition calls `VFS_RemountPartition()` under that same display name to refresh the handler's cached FAT32 geometry and re-read the volume label.
+- **Volume labels**: each `MountEntry` carries `vol_name` (the unit name, e.g. `DH0`) plus `vol_label` read from the filesystem at mount (`FAT32_VolumeLabel`, from the BPB; "NO NAME"/empty counts as none). Both names resolve as path prefixes — `cd wb:` and `cd DH0:` reach the same disk — with unit names taking precedence so a label can't shadow a real mount or assign. `VFS_GetMountName` returns the label when present, so the desktop icon and `info`'s "Volumes available" show the volume name (e.g. `WB:`), matching AmigaDOS.
 - **IDE driver (`kernel/drivers/ide.c`)**: ATA/ATAPI PIO access for hard disks and CD-ROMs.
 - **VirtIO Block (`virtio_blk.c`)**: VirtIO-compliant block device driver.
 

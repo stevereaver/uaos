@@ -18,7 +18,9 @@
 #define MAX_MOUNTS  16
 
 typedef struct {
-    char      vol_name[16]; /* e.g. "RAM" (no colon) */
+    char      vol_name[16];  /* e.g. "RAM" (no colon) — unit/mount name */
+    char      vol_label[16]; /* filesystem volume label, e.g. FAT "WB" —
+                              * resolvable alias + display name (empty = none) */
     RamFsVol *vol;          /* direct pointer for native VFS access */
     Handler  *handler;      /* packet handler for DoPkt routing */
 } MountEntry;
@@ -88,9 +90,15 @@ static MountEntry *find_mount(const char *name)
         return NULL;
     }
 
-    /* Direct volume lookup */
+    /* Direct volume lookup — unit names take precedence over labels so
+     * a disk labeled "RAM" can't shadow the real RAM: mount. */
     for (int i = 0; i < g_n_mounts; i++)
         if (seq_ci(g_mounts[i].vol_name, name))
+            return &g_mounts[i];
+    /* AmigaDOS semantics: the filesystem's volume label is also a valid
+     * path prefix ("cd wb:" on the disk whose unit is DH0:). */
+    for (int i = 0; i < g_n_mounts; i++)
+        if (g_mounts[i].vol_label[0] && seq_ci(g_mounts[i].vol_label, name))
             return &g_mounts[i];
     return NULL;
 }
@@ -110,39 +118,47 @@ static Handler *find_handler(const char *name)
 }
 
 /* Get the actual target path for a path that may contain assigns.
- * Writes resolved path to dst[max]. Returns dst or NULL on error. */
+ * Writes resolved path to dst[max]. Returns dst or NULL on error.
+ * Chained assigns are fully expanded ("ACElib:x" -> "ACE:lib/x" ->
+ * "SYS:ACE/lib/x" -> "Workbench:ACE/lib/x"), depth-capped to guard
+ * against assign cycles. */
 static const char *resolve_assign_path(const char *path, char *dst, int max)
 {
-    char vol_name[16];
-    int vl = extract_vol(path, vol_name, 16);
-    if (!vl) {
-        /* No volume prefix - return as-is */
-        int i = 0;
-        while (i < max - 1 && path[i]) { dst[i] = path[i]; i++; }
-        dst[i] = '\0';
-        return dst;
+    char src[128];
+    int i = 0;
+    while (i < (int)sizeof(src) - 1 && path[i]) { src[i] = path[i]; i++; }
+    src[i] = '\0';
+
+    for (int depth = 0; depth < 8; depth++) {
+        char vol_name[16];
+        int vl = extract_vol(src, vol_name, 16);
+        if (!vl) break; /* No volume prefix */
+
+        const char *assign_target = VFS_ResolveAssign(vol_name);
+        if (!assign_target) break; /* Not an assign - resolved */
+
+        /* Expand assign: "C:dir" -> "Workbench:C/dir" */
+        int ti = 0;
+        while (ti < max - 1 && assign_target[ti]) { dst[ti] = assign_target[ti]; ti++; }
+
+        /* Append rest of path */
+        const char *rest = src + vl + 1; /* skip "VOL:" */
+        if (*rest) {
+            if (ti < max - 1 && assign_target[ti-1] != ':') dst[ti++] = '/';
+            while (ti < max - 1 && *rest) { dst[ti++] = *rest++; }
+        }
+        dst[ti] = '\0';
+
+        /* Feed the expansion back in for the next hop */
+        i = 0;
+        while (i < (int)sizeof(src) - 1 && dst[i]) { src[i] = dst[i]; i++; }
+        src[i] = '\0';
     }
 
-    const char *assign_target = VFS_ResolveAssign(vol_name);
-    if (!assign_target) {
-        /* Not an assign - return original path */
-        int i = 0;
-        while (i < max - 1 && path[i]) { dst[i] = path[i]; i++; }
-        dst[i] = '\0';
-        return dst;
-    }
-
-    /* Expand assign: "C:dir" -> "Workbench:C/dir" */
-    int ti = 0;
-    while (ti < max - 1 && assign_target[ti]) { dst[ti] = assign_target[ti]; ti++; }
-
-    /* Append rest of path */
-    const char *rest = path + vl + 1; /* skip "VOL:" */
-    if (*rest) {
-        if (ti < max - 1 && assign_target[ti-1] != ':') dst[ti++] = '/';
-        while (ti < max - 1 && *rest) { dst[ti++] = *rest++; }
-    }
-    dst[ti] = '\0';
+    /* Return the last expansion (or the unexpanded path if no hops ran) */
+    i = 0;
+    while (i < max - 1 && src[i]) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
     return dst;
 }
 
@@ -150,13 +166,24 @@ static const char *resolve_assign_path(const char *path, char *dst, int max)
 static const char *expand_with_target(const char *path, int vol_len,
                                       const char *target, char *dst, int max);
 
+/* Copy a filesystem volume label into a mount entry (truncated to 15). */
+static void mount_set_label(MountEntry *m, const char *label)
+{
+    int i = 0;
+    if (label)
+        while (i < 15 && label[i]) { m->vol_label[i] = label[i]; i++; }
+    m->vol_label[i] = '\0';
+}
+
 /* Register a mounted volume with an associated packet handler */
-static void register_mount(const char *name, RamFsVol *vol, Handler *handler)
+static void register_mount(const char *name, const char *label,
+                           RamFsVol *vol, Handler *handler)
 {
     if (g_n_mounts >= MAX_MOUNTS) return;
     int i = 0;
     while (i < 15 && name[i]) { g_mounts[g_n_mounts].vol_name[i] = name[i]; i++; }
     g_mounts[g_n_mounts].vol_name[i] = '\0';
+    mount_set_label(&g_mounts[g_n_mounts], label);
     g_mounts[g_n_mounts].vol     = vol;
     g_mounts[g_n_mounts].handler = handler;
     g_n_mounts++;
@@ -175,7 +202,7 @@ void VFS_Init(void)
     RamFsVol *ram = RamFS_MountVol("RAM");
     if (!ram) return;
     Handler *ram_handler = RamHandler_Create("ram-handler", ram);
-    register_mount("RAM", ram, ram_handler);
+    register_mount("RAM", NULL, ram, ram_handler);
 
     /* Standard AmigaDOS RAM disk directories */
     RamFS_MkDir(ram, "RAM:T");
@@ -275,13 +302,16 @@ int VFS_MountPartition(const char *name)
     Fat32FS *fs = FAT32_Mount(bdev);
     if (!fs) return -1;
 
+    char label[16];
+    FAT32_VolumeLabel(fs, label, sizeof(label));
+
     Handler *handler = FatHandler_Create(name, fs);
     if (!handler) {
         FAT32_Unmount(fs);
         return -1;
     }
 
-    register_mount(name, NULL, handler);
+    register_mount(name, label[0] ? label : NULL, NULL, handler);
     return 0;
 }
 
@@ -295,10 +325,14 @@ int VFS_RemountPartition(const char *name)
     Fat32FS *fs = FAT32_Mount(bdev);
     if (!fs) return -1;
 
+    char label[16];
+    FAT32_VolumeLabel(fs, label, sizeof(label));
+
     for (int i = 0; i < g_n_mounts; i++) {
         if (seq(g_mounts[i].vol_name, name)) {
             if (!g_mounts[i].handler) return -1;
             g_mounts[i].handler->private = fs;
+            mount_set_label(&g_mounts[i], label);
             return 0;
         }
     }
@@ -319,7 +353,7 @@ int VFS_MountExistingVol(const char *name, RamFsVol *vol)
     if (g_n_mounts >= MAX_MOUNTS) return -1;
 
     Handler *handler = RamHandler_Create(name, vol);
-    register_mount(name, vol, handler);
+    register_mount(name, NULL, vol, handler);
     return 0;
 }
 
@@ -338,13 +372,16 @@ int VFS_MountFat(const char *name, BlockDev *bdev)
     Fat32FS *fs = FAT32_Mount(bdev);
     if (!fs) return -1;
 
+    char label[16];
+    FAT32_VolumeLabel(fs, label, sizeof(label));
+
     Handler *handler = FatHandler_Create(name, fs);
     if (!handler) {
         FAT32_Unmount(fs);
         return -1;
     }
 
-    register_mount(name, NULL, handler);
+    register_mount(name, label[0] ? label : NULL, NULL, handler);
     return 0;
 }
 
@@ -356,9 +393,15 @@ int VFS_GetMountCount(void)
 int VFS_GetMountName(int idx, char *dst, int max)
 {
     if (idx < 0 || idx >= g_n_mounts || !dst || max < 2) return 0;
+    /* Display name is the filesystem volume label when present
+     * (AmigaDOS: the desktop shows "Workbench", not "DH0"), else the
+     * unit/mount name.  Both names resolve as path prefixes. */
+    const char *name = g_mounts[idx].vol_label[0]
+                       ? g_mounts[idx].vol_label
+                       : g_mounts[idx].vol_name;
     int i = 0;
-    while (i < max - 1 && g_mounts[idx].vol_name[i]) {
-        dst[i] = g_mounts[idx].vol_name[i];
+    while (i < max - 1 && name[i]) {
+        dst[i] = name[i];
         i++;
     }
     dst[i] = '\0';
@@ -405,6 +448,9 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
             if (!target) continue;
             expand_with_target(path, vl, target, resolved_path,
                                sizeof(resolved_path));
+            /* Targets may themselves route through assigns */
+            resolve_assign_path(resolved_path, resolved_path,
+                                sizeof(resolved_path));
 
             char rvol[16];
             if (!extract_vol(resolved_path, rvol, 16)) continue;
@@ -612,14 +658,20 @@ uint32_t VFS_Size(VfsFile *fh)
 
     /* Handler-backed file: use ACTION_SEEK with OFFSET_END to get size */
     if (fh->handler_port && fh->handle_id) {
+        /* AmigaDOS Seek returns the position *before* the move, so
+         * Seek(0, OFFSET_END) reports the old position, not the size.
+         * A second Seek(0, OFFSET_CURRENT) is needed to read back the
+         * end position (= file size), then restore the original pos. */
         int32_t old = DoPkt(fh->handler_port, ACTION_SEEK,
                             (int32_t)fh->handle_id,
                             0, OFFSET_END, 0, 0);
-        /* Seek returns the old position; restore it */
+        int32_t size = DoPkt(fh->handler_port, ACTION_SEEK,
+                             (int32_t)fh->handle_id,
+                             0, OFFSET_CURRENT, 0, 0);
         DoPkt(fh->handler_port, ACTION_SEEK,
               (int32_t)fh->handle_id,
               old, OFFSET_BEGINNING, 0, 0);
-        return (old > 0) ? (uint32_t)old : 0;
+        return (size > 0) ? (uint32_t)size : 0;
     }
 
     if (!fh->node) return 0;
@@ -700,6 +752,9 @@ RamFsNode *VFS_OpenDir(const char *path)
             if (!target) continue;
             expand_with_target(path, vl, target, resolved_path,
                                sizeof(resolved_path));
+            /* Targets may themselves route through assigns */
+            resolve_assign_path(resolved_path, resolved_path,
+                                sizeof(resolved_path));
 
             char rvol[16];
             int rvl = extract_vol(resolved_path, rvol, 16);
@@ -760,6 +815,9 @@ RamFsNode *VFS_ResolveDir(const char *path)
             if (!target) continue;
             expand_with_target(path, vl, target, resolved_path,
                                sizeof(resolved_path));
+            /* Targets may themselves route through assigns */
+            resolve_assign_path(resolved_path, resolved_path,
+                                sizeof(resolved_path));
 
             char rvol[16];
             int rvl = extract_vol(resolved_path, rvol, 16);
@@ -1151,12 +1209,13 @@ int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_by
         return 0;
     }
 
-    /* Handler-backed: dispatch ACTION_DISK_INFO */
+    /* Handler-backed: dispatch ACTION_DISK_INFO.  The InfoData pointer
+     * goes in dp_Arg2 (dp_Arg1 is the volume lock, unused here). */
     Handler *h = find_handler(vol_name);
     if (h) {
         InfoData id;
         int32_t res = DoPkt(&h->port, ACTION_DISK_INFO,
-                            (intptr_t)&id, 0, 0, 0, 0);
+                            0, (intptr_t)&id, 0, 0, 0);
         if (res == DOSTRUE) {
             *total_bytes = (uint32_t)id.id_NumBlocks * (uint32_t)id.id_BytesPerBlock;
             *used_bytes  = (uint32_t)id.id_NumBlocksUsed * (uint32_t)id.id_BytesPerBlock;
@@ -1174,7 +1233,7 @@ int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_by
  * makes "LIBS:foo" search Workbench:LIBS/foo then SYS:Classes/foo.
  * ========================================================================= */
 
-#define MAX_ASSIGNS 16
+#define MAX_ASSIGNS 64
 #define ASSIGN_MAX_NAME 16
 #define ASSIGN_MAX_PATH 64
 #define ASSIGN_MAX_TARGETS 8
@@ -1258,10 +1317,16 @@ int VFS_AddAssign(const char *assign_name, const char *target_path,
     strip_colon(name, assign_name, ASSIGN_MAX_NAME);
     if (!name[0]) return -1;
 
-    /* Validate target path exists unless DEFER is set */
+    /* Validate target path exists unless DEFER is set.
+     * Resolve chained assigns first so targets like "ACE:lib"
+     * (ACE -> SYS:ACE, SYS -> Workbench:) validate against the
+     * real backing volume. */
     if (!defer) {
+        char resolved[128];
+        if (!resolve_assign_path(target_path, resolved, sizeof(resolved)))
+            return -1;
         char test_vol[16];
-        if (!extract_vol(target_path, test_vol, 16)) return -1;
+        if (!extract_vol(resolved, test_vol, 16)) return -1;
         if (!find_vol(test_vol)) return -1;
     }
 
@@ -1269,8 +1334,15 @@ int VFS_AddAssign(const char *assign_name, const char *target_path,
 
     if (idx >= 0 && add) {
         /* Append to existing multi-assign */
-        if (g_assigns[idx].target_count >= ASSIGN_MAX_TARGETS)
+        if (g_assigns[idx].target_count >= ASSIGN_MAX_TARGETS) {
+            /* Log to kernel console so '>NIL:' redirects cannot hide the drop */
+            kprint("[VFS] WARN: assign '");
+            kprint(name);
+            kprint("' has max targets, dropping '");
+            kprint(target_path);
+            kprint("'\n");
             return -1; /* Too many targets */
+        }
         /* Check for duplicate target */
         for (int t = 0; t < g_assigns[idx].target_count; t++) {
             if (seq_ci_assign(g_assigns[idx].targets[t], target_path))
@@ -1307,7 +1379,13 @@ int VFS_AddAssign(const char *assign_name, const char *target_path,
             break;
         }
     }
-    if (free_idx < 0) return -1; /* Table full */
+    if (free_idx < 0) {
+        /* Log to kernel console so '>NIL:' redirects cannot hide the drop */
+        kprint("[VFS] WARN: assign table full, dropping '");
+        kprint(name);
+        kprint("'\n");
+        return -1; /* Table full */
+    }
 
     int ni = 0;
     while (ni < ASSIGN_MAX_NAME - 1 && name[ni]) {

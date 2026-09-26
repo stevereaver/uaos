@@ -249,7 +249,12 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   `remote_dead` via the existing `close_shell` callback, which makes the
   session task exit and releases the slot.
 - Input: `ShellWin_RemoteFeed()` enqueues NVT-decoded bytes into the
-  instance's normal key ring.  `inst_handle_key` dispatches to a remote
+  instance's normal key ring and returns whether every byte was
+  accepted; when the 64-byte ring is full it returns false and the
+  telnetd pump retries the remainder on the next poll instead of
+  dropping it — a dropped newline previously left the session waiting
+  for line termination forever, making input bursts look like a hang.
+  `inst_handle_key` dispatches to a remote
   line editor that mirrors the window editor (history recall, cursor
   keys, tab completion, backspace) but repaints with
   `\r` + `ESC[2K` + prompt + buffer instead of the framebuffer input bar.

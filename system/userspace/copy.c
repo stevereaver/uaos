@@ -154,6 +154,10 @@ int main(int argc, const char **argv)
             int is_dir = (uaos_stat(abs_src, &st) == 0 && st.is_dir);
             if (is_dir && all) {
                 copy_dir(abs_src, abs_dst, clone, com, quiet, nopro, NULL);
+            } else if (is_dir) {
+                /* AmigaDOS: copying a dir without ALL creates the
+                 * destination directory but does not recurse. */
+                uaos_mkdir(abs_dst);
             } else {
                 copy_one(abs_src, abs_dst, clone, com, quiet, nopro);
             }

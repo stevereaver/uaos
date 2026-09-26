@@ -564,7 +564,10 @@ static int sys_stat(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     char abs_path[UAOS_PATH_MAX];
     make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
 
-    /* Directories first — VFS_Open may refuse them. */
+    /* Directories first — VFS_Open may refuse them.  VFS_IsDir covers
+     * both RAMFS and handler-backed (FAT32) volumes; without it a FAT32
+     * directory falls through to VFS_Open and looks like a 0-byte file
+     * (which made `copy dir dst` create a file, not a directory). */
     RamFsNode *dir = VFS_ResolveDir(abs_path);
     if (dir) {
         st->size    = 0;
@@ -572,6 +575,14 @@ static int sys_stat(uint64_t rdi, uint64_t rsi, uint64_t rdx)
         st->attrs   = dir->attrs;
         st->protection = dir->protection;
         st->mtime   = dir->mtime;
+        return 0;
+    }
+    if (VFS_IsDir(abs_path)) {
+        st->size    = 0;
+        st->is_dir  = 1;
+        st->attrs   = 0;
+        st->protection = VFS_GetProtection(abs_path);
+        st->mtime   = 0;
         return 0;
     }
 

@@ -229,6 +229,8 @@ static uint32_t fat32_alloc_cluster(Fat32FS *fs)
                 /* Zero the cluster data */
                 if (fat32_zero_cluster(fs, cluster) != 0)
                     return 0;
+                if (fs->free_clusters > 0)
+                    fs->free_clusters--;
                 return cluster;
             }
         }
@@ -238,13 +240,19 @@ static uint32_t fat32_alloc_cluster(Fat32FS *fs)
     return 0;
 }
 
-/* Free an entire cluster chain starting at start_cluster */
+/* Free an entire cluster chain starting at start_cluster.
+ * Bounded by total_clusters: a corrupt FAT could otherwise send us
+ * around a cycle forever and hang the calling task. */
 static void fat32_free_chain(Fat32FS *fs, uint32_t start_cluster)
 {
     uint32_t cluster = start_cluster;
-    while (cluster >= 2 && !FAT32_IS_EOC(cluster)) {
+    uint32_t guard = fs->total_clusters + 2;
+    while (cluster >= 2 && !FAT32_IS_EOC(cluster) && guard-- > 0) {
         uint32_t next = fat32_get_fat_entry(fs, cluster);
         fat32_set_fat_entry(fs, cluster, 0);
+        if (fs->free_clusters >= 0 &&
+            fs->free_clusters < (int32_t)fs->total_clusters)
+            fs->free_clusters++;
         cluster = next;
     }
 }
@@ -342,8 +350,9 @@ static int fat32_find_in_dir(Fat32FS *fs, uint32_t dir_cluster,
 {
     uint32_t cluster = dir_cluster;
     uint32_t ents_per_cluster = fs->cluster_size / FAT32_DIR_ENTRY_SIZE;
+    uint32_t guard = fs->total_clusters + 2;   /* corrupt-FAT cycle bound */
 
-    while (cluster >= 2 && !FAT32_IS_EOC(cluster)) {
+    while (cluster >= 2 && !FAT32_IS_EOC(cluster) && guard-- > 0) {
         if (fat32_read_cluster(fs, cluster, g_cluster_buf) != 0) return 0;
         uint32_t sec = fat32_cluster_to_sector(fs, cluster);
 
@@ -379,8 +388,9 @@ static int fat32_find_free_dir_slot(Fat32FS *fs, uint32_t dir_cluster,
     uint32_t cluster = dir_cluster;
     uint32_t ents_per_cluster = fs->cluster_size / FAT32_DIR_ENTRY_SIZE;
     uint32_t last_cluster = cluster;
+    uint32_t guard = fs->total_clusters + 2;   /* corrupt-FAT cycle bound */
 
-    while (cluster >= 2 && !FAT32_IS_EOC(cluster)) {
+    while (cluster >= 2 && !FAT32_IS_EOC(cluster) && guard-- > 0) {
         if (fat32_read_cluster(fs, cluster, g_cluster_buf) != 0) return 0;
         uint32_t sec = fat32_cluster_to_sector(fs, cluster);
 
@@ -607,10 +617,20 @@ Fat32FS *FAT32_Mount(BlockDev *bdev)
         return NULL;
     }
     fs->total_clusters = (tot_sec - fs->data_start) / fs->sec_per_clus;
+    /* Clamp to what the FAT can actually address: the FAT holds
+     * fat_sz32 * (bytes_per_sec/4) entries, of which 0 and 1 are
+     * reserved.  Volumes whose BPB claims more clusters than the FAT
+     * can hold (e.g. written by a non-converged formatter) would
+     * otherwise report the tail clusters as permanently "used" and
+     * could walk past the FAT end. */
+    uint32_t fat_capacity = fat_sz32 * (fs->bytes_per_sec / 4);
+    if (fat_capacity > 2 && fs->total_clusters > fat_capacity - 2)
+        fs->total_clusters = fat_capacity - 2;
     if (fs->total_clusters == 0) {
         printf("[FAT32] No data clusters\n");
         return NULL;
     }
+    fs->free_clusters = -1;   /* computed lazily by FAT32_GetVolumeStats */
 
     printf("[FAT32] Mounted: bytes/sec=%u, sec/clus=%u, root_clus=%u, "
            "total_clusters=%u\n",
@@ -907,7 +927,9 @@ int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir)
         dir->iter_offset = 0;
     }
 
-    while (dir->iter_cluster >= 2 && !FAT32_IS_EOC(dir->iter_cluster)) {
+    uint32_t guard = fs->total_clusters + 2;   /* corrupt-FAT cycle bound */
+    while (dir->iter_cluster >= 2 && !FAT32_IS_EOC(dir->iter_cluster) &&
+           guard-- > 0) {
         /* Read the current cluster if we're at offset 0 within it */
         if (dir->iter_offset == 0) {
             if (fat32_read_cluster(fs, dir->iter_cluster, g_cluster_buf) != 0)
@@ -1111,25 +1133,73 @@ void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_byt
 {
     if (!fs) return;
     uint32_t total = fs->total_clusters * fs->cluster_size;
-    uint32_t used = 0;
 
-    /* Count used clusters by scanning the FAT */
-    uint32_t fat_sz = fs->bpb.fat_sz32;
-    for (uint32_t sec = 0; sec < fat_sz; sec++) {
-        if (BlockDev_Read(fs->bdev, fs->fat_start + sec,
-                          g_sector_buf, 1) != 0) break;
+    /* The free count is cached in fs->free_clusters and maintained by
+     * fat32_alloc_cluster/fat32_free_chain.  Compute it with a full FAT
+     * scan only the first time — on volumes with small clusters the FAT
+     * spans tens of thousands of sectors, and rescanning on every
+     * `dir`/`info` call makes the shell appear to hang. */
+    if (fs->free_clusters < 0) {
+        uint32_t free_cnt = 0;
+        uint32_t fat_sz = fs->bpb.fat_sz32;
         uint32_t ents_per_sec = fs->bytes_per_sec / 4;
-        for (uint32_t e = 0; e < ents_per_sec; e++) {
-            uint32_t cluster = sec * ents_per_sec + e;
-            if (cluster < 2 || cluster >= fs->total_clusters + 2)
-                continue;
-            uint32_t val = le32(&g_sector_buf[e * 4]) & 0x0FFFFFFF;
-            if (val != 0) used++;
+        int scan_ok = 1;
+
+        /* Read the FAT in large chunks — one sector per request turned a
+         * full scan into thousands of synchronous device reads (slow, and
+         * each one is another chance to hit a device timeout). */
+        for (uint32_t sec = 0; sec < fat_sz && scan_ok;
+             sec += FAT32_MAX_CLUSTER_SECS) {
+            uint32_t batch = fat_sz - sec;
+            if (batch > FAT32_MAX_CLUSTER_SECS) batch = FAT32_MAX_CLUSTER_SECS;
+            if (BlockDev_Read(fs->bdev, fs->fat_start + sec,
+                              g_cluster_buf, batch) != 0 &&
+                BlockDev_Read(fs->bdev, fs->fat_start + sec,
+                              g_cluster_buf, batch) != 0) {
+                scan_ok = 0;   /* retry once, then give up */
+                break;
+            }
+            for (uint32_t i = 0; i < batch * ents_per_sec; i++) {
+                uint32_t cluster = sec * ents_per_sec + i;
+                if (cluster < 2 || cluster >= fs->total_clusters + 2)
+                    continue;
+                uint32_t val = le32(&g_cluster_buf[i * 4]) & 0x0FFFFFFF;
+                if (val == 0) free_cnt++;
+            }
         }
+
+        /* Only cache a complete scan — caching a partial count after an
+         * I/O error makes used/free wildly wrong and stays wrong. */
+        if (scan_ok) fs->free_clusters = (int32_t)free_cnt;
     }
 
+    uint32_t used = 0;
+    if (fs->free_clusters <= (int32_t)fs->total_clusters)
+        used = (fs->total_clusters - (uint32_t)fs->free_clusters)
+               * fs->cluster_size;
+
     if (total_bytes) *total_bytes = total;
-    if (used_bytes)  *used_bytes = used * fs->cluster_size;
+    if (used_bytes)  *used_bytes = used;
+}
+
+int FAT32_VolumeLabel(Fat32FS *fs, char *dst, int max)
+{
+    if (!fs || !dst || max < 2) return 0;
+    /* BPB vol_label is 11 bytes, space-padded, no NUL.  Copy then trim
+     * trailing spaces.  "NO NAME" (the formatter's blank label) counts
+     * as no label so the unit name remains the display name. */
+    int len = 11;
+    while (len > 0 && fs->bpb.vol_label[len - 1] == ' ') len--;
+    if (len == 0) { dst[0] = '\0'; return 0; }
+    if (len == 7 && memcmp(fs->bpb.vol_label, "NO NAME", 7) == 0) {
+        dst[0] = '\0';
+        return 0;
+    }
+    if (len > max - 1) len = max - 1;
+    int i;
+    for (i = 0; i < len; i++) dst[i] = (char)fs->bpb.vol_label[i];
+    dst[i] = '\0';
+    return len;
 }
 
 /* =========================================================================
@@ -1170,20 +1240,21 @@ int FAT32_Format(BlockDev *bdev, const char *vol_label)
     uint8_t  num_fats      = 2;
     uint32_t root_clus     = 2;
 
-    /* Approximate data sectors and cluster count */
-    uint32_t data_sectors = (uint32_t)(total_sectors - rsvd_sec_cnt);
-    uint32_t total_clusters = data_sectors / sec_per_clus;
-    /* FAT size = ceil(total_clusters * 4 / 512) */
-    uint32_t fat_sz = (total_clusters + 127) / 128;
-    if (fat_sz < 1) fat_sz = 1;
-
-    /* Re-calculate with actual FAT size */
-    data_sectors = (uint32_t)total_sectors - rsvd_sec_cnt - (num_fats * fat_sz);
-    total_clusters = data_sectors / sec_per_clus;
-
-    /* Re-calculate FAT size to cover all clusters */
-    fat_sz = (total_clusters + 127) / 128;
-    if (fat_sz < 1) fat_sz = 1;
+    /* Iterate to convergence: FAT size depends on cluster count which
+     * itself depends on FAT size.  Two passes are NOT always enough —
+     * a fixed pair of passes can leave the FAT a few sectors short so
+     * the tail clusters have no FAT entries (they then look "used"). */
+    uint32_t fat_sz = 1;
+    uint32_t data_sectors = 0, total_clusters = 0;
+    for (int iter = 0; iter < 16; iter++) {
+        data_sectors = (uint32_t)total_sectors - rsvd_sec_cnt
+                       - (num_fats * fat_sz);
+        total_clusters = data_sectors / sec_per_clus;
+        /* entries needed = data clusters + 2 reserved FAT entries */
+        uint32_t need = (total_clusters + 2 + 127) / 128;
+        if (need <= fat_sz) break;   /* covers all clusters; done */
+        fat_sz = need;
+    }
 
     printf("[FAT32] Format: %u sectors, clus=%u, FAT=%u sectors\n",
            (uint32_t)total_sectors, sec_per_clus, fat_sz);
@@ -1275,9 +1346,9 @@ int FAT32_Format(BlockDev *bdev, const char *vol_label)
         uint32_t remain = fat_sz;
         uint32_t s = 0;
         while (remain > 0) {
-            /* Keep each write <= 64 sectors (32 KB) to stay safely inside
-             * the VirtIO/scsi data buffers and device limits. */
-            uint32_t batch = (remain > 64) ? 64 : remain;
+            /* Keep each write <= 128 sectors (64 KB) — the VirtIO data
+             * buffer and g_cluster_buf are both 64 KB. */
+            uint32_t batch = (remain > 128) ? 128 : remain;
             if (BlockDev_Write(bdev, fat_start + s, g_cluster_buf, batch) != 0) {
                 printf("[FAT32] Failed to zero FAT%u at sector %u\n", f, s);
                 return -6;

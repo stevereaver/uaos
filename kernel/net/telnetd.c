@@ -240,8 +240,24 @@ static void pump_task(void *arg)
                 (c == TN_WILL || c == TN_WONT || c == TN_DO || c == TN_DONT))
                 st[1] = c;
             int k = nvt_filter(st, c, sock);
-            if (k != -1)
-                ShellWin_RemoteFeed(sess, (char)k);
+            if (k != -1) {
+                /* The shell's key queue is only 64 entries — a pasted
+                 * burst can fill it while a command runs.  Wait for the
+                 * session to drain it instead of dropping the byte: a
+                 * lost '\n' leaves a half-typed command that never
+                 * executes and the session looks dead. */
+                extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
+                uint64_t deadline = g_pit_ticks + 500;  /* ~5 s */
+                while (!ShellWin_RemoteFeed(sess, (char)k)) {
+                    if (ShellWin_RemoteIsDead(sess) ||
+                        g_stop || gen != g_generation ||
+                        !net_stack_is_up() ||
+                        g_pit_ticks >= deadline)
+                        break;
+                    net_stack_poll();
+                    Task_Yield();
+                }
+            }
         }
 
         /* Shell side ended (ENDCLI) or slot released */

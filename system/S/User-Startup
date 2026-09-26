@@ -1,4 +1,5 @@
 ; User-Startup — runs after scheduler is active
 ; ACE and vlink can be tested interactively from the shell prompt.
 
+C:telnetd
 echo "User-Startup complete. Try: ace:bin/ace or ace:bin/vlink"
