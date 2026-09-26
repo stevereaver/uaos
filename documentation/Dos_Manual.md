@@ -433,6 +433,43 @@ UAOS> format virtio01 fat32
 UAOS> format Device=DH0: Name=Workbench FFS
 ```
 
+#### `fsck <device> [options]`
+Disk and filesystem interrogation and repair tool. Operates directly on
+block-device sectors, so it is safe to run read-only against mounted
+volumes. Whole-disk devices get partition-table analysis; partition
+devices get the filesystem checker.
+
+```
+UAOS> fsck LIST                  ; list detected block devices
+UAOS> fsck ALL                   ; check every filesystem volume
+UAOS> fsck virtio0               ; whole-disk MBR/GPT/RDB analysis
+UAOS> fsck virtio1 CHECK         ; check bare-filesystem disk
+UAOS> fsck DH0: REPAIR           ; check + fix automatically
+UAOS> fsck DH0: INTERACTIVE      ; prompt before each fix
+UAOS> fsck DH0: INFO             ; filesystem geometry/metadata dump
+UAOS> fsck DH0: SURFACE          ; media surface scan (read test)
+UAOS> fsck DH0: DUMP=0           ; hex dump of one sector
+```
+
+Supported checks: FAT32 (full check/repair), FAT12/16 (BPB sanity),
+ext2/3/4 (superblock state), Amiga OFS/FFS (bootblock checksum, root
+block, directory-tree walk, data-pointer and extension-chain validation,
+advisory bitmap accounting), PFS/SFS, exFAT, NTFS, ISO9660 (info).
+Return codes via `failat`: 0 clean, 5 warnings, 10 errors, 20 fatal.
+
+#### Storage notes
+
+- Multiple VirtIO disks are detected as `virtio0`, `virtio1`, ... in PCI
+  order. Attach additional images in `scripts/run_with_disk.sh` (second
+  argument or `DISK2=`).
+- Partition tables: MBR and Amiga RDB (`RDSK`/`PART`/`FSHD` chains) are
+  recognised at boot; every recognised partition is auto-mounted.
+- Disks with no partition table are probed as bare filesystems —
+  WinUAE `.hdf` hardfiles formatted OFS/FFS mount this way under their
+  Amiga volume name (e.g. `test:`).
+- Amiga OFS/FFS volumes are mounted **read-only**; write packets are
+  rejected with `ERROR_DISK_WRITE_PROTECTED`.
+
 ---
 
 ### Networking Commands
@@ -1164,6 +1201,7 @@ echo "Scan saved to RAM:dirlog.txt"
 | `echo` | `echo <text>` | Print text |
 | `fdisk` | `fdisk <dev>` / `fdisk -l` | Partition editor |
 | `format` | `format <dev> [fs]` | Format partition |
+| `fsck` | `fsck <dev> [CHECK\|REPAIR\|INFO]` | Check/repair disk or FS |
 | `diskchange` | `diskchange <dev>` | Disk change |
 | `addbuffers` | `addbuffers <dev> <n>` | Add buffers |
 | `install` | `install <dev> [NOBOOT]` | Install boot block |

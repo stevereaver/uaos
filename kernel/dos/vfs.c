@@ -5,6 +5,8 @@
 #include "amiga_dos_types.h"
 #include "ram_handler.h"
 #include "fat_handler.h"
+#include "ffs.h"
+#include "ffs_handler.h"
 #include "handle_table.h"
 #include "blockdev.h"
 #include "boot/kprint.h"
@@ -286,6 +288,37 @@ int VFS_MountPartition(const char *name)
 {
     if (!name || !*name) return -1;
 
+    /* Try to find the underlying block device */
+    BlockDev *bdev = find_bdev_by_name(name);
+    if (!bdev) return -1;
+
+    /* Amiga OFS/FFS volume — mounted under the root-block disk name,
+     * not the device display name (AmigaDOS semantics). */
+    FfsVolume *fv = FFS_Mount(bdev);
+    if (fv) {
+        const char *vname = FFS_VolumeName(fv);
+        if (!vname[0]) vname = name;
+
+        for (int i = 0; i < g_n_mounts; i++) {
+            if (seq(g_mounts[i].vol_name, vname)) {
+                FFS_Unmount(fv);
+                return 0;  /* already mounted */
+            }
+        }
+        if (g_n_mounts >= MAX_MOUNTS) {
+            FFS_Unmount(fv);
+            return -1;
+        }
+
+        Handler *handler = FfsHandler_Create(vname, fv);
+        if (!handler) {
+            FFS_Unmount(fv);
+            return -1;
+        }
+        register_mount(vname, NULL, NULL, handler);
+        return 0;
+    }
+
     /* Check if already mounted */
     for (int i = 0; i < g_n_mounts; i++) {
         if (seq(g_mounts[i].vol_name, name))
@@ -294,9 +327,8 @@ int VFS_MountPartition(const char *name)
 
     if (g_n_mounts >= MAX_MOUNTS) return -1;
 
-    /* Try to find the underlying block device and mount it as FAT32 */
-    BlockDev *bdev = find_bdev_by_name(name);
-    if (!bdev || !BlockDev_CheckFormatted(bdev))
+    /* FAT32 partition */
+    if (!BlockDev_CheckFormatted(bdev))
         return -1;
 
     Fat32FS *fs = FAT32_Mount(bdev);
@@ -963,7 +995,9 @@ int VFS_ReadDir(const char *path, VfsDirEnt *ents, int max)
         FileInfoBlock fib;
         int32_t res = DoPkt(&h->port, ACTION_EXAMINE_OBJECT,
                             lock, (intptr_t)&fib, 0, 0, 0);
-        if (res != DOSTRUE || fib.fib_DirEntryType != ST_USERDIR) {
+        if (res != DOSTRUE ||
+            (fib.fib_DirEntryType != ST_USERDIR &&
+             fib.fib_DirEntryType != ST_ROOTDIR)) {
             DoPkt(&h->port, ACTION_FREE_LOCK, lock, 0, 0, 0, 0);
             return 0;
         }

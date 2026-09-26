@@ -103,48 +103,83 @@ typedef struct {
 #define PART_IDENTIFIER     0x50415254  /* 'PART' */
 #define FS_IDENTIFIER       0x46534844  /* 'FSHD' */
 
-/* Rigid Disk Block */
+/* Rigid Disk Block — offsets follow Amiga devices/hardblocks.h */
 typedef struct {
-    uint32_t identifier;        /* 'RDSK' */
-    uint32_t size;              /* Size of this block in longwords */
-    uint32_t checksum;
-    uint32_t host_id;           /* SCSI host ID */
-    uint32_t block_size;        /* Block size in bytes */
-    uint32_t flags;
-    uint32_t bad_block_list;
-    uint32_t partition_list;
-    uint32_t filesystem_list;
-    uint32_t reserved[5];
-    /* Geometry */
-    uint32_t cylinders;
-    uint32_t sectors;
-    uint32_t heads;
-    uint32_t interleave;
-    uint32_t parking_zone;
-    uint32_t reserved2[3];
-    uint32_t cylinder_blocks;   /* blocks per cylinder */
-    uint32_t high_cyl;          /* highest cylinder */
-    uint32_t low_cyl;           /* lowest cylinder */
-    /* More fields... */
+    uint32_t identifier;        /* 'RDSK'              lw0   */
+    uint32_t size;              /* summed longs        lw1   */
+    int32_t  checksum;          /*                     lw2   */
+    uint32_t host_id;           /*                     lw3   */
+    uint32_t block_size;        /* block bytes         lw4   */
+    uint32_t flags;             /*                     lw5   */
+    uint32_t bad_block_list;    /*                     lw6   */
+    uint32_t partition_list;    /* first PART key      lw7   */
+    uint32_t filesystem_list;   /* first FSHD key      lw8   */
+    uint32_t drive_init;        /*                     lw9   */
+    uint32_t boot_block_list;   /*                     lw10  */
+    uint32_t reserved1[5];      /*                     lw11-15 */
+    uint32_t cylinders;         /*                     lw16  */
+    uint32_t sectors;           /* per track           lw17  */
+    uint32_t heads;             /*                     lw18  */
+    uint32_t interleave;        /*                     lw19  */
+    uint32_t parking_zone;      /*                     lw20  */
+    uint32_t reserved2[3];      /*                     lw21-23 */
+    uint32_t write_pre_comp;    /*                     lw24  */
+    uint32_t reduced_write;     /*                     lw25  */
+    uint32_t step_rate;         /*                     lw26  */
+    uint32_t reserved3[5];      /*                     lw27-31 */
+    uint32_t rdb_blocks_lo;     /*                     lw32  */
+    uint32_t rdb_blocks_hi;     /*                     lw33  */
+    uint32_t low_cyl;           /*                     lw34  */
+    uint32_t high_cyl;          /*                     lw35  */
+    uint32_t cyl_blocks;        /* blocks per cylinder lw36  */
+    uint32_t auto_park;         /*                     lw37  */
+    /* More fields follow (vendor/product/revision + controllers) —
+     * only the region above is needed to walk the chains. */
 } __attribute__((packed)) RdbBlock;
 
-/* Partition Block */
+/* Partition Block — layout follows Amiga devices/hardblocks.h:
+ * the checksummed region is 64 longwords (256 bytes); the drive
+ * environment vector starts at longword 32 (byte 128). */
 typedef struct {
-    uint32_t identifier;        /* 'PART' */
-    uint32_t size;
-    uint32_t checksum;
-    uint32_t host_id;
-    uint32_t next;             /* Next partition block */
-    uint32_t flags;
-    uint32_t reserved[3];
-    uint32_t dev_flags;
-    uint8_t  name_len;
-    char     name[31];         /* Partition name */
-    uint32_t reserved2[15];
-    uint32_t size_blocks;      /* Size in blocks */
-    uint32_t start_block;      /* Start block */
-    /* More fields for filesystem specific data */
+    uint32_t identifier;        /* 'PART'        lw0   */
+    uint32_t size;              /* summed longs  lw1   */
+    int32_t  checksum;          /*               lw2   */
+    uint32_t host_id;           /*               lw3   */
+    uint32_t next;              /* next PART key lw4   */
+    uint32_t flags;             /*               lw5   */
+    uint32_t reserved1[2];      /*               lw6-7 */
+    uint32_t dev_flags;         /*               lw8   */
+    uint8_t  name_len;          /* BSTR          lw9   byte 36 */
+    char     name[31];          /*               bytes 37-67 */
+    uint32_t reserved2[15];     /*               lw17-31 */
+    uint32_t environment[32];   /* drive env     lw32-63 */
 } __attribute__((packed)) RdbPartBlock;
+
+/* Partition block flag bits */
+#define PARTF_BOOTABLE  0x01
+#define PARTF_NOMOUNT   0x02
+
+/* Drive environment indices into RdbPartBlock.environment */
+#define RDB_DE_TABLE_SIZE   0
+#define RDB_DE_SIZE_BLOCK   1   /* block size in longwords */
+#define RDB_DE_SEC_ORG      2
+#define RDB_DE_SURFACES     3
+#define RDB_DE_SEC_PER_BLK  4
+#define RDB_DE_BLOCKS_TRACK 5
+#define RDB_DE_RESERVED     6
+#define RDB_DE_PREALLOC     7
+#define RDB_DE_INTERLEAVE   8
+#define RDB_DE_LOW_CYL      9
+#define RDB_DE_HIGH_CYL     10
+#define RDB_DE_NUM_BUFFERS  11
+#define RDB_DE_BUF_MEM_TYPE 12
+#define RDB_DE_MAX_TRANSFER 13
+#define RDB_DE_MASK         14
+#define RDB_DE_BOOT_PRI     15
+#define RDB_DE_DOS_TYPE     16
+#define RDB_DE_BAUD         17
+#define RDB_DE_CONTROL      18
+#define RDB_DE_BOOT_BLOCKS  19
 
 /* =========================================================================
  * UAOS Partition Metadata (stored in sector 1 of MBR disks)
@@ -191,7 +226,9 @@ typedef struct {
     int       gpt_modified;
     /* RDB specific */
     RdbBlock  rdb;
+    int       rdb_block;       /* sector the RDSK block was found at */
     RdbPartBlock rdb_parts[16];
+    int       rdb_fshd_count;  /* FSHD blocks in the filesystem chain */
     int       rdb_modified;
     /* UAOS metadata */
     UaosPartMeta uaos_meta;
@@ -230,6 +267,11 @@ void gpt_print_partitions(PartitionTable *pt, void (*print_fn)(const char *));
 int rdb_read(BlockDev *dev, PartitionTable *pt);
 int rdb_write(BlockDev *dev, PartitionTable *pt);
 void rdb_print_partitions(PartitionTable *pt, void (*print_fn)(const char *));
+
+/* Partition extent in 512-byte sectors, derived from the PART block's
+ * drive environment vector (low/high cyl * surfaces * blocks/track). */
+uint64_t rdb_part_start_sector(const RdbPartBlock *pb);
+uint64_t rdb_part_size_sectors(const RdbPartBlock *pb);
 
 /* =========================================================================
  * Generic Operations

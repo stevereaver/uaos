@@ -17,6 +17,10 @@
 set -e
 
 DISK_PATH=${1:-/home/reaver/workspaces/uaos/uaos/build/uaos_disk.qcow2}
+# Optional second disk image (raw format, e.g. an Amiga .hdf hardfile).
+# Attach via:   bash scripts/run_with_disk.sh disk.qcow2 scripts/test-ffs.hdf
+#          or:  DISK2=scripts/test-ffs.hdf bash scripts/run_with_disk.sh
+DISK2_PATH=${2:-${DISK2:-}}
 OVMF_VARS=/tmp/ovmf_vars.fd
 NET=${NET:-user}
 TAP=${TAP:-tap0}
@@ -42,7 +46,15 @@ if [ "$NET" = "bridge" ]; then
     NETDEV_ARGS="-netdev tap,id=n0,ifname=${TAP},script=no,downscript=no"
 else
     # user-mode NAT: QEMU built-in DHCP serves 10.0.2.15
-    NETDEV_ARGS="-netdev user,id=n0,net=10.0.2.0/24,host=10.0.2.2,restrict=off"
+    # hostfwd exposes the in-kernel telnetd for remote shell sessions
+    NETDEV_ARGS="-netdev user,id=n0,net=10.0.2.0/24,host=10.0.2.2,restrict=off,hostfwd=tcp::2323-:23"
+fi
+
+# Optional second block device (raw image attached as virtio1).
+DRIVE2_ARGS=""
+if [ -n "$DISK2_PATH" ]; then
+    DRIVE2_ARGS="-device virtio-blk-pci,disable-modern=on,drive=blk1 -drive id=blk1,file=${DISK2_PATH},if=none,format=raw,readonly=on"
+    echo "Second disk (raw, virtio1): $DISK2_PATH"
 fi
 
 SERIAL_LOG=/tmp/uaos_serial.log
@@ -57,6 +69,7 @@ qemu-system-x86_64 \
   -device ide-cd,drive=cdrom,bus=ide.0 \
   -device virtio-blk-pci,disable-modern=on,drive=blk0 \
   -drive id=blk0,file="$DISK_PATH",if=none,format=qcow2 \
+  ${DRIVE2_ARGS} \
   ${NETDEV_ARGS} -device virtio-net-pci,netdev=n0,disable-modern=on \
   -object filter-dump,id=dump0,netdev=n0,file=/tmp/uaos_net.pcap \
   -serial "file:${SERIAL_LOG}" \

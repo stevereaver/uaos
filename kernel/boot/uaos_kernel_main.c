@@ -30,6 +30,7 @@
 #include "dos/vfs.h"
 #include "dos/blockdev.h"
 #include "dos/partition.h"
+#include "dos/ffs.h"
 #include "drivers/ide.h"
 #include "dos/iso9660.h"
 #include "drivers/floppy_blk.h"
@@ -334,38 +335,104 @@ static void boot_automount_partitions(BlockDev *vdev)
     if (!vdev) return;
 
     PartitionTable pt;
-    if (partition_read(vdev, &pt) != 0 || !pt.valid || pt.scheme != PART_SCHEME_MBR)
-        return;
+    if (partition_read(vdev, &pt) == 0 && pt.valid) {
 
-    for (int i = 0; i < MBR_PART_COUNT; i++) {
-        if (pt.mbr.partitions[i].type_code == PART_TYPE_EMPTY)
-            continue;
+        if (pt.scheme == PART_SCHEME_MBR) {
+            int any = 0;
+            for (int i = 0; i < MBR_PART_COUNT; i++) {
+                if (pt.mbr.partitions[i].type_code == PART_TYPE_EMPTY)
+                    continue;
+                any = 1;
 
-        char namebuf[16];
-        const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
-        BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
-            pt.mbr.partitions[i].lba_start,
-            pt.mbr.partitions[i].sector_count, dname);
-        if (!pdev || !BlockDev_CheckFormatted(pdev))
-            continue;
+                char namebuf[16];
+                const char *dname = uaos_meta_get_name(&pt.uaos_meta, i, namebuf, sizeof(namebuf));
+                BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
+                    pt.mbr.partitions[i].lba_start,
+                    pt.mbr.partitions[i].sector_count, dname);
+                if (!pdev || !BlockDev_CheckFormatted(pdev))
+                    continue;
 
-        /* Strip trailing colon for VFS mount name */
-        char mnt_name[16];
-        int ni = 0, si = 0;
-        while (si < 15 && dname[si] && dname[si] != ':')
-            mnt_name[ni++] = dname[si++];
-        mnt_name[ni] = '\0';
+                /* Strip trailing colon for VFS mount name */
+                char mnt_name[16];
+                int ni = 0, si = 0;
+                while (si < 15 && dname[si] && dname[si] != ':')
+                    mnt_name[ni++] = dname[si++];
+                mnt_name[ni] = '\0';
 
-        if (mnt_name[0]) {
-            if (VFS_MountPartition(mnt_name) == 0) {
-                kprint("[BOOT] Auto-mounted ");
-                kprint(mnt_name);
-                kprint(":\n");
-            } else {
-                kprint("[BOOT] Failed to auto-mount ");
-                kprint(mnt_name);
-                kprint(":\n");
+                if (mnt_name[0]) {
+                    if (VFS_MountPartition(mnt_name) == 0) {
+                        kprint("[BOOT] Auto-mounted ");
+                        kprint(mnt_name);
+                        kprint(":\n");
+                    } else {
+                        kprint("[BOOT] Failed to auto-mount ");
+                        kprint(mnt_name);
+                        kprint(":\n");
+                    }
+                }
             }
+            if (any) return;
+            /* Empty MBR — fall through to the bare-filesystem probe. */
+        }
+
+        if (pt.scheme == PART_SCHEME_RDB) {
+            int any = 0;
+            for (int i = 0; i < pt.num_partitions; i++) {
+                RdbPartBlock *pb = &pt.rdb_parts[i];
+                if (pb->flags & PARTF_NOMOUNT) continue;
+                uint64_t start = rdb_part_start_sector(pb);
+                uint64_t size  = rdb_part_size_sectors(pb);
+                if (!start || !size || start + size > vdev->num_sectors)
+                    continue;
+                any = 1;
+
+                /* Display name = RDB drive name + ':' */
+                char dname[36];
+                int ni = 0;
+                while (ni < 31 && pb->name[ni]) { dname[ni] = pb->name[ni]; ni++; }
+                if (ni > 0 && dname[ni - 1] != ':' && ni < 33) dname[ni++] = ':';
+                dname[ni] = '\0';
+
+                BlockDev *pdev = BlockDev_RegisterPartition(vdev, i + 1,
+                    (uint32_t)start, (uint32_t)size, dname);
+                if (!pdev || !BlockDev_CheckFormatted(pdev))
+                    continue;
+
+                /* Mount under the drive name; an FFS volume renames
+                 * itself to the root-block volume name on mount. */
+                char mnt_name[16];
+                int mi = 0, si = 0;
+                while (si < 15 && dname[si] && dname[si] != ':')
+                    mnt_name[mi++] = dname[si++];
+                mnt_name[mi] = '\0';
+
+                if (mnt_name[0]) {
+                    if (VFS_MountPartition(mnt_name) == 0) {
+                        kprint("[BOOT] Auto-mounted ");
+                        kprint(mnt_name);
+                        kprint(": (RDB)\n");
+                    } else {
+                        kprint("[BOOT] Failed to auto-mount ");
+                        kprint(mnt_name);
+                        kprint(": (RDB)\n");
+                    }
+                }
+            }
+            if (any || pt.num_partitions > 0) return;
+        }
+    }
+
+    /* No partition table (or an empty one): the whole disk may itself be
+     * a filesystem — Amiga FFS hardfiles are bare volumes without RDB. */
+    if (BlockDev_CheckFormatted(vdev) || FFS_Probe(vdev)) {
+        if (VFS_MountPartition(vdev->name) == 0) {
+            kprint("[BOOT] Auto-mounted bare filesystem on ");
+            kprint(vdev->name);
+            kprint("\n");
+        } else {
+            kprint("[BOOT] Bare filesystem mount failed on ");
+            kprint(vdev->name);
+            kprint("\n");
         }
     }
 }
@@ -593,9 +660,15 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");
     if (virtio_blk_init() == 0) {
-        kprint("[BOOT] VirtIO block device detected and registered.\n");
-        /* Auto-detect partitions on virtio0 */
-        boot_automount_partitions(BlockDev_Find("virtio0"));
+        kprint("[BOOT] VirtIO block device(s) detected and registered.\n");
+        /* Auto-detect partitions / bare filesystems on every virtio disk */
+        for (int i = 0; i < 4; i++) {
+            char vn[12];
+            vn[0]='v';vn[1]='i';vn[2]='r';vn[3]='t';vn[4]='i';vn[5]='o';
+            vn[6]=(char)('0'+i);vn[7]='\0';
+            BlockDev *d = BlockDev_Find(vn);
+            if (d) boot_automount_partitions(d);
+        }
     } else if (virtio_scsi_init() == 0) {
         /* Fall back to VirtIO-SCSI (VirtualBox virtio-scsi controller) */
         kprint("[BOOT] VirtIO-SCSI block device detected and registered.\n");

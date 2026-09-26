@@ -38,6 +38,6 @@ typedef struct Handler {
 
 ## Dynamic Handler Loading
 
-UAOS supports loading handlers from the `L:` directory. These handlers can be native or emulated M68k processes that handle specific device or filesystem logic. The `kernel/dos/handler_loader.c` module scans `L:` at boot, registers discovered handlers, and routes future DosPacket requests to them. Built-in handlers include `ram_handler.c`, `fat_handler.c`, `device_handler.c`, `aux_handler.c`, and `port_handler.c`.
+UAOS supports loading handlers from the `L:` directory. These handlers can be native or emulated M68k processes that handle specific device or filesystem logic. The `kernel/dos/handler_loader.c` module scans `L:` at boot, registers discovered handlers, and routes future DosPacket requests to them. Built-in handlers include `ram_handler.c`, `fat_handler.c`, `ffs_handler.c` (read-only Amiga OFS/FFS), `crossdos_handler.c`, `device_handler.c`, `aux_handler.c`, and `port_handler.c`.
 
 For the filesystem and device implementations that sit behind the handler system, see [DOS Library & Handler System](index.md).

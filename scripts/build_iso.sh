@@ -392,6 +392,8 @@ for src in \
     "${REPO_ROOT}/kernel/dos/print_handler.c" \
     "${REPO_ROOT}/kernel/dos/ram_handler.c" \
     "${REPO_ROOT}/kernel/dos/fat_handler.c" \
+    "${REPO_ROOT}/kernel/dos/ffs.c" \
+    "${REPO_ROOT}/kernel/dos/ffs_handler.c" \
     "${REPO_ROOT}/kernel/dos/crossdos_handler.c" \
     "${REPO_ROOT}/kernel/dos/blockdev.c" \
     "${REPO_ROOT}/kernel/dos/partition.c" \
@@ -810,6 +812,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/print_handler.o" \
     "${BUILD_DIR}/obj/ram_handler.o" \
     "${BUILD_DIR}/obj/fat_handler.o" \
+    "${BUILD_DIR}/obj/ffs.o" \
+    "${BUILD_DIR}/obj/ffs_handler.o" \
     "${BUILD_DIR}/obj/crossdos_handler.o" \
     "${BUILD_DIR}/obj/blockdev.o" \
     "${BUILD_DIR}/obj/partition.o" \

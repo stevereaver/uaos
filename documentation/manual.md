@@ -523,9 +523,9 @@ typedef struct BlockDev {
 
 #### Supported Block Devices
 
-- **VirtIO Block Device** (`virtio_blk.c`): PCI scanning, device detection, capacity reporting
-  - Registers as "virtio0"
-  - Currently stub implementation (virtqueue I/O marked as TODO)
+- **VirtIO Block Device** (`virtio_blk.c`): full PCI scan, per-device state and virtqueues
+  - Registers as "virtio0", "virtio1", ... in PCI enumeration order (up to 4 disks)
+  - Legacy `virtio_blk_read`/`virtio_blk_write`/`virtio_blk_get_capacity` entry points target virtio0; the `BlockDev` ops interface dispatches per-device
 
 ### VFS Layer (`vfs.c`)
 
@@ -554,7 +554,7 @@ typedef struct {
 | `VFS_OpenDir(path)` | Open directory for reading |
 | `VFS_ResolveDir(path)` | Resolve path to directory node |
 | `VFS_GetRoot(vol_name)` | Get volume root node |
-| `VFS_MountPartition(name)` | Mount a partition volume by name (creates RAMFS backing) |
+| `VFS_MountPartition(name)` | Mount a partition volume by name (FAT32 handler, or FFS/OFS handler under the Amiga volume name) |
 | `VFS_GetMountCount()` | Return number of mounted volumes |
 | `VFS_GetMountName(idx, dst, max)` | Get name of i-th mounted volume |
 
@@ -592,6 +592,68 @@ typedef struct {
 **Operations**: Mount, Unmount, Open, Close, Read, Write, Seek, Size, ReadDir
 
 **Status**: Boot sector parsing, volume label extraction (`BlockDev_ReadVolLabel`), and formatting via `FAT32_Format()` are implemented. Cluster-chain read/write and directory traversal are pending.
+
+#### Amiga OFS/FFS (`ffs.c`, `ffs_handler.c`)
+
+Read-only driver for the Amiga Old File System (`DOS\0`) and Fast File
+System (`DOS\1`), including the international/dircache variants
+(`DOS\2`–`DOS\7`) that share the same on-disk structures:
+
+```c
+typedef struct FfsVolume {
+    BlockDev *dev;            /* Block device (disk or partition) */
+    uint8_t   dostype;        /* bootblock 'DOS\x' low byte */
+    uint8_t   is_ofs;         /* data blocks carry 24-byte headers */
+    uint8_t   is_intl;
+    uint32_t  block_size;     /* 512 */
+    uint32_t  ht_size;        /* hash table size (72 for 512B blocks) */
+    uint32_t  root_key;       /* root header block */
+    uint32_t  num_blocks;
+    uint32_t  used_blocks;    /* advisory bitmap count */
+    char      vol_name[31];
+} FfsVolume;
+```
+
+- **Boot block**: `'DOS'` + dostype byte probe; the longword checksum
+  covers blocks 0-1 but WinUAE hardfiles leave it unset (reported as
+  "not present", not an error).
+- **Root block**: located at `num_blocks/2` (scanned ±64 blocks),
+  validated by `T_HEADER`/`ST_ROOT`, checksum, and hash-table bounds.
+  The volume name is a BSTR at longword 108.
+- **Name hash**: `h = len; for each char: h = (h*13 + upper(c)) & 0x7FF`,
+  slot = `h % ht_size`; same-hash chains linked at longword 124.
+- **Directories**: 72-entry hash table of child header keys; entry names
+  are BSTRs at longword 108; parent keys at longword 125.
+- **File data**: `high_seq` data-block pointers anchored at
+  `lw(5 + ht_size - i)` in the header block, then `T.LIST` extension
+  blocks (link at longword 126) for larger files. FFS data blocks are
+  raw payload; OFS data blocks have a 24-byte header and a 488-byte
+  payload.
+- **Bitmap**: bit=1 means free; treated as advisory (WinUAE images do
+  not mark all used blocks), never authoritative for structure checks.
+- **Packet handler**: `ffs_handler.c` implements the read-only packet
+  set (`FINDINPUT`, `READ`, `SEEK`, `END`, `LOCATE_OBJECT`,
+  `EXAMINE_OBJECT`/`NEXT`, `FREE_LOCK`, `PARENT`, `COPY_DIR`,
+  `SAME_LOCK`, `DISK_INFO`, `IS_FILESYSTEM`). Mutating packets fail with
+  `ERROR_DISK_WRITE_PROTECTED`. The volume mounts under its Amiga
+  volume name (e.g. `test:`).
+
+**Status**: read, directory enumeration, and mounting are implemented
+and verified against a WinUAE-created FFS hardfile; write support is
+intentionally absent.
+
+#### Partition tables (`partition.c`)
+
+- **MBR**: classic four-entry table; partitions register as
+  `<disk><index>` (e.g. `virtio01`).
+- **Amiga RDB**: `RDSK` rigid-disk block scanned in the first 16 blocks
+  (checksummed), then the `PART` partition chain and `FSHD`
+  filesystem-header chain are traversed. Partition start/length come
+  from the environment vector (`de_HighCyl`/`de_Surfaces`/`de_Sectors`
+  geometry product), not the legacy `pb_Drives` field.
+- **Bare filesystems**: when a whole disk has neither MBR nor RDB, the
+  boot code probes it as a single filesystem — FAT32 first, then
+  OFS/FFS. This covers WinUAE `.hdf` hardfiles.
 
 #### ISO9660 (`iso9660.c`)
 
@@ -671,15 +733,18 @@ The shell integrates with the VFS layer for filesystem operations:
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
+| `fsck <dev> [opts]` | Check/repair disk or filesystem |
 | `run <cmd> [args]` | Run a command in a new CLI |
 
 ### Current Implementation Status
 
-- **Block device layer**: Complete with VirtIO registration and MBR partition support
+- **Block device layer**: Complete with multi-device VirtIO registration, MBR + Amiga RDB partition support, and bare-filesystem probing
 - **VFS layer**: Complete with RAM filesystem and partition volume mounting
 - **FAT32**: Boot sector parsing, volume label extraction, and formatting implemented; file read/write via virtqueue I/O pending
+- **Amiga OFS/FFS**: Read-only mount, directory traversal, and file read implemented (hash lookup, T.LIST extension chains, OFS 488-byte payloads); verified against WinUAE FFS media
 - **PFS3**: Mount implemented, file operations stubs
 - **EXT4**: Mount implemented, file operations stubs
+- **fsck**: MBR/GPT/RDB disk analysis plus FAT32 and OFS/FFS filesystem checkers (see `Dos_Manual.md` → `fsck`)
 
 All filesystem drivers use static allocation (no malloc) for freestanding environment. File operations have detailed implementation logic in comments pending M68k memory access integration.
 
@@ -745,6 +810,7 @@ All lookup is case-insensitive. Native commands may declare an AmigaDOS-style te
 | `disks` | List detected block devices |
 | `fdisk <device>` | Partition a block device |
 | `format <dev> [fs]` | Format a partition (FAT32) |
+| `fsck <dev> [opts]` | Check/repair disk or filesystem |
 | `pointer` | Open pointer preferences |
 | `run <cmd> [args]` | Run a command in a new CLI |
 | `assign [name: target]` | Create or list assigns |

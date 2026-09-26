@@ -258,6 +258,12 @@ int BlockDev_CheckFormatted(BlockDev *dev)
         return 0;
     }
 
+    /* Amiga OFS/FFS bootblock: 'DOS' + dostype byte 0..7 at offset 0 */
+    if (blockdev_boot_sector[0] == 'D' && blockdev_boot_sector[1] == 'O' &&
+        blockdev_boot_sector[2] == 'S' && blockdev_boot_sector[3] <= 7) {
+        return 1;
+    }
+
     /* Check boot signature 0x55AA at offset 510 */
     uint16_t sig = blockdev_boot_sector[510] | (blockdev_boot_sector[511] << 8);
     if (sig != 0xAA55) {

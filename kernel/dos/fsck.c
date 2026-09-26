@@ -15,6 +15,7 @@
 
 #include "fsck.h"
 #include "partition.h"
+#include "ffs.h"
 #include <string.h>
 
 /* =========================================================================
@@ -179,6 +180,8 @@ void fsck_yield(FsckCtx *ctx)
 /* =========================================================================
  * Filesystem probes — each returns 1 when its on-disk signature matches
  * ========================================================================= */
+
+static char *print_size(uint64_t sectors, char *buf, int max);
 
 static int rd0(BlockDev *dev)
 {
@@ -395,7 +398,7 @@ static const char *ffs_variant(int n)
 
 static int info_ffs(BlockDev *dev, FsckCtx *ctx)
 {
-    char line[LINE_MAX];
+    char line[LINE_MAX], num[24], num2[24], sz[24];
     if (!rd0(dev)) { fsck_err(ctx, "cannot read boot block"); return -1; }
     line[0] = 0;
     fk_cat(line, "Amiga ", LINE_MAX);
@@ -408,43 +411,240 @@ static int info_ffs(BlockDev *dev, FsckCtx *ctx)
     fk_cat(line, ")", LINE_MAX);
     fsck_out(ctx, line);
 
-    /* Boot-block checksum: sum of all 128 big-endian longwords == 0 */
+    /* Boot-block checksum: longword sum over blocks 0-1 == 0.  WinUAE
+     * hardfiles leave the checksum field zero — that is "not present",
+     * not corrupt (hard partitions are never booted from block 0). */
+    uint32_t bb_stored = fk_be32(g_s0 + 4);
     uint32_t sum = 0;
     for (int i = 0; i < 128; i++) sum += fk_be32(g_s0 + i * 4);
+    if (BlockDev_Read(dev, 1, g_s1, 1) == 0)
+        for (int i = 0; i < 128; i++) sum += fk_be32(g_s1 + i * 4);
     line[0] = 0;
     fk_cat(line, "  bootblock checksum: ", LINE_MAX);
-    fk_cat(line, sum == 0 ? "valid" : "INVALID", LINE_MAX);
+    fk_cat(line, bb_stored == 0 ? "not present (hardfile)"
+                              : (sum == 0 ? "valid" : "INVALID"), LINE_MAX);
     fsck_out(ctx, line);
+
+    /* Root-block details when mountable */
+    FfsVolume *vol = FFS_Mount(dev);
+    if (vol) {
+        line[0] = 0;
+        fk_cat(line, "  volume '", LINE_MAX);
+        fk_cat(line, FFS_VolumeName(vol), LINE_MAX);
+        fk_cat(line, "'  root block ", LINE_MAX);
+        fk_cat(line, fk_dec(vol->root_key, num, sizeof(num)), LINE_MAX);
+        fk_cat(line, "  blocks ", LINE_MAX);
+        fk_cat(line, fk_dec(vol->num_blocks, num2, sizeof(num2)), LINE_MAX);
+        fk_cat(line, " (", LINE_MAX);
+        fk_cat(line, print_size(vol->num_blocks, sz, sizeof(sz)), LINE_MAX);
+        fk_cat(line, ")", LINE_MAX);
+        fsck_out(ctx, line);
+        line[0] = 0;
+        fk_cat(line, "  bitmap ", LINE_MAX);
+        fk_cat(line, vol->bitmap_valid ? "valid" : "invalid/missing", LINE_MAX);
+        if (vol->bitmap_valid) {
+            fk_cat(line, "  used blocks ", LINE_MAX);
+            fk_cat(line, fk_dec(vol->used_blocks, num, sizeof(num)), LINE_MAX);
+        }
+        fsck_out(ctx, line);
+        FFS_Unmount(vol);
+    }
     return 0;
+}
+
+/* Visited-block bitmap for the FFS tree walk (covers 262144 blocks). */
+static uint8_t g_ffs_seen[32768];
+
+static int ffs_mark(uint32_t key)
+{
+    uint32_t b = key >> 3;
+    if (b >= sizeof(g_ffs_seen)) return 1;   /* out of tracked range */
+    uint8_t m = (uint8_t)(1u << (key & 7));
+    if (g_ffs_seen[b] & m) return 1;         /* already visited */
+    g_ffs_seen[b] |= m;
+    return 0;
+}
+
+/* Count data blocks of a file: header's high_seq plus each T.LIST ext
+ * block's high_seq.  Reports out-of-range pointers as errors. */
+static int ffs_check_file_data(FfsVolume *vol, const FfsEntry *file,
+                               FsckCtx *ctx, int *blocks_out)
+{
+    char line[LINE_MAX], num[24];
+    uint32_t payload = vol->is_ofs ? FFS_OFS_PAYLOAD : vol->block_size;
+    uint32_t need = (file->byte_size + payload - 1) / payload;
+
+    /* Walk the header + T.LIST extension chain counting pointers.
+     * Both block kinds anchor the 72-entry data table at lw(5+ht_size-i). */
+    int total = 0;
+    uint32_t key = file->key;
+    int guard = 512;
+    int bad = 0;
+
+    while (key && guard-- > 0) {
+        /* The header itself was already marked by the directory walk;
+         * only chain members get marked here. */
+        if (key != file->key && ffs_mark(key)) {
+            fsck_err(ctx, "file extension chain loops or shares blocks");
+            bad++;
+            break;
+        }
+        if (BlockDev_Read(vol->dev, key, g_s1, 1) != 0) { bad = 1; break; }
+        uint32_t high = fk_be32(g_s1 + 8);
+        if (high > vol->ht_size) high = vol->ht_size;
+        for (uint32_t i = 0; i < high; i++) {
+            uint32_t dk = fk_be32(g_s1 + (5 + vol->ht_size - i) * 4);
+            total++;
+            if (dk == 0 || dk >= vol->num_blocks) {
+                line[0] = 0;
+                fk_cat(line, "file '", LINE_MAX);
+                fk_cat(line, file->name, LINE_MAX);
+                fk_cat(line, "' data ptr ", LINE_MAX);
+                fk_cat(line, fk_dec(total - 1, num, sizeof(num)), LINE_MAX);
+                fk_cat(line, " out of range", LINE_MAX);
+                fsck_err(ctx, line);
+                bad++;
+            } else {
+                ffs_mark(dk);
+            }
+        }
+        key = fk_be32(g_s1 + FFS_LW_EXTENSION * 4);
+    }
+
+    *blocks_out = total;
+    if ((uint32_t)total < need) {
+        line[0] = 0;
+        fk_cat(line, "file '", LINE_MAX);
+        fk_cat(line, file->name, LINE_MAX);
+        fk_cat(line, "' has ", LINE_MAX);
+        fk_cat(line, fk_dec((uint32_t)total, num, sizeof(num)), LINE_MAX);
+        fk_cat(line, " data blocks, needs ", LINE_MAX);
+        fk_cat(line, fk_dec(need, num, sizeof(num)), LINE_MAX);
+        fsck_err(ctx, line);
+        bad++;
+    }
+    return bad;
+}
+
+/* Recursive directory validation. Returns error count. */
+static int ffs_check_dir(FfsVolume *vol, uint32_t dir_key, FsckCtx *ctx,
+                         int depth, int *dirs, int *files)
+{
+    char line[LINE_MAX], num[24];
+    if (depth > 32) {
+        fsck_err(ctx, "directory nesting limit exceeded");
+        return 1;
+    }
+    int errs = 0;
+    FfsDirIter it;
+    FfsEntry e;
+    FFS_DirIterInit(&it);
+    while (errs < 64 && FFS_DirIterNext(vol, dir_key, &it, &e)) {
+        fsck_yield(ctx);
+        if (fsck_break(ctx)) return errs + 1;
+
+        /* Every visited block must be unique */
+        if (ffs_mark(e.key)) {
+            line[0] = 0;
+            fk_cat(line, "entry '", LINE_MAX);
+            fk_cat(line, e.name, LINE_MAX);
+            fk_cat(line, "' shares block ", LINE_MAX);
+            fk_cat(line, fk_dec(e.key, num, sizeof(num)), LINE_MAX);
+            fsck_err(ctx, line);
+            errs++;
+        }
+        /* Parent pointer must point back at this directory */
+        if (e.parent_key != dir_key) {
+            line[0] = 0;
+            fk_cat(line, "entry '", LINE_MAX);
+            fk_cat(line, e.name, LINE_MAX);
+            fk_cat(line, "' has wrong parent key", LINE_MAX);
+            fsck_err(ctx, line);
+            errs++;
+        }
+        if (e.sec_type == FFS_ST_USERDIR) {
+            (*dirs)++;
+            errs += ffs_check_dir(vol, e.key, ctx, depth + 1, dirs, files);
+        } else if (e.sec_type == FFS_ST_FILE || e.sec_type == FFS_ST_LINKFILE) {
+            (*files)++;
+            int nb = 0;
+            errs += ffs_check_file_data(vol, &e, ctx, &nb);
+        }
+        /* link dirs/files other than ST_LINKFILE fall through silently */
+    }
+    return errs;
 }
 
 static int check_ffs(BlockDev *dev, FsckCtx *ctx)
 {
     (void)info_ffs(dev, ctx);
+    uint32_t bb_stored = fk_be32(g_s0 + 4);
     uint32_t sum = 0;
     for (int i = 0; i < 128; i++) sum += fk_be32(g_s0 + i * 4);
-    if (sum == 0) {
-        fsck_out(ctx, "  boot block OK");
-        return 0;
-    }
-    fsck_err(ctx, "FFS boot block checksum mismatch");
-    if (fsck_should_fix(ctx)) {
-        /* Recompute checksum with field zeroed, then write it back. */
-        fk_put32(g_s0 + 4, 0);
-        uint32_t s2 = 0;
-        for (int i = 0; i < 128; i++) s2 += fk_be32(g_s0 + i * 4);
-        uint32_t fix = (uint32_t)(-(int32_t)s2);
-        g_s0[4] = (fix >> 24) & 0xFF; g_s0[5] = (fix >> 16) & 0xFF;
-        g_s0[6] = (fix >> 8) & 0xFF;  g_s0[7] = fix & 0xFF;
-        if (BlockDev_Write(dev, 0, g_s0, 1) == 0) {
-            ctx->fixed++;
-            fsck_out(ctx, "  boot block checksum repaired");
-        } else {
-            fsck_err(ctx, "boot block repair write failed");
+    /* g_s1 already holds block 1 from info_ffs when it could be read. */
+    for (int i = 0; i < 128; i++) sum += fk_be32(g_s1 + i * 4);
+    if (bb_stored == 0) {
+        fsck_out(ctx, "  boot block checksum unset (hardfile) — skipped");
+    } else if (sum != 0) {
+        fsck_err(ctx, "FFS boot block checksum mismatch");
+        if (fsck_should_fix(ctx)) {
+            /* Recompute checksum over blocks 0-1 with field zeroed. */
+            fk_put32(g_s0 + 4, 0);
+            uint32_t s2 = 0;
+            for (int i = 0; i < 128; i++) s2 += fk_be32(g_s0 + i * 4);
+            for (int i = 0; i < 128; i++) s2 += fk_be32(g_s1 + i * 4);
+            uint32_t fix = (uint32_t)(-(int32_t)s2);
+            g_s0[4] = (fix >> 24) & 0xFF; g_s0[5] = (fix >> 16) & 0xFF;
+            g_s0[6] = (fix >> 8) & 0xFF;  g_s0[7] = fix & 0xFF;
+            if (BlockDev_Write(dev, 0, g_s0, 1) == 0) {
+                ctx->fixed++;
+                fsck_out(ctx, "  boot block checksum repaired");
+            } else {
+                fsck_err(ctx, "boot block repair write failed");
+            }
         }
+    } else {
+        fsck_out(ctx, "  boot block OK");
     }
-    fsck_warn(ctx, "FFS directory/allocation check not implemented yet");
-    return 0;
+
+    /* Structural pass: mount, then walk the whole directory tree. */
+    FfsVolume *vol = FFS_Mount(dev);
+    if (!vol) {
+        fsck_err(ctx, "no valid root block — volume not mountable");
+        return 1;
+    }
+
+    char line[LINE_MAX], num[24], num2[24];
+    memset(g_ffs_seen, 0, sizeof(g_ffs_seen));
+    ffs_mark(vol->root_key);
+
+    int dirs = 1, files = 0;
+    int errs = ffs_check_dir(vol, vol->root_key, ctx, 0, &dirs, &files);
+
+    line[0] = 0;
+    fk_cat(line, "  directory tree: ", LINE_MAX);
+    fk_cat(line, fk_dec((uint32_t)dirs, num, sizeof(num)), LINE_MAX);
+    fk_cat(line, " dirs, ", LINE_MAX);
+    fk_cat(line, fk_dec((uint32_t)files, num2, sizeof(num2)), LINE_MAX);
+    fk_cat(line, " files", LINE_MAX);
+    fsck_out(ctx, line);
+
+    /* Bitmap cross-check is advisory: FFS bitmaps are not authoritative
+     * and WinUAE images legitimately disagree with the directory tree. */
+    if (vol->bitmap_valid) {
+        int32_t used = FFS_CountUsedBlocks(vol);
+        line[0] = 0;
+        fk_cat(line, "  bitmap used-blocks ", LINE_MAX);
+        fk_cat(line, fk_dec((uint32_t)(used > 0 ? used : 0), num, sizeof(num)), LINE_MAX);
+        fk_cat(line, " (advisory)", LINE_MAX);
+        fsck_out(ctx, line);
+    } else {
+        fsck_warn(ctx, "bitmap flag clear — volume would be validated on AmigaOS");
+    }
+
+    FFS_Unmount(vol);
+    if (errs == 0) fsck_out(ctx, "  FFS structure OK");
+    return errs;
 }
 
 static int info_pfs(BlockDev *dev, FsckCtx *ctx)
@@ -883,11 +1083,11 @@ static int rdb_check(BlockDev *dev, FsckCtx *ctx)
     fk_cat(line, "  block_size ", LINE_MAX);
     fk_cat(line, fk_dec(block_size, num, sizeof(num)), LINE_MAX);
     fk_cat(line, "  cyl ", LINE_MAX);
-    fk_cat(line, fk_dec(fk_be32(g_s0 + 56), num, sizeof(num)), LINE_MAX);
-    fk_cat(line, "  h ", LINE_MAX);
     fk_cat(line, fk_dec(fk_be32(g_s0 + 64), num, sizeof(num)), LINE_MAX);
+    fk_cat(line, "  h ", LINE_MAX);
+    fk_cat(line, fk_dec(fk_be32(g_s0 + 72), num, sizeof(num)), LINE_MAX);
     fk_cat(line, "  spt ", LINE_MAX);
-    fk_cat(line, fk_dec(fk_be32(g_s0 + 60), num, sizeof(num)), LINE_MAX);
+    fk_cat(line, fk_dec(fk_be32(g_s0 + 68), num, sizeof(num)), LINE_MAX);
     fsck_out(ctx, line);
 
     /* Walk PART chain */
@@ -903,16 +1103,35 @@ static int rdb_check(BlockDev *dev, FsckCtx *ctx)
         if (psz == 0 || psz > 128) psz = 128;
         uint32_t psum = 0;
         for (uint32_t i = 0; i < psz; i++) psum += fk_be32(g_s1 + i * 4);
-        uint8_t nlen = g_s1[40];
+        /* PART layout: DevFlags @32, drive-name BSTR @36 (len byte + 31),
+         * drive environment vector at offset 128 (env[] = lw32..63). */
+        uint8_t nlen = g_s1[36];
         if (nlen > 30) nlen = 30;
-        char nm[32]; memcpy(nm, g_s1 + 41, nlen); nm[nlen] = 0;
-        uint32_t pb = fk_be32(g_s1 + 136);
-        uint32_t ps = fk_be32(g_s1 + 132);
+        char nm[32]; memcpy(nm, g_s1 + 37, nlen); nm[nlen] = 0;
+        uint32_t surf = fk_be32(g_s1 + 140);      /* de_Surfaces      */
+        uint32_t bpt  = fk_be32(g_s1 + 148);      /* de_BlocksPerTrack*/
+        uint32_t sblk = fk_be32(g_s1 + 132);      /* de_SizeBlock     */
+        uint32_t lo   = fk_be32(g_s1 + 164);      /* de_LowCyl        */
+        uint32_t hi   = fk_be32(g_s1 + 168);      /* de_HighCyl       */
+        uint32_t dt   = fk_be32(g_s1 + 192);      /* de_DosType       */
+        uint64_t fs_block_bytes = sblk ? (uint64_t)sblk * 4 : 512;
+        uint64_t cyl_blocks = (uint64_t)surf * bpt;
+        uint64_t pb = (uint64_t)lo * cyl_blocks * fs_block_bytes / 512;
+        uint64_t ps = hi > lo ? (uint64_t)(hi - lo + 1) * cyl_blocks *
+                                fs_block_bytes / 512
+                              : 0;
+        char dts[5];
+        dts[0] = (dt >> 24) & 0xFF; dts[1] = (dt >> 16) & 0xFF;
+        dts[2] = (dt >> 8) & 0xFF;  dts[3] = dt & 0xFF; dts[4] = 0;
+        for (int c = 0; c < 4; c++)
+            if (dts[c] < 0x20) dts[c] = (char)('0' + (dts[c] & 0x0F));
 
         line[0] = 0;
         fk_cat(line, "  '", LINE_MAX);
         fk_cat(line, nm, LINE_MAX);
-        fk_cat(line, "'  start blk ", LINE_MAX);
+        fk_cat(line, "'  ", LINE_MAX);
+        fk_cat(line, dts, LINE_MAX);
+        fk_cat(line, "  start sec ", LINE_MAX);
         fk_cat(line, fk_dec(pb, num, sizeof(num)), LINE_MAX);
         fk_cat(line, "  size ", LINE_MAX);
         fk_cat(line, fk_dec(ps, num2, sizeof(num2)), LINE_MAX);

@@ -205,6 +205,29 @@
     @{i}LoadWB@{ui}                Launch the Workbench GUI
     @{i}Guide@{ui}                 Open the AmigaGuide help viewer
 
+  @{b}Storage Devices and Filesystems@{ub}
+
+  Every VirtIO block device found on the PCI bus is registered as
+  @{b}virtio0@{ub}, @{b}virtio1@{ub}, ... in enumeration order.  At boot each
+  disk is inspected for an @{b}MBR@{ub} partition table, then an Amiga
+  @{b}RDB@{ub} (Rigid Disk Block — @{i}RDSK@{ub}/@{i}PART@{ub}/@{i}FSHD@{ub} chains), and
+  finally probed as a bare filesystem when no partition table exists.
+  Recognised volumes are auto-mounted:
+
+    @{b}FAT32@{ub}     read/write, mounted under display name (DH0:) and label
+    @{b}OFS/FFS@{ub}   read-only Amiga filesystems (DOS\0 .. DOS\7), mounted
+               under the Amiga volume name stored in the root block
+               (e.g. a WinUAE hardfile named "test" mounts as test:)
+
+  The OFS/FFS driver is intentionally read-only — writes return
+  ERROR_DISK_WRITE_PROTECTED.  @{i}fsck@{ui} inspects partition tables
+  and filesystems directly on the block device:
+
+    @{i}fsck LIST@{ui}              list detected block devices
+    @{i}fsck virtio0@{ui}           MBR/GPT/RDB partition-table analysis
+    @{i}fsck virtio1@{ui}           check a bare filesystem (e.g. FFS hdf)
+    @{i}fsck DH0: REPAIR@{ui}       check + repair a FAT32 volume
+
   @{"  Back to Index  " LINK MAIN}
 
 @ENDNODE

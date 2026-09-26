@@ -266,6 +266,7 @@ including <code>version</code>, <code>mem</code>, <code>libs</code>,
 <code>echo</code>, <code>protect</code>, <code>attr</code>,
 <code>info</code>, <code>date</code>, <code>which</code>,
 <code>disks</code>, <code>fdisk</code>, <code>format</code>,
+<code>fsck</code>,
 <code>assign</code>, <code>execute</code>, <code>loadwb</code>,
 <code>run</code>, <code>ping</code>, <code>ifconfig</code>,
 <code>route</code>, <code>nslookup</code>, <code>ntpd</code>,
@@ -319,14 +320,20 @@ integration</li>
 nodes, 512 KB per file), auto-mounted at boot with T, ENV, CLIPS, S
 dirs; partition volumes mountable by display name or FAT32 volume
 label</li>
-<li><strong>Filesystem drivers</strong> — FAT32, PFS3, EXT4 (read-only),
+<li><strong>Filesystem drivers</strong> — FAT32, Amiga OFS/FFS
+(read-only, incl. WinUAE hardfiles), PFS3, EXT4 (read-only),
 ISO9660 (CD-ROM), and RAMFS</li>
-<li><strong>VirtIO block device driver</strong> — PCI scanning, device
-detection, capacity reporting</li>
+<li><strong>VirtIO block device driver</strong> — multi-disk PCI
+scanning (virtio0, virtio1, ...), per-device virtqueues and IRQ
+routing</li>
 <li><strong>IDE / ATAPI driver</strong> — Storage controller for CD-ROM
 and hard disks</li>
 <li><strong>Block device layer</strong> — Unified interface for storage
-devices; partition registration and MBR parsing</li>
+devices; partition registration with MBR and Amiga RDB (RDSK/PART/FSHD)
+support, plus bare-filesystem probing</li>
+<li><strong>fsck</strong> — Disk/filesystem check and repair tool:
+MBR/GPT/RDB analysis, FAT32 and OFS/FFS checkers, surface scan,
+sector dump</li>
 <li><strong>RTC driver</strong> — CMOS real-time clock with UIE
 interrupt</li>
 <li><strong>TCP/IP networking stack</strong> — IPv4, ARP, ICMP, TCP,
@@ -794,6 +801,10 @@ type commands:</p>
 <tr class="even">
 <td><code>format &lt;dev&gt; [fs]</code></td>
 <td>Format a partition (FAT32)</td>
+</tr>
+<tr class="odd">
+<td><code>fsck &lt;device&gt; [opts]</code></td>
+<td>Check/repair disk or filesystem (MBR/GPT/RDB, FAT32, OFS/FFS)</td>
 </tr>
 <tr class="odd">
 <td><code>run &lt;cmd&gt; [args]</code></td>

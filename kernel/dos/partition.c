@@ -382,20 +382,145 @@ void gpt_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
 }
 
 /* =========================================================================
- * RDB Operations (stubs for now)
+ * RDB Operations
  * ========================================================================= */
+
+static uint32_t rdb_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+/* Checksum rule for every RDB-family block: the sum of `longs`
+ * big-endian longwords at the start of the block is zero. */
+static int rdb_checksum_ok(const uint8_t *blk, uint32_t longs)
+{
+    if (longs == 0 || longs > RDB_BLOCK_SIZE / 4) return 0;
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < longs; i++)
+        sum += rdb_be32(blk + i * 4);
+    return sum == 0;
+}
+
+/* RDB blocks are big-endian; byte-swap `n` longwords in place after the
+ * raw block has been memcpy'd into a host-side struct. */
+static void rdb_swap32(uint32_t *p, int n)
+{
+    for (int i = 0; i < n; i++) {
+        uint32_t v = p[i];
+        p[i] = (v >> 24) | ((v >> 8) & 0xFF00u) |
+               ((v << 8) & 0xFF0000u) | (v << 24);
+    }
+}
 
 int rdb_read(BlockDev *dev, PartitionTable *pt)
 {
-    /* TODO: Implement RDB reading */
-    (void)dev;
-    (void)pt;
-    return -1;
+    if (!dev || !pt) return -1;
+
+    /* The Rigid Disk Block lives within the first RDB_LOCATION_LIMIT
+     * sectors (usually sector 0 or 1). */
+    int rdb_at = -1;
+    for (uint32_t s = 0; s < 16 && s < dev->num_sectors; s++) {
+        memset(part_sector_buf, 0, 512);
+        if (BlockDev_Read(dev, s, part_sector_buf, 1) != 0) break;
+        if (rdb_be32(part_sector_buf) != RDB_IDENTIFIER) continue;
+        uint32_t longs = rdb_be32(part_sector_buf + 4);
+        if (!rdb_checksum_ok(part_sector_buf, longs)) continue;
+        rdb_at = (int)s;
+        break;
+    }
+    if (rdb_at < 0) return -1;
+
+    memset(&pt->rdb, 0, sizeof(pt->rdb));
+    memcpy(&pt->rdb, part_sector_buf, sizeof(RdbBlock));
+    /* The whole RdbBlock is uint32 fields — swap them all. */
+    rdb_swap32((uint32_t *)&pt->rdb, (int)(sizeof(pt->rdb) / 4));
+    pt->rdb_block = rdb_at;
+    pt->valid = 1;
+    pt->scheme = PART_SCHEME_RDB;
+    pt->num_partitions = 0;
+    pt->rdb_fshd_count = 0;
+    pt->disk_sectors = dev->num_sectors;
+    pt->rdb_modified = 0;
+
+    /* Walk the partition chain.  Every PART block holds a drive
+     * environment vector; the partition extent is derived from the
+     * low/high cylinders times blocks-per-cylinder. */
+    uint32_t key = pt->rdb.partition_list;
+    int guard = 16;
+    while (key != 0 && key != 0xFFFFFFFFu && key < dev->num_sectors &&
+           pt->num_partitions < 16 && guard-- > 0) {
+        memset(part_sector_buf, 0, 512);
+        if (BlockDev_Read(dev, key, part_sector_buf, 1) != 0) break;
+        if (rdb_be32(part_sector_buf) != PART_IDENTIFIER) break;
+        uint32_t longs = rdb_be32(part_sector_buf + 4);
+        if (!rdb_checksum_ok(part_sector_buf, longs)) break;
+
+        RdbPartBlock *pb = &pt->rdb_parts[pt->num_partitions];
+        memset(pb, 0, sizeof(*pb));
+        memcpy(pb, part_sector_buf, sizeof(*pb));
+        /* Swap scalar fields lw0-8 and the environment vector lw32-63;
+         * bytes 36-67 (lw9-16) are the drive-name BSTR — leave raw. */
+        rdb_swap32((uint32_t *)pb, 9);
+        rdb_swap32(pb->reserved2, 15);
+        rdb_swap32(pb->environment, 32);
+        if (pb->name_len > 30) pb->name_len = 30;
+        pb->name[pb->name_len] = '\0';
+        pt->num_partitions++;
+        key = pb->next;
+    }
+
+    /* Walk the filesystem-header chain (FSHD) — informational; the
+     * kernel's built-in drivers handle the filesystem types directly. */
+    key = pt->rdb.filesystem_list;
+    guard = 8;
+    while (key != 0 && key != 0xFFFFFFFFu && key < dev->num_sectors &&
+           guard-- > 0) {
+        memset(part_sector_buf, 0, 512);
+        if (BlockDev_Read(dev, key, part_sector_buf, 1) != 0) break;
+        if (rdb_be32(part_sector_buf) != FS_IDENTIFIER) break;
+        uint32_t longs = rdb_be32(part_sector_buf + 4);
+        if (!rdb_checksum_ok(part_sector_buf, longs)) break;
+        pt->rdb_fshd_count++;
+        key = rdb_be32(part_sector_buf + 16);   /* fseg_Next */
+    }
+
+    return 0;
+}
+
+/* Partition extent in 512-byte sectors, derived from the drive
+ * environment:  start = low_cyl * surfaces * blocks_per_track fs-blocks,
+ * size  = (high_cyl - low_cyl + 1) * surfaces * blocks_per_track. */
+static uint64_t rdb_part_fs_blocks(const RdbPartBlock *pb)
+{
+    uint64_t surf = pb->environment[RDB_DE_SURFACES];
+    uint64_t bpt  = pb->environment[RDB_DE_BLOCKS_TRACK];
+    uint64_t lo   = pb->environment[RDB_DE_LOW_CYL];
+    uint64_t hi   = pb->environment[RDB_DE_HIGH_CYL];
+    if (hi < lo || surf == 0 || bpt == 0) return 0;
+    return (hi - lo + 1) * surf * bpt;
+}
+
+uint64_t rdb_part_start_sector(const RdbPartBlock *pb)
+{
+    uint64_t surf = pb->environment[RDB_DE_SURFACES];
+    uint64_t bpt  = pb->environment[RDB_DE_BLOCKS_TRACK];
+    uint64_t lo   = pb->environment[RDB_DE_LOW_CYL];
+    uint64_t fs_block_bytes = (uint64_t)pb->environment[RDB_DE_SIZE_BLOCK] * 4;
+    if (fs_block_bytes == 0) fs_block_bytes = 512;
+    return lo * surf * bpt * fs_block_bytes / 512;
+}
+
+uint64_t rdb_part_size_sectors(const RdbPartBlock *pb)
+{
+    uint64_t fs_block_bytes = (uint64_t)pb->environment[RDB_DE_SIZE_BLOCK] * 4;
+    if (fs_block_bytes == 0) fs_block_bytes = 512;
+    return rdb_part_fs_blocks(pb) * fs_block_bytes / 512;
 }
 
 int rdb_write(BlockDev *dev, PartitionTable *pt)
 {
-    /* TODO: Implement RDB writing */
+    /* RDB writing is not supported — RDB disks are mounted read-only. */
     (void)dev;
     (void)pt;
     return -1;
@@ -403,9 +528,85 @@ int rdb_write(BlockDev *dev, PartitionTable *pt)
 
 void rdb_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
 {
-    /* TODO: Implement RDB printing */
-    (void)pt;
-    (void)print_fn;
+    if (!pt || !pt->valid || pt->scheme != PART_SCHEME_RDB || !print_fn)
+        return;
+
+    char msg[256], num[32];
+
+    scpy(msg, "RDSK at sector ", 256);
+    uint_to_str((uint32_t)pt->rdb_block, num, 32);
+    scat(msg, num, 256);
+    scat(msg, "  block_size ", 256);
+    uint_to_str(pt->rdb.block_size, num, 32);
+    scat(msg, num, 256);
+    scat(msg, "  FSHD blocks ", 256);
+    uint_to_str((uint32_t)pt->rdb_fshd_count, num, 32);
+    scat(msg, num, 256);
+    print_fn(msg);
+
+    print_fn("Device   Name          Boot Pri  DosType   Start      Sectors     Size");
+
+    for (int i = 0; i < pt->num_partitions; i++) {
+        RdbPartBlock *pb = &pt->rdb_parts[i];
+        uint64_t start = rdb_part_start_sector(pb);
+        uint64_t size  = rdb_part_size_sectors(pb);
+
+        /* Device column: parent + digit follows the MBR convention */
+        msg[0] = '\0';
+        scpy(msg, "part", 256);
+        uint_to_str((uint32_t)i, num, 32);
+        scat(msg, num, 256);
+        int len = 0;
+        while (msg[len]) len++;
+        while (len < 9) { msg[len] = ' '; len++; }
+        msg[len] = '\0';
+
+        /* Drive name (BSTR) + boot flags */
+        scat(msg, pb->name, 256);
+        len = 0;
+        while (msg[len]) len++;
+        while (len < 20) { msg[len] = ' '; len++; }
+        msg[len] = '\0';
+        if (pb->flags & PARTF_BOOTABLE) scat(msg, "* ", 256);
+        else scat(msg, "  ", 256);
+        if (pb->flags & PARTF_NOMOUNT) scat(msg, "NM ", 256);
+        else scat(msg, "   ", 256);
+
+        /* Boot priority + dostype as 4 chars */
+        uint_to_str(pb->environment[RDB_DE_BOOT_PRI], num, 32);
+        scat(msg, num, 256);
+        len = 0;
+        while (msg[len]) len++;
+        while (len < 36) { msg[len] = ' '; len++; }
+        msg[len] = '\0';
+        {
+            uint32_t dt = pb->environment[RDB_DE_DOS_TYPE];
+            char dts[5];
+            dts[0] = (char)((dt >> 24) & 0xFF);
+            dts[1] = (char)((dt >> 16) & 0xFF);
+            dts[2] = (char)((dt >> 8) & 0xFF);
+            dts[3] = (char)(dt & 0xFF);
+            dts[4] = 0;
+            for (int c = 0; c < 4; c++)
+                if (dts[c] < 0x20) dts[c] = (char)('0' + (dts[c] & 0x0F));
+            scat(msg, dts, 256);
+            scat(msg, "    ", 256);
+        }
+
+        uint64_to_str(start, num, 32);
+        scat(msg, num, 256);
+        scat(msg, "  ", 256);
+        uint64_to_str(size, num, 32);
+        scat(msg, num, 256);
+        scat(msg, "  ", 256);
+        uint64_to_str(size * 512 / (1024 * 1024), num, 32);
+        scat(msg, num, 256);
+        scat(msg, "M", 256);
+        print_fn(msg);
+    }
+
+    if (pt->num_partitions == 0)
+        print_fn("(no partitions in RDB chain)");
 }
 
 /* =========================================================================
@@ -419,14 +620,20 @@ int partition_read(BlockDev *dev, PartitionTable *pt)
     memset(pt, 0, sizeof(PartitionTable));
     pt->disk_sectors = dev->num_sectors;
 
-    /* Try MBR first */
+    /* Try RDB first — an RDB disk has no 55AA MBR signature, but an
+     * MBR disk can never carry an RDSK block in the first 16 sectors. */
+    if (rdb_read(dev, pt) == 0) {
+        return 0;
+    }
+
+    /* Try MBR */
     if (mbr_read(dev, pt) == 0) {
         /* Read UAOS metadata from sector 1 */
         uaos_meta_read(dev, &pt->uaos_meta);
         return 0;
     }
 
-    /* TODO: Try GPT, then RDB */
+    /* TODO: Try GPT */
 
     return -1;
 }
