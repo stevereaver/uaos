@@ -39,6 +39,8 @@ Note: the upper 16 MB address range also contains the Amiga custom chip/CIA wind
 
 M68k tasks are given a private VBlank signal bit (`UaosTask.m68k_vblank_sig`) so that `graphics.library/WaitTOF()` can block on `Wait()` instead of busy-waiting.  The VBlank path in `timer_ProcessTicks()` signals the waiting task, keeping the idle/WM task responsive while M68k animations run at ~50 Hz.
 
+Guest message ports (`exec.library` `PutMsg`/`GetMsg`/`ReplyMsg`/`WaitPort` in `uaos_m68k_glue.c`) carry real wakeup semantics: every poster queues the node on `mp_MsgList` and then `Signal()`s `mp_SigTask` with `mp_SigBit`.  `WaitPort` sleeps in bounded ~10 ms `sti; hlt` slices (waking early when the port's signal lands in `tc_SigRecvd`), capped at ~100 ms per call, instead of returning 0 instantly — an instant return made every IDCMP loop a 100%-CPU spin that died on the M68k cycle budget.  The cap preserves progress for ports that never receive messages (console/device reply ports polled by CLI tools).  Ports without `mp_SigTask` wired keep the old immediate return.  While blocked in the shared `UAOS_Emu_LoadAndRun` context (`g_chipset_sync_disabled == 0`), `WaitPort` re-pumps `UAOS_Intuition_PostIntuiTicks()` so `IDCMP_INTUITICKS` keeps flowing; per-task contexts never pump ticks (the slot table's `guest_win` pointers belong to other tasks' address spaces).
+
 ## Trap System
 
 The emulation layer uses the `ILLEGAL` opcode to implement system calls (Traps). When the emulator encounters an `ILLEGAL` instruction, the glue logic checks the address to determine which LVO is being called. `TRAP #1` is used for simple DOS-style I/O (Write/Output, etc.).

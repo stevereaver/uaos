@@ -397,6 +397,8 @@ for src in \
     "${REPO_ROOT}/kernel/dos/partition.c" \
     "${REPO_ROOT}/kernel/dos/dma.c" \
     "${REPO_ROOT}/kernel/dos/fat32.c" \
+    "${REPO_ROOT}/kernel/dos/fsck.c" \
+    "${REPO_ROOT}/kernel/dos/fsck_fat32.c" \
     "${REPO_ROOT}/kernel/dos/pfs3.c" \
     "${REPO_ROOT}/kernel/dos/ext4.c" \
     "${REPO_ROOT}/kernel/dos/iso9660.c" \
@@ -419,6 +421,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_disks.c" \
     "${REPO_ROOT}/kernel/shell/cmd_fdisk.c" \
     "${REPO_ROOT}/kernel/shell/cmd_format.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_fsck.c" \
     "${REPO_ROOT}/kernel/shell/cmd_pointer.c" \
     "${REPO_ROOT}/kernel/shell/cmd_run.c" \
     "${REPO_ROOT}/kernel/shell/cmd_assign.c" \
@@ -812,6 +815,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/partition.o" \
     "${BUILD_DIR}/obj/dma.o" \
     "${BUILD_DIR}/obj/fat32.o" \
+    "${BUILD_DIR}/obj/fsck.o" \
+    "${BUILD_DIR}/obj/fsck_fat32.o" \
     "${BUILD_DIR}/obj/pfs3.o" \
     "${BUILD_DIR}/obj/ext4.o" \
     "${BUILD_DIR}/obj/iso9660.o" \
@@ -843,6 +848,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_disks.o" \
     "${BUILD_DIR}/obj/cmd_fdisk.o" \
     "${BUILD_DIR}/obj/cmd_format.o" \
+    "${BUILD_DIR}/obj/cmd_fsck.o" \
     "${BUILD_DIR}/obj/cmd_pointer.o" \
     "${BUILD_DIR}/obj/cmd_run.o" \
     "${BUILD_DIR}/obj/cmd_assign.o" \
@@ -957,7 +963,7 @@ GEN_NATIVE="${BUILD_DIR}/gen_uaos_native"
 
 for cmd in version mem libs clear reboot \
            pwd \
-           info date which disks fdisk format pointer \
+           info date which disks fdisk format fsck pointer \
            run assign execute loadwb ifconfig ping route nslookup ntpd netstart netstop vim ed ps netinfo \
            wait prompt stack why failat quit endcli relabel \
            getenv unset jobs \

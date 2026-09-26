@@ -38,6 +38,9 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("disks",      Cmd_Disks    ),
     CMD ("fdisk",      Cmd_Fdisk    ),
     CMD ("format",     Cmd_Format   ),
+    CMDT("fsck",       Cmd_Fsck,
+         "DEVICE,LIST/S,INFO/S,CHECK/S,REPAIR/S,FIX/S,INTERACTIVE/S,"
+         "VERBOSE/S,SURFACE/S,DUMP/K/N,ALL/S"),
     CMD ("pointer",    Cmd_Pointer  ),
     CMD ("run",        Cmd_Run      ),
     CMD ("assign",     Cmd_Assign   ),

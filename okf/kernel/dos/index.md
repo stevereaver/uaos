@@ -70,6 +70,31 @@ RAMFS uses a shared bump-allocator data pool (`g_pool` in `kernel/dos/ramfs.c`) 
 
 `BlockDev_Read`/`BlockDev_Write` serialize all block I/O with `cli`/`sti` — the VirtIO drivers keep a single set of global request/response/data buffers and one in-flight descriptor, so concurrent I/O from different tasks (e.g. desktop polling vs. shell `format`/`makedir`) would otherwise corrupt the in-flight transaction. `blockdev.c` and `partition.c` use 4K-aligned static sector buffers (`blockdev_boot_sector`, `part_sector_buf`) for boot-sector, MBR, and UAOS-meta I/O because the VirtIO driver requires DMA-accessible buffers — stack buffers are not safe. `BlockDev_ReadVolLabel` strips only *trailing* spaces from the 11-byte FAT label so labels with internal spaces (e.g. "MY DISK") read correctly.
 
+## Filesystem Check & Repair (`fsck` / `C:fsck`)
+
+`kernel/dos/fsck.{c,h}` is a pluggable disk/filesystem interrogation and repair framework used by the `fsck` native command (`kernel/shell/cmd_fsck.c`). It operates directly on `BlockDev` sectors — deliberately independent of the mounted handlers' cached state — and is safe to run in read-only mode against mounted volumes (repair mode prints a mounted-volume warning first).
+
+### Framework
+
+- **`FsckCtx`** carries the output callback, check mode (`CHECK`/`REPAIR`/`INTERACTIVE`), `verbose`, `confirm` (y/n prompt), `brk` (Ctrl-C poll), and `yield` callbacks plus running error/warning/fixed counters. Checkers report through `fsck_err`/`fsck_warn`/`fsck_note`/`fsck_out`; every repair decision goes through `fsck_should_fix()` so INTERACTIVE mode prompts per fix.
+- **`FsckFS` vtable** (`probe`/`info`/`check`) plus a dispatch table (`k_fsck_fs[]`) makes new filesystem checkers drop-in: implement `kernel/dos/fsck_<fs>.c`, add one table row. Registered probes: FAT32 (full checker in `fsck_fat32.c`), FAT12/16 (info + BPB sanity), ext2/3/4 (superblock info + dirty/error flags), Amiga FFS/OFS (bootblock checksum + repair), PFS/SFS, exFAT, NTFS, ISO9660 (info/interrogation only until their checkers land).
+- **Whole-disk analysis** (`FSCK_DiskCheck`, used when `BlockDev.part_offset == 0`): MBR entry bounds/boot-flag/overlap checks with MBR rewrite repair, GPT header CRC/size/usable-range checks with CRC repair, and Amiga RDB `RDSK`/`PART`/`FSHD` chain walks with checksum repair.
+- **Media tools**: `FSCK_SurfaceScan` (batched read test reporting unreadable ranges, break/yield polled) and `FSCK_DumpSector` (hex+ASCII dump).
+- All FAT scans and the cluster-reference bitmaps run against static aligned buffers (`g_scan` 64 KiB batches, two 512 KiB cluster bitmaps covering 4 Mi clusters); long loops yield and poll the break callback.
+
+### FAT32 checker (`fsck_fat32.c`)
+
+Seven phases: BPB validation (with sector-6 backup restore), FSINFO signature/counters, FAT1↔FAT2 compare (batched, retried reads — VirtIO can transiently fail under I/O bursts) with FAT2 resync repair, FAT entry scan (free/used/bad/out-of-range link truncation), iterative directory-tree walk (stack-based DFS, 8.3/LFN/attr/dot-entry sanity, per-entry cluster-chain marking for cross-link and loop detection, file size vs. chain-length reconciliation, clusterless-directory allocation + `.`/`..` rebuild), lost-cluster detection with optional reclaim, and free-space/FSINFO reconciliation. Repairs write every FAT copy and only count as `fixed` when the write succeeds.
+
+### CLI
+
+```
+fsck DEVICE [CHECK|REPAIR|INTERACTIVE] [VERBOSE] [SURFACE] [DUMP=n] [INFO]
+fsck LIST | fsck ALL
+```
+
+Partition BlockDevs run the FS checker; whole-disk BlockDevs run partition-table analysis; `ALL` iterates partition devices. Return codes via `failat`: 0 clean, 5 warnings, 10 errors found, 20 fatal/abort.
+
 ## Dynamic Handler Loading
 
 Following the Amiga model, UAOS supports loading handlers from the `L:` directory. Built-in handlers include `ram_handler.c`, `fat_handler.c`, `device_handler.c`, `aux_handler.c`, `port_handler.c`, `print_handler.c`, and `crossdos_handler.c`. Loadable handlers can be native or emulated M68k processes that handle specific device or filesystem logic.

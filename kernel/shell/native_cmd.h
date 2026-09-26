@@ -192,6 +192,7 @@ void Cmd_Which   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Disks   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Fdisk   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Format  (NativeCmdCtx *ctx, const char *args);
+void Cmd_Fsck    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Pointer (NativeCmdCtx *ctx, const char *args);
 void Cmd_Run     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Assign  (NativeCmdCtx *ctx, const char *args);

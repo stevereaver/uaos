@@ -2048,22 +2048,59 @@ static void exec_ReplyMsg(void)
 static void exec_WaitPort(void)
 {
     /* WaitPort(port) — A0 = port, returns port in D0.
-     * In a real Amiga, this blocks until a message arrives.  In UAOS,
-     * we don't have real message ports for most operations, so blocking
-     * would hang the M68k task forever.  Instead, return immediately:
-     * if a message is already in the list, return the port; otherwise
-     * return 0 (no message).  This prevents ACE-compiled binaries and
-     * other CLI tools from hanging when they try to wait for console
-     * input or device replies that never arrive. */
+     *
+     * Amiga semantics: block until a message arrives.  Every poster
+     * (PutMsg/ReplyMsg/post_intui_message) queues the node and then
+     * Signal()s MP_SIGTASK with MP_SIGBIT, so nap until that signal —
+     * or a message — lands.  Blocking unconditionally is wrong here:
+     * Wait() has no timeout and some ports legitimately never receive a
+     * message in UAOS (console/device reply ports that CLI tools poll),
+     * so cap each call at ~100 ms.  A busy IDCMP loop then costs ~10
+     * short sleeps per second instead of millions of ILLEGAL traps,
+     * and sleeping doesn't burn emulated cycles — which is what used
+     * to trip the cycle-budget abort on interactive programs.
+     *
+     * The INTUITICKS pump normally lives in the LoadAndRun slice loop,
+     * which stalls while we're inside a trap; repump it here when in
+     * that context (g_chipset_sync_disabled == 0).  Per-task M68k
+     * contexts never pumped ticks and mustn't start — the slot table's
+     * guest_win pointers belong to other tasks' address spaces. */
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     if (!port) { m68k_set_reg(M68K_REG_D0, 0); return; }
 
-    if (glue_list_empty(port + MP_MSGLIST)) {
-        /* No message available — return 0 instead of blocking */
-        m68k_set_reg(M68K_REG_D0, 0);
-    } else {
-        m68k_set_reg(M68K_REG_D0, port);
+    UaosTask *self = Task_Current();
+    if (!self || !glue_r32(port + MP_SIGTASK)) {
+        /* Nobody could ever signal this port — keep the old immediate
+         * return so callers polling dead ports can't hang. */
+        m68k_set_reg(M68K_REG_D0,
+                     glue_list_empty(port + MP_MSGLIST) ? 0 : port);
+        return;
     }
+
+    uint32_t sigbit = glue_r8(port + MP_SIGBIT);
+    uint32_t mask   = (sigbit < 32) ? (1U << sigbit) : 0;
+
+    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
+    extern void UAOS_Intuition_PostIntuiTicks(void);
+    extern int  g_chipset_sync_disabled;
+    uint64_t deadline = g_pit_ticks + 10;   /* ~100 ms cap per call */
+
+    while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
+        if (!g_chipset_sync_disabled)
+            UAOS_Intuition_PostIntuiTicks();
+        uint64_t nap_end = g_pit_ticks + 1;
+        while (glue_list_empty(port + MP_MSGLIST)
+               && (!mask || !(self->tc_SigRecvd & mask))
+               && g_pit_ticks < nap_end)
+            __asm__ volatile ("sti; hlt" ::: "memory");
+        /* Consume the port signal — it only means "check the list"; a
+         * leftover edge must not skip every future nap. */
+        if (mask && (self->tc_SigRecvd & mask))
+            Task_ClearSig(mask);
+    }
+
+    m68k_set_reg(M68K_REG_D0,
+                 glue_list_empty(port + MP_MSGLIST) ? 0 : port);
 }
 
 /* Public exec dispatcher for use by other host library code (e.g. gadtools). */
