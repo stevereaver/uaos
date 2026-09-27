@@ -23,7 +23,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 
 ## Core Files
 
-- `task.c`: Task creation (native, X64 user-space, and emulated M68k) and context switching logic.
+- `task.c`: Task creation (native, X64 user-space, and emulated M68k) and context switching logic. Each `UaosTask` carries a `bg_job` field stamped at creation from `g_task_bg_job` — the shell job pump sets that global while dispatching a background job, so `jobs`/`[n] done` bookkeeping can detect when the spawned task(s) actually exit (job numbers never collide with recycled task slots the way a bare `UaosTask *` would).
 - `exec_task.c`: AmigaOS-compatible `AddTask`/`FindTask`/`SetTaskPri` helpers for M68k tasks.
 - `exec_signal.c`: Task lookup helpers for M68k guest process structures.
 - `exec_ipc.c`: Message port and message passing implementation (`NewPort`, `PutMsg`, `GetMsg`, `WaitPort`, `ReplyMsg`).

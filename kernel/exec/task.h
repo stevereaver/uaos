@@ -122,6 +122,12 @@ typedef struct UaosTask {
     /* Parent task (for SIGF_CHILD notification on exit). */
     struct UaosTask *parent;
 
+    /* Shell background-job number that spawned this task (0 = none).
+     * Stamped at creation from g_task_bg_job so the job pump can tell
+     * whether a backgrounded command is still running even after its
+     * task slot has been recycled. */
+    int32_t  bg_job;
+
     /* Per-task current working directory (copied at creation). */
     char     task_cwd[128];
 
@@ -233,6 +239,10 @@ void wait_remove(UaosTask *task);
 
 extern UaosTask g_tasks[];
 extern int      g_task_count;
+
+/* Set by the shell job pump while dispatching a background job; every
+ * task created during that dispatch is stamped with the job number. */
+extern int32_t  g_task_bg_job;
 
 /* M68k task lookup */
 UaosTask *Task_FindByM68kAddr(uint32_t guest_addr);

@@ -787,9 +787,46 @@ static void bg_remove_done(void)
     g_bg_job_count = write;
 }
 
+/* A background job is alive while at least one task it spawned is still
+ * on the scheduler.  Tasks created while the job was being dispatched
+ * are stamped with the job number in t->bg_job (see g_task_bg_job), so
+ * a recycled task slot can never resurrect a finished job. */
+static int bg_job_alive(const BgJob *job)
+{
+    for (int i = 0; i < g_task_count; i++) {
+        if (g_tasks[i].bg_job == job->number &&
+            g_tasks[i].tc_State != TASK_REMOVED)
+            return 1;
+    }
+    return 0;
+}
+
+static void bg_job_done(BgJob *job)
+{
+    char done_msg[MAX_LINE_LEN];
+    scopy(done_msg, "[", MAX_LINE_LEN);
+    char num[8];
+    uint_to_dec_s((uint32_t)job->number, num, 8);
+    scat(done_msg, num, MAX_LINE_LEN);
+    scat(done_msg, "] done", MAX_LINE_LEN);
+    inst_print(job->shell, done_msg);
+
+    job->active = 0;
+    job->done   = 1;
+}
+
 static void bg_run_next(void)
 {
     if (g_bg_running) return;
+
+    /* Reap finished jobs: a backgrounded command completes when the last
+     * task it spawned has exited — not when dispatch returns, since
+     * binaries run as their own scheduled tasks. */
+    for (int i = 0; i < g_bg_job_count; i++) {
+        if (g_bg_jobs[i].active && !bg_job_alive(&g_bg_jobs[i]))
+            bg_job_done(&g_bg_jobs[i]);
+    }
+
     bg_remove_done();
     if (g_bg_job_count == 0) return;
 
@@ -806,6 +843,9 @@ static void bg_run_next(void)
     BgJob *job = &g_bg_jobs[idx];
     job->active = 1;
     g_bg_running = 1;
+    /* Stamp every task spawned by this dispatch with the job number so
+     * the pump can later detect when the backgrounded command exits. */
+    g_task_bg_job = job->number;
 
     /* Suppress prompt echo for background execution by calling run_cmd
      * directly — inst_dispatch would print the command again.  If the
@@ -828,17 +868,15 @@ static void bg_run_next(void)
         inst_dispatch(job->shell, job->cmd);
     }
 
-    char done_msg[MAX_LINE_LEN];
-    scopy(done_msg, "[", MAX_LINE_LEN);
-    char num[8];
-    uint_to_dec_s((uint32_t)job->number, num, 8);
-    scat(done_msg, num, MAX_LINE_LEN);
-    scat(done_msg, "] done", MAX_LINE_LEN);
-    inst_print(job->shell, done_msg);
-
-    job->active = 0;
-    job->done   = 1;
+    g_task_bg_job = 0;
     g_bg_running = 0;
+
+    /* If the command spawned a detached task that is still running, the
+     * job stays active — "[n] done" is printed by the reaper above when
+     * the task exits.  Synchronous commands (builtins, scripts, native
+     * C: commands) are complete as soon as dispatch returns. */
+    if (!bg_job_alive(job))
+        bg_job_done(job);
 }
 
 static void pipe_print(void *shell, const char *line)

@@ -37,6 +37,7 @@ extern uint8_t *g_ram;
 UaosTask g_tasks[MAX_TASKS];
 uint8_t __attribute__((aligned(8))) g_task_stacks[MAX_TASKS][TASK_STACK_SIZE];
 int      g_task_count = 0;
+int32_t  g_task_bg_job = 0;
 static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
 UaosTask *Task_SwitchPrev = NULL;
@@ -194,6 +195,7 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     t->native_entry = entry;
     t->native_arg = arg;
     t->parent = Task_Current();
+    t->bg_job = g_task_bg_job;
     copy_cwd(t->task_cwd, "");
 
     /* Build initial stack frame that looks like what the timer ISR pushes:
@@ -312,6 +314,7 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     t->native_rip = entry_rip;
     t->native_initial_rsp = initial_rsp;
     t->parent = Task_Current();
+    t->bg_job = g_task_bg_job;
     copy_cwd(t->task_cwd, cwd);
     t->native_print_fn  = print_fn;
     t->native_print_ctx = print_ctx;
