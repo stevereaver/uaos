@@ -29,6 +29,10 @@ All WM-driven rendering goes through a back buffer (`g_backbuf`, 1280×1024 max 
 
 Direct-mode drawing (when `FB_IsDrawing()` is false) writes straight to VRAM and bypasses dirty tracking. `FB_DirtyInclude()` lets callers that touch VRAM directly during a back-buffered frame extend the dirty box.
 
+### Scene Clip Rectangle
+
+`FB_SetClipRect(x, y, w, h)` / `FB_ClearClip()` install an optional half-open screen-space clip (`g_clip_*`) that every write primitive honours in addition to the framebuffer-bounds clamp: `FB_PutPixel` and the char paths test each pixel (`clip_point`), while the rect/line/blit fills intersect their bounds up front (`clip_rect`). `FB_BlitARGB` computes its source `skip` offset after clipping so the blit stays aligned, and `FB_FillRectDithered` clips after the fb-bounds clamp so `(px - x)`/`(py - y)` checkerboard parity stays anchored to the requested origin. The clip applies in both back-buffered and direct modes; it is off unless explicitly set, so full-scene repaints are unaffected. Its only consumer is `repaint_damaged()` (see below).
+
 ### Fast Row-Based Primitives
 
 The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`) hoist the `g_drawing` and `bpp` branches out of the per-pixel loop, resolve the target row pointer once, and run a tight inner loop. `FB_BlitARGB` provides a clipped ARGB row blit (alpha-keyed, optional colour inversion) used by `icon_render.c` instead of per-pixel `FB_PutPixel` calls. `FB_FillRectDithered` paints a 1px two-colour checkerboard rect (pattern anchored to the rect origin) with the same hoisted structure — used by the scrollbar track (UAOS-103).
@@ -62,10 +66,11 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 `WM_Redraw()` previously repainted the entire scene (backdrop, every icon, every window, menu, cursor) on every event — scrollbar clicks, menu hover, drag/resize mouse moves, focus changes, and the 1 Hz clock tick. Event handlers now instead merge a damaged screen rectangle into `g_dmg_*` bounds (`damage_add`) and the idle loop repaints the union once per iteration via `WM_FlushRedraw()` → `repaint_damaged()`:
 
 1. `FB_BeginDraw()` — switches to the persistent back buffer (pixels outside the damage keep their previous contents).
-2. If the damage may expose desktop (`g_dmg_desktop`), `Desktop_RedrawRect()` repaints backdrop/icons/menubar inside the damage only — including the damaged region of the front Intuition screen's BitMap via `UAOS_Intuition_RenderScreenBackdropRegion()`.
-3. Only windows intersecting the damage are repainted, back-to-front, so restacked/vacated regions resolve to the new z-order.
-4. The open menu dropdown repaints itself (it floats above windows).
-5. `Cursor_Redraw()` + `FB_Flip()` — the VRAM copy is bounded by the FB dirty rect.
+2. `FB_SetClipRect()` constrains every write primitive to the damage rect for the rest of the scene pass. This is required for correctness (UAOS-121): `repaint_window()` paints each intersecting window's *full* footprint and `FB_Flip()` copies the union dirty box, so without the clip a lower window's repaint overwrites the back-buffer pixels of a front window that was skipped for not intersecting the damage — it appeared to pop to the front during title-bar drags until a later repaint restored it.
+3. If the damage may expose desktop (`g_dmg_desktop`), `Desktop_RedrawRect()` repaints backdrop/icons/menubar inside the damage only — including the damaged region of the front Intuition screen's BitMap via `UAOS_Intuition_RenderScreenBackdropRegion()`.
+4. Only windows intersecting the damage are repainted, back-to-front, so restacked/vacated regions resolve to the new z-order.
+5. The open menu dropdown repaints itself (it floats above windows).
+6. `FB_ClearClip()` then `Cursor_Redraw()` + `FB_Flip()` — the sprite must paint at its full live position, which may lie outside the damage; the VRAM copy is bounded by the FB dirty rect.
 
 Two invalidation APIs mark damage: `WM_InvalidateRect()` (only window content changed) and `WM_InvalidateDesktopRect()` (the rect may expose backdrop/icons/menubar — a window vacated it, or desktop content itself changed). Callers: window drag/resize/zoom/depth, scrollbar and gadget presses, focus changes, `WM_SetWindowTitle` (title strip only), `WM_CloseWindow` (vacated footprint + new focus title bar), desktop menu open/close/switch, lasso old/new outline, icon select/drag/drop footprints, menubar clock tick, and `Desktop_SetScreenTitle`. A burst of input coalesces into one repaint instead of one per event. `WM_Redraw()` remains for true full-scene updates and clears pending damage.
 

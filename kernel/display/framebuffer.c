@@ -66,6 +66,49 @@ static int g_drawing = 0;  /* 1 = drawing to back buffer, 0 = direct */
  * when dirty_x1 < dirty_x0.  Coordinates are clamped to BB_MAX_W/H. */
 static int g_dirty_x0, g_dirty_y0, g_dirty_x1, g_dirty_y1;
 
+/* Clip rectangle — when active, every write primitive drops pixels outside
+ * it (half-open [x0,x1) x [y0,y1) bounds, screen coordinates).
+ * repaint_damaged() in wm.c sets this to the damage rect: repaint_window()
+ * draws each intersecting window's FULL footprint into the back buffer and
+ * FB_Flip() copies the union dirty box to VRAM, so without a clip a lower
+ * window's repaint would overwrite the pixels of a front window that was
+ * skipped for not intersecting the damage — it appeared to pop to the
+ * front for the duration of a title-bar drag (UAOS-121). */
+static int g_clip_on = 0;
+static int g_clip_x0, g_clip_y0, g_clip_x1, g_clip_y1;
+
+void FB_SetClipRect(int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) { g_clip_on = 0; return; }
+    g_clip_x0 = x;     g_clip_y0 = y;
+    g_clip_x1 = x + w; g_clip_y1 = y + h;
+    g_clip_on = 1;
+}
+
+void FB_ClearClip(void)
+{
+    g_clip_on = 0;
+}
+
+/* Intersect half-open bounds with the clip rect; returns 0 when empty. */
+static inline int clip_rect(int *x0, int *y0, int *x1, int *y1)
+{
+    if (!g_clip_on) return 1;
+    if (*x0 < g_clip_x0) *x0 = g_clip_x0;
+    if (*y0 < g_clip_y0) *y0 = g_clip_y0;
+    if (*x1 > g_clip_x1) *x1 = g_clip_x1;
+    if (*y1 > g_clip_y1) *y1 = g_clip_y1;
+    return *x0 < *x1 && *y0 < *y1;
+}
+
+/* Clip test for a single pixel. */
+static inline int clip_point(int x, int y)
+{
+    return !g_clip_on ||
+           (x >= g_clip_x0 && x < g_clip_x1 &&
+            y >= g_clip_y0 && y < g_clip_y1);
+}
+
 static inline void dirty_reset(void)
 {
     g_dirty_x0 = 1; g_dirty_y0 = 1;
@@ -292,6 +335,7 @@ static inline void put_pixel24(uint8_t *base, uint32_t pitch,
 void FB_PutPixel(int x, int y, uint32_t colour)
 {
     if (!g_fb.valid) return;
+    if (!clip_point(x, y)) return;
     if (x < 0 || y < 0 || (unsigned)x >= g_fb.width || (unsigned)y >= g_fb.height) return;
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) put_pixel32(base, g_fb.pitch, x, y, colour);
@@ -303,9 +347,14 @@ void FB_DrawHLine(int x, int y, int len, uint32_t colour)
 {
     if (!g_fb.valid || len <= 0) return;
     if (y < 0 || (unsigned)y >= g_fb.height) return;
+    if (g_clip_on && (y < g_clip_y0 || y >= g_clip_y1)) return;
     int x0 = x < 0 ? 0 : x;
     int x1 = x + len;
     if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
+    {
+        int cy0 = y, cy1 = y + 1;
+        if (!clip_rect(&x0, &cy0, &x1, &cy1)) return;
+    }
     if (x0 >= x1) return;
 
     if (g_drawing) {
@@ -337,9 +386,14 @@ void FB_DrawVLine(int x, int y, int len, uint32_t colour)
 {
     if (!g_fb.valid || len <= 0) return;
     if (x < 0 || (unsigned)x >= g_fb.width) return;
+    if (g_clip_on && (x < g_clip_x0 || x >= g_clip_x1)) return;
     int y0 = y < 0 ? 0 : y;
     int y1 = y + len;
     if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    {
+        int cx0 = x, cx1 = x + 1;
+        if (!clip_rect(&cx0, &y0, &cx1, &y1)) return;
+    }
     if (y0 >= y1) return;
 
     if (g_drawing) {
@@ -374,6 +428,7 @@ void FB_FillRect(int x, int y, int w, int h, uint32_t colour)
     int y0 = y < 0 ? 0 : y;
     int x1 = x + w; if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
     int y1 = y + h; if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    if (!clip_rect(&x0, &y0, &x1, &y1)) return;
     if (x0 >= x1 || y0 >= y1) return;
 
     if (g_drawing) {
@@ -418,6 +473,9 @@ void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t co
     int y0 = y < 0 ? 0 : y;
     int x1 = x + w;  if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
     int y1 = y + h;  if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    /* Clip after fb bounds so (px - x)/(py - y) parity stays anchored to the
+     * requested origin — the checkerboard doesn't shift under clipping. */
+    if (!clip_rect(&x0, &y0, &x1, &y1)) return;
     if (x0 >= x1 || y0 >= y1) return;
 
     const uint32_t cols[2] = { col_a, col_b };
@@ -474,10 +532,15 @@ void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert)
 {
     if (!g_fb.valid || w <= 0) return;
     if (y < 0 || (unsigned)y >= g_fb.height) return;
+    if (g_clip_on && (y < g_clip_y0 || y >= g_clip_y1)) return;
     int x0 = x < 0 ? 0 : x;
-    int skip = x0 - x;
     int x1 = x + w;
     if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
+    {
+        int cy0 = y, cy1 = y + 1;
+        if (!clip_rect(&x0, &cy0, &x1, &cy1)) return;
+    }
+    int skip = x0 - x;
     if (x0 >= x1) return;
     const uint32_t *src = argb + skip;
     int n = x1 - x0;
@@ -646,15 +709,18 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
             int py = y + row;
             if (py < 0) continue;
             if ((unsigned)py >= BB_MAX_H) break;
+            if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint32_t *dst = g_backbuf[py];
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
-                if ((unsigned)px < BB_MAX_W)
+                if ((unsigned)px < BB_MAX_W && clip_point(px, py))
                     dst[px] = (bits & (0x80 >> col)) ? fg : bg;
             }
         }
-        dirty_add(x, y, x + 8, y + 16);
+        int dx0 = x, dy0 = y, dx1 = x + 8, dy1 = y + 16;
+        if (clip_rect(&dx0, &dy0, &dx1, &dy1))
+            dirty_add(dx0, dy0, dx1, dy1);
         return;
     }
 
@@ -663,11 +729,13 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
         for (int row = 0; row < 16; row++) {
             int py = y + row;
             if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint32_t *dst = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
                 if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                if (!clip_point(px, py)) continue;
                 dst[px] = (bits & (0x80 >> col)) ? fg : bg;
             }
         }
@@ -675,11 +743,13 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
         for (int row = 0; row < 16; row++) {
             int py = y + row;
             if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint8_t *dst = base + (uint32_t)py * g_fb.pitch;
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
                 if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                if (!clip_point(px, py)) continue;
                 uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
                 uint8_t *p = dst + px * 3;
                 p[0] = (uint8_t)(colour & 0xFF);
@@ -842,15 +912,18 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
             int py = y + row;
             if (py < 0) continue;
             if ((unsigned)py >= BB_MAX_H) break;
+            if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint32_t *dst = g_backbuf[py];
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
-                if ((unsigned)px < BB_MAX_W)
+                if ((unsigned)px < BB_MAX_W && clip_point(px, py))
                     dst[px] = (bits & (0x80 >> col)) ? fg : bg;
             }
         }
-        dirty_add(x, y, x + 8, y + 8);
+        int dx0 = x, dy0 = y, dx1 = x + 8, dy1 = y + 8;
+        if (clip_rect(&dx0, &dy0, &dx1, &dy1))
+            dirty_add(dx0, dy0, dx1, dy1);
         return;
     }
 
@@ -859,11 +932,13 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
         for (int row = 0; row < 8; row++) {
             int py = y + row;
             if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint32_t *dst = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
                 if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                if (!clip_point(px, py)) continue;
                 dst[px] = (bits & (0x80 >> col)) ? fg : bg;
             }
         }
@@ -871,11 +946,13 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
         for (int row = 0; row < 8; row++) {
             int py = y + row;
             if (py < 0 || (unsigned)py >= g_fb.height) continue;
+            if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint8_t *dst = base + (uint32_t)py * g_fb.pitch;
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
                 if (px < 0 || (unsigned)px >= g_fb.width) continue;
+                if (!clip_point(px, py)) continue;
                 uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
                 uint8_t *p = dst + px * 3;
                 p[0] = (uint8_t)(colour & 0xFF);

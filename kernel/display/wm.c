@@ -1299,6 +1299,15 @@ static void repaint_damaged(void)
 
     FB_BeginDraw();
 
+    /* Clip all drawing to the damage rect (UAOS-121): repaint_window()
+     * paints each intersecting window's FULL footprint and FB_Flip() copies
+     * the union dirty box, so unclipped a lower window's repaint would
+     * overwrite the pixels of a front window that was skipped for not
+     * intersecting the damage — it popped to the front during title-bar
+     * drags.  With the clip, nothing outside the damage is touched in the
+     * back buffer or on screen. */
+    FB_SetClipRect(x0, y0, x1 - x0, y1 - y0);
+
     /* Backdrop/icons/menubar only where the damage can expose them. */
     if (desktop && Desktop_IsWorkbenchLoaded())
         Desktop_RedrawRect(x0, y0, x1 - x0, y1 - y0);
@@ -1323,6 +1332,9 @@ static void repaint_damaged(void)
     if (Desktop_IsMenuOpen())
         Desktop_DrawMenuDropdown();
 
+    /* The cursor sprite must paint at its full live position, not clipped
+     * to the damage — its new position may lie outside it. */
+    FB_ClearClip();
     Cursor_Redraw();
     FB_Flip();
 }

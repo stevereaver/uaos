@@ -56,6 +56,13 @@ uint32_t FB_GetPixel(int x, int y); /* reads from back buf if drawing, physical 
  * cursor sprite drawn at frame end) so FB_Flip will copy those pixels too. */
 void     FB_DirtyInclude(int x, int y, int w, int h);
 
+/* Clip rectangle — while set, all write primitives drop pixels outside it.
+ * repaint_damaged() uses this to bound the scene repaint to the damage
+ * rect so a repainted window can't stomp a front window that lies outside
+ * the damage (UAOS-121).  Cleared with FB_ClearClip(). */
+void     FB_SetClipRect(int x, int y, int w, int h);
+void     FB_ClearClip(void);
+
 /* Primitive drawing --------------------------------------------------------- */
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour);
 void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t col_b);
