@@ -535,7 +535,7 @@ static int sys_readdir(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     ent->is_dir = entry->is_dir;
     ent->attrs = 0;
     ent->protection = 0;
-    ent->mtime = 0;
+    ent->mtime = entry->mtime;
     return 1;
 }
 
@@ -582,7 +582,7 @@ static int sys_stat(uint64_t rdi, uint64_t rsi, uint64_t rdx)
         st->is_dir  = 1;
         st->attrs   = 0;
         st->protection = VFS_GetProtection(abs_path);
-        st->mtime   = 0;
+        st->mtime   = VFS_GetMtime(abs_path);
         return 0;
     }
 
@@ -595,8 +595,8 @@ static int sys_stat(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     st->is_dir  = 0;
     st->attrs   = 0;
     st->protection = 0;
-    st->mtime   = 0;
     VFS_Close(&fh);
+    st->mtime   = VFS_GetMtime(abs_path);
     return 0;
 }
 

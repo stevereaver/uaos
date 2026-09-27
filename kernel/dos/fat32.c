@@ -7,6 +7,7 @@
  */
 
 #include "fat32.h"
+#include "../irq/rtc.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -446,6 +447,95 @@ static void fat32_build_dir_entry(uint8_t *de, const char *name83,
 }
 
 /* =========================================================================
+ * FAT timestamps (UAOS-29)
+ *
+ * FAT stores a packed local date/time: date = (year-1980)<<9 | month<<5 |
+ * day, time = hour<<11 | minute<<5 | sec/2.  Amiga DateStamp counts days
+ * since 1978-01-01 plus minutes and 1/50s ticks. */
+static void fat32_now(uint16_t *fat_date, uint16_t *fat_time)
+{
+    RtcDateTime t = RTC_ReadDateTime();
+    int year = t.year;
+    if (year < 1980) year = 1980;
+    if (year > 2107) year = 2107;
+    *fat_date = (uint16_t)(((year - 1980) << 9) | (t.month << 5) | t.day);
+    *fat_time = (uint16_t)((t.hour << 11) | (t.min << 5) | (t.sec >> 1));
+}
+
+/* days since 1970-01-01 from a civil date (Howard Hinnant's algorithm) */
+static int32_t fat32_days_from_civil(int y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? 9 : -3)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int32_t)doe - 719468;
+}
+
+static void fat32_civil_from_days(int32_t z, int *y, unsigned *m, unsigned *d)
+{
+    z += 719468;
+    const int era = (int)((z >= 0 ? z : z - 146096) / 146097);
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int yr = (int)yoe + era * 400;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp + (mp < 10 ? 3 : -9);
+    *y = yr + (*m <= 2);
+}
+
+/* Amiga DateStamp -> FAT date/time.  Returns 0 if the date precedes the
+ * FAT epoch (1980) — the fields are left zeroed then. */
+static void fat32_ds_to_fatstamp(int32_t days, int32_t mins, int32_t ticks,
+                                 uint16_t *fat_date, uint16_t *fat_time)
+{
+    /* Amiga epoch 1978-01-01 -> unix days, then to a civil date. */
+    const int32_t unix_days = days - 2922;
+    int y; unsigned m, d;
+    fat32_civil_from_days(unix_days, &y, &m, &d);
+    uint32_t secs = (uint32_t)mins * 60 + (uint32_t)ticks / 50;
+    if (y < 1980) { *fat_date = 0; *fat_time = 0; return; }
+    if (y > 2107) y = 2107;
+    *fat_date = (uint16_t)(((y - 1980) << 9) | (m << 5) | d);
+    *fat_time = (uint16_t)(((secs / 3600) << 11) | (((secs / 60) % 60) << 5) |
+                           ((secs % 60) >> 1));
+}
+
+/* FAT date/time -> Amiga DateStamp fields (ds_Days/ds_Minute/ds_Tick). */
+static void fat32_fatstamp_to_ds(uint16_t fat_date, uint16_t fat_time,
+                                 int32_t *days, int32_t *mins, int32_t *ticks)
+{
+    const int y = 1980 + (fat_date >> 9);
+    const unsigned m = (fat_date >> 5) & 0xF;
+    const unsigned d = fat_date & 0x1F;
+    if (!fat_date || !m || !d) { *days = 0; *mins = 0; *ticks = 0; return; }
+    const int32_t unix_days = fat32_days_from_civil(y, m, d);
+    *days = unix_days + 2922;
+    const unsigned h = fat_time >> 11;
+    const unsigned mi = (fat_time >> 5) & 0x3F;
+    const unsigned s = (fat_time & 0x1F) * 2;
+    *mins = (int32_t)(h * 60 + mi);
+    *ticks = (int32_t)(s * 50);
+}
+
+/* Stamp a freshly built entry (create/write times + access date). */
+static void fat32_stamp_entry(uint8_t *de, int created)
+{
+    uint16_t fd, ft;
+    fat32_now(&fd, &ft);
+    put_le16(&de[22], ft);    /* wrt_time  */
+    put_le16(&de[24], fd);    /* wrt_date  */
+    put_le16(&de[18], fd);    /* lst_acc_date */
+    if (created) {
+        put_le16(&de[14], ft);/* crt_time  */
+        put_le16(&de[16], fd);/* crt_date  */
+    }
+}
+
+/* =========================================================================
  * Path parsing — strip volume prefix and walk directory tree
  * ========================================================================= */
 
@@ -671,9 +761,10 @@ Fat32File *FAT32_Open(Fat32FS *fs, const char *path)
     uint32_t file_cluster = 0, file_size = 0;
     uint8_t file_attr = 0;
     uint32_t entry_sec = 0, entry_off = 0;
+    uint32_t dir_cluster = 0;
 
     int found = fat32_walk_path(fs, rel, fs->root_cluster,
-                                NULL, NULL,
+                                &dir_cluster, NULL,
                                 &file_cluster, &file_size, &file_attr,
                                 &entry_sec, &entry_off);
     if (found != 1) return NULL;
@@ -689,6 +780,7 @@ Fat32File *FAT32_Open(Fat32FS *fs, const char *path)
     f->is_dir = (file_attr & FAT32_ATTR_DIRECTORY) ? 1 : 0;
     f->dir_sector = entry_sec;
     f->dir_offset = entry_off;
+    f->parent_cluster = dir_cluster;
     return f;
 }
 
@@ -716,9 +808,10 @@ Fat32File *FAT32_CreateFile(Fat32FS *fs, const char *path)
         /* Free existing cluster chain and reset entry */
         if (existing_cluster >= 2)
             fat32_free_chain(fs, existing_cluster);
-        /* Update dir entry: cluster=0, size=0 */
+        /* Update dir entry: cluster=0, size=0 — fresh timestamps too */
         uint8_t entry[32];
         fat32_build_dir_entry(entry, name83, 0, 0, 0);
+        fat32_stamp_entry(entry, 1);
         fat32_write_dir_entry(fs, entry_sec, entry_off, entry);
     } else if (found == 0) {
         /* File doesn't exist — need parent dir + name */
@@ -757,6 +850,7 @@ Fat32File *FAT32_CreateFile(Fat32FS *fs, const char *path)
         /* Write the new (empty) directory entry */
         uint8_t entry[32];
         fat32_build_dir_entry(entry, name83, 0, 0, 0);
+        fat32_stamp_entry(entry, 1);
         if (fat32_write_dir_entry(fs, entry_sec, entry_off, entry) != 0)
             return NULL;
     } else {
@@ -774,6 +868,7 @@ Fat32File *FAT32_CreateFile(Fat32FS *fs, const char *path)
     f->is_dir = 0;
     f->dir_sector = entry_sec;
     f->dir_offset = entry_off;
+    f->parent_cluster = dir_cluster;
     return f;
 }
 
@@ -790,6 +885,7 @@ void FAT32_Close(Fat32File *file)
                      (uint16_t)(file->start_cluster >> 16));
             put_le16(&g_sector_buf[file->dir_offset + 26],
                      (uint16_t)(file->start_cluster & 0xFFFF));
+            fat32_stamp_entry(&g_sector_buf[file->dir_offset], 0);
             BlockDev_Write(file->fs->bdev, file->dir_sector,
                            g_sector_buf, 1);
         }
@@ -914,7 +1010,8 @@ uint32_t FAT32_Size(Fat32File *file)
  * Directory iteration
  * ========================================================================= */
 
-int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir)
+int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir,
+                  uint16_t *wrt_time, uint16_t *wrt_date)
 {
     if (!dir || !dir->fs || !dir->is_dir) return 0;
     Fat32FS *fs = dir->fs;
@@ -968,6 +1065,8 @@ int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir)
 
             if (size)   *size = le32(&de[28]);
             if (is_dir) *is_dir = (attr & FAT32_ATTR_DIRECTORY) ? 1 : 0;
+            if (wrt_time) *wrt_time = le16(&de[22]);
+            if (wrt_date) *wrt_date = le16(&de[24]);
             return 1;
         }
 
@@ -1069,6 +1168,7 @@ int FAT32_CreateDir(Fat32FS *fs, const char *path)
     uint8_t entry[32];
     fat32_build_dir_entry(entry, name83, FAT32_ATTR_DIRECTORY,
                           new_cluster, 0);
+    fat32_stamp_entry(entry, 1);
     if (fat32_write_dir_entry(fs, entry_sec, entry_off, entry) != 0)
         return -1;
 
@@ -1103,7 +1203,7 @@ int FAT32_Delete(Fat32FS *fs, const char *path)
         char name[32];
         uint32_t size;
         uint8_t is_dir;
-        while (FAT32_ReadDir(dir, name, &size, &is_dir)) {
+        while (FAT32_ReadDir(dir, name, &size, &is_dir, NULL, NULL)) {
             /* Any entry other than . and .. means non-empty */
             FAT32_Close(dir);
             return -1;
@@ -1123,6 +1223,150 @@ int FAT32_Delete(Fat32FS *fs, const char *path)
         return -1;
 
     return 0;
+}
+
+/* =========================================================================
+ * Rename (same directory) — UAOS-29
+ * ========================================================================= */
+
+/* Split a relative path into (parent dir cluster, final 8.3 name).
+ * Returns 1 on success, 0 when the parent can't be resolved. */
+static int fat32_resolve_parent(Fat32FS *fs, const char *rel,
+                                uint32_t *out_dir_cluster, char *out_name83)
+{
+    char tmp[128];
+    int i = 0;
+    while (i < 127 && rel[i]) { tmp[i] = rel[i]; i++; }
+    tmp[i] = '\0';
+
+    char *last_slash = NULL;
+    for (char *s = tmp; *s; s++)
+        if (*s == '/' || *s == '\\') last_slash = s;
+
+    if (!last_slash) {
+        *out_dir_cluster = fs->root_cluster;
+        fat32_name_to_83(tmp, out_name83);
+        return 1;
+    }
+
+    *last_slash = '\0';
+    uint32_t pcl = 0;
+    uint8_t pattr = 0;
+    int pfound = fat32_walk_path(fs, tmp, fs->root_cluster,
+                                 NULL, NULL, &pcl, NULL, &pattr, NULL, NULL);
+    if (pfound != 1 || !(pattr & FAT32_ATTR_DIRECTORY)) return 0;
+    *out_dir_cluster = pcl;
+    fat32_name_to_83(last_slash + 1, out_name83);
+    return 1;
+}
+
+int FAT32_Rename(Fat32FS *fs, const char *old_path, const char *new_path)
+{
+    if (!fs || !old_path || !new_path) return -1;
+    const char *old_rel = strip_vol_prefix(old_path);
+    const char *new_rel = strip_vol_prefix(new_path);
+    if (*old_rel == '\0' || *new_rel == '\0') return -1;
+
+    /* Resolve the source entry (parent cluster + slot position). */
+    uint32_t old_dir = 0, file_cluster = 0, file_size = 0;
+    uint8_t file_attr = 0;
+    uint32_t entry_sec = 0, entry_off = 0;
+    char old_name83[12];
+
+    int found = fat32_walk_path(fs, old_rel, fs->root_cluster,
+                                &old_dir, old_name83,
+                                &file_cluster, &file_size, &file_attr,
+                                &entry_sec, &entry_off);
+    if (found != 1) return -1;
+
+    /* Resolve the destination parent and name. */
+    uint32_t new_dir = 0;
+    char new_name83[12];
+    if (!fat32_resolve_parent(fs, new_rel, &new_dir, new_name83))
+        return -1;
+
+    /* Same-directory rename only — a cross-directory move would have to
+     * relocate the entry between clusters; AmigaDOS callers that want a
+     * move get copy+delete at a higher level. */
+    if (new_dir != old_dir) return -1;
+
+    /* The new name must not collide with an existing entry. */
+    if (fat32_find_in_dir(fs, new_dir, new_name83,
+                          NULL, NULL, NULL, NULL, NULL))
+        return -1;
+
+    /* Patch the 11-byte short name in place — the cluster, attributes,
+     * size, and timestamps travel with the entry. */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (BlockDev_Read(fs->bdev, entry_sec, g_sector_buf, 1) != 0) continue;
+        memcpy(&g_sector_buf[entry_off], new_name83, 11);
+        if (BlockDev_Write(fs->bdev, entry_sec, g_sector_buf, 1) != 0) continue;
+        if (BlockDev_Read(fs->bdev, entry_sec, g_sector_buf2, 1) != 0) continue;
+        if (memcmp(&g_sector_buf2[entry_off], new_name83, 11) == 0)
+            return 0;
+    }
+    printf("[FAT32] Rename did not persist at sector %u\n", entry_sec);
+    return -1;
+}
+
+/* =========================================================================
+ * Set write timestamp (ACTION_SET_DATE) — UAOS-29
+ * ========================================================================= */
+
+int FAT32_SetDate(Fat32FS *fs, const char *path,
+                  int32_t days, int32_t mins, int32_t ticks)
+{
+    if (!fs || !path) return -1;
+    const char *rel = strip_vol_prefix(path);
+    if (*rel == '\0') return -1;
+
+    uint32_t file_cluster = 0, file_size = 0;
+    uint8_t file_attr = 0;
+    uint32_t entry_sec = 0, entry_off = 0;
+    int found = fat32_walk_path(fs, rel, fs->root_cluster,
+                                NULL, NULL,
+                                &file_cluster, &file_size, &file_attr,
+                                &entry_sec, &entry_off);
+    if (found != 1) return -1;
+
+    uint16_t fat_date, fat_time;
+    fat32_ds_to_fatstamp(days, mins, ticks, &fat_date, &fat_time);
+
+    if (BlockDev_Read(fs->bdev, entry_sec, g_sector_buf, 1) != 0) return -1;
+    put_le16(&g_sector_buf[entry_off + 22], fat_time);
+    put_le16(&g_sector_buf[entry_off + 24], fat_date);
+    if (BlockDev_Write(fs->bdev, entry_sec, g_sector_buf, 1) != 0) return -1;
+    return 0;
+}
+
+int FAT32_GetDate(Fat32File *file, uint16_t *fat_time, uint16_t *fat_date)
+{
+    if (!file || !file->fs || !file->dir_sector) return -1;
+    if (BlockDev_Read(file->fs->bdev, file->dir_sector,
+                      g_sector_buf, 1) != 0) return -1;
+    if (fat_time) *fat_time = le16(&g_sector_buf[file->dir_offset + 22]);
+    if (fat_date) *fat_date = le16(&g_sector_buf[file->dir_offset + 24]);
+    return 0;
+}
+
+void FAT32_FatstampToDs(uint16_t fat_date, uint16_t fat_time,
+                        int32_t *days, int32_t *mins, int32_t *ticks)
+{
+    fat32_fatstamp_to_ds(fat_date, fat_time, days, mins, ticks);
+}
+
+uint32_t FAT32_FatstampToUnix(uint16_t fat_date, uint16_t fat_time)
+{
+    const int y = 1980 + (fat_date >> 9);
+    const unsigned m = (fat_date >> 5) & 0xF;
+    const unsigned d = fat_date & 0x1F;
+    if (!fat_date || !m || !d) return 0;
+    const int32_t unix_days = fat32_days_from_civil(y, m, d);
+    if (unix_days < 0) return 0;
+    const unsigned h = fat_time >> 11;
+    const unsigned mi = (fat_time >> 5) & 0x3F;
+    const unsigned s = (fat_time & 0x1F) * 2;
+    return (uint32_t)unix_days * 86400 + h * 3600 + mi * 60 + s;
 }
 
 /* =========================================================================

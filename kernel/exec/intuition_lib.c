@@ -2909,6 +2909,138 @@ static void update_desktop_title(void)
     }
 }
 
+/* -------------------------------------------------------------------------
+ * Front-screen backdrop cache (UAOS-102)
+ *
+ * The front Intuition screen's planar BitMap used to be decoded
+ * pixel-by-pixel on every repaint — per pixel: one bounds-checked guest
+ * read per bitplane, three more for the ColorMap, plus an FB_PutPixel —
+ * tens of millions of emulated-memory ops per frame at 1280x1024.
+ *
+ * The screen's pen values are now held in a host-side cache: the whole
+ * BitMap is decoded once whenever its (pointer,dims) key changes, dirty
+ * rectangles are refreshed through the per-dispatch planar-write flush,
+ * and the emit pass translates cached pens through a per-call LUT — so
+ * palette edits propagate without a re-decode.  SA_BackFill is keyed on
+ * (backfill,bitmap,rastport,colormap) and only re-runs when the key moves.
+ * ------------------------------------------------------------------------- */
+#define SCR_CACHE_MAX_W 1280
+#define SCR_CACHE_MAX_H 1024
+static uint8_t  g_scr_pens[SCR_CACHE_MAX_W * SCR_CACHE_MAX_H];
+static uint32_t g_scr_cache_bm = 0;
+static int      g_scr_cache_w = 0, g_scr_cache_h = 0;
+static uint32_t g_scr_bf_key = 0, g_scr_bf_key2 = 0;
+static uint32_t g_scr_bf_key3 = 0, g_scr_bf_key4 = 0;
+
+static int scr_cache_fits(int w, int h)
+{
+    return w > 0 && h > 0 && w <= SCR_CACHE_MAX_W && h <= SCR_CACHE_MAX_H;
+}
+
+/* Decode a rectangle of a planar guest BitMap into pen bytes.
+ * sx,sy,w,h are BitMap coordinates; out is indexed by the same coords. */
+static void scr_decode_pens(uint32_t bm, int sx, int sy, int w, int h)
+{
+    const uint16_t bpr = mem_u16(bm + BM_OFF_BYTESPERROW);
+    uint8_t depth = mem_u8(bm + BM_OFF_DEPTH);
+    if (depth == 0) depth = 1;
+    if (depth > 8) depth = 8;
+    for (int y = 0; y < h; y++) {
+        int x = 0;
+        while (x < w) {
+            const int ax = sx + x;
+            const int bit = ax & 7;
+            const int n = (8 - bit < w - x) ? 8 - bit : w - x;
+            uint8_t *dst = g_scr_pens + (size_t)(sy + y) * SCR_CACHE_MAX_W + ax;
+            memset(dst, 0, (size_t)n);
+            for (int p = 0; p < depth; p++) {
+                const uint32_t base = mem_u32(bm + BM_OFF_PLANES + p * 4);
+                if (!base) continue;
+                const uint8_t b = mem_u8(base + (uint32_t)(sy + y) * bpr +
+                                         (uint32_t)(ax / 8));
+                if (!b) continue;
+                for (int i = 0; i < n; i++)
+                    if (b & (1 << (7 - ((bit + i) & 7))))
+                        dst[i] |= (uint8_t)(1u << p);
+            }
+            x += n;
+        }
+    }
+}
+
+/* Build the pen → RGB LUT from a screen ColorMap once per emit call. */
+static void scr_build_lut(uint32_t cmap, uint32_t lut[256])
+{
+    uint32_t table = 0, count = 0;
+    if (cmap) {
+        table = mem_u32(cmap + CM_OFF_COLORTABLE);
+        count = (uint32_t)mem_u16(cmap + CM_OFF_COUNT);
+    }
+    for (uint32_t pen = 0; pen < 256; pen++)
+        lut[pen] = (table && pen < count)
+                 ? mem_u32(table + pen * 4)
+                 : amiga_pen_to_rgb((uint8_t)pen);
+}
+
+/* Emit a host-framebuffer rectangle from the pen cache through the LUT.
+ * (x,y,w,h) are screen coordinates; the cache is indexed by BitMap coords. */
+static void scr_emit_pens(ScreenSlot *slot, int x, int y, int w, int h)
+{
+    /* Clip to the framebuffer and the BitMap's decoded extent. */
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)g_fb.width)  w = (int)g_fb.width  - x;
+    if (y + h > (int)g_fb.height) h = (int)g_fb.height - y;
+    int bx0 = x - slot->left, by0 = y - slot->top;
+    if (bx0 + w > g_scr_cache_w) w = g_scr_cache_w - bx0;
+    if (by0 + h > g_scr_cache_h) h = g_scr_cache_h - by0;
+    if (w <= 0 || h <= 0) return;
+
+    uint32_t lut[256];
+    scr_build_lut(screen_colormap(slot), lut);
+
+    uint32_t argb[SCR_CACHE_MAX_W];
+    for (int r = 0; r < h; r++) {
+        const uint8_t *row =
+            g_scr_pens + (size_t)(by0 + r) * SCR_CACHE_MAX_W + bx0;
+        for (int c = 0; c < w; c++) argb[c] = lut[row[c]];
+        FB_BlitARGB(x, y + r, w, argb, 0);
+    }
+}
+
+/* Ensure the pen cache holds current contents for slot->bitmap.
+ * Decodes the whole BitMap when its key changed (new screen, resize,
+ * BackFill just ran); dirty rectangles are maintained by the flush path. */
+static void scr_cache_ensure(ScreenSlot *slot)
+{
+    const uint32_t bm = slot->bitmap;
+    const int bw = (int)mem_u16(bm + BM_OFF_BYTESPERROW) * 8;
+    const int bh = (int)mem_u16(bm + BM_OFF_ROWS);
+    if (g_scr_cache_bm == bm && g_scr_cache_w == bw && g_scr_cache_h == bh)
+        return;
+    g_scr_cache_bm = 0;            /* invalidate during decode */
+    g_scr_cache_w = g_scr_cache_h = 0;
+    if (!scr_cache_fits(bw, bh)) return;
+    const int dw = (slot->width < bw) ? slot->width : bw;
+    const int dh = (slot->height < bh) ? slot->height : bh;
+    scr_decode_pens(bm, 0, 0, dw, dh);
+    g_scr_cache_bm = bm;
+    g_scr_cache_w = dw;
+    g_scr_cache_h = dh;
+}
+
+/* Refresh a dirty BitMap rectangle inside the cache (BitMap coords). */
+static void scr_cache_refresh(uint32_t bm, int x0, int y0, int x1, int y1)
+{
+    if (bm != g_scr_cache_bm) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= g_scr_cache_w) x1 = g_scr_cache_w - 1;
+    if (y1 >= g_scr_cache_h) y1 = g_scr_cache_h - 1;
+    if (x1 < x0 || y1 < y0) return;
+    scr_decode_pens(bm, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+}
+
 /* Render the front Intuition screen's BitMap into the host framebuffer.
  * SA_BackFill runs first so the hook/pen fill lands inside the screen
  * BitMap (or directly on the framebuffer when the screen has none).
@@ -2922,22 +3054,29 @@ int UAOS_Intuition_RenderScreenBackdrop(void)
         if (!screen) continue;
         uint32_t bm = slot->bitmap;
 
-        if (slot->backfill) {
-            uint32_t rport = slot->rastport
-                             ? slot->rastport
-                             : mem_u32(screen + SCR_OFF_RASTPORT);
+        /* SA_BackFill lands inside the screen BitMap, which retains the
+         * pixels — re-run it only when its (hook/pen, bitmap, rastport,
+         * colormap) key moves instead of every repaint (UAOS-102). */
+        uint32_t rport = slot->rastport
+                         ? slot->rastport
+                         : mem_u32(screen + SCR_OFF_RASTPORT);
+        const uint32_t cmap = screen_colormap(slot);
+        if (slot->backfill && bm && !rport && slot->backfill < 256) {
+            /* No RastPort to fill the BitMap through — the pen colour has
+             * to be re-emitted every repaint since the backdrop erased it. */
+            uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
+            FB_FillRect(slot->left, slot->top, slot->width, slot->height, rgb);
+        } else if (slot->backfill && bm &&
+            (g_scr_bf_key != slot->backfill || g_scr_bf_key2 != bm ||
+             g_scr_bf_key3 != rport || g_scr_bf_key4 != cmap)) {
+            const uint32_t key_rport = rport;
             if (slot->backfill < 256) {
                 /* Pen-index fallback for SA_BackFill. */
-                if (bm && rport) {
-                    /* Fill the screen BitMap with the pen index so the
-                     * colour comes out through the screen's ColorMap. */
-                    m68k_set_reg(M68K_REG_A1, rport);
-                    m68k_set_reg(M68K_REG_D0, slot->backfill);
-                    UAOS_Graphics_Dispatch(GFX_SLOT_SETRAST);
-                } else {
-                    uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
-                    FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, rgb);
-                }
+                /* Fill the screen BitMap with the pen index so the
+                 * colour comes out through the screen's ColorMap. */
+                m68k_set_reg(M68K_REG_A1, rport);
+                m68k_set_reg(M68K_REG_D0, slot->backfill);
+                UAOS_Graphics_Dispatch(GFX_SLOT_SETRAST);
             } else {
                 /* Real m68k Hook callback: fill the screen backdrop.
                  * A0 = hook, A2 = screen RastPort, A1 = Rectangle in
@@ -2961,12 +3100,51 @@ int UAOS_Intuition_RenderScreenBackdrop(void)
                     if (tmp_rport) intu_free(tmp_rport);
                 }
             }
+            g_scr_bf_key  = slot->backfill;
+            g_scr_bf_key2 = bm;
+            g_scr_bf_key3 = key_rport;
+            g_scr_bf_key4 = cmap;
+            /* The fill just rewrote the BitMap — force a full re-decode. */
+            g_scr_cache_bm = 0;
+        } else if (slot->backfill && !bm) {
+            /* No screen BitMap — the pen fill must hit the framebuffer
+             * every repaint since the backdrop just erased it. */
+            if (slot->backfill < 256) {
+                uint32_t rgb = amiga_pen_to_rgb((uint8_t)slot->backfill);
+                FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, rgb);
+            } else {
+                uint32_t tmp_rport = 0;
+                if (!rport) {
+                    tmp_rport = intu_alloc(RP_SIZE_MIN);
+                    if (tmp_rport) {
+                        init_guest_rastport(tmp_rport, 0);
+                        mem_w32(tmp_rport + RP_OFF_BITMAP, bm);
+                    }
+                    rport = tmp_rport;
+                }
+                if (rport) {
+                    const uint32_t rect = 0x1EF100u;
+                    mem_w16(rect + 0, 0);
+                    mem_w16(rect + 2, 0);
+                    mem_w16(rect + 4, (int16_t)(slot->width - 1));
+                    mem_w16(rect + 6, (int16_t)(slot->height - 1));
+                    UAOS_InvokeM68kHook(slot->backfill, slot->backfill, rect, rport);
+                    if (tmp_rport) intu_free(tmp_rport);
+                }
+            }
+            return 1;
         }
 
         if (bm) {
-            render_bitmap_to_framebuffer(bm, screen_colormap(slot),
-                                         slot->left, slot->top,
-                                         slot->width, slot->height);
+            scr_cache_ensure(slot);
+            if (g_scr_cache_bm == bm) {
+                scr_emit_pens(slot, slot->left, slot->top,
+                              slot->width, slot->height);
+            } else {
+                render_bitmap_to_framebuffer(bm, cmap,
+                                             slot->left, slot->top,
+                                             slot->width, slot->height);
+            }
             return 1;
         }
         return slot->backfill ? 1 : 0;
@@ -2986,8 +3164,15 @@ int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h)
         if (!slot->active || !slot->is_front) continue;
         uint32_t bm = slot->bitmap;
         if (!bm) return slot->backfill ? 1 : 0;
-        render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
-            x - slot->left, y - slot->top, x, y, w, h);
+        /* The damage means the back buffer's copy is stale — emit the
+         * current pen-cache contents for the region (UAOS-102). */
+        scr_cache_ensure(slot);
+        if (g_scr_cache_bm == bm) {
+            scr_emit_pens(slot, x, y, w, h);
+        } else {
+            render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
+                x - slot->left, y - slot->top, x, y, w, h);
+        }
         return 1;
     }
     return 0;
@@ -3002,13 +3187,22 @@ void UAOS_Intuition_FlushScreenBitmap(uint32_t bm, int x0, int y0, int x1, int y
 {
     if (!bm || x1 < x0 || y1 < y0 || !g_fb.valid) return;
 
-    /* Front screen's BitMap: map bitmap coords through the screen origin. */
+    /* Front screen's BitMap: map bitmap coords through the screen origin.
+     * Keep the pen cache coherent with the planar write, then emit the
+     * dirty rectangle from pens (UAOS-102). */
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
         if (!slot->active || !slot->is_front || slot->bitmap != bm) continue;
-        render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
-            x0, y0, slot->left + x0, slot->top + y0,
-            x1 - x0 + 1, y1 - y0 + 1);
+        scr_cache_ensure(slot);
+        scr_cache_refresh(bm, x0, y0, x1, y1);
+        if (g_scr_cache_bm == bm) {
+            scr_emit_pens(slot, slot->left + x0, slot->top + y0,
+                          x1 - x0 + 1, y1 - y0 + 1);
+        } else {
+            render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
+                x0, y0, slot->left + x0, slot->top + y0,
+                x1 - x0 + 1, y1 - y0 + 1);
+        }
         return;
     }
 

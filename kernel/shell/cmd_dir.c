@@ -89,7 +89,7 @@ static void dir_print_entry(NativeCmdCtx *ctx, const VfsDirEnt *ent,
 
     if (dates) {
         char dstr[20];
-        fmt_mtime_dir(0, dstr, sizeof(dstr));  /* timestamps not in VfsDirEnt yet */
+        fmt_mtime_dir(ent->mtime, dstr, sizeof(dstr));
         cmd_scat(line, "  ", CMD_MAX_LINE);
         cmd_scat(line, dstr, CMD_MAX_LINE);
     }

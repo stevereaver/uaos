@@ -8,6 +8,7 @@
 #include "filebrowser.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* On-screen debug from filebrowser */
 extern void dbg_add_line(const char *msg);
@@ -870,22 +871,17 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
 
     /* WM_LOG disabled — causes hang when called at runtime from non-boot context */
 
+    /* Slots are recycled on close — clear every field so a reused slot can't
+     * inherit the previous window's view_h/zoomed/restore geometry. */
     WmWindow *win = &g_wins[slot];
+    memset(win, 0, sizeof(*win));
     win->x       = x;
     win->y       = y;
     win->w       = w;
     win->h       = h;
     win->draw     = draw;
     win->on_key   = on_key;
-    win->on_click   = (WM_ClickFn)0;
-    win->on_move    = (WM_MouseMoveFn)0;
-    win->on_release = (WM_MouseReleaseFn)0;
-    win->on_event   = (WM_EventFn)0;
-    win->scroll_x   = 0;
-    win->scroll_y   = 0;
-    win->content_w  = 0;
-    win->content_h  = 0;
-    win->active     = 1;
+    win->active   = 1;
     str_copy(win->title, title, 32);
 
     g_zorder[g_nwins++] = slot;

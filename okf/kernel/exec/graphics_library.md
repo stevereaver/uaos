@@ -132,8 +132,8 @@ All planar writes funnel through `blit_surface_put()` and `planar_fill_rect()`, 
 
 - `BlitSurface` carries the guest `BitMap` pointer (`bm`) so dirty regions can be attributed to a specific `BitMap`; writing to a different `BitMap` flushes the previous box first.
 - A window `RastPort` whose `BitMap` is its screen's planar `BitMap` gets `dx`/`dy` set to the window's position relative to the screen origin (plus the GimmeZeroZero border offset), so window-relative drawing lands at the right place in the screen `BitMap`.
-- `render_bitmap_region_to_framebuffer(bm, cmap, sx, sy, dx, dy, w, h)` translates a source rectangle of a planar `BitMap` to a framebuffer destination rectangle with two-sided clipping; `render_bitmap_to_framebuffer` is the whole-bitmap convenience wrapper.
-- Direct M68k writes into bitplane memory bypass the dirty tracker; they become visible on the next `WM_Redraw`, which re-renders the full screen `BitMap`.
+- `render_bitmap_region_to_framebuffer(bm, cmap, sx, sy, dx, dy, w, h)` translates a source rectangle of a planar `BitMap` to a framebuffer destination rectangle with two-sided clipping; `render_bitmap_to_framebuffer` is the whole-bitmap convenience wrapper. The translate pass is batched (UAOS-102): a 256-entry pen→RGB LUT is built once per call (`cmap_build_lut`) instead of three guest-memory reads per pixel, and the planar decode fetches one byte per plane per 8-pixel group rather than a bounds-checked read per bitplane per pixel.
+- Direct M68k writes into bitplane memory bypass the dirty tracker. On non-front bitmaps they still become visible on the next `WM_Redraw`; on the front screen's `BitMap` they land in the Intuition pen cache only when a tracked write or a (bm,dims) key change triggers a re-decode — see the backdrop cache in `okf/kernel/exec/intuition_library.md`.
 - The `RastPort` write mask (`Mask`, offset 40) is honoured on every put: `0xFF` means all planes writable, `0` drops the write. `InitRastPort` and intuition's rastport init default it to `0xFF`, matching AmigaOS.
 
 | Function | Status | Notes |

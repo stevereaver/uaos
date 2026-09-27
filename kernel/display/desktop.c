@@ -854,8 +854,15 @@ static int menu_item_count(const MenuItem *items)
 }
 
 /* Refresh the active menu strip from the focused guest window.
- * Falls back to the hardcoded desktop menu when no guest strip is present. */
-static void refresh_active_menus(void)
+ * Falls back to the hardcoded desktop menu when no guest strip is present.
+ * The parsed strip is cached keyed on the strip pointer plus the 1 Hz tick
+ * so checkmark/enabled mutations under a stable pointer are still picked up
+ * once per second, and force=true reparses on demand (menu open). */
+static uint32_t g_menu_strip_key = 0xFFFFFFFFu;
+static uint32_t g_menu_strip_tick = 0xFFFFFFFFu;
+static int      g_menu_focus_key = -2;
+
+static void refresh_active_menus_impl(void)
 {
     uint32_t strip = Intuition_GetActiveWindowMenuStrip();
     if (strip) {
@@ -868,6 +875,27 @@ static void refresh_active_menus(void)
     }
     g_active_menu_count = 0;
     g_guest_menu_active = 0;
+}
+
+static void refresh_active_menus(void)
+{
+    const uint32_t strip = Intuition_GetActiveWindowMenuStrip();
+    const int focus = WM_GetFocus();
+    if (strip == g_menu_strip_key && focus == g_menu_focus_key &&
+        Desktop_GetTick() == g_menu_strip_tick)
+        return;
+    refresh_active_menus_impl();
+    g_menu_strip_key = strip;
+    g_menu_focus_key = focus;
+    g_menu_strip_tick = Desktop_GetTick();
+}
+
+static void refresh_active_menus_forced(void)
+{
+    refresh_active_menus_impl();
+    g_menu_strip_key = Intuition_GetActiveWindowMenuStrip();
+    g_menu_focus_key = WM_GetFocus();
+    g_menu_strip_tick = Desktop_GetTick();
 }
 
 /* Compute the screen width of the longest menu label in a fallback MenuItem list.
@@ -1214,11 +1242,15 @@ static void draw_menubar(int W)
             FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
 
-    /* Clock display — HH:MM:SS on the far right of the menubar.
-     * When the NTP epoch is live, convert UTC → local like C:date and the
-     * Clock window do; otherwise fall back to the raw CMOS RTC (UTC). */
-    char clock_buf[16];
-    {
+    /* Clock + free-memory strings — rebuilt only when the 1 Hz tick changes.
+     * RTC port I/O and Mem_GetInfo used to run on every menubar repaint
+     * (dozens per second during drags); the displayed values change at most
+     * once per second anyway. */
+    static char g_clock_str[16];
+    static char g_mem_str[24];
+    static uint32_t g_menubar_strs_tick = 0xFFFFFFFFu;
+    if (g_menubar_strs_tick != Desktop_GetTick()) {
+        g_menubar_strs_tick = Desktop_GetTick();
         uint8_t ch, cm, cs;
         uint32_t epoch = ntp_get_epoch();
         if (epoch) {
@@ -1231,28 +1263,27 @@ static void draw_menubar(int W)
             ch = t.hour; cm = t.min; cs = t.sec;
         }
         int ci = 0;
-        clock_buf[ci++] = (char)('0' + (ch / 10) % 10);
-        clock_buf[ci++] = (char)('0' + ch % 10);
-        clock_buf[ci++] = ':';
-        clock_buf[ci++] = (char)('0' + (cm / 10) % 10);
-        clock_buf[ci++] = (char)('0' + cm % 10);
-        clock_buf[ci++] = ':';
-        clock_buf[ci++] = (char)('0' + (cs / 10) % 10);
-        clock_buf[ci++] = (char)('0' + cs % 10);
-        clock_buf[ci] = '\0';
+        g_clock_str[ci++] = (char)('0' + (ch / 10) % 10);
+        g_clock_str[ci++] = (char)('0' + ch % 10);
+        g_clock_str[ci++] = ':';
+        g_clock_str[ci++] = (char)('0' + (cm / 10) % 10);
+        g_clock_str[ci++] = (char)('0' + cm % 10);
+        g_clock_str[ci++] = ':';
+        g_clock_str[ci++] = (char)('0' + (cs / 10) % 10);
+        g_clock_str[ci++] = (char)('0' + cs % 10);
+        g_clock_str[ci] = '\0';
+        mem_free_str(g_mem_str, (int)sizeof(g_mem_str));
     }
     int clk_len = 0;
-    for (const char *p = clock_buf; *p; p++) clk_len++;
+    for (const char *p = g_clock_str; *p; p++) clk_len++;
     int clk_x = W - clk_len * 8 - 8;
-    FB_PutStr(clk_x, 2, clock_buf, WB_WHITE, WB_BLUE);
+    FB_PutStr(clk_x, 2, g_clock_str, WB_WHITE, WB_BLUE);
 
     /* Memory display — show free memory just left of the clock */
     {
-        char buf[24];
-        mem_free_str(buf, (int)sizeof(buf));
         int mlen = 0;
-        for (const char *p = buf; *p; p++) mlen++;
-        FB_PutStr(clk_x - mlen * 8 - 16, 2, buf, WB_CREAM, WB_BLUE);
+        for (const char *p = g_mem_str; *p; p++) mlen++;
+        FB_PutStr(clk_x - mlen * 8 - 16, 2, g_mem_str, WB_CREAM, WB_BLUE);
     }
 }
 
@@ -2308,6 +2339,9 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
 
     /* ── Right-click on menubar: open the selected menu ───── */
     if (right_pressed && my >= 0 && my < MENUBAR_H) {
+        /* Item enable/check state is only visible while open — reparse the
+         * guest strip on open rather than trusting the cached copy. */
+        refresh_active_menus_forced();
         int menu = menubar_hit(mx, my);
         if (menu >= 0 && menu < active_menu_count()) {
             g_menu_index = menu;

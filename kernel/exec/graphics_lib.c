@@ -1383,6 +1383,21 @@ static uint32_t cmap_lookup_rgb(uint32_t cmap, uint32_t pen)
     return m68k_read_memory_32(table + pen * 4);
 }
 
+/* Build the pen → RGB lookup table once per render call instead of the
+ * 3 guest-memory reads cmap_lookup_rgb used to cost per pixel (UAOS-102). */
+static void cmap_build_lut(uint32_t cmap, uint32_t lut[256])
+{
+    uint32_t table = 0, count = 0;
+    if (cmap) {
+        table = m68k_read_memory_32(cmap + CM_OFF_COLORTABLE);
+        count = (uint32_t)m68k_read_memory_16(cmap + CM_OFF_COUNT);
+    }
+    for (uint32_t pen = 0; pen < 256; pen++)
+        lut[pen] = (table && pen < count)
+                 ? m68k_read_memory_32(table + pen * 4)
+                 : amiga_pen_to_rgb((uint8_t)pen);
+}
+
 void render_bitmap_region_to_framebuffer(uint32_t bm, uint32_t cmap,
                                          int sx, int sy, int dx, int dy,
                                          int w, int h)
@@ -1405,12 +1420,33 @@ void render_bitmap_region_to_framebuffer(uint32_t bm, uint32_t cmap,
     if (dy + h > (int)g_fb.height) h = (int)g_fb.height - dy;
     if (w <= 0 || h <= 0) return;
 
+    uint32_t lut[256];
+    cmap_build_lut(cmap, lut);
+
+    /* Row-based planar decode (UAOS-102): fetch one byte per plane per
+     * 8-pixel group instead of one bounds-checked guest read per bitplane
+     * per pixel. */
     for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            uint32_t pen = 0;
-            if (!blit_surface_get(&s, sx + x, sy + y, &pen)) continue;
-            uint32_t rgb = cmap_lookup_rgb(cmap, pen);
-            FB_PutPixel(dx + x, dy + y, rgb);
+        const uint32_t row_base = (uint32_t)(sy + y) * s.bpr;
+        int x = 0;
+        while (x < w) {
+            const int ax = sx + x;
+            const int bit = ax & 7;
+            const int n = (8 - bit < w - x) ? 8 - bit : w - x;
+            uint8_t pb[8];
+            for (int p = 0; p < s.depth; p++)
+                pb[p] = s.planes[p]
+                      ? m68k_read_memory_8(s.planes[p] + row_base +
+                                           (uint32_t)(ax / 8))
+                      : 0;
+            for (int i = 0; i < n; i++) {
+                uint32_t pen = 0;
+                for (int p = 0; p < s.depth; p++)
+                    if (pb[p] & (1 << (7 - ((bit + i) & 7))))
+                        pen |= (1u << p);
+                FB_PutPixel(dx + x + i, dy + y, lut[pen]);
+            }
+            x += n;
         }
     }
 }

@@ -158,6 +158,10 @@ uint16_t VFS_GetProtection(const char *path);
 /* Set protection bits of a file/directory. Returns 0 on success, -1 on failure. */
 int VFS_SetProtection(const char *path, uint16_t prot);
 
+/* Get modification time of a file/directory as Unix epoch seconds.
+ * Returns 0 when the filesystem does not record timestamps. */
+uint32_t VFS_GetMtime(const char *path);
+
 /* Get comment of a file/directory. Writes to dst[max], returns 0 on success. */
 int VFS_GetComment(const char *path, char *dst, int max);
 

@@ -1149,6 +1149,40 @@ int VFS_SetProtection(const char *path, uint16_t prot)
     return -1;
 }
 
+uint32_t VFS_GetMtime(const char *path)
+{
+    char resolved_path[128];
+    if (!resolve_assign_path(path, resolved_path, sizeof(resolved_path))) return 0;
+
+    char vol_name[16];
+    if (!extract_vol(resolved_path, vol_name, 16)) return 0;
+    RamFsVol *vol = find_vol(vol_name);
+    if (vol) {
+        RamFsNode *node = RamFS_Resolve(vol, resolved_path);
+        return node ? node->mtime : 0;
+    }
+    /* Handler-backed: use ACTION_LOCATE_OBJECT + ACTION_EXAMINE_OBJECT.
+     * Amiga DateStamp -> Unix epoch (same convention as VFS_ReadDir):
+     * ds_Days is unix_days + 2922. Handlers that don't fill fib_Date
+     * leave it zeroed -> mtime 0. */
+    Handler *h = find_handler(vol_name);
+    if (h) {
+        int32_t lock = DoPkt(&h->port, ACTION_LOCATE_OBJECT,
+                              (intptr_t)resolved_path,
+                              SHARED_LOCK, 0, 0, 0);
+        if (lock == 0 || lock == DOSFALSE) return 0;
+        FileInfoBlock fib;
+        int32_t res = DoPkt(&h->port, ACTION_EXAMINE_OBJECT,
+                            lock, (intptr_t)&fib, 0, 0, 0);
+        DoPkt(&h->port, ACTION_FREE_LOCK, lock, 0, 0, 0, 0);
+        if (res == DOSTRUE && fib.fib_Date.ds_Days > 2922)
+            return (uint32_t)(fib.fib_Date.ds_Days - 2922) * 86400
+                 + (uint32_t)fib.fib_Date.ds_Minute * 60
+                 + (uint32_t)fib.fib_Date.ds_Tick / 50;
+    }
+    return 0;
+}
+
 int VFS_GetComment(const char *path, char *dst, int max)
 {
     if (!dst || max < 1) return -1;

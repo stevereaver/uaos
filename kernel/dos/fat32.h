@@ -102,6 +102,8 @@ typedef struct {
     /* For directory iteration (ReadDir / ExamineNext) */
     uint32_t    iter_cluster; /* Current cluster being scanned */
     uint32_t    iter_offset;  /* Byte offset within current cluster */
+    uint32_t    parent_cluster;/* Cluster of the directory holding this entry
+                              * (0 = volume root — AmigaDOS Parent()==0) */
 } Fat32File;
 
 /* Mount a FAT32 filesystem on a block device */
@@ -135,14 +137,38 @@ uint32_t FAT32_Size(Fat32File *file);
 
 /* Read next directory entry. Call repeatedly until it returns 0.
  * Skips LFN, volume label, deleted, and . / .. entries.
+ * wrt_time/wrt_date receive the entry's FAT modify timestamp (may be NULL).
  * Returns 1 on success (entry found), 0 on end-of-directory. */
-int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir);
+int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir,
+                  uint16_t *wrt_time, uint16_t *wrt_date);
 
 /* Create a directory at the given path. Returns 0 on success, -1 on error. */
 int FAT32_CreateDir(Fat32FS *fs, const char *path);
 
 /* Delete a file or empty directory. Returns 0 on success, -1 on error. */
 int FAT32_Delete(Fat32FS *fs, const char *path);
+
+/* Rename within a single directory (AmigaDOS allows same-dir rename only
+ * for this handler).  Patching the name bytes in place preserves the
+ * cluster, attributes, size, and timestamps.  Returns 0 on success,
+ * -1 on failure (missing source, cross-directory move, name collision). */
+int FAT32_Rename(Fat32FS *fs, const char *old_path, const char *new_path);
+
+/* Set a file's write timestamp from an Amiga DateStamp
+ * (ds_Days since 1978-01-01, ds_Minute, ds_Tick = 1/50 s). */
+int FAT32_SetDate(Fat32FS *fs, const char *path,
+                  int32_t days, int32_t mins, int32_t ticks);
+
+/* Read an open handle's current write timestamp from its dir entry.
+ * Returns 0 on success. */
+int FAT32_GetDate(Fat32File *file, uint16_t *fat_time, uint16_t *fat_date);
+
+/* FAT packed date/time -> Amiga DateStamp fields. */
+void FAT32_FatstampToDs(uint16_t fat_date, uint16_t fat_time,
+                        int32_t *days, int32_t *mins, int32_t *ticks);
+
+/* FAT packed date/time -> Unix epoch seconds (for VfsDirEnt.mtime). */
+uint32_t FAT32_FatstampToUnix(uint16_t fat_date, uint16_t fat_time);
 
 /* Get volume statistics (total/used bytes). */
 void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_bytes);
