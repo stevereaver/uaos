@@ -128,84 +128,102 @@ void Cmd_Info(NativeCmdCtx *ctx, const char *args)
         return;
     }
 
-    /* Show all mounted disks */
+    /* Show all mounted disks — iterate the VFS mount table so every
+     * mounted volume is listed: partition units (DH0:), whole disks
+     * carrying a bare filesystem (mounted under the device name, e.g.
+     * "virtio1"), RAM:, and handler-backed mounts like the ISO9660
+     * Workbench:. */
     PRINT("Mounted disks:");
-    PRINT("Unit      Size       Used       Free      Full  Errs Status        Name");
+    PRINT("Unit       Size       Used       Free      Full  Errs Status        Name");
 
-    BlockDev *dev = BlockDev_GetList();
-    while (dev) {
-        if (dev->part_offset != 0) {
-            uint64_t cap   = BlockDev_GetCapacity(dev);
-            uint64_t bytes = cap * dev->sector_size;
-            char sz[16]; sz[0] = '\0';
+    int nmounts = VFS_GetMountCount();
+    for (int i = 0; i < nmounts; i++) {
+        char unit[16], label[16];
+        unit[0] = label[0] = '\0';
+        if (!VFS_GetMountInfo(i, unit, sizeof(unit), label, sizeof(label)))
+            continue;
+        BlockDev *bdev = VFS_GetMountDev(i);
+
+        char unit_col[18];
+        cmd_scopy(unit_col, unit, sizeof(unit_col));
+        cmd_scat(unit_col, ":", sizeof(unit_col));
+
+        const char *vol_name = label[0] ? label : unit;
+
+        /* Query the mounted filesystem for real used/free figures;
+         * falls back to the backing device's capacity when the
+         * filesystem reports no stats. */
+        uint32_t vol_total = 0, vol_used = 0;
+        int have_stats =
+            (VFS_GetVolumeInfo(unit_col, &vol_total, &vol_used) == 0);
+        char sz[16] = "0", used_sz[16] = "0", free_sz[16] = "0", pct[8] = "0%";
+        if (have_stats) {
+            uint32_t vol_free =
+                (vol_total > vol_used) ? vol_total - vol_used : 0;
+            format_cap(vol_total, sz, 16);
+            format_cap(vol_used, used_sz, 16);
+            format_cap(vol_free, free_sz, 16);
+            uint32_t p = vol_total
+                ? (uint32_t)((vol_used * 100ULL) / vol_total) : 0;
+            pct[0] = '\0';
+            cmd_uint_to_dec(p, pct, 8);
+            cmd_scat(pct, "%", 8);
+        } else if (bdev) {
+            uint64_t bytes = BlockDev_GetCapacity(bdev) * bdev->sector_size;
             format_cap(bytes, sz, 16);
-
-            const char *name = dev->display_name ? dev->display_name : dev->name;
-            char vol_label[16] = {0};
-            BlockDev_ReadVolLabel(dev, vol_label, sizeof(vol_label));
-            const char *vol_name = vol_label[0] ? vol_label : name;
-
-            /* Query the mounted filesystem for real used/free figures;
-             * falls back to capacity/0 when the volume is not mounted. */
-            uint32_t vol_total = 0, vol_used = 0;
-            int have_stats = (VFS_GetVolumeInfo(name,
-                                                &vol_total, &vol_used) == 0);
-            char used_sz[16] = "0", free_sz[16] = "0", pct[8] = "0%";
-            if (have_stats) {
-                uint32_t vol_free =
-                    (vol_total > vol_used) ? vol_total - vol_used : 0;
-                format_cap(vol_used, used_sz, 16);
-                format_cap(vol_free, free_sz, 16);
-                uint32_t p = vol_total
-                    ? (uint32_t)((vol_used * 100ULL) / vol_total) : 0;
-                pct[0] = '\0';
-                cmd_uint_to_dec(p, pct, 8);
-                cmd_scat(pct, "%", 8);
-            } else {
-                format_cap(bytes, free_sz, 16);
-            }
-
-            char line[CMD_MAX_LINE];
-            line[0] = '\0';
-            pad_field(line, name,         CMD_MAX_LINE, 10);
-            pad_field(line, sz,           CMD_MAX_LINE, 11);
-            pad_field(line, used_sz,      CMD_MAX_LINE, 11);
-            pad_field(line, free_sz,      CMD_MAX_LINE, 11);
-            pad_field(line, pct,          CMD_MAX_LINE,  6);
-            pad_field(line, "0",          CMD_MAX_LINE,  5);
-            pad_field(line, "Read/Write", CMD_MAX_LINE, 14);
-            pad_field(line, vol_name,     CMD_MAX_LINE, 10);
-            PRINT(line);
+            format_cap(bytes, free_sz, 16);
         }
-        dev = dev->next;
-    }
-
-    /* RAM: entry */
-    {
-        uint32_t total = 0, used = 0;
-        VFS_GetVolumeInfo("RAM:", &total, &used);
-        uint32_t free = (total > used) ? (total - used) : 0;
-        int full_pct = (total > 0) ? (int)((used * 100ULL) / total) : 0;
-
-        char sz[16], usz[16], fsz[16], pct[8];
-        sz[0] = usz[0] = fsz[0] = pct[0] = '\0';
-        format_cap(total, sz, 16);
-        format_cap(used, usz, 16);
-        format_cap(free, fsz, 16);
-        cmd_uint_to_dec((uint32_t)full_pct, pct, 8);
-        cmd_scat(pct, "%", 8);
 
         char line[CMD_MAX_LINE];
         line[0] = '\0';
-        pad_field(line, "RAM:",       CMD_MAX_LINE, 10);
+        pad_field(line, unit_col,     CMD_MAX_LINE, 11);
         pad_field(line, sz,           CMD_MAX_LINE, 11);
-        pad_field(line, usz,          CMD_MAX_LINE, 11);
-        pad_field(line, fsz,          CMD_MAX_LINE, 11);
+        pad_field(line, used_sz,      CMD_MAX_LINE, 11);
+        pad_field(line, free_sz,      CMD_MAX_LINE, 11);
         pad_field(line, pct,          CMD_MAX_LINE,  6);
         pad_field(line, "0",          CMD_MAX_LINE,  5);
         pad_field(line, "Read/Write", CMD_MAX_LINE, 14);
-        pad_field(line, "RAM",        CMD_MAX_LINE, 10);
+        pad_field(line, vol_name,     CMD_MAX_LINE, 10);
         PRINT(line);
+    }
+
+    /* Partition devices whose filesystem is not currently mounted still
+     * appear (a formatted-but-unmounted partition is still a disk). */
+    BlockDev *dev = BlockDev_GetList();
+    while (dev) {
+        if (dev->part_offset != 0) {
+            int mounted = 0;
+            for (int i = 0; i < nmounts; i++) {
+                if (VFS_GetMountDev(i) == dev) { mounted = 1; break; }
+            }
+            if (!mounted) {
+                uint64_t bytes =
+                    BlockDev_GetCapacity(dev) * dev->sector_size;
+                char sz[16], free_sz[16];
+                sz[0] = free_sz[0] = '\0';
+                format_cap(bytes, sz, 16);
+                format_cap(bytes, free_sz, 16);
+
+                const char *name =
+                    dev->display_name ? dev->display_name : dev->name;
+                char vol_label[16] = {0};
+                BlockDev_ReadVolLabel(dev, vol_label, sizeof(vol_label));
+                const char *vol_name = vol_label[0] ? vol_label : name;
+
+                char line[CMD_MAX_LINE];
+                line[0] = '\0';
+                pad_field(line, name,         CMD_MAX_LINE, 11);
+                pad_field(line, sz,           CMD_MAX_LINE, 11);
+                pad_field(line, "0",          CMD_MAX_LINE, 11);
+                pad_field(line, free_sz,      CMD_MAX_LINE, 11);
+                pad_field(line, "0%",         CMD_MAX_LINE,  6);
+                pad_field(line, "0",          CMD_MAX_LINE,  5);
+                pad_field(line, "Read/Write", CMD_MAX_LINE, 14);
+                pad_field(line, vol_name,     CMD_MAX_LINE, 10);
+                PRINT(line);
+            }
+        }
+        dev = dev->next;
     }
 
     PRINT("");

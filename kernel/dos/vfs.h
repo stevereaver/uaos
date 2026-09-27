@@ -81,6 +81,17 @@ int VFS_GetMountCount(void);
  * Returns 1 on success, 0 if idx out of range. */
 int VFS_GetMountName(int idx, char *dst, int max);
 
+/* Get the i-th mount's unit name and filesystem volume label separately.
+ * unit gets the mount/unit name (e.g. "DH0", "virtio1", "RAM"); label gets
+ * the filesystem label (e.g. "WB"; empty when the volume has none).
+ * Either output may be NULL.  Returns 1 on success, 0 if idx out of range. */
+int VFS_GetMountInfo(int idx, char *unit, int unit_max,
+                     char *label, int label_max);
+
+/* Return the backing block device of the i-th mount, or NULL for
+ * RAMFS-backed mounts (RAM:, ISO9660 extracts) and out-of-range idx. */
+BlockDev *VFS_GetMountDev(int idx);
+
 /* Open a file.  Returns 1 on success, 0 on failure. */
 int  VFS_Open(VfsFile *fh, const char *path, int flags);
 

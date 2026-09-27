@@ -23,6 +23,7 @@ typedef struct {
     char      vol_name[16];  /* e.g. "RAM" (no colon) — unit/mount name */
     char      vol_label[16]; /* filesystem volume label, e.g. FAT "WB" —
                               * resolvable alias + display name (empty = none) */
+    BlockDev *bdev;         /* backing block device, or NULL (RAMFS mounts) */
     RamFsVol *vol;          /* direct pointer for native VFS access */
     Handler  *handler;      /* packet handler for DoPkt routing */
 } MountEntry;
@@ -179,13 +180,14 @@ static void mount_set_label(MountEntry *m, const char *label)
 
 /* Register a mounted volume with an associated packet handler */
 static void register_mount(const char *name, const char *label,
-                           RamFsVol *vol, Handler *handler)
+                           BlockDev *bdev, RamFsVol *vol, Handler *handler)
 {
     if (g_n_mounts >= MAX_MOUNTS) return;
     int i = 0;
     while (i < 15 && name[i]) { g_mounts[g_n_mounts].vol_name[i] = name[i]; i++; }
     g_mounts[g_n_mounts].vol_name[i] = '\0';
     mount_set_label(&g_mounts[g_n_mounts], label);
+    g_mounts[g_n_mounts].bdev    = bdev;
     g_mounts[g_n_mounts].vol     = vol;
     g_mounts[g_n_mounts].handler = handler;
     g_n_mounts++;
@@ -204,7 +206,7 @@ void VFS_Init(void)
     RamFsVol *ram = RamFS_MountVol("RAM");
     if (!ram) return;
     Handler *ram_handler = RamHandler_Create("ram-handler", ram);
-    register_mount("RAM", NULL, ram, ram_handler);
+    register_mount("RAM", NULL, NULL, ram, ram_handler);
 
     /* Standard AmigaDOS RAM disk directories */
     RamFS_MkDir(ram, "RAM:T");
@@ -315,7 +317,7 @@ int VFS_MountPartition(const char *name)
             FFS_Unmount(fv);
             return -1;
         }
-        register_mount(vname, NULL, NULL, handler);
+        register_mount(vname, NULL, bdev, NULL, handler);
         return 0;
     }
 
@@ -343,7 +345,7 @@ int VFS_MountPartition(const char *name)
         return -1;
     }
 
-    register_mount(name, label[0] ? label : NULL, NULL, handler);
+    register_mount(name, label[0] ? label : NULL, bdev, NULL, handler);
     return 0;
 }
 
@@ -364,6 +366,7 @@ int VFS_RemountPartition(const char *name)
         if (seq(g_mounts[i].vol_name, name)) {
             if (!g_mounts[i].handler) return -1;
             g_mounts[i].handler->private = fs;
+            g_mounts[i].bdev = bdev;
             mount_set_label(&g_mounts[i], label);
             return 0;
         }
@@ -385,7 +388,7 @@ int VFS_MountExistingVol(const char *name, RamFsVol *vol)
     if (g_n_mounts >= MAX_MOUNTS) return -1;
 
     Handler *handler = RamHandler_Create(name, vol);
-    register_mount(name, NULL, vol, handler);
+    register_mount(name, NULL, NULL, vol, handler);
     return 0;
 }
 
@@ -413,7 +416,7 @@ int VFS_MountFat(const char *name, BlockDev *bdev)
         return -1;
     }
 
-    register_mount(name, label[0] ? label : NULL, NULL, handler);
+    register_mount(name, label[0] ? label : NULL, bdev, NULL, handler);
     return 0;
 }
 
@@ -438,6 +441,33 @@ int VFS_GetMountName(int idx, char *dst, int max)
     }
     dst[i] = '\0';
     return 1;
+}
+
+int VFS_GetMountInfo(int idx, char *unit, int unit_max,
+                     char *label, int label_max)
+{
+    if (idx < 0 || idx >= g_n_mounts) return 0;
+    if (unit && unit_max > 0) {
+        int i = 0;
+        while (i < unit_max - 1 && g_mounts[idx].vol_name[i]) {
+            unit[i] = g_mounts[idx].vol_name[i]; i++;
+        }
+        unit[i] = '\0';
+    }
+    if (label && label_max > 0) {
+        int i = 0;
+        while (i < label_max - 1 && g_mounts[idx].vol_label[i]) {
+            label[i] = g_mounts[idx].vol_label[i]; i++;
+        }
+        label[i] = '\0';
+    }
+    return 1;
+}
+
+BlockDev *VFS_GetMountDev(int idx)
+{
+    if (idx < 0 || idx >= g_n_mounts) return NULL;
+    return g_mounts[idx].bdev;
 }
 
 /* =========================================================================

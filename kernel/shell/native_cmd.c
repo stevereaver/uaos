@@ -180,7 +180,12 @@ int NativeCmd_Run(const char *name, NativeCmdCtx *ctx, const char *args)
                 while (*s && j < 127) msg[j++] = *s++;
                 s = tr.error;
                 while (*s && j < 127) msg[j++] = *s++;
+                s = " [args='";
+                while (*s && j < 127) msg[j++] = *s++;
+                s = args ? args : "(null)";
+                while (*s && j < 127) msg[j++] = *s++;
                 msg[j] = '\0';
+                if (j < 126) { msg[j++] = '\''; msg[j] = '\0'; }
                 if (ctx->print)
                     ctx->print(ctx->shell, msg);
                 if (ctx->set_rc)
