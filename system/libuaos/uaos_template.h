@@ -163,6 +163,7 @@ static inline void uaos_tmpl_parse(const char *template_str, UaosTmpl *out)
 typedef struct {
     char tok[UAOS_TMPL_MAX_TOKENS][UAOS_TMPL_MAX_VAL];
     int  used[UAOS_TMPL_MAX_TOKENS];
+    int  quoted[UAOS_TMPL_MAX_TOKENS];
     int  n;
 } UaosTmplTokArray;
 
@@ -174,11 +175,38 @@ static inline void uaos_tmpl_tokenise(const char *args, UaosTmplTokArray *ta)
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         if (ta->n >= UAOS_TMPL_MAX_TOKENS) break;
-        const char *start = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        int len = (int)(p - start);
-        if (len >= UAOS_TMPL_MAX_VAL) len = UAOS_TMPL_MAX_VAL - 1;
-        uaos_tmpl_scopy_n(ta->tok[ta->n], start, len, UAOS_TMPL_MAX_VAL);
+        ta->quoted[ta->n] = 0;
+        if (*p == '"') {
+            /* Double-quoted token: consume through the closing quote so a
+             * literal string may contain spaces and words that collide
+             * with template keywords (echo "a TO b").  The quotes are
+             * stripped and the token is exempt from keyword matching. */
+            p++;
+            const char *start = p;
+            while (*p && *p != '"') p++;
+            int len = (int)(p - start);
+            if (*p == '"') p++;
+            if (len >= UAOS_TMPL_MAX_VAL) len = UAOS_TMPL_MAX_VAL - 1;
+            uaos_tmpl_scopy_n(ta->tok[ta->n], start, len, UAOS_TMPL_MAX_VAL);
+            ta->quoted[ta->n] = 1;
+        } else {
+            const char *start = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            int len = (int)(p - start);
+            if (len >= UAOS_TMPL_MAX_VAL) len = UAOS_TMPL_MAX_VAL - 1;
+            uaos_tmpl_scopy_n(ta->tok[ta->n], start, len, UAOS_TMPL_MAX_VAL);
+            /* Strip one layer of surrounding double-quotes (a quote pair
+             * that happened to fit inside a single whitespace-delimited
+             * word, e.g. cmd foo"bar"). */
+            int tlen = uaos_tmpl_slen(ta->tok[ta->n]);
+            if (tlen >= 2 && ta->tok[ta->n][0] == '"' &&
+                ta->tok[ta->n][tlen - 1] == '"') {
+                ta->tok[ta->n][tlen - 1] = '\0';
+                uaos_tmpl_scopy(ta->tok[ta->n], ta->tok[ta->n] + 1,
+                                UAOS_TMPL_MAX_VAL);
+                ta->quoted[ta->n] = 1;
+            }
+        }
         ta->used[ta->n] = 0;
         ta->n++;
     }
@@ -203,9 +231,13 @@ static inline void uaos_tmpl_match(UaosTmpl *out, const char *args)
 
     uaos_tmpl_tokenise(args, &ta);
 
-    /* Pass 1: switches (/S) and keyword args (/K), including KEYWORD=VALUE */
+    /* Pass 1: switches (/S), keyword args (/K), and KEYWORD=VALUE forms.
+     * AmigaDOS ReadArgs treats every template item name as a keyword —
+     * /K merely makes the keyword *required* — so "FROM dir" binds a
+     * positional/M item by name too.  Quoted tokens are literal strings
+     * and never match a keyword. */
     for (i = 0; i < ta.n; i++) {
-        if (ta.used[i]) continue;
+        if (ta.used[i] || ta.quoted[i]) continue;
         const char *t = ta.tok[i];
         int tlen = uaos_tmpl_slen(t);
 
@@ -248,26 +280,26 @@ static inline void uaos_tmpl_match(UaosTmpl *out, const char *args)
                 ta.used[i] = 1;
                 break;
             }
-            if (it->keyword) {
-                if (i + 1 < ta.n && !ta.used[i + 1]) {
-                    const char *val = ta.tok[i + 1];
-                    int vallen = uaos_tmpl_slen(val);
-                    if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULTI) {
-                        uaos_tmpl_scopy_n(it->values[it->value_count], val,
-                                          vallen, UAOS_TMPL_MAX_VAL);
-                        it->value_count++;
-                    } else {
-                        uaos_tmpl_scopy(it->value, val, UAOS_TMPL_MAX_VAL);
-                    }
-                    it->present = 1;
-                    ta.used[i] = 1;
-                    ta.used[i + 1] = 1;
+            /* /K keyword or bare item name used in keyword form: the
+             * NEXT token is the value. */
+            if (i + 1 < ta.n && !ta.used[i + 1]) {
+                const char *val = ta.tok[i + 1];
+                int vallen = uaos_tmpl_slen(val);
+                if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULTI) {
+                    uaos_tmpl_scopy_n(it->values[it->value_count], val,
+                                      vallen, UAOS_TMPL_MAX_VAL);
+                    it->value_count++;
                 } else {
-                    it->present = 1;
-                    ta.used[i] = 1;
+                    uaos_tmpl_scopy(it->value, val, UAOS_TMPL_MAX_VAL);
                 }
-                break;
+                it->present = 1;
+                ta.used[i] = 1;
+                ta.used[i + 1] = 1;
+            } else {
+                it->present = 1;
+                ta.used[i] = 1;
             }
+            break;
         }
     }
 

@@ -676,6 +676,43 @@ uint32_t Wait(uint32_t sigmask)
     return result;
 }
 
+void Task_SleepTicks(uint64_t ticks)
+{
+    if (!g_current || ticks == 0) return;
+    uint64_t deadline = g_pit_ticks + ticks;
+
+    __asm__ volatile ("cli");
+    g_current->tc_SigWait = 0;          /* not woken by Signal() */
+    g_current->tc_wake_tick = deadline;
+
+    while (g_pit_ticks < deadline) {
+        g_current->tc_State = TASK_WAITING;
+        wait_enqueue(g_current);
+        /* Same mechanism as Wait(): hlt lets the PIT ISR run, and
+         * Task_WakeTimers() moves us back to the ready queue once the
+         * deadline passes.  We resume here when re-dispatched. */
+        __asm__ volatile ("sti; hlt" ::: "memory");
+        __asm__ volatile ("cli");
+    }
+
+    g_current->tc_wake_tick = 0;
+    __asm__ volatile ("sti");
+}
+
+void Task_WakeTimers(void)
+{
+    UaosTask *t = g_wait_head.ln_Succ;
+    while (t != &g_wait_head) {
+        UaosTask *next = t->ln_Succ;
+        if (t->tc_wake_tick && g_pit_ticks >= t->tc_wake_tick) {
+            t->tc_wake_tick = 0;
+            wait_remove(t);
+            ready_enqueue(t);
+        }
+        t = next;
+    }
+}
+
 void Task_ClearSig(uint32_t sigmask)
 {
     __asm__ volatile ("cli");

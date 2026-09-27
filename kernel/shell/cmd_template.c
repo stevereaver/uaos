@@ -129,6 +129,7 @@ void CmdTemplate_Parse(const char *template_str, CmdTemplateResult *out)
 typedef struct {
     char  tok[CMD_MAX_TOKENS][CMD_MAX_TEMPLATE_VAL];
     int   used[CMD_MAX_TOKENS];
+    int   quoted[CMD_MAX_TOKENS];
     int   n;
 } TokArray;
 
@@ -140,16 +141,28 @@ static void tokenise(const char *args, TokArray *ta)
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         if (ta->n >= CMD_MAX_TOKENS) break;
-        const char *start = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        int len = (int)(p - start);
-        if (len >= CMD_MAX_TEMPLATE_VAL) len = CMD_MAX_TEMPLATE_VAL - 1;
-        ct_scopy_n(ta->tok[ta->n], start, len, CMD_MAX_TEMPLATE_VAL);
-        /* Strip one layer of surrounding double-quotes so that AmigaDOS-style
-         * quoted arguments (e.g. copy T:file "", SET foo "bar") resolve to
-         * the unquoted value.  Only strips when the first AND last character
-         * are both '"', so partial quotes inside a token are preserved. */
-        {
+        ta->quoted[ta->n] = 0;
+        if (*p == '"') {
+            /* Double-quoted token: consume through the closing quote so a
+             * literal string may contain spaces and words that collide
+             * with template keywords (echo "a TO b").  The quotes are
+             * stripped and the token is exempt from keyword matching. */
+            p++;
+            const char *start = p;
+            while (*p && *p != '"') p++;
+            int len = (int)(p - start);
+            if (*p == '"') p++;
+            if (len >= CMD_MAX_TEMPLATE_VAL) len = CMD_MAX_TEMPLATE_VAL - 1;
+            ct_scopy_n(ta->tok[ta->n], start, len, CMD_MAX_TEMPLATE_VAL);
+            ta->quoted[ta->n] = 1;
+        } else {
+            const char *start = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            int len = (int)(p - start);
+            if (len >= CMD_MAX_TEMPLATE_VAL) len = CMD_MAX_TEMPLATE_VAL - 1;
+            ct_scopy_n(ta->tok[ta->n], start, len, CMD_MAX_TEMPLATE_VAL);
+            /* Strip one layer of surrounding double-quotes (a quote pair
+             * inside a single whitespace-delimited word, e.g. foo"bar"). */
             int tlen = ct_slen(ta->tok[ta->n]);
             if (tlen >= 2 &&
                 ta->tok[ta->n][0] == '"' &&
@@ -157,6 +170,7 @@ static void tokenise(const char *args, TokArray *ta)
                 ta->tok[ta->n][tlen - 1] = '\0';
                 ct_scopy(ta->tok[ta->n], ta->tok[ta->n] + 1,
                          CMD_MAX_TEMPLATE_VAL);
+                ta->quoted[ta->n] = 1;
             }
         }
         ta->used[ta->n] = 0;
@@ -184,9 +198,13 @@ void CmdTemplate_MatchArgs(CmdTemplateResult *out, const char *args)
 
     tokenise(args, &ta);
 
-    /* --- Pass 1: switches (/S) and keyword args (/K) --- */
+    /* --- Pass 1: switches (/S), keyword args (/K), KEYWORD=VALUE.
+     * AmigaDOS ReadArgs treats every template item name as a keyword —
+     * /K merely makes the keyword *required* — so "FROM dir" binds a
+     * positional/M item by name too.  Quoted tokens are literal strings
+     * and never match a keyword. --- */
     for (i = 0; i < ta.n; i++) {
-        if (ta.used[i]) continue;
+        if (ta.used[i] || ta.quoted[i]) continue;
 
         const char *t = ta.tok[i];
         int tlen = ct_slen(t);
@@ -234,30 +252,28 @@ void CmdTemplate_MatchArgs(CmdTemplateResult *out, const char *args)
                 ta.used[i] = 1;
                 break;
             }
-            if (it->keyword) {
-                /* Next token is the value */
-                if (i + 1 < ta.n && !ta.used[i + 1]) {
-                    const char *val = ta.tok[i + 1];
-                    int vallen = ct_slen(val);
-                    if (it->multiple && it->value_count < CMD_MAX_MULT_VALUES) {
-                        ct_scopy_n(it->values[it->value_count], val,
-                                   vallen, CMD_MAX_TEMPLATE_VAL);
-                        it->value_count++;
-                    } else {
-                        ct_scopy(it->value, val, CMD_MAX_TEMPLATE_VAL);
-                    }
-                    it->present = 1;
-                    ta.used[i] = 1;
-                    ta.used[i + 1] = 1;
+            /* /K keyword or bare item name used in keyword form: the
+             * NEXT token is the value. */
+            if (i + 1 < ta.n && !ta.used[i + 1]) {
+                const char *val = ta.tok[i + 1];
+                int vallen = ct_slen(val);
+                if (it->multiple && it->value_count < CMD_MAX_MULT_VALUES) {
+                    ct_scopy_n(it->values[it->value_count], val,
+                               vallen, CMD_MAX_TEMPLATE_VAL);
+                    it->value_count++;
                 } else {
-                    /* Keyword with no following value — still mark present,
-                     * but leave value empty.  This happens for trailing
-                     * keywords in some edge cases. */
-                    it->present = 1;
-                    ta.used[i] = 1;
+                    ct_scopy(it->value, val, CMD_MAX_TEMPLATE_VAL);
                 }
-                break;
+                it->present = 1;
+                ta.used[i] = 1;
+                ta.used[i + 1] = 1;
+            } else {
+                /* Keyword with no following value — still mark present,
+                 * but leave value empty. */
+                it->present = 1;
+                ta.used[i] = 1;
             }
+            break;
         }
     }
 

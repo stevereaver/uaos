@@ -746,6 +746,19 @@ static int sys_getvolumeinfo(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     return VFS_GetVolumeInfo(abs_path, total, used);
 }
 
+static int sys_sleep_ms(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rsi; (void)rdx;
+
+    /* g_pit_ticks runs at 100 Hz — 1 tick = 10 ms.  Task_SleepTicks
+     * parks the caller on the wait queue until Task_WakeTimers()
+     * re-readies it at the deadline. */
+    uint64_t ticks = (rdi + 9) / 10;
+    if (rdi && !ticks) ticks = 1;
+    Task_SleepTicks(ticks);
+    return 0;
+}
+
 static int sys_readkey(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     (void)rdi; (void)rsi; (void)rdx;
@@ -1070,6 +1083,7 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_GETMOUNTCOUNT:  ret = sys_getmountcount(rdi, rsi, rdx); break;
     case SYSCALL_GETMOUNTNAME:   ret = sys_getmountname(rdi, rsi, rdx); break;
     case SYSCALL_MEMINFO:        ret = sys_meminfo(rdi, rsi, rdx); break;
+    case SYSCALL_SLEEP_MS:       ret = sys_sleep_ms(rdi, rsi, rdx); break;
     case SYSCALL_SCHEDULE:
     default:
         /* Reserved / legacy voluntary yield. */

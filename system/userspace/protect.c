@@ -66,8 +66,54 @@ int main(int argc, const char **argv)
     char args[UAOS_TMPL_MAX_VAL];
     cmd_build_args(argc, argv, args, sizeof(args));
 
+    /* Pre-scan for +/- flag groups before the template runs: the
+     * positional FLAGS item would otherwise swallow tokens like "-d",
+     * and a leading group ("protect -d FILE") would even land in FILE.
+     * A token is a flag group only when every character after the first
+     * sign is a flag letter or another sign — otherwise it stays as an
+     * ordinary argument (e.g. a filename). */
+    char clean[UAOS_TMPL_MAX_VAL];
+    int ci = 0;
+    uint16_t delta_set = 0, delta_clear = 0;
+    {
+        const char *p = args;
+        while (*p) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            const char *ts = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            int tl = (int)(p - ts);
+            int is_group = tl >= 2 && (ts[0] == '+' || ts[0] == '-');
+            if (is_group) {
+                for (int k = 1; k < tl; k++) {
+                    if (ts[k] != '+' && ts[k] != '-' && !protect_bit(ts[k])) {
+                        is_group = 0;
+                        break;
+                    }
+                }
+            }
+            if (is_group) {
+                char sign = '+';
+                for (int k = 0; k < tl; k++) {
+                    char c = ts[k];
+                    if (c == '+' || c == '-') { sign = c; continue; }
+                    int bit = protect_bit(c);
+                    if (bit) {
+                        if (sign == '+') delta_set   |= (uint16_t)bit;
+                        else             delta_clear |= (uint16_t)bit;
+                    }
+                }
+            } else {
+                if (ci && ci < (int)sizeof(clean) - 1) clean[ci++] = ' ';
+                for (int k = 0; k < tl && ci < (int)sizeof(clean) - 1; k++)
+                    clean[ci++] = ts[k];
+            }
+        }
+        clean[ci] = '\0';
+    }
+
     UaosTmpl t;
-    uaos_tmpl_run("FILE/A,FLAGS,ADD/S,SUB/S,ALL/S,QUIET/S", &t, args);
+    uaos_tmpl_run("FILE/A,FLAGS,ADD/S,SUB/S,ALL/S,QUIET/S", &t, clean);
     if (t.error[0]) { put_s("protect: "); put_line(t.error); return 20; }
 
     const char *file_arg = uaos_tmpl_string(&t, "FILE");
@@ -84,20 +130,33 @@ int main(int argc, const char **argv)
 
     uint16_t set_bits = 0, clear_bits = 0;
 
-    /* Check for FLAGS keyword argument (AmigaDOS 3.1 style). */
+    /* Check for a FLAGS argument (AmigaDOS 3.1 style).  A sign char
+     * switches the remainder of the word into delta mode, matching the
+     * pre-scanned +/- groups: + sets the bit (denies the operation),
+     * - clears it (allows), per the inverted FIBF convention. */
     const char *flags_str = uaos_tmpl_string(&t, "FLAGS");
-    if (flags_str && flags_str[0]) {
+    if (flags_str && flags_str[0] &&
+        (flags_str[0] == '+' || flags_str[0] == '-')) {
+        char sign = '+';
+        for (int i = 0; flags_str[i]; i++) {
+            char c = flags_str[i];
+            if (c == '+' || c == '-') { sign = c; continue; }
+            int bit = protect_bit(c);
+            if (bit) {
+                if (sign == '+') set_bits   |= (uint16_t)bit;
+                else             clear_bits |= (uint16_t)bit;
+            }
+        }
+    } else if (flags_str && flags_str[0]) {
         /* FLAGS specifies the complete protection word.  With ADD, the
          * bits are OR'd in; with SUB, they're cleared.  Without either,
          * the protection is set to exactly these bits. */
         if (add) {
-            set_bits = 0;
             for (int i = 0; flags_str[i]; i++) {
                 int bit = protect_bit(flags_str[i]);
                 if (bit) set_bits |= (uint16_t)bit;
             }
         } else if (sub) {
-            clear_bits = 0;
             for (int i = 0; flags_str[i]; i++) {
                 int bit = protect_bit(flags_str[i]);
                 if (bit) clear_bits |= (uint16_t)bit;
@@ -115,20 +174,13 @@ int main(int argc, const char **argv)
             set_bits = new_prot;
             clear_bits = (uint16_t)~new_prot;
         }
-    } else {
-        /* Parse +/- syntax from the raw argument string. */
-        const char *p = args;
-        while (*p && (*p == '+' || *p == '-')) {
-            char op = *p++;
-            char flag = *p++;
-            int bit = protect_bit(flag);
-            if (bit) {
-                if (op == '+') set_bits |= (uint16_t)bit;
-                else           clear_bits |= (uint16_t)bit;
-            }
-            while (*p == ' ') p++;
-        }
     }
+
+    /* Apply any +/- groups collected by the pre-scan; they override the
+     * FLAGS result so `protect file rwed -w` clears w after the exact
+     * set. */
+    set_bits   |= delta_set;
+    clear_bits |= delta_clear;
 
     char path[UAOS_CMD_PATH_MAX], pat[UAOS_CMD_PATH_MAX];
     cmd_split_path_pat(file_arg, path, pat);

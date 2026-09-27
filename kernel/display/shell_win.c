@@ -2392,6 +2392,35 @@ static int script_eval_cond(ShellInstance *s, const char *cond)
     return *cond ? 1 : 0;
 }
 
+/* Find the THEN keyword separating a single-line IF condition from its
+ * command.  Returns a pointer just past THEN (the command), and the
+ * length of the condition text in *cond_len.  NULL when no THEN. */
+static const char *script_find_then(const char *cond, int *cond_len)
+{
+    const char *p = cond;
+    for (;;) {
+        p = script_skip_sp(p);
+        if (!*p) return NULL;
+        if (script_kw_match(p, "then")) {
+            *cond_len = (int)(p - cond);
+            return script_skip_sp(p + 4);
+        }
+        while (*p && *p != ' ' && *p != '\t') p++;
+    }
+}
+
+/* Evaluate the bounded condition cond[0..clen) (script_eval_cond needs
+ * a NUL-terminated string — it would otherwise swallow the THEN part). */
+static int script_eval_cond_n(ShellInstance *s, const char *cond, int clen)
+{
+    char buf[MAX_LINE_LEN];
+    if (clen >= MAX_LINE_LEN) clen = MAX_LINE_LEN - 1;
+    int i;
+    for (i = 0; i < clen; i++) buf[i] = cond[i];
+    buf[i] = '\0';
+    return script_eval_cond(s, buf);
+}
+
 static int script_run_line(ShellInstance *s, const char **lines, int line_count, int pc);
 
 static int script_run_block(ShellInstance *s, const char **lines, int line_count, int start, int end)
@@ -2427,18 +2456,11 @@ static int script_run_line(ShellInstance *s, const char **lines, int line_count,
         const char *cond = script_skip_sp(line + 2);
 
         /* Single-line: IF <cond> THEN <cmd> */
-        const char *tp = cond;
-        while (*tp && *tp != ' ' && *tp != '\t') tp++;
-        tp = script_skip_sp(tp);
-        int is_then = (tp[0] == 'T' || tp[0] == 't') &&
-                      (tp[1] == 'H' || tp[1] == 'h') &&
-                      (tp[2] == 'E' || tp[2] == 'e') &&
-                      (tp[3] == 'N' || tp[3] == 'n') &&
-                      (tp[4] == ' ' || tp[4] == '\t' || tp[4] == '\0');
-        if (is_then) {
-            if (script_eval_cond(s, cond)) {
-                inst_dispatch(s, script_skip_sp(tp + 4));
-            }
+        int clen = 0;
+        const char *body = script_find_then(cond, &clen);
+        if (body) {
+            if (script_eval_cond_n(s, cond, clen))
+                inst_dispatch(s, body);
             return pc;
         }
 
@@ -4551,18 +4573,11 @@ static void run_cmd(ShellInstance *s, const char *line)
     /* Single-line IF at the interactive prompt */
     if (script_kw_match(lp, "if")) {
         const char *cond = script_skip_sp(lp + 2);
-        const char *tp = cond;
-        while (*tp && *tp != ' ' && *tp != '\t') tp++;
-        tp = script_skip_sp(tp);
-        int is_then = (tp[0] == 'T' || tp[0] == 't') &&
-                      (tp[1] == 'H' || tp[1] == 'h') &&
-                      (tp[2] == 'E' || tp[2] == 'e') &&
-                      (tp[3] == 'N' || tp[3] == 'n') &&
-                      (tp[4] == ' ' || tp[4] == '\t' || tp[4] == '\0');
-        if (is_then) {
-            if (script_eval_cond(s, cond)) {
-                inst_dispatch(s, script_skip_sp(tp + 4));
-            }
+        int clen = 0;
+        const char *body = script_find_then(cond, &clen);
+        if (body) {
+            if (script_eval_cond_n(s, cond, clen))
+                inst_dispatch(s, body);
             return;
         }
         inst_print(s, "Multi-line IF blocks are only valid inside scripts.");
@@ -4576,7 +4591,11 @@ static void run_cmd(ShellInstance *s, const char *line)
         return;
     }
 
-    /* Single-line FOR at the interactive prompt */
+    /* Single-line FOR at the interactive prompt.  inst_dispatch skipped
+     * global expansion for this line, so only the header (var=start TO
+     * end [STEP k]) is expanded here; the body after DO stays raw and is
+     * re-expanded per iteration by the recursive inst_dispatch call —
+     * that is what lets `for i=1 to 3 do echo $i` see the loop var. */
     if (script_kw_match(lp, "for")) {
         const char *rest = script_skip_sp(lp + 3);
         char varname[MAX_ENV_NAME];
@@ -4587,23 +4606,48 @@ static void run_cmd(ShellInstance *s, const char *line)
         rest = script_skip_sp(rest);
         if (*rest != '=') goto for_prompt_err;
         rest = script_skip_sp(rest + 1);
-        int start_val, end_val, step_val = 1;
-        if (!script_parse_int(rest, &start_val)) goto for_prompt_err;
-        while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
-        rest = script_skip_sp(rest);
-        if (!script_kw_match(rest, "to")) goto for_prompt_err;
-        rest = script_skip_sp(rest + 2);
-        if (!script_parse_int(rest, &end_val)) goto for_prompt_err;
-        while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
-        rest = script_skip_sp(rest);
-        if (script_kw_match(rest, "step")) {
-            rest = script_skip_sp(rest + 4);
-            if (!script_parse_int(rest, &step_val)) goto for_prompt_err;
-            while (*rest && ((*rest >= '0' && *rest <= '9') || *rest == '-')) rest++;
-            rest = script_skip_sp(rest);
+
+        /* Find the DO keyword that separates the range header from the
+         * loop body (scan token-wise so a value containing "do" doesn't
+         * match). */
+        const char *dop = NULL;
+        {
+            const char *scan = rest;
+            for (;;) {
+                scan = script_skip_sp(scan);
+                if (!*scan) break;
+                if (script_kw_match(scan, "do")) { dop = scan; break; }
+                while (*scan && *scan != ' ' && *scan != '\t') scan++;
+            }
+            if (!dop) goto for_prompt_err;
         }
-        if (!script_kw_match(rest, "do")) goto for_prompt_err;
-        rest = script_skip_sp(rest + 2);
+
+        char hdr[MAX_LINE_LEN], hdrexp[MAX_LINE_LEN];
+        {
+            int hl = (int)(dop - rest);
+            if (hl >= MAX_LINE_LEN) hl = MAX_LINE_LEN - 1;
+            for (int k = 0; k < hl; k++) hdr[k] = rest[k];
+            hdr[hl] = '\0';
+        }
+        expand_vars(s, hdr, hdrexp, MAX_LINE_LEN);
+        const char *hp = hdrexp;
+
+        int start_val, end_val, step_val = 1;
+        if (!script_parse_int(hp, &start_val)) goto for_prompt_err;
+        while (*hp && ((*hp >= '0' && *hp <= '9') || *hp == '-')) hp++;
+        hp = script_skip_sp(hp);
+        if (!script_kw_match(hp, "to")) goto for_prompt_err;
+        hp = script_skip_sp(hp + 2);
+        if (!script_parse_int(hp, &end_val)) goto for_prompt_err;
+        while (*hp && ((*hp >= '0' && *hp <= '9') || *hp == '-')) hp++;
+        hp = script_skip_sp(hp);
+        if (script_kw_match(hp, "step")) {
+            hp = script_skip_sp(hp + 4);
+            if (!script_parse_int(hp, &step_val)) goto for_prompt_err;
+            while (*hp && ((*hp >= '0' && *hp <= '9') || *hp == '-')) hp++;
+            hp = script_skip_sp(hp);
+        }
+        const char *body = script_skip_sp(dop + 2);
 
         for (int v = start_val; (step_val > 0) ? (v <= end_val) : (v >= end_val); v += step_val) {
             if (shell_take_break(s)) {
@@ -4620,7 +4664,7 @@ static void run_cmd(ShellInstance *s, const char *line)
             while (ti-- > 0) valstr[di++] = tmp[ti];
             valstr[di] = '\0';
             script_set_var(s, varname, valstr);
-            inst_dispatch(s, rest);
+            inst_dispatch(s, body);
             if (s->dispatch_broken) { s->dispatch_broken = 0; break; }
         }
         return;
@@ -5193,10 +5237,16 @@ static void inst_dispatch(ShellInstance *s, const char *line)
         return;
     }
 
-    /* Expand $variables before anything else */
+    /* Expand $variables before anything else — except lines that open a
+     * single-line script construct (IF/FOR).  A global pass would expand
+     * a FOR body before the loop binds its variable; IF's condition is
+     * expanded inside script_eval_cond, and run_cmd expands only the FOR
+     * header, re-dispatching the raw body each iteration. */
     char expanded_line[MAX_LINE_LEN];
-    expand_vars(s, line, expanded_line, MAX_LINE_LEN);
-    line = expanded_line;
+    if (!script_kw_match(line, "if") && !script_kw_match(line, "for")) {
+        expand_vars(s, line, expanded_line, MAX_LINE_LEN);
+        line = expanded_line;
+    }
 
     /* Echo prompt (skip when dispatching a queued background job, or
      * when capturing output for backtick command substitution) */

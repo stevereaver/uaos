@@ -174,6 +174,27 @@ int main(int argc, const char **argv)
         if (n <= 0) path[0] = '\0';
     }
 
+    /* If the FROM path does not exist, the caller may have used
+     * grep-style argument order ('search <pattern> <file>').  When the
+     * SEARCH argument names an existing file or directory, swap the
+     * roles so that form works too. */
+    {
+        struct uaos_stat st;
+        if (from && from[0] && uaos_stat(path, &st) != 0) {
+            char alt[UAOS_CMD_PATH_MAX];
+            cmd_make_abs(pattern, alt, sizeof(alt));
+            if (uaos_stat(alt, &st) == 0) {
+                pattern = from;
+                uaos_strcpy(path, alt);
+            }
+        }
+        if (uaos_stat(path, &st) != 0) {
+            put_s("search: "); put_s(path);
+            put_line(": no such file or directory");
+            return 20;
+        }
+    }
+
     int hits = 0, files = 0;
 
     if (file_mode) {

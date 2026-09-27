@@ -37,7 +37,7 @@ Native Ring-0 userspace programs are built against a minimal freestanding librar
 
 - **`uaos_start.c`**: Entry point (`_start`) that parses arguments and calls `main`.
 - **`uaos_libc.h`**: Header-only static-inline implementations of `strlen`, `strcmp`, `strcpy`, `memcpy`, `memset`, `strlcat`, and character helpers.
-- **`uaos_syscall.h`**: Inline wrappers for every `INT 0x80` syscall and the `uaos_gui_event`, `uaos_dirent`, `uaos_stat`, and `uaos_meminfo` structures. Extended in Phase 7 with VFS mutation/metadata syscalls (0x20–0x2C): `mkdir`, `delete`, `rename`, `setprotection`, `getprotection`, `getcomment`, `setcomment`, `getvolumeinfo`, `readkey`, `getattrs`, `setattrs`, `getmountcount`, `getmountname`. `SYSCALL_MEMINFO` (0x2D) exposes the kernel memory query API (`uaos_meminfo()`), used by `C:avail`. Also defines AmigaDOS `FIBF_*` protection bit constants and `UAOS_ATTR_*` flags.
+- **`uaos_syscall.h`**: Inline wrappers for every `INT 0x80` syscall and the `uaos_gui_event`, `uaos_dirent`, `uaos_stat`, and `uaos_meminfo` structures. Extended in Phase 7 with VFS mutation/metadata syscalls (0x20–0x2C): `mkdir`, `delete`, `rename`, `setprotection`, `getprotection`, `getcomment`, `setcomment`, `getvolumeinfo`, `readkey`, `getattrs`, `setattrs`, `getmountcount`, `getmountname`. `SYSCALL_MEMINFO` (0x2D) exposes the kernel memory query API (`uaos_meminfo()`), used by `C:avail`; `SYSCALL_SLEEP_MS` (0x2E) blocks the caller for N ms via `uaos_sleep_ms()`, backed by `Task_SleepTicks`/`Task_WakeTimers` — wall-clock accurate, no CPU burn (UAOS-120). Also defines AmigaDOS `FIBF_*` protection bit constants and `UAOS_ATTR_*` flags.
 - **`uaos_template.h`**: Header-only AmigaDOS-style command template parser (ported from `kernel/shell/cmd_template.c`). Supports `/A`, `/K`, `/S`, `/N`, `/M`, `/F` qualifiers with `uaos_tmpl_parse()`, `uaos_tmpl_match()`, and query helpers (`uaos_tmpl_switch()`, `uaos_tmpl_string()`, `uaos_tmpl_int()`, `uaos_tmpl_count()`, `uaos_tmpl_multi()`).
 - **`uaos_cmd.h`**: Shared helpers for userspace C: command binaries — output (`put_s`, `put_c`, `put_line`, routed through the shared buffered stdout in `uaos_start.c` so a line costs one `sys.write`, not one per fragment), argument reconstruction (`cmd_build_args`), path resolution (`cmd_make_abs`, `cmd_join_path`, `cmd_split_path_pat` — `cmd_resolve_dots` normalizes `.`/`..`, with `..` floored at the volume prefix), AmigaDOS pattern matching (`cmd_pattern_match` with `#?`, `?`, `*`, `%` wildcards), a buffered file reader (`UaosCmdRd`/`cmd_rd_getc`, 4 KB blocks, used by `type`, `more`, `grep`, `sort`, `search`), keyword helpers (`cmd_kw_find`, `cmd_kw_strip`), numeric formatting, and date formatting (`cmd_fmt_mtime`).
 - **`uaos_getopt.h`**: Freestanding GNU-style `getopt_long` parser for the `gnu:` coreutils layer. Supports short options, long options (`--name`, `--name=value`, `--name value`), `no_argument`/`required_argument`/`optional_argument` modes, automatic `--` terminator handling, and the `UAOS_GO_LONG + N` sentinel for long-only options. Exposes `uaos_getopt_long()`, `uaos_operands_count()`, `uaos_operand()`, `uaos_optarg_long()`, and the global `g_optarg`/`g_optind`.
@@ -61,12 +61,12 @@ The following programs are compiled as x86-64 ELF64 PIE binaries, wrapped with a
 - `delete` — delete a file or directory (`FILE/A,ALL/S,QUIET/S,FORCE/S`).
 - `rename` — rename or move a file.
 - `copy` — copy a file or directory tree (`FROM/A,TO/A,ALL/S,CLONE/S,DATES/S,COM/S,QUIET/S,BUFFER/K/N`).
-- `protect` — set file protection bits (`+/-[hsparwed]`, `ALL`, `QUIET`).
+- `protect` — set file protection bits (`+/-[hsparwed]` sign groups are pre-scanned from the raw arg string before template matching, so `protect -d FILE` and `protect FILE -d` both work — UAOS-111; `FLAGS` word sets the protection exactly, `ADD`/`SUB` fold bits in/out, `ALL`, `QUIET`).
 - `attr` — show file attributes and protection bits.
 - `grep` — search file contents (`PATTERN/A,FILE,CI/S`).
 - `sort` — sort lines of a file (`FILE,COL/K/N,CASE/S,NUMERIC/S`).
 - `join` — concatenate multiple files.
-- `search` — search files for text (`PATTERN/A,FILE,ALL/S,FROM/K,FILEPAT/K,CI/S`).
+- `search` — search files for text (`FROM/M,SEARCH/A,ALL/S,NONUM/S,QUIET/S,QUICK/S,FILE/S,PATTERN/S`). Keyword binding (`FROM RAM: SEARCH pat`) works via the shared matcher's item-name keywords; when the FROM path doesn't exist but the SEARCH arg does, the roles are swapped so grep-style `search <pattern> <file>` also works (UAOS-112).
 - `filenote` — set or show a file's comment (`FILE/A,COMMENT/F`).
 - `more` — paginate file output one screen at a time.
 - `avail` — show available system memory (`BYTES/S`, `K/S`). Queries the kernel memory API via `SYSCALL_MEMINFO` and reports x86-64 heap total/used/free, M68k guest RAM slot usage, and scheduler task counts.
@@ -153,7 +153,7 @@ The complete GNU coreutils set (86 utilities) is built as x86-64 ELF64 PIE binar
 - `test` / `[` — evaluate expression (`-e`, `-f`, `-d`, `-r`, `-w`, `-x`, `-s`, `-z`, `-n`, `=`, `!=`, `-eq`, `-ne`, `-lt`, `-le`, `-gt`, `-ge`, `!`, `-a`, `-o`).
 - `expr` — evaluate expressions (arithmetic, string, comparison).
 - `factor` — print prime factors (`--exponents`).
-- `sleep` — delay for a duration (`s`, `m`, `h`, `d` suffixes).
+- `sleep` — delay for a duration (`s`, `m`, `h`, `d` suffixes; fractional values like `0.5` supported). Uses `uaos_sleep_ms` (a real blocking syscall, SYSCALL_SLEEP_MS 0x2E) rather than yield-counting, so durations are wall-clock accurate (UAOS-120).
 - `tee` — read stdin, write to stdout and files (`-a`, `-i`, `-p`).
 - `date` — print/set system date (`-u`, `-d STRING`, `+FORMAT`).
 - `env` — run a command in a modified environment (`-i`, `-u NAME`, `-C DIR`).

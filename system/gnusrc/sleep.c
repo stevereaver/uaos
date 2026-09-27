@@ -2,7 +2,8 @@
  *
  * Delay for a specified amount of time.
  *   sleep NUMBER[SUFFIX]...
- * Suffixes: s (seconds, default), m (minutes), h (hours), d (days)
+ * NUMBER may be fractional (sleep 0.5); suffixes: s (seconds, default),
+ * m (minutes), h (hours), d (days).
  */
 
 #include "uaos_cmd.h"
@@ -19,26 +20,42 @@ int main(int argc, const char **argv)
     int nops = uaos_operands_count(argc);
     if (nops == 0) { put_line("sleep: missing operand"); return 1; }
 
-    /* sum all durations */
-    long total_ticks = 0;
+    /* Sum all durations in milliseconds so fractional seconds work. */
+    uint64_t total_ms = 0;
     for (int i = 0; i < nops; i++) {
         const char *arg = uaos_operand(argc, argv, i);
         if (!arg) continue;
-        long val = 0;
         const char *p = arg;
-        while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+        long val = 0;
+        int digits = 0;
+        while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; digits++; }
+        long frac_ms = 0;
+        if (*p == '.') {
+            p++;
+            int scale = 100;
+            while (*p >= '0' && *p <= '9' && scale) {
+                frac_ms += (*p - '0') * scale;
+                scale /= 10;
+                p++;
+                digits++;
+            }
+            while (*p >= '0' && *p <= '9') p++; /* extra digits ignored */
+        }
+        if (!digits) {
+            put_s("sleep: invalid time interval '");
+            put_s(arg);
+            put_line("'");
+            return 1;
+        }
         long mult = 1;
         if (*p == 's') mult = 1;
         else if (*p == 'm') mult = 60;
         else if (*p == 'h') mult = 3600;
         else if (*p == 'd') mult = 86400;
-        total_ticks += val * mult;
+        total_ms += (uint64_t)val * (uint64_t)mult * 1000ULL +
+                    (uint64_t)frac_ms * (uint64_t)mult;
     }
 
-    /* UAOS uses the schedule syscall to yield.  We yield repeatedly.
-     * The kernel tick rate is roughly 100 Hz, so 100 yields ≈ 1 second. */
-    for (long i = 0; i < total_ticks * 100; i++) {
-        uaos_yield();
-    }
+    uaos_sleep_ms((long)total_ms);
     return 0;
 }

@@ -73,6 +73,10 @@ Key details:
 
 X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations (0x11–0x18), extended GUI drawing primitives (0x30–0x37), and the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C).
 
+### Timed Sleep (`SYSCALL_SLEEP_MS`, 0x2E) and Task Wake Timers
+
+`sys_sleep_ms` blocks the calling task for a wall-clock duration (UAOS-120). `Task_SleepTicks(ticks)` in `task.c` parks the task on the wait queue — same `sti; hlt` mechanism as `Wait()`, but with `tc_SigWait = 0` so signals do not wake it — and stamps `tc_wake_tick` (an absolute `g_pit_ticks` deadline, 100 Hz = 10 ms/tick). `Task_WakeTimers()` is called from `PIT_IRQHandler` before `Task_ScheduleFromIRQ()` and re-readies wait-queue tasks whose deadline has passed. This replaced yield-counting delays (e.g. `gnu:sleep` looped `uaos_yield()` ~100×/sec assuming 10 ms per yield, which actually cost a full round-robin quantum — `sleep 3` took ~15 s and burned CPU); now `sleep 3` completes in ~3 s while the task truly blocks.
+
 ### Memory Query API (`SYSCALL_MEMINFO`, 0x2D)
 
 `sys_meminfo` fills a `struct uaos_meminfo` (kernel side: `struct UaosMemInfo` in `mem_info.h`) with a point-in-time snapshot of the live memory arenas. It is a thin wrapper over the in-kernel `Mem_GetInfo()` helper in `mem_info.c`, which gathers:

@@ -240,6 +240,7 @@ void kprintdec(uint32_t v)
 volatile uint64_t g_pit_ticks = 0;
 
 extern void Task_ScheduleFromIRQ(void);
+extern void Task_WakeTimers(void);
 extern void timer_ProcessTicks(void);
 extern int FloppyBlockDev_Init(void);
 extern BlockDev *BlockDev_Find(const char *name);
@@ -251,6 +252,7 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
     g_pit_ticks++;
     net_stack_tick();
     timer_ProcessTicks();
+    Task_WakeTimers();       /* re-ready tasks whose sleep deadline passed */
     Task_ScheduleFromIRQ();
 }
 

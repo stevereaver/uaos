@@ -78,6 +78,7 @@
 #define UAOS_SYSCALL_GETMOUNTCOUNT  0x2B
 #define UAOS_SYSCALL_GETMOUNTNAME   0x2C
 #define UAOS_SYSCALL_MEMINFO        0x2D
+#define UAOS_SYSCALL_SLEEP_MS       0x2E
 
 #define UAOS_SYSCALL_SCHEDULE           0xFF
 
@@ -407,6 +408,14 @@ static inline long uaos_getmountname(int idx, char *buf, long max)
 static inline long uaos_meminfo(struct uaos_meminfo *info)
 {
     return uaos_syscall1(UAOS_SYSCALL_MEMINFO, (long)info);
+}
+
+/* Block the calling task for `ms` milliseconds.  The kernel parks the
+ * task on the wait queue until the PIT deadline passes — unlike
+ * uaos_yield() spinning, this is wall-clock accurate and burns no CPU. */
+static inline long uaos_sleep_ms(long ms)
+{
+    return uaos_syscall1(UAOS_SYSCALL_SLEEP_MS, ms);
 }
 
 /* -------------------------------------------------------------------------

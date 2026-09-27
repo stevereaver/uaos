@@ -128,6 +128,11 @@ typedef struct UaosTask {
      * task slot has been recycled. */
     int32_t  bg_job;
 
+    /* Absolute g_pit_ticks deadline at which a task parked by
+     * Task_SleepTicks wakes.  0 = not sleeping.  Scanned every PIT
+     * tick by Task_WakeTimers. */
+    uint64_t tc_wake_tick;
+
     /* Per-task current working directory (copied at creation). */
     char     task_cwd[128];
 
@@ -219,6 +224,16 @@ extern UaosTask *g_wait_tof_task;
  * ------------------------------------------------------------------------- */
 
 uint32_t Wait(uint32_t sigmask);
+
+/* Block the current task for `ticks` PIT ticks (100 Hz = 10 ms each).
+ * Implemented as a timed wait: the task sits on the wait queue with a
+ * tc_wake_tick deadline and is re-readied by Task_WakeTimers.  Unlike
+ * Wait() it does not take signals — it is purely time-driven. */
+void     Task_SleepTicks(uint64_t ticks);
+
+/* Re-ready wait-queue tasks whose tc_wake_tick deadline has passed.
+ * Called from the PIT interrupt handler once per tick. */
+void     Task_WakeTimers(void);
 void Task_ClearSig(uint32_t sigmask);
 void     Signal(UaosTask *task, uint32_t sigmask);
 uint32_t SetSignal(uint32_t newsignals, uint32_t sigmask);

@@ -117,9 +117,17 @@ AmigaDOS-style script template arguments are implemented across two files:
 
 Backtick substitution applies everywhere `expand_vars()` runs — command lines, `echo` arguments, and `IF` condition strings — but not in the prompt string (`expand_prompt()` is separate).
 
-### Quote Stripping
+### Quote Stripping & Quoted Tokens
 
-The template tokenizer (`tokenise()` in `cmd_template.c`) and the `SET` built-in (`inst_cmd_set` in `shell_win.c`) strip one layer of surrounding double-quotes from argument values. This matches AmigaDOS conventions where `SET foo "bar"` stores `bar` (not `"bar"`) and `copy T:file ""` uses the empty string (current directory). Only tokens where the first AND last character are both `"` are stripped; partial quotes inside a token are preserved.
+Both template tokenizers (`tokenise()` in `cmd_template.c` and `uaos_tmpl_tokenise()` in `uaos_template.h`) treat `"..."` as a single token that may contain spaces, strip the quotes, and mark the token `quoted` so it is exempt from keyword matching (UAOS-110). This makes the documented AmigaDOS escape work — `echo "FOR x=1 TO 3"` prints literally instead of `TO` binding `3` as Echo's `TO/K` destination. A quote pair that happens to fill a whole whitespace-delimited word is still stripped and marked quoted. The `SET` built-in (`inst_cmd_set` in `shell_win.c`) strips one layer of surrounding double-quotes as before.
+
+### Keyword Binding
+
+Matching AmigaDOS `ReadArgs` semantics, **every** template item name acts as a keyword — `/K` merely makes the keyword *required*. `search FROM RAM: SEARCH plain` now binds `FROM={RAM:}`, `SEARCH=plain` (previously the literal `FROM`/`SEARCH` tokens were absorbed positionally into `FROM/M`, so `uaos_opendir` was called on `cwd/FROM` — UAOS-112). Quoted tokens never match a keyword. As on real AmigaDOS, a filename that collides with a template item name must be quoted to be taken positionally.
+
+### Single-line IF / FOR at the prompt
+
+`inst_dispatch()` skips its global `expand_vars()` pass for lines beginning with `if` or `for`: the FOR body would otherwise expand before the loop variable is bound, making `for i=1 to 3 do echo $i` print empty (UAOS-110). `run_cmd` scans the header token-wise for `do`, expands only the header (`var=start TO end [STEP k]`), and re-dispatches the raw body per iteration. `script_find_then`/`script_eval_cond_n` locate `THEN` by scanning tokens rather than skipping one word, so multi-token conditions (`if 1 eq 1 then ...`, `if exists f then ...`) work at the prompt and inside scripts, and the condition is evaluated on the bounded text before `THEN` — previously `EXISTS` swallowed the `THEN ...` tail into the tested path.
 
 ### `rx` Command (`kernel/shell/cmd_rx.c`)
 

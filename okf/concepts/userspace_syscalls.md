@@ -99,6 +99,7 @@ Added to support the migration of DOS commands from kernel-resident C: stubs to 
 | `0x2B` | `sys_getmountcount` | Return the number of mounted VFS volumes. |
 | `0x2C` | `sys_getmountname` | Get the name of a mounted volume by index. |
 | `0x2D` | `sys_meminfo` | Fill a `uaos_meminfo` struct with a point-in-time snapshot of x64 heap, M68k guest RAM, and scheduler task counts. Backed by the kernel `Mem_GetInfo()` helper. |
+| `0x2E` | `sys_sleep_ms` | Block the calling task for N milliseconds (UAOS-120). Implemented as a timed wait: `Task_SleepTicks` parks the task on the wait queue with a `tc_wake_tick` deadline (g_pit_ticks, 100 Hz) and `Task_WakeTimers` — run each PIT tick ahead of `Task_ScheduleFromIRQ` — re-readies expired sleepers. Unlike yield-counting this is wall-clock accurate and consumes no CPU. |
 
 ### Extended GUI Drawing Syscalls
 
