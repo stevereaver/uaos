@@ -142,9 +142,15 @@ static CursorSettings g_cursor_settings = {
  * ========================================================================= */
 
 static uint32_t bg_save[CUR_MAX_W * CUR_MAX_H];
-static int      cur_x = 0;
+static int      cur_x = 0;    /* requested position (set at IRQ time) */
 static int      cur_y = 0;
+static int      drw_x = 0;    /* position the sprite is painted at (visible buffer) */
+static int      drw_y = 0;
+static int      bb_x = 0;     /* pos the sprite was last painted INTO THE BACK BUFFER */
+static int      bb_y = 0;
+static int      bb_drawn = 0;    /* 1 if sprite pixels may linger in the back buffer */
 static int      cur_drawn = 0;   /* 1 if cursor is currently on screen */
+static volatile int cur_moved = 0; /* IRQ-deferred move pending (UAOS-104) */
 
 /* =========================================================================
  * Helper functions
@@ -193,6 +199,34 @@ static void cursor_save_bg(int x, int y)
     int off_x = cur_custom_active ? cur_custom_x : 0;
     int off_y = cur_custom_active ? cur_custom_y : 0;
 
+    /* Fast path: 32bpp direct mode — whole-row memcpy instead of a
+     * function-called FB_GetPixel per pixel (VRAM reads are expensive on
+     * write-combining memory). */
+    if (!FB_IsDrawing() && g_fb.bpp == 32) {
+        const uint8_t *base = (const uint8_t *)(uintptr_t)g_fb.phys_addr;
+        for (int row = 0; row < cur_h; row++) {
+            uint32_t *dst = &bg_save[row * CUR_MAX_W];
+            int py = y + off_y + row;
+            int sx = x + off_x;
+            int c0 = 0, c1 = cur_w;
+            if (py < 0 || py >= H) {
+                c1 = 0;
+            } else {
+                if (sx < 0) c0 = -sx;
+                if (c0 > cur_w) c0 = cur_w;
+                if (sx + cur_w > W) c1 = W - sx;
+                if (c1 < 0) c1 = 0;
+            }
+            for (int c = 0; c < c0; c++) dst[c] = 0;
+            for (int c = c1; c < cur_w; c++) dst[c] = 0;
+            if (c0 < c1)
+                memcpy(dst + c0,
+                       base + (uint32_t)py * g_fb.pitch + (uint32_t)(sx + c0) * 4,
+                       (size_t)(c1 - c0) * 4);
+        }
+        return;
+    }
+
     for (int row = 0; row < cur_h; row++) {
         int py = y + off_y + row;
         for (int col = 0; col < cur_w; col++) {
@@ -214,6 +248,26 @@ static void cursor_restore_bg(int x, int y)
     int cur_w = get_cursor_width();
     int off_x = cur_custom_active ? cur_custom_x : 0;
     int off_y = cur_custom_active ? cur_custom_y : 0;
+
+    /* Fast path: 32bpp row memcpy back to VRAM. */
+    if (g_fb.bpp == 32) {
+        uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+        for (int row = 0; row < cur_h; row++) {
+            int py = y + off_y + row;
+            if (py < 0 || py >= H) continue;
+            int sx = x + off_x;
+            int c0 = 0, c1 = cur_w;
+            if (sx < 0) c0 = -sx;
+            if (c0 > cur_w) c0 = cur_w;
+            if (sx + cur_w > W) c1 = W - sx;
+            if (c1 > cur_w) c1 = cur_w;
+            if (c0 >= c1) continue;
+            memcpy(base + (uint32_t)py * g_fb.pitch + (uint32_t)(sx + c0) * 4,
+                   &bg_save[row * CUR_MAX_W + c0],
+                   (size_t)(c1 - c0) * 4);
+        }
+        return;
+    }
 
     for (int row = 0; row < cur_h; row++) {
         int py = y + off_y + row;
@@ -269,15 +323,37 @@ static void cursor_draw(int x, int y)
  * Public API
  * ========================================================================= */
 
+/* Paint the sprite at the requested position and record where it landed.
+ * Clears the deferred-move flag: any move serviced by this paint is done. */
+static void cursor_commit_draw(void)
+{
+    cursor_save_bg(cur_x, cur_y);
+    cursor_draw(cur_x, cur_y);
+    drw_x = cur_x;
+    drw_y = cur_y;
+    cur_drawn = 1;
+    /* While a back-buffered frame is in progress the sprite lands in the
+     * back buffer too — record that position so the next damage-scoped
+     * repaint can erase it (otherwise it would linger and ghost once the
+     * cursor moves away). */
+    if (FB_IsDrawing()) {
+        bb_x = cur_x;
+        bb_y = cur_y;
+        bb_drawn = 1;
+    }
+    cur_moved = 0;
+}
+
 void Cursor_Init(int x, int y)
 {
     cur_x     = x;
     cur_y     = y;
+    drw_x     = x;
+    drw_y     = y;
     cur_drawn = 0;
+    cur_moved = 0;
     if (!g_fb.valid) return;
-    cursor_save_bg(x, y);
-    cursor_draw(x, y);
-    cur_drawn = 1;
+    cursor_commit_draw();
 }
 
 /* Intuition may have scheduled a delayed pointer change via WA_PointerDelay. */
@@ -285,27 +361,30 @@ extern void UAOS_Intuition_CheckPendingPointer(void);
 
 void Cursor_Move(int x, int y)
 {
-    UAOS_Intuition_CheckPendingPointer();
-    if (!g_fb.valid) return;
-    /* B2: Cursor_Move runs at IRQ time from PS2Mouse_IRQHandler.  If a
-     * back-buffered frame is in progress (FB_BeginDraw..FB_Flip), drawing
-     * the cursor here would pollute the half-painted back buffer and the
-     * save/restore pair would capture cursor pixels into bg_save, leaving
-     * a ghost cursor on the next restore.  The frame-end Cursor_Redraw
-     * paints the cursor at the new position anyway, so while drawing is
-     * active we only update the stored position. */
-    if (FB_IsDrawing()) {
-        cur_x = x;
-        cur_y = y;
-        return;
-    }
-    if (cur_drawn)
-        cursor_restore_bg(cur_x, cur_y);
+    /* UAOS-104: called from PS2Mouse_IRQHandler once per mouse packet.
+     * Only record the target position here — the save/restore/draw runs
+     * once per frame from Cursor_Flush() (idle loop) or the frame-end
+     * Cursor_Redraw() inside a back-buffered WM repaint, so a burst of
+     * packets coalesces into a single paint instead of three per-pixel
+     * passes per packet at IRQ time. */
     cur_x = x;
     cur_y = y;
-    cursor_save_bg(x, y);
-    cursor_draw(x, y);
-    cur_drawn = 1;
+    cur_moved = 1;
+}
+
+void Cursor_Flush(void)
+{
+    if (!cur_moved) return;
+    cur_moved = 0;
+    UAOS_Intuition_CheckPendingPointer();
+    /* While a back-buffered frame is in progress the frame-end
+     * Cursor_Redraw paints the cursor at the new position anyway. */
+    if (!g_fb.valid || FB_IsDrawing()) return;
+    /* Early-out: sprite already painted at the target position. */
+    if (cur_drawn && cur_x == drw_x && cur_y == drw_y) return;
+    if (cur_drawn)
+        cursor_restore_bg(drw_x, drw_y);
+    cursor_commit_draw();
 }
 
 void Cursor_Redraw(void)
@@ -313,10 +392,8 @@ void Cursor_Redraw(void)
     UAOS_Intuition_CheckPendingPointer();
     if (!g_fb.valid) return;
     if (cur_drawn)
-        cursor_restore_bg(cur_x, cur_y);
-    cursor_save_bg(cur_x, cur_y);
-    cursor_draw(cur_x, cur_y);
-    cur_drawn = 1;
+        cursor_restore_bg(drw_x, drw_y);
+    cursor_commit_draw();
 }
 
 void Cursor_Hide(void)
@@ -324,9 +401,44 @@ void Cursor_Hide(void)
     if (!g_fb.valid) return;
     if (FB_IsDrawing()) return;  /* no-op during double-buffered draw */
     if (cur_drawn) {
-        cursor_restore_bg(cur_x, cur_y);
+        cursor_restore_bg(drw_x, drw_y);
         cur_drawn = 0;
     }
+}
+
+/* Union of the sprite footprint in the visible buffer (drw pos) and in the
+ * back buffer (bb pos).  The WM damages this before a damage-scoped repaint
+ * so the scene repaint erases stale sprite pixels from BOTH buffers before
+ * cursor_save_bg() samples the new position — prevents ghosting and stops
+ * the save buffer capturing old sprite pixels as "background" (UAOS-104). */
+int Cursor_GetSpriteRect(int *x, int *y, int *w, int *h)
+{
+    int cw = get_cursor_width();
+    int ch = get_cursor_size();
+    int ox = cur_custom_active ? cur_custom_x : 0;
+    int oy = cur_custom_active ? cur_custom_y : 0;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0, have = 0;
+
+    if (cur_drawn) {
+        x0 = drw_x + ox;  y0 = drw_y + oy;
+        x1 = x0 + cw;     y1 = y0 + ch;
+        have = 1;
+    }
+    if (bb_drawn) {
+        int bx0 = bb_x + ox, by0 = bb_y + oy;
+        if (!have) {
+            x0 = bx0; y0 = by0; x1 = bx0 + cw; y1 = by0 + ch;
+            have = 1;
+        } else {
+            if (bx0 < x0) x0 = bx0;
+            if (by0 < y0) y0 = by0;
+            if (bx0 + cw > x1) x1 = bx0 + cw;
+            if (by0 + ch > y1) y1 = by0 + ch;
+        }
+    }
+    if (!have) return 0;
+    *x = x0; *y = y0; *w = x1 - x0; *h = y1 - y0;
+    return 1;
 }
 
 /* =========================================================================
@@ -366,7 +478,7 @@ void Cursor_ApplySettings(void)
 {
     /* Hide cursor first to restore old background completely */
     if (cur_drawn) {
-        cursor_restore_bg(cur_x, cur_y);
+        cursor_restore_bg(drw_x, drw_y);
         cur_drawn = 0;
     }
 
@@ -376,9 +488,7 @@ void Cursor_ApplySettings(void)
     }
 
     /* Save new background and draw cursor with new settings */
-    cursor_save_bg(cur_x, cur_y);
-    cursor_draw(cur_x, cur_y);
-    cur_drawn = 1;
+    cursor_commit_draw();
 }
 
 /* =========================================================================
@@ -392,7 +502,7 @@ void Cursor_SetCustomSprite(const uint8_t *data, int w, int h, int xoff, int yof
     if (h > CUR_MAX_H) h = CUR_MAX_H;
 
     if (cur_drawn) {
-        cursor_restore_bg(cur_x, cur_y);
+        cursor_restore_bg(drw_x, drw_y);
         cur_drawn = 0;
     }
 
@@ -409,15 +519,13 @@ void Cursor_SetCustomSprite(const uint8_t *data, int w, int h, int xoff, int yof
     cur_custom_active = 1;
     cur_busy = 0;
 
-    cursor_save_bg(cur_x, cur_y);
-    cursor_draw(cur_x, cur_y);
-    cur_drawn = 1;
+    cursor_commit_draw();
 }
 
 void Cursor_ClearCustomSprite(void)
 {
     if (cur_drawn) {
-        cursor_restore_bg(cur_x, cur_y);
+        cursor_restore_bg(drw_x, drw_y);
         cur_drawn = 0;
     }
 
@@ -427,9 +535,7 @@ void Cursor_ClearCustomSprite(void)
     cur_custom_x = 0;
     cur_custom_y = 0;
 
-    cursor_save_bg(cur_x, cur_y);
-    cursor_draw(cur_x, cur_y);
-    cur_drawn = 1;
+    cursor_commit_draw();
 }
 
 void Cursor_SetBusy(int busy)
@@ -437,7 +543,7 @@ void Cursor_SetBusy(int busy)
     if (!!cur_busy == !!busy) return;
 
     if (cur_drawn) {
-        cursor_restore_bg(cur_x, cur_y);
+        cursor_restore_bg(drw_x, drw_y);
         cur_drawn = 0;
     }
 
@@ -445,7 +551,5 @@ void Cursor_SetBusy(int busy)
     if (cur_busy)
         cur_custom_active = 0;
 
-    cursor_save_bg(cur_x, cur_y);
-    cursor_draw(cur_x, cur_y);
-    cur_drawn = 1;
+    cursor_commit_draw();
 }

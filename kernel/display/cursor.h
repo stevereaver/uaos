@@ -36,14 +36,26 @@ typedef struct {
 /* Initialise cursor state and draw at starting position */
 void Cursor_Init(int x, int y);
 
-/* Move cursor to (x, y): restore background, draw at new position */
+/* Move cursor to (x, y): records the target position only (IRQ-safe).
+ * The actual restore/save/draw is deferred to Cursor_Flush() or the
+ * frame-end Cursor_Redraw() so packet bursts coalesce to one paint. */
 void Cursor_Move(int x, int y);
+
+/* Apply a deferred cursor move: restore old background, draw at the new
+ * position.  Call once per idle-loop iteration. */
+void Cursor_Flush(void);
 
 /* Draw cursor at current position (call after desktop redraw) */
 void Cursor_Redraw(void);
 
 /* Remove cursor from screen (restore background) — call before any repaint */
 void Cursor_Hide(void);
+
+/* Union rect the cursor sprite currently occupies in the visible or back
+ * buffer.  Returns 1 and fills x/y/w/h when a sprite may be on screen;
+ * callers feed it back as repaint damage so stale sprite pixels get erased.
+ * Returns 0 when nothing is drawn. */
+int Cursor_GetSpriteRect(int *x, int *y, int *w, int *h);
 
 /* Cursor settings management */
 void Cursor_SetSize(CursorSize size);

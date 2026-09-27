@@ -19,6 +19,10 @@ void UAOS_INTUITION_Register(void);
  * Returns 1 if a screen bitmap was rendered, 0 otherwise. */
 int UAOS_Intuition_RenderScreenBackdrop(void);
 
+/* Region variant: re-render only the given host-framebuffer rectangle of the
+ * front screen's BitMap (used by WM damage-scoped repaints). */
+int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h);
+
 /* Re-render a dirty rectangle of a screen (or WA_SuperBitMap window) BitMap
  * into the host framebuffer.  Called by graphics.library after drawing
  * operations that modified a planar surface; the rectangle is in BitMap

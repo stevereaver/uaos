@@ -2974,6 +2974,25 @@ int UAOS_Intuition_RenderScreenBackdrop(void)
     return 0;
 }
 
+/* Region variant used by the WM's damage-scoped repaints (UAOS-101):
+ * re-renders only the given host-framebuffer rectangle of the front
+ * screen's BitMap.  SA_BackFill is not re-run — the screen BitMap already
+ * holds the backfilled pixels from the last full render.  Returns 1 if a
+ * front screen bitmap was rendered, 0 otherwise. */
+int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h)
+{
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (!slot->active || !slot->is_front) continue;
+        uint32_t bm = slot->bitmap;
+        if (!bm) return slot->backfill ? 1 : 0;
+        render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
+            x - slot->left, y - slot->top, x, y, w, h);
+        return 1;
+    }
+    return 0;
+}
+
 /* Re-render a dirty rectangle of a screen (or WA_SuperBitMap window)
  * BitMap into the host framebuffer.  Called by graphics.library at the
  * end of each dispatch that wrote planar pixels so drawing is visible

@@ -400,9 +400,9 @@ x/y coordinates):
 - **Status bar** (bottom, 18 px) — kernel idle message and RAM size
 
 `Desktop_RedrawRect(rx, ry, rw, rh)` repaints a sub-rectangle of the desktop
-(backdrop + all overlays: icons, menu bar, status bar) without a full-screen
-repaint. This is called by the window manager on every drag/resize step to erase
-the old window footprint efficiently.
+(backdrop + intersecting icons + lasso + the menu bar when reached) without a
+full-screen repaint. The window manager calls it for damage regions that may
+expose desktop (vacated window footprints, menu/icon/lasso changes).
 
 ### Window Manager (`wm.c`)
 
@@ -430,11 +430,13 @@ top of the z-stack.
 #### Drag and Resize
 
 - **Drag** — mouse-down on the title bar records the grab offset. Each
-  subsequent mouse move calls `Desktop_RedrawRect` on the old footprint, updates
-  `w->x/y`, then repaints all windows front-to-back.
+  subsequent mouse move damages the old + new footprints
+  (`WM_InvalidateDesktopRect`); the idle loop's `WM_FlushRedraw` repaints the
+  damaged union once — backdrop + intersecting windows back-to-front.
 - **Resize** — mouse-down on the 16×16 resize grip (bottom-right corner)
   records the base size and drag origin. Mouse movement computes new dimensions
-  relative to the drag start point. Minimum size: 120×80 px.
+  relative to the drag start point and damages old + new footprints the same
+  way. Minimum size: 120×80 px.
 - Windows may extend off the left, right, and bottom screen edges. The title
   bar is always constrained to remain at or below the menu bar (`y >= 20`), and
   at least 32 px of horizontal width stays on-screen.
@@ -443,9 +445,13 @@ top of the z-stack.
 
 A 16×16 Amiga-style arrow sprite cursor rendered in software:
 
-1. Save the 16×16 background pixels beneath the cursor position
-2. Draw the sprite (two-colour XOR mask)
-3. On each move: restore saved background, save new background, draw sprite at new position
+1. Save the 16×16 background pixels beneath the cursor position (row `memcpy`
+   in 32bpp)
+2. Draw the sprite (two-colour body/shadow mask)
+3. The PS/2 IRQ handler only records the target position (`Cursor_Move`);
+   the restore/save/draw pass runs once per idle-loop iteration
+   (`Cursor_Flush`) or at frame end inside a back-buffered repaint
+   (`Cursor_Redraw`), so packet bursts coalesce to a single paint
 
 This ensures desktop and window content are never permanently overwritten by
 cursor movement.

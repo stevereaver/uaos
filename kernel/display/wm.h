@@ -131,6 +131,20 @@ void WM_KeyEvent(char c);
 /* Redraw all windows back-to-front, then cursor */
 void WM_Redraw(void);
 
+/* Damage tracking (UAOS-101): mark a screen region as needing repaint.
+ * The pending damage union is repainted once per idle-loop iteration by
+ * WM_FlushRedraw — event handlers call these instead of WM_Redraw so a
+ * burst of input coalesces into a single damage-scoped repaint.
+ * WM_InvalidateRect: only window content changed in the rect.
+ * WM_InvalidateDesktopRect: the rect may also expose backdrop/icons/menubar
+ * (a window vacated it, or desktop content itself changed). */
+void WM_InvalidateRect(int x, int y, int w, int h);
+void WM_InvalidateDesktopRect(int x, int y, int w, int h);
+
+/* Repaint any pending accumulated damage (call once per idle-loop pass).
+ * No-op when nothing is damaged or the screen blanker is active. */
+void WM_FlushRedraw(void);
+
 /* Get the currently focused window handle (-1 if none) */
 int  WM_GetFocus(void);
 
@@ -156,7 +170,7 @@ void WM_MoveWindowInFrontOf(int src, int behind);
 /* Lower a window to the bottom of the z-order and redraw */
 void WM_LowerWindow(int handle);
 
-/* Request a repaint of a window's chrome (and full scene) */
+/* Request a repaint of a window's chrome + content (damage-scoped) */
 void WM_RepaintWindow(int handle);
 
 /* Set the title of an active window and repaint its chrome */

@@ -10,6 +10,7 @@
 #include "../irq/ps2kbd.h"
 #include "../display/framebuffer.h"
 #include "../display/desktop.h"
+#include "../display/cursor.h"
 #include "../display/wm.h"
 #include "../net/stack.h"
 #include "../display/shell_win.h"
@@ -554,6 +555,12 @@ void Task_IdleEntry(void *arg)
         /* Background jobs */
         if (!PS2Kbd_HasChar())
             ShellWin_PollJobs();
+
+        /* Coalesced repaint: event handlers accumulate damage instead of
+         * repainting per event — flush once per iteration (UAOS-101).
+         * Then apply any IRQ-deferred cursor move (UAOS-104). */
+        WM_FlushRedraw();
+        Cursor_Flush();
 
         Permit();
         /* --- End protected section --- */

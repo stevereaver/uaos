@@ -2,8 +2,9 @@
  *
  * Communicates with the PS/2 controller (i8042) to enable the auxiliary
  * (mouse) port.  Receives 3-byte standard PS/2 packets on IRQ12 (vector 44)
- * and updates a shared MouseState struct.  Calls Cursor_Move() to redraw
- * the hardware pointer on the framebuffer.
+ * and updates a shared MouseState struct.  Calls Cursor_Move() which only
+ * records the target position — the sprite repaint is deferred to the
+ * idle-loop Cursor_Flush() / frame-end Cursor_Redraw() (UAOS-104).
  */
 
 #include "ps2mouse.h"

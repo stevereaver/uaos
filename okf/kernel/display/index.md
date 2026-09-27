@@ -31,7 +31,7 @@ Direct-mode drawing (when `FB_IsDrawing()` is false) writes straight to VRAM and
 
 ### Fast Row-Based Primitives
 
-The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`) hoist the `g_drawing` and `bpp` branches out of the per-pixel loop, resolve the target row pointer once, and run a tight inner loop. `FB_BlitARGB` provides a clipped ARGB row blit (alpha-keyed, optional colour inversion) used by `icon_render.c` instead of per-pixel `FB_PutPixel` calls.
+The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`) hoist the `g_drawing` and `bpp` branches out of the per-pixel loop, resolve the target row pointer once, and run a tight inner loop. `FB_BlitARGB` provides a clipped ARGB row blit (alpha-keyed, optional colour inversion) used by `icon_render.c` instead of per-pixel `FB_PutPixel` calls. `FB_FillRectDithered` paints a 1px two-colour checkerboard rect (pattern anchored to the rect origin) with the same hoisted structure — used by the scrollbar track (UAOS-103).
 
 ### Mode-Size Clamp
 
@@ -51,10 +51,24 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 - **Z-Order Management**: Windows are stacked, with the top window receiving focus.
 - **Click-to-Focus**: Clicking a window title bar or client area raises it to the top.
 - **Raise / Lower**: `WM_RaiseWindow` brings a window to the front; `WM_LowerWindow` sends it to the back. `WM_MoveWindowInFrontOf` and the depth gadget also reorder the z-stack. Whenever the z-order of a window changes, `UAOS_Intuition_NotifyDepthChange()` is called so windows with `WA_NotifyDepth` can receive `IDCMP_NEWSIZE`.
-- **Repaint Requests**: `WM_RepaintWindow` requests a chrome/content redraw of a window (currently performed as a full-scene redraw to handle overlap correctly).
-- **Title Changes**: `WM_SetWindowTitle` updates the title string stored in the `WmWindow` and triggers a full redraw so the title bar is refreshed.
+- **Repaint Requests**: `WM_RepaintWindow` requests a chrome/content redraw of a window — damage-scoped (UAOS-101): only the window's footprint plus other windows intersecting it are repainted at the next flush.
+- **Title Changes**: `WM_SetWindowTitle` updates the title string stored in the `WmWindow` and damages only the title-bar strip.
 - **Dragging & Resizing**: Title bars can be dragged to move windows, and some windows support resizing.
 - **Event Routing**: Mouse and keyboard events are routed to the active window's callbacks.
+
+### Damage-Scoped Repaint (UAOS-101)
+
+`WM_Redraw()` previously repainted the entire scene (backdrop, every icon, every window, menu, cursor) on every event — scrollbar clicks, menu hover, drag/resize mouse moves, focus changes, and the 1 Hz clock tick. Event handlers now instead merge a damaged screen rectangle into `g_dmg_*` bounds (`damage_add`) and the idle loop repaints the union once per iteration via `WM_FlushRedraw()` → `repaint_damaged()`:
+
+1. `FB_BeginDraw()` — switches to the persistent back buffer (pixels outside the damage keep their previous contents).
+2. If the damage may expose desktop (`g_dmg_desktop`), `Desktop_RedrawRect()` repaints backdrop/icons/menubar inside the damage only — including the damaged region of the front Intuition screen's BitMap via `UAOS_Intuition_RenderScreenBackdropRegion()`.
+3. Only windows intersecting the damage are repainted, back-to-front, so restacked/vacated regions resolve to the new z-order.
+4. The open menu dropdown repaints itself (it floats above windows).
+5. `Cursor_Redraw()` + `FB_Flip()` — the VRAM copy is bounded by the FB dirty rect.
+
+Two invalidation APIs mark damage: `WM_InvalidateRect()` (only window content changed) and `WM_InvalidateDesktopRect()` (the rect may expose backdrop/icons/menubar — a window vacated it, or desktop content itself changed). Callers: window drag/resize/zoom/depth, scrollbar and gadget presses, focus changes, `WM_SetWindowTitle` (title strip only), `WM_CloseWindow` (vacated footprint + new focus title bar), desktop menu open/close/switch, lasso old/new outline, icon select/drag/drop footprints, menubar clock tick, and `Desktop_SetScreenTitle`. A burst of input coalesces into one repaint instead of one per event. `WM_Redraw()` remains for true full-scene updates and clears pending damage.
+
+Because the sprite is painted into the back buffer at frame end and the back buffer persists, `repaint_damaged` first damages `Cursor_GetSpriteRect()` (union of the sprite's front- and back-buffer footprints) so the scene repaint erases stale sprite pixels before `cursor_save_bg` samples the new position — prevents ghosting and save-buffer contamination.
 
 ### Window Callbacks
 Each window provides callbacks for:
@@ -64,7 +78,7 @@ Each window provides callbacks for:
 
 ### Close and Depth Gadgets
 
-`WM_CloseWindow` repaints via the double-buffered `WM_Redraw()` path (no flicker). The title bar is 20 pixels high and uses the full 8×16 font; its close, zoom, and depth cells are square and have explicit separating edges. The zoom and depth glyphs use compact 11×7 imagery centered with at least three pixels of horizontal padding. Close, zoom, and depth actions are armed on mouse-down, rendered with an inset bevel and shifted glyph, and committed only when the left button is released over the same gadget. Releasing elsewhere cancels the action. The zoom gadget toggles between the full usable screen and the window's saved original geometry, then emits a resize event so Intuition's guest `Window` geometry stays synchronized. The depth gadget (`depth_window`) reorders the z-stack and notifies Intuition of the focus change via `wm_notify_focus_change()` so `IDCMP_ACTIVEWINDOW`/`INACTIVEWINDOW` are sent. The square bottom-right sizing gadget uses the same pressed bevel while its drag updates window geometry and emits resize events.
+`WM_CloseWindow` repaints via the double-buffered damage path — the vacated footprint is damaged with the desktop flag plus the new focus window's title bar (no flicker, no full-scene repaint). The title bar is 20 pixels high and uses the full 8×16 font; its close, zoom, and depth cells are square and have explicit separating edges. The zoom and depth glyphs use compact 11×7 imagery centered with at least three pixels of horizontal padding. Close, zoom, and depth actions are armed on mouse-down, rendered with an inset bevel and shifted glyph, and committed only when the left button is released over the same gadget. Releasing elsewhere cancels the action. The zoom gadget toggles between the full usable screen and the window's saved original geometry, then emits a resize event so Intuition's guest `Window` geometry stays synchronized. The depth gadget (`depth_window`) reorders the z-stack and notifies Intuition of the focus change via `wm_notify_focus_change()` so `IDCMP_ACTIVEWINDOW`/`INACTIVEWINDOW` are sent. The square bottom-right sizing gadget uses the same pressed bevel while its drag updates window geometry and emits resize events.
 
 ### Vacate hook
 
@@ -72,15 +86,16 @@ Each window provides callbacks for:
 
 ### Scrollbars
 
-Every window gets an always-on right (vertical) and bottom (horizontal) scrollbar: an `WM_ARROW_LEN` (11px) arrow button at each end, a dithered track between them, and a hollow raised-bevel thumb sized proportionally to `view/content` (minimum 8px). The thumb top travels `track_len - thumb_len` pixels over the scroll range `[0, content - view]`. Thumb drags map pointer delta to scroll delta through **that same travel range** (`dm * max_s / travel`) so the thumb tracks the pointer 1:1 — the drag handler must replicate `draw_scrollbar`'s geometry exactly (track = rect − `WM_ARROW_LEN`×2, same thumb clamp). `view` is `WmWindow.view_h` when set via `WM_SetScrollInfoEx` (shell/ed/vim reserve a status bar), else the client height; `draw_chrome`, `scroll_by`, `WM_SetScrollY`, and the drag handler all use it consistently so the drawn thumb position, the scroll clamp, and the drag inverse all agree. Both arrow buttons are skipped when the scrollbar's long axis can't fit them (`th`/`tw < WM_ARROW_LEN*2`), so degenerate rects never paint stray arrows over chrome.
+Every window gets an always-on right (vertical) and bottom (horizontal) scrollbar: an `WM_ARROW_LEN` (11px) arrow button at each end, a dithered track between them (drawn by `FB_FillRectDithered`, a hoisted two-colour checkerboard fill that replaces ~`live_w×len` `FB_PutPixel` calls per scrollbar per repaint — UAOS-103), and a hollow raised-bevel thumb sized proportionally to `view/content` (minimum 8px). The thumb top travels `track_len - thumb_len` pixels over the scroll range `[0, content - view]`. Thumb drags map pointer delta to scroll delta through **that same travel range** (`dm * max_s / travel`) so the thumb tracks the pointer 1:1 — the drag handler must replicate `draw_scrollbar`'s geometry exactly (track = rect − `WM_ARROW_LEN`×2, same thumb clamp). `view` is `WmWindow.view_h` when set via `WM_SetScrollInfoEx` (shell/ed/vim reserve a status bar), else the client height; `draw_chrome`, `scroll_by`, `WM_SetScrollY`, and the drag handler all use it consistently so the drawn thumb position, the scroll clamp, and the drag inverse all agree. Both arrow buttons are skipped when the scrollbar's long axis can't fit them (`th`/`tw < WM_ARROW_LEN*2`), so degenerate rects never paint stray arrows over chrome.
 
 ## Software Cursor
 
 The software cursor (`cursor.c`) uses save/restore of background pixels for flicker-free movement. Key rules:
 
-- **IRQ-time moves**: `Cursor_Move` is called from `PS2Mouse_IRQHandler`. If a back-buffered frame is in progress (`FB_IsDrawing()`), it only updates the stored position — the frame-end `Cursor_Redraw` paints the cursor at the new position. This prevents back-buffer pollution and ghost-cursor artifacts.
+- **IRQ-time moves** (UAOS-104): `Cursor_Move` is called from `PS2Mouse_IRQHandler` but only records the target position and sets `cur_moved` — the save/restore/draw passes no longer run at IRQ time. The idle loop applies a pending move once per iteration via `Cursor_Flush()` (restore old background, save new, draw — all on the visible buffer in direct mode), and `Cursor_Redraw()` at the end of a back-buffered repaint paints at the live position. Packet bursts coalesce to a single paint per frame; `UAOS_Intuition_CheckPendingPointer()` now runs from `Cursor_Flush`/`Cursor_Redraw` instead of IRQ context. `Cursor_GetSpriteRect()` exposes the sprite's footprint in either buffer so damage repaints can erase it (see Damage-Scoped Repaint).
+- **Row-memcpy save/restore**: `cursor_save_bg`/`cursor_restore_bg` use whole-row `memcpy` in 32bpp direct mode instead of per-pixel `FB_GetPixel`/`FB_PutPixel` (VRAM reads are expensive on write-combining memory).
 - **Sprite scaling**: The 32×32 and 48×48 arrow pointers are generated at boot by integer-scaling the verified 16×16 sprite (2× and 3× respectively). The previous hand-typed tables had wrong per-row element counts and produced skewed sprites.
-- **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` (back buffer when drawing, VRAM otherwise — both authoritative after the last flip). `cursor_restore_bg` is a no-op during back-buffered drawing since the full frame is repainted.
+- **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` (back buffer when drawing, VRAM otherwise — both authoritative after the last flip). `cursor_restore_bg` is a no-op during back-buffered drawing since the repainted region covers the sprite footprint (damage repaints always include `Cursor_GetSpriteRect()`).
 
 ## Workbench Elements
 - **Backdrop**: Solid Amiga grey (`WB_GREY`, R:170 G:170 B:170). Can be toggled via Workbench ▸ Backdrop to hide/show desktop icons.
@@ -95,7 +110,7 @@ On rebuild, every emitted `icons[]` slot is fully reset (`memset`) before repopu
 
 ### Clock and Memory Display
 
-The menubar shows a clock (`HH:MM:SS` in white on blue) on the far right. When the NTP epoch is live it converts UTC→local via `ntp_get_epoch()` + `tz_offset_min()` (same as `C:date` and the Clock window); otherwise it reads `RTC_ReadTime()` directly (UTC). Fixed in UAOS-91 — it previously always showed raw RTC/UTC, diverging from local time once ntpd synced. Just to the left of the clock is a free-memory readout (e.g. `512K Free` in cream on blue), computed from `Mem_GetInfo()` (x64 heap free + M68k guest RAM free slots). `Desktop_UpdateClock` (called once per second from IRQ context) increments the double-click tick counter and sets a dirty flag; `Desktop_FlushClockRedraw` checks the flag and triggers `WM_Redraw()` to update the menubar. Double-clicking the clock text opens the Clock window (`ClockWin_Open()`): `menubar_clock_hit()` replicates the draw layout to hit-test the clock area, and the press/release pair uses the same `g_tick`/`DBLCLICK_TICKS` double-click timing as icons and the desktop backdrop.
+The menubar shows a clock (`HH:MM:SS` in white on blue) on the far right. When the NTP epoch is live it converts UTC→local via `ntp_get_epoch()` + `tz_offset_min()` (same as `C:date` and the Clock window); otherwise it reads `RTC_ReadTime()` directly (UTC). Fixed in UAOS-91 — it previously always showed raw RTC/UTC, diverging from local time once ntpd synced. Just to the left of the clock is a free-memory readout (e.g. `512K Free` in cream on blue), computed from `Mem_GetInfo()` (x64 heap free + M68k guest RAM free slots). `Desktop_UpdateClock` (called once per second from IRQ context) increments the double-click tick counter and sets a dirty flag; `Desktop_FlushClockRedraw` checks the flag and damages only the menubar strip (`WM_InvalidateDesktopRect(0,0,W,MENUBAR_H)`) — the clock no longer triggers a full-scene repaint every second (UAOS-101). Double-clicking the clock text opens the Clock window (`ClockWin_Open()`): `menubar_clock_hit()` replicates the draw layout to hit-test the clock area, and the press/release pair uses the same `g_tick`/`DBLCLICK_TICKS` double-click timing as icons and the desktop backdrop.
 
 ### Menu Bar
 

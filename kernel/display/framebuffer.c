@@ -406,6 +406,58 @@ void FB_FillRect(int x, int y, int w, int h, uint32_t colour)
     }
 }
 
+/* Fill a rect with a 1px two-colour checkerboard.  Pixel (px,py) gets col_a
+ * when ((px - x) + (py - y)) is even, col_b otherwise — the pattern is
+ * anchored to the rect origin so both scrollbar axes share the same path.
+ * Hoists the g_drawing/bpp branches and clipping out of the per-pixel loop:
+ * replaces ~w*h FB_PutPixel calls (scrollbar track dither, UAOS-103). */
+void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t col_b)
+{
+    if (!g_fb.valid || w <= 0 || h <= 0) return;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w;  if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
+    int y1 = y + h;  if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    const uint32_t cols[2] = { col_a, col_b };
+
+    if (g_drawing) {
+        int bx1 = x1 < BB_MAX_W ? x1 : BB_MAX_W;
+        int by1 = y1 < BB_MAX_H ? y1 : BB_MAX_H;
+        for (int py = y0; py < by1; py++) {
+            uint32_t *row = g_backbuf[py];
+            int rpar = (py - y) & 1;
+            for (int px = x0; px < bx1; px++)
+                row[px] = cols[(rpar + px - x) & 1];
+        }
+        dirty_add(x0, y0, x1, y1);
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        for (int py = y0; py < y1; py++) {
+            uint32_t *row = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
+            int rpar = (py - y) & 1;
+            for (int px = x0; px < x1; px++)
+                row[px] = cols[(rpar + px - x) & 1];
+        }
+    } else {
+        for (int py = y0; py < y1; py++) {
+            uint8_t *row = base + (uint32_t)py * g_fb.pitch;
+            int rpar = (py - y) & 1;
+            for (int px = x0; px < x1; px++) {
+                uint32_t c = cols[(rpar + px - x) & 1];
+                uint8_t *p = row + px * 3;
+                p[0] = (uint8_t)(c & 0xFF);
+                p[1] = (uint8_t)((c >> 8) & 0xFF);
+                p[2] = (uint8_t)((c >> 16) & 0xFF);
+            }
+        }
+    }
+}
+
 void FB_DrawRect(int x, int y, int w, int h, uint32_t colour)
 {
     FB_DrawHLine(x,         y,         w, colour);

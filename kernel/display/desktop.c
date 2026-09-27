@@ -1888,9 +1888,10 @@ static void draw_lasso(int W, int H)
  * Public entry
  * ========================================================================= */
 
-/* Repaint a rectangular region of the desktop backdrop (stipple pattern).
- * Writes directly to the framebuffer row buffer for speed — avoids per-pixel
- * function call overhead so drag/resize does not cause full-screen flicker. */
+/* Repaint a rectangular region of the desktop backdrop for the WM's
+ * damage-scoped repaints (UAOS-101).  Paints the base fill (or the front
+ * Intuition screen's BitMap region), only the icons intersecting the rect,
+ * the lasso, and — only when the rect reaches the top strip — the menubar. */
 void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
 {
     if (!g_fb.valid) return;
@@ -1899,23 +1900,44 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     int top    = MENUBAR_H;
     int bottom = H;
 
+    /* Use the front Intuition screen's palette for desktop chrome, matching
+     * Desktop_Draw. */
+    UAOS_Intuition_ApplyFrontScreenPalette();
+
     /* Clip to backdrop area */
     int x0 = rx < 0 ? 0 : rx;
     int y0 = ry < top ? top : ry;
     int x1 = rx + rw > W ? W : rx + rw;
     int y1 = ry + rh > bottom ? bottom : ry + rh;
-    if (x1 <= x0 || y1 <= y0) return;
 
-    /* Base grey fill */
-    FB_FillRect(x0, y0, x1 - x0, y1 - y0, WB_GREY);
+    if (x1 > x0 && y1 > y0) {
+        /* Base fill — DisplayBeep flash colour while the flash is live. */
+        uint32_t bg = WB_GREY;
+        if (g_beep_flash_color && g_beep_flash_until &&
+            g_pit_ticks < g_beep_flash_until)
+            bg = g_beep_flash_color;
+        FB_FillRect(x0, y0, x1 - x0, y1 - y0, bg);
 
-    /* Repaint desktop icons — all icons come from get_icons (VFS + partitions).
-     * Hidden when the Backdrop menu toggle is active. */
-    if (!g_backdrop_hidden) {
+        /* If the front Intuition screen has a custom BitMap, render the
+         * damaged region of it over the base fill (same layering as
+         * Desktop_Draw's RenderScreenBackdrop). */
+        UAOS_Intuition_RenderScreenBackdropRegion(x0, y0, x1 - x0, y1 - y0);
+    }
+
+    /* Repaint only desktop icons intersecting the damage (footprint incl.
+     * label area + 1px highlight margin).  Hidden when the Backdrop menu
+     * toggle is active. */
+    if (!g_backdrop_hidden && x1 > x0 && y1 > y0) {
         int n;
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
-            draw_icon_state(&icons[i]);
+            IconState *ic = &icons[i];
+            int lx = ic->x + (ICON_W - LABEL_W) / 2;
+            if (lx < 0) lx = 0;
+            if (lx - 1 >= x1 || ic->y - 1 >= y1 ||
+                lx + LABEL_W + 1 <= x0 || ic->y + ICON_H + 1 <= y0)
+                continue;
+            draw_icon_state(ic);
         }
         draw_drop_target_highlight(icons, n);
     }
@@ -1923,8 +1945,10 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     /* Lasso rectangle on top of icons, below bars */
     draw_lasso(W, H);
 
-    /* Always repaint menubar — a window may have overlapped it */
-    draw_menubar(W);
+    /* Repaint the menubar only when the damage reaches the top strip —
+     * a vacated window may have overlapped it. */
+    if (ry < MENUBAR_H)
+        draw_menubar(W);
 }
 
 void Desktop_Draw(void)
@@ -1994,7 +2018,8 @@ void Desktop_SetScreenTitle(const char *title, int show)
     } else {
         g_screen_title[0] = '\0';
     }
-    WM_Redraw();
+    /* The screen title renders inside the menubar strip only. */
+    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
 }
 
 void Desktop_DisplayBeepFlash(uint32_t color)
@@ -2183,6 +2208,39 @@ static int submenu_hit(int mx, int my)
 /* Update menu hover state and request a redraw if it changed.
  * Also switches to a different menu title if the cursor moves over it while
  * a menu is already open, and opens submenus for items that have them. */
+/* Damage helpers for damage-scoped repaints (UAOS-101) — used instead of
+ * WM_Redraw on the per-mouse-move paths (menu hover, lasso, icon drag). */
+
+/* The icon's full screen footprint incl. label area and the 1px
+ * drop-target highlight margin.  Backdrop must repaint underneath. */
+static void icon_damage(const IconState *ic)
+{
+    int lx = ic->x + (ICON_W - LABEL_W) / 2;
+    if (lx < 0) lx = 0;
+    WM_InvalidateDesktopRect(lx - 1, ic->y - 1, LABEL_W + 2, ICON_H + 2);
+}
+
+/* Damage the whole current menu footprint: menubar strip (title highlight),
+ * open dropdown incl. shadow, and flyout submenu incl. shadow.  Use when
+ * the menu opens/closes or switches so vacated pixels get repainted. */
+static void menu_invalidate(void)
+{
+    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
+    WM_InvalidateDesktopRect(g_menu_x, g_menu_y, g_menu_w + 4, g_menu_h + 4);
+    WM_InvalidateDesktopRect(g_submenu_x, g_submenu_y,
+                             g_submenu_w + 4, g_submenu_h + 4);
+}
+
+/* Lighter variant for hover changes: the open dropdown/submenu repaint
+ * themselves when the menu is open; the submenu region gets desktop damage
+ * in case it vacated or moved. */
+static void menu_invalidate_items(void)
+{
+    WM_InvalidateRect(g_menu_x, g_menu_y, g_menu_w + 4, g_menu_h + 4);
+    WM_InvalidateDesktopRect(g_submenu_x, g_submenu_y,
+                             g_submenu_w + 4, g_submenu_h + 4);
+}
+
 static void menu_update_hover(int mx, int my)
 {
     if (g_menu_index < 0) return;
@@ -2191,11 +2249,11 @@ static void menu_update_hover(int mx, int my)
     if (my >= 0 && my < MENUBAR_H) {
         int menu = menubar_hit(mx, my);
         if (menu >= 0 && menu < active_menu_count() && menu != g_menu_index) {
+            menu_invalidate();   /* old dropdown/submenu + menubar strip */
             g_menu_index = menu;
             g_menu_hover = -1;
             g_submenu_item = -1;
             g_submenu_hover = -1;
-            WM_Redraw();
             return;
         }
     }
@@ -2205,7 +2263,7 @@ static void menu_update_hover(int mx, int my)
         if (sub_hover >= 0) {
             if (sub_hover != g_submenu_hover) {
                 g_submenu_hover = sub_hover;
-                WM_Redraw();
+                menu_invalidate_items();
             }
             return;
         }
@@ -2215,7 +2273,7 @@ static void menu_update_hover(int mx, int my)
         if (sub_hover >= 0) {
             if (sub_hover != g_submenu_hover) {
                 g_submenu_hover = sub_hover;
-                WM_Redraw();
+                menu_invalidate_items();
             }
             return;
         }
@@ -2240,7 +2298,7 @@ static void menu_update_hover(int mx, int my)
         } else {
             g_submenu_item = -1;
         }
-        WM_Redraw();
+        menu_invalidate_items();
     }
 }
 
@@ -2257,26 +2315,26 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
             g_submenu_item = -1;
             g_submenu_hover = -1;
             menu_update_hover(mx, my);
-            WM_Redraw();
+            menu_invalidate();
             return 1;
         }
         /* Right-click on empty menu bar area: close any open menu. */
+        menu_invalidate();
         g_menu_index = -1;
         g_menu_hover = -1;
         g_submenu_item = -1;
         g_submenu_hover = -1;
-        WM_Redraw();
         return 1;
     }
 
     /* Left-click while a menu is open: close the menu without triggering an
      * action.  This lets the user dismiss a menu with the left button. */
     if (left_pressed && g_menu_index >= 0) {
+        menu_invalidate();
         g_menu_index = -1;
         g_menu_hover = -1;
         g_submenu_item = -1;
         g_submenu_hover = -1;
-        WM_Redraw();
         return 1;
     }
 
@@ -2317,15 +2375,13 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
             DT_LOG(ic->volume); DT_LOG("'\n");
 
             /* Select the clicked icon and deselect all others */
-            int changed = 0;
             for (int j = 0; j < n; j++) {
                 int want = (j == i) ? 1 : 0;
                 if (icons[j].is_selected != want) {
                     icons[j].is_selected = want;
-                    changed = 1;
+                    icon_damage(&icons[j]);
                 }
             }
-            if (changed) WM_Redraw();
 
             g_icon_drag_idx    = i;
             g_icon_drag_off_x  = mx - ic->x;
@@ -2341,14 +2397,12 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     /* Missed all icons — deselect all, start a lasso for potential drag
      * selection, and mark as desktop background press for double-click. */
     {
-        int changed = 0;
         for (int j = 0; j < n; j++) {
             if (icons[j].is_selected) {
                 icons[j].is_selected = 0;
-                changed = 1;
+                icon_damage(&icons[j]);
             }
         }
-        if (changed) WM_Redraw();
     }
     g_desktop_pressed = 1;
     g_lasso_active  = 1;
@@ -2410,11 +2464,11 @@ void Desktop_RightButtonRelease(int mx, int my)
         }
     }
 
+    menu_invalidate();
     g_menu_index = -1;
     g_menu_hover = -1;
     g_submenu_item = -1;
     g_submenu_hover = -1;
-    WM_Redraw();
 }
 
 /* Forward declaration — used by Desktop_MouseMove and draw_drop_target_highlight. */
@@ -2431,6 +2485,16 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
      * select every icon whose bounding box intersects it. */
     if (g_lasso_active) {
         if (mx == g_lasso_cur_x && my == g_lasso_cur_y) return;
+
+        /* Erase the outline drawn for the previous lasso rect. */
+        if (g_lasso_moved) {
+            int ox0 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_start_x : g_lasso_cur_x;
+            int oy0 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_start_y : g_lasso_cur_y;
+            int ox1 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_cur_x   : g_lasso_start_x;
+            int oy1 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_cur_y   : g_lasso_start_y;
+            WM_InvalidateDesktopRect(ox0, oy0, ox1 - ox0 + 1, oy1 - oy0 + 1);
+        }
+
         g_lasso_cur_x = mx;
         g_lasso_cur_y = my;
         g_lasso_moved = 1;
@@ -2443,7 +2507,6 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
 
         int n;
         IconState *icons = get_icons(&n);
-        int changed = 0;
         for (int i = 0; i < n; i++) {
             IconState *ic = &icons[i];
             /* AABB intersection: icon bbox vs lasso rect */
@@ -2451,13 +2514,12 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
                         ic->y + ICON_H <= ly0 || ic->y >= ly1 + 1);
             if (ic->is_selected != hit) {
                 ic->is_selected = hit;
-                changed = 1;
+                icon_damage(ic);
             }
         }
-        /* Always redraw — the lasso rectangle itself moved even if no
-         * icon selection changed. */
-        WM_Redraw();
-        (void)changed;
+        /* Damage the new lasso bbox so its outline is repainted even where
+         * it extends past the old rect. */
+        WM_InvalidateDesktopRect(lx0, ly0, lx1 - lx0 + 1, ly1 - ly0 + 1);
         return;
     }
 
@@ -2488,8 +2550,10 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
     if (new_x != ic->x || new_y != ic->y) {
         if (new_x != g_icon_drag_orig_x || new_y != g_icon_drag_orig_y)
             g_icon_drag_moved = 1;
+        icon_damage(ic);   /* vacated footprint */
         ic->x = new_x;
         ic->y = new_y;
+        icon_damage(ic);   /* new footprint */
     }
 
     /* Track drop target for highlight.  Use the mouse position (not the
@@ -2511,9 +2575,10 @@ void Desktop_MouseMove(int mx, int my, int btn_left)
         }
     }
     if (new_target != prev_target) {
+        if (prev_target >= 0) icon_damage(&icons[prev_target]);
+        if (new_target >= 0) icon_damage(&icons[new_target]);
         g_drop_target_idx = new_target;
     }
-    WM_Redraw();
 }
 
 /* =========================================================================
@@ -2712,9 +2777,13 @@ void Desktop_MouseRelease(int mx, int my)
             }
             /* Snap icon back to original position (drag-to-copy doesn't
              * move the icon — it copies the content). */
+            icon_damage(src);
             src->x = g_icon_drag_orig_x;
             src->y = g_icon_drag_orig_y;
+            icon_damage(src);
         }
+        if (g_drop_target_idx >= 0 && g_drop_target_idx < n)
+            icon_damage(&icons[g_drop_target_idx]);
         g_drop_target_idx = -1;
         g_icon_drag_idx = -1;
         g_desktop_pressed = 0;
@@ -2756,7 +2825,14 @@ void Desktop_MouseRelease(int mx, int my)
     }
     if (g_lasso_active) {
         g_lasso_active = 0;
-        WM_Redraw();
+        /* Erase the last-drawn lasso outline. */
+        if (g_lasso_moved) {
+            int x0 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_start_x : g_lasso_cur_x;
+            int y0 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_start_y : g_lasso_cur_y;
+            int x1 = g_lasso_start_x < g_lasso_cur_x ? g_lasso_cur_x   : g_lasso_start_x;
+            int y1 = g_lasso_start_y < g_lasso_cur_y ? g_lasso_cur_y   : g_lasso_start_y;
+            WM_InvalidateDesktopRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        }
     }
 }
 
@@ -2781,7 +2857,8 @@ void Desktop_FlushClockRedraw(void)
 {
     if (g_clock_dirty) {
         g_clock_dirty = 0;
-        WM_Redraw();
+        /* The clock lives inside the menubar strip — repaint only that. */
+        WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
     }
 }
 

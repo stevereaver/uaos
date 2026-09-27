@@ -58,6 +58,7 @@ void     FB_DirtyInclude(int x, int y, int w, int h);
 
 /* Primitive drawing --------------------------------------------------------- */
 void FB_FillRect(int x, int y, int w, int h, uint32_t colour);
+void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t col_b);
 void FB_DrawRect(int x, int y, int w, int h, uint32_t colour);   /* outline   */
 void FB_DrawHLine(int x, int y, int len, uint32_t colour);
 void FB_DrawVLine(int x, int y, int len, uint32_t colour);

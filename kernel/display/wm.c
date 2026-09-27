@@ -88,6 +88,17 @@ static int g_scroll_drag_mbase = 0;  /* mouse coord at drag start  */
 static int g_gadget_win  = -1;
 static int g_gadget_id   = 0;
 
+/* Damage accumulation (UAOS-101).  Hot-path callers (drag, resize, scroll,
+ * gadget press/release, focus change, icon/menu updates) mark the changed
+ * screen region instead of repainting the whole scene per event.
+ * WM_FlushRedraw() repaints the union once per idle-loop iteration:
+ * backdrop/icons inside the damage (only when it can expose desktop),
+ * windows intersecting it back-to-front, the open menu dropdown, and the
+ * cursor — the VRAM flip stays bounded by the FB dirty rect. */
+static int g_dmg_pending = 0;
+static int g_dmg_desktop = 0;   /* damage may expose backdrop/icons/menubar */
+static int g_dmg_x0, g_dmg_y0, g_dmg_x1, g_dmg_y1;  /* half-open bounds */
+
 /* =========================================================================
  * Helpers
  * ========================================================================= */
@@ -101,6 +112,39 @@ static void str_copy(char *dst, const char *src, int max)
 
 /* Forward declaration — needed by scroll_by which is defined before repaint_window */
 static void repaint_window(int wh);
+
+/* Merge a damaged screen rectangle into the pending damage bounds.
+ * desktop=1 marks that the region may expose backdrop/icons/menubar
+ * (window vacated it) — desktop=0 when only window content changed. */
+static void damage_add(int x, int y, int w, int h, int desktop)
+{
+    if (!g_fb.valid || w <= 0 || h <= 0) return;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w;  if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
+    int y1 = y + h;  if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
+    if (x0 >= x1 || y0 >= y1) return;
+    if (!g_dmg_pending) {
+        g_dmg_x0 = x0; g_dmg_y0 = y0;
+        g_dmg_x1 = x1; g_dmg_y1 = y1;
+    } else {
+        if (x0 < g_dmg_x0) g_dmg_x0 = x0;
+        if (y0 < g_dmg_y0) g_dmg_y0 = y0;
+        if (x1 > g_dmg_x1) g_dmg_x1 = x1;
+        if (y1 > g_dmg_y1) g_dmg_y1 = y1;
+    }
+    g_dmg_desktop |= desktop;
+    g_dmg_pending = 1;
+}
+
+/* Damage a window's full screen footprint. */
+static void damage_add_win(int wh, int desktop)
+{
+    if (wh < 0 || wh >= WM_MAX_WINDOWS) return;
+    WmWindow *w = &g_wins[wh];
+    if (!w->active) return;
+    damage_add(w->x, w->y, w->w, w->h, desktop);
+}
 
 /* =========================================================================
  * Chrome geometry helpers
@@ -208,18 +252,12 @@ static void draw_arrow(int bx, int by, int bw, int bh,
  * Reproduces the measured 1px ordered checkerboard of black/grey pixels
  * (never solid), phase alternating by 1px each line, confined to the
  * live width/height passed in. axis: 0=vertical (dither varies by row),
- * 1=horizontal (dither varies by column). */
+ * 1=horizontal (dither varies by column).  Painted by one hoisted
+ * checkerboard fill instead of ~live_w*len FB_PutPixel calls (UAOS-103). */
 static void draw_sb_track(int x, int y, int live_w, int len, int axis)
 {
-    for (int i = 0; i < len; i++) {
-        int phase = i & 1;
-        for (int c = 0; c < live_w; c++) {
-            int on = ((c + phase) & 1) == 0;
-            uint32_t col = on ? WB_BLACK : WB_GREY;
-            if (axis == 0) FB_PutPixel(x + c, y + i, col);
-            else           FB_PutPixel(x + i, y + c, col);
-        }
-    }
+    if (axis == 0) FB_FillRectDithered(x, y, live_w, len, WB_BLACK, WB_GREY);
+    else           FB_FillRectDithered(x, y, len, live_w, WB_BLACK, WB_GREY);
 }
 
 /* Draw the scrollbar thumb: a HOLLOW raised-bevel box (white top+left,
@@ -672,6 +710,7 @@ static void zoom_window(int wh)
 {
     WmWindow *w = &g_wins[wh];
     wm_vacate(wh, w->x, w->y, w->w, w->h);
+    damage_add(w->x, w->y, w->w, w->h, 1);
     if (w->zoomed) {
         /* Restore */
         w->x = w->restore_x;
@@ -691,6 +730,7 @@ static void zoom_window(int wh)
         w->h = (int)g_fb.height - 20;
         w->zoomed = 1;
     }
+    damage_add(w->x, w->y, w->w, w->h, 1);
 }
 
 /* Hit-test depth gadget (top-right of title bar) */
@@ -760,7 +800,7 @@ static void scroll_by(int wh, int axis, int delta)
         if (w->scroll_x < 0) w->scroll_x = 0;
         if (w->scroll_x > max_s) w->scroll_x = max_s;
     }
-    WM_Redraw();
+    damage_add_win(wh, 0);   /* window content + thumb only (UAOS-101) */
 }
 
 /* Hit-test scrollbar arrows/thumb, returning scroll delta or 0 */
@@ -941,7 +981,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_CLOSE;
             wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_CLOSE, mx, my);
-            WM_Redraw();
+            damage_add_win(wh, 0);
             return;
         }
 
@@ -952,7 +992,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_ZOOM;
             wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_ZOOM, mx, my);
-            WM_Redraw();
+            damage_add_win(wh, 0);
             return;
         }
 
@@ -961,7 +1001,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_DEPTH;
             wm_notify_gadget_event(wh, WM_EVT_GADGET_DOWN, WM_GADGET_DEPTH, mx, my);
-            WM_Redraw();
+            damage_add_win(wh, 0);
             return;
         }
 
@@ -971,7 +1011,10 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
         g_focus = wh;
         raise_window(wh);
         if (!was_focused) {
-            WM_Redraw();
+            /* Raise can't expose desktop — repaint only the raised window's
+             * region plus the previously focused window's title bar. */
+            damage_add_win(wh, 0);
+            damage_add_win(old_focus, 0);
             wm_notify_focus_change(old_focus, g_focus);
         }
 
@@ -984,7 +1027,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
             g_resize_base_h  = g_wins[wh].h;
             g_resize_orig_mx = mx;
             g_resize_orig_my = my;
-            WM_Redraw();
+            damage_add_win(wh, 0);
         } else if (hit_titlebar(wh, mx, my)) {
             g_gadget_win = wh;
             g_gadget_id  = WM_GADGET_DRAG;
@@ -1035,9 +1078,10 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 
         if (new_x != w->x || new_y != w->y) {
             wm_vacate(g_drag_handle, w->x, w->y, w->w, w->h);
+            damage_add(w->x, w->y, w->w, w->h, 1);
             w->x = new_x;
             w->y = new_y;
-            WM_Redraw();
+            damage_add(new_x, new_y, w->w, w->h, 1);
         }
     }
 
@@ -1056,9 +1100,10 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 
         if (new_w != w->w || new_h != w->h) {
             wm_vacate(g_resize_handle, w->x, w->y, w->w, w->h);
+            damage_add(w->x, w->y, w->w, w->h, 1);
             w->w = new_w;
             w->h = new_h;
-            WM_Redraw();
+            damage_add(w->x, w->y, new_w, new_h, 1);
             if (w->on_event)
                 w->on_event(g_resize_handle, WM_EVT_RESIZE, new_w, new_h, 0);
         }
@@ -1093,7 +1138,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
                     if (new_s > max_s) new_s = max_s;
                     if (new_s != w->scroll_y) {
                         w->scroll_y = new_s;
-                        WM_Redraw();
+                        damage_add_win(wh, 0);
                     }
                 }
             }
@@ -1115,7 +1160,7 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
                     if (new_s > max_s) new_s = max_s;
                     if (new_s != w->scroll_x) {
                         w->scroll_x = new_s;
-                        WM_Redraw();
+                        damage_add_win(wh, 0);
                     }
                 }
             }
@@ -1174,16 +1219,17 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
                 if (allow_close)
                     WM_CloseWindow(gadget_win);
             } else if (activate && gadget_id == WM_GADGET_ZOOM) {
-                zoom_window(gadget_win);
+                zoom_window(gadget_win);   /* accumulates its own damage */
                 if (g_wins[gadget_win].on_event)
                     g_wins[gadget_win].on_event(gadget_win, WM_EVT_RESIZE,
                                                 g_wins[gadget_win].w, g_wins[gadget_win].h, 0);
-                WM_Redraw();
             } else if (activate && gadget_id == WM_GADGET_DEPTH) {
                 depth_window(gadget_win);
-                WM_Redraw();
+                /* Restack reveals whatever was beneath the window. */
+                damage_add_win(gadget_win, 1);
             } else {
-                WM_Redraw();
+                /* Release over/away from a pressed gadget — un-press visual. */
+                damage_add_win(gadget_win, 0);
             }
         }
         g_drag_handle      = -1;
@@ -1232,12 +1278,91 @@ void WM_KeyEvent(char c)
         w->on_event(g_focus, WM_EVT_KEY, (int)(unsigned char)c, 0, 0);
 }
 
+/* Damage-scoped repaint: paint only what intersects the accumulated damage
+ * region.  The back buffer persists across frames, so windows and desktop
+ * areas outside the damage keep their pixels; the FB dirty rect bounds the
+ * flip to the repainted footprints. */
+static void repaint_damaged(void)
+{
+    /* Erase any cursor sprite still occupying a buffer: the sprite is
+     * painted into the back buffer at frame end and persists there, so a
+     * damage repaint that skipped its old footprint would leave a ghost and
+     * let cursor_save_bg() capture sprite pixels as background.  Damaging
+     * the sprite rect makes the repaint overwrite it (both buffers share
+     * the flip); Cursor_Redraw() below repaints it at the live position. */
+    {
+        int cx, cy, cw, ch;
+        if (Cursor_GetSpriteRect(&cx, &cy, &cw, &ch))
+            damage_add(cx, cy, cw, ch, 1);
+    }
+
+    int x0 = g_dmg_x0, y0 = g_dmg_y0, x1 = g_dmg_x1, y1 = g_dmg_y1;
+    int desktop = g_dmg_desktop;
+    g_dmg_pending = 0;
+    g_dmg_desktop = 0;
+
+    FB_BeginDraw();
+
+    /* Backdrop/icons/menubar only where the damage can expose them. */
+    if (desktop && Desktop_IsWorkbenchLoaded())
+        Desktop_RedrawRect(x0, y0, x1 - x0, y1 - y0);
+
+    /* Same chrome-palette reset as WM_Redraw. */
+    WB_InitPalette();
+
+    /* Repaint only windows intersecting the damage, back-to-front so a
+     * restacked or vacated region resolves to the new z-order. */
+    for (int i = 0; i < g_nwins; i++) {
+        int wh = g_zorder[i];
+        WmWindow *w = &g_wins[wh];
+        if (!w->active) continue;
+        if (w->x >= x1 || w->y >= y1 ||
+            w->x + w->w <= x0 || w->y + w->h <= y0)
+            continue;
+        repaint_window(wh);
+    }
+
+    /* The menu dropdown floats above windows and manages its own geometry —
+     * repaint it whenever open so hover/switch damage is reflected. */
+    if (Desktop_IsMenuOpen())
+        Desktop_DrawMenuDropdown();
+
+    Cursor_Redraw();
+    FB_Flip();
+}
+
+void WM_InvalidateRect(int x, int y, int w, int h)
+{
+    damage_add(x, y, w, h, 0);
+}
+
+void WM_InvalidateDesktopRect(int x, int y, int w, int h)
+{
+    damage_add(x, y, w, h, 1);
+}
+
+void WM_FlushRedraw(void)
+{
+    if (!g_dmg_pending) return;
+    /* While blanked, drop pending damage — un-blank repaints via WM_Redraw. */
+    if (Blanker_IsBlanked()) {
+        g_dmg_pending = 0;
+        g_dmg_desktop = 0;
+        return;
+    }
+    repaint_damaged();
+}
+
 void WM_Redraw(void)
 {
     /* While the screen blanker holds the display, a composed repaint
      * would undo the blank (e.g. the 1 Hz clock flush).  Input un-blanks
      * via Blanker_OnInput(), which clears the flag before redrawing. */
     if (Blanker_IsBlanked()) return;
+
+    /* A full repaint covers any accumulated damage. */
+    g_dmg_pending = 0;
+    g_dmg_desktop = 0;
 
     FB_BeginDraw();
 
@@ -1299,7 +1424,8 @@ void WM_RequestFocus(int handle)
     g_focus = handle;
     raise_window(handle);
     if (!was_focused) {
-        WM_Redraw();
+        damage_add_win(handle, 0);
+        damage_add_win(old_focus, 0);
         wm_notify_focus_change(old_focus, g_focus);
     }
 }
@@ -1335,11 +1461,13 @@ void WM_CloseWindow(int handle)
     /* Free the slot */
     w->active = 0;
 
-    /* B3: repaint via the double-buffered WM_Redraw path instead of drawing
-     * straight to VRAM (which flickered on close and skipped the menu
-     * dropdown layer).  WM_Redraw repaints the desktop + every remaining
-     * window + cursor in one back-buffered flip. */
-    WM_Redraw();
+    /* B3: repaint via the double-buffered damage path (UAOS-101) instead of
+     * drawing straight to VRAM (which flickered on close and skipped the
+     * menu dropdown layer).  The vacated footprint repaints backdrop +
+     * every window intersecting it; the new focus window's title bar gets
+     * its active-state repaint too. */
+    damage_add(ox, oy, ow, oh, 1);
+    damage_add_win(g_focus, 0);
 
     wm_notify_focus_change(old_focus, g_focus);
 }
@@ -1446,7 +1574,8 @@ void WM_MoveWindowInFrontOf(int src, int behind)
     if (src < 0 || src >= WM_MAX_WINDOWS) return;
     if (!g_wins[src].active) return;
     move_in_front_of(src, behind);
-    WM_Redraw();
+    /* Restacking only changes pixels inside the moved window's rect. */
+    damage_add_win(src, 0);
     UAOS_Intuition_NotifyDepthChange(src);
 }
 
@@ -1471,7 +1600,11 @@ void WM_LowerWindow(int handle)
     int old_focus = g_focus;
     /* Focus stays with the now-topmost window */
     g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
-    WM_Redraw();
+    /* Lowering reveals whatever was beneath — windows or desktop — plus the
+     * previous and new focus windows' title bars. */
+    damage_add_win(handle, 1);
+    damage_add_win(old_focus, 0);
+    damage_add_win(g_focus, 0);
     wm_notify_focus_change(old_focus, g_focus);
     UAOS_Intuition_NotifyDepthChange(handle);
 }
@@ -1481,9 +1614,9 @@ void WM_RepaintWindow(int handle)
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
     if (!g_wins[handle].active) return;
 
-    /* Repaint the affected window chrome and any overlapping windows.
-     * A full redraw is simplest and guarantees correct overlap. */
-    WM_Redraw();
+    /* Damage-scoped repaint (UAOS-101): only this window's footprint plus
+     * any windows intersecting it get repainted at the next flush. */
+    damage_add_win(handle, 0);
 }
 
 void WM_SetWindowTitle(int handle, const char *title)
@@ -1493,7 +1626,9 @@ void WM_SetWindowTitle(int handle, const char *title)
     if (!title) return;
 
     str_copy(g_wins[handle].title, title, 32);
-    WM_Redraw();
+    /* Only the title bar strip changes. */
+    damage_add(g_wins[handle].x, g_wins[handle].y,
+               g_wins[handle].w, WM_TITLEBAR_H, 0);
 }
 
 void WM_MoveWindow(int handle, int new_x, int new_y)
@@ -1502,9 +1637,10 @@ void WM_MoveWindow(int handle, int new_x, int new_y)
     WmWindow *w = &g_wins[handle];
     if (!w->active) return;
     wm_vacate(handle, w->x, w->y, w->w, w->h);
+    damage_add(w->x, w->y, w->w, w->h, 1);
     w->x = new_x;
     w->y = new_y;
-    WM_Redraw();
+    damage_add(new_x, new_y, w->w, w->h, 1);
 }
 
 void WM_SetWindowGeometry(int handle, int x, int y, int width, int height)
@@ -1515,11 +1651,12 @@ void WM_SetWindowGeometry(int handle, int x, int y, int width, int height)
     if (width < 200) width = 200;
     if (height < 100) height = 100;
     wm_vacate(handle, w->x, w->y, w->w, w->h);
+    damage_add(w->x, w->y, w->w, w->h, 1);
     w->x = x;
     w->y = y;
     w->w = width;
     w->h = height;
-    WM_Redraw();
+    damage_add(x, y, width, height, 1);
     if (w->on_event)
         w->on_event(handle, WM_EVT_RESIZE, w->w, w->h, 0);
 }
