@@ -19,21 +19,59 @@
 
 /* -------------------------------------------------------------------------
  * Output helpers
+ *
+ * These append to the shared stdout buffer in uaos_start.c (one
+ * sys.write per line or per 512 bytes instead of one per fragment),
+ * so put_s("") and put_line() never issue a len=0 syscall.
  * ------------------------------------------------------------------------- */
 static inline void put_s(const char *s)
 {
-    uaos_write(1, s, (long)uaos_strlen(s));
+    uaos_stdout_write(s, (long)uaos_strlen(s));
 }
 
 static inline void put_c(char c)
 {
-    uaos_write(1, &c, 1);
+    uaos_stdout_write(&c, 1);
 }
 
 static inline void put_line(const char *s)
 {
     put_s(s);
     put_c('\n');
+}
+
+/* -------------------------------------------------------------------------
+ * Buffered file reader
+ *
+ * cmd_rd_* wraps uaos_read_file() so line-oriented commands can consume
+ * input a byte at a time without paying an INT 0x80 round trip per byte.
+ * ------------------------------------------------------------------------- */
+#define UAOS_CMD_RD_SIZE 4096
+
+typedef struct {
+    int      fd;
+    int      eof;
+    uint32_t len;
+    uint32_t idx;
+    uint8_t  buf[UAOS_CMD_RD_SIZE];
+} UaosCmdRd;
+
+static inline void cmd_rd_init(UaosCmdRd *r, int fd)
+{
+    r->fd = fd; r->eof = 0; r->len = 0; r->idx = 0;
+}
+
+/* Returns the next byte (0-255), or -1 on EOF/read error. */
+static inline int cmd_rd_getc(UaosCmdRd *r)
+{
+    if (r->idx >= r->len) {
+        if (r->eof) return -1;
+        long n = uaos_read_file(r->fd, r->buf, UAOS_CMD_RD_SIZE);
+        if (n <= 0) { r->eof = 1; return -1; }
+        r->len = (uint32_t)n;
+        r->idx = 0;
+    }
+    return r->buf[r->idx++];
 }
 
 /* Reconstruct the raw argument string from argv[1..] by joining tokens with
@@ -75,13 +113,49 @@ static inline void int_to_dec(int32_t v, char *buf, int max)
  * calling task's current working directory.
  * ------------------------------------------------------------------------- */
 
+/* Resolve "." and ".." components of an absolute path in place.
+ * AmigaDOS spells parent-directory ascent as '/' ("cd /" = up one);
+ * this accepts the familiar Unix ".." spelling so `cd ..`, `dir ..`,
+ * `copy ..` and friends behave as users coming from Unix/DOS expect.
+ * The volume prefix ("NAME:") is the traversal floor: a ".." that
+ * would ascend past the volume root is dropped. */
+static inline void cmd_resolve_dots(char *out)
+{
+    int base = 0;
+    while (out[base] && out[base] != ':') base++;
+    if (out[base] == ':') base++;
+
+    int w = base;
+    const char *r = out + base;
+    while (*r) {
+        const char *cs = r;
+        while (*r && *r != '/') r++;
+        int cl = (int)(r - cs);
+        if (*r) r++;                          /* consume the '/' */
+        if (cl == 0) continue;                /* drop empty components */
+        if (cl == 1 && cs[0] == '.') continue;
+        if (cl == 2 && cs[0] == '.' && cs[1] == '.') {
+            while (w > base && out[w - 1] != '/') w--;
+            if (w > base) w--;                /* drop the separator too */
+            continue;
+        }
+        if (w > base) out[w++] = '/';
+        for (int i = 0; i < cl; i++) out[w++] = cs[i];
+    }
+    out[w] = '\0';
+}
+
 /* Resolve arg against cwd into out[max].  Reads cwd via the getcwd syscall. */
 static inline void cmd_make_abs(const char *arg, char *out, int max)
 {
     /* If arg contains ':' it is already absolute. */
     const char *p = arg;
     while (*p && *p != ':') p++;
-    if (*p == ':') { uaos_strcpy(out, arg); return; }
+    if (*p == ':') {
+        uaos_strcpy(out, arg);
+        cmd_resolve_dots(out);
+        return;
+    }
 
     char cwd[UAOS_CMD_PATH_MAX];
     long n = uaos_getcwd(cwd, sizeof(cwd));
@@ -94,6 +168,7 @@ static inline void cmd_make_abs(const char *arg, char *out, int max)
     size_t j = 0;
     while (i + 1 < (size_t)max && arg[j]) { out[i] = arg[j]; i++; j++; }
     out[i] = '\0';
+    cmd_resolve_dots(out);
 }
 
 /* Join a base directory path and a child name into out[max]. */

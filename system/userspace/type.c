@@ -45,13 +45,15 @@ static void type_hex(long fd, uint32_t sz)
 static void type_text(long fd, uint32_t sz, int numbers, long out_fd)
 {
     char buf[UAOS_CMD_LINE_MAX];
+    UaosCmdRd rd;
+    cmd_rd_init(&rd, (int)fd);
     uint32_t pos = 0;
     int line_no = 0;
-    while (pos < sz) {
+    while (pos < sz && !rd.eof) {
         int col = 0;
         while (pos < sz && col < (int)sizeof(buf) - 1) {
-            uint8_t c;
-            if (uaos_read_file((int)fd, &c, 1) == 0) break;
+            int c = cmd_rd_getc(&rd);
+            if (c < 0) break;
             pos++;
             if (c == '\n') break;
             if (c != '\r') buf[col++] = (char)c;

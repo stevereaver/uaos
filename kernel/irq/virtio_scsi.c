@@ -275,8 +275,6 @@ typedef struct {
  * Virtqueue structures (split-ring, legacy-compatible layout)
  * ========================================================================= */
 
-#define VIO_SCSI_QSIZE     32
-
 typedef struct {
     uint64_t addr;
     uint32_t len;
@@ -287,17 +285,23 @@ typedef struct {
 #define VIO_DESC_F_NEXT    1
 #define VIO_DESC_F_WRITE   2
 
-/* Layout (page-aligned for legacy compatibility):
- *   desc table:  QSIZE * 16
- *   avail ring:  6 + QSIZE * 2  (flags + idx + ring + used_event)
- *   --- 4K boundary ---
- *   used ring:   6 + QSIZE * 8  (flags + idx + ring + avail_event)
+/* Virtqueue ring layout.
+ *
+ * The legacy QueueNum register is read-only: the device fixes the ring
+ * size (QEMU virtio-scsi uses 256) and derives the avail/used ring
+ * locations from it, so the ring must be laid out for exactly that many
+ * entries or the device and driver read/write different memory.  The
+ * modern transport lets the driver pick a size, but honoring the device
+ * size keeps a single layout for both paths.  Each queue gets a
+ * page-aligned slot and rings are reached through computed pointers:
+ *
+ *   desc table:  num * 16
+ *   avail ring:  6 + num * 2   (flags + idx + ring + used_event)
+ *   used ring:   6 + num * 8   (flags + idx + ring + avail_event),
+ *                starting on the next page boundary
  */
-#define VIO_DESC_BYTES   (VIO_SCSI_QSIZE * 16)
-#define VIO_AVAIL_BYTES  (6 + VIO_SCSI_QSIZE * 2)
-#define VIO_USED_OFF     (((VIO_DESC_BYTES + VIO_AVAIL_BYTES) + 4095) & ~4095U)
-#define VIO_USED_BYTES   (6 + VIO_SCSI_QSIZE * 8)
-#define VIO_QBYTES       (VIO_USED_OFF + VIO_USED_BYTES)
+#define VIO_VQ_MAX_NUM   1024
+#define VIO_VQ_SLOT      32768   /* fits a 1024-entry ring */
 
 /* 3 virtqueues: 0=control, 1=event, 2=command */
 #define VIO_Q_CONTROL    0
@@ -305,20 +309,18 @@ typedef struct {
 #define VIO_Q_COMMAND    2
 #define VIO_NUM_QUEUES   3
 
-typedef struct __attribute__((aligned(4096))) {
-    vio_desc_t desc[VIO_SCSI_QSIZE];
-    uint16_t avail_flags;
-    uint16_t avail_idx;
-    uint16_t avail_ring[VIO_SCSI_QSIZE];
-    uint16_t avail_used_event;
-    uint8_t  padding[VIO_USED_OFF - VIO_DESC_BYTES - VIO_AVAIL_BYTES];
-    uint16_t used_flags;
-    uint16_t used_idx;
-    struct { uint32_t id; uint32_t len; } used_ring[VIO_SCSI_QSIZE];
-    uint16_t used_avail_event;
+typedef struct {
+    uint16_t num;
+    vio_desc_t *desc;
+    volatile uint16_t *avail_flags;
+    volatile uint16_t *avail_idx;
+    volatile uint16_t *avail_ring;
+    volatile uint16_t *used_flags;
+    volatile uint16_t *used_idx;
 } vio_virtq_t;
 
 /* Static virtqueue memory (BSS, page-aligned) */
+static uint8_t g_vq_mem[VIO_NUM_QUEUES][VIO_VQ_SLOT] __attribute__((aligned(4096)));
 static vio_virtq_t g_vq[VIO_NUM_QUEUES];
 static uint16_t g_command_last_used;
 
@@ -550,6 +552,9 @@ static uint8_t vio_isr_read(void) {
  * ========================================================================= */
 
 static int vio_setup_queue(uint16_t qidx) {
+    vio_virtq_t *vq = &g_vq[qidx];
+    uint8_t *mem = g_vq_mem[qidx];
+
     vio_queue_select(qidx);
     uint16_t qsize = vio_queue_size_read();
     if (qsize == 0) {
@@ -557,14 +562,42 @@ static int vio_setup_queue(uint16_t qidx) {
         kprint(" not available\n");
         return -1;
     }
-    if (qsize > VIO_SCSI_QSIZE) qsize = VIO_SCSI_QSIZE;
-    /* For modern, write the actual queue size */
-    if (g_transport == VIO_SCSI_MODERN) {
-        sio_w16(&g_common_cap, VIO_COMMON_QUEUE_SIZE, qsize);
+    /* Legacy QueueNum is read-only — the device's size is mandatory (QEMU
+     * virtio-scsi reports 256 and lays out avail/used for 256 entries).
+     * Modern can be shrunk, but keeping the device size gives both
+     * transports the same layout. */
+    if (qsize > VIO_VQ_MAX_NUM) {
+        if (g_transport == VIO_SCSI_LEGACY) {
+            kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
+            kprint(" size too large for legacy transport\n");
+            return -1;
+        }
+        qsize = VIO_VQ_MAX_NUM;
     }
 
+    uint32_t desc_bytes  = (uint32_t)qsize * 16;
+    uint32_t avail_bytes = 6 + (uint32_t)qsize * 2;
+    uint32_t used_off    = (desc_bytes + avail_bytes + 4095) & ~4095U;
+    uint32_t need        = used_off + 6 + (uint32_t)qsize * 8;
+    if (need > VIO_VQ_SLOT) {
+        kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
+        kprint(" ring does not fit slot\n");
+        return -1;
+    }
+
+    vq->num         = qsize;
+    vq->desc        = (vio_desc_t *)mem;
+    vq->avail_flags = (volatile uint16_t *)(mem + desc_bytes);
+    vq->avail_idx   = vq->avail_flags + 1;
+    vq->avail_ring  = vq->avail_flags + 2;
+    vq->used_flags  = (volatile uint16_t *)(mem + used_off);
+    vq->used_idx    = vq->used_flags + 1;
+
+    /* Clear the ring before handing it to the device */
+    for (uint32_t i = 0; i < need; i++) mem[i] = 0;
+
     /* Get physical address of the virtqueue */
-    uint64_t vq_phys = DMA_VirtToPhys(&g_vq[qidx]);
+    uint64_t vq_phys = DMA_VirtToPhys(mem);
     if (!vq_phys) {
         kprint("[VIO-SCSI] Failed to get virtqueue physical address\n");
         return -1;
@@ -574,10 +607,12 @@ static int vio_setup_queue(uint16_t qidx) {
         /* Legacy: write PFN (page number) of descriptor table */
         outl(g_legacy_io + VIO_LEGACY_QUEUE_PFN, (uint32_t)(vq_phys >> 12));
     } else {
-        /* Modern: write 64-bit addresses for desc, avail, used */
+        /* Modern: program queue size, then 64-bit desc/avail/used addrs */
+        sio_w16(&g_common_cap, VIO_COMMON_QUEUE_SIZE, qsize);
+
         uint64_t desc_addr  = vq_phys;
-        uint64_t avail_addr = vq_phys + VIO_DESC_BYTES;
-        uint64_t used_addr  = vq_phys + VIO_USED_OFF;
+        uint64_t avail_addr = vq_phys + desc_bytes;
+        uint64_t used_addr  = vq_phys + used_off;
 
         sio_w32(&g_common_cap, VIO_COMMON_QUEUE_DESC_LO,
                 (uint32_t)(desc_addr & 0xFFFFFFFF));
@@ -600,19 +635,6 @@ static int vio_setup_queue(uint16_t qidx) {
         sio_w16(&g_common_cap, VIO_COMMON_QUEUE_ENABLE, 1);
     }
 
-    /* Clear the virtqueue memory */
-    vio_virtq_t *vq = &g_vq[qidx];
-    for (int i = 0; i < VIO_SCSI_QSIZE; i++) {
-        vq->desc[i].addr  = 0;
-        vq->desc[i].len   = 0;
-        vq->desc[i].flags = 0;
-        vq->desc[i].next  = 0;
-    }
-    vq->avail_flags = 0;
-    vq->avail_idx   = 0;
-    for (int i = 0; i < VIO_SCSI_QSIZE; i++) vq->avail_ring[i] = 0;
-    vq->used_flags  = 0;
-    vq->used_idx    = 0;
     if (qidx == VIO_Q_COMMAND) g_command_last_used = 0;
 
     kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
@@ -647,9 +669,19 @@ static int vio_device_init(void) {
 
     /* 3. Feature negotiation */
     if (g_transport == VIO_SCSI_LEGACY) {
-        /* Legacy: accept all offered features (simplest) */
+        /* Legacy: accept all offered features (simplest), then complete
+         * the FEATURES_OK handshake.  Transitional devices (1af4:1004)
+         * implement the virtio-1.x status semantics: without FEATURES_OK
+         * the device never starts processing queue kicks, so every SCSI
+         * command times out (QEMU i440fx/q35 legacy path). */
         uint32_t features = vio_host_features_read();
         vio_guest_features_write(0, features);
+        vio_status_write(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
+                         VIRTIO_STATUS_FEATURES_OK);
+        if (!(vio_status_read() & VIRTIO_STATUS_FEATURES_OK)) {
+            kprint("[VIO-SCSI] Device rejected our features\n");
+            return -1;
+        }
     } else {
         /* Modern: negotiate VIRTIO_F_VERSION_1 (bit 32) if offered */
         /* Read feature bits 32-63 */
@@ -697,6 +729,77 @@ static int vio_device_init(void) {
 }
 
 /* =========================================================================
+ * BAR relocation (modern transport)
+ *
+ * Some firmware (notably OVMF on q35) places 64-bit virtio BARs above the
+ * 4GB identity map, e.g. 0x380000004000.  Plain MMIO dereference cannot
+ * reach those addresses, so every vendor capability comes back "not
+ * mappable" and the controller is skipped.  Moving the BAR into the
+ * 32-bit PCI hole recovers the fast MMIO path; the PCI_CFG window stays
+ * as the fallback when relocation is impossible.
+ * ========================================================================= */
+
+/* Probe a BAR's size by writing all-ones and reading the decode mask.
+ * Returns the extent in bytes, minimum one page. */
+static uint32_t vio_bar_size(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t bar_idx) {
+    uint8_t  off  = (uint8_t)(0x10 + bar_idx * 4);
+    uint32_t orig = pci_read32(bus, dev, fn, off);
+    pci_write32(bus, dev, fn, off, 0xFFFFFFFFU);
+    uint32_t mask = pci_read32(bus, dev, fn, off);
+    pci_write32(bus, dev, fn, off, orig);
+    uint32_t size = ~(mask & 0xFFFFFFF0U) + 1;
+    return (size < 4096U) ? 4096U : size;
+}
+
+/* Highest allocated 32-bit MMIO BAR extent on the bus, so a relocated
+ * BAR lands just above everything else already assigned in the PCI
+ * hole.  Returns 0 if nothing is assigned. */
+static uint32_t vio_mmio_top(void) {
+    uint32_t top = 0;
+    for (uint16_t bus = 0; bus < 256; bus++) {
+        for (uint8_t dev = 0; dev < 32; dev++) {
+            for (uint8_t fn = 0; fn < 8; fn++) {
+                uint32_t id = pci_read32((uint8_t)bus, dev, fn, PCI_REG_VENDOR_DEVICE);
+                if (id == 0xFFFFFFFF) { if (fn == 0) break; continue; }
+                for (uint8_t b = 0; b < 6; b++) {
+                    uint32_t lo = pci_read32((uint8_t)bus, dev, fn, PCI_REG_BAR(b));
+                    if (lo & 1) continue;                    /* I/O BAR        */
+                    uint32_t a = lo & 0xFFFFFFF0U;
+                    if (!a || a > 0xFE000000U) continue;     /* unassigned/hi  */
+                    uint32_t end = a + vio_bar_size((uint8_t)bus, dev, fn, b);
+                    if (end > top) top = end;
+                    if ((lo & 6) == 4) b++;                  /* 64-bit BAR pair */
+                }
+            }
+        }
+    }
+    return top;
+}
+
+/* Move a BAR that firmware mapped above the 4GB identity map into the
+ * 32-bit PCI hole.  Returns the new BAR base (already re-read), or 0 if
+ * no safe slot was found. */
+static uint64_t vio_relocate_bar32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t bar_idx) {
+    uint32_t size = vio_bar_size(bus, dev, fn, bar_idx);
+    uint32_t top  = vio_mmio_top();
+    uint32_t addr = (top + size - 1) & ~(size - 1);
+    if (addr < 0xC0000000U) addr = 0xC0000000U;   /* PCI hole floor */
+    /* Keep clear of the IOAPIC/LAPIC/HPET decode window at 0xFEC00000+. */
+    if (addr + size > 0xFE000000U) return 0;
+
+    uint8_t  off = (uint8_t)(0x10 + bar_idx * 4);
+    uint32_t lo  = pci_read32(bus, dev, fn, off);
+    pci_write32(bus, dev, fn, off, (lo & 0xFU) | addr);
+    pci_write32(bus, dev, fn, (uint8_t)(off + 4), 0);
+    uint64_t new_addr = pci_read_bar(bus, dev, fn, bar_idx);
+    if (new_addr) {
+        kprint("[VIO-SCSI] Relocated BAR"); kprinthex((uint64_t)bar_idx);
+        kprint(" to "); kprinthex(new_addr); kprint("\n");
+    }
+    return new_addr;
+}
+
+/* =========================================================================
  * PCI capability walking (modern transport)
  * ========================================================================= */
 
@@ -735,6 +838,12 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
             uint32_t length  = pci_read32(bus, dev, fn, (uint8_t)(cap_ptr + 12));
 
             uint64_t bar_addr = pci_read_bar(bus, dev, fn, bar_idx);
+            if (bar_addr > 0xFFFFFFFFULL) {
+                /* Firmware placed the BAR above the 4GB identity map —
+                 * try to relocate it into the 32-bit PCI hole. */
+                uint64_t moved = vio_relocate_bar32(bus, dev, fn, bar_idx);
+                if (moved) bar_addr = moved;
+            }
             int usable = bar_addr && bar_addr <= 0xFFFFFFFFULL;
 
             vio_cap_t *cap = NULL;
@@ -958,8 +1067,8 @@ static int vio_scsi_submit(const uint8_t cdb[32], int port, int lun_num,
     memory_barrier();
 
     /* Submit to available ring */
-    vq->avail_ring[vq->avail_idx % VIO_SCSI_QSIZE] = 0;  /* start at desc 0 */
-    vq->avail_idx++;
+    vq->avail_ring[*vq->avail_idx % vq->num] = 0;  /* start at desc 0 */
+    (*vq->avail_idx)++;
 
     memory_barrier();
 
@@ -980,8 +1089,8 @@ static int vio_scsi_wait_completion_ext(uint8_t *out_response) {
     while (1) {
         memory_barrier();
 
-        if (vq->used_idx != g_command_last_used) {
-            g_command_last_used = vq->used_idx;
+        if (*vq->used_idx != g_command_last_used) {
+            g_command_last_used = *vq->used_idx;
             memory_barrier();
             if (out_response) *out_response = g_scsi_resp.response;
             if (g_scsi_resp.response != VIO_SCSI_RESP_OK) {

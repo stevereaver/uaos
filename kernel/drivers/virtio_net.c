@@ -235,6 +235,78 @@ static uint16_t g_q_notify_off[2];
 #define PCI_CMD_MEMORY_SPACE        0x02
 #define PCI_CMD_BUS_MASTER          0x04
 
+/* -------------------------------------------------------------------------
+ * BAR relocation (modern transport)
+ *
+ * Some firmware (notably OVMF on q35) places 64-bit virtio BARs above the
+ * 4GB identity map.  Plain MMIO dereference cannot reach those, so the
+ * BAR is moved into the 32-bit PCI hole; the PCI_CFG window stays as the
+ * fallback when relocation is impossible.
+ * ------------------------------------------------------------------------- */
+
+/* Probe a BAR's size by writing all-ones and reading the decode mask.
+ * Returns the extent in bytes, minimum one page. */
+static uint32_t vnet_bar_size(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t bar_idx)
+{
+    uint8_t  off  = (uint8_t)(0x10 + bar_idx * 4);
+    uint32_t orig = pci_read32(bus, dev, fn, off);
+    pci_write32(bus, dev, fn, off, 0xFFFFFFFFU);
+    uint32_t mask = pci_read32(bus, dev, fn, off);
+    pci_write32(bus, dev, fn, off, orig);
+    uint32_t size = ~(mask & 0xFFFFFFF0U) + 1;
+    return (size < 4096U) ? 4096U : size;
+}
+
+/* Highest allocated 32-bit MMIO BAR extent on the bus, so a relocated
+ * BAR lands just above everything else already assigned in the PCI
+ * hole.  Returns 0 if nothing is assigned. */
+static uint32_t vnet_mmio_top(void)
+{
+    uint32_t top = 0;
+    for (uint16_t bus = 0; bus < 256; bus++) {
+        for (uint8_t dev = 0; dev < 32; dev++) {
+            for (uint8_t fn = 0; fn < 8; fn++) {
+                if (pci_read32((uint8_t)bus, dev, fn, 0x00) == 0xFFFFFFFF) {
+                    if (fn == 0) break;
+                    continue;
+                }
+                for (uint8_t b = 0; b < 6; b++) {
+                    uint32_t lo = pci_read32((uint8_t)bus, dev, fn,
+                                             (uint8_t)(0x10 + b * 4));
+                    if (lo & 1) continue;                    /* I/O BAR        */
+                    uint32_t a = lo & 0xFFFFFFF0U;
+                    if (!a || a > 0xFE000000U) continue;     /* unassigned/hi  */
+                    uint32_t end = a + vnet_bar_size((uint8_t)bus, dev, fn, b);
+                    if (end > top) top = end;
+                    if ((lo & 6) == 4) b++;                  /* 64-bit BAR pair */
+                }
+            }
+        }
+    }
+    return top;
+}
+
+/* Move a BAR that firmware mapped above the 4GB identity map into the
+ * 32-bit PCI hole.  Returns the new BAR base, or 0 if no safe slot. */
+static uint64_t vnet_relocate_bar32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t bar_idx)
+{
+    uint32_t size = vnet_bar_size(bus, dev, fn, bar_idx);
+    uint32_t top  = vnet_mmio_top();
+    uint32_t addr = (top + size - 1) & ~(size - 1);
+    if (addr < 0xC0000000U) addr = 0xC0000000U;   /* PCI hole floor */
+    /* Keep clear of the IOAPIC/LAPIC/HPET decode window at 0xFEC00000+. */
+    if (addr + size > 0xFE000000U) return 0;
+
+    uint8_t  off = (uint8_t)(0x10 + bar_idx * 4);
+    uint32_t lo  = pci_read32(bus, dev, fn, off);
+    pci_write32(bus, dev, fn, off, (lo & 0xFU) | addr);
+    pci_write32(bus, dev, fn, (uint8_t)(off + 4), 0);
+    uint64_t new_addr = pci_read_bar(bus, dev, fn, bar_idx);
+    _vn_ps("[VNET] relocated BAR"); _vn_ph(bar_idx);
+    _vn_ps(" to "); _vn_ph((uint32_t)new_addr); _vn_ps("\n");
+    return new_addr;
+}
+
 /* Walk the PCI vendor capabilities and locate the virtio-1.0 config
  * regions: common config, notify, ISR, (optionally) device-specific
  * config, and the PCI_CFG config-space access window.  Regions are
@@ -284,6 +356,12 @@ static int vnet_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn)
         uint32_t length  = pci_read32(bus, dev, fn, (uint8_t)(cap_ptr + 12));
 
         uint64_t bar_addr = pci_read_bar(bus, dev, fn, bar_idx);
+        if (bar_addr > 0xFFFFFFFFULL) {
+            /* Firmware placed the BAR above the 4GB identity map —
+             * try to relocate it into the 32-bit PCI hole. */
+            uint64_t moved = vnet_relocate_bar32(bus, dev, fn, bar_idx);
+            if (moved) bar_addr = moved;
+        }
         int usable = bar_addr && bar_addr <= 0xFFFFFFFFULL;
 
         vnet_cap_t *cap = NULL;

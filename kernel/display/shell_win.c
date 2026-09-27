@@ -37,6 +37,7 @@
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
 #include "../exec/task.h"
+#include "../klog/klog.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -919,9 +920,14 @@ static inline uint8_t inb(uint16_t port)
 
 static void inst_print(ShellInstance *s, const char *line)
 {
-    /* Also mirror to serial port so QEMU -serial stdio captures emu traces */
-    _ser_puts(line);
-    _ser_putc('\n');
+    /* Serial mirror is gated behind `klog shell=trace`: a polled UART
+     * write costs ~86us/char at 115200 baud and ran for every line on
+     * every shell (remote included), which made output-heavy remote
+     * commands unusably slow. */
+    if (klog_enabled(KLOG_SHELL, KLOG_TRACE)) {
+        _ser_puts(line);
+        _ser_putc('\n');
+    }
 
     /* If stdout is redirected, write to file instead of shell history */
     if (g_redir.active) {
@@ -1131,8 +1137,40 @@ static void inst_cmd_reboot(ShellInstance *s)
  *   /foo           parent directory, then into "foo"
  *   foo            relative to cwd
  */
-static void make_abs_path(ShellInstance *s, const char *arg,
-                           char *out, int max)
+/* Resolve "." and ".." components of an absolute path in place.
+ * AmigaDOS spells parent-directory ascent as '/' ("cd /" = up one);
+ * this accepts the familiar Unix ".." spelling so `cd ..`, `dir ..`,
+ * `copy ..` and friends behave as users coming from Unix/DOS expect.
+ * The volume prefix ("NAME:") is the traversal floor: a ".." that
+ * would ascend past the volume root is dropped. */
+static void resolve_dot_components(char *out)
+{
+    int base = 0;
+    while (out[base] && out[base] != ':') base++;
+    if (out[base] == ':') base++;
+
+    int w = base;
+    const char *r = out + base;
+    while (*r) {
+        const char *cs = r;
+        while (*r && *r != '/') r++;
+        int cl = (int)(r - cs);
+        if (*r) r++;                          /* consume the '/' */
+        if (cl == 0) continue;                /* drop empty components */
+        if (cl == 1 && cs[0] == '.') continue;
+        if (cl == 2 && cs[0] == '.' && cs[1] == '.') {
+            while (w > base && out[w - 1] != '/') w--;
+            if (w > base) w--;                /* drop the separator too */
+            continue;
+        }
+        if (w > base) out[w++] = '/';
+        for (int i = 0; i < cl; i++) out[w++] = cs[i];
+    }
+    out[w] = '\0';
+}
+
+static void make_abs_path_impl(ShellInstance *s, const char *arg,
+                               char *out, int max)
 {
     if (!arg || !*arg) {
         scopy(out, s->cwd, max);
@@ -1203,6 +1241,13 @@ static void make_abs_path(ShellInstance *s, const char *arg,
         if (cl < max - 1) { out[cl] = '/'; out[cl+1] = '\0'; }
     }
     scat(out, arg, max);
+}
+
+static void make_abs_path(ShellInstance *s, const char *arg,
+                           char *out, int max)
+{
+    make_abs_path_impl(s, arg, out, max);
+    resolve_dot_components(out);
 }
 
 /* =========================================================================
@@ -3607,7 +3652,8 @@ static void shell_print_raw(void *shell_extra, const char *text)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
     if (!s || !text) return;
-    _ser_puts(text);
+    if (klog_enabled(KLOG_SHELL, KLOG_TRACE))
+        _ser_puts(text);
     if (s->remote) {
         remote_send(s, text, slen(text));
         return;

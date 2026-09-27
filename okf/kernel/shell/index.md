@@ -30,6 +30,10 @@ Commands in UAOS can be:
   - **Native x86-64 ELF64 binaries** compiled using the `-nostdlib` flag and executed as ring-0 tasks (for VirtualBox NEM compatibility). These use the `INT 0x80` syscall ABI to interact with the kernel.
 - **Native C: commands**: Executed in-place by the kernel command dispatcher (`cmd_*.c` in `kernel/shell/`).
 
+### Path resolution
+
+Shell paths follow AmigaDOS conventions (`NAME:` absolute, `:` volume root, leading `/` = one level up per slash). `make_abs_path` (in `kernel/display/shell_win.c` for shell builtins, mirrored in `kernel/shell/cmd_internal.h` for native C: commands and `kernel/exec/syscall_dispatch.c` for userspace syscall paths) additionally normalizes `.` and `..` components via `resolve_dot_components`/`cmd_resolve_dots`, so Unix-style spellings work everywhere: `cd ..`, `cd ../..`, `cd ../foo`, `dir ..`, `copy .. dest`. A `..` at the volume root is dropped — the `NAME:` prefix is the traversal floor.
+
 > [!NOTE]
 > As of Phase 7, the following DOS commands have been migrated from kernel-resident native C: stubs to on-disk x86-64 ELF64 userspace binaries: `echo`, `type`, `dir`, `list`, `makedir`, `delete`, `rename`, `copy`, `protect`, `attr`, `grep`, `sort`, `join`, `search`, `filenote`, `more`. These binaries live in `system/userspace/` and use the shared helpers in `system/libuaos/uaos_cmd.h`, `uaos_template.h`, and `uaos_syscall.h`. New VFS syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C) were added to support them. The native `dir` backend uses a static 256-entry `VfsDirEnt` workspace rather than an approximately 18KB command-stack array, avoiding kernel task stack corruption during enumeration. `avail` was likewise migrated off its hardcoded native stub to a userspace binary that queries real memory statistics via `SYSCALL_MEMINFO` (0x2D); the kernel `C:mem` command now uses the same `Mem_GetInfo()` helper.
 

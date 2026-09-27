@@ -55,15 +55,17 @@ static void search_file(const char *path, const char *pattern, int ci,
 
     uint32_t pos = 0;
     int line_no = 0, file_hits = 0;
-    while (pos < sz) {
+    UaosCmdRd rd;
+    cmd_rd_init(&rd, (int)fd);
+    while (pos < sz && !rd.eof) {
         uint8_t buf[UAOS_CMD_LINE_MAX];
         int col = 0;
         while (pos < sz && col < (int)sizeof(buf) - 1) {
-            uint8_t c;
-            if (uaos_read_file((int)fd, &c, 1) == 0) break;
+            int c = cmd_rd_getc(&rd);
+            if (c < 0) break;
             pos++;
             if (c == '\n') break;
-            if (c != '\r') buf[col++] = c;
+            if (c != '\r') buf[col++] = (uint8_t)c;
         }
         buf[col] = '\0';
         line_no++;

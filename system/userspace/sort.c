@@ -107,11 +107,13 @@ int main(int argc, const char **argv)
 
     int count = 0;
     uint32_t pos = 0;
-    while (pos < sz && count < MAX_SORT_LINES) {
+    UaosCmdRd rd;
+    cmd_rd_init(&rd, (int)fd);
+    while (pos < sz && !rd.eof && count < MAX_SORT_LINES) {
         int c = 0;
         while (pos < sz && c < MAX_SORT_LINE - 1) {
-            uint8_t ch;
-            if (uaos_read_file((int)fd, &ch, 1) == 0) break;
+            int ch = cmd_rd_getc(&rd);
+            if (ch < 0) break;
             pos++;
             if (ch == '\n') break;
             if (ch != '\r') sbuf[count][c++] = (char)ch;

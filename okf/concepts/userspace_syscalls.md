@@ -123,14 +123,16 @@ Back the userspace widget toolkit (`uaos_gui.h`); implemented in `kernel/display
 
 ## Per-Task Environment & IPC
 
-- **Current Working Directory (`task_cwd`)**: Copy-on-write directory string stored inside the `UaosTask` struct. Used by the VFS to resolve relative paths.
+- **Current Working Directory (`task_cwd`)**: Copy-on-write directory string stored inside the `UaosTask` struct. Used by the VFS to resolve relative paths. Path resolution normalizes `.` and `..` components (`resolve_dot_components` in `kernel/exec/syscall_dispatch.c`), mapping Unix-style `..` onto the native AmigaDOS `/`-as-parent convention; the volume prefix (`NAME:`) is the traversal floor.
 - **Output Redirection**: Each userspace task registers a custom line printer (`native_print_fn`) and context (`native_print_ctx`). Syscall output is buffered in `task_out` and printed line-by-line or on exit.
 - **Parent/Child Signaling**: A parent task tracks child execution. When a child task exits, it signals its parent with `SIGF_CHILD` (used by the CLI shell to wait for foreground commands).
 
 ## Freestanding Library Support
 
 To run without linking a host standard C library:
-- `uaos_start.c`: The startup object (`uaos_start.o`) providing the entry point (`_start`) that wraps parameter parsing and invokes userspace `main`.
+- `uaos_start.c`: The startup object (`uaos_start.o`) providing the entry point (`_start`) that wraps parameter parsing and invokes userspace `main`. It also hosts two shared fast paths every binary inherits:
+  - **Buffered stdout** (`uaos_stdout_write`/`uaos_stdout_flush`, 512-byte buffer): the `put_s`/`put_c`/`put_line` helpers in `uaos_cmd.h` append to it instead of issuing a `sys.write` per fragment — one `INT 0x80` per line (or per 512 bytes), never a zero-length write. The buffer drains on `'\n'`, when full, before any direct `uaos_write(1, ...)` (keeps mixed buffered/raw output ordered), before blocking input on fd 0 and `uaos_readkey` (unterminated prompts still appear), inside `uaos_exit`, and in `_start` after `main` returns.
+  - **`sys.read_file` read-ahead cache** (`uaos_read_file`, 8 per-fd slots × 4 KB): byte-at-a-time readers (`type`, `more`, `grep`, and most GNU coreutils) used to pay one `INT 0x80` per byte; the cache refills in 4 KB blocks and serves bytes from the slot, collapsing the syscall count. Bulk reads (≥ 4 KB with nothing pending) bypass it. Slots are dropped on `uaos_close`, on `uaos_write`/`uaos_write_file`/`uaos_open` reuse of the fd, and `uaos_read` drains pending bytes first so mixed calls stay in stream order.
 
 **Stack red zone**: all userspace code MUST be compiled `-mno-red-zone`. Tasks execute in ring 0, so `INT 0x80` entry (and any IRQ that fires while userspace runs) pushes the CPU frame + saved-GPR frame (~160 bytes) directly onto the user stack, clobbering the 128-byte SysV red zone below `%rsp`. Compilers may legally place locals there; e.g. `makedir`'s `path` buffer once straddled `rsp-0x78..rsp+0x87`, so the syscall saw an empty string and every `makedir` failed while `New Drawer` (a direct kernel `VFS_MkDir` call) worked.
 - `uaos_libc.h`: A header-only minimal libc providing freestanding implementations of `strlen`, `strcmp`, `strcpy`, `strncpy`, `strlcat`, `memcpy`, `memset`, `memcmp`, `strchr`, `isdigit`, `isprint`, `isspace`, `toupper`, and `tolower`.

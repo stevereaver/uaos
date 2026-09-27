@@ -199,40 +199,65 @@ static inline long uaos_syscall3(long n, long a1, long a2, long a3)
 }
 
 /* -------------------------------------------------------------------------
- * Convenience wrappers
+ * Buffered stdout — implemented in uaos_start.c
+ *
+ * put_s/put_c/put_line (uaos_cmd.h) append to a shared line buffer that
+ * is flushed on '\n', when full, before blocking input, before any
+ * direct fd-1 write, and at exit.  Because every uaos_write(1, ...)
+ * flushes the pending buffer first, callers that mix buffered helpers
+ * with direct writes stay correctly ordered.
  * ------------------------------------------------------------------------- */
+void uaos_stdout_flush(void);
+void uaos_stdout_write(const void *buf, long len);
+
+/* uaos_read_file goes through a per-fd read-ahead cache in uaos_start.c so
+ * byte-wise readers do not pay one INT 0x80 per byte; uaos_rd_invalidate
+ * drops a slot when its fd is closed, written to, or re-opened. */
+void uaos_rd_invalidate(int fd);
+long uaos_rd_drain(int fd, void *buf, long len);
+long uaos_read_file(int fd, void *buf, long len);
+
 static inline long uaos_write(int fd, const void *buf, long len)
 {
+    if (fd == 1) uaos_stdout_flush();
+    else uaos_rd_invalidate(fd);
     return uaos_syscall3(UAOS_SYSCALL_WRITE, (long)fd, (long)buf, len);
 }
 
 static inline long uaos_read(int fd, void *buf, long len)
 {
-    return uaos_syscall3(UAOS_SYSCALL_READ, (long)fd, (long)buf, len);
+    if (fd == 0) uaos_stdout_flush();   /* drain prompts before blocking */
+    /* A uaos_read_file read-ahead may hold pending bytes for this fd —
+     * serve them first so a mixed read/read_file stream stays in order. */
+    long done = (len > 0) ? uaos_rd_drain(fd, buf, len) : 0;
+    if (done >= len) return done;
+    long n = uaos_syscall3(UAOS_SYSCALL_READ, (long)fd,
+                           (long)((char *)buf + done), len - done);
+    return (n < 0 && done > 0) ? done : done + n;
 }
 
 static inline long uaos_open(const char *path, int flags)
 {
-    return uaos_syscall2(UAOS_SYSCALL_OPEN, (long)path, (long)flags);
+    long fd = uaos_syscall2(UAOS_SYSCALL_OPEN, (long)path, (long)flags);
+    if (fd >= 0) uaos_rd_invalidate((int)fd);   /* fd reuse after close */
+    return fd;
 }
 
 static inline long uaos_close(int fd)
 {
+    uaos_rd_invalidate(fd);
     return uaos_syscall1(UAOS_SYSCALL_CLOSE, (long)fd);
-}
-
-static inline long uaos_read_file(int fd, void *buf, long len)
-{
-    return uaos_syscall3(UAOS_SYSCALL_READ_FILE, (long)fd, (long)buf, len);
 }
 
 static inline long uaos_write_file(int fd, const void *buf, long len)
 {
+    uaos_rd_invalidate(fd);
     return uaos_syscall3(UAOS_SYSCALL_WRITE_FILE, (long)fd, (long)buf, len);
 }
 
 __attribute__((noreturn)) static inline void uaos_exit(int code)
 {
+    uaos_stdout_flush();
     __asm__ volatile(
         "int $0x80"
         :
@@ -353,6 +378,7 @@ static inline long uaos_getvolumeinfo(const char *path, uint32_t *total, uint32_
 
 static inline long uaos_readkey(void)
 {
+    uaos_stdout_flush();   /* a prompt that ends mid-line still appears */
     return uaos_syscall0(UAOS_SYSCALL_READKEY);
 }
 

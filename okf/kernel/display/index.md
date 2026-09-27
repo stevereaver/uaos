@@ -316,4 +316,6 @@ Hot-path serial logging is compile-time gated to avoid UART busy-wait overhead (
 - `FB_DEBUG` (in `filebrowser.c`, default 0) — gates `FB_LOG` and the on-screen debug overlay.
 - `MOUSE_DEBUG` (in `ps2mouse.c`, default 0) — gates the per-packet serial dump in `PS2Mouse_IRQHandler`.
 
-Set any to 1 to re-enable the corresponding debug output. Boot-time logs and shell serial mirroring are unaffected.
+Set any to 1 to re-enable the corresponding debug output. Boot-time logs are unaffected.
+
+The `inst_print()`/`shell_print_raw()` serial mirror (every shell line echoed to COM1) is gated at runtime by `klog_enabled(KLOG_SHELL, KLOG_TRACE)` rather than a compile-time flag — it is off by default (default threshold `KLOG_DEBUG`) because a polled 115200-baud UART costs ~86 µs per character and dominated remote-session output. Re-enable it live with `klog shell=trace`.

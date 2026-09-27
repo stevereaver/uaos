@@ -90,8 +90,40 @@ static inline void cmd_uint_to_dec(uint32_t v, char *buf, int max)
 #define CMD_MAX_PATH  64
 #define CMD_MAX_LINE  96
 
-static inline void cmd_make_abs(const char *cwd, const char *arg,
-                                 char *out, int max)
+/* Resolve "." and ".." components of an absolute path in place.
+ * AmigaDOS spells parent-directory ascent as '/' ("cd /" = up one);
+ * this accepts the familiar Unix ".." spelling so `cd ..`, `dir ..`
+ * and friends behave as users coming from Unix/DOS expect.  The
+ * volume prefix ("NAME:") is the traversal floor: a ".." that would
+ * ascend past the volume root is dropped. */
+static inline void cmd_resolve_dots(char *out)
+{
+    int base = 0;
+    while (out[base] && out[base] != ':') base++;
+    if (out[base] == ':') base++;
+
+    int w = base;
+    const char *r = out + base;
+    while (*r) {
+        const char *cs = r;
+        while (*r && *r != '/') r++;
+        int cl = (int)(r - cs);
+        if (*r) r++;                          /* consume the '/' */
+        if (cl == 0) continue;                /* drop empty components */
+        if (cl == 1 && cs[0] == '.') continue;
+        if (cl == 2 && cs[0] == '.' && cs[1] == '.') {
+            while (w > base && out[w - 1] != '/') w--;
+            if (w > base) w--;                /* drop the separator too */
+            continue;
+        }
+        if (w > base) out[w++] = '/';
+        for (int i = 0; i < cl; i++) out[w++] = cs[i];
+    }
+    out[w] = '\0';
+}
+
+static inline void cmd_make_abs_impl(const char *cwd, const char *arg,
+                                     char *out, int max)
 {
     if (!arg || !*arg) {
         cmd_scopy(out, cwd, max);
@@ -160,6 +192,13 @@ static inline void cmd_make_abs(const char *cwd, const char *arg,
         if (cl < max - 1) { out[cl] = '/'; out[cl+1] = '\0'; }
     }
     cmd_scat(out, arg, max);
+}
+
+static inline void cmd_make_abs(const char *cwd, const char *arg,
+                                 char *out, int max)
+{
+    cmd_make_abs_impl(cwd, arg, out, max);
+    cmd_resolve_dots(out);
 }
 
 /* Convenience print via ctx */
