@@ -104,8 +104,12 @@ int RamFS_Delete(RamFsVol *vol, const char *path);
  * Use node->next_sibling to walk all siblings. */
 RamFsNode *RamFS_FirstChild(RamFsNode *dir);
 
-/* Allocate bytes from the shared pool (bump allocator). Returns NULL if full. */
+/* Allocate bytes from the shared pool. Returns NULL if the pool cannot
+ * satisfy the request (free-list miss and high-water mark reached). */
 uint8_t *RamFS_AllocPool(uint32_t bytes);
+
+/* Free a pool allocation returned by RamFS_AllocPool (NULL-safe). */
+void RamFS_FreePool(uint8_t *ptr);
 
 /* Get attributes of a node. Returns RAMFS_ATTR_* bit flags. */
 uint8_t RamFS_GetAttrs(RamFsNode *node);
@@ -126,7 +130,10 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name);
 int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path);
 
 /* Get volume capacity statistics.
- * total = total pool bytes, used = sum of all file data sizes. */
+ * used  = pool bytes held by this volume's files (ext_bdev proxy files
+ *         excluded — they consume no pool),
+ * total = used + pool bytes still free pool-wide (all RAM volumes share
+ *         the pool), so callers get free = total - used. */
 void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes);
 
 #endif

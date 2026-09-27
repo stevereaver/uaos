@@ -50,6 +50,10 @@ void Cmd_Delete(NativeCmdCtx *ctx, const char *args)
             PRINT(msg);
         } else if (rc == -2) {
             PRINT("Directory not empty.");
+        } else if (rc == -4) {
+            PRINT("Object is delete-protected (use FORCE).");
+        } else if (rc == -3) {
+            PRINT("Cannot delete volume root.");
         } else if (rc == -1) {
             PRINT("Not found.");
         } else {

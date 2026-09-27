@@ -410,12 +410,15 @@ static void menu_action_icon_copy(void)
         VFS_Close(&fh_src);
         return;
     }
-    uint8_t buf[512];
+    uint8_t buf[4096];
     uint32_t n;
-    while ((n = VFS_Read(&fh_src, buf, sizeof(buf))) > 0)
-        VFS_Write(&fh_dst, buf, n);
+    int failed = 0;
+    while ((n = VFS_Read(&fh_src, buf, sizeof(buf))) > 0) {
+        if (VFS_Write(&fh_dst, buf, n) < n) { failed = 1; break; }
+    }
     VFS_Close(&fh_src);
     VFS_Close(&fh_dst);
+    if (failed) VFS_Delete(dst);
 
     int fh = FileBrowser_GetFocusedHandle();
     if (fh >= 0) FileBrowser_Refresh(fh);
@@ -481,15 +484,20 @@ static void desktop_move_to_trash(const char *path, const char *name)
         /* Cross-volume or other rename failure — copy then delete */
         VfsFile fh_src, fh_dst;
         if (VFS_Open(&fh_src, path, VFS_READ)) {
+            int failed = 0;
             if (VFS_Open(&fh_dst, trash_path, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
-                uint8_t buf[512];
+                uint8_t buf[4096];
                 uint32_t n;
-                while ((n = VFS_Read(&fh_src, buf, sizeof(buf))) > 0)
-                    VFS_Write(&fh_dst, buf, n);
+                while ((n = VFS_Read(&fh_src, buf, sizeof(buf))) > 0) {
+                    if (VFS_Write(&fh_dst, buf, n) < n) { failed = 1; break; }
+                }
                 VFS_Close(&fh_dst);
+            } else {
+                failed = 1;
             }
             VFS_Close(&fh_src);
-            VFS_Delete(path);
+            if (failed) VFS_Delete(trash_path);
+            else        VFS_Delete(path);
         }
     }
 }
@@ -2644,15 +2652,17 @@ static int desktop_copy_file(const char *src, const char *dst)
         VFS_Close(&fsrc);
         return -1;
     }
-    uint8_t buf[512];
+    uint8_t buf[4096];
     int total = 0;
     uint32_t n;
     while ((n = VFS_Read(&fsrc, buf, sizeof(buf))) > 0) {
-        VFS_Write(&fdst, buf, n);
-        total += (int)n;
+        uint32_t w = VFS_Write(&fdst, buf, n);
+        if (w < n) { total = -1; break; }
+        total += (int)w;
     }
     VFS_Close(&fsrc);
     VFS_Close(&fdst);
+    if (total < 0) VFS_Delete(dst);
     return total;
 }
 

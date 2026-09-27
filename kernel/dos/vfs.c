@@ -12,6 +12,7 @@
 #include "boot/kprint.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* =========================================================================
  * Mount table — maps "VOL" names to RamFsVol instances
@@ -643,9 +644,9 @@ uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len)
     return got;
 }
 
-/* Block size pre-allocated per file on first write.
+/* Minimum pool allocation for a file (first write / growth floor).
  * 4 KB covers typical shell output, env vars, and small scripts while
- * keeping the bump-allocator pool from being exhausted too quickly. */
+ * keeping realloc churn low. */
 #define VFS_BLOCK_SZ  (4 * 1024)
 
 uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
@@ -671,26 +672,30 @@ uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
     }
     if (len == 0) return 0;
 
-    /* First write to this node: allocate a full block from the pool */
-    if (fh->node->alloc == 0) {
-        uint32_t alloc_sz = end < VFS_BLOCK_SZ ? VFS_BLOCK_SZ : end;
-        if (alloc_sz > RAMFS_MAX_FILESIZE) alloc_sz = RAMFS_MAX_FILESIZE;
-        uint8_t *pool_buf = RamFS_AllocPool(alloc_sz);
-        if (!pool_buf) return 0;
-        fh->node->data  = pool_buf;
-        fh->node->alloc = alloc_sz;
-        fh->node->size  = 0;
-    }
-
-    /* Allocation too small — can't grow (bump allocator), truncate write */
+    /* Grow the node's pool buffer when the write would overflow it.
+     * Doubling keeps append-heavy patterns amortised.  On pool exhaustion
+     * fall back to a short write so callers can detect the failure. */
     if (end > fh->node->alloc) {
-        len = fh->node->alloc - fh->pos;
-        end = fh->node->alloc;
-        if (len == 0) return 0;
+        uint32_t want = fh->node->alloc * 2;
+        if (want < VFS_BLOCK_SZ) want = VFS_BLOCK_SZ;
+        if (want < end)          want = end;
+        if (want > RAMFS_MAX_FILESIZE) want = RAMFS_MAX_FILESIZE;
+        uint8_t *pool_buf = RamFS_AllocPool(want);
+        if (pool_buf) {
+            if (fh->node->data && fh->node->size)
+                memcpy(pool_buf, fh->node->data, fh->node->size);
+            RamFS_FreePool(fh->node->data);
+            fh->node->data  = pool_buf;
+            fh->node->alloc = want;
+        } else {
+            /* Pool exhausted: write only what still fits */
+            if (fh->pos >= fh->node->alloc) return 0;
+            len = fh->node->alloc - fh->pos;
+            end = fh->node->alloc;
+        }
     }
 
-    for (uint32_t i = 0; i < len; i++)
-        fh->node->data[fh->pos + i] = buf[i];
+    memcpy(fh->node->data + fh->pos, buf, len);
     fh->pos += len;
     if (fh->pos > fh->node->size)
         fh->node->size = fh->pos;

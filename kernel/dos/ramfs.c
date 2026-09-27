@@ -12,11 +12,36 @@ extern uint32_t ntp_get_epoch(void);
  * ========================================================================= */
 
 static RamFsNode  g_nodes[RAMFS_MAX_NODES];
-static uint8_t    g_pool[8 * 1024 * 1024]; /* 8 MB shared data pool */
-static uint32_t   g_pool_top = 0;                /* bump allocator cursor   */
+static uint8_t    g_pool[8 * 1024 * 1024] __attribute__((aligned(16)));
+                                                    /* 8 MB shared data pool */
+static uint32_t   g_pool_top = 0;   /* high-water mark: bytes above have never
+                                     * been carved into a chunk              */
 
 #define MAX_VOLS  16
 static RamFsVol   g_vols[MAX_VOLS];
+
+/* =========================================================================
+ * Pool allocator — address-ordered free list with coalescing
+ *
+ * Every chunk (live or free) starts with a PoolChunk header recording its
+ * total size.  Free chunks additionally carry 'next' (pool offset of the
+ * next free chunk).  Allocation is first-fit on the free list, falling back
+ * to carving a fresh chunk below g_pool_top.  Freeing inserts in address
+ * order and merges with physically adjacent free neighbours.
+ * ========================================================================= */
+
+#define POOL_HDR    16u          /* sizeof(PoolChunk), keep in sync          */
+#define POOL_ALIGN  16u
+#define POOL_NIL    0xFFFFFFFFu  /* free-list terminator (offset form)       */
+
+typedef struct {
+    uint32_t size;               /* chunk size in bytes, header included    */
+    uint32_t next;               /* free chunks: offset of next free chunk  */
+    uint64_t _pad;
+} PoolChunk;
+
+static uint32_t g_free_head = POOL_NIL;  /* offset of first free chunk      */
+static uint32_t g_pool_used = 0;         /* bytes held by live allocations  */
 
 /* =========================================================================
  * Helpers
@@ -133,17 +158,96 @@ static RamFsNode *find_child(RamFsNode *dir, const char *name)
     return NULL;
 }
 
-/* Allocate bytes from the data pool */
+/* Allocate bytes from the data pool.  Returns NULL when no chunk fits. */
 uint8_t *RamFS_AllocPool(uint32_t bytes)
 {
+    if (!bytes) return NULL;
+    uint32_t need = POOL_HDR + ((bytes + POOL_ALIGN - 1) & ~(POOL_ALIGN - 1));
+
+    /* First-fit over the (address-ordered) free list */
+    uint32_t prev = POOL_NIL, cur = g_free_head;
+    while (cur != POOL_NIL) {
+        PoolChunk *c = (PoolChunk *)&g_pool[cur];
+        if (c->size >= need) {
+            uint32_t rem = c->size - need;
+            if (rem >= POOL_HDR + POOL_ALIGN) {
+                /* Split: remainder becomes a free chunk in c's slot */
+                PoolChunk *r = (PoolChunk *)&g_pool[cur + need];
+                r->size = rem;
+                r->next = c->next;
+                c->size = need;
+                if (prev == POOL_NIL) g_free_head = cur + need;
+                else ((PoolChunk *)&g_pool[prev])->next = cur + need;
+            } else {
+                /* Consume the whole chunk */
+                if (prev == POOL_NIL) g_free_head = c->next;
+                else ((PoolChunk *)&g_pool[prev])->next = c->next;
+            }
+            g_pool_used += c->size;
+            return (uint8_t *)(c + 1);
+        }
+        prev = cur;
+        cur = c->next;
+    }
+
+    /* No reusable chunk — carve fresh space below the high-water mark */
     uint32_t pool_sz = (uint32_t)sizeof(g_pool);
-    if (g_pool_top + bytes > pool_sz) return NULL;
-    uint8_t *p = &g_pool[g_pool_top];
-    g_pool_top += bytes;
-    return p;
+    if (g_pool_top + need > pool_sz) return NULL;
+    PoolChunk *c = (PoolChunk *)&g_pool[g_pool_top];
+    g_pool_top += need;
+    c->size = need;
+    g_pool_used += need;
+    return (uint8_t *)(c + 1);
+}
+
+/* Return a pool allocation to the free list (NULL-safe). */
+void RamFS_FreePool(uint8_t *ptr)
+{
+    if (!ptr) return;
+    PoolChunk *c = ((PoolChunk *)ptr) - 1;
+    uint32_t off = (uint32_t)((uint8_t *)c - g_pool);
+    g_pool_used -= c->size;
+
+    /* Find insertion point (address-ordered list) */
+    uint32_t prev = POOL_NIL, cur = g_free_head;
+    while (cur != POOL_NIL && cur < off) {
+        prev = cur;
+        cur = ((PoolChunk *)&g_pool[cur])->next;
+    }
+
+    /* Merge with the following chunk when physically adjacent */
+    if (cur != POOL_NIL && off + c->size == cur) {
+        c->size += ((PoolChunk *)&g_pool[cur])->size;
+        c->next  = ((PoolChunk *)&g_pool[cur])->next;
+    } else {
+        c->next = cur;
+    }
+
+    /* Link in, merging with the preceding chunk when adjacent */
+    if (prev != POOL_NIL) {
+        PoolChunk *p = (PoolChunk *)&g_pool[prev];
+        if (prev + p->size == off) {
+            p->size += c->size;
+            p->next  = c->next;
+        } else {
+            p->next = off;
+        }
+    } else {
+        g_free_head = off;
+    }
 }
 
 static uint8_t *pool_alloc(uint32_t bytes) { return RamFS_AllocPool(bytes); }
+static void     pool_free(uint8_t *ptr)    { RamFS_FreePool(ptr); }
+
+/* Last-block cache for ext_bdev proxy reads (see RamFS_Read).  Keyed on
+ * (bdev, fs block size, device-sector start); ext-backed files are
+ * read-only mounts so no write invalidation is needed. */
+static BlockDev *g_sec_bdev   = NULL;
+static uint64_t  g_sec_devsec = 0;
+static uint32_t  g_sec_blksz  = 0;
+static int       g_sec_valid  = 0;
+static uint8_t   g_sec_buf[8192];
 
 /* =========================================================================
  * Path resolution
@@ -183,7 +287,10 @@ static RamFsNode *resolve_from(RamFsNode *dir, const char *path)
 void RamFS_Init(void)
 {
     /* BSS is zero — nodes are RAMFS_TYPE_FREE (0) by default */
-    g_pool_top = 0;
+    g_pool_top  = 0;
+    g_free_head = POOL_NIL;
+    g_pool_used = 0;
+    g_sec_valid = 0;
 }
 
 RamFsVol *RamFS_MountVol(const char *name)
@@ -318,9 +425,10 @@ int RamFS_Write(RamFsNode *node, const uint8_t *data, uint32_t len)
     if (len == 0) { node->size = 0; return 0; }
 
     if (len > node->alloc) {
-        /* Try to allocate from pool */
+        /* Grow: allocate a fresh buffer, release the old one */
         uint8_t *buf = pool_alloc(len);
         if (!buf) return -1;
+        pool_free(node->data);
         node->data  = buf;
         node->alloc = len;
     }
@@ -340,21 +448,32 @@ uint32_t RamFS_Read(RamFsNode *node, uint32_t offset,
     if (len > avail) len = avail;
 
     if (node->ext_bdev) {
-        /* Proxy file — read from block device on demand */
+        /* Proxy file — read from block device on demand.  The last
+         * filesystem block read is cached: sequential readers issue many
+         * small reads that all land in the same block, and this avoids
+         * re-fetching it from the device every call. */
         uint32_t blksz = node->ext_blksz ? node->ext_blksz : 2048;
+        if (blksz > sizeof(g_sec_buf)) return 0;
         uint32_t sector = node->ext_lba + (offset / blksz);
         uint32_t sec_off = offset % blksz;
+        uint32_t ratio = blksz / node->ext_bdev->sector_size;
         uint32_t total = 0;
         while (len > 0) {
-            uint8_t sec_buf[4096];
-            uint32_t ratio = blksz / node->ext_bdev->sector_size;
             uint64_t dev_sec = (uint64_t)sector * ratio;
-            if (BlockDev_Read(node->ext_bdev, dev_sec, sec_buf, ratio) != 0)
-                break;
+            if (!(g_sec_valid && g_sec_bdev == node->ext_bdev &&
+                  g_sec_blksz == blksz && g_sec_devsec == dev_sec)) {
+                if (BlockDev_Read(node->ext_bdev, dev_sec, g_sec_buf,
+                                  ratio) != 0)
+                    break;
+                g_sec_bdev   = node->ext_bdev;
+                g_sec_blksz  = blksz;
+                g_sec_devsec = dev_sec;
+                g_sec_valid  = 1;
+            }
             uint32_t chunk = blksz - sec_off;
             if (chunk > len) chunk = len;
             for (uint32_t i = 0; i < chunk; i++)
-                buf[total + i] = sec_buf[sec_off + i];
+                buf[total + i] = g_sec_buf[sec_off + i];
             total += chunk;
             len -= chunk;
             sec_off = 0;
@@ -375,6 +494,7 @@ int RamFS_Delete(RamFsVol *vol, const char *path)
     if (!node->parent) return -3; /* cannot delete root */
     if (node->protection & FIBF_DELETE) return -4; /* delete-protected */
 
+    pool_free(node->data); /* return file data to the pool */
     dir_remove_child(node->parent, node);
     node->type = RAMFS_TYPE_FREE;
     node->name[0] = '\0';
@@ -430,7 +550,8 @@ int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path)
         if (existing->type == RAMFS_TYPE_DIR && existing->first_child)
             return -2; /* destination dir not empty */
         if (existing->protection & FIBF_DELETE) return -4;
-        /* Remove existing node */
+        /* Remove existing node (returning any file data to the pool) */
+        pool_free(existing->data);
         dir_remove_child(existing->parent, existing);
         existing->type = RAMFS_TYPE_FREE;
         existing->parent = existing->first_child = existing->next_sibling = NULL;
@@ -491,12 +612,31 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name)
 
 void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes)
 {
-    (void)vol; /* all volumes share the same global pool */
+    /* Per-volume used: walk this volume's node tree, summing pool bytes
+     * held by files that actually consume pool.  ext_bdev proxy files are
+     * skipped — their content lives on the backing block device. */
     uint32_t used = 0;
-    for (int i = 0; i < RAMFS_MAX_NODES; i++) {
-        if (g_nodes[i].type == RAMFS_TYPE_FILE)
-            used += g_nodes[i].size;
+    if (vol && vol->root) {
+        RamFsNode *n = vol->root;
+        while (n) {
+            if (n->type == RAMFS_TYPE_FILE && !n->ext_bdev)
+                used += n->alloc;
+            /* Iterative DFS: child, else sibling, else climb to a sibling */
+            RamFsNode *next = n->first_child ? n->first_child
+                                             : n->next_sibling;
+            while (!next && n->parent) {
+                n = n->parent;
+                next = n->next_sibling;
+            }
+            n = next;
+        }
     }
-    *total_bytes = (uint32_t)sizeof(g_pool);
+
+    /* All RAM volumes draw from the same pool: total is this volume's own
+     * usage plus whatever the pool can still supply (free = pool_sz -
+     * pool_used, including header overhead and unreclaimed fragments). */
+    uint32_t pool_sz  = (uint32_t)sizeof(g_pool);
+    uint32_t pool_free = pool_sz - g_pool_used;
     *used_bytes  = used;
+    *total_bytes = used + pool_free;
 }

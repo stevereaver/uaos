@@ -310,7 +310,9 @@ static inline int cmd_prompt_yn(NativeCmdCtx *ctx, const char *msg)
     return 0;
 }
 
-/* Copy a single file from src to dst. Returns bytes copied or -1 on error. */
+/* Copy a single file from src to dst. Returns bytes copied or -1 on error.
+ * A short VFS_Write (e.g. RAMFS pool exhausted) aborts the copy and the
+ * partial destination is removed. */
 static inline int cmd_copy_file(const char *src, const char *dst)
 {
     VfsFile fsrc;
@@ -320,16 +322,18 @@ static inline int cmd_copy_file(const char *src, const char *dst)
         VFS_Close(&fsrc);
         return -1;
     }
-    char buf[256];
+    char buf[4096];
     int total = 0;
     while (1) {
-        int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, 256);
+        int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, sizeof(buf));
         if (n <= 0) break;
-        VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
-        total += n;
+        uint32_t w = VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
+        if (w < (uint32_t)n) { total = -1; break; }
+        total += (int)w;
     }
     VFS_Close(&fsrc);
     VFS_Close(&fdst);
+    if (total < 0) VFS_Delete(dst);
     return total;
 }
 

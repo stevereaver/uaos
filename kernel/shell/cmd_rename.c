@@ -23,8 +23,13 @@ void Cmd_Rename(NativeCmdCtx *ctx, const char *args)
     cmd_make_abs(ctx->cwd, src, abs_src, CMD_MAX_PATH);
     cmd_make_abs(ctx->cwd, dst, abs_dst, CMD_MAX_PATH);
 
-    if (VFS_Rename(abs_src, abs_dst) == 0) {
+    int rc = VFS_Rename(abs_src, abs_dst);
+    if (rc == 0) {
         PRINT("Renamed successfully.");
+    } else if (rc == -4) {
+        PRINT("Object is delete-protected.");
+    } else if (rc == -2) {
+        PRINT("Destination directory not empty.");
     } else {
         PRINT("Rename failed.");
     }

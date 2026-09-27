@@ -1434,19 +1434,28 @@ static void inst_cmd_copy(ShellInstance *s, const char *arg)
         return;
     }
 
-    char buf[256];
+    char buf[4096];
     int total = 0;
+    int failed = 0;
     while (1) {
-        int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, 256);
+        int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, sizeof(buf));
         if (n <= 0) break;
-        VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
-        total += n;
+        uint32_t w = VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
+        if (w < (uint32_t)n) { failed = 1; break; }
+        total += (int)w;
     }
 
     VFS_Close(&fsrc);
     VFS_Close(&fdst);
 
     char msg[MAX_LINE_LEN];
+    if (failed) {
+        VFS_Delete(abs_dst);
+        scopy(msg, "Copy failed (disk full): ", MAX_LINE_LEN);
+        scat(msg, abs_dst, MAX_LINE_LEN);
+        inst_print(s, msg);
+        return;
+    }
     scopy(msg, "Copied ", MAX_LINE_LEN);
     uint_to_dec_s(total, msg + slen(msg), 12);
     scat(msg, " bytes", MAX_LINE_LEN);

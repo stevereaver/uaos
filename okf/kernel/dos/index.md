@@ -60,7 +60,15 @@ The VFS layer (`kernel/dos/vfs.c`) provides a unified interface for multiple fil
 
 ### RAMFS Data Pool
 
-RAMFS uses a shared bump-allocator data pool (`g_pool` in `kernel/dos/ramfs.c`) for all file content across all volumes. The pool is 8 MB. `VFS_Write` pre-allocates a 4 KB block per file on first write (`VFS_BLOCK_SZ` in `vfs.c`); writes beyond the block are truncated. The bump allocator does not reclaim freed memory when files are deleted, so the pool can still be exhausted under heavy file churn. If `RamFS_AllocPool` returns NULL, `VFS_Write` returns 0 (silent write failure — the file remains empty).
+RAMFS uses a shared 8 MB data pool (`g_pool` in `kernel/dos/ramfs.c`) for file content across all volumes. The pool is managed by an address-ordered free-list allocator with coalescing: every chunk (live or free) carries a 16-byte `PoolChunk` header (`size` + `next`), `RamFS_AllocPool` is first-fit on the free list and otherwise carves fresh chunks below the `g_pool_top` high-water mark, and `RamFS_FreePool` inserts in address order and merges physically adjacent free chunks. `g_pool_used` tracks committed chunk bytes (header included). `RamFS_Delete` and the `RamFS_Rename` overwrite path return `node->data` to the pool, and `RamFS_Write` frees the old buffer when regrowing.
+
+`VFS_Write` grows node storage instead of the old first-write fixed 4 KB block: when a write would overflow `node->alloc` it allocates `max(alloc*2, VFS_BLOCK_SZ=4 KB, end)` (capped at `RAMFS_MAX_FILESIZE`), copies the existing data, frees the old chunk, and continues. If `RamFS_AllocPool` fails the write degrades to a *short write* — only the bytes that still fit are written and the partial count is returned so callers can detect the failure (`cmd_copy_file`, the shell-window `copy`, and the desktop copy helpers all treat a short write as an error and delete the partial destination).
+
+`RamFS_Read`'s ext-backed proxy path caches the last filesystem block read (`g_sec_buf`, keyed on bdev + block size + device sector): sequential 256 B reads that land in the same 2048-byte ISO block now cost one `BlockDev_Read` per block instead of one per call (~8x I/O amplification removed).
+
+Volume stats are per-volume: `RamFS_GetVolumeStats` walks the volume's own node tree summing `node->alloc` for pool-backed files only (ext_bdev proxy files consume no pool) and reports `total = used + pool_free` where `pool_free = pool_size - g_pool_used` — so every volume's `free` reflects the shared pool while `used` is its own.
+
+`DEFAULT_PROTECTION` in `amiga_dos_types.h` is `FIBF_OTR_WRITE|FIBF_OTR_EXECUTE|FIBF_OTR_DELETE|FIBF_GRP_WRITE|FIBF_GRP_EXECUTE|FIBF_GRP_DELETE` (0xEE00): all R/W/E/D bits use inverted logic (bit set = denied), so owner rwed and group/other read stay clear (allowed) while group/other write+execute+delete are denied. The previous `0xFFE0|GRP_READ|OTR_READ` encoding (= 0xFFE0) set `FIBF_DELETE` on every new node, making fresh files undeletable/unrenamable.
 
 ## Block Devices and Partitioning
 

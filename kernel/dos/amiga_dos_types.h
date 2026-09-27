@@ -84,8 +84,12 @@ typedef struct FileInfoBlock {
 #define FIBF_GRP_EXECUTE (1 << 14)
 #define FIBF_GRP_DELETE  (1 << 15)
 
-/* Default protection: owner R/W/E/D, group+other R only */
-#define DEFAULT_PROTECTION (0xFFE0 | FIBF_GRP_READ | FIBF_OTR_READ)
+/* Default protection: owner R/W/E/D, group+other R only.
+ * All R/W/E/D bits use inverted logic (bit set = denied), so the owner
+ * bits and the group/other READ bits stay clear while group/other
+ * write+execute+delete are set. */
+#define DEFAULT_PROTECTION (FIBF_OTR_WRITE | FIBF_OTR_EXECUTE | FIBF_OTR_DELETE | \
+                            FIBF_GRP_WRITE | FIBF_GRP_EXECUTE | FIBF_GRP_DELETE)
 
 /* -------------------------------------------------------------------------
  * DosList node types
