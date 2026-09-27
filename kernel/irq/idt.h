@@ -23,9 +23,15 @@ void PIC_MaskIRQ(int irq);
 /* Send End-Of-Interrupt to master (and slave if irq >= 8) */
 void PIC_SendEOI(int irq);
 
-/* Install a C handler for a given vector */
+/* Install a C handler for a given vector.  `name` is an optional short
+ * human-readable label (e.g. "virtio-net") recorded for C:irqstat — PCI
+ * IRQ routing is dynamic, so a hardcoded vector→device table can't know
+ * which device landed on which IRQ.  Pass NULL to leave it unnamed. */
 typedef void (*ISRHandler)(uint64_t vector, uint64_t error_code);
-void IDT_SetHandler(uint8_t vector, ISRHandler handler);
+void IDT_SetHandler(uint8_t vector, ISRHandler handler, const char *name);
+
+/* Returns the name registered with the vector's handler, or NULL. */
+const char *IDT_VectorName(uint8_t vector);
 
 /* Install a raw assembly entry point directly into the IDT (DPL=0). */
 void IDT_SetRawHandler(uint8_t vector, void (*handler)(void));

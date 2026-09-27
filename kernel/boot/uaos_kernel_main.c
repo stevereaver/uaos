@@ -690,14 +690,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     IDE_RegisterBlockDevs();
 
     /* Scan for ATAPI CD-ROMs and mount ISO 9660 volumes */
-    {
-        extern int g_virtio_irq_line;
-        extern unsigned int g_canary_before;
-        extern unsigned int g_canary_after;
-        kprint("[BOOT] virtio_irq_line before ISO9660 = "); kprinthex(g_virtio_irq_line);
-        kprint(" canary_before="); kprinthex(g_canary_before);
-        kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
-    }
     kprint("[BOOT] Scanning for ATAPI CD-ROMs...\n");
     /* Probe both fixed IDE channels (primary + secondary).  IDE_GetChannelCount()
      * returns the number of *populated* channels, which is NOT a valid index
@@ -746,14 +738,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
                 kprint("[BOOT] Workbench: already mounted, skipping virtio-scsi CD-ROM.\n");
             }
         }
-    }
-    {
-        extern int g_virtio_irq_line;
-        extern unsigned int g_canary_before;
-        extern unsigned int g_canary_after;
-        kprint("[BOOT] virtio_irq_line after ISO9660 = "); kprinthex(g_virtio_irq_line);
-        kprint(" canary_before="); kprinthex(g_canary_before);
-        kprint(" canary_after="); kprinthex(g_canary_after); kprint("\n");
     }
 
     /* -------------------------------------------------------------------
@@ -812,7 +796,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * kernel timing (network poll pacing, yield_ms, ntp guards) and must
      * tick regardless of whether a framebuffer is present. */
     kprint("[BOOT] Programming PIT (100 Hz)...\n");
-    IDT_SetHandler(32, PIT_IRQHandler);
+    IDT_SetHandler(32, PIT_IRQHandler, "PIT timer");
     {
         uint16_t divisor = (uint16_t)(1193180UL / 100UL);
         outb(0x43, 0x36);
@@ -828,20 +812,20 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         g_fb_height_irq = g_fb.height;
 
         kprint("[BOOT] Initialising PS/2 mouse...\n");
-        IDT_SetHandler(44, PS2Mouse_IRQHandler);
+        IDT_SetHandler(44, PS2Mouse_IRQHandler, "PS/2 mouse");
         PS2Mouse_Init();
         PIC_UnmaskIRQ(12);
         Cursor_Init(g_mouse.x, g_mouse.y);
         kprint("[BOOT] PS/2 mouse active.\n");
 
         kprint("[BOOT] Initialising PS/2 keyboard...\n");
-        IDT_SetHandler(33, PS2Kbd_IRQHandler);
+        IDT_SetHandler(33, PS2Kbd_IRQHandler, "PS/2 keyboard");
         PS2Kbd_Init();
         PIC_UnmaskIRQ(1);
         kprint("[BOOT] PS/2 keyboard active.\n");
 
         kprint("[BOOT] Initialising RTC clock...\n");
-        IDT_SetHandler(40, RTC_IRQHandler);  /* IRQ8 = vector 40 */
+        IDT_SetHandler(40, RTC_IRQHandler, "RTC");  /* IRQ8 = vector 40 */
         RTC_Init();
         PIC_UnmaskIRQ(8);
         Desktop_UpdateClock();               /* initial draw from CMOS */

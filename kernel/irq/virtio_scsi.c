@@ -1590,7 +1590,7 @@ void virtio_scsi_setup_irq(void) {
     if (!g_active) return;
     if (g_irq_line >= 0 && g_irq_line < 16) {
         uint8_t vector = (uint8_t)(32 + g_irq_line);
-        IDT_SetHandler(vector, vio_scsi_irq_handler);
+        IDT_SetHandler(vector, vio_scsi_irq_handler, "virtio-scsi");
         PIC_UnmaskIRQ(g_irq_line);
         kprint("[VIO-SCSI] IRQ handler registered for IRQ ");
         kprinthex((uint64_t)g_irq_line); kprint("\n");

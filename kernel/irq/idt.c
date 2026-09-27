@@ -84,6 +84,9 @@ typedef struct __attribute__((packed)) {
 
 static IdtEntry  g_idt[256];
 static ISRHandler g_handlers[256];
+/* Optional name registered alongside each C handler — lets C:irqstat label
+ * vectors with the actual device instead of a hardcoded routing table. */
+static const char *g_vector_names[256];
 
 /* Forward declarations for all 256 stubs (defined in idt_stubs.asm) */
 #define DECL_STUB(n) extern void isr_stub_##n(void);
@@ -255,6 +258,7 @@ void IDT_Init(void)
 {
     for (int i = 0; i < 256; i++) {
         g_handlers[i] = NULL;
+        g_vector_names[i] = NULL;
         idt_set_entry(i, stub_table[i]);
     }
 
@@ -352,9 +356,15 @@ void IDT_ClearCounts(void)
     if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
 }
 
-void IDT_SetHandler(uint8_t vector, ISRHandler handler)
+void IDT_SetHandler(uint8_t vector, ISRHandler handler, const char *name)
 {
     g_handlers[vector] = handler;
+    g_vector_names[vector] = name;
+}
+
+const char *IDT_VectorName(uint8_t vector)
+{
+    return g_vector_names[vector];
 }
 
 void IDT_SetRawHandler(uint8_t vector, void (*handler)(void))

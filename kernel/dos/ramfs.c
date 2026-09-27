@@ -5,13 +5,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-extern void kprint(const char *s);
-extern void kprinthex(uint64_t v);
 extern uint32_t ntp_get_epoch(void);
-extern int g_virtio_irq_line;
-extern unsigned int g_canary_before;
-extern unsigned int g_canary_after;
-#define CHECK_IRQ(label) do { int _irq = g_virtio_irq_line; unsigned int _cb = g_canary_before; unsigned int _ca = g_canary_after; if (_irq != 10) { kprint("[RAMFS] irq="); kprinthex(_irq); kprint(" at " label "\n"); } if (_cb != 0xDEADBEEF) { kprint("[RAMFS] CANARY_BEFORE="); kprinthex(_cb); kprint(" at " label "\n"); } if (_ca != 0xCAFEBABE) { kprint("[RAMFS] CANARY_AFTER="); kprinthex(_ca); kprint(" at " label "\n"); } } while(0)
 
 /* =========================================================================
  * Static storage — all in BSS (zero-initialised)
@@ -220,7 +214,6 @@ RamFsNode *RamFS_Resolve(RamFsVol *vol, const char *path)
 
 RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
 {
-    CHECK_IRQ("RamFS_MkDir start");
     if (!vol || !vol->valid) return NULL;
     const char *p = skip_vol_prefix(path);
     if (*p == '/') p++;
@@ -266,13 +259,11 @@ RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
     scopy(node->name, last, RAMFS_MAX_NAME);
     node->parent = dir;
     dir_add_child(dir, node);
-    CHECK_IRQ("RamFS_MkDir end");
     return node;
 }
 
 RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
 {
-    CHECK_IRQ("RamFS_Create start");
     if (!vol || !vol->valid) return NULL;
     const char *p = skip_vol_prefix(path);
     if (*p == '/') p++;
@@ -316,7 +307,6 @@ RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
     node->alloc  = 0;
     node->data   = NULL;
     dir_add_child(dir, node);
-    CHECK_IRQ("RamFS_Create end");
     return node;
 }
 

@@ -208,10 +208,7 @@ static vblk_dev_t    g_devs[VBLK_MAX_DEVS];
 static vblk_qstate_t g_qstates[VBLK_MAX_DEVS];
 static int           g_ndevs = 0;
 
-/* Legacy debug globals (referenced by ramfs/iso9660/kernel_main canaries) */
-unsigned int g_canary_before = 0xDEADBEEF;
-int g_virtio_irq_line = -1;
-unsigned int g_canary_after = 0xCAFEBABE;
+
 
 /* DMA-aligned buffers for I/O — shared across devices; all I/O is
  * synchronous and serialised at the BlockDev layer. */
@@ -756,9 +753,6 @@ int virtio_blk_init(void)
         return -1;
     }
 
-    /* Legacy debug global — first disk's IRQ line (canary checks) */
-    g_virtio_irq_line = g_devs[0].irq_line;
-
     kprint("[VIRTIO] Registered ");
     kprinthex(g_ndevs);
     kprint(" virtio block device(s)\n");
@@ -768,11 +762,6 @@ int virtio_blk_init(void)
 /* =========================================================================
  * VirtIO IRQ Setup (must be called AFTER IDT_Init and PIC_Init)
  * ========================================================================= */
-
-int virtio_blk_get_irq_line(void)
-{
-    return g_virtio_irq_line;
-}
 
 /* =========================================================================
  * Legacy single-device entry points (virtio0)
@@ -806,7 +795,7 @@ void virtio_blk_setup_irq(void)
         vblk_dev_t *d = &g_devs[i];
         if (d->irq_line >= 0 && d->irq_line < 16) {
             uint8_t vector = 32 + d->irq_line;
-            IDT_SetHandler(vector, virtio_irq_handler);
+            IDT_SetHandler(vector, virtio_irq_handler, "virtio-blk");
             PIC_UnmaskIRQ(d->irq_line);
             kprint("[VIRTIO] Interrupt handler registered for ");
             kprint(d->name);

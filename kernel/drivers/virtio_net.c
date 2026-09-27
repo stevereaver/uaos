@@ -1099,6 +1099,6 @@ void virtio_net_setup_irq(void)
     if (!g_up) return;
     _vn_ps("[VNET] setup_irq line="); _vn_ph(g_irq_line);
     _vn_ps(" iobase="); _vn_ph(g_io_base); _vn_ps("\n");
-    IDT_SetHandler((uint8_t)(32 + g_irq_line), virtio_net_irq_handler);
+    IDT_SetHandler((uint8_t)(32 + g_irq_line), virtio_net_irq_handler, "virtio-net");
     PIC_UnmaskIRQ((int)g_irq_line);
 }

@@ -307,6 +307,7 @@ typedef struct {
     uint32_t payload;   /* guest address returned to the caller */
     uint32_t size;      /* requested payload size               */
     uint32_t blk;       /* block base: guest addr of heap header */
+    void    *owner;     /* allocating task (Task_Current())      */
     char     task[20];  /* allocating task name                  */
 } MemchkRec;
 
@@ -322,12 +323,14 @@ static const char *mc_task_name(void)
 
 static void mc_record(uint32_t payload, uint32_t size, uint32_t blk)
 {
+    extern UaosTask *Task_Current(void);
     for (int i = 0; i < MC_MAX_RECS; i++) {
         if (!g_mc[i].payload) {
             const char *n = mc_task_name();
             g_mc[i].payload = payload;
             g_mc[i].size    = size;
             g_mc[i].blk     = blk;
+            g_mc[i].owner   = Task_Current();
             int j = 0;
             while (n[j] && j < 19) { g_mc[i].task[j] = n[j]; j++; }
             g_mc[i].task[j] = '\0';
@@ -419,6 +422,32 @@ static void mc_free(uint32_t addr)
 /* Public API for C:memcheck ------------------------------------------------ */
 
 int Memcheck_IsEnabled(void)          { return g_memcheck_on; }
+
+/* Free every tracked allocation owned by `owner` (called from Task_Exit).
+ * A task that dies or is aborted (e.g. the M68k cycle-budget kill) leaves
+ * its AllocMem blocks allocated; without this sweep they'd sit in the
+ * tracking table as "live" forever — and when the guest RAM slot is
+ * recycled, stale records can alias a new task's allocations.  Must be
+ * called while g_ram still maps the dying task's guest RAM. */
+uint32_t Memcheck_FreeByOwner(void *owner)
+{
+    if (!owner) return 0;
+    uint32_t freed = 0;
+    for (int i = 0; i < MC_MAX_RECS; i++) {
+        if (g_mc[i].payload && g_mc[i].owner == owner) {
+            mc_check_guards(&g_mc[i], "task-exit");
+            heap_free_fl(g_mc[i].payload - 4);
+            g_mc[i].payload = 0;
+            freed++;
+        }
+    }
+    if (freed) {
+        KLOG(KLOG_EXEC, KLOG_INFO,
+             "[memchk] task exit: reclaimed %u tracked alloc(s)\n", (unsigned)freed);
+    }
+    return freed;
+}
+
 void Memcheck_SetEnabled(int on)
 {
     g_memcheck_on = !!on;

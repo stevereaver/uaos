@@ -133,3 +133,7 @@ The emulated M68k guest RAM is wired into the 4 GB guest physical window at offs
 - Unspecified / `MEMF_PUBLIC` allocations prefer fast RAM and fall back to chip RAM.
 
 The Amiga custom chip / CIA register window at `0x00B00000–0x00DFFFFF` is mapped non-present; accesses from M68k code fault to the page fault handler and are forwarded to the chip emulator in `kernel/chipset/chip_emu.c`.
+
+## Allocation tracking on task exit (memcheck)
+
+When `memcheck` is on, every tracked `AllocMem` records its allocating task (`MemchkRec.owner` = `Task_Current()` at alloc time) alongside the task-name label. `Task_Exit` calls `Memcheck_FreeByOwner()` for M68k tasks while `g_ram` still maps the dying task's guest RAM, so blocks a guest allocated are reclaimed on both normal `Exit()` and the cycle-budget abort — `memcheck` shows 0 live tracked allocs afterwards instead of leaking records that could alias a recycled RAM slot's new allocations.

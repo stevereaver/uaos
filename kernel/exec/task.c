@@ -15,6 +15,7 @@
 #include "../display/shell_win.h"
 #include "../display/blanker.h"
 #include "intuition_lib.h"
+#include "memcheck.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -427,6 +428,11 @@ void Task_Exit(void)
             g_current->tc_SigAlloc |= (1u << (unsigned int)g_current->m68k_vblank_sig);
             g_current->m68k_vblank_sig = -1;
         }
+        /* Reclaim the M68k task's tracked guest AllocMem blocks while
+         * g_ram still maps its address space (cycle-budget aborts and
+         * plain Exit() both end here). */
+        if (g_current->type == TASK_TYPE_M68K)
+            Memcheck_FreeByOwner(g_current);
         /* Release M68k guest RAM so the slot can be reused. */
         Task_ReleaseM68kRam(g_current);
         g_current->tc_State = TASK_REMOVED;

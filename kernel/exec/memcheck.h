@@ -15,6 +15,11 @@ int      Memcheck_IsEnabled(void);
 void     Memcheck_SetEnabled(int on);
 int      Memcheck_LiveCount(void);
 
+/* Free all tracked allocations owned by `owner` (a UaosTask*).  Called
+ * from Task_Exit for M68k tasks while g_ram still maps their guest RAM,
+ * so allocations survive neither task exit nor cycle-budget abort. */
+uint32_t Memcheck_FreeByOwner(void *owner);
+
 /* Walk live tracked allocs + both free lists; violations go to klog.
  * Returns the number of violations found. */
 uint32_t Memcheck_Scan(void);

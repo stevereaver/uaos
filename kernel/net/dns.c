@@ -84,7 +84,11 @@ static int dns_name_end(const uint8_t *buf, uint16_t buflen, int off)
 
 /* -------------------------------------------------------------------------
  * Parse a DNS response and extract the first A record IP.
- * Returns 1 and fills *out_ip on success, 0 otherwise.
+ * Returns  1 and fills *out_ip on success;
+ *          0 if the packet isn't a usable reply to our query (keep waiting);
+ *         -1 if the server gave a definitive answer we must NOT retry —
+ *            an error RCODE (NXDOMAIN/SERVFAIL/REFUSED/…) or a valid
+ *            response that simply contains no A record.
  * txid: the transaction ID we sent; response must match.
  * ------------------------------------------------------------------------- */
 static int dns_parse_response(const uint8_t *buf, uint16_t len,
@@ -106,14 +110,18 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
 
     if (rid != txid) return 0;                     /* not our reply */
     if (!(flags & DNS_FLAG_QR)) return 0;          /* not a response */
-    if ((flags & DNS_FLAG_RCODE) != 0) return 0;   /* error response */
-    if (ancount == 0) return 0;                    /* no answers */
+    if ((flags & DNS_FLAG_RCODE) != 0) {           /* definitive error (NXDOMAIN, …) */
+        klog_puts(KLOG_DNS, KLOG_DEBUG, "rcode="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%u", (unsigned)(flags & DNS_FLAG_RCODE));
+        klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
+        return -1;
+    }
+    if (ancount == 0) return -1;                   /* NODATA: definitive empty answer */
 
     /* Skip the question section */
     int off = DNS_HDR_LEN;
     for (uint16_t q = 0; q < qdcount; q++) {
         off = dns_name_end(buf, len, off);
-        if (off < 0 || off + 4 > len) return 0;
+        if (off < 0 || off + 4 > len) return -1;
         off += 4;   /* QTYPE + QCLASS */
     }
 
@@ -121,7 +129,7 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
     for (uint16_t a = 0; a < ancount; a++) {
         /* NAME field (may be a pointer) */
         off = dns_name_end(buf, len, off);
-        if (off < 0 || off + 10 > len) return 0;
+        if (off < 0 || off + 10 > len) return -1;
 
         uint16_t rtype  = (uint16_t)((buf[off] << 8) | buf[off+1]);
         /* uint16_t rclass = (uint16_t)((buf[off+2] << 8) | buf[off+3]); */
@@ -145,7 +153,25 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
         /* Skip this RR's RDATA */
         off += rdlen;
     }
-    return 0;
+    /* A real response arrived but contained no usable A record — the
+     * answer is definitive, retrying won't change it. */
+    return -1;
+}
+
+/* "localhost" (optionally with a trailing dot) resolves locally — no
+ * network round trip, and it works with no DNS server configured. */
+static int dns_is_localhost(const char *hostname)
+{
+    static const char l[] = "localhost";
+    int i = 0;
+    while (l[i]) {
+        char c = hostname[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if (c != l[i]) return 0;
+        i++;
+    }
+    return hostname[i] == '\0' ||
+           (hostname[i] == '.' && hostname[i + 1] == '\0');
 }
 
 /* -------------------------------------------------------------------------
@@ -157,6 +183,12 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
 {
     /* Fast path: already a dotted-decimal address */
     if (net_str_to_ip(hostname, out_ip)) return 1;
+
+    /* Fast path: localhost never hits the wire */
+    if (dns_is_localhost(hostname)) {
+        *out_ip = 0x7F000001;   /* 127.0.0.1 */
+        return 1;
+    }
 
     ipv4_t dns_server = net_stack_get_dns();
     if (!dns_server) {
@@ -188,13 +220,17 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
         return 0;
     }
 
-    /* Retry loop: send query, wait up to 2 s per attempt, up to timeout_ms total */
+    /* Retry loop: send query, wait up to 2 s per attempt, up to timeout_ms
+     * total.  Retries happen only on real timeouts — a definitive answer
+     * (any response with our txid and QR set, including NXDOMAIN) ends the
+     * loop immediately. */
     static const uint32_t RETRY_MS  = 2000;
     static const uint32_t SLICE_MS  = 50;
     uint32_t elapsed = 0;
     int result = 0;
+    int answered = 0;
 
-    while (elapsed < timeout_ms && !result) {
+    while (elapsed < timeout_ms && !result && !answered) {
         klog_puts(KLOG_DNS, KLOG_DEBUG, "sending query txid="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%04X", txid); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
         udp_send(sock, dns_server, DNS_PORT, qbuf, qlen);
 
@@ -219,14 +255,18 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
             int rlen = udp_recv(sock, rbuf, (uint16_t)sizeof(rbuf),
                                 &src_ip, &src_port);
             if (rlen > 0 && src_port == DNS_PORT) {
-                if (dns_parse_response(rbuf, (uint16_t)rlen, txid, out_ip))
-                    result = 1;
+                int r = dns_parse_response(rbuf, (uint16_t)rlen, txid, out_ip);
+                if (r > 0) result = 1;
+                else if (r < 0) { answered = 1; break; }
             }
         }
     }
 
     udp_close(sock);
 
-    if (!result) klog_puts(KLOG_DNS, KLOG_DEBUG, "resolve timed out\n");
+    if (!result) {
+        klog_puts(KLOG_DNS, KLOG_DEBUG, answered ? "resolve failed (definitive answer)\n"
+                                               : "resolve timed out\n");
+    }
     return result;
 }

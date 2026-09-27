@@ -27,7 +27,12 @@ static void irqstat_u64dec(uint64_t v, char *buf, int max)
     buf[i] = '\0';
 }
 
-static const char *irqstat_name(int vec)
+/* Vector → display name.  Exception names are fixed by the CPU, but device
+ * IRQs are whatever INT line PCI routing assigned, so device names come
+ * from the IDT handler registration (IDT_SetHandler's name arg) rather
+ * than a hardcoded table that lies on any layout but the one it was
+ * tuned on. */
+static void irqstat_name(int vec, char *out, int max)
 {
     static const char *exc[32] = {
         "#DE divide",  "#DB debug",   "NMI",        "#BP break",
@@ -39,25 +44,23 @@ static const char *irqstat_name(int vec)
         "rsvd24",      "rsvd25",      "rsvd26",     "rsvd27",
         "rsvd28",      "rsvd29",      "rsvd30",     "rsvd31",
     };
-    if (vec < 32) return exc[vec];
-    switch (vec) {
-    case 32:    return "IRQ0  PIT timer";
-    case 33:    return "IRQ1  keyboard";
-    case 34:    return "IRQ2  PIC cascade";
-    case 35:    return "IRQ3  COM2";
-    case 36:    return "IRQ4  COM1";
-    case 38:    return "IRQ6  floppy";
-    case 40:    return "IRQ8  RTC";
-    case 43:    return "IRQ11 virtio/e1000";
-    case 44:    return "IRQ12 PS/2 mouse";
-    case 45:    return "IRQ13 FPU";
-    case 46:    return "IRQ14 ATA pri";
-    case 47:    return "IRQ15 ATA sec";
-    case 0x80:  return "INT80 syscall";
-    default:    break;
+    out[0] = '\0';
+    if (vec < 32) { cmd_scopy(out, exc[vec], max); return; }
+    if (vec == 0x80) { cmd_scopy(out, "INT80 syscall", max); return; }
+
+    const char *reg = IDT_VectorName((uint8_t)vec);
+    if (vec >= 32 && vec < 48) {
+        cmd_scopy(out, "IRQ", max);
+        char num[8];
+        cmd_uint_to_dec((uint32_t)(vec - 32), num, sizeof(num));
+        cmd_scat(out, num, max);
+        if (reg) {
+            cmd_scat(out, " ", max);
+            cmd_scat(out, reg, max);
+        }
+        return;
     }
-    if (vec >= 32 && vec < 48) return "IRQ";
-    return "";
+    if (reg) cmd_scopy(out, reg, max);
 }
 
 void Cmd_Irqstat(NativeCmdCtx *ctx, const char *args)
@@ -117,7 +120,8 @@ void Cmd_Irqstat(NativeCmdCtx *ctx, const char *args)
         cmd_scat(line, num, CMD_MAX_LINE);
         cmd_scat(line, "  ", CMD_MAX_LINE);
 
-        const char *nm = irqstat_name(v);
+        char nm[24];
+        irqstat_name(v, nm, sizeof(nm));
         char pad[20];
         int i = 0;
         while (nm[i] && i < 18) { pad[i] = nm[i]; i++; }

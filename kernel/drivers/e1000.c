@@ -639,6 +639,6 @@ void e1000_setup_irq(void)
 {
     if (!g_up) return;
     klog_puts(KLOG_E1000, KLOG_DEBUG, "setup_irq line="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", g_irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
-    IDT_SetHandler((uint8_t)(32 + g_irq), e1000_irq_handler);
+    IDT_SetHandler((uint8_t)(32 + g_irq), e1000_irq_handler, "e1000");
     PIC_UnmaskIRQ((int)g_irq);
 }

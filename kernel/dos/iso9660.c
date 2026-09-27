@@ -7,10 +7,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-extern int g_virtio_irq_line;
-extern unsigned int g_canary_before;
-extern unsigned int g_canary_after;
-
 #define ISO_SECTOR_SIZE 2048
 
 /* ISO 9660 Primary Volume Descriptor offsets */
@@ -172,12 +168,6 @@ static void iso_process_entry(BlockDev *bdev, const uint8_t *rec, int rec_len,
                                RamFsVol *vol, const char *parent_ram_path,
                                int proxy)
 {
-    if (g_canary_before != 0xDEADBEEF) {
-        kprint("[ISO9660] CANARY_BEFORE CORRUPTED!\n");
-    }
-    if (g_canary_after != 0xCAFEBABE) {
-        kprint("[ISO9660] CANARY_AFTER CORRUPTED!\n");
-    }
     if (rec_len < 34) return;
     uint8_t flags = rec[DIRREC_FILE_FLAGS];
     uint32_t extent_lba = read_both32(&rec[DIRREC_EXTENT_LBA]);
@@ -210,10 +200,6 @@ static void iso_process_entry(BlockDev *bdev, const uint8_t *rec, int rec_len,
     int ni = 0;
     while (iso_name[ni] && pl < 255) { ram_path[pl++] = iso_name[ni++]; }
     ram_path[pl] = '\0';
-
-    if (g_virtio_irq_line != 10) {
-        kprint("[ISO9660] irq="); kprinthex(g_virtio_irq_line); kprint(" before mkdir/create for "); kprint(ram_path); kprint("\n");
-    }
 
     if (flags & FLAG_DIRECTORY) {
         /* Create directory and recurse */
@@ -272,9 +258,6 @@ static void iso_traverse_dir(BlockDev *bdev, uint32_t dir_lba, uint32_t dir_size
             uint8_t local_rec[256];
             for (int i = 0; i < rec_len && i < 256; i++)
                 local_rec[i] = sector_buf[offset + i];
-            if (g_virtio_irq_line != 10) {
-                kprint("[ISO9660] irq="); kprinthex(g_virtio_irq_line); kprint(" after iso_read_sector\n");
-            }
             iso_process_entry(bdev, local_rec, rec_len, vol, ram_path, proxy);
             offset += rec_len;
         }
@@ -374,18 +357,13 @@ static int iso_mount_subvol(BlockDev *bdev, uint32_t dir_lba, uint32_t dir_size,
 
 int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
 {
-    extern int g_virtio_irq_line;
-    #define CHECK_IRQ(label) do { int _irq = g_virtio_irq_line; if (_irq != 10) { kprint("[ISO9660] irq="); kprinthex(_irq); kprint(" at " label "\n"); } } while(0)
-
     if (!bdev || !vol_name || !*vol_name) return -1;
 
     uint8_t pvd_buf[ISO_SECTOR_SIZE];
     if (iso_read_sector(bdev, 16, pvd_buf) != 0) return -1;
-    CHECK_IRQ("after_read_pvd");
 
     uint32_t root_lba, root_size;
     if (parse_pvd(pvd_buf, &root_lba, &root_size) != 0) return -1;
-    CHECK_IRQ("after_parse_pvd");
 
     /* Check for sys-root directory (ISO names are uppercase) */
     uint32_t sys_lba, sys_size;
@@ -416,17 +394,14 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
     }
 
     if (is_workbench_mount && iso_find_dir_entry(bdev, root_lba, root_size, "SYS_ROOT", &sys_lba, &sys_size, &sys_is_dir)) {
-        CHECK_IRQ("after_find_sysroot");
         if (sys_is_dir) {
             kprint("[ISO9660] Found SYS-ROOT, mounting Workbench: from SYS-ROOT contents...\n");
             /* Mount SYS-ROOT contents as Workbench: (Amiga-style live environment) */
             RamFsVol *wb_vol = RamFS_MountVol("Workbench");
-            CHECK_IRQ("after_mountvol_workbench");
             if (wb_vol) {
                 if (VFS_MountExistingVol("Workbench", wb_vol) == 0) {
                     /* Traverse SYS-ROOT to populate Workbench: with proxy files */
                     iso_traverse_dir(bdev, sys_lba, sys_size, wb_vol, "Workbench:", 1);
-                    CHECK_IRQ("after_traverse_sysroot");
                     kprint("[ISO9660] Workbench: mounted from SYS-ROOT\n");
                 } else {
                     kprint("[ISO9660] VFS_MountExistingVol Workbench failed\n");
@@ -445,7 +420,6 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
             return 0;
         }
     }
-    CHECK_IRQ("after_sysroot_check");
 
     /* Fallback: mount entire CD as vol_name (or if not Workbench/CDROM) */
     RamFsVol *vol = RamFS_MountVol(vol_name);

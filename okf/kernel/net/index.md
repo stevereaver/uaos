@@ -105,7 +105,7 @@ Minimal DHCP client following RFC 2131/2132. State machine: `DISCOVER` → `OFFE
 
 ### DNS (`dns.c`)
 
-Minimal A-record resolver (RFC 1035). Encodes QNAME labels, handles compression pointers (`0xC0`), and retries with a 2-second timeout per attempt.
+Minimal A-record resolver (RFC 1035). Encodes QNAME labels, handles compression pointers (`0xC0`), and retries with a 2-second timeout per attempt — but only on real timeouts: `dns_parse_response` returns a tri-state so any definitive answer (nonzero RCODE like NXDOMAIN/SERVFAIL/REFUSED, a NODATA empty answer, or a response with no usable A record) ends the retry loop immediately. `localhost` (any case, optional trailing dot) short-circuits to 127.0.0.1 with no query at all, even with no DNS server configured.
 
 ### NTP (`ntp.c`)
 

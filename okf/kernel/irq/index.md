@@ -17,6 +17,8 @@ The kernel sets up a 256-vector IDT in 64-bit mode.
 - **Exceptions**: Vectors 0-31 handle CPU exceptions (e.g., Page Faults, GPF).
 - **IRQs**: Hardware interrupts are remapped via the 8259A PIC to vectors 32-47.
 
+`IDT_SetHandler(vector, handler, name)` takes an optional human-readable name that is stored per-vector (`IDT_VectorName()`). Drivers pass their device name at registration (`"virtio-blk"`, `"virtio-scsi"`, `"virtio-net"`, `"e1000"`, `"PIT timer"`, `"PS/2 keyboard"`, `"PS/2 mouse"`, `"RTC"`); `C:irqstat` labels each firing vector as `IRQ<n> <name>` from this table. PCI INTx routing is dynamic (OVMF assigns lines per device order), so names must come from registration — a hardcoded vector→device table mislabels on any other layout.
+
 ## Core Hardware Drivers
 
 - **PS/2 Keyboard (`ps2kbd.c`, IRQ1)**: Handles scancode set 1 translation and provides a ring buffer for keystrokes, including extended scancodes and modifier keys. Supports Amiga key mapping: Left Super/Windows → LAmiga, Right Super/Windows → RAmiga. RAmiga+letter pushes `0x80|UPPER` for menu shortcuts. LAmiga+V/B/M/N pushes special codes (`AMIGA_LV`/`AMIGA_LB`/`AMIGA_LM`/`AMIGA_LN`) for requester Verify/Cancel and screen cycling. The idle loop in `task.c` dispatches these: LAmiga+M/N calls `UAOS_Intuition_CycleScreen()`, RAmiga+letter calls `Intuition_InvokeCommandKey()`, and LAmiga+V/B is consumed (future: routed to active requester).
