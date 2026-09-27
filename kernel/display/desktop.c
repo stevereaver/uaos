@@ -23,6 +23,8 @@
 #include "../dos/icon_loader.h"
 #include "../exec/workbench_lib.h"
 #include "../irq/rtc.h"
+#include "../net/ntp.h"
+#include "../net/timezone.h"
 #include "blanker.h"
 #include "format_win.h"
 #include "../system_reboot.h"
@@ -1212,19 +1214,31 @@ static void draw_menubar(int W)
             FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
 
-    /* Clock display — HH:MM:SS on the far right of the menubar */
+    /* Clock display — HH:MM:SS on the far right of the menubar.
+     * When the NTP epoch is live, convert UTC → local like C:date and the
+     * Clock window do; otherwise fall back to the raw CMOS RTC (UTC). */
     char clock_buf[16];
     {
-        RtcTime t = RTC_ReadTime();
+        uint8_t ch, cm, cs;
+        uint32_t epoch = ntp_get_epoch();
+        if (epoch) {
+            uint16_t cy; uint8_t cmo, cd;
+            int32_t  off_min  = tz_offset_min(tz_get_current(), epoch);
+            uint32_t local_ts = (uint32_t)((int64_t)epoch + (int64_t)off_min * 60);
+            ntp_unix_to_datetime(local_ts, &cy, &cmo, &cd, &ch, &cm, &cs);
+        } else {
+            RtcTime t = RTC_ReadTime();
+            ch = t.hour; cm = t.min; cs = t.sec;
+        }
         int ci = 0;
-        clock_buf[ci++] = (char)('0' + (t.hour / 10) % 10);
-        clock_buf[ci++] = (char)('0' + t.hour % 10);
+        clock_buf[ci++] = (char)('0' + (ch / 10) % 10);
+        clock_buf[ci++] = (char)('0' + ch % 10);
         clock_buf[ci++] = ':';
-        clock_buf[ci++] = (char)('0' + (t.min / 10) % 10);
-        clock_buf[ci++] = (char)('0' + t.min % 10);
+        clock_buf[ci++] = (char)('0' + (cm / 10) % 10);
+        clock_buf[ci++] = (char)('0' + cm % 10);
         clock_buf[ci++] = ':';
-        clock_buf[ci++] = (char)('0' + (t.sec / 10) % 10);
-        clock_buf[ci++] = (char)('0' + t.sec % 10);
+        clock_buf[ci++] = (char)('0' + (cs / 10) % 10);
+        clock_buf[ci++] = (char)('0' + cs % 10);
         clock_buf[ci] = '\0';
     }
     int clk_len = 0;

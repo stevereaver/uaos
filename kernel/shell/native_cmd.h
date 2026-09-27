@@ -145,6 +145,11 @@ typedef struct NativeCmdCtx {
      * explicit file argument is given. */
     const char *pipe_file;
 
+    /* For run: the caller's active stdout redirect spec including the
+     * operator (e.g. ">NIL:" or ">>RAM:log"), or NULL when output goes to
+     * the shell window.  Lets a detached child inherit run's redirect. */
+    const char *out_redirect;
+
     /* Set automatically by NativeCmd_Run when the command has a template.
      * Commands can query parsed arguments via the CmdTemplate_* helpers. */
     CmdTemplateResult *template;

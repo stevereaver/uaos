@@ -657,7 +657,16 @@ static void inst_push_scroll_to_wm(ShellInstance *s)
 }
 
 /* Forward declaration — defined below after inst_dispatch */
-typedef struct { void *shell; VfsFile fh; int active; int null; } RedirCtx;
+typedef struct {
+    void   *shell;
+    VfsFile fh;
+    int     active;
+    int     null;
+    /* Redirect spec including the operator (">path" / ">>path"), exposed to
+     * commands via NativeCmdCtx.out_redirect so detached children can
+     * inherit the redirect. */
+    char    path[80];
+} RedirCtx;
 static RedirCtx g_redir;
 
 /* Backtick command-substitution capture state.
@@ -935,7 +944,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  fdisk <device>     partition a block device");
     inst_print(s, "  format <dev> [fs]  format a partition");
     inst_print(s, "  pointer            open pointer preferences");
-    inst_print(s, "  run <prog> [args]  run an embedded Amiga binary");
+    inst_print(s, "  run <cmd> [args]   run a command detached (background)");
     inst_print(s, "  runback <cmd>      run a command in the background");
     inst_print(s, "  resload <cmd>      load command into resident list");
     inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
@@ -3984,6 +3993,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.quit_script    = shell_quit_script;
     ctx.break_pending  = shell_break_pending;
     ctx.pipe_file      = g_pipe_in_active ? g_pipe_in_file : NULL;
+    ctx.out_redirect   = g_redir.active ? g_redir.path : NULL;
     return ctx;
 }
 
@@ -4132,9 +4142,14 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
              * returning to the prompt, so output appears before the
              * next prompt line. When the shell is not running as a
              * scheduled task (e.g. during the pre-scheduler startup
-             * sequence), there is no parent task context to wait in. */
+             * sequence), there is no parent task context to wait in.
+             * Never wait while pumping a background job: the spawned
+             * task is genuinely detached and the job pump runs inside
+             * the main UI loop — blocking here would freeze the desktop
+             * until the child exits (run <m68k prog> would deadlock on
+             * any program that waits for user input). */
             UaosTask *cur = Task_Current();
-            if (cur) {
+            if (cur && !g_bg_running) {
                 /* Clear any stale SIGF_CHILD from a previous child exit
                  * so that Wait() blocks until THIS child actually exits. */
                 Task_ClearSig(SIGF_CHILD | SIGF_BREAKF);
@@ -4216,8 +4231,10 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
              * scheduled task (e.g. during the pre-scheduler startup
              * sequence), there is no parent task context to wait in; the
              * newly created task will be picked up by the scheduler once
-             * it starts. */
-            if (cur) {
+             * it starts. Background jobs skip the wait for the same
+             * reason as the M68K path above — the job pump must not
+             * block the UI loop on a detached task. */
+            if (cur && !g_bg_running) {
                 /* Clear any stale SIGF_CHILD from a previous child exit
                  * so that Wait() blocks until THIS child actually exits.
                  * Without this, a stale signal (e.g. from a background
@@ -4763,6 +4780,9 @@ static int run_backtick(ShellInstance *s, const char *cmd, char *dst, int max)
     g_redir.fh     = bt_fh;
     g_redir.active = 1;
     g_redir.null   = 0;
+    g_redir.path[0] = '>';
+    g_redir.path[1] = '\0';
+    scat(g_redir.path, path, sizeof(g_redir.path));
     g_capture_mode = 1;
 
     inst_dispatch(s, cmd);
@@ -5051,6 +5071,13 @@ static void inst_dispatch(ShellInstance *s, const char *line)
                 VFS_Seek(&g_redir.fh, VFS_Size(&g_redir.fh));
         }
 
+        /* Record the redirect spec so detached children spawned by the
+         * command (run) inherit it. */
+        g_redir.path[0] = '>';
+        g_redir.path[1] = '\0';
+        if (redir_mode == 2) scat(g_redir.path, ">", sizeof(g_redir.path));
+        scat(g_redir.path, redir_path, sizeof(g_redir.path));
+
         g_redir.shell  = s;
         g_redir.active = 1;
         run_cmd(s, cmd_only);
@@ -5084,6 +5111,9 @@ static void inst_dispatch(ShellInstance *s, const char *line)
             }
             g_redir.shell  = s;
             g_redir.active = 1;
+            g_redir.path[0] = '>';
+            g_redir.path[1] = '\0';
+            scat(g_redir.path, path, sizeof(g_redir.path));
             run_cmd(s, pipe_segs[i]);
             g_redir.active = 0;
             VFS_Close(&g_redir.fh);

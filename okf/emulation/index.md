@@ -47,6 +47,6 @@ The emulation layer uses the `ILLEGAL` opcode to implement system calls (Traps).
 
 ## Embedded Binary Registry
 
-`emulation/binaries/` holds Amiga binaries that are converted to C byte arrays by `scripts/embed_binary.sh`. The registry in `uaos_emu_registry.c` maps names (e.g., `Lha`) to the embedded data so the shell can run them with `C:run <name>`.
+`emulation/binaries/` holds Amiga binaries that are converted to C byte arrays by `scripts/embed_binary.sh`. The registry in `uaos_emu_registry.c` maps names (e.g., `Lha`) to the embedded data via `UAOS_Emu_RunByName()`. Since UAOS-75, `C:run` resolves commands through the normal shell dispatch path and spawns them detached; the registry remains only as a fallback when `run` is invoked without a shell dispatch context (e.g. a minimal `NativeCmdCtx`).
 
 For details on how M68k code calls native functions, see [Thunking](/concepts/thunking.md).

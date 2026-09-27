@@ -53,7 +53,7 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | Category | Commands |
 |---|---|
 | **Volume / Disk** | `info`, `disks`, `diskchange`, `mount`, `format`, `fdisk`, `fsck`, `addbuffers`, `relabel`, `install` |
-| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `resload`, `runback`, `strace`, `rx`, `klog` (`debug`), `dmesg`, `irqstat`, `chiptrace`, `memcheck`, `crash` |
+| **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `resload`, `run`, `runback`, `strace`, `rx`, `klog` (`debug`), `dmesg`, `irqstat`, `chiptrace`, `memcheck`, `crash` |
 | **Network** | `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo` |
 | **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `ed`, `guide`, `requestchoice`, `requestfile` |
 | **Preferences** | `screenmode`, `font`, `icontrol`, `input`, `palette`, `wbpattern`, `serial`, `printer`, `time`, `locale` |
@@ -64,6 +64,8 @@ The following native C: commands are still implemented in `kernel/shell/`:
 | **Shell-state wrappers** | `alias`, `unalias`, `path` (forward to the shell built-ins via `dispatch_line`); `skip`, `lab` (script keywords — native entries exist so `C:skip`/`C:lab` resolve; `skip` prints a note, `lab` is a no-op) |
 
 `format` reports per-stage FAT32 errors (e.g. "FAT32: failed to write FSINFO") instead of a bare "Format failed."; the same return-code switch lives in `inst_cmd_format` (`shell_win.c`) and `Cmd_Format` (`cmd_format.c`).
+
+`run` (UAOS-75) has AmigaOS semantics: it re-dispatches its argument line through the shell's background-job queue (`dispatch_line` + trailing `&`), so the child resolves through the normal `run_cmd` chain (built-ins → resident → native C: → PATH/cwd binaries, NATIVE/M68K/X64 headers).  It no longer consults only the ROM embedded-binary registry (`UAOS_Emu_RunByName`), which is kept solely as a fallback when no shell dispatch context exists.  If `run`'s own stdout was redirected, the spec is propagated to the detached child via `NativeCmdCtx.out_redirect` (filled from `g_redir.path` in `shell_make_ctx`), so `run >NIL: C:ntpd` silences the child too.  Because M68K/X64 payloads become real `UaosTask`s, `inst_exec_uaos_bin` skips the foreground `Wait(SIGF_CHILD)` while `g_bg_running` is set — otherwise a detached long-running binary would block the job pump, which lives in the main UI loop.
 
 The following commands are now on-disk x86-64 ELF64 userspace binaries in `system/userspace/`:
 
