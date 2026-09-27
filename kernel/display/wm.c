@@ -4,6 +4,7 @@
 #include "framebuffer.h"
 #include "cursor.h"
 #include "desktop.h"
+#include "blanker.h"
 #include "filebrowser.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -261,9 +262,10 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
         if (track_h > 0)
             draw_sb_track(live_x, track_y, SB_LIVE_W, track_h, 0);
 
-        draw_arrow(tx, ty, tw, arrow_sz, 0, bg);
-        if (th >= arrow_sz * 2)
+        if (th >= arrow_sz * 2) {
+            draw_arrow(tx, ty, tw, arrow_sz, 0, bg);
             draw_arrow(tx, ty + th - arrow_sz, tw, arrow_sz, 1, bg);
+        }
 
         if (track_h > 4 && content_sz > view_sz && scroll >= 0) {
             int thumb_h = track_h * view_sz / content_sz;
@@ -289,8 +291,10 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
         if (track_w > 0)
             draw_sb_track(track_x, live_y, SB_LIVE_W, track_w, 1);
 
-        draw_arrow(tx, ty, arrow_sz, th, 2, bg);
-        draw_arrow(tx + tw - arrow_sz, ty, arrow_sz, th, 3, bg);
+        if (tw >= arrow_sz * 2) {
+            draw_arrow(tx, ty, arrow_sz, th, 2, bg);
+            draw_arrow(tx + tw - arrow_sz, ty, arrow_sz, th, 3, bg);
+        }
 
         if (track_w > 4 && content_sz > view_sz) {
             int thumb_w = track_w * view_sz / content_sz;
@@ -1230,6 +1234,11 @@ void WM_KeyEvent(char c)
 
 void WM_Redraw(void)
 {
+    /* While the screen blanker holds the display, a composed repaint
+     * would undo the blank (e.g. the 1 Hz clock flush).  Input un-blanks
+     * via Blanker_OnInput(), which clears the flag before redrawing. */
+    if (Blanker_IsBlanked()) return;
+
     FB_BeginDraw();
 
     /* Repaint full desktop backdrop only if Workbench has been loaded */

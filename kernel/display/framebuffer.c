@@ -592,6 +592,7 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
     if (g_drawing) {
         for (int row = 0; row < 16; row++) {
             int py = y + row;
+            if (py < 0) continue;
             if ((unsigned)py >= BB_MAX_H) break;
             uint8_t bits = glyph[row];
             uint32_t *dst = g_backbuf[py];
@@ -787,6 +788,7 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
     if (g_drawing) {
         for (int row = 0; row < 8; row++) {
             int py = y + row;
+            if (py < 0) continue;
             if ((unsigned)py >= BB_MAX_H) break;
             uint8_t bits = glyph[row];
             uint32_t *dst = g_backbuf[py];

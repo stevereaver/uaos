@@ -41,6 +41,8 @@ The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`,
 
 `FB_PutStrCentred` and `FB_PutStrSmallCentred` truncate the string to fit the target rectangle (character-granular), preventing long window titles from overdrawing the zoom/depth gadgets or bleeding past the window edge.
 
+The buffered (`g_drawing`) paths of `FB_PutChar`/`FB_PutCharSmall` clip rows the same way as the direct-to-VRAM path: `continue` for `py < 0` and `break` only once `py >= BB_MAX_H`, so a glyph whose top extends above the screen still draws its visible lower rows instead of vanishing entirely.
+
 ## Window Manager (WM)
 
 The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles user interaction and repainting.
@@ -70,7 +72,7 @@ Each window provides callbacks for:
 
 ### Scrollbars
 
-Every window gets an always-on right (vertical) and bottom (horizontal) scrollbar: an `WM_ARROW_LEN` (11px) arrow button at each end, a dithered track between them, and a hollow raised-bevel thumb sized proportionally to `view/content` (minimum 8px). The thumb top travels `track_len - thumb_len` pixels over the scroll range `[0, content - view]`. Thumb drags map pointer delta to scroll delta through **that same travel range** (`dm * max_s / travel`) so the thumb tracks the pointer 1:1 — the drag handler must replicate `draw_scrollbar`'s geometry exactly (track = rect − `WM_ARROW_LEN`×2, same thumb clamp). `view` is `WmWindow.view_h` when set via `WM_SetScrollInfoEx` (shell/ed/vim reserve a status bar), else the client height; `draw_chrome`, `scroll_by`, `WM_SetScrollY`, and the drag handler all use it consistently so the drawn thumb position, the scroll clamp, and the drag inverse all agree.
+Every window gets an always-on right (vertical) and bottom (horizontal) scrollbar: an `WM_ARROW_LEN` (11px) arrow button at each end, a dithered track between them, and a hollow raised-bevel thumb sized proportionally to `view/content` (minimum 8px). The thumb top travels `track_len - thumb_len` pixels over the scroll range `[0, content - view]`. Thumb drags map pointer delta to scroll delta through **that same travel range** (`dm * max_s / travel`) so the thumb tracks the pointer 1:1 — the drag handler must replicate `draw_scrollbar`'s geometry exactly (track = rect − `WM_ARROW_LEN`×2, same thumb clamp). `view` is `WmWindow.view_h` when set via `WM_SetScrollInfoEx` (shell/ed/vim reserve a status bar), else the client height; `draw_chrome`, `scroll_by`, `WM_SetScrollY`, and the drag handler all use it consistently so the drawn thumb position, the scroll clamp, and the drag inverse all agree. Both arrow buttons are skipped when the scrollbar's long axis can't fit them (`th`/`tw < WM_ARROW_LEN*2`), so degenerate rects never paint stray arrows over chrome.
 
 ## Software Cursor
 
@@ -82,12 +84,14 @@ The software cursor (`cursor.c`) uses save/restore of background pixels for flic
 
 ## Workbench Elements
 - **Backdrop**: Solid Amiga grey (`WB_GREY`, R:170 G:170 B:170). Can be toggled via Workbench ▸ Backdrop to hide/show desktop icons.
-- **Menu Bar**: Fixed at the top of the screen.
+- **Menu Bar**: Fixed at the top of the screen. Right-click opens menus; a left press in the band that misses every menu title and the clock is consumed — LMB on the screen bar does nothing (no lasso, no backdrop double-click).
 - **Icons**: Desktop icons representing disks, tools, and leave-out shortcuts (placed by Icons ▸ Leave Out). Leave-out icons show a small shortcut arrow and open/run their target on double-click.
 
 ### Icon Cache
 
 The desktop icon list (including `.info` file loading and planar decoding) is cached in `get_icons()` and only rebuilt when the VFS mount table, AppIcon set, or leave-out registry changes (mount count, any mount name, AppIcon count, or `g_leaveout_version` differs from the cached fingerprint). This avoids reloading every `.info` from VFS on every frame and mouse event. Click/selection state persists in the cached `icons[]` array across calls.
+
+On rebuild, every emitted `icons[]` slot is fully reset (`memset`) before repopulation and unused slots are zeroed, so a slot recycled from a previous icon type can't retain stale `is_trashcan`/`is_appicon`/`is_leaveout`/`leaveout_path`/`appicon_id` state. Leave-out label/path backing storage is indexed by the leave-out registry index (`li < MAX_LEAVEOUT`), not the running icon index (which can exceed the arrays' size). The mount-name fingerprint is bounded by `MAX_ICONS` on both store and compare.
 
 ### Clock and Memory Display
 
@@ -215,7 +219,7 @@ The display layer includes several Workbench-style application windows in additi
 - **Preferences Suite (`prefs_win.c`)**: GUI editors for all AmigaOS 3.x Prefs programs — Palette, Time, IControl, Input, ScreenMode, WBPattern, Font, Serial, Printer, Locale. Each opens a WM window with AmigaOS-style gadgets (buttons, cycle gadgets, sliders, checkboxes). Palette editor persists to `ENVARC:Sys/palette.prefs` via IFF PREF format. Time editor reads/writes the RTC via `RTC_ReadDateTime()`/`RTC_SetDateTime()`.
 - **Commodities Framework (`commodities.h/c`)**: Broker registry for commodities — background tools that can be controlled from Exchange. Supports up to 16 brokers with Active/Sleeping/Disabled states and enable/disable/sleep/wake callbacks.
 - **Exchange Window (`exchange_win.c`)**: GUI window listing all registered commodity brokers with status indicators and Enable/Disable/Sleep/Wake/Cycle controls.
-- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity.
+- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity. While `Blanker_IsBlanked()`, `WM_Redraw()` is a no-op so the 1 Hz clock flush (or any other composed repaint) can't undo the blank; un-blank paths clear the flag before redrawing.
 - **Format Window (`format_win.c`)**: AmigaOS-style Format window opened from Icons ▸ Format. Lists formattable block devices in a cycle gadget, a volume name text field, and a Format button that confirms via requester then invokes `FAT32_Format()` and auto-mounts the result via `VFS_MountPartition()`.
 - **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-0 userspace programs that use the GUI syscall interface.
 

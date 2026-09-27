@@ -1423,7 +1423,7 @@ static IconState *get_icons(int *count)
                   (g_leaveout_version != cache_leaveout_version);
 
     if (!changed) {
-        for (int mi = 0; mi < mount_count && !changed; mi++) {
+        for (int mi = 0; mi < mount_count && mi < MAX_ICONS && !changed; mi++) {
             char mname[32];
             if (!VFS_GetMountName(mi, mname, 32)) { changed = 1; break; }
             /* Compare against cached fingerprint */
@@ -1513,7 +1513,9 @@ static IconState *get_icons(int *count)
             }
         }
 
-        /* Store icon data */
+        /* Store icon data — reset the whole slot first so a recycled
+         * slot can't retain flags from a previous icon type. */
+        memset(&icons[n], 0, sizeof(IconState));
         icons[n].volume = vol_str;
         icons[n].label  = str_eq(mname, "RAM") ? "RAM Disk" : vol_str;
         icons[n].x = old_x;
@@ -1522,8 +1524,6 @@ static IconState *get_icons(int *count)
         icons[n].last_tick   = old_tick;
         icons[n].click_count = old_clicks;
         icons[n].is_selected = old_selected;
-        icons[n].has_parsed  = 0;
-        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
 
         /* Try to load a .info icon for this volume */
         if (Icon_Load(vol_str, &icons[n].parsed)) {
@@ -1563,27 +1563,21 @@ static IconState *get_icons(int *count)
             }
         }
 
+        memset(&icons[n], 0, sizeof(IconState));
         icons[n].volume = "RAM:/Trash";
         icons[n].label  = "Trashcan";
         icons[n].x = trash_x;
         icons[n].y = trash_y;
-        icons[n].is_ndos = 0;
         icons[n].last_tick   = old_tick;
         icons[n].click_count = old_clicks;
         icons[n].is_selected = old_selected;
-        icons[n].has_parsed  = 0;
         icons[n].is_trashcan = 1;
-        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
         n++;
     }
 
     /* Clear any leftover slots */
-    for (int i = n; i < MAX_ICONS; i++) {
-        icons[i].volume = NULL;
-        icons[i].label  = NULL;
-        icons[i].is_trashcan = 0;
-        icons[i].is_appicon = 0;
-    }
+    for (int i = n; i < MAX_ICONS; i++)
+        memset(&icons[i], 0, sizeof(IconState));
 
     /* ── AppIcons from workbench.library ── */
     static char appicon_labels[MAX_ICONS][APPICON_MAX_LABEL];
@@ -1602,31 +1596,19 @@ static IconState *get_icons(int *count)
         }
         appicon_labels[n][APPICON_MAX_LABEL - 1] = '\0';
 
-        icons[n].volume = NULL;  /* AppIcons don't open a volume */
+        memset(&icons[n], 0, sizeof(IconState));
         icons[n].label  = appicon_labels[n];
         icons[n].x = ai_x;
         icons[n].y = ai_y;
-        icons[n].is_ndos = 0;
-        icons[n].last_tick = 0;
-        icons[n].click_count = 0;
-        icons[n].is_selected = 0;
-        icons[n].has_parsed = 0;
-        icons[n].is_trashcan = 0;
         icons[n].is_appicon = 1;
         icons[n].appicon_id = info.id;
-        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
         n++;
         ai_y += ICON_H + 8;
     }
 
     /* Clear remaining slots */
-    for (int i = n; i < MAX_ICONS; i++) {
-        icons[i].volume = NULL;
-        icons[i].label  = NULL;
-        icons[i].is_trashcan = 0;
-        icons[i].is_appicon = 0;
-        icons[i].is_leaveout = 0;
-    }
+    for (int i = n; i < MAX_ICONS; i++)
+        memset(&icons[i], 0, sizeof(IconState));
 
     /* ── Leave Out desktop shortcut icons ── */
     static char leaveout_labels[MAX_LEAVEOUT][32];
@@ -1635,42 +1617,30 @@ static IconState *get_icons(int *count)
     int lo_y = MENUBAR_H + 16 + (ICON_H + 8) * 4;  /* below AppIcon column */
     for (int li = 0; li < MAX_LEAVEOUT && n < MAX_ICONS; li++) {
         if (!g_leaveout[li].valid) continue;
-        /* Copy label + path to static storage */
+        /* Copy label + path to static storage — index by li (bounded by
+         * MAX_LEAVEOUT), not the running icon index n. */
         int k;
         for (k = 0; k < 31 && g_leaveout[li].label[k]; k++)
-            leaveout_labels[n][k] = g_leaveout[li].label[k];
-        leaveout_labels[n][k] = '\0';
+            leaveout_labels[li][k] = g_leaveout[li].label[k];
+        leaveout_labels[li][k] = '\0';
         for (k = 0; k < 127 && g_leaveout[li].path[k]; k++)
-            leaveout_paths[n][k] = g_leaveout[li].path[k];
-        leaveout_paths[n][k] = '\0';
+            leaveout_paths[li][k] = g_leaveout[li].path[k];
+        leaveout_paths[li][k] = '\0';
 
-        icons[n].volume = NULL;
-        icons[n].label  = leaveout_labels[n];
+        memset(&icons[n], 0, sizeof(IconState));
+        icons[n].label  = leaveout_labels[li];
         icons[n].x = lo_x;
         icons[n].y = lo_y;
-        icons[n].is_ndos = 0;
-        icons[n].last_tick = 0;
-        icons[n].click_count = 0;
-        icons[n].is_selected = 0;
-        icons[n].has_parsed = 0;
-        icons[n].is_trashcan = 0;
-        icons[n].is_appicon = 0;
         icons[n].is_leaveout = 1;
-        icons[n].leaveout_path = leaveout_paths[n];
+        icons[n].leaveout_path = leaveout_paths[li];
         icons[n].leaveout_is_dir = g_leaveout[li].is_dir;
-        memset(&icons[n].parsed, 0, sizeof(ParsedIcon));
         n++;
         lo_y += ICON_H + 8;
     }
 
     /* Clear any newly-remaining slots */
-    for (int i = n; i < MAX_ICONS; i++) {
-        icons[i].volume = NULL;
-        icons[i].label  = NULL;
-        icons[i].is_trashcan = 0;
-        icons[i].is_appicon = 0;
-        icons[i].is_leaveout = 0;
-    }
+    for (int i = n; i < MAX_ICONS; i++)
+        memset(&icons[i], 0, sizeof(IconState));
 
     cache_count = n;
     *count = n;
@@ -2321,6 +2291,13 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
         g_clock_pressed = 1;
         return 1;
     }
+
+    /* Any other left press inside the menubar band is consumed — LMB on
+     * the screen bar does nothing on Workbench.  Without this the press
+     * falls through to the desktop path, arming the backdrop double-click
+     * and starting an invisible lasso anchored in the menubar. */
+    if (left_pressed && my >= 0 && my < MENUBAR_H)
+        return 1;
 
     /* ── Desktop icon press (start potential drag) ─────── */
     int n;
