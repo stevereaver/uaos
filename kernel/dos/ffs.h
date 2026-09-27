@@ -1,4 +1,4 @@
-/* ffs.h — UAOS Amiga OFS/FFS filesystem driver (read-only)
+/* ffs.h — UAOS Amiga OFS/FFS filesystem driver (read/write)
  *
  * Implements the Amiga "Old File System" (DOS\0) and "Fast File System"
  * (DOS\1) on-disk layout as written by AmigaOS / WinUAE, plus the
@@ -14,12 +14,14 @@
  *   file headers T_HEADER + ST_FILE: high_seq data-block pointers anchored
  *                at the top of the hash-table region (index ht_size+5-i),
  *                extension link to T.LIST blocks for >ht_size-ish files
- *   ext blocks   T_LIST + ST_FILE: 51 further data pointers at index
- *                (56-i), extension link for the next chunk
+ *   ext blocks   T_LIST + ST_FILE: headerKey = own key, parent = file
+ *                header, data pointers anchored identically to headers
  *   data blocks  FFS: raw payload;  OFS: 24-byte header + 488 bytes
  *
- * Write operations are intentionally unsupported: the handler reports
- * ERROR_DISK_WRITE_PROTECTED for any mutating packet.
+ * Writes maintain: header/ext/checksum fields, the allocation bitmap
+ * (bit=1 free, bitmap checksum at lw0), OFS data-block headers
+ * (seq/dataSize/nextData chain), hash chains on create/delete/rename,
+ * and the file-header byteSize/datestamp on every size change.
  */
 
 #ifndef UAOS_FFS_H
@@ -52,6 +54,9 @@
 #define FFS_LW_TABLE       6          /* hash table / data list region */
 #define FFS_LW_BM_FLAG     78         /* root: -1 = bitmap valid */
 #define FFS_LW_BM_PAGES    79         /* root: bitmap page keys [25] */
+#define FFS_LW_PROTECT     80         /* access/protection bits */
+#define FFS_LW_BYTE_SIZE   81         /* file size (files only) */
+#define FFS_LW_COMMENT     82         /* BSTR comment (up to 79 chars) */
 #define FFS_LW_BM_EXT      104        /* root: bitmap extension block */
 #define FFS_LW_DAYS        105        /* datestamp (dir/file: entry date) */
 #define FFS_LW_MINS        106
@@ -61,6 +66,16 @@
 #define FFS_LW_PARENT      125        /* parent dir key (ext: hdr key) */
 #define FFS_LW_EXTENSION   126        /* next T.LIST ext / dir cache blk */
 #define FFS_LW_SEC_TYPE    127        /* secondary type */
+
+/* OFS data block longword indices */
+#define FFS_OFS_LW_TYPE      0        /* T_DATA */
+#define FFS_OFS_LW_HDR_KEY   1        /* owning file header key */
+#define FFS_OFS_LW_SEQ       2        /* 1-based sequence number */
+#define FFS_OFS_LW_SIZE      3        /* payload bytes used (<=488) */
+#define FFS_OFS_LW_NEXT      4        /* next data block in chain */
+#define FFS_OFS_LW_CHECKSUM  5        /* sum of all 128 longwords == 0 */
+
+/* bitmap block: lw0 checksum, lw1..127 map words; bit set = free */
 
 /* secondary types (values in FFS_LW_SEC_TYPE) */
 #define FFS_ST_ROOT       1
@@ -87,6 +102,7 @@ typedef struct {
     uint32_t high_seq;      /* data ptrs stored in this header (files) */
     uint32_t days, mins, ticks;
     char     name[FFS_MAX_NAME];
+    char     comment[80];   /* decoded BSTR comment */
 } FfsEntry;
 
 /* ---- volume ------------------------------------------------------------ */
@@ -164,5 +180,45 @@ int32_t FFS_CountUsedBlocks(FfsVolume *vol);
 
 /* Standard OFS/FFS name hash. Public for fsck validation. */
 uint32_t FFS_Hash(const char *name, uint32_t ht_size);
+
+/* ---- write support -------------------------------------------------- */
+
+/* Allocate one block via the bitmap. Returns block key, 0 on failure
+ * (bitmap unavailable/invalid or disk full). */
+uint32_t FFS_AllocBlock(FfsVolume *vol);
+
+/* Return a block to the bitmap. Best-effort, silent on bad input. */
+void     FFS_FreeBlock(FfsVolume *vol, uint32_t block);
+
+/* Write `len` bytes into file header `key` at absolute `pos`.
+ * Extends the file (allocating data/ext blocks) as needed; positions
+ * beyond the current end zero-fill the gap.  Returns bytes written,
+ * or a negative error. */
+int32_t FFS_WriteAt(FfsVolume *vol, uint32_t key, uint32_t pos,
+                    const void *src, uint32_t len);
+
+/* Set exact file size: truncates (freeing tail blocks/exts) or
+ * zero-extends.  Returns 0 on success. */
+int FFS_SetFileSize(FfsVolume *vol, uint32_t key, uint32_t size);
+
+/* Create (or truncate an existing) file at volume-relative `path`.
+ * Returns the new/existing header key, 0 on failure. */
+uint32_t FFS_CreateFile(FfsVolume *vol, const char *path);
+
+/* Create a directory. Returns header key or 0. */
+uint32_t FFS_CreateDir(FfsVolume *vol, const char *path);
+
+/* Delete a file or empty directory. Returns 0 on success,
+ * -1 not found, -3 directory not empty. */
+int FFS_Delete(FfsVolume *vol, const char *path);
+
+/* Rename/move within the volume. Returns 0 on success. */
+int FFS_Rename(FfsVolume *vol, const char *old_path, const char *new_path);
+
+/* Metadata setters (header-key based). */
+int FFS_SetProtect(FfsVolume *vol, uint32_t key, uint32_t prot);
+int FFS_SetComment(FfsVolume *vol, uint32_t key, const char *comment);
+int FFS_SetDate(FfsVolume *vol, uint32_t key,
+                uint32_t days, uint32_t mins, uint32_t ticks);
 
 #endif /* UAOS_FFS_H */

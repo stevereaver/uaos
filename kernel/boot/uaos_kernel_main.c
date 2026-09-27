@@ -672,7 +672,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     } else if (virtio_scsi_init() == 0) {
         /* Fall back to VirtIO-SCSI (VirtualBox virtio-scsi controller) */
         kprint("[BOOT] VirtIO-SCSI block device detected and registered.\n");
-        boot_automount_partitions(BlockDev_Find("virtio0"));
+        /* Auto-detect partitions / bare filesystems on every scsi disk */
+        for (int i = 0; i < 4; i++) {
+            char vn[12];
+            vn[0]='v';vn[1]='i';vn[2]='r';vn[3]='t';vn[4]='i';vn[5]='o';
+            vn[6]=(char)('0'+i);vn[7]='\0';
+            BlockDev *d = BlockDev_Find(vn);
+            if (d) boot_automount_partitions(d);
+        }
     } else {
         kprint("[BOOT] No VirtIO block device found (this is OK if no disk attached).\n");
     }

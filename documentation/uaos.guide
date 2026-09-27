@@ -215,13 +215,15 @@
   Recognised volumes are auto-mounted:
 
     @{b}FAT32@{ub}     read/write, mounted under display name (DH0:) and label
-    @{b}OFS/FFS@{ub}   read-only Amiga filesystems (DOS\0 .. DOS\7), mounted
+    @{b}OFS/FFS@{ub}   read/write Amiga filesystems (DOS\0 .. DOS\7), mounted
                under the Amiga volume name stored in the root block
                (e.g. a WinUAE hardfile named "test" mounts as test:)
 
-  The OFS/FFS driver is intentionally read-only — writes return
-  ERROR_DISK_WRITE_PROTECTED.  @{i}fsck@{ui} inspects partition tables
-  and filesystems directly on the block device:
+  The OFS/FFS driver supports create/write/append, mkdir, rename and
+  delete, growing files past the inline pointer table into T.LIST
+  extension blocks, with full bitmap accounting and header checksums.
+  @{i}fsck@{ui} inspects partition tables and filesystems directly on
+  the block device:
 
     @{i}fsck LIST@{ui}              list detected block devices
     @{i}fsck virtio0@{ui}           MBR/GPT/RDB partition-table analysis

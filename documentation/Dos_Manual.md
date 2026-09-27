@@ -467,8 +467,14 @@ Return codes via `failat`: 0 clean, 5 warnings, 10 errors, 20 fatal.
 - Disks with no partition table are probed as bare filesystems —
   WinUAE `.hdf` hardfiles formatted OFS/FFS mount this way under their
   Amiga volume name (e.g. `test:`).
-- Amiga OFS/FFS volumes are mounted **read-only**; write packets are
-  rejected with `ERROR_DISK_WRITE_PROTECTED`.
+- Amiga OFS/FFS volumes are mounted **read/write**: create, write,
+  grow, rename, mkdir and delete are supported, including `T.LIST`
+  extension blocks for large files and OFS checksummed data blocks.
+  Attach a second image writable (the default in
+  `scripts/run_with_disk.sh`; `DISK2_RO=1` restores read-only).
+- For VirtualBox, `scripts/hdf2vdi.py in.hdf out.vdi` wraps a raw
+  WinUAE `.hdf` in a sparse dynamic VDI (`--fixed` for a flat image);
+  sector content is byte-identical.
 
 ---
 

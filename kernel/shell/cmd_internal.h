@@ -277,7 +277,7 @@ static inline int cmd_copy_file(const char *src, const char *dst)
     VfsFile fsrc;
     if (!VFS_Open(&fsrc, src, VFS_READ)) return -1;
     VfsFile fdst;
-    if (!VFS_Open(&fdst, dst, VFS_WRITE | VFS_CREATE)) {
+    if (!VFS_Open(&fdst, dst, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
         VFS_Close(&fsrc);
         return -1;
     }

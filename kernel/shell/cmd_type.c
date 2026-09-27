@@ -131,7 +131,8 @@ void Cmd_Type(NativeCmdCtx *ctx, const char *args)
     if (to_file) {
         char abs_to[CMD_MAX_PATH];
         cmd_make_abs(ctx->cwd, to_file, abs_to, CMD_MAX_PATH);
-        if (VFS_Open(&outfh, abs_to, VFS_WRITE | VFS_CREATE)) {
+        if (VFS_Open(&outfh, abs_to,
+                     VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
             has_out = 1;
         } else {
             char msg[CMD_MAX_LINE];

@@ -129,7 +129,7 @@ static void trace_output(const char *s)
         if (!g_out_file_open) {
             g_out_file_open =
                 VFS_Open(&g_out_file, g_output_path,
-                         VFS_WRITE | VFS_CREATE) ? 1 : -1;
+                         VFS_WRITE | VFS_CREATE | VFS_TRUNC) ? 1 : -1;
         }
         if (g_out_file_open > 0) {
             int n = 0;

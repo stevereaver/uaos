@@ -6,7 +6,7 @@
 #include "ffs.h"
 #include "handler.h"
 
-/* Create a read-only OFS/FFS handler bound to a mounted volume. */
+/* Create a read/write OFS/FFS handler bound to a mounted volume. */
 Handler *FfsHandler_Create(const char *name, FfsVolume *vol);
 
 /* Identity test for direct-dispatch optimizations. */

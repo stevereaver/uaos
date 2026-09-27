@@ -189,6 +189,7 @@ typedef struct __attribute__((aligned(4096))) {
     volatile virtq_t vq;
     uint16_t free_idx;
     uint16_t used_idx;
+    uint16_t submit_base;   /* used_idx sampled before notify, per request */
     volatile int irq_seen;
 } vblk_qstate_t;
 
@@ -429,6 +430,12 @@ static int virtio_submit_request(vblk_dev_t *d, uint64_t req_phys, uint64_t data
     /* Memory barrier to ensure descriptors are written before notifying device */
     memory_barrier();
 
+    /* Completion baseline MUST be sampled before the avail-ring update:
+     * the device may finish the request the instant it is notified, so
+     * sampling used_idx in the wait routine would miss a completion that
+     * already landed (wait would then hang until timeout). */
+    d->q->submit_base = vq->used_idx;
+
     /* Update available ring */
     vq->avail_ring[vq->avail_idx % VIRTIO_QUEUE_SIZE] = desc_idx;
     vq->avail_idx++;
@@ -478,8 +485,8 @@ static void virtio_irq_handler(uint64_t vector, uint64_t error_code)
 
 static int virtio_wait_completion(vblk_dev_t *d, uint16_t desc_idx, uint32_t timeout_ms)
 {
-    (void)timeout_ms;
-    uint16_t initial_used_idx = d->q->vq.used_idx;
+    (void)timeout_ms; (void)desc_idx;
+    uint16_t initial_used_idx = d->q->submit_base;
 
     /* Wait for completion by polling the used ring index */
     uint32_t iterations = 0;
@@ -516,7 +523,9 @@ static int virtio_wait_completion(vblk_dev_t *d, uint16_t desc_idx, uint32_t tim
          * bulk scans like FAT free-space counting. */
         iterations++;
         if (iterations > 400000000) {
-            kprint("[VIRTIO] Timeout waiting for completion\n");
+            kprint("[VIRTIO] Timeout waiting for completion on ");
+            kprint(d->name);
+            kprint("\n");
             return -1;
         }
     }

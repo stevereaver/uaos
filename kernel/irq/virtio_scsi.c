@@ -63,6 +63,7 @@
 #define VIRTIO_PCI_CAP_NOTIFY_CFG   2
 #define VIRTIO_PCI_CAP_ISR_CFG      3
 #define VIRTIO_PCI_CAP_DEVICE_CFG   4
+#define VIRTIO_PCI_CAP_PCI_CFG      5
 
 /* =========================================================================
  * I/O port helpers
@@ -102,6 +103,12 @@ static uint16_t pci_read16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg) {
 }
 static uint8_t pci_read8(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg) {
     return (uint8_t)(pci_read32(bus, dev, fn, reg) >> ((reg & 3) * 8));
+}
+static void pci_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg, uint32_t val) {
+    uint32_t addr = 0x80000000U | ((uint32_t)bus << 16) | ((uint32_t)dev << 11)
+                  | ((uint32_t)fn << 8) | (reg & 0xFC);
+    outl(PCI_CONFIG_ADDRESS_PORT, addr);
+    outl(PCI_CONFIG_DATA_PORT, val);
 }
 static void pci_write16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg, uint16_t val) {
     uint32_t addr = 0x80000000U | ((uint32_t)bus << 16) | ((uint32_t)dev << 11)
@@ -373,6 +380,8 @@ typedef struct {
     int       is_cdrom;      /* 1 if CD/DVD-ROM, 0 if hard disk */
     uint32_t  sector_size;   /* 512 for hard disk, 2048 for CD-ROM */
     uint64_t  capacity;      /* in sector_size-byte sectors */
+    char      name[12];      /* "virtio0" .. / "vio_cd0" .. */
+    char      disp[8];       /* "DH0:" .. for disks, "CD0:" for CDs */
     BlockDev  bdev;
 } vio_scsi_device_t;
 
@@ -390,12 +399,28 @@ static int         g_active      = 0;       /* controller initialised */
 
 static vio_scsi_device_t g_devices[VIO_SCSI_MAX_PORTS];
 static int g_num_devices = 0;
+static int g_num_disks   = 0;
+static int g_num_cds     = 0;
+
+static void vio_scsi_make_name(vio_scsi_device_t *dev, const char *prefix, int idx) {
+    int i = 0;
+    while (prefix[i]) { dev->name[i] = prefix[i]; i++; }
+    dev->name[i++] = (char)('0' + idx);
+    dev->name[i] = 0;
+}
 
 /* Modern transport capability locations */
 static vio_cap_t g_common_cap;
 static vio_cap_t g_notify_cap;
 static vio_cap_t g_isr_cap;
 static uint32_t  g_notify_off_mult = 0;
+
+/* When a capability's BAR cannot be reached by MMIO dereference (e.g.
+ * firmware placed a 64-bit BAR above the 4GB identity map), all config
+ * regions are accessed through the VIRTIO_PCI_CAP_PCI_CFG window in PCI
+ * config space instead.  Mirrors virtio_net.c. */
+static int        g_use_pcicfg = 0;
+static uint8_t    g_pcicfg_pos = 0;   /* cfg-space offset of the PCI_CFG cap */
 
 /* Completion tracking (synchronous I/O) */
 static volatile int g_irq_pending = 0;
@@ -409,20 +434,62 @@ static uint8_t g_data_buffer[65536] __attribute__((aligned(4096)));
  * Transport accessors
  *
  * For legacy: all registers are at BAR0 I/O base + offset (port I/O).
- * For modern: common config is at common_cap.bar_addr + common_cap.offset + reg.
+ * For modern: common config is at common_cap.bar_addr + common_cap.offset + reg,
+ *             either directly when the BAR is below the 4GB identity map, or
+ *             through the PCI_CFG config-space window when it is not.
  * ========================================================================= */
+
+static uint32_t sio_pcicfg_read(vio_cap_t *cap, uint32_t reg, uint32_t len)
+{
+    pci_write8 (g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 4),  cap->bar);
+    pci_write32(g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 8),  cap->offset + reg);
+    pci_write32(g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 12), len);
+    return pci_read32(g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 16));
+}
+static void sio_pcicfg_write(vio_cap_t *cap, uint32_t reg, uint32_t len, uint32_t val)
+{
+    pci_write8 (g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 4),  cap->bar);
+    pci_write32(g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 8),  cap->offset + reg);
+    pci_write32(g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 12), len);
+    pci_write32(g_pci_bus, g_pci_dev, g_pci_fn, (uint8_t)(g_pcicfg_pos + 16), val);
+}
+
+static uint8_t sio_r8(vio_cap_t *cap, uint32_t reg) {
+    if (g_use_pcicfg) return (uint8_t)sio_pcicfg_read(cap, reg, 1);
+    return mmio_r8(cap->bar_addr + cap->offset + reg);
+}
+static uint16_t sio_r16(vio_cap_t *cap, uint32_t reg) {
+    if (g_use_pcicfg) return (uint16_t)sio_pcicfg_read(cap, reg, 2);
+    return mmio_r16(cap->bar_addr + cap->offset + reg);
+}
+static uint32_t sio_r32(vio_cap_t *cap, uint32_t reg) {
+    if (g_use_pcicfg) return sio_pcicfg_read(cap, reg, 4);
+    return mmio_r32(cap->bar_addr + cap->offset + reg);
+}
+static void sio_w8(vio_cap_t *cap, uint32_t reg, uint8_t val) {
+    if (g_use_pcicfg) { sio_pcicfg_write(cap, reg, 1, val); return; }
+    mmio_w8(cap->bar_addr + cap->offset + reg, val);
+}
+static void sio_w16(vio_cap_t *cap, uint32_t reg, uint16_t val) {
+    if (g_use_pcicfg) { sio_pcicfg_write(cap, reg, 2, val); return; }
+    mmio_w16(cap->bar_addr + cap->offset + reg, val);
+}
+static void sio_w32(vio_cap_t *cap, uint32_t reg, uint32_t val) {
+    if (g_use_pcicfg) { sio_pcicfg_write(cap, reg, 4, val); return; }
+    mmio_w32(cap->bar_addr + cap->offset + reg, val);
+}
 
 /* --- Status register --- */
 static uint8_t vio_status_read(void) {
     if (g_transport == VIO_SCSI_LEGACY)
         return inb(g_legacy_io + VIO_LEGACY_STATUS);
-    return mmio_r8(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DEVICE_STATUS);
+    return sio_r8(&g_common_cap, VIO_COMMON_DEVICE_STATUS);
 }
 static void vio_status_write(uint8_t val) {
     if (g_transport == VIO_SCSI_LEGACY)
         outb(g_legacy_io + VIO_LEGACY_STATUS, val);
     else
-        mmio_w8(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DEVICE_STATUS, val);
+        sio_w8(&g_common_cap, VIO_COMMON_DEVICE_STATUS, val);
 }
 
 /* --- Feature negotiation --- */
@@ -430,16 +497,16 @@ static uint32_t vio_host_features_read(void) {
     if (g_transport == VIO_SCSI_LEGACY)
         return inl(g_legacy_io + VIO_LEGACY_HOST_FEATURES);
     /* Modern: read feature select 0 (bits 0-31) */
-    mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DEVICE_FEATURE_SELECT, 0);
-    return mmio_r32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DEVICE_FEATURE);
+    sio_w32(&g_common_cap, VIO_COMMON_DEVICE_FEATURE_SELECT, 0);
+    return sio_r32(&g_common_cap, VIO_COMMON_DEVICE_FEATURE);
 }
 static void vio_guest_features_write(uint32_t select, uint32_t val) {
     if (g_transport == VIO_SCSI_LEGACY) {
         outl(g_legacy_io + VIO_LEGACY_GUEST_FEATURES, val);
         return;
     }
-    mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DRIVER_FEATURE_SELECT, select);
-    mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DRIVER_FEATURE, val);
+    sio_w32(&g_common_cap, VIO_COMMON_DRIVER_FEATURE_SELECT, select);
+    sio_w32(&g_common_cap, VIO_COMMON_DRIVER_FEATURE, val);
 }
 
 /* --- Queue selection --- */
@@ -447,14 +514,14 @@ static void vio_queue_select(uint16_t idx) {
     if (g_transport == VIO_SCSI_LEGACY)
         outw(g_legacy_io + VIO_LEGACY_QUEUE_SEL, idx);
     else
-        mmio_w16(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_SELECT, idx);
+        sio_w16(&g_common_cap, VIO_COMMON_QUEUE_SELECT, idx);
 }
 
 /* --- Queue size read --- */
 static uint16_t vio_queue_size_read(void) {
     if (g_transport == VIO_SCSI_LEGACY)
         return inw(g_legacy_io + VIO_LEGACY_QUEUE_SIZE);
-    return mmio_r16(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_SIZE);
+    return sio_r16(&g_common_cap, VIO_COMMON_QUEUE_SIZE);
 }
 
 /* --- Queue notify --- */
@@ -467,18 +534,15 @@ static void vio_queue_notify(uint16_t idx) {
     }
     /* Modern: read notify_off for this queue, then write to notify region */
     vio_queue_select(idx);
-    uint16_t notify_off = mmio_r16(g_common_cap.bar_addr + g_common_cap.offset +
-                                   VIO_COMMON_QUEUE_NOTIFY_OFF);
-    uint64_t notify_addr = g_notify_cap.bar_addr + g_notify_cap.offset
-                         + (uint64_t)notify_off * g_notify_off_mult;
-    mmio_w16(notify_addr, idx);
+    uint16_t notify_off = sio_r16(&g_common_cap, VIO_COMMON_QUEUE_NOTIFY_OFF);
+    sio_w16(&g_notify_cap, (uint32_t)notify_off * g_notify_off_mult, idx);
 }
 
 /* --- ISR read (clears interrupt) --- */
 static uint8_t vio_isr_read(void) {
     if (g_transport == VIO_SCSI_LEGACY)
         return inb(g_legacy_io + VIO_LEGACY_ISR);
-    return mmio_r8(g_isr_cap.bar_addr + g_isr_cap.offset);
+    return sio_r8(&g_isr_cap, 0);
 }
 
 /* =========================================================================
@@ -496,7 +560,7 @@ static int vio_setup_queue(uint16_t qidx) {
     if (qsize > VIO_SCSI_QSIZE) qsize = VIO_SCSI_QSIZE;
     /* For modern, write the actual queue size */
     if (g_transport == VIO_SCSI_MODERN) {
-        mmio_w16(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_SIZE, qsize);
+        sio_w16(&g_common_cap, VIO_COMMON_QUEUE_SIZE, qsize);
     }
 
     /* Get physical address of the virtqueue */
@@ -515,25 +579,25 @@ static int vio_setup_queue(uint16_t qidx) {
         uint64_t avail_addr = vq_phys + VIO_DESC_BYTES;
         uint64_t used_addr  = vq_phys + VIO_USED_OFF;
 
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_DESC_LO,
-                 (uint32_t)(desc_addr & 0xFFFFFFFF));
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_DESC_HI,
-                 (uint32_t)(desc_addr >> 32));
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_AVAIL_LO,
-                 (uint32_t)(avail_addr & 0xFFFFFFFF));
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_AVAIL_HI,
-                 (uint32_t)(avail_addr >> 32));
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_USED_LO,
-                 (uint32_t)(used_addr & 0xFFFFFFFF));
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_USED_HI,
-                 (uint32_t)(used_addr >> 32));
+        sio_w32(&g_common_cap, VIO_COMMON_QUEUE_DESC_LO,
+                (uint32_t)(desc_addr & 0xFFFFFFFF));
+        sio_w32(&g_common_cap, VIO_COMMON_QUEUE_DESC_HI,
+                (uint32_t)(desc_addr >> 32));
+        sio_w32(&g_common_cap, VIO_COMMON_QUEUE_AVAIL_LO,
+                (uint32_t)(avail_addr & 0xFFFFFFFF));
+        sio_w32(&g_common_cap, VIO_COMMON_QUEUE_AVAIL_HI,
+                (uint32_t)(avail_addr >> 32));
+        sio_w32(&g_common_cap, VIO_COMMON_QUEUE_USED_LO,
+                (uint32_t)(used_addr & 0xFFFFFFFF));
+        sio_w32(&g_common_cap, VIO_COMMON_QUEUE_USED_HI,
+                (uint32_t)(used_addr >> 32));
 
         /* Disable MSI-X vector for this queue (use legacy INTx) */
-        mmio_w16(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_MSIX_VECTOR,
-                 VIO_MSIX_NO_VECTOR);
+        sio_w16(&g_common_cap, VIO_COMMON_QUEUE_MSIX_VECTOR,
+                VIO_MSIX_NO_VECTOR);
 
         /* Enable the queue */
-        mmio_w16(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_QUEUE_ENABLE, 1);
+        sio_w16(&g_common_cap, VIO_COMMON_QUEUE_ENABLE, 1);
     }
 
     /* Clear the virtqueue memory */
@@ -589,13 +653,11 @@ static int vio_device_init(void) {
     } else {
         /* Modern: negotiate VIRTIO_F_VERSION_1 (bit 32) if offered */
         /* Read feature bits 32-63 */
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DEVICE_FEATURE_SELECT, 1);
-        uint32_t host_feat_hi = mmio_r32(g_common_cap.bar_addr + g_common_cap.offset +
-                                         VIO_COMMON_DEVICE_FEATURE);
+        sio_w32(&g_common_cap, VIO_COMMON_DEVICE_FEATURE_SELECT, 1);
+        uint32_t host_feat_hi = sio_r32(&g_common_cap, VIO_COMMON_DEVICE_FEATURE);
         /* Read feature bits 0-31 */
-        mmio_w32(g_common_cap.bar_addr + g_common_cap.offset + VIO_COMMON_DEVICE_FEATURE_SELECT, 0);
-        uint32_t host_feat_lo = mmio_r32(g_common_cap.bar_addr + g_common_cap.offset +
-                                         VIO_COMMON_DEVICE_FEATURE);
+        sio_w32(&g_common_cap, VIO_COMMON_DEVICE_FEATURE_SELECT, 0);
+        uint32_t host_feat_lo = sio_r32(&g_common_cap, VIO_COMMON_DEVICE_FEATURE);
 
         /* Accept VIRTIO_F_VERSION_1 if offered, no other features */
         uint32_t guest_feat_hi = (host_feat_hi & VIRTIO_F_VERSION_1_BIT);
@@ -647,6 +709,7 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
 
     uint8_t cap_ptr = pci_read8(bus, dev, fn, PCI_REG_CAP_PTR) & 0xFC;
     int found_common = 0, found_notify = 0, found_isr = 0;
+    int usable_common = 0, usable_notify = 0, usable_isr = 0;
     int limit = 48;
 
     while (cap_ptr && limit--) {
@@ -656,26 +719,33 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
 
         if (cap_id == PCI_CAP_ID_VENDOR && cap_len >= 16) {
             uint8_t cfg_type = pci_read8(bus, dev, fn, (uint8_t)(cap_ptr + 3));
+
+            if (cfg_type == VIRTIO_PCI_CAP_PCI_CFG && cap_len >= 20) {
+                /* PCI config-space access window — its bar/offset/length
+                 * fields are driver-writable, not descriptors. */
+                g_pcicfg_pos = cap_ptr;
+                kprint("[VIO-SCSI] pcicfg window @"); kprinthex((uint64_t)cap_ptr);
+                kprint("\n");
+                cap_ptr = cap_next & 0xFC;
+                continue;
+            }
+
             uint8_t bar_idx  = pci_read8(bus, dev, fn, (uint8_t)(cap_ptr + 4));
             uint32_t offset  = pci_read32(bus, dev, fn, (uint8_t)(cap_ptr + 8));
             uint32_t length  = pci_read32(bus, dev, fn, (uint8_t)(cap_ptr + 12));
 
             uint64_t bar_addr = pci_read_bar(bus, dev, fn, bar_idx);
-            if (!bar_addr || bar_addr > 0xFFFFFFFFULL) {
-                kprint("[VIO-SCSI] Cap type "); kprinthex((uint64_t)cfg_type);
-                kprint(" BAR "); kprinthex((uint64_t)bar_idx);
-                kprint(" unusable (addr="); kprinthex(bar_addr); kprint(")\n");
-                cap_ptr = cap_next & 0xFC;
-                continue;
-            }
+            int usable = bar_addr && bar_addr <= 0xFFFFFFFFULL;
 
             vio_cap_t *cap = NULL;
-            if (cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)      { cap = &g_common_cap; found_common = 1; }
+            if (cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)      { cap = &g_common_cap; found_common = 1;
+                if (usable) usable_common = 1; }
             else if (cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG) { cap = &g_notify_cap; found_notify = 1;
                 /* notify_off_multiplier is at cap_ptr + 16 */
                 g_notify_off_mult = pci_read32(bus, dev, fn, (uint8_t)(cap_ptr + 16));
-            }
-            else if (cfg_type == VIRTIO_PCI_CAP_ISR_CFG)    { cap = &g_isr_cap; found_isr = 1; }
+                if (usable) usable_notify = 1; }
+            else if (cfg_type == VIRTIO_PCI_CAP_ISR_CFG)    { cap = &g_isr_cap; found_isr = 1;
+                if (usable) usable_isr = 1; }
 
             if (cap) {
                 cap->bar      = bar_idx;
@@ -686,7 +756,8 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
                 kprint(" bar="); kprinthex((uint64_t)bar_idx);
                 kprint(" off="); kprinthex((uint64_t)offset);
                 kprint(" len="); kprinthex((uint64_t)length);
-                kprint(" base="); kprinthex(bar_addr); kprint("\n");
+                kprint(" base="); kprinthex(bar_addr);
+                kprint(usable ? "\n" : " (not mappable)\n");
             }
         }
         cap_ptr = cap_next & 0xFC;
@@ -697,6 +768,19 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
         kprinthex((uint64_t)found_common);
         kprint(" notify="); kprinthex((uint64_t)found_notify);
         kprint(" isr="); kprinthex((uint64_t)found_isr); kprint(")\n");
+        return -1;
+    }
+    if (g_notify_off_mult == 0) g_notify_off_mult = 1;
+
+    /* All three required regions must share one access mode. */
+    if (usable_common && usable_notify && usable_isr) {
+        g_use_pcicfg = 0;
+        kprint("[VIO-SCSI] using MMIO register access\n");
+    } else if (g_pcicfg_pos) {
+        g_use_pcicfg = 1;
+        kprint("[VIO-SCSI] BAR not mappable, using PCI_CFG window access\n");
+    } else {
+        kprint("[VIO-SCSI] BAR not mappable and no PCI_CFG window\n");
         return -1;
     }
     return 0;
@@ -1303,8 +1387,9 @@ static int vio_scsi_probe_port(int port) {
         }
         dev->capacity = capacity;
 
-        /* Register as "vio_cd0" so the boot code can find it for ISO9660 */
-        dev->bdev.name         = "vio_cd0";
+        /* Register as "vio_cdN" so the boot code can find it for ISO9660 */
+        vio_scsi_make_name(dev, "vio_cd", g_num_cds);
+        dev->bdev.name         = dev->name;
         dev->bdev.display_name = "CD0:";
         dev->bdev.sector_size  = 2048;
         dev->bdev.num_sectors  = capacity;
@@ -1320,9 +1405,10 @@ static int vio_scsi_probe_port(int port) {
             return 0;
         }
 
-        kprint("[VIO-SCSI] Registered CD-ROM vio_cd0 (");
+        kprint("[VIO-SCSI] Registered CD-ROM "); kprint(dev->name); kprint(" (");
         kprinthex(capacity); kprint(" sectors, 2048-byte)\n");
         g_num_devices++;
+        g_num_cds++;
         return 1;
 
     } else if (periph_type == SCSI_PERIPH_DIRECT) {
@@ -1389,7 +1475,8 @@ static int vio_scsi_probe_port(int port) {
                     if (vol_size == 0) vol_size = 332800;  /* fallback ~650MB */
                     dev->capacity = vol_size;
 
-                    dev->bdev.name         = "vio_cd0";
+                    vio_scsi_make_name(dev, "vio_cd", g_num_cds);
+                    dev->bdev.name         = dev->name;
                     dev->bdev.display_name = "CD0:";
                     dev->bdev.sector_size  = 2048;
                     dev->bdev.num_sectors  = vol_size;
@@ -1405,9 +1492,10 @@ static int vio_scsi_probe_port(int port) {
                         return 0;
                     }
 
-                    kprint("[VIO-SCSI] Registered CD-ROM vio_cd0 (");
+                    kprint("[VIO-SCSI] Registered CD-ROM "); kprint(dev->name); kprint(" (");
                     kprinthex((uint64_t)vol_size); kprint(" sectors, 2048-byte)\n");
                     g_num_devices++;
+                    g_num_cds++;
                     return 1;
                 }
 
@@ -1427,8 +1515,12 @@ static int vio_scsi_probe_port(int port) {
         /* Convert to 512-byte sectors for the block device layer */
         dev->capacity = (capacity * blk_size) / 512;
 
-        dev->bdev.name         = "virtio0";
-        dev->bdev.display_name = "DH0:";
+        vio_scsi_make_name(dev, "virtio", g_num_disks);
+        dev->disp[0] = 'D'; dev->disp[1] = 'H';
+        dev->disp[2] = (char)('0' + g_num_disks); dev->disp[3] = ':';
+        dev->disp[4] = 0;
+        dev->bdev.name         = dev->name;
+        dev->bdev.display_name = dev->disp;
         dev->bdev.sector_size  = 512;
         dev->bdev.num_sectors  = dev->capacity;
         dev->bdev.part_offset  = 0;
@@ -1443,9 +1535,10 @@ static int vio_scsi_probe_port(int port) {
             return 0;
         }
 
-        kprint("[VIO-SCSI] Registered disk virtio0 (");
+        kprint("[VIO-SCSI] Registered disk "); kprint(dev->name); kprint(" (");
         kprinthex(dev->capacity); kprint(" sectors, 512-byte)\n");
         g_num_devices++;
+        g_num_disks++;
         return 1;
 
     } else {

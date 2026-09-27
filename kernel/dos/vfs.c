@@ -556,9 +556,9 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
     Handler *h = find_handler(rvol);
     if (h) {
         int32_t action;
-        if (flags & (VFS_CREATE | VFS_TRUNC))
+        if (flags & VFS_TRUNC)
             action = ACTION_FINDOUTPUT;       /* create + truncate */
-        else if (flags & VFS_WRITE)
+        else if (flags & (VFS_WRITE | VFS_CREATE))
             action = ACTION_FINDUPDATE;       /* read/write, create if missing */
         else
             action = ACTION_FINDINPUT;        /* read-only */

@@ -631,16 +631,25 @@ typedef struct FfsVolume {
   payload.
 - **Bitmap**: bit=1 means free; treated as advisory (WinUAE images do
   not mark all used blocks), never authoritative for structure checks.
-- **Packet handler**: `ffs_handler.c` implements the read-only packet
-  set (`FINDINPUT`, `READ`, `SEEK`, `END`, `LOCATE_OBJECT`,
-  `EXAMINE_OBJECT`/`NEXT`, `FREE_LOCK`, `PARENT`, `COPY_DIR`,
-  `SAME_LOCK`, `DISK_INFO`, `IS_FILESYSTEM`). Mutating packets fail with
-  `ERROR_DISK_WRITE_PROTECTED`. The volume mounts under its Amiga
-  volume name (e.g. `test:`).
+- **Packet handler**: `ffs_handler.c` implements the read/write packet
+  set (`FINDINPUT`/`FINDUPDATE`/`FINDOUTPUT`, `READ`, `WRITE`, `SEEK`,
+  `END`, `SET_FILE_SIZE`, `CREATE_DIR`, `DELETE_OBJECT`,
+  `RENAME_OBJECT`, `SET_PROTECT`, `SET_COMMENT`, `SET_DATE`,
+  `LOCATE_OBJECT`, `EXAMINE_OBJECT`/`NEXT`, `FREE_LOCK`, `PARENT`,
+  `COPY_DIR`, `SAME_LOCK`, `DISK_INFO`, `IS_FILESYSTEM`). The volume
+  mounts under its Amiga volume name (e.g. `test:`).
+- **Write support**: block allocation/deallocation via the bitmap
+  (bit=1 free; blocks 0-1 are never allocatable), file data writes with
+  growth beyond the inline 72-pointer table into `T.LIST` extension
+  blocks, OFS data-block headers/sequencing/checksums, hash-chain
+  insert/remove for create/delete/rename, and header checksum repair
+  on every mutated block.
 
-**Status**: read, directory enumeration, and mounting are implemented
-and verified against a WinUAE-created FFS hardfile; write support is
-intentionally absent.
+**Status**: read and write are implemented and verified against a
+WinUAE-created FFS hardfile in QEMU (create/write/append/mkdir/
+rename/delete, >72-block files through `T.LIST` extensions, and a
+clean `fsck` after each stage). OFS (`DOS\0`) writes are code-reviewed
+but not live-tested — no OFS media was available.
 
 #### Partition tables (`partition.c`)
 

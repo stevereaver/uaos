@@ -51,10 +51,14 @@ else
 fi
 
 # Optional second block device (raw image attached as virtio1).
+# Attached read/write so FFS writes are exercised; DISK2_RO=1 reverts
+# to the old read-only attachment.
 DRIVE2_ARGS=""
 if [ -n "$DISK2_PATH" ]; then
-    DRIVE2_ARGS="-device virtio-blk-pci,disable-modern=on,drive=blk1 -drive id=blk1,file=${DISK2_PATH},if=none,format=raw,readonly=on"
-    echo "Second disk (raw, virtio1): $DISK2_PATH"
+    DRIVE2_RO=""
+    if [ "${DISK2_RO:-0}" = "1" ]; then DRIVE2_RO=",readonly=on"; fi
+    DRIVE2_ARGS="-device virtio-blk-pci,disable-modern=on,drive=blk1 -drive id=blk1,file=${DISK2_PATH},if=none,format=raw${DRIVE2_RO}"
+    echo "Second disk (raw${DRIVE2_RO:+, readonly}, virtio1): $DISK2_PATH"
 fi
 
 SERIAL_LOG=/tmp/uaos_serial.log
