@@ -97,6 +97,7 @@ The software cursor (`cursor.c`) uses save/restore of background pixels for flic
 - **Row-memcpy save/restore**: `cursor_save_bg`/`cursor_restore_bg` use whole-row `memcpy` in 32bpp direct mode instead of per-pixel `FB_GetPixel`/`FB_PutPixel` (VRAM reads are expensive on write-combining memory).
 - **Sprite scaling**: The 32×32 and 48×48 arrow pointers are generated at boot by integer-scaling the verified 16×16 sprite (2× and 3× respectively). The previous hand-typed tables had wrong per-row element counts and produced skewed sprites.
 - **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` (back buffer when drawing, VRAM otherwise — both authoritative after the last flip). `cursor_restore_bg` is a no-op during back-buffered drawing since the repainted region covers the sprite footprint (damage repaints always include `Cursor_GetSpriteRect()`).
+- **Default colours**: `CURSOR_DEFAULT_BODY` is `0xFF2200` — the classic Workbench 3.x red arrow — with a black outline/shadow (`cursor.h`; UAOS-4). Pointer Prefs has no colour constants of its own; it reads and applies `Cursor_GetSettings()`/`Cursor_SetColors()`.
 
 ## Workbench Elements
 - **Backdrop**: Solid Amiga grey (`WB_GREY`, R:170 G:170 B:170). Can be toggled via Workbench ▸ Backdrop to hide/show desktop icons.

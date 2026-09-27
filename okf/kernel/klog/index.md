@@ -41,7 +41,7 @@ Levels `KLOG_OFF < ERR < WARN < INFO < DEBUG < TRACE`; a message emits when `lev
 ## Commands
 
 - **`C:klog`** (`cmd_klog.c`; `debug` is an alias) — `klog` lists subsystems and thresholds; `klog dhcp=off`, `klog net=trace`, `klog all=debug` set runtime masks. `off/err/dbg/none` aliases accepted.
-- **`C:dmesg`** (`cmd_dmesg.c`) — dumps the ring oldest-first; `dmesg dhcp` filters by subsystem, `dmesg debug` by minimum level, `dmesg -c` clears.
+- **`C:dmesg`** (`cmd_dmesg.c`) — dumps the ring oldest-first; `dmesg dhcp` filters by subsystem, `dmesg warn` by severity floor (shows the named level *and* everything more severe — `warn` ⇒ warn+err; UAOS-83), `dmesg clear` empties the ring.
 
 ## strace Integration
 

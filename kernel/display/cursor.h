@@ -28,8 +28,8 @@ typedef struct {
     int double_pixel;         /* Double pixels for visibility (0/1) */
 } CursorSettings;
 
-/* Default cursor colors */
-#define CURSOR_DEFAULT_BODY      0xFFFFFF    /* White */
+/* Default cursor colors — WB 3.x-style red arrow with black outline */
+#define CURSOR_DEFAULT_BODY      0xFF2200    /* Classic Workbench red */
 #define CURSOR_DEFAULT_SHADOW    0x000000    /* Black */
 #define CURSOR_DEFAULT_BG        0x000000    /* Black */
 

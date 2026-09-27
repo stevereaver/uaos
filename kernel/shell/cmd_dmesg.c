@@ -5,7 +5,8 @@
  *
  *   dmesg                    dump the whole ring buffer
  *   dmesg <subsys> [...]     only the named subsystem(s)
- *   dmesg <level>  [...]     only entries at the given level(s)
+ *   dmesg <level>  [...]     entries at the given level(s) or more severe
+ *                            ("dmesg warn" shows warn+err)
  *   dmesg clear              discard all entries
  *
  * Subsystem and level filters may be combined, e.g. "dmesg dhcp dns warn".
@@ -48,7 +49,10 @@ void Cmd_Dmesg(NativeCmdCtx *ctx, const char *args)
 
         int lvl = klog_level_find(tok);
         if (lvl >= 0) {
-            level_mask |= (1u << lvl);
+            /* Severity floor: select this level and everything more severe
+             * (lower level number = more severe; OFF is never logged, so
+             * "dmesg off" sets only bit 0, which matches nothing). */
+            level_mask |= lvl ? (1u << (lvl + 1)) - 2u : 1u;
             continue;
         }
 
@@ -63,7 +67,7 @@ void Cmd_Dmesg(NativeCmdCtx *ctx, const char *args)
     }
 
     if (had_error) {
-        PRINT("Usage: dmesg [<subsys>|<level>|clear] ...");
+        PRINT("Usage: dmesg [<subsys>|<level>|clear] ...  (level = that severity or worse)");
         PRINT("       e.g. dmesg dhcp   dmesg warn   dmesg dhcp dns debug");
         if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 10);
         return;
