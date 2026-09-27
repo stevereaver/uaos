@@ -2,7 +2,7 @@
 
 #include "cmd_internal.h"
 #include "../net/telnetd.h"
-#include "../net/stack.h"
+#include "../net/stack.h"   /* net_ip_to_str */
 
 static void set_rc(NativeCmdCtx *ctx, int rc)
 {
@@ -26,6 +26,44 @@ void Cmd_Telnetd(NativeCmdCtx *ctx, const char *args)
          * reach the client. */
         PRINT("telnetd: stopping");
         Telnetd_Stop();
+        return;
+    }
+
+    /* STATUS — list the listener and its live sessions. */
+    if (ctx->template &&
+        CmdTemplate_GetSwitch(ctx->template, "STATUS")) {
+        if (!Telnetd_IsRunning()) {
+            PRINT("telnetd: not running");
+            return;
+        }
+        char line[CMD_MAX_LINE];
+        char num[12];
+        cmd_scopy(line, "telnetd: listening on port ", sizeof(line));
+        cmd_uint_to_dec((uint32_t)Telnetd_Port(), num, sizeof(num));
+        cmd_scat(line, num, sizeof(line));
+        PRINT(line);
+        int found = 0;
+        for (int i = 0; ; i++) {
+            ipv4_t ip;
+            uint16_t port;
+            uint32_t up;
+            if (!Telnetd_SessionInfo(i, &ip, &port, &up)) break;
+            found = 1;
+            char ipbuf[20];
+            net_ip_to_str(ip, ipbuf);
+            cmd_scopy(line, "  ", sizeof(line));
+            cmd_scat(line, ipbuf, sizeof(line));
+            cmd_scat(line, ":", sizeof(line));
+            cmd_uint_to_dec((uint32_t)port, num, sizeof(num));
+            cmd_scat(line, num, sizeof(line));
+            cmd_scat(line, " up ", sizeof(line));
+            cmd_uint_to_dec(up, num, sizeof(num));
+            cmd_scat(line, num, sizeof(line));
+            cmd_scat(line, "s", sizeof(line));
+            PRINT(line);
+        }
+        if (!found)
+            PRINT("  (no sessions)");
         return;
     }
 

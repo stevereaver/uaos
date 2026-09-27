@@ -81,7 +81,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("changetaskpri",   Cmd_ChangeTaskPri, "PRI/A/N,TASK/K" ),
     CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
     CMD ("rx",              Cmd_Rx             ),
-    CMDT("telnetd",         Cmd_Telnetd,       "PORT/K/N,STOP/S" ),
+    CMDT("telnetd",         Cmd_Telnetd,       "PORT/K/N,STOP/S,STATUS/S" ),
     CMD ("strace",          Cmd_Strace         ),
     CMD ("klog",            Cmd_Klog           ),
     CMD ("debug",           Cmd_Klog           ),  /* alias */

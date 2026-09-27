@@ -45,6 +45,12 @@ typedef struct NativeCmdCtx {
     const char *cwd;
     const char *path;          /* shell's command search path (space-separated) */
 
+    /* 1 when the command runs in a remote (telnet) shell — NativeCmd_Run
+     * refuses framebuffer-only commands and logs destructive ones, since
+     * the unauthenticated listener hands a full shell to anyone who can
+     * open TCP/23. */
+    int          remote;
+
     /* For fdisk: lets Cmd_Fdisk set the shell into interactive mode */
     void       *shell_extra;   /* ShellInstance* */
     void      (*set_fdisk_mode)(void *shell_extra,

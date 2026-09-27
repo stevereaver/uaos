@@ -515,6 +515,14 @@ TcpState tcp_state(int sock)
     return g_socks[sock].state;
 }
 
+int tcp_peer(int sock, ipv4_t *ip, uint16_t *port)
+{
+    if (sock < 0 || sock >= TCP_MAX_SOCKETS) return -1;
+    if (ip)   *ip   = g_socks[sock].remote_ip;
+    if (port) *port = g_socks[sock].remote_port;
+    return 0;
+}
+
 /* -------------------------------------------------------------------------
  * Retransmit helper — resend the saved segment with the original seq number.
  * We temporarily roll snd_nxt back so tcp_send_seg builds the right header,

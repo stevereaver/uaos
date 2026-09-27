@@ -31,6 +31,7 @@
 #include "shell/resident_cmd.h"
 #include "exec/uaos_binary.h"
 #include "exec/elf64_loader.h"
+#include "../boot/kprint.h"
 #include "../net/stack.h"
 #include "../net/tcp.h"
 #include "../irq/ps2mouse.h"
@@ -81,6 +82,9 @@ static void inst_print_wrapper(const char *line)
 #define VKEY_DOWN  SHELL_VKEY_DOWN
 #define VKEY_LEFT  SHELL_VKEY_LEFT
 #define VKEY_RIGHT SHELL_VKEY_RIGHT
+#define VKEY_HOME  SHELL_VKEY_HOME
+#define VKEY_END   SHELL_VKEY_END
+#define VKEY_DEL   SHELL_VKEY_DEL
 
 #define MAX_CMD_HIST  64   /* command history entries per shell */
 #define MAX_ALIASES   32   /* max aliases per shell */
@@ -167,8 +171,11 @@ struct ShellInstance {
     int          quit_flag;
 
     /* Keyboard ring buffer — fed by WM/idle task (or the telnet daemon
-     * for remote sessions), consumed by shell task */
-#define SHELL_KB_BUFSIZE 64
+     * for remote sessions), consumed by shell task.  256 entries so a
+     * pasted command burst has headroom before the producer has to
+     * stall (the telnetd pump still spins briefly on a full queue so a
+     * line terminator is never dropped). */
+#define SHELL_KB_BUFSIZE 256
     char         kb_buf[SHELL_KB_BUFSIZE];
     int          kb_head;
     int          kb_tail;
@@ -179,6 +186,9 @@ struct ShellInstance {
     int          remote_sock;    /* TCP socket index, -1 when detached */
     volatile int remote_dead;    /* 1 = session over; task should exit */
     volatile int remote_inuse;   /* 1 = remote slot allocated */
+    int          remote_noecho;  /* 1 = peer sent DONT ECHO (linemode
+                                  * client does its own echo) — suppress
+                                  * the per-keystroke line repaint */
     uint32_t     remote_token;   /* stamped into the opaque session handle
                                   * so a stale handle on a re-used slot is
                                   * rejected by the Remote* API */
@@ -319,15 +329,17 @@ static int seq_ci(const char *a, const char *b)
  * the shell task can exit and the slot can be reused.
  * ========================================================================= */
 
-static void remote_send(ShellInstance *s, const char *data, int len)
+/* Push bytes verbatim onto the session socket (retry-on-busy, bounded
+ * stall).  Callers must not feed this telnet command bytes — see
+ * remote_send() for the IAC-escaping layer. */
+static void remote_send_raw(ShellInstance *s, const uint8_t *data, int len)
 {
     if (!s->remote || s->remote_dead || s->remote_sock < 0) return;
     extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
     uint64_t stall_start = g_pit_ticks;
     while (len > 0) {
         int chunk = len > 1400 ? 1400 : len;   /* stay under one segment */
-        int sent = tcp_send(s->remote_sock, (const uint8_t *)data,
-                            (uint16_t)chunk);
+        int sent = tcp_send(s->remote_sock, data, (uint16_t)chunk);
         if (sent <= 0) {
             TcpState t = tcp_state(s->remote_sock);
             if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) {
@@ -347,6 +359,28 @@ static void remote_send(ShellInstance *s, const char *data, int len)
         data += sent;
         len  -= sent;
     }
+}
+
+static void remote_send(ShellInstance *s, const char *data, int len)
+{
+    /* RFC 854: a data byte of 0xFF must be doubled (IAC IAC) or a strict
+     * client parses it as a command introducer and eats the byte after
+     * it — binary output (e.g. `type` on an executable) would corrupt
+     * the client display and silently lose bytes. */
+    int start = 0;
+    for (int i = 0; i < len; i++) {
+        if ((uint8_t)data[i] == 0xFF) {
+            if (i > start)
+                remote_send_raw(s, (const uint8_t *)data + start,
+                                i - start);
+            static const uint8_t iac_iac[2] = { 0xFF, 0xFF };
+            remote_send_raw(s, iac_iac, 2);
+            start = i + 1;
+            if (s->remote_dead) return;
+        }
+    }
+    if (len > start)
+        remote_send_raw(s, (const uint8_t *)data + start, len - start);
 }
 
 static void remote_send_str(ShellInstance *s, const char *str)
@@ -542,9 +576,12 @@ static void remote_send_prompt(ShellInstance *s)
 }
 
 /* Repaint the input line on a remote terminal: carriage return +
- * erase-line, then prompt + input text, then reposition the cursor. */
+ * erase-line, then prompt + input text, then reposition the cursor.
+ * A client that refused our WILL ECHO (DONT ECHO — linemode clients
+ * echo locally) gets no repaint so its display is not doubled. */
 static void remote_refresh_line(ShellInstance *s)
 {
+    if (s->remote_noecho) return;
     remote_send_str(s, "\r\x1b[2K");
     remote_send_prompt(s);
     if (s->input_len > 0)
@@ -3744,7 +3781,8 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                     s->input_len--;
                     s->input_cur--;
                     s->input_buf[s->input_len] = '\0';
-                    if (s->remote) remote_send_str(s, "\b \b");
+                    if (s->remote && !s->remote_noecho)
+                        remote_send_str(s, "\b \b");
                 }
                 continue;
             }
@@ -3754,7 +3792,8 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                 s->input_buf[s->input_len++] = c;
                 s->input_cur++;
                 s->input_buf[s->input_len] = '\0';
-                if (s->remote) remote_send(s, &c, 1);
+                if (s->remote && !s->remote_noecho)
+                    remote_send(s, &c, 1);
                 /* Copy to result buffer */
                 s->ask_result[s->input_len] = '\0';
                 for (int i = 0; i < s->input_len; i++) {
@@ -3961,6 +4000,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
 {
     NativeCmdCtx ctx;
     ctx.shell          = s;
+    ctx.remote         = s->remote;
     ctx.print          = (void (*)(void *, const char *))inst_print;
     ctx.print_raw      = shell_print_raw;
     ctx.cwd            = s->cwd;
@@ -4336,6 +4376,67 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
  * Dispatch
  * ========================================================================= */
 
+/* Remote-session command policy (telnetd is unauthenticated — a debug
+ * facility that hands a shell to anyone who can open the port):
+ *
+ *  k_remote_blocked — commands whose only interface is a framebuffer
+ *    window or desktop element.  Run remotely they open UI the caller
+ *    cannot see or dismiss and can wedge the session on a requester,
+ *    so they fail with a message instead.  (vim/ed are refused by their
+ *    open callbacks; requestfile/requestchoice are text-mode and work.)
+ *
+ *  k_remote_logged — destructive / system-wide commands.  Still allowed
+ *    (remote debugging needs them), but every invocation is written to
+ *    klog/serial so the console keeps a record.
+ *
+ * Checked on the command basename at the run_cmd choke point so it
+ * covers every dispatch path: builtins, resident commands, the native
+ * registry, and real binaries found by PATH search. */
+static const char *const k_remote_blocked[] = {
+    "calculator", "clock", "exchange", "guide", "loadwb",
+    "netinfo", "newcli", "newshell", "pointer", "blanker",
+    /* prefs editors — all GUI panels */
+    "screenmode", "font", "icontrol", "input", "palette",
+    "wbpattern", "serial", "printer", "time", "locale",
+    NULL
+};
+
+static const char *const k_remote_logged[] = {
+    "reboot", "format", "fdisk", "install", "diskchange",
+    "crash", "delete", "protect", "relabel", "addbuffers",
+    "netstop",
+    NULL
+};
+
+static int remote_name_in_list(const char *const *list, const char *name)
+{
+    for (int i = 0; list[i]; i++)
+        if (seq_ci(list[i], name)) return 1;
+    return 0;
+}
+
+/* Returns 1 if the command was refused for this remote session. */
+static int remote_cmd_guard(ShellInstance *s, const char *cmd)
+{
+    if (!s->remote) return 0;
+    /* Basename — text after the last ':' or '/' ("C:delete" → "delete") */
+    const char *base = cmd;
+    for (const char *p = cmd; *p; p++)
+        if (*p == ':' || *p == '/') base = p + 1;
+    if (remote_name_in_list(k_remote_blocked, base)) {
+        inst_print(s, "not available on remote shells "
+                      "(console/desktop UI only)");
+        s->last_rc = 20;
+        return 1;
+    }
+    if (remote_name_in_list(k_remote_logged, base)) {
+        kprint("telnetd: remote shell ran '");
+        kprint(base);
+        kprint("'\n");
+    }
+    return 0;
+}
+
 static void run_cmd(ShellInstance *s, const char *line)
 {
     const char *lp = script_skip_sp(line);
@@ -4466,6 +4567,11 @@ static void run_cmd(ShellInstance *s, const char *line)
         while (*q && *q != ' ' && j < 31) { first_word[j++] = *q++; }
         first_word[j] = '\0';
     }
+
+    /* Remote-session policy — refuse framebuffer-only commands and log
+     * destructive ones, whichever dispatch path they resolve through. */
+    if (remote_cmd_guard(s, first_word))
+        return;
 
     /* ---- Explicit path: user typed "C:cmd", "SYS:tools/foo", etc. ----
      *
@@ -5442,12 +5548,45 @@ static void inst_handle_key_remote(ShellInstance *s, char c)
         return;
     }
     if (c == VKEY_LEFT) {
-        if (s->input_cur > 0) s->input_cur--;
-        remote_refresh_line(s);
+        /* CSI D moves the terminal cursor — cheaper than a full repaint */
+        if (s->input_cur > 0) {
+            s->input_cur--;
+            if (!s->remote_noecho) remote_send_str(s, "\x1b[D");
+        }
         return;
     }
     if (c == VKEY_RIGHT) {
-        if (s->input_cur < s->input_len) s->input_cur++;
+        if (s->input_cur < s->input_len) {
+            s->input_cur++;
+            if (!s->remote_noecho) remote_send_str(s, "\x1b[C");
+        }
+        return;
+    }
+    if (c == VKEY_HOME) {
+        if (s->input_cur > 0) {
+            s->input_cur = 0;
+            remote_refresh_line(s);
+        }
+        return;
+    }
+    if (c == VKEY_END) {
+        if (s->input_cur != s->input_len) {
+            s->input_cur = s->input_len;
+            remote_refresh_line(s);
+        }
+        return;
+    }
+    if (c == VKEY_DEL) {
+        /* Delete the char under the cursor (ESC [ 3 ~) */
+        s->cmd_hist_nav = 0;
+        if (s->input_cur < s->input_len) {
+            int i = s->input_cur;
+            while (i < s->input_len - 1) {
+                s->input_buf[i] = s->input_buf[i+1]; i++;
+            }
+            s->input_len--;
+            s->input_buf[s->input_len] = 0;
+        }
         remote_refresh_line(s);
         return;
     }
@@ -5520,7 +5659,9 @@ static void inst_handle_key_remote(ShellInstance *s, char c)
     }
     if (c == '\b') {
         s->cmd_hist_nav = 0;
+        int deleted_last = 0;
         if (s->input_cur > 0) {
+            deleted_last = (s->input_cur == s->input_len);
             int i = s->input_cur - 1;
             while (i < s->input_len - 1) {
                 s->input_buf[i] = s->input_buf[i+1]; i++;
@@ -5529,20 +5670,36 @@ static void inst_handle_key_remote(ShellInstance *s, char c)
             s->input_cur--;
             s->input_buf[s->input_len] = 0;
         }
-        remote_refresh_line(s);
+        /* Fast path: backspace at end-of-line is just "\b \b" — the full
+         * repaint is only needed when text remains after the cursor. */
+        if (deleted_last && !s->remote_noecho)
+            remote_send_str(s, "\b \b");
+        else
+            remote_refresh_line(s);
         return;
     }
     if (c >= 0x20 && c < 0x7F) {
         s->cmd_hist_nav = 0;
         if (s->input_len < MAX_INPUT) {
-            for (int i = s->input_len; i > s->input_cur; i--)
-                s->input_buf[i] = s->input_buf[i-1];
-            s->input_buf[s->input_cur] = c;
-            s->input_len++;
-            s->input_cur++;
-            s->input_buf[s->input_len] = 0;
+            /* Fast path: appending a printable char at end-of-line echoes
+             * just that byte — a ~15-byte repaint per keystroke is only
+             * needed for mid-line edits where the tail shifts. */
+            if (s->input_cur == s->input_len) {
+                s->input_buf[s->input_len] = c;
+                s->input_len++;
+                s->input_cur++;
+                s->input_buf[s->input_len] = 0;
+                if (!s->remote_noecho) remote_send(s, &c, 1);
+            } else {
+                for (int i = s->input_len; i > s->input_cur; i--)
+                    s->input_buf[i] = s->input_buf[i-1];
+                s->input_buf[s->input_cur] = c;
+                s->input_len++;
+                s->input_cur++;
+                s->input_buf[s->input_len] = 0;
+                remote_refresh_line(s);
+            }
         }
-        remote_refresh_line(s);
         return;
     }
 }
@@ -5619,6 +5776,29 @@ static void inst_handle_key(ShellInstance *s, char c)
     }
     if (c == VKEY_RIGHT) {
         if (s->input_cur < s->input_len) s->input_cur++;
+        inst_draw_input(s);
+        return;
+    }
+    if (c == VKEY_HOME) {
+        if (s->input_cur > 0) s->input_cur = 0;
+        inst_draw_input(s);
+        return;
+    }
+    if (c == VKEY_END) {
+        if (s->input_cur != s->input_len) s->input_cur = s->input_len;
+        inst_draw_input(s);
+        return;
+    }
+    if (c == VKEY_DEL) {
+        s->cmd_hist_nav = 0;
+        if (s->input_cur < s->input_len) {
+            int i = s->input_cur;
+            while (i < s->input_len - 1) {
+                s->input_buf[i] = s->input_buf[i+1]; i++;
+            }
+            s->input_len--;
+            s->input_buf[s->input_len] = 0;
+        }
         inst_draw_input(s);
         return;
     }
@@ -5832,6 +6012,7 @@ static ShellInstance *open_shell(int stagger)
     s->remote_sock = -1;
     s->remote_dead = 0;
     s->remote_inuse = 0;
+    s->remote_noecho = 0;
     s->remote_token = 0;
     s->break_req = 0;
     s->dispatch_broken = 0;
@@ -5883,6 +6064,7 @@ static ShellInstance *open_remote_shell(int sock)
         s->remote     = 1;
         s->remote_sock= sock;
         s->remote_dead= 0;
+        s->remote_noecho = 0;
         s->remote_token = g_remote_token_next++;
         if (!g_remote_token_next) g_remote_token_next = 1;
         s->remote_inuse = 1;
@@ -6146,4 +6328,11 @@ void ShellWin_RemoteKill(void *session)
     ShellInstance *s = remote_from_handle(session);
     if (!s) return;
     s->remote_dead = 1;
+}
+
+void ShellWin_RemoteSetEcho(void *session, int on)
+{
+    ShellInstance *s = remote_from_handle(session);
+    if (!s) return;
+    s->remote_noecho = !on;
 }

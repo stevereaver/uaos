@@ -56,6 +56,14 @@ extern KbdMods g_kbd_mods;
 #define KBD_VKEY_LEFT   ((char)0xFD)
 #define KBD_VKEY_RIGHT  ((char)0xFE)
 
+/* Editing keys the PS/2 driver does not currently emit but remote
+ * (telnet) sessions can feed via SHELL_VKEY_* — decoded from ANSI CSI
+ * sequences (ESC [ H/F/1~/4~/3~).  Kept in the same non-ASCII space,
+ * above the RAmiga-letter range (0x80..0xEF). */
+#define KBD_VKEY_HOME   ((char)0xF2)
+#define KBD_VKEY_END    ((char)0xF3)
+#define KBD_VKEY_DEL    ((char)0xF4)
+
 /* Mask to extract the letter from a RAmiga+letter byte */
 #define AMIGA_RMASK  0x80
 #define AMIGA_RLETTER(c) ((char)((unsigned char)(c) & 0x7F))

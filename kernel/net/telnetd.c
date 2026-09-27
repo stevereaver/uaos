@@ -20,12 +20,22 @@
  *     WILL ECHO, WILL SUPPRESS_GO_AHEAD, DO SUPPRESS_GO_AHEAD
  * then a small NVT state machine filters IAC sequences out of the input
  * stream, responding DONT/WONT to anything the peer demands of us and
- * collapsing an escaped IAC-IAC to a literal 0xFF byte.  CR NUL and bare
- * CR are mapped to '\n'; incoming '\n' and '\r' both become '\n' for the
- * shell.  Arrow-key escape sequences (ESC [ A/B/C/D) are mapped to the
- * virtual key codes the shell editor understands.  Interrupt Process /
- * Abort Output (IAC IP / IAC AO) and a raw Ctrl-C byte all become the
- * ETX (0x03) break byte the shell treats as a command interrupt.
+ * collapsing an escaped IAC-IAC to a literal 0xFF byte.  CR, CR NUL and
+ * CR LF each produce exactly one line-feed for the shell (a bare LF also
+ * works).  Full ANSI CSI sequences are consumed — parameter and
+ * intermediate bytes up to the final byte — with arrows, Home/End,
+ * PgUp/PgDn and Delete mapped to the shell's virtual key codes.
+ * Interrupt Process / Abort Output / Break (IAC IP / IAC AO / IAC BRK)
+ * and a raw Ctrl-C byte all become the ETX (0x03) break byte the shell
+ * treats as a command interrupt; IAC EC erases a char; IAC AYT gets a
+ * "yes" reply.
+ *
+ * Dead peers: a session that sees no input for TELNETD_IDLE_PROBE_TICKS
+ * gets an IAC AYT liveness probe (a live client answers; a vanished one
+ * lets the probe's retransmits exhaust, which tcp_tick turns into
+ * TCP_CLOSED).  No input at all for TELNETD_IDLE_TICKS closes the
+ * session — a laptop that slept holding the connection would otherwise
+ * pin a remote shell slot forever.
  */
 
 #include "telnetd.h"
@@ -63,12 +73,22 @@ enum {
     NVT_NEG,            /* IAC WILL/WONT/DO/DONT seen — expect option byte */
     NVT_SB,             /* inside sub-negotiation — discard until IAC SE */
     NVT_SB_IAC,         /* inside sub-negotiation — IAC seen */
-    NVT_ESC,            /* ESC seen — expect CSI leader */
-    NVT_CSI,            /* ESC [ seen — expect final byte */
+    NVT_ESC,            /* ESC seen — expect CSI/SS3 leader */
+    NVT_CSI,            /* ESC [ seen — consume params until final byte */
+    NVT_SS3,            /* ESC O seen — single final byte follows */
+    NVT_CR,             /* CR delivered — swallow a following LF/NUL */
 };
+
+/* PIT runs at 100 Hz — express the watchdog budget in ticks.  Halfway
+ * idle we probe the peer with IAC AYT; fully idle we close. */
+#define TELNETD_IDLE_PROBE_TICKS  30000u   /* ~5 min  */
+#define TELNETD_IDLE_TICKS        60000u   /* ~10 min */
+
+extern volatile uint64_t g_pit_ticks;      /* 100 Hz */
 
 static volatile int g_running = 0;   /* daemon task is alive */
 static volatile int g_stop    = 0;   /* stop requested via Telnetd_Stop() */
+static uint16_t     g_port    = 0;   /* port the listener is bound to */
 
 /* Pump context pool — one per live connection.  g_generation is bumped
  * by every Telnetd_Start so a pump left over from a previous run notices
@@ -78,6 +98,9 @@ typedef struct {
     int          sock;
     void        *sess;
     uint32_t     gen;
+    ipv4_t       peer_ip;     /* for connect/disconnect logging + STATUS */
+    uint16_t     peer_port;
+    uint64_t     t_connect;   /* PIT tick when the session was accepted */
 } PumpCtx;
 
 static PumpCtx           g_pump_ctx[TCP_MAX_SOCKETS];
@@ -86,7 +109,6 @@ static volatile uint32_t g_generation  = 0;
 
 static int send_buf(int sock, const uint8_t *b, int len)
 {
-    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
     /* tcp_send allows only one in-flight segment per socket and returns
      * 0 while busy — keep retrying so negotiation bytes are not dropped,
      * but bound the wait (~250 ms) so a dead peer cannot wedge us. */
@@ -123,22 +145,20 @@ static void send_greeting_neg(int sock)
 }
 
 /* Feed a data byte through the NVT filter into the shell.
- * Returns the byte to enqueue — including the negative SHELL_VKEY_*
- * codes — or -1 to drop it. */
-static int nvt_filter(uint8_t *st, uint8_t c, int sock)
+ * st[] carries: [0] parser state, [1] saved neg command, [2] first CSI
+ * parameter digit (0 = none seen).  Returns the byte to enqueue —
+ * including the negative SHELL_VKEY_* codes — or -1 to drop it. */
+static int nvt_filter(uint8_t *st, uint8_t c, int sock, void *sess)
 {
     switch (*st) {
     case NVT_IAC:
         switch (c) {
         case TN_WILL:
         case TN_WONT:
-            /* Option peer wants to enable itself — accept WILL, but if it
-             * insists on something we do not want, WONT is its answer to
-             * our DO and needs no reply either. */
-            *st = NVT_NEG;
-            return -1;
         case TN_DO:
         case TN_DONT:
+            /* st[1] is saved by the caller before we run — it survives
+             * the transition so NVT_NEG knows which verb to answer. */
             *st = NVT_NEG;
             return -1;
         case TN_SB:
@@ -149,19 +169,36 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock)
             return 0xFF;    /* escaped IAC = literal data byte */
         case TN_IP:
         case TN_AO:
-            /* Interrupt Process / Abort Output → feed the shell's break
-             * byte (ETX), which interrupts a running command or cancels
-             * the current input line. */
+        case TN_BRK:
+            /* Interrupt Process / Abort Output / Break → feed the
+             * shell's break byte (ETX), which interrupts a running
+             * command or cancels the current input line. */
             *st = NVT_DATA;
             return 0x03;
+        case TN_EC:
+            *st = NVT_DATA;
+            return '\b';    /* Erase Character → backspace */
+        case TN_AYT:
+            /* Are You There — the classic liveness check: answer with
+             * a short banner so the client sees the session is alive. */
+            *st = NVT_DATA;
+            send_buf(sock, (const uint8_t *)"\r\n[UAOS yes]\r\n", 14);
+            return -1;
         default:
             *st = NVT_DATA;
-            return -1;      /* NOP, DM, BRK, EC, EL, GA ... just drop */
+            return -1;      /* NOP, DM, EL, GA ... just drop */
         }
     case NVT_NEG:
         /* Byte is the option under negotiation; the command byte was
          * saved in st[1] by the caller.  Refuse DO for anything we did
          * not offer, and refuse WILL for anything we did not ask for. */
+        if (c == TN_IAC) {
+            /* Malformed sequence like "IAC WILL IAC" — do not eat the
+             * IAC as an option byte, let it start a fresh command. */
+            *st = NVT_IAC;
+            st[1] = 0;
+            return -1;
+        }
         *st = NVT_DATA;
         {
             uint8_t cmd = st[1];
@@ -170,6 +207,13 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock)
                 send_neg(sock, TN_WONT, c);
             if (cmd == TN_WILL && c != TN_OPT_SGA)
                 send_neg(sock, TN_DONT, c);
+            /* DONT ECHO — the client declined our WILL ECHO and does
+             * its own echo (linemode): suppress our per-keystroke line
+             * repaint or it would double every character. */
+            if (cmd == TN_DONT && c == TN_OPT_ECHO && sess)
+                ShellWin_RemoteSetEcho(sess, 0);
+            if (cmd == TN_DO && c == TN_OPT_ECHO && sess)
+                ShellWin_RemoteSetEcho(sess, 1);
         }
         return -1;
     case NVT_SB:
@@ -179,24 +223,75 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock)
         *st = (c == TN_SE) ? NVT_DATA : NVT_SB;
         return -1;
     case NVT_ESC:
-        *st = (c == '[' || c == 'O') ? NVT_CSI : NVT_DATA;
+        *st = (c == '[') ? NVT_CSI : (c == 'O') ? NVT_SS3 : NVT_DATA;
+        st[2] = 0;
         return -1;
     case NVT_CSI:
+        /* Consume the full sequence: parameter bytes (0x30–0x3F) and
+         * intermediates (0x20–0x2F) until a final byte (0x40–0x7E).
+         * Consuming only the first byte used to leak the tail of e.g.
+         * "ESC [ 3 ~" (Delete) into the input line as literal text. */
+        if (c >= 0x30 && c <= 0x3F) {
+            if (!st[2] && c >= '0' && c <= '9') st[2] = c; /* first digit */
+            return -1;
+        }
+        if (c >= 0x20 && c <= 0x2F) return -1;   /* intermediate bytes */
+        if (c < 0x40 || c > 0x7E) {              /* malformed — abort */
+            *st = NVT_DATA;
+            st[2] = 0;
+            return -1;
+        }
+        *st = NVT_DATA;
+        {
+            uint8_t p1 = st[2];
+            st[2] = 0;
+            switch (c) {
+            case 'A': return SHELL_VKEY_UP;
+            case 'B': return SHELL_VKEY_DOWN;
+            case 'C': return SHELL_VKEY_RIGHT;
+            case 'D': return SHELL_VKEY_LEFT;
+            case 'H': return SHELL_VKEY_HOME;
+            case 'F': return SHELL_VKEY_END;
+            case '~':
+                switch (p1) {
+                case '1': case '7': return SHELL_VKEY_HOME;
+                case '4': case '8': return SHELL_VKEY_END;
+                case '2': return -1;                /* Insert — ignore */
+                case '3': return SHELL_VKEY_DEL;    /* delete under cursor */
+                case '5': return SHELL_VKEY_PGUP;
+                case '6': return SHELL_VKEY_PGDN;
+                default:  return -1;
+                }
+            default:  return -1;
+            }
+        }
+    case NVT_SS3:
+        /* ESC O <final> — application-mode keys (xterm arrows etc.) */
         *st = NVT_DATA;
         switch (c) {
         case 'A': return SHELL_VKEY_UP;
         case 'B': return SHELL_VKEY_DOWN;
         case 'C': return SHELL_VKEY_RIGHT;
         case 'D': return SHELL_VKEY_LEFT;
+        case 'H': return SHELL_VKEY_HOME;
+        case 'F': return SHELL_VKEY_END;
         default:  return -1;
         }
+    case NVT_CR:
+        /* CR delivered as '\n' — the RFC 854 terminator is CR LF or
+         * CR NUL, so swallow exactly one following LF/NUL.  Anything
+         * else means the CR stood alone: re-filter this byte as data. */
+        *st = NVT_DATA;
+        if (c == '\n' || c == 0) return -1;
+        return nvt_filter(st, c, sock, sess);
     case NVT_DATA:
     default:
         if (c == TN_IAC) { *st = NVT_IAC; return -1; }
         if (c == 0x1B)   { *st = NVT_ESC; return -1; }
-        if (c == '\r' || c == '\n') return '\n';
+        if (c == '\r')   { *st = NVT_CR;  return '\n'; }
+        if (c == '\n')   return '\n';
         if (c == 0x7F) return '\b';      /* DEL = backspace */
-        if (c == 0) return -1;           /* CR NUL padding */
+        if (c == 0) return -1;           /* stray NUL padding */
         return c;
     }
 }
@@ -204,7 +299,8 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock)
 /* Session pump: bridge one accepted socket to a remote shell session.
  * Runs as its own task (one per connection, so sessions are concurrent)
  * until the peer disconnects, the shell ENDCLIs, the socket dies, the
- * daemon stops, or a newer daemon generation takes over. */
+ * daemon stops, a newer daemon generation takes over, or the peer goes
+ * idle past TELNETD_IDLE_TICKS. */
 static void pump_task(void *arg)
 {
     PumpCtx *ctx  = (PumpCtx *)arg;
@@ -212,9 +308,17 @@ static void pump_task(void *arg)
     void    *sess = ctx->sess;
     uint32_t gen  = ctx->gen;
 
-    /* nvt state: [0] = state, [1] = saved neg command */
-    uint8_t st[2] = { NVT_DATA, 0 };
+    /* nvt state: [0] = state, [1] = saved neg cmd, [2] = CSI param digit */
+    uint8_t st[3] = { NVT_DATA, 0, 0 };
     uint8_t buf[256];
+
+    /* Idle watchdog: last_rx only advances on received input.  A peer
+     * that vanishes without FIN/RST (sleep, NAT drop) keeps the socket
+     * ESTABLISHED forever — the half-timeout IAC AYT probe forces the
+     * dead connection to exhaust its retransmits in tcp_tick, and the
+     * full timeout closes a silent-but-alive peer that ignores AYT. */
+    uint64_t last_rx = g_pit_ticks;
+    int      probed  = 0;
 
     for (;;) {
         /* Daemon asked to stop, superseded by a fresh Telnetd_Start, or
@@ -224,7 +328,7 @@ static void pump_task(void *arg)
         if (g_stop || gen != g_generation || !net_stack_is_up())
             break;
 
-        /* Socket gone (peer closed / RST) */
+        /* Socket gone (peer closed / RST / probe retx exhaustion) */
         TcpState t = tcp_state(sock);
         if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT)
             break;
@@ -233,20 +337,23 @@ static void pump_task(void *arg)
         /* Half-close: peer sent FIN and RX buffer is drained */
         if (n <= 0 && t == TCP_CLOSE_WAIT)
             break;
+        if (n > 0) {
+            last_rx = g_pit_ticks;
+            probed  = 0;
+        }
         for (int i = 0; i < n; i++) {
             uint8_t c = buf[i];
             /* Remember neg command byte for NVT_NEG */
             if (st[0] == NVT_IAC &&
                 (c == TN_WILL || c == TN_WONT || c == TN_DO || c == TN_DONT))
                 st[1] = c;
-            int k = nvt_filter(st, c, sock);
+            int k = nvt_filter(st, c, sock, sess);
             if (k != -1) {
-                /* The shell's key queue is only 64 entries — a pasted
-                 * burst can fill it while a command runs.  Wait for the
-                 * session to drain it instead of dropping the byte: a
-                 * lost '\n' leaves a half-typed command that never
-                 * executes and the session looks dead. */
-                extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
+                /* A pasted burst can fill the shell's key queue while a
+                 * command runs.  Wait for the session to drain it rather
+                 * than dropping the byte: a lost '\n' leaves a
+                 * half-typed command that never executes and the
+                 * session looks dead. */
                 uint64_t deadline = g_pit_ticks + 500;  /* ~5 s */
                 while (!ShellWin_RemoteFeed(sess, (char)k)) {
                     if (ShellWin_RemoteIsDead(sess) ||
@@ -264,8 +371,38 @@ static void pump_task(void *arg)
         if (ShellWin_RemoteIsDead(sess))
             break;
 
+        /* Idle watchdog — see the block above. */
+        {
+            uint64_t idle = g_pit_ticks - last_rx;
+            if (!probed && idle >= TELNETD_IDLE_PROBE_TICKS) {
+                static const uint8_t ayt[] = { TN_IAC, TN_AYT };
+                send_buf(sock, ayt, (int)sizeof(ayt));
+                probed = 1;
+            }
+            if (idle >= TELNETD_IDLE_TICKS) {
+                static const char to[] =
+                    "\r\n[telnetd: idle timeout — closing]\r\n";
+                send_buf(sock, (const uint8_t *)to, (int)sizeof(to) - 1);
+                break;
+            }
+        }
+
         net_stack_poll();
         Task_Yield();
+    }
+
+    /* Connection log — the disconnect side pairs with the "connect
+     * from" line emitted at accept time. */
+    {
+        char ipbuf[20];
+        net_ip_to_str(ctx->peer_ip, ipbuf);
+        kprint("telnetd: disconnect ");
+        kprint(ipbuf);
+        kprint(":");
+        kprintdec(ctx->peer_port);
+        kprint(" (up ");
+        kprintdec((uint32_t)((g_pit_ticks - ctx->t_connect) / 100));
+        kprint("s)\n");
     }
 
     /* Notify the shell side and drop the connection — but only if our
@@ -298,6 +435,7 @@ static void telnetd_task(void *arg)
         g_running = 0;
         Task_Exit();
     }
+    g_port = port;
     kprint("telnetd: listening on port ");
     kprintdec(port);
     kprint("\n");
@@ -310,6 +448,19 @@ static void telnetd_task(void *arg)
     while (!g_stop && net_stack_is_up()) {
         int csock = tcp_accept(lsock);
         if (csock >= 0) {
+            /* Log every accepted connection (peer ip:port) — an
+             * unauthenticated service should at least leave a trace. */
+            ipv4_t peer_ip = 0;
+            uint16_t peer_port = 0;
+            if (tcp_peer(csock, &peer_ip, &peer_port) == 0) {
+                char ipbuf[20];
+                net_ip_to_str(peer_ip, ipbuf);
+                kprint("telnetd: connect ");
+                kprint(ipbuf);
+                kprint(":");
+                kprintdec(peer_port);
+                kprint("\n");
+            }
             send_greeting_neg(csock);
             void *sess = ShellWin_RemoteOpen(csock);
             PumpCtx *ctx = NULL;
@@ -325,10 +476,13 @@ static void telnetd_task(void *arg)
                 tcp_close(csock);
                 if (sess) ShellWin_RemoteKill(sess);
             } else {
-                ctx->inuse = 1;
-                ctx->sock  = csock;
-                ctx->sess  = sess;
-                ctx->gen   = g_generation;
+                ctx->inuse     = 1;
+                ctx->sock      = csock;
+                ctx->sess      = sess;
+                ctx->gen       = g_generation;
+                ctx->peer_ip   = peer_ip;
+                ctx->peer_port = peer_port;
+                ctx->t_connect = g_pit_ticks;
                 __asm__ volatile("cli" ::: "memory");
                 g_pump_count++;
                 __asm__ volatile("sti" ::: "memory");
@@ -347,6 +501,7 @@ static void telnetd_task(void *arg)
         Task_Yield();
     }
     tcp_close(lsock);
+    g_port = 0;
     g_running = 0;
     kprint("telnetd: stopped\n");
     Task_Exit();
@@ -373,7 +528,6 @@ int Telnetd_Start(uint16_t port)
 
 void Telnetd_Stop(void)
 {
-    extern volatile uint64_t g_pit_ticks;   /* 100 Hz */
     if (!g_running) return;
     g_stop = 1;
     /* Wait for the daemon task — and the per-connection pump tasks — to
@@ -390,4 +544,27 @@ void Telnetd_Stop(void)
 int Telnetd_IsRunning(void)
 {
     return g_running;
+}
+
+uint16_t Telnetd_Port(void)
+{
+    return g_port;
+}
+
+int Telnetd_SessionInfo(int idx, ipv4_t *ip, uint16_t *port,
+                        uint32_t *up_secs)
+{
+    int n = 0;
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        if (!g_pump_ctx[i].inuse) continue;
+        if (n++ == idx) {
+            if (ip)   *ip      = g_pump_ctx[i].peer_ip;
+            if (port) *port    = g_pump_ctx[i].peer_port;
+            if (up_secs)
+                *up_secs = (uint32_t)((g_pit_ticks -
+                                       g_pump_ctx[i].t_connect) / 100);
+            return 1;
+        }
+    }
+    return 0;
 }

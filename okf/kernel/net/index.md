@@ -154,11 +154,25 @@ Telnet protocol handling is deliberately small:
   was still unacked — leaving the client in line mode with local echo
   off and typed keys invisible until Enter.
 - An NVT state machine in the pump strips `IAC` command sequences,
-  consumes sub-negotiations (`SB ... SE`), refuses `DO`/`WILL` for
-  options it did not offer, maps `IAC IAC` to a literal `0xFF`, and
-  translates `CR`, `CR NUL`, and `LF` to a single line-feed for the shell.
-- `ESC [` / `ESC O` final bytes `A`/`B`/`C`/`D` are mapped to the shell's
-  virtual cursor-key codes so command history works over the wire.
+  consumes sub-negotiations (`SB ... SE`), answers `DO`/`DONT`/`WILL`/
+  `WONT` per RFC 854 (`DO` for unoffered options gets `WONT`, `WILL`
+  gets `DONT`), maps `IAC IAC` to a literal `0xFF`, answers `IAC AYT`
+  with `[UAOS yes]`, and treats `IAC IP`/`IAC AO` as a break request.
+  `CR LF`, `CR NUL` and bare `CR` all collapse to a single line-feed —
+  the `NVT_CR` state swallows the byte following a `CR` when it is
+  `LF`/`NUL`, so one Enter can never dispatch a phantom empty command
+  (UAOS-48).
+- Escape sequences are parsed as full CSI/SS3, not byte-at-a-time: CSI
+  parameter (`0x30-0x3F`) and intermediate (`0x20-0x2F`) bytes are
+  consumed until a final byte (`0x40-0x7E`) ends the sequence, so
+  `ESC [ 3 ~`, `ESC [ 1 ; 5 A` and friends can no longer leak literal
+  bytes into the input line (UAOS-49).  Arrow finals map to the shell's
+  virtual cursor keys; `H`/`F`, `1~`/`4~`/`7~`/`8~` and `3~` map to
+  Home/End/Delete line-editor behavior; `ESC O` SS3 arrows and
+  Home/End work too.
+- Outbound data is IAC-escaped per RFC 854: `remote_send()` in
+  `shell_win.c` doubles every literal `0xFF` byte so a strict Telnet
+  client never mistakes shell output for protocol bytes (UAOS-51).
 - A raw `0x03` byte (Ctrl-C) and the Telnet `IAC IP` / `IAC AO` commands
   are all fed to the shell as a break request (UAOS-50).  They are no
   longer mapped to backspace or cursor keys: the shell's virtual-key
@@ -215,13 +229,25 @@ cannot leave the service permanently "running".
 `tcp_close()`: it forces the socket to `TCP_CLOSED` unconditionally,
 for teardown when the peer can no longer be reached.
 
-Known issues (live audit, 2026-09-25 — tracked under UAOS-47; updated
-after UAOS-50/53): CR LF produces two newlines; non-arrow CSI sequences
-leak literal bytes; output is not IAC-escaped; no dead-peer/idle
-timeout.  Concurrency (per-session pump tasks, tokenized handles, busy
-banner) landed in UAOS-53 and remote interrupt handling (Ctrl-C /
-IAC IP / IAC AO → real shell break) in UAOS-50.  The TCP-layer gaps that hit telnetd directly were fixed:
-RX overflow dropped-but-ACKed in UAOS-56, and peer-window enforcement,
+Session watchdog and logging (UAOS-60/61): each pump tracks `last_rx`
+(last received input).  At ~5 min idle (`TELNETD_IDLE_PROBE_TICKS`) it
+sends `IAC AYT` as a liveness probe; at ~10 min
+(`TELNETD_IDLE_TICKS`) it closes the socket and kills the shell via
+`ShellWin_RemoteKill()`, so a peer that vanishes without FIN/RST can no
+longer pin a remote slot forever.  Connects and disconnects are logged
+to klog/serial with peer IP:port and session duration, and `telnetd
+STATUS` lists live sessions.  Because the daemon is unauthenticated,
+remote sessions are also policy-guarded at the shell's `run_cmd` choke
+point — framebuffer/desktop-only commands (`calculator`, `loadwb`, the
+prefs editors, ...) are refused, and destructive commands (`delete`,
+`format`, `reboot`, ...) are logged to klog/serial; see the Remote
+Shell Sessions section of [Display](/kernel/display/index.md)
+(UAOS-59).
+
+Earlier audit fixes that already landed: concurrency (per-session pump
+tasks, tokenized handles, busy banner) in UAOS-53, remote interrupt
+handling (Ctrl-C / IAC IP / IAC AO → real shell break) in UAOS-50, TCP
+RX-overflow dropped-but-ACKed in UAOS-56, and peer-window enforcement,
 single-segment-in-flight send, `snd_una` validation, and RST generation
 in UAOS-55.
 

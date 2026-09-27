@@ -63,6 +63,9 @@ void ShellWin_DispatchLine(const char *line);
 #define SHELL_VKEY_DOWN   KBD_VKEY_DOWN
 #define SHELL_VKEY_LEFT   KBD_VKEY_LEFT
 #define SHELL_VKEY_RIGHT  KBD_VKEY_RIGHT
+#define SHELL_VKEY_HOME   KBD_VKEY_HOME
+#define SHELL_VKEY_END    KBD_VKEY_END
+#define SHELL_VKEY_DEL    KBD_VKEY_DEL
 
 /* Open a remote shell session bound to an accepted TCP socket index.
  * Sends the banner and prompt immediately, then spawns the session task.
@@ -87,5 +90,11 @@ int   ShellWin_RemoteIsDead(void *session);
 /* Signal the session to terminate (peer went away).  The session task
  * exits and releases its slot; RemoteIsDead then reports 1. */
 void  ShellWin_RemoteKill(void *session);
+
+/* Turn remote-side echo of the input line on/off (RFC 857): a client
+ * that answers our WILL ECHO with DONT ECHO does its own echo — the
+ * per-keystroke line repaint is suppressed so it does not double the
+ * display.  Command output and prompts still flow.  Default on. */
+void  ShellWin_RemoteSetEcho(void *session, int on);
 
 #endif

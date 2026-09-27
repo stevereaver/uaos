@@ -128,6 +128,10 @@ void tcp_abort(int sock);
 /* Query socket state */
 TcpState tcp_state(int sock);
 
+/* Read the peer address/port of a socket (for connection logging and
+ * session listings).  Returns 0 on success, -1 for a bad index. */
+int  tcp_peer(int sock, ipv4_t *ip, uint16_t *port);
+
 /* Must be called periodically (e.g. from PIT tick) for retransmit/timeout */
 void tcp_tick(void);
 

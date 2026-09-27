@@ -242,22 +242,39 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   old session can never write into a different session that reused the
   slot (UAOS-53).
 - Output: `inst_print`/`shell_print_raw` route through `remote_send()`,
-  which pushes bytes with `tcp_send()` and marks the session dead if the
-  socket dies.  `tcp_send` returns 0 while a segment is still unacked or
-  the peer window is closed (UAOS-55), so `remote_send` polls the stack
+  which IAC-escapes literal `0xFF` bytes (RFC 854) over
+  `remote_send_raw()` before pushing bytes with `tcp_send()` and marks
+  the session dead if the socket dies (UAOS-51).  `tcp_send` returns 0
+  while a segment is still unacked or the peer window is closed
+  (UAOS-55), so `remote_send_raw` polls the stack
   and retries with a ~60 s `g_pit_ticks` stall bound.  `clear` sends ANSI clear-screen; `endcli` sets
   `remote_dead` via the existing `close_shell` callback, which makes the
   session task exit and releases the slot.
 - Input: `ShellWin_RemoteFeed()` enqueues NVT-decoded bytes into the
-  instance's normal key ring and returns whether every byte was
-  accepted; when the 64-byte ring is full it returns false and the
-  telnetd pump retries the remainder on the next poll instead of
-  dropping it — a dropped newline previously left the session waiting
-  for line termination forever, making input bursts look like a hang.
+  instance's normal key ring (256 bytes, `SHELL_KB_BUFSIZE`) and returns
+  whether every byte was accepted; when the ring is full it returns
+  false and the telnetd pump retries the remainder on the next poll
+  instead of dropping it — a dropped newline previously left the
+  session waiting for line termination forever, making input bursts
+  look like a hang (UAOS-52).
   `inst_handle_key` dispatches to a remote
   line editor that mirrors the window editor (history recall, cursor
-  keys, tab completion, backspace) but repaints with
+  keys, tab completion, backspace, Home/End/Delete) but repaints with
   `\r` + `ESC[2K` + prompt + buffer instead of the framebuffer input bar.
+  For the common case — a printable character appended at end of line —
+  it echoes just that character instead of repainting the whole line,
+  which keeps typing usable over the single-segment TCP path
+  (UAOS-58); mid-line edits, history recall, tab completion and
+  Delete still trigger a full repaint.
+- Remote command policy (UAOS-59): because telnetd is unauthenticated,
+  `run_cmd` checks every command's basename against
+  `k_remote_blocked`/`k_remote_logged` before any dispatch path —
+  builtins, resident commands, the native registry, or PATH-exec'd
+  binaries.  Framebuffer/desktop-only commands are refused with
+  "not available on remote shells" (rc 20); destructive/system-wide
+  commands run but are logged to klog/serial as
+  `telnetd: remote shell ran '...'`.  `NativeCmdCtx.remote` marks a
+  context as remote.
   Feeding `0x03` (Ctrl-C — also produced by Telnet `IAC IP`/`IAC AO`)
   sets the instance's `break_req` flag and signals the session task
   with `SIGF_BREAKF` so command waits, `read_line`/`read_key` and
