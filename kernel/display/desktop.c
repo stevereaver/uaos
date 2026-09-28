@@ -2259,25 +2259,113 @@ static void icon_damage(const IconState *ic)
     WM_InvalidateDesktopRect(lx - 1, ic->y - 1, LABEL_W + 2, ICON_H + 2);
 }
 
+/* Recompute the cached dropdown/flyout footprint (g_menu_.., g_submenu_..)
+ * from the current menu state.  Replicates the geometry math in
+ * draw_menu_dropdown()/draw_host_submenu().  Needed because the globals are
+ * otherwise only refreshed when the dropdown repaints — damage tracking
+ * must know the NEW footprint before that repaint runs, otherwise a freshly
+ * opened or switched menu gets clipped to the previous menu's rect by
+ * repaint_damaged()'s FB_SetClipRect (UAOS-122). */
+static void menu_update_geometry(void)
+{
+    int W = (int)g_fb.width;
+    int item_h = 16;
+    int pad_x  = 8;
+    int pad_y  = 2;
+    int n, label_w;
+    const HostMenu *hmenu = NULL;
+    const MenuItem *items = NULL;
+
+    if (g_guest_menu_active) {
+        if (g_menu_index < 0 || g_menu_index >= g_active_menu_count) return;
+        hmenu = &g_active_menus[g_menu_index];
+        n = hmenu->item_count;
+        if (n <= 0) return;
+        label_w = host_menu_dropdown_width(hmenu);
+    } else {
+        if (g_menu_index < 0 || g_menu_index >= (int)NUM_MENUS) return;
+        items = g_menus[g_menu_index];
+        n = menu_item_count(items);
+        label_w = menu_max_label_width(items);
+    }
+
+    g_menu_x = menu_title_x(g_menu_index);
+    g_menu_y = MENUBAR_H;
+    g_menu_w = label_w + pad_x * 2;
+    g_menu_h = n * item_h + pad_y * 2;
+    if (g_menu_x + g_menu_w > W) g_menu_x = W - g_menu_w;
+
+    g_submenu_w = 0;
+    g_submenu_h = 0;
+    if (g_submenu_item < 0 || g_submenu_item >= n) return;
+
+    int sw = 0, sh = 0;
+    if (g_guest_menu_active) {
+        const HostMenuItem *hi = &hmenu->items[g_submenu_item];
+        if (hi->has_submenu && hi->submenu && hi->submenu->item_count > 0) {
+            sw = host_menu_dropdown_width(hi->submenu) + pad_x * 2;
+            sh = hi->submenu->item_count * item_h + pad_y * 2;
+        }
+    } else if (items[g_submenu_item].has_submenu &&
+               items[g_submenu_item].submenu) {
+        const MenuItem *sub = items[g_submenu_item].submenu;
+        int sn = menu_item_count(sub);
+        if (sn > 0) {
+            sw = submenu_max_label_width(sub) + pad_x * 2;
+            sh = sn * item_h + pad_y * 2;
+        }
+    }
+    if (sw <= 0) return;
+
+    int sx = g_menu_x + g_menu_w - 2;
+    int sy = g_menu_y + pad_y + g_submenu_item * item_h;
+    if (sx + sw > W) sx = W - sw;
+    if (sy + sh > (int)g_fb.height) sy = (int)g_fb.height - sh;
+    if (sy < 0) sy = 0;
+    g_submenu_x = sx;
+    g_submenu_y = sy;
+    g_submenu_w = sw;
+    g_submenu_h = sh;
+}
+
 /* Damage the whole current menu footprint: menubar strip (title highlight),
  * open dropdown incl. shadow, and flyout submenu incl. shadow.  Use when
- * the menu opens/closes or switches so vacated pixels get repainted. */
+ * the menu opens/closes or switches so vacated pixels get repainted.
+ * Both the last-drawn rect and the rect the current state will produce are
+ * damaged — on open/switch they differ, and damaging only the stale rect
+ * leaves the new dropdown clipped by the damage-rect pass (UAOS-122). */
 static void menu_invalidate(void)
 {
+    int ox = g_menu_x, oy = g_menu_y, ow = g_menu_w, oh = g_menu_h;
+    int osx = g_submenu_x, osy = g_submenu_y,
+        osw = g_submenu_w, osh = g_submenu_h;
+    menu_update_geometry();
     WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
+    WM_InvalidateDesktopRect(ox, oy, ow + 4, oh + 4);
+    if (osw > 0)
+        WM_InvalidateDesktopRect(osx, osy, osw + 4, osh + 4);
     WM_InvalidateDesktopRect(g_menu_x, g_menu_y, g_menu_w + 4, g_menu_h + 4);
-    WM_InvalidateDesktopRect(g_submenu_x, g_submenu_y,
-                             g_submenu_w + 4, g_submenu_h + 4);
+    if (g_submenu_w > 0)
+        WM_InvalidateDesktopRect(g_submenu_x, g_submenu_y,
+                                 g_submenu_w + 4, g_submenu_h + 4);
 }
 
 /* Lighter variant for hover changes: the open dropdown/submenu repaint
  * themselves when the menu is open; the submenu region gets desktop damage
- * in case it vacated or moved. */
+ * in case it vacated or moved.  Old ∪ new footprints, as above. */
 static void menu_invalidate_items(void)
 {
+    int ox = g_menu_x, oy = g_menu_y, ow = g_menu_w, oh = g_menu_h;
+    int osx = g_submenu_x, osy = g_submenu_y,
+        osw = g_submenu_w, osh = g_submenu_h;
+    menu_update_geometry();
+    WM_InvalidateRect(ox, oy, ow + 4, oh + 4);
+    if (osw > 0)
+        WM_InvalidateDesktopRect(osx, osy, osw + 4, osh + 4);
     WM_InvalidateRect(g_menu_x, g_menu_y, g_menu_w + 4, g_menu_h + 4);
-    WM_InvalidateDesktopRect(g_submenu_x, g_submenu_y,
-                             g_submenu_w + 4, g_submenu_h + 4);
+    if (g_submenu_w > 0)
+        WM_InvalidateDesktopRect(g_submenu_x, g_submenu_y,
+                                 g_submenu_w + 4, g_submenu_h + 4);
 }
 
 static void menu_update_hover(int mx, int my)
@@ -2288,11 +2376,14 @@ static void menu_update_hover(int mx, int my)
     if (my >= 0 && my < MENUBAR_H) {
         int menu = menubar_hit(mx, my);
         if (menu >= 0 && menu < active_menu_count() && menu != g_menu_index) {
-            menu_invalidate();   /* old dropdown/submenu + menubar strip */
             g_menu_index = menu;
             g_menu_hover = -1;
             g_submenu_item = -1;
             g_submenu_hover = -1;
+            /* Invalidate AFTER the index change: g_menu_* still hold the
+             * old drawn rect (damaged as "old") and the new footprint is
+             * computed + damaged too. */
+            menu_invalidate();
             return;
         }
     }
