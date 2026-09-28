@@ -3792,7 +3792,7 @@ static void shell_yield_ms(void *shell_extra, uint32_t ms)
     uint64_t start = g_pit_ticks;
     while (g_pit_ticks - start < ticks && !(s && s->break_req)) {
         net_stack_poll();
-        __asm__ volatile ("pause");
+        Task_SleepTicks(1);
     }
 }
 
@@ -3826,7 +3826,7 @@ static char shell_read_key(void *shell_extra)
         }
         if (shell_kb_dequeue(s, &c))
             return c;
-        Task_Yield();
+        Task_SleepTicks(1);
     }
 }
 
@@ -3915,8 +3915,12 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                     s->ask_result[i] = s->input_buf[i];
                 }
             }
+        } else {
+            /* No key queued — block until the next tick rather than
+             * spin-yielding (Task_Yield is a no-op; a spinning shell
+             * starves the -128 Idle task that pumps GUI input). */
+            Task_SleepTicks(1);
         }
-        Task_Yield();
     }
 }
 
@@ -4090,7 +4094,7 @@ static int shell_change_task_pri(void *shell_extra, const char *name, int8_t pri
     (void)shell_extra;
     UaosTask *t = Task_FindByName(name);
     if (!t) return 0;
-    t->ln_Pri = pri;
+    SetTaskPri(t, pri);
     return 1;
 }
 
@@ -4283,7 +4287,10 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             m68k_argv[argc] = NULL;
             int slot = (int)(s - g_shells);
             UAOS_Emu_SetCwd(s->cwd);
-            UaosTask *t = Task_CreateM68k(bin_name, -128,
+            int8_t pri = 0;
+            UaosTask *cur = Task_Current();
+            if (cur) pri = cur->ln_Pri;
+            UaosTask *t = Task_CreateM68k(bin_name, pri,
                                           g_bin_payload, payload_size,
                                           m68k_argv,
                                           (slot >= 0 && slot < TOTAL_SHELLS)
@@ -4303,7 +4310,6 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
              * the main UI loop — blocking here would freeze the desktop
              * until the child exits (run <m68k prog> would deadlock on
              * any program that waits for user input). */
-            UaosTask *cur = Task_Current();
             if (cur && !g_bg_running) {
                 /* Clear any stale SIGF_CHILD from a previous child exit
                  * so that Wait() blocks until THIS child actually exits. */
@@ -4471,7 +4477,10 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
 
         int slot = (int)(s - g_shells);
         UAOS_Emu_SetCwd(s->cwd);
-        UaosTask *t = Task_CreateM68k(bin_name, -128,
+        int8_t pri = 0;
+        UaosTask *cur = Task_Current();
+        if (cur) pri = cur->ln_Pri;
+        UaosTask *t = Task_CreateM68k(bin_name, pri,
                                       g_bin_payload, file_size,
                                       m68k_argv,
                                       (slot >= 0 && slot < TOTAL_SHELLS)
@@ -6107,8 +6116,13 @@ static void shell_task_entry(void *arg)
         }
         if (shell_kb_dequeue(s, &c)) {
             inst_handle_key(s, c);
+            continue;
         }
-        Task_Yield();
+        /* Nothing queued — block until the next tick instead of
+         * spin-yielding: Task_Yield() is a no-op under the preemptive
+         * scheduler, and a permanently-ready shell at pri 0 starves the
+         * -128 Idle task (which pumps all GUI input). */
+        Task_SleepTicks(1);
     }
 }
 
@@ -6181,7 +6195,7 @@ static ShellInstance *open_shell(int stagger)
                                 k_key_shims[idx]);
     s->kb_head = 0;
     s->kb_tail = 0;
-    s->task = Task_CreateNative("Shell", -128, shell_task_entry, s);
+    s->task = Task_CreateNative("Shell", 0, shell_task_entry, s);
     WM_Redraw();
     return s;
 }
@@ -6254,7 +6268,7 @@ static ShellInstance *open_remote_shell(int sock)
         inst_print(s, "");
         remote_send_prompt(s);
 
-        s->task = Task_CreateNative("Shell", -128, shell_task_entry, s);
+        s->task = Task_CreateNative("Shell", 0, shell_task_entry, s);
         return s;
     }
     return NULL;

@@ -24,7 +24,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 ## Core Files
 
 - `task.c`: Task creation (native, X64 user-space, and emulated M68k) and context switching logic. Each `UaosTask` carries a `bg_job` field stamped at creation from `g_task_bg_job` — the shell job pump sets that global while dispatching a background job, so `jobs`/`[n] done` bookkeeping can detect when the spawned task(s) actually exit (job numbers never collide with recycled task slots the way a bare `UaosTask *` would).
-- `exec_task.c`: AmigaOS-compatible `AddTask`/`FindTask`/`SetTaskPri` helpers for M68k tasks.
+- `exec_task.c`: AmigaOS-compatible `AddTask`/`FindTask`/`SetTaskPri` helpers for M68k tasks. `SetTaskPri` re-queues a READY task onto the new priority's ready list (under `cli`) so reprioritising applies at the next dispatch instead of silently keeping the old queue position.
 - `exec_signal.c`: Task lookup helpers for M68k guest process structures.
 - `exec_ipc.c`: Message port and message passing implementation (`NewPort`, `PutMsg`, `GetMsg`, `WaitPort`, `ReplyMsg`).
 - `syscall_dispatch.c`: Handling register-based system call routing and implementation for Ring-0 userspace programs.
@@ -59,6 +59,14 @@ The preferences library implements AmigaOS IFF PREF file format for `ENV:` and `
 - **ENVARC:** — persistent prefs (RAM:ENVARC), survives within a session.
 - **API**: `Prefs_Load`/`Prefs_Save` for IFF PREF read/write; `Prefs_FindChunk`/`Prefs_SetChunk`/`Prefs_RemoveChunk` for chunk manipulation; `Prefs_LoadToEnv`/`Prefs_SaveToEnvarc` for ENV:↔ENVARC: copying; `Prefs_NotifyChange`/`Prefs_RegisterNotify` for change broadcast.
 - **Prefs types**: `PREFS_WB`, `PREFS_SCREEN`, `PREFS_PALETTE`, `PREFS_POINTER`, `PREFS_INPUT`, `PREFS_FONT`, `PREFS_TIME`, `PREFS_IControl`, `PREFS_SERIAL`, `PREFS_SOUND`, `PREFS_OVERSCAN`, `PREFS_PRINTER`, `PREFS_PGFX`, `PREFS_PPS`, `PREFS_LOCALE`, `PREFS_WBPATTERN`.
+
+## Scheduling Model
+
+Strict priority + round-robin within a priority, like AmigaOS. `task.c` keeps 256 ready lists (`g_ready_heads[pri+128]`) plus a 256-bit occupancy bitmap (`g_ready_map[4]`); dispatch finds the highest non-empty queue via `__builtin_clzll` (O(4) worst case, no 256-entry scan) and dequeues tasks that were marked `TASK_REMOVED` while still queued as a defensive skip. Bitmap clear is followed by a re-check of the queue head so an IRQ-level `ready_enqueue` landing mid-dequeue/`ready_remove` can't leave a set bit for an empty queue (enqueue order is append→set-bit). Spawn priorities: `Idle` is a pure `hlt` loop at `-128` (only runs when nothing else is ready); `EventPump` — the WM/mouse/keyboard/`net_stack_poll`/job-pump loop that used to live inside Idle — is its own task at `0`, because it is always runnable and at -128 strict priority would let every-tick wakers starve it (frozen desktop while telnet still works); windowed/remote `Shell`, `telnetd`, and `telnetd-session` run at `0`; shell-spawned M68k and X64 commands inherit `Task_Current()->ln_Pri`. Consequence: a task that never blocks (e.g. `telnetd`'s poll loop, `Idle`) starves all lower priorities if raised above them — `changetaskpri` is now semantically real, verified live (`status FULL` shows mixed priorities; raising `Idle` to 20 froze the rest of the system as expected).
+
+Dispatch only happens in the PIT ISR (`do_schedule`), so voluntary descheduling means blocking. Poll loops therefore must not rely on `Task_Yield()` (a documented no-op `pause` under the timer scheduler): shell key/line reads, `shell_yield_ms`, telnetd accept/pump/back-pressure loops, native `sys_read`/`sys_readkey`, and `dos_Delay()` all use `Task_SleepTicks()` — a timed wait on the wait queue woken by `Task_WakeTimers()` each tick — so a runnable-every-tick task doesn't pin the CPU or (once priorities mattered) starve `Idle`.
+
+**Wait-queue invariant**: `Wait()` and `Task_SleepTicks()` do `wait_enqueue → sti;hlt → re-check`. A non-PIT IRQ (kbd/mouse/NIC) wakes `hlt` without rescheduling, so enqueue is guarded by `tc_State != TASK_WAITING` — re-appending an already-linked node corrupts the list into a cycle that hangs `Task_WakeTimers()` *inside* the PIT ISR (100 % CPU, system dead). `Task_WakeTimers()` also unlinks `TASK_REMOVED` stragglers, and the M68k `RemTask` thunk removes a task from the wait queue before marking it removed.
 
 ## Task Stack Alignment
 

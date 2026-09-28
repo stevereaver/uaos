@@ -857,9 +857,15 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * Syscall_Dispatch(); legacy Wait() yields use SYSCALL_SCHEDULE (0xFF). */
     IDT_SetRawHandlerDPL3(0x80, uaos_syscall_isr);
 
-    /* Create system idle task (runs the former event loop) */
+    /* Create the system idle task (pure hlt loop at the floor priority)
+     * and the event pump (input/WM/network/jobs) at handler priority.
+     * The pump must live at pri 0: it is always runnable, so at -128
+     * any task that wakes every tick would starve it — freezing the
+     * desktop while telnet et al keep working. */
     extern void Task_IdleEntry(void *arg);
+    extern void Task_EventPumpEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
+    Task_CreateNative("EventPump", 0, Task_EventPumpEntry, NULL);
 
     kprint("[BOOT] Initialising userspace GUI windows...\n");
     UserWindow_Init();

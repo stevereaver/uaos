@@ -362,7 +362,7 @@ static void pump_task(void *arg)
                         g_pit_ticks >= deadline)
                         break;
                     net_stack_poll();
-                    Task_Yield();
+                    Task_SleepTicks(1);
                 }
             }
         }
@@ -388,7 +388,7 @@ static void pump_task(void *arg)
         }
 
         net_stack_poll();
-        Task_Yield();
+        Task_SleepTicks(1);
     }
 
     /* Connection log — the disconnect side pairs with the "connect
@@ -486,7 +486,7 @@ static void telnetd_task(void *arg)
                 __asm__ volatile("cli" ::: "memory");
                 g_pump_count++;
                 __asm__ volatile("sti" ::: "memory");
-                if (!Task_CreateNative("telnetd-session", -128,
+                if (!Task_CreateNative("telnetd-session", 0,
                                        pump_task, ctx)) {
                     ctx->inuse = 0;
                     __asm__ volatile("cli" ::: "memory");
@@ -498,7 +498,7 @@ static void telnetd_task(void *arg)
             }
         }
         net_stack_poll();
-        Task_Yield();
+        Task_SleepTicks(1);
     }
     tcp_close(lsock);
     g_port = 0;
@@ -518,7 +518,7 @@ int Telnetd_Start(uint16_t port)
     g_generation++;
     g_stop    = 0;
     g_running = 1;
-    if (!Task_CreateNative("telnetd", -128, telnetd_task,
+    if (!Task_CreateNative("telnetd", 0, telnetd_task,
                            (void *)(uintptr_t)port)) {
         g_running = 0;
         return 0;

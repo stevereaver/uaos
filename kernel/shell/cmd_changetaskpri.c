@@ -89,7 +89,7 @@ void Cmd_ChangeTaskPri(NativeCmdCtx *ctx, const char *args)
             if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 5);
             return;
         }
-        t->ln_Pri = (int8_t)pri;
+        SetTaskPri(t, pri);
     }
 
     char msg[CMD_MAX_LINE];

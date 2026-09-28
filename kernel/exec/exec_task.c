@@ -470,6 +470,17 @@ void SetTaskPri(UaosTask *task, int newpri)
     if (!task) return;
     if (newpri < MIN_PRI) newpri = MIN_PRI;
     if (newpri > MAX_PRI) newpri = MAX_PRI;
-    task->ln_Pri = (int8_t)newpri;
-    /* TODO: if task is on a ready queue, move it to the new priority queue */
+
+    __asm__ volatile ("cli");
+    if (task->tc_State == TASK_READY) {
+        /* Task is queued: move it to the new priority's ready list so
+         * the change takes effect at the next dispatch instead of
+         * silently keeping the old queue position. */
+        ready_remove(task);
+        task->ln_Pri = (int8_t)newpri;
+        ready_enqueue(task);
+    } else {
+        task->ln_Pri = (int8_t)newpri;
+    }
+    __asm__ volatile ("sti");
 }

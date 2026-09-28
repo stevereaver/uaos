@@ -180,6 +180,10 @@ static void stub_RemTask(M68kCPUState *cpu)
     /* Find task by guest address and mark as removed */
     UaosTask *t = Task_FindByM68kAddr(task_addr);
     if (t) {
+        /* Unlink from the wait queue first so the dead task does not
+         * linger as a stale wait-list node. */
+        if (t->tc_State == TASK_WAITING)
+            wait_remove(t);
         t->tc_State = TASK_REMOVED;
         /* Also update the guest task struct if accessible */
         if (task_addr + TASK_TC_STATE_OFF <= 0xFFFFFFFFu) {

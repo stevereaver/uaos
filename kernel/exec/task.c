@@ -44,9 +44,11 @@ UaosTask *Task_SwitchPrev = NULL;
 
 /* g_wait_tof_task defined in graphics_lib.c (extern in task.h) */
 
-/* Ready queues: one doubly-linked list per priority level */
+/* Ready queues: one doubly-linked list per priority level, plus a
+ * 256-bit occupancy bitmap so dispatch finds the highest non-empty
+ * queue without scanning all 256 lists. */
 static UaosTask g_ready_heads[256];  /* index 0 = pri -128 */
-static int      g_ready_mask = 0;    /* bit i set if ready queue at pri i-128 is non-empty */
+static uint64_t g_ready_map[4];      /* bit i set if ready queue i is non-empty */
 
 /* Wait queue — tasks blocked on Wait() */
 static UaosTask g_wait_head;
@@ -105,18 +107,43 @@ void ready_enqueue(UaosTask *task)
 {
     int idx = pri_to_idx(task->ln_Pri);
     list_append(&g_ready_heads[idx], task);
-    g_ready_mask |= (1 << (idx & 31));   /* simplified: we only track first 32 priorities for now */
+    g_ready_map[idx >> 6] |= 1ULL << (idx & 63);
     task->tc_State = TASK_READY;
+}
+
+/* Remove a task from its ready queue (e.g. SetTaskPri reprioritising).
+ * Caller must guarantee the task is currently queued. */
+void ready_remove(UaosTask *task)
+{
+    int idx = pri_to_idx(task->ln_Pri);
+    uint64_t bit = 1ULL << (idx & 63);
+    list_remove(task);
+    /* Clear-then-recheck: safe against an IRQ that enqueues to the same
+     * queue between the list op and the bitmap op (ready_enqueue sets
+     * the bit after appending, so either side restores it). */
+    g_ready_map[idx >> 6] &= ~bit;
+    if (!list_empty(&g_ready_heads[idx]))
+        g_ready_map[idx >> 6] |= bit;
 }
 
 static UaosTask *ready_dequeue_highest(void)
 {
-    /* Scan from highest priority (255) down to 0 */
-    for (int idx = 255; idx >= 0; idx--) {
-        if (!list_empty(&g_ready_heads[idx])) {
+    /* Highest set bitmap bit = highest non-empty priority queue. */
+    for (int w = 3; w >= 0; w--) {
+        while (g_ready_map[w]) {
+            uint64_t bits = g_ready_map[w];
+            int idx = (w << 6) + (63 - __builtin_clzll(bits));
             UaosTask *t;
             list_remove_head(&g_ready_heads[idx], &t);
-            return t;
+            /* Same clear-then-recheck as ready_remove: an IRQ-level
+             * enqueue landing mid-sequence leaves the bit set, matching
+             * the now non-empty queue. */
+            g_ready_map[w] &= ~(1ULL << (idx & 63));
+            if (!list_empty(&g_ready_heads[idx]))
+                g_ready_map[w] |= 1ULL << (idx & 63);
+            if (t->tc_State != TASK_REMOVED)
+                return t;
+            /* Marked REMOVED while still queued (e.g. RemTask): drop it. */
         }
     }
     return NULL;
@@ -466,7 +493,8 @@ void TaskScheduler_Init(void)
     g_current = NULL;
     for (int i = 0; i < 256; i++)
         list_init(&g_ready_heads[i]);
-    g_ready_mask = 0;
+    for (int i = 0; i < 4; i++)
+        g_ready_map[i] = 0;
     list_init(&g_wait_head);
     g_wait_count = 0;
 
@@ -488,9 +516,24 @@ void Task_StartFirst(void)
 }
 
 /* -------------------------------------------------------------------------
- * Idle task — former main event loop
+ * Idle task — lowest priority, halts the CPU when nothing else is ready
  * ------------------------------------------------------------------------- */
 void Task_IdleEntry(void *arg)
+{
+    (void)arg;
+    for (;;) __asm__ volatile ("hlt" ::: "memory");
+}
+
+/* -------------------------------------------------------------------------
+ * Event pump — WM/input/network/job servicing (the former Idle body).
+ *
+ * Runs at handler priority (0), NOT idle priority: it is always runnable
+ * (hlt, never blocks), so at -128 strict priority would let any task that
+ * wakes every tick starve it forever — which freezes the desktop while
+ * the rest of the system looks healthy.  At pri 0 it round-robins with
+ * the other pri-0 tasks and gets a fair slice each rotation.
+ * ------------------------------------------------------------------------- */
+void Task_EventPumpEntry(void *arg)
 {
     (void)arg;
     int last_mx = -1, last_my = -1, last_btn = -1, last_btn_right = -1;
@@ -651,8 +694,15 @@ uint32_t Wait(uint32_t sigmask)
     g_current->tc_SigWait = sigmask;
 
     while ((g_current->tc_SigRecvd & sigmask) == 0) {
-        g_current->tc_State = TASK_WAITING;
-        wait_enqueue(g_current);
+        /* Enqueue only once: a non-PIT interrupt (kbd/mouse/NIC) wakes
+         * the hlt and returns here WITHOUT rescheduling, so re-enqueueing
+         * a task still linked in the wait list corrupts it (the node is
+         * appended twice; a later wait_remove can leave a succ self-loop
+         * that hangs Task_WakeTimers inside the PIT ISR). */
+        if (g_current->tc_State != TASK_WAITING) {
+            g_current->tc_State = TASK_WAITING;
+            wait_enqueue(g_current);
+        }
         /* Enable interrupts and halt until the timer ISR fires.
          * The timer ISR will call do_schedule(1) which switches to
          * another task.  When that task signals us, the scheduler
@@ -686,8 +736,13 @@ void Task_SleepTicks(uint64_t ticks)
     g_current->tc_wake_tick = deadline;
 
     while (g_pit_ticks < deadline) {
-        g_current->tc_State = TASK_WAITING;
-        wait_enqueue(g_current);
+        /* Enqueue only once — see Wait(): a non-PIT interrupt can wake
+         * the hlt without rescheduling; re-enqueueing a task that is
+         * still linked corrupts the wait list. */
+        if (g_current->tc_State != TASK_WAITING) {
+            g_current->tc_State = TASK_WAITING;
+            wait_enqueue(g_current);
+        }
         /* Same mechanism as Wait(): hlt lets the PIT ISR run, and
          * Task_WakeTimers() moves us back to the ready queue once the
          * deadline passes.  We resume here when re-dispatched. */
@@ -704,7 +759,10 @@ void Task_WakeTimers(void)
     UaosTask *t = g_wait_head.ln_Succ;
     while (t != &g_wait_head) {
         UaosTask *next = t->ln_Succ;
-        if (t->tc_wake_tick && g_pit_ticks >= t->tc_wake_tick) {
+        if (t->tc_State == TASK_REMOVED) {
+            /* Dead task left linked (e.g. RemTask on a waiter): unlink. */
+            wait_remove(t);
+        } else if (t->tc_wake_tick && g_pit_ticks >= t->tc_wake_tick) {
             t->tc_wake_tick = 0;
             wait_remove(t);
             ready_enqueue(t);

@@ -201,6 +201,7 @@ void SetTaskPri(UaosTask *task, int newpri);
 
 /* Idle task entry (system loop) */
 void Task_IdleEntry(void *arg);
+void Task_EventPumpEntry(void *arg);
 
 /* Assembly: switch from current task to next task */
 void Task_SwitchContext(UaosTask *old_task, UaosTask *new_task);
@@ -250,6 +251,7 @@ void Task_ScheduleFromSyscall(void);
  * ------------------------------------------------------------------------- */
 
 void ready_enqueue(UaosTask *task);
+void ready_remove(UaosTask *task);
 void wait_remove(UaosTask *task);
 
 extern UaosTask g_tasks[];

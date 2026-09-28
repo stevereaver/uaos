@@ -1482,12 +1482,10 @@ static void dos_Delay(M68kCPUState *cpu)
     uint32_t ticks = cpu->d[0];
     if (ticks == 0) return;
 
-    /* Conservative busy-wait: ~20 ms per Amiga tick.
-     * This is approximate; real timing depends on CPU frequency. */
-    volatile uint64_t n = (uint64_t)ticks * 4000000ULL;
-    while (n--) {
-        __asm__ __volatile__("pause");
-    }
+    /* Amiga ticks are 1/50 s = 2 PIT ticks at 100 Hz.  Block on the
+     * wait queue instead of busy-waiting so a Delay()ing guest task
+     * does not stay runnable and starve lower priorities. */
+    Task_SleepTicks((uint64_t)ticks * 2);
 }
 
 /* =========================================================================
