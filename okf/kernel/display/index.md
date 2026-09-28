@@ -228,6 +228,10 @@ Dragging a desktop icon (volume or leave-out shortcut) onto another volume icon 
 - **Snap-back**: The dragged icon snaps back to its original position in both cases — drag-to-copy and drag-to-trash do not move the icon itself.
 - **Visual feedback**: While dragging, the icon under the cursor that would be the drop target is highlighted with a 2px white outline (with a 1px dark border). The highlight is drawn by `draw_drop_target_highlight()` in both `Desktop_Draw` and the dirty-rect repaint path. The drop target index (`g_drop_target_idx`) is updated in `Desktop_MouseMove` via `icon_at_pos()`.
 
+## Declarative UI Tree (uitree)
+
+`uitree.{c,h}` is the dependency-free interface description + auto-layout engine (UAOS-130, umbrella UAOS-123): a window's UI is a tree of `UINode`s — `UI_VGROUP`/`UI_HGROUP`/`UI_PAGE` containers plus gadget leaves — laid out by `ui_measure()` (bottom-up natural sizes) and `ui_arrange()` (top-down rect distribution by `weight`). `UI_SPACER` absorbs free space; `UI_F_CENTER` keeps a node at natural size centred in its cell; `UI_PAGE` provides a tabbed container with `ui_page_tab_rect` for backend tab hit-testing. Nodes are allocated from a caller-supplied `UIArena` (no malloc needed) via `ui_*()` constructors; `ui_find`/`ui_node_at` give id lookup and hit-testing. The file compiles unchanged for the kernel, libuaos, and host tools — `tools/ui_layout_test.c` unit-tests it and gates the ISO build. See [uitree](/kernel/display/uitree.md).
+
 ## Application Windows
 
 The display layer includes several Workbench-style application windows in addition to the file browser and shell:

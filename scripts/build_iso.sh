@@ -112,6 +112,16 @@ ok "  Built: gen_uaos_x64"
 gcc -O2 -o "${BUILD_DIR}/gen_m68k_library" "${TOOLS_DIR}/gen_m68k_library.c"
 ok "  Built: gen_m68k_library"
 
+# UI layout engine self-test — uitree.c is shared with the kernel, so a
+# failure here means the kernel layout code is broken; abort the build.
+gcc -O2 -I"${REPO_ROOT}/kernel/display" \
+    -o "${BUILD_DIR}/ui_layout_test" \
+    "${TOOLS_DIR}/ui_layout_test.c" \
+    "${REPO_ROOT}/kernel/display/uitree.c"
+ok "  Built: ui_layout_test"
+"${BUILD_DIR}/ui_layout_test"
+ok "  Layout engine self-test passed"
+
 # -------------------------------------------------------------------------
 # Step 1b — Generate real M68k binary .library files
 # -------------------------------------------------------------------------
@@ -320,6 +330,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/blanker.c" \
     "${REPO_ROOT}/kernel/display/format_win.c" \
     "${REPO_ROOT}/kernel/display/early_startup.c" \
+    "${REPO_ROOT}/kernel/display/uitree.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \

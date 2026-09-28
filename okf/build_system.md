@@ -23,7 +23,7 @@ UAOS uses a custom build pipeline to produce a hybrid BIOS/UEFI bootable ISO ima
 The primary build script is `scripts/build_iso.sh`.
 
 1. **Staging**: Creates `build/` directories for object files and the ISO root.
-2. **Host Tools**: Builds `tools/gen_uaos_native`, `tools/gen_uaos_m68k`, `tools/gen_uaos_x64`, and `tools/gen_m68k_library`.
+2. **Host Tools**: Builds `tools/gen_uaos_native`, `tools/gen_uaos_m68k`, `tools/gen_uaos_x64`, and `tools/gen_m68k_library`. Also builds and **runs** `tools/ui_layout_test` (compiled against the real `kernel/display/uitree.c`) — a layout-engine regression aborts the ISO build.
 3. **M68k Library Generation**: Generates loadable Amiga `.library` wrappers (e.g., `powerpacker.library`) in `system/LIBS/`.
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
 5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/src/musashi/m68kops.c`) if it is missing.

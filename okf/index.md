@@ -21,6 +21,10 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 - [TCP/IP Network Stack](/kernel/net/index.md) - IPv4 networking, DHCP, DNS, NTP, socket API, and the telnetd remote-shell daemon.
 - [Build System](/build_system.md) - How the OS is compiled and packaged.
 
+## Tools
+
+- [Host Tools](/tools/index.md) - Build-time binary generators and host-side test harnesses in `tools/`.
+
 ## Documentation
 
 - [Dos Manual.pdf](/documentation/dos_manual_pdf.md) - DOS & Scripting Manual, generated from `Dos_Manual.md` via pandoc/pdfTeX.
