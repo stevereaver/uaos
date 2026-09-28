@@ -34,18 +34,19 @@ uint32_t WB_GREEN      = 0;
 
 void WB_InitPalette(void)
 {
-    /* Verified pixel-exact against two independent, unscaled AmigaOS 3.1
-     * Workbench screenshots (genuine captures, confirmed via colour
-     * histogram to contain only these 4 RGB values): grey/white/black are
-     * exactly as before, but the default Workbench blue is 0x6688BB, not
-     * the more saturated 0x0055AA previously used here. */
+    /* Canonical Workbench 3.1 four-pen palette: grey #AAAAAA, black,
+     * white, and the 3.1 highlight blue #3B67A2 (R:59 G:103 B:162).
+     * WB_LIGHT_BLUE matches the scale_rgb(blue, 3, 2) derivation used by
+     * intuition's screen/prefs palette application.  The light/dark
+     * greys, light blue, orange and cream are UAOS extensions outside
+     * the four hardware pens. */
     WB_GREY       = FB_RGB(0xAA,0xAA,0xAA);
     WB_LIGHT_GREY = FB_RGB(0xCC,0xCC,0xCC);
     WB_DARK_GREY  = FB_RGB(0x55,0x55,0x55);
     WB_BLACK      = FB_RGB(0x00,0x00,0x00);
     WB_WHITE      = FB_RGB(0xFF,0xFF,0xFF);
-    WB_BLUE       = FB_RGB(0x66,0x88,0xBB);
-    WB_LIGHT_BLUE = FB_RGB(0x66,0x88,0xBB);
+    WB_BLUE       = FB_RGB(0x3B,0x67,0xA2);
+    WB_LIGHT_BLUE = FB_RGB(0x58,0x9A,0xF3);
     WB_ORANGE     = FB_RGB(0xFF,0x88,0x00);
     WB_CREAM      = FB_RGB(0xFF,0xFF,0xCC);
     WB_RED        = FB_RGB(0xCC,0x00,0x00);

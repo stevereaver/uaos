@@ -8,6 +8,7 @@
 #include "icon_loader.h"
 #include "vfs.h"
 #include "ramfs.h"
+#include "../display/framebuffer.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -46,21 +47,19 @@ static void planar_to_argb(const uint8_t *src, uint32_t *dst,
     uint16_t bpr = ((width + 15) >> 4) << 1;  /* bytes per row, word-aligned */
     uint16_t plane_size = bpr * height;
 
-    /* Default Amiga Workbench palette for icons (pens 0-3):
-     * 0 = transparent (blue-ish on WB but we treat as transparent)
-     * 1 = white
-     * 2 = black
-     * 3 = grey/selected
-     */
-    static const uint32_t pens[8] = {
-        0x00000000,  /* 0: transparent (ARGB) */
-        0xFFFFFFFF,  /* 1: white */
-        0xFF000000,  /* 2: black */
-        0xFF888888,  /* 3: grey */
-        0xFFFFFFFF,  /* 4-7: repeated for safety */
-        0xFFFFFFFF,
-        0xFFFFFFFF,
-        0xFFFFFFFF,
+    /* Icon pens index the Workbench screen palette directly.  WB 3.x
+     * screen order is pen 0 = grey backdrop (transparent for icons),
+     * pen 1 = black, pen 2 = white, pen 3 = blue (#3B67A2).  Pens 4-7
+     * use the WB 3.x eight-colour extension set for depth-3 images. */
+    const uint32_t pens[8] = {
+        0x00000000,                    /* 0: transparent           */
+        0xFF000000,                    /* 1: black                 */
+        0xFFFFFFFF,                    /* 2: white                 */
+        0xFF000000u | WB_BLUE,         /* 3: WB blue (screen pen 3)*/
+        0xFF7B7B7B,                    /* 4: dark grey  #7B7B7B    */
+        0xFFAFAFAF,                    /* 5: light grey #AFAFAF    */
+        0xFFAA907C,                    /* 6: brown/tan  #AA907C    */
+        0xFFFFA997,                    /* 7: salmon     #FFA997    */
     };
 
     /* Clear output */
@@ -323,9 +322,9 @@ static inline void put_u32(uint8_t *p, int off, uint32_t v)
  *
  * Reverse of planar_to_argb().  Maps ARGB pixels back to Amiga pens:
  *   0 = transparent (alpha 0)
- *   1 = white  (0xFFFFFFFF)
- *   2 = black  (0xFF000000)
- *   3 = grey   (0xFF888888)
+ *   1 = black  (0xFF000000)
+ *   2 = white  (0xFFFFFFFF)
+ *   3 = detail (WB blue pen)
  * ========================================================================= */
 
 static uint8_t argb_to_pen(uint32_t argb)
@@ -334,9 +333,9 @@ static uint8_t argb_to_pen(uint32_t argb)
     uint32_t r = (argb >> 16) & 0xFF;
     uint32_t g = (argb >> 8)  & 0xFF;
     uint32_t b =  argb        & 0xFF;
-    if (r > 200 && g > 200 && b > 200) return 1; /* white */
-    if (r < 50  && g < 50  && b < 50)  return 2; /* black */
-    return 3; /* grey */
+    if (r > 200 && g > 200 && b > 200) return 2; /* white */
+    if (r < 50  && g < 50  && b < 50)  return 1; /* black */
+    return 3; /* blue/detail */
 }
 
 static uint16_t argb_to_planar(const uint32_t *src, uint8_t *dst,
@@ -696,9 +695,9 @@ static void draw_rect_px(uint32_t *buf, int x, int y, int w, int h, uint32_t arg
 }
 
 #define PEN_TRANSPARENT  0x00000000
-#define PEN_WHITE        0xFFFFFFFF
-#define PEN_BLACK        0xFF000000
-#define PEN_GREY         0xFF888888
+#define PEN_WHITE        (0xFF000000u | WB_WHITE)
+#define PEN_BLACK        (0xFF000000u | WB_BLACK)
+#define PEN_GREY         (0xFF000000u | WB_GREY)
 
 /* Default icon image size */
 #define DEF_ICON_W  32

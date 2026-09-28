@@ -96,8 +96,8 @@
 #define UAOS_WB_DARK_GREY  0x555555
 #define UAOS_WB_BLACK      0x000000
 #define UAOS_WB_WHITE      0xFFFFFF
-#define UAOS_WB_BLUE       0x0055AA
-#define UAOS_WB_LIGHT_BLUE 0x0088FF
+#define UAOS_WB_BLUE       0x3B67A2
+#define UAOS_WB_LIGHT_BLUE 0x589AF3
 #define UAOS_WB_ORANGE     0xFF8800
 #define UAOS_WB_CREAM      0xFFFFCC
 #define UAOS_WB_RED        0xCC0000

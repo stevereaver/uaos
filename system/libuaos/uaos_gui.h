@@ -85,8 +85,8 @@ typedef struct {
 /* -------------------------------------------------------------------------
  * Color palette (Workbench 3.1 compatible)
  * ------------------------------------------------------------------------- */
-#define UAOS_COL_BLUE       0x0055AA
-#define UAOS_COL_LIGHT_BLUE 0x0088FF
+#define UAOS_COL_BLUE       0x3B67A2
+#define UAOS_COL_LIGHT_BLUE 0x589AF3
 #define UAOS_COL_GREY       0xAAAAAA
 #define UAOS_COL_LIGHT_GREY 0xCCCCCC
 #define UAOS_COL_DARK_GREY  0x555555

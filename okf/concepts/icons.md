@@ -26,6 +26,10 @@ UAOS supports classic Amiga Workbench `.info` icon files. These files contain on
    - If the selected image matches the normal image dimensions and fits in the file, it is converted and `has_selected` is set to `1`.
    - If the selected image is missing or mismatched, the `selected` buffer is filled with a copy of the normal image and `has_selected` remains `0`.
 
+### Pen Mapping
+
+Classic `.info` images carry no palette — planar pen indices map onto the Workbench 2.x/3.x screen palette: pen 0 renders transparent (backdrop shows through), pen 1 = black, pen 2 = white, pen 3 = the live `WB_BLUE` (`#3B67A2`). Pens 4-7 in depth-3 images use the WB 3.x eight-colour extension set (`#7B7B7B`, `#AFAFAF`, `#AA907C`, `#FFA997`). `Icon_Save()`'s `argb_to_pen` is the inverse of this table. `Icon_MakeDefault()` procedural fallbacks draw with `WB_WHITE`/`WB_BLACK`/`WB_GREY` so they track palette changes too.
+
 ## Rendering
 
 `Icon_Draw()` and `Icon_DrawSelected()` in `kernel/display/icon_render.c` blit ARGB pixels to the linear framebuffer, skipping fully transparent pixels.

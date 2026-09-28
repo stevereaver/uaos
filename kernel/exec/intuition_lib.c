@@ -3334,7 +3334,7 @@ static void extract_screen_palette(ScreenSlot *slot, uint32_t *palette, int max_
         FB_RGB(0xAA, 0xAA, 0xAA), /* pen 0: backdrop grey */
         FB_RGB(0x00, 0x00, 0x00), /* pen 1: text black    */
         FB_RGB(0xFF, 0xFF, 0xFF), /* pen 2: shine white   */
-        FB_RGB(0x66, 0x88, 0xBB), /* pen 3: WB blue       */
+        FB_RGB(0x3B, 0x67, 0xA2), /* pen 3: WB 3.1 blue   */
     };
     for (int i = 0; i < max_colors; i++)
         palette[i] = (i < 4) ? wb_defaults[i]
@@ -7846,7 +7846,7 @@ static void init_prefs(void)
     write_host_u16(&g_intu_def_prefs[PREF_OFF_COLOR0], 0x0AAA); /* grey */
     write_host_u16(&g_intu_def_prefs[PREF_OFF_COLOR1], 0x0000); /* black */
     write_host_u16(&g_intu_def_prefs[PREF_OFF_COLOR2], 0x0FFF); /* white */
-    write_host_u16(&g_intu_def_prefs[PREF_OFF_COLOR3], 0x00F0); /* blue */
+    write_host_u16(&g_intu_def_prefs[PREF_OFF_COLOR3], 0x036A); /* blue (nearest 12-bit to #3B67A2) */
     g_intu_def_prefs[PREF_OFF_VIEWXOFFSET]     = 0;
     g_intu_def_prefs[PREF_OFF_VIEWYOFFSET]     = 0;
     write_host_u16(&g_intu_def_prefs[PREF_OFF_VIEWINITX], 0);
