@@ -462,8 +462,11 @@ void Task_Exit(void)
         /* Reclaim the M68k task's tracked guest AllocMem blocks while
          * g_ram still maps its address space (cycle-budget aborts and
          * plain Exit() both end here). */
-        if (g_current->type == TASK_TYPE_M68K)
+        if (g_current->type == TASK_TYPE_M68K) {
+            extern int g_chipset_sync_disabled;
+            g_chipset_sync_disabled = 0;   /* may bypass wrapper cleanup */
             Memcheck_FreeByOwner(g_current);
+        }
         /* Release M68k guest RAM so the slot can be reused. */
         Task_ReleaseM68kRam(g_current);
         g_current->tc_State = TASK_REMOVED;

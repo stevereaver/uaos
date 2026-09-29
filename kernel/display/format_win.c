@@ -15,6 +15,7 @@
 #include "format_win.h"
 #include "wm.h"
 #include "framebuffer.h"
+#include "gadgets.h"
 #include "requester.h"
 #include "../dos/blockdev.h"
 #include "../dos/fat32.h"
@@ -23,44 +24,8 @@
 #include <stddef.h>
 #include <string.h>
 
-/* =========================================================================
- * Helpers (no libc)
- * ========================================================================= */
-
-static int str_len(const char *s) { int n = 0; while (s[n]) n++; return n; }
-
-static void str_cp(char *dst, const char *src, int max)
-{
-    int i = 0;
-    while (i < max - 1 && src[i]) { dst[i] = src[i]; i++; }
-    dst[i] = '\0';
-}
-
-static int str_eq(const char *a, const char *b)
-{
-    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
-    return *a == *b;
-}
-
-static void uint_to_dec(uint32_t v, char *buf, int max)
-{
-    char tmp[12];
-    int i = 0, j = 0;
-    if (v == 0) { buf[j++] = '0'; buf[j] = '\0'; return; }
-    while (v && i < 11) { tmp[i++] = (char)('0' + v % 10); v /= 10; }
-    while (i-- && j < max - 1) buf[j++] = tmp[i];
-    buf[j] = '\0';
-}
-
-static void draw_bevel(int x, int y, int w, int h, int raised)
-{
-    uint32_t lo = raised ? WB_DARK_GREY : WB_WHITE;
-    uint32_t hi = raised ? WB_WHITE     : WB_DARK_GREY;
-    FB_DrawHLine(x,         y,         w, hi);
-    FB_DrawVLine(x,         y,         h, hi);
-    FB_DrawHLine(x,         y + h - 1, w, lo);
-    FB_DrawVLine(x + w - 1, y,         h, lo);
-}
+/* str/bevel helpers live in gadgets.c */
+#define str_cp     gad_str_cp
 
 /* =========================================================================
  * Window state
@@ -79,20 +44,18 @@ static BlockDev *g_devs[MAX_FORMAT_DEVS];
 static int       g_dev_count = 0;
 static int       g_dev_sel   = 0;
 
-/* Volume name input */
+/* Volume name input — storage for the string gadget */
 static char g_volname[32];
-static int  g_volname_len = 0;
-static int  g_volname_focused = 1;
 
 /* Status */
 static char g_status[64] = "Select a device and click Format.";
 static int  g_formatting = 0;
 
-/* Widget rects (updated during draw) */
-static int g_dev_btn_x, g_dev_btn_y, g_dev_btn_w, g_dev_btn_h;
-static int g_tf_x, g_tf_y, g_tf_w, g_tf_h;
-static int g_fmt_x, g_fmt_y, g_fmt_w, g_fmt_h;
-static int g_cancel_x, g_cancel_y, g_cancel_w, g_cancel_h;
+/* Shared gadgets (rects assigned during draw) */
+static Gad         g_dev_cyc;                    /* device picker     */
+static const char *g_dev_names[MAX_FORMAT_DEVS];
+static Gad         g_volname_g;                  /* volume name field */
+static Gad         g_fmt_btn, g_cancel_btn;
 
 /* =========================================================================
  * Device list — populate from BlockDev_GetList, filtering to partitions
@@ -105,11 +68,18 @@ static void refresh_device_list(void)
     while (bdev && g_dev_count < MAX_FORMAT_DEVS) {
         /* Only list partitions (part_offset != 0) or named devices */
         if (bdev->part_offset != 0 || (bdev->display_name && bdev->display_name[0])) {
-            g_devs[g_dev_count++] = bdev;
+            g_devs[g_dev_count] = bdev;
+            g_dev_names[g_dev_count] =
+                bdev->display_name ? bdev->display_name : bdev->name;
+            g_dev_count++;
         }
         bdev = bdev->next;
     }
     if (g_dev_sel >= g_dev_count) g_dev_sel = 0;
+    g_dev_cyc.kind     = GAD_CYCLE;
+    g_dev_cyc.choices  = g_dev_names;
+    g_dev_cyc.nchoices = g_dev_count;
+    g_dev_cyc.val      = g_dev_sel;
 }
 
 /* =========================================================================
@@ -131,45 +101,24 @@ static void format_draw(int wx, int wy, int ww, int wh)
     int y = cy + pad;
     int label_h = 16;
 
-    /* Device label + cycle button */
+    /* Device label + cycle gadget */
     FB_PutStr(cx + pad, y, "Device:", WB_BLACK, WB_GREY);
     y += label_h + 2;
 
-    g_dev_btn_x = cx + pad;
-    g_dev_btn_y = y;
-    g_dev_btn_w = cw - pad * 2;
-    g_dev_btn_h = 22;
-    FB_FillRect(g_dev_btn_x, g_dev_btn_y, g_dev_btn_w, g_dev_btn_h, WB_WHITE);
-    draw_bevel(g_dev_btn_x, g_dev_btn_y, g_dev_btn_w, g_dev_btn_h, 0);
-    const char *dev_label = "<no devices>";
-    if (g_dev_count > 0 && g_dev_sel < g_dev_count) {
-        BlockDev *d = g_devs[g_dev_sel];
-        dev_label = d->display_name ? d->display_name : d->name;
-    }
-    FB_PutStr(g_dev_btn_x + 4, g_dev_btn_y + 3, dev_label, WB_BLACK, WB_WHITE);
-    /* Cycle arrow on the right */
-    FB_PutStr(g_dev_btn_x + g_dev_btn_w - 12, g_dev_btn_y + 3, ">", WB_BLACK, WB_WHITE);
-    y += g_dev_btn_h + pad;
+    g_dev_cyc.x = cx + pad;   g_dev_cyc.y = y;
+    g_dev_cyc.w = cw - pad * 2; g_dev_cyc.h = 22;
+    gad_draw(&g_dev_cyc);
+    y += g_dev_cyc.h + pad;
 
-    /* Volume name label + text field */
+    /* Volume name label + string gadget */
     FB_PutStr(cx + pad, y, "Volume Name:", WB_BLACK, WB_GREY);
     y += label_h + 2;
 
-    g_tf_x = cx + pad;
-    g_tf_y = y;
-    g_tf_w = cw - pad * 2;
-    g_tf_h = 22;
-    FB_FillRect(g_tf_x, g_tf_y, g_tf_w, g_tf_h,
-                g_volname_focused ? WB_WHITE : WB_LIGHT_GREY);
-    draw_bevel(g_tf_x, g_tf_y, g_tf_w, g_tf_h, 0);
-    FB_PutStr(g_tf_x + 4, g_tf_y + 3, g_volname, WB_BLACK,
-              g_volname_focused ? WB_WHITE : WB_LIGHT_GREY);
-    /* Cursor */
-    if (g_volname_focused) {
-        int cx_pos = g_tf_x + 4 + g_volname_len * 8;
-        FB_DrawVLine(cx_pos, g_tf_y + 3, g_tf_h - 6, WB_BLACK);
-    }
-    y += g_tf_h + pad;
+    g_volname_g.kind = GAD_STRING;
+    g_volname_g.x = cx + pad;   g_volname_g.y = y;
+    g_volname_g.w = cw - pad * 2; g_volname_g.h = 22;
+    gad_draw(&g_volname_g);
+    y += g_volname_g.h + pad;
 
     /* Filesystem label (fixed — FAT32 only) */
     FB_PutStr(cx + pad, y, "Filesystem: FAT32", WB_DARK_GREY, WB_GREY);
@@ -186,18 +135,18 @@ static void format_draw(int wx, int wy, int ww, int wh)
     int btn_x_start = cx + (cw - total_btn_w) / 2;
     int btn_y = cy + ch - btn_h - pad;
 
-    g_fmt_w = btn_w; g_fmt_h = btn_h;
-    g_fmt_x = btn_x_start; g_fmt_y = btn_y;
-    FB_FillRect(g_fmt_x, g_fmt_y, btn_w, btn_h, WB_GREY);
-    draw_bevel(g_fmt_x, g_fmt_y, btn_w, btn_h, 1);
-    FB_PutStrCentred(g_fmt_x, g_fmt_y, btn_w, btn_h, "Format", WB_BLACK, WB_GREY);
+    g_fmt_btn.kind = GAD_BUTTON;
+    g_fmt_btn.x = btn_x_start; g_fmt_btn.y = btn_y;
+    g_fmt_btn.w = btn_w; g_fmt_btn.h = btn_h;
+    g_fmt_btn.text = "Format";
+    gad_draw(&g_fmt_btn);
 
-    g_cancel_w = btn_w; g_cancel_h = btn_h;
-    g_cancel_x = btn_x_start + btn_w + btn_gap;
-    g_cancel_y = btn_y;
-    FB_FillRect(g_cancel_x, g_cancel_y, btn_w, btn_h, WB_GREY);
-    draw_bevel(g_cancel_x, g_cancel_y, btn_w, btn_h, 1);
-    FB_PutStrCentred(g_cancel_x, g_cancel_y, btn_w, btn_h, "Cancel", WB_BLACK, WB_GREY);
+    g_cancel_btn.kind = GAD_BUTTON;
+    g_cancel_btn.x = btn_x_start + btn_w + btn_gap;
+    g_cancel_btn.y = btn_y;
+    g_cancel_btn.w = btn_w; g_cancel_btn.h = btn_h;
+    g_cancel_btn.text = "Cancel";
+    gad_draw(&g_cancel_btn);
 }
 
 /* =========================================================================
@@ -212,21 +161,9 @@ static void format_key(char c)
         g_wm_handle = -1;
         return;
     }
-    if (!g_volname_focused) return;
-
-    if (c == 8) {  /* Backspace */
-        if (g_volname_len > 0) {
-            g_volname_len--;
-            g_volname[g_volname_len] = '\0';
-            WM_Redraw();
-        }
-        return;
-    }
-    if (c >= 32 && c < 127 && g_volname_len < 30) {
-        g_volname[g_volname_len++] = c;
-        g_volname[g_volname_len] = '\0';
+    /* String gadget handles insert/backspace/cursor keys */
+    if (gad_event(&g_volname_g, GAD_KEY, c, 0) == GADE_CHANGE)
         WM_Redraw();
-    }
 }
 
 /* =========================================================================
@@ -282,28 +219,23 @@ static void format_click(int handle, int mx, int my)
 {
     (void)handle;
 
-    /* Device cycle button */
-    if (mx >= g_dev_btn_x && mx < g_dev_btn_x + g_dev_btn_w &&
-        my >= g_dev_btn_y && my < g_dev_btn_y + g_dev_btn_h) {
-        if (g_dev_count > 0) {
-            g_dev_sel = (g_dev_sel + 1) % g_dev_count;
-        }
-        g_volname_focused = 0;
+    /* Device cycle gadget */
+    if (gad_event(&g_dev_cyc, GAD_DOWN, mx, my) == GADE_CHANGE) {
+        g_dev_sel = g_dev_cyc.val;
+        g_volname_g.focused = 0;
         WM_Redraw();
         return;
     }
 
-    /* Volume name text field — click to focus */
-    if (mx >= g_tf_x && mx < g_tf_x + g_tf_w &&
-        my >= g_tf_y && my < g_tf_y + g_tf_h) {
-        g_volname_focused = 1;
+    /* Volume name field — click to focus */
+    if (gad_hit(&g_volname_g, mx, my)) {
+        gad_event(&g_volname_g, GAD_DOWN, mx, my);
         WM_Redraw();
         return;
     }
 
     /* Format button */
-    if (mx >= g_fmt_x && mx < g_fmt_x + g_fmt_w &&
-        my >= g_fmt_y && my < g_fmt_y + g_fmt_h) {
+    if (gad_hit(&g_fmt_btn, mx, my)) {
         if (g_formatting) return;
         if (g_dev_sel >= g_dev_count || !g_devs[g_dev_sel]) {
             str_cp(g_status, "No device selected.", 64);
@@ -328,15 +260,14 @@ static void format_click(int handle, int mx, int my)
     }
 
     /* Cancel button */
-    if (mx >= g_cancel_x && mx < g_cancel_x + g_cancel_w &&
-        my >= g_cancel_y && my < g_cancel_y + g_cancel_h) {
+    if (gad_hit(&g_cancel_btn, mx, my)) {
         WM_CloseWindow(g_wm_handle);
         g_wm_handle = -1;
         return;
     }
 
     /* Click on empty area — unfocus text field */
-    g_volname_focused = 0;
+    g_volname_g.focused = 0;
     WM_Redraw();
 }
 
@@ -353,8 +284,11 @@ void FormatWin_Show(void)
     }
     g_wm_handle = -1;
     g_volname[0] = '\0';
-    g_volname_len = 0;
-    g_volname_focused = 1;
+    g_volname_g.buf     = g_volname;
+    g_volname_g.buf_max = sizeof(g_volname);
+    g_volname_g.buf_len = 0;
+    g_volname_g.cursor  = 0;
+    g_volname_g.focused = 1;
     g_formatting = 0;
     str_cp(g_status, "Select a device and click Format.", 64);
     refresh_device_list();

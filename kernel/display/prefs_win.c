@@ -6,6 +6,7 @@
 
 #include "prefs_win.h"
 #include "framebuffer.h"
+#include "gadgets.h"
 #include "wm.h"
 #include "../irq/rtc.h"
 #include "../exec/prefs_lib.h"
@@ -13,7 +14,7 @@
 #include <string.h>
 
 /* =========================================================================
- * Shared UI helpers
+ * Shared UI helpers — widget drawing/behaviour lives in gadgets.c
  * ========================================================================= */
 
 #define COL_BG       WB_GREY
@@ -24,197 +25,11 @@
 #define COL_SEL      WB_BLUE
 #define COL_SEL_FG   WB_WHITE
 
-static int pw_slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
-
-static int pw_str_eq(const char *a, const char *b)
+static void draw_btn_row(Gad *a, Gad *b, Gad *c)
 {
-    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
-    return *a == *b;
-}
-
-/* Draw a raised bevel box (AmigaOS gadget look) */
-static void pw_bevel(int x, int y, int w, int h, int raised)
-{
-    uint32_t hi = raised ? WB_WHITE : WB_DARK_GREY;
-    uint32_t lo = raised ? WB_DARK_GREY : WB_WHITE;
-    FB_DrawHLine(x, y, w, hi);
-    FB_DrawVLine(x, y, h, hi);
-    FB_DrawHLine(x, y + h - 1, w, lo);
-    FB_DrawVLine(x + w - 1, y, h, lo);
-}
-
-/* Draw a text label */
-static void pw_label(int x, int y, const char *s)
-{
-    FB_PutStr(x, y, s, COL_LABEL, COL_BG);
-}
-
-/* Draw a button gadget */
-typedef struct {
-    int x, y, w, h;
-    const char *label;
-} PwBtn;
-
-static void pw_btn_draw(PwBtn *b, int pressed)
-{
-    uint32_t bg = pressed ? COL_BTN_PRS : COL_BTN;
-    FB_FillRect(b->x, b->y, b->w, b->h, bg);
-    pw_bevel(b->x, b->y, b->w, b->h, !pressed);
-    int tw = pw_slen(b->label) * 8;
-    int th = 16;
-    int tx = b->x + (b->w - tw) / 2;
-    int ty = b->y + (b->h - th) / 2;
-    FB_PutStr(tx, ty, b->label, COL_LABEL, bg);
-}
-
-static int pw_btn_hit(PwBtn *b, int mx, int my)
-{
-    return (mx >= b->x && mx < b->x + b->w &&
-            my >= b->y && my < b->y + b->h);
-}
-
-/* Draw a cycle gadget (up/down arrows + current value) */
-typedef struct {
-    int x, y, w, h;
-    const char *value;
-} PwCycle;
-
-static void pw_cycle_draw(PwCycle *c)
-{
-    FB_FillRect(c->x, c->y, c->w, c->h, COL_BTN);
-    pw_bevel(c->x, c->y, c->w, c->h, 1);
-    /* Value text */
-    int tw = pw_slen(c->value) * 8;
-    int tx = c->x + 4;
-    int ty = c->y + (c->h - 16) / 2;
-    FB_PutStr(tx, ty, c->value, COL_LABEL, COL_BTN);
-    /* Arrow buttons on right */
-    int ax = c->x + c->w - 18;
-    int ah = c->h / 2;
-    FB_FillRect(ax, c->y, 16, ah, COL_BTN);
-    pw_bevel(ax, c->y, 16, ah, 1);
-    FB_PutStr(ax + 4, c->y + (ah - 16) / 2, "^", COL_LABEL, COL_BTN);
-    FB_FillRect(ax, c->y + ah, 16, ah, COL_BTN);
-    pw_bevel(ax, c->y + ah, 16, ah, 1);
-    FB_PutStr(ax + 4, c->y + ah + (ah - 16) / 2, "v", COL_LABEL, COL_BTN);
-}
-
-static int pw_cycle_hit_up(PwCycle *c, int mx, int my)
-{
-    int ax = c->x + c->w - 18;
-    int ah = c->h / 2;
-    return (mx >= ax && mx < ax + 16 && my >= c->y && my < c->y + ah);
-}
-
-static int pw_cycle_hit_dn(PwCycle *c, int mx, int my)
-{
-    int ax = c->x + c->w - 18;
-    int ah = c->h / 2;
-    return (mx >= ax && mx < ax + 16 && my >= c->y + ah && my < c->y + c->h);
-}
-
-/* Draw a slider gadget (horizontal) */
-typedef struct {
-    int x, y, w, h;
-    int min, max, val;
-} PwSlider;
-
-static void pw_slider_draw(PwSlider *s)
-{
-    /* Track */
-    int track_y = s->y + (s->h - 6) / 2;
-    FB_FillRect(s->x, track_y, s->w, 6, WB_WHITE);
-    pw_bevel(s->x, track_y, s->w, 6, 0);
-    /* Knob */
-    int range = s->max - s->min;
-    int kx;
-    if (range <= 0) kx = s->x;
-    else kx = s->x + ((s->val - s->min) * (s->w - 16)) / range;
-    int kw = 16;
-    FB_FillRect(kx, s->y, kw, s->h, COL_BTN);
-    pw_bevel(kx, s->y, kw, s->h, 1);
-}
-
-static int pw_slider_hit(PwSlider *s, int mx, int my)
-{
-    return (mx >= s->x && mx < s->x + s->w &&
-            my >= s->y && my < s->y + s->h);
-}
-
-static void pw_slider_set_from_mouse(PwSlider *s, int mx)
-{
-    int range = s->max - s->min;
-    if (range <= 0) { s->val = s->min; return; }
-    int rel = mx - s->x - 8;
-    if (rel < 0) rel = 0;
-    if (rel > s->w - 16) rel = s->w - 16;
-    s->val = s->min + (rel * range) / (s->w - 16);
-}
-
-/* Draw a check box gadget */
-typedef struct {
-    int x, y;
-    const char *label;
-    int checked;
-} PwCheck;
-
-static void pw_check_draw(PwCheck *c)
-{
-    FB_FillRect(c->x, c->y, 14, 14, WB_WHITE);
-    pw_bevel(c->x, c->y, 14, 14, 0);
-    if (c->checked) {
-        FB_PutStr(c->x + 2, c->y - 1, "X", COL_LABEL, WB_WHITE);
-    }
-    FB_PutStr(c->x + 20, c->y - 1, c->label, COL_LABEL, COL_BG);
-}
-
-static int pw_check_hit(PwCheck *c, int mx, int my)
-{
-    return (mx >= c->x && mx < c->x + 14 + pw_slen(c->label) * 8 + 20 &&
-            my >= c->y && my < c->y + 14);
-}
-
-/* Standard button row at bottom of a prefs window */
-#define PW_BTN_W  80
-#define PW_BTN_H  22
-#define PW_BTN_GAP 12
-
-static void pw_btn_row(PwBtn *apply, PwBtn *save, PwBtn *close,
-                       int wx, int wy, int ww, int wh)
-{
-    int y = wy + wh - WM_TITLEBAR_H - PW_BTN_H - 8;
-    int total = PW_BTN_W * 3 + PW_BTN_GAP * 2;
-    int x = wx + (ww - total) / 2;
-    apply->x = x; apply->y = y; apply->w = PW_BTN_W; apply->h = PW_BTN_H; apply->label = "Apply";
-    x += PW_BTN_W + PW_BTN_GAP;
-    save->x = x; save->y = y; save->w = PW_BTN_W; save->h = PW_BTN_H; save->label = "Save";
-    x += PW_BTN_W + PW_BTN_GAP;
-    close->x = x; close->y = y; close->w = PW_BTN_W; close->h = PW_BTN_H; close->label = "Close";
-}
-
-static void pw_draw_btn_row(PwBtn *apply, PwBtn *save, PwBtn *close)
-{
-    pw_btn_draw(apply, 0);
-    pw_btn_draw(save, 0);
-    pw_btn_draw(close, 0);
-}
-
-static void pw_draw_bg(int x, int y, int w, int h)
-{
-    FB_FillRect(x, y + WM_TITLEBAR_H, w, h - WM_TITLEBAR_H, COL_BG);
-}
-
-/* Int to string */
-static void pw_int_str(char *buf, int val)
-{
-    int i = 0;
-    if (val < 0) { buf[i++] = '-'; val = -val; }
-    char tmp[12];
-    int j = 0;
-    if (val == 0) tmp[j++] = '0';
-    while (val > 0) { tmp[j++] = '0' + (val % 10); val /= 10; }
-    while (j > 0) buf[i++] = tmp[--j];
-    buf[i] = '\0';
+    gad_draw(a);
+    gad_draw(b);
+    gad_draw(c);
 }
 
 /* =========================================================================
@@ -248,8 +63,8 @@ static const PalColor pal_defaults[8] = {
 
 static PalColor g_pal_colors[8];
 static int g_pal_sel = 0;  /* selected color index */
-static PwSlider g_pal_r, g_pal_g, g_pal_b;
-static PwBtn g_pal_apply, g_pal_save, g_pal_close;
+static Gad g_pal_r, g_pal_g, g_pal_b;
+static Gad g_pal_apply, g_pal_save, g_pal_close;
 
 static void pal_load_current(void)
 {
@@ -277,9 +92,11 @@ static void pal_apply_colors(void)
     WB_CREAM      = FB_RGB(g_pal_colors[7].r, g_pal_colors[7].g, g_pal_colors[7].b);
 }
 
+/* PrefsFile is ~128KB (PREFS_MAX_CHUNKS x PREFS_MAX_CHUNK_DATA) — far
+ * larger than a task stack.  It must never be a stack local. */
 static void pal_save_prefs(void)
 {
-    PrefsFile pf;
+    static PrefsFile pf;
     memset(&pf, 0, sizeof(pf));
     Prefs_SetType(&pf, PREFS_PALETTE);
 
@@ -297,7 +114,7 @@ static void pal_save_prefs(void)
 
 static void pal_load_prefs(void)
 {
-    PrefsFile pf;
+    static PrefsFile pf;
     if (!Prefs_Load("ENVARC:Sys/palette.prefs", &pf)) return;
     const PrefsChunk *ch = Prefs_FindChunk(&pf, "PLRM");
     if (ch && ch->size >= 24) {
@@ -311,12 +128,12 @@ static void pal_load_prefs(void)
 
 static void pal_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
 
     /* Color list on left */
     int lx = wx + 10;
     int ly = wy + WM_TITLEBAR_H + 10;
-    pw_label(lx, ly, "Colors:");
+    gad_label(lx, ly, "Colors:");
     ly += 20;
 
     for (int i = 0; i < 8; i++) {
@@ -331,7 +148,7 @@ static void pal_draw(int wx, int wy, int ww, int wh)
         /* Color swatch */
         uint32_t col = FB_RGB(g_pal_colors[i].r, g_pal_colors[i].g, g_pal_colors[i].b);
         FB_FillRect(lx + 90, ry, 20, 16, col);
-        pw_bevel(lx + 90, ry, 20, 16, 1);
+        gad_bevel(lx + 90, ry, 20, 16, 1);
     }
 
     /* Sliders on right */
@@ -340,45 +157,48 @@ static void pal_draw(int wx, int wy, int ww, int wh)
     int sw = 240;
 
     /* Selected color name + preview */
-    pw_label(sx, sy - 20, "Editing:");
+    gad_label(sx, sy - 20, "Editing:");
     FB_PutStr(sx + 64, sy - 20, pal_names[g_pal_sel], COL_LABEL, COL_BG);
     uint32_t prev = FB_RGB(g_pal_colors[g_pal_sel].r, g_pal_colors[g_pal_sel].g, g_pal_colors[g_pal_sel].b);
     FB_FillRect(sx + sw - 40, sy - 24, 40, 20, prev);
-    pw_bevel(sx + sw - 40, sy - 24, 40, 20, 1);
+    gad_bevel(sx + sw - 40, sy - 24, 40, 20, 1);
 
     /* R slider */
-    pw_label(sx, sy, "Red:");
+    gad_label(sx, sy, "Red:");
+    g_pal_r.kind = GAD_SLIDER;
     g_pal_r.x = sx + 50; g_pal_r.y = sy - 4; g_pal_r.w = sw - 50; g_pal_r.h = 20;
     g_pal_r.min = 0; g_pal_r.max = 255; g_pal_r.val = g_pal_colors[g_pal_sel].r;
-    pw_slider_draw(&g_pal_r);
+    gad_draw(&g_pal_r);
 
     /* G slider */
     sy += 30;
-    pw_label(sx, sy, "Green:");
+    gad_label(sx, sy, "Green:");
+    g_pal_g.kind = GAD_SLIDER;
     g_pal_g.x = sx + 50; g_pal_g.y = sy - 4; g_pal_g.w = sw - 50; g_pal_g.h = 20;
     g_pal_g.min = 0; g_pal_g.max = 255; g_pal_g.val = g_pal_colors[g_pal_sel].g;
-    pw_slider_draw(&g_pal_g);
+    gad_draw(&g_pal_g);
 
     /* B slider */
     sy += 30;
-    pw_label(sx, sy, "Blue:");
+    gad_label(sx, sy, "Blue:");
+    g_pal_b.kind = GAD_SLIDER;
     g_pal_b.x = sx + 50; g_pal_b.y = sy - 4; g_pal_b.w = sw - 50; g_pal_b.h = 20;
     g_pal_b.min = 0; g_pal_b.max = 255; g_pal_b.val = g_pal_colors[g_pal_sel].b;
-    pw_slider_draw(&g_pal_b);
+    gad_draw(&g_pal_b);
 
     /* RGB values */
     sy += 30;
     char buf[16];
-    pw_int_str(buf, g_pal_colors[g_pal_sel].r);
+    gad_itoa(buf, g_pal_colors[g_pal_sel].r);
     FB_PutStr(sx, sy, "R:", COL_LABEL, COL_BG); FB_PutStr(sx + 16, sy, buf, COL_LABEL, COL_BG);
-    pw_int_str(buf, g_pal_colors[g_pal_sel].g);
+    gad_itoa(buf, g_pal_colors[g_pal_sel].g);
     FB_PutStr(sx + 60, sy, "G:", COL_LABEL, COL_BG); FB_PutStr(sx + 76, sy, buf, COL_LABEL, COL_BG);
-    pw_int_str(buf, g_pal_colors[g_pal_sel].b);
+    gad_itoa(buf, g_pal_colors[g_pal_sel].b);
     FB_PutStr(sx + 120, sy, "B:", COL_LABEL, COL_BG); FB_PutStr(sx + 136, sy, buf, COL_LABEL, COL_BG);
 
     /* Buttons */
-    pw_btn_row(&g_pal_apply, &g_pal_save, &g_pal_close, wx, wy, ww, wh);
-    pw_draw_btn_row(&g_pal_apply, &g_pal_save, &g_pal_close);
+    gad_btn_row(&g_pal_apply, &g_pal_save, &g_pal_close, wx, wy, ww, wh);
+    draw_btn_row(&g_pal_apply, &g_pal_save, &g_pal_close);
 }
 
 static void pal_key(char c)
@@ -410,22 +230,22 @@ static void pal_click(int handle, int mx, int my)
     }
 
     /* Slider clicks */
-    if (pw_slider_hit(&g_pal_r, mx, my)) { g_pal_drag_slider = 1; pw_slider_set_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_Redraw(); return; }
-    if (pw_slider_hit(&g_pal_g, mx, my)) { g_pal_drag_slider = 2; pw_slider_set_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_Redraw(); return; }
-    if (pw_slider_hit(&g_pal_b, mx, my)) { g_pal_drag_slider = 3; pw_slider_set_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_Redraw(); return; }
+    if (gad_hit(&g_pal_r, mx, my)) { g_pal_drag_slider = 1; gad_slider_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_Redraw(); return; }
+    if (gad_hit(&g_pal_g, mx, my)) { g_pal_drag_slider = 2; gad_slider_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_Redraw(); return; }
+    if (gad_hit(&g_pal_b, mx, my)) { g_pal_drag_slider = 3; gad_slider_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_Redraw(); return; }
 
     /* Buttons */
-    if (pw_btn_hit(&g_pal_apply, mx, my)) { pal_apply_colors(); WM_Redraw(); return; }
-    if (pw_btn_hit(&g_pal_save, mx, my)) { pal_apply_colors(); pal_save_prefs(); WM_Redraw(); return; }
-    if (pw_btn_hit(&g_pal_close, mx, my)) { WM_CloseWindow(g_pal_handle); g_pal_handle = -1; return; }
+    if (gad_hit(&g_pal_apply, mx, my)) { pal_apply_colors(); WM_Redraw(); return; }
+    if (gad_hit(&g_pal_save, mx, my)) { pal_apply_colors(); pal_save_prefs(); WM_Redraw(); return; }
+    if (gad_hit(&g_pal_close, mx, my)) { WM_CloseWindow(g_pal_handle); g_pal_handle = -1; return; }
 }
 
 static void pal_mouse_move(int handle, int mx, int my)
 {
     (void)handle; (void)my;
-    if (g_pal_drag_slider == 1) { pw_slider_set_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_Redraw(); }
-    else if (g_pal_drag_slider == 2) { pw_slider_set_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_Redraw(); }
-    else if (g_pal_drag_slider == 3) { pw_slider_set_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_Redraw(); }
+    if (g_pal_drag_slider == 1) { gad_slider_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_Redraw(); }
+    else if (g_pal_drag_slider == 2) { gad_slider_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_Redraw(); }
+    else if (g_pal_drag_slider == 3) { gad_slider_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_Redraw(); }
 }
 
 static void pal_mouse_release(int handle, int mx, int my)
@@ -468,7 +288,7 @@ void PalettePrefs_Show(void)
 
 static int g_time_handle = -1;
 static RtcDateTime g_time_dt;
-static PwBtn g_time_set, g_time_close;
+static Gad g_time_set, g_time_close;
 
 /* Which field is selected for editing: 0=year 1=month 2=day 3=hour 4=min 5=sec */
 static int g_time_field = 0;
@@ -480,12 +300,12 @@ static const char *month_names[] = {
 
 static void time_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
 
     int cx = wx + 20;
     int cy = wy + WM_TITLEBAR_H + 20;
 
-    pw_label(cx, cy, "Date & Time Settings");
+    gad_label(cx, cy, "Date & Time Settings");
     cy += 30;
 
     /* Field labels and values */
@@ -501,7 +321,7 @@ static void time_draw(int wx, int wy, int ww, int wh)
     for (int i = 0; i < 6; i++) {
         int fy = cy + i * 24;
         /* Label */
-        pw_label(cx, fy, labels[i]);
+        gad_label(cx, fy, labels[i]);
 
         /* Value box */
         int bx = cx + 60;
@@ -509,10 +329,10 @@ static void time_draw(int wx, int wy, int ww, int wh)
         int bh = 18;
         if (i == g_time_field) {
             FB_FillRect(bx, fy - 2, bw, bh, COL_SEL);
-            pw_bevel(bx, fy - 2, bw, bh, 1);
+            gad_bevel(bx, fy - 2, bw, bh, 1);
         } else {
             FB_FillRect(bx, fy - 2, bw, bh, WB_WHITE);
-            pw_bevel(bx, fy - 2, bw, bh, 0);
+            gad_bevel(bx, fy - 2, bw, bh, 0);
         }
 
         char buf[16];
@@ -526,10 +346,10 @@ static void time_draw(int wx, int wy, int ww, int wh)
             buf[2] = month_names[mi][2];
             buf[3] = '\0';
         } else if (i == 0) {
-            pw_int_str(buf, values[i]);
+            gad_itoa(buf, values[i]);
         } else {
             if (values[i] < 10) { buf[0] = '0'; buf[1] = '0' + values[i]; buf[2] = '\0'; }
-            else pw_int_str(buf, values[i]);
+            else gad_itoa(buf, values[i]);
         }
 
         uint32_t fg = (i == g_time_field) ? COL_SEL_FG : COL_LABEL;
@@ -539,20 +359,22 @@ static void time_draw(int wx, int wy, int ww, int wh)
         /* +/- buttons */
         int upx = bx + bw + 6;
         FB_FillRect(upx, fy - 2, 20, 9, COL_BTN);
-        pw_bevel(upx, fy - 2, 20, 9, 1);
+        gad_bevel(upx, fy - 2, 20, 9, 1);
         FB_PutStr(upx + 6, fy - 3, "+", COL_LABEL, COL_BTN);
         FB_FillRect(upx, fy + 7, 20, 9, COL_BTN);
-        pw_bevel(upx, fy + 7, 20, 9, 1);
+        gad_bevel(upx, fy + 7, 20, 9, 1);
         FB_PutStr(upx + 6, fy + 5, "-", COL_LABEL, COL_BTN);
     }
 
     /* Buttons */
+    g_time_set.kind = GAD_BUTTON;
     g_time_set.x = wx + 60; g_time_set.y = wy + wh - WM_TITLEBAR_H - 30;
-    g_time_set.w = PW_BTN_W; g_time_set.h = PW_BTN_H; g_time_set.label = "Set Time";
-    g_time_close.x = wx + ww - PW_BTN_W - 60; g_time_close.y = g_time_set.y;
-    g_time_close.w = PW_BTN_W; g_time_close.h = PW_BTN_H; g_time_close.label = "Close";
-    pw_btn_draw(&g_time_set, 0);
-    pw_btn_draw(&g_time_close, 0);
+    g_time_set.w = GAD_BTN_W; g_time_set.h = GAD_BTN_H; g_time_set.text = "Set Time";
+    g_time_close.kind = GAD_BUTTON;
+    g_time_close.x = wx + ww - GAD_BTN_W - 60; g_time_close.y = g_time_set.y;
+    g_time_close.w = GAD_BTN_W; g_time_close.h = GAD_BTN_H; g_time_close.text = "Close";
+    gad_draw(&g_time_set);
+    gad_draw(&g_time_close);
 }
 
 static void time_adjust_field(int field, int delta)
@@ -645,13 +467,13 @@ static void time_click(int handle, int mx, int my)
     }
 
     /* Set button */
-    if (pw_btn_hit(&g_time_set, mx, my)) {
+    if (gad_hit(&g_time_set, mx, my)) {
         RTC_SetDateTime(&g_time_dt);
         WM_Redraw();
         return;
     }
     /* Close button */
-    if (pw_btn_hit(&g_time_close, mx, my)) {
+    if (gad_hit(&g_time_close, mx, my)) {
         WM_CloseWindow(g_time_handle);
         g_time_handle = -1;
         return;
@@ -688,46 +510,47 @@ void TimePrefs_Show(void)
 #define IC_WIN_H  280
 
 static int g_ic_handle = -1;
-static PwCheck g_ic_click_front, g_ic_menu_popup, g_ic_boopsi;
-static PwSlider g_ic_timeout;
-static PwBtn g_ic_apply, g_ic_save, g_ic_close;
+static Gad g_ic_click_front, g_ic_menu_popup, g_ic_boopsi;
+static Gad g_ic_timeout;
+static Gad g_ic_apply, g_ic_save, g_ic_close;
 
 static void ic_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
 
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Intuition Control Preferences");
+    gad_label(cx, cy, "Intuition Control Preferences");
     cy += 28;
 
+    g_ic_click_front.kind = GAD_CHECKBOX;
     g_ic_click_front.x = cx; g_ic_click_front.y = cy;
-    g_ic_click_front.label = "Click to front";
-    g_ic_click_front.checked = 1;
-    pw_check_draw(&g_ic_click_front);
+    g_ic_click_front.text = "Click to front";
+    gad_draw(&g_ic_click_front);
     cy += 24;
 
+    g_ic_menu_popup.kind = GAD_CHECKBOX;
     g_ic_menu_popup.x = cx; g_ic_menu_popup.y = cy;
-    g_ic_menu_popup.label = "Menu popup on press";
-    g_ic_menu_popup.checked = 1;
-    pw_check_draw(&g_ic_menu_popup);
+    g_ic_menu_popup.text = "Menu popup on press";
+    gad_draw(&g_ic_menu_popup);
     cy += 24;
 
+    g_ic_boopsi.kind = GAD_CHECKBOX;
     g_ic_boopsi.x = cx; g_ic_boopsi.y = cy;
-    g_ic_boopsi.label = "Boopsi menus";
-    g_ic_boopsi.checked = 0;
-    pw_check_draw(&g_ic_boopsi);
+    g_ic_boopsi.text = "Boopsi menus";
+    gad_draw(&g_ic_boopsi);
     cy += 30;
 
-    pw_label(cx, cy, "Input timeout:");
+    gad_label(cx, cy, "Input timeout:");
+    g_ic_timeout.kind = GAD_SLIDER;
     g_ic_timeout.x = cx + 120; g_ic_timeout.y = cy - 4;
     g_ic_timeout.w = 180; g_ic_timeout.h = 20;
-    g_ic_timeout.min = 0; g_ic_timeout.max = 50; g_ic_timeout.val = 10;
-    pw_slider_draw(&g_ic_timeout);
+    g_ic_timeout.min = 0; g_ic_timeout.max = 50;
+    gad_draw(&g_ic_timeout);
 
-    pw_btn_row(&g_ic_apply, &g_ic_save, &g_ic_close, wx, wy, ww, wh);
-    pw_draw_btn_row(&g_ic_apply, &g_ic_save, &g_ic_close);
+    gad_btn_row(&g_ic_apply, &g_ic_save, &g_ic_close, wx, wy, ww, wh);
+    draw_btn_row(&g_ic_apply, &g_ic_save, &g_ic_close);
 }
 
 static void ic_key(char c)
@@ -738,13 +561,13 @@ static void ic_key(char c)
 static void ic_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_check_hit(&g_ic_click_front, mx, my)) { g_ic_click_front.checked ^= 1; WM_Redraw(); return; }
-    if (pw_check_hit(&g_ic_menu_popup, mx, my)) { g_ic_menu_popup.checked ^= 1; WM_Redraw(); return; }
-    if (pw_check_hit(&g_ic_boopsi, mx, my)) { g_ic_boopsi.checked ^= 1; WM_Redraw(); return; }
-    if (pw_slider_hit(&g_ic_timeout, mx, my)) { pw_slider_set_from_mouse(&g_ic_timeout, mx); WM_Redraw(); return; }
-    if (pw_btn_hit(&g_ic_apply, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_ic_save, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_ic_close, mx, my)) { WM_CloseWindow(g_ic_handle); g_ic_handle = -1; return; }
+    if (gad_event(&g_ic_click_front, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_ic_menu_popup, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_ic_boopsi, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_ic_timeout, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_hit(&g_ic_apply, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_ic_save, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_ic_close, mx, my)) { WM_CloseWindow(g_ic_handle); g_ic_handle = -1; return; }
 }
 
 void IControlPrefs_Show(void)
@@ -753,6 +576,10 @@ void IControlPrefs_Show(void)
         WM_RaiseWindow(g_ic_handle); WM_Redraw(); return;
     }
     g_ic_handle = -1;
+    g_ic_click_front.val = 1;
+    g_ic_menu_popup.val  = 1;
+    g_ic_boopsi.val      = 0;
+    g_ic_timeout.val     = 10;
     int wx = ((int)g_fb.width - IC_WIN_W) / 2;
     int wy = ((int)g_fb.height - IC_WIN_H) / 2;
     if (wy < WM_TITLEBAR_H + 4) wy = WM_TITLEBAR_H + 4;
@@ -768,37 +595,40 @@ void IControlPrefs_Show(void)
 #define IN_WIN_H  260
 
 static int g_in_handle = -1;
-static PwSlider g_in_accel, g_in_repeat_rate, g_in_repeat_delay;
-static PwBtn g_in_apply, g_in_save, g_in_close;
+static Gad g_in_accel, g_in_repeat_rate, g_in_repeat_delay;
+static Gad g_in_apply, g_in_save, g_in_close;
 
 static void in_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Input Preferences");
+    gad_label(cx, cy, "Input Preferences");
     cy += 30;
 
-    pw_label(cx, cy, "Mouse Acceleration:");
+    gad_label(cx, cy, "Mouse Acceleration:");
+    g_in_accel.kind = GAD_SLIDER;
     g_in_accel.x = cx + 160; g_in_accel.y = cy - 4; g_in_accel.w = 160; g_in_accel.h = 20;
-    g_in_accel.min = 0; g_in_accel.max = 100; g_in_accel.val = 50;
-    pw_slider_draw(&g_in_accel);
+    g_in_accel.min = 0; g_in_accel.max = 100;
+    gad_draw(&g_in_accel);
     cy += 30;
 
-    pw_label(cx, cy, "Key Repeat Rate:");
+    gad_label(cx, cy, "Key Repeat Rate:");
+    g_in_repeat_rate.kind = GAD_SLIDER;
     g_in_repeat_rate.x = cx + 160; g_in_repeat_rate.y = cy - 4; g_in_repeat_rate.w = 160; g_in_repeat_rate.h = 20;
-    g_in_repeat_rate.min = 0; g_in_repeat_rate.max = 10; g_in_repeat_rate.val = 4;
-    pw_slider_draw(&g_in_repeat_rate);
+    g_in_repeat_rate.min = 0; g_in_repeat_rate.max = 10;
+    gad_draw(&g_in_repeat_rate);
     cy += 30;
 
-    pw_label(cx, cy, "Key Repeat Delay:");
+    gad_label(cx, cy, "Key Repeat Delay:");
+    g_in_repeat_delay.kind = GAD_SLIDER;
     g_in_repeat_delay.x = cx + 160; g_in_repeat_delay.y = cy - 4; g_in_repeat_delay.w = 160; g_in_repeat_delay.h = 20;
-    g_in_repeat_delay.min = 0; g_in_repeat_delay.max = 50; g_in_repeat_delay.val = 20;
-    pw_slider_draw(&g_in_repeat_delay);
+    g_in_repeat_delay.min = 0; g_in_repeat_delay.max = 50;
+    gad_draw(&g_in_repeat_delay);
 
-    pw_btn_row(&g_in_apply, &g_in_save, &g_in_close, wx, wy, ww, wh);
-    pw_draw_btn_row(&g_in_apply, &g_in_save, &g_in_close);
+    gad_btn_row(&g_in_apply, &g_in_save, &g_in_close, wx, wy, ww, wh);
+    draw_btn_row(&g_in_apply, &g_in_save, &g_in_close);
 }
 
 static void in_key(char c)
@@ -809,12 +639,12 @@ static void in_key(char c)
 static void in_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_slider_hit(&g_in_accel, mx, my)) { pw_slider_set_from_mouse(&g_in_accel, mx); WM_Redraw(); return; }
-    if (pw_slider_hit(&g_in_repeat_rate, mx, my)) { pw_slider_set_from_mouse(&g_in_repeat_rate, mx); WM_Redraw(); return; }
-    if (pw_slider_hit(&g_in_repeat_delay, mx, my)) { pw_slider_set_from_mouse(&g_in_repeat_delay, mx); WM_Redraw(); return; }
-    if (pw_btn_hit(&g_in_apply, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_in_save, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_in_close, mx, my)) { WM_CloseWindow(g_in_handle); g_in_handle = -1; return; }
+    if (gad_hit(&g_in_accel, mx, my)) { gad_slider_from_mouse(&g_in_accel, mx); WM_Redraw(); return; }
+    if (gad_hit(&g_in_repeat_rate, mx, my)) { gad_slider_from_mouse(&g_in_repeat_rate, mx); WM_Redraw(); return; }
+    if (gad_hit(&g_in_repeat_delay, mx, my)) { gad_slider_from_mouse(&g_in_repeat_delay, mx); WM_Redraw(); return; }
+    if (gad_hit(&g_in_apply, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_in_save, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_in_close, mx, my)) { WM_CloseWindow(g_in_handle); g_in_handle = -1; return; }
 }
 
 void InputPrefs_Show(void)
@@ -823,6 +653,9 @@ void InputPrefs_Show(void)
         WM_RaiseWindow(g_in_handle); WM_Redraw(); return;
     }
     g_in_handle = -1;
+    g_in_accel.val        = 50;
+    g_in_repeat_rate.val  = 4;
+    g_in_repeat_delay.val = 20;
     int wx = ((int)g_fb.width - IN_WIN_W) / 2;
     int wy = ((int)g_fb.height - IN_WIN_H) / 2;
     if (wy < WM_TITLEBAR_H + 4) wy = WM_TITLEBAR_H + 4;
@@ -838,9 +671,8 @@ void InputPrefs_Show(void)
 #define SM_WIN_H  280
 
 static int g_sm_handle = -1;
-static PwCycle g_sm_mode;
-static PwBtn g_sm_apply, g_sm_close;
-static int g_sm_mode_idx = 0;
+static Gad g_sm_mode;
+static Gad g_sm_apply, g_sm_close;
 
 static const char *sm_modes[] = {
     "VBE 1024x768 24-bit",
@@ -851,41 +683,44 @@ static const char *sm_modes[] = {
 
 static void sm_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Screen Mode Preferences");
+    gad_label(cx, cy, "Screen Mode Preferences");
     cy += 30;
 
-    pw_label(cx, cy, "Display Mode:");
+    gad_label(cx, cy, "Display Mode:");
+    g_sm_mode.kind = GAD_CYCLE;
     g_sm_mode.x = cx + 110; g_sm_mode.y = cy - 2; g_sm_mode.w = 220; g_sm_mode.h = 20;
-    g_sm_mode.value = sm_modes[g_sm_mode_idx];
-    pw_cycle_draw(&g_sm_mode);
+    g_sm_mode.choices = sm_modes; g_sm_mode.nchoices = SM_MODE_COUNT;
+    gad_draw(&g_sm_mode);
     cy += 40;
 
     /* Info display */
-    pw_label(cx, cy, "Current Resolution:");
+    gad_label(cx, cy, "Current Resolution:");
     char buf[32];
-    pw_int_str(buf, (int)g_fb.width);
+    gad_itoa(buf, (int)g_fb.width);
     FB_PutStr(cx + 130, cy, buf, COL_LABEL, COL_BG);
-    FB_PutStr(cx + 130 + pw_slen(buf) * 8 + 8, cy, "x", COL_LABEL, COL_BG);
-    pw_int_str(buf, (int)g_fb.height);
-    FB_PutStr(cx + 130 + pw_slen(buf) * 8 + 24, cy, buf, COL_LABEL, COL_BG);
+    FB_PutStr(cx + 130 + gad_slen(buf) * 8 + 8, cy, "x", COL_LABEL, COL_BG);
+    gad_itoa(buf, (int)g_fb.height);
+    FB_PutStr(cx + 130 + gad_slen(buf) * 8 + 24, cy, buf, COL_LABEL, COL_BG);
     cy += 24;
 
-    pw_label(cx, cy, "Color Depth:");
-    pw_int_str(buf, g_fb.bpp);
+    gad_label(cx, cy, "Color Depth:");
+    gad_itoa(buf, g_fb.bpp);
     FB_PutStr(cx + 130, cy, buf, COL_LABEL, COL_BG);
-    FB_PutStr(cx + 130 + pw_slen(buf) * 8, cy, "-bit", COL_LABEL, COL_BG);
+    FB_PutStr(cx + 130 + gad_slen(buf) * 8, cy, "-bit", COL_LABEL, COL_BG);
 
     /* Buttons */
+    g_sm_apply.kind = GAD_BUTTON;
     g_sm_apply.x = wx + 80; g_sm_apply.y = wy + wh - WM_TITLEBAR_H - 30;
-    g_sm_apply.w = PW_BTN_W; g_sm_apply.h = PW_BTN_H; g_sm_apply.label = "Apply";
-    g_sm_close.x = wx + ww - PW_BTN_W - 80; g_sm_close.y = g_sm_apply.y;
-    g_sm_close.w = PW_BTN_W; g_sm_close.h = PW_BTN_H; g_sm_close.label = "Close";
-    pw_btn_draw(&g_sm_apply, 0);
-    pw_btn_draw(&g_sm_close, 0);
+    g_sm_apply.w = GAD_BTN_W; g_sm_apply.h = GAD_BTN_H; g_sm_apply.text = "Apply";
+    g_sm_close.kind = GAD_BUTTON;
+    g_sm_close.x = wx + ww - GAD_BTN_W - 80; g_sm_close.y = g_sm_apply.y;
+    g_sm_close.w = GAD_BTN_W; g_sm_close.h = GAD_BTN_H; g_sm_close.text = "Close";
+    gad_draw(&g_sm_apply);
+    gad_draw(&g_sm_close);
 }
 
 static void sm_key(char c)
@@ -896,16 +731,11 @@ static void sm_key(char c)
 static void sm_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_cycle_hit_up(&g_sm_mode, mx, my)) {
-        g_sm_mode_idx = (g_sm_mode_idx + 1) % SM_MODE_COUNT;
+    if (gad_event(&g_sm_mode, GAD_DOWN, mx, my) == GADE_CHANGE) {
         WM_Redraw(); return;
     }
-    if (pw_cycle_hit_dn(&g_sm_mode, mx, my)) {
-        g_sm_mode_idx = (g_sm_mode_idx - 1 + SM_MODE_COUNT) % SM_MODE_COUNT;
-        WM_Redraw(); return;
-    }
-    if (pw_btn_hit(&g_sm_apply, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_sm_close, mx, my)) { WM_CloseWindow(g_sm_handle); g_sm_handle = -1; return; }
+    if (gad_hit(&g_sm_apply, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_sm_close, mx, my)) { WM_CloseWindow(g_sm_handle); g_sm_handle = -1; return; }
 }
 
 void ScreenModePrefs_Show(void)
@@ -929,9 +759,8 @@ void ScreenModePrefs_Show(void)
 #define WP_WIN_H  260
 
 static int g_wp_handle = -1;
-static PwCycle g_wp_pattern;
-static PwBtn g_wp_apply, g_wp_save, g_wp_close;
-static int g_wp_pat_idx = 0;
+static Gad g_wp_pattern;
+static Gad g_wp_apply, g_wp_save, g_wp_close;
 
 static const char *wp_patterns[] = {
     "Solid Grey",
@@ -943,38 +772,39 @@ static const char *wp_patterns[] = {
 
 static void wp_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Workbench Pattern");
+    gad_label(cx, cy, "Workbench Pattern");
     cy += 30;
 
-    pw_label(cx, cy, "Pattern:");
+    gad_label(cx, cy, "Pattern:");
+    g_wp_pattern.kind = GAD_CYCLE;
     g_wp_pattern.x = cx + 80; g_wp_pattern.y = cy - 2; g_wp_pattern.w = 200; g_wp_pattern.h = 20;
-    g_wp_pattern.value = wp_patterns[g_wp_pat_idx];
-    pw_cycle_draw(&g_wp_pattern);
+    g_wp_pattern.choices = wp_patterns; g_wp_pattern.nchoices = WP_PAT_COUNT;
+    gad_draw(&g_wp_pattern);
     cy += 40;
 
     /* Preview box */
-    pw_label(cx, cy, "Preview:");
+    gad_label(cx, cy, "Preview:");
     int px = cx + 80;
     int py = cy;
     int pw = 120;
     int ph = 60;
     FB_FillRect(px, py, pw, ph, WB_GREY);
-    pw_bevel(px, py, pw, ph, 0);
+    gad_bevel(px, py, pw, ph, 0);
 
-    if (g_wp_pat_idx == 1) { /* Checkerboard */
+    if (g_wp_pattern.val == 1) { /* Checkerboard */
         for (int yy = 0; yy < ph; yy += 8)
             for (int xx = 0; xx < pw; xx += 8)
                 if (((xx / 8) + (yy / 8)) & 1)
                     FB_FillRect(px + xx, py + yy, 8, 8, WB_DARK_GREY);
-    } else if (g_wp_pat_idx == 2) { /* Dots */
+    } else if (g_wp_pattern.val == 2) { /* Dots */
         for (int yy = 4; yy < ph; yy += 8)
             for (int xx = 4; xx < pw; xx += 8)
                 FB_PutPixel(px + xx, py + yy, WB_DARK_GREY);
-    } else if (g_wp_pat_idx == 3) { /* Brick */
+    } else if (g_wp_pattern.val == 3) { /* Brick */
         for (int yy = 0; yy < ph; yy += 8) {
             FB_DrawHLine(px, py + yy, pw, WB_DARK_GREY);
             int off = (yy / 8) & 1 ? 0 : 16;
@@ -983,8 +813,8 @@ static void wp_draw(int wx, int wy, int ww, int wh)
         }
     }
 
-    pw_btn_row(&g_wp_apply, &g_wp_save, &g_wp_close, wx, wy, ww, wh);
-    pw_draw_btn_row(&g_wp_apply, &g_wp_save, &g_wp_close);
+    gad_btn_row(&g_wp_apply, &g_wp_save, &g_wp_close, wx, wy, ww, wh);
+    draw_btn_row(&g_wp_apply, &g_wp_save, &g_wp_close);
 }
 
 static void wp_key(char c)
@@ -995,11 +825,10 @@ static void wp_key(char c)
 static void wp_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_cycle_hit_up(&g_wp_pattern, mx, my)) { g_wp_pat_idx = (g_wp_pat_idx + 1) % WP_PAT_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_wp_pattern, mx, my)) { g_wp_pat_idx = (g_wp_pat_idx - 1 + WP_PAT_COUNT) % WP_PAT_COUNT; WM_Redraw(); return; }
-    if (pw_btn_hit(&g_wp_apply, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_wp_save, mx, my)) { WM_Redraw(); return; }
-    if (pw_btn_hit(&g_wp_close, mx, my)) { WM_CloseWindow(g_wp_handle); g_wp_handle = -1; return; }
+    if (gad_event(&g_wp_pattern, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_hit(&g_wp_apply, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_wp_save, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_wp_close, mx, my)) { WM_CloseWindow(g_wp_handle); g_wp_handle = -1; return; }
 }
 
 void WBPatternPrefs_Show(void)
@@ -1023,36 +852,37 @@ void WBPatternPrefs_Show(void)
 #define FT_WIN_H  220
 
 static int g_ft_handle = -1;
-static PwCycle g_ft_font;
-static PwBtn g_ft_close;
-static int g_ft_idx = 0;
+static Gad g_ft_font;
+static Gad g_ft_close;
 
 static const char *ft_fonts[] = { "Topaz 8", "Topaz 9", "Courier 10" };
 #define FT_COUNT 3
 
 static void ft_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Font Preferences");
+    gad_label(cx, cy, "Font Preferences");
     cy += 30;
 
-    pw_label(cx, cy, "System Font:");
+    gad_label(cx, cy, "System Font:");
+    g_ft_font.kind = GAD_CYCLE;
     g_ft_font.x = cx + 100; g_ft_font.y = cy - 2; g_ft_font.w = 180; g_ft_font.h = 20;
-    g_ft_font.value = ft_fonts[g_ft_idx];
-    pw_cycle_draw(&g_ft_font);
+    g_ft_font.choices = ft_fonts; g_ft_font.nchoices = FT_COUNT;
+    gad_draw(&g_ft_font);
     cy += 40;
 
-    pw_label(cx, cy, "Preview:");
+    gad_label(cx, cy, "Preview:");
     FB_FillRect(cx + 80, cy, 200, 30, WB_WHITE);
-    pw_bevel(cx + 80, cy, 200, 30, 0);
+    gad_bevel(cx + 80, cy, 200, 30, 0);
     FB_PutStr(cx + 88, cy + 7, "The quick brown fox", COL_LABEL, WB_WHITE);
 
-    g_ft_close.x = wx + (ww - PW_BTN_W) / 2; g_ft_close.y = wy + wh - WM_TITLEBAR_H - 30;
-    g_ft_close.w = PW_BTN_W; g_ft_close.h = PW_BTN_H; g_ft_close.label = "Close";
-    pw_btn_draw(&g_ft_close, 0);
+    g_ft_close.kind = GAD_BUTTON;
+    g_ft_close.x = wx + (ww - GAD_BTN_W) / 2; g_ft_close.y = wy + wh - WM_TITLEBAR_H - 30;
+    g_ft_close.w = GAD_BTN_W; g_ft_close.h = GAD_BTN_H; g_ft_close.text = "Close";
+    gad_draw(&g_ft_close);
 }
 
 static void ft_key(char c)
@@ -1063,9 +893,8 @@ static void ft_key(char c)
 static void ft_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_cycle_hit_up(&g_ft_font, mx, my)) { g_ft_idx = (g_ft_idx + 1) % FT_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_ft_font, mx, my)) { g_ft_idx = (g_ft_idx - 1 + FT_COUNT) % FT_COUNT; WM_Redraw(); return; }
-    if (pw_btn_hit(&g_ft_close, mx, my)) { WM_CloseWindow(g_ft_handle); g_ft_handle = -1; return; }
+    if (gad_event(&g_ft_font, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_hit(&g_ft_close, mx, my)) { WM_CloseWindow(g_ft_handle); g_ft_handle = -1; return; }
 }
 
 void FontPrefs_Show(void)
@@ -1089,10 +918,9 @@ void FontPrefs_Show(void)
 #define SR_WIN_H  240
 
 static int g_sr_handle = -1;
-static PwCycle g_sr_baud, g_sr_parity;
-static PwBtn g_sr_close;
-static int g_sr_baud_idx = 4; /* 9600 */
-static int g_sr_parity_idx = 0; /* None */
+static Gad g_sr_baud = { .kind = GAD_CYCLE, .val = 4 };  /* 9600 */
+static Gad g_sr_parity = { .kind = GAD_CYCLE };          /* None */
+static Gad g_sr_close;
 
 static const char *sr_bauds[] = { "300", "1200", "2400", "4800", "9600", "19200", "38400", "57600" };
 #define SR_BAUD_COUNT 8
@@ -1101,27 +929,28 @@ static const char *sr_parities[] = { "None", "Even", "Odd" };
 
 static void sr_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Serial Port Preferences");
+    gad_label(cx, cy, "Serial Port Preferences");
     cy += 30;
 
-    pw_label(cx, cy, "Baud Rate:");
+    gad_label(cx, cy, "Baud Rate:");
     g_sr_baud.x = cx + 100; g_sr_baud.y = cy - 2; g_sr_baud.w = 140; g_sr_baud.h = 20;
-    g_sr_baud.value = sr_bauds[g_sr_baud_idx];
-    pw_cycle_draw(&g_sr_baud);
+    g_sr_baud.choices = sr_bauds; g_sr_baud.nchoices = SR_BAUD_COUNT;
+    gad_draw(&g_sr_baud);
     cy += 30;
 
-    pw_label(cx, cy, "Parity:");
+    gad_label(cx, cy, "Parity:");
     g_sr_parity.x = cx + 100; g_sr_parity.y = cy - 2; g_sr_parity.w = 140; g_sr_parity.h = 20;
-    g_sr_parity.value = sr_parities[g_sr_parity_idx];
-    pw_cycle_draw(&g_sr_parity);
+    g_sr_parity.choices = sr_parities; g_sr_parity.nchoices = SR_PAR_COUNT;
+    gad_draw(&g_sr_parity);
 
-    g_sr_close.x = wx + (ww - PW_BTN_W) / 2; g_sr_close.y = wy + wh - WM_TITLEBAR_H - 30;
-    g_sr_close.w = PW_BTN_W; g_sr_close.h = PW_BTN_H; g_sr_close.label = "Close";
-    pw_btn_draw(&g_sr_close, 0);
+    g_sr_close.kind = GAD_BUTTON;
+    g_sr_close.x = wx + (ww - GAD_BTN_W) / 2; g_sr_close.y = wy + wh - WM_TITLEBAR_H - 30;
+    g_sr_close.w = GAD_BTN_W; g_sr_close.h = GAD_BTN_H; g_sr_close.text = "Close";
+    gad_draw(&g_sr_close);
 }
 
 static void sr_key(char c)
@@ -1132,11 +961,9 @@ static void sr_key(char c)
 static void sr_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_cycle_hit_up(&g_sr_baud, mx, my)) { g_sr_baud_idx = (g_sr_baud_idx + 1) % SR_BAUD_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_sr_baud, mx, my)) { g_sr_baud_idx = (g_sr_baud_idx - 1 + SR_BAUD_COUNT) % SR_BAUD_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_up(&g_sr_parity, mx, my)) { g_sr_parity_idx = (g_sr_parity_idx + 1) % SR_PAR_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_sr_parity, mx, my)) { g_sr_parity_idx = (g_sr_parity_idx - 1 + SR_PAR_COUNT) % SR_PAR_COUNT; WM_Redraw(); return; }
-    if (pw_btn_hit(&g_sr_close, mx, my)) { WM_CloseWindow(g_sr_handle); g_sr_handle = -1; return; }
+    if (gad_event(&g_sr_baud, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_sr_parity, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_hit(&g_sr_close, mx, my)) { WM_CloseWindow(g_sr_handle); g_sr_handle = -1; return; }
 }
 
 void SerialPrefs_Show(void)
@@ -1160,10 +987,9 @@ void SerialPrefs_Show(void)
 #define PR_WIN_H  240
 
 static int g_pr_handle = -1;
-static PwCycle g_pr_type, g_pr_port;
-static PwBtn g_pr_close;
-static int g_pr_type_idx = 0;
-static int g_pr_port_idx = 0;
+static Gad g_pr_type = { .kind = GAD_CYCLE };
+static Gad g_pr_port = { .kind = GAD_CYCLE };
+static Gad g_pr_close;
 
 static const char *pr_types[] = { "Generic", "PostScript", "HP DeskJet", "Epson" };
 #define PR_TYPE_COUNT 4
@@ -1172,27 +998,28 @@ static const char *pr_ports[] = { "Parallel", "Serial", "USB" };
 
 static void pr_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Printer Preferences");
+    gad_label(cx, cy, "Printer Preferences");
     cy += 30;
 
-    pw_label(cx, cy, "Printer Type:");
+    gad_label(cx, cy, "Printer Type:");
     g_pr_type.x = cx + 110; g_pr_type.y = cy - 2; g_pr_type.w = 160; g_pr_type.h = 20;
-    g_pr_type.value = pr_types[g_pr_type_idx];
-    pw_cycle_draw(&g_pr_type);
+    g_pr_type.choices = pr_types; g_pr_type.nchoices = PR_TYPE_COUNT;
+    gad_draw(&g_pr_type);
     cy += 30;
 
-    pw_label(cx, cy, "Port:");
+    gad_label(cx, cy, "Port:");
     g_pr_port.x = cx + 110; g_pr_port.y = cy - 2; g_pr_port.w = 160; g_pr_port.h = 20;
-    g_pr_port.value = pr_ports[g_pr_port_idx];
-    pw_cycle_draw(&g_pr_port);
+    g_pr_port.choices = pr_ports; g_pr_port.nchoices = PR_PORT_COUNT;
+    gad_draw(&g_pr_port);
 
-    g_pr_close.x = wx + (ww - PW_BTN_W) / 2; g_pr_close.y = wy + wh - WM_TITLEBAR_H - 30;
-    g_pr_close.w = PW_BTN_W; g_pr_close.h = PW_BTN_H; g_pr_close.label = "Close";
-    pw_btn_draw(&g_pr_close, 0);
+    g_pr_close.kind = GAD_BUTTON;
+    g_pr_close.x = wx + (ww - GAD_BTN_W) / 2; g_pr_close.y = wy + wh - WM_TITLEBAR_H - 30;
+    g_pr_close.w = GAD_BTN_W; g_pr_close.h = GAD_BTN_H; g_pr_close.text = "Close";
+    gad_draw(&g_pr_close);
 }
 
 static void pr_key(char c)
@@ -1203,11 +1030,9 @@ static void pr_key(char c)
 static void pr_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_cycle_hit_up(&g_pr_type, mx, my)) { g_pr_type_idx = (g_pr_type_idx + 1) % PR_TYPE_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_pr_type, mx, my)) { g_pr_type_idx = (g_pr_type_idx - 1 + PR_TYPE_COUNT) % PR_TYPE_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_up(&g_pr_port, mx, my)) { g_pr_port_idx = (g_pr_port_idx + 1) % PR_PORT_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_pr_port, mx, my)) { g_pr_port_idx = (g_pr_port_idx - 1 + PR_PORT_COUNT) % PR_PORT_COUNT; WM_Redraw(); return; }
-    if (pw_btn_hit(&g_pr_close, mx, my)) { WM_CloseWindow(g_pr_handle); g_pr_handle = -1; return; }
+    if (gad_event(&g_pr_type, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_pr_port, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_hit(&g_pr_close, mx, my)) { WM_CloseWindow(g_pr_handle); g_pr_handle = -1; return; }
 }
 
 void PrinterPrefs_Show(void)
@@ -1231,10 +1056,9 @@ void PrinterPrefs_Show(void)
 #define LO_WIN_H  240
 
 static int g_lo_handle = -1;
-static PwCycle g_lo_lang, g_lo_country;
-static PwBtn g_lo_close;
-static int g_lo_lang_idx = 0;
-static int g_lo_country_idx = 0;
+static Gad g_lo_lang = { .kind = GAD_CYCLE };
+static Gad g_lo_country = { .kind = GAD_CYCLE };
+static Gad g_lo_close;
 
 static const char *lo_langs[] = { "English", "Deutsch", "Francais", "Italiano" };
 #define LO_LANG_COUNT 4
@@ -1243,27 +1067,28 @@ static const char *lo_countries[] = { "USA", "UK", "Deutschland", "France" };
 
 static void lo_draw(int wx, int wy, int ww, int wh)
 {
-    pw_draw_bg(wx, wy, ww, wh);
+    gad_bg(wx, wy, ww, wh);
     int cx = wx + 16;
     int cy = wy + WM_TITLEBAR_H + 16;
 
-    pw_label(cx, cy, "Locale Preferences");
+    gad_label(cx, cy, "Locale Preferences");
     cy += 30;
 
-    pw_label(cx, cy, "Language:");
+    gad_label(cx, cy, "Language:");
     g_lo_lang.x = cx + 100; g_lo_lang.y = cy - 2; g_lo_lang.w = 160; g_lo_lang.h = 20;
-    g_lo_lang.value = lo_langs[g_lo_lang_idx];
-    pw_cycle_draw(&g_lo_lang);
+    g_lo_lang.choices = lo_langs; g_lo_lang.nchoices = LO_LANG_COUNT;
+    gad_draw(&g_lo_lang);
     cy += 30;
 
-    pw_label(cx, cy, "Country:");
+    gad_label(cx, cy, "Country:");
     g_lo_country.x = cx + 100; g_lo_country.y = cy - 2; g_lo_country.w = 160; g_lo_country.h = 20;
-    g_lo_country.value = lo_countries[g_lo_country_idx];
-    pw_cycle_draw(&g_lo_country);
+    g_lo_country.choices = lo_countries; g_lo_country.nchoices = LO_COUNTRY_COUNT;
+    gad_draw(&g_lo_country);
 
-    g_lo_close.x = wx + (ww - PW_BTN_W) / 2; g_lo_close.y = wy + wh - WM_TITLEBAR_H - 30;
-    g_lo_close.w = PW_BTN_W; g_lo_close.h = PW_BTN_H; g_lo_close.label = "Close";
-    pw_btn_draw(&g_lo_close, 0);
+    g_lo_close.kind = GAD_BUTTON;
+    g_lo_close.x = wx + (ww - GAD_BTN_W) / 2; g_lo_close.y = wy + wh - WM_TITLEBAR_H - 30;
+    g_lo_close.w = GAD_BTN_W; g_lo_close.h = GAD_BTN_H; g_lo_close.text = "Close";
+    gad_draw(&g_lo_close);
 }
 
 static void lo_key(char c)
@@ -1274,11 +1099,9 @@ static void lo_key(char c)
 static void lo_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (pw_cycle_hit_up(&g_lo_lang, mx, my)) { g_lo_lang_idx = (g_lo_lang_idx + 1) % LO_LANG_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_lo_lang, mx, my)) { g_lo_lang_idx = (g_lo_lang_idx - 1 + LO_LANG_COUNT) % LO_LANG_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_up(&g_lo_country, mx, my)) { g_lo_country_idx = (g_lo_country_idx + 1) % LO_COUNTRY_COUNT; WM_Redraw(); return; }
-    if (pw_cycle_hit_dn(&g_lo_country, mx, my)) { g_lo_country_idx = (g_lo_country_idx - 1 + LO_COUNTRY_COUNT) % LO_COUNTRY_COUNT; WM_Redraw(); return; }
-    if (pw_btn_hit(&g_lo_close, mx, my)) { WM_CloseWindow(g_lo_handle); g_lo_handle = -1; return; }
+    if (gad_event(&g_lo_lang, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_lo_country, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_hit(&g_lo_close, mx, my)) { WM_CloseWindow(g_lo_handle); g_lo_handle = -1; return; }
 }
 
 void LocalePrefs_Show(void)

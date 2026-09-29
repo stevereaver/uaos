@@ -61,7 +61,10 @@ typedef struct {
     uint8_t  data[PREFS_MAX_CHUNK_DATA];
 } PrefsChunk;
 
-/* A parsed prefs file */
+/* A parsed prefs file.
+ * WARNING: sizeof(PrefsFile) is ~128KB — far larger than a task stack
+ * (TASK_STACK_SIZE = 32KB, X64 user stacks are smaller still).
+ * NEVER declare a PrefsFile local; use static or global storage. */
 typedef struct {
     uint8_t     prefs_type;     /* from PRHD chunk */
     PrefsChunk  chunks[PREFS_MAX_CHUNKS];

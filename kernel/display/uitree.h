@@ -179,12 +179,23 @@ UINode *ui_custom  (UIArena *a, int min_w, int min_h,
  *   ui_pad(ui_vgroup(a, ...), 8)
  * ------------------------------------------------------------------------- */
 static inline UINode *ui_w      (UINode *n, int weight)    { n->weight = weight; return n; }
+static inline UINode *ui_id     (UINode *n, int id)        { n->id = id;         return n; }
 static inline UINode *ui_min    (UINode *n, int w, int h)  { n->min_w = w; n->min_h = h; return n; }
 static inline UINode *ui_max    (UINode *n, int w, int h)  { n->max_w = w; n->max_h = h; return n; }
 static inline UINode *ui_pad    (UINode *n, int pad)       { n->pad = pad; return n; }
 static inline UINode *ui_spacing(UINode *n, int px)        { n->spacing = px; return n; }
 static inline UINode *ui_flags  (UINode *n, uint32_t f)    { n->flags |= f; return n; }
 static inline UINode *ui_tab    (UINode *n, const char *l) { n->tab = l; return n; }
+
+/* FNV-1a hash of a symbolic id — .gui files may name nodes (id=save) and
+ * C code resolves the same integer with ui_sym("save"). Result is always
+ * positive; 0 is reserved for "no id". */
+static inline int ui_sym(const char *s)
+{
+    uint32_t h = 2166136261u;
+    while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
+    return (int)(h & 0x7fffffffu) | 1;
+}
 
 /* -------------------------------------------------------------------------
  * Tree operations

@@ -1146,6 +1146,53 @@ typedef struct {
 #define LVGA_Spacing        (LVGA_Dummy + 0x0B)  /* spacing between items */
 
 /* -------------------------------------------------------------------------
+ * LAYOUT_* — layout.gadget attributes (UAOS-128)
+ *
+ * ReAction-inspired automatic layout gadget backed by the shared UINode
+ * engine (kernel/display/uitree.c).  Children are added with the
+ * LAYOUT_AddChild/LAYOUT_AddImage tags; any CHILD_* tags that follow in
+ * the same tag list apply to the most recently added child.  When a
+ * layout gadget enters a window's gadget list its children are spliced
+ * into the same list so hit-testing, drawing and IDCMP_GADGETUP all see
+ * real Gadget structures, and each open/resize re-runs the layout.
+ * ------------------------------------------------------------------------- */
+#define LAYOUT_Dummy         (TAG_USER + 0x40120)
+#define LAYOUT_Orientation   (LAYOUT_Dummy + 0x01)  /* LAYOUT_ORIENT_*      */
+#define LAYOUT_AddChild      (LAYOUT_Dummy + 0x02)  /* data = gadget object */
+#define LAYOUT_AddImage      (LAYOUT_Dummy + 0x03)  /* data = image object  */
+#define LAYOUT_RemoveChild   (LAYOUT_Dummy + 0x04)  /* data = gadget object */
+#define LAYOUT_InnerSpacing  (LAYOUT_Dummy + 0x05)  /* gap between children */
+#define LAYOUT_SpaceInner    (LAYOUT_Dummy + 0x06)  /* pad inside the group */
+#define LAYOUT_SpaceOuter    (LAYOUT_Dummy + 0x07)  /* pad around the group */
+#define LAYOUT_Label         (LAYOUT_Dummy + 0x08)  /* group box title      */
+#define LAYOUT_BevelState    (LAYOUT_Dummy + 0x09)  /* draw a group bevel   */
+#define LAYOUT_FixedVert     (LAYOUT_Dummy + 0x0A)  /* accepted, advisory   */
+#define LAYOUT_FixedHoriz    (LAYOUT_Dummy + 0x0B)  /* accepted, advisory   */
+#define LAYOUT_Children      (LAYOUT_Dummy + 0x0C)  /* OM_GET: child count  */
+#define LAYOUT_Parent        (LAYOUT_Dummy + 0x0D)  /* accepted, advisory   */
+#define LAYOUT_RelVerify     (LAYOUT_Dummy + 0x0E)  /* accepted, advisory   */
+#define LAYOUT_AlignLabels   (LAYOUT_Dummy + 0x0F)  /* accepted, advisory   */
+
+/* LAYOUT_Orientation values */
+#define LAYOUT_ORIENT_VERT   0
+#define LAYOUT_ORIENT_HORIZ  1
+
+/* CHILD_* — per-child attributes; apply to the most recent
+ * LAYOUT_AddChild/LAYOUT_AddImage in the tag list. */
+#define CHILD_Dummy          (TAG_USER + 0x40130)
+#define CHILD_WeightedWidth  (CHILD_Dummy + 0x01)  /* hgroup share weight  */
+#define CHILD_WeightedHeight (CHILD_Dummy + 0x02)  /* vgroup share weight  */
+#define CHILD_MinWidth       (CHILD_Dummy + 0x03)
+#define CHILD_MinHeight      (CHILD_Dummy + 0x04)
+#define CHILD_MaxWidth       (CHILD_Dummy + 0x05)
+#define CHILD_MaxHeight      (CHILD_Dummy + 0x06)
+#define CHILD_Label          (CHILD_Dummy + 0x07)  /* label left of child  */
+#define CHILD_ReplaceObject  (CHILD_Dummy + 0x08)
+#define CHILD_NoDispose      (CHILD_Dummy + 0x09)
+#define CHILD_ScaleWidth     (CHILD_Dummy + 0x0A)  /* accepted, advisory   */
+#define CHILD_ScaleHeight    (CHILD_Dummy + 0x0B)  /* accepted, advisory   */
+
+/* -------------------------------------------------------------------------
  * Alert types
  * ------------------------------------------------------------------------- */
 #define RECOVERY_ALERT 0x00000001

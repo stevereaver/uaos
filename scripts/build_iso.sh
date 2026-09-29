@@ -117,7 +117,8 @@ ok "  Built: gen_m68k_library"
 gcc -O2 -I"${REPO_ROOT}/kernel/display" \
     -o "${BUILD_DIR}/ui_layout_test" \
     "${TOOLS_DIR}/ui_layout_test.c" \
-    "${REPO_ROOT}/kernel/display/uitree.c"
+    "${REPO_ROOT}/kernel/display/uitree.c" \
+    "${REPO_ROOT}/kernel/display/uiformat.c"
 ok "  Built: ui_layout_test"
 "${BUILD_DIR}/ui_layout_test"
 ok "  Layout engine self-test passed"
@@ -310,6 +311,8 @@ for src in \
     "${REPO_ROOT}/kernel/klog/uart.c" \
     "${REPO_ROOT}/kernel/klog/klog.c" \
     "${REPO_ROOT}/kernel/display/framebuffer.c" \
+    "${REPO_ROOT}/kernel/display/gadgets.c" \
+    "${REPO_ROOT}/kernel/display/uibind.c" \
     "${REPO_ROOT}/kernel/display/desktop.c" \
     "${REPO_ROOT}/kernel/display/icon_render.c" \
     "${REPO_ROOT}/kernel/display/cursor.c" \
@@ -331,6 +334,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/format_win.c" \
     "${REPO_ROOT}/kernel/display/early_startup.c" \
     "${REPO_ROOT}/kernel/display/uitree.c" \
+    "${REPO_ROOT}/kernel/display/uiformat.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
@@ -733,6 +737,10 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uart.o" \
     "${BUILD_DIR}/obj/klog.o" \
     "${BUILD_DIR}/obj/framebuffer.o" \
+    "${BUILD_DIR}/obj/gadgets.o" \
+    "${BUILD_DIR}/obj/uitree.o" \
+    "${BUILD_DIR}/obj/uiformat.o" \
+    "${BUILD_DIR}/obj/uibind.o" \
     "${BUILD_DIR}/obj/desktop.o" \
     "${BUILD_DIR}/obj/icon_render.o" \
     "${BUILD_DIR}/obj/cursor.o" \
@@ -1082,6 +1090,23 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
         -o "${BUILD_DIR}/obj/uaos_start.o"
     ok "  Compiled: uaos_start.o"
 
+    # The declarative UI tree is shared with the kernel — compiled once
+    # for userspace and linked into every program (tiny, no deps).
+    gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie -mno-red-zone \
+        -fcf-protection=none \
+        -m64 -O2 -std=c11 \
+        -I"${REPO_ROOT}/kernel/display" \
+        -c "${REPO_ROOT}/kernel/display/uitree.c" \
+        -o "${BUILD_DIR}/userspace/uitree.o"
+    ok "  Compiled: uitree.o (userspace)"
+    gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie -mno-red-zone \
+        -fcf-protection=none \
+        -m64 -O2 -std=c11 \
+        -I"${REPO_ROOT}/kernel/display" \
+        -c "${REPO_ROOT}/kernel/display/uiformat.c" \
+        -o "${BUILD_DIR}/userspace/uiformat.o"
+    ok "  Compiled: uiformat.o (userspace)"
+
     for src in "${USERSPACE_DIR}"/*.c; do
         [[ -f "${src}" ]] || continue
         base="$(basename "${src}" .c)"
@@ -1094,12 +1119,15 @@ if [[ -d "${USERSPACE_DIR}" ]]; then
             -fcf-protection=none \
             -m64 -O2 -std=c11 \
             -I"${REPO_ROOT}/system/libuaos" \
+            -I"${REPO_ROOT}/kernel/display" \
             -c "${src}" -o "${BUILD_DIR}/userspace/${base}.o"
         ok "  Compiled: userspace/${base}.c"
 
         gcc -nostdlib -fPIE -pie -m64 -fcf-protection=none \
             -o "${elf_out}" \
             "${BUILD_DIR}/obj/uaos_start.o" \
+            "${BUILD_DIR}/userspace/uitree.o" \
+            "${BUILD_DIR}/userspace/uiformat.o" \
             "${BUILD_DIR}/userspace/${base}.o"
         ok "  Linked:   userspace/${base}"
 
@@ -1215,7 +1243,7 @@ mkdir -p "${DEMOS_STAGING}"
 
 # List of demos to build (basename without extension). Each must have a
 # corresponding source file at system/Demos/<name>.s.
-M68K_DEMOS=(CopperBars AGATest HelloWorld ChipPoke)
+M68K_DEMOS=(CopperBars AGATest HelloWorld ChipPoke LayoutTest)
 
 VASM_DIR="${BUILD_DIR}/vasm"
 VASM_BIN="${VASM_DIR}/vasmm68k_mot"

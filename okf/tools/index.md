@@ -15,6 +15,9 @@ Programs under `tools/` that run on the build host — binary wrappers used by
 - [ui_layout_test.c](/tools/ui_layout_test.md) — unit tests for the
   `uitree` layout engine; runs in `build_iso.sh` step 1a and gates the ISO
   build.
+- [qemu_layout_test.py](/tools/qemu_layout_test.md) (`scripts/`) —
+  end-to-end QEMU regression for the M68k BOOPSI layout path: drives
+  LayoutTest with closed-loop pointer control via the monitor + GDB stub.
 
 `gen_uaos_native`, `gen_uaos_m68k`, `gen_uaos_x64`, and `gen_m68k_library`
 wrap binaries with UAOS headers and generate loadable `.library` stubs —

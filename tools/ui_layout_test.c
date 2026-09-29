@@ -12,7 +12,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "uitree.h"
+#include "uiformat.h"
 
 static int g_checks = 0;
 static int g_fails  = 0;
@@ -423,6 +425,173 @@ static void test_prefs_shape(void)
              "radios in sequence");
 }
 
+/* -------------------------------------------------------------------------
+ * .gui text format round-trip (UAOS-127): a parsed tree must lay out
+ * identically to the equivalent C-built tree.
+ * ------------------------------------------------------------------------- */
+static void cmp_tree(const UINode *a, const UINode *b, const char *path)
+{
+    CHECK(a && b, path);
+    if (!a || !b) return;
+    CHECK_EQ(a->type,   b->type,   "type");
+    CHECK_EQ(a->id,     b->id,     "id");
+    CHECK_EQ(a->weight, b->weight, "weight");
+    CHECK_EQ(a->x, b->x, "x");  CHECK_EQ(a->y, b->y, "y");
+    CHECK_EQ(a->w, b->w, "w");  CHECK_EQ(a->h, b->h, "h");
+    CHECK_EQ(a->nat_w, b->nat_w, "nat_w");
+    CHECK_EQ(a->nat_h, b->nat_h, "nat_h");
+    const UINode *ca = a->first_child, *cb = b->first_child;
+    while (ca || cb) {
+        CHECK(ca && cb, "child count differs");
+        if (!ca || !cb) return;
+        cmp_tree(ca, cb, path);
+        ca = ca->next_sibling;
+        cb = cb->next_sibling;
+    }
+}
+
+static void test_gui_parse_roundtrip(void)
+{
+    static char gui[] =
+        "// pointer prefs shape\n"
+        "window \"Pointer\" pad=0 {\n"
+        "  vgroup pad=8 {\n"
+        "    label \"Pointer size:\" ;\n"
+        "    hgroup {\n"
+        "      radio \"16x16\" group=1 id=20 ;\n"
+        "      radio \"32x32\" group=1 id=21 ;\n"
+        "      radio \"48x48\" group=1 id=22 ;\n"
+        "    }\n"
+        "    checkbox \"Shadow\" id=23 ;\n"
+        "    spacer ;\n"
+        "    hgroup {\n"
+        "      spacer ;\n"
+        "      button \"Save\"   id=24 ;\n"
+        "      button \"Use\"    id=25 ;\n"
+        "      button \"Cancel\" id=26 ;\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+
+    arena_reset();
+    UIParseErr err;
+    UINode *parsed = ui_parse(&g_arena, gui, &err);
+    if (!parsed)
+        printf("parse error %d:%d %s\n", err.line, err.col, err.msg);
+    CHECK(parsed != NULL, "gui parses");
+
+    /* identical C-built tree (same shape as test_prefs_shape) */
+    UINode *ref = ui_window(&g_arena, "Pointer",
+        ui_pad(ui_vgroup(&g_arena,
+            ui_label(&g_arena, "Pointer size:"),
+            ui_hgroup(&g_arena,
+                      ui_radio(&g_arena, "16x16", 1, 20),
+                      ui_radio(&g_arena, "32x32", 1, 21),
+                      ui_radio(&g_arena, "48x48", 1, 22),
+                      NULL),
+            ui_checkbox(&g_arena, "Shadow", 23),
+            ui_spacer(&g_arena),
+            ui_hgroup(&g_arena,
+                      ui_spacer(&g_arena),
+                      ui_button(&g_arena, "Save",   24),
+                      ui_button(&g_arena, "Use",    25),
+                      ui_button(&g_arena, "Cancel", 26),
+                      NULL),
+            NULL), 8));
+
+    ui_layout(parsed, 0, 0, 320, 240);
+    ui_layout(ref,    0, 0, 320, 240);
+    cmp_tree(parsed, ref, "roundtrip @320x240");
+
+    /* a second size catches attr/weight asymmetries */
+    ui_layout(parsed, 0, 0, 500, 300);
+    ui_layout(ref,    0, 0, 500, 300);
+    cmp_tree(parsed, ref, "roundtrip @500x300");
+}
+
+static void test_gui_parse_kinds(void)
+{
+    static char gui[] =
+        "window \"K\" {\n"
+        "  vgroup {\n"
+        "    hgroup weight=1 { slider id=1 0..100 value=50 ; custom id=9 min=10,10 weight=1 ; }\n"
+        "    string \"demo\" maxchars=24 id=2 ;\n"
+        "    integer 0..99 value=42 id=3 ;\n"
+        "    cycle id=sym \"Workbench\" \"Screen\" \"FX\" active=1 ;\n"
+        "    listview id=4 \"a\",\"b\",\"c\" sel=2 ;\n"
+        "    page {\n"
+        "      tab \"One\" { label \"p1\" ; }\n"
+        "      tab \"Two\" { label \"p2\" ; }\n"
+        "    }\n"
+        "    label \"flagged\" disabled center ;\n"
+        "  }\n"
+        "}\n";
+
+    arena_reset();
+    UIParseErr err;
+    UINode *root = ui_parse(&g_arena, gui, &err);
+    if (!root)
+        printf("parse error %d:%d %s\n", err.line, err.col, err.msg);
+    CHECK(root != NULL, "all kinds parse");
+    if (!root) return;
+
+    UINode *sld = ui_find(root, 1);
+    CHECK_EQ(sld->u.range.min, 0,   "slider min");
+    CHECK_EQ(sld->u.range.max, 100, "slider max");
+    CHECK_EQ(sld->u.range.cur, 50,  "slider value");
+
+    UINode *str = ui_find(root, 2);
+    CHECK_EQ(str->u.input.max_chars, 24, "string maxchars");
+    CHECK(str->u.input.text && !strcmp(str->u.input.text, "demo"), "string text");
+
+    UINode *i = ui_find(root, 3);
+    CHECK_EQ(i->u.input.min, 0,  "integer min");
+    CHECK_EQ(i->u.input.max, 99, "integer max");
+    CHECK_EQ(i->u.input.value, 42, "integer value");
+
+    UINode *cyc = ui_find(root, ui_sym("sym"));
+    CHECK(cyc != NULL, "symbolic id resolves via ui_sym");
+    CHECK_EQ(cyc->u.items.count, 3,   "cycle items");
+    CHECK_EQ(cyc->u.items.active, 1,  "cycle active");
+    CHECK(!strcmp(cyc->u.items.items[2], "FX"), "cycle item text");
+
+    UINode *lv = ui_find(root, 4);
+    CHECK_EQ(lv->u.items.count, 3,    "listview items");
+    CHECK_EQ(lv->u.items.selected, 2, "listview sel");
+
+    /* page: two implicit vgroup children with tab labels */
+    UINode *c = root->first_child; /* vgroup */
+    UINode *pg = NULL;
+    for (UINode *n = c->first_child; n; n = n->next_sibling)
+        if (n->type == UI_PAGE) pg = n;
+    CHECK(pg != NULL, "page parsed");
+    CHECK_EQ(ui_child_count(pg), 2, "page has 2 tabs");
+    CHECK(!strcmp(pg->first_child->tab, "One"), "tab label");
+
+    UINode *flagged = pg->next_sibling;
+    CHECK(flagged && (flagged->flags & UI_F_DISABLED) &&
+          (flagged->flags & UI_F_CENTER), "flags parsed");
+
+    /* layout the parsed tree end-to-end */
+    ui_layout(root, 0, 0, 400, 300);
+    CHECK(sld->w > 0 && sld->h > 0, "parsed tree arranges");
+}
+
+static void test_gui_parse_errors(void)
+{
+    static char bad1[] = "window \"T\" { vgroup { button \"x\" id=1 } }"; /* missing ; */
+    static char bad2[] = "vgroup { }";                                   /* no window */
+    static char bad3[] = "window \"T\" { frobnicate \"x\" ; }";          /* bad kind  */
+    UIParseErr err;
+    arena_reset();
+    CHECK(ui_parse(&g_arena, bad1, &err) == NULL && err.line > 0,
+          "missing ; rejected with position");
+    arena_reset();
+    CHECK(ui_parse(&g_arena, bad2, &err) == NULL, "non-window rejected");
+    arena_reset();
+    CHECK(ui_parse(&g_arena, bad3, &err) == NULL, "unknown node rejected");
+}
+
 int main(void)
 {
     static char arena_buf[ARENA_BYTES];
@@ -443,6 +612,9 @@ int main(void)
     test_null_safety();
     test_pad();
     test_prefs_shape();
+    test_gui_parse_roundtrip();
+    test_gui_parse_kinds();
+    test_gui_parse_errors();
 
     printf("%d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

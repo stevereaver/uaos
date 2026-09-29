@@ -7,42 +7,16 @@
 #include "requester.h"
 #include "wm.h"
 #include "framebuffer.h"
+#include "gadgets.h"
 #include "../irq/ps2kbd.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 
-/* =========================================================================
- * Helpers
- * ========================================================================= */
-
-static int str_eq(const char *a, const char *b)
-{
-    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
-    return *a == *b;
-}
-
-static int str_len(const char *s)
-{
-    int n = 0; while (s[n]) n++; return n;
-}
-
-static void str_cp(char *dst, const char *src, int max)
-{
-    int i = 0;
-    while (i < max - 1 && src[i]) { dst[i] = src[i]; i++; }
-    dst[i] = '\0';
-}
-
-static void draw_bevel(int x, int y, int w, int h, int raised)
-{
-    uint32_t lo = raised ? WB_DARK_GREY : WB_WHITE;
-    uint32_t hi = raised ? WB_WHITE     : WB_DARK_GREY;
-    FB_DrawHLine(x,         y,         w, hi);
-    FB_DrawVLine(x,         y,         h, hi);
-    FB_DrawHLine(x,         y + h - 1, w, lo);
-    FB_DrawVLine(x + w - 1, y,         h, lo);
-}
+/* str_* helpers and bevel/gadget drawing now live in gadgets.c */
+#define str_len  gad_slen
+#define str_cp   gad_str_cp
+#define draw_bevel gad_bevel
 
 /* =========================================================================
  * Requester state
@@ -68,20 +42,16 @@ typedef struct {
     char         btn_labels[REQ_BTN_MAX][16];
     int          n_buttons;
     char         text[REQ_MAX_TEXT];
-    int          text_len;
-    int          cursor_pos;
     int          max_chars;
     int          active_btn;    /* 0 = left, 1 = right (hover/pressed) */
     int          btn_pressed;   /* 1 while mouse held on a button */
-    int          text_focused;  /* 1 = text field has focus (for string req) */
     ReqCallback  callback;
     void        *user_data;
     /* Cached client rect */
     int cx, cy, cw, ch;
-    /* Button rects */
-    int btn_x[REQ_BTN_MAX], btn_y[REQ_BTN_MAX], btn_w[REQ_BTN_MAX], btn_h[REQ_BTN_MAX];
-    /* Text field rect */
-    int tf_x, tf_y, tf_w, tf_h;
+    /* Shared gadgets: buttons + string field (tf.buf -> text) */
+    Gad          btns[REQ_BTN_MAX];
+    Gad          tf;
 } Requester;
 
 static Requester g_req = { .wm_handle = -1 };  /* -1 = no requester active;
@@ -221,19 +191,12 @@ static void req_draw(int wx, int wy, int ww, int wh)
             /* Text input field */
             int tf_w = cw - REQ_PAD * 2 - 4;
             if (tf_w > g_req.max_chars * 8 + 4) tf_w = g_req.max_chars * 8 + 4;
-            g_req.tf_x = cx + REQ_PAD;
-            g_req.tf_y = y;
-            g_req.tf_w = tf_w;
-            g_req.tf_h = REQ_TF_H;
-            FB_FillRect(g_req.tf_x, g_req.tf_y, tf_w, REQ_TF_H, WB_WHITE);
-            draw_bevel(g_req.tf_x, g_req.tf_y, tf_w, REQ_TF_H, 0);
-            /* Text content */
-            FB_PutStr(g_req.tf_x + 4, g_req.tf_y + 3, g_req.text, WB_BLACK, WB_WHITE);
-            /* Cursor */
-            if (g_req.text_focused) {
-                int cx_pos = g_req.tf_x + 4 + g_req.cursor_pos * 8;
-                FB_DrawVLine(cx_pos, g_req.tf_y + 3, REQ_TF_H - 6, WB_BLACK);
-            }
+            g_req.tf.kind = GAD_STRING;
+            g_req.tf.x = cx + REQ_PAD;
+            g_req.tf.y = y;
+            g_req.tf.w = tf_w;
+            g_req.tf.h = REQ_TF_H;
+            gad_draw(&g_req.tf);
             y += REQ_TF_H + REQ_PAD;
         } else {
             FB_PutStr(cx + REQ_PAD, y, g_req.body_lines[i], WB_BLACK, WB_GREY);
@@ -250,25 +213,15 @@ static void req_draw(int wx, int wy, int ww, int wh)
     int by = cy + ch - REQ_BTN_H - REQ_PAD;
 
     for (int i = 0; i < g_req.n_buttons; i++) {
-        int bx = bx_start + i * (REQ_BTN_W + REQ_PAD);
-        g_req.btn_x[i] = bx;
-        g_req.btn_y[i] = by;
-        g_req.btn_w[i] = REQ_BTN_W;
-        g_req.btn_h[i] = REQ_BTN_H;
-
-        uint32_t bg = WB_GREY;
-        int raised = 1;
-        if (g_req.btn_pressed && g_req.active_btn == i) {
-            raised = 0;
-        }
-        FB_FillRect(bx, by, REQ_BTN_W, REQ_BTN_H, bg);
-        draw_bevel(bx, by, REQ_BTN_W, REQ_BTN_H, raised);
-
-        /* Centre button label */
-        int lbl_len = str_len(g_req.btn_labels[i]);
-        int tx = bx + (REQ_BTN_W - lbl_len * 8) / 2;
-        int ty = by + (REQ_BTN_H - 16) / 2;
-        FB_PutStr(tx, ty, g_req.btn_labels[i], WB_BLACK, bg);
+        Gad *b = &g_req.btns[i];
+        b->kind = GAD_BUTTON;
+        b->x = bx_start + i * (REQ_BTN_W + REQ_PAD);
+        b->y = by;
+        b->w = REQ_BTN_W;
+        b->h = REQ_BTN_H;
+        b->text = g_req.btn_labels[i];
+        b->pressed = (g_req.btn_pressed && g_req.active_btn == i);
+        gad_draw(b);
     }
 }
 
@@ -277,7 +230,7 @@ static void req_draw(int wx, int wy, int ww, int wh)
  * ========================================================================= */
 static void req_key(char c)
 {
-    if (g_req.type == REQ_TYPE_STRING && g_req.text_focused) {
+    if (g_req.type == REQ_TYPE_STRING && g_req.tf.focused) {
         if (c == '\n' || c == '\r') {
             /* Enter = OK — close before the callback so focus returns to
              * the window that opened the requester (matches req_release). */
@@ -296,48 +249,9 @@ static void req_key(char c)
             if (cb) cb(REQ_BTN_CANCEL, NULL, ud);
             return;
         }
-        if (c == '\b') {
-            if (g_req.cursor_pos > 0) {
-                for (int i = g_req.cursor_pos - 1; i < g_req.text_len; i++)
-                    g_req.text[i] = g_req.text[i + 1];
-                g_req.cursor_pos--;
-                g_req.text_len--;
-            }
+        /* Editing (insert/delete/cursor keys) is the string gadget's job */
+        if (gad_event(&g_req.tf, GAD_KEY, c, 0) == GADE_CHANGE)
             WM_Redraw();
-            return;
-        }
-        if (c >= 32 && c < 127) {
-            if (g_req.text_len < g_req.max_chars - 1) {
-                for (int i = g_req.text_len; i >= g_req.cursor_pos; i--)
-                    g_req.text[i + 1] = g_req.text[i];
-                g_req.text[g_req.cursor_pos] = c;
-                g_req.cursor_pos++;
-                g_req.text_len++;
-            }
-            WM_Redraw();
-            return;
-        }
-        /* Arrow keys */
-        if (c == KBD_VKEY_LEFT && g_req.cursor_pos > 0) {
-            g_req.cursor_pos--;
-            WM_Redraw();
-            return;
-        }
-        if (c == KBD_VKEY_RIGHT && g_req.cursor_pos < g_req.text_len) {
-            g_req.cursor_pos++;
-            WM_Redraw();
-            return;
-        }
-        if (c == KBD_VKEY_UP) {
-            g_req.cursor_pos = 0;
-            WM_Redraw();
-            return;
-        }
-        if (c == KBD_VKEY_DOWN) {
-            g_req.cursor_pos = g_req.text_len;
-            WM_Redraw();
-            return;
-        }
     } else {
         /* Non-string requester: Enter = first button, Esc = cancel/close.
          * Close before the callback so focus returns first. */
@@ -367,25 +281,18 @@ static void req_click(int handle, int mx, int my)
 
     /* Check text field click (string requester) */
     if (g_req.type == REQ_TYPE_STRING) {
-        if (mx >= g_req.tf_x && mx < g_req.tf_x + g_req.tf_w &&
-            my >= g_req.tf_y && my < g_req.tf_y + g_req.tf_h) {
-            g_req.text_focused = 1;
-            /* Position cursor at click */
-            int rel = (mx - g_req.tf_x - 4) / 8;
-            if (rel < 0) rel = 0;
-            if (rel > g_req.text_len) rel = g_req.text_len;
-            g_req.cursor_pos = rel;
+        if (gad_hit(&g_req.tf, mx, my)) {
+            gad_event(&g_req.tf, GAD_DOWN, mx, my);   /* focus + cursor pos */
             WM_Redraw();
             return;
         }
         /* Click outside text field — defocus */
-        g_req.text_focused = 0;
+        g_req.tf.focused = 0;
     }
 
     /* Check button hits */
     for (int i = 0; i < g_req.n_buttons; i++) {
-        if (mx >= g_req.btn_x[i] && mx < g_req.btn_x[i] + g_req.btn_w[i] &&
-            my >= g_req.btn_y[i] && my < g_req.btn_y[i] + g_req.btn_h[i]) {
+        if (gad_hit(&g_req.btns[i], mx, my)) {
             g_req.active_btn = i;
             g_req.btn_pressed = 1;
             WM_Redraw();
@@ -400,8 +307,7 @@ static void req_move(int handle, int mx, int my)
     /* Update button hover */
     int new_active = -1;
     for (int i = 0; i < g_req.n_buttons; i++) {
-        if (mx >= g_req.btn_x[i] && mx < g_req.btn_x[i] + g_req.btn_w[i] &&
-            my >= g_req.btn_y[i] && my < g_req.btn_y[i] + g_req.btn_h[i]) {
+        if (gad_hit(&g_req.btns[i], mx, my)) {
             new_active = i;
             break;
         }
@@ -419,8 +325,7 @@ static void req_release(int handle, int mx, int my)
     if (g_req.btn_pressed && g_req.active_btn >= 0) {
         int btn = g_req.active_btn;
         /* Verify release is still on the button */
-        if (mx >= g_req.btn_x[btn] && mx < g_req.btn_x[btn] + g_req.btn_w[btn] &&
-            my >= g_req.btn_y[btn] && my < g_req.btn_y[btn] + g_req.btn_h[btn]) {
+        if (gad_hit(&g_req.btns[btn], mx, my)) {
             g_req.btn_pressed = 0;
             /* Map button index to OK/CANCEL */
             int btn_id = (btn == 0) ? REQ_BTN_OK : REQ_BTN_CANCEL;
@@ -470,7 +375,7 @@ void Requester_Confirm(const char *title, const char *body,
     g_req.type = REQ_TYPE_CONFIRM;
     g_req.callback = cb;
     g_req.user_data = user_data;
-    g_req.text_focused = 0;
+    g_req.tf.focused = 0;
     str_cp(g_req.title, title, sizeof(g_req.title));
     split_lines(body);
 
@@ -510,20 +415,22 @@ void Requester_String(const char *title, const char *prompt,
     g_req.type = REQ_TYPE_STRING;
     g_req.callback = cb;
     g_req.user_data = user_data;
-    g_req.text_focused = 1;
     g_req.max_chars = max_chars;
     if (g_req.max_chars > REQ_MAX_TEXT) g_req.max_chars = REQ_MAX_TEXT;
     str_cp(g_req.title, title, sizeof(g_req.title));
     split_lines(prompt);
 
+    /* Wire the shared string gadget onto the text buffer */
+    g_req.tf.buf       = g_req.text;
+    g_req.tf.buf_max   = g_req.max_chars;
+    g_req.tf.buf_len   = 0;
+    g_req.tf.cursor    = 0;
+    g_req.tf.focused   = 1;
+    g_req.text[0]      = '\0';
     if (initial) {
         str_cp(g_req.text, initial, g_req.max_chars);
-        g_req.text_len = str_len(g_req.text);
-        g_req.cursor_pos = g_req.text_len;
-    } else {
-        g_req.text[0] = '\0';
-        g_req.text_len = 0;
-        g_req.cursor_pos = 0;
+        g_req.tf.buf_len = str_len(g_req.text);
+        g_req.tf.cursor  = g_req.tf.buf_len;
     }
 
     str_cp(g_req.btn_labels[0], "OK", 16);
@@ -601,7 +508,7 @@ void Requester_Close(void)
     }
     g_req.callback = NULL;
     g_req.user_data = NULL;
-    g_req.text_focused = 0;
+    g_req.tf.focused = 0;
     g_req.btn_pressed = 0;
     WM_Redraw();
 }

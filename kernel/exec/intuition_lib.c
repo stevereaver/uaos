@@ -8,6 +8,7 @@
 
 #include "rom_modules.h"
 #include "intuition_lib.h"
+#include "boopsi_builtin.h"
 #include "amiga_graphics.h"
 #include "../../emulation/uaos_emu.h"
 #include "../display/wm.h"
@@ -507,11 +508,17 @@ static void free_window_idcmp(uint32_t win_ptr)
     mem_w32(win_ptr + WIN_OFF_WINDOWPORT, 0);
 }
 
+static int gadget_is_boopsi_object(uint32_t gad);
+
 static void free_gadget_list(uint32_t gad)
 {
     while (gad) {
         uint32_t next = mem_u32(gad + GAD_OFF_NEXTGADGET);
-        intu_free(gad);
+        /* BOOPSI objects (including spliced layout children) are guest-
+         * owned — the object pointer is not the intu_alloc base and the
+         * guest frees them via DisposeObject. */
+        if (!gadget_is_boopsi_object(gad))
+            intu_free(gad);
         gad = next;
     }
 }
@@ -965,6 +972,7 @@ static void apply_window_zoom(IntuitionSlot *slot, int wm_handle, uint32_t win_p
     mem_w16(win_ptr + WIN_OFF_TOPEDGE, ny);
     mem_w16(win_ptr + WIN_OFF_WIDTH, nw);
     mem_w16(win_ptr + WIN_OFF_HEIGHT, nh);
+    UAOS_Layout_ReflowWindow(win_ptr);
 
     uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
     if (idcmp & IDCMP_NEWSIZE)
@@ -984,6 +992,8 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
         mem_w16(win_ptr + WIN_OFF_TOPEDGE, (uint16_t)wy);
         mem_w16(win_ptr + WIN_OFF_WIDTH, (uint16_t)ww);
         mem_w16(win_ptr + WIN_OFF_HEIGHT, (uint16_t)wh);
+        /* Reflow any layout.gadget groups against the new inner rect. */
+        UAOS_Layout_ReflowWindow(win_ptr);
     }
     if (!idcmp) return 1;
     IntuitionSlot *slot = get_slot_from_handle(wm_handle);
@@ -1147,9 +1157,13 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
                     post_intui_message(win_ptr, IDCMP_GADGETUP, 0, 0, 0, 0, hit_gad);
             }
 
+            /* Clear the momentary press highlight on every gadget — but
+             * never touch GFLG_SELECTED on checkbox/radio gadgets, where
+             * the bit is semantic toggle state (and may have just been
+             * set by the hit_gad toggle above). */
             while (gad) {
                 uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
-                if (flags & GFLG_SELECTED) {
+                if ((flags & GFLG_SELECTED) && !gad_is_checkbox_or_radio(gad)) {
                     flags &= ~GFLG_SELECTED;
                     mem_w16(gad + GAD_OFF_FLAGS, flags);
                     redraw = 1;
@@ -1362,6 +1376,9 @@ static int add_gadget_list(uint32_t win_ptr, uint32_t first_gad, int position, i
 
     first = insert_gadget_at(first, first_gad, position);
     mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, first);
+    /* Attach pass: splice the children of any layout.gadget into the list
+     * and run the initial layout.  No-op for ordinary gadgets. */
+    UAOS_Layout_AttachWindow(win_ptr);
     return position;
 }
 
@@ -1394,6 +1411,7 @@ static void intuition_RemoveGadget(void)
     uint32_t gad     = m68k_get_reg(NULL, M68K_REG_A1);
     int result = -1;
     if (win_ptr && gad) {
+        UAOS_Layout_DetachGadget(win_ptr, gad);
         uint32_t first = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
         result = gadget_position_in_list(first, gad);
         first = remove_gadget_from_list(first, gad);
@@ -1410,6 +1428,13 @@ static void intuition_RemoveGList(void)
     int      num     = (int)m68k_get_reg(NULL, M68K_REG_D0);
     int result = -1;
     if (win_ptr && gad) {
+        /* Detach any layout containers in the removed chain so their
+         * spliced children leave the window list too. */
+        uint32_t cur = gad;
+        for (int i = 0; i < num && cur; i++) {
+            UAOS_Layout_DetachGadget(win_ptr, cur);
+            cur = mem_u32(cur + GAD_OFF_NEXTGADGET);
+        }
         uint32_t first = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
         result = gadget_position_in_list(first, gad);
         first = remove_gadgets_from_list(first, gad, num);
@@ -1576,6 +1601,12 @@ static uint32_t gadget_at(uint32_t win_ptr, int mx, int my)
     uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
     while (gad) {
         uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        /* layout.gadget containers are layout managers only — transparent
+         * to hit-testing; their children are spliced into this list. */
+        if (UAOS_BOOPSI_IsLayoutGadget(gad)) {
+            gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+            continue;
+        }
         if (flags & GFLG_DISABLED) {
             gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
             continue;
@@ -2068,6 +2099,14 @@ static void render_custom_gadgets(int win_x, int win_y, int off_x, int off_y, ui
 
         if (clip_w <= 0 || clip_h <= 0 ||
             !rect_intersect(gx, gy, w, h, clip_x, clip_y, clip_w, clip_h, NULL, NULL, NULL, NULL)) {
+            gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+            continue;
+        }
+
+        /* layout.gadget: no body — optional group bevel/label chrome only;
+         * its children are spliced into this same list and draw normally. */
+        if (UAOS_BOOPSI_IsLayoutGadget(gad)) {
+            UAOS_Layout_DrawChrome(gad, gx, gy, w, h);
             gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
             continue;
         }
@@ -4028,7 +4067,8 @@ static void parse_window_tags(uint32_t tag_list,
     uint16_t *mouse_queue, uint16_t *rpt_queue,
     uint32_t *backfill, uint32_t *help_group,
     uint32_t *help_group_window, uint32_t *pointer,
-    int *busy_pointer, uint8_t *wbench_window)
+    int *busy_pointer, uint8_t *wbench_window,
+    uint32_t *first_gadget)
 {
     while (tag_list && tag_list + 8 <= GUEST_RAM_SIZE) {
         uint32_t tag  = mem_u32(tag_list);
@@ -4073,7 +4113,7 @@ static void parse_window_tags(uint32_t tag_list,
             case WA_SizeBRight:  if (data) *flags |= WFLG_SIZEBRIGHT;  else *flags &= ~WFLG_SIZEBRIGHT; break;
             case WA_SizeBBottom: if (data) *flags |= WFLG_SIZEBBOTTOM; else *flags &= ~WFLG_SIZEBBOTTOM; break;
             case WA_NewLookMenus: if (data) *flags |= WFLG_NEWLOOKMENUS; else *flags &= ~WFLG_NEWLOOKMENUS; break;
-            case WA_Gadgets:     /* not wired in this path */ break;
+            case WA_Gadgets:     if (first_gadget) *first_gadget = data; break;
 
             /* Stored tag values for GetWindowAttrsA / SetWindowAttrsA */
             case WA_Colors:          if (colors)          *colors          = data; break;
@@ -4161,7 +4201,7 @@ static void intuition_OpenWindowTagList(void)
                           &inner_width, &inner_height, &screen_title, &zoom,
                           &mouse_queue, &rpt_queue, &backfill,
                           &help_group, &help_group_window, &wa_pointer,
-                          &busy_pointer, &wbench_window);
+                          &busy_pointer, &wbench_window, &first_gadget);
     }
     if (tablet_messages) idcmp |= IDCMP_TABLET;
     if (menu_help) idcmp |= IDCMP_MENUHELP;
@@ -4346,6 +4386,21 @@ static void intuition_OpenWindowTagList(void)
 
     WM_SetEventHandler(wh, intu_wm_event_handler);
     create_system_gadgets(slot, width, height);
+
+    /* WA_Gadgets / NewWindow->FirstGadget: link the caller's gadget list
+     * behind the system gadgets (close→drag→depth→size) and run the
+     * layout attach pass so any layout.gadget children are spliced in
+     * and arranged against the window's inner area. */
+    if (first_gadget) {
+        uint32_t head = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+        uint32_t tail = head;
+        while (tail && mem_u32(tail + GAD_OFF_NEXTGADGET))
+            tail = mem_u32(tail + GAD_OFF_NEXTGADGET);
+        if (tail) mem_w32(tail + GAD_OFF_NEXTGADGET, first_gadget);
+        else      head = first_gadget;
+        mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, head);
+        UAOS_Layout_AttachWindow(win_ptr);
+    }
 
     if (flags & WFLG_ACTIVATE)
         WM_RequestFocus(wh);
@@ -4651,6 +4706,7 @@ static void intuition_SetWindowAttrsA(void)
                 break;
             case WA_Gadgets:
                 mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, data);
+                UAOS_Layout_AttachWindow(win_ptr);
                 redraw = 1;
                 break;
             case WA_Checkmark:
@@ -8621,6 +8677,19 @@ static uint32_t boopsi_object_class(uint32_t object)
     return mem_u32(object - OBJ_HEADER_SIZE + OBJ_OFF_CLASS);
 }
 
+/* Non-zero when the gadget pointer is a BOOPSI object whose class is
+ * registered (the object header stores the class pointer at obj-4). */
+static int gadget_is_boopsi_object(uint32_t gad)
+{
+    uint32_t cls = boopsi_object_class(gad);
+    if (!cls) return 0;
+    for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
+        if (g_boopsi_classes[i].active && g_boopsi_classes[i].class_ptr == cls)
+            return 1;
+    }
+    return 0;
+}
+
 static void boopsi_set_object_class(uint32_t object, uint32_t cls)
 {
     if (object >= OBJ_HEADER_SIZE)
@@ -9790,6 +9859,17 @@ void UAOS_Intuition_Dispatch(uint32_t fn)
  * ROM module registration
  * ========================================================================= */
 
+/* Guest-address range holding the builtin BOOPSI class objects in the
+ * shared emulator RAM (g_default_ram), recorded during registration. */
+static uint32_t g_boopsi_class_img_start = 0;
+static uint32_t g_boopsi_class_img_end   = 0;
+
+void UAOS_Intuition_ClassImageRange(uint32_t *start, uint32_t *end)
+{
+    if (start) *start = g_boopsi_class_img_start;
+    if (end)   *end   = g_boopsi_class_img_end;
+}
+
 void UAOS_INTUITION_Register(void)
 {
     UAOS_ROM_Register("intuition.library", 40, 0x00005000,
@@ -9798,6 +9878,13 @@ void UAOS_INTUITION_Register(void)
     WM_SetPaletteFn(intuition_apply_window_palette);
     WM_SetVacateFn(intu_screen_vacate);
 
+    /* Register builtin BOOPSI classes into the shared emulator RAM and
+     * record the heap span they occupy.  Per-task M68k guests resolve the
+     * same guest addresses through their own g_ram, so the wrapper mirrors
+     * this immutable image into each task at startup (see exec_task.c). */
     extern void UAOS_BOOPSI_RegisterBuiltinClasses(void);
+    uint32_t heap_before = intu_heap_top;
     UAOS_BOOPSI_RegisterBuiltinClasses();
+    g_boopsi_class_img_start = heap_before;
+    g_boopsi_class_img_end   = intu_heap_top;
 }

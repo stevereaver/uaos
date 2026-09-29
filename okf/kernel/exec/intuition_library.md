@@ -370,8 +370,21 @@ At boot, the following standard built-in classes are registered automatically:
 | `scrollbarclass` | `propgclass` | Scroll bar gadget with `SCROLLER_*` and `SCROLLBARA_*` attributes (`SCROLLER_Top`/`SCROLLBARA_Top`, `SCROLLER_Total`/`SCROLLBARA_Total`, `SCROLLER_Visible`/`SCROLLBARA_Visible`, `SCROLLER_Orientation`/`SCROLLBARA_Orientation`). Converts Top/Total/Visible to PropInfo Pot/Body values via `scroller_recalc`. Also accepts `PGA_Top` as an alias for `SCROLLER_Top`. Delegates `OM_NEW`/`OM_DISPOSE`/`GM_*` to `propgclass`. |
 | `pagerclass` | `gadgetclass` | V40 pager/tab gadget with `PAGERA_*` attributes (`PAGERA_Active`, `PAGERA_Total`, `PAGERA_Labels`, `PAGERA_Orientation`, `PAGERA_Style`, `PAGERA_Spacing`). `GM_GOACTIVE` determines which tab was clicked by dividing the gadget width/height by the total page count and sets `PAGERA_Active` accordingly. Sets `GTYP_CUSTOMGADGET`. |
 | `listviewgclass` | `gadgetclass` | V40 BOOPSI listview gadget with `LVGA_*` attributes (`LVGA_Top`, `LVGA_Visible`, `LVGA_Total`, `LVGA_Selected`, `LVGA_ItemText`/`LVGA_Labels`, `LVGA_MultiSelect`, `LVGA_ReadOnly`, `LVGA_Spacing`). `GM_GOACTIVE` determines which item was clicked by dividing the gadget height by the visible count and sets `LVGA_Selected` accordingly. Sets `GTYP_CUSTOMGADGET`. |
+| `layoutgclass` ("layout.gadget") | `gadgetclass` | ReAction-style automatic-layout container (UAOS-128). Children arrive via `LAYOUT_AddChild`/`LAYOUT_AddImage` tags; `CHILD_*` tags that follow in the same tag list apply to the most recent child. Transparent to hit-testing and drawing (optional labelled group bevel via `UAOS_Layout_DrawChrome`); see "Layout gadgets" below. `LAYOUT_Orientation` = `LAYOUT_ORIENT_VERT` (default). |
+| `vgroupgclass` ("vgroup.gadget") | `layoutgclass` | Vertical group — same class with `LAYOUT_ORIENT_VERT` forced. |
+| `hgroupgclass` ("hgroup.gadget") | `layoutgclass` | Horizontal group — same class with `LAYOUT_ORIENT_HORIZ` forced. |
 
 Built-in classes are created in `kernel/exec/boopsi_builtin.c` and registered from `UAOS_INTUITION_Register()`. The class structures are stored in the same public registry used by `MakeClass`/`AddClass`, so `NewObject(NULL, "gadgetclass", ...)` finds them by string ID.
+
+### Layout gadgets (ReAction-style, UAOS-128)
+
+`layout.gadget` is a non-interactive container that delegates all geometry to the shared `UINode` layout engine (`kernel/display/uitree.c`) — the same engine behind `uibind` and the userspace `uaos_ui.h` backend, so layout semantics are identical across kernel tools, Ring-3 apps, and M68k guests.
+
+- **Child records**: `LAYOUT_AddChild`/`LAYOUT_AddImage` append a 40-byte guest record (`LCH_*`: object, weight, min/max, label). `CHILD_WeightedWidth`/`WeightedHeight` (`~0` = default weight 1), `CHILD_Min/MaxWidth`/`Height`, and `CHILD_Label` apply to the last record.
+- **Attachment**: `UAOS_Layout_AttachWindow()` runs after `WA_Gadgets`/`NewWindow->FirstGadget` linking (`OpenWindowTagList`), `AddGList`, and `SetWindowAttrsA(WA_Gadgets)`. It walks the gadget list and splices each layout's children into the list — reading `NextGadget` *after* each splice so children of nested layouts are visited by the same walk. Nested containers are marked `BLYT_OFF_NESTED` so they keep the slice their parent's layout assigned.
+- **Geometry**: `UAOS_Layout_ReflowWindow()` rebuilds a temporary `UINode` tree per container (natural sizes from gadget type + label, weights/min/max from `CHILD_*`), runs `ui_layout()`, and writes `LeftEdge`/`TopEdge`/`Width`/`Height` back to the children. An unsized *top-level* layout gets `BLYT_OFF_AUTO` and fills the window's inner area; nested layouts never auto-rect. Reflow runs on window open, `WM_EVT_RESIZE`, and `apply_window_zoom`.
+- **Transparency**: `gadget_at` skips layout containers (children are real spliced `Gadget`s and receive `IDCMP_GADGETUP` in `IAddress`); the draw walk renders only the container's optional group bevel/label chrome; `free_gadget_list` never `intu_free`s BOOPSI objects (guest-owned, freed via `DisposeObject`); `RemoveGadget`/`RemoveGList` call `UAOS_Layout_DetachGadget` to unlink spliced children recursively.
+- **`WA_Gadgets`** is now honoured by `OpenWindowTagList`/`parse_window_tags` — the caller's list is appended behind the system gadgets and the attach pass runs immediately.
 
 ## BOOPSI attribute tag families
 
@@ -398,6 +411,8 @@ All standard AmigaOS BOOPSI attribute tag families are defined in `kernel/exec/i
 | `SCROLLBARA_*` | `TAG_USER+0x400F0` | `SCROLLBARA_Top`, `SCROLLBARA_Total`, `SCROLLBARA_Visible`, `SCROLLBARA_Orientation`, `SCROLLBARA_Invisible`, `SCROLLBARA_Decrement`, `SCROLLBARA_Increment`, `SCROLLBARA_Knob`, `SCROLLBARA_Slider` | `scrollbarclass` |
 | `PAGERA_*` | `TAG_USER+0x40100` | `PAGERA_Active`, `PAGERA_Total`, `PAGERA_Labels`, `PAGERA_LabelType`, `PAGERA_Orientation`, `PAGERA_Style`, `PAGERA_Spacing` | `pagerclass` |
 | `LVGA_*` | `TAG_USER+0x40110` | `LVGA_Top`, `LVGA_Visible`, `LVGA_Total`, `LVGA_Selected`, `LVGA_ItemText`/`ItemLabels`/`Labels`, `LVGA_MultiSelect`, `LVGA_ShowSelected`, `LVGA_ReadOnly`, `LVGA_Spacing` | `listviewgclass` |
+| `LAYOUT_*` | `TAG_USER+0x40120` | `LAYOUT_Orientation`, `LAYOUT_AddChild`, `LAYOUT_AddImage`, `LAYOUT_RemoveChild`, `LAYOUT_InnerSpacing`, `LAYOUT_SpaceInner`/`Outer`, `LAYOUT_Label`, `LAYOUT_BevelState`, `LAYOUT_FixedVert`/`Horiz`, `LAYOUT_Children` (`OM_GET` count), `LAYOUT_Parent`/`RelVerify`/`AlignLabels` (accepted, advisory) | `layoutgclass` |
+| `CHILD_*` | `TAG_USER+0x40130` | `CHILD_WeightedWidth`/`WeightedHeight`, `CHILD_MinWidth`/`MinHeight`/`MaxWidth`/`MaxHeight`, `CHILD_Label` — apply to the most recent `LAYOUT_AddChild`/`AddImage` | `layoutgclass` children |
 
 Non-tag constants are also defined:
 

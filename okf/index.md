@@ -36,6 +36,10 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 - [Thunking and LVOs](/concepts/thunking.md) - Calling native libraries from emulated M68k code.
 - [Concepts Index](/concepts/index.md) - All cross-cutting concepts.
 
+## Hardware Platforms
+
+- [MacBookPro4,1](/platforms/macbook41.md) - Verified inventory + driver gaps for the bare-metal test machine (Plane: UAOS-131).
+
 ## Directory Structure Overview
 
 - `kernel/`: Core OS components (Exec, DOS, Display, IRQ, Net, Shell, Drivers).

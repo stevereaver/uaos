@@ -1,0 +1,43 @@
+// uidemo.gui — userspace UI demo layout (UAOS-127)
+//
+// Loaded by system/userspace/uidemo.c via uaos_ui_load():
+// ENV:GUI/uidemo.gui overrides this file at runtime — edit it in RAM:
+// and the next `uidemo` launch picks up the new layout, no rebuild.
+// Node ids match the enum in uidemo.c:
+//   1 mode  2 shadow  3 fx  4 speed  5 name  6 level
+//   7 save  8 use     9 cancel  10 status
+
+window "UI Demo" {
+    vgroup {
+        hgroup {
+            label "Mode:" ;
+            cycle id=1 "Workbench" "Screen" "Window" weight=1 ;
+        }
+        hgroup {
+            checkbox "Pointer shadow" id=2 weight=1 ;
+            checkbox "Screen FX"      id=3 weight=1 ;
+        }
+        hgroup {
+            label "Speed:" ;
+            slider id=4 0..100 value=50 weight=1 ;
+        }
+        hgroup {
+            label "Name:" ;
+            string "demo" maxchars=24 id=5 weight=1 ;
+        }
+        hgroup {
+            label "Level:" ;
+            integer 0..99 value=42 id=6 ;
+            spacer ;
+        }
+        label "Status: idle" id=10 ;
+        spacer ;
+        hgroup {
+            spacer ;
+            button "Save"   id=7 min=80,0 ;
+            button "Use"    id=8 min=80,0 ;
+            button "Cancel" id=9 min=80,0 ;
+            spacer ;
+        }
+    }
+}

@@ -55,6 +55,16 @@ Key startup conventions for per-task M68k execution:
 
 The chipset emulator (`chip_emu.c`) uses global blitter/copper state shared across all tasks. When a per-task M68k program accesses chip RAM (addresses < 0x800000), the memory callbacks in `uaos_m68k_glue.c` normally call `chip_emu_cpu_chipram_access()` to synchronize the chipset. However, during per-task M68k execution, this synchronization is disabled via the `g_chipset_sync_disabled` flag (set in `m68k_wrapper_entry`, cleared on exit). Without this, the blitter could operate on the wrong task's `g_ram` using addresses set up by another task, causing kernel page faults (e.g., when running `vlink` after the Workbench).
 
+The same flag also gates **IRQ injection**: `chip_emu_update_irq()` skips `m68k_set_irq()` while `g_chipset_sync_disabled` is set. Per-task guests run with a zeroed exception vector table, so an injected chipset interrupt (e.g. CIA-B level 6) vectors to PC=0 and marches through zeroed RAM until the cycle budget aborts — the classic intermittent "wild PC" crash. Pending INTREQ/INTENA state persists and is delivered when the shared context runs again. `Task_Exit()` also clears the flag since early task exits (e.g. `hunk_load` failure) can bypass the wrapper's cleanup path.
+
+## Per-Task Guest RAM vs Boot-Time Structures
+
+Each per-task M68k program gets its own `g_ram` window, but structures registered at boot (notably the built-in BOOPSI class objects allocated on the intuition heap) hold guest addresses valid only in the shared `g_default_ram`. `UAOS_Intuition_ClassImageRange()` records the heap span the class registration occupied, and `UAOS_Emu_MirrorSharedRegion()` (`uaos_m68k_glue.c`) memcpy's that immutable image into each task's RAM at startup (called from `m68k_wrapper_entry` after `install_library_tables`, before `hunk_load`). Without the mirror, `find_public_class()` reads zeros in the task context and every `NewObjectA` fails.
+
+## Instruction-PC Ring (crash diagnostics)
+
+`uaos_m68k_glue.c` implements a 256-entry control-flow edge ring behind `M68K_INSTRUCTION_HOOK` (`m68k_set_instr_hook_callback`, wired in both `UAOS_Emu_LoadAndRun_Internal` and `m68k_wrapper_entry` — the callback lives in `m68ki_cpu` state, so per-task contexts must re-install it after `m68k_init`). To survive a crash that marches linearly through data, the ring records only *discontinuities* (delta <2 or >8, or any backward edge): each entry pair stores source PC then destination with bit0 set. Recording stops once the PC escapes all code regions (<0x10000) — the escape is captured in `g_m68k_first_wild_pc`. On cycle-budget abort, `exec_task.c` dumps the first wild PC plus the full ring; the ring and flag are reset per task.
+
 ## Task Scheduling and Wait/Signal
 
 M68k wrapper tasks run at priority -128 (same as the shell and idle tasks), allowing the scheduler to round-robin between them. When the shell launches an M68k binary, it calls `Wait(SIGF_CHILD)` to block until the child exits. Key implementation details:

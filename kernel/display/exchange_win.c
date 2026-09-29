@@ -7,6 +7,7 @@
 #include "exchange_win.h"
 #include "commodities.h"
 #include "framebuffer.h"
+#include "gadgets.h"
 #include "wm.h"
 #include <stdint.h>
 
@@ -22,41 +23,11 @@
 static int g_ex_handle = -1;
 static int g_ex_sel    = 0;  /* selected broker index in list */
 
-/* Button gadgets */
-typedef struct { int x, y, w, h; const char *label; } ExBtn;
+/* Button gadgets — shared gadget set */
+static Gad g_ex_cycle, g_ex_sleep, g_ex_wake, g_ex_disable, g_ex_close;
 
-static ExBtn g_ex_cycle, g_ex_sleep, g_ex_wake, g_ex_disable, g_ex_close;
-
-/* --- helpers --- */
-
-static int ex_slen(const char *s) { int n = 0; while (s[n]) n++; return n; }
-
-static void ex_bevel(int x, int y, int w, int h, int raised)
-{
-    uint32_t hi = raised ? WB_WHITE : WB_DARK_GREY;
-    uint32_t lo = raised ? WB_DARK_GREY : WB_WHITE;
-    FB_DrawHLine(x, y, w, hi);
-    FB_DrawVLine(x, y, h, hi);
-    FB_DrawHLine(x, y + h - 1, w, lo);
-    FB_DrawVLine(x + w - 1, y, h, lo);
-}
-
-static void ex_btn_draw(ExBtn *b, int pressed)
-{
-    uint32_t bg = pressed ? WB_DARK_GREY : WB_LIGHT_GREY;
-    FB_FillRect(b->x, b->y, b->w, b->h, bg);
-    ex_bevel(b->x, b->y, b->w, b->h, !pressed);
-    int tw = ex_slen(b->label) * 8;
-    int tx = b->x + (b->w - tw) / 2;
-    int ty = b->y + (b->h - 16) / 2;
-    FB_PutStr(tx, ty, b->label, WB_BLACK, bg);
-}
-
-static int ex_btn_hit(ExBtn *b, int mx, int my)
-{
-    return (mx >= b->x && mx < b->x + b->w &&
-            my >= b->y && my < b->y + b->h);
-}
+#define ex_slen   gad_slen
+#define ex_bevel  gad_bevel
 
 static const char *state_str(CxState s)
 {
@@ -130,26 +101,19 @@ static void ex_draw(int wx, int wy, int ww, int wh)
     /* Buttons at bottom */
     int by = wy + wh - WM_TITLEBAR_H - EX_BTN_H - 8;
     int bx = wx + 12;
-    g_ex_cycle.x = bx;   g_ex_cycle.y = by;   g_ex_cycle.w = EX_BTN_W; g_ex_cycle.h = EX_BTN_H;
-    g_ex_cycle.label = "Cycle";
-    bx += EX_BTN_W + 8;
-    g_ex_sleep.x = bx;   g_ex_sleep.y = by;   g_ex_sleep.w = EX_BTN_W; g_ex_sleep.h = EX_BTN_H;
-    g_ex_sleep.label = "Sleep";
-    bx += EX_BTN_W + 8;
-    g_ex_wake.x = bx;    g_ex_wake.y = by;    g_ex_wake.w = EX_BTN_W; g_ex_wake.h = EX_BTN_H;
-    g_ex_wake.label = "Wake";
-    bx += EX_BTN_W + 8;
-    g_ex_disable.x = bx; g_ex_disable.y = by; g_ex_disable.w = EX_BTN_W; g_ex_disable.h = EX_BTN_H;
-    g_ex_disable.label = "Disable";
-    bx += EX_BTN_W + 8;
-    g_ex_close.x = bx;   g_ex_close.y = by;   g_ex_close.w = EX_BTN_W; g_ex_close.h = EX_BTN_H;
-    g_ex_close.label = "Close";
+    Gad *btns[5] = { &g_ex_cycle, &g_ex_sleep, &g_ex_wake,
+                     &g_ex_disable, &g_ex_close };
+    static const char *names[5] = { "Cycle", "Sleep", "Wake", "Disable", "Close" };
+    for (int i = 0; i < 5; i++) {
+        btns[i]->kind = GAD_BUTTON;
+        btns[i]->x = bx; btns[i]->y = by;
+        btns[i]->w = EX_BTN_W; btns[i]->h = EX_BTN_H;
+        btns[i]->text = names[i];
+        bx += EX_BTN_W + 8;
+    }
 
-    ex_btn_draw(&g_ex_cycle, 0);
-    ex_btn_draw(&g_ex_sleep, 0);
-    ex_btn_draw(&g_ex_wake, 0);
-    ex_btn_draw(&g_ex_disable, 0);
-    ex_btn_draw(&g_ex_close, 0);
+    for (int i = 0; i < 5; i++)
+        gad_draw(btns[i]);
 }
 
 /* --- input --- */
@@ -195,27 +159,27 @@ static void ex_click(int handle, int mx, int my)
     }
 
     /* Button clicks */
-    if (ex_btn_hit(&g_ex_cycle, mx, my)) {
+    if (gad_hit(&g_ex_cycle, mx, my)) {
         Cx_CycleState(g_ex_sel);
         WM_Redraw();
         return;
     }
-    if (ex_btn_hit(&g_ex_sleep, mx, my)) {
+    if (gad_hit(&g_ex_sleep, mx, my)) {
         Cx_Sleep(g_ex_sel);
         WM_Redraw();
         return;
     }
-    if (ex_btn_hit(&g_ex_wake, mx, my)) {
+    if (gad_hit(&g_ex_wake, mx, my)) {
         Cx_Wake(g_ex_sel);
         WM_Redraw();
         return;
     }
-    if (ex_btn_hit(&g_ex_disable, mx, my)) {
+    if (gad_hit(&g_ex_disable, mx, my)) {
         Cx_Disable(g_ex_sel);
         WM_Redraw();
         return;
     }
-    if (ex_btn_hit(&g_ex_close, mx, my)) {
+    if (gad_hit(&g_ex_close, mx, my)) {
         WM_CloseWindow(g_ex_handle);
         g_ex_handle = -1;
         return;

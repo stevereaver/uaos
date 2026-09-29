@@ -29,6 +29,8 @@
 #include "exec/intuition_lib.h"
 #include "exec/amiga_graphics.h"
 #include "display/framebuffer.h"
+#include "display/uitree.h"
+#include "display/wm.h"
 #include <string.h>
 
 /* Guest RAM access (mirrors intuition_lib.c helpers for fast local use) */
@@ -2585,6 +2587,661 @@ static uint32_t listviewgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
 }
 
 /* =========================================================================
+ * layoutgclass — "layout.gadget" (ReAction-style automatic layout)
+ * (subclass of gadgetclass, UAOS-128)
+ *
+ * A layout gadget is a non-interactive container: it owns a list of child
+ * records (gadget objects, image objects, or nested layout gadgets).
+ * Children are added with the LAYOUT_AddChild/LAYOUT_AddImage tags; CHILD_*
+ * tags that follow in the same tag list apply to the most recent child.
+ *
+ * When the layout gadget enters a window's FirstGadget list
+ * (UAOS_Layout_AttachWindow, called from AddGList/AddGadget) its child
+ * gadgets are spliced into the same list so that hit-testing, drawing,
+ * keyboard focus and IDCMP_GADGETUP all operate on real Gadget structures.
+ * The container itself is transparent: gadget_at skips it and the window
+ * draw walk renders only its optional group box/label chrome.
+ *
+ * Geometry is computed by the shared uitree engine: each child becomes a
+ * leaf whose natural size derives from its gadget type and label, with
+ * CHILD_Weighted, CHILD_Min and CHILD_Max tags mapped onto the node's
+ * weight/min/max.  Every open and
+ * resize re-runs UAOS_Layout_ReflowWindow which rebuilds the tree and
+ * writes the resulting LeftEdge/TopEdge/Width/Height back to the children.
+ * ========================================================================= */
+
+/* Instance data (appended after the Gadget struct, inst_offset=GAD_SIZE) */
+#define BLYT_OFF_CHILDREN  0    /* head of child record list            */
+#define BLYT_OFF_LAST      4    /* most recent record (CHILD_* target)  */
+#define BLYT_OFF_ORIENT    8    /* LAYOUT_ORIENT_*                      */
+#define BLYT_OFF_SPACING   12   /* LAYOUT_InnerSpacing (px gap)         */
+#define BLYT_OFF_PADIN     16   /* LAYOUT_SpaceInner (pad inside group) */
+#define BLYT_OFF_PADOUT    20   /* LAYOUT_SpaceOuter (margin outside)   */
+#define BLYT_OFF_LABEL     24   /* guest string: group box title        */
+#define BLYT_OFF_BEVEL     28   /* draw a group bevel                   */
+#define BLYT_OFF_WINDOW    32   /* guest Window* the gadget lives in    */
+#define BLYT_OFF_AUTO      36   /* rect auto-derived from window inner  */
+#define BLYT_OFF_NESTED    40   /* gadget is itself a layout child      */
+#define BLYT_INST_SIZE     44
+
+/* Per-child record — allocated in guest RAM */
+#define LCH_OFF_NEXT    0
+#define LCH_OFF_OBJ     4    /* child gadget or image object           */
+#define LCH_OFF_IS_IMG  8    /* 1 = image child                        */
+#define LCH_OFF_WW      12   /* CHILD_WeightedWidth   (~0 = default)   */
+#define LCH_OFF_WH      16   /* CHILD_WeightedHeight                   */
+#define LCH_OFF_MINW    20
+#define LCH_OFF_MINH    24
+#define LCH_OFF_MAXW    28
+#define LCH_OFF_MAXH    32
+#define LCH_OFF_LABEL   36   /* CHILD_Label guest string               */
+#define LCH_SIZE        40
+
+#define LYT_MAX_CHILDREN 32
+
+static uint32_t g_layoutgclass, g_vgroupgclass, g_hgroupgclass;
+
+int UAOS_BOOPSI_IsLayoutGadget(uint32_t obj)
+{
+    if (!obj || obj < OBJ_HEADER_SIZE) return 0;
+    uint32_t cls = mem_u32(obj - OBJ_HEADER_SIZE + OBJ_OFF_CLASS);
+    return (cls == g_layoutgclass || cls == g_vgroupgclass ||
+            cls == g_hgroupgclass) ? 1 : 0;
+}
+
+static int gadget_list_contains(uint32_t first, uint32_t obj)
+{
+    while (first) {
+        if (first == obj) return 1;
+        first = mem_u32(first + GAD_OFF_NEXTGADGET);
+    }
+    return 0;
+}
+
+static void lyt_free_children(uint32_t base)
+{
+    uint32_t rec = mem_u32(base + BLYT_OFF_CHILDREN);
+    while (rec) {
+        uint32_t next = mem_u32(rec + LCH_OFF_NEXT);
+        intu_free(rec);
+        rec = next;
+    }
+    mem_w32(base + BLYT_OFF_CHILDREN, 0);
+    mem_w32(base + BLYT_OFF_LAST, 0);
+}
+
+static int layout_set_tag(uint32_t tag, uint32_t data, void *ctx)
+{
+    uint32_t obj  = (uint32_t)(uintptr_t)ctx;
+    uint32_t base = obj + GAD_SIZE;
+    uint32_t rec;
+    switch (tag) {
+        case LAYOUT_AddChild:
+        case LAYOUT_AddImage:
+            rec = intu_alloc(LCH_SIZE);
+            if (!rec) return 1;
+            for (int i = 0; i < LCH_SIZE; i++) g_ram[rec + i] = 0;
+            mem_w32(rec + LCH_OFF_OBJ,    data);
+            mem_w32(rec + LCH_OFF_IS_IMG, tag == LAYOUT_AddImage ? 1 : 0);
+            mem_w32(rec + LCH_OFF_WW,     ~0u);
+            mem_w32(rec + LCH_OFF_WH,     ~0u);
+            /* append at tail so children keep declaration order */
+            {
+                uint32_t head = mem_u32(base + BLYT_OFF_CHILDREN);
+                if (!head) mem_w32(base + BLYT_OFF_CHILDREN, rec);
+                else {
+                    uint32_t t = head;
+                    while (mem_u32(t + LCH_OFF_NEXT)) t = mem_u32(t + LCH_OFF_NEXT);
+                    mem_w32(t + LCH_OFF_NEXT, rec);
+                }
+            }
+            mem_w32(base + BLYT_OFF_LAST, rec);
+            break;
+        case LAYOUT_RemoveChild:
+            rec = mem_u32(base + BLYT_OFF_CHILDREN);
+            {
+                uint32_t prev = 0;
+                while (rec) {
+                    uint32_t next = mem_u32(rec + LCH_OFF_NEXT);
+                    if (mem_u32(rec + LCH_OFF_OBJ) == data) {
+                        if (prev) mem_w32(prev + LCH_OFF_NEXT, next);
+                        else      mem_w32(base + BLYT_OFF_CHILDREN, next);
+                        if (mem_u32(base + BLYT_OFF_LAST) == rec)
+                            mem_w32(base + BLYT_OFF_LAST, prev);
+                        intu_free(rec);
+                        break;
+                    }
+                    prev = rec;
+                    rec = next;
+                }
+            }
+            break;
+        case LAYOUT_Orientation: mem_w32(base + BLYT_OFF_ORIENT, data); break;
+        case LAYOUT_InnerSpacing: mem_w32(base + BLYT_OFF_SPACING, data); break;
+        case LAYOUT_SpaceInner:   mem_w32(base + BLYT_OFF_PADIN, data); break;
+        case LAYOUT_SpaceOuter:   mem_w32(base + BLYT_OFF_PADOUT, data); break;
+        case LAYOUT_Label:        mem_w32(base + BLYT_OFF_LABEL, data); break;
+        case LAYOUT_BevelState:   mem_w32(base + BLYT_OFF_BEVEL, data); break;
+        case LAYOUT_FixedVert:
+        case LAYOUT_FixedHoriz:
+        case LAYOUT_Parent:
+        case LAYOUT_RelVerify:
+        case LAYOUT_AlignLabels:
+            break;
+        case CHILD_WeightedWidth:  rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_WW, data); break;
+        case CHILD_WeightedHeight: rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_WH, data); break;
+        case CHILD_MinWidth:       rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_MINW, data); break;
+        case CHILD_MinHeight:      rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_MINH, data); break;
+        case CHILD_MaxWidth:       rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_MAXW, data); break;
+        case CHILD_MaxHeight:      rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_MAXH, data); break;
+        case CHILD_Label:          rec = mem_u32(base + BLYT_OFF_LAST); if (rec) mem_w32(rec + LCH_OFF_LABEL, data); break;
+        case CHILD_ReplaceObject:
+        case CHILD_NoDispose:
+        case CHILD_ScaleWidth:
+        case CHILD_ScaleHeight:
+            break;
+        default:
+            break;
+    }
+    return 1;
+}
+
+static uint32_t lyt_child_count(uint32_t base)
+{
+    uint32_t n = 0;
+    uint32_t rec = mem_u32(base + BLYT_OFF_CHILDREN);
+    while (rec) { n++; rec = mem_u32(rec + LCH_OFF_NEXT); }
+    return n;
+}
+
+/* Natural size of a child object: derived from the gadget type and its
+ * label, matching the engine's UI_* metrics.  Nested layout gadgets
+ * recursively measure their own children. */
+static void lyt_natural(uint32_t obj, int depth, int *w, int *h)
+{
+    *w = 60; *h = UI_BUTTON_H;
+    if (!obj || obj >= GUEST_RAM_SIZE) return;
+
+    if (UAOS_BOOPSI_IsLayoutGadget(obj) && depth < 4) {
+        uint32_t base = obj + GAD_SIZE;
+        int orient  = (int)mem_u32(base + BLYT_OFF_ORIENT);
+        int spacing = (int)mem_u32(base + BLYT_OFF_SPACING);
+        int pad     = (int)mem_u32(base + BLYT_OFF_PADIN);
+        if (!spacing) spacing = UI_DEF_SPACING;
+        int mw = 0, mh = 0, n = 0;
+        uint32_t rec = mem_u32(base + BLYT_OFF_CHILDREN);
+        while (rec) {
+            int cw = 0, ch = 0;
+            uint32_t cobj = mem_u32(rec + LCH_OFF_OBJ);
+            if (mem_u32(rec + LCH_OFF_IS_IMG)) {
+                cw = (int)mem_u32(cobj + BIMG_OFF_WIDTH);
+                ch = (int)mem_u32(cobj + BIMG_OFF_HEIGHT);
+            } else {
+                lyt_natural(cobj, depth + 1, &cw, &ch);
+            }
+            if (orient == LAYOUT_ORIENT_HORIZ) { mw += cw; if (ch > mh) mh = ch; }
+            else                               { mh += ch; if (cw > mw) mw = cw; }
+            n++;
+            rec = mem_u32(rec + LCH_OFF_NEXT);
+        }
+        if (n > 1) {
+            if (orient == LAYOUT_ORIENT_HORIZ) mw += spacing * (n - 1);
+            else                               mh += spacing * (n - 1);
+        }
+        *w = mw + 2 * pad;
+        *h = mh + 2 * pad;
+    } else {
+        uint16_t type = mem_u16(obj + GAD_OFF_GADGETTYPE) & 0xF;
+        uint16_t act  = mem_u16(obj + GAD_OFF_ACTIVATION);
+        int label_len = 0;
+        uint32_t it = mem_u32(obj + GAD_OFF_GADGETTEXT);
+        if (it) {
+            uint32_t tp = mem_u32(it + ITEXT_OFF_ITEXT);
+            while (tp && tp + label_len < GUEST_RAM_SIZE &&
+                   g_ram[tp + label_len] && label_len < 200)
+                label_len++;
+        }
+        switch (type) {
+            case GTYP_BOOLGADGET:
+                if ((act & GACT_TOGGLESELECT) ||
+                    mem_u32(obj + GAD_OFF_MUTUALEXCLUDE)) {
+                    *w = UI_CHECK_BOX + 4 + label_len * UI_CHAR_W;
+                    *h = UI_CHECK_H;
+                } else {
+                    *w = label_len * UI_CHAR_W + 24;
+                    *h = UI_BUTTON_H;
+                }
+                break;
+            case GTYP_STRGADGET:
+            case GTYP_INTGADGET: {
+                uint32_t si = mem_u32(obj + GAD_OFF_SPECIALINFO);
+                int mc = si ? (int)mem_u16(si + SI_OFF_MAXCHARS) : 16;
+                if (mc <= 0) mc = 16;
+                *w = mc * UI_CHAR_W + 16;
+                *h = UI_INPUT_H;
+                break;
+            }
+            case GTYP_PROPGADGET: *w = 80; *h = UI_SLIDER_H; break;
+            case GTYP_LISTVIEW:   *w = 160; *h = 96; break;
+            default: break;
+        }
+    }
+
+    /* An explicitly-sized child wins over the measured natural size. */
+    {
+        int16_t gw = mem_s16(obj + GAD_OFF_WIDTH);
+        int16_t gh = mem_s16(obj + GAD_OFF_HEIGHT);
+        if (!UAOS_BOOPSI_IsLayoutGadget(obj)) {
+            if (gw > 0) *w = gw;
+            if (gh > 0) *h = gh;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Layout engine bridge                                               *
+ * ------------------------------------------------------------------ */
+
+static UIArena   g_lyt_arena;
+static uint8_t   g_lyt_arena_buf[8192];
+static uint8_t   g_lyt_arena_ready = 0;
+
+typedef struct {
+    uint32_t rec;
+    UINode  *node;          /* the leaf/group node for this child       */
+} LytMap;
+
+static const char *lyt_arena_str(UIArena *a, uint32_t guest_ptr)
+{
+    if (!guest_ptr || guest_ptr >= GUEST_RAM_SIZE) return NULL;
+    int len = 0;
+    while (len < 200 && guest_ptr + len < GUEST_RAM_SIZE &&
+           g_ram[guest_ptr + len])
+        len++;
+    char *dst = (char *)ui_arena_alloc(a, (uint32_t)len + 1);
+    if (!dst) return NULL;
+    memcpy(dst, &g_ram[guest_ptr], (size_t)len);
+    dst[len] = '\0';
+    return dst;
+}
+
+static UINode *lyt_child_node(UIArena *a, uint32_t rec, int orient,
+                              UINode **leaf_out)
+{
+    uint32_t obj = mem_u32(rec + LCH_OFF_OBJ);
+    int is_img   = (int)mem_u32(rec + LCH_OFF_IS_IMG);
+    int nw = 0, nh = 0;
+    if (is_img) {
+        nw = (int)mem_u32(obj + BIMG_OFF_WIDTH);
+        nh = (int)mem_u32(obj + BIMG_OFF_HEIGHT);
+        if (nw <= 0) nw = 8;
+        if (nh <= 0) nh = 8;
+    } else {
+        lyt_natural(obj, 0, &nw, &nh);
+    }
+
+    UINode *n = ui_custom(a, nw, nh, NULL, NULL,
+                          is_img ? 0 : (int)mem_u16(obj + GAD_OFF_GADGETID));
+    if (!n) return NULL;
+    *leaf_out = n;
+
+    int32_t ww = (int32_t)mem_u32(rec + LCH_OFF_WW);
+    int32_t wh = (int32_t)mem_u32(rec + LCH_OFF_WH);
+    int32_t weight = (orient == LAYOUT_ORIENT_HORIZ) ? ww : wh;
+    if (weight > 0) n->weight = (int)weight;
+
+    int32_t mnw = (int32_t)mem_u32(rec + LCH_OFF_MINW);
+    int32_t mnh = (int32_t)mem_u32(rec + LCH_OFF_MINH);
+    int32_t mxw = (int32_t)mem_u32(rec + LCH_OFF_MAXW);
+    int32_t mxh = (int32_t)mem_u32(rec + LCH_OFF_MAXH);
+    if (mnw > 0) n->min_w = (int)mnw;
+    if (mnh > 0) n->min_h = (int)mnh;
+    if (mxw > 0) n->max_w = (int)mxw;
+    if (mxh > 0) n->max_h = (int)mxh;
+
+    uint32_t lbl = mem_u32(rec + LCH_OFF_LABEL);
+    if (lbl) {
+        const char *text = lyt_arena_str(a, lbl);
+        UINode *ln = ui_label(a, text ? text : "");
+        UINode *row = ln ? ui_hgroup(a, ln, n, NULL) : NULL;
+        if (row) { row->spacing = 4; return row; }
+    }
+    return n;
+}
+
+/* Run the layout for one layout gadget over its own rect. */
+static void layout_run(uint32_t lay)
+{
+    if (!g_lyt_arena_ready) {
+        ui_arena_init(&g_lyt_arena, g_lyt_arena_buf, sizeof(g_lyt_arena_buf));
+        g_lyt_arena_ready = 1;
+    }
+    ui_arena_reset(&g_lyt_arena);
+    UIArena *a = &g_lyt_arena;
+
+    uint32_t base = lay + GAD_SIZE;
+    int orient  = (int)mem_u32(base + BLYT_OFF_ORIENT);
+    int spacing = (int)mem_u32(base + BLYT_OFF_SPACING);
+    int pin     = (int)mem_u32(base + BLYT_OFF_PADIN);
+    int pout    = (int)mem_u32(base + BLYT_OFF_PADOUT);
+    if (!spacing) spacing = UI_DEF_SPACING;
+
+    int x = mem_s16(lay + GAD_OFF_LEFTEDGE);
+    int y = mem_s16(lay + GAD_OFF_TOPEDGE);
+    int w = mem_s16(lay + GAD_OFF_WIDTH);
+    int h = mem_s16(lay + GAD_OFF_HEIGHT);
+    x += pout; y += pout; w -= 2 * pout; h -= 2 * pout;
+    if (w <= 0 || h <= 0) return;
+
+    static LytMap map[LYT_MAX_CHILDREN];
+    int nmaps = 0;
+
+    UINode *root = (orient == LAYOUT_ORIENT_HORIZ)
+                 ? ui_hgroup(a, NULL) : ui_vgroup(a, NULL);
+    if (!root) return;
+    root->spacing = spacing;
+    root->pad = pin;
+
+    uint32_t rec = mem_u32(base + BLYT_OFF_CHILDREN);
+    while (rec && nmaps < LYT_MAX_CHILDREN) {
+        UINode *leaf = NULL;
+        UINode *n = lyt_child_node(a, rec, orient, &leaf);
+        if (!n || !leaf) return;        /* arena exhausted: keep old rects */
+        map[nmaps].rec = rec;
+        map[nmaps].node = leaf;
+        nmaps++;
+        ui_append(root, n);
+        rec = mem_u32(rec + LCH_OFF_NEXT);
+    }
+    if (rec) return;                     /* too many children: keep old   */
+    if (!root->first_child) return;
+
+    ui_layout(root, x, y, w, h);
+
+    for (int i = 0; i < nmaps; i++) {
+        uint32_t obj = mem_u32(map[i].rec + LCH_OFF_OBJ);
+        UINode  *nd  = map[i].node;
+        if (mem_u32(map[i].rec + LCH_OFF_IS_IMG)) {
+            mem_w32(obj + BIMG_OFF_LEFT, (uint32_t)(int32_t)nd->x);
+            mem_w32(obj + BIMG_OFF_TOP,  (uint32_t)(int32_t)nd->y);
+            continue;
+        }
+        mem_w16(obj + GAD_OFF_LEFTEDGE, (uint16_t)(int16_t)nd->x);
+        mem_w16(obj + GAD_OFF_TOPEDGE,  (uint16_t)(int16_t)nd->y);
+        mem_w16(obj + GAD_OFF_WIDTH,    (uint16_t)(int16_t)nd->w);
+        mem_w16(obj + GAD_OFF_HEIGHT,   (uint16_t)(int16_t)nd->h);
+    }
+}
+
+/* Derive the container's rect from the window inner area when the app
+ * left it unsized. */
+static void layout_auto_rect(uint32_t lay, int win_w, int win_h)
+{
+    int x = 2;
+    int y = WM_TITLEBAR_H + 2;
+    int w = win_w - 5 - WM_SCROLLBAR_W;
+    int h = win_h - WM_TITLEBAR_H - 5 - WM_SCROLLBAR_W;
+    if (w < 8)  w = 8;
+    if (h < 8)  h = 8;
+    mem_w16(lay + GAD_OFF_LEFTEDGE, (uint16_t)(int16_t)x);
+    mem_w16(lay + GAD_OFF_TOPEDGE,  (uint16_t)(int16_t)y);
+    mem_w16(lay + GAD_OFF_WIDTH,    (uint16_t)(int16_t)w);
+    mem_w16(lay + GAD_OFF_HEIGHT,   (uint16_t)(int16_t)h);
+}
+
+/* Splice a layout gadget's children into the window's gadget list so the
+ * regular draw/hit/event paths see them as ordinary gadgets.  Idempotent —
+ * children already present are not re-linked. */
+static void layout_splice(uint32_t win_ptr, uint32_t lay)
+{
+    uint32_t base  = lay + GAD_SIZE;
+    uint32_t first = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    uint32_t rec   = mem_u32(base + BLYT_OFF_CHILDREN);
+    while (rec) {
+        uint32_t obj = mem_u32(rec + LCH_OFF_OBJ);
+        if (obj && !mem_u32(rec + LCH_OFF_IS_IMG)) {
+            /* A nested layout child's rect always comes from its parent's
+             * layout_run — never auto-size it to the window. */
+            if (UAOS_BOOPSI_IsLayoutGadget(obj)) {
+                mem_w32(obj + GAD_SIZE + BLYT_OFF_NESTED, 1);
+                mem_w32(obj + GAD_SIZE + BLYT_OFF_AUTO,   0);
+            }
+            if (!gadget_list_contains(first, obj)) {
+                mem_w32(obj + GAD_OFF_NEXTGADGET, 0);
+                if (!first) first = obj;
+                else {
+                    uint32_t t = first;
+                    while (mem_u32(t + GAD_OFF_NEXTGADGET))
+                        t = mem_u32(t + GAD_OFF_NEXTGADGET);
+                    mem_w32(t + GAD_OFF_NEXTGADGET, obj);
+                }
+            }
+        }
+        rec = mem_u32(rec + LCH_OFF_NEXT);
+    }
+    mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, first);
+    mem_w32(base + BLYT_OFF_WINDOW, win_ptr);
+
+    /* An unsized TOP-LEVEL layout gadget fills the window's inner area
+     * and keeps doing so across resizes. */
+    if (!mem_u32(base + BLYT_OFF_NESTED) &&
+        (mem_s16(lay + GAD_OFF_WIDTH)  <= 0 ||
+         mem_s16(lay + GAD_OFF_HEIGHT) <= 0))
+        mem_w32(base + BLYT_OFF_AUTO, 1);
+}
+
+static void lyt_unlink(uint32_t win_ptr, uint32_t obj)
+{
+    uint32_t prev = 0;
+    uint32_t cur  = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    while (cur) {
+        uint32_t next = mem_u32(cur + GAD_OFF_NEXTGADGET);
+        if (cur == obj) {
+            if (prev) mem_w32(prev + GAD_OFF_NEXTGADGET, next);
+            else      mem_w32(win_ptr + WIN_OFF_FIRSTGADGET, next);
+            mem_w32(cur + GAD_OFF_NEXTGADGET, 0);
+            return;
+        }
+        prev = cur;
+        cur = next;
+    }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Hooks called by intuition_lib.c                                    *
+ * ------------------------------------------------------------------ */
+
+/* Attach pass: splice the children of every layout gadget found in the
+ * window's gadget list (nested layouts included — spliced children are
+ * visited by the same walk) and run the initial layout.  Safe to call
+ * repeatedly; re-splice is idempotent. */
+void UAOS_Layout_AttachWindow(uint32_t win_ptr)
+{
+    if (!win_ptr) return;
+    uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    int guard = 0;
+    while (gad && guard++ < 256) {
+        if (UAOS_BOOPSI_IsLayoutGadget(gad))
+            layout_splice(win_ptr, gad);
+        /* Read next AFTER splicing: layout_splice() appends newly found
+         * children to the tail of the list, so a pre-splice next pointer
+         * would skip them (and their own descendants). */
+        gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
+    }
+    UAOS_Layout_ReflowWindow(win_ptr);
+}
+
+/* Reflow pass: re-run the layout of every layout gadget in the window.
+ * Spliced nested containers appear after their parents in the list, so a
+ * single pass lays out the whole hierarchy. */
+void UAOS_Layout_ReflowWindow(uint32_t win_ptr)
+{
+    if (!win_ptr) return;
+    int win_w = (int)mem_s16(win_ptr + WIN_OFF_WIDTH);
+    int win_h = (int)mem_s16(win_ptr + WIN_OFF_HEIGHT);
+    uint32_t gad = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+    int guard = 0;
+    while (gad && guard++ < 256) {
+        uint32_t next = mem_u32(gad + GAD_OFF_NEXTGADGET);
+        if (UAOS_BOOPSI_IsLayoutGadget(gad)) {
+            if (mem_u32(gad + GAD_SIZE + BLYT_OFF_AUTO))
+                layout_auto_rect(gad, win_w, win_h);
+            layout_run(gad);
+        }
+        gad = next;
+    }
+}
+
+/* Called before a gadget is unlinked from a window: when it is a layout
+ * container, its spliced children are unlinked too (recursively). */
+void UAOS_Layout_DetachGadget(uint32_t win_ptr, uint32_t lay)
+{
+    if (!win_ptr || !UAOS_BOOPSI_IsLayoutGadget(lay)) return;
+    uint32_t base = lay + GAD_SIZE;
+    uint32_t rec  = mem_u32(base + BLYT_OFF_CHILDREN);
+    int guard = 0;
+    while (rec && guard++ < 128) {
+        uint32_t obj = mem_u32(rec + LCH_OFF_OBJ);
+        if (obj && !mem_u32(rec + LCH_OFF_IS_IMG)) {
+            if (UAOS_BOOPSI_IsLayoutGadget(obj))
+                UAOS_Layout_DetachGadget(win_ptr, obj);
+            lyt_unlink(win_ptr, obj);
+        }
+        rec = mem_u32(rec + LCH_OFF_NEXT);
+    }
+    mem_w32(base + BLYT_OFF_WINDOW, 0);
+}
+
+/* Draw the container chrome — a ReAction-style labelled group box when
+ * LAYOUT_Label/LAYOUT_BevelState are set; nothing otherwise.  Called by
+ * the intuition gadget draw walk instead of the default gadget body. */
+void UAOS_Layout_DrawChrome(uint32_t lay, int gx, int gy, int w, int h)
+{
+    uint32_t base  = lay + GAD_SIZE;
+    uint32_t label = mem_u32(base + BLYT_OFF_LABEL);
+    int      bevel = (int)mem_u32(base + BLYT_OFF_BEVEL);
+    if (!label && !bevel) return;
+
+    int top = label ? 8 : 0;
+    int bw = w, bh = h - top;
+    if (bh < 4) bh = 4;
+    /* Raised 3D group box: dark outer edge, light inner edge. */
+    FB_DrawRect(gx, gy + top, bw, bh, WB_DARK_GREY);
+    FB_DrawRect(gx + 1, gy + top + 1, bw - 2, bh - 2, WB_WHITE);
+
+    if (label) {
+        char buf[40] = "";
+        guest_str(buf, label, sizeof(buf));
+        int tw = (int)strlen(buf) * UI_CHAR_W;
+        /* Cut the top border behind the label text. */
+        FB_FillRect(gx + 8, gy + top - 7, tw + 4, 14, WB_GREY);
+        FB_PutStr(gx + 10, gy + top - 6, buf, WB_BLACK, WB_GREY);
+    }
+}
+
+static uint32_t layoutgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
+{
+    uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
+    uint32_t base   = obj + GAD_SIZE;
+    switch (method) {
+        case OM_NEW: {
+            uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
+            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
+            if (!r) return 0;
+            memset(&g_ram[base], 0, BLYT_INST_SIZE);
+            /* orientation aliases: vgroup.gadget/hgroup.gadget */
+            if (cls == g_hgroupgclass)
+                mem_w32(base + BLYT_OFF_ORIENT, LAYOUT_ORIENT_HORIZ);
+            walk_tags(tags, layout_set_tag, (void*)(uintptr_t)obj);
+            return r;
+        }
+        case OM_DISPOSE:
+            lyt_free_children(base);
+            return gadgetclass_dispatch(cls, obj, msg);
+        case OM_SET: {
+            uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
+            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
+            walk_tags(tags, layout_set_tag, (void*)(uintptr_t)obj);
+            /* Live re-attach: children added to an already-open layout
+             * are spliced into the window and laid out immediately. */
+            uint32_t win = mem_u32(base + BLYT_OFF_WINDOW);
+            if (win) {
+                layout_splice(win, obj);
+                UAOS_Layout_ReflowWindow(win);
+                WM_Redraw();
+            }
+            return r;
+        }
+        case OM_GET: {
+            uint32_t attr  = mem_u32(msg + OPGET_OFF_ATTRID);
+            uint32_t store = mem_u32(msg + OPGET_OFF_STORAGE);
+            if (!store) return 0;
+            switch (attr) {
+                case LAYOUT_Orientation:
+                    mem_w32(store, mem_u32(base + BLYT_OFF_ORIENT)); return 1;
+                case LAYOUT_Children:
+                    mem_w32(store, lyt_child_count(base)); return 1;
+                case LAYOUT_Label:
+                    mem_w32(store, mem_u32(base + BLYT_OFF_LABEL)); return 1;
+                default:
+                    return gadgetclass_dispatch(cls, obj, msg);
+            }
+        }
+        case OM_ADDMEMBER: {
+            /* GadTools-style member add: equivalent to LAYOUT_AddChild. */
+            uint32_t child = mem_u32(msg + 4);
+            if (!child) return 0;
+            uint32_t rec = intu_alloc(LCH_SIZE);
+            if (!rec) return 0;
+            for (int i = 0; i < LCH_SIZE; i++) g_ram[rec + i] = 0;
+            mem_w32(rec + LCH_OFF_OBJ, child);
+            mem_w32(rec + LCH_OFF_WW, ~0u);
+            mem_w32(rec + LCH_OFF_WH, ~0u);
+            uint32_t head = mem_u32(base + BLYT_OFF_CHILDREN);
+            if (!head) mem_w32(base + BLYT_OFF_CHILDREN, rec);
+            else {
+                uint32_t t = head;
+                while (mem_u32(t + LCH_OFF_NEXT)) t = mem_u32(t + LCH_OFF_NEXT);
+                mem_w32(t + LCH_OFF_NEXT, rec);
+            }
+            mem_w32(base + BLYT_OFF_LAST, rec);
+            return 1;
+        }
+        case OM_REMMEMBER: {
+            uint32_t child = mem_u32(msg + 4);
+            uint32_t prev = 0;
+            uint32_t rec  = mem_u32(base + BLYT_OFF_CHILDREN);
+            while (rec) {
+                uint32_t next = mem_u32(rec + LCH_OFF_NEXT);
+                if (mem_u32(rec + LCH_OFF_OBJ) == child) {
+                    if (prev) mem_w32(prev + LCH_OFF_NEXT, next);
+                    else      mem_w32(base + BLYT_OFF_CHILDREN, next);
+                    if (mem_u32(base + BLYT_OFF_LAST) == rec)
+                        mem_w32(base + BLYT_OFF_LAST, prev);
+                    intu_free(rec);
+                    return 1;
+                }
+                prev = rec;
+                rec = next;
+            }
+            return 0;
+        }
+        case GM_HITTEST:
+            /* The container is layout-only; children are hit directly. */
+            return 0;
+        case GM_RENDER:
+            /* Container has no body of its own; chrome is drawn by the
+             * window gadget walk via UAOS_Layout_DrawChrome. */
+            return 1;
+        case GM_LAYOUT:
+            layout_run(obj);
+            return 1;
+        default:
+            return gadgetclass_dispatch(cls, obj, msg);
+    }
+}
+
+/* =========================================================================
  * Class creation helper
  * ========================================================================= */
 static uint32_t make_builtin_class(const char *id, const char *super_id,
@@ -2710,6 +3367,20 @@ void UAOS_BOOPSI_RegisterBuiltinClasses(void)
     g_listviewgclass = make_builtin_class("listviewgclass", "gadgetclass", g_gadgetclass,
                                            GAD_SIZE, BLV_INST_SIZE, listviewgclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_listviewgclass);
+
+    /* layout.gadget — ReAction-style auto-layout over the UINode engine,
+     * plus vertical/horizontal group aliases (UAOS-128). */
+    g_layoutgclass = make_builtin_class("layout.gadget", "gadgetclass", g_gadgetclass,
+                                         GAD_SIZE, BLYT_INST_SIZE, layoutgclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_layoutgclass);
+
+    g_vgroupgclass = make_builtin_class("vgroup.gadget", "layout.gadget", g_layoutgclass,
+                                         GAD_SIZE, BLYT_INST_SIZE, layoutgclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_vgroupgclass);
+
+    g_hgroupgclass = make_builtin_class("hgroup.gadget", "layout.gadget", g_layoutgclass,
+                                         GAD_SIZE, BLYT_INST_SIZE, layoutgclass_dispatch);
+    UAOS_BOOPSI_RegisterClass(g_hgroupgclass);
 }
 
 /* =========================================================================

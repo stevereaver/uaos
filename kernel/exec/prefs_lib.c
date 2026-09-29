@@ -256,8 +256,8 @@ int Prefs_LoadToEnv(const char *name)
     while (*p && di < 62) dst[di++] = *p++;
     dst[di] = '\0';
 
-    /* Load from ENVARC: */
-    PrefsFile pf;
+    /* Load from ENVARC: — PrefsFile is ~128KB, too big for a task stack. */
+    static PrefsFile pf;
     if (!Prefs_Load(src, &pf)) return 0;
 
     /* Save to ENV: */
@@ -286,8 +286,8 @@ int Prefs_SaveToEnvarc(const char *name)
     while (*p && di < 62) dst[di++] = *p++;
     dst[di] = '\0';
 
-    /* Load from ENV: */
-    PrefsFile pf;
+    /* Load from ENV: — static: PrefsFile (~128KB) cannot live on a stack. */
+    static PrefsFile pf;
     if (!Prefs_Load(src, &pf)) return 0;
 
     /* Save to ENVARC: */

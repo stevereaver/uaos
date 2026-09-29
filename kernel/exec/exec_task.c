@@ -175,6 +175,19 @@ static void m68k_wrapper_entry(void *arg)
     /* Install library jump tables (per-task) */
     install_library_tables();
 
+    /* Mirror the boot-time BOOPSI class image into this task's RAM.
+     * Class objects were allocated in the shared emulator RAM, but class
+     * lookup/dispatch dereferences their guest addresses through the
+     * current g_ram — without the mirror, find_public_class() reads zeros
+     * and NewObjectA() fails in every per-task context. */
+    {
+        extern void UAOS_Emu_MirrorSharedRegion(uint32_t off, uint32_t len);
+        extern void UAOS_Intuition_ClassImageRange(uint32_t *s, uint32_t *e);
+        uint32_t cs = 0, ce = 0;
+        UAOS_Intuition_ClassImageRange(&cs, &ce);
+        if (ce > cs) UAOS_Emu_MirrorSharedRegion(cs, ce - cs);
+    }
+
     /* Load binary — use the saved copy in guest RAM. */
     g_uaos_heap_ptr = PROG_BASE;
     uint32_t entry = hunk_load(g_ram + bin_save, bin_size);
@@ -268,6 +281,10 @@ static void m68k_wrapper_entry(void *arg)
     extern int m68k_illg_instr_callback(int opcode);
     extern void m68k_set_illg_instr_callback(int (*cb)(int));
     m68k_set_illg_instr_callback(m68k_illg_instr_callback);
+    /* Same for the PC-ring instruction hook — lives in m68ki_cpu state. */
+    extern void uaos_m68k_instr_hook(unsigned int pc);
+    extern void m68k_set_instr_hook_callback(void (*cb)(unsigned int));
+    m68k_set_instr_hook_callback(uaos_m68k_instr_hook);
 
     /* Patch reset vectors */
     m68k_write_memory_32(0, sp);
@@ -290,6 +307,12 @@ static void m68k_wrapper_entry(void *arg)
      * (~70 seconds at 7 MHz), we abort it. */
     g_emu_halted = 0;
     task->m68k_halted = 0;
+    {
+        extern uint32_t g_m68k_first_wild_pc;
+        extern int g_m68k_pc_ring_idx;
+        g_m68k_first_wild_pc = 0;
+        g_m68k_pc_ring_idx = 0;
+    }
     task->m68k_entry = entry;
     task->m68k_stack_top = sp;
     uint64_t cycle_budget = 100000000ULL;  /* 100M cycles (~14s at 7MHz) */
@@ -324,7 +347,34 @@ static void m68k_wrapper_entry(void *arg)
         /* Timeout: abort if the binary exceeds the cycle budget */
         if (g_m68k_cycles >= cycle_budget) {
             extern void kprint(const char *);
+            extern uint32_t g_m68k_pc_ring[];
+            extern int g_m68k_pc_ring_idx;
+            extern uint32_t g_m68k_first_wild_pc;
+#define M68K_PC_RING_SZ_DUMP 256
             kprint("[m68k] cycle budget exceeded, aborting task\n");
+            kprint("[m68k] last-PCs (newest first, 8/line):\n");
+            {
+                char wb[40]; int wj = 0;
+                uint32_t wp = g_m68k_first_wild_pc;
+                static const char hx2[] = "0123456789ABCDEF";
+                const char *wl = "[m68k] first wild PC: 0x";
+                while (wl[wj]) { wb[wj] = wl[wj]; wj++; }
+                for (int b = 7; b >= 0; b--) wb[wj++] = hx2[(wp >> (b*4)) & 15];
+                wb[wj] = 0;
+                kprint(wb); kprint("\n");
+            }
+            for (int k = 0; k < M68K_PC_RING_SZ_DUMP; k += 8) {
+                char rb[96]; int t = 0;
+                static const char hx[] = "0123456789ABCDEF";
+                for (int e = 0; e < 8; e++) {
+                    uint32_t p = g_m68k_pc_ring[(g_m68k_pc_ring_idx - 1 - k - e) & 255];
+                    if (e) rb[t++] = ' ';
+                    rb[t++]='0'; rb[t++]='x';
+                    for (int b = 7; b >= 0; b--) rb[t++] = hx[(p >> (b*4)) & 15];
+                }
+                rb[t] = 0;
+                kprint(rb); kprint("\n");
+            }
             task->m68k_halted = 1;
             break;
         }

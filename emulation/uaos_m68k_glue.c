@@ -47,6 +47,36 @@ extern int  Strace_IsEnabled(void);
 extern void Strace_M68kEntry(uint8_t lib, uint8_t fn, M68kCPUState *cpu);
 extern void Strace_M68kExit(uint8_t lib, uint8_t fn, int32_t result);
 
+/* Debug: control-flow edge ring (M68K_INSTRUCTION_HOOK).  Records only
+ * discontinuities — the destination is stored with bit0 set (PCs are always
+ * even) preceded by the source — so a crash-driven linear march through
+ * data doesn't flush the useful edges.  The first PC that escapes all code
+ * regions (<0x10000) is captured in g_m68k_first_wild_pc. */
+#define M68K_PC_RING_SZ 256
+uint32_t g_m68k_pc_ring[M68K_PC_RING_SZ];
+int      g_m68k_pc_ring_idx = 0;
+uint32_t g_m68k_first_wild_pc = 0;
+void uaos_m68k_instr_hook(unsigned int pc)
+{
+    static uint32_t prev = 0;
+    uint32_t d = pc - prev;
+    if (pc < 0x10000u) {
+        if (d < 2 || d > 8) {
+            int i = g_m68k_pc_ring_idx;
+            g_m68k_pc_ring[i & (M68K_PC_RING_SZ - 1)] = prev;
+            g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
+            g_m68k_pc_ring_idx = i + 2;
+        }
+    } else if (!g_m68k_first_wild_pc) {
+        g_m68k_first_wild_pc = pc;
+        int i = g_m68k_pc_ring_idx;
+        g_m68k_pc_ring[i & (M68K_PC_RING_SZ - 1)] = prev;
+        g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
+        g_m68k_pc_ring_idx = i + 2;
+    }
+    prev = pc;
+}
+
 /* =========================================================================
  * Shell output callback — set by UAOS_Emu_LoadAndRun_Internal
  * ========================================================================= */
@@ -2880,6 +2910,19 @@ uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32
  * This stub satisfies the linker; it should never be called at runtime. */
 void m68881_mmu_ops(void) { }
 
+/* Copy a region of the shared boot-time guest RAM into the current task's
+ * guest RAM.  Structures registered at boot (e.g. BOOPSI class objects on
+ * the intuition heap) hold guest addresses that are only valid in
+ * g_default_ram; per-task M68k tasks resolve the same numeric addresses
+ * through their own g_ram, so the image must be mirrored for class lookups
+ * and dispatches to work in a task context.  No-op on the shared path. */
+void UAOS_Emu_MirrorSharedRegion(uint32_t off, uint32_t len)
+{
+    if (g_ram == g_default_ram) return;
+    if (off + len <= GUEST_RAM_SIZE)
+        emu_memcpy(g_ram + off, g_default_ram + off, len);
+}
+
 /* =========================================================================
  * ILLEGAL opcode callback — dispatches library calls
  * ========================================================================= */
@@ -3354,6 +3397,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     m68k_init();
     m68k_set_cpu_type(M68K_CPU_TYPE_68020);
     m68k_set_illg_instr_callback(m68k_illg_instr_callback);
+    m68k_set_instr_hook_callback(uaos_m68k_instr_hook);
 
     /* Patch reset vectors so pulse_reset loads our entry/stack:
      * Address 0 = initial SSP, Address 4 = initial PC

@@ -768,7 +768,14 @@ void chip_emu_update_irq(void)
     if (g_cia_b_irq) {
         if (level < 6) level = 6;
     }
-    m68k_set_irq((unsigned int)level);
+    /* Don't inject chipset IRQs while a per-task M68k guest context is
+     * installed (g_chipset_sync_disabled).  Per-task guests run with a
+     * zeroed exception vector table — an injected interrupt vectors to
+     * PC=0 and spins the cycle-budget abort.  The pending INTREQ/INTENA
+     * state persists and is delivered the next time the shared context
+     * is active. */
+    if (!g_chipset_sync_disabled)
+        m68k_set_irq((unsigned int)level);
 }
 
 /* -----------------------------------------------------------------------
