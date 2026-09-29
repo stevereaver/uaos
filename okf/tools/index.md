@@ -18,6 +18,9 @@ Programs under `tools/` that run on the build host — binary wrappers used by
 - [qemu_layout_test.py](/tools/qemu_layout_test.md) (`scripts/`) —
   end-to-end QEMU regression for the M68k BOOPSI layout path: drives
   LayoutTest with closed-loop pointer control via the monitor + GDB stub.
+- [make_splash.py](/tools/make_splash.md) — converts `splash.jpg` into a
+  self-describing RGB24 blob linked into the kernel (boot splash) via
+  `ld -r -b binary`; run by `build_iso.sh`.
 
 `gen_uaos_native`, `gen_uaos_m68k`, `gen_uaos_x64`, and `gen_m68k_library`
 wrap binaries with UAOS headers and generate loadable `.library` stubs —

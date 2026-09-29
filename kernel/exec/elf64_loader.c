@@ -15,7 +15,7 @@
  * Static arena
  * ------------------------------------------------------------------------- */
 #define X64_HEAP_SIZE   (4 * 1024 * 1024)
-#define X64_STACK_SIZE  (64 * 1024)
+#define X64_STACK_SIZE  (256 * 1024)
 
 static uint8_t  g_x64_heap[X64_HEAP_SIZE];
 static uint32_t g_x64_heap_used = 0;

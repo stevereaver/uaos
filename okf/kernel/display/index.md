@@ -47,6 +47,12 @@ The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`,
 
 The buffered (`g_drawing`) paths of `FB_PutChar`/`FB_PutCharSmall` clip rows the same way as the direct-to-VRAM path: `continue` for `py < 0` and `break` only once `py >= BB_MAX_H`, so a glyph whose top extends above the screen still draws its visible lower rows instead of vanishing entirely.
 
+## Boot Splash
+
+`kernel/display/splash.c` paints a boot splash onto the framebuffer during early kernel init (UAOS-151). The artwork lives in the repo root as `splash.jpg`; at build time `tools/make_splash.py` converts it to a self-describing RGB24 blob (`"SPL0"` magic, width, height, border colour, row-major pixels) which `ld -r -b binary` links into the kernel as `_binary_splash_rgb_start/_end` — no decoder needed in-kernel.
+
+`Splash_Show()` fills the whole framebuffer with the blob's border colour (so letterbox bands blend) and centre-blits the image via `FB_BlitARGB` row-by-row through a `0xFF`-alpha conversion buffer (centre-cropped if the art exceeds the mode). It is called twice in `uaos_kernel_main`: once right after `UAOS_MMU_Init()` (required — the FB can sit above the bootstrap 1 GB identity map), and again after the chipset self-tests because they scribble into the same framebuffer. `Splash_Dwell()` then holds the second paint for ~1 s with a pre-PIT `pause` spin — init is fast enough that the splash would otherwise only flash by. GRUB covers the menu phase independently: `scripts/grub.cfg` loads `insmod jpeg` and sets `background_image /boot/splash.jpg`, staged onto the ISO by `build_iso.sh`.
+
 ## Window Manager (WM)
 
 The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles user interaction and repainting.

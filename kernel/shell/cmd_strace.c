@@ -624,10 +624,16 @@ static const struct {
     {0x28, "sys.readkey"},    {0x29, "sys.getattrs"},
     {0x2A, "sys.setattrs"},   {0x2B, "sys.getmountcount"},
     {0x2C, "sys.getmountname"},{0x2D, "sys.meminfo"},
+    {0x2E, "sys.sleep_ms"},   {0x2F, "sys.seek"},
     {0x30, "sys.gui_draw_line"},      {0x31, "sys.gui_fill_rect"},
     {0x32, "sys.gui_draw_3dborder"},  {0x33, "sys.gui_draw_pixel"},
     {0x34, "sys.gui_draw_text_bg"},   {0x35, "sys.gui_get_winsize"},
     {0x36, "sys.gui_set_title"},      {0x37, "sys.gui_draw_ellipse"},
+    {0x38, "sys.net_socket"},   {0x39, "sys.net_connect"},
+    {0x3A, "sys.net_send"},     {0x3B, "sys.net_recv"},
+    {0x3C, "sys.net_close"},    {0x3D, "sys.net_resolve"},
+    {0x3E, "sys.net_setopt"},   {0x3F, "sys.net_state"},
+    {0x40, "sys.time"},         {0x41, "sys.getrandom"},
     {0xFF, "sys.schedule"},
     {0, NULL}
 };

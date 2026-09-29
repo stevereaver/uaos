@@ -13,6 +13,7 @@
 #include "../display/cursor.h"
 #include "../display/wm.h"
 #include "../net/stack.h"
+#include "../net/usock.h"
 #include "../display/shell_win.h"
 #include "../display/blanker.h"
 #include "intuition_lib.h"
@@ -469,6 +470,9 @@ void Task_Exit(void)
         }
         /* Release M68k guest RAM so the slot can be reused. */
         Task_ReleaseM68kRam(g_current);
+        /* Close any userspace sockets this task left open so the
+         * usock/tcp slots are not leaked by a killed command. */
+        usock_cleanup_task(g_current);
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);

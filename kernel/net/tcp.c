@@ -397,6 +397,34 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
  * Public API
  * ------------------------------------------------------------------------- */
 
+/* Ephemeral source port for outbound connections.  Rotates through the
+ * IANA dynamic range so a rapid reconnect to the same peer gets a fresh
+ * 4-tuple — the guest's TIME_WAIT (2 s) is far shorter than a typical
+ * host's (~60 s), and reusing a slot-derived port made every successive
+ * connect to the same server share the old connection's tuple, which
+ * the still-TIME_WAIT peer answers with RST. */
+static uint16_t g_eph_next = 49152;
+
+static uint16_t pick_ephemeral_port(void)
+{
+    for (int tries = 0; tries < 16384; tries++) {
+        uint16_t cand = g_eph_next;
+        if (++g_eph_next == 0 || g_eph_next < 49152)
+            g_eph_next = 49152;
+        int inuse = 0;
+        for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+            if (g_socks[i].state != TCP_CLOSED &&
+                g_socks[i].local_port == cand) {
+                inuse = 1;
+                break;
+            }
+        }
+        if (!inuse)
+            return cand;
+    }
+    return g_eph_next;
+}
+
 int tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port)
 {
     TcpSocket *s = alloc_sock();
@@ -404,7 +432,7 @@ int tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port)
     net_memset(s, 0, sizeof(*s));
     s->state       = TCP_SYN_SENT;
     s->local_ip    = ip_get_local();
-    s->local_port  = local_port ? local_port : (uint16_t)(49152 + sock_idx(s));
+    s->local_port  = local_port ? local_port : pick_ephemeral_port();
     s->remote_ip   = dst_ip;
     s->remote_port = dst_port;
     s->accepted    = 1;   /* outbound socket — never a pending accept      */
@@ -473,10 +501,13 @@ int tcp_recv(int sock, uint8_t *buf, uint16_t maxlen)
     uint16_t free_before = rbuf_free(s->rx_head, s->rx_tail, TCP_RX_BUF_SIZE);
     int n = rbuf_get(s->rx_buf, &s->rx_head, &s->rx_tail,
                      TCP_RX_BUF_SIZE, buf, maxlen);
-    /* Ring was full: the last ACK advertised a zero window and the peer is
-     * parked in its persist probe.  Push a window update now that draining
-     * reopened space instead of waiting out the probe backoff. */
-    if (n > 0 && free_before == 0 &&
+    /* Draining a non-empty ring freed space the peer's stream was
+     * probably blocked on: every ACK we sent while queuing advertised a
+     * shrinking window, so the sender parks in zero-window persist mode
+     * (multi-second probes) once it has filled what we last advertised.
+     * Announce the reopened window now instead of waiting out the probe
+     * backoff. */
+    if (n > 0 && free_before < TCP_RX_BUF_SIZE &&
         s->state != TCP_CLOSED && s->state != TCP_LISTEN)
         tcp_send_seg(s, TCP_ACK, 0, 0);
     return n;

@@ -28,7 +28,7 @@ The primary build script is `scripts/build_iso.sh`.
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
 5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/src/musashi/m68kops.c`) if it is missing.
 6. **Chipset Emulator**: Compiles the real AGA/ECS custom chip emulator (`kernel/chipset/chip_emu.c`) and links it into the kernel.
-7. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`.
+7. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`. Separately, `tools/make_splash.py` converts the repo-root `splash.jpg` into a self-describing RGB24 blob (`build/obj/splash.rgb`) wrapped by `ld -r -b binary` into `splash_img.o` and linked into the kernel — the C-array pattern isn't used for it because the converted image is ~1.7 MB.
 8. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
 9. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
 10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie -mno-red-zone`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`. `-mno-red-zone` is mandatory: tasks run in ring 0, so `INT 0x80` and IRQ entry frames are pushed directly onto the *user* stack and would overwrite anything the compiler places in the 128-byte SysV red zone below `%rsp` (this was the root cause of `makedir` silently receiving an empty path — the 256-byte `path` buffer straddled the red zone). The same flag is applied to `uaos_start.o`, `Tools:Guide`, and the `system/gnusrc/` coreutils builds.
@@ -36,7 +36,7 @@ The primary build script is `scripts/build_iso.sh`.
 12. **Regina Rexx**: Downloads Regina Rexx 0.08i from Aminet, extracts the `rexx` binary, wraps it with `gen_uaos_m68k`, and stages it into `SYS_ROOT/REXX/`.
 13. **ACE Basic**: Downloads ACE Basic 3.0.1 from GitHub, extracts and wraps the tool binaries (`ace`, `yap`, `vasmm68k_mot`, `vlink`, `parseusing`) into `SYS_ROOT/ACE/bin/`, stages support files (`lib/`, `bmaps/`, `include/`, `submods/`), and downloads the `bas` script into `SYS_ROOT/C/`.
 14. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`, `REXX:`, `ACE:`) into `SYS_ROOT`.
-15. **GRUB Config**: Injects `scripts/grub.cfg` and the kickstart configuration.
+15. **GRUB Config**: Injects `scripts/grub.cfg` and the kickstart configuration; also stages `splash.jpg` to `/boot/splash.jpg` on the ISO — `grub.cfg` loads `insmod jpeg` and sets it as the menu `background_image`.
 16. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.
 
 ## Helper Scripts

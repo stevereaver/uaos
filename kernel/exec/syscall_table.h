@@ -69,6 +69,21 @@
 #define SYSCALL_GETMOUNTNAME   0x2C   /* sys_getmountname(idx, buf, max)     */
 #define SYSCALL_MEMINFO        0x2D   /* sys_meminfo(struct uaos_meminfo *)  */
 #define SYSCALL_SLEEP_MS       0x2E   /* sys_sleep_ms(ms) — block on PIT    */
+#define SYSCALL_SEEK           0x2F   /* sys_seek(fd, pos)                  */
+
+/* Network syscalls for userspace tools (implemented in kernel/net/usock.c) */
+#define SYSCALL_NET_SOCKET     0x38   /* sys_net_socket(type) -> usock       */
+#define SYSCALL_NET_CONNECT    0x39   /* sys_net_connect(us, ip, port)       */
+#define SYSCALL_NET_SEND       0x3A   /* sys_net_send(us, buf, len)          */
+#define SYSCALL_NET_RECV       0x3B   /* sys_net_recv(us, buf, len)          */
+#define SYSCALL_NET_CLOSE      0x3C   /* sys_net_close(us)                   */
+#define SYSCALL_NET_RESOLVE    0x3D   /* sys_net_resolve(host, &ip, ms)      */
+#define SYSCALL_NET_SETOPT     0x3E   /* sys_net_setopt(us, opt, val)        */
+#define SYSCALL_NET_STATE      0x3F   /* sys_net_state(us) -> TcpState       */
+
+/* Time + entropy for userspace (TLS certificate validation / TLS PRNG) */
+#define SYSCALL_TIME           0x40   /* sys_time() -> unix epoch (0 if unset) */
+#define SYSCALL_GETRANDOM      0x41   /* sys_getrandom(buf, len) -> bytes    */
 
 #define SYSCALL_SCHEDULE    0xFF   /* reserved: yield/reschedule         */
 

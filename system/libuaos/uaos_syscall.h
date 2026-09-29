@@ -79,6 +79,20 @@
 #define UAOS_SYSCALL_GETMOUNTNAME   0x2C
 #define UAOS_SYSCALL_MEMINFO        0x2D
 #define UAOS_SYSCALL_SLEEP_MS       0x2E
+#define UAOS_SYSCALL_SEEK           0x2F
+
+/* Network / socket syscalls (must stay in sync with
+ * kernel/exec/syscall_table.h; implemented by kernel/net/usock.c) */
+#define UAOS_SYSCALL_NET_SOCKET     0x38
+#define UAOS_SYSCALL_NET_CONNECT    0x39
+#define UAOS_SYSCALL_NET_SEND       0x3A
+#define UAOS_SYSCALL_NET_RECV       0x3B
+#define UAOS_SYSCALL_NET_CLOSE      0x3C
+#define UAOS_SYSCALL_NET_RESOLVE    0x3D
+#define UAOS_SYSCALL_NET_SETOPT     0x3E
+#define UAOS_SYSCALL_NET_STATE      0x3F
+#define UAOS_SYSCALL_TIME           0x40
+#define UAOS_SYSCALL_GETRANDOM      0x41
 
 #define UAOS_SYSCALL_SCHEDULE           0xFF
 
@@ -418,6 +432,14 @@ static inline long uaos_sleep_ms(long ms)
     return uaos_syscall1(UAOS_SYSCALL_SLEEP_MS, ms);
 }
 
+/* Seek an open file descriptor to an absolute byte position.
+ * Returns the resulting position, or -1 for a bad fd. */
+static inline long uaos_seek(int fd, uint32_t pos)
+{
+    uaos_rd_invalidate(fd);
+    return uaos_syscall2(UAOS_SYSCALL_SEEK, (long)fd, (long)pos);
+}
+
 /* -------------------------------------------------------------------------
  * GUI / windowing syscall wrappers
  * ------------------------------------------------------------------------- */
@@ -527,6 +549,18 @@ static inline long uaos_gui_draw_ellipse(int handle, int cx, int cy, int rx, int
 {
     uint64_t args = UAOS_PACK_I16_4(cx, cy, rx, ry);
     return uaos_syscall3(UAOS_SYSCALL_GUI_DRAW_ELLIPSE, (long)handle, (long)args, (long)color);
+}
+
+/* Unix epoch seconds, 0 until the clock has been set (ntpd). */
+static inline long uaos_time(void)
+{
+    return uaos_syscall0(UAOS_SYSCALL_TIME);
+}
+
+/* Fill buf with len bytes of kernel entropy.  Returns byte count. */
+static inline long uaos_getrandom(void *buf, unsigned long len)
+{
+    return uaos_syscall2(UAOS_SYSCALL_GETRANDOM, (long)buf, (long)len);
 }
 
 #endif /* UAOS_SYSCALL_H */

@@ -333,6 +333,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/blanker.c" \
     "${REPO_ROOT}/kernel/display/format_win.c" \
     "${REPO_ROOT}/kernel/display/early_startup.c" \
+    "${REPO_ROOT}/kernel/display/splash.c" \
     "${REPO_ROOT}/kernel/display/uitree.c" \
     "${REPO_ROOT}/kernel/display/uiformat.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
@@ -344,6 +345,7 @@ for src in \
     "${REPO_ROOT}/kernel/irq/virtio_scsi.c" \
     "${REPO_ROOT}/kernel/drivers/virtio_net.c" \
     "${REPO_ROOT}/kernel/drivers/e1000.c" \
+    "${REPO_ROOT}/kernel/drivers/entropy.c" \
     "${REPO_ROOT}/kernel/net/eth.c" \
     "${REPO_ROOT}/kernel/net/arp.c" \
     "${REPO_ROOT}/kernel/net/ip.c" \
@@ -357,6 +359,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/stack.c" \
     "${REPO_ROOT}/kernel/net/net_device.c" \
     "${REPO_ROOT}/kernel/net/telnetd.c" \
+    "${REPO_ROOT}/kernel/net/usock.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/task.c" \
@@ -728,6 +731,23 @@ STUBEOF
 gcc ${GCC_FLAGS} -c "${BUILD_DIR}/obj/stubs.c" -o "${BUILD_DIR}/obj/stubs.o"
 ok "  Compiled:  stubs.c (symbol resolution)"
 
+# Boot splash — convert the artwork to a self-describing RGB blob and
+# wrap it as an object file (symbols _binary_splash_rgb_start/_end used
+# by kernel/display/splash.c).  A 1x1 navy placeholder keeps the link
+# working when the source image or Pillow is unavailable.
+SPLASH_SRC="${REPO_ROOT}/splash.jpg"
+SPLASH_RGB="${BUILD_DIR}/obj/splash.rgb"
+if [[ -f "${SPLASH_SRC}" ]] && \
+   python3 "${REPO_ROOT}/tools/make_splash.py" "${SPLASH_SRC}" "${SPLASH_RGB}"; then
+    ok "  Splash blob: $(du -h "${SPLASH_RGB}" | cut -f1)"
+else
+    info "  splash.jpg/Pillow unavailable — embedding 1x1 fallback"
+    printf 'SPL0\001\000\000\000\001\000\000\000\040\016\012\000\012\016\040' \
+        > "${SPLASH_RGB}"
+fi
+( cd "${BUILD_DIR}/obj" && ld -r -b binary splash.rgb -o splash_img.o )
+ok "  Wrapped:   splash_img.o"
+
 # Link into ELF64
 ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_kernel_entry.o" \
@@ -768,6 +788,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/virtio_scsi.o" \
     "${BUILD_DIR}/obj/virtio_net.o" \
     "${BUILD_DIR}/obj/e1000.o" \
+    "${BUILD_DIR}/obj/entropy.o" \
     "${BUILD_DIR}/obj/eth.o" \
     "${BUILD_DIR}/obj/arp.o" \
     "${BUILD_DIR}/obj/ip.o" \
@@ -781,6 +802,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/stack.o" \
     "${BUILD_DIR}/obj/net_device.o" \
     "${BUILD_DIR}/obj/telnetd.o" \
+    "${BUILD_DIR}/obj/usock.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/task.o" \
@@ -950,6 +972,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/blanker.o" \
     "${BUILD_DIR}/obj/format_win.o" \
     "${BUILD_DIR}/obj/early_startup.o" \
+    "${BUILD_DIR}/obj/splash.o" \
+    "${BUILD_DIR}/obj/splash_img.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
 ok "  Linked:    uaos-kernel.elf  ($(du -h "${KERNEL_ELF}" | cut -f1))"
@@ -1203,6 +1227,31 @@ if [[ -d "${GNUSRC_DIR}" ]]; then
         ok "  Compiled: uaos_start.o"
     fi
 
+    # BearSSL TLS archive — vendored subset (system/bearssl/src) compiled
+    # against the freestanding compat headers; linked only by tools that
+    # include uaos_tls.h (UAOS_TLS_TOOLS below).
+    BEARSSL_DIR="${REPO_ROOT}/system/bearssl"
+    BEARSSL_LIB="${BUILD_DIR}/libbearssl.a"
+    if [[ -d "${BEARSSL_DIR}/src" ]]; then
+        mkdir -p "${BUILD_DIR}/obj/bearssl"
+        for bsrc in "${BEARSSL_DIR}"/src/*.c "${BEARSSL_DIR}"/src/*/*.c \
+                    "${BEARSSL_DIR}/ta_roots.c"; do
+            [[ -f "${bsrc}" ]] || continue
+            gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE \
+                -mno-red-zone -fcf-protection=none \
+                -m64 -O2 -std=c11 \
+                -I"${BEARSSL_DIR}/inc" \
+                -I"${BEARSSL_DIR}/src" \
+                -I"${BEARSSL_DIR}/compat" \
+                -c "${bsrc}" \
+                -o "${BUILD_DIR}/obj/bearssl/$(basename "${bsrc}" .c).o"
+        done
+        ar rcs "${BEARSSL_LIB}" "${BUILD_DIR}"/obj/bearssl/*.o
+        ok "  Built libbearssl.a (TLS client subset)"
+    fi
+    # gnusrc tools that link BearSSL (need -I for bearssl.h + the archive)
+    UAOS_TLS_TOOLS="wget curl"
+
     gnu_count=0
     for src in "${GNUSRC_DIR}"/*.c; do
         [[ -f "${src}" ]] || continue
@@ -1210,17 +1259,27 @@ if [[ -d "${GNUSRC_DIR}" ]]; then
         elf_out="${BUILD_DIR}/userspace/gnu_${base}"
         bin_out="${GNU_STAGING}/${base}"
 
+        TLS_INC=""
+        TLS_LIB=""
+        case " ${UAOS_TLS_TOOLS} " in
+            *" ${base} "*)
+                TLS_INC="-I${BEARSSL_DIR}/inc"
+                TLS_LIB="${BEARSSL_LIB}" ;;
+        esac
+
         gcc -ffreestanding -fno-stack-protector -nostdlib -fPIE -pie -mno-red-zone \
             -fcf-protection=none \
             -m64 -O2 -std=c11 \
             -I"${REPO_ROOT}/system/libuaos" \
+            ${TLS_INC} \
             -c "${src}" -o "${BUILD_DIR}/userspace/gnu_${base}.o"
         ok "  Compiled: gnusrc/${base}.c"
 
         gcc -nostdlib -fPIE -pie -m64 -fcf-protection=none \
             -o "${elf_out}" \
             "${BUILD_DIR}/obj/uaos_start.o" \
-            "${BUILD_DIR}/userspace/gnu_${base}.o"
+            "${BUILD_DIR}/userspace/gnu_${base}.o" \
+            ${TLS_LIB}
         ok "  Linked:   gnu/${base}"
 
         "${GEN_X64}" "${base}" "${elf_out}" "${bin_out}"
@@ -1421,6 +1480,14 @@ if [[ -f "${GRUB_CFG}" ]]; then
     ok "grub.cfg installed at /boot/grub/grub.cfg"
 else
     fatal "grub.cfg not found at ${GRUB_CFG}"
+fi
+
+# GRUB menu background (grub.cfg references /boot/splash.jpg)
+if [[ -f "${REPO_ROOT}/splash.jpg" ]]; then
+    cp "${REPO_ROOT}/splash.jpg" "${ISO_STAGING}/boot/splash.jpg"
+    ok "splash.jpg installed at /boot/splash.jpg"
+else
+    warn "splash.jpg not found — GRUB menu will have no background image"
 fi
 
 # -------------------------------------------------------------------------

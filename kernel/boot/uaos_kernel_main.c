@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../display/framebuffer.h"
+#include "../display/splash.h"
 #include "../display/desktop.h"
 #include "../audio/audio.h"
 #include "../display/cursor.h"
@@ -24,6 +25,7 @@
 #include "../irq/virtio_blk.h"
 #include "../irq/virtio_scsi.h"
 #include "../drivers/virtio_net.h"
+#include "../drivers/entropy.h"
 #include "../net/stack.h"
 #include "../exec/bsdsocket_lib.h"
 #include "../display/wm.h"
@@ -495,6 +497,15 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     UAOS_MMU_Init();
     kprint("[BOOT] MMU sandbox active.\n");
 
+    /* Paint the boot splash now that the framebuffer is safely mapped */
+    Splash_Show();
+
+    entropy_init();
+    if (entropy_hw_available())
+        kprint("[BOOT] Hardware RNG available (RDRAND/RDSEED)\n");
+    else
+        kprint("[BOOT] WARNING: no hardware RNG — TSC-jitter entropy fallback\n");
+
     /* Initialise host audio subsystem */
     kprint("[BOOT] Initialising audio subsystem...\n");
     audio_init();
@@ -658,6 +669,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running Agnus slot table test...\n");
     int agnus_test = chip_emu_agnus_slot_test();
     kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
+
+    /* The chipset self-tests scribble into the framebuffer — restore the
+     * splash so it stays up through the driver/storage init phase, and
+     * hold it briefly (init is fast enough that it would only flash by). */
+    Splash_Show();
+    Splash_Dwell();
 
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");

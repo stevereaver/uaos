@@ -13,6 +13,9 @@
 #include "../irq/ps2kbd.h"
 #include "../boot/kprint.h"
 #include "../display/user_window.h"
+#include "../net/usock.h"
+#include "../net/ntp.h"
+#include "../drivers/entropy.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -758,6 +761,19 @@ static int sys_sleep_ms(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     return 0;
 }
 
+static int sys_seek(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    int fd = (int)rdi;
+    uint32_t pos = (uint32_t)rsi;
+    (void)rdx;
+
+    if (fd < 0 || fd >= MAX_FD || !g_fd_used[fd])
+        return -1;
+
+    VFS_Seek(&g_fd_table[fd], pos);
+    return (int)g_fd_table[fd].pos;
+}
+
 static int sys_readkey(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     (void)rdi; (void)rsi; (void)rdx;
@@ -850,6 +866,69 @@ static int sys_meminfo(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     out->tasks_waiting    = info.tasks_waiting;
     out->reserved         = 0;
     return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Network syscalls — thin wrappers over the blocking socket layer in
+ * kernel/net/usock.c (per-task sockets, internal net_stack_poll waits)
+ * ------------------------------------------------------------------------- */
+static int sys_net_socket(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rsi; (void)rdx;
+    return usock_socket((int)rdi);
+}
+
+static int sys_net_connect(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    return usock_connect((int)rdi, (uint32_t)rsi, (uint16_t)rdx);
+}
+
+static int sys_net_send(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    return usock_send((int)rdi, (const void *)(uintptr_t)rsi, (int)rdx);
+}
+
+static int sys_net_recv(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    return usock_recv((int)rdi, (void *)(uintptr_t)rsi, (int)rdx);
+}
+
+static int sys_net_close(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rsi; (void)rdx;
+    return usock_close((int)rdi);
+}
+
+static int sys_net_resolve(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    return usock_resolve((const char *)(uintptr_t)rdi,
+                         (uint32_t *)(uintptr_t)rsi, (uint32_t)rdx);
+}
+
+static int sys_net_setopt(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    return usock_setopt((int)rdi, (int)rsi, (uint32_t)rdx);
+}
+
+static int sys_net_state(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rsi; (void)rdx;
+    return usock_state((int)rdi);
+}
+
+/* -------------------------------------------------------------------------
+ * Time / entropy syscalls
+ * ------------------------------------------------------------------------- */
+static int64_t sys_time(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdi; (void)rsi; (void)rdx;
+    return (int64_t)ntp_get_epoch();   /* 0 until ntpd has synced */
+}
+
+static int64_t sys_getrandom(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rdx;
+    return (int64_t)entropy_fill((void *)(uintptr_t)rdi, (uint32_t)rsi);
 }
 
 /* -------------------------------------------------------------------------
@@ -1083,6 +1162,17 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_GETMOUNTNAME:   ret = sys_getmountname(rdi, rsi, rdx); break;
     case SYSCALL_MEMINFO:        ret = sys_meminfo(rdi, rsi, rdx); break;
     case SYSCALL_SLEEP_MS:       ret = sys_sleep_ms(rdi, rsi, rdx); break;
+    case SYSCALL_SEEK:           ret = sys_seek(rdi, rsi, rdx); break;
+    case SYSCALL_NET_SOCKET:     ret = sys_net_socket(rdi, rsi, rdx); break;
+    case SYSCALL_NET_CONNECT:    ret = sys_net_connect(rdi, rsi, rdx); break;
+    case SYSCALL_NET_SEND:       ret = sys_net_send(rdi, rsi, rdx); break;
+    case SYSCALL_NET_RECV:       ret = sys_net_recv(rdi, rsi, rdx); break;
+    case SYSCALL_NET_CLOSE:      ret = sys_net_close(rdi, rsi, rdx); break;
+    case SYSCALL_NET_RESOLVE:    ret = sys_net_resolve(rdi, rsi, rdx); break;
+    case SYSCALL_NET_SETOPT:     ret = sys_net_setopt(rdi, rsi, rdx); break;
+    case SYSCALL_NET_STATE:      ret = sys_net_state(rdi, rsi, rdx); break;
+    case SYSCALL_TIME:           ret = sys_time(rdi, rsi, rdx); break;
+    case SYSCALL_GETRANDOM:      ret = sys_getrandom(rdi, rsi, rdx); break;
     case SYSCALL_SCHEDULE:
     default:
         /* Reserved / legacy voluntary yield. */

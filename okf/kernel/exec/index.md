@@ -79,7 +79,7 @@ Key details:
 
 ## X64 Syscall Dispatch
 
-X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations (0x11–0x18), extended GUI drawing primitives (0x30–0x37), and the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C).
+X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations (0x11–0x18), extended GUI drawing primitives (0x30–0x37), the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C), `SYSCALL_SEEK` (0x2F — file-position seek, added for `wget -c` resume; UAOS-143), and the userspace socket block (`SYSCALL_NET_SOCKET` through `SYSCALL_NET_STATE`, 0x38–0x3F — TCP connect/send/recv/close, DNS resolve, timeouts, state; see [TCP/IP Network Stack](/kernel/net/index.md)). `SYSCALL_TIME` (0x40) returns the UTC epoch (`ntp_get_epoch()`, 0 until ntpd syncs) and `SYSCALL_GETRANDOM` (0x41) fills a buffer from `kernel/drivers/entropy.c` — added for the BearSSL TLS layer (UAOS-147).
 
 ### Timed Sleep (`SYSCALL_SLEEP_MS`, 0x2E) and Task Wake Timers
 
