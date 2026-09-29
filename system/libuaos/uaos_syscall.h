@@ -93,6 +93,7 @@
 #define UAOS_SYSCALL_NET_STATE      0x3F
 #define UAOS_SYSCALL_TIME           0x40
 #define UAOS_SYSCALL_GETRANDOM      0x41
+#define UAOS_SYSCALL_FREE           0x42
 
 #define UAOS_SYSCALL_SCHEDULE           0xFF
 
@@ -304,6 +305,17 @@ static inline long uaos_yield(void)
 static inline void *uaos_alloc(long size)
 {
     return (void *)(uintptr_t)uaos_syscall1(UAOS_SYSCALL_ALLOC, size);
+}
+
+/* Release a block returned by uaos_alloc().  Invalid and double frees
+ * are rejected kernel-side with a serial diagnostic; NULL is a no-op.
+ * Anything left allocated is reclaimed by the kernel when the task
+ * exits, so per-block free is a correctness/footprint aid, not a leak
+ * requirement. */
+static inline void uaos_free(void *ptr)
+{
+    if (ptr)
+        uaos_syscall1(UAOS_SYSCALL_FREE, (long)ptr);
 }
 
 static inline long uaos_getcwd(char *buf, long max)

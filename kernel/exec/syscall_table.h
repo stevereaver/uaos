@@ -84,6 +84,7 @@
 /* Time + entropy for userspace (TLS certificate validation / TLS PRNG) */
 #define SYSCALL_TIME           0x40   /* sys_time() -> unix epoch (0 if unset) */
 #define SYSCALL_GETRANDOM      0x41   /* sys_getrandom(buf, len) -> bytes    */
+#define SYSCALL_FREE           0x42   /* sys_free(ptr) — release heap block  */
 
 #define SYSCALL_SCHEDULE    0xFF   /* reserved: yield/reschedule         */
 

@@ -211,7 +211,15 @@ int ExecFile_Run(const char *path, const char *args)
                                          "",
                                          exec_kprint_line,
                                          NULL);
-            (void)t;
+            if (t) {
+                /* Hand the loaded image and user stack to the task so
+                 * Task_Exit reclaims them when it dies. */
+                ELF64_HeapOwn(t, (void *)(uintptr_t)result.image_base);
+                ELF64_HeapOwn(t, (void *)(uintptr_t)result.initial_rsp);
+            } else {
+                ELF64_HeapFreeRange(result.image_base, result.image_size);
+                ELF64_HeapFreeRange(result.initial_rsp, 1);
+            }
             return 0;
         }
 

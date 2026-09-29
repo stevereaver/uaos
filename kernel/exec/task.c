@@ -476,9 +476,12 @@ void Task_Exit(void)
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);
-        /* Reclaim x64 heap if this was the last live X64 task. */
+        /* Reclaim this X64 task's heap blocks individually, then reset
+         * the arena entirely if no X64 tasks remain. */
         if (g_current->type == TASK_TYPE_X64) {
+            extern void ELF64_FreeTaskBlocks(void *task);
             extern void ELF64_ReclaimHeap(void);
+            ELF64_FreeTaskBlocks(g_current);
             ELF64_ReclaimHeap();
         }
     }

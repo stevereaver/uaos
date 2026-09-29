@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "uaos_syscall.h"
 
 static inline size_t uaos_strlen(const char *s)
 {
@@ -146,6 +147,34 @@ static inline void uaos_strlcat(char *dst, const char *src, size_t max)
         i++;
     }
     dst[dst_len + i] = '\0';
+}
+
+/* -------------------------------------------------------------------------
+ * Heap allocation — libc-style names over the x64 heap syscalls.
+ * Blocks come from the kernel-managed arena in elf64_loader.c: malloc
+ * maps to SYSCALL_ALLOC and free to SYSCALL_FREE.  A task's unfreed
+ * blocks are still reclaimed at exit, so free() is about footprint and
+ * block reuse, not leak prevention.
+ * ------------------------------------------------------------------------- */
+static inline void *malloc(size_t size)
+{
+    if (size == 0)
+        size = 1;
+    return uaos_alloc((long)size);
+}
+
+static inline void *calloc(size_t nmemb, size_t size)
+{
+    size_t total = nmemb * size;
+    void *p = malloc(total);
+    if (p)
+        uaos_memset(p, 0, total);
+    return p;
+}
+
+static inline void free(void *ptr)
+{
+    uaos_free(ptr);
 }
 
 #endif /* UAOS_LIBC_H */

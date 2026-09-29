@@ -4383,9 +4383,15 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                                          (void (*)(void *, const char *))inst_print,
                                          s);
             if (!t) {
+                ELF64_HeapFreeRange(result.image_base, result.image_size);
+                ELF64_HeapFreeRange(result.initial_rsp, 1);
                 inst_print(s, "X64 binary: failed to create task");
                 return -2;
             }
+            /* Hand the loaded image and user stack to the task so
+             * Task_Exit reclaims them when it dies. */
+            ELF64_HeapOwn(t, (void *)(uintptr_t)result.image_base);
+            ELF64_HeapOwn(t, (void *)(uintptr_t)result.initial_rsp);
             /* Wait for the foreground X64 command to finish before
              * returning to the prompt, so output appears before the
              * next prompt line. When the shell is not running as a

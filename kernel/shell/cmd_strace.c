@@ -634,6 +634,7 @@ static const struct {
     {0x3C, "sys.net_close"},    {0x3D, "sys.net_resolve"},
     {0x3E, "sys.net_setopt"},   {0x3F, "sys.net_state"},
     {0x40, "sys.time"},         {0x41, "sys.getrandom"},
+    {0x42, "sys.free"},
     {0xFF, "sys.schedule"},
     {0, NULL}
 };

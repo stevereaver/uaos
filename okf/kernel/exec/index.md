@@ -29,7 +29,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `exec_ipc.c`: Message port and message passing implementation (`NewPort`, `PutMsg`, `GetMsg`, `WaitPort`, `ReplyMsg`).
 - `syscall_dispatch.c`: Handling register-based system call routing and implementation for Ring-0 userspace programs.
 - `mem_info.c` / `mem_info.h`: Kernel-exported memory query API (`Mem_GetInfo()`), backing both the resident `C:mem` command and the `SYSCALL_MEMINFO` (0x2D) syscall consumed by the on-disk `C:avail` userspace command.
-- `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries.
+- `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries, plus the x64 heap allocator — see "X64 Heap Allocator" below.
 - `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
 - `float_math.c` / `float_math.h`: Shared freestanding IEEE 754 single-precision transcendental helpers (`uaos_sinf`, `uaos_sqrtf`, `uaos_expf`, ...) used by `mathffp.library` and `mathtrans.library`.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
@@ -79,7 +79,7 @@ Key details:
 
 ## X64 Syscall Dispatch
 
-X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations (0x11–0x18), extended GUI drawing primitives (0x30–0x37), the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C), `SYSCALL_SEEK` (0x2F — file-position seek, added for `wget -c` resume; UAOS-143), and the userspace socket block (`SYSCALL_NET_SOCKET` through `SYSCALL_NET_STATE`, 0x38–0x3F — TCP connect/send/recv/close, DNS resolve, timeouts, state; see [TCP/IP Network Stack](/kernel/net/index.md)). `SYSCALL_TIME` (0x40) returns the UTC epoch (`ntp_get_epoch()`, 0 until ntpd syncs) and `SYSCALL_GETRANDOM` (0x41) fills a buffer from `kernel/drivers/entropy.c` — added for the BearSSL TLS layer (UAOS-147).
+X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_dispatch.c`). Key syscalls include `read`, `write`, `open`, `close`, `exit`, `getargs`, `spawn`, `wait`, `alloc`, `getcwd`, `opendir`, `readdir`, `stat`, GUI window operations (0x11–0x18), extended GUI drawing primitives (0x30–0x37), the filesystem metadata syscalls (`SYSCALL_MKDIR` through `SYSCALL_GETMOUNTNAME`, 0x20–0x2C), `SYSCALL_SEEK` (0x2F — file-position seek, added for `wget -c` resume; UAOS-143), and the userspace socket block (`SYSCALL_NET_SOCKET` through `SYSCALL_NET_STATE`, 0x38–0x3F — TCP connect/send/recv/close, DNS resolve, timeouts, state; see [TCP/IP Network Stack](/kernel/net/index.md)). `SYSCALL_TIME` (0x40) returns the UTC epoch (`ntp_get_epoch()`, 0 until ntpd syncs) and `SYSCALL_GETRANDOM` (0x41) fills a buffer from `kernel/drivers/entropy.c` — added for the BearSSL TLS layer (UAOS-147). `SYSCALL_FREE` (0x42) releases an x64 heap block allocated by `SYSCALL_ALLOC` — added for per-block userspace deallocation (UAOS-152).
 
 ### Timed Sleep (`SYSCALL_SLEEP_MS`, 0x2E) and Task Wake Timers
 
@@ -89,7 +89,7 @@ X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_
 
 `sys_meminfo` fills a `struct uaos_meminfo` (kernel side: `struct UaosMemInfo` in `mem_info.h`) with a point-in-time snapshot of the live memory arenas. It is a thin wrapper over the in-kernel `Mem_GetInfo()` helper in `mem_info.c`, which gathers:
 
-- **x86-64 userspace heap** — total/used/free from the ELF64 loader bump arena (`ELF64_HeapSize()` / `ELF64_HeapUsed()`). This arena backs ELF64 segment loading and `sys_alloc`; it is reclaimed only when no X64 tasks are alive (`ELF64_ReclaimHeap()`).
+- **x86-64 userspace heap** — total/used/free from the ELF64 loader arena (`ELF64_HeapSize()` / `ELF64_HeapUsed()`). This arena backs ELF64 segment loading, initial stacks, and `sys_alloc`/`sys_free`; `used` counts live allocated block bytes, so it shrinks on `free` and on task exit (per-task blocks are reclaimed by `ELF64_FreeTaskBlocks()`, and `ELF64_ReclaimHeap()` resets the whole arena once no X64 tasks remain).
 - **Emulated M68k guest RAM slots** — per-task RAM pool count from `Task_M68kSlotCount()` and the per-slot size (`GUEST_RAM_SIZE`).
 - **Scheduler task table** — total/running/waiting counts from `Task_GetCounts()`.
 
@@ -126,6 +126,19 @@ The INT 0x80 syscall gate is configured as a **trap gate** (IDT type 0xEF), not 
 ### CPU Exception Handling (ISR_Dispatch)
 
 `ISR_Dispatch` in `irq/idt.c` handles all IDT vectors. For CPU exceptions (vectors 0-31) with no registered handler, it checks whether the faulting task is an X64 userspace task. If so, the task is killed via `Task_Exit()` (printing a diagnostic message first) and the scheduler picks the next runnable task. This prevents a single buggy userspace command (e.g. a GNU coreutils binary that triggers a GPF) from locking up the entire OS. Kernel-mode exceptions still halt the system as a fatal panic.
+
+## X64 Heap Allocator
+
+The 4 MiB static arena in `elf64_loader.c` (`g_x64_heap`) backs every x86-64 userspace allocation: ELF image reservation, the initial stack, and `SYSCALL_ALLOC`. It is a boundary-tag free-list allocator (UAOS-152), replacing the original bump pointer.
+
+- **Layout**: a doubly-linked chain of blocks ordered by address. Each block's 48-byte header (`X64Blk`: `magic`, `size`, physical `prev`/`next`, `owner`, `flags`) sits immediately before its payload, so `free()` finds its header at `ptr - 48` and prev/next describe physical adjacency — neighbour coalescing is O(1).
+- **Allocation** is first-fit with splitting: a lead fragment is split for alignment (16-byte minimum; 4096 for PIE image bases), a tail fragment when the remainder can still hold a header plus 16 bytes. A lead sliver under 48 B is absorbed into the preceding used block (or orphaned at the arena base for the first block) rather than creating an invalid header-sized fragment.
+- **ET_EXEC reservation**: `x64_heap_reserve()` marks an absolute address range used — required for fixed-vaddr images — splitting around the range. It fails if the range overlaps live memory or the containing free block starts within 48 B of the image (the header would be clobbered by the segment copy).
+- **Ownership**: each used block records its owning `UaosTask *`. `sys_alloc` stamps `Task_Current()`; loader blocks start ownerless and are handed to the new task by `ELF64_HeapOwn()` after `Task_CreateX64` succeeds. `Task_Exit` frees all blocks a dying task still owns via `ELF64_FreeTaskBlocks()` — only header fields are written, so freeing the stack the exit path itself runs on is safe.
+- **Validation**: free rejects NULL (no-op), out-of-arena, bad magic, double-free (`!USED`), insane size, and inconsistent prev/next links — each rejection logs to klog (`[ELF64] free: ...`) and leaves the heap untouched.
+- **Reclamation**: `ELF64_ReclaimHeap()` still runs from `Task_Exit` and resets the arena to a single free block once no X64 task remains — now acting as a defrag/sweep for ownerless strays rather than the sole reclaim path.
+- **Accounting**: `ELF64_HeapUsed()` returns bytes held in live used blocks (`g_x64_live`), not a high-water mark — `avail`/`SYSCALL_MEMINFO` reflect real occupancy.
+- **Concurrency**: all list mutation runs under the pushfq/cli + conditional-sti critical-section idiom (same as `Memcheck_Scan`), so a PIT preemption can never observe a half-split chain.
 
 ## M68k Integration
 

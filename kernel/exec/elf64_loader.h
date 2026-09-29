@@ -130,7 +130,7 @@ typedef struct {
 typedef struct {
     uint64_t entry_rip;      /* Initial instruction pointer */
     uint64_t initial_rsp;    /* User stack pointer (argc at [rsp]) */
-    uint64_t image_base;     /* Load base used for relocations */
+    uint64_t image_base;     /* First byte of image memory in the heap */
     uint64_t image_size;     /* Bytes consumed from the x64 heap */
     int      error;          /* 0 = success, negative = error code */
 } ELF64Result;
@@ -146,16 +146,34 @@ typedef struct {
 int ELF64_Load(const uint8_t *data, uint32_t size,
                const char **argv, ELF64Result *out);
 
-/* Return the amount of heap currently in use (bytes). */
+/* Return the amount of heap held by live allocations (bytes). */
 uint32_t ELF64_HeapUsed(void);
 
 /* Return the total size of the x64 heap arena (bytes). */
 uint32_t ELF64_HeapSize(void);
 
-/* Allocate size bytes from the x64 heap with the given alignment.
- * Returns a valid kernel pointer or NULL on exhaustion.
- * The heap is a single bump arena; allocations are never freed. */
+/* Allocate size bytes from the x64 heap; the returned payload is aligned
+ * to `align` (16 minimum).  The block is owned by the calling task
+ * (Task_Current) and released by Task_Exit even if never freed.
+ * Returns a valid kernel pointer or NULL on exhaustion. */
 void *ELF64_HeapAlloc(uint32_t size, uint32_t align);
+
+/* Free a block previously returned by ELF64_HeapAlloc (or sys_alloc).
+ * NULL is a no-op; wild, foreign, and double frees are rejected with a
+ * serial diagnostic and leave the heap intact. */
+void ELF64_HeapFree(void *ptr);
+
+/* Assign ownership of the used block containing `ptr` (any address
+ * inside its span) to `owner`.  Spawn paths use this to hand the
+ * freshly loaded image and stack to the new task. */
+void ELF64_HeapOwn(void *owner, void *ptr);
+
+/* Free every used block intersecting [addr, addr+size).  Spawn-failure
+ * cleanup for loader-owned (NULL owner) image/stack blocks. */
+void ELF64_HeapFreeRange(uint64_t addr, uint64_t size);
+
+/* Free all blocks owned by `task`.  Called from Task_Exit(). */
+void ELF64_FreeTaskBlocks(void *task);
 
 /* Reclaim the x64 heap when no X64 tasks are alive.
  * Called from Task_Exit() after marking the current task REMOVED. */

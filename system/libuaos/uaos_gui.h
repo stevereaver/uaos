@@ -126,7 +126,7 @@ static inline void uaos_gui_free(uaos_gui_t *gui)
     uaos_widget_t *w = gui->widgets;
     while (w) {
         uaos_widget_t *next = w->next;
-        uaos_alloc(0); /* cannot free individually; pool is simple */
+        uaos_free(w);
         w = next;
     }
     gui->widgets = NULL;

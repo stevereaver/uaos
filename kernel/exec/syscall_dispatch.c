@@ -408,7 +408,8 @@ static int sys_spawn(uint64_t rdi, uint64_t rsi, uint64_t rdx)
         return -1;
     }
 
-    /* Load the whole file into the x64 heap using the public bump allocator. */
+    /* Load the whole file into the x64 heap; freed once the image and
+     * stack have been copied out by ELF64_Load. */
     uint8_t *data = (uint8_t *)ELF64_HeapAlloc(size, 16);
     if (!data) {
         VFS_Close(&fh);
@@ -416,13 +417,16 @@ static int sys_spawn(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     }
 
     if (VFS_Read(&fh, data, size) != size) {
+        ELF64_HeapFree(data);
         VFS_Close(&fh);
         return -1;
     }
     VFS_Close(&fh);
 
     ELF64Result res;
-    if (ELF64_Load(data, size, args, &res) != 0) {
+    int load_rc = ELF64_Load(data, size, args, &res);
+    ELF64_HeapFree(data);
+    if (load_rc != 0) {
         return -1;
     }
 
@@ -437,8 +441,16 @@ static int sys_spawn(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 
     UaosTask *child = Task_CreateX64(path, 0, res.entry_rip, res.initial_rsp,
                                      cwd, print_fn, print_ctx);
-    if (!child)
+    if (!child) {
+        ELF64_HeapFreeRange(res.image_base, res.image_size);
+        ELF64_HeapFreeRange(res.initial_rsp, 1);
         return -1;
+    }
+
+    /* Hand the loaded image and user stack to the child so Task_Exit
+     * reclaims them when it dies. */
+    ELF64_HeapOwn(child, (void *)(uintptr_t)res.image_base);
+    ELF64_HeapOwn(child, (void *)(uintptr_t)res.initial_rsp);
 
     return (int)(child - g_tasks);   /* simple task index as PID */
 }
@@ -463,6 +475,13 @@ static int sys_alloc(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 
     void *p = ELF64_HeapAlloc(size, 16);
     return (int)(intptr_t)p;
+}
+
+static int sys_free(uint64_t rdi, uint64_t rsi, uint64_t rdx)
+{
+    (void)rsi; (void)rdx;
+    ELF64_HeapFree((void *)(uintptr_t)rdi);
+    return 0;
 }
 
 static int sys_getcwd(uint64_t rdi, uint64_t rsi, uint64_t rdx)
@@ -1126,6 +1145,7 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_SPAWN:    ret = sys_spawn(rdi, rsi, rdx); break;
     case SYSCALL_WAIT:     ret = sys_wait(rdi, rsi, rdx); break;
     case SYSCALL_ALLOC:    ret = sys_alloc(rdi, rsi, rdx); break;
+    case SYSCALL_FREE:     ret = sys_free(rdi, rsi, rdx); break;
     case SYSCALL_GETCWD:   ret = sys_getcwd(rdi, rsi, rdx); break;
     case SYSCALL_OPENDIR:  ret = sys_opendir(rdi, rsi, rdx); break;
     case SYSCALL_READDIR:  ret = sys_readdir(rdi, rsi, rdx); break;
