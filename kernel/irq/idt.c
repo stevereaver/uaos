@@ -1,6 +1,7 @@
 /* idt.c — UAOS x86_64 IDT initialisation and 8259A PIC driver */
 
 #include "idt.h"
+#include "irq.h"
 #include "../exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -501,10 +502,10 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
         kprint("[PANIC] unhandled kernel exception — halting.\n");
         __asm__ volatile ("cli; hlt");
     }
-    /* Send EOI to PIC for all hardware IRQs (vectors 32-47) */
-    if (vector >= 32 && vector < 48) {
-        PIC_SendEOI((int)(vector - 32));
-    }
+    /* Send EOI — the IRQ layer knows whether the vector is owned by the
+     * PIC, the IO-APIC/LAPIC, or MSI.  In PIC mode unregistered vectors
+     * 32-47 still get a PIC EOI (legacy behaviour). */
+    IRQ_EOI((int)vector);
 }
 
 /* =========================================================================

@@ -25,7 +25,7 @@
 static const char *const k_subsys_names[KLOG_NSUBSYS] = {
     "kern", "exec", "dos", "vfs", "net", "dhcp", "dns", "ntp",
     "netdev", "e1000", "virtio", "ide", "floppy", "disp", "audio",
-    "chip", "shell", "strace",
+    "chip", "shell", "strace", "sky2", "usb",
 };
 
 static const char *const k_level_names[] = {
@@ -228,6 +228,8 @@ static void line_commit(void)
             uart_write(g_pend, g_pend_len);
             uart_putchar('\n');
         }
+        Dbgcon_Write(g_pend, g_pend_len);
+        Dbgcon_Write("\n", 1);
     }
     g_pend_on  = 0;
     g_pend_len = 0;

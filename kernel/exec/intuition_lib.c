@@ -2963,7 +2963,7 @@ static void update_desktop_title(void)
  * palette edits propagate without a re-decode.  SA_BackFill is keyed on
  * (backfill,bitmap,rastport,colormap) and only re-runs when the key moves.
  * ------------------------------------------------------------------------- */
-#define SCR_CACHE_MAX_W 1280
+#define SCR_CACHE_MAX_W 1440
 #define SCR_CACHE_MAX_H 1024
 static uint8_t  g_scr_pens[SCR_CACHE_MAX_W * SCR_CACHE_MAX_H];
 static uint32_t g_scr_cache_bm = 0;

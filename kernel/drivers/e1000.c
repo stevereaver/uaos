@@ -17,7 +17,8 @@
  */
 
 #include "e1000.h"
-#include "../irq/idt.h"    /* IDT_SetHandler, PIC_UnmaskIRQ, PIC_SendEOI */
+#include "../irq/idt.h"    /* IDT_SetHandler */
+#include "../irq/irq.h"    /* IRQ_AttachPCI, IRQ_EOI */
 #include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
@@ -199,6 +200,7 @@ static uint32_t g_bar0    = 0;   /* BAR0 base physical address (identity-mapped)
 static uint8_t  g_mac[E1000_ETH_ALEN];
 static int      g_up      = 0;
 static uint8_t  g_irq     = 0;
+static uint8_t  g_bus = 0, g_dev = 0, g_fn = 0;
 static uint16_t g_rx_tail = 0;   /* next descriptor to check for DD */
 static uint16_t g_tx_tail = 0;   /* software copy of TDT */
 static volatile uint8_t g_poll_lock = 0;
@@ -443,7 +445,7 @@ static void e1000_irq_handler(uint64_t vector, uint64_t error_code)
     uint32_t icr = mmio_r32(g_bar0, E1000_ICR); /* read clears */
     if (icr & (E1000_ICR_RXT0 | E1000_ICR_RXDMT0 | E1000_ICR_RXO))
         e1000_poll();
-    PIC_SendEOI((int)g_irq);
+    IRQ_EOI((int)vector);
 }
 
 /* -------------------------------------------------------------------------
@@ -462,6 +464,7 @@ int e1000_init(void)
 
     g_bar0 = bar0;
     g_irq  = irq;
+    g_bus  = bus; g_dev = dev; g_fn = fn;
 
     klog_puts(KLOG_E1000, KLOG_DEBUG, "bar0_base="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bar0);
     klog_puts(KLOG_E1000, KLOG_DEBUG, " irq="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
@@ -639,6 +642,5 @@ void e1000_setup_irq(void)
 {
     if (!g_up) return;
     klog_puts(KLOG_E1000, KLOG_DEBUG, "setup_irq line="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", g_irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
-    IDT_SetHandler((uint8_t)(32 + g_irq), e1000_irq_handler, "e1000");
-    PIC_UnmaskIRQ((int)g_irq);
+    IRQ_AttachPCI(g_bus, g_dev, g_fn, e1000_irq_handler, "e1000");
 }

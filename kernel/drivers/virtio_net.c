@@ -40,6 +40,7 @@
 
 #include "virtio_net.h"
 #include "../irq/idt.h"
+#include "../irq/irq.h"
 #include "../exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -914,12 +915,12 @@ static int vnet_setup_queue(uint16_t qidx,
 
 static void virtio_net_irq_handler(uint64_t vector, uint64_t error_code)
 {
-    (void)vector; (void)error_code;
+    (void)error_code;
     if (!g_up) return;
     uint8_t isr = vn_isr_read();
     if (isr & 1)
         virtio_net_poll();
-    PIC_SendEOI((int)(g_irq_line));
+    IRQ_EOI((int)vector);
 }
 
 /* -------------------------------------------------------------------------
@@ -1177,6 +1178,6 @@ void virtio_net_setup_irq(void)
     if (!g_up) return;
     _vn_ps("[VNET] setup_irq line="); _vn_ph(g_irq_line);
     _vn_ps(" iobase="); _vn_ph(g_io_base); _vn_ps("\n");
-    IDT_SetHandler((uint8_t)(32 + g_irq_line), virtio_net_irq_handler, "virtio-net");
-    PIC_UnmaskIRQ((int)g_irq_line);
+    IRQ_AttachPCI(g_pci_bus, g_pci_dev, g_pci_fn,
+                  virtio_net_irq_handler, "virtio-net");
 }

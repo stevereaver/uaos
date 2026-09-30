@@ -7,6 +7,7 @@
 
 #include "ps2kbd.h"
 #include "idt.h"
+#include "irq.h"
 #include <stdint.h>
 
 /* =========================================================================
@@ -103,6 +104,12 @@ static void kbuf_push(char c)
     }
 }
 
+/* Public hook so the USB HID driver can feed the same ring buffer. */
+void PS2Kbd_PushChar(char c)
+{
+    kbuf_push(c);
+}
+
 /* =========================================================================
  * Modifier state
  * ========================================================================= */
@@ -132,7 +139,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
     (void)vector; (void)error_code;
 
     if (!(inb(PS2_STATUS) & PS2_STAT_OBF)) {
-        PIC_SendEOI(1);
+        IRQ_EOI((int)vector);
         return;
     }
 
@@ -140,7 +147,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
 
     /* 0xE0 extended prefix — handle Page Up/Down for scrollback */
     static int extended = 0;
-    if (sc == 0xE0) { extended = 1; PIC_SendEOI(1); return; }
+    if (sc == 0xE0) { extended = 1; IRQ_EOI((int)vector); return; }
 
     int is_break = (sc & 0x80) != 0;
     uint8_t key  = sc & 0x7F;
@@ -150,12 +157,12 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
         /* Left Super/Windows key → LAmiga (E0 5B make / E0 DB break) */
         if (key == 0x5B) {
             g_kbd_mods.super_left = !is_break;
-            PIC_SendEOI(1); return;
+            IRQ_EOI((int)vector); return;
         }
         /* Right Super/Windows key → RAmiga (E0 5C make / E0 DC break) */
         if (key == 0x5C) {
             g_kbd_mods.super_right = !is_break;
-            PIC_SendEOI(1); return;
+            IRQ_EOI((int)vector); return;
         }
         if (!is_break) {
             if (key == 0x49) { kbuf_push(KBD_VKEY_PGUP);  } /* Page Up   */
@@ -165,31 +172,31 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             if (key == 0x4B) { kbuf_push(KBD_VKEY_LEFT);  } /* Left arrow*/
             if (key == 0x4D) { kbuf_push(KBD_VKEY_RIGHT); } /* Right arrow*/
         }
-        PIC_SendEOI(1); return;
+        IRQ_EOI((int)vector); return;
     }
 
     /* Update modifiers on both make and break */
     if (key == 0x2A || key == 0x36) { /* L/R Shift */
         g_kbd_mods.shift = !is_break;
-        PIC_SendEOI(1); return;
+        IRQ_EOI((int)vector); return;
     }
     if (key == 0x1D) { /* Ctrl */
         g_kbd_mods.ctrl = !is_break;
-        PIC_SendEOI(1); return;
+        IRQ_EOI((int)vector); return;
     }
     if (key == 0x38) { /* Alt */
         g_kbd_mods.alt = !is_break;
-        PIC_SendEOI(1); return;
+        IRQ_EOI((int)vector); return;
     }
     if (key == 0x3A && !is_break) { /* Caps Lock toggle */
         g_kbd_mods.caps_lock ^= 1;
-        PIC_SendEOI(1); return;
+        IRQ_EOI((int)vector); return;
     }
 
     /* Only process make codes past this point */
-    if (is_break) { PIC_SendEOI(1); return; }
+    if (is_break) { IRQ_EOI((int)vector); return; }
 
-    if (key >= 89) { PIC_SendEOI(1); return; }
+    if (key >= 89) { IRQ_EOI((int)vector); return; }
 
     int use_shift = g_kbd_mods.shift;
     /* Caps lock inverts shift for alpha keys only */
@@ -214,7 +221,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
             if (upper >= 'A' && upper <= 'Z') {
                 kbuf_push((char)(0x80 | (unsigned char)upper));
-                PIC_SendEOI(1); return;
+                IRQ_EOI((int)vector); return;
             }
         }
         if (g_kbd_mods.super_left) {
@@ -222,16 +229,16 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             char upper = ascii;
             if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
             switch (upper) {
-                case 'V': kbuf_push(AMIGA_LV); PIC_SendEOI(1); return;
-                case 'B': kbuf_push(AMIGA_LB); PIC_SendEOI(1); return;
-                case 'M': kbuf_push(AMIGA_LM); PIC_SendEOI(1); return;
-                case 'N': kbuf_push(AMIGA_LN); PIC_SendEOI(1); return;
+                case 'V': kbuf_push(AMIGA_LV); IRQ_EOI((int)vector); return;
+                case 'B': kbuf_push(AMIGA_LB); IRQ_EOI((int)vector); return;
+                case 'M': kbuf_push(AMIGA_LM); IRQ_EOI((int)vector); return;
+                case 'N': kbuf_push(AMIGA_LN); IRQ_EOI((int)vector); return;
             }
         }
         kbuf_push(ascii);
     }
 
-    PIC_SendEOI(1);
+    IRQ_EOI((int)vector);
 }
 
 /* =========================================================================

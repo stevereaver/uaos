@@ -26,6 +26,7 @@
 #include "../dos/dma.h"
 #include "../boot/kprint.h"
 #include "idt.h"
+#include "irq.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -1434,12 +1435,12 @@ static const BlockDevOps vio_scsi_ops = {
  * ========================================================================= */
 
 static void vio_scsi_irq_handler(uint64_t vector, uint64_t error_code) {
-    (void)vector; (void)error_code;
+    (void)error_code;
     if (!g_active) return;
     uint8_t isr = vio_isr_read();
     if (isr & 1)
         g_irq_pending = 1;
-    PIC_SendEOI(g_irq_line);
+    IRQ_EOI((int)vector);
 }
 
 /* =========================================================================
@@ -1697,14 +1698,13 @@ int virtio_scsi_init(void) {
 
 void virtio_scsi_setup_irq(void) {
     if (!g_active) return;
-    if (g_irq_line >= 0 && g_irq_line < 16) {
-        uint8_t vector = (uint8_t)(32 + g_irq_line);
-        IDT_SetHandler(vector, vio_scsi_irq_handler, "virtio-scsi");
-        PIC_UnmaskIRQ(g_irq_line);
-        kprint("[VIO-SCSI] IRQ handler registered for IRQ ");
-        kprinthex((uint64_t)g_irq_line); kprint("\n");
+    int vec = IRQ_AttachPCI(g_pci_bus, g_pci_dev, g_pci_fn,
+                            vio_scsi_irq_handler, "virtio-scsi");
+    if (vec >= 0) {
+        kprint("[VIO-SCSI] IRQ handler registered, vector ");
+        kprinthex((uint64_t)vec); kprint("\n");
     } else {
-        kprint("[VIO-SCSI] Invalid IRQ line, using polling only\n");
+        kprint("[VIO-SCSI] IRQ not routed, using polling only\n");
     }
 }
 

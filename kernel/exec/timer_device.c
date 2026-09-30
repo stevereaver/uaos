@@ -185,6 +185,12 @@ void timer_ProcessTicks(void)
     floppy_tick();
     audio_tick();
     chip_emu_poll_ps2_keyboard();
+    /* USB interrupt-transfer completion scan — plain memory reads on the
+     * TD chain, safe at 100 Hz and complements the INTx IRQ path. */
+    {
+        extern void USB_Poll(void);
+        USB_Poll();
+    }
     chip_emu_serial_poll();
 
     /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */

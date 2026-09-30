@@ -20,6 +20,7 @@
 #include "net_device.h"
 #include "../drivers/virtio_net.h"
 #include "../drivers/e1000.h"
+#include "../drivers/sky2.h"
 #include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
@@ -241,11 +242,63 @@ void netdev_register_e1000(void)
 }
 
 /* -------------------------------------------------------------------------
+ * sky2 adapter — Marvell Yukon-2 (MacBookPro4,1 Ethernet)
+ * ------------------------------------------------------------------------- */
+
+static int sk_init(NetDevice *dev)
+{
+    (void)dev;
+    return sky2_init();
+}
+
+static void sk_get_mac(NetDevice *dev, uint8_t *buf)
+{
+    (void)dev;
+    sky2_get_mac(buf);
+}
+
+static int sk_send(NetDevice *dev, const uint8_t *data, uint16_t len)
+{
+    (void)dev;
+    return sky2_send(data, len);
+}
+
+static void sk_poll(NetDevice *dev)
+{
+    (void)dev;
+    sky2_poll();
+}
+
+static void sk_set_rx_callback(NetDevice *dev, netdev_rx_fn cb)
+{
+    (void)dev;
+    sky2_set_rx_callback((sky2_rx_cb)cb);
+}
+
+static void sk_setup_irq(NetDevice *dev)
+{
+    (void)dev;
+    sky2_setup_irq();
+}
+
+static NetDevice g_sky2_device = {
+    .name            = "sky2",
+    .init            = sk_init,
+    .get_mac         = sk_get_mac,
+    .send            = sk_send,
+    .poll            = sk_poll,
+    .set_rx_callback = sk_set_rx_callback,
+    .setup_irq       = sk_setup_irq,
+    .priv            = 0,
+};
+
+/* -------------------------------------------------------------------------
  * netdev_probe() — try all known drivers, register the first found.
  *
  * Priority order:
- *   1. e1000  — Intel PRO/1000 (VirtualBox, QEMU -device e1000)
- *   2. virtio-net — QEMU -device virtio-net-pci (default QEMU)
+ *   1. sky2   — Marvell Yukon-2 (MacBookPro4,1 real hardware)
+ *   2. e1000  — Intel PRO/1000 (VirtualBox, QEMU -device e1000)
+ *   3. virtio-net — QEMU -device virtio-net-pci (default QEMU)
  *
  * The actual hardware detection happens inside each driver's init(), so
  * we register the candidate and then let netdev_init() call init().
@@ -257,8 +310,16 @@ void netdev_register_e1000(void)
  */
 void netdev_probe(void)
 {
-    /* Try e1000 first. */
-    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "probing e1000...\n");
+    /* Try sky2 (Marvell Yukon-2) first — real hardware. */
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "probing sky2...\n");
+    netdev_register(&g_sky2_device);
+    if (netdev_init()) {
+        klog_puts(KLOG_NETDEV, KLOG_DEBUG, "sky2 selected\n");
+        return;
+    }
+
+    /* Try e1000 next. */
+    klog_puts(KLOG_NETDEV, KLOG_DEBUG, "sky2 not found, probing e1000...\n");
     netdev_register(&g_e1000_device);
     if (netdev_init()) {
         klog_puts(KLOG_NETDEV, KLOG_DEBUG, "e1000 selected\n");

@@ -310,6 +310,8 @@ for src in \
     "${KERNEL_MAIN}" \
     "${REPO_ROOT}/kernel/klog/uart.c" \
     "${REPO_ROOT}/kernel/klog/klog.c" \
+    "${REPO_ROOT}/kernel/klog/dbgcon.c" \
+    "${REPO_ROOT}/kernel/boot/mb2mod.c" \
     "${REPO_ROOT}/kernel/display/framebuffer.c" \
     "${REPO_ROOT}/kernel/display/gadgets.c" \
     "${REPO_ROOT}/kernel/display/uibind.c" \
@@ -337,6 +339,9 @@ for src in \
     "${REPO_ROOT}/kernel/display/uitree.c" \
     "${REPO_ROOT}/kernel/display/uiformat.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
+    "${REPO_ROOT}/kernel/irq/acpi.c" \
+    "${REPO_ROOT}/kernel/irq/ioapic.c" \
+    "${REPO_ROOT}/kernel/irq/irq.c" \
     "${REPO_ROOT}/kernel/irq/ps2mouse.c" \
     "${REPO_ROOT}/kernel/irq/ps2kbd.c" \
     "${REPO_ROOT}/kernel/irq/vmmouse.c" \
@@ -345,6 +350,12 @@ for src in \
     "${REPO_ROOT}/kernel/irq/virtio_scsi.c" \
     "${REPO_ROOT}/kernel/drivers/virtio_net.c" \
     "${REPO_ROOT}/kernel/drivers/e1000.c" \
+    "${REPO_ROOT}/kernel/drivers/ahci.c" \
+    "${REPO_ROOT}/kernel/drivers/sky2.c" \
+    "${REPO_ROOT}/kernel/drivers/usb.c" \
+    "${REPO_ROOT}/kernel/drivers/uhci.c" \
+    "${REPO_ROOT}/kernel/drivers/usbhid.c" \
+    "${REPO_ROOT}/kernel/drivers/bcm5974.c" \
     "${REPO_ROOT}/kernel/drivers/entropy.c" \
     "${REPO_ROOT}/kernel/net/eth.c" \
     "${REPO_ROOT}/kernel/net/arp.c" \
@@ -756,6 +767,8 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_kernel_main.o" \
     "${BUILD_DIR}/obj/uart.o" \
     "${BUILD_DIR}/obj/klog.o" \
+    "${BUILD_DIR}/obj/dbgcon.o" \
+    "${BUILD_DIR}/obj/mb2mod.o" \
     "${BUILD_DIR}/obj/framebuffer.o" \
     "${BUILD_DIR}/obj/gadgets.o" \
     "${BUILD_DIR}/obj/uitree.o" \
@@ -780,6 +793,9 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uaos_emu_registry.o" \
     ${BIN_OBJ_LIST} \
     "${BUILD_DIR}/obj/idt.o" \
+    "${BUILD_DIR}/obj/acpi.o" \
+    "${BUILD_DIR}/obj/ioapic.o" \
+    "${BUILD_DIR}/obj/irq.o" \
     "${BUILD_DIR}/obj/ps2mouse.o" \
     "${BUILD_DIR}/obj/ps2kbd.o" \
     "${BUILD_DIR}/obj/vmmouse.o" \
@@ -788,6 +804,12 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/virtio_scsi.o" \
     "${BUILD_DIR}/obj/virtio_net.o" \
     "${BUILD_DIR}/obj/e1000.o" \
+    "${BUILD_DIR}/obj/ahci.o" \
+    "${BUILD_DIR}/obj/sky2.o" \
+    "${BUILD_DIR}/obj/usb.o" \
+    "${BUILD_DIR}/obj/uhci.o" \
+    "${BUILD_DIR}/obj/usbhid.o" \
+    "${BUILD_DIR}/obj/bcm5974.o" \
     "${BUILD_DIR}/obj/entropy.o" \
     "${BUILD_DIR}/obj/eth.o" \
     "${BUILD_DIR}/obj/arp.o" \
@@ -1517,14 +1539,7 @@ ok "Kernel installed at /boot/uaos-kernel.bin ($(du -h "${ISO_STAGING}/boot/uaos
 # Step 6 — Create mock sysroot image for multiboot2 module2 validation
 # -------------------------------------------------------------------------
 
-info "Step 6: Creating mock sysroot image module"
-
-dd if=/dev/zero                         \
-   of="${ISO_STAGING}/boot/uaos-sysroot.img" \
-   bs=512 count=2048                    \
-   status=none
-
-ok "Mock sysroot image created (1 MB placeholder)"
+info "Step 6: Sysroot image (deferred — built after SYS_ROOT is populated)"
 
 # -------------------------------------------------------------------------
 # Step 7 — Copy system files to dynamic sys-root
@@ -1641,6 +1656,41 @@ if [[ -d "${SYSTEM_DIR}" ]]; then
 fi
 
 ok "Dynamic sys-root populated from system files"
+
+# -------------------------------------------------------------------------
+# Step 7b — Pack SYS_ROOT into the uaos-sysroot multiboot module
+#
+# GRUB loads this ISO 9660 image into RAM via `module2`; the kernel
+# mounts Workbench: from it directly.  This makes the root filesystem
+# available even when the boot medium itself is unreadable by the
+# kernel (e.g. USB-booted MacBookPro4,1 — no EHCI/mass-storage yet).
+# -------------------------------------------------------------------------
+
+info "Step 7b: Building sysroot ISO9660 module image"
+
+XORRISO_CMD=""
+for c in xorriso genisoimage mkisofs; do
+    if command -v "$c" &>/dev/null; then XORRISO_CMD="$c"; break; fi
+done
+[[ -n "${XORRISO_CMD}" ]] || fatal "xorriso/genisoimage/mkisofs not found"
+
+if [[ "${XORRISO_CMD}" == "xorriso" ]]; then
+    xorriso -as mkisofs \
+        -o "${ISO_STAGING}/boot/uaos-sysroot.img" \
+        -V "UAOS_SYSROOT" -r -J -iso-level 3 \
+        -graft-points \
+        "SYS_ROOT=${ISO_STAGING}/SYS_ROOT" \
+        || fatal "sysroot image build failed"
+else
+    "${XORRISO_CMD}" \
+        -o "${ISO_STAGING}/boot/uaos-sysroot.img" \
+        -V "UAOS_SYSROOT" -r -J -iso-level 3 \
+        -graft-points \
+        "SYS_ROOT=${ISO_STAGING}/SYS_ROOT" \
+        || fatal "sysroot image build failed"
+fi
+
+ok "Sysroot module image: $(du -h "${ISO_STAGING}/boot/uaos-sysroot.img" | cut -f1)"
 
 # -------------------------------------------------------------------------
 # Step 8 — Validate staging directory structure

@@ -64,6 +64,8 @@ enum {
     KLOG_CHIP,       /* AGA/ECS chipset emulator */
     KLOG_SHELL,
     KLOG_STRACE,
+    KLOG_SKY2,       /* Marvell Yukon-2 NIC driver */
+    KLOG_USB,        /* USB core + host controllers + HID */
     KLOG_NSUBSYS
 };
 
@@ -100,6 +102,16 @@ void klog_commit(void);   /* flush a partial pending line, if any */
  * keeping kprint's VGA+UART behaviour unchanged. */
 void klog_raw_feed(int subsys, int level, const char *s);
 void klog_raw_feedn(int subsys, int level, const char *s, size_t len);
+
+/* -------------------------------------------------------------------------
+ * Framebuffer debug console (dbgcon.c) — for machines with no serial port.
+ * Enabled when the kernel command line contains "fbcon"; committed klog
+ * lines are then rendered directly into the framebuffer.
+ * ------------------------------------------------------------------------- */
+void Dbgcon_Init(uint32_t mb2_info_phys);
+int  Dbgcon_Enabled(void);
+void Dbgcon_VramReady(void);   /* call once the 4GB map covers the FB BAR */
+void Dbgcon_Write(const char *s, uint32_t len);
 
 /* -------------------------------------------------------------------------
  * Subsystem / level tables (for the C:klog and C:dmesg commands)

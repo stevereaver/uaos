@@ -9,6 +9,7 @@
 
 #include "ps2mouse.h"
 #include "idt.h"
+#include "irq.h"
 #include "../display/cursor.h"
 #include <stdint.h>
 
@@ -187,7 +188,7 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
 
     /* No data ready — spurious IRQ */
     if (!(status & PS2_STAT_OBF)) {
-        PIC_SendEOI(12);
+        IRQ_EOI((int)vector);
         return;
     }
     /* IRQ12 is wired exclusively to the aux (mouse) port by the 8259A,
@@ -198,14 +199,14 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
     /* Sync: first byte must have bit 3 set (always 1 in standard packets).
      * If out of sync, reset and try to re-sync on this byte. */
     if (pkt_idx == 0 && !(data & 0x08)) {
-        PIC_SendEOI(12);
+        IRQ_EOI((int)vector);
         return;
     }
 
     pkt[pkt_idx++] = data;
 
     if (pkt_idx < 3) {
-        PIC_SendEOI(12);
+        IRQ_EOI((int)vector);
         return;
     }
     pkt_idx = 0;
@@ -215,7 +216,7 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
 
     /* Overflow bits — discard packet if set */
     if ((flags & 0x40) || (flags & 0x80)) {
-        PIC_SendEOI(12);
+        IRQ_EOI((int)vector);
         return;
     }
 
@@ -264,5 +265,5 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
 
     Cursor_Move(new_x, new_y);
 
-    PIC_SendEOI(12);
+    IRQ_EOI((int)vector);
 }

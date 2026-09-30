@@ -18,6 +18,10 @@ char PS2Kbd_GetChar(void);
 /* Returns 1 if there is a character waiting in the buffer */
 int PS2Kbd_HasChar(void);
 
+/* Push a translated ASCII/virtual-key byte into the ring buffer.
+ * Used by the USB HID keyboard driver so both paths share the queue. */
+void PS2Kbd_PushChar(char c);
+
 /* Modifier state */
 typedef struct {
     int shift;

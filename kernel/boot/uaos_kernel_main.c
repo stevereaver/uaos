@@ -18,6 +18,7 @@
 #include "../display/shell_win.h"
 #include "../display/user_window.h"
 #include "../irq/idt.h"
+#include "../irq/irq.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
 #include "../irq/vmmouse.h"
@@ -41,6 +42,7 @@
 #include "chipset/floppy.h"
 #include "chipset/chip_emu.h"
 #include "klog/klog.h"
+#include "mb2mod.h"
 #include "uaos_emu.h"
 
 /* -----------------------------------------------------------------------
@@ -467,6 +469,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprinthex((uint64_t)mb2_info_phys);
     kprint("\n");
 
+    /* Framebuffer debug console — "fbcon" on the kernel cmdline renders
+     * committed klog lines straight into the framebuffer.  For machines
+     * without a serial port (MacBookPro4,1). */
+    Dbgcon_Init(mb2_info_phys);
+
     /* Initialise framebuffer from Multiboot2 info */
     kprint("[BOOT] Initialising framebuffer...\n");
     FB_Init(mb2_info_phys);
@@ -496,6 +503,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Initialising MMU sandbox...\n");
     UAOS_MMU_Init();
     kprint("[BOOT] MMU sandbox active.\n");
+    Dbgcon_VramReady();              /* 4 GB map covers the FB BAR now */
 
     /* Paint the boot splash now that the framebuffer is safely mapped */
     Splash_Show();
@@ -708,8 +716,66 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     IDE_Init();
     IDE_RegisterBlockDevs();
 
+    /* Initialise AHCI (SATA) host controller — real-hardware disks.
+     * Note: this runs before IRQ_Init/IDT_Init, so it is pure polling;
+     * the interrupt attach happens later in AHCI_SetupIRQ(). */
+    kprint("[BOOT] Scanning for AHCI SATA controller...\n");
+    {
+        extern int AHCI_Init(void);
+        int nahci = AHCI_Init();
+        if (nahci > 0) {
+            for (int i = 0; i < nahci && i < 8; i++) {
+                char an[12];
+                an[0]='a';an[1]='h';an[2]='c';an[3]='i';
+                an[4]=(char)('0'+i);an[5]='\0';
+                BlockDev *d = BlockDev_Find(an);
+                if (d) boot_automount_partitions(d);
+            }
+        } else {
+            kprint("[BOOT] No AHCI controller found.\n");
+        }
+    }
+
+    /* USB host controllers + device enumeration.  Control transfers are
+     * polled so this works before IRQ_Init; INTx IRQs are attached later
+     * in UHCI_SetupIRQ() and USB_Poll() also runs from the PIT tick. */
+    kprint("[BOOT] Scanning for USB host controllers...\n");
+    {
+        extern int  UHCI_Init(void);
+        extern void USBHID_Init(void);
+        extern void BCM5974_Init(void);
+        extern int  USB_Init(void);
+        int nuhci = UHCI_Init();
+        if (nuhci > 0) {
+            BCM5974_Init();         /* Apple trackpad claims tp/bt ifs first */
+            USBHID_Init();          /* register HID class driver */
+            int ndev = USB_Init();  /* enumerate all HC ports */
+            if (ndev == 0)
+                kprint("[BOOT] No USB devices found.\n");
+        } else {
+            kprint("[BOOT] No USB host controllers found.\n");
+        }
+    }
+
+    /* Mount Workbench: from the multiboot sysroot module first — GRUB
+     * loads it into RAM on every boot medium, so this works even when
+     * the boot device itself is unreadable (USB stick on the MacBook
+     * needs EHCI + mass-storage we don't have yet). */
+    {
+        BlockDev *sr = Mb2Mod_RegisterSysroot(mb2_info_phys);
+        if (sr) {
+            kprint("[BOOT] Mounting ISO 9660 from sysroot module (RAM)...\n");
+            if (ISO9660_MountCD(sr, "Workbench") == 0) {
+                kprint("[BOOT] Workbench: mounted from sysroot module.\n");
+            } else {
+                kprint("[BOOT] Sysroot module ISO mount failed.\n");
+            }
+        }
+    }
+
     /* Scan for ATAPI CD-ROMs and mount ISO 9660 volumes */
     kprint("[BOOT] Scanning for ATAPI CD-ROMs...\n");
+    if (!VFS_FindVol("Workbench"))
     /* Probe both fixed IDE channels (primary + secondary).  IDE_GetChannelCount()
      * returns the number of *populated* channels, which is NOT a valid index
      * bound — e.g. an empty primary + a CD on the secondary yields a count of 1
@@ -798,6 +864,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     GDT_InitTSS();
     kprint("[BOOT] Initialising PIC...\n");
     PIC_Init();
+    /* LAPIC must be up before the IRQ layer selects IO-APIC mode */
+    APIC_Init();
+    kprint("[BOOT] Initialising IRQ routing (ACPI/IO-APIC)...\n");
+    IRQ_Init(mb2_info_phys);
     /* PIT is programmed and unmasked later, after its handler is registered */
 
     /* Register the custom chip-window page fault handler (vector 14).
@@ -810,19 +880,30 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     virtio_blk_setup_irq();
     if (virtio_scsi_is_active())
         virtio_scsi_setup_irq();
+    {
+        extern void AHCI_SetupIRQ(void);
+        AHCI_SetupIRQ();
+    }
+    {
+        extern void UHCI_SetupIRQs(void);
+        UHCI_SetupIRQs();
+    }
 
     /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
      * kernel timing (network poll pacing, yield_ms, ntp guards) and must
      * tick regardless of whether a framebuffer is present. */
     kprint("[BOOT] Programming PIT (100 Hz)...\n");
-    IDT_SetHandler(32, PIT_IRQHandler, "PIT timer");
+    {
+        int vec = IRQ_AttachISA(0, PIT_IRQHandler, "PIT timer");
+        if (vec < 0)
+            kprint("[BOOT] WARNING: PIT IRQ0 not routed\n");
+    }
     {
         uint16_t divisor = (uint16_t)(1193180UL / 100UL);
         outb(0x43, 0x36);
         outb(0x40, (uint8_t)(divisor & 0xFF));
         outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
     }
-    PIC_UnmaskIRQ(0);
     kprint("[BOOT] PIT active.\n");
 
     /* Initialise PS/2 mouse/keyboard and RTC only when a display is present */
@@ -831,28 +912,22 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         g_fb_height_irq = g_fb.height;
 
         kprint("[BOOT] Initialising PS/2 mouse...\n");
-        IDT_SetHandler(44, PS2Mouse_IRQHandler, "PS/2 mouse");
+        IRQ_AttachISA(12, PS2Mouse_IRQHandler, "PS/2 mouse");
         PS2Mouse_Init();
-        PIC_UnmaskIRQ(12);
         Cursor_Init(g_mouse.x, g_mouse.y);
         kprint("[BOOT] PS/2 mouse active.\n");
 
         kprint("[BOOT] Initialising PS/2 keyboard...\n");
-        IDT_SetHandler(33, PS2Kbd_IRQHandler, "PS/2 keyboard");
+        IRQ_AttachISA(1, PS2Kbd_IRQHandler, "PS/2 keyboard");
         PS2Kbd_Init();
-        PIC_UnmaskIRQ(1);
         kprint("[BOOT] PS/2 keyboard active.\n");
 
         kprint("[BOOT] Initialising RTC clock...\n");
-        IDT_SetHandler(40, RTC_IRQHandler, "RTC");  /* IRQ8 = vector 40 */
+        IRQ_AttachISA(8, RTC_IRQHandler, "RTC");
         RTC_Init();
-        PIC_UnmaskIRQ(8);
         Desktop_UpdateClock();               /* initial draw from CMOS */
         kprint("[BOOT] RTC active.\n");
     }
-
-    /* Initialise local APIC so q35 forwards 8259A PIC interrupts */
-    APIC_Init();
 
     kprint("[BOOT] Detecting vmmouse...\n");
     VMMouse_Init();

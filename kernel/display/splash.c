@@ -29,8 +29,8 @@ extern const uint8_t _binary_splash_rgb_end[];
 #define SPLASH_HDR    16
 #define SPLASH_MAX_DIM 4096
 
-/* Row conversion buffer — g_fb.width is clamped to BB_MAX_W (1280). */
-static uint32_t s_row[1280];
+/* Row conversion buffer — g_fb.width is clamped to BB_MAX_W (1440). */
+static uint32_t s_row[1440];
 
 static uint32_t rd32(const uint8_t *p)
 {

@@ -15,6 +15,7 @@
 #include "../dos/dma.h"
 #include "../boot/kprint.h"
 #include "idt.h"
+#include "irq.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -793,19 +794,18 @@ void virtio_blk_setup_irq(void)
 
     for (int i = 0; i < g_ndevs; i++) {
         vblk_dev_t *d = &g_devs[i];
-        if (d->irq_line >= 0 && d->irq_line < 16) {
-            uint8_t vector = 32 + d->irq_line;
-            IDT_SetHandler(vector, virtio_irq_handler, "virtio-blk");
-            PIC_UnmaskIRQ(d->irq_line);
+        int vec = IRQ_AttachPCI(d->pci_bus, d->pci_dev, d->pci_func,
+                                virtio_irq_handler, "virtio-blk");
+        if (vec >= 0) {
             kprint("[VIRTIO] Interrupt handler registered for ");
             kprint(d->name);
-            kprint(" IRQ ");
-            kprinthex(d->irq_line);
+            kprint(" vector ");
+            kprinthex((uint64_t)vec);
             kprint("\n");
         } else {
-            kprint("[VIRTIO] Invalid IRQ line for ");
+            kprint("[VIRTIO] IRQ not routed for ");
             kprint(d->name);
-            kprint(", interrupt not registered\n");
+            kprint(", polling only\n");
         }
     }
 }

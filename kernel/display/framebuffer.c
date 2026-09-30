@@ -55,9 +55,9 @@ void WB_InitPalette(void)
 
 /* =========================================================================
  * Back buffer for flicker-free double buffering
- * Max 1280×1024 @ 32bpp = 5 MB in BSS
+ * Max 1440×1024 @ 32bpp = 5.9 MB in BSS (1440 wide for the MBP4,1 LVDS panel)
  * ========================================================================= */
-#define BB_MAX_W 1280
+#define BB_MAX_W 1440
 #define BB_MAX_H 1024
 static uint32_t g_backbuf[BB_MAX_H][BB_MAX_W];
 static int g_drawing = 0;  /* 1 = drawing to back buffer, 0 = direct */
