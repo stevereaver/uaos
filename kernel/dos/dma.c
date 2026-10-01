@@ -76,7 +76,8 @@ uint64_t DMA_VirtToPhys(void *virt_addr)
     }
 
     /* Addresses above 4GB are not identity-mapped */
-    printf("[DMA] Warning: Address 0x%llx not in identity-mapped region\n", virt);
+    printf("[DMA] Warning: Address 0x%llx not in identity-mapped region\n",
+           (unsigned long long)virt);
     return 0;
 }
 
@@ -116,7 +117,10 @@ void *DMA_Alloc(size_t size, size_t alignment)
     while (blk) {
         uint64_t base    = (uint64_t)(uintptr_t)blk;
         uint64_t payload = dma_align_up(base + DMA_HDR, alignment);
-        uint64_t need    = (payload - base) + size;   /* span incl. align pad */
+        /* Round the consumed span up to 8 so every split-off block base
+         * (and therefore every DmaBlk header and payload-8 back-offset)
+         * stays 8-aligned — block sizes are multiples of 8 from here on. */
+        uint64_t need    = dma_align_up((payload - base) + size, 8);
         if (blk->size >= need) {
             uint64_t leftover = blk->size - need;
             if (leftover >= DMA_MIN_SPLIT) {
