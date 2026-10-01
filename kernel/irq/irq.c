@@ -247,8 +247,10 @@ void IRQ_StormMask(int vector)
 /* LPC bridge (00:1f.0) registers:
  *   PIRQA-H routing : classic config 0x60-0x67 (bit7=1 -> unrouted,
  *                     bits4:0 = IRQ/GSI number)
- *   DxxIP (pin map) : extended config 0x3100 + 4*(31-dev)
- *   DxxIR (pin->PIRQ): extended config 0x3140 + 2*(31-dev)           */
+ *   DxxIP (pin map) : RCBA 0x3100 + 4*(31-dev) — uniform 32-bit stride
+ *   DxxIR (pin->PIRQ): RCBA, per-device table — NOT uniform: D27IR ends
+ *                     at 0x3148 and D26IR resumes at 0x314C (0x314A/0x314E
+ *                     are holes), per ICH8 datasheet 7.1.59-65          */
 
 static int ich_dip_off(uint8_t dev)
 {
@@ -257,8 +259,20 @@ static int ich_dip_off(uint8_t dev)
 }
 static int ich_dir_off(uint8_t dev)
 {
-    if (dev >= 25 && dev <= 31) return 0x3140 + 2 * (31 - dev);
-    return -1;
+    /* A uniform 2*(31-dev) stride lands dev26 on the 0x314A hole —
+     * reads return 0 and the reprogram write goes nowhere, so both
+     * 00:1A.x UHCIs decoded as PIRQA while the silicon drove whatever
+     * the real D26IR said (UAOS-174: zero dispatches on MBP4,1). */
+    switch (dev) {
+    case 31: return 0x3140;
+    case 30: return 0x3142;
+    case 29: return 0x3144;
+    case 28: return 0x3146;
+    case 27: return 0x3148;
+    case 26: return 0x314C;
+    case 25: return 0x3150;
+    default: return -1;
+    }
 }
 
 static int lpc_is_intel_ich(void)
@@ -605,6 +619,20 @@ void IRQ_Init(uint32_t mb2_phys)
             outb(0x22, 0x70);
             outb(0x23, 0x01);
             kprint("[IRQ] IMCR -> symmetric I/O mode\n");
+        }
+        /* ICH8-class LPC: OIC (RCBA+0x31FF) bit0 = AEN enables the
+         * internal IOxAPIC and its MMIO decode — datasheet default is
+         * 0 and firmware may leave it clear under EFI.  Must run before
+         * IOAPIC_Init or the RTE writes go nowhere (datasheet requires
+         * a read-back after modifying AEN before touching the IOxAPIC
+         * range). */
+        if (lpc_is_intel_ich()) {
+            volatile uint8_t *rcba = ich_rcba();
+            if (rcba && !(rcba[0x31FF] & 0x01)) {
+                rcba[0x31FF] |= 0x01;
+                (void)rcba[0x31FF];
+                kprint("[IRQ] ich: OIC AEN set — IOxAPIC enabled\n");
+            }
         }
         IOAPIC_Init();
         kprint("[IRQ] IO-APIC mode\n");

@@ -586,8 +586,18 @@ static void uhci_scan_intr(UhciHc *h)
 
 void UHCI_Poll(void)
 {
+    /* Cadence (UAOS-174): a controller whose INTx has never dispatched
+     * needs this poll at the full 100 Hz — it is the only completion
+     * path.  Once the vector is proven live, uhci_irq_handler does the
+     * real work and the poll becomes a ~10 Hz sweep for stragglers
+     * (masked shared line, cleared USBINTR). */
+    static int ph;
+    if (++ph >= 10) ph = 0;
+    int sweep = (ph == 0);
     for (int i = 0; i < g_nhc; i++) {
         UhciHc *h = &g_hc[i];
+        if (h->irq_vec >= 0 && h->irq_hits && !sweep)
+            continue;
         uhci_scan_intr(h);
 
         if (h->irq_vec < 0) continue;
