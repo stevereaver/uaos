@@ -87,6 +87,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("debug",           Cmd_Klog           ),  /* alias */
     CMD ("dmesg",           Cmd_Dmesg          ),
     CMD ("irqstat",         Cmd_Irqstat        ),
+    CMD ("usbdiag",         Cmd_Usbdiag        ),
     CMD ("crash",           Cmd_Crash          ),
     CMD ("memcheck",        Cmd_Memcheck       ),
     CMD ("chiptrace",       Cmd_Chiptrace      ),

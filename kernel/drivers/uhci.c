@@ -148,6 +148,7 @@ typedef struct {
     UhciIntr    intr[UHCI_MAX_INTR];
     int         irq_vec;
     uint32_t    irq_hits;         /* dispatches seen on our vector */
+    uint32_t    poll_usbint;      /* USBSTS.USBINT found latched by poll */
     uint64_t    t_irq_armed;      /* tick when USBINTR was enabled */
     int         irq_dead_logged;  /* one-shot "irq silent" warning */
 } UhciHc;
@@ -615,6 +616,7 @@ void UHCI_Poll(void)
          * bit left set keeps the level line asserted forever.  Ack any
          * pending bits here the same way the IRQ handler would. */
         uint16_t st = rg16(h, U_USBSTS);
+        if (st & STS_USBINT) h->poll_usbint++;   /* C:usbdiag evidence */
         if (st) w16(h, U_USBSTS, st);
 
         /* One-shot diagnostic: ~30 s after the IRQ was armed with zero
@@ -724,8 +726,14 @@ static int uhci_controller_init(UhciHc *h, uint8_t bus, uint8_t dev, uint8_t fn)
     pci_w16(bus, dev, fn, 0x04,
             (uint16_t)(pci_r16(bus, dev, fn, 0x04) | 0x05));
 
-    /* Kill legacy BIOS/SMM emulation traps */
+    /* Kill legacy BIOS/SMM emulation traps (0x8F00 = W1C status bits),
+     * then set only bit 13 PIRQ enable.  Without it the HC's interrupt
+     * never reaches its PIRQ line: MBP4,1 read LEGSUP=0x0000 on all five
+     * UHCIs with zero dispatches (UAOS-183).  QEMU ignores the bit.
+     * Same sequence as Linux USBLEGSUP_RWC then USBLEGSUP_DEFAULT.
+     * USBINTR stays 0 until UHCI_SetupIRQs, so nothing asserts yet. */
     pci_w16(bus, dev, fn, 0xC0, 0x8F00);             /* USBLEGSUP */
+    pci_w16(bus, dev, fn, 0xC0, 0x2000);
 
     /* Global reset, then HC reset */
     w16(h, U_USBCMD, CMD_GRESET);
@@ -812,6 +820,42 @@ int UHCI_Init(void)
                 klog_puts(KLOG_USB, KLOG_DEBUG, "uhci up\n");
             }
     return found;
+}
+
+/* C:usbdiag snapshot — reads only.  PCI config goes through the shared
+ * 0xCF8/0xCFC index pair, so keep IRQs off across each access. */
+int UHCI_DiagCount(void) { return g_nhc; }
+
+int UHCI_DiagRead(int idx, UhciDiag *d)
+{
+    if (idx < 0 || idx >= g_nhc) return -1;
+    UhciHc *h = &g_hc[idx];
+    memset(d, 0, sizeof(*d));
+    d->bus = h->bus; d->dev = h->dev; d->fn = h->fn; d->io = h->io;
+    d->irq_vec = h->irq_vec;
+    d->irq_hits = h->irq_hits;
+    d->poll_usbint = h->poll_usbint;
+    d->usbcmd  = rg16(h, U_USBCMD);
+    d->usbsts  = rg16(h, U_USBSTS);
+    d->usbintr = rg16(h, U_USBINTR);
+    d->frnum   = rg16(h, U_FRNUM);
+    d->portsc[0] = rg16(h, U_PORTSC1);
+    d->portsc[1] = rg16(h, U_PORTSC2);
+    uint64_t fl = irq_save();
+    d->pci_cmd = pci_r16(h->bus, h->dev, h->fn, 0x04);
+    d->pci_sts = pci_r16(h->bus, h->dev, h->fn, 0x06);
+    uint32_t intr = pci_r32(h->bus, h->dev, h->fn, 0x3C);
+    d->legsup  = pci_r16(h->bus, h->dev, h->fn, 0xC0);
+    irq_restore(fl);
+    d->int_line = (uint8_t)intr;
+    d->int_pin  = (uint8_t)(intr >> 8);
+    for (int i = 0; i < UHCI_MAX_INTR; i++) {
+        UhciIntr *p = &h->intr[i];
+        if (!p->td) continue;
+        d->npipes++;
+        if (p->td[p->ntd - 1].status & TD_ST_IOC) d->pipes_ioc++;
+    }
+    return 0;
 }
 
 /* Called from kernel main after IRQ_Init: attach INTx for each HC. */

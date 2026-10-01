@@ -248,6 +248,7 @@ void Cmd_Strace          (NativeCmdCtx *ctx, const char *args);
 void Cmd_Klog            (NativeCmdCtx *ctx, const char *args);
 void Cmd_Dmesg           (NativeCmdCtx *ctx, const char *args);
 void Cmd_Irqstat         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Usbdiag         (NativeCmdCtx *ctx, const char *args);
 void Cmd_Crash           (NativeCmdCtx *ctx, const char *args);
 void Cmd_Memcheck        (NativeCmdCtx *ctx, const char *args);
 void Cmd_Chiptrace       (NativeCmdCtx *ctx, const char *args);

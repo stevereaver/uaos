@@ -132,6 +132,7 @@ strace -o RAM:trace.txt run <m68k binary>
 | `dmesg` | Ring buffer dump/filter/clear (above) |
 | `strace` | Call tracer (above) |
 | `irqstat` | Per-vector IRQ counters + rate sampled over 1 s; `irqstat <sec>`, `irqstat NOW` (no wait), `irqstat CLEAR`. First check when a device seems dead. |
+| `usbdiag` | Read-only UHCI interrupt-path dump: per controller HC regs (USBSTS/USBINTR, poll-path USBINT latch count, TD IOC), PCI cmd/status/USBLEGSUP (PIRQEN bit13), ICH PIRQ/DxxIR/OIC routing, IO-APIC RTE (mask/trigger/rIRR), LAPIC IRR/ISR. `usbdiag <sec>` samples every stage for 1-60 s while you use the device and prints a verdict on where the interrupt stops. Use when `irqstat` shows a USB vector at 0. |
 | `memcheck` | Mungwall-style heap debugging: `memcheck on` adds front/tail guard words to every AllocMem + free-list poisoning; `memcheck` (bare) = status + scan; `memcheck test` = deliberate overwrite self-test; `memcheck dump`; `memcheck off`. Violations report allocating/freeing task names via klog `[memchk]`. |
 | `chiptrace` | Custom-chip/CIA access tracer for the AGA/ECS emulator. `chiptrace ON|OFF`, per-class toggles `CHIP`/`CIA`/`PAULA`/`DISK`, `chiptrace PC [N]` samples the M68k PC with disassembly every N ticks, `chiptrace CLEAR`. Output → klog `[chip]`; watch with `dmesg chip`. |
 | `crash` | **Deliberate kernel #PF — kills the kernel.** Only for testing the panic dump path + `tools/symbolize.sh`. |

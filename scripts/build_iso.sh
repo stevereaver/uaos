@@ -502,6 +502,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_klog.c" \
     "${REPO_ROOT}/kernel/shell/cmd_dmesg.c" \
     "${REPO_ROOT}/kernel/shell/cmd_irqstat.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_usbdiag.c" \
     "${REPO_ROOT}/kernel/shell/cmd_crash.c" \
     "${REPO_ROOT}/kernel/shell/cmd_memcheck.c" \
     "${REPO_ROOT}/kernel/shell/cmd_chiptrace.c" \
@@ -987,6 +988,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_klog.o" \
     "${BUILD_DIR}/obj/cmd_dmesg.o" \
     "${BUILD_DIR}/obj/cmd_irqstat.o" \
+    "${BUILD_DIR}/obj/cmd_usbdiag.o" \
     "${BUILD_DIR}/obj/cmd_crash.o" \
     "${BUILD_DIR}/obj/cmd_memcheck.o" \
     "${BUILD_DIR}/obj/cmd_chiptrace.o" \
@@ -1054,7 +1056,7 @@ for cmd in version mem libs clear reboot \
            getenv unset jobs \
            install diskchange addbuffers requestchoice requestfile changetaskpri status rx \
            telnetd strace print crossdos ed guide \
-           klog debug dmesg irqstat crash memcheck chiptrace \
+           klog debug dmesg irqstat usbdiag crash memcheck chiptrace \
            runback alias unalias path skip lab resload; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"

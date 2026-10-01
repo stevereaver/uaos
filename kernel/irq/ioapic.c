@@ -6,6 +6,7 @@
 
 #include "ioapic.h"
 #include "acpi.h"
+#include "irq.h"
 #include "../boot/kprint.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -104,6 +105,25 @@ void IOAPIC_Mask(uint32_t gsi)
     uint32_t pin = gsi - a->gsi_base;
     uint32_t lo = io_r32(a->mmio_base, IOAPIC_REDTBL + 2 * pin);
     io_w32(a->mmio_base, IOAPIC_REDTBL + 2 * pin, lo | RTE_MASK);
+}
+
+/* C:usbdiag — read one RTE.  IOREGSEL/IOWIN is an index pair shared
+ * with the storm-mask path in ISR context, so read it with IRQs off. */
+int IOAPIC_ReadRTE(uint32_t gsi, uint32_t *lo, uint32_t *hi)
+{
+    const AcpiIoApic *a = ioapic_for_gsi(gsi);
+    if (!a) return -1;
+    uint32_t pin = gsi - a->gsi_base;
+    uint64_t fl = irq_save();
+    *lo = io_r32(a->mmio_base, IOAPIC_REDTBL + 2 * pin);
+    *hi = io_r32(a->mmio_base, IOAPIC_REDTBL + 2 * pin + 1);
+    irq_restore(fl);
+    return 0;
+}
+
+uint32_t LAPIC_Read(uint32_t off)
+{
+    return *(volatile uint32_t *)(uintptr_t)(ACPI_LapicBase() + off);
 }
 
 void LAPIC_EOI(void)

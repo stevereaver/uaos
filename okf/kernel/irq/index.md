@@ -19,6 +19,8 @@ The kernel sets up a 256-vector IDT in 64-bit mode.
 
 `IDT_SetHandler(vector, handler, name)` takes an optional human-readable name that is stored per-vector (`IDT_VectorName()`). Drivers pass their device name at registration (`"virtio-blk"`, `"virtio-scsi"`, `"virtio-net"`, `"e1000"`, `"PIT timer"`, `"PS/2 keyboard"`, `"PS/2 mouse"`, `"RTC"`); `C:irqstat` labels each firing vector as `IRQ<n> <name>` from this table. PCI INTx routing is dynamic (OVMF assigns lines per device order), so names must come from registration — a hardcoded vector→device table mislabels on any other layout.
 
+**Read-only diagnostics accessors (UAOS-183)**, used by `C:usbdiag`: `IRQ_DiagIch()` snapshots the ICH LPC routing (RCBA, OIC, PIRQA-H_ROUT, DxxIP/DxxIR for devices 25-31); `IOAPIC_ReadRTE(gsi, &lo, &hi)` reads one redirection entry (`RTE_BIT_RIRR` = remote IRR, `RTE_BIT_DELIVS` = delivery pending); `LAPIC_Read(off)` reads a LAPIC register (IRR at 0x200, ISR at 0x100, TPR at 0x80). PCI config and IOREGSEL/IOWIN are index/data pairs shared with ISR paths, so these accessors read with IRQs off.
+
 ## Core Hardware Drivers
 
 - **PS/2 Keyboard (`ps2kbd.c`, IRQ1)**: Handles scancode set 1 translation and provides a ring buffer for keystrokes, including extended scancodes and modifier keys. Supports Amiga key mapping: Left Super/Windows → LAmiga, Right Super/Windows → RAmiga. RAmiga+letter pushes `0x80|UPPER` for menu shortcuts. LAmiga+V/B/M/N pushes special codes (`AMIGA_LV`/`AMIGA_LB`/`AMIGA_LM`/`AMIGA_LN`) for requester Verify/Cancel and screen cycling. The idle loop in `task.c` dispatches these: LAmiga+M/N calls `UAOS_Intuition_CycleScreen()`, RAmiga+letter calls `Intuition_InvokeCommandKey()`, and LAmiga+V/B is consumed (future: routed to active requester).

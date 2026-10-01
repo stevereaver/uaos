@@ -84,4 +84,16 @@ void IRQ_Unmask(int gsi);
  * any APIC vector whose rate exceeds the storm threshold. */
 void IRQ_StormTick(void);
 
+/* C:usbdiag — ICH8/9/10 PCI INTx routing registers (read-only snapshot).
+ * dip/dir are indexed by device - 25 (devices 25..31). */
+typedef struct {
+    int      ich;           /* LPC is a supported Intel ICH */
+    uint32_t rcba;          /* 0 if unavailable */
+    uint8_t  oic;           /* RCBA+0x31FF, bit0 = IOxAPIC AEN */
+    uint8_t  pirq[8];       /* PIRQA-H_ROUT (cfg 0x60-63, 0x68-6B) */
+    uint32_t dip[7];
+    uint16_t dir[7];
+} IrqIchDiag;
+int  IRQ_DiagIch(IrqIchDiag *d);
+
 #endif

@@ -600,6 +600,30 @@ void IRQ_EOI(int vector)
     }
 }
 
+/* C:usbdiag — chipset INTx routing snapshot (reads only). */
+int IRQ_DiagIch(IrqIchDiag *d)
+{
+    for (int i = 0; i < (int)sizeof(*d); i++) ((uint8_t *)d)[i] = 0;
+    uint64_t fl = irq_save();
+    d->ich = lpc_is_intel_ich();
+    if (d->ich) {
+        for (int i = 0; i < 4; i++) {
+            d->pirq[i]     = pci_r8(0, 31, 0, (uint8_t)(0x60 + i));
+            d->pirq[4 + i] = pci_r8(0, 31, 0, (uint8_t)(0x68 + i));
+        }
+    }
+    irq_restore(fl);
+    volatile uint8_t *rcba = d->ich ? ich_rcba() : 0;
+    if (!rcba) return d->ich ? -1 : 0;
+    d->rcba = (uint32_t)(uintptr_t)rcba;
+    d->oic  = rcba[0x31FF];
+    for (int dev = 25; dev <= 31; dev++) {
+        d->dip[dev - 25] = *(volatile uint32_t *)(rcba + ich_dip_off((uint8_t)dev));
+        d->dir[dev - 25] = *(volatile uint16_t *)(rcba + ich_dir_off((uint8_t)dev));
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Init                                                                */
 /* ------------------------------------------------------------------ */

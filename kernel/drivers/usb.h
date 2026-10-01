@@ -187,6 +187,20 @@ int  UHCI_Init(void);
 void UHCI_SetupIRQs(void);
 void UHCI_Poll(void);
 
+/* Read-only register snapshot for C:usbdiag (UAOS-183). */
+typedef struct {
+    uint8_t  bus, dev, fn, int_line, int_pin;
+    uint16_t io;
+    int      irq_vec;
+    uint32_t irq_hits;      /* dispatches seen on our vector */
+    uint32_t poll_usbint;   /* times the poll path found USBSTS.USBINT latched */
+    uint16_t usbcmd, usbsts, usbintr, frnum, portsc[2];
+    uint16_t pci_cmd, pci_sts, legsup;
+    int      npipes, pipes_ioc;   /* armed intr pipes / with IOC on last TD */
+} UhciDiag;
+int  UHCI_DiagCount(void);
+int  UHCI_DiagRead(int idx, UhciDiag *d);
+
 /* Synchronous standard request helper. */
 int  usb_ctrl(UsbDev *dev, uint8_t bmRequestType, uint8_t bRequest,
               uint16_t wValue, uint16_t wIndex, void *data, uint16_t len);

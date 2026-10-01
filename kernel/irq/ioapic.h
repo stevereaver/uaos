@@ -25,4 +25,10 @@ void IOAPIC_Mask(uint32_t gsi);
 /* Local APIC end-of-interrupt (IO-APIC and MSI interrupts). */
 void LAPIC_EOI(void);
 
+/* C:usbdiag diagnostics (read-only) */
+#define RTE_BIT_DELIVS   (1u << 12)   /* delivery status: send pending */
+#define RTE_BIT_RIRR     (1u << 14)   /* remote IRR: level IRQ awaiting EOI */
+int      IOAPIC_ReadRTE(uint32_t gsi, uint32_t *lo, uint32_t *hi);
+uint32_t LAPIC_Read(uint32_t off);
+
 #endif
