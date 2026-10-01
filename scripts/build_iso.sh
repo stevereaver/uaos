@@ -534,18 +534,14 @@ do
     ok "  Compiled:  ${src##*/}"
 done
 
-# Provide stub implementations for chip_emu_read/write and aligned_alloc
-# so the freestanding link resolves all symbols for this validation build.
+# Provide stub implementations for symbols the freestanding link cannot
+# otherwise resolve (printf-family used by Musashi, framebuffer globals).
 cat > "${BUILD_DIR}/obj/stubs.c" <<'STUBEOF'
 #include <stdint.h>
 
 /* Screen size for PS/2 mouse clamp — populated by kernel before PS2Mouse_Init */
 unsigned int g_fb_width_irq  = 1024;
 unsigned int g_fb_height_irq = 768;
-
-/* Memory allocation stubs */
-void *aligned_alloc(unsigned long a, unsigned long s)  { (void)a;(void)s; return (void*)0; }
-void  free(void *p)                                    { (void)p; }
 
 /* vfprintf / fprintf / printf / sprintf / sscanf / exit stubs for Musashi */
 typedef __builtin_va_list va_list;

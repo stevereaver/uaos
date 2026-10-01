@@ -41,8 +41,14 @@ extern void UAOS_Glue_SetRamBase(uint8_t *base);
 /* rom_modules.c */
 extern void UAOS_ROM_RegisterAll(void);
 
-/* mmu_sandbox.c */
-extern void UAOS_MMU_Init(void);
+/* mmu_sandbox.c — demand-paged VA window used as the guest RAM.
+ * UAOS_MMU_Init() must already have run (done by the kernel at boot). */
+extern void *UAOS_VM_ReserveGuestWindow(void);
+extern void  UAOS_VM_ReleaseGuestWindow(void);
+
+/* kernel logging (uaos_kernel_main.c) */
+extern void kprint(const char *s);
+extern void kprinthex(uint64_t v);
 
 /* -----------------------------------------------------------------------
  * Guest physical RAM window — 4 GB
@@ -85,33 +91,62 @@ void UAOS_Bridge_SetEmulatorCtx(void *ctx)
 
 int UAOS_Bridge_Init(void)
 {
-    fprintf(stderr, "[BRIDGE] Initialising UAOS kernel bridge\n");
+    kprint("[BRIDGE] Initialising UAOS kernel bridge\n");
 
-    /* Allocate aligned 4 GB guest RAM window                              */
-    uaos_guest_ram = (uint8_t *)aligned_alloc(4096, UAOS_GUEST_RAM_SIZE);
+    /* Reserve the 4 GB guest VA window.  This is a pure VA reservation:
+     * no contiguous physical allocation is needed because the MMU sandbox
+     * commits 2 MB backing pages on demand through the #PF handler, and
+     * committed pages arrive zeroed. */
+    uaos_guest_ram = (uint8_t *)UAOS_VM_ReserveGuestWindow();
     if (uaos_guest_ram == NULL) {
-        fprintf(stderr, "[BRIDGE] FATAL: failed to allocate guest RAM\n");
+        kprint("[BRIDGE] FATAL: guest VA window reservation failed\n");
         return -1;
     }
-    memset(uaos_guest_ram, 0, UAOS_GUEST_RAM_SIZE);
-    fprintf(stderr, "[BRIDGE] Guest RAM window: %p – %p\n",
-            (void *)uaos_guest_ram,
-            (void *)(uaos_guest_ram + UAOS_GUEST_RAM_SIZE - 1));
+    kprint("[BRIDGE] Guest RAM window: ");
+    kprinthex((uint64_t)(uintptr_t)uaos_guest_ram);
+    kprint(" – ");
+    kprinthex((uint64_t)(uintptr_t)uaos_guest_ram + UAOS_GUEST_RAM_SIZE - 1);
+    kprint("\n");
 
     /* Pass RAM base to the thunk translation layer and the M68k glue      */
     UAOS_SetRamBase(uaos_guest_ram);
     UAOS_Glue_SetRamBase(uaos_guest_ram);
 
-    /* Register all built-in ROM library modules                           */
-    UAOS_ROM_RegisterAll();
+    /* ROM modules are registered by the kernel before bridge init —
+     * re-registering here would double-register every module and rebuild
+     * the BOOPSI class image against the new g_ram base, corrupting the
+     * boot image that per-task M68k guests mirror from g_default_ram.   */
 
-    /* Install MMU sandbox paging tables (bare-metal only; skipped on
-     * hosted builds where paging is already managed by the host OS)       */
-#if defined(UAOS_BARE_METAL)
-    UAOS_MMU_Init();
-#endif
+    kprint("[BRIDGE] Initialisation complete\n");
+    return 0;
+}
 
-    fprintf(stderr, "[BRIDGE] Initialisation complete\n");
+/* -----------------------------------------------------------------------
+ * UAOS_Bridge_PostInitProbe — verify the guest window is actually backed
+ *
+ * Must be called after the #PF handler is installed (the window's pages
+ * are non-present until first touch, so a probe before the IDT exists
+ * would triple-fault).  First-touch write/read-back inside several 2 MB
+ * slots drives the demand-commit path in UAOS_VM_GuestWindowFault().
+ *
+ * Returns 0 on success, -1 if no window was reserved, -2 on read-back
+ * mismatch.
+ * ----------------------------------------------------------------------- */
+
+int UAOS_Bridge_PostInitProbe(void)
+{
+    if (uaos_guest_ram == NULL) return -1;
+
+    static const uint32_t probe_offsets[] =
+        { 0x00000000u, 0x001FFFFCu, 0x00200000u, 0x00FFFFFCu };
+    volatile uint8_t *win = uaos_guest_ram;
+
+    for (unsigned int i = 0; i < sizeof(probe_offsets) / sizeof(probe_offsets[0]); i++) {
+        uint32_t off = probe_offsets[i];
+        win[off] = 0xA5;
+        if (win[off] != 0xA5) return -2;
+        win[off] = 0;
+    }
     return 0;
 }
 
@@ -137,15 +172,15 @@ int UAOS_Bridge_IllegalOpcode(M68kCPUState *cpu)
 
 void UAOS_Bridge_Shutdown(void)
 {
-    fprintf(stderr, "[BRIDGE] Shutdown initiated\n");
+    kprint("[BRIDGE] Shutdown initiated\n");
 
     if (uaos_guest_ram != NULL) {
-        free(uaos_guest_ram);
+        UAOS_VM_ReleaseGuestWindow();
         uaos_guest_ram = NULL;
     }
 
     uaos_emu_ctx = NULL;
-    fprintf(stderr, "[BRIDGE] Shutdown complete\n");
+    kprint("[BRIDGE] Shutdown complete\n");
 }
 
 /* -----------------------------------------------------------------------

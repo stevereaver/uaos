@@ -33,6 +33,11 @@
 extern void kprint(const char *s);
 extern void kprinthex(uint64_t v);
 
+/* Guest-window demand paging — defined in kernel/exec/mmu_sandbox.c.
+ * Commits a backing page for faults inside the reserved M68k guest VA
+ * window (16–20 GB). */
+extern int UAOS_VM_GuestWindowFault(uint64_t fault_addr);
+
 /* -----------------------------------------------------------------------
  * Amiga hardware register window boundaries
  * ----------------------------------------------------------------------- */
@@ -278,6 +283,12 @@ void UAOS_PageFaultHandler(InterruptFrame *frame, SavedRegs *regs)
 {
     uint64_t fault_addr;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(fault_addr));
+
+    /* Demand-paged M68k guest window: commit a backing page and return so
+     * the faulting instruction is re-executed.  A negative return means
+     * the backing pool is exhausted — fall through to the panic path. */
+    if (UAOS_VM_GuestWindowFault(fault_addr) > 0)
+        return;
 
     if (!is_chip_address(fault_addr)) {
         /* Non-chip page fault.

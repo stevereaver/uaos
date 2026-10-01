@@ -323,6 +323,7 @@ static void print_banner(void)
 extern void UAOS_MMU_Init(void);
 extern void UAOS_ROM_RegisterAll(void);
 extern int  UAOS_Bridge_Init(void);
+extern int  UAOS_Bridge_PostInitProbe(void);
 extern void UAOS_LoadableLib_Init(void);
 extern void FB_Init(uint32_t mb2_info_phys);
 extern void chip_emu_reset(void);
@@ -951,6 +952,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * The generic stub is replaced so M68k accesses to 0x00B00000-0x00DFFFFF
      * are decoded and forwarded to the AGA/ECS emulator. */
     IDT_SetRawHandler(14, uaos_page_fault_isr);
+
+    /* With the #PF handler live, verify the M68k guest VA window commits
+     * backing pages on first touch.  The window's pages are non-present
+     * until accessed, so this must run after vector 14 is registered. */
+    if (rc == 0 && UAOS_Bridge_PostInitProbe() != 0)
+        kprint("[BOOT] WARNING: M68k guest window probe failed — emulation may be broken.\n");
 
     /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
      * kernel timing (network poll pacing, yield_ms, ntp guards) and must

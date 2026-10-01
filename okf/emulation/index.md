@@ -15,7 +15,7 @@ The emulation layer provides the infrastructure to execute Motorola 68000 binary
 
 - **`uaos_m68k_glue.c`**: The primary interface between the Musashi emulator and the kernel. It handles CPU initialization, memory access callbacks, opcode trapping, and the Amiga Hunk binary loader.
 - **`uaos_emu_registry.c`**: Manages embedded Amiga binaries (e.g., `Lha`) and exposes `UAOS_Emu_RunByName()` for the shell.
-- **`uaos_uae_bridge.c`**: UAE-compatible bridge that wires ILLEGAL callbacks and initializes the 4 GB guest physical RAM window used by some emulator builds.
+- **`uaos_uae_bridge.c`**: UAE-compatible bridge that wires ILLEGAL callbacks and reserves the 4 GB guest RAM window — a demand-paged VA reservation at 16–20 GB committed per 2 MB page on first touch via `UAOS_VM_ReserveGuestWindow`/`UAOS_VM_GuestWindowFault`/`UAOS_VM_ReleaseGuestWindow` in `kernel/exec/mmu_sandbox.c` (UAOS-162). `UAOS_Bridge_PostInitProbe()` verifies the commit path after the #PF handler is installed.
 - **`uaos_m68kconf.h`**: Musashi configuration tuned for M68020 emulation (the 68020 core is a superset of the 68000, so 68000 code runs unmodified) with ILLEGAL/TRAP callbacks and no FPU/PMMU. The CPU type is selected at runtime in `uaos_m68k_glue.c` via `m68k_set_cpu_type(M68K_CPU_TYPE_68020)`.
 - **`rom_patches/`**: Contains assembly stubs (`rom_traps.s`) and the kickstart configuration (`kickstart.conf`).
 - **`binaries/`**: Embedded Amiga binaries converted to C byte arrays (e.g., `Lha`).
