@@ -21,6 +21,7 @@ extern ISR_Dispatch
 extern Task_SwitchNext
 extern Task_SwitchPrev
 extern g_sched_switch_pending
+extern g_irq_depth
 
 isr_common:
     ; Stack at entry:
@@ -72,8 +73,15 @@ isr_common:
     ; incoming task, so filing our RSP into Task_SwitchPrev's native_rsp
     ; would corrupt that task's frame (UAOS-180: #GP on resume).  The
     ; syscall epilogue consumes it when we return.
+    ;
+    ; Likewise if g_irq_depth is still nonzero we are a nested IRQ (a
+    ; handler re-enabled interrupts, e.g. Enable() from an ISR): our RSP
+    ; is mid-way through the outer ISR, so leave the armed switch for the
+    ; outer epilogue, which runs on the task-level frame (UAOS-181).
     ; -----------------------------------------------------------------
     cmp     dword [rel g_sched_switch_pending], 0
+    jnz     .no_switch
+    cmp     dword [rel g_irq_depth], 0
     jnz     .no_switch
     mov     rax, [rel Task_SwitchNext]
     test    rax, rax

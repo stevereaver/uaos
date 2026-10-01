@@ -440,6 +440,18 @@ static void do_schedule(int from_irq)
         return;
     }
 
+    /* An IRQ-side switch is already armed for this interrupt exit.  One
+     * ISR can reach here several times (PIT → USB_Poll → HID callback →
+     * EventPump_Wake, then the PIT handler's own schedule; or two USB
+     * callbacks in one UHCI scan).  Re-running would treat the incoming
+     * task as prev, re-enqueue it and overwrite Task_SwitchPrev, so the
+     * epilogue files the outgoing RSP into the wrong native_rsp and the
+     * real outgoing task later resumes a stale frame (UAOS-181: #GP at
+     * the syscall iretq on MBP4,1, task bcm5974-reset).  The armed switch
+     * stands; anything readied since is picked up at the next tick. */
+    if (Task_SwitchNext)
+        return;
+
     if (from_irq) {
         /* Honour Forbid / Disable nesting — timer ISR only.  Record the
          * suppressed reschedule so Permit()/Enable() can dispatch it
