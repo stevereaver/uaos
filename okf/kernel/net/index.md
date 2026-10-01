@@ -52,7 +52,7 @@ Implements echo request/reply (ping). The `ping` shell command uses this layer a
 
 ### UDP (`udp.c`)
 
-- Socket table with ephemeral port allocation (`49152`–`65535`).
+- Socket table with ephemeral port allocation (`49152`–`65535`). Ports are drawn at random from the kernel entropy source (UAOS-168) with a sequential-counter fallback, so DNS/NTP source ports aren't predictable.
 - Ring-buffer RX path.
 - Used by DHCP, DNS, and NTP.
 
@@ -114,6 +114,8 @@ Minimal DHCP client following RFC 2131/2132. State machine: `DISCOVER` → `OFFE
 ### DNS (`dns.c`)
 
 Minimal A-record resolver (RFC 1035). Encodes QNAME labels, handles compression pointers (`0xC0`), and retries with a 2-second timeout per attempt — but only on real timeouts: `dns_parse_response` returns a tri-state so any definitive answer (nonzero RCODE like NXDOMAIN/SERVFAIL/REFUSED, a NODATA empty answer, or a response with no usable A record) ends the retry loop immediately. `localhost` (any case, optional trailing dot) short-circuits to 127.0.0.1 with no query at all, even with no DNS server configured.
+
+Spoof-resistance (UAOS-168): the transaction ID comes from `entropy_fill` (the old hostname-derived ID was deterministic), the UDP source port is random (see `alloc_port` in `udp.c`), and a response is only accepted if its source IP/port match the queried server and its question section echoes our query byte-for-byte. With no caller `poll_fn`, the wait blocks on `SIGF_NET` via `Task_WaitTicks` (armed by `net_rx_notify_arm`) instead of a busy-spin.
 
 ### NTP (`ntp.c`)
 
