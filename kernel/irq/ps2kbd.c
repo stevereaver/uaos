@@ -8,6 +8,7 @@
 #include "ps2kbd.h"
 #include "idt.h"
 #include "irq.h"
+#include "../exec/task.h"
 #include <stdint.h>
 
 /* =========================================================================
@@ -101,6 +102,9 @@ static void kbuf_push(char c)
     if (next != kbuf_head) {   /* drop if full */
         kbuf[kbuf_tail] = c;
         kbuf_tail = next;
+        /* Wake the event pump (IRQ-safe Signal + IRQ-exit reschedule) so
+         * keys are dispatched to the WM without waiting for a tick. */
+        EventPump_Wake();
     }
 }
 

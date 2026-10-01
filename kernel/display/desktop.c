@@ -463,20 +463,47 @@ static void menu_action_icon_rename(void)
                      name, 30, rename_cb, NULL);
 }
 
-/* Move a file to the Trashcan (RAM:/Trash/name).  Tries a same-volume
- * rename first; falls back to copy+delete for cross-volume moves. */
+/* Move a file to the Trashcan of its own volume (VOL:Trashcan/name),
+ * matching the Amiga paradigm where the Trashcan is a per-volume drawer
+ * created at format time.  If the volume has no Trashcan (formatted
+ * NOICON, or the drawer was removed) the item is deleted permanently.
+ * Tries a rename first; falls back to copy+delete on failure. */
 static void desktop_move_to_trash(const char *path, const char *name)
 {
-    /* Build trash path: RAM:/Trash/name */
-    char trash_path[128];
+    /* Extract the volume prefix from path ("VOL:foo/bar" -> "VOL:") */
+    char trash_dir[48];
     int di = 0;
-    const char *p = "RAM:/Trash/";
-    while (*p && di < 126) trash_path[di++] = *p++;
-    int ni = 0;
-    while (name[ni] && di < 126) trash_path[di++] = name[ni++];
-    trash_path[di] = '\0';
+    while (path[di] && path[di] != ':' && di < 30) {
+        trash_dir[di] = path[di];
+        di++;
+    }
+    if (path[di] != ':') {
+        /* No volume prefix — just delete permanently */
+        VFS_Delete(path);
+        return;
+    }
+    trash_dir[di++] = ':';
+    const char *t = "Trashcan";
+    while (*t && di < 46) trash_dir[di++] = *t++;
+    trash_dir[di] = '\0';
 
-    /* Try to rename (move) to trash. If rename fails (cross-volume),
+    /* No Trashcan drawer on this volume -> permanent delete */
+    if (!VFS_IsDir(trash_dir)) {
+        VFS_Delete(path);
+        return;
+    }
+
+    /* Build trash path: VOL:Trashcan/name */
+    char trash_path[128];
+    int pi = 0;
+    const char *p = trash_dir;
+    while (*p && pi < 126) trash_path[pi++] = *p++;
+    trash_path[pi++] = '/';
+    int ni = 0;
+    while (name[ni] && pi < 126) trash_path[pi++] = name[ni++];
+    trash_path[pi] = '\0';
+
+    /* Try to rename (move) to trash. If rename fails,
      * fall back to copy+delete. */
     if (VFS_Rename(path, trash_path) == 0) {
         /* Success — file moved to trash */
@@ -509,7 +536,7 @@ static struct {
     char name[64];
 } g_pending_delete;
 
-/* Delete confirm callback — moves the pending path to Trashcan (RAM:/Trash) */
+/* Delete confirm callback — moves the pending path to its Trashcan */
 static void delete_cb(int button, const char *text, void *user_data)
 {
     (void)text; (void)user_data;
@@ -522,8 +549,8 @@ static void delete_cb(int button, const char *text, void *user_data)
 }
 
 /* Ask the user to confirm deleting path/name ("Delete 'name'?"), then
- * move it to RAM:/Trash/ on confirm.  Shared by Icons ▸ Delete and by
- * dropping a desktop icon onto the Trashcan. */
+ * move it to the volume's Trashcan on confirm.  Shared by Icons ▸ Delete
+ * and by dropping a desktop icon onto the Trashcan. */
 static void desktop_confirm_delete(const char *path, const char *name)
 {
     int i = 0;
@@ -687,27 +714,50 @@ static void menu_action_icon_format(void)
     FormatWin_Show();
 }
 
+/* Recursively delete the contents of a directory (but not the dir
+ * itself).  Uses VFS_ReadDir so it works on handler-backed volumes too.
+ * depth caps pathological nesting. */
+static void desktop_empty_dir(const char *dirpath, int depth)
+{
+    if (depth > 6) return;
+    VfsDirEnt ents[32];
+    int n = VFS_ReadDir(dirpath, ents, 32);
+    for (int i = 0; i < n; i++) {
+        char sub[128];
+        int pi = 0;
+        const char *p = dirpath;
+        while (*p && pi < 126) sub[pi++] = *p++;
+        if (pi > 0 && sub[pi - 1] != ':' && sub[pi - 1] != '/')
+            sub[pi++] = '/';
+        int ni = 0;
+        while (ents[i].name[ni] && pi < 126) sub[pi++] = ents[i].name[ni++];
+        sub[pi] = '\0';
+
+        if (ents[i].is_dir) desktop_empty_dir(sub, depth + 1);
+        VFS_Delete(sub);
+    }
+}
+
 /* Empty Trash confirm callback */
 static void empty_trash_cb(int button, const char *text, void *user_data)
 {
     (void)text; (void)user_data;
     if (button != REQ_BTN_OK) return;
 
-    /* Delete all files in RAM:Trash */
-    RamFsNode *trash_dir = VFS_ResolveDir("RAM:/Trash");
-    if (!trash_dir) return;
-    RamFsNode *child = RamFS_FirstChild(trash_dir);
-    while (child) {
-        char path[64];
-        int pi = 0;
-        const char *p = "RAM:/Trash/";
-        while (*p && pi < 62) path[pi++] = *p++;
-        int ni = 0;
-        while (child->name[ni] && pi < 62) path[pi++] = child->name[ni++];
-        path[pi] = '\0';
-        RamFsNode *next = child->next_sibling;
-        VFS_Delete(path);
-        child = next;
+    /* Empty the Trashcan drawer of every mounted volume that has one */
+    int mounts = VFS_GetMountCount();
+    for (int mi = 0; mi < mounts; mi++) {
+        char mname[32];
+        if (!VFS_GetMountName(mi, mname, 32)) continue;
+        char dir[48];
+        int di = 0;
+        const char *p = mname;
+        while (*p && di < 38) dir[di++] = *p++;
+        dir[di++] = ':';
+        p = "Trashcan";
+        while (*p && di < 46) dir[di++] = *p++;
+        dir[di] = '\0';
+        if (VFS_IsDir(dir)) desktop_empty_dir(dir, 0);
     }
 }
 
@@ -1438,6 +1488,7 @@ static IconState *get_icons(int *count)
     static int  cache_count = 0;
     static int  cache_appicon_count = -1;
     static int  cache_leaveout_version = -1;
+    static uint32_t cache_trash_mask = 0;
 
     if (!initialised) {
         for (int i = 0; i < MAX_ICONS; i++) {
@@ -1457,9 +1508,29 @@ static IconState *get_icons(int *count)
      *     registry changed ── */
     int mount_count = VFS_GetMountCount();
     int appicon_count = WB_GetAppIconCount();
+
+    /* Trashcan presence bitmask — a volume's Trashcan drawer can appear
+     * or disappear without the mount table changing (Format vs Format
+     * NOICON, or the drawer being deleted), so it is part of the cache
+     * fingerprint. */
+    uint32_t trash_mask = 0;
+    for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
+        char mname[32], tdir[48];
+        if (!VFS_GetMountName(mi, mname, 32)) continue;
+        int di = 0;
+        const char *tp = mname;
+        while (*tp && di < 38) tdir[di++] = *tp++;
+        tdir[di++] = ':';
+        tp = "Trashcan";
+        while (*tp && di < 46) tdir[di++] = *tp++;
+        tdir[di] = '\0';
+        if (VFS_IsDir(tdir)) trash_mask |= (1u << mi);
+    }
+
     int changed = (mount_count != cache_mount_count) ||
                   (appicon_count != cache_appicon_count) ||
-                  (g_leaveout_version != cache_leaveout_version);
+                  (g_leaveout_version != cache_leaveout_version) ||
+                  (trash_mask != cache_trash_mask);
 
     if (!changed) {
         for (int mi = 0; mi < mount_count && mi < MAX_ICONS && !changed; mi++) {
@@ -1500,6 +1571,7 @@ static IconState *get_icons(int *count)
     cache_mount_count = mount_count;
     cache_appicon_count = appicon_count;
     cache_leaveout_version = g_leaveout_version;
+    cache_trash_mask = trash_mask;
     for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
         char mname[32];
         if (VFS_GetMountName(mi, mname, 32)) {
@@ -1581,18 +1653,37 @@ static IconState *get_icons(int *count)
         n++;
     }
 
-    /* ── Trashcan icon (always present, bottom-right) ── */
-    if (n < MAX_ICONS) {
-        /* Position at bottom-right of desktop */
+    /* ── Per-volume Trashcan icons ──
+     * On Amiga the Trashcan is a drawer (VOL:Trashcan + WB_GARBAGE .info)
+     * created at format time — Format NOICON leaves a volume without one.
+     * Each mounted volume that has a Trashcan gets an icon stacked at the
+     * bottom-right of the desktop. */
+    int ti = 0;
+    for (int mi = 0; mi < mount_count && n < MAX_ICONS; mi++) {
+        if (!(trash_mask & (1u << mi))) continue;
+
+        char mname[32];
+        if (!VFS_GetMountName(mi, mname, 32)) continue;
+
+        /* vol_labels doubles as backing storage for the trashcan path */
+        int li = 0;
+        while (mname[li] && li < 22) { vol_labels[n][li] = mname[li]; li++; }
+        const char *tn = ":Trashcan";
+        for (int k = 0; tn[k] && li < 31; k++) vol_labels[n][li++] = tn[k];
+        vol_labels[n][li] = '\0';
+        const char *trash_str = vol_labels[n];
+
+        /* Default position: bottom-right, stacking upward per trashcan */
         int trash_x = W - ICON_W - 16;
-        int trash_y = (int)g_fb.height - ICON_H - 24;
+        int trash_y = (int)g_fb.height - ICON_H - 24 - ti * (ICON_H + 8);
+        ti++;
 
         /* Preserve state from previous build */
         uint32_t old_tick = 0;
         int old_clicks = 0;
         int old_selected = 0;
         for (int j = 0; j < MAX_ICONS; j++) {
-            if (old_icons[j].volume && str_eq(old_icons[j].volume, "RAM:/Trash")) {
+            if (old_icons[j].volume && str_eq(old_icons[j].volume, trash_str)) {
                 old_tick = old_icons[j].last_tick;
                 old_clicks = old_icons[j].click_count;
                 old_selected = old_icons[j].is_selected;
@@ -1603,7 +1694,7 @@ static IconState *get_icons(int *count)
         }
 
         memset(&icons[n], 0, sizeof(IconState));
-        icons[n].volume = "RAM:/Trash";
+        icons[n].volume = trash_str;
         icons[n].label  = "Trashcan";
         icons[n].x = trash_x;
         icons[n].y = trash_y;
@@ -1611,6 +1702,18 @@ static IconState *get_icons(int *count)
         icons[n].click_count = old_clicks;
         icons[n].is_selected = old_selected;
         icons[n].is_trashcan = 1;
+
+        /* Load Trashcan.info — supplies the icon image and, when the
+         * position was snapshotted (nonzero), the saved desktop pos. */
+        if (Icon_Load(trash_str, &icons[n].parsed)) {
+            icons[n].has_parsed = 1;
+            if (icons[n].parsed.label[0])
+                icons[n].label = icons[n].parsed.label;
+            if (icons[n].parsed.pos_x || icons[n].parsed.pos_y) {
+                icons[n].x = icons[n].parsed.pos_x;
+                icons[n].y = icons[n].parsed.pos_y;
+            }
+        }
         n++;
     }
 
@@ -1821,7 +1924,9 @@ static void draw_leaveout_icon(int x, int y, const char *label,
 /* Draw an IconState using .info image when available, else procedural fallback. */
 static void draw_icon_state(const IconState *ic)
 {
-    if (ic->is_trashcan) {
+    /* Trashcan falls back to the procedural icon only when the volume's
+     * Trashcan.info couldn't be loaded; a real .info renders normally. */
+    if (ic->is_trashcan && !ic->has_parsed) {
         draw_trashcan_icon(ic->x, ic->y, ic->is_selected);
         return;
     }
@@ -2880,7 +2985,7 @@ void Desktop_MouseRelease(int mx, int my)
 
                 if (dst->is_trashcan) {
                     /* Drop on the Trashcan — confirm, then move to
-                     * RAM:/Trash/ exactly like Icons ▸ Delete. */
+                     * VOL:Trashcan/ exactly like Icons ▸ Delete. */
                     if (src_path && src_name) {
                         DT_LOG("[DT] Drag-to-trash '");
                         DT_LOG(src_name);

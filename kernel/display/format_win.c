@@ -7,6 +7,7 @@
  *   - Device cycle gadget (lists formattable block devices)
  *   - Volume name string field
  *   - Filesystem label (FAT32 — only supported FS)
+ *   - Trashcan checkbox (like Format NOICON when unchecked)
  *   - Format button (with confirm requester)
  *   - Cancel button
  *   - Status line
@@ -32,7 +33,7 @@
  * ========================================================================= */
 
 #define WIN_W  360
-#define WIN_H  220
+#define WIN_H  248
 
 #define MAX_FORMAT_DEVS 16
 
@@ -55,6 +56,7 @@ static int  g_formatting = 0;
 static Gad         g_dev_cyc;                    /* device picker     */
 static const char *g_dev_names[MAX_FORMAT_DEVS];
 static Gad         g_volname_g;                  /* volume name field */
+static Gad         g_trash_chk;                  /* create Trashcan?   */
 static Gad         g_fmt_btn, g_cancel_btn;
 
 /* =========================================================================
@@ -123,6 +125,14 @@ static void format_draw(int wx, int wy, int ww, int wh)
     /* Filesystem label (fixed — FAT32 only) */
     FB_PutStr(cx + pad, y, "Filesystem: FAT32", WB_DARK_GREY, WB_GREY);
     y += label_h + pad;
+
+    /* Trashcan checkbox — Amiga Format NOICON equivalent */
+    g_trash_chk.kind = GAD_CHECKBOX;
+    g_trash_chk.x = cx + pad;   g_trash_chk.y = y;
+    g_trash_chk.w = 14;         g_trash_chk.h = 14;
+    g_trash_chk.text = "Trashcan";
+    gad_draw(&g_trash_chk);
+    y += GAD_CHECK_SZ + pad;
 
     /* Status line */
     FB_PutStr(cx + pad, y, g_status, WB_DARK_GREY, WB_GREY);
@@ -202,7 +212,12 @@ static void format_confirm_cb(int button, const char *text, void *user_data)
             mnt_name[ni++] = dname[si++];
         mnt_name[ni] = '\0';
         const char *vol_mnt = g_volname[0] ? g_volname : mnt_name;
-        if (vol_mnt[0]) VFS_MountPartition(vol_mnt);
+        if (vol_mnt[0]) {
+            VFS_MountPartition(vol_mnt);
+            /* Amiga: format adds the Trashcan drawer to the new
+             * filesystem unless the Trashcan checkbox (NOICON) is off. */
+            if (g_trash_chk.val) VFS_CreateTrashcan(vol_mnt);
+        }
         str_cp(g_status, "Format complete.", 64);
     } else {
         str_cp(g_status, "Format failed.", 64);
@@ -230,6 +245,12 @@ static void format_click(int handle, int mx, int my)
     /* Volume name field — click to focus */
     if (gad_hit(&g_volname_g, mx, my)) {
         gad_event(&g_volname_g, GAD_DOWN, mx, my);
+        WM_Redraw();
+        return;
+    }
+
+    /* Trashcan checkbox */
+    if (gad_event(&g_trash_chk, GAD_DOWN, mx, my) == GADE_CHANGE) {
         WM_Redraw();
         return;
     }
@@ -289,6 +310,8 @@ void FormatWin_Show(void)
     g_volname_g.buf_len = 0;
     g_volname_g.cursor  = 0;
     g_volname_g.focused = 1;
+    memset(&g_trash_chk, 0, sizeof(g_trash_chk));
+    g_trash_chk.val = 1;   /* Trashcan on by default (NOICON clears it) */
     g_formatting = 0;
     str_cp(g_status, "Select a device and click Format.", 64);
     refresh_device_list();

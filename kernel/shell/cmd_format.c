@@ -7,10 +7,12 @@
 void Cmd_Format(NativeCmdCtx *ctx, const char *args)
 {
     if (!args || !*args) {
-        PRINT("Usage: format <device> [filesystem]");
+        PRINT("Usage: format <device> [filesystem] [NOICON]");
         PRINT("       format Device=DH0: Name=Workbench FFS");
         PRINT("");
         PRINT("Supported filesystems: fat32");
+        PRINT("");
+        PRINT("Options: NOICON — format without creating a Trashcan");
         PRINT("");
         PRINT("Note: Format a partition (e.g. virtio01 or DH0:),");
         PRINT("      not the whole disk (virtio0).");
@@ -21,6 +23,7 @@ void Cmd_Format(NativeCmdCtx *ctx, const char *args)
     char devname[32] = {0};
     char volname[12] = {0};
     char fs[16]      = {0};
+    int  noicon      = cmd_kw_find(args, "NOICON");
 
     const char *p = args;
     while (*p) {
@@ -49,6 +52,7 @@ void Cmd_Format(NativeCmdCtx *ctx, const char *args)
             int i = 0;
             while (*p && *p != ' ' && i < 31) { tok[i++] = *p++; }
             tok[i] = '\0';
+            if (cmd_seq_ci(tok, "NOICON")) continue;
             if (!devname[0]) cmd_scopy(devname, tok, 32);
             else if (!fs[0]) cmd_scopy(fs, tok, 16);
         }
@@ -126,6 +130,9 @@ void Cmd_Format(NativeCmdCtx *ctx, const char *args)
                     cmd_scat(msg2, mnt_name, CMD_MAX_LINE);
                     cmd_scat(msg2, ":", CMD_MAX_LINE);
                     PRINT(msg2);
+                    /* Amiga: format adds the Trashcan drawer to the new
+                     * filesystem unless NOICON was given. */
+                    if (!noicon) VFS_CreateTrashcan(mnt_name);
                 }
             }
         } else {

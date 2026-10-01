@@ -9,6 +9,7 @@
 #include "ffs_handler.h"
 #include "handle_table.h"
 #include "blockdev.h"
+#include "icon_loader.h"
 #include "boot/kprint.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -215,13 +216,42 @@ void VFS_Init(void)
     RamFS_MkDir(ram, "RAM:ENVARC");
     RamFS_MkDir(ram, "RAM:CLIPS");
     RamFS_MkDir(ram, "RAM:S");
-    RamFS_MkDir(ram, "RAM:Trash");
+
+    /* RAM: is "formatted" at boot, so it gets a Trashcan drawer like any
+     * freshly formatted Amiga volume (Format NOICON would skip this). */
+    VFS_CreateTrashcan("RAM");
 
     /* ENV: and ENVARC: assigns (AmigaOS semantics):
      * ENV:     = volatile runtime prefs (RAM:)
      * ENVARC:  = persistent prefs (would be on writable SYS: in real Amiga) */
     VFS_AddAssign("ENV", "RAM:ENV", 0, 0);
     VFS_AddAssign("ENVARC", "RAM:ENVARC", 0, 0);
+}
+
+/* Create the Trashcan drawer + WB_GARBAGE .info on a volume root.
+ * AmigaOS adds the Trashcan to a volume at format time; format NOICON
+ * is the opt-out.  vol_name is a mount/volume name like "RAM" or "DH0". */
+void VFS_CreateTrashcan(const char *vol_name)
+{
+    if (!vol_name || !vol_name[0]) return;
+
+    char dir[48];
+    int i = 0;
+    while (vol_name[i] && vol_name[i] != ':' && i < 38)
+        { dir[i] = vol_name[i]; i++; }
+    dir[i++] = ':';
+    const char *t = "Trashcan";
+    while (*t && i < 47) dir[i++] = *t++;
+    dir[i] = '\0';
+
+    VFS_MkDir(dir);
+
+    /* Write Trashcan.info so the desktop renders the garbage icon and
+     * has a DiskObject to store the icon position in.  ParsedIcon is
+     * ~10 KB — keep it off the stack (static, non-reentrant). */
+    static ParsedIcon ic;
+    Icon_MakeDefault(&ic, WB_GARBAGE, "Trashcan");
+    Icon_Save(dir, &ic);   /* writes <dir>.info */
 }
 
 /* Setup default Workbench assigns after Workbench: is mounted */

@@ -127,6 +127,12 @@ static void dbg_scroll(void)
     dbg_repaint();
 }
 
+/* Once the window manager owns the framebuffer, per-line paints would
+ * punch holes in the desktop on every committed klog line (the
+ * "console flickering over Workbench" bug).  Suspend stops rendering;
+ * the ring buffer and UART keep receiving everything. */
+void Dbgcon_Suspend(void) { g_dbgcon_on = 0; }
+
 void Dbgcon_Write(const char *s, uint32_t len)
 {
     if (!g_dbgcon_on || !g_vram_ready || !g_fb.valid || !s) return;

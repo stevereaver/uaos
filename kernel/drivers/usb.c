@@ -150,12 +150,12 @@ static void enumerate_port(UsbHc *hc, int port)
      * the spec minimum is 10 ms but real hardware often wants more.
      * Retry with a settle delay rather than abandoning enumeration. */
     int ok = 0;
-    for (int attempt = 0; attempt < 4; attempt++) {
+    for (int attempt = 0; attempt < 8; attempt++) {
         if (get_desc(dev, USB_DESC_DEVICE, 0, dd, 8) == 0) {
             ok = 1;
             break;
         }
-        usb_msleep(50);
+        usb_msleep(100);
     }
     if (!ok) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: GET_DESCRIPTOR(8) failed\n");

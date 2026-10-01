@@ -6,6 +6,7 @@
 #include "desktop.h"
 #include "blanker.h"
 #include "filebrowser.h"
+#include "../exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -136,6 +137,10 @@ static void damage_add(int x, int y, int w, int h, int desktop)
     }
     g_dmg_desktop |= desktop;
     g_dmg_pending = 1;
+    /* New damage needs a WM_FlushRedraw from the event pump — signal it
+     * so a blocked pump wakes now rather than at its timeout.  Safe in
+     * both task and IRQ context. */
+    EventPump_Wake();
 }
 
 /* Damage a window's full screen footprint. */

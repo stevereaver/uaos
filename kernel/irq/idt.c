@@ -464,9 +464,16 @@ static void exc_dump(const IsrFrame *f, const UaosTask *cur)
     kprint("================================================\n");
 }
 
+/* IRQ nesting depth: incremented on ISR entry, decremented on exit.
+ * Lets task-level code (e.g. Permit/Enable deferred reschedules and
+ * EventPump_Wake) distinguish interrupt context from task context —
+ * a context switch must never be triggered from inside an ISR body. */
+volatile int g_irq_depth = 0;
+
 void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
                   IsrFrame *frame)
 {
+    g_irq_depth++;
     /* Write a rotating magic value to the mailbox */
     static volatile uint32_t mailbox_seq = 0;
     uint32_t seq = mailbox_seq++;
@@ -476,6 +483,23 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
 
     if (vector < 256)
         g_vector_counts[vector]++;
+
+    /* Storm detector: a level-triggered line nobody can ack re-fires the
+     * instant the EOI clears the IO-APIC remote-IRR.  Because the LAPIC
+     * always picks the highest pending vector, a storm on a high vector
+     * starves everything below it (incl. the PIT tick) — so detection
+     * must happen here, not in the tick handler.  20k consecutive
+     * same-vector deliveries ≈ 20 ms of unbroken storm → mask the GSI. */
+    {
+        static uint32_t storm_vec, storm_streak;
+        if (vector == storm_vec) storm_streak++;
+        else { storm_vec = (uint32_t)vector; storm_streak = 1; }
+        if (storm_streak == 20000) {
+            extern void IRQ_StormMask(int);
+            IRQ_StormMask((int)vector);
+            storm_streak = 0;
+        }
+    }
 
     if (vector < 256 && g_handlers[vector]) {
         g_handlers[vector](vector, error_code);
@@ -495,6 +519,9 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
             kprint("[EXC] killing X64 task '");
             kprint(cur->ln_Name ? cur->ln_Name : "(null)");
             kprint("'\n");
+            /* Task_Exit never returns: the abandoned exception frame
+             * must not leave the IRQ depth count elevated forever. */
+            g_irq_depth--;
             Task_Exit();
             __builtin_unreachable();
         }
@@ -506,6 +533,7 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
      * PIC, the IO-APIC/LAPIC, or MSI.  In PIC mode unregistered vectors
      * 32-47 still get a PIC EOI (legacy behaviour). */
     IRQ_EOI((int)vector);
+    g_irq_depth--;
 }
 
 /* =========================================================================

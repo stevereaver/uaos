@@ -578,6 +578,7 @@ static int _vsfmt(char *buf, const char *fmt, va_list ap) {
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
         if (*fmt == 'l') fmt++;              /* swallow %l* — we always use 32-bit */
         if (*fmt == 'l') fmt++;
+        if (*fmt == 'z' || *fmt == 't' || *fmt == 'j') fmt++;
         switch (*fmt) {
         case 's': {
             const char *s = va_arg(ap, const char *);
@@ -725,19 +726,32 @@ static void _uart_puts(const char *s) {
     while (*s) { if (*s == '\n') _uart_putc('\r'); _uart_putc(*s++); }
 }
 
-/* fprintf stub — routes to UART serial output, ignores FILE*, ignores format */
+/* fprintf stub — formats via _vsfmt then emits through klog so the text
+ * lands in the ring buffer, UART, and fbcon with the [kern] tag.
+ * Previously this printed the raw format string (literal "%s"/"%u"). */
 typedef void FILE;
 extern FILE *stderr;
 FILE *stderr = (FILE*)0;
+extern void klog_emit(int subsys, int level, const char *fmt, ...);
 
 int fprintf(FILE *f, const char *fmt, ...) {
     (void)f;
-    _uart_puts(fmt);
-    return 0;
+    static char fbuf[512];
+    va_list ap; va_start(ap, fmt);
+    int n = _vsfmt(fbuf, fmt, ap);
+    va_end(ap);
+    fbuf[n] = '\0';
+    klog_emit(0, 3, "%s", fbuf);     /* KLOG_KERN / KLOG_INFO */
+    return n;
 }
 int printf(const char *fmt, ...) {
-    _uart_puts(fmt);
-    return 0;
+    static char pbuf[512];
+    va_list ap; va_start(ap, fmt);
+    int n = _vsfmt(pbuf, fmt, ap);
+    va_end(ap);
+    pbuf[n] = '\0';
+    klog_emit(0, 3, "%s", pbuf);
+    return n;
 }
 STUBEOF
 gcc ${GCC_FLAGS} -c "${BUILD_DIR}/obj/stubs.c" -o "${BUILD_DIR}/obj/stubs.o"

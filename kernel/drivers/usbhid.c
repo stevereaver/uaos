@@ -18,6 +18,7 @@
 #include "../irq/ps2kbd.h"
 #include "../irq/ps2mouse.h"
 #include "../display/cursor.h"
+#include "../exec/task.h"
 #include "../klog/klog.h"
 #include "../dos/dma.h"
 #include <string.h>
@@ -203,6 +204,7 @@ static void hid_mouse_report(const uint8_t *r, int len)
     g_mouse.btn_middle = (r[0] & 0x04) ? 1 : 0;
 
     Cursor_Move(nx, ny);
+    EventPump_Wake();
 }
 
 /* ------------------------------------------------------------------ */

@@ -776,6 +776,10 @@ static void bg_enqueue(ShellInstance *s, const char *cmd)
     scat(msg, "] ", MAX_LINE_LEN);
     scat(msg, cmd, MAX_LINE_LEN);
     inst_print(s, msg);
+
+    /* Wake the event pump so the queued job is dispatched promptly —
+     * the pump may be blocked in Task_WaitTicks between events. */
+    EventPump_Wake();
 }
 
 static void bg_remove_done(void)
@@ -3375,10 +3379,12 @@ static void inst_cmd_fdisk(ShellInstance *s, const char *arg)
 static void inst_cmd_format(ShellInstance *s, const char *arg)
 {
     if (!arg || !*arg) {
-        inst_print(s, "Usage: format <device> [filesystem]");
+        inst_print(s, "Usage: format <device> [filesystem] [NOICON]");
         inst_print(s, "       format Device=DH0: Name=Workbench FFS");
         inst_print(s, "");
         inst_print(s, "Supported filesystems: fat32");
+        inst_print(s, "");
+        inst_print(s, "Options: NOICON — format without creating a Trashcan");
         inst_print(s, "");
         inst_print(s, "Note: Format a partition (e.g. virtio01 or DH0:),");
         inst_print(s, "      not the whole disk (virtio0).");
@@ -3389,6 +3395,7 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
     char devname[32] = {0};
     char volname[12] = {0};
     char fs[16] = {0};
+    int  noicon = 0;
 
     const char *p = arg;
     while (*p) {
@@ -3421,13 +3428,15 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
             scopy(fs, "fat32", 16);
             p += 3;
         } else {
-            /* Bare token: device name or fs type */
+            /* Bare token: device name, fs type, or NOICON */
             char tok[32];
             int i = 0;
             while (*p && *p != ' ' && i < 31) { tok[i++] = *p++; }
             tok[i] = '\0';
 
-            if (!devname[0]) {
+            if (seq_ci(tok, "NOICON")) {
+                noicon = 1;
+            } else if (!devname[0]) {
                 scopy(devname, tok, 32);
             } else if (!fs[0]) {
                 scopy(fs, tok, 16);
@@ -3509,6 +3518,9 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
                     scat(msg2, mnt_name, MAX_LINE_LEN);
                     scat(msg2, ":", MAX_LINE_LEN);
                     inst_print(s, msg2);
+                    /* Amiga: format adds the Trashcan drawer to the new
+                     * filesystem unless NOICON was given. */
+                    if (!noicon) VFS_CreateTrashcan(mnt_name);
                 }
             }
         } else {

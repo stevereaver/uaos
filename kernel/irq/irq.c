@@ -154,11 +154,91 @@ static volatile uint8_t *ich_rcba(void)
 #define VEC_MSI   3
 
 static int     g_mode = IRQ_MODE_PIC;
+static int     g_pic_fallback = 0;   /* IO-APIC detected but delivery dead
+                                        (probe found no ticks); all new
+                                        attaches ride the 8259 instead. */
+
+void IRQ_PicFallback(void) { g_pic_fallback = 1; }
+int  IRQ_PicFallbackActive(void) { return g_pic_fallback; }
 static uint8_t g_kind[256];    /* VEC_* per vector */
 static uint8_t g_gsi[256];     /* GSI per vector (diagnostics) */
 static int     g_msi_next = 0x60;   /* MSI vector pool 0x60-0x7F */
 
+/* Shared level-triggered lines: on PIIX3-class chipsets several PCI
+ * functions land on the same GSI.  The first attach owns the vector;
+ * later attaches chain so every device gets a chance to ack its INTx. */
+#define IRQ_SHARED_MAX 4
+static ISRHandler  g_shared[256][IRQ_SHARED_MAX];
+static uint8_t     g_shared_n[256];
+static ISRHandler  g_pri[256];   /* primary handler per IRQ-layer vector */
+
+static void irq_shared_dispatch(uint64_t vector, uint64_t error_code)
+{
+    uint8_t n = g_shared_n[(uint8_t)vector];
+    for (uint8_t i = 0; i < n; i++)
+        g_shared[(uint8_t)vector][i](vector, error_code);
+}
+
+/* Returns 0 on success.  Moves the existing primary handler into slot 0
+ * of the chain and installs the fan-out trampoline as the primary. */
+static int irq_shared_add(int vec, ISRHandler handler, const char *name)
+{
+    if (g_kind[vec] != VEC_APIC) return -1;
+    if (g_shared_n[vec] == 0) {
+        ISRHandler pri = g_pri[vec];
+        if (!pri) return -1;
+        g_shared[vec][0] = pri;
+        g_shared_n[vec]  = 1;
+        IDT_SetHandler((uint8_t)vec, irq_shared_dispatch, "shared");
+    }
+    if (g_shared_n[vec] >= IRQ_SHARED_MAX) return -1;
+    g_shared[vec][g_shared_n[vec]++] = handler;
+    kprint("[IRQ] sharing vector "); kprintdec((uint32_t)vec);
+    kprint(" with "); kprint(name ? name : "?"); kprint("\n");
+    return 0;
+}
+
 int IRQ_Mode(void) { return g_mode; }
+
+/* Storm failsafe — sampled once per PIT tick from ISR_Dispatch counters.
+ * A level-triggered line nobody can ack would otherwise saturate the CPU
+ * (observed on VirtualBox: EFI-leftover INTx assertion on a shared GSI).
+ * Threshold 400 dispatches/10 ms (~40k/s); mask + warn once, and the
+ * vector is re-armed if a shared-handler attach re-unmasks the GSI. */
+#define IRQ_STORM_PER_TICK 400
+
+void IRQ_StormTick(void)
+{
+    if (g_mode != IRQ_MODE_IOAPIC) return;
+    static uint64_t last[256];
+    static uint8_t  stormed[256];
+    uint64_t now[256];
+    IDT_SnapshotCounts(now);
+    for (int v = 32; v < 128; v++) {
+        uint64_t d = now[v] - last[v];
+        last[v] = now[v];
+        if (d <= IRQ_STORM_PER_TICK || g_kind[v] != VEC_APIC || stormed[v])
+            continue;
+        stormed[v] = 1;
+        kprint("[IRQ] storm on vector "); kprintdec((uint32_t)v);
+        kprint(" (gsi "); kprintdec(g_gsi[v]); kprint(") — masking\n");
+        IOAPIC_Mask(g_gsi[v]);
+    }
+}
+
+/* Immediate storm break — called from ISR_Dispatch when one vector has
+ * been delivered N times in a row with no other interrupt interleaved.
+ * This is the only detection that works when the storm vector outranks
+ * the PIT (LAPIC serves the highest pending vector, so a storming vec43
+ * starves vec34 and the tick-based check above never runs). */
+void IRQ_StormMask(int vector)
+{
+    if (vector < 32 || vector > 255) return;
+    if (g_kind[vector] != VEC_APIC) return;
+    kprint("[IRQ] storm on vector "); kprintdec((uint32_t)vector);
+    kprint(" (gsi "); kprintdec(g_gsi[vector]); kprint(") — masking\n");
+    IOAPIC_Mask(g_gsi[vector]);
+}
 
 /* ------------------------------------------------------------------ */
 /* ICH8/ICH9-class PCI INTx decoding                                   */
@@ -310,7 +390,7 @@ int IRQ_AttachISA(int isa_irq, ISRHandler handler, const char *name)
 {
     if (isa_irq < 0 || isa_irq > 15) return -1;
 
-    if (g_mode == IRQ_MODE_PIC) {
+    if (g_mode == IRQ_MODE_PIC || g_pic_fallback) {
         int vec = 32 + isa_irq;
         IDT_SetHandler((uint8_t)vec, handler, name);
         g_kind[vec] = VEC_PIC;
@@ -333,6 +413,17 @@ int IRQ_AttachISA(int isa_irq, ISRHandler handler, const char *name)
     return vec;
 }
 
+int IRQ_AttachISAPIC(int isa_irq, ISRHandler handler, const char *name)
+{
+    if (isa_irq < 0 || isa_irq > 15) return -1;
+    int vec = 32 + isa_irq;
+    IDT_SetHandler((uint8_t)vec, handler, name);
+    g_kind[vec] = VEC_PIC;
+    g_gsi[vec]  = (uint8_t)isa_irq;
+    PIC_UnmaskIRQ(isa_irq);
+    return vec;
+}
+
 int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
                   ISRHandler handler, const char *name)
 {
@@ -342,9 +433,12 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
         return -1;
     }
 
-    if (g_mode == IRQ_MODE_PIC) {
+    if (g_mode == IRQ_MODE_PIC || g_pic_fallback) {
         uint8_t line = pci_r8(bus, dev, fn, 0x3C);
         if (line == 0xFF || line >= 16) return -1;
+        uint16_t cmd = pci_r16(bus, dev, fn, 0x04);
+        if (cmd & 0x0400)
+            pci_w16(bus, dev, fn, 0x04, (uint16_t)(cmd & ~0x0400u));
         int vec = 32 + line;
         IDT_SetHandler((uint8_t)vec, handler, name);
         g_kind[vec] = VEC_PIC;
@@ -360,11 +454,38 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
         kprintdec(fn); kprint("\n");
         return -1;
     }
+
+    /* Ensure INTx is allowed to assert — firmware may have left the
+     * PCI command INTx-disable bit (bit 10) set. */
+    {
+        uint16_t cmd = pci_r16(bus, dev, fn, 0x04);
+        if (cmd & 0x0400) {
+            pci_w16(bus, dev, fn, 0x04, (uint16_t)(cmd & ~0x0400u));
+            kprint("[IRQ] cleared INTx-disable on ");
+            kprinthex(bus); kprint(":"); kprinthex(dev); kprint(".");
+            kprintdec(fn); kprint("\n");
+        }
+    }
+
     int vec = 32 + gsi;
+    if (g_kind[vec] == VEC_APIC) {
+        /* Another PCI device already owns this GSI — level-triggered
+         * lines are shared, so chain the handler instead of replacing
+         * it.  Re-unmask in case the storm failsafe masked it while no
+         * handler could ack the line. */
+        if (irq_shared_add(vec, handler, name) != 0) {
+            kprint("[IRQ] shared-vector table full for gsi ");
+            kprintdec((uint32_t)gsi); kprint("\n");
+            return -1;
+        }
+        IOAPIC_Unmask((uint32_t)gsi);
+        return vec;
+    }
     /* PCI INTx is level-triggered, active-low. */
     IOAPIC_ProgramGSI((uint32_t)gsi, (uint8_t)vec,
                       IOAPIC_RTE_LEVEL | IOAPIC_RTE_LOW);
     IDT_SetHandler((uint8_t)vec, handler, name);
+    g_pri[vec]  = handler;
     g_kind[vec] = VEC_APIC;
     g_gsi[vec]  = (uint8_t)gsi;
     IOAPIC_Unmask((uint32_t)gsi);
@@ -450,6 +571,16 @@ void IRQ_Init(uint32_t mb2_phys)
 
     if (ACPI_Present() && IOAPIC_Available()) {
         g_mode = IRQ_MODE_IOAPIC;
+        /* IMCR (MP spec): on PCAT-compat machines a mux defaults to
+         * PIC-mode delivery and must be flipped to symmetric I/O APIC.
+         * QEMU ignores this; VirtualBox models it — without the write
+         * every IRQ goes to the (masked) 8259 and the box wedges at the
+         * first tick-dependent wait.  No-op on hardware without IMCR. */
+        if (ACPI_PcatCompat()) {
+            outb(0x22, 0x70);
+            outb(0x23, 0x01);
+            kprint("[IRQ] IMCR -> symmetric I/O mode\n");
+        }
         IOAPIC_Init();
         kprint("[IRQ] IO-APIC mode\n");
     } else {

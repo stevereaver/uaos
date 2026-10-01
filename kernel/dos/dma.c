@@ -7,6 +7,7 @@
  */
 
 #include "dma.h"
+#include "../klog/klog.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -62,8 +63,9 @@ void *DMA_Alloc(size_t size, size_t alignment)
     
     /* Check if we have enough space */
     if (aligned_offset + size > DMA_POOL_SIZE) {
-        printf("[DMA] Out of DMA memory (requested: %zu, available: %zu)\n",
-               size, DMA_POOL_SIZE - g_dma_pool_offset);
+        KLOG(KLOG_KERN, KLOG_WARN,
+             "[DMA] Out of DMA memory (requested: %zu, available: %zu)",
+             size, DMA_POOL_SIZE - g_dma_pool_offset);
         return NULL;
     }
     
@@ -71,8 +73,8 @@ void *DMA_Alloc(size_t size, size_t alignment)
     void *ptr = (void *)(g_dma_pool + aligned_offset);
     g_dma_pool_offset = aligned_offset + size;
     
-    printf("[DMA] Allocated %zu bytes at %p (phys: 0x%llx)\n",
-           size, ptr, DMA_VirtToPhys(ptr));
+    KLOG(KLOG_KERN, KLOG_DEBUG, "[DMA] Allocated %zu bytes at %p (phys: 0x%llx)",
+         size, ptr, DMA_VirtToPhys(ptr));
     
     return ptr;
 }
@@ -87,5 +89,5 @@ void DMA_Free(void *ptr, size_t size)
     /* For simplicity, we don't implement deallocation from the pool.
      * The pool is reset on reboot. For a more sophisticated system,
      * we would implement a proper allocator with free list tracking. */
-    printf("[DMA] Free not implemented (pool-based allocator)\n");
+    KLOG(KLOG_KERN, KLOG_DEBUG, "[DMA] Free not implemented (pool-based allocator)");
 }

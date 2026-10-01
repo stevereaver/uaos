@@ -5,6 +5,7 @@
  */
 
 #include "task.h"
+#include "syscall_table.h"
 #include "../boot/kprint.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
@@ -42,6 +43,17 @@ int32_t  g_task_bg_job = 0;
 static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
 UaosTask *Task_SwitchPrev = NULL;
+
+/* Deferred-reschedule flag — the SysFlags SF_SAR analogue.  Set when an
+ * IRQ-level do_schedule() is suppressed by Forbid/Disable nesting; the
+ * request would otherwise be dropped and the newly-readied task would
+ * wait for the next unsuppressed tick.  Permit()/Enable() honour it via
+ * Task_CheckResched() when the nesting count unwinds to zero. */
+static volatile int g_need_resched = 0;
+
+/* The EventPump service task — registered by Task_EventPumpEntry so IRQ
+ * and task-context producers can Signal() it via EventPump_Wake(). */
+static UaosTask * volatile g_eventpump_task = NULL;
 
 /* g_wait_tof_task defined in graphics_lib.c (extern in task.h) */
 
@@ -378,10 +390,15 @@ static void do_schedule(int from_irq)
     if (!g_current) return;
 
     if (from_irq) {
-        /* Honour Forbid / Disable nesting — timer ISR only */
-        if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0)
+        /* Honour Forbid / Disable nesting — timer ISR only.  Record the
+         * suppressed reschedule so Permit()/Enable() can dispatch it
+         * when the nesting unwinds instead of dropping it outright. */
+        if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0) {
+            g_need_resched = 1;
             return;
+        }
     }
+    g_need_resched = 0;
 
     UaosTask *prev = g_current;
     if (prev->tc_State == TASK_RUNNING) {
@@ -540,16 +557,40 @@ void Task_IdleEntry(void *arg)
 /* -------------------------------------------------------------------------
  * Event pump — WM/input/network/job servicing (the former Idle body).
  *
- * Runs at handler priority (0), NOT idle priority: it is always runnable
- * (hlt, never blocks), so at -128 strict priority would let any task that
- * wakes every tick starve it forever — which freezes the desktop while
- * the rest of the system looks healthy.  At pri 0 it round-robins with
- * the other pri-0 tasks and gets a fair slice each rotation.
+ * Signal-driven: the pump blocks in Task_WaitTicks() on SIGF_EVENTPUMP
+ * (input drivers, RTC second tick, WM damage, job enqueue), SIGF_NET
+ * (armed via net_rx_notify_arm, kicked by NIC IRQs) and SIGF_CHILD
+ * (pump-spawned tasks such as background jobs exiting).  A 100-tick
+ * timeout is a 1 s safety net matching the menubar-clock cadence.
+ *
+ * Runs at handler priority (0), NOT idle priority: it must respond to
+ * desktop input promptly even while other pri-0 work is queued, and at
+ * -128 strict priority every-tick wakers would starve it forever —
+ * which freezes the desktop while the rest of the system looks healthy.
  * ------------------------------------------------------------------------- */
+void EventPump_Wake(void)
+{
+    UaosTask *t = g_eventpump_task;
+    if (t && t->tc_State != TASK_REMOVED)
+        Signal(t, SIGF_EVENTPUMP);
+    /* From IRQ context also request a reschedule so the woken pump is
+     * dispatched at interrupt exit instead of the next PIT tick.  In
+     * task context this is left to the normal schedule points — calling
+     * Task_ScheduleFromIRQ outside a saved ISR frame corrupts state. */
+    if (g_irq_depth > 0)
+        Task_ScheduleFromIRQ();
+}
+
 void Task_EventPumpEntry(void *arg)
 {
     (void)arg;
     int last_mx = -1, last_my = -1, last_btn = -1, last_btn_right = -1;
+
+    /* Register as the wake target before the first wait; producers that
+     * signalled before this point are still picked up because their
+     * state changes (key buffer, mouse position, damage flag) persist. */
+    g_eventpump_task = Task_Current();
+    net_rx_notify_arm();
 
     for (;;) {
         /* --- Protected section: WM + input + network + jobs --- */
@@ -624,14 +665,13 @@ void Task_EventPumpEntry(void *arg)
         Permit();
         /* --- End protected section --- */
 
-        /* Halt until the next interrupt (timer tick, mouse, keyboard, NIC).
-         * This is critical: after Permit() the scheduler nesting count is
-         * zero, so the timer ISR's do_schedule(1) can switch to a task that
-         * was just signaled (e.g. an Intuition window's IDCMP_CLOSEWINDOW
-         * message waking the guest m68k task).  Without this halt the loop
-         * would re-enter Forbid() before the timer has a chance to fire,
-         * starving any signaled task and making the close gadget unreliable. */
-        __asm__ volatile ("hlt" ::: "memory");
+        /* Block until the next event instead of spinning on hlt: the
+         * producers above Signal() us and IRQ-side wakes reschedule at
+         * interrupt exit (or at Permit via g_need_resched).  Signals
+         * that landed during the work body are latched in tc_SigRecvd,
+         * so this returns immediately when there is pending input.
+         * The timeout is only a safety net for unsignalled producers. */
+        Task_WaitTicks(SIGF_EVENTPUMP | SIGF_NET | SIGF_CHILD, 100);
     }
 }
 
@@ -847,12 +887,37 @@ void Forbid(void)
     if (g_current) g_current->tc_TDNestCnt++;
 }
 
+/* Dispatch a reschedule that was deferred by g_need_resched.  The switch
+ * can only happen on a saved interrupt frame, so we go through the
+ * INT 0x80 syscall ISR (SYSCALL_SCHEDULE → Task_ScheduleFromSyscall →
+ * do_schedule(0)); its epilogue performs the context switch and we resume
+ * here when this task is re-dispatched. */
+static void Task_CheckResched(void)
+{
+    if (!g_current || !g_need_resched) return;
+    if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0) return;
+    if (g_irq_depth > 0) return;   /* called from inside an ISR body */
+
+    uint64_t fl;
+    __asm__ volatile ("pushfq; popq %0" : "=r"(fl));
+    if (!(fl & 0x200)) return;     /* caller holds a raw cli region */
+
+    g_need_resched = 0;
+    uint64_t ret;
+    __asm__ volatile ("int $0x80"
+                      : "=a"(ret)
+                      : "a"((uint64_t)SYSCALL_SCHEDULE)
+                      : "memory", "cc");
+    (void)ret;
+}
+
 void Permit(void)
 {
     if (!g_current) return;
     if (--g_current->tc_TDNestCnt <= 0) {
         g_current->tc_TDNestCnt = 0;
-        /* A task switch is deferred to the next timer tick */
+        /* Run a reschedule an IRQ deferred while we were forbidden. */
+        Task_CheckResched();
     }
 }
 
@@ -871,6 +936,10 @@ void Enable(void)
     if (--g_current->tc_IDNestCnt <= 0) {
         g_current->tc_IDNestCnt = 0;
         __asm__ volatile ("sti");
+        /* Interrupts are back on — a deferred reschedule can dispatch.
+         * Task_CheckResched() no-ops in IRQ context (g_irq_depth > 0),
+         * where Enable() is legal (e.g. virtio_net TX from the NIC ISR). */
+        Task_CheckResched();
     }
 }
 

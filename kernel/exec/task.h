@@ -29,6 +29,7 @@
 #define SIGB_NET       7
 #define SIGB_TP        6   /* bcm5974 mode-reset worker */
 #define SIGB_BREAKF    8
+#define SIGB_EVENTPUMP 9   /* wake bit for the EventPump service task */
 
 #define SIGF_ABORT     (1U << SIGB_ABORT)
 #define SIGF_CHILD     (1U << SIGB_CHILD)
@@ -38,6 +39,7 @@
 #define SIGF_NET       (1U << SIGB_NET)
 #define SIGF_TP        (1U << SIGB_TP)
 #define SIGF_BREAKF    (1U << SIGB_BREAKF)
+#define SIGF_EVENTPUMP (1U << SIGB_EVENTPUMP)
 
 /* -------------------------------------------------------------------------
  * Task type
@@ -221,6 +223,17 @@ extern UaosTask *Task_SwitchPrev;
 /* Task currently blocked inside graphics.library/WaitTOF, signalled by the
  * VBlank path in timer_ProcessTicks().  Defined in graphics_lib.c. */
 extern UaosTask *g_wait_tof_task;
+
+/* IRQ nesting depth (defined in irq/idt.c): >0 while a hardware interrupt
+ * frame is being serviced.  Used to keep task-context operations (deferred
+ * reschedules, EventPump wake dispatch) out of ISR bodies. */
+extern volatile int g_irq_depth;
+
+/* Signal the EventPump task (SIGF_EVENTPUMP) — IRQ- and task-context safe.
+ * Producers: PS/2 kbd/mouse, USB-HID, bcm5974 trackpad, RTC second tick,
+ * WM damage, background-job enqueue.  When called from IRQ context it also
+ * requests a reschedule so the pump can run at interrupt exit. */
+void EventPump_Wake(void);
 
 /* -------------------------------------------------------------------------
  * Signal / Wait / Critical sections

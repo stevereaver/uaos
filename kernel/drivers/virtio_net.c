@@ -43,15 +43,15 @@
 #include "../irq/irq.h"
 #include "../exec/task.h"
 #include "../net/stack.h"   /* net_rx_kick */
+#include "../klog/klog.h"
 #include <stdint.h>
 #include <stddef.h>
 
-/* Serial debug (COM1 = 0x3F8) */
-static inline void _vn_ob(uint16_t p,uint8_t v){__asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p));}
-static inline uint8_t _vn_ib(uint16_t p){uint8_t v;__asm__ volatile("inb %1,%0":"=a"(v):"Nd"(p));return v;}
-static void _vn_pc(char c){while((_vn_ib(0x3FD)&0x20)==0){}_vn_ob(0x3F8,(uint8_t)c);if(c=='\n'){while((_vn_ib(0x3FD)&0x20)==0){}_vn_ob(0x3F8,'\r');}}
-static void _vn_ps(const char *s){while(*s)_vn_pc(*s++);}
-static void _vn_ph(uint32_t v){static const char h[]="0123456789ABCDEF";_vn_ps("0x");for(int i=28;i>=0;i-=4)_vn_pc(h[(v>>i)&0xF]);}
+/* Debug output goes through klog at DEBUG level — raw UART writes used
+ * to bypass the level filter and ~30 lines per boot visibly stalled
+ * VirtualBox (each char polls LSR with a VM exit per inb). */
+static void _vn_ps(const char *s){ klog_puts(KLOG_VIRTIO, KLOG_DEBUG, s); }
+static void _vn_ph(uint32_t v){ klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "0x%08x", v); }
 
 /* forward declared in idt.h as void (*ISRHandler)(uint64_t vector, uint64_t error_code) */
 
@@ -917,8 +917,10 @@ static int vnet_setup_queue(uint16_t qidx,
 static void virtio_net_irq_handler(uint64_t vector, uint64_t error_code)
 {
     (void)error_code;
-    if (!g_up) return;
+    /* Read ISR unconditionally — the read is the INTx ack.  Skipping it
+     * when !g_up leaves a level-triggered line asserted forever. */
     uint8_t isr = vn_isr_read();
+    if (!g_up) { IRQ_EOI((int)vector); return; }
     if (isr & 1) {
         virtio_net_poll();
         /* Wake net consumers blocked in Task_WaitTicks(SIGF_NET) and
@@ -1048,6 +1050,11 @@ int virtio_net_init(void)
 
     /* Kick RX queue so device knows buffers are available immediately */
     vn_queue_notify(0);
+
+    /* Drain any ISR status the device latched during firmware/setup —
+     * a pending assert on a shared INTx line storms the moment some
+     * other driver unmasks the GSI. */
+    (void)vn_isr_read();
 
     g_up = 1;
     return 1;

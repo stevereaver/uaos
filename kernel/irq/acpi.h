@@ -56,4 +56,8 @@ int ACPI_IsaToGsi(int isa_irq, uint16_t *flags_out);
 /* PCIe ECAM (enhanced config) base from MCFG, 0 if absent. */
 uint64_t ACPI_EcamBase(void);
 
+/* MADT flags bit0 — system has a dual-8259 PIC (PC-AT compatible), so an
+ * IMCR register (ports 0x22/0x23) may gate interrupt routing. */
+int ACPI_PcatCompat(void);
+
 #endif

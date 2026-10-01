@@ -83,6 +83,8 @@ typedef struct {
     UsbDev  *dev;                /* device for the reset worker */
     UaosTask *reset_task;        /* deferred mode-reset worker */
     int      resets;             /* mode-reset attempts so far */
+    int      px, py;             /* last tracked pad position */
+    int      fslot;              /* finger slot being tracked */
 } Bcm5974;
 
 static Bcm5974 g_tp;
@@ -219,18 +221,34 @@ static void bcm5974_tp_cb(void *ctx, void *buf, int len)
             continue;                       /* finger lifted */
 
         int ax = rd16s(f + TF_ABS_X);
-        int ay = rd16s(f + TF_ABS_Y);       /* y is inverted vs screen */
+        int ay = rd16s(f + TF_ABS_Y);       /* pad y is inverted vs screen */
 
-        /* map pad coords → screen coords */
-        int sx = (ax - WS2_X_MIN) * mx / (WS2_X_MAX - WS2_X_MIN);
-        int sy = (WS2_Y_MAX - ay) * my / (WS2_Y_MAX - WS2_Y_MIN);
-        if (sx < 0) sx = 0; else if (sx > mx) sx = mx;
-        if (sy < 0) sy = 0; else if (sy > my) sy = my;
+        /* Relative motion: finger-down — or a different finger slot
+         * taking over — re-bases the origin without moving the cursor.
+         * Subsequent reports move by the pad delta scaled so a full
+         * pad sweep covers ~1.5 screen widths. */
+        if (!g_tp.had_finger || g_tp.fslot != i) {
+            g_tp.px = ax;
+            g_tp.py = ay;
+            g_tp.fslot = i;
+            g_tp.had_finger = 1;
+            return;
+        }
 
-        g_mouse.x = sx;
-        g_mouse.y = sy;
-        Cursor_Move(sx, sy);
-        g_tp.had_finger = 1;
+        int dx = ax - g_tp.px;
+        int dy = g_tp.py - ay;
+        g_tp.px = ax;
+        g_tp.py = ay;
+
+        int nx = g_mouse.x + dx * 3 * mx / (2 * (WS2_X_MAX - WS2_X_MIN));
+        int ny = g_mouse.y + dy * 3 * my / (2 * (WS2_Y_MAX - WS2_Y_MIN));
+        if (nx < 0) nx = 0; else if (nx > mx) nx = mx;
+        if (ny < 0) ny = 0; else if (ny > my) ny = my;
+
+        g_mouse.x = nx;
+        g_mouse.y = ny;
+        Cursor_Move(nx, ny);
+        EventPump_Wake();
         return;
     }
     g_tp.had_finger = 0;
@@ -245,6 +263,7 @@ static void bcm5974_bt_cb(void *ctx, void *buf, int len)
     if (len != BT_DATALEN_T1) return;
     const uint8_t *d = (const uint8_t *)buf;
     g_mouse.btn_left = d[1] ? 1 : 0;
+    EventPump_Wake();
 }
 
 /* ------------------------------------------------------------------ */

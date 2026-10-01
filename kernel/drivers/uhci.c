@@ -476,7 +476,10 @@ static void uhci_scan_intr(UhciHc *h)
              * means the device never answers (mode switch failed?) or
              * the HC never reaches the QH — log td[0] once to tell. */
             if (++p->stall_n == 400) {   /* ~4 s at 100 Hz poll */
-                klog_puts(KLOG_USB, KLOG_WARN, "uhci: intr pipe=");
+                klog_puts(KLOG_USB, KLOG_WARN, "uhci: intr hc=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             (uint32_t)(h - g_hc));
+                klog_puts(KLOG_USB, KLOG_WARN, " pipe=");
                 klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
                 klog_puts(KLOG_USB, KLOG_WARN, " idle td0=");
                 klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
@@ -485,7 +488,11 @@ static void uhci_scan_intr(UhciHc *h)
             }
             continue;
         }
-        p->stall_n = 0;
+        /* NAK-suspend is the normal idle state — it must NOT reset the
+         * stall counter or the idle log re-fires forever on devices
+         * whose NAK retires interleave with all-active stretches. */
+        if (eflag != 2)
+            p->stall_n = 0;
 
         /* Count newly completed TDs (indices p->ndone .. end-1, plus
          * end itself when it completed normally). */
@@ -550,14 +557,39 @@ void UHCI_Poll(void)
 static void uhci_irq_handler(uint64_t vector, uint64_t error_code)
 {
     (void)error_code;
+    int serviced = 0;
     for (int i = 0; i < g_nhc; i++) {
         UhciHc *h = &g_hc[i];
         if (h->irq_vec != (int)vector) continue;
         uint16_t st = rg16(h, U_USBSTS);
+        if (st) serviced = 1;
         w16(h, U_USBSTS, st);            /* W1C ack */
         uhci_scan_intr(h);
     }
     IRQ_EOI((int)vector);
+
+    /* Shared level-triggered line: a dispatch where no HC had any
+     * status bits means another function on the PIRQ asserted it and
+     * we cannot clear it.  Log occasionally; if it turns into a storm,
+     * mask the GSI rather than wedge the machine. */
+    if (!serviced) {
+        static uint32_t spur[64];
+        uint64_t g = vector - 32;
+        if (g >= 64) return;
+        uint32_t n = ++spur[g];
+        if (n == 1 || (n & 0x3FF) == 0) {
+            klog_puts(KLOG_USB, KLOG_WARN, "uhci: spurious irq gsi=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)g);
+            klog_puts(KLOG_USB, KLOG_WARN, " count=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", n);
+            klog_puts(KLOG_USB, KLOG_WARN, "\n");
+        }
+        if (n >= 100000) {
+            IRQ_Mask((int)g);
+            klog_puts(KLOG_USB, KLOG_WARN, "uhci: masked storming gsi\n");
+            spur[g] = 0;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */

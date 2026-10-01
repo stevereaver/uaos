@@ -149,6 +149,13 @@ static inline void wrmsr(uint32_t msr, uint64_t val)
     __asm__ volatile ("wrmsr" :: "a"(lo), "d"(hi), "c"(msr));
 }
 
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
 /* Forward declarations (defined further down) */
 void kprint(const char *s);
 void kprinthex(uint64_t v);
@@ -167,6 +174,22 @@ static void APIC_Init(void)
     }
 
     uint32_t *lapic = (uint32_t *)(apic_base & 0xFFFFF000);
+
+    /* Sanitise firmware leftovers — VirtualBox's emulated LAPIC (NEM
+     * LocalApicEmulation) can boot with a non-zero TPR or stale LVT
+     * entries, which silently drops every IO-APIC delivery. */
+    lapic[0x080 / 4] = 0;           /* TPR: accept all priorities       */
+    lapic[0x0B0 / 4] = 0;           /* EOI: clear any pending ISR bit   */
+    lapic[0x0E0 / 4] = 0xFFFFFFFF;  /* DFR: flat model                  */
+    lapic[0x0D0 / 4] = 1;           /* LDR: logical id 1 << 0           */
+
+    /* Mask all LVT entries except LINT0 (ExtINT, handled below). */
+    lapic[0x2F0 / 4] = 0x10000;     /* CMCI         masked */
+    lapic[0x320 / 4] = 0x10000;     /* LVT Timer    masked */
+    lapic[0x330 / 4] = 0x10000;     /* Thermal      masked */
+    lapic[0x340 / 4] = 0x10000;     /* PerfMon      masked */
+    lapic[0x360 / 4] = 0x10000;     /* LVT LINT1    masked */
+    lapic[0x370 / 4] = 0x10000;     /* LVT Error    masked */
 
     /* Spurious Interrupt Vector Register (SVR) at offset 0x0F0 */
     uint32_t svr = lapic[0x0F0 / 4];
@@ -255,10 +278,20 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
     (void)vector; (void)error_code;
     g_pit_ticks++;
+    IRQ_StormTick();
     net_stack_tick();
     timer_ProcessTicks();
     Task_WakeTimers();       /* re-ready tasks whose sleep deadline passed */
     Task_ScheduleFromIRQ();
+}
+
+/* Counting-only IRQ handler for the pre-scheduler delivery probe —
+ * the real PIT handler schedules, which cannot run this early. */
+static volatile uint64_t g_irq_probe_hits = 0;
+static void IRQProbe_Handler(uint64_t vector, uint64_t error_code)
+{
+    (void)vector; (void)error_code;
+    g_irq_probe_hits++;
 }
 
 /* -----------------------------------------------------------------------
@@ -475,6 +508,20 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * without a serial port (MacBookPro4,1). */
     Dbgcon_Init(mb2_info_phys);
 
+    /* Kernel log verbosity — "loglevel=<name>" on the cmdline sets the
+     * default threshold for all subsystems (unparsed until now, so the
+     * grub "loglevel=info" on Normal Boot did nothing and DEBUG spam
+     * reached fbcon/serial). */
+    {
+        int lvl = KLOG_DEBUG;                    /* historical default */
+        if      (Mb2_CmdlineHas(mb2_info_phys, "loglevel=off"))   lvl = KLOG_OFF;
+        else if (Mb2_CmdlineHas(mb2_info_phys, "loglevel=err"))   lvl = KLOG_ERR;
+        else if (Mb2_CmdlineHas(mb2_info_phys, "loglevel=warn"))  lvl = KLOG_WARN;
+        else if (Mb2_CmdlineHas(mb2_info_phys, "loglevel=info"))  lvl = KLOG_INFO;
+        else if (Mb2_CmdlineHas(mb2_info_phys, "loglevel=trace")) lvl = KLOG_TRACE;
+        klog_set_level(-1, lvl);
+    }
+
     /* Initialise framebuffer from Multiboot2 info */
     kprint("[BOOT] Initialising framebuffer...\n");
     FB_Init(mb2_info_phys);
@@ -527,14 +574,26 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] WARNING: no audio backend available.\n");
     }
 
+    /* Chipset/floppy/audio self-test battery — bring-up diagnostics that
+     * scribble the framebuffer and cost boot time.  Only run on demand:
+     * "selftest" on the cmdline, or any debug/trace loglevel. */
+    int run_selftests =
+        Mb2_CmdlineHas(mb2_info_phys, "selftest") ||
+        Mb2_CmdlineHas(mb2_info_phys, "loglevel=debug") ||
+        Mb2_CmdlineHas(mb2_info_phys, "loglevel=trace");
+    if (!run_selftests)
+        kprint("[BOOT] Self-tests skipped (add 'selftest' to enable)\n");
+
     /* Run audio subsystem tests */
+    kprint("[BOOT] Initialising floppy subsystem...\n");
+    floppy_make_test_adf();   /* loads the RAM ADF that backs DF0: */
+
+    if (run_selftests) {
     kprint("[BOOT] Running audio sine-wave test...\n");
     audio_sine_test();
     kprint("[BOOT] Running audio pattern test...\n");
     audio_pattern_test();
 
-    kprint("[BOOT] Initialising floppy subsystem...\n");
-    floppy_make_test_adf();
     kprint("[BOOT] Running disk DMA test...\n");
     int disk_test = chip_emu_disk_dma_test();
     kprint(disk_test ? "[BOOT] Disk DMA test PASSED\n" : "[BOOT] Disk DMA test FAILED\n");
@@ -589,6 +648,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running AGA sprite subpixel test...\n");
     int sprite_subpixel_test = chip_emu_sprite_subpixel_test();
     kprint(sprite_subpixel_test ? "[BOOT] AGA sprite subpixel test PASSED\n" : "[BOOT] AGA sprite subpixel test FAILED\n");
+    } /* run_selftests — first battery */
 
     /* Register all built-in ROM library modules */
     kprint("[BOOT] Registering ROM modules...\n");
@@ -627,6 +687,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] Floppy block device registration failed.\n");
     }
 
+    if (run_selftests) {
     kprint("[BOOT] Running floppy block-device test...\n");
     int floppy_blk_test = floppy_block_device_test();
     kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
@@ -678,12 +739,15 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running Agnus slot table test...\n");
     int agnus_test = chip_emu_agnus_slot_test();
     kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
+    } /* run_selftests */
 
     /* The chipset self-tests scribble into the framebuffer — restore the
      * splash so it stays up through the driver/storage init phase, and
      * hold it briefly (init is fast enough that it would only flash by). */
-    Splash_Show();
-    Splash_Dwell();
+    if (run_selftests) {
+        Splash_Show();
+        Splash_Dwell();
+    }
 
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");
@@ -888,6 +952,62 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * are decoded and forwarded to the AGA/ECS emulator. */
     IDT_SetRawHandler(14, uaos_page_fault_isr);
 
+    /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
+     * kernel timing (network poll pacing, yield_ms, ntp guards) and must
+     * tick regardless of whether a framebuffer is present. */
+    kprint("[BOOT] Programming PIT (100 Hz)...\n");
+    int pit_vec;
+    {
+        pit_vec = IRQ_AttachISA(0, PIT_IRQHandler, "PIT timer");
+        if (pit_vec < 0)
+            kprint("[BOOT] WARNING: PIT IRQ0 not routed\n");
+    }
+    {
+        uint16_t divisor = (uint16_t)(1193180UL / 100UL);
+        outb(0x43, 0x36);
+        outb(0x40, (uint8_t)(divisor & 0xFF));
+        outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+    }
+    kprint("[BOOT] PIT active.\n");
+
+    /* PIT delivery probe — must run BEFORE any other IRQ line is
+     * unmasked and with a counting-only handler: the real handler calls
+     * Task_ScheduleFromIRQ which does not exist until the scheduler is
+     * up, so letting it run here GP-faults the boot. */
+    if (IRQ_Mode() == IRQ_MODE_IOAPIC && pit_vec >= 0) {
+        g_irq_probe_hits = 0;
+        IDT_SetHandler((uint8_t)pit_vec, IRQProbe_Handler, "probe");
+        uint64_t t0 = rdtsc();
+        __asm__ volatile ("sti");
+        while (g_irq_probe_hits < 3 && (rdtsc() - t0) < 500000000ULL)
+            __asm__ volatile ("pause");
+        __asm__ volatile ("cli");
+        if (g_irq_probe_hits == 0) {
+            kprint("[BOOT] WARNING: no PIT ticks via IO-APIC — "
+                   "8259 fallback\n");
+            IRQ_PicFallback();
+            int pv = IRQ_AttachISAPIC(0, IRQProbe_Handler, "probe");
+            if (pv >= 0) {
+                t0 = rdtsc();
+                __asm__ volatile ("sti");
+                while (g_irq_probe_hits < 2 &&
+                       (rdtsc() - t0) < 500000000ULL)
+                    __asm__ volatile ("pause");
+                __asm__ volatile ("cli");
+                if (g_irq_probe_hits)
+                    IDT_SetHandler((uint8_t)pv, PIT_IRQHandler,
+                                   "PIT timer");
+                else
+                    PIC_MaskIRQ(0);
+            }
+            kprint("[BOOT] PIC fallback ticks=");
+            kprintdec((uint32_t)g_pit_ticks + (uint32_t)g_irq_probe_hits);
+            kprint("\n");
+        } else {
+            IDT_SetHandler((uint8_t)pit_vec, PIT_IRQHandler, "PIT timer");
+        }
+    }
+
     /* Register VirtIO interrupt handler (must be after IDT/PIC init) */
     kprint("[BOOT] Registering VirtIO IRQ...\n");
     virtio_blk_setup_irq();
@@ -901,23 +1021,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         extern void UHCI_SetupIRQs(void);
         UHCI_SetupIRQs();
     }
-
-    /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
-     * kernel timing (network poll pacing, yield_ms, ntp guards) and must
-     * tick regardless of whether a framebuffer is present. */
-    kprint("[BOOT] Programming PIT (100 Hz)...\n");
-    {
-        int vec = IRQ_AttachISA(0, PIT_IRQHandler, "PIT timer");
-        if (vec < 0)
-            kprint("[BOOT] WARNING: PIT IRQ0 not routed\n");
-    }
-    {
-        uint16_t divisor = (uint16_t)(1193180UL / 100UL);
-        outb(0x43, 0x36);
-        outb(0x40, (uint8_t)(divisor & 0xFF));
-        outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
-    }
-    kprint("[BOOT] PIT active.\n");
 
     /* Initialise PS/2 mouse/keyboard and RTC only when a display is present */
     if (g_fb.valid) {
@@ -992,6 +1095,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("\n");
 
     kprint("[BOOT] Opening shell window...\n");
+    /* The WM/shell now owns the framebuffer — stop the debug console
+     * from painting klog lines over it (ring + UART unaffected). */
+    Dbgcon_Suspend();
     ShellWin_Init();
 
     /* Set shell-only mode before Startup-Sequence runs */

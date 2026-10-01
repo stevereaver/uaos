@@ -11,6 +11,7 @@
 #include "idt.h"
 #include "irq.h"
 #include "../display/cursor.h"
+#include "../exec/task.h"
 #include <stdint.h>
 
 /* P4: set to 1 to re-enable the per-packet serial dump in the IRQ handler.
@@ -266,6 +267,10 @@ void PS2Mouse_IRQHandler(uint64_t vector, uint64_t error_code)
 #endif
 
     Cursor_Move(new_x, new_y);
+
+    /* Full packet decoded — wake the event pump so the WM sees the
+     * pointer state at IRQ exit instead of the next tick. */
+    EventPump_Wake();
 
     IRQ_EOI((int)vector);
 }

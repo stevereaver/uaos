@@ -29,6 +29,16 @@ int  IRQ_Mode(void);            /* IRQ_MODE_PIC or IRQ_MODE_IOAPIC */
  * vector, or -1 on failure. */
 int  IRQ_AttachISA(int isa_irq, ISRHandler handler, const char *name);
 
+/* Force-attach on the legacy 8259 PIC regardless of routing mode —
+ * survival fallback when IO-APIC delivery is confirmed dead. */
+int  IRQ_AttachISAPIC(int isa_irq, ISRHandler handler, const char *name);
+
+/* Called when the boot-time PIT probe proves the IO-APIC is not
+ * delivering; subsequent ISA/PCI attaches use the 8259 paths so the
+ * machine stays functional instead of hanging on a dead APIC path. */
+void IRQ_PicFallback(void);
+int  IRQ_PicFallbackActive(void);
+
 /* Attach a handler to a PCI function's INTx pin.  The GSI is resolved
  * from chipset routing registers (ICH8/ICH9 DxxIP/DxxIR + PIRQx_ROUT)
  * with the PCI interrupt-line register as fallback.  Returns the IDT
@@ -50,5 +60,10 @@ void IRQ_EOI(int vector);
 /* Mask/unmask by GSI (IO-APIC mode) or legacy IRQ (PIC mode). */
 void IRQ_Mask(int gsi);
 void IRQ_Unmask(int gsi);
+
+/* Per-tick interrupt-storm failsafe — call from the PIT handler.
+ * Compares ISR_Dispatch counters against the previous tick and masks
+ * any APIC vector whose rate exceeds the storm threshold. */
+void IRQ_StormTick(void);
 
 #endif

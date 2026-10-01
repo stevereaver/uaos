@@ -18,6 +18,7 @@
 #include "rtc.h"
 #include "../display/desktop.h"
 #include "../net/ntp.h"
+#include "../exec/task.h"
 #include <stdint.h>
 
 
@@ -233,8 +234,10 @@ void RTC_IRQHandler(uint64_t vec, uint64_t err)
     /* Advance the live UTC epoch counter */
     ntp_tick_epoch();
 
-    /* Redraw clock in menu bar */
+    /* Redraw clock in menu bar — the actual repaint is deferred to the
+     * event pump, so wake it for the once-per-second flush. */
     Desktop_UpdateClock();
+    EventPump_Wake();
 }
 
 /* -------------------------------------------------------------------------

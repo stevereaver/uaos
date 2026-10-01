@@ -168,6 +168,11 @@ int VFS_GetComment(const char *path, char *dst, int max);
 /* Set comment of a file/directory. Returns 0 on success, -1 on failure. */
 int VFS_SetComment(const char *path, const char *comment);
 
+/* Create the Trashcan drawer (VOL:Trashcan + WB_GARBAGE .info) on a
+ * mounted volume root.  Called by format paths unless NOICON is given,
+ * and once at boot for RAM: (which is "formatted" at init). */
+void VFS_CreateTrashcan(const char *vol_name);
+
 /* Rename a volume. Returns 0 on success, -1 if not found. */
 int VFS_RenameVol(const char *old_name, const char *new_name);
 

@@ -1436,9 +1436,12 @@ static const BlockDevOps vio_scsi_ops = {
 
 static void vio_scsi_irq_handler(uint64_t vector, uint64_t error_code) {
     (void)error_code;
-    if (!g_active) return;
+    /* Always read ISR first — it is the only INTx ack.  If the device
+     * asserted before g_active (e.g. a pending queue/config notification
+     * the moment we cleared INTx-disable), returning early would leave
+     * the level line asserted forever -> interrupt storm. */
     uint8_t isr = vio_isr_read();
-    if (isr & 1)
+    if (g_active && (isr & 1))
         g_irq_pending = 1;
     IRQ_EOI((int)vector);
 }

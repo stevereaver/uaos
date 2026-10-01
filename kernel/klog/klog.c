@@ -104,6 +104,7 @@ static int kfmt(char *dst, int cap, const char *fmt, va_list ap)
 
         int is64 = 0;
         while (*p == 'l') { is64 = 1; p++; }
+        if (*p == 'z' || *p == 't' || *p == 'j') { is64 = 1; p++; }
         if (!*p) break;
 
         switch (*p) {

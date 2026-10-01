@@ -109,6 +109,7 @@ static const uint8_t k_guid_acpi10[16] = {
 /* ------------------------------------------------------------------ */
 
 static int          g_acpi_ok   = 0;
+static int          g_pcat      = 0;
 static uint32_t     g_lapic     = 0xFEE00000;
 static uint64_t     g_ecam      = 0;
 static AcpiIoApic   g_ioapics[ACPI_MAX_IOAPICS];
@@ -261,6 +262,7 @@ static void parse_madt(const SdtHeader *madt)
 {
     const MadtBody *body = (const MadtBody *)(madt + 1);
     g_lapic = body->lapic_addr;
+    g_pcat  = (body->flags & 1) != 0;
 
     const uint8_t *p   = (const uint8_t *)(body + 1);
     const uint8_t *end = (const uint8_t *)madt + madt->length;
@@ -341,6 +343,7 @@ void ACPI_Init(uint32_t mb2_phys)
 }
 
 int      ACPI_Present(void)        { return g_acpi_ok; }
+int      ACPI_PcatCompat(void)     { return g_pcat; }
 uint32_t ACPI_LapicBase(void)      { return g_lapic; }
 int      ACPI_NumIoApics(void)     { return g_nioapics; }
 const AcpiIoApic *ACPI_IoApic(int i) { return (i >= 0 && i < g_nioapics) ? &g_ioapics[i] : 0; }
