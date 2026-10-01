@@ -105,6 +105,15 @@ static void parse_config(UsbDev *dev, const uint8_t *buf, uint16_t len)
                    blen >= sizeof(UsbEpDesc)) {
             const UsbEpDesc *ed = (const UsbEpDesc *)(buf + off);
             uint8_t xfer = ed->bmAttributes & 0x3;
+            klog_puts(KLOG_USB, KLOG_DEBUG, "usb: ep if=");
+            klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", cur->ifnum);
+            klog_puts(KLOG_USB, KLOG_DEBUG, " addr=");
+            klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
+                         ed->bEndpointAddress);
+            klog_puts(KLOG_USB, KLOG_DEBUG, " mps=");
+            klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
+                         ed->wMaxPacketSize);
+            klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
             if ((ed->bEndpointAddress & USB_EP_DIR_IN) &&
                 xfer == USB_EP_XFER_INT && !cur->int_ep) {
                 cur->int_ep = ed->bEndpointAddress & 0x0F;
@@ -136,8 +145,19 @@ static void enumerate_port(UsbHc *hc, int port)
     UsbDeviceDesc *dd = (UsbDeviceDesc *)DMA_Alloc(256, 64);
     if (!dd) return;
 
-    /* First 8 bytes of the device descriptor → ep0 max packet */
-    if (get_desc(dev, USB_DESC_DEVICE, 0, dd, 8) != 0) {
+    /* First 8 bytes of the device descriptor → ep0 max packet.
+     * Devices (hubs especially) need recovery time after port reset —
+     * the spec minimum is 10 ms but real hardware often wants more.
+     * Retry with a settle delay rather than abandoning enumeration. */
+    int ok = 0;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (get_desc(dev, USB_DESC_DEVICE, 0, dd, 8) == 0) {
+            ok = 1;
+            break;
+        }
+        usb_msleep(50);
+    }
+    if (!ok) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: GET_DESCRIPTOR(8) failed\n");
         return;
     }

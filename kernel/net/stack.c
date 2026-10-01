@@ -8,6 +8,7 @@
 #include "tcp.h"
 #include "dhcp.h"
 #include "net_device.h"
+#include "../exec/task.h"
 
 static int    g_up          = 0;
 static ipv4_t g_ip          = 0;
@@ -74,6 +75,54 @@ int  net_stack_is_up(void)     { return g_up; }
 int  net_stack_dhcp_used(void) { return g_dhcp_used; }
 void net_stack_poll(void)      { if (g_up) netdev_poll(); }
 void net_stack_tick(void)      { if (g_up) tcp_tick(); }
+
+/* -------------------------------------------------------------------------
+ * RX notify — event-driven wake for net consumers.
+ *
+ * Tasks that poll net_stack_poll() in a loop (telnetd pump + listener,
+ * remote-shell output retry, ...) arm a slot once, then block in
+ * Task_WaitTicks(SIGF_NET, ...).  When a NIC IRQ records completed RX
+ * frames the driver calls net_rx_kick(), which signals every armed task
+ * — the consumer wakes in the same interrupt instead of at the next
+ * 100 Hz tick boundary (~10 ms -> sub-ms interactive latency).
+ * ------------------------------------------------------------------------- */
+#define NET_RX_NOTIFY_MAX 8    /* telnetd listener + 4 pumps + misc */
+
+static UaosTask * volatile g_rx_notify[NET_RX_NOTIFY_MAX];
+
+void net_rx_notify_arm(void)
+{
+    UaosTask *cur = Task_Current();
+    if (!cur) return;
+    __asm__ volatile("cli" ::: "memory");
+    for (int i = 0; i < NET_RX_NOTIFY_MAX; i++)
+        if (g_rx_notify[i] == cur) goto done;   /* already armed */
+    for (int i = 0; i < NET_RX_NOTIFY_MAX; i++)
+        if (!g_rx_notify[i]) { g_rx_notify[i] = cur; break; }
+done:
+    __asm__ volatile("sti");
+}
+
+void net_rx_notify_disarm(void *task)
+{
+    if (!task) return;
+    __asm__ volatile("cli" ::: "memory");
+    for (int i = 0; i < NET_RX_NOTIFY_MAX; i++)
+        if (g_rx_notify[i] == task) g_rx_notify[i] = 0;
+    __asm__ volatile("sti");
+}
+
+void net_rx_kick(void)
+{
+    /* Callable from IRQ context: Signal() preserves IF.  Skip removed
+     * tasks — a slot can outlive its owner if the task exits between
+     * drain and Task_Exit's disarm. */
+    for (int i = 0; i < NET_RX_NOTIFY_MAX; i++) {
+        UaosTask *t = g_rx_notify[i];
+        if (t && t->tc_State != TASK_REMOVED)
+            Signal(t, SIGF_NET);
+    }
+}
 ipv4_t net_stack_get_ip(void)  { return g_ip; }
 ipv4_t net_stack_get_dns(void) { return g_dns; }
 

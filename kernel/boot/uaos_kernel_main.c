@@ -43,6 +43,7 @@
 #include "chipset/chip_emu.h"
 #include "klog/klog.h"
 #include "mb2mod.h"
+#include "exec/mtrr.h"
 #include "uaos_emu.h"
 
 /* -----------------------------------------------------------------------
@@ -479,11 +480,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     FB_Init(mb2_info_phys);
     if (g_fb.valid) {
         kprint("[BOOT] Framebuffer ready: ");
-        kprinthex((uint64_t)g_fb.width);
+        kprintdec((uint32_t)g_fb.width);
         kprint("x");
-        kprinthex((uint64_t)g_fb.height);
+        kprintdec((uint32_t)g_fb.height);
         kprint(" ");
-        kprinthex((uint64_t)g_fb.bpp);
+        kprintdec((uint32_t)g_fb.bpp);
         kprint("bpp\n");
     } else {
         kprint("[BOOT] WARNING: No framebuffer from bootloader.\n");
@@ -860,6 +861,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     /* Set up interrupts — IDT must be loaded before STI */
     kprint("[BOOT] Initialising IDT...\n");
     IDT_Init();
+
+    /* Mark the framebuffer write-combining — firmware leaves GPU BARs
+     * uncached, which makes every pixel write a discrete bus cycle and
+     * full-screen updates visibly slow (MacBookPro4,1 8600M GT).
+     * Runs after IDT_Init so a #GP on the MSR writes produces a
+     * diagnosable exception dump rather than a silent triple fault.
+     * "nomtrr" on the cmdline skips it. */
+    if (g_fb.valid && !Mb2_CmdlineHas(mb2_info_phys, "nomtrr") &&
+        MTRR_MarkWC(g_fb.phys_addr,
+                    (uint64_t)g_fb.pitch * (uint64_t)g_fb.height) == 0)
+        kprint("[BOOT] Framebuffer WC caching enabled.\n");
+
     kprint("[BOOT] Initialising TSS/GDT (user segments)...\n");
     GDT_InitTSS();
     kprint("[BOOT] Initialising PIC...\n");
@@ -958,6 +971,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     extern void Task_EventPumpEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
     Task_CreateNative("EventPump", 0, Task_EventPumpEntry, NULL);
+
+    /* Deferred bcm5974 mode-reset worker — only if a trackpad claimed
+     * during USB enum (runs before TaskScheduler_Init, so the task is
+     * created here). */
+    {
+        extern void BCM5974_StartWorker(void);
+        BCM5974_StartWorker();
+    }
 
     kprint("[BOOT] Initialising userspace GUI windows...\n");
     UserWindow_Init();

@@ -45,6 +45,17 @@ void net_stack_poll(void);
 /* Called from PIT tick handler for TCP timers */
 void net_stack_tick(void);
 
+/* RX notify: consumers that block on net_stack_poll() arm themselves
+ * once via net_rx_notify_arm() (registers the *calling* task), then
+ * block in Task_WaitTicks(SIGF_NET, timeout).  NIC drivers call
+ * net_rx_kick() when RX completions are pending task-side delivery —
+ * armed tasks wake at interrupt time, not at the next PIT tick.
+ * net_rx_notify_disarm() clears a task's slot; Task_Exit calls it for
+ * exiting tasks automatically. */
+void net_rx_notify_arm(void);
+void net_rx_notify_disarm(void *task);
+void net_rx_kick(void);
+
 /* Returns our assigned IP address */
 ipv4_t net_stack_get_ip(void);
 

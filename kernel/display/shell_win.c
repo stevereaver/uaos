@@ -353,7 +353,11 @@ static void remote_send_raw(ShellInstance *s, const uint8_t *data, int len)
                 s->remote_dead = 1;
                 return;
             }
+            /* Sleep until the peer's ACK arrives (SIGF_NET kick) or the
+             * next tick — was a bare net_stack_poll() busy-spin. */
+            net_rx_notify_arm();
             net_stack_poll();
+            Task_WaitTicks(SIGF_NET, 1);
             continue;
         }
         stall_start = g_pit_ticks;

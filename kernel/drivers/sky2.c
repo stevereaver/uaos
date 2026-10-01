@@ -26,8 +26,10 @@
  */
 
 #include "sky2.h"
+#include "sky2_golden.h"   /* Linux golden register dump (real-HW bring-up) */
 #include "../irq/idt.h"    /* IDT_SetHandler */
 #include "../irq/irq.h"    /* IRQ_AttachPCI, IRQ_EOI */
+#include "../exec/task.h"  /* Task_ScheduleFromIRQ */
 #include "../klog/klog.h"
 #include "../dos/dma.h"
 #include <string.h>
@@ -185,6 +187,8 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define Q_CSR            0x34
 #define Q_TEST           0x38
 #define Q_WM             0x40
+#define Q_RL             0x4a    /*  8 bit  FIFO Read Level */
+#define Q_WL             0x4e    /*  8 bit  FIFO Write Level */
 
 #define BMU_FIFO_OP_ON   (1u << 7)
 #define BMU_FIFO_ENA     (1u << 5)
@@ -207,7 +211,9 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define PREF_UNIT_LAST_IDX  0x04
 #define PREF_UNIT_ADDR_LO   0x08
 #define PREF_UNIT_ADDR_HI   0x0c
+#define PREF_UNIT_GET_IDX   0x10
 #define PREF_UNIT_PUT_IDX   0x14
+#define PREF_UNIT_FIFO_LEV  0x2c
 
 #define PREF_UNIT_RST_SET   0x1
 #define PREF_UNIT_RST_CLR   0x2
@@ -239,6 +245,7 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define RX_GMF_UP_THR    0x0c58
 #define RX_GMF_LP_THR    0x0c5a
 #define TX_GMF_CTRL_T    0x0d48
+#define TX_GMF_AE_THR    0x0d44
 #define GMAC_TI_ST_CTRL  0x0e18
 #define GMAC_CTRL        0x0f00
 #define GPHY_CTRL        0x0f04
@@ -257,6 +264,7 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define GMF_RST_CLR      0x2
 #define GMF_OPER_ON      0x8
 #define GMF_RX_F_FL_ON   0x80
+#define TX_STFW_ENA      (1u << 30)  /* Tx GMAC FIFO store & forward */
 #define GMT_ST_STOP      0x2
 #define GMT_ST_CLR_IRQ   0x1
 #define RX_TRUNC_ON      (1u << 27)
@@ -286,6 +294,7 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define STAT_LIST_ADDR_HI  0x0e8c
 #define STAT_TX_IDX_TH     0x0e98
 #define STAT_PUT_IDX       0x0e9c
+#define STAT_FIFO_LEVEL    0x0ea8
 #define STAT_FIFO_WM       0x0eac
 #define STAT_FIFO_ISR_WM   0x0ead
 #define STAT_LEV_TIMER_INI 0x0eb0
@@ -390,6 +399,7 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define GM_PHY_ADDR      0x0088
 #define GM_MIB_CNT_BASE  0x0100
 #define GM_MIB_CNT_END   0x025C
+#define GM_TXF_BC_OK     (GM_MIB_CNT_BASE + 200)  /* bcast frames tx'd */
 
 /* GM_GP_CTRL bits */
 #define GM_GPCR_TX_ENA       (1u << 12)
@@ -527,6 +537,7 @@ static inline void gma_w16(int port, uint32_t reg, uint16_t v)
 #define OP_RXSTAT    0x60
 #define OP_TXINDEXLE 0x68
 #define CSS_LINK_BIT 0x01
+#define TX_LE_EOP    (1u << 7)   /* ctrl byte: end-of-packet marker */
 
 /* Chip IDs we accept at PCI probe */
 static const uint16_t k_sky2_devids[] = {
@@ -544,8 +555,12 @@ static const uint16_t k_sky2_devids[] = {
  * ------------------------------------------------------------------------- */
 #define SKY2_RX_LES      128   /* RX list elements (2 per buffer) */
 #define SKY2_RX_BUFS     48    /* posted receive buffers */
-#define SKY2_TX_LES      64    /* TX list elements */
+#define SKY2_TX_LES      128   /* TX list elements — matches Linux (LAST_IDX 0x7F);
+                                * at 64 the chip ran GET past 0x3F and reported
+                                * done=0x40, so TX died on the first wrap */
+#define SKY2_TX_BUFSZ    1536  /* per-LE TX bounce buffer */
 #define SKY2_STATUS_LES  256   /* status ring entries */
+#define SKY2_RING_ALIGN  32768 /* LE/status ring base alignment (HW ignores low bits) */
 
 typedef struct __attribute__((packed)) {
     uint32_t addr;
@@ -579,15 +594,19 @@ static Sky2RxLE     *g_rx_le = 0;
 static Sky2TxLE     *g_tx_le = 0;
 static Sky2StatusLE *g_st_le = 0;
 static uint8_t      *g_rx_buf = 0;   /* SKY2_RX_BUFS * SKY2_RX_BUFSZ */
+static uint8_t      *g_tx_buf = 0;   /* SKY2_TX_LES * SKY2_TX_BUFSZ */
 
 static uint16_t g_rx_put  = 0;   /* next RX LE to write */
 static uint16_t g_rx_next = 0;   /* next RX buffer expected to complete */
+static uint16_t g_rx_len[SKY2_RX_BUFS];   /* 0 = errored frame, drop */
+static uint16_t g_rx_deliv   = 0;         /* next buffer to deliver */
+static uint16_t g_rx_pending = 0;         /* completed, not yet delivered */
 static uint16_t g_tx_prod = 0;   /* next TX LE to write */
 static uint16_t g_tx_done = 0;   /* last TX LE index reported complete */
 static uint16_t g_st_idx  = 0;   /* next status entry to consume */
-static volatile uint8_t g_poll_lock = 0;
 
 static sky2_rx_cb g_rx_cb = 0;
+static void (*g_notify_cb)(void) = 0;   /* fired when RX completions land */
 
 /* -------------------------------------------------------------------------
  * Delay helpers
@@ -673,6 +692,35 @@ static int pci_find_sky2(uint8_t *bus_out, uint8_t *dev_out,
                 uint16_t cmd = pci_read16((uint8_t)bus, dev, fn, 0x04);
                 pci_write16((uint8_t)bus, dev, fn, 0x04,
                             (uint16_t)(cmd | 0x06)); /* MEM | BusMaster */
+
+                /* Match the PCIe config Linux ends up with on this chip:
+                 * DevCtl = all error reporting on + MaxReadReq 2048B
+                 * (Linux negotiates 0x400f via pcie_set_readrq), and a
+                 * cache-line size of 0x40.  Without the error-report
+                 * bits, posted-write failures never reach the AER regs.
+                 * CRITICAL: also clear NoSnoop (bit 11) and Relaxed
+                 * Ordering (bit 4) — both default to 1 at PCIe reset.
+                 * With NoSnoop set the chip's DMA writes bypass CPU
+                 * cache snooping, so the status ring stays at its stale
+                 * cached zeros while STAT_PUT_IDX advances — and stale
+                 * descriptor reads latch CHK_* errors on both queues. */
+                if (!(pci_read16((uint8_t)bus, dev, fn, 0x0C) & 0xFF))
+                    pci_write16((uint8_t)bus, dev, fn, 0x0C, 0x40);
+                for (uint8_t cap = (uint8_t)(pci_read32((uint8_t)bus, dev, fn, 0x34) & 0xFF);
+                     cap && cap != 0xFF;
+                     cap = (uint8_t)((pci_read32((uint8_t)bus, dev, fn, cap) >> 8) & 0xFF)) {
+                    if ((pci_read32((uint8_t)bus, dev, fn, cap) & 0xFF) != 0x10)
+                        continue;   /* not the PCIe cap */
+                    uint16_t dc0 = pci_read16((uint8_t)bus, dev, fn, cap + 0x08);
+                    uint16_t dc = (uint16_t)((dc0 & ~0xF810u) | 0x000F | (4 << 12));
+                    pci_write16((uint8_t)bus, dev, fn, cap + 0x08, dc);
+                    uint16_t dc1 = pci_read16((uint8_t)bus, dev, fn, cap + 0x08);
+                    klog_puts(KLOG_SKY2, KLOG_DEBUG, "devctl=");
+                    klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", (uint32_t)dc0);
+                    klog_puts(KLOG_SKY2, KLOG_DEBUG, "->");
+                    klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X\n", (uint32_t)dc1);
+                    break;
+                }
 
                 *bus_out = (uint8_t)bus;
                 *dev_out = dev;
@@ -829,6 +877,18 @@ static void sky2_mac_init(int port)
     /* Tx MAC FIFO */
     w8(SK_REG(port, TX_GMF_CTRL_T), GMF_RST_CLR);
     w16(SK_REG(port, TX_GMF_CTRL_T), GMF_OPER_ON);
+
+    /* Chips without an internal RAM buffer (B2_E_0 reads 0 — e.g. the
+     * 88E8058/EC_U in the MacBookPro4,1): pause is MAC-level and the TX
+     * FIFO must be switched to store-and-forward or fetched packets
+     * never reach the wire (observed: prefetch GET advances, zero
+     * status entries, silent TX hang).  Mirrors Linux sky2_set_tx_stfwd
+     * + the RX pause thresholds. */
+    if (!g_has_ram_buffer) {
+        w16(SK_REG(port, RX_GMF_UP_THR), 1024 / 8);
+        w16(SK_REG(port, RX_GMF_LP_THR), 768 / 8);
+        w32(SK_REG(port, TX_GMF_CTRL_T), TX_STFW_ENA);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -875,6 +935,11 @@ static void sky2_prefetch_init(uint16_t q, uint64_t addr, uint32_t last)
     w16(Y2_QADDR(q, PREF_UNIT_LAST_IDX), (uint16_t)last);
     w32(Y2_QADDR(q, PREF_UNIT_CTRL), PREF_UNIT_OP_ON);
     r32(Y2_QADDR(q, PREF_UNIT_CTRL));
+    uint32_t rb = r32(Y2_QADDR(q, PREF_UNIT_ADDR_LO));
+    uint16_t lrb = r16(Y2_QADDR(q, PREF_UNIT_LAST_IDX));
+    if (rb != (uint32_t)addr || lrb != (uint16_t)last)
+        KLOG(KLOG_SKY2, KLOG_WARN, "pref q=0x%08X addr=0x%08X/0x%08X last=0x%08X/0x%08X MISMATCH",
+             (uint32_t)q, (uint32_t)addr, rb, last, (uint32_t)lrb);
 }
 
 /* -------------------------------------------------------------------------
@@ -909,6 +974,8 @@ static void sky2_rx_start(int port)
     (void)port;
     g_rx_put = 0;
     g_rx_next = 0;
+    g_rx_deliv = 0;
+    g_rx_pending = 0;
     sky2_qset(Q_R1);
 
     /* PCIe: lower the FIFO watermark for better performance */
@@ -939,8 +1006,34 @@ static void sky2_rx_start(int port)
 /* -------------------------------------------------------------------------
  * Status ring processing
  * ------------------------------------------------------------------------- */
-static void sky2_drain_status(void)
+/* Concurrency model.  The status ring is drained from three places —
+ * sky2_send() while it waits for its TX index, sky2_poll() from any task,
+ * and the IRQ handler — and tasks are preemptible.  So:
+ *   - draining never calls into the net stack; it runs with interrupts
+ *     off and only records completions: TX index -> g_tx_done, RX frame
+ *     -> per-buffer length, pushed onto an in-order pending FIFO
+ *     (buffers complete in LE order, so the FIFO is just a counter).
+ *   - delivery happens only from sky2_poll(): pop one buffer, copy it to
+ *     the caller's stack and resubmit it to the chip atomically (so the
+ *     buffer/LE order can never permute, however calls nest or tasks
+ *     interleave), then run the RX callback with interrupts on.
+ * There is no global "someone is draining" gate, so a task that sleeps
+ * or is preempted inside the RX callback cannot stall anyone else. */
+static inline uint64_t sky2_irq_save(void)
 {
+    uint64_t f;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+static inline void sky2_irq_restore(uint64_t f)
+{
+    __asm__ volatile("pushq %0; popfq" :: "r"(f) : "memory", "cc");
+}
+
+static int sky2_drain_status(void)
+{
+    int rx_new = 0;
+    uint64_t fl = sky2_irq_save();
     while (g_st_idx != r16(STAT_PUT_IDX)) {
         Sky2StatusLE *le = &g_st_le[g_st_idx];
         uint8_t opcode = le->opcode;
@@ -950,6 +1043,12 @@ static void sky2_drain_status(void)
         uint16_t length = le->length;
         uint32_t status = le->status;
         uint16_t count = (uint16_t)((status & GMR_FS_LEN) >> 16);
+        klog_puts(KLOG_SKY2, KLOG_TRACE, "st#"); klog_appendf(KLOG_SKY2, KLOG_TRACE, "0x%08X",
+            (uint32_t)g_st_idx);
+        klog_puts(KLOG_SKY2, KLOG_TRACE, " op="); klog_appendf(KLOG_SKY2, KLOG_TRACE, "0x%08X",
+            (uint32_t)opcode);
+        klog_puts(KLOG_SKY2, KLOG_TRACE, " st="); klog_appendf(KLOG_SKY2, KLOG_TRACE, "0x%08X\n",
+            status);
         le->opcode = 0;
         g_st_idx = (g_st_idx + 1) & (SKY2_STATUS_LES - 1);
 
@@ -957,16 +1056,16 @@ static void sky2_drain_status(void)
         case OP_RXSTAT: {
             /* Data already DMA'd into rx buffer g_rx_next.  If the DMA
              * length doesn't match the PHY's frame length the packet was
-             * truncated — drop it. */
-            uint8_t *buf = g_rx_buf + g_rx_next * SKY2_RX_BUFSZ;
-            if (!(status & GMR_FS_ANY_ERR) && (status & GMR_FS_RX_OK) &&
-                length == count &&
-                length > 0 && length <= SKY2_RX_BUFSZ && g_rx_cb) {
-                g_rx_cb(buf, length);
+             * truncated — mark it for drop.  Delivery + resubmit happen
+             * later in sky2_rx_deliver(). */
+            int ok = !(status & GMR_FS_ANY_ERR) && (status & GMR_FS_RX_OK) &&
+                     length == count && length > 0 && length <= SKY2_RX_BUFSZ;
+            if (g_rx_pending < SKY2_RX_BUFS) {
+                g_rx_len[g_rx_next] = ok ? length : 0;
+                g_rx_next = (uint16_t)((g_rx_next + 1) % SKY2_RX_BUFS);
+                g_rx_pending++;
+                rx_new = 1;
             }
-            sky2_rx_submit(g_rx_next);
-            g_rx_next = (g_rx_next + 1) % SKY2_RX_BUFS;
-            sky2_rx_update();
             break;
         }
         case OP_TXINDEXLE:
@@ -979,6 +1078,38 @@ static void sky2_drain_status(void)
     }
     /* Fully processed: clear status IRQ */
     w32(STAT_CTRL, SC_STAT_CLR_IRQ);
+    sky2_irq_restore(fl);
+
+    /* New RX completions are waiting for task-side delivery — wake any
+     * consumer blocked in Task_WaitTicks(SIGF_NET) at interrupt time
+     * instead of the next 100 Hz poll tick.  net_rx_kick() is IRQ-safe.
+     * The IRQ handler uses the return value to reschedule at IRQ exit. */
+    if (rx_new && g_notify_cb)
+        g_notify_cb();
+    return rx_new;
+}
+
+/* Deliver completed RX frames to the net stack.  Re-entrant: each frame
+ * is popped, copied and its buffer resubmitted under cli, then the
+ * callback runs on a private stack copy with interrupts restored. */
+static void sky2_rx_deliver(void)
+{
+    uint8_t frame[SKY2_RX_BUFSZ];
+    for (;;) {
+        uint64_t fl = sky2_irq_save();
+        if (!g_rx_pending) { sky2_irq_restore(fl); break; }
+        uint16_t idx = g_rx_deliv;
+        uint16_t len = g_rx_len[idx];
+        if (len)
+            memcpy(frame, g_rx_buf + idx * SKY2_RX_BUFSZ, len);
+        g_rx_deliv = (uint16_t)((idx + 1) % SKY2_RX_BUFS);
+        g_rx_pending--;
+        sky2_rx_submit(idx);
+        sky2_rx_update();
+        sky2_irq_restore(fl);
+        if (len && g_rx_cb)
+            g_rx_cb(frame, len);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -1020,6 +1151,10 @@ static void sky2_reset(void)
     /* disable ASF firmware unit */
     w8(B28_Y2_ASF_STAT_CMD, Y2_ASF_RESET);
     w16(B0_CTST, Y2_ASF_DISABLE);
+    /* ASF owns the status list if alive — log its state so a stuck unit
+     * is visible during real-HW bring-up */
+    klog_puts(KLOG_SKY2, KLOG_DEBUG, "asf="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X\n",
+        r32(B28_Y2_ASF_STAT_CMD));
 
     /* software reset */
     w8(B0_CTST, CS_RST_SET);
@@ -1078,9 +1213,31 @@ static void sky2_reset(void)
     uint64_t st_dma = (uint64_t)(uintptr_t)g_st_le;
 
     w32(STAT_CTRL, SC_STAT_RST_SET);
-    w32(STAT_CTRL, SC_STAT_RST_CLR);
+    /* CSR writes while the unit is still in reset may land in the
+     * address latch before RST_CLR samples it — program the base now
+     * too (harmless if the block ignores them). */
     w32(STAT_LIST_ADDR_LO, (uint32_t)st_dma);
     w32(STAT_LIST_ADDR_HI, (uint32_t)(st_dma >> 32));
+    w16(STAT_LAST_IDX, SKY2_STATUS_LES - 1);
+    w32(STAT_CTRL, SC_STAT_RST_CLR);
+
+    /* On the 88E8058 the status block ignores register writes for a
+     * window after reset release — poll the readback until the list
+     * base actually sticks (observed: immediate rb returned 0 and all
+     * status DMA then went to PA 0). */
+    uint32_t stlo_rb = 0;
+    for (int i = 0; i < 100000; i++) {
+        w32(STAT_LIST_ADDR_LO, (uint32_t)st_dma);
+        w32(STAT_LIST_ADDR_HI, (uint32_t)(st_dma >> 32));
+        stlo_rb = r32(STAT_LIST_ADDR_LO);
+        if (stlo_rb == (uint32_t)st_dma)
+            break;
+        __asm__ volatile("pause" ::: "memory");
+    }
+    klog_puts(KLOG_SKY2, KLOG_DEBUG, "stle_dma="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+        (uint32_t)st_dma);
+    klog_puts(KLOG_SKY2, KLOG_DEBUG, " rb="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X\n",
+        stlo_rb);
     w16(STAT_LAST_IDX, SKY2_STATUS_LES - 1);
     w16(STAT_TX_IDX_TH, 10);
     w8(STAT_FIFO_WM, 16);
@@ -1089,6 +1246,10 @@ static void sky2_reset(void)
     w32(STAT_ISR_TIMER_INI, 125u * 20);
     w32(STAT_LEV_TIMER_INI, 125u * 100);
     w32(STAT_CTRL, SC_STAT_OP_ON);
+    /* One more poke post-enable in case the BMU samples the base
+     * lazily at OP_ON rather than at reset release. */
+    w32(STAT_LIST_ADDR_LO, (uint32_t)st_dma);
+    w32(STAT_LIST_ADDR_HI, (uint32_t)(st_dma >> 32));
     w8(STAT_TX_TIMER_CTRL, TIM_START);
     w8(STAT_LEV_TIMER_CTRL, TIM_START);
     w8(STAT_ISR_TIMER_CTRL, TIM_START);
@@ -1113,8 +1274,16 @@ static void sky2_irq_handler(uint64_t vector, uint64_t error_code)
     if (status & Y2_IS_IRQ_PHY1)
         gm_phy_read(0, PHY_MARV_INT_STAT);   /* ack PHY irq */
 
-    sky2_drain_status();
+    /* Record completions only; frames are delivered to the net stack
+     * from task context in sky2_poll(), never from interrupt context. */
+    int rx_new = sky2_drain_status();
     r32(B0_Y2_SP_LISR);   /* unmask interrupts */
+
+    /* Armed net consumers were just SIGF_NET-signalled: reschedule now
+     * so the isr_common epilogue switches straight into the woken task
+     * rather than waiting out the current 100 Hz tick. */
+    if (rx_new)
+        Task_ScheduleFromIRQ();
     IRQ_EOI((int)vector);
 }
 
@@ -1172,12 +1341,19 @@ int sky2_init(void)
         klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%s0x%08X", i ? ":" : "", g_mac[i]);
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
 
-    /* Allocate descriptor rings + buffers */
-    g_rx_le  = (Sky2RxLE *)    DMA_Alloc(SKY2_RX_LES * sizeof(Sky2RxLE), 64);
-    g_tx_le  = (Sky2TxLE *)    DMA_Alloc(SKY2_TX_LES * sizeof(Sky2TxLE), 64);
-    g_st_le  = (Sky2StatusLE *)DMA_Alloc(SKY2_STATUS_LES * sizeof(Sky2StatusLE), 64);
+    /* Allocate descriptor rings + buffers.  The prefetch-unit and
+     * status-list base registers drop address bits [11:0] on real
+     * silicon (88E8058 read back 0x031CD000 for both the TX ring and the
+     * status ring, which were 0x200 apart) — so a sub-4K-aligned ring
+     * makes the chip fetch LEs from / write status to the wrong place.
+     * FreeBSD msk uses 32 KB alignment (MSK_RING_ALIGN/MSK_STAT_ALIGN);
+     * Linux gets page-aligned coherent memory.  Match FreeBSD. */
+    g_rx_le  = (Sky2RxLE *)    DMA_Alloc(SKY2_RX_LES * sizeof(Sky2RxLE), SKY2_RING_ALIGN);
+    g_tx_le  = (Sky2TxLE *)    DMA_Alloc(SKY2_TX_LES * sizeof(Sky2TxLE), SKY2_RING_ALIGN);
+    g_st_le  = (Sky2StatusLE *)DMA_Alloc(SKY2_STATUS_LES * sizeof(Sky2StatusLE), SKY2_RING_ALIGN);
     g_rx_buf = (uint8_t *)     DMA_Alloc(SKY2_RX_BUFS * SKY2_RX_BUFSZ, 64);
-    if (!g_rx_le || !g_tx_le || !g_st_le || !g_rx_buf) {
+    g_tx_buf = (uint8_t *)     DMA_Alloc(SKY2_TX_LES * SKY2_TX_BUFSZ, 64);
+    if (!g_rx_le || !g_tx_le || !g_st_le || !g_rx_buf || !g_tx_buf) {
         klog_puts(KLOG_SKY2, KLOG_ERR, "DMA_Alloc failed\n");
         return 0;
     }
@@ -1224,9 +1400,12 @@ int sky2_init(void)
     w8(SK_REG(0, LNK_LED_REG),
        LINKLED_ON | LINKLED_BLINK_OFF | LINKLED_LINKSYNC_OFF);
 
-    /* Keep device interrupts masked until sky2_setup_irq() has a handler
-     * installed — poll mode works without them. */
-    w32(B0_IMSK, 0);
+    /* Unmask the base IRQ sources now.  Linux never moves traffic with
+     * B0_IMSK==0, and on this silicon the status-BMU writeback may be
+     * coupled to the IRQ-enable state.  The INTx line isn't routed on
+     * the MacBook (IRQ attach fails), so asserting it is harmless; the
+     * driver remains in poll mode. */
+    w32(B0_IMSK, Y2_IS_BASE | Y2_IS_PORT_1);
     r32(B0_IMSK);
 
     /* wait for PHY link (autoneg) */
@@ -1243,6 +1422,20 @@ int sky2_init(void)
         klog_puts(KLOG_SKY2, KLOG_WARN, "link not up (cable?)\n");
 
     g_up = 1;
+    /* Attach interrupts *now*, not after DHCP: on this silicon the
+     * status-BMU writeback is coupled to the IRQ path, and Linux runs
+     * traffic with MSI enabled.  Falling back to INTx is fine. */
+    sky2_setup_irq();
+
+    /* Clear any descriptor-checker IRQs latched during init (the BMU
+     * sees zeroed ring slots with opcode 0 as invalid).  If CHK bits
+     * reappear in the timeout dump the checker is still rejecting our
+     * LEs; staying clear means they were init noise / stale reads. */
+    w32(Q_ADDR(Q_XA1, Q_CSR), BMU_CLR_IRQ_CHK);
+    w32(Q_ADDR(Q_R1, Q_CSR), BMU_CLR_IRQ_CHK);
+    uint32_t sp0 = r32(B0_Y2_SP_ISRC2);
+    w32(B0_Y2_SP_ICR, 2);
+    klog_puts(KLOG_SKY2, KLOG_DEBUG, "sp_init="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X\n", sp0);
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "init OK\n");
     return 1;
 }
@@ -1254,33 +1447,100 @@ void sky2_get_mac(uint8_t *buf)
     for (int i = 0; i < 6; i++) buf[i] = g_mac[i];
 }
 
+/* True once the chip's completed index has reached or moved past
+ * `target` (the index just after our LE), modulo the ring. */
+static int sky2_tx_reached(uint16_t target)
+{
+    const uint16_t m = SKY2_TX_LES - 1;
+    return ((g_tx_done - target) & m) <= ((g_tx_prod - target) & m);
+}
+
 int sky2_send(const uint8_t *data, uint16_t len)
 {
     if (!g_up || !g_regs || !data || len > SKY2_MTU) return 0;
 
+    /* Claim an LE and publish it atomically: sends come from several
+     * preemptible tasks, so the slot claim + PUT update must not
+     * interleave.  The frame is copied into a driver-owned per-LE
+     * buffer so the caller may reuse its buffer immediately. */
+    uint64_t fl = sky2_irq_save();
+    /* Ring full: prod+1 would land on done — overwriting an in-flight
+     * LE's bounce buffer mid-DMA.  Drop and let the caller retry; all
+     * existing callers (send_buf / remote_send_raw) already loop. */
+    if (((g_tx_prod + 1) & (SKY2_TX_LES - 1)) == g_tx_done) {
+        sky2_irq_restore(fl);
+        return 0;
+    }
     uint16_t idx = g_tx_prod;
+    uint8_t *txb = g_tx_buf + (uint32_t)idx * SKY2_TX_BUFSZ;
+    memcpy(txb, data, len);
     Sky2TxLE *le = &g_tx_le[idx];
-    le->ctrl = 0;
-    le->addr = (uint32_t)(uintptr_t)data;
+    le->ctrl = TX_LE_EOP;   /* single-LE packet: mark end-of-packet */
+    le->addr = (uint32_t)(uintptr_t)txb;
     le->length = len;
     le->opcode = OP_PACKET | HW_OWNER;
     g_tx_prod = (g_tx_prod + 1) & (SKY2_TX_LES - 1);
+    uint16_t target = g_tx_prod;
 
     __asm__ volatile("mfence" ::: "memory");
     w16(Y2_QADDR(Q_XA1, PREF_UNIT_PUT_IDX), g_tx_prod);
+    sky2_irq_restore(fl);
 
-    /* Synchronous completion: drain status ring until the TX index
-     * report catches up with our LE. */
-    uint16_t target = g_tx_prod;
+    /* Synchronous completion: drain status ring (records completions
+     * only — never re-enters the net stack) until the TX index report
+     * has reached or passed our LE.  "Passed" matters: a concurrent
+     * send completes later LEs and the chip reports only the newest
+     * index, so an equality test would spin to timeout. */
     uint32_t spin = 0;
-    while (g_tx_done != target && spin < 2000000) {
+    while (!sky2_tx_reached(target) && spin < 2000000) {
         sky2_drain_status();
         __asm__ volatile("pause" ::: "memory");
         spin++;
     }
-    if (g_tx_done != target) {
+    if (!sky2_tx_reached(target)) {
         klog_puts(KLOG_SKY2, KLOG_DEBUG, "TX timeout done="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", g_tx_done);
         klog_puts(KLOG_SKY2, KLOG_DEBUG, " want="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", target); klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
+        /* Pipeline stage levels, ordered to fit the fbcon width:
+         * get  = LEs the prefetch unit consumed
+         * pfl  = prefetch FIFO level (LEs fetched, not eaten by TX-BMU)
+         * qwl  = TX FIFO write level (packet bytes DMA'd into chip)
+         * qrl  = TX FIFO read level (bytes the MAC drained)
+         * gp   = GM_GP_STAT: MAC link state (bit12 = LINK_UP)
+         * txbc = bcast frames on wire; stput = status writebacks */
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, "  get="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            r16(Y2_QADDR(Q_XA1, PREF_UNIT_GET_IDX)));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " pfl="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            (uint32_t)r8(Y2_QADDR(Q_XA1, PREF_UNIT_FIFO_LEV)));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " qwl="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            (uint32_t)r8(Q_ADDR(Q_XA1, Q_WL)));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " qrl="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X\n",
+            (uint32_t)r8(Q_ADDR(Q_XA1, Q_RL)));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, "  gp="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            (uint32_t)gma_r16(0, GM_GP_STAT));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " txbc="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            (uint32_t)gma_r16(0, GM_TXF_BC_OK));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " stput="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            r16(STAT_PUT_IDX));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " hwe="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
+            r32(B0_HWE_ISRC));
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " aer="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X\n",
+            r32(Y2_CFG_AER + PCI_ERR_UNCOR_STATUS));
+        /* Full register diff only once per boot — it's ~25 fbcon lines */
+        static int dumped = 0;
+        if (dumped++) return 0;
+        /* Register diff vs the live Linux golden dump captured on this
+         * exact machine — prints off:ours/linux for every mismatch,
+         * three per line so nothing runs off the fbcon edge. */
+        unsigned nd = 0;
+        for (unsigned i = 0; i < sizeof(k_linux_regs)/sizeof(k_linux_regs[0]); i++) {
+            uint32_t ours = r32(k_linux_regs[i].off);
+            if (ours == k_linux_regs[i].val) continue;
+            if (!(nd & 3)) klog_puts(KLOG_SKY2, KLOG_DEBUG, "  df");
+            klog_appendf(KLOG_SKY2, KLOG_DEBUG, " %04X:%08X/%08X",
+                k_linux_regs[i].off, ours, k_linux_regs[i].val);
+            if (++nd & 3) {} else klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
+        }
+        if (nd & 3) klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
         return 0;
     }
     return 1;
@@ -1290,13 +1550,9 @@ void sky2_poll(void)
 {
     if (!g_up || !g_regs) return;
 
-    uint8_t locked = __sync_lock_test_and_set(&g_poll_lock, 1);
-    if (locked) return;
-
     /* PHY link events don't gate RX processing for a poll-mode driver */
     sky2_drain_status();
-
-    __sync_lock_release(&g_poll_lock);
+    sky2_rx_deliver();
 }
 
 void sky2_set_rx_callback(sky2_rx_cb cb)
@@ -1304,9 +1560,15 @@ void sky2_set_rx_callback(sky2_rx_cb cb)
     g_rx_cb = cb;
 }
 
+void sky2_set_notify_cb(void (*fn)(void))
+{
+    g_notify_cb = fn;
+}
+
 void sky2_setup_irq(void)
 {
-    if (!g_up) return;
+    static int attached = 0;
+    if (!g_up || attached) return;   /* sky2_init and netdev both call us */
 
     /* Prefer MSI (Yukon-2 is a PCIe device); fall back to INTx. */
     int vec = IRQ_AttachMSI(g_bus, g_dev, g_fn, sky2_irq_handler, "sky2");
@@ -1316,6 +1578,7 @@ void sky2_setup_irq(void)
         klog_puts(KLOG_SKY2, KLOG_WARN, "IRQ attach failed — poll mode\n");
         return;
     }
+    attached = 1;
 
     /* Handler installed: unmask device interrupts (base + port 0). */
     w32(B0_IMSK, Y2_IS_BASE | Y2_IS_PORT_1);

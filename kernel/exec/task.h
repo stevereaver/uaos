@@ -27,6 +27,7 @@
 #define SIGB_SINGLE    4
 #define SIGB_INTUITION 5
 #define SIGB_NET       7
+#define SIGB_TP        6   /* bcm5974 mode-reset worker */
 #define SIGB_BREAKF    8
 
 #define SIGF_ABORT     (1U << SIGB_ABORT)
@@ -35,6 +36,7 @@
 #define SIGF_SINGLE    (1U << SIGB_SINGLE)
 #define SIGF_INTUITION (1U << SIGB_INTUITION)
 #define SIGF_NET       (1U << SIGB_NET)
+#define SIGF_TP        (1U << SIGB_TP)
 #define SIGF_BREAKF    (1U << SIGB_BREAKF)
 
 /* -------------------------------------------------------------------------
@@ -231,6 +233,12 @@ uint32_t Wait(uint32_t sigmask);
  * tc_wake_tick deadline and is re-readied by Task_WakeTimers.  Unlike
  * Wait() it does not take signals — it is purely time-driven. */
 void     Task_SleepTicks(uint64_t ticks);
+
+/* Wait() with a timeout: block until any signal in `sigmask` arrives or
+ * `ticks` PIT ticks (100 Hz) elapse, whichever comes first.  Returns the
+ * received bits (0 on timeout).  Lets event-driven consumers (e.g. net
+ * RX via SIGF_NET) wake at interrupt time instead of the next tick. */
+uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks);
 
 /* Re-ready wait-queue tasks whose tc_wake_tick deadline has passed.
  * Called from the PIT interrupt handler once per tick. */

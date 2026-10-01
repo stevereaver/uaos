@@ -45,6 +45,11 @@ void sky2_poll(void);
 /* Register the function called for every received Ethernet frame. */
 void sky2_set_rx_callback(sky2_rx_cb cb);
 
+/* Register a hook invoked (from IRQ or task context) whenever the status
+ * drain records new RX completions.  The net layer uses it to wake
+ * consumers blocked in Task_WaitTicks(SIGF_NET). */
+void sky2_set_notify_cb(void (*fn)(void));
+
 /* Register the IRQ handler with the unified IRQ layer. */
 void sky2_setup_irq(void);
 

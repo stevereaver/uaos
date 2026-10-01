@@ -84,6 +84,13 @@ static void pci_w16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint16_t 
     d = (d & ~(0xFFFFu << sh)) | ((uint32_t)v << sh);
     pci_w32(bus, dev, fn, off & 0xFC, d);
 }
+static void pci_w8(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint8_t v)
+{
+    uint32_t d = pci_r32(bus, dev, fn, off & 0xFC);
+    uint32_t sh = (off & 3) * 8;
+    d = (d & ~(0xFFu << sh)) | ((uint32_t)v << sh);
+    pci_w32(bus, dev, fn, off & 0xFC, d);
+}
 
 /* Extended config space via ECAM (offsets >= 0x100). */
 static int ecam_avail(void) { return ACPI_EcamBase() != 0; }
@@ -101,6 +108,40 @@ static uint32_t ecam_r32(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t off)
 static uint16_t ecam_r16(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t off)
 {
     return *(volatile uint16_t *)ecam_addr(bus, dev, fn, off);
+}
+
+/* Root Complex Base Address block — LPC bridge (00:1f.0) config 0xF0.
+ * The DxxIP/DxxIR interrupt-map registers live in RCBA MMIO space, NOT
+ * in PCI config space (offsets 0x31xx exceed the 4 KB ECAM window —
+ * reading them via ECAM returns garbage 0xFF). */
+#define LPC_RCBA_REG   0xF0
+#define RCBA_ENABLE    0x01
+#define RCBA_BASE_MASK 0xFFFFC000u   /* 16 KB window */
+#define RCBA_DEFAULT   0xFED1C000u   /* conventional chipset assignment */
+
+static volatile uint8_t *g_rcba;
+static int g_rcba_tried;
+
+static volatile uint8_t *ich_rcba(void)
+{
+    if (g_rcba_tried) return g_rcba;
+    g_rcba_tried = 1;
+    uint32_t v = pci_r32(0, 31, 0, LPC_RCBA_REG);
+    if (!(v & RCBA_ENABLE) || !(v & RCBA_BASE_MASK)) {
+        /* Firmware left the block undecoded — give it the conventional
+         * chipset MMIO window. */
+        pci_w32(0, 31, 0, LPC_RCBA_REG, RCBA_DEFAULT | RCBA_ENABLE);
+        v = pci_r32(0, 31, 0, LPC_RCBA_REG);
+        if (!(v & RCBA_ENABLE) || !(v & RCBA_BASE_MASK)) {
+            kprint("[IRQ] ich-route: RCBA unavailable (0xF0=");
+            kprinthex(v); kprint(")\n");
+            return 0;
+        }
+        kprint("[IRQ] ich-route: assigned RCBA ");
+        kprinthex(v & RCBA_BASE_MASK); kprint("\n");
+    }
+    g_rcba = (volatile uint8_t *)(uintptr_t)(v & RCBA_BASE_MASK);
+    return g_rcba;
 }
 
 /* ------------------------------------------------------------------ */
@@ -142,35 +183,100 @@ static int ich_dir_off(uint8_t dev)
 
 static int lpc_is_intel_ich(void)
 {
-    uint16_t v = pci_r16(0, 31, 0, 0x00);
-    return v == 0x8086;
+    if (pci_r16(0, 31, 0, 0x00) != 0x8086) return 0;
+    /* Restrict to real ICH8/9/10 LPC bridge DIDs — PIIX3 (QEMU) is also
+     * vendor 8086 but has no RCBA at cfg 0xF0. */
+    uint16_t did = pci_r16(0, 31, 0, 0x02);
+    return (did >= 0x2810 && did <= 0x281F) ||   /* ICH8  */
+           (did >= 0x2910 && did <= 0x291F) ||   /* ICH9  */
+           (did >= 0x3A10 && did <= 0x3A4F);     /* ICH10 */
 }
 
 /* Resolve a bus-0 function's INTx to a GSI via chipset registers.
- * Returns GSI (>=0) or -1 if undecodable. */
+ * Returns GSI (>=0) or -1 if undecodable.  Stage telemetry is logged so
+ * a firmware-specific failure point (Apple EFI leaves a lot unrouted)
+ * is visible instead of collapsing to a bare "cannot resolve". */
 static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
 {
     uint8_t pin = pci_r8(bus, dev, fn, 0x3D);      /* interrupt pin */
-    if (pin < 1 || pin > 4) return -1;
+    if (pin < 1 || pin > 4) {
+        kprint("[IRQ] ich-route dev=");
+        kprinthex(dev); kprint("."); kprintdec(fn);
+        kprint(" fail: intpin="); kprinthex(pin); kprint("\n");
+        return -1;
+    }
 
-    if (!lpc_is_intel_ich() || !ecam_avail()) return -1;
+    if (!lpc_is_intel_ich()) {
+        kprint("[IRQ] ich-route: lpc not intel\n");
+        return -1;
+    }
+    volatile uint8_t *rcba = ich_rcba();
+    if (!rcba) {
+        kprint("[IRQ] ich-route: no RCBA\n");
+        return -1;
+    }
     int ioff = ich_dip_off(dev);
     int roff = ich_dir_off(dev);
-    if (ioff < 0 || roff < 0) return -1;
+    if (ioff < 0 || roff < 0) {
+        kprint("[IRQ] ich-route dev=");
+        kprinthex(dev); kprint(" no DxxIP/DxxIR (dev>31 range)\n");
+        return -1;
+    }
 
     /* DxxIP: nibble per function holds the pin the function drives. */
-    uint32_t ip = ecam_r32(0, 31, 0, (uint16_t)ioff);
+    uint32_t ip = *(volatile uint32_t *)(rcba + ioff);
     uint8_t chip_pin = (uint8_t)((ip >> (fn * 4)) & 0xF);
     if (chip_pin >= 1 && chip_pin <= 4) pin = chip_pin;
 
     /* DxxIR: nibble per pin selects PIRQA-H (0-7), 0xF = unrouted. */
-    uint16_t ir = ecam_r16(0, 31, 0, (uint16_t)roff);
-    uint8_t pirq = (uint8_t)((ir >> ((pin - 1) * 4)) & 0xF);
-    if (pirq > 7) return -1;
+    volatile uint16_t *irp = (volatile uint16_t *)(rcba + roff);
+    uint16_t ir = *irp;
+    uint8_t nib = (uint8_t)((ir >> ((pin - 1) * 4)) & 0xF);
+    uint8_t pirq = nib;
+    if (nib == 0xF) {
+        /* Firmware left this pin unrouted — try programming the nibble
+         * ourselves: INTA->PIRQA, INTB->PIRQB, ... (the canonical map a
+         * BIOS POST would write).  Readback proves the register exists
+         * and is writable. */
+        uint8_t want = (uint8_t)(pin - 1);
+        uint16_t nv = (uint16_t)((ir & ~(0xFu << ((pin - 1) * 4)))
+                                 | ((uint16_t)want << ((pin - 1) * 4)));
+        *irp = nv;
+        ir = *irp;
+        pirq = (uint8_t)((ir >> ((pin - 1) * 4)) & 0xF);
+        if (pirq > 7) {
+            kprint("[IRQ] ich-route dev=");
+            kprinthex(dev); kprint("."); kprintdec(fn);
+            kprint(" pin="); kprinthex(pin);
+            kprint(" dip=0x"); kprinthex(ip);
+            kprint(" dir=0x"); kprinthex(ir);
+            kprint(" fail: dir nibble unrouted\n");
+            return -1;
+        }
+        kprint("[IRQ] ich-route dev=");
+        kprinthex(dev); kprint("."); kprintdec(fn);
+        kprint(" programmed dir pin="); kprinthex(pin);
+        kprint(" -> PIRQ"); kprinthex(pirq); kprint("\n");
+    }
+    if (pirq > 7) {
+        kprint("[IRQ] ich-route dev=");
+        kprinthex(dev); kprint("."); kprintdec(fn);
+        kprint(" fail: dir nibble="); kprinthex(nib); kprint("\n");
+        return -1;
+    }
 
-    uint8_t route = pci_r8(0, 31, 0, (uint8_t)(0x60 + pirq));
-    if (route & 0x80) return -1;
-    return route & 0x1F;
+    /* APIC mode: the chipset PIRQA-H lines are hardwired to IO-APIC
+     * inputs 16-23 — the cfg 0x60-0x67 PIRQ_ROUTE registers only select
+     * the ISA IRQ for 8259/PIC mode and must not be consulted here
+     * (they read 0 on Apple EFI, which we mistook for "routed to GSI0"
+     * -> level line stormed on vector 32). */
+    kprint("[IRQ] ich-route dev=");
+    kprinthex(dev); kprint("."); kprintdec(fn);
+    kprint(" pin="); kprinthex(pin);
+    kprint(" dip=0x"); kprinthex(ip); kprint(" dir=0x"); kprinthex(ir);
+    kprint(" -> PIRQ"); kprinthex(pirq);
+    kprint(" = gsi "); kprintdec((uint32_t)(16 + pirq)); kprint("\n");
+    return 16 + pirq;
 }
 
 /* Public resolver: chipset decode first, then the firmware-programmed

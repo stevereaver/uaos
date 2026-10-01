@@ -154,9 +154,9 @@ void RTC_SetDateTime(const RtcDateTime *dt)
      * CMOS values, and overwrites the in-memory cache with garbage/zeros. */
     __asm__ volatile("cli");
 
-    /* Wait for any update in progress to finish */
-    while (cmos_read(0x0A) & 0x80)
-        ;
+    /* Wait for any update in progress to finish — bounded: hardware
+     * without a conventional CMOS RTC could otherwise wedge boot here. */
+    for (int n = 100000; n && (cmos_read(0x0A) & 0x80); n--) {}
 
     /* Set the SET bit (bit 7 of register B) to halt clock updates */
     uint8_t regB = cmos_read(0x0B);
@@ -191,8 +191,7 @@ void RTC_SetDateTime(const RtcDateTime *dt)
  * ------------------------------------------------------------------------- */
 static void rtc_snapshot(void)
 {
-    while (cmos_read(0x0A) & 0x80)
-        ;
+    for (int n = 100000; n && (cmos_read(0x0A) & 0x80); n--) {}
 
     uint8_t raw_s    = cmos_read(0x00);
     uint8_t raw_m    = cmos_read(0x02);

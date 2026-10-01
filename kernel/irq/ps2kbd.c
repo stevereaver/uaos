@@ -122,8 +122,11 @@ KbdMods g_kbd_mods = { 0, 0, 0, 0, 0, 0 };
 
 void PS2Kbd_Init(void)
 {
-    /* Flush output buffer */
-    while (inb(PS2_STATUS) & PS2_STAT_OBF)
+    /* Flush output buffer — bounded: machines without an i8042 (e.g.
+     * MacBookPro4,1, USB-only input) leave port 0x64 reading 0xFF, which
+     * would loop forever on OBF. */
+    int n = 128;
+    while ((inb(PS2_STATUS) & PS2_STAT_OBF) && --n)
         inb(PS2_DATA);
     /* Keyboard is already active after BIOS; just clear any pending data */
     kbuf_head = 0;

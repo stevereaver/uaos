@@ -127,6 +127,13 @@ typedef struct {
     int       toggle;         /* next DATA toggle for td[0] */
     void      (*cb)(void *ctx, void *buf, int len);
     void     *ctx;
+    int       err_n;          /* bounded error-log counter */
+    int       ndone;          /* TDs already consumed in the current
+                               * report — a mid-chain NAK suspends the
+                               * chain instead of discarding progress */
+    int       total;          /* bytes accumulated so far this report */
+    int       stall_n;        /* consecutive scans with no completion —
+                               * diagnostics for a wedged/silent pipe */
 } UhciIntr;
 
 typedef struct {
@@ -395,16 +402,58 @@ static int uhci_intr_in(UsbHc *pub, UsbDev *dev, uint8_t ep,
         h->intr[i].toggle = 0;         /* td[0] starts at DATA0 */
         h->intr[i].cb     = cb;
         h->intr[i].ctx    = ctx;
+        h->intr[i].ndone  = 0;
+        h->intr[i].total  = 0;
+        h->intr[i].stall_n = 0;
+        klog_puts(KLOG_USB, KLOG_DEBUG, "uhci: intr arm pipe=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", i);
+        klog_puts(KLOG_USB, KLOG_DEBUG, " dev=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", dev->addr);
+        klog_puts(KLOG_USB, KLOG_DEBUG, " ep=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", ep);
+        klog_puts(KLOG_USB, KLOG_DEBUG, " mps=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", mps);
+        klog_puts(KLOG_USB, KLOG_DEBUG, " ntd=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", ntd);
+        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
         return 0;
     }
     return -1;
 }
 
+/* Re-arm TDs [first, ntd) of pipe p and point its QH at td[first].
+ * DATA toggles are fixed per TD index: td[t] always receives stream
+ * packet #t of the current report, so its toggle is
+ * (start-toggle) ^ (t & 1) — this holds whether resuming mid-chain
+ * or restarting at 0. */
+static void uhci_intr_rearm(UhciIntr *p, int first)
+{
+    UhciTD *tds = p->td;
+    uint32_t ls = tds[first].status & TD_ST_LS;
+    for (int t = first; t < p->ntd; t++) {
+        uint32_t tok = tds[t].token;
+        if (p->toggle ^ (t & 1)) tok |=  TD_TOK_D(1);
+        else                     tok &= ~TD_TOK_D(1);
+        tds[t].token = tok;
+        tds[t].status = TD_ST_ACTIVE | TD_ST_SPD | TD_ST_CERR(3) |
+                        (t == p->ntd - 1 ? TD_ST_IOC : 0) | ls;
+    }
+    __asm__ volatile("mfence" ::: "memory");
+    p->qh->element = (uint32_t)(uintptr_t)&tds[first];
+    __asm__ volatile("mfence" ::: "memory");
+}
+
 /* Scan armed interrupt pipes; dispatch + re-arm completed chains.
  *
- * A chain is done when the last TD went inactive, or an earlier TD
- * completed short (<mps) or with NAK/error (the HC abandons the rest
- * of the queue, leaving later TDs armed — we reset them on re-arm). */
+ * A report ends when the last TD completes, an earlier TD completes
+ * short (<mps), or a TD retires with a hard error.  A NAK mid-chain is
+ * NOT an abort: the device simply had no more data this visit, so the
+ * chain suspends — already-fetched bytes stay consumed and the chain
+ * resumes at the next unconsumed TD.  Only a report boundary (short
+ * packet or full chain) delivers to the callback.
+ *
+ * p->ndone = TDs consumed so far in the current report;
+ * p->total = bytes accumulated. */
 static void uhci_scan_intr(UhciHc *h)
 {
     for (int i = 0; i < UHCI_MAX_INTR; i++) {
@@ -413,45 +462,78 @@ static void uhci_scan_intr(UhciHc *h)
         if (!tds) continue;
 
         int end = -1;            /* index of the TD that ended the xfer */
-        for (int t = 0; t < p->ntd; t++) {
+        int eflag = 0;           /* 1 = hard error, 2 = NAK suspend */
+        for (int t = p->ndone; t < p->ntd; t++) {
             uint32_t st = tds[t].status;
             if (st & TD_ST_ACTIVE) continue;
-            if (st & (TD_ST_ERRMSK | TD_ST_NAK)) { end = t; break; }
+            if (st & TD_ST_ERRMSK) { end = t; eflag = 1; break; }
+            if (st & TD_ST_NAK)    { end = t; eflag = 2; break; }
             if (t == p->ntd - 1 ||
                 (int)TD_ST_ACTLEN(st) + 1 < p->mps) { end = t; break; }
         }
-        if (end < 0) continue;
+        if (end < 0) {
+            /* Nothing new retired.  A long-standing all-active chain
+             * means the device never answers (mode switch failed?) or
+             * the HC never reaches the QH — log td[0] once to tell. */
+            if (++p->stall_n == 400) {   /* ~4 s at 100 Hz poll */
+                klog_puts(KLOG_USB, KLOG_WARN, "uhci: intr pipe=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+                klog_puts(KLOG_USB, KLOG_WARN, " idle td0=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             tds[p->ndone].status);
+                klog_puts(KLOG_USB, KLOG_WARN, "\n");
+            }
+            continue;
+        }
+        p->stall_n = 0;
 
-        /* total bytes + count of packets that actually transferred */
-        int total = 0, ndone = 0;
-        int err = 0;
-        for (int t = 0; t <= end; t++) {
-            uint32_t st = tds[t].status;
-            if (st & (TD_ST_ERRMSK | TD_ST_NAK)) { err = 1; break; }
-            total += (int)TD_ST_ACTLEN(st) + 1;
-            ndone++;
+        /* Count newly completed TDs (indices p->ndone .. end-1, plus
+         * end itself when it completed normally). */
+        int err = (eflag == 1);
+        int last = (eflag == 0) ? end : end - 1;
+        for (int t = p->ndone; t <= last; t++) {
+            p->total += (int)TD_ST_ACTLEN(tds[t].status) + 1;
+            p->ndone++;
+        }
+        int fresh = p->ndone;    /* packets consumed overall */
+
+        if (err) {
+            /* STALL/timeout/CRC kills the report — reset the stream. */
+            if (p->err_n < 16) {
+                p->err_n++;
+                klog_puts(KLOG_USB, KLOG_WARN, "uhci: intr err td=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", end);
+                klog_puts(KLOG_USB, KLOG_WARN, " st=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             tds[end].status);
+                klog_puts(KLOG_USB, KLOG_WARN, " pipe=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+                klog_puts(KLOG_USB, KLOG_WARN, "\n");
+            }
+            p->toggle ^= fresh & 1;   /* consumed packets flip parity */
+            p->ndone = 0;
+            p->total = 0;
+            uhci_intr_rearm(p, 0);
+            continue;
         }
 
-        /* Re-arm the whole chain.  Only packets that transferred
-         * advance the data toggle; CERR is reset — it may have expired
-         * while the device was idle.  The HC overwrote qh->element
-         * with the last TD's link (T) on completion — repoint it.
-         * p->toggle = toggle that td[0] carries when re-armed. */
-        p->toggle ^= ndone & 1;
-        uint32_t ls = tds[0].status & TD_ST_LS;
-        for (int t = 0; t < p->ntd; t++) {
-            uint32_t tok = tds[t].token;
-            if (p->toggle ^ (t & 1)) tok |=  TD_TOK_D(1);
-            else                     tok &= ~TD_TOK_D(1);
-            tds[t].token = tok;
-            tds[t].status = TD_ST_ACTIVE | TD_ST_SPD | TD_ST_CERR(3) |
-                            (t == p->ntd - 1 ? TD_ST_IOC : 0) | ls;
+        if (eflag == 2) {
+            /* NAK suspend — device has no more data right now.
+             * td[end] retired NAKed; re-arm it and everything after,
+             * resume where the stream left off.  p->toggle stays put —
+             * it is the toggle of report packet 0, and td[t] always
+             * carries p->toggle ^ (t&1) regardless of where we resume. */
+            uhci_intr_rearm(p, p->ndone);
+            continue;
         }
-        __asm__ volatile("mfence" ::: "memory");
-        p->qh->element = (uint32_t)(uintptr_t)&tds[0];
-        __asm__ volatile("mfence" ::: "memory");
 
-        if (p->cb && total > 0 && !err)
+        /* Report complete — deliver accumulated bytes and restart. */
+        int total = p->total;
+        p->toggle ^= fresh & 1;
+        p->ndone = 0;
+        p->total = 0;
+        uhci_intr_rearm(p, 0);
+        if (p->cb && total > 0)
             p->cb(p->ctx, (void *)(uintptr_t)tds[0].buffer, total);
     }
 }

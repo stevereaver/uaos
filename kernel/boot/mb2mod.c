@@ -55,6 +55,30 @@ int Mb2_FindModule(uint32_t mb2_info_phys, const char *name,
     return 0;
 }
 
+int Mb2_CmdlineHas(uint32_t mb2_info_phys, const char *tok)
+{
+    if (!mb2_info_phys || !tok) return 0;
+
+    Mb2InfoHdr *hdr = (Mb2InfoHdr *)(uintptr_t)mb2_info_phys;
+    const uint8_t *p   = (const uint8_t *)(uintptr_t)(mb2_info_phys + 8);
+    const uint8_t *end = (const uint8_t *)(uintptr_t)(mb2_info_phys + hdr->total_size);
+
+    while (p < end) {
+        Mb2TagHdr *tag = (Mb2TagHdr *)p;
+        if (tag->type == 0 || tag->size < 8) break;
+        if (tag->type == 1) {                /* boot command line */
+            const char *s = (const char *)(p + 8);
+            uint32_t n = tag->size - 8;
+            uint32_t tl = (uint32_t)strlen(tok);
+            for (uint32_t i = 0; i + tl <= n; i++)
+                if (memcmp(s + i, tok, tl) == 0) return 1;
+            return 0;
+        }
+        p += (tag->size + 7) & ~7U;
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 
 typedef struct {

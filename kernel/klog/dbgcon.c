@@ -9,15 +9,25 @@
  *
  * Writes go straight to VRAM (never the GUI back buffer), so output
  * survives regardless of what the desktop is doing.
+ *
+ * Scroll is text-based: the rendered lines live in a cached RAM ring and
+ * the console band is repainted on scroll.  A naive pixel memmove over
+ * the framebuffer reads VRAM — uncached on real GPUs — which made every
+ * line take ~0.5 s during the first MacBook bring-up.
  */
 
 #include "klog.h"
 #include "../display/framebuffer.h"
+#include <string.h>
+
+#define DBG_MAX_ROWS  64
+#define DBG_MAX_COLS  200
 
 static int      g_dbgcon_on;
 static int      g_vram_ready;            /* 4GB map installed (safe VRAM) */
 static uint32_t dbg_cx, dbg_cy;          /* cursor, char cells          */
 static uint32_t dbg_cols, dbg_rows;      /* console geometry            */
+static char     g_text[DBG_MAX_ROWS][DBG_MAX_COLS];
 
 /* Called once the MMU sandbox's full 4 GB identity map is active.  The
  * bootstrap page tables only cover 1 GB and the framebuffer BAR sits
@@ -30,6 +40,8 @@ void Dbgcon_VramReady(void)
 
     dbg_cols = g_fb.width  / 8;
     dbg_rows = g_fb.height / 16;
+    if (dbg_cols > DBG_MAX_COLS) dbg_cols = DBG_MAX_COLS;
+    if (dbg_rows > DBG_MAX_ROWS) dbg_rows = DBG_MAX_ROWS;
     if (!dbg_cols || !dbg_rows) return;
 
     uint32_t n = klog_ring_count();
@@ -95,13 +107,24 @@ static void dbg_put_glyph(uint32_t px, uint32_t py, uint8_t ch)
     }
 }
 
+/* Repaint the whole console from the text ring — writes only, so it
+ * never reads VRAM (uncached on real GPUs). */
+static void dbg_repaint(void)
+{
+    for (uint32_t r = 0; r < dbg_rows; r++)
+        for (uint32_t c = 0; c < dbg_cols; c++)
+            dbg_put_glyph(c * 8, r * 16,
+                          (uint8_t)(g_text[r][c] ? g_text[r][c] : ' '));
+}
+
 static void dbg_scroll(void)
 {
-    uint8_t  *fb  = (uint8_t *)(uintptr_t)g_fb.phys_addr;
-    uint32_t  one = 16 * g_fb.pitch;
-    uint32_t  tot = g_fb.height * g_fb.pitch;
-    for (uint32_t i = 0; i < tot - one; i++) fb[i] = fb[i + one];
-    for (uint32_t i = tot - one; i < tot; i++) fb[i] = 0;
+    /* dst < src and rows are contiguous — a forward memcpy is safe here
+     * (no memmove stub in the freestanding environment). */
+    memcpy(g_text[0], g_text[1],
+           (dbg_rows - 1) * DBG_MAX_COLS * sizeof(char));
+    memset(g_text[dbg_rows - 1], 0, DBG_MAX_COLS);
+    dbg_repaint();
 }
 
 void Dbgcon_Write(const char *s, uint32_t len)
@@ -110,12 +133,15 @@ void Dbgcon_Write(const char *s, uint32_t len)
     if (!dbg_cols) {
         dbg_cols = g_fb.width  / 8;
         dbg_rows = g_fb.height / 16;
+        if (dbg_cols > DBG_MAX_COLS) dbg_cols = DBG_MAX_COLS;
+        if (dbg_rows > DBG_MAX_ROWS) dbg_rows = DBG_MAX_ROWS;
         if (!dbg_cols || !dbg_rows) return;
     }
     for (uint32_t i = 0; i < len; i++) {
         char c = s[i];
         if (c == '\r') continue;
         if (c != '\n') {
+            g_text[dbg_cy][dbg_cx] = c;
             dbg_put_glyph(dbg_cx * 8, dbg_cy * 16, (uint8_t)c);
             if (++dbg_cx >= dbg_cols) dbg_cx = 0;
         } else {

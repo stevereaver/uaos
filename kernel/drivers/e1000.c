@@ -19,6 +19,8 @@
 #include "e1000.h"
 #include "../irq/idt.h"    /* IDT_SetHandler */
 #include "../irq/irq.h"    /* IRQ_AttachPCI, IRQ_EOI */
+#include "../exec/task.h"  /* Task_ScheduleFromIRQ */
+#include "../net/stack.h"  /* net_rx_kick */
 #include "../klog/klog.h"
 
 /* -------------------------------------------------------------------------
@@ -443,8 +445,13 @@ static void e1000_irq_handler(uint64_t vector, uint64_t error_code)
     (void)vector; (void)error_code;
     if (!g_bar0) return;
     uint32_t icr = mmio_r32(g_bar0, E1000_ICR); /* read clears */
-    if (icr & (E1000_ICR_RXT0 | E1000_ICR_RXDMT0 | E1000_ICR_RXO))
+    if (icr & (E1000_ICR_RXT0 | E1000_ICR_RXDMT0 | E1000_ICR_RXO)) {
         e1000_poll();
+        /* Wake net consumers blocked in Task_WaitTicks(SIGF_NET) and
+         * reschedule at IRQ exit so they run before the next tick. */
+        net_rx_kick();
+        Task_ScheduleFromIRQ();
+    }
     IRQ_EOI((int)vector);
 }
 

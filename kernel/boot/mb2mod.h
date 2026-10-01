@@ -20,6 +20,9 @@
 int Mb2_FindModule(uint32_t mb2_info_phys, const char *name,
                    uint64_t *start, uint64_t *size);
 
+/* Returns 1 if the kernel command line (tag 1) contains the token. */
+int Mb2_CmdlineHas(uint32_t mb2_info_phys, const char *tok);
+
 /* Locate the "uaos-sysroot" module and register a read-only RAM block
  * device named "sysroot0" over it (2048-byte sectors, matching the ISO
  * image).  Returns the registered BlockDev, or NULL when the module is

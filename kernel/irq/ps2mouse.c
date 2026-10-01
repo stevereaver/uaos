@@ -53,7 +53,9 @@ static inline uint8_t inb(uint16_t port)
  * Minimal serial debug output (COM1 = 0x3F8) — defined after inb/outb
  * ========================================================================= */
 static void _ser_putc(char c) {
-    while ((inb(0x3F8 + 5) & 0x20) == 0) {}
+    int spins = 100000;
+    while ((inb(0x3F8 + 5) & 0x20) == 0 && --spins) {}
+    if (!spins) return;
     outb(0x3F8, (uint8_t)c);
     if (c == '\n') _ser_putc('\r');
 }

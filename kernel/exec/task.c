@@ -473,6 +473,9 @@ void Task_Exit(void)
         /* Close any userspace sockets this task left open so the
          * usock/tcp slots are not leaked by a killed command. */
         usock_cleanup_task(g_current);
+        /* Drop the task's net RX-notify slot so a stale TCB pointer can
+         * never be signalled by a later net_rx_kick(). */
+        net_rx_notify_disarm(g_current);
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);
@@ -686,14 +689,20 @@ void Signal(UaosTask *task, uint32_t sigmask)
 {
     if (!task || !sigmask) return;
 
-    __asm__ volatile ("cli");
+    /* Save/restore IF instead of an unconditional cli/sti pair: with the
+     * old code a Signal() from interrupt context would re-enable IRQs in
+     * the middle of the ISR.  Restoring the caller's flags makes Signal
+     * callable from both task and IRQ context (e.g. a NIC interrupt
+     * waking a net consumer task directly). */
+    uint64_t fl;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(fl) :: "memory");
     task->tc_SigRecvd |= sigmask;
 
     if (task->tc_State == TASK_WAITING && (task->tc_SigRecvd & task->tc_SigWait) != 0) {
         wait_remove(task);
         ready_enqueue(task);
     }
-    __asm__ volatile ("sti");
+    __asm__ volatile ("pushq %0; popfq" :: "r"(fl) : "memory", "cc");
 }
 
 uint32_t Wait(uint32_t sigmask)
@@ -762,6 +771,41 @@ void Task_SleepTicks(uint64_t ticks)
 
     g_current->tc_wake_tick = 0;
     __asm__ volatile ("sti");
+}
+
+uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks)
+{
+    if (!g_current) return 0;
+    if (!sigmask) { Task_SleepTicks(ticks); return 0; }
+
+    uint64_t deadline = g_pit_ticks + ticks;
+    uint32_t result;
+
+    __asm__ volatile ("cli");
+    g_current->tc_SigWait  = sigmask;
+    g_current->tc_wake_tick = deadline;
+
+    /* Block until a matching signal arrives or the deadline passes.
+     * Signal() from IRQ/task context moves us wait->ready; Task_WakeTimers
+     * does the same on timeout.  Only enqueue once — a spurious non-PIT
+     * interrupt can wake the hlt without rescheduling (see Wait()). */
+    while ((g_current->tc_SigRecvd & sigmask) == 0 &&
+           g_pit_ticks < deadline) {
+        if (g_current->tc_State != TASK_WAITING) {
+            g_current->tc_State = TASK_WAITING;
+            wait_enqueue(g_current);
+        }
+        __asm__ volatile ("sti; hlt" ::: "memory");
+        __asm__ volatile ("cli");
+    }
+
+    result = g_current->tc_SigRecvd & sigmask;
+    g_current->tc_SigRecvd &= ~sigmask;
+    g_current->tc_SigWait  = 0;
+    g_current->tc_wake_tick = 0;
+    __asm__ volatile ("sti");
+
+    return result;
 }
 
 void Task_WakeTimers(void)

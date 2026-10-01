@@ -69,11 +69,12 @@ void Cmd_Ifconfig(NativeCmdCtx *ctx, const char *args)
     /* Interface name from active driver */
     const char *devname = netdev_name();
     const char *mediastr;
-    if (devname[0] == 'e') {          /* "e1000" */
+    if (devname[0] == 'e')            /* "e1000" */
         mediastr = "Ethernet 1000baseT <full-duplex> (Intel e1000)";
-    } else {                          /* "virtio-net" */
+    else if (devname[0] == 's')       /* "sky2" */
+        mediastr = "Ethernet 1000baseT <full-duplex> (Marvell sky2)";
+    else                              /* "virtio-net" */
         mediastr = "Ethernet 1000baseT <full-duplex> (VirtIO)";
-    }
 
     /* Interface name line */
     cmd_scopy(line, devname, sizeof(line));

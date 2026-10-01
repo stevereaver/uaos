@@ -445,13 +445,26 @@ int tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port)
 
 int tcp_listen(uint16_t local_port)
 {
+    /* Reject a second LISTEN on the same port — otherwise a double-start
+     * (e.g. telnetd from User-Startup + manual) leaves two accept loops
+     * racing over the same backlog.  The scan and the claim must be
+     * atomic: two concurrent callers can otherwise both pass the scan. */
+    __asm__ volatile("cli" ::: "memory");
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++)
+        if (g_socks[i].state == TCP_LISTEN &&
+            g_socks[i].local_port == local_port) {
+            __asm__ volatile("sti" ::: "memory");
+            return -1;
+        }
     TcpSocket *s = alloc_sock();
-    if (!s) return -1;
+    if (!s) { __asm__ volatile("sti" ::: "memory"); return -1; }
     net_memset(s, 0, sizeof(*s));
     s->state      = TCP_LISTEN;
     s->local_ip   = ip_get_local();
     s->local_port = local_port;
-    return sock_idx(s);
+    int idx = sock_idx(s);
+    __asm__ volatile("sti" ::: "memory");
+    return idx;
 }
 
 int tcp_accept(int listen_sock)

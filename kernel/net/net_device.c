@@ -18,6 +18,7 @@
  */
 
 #include "net_device.h"
+#include "stack.h"   /* net_rx_kick */
 #include "../drivers/virtio_net.h"
 #include "../drivers/e1000.h"
 #include "../drivers/sky2.h"
@@ -278,6 +279,9 @@ static void sk_set_rx_callback(NetDevice *dev, netdev_rx_fn cb)
 static void sk_setup_irq(NetDevice *dev)
 {
     (void)dev;
+    /* Wake net consumers (SIGF_NET waiters) the moment the IRQ-side
+     * drain records RX completions — avoids the 100 Hz poll delay. */
+    sky2_set_notify_cb(net_rx_kick);
     sky2_setup_irq();
 }
 

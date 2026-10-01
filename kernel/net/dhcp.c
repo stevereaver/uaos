@@ -127,7 +127,7 @@ static void dhcp_calibrate_tsc(void)
     uint64_t diff = t1 - t0;   /* ticks in ~50 ms */
     g_tsc_hz = diff * 20;      /* extrapolate to 1 second */
     klog_puts(KLOG_DHCP, KLOG_DEBUG, "TSC Hz="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", (uint32_t)(g_tsc_hz >> 32));
-    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", (uint32_t)g_tsc_hz); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
+    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%08X", (uint32_t)g_tsc_hz); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
 }
 
 static void dhcp_delay_ms(uint32_t ms)

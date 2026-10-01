@@ -400,6 +400,7 @@ for src in \
     "${REPO_ROOT}/kernel/exec/boopsi_builtin.c" \
     "${REPO_ROOT}/kernel/exec/loadable_lib.c" \
     "${REPO_ROOT}/kernel/exec/mmu_sandbox.c" \
+    "${REPO_ROOT}/kernel/exec/mtrr.c" \
     "${REPO_ROOT}/kernel/exec/page_fault_handler.c" \
     "${REPO_ROOT}/kernel/chipset/chip_emu.c" \
     "${REPO_ROOT}/kernel/chipset/chiptrace.c" \
@@ -854,6 +855,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/boopsi_builtin.o" \
     "${BUILD_DIR}/obj/loadable_lib.o" \
     "${BUILD_DIR}/obj/mmu_sandbox.o" \
+    "${BUILD_DIR}/obj/mtrr.o" \
     "${BUILD_DIR}/obj/page_fault_handler.o" \
     "${BUILD_DIR}/obj/chip_emu.o" \
     "${BUILD_DIR}/obj/chiptrace.o" \

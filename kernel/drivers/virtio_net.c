@@ -42,6 +42,7 @@
 #include "../irq/idt.h"
 #include "../irq/irq.h"
 #include "../exec/task.h"
+#include "../net/stack.h"   /* net_rx_kick */
 #include <stdint.h>
 #include <stddef.h>
 
@@ -918,8 +919,13 @@ static void virtio_net_irq_handler(uint64_t vector, uint64_t error_code)
     (void)error_code;
     if (!g_up) return;
     uint8_t isr = vn_isr_read();
-    if (isr & 1)
+    if (isr & 1) {
         virtio_net_poll();
+        /* Wake net consumers blocked in Task_WaitTicks(SIGF_NET) and
+         * reschedule at IRQ exit so they run before the next tick. */
+        net_rx_kick();
+        Task_ScheduleFromIRQ();
+    }
     IRQ_EOI((int)vector);
 }
 

@@ -19,6 +19,7 @@
 #include "../display/cursor.h"
 #include "../klog/klog.h"
 #include "../dos/dma.h"
+#include "../exec/task.h"
 #include <string.h>
 
 #define APPLE_VID            0x05AC
@@ -38,6 +39,16 @@
 #define WS_UM_SWITCH_IDX     0
 #define WS_UM_SWITCH_ON      0x01
 #define WS_UM_SWITCH_OFF     0x08
+
+/* HID class requests (shared with usbhid.c) */
+#define HID_REQ_SET_IDLE     0x0A
+
+static void udelay(unsigned int us)
+{
+    while (us--)
+        __asm__ volatile("inb $0x80, %%al" ::: "eax");
+}
+static void msleep(uint32_t ms) { udelay(ms * 1000); }
 
 /* TYPE1 report layout (le16-aligned) */
 #define TP_HEADER_T1         (13 * 2)   /* 26-byte header */
@@ -69,6 +80,9 @@ typedef struct {
     uint8_t *tp_buf;             /* TP_DATALEN_T1 DMA buffer */
     uint8_t *bt_buf;             /* BT_DATALEN_T1 DMA buffer */
     int      had_finger;         /* edge detect for click/drag */
+    UsbDev  *dev;                /* device for the reset worker */
+    UaosTask *reset_task;        /* deferred mode-reset worker */
+    int      resets;             /* mode-reset attempts so far */
 } Bcm5974;
 
 static Bcm5974 g_tp;
@@ -93,16 +107,72 @@ static int bcm5974_wellspring_mode(UsbDev *dev, int on)
         klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode read failed\n");
         return -1;
     }
+    /* The readback tells us whether the device understood the request —
+     * a sane config block vs zeros/garbage. */
+    {
+        uint32_t lo = (uint32_t)(data[0] | (data[1] << 8) |
+                                 (data[2] << 16) | ((uint32_t)data[3] << 24));
+        uint32_t hi = (uint32_t)(data[4] | (data[5] << 8) |
+                                 (data[6] << 16) | ((uint32_t)data[7] << 24));
+        klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: mode cfg=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", lo);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, ":%08X", hi);
+        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
+    }
     data[WS_UM_SWITCH_IDX] = on ? WS_UM_SWITCH_ON : WS_UM_SWITCH_OFF;
 
-    /* write it back */
-    if (usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
-                 WS_MODE_WRITE_REQ, WS_UM_REQ_VAL, WS_UM_REQ_IDX,
-                 data, WS_UM_SIZE) != 0) {
-        klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode write failed\n");
-        return -1;
+    /* Write it back, then verify — the device ACKs the control write
+     * even when it does not apply the switch, so re-read and retry. */
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
+                     WS_MODE_WRITE_REQ, WS_UM_REQ_VAL, WS_UM_REQ_IDX,
+                     data, WS_UM_SIZE) != 0) {
+            klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode write failed\n");
+            return -1;
+        }
+        msleep(20);
+        memset(data, 0, WS_UM_SIZE);
+        if (usb_ctrl(dev, USB_RT_IN | USB_RT_CLASS | USB_RT_IF,
+                     WS_MODE_READ_REQ, WS_UM_REQ_VAL, WS_UM_REQ_IDX,
+                     data, WS_UM_SIZE) != 0) {
+            klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode vfy read failed\n");
+            return -1;
+        }
+        klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: mode vfy=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)data[WS_UM_SWITCH_IDX]);
+        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
+        if (data[WS_UM_SWITCH_IDX] == (uint8_t)(on ? WS_UM_SWITCH_ON : WS_UM_SWITCH_OFF))
+            return 0;
+        data[WS_UM_SWITCH_IDX] = on ? WS_UM_SWITCH_ON : WS_UM_SWITCH_OFF;
+        msleep(50);
     }
-    return 0;
+    klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode switch did not stick\n");
+    return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Mode-reset worker — runs in task context (control transfers are      */
+/* too slow for the IRQ-side USB_Poll callback).  A mode switch sent    */
+/* before the device has drained its control response is ignored: the   */
+/* fix is to drop back to normal mode, wait, and switch again           */
+/* (Linux commit fc1e8a6 — "bcm5974: bad trackpad package, length: 8"). */
+/* ------------------------------------------------------------------ */
+static void bcm5974_reset_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        Task_WaitTicks(SIGF_TP, UINT64_MAX / 2);
+        if (!g_tp.opened || !g_tp.dev)
+            continue;
+        g_tp.resets++;
+        klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: mode reset #");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)g_tp.resets);
+        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
+        if (bcm5974_wellspring_mode(g_tp.dev, 0) != 0)
+            continue;
+        msleep(50);                     /* spec needs ~1ms; be generous */
+        bcm5974_wellspring_mode(g_tp.dev, 1);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -113,10 +183,30 @@ static void bcm5974_tp_cb(void *ctx, void *buf, int len)
     (void)ctx;
     uint8_t *d = (uint8_t *)buf;
 
+    /* Debug: the first few deliveries tell us whether the pipe streams
+     * at all and whether the report shape matches TYPE1. */
+    static int dbg_n;
+    if (dbg_n < 24) {
+        dbg_n++;
+        klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: tp rx len=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)len);
+        klog_puts(KLOG_USB, KLOG_DEBUG, " d0=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
+                     len >= 4 ? (uint32_t)(d[0] | (d[1]<<8) |
+                              (d[2]<<16) | ((uint32_t)d[3]<<24)) : 0);
+        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
+    }
+
     /* 2-byte packets are control-response noise — ignore */
     if (len <= 2) return;
-    if (len < TP_HEADER_T1 || (len - TP_HEADER_T1) % TP_FSIZE_T1 != 0)
+    if (len < TP_HEADER_T1 || (len - TP_HEADER_T1) % TP_FSIZE_T1 != 0) {
+        /* Unknown small packets (typically 8-byte HID-style reports)
+         * mean the mode switch was ignored — kick the reset worker.
+         * We're in IRQ context; the worker does the slow control xfers. */
+        if (g_tp.reset_task && g_tp.resets < 16)
+            Signal(g_tp.reset_task, SIGF_TP);
         return;
+    }
 
     int nfingers = (len - TP_HEADER_T1) / TP_FSIZE_T1;
     int mx = (int)g_fb_width_irq  - 1;
@@ -175,6 +265,12 @@ static int bcm5974_probe(UsbIf *ifc)
     uint8_t ep = USB_EP_DIR_IN | ifc->int_ep;
 
     if (ep == TP_EP_T1 && !g_tp.claimed_tp) {
+        /* Under Linux, usbhid binds this interface too and issues
+         * SET_IDLE during claim — do the same before the mode switch. */
+        usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
+                 HID_REQ_SET_IDLE, 0, ifc->ifnum, 0, 0);
+        msleep(10);
+
         /* Mode switch must happen before traffic starts */
         if (bcm5974_wellspring_mode(dev, 1) != 0)
             return 0;
@@ -186,6 +282,7 @@ static int bcm5974_probe(UsbIf *ifc)
                              ifc->int_mps, g_tp.tp_buf, TP_DATALEN_T1,
                              bcm5974_tp_cb, 0) != 0)
             return 0;
+        g_tp.dev = dev;
         g_tp.claimed_tp = 1;
         klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: trackpad armed\n");
         return 1;
@@ -210,4 +307,13 @@ void BCM5974_Init(void)
 {
     memset(&g_tp, 0, sizeof(g_tp));
     USB_RegisterClass(bcm5974_probe);
+}
+
+/* Called after TaskScheduler_Init — USB enum runs before the scheduler
+ * exists, so the reset worker must be spawned late. */
+void BCM5974_StartWorker(void)
+{
+    if (g_tp.dev && !g_tp.reset_task)
+        g_tp.reset_task = Task_CreateNative("bcm5974-reset", 0,
+                                            bcm5974_reset_task, 0);
 }

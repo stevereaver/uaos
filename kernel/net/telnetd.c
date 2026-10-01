@@ -119,6 +119,7 @@ static int send_buf(int sock, const uint8_t *b, int len)
         if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) return 0;
         if (g_pit_ticks >= deadline) return 0;
         net_stack_poll();
+        Task_WaitTicks(SIGF_NET, 1);   /* ACK arrival wakes us */
     }
 }
 
@@ -312,6 +313,10 @@ static void pump_task(void *arg)
     uint8_t st[3] = { NVT_DATA, 0, 0 };
     uint8_t buf[256];
 
+    /* Wake on RX at interrupt time: the driver kicks armed tasks the
+     * moment a frame lands instead of waiting out the 100 Hz tick. */
+    net_rx_notify_arm();
+
     /* Idle watchdog: last_rx only advances on received input.  A peer
      * that vanishes without FIN/RST (sleep, NAT drop) keeps the socket
      * ESTABLISHED forever — the half-timeout IAC AYT probe forces the
@@ -388,7 +393,10 @@ static void pump_task(void *arg)
         }
 
         net_stack_poll();
-        Task_SleepTicks(1);
+        /* Sleep until the next RX interrupt kicks us, or at most one
+         * tick — keeps the idle watchdog and dead-socket checks on a
+         * bounded cadence without paying ~10 ms per keystroke. */
+        Task_WaitTicks(SIGF_NET, 1);
     }
 
     /* Connection log — the disconnect side pairs with the "connect
@@ -429,6 +437,7 @@ static void pump_task(void *arg)
 static void telnetd_task(void *arg)
 {
     uint16_t port = (uint16_t)(uintptr_t)arg;
+    net_rx_notify_arm();
     int lsock = tcp_listen(port);
     if (lsock < 0) {
         kprint("telnetd: tcp_listen failed\n");
@@ -498,7 +507,7 @@ static void telnetd_task(void *arg)
             }
         }
         net_stack_poll();
-        Task_SleepTicks(1);
+        Task_WaitTicks(SIGF_NET, 1);   /* wake on inbound SYN, not tick */
     }
     tcp_close(lsock);
     g_port = 0;
@@ -509,15 +518,23 @@ static void telnetd_task(void *arg)
 
 int Telnetd_Start(uint16_t port)
 {
-    if (g_running) return 0;
     if (port == 0) port = TELNETD_DEFAULT_PORT;
     if (!net_stack_is_up()) return 0;
+    /* Atomic check-and-set — a double-start (User-Startup + manual, or
+     * two callers racing the gap between the test and the store) used
+     * to spawn two listener tasks on the same port. */
+    __asm__ volatile("cli" ::: "memory");
+    if (g_running) {
+        __asm__ volatile("sti" ::: "memory");
+        return 0;
+    }
     /* Set the flags before spawning: if the new task runs first and
      * tcp_listen fails it clears g_running itself.  Bumping the
      * generation tells any pump left over from a previous run to exit. */
     g_generation++;
     g_stop    = 0;
     g_running = 1;
+    __asm__ volatile("sti" ::: "memory");
     if (!Task_CreateNative("telnetd", 0, telnetd_task,
                            (void *)(uintptr_t)port)) {
         g_running = 0;

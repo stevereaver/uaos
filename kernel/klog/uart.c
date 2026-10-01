@@ -37,7 +37,11 @@ void uart_init(void)
 
 void uart_putchar(char ch)
 {
-    while ((uart_inb(UART_BASE + 5) & 0x20) == 0) {}
+    /* Bounded wait — machines with no UART (MacBookPro4,1) would
+     * otherwise hang the first kprint if the open port reads 0x00. */
+    int spins = 100000;
+    while ((uart_inb(UART_BASE + 5) & 0x20) == 0 && --spins) {}
+    if (!spins) return;
     uart_outb(UART_BASE, (uint8_t)ch);
     if (ch == '\n') uart_putchar('\r');
 }
