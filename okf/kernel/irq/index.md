@@ -19,6 +19,8 @@ The kernel sets up a 256-vector IDT in 64-bit mode.
 
 `IDT_SetHandler(vector, handler, name)` takes an optional human-readable name that is stored per-vector (`IDT_VectorName()`). Drivers pass their device name at registration (`"virtio-blk"`, `"virtio-scsi"`, `"virtio-net"`, `"e1000"`, `"PIT timer"`, `"PS/2 keyboard"`, `"PS/2 mouse"`, `"RTC"`); `C:irqstat` labels each firing vector as `IRQ<n> <name>` from this table. PCI INTx routing is dynamic (OVMF assigns lines per device order), so names must come from registration — a hardcoded vector→device table mislabels on any other layout.
 
+**Shared vectors**: `IRQ_AttachPCI` on a GSI that already has an APIC vector chains the new handler via `irq_shared_add` (up to 4, fan-out through `irq_shared_dispatch`). A handler already present on the vector is not chained again (UAOS-184): ISR handlers take no device context, so a driver's handler must service all of its devices on the vector anyway, and a duplicate just runs it twice per dispatch.
+
 **Read-only diagnostics accessors (UAOS-183)**, used by `C:usbdiag`: `IRQ_DiagIch()` snapshots the ICH LPC routing (RCBA, OIC, PIRQA-H_ROUT, DxxIP/DxxIR for devices 25-31); `IOAPIC_ReadRTE(gsi, &lo, &hi)` reads one redirection entry (`RTE_BIT_RIRR` = remote IRR, `RTE_BIT_DELIVS` = delivery pending); `LAPIC_Read(off)` reads a LAPIC register (IRR at 0x200, ISR at 0x100, TPR at 0x80). PCI config and IOREGSEL/IOWIN are index/data pairs shared with ISR paths, so these accessors read with IRQs off.
 
 ## Core Hardware Drivers

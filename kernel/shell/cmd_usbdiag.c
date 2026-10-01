@@ -201,11 +201,11 @@ void Cmd_Usbdiag(NativeCmdCtx *ctx, const char *args)
     PRINT(l);
     ud_print_ich(ctx);
 
+    /* Read every controller before printing — PRINT over telnet is slow
+     * enough to skew counters between controllers sharing a vector. */
     UhciDiag d[UD_MAX];
-    for (int i = 0; i < n; i++) {
-        UHCI_DiagRead(i, &d[i]);
-        ud_print_hc(ctx, i, &d[i]);
-    }
+    for (int i = 0; i < n; i++) UHCI_DiagRead(i, &d[i]);
+    for (int i = 0; i < n; i++) ud_print_hc(ctx, i, &d[i]);
     if (!secs || !n) return;
 
     static UdSample s[UD_MAX];
@@ -238,10 +238,10 @@ void Cmd_Usbdiag(NativeCmdCtx *ctx, const char *args)
         CMD_YIELD(ctx, 10);
     }
 
+    for (int i = 0; i < n; i++) UHCI_DiagRead(i, &d[i]);
     PRINT("results (per controller; counts are samples where the bit was set):");
     for (int i = 0; i < n; i++) {
-        UhciDiag x;
-        UHCI_DiagRead(i, &x);
+        const UhciDiag x = d[i];
         uint32_t dh = x.irq_hits - s[i].hits0;
         uint32_t du = x.poll_usbint - s[i].usbint0;
 

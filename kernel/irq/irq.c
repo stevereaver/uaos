@@ -184,6 +184,14 @@ static void irq_shared_dispatch(uint64_t vector, uint64_t error_code)
 static int irq_shared_add(int vec, ISRHandler handler, const char *name)
 {
     if (g_kind[vec] != VEC_APIC) return -1;
+    /* A driver whose handler services every one of its devices on the
+     * vector (uhci: two HCs on one PIRQ) must be chained once.  A
+     * duplicate ran it twice per dispatch; the second pass found the
+     * status already acked and counted a spurious IRQ every time
+     * (UAOS-184: MBP4,1 gsi 16 heading for the spurious-mask limit). */
+    if (handler == g_pri[vec]) return 0;
+    for (uint8_t i = 0; i < g_shared_n[vec]; i++)
+        if (g_shared[vec][i] == handler) return 0;
     if (g_shared_n[vec] == 0) {
         ISRHandler pri = g_pri[vec];
         if (!pri) return -1;

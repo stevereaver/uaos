@@ -657,18 +657,22 @@ static void uhci_irq_handler(uint64_t vector, uint64_t error_code)
      * we cannot clear it.  Log occasionally; if it turns into a storm,
      * mask the GSI rather than wedge the machine. */
     if (!serviced) {
-        static uint32_t spur[64];
+        /* Storm = rate, not lifetime total: a never-reset counter would
+         * eventually mask a healthy shared line on long uptimes (UAOS-184). */
+        static uint32_t total[64], spur[64];
+        static uint64_t win[64];
         uint64_t g = vector - 32;
         if (g >= 64) return;
-        uint32_t n = ++spur[g];
-        if (n == 1 || (n & 0x3FF) == 0) {
+        if (g_pit_ticks - win[g] >= 100) { win[g] = g_pit_ticks; spur[g] = 0; }
+        uint32_t t = ++total[g];
+        if (t == 1 || (t & 0x3FF) == 0) {
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: spurious irq gsi=");
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)g);
             klog_puts(KLOG_USB, KLOG_WARN, " count=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", n);
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", t);
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         }
-        if (n >= 100000) {
+        if (++spur[g] >= 20000) {          /* >= 20k/s with nothing to ack */
             IRQ_Mask((int)g);
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: masked storming gsi\n");
             spur[g] = 0;
