@@ -287,6 +287,15 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
      *   sp[20] = RSP
      *   sp[21] = SS
      */
+    /* SysV ABI: at function entry RSP must be 8 mod 16, as if `call`
+     * had just pushed a return address.  iretq jumps straight to entry,
+     * so plant that slot ourselves — entering with a 16-aligned RSP
+     * leaves the whole task misaligned and any compiler-emitted aligned
+     * SSE spill (movaps [rsp]) #GPs (UAOS-182: draw_menubar from the
+     * Shell task).  Returning from entry lands in Task_Exit. */
+    *--sp = (uint64_t)Task_Exit;
+    uint64_t entry_rsp = (uint64_t)sp;
+
     sp -= 22;
     for (int i = 0; i < 15; i++) sp[i] = 0;
     sp[9] = (uint64_t)arg;                      /* RDI — first argument */
@@ -295,7 +304,7 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     sp[17] = (uint64_t)entry;                   /* RIP */
     sp[18] = 0x08;                              /* CS */
     sp[19] = 0x202;                             /* RFLAGS: IF=1 */
-    sp[20] = (uint64_t)(stack + TASK_STACK_SIZE); /* RSP (for iretq safety) */
+    sp[20] = entry_rsp;                         /* RSP at entry (8 mod 16) */
     sp[21] = 0x10;                              /* SS  (kernel data seg) */
 
     t->native_rsp = (uint64_t)sp;  /* points to R15 slot */

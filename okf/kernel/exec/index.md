@@ -76,12 +76,15 @@ Dispatch happens in the PIT ISR (`do_schedule(1)`), NIC RX IRQ exits (`net_rx_ki
 
 ## Task Stack Alignment
 
-The x86-64 SysV ABI requires the stack pointer to be 16-byte aligned *before* a `CALL` instruction, which means a function is entered with `%rsp` 8-byte misaligned (the return address pushed by `CALL` makes it 16-byte aligned). To preserve this invariant across context switches, the kernel stacks are aligned to 8-byte boundaries (not 16-byte), and the synthetic interrupt frames built by `Task_CreateNative()` and `Task_CreateX64()` are sized so that the `iretq` epilogue leaves the new task with the ABI-required 8-byte misaligned `%rsp`.
+The x86-64 SysV ABI requires the stack pointer to be 16-byte aligned *before* a `CALL` instruction, so a function is entered with `%rsp ≡ 8 (mod 16)` (the return address pushed by `CALL`). GCC relies on this for aligned SSE spills (`movaps [rsp]`); a task whose entry RSP is wrong runs misaligned for its whole life and #GPs on the first such spill.
 
 Key details:
-- Per-task kernel stacks are declared with `__attribute__((aligned(8)))`.
-- Synthetic frames are 176 bytes for X64 userspace tasks (ELF64, now Ring 0) and 160 bytes for Ring-0 native tasks, matching the `iretq` pop count. (X64 tasks use kernel CS/SS `0x08`/`0x10`; the 176-byte frame still includes the SS slot since `iretq` pops it when returning to the same ring.)
-- `isr_common` and `uaos_syscall_isr` use the same frame layout for both the interrupted task and the task being switched to; no padding is inserted into the synthetic frame, keeping the layout identical to a CPU-generated interrupt frame.
+- `g_task_stacks` slots are 32 KB each, so every stack top is 16-byte aligned.
+- `Task_CreateNative()` plants a return-address slot holding `Task_Exit` just below the stack top and puts that address (top − 8, ≡ 8 mod 16) in the synthetic frame's RSP slot, so `iretq` enters the task exactly as if it had been `CALL`ed, and returning from the entry function exits the task cleanly (UAOS-182). Before this fix the frame used RSP = top: every native task except the first was misaligned, and the desktop Shell #GP'd in `draw_menubar` when a command redrew the desktop from Shell context.
+- `Task_RunNew()` (first task only) gets there differently: `and rsp,-16; call entry`.
+- `Task_CreateX64()` uses the ELF loader's `initial_rsp` (process-entry convention: RSP 16-aligned at `_start`, no return address).
+- Synthetic frames are 22 qwords (R15..RAX, vector, error_code, RIP, CS, RFLAGS, RSP, SS); X64 tasks use kernel CS/SS `0x08`/`0x10` and `iretq` still pops SS in 64-bit mode.
+- `isr_common` and `uaos_syscall_isr` use the same frame layout for both the interrupted task and the task being switched to. The CPU 16-aligns RSP before pushing an interrupt frame and `iretq` restores the original RSP, so interrupts never change a task's alignment parity.
 
 ## X64 Syscall Dispatch
 
