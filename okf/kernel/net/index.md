@@ -28,7 +28,7 @@ Simple RX dispatch: ARP frames (`0x0806`) go to the ARP handler; IPv4 frames (`0
 
 ### ARP (`arp.c`)
 
-Maintains a small ARP cache with simple LRU eviction. Sends ARP requests and replies, and updates the cache from incoming traffic. Used by the IP layer before sending to a non-local address.
+Maintains a 16-entry ARP cache (`ARP_CACHE_SIZE`) with true LRU eviction — each entry carries a `last_use` stamp updated on insert, refresh, and lookup hit, and a full cache evicts the oldest non-pinned slot. The default gateway's entry is pinned (`arp_set_gateway`, called from `ip_init`) so chatty LAN hosts can never evict it. Cache learning follows RFC 826: `arp_rx` refreshes the sender's MAC only if an entry already exists, and creates new entries only for packets that target our IP (UAOS-166 — previously every broadcast request was learned, which filled the cache with random LAN hosts and the always-evict-slot-0 policy kicked out the gateway). Sends ARP requests and replies, and calls `ip_arp_resolved()` when a learn/refresh may unblock queued TX frames. Used by the IP layer before sending to a non-local address.
 
 ### IPv4 (`ip.c`)
 
@@ -36,6 +36,14 @@ Maintains a small ARP cache with simple LRU eviction. Sends ARP requests and rep
 - Drops fragmented packets (no reassembly).
 - Handles local delivery, broadcast, and gateway routing.
 - Dispatches to ICMP, UDP, or TCP based on the protocol field.
+- ARP-miss pending queue (UAOS-167): a send whose next-hop is unresolved
+  used to drop the packet outright (the first DNS query to the gateway
+  was always lost, costing the full ~2 s retry).  `ip_send` now queues
+  up to `ARP_PEND_MAX` (8) complete frames — at most `ARP_PEND_PER_PEER`
+  (2) per next-hop, each with an `ARP_PEND_TTL` (~3 s) — and
+  `arp_rx` → `ip_arp_resolved()` fills in the Ethernet header and
+  transmits them when the reply lands.  ARP requests are throttled to
+  one per `ARP_REQ_MIN_GAP` (~1 s) per next-hop.
 - Serial debug output is limited to errors only (bad length, bad checksum, fragments). Per-packet "rx proto" and "dispatching" logging was removed because it produced ~180k lines of blocking serial output at 115200 baud (~20 min of CPU time), which starved the PS/2 mouse IRQ (IRQ 12, lower priority than E1000's IRQ 11 on the slave 8259A PIC) and froze the UI.
 
 ### ICMP (`icmp.c`)
@@ -63,12 +71,12 @@ Full TCP state machine including:
 - Retransmit timer with exponential backoff (10 Hz tick).
 - Connect timeout, half-open cleanup, and `TIME_WAIT` expiry.
 - Duplicate-SYN handling: a retransmitted SYN matching a `SYN_RECEIVED`
-  socket replays the saved SYN-ACK segment.  This matters because the
-  first SYN-ACK is dropped by `ip_send` whenever the ARP cache is cold
-  (the packet is discarded while the ARP request resolves); without the
-  replay the half-open connection could never complete.  `SYN_RECEIVED`
-  sockets also have a `conn_timer` timeout so dead half-opens do not
-  leak socket slots.
+  socket replays the saved SYN-ACK segment.  `ip_send` no longer drops
+  on an ARP miss (see the ARP-miss pending queue under IPv4), but real
+  loss still happens — without the replay a half-open connection whose
+  SYN-ACK was lost could never complete.  `SYN_RECEIVED` sockets also
+  have a `conn_timer` timeout so dead half-opens do not leak socket
+  slots.
 - Receive flow control: every outgoing segment advertises the RX ring's
   actual free space (0-window when full).  `tcp_rx_data` accepts only
   in-order bytes — retransmit overlap is trimmed, a segment ahead of
