@@ -133,6 +133,35 @@ static void dbg_scroll(void)
  * the ring buffer and UART keep receiving everything. */
 void Dbgcon_Suspend(void) { g_dbgcon_on = 0; }
 
+/* Re-enable painting after Suspend — the panic path calls this so a
+ * crash that happens after the WM/shell owns the screen still dumps to
+ * the framebuffer (no serial on MBP4,1).  Replays the last screenful of
+ * the klog ring so the lines leading up to the fault are visible. */
+void Dbgcon_Resume(void)
+{
+    if (!g_fb.valid || !g_vram_ready) return;
+    if (!dbg_cols) {
+        dbg_cols = g_fb.width  / 8;
+        dbg_rows = g_fb.height / 16;
+        if (dbg_cols > DBG_MAX_COLS) dbg_cols = DBG_MAX_COLS;
+        if (dbg_rows > DBG_MAX_ROWS) dbg_rows = DBG_MAX_ROWS;
+        if (!dbg_cols || !dbg_rows) return;
+    }
+    g_dbgcon_on = 1;
+    dbg_cx = 0;
+    if (dbg_cy >= dbg_rows) dbg_cy = dbg_rows - 1;
+    uint32_t n = klog_ring_count();
+    for (uint32_t i = (n > dbg_rows ? n - dbg_rows : 0); i < n; i++) {
+        int sub = 0, lvl = 0;
+        const char *t = 0;
+        if (!klog_ring_get(i, &sub, &lvl, &t) || !t) continue;
+        uint32_t l = 0;
+        while (t[l] && l < 200) l++;
+        Dbgcon_Write(t, l);
+        Dbgcon_Write("\n", 1);
+    }
+}
+
 void Dbgcon_Write(const char *s, uint32_t len)
 {
     if (!g_dbgcon_on || !g_vram_ready || !g_fb.valid || !s) return;

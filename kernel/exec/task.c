@@ -52,6 +52,17 @@ UaosTask *Task_SwitchPrev = NULL;
  * Task_CheckResched() when the nesting count unwinds to zero. */
 static volatile int g_need_resched = 0;
 
+/* Set by do_schedule(0) once a syscall-side switch is committed — from
+ * just before g_current changes until the uaos_syscall_isr epilogue has
+ * loaded the new task's RSP.  The int 0x80 gate is a TRAP gate (IF stays
+ * set), so an IRQ can nest inside that window; the nested isr_common's
+ * do_schedule(1)/epilogue must not touch the armed switch — g_current
+ * already names the incoming task, so the nested epilogue would file
+ * the physical RSP (old task's stack) into the WRONG task's native_rsp,
+ * and resuming that task later iretqs a garbage frame (UAOS-180:
+ * #GP at the syscall ISR's iretq on MBP4,1, EventPump victim). */
+volatile int g_sched_switch_pending = 0;
+
 /* The EventPump service task — registered by Task_EventPumpEntry so IRQ
  * and task-context producers can Signal() it via EventPump_Wake(). */
 static UaosTask * volatile g_eventpump_task = NULL;
@@ -419,6 +430,16 @@ static void do_schedule(int from_irq)
 {
     if (!g_current) return;
 
+    /* A syscall-side switch is armed but not yet consumed — defer (see
+     * g_sched_switch_pending above).  Applies to both paths: an IRQ may
+     * nest in the trap-gate window, and a nested int $0x80 issued before
+     * the outer epilogue would see g_current already pointing at the
+     * incoming task and misfile the physical RSP just the same. */
+    if (g_sched_switch_pending) {
+        g_need_resched = 1;
+        return;
+    }
+
     if (from_irq) {
         /* Honour Forbid / Disable nesting — timer ISR only.  Record the
          * suppressed reschedule so Permit()/Enable() can dispatch it
@@ -455,6 +476,13 @@ static void do_schedule(int from_irq)
             prev->m68k_remaining_cycles = m68ki_remaining_cycles;
         }
     }
+
+    /* Up to here a nested IRQ still sees physical context == g_current,
+     * so it may park/switch correctly.  Past this line g_current names
+     * the incoming task while the CPU is still on the outgoing stack —
+     * raise the pending flag so a nested IRQ defers instead of misfiling
+     * this RSP into `next`'s native_rsp. */
+    if (!from_irq) g_sched_switch_pending = 1;
 
     g_current = next;
     next->tc_State = TASK_RUNNING;

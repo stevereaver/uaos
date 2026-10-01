@@ -9,6 +9,7 @@
 /* Forward declarations (defined in uaos_kernel_main.c) */
 extern void kprint(const char *s);
 extern void kprinthex(uint64_t v);
+extern void Dbgcon_Resume(void);   /* panic: repaint klog ring on the FB */
 
 /* =========================================================================
  * Segment selector constants
@@ -512,6 +513,10 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
          * For kernel-mode faults (no current task, or current task is not
          * an X64 task), treat it as a fatal kernel panic. */
         UaosTask *cur = Task_Current();
+        /* Bring the debug console back over the GUI — on machines with
+         * no serial (MBP4,1) a post-LoadWB fault is otherwise invisible
+         * and looks like a frozen desktop. */
+        Dbgcon_Resume();
         exc_dump(frame, cur);
         if (cur && cur->type == TASK_TYPE_X64) {
             kprint("[EXC] killing X64 task '");

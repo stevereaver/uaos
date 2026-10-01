@@ -20,6 +20,7 @@ section .text
 extern ISR_Dispatch
 extern Task_SwitchNext
 extern Task_SwitchPrev
+extern g_sched_switch_pending
 
 isr_common:
     ; Stack at entry:
@@ -64,7 +65,16 @@ isr_common:
 
     ; -----------------------------------------------------------------
     ; Task switch requested by scheduler?
+    ;
+    ; If g_sched_switch_pending is set, a syscall-side do_schedule armed
+    ; a switch that its own epilogue has not consumed yet — this IRQ is
+    ; nested inside the int 0x80 trap gate.  g_current already names the
+    ; incoming task, so filing our RSP into Task_SwitchPrev's native_rsp
+    ; would corrupt that task's frame (UAOS-180: #GP on resume).  The
+    ; syscall epilogue consumes it when we return.
     ; -----------------------------------------------------------------
+    cmp     dword [rel g_sched_switch_pending], 0
+    jnz     .no_switch
     mov     rax, [rel Task_SwitchNext]
     test    rax, rax
     jz      .no_switch
@@ -246,6 +256,7 @@ uaos_syscall_isr:
     ; X64 ELF64) use this same iretq-based restore path; their synthetic
     ; frames are built in the shared isr_common layout.
     mov     rsp, [rax + 136]
+    mov     dword [rel g_sched_switch_pending], 0
     mov     qword [rel Task_SwitchNext], 0
     mov     qword [rel Task_SwitchPrev], 0
 

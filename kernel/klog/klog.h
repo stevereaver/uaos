@@ -112,6 +112,7 @@ void Dbgcon_Init(uint32_t mb2_info_phys);
 int  Dbgcon_Enabled(void);
 void Dbgcon_VramReady(void);   /* call once the 4GB map covers the FB BAR */
 void Dbgcon_Suspend(void);     /* GUI owns the screen — stop painting   */
+void Dbgcon_Resume(void);      /* panic path — repaint ring on the FB   */
 void Dbgcon_Write(const char *s, uint32_t len);
 
 /* -------------------------------------------------------------------------
