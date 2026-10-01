@@ -2118,11 +2118,10 @@ static void exec_WaitPort(void)
     while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
         if (!g_chipset_sync_disabled)
             UAOS_Intuition_PostIntuiTicks();
-        uint64_t nap_end = g_pit_ticks + 1;
-        while (glue_list_empty(port + MP_MSGLIST)
-               && (!mask || !(self->tc_SigRecvd & mask))
-               && g_pit_ticks < nap_end)
-            __asm__ volatile ("sti; hlt" ::: "memory");
+        /* One-tick nap as a real blocking wait (UAOS-169): the task
+         * deschedules immediately instead of sti;hlt-ing as g_current,
+         * and wakes early when PutMsg signals the port's sigbit. */
+        Task_WaitTicks(mask, 1);
         /* Consume the port signal — it only means "check the list"; a
          * leftover edge must not skip every future nap. */
         if (mask && (self->tc_SigRecvd & mask))

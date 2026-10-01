@@ -3933,8 +3933,8 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
             }
         } else {
             /* No key queued — block until the next tick rather than
-             * spin-yielding (Task_Yield is a no-op; a spinning shell
-             * starves the -128 Idle task that pumps GUI input). */
+             * spin-yielding (a spinning shell starves the -128 Idle
+             * task that pumps GUI input). */
             Task_SleepTicks(1);
         }
     }
@@ -6141,8 +6141,7 @@ static void shell_task_entry(void *arg)
             continue;
         }
         /* Nothing queued — block until the next tick instead of
-         * spin-yielding: Task_Yield() is a no-op under the preemptive
-         * scheduler, and a permanently-ready shell at pri 0 starves the
+         * spin-yielding: a permanently-ready shell at pri 0 starves the
          * -128 Idle task (which pumps all GUI input). */
         Task_SleepTicks(1);
     }

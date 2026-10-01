@@ -549,13 +549,15 @@ void Telnetd_Stop(void)
     g_stop = 1;
     /* Wait for the daemon task — and the per-connection pump tasks — to
      * notice g_stop, close their sockets and wind down.  Task_Yield()
-     * does not reschedule (a bare pause) and Wait() has no timeout, so
-     * poll on the PIT tick with a ~1 s deadline — the timer ISR preempts
-     * us and lets the daemon run.  hlt keeps the CPU idle between
-     * checks. */
+     * performs a real reschedule (UAOS-169), so the daemon runs
+     * immediately; when it can't switch (scheduler not started, or
+     * Forbid held — e.g. `&` jobs under the idle task) hlt still sleeps
+     * until the next IRQ.  The ~1 s deadline bounds the shutdown. */
     uint64_t deadline = g_pit_ticks + 100;
-    while ((g_running || g_pump_count > 0) && g_pit_ticks < deadline)
-        __asm__ volatile ("sti; hlt" ::: "memory");
+    while ((g_running || g_pump_count > 0) && g_pit_ticks < deadline) {
+        if (!Task_Yield())
+            __asm__ volatile ("sti; hlt" ::: "memory");
+    }
 }
 
 int Telnetd_IsRunning(void)

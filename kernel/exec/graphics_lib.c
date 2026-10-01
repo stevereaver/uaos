@@ -64,7 +64,7 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern const uint8_t g_font8x16[95][16];
-extern void Task_Yield(void);
+extern int  Task_Yield(void);
 
 /* AmigaOS memory-type flags (forward definition; full set lives in dos_lib.c). */
 #define MEMF_PUBLIC 0x00000001u

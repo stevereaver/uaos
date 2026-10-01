@@ -188,8 +188,12 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
 /* Release an M68k task's guest RAM slot (called by Task_Exit) */
 void Task_ReleaseM68kRam(UaosTask *t);
 
-/* Current task yields CPU voluntarily */
-void Task_Yield(void);
+/* Current task yields CPU voluntarily.  Performs a real reschedule via
+ * the syscall ISR (UAOS-169) and returns nonzero when the CPU was handed
+ * to another task.  Returns 0 — without switching — when nothing else is
+ * runnable, when called from IRQ context, or while Forbid/Disable
+ * nesting is held. */
+int  Task_Yield(void);
 
 /* Exit current task */
 void Task_Exit(void) __attribute__((noreturn));

@@ -385,6 +385,35 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
  * Scheduling
  * ------------------------------------------------------------------------- */
 
+/* Synchronous reschedule from task context (UAOS-169).
+ *
+ * Enters the INT 0x80 syscall ISR so the CPU and stub prologue build a
+ * full saved frame — identical to an IRQ frame — on the current stack.
+ * do_schedule(0) then arms Task_SwitchNext and the ISR epilogue performs
+ * the context switch immediately; the caller resumes here only after it
+ * has been re-dispatched.  This is what lets a blocking task hand the
+ * CPU to the next ready task *now* instead of idling in `sti; hlt` as
+ * g_current until the next PIT tick.
+ *
+ * `int` is a trap, not a maskable interrupt, so it works with IF=0 (all
+ * the blocking primitives call it from their cli region); the vector
+ * 0x80 gate is a trap gate, preserving whatever IF the caller had.
+ *
+ * Returns nonzero when a switch to a different task was armed, zero when
+ * nothing else was runnable and no switch happened (Syscall_Dispatch
+ * reports the SYSCALL_SCHEDULE result).  Callers use the zero case to
+ * fall back to hlt so the CPU still sleeps rather than spinning on the
+ * trap when the ready queues are empty. */
+static int task_switch_away(void)
+{
+    uint64_t ret;
+    __asm__ volatile ("int $0x80"
+                      : "=a"(ret)
+                      : "a"((uint64_t)SYSCALL_SCHEDULE)
+                      : "memory", "cc");
+    return (int)ret;
+}
+
 static void do_schedule(int from_irq)
 {
     if (!g_current) return;
@@ -455,13 +484,19 @@ void Task_ScheduleFromSyscall(void)
     do_schedule(0);
 }
 
-void Task_Yield(void)
+int Task_Yield(void)
 {
-    /* Under the timer-driven scheduler, voluntary yield is a no-op.
-     * The timer ISR will preempt us at the next tick boundary.
-     * Calling Task_ScheduleFromIRQ from normal task context corrupts
-     * g_current because the current task context has not been saved. */
-    __asm__ volatile ("pause");
+    /* Voluntary reschedule through the syscall ISR (UAOS-169): the
+     * switch rides a real saved frame, so do_schedule(0) runs now rather
+     * than at the next PIT tick.  Stays a no-op in IRQ context and under
+     * Forbid/Disable — a voluntary yield must not break a caller's
+     * critical section; code that wants to sleep there should call
+     * Wait()/Task_SleepTicks(), which always deschedule. */
+    if (!g_current || g_irq_depth > 0)
+        return 0;
+    if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0)
+        return 0;
+    return task_switch_away();
 }
 
 void Task_Exit(void)
@@ -505,7 +540,14 @@ void Task_Exit(void)
             ELF64_ReclaimHeap();
         }
     }
-    for (;;) __asm__ volatile ("sti; hlt");
+    /* Switch away immediately (UAOS-169): a REMOVED task is never
+     * re-dispatched, so a successful switch never returns here.  If
+     * nothing else was runnable the int returns 0 — hlt then sleeps
+     * until the next IRQ retries the schedule instead of spinning. */
+    for (;;) {
+        if (!task_switch_away())
+            __asm__ volatile ("sti; hlt" ::: "memory");
+    }
 }
 
 UaosTask *Task_Current(void)
@@ -762,18 +804,19 @@ uint32_t Wait(uint32_t sigmask)
             g_current->tc_State = TASK_WAITING;
             wait_enqueue(g_current);
         }
-        /* Enable interrupts and halt until the timer ISR fires.
-         * The timer ISR will call do_schedule(1) which switches to
-         * another task.  When that task signals us, the scheduler
-         * will put us back in the ready queue and eventually resume
-         * execution here.
+        /* Switch to the next ready task immediately (UAOS-169):
+         * task_switch_away() enters the syscall ISR (a trap — safe with
+         * IF=0, unlike the sti;int $0x80 shadow this used to worry
+         * about) so the ISR epilogue context-switches right now instead
+         * of idling as g_current in sti;hlt until the next PIT tick.
+         * When a matching Signal() re-readies us, a later schedule
+         * resumes execution here.
          *
-         * We cannot use int $0x80 for yielding because sti on x86
-         * delays interrupt delivery until after the next instruction,
-         * so sti; int $0x80 would prevent the timer ISR from firing.
-         * hlt is safe because it halts the CPU until the next
-         * interrupt, giving the timer ISR a chance to run. */
-        __asm__ volatile ("sti; hlt" ::: "memory");
+         * task_switch_away() returns 0 only when nothing else was
+         * runnable; the hlt fallback then sleeps until the next IRQ
+         * rather than spinning on the trap. */
+        if (!task_switch_away())
+            __asm__ volatile ("sti; hlt" ::: "memory");
         __asm__ volatile ("cli");
     }
 
@@ -802,10 +845,13 @@ void Task_SleepTicks(uint64_t ticks)
             g_current->tc_State = TASK_WAITING;
             wait_enqueue(g_current);
         }
-        /* Same mechanism as Wait(): hlt lets the PIT ISR run, and
-         * Task_WakeTimers() moves us back to the ready queue once the
-         * deadline passes.  We resume here when re-dispatched. */
-        __asm__ volatile ("sti; hlt" ::: "memory");
+        /* Same mechanism as Wait() (UAOS-169): switch to the next ready
+         * task via the syscall-ISR epilogue now; Task_WakeTimers() moves
+         * us back to the ready queue once the deadline passes and we
+         * resume here when re-dispatched.  The hlt fallback covers the
+         * nothing-else-runnable case so the CPU still sleeps. */
+        if (!task_switch_away())
+            __asm__ volatile ("sti; hlt" ::: "memory");
         __asm__ volatile ("cli");
     }
 
@@ -827,15 +873,18 @@ uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks)
 
     /* Block until a matching signal arrives or the deadline passes.
      * Signal() from IRQ/task context moves us wait->ready; Task_WakeTimers
-     * does the same on timeout.  Only enqueue once — a spurious non-PIT
-     * interrupt can wake the hlt without rescheduling (see Wait()). */
+     * does the same on timeout.  Only enqueue once — a wake that doesn't
+     * move us back to ready leaves us still linked (see Wait()).
+     * task_switch_away() deschedules immediately (UAOS-169); hlt is the
+     * nothing-else-runnable fallback. */
     while ((g_current->tc_SigRecvd & sigmask) == 0 &&
            g_pit_ticks < deadline) {
         if (g_current->tc_State != TASK_WAITING) {
             g_current->tc_State = TASK_WAITING;
             wait_enqueue(g_current);
         }
-        __asm__ volatile ("sti; hlt" ::: "memory");
+        if (!task_switch_away())
+            __asm__ volatile ("sti; hlt" ::: "memory");
         __asm__ volatile ("cli");
     }
 

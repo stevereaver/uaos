@@ -211,13 +211,14 @@ Lifecycle (UAOS-54): `telnetd STOP` maps to `Telnetd_Stop()`, which sets
 a `g_stop` flag the daemon checks every loop iteration — the accept loop
 and any in-progress session pump both unwind, the listener is
 `tcp_close()`d, `g_running` clears, and the task exits.  `Telnetd_Stop`
-waits for `g_running` and `g_pump_count` to drain by polling on the 100
-Hz PIT tick with a ~1 s deadline (Task_Yield is a bare `pause` and
-Wait() has no timeout);
-the wait relies on timer preemption, so in contexts where the scheduler
-cannot run — Startup-Sequence executes in kernel-main context before
-`Task_StartFirst()`, and `&` background jobs run under the idle task's
-`Forbid()` — it simply times out and the daemon exits on its first
+waits for `g_running` and `g_pump_count` to drain by calling
+`Task_Yield()` — a real reschedule since UAOS-169, so the daemon runs
+immediately — with an `sti;hlt` fallback when no switch is possible and
+a ~1 s `g_pit_ticks` deadline;
+in contexts where the scheduler cannot preempt — Startup-Sequence
+executes in kernel-main context before `Task_StartFirst()`, and `&`
+background jobs run under the idle task's `Forbid()` (which `Task_Yield`
+honours) — it simply times out and the daemon exits on its first
 timeslice.  The daemon also exits on its own when the net stack goes
 down: `net_stack_shutdown()` does not tear down TCP sockets, so the task
 watches `net_stack_is_up()` rather than the listener's `tcp_state()`.

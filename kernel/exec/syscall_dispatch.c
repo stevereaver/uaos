@@ -1194,8 +1194,15 @@ void Syscall_Dispatch(SyscallRegs *regs, InterruptFrame *frame)
     case SYSCALL_TIME:           ret = sys_time(rdi, rsi, rdx); break;
     case SYSCALL_GETRANDOM:      ret = sys_getrandom(rdi, rsi, rdx); break;
     case SYSCALL_SCHEDULE:
+        /* Voluntary reschedule (kernel blocking paths and userspace
+         * uaos_yield).  Report whether a switch to a different task was
+         * armed so callers can fall back to hlt when nothing else is
+         * runnable (UAOS-169). */
+        Task_ScheduleFromSyscall();
+        ret = Task_SwitchNext ? 1 : 0;
+        break;
     default:
-        /* Reserved / legacy voluntary yield. */
+        /* Unknown / reserved. */
         Task_ScheduleFromSyscall();
         ret = 0;
         break;

@@ -69,7 +69,7 @@ Each per-task M68k program gets its own `g_ram` window, but structures registere
 
 M68k wrapper tasks run at priority -128 (same as the shell and idle tasks), allowing the scheduler to round-robin between them. When the shell launches an M68k binary, it calls `Wait(SIGF_CHILD)` to block until the child exits. Key implementation details:
 
-- **`Wait()` uses `sti; hlt`** (not `sti; int $0x80`) because x86 `sti` delays interrupt delivery until after the next instruction — `sti; int $0x80` would prevent the timer ISR from firing, causing a deadlock.
+- **`Wait()` deschedules via `int $0x80`/`SYSCALL_SCHEDULE`** (UAOS-169) — a trap executed inside the blocker's `cli` region, so the syscall-ISR epilogue switches to the next ready task immediately; `sti;hlt` remains only as the nothing-else-runnable fallback. (The old `sti; hlt` implementation documented here predates that path.)
 - **`Task_ClearSig(SIGF_CHILD)`** is called before `Wait()` to clear any stale signal from a previous child exit, ensuring `Wait()` blocks until the current child actually exits.
 - **`Task_Exit()`** signals the parent task with `SIGF_CHILD`, waking the shell.
 - The M68k wrapper has a cycle budget timeout (100M cycles) to prevent infinite loops (e.g., Workbench tools that wait for WBStartup messages when run from CLI).
