@@ -7,6 +7,7 @@
 #include "elf64_loader.h"
 #include "boot/kprint.h"
 #include "exec/task.h"
+#include "../irq/irq.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -125,15 +126,12 @@ static inline uint64_t rela_sym(uint64_t info)
  * transiently half-split block chain. */
 static inline uint64_t x64_irq_save(void)
 {
-    uint64_t flags;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
-    return flags;
+    return irq_save();
 }
 
 static inline void x64_irq_restore(uint64_t flags)
 {
-    if (flags & 0x200)
-        __asm__ volatile("sti" ::: "memory");
+    irq_restore(flags);
 }
 
 /* Reset the arena to a single free block spanning the whole heap. */

@@ -36,6 +36,7 @@
 #include "../net/tcp.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
+#include "../irq/irq.h"
 #include "../exec/task.h"
 #include "../klog/klog.h"
 #include <stdint.h>
@@ -223,7 +224,7 @@ static uint32_t      g_remote_token_next = 1;   /* never handed out as 0 */
  * ------------------------------------------------------------------------- */
 static int shell_kb_enqueue(ShellInstance *s, char c)
 {
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     /* Ctrl-C raises the break flag at feed time — it must be visible to a
      * running command even though the queued byte is only consumed once
      * the task loop returns to it.  Set it before the full-queue check so
@@ -231,12 +232,12 @@ static int shell_kb_enqueue(ShellInstance *s, char c)
     if (c == 0x03) s->break_req = 1;
     int next = (s->kb_tail + 1) % SHELL_KB_BUFSIZE;
     if (next == s->kb_head) {
-        __asm__ volatile ("sti");
+        irq_restore(fl);
         return 0;   /* full */
     }
     s->kb_buf[s->kb_tail] = c;
     s->kb_tail = next;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
     /* Wake a shell parked in Wait(SIGF_CHILD|SIGF_BREAKF) while a
      * foreground binary runs.  Done outside the cli section: Signal()
      * brackets its own critical section and would re-enable interrupts
@@ -253,22 +254,22 @@ static int shell_take_break(ShellInstance *s)
 {
     if (!s->break_req) return 0;
     s->break_req = 0;
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     s->kb_head = s->kb_tail;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
     return 1;
 }
 
 static int shell_kb_dequeue(ShellInstance *s, char *c)
 {
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     if (s->kb_head == s->kb_tail) {
-        __asm__ volatile ("sti");
+        irq_restore(fl);
         return 0;   /* empty */
     }
     *c = s->kb_buf[s->kb_head];
     s->kb_head = (s->kb_head + 1) % SHELL_KB_BUFSIZE;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
     return 1;
 }
 

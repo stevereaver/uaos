@@ -159,7 +159,7 @@ static void enumerate_port(UsbHc *hc, int port)
     }
     if (!ok) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: GET_DESCRIPTOR(8) failed\n");
-        return;
+        goto out_dd;
     }
     dev->ep0_mps = dd->bMaxPacketSize0 ? dd->bMaxPacketSize0 : 8;
 
@@ -168,7 +168,7 @@ static void enumerate_port(UsbHc *hc, int port)
     if (usb_ctrl(dev, USB_RT_OUT | USB_RT_STD | USB_RT_DEV,
                  USB_REQ_SET_ADDRESS, addr, 0, 0, 0) != 0) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: SET_ADDRESS failed\n");
-        return;
+        goto out_dd;
     }
     usb_msleep(2);
     dev->addr = addr;
@@ -177,7 +177,7 @@ static void enumerate_port(UsbHc *hc, int port)
     if (get_desc(dev, USB_DESC_DEVICE, 0, dd,
                  sizeof(UsbDeviceDesc)) != 0) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: GET_DESCRIPTOR(18) failed\n");
-        return;
+        goto out_dd;
     }
     dev->vid      = dd->idVendor;
     dev->pid      = dd->idProduct;
@@ -191,14 +191,16 @@ static void enumerate_port(UsbHc *hc, int port)
     klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", dev->pid);
     klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
 
-    /* Config descriptor — header first, then the whole blob */
+    /* Config descriptor — header first, then the whole blob.
+     * cd is freed on every path — re-enumeration must not leak 4 KB
+     * per device per attempt (UAOS-173). */
     UsbConfigDesc *cd = (UsbConfigDesc *)DMA_Alloc(4096, 64);
-    if (!cd) return;
+    if (!cd) goto out_dd;
     if (get_desc(dev, USB_DESC_CONFIG, 0, cd,
-                 sizeof(UsbConfigDesc)) != 0) return;
+                 sizeof(UsbConfigDesc)) != 0) goto out_cd;
     uint16_t total = cd->wTotalLength;
     if (total > 4096) total = 4096;
-    if (get_desc(dev, USB_DESC_CONFIG, 0, cd, total) != 0) return;
+    if (get_desc(dev, USB_DESC_CONFIG, 0, cd, total) != 0) goto out_cd;
 
     int ifbase = g_nifs;
     parse_config(dev, (const uint8_t *)cd, total);
@@ -209,10 +211,12 @@ static void enumerate_port(UsbHc *hc, int port)
                  USB_REQ_SET_CONFIG, cd->bConfigurationValue,
                  0, 0, 0) != 0) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: SET_CONFIGURATION failed\n");
-        return;
+        goto out_cd;
     }
     usb_msleep(2);
     g_ndevs++;
+    DMA_Free(cd, 4096);
+    DMA_Free(dd, 256);
 
     /* Bind class drivers to each interface */
     for (int i = ifbase; i < g_nifs; i++) {
@@ -222,6 +226,12 @@ static void enumerate_port(UsbHc *hc, int port)
             if (g_classes[c](ifc))
                 ifc->used = 1;
     }
+    return;
+
+out_cd:
+    DMA_Free(cd, 4096);
+out_dd:
+    DMA_Free(dd, 256);
 }
 
 /* ------------------------------------------------------------------ */

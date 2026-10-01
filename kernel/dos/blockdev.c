@@ -7,6 +7,7 @@
  */
 
 #include "blockdev.h"
+#include "../irq/irq.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -121,13 +122,11 @@ BlockDev *BlockDev_GetList(void)
  * that window faults against a null IDT and triple-faults. */
 static inline uint64_t bd_cli(void)
 {
-    uint64_t flags;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
-    return flags;
+    return irq_save();
 }
 static inline void bd_sti(uint64_t flags)
 {
-    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+    irq_restore(flags);
 }
 
 int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors)

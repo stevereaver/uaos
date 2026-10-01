@@ -10,6 +10,7 @@
 
 #include "mtrr.h"
 #include "../boot/kprint.h"
+#include "../irq/irq.h"
 
 #define MSR_MTRRCAP       0xFE
 #define MSR_MTRR_DEFTYPE  0x2FF
@@ -157,8 +158,7 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
 
     /* Save/restore IF — cli for the CD window, then put flags back
      * exactly (the caller may legitimately run with IRQs off). */
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags) :: "memory");
+    uint64_t rflags = irq_save();
 
     if (cr4 & CR4_PGE)
         write_cr4(cr4 & ~(uint64_t)CR4_PGE);
@@ -186,7 +186,7 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
     else
         write_cr3(read_cr3());
 
-    __asm__ volatile ("pushq %0; popfq" :: "r"(rflags) : "cc", "memory");
+    irq_restore(rflags);
 
     kprint("[MTRR] WC region @ ");
     kprinthex(rbase);

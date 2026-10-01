@@ -9,6 +9,7 @@
 #include "../boot/kprint.h"
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
+#include "../irq/irq.h"
 #include "../display/framebuffer.h"
 #include "../display/desktop.h"
 #include "../display/cursor.h"
@@ -776,22 +777,24 @@ void Signal(UaosTask *task, uint32_t sigmask)
      * the middle of the ISR.  Restoring the caller's flags makes Signal
      * callable from both task and IRQ context (e.g. a NIC interrupt
      * waking a net consumer task directly). */
-    uint64_t fl;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(fl) :: "memory");
+    uint64_t fl = irq_save();
     task->tc_SigRecvd |= sigmask;
 
     if (task->tc_State == TASK_WAITING && (task->tc_SigRecvd & task->tc_SigWait) != 0) {
         wait_remove(task);
         ready_enqueue(task);
     }
-    __asm__ volatile ("pushq %0; popfq" :: "r"(fl) : "memory", "cc");
+    irq_restore(fl);
 }
 
 uint32_t Wait(uint32_t sigmask)
 {
     uint32_t result;
 
-    __asm__ volatile ("cli");
+    /* Save/restore IF: a bare sti at exit would silently re-enable
+     * interrupts if the caller entered with IF=0 (Disable() nesting or
+     * an outer irq_save region) — see UAOS-176. */
+    uint64_t fl = irq_save();
     g_current->tc_SigWait = sigmask;
 
     while ((g_current->tc_SigRecvd & sigmask) == 0) {
@@ -823,7 +826,7 @@ uint32_t Wait(uint32_t sigmask)
     result = g_current->tc_SigRecvd & sigmask;
     g_current->tc_SigRecvd &= ~sigmask;
     g_current->tc_SigWait = 0;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
 
     return result;
 }
@@ -833,7 +836,7 @@ void Task_SleepTicks(uint64_t ticks)
     if (!g_current || ticks == 0) return;
     uint64_t deadline = g_pit_ticks + ticks;
 
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();           /* UAOS-176: restore caller's IF */
     g_current->tc_SigWait = 0;          /* not woken by Signal() */
     g_current->tc_wake_tick = deadline;
 
@@ -856,7 +859,7 @@ void Task_SleepTicks(uint64_t ticks)
     }
 
     g_current->tc_wake_tick = 0;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
 }
 
 uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks)
@@ -867,7 +870,7 @@ uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks)
     uint64_t deadline = g_pit_ticks + ticks;
     uint32_t result;
 
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();           /* UAOS-176: restore caller's IF */
     g_current->tc_SigWait  = sigmask;
     g_current->tc_wake_tick = deadline;
 
@@ -892,7 +895,7 @@ uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks)
     g_current->tc_SigRecvd &= ~sigmask;
     g_current->tc_SigWait  = 0;
     g_current->tc_wake_tick = 0;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
 
     return result;
 }
@@ -916,18 +919,18 @@ void Task_WakeTimers(void)
 
 void Task_ClearSig(uint32_t sigmask)
 {
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     if (g_current)
         g_current->tc_SigRecvd &= ~sigmask;
-    __asm__ volatile ("sti");
+    irq_restore(fl);
 }
 
 uint32_t SetSignal(uint32_t newsignals, uint32_t sigmask)
 {
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     uint32_t old = g_current->tc_SigRecvd;
     g_current->tc_SigRecvd = (old & ~sigmask) | (newsignals & sigmask);
-    __asm__ volatile ("sti");
+    irq_restore(fl);
     return old;
 }
 

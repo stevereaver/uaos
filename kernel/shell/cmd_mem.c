@@ -7,6 +7,7 @@
 
 #include "cmd_internal.h"
 #include "../exec/mem_info.h"
+#include "../dos/dma.h"
 
 static void mem_fmt(uint32_t bytes, char *buf, int max)
 {
@@ -56,6 +57,18 @@ void Cmd_Mem(NativeCmdCtx *ctx, const char *args)
     mem_fmt(m.m68k_ram_total, num, sizeof(num));
     cmd_scat(line, num, CMD_MAX_LINE);
     cmd_scat(line, "/slot", CMD_MAX_LINE);
+    PRINT(line);
+
+    /* DMA pool (TDs/QHs, frame lists, bounce buffers) */
+    uint64_t dma_used = 0, dma_free = 0;
+    DMA_Usage(&dma_used, &dma_free);
+    cmd_scopy(line, "DMA pool:  ", CMD_MAX_LINE);
+    mem_fmt((uint32_t)dma_used, num, sizeof(num));
+    cmd_scat(line, num, CMD_MAX_LINE);
+    cmd_scat(line, " / ", CMD_MAX_LINE);
+    mem_fmt((uint32_t)(dma_used + dma_free), num, sizeof(num));
+    cmd_scat(line, num, CMD_MAX_LINE);
+    cmd_scat(line, " used", CMD_MAX_LINE);
     PRINT(line);
 
     /* Scheduler task summary */

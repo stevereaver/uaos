@@ -37,10 +37,14 @@ void ip_rx(const uint8_t *pkt, uint16_t len);
  * dst_ip: destination IPv4 (host byte order).
  * proto:  IP_PROTO_* constant.
  * payload: already-filled buffer of payload_len bytes (placed after IP hdr).
- * Returns 1 on success.
+ * Returns 1 on success (including queued-behind-ARP; UAOS-167).
  */
 int  ip_send(ipv4_t dst_ip, uint8_t proto,
              uint8_t *payload, uint16_t payload_len);
+
+/* Called from arp_rx() when a sender's MAC is learned or refreshed —
+ * flushes frames queued on that next-hop's ARP resolution. */
+void ip_arp_resolved(ipv4_t ip);
 
 /* Query local IP */
 ipv4_t ip_get_local(void);

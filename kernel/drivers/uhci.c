@@ -20,6 +20,7 @@
 #include "../irq/irq.h"
 #include "../klog/klog.h"
 #include "../dos/dma.h"
+#include "../exec/task.h"
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -146,11 +147,16 @@ typedef struct {
     UhciQH     *chain_head;   /* first transfer QH (anchor.link target) */
     UhciIntr    intr[UHCI_MAX_INTR];
     int         irq_vec;
+    uint32_t    irq_hits;         /* dispatches seen on our vector */
+    uint64_t    t_irq_armed;      /* tick when USBINTR was enabled */
+    int         irq_dead_logged;  /* one-shot "irq silent" warning */
 } UhciHc;
 
 #define MAX_UHCI 6
 static UhciHc g_hc[MAX_UHCI];
 static int    g_nhc = 0;
+
+extern volatile uint64_t g_pit_ticks;      /* 100 Hz */
 
 /* ------------------------------------------------------------------ */
 /* I/O helpers                                                         */
@@ -288,9 +294,14 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
     int ndata = (len + mps - 1) / mps;
     int ntd   = 1 + ndata + 1;                 /* setup + data + status */
 
-    UhciQH *qh = qh_alloc();
+    UhciQH *qh  = qh_alloc();
     UhciTD *tds = (UhciTD *)DMA_Alloc(ntd * sizeof(UhciTD), 16);
-    if (!qh || !tds) return -1;
+    if (!qh || !tds) {                         /* UAOS-173: no leaks */
+        DMA_Free(setup, 8);
+        if (qh)  DMA_Free(qh, sizeof(UhciQH));
+        if (tds) DMA_Free(tds, ntd * sizeof(UhciTD));
+        return -1;
+    }
 
     /* setup stage — DATA0 */
     td_init(&tds[0], TD_PID_SETUP, dev->addr, ep, 0, setup, 8, ls);
@@ -319,14 +330,30 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
     qh->link    = TD_LINK_T;
     qh_insert_head(h, qh);
 
-    /* wait for the last TD to go inactive */
+    /* wait for the last TD to go inactive (UAOS-172):
+     *  - bail as soon as ANY TD in the chain retires with a hard error;
+     *    the old code re-tested tds[ntd-1], which stays ACTIVE forever
+     *    once the HC halts the queue on a failed SETUP/DATA TD, so a
+     *    failed transfer burned the whole timeout;
+     *  - poll with msleep only for the first few ms (a healthy transfer
+     *    retires inside ~2 frames), then yield via Task_SleepTicks when
+     *    the scheduler is running instead of udelay-spinning. */
+    int sched = (Task_Current() != NULL);
+    int max_iter = sched ? 56 : 500;        /* 6 ms spin + ~500 ms sleep */
     int err = -1;
-    for (int ms = 0; ms < 500; ms++) {
-        uint32_t st = tds[ntd - 1].status;
-        if (!(st & TD_ST_ACTIVE)) { err = 0; break; }
-        /* also bail on hard error in an earlier TD */
-        if (tds[ntd - 1].status & TD_ST_ERRMSK) { err = -1; break; }
-        msleep(1);
+    for (int i = 0; i < max_iter; i++) {
+        if (!(tds[ntd - 1].status & TD_ST_ACTIVE)) { err = 0; break; }
+        int harderr = 0;
+        for (int t = 0; t < ntd - 1; t++) {
+            uint32_t st = tds[t].status;
+            if (!(st & TD_ST_ACTIVE) && (st & TD_ST_ERRMSK)) {
+                harderr = 1;
+                break;
+            }
+        }
+        if (harderr) break;
+        if (i < 6 || !sched) msleep(1);
+        else                 Task_SleepTicks(1);
     }
 
     /* check every TD for errors */
@@ -351,6 +378,14 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
     }
 
     qh_remove(h, qh);
+    /* Let a full frame elapse before the memory is released: the HC
+     * caches the QH pointer and may still touch it right after unlink
+     * (UAOS-172).  With a working DMA_Free (UAOS-173) that would be a
+     * use-after-free on the very next transfer. */
+    msleep(2);
+    DMA_Free(setup, 8);
+    DMA_Free(qh, sizeof(UhciQH));
+    DMA_Free(tds, ntd * sizeof(UhciTD));
     return err;
 }
 
@@ -372,7 +407,11 @@ static int uhci_intr_in(UsbHc *pub, UsbDev *dev, uint8_t ep,
         if (h->intr[i].td) continue;
         UhciQH *qh = qh_alloc();
         UhciTD *tds = (UhciTD *)DMA_Alloc(ntd * sizeof(UhciTD), 16);
-        if (!qh || !tds) return -1;
+        if (!qh || !tds) {                 /* UAOS-173: no leaks */
+            if (qh)  DMA_Free(qh, sizeof(UhciQH));
+            if (tds) DMA_Free(tds, ntd * sizeof(UhciTD));
+            return -1;
+        }
 
         /* Chain of ntd IN transactions, VF-linked so the HC runs the
          * whole report in one visit; SPD lets a short packet end it
@@ -547,8 +586,40 @@ static void uhci_scan_intr(UhciHc *h)
 
 void UHCI_Poll(void)
 {
-    for (int i = 0; i < g_nhc; i++)
-        uhci_scan_intr(&g_hc[i]);
+    for (int i = 0; i < g_nhc; i++) {
+        UhciHc *h = &g_hc[i];
+        uhci_scan_intr(h);
+
+        if (h->irq_vec < 0) continue;
+
+        /* USBINTR health check (UAOS-174): if a later HC reset cleared
+         * the interrupt enables, re-arm them — otherwise INTx delivery
+         * silently stops while the device keeps running on this poll. */
+        if (rg16(h, U_USBINTR) == 0) {
+            w16(h, U_USBINTR, INTR_IOC | INTR_SPI | INTR_TOCRC | INTR_RESUME);
+            klog_puts(KLOG_USB, KLOG_WARN,
+                      "uhci: USBINTR was cleared — re-armed\n");
+        }
+
+        /* The poll path retires TDs without touching USBSTS — a status
+         * bit left set keeps the level line asserted forever.  Ack any
+         * pending bits here the same way the IRQ handler would. */
+        uint16_t st = rg16(h, U_USBSTS);
+        if (st) w16(h, U_USBSTS, st);
+
+        /* One-shot diagnostic: ~30 s after the IRQ was armed with zero
+         * dispatches, say so — on MBP4,1 all UHCI vectors stayed at 0
+         * while HID still worked through this poll path. */
+        if (!h->irq_dead_logged && h->irq_hits == 0 && h->t_irq_armed &&
+            g_pit_ticks - h->t_irq_armed > 3000) {
+            h->irq_dead_logged = 1;
+            klog_puts(KLOG_USB, KLOG_WARN, "uhci: hc=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+            klog_puts(KLOG_USB, KLOG_WARN,
+                      " irq vec has fired 0 times in 30 s — INTx "
+                      "delivery dead, poll fallback active\n");
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -561,6 +632,7 @@ static void uhci_irq_handler(uint64_t vector, uint64_t error_code)
     for (int i = 0; i < g_nhc; i++) {
         UhciHc *h = &g_hc[i];
         if (h->irq_vec != (int)vector) continue;
+        h->irq_hits++;
         uint16_t st = rg16(h, U_USBSTS);
         if (st) serviced = 1;
         w16(h, U_USBSTS, st);            /* W1C ack */
@@ -746,6 +818,7 @@ void UHCI_SetupIRQs(void)
              * line here. */
             w16(h, U_USBSTS, 0x3F);
             w16(h, U_USBINTR, INTR_IOC | INTR_SPI | INTR_TOCRC | INTR_RESUME);
+            h->t_irq_armed = g_pit_ticks;
         }
         klog_puts(KLOG_USB, KLOG_DEBUG, "uhci: irq vec=");
         klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)vec);

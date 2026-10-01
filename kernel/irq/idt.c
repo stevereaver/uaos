@@ -341,20 +341,18 @@ static uint64_t g_vector_counts[256];
 void IDT_SnapshotCounts(uint64_t *out)
 {
     /* Copy under cli so a mid-copy interrupt can't produce torn deltas. */
-    uint64_t flags;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    uint64_t flags = irq_save();
     for (int i = 0; i < 256; i++)
         out[i] = g_vector_counts[i];
-    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+    irq_restore(flags);
 }
 
 void IDT_ClearCounts(void)
 {
-    uint64_t flags;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    uint64_t flags = irq_save();
     for (int i = 0; i < 256; i++)
         g_vector_counts[i] = 0;
-    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+    irq_restore(flags);
 }
 
 void IDT_SetHandler(uint8_t vector, ISRHandler handler, const char *name)

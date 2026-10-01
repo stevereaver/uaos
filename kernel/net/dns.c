@@ -19,6 +19,8 @@
 #include "stack.h"
 #include "net.h"
 #include "../klog/klog.h"
+#include "../exec/task.h"
+#include "../drivers/entropy.h"
 
 /* -------------------------------------------------------------------------
  * Build DNS query packet.
@@ -90,9 +92,12 @@ static int dns_name_end(const uint8_t *buf, uint16_t buflen, int off)
  *            an error RCODE (NXDOMAIN/SERVFAIL/REFUSED/…) or a valid
  *            response that simply contains no A record.
  * txid: the transaction ID we sent; response must match.
+ * query/qlen: the question section we sent — a response whose question
+ * doesn't echo it byte-for-byte is not a reply to our query (UAOS-168).
  * ------------------------------------------------------------------------- */
 static int dns_parse_response(const uint8_t *buf, uint16_t len,
-                              uint16_t txid, ipv4_t *out_ip)
+                              uint16_t txid, ipv4_t *out_ip,
+                              const uint8_t *query, uint16_t qlen)
 {
     if (len < DNS_HDR_LEN) return 0;
 
@@ -110,6 +115,12 @@ static int dns_parse_response(const uint8_t *buf, uint16_t len,
 
     if (rid != txid) return 0;                     /* not our reply */
     if (!(flags & DNS_FLAG_QR)) return 0;          /* not a response */
+    /* The answer must echo exactly the one question we sent — a packet
+     * with our txid but a different question is a forgery (UAOS-168). */
+    if (qdcount != 1 || len < qlen ||
+        net_memcmp(buf + DNS_HDR_LEN, query + DNS_HDR_LEN,
+                   (uint32_t)(qlen - DNS_HDR_LEN)) != 0)
+        return 0;
     if ((flags & DNS_FLAG_RCODE) != 0) {           /* definitive error (NXDOMAIN, …) */
         klog_puts(KLOG_DNS, KLOG_DEBUG, "rcode="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%u", (unsigned)(flags & DNS_FLAG_RCODE));
         klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
@@ -199,10 +210,12 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
     klog_puts(KLOG_DNS, KLOG_DEBUG, "resolve: "); klog_puts(KLOG_DNS, KLOG_DEBUG, hostname); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
     klog_puts(KLOG_DNS, KLOG_DEBUG, "server="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%08X", dns_server); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
 
-    /* Use a fixed transaction ID derived from the hostname for simplicity */
-    uint16_t txid = 0xAB00;
-    for (const char *p = hostname; *p; p++)
-        txid = (uint16_t)(txid * 31 + (uint8_t)*p);
+    /* Random transaction ID from the kernel entropy source (UAOS-168).
+     * The old hostname-derived ID was deterministic — an off-path
+     * attacker who knew the name only had to guess the (then
+     * sequential) source port to inject a forged A record. */
+    uint16_t txid = 0;
+    entropy_fill(&txid, sizeof(txid));
     txid |= 1;   /* ensure non-zero */
 
     /* Build query */
@@ -230,6 +243,12 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
     int result = 0;
     int answered = 0;
 
+    /* The poll_fn-less path blocks on SIGF_NET — arm once for the whole
+     * resolve so NIC IRQs wake us instead of waiting for the slice
+     * timeout (idempotent if the caller is already armed). */
+    if (!poll_fn)
+        net_rx_notify_arm();
+
     while (elapsed < timeout_ms && !result && !answered) {
         klog_puts(KLOG_DNS, KLOG_DEBUG, "sending query txid="); klog_appendf(KLOG_DNS, KLOG_DEBUG, "%04X", txid); klog_putc(KLOG_DNS, KLOG_DEBUG, '\n');
         udp_send(sock, dns_server, DNS_PORT, qbuf, qlen);
@@ -237,25 +256,31 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
         /* Wait up to RETRY_MS for a response, polling in SLICE_MS slices */
         uint32_t waited = 0;
         while (waited < RETRY_MS && elapsed < timeout_ms && !result) {
-            if (poll_fn)
+            if (poll_fn) {
                 poll_fn(poll_arg, SLICE_MS);
-            else {
-                /* Simple busy-poll without yielding */
-                volatile uint32_t n = 5000000UL;
-                while (n--) __asm__ volatile("pause");
+            } else {
+                /* No caller poll hook: block on SIGF_NET until the NIC
+                 * IRQ wakes us (armed below), then drain the stack.
+                 * Replaces the old 5M-iteration pause spin per slice
+                 * (UAOS-168).  The slice length is the safety-net
+                 * timeout in case a reply arrives via a path that
+                 * doesn't kick SIGF_NET. */
+                Task_WaitTicks(SIGF_NET, (SLICE_MS + 9) / 10);
                 net_stack_poll();
             }
             waited  += SLICE_MS;
             elapsed += SLICE_MS;
 
-            /* Check for incoming UDP packet on our socket */
+            /* Check for incoming UDP packet on our socket — only accept
+             * answers from the server we actually queried (UAOS-168). */
             uint8_t rbuf[512];
             ipv4_t  src_ip   = 0;
             uint16_t src_port = 0;
             int rlen = udp_recv(sock, rbuf, (uint16_t)sizeof(rbuf),
                                 &src_ip, &src_port);
-            if (rlen > 0 && src_port == DNS_PORT) {
-                int r = dns_parse_response(rbuf, (uint16_t)rlen, txid, out_ip);
+            if (rlen > 0 && src_port == DNS_PORT && src_ip == dns_server) {
+                int r = dns_parse_response(rbuf, (uint16_t)rlen, txid,
+                                           out_ip, qbuf, qlen);
                 if (r > 0) result = 1;
                 else if (r < 0) { answered = 1; break; }
             }
@@ -263,6 +288,8 @@ int dns_resolve(const char *hostname, ipv4_t *out_ip,
     }
 
     udp_close(sock);
+    if (!poll_fn)
+        net_rx_notify_disarm(Task_Current());
 
     if (!result) {
         klog_puts(KLOG_DNS, KLOG_DEBUG, answered ? "resolve failed (definitive answer)\n"

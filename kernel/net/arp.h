@@ -25,6 +25,10 @@ typedef struct __attribute__((packed)) {
 /* Initialise the ARP module with our IP + MAC */
 void arp_init(ipv4_t my_ip, const uint8_t *my_mac);
 
+/* Pin the gateway's entry so LRU eviction can never drop it (UAOS-166).
+ * Called from ip_init() once the gateway is known. */
+void arp_set_gateway(ipv4_t gw_ip);
+
 /* Handle an incoming ARP packet (payload after Ethernet header) */
 void arp_rx(const uint8_t *pkt, uint16_t len);
 

@@ -9,6 +9,7 @@
 #include "dhcp.h"
 #include "net_device.h"
 #include "../exec/task.h"
+#include "../irq/irq.h"
 
 static int    g_up          = 0;
 static ipv4_t g_ip          = 0;
@@ -59,6 +60,9 @@ int net_stack_init_ex(ipv4_t fallback_ip, ipv4_t fallback_gw,
     netdev_set_rx_callback(rx_callback);
     netdev_setup_irq();
     g_up = 1;
+    /* Warm the ARP cache for the gateway so the first off-subnet packet
+     * (DHCP/DNS/NTP) doesn't have to queue behind resolution. */
+    if (gw) arp_request(gw);
     return 1;
 }
 
@@ -94,22 +98,25 @@ void net_rx_notify_arm(void)
 {
     UaosTask *cur = Task_Current();
     if (!cur) return;
-    __asm__ volatile("cli" ::: "memory");
+    /* irq_save/restore, not cli/sti: callers may already hold IF=0
+     * (Disable(), sky2_irq_save(), Task_Exit teardown) and a bare sti
+     * would break their atomicity (UAOS-176). */
+    uint64_t fl = irq_save();
     for (int i = 0; i < NET_RX_NOTIFY_MAX; i++)
         if (g_rx_notify[i] == cur) goto done;   /* already armed */
     for (int i = 0; i < NET_RX_NOTIFY_MAX; i++)
         if (!g_rx_notify[i]) { g_rx_notify[i] = cur; break; }
 done:
-    __asm__ volatile("sti");
+    irq_restore(fl);
 }
 
 void net_rx_notify_disarm(void *task)
 {
     if (!task) return;
-    __asm__ volatile("cli" ::: "memory");
+    uint64_t fl = irq_save();
     for (int i = 0; i < NET_RX_NOTIFY_MAX; i++)
         if (g_rx_notify[i] == task) g_rx_notify[i] = 0;
-    __asm__ volatile("sti");
+    irq_restore(fl);
 }
 
 void net_rx_kick(void)

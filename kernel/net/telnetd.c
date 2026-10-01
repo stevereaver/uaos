@@ -42,6 +42,7 @@
 #include "tcp.h"
 #include "stack.h"
 #include "../exec/task.h"
+#include "../irq/irq.h"
 #include "../display/shell_win.h"
 #include "../boot/kprint.h"
 
@@ -427,9 +428,9 @@ static void pump_task(void *arg)
     } else {
         tcp_abort(sock);
     }
-    __asm__ volatile("cli" ::: "memory");
+    uint64_t fl = irq_save();
     g_pump_count--;
-    __asm__ volatile("sti" ::: "memory");
+    irq_restore(fl);
     ctx->inuse = 0;
     Task_Exit();
 }
@@ -492,15 +493,15 @@ static void telnetd_task(void *arg)
                 ctx->peer_ip   = peer_ip;
                 ctx->peer_port = peer_port;
                 ctx->t_connect = g_pit_ticks;
-                __asm__ volatile("cli" ::: "memory");
+                uint64_t fl = irq_save();
                 g_pump_count++;
-                __asm__ volatile("sti" ::: "memory");
+                irq_restore(fl);
                 if (!Task_CreateNative("telnetd-session", 0,
                                        pump_task, ctx)) {
                     ctx->inuse = 0;
-                    __asm__ volatile("cli" ::: "memory");
+                    fl = irq_save();
                     g_pump_count--;
-                    __asm__ volatile("sti" ::: "memory");
+                    irq_restore(fl);
                     ShellWin_RemoteKill(sess);
                     tcp_close(csock);
                 }
@@ -523,9 +524,9 @@ int Telnetd_Start(uint16_t port)
     /* Atomic check-and-set — a double-start (User-Startup + manual, or
      * two callers racing the gap between the test and the store) used
      * to spawn two listener tasks on the same port. */
-    __asm__ volatile("cli" ::: "memory");
+    uint64_t fl = irq_save();
     if (g_running) {
-        __asm__ volatile("sti" ::: "memory");
+        irq_restore(fl);
         return 0;
     }
     /* Set the flags before spawning: if the new task runs first and
@@ -534,7 +535,7 @@ int Telnetd_Start(uint16_t port)
     g_generation++;
     g_stop    = 0;
     g_running = 1;
-    __asm__ volatile("sti" ::: "memory");
+    irq_restore(fl);
     if (!Task_CreateNative("telnetd", 0, telnetd_task,
                            (void *)(uintptr_t)port)) {
         g_running = 0;

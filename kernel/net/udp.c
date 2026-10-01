@@ -3,16 +3,38 @@
  */
 #include "udp.h"
 #include "ip.h"
+#include "../drivers/entropy.h"
 
 static UdpSocket g_socks[UDP_MAX_SOCKETS];
 static uint16_t  g_ephemeral = 49152;
 
 static int sock_valid(int s){ return s >= 0 && s < UDP_MAX_SOCKETS && g_socks[s].active; }
 
+static int port_in_use(uint16_t port)
+{
+    for (int i = 0; i < UDP_MAX_SOCKETS; i++)
+        if (g_socks[i].active && g_socks[i].local_port == port)
+            return 1;
+    return 0;
+}
+
+/* Ephemeral ports are drawn at random (UAOS-168): a predictable
+ * sequential source port makes off-path DNS/NTP response spoofing
+ * trivial.  Retry a few random draws, then fall back to the sequential
+ * counter so a full table can't wedge the allocator. */
 static uint16_t alloc_port(void)
 {
-    if (g_ephemeral >= 65535) g_ephemeral = 49152;
-    return g_ephemeral++;
+    for (int tries = 0; tries < 16; tries++) {
+        uint32_t r = 0;
+        entropy_fill(&r, sizeof(r));
+        uint16_t port = (uint16_t)(49152 + (r % (65536 - 49152)));
+        if (!port_in_use(port)) return port;
+    }
+    do {
+        if (g_ephemeral >= 65535) g_ephemeral = 49152;
+        uint16_t port = g_ephemeral++;
+        if (!port_in_use(port)) return port;
+    } while (1);
 }
 
 static void ring_put(UdpSocket *s, const uint8_t *data, uint16_t len)

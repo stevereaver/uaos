@@ -23,6 +23,9 @@ void *DMA_Alloc(size_t size, size_t alignment);
 /* Free DMA-allocated memory */
 void DMA_Free(void *ptr, size_t size);
 
+/* Pool usage for diagnostics (C:mem): payload-side used/free bytes. */
+void DMA_Usage(uint64_t *used, uint64_t *freeb);
+
 /* Check if an address is DMA-accessible (in identity-mapped region) */
 int DMA_IsAccessible(void *virt_addr);
 

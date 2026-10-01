@@ -311,6 +311,31 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
     /* DxxIR: nibble per pin selects PIRQA-H (0-7), 0xF = unrouted. */
     volatile uint16_t *irp = (volatile uint16_t *)(rcba + roff);
     uint16_t ir = *irp;
+
+    /* A full-zero DxxIR is anomalous — the ICH8M reset default is
+     * 0x3210.  It either means firmware left the whole register cleared
+     * (then every pin claims PIRQA, wrong for pins B-D) or the read is
+     * landing on a non-decoding offset.  Either way, program the
+     * canonical pin->PIRQ map for OUR pin and verify the write sticks
+     * before trusting the decode (UAOS-174, MBP4,1 D26IR read 0x0). */
+    if (ir == 0) {
+        /* Write the documented ICH8M reset default (INTA->PIRQA …
+         * INTD->PIRQD) rather than just our nibble, so sibling
+         * functions on other pins keep a sane route. */
+        *irp = 0x3210;
+        ir = *irp;
+        if (((ir >> ((pin - 1) * 4)) & 0xF) != ((pin - 1) & 0x7)) {
+            kprint("[IRQ] ich-route dev=");
+            kprinthex(dev); kprint("."); kprintdec(fn);
+            kprint(" dir read 0 and write failed — untrusted\n");
+            return -1;      /* fall back to the PCI intline register */
+        }
+        kprint("[IRQ] ich-route dev=");
+        kprinthex(dev); kprint("."); kprintdec(fn);
+        kprint(" dir was 0x0 — programmed pin map, dir=0x");
+        kprinthex(ir); kprint("\n");
+    }
+
     uint8_t nib = (uint8_t)((ir >> ((pin - 1) * 4)) & 0xF);
     uint8_t pirq = nib;
     if (nib == 0xF) {

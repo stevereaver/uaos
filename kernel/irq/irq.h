@@ -19,6 +19,24 @@
 #define IRQ_MODE_PIC    0
 #define IRQ_MODE_IOAPIC 1
 
+/* Critical-section helpers — the save/restore IF pair every short
+ * atomic region should use.  A bare cli … sti pair silently re-enables
+ * interrupts when the caller already had IF=0 (inside Disable(),
+ * another irq_save() region, or an outer critical section), breaking
+ * its atomicity; restoring the caller's RFLAGS preserves whatever IF
+ * it entered with.  Safe from task and IRQ context. */
+static inline uint64_t irq_save(void)
+{
+    uint64_t f;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+
+static inline void irq_restore(uint64_t f)
+{
+    __asm__ volatile("pushq %0; popfq" :: "r"(f) : "memory", "cc");
+}
+
 /* mb2_phys is the Multiboot2 info physical address. */
 void IRQ_Init(uint32_t mb2_phys);
 

@@ -8,6 +8,7 @@
 #include "task.h"
 #include "amiga_task.h"
 #include "chipset/chiptrace.h"
+#include "../irq/irq.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -521,7 +522,7 @@ void SetTaskPri(UaosTask *task, int newpri)
     if (newpri < MIN_PRI) newpri = MIN_PRI;
     if (newpri > MAX_PRI) newpri = MAX_PRI;
 
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     if (task->tc_State == TASK_READY) {
         /* Task is queued: move it to the new priority's ready list so
          * the change takes effect at the next dispatch instead of
@@ -532,5 +533,5 @@ void SetTaskPri(UaosTask *task, int newpri)
     } else {
         task->ln_Pri = (int8_t)newpri;
     }
-    __asm__ volatile ("sti");
+    irq_restore(fl);
 }

@@ -23,6 +23,7 @@
 #include "chipset/chip_emu.h"
 #include "chipset/chiptrace.h"
 #include "irq/rtc.h"
+#include "irq/irq.h"
 #include "net/ntp.h"
 #include "klog/klog.h"
 
@@ -515,8 +516,7 @@ static uint32_t mc_scan_freelist(uint32_t list_slot, const char *pool_name)
  * a transient split-block header looks like corruption. */
 uint32_t Memcheck_Scan(void)
 {
-    uint64_t flags;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    uint64_t flags = irq_save();
 
     uint32_t bad = 0;
     for (int i = 0; i < MC_MAX_RECS; i++)
@@ -525,7 +525,7 @@ uint32_t Memcheck_Scan(void)
     bad += mc_scan_freelist(HEAP_LIST_SLOT_CHIP, "chip");
     bad += mc_scan_freelist(HEAP_LIST_SLOT_FAST, "fast");
 
-    if (flags & 0x200) __asm__ volatile("sti" ::: "memory");
+    irq_restore(flags);
     return bad;
 }
 
@@ -2709,10 +2709,10 @@ static void dos_CheckSignal(M68kCPUState *cpu)
     if (!cur) { cpu->d[0] = 0; return; }
 
     /* Atomically read and clear matching bits */
-    __asm__ volatile ("cli");
+    uint64_t fl = irq_save();
     uint32_t received = cur->tc_SigRecvd & mask;
     cur->tc_SigRecvd &= ~received;  /* Clear only the bits that were matched */
-    __asm__ volatile ("sti");
+    irq_restore(fl);
 
     cpu->d[0] = received;
 }

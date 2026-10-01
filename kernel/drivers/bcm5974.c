@@ -107,7 +107,7 @@ static int bcm5974_wellspring_mode(UsbDev *dev, int on)
                  WS_MODE_READ_REQ, WS_UM_REQ_VAL, WS_UM_REQ_IDX,
                  data, WS_UM_SIZE) != 0) {
         klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode read failed\n");
-        return -1;
+        goto fail;
     }
     /* The readback tells us whether the device understood the request —
      * a sane config block vs zeros/garbage. */
@@ -130,7 +130,7 @@ static int bcm5974_wellspring_mode(UsbDev *dev, int on)
                      WS_MODE_WRITE_REQ, WS_UM_REQ_VAL, WS_UM_REQ_IDX,
                      data, WS_UM_SIZE) != 0) {
             klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode write failed\n");
-            return -1;
+            goto fail;
         }
         msleep(20);
         memset(data, 0, WS_UM_SIZE);
@@ -138,17 +138,21 @@ static int bcm5974_wellspring_mode(UsbDev *dev, int on)
                      WS_MODE_READ_REQ, WS_UM_REQ_VAL, WS_UM_REQ_IDX,
                      data, WS_UM_SIZE) != 0) {
             klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode vfy read failed\n");
-            return -1;
+            goto fail;
         }
         klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: mode vfy=");
         klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)data[WS_UM_SWITCH_IDX]);
         klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
-        if (data[WS_UM_SWITCH_IDX] == (uint8_t)(on ? WS_UM_SWITCH_ON : WS_UM_SWITCH_OFF))
+        if (data[WS_UM_SWITCH_IDX] == (uint8_t)(on ? WS_UM_SWITCH_ON : WS_UM_SWITCH_OFF)) {
+            DMA_Free(data, WS_UM_SIZE);
             return 0;
+        }
         data[WS_UM_SWITCH_IDX] = on ? WS_UM_SWITCH_ON : WS_UM_SWITCH_OFF;
         msleep(50);
     }
     klog_puts(KLOG_USB, KLOG_WARN, "bcm5974: mode switch did not stick\n");
+fail:
+    DMA_Free(data, WS_UM_SIZE);
     return -1;
 }
 

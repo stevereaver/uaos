@@ -3,53 +3,94 @@
  */
 #include "arp.h"
 #include "eth.h"
+#include "ip.h"
 #include "net_device.h"
 
-static ipv4_t   g_my_ip  = 0;
+extern volatile uint64_t g_pit_ticks;      /* 100 Hz */
+
+static ipv4_t   g_my_ip   = 0;
+static ipv4_t   g_gateway = 0;
 static uint8_t  g_my_mac[ETH_ALEN];
 
-/* ARP cache */
-typedef struct { ipv4_t ip; uint8_t mac[ETH_ALEN]; uint8_t valid; } ArpEntry;
+/* ARP cache — LRU with a pinned gateway entry (UAOS-166).  last_use is
+ * stamped on insert, refresh, and lookup hit; eviction picks the oldest
+ * non-pinned slot instead of always slot 0 (which used to be the first
+ * entry learned — normally the default gateway). */
+typedef struct {
+    ipv4_t   ip;
+    uint8_t  mac[ETH_ALEN];
+    uint8_t  valid;
+    uint8_t  pinned;        /* never evicted (the default gateway) */
+    uint64_t last_use;
+} ArpEntry;
 static ArpEntry g_cache[ARP_CACHE_SIZE];
 
 void arp_init(ipv4_t my_ip, const uint8_t *my_mac)
 {
-    g_my_ip = my_ip;
+    g_my_ip   = my_ip;
+    g_gateway = 0;
     net_memcpy(g_my_mac, my_mac, ETH_ALEN);
     net_memset(g_cache, 0, sizeof(g_cache));
 }
 
+void arp_set_gateway(ipv4_t gw_ip)
+{
+    g_gateway = gw_ip;
+    /* Pin the entry too if the gateway is already cached. */
+    for (int i = 0; i < ARP_CACHE_SIZE; i++)
+        if (g_cache[i].valid && g_cache[i].ip == gw_ip)
+            g_cache[i].pinned = 1;
+}
+
+static int arp_cache_find(ipv4_t ip)
+{
+    for (int i = 0; i < ARP_CACHE_SIZE; i++)
+        if (g_cache[i].valid && g_cache[i].ip == ip)
+            return i;
+    return -1;
+}
+
 void arp_cache_update(ipv4_t ip, const uint8_t *mac)
 {
-    /* Update existing entry */
-    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (g_cache[i].valid && g_cache[i].ip == ip) {
-            net_memcpy(g_cache[i].mac, mac, ETH_ALEN);
-            return;
-        }
+    if (!ip) return;
+    /* Refresh existing entry */
+    int i = arp_cache_find(ip);
+    if (i >= 0) {
+        net_memcpy(g_cache[i].mac, mac, ETH_ALEN);
+        g_cache[i].last_use = g_pit_ticks;
+        if (ip == g_gateway) g_cache[i].pinned = 1;
+        return;
     }
-    /* Find empty slot */
-    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (!g_cache[i].valid) {
-            g_cache[i].ip = ip;
-            net_memcpy(g_cache[i].mac, mac, ETH_ALEN);
-            g_cache[i].valid = 1;
-            return;
+    /* Empty slot first */
+    int slot = -1;
+    for (i = 0; i < ARP_CACHE_SIZE; i++)
+        if (!g_cache[i].valid) { slot = i; break; }
+    /* Full: evict the least-recently-used non-pinned entry */
+    if (slot < 0) {
+        uint64_t oldest = ~0ULL;
+        for (i = 0; i < ARP_CACHE_SIZE; i++) {
+            if (g_cache[i].pinned) continue;
+            if (g_cache[i].last_use < oldest) {
+                oldest = g_cache[i].last_use;
+                slot = i;
+            }
         }
+        if (slot < 0) return;   /* every entry pinned — drop the new one */
     }
-    /* Evict entry 0 (simple LRU approximation) */
-    g_cache[0].ip = ip;
-    net_memcpy(g_cache[0].mac, mac, ETH_ALEN);
-    g_cache[0].valid = 1;
+    g_cache[slot].ip       = ip;
+    g_cache[slot].pinned   = (ip == g_gateway);
+    g_cache[slot].last_use = g_pit_ticks;
+    net_memcpy(g_cache[slot].mac, mac, ETH_ALEN);
+    g_cache[slot].valid = 1;
 }
 
 int arp_lookup(ipv4_t ip, uint8_t *mac_out)
 {
-    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (g_cache[i].valid && g_cache[i].ip == ip) {
-            net_memcpy(mac_out, g_cache[i].mac, ETH_ALEN);
-            return 1;
-        }
+    int i = arp_cache_find(ip);
+    if (i >= 0) {
+        net_memcpy(mac_out, g_cache[i].mac, ETH_ALEN);
+        g_cache[i].last_use = g_pit_ticks;   /* LRU touch */
+        return 1;
     }
     return 0;
 }
@@ -101,15 +142,29 @@ void arp_rx(const uint8_t *pkt, uint16_t len)
     if (a->hlen != ETH_ALEN || a->plen != 4) return;
 
     ipv4_t sender_ip = net_ntohl(a->spa);
-    /* Always update cache with sender info */
-    arp_cache_update(sender_ip, a->sha);
+    ipv4_t target_ip = net_ntohl(a->tpa);
+    int is_reply = (net_ntohs(a->oper) == 2);
 
-    if (net_ntohs(a->oper) == 1) {
-        /* ARP Request: reply if we are the target */
-        ipv4_t target_ip = net_ntohl(a->tpa);
-        if (target_ip == g_my_ip) {
-            arp_send(2, a->sha, sender_ip);
+    /* RFC 826 merge: refresh the sender's MAC only if it already has an
+     * entry; create a new entry only when WE are the target of the
+     * packet.  Learning from every broadcast request lets chatty LAN
+     * hosts fill the cache and evict the gateway (UAOS-166). */
+    int merged = (arp_cache_find(sender_ip) >= 0);
+    if (merged)
+        arp_cache_update(sender_ip, a->sha);
+
+    int learned = 0;
+    if (target_ip == g_my_ip) {
+        if (!merged) {
+            arp_cache_update(sender_ip, a->sha);
+            learned = 1;
         }
+        if (!is_reply)      /* ARP request for us — answer it */
+            arp_send(2, a->sha, sender_ip);
     }
-    /* ARP Reply: cache already updated above */
+
+    /* A learned/refreshed mapping may resolve a next-hop that has TX
+     * frames queued on an ARP miss — flush them (UAOS-167). */
+    if (merged || learned)
+        ip_arp_resolved(sender_ip);
 }

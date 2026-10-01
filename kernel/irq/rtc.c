@@ -16,6 +16,7 @@
  */
 
 #include "rtc.h"
+#include "irq.h"
 #include "../display/desktop.h"
 #include "../net/ntp.h"
 #include "../exec/task.h"
@@ -152,8 +153,9 @@ void RTC_SetDateTime(const RtcDateTime *dt)
     /* Disable CPU interrupts for the entire CMOS write sequence.
      * Without this, a pending IRQ8 fires between setting the SET bit and
      * actually writing the registers, reads partially-written (or frozen)
-     * CMOS values, and overwrites the in-memory cache with garbage/zeros. */
-    __asm__ volatile("cli");
+     * CMOS values, and overwrites the in-memory cache with garbage/zeros.
+     * irq_save preserves the caller's IF so this is safe under Disable(). */
+    uint64_t fl = irq_save();
 
     /* Wait for any update in progress to finish — bounded: hardware
      * without a conventional CMOS RTC could otherwise wedge boot here. */
@@ -183,8 +185,8 @@ void RTC_SetDateTime(const RtcDateTime *dt)
     g_month = dt->month;
     g_year  = dt->year;
 
-    /* Re-enable interrupts */
-    __asm__ volatile("sti");
+    /* Restore the caller's interrupt state */
+    irq_restore(fl);
 }
 
 /* -------------------------------------------------------------------------

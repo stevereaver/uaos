@@ -1021,13 +1021,11 @@ static void sky2_rx_start(int port)
  * or is preempted inside the RX callback cannot stall anyone else. */
 static inline uint64_t sky2_irq_save(void)
 {
-    uint64_t f;
-    __asm__ volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
-    return f;
+    return irq_save();
 }
 static inline void sky2_irq_restore(uint64_t f)
 {
-    __asm__ volatile("pushq %0; popfq" :: "r"(f) : "memory", "cc");
+    irq_restore(f);
 }
 
 static int sky2_drain_status(void)
