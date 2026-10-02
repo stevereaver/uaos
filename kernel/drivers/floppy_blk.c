@@ -93,3 +93,19 @@ int floppy_block_device_write_test(void)
 
     return memcmp(buf, readback, 512) == 0;
 }
+
+/* -------------------------------------------------------------------------
+ * C:diskdiag — floppy block layer stage dump (UAOS-204)
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void FloppyBlk_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    dl_reset(&l);
+    dl_add(&l, " floppy: adf_loaded="); dl_dec(&l, (uint64_t)g_floppy.adf_loaded);
+    dl_add(&l, " blk_loaded="); dl_dec(&l, (uint64_t)g_floppy_blk_priv.loaded);
+    dl_add(&l, " bdev='"); dl_add(&l, g_floppy_blk_dev.name ? g_floppy_blk_dev.name : "-");
+    dl_add(&l, "'");
+    dl_emit(&l, ctx, emit);
+}

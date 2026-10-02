@@ -147,6 +147,16 @@ typedef struct UaosTask {
     void    *native_print_ctx;
     char     task_out[256];
     int      task_out_len;
+
+    /* ---- Diagnostics (taskstat / irqaudit / stack watermark) ---- */
+    uint64_t cpu_ticks;         /* PIT ticks charged while running     */
+    uint32_t ctx_switches;      /* times this task was dispatched      */
+    uint64_t irqoff_ticks;      /* total ticks spent in Disable()      */
+    uint64_t irqoff_max_ticks;  /* longest single Disable() hold       */
+    uint32_t irqoff_long;       /* holds exceeding IRQAUDIT threshold  */
+    uint32_t switch_while_crit; /* descheduled while Disable/Forbid held */
+    uint64_t disable_enter_tick;/* g_pit_ticks when IDNest went 0->1   */
+    uint8_t  stack_overflowed;  /* stack-base canary was scribbled on  */
 } UaosTask;
 
 /* -------------------------------------------------------------------------
@@ -304,5 +314,31 @@ void Task_M68kSlotCount(int *total, int *used);
 
 /* Test helper: spawn UART-printing tasks */
 void Task_TestSpawn(void);
+
+/* -------------------------------------------------------------------------
+ * Diagnostics (UAOS-195/197/198/206/212)
+ * ------------------------------------------------------------------------- */
+
+/* Total context switches since boot — the watchdog's progress signal. */
+extern volatile uint64_t g_ctx_switches;
+
+/* Number of tasks in TASK_RUNNING or TASK_READY right now.  The watchdog
+ * uses this to suppress false positives when only one task can run. */
+int      Task_RunnableCount(void);
+
+/* Scan the stack fill pattern: returns the highest byte count ever used
+ * (watermark = SPUpper minus the lowest non-0xA5 byte).  Includes a base
+ * canary check — 0xFFFFFFFF on a bad stack pointer range. */
+uint32_t Task_StackPeakUsed(UaosTask *t);
+
+/* Per-task dump used by C:taskdump and the watchdog stall dump.
+ * name = NULL dumps every live task one line each; a name prints the
+ * full saved-frame decode for that task. */
+void Task_DiagDump(void *ctx, void (*emit)(void *ctx, const char *line),
+                   const char *name, int full);
+
+/* Disable() hold threshold in PIT ticks at which irqoff_long counts and
+ * klog warns (default ~50 ms at 100 Hz). */
+#define TASK_IRQOFF_LONG_TICKS 5
 
 #endif /* UAOS_TASK_H */

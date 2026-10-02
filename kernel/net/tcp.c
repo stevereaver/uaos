@@ -679,3 +679,53 @@ void tcp_tick(void)
         }
     }
 }
+
+/* -------------------------------------------------------------------------
+ * C:netstat — TCP socket table dump (UAOS-203).  Read-only.
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+static void d_ip(DiagLine *l, ipv4_t ip)
+{
+    dl_dec(l, (ip >> 24) & 0xFF); dl_ch(l, '.');
+    dl_dec(l, (ip >> 16) & 0xFF); dl_ch(l, '.');
+    dl_dec(l, (ip >> 8) & 0xFF);  dl_ch(l, '.');
+    dl_dec(l, ip & 0xFF);
+}
+
+static const char *d_tcp_state(TcpState s)
+{
+    static const char *const names[] = {
+        "closed","syn-sent","syn-recv","estab","fin-w1","fin-w2",
+        "close-w","last-ack","time-w","listen"
+    };
+    return (s >= 0 && s <= TCP_LISTEN) ? names[s] : "?";
+}
+
+void Tcp_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    int open = 0;
+    emit(ctx, " tcp# state    local              remote             rx   tx  retx");
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        TcpSocket *s = &g_socks[i];
+        if (s->state == TCP_CLOSED) continue;
+        open++;
+        dl_reset(&l);
+        dl_ch(&l, ' '); dl_dec(&l, (uint64_t)i); dl_pad(&l, 5);
+        dl_add(&l, d_tcp_state(s->state)); dl_pad(&l, 13);
+        d_ip(&l, s->local_ip); dl_ch(&l, ':'); dl_dec(&l, s->local_port);
+        dl_pad(&l, 33);
+        d_ip(&l, s->remote_ip); dl_ch(&l, ':'); dl_dec(&l, s->remote_port);
+        dl_pad(&l, 53);
+        uint32_t rxq = (uint16_t)(s->rx_head - s->rx_tail);
+        uint32_t txq = (uint16_t)(s->tx_head - s->tx_tail);
+        dl_dec(&l, rxq); dl_pad(&l, 58);
+        dl_dec(&l, txq); dl_pad(&l, 63);
+        dl_dec(&l, s->retx_count);
+        dl_emit(&l, ctx, emit);
+    }
+    dl_reset(&l);
+    dl_add(&l, " "); dl_dec(&l, (uint64_t)open); dl_add(&l, " open TCP socket(s)");
+    dl_emit(&l, ctx, emit);
+}

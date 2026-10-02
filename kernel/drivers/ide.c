@@ -511,3 +511,44 @@ void IDE_RegisterBlockDevs(void) {
         }
     }
 }
+
+/* -------------------------------------------------------------------------
+ * C:diskdiag — IDE/ATAPI stage dump (UAOS-204)
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void IDE_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    if (!g_num_channels) { emit(ctx, " ide: no channels"); return; }
+
+    for (int c = 0; c < g_num_channels; c++) {
+        IdeChannel *ch = &g_channels[c];
+        dl_reset(&l);
+        dl_add(&l, " ide ch"); dl_dec(&l, (uint64_t)c);
+        dl_add(&l, " io="); dl_hex(&l, ch->ports.data_port);
+        dl_add(&l, " ctl="); dl_hex(&l, ch->ports.ctl_alt_port);
+        dl_add(&l, " irq="); dl_sdec(&l, ch->irq_line);
+        /* live status + alt-status reads — the classic "stuck BSY" tell */
+        uint8_t st  = inb(ch->ports.cmd_stat_port);
+        uint8_t alt = inb(ch->ports.ctl_alt_port);
+        dl_add(&l, " stat="); dl_hex(&l, st);
+        dl_add(&l, " alt="); dl_hex(&l, alt);
+        if (st & ATA_SR_BSY) dl_add(&l, " *BSY*");
+        if (st & ATA_SR_ERR) dl_add(&l, " *ERR*");
+        dl_emit(&l, ctx, emit);
+
+        for (int d = 0; d < 2; d++) {
+            IdeDeviceInfo *di = &g_devices[c][d];
+            if (!di->present) continue;
+            dl_reset(&l);
+            dl_add(&l, "   dev"); dl_dec(&l, (uint64_t)d);
+            dl_add(&l, di->type == IDE_DEV_ATAPI ? " atapi " : " ata   ");
+            dl_add(&l, di->model);
+            dl_add(&l, "  sectors="); dl_dec(&l, di->num_sectors);
+            dl_add(&l, " sec_sz="); dl_dec(&l, di->sector_size);
+            if (di->lba48) dl_add(&l, " lba48");
+            dl_emit(&l, ctx, emit);
+        }
+    }
+}

@@ -430,6 +430,81 @@ int IRQ_ResolvePCI(uint8_t bus, uint8_t dev, uint8_t fn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Diagnostics exports (UAOS-199: C:pciscan, C:irqroute)                */
+/* ------------------------------------------------------------------ */
+
+uint32_t IRQ_PciRead32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off)
+{
+    return pci_r32(bus, dev, fn, off);
+}
+uint16_t IRQ_PciRead16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off)
+{
+    return pci_r16(bus, dev, fn, off);
+}
+uint8_t IRQ_PciRead8(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off)
+{
+    return pci_r8(bus, dev, fn, off);
+}
+
+int IRQ_VecKind(int vec) { return (vec >= 0 && vec < 256) ? g_kind[vec] : 0; }
+int IRQ_VecGsi(int vec)  { return (vec >= 0 && vec < 256) ? g_gsi[vec] : -1; }
+
+int IRQ_VecForGsi(int gsi)
+{
+    for (int v = 0; v < 256; v++)
+        if (g_kind[v] != VEC_NONE && g_gsi[v] == (uint8_t)gsi) return v;
+    return -1;
+}
+
+/* Read-only INTx route decode — same register walk as ich_route_gsi but
+ * never writes (no DxxIR repair attempts), so C:irqroute is safe to run
+ * at any time on any machine. */
+int IRQ_RouteInspect(uint8_t bus, uint8_t dev, uint8_t fn, IrqRouteInfo *out)
+{
+    if (!out) return -1;
+    for (int i = 0; i < (int)sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
+    out->pirq = -1;
+    out->gsi  = -1;
+
+    out->pin     = pci_r8(bus, dev, fn, 0x3D);
+    out->intline = pci_r8(bus, dev, fn, 0x3C);
+
+    if (out->pin < 1 || out->pin > 4)
+        return 0;    /* no INTx pin — MSI-only or unrouted device */
+
+    /* ICH8/9/10 DxxIP/DxxIR decode (bus-0 devices 25..31 only) */
+    out->ich = lpc_is_intel_ich();
+    if (out->ich && bus == 0) {
+        volatile uint8_t *rcba = ich_rcba();
+        int ioff = ich_dip_off(dev);
+        int roff = ich_dir_off(dev);
+        if (rcba && ioff >= 0 && roff >= 0) {
+            out->dip = *(volatile uint32_t *)(rcba + ioff);
+            out->dir = *(volatile uint16_t *)(rcba + roff);
+            uint8_t cp = (uint8_t)((out->dip >> (fn * 4)) & 0xF);
+            out->chip_pin = (cp >= 1 && cp <= 4) ? cp : out->pin;
+            uint8_t nib = (uint8_t)((out->dir >> ((out->chip_pin - 1) * 4)) & 0xF);
+            if (nib <= 7) {
+                out->pirq = nib;
+                /* APIC mode: PIRQA-H hardwire to IO-APIC 16-23 */
+                if (g_mode == IRQ_MODE_IOAPIC) {
+                    out->gsi = 16 + nib;
+                    out->source = IRQ_ROUTE_ICH;
+                    return 0;
+                }
+            }
+        }
+    }
+
+    /* Firmware intline fallback (or PIC-mode PIRQ route) */
+    if (out->intline != 0xFF && out->intline != 0) {
+        out->gsi = out->intline;
+        out->source = IRQ_ROUTE_INTLINE;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Attach operations                                                   */
 /* ------------------------------------------------------------------ */
 

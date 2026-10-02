@@ -29,6 +29,20 @@ void uart_init(void);
 void uart_putchar(char ch);                 /* '\n' auto-expanded to CRLF */
 void uart_puts(const char *s);
 void uart_write(const char *s, size_t len);
+int  uart_rx_ready(void);                   /* nonzero when RX data pending */
+int  uart_getchar(void);                    /* -1 if none (polled)          */
+
+/* -------------------------------------------------------------------------
+ * sercon — two-way serial debug console (kernel/klog/sercon.c).
+ * A low-priority native task polls UART RX and answers a minimal command
+ * set (ps, dmesg, taskdump, irqstat, klog, reboot) so machines with no
+ * framebuffer/net path (or a dead GUI) still have an interactive debug
+ * channel.  Started at boot when the cmdline has "sercon" or
+ * "console=ttyS0", or at runtime via "C:sercon on".
+ * ------------------------------------------------------------------------- */
+int  Sercon_Running(void);
+void Sercon_Start(void);
+void Sercon_Stop(void);
 
 /* -------------------------------------------------------------------------
  * Log levels — lower number = more severe.  A message is emitted when

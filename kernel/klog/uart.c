@@ -56,3 +56,24 @@ void uart_write(const char *s, size_t len)
     for (size_t i = 0; i < len; i++)
         uart_putchar(s[i]);
 }
+
+/* -------------------------------------------------------------------------
+ * RX side — polled receive for the serial debug console (sercon).
+ *
+ * Deliberately polling, not IRQ4-driven: a polled reader works with no
+ * IO-APIC/PIC routing at all, so the console still functions on machines
+ * where interrupt delivery is the thing being debugged.  On a machine
+ * with no UART, inb(LSR) reads 0x00/0xFF — both report "no data", never
+ * a wedge.
+ * ------------------------------------------------------------------------- */
+
+int uart_rx_ready(void)
+{
+    return (uart_inb(UART_BASE + 5) & 0x01) != 0;   /* LSR DR bit */
+}
+
+int uart_getchar(void)
+{
+    if (!uart_rx_ready()) return -1;
+    return (int)uart_inb(UART_BASE + 0);
+}

@@ -21,6 +21,7 @@
 typedef struct {
     uint8_t  type;          /* HTYPE_* */
     char     path[128];   /* path string (diagnostic / re-open) */
+    void    *owner;         /* UaosTask that allocated (leak detection) */
     union {
         struct {
             VfsFile   fh;     /* copy of open file handle */
@@ -60,6 +61,9 @@ HandleEntry *HandleTable_GetLockEntry(uint32_t handle, int32_t *access_out);
 /* Convenience: advance lock iterator and return next child.
  * Returns NULL when there are no more entries.
  * The caller must cast iter_next to the appropriate type. */
+/* C:handles — dump the table (read-only). */
+void HandleTable_DiagDump(void *ctx, void (*emit)(void *, const char *));
+
 void *HandleTable_LockIterate(uint32_t handle);
 
 /* Reset lock iterator to first child (handler-specific). */

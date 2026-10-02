@@ -247,3 +247,35 @@ void usock_cleanup_task(void *task)
         }
     }
 }
+
+/* -------------------------------------------------------------------------
+ * C:netstat — userspace socket table dump (UAOS-203).  Read-only.
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void Usock_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    int open = 0;
+    emit(ctx, " usock#  owner              nsock  type  timeouts ms (conn/recv/send)");
+    for (int i = 0; i < MAX_USOCKS; i++) {
+        Usock *u = &g_usocks[i];
+        if (!u->used) continue;
+        open++;
+        dl_reset(&l);
+        dl_ch(&l, ' '); dl_dec(&l, (uint64_t)i); dl_pad(&l, 8);
+        const char *on = (u->owner && u->owner->ln_Name) ? u->owner->ln_Name : "-";
+        dl_add(&l, on); dl_pad(&l, 27);
+        dl_sdec(&l, u->nsock); dl_pad(&l, 34);
+        dl_dec(&l, (uint64_t)u->type); dl_pad(&l, 40);
+        dl_dec(&l, u->conn_to_ms); dl_ch(&l, '/');
+        dl_dec(&l, u->recv_to_ms); dl_ch(&l, '/');
+        dl_dec(&l, u->send_to_ms);
+        if (u->owner && u->owner->tc_State == TASK_REMOVED)
+            dl_add(&l, "  *owner dead*");
+        dl_emit(&l, ctx, emit);
+    }
+    dl_reset(&l);
+    dl_add(&l, " "); dl_dec(&l, (uint64_t)open); dl_add(&l, " userspace socket(s)");
+    dl_emit(&l, ctx, emit);
+}

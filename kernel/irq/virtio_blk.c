@@ -809,3 +809,45 @@ void virtio_blk_setup_irq(void)
         }
     }
 }
+
+/* -------------------------------------------------------------------------
+ * C:diskdiag — VirtIO-BLK stage dump (UAOS-204)
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void Vblk_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    if (!g_ndevs) { emit(ctx, " virtio-blk: none present"); return; }
+
+    for (int i = 0; i < g_ndevs; i++) {
+        vblk_dev_t *d = &g_devs[i];
+        dl_reset(&l);
+        dl_add(&l, " vblk '"); dl_add(&l, d->name); dl_add(&l, "' pci=");
+        dl_hex(&l, d->pci_bus); dl_ch(&l, ':');
+        dl_hex(&l, d->pci_dev); dl_ch(&l, '.');
+        dl_hex(&l, d->pci_func);
+        dl_add(&l, " io="); dl_hex(&l, d->mmio_base);
+        dl_add(&l, " irq="); dl_sdec(&l, d->irq_line);
+        dl_add(&l, " cap="); dl_dec(&l, d->capacity);
+        dl_add(&l, " sect");
+        dl_emit(&l, ctx, emit);
+
+        if (d->q) {
+            dl_reset(&l);
+            dl_add(&l, "   vq avail_idx="); dl_dec(&l, d->q->vq.avail_idx);
+            dl_add(&l, " used_idx(hw)="); dl_dec(&l, d->q->vq.used_idx);
+            dl_add(&l, " used_idx(sw)="); dl_dec(&l, d->q->used_idx);
+            dl_add(&l, " submit_base="); dl_dec(&l, d->q->submit_base);
+            dl_add(&l, " irq_seen="); dl_dec(&l, (uint64_t)d->q->irq_seen);
+            /* stale submit_base vs hw used_idx = completion never landed */
+            if (d->q->submit_base != d->q->vq.used_idx)
+                dl_add(&l, "  *IN FLIGHT*");
+            dl_emit(&l, ctx, emit);
+            dl_reset(&l);
+            dl_add(&l, "   isr="); dl_hex(&l, inb(d->mmio_base + VIRTIO_PCI_ISR));
+            dl_add(&l, " status="); dl_hex(&l, inb(d->mmio_base + VIRTIO_PCI_STATUS));
+            dl_emit(&l, ctx, emit);
+        }
+    }
+}

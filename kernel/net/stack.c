@@ -8,8 +8,10 @@
 #include "tcp.h"
 #include "dhcp.h"
 #include "net_device.h"
+#include "pktmon.h"
 #include "../exec/task.h"
 #include "../irq/irq.h"
+#include "../dbg/diag.h"
 
 static int    g_up          = 0;
 static ipv4_t g_ip          = 0;
@@ -20,6 +22,8 @@ static ipv4_t g_dhcp_server = 0;  /* DHCP server IP for release */
 /* RX callback registered with VirtIO-Net driver after stack is up */
 static void rx_callback(const uint8_t *frame, uint16_t len)
 {
+    Pktmon_Record(0, frame, len);       /* in-guest pcap tap (UAOS-214) */
+    Etrace_Emit(ETRACE_PKT_RX, len, 0);
     eth_rx(frame, len);
 }
 

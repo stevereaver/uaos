@@ -7,6 +7,7 @@
 #include "elf64_loader.h"
 #include "boot/kprint.h"
 #include "exec/task.h"
+#include "../dbg/diag.h"
 #include "../irq/irq.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -235,6 +236,9 @@ static void x64_split_tail(X64Blk *b, uint64_t need)
  * into the block for per-task reclamation. */
 static void *x64_heap_alloc(uint64_t size, uint64_t align, void *owner)
 {
+    /* Fault injection (C:failalloc, UAOS-211): inert unless enabled. */
+    if (Failalloc_ShouldFail(FAILALLOC_X64)) return NULL;
+
     uint64_t irq = x64_irq_save();
 
     if (!g_x64_first)

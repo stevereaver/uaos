@@ -1754,3 +1754,39 @@ uint64_t virtio_scsi_get_capacity(void) {
     }
     return 0;
 }
+
+/* -------------------------------------------------------------------------
+ * C:diskdiag — VirtIO-SCSI stage dump (UAOS-204)
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void Vscsi_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    if (!g_active) { emit(ctx, " virtio-scsi: not active"); return; }
+
+    dl_reset(&l);
+    dl_add(&l, " vscsi pci="); dl_hex(&l, g_pci_bus); dl_ch(&l, ':');
+    dl_hex(&l, g_pci_dev); dl_ch(&l, '.'); dl_hex(&l, g_pci_fn);
+    dl_add(&l, g_transport == VIO_SCSI_LEGACY ? " legacy io=" : " modern ");
+    dl_hex(&l, g_legacy_io);
+    dl_add(&l, " irq="); dl_sdec(&l, g_irq_line);
+    dl_add(&l, " devs="); dl_dec(&l, (uint64_t)g_num_devices);
+    dl_add(&l, " disks="); dl_dec(&l, (uint64_t)g_num_disks);
+    dl_add(&l, " cds="); dl_dec(&l, (uint64_t)g_num_cds);
+    dl_add(&l, " cmdq_last_used="); dl_dec(&l, g_command_last_used);
+    dl_emit(&l, ctx, emit);
+
+    for (int i = 0; i < g_num_devices; i++) {
+        vio_scsi_device_t *d = &g_devices[i];
+        if (!d->active) continue;
+        dl_reset(&l);
+        dl_add(&l, "  '"); dl_add(&l, d->name); dl_add(&l, "'");
+        dl_add(&l, d->is_cdrom ? " cdrom" : " disk ");
+        dl_add(&l, " port="); dl_dec(&l, (uint64_t)d->port);
+        dl_add(&l, " lun="); dl_dec(&l, (uint64_t)d->lun);
+        dl_add(&l, " cap="); dl_dec(&l, d->capacity);
+        dl_add(&l, " x"); dl_dec(&l, d->sector_size);
+        dl_emit(&l, ctx, emit);
+    }
+}

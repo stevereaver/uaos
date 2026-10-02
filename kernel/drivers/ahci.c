@@ -536,3 +536,43 @@ void AHCI_SetupIRQ(void)
         kprint("[AHCI] no IRQ route — polling only\n");
     }
 }
+
+/* -------------------------------------------------------------------------
+ * C:diskdiag — AHCI stage dump (UAOS-204)
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void AHCI_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    if (!g_hba) { emit(ctx, " ahci: no HBA found"); return; }
+
+    dl_reset(&l);
+    dl_add(&l, " ahci HBA pci="); dl_hex(&l, g_bus);
+    dl_ch(&l, ':'); dl_hex(&l, g_dev); dl_ch(&l, '.'); dl_hex(&l, g_fn);
+    dl_add(&l, " bar5="); dl_hex(&l, (uint64_t)(uintptr_t)g_hba);
+    dl_add(&l, " irq_seen="); dl_dec(&l, (uint64_t)g_irq_seen);
+    /* live HBA regs: IS (interrupt status), PI (ports implemented) */
+    dl_add(&l, " IS="); dl_hex(&l, g_hba[0x08/4]);
+    dl_add(&l, " PI="); dl_hex(&l, g_hba[0x0C/4]);
+    dl_emit(&l, ctx, emit);
+
+    for (int i = 0; i < MAX_PORTS; i++) {
+        AhciPort *p = &g_ports[i];
+        if (!p->present) continue;
+        volatile uint32_t *pr = px(i, 0);
+        dl_reset(&l);
+        dl_add(&l, "  port "); dl_dec(&l, (uint64_t)i);
+        dl_add(&l, " '"); dl_add(&l, p->name); dl_add(&l, "' ");
+        dl_add(&l, p->is_atapi ? "atapi" : "ata");
+        dl_add(&l, " '"); dl_add(&l, p->model); dl_add(&l, "'");
+        dl_add(&l, " sect="); dl_dec(&l, p->sectors);
+        dl_emit(&l, ctx, emit);
+        dl_add(&l, "    TFD="); dl_hex(&l, pr[0x20/4]);   /* task file */
+        dl_add(&l, " SSTS="); dl_hex(&l, pr[0x28/4]);   /* phy status */
+        dl_add(&l, " SERR="); dl_hex(&l, pr[0x30/4]);   /* error */
+        dl_add(&l, " CI=");  dl_hex(&l, pr[0x38/4]);   /* cmds in flight */
+        dl_add(&l, " IS=");  dl_hex(&l, pr[0x10/4]);   /* port int status */
+        dl_emit(&l, ctx, emit);
+    }
+}

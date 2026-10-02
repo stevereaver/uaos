@@ -96,4 +96,37 @@ typedef struct {
 } IrqIchDiag;
 int  IRQ_DiagIch(IrqIchDiag *d);
 
+/* -------------------------------------------------------------------------
+ * Diagnostics (UAOS-199: C:pciscan / C:irqroute)
+ * ------------------------------------------------------------------------- */
+uint32_t IRQ_PciRead32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
+uint16_t IRQ_PciRead16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
+uint8_t  IRQ_PciRead8 (uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
+
+#define IRQ_VEC_NONE  0   /* unassigned                    */
+#define IRQ_VEC_PIC   1   /* legacy 8259 IRQ               */
+#define IRQ_VEC_APIC  2   /* IO-APIC routed GSI            */
+#define IRQ_VEC_MSI   3   /* MSI vector                    */
+int  IRQ_VecKind(int vec);          /* IRQ_VEC_*               */
+int  IRQ_VecGsi(int vec);           /* GSI behind a vector, -1 */
+int  IRQ_VecForGsi(int gsi);        /* first vector on a GSI   */
+
+#define IRQ_ROUTE_NONE     0
+#define IRQ_ROUTE_ICH      1   /* decoded via ICH DxxIP/DxxIR */
+#define IRQ_ROUTE_INTLINE  2   /* firmware intline register   */
+
+typedef struct {
+    uint8_t  pin;         /* cfg 0x3D interrupt pin (0=none)      */
+    uint8_t  intline;     /* cfg 0x3C interrupt line              */
+    int      ich;         /* LPC is a supported Intel ICH         */
+    uint32_t dip;         /* DxxIP register (0 if n/a)            */
+    uint16_t dir;         /* DxxIR register (0 if n/a)            */
+    int      chip_pin;    /* effective pin after DxxIP override   */
+    int      pirq;        /* decoded PIRQA-H (0-7), -1 unrouted   */
+    int      gsi;         /* final resolved GSI, -1 = undecodable */
+    int      source;      /* IRQ_ROUTE_*                          */
+} IrqRouteInfo;
+int  IRQ_RouteInspect(uint8_t bus, uint8_t dev, uint8_t fn,
+                      IrqRouteInfo *out);
+
 #endif

@@ -20,6 +20,7 @@
 #include "../display/blanker.h"
 #include "intuition_lib.h"
 #include "memcheck.h"
+#include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -44,6 +45,35 @@ int32_t  g_task_bg_job = 0;
 static UaosTask *g_current = NULL;
 UaosTask *Task_SwitchNext = NULL;
 UaosTask *Task_SwitchPrev = NULL;
+
+/* ---- Diagnostics state (UAOS-197/198/206/212) ---- */
+volatile uint64_t g_ctx_switches = 0;   /* successful dispatches (watchdog) */
+static uint64_t g_acct_last_tick = 0;   /* g_pit_ticks at last switch       */
+
+/* Stack instrumentation: at task creation the whole stack is filled with
+ * STACK_FILL so Task_StackPeakUsed() can report the high-water mark, and
+ * the lowest qword carries STACK_CANARY — checked on every context switch
+ * so a downward overflow into the base is caught even when it scribbles
+ * into the neighbouring slot's stack first. */
+#define STACK_FILL_BYTE 0xA5
+#define STACK_CANARY    0xC0FFEE00C0FFEE01ULL
+
+static void stack_instrument(uint8_t *stack)
+{
+    for (int i = 0; i < TASK_STACK_SIZE; i++) stack[i] = STACK_FILL_BYTE;
+    *(volatile uint64_t *)stack = STACK_CANARY;
+}
+
+static void stack_canary_check(UaosTask *t)
+{
+    if (!t->native_stack_base || t->stack_overflowed) return;
+    if (*(volatile uint64_t *)t->native_stack_base != STACK_CANARY) {
+        t->stack_overflowed = 1;
+        kprint("[TASK] STACK OVERFLOW: '");
+        kprint(t->ln_Name ? t->ln_Name : "?");
+        kprint("' base canary dead — stack grew past SPLower\n");
+    }
+}
 
 /* Deferred-reschedule flag — the SysFlags SF_SAR analogue.  Set when an
  * IRQ-level do_schedule() is suppressed by Forbid/Disable nesting; the
@@ -241,6 +271,8 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     t->tc_SPLower = stack;
     t->tc_SPUpper = stack + TASK_STACK_SIZE;
 
+    stack_instrument(stack);
+
     t->type = TASK_TYPE_NATIVE;
     t->native_stack_base = stack;
     t->native_stack_size = TASK_STACK_SIZE;
@@ -366,6 +398,8 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     t->tc_SigExcept = 0;
     t->tc_SPLower = stack;
     t->tc_SPUpper = stack + TASK_STACK_SIZE;
+
+    stack_instrument(stack);
 
     t->type = TASK_TYPE_X64;
     t->native_stack_base = stack;
@@ -518,6 +552,19 @@ static void do_schedule(int from_irq)
         g_ram = next->m68k_ram;
     }
 
+    /* ---- Accounting (taskstat / watchdog / irqaudit) ----
+     * Charge the outgoing task the PIT ticks since the last switch — the
+     * whole window belongs to it regardless of nested IRQ time. */
+    prev->cpu_ticks += g_pit_ticks - g_acct_last_tick;
+    g_acct_last_tick = g_pit_ticks;
+    g_ctx_switches++;
+    next->ctx_switches++;
+    if (prev->tc_IDNestCnt > 0 || prev->tc_TDNestCnt > 0)
+        prev->switch_while_crit++;
+    stack_canary_check(prev);
+    Etrace_Emit(ETRACE_SCHED, (uint32_t)(prev - g_tasks),
+                (uint32_t)(next - g_tasks));
+
     /* Tell isr_common to perform the switch */
     Task_SwitchPrev = prev;
     Task_SwitchNext = next;
@@ -578,6 +625,18 @@ void Task_Exit(void)
         /* Drop the task's net RX-notify slot so a stale TCB pointer can
          * never be signalled by a later net_rx_kick(). */
         net_rx_notify_disarm(g_current);
+        /* Critical-section leak audit (UAOS-206): a task that dies while
+         * holding Disable/Forbid nesting leaves the counts pinned — warn
+         * so irqaudit-style accounting catches the culprit. */
+        if (g_current->tc_IDNestCnt > 0 || g_current->tc_TDNestCnt > 0) {
+            kprint("[TASK] WARN: '");
+            kprint(g_current->ln_Name ? g_current->ln_Name : "?");
+            kprint("' exited with nesting ID=");
+            kprinthex((uint64_t)(int)g_current->tc_IDNestCnt);
+            kprint(" TD=");
+            kprinthex((uint64_t)(int)g_current->tc_TDNestCnt);
+            kprint("\n");
+        }
         g_current->tc_State = TASK_REMOVED;
         if (g_current->parent && g_current->parent->tc_State != TASK_REMOVED)
             Signal(g_current->parent, SIGF_CHILD);
@@ -843,6 +902,7 @@ void Signal(UaosTask *task, uint32_t sigmask)
         wait_remove(task);
         ready_enqueue(task);
     }
+    Etrace_Emit(ETRACE_SIGNAL, (uint32_t)(task - g_tasks), sigmask);
     irq_restore(fl);
 }
 
@@ -1035,7 +1095,14 @@ void Permit(void)
 void Disable(void)
 {
     __asm__ volatile ("cli");
-    if (g_current) g_current->tc_IDNestCnt++;
+    if (g_current) {
+        /* IRQOFF hold-time audit (UAOS-206): stamp the TSC on the 0->1
+         * transition; Enable() measures the hold in cycles because
+         * g_pit_ticks is frozen while IF=0. */
+        if (g_current->tc_IDNestCnt == 0)
+            g_current->disable_enter_tick = diag_rdtsc();
+        g_current->tc_IDNestCnt++;
+    }
 }
 
 void Enable(void)
@@ -1046,6 +1113,22 @@ void Enable(void)
     }
     if (--g_current->tc_IDNestCnt <= 0) {
         g_current->tc_IDNestCnt = 0;
+        /* Close the IF=0 hold interval started by Disable().  PIT ticks
+         * cannot advance while IF=0 so this is measured in TSC cycles;
+         * ~50M cycles is roughly 17–100 ms depending on the machine —
+         * a hold that long is a bug signature, not a critical section. */
+        uint64_t dur = diag_rdtsc() - g_current->disable_enter_tick;
+        g_current->irqoff_ticks += dur;
+        if (dur > g_current->irqoff_max_ticks)
+            g_current->irqoff_max_ticks = dur;
+        if (dur > 50000000ULL) {
+            g_current->irqoff_long++;
+            kprint("[TASK] WARN: '");
+            kprint(g_current->ln_Name ? g_current->ln_Name : "?");
+            kprint("' held Disable() for ");
+            kprinthex(dur);
+            kprint(" cycles (IF=0)\n");
+        }
         __asm__ volatile ("sti");
         /* Interrupts are back on — a deferred reschedule can dispatch.
          * Task_CheckResched() no-ops in IRQ context (g_irq_depth > 0),
@@ -1070,4 +1153,168 @@ void Task_GetCounts(int *out_total, int *out_running, int *out_waiting)
     if (out_total)   *out_total   = total;
     if (out_running) *out_running = running;
     if (out_waiting) *out_waiting = waiting;
+}
+
+/* =========================================================================
+ * Diagnostics — taskdump / taskstat / watchdog helpers (UAOS-195/197/198)
+ * ========================================================================= */
+
+int Task_RunnableCount(void)
+{
+    int n = 0;
+    for (int i = 0; i < g_task_count; i++) {
+        uint8_t st = g_tasks[i].tc_State;
+        if (st == TASK_RUNNING || st == TASK_READY) n++;
+    }
+    return n;
+}
+
+uint32_t Task_StackPeakUsed(UaosTask *t)
+{
+    if (!t || !t->native_stack_base) return 0;
+    const uint8_t *base = (const uint8_t *)t->native_stack_base;
+    uint32_t size = t->native_stack_size;
+    /* First 8 bytes are the canary; scan upward for the lowest byte that
+     * is no longer fill pattern — watermark of deepest stack usage. */
+    uint32_t i = 8;
+    while (i < size && base[i] == STACK_FILL_BYTE) i++;
+    return size - i;   /* bytes ever touched (upper bound estimate) */
+}
+
+static const char *task_state_name(uint8_t st)
+{
+    switch (st) {
+    case TASK_RUNNING: return "running";
+    case TASK_READY:   return "ready";
+    case TASK_WAITING: return "waiting";
+    case TASK_REMOVED: return "removed";
+    default:           return "?";
+    }
+}
+
+static const char *task_type_name(TaskType ty)
+{
+    switch (ty) {
+    case TASK_TYPE_NATIVE: return "native";
+    case TASK_TYPE_M68K:   return "m68k";
+    case TASK_TYPE_X64:    return "x64";
+    default:               return "?";
+    }
+}
+
+/* Decode the saved interrupt frame parked at native_rsp — same layout the
+ * isr_common prologue/creation stubs build (see Task_CreateNative). */
+static void task_dump_frame(UaosTask *t, void *ctx, DiagEmitFn emit)
+{
+    DiagLine l;
+    const uint64_t *sp = (const uint64_t *)(uintptr_t)t->native_rsp;
+
+    static const char *const rnames[15] = {
+        "r15","r14","r13","r12","r11","r10","r9","r8",
+        "rbp","rdi","rsi","rdx","rcx","rbx","rax"
+    };
+
+    dl_reset(&l);
+    dl_add(&l, "  saved frame @"); dl_hex(&l, t->native_rsp);
+    dl_add(&l, "  (armed=");
+    dl_add(&l, (t == Task_SwitchNext) ? "yes" : "no");
+    dl_add(&l, ")");
+    dl_emit(&l, ctx, emit);
+
+    /* Only safe to decode when the frame is within this task's stack. */
+    uint64_t lo = (uint64_t)(uintptr_t)t->native_stack_base;
+    uint64_t hi = lo + t->native_stack_size;
+    if (t->native_rsp < lo || t->native_rsp + 22 * 8 > hi) {
+        dl_add(&l, "  <native_rsp outside stack range — frame stale/corrupt>");
+        dl_emit(&l, ctx, emit);
+        return;
+    }
+
+    dl_add(&l, "  rip=");
+    dl_hex(&l, sp[17]);
+    dl_add(&l, "  cs=");  dl_hex(&l, sp[18]);
+    dl_add(&l, "  rflags="); dl_hex(&l, sp[19]);
+    dl_add(&l, "  rsp="); dl_hex(&l, sp[20]);
+    dl_add(&l, "  ss=");  dl_hex(&l, sp[21]);
+    dl_emit(&l, ctx, emit);
+
+    dl_add(&l, "  vec="); dl_hex(&l, sp[15]);
+    dl_add(&l, "  err="); dl_hex(&l, sp[16]);
+    dl_emit(&l, ctx, emit);
+
+    for (int i = 0; i < 15; i += 5) {
+        dl_reset(&l);
+        for (int j = i; j < i + 5; j++) {
+            dl_ch(&l, ' ');
+            dl_add(&l, rnames[j]);
+            dl_ch(&l, '=');
+            dl_hex(&l, sp[j]);
+        }
+        dl_emit(&l, ctx, emit);
+    }
+}
+
+void Task_DiagDump(void *ctx, void (*emit)(void *ctx, const char *line),
+                   const char *name, int full)
+{
+    DiagLine l;
+
+    for (int i = 0; i < g_task_count; i++) {
+        UaosTask *t = &g_tasks[i];
+        if (t->tc_State == TASK_REMOVED) continue;
+        if (name && (!t->ln_Name || !name[0])) continue;
+        if (name) {
+            /* case-insensitive substring-free exact match */
+            const char *a = t->ln_Name, *b = name;
+            int eq = 1;
+            while (*a && *b) {
+                char ca = *a, cb = *b;
+                if (ca >= 'A' && ca <= 'Z') ca += 32;
+                if (cb >= 'A' && cb <= 'Z') cb += 32;
+                if (ca != cb) { eq = 0; break; }
+                a++; b++;
+            }
+            if (!eq || *a || *b) continue;
+        }
+
+        dl_reset(&l);
+        dl_add(&l, " #"); dl_dec(&l, (uint64_t)i); dl_pad(&l, 4);
+        dl_ch(&l, ' ');
+        dl_add(&l, t->ln_Name ? t->ln_Name : "(null)"); dl_pad(&l, 24);
+        dl_add(&l, task_type_name(t->type)); dl_pad(&l, 31);
+        dl_add(&l, task_state_name(t->tc_State)); dl_pad(&l, 39);
+        dl_add(&l, "pri="); dl_sdec(&l, t->ln_Pri);
+        dl_add(&l, " cpu="); dl_dec(&l, t->cpu_ticks);
+        dl_add(&l, "t sw="); dl_dec(&l, t->ctx_switches);
+        dl_add(&l, " pk="); dl_dec(&l, Task_StackPeakUsed(t));
+        dl_add(&l, "/"); dl_dec(&l, t->native_stack_size);
+        if (t->tc_SigWait) { dl_add(&l, " wait="); dl_hex(&l, t->tc_SigWait); }
+        if (t->tc_IDNestCnt || t->tc_TDNestCnt) {
+            dl_add(&l, " nest D="); dl_sdec(&l, t->tc_IDNestCnt);
+            dl_add(&l, " F="); dl_sdec(&l, t->tc_TDNestCnt);
+        }
+        if (t == g_current) dl_add(&l, " <-cur");
+        dl_emit(&l, ctx, emit);
+
+        if (full) {
+            dl_add(&l, "  stack=["); dl_hex(&l, (uint64_t)(uintptr_t)t->native_stack_base);
+            dl_add(&l, ".."); dl_hex(&l, (uint64_t)(uintptr_t)t->native_stack_base + t->native_stack_size);
+            dl_add(&l, "]");
+            if (t->stack_overflowed) dl_add(&l, "  ** CANARY DEAD **");
+            dl_emit(&l, ctx, emit);
+
+            if (t->type == TASK_TYPE_M68K) {
+                dl_add(&l, "  m68k: pc-entry="); dl_hex(&l, t->m68k_entry);
+                dl_add(&l, " sp="); dl_hex(&l, t->m68k_stack_top);
+                dl_add(&l, " ctxsz="); dl_dec(&l, t->m68k_context_size);
+                dl_add(&l, " cycles(rem/init)=");
+                dl_dec(&l, (uint64_t)(uint32_t)t->m68k_remaining_cycles);
+                dl_ch(&l, '/');
+                dl_dec(&l, (uint64_t)(uint32_t)t->m68k_initial_cycles);
+                dl_emit(&l, ctx, emit);
+            } else {
+                task_dump_frame(t, ctx, emit);
+            }
+        }
+    }
 }

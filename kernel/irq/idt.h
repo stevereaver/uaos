@@ -58,5 +58,10 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
 /* Per-vector interrupt counters (256 entries) — for C:irqstat. */
 void IDT_SnapshotCounts(uint64_t *out);
 void IDT_ClearCounts(void);
+uint64_t IDT_VectorCount(int vec);
+
+/* Outermost ISR frame currently being serviced (NULL at task level).
+ * prof and the stall watchdog sample its RIP. */
+IsrFrame *IDT_LastIsrFrame(void);
 
 #endif

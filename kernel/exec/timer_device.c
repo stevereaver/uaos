@@ -237,8 +237,47 @@ void timer_ProcessTicks(void)
 }
 
 /* =========================================================================
- * timer.device function indices (must match AmigaOS LVO offsets)
+ * C:timers — pending timer-request dump (UAOS-201)
  * ========================================================================= */
+#include "../dbg/diag.h"
+
+void TimerDevice_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    int n = 0;
+
+    dl_reset(&l);
+    dl_add(&l, " tick_counter="); dl_dec(&l, g_tick_counter);
+    dl_add(&l, "  (PIT rate ~100 Hz)");
+    dl_emit(&l, ctx, emit);
+
+    emit(ctx, " req#  target-tick  delta  sigmask    task             req-addr");
+    for (int i = 0; i < MAX_TIMER_ENTRIES; i++) {
+        TimerQueueEntry_t *e = &g_timer_entries[i];
+        if (!e->active) continue;
+        n++;
+        dl_reset(&l);
+        dl_ch(&l, ' ');
+        dl_dec(&l, (uint64_t)i); dl_pad(&l, 6);
+        dl_dec(&l, e->target_ticks); dl_pad(&l, 19);
+        int32_t delta = (int32_t)e->target_ticks - (int32_t)g_tick_counter;
+        if (delta < 0) { dl_add(&l, "OVERDUE by "); dl_dec(&l, (uint64_t)(-delta)); }
+        else           { dl_dec(&l, (uint64_t)delta); }
+        dl_pad(&l, 26);
+        dl_hex(&l, e->sigmask); dl_pad(&l, 37);
+        dl_add(&l, (e->task && e->task->ln_Name) ? e->task->ln_Name : "-");
+        if (e->task && e->task->tc_State == TASK_REMOVED)
+            dl_add(&l, " *dead*");
+        dl_pad(&l, 54);
+        dl_hex(&l, e->request_addr);
+        dl_emit(&l, ctx, emit);
+    }
+
+    dl_reset(&l);
+    dl_add(&l, " "); dl_dec(&l, (uint64_t)n);
+    dl_add(&l, " pending timer request(s)");
+    dl_emit(&l, ctx, emit);
+}
 
 #define TIMER_OPEN_DEVICE   1
 #define TIMER_CLOSE_DEVICE  2

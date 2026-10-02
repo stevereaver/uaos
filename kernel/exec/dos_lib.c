@@ -18,6 +18,7 @@
 #include "dos/amiga_dos_types.h"
 #include "exec/task.h"
 #include "exec/amiga_task.h"
+#include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "chipset/chip_emu.h"
@@ -369,6 +370,10 @@ static int mc_check_guards(const MemchkRec *r, const char *what)
 
 static uint32_t mc_alloc(uint32_t size, uint32_t reqs)
 {
+    /* Fault injection (C:failalloc, UAOS-211): deterministic failures
+     * exercise unchecked-NULL bugs.  Inert unless enabled. */
+    if (Failalloc_ShouldFail(FAILALLOC_GUEST)) return 0;
+
     if (!g_memcheck_on) {
         if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA))
             return heap_alloc_fl_chip(size);

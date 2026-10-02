@@ -1,6 +1,6 @@
 ---
 name: uaos-debug
-description: Debug a running UAOS instance — boot under QEMU, log in remotely via telnetd, and drive the kernel debug suite (klog/dmesg, strace, irqstat, memcheck, chiptrace, crash) plus host-side tools (serial log, symbolize.sh, GDB stub, pcap).
+description: Debug a running UAOS instance — boot under QEMU, log in remotely via telnetd, and drive the kernel debug suite (klog/dmesg, strace, irqstat, memcheck, chiptrace, crash, taskdump/taskstat/watchdog, pciscan/irqroute, ports/timers/handles/netstat/diskdiag, peek/poke, irqaudit, sercon, tickcheck, etrace, prof, failalloc, pktmon) plus host-side tools (serial log, symbolize.sh, analyze_log.py, etrace_decode.py, prof_report.py, gdb_uaos.py, GDB stub, pcap, smoke.sh).
 argument-hint: "[what to debug]"
 allowed-tools:
   - read
@@ -136,6 +136,22 @@ strace -o RAM:trace.txt run <m68k binary>
 | `memcheck` | Mungwall-style heap debugging: `memcheck on` adds front/tail guard words to every AllocMem + free-list poisoning; `memcheck` (bare) = status + scan; `memcheck test` = deliberate overwrite self-test; `memcheck dump`; `memcheck off`. Violations report allocating/freeing task names via klog `[memchk]`. |
 | `chiptrace` | Custom-chip/CIA access tracer for the AGA/ECS emulator. `chiptrace ON|OFF`, per-class toggles `CHIP`/`CIA`/`PAULA`/`DISK`, `chiptrace PC [N]` samples the M68k PC with disassembly every N ticks, `chiptrace CLEAR`. Output → klog `[chip]`; watch with `dmesg chip`. |
 | `crash` | **Deliberate kernel #PF — kills the kernel.** Only for testing the panic dump path + `tools/symbolize.sh`. |
+| `taskdump` | Live task table: state, pri, cpu ticks, ctx switches, stack peak/watermark, wait mask, nest levels. `taskdump FULL` or `taskdump <name>` decodes the parked interrupt frame (RIP/CS/RFLAGS/r15..rax) at `native_rsp` — the UAOS-180/181 armed-frame state, no GDB needed. (UAOS-195) |
+| `taskstat` | Per-task CPU accounting: `taskstat [<sec>\|NOW]` samples a window and prints cpu%/switches/irqoff/wait — the "hung or spinning" answer. (UAOS-197) |
+| `watchdog` | Stall detector armed at boot (`watchdog=<ms>` cmdline, default 5000). Trips when no context switch happens within the budget while ≥2 tasks are runnable, or the tick ISR stops (RTC-second heartbeat). Dumps task states via klog/dbgcon. `watchdog TEST` holds Forbid() past the budget; `watchdog MS=n|OFF`. (UAOS-198) |
+| `pciscan` / `irqroute` | PCI enumeration (bdf, class, vendor:dev, pin/line, BARs) + per-device pin→PIRQ→GSI→vector decode with ICH DxxIP/DxxIR handling. `irqroute` flags `vec=UNASSIGNED` / `* UNRESOLVED ROUTE *`. (UAOS-199) |
+| `ports` / `timers` / `handles` | Handler MsgPort pending queues + async packet pool; pending TimeRequests (fire tick/delta/sigmask); open-file/lock handle table with owners. (UAOS-200/201/202) |
+| `netstat` | TCP socket table (state, addrs, rx/tx depth, retx), UDP sockets, usock layer + owners. (UAOS-203) |
+| `diskdiag` | Storage-path stage dump: blockdev registry plus per-driver dumps (IDE status/alt-status + devices, AHCI HBA IS/PI + per-port TFD/SSTS/SERR/CI, virtio-blk queue indices + ISR, virtio-scsi devices, floppy ADF state). `diskdiag TEST=<dev>` times a 1-sector read. (UAOS-204) |
+| `peek` / `poke` | Physical/MMIO access (identity-mapped): `peek <addr> [LEN=n] [W=8\|16\|32\|64]`; `poke <addr> <val> FORCE` reports before/write/readback. (UAOS-205) |
+| `irqaudit` | Per-task Disable()/Forbid() audit: nest levels, total/max IF=0 time, >50 ms holds, descheduled-in-critical-section count — the UAOS-169/170/176 bug class. (UAOS-206) |
+| `sercon` | Two-way serial console: `sercon on|off` (or boot arg `sercon`/`console=ttyS0`). Polled UART RX task with `help ps taskdump dmesg irqstat klog mem tick reboot` — works when IRQ delivery itself is broken. (UAOS-207) |
+| `tickcheck` | PIT period vs self-calibrated TSC, IRQ dispatch latency histogram + worst vectors; `tickcheck SEC=n` measures TSC/PIT drift in ppm. (UAOS-208) |
+| `etrace` | Binary kernel event ring (ftrace-lite — no UART cost): `etrace MASK=n` (bit0 irq,1 sched,2 signal,3 dos,4 net), `TAIL n` prints recent records, `FILE=path` dumps for `tools/etrace_decode.py`. (UAOS-209) |
+| `prof` | PIT-sampled RIP profiler: `prof START|STOP|REPORT [n]|FILE=path`; host-side `tools/prof_report.py` symbolizes. (UAOS-210) |
+| `failalloc` | Deterministic alloc-failure injection: `failalloc ON RATE=n|AFTER=n [SEED=n]` — both guest AllocMem and x64 heap. (UAOS-211) |
+| `stack` | Now includes per-task peak usage (0xA5 fill watermark) + canary state. (UAOS-212) |
+| `pktmon` | In-guest pcap capture: `pktmon START FILE=path [MAX=n]|STOP` — taps netdev TX/RX; works on bare metal where QEMU filter-dump can't. (UAOS-214) |
 | `mem` | Memory usage summary |
 | `ps` | Task list |
 | `status FULL` / `status TCB` / `status CLI` | Task/CLI status detail |
@@ -161,6 +177,11 @@ All are native shell commands — they work identically in the console window an
   ```
   Kernel is on a 4 GB identity map (VA = PA), so ELF symbols resolve directly. Use `hbreak` (hardware breakpoints) for code in read-only pages.
 - **pcap**: `/tmp/uaos_net.pcap` — open in Wireshark/tcpdump to debug net stack issues at the wire level.
+- **`tools/analyze_log.py`** (UAOS-216): serial-log analyzer — panic extraction + RIP symbolization, warn/err rollup, watchdog events. `tools/analyze_log.py /tmp/uaos_serial.log`.
+- **`tools/etrace_decode.py`** (UAOS-209): decodes `etrace FILE=` dumps (`ETRC` magic, 24 B records). `--elf` symbolizes, `--hz` adds µs deltas.
+- **`tools/prof_report.py`** (UAOS-210): `prof FILE=` rows → sorted symbolized hotspot table.
+- **`tools/gdb_uaos.py`** (UAOS-213): `source` it inside the GDB-stub session for `uaos tasks|task NAME|timers|stack NAME` — walks `g_tasks[]` via DWARF, decodes parked frames.
+- **`scripts/smoke.sh`** (UAOS-215): headless QEMU + telnet command battery — asserts each debug command produces output, archives serial log + pcap to `build/smoke-<ts>/`.
 
 ## Standard debug workflow
 
@@ -173,8 +194,11 @@ All are native shell commands — they work identically in the console window an
 
 ## Gotchas
 
-- The serial device is write-only from the host side (`-serial file:`) — no input channel. Use the GUI window or telnet.
+- The serial device is write-only from the host side (`-serial file:`) — no input channel for sercon in the stock script. To exercise `sercon`, change `-serial` to `-serial tcp::4444,server,nowait` (then `nc localhost 4444`) or a pty; with `file:` the console still logs normally but guest RX sees nothing.
 - `telnetd` serves one session; if a client wedges the session, `telnetd STOP` frees it.
-- `dmesg` reads the 288-entry ring — long traces overflow; for big captures use `strace -o RAM:file` or read the serial log on the host.
+- `dmesg` reads the 288-entry ring — long traces overflow; for big captures use `strace -o RAM:file`, `etrace FILE=RAM:x` (binary ring — no UART cost), or read the serial log on the host.
 - klog/strace/chiptrace output deliberately bypasses the console — if you "see nothing", check `dmesg` or the serial log, not the shell window.
-- `crash` and `format`/`install`-class commands are destructive — do not run them in a session you want to keep.
+- `etrace MASK=0x1f` traces at IRQ/sched rate with ~zero overhead — use it instead of `klog all=trace` when chasing timing bugs; the UART starvation incident is exactly what it avoids.
+- `watchdog` is armed by default (5 s). On bare metal a trip paints the task dump via dbgcon even with no serial — read it off the screen or the ring.
+- `crash`, `poke ... FORCE`, and `format`/`install`-class commands are destructive — `poke` to an MMIO register can wedge the bus.
+- Boot args for diagnostics: `watchdog=<ms>` (budget, 0=off), `sercon` or `console=ttyS0` (serial console at boot).

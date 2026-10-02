@@ -73,6 +73,9 @@ void Handler_CheckReplies(void);
 /* -------------------------------------------------------------------------
  * Global IoErr (single-threaded = one global value)
  * ------------------------------------------------------------------------- */
+/* C:ports — dump handler pool + pending async packets (read-only). */
+void Handler_DiagDump(void *ctx, void (*emit)(void *, const char *));
+
 extern int32_t g_dos_last_ioerr;
 
 static inline void SetIoErr(int32_t code) { g_dos_last_ioerr = code; }

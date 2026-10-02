@@ -19,10 +19,12 @@
 
 #include "net_device.h"
 #include "stack.h"   /* net_rx_kick */
+#include "pktmon.h"
 #include "../drivers/virtio_net.h"
 #include "../drivers/e1000.h"
 #include "../drivers/sky2.h"
 #include "../klog/klog.h"
+#include "../dbg/diag.h"
 
 /* -------------------------------------------------------------------------
  * Global registry
@@ -67,6 +69,8 @@ void netdev_get_mac(uint8_t *buf)
 int netdev_send(const uint8_t *data, uint16_t len)
 {
     if (!g_up || !g_netdev || !g_netdev->send) return 0;
+    Pktmon_Record(1, data, len);        /* in-guest pcap tap (UAOS-214) */
+    Etrace_Emit(ETRACE_PKT_TX, len, 0);
     if (len >= ETH_MIN_FRAME)
         return g_netdev->send(g_netdev, data, len);
 

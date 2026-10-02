@@ -118,3 +118,36 @@ int udp_recv(int sock, uint8_t *buf, uint16_t maxlen,
     if (src_port_out) *src_port_out = g_socks[sock].last_src_port;
     return ring_get(&g_socks[sock], buf, maxlen);
 }
+
+/* -------------------------------------------------------------------------
+ * C:netstat — UDP socket table dump (UAOS-203).  Read-only.
+ * ------------------------------------------------------------------------- */
+#include "../dbg/diag.h"
+
+void Udp_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    int open = 0;
+    emit(ctx, " udp# local-port  rx-queued  last-sender");
+    for (int i = 0; i < UDP_MAX_SOCKETS; i++) {
+        UdpSocket *s = &g_socks[i];
+        if (!s->active) continue;
+        open++;
+        dl_reset(&l);
+        dl_ch(&l, ' '); dl_dec(&l, (uint64_t)i); dl_pad(&l, 5);
+        dl_dec(&l, s->local_port); dl_pad(&l, 17);
+        uint32_t q = (uint16_t)(s->rx_head - s->rx_tail);
+        dl_dec(&l, q); dl_pad(&l, 28);
+        if (s->last_src_ip) {
+            dl_dec(&l, (s->last_src_ip >> 24) & 0xFF); dl_ch(&l, '.');
+            dl_dec(&l, (s->last_src_ip >> 16) & 0xFF); dl_ch(&l, '.');
+            dl_dec(&l, (s->last_src_ip >> 8) & 0xFF);  dl_ch(&l, '.');
+            dl_dec(&l, s->last_src_ip & 0xFF);
+            dl_ch(&l, ':'); dl_dec(&l, s->last_src_port);
+        } else dl_add(&l, "-");
+        dl_emit(&l, ctx, emit);
+    }
+    dl_reset(&l);
+    dl_add(&l, " "); dl_dec(&l, (uint64_t)open); dl_add(&l, " open UDP socket(s)");
+    dl_emit(&l, ctx, emit);
+}

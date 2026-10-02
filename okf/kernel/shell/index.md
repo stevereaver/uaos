@@ -58,6 +58,7 @@ The following native C: commands are still implemented in `kernel/shell/`:
 |---|---|
 | **Volume / Disk** | `info`, `disks`, `diskchange`, `mount`, `format`, `fdisk`, `fsck`, `addbuffers`, `relabel`, `install` |
 | **System** | `version`, `mem`, `status`, `info`, `libs`, `ps`, `jobs`, `wait`, `changetaskpri`, `stack`, `why`, `failat`, `quit`, `endcli`, `newcli`, `execute`, `resident`, `resload`, `run`, `runback`, `strace`, `rx`, `klog` (`debug`), `dmesg`, `irqstat`, `usbdiag`, `chiptrace`, `memcheck`, `crash` |
+| **Diagnostics** (UAOS-188) | `taskdump`, `taskstat`, `watchdog`, `ports`, `timers`, `handles`, `netstat`, `diskdiag`, `pciscan`, `irqroute`, `peek`, `poke`, `irqaudit`, `sercon`, `tickcheck`, `etrace`, `prof`, `failalloc`, `pktmon` — see [Diagnostics toolkit](/kernel/diag/index.md) |
 | **Network** | `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netstart`, `netstop`, `netinfo` |
 | **Desktop / Windows** | `loadwb`, `calc`, `clock`, `pointer`, `vim`, `ed`, `guide`, `requestchoice`, `requestfile` |
 | **Preferences** | `screenmode`, `font`, `icontrol`, `input`, `palette`, `wbpattern`, `serial`, `printer`, `time`, `locale` |

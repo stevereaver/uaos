@@ -296,6 +296,72 @@ static inline int cmd_kw_strip(const char *args, const char *kw,
     return found;
 }
 
+/* Find a KEY=value token in args (case-insensitive key); returns a pointer
+ * to the value text (up to the next space) or NULL if absent. */
+static inline const char *cmd_kv_find(const char *args, const char *key)
+{
+    if (!args || !key) return NULL;
+    int kl = cmd_slen(key);
+    const char *p = args;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ' ') p++;
+        int len = (int)(p - start);
+        if (len > kl && start[kl] == '=') {
+            int match = 1;
+            for (int i = 0; i < kl; i++) {
+                char c = start[i]; if (c >= 'A' && c <= 'Z') c += 32;
+                char k = key[i];   if (k >= 'A' && k <= 'Z') k += 32;
+                if (c != k) { match = 0; break; }
+            }
+            if (match) return start + kl + 1;
+        }
+    }
+    return NULL;
+}
+
+/* Parse a decimal or 0x-prefixed hex integer from s into *out.
+ * Returns the number of characters consumed, 0 on failure. */
+static inline int cmd_parse_uint(const char *s, uint64_t *out)
+{
+    if (!s || !*s) return 0;
+    uint64_t v = 0;
+    int n = 0;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+        while (1) {
+            char c = *s;
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else break;
+            v = v * 16 + (uint64_t)d;
+            s++; n++;
+        }
+        if (!n) return 0;
+    } else {
+        while (*s >= '0' && *s <= '9') {
+            v = v * 10 + (uint64_t)(*s - '0');
+            s++; n++;
+        }
+    }
+    if (!n) return 0;
+    *out = v;
+    return n;
+}
+
+static inline void cmd_sdec(int32_t v, char *buf, int max)
+{
+    if (v < 0) {
+        if (max > 1) { buf[0] = '-'; cmd_uint_to_dec((uint32_t)(-v), buf + 1, max - 1); }
+    } else {
+        cmd_uint_to_dec((uint32_t)v, buf, max);
+    }
+}
+
 /* Blocking yes/no prompt. Returns 1 for yes, 0 for no. */
 static inline int cmd_prompt_yn(NativeCmdCtx *ctx, const char *msg)
 {

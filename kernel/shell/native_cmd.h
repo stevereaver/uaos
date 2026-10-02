@@ -252,6 +252,25 @@ void Cmd_Usbdiag         (NativeCmdCtx *ctx, const char *args);
 void Cmd_Crash           (NativeCmdCtx *ctx, const char *args);
 void Cmd_Memcheck        (NativeCmdCtx *ctx, const char *args);
 void Cmd_Chiptrace       (NativeCmdCtx *ctx, const char *args);
+void Cmd_Taskdump        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Taskstat        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Watchdog        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Ports           (NativeCmdCtx *ctx, const char *args);
+void Cmd_Timers          (NativeCmdCtx *ctx, const char *args);
+void Cmd_Handles         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Netstat         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Diskdiag        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Pciscan         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Irqroute        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Peek            (NativeCmdCtx *ctx, const char *args);
+void Cmd_Poke            (NativeCmdCtx *ctx, const char *args);
+void Cmd_Irqaudit        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Sercon          (NativeCmdCtx *ctx, const char *args);
+void Cmd_Tickcheck       (NativeCmdCtx *ctx, const char *args);
+void Cmd_Etrace          (NativeCmdCtx *ctx, const char *args);
+void Cmd_Prof            (NativeCmdCtx *ctx, const char *args);
+void Cmd_Failalloc       (NativeCmdCtx *ctx, const char *args);
+void Cmd_Pktmon          (NativeCmdCtx *ctx, const char *args);
 
 /* Prefs editors (stubs — Phase 3) */
 void Cmd_ScreenMode      (NativeCmdCtx *ctx, const char *args);

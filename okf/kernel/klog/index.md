@@ -21,7 +21,8 @@ KLOG(...) → klog_emit ───┼→ pending line buffer → ring buffer (alw
 klog_raw_feed (kprint) ──┘                           └→ UART (unless raw feed)
 ```
 
-- `uart.c` — the canonical 16550A COM1 (`0x3F8`) driver: `uart_init`, `uart_putchar` (auto CRLF), `uart_puts`, `uart_write`. `kprint`'s UART output now uses this too.
+- `uart.c` — the canonical 16550A COM1 (`0x3F8`) driver: `uart_init`, `uart_putchar` (auto CRLF), `uart_puts`, `uart_write`. `kprint`'s UART output now uses this too. RX side (UAOS-207): `uart_rx_ready()` / `uart_getchar()` poll the LSR data-ready bit — deliberately not IRQ4-driven, so the console works even when interrupt delivery is what's being debugged.
+- `sercon.c` — two-way serial debug console (UAOS-207): a low-priority native task running a minimal command set (`help`, `ps`, `taskdump <name>`, `dmesg [n]`, `irqstat`, `klog <sub>=<lvl>`, `mem`, `tick`, `reboot`) on the serial line. Started at boot by cmdline `sercon` or `console=ttyS0`, or at runtime via `C:sercon on|off`. Survives GUI and net-stack death; under `-serial file:` it's output-only — use `-serial tcp:`/pty for an interactive session.
 - `klog.c` — subsystem registry, level thresholds, no-libc printf formatter (`%s %c %d %u %x %p`, zero-pad widths, `l`/`ll` for 64-bit), pending-line assembler, and the ring.
 
 ## Levels & Subsystems

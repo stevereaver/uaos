@@ -26,3 +26,18 @@ Programs under `tools/` that run on the build host — binary wrappers used by
 wrap binaries with UAOS headers and generate loadable `.library` stubs —
 see [Build System](/build_system.md). `symbolize.sh` maps serial-log crash
 addresses back to symbols (see [Kernel](/kernel/index.md) diagnostics).
+
+Diagnostics host tooling (UAOS-188, see [Diagnostics toolkit](/kernel/diag/index.md)):
+
+- `tools/gdb_uaos.py` — GDB Python helpers for the QEMU stub session
+  (`uaos tasks`, `uaos task NAME`, `uaos timers`, `uaos stack NAME`);
+  walks `g_tasks[]` via DWARF and decodes parked interrupt frames.
+- `tools/etrace_decode.py` — decodes the `etrace FILE=` binary ring dump
+  (`ETRC` magic, 12 B header + 24 B records) with optional symbolization.
+- `tools/prof_report.py` — symbolizes `prof FILE=` output
+  (`rip taskidx count` rows) into a hotspot table.
+- `tools/analyze_log.py` — serial-log analyzer: panic extraction and
+  symbolization, warn/err rollup, watchdog events, boot markers.
+- `scripts/smoke.sh` — headless QEMU + telnet regression battery:
+  runs a command list, asserts output, archives serial log + pcap to
+  `build/smoke-<ts>/`.

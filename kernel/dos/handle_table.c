@@ -2,6 +2,7 @@
 
 #include "handle_table.h"
 #include "../exec/task.h"
+#include "../dbg/diag.h"
 #include <stddef.h>
 
 #define MAX_HANDLES 128
@@ -38,6 +39,7 @@ uint32_t HandleTable_AllocFile(const char *path, const VfsFile *fh, int flags)
 
     HandleEntry *e = &g_entries[h - 1];
     e->type = HTYPE_FILE;
+    e->owner = Task_Current();
     scopy(e->path, path ? path : "", sizeof(e->path));
     e->u.file.fh    = *fh;
     e->u.file.flags = flags;
@@ -53,6 +55,7 @@ uint32_t HandleTable_AllocLock(const char *path, void *node, int32_t access)
 
     HandleEntry *e = &g_entries[h - 1];
     e->type = HTYPE_LOCK;
+    e->owner = Task_Current();
     scopy(e->path, path ? path : "", sizeof(e->path));
     e->u.lock.node      = node;
     e->u.lock.access    = access;
@@ -111,4 +114,56 @@ void HandleTable_LockResetIter(uint32_t handle, void *first_child)
     HandleEntry *e = HandleTable_Get(handle);
     if (!e || e->type != HTYPE_LOCK) return;
     e->u.lock.iter_next = first_child;
+}
+
+/* -------------------------------------------------------------------------
+ * C:handles — open-file/lock/handler-packet dump (UAOS-202)
+ * ------------------------------------------------------------------------- */
+void HandleTable_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+    int open = 0, leaked = 0;
+
+    emit(ctx, " hnd  type  owner              pos/acc      flags  path");
+    for (int i = 0; i < MAX_HANDLES; i++) {
+        HandleEntry *e = &g_entries[i];
+        if (e->type == HTYPE_FREE) continue;
+        open++;
+
+        /* A handle owned by a REMOVED task is a leak — the task can no
+         * longer close it. */
+        UaosTask *o = (UaosTask *)e->owner;
+        int dead = o && o->tc_State == TASK_REMOVED;
+        if (dead) leaked++;
+
+        dl_reset(&l);
+        dl_ch(&l, ' ');
+        dl_dec(&l, (uint64_t)(i + 1)); dl_pad(&l, 5);
+        dl_add(&l, e->type == HTYPE_FILE ? "file" : "lock"); dl_pad(&l, 12);
+        dl_add(&l, (o && o->ln_Name) ? o->ln_Name : "-"); dl_pad(&l, 31);
+        if (e->type == HTYPE_FILE) {
+            dl_dec(&l, e->u.file.fh.pos);
+            dl_pad(&l, 44);
+            dl_dec(&l, (uint64_t)e->u.file.flags);
+            if (e->u.file.fh.handler_port)
+                dl_add(&l, " (pkt)");
+            if (e->u.file.fh.nil) dl_add(&l, " (nil)");
+        } else {
+            dl_sdec(&l, e->u.lock.access);
+            dl_pad(&l, 44);
+            dl_add(&l, e->u.lock.access == EXCLUSIVE_LOCK ? "excl" : "shared");
+        }
+        dl_pad(&l, 51);
+        dl_add(&l, e->path);
+        if (dead) dl_add(&l, "  *LEAKED*");
+        dl_emit(&l, ctx, emit);
+    }
+
+    dl_reset(&l);
+    dl_add(&l, " ");
+    dl_dec(&l, (uint64_t)open);
+    dl_add(&l, " open, ");
+    dl_dec(&l, (uint64_t)leaked);
+    dl_add(&l, " owned by dead tasks");
+    dl_emit(&l, ctx, emit);
 }

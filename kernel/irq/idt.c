@@ -3,6 +3,7 @@
 #include "idt.h"
 #include "irq.h"
 #include "../exec/task.h"
+#include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -356,6 +357,12 @@ void IDT_ClearCounts(void)
     irq_restore(flags);
 }
 
+uint64_t IDT_VectorCount(int vec)
+{
+    if (vec < 0 || vec > 255) return 0;
+    return g_vector_counts[vec];
+}
+
 void IDT_SetHandler(uint8_t vector, ISRHandler handler, const char *name)
 {
     g_handlers[vector] = handler;
@@ -469,10 +476,19 @@ static void exc_dump(const IsrFrame *f, const UaosTask *cur)
  * a context switch must never be triggered from inside an ISR body. */
 volatile int g_irq_depth = 0;
 
+/* Stashed outermost interrupt frame — points at the interrupted task's
+ * saved registers.  prof samples its RIP every PIT tick and the watchdog
+ * prints it in stall dumps (where the CPU was when everything froze). */
+static IsrFrame *g_last_isr_frame = 0;
+
+IsrFrame *IDT_LastIsrFrame(void) { return g_last_isr_frame; }
+
 void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
                   IsrFrame *frame)
 {
     g_irq_depth++;
+    if (g_irq_depth == 1)
+        g_last_isr_frame = frame;
     /* Write a rotating magic value to the mailbox */
     static volatile uint32_t mailbox_seq = 0;
     uint32_t seq = mailbox_seq++;
@@ -482,6 +498,9 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
 
     if (vector < 256)
         g_vector_counts[vector]++;
+
+    if (vector < 256)
+        Etrace_Emit(ETRACE_IRQ_ENTER, (uint32_t)vector, (uint32_t)error_code);
 
     /* Storm detector: a level-triggered line nobody can ack re-fires the
      * instant the EOI clears the IO-APIC remote-IRR.  Because the LAPIC
@@ -501,7 +520,11 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
     }
 
     if (vector < 256 && g_handlers[vector]) {
+        /* Time the handler body for the tickcheck latency histogram.
+         * rdtsc is ~30 cycles of overhead — worthwhile diagnostics. */
+        uint64_t t0 = diag_rdtsc();
         g_handlers[vector](vector, error_code);
+        Tickmon_IrqDur((uint8_t)vector, diag_rdtsc() - t0);
     } else if (vector < 32) {
         /* Unhandled CPU exception.
          *
@@ -536,6 +559,10 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
      * PIC, the IO-APIC/LAPIC, or MSI.  In PIC mode unregistered vectors
      * 32-47 still get a PIC EOI (legacy behaviour). */
     IRQ_EOI((int)vector);
+    if (vector < 256)
+        Etrace_Emit(ETRACE_IRQ_EXIT, (uint32_t)vector, 0);
+    if (g_irq_depth == 1)
+        g_last_isr_frame = 0;
     g_irq_depth--;
 }
 

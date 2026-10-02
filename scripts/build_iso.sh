@@ -311,6 +311,12 @@ for src in \
     "${REPO_ROOT}/kernel/klog/uart.c" \
     "${REPO_ROOT}/kernel/klog/klog.c" \
     "${REPO_ROOT}/kernel/klog/dbgcon.c" \
+    "${REPO_ROOT}/kernel/klog/sercon.c" \
+    "${REPO_ROOT}/kernel/dbg/watchdog.c" \
+    "${REPO_ROOT}/kernel/dbg/tickmon.c" \
+    "${REPO_ROOT}/kernel/dbg/etrace.c" \
+    "${REPO_ROOT}/kernel/dbg/prof.c" \
+    "${REPO_ROOT}/kernel/dbg/failalloc.c" \
     "${REPO_ROOT}/kernel/boot/mb2mod.c" \
     "${REPO_ROOT}/kernel/display/framebuffer.c" \
     "${REPO_ROOT}/kernel/display/gadgets.c" \
@@ -371,6 +377,7 @@ for src in \
     "${REPO_ROOT}/kernel/net/net_device.c" \
     "${REPO_ROOT}/kernel/net/telnetd.c" \
     "${REPO_ROOT}/kernel/net/usock.c" \
+    "${REPO_ROOT}/kernel/net/pktmon.c" \
     "${REPO_ROOT}/kernel/exec/thunk_handler.c" \
     "${REPO_ROOT}/kernel/exec/rom_modules.c" \
     "${REPO_ROOT}/kernel/exec/task.c" \
@@ -506,6 +513,25 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_crash.c" \
     "${REPO_ROOT}/kernel/shell/cmd_memcheck.c" \
     "${REPO_ROOT}/kernel/shell/cmd_chiptrace.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_taskdump.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_taskstat.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_watchdog.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_ports.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_timers.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_handles.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_netstat.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_diskdiag.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_pciscan.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_irqroute.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_peek.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_poke.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_irqaudit.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_sercon.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_tickcheck.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_etrace.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_prof.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_failalloc.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_pktmon.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prefs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
     "${REPO_ROOT}/kernel/shell/cmd_blanker.c" \
@@ -789,6 +815,12 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/uart.o" \
     "${BUILD_DIR}/obj/klog.o" \
     "${BUILD_DIR}/obj/dbgcon.o" \
+    "${BUILD_DIR}/obj/sercon.o" \
+    "${BUILD_DIR}/obj/watchdog.o" \
+    "${BUILD_DIR}/obj/tickmon.o" \
+    "${BUILD_DIR}/obj/etrace.o" \
+    "${BUILD_DIR}/obj/prof.o" \
+    "${BUILD_DIR}/obj/failalloc.o" \
     "${BUILD_DIR}/obj/mb2mod.o" \
     "${BUILD_DIR}/obj/framebuffer.o" \
     "${BUILD_DIR}/obj/gadgets.o" \
@@ -846,6 +878,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/net_device.o" \
     "${BUILD_DIR}/obj/telnetd.o" \
     "${BUILD_DIR}/obj/usock.o" \
+    "${BUILD_DIR}/obj/pktmon.o" \
     "${BUILD_DIR}/obj/thunk_handler.o" \
     "${BUILD_DIR}/obj/rom_modules.o" \
     "${BUILD_DIR}/obj/task.o" \
@@ -997,6 +1030,25 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_crash.o" \
     "${BUILD_DIR}/obj/cmd_memcheck.o" \
     "${BUILD_DIR}/obj/cmd_chiptrace.o" \
+    "${BUILD_DIR}/obj/cmd_taskdump.o" \
+    "${BUILD_DIR}/obj/cmd_taskstat.o" \
+    "${BUILD_DIR}/obj/cmd_watchdog.o" \
+    "${BUILD_DIR}/obj/cmd_ports.o" \
+    "${BUILD_DIR}/obj/cmd_timers.o" \
+    "${BUILD_DIR}/obj/cmd_handles.o" \
+    "${BUILD_DIR}/obj/cmd_netstat.o" \
+    "${BUILD_DIR}/obj/cmd_diskdiag.o" \
+    "${BUILD_DIR}/obj/cmd_pciscan.o" \
+    "${BUILD_DIR}/obj/cmd_irqroute.o" \
+    "${BUILD_DIR}/obj/cmd_peek.o" \
+    "${BUILD_DIR}/obj/cmd_poke.o" \
+    "${BUILD_DIR}/obj/cmd_irqaudit.o" \
+    "${BUILD_DIR}/obj/cmd_sercon.o" \
+    "${BUILD_DIR}/obj/cmd_tickcheck.o" \
+    "${BUILD_DIR}/obj/cmd_etrace.o" \
+    "${BUILD_DIR}/obj/cmd_prof.o" \
+    "${BUILD_DIR}/obj/cmd_failalloc.o" \
+    "${BUILD_DIR}/obj/cmd_pktmon.o" \
     "${BUILD_DIR}/obj/cmd_prefs.o" \
     "${BUILD_DIR}/obj/cmd_exchange.o" \
     "${BUILD_DIR}/obj/cmd_blanker.o" \
@@ -1062,6 +1114,9 @@ for cmd in version mem libs clear reboot \
            install diskchange addbuffers requestchoice requestfile changetaskpri status rx \
            telnetd strace print crossdos ed guide \
            klog debug dmesg irqstat usbdiag crash memcheck chiptrace \
+           taskdump taskstat watchdog ports timers handles netstat diskdiag \
+           pciscan irqroute peek poke irqaudit sercon tickcheck etrace prof \
+           failalloc pktmon \
            runback alias unalias path skip lab resload; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"

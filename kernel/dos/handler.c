@@ -1,6 +1,7 @@
 /* handler.c — Handler creation and synchronous DoPkt dispatch */
 
 #include "handler.h"
+#include "../dbg/diag.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -101,6 +102,7 @@ int32_t DoPkt(MsgPort *port, int32_t action,
 
     Handler *h = Handler_FromPort(port);
     if (h && h->ProcessPacket) {
+        Etrace_Emit(ETRACE_DOPKT, (uint32_t)action, (uint32_t)(uintptr_t)h);
         h->ProcessPacket(h, &pkt);
         if (pkt.dp_Res2 != 0)
             g_dos_last_ioerr = pkt.dp_Res2;
@@ -165,5 +167,55 @@ void Handler_CheckReplies(void)
         }
 
         pp = next;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * C:ports — dump handler packet ports + the async pending queue
+ * (UAOS-200).  Read-only; safe while traffic is in flight because the
+ * kernel is single-threaded and this runs under the caller's Forbid.
+ * ------------------------------------------------------------------------- */
+void Handler_DiagDump(void *ctx, void (*emit)(void *, const char *))
+{
+    DiagLine l;
+
+    emit(ctx, " handler            pending  private");
+    for (int i = 0; i < g_pool_used; i++) {
+        Handler *h = &g_pool[i];
+        dl_reset(&l);
+        dl_ch(&l, ' ');
+        dl_add(&l, h->name ? h->name : "(null)");
+        dl_pad(&l, 20);
+        int depth = 0;
+        for (DosPacket *p = h->port.mp_MsgList; p; p = p->dp_Next) {
+            if (++depth > 1000) break;   /* corrupt list guard */
+        }
+        dl_dec(&l, (uint64_t)depth);
+        dl_pad(&l, 29);
+        dl_hex(&l, (uint64_t)(uintptr_t)h->private);
+        dl_emit(&l, ctx, emit);
+    }
+
+    dl_reset(&l);
+    dl_add(&l, " async pending queue: ");
+    int n = 0;
+    for (PendingPacket *pp = g_pending_head; pp; pp = pp->next) {
+        if (++n > MAX_PENDING) break;
+    }
+    dl_dec(&l, (uint64_t)n);
+    dl_add(&l, " packet(s)");
+    dl_emit(&l, ctx, emit);
+
+    for (PendingPacket *pp = g_pending_head; pp; pp = pp->next) {
+        dl_reset(&l);
+        dl_add(&l, "   -> port '");
+        dl_add(&l, (pp->port && pp->port->mp_Name) ? pp->port->mp_Name : "?");
+        dl_add(&l, "' action=");
+        dl_dec(&l, (uint64_t)(uint32_t)(pp->pkt ? pp->pkt->dp_Type : -1));
+        dl_add(&l, " reply='");
+        dl_add(&l, (pp->reply_port && pp->reply_port->mp_Name)
+                    ? pp->reply_port->mp_Name : "-");
+        dl_add(&l, "'");
+        dl_emit(&l, ctx, emit);
     }
 }

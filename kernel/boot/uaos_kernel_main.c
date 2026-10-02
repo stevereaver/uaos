@@ -44,6 +44,7 @@
 #include "klog/klog.h"
 #include "mb2mod.h"
 #include "exec/mtrr.h"
+#include "dbg/diag.h"
 #include "uaos_emu.h"
 
 /* -----------------------------------------------------------------------
@@ -278,10 +279,13 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
     (void)vector; (void)error_code;
     g_pit_ticks++;
+    Tickmon_PitTick(diag_rdtsc());   /* tick jitter instrumentation   */
+    Prof_Tick();                   /* sampling profiler             */
     IRQ_StormTick();
     net_stack_tick();
     timer_ProcessTicks();
     Task_WakeTimers();       /* re-ready tasks whose sleep deadline passed */
+    Watchdog_Tick();         /* stall detector: runs before schedule */
     Task_ScheduleFromIRQ();
 }
 
@@ -521,6 +525,28 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         else if (Mb2_CmdlineHas(mb2_info_phys, "loglevel=info"))  lvl = KLOG_INFO;
         else if (Mb2_CmdlineHas(mb2_info_phys, "loglevel=trace")) lvl = KLOG_TRACE;
         klog_set_level(-1, lvl);
+    }
+
+    /* Stall watchdog — "watchdog=<ms>" on the cmdline sets the budget;
+     * "watchdog=0" disables.  Default is on at 5 s so bare-metal freezes
+     * (MBP4,1, no serial) always produce a task/frame dump. */
+    {
+        char wdbuf[12];
+        if (Mb2_CmdlineParam(mb2_info_phys, "watchdog=", wdbuf, sizeof(wdbuf))) {
+            uint32_t ms = 0;
+            const char *p = wdbuf;
+            while (*p >= '0' && *p <= '9') { ms = ms * 10 + (uint32_t)(*p - '0'); p++; }
+            Watchdog_SetBudget(ms);
+        } else {
+            Watchdog_SetBudget(5000);
+        }
+        if (Watchdog_Enabled()) {
+            kprint("[BOOT] watchdog armed: ");
+            kprintdec(Watchdog_Budget());
+            kprint(" ms no-switch budget\n");
+        } else {
+            kprint("[BOOT] watchdog disabled (watchdog=0)\n");
+        }
     }
 
     /* Initialise framebuffer from Multiboot2 info */
@@ -1087,6 +1113,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     extern void Task_EventPumpEntry(void *arg);
     Task_CreateNative("Idle", -128, Task_IdleEntry, NULL);
     Task_CreateNative("EventPump", 0, Task_EventPumpEntry, NULL);
+
+    /* Two-way serial console — "sercon" or "console=ttyS0" on the
+     * cmdline starts a polled-UART command task so a headless box (or a
+     * dead net stack) still has an interactive debug channel.  Runtime
+     * toggle: "C:sercon on|off". */
+    if (Mb2_CmdlineHas(mb2_info_phys, "sercon") ||
+        Mb2_CmdlineHas(mb2_info_phys, "console=ttyS0"))
+        Sercon_Start();
 
     /* Deferred bcm5974 mode-reset worker — only if a trackpad claimed
      * during USB enum (runs before TaskScheduler_Init, so the task is
