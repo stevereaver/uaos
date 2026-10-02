@@ -110,6 +110,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("prof",            Cmd_Prof           ),
     CMD ("failalloc",       Cmd_Failalloc      ),
     CMD ("pktmon",          Cmd_Pktmon         ),
+    CMD ("screenshot",      Cmd_Screenshot     ),
     /* Prefs editors (stubs — Phase 3) */
     CMD ("screenmode",      Cmd_ScreenMode  ),
     CMD ("font",            Cmd_Font        ),

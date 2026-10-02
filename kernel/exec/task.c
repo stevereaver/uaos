@@ -300,7 +300,17 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
      * We want to "return" to the new task via the same path.
      */
 
-    uint64_t *sp = (uint64_t *)(stack + TASK_STACK_SIZE);
+    /* SysV ABI: at function entry RSP must be 8 mod 16, as if `call`
+     * had just pushed a return address.  iretq jumps straight to entry,
+     * so plant that slot ourselves — entering with a 16-aligned RSP
+     * leaves the whole task misaligned and any compiler-emitted aligned
+     * SSE spill (movaps/movdqa [rsp]) #GPs (UAOS-182: draw_menubar from
+     * the Shell task; seen again via Jpeg_Encode, UAOS-218).
+     * g_task_stacks is only aligned(8), so the top of the stack must be
+     * forced to 16-alignment here rather than assumed from the array. */
+    uint64_t *sp = (uint64_t *)((uintptr_t)(stack + TASK_STACK_SIZE) & ~15ull);
+    *--sp = (uint64_t)Task_Exit;
+    uint64_t entry_rsp = (uint64_t)sp;   /* ≡ 8 mod 16 — correct entry RSP */
 
     /* Build synthetic interrupt frame at the top of the stack.
      * isr_common pushes 15 GPRs (RAX .. R15) AFTER the stub pushes
@@ -319,15 +329,6 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
      *   sp[20] = RSP
      *   sp[21] = SS
      */
-    /* SysV ABI: at function entry RSP must be 8 mod 16, as if `call`
-     * had just pushed a return address.  iretq jumps straight to entry,
-     * so plant that slot ourselves — entering with a 16-aligned RSP
-     * leaves the whole task misaligned and any compiler-emitted aligned
-     * SSE spill (movaps [rsp]) #GPs (UAOS-182: draw_menubar from the
-     * Shell task).  Returning from entry lands in Task_Exit. */
-    *--sp = (uint64_t)Task_Exit;
-    uint64_t entry_rsp = (uint64_t)sp;
-
     sp -= 22;
     for (int i = 0; i < 15; i++) sp[i] = 0;
     sp[9] = (uint64_t)arg;                      /* RDI — first argument */

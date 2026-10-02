@@ -342,6 +342,7 @@ for src in \
     "${REPO_ROOT}/kernel/display/format_win.c" \
     "${REPO_ROOT}/kernel/display/early_startup.c" \
     "${REPO_ROOT}/kernel/display/splash.c" \
+    "${REPO_ROOT}/kernel/display/jpeg_enc.c" \
     "${REPO_ROOT}/kernel/display/uitree.c" \
     "${REPO_ROOT}/kernel/display/uiformat.c" \
     "${REPO_ROOT}/kernel/irq/idt.c" \
@@ -532,6 +533,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_prof.c" \
     "${REPO_ROOT}/kernel/shell/cmd_failalloc.c" \
     "${REPO_ROOT}/kernel/shell/cmd_pktmon.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_screenshot.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prefs.c" \
     "${REPO_ROOT}/kernel/shell/cmd_exchange.c" \
     "${REPO_ROOT}/kernel/shell/cmd_blanker.c" \
@@ -1049,6 +1051,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_prof.o" \
     "${BUILD_DIR}/obj/cmd_failalloc.o" \
     "${BUILD_DIR}/obj/cmd_pktmon.o" \
+    "${BUILD_DIR}/obj/cmd_screenshot.o" \
     "${BUILD_DIR}/obj/cmd_prefs.o" \
     "${BUILD_DIR}/obj/cmd_exchange.o" \
     "${BUILD_DIR}/obj/cmd_blanker.o" \
@@ -1070,6 +1073,7 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/format_win.o" \
     "${BUILD_DIR}/obj/early_startup.o" \
     "${BUILD_DIR}/obj/splash.o" \
+    "${BUILD_DIR}/obj/jpeg_enc.o" \
     "${BUILD_DIR}/obj/splash_img.o" \
     "${BUILD_DIR}/obj/stubs.o" \
     -o "${KERNEL_ELF}"
@@ -1116,7 +1120,7 @@ for cmd in version mem libs clear reboot \
            klog debug dmesg irqstat usbdiag crash memcheck chiptrace \
            taskdump taskstat watchdog ports timers handles netstat diskdiag \
            pciscan irqroute peek poke irqaudit sercon tickcheck etrace prof \
-           failalloc pktmon \
+           failalloc pktmon screenshot \
            runback alias unalias path skip lab resload; do
     "${GEN_NATIVE}" "${cmd}" "${C_STAGING}/${cmd}"
     ok "  Generated: C:${cmd}  (32-byte NATIVE binary)"

@@ -1,6 +1,6 @@
 ---
 name: uaos-debug
-description: Debug a running UAOS instance — boot under QEMU, log in remotely via telnetd, and drive the kernel debug suite (klog/dmesg, strace, irqstat, memcheck, chiptrace, crash, taskdump/taskstat/watchdog, pciscan/irqroute, ports/timers/handles/netstat/diskdiag, peek/poke, irqaudit, sercon, tickcheck, etrace, prof, failalloc, pktmon) plus host-side tools (serial log, symbolize.sh, analyze_log.py, etrace_decode.py, prof_report.py, gdb_uaos.py, GDB stub, pcap, smoke.sh).
+description: Debug a running UAOS instance — boot under QEMU, log in remotely via telnetd, and drive the kernel debug suite (klog/dmesg, strace, irqstat, memcheck, chiptrace, crash, taskdump/taskstat/watchdog, pciscan/irqroute, ports/timers/handles/netstat/diskdiag, peek/poke, irqaudit, sercon, tickcheck, etrace, prof, failalloc, pktmon, screenshot) plus host-side tools (serial log, symbolize.sh, analyze_log.py, etrace_decode.py, prof_report.py, gdb_uaos.py, GDB stub, pcap, smoke.sh) and telnet file-exfil via base64/uuencode — which is also how to *see the screen* on real hardware.
 argument-hint: "[what to debug]"
 allowed-tools:
   - read
@@ -152,6 +152,7 @@ strace -o RAM:trace.txt run <m68k binary>
 | `failalloc` | Deterministic alloc-failure injection: `failalloc ON RATE=n|AFTER=n [SEED=n]` — both guest AllocMem and x64 heap. (UAOS-211) |
 | `stack` | Now includes per-task peak usage (0xA5 fill watermark) + canary state. (UAOS-212) |
 | `pktmon` | In-guest pcap capture: `pktmon START FILE=path [MAX=n]|STOP` — taps netdev TX/RX; works on bare metal where QEMU filter-dump can't. (UAOS-214) |
+| `screenshot` | Captures the composited screen to a baseline JPEG: `screenshot` → `RAM:<YYYYMMDDHHMMSS>.jpg` (serial from NTP/RTC time), `screenshot FILE=path [Q=1..100]`. The only way to *see* the display headlessly / on real hardware. (UAOS-218) |
 | `mem` | Memory usage summary |
 | `ps` | Task list |
 | `status FULL` / `status TCB` / `status CLI` | Task/CLI status detail |
@@ -163,6 +164,58 @@ strace -o RAM:trace.txt run <m68k binary>
 | `changetaskpri PRI=n TASK=name` | Reprioritize a task |
 
 All are native shell commands — they work identically in the console window and over telnet.
+
+## Screen capture + file exfil over telnet
+
+`screenshot` (UAOS-218) encodes the whole composited screen to JPEG —
+it is the only way to *see* the display when debugging bare metal
+(MBP4,1) or a headless QEMU boot. The file lands on `RAM:`; pull it to
+the host over the telnet session with either encoder in
+`gnu:usr/bin/` (`base64`, `uuencode`/`uudecode` — sharutils tools,
+UAOS-217). The same recipe extracts any guest file (pktmon pcaps,
+`strace -o` logs, `etrace FILE=` dumps).
+
+### Process A — uuencode (self-framing, recommended)
+
+```bash
+# guest side (in a telnet shell):
+screenshot                                            # -> RAM:<YYYYMMDDHHMMSS>.jpg
+gnu:usr/bin/uuencode RAM:20261002144937.jpg shot.jpg  # prints uuencoded body
+```
+
+Capture the session output on the host and `uudecode` it — uudecode
+skips the banner/prompt preamble itself and stops at the `end` trailer,
+so no manual line filtering is needed:
+
+```bash
+{ sleep 1; printf 'screenshot\r'; sleep 8;
+  printf 'gnu:usr/bin/uuencode RAM:<file>.jpg shot.jpg\r'; sleep 25;
+  printf 'endcli\r'; sleep 1; } | nc -w 60 127.0.0.1 2323 > cap.txt
+tr -d '\r' < cap.txt | uudecode   # produces ./shot.jpg (name from header)
+```
+
+### Process B — base64
+
+```bash
+{ sleep 1; printf 'screenshot\r'; sleep 8;
+  printf 'gnu:usr/bin/base64 RAM:<file>.jpg\r'; sleep 25;
+  printf 'endcli\r'; sleep 1; } | nc -w 60 127.0.0.1 2323 > cap.txt
+# strip CRs + prompt/echo lines, keep only [A-Za-z0-9+/=] body lines:
+tr -d '\r' < cap.txt | grep -oE '^[A-Za-z0-9+/=]+$' | base64 -d > shot.jpg
+```
+
+Either way, verify locally: `file shot.jpg` → `JPEG image data`, or
+`python3 -c "from PIL import Image; Image.open('shot.jpg').load()"`.
+
+### Notes
+
+- Sizing: a 1024×768 Workbench shot is ~70 KB → ~1200 lines of encoded
+  text; keep the post-command sleep ≥20 s and the `nc -w` generous.
+- telnetd serves one session at a time — run the whole sequence in one
+  connection (as above) rather than separate probes.
+- The pointer sprite is drawn to VRAM at flip time and is NOT captured.
+- Remote shell runs the same native table, so `screenshot` works from
+  telnet exactly as in the console window.
 
 ## Host-side tools
 
