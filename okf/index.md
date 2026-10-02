@@ -43,9 +43,12 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 ## Directory Structure Overview
 
 - `kernel/`: Core OS components (Exec, DOS, Display, IRQ, Net, Shell, Drivers).
-- `emulation/`: M68k CPU emulation and glue logic.
-- `drivers/`: Hardware-specific drivers (network, IDE, VirtIO).
+- `emulation/`: M68k CPU emulation and glue logic; `musashi/` submodule holds the CPU core.
 - `system/`: System layout (Amiga-style `S:`, `L:`, `LIBS:`, userspace programs, and libuaos). Also contains `gnusrc/` (the complete 86-utility GNU coreutils suite) and the `gnu/` POSIX directory skeleton exposed via the `gnu:` assign.
+- `scripts/`: Build/run helpers (`build_iso.sh`, `grub.cfg`, QEMU launchers).
+- `tests/`: Host-side test harnesses (`smoke.sh`, `qemu_layout_test.py`) and disk-image fixtures (`test-ffs.*`).
+- `tools/`: Build-time binary generators and debug/log tools.
+- `assets/`: Project artwork (`splash.jpg` — GRUB menu + kernel boot splash).
 
 ## Key Principles
 

@@ -1,7 +1,7 @@
 ---
 type: Tool
 title: make_splash.py
-description: Build-time converter that turns splash.jpg into a self-describing RGB24 blob for embedding into the kernel as a binary object.
+description: Build-time converter that turns assets/splash.jpg into a self-describing RGB24 blob for embedding into the kernel as a binary object.
 resource: /tools/make_splash.py
 tags: [tool, build, splash, display]
 status: stable
@@ -10,7 +10,7 @@ generated: { by: agent:devin, at: 2026-09-29T00:00:00Z }
 
 # make_splash.py
 
-Converts the boot splash artwork (repo-root `splash.jpg`) into a raw
+Converts the boot splash artwork (`assets/splash.jpg`) into a raw
 self-describing RGB24 blob consumed by `kernel/display/splash.c`
 (UAOS-151). Requires Pillow. Invoked by `scripts/build_iso.sh`; the
 output (`build/obj/splash.rgb`) is wrapped with `ld -r -b binary` into
@@ -38,7 +38,7 @@ enormous and slow to compile.
 ## Usage
 
 ```bash
-tools/make_splash.py splash.jpg build/obj/splash.rgb
+tools/make_splash.py assets/splash.jpg build/obj/splash.rgb
 ```
 
 Prints `splash: <in> -> <out> (<w>x<h>, bg=#RRGGBB, <n> bytes)`.

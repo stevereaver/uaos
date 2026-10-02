@@ -6,7 +6,7 @@
 # headless, drives the telnet port, asserts each command produces output,
 # then archives serial log + pcap to build/smoke-<ts>/.
 #
-#   scripts/smoke.sh [--timeout 90] [--keep]
+#   tests/smoke.sh [--timeout 90] [--keep]
 #
 # Requires: qemu run script working, telnet forward on host :2323,
 # nc (netcat) available.

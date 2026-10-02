@@ -108,7 +108,7 @@ still lands in the log either way.
 | `tools/etrace_decode.py` | Decodes the `ETRC` binary dump (12 B header + 24 B records). (UAOS-209) |
 | `tools/prof_report.py` | Symbolizes `prof FILE=` output into a sorted hotspot table via `nm`. (UAOS-210) |
 | `tools/analyze_log.py` | Serial-log analyzer: panic extraction + symbolization, warn/err rollup, watchdog events, boot markers. (UAOS-216) |
-| `scripts/smoke.sh` | Headless QEMU + telnet command battery; archives serial log + pcap under `build/smoke-<ts>/`. (UAOS-215) |
+| `tests/smoke.sh` | Headless QEMU + telnet command battery; archives serial log + pcap under `build/smoke-<ts>/`. (UAOS-215) |
 
 ## IRQ/PCI diagnostic exports (`kernel/irq/irq.{c,h}`)
 

@@ -48,7 +48,7 @@ flowchart TD
         end
 
         subgraph EMU["emulation/  —  M68k subsystem"]
-            MUSASHI["Musashi M68k interpreter\n(src/musashi/)"]
+            MUSASHI["Musashi M68k interpreter\n(emulation/musashi/)"]
             GLUE["M68k glue layer\nHunk loader · LVO stubs · DOS stubs\n(uaos_m68k_glue.c)"]
             UAEBRIDGE["UAE bridge\nRAM-base management\n(uaos_uae_bridge.c)"]
             GUESTRAM["Guest RAM\n8 MB chip + 8 MB fast\n(flat 16 MB window)"]

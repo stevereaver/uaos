@@ -28,7 +28,7 @@
 #include "../exec/task.h"
 #include "../irq/idt.h"
 #include "../dbg/diag.h"
-#include "../system_reboot.h"
+#include "../exec/system_reboot.h"
 #include "../exec/mem_info.h"
 #include <stdint.h>
 #include <stddef.h>

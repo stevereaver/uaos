@@ -15,7 +15,7 @@ Programs under `tools/` that run on the build host — binary wrappers used by
 - [ui_layout_test.c](/tools/ui_layout_test.md) — unit tests for the
   `uitree` layout engine; runs in `build_iso.sh` step 1a and gates the ISO
   build.
-- [qemu_layout_test.py](/tools/qemu_layout_test.md) (`scripts/`) —
+- [qemu_layout_test.py](/tools/qemu_layout_test.md) (`tests/`) —
   end-to-end QEMU regression for the M68k BOOPSI layout path: drives
   LayoutTest with closed-loop pointer control via the monitor + GDB stub.
 - [make_splash.py](/tools/make_splash.md) — converts `splash.jpg` into a
@@ -38,6 +38,6 @@ Diagnostics host tooling (UAOS-188, see [Diagnostics toolkit](/kernel/diag/index
   (`rip taskidx count` rows) into a hotspot table.
 - `tools/analyze_log.py` — serial-log analyzer: panic extraction and
   symbolization, warn/err rollup, watchdog events, boot markers.
-- `scripts/smoke.sh` — headless QEMU + telnet regression battery:
+- `tests/smoke.sh` — headless QEMU + telnet regression battery:
   runs a command list, asserts output, archives serial log + pcap to
   `build/smoke-<ts>/`.

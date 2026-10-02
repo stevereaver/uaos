@@ -22,7 +22,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/build"
 ISO_STAGING="${BUILD_DIR}/iso-staging"
 ISO_OUTPUT="${BUILD_DIR}/Ultimate_Amiga_OS.iso"
-SYS_ROOT="${REPO_ROOT}/sys-root"
 GRUB_CFG="${REPO_ROOT}/scripts/grub.cfg"
 KICKSTART_CONF="${REPO_ROOT}/emulation/rom_patches/kickstart.conf"
 KERNEL_ASM="${REPO_ROOT}/kernel/boot/uaos_kernel_entry.asm"
@@ -129,10 +128,9 @@ ok "  Layout engine self-test passed"
 
 info "Step 1b: Generating M68k binary .library files"
 
-mkdir -p "${REPO_ROOT}/system/LIBS"
 "${BUILD_DIR}/gen_m68k_library" "powerpacker.library" 1 4 \
-    "${REPO_ROOT}/system/LIBS/powerpacker.library"
-ok "  Generated: system/LIBS/powerpacker.library"
+    "${ISO_STAGING}/SYS_ROOT/LIBS/powerpacker.library"
+ok "  Generated: SYS_ROOT/LIBS/powerpacker.library"
 
 # -------------------------------------------------------------------------
 # Step 1c — Compile ELF64 kernel from NASM + C sources
@@ -145,7 +143,7 @@ mkdir -p "${BUILD_DIR}/obj"
 # -------------------------------------------------------------------------
 # Step 1c — Generate Musashi m68kops.c if not already present
 # -------------------------------------------------------------------------
-MUSASHI_DIR="${REPO_ROOT}/emulation/src/musashi"
+MUSASHI_DIR="${REPO_ROOT}/emulation/musashi"
 if [ ! -f "${MUSASHI_DIR}/m68kops.c" ]; then
     info "Step 1c: Generating Musashi opcode handlers"
     gcc -o "${BUILD_DIR}/m68kmake" "${MUSASHI_DIR}/m68kmake.c"
@@ -455,6 +453,15 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_clear.c" \
     "${REPO_ROOT}/kernel/shell/cmd_reboot.c" \
     "${REPO_ROOT}/kernel/shell/cmd_pwd.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_dir.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_makedir.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_delete.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_type.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_copy.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_rename.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_echo.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_protect.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_attr.c" \
     "${REPO_ROOT}/kernel/shell/cmd_info.c" \
     "${REPO_ROOT}/kernel/shell/cmd_date.c" \
     "${REPO_ROOT}/kernel/shell/cmd_which.c" \
@@ -477,6 +484,8 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_netstop.c" \
     "${REPO_ROOT}/kernel/shell/cmd_clock.c" \
     "${REPO_ROOT}/kernel/shell/cmd_netinfo.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_grep.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_more.c" \
     "${REPO_ROOT}/kernel/shell/cmd_vim.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ed.c" \
     "${REPO_ROOT}/kernel/shell/cmd_guide.c" \
@@ -485,6 +494,10 @@ for src in \
     "${REPO_ROOT}/kernel/shell/resident_cmd.c" \
     "${REPO_ROOT}/kernel/shell/cmd_resident.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ps.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_list.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_search.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_sort.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_join.c" \
     "${REPO_ROOT}/kernel/shell/cmd_wait.c" \
     "${REPO_ROOT}/kernel/shell/cmd_prompt.c" \
     "${REPO_ROOT}/kernel/shell/cmd_stack.c" \
@@ -492,6 +505,7 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_failat.c" \
     "${REPO_ROOT}/kernel/shell/cmd_quit.c" \
     "${REPO_ROOT}/kernel/shell/cmd_endcli.c" \
+    "${REPO_ROOT}/kernel/shell/cmd_filenote.c" \
     "${REPO_ROOT}/kernel/shell/cmd_relabel.c" \
     "${REPO_ROOT}/kernel/shell/cmd_mount.c" \
     "${REPO_ROOT}/kernel/shell/cmd_getenv.c" \
@@ -795,7 +809,7 @@ ok "  Compiled:  stubs.c (symbol resolution)"
 # wrap it as an object file (symbols _binary_splash_rgb_start/_end used
 # by kernel/display/splash.c).  A 1x1 navy placeholder keeps the link
 # working when the source image or Pillow is unavailable.
-SPLASH_SRC="${REPO_ROOT}/splash.jpg"
+SPLASH_SRC="${REPO_ROOT}/assets/splash.jpg"
 SPLASH_RGB="${BUILD_DIR}/obj/splash.rgb"
 if [[ -f "${SPLASH_SRC}" ]] && \
    python3 "${REPO_ROOT}/tools/make_splash.py" "${SPLASH_SRC}" "${SPLASH_RGB}"; then
@@ -1587,8 +1601,8 @@ else
 fi
 
 # GRUB menu background (grub.cfg references /boot/splash.jpg)
-if [[ -f "${REPO_ROOT}/splash.jpg" ]]; then
-    cp "${REPO_ROOT}/splash.jpg" "${ISO_STAGING}/boot/splash.jpg"
+if [[ -f "${REPO_ROOT}/assets/splash.jpg" ]]; then
+    cp "${REPO_ROOT}/assets/splash.jpg" "${ISO_STAGING}/boot/splash.jpg"
     ok "splash.jpg installed at /boot/splash.jpg"
 else
     warn "splash.jpg not found — GRUB menu will have no background image"

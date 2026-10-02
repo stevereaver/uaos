@@ -16,7 +16,7 @@ and asserts on kernel + guest state read through the same stub:
   * serial:       no cycle-budget aborts / wild PCs / faults
 
 Requires: gdb (with the kernel ELF's DWARF info), QEMU, a built ISO.
-Run:  scripts/qemu_layout_test.py [--iso PATH] [--keep] [--timeout SEC]
+Run:  tests/qemu_layout_test.py [--iso PATH] [--keep] [--timeout SEC]
 
 Exit 0 = all checks passed.  On failure the last screendump is kept
 (--shot-dir, default $TMPDIR) for post-mortem inspection.

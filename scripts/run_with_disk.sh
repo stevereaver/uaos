@@ -18,8 +18,8 @@ set -e
 
 DISK_PATH=${1:-/home/reaver/workspaces/uaos/uaos/build/uaos_disk.qcow2}
 # Optional second disk image (raw format, e.g. an Amiga .hdf hardfile).
-# Attach via:   bash scripts/run_with_disk.sh disk.qcow2 scripts/test-ffs.hdf
-#          or:  DISK2=scripts/test-ffs.hdf bash scripts/run_with_disk.sh
+# Attach via:   bash scripts/run_with_disk.sh disk.qcow2 tests/test-ffs.hdf
+#          or:  DISK2=tests/test-ffs.hdf bash scripts/run_with_disk.sh
 DISK2_PATH=${2:-${DISK2:-}}
 OVMF_VARS=/tmp/ovmf_vars.fd
 NET=${NET:-user}

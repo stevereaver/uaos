@@ -18,7 +18,7 @@
     --code-bg:     #0d1117;
     --code-text:   #00cc66;
     --link:        #44aaff;
-    --title-bar:   #0055aa;
+    --title-bar:   #3b67a2;
     --title-text:  #ffffff;
     --wb-grey:     #aaaaaa;
 }
@@ -246,8 +246,8 @@ support, and an interactive shell.</p>
 <hr />
 <h2 id="features">Features</h2>
 <ul>
-<li><strong>Workbench-style desktop</strong> — solid Amiga grey backdrop, menu
-bar, status bar, disk icons</li>
+<li><strong>Workbench-style desktop</strong> — solid Amiga grey
+backdrop, menu bar, status bar, disk icons</li>
 <li><strong>Window manager</strong> — multiple windows, click-to-focus,
 z-order, title bar drag, resize grip</li>
 <li><strong>PS/2 mouse</strong> — IRQ12-driven relative tracking, 16×16
@@ -266,7 +266,6 @@ including <code>version</code>, <code>mem</code>, <code>libs</code>,
 <code>echo</code>, <code>protect</code>, <code>attr</code>,
 <code>info</code>, <code>date</code>, <code>which</code>,
 <code>disks</code>, <code>fdisk</code>, <code>format</code>,
-<code>fsck</code>,
 <code>assign</code>, <code>execute</code>, <code>loadwb</code>,
 <code>run</code>, <code>ping</code>, <code>ifconfig</code>,
 <code>route</code>, <code>nslookup</code>, <code>ntpd</code>,
@@ -320,20 +319,14 @@ integration</li>
 nodes, 512 KB per file), auto-mounted at boot with T, ENV, CLIPS, S
 dirs; partition volumes mountable by display name or FAT32 volume
 label</li>
-<li><strong>Filesystem drivers</strong> — FAT32, Amiga OFS/FFS
-(read/write, incl. WinUAE hardfiles), PFS3, EXT4 (read-only),
+<li><strong>Filesystem drivers</strong> — FAT32, PFS3, EXT4 (read-only),
 ISO9660 (CD-ROM), and RAMFS</li>
-<li><strong>VirtIO block device driver</strong> — multi-disk PCI
-scanning (virtio0, virtio1, ...), per-device virtqueues and IRQ
-routing</li>
+<li><strong>VirtIO block device driver</strong> — PCI scanning, device
+detection, capacity reporting</li>
 <li><strong>IDE / ATAPI driver</strong> — Storage controller for CD-ROM
 and hard disks</li>
 <li><strong>Block device layer</strong> — Unified interface for storage
-devices; partition registration with MBR and Amiga RDB (RDSK/PART/FSHD)
-support, plus bare-filesystem probing</li>
-<li><strong>fsck</strong> — Disk/filesystem check and repair tool:
-MBR/GPT/RDB analysis, FAT32 and OFS/FFS checkers, surface scan,
-sector dump</li>
+devices; partition registration and MBR parsing</li>
 <li><strong>RTC driver</strong> — CMOS real-time clock with UIE
 interrupt</li>
 <li><strong>TCP/IP networking stack</strong> — IPv4, ARP, ICMP, TCP,
@@ -352,23 +345,31 @@ legacy BIOS via GRUB2</li>
 │   │                   # syscall dispatch, native x86-64 ELF64 loader
 │   ├── dos/            # VFS layer, RAM filesystem, block device layer, FAT32/PFS3/EXT4/ISO9660
 │   ├── net/            # TCP/IP stack (IPv4, ARP, ICMP, TCP, UDP, DHCP, DNS, NTP)
-│   ├── drivers/        # Network and storage drivers (e1000, virtio-net, virtio-blk, IDE)
+│   ├── drivers/        # Network and IDE storage drivers (e1000, virtio-net, IDE)
 │   └── shell/          # Native C: command implementations (cmd_*.c) and resident command system
 ├── emulation/
 │   ├── binaries/       # Embedded M68k binaries (auto-wrapped into the kernel image)
 │   ├── rom_patches/    # M68k Vasm/Devpac stubs, kickstart config
-│   ├── src/musashi/    # M68k CPU emulator
+│   ├── musashi/        # M68k CPU emulator (git submodule)
 │   ├── uaos_m68k_glue.c # M68k emulator glue, LVO stubs, DOS stubs
 │   ├── uaos_uae_bridge.c  # UAE bridge and RAM-base management
 │   └── uaos_emu_registry.c
 ├── system/             # Amiga-style filesystem skeleton (C, S, LIBS, L, DEVS, SYS, Tools)
 │   ├── libuaos/        # Userspace C library headers and startup code
 │   ├── userspace/      # Native x86-64 Ring-3 ELF64 programs (pwd, file, strings, find, Guide, ...)
+│   ├── gnusrc/         # GNU coreutils (cat, wc, sort, ls, cp, chmod, md5sum, ...)
+│   ├── gnu/            # POSIX directory skeleton exposed via the `gnu:` assign
 │   └── S/              # Startup-Sequence, network, NTP, timezone configs
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
 │   └── grub.cfg        # GRUB2 multiboot2 configuration
+├── tests/              # Host-side test harnesses and disk-image fixtures
+│   ├── smoke.sh        # Headless QEMU + telnet command battery
+│   ├── qemu_layout_test.py  # Scripted BOOPSI/LayoutTest regression test
+│   └── test-ffs.*      # FFS test disk images (hdf/vdi)
 ├── tools/              # Host-side build helpers (gen_uaos_native, gen_uaos_m68k, gen_uaos_x64)
+├── assets/
+│   └── splash.jpg      # Boot splash artwork (GRUB menu + kernel splash)
 ├── documentation/
 │   ├── uaos.guide      # AmigaGuide database
 │   ├── manual.md       # Markdown technical reference
@@ -458,8 +459,7 @@ and Amiga <code>.library</code> files</td>
 </tr>
 <tr class="even">
 <td>10</td>
-<td>Injects <code>grub.cfg</code> and the kickstart
-configuration</td>
+<td>Injects <code>grub.cfg</code> and the kickstart configuration</td>
 </tr>
 <tr class="odd">
 <td>11</td>
@@ -532,6 +532,110 @@ the kernel loads them into Ring-3 tasks and enters user mode via
 <p>The syscall numbers are defined in
 <code>kernel/exec/syscall_table.h</code> (kernel) and
 <code>system/libuaos/uaos_syscall.h</code> (userspace).</p>
+<hr />
+<h2 id="gnu-core-utilities-gnu-layer">GNU Core Utilities
+(<code>gnu:</code> layer)</h2>
+<p>UAOS ships the complete GNU coreutils suite (86 utilities) alongside
+the AmigaDOS-style commands. The GNU tools use GNU-style flags
+(<code>--long</code>, <code>-s</code>, <code>-n 5</code>) parsed by
+<code>system/libuaos/uaos_getopt.h</code>, a freestanding
+<code>getopt_long</code> implementation. The existing AmigaDOS commands
+in <code>C:</code> (e.g. <code>sort</code>, <code>join</code>) are kept
+unchanged; the GNU equivalents live under the <code>gnu:</code> assign,
+which <code>S:Startup-Sequence</code> maps to
+<code>Workbench:gnu</code>.</p>
+<h3 id="directory-layout">Directory layout</h3>
+<pre><code>gnu:
+├── bin/              # symlink-style bin directory
+├── usr/
+│   └── bin/          # GNU coreutils binaries (cat, wc, sort, md5sum, ...)
+└── usr/local/bin/    # reserved for user-installed tools</code></pre>
+<h3 id="available-utilities-86-tools">Available utilities (86
+tools)</h3>
+<p>Sources live in <code>system/gnusrc/</code> and are compiled by Step
+2ga of <code>scripts/build_iso.sh</code>:</p>
+<table>
+<colgroup>
+<col style="width: 58%" />
+<col style="width: 41%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Category</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Core text</td>
+<td><code>cat</code> <code>tac</code> <code>nl</code> <code>wc</code>
+<code>head</code> <code>tail</code> <code>cut</code> <code>tr</code>
+<code>uniq</code> <code>fold</code> <code>expand</code>
+<code>unexpand</code></td>
+</tr>
+<tr class="even">
+<td>Advanced text</td>
+<td><code>paste</code> <code>comm</code> <code>fmt</code>
+<code>sort</code> <code>seq</code> <code>tsort</code> <code>shuf</code>
+<code>split</code> <code>csplit</code></td>
+</tr>
+<tr class="odd">
+<td>Encoding</td>
+<td><code>base32</code> <code>base64</code> <code>basenc</code>
+<code>od</code></td>
+</tr>
+<tr class="even">
+<td>Checksums</td>
+<td><code>sum</code> <code>cksum</code> <code>md5sum</code>
+<code>sha1sum</code> <code>sha256sum</code> <code>sha512sum</code>
+<code>b2sum</code></td>
+</tr>
+<tr class="odd">
+<td>Other text</td>
+<td><code>pr</code> <code>numfmt</code> <code>ptx</code></td>
+</tr>
+<tr class="even">
+<td>File listing/info</td>
+<td><code>ls</code> <code>dir</code> <code>vdir</code> <code>stat</code>
+<code>df</code> <code>du</code> <code>basename</code>
+<code>dirname</code> <code>realpath</code> <code>pathchk</code>
+<code>mktemp</code></td>
+</tr>
+<tr class="odd">
+<td>File manipulation</td>
+<td><code>cp</code> <code>mv</code> <code>rm</code> <code>mkdir</code>
+<code>rmdir</code> <code>install</code> <code>touch</code>
+<code>truncate</code> <code>shred</code> <code>unlink</code>
+<code>dd</code></td>
+</tr>
+<tr class="even">
+<td>Shell basics</td>
+<td><code>echo</code> <code>printf</code> <code>yes</code>
+<code>true</code> <code>false</code> <code>test</code> <code>expr</code>
+<code>factor</code> <code>sleep</code> <code>tee</code>
+<code>date</code> <code>env</code> <code>printenv</code></td>
+</tr>
+<tr class="odd">
+<td>System info</td>
+<td><code>uname</code> <code>arch</code> <code>nproc</code>
+<code>hostname</code> <code>hostid</code> <code>tty</code>
+<code>whoami</code> <code>logname</code> <code>id</code>
+<code>groups</code> <code>who</code> <code>users</code>
+<code>pinky</code></td>
+</tr>
+<tr class="even">
+<td>User/group</td>
+<td><code>chmod</code> <code>chown</code> <code>chgrp</code></td>
+</tr>
+</tbody>
+</table>
+<p>The checksum tools use <code>system/libuaos/uaos_hash.h</code>, a
+freestanding implementation of MD5, SHA-1, SHA-256, SHA-512, BLAKE2b,
+and CRC32.</p>
+<p><code>chmod</code> maps POSIX octal/symbolic permission modes to
+AmigaDOS <code>FIBF_*</code> protection bits. <code>chown</code> and
+<code>chgrp</code> accept arguments but are no-ops on the single-user
+UAOS system.</p>
 <hr />
 <h2 id="running-in-qemu">Running in QEMU</h2>
 <h3 id="first-time-setup-copy-ovmf-variables-file">First-time setup —
@@ -624,6 +728,28 @@ kernel on your terminal:</p>
   -serial stdio</code></pre>
 <p>Or log to a file:</p>
 <pre class="bash"><code>  -serial file:/tmp/uaos_serial.log</code></pre>
+<h3 id="kernel-debugging-with-gdb">Kernel debugging with GDB</h3>
+<p><code>scripts/debug_qemu.sh</code> boots the ISO under QEMU’s
+built-in GDB stub (<code>-gdb tcp::1234 -S</code>): the CPU starts
+halted so you can set breakpoints before the first kernel instruction
+runs.</p>
+<pre class="bash"><code>./scripts/build_iso.sh            # build the ISO first
+./scripts/debug_qemu.sh           # QEMU waits on :1234
+
+gdb build/uaos-kernel.elf
+(gdb) target remote :1234
+(gdb) hbreak uaos_kernel_main     # hardware breakpoint — see notes
+(gdb) continue</code></pre>
+<p>Notes:</p>
+<ul>
+<li>The kernel runs in long mode on a 4 GB identity map, so ELF symbol
+addresses match guest addresses directly.</li>
+<li>Prefer <code>hbreak</code> over <code>break</code> — software
+breakpoints need write access to the code page.</li>
+<li>Serial debug output still goes to <code>/tmp/uaos_serial.log</code>
+(override with <code>SERIAL_LOG=</code>); the stub port can be changed
+with <code>GDB_PORT=</code>.</li>
+</ul>
 <hr />
 <h2 id="using-the-desktop">Using the Desktop</h2>
 <p>Once booted you will see a Workbench-style desktop.</p>
@@ -801,10 +927,6 @@ type commands:</p>
 <tr class="even">
 <td><code>format &lt;dev&gt; [fs]</code></td>
 <td>Format a partition (FAT32)</td>
-</tr>
-<tr class="odd">
-<td><code>fsck &lt;device&gt; [opts]</code></td>
-<td>Check/repair disk or filesystem (MBR/GPT/RDB, FAT32, OFS/FFS)</td>
 </tr>
 <tr class="odd">
 <td><code>run &lt;cmd&gt; [args]</code></td>
@@ -994,6 +1116,8 @@ type commands:</p>
 </table>
 <hr />
 <h2 id="architecture-overview">Architecture Overview</h2>
+<p>For a full interactive diagram see <strong><a
+href="ARCHITECTURE.md">ARCHITECTURE.md</a></strong>.</p>
 <pre><code>GRUB2 Multiboot2
     └── uaos_kernel_entry.asm   (32-bit protected → 64-bit long mode)
             └── uaos_kernel_main.c
@@ -1034,24 +1158,39 @@ type commands:</p>
 <hr />
 <h2 id="known-limitations">Known Limitations</h2>
 <ul>
-<li>M68k emulation has basic LVO stubs but needs full memory access
-integration</li>
-<li>ROM library functions are stubs with implementation logic in
-comments</li>
-<li>VirtIO block device read/write needs virtqueue I/O
-implementation</li>
-<li>FAT32 partition read/write via virtqueue I/O not yet
-implemented</li>
-<li>No networking, no audio</li>
-<li>Single CPU, no SMP</li>
-<li>Clock display updates via RTC but needs full date/time
-integration</li>
+<li><strong>No audio support</strong> — audio drivers are not
+implemented yet.</li>
+<li><strong>M68k emulation is partial</strong> — the Musashi CPU core,
+Hunk loader, and trap-based thunking can run simple M68k binaries and
+embedded programs; full custom-chip emulation and complex AmigaOS
+software compatibility are still being completed.</li>
+<li><strong>ROM library coverage is incomplete</strong> — the native
+AmigaOS-compatible libraries are functional implementations, but not
+every AmigaOS API is available.</li>
+<li><strong>Storage driver coverage is limited</strong> — VirtIO block
+read/write and FAT32 are implemented, but IDE, PFS3, EXT4, and ISO9660
+support varies and is not fully exercised.</li>
+<li><strong>Single CPU only</strong> — no SMP/multicore support.</li>
+<li><strong>Clock display uses RTC time</strong> — full timezone,
+calendar arithmetic, and date/time formatting integration are still
+being completed.</li>
 </ul>
 <hr />
-<p><img width="1413" height="1069" alt="image" src="https://github.com/user-attachments/assets/66433a49-276c-4408-a7e7-6b869220c57e" /></p>
+<p><img width="1230" height="922" alt="image" src="https://github.com/user-attachments/assets/cd9f836a-e78a-40dc-993d-5f59b2e8fad1" /></p>
 <h2 id="license">License</h2>
-<p>This project is a personal research and hobby project. No licence is
-currently applied.</p>
+<p>UAOS-original code is released under the <a href="LICENSE">MIT
+License</a>.</p>
+<p>The UAOS kernel and system files are MIT-licensed. The bootable ISO
+image also contains <a href="https://www.gnu.org/software/grub/">GNU
+GRUB</a> (GPL-3.0-or-later) as the bootloader — GRUB is a separate work
+loaded via the multiboot2 protocol and is not linked into the UAOS
+kernel.</p>
+<p>Third-party source code bundled in this repository (Musashi M68k
+emulator, SoftFloat 2b, M68k PMMU) is licensed under their own terms.
+SoftFloat 2b and the M68k PMMU file are retained in the source tree for
+reference but are <strong>not compiled into the kernel</strong>. See <a
+href="THIRD_PARTY_NOTICES.md">THIRD_PARTY_NOTICES.md</a> for full
+details including build tool licenses.</p>
   </div>
 </body>
 </html>

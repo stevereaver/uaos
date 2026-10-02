@@ -472,7 +472,7 @@ Return codes via `failat`: 0 clean, 5 warnings, 10 errors, 20 fatal.
   extension blocks for large files and OFS checksummed data blocks.
   Attach a second image writable (the default in
   `scripts/run_with_disk.sh`; `DISK2_RO=1` restores read-only).
-- For VirtualBox, `scripts/hdf2vdi.py in.hdf out.vdi` wraps a raw
+- For VirtualBox, `tools/hdf2vdi.py in.hdf out.vdi` wraps a raw
   WinUAE `.hdf` in a sparse dynamic VDI (`--fixed` for a flat image);
   sector content is byte-identical.
 

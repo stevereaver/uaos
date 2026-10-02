@@ -18,7 +18,7 @@ reference but excluded from the build.
 - **Upstream:** <https://github.com/kstenerud/Musashi>
 - **Author:** Karl Stenerud
 - **License:** MIT
-- **Location:** `emulation/src/musashi/`
+- **Location:** `emulation/musashi/`
 
 A portable Motorola M680x0 processor emulation engine.  Used as the
 M68k CPU core for UAOS's M68k emulation subsystem.  UAOS supplies a

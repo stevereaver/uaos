@@ -27,7 +27,7 @@
 #include "../net/timezone.h"
 #include "blanker.h"
 #include "format_win.h"
-#include "../system_reboot.h"
+#include "../exec/system_reboot.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>

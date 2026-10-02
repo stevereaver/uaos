@@ -24,11 +24,11 @@ The primary build script is `scripts/build_iso.sh`.
 
 1. **Staging**: Creates `build/` directories for object files and the ISO root.
 2. **Host Tools**: Builds `tools/gen_uaos_native`, `tools/gen_uaos_m68k`, `tools/gen_uaos_x64`, and `tools/gen_m68k_library`. Also builds and **runs** `tools/ui_layout_test` (compiled against the real `kernel/display/uitree.c`) — a layout-engine regression aborts the ISO build.
-3. **M68k Library Generation**: Generates loadable Amiga `.library` wrappers (e.g., `powerpacker.library`) in `system/LIBS/`.
+3. **M68k Library Generation**: Generates loadable Amiga `.library` wrappers (e.g., `powerpacker.library`) into the ISO staging `SYS_ROOT/LIBS/`.
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
-5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/src/musashi/m68kops.c`) if it is missing.
+5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/musashi/m68kops.c`) if it is missing.
 6. **Chipset Emulator**: Compiles the real AGA/ECS custom chip emulator (`kernel/chipset/chip_emu.c`) and links it into the kernel.
-7. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`. Separately, `tools/make_splash.py` converts the repo-root `splash.jpg` into a self-describing RGB24 blob (`build/obj/splash.rgb`) wrapped by `ld -r -b binary` into `splash_img.o` and linked into the kernel — the C-array pattern isn't used for it because the converted image is ~1.7 MB.
+7. **Binary Embedding**: Converts any files in `emulation/binaries/` to C byte arrays via `scripts/embed_binary.sh`. Separately, `tools/make_splash.py` converts `assets/splash.jpg` into a self-describing RGB24 blob (`build/obj/splash.rgb`) wrapped by `ld -r -b binary` into `splash_img.o` and linked into the kernel — the C-array pattern isn't used for it because the converted image is ~1.7 MB.
 8. **Compilation**: Compiles all kernel C files with `-ffreestanding -fno-stack-protector -fno-pie -fno-PIE -mno-red-zone -nostdlib -m64 -O2 -std=c11`.
 9. **Linking**: Links objects into `uaos-kernel.elf` via `kernel/boot/uaos_kernel.ld`.
 10. **Userspace Programs**: Compiles C utilities in `system/userspace/` with `-ffreestanding -nostdlib -fPIE -pie -mno-red-zone`, links them with `uaos_start.o`, wraps the resulting binaries using `gen_uaos_x64`, and packages them into `SYS_ROOT/C/`. `-mno-red-zone` is mandatory: tasks run in ring 0, so `INT 0x80` and IRQ entry frames are pushed directly onto the *user* stack and would overwrite anything the compiler places in the 128-byte SysV red zone below `%rsp` (this was the root cause of `makedir` silently receiving an empty path — the 256-byte `path` buffer straddled the red zone). The same flag is applied to `uaos_start.o`, `Tools:Guide`, and the `system/gnusrc/` coreutils builds.

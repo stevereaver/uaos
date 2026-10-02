@@ -1,5 +1,15 @@
 build
-sys-root
+__pycache__/
+*.pyc
+
+# LaTeX build intermediates (the PDFs themselves are checked-in deliverables)
+documentation/*.aux
+documentation/*.lof
+documentation/*.log
+documentation/*.lot
+documentation/*.out
+documentation/*.toc
+documentation/*_body.html
 
 # Embedded Amiga binaries — test-only, auto-processed by build_iso.sh
 # Raw binaries (no extension) and their generated _bin.c / _bin.h wrappers

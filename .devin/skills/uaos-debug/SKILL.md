@@ -234,7 +234,7 @@ Either way, verify locally: `file shot.jpg` → `JPEG image data`, or
 - **`tools/etrace_decode.py`** (UAOS-209): decodes `etrace FILE=` dumps (`ETRC` magic, 24 B records). `--elf` symbolizes, `--hz` adds µs deltas.
 - **`tools/prof_report.py`** (UAOS-210): `prof FILE=` rows → sorted symbolized hotspot table.
 - **`tools/gdb_uaos.py`** (UAOS-213): `source` it inside the GDB-stub session for `uaos tasks|task NAME|timers|stack NAME` — walks `g_tasks[]` via DWARF, decodes parked frames.
-- **`scripts/smoke.sh`** (UAOS-215): headless QEMU + telnet command battery — asserts each debug command produces output, archives serial log + pcap to `build/smoke-<ts>/`.
+- **`tests/smoke.sh`** (UAOS-215): headless QEMU + telnet command battery — asserts each debug command produces output, archives serial log + pcap to `build/smoke-<ts>/`.
 
 ## Standard debug workflow
 

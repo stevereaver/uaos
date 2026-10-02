@@ -18,7 +18,7 @@
 
 extern volatile uint64_t g_pit_ticks;   /* 100 Hz — uaos_kernel_main.c */
 
-/* Musashi — mirrored from emulation/src/musashi/m68k.h (not on the include
+/* Musashi — mirrored from emulation/musashi/m68k.h (not on the include
  * path for kernel sources). */
 extern int           m68k_get_reg(void *ctx, int regnum);
 extern unsigned int  m68k_disassemble(char *str_buff, unsigned int pc,

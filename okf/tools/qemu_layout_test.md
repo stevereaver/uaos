@@ -2,7 +2,7 @@
 type: Tool
 title: qemu_layout_test.py
 description: End-to-end QEMU regression test for the M68k BOOPSI layout path — drives LayoutTest via the QEMU monitor + GDB stub with closed-loop pointer control.
-resource: /scripts/qemu_layout_test.py
+resource: /tests/qemu_layout_test.py
 tags: [tool, test, qemu, m68k, boopsi, layout]
 status: stable
 generated: { by: agent:devin, at: 2026-09-29T08:00:00Z }
@@ -41,8 +41,8 @@ of cycle-budget aborts, wild PCs, and faults.
 ## Usage
 
 ```bash
-scripts/qemu_layout_test.py            # builds nothing; uses existing ISO
-scripts/qemu_layout_test.py --keep     # leave QEMU running for inspection
+tests/qemu_layout_test.py            # builds nothing; uses existing ISO
+tests/qemu_layout_test.py --keep     # leave QEMU running for inspection
 ```
 
 Exit 0 = all pass. On failure a screendump lands at

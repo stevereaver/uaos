@@ -60,7 +60,7 @@ uaos/
 ├── emulation/
 │   ├── binaries/       # Embedded M68k binaries (auto-wrapped into the kernel image)
 │   ├── rom_patches/    # M68k Vasm/Devpac stubs, kickstart config
-│   ├── src/musashi/    # M68k CPU emulator
+│   ├── musashi/        # M68k CPU emulator (git submodule)
 │   ├── uaos_m68k_glue.c # M68k emulator glue, LVO stubs, DOS stubs
 │   ├── uaos_uae_bridge.c  # UAE bridge and RAM-base management
 │   └── uaos_emu_registry.c
@@ -73,7 +73,13 @@ uaos/
 ├── scripts/
 │   ├── build_iso.sh    # Full build pipeline
 │   └── grub.cfg        # GRUB2 multiboot2 configuration
+├── tests/              # Host-side test harnesses and disk-image fixtures
+│   ├── smoke.sh        # Headless QEMU + telnet command battery
+│   ├── qemu_layout_test.py  # Scripted BOOPSI/LayoutTest regression test
+│   └── test-ffs.*      # FFS test disk images (hdf/vdi)
 ├── tools/              # Host-side build helpers (gen_uaos_native, gen_uaos_m68k, gen_uaos_x64)
+├── assets/
+│   └── splash.jpg      # Boot splash artwork (GRUB menu + kernel splash)
 ├── documentation/
 │   ├── uaos.guide      # AmigaGuide database
 │   ├── manual.md       # Markdown technical reference

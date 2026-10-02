@@ -27,7 +27,7 @@ pdflatex -interaction=nonstopmode -halt-on-error manual.tex
 pdflatex -interaction=nonstopmode -halt-on-error manual.tex
 ```
 
-`manual.md` is the Markdown sibling rendered to `manual.html` by `build_html.sh`; keep `manual.tex`, `manual.md`, and the PDF in sync. Regeneration leaves refreshed `manual.aux/.log/.toc/.lof/.lot/.out` artifacts alongside the PDF.
+`manual.md` is the Markdown sibling rendered to `manual.html` by `build_html.sh`; keep `manual.tex`, `manual.md`, and the PDF in sync. Regeneration leaves refreshed `manual.aux/.log/.toc/.lof/.lot/.out` artifacts alongside the PDF — these are gitignored build intermediates, not checked in.
 
 # Related
 

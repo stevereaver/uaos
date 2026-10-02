@@ -2,7 +2,7 @@
  *
  * Paints the embedded splash artwork onto the linear framebuffer during
  * early kernel init, before the scheduler and WM exist.  The artwork is
- * converted from splash.jpg at build time (tools/make_splash.py) into a
+ * converted from assets/splash.jpg at build time (tools/make_splash.py) into a
  * self-describing RGB24 blob and linked into the kernel image with
  * `ld -r -b binary`, which exports the _binary_*_start/_end symbols.
  *

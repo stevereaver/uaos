@@ -26,7 +26,7 @@
 
 #define MUSASHI_CNF "uaos_m68kconf.h"
 
-#include "src/musashi/m68k.h"
+#include "musashi/m68k.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "uaos_emu.h"

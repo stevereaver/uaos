@@ -14,8 +14,8 @@ The audit was performed in two phases:
    entire repository using [ScanCode Toolkit](https://github.com/aboutcode-org/scancode-toolkit).
    The scan checked all 533 source files for license expressions,
    copyright holders, package manifests, emails, and URLs.  Results are
-   in `scancode_report.json` and `scancode_report.md` at the repository
-   root.
+   in `documentation/scancode_report.json` and
+   `documentation/scancode_report.md`.
 
 ---
 
@@ -23,12 +23,12 @@ The audit was performed in two phases:
 
 | Component | Origin | License | Location |
 |---|---|---|---|
-| Musashi M68k CPU core | Karl Stenerud (upstream) | MIT | `emulation/src/musashi/` |
-| SoftFloat 2b | John R. Hauser (via MAME) | Hauser/ICSI non-warranty | `emulation/src/musashi/softfloat/` |
-| M68k PMMU (`m68kmmu.h`) | R. Belmont / MAME Team | MAME license | `emulation/src/musashi/m68kmmu.h` |
-| Musashi example/test harness | Karl Stenerud (upstream) | MIT | `emulation/src/musashi/example/`, `emulation/src/musashi/test/` |
+| Musashi M68k CPU core | Karl Stenerud (upstream) | MIT | `emulation/musashi/` |
+| SoftFloat 2b | John R. Hauser (via MAME) | Hauser/ICSI non-warranty | `emulation/musashi/softfloat/` |
+| M68k PMMU (`m68kmmu.h`) | R. Belmont / MAME Team | MAME license | `emulation/musashi/m68kmmu.h` |
+| Musashi example/test harness | Karl Stenerud (upstream) | MIT | `emulation/musashi/example/`, `emulation/musashi/test/` |
 | UAOS kernel + AmigaOS libraries | UAOS Development Team (clean-room) | MIT | `kernel/**`, `emulation/uaos_*.c` |
-| `powerpacker.library` | UAOS-generated stub wrapper (not real PowerPacker) | MIT | `system/LIBS/powerpacker.library` |
+| `powerpacker.library` | UAOS-generated stub wrapper (not real PowerPacker); generated into the ISO by `build_iso.sh` | MIT | `SYS_ROOT/LIBS/powerpacker.library` |
 | Build scripts, tools, docs | UAOS Development Team | MIT | `scripts/`, `tools/`, `documentation/` |
 
 **No source code from the AROS project is present in this repository.**
@@ -45,7 +45,7 @@ previously claimed otherwise — see §"Prior Discrepancies (Resolved)").
 The M68k CPU emulator is the **Musashi** engine by Karl Stenerud, taken
 from the upstream project at <https://github.com/kstenerud/Musashi>.
 
-**Files (all under `emulation/src/musashi/`):**
+**Files (all under `emulation/musashi/`):**
 
 | File | Upstream version noted in header |
 |---|---|
@@ -89,7 +89,7 @@ in.
 
 ### 1.2 SoftFloat 2b (FPU support library)
 
-Bundled inside the Musashi directory at `emulation/src/musashi/softfloat/`.
+Bundled inside the Musashi directory at `emulation/musashi/softfloat/`.
 
 **Files:**
 
@@ -124,7 +124,7 @@ references SoftFloat symbols conditionally.
 
 ### 1.3 M68k PMMU (`m68kmmu.h`)
 
-`emulation/src/musashi/m68kmmu.h` implements the 68851/68030/68040
+`emulation/musashi/m68kmmu.h` implements the 68851/68030/68040
 PMMU address translation.
 
 **Origin:** By R. Belmont. Header reads:

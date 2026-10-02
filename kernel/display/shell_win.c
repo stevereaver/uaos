@@ -27,7 +27,7 @@
 #include "dos/fat32.h"
 #include "exec/rom_modules.h"
 #include "shell/native_cmd.h"
-#include "../system_reboot.h"
+#include "../exec/system_reboot.h"
 #include "shell/resident_cmd.h"
 #include "exec/uaos_binary.h"
 #include "exec/elf64_loader.h"

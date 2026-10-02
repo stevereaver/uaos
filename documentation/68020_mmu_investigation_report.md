@@ -24,10 +24,10 @@ This report details:
 ### 1.1 Musashi Integration
 
 **Key Files:**
-- `emulation/src/musashi/m68kcpu.c` - Main CPU execution engine
-- `emulation/src/musashi/m68kcpu.h` - CPU state structures and internal macros
-- `emulation/src/musashi/m68k_in.c` - Instruction definitions (518+ instructions)
-- `emulation/src/musashi/m68kmmu.h` - **68851/68030/68040 PMMU implementation**
+- `emulation/musashi/m68kcpu.c` - Main CPU execution engine
+- `emulation/musashi/m68kcpu.h` - CPU state structures and internal macros
+- `emulation/musashi/m68k_in.c` - Instruction definitions (518+ instructions)
+- `emulation/musashi/m68kmmu.h` - **68851/68030/68040 PMMU implementation**
 - `emulation/uaos_m68kconf.h` - **UAOS-specific configuration (currently 68000-only)**
 - `emulation/uaos_m68k_glue.c` - UAOS integration layer
 
@@ -126,7 +126,7 @@ m68k_set_cpu_type(M68K_CPU_TYPE_68020);  // Or M68K_CPU_TYPE_68EC020
 
 If Musashi's `m68kops.c` was pre-generated for 68000 only, regenerate it:
 ```bash
-cd emulation/src/musashi
+cd emulation/musashi
 gcc -o m68kmake m68kmake.c
 ./m68kmake . m68k_in.c  # Generates m68kops.c with 68020 instructions
 ```
@@ -147,7 +147,7 @@ gcc -o m68kmake m68kmake.c
 
 ### 3.1 Existing PMMU Implementation in Musashi
 
-**File:** `emulation/src/musashi/m68kmmu.h` (321 lines)
+**File:** `emulation/musashi/m68kmmu.h` (321 lines)
 
 The PMMU implementation includes:
 
@@ -393,7 +393,7 @@ Physical Address (as seen by UAOS glue layer):
 
 3. **Regenerate opcode table:**
    ```bash
-   cd emulation/src/musashi
+   cd emulation/musashi
    gcc -o m68kmake m68kmake.c
    ./m68kmake . m68k_in.c
    ```
@@ -501,10 +501,10 @@ Physical Address (as seen by UAOS glue layer):
 - `emulation/uaos_m68k_glue.c` (line 2151) - CPU type initialization
 
 ### Musashi Core
-- `emulation/src/musashi/m68kcpu.h` (lines 938-1017) - CPU state structure with PMMU fields
-- `emulation/src/musashi/m68kcpu.h` (lines 975-999) - PMMU register definitions
-- `emulation/src/musashi/m68kmmu.h` (all) - PMMU implementation
-- `emulation/src/musashi/m68k_in.c` - 68020+ instruction handlers (search for CPU_TYPE_IS_EC020_PLUS)
+- `emulation/musashi/m68kcpu.h` (lines 938-1017) - CPU state structure with PMMU fields
+- `emulation/musashi/m68kcpu.h` (lines 975-999) - PMMU register definitions
+- `emulation/musashi/m68kmmu.h` (all) - PMMU implementation
+- `emulation/musashi/m68k_in.c` - 68020+ instruction handlers (search for CPU_TYPE_IS_EC020_PLUS)
 
 ### UAOS Memory System
 - `kernel/exec/mmu_sandbox.c` - x86_64 paging sandbox (independent of M68k PMMU)
@@ -719,7 +719,7 @@ gcc ${GCC_FLAGS} -w \
 #    M68K_EMULATE_PMMU = M68K_OPT_ON
 
 # 2. Regenerate opcode table:
-cd emulation/src/musashi
+cd emulation/musashi
 gcc -o m68kmake m68kmake.c
 ./m68kmake . m68k_in.c
 

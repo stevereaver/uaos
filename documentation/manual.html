@@ -18,7 +18,7 @@
     --code-bg:     #0d1117;
     --code-text:   #00cc66;
     --link:        #44aaff;
-    --title-bar:   #0055aa;
+    --title-bar:   #3b67a2;
     --title-text:  #ffffff;
     --wb-grey:     #aaaaaa;
 }
@@ -337,8 +337,8 @@ and TSS</li>
 </ol>
 <h3 id="m68k-thunk-dispatch">M68k Thunk Dispatch</h3>
 <p>The thunk mechanism replaces selected Exec jump-table vectors in the
-ROM with 8-byte breakout stubs using the <code>MK_THUNK</code>
-macro in <code>emulation/rom_patches/rom_traps.s</code>:</p>
+ROM with 8-byte breakout stubs using the <code>MK_THUNK</code> macro in
+<code>emulation/rom_patches/rom_traps.s</code>:</p>
 <pre class="asm"><code>MK_THUNK MACRO
         ILLEGAL             ; $4AFC — triggers JIT breakout
         dc.w    \1          ; UAOS magic token ($414D = &quot;AM&quot;)
@@ -562,16 +562,28 @@ automatically at boot via <code>netdev_probe()</code>.</p>
 (<code>virtio_net.c</code>)</h4>
 <ul>
 <li><strong>PCI</strong>: vendor <code>0x1AF4</code>, device
-<code>0x1000</code> (legacy VirtIO 0.9) or <code>0x1041</code>
-(modern)</li>
-<li><strong>Interface</strong>: I/O-port or MMIO BAR0; split virtqueue
-ring protocol</li>
-<li><strong>Queue size</strong>: 256 descriptors each for RX and TX
-(matches QEMU default)</li>
+<code>0x1000</code> (legacy/transitional) or <code>0x1041</code> (modern
+non-transitional)</li>
+<li><strong>Interface</strong>: legacy devices use the BAR0 I/O-port
+register block; modern devices use the virtio-1.0 capability transport
+(common config, notify, ISR and device-config vendor capabilities).
+Regions are reached by MMIO dereference when the BAR is mapped inside
+the identity-mapped low 4 GB, or through the
+<code>VIRTIO_PCI_CAP_PCI_CFG</code> config-space window when the BAR
+sits above 4 GB (e.g. OVMF’s 64-bit BAR allocation on q35). Negotiates
+<code>VIRTIO_F_VERSION_1</code> + <code>VIRTIO_NET_F_MAC</code> on
+modern and uses the 12-byte <code>virtio_net_hdr</code> (10 bytes on
+legacy). Split virtqueue ring protocol on both transports.</li>
+<li><strong>Queue size</strong>: honours the device-reported QUEUE_SIZE
+at init (QEMU = 256, VirtualBox = 1024) and lays out the desc/avail/used
+rings accordingly; up to VIRTQ_MAX_SIZE (1024) entries are supported
+while only 256 RX buffers are posted</li>
 <li><strong>MSI-X</strong>: present in device but kept disabled; uses
 8259A PIC IRQ</li>
-<li><strong>Used by</strong>: QEMU
-(<code>-device virtio-net-pci,disable-modern=on</code>)</li>
+<li><strong>Used by</strong>: QEMU (<code>-device virtio-net-pci</code>,
+transitional or <code>disable-legacy=on</code> for the pure-modern
+1af4:1041 device) and VirtualBox virtio-net NICs (transitional device
+1af4:1000, legacy I/O path)</li>
 </ul>
 <h4 id="intel-82540em-e1000-e1000.c">Intel 82540EM e1000
 (<code>e1000.c</code>)</h4>
@@ -851,7 +863,7 @@ writing, correctly handling windows that extend partially off-screen
 </table>
 <h3 id="desktop-desktop.c">Desktop (<code>desktop.c</code>)</h3>
 <p><code>Desktop_Draw()</code> renders the full Workbench-style
-backdrop:</p>
+desktop:</p>
 <ul>
 <li><strong>Menu bar</strong> (top, 20 px) — Workbench menu labels and
 clock area</li>
@@ -863,10 +875,10 @@ R:170 G:170 B:170)</li>
 and RAM size</li>
 </ul>
 <p><code>Desktop_RedrawRect(rx, ry, rw, rh)</code> repaints a
-sub-rectangle of the desktop (backdrop + all overlays: icons, menu bar,
-status bar) without a full-screen repaint. This is called by the window
-manager on every drag/resize step to erase the old window footprint
-efficiently.</p>
+sub-rectangle of the desktop (backdrop + intersecting icons + lasso +
+the menu bar when reached) without a full-screen repaint. The window
+manager calls it for damage regions that may expose desktop (vacated
+window footprints, menu/icon/lasso changes).</p>
 <h3 id="window-manager-wm.c">Window Manager (<code>wm.c</code>)</h3>
 <p>A lightweight WM supporting up to 8 simultaneous windows.</p>
 <h4 id="wmwindow-structure">WmWindow structure</h4>
@@ -886,13 +898,14 @@ promote it to the top of the z-stack.</p>
 <h4 id="drag-and-resize">Drag and Resize</h4>
 <ul>
 <li><strong>Drag</strong> — mouse-down on the title bar records the grab
-offset. Each subsequent mouse move calls <code>Desktop_RedrawRect</code>
-on the old footprint, updates <code>w-&gt;x/y</code>, then repaints all
-windows front-to-back.</li>
+offset. Each subsequent mouse move damages the old + new footprints
+(<code>WM_InvalidateDesktopRect</code>); the idle loop’s
+<code>WM_FlushRedraw</code> repaints the damaged union once — backdrop +
+intersecting windows back-to-front.</li>
 <li><strong>Resize</strong> — mouse-down on the 16×16 resize grip
 (bottom-right corner) records the base size and drag origin. Mouse
-movement computes new dimensions relative to the drag start point.
-Minimum size: 120×80 px.</li>
+movement computes new dimensions relative to the drag start point and
+damages old + new footprints the same way. Minimum size: 120×80 px.</li>
 <li>Windows may extend off the left, right, and bottom screen edges. The
 title bar is always constrained to remain at or below the menu bar
 (<code>y &gt;= 20</code>), and at least 32 px of horizontal width stays
@@ -902,10 +915,14 @@ on-screen.</li>
 (<code>cursor.c</code>)</h3>
 <p>A 16×16 Amiga-style arrow sprite cursor rendered in software:</p>
 <ol type="1">
-<li>Save the 16×16 background pixels beneath the cursor position</li>
-<li>Draw the sprite (two-colour XOR mask)</li>
-<li>On each move: restore saved background, save new background, draw
-sprite at new position</li>
+<li>Save the 16×16 background pixels beneath the cursor position (row
+<code>memcpy</code> in 32bpp)</li>
+<li>Draw the sprite (two-colour body/shadow mask)</li>
+<li>The PS/2 IRQ handler only records the target position
+(<code>Cursor_Move</code>); the restore/save/draw pass runs once per
+idle-loop iteration (<code>Cursor_Flush</code>) or at frame end inside a
+back-buffered repaint (<code>Cursor_Redraw</code>), so packet bursts
+coalesce to a single paint</li>
 </ol>
 <p>This ensures desktop and window content are never permanently
 overwritten by cursor movement.</p>
@@ -1067,10 +1084,14 @@ devices:</p>
 <h4 id="supported-block-devices">Supported Block Devices</h4>
 <ul>
 <li><strong>VirtIO Block Device</strong> (<code>virtio_blk.c</code>):
-PCI scanning, device detection, capacity reporting
+full PCI scan, per-device state and virtqueues
 <ul>
-<li>Registers as “virtio0”</li>
-<li>Currently stub implementation (virtqueue I/O marked as TODO)</li>
+<li>Registers as “virtio0”, “virtio1”, … in PCI enumeration order (up to
+4 disks)</li>
+<li>Legacy
+<code>virtio_blk_read</code>/<code>virtio_blk_write</code>/<code>virtio_blk_get_capacity</code>
+entry points target virtio0; the <code>BlockDev</code> ops interface
+dispatches per-device</li>
 </ul></li>
 </ul>
 <h3 id="vfs-layer-vfs.c">VFS Layer (<code>vfs.c</code>)</h3>
@@ -1143,7 +1164,8 @@ implementations:</p>
 </tr>
 <tr class="odd">
 <td><code>VFS_MountPartition(name)</code></td>
-<td>Mount a partition volume by name (creates RAMFS backing)</td>
+<td>Mount a partition volume by name (FAT32 handler, or FFS/OFS handler
+under the Amiga volume name)</td>
 </tr>
 <tr class="even">
 <td><code>VFS_GetMountCount()</code></td>
@@ -1190,6 +1212,89 @@ Write, Seek, Size, ReadDir</p>
 (<code>BlockDev_ReadVolLabel</code>), and formatting via
 <code>FAT32_Format()</code> are implemented. Cluster-chain read/write
 and directory traversal are pending.</p>
+<h4 id="amiga-ofsffs-ffs.c-ffs_handler.c">Amiga OFS/FFS
+(<code>ffs.c</code>, <code>ffs_handler.c</code>)</h4>
+<p>Read-only driver for the Amiga Old File System (<code>DOS\0</code>)
+and Fast File System (<code>DOS\1</code>), including the
+international/dircache variants (<code>DOS\2</code>–<code>DOS\7</code>)
+that share the same on-disk structures:</p>
+<pre class="c"><code>typedef struct FfsVolume {
+    BlockDev *dev;            /* Block device (disk or partition) */
+    uint8_t   dostype;        /* bootblock &#39;DOS\x&#39; low byte */
+    uint8_t   is_ofs;         /* data blocks carry 24-byte headers */
+    uint8_t   is_intl;
+    uint32_t  block_size;     /* 512 */
+    uint32_t  ht_size;        /* hash table size (72 for 512B blocks) */
+    uint32_t  root_key;       /* root header block */
+    uint32_t  num_blocks;
+    uint32_t  used_blocks;    /* advisory bitmap count */
+    char      vol_name[31];
+} FfsVolume;</code></pre>
+<ul>
+<li><strong>Boot block</strong>: <code>'DOS'</code> + dostype byte
+probe; the longword checksum covers blocks 0-1 but WinUAE hardfiles
+leave it unset (reported as “not present”, not an error).</li>
+<li><strong>Root block</strong>: located at <code>num_blocks/2</code>
+(scanned ±64 blocks), validated by
+<code>T_HEADER</code>/<code>ST_ROOT</code>, checksum, and hash-table
+bounds. The volume name is a BSTR at longword 108.</li>
+<li><strong>Name hash</strong>:
+<code>h = len; for each char: h = (h*13 + upper(c)) &amp; 0x7FF</code>,
+slot = <code>h % ht_size</code>; same-hash chains linked at longword
+124.</li>
+<li><strong>Directories</strong>: 72-entry hash table of child header
+keys; entry names are BSTRs at longword 108; parent keys at longword
+125.</li>
+<li><strong>File data</strong>: <code>high_seq</code> data-block
+pointers anchored at <code>lw(5 + ht_size - i)</code> in the header
+block, then <code>T.LIST</code> extension blocks (link at longword 126)
+for larger files. FFS data blocks are raw payload; OFS data blocks have
+a 24-byte header and a 488-byte payload.</li>
+<li><strong>Bitmap</strong>: bit=1 means free; treated as advisory
+(WinUAE images do not mark all used blocks), never authoritative for
+structure checks.</li>
+<li><strong>Packet handler</strong>: <code>ffs_handler.c</code>
+implements the read/write packet set
+(<code>FINDINPUT</code>/<code>FINDUPDATE</code>/<code>FINDOUTPUT</code>,
+<code>READ</code>, <code>WRITE</code>, <code>SEEK</code>,
+<code>END</code>, <code>SET_FILE_SIZE</code>, <code>CREATE_DIR</code>,
+<code>DELETE_OBJECT</code>, <code>RENAME_OBJECT</code>,
+<code>SET_PROTECT</code>, <code>SET_COMMENT</code>,
+<code>SET_DATE</code>, <code>LOCATE_OBJECT</code>,
+<code>EXAMINE_OBJECT</code>/<code>NEXT</code>, <code>FREE_LOCK</code>,
+<code>PARENT</code>, <code>COPY_DIR</code>, <code>SAME_LOCK</code>,
+<code>DISK_INFO</code>, <code>IS_FILESYSTEM</code>). The volume mounts
+under its Amiga volume name (e.g. <code>test:</code>).</li>
+<li><strong>Write support</strong>: block allocation/deallocation via
+the bitmap (bit=1 free; blocks 0-1 are never allocatable), file data
+writes with growth beyond the inline 72-pointer table into
+<code>T.LIST</code> extension blocks, OFS data-block
+headers/sequencing/checksums, hash-chain insert/remove for
+create/delete/rename, and header checksum repair on every mutated
+block.</li>
+</ul>
+<p><strong>Status</strong>: read and write are implemented and verified
+against a WinUAE-created FFS hardfile in QEMU
+(create/write/append/mkdir/ rename/delete, &gt;72-block files through
+<code>T.LIST</code> extensions, and a clean <code>fsck</code> after each
+stage). OFS (<code>DOS\0</code>) writes are code-reviewed but not
+live-tested — no OFS media was available.</p>
+<h4 id="partition-tables-partition.c">Partition tables
+(<code>partition.c</code>)</h4>
+<ul>
+<li><strong>MBR</strong>: classic four-entry table; partitions register
+as <code>&lt;disk&gt;&lt;index&gt;</code>
+(e.g. <code>virtio01</code>).</li>
+<li><strong>Amiga RDB</strong>: <code>RDSK</code> rigid-disk block
+scanned in the first 16 blocks (checksummed), then the <code>PART</code>
+partition chain and <code>FSHD</code> filesystem-header chain are
+traversed. Partition start/length come from the environment vector
+(<code>de_HighCyl</code>/<code>de_Surfaces</code>/<code>de_Sectors</code>
+geometry product), not the legacy <code>pb_Drives</code> field.</li>
+<li><strong>Bare filesystems</strong>: when a whole disk has neither MBR
+nor RDB, the boot code probes it as a single filesystem — FAT32 first,
+then OFS/FFS. This covers WinUAE <code>.hdf</code> hardfiles.</li>
+</ul>
 <h4 id="iso9660-iso9660.c">ISO9660 (<code>iso9660.c</code>)</h4>
 <p>CD-ROM reader used at boot to load files from the boot ISO into
 RAMFS:</p>
@@ -1348,6 +1453,10 @@ utility)</td>
 <td>Format a partition (FAT32)</td>
 </tr>
 <tr class="even">
+<td><code>fsck &lt;dev&gt; [opts]</code></td>
+<td>Check/repair disk or filesystem</td>
+</tr>
+<tr class="odd">
 <td><code>run &lt;cmd&gt; [args]</code></td>
 <td>Run a command in a new CLI</td>
 </tr>
@@ -1356,15 +1465,22 @@ utility)</td>
 <h3 id="current-implementation-status-1">Current Implementation
 Status</h3>
 <ul>
-<li><strong>Block device layer</strong>: Complete with VirtIO
-registration and MBR partition support</li>
+<li><strong>Block device layer</strong>: Complete with multi-device
+VirtIO registration, MBR + Amiga RDB partition support, and
+bare-filesystem probing</li>
 <li><strong>VFS layer</strong>: Complete with RAM filesystem and
 partition volume mounting</li>
 <li><strong>FAT32</strong>: Boot sector parsing, volume label
 extraction, and formatting implemented; file read/write via virtqueue
 I/O pending</li>
+<li><strong>Amiga OFS/FFS</strong>: Read-only mount, directory
+traversal, and file read implemented (hash lookup, T.LIST extension
+chains, OFS 488-byte payloads); verified against WinUAE FFS media</li>
 <li><strong>PFS3</strong>: Mount implemented, file operations stubs</li>
 <li><strong>EXT4</strong>: Mount implemented, file operations stubs</li>
+<li><strong>fsck</strong>: MBR/GPT/RDB disk analysis plus FAT32 and
+OFS/FFS filesystem checkers (see <code>Dos_Manual.md</code> →
+<code>fsck</code>)</li>
 </ul>
 <p>All filesystem drivers use static allocation (no malloc) for
 freestanding environment. File operations have detailed implementation
@@ -1544,182 +1660,186 @@ automatically before the handler is invoked.</p>
 <td>Format a partition (FAT32)</td>
 </tr>
 <tr class="odd">
+<td><code>fsck &lt;dev&gt; [opts]</code></td>
+<td>Check/repair disk or filesystem</td>
+</tr>
+<tr class="even">
 <td><code>pointer</code></td>
 <td>Open pointer preferences</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>run &lt;cmd&gt; [args]</code></td>
 <td>Run a command in a new CLI</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>assign [name: target]</code></td>
 <td>Create or list assigns</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>execute &lt;script&gt;</code></td>
 <td>Execute a script file</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>loadwb</code></td>
 <td>Launch the Workbench desktop</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>calculator</code></td>
 <td>Open the calculator window</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>clock</code></td>
 <td>Open the clock window</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>ifconfig [dhcp \| &lt;ip&gt; &lt;gw&gt;]</code></td>
 <td>Show or configure network</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>ping &lt;host&gt; [count]</code></td>
 <td>Send ICMP echo requests</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>route</code></td>
 <td>Display routing table and ARP cache</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>nslookup &lt;host&gt; [server]</code></td>
 <td>Resolve a hostname via DNS</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>ntpd [server]</code></td>
 <td>Synchronise time via NTP</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>netstart</code> / <code>netstop</code></td>
 <td>Start or stop the network stack</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>netinfo</code></td>
 <td>Open the network information window</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>grep [-i] &lt;pattern&gt; &lt;file&gt;</code></td>
 <td>Search a file for a pattern</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>more &lt;file&gt;</code></td>
 <td>Paginated file viewer</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>vim &lt;file&gt;</code></td>
 <td>Inline text editor</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>newcli</code> / <code>newshell</code></td>
 <td>Open a new shell window</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>ask &lt;prompt&gt;</code></td>
 <td>Prompt the user for input</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>resident</code></td>
 <td>Manage resident commands</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>ps</code></td>
 <td>List running tasks</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>list</code></td>
 <td>List files with details</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>search &lt;pattern&gt; [file]</code></td>
 <td>Advanced file search</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>sort [file] [options]</code></td>
 <td>Sort file lines</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>join &lt;file1&gt; &lt;file2&gt;</code></td>
 <td>Join two files by key</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>wait</code></td>
 <td>Wait for background jobs</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>prompt &lt;string&gt;</code></td>
 <td>Set a custom shell prompt</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>stack</code></td>
 <td>Show stack usage</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>why</code></td>
 <td>Show last command return code</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>failat &lt;n&gt;</code></td>
 <td>Set failure threshold</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>quit [rc]</code></td>
 <td>Exit a script</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>endcli</code></td>
 <td>Close the current shell window</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>filenote &lt;file&gt; &lt;comment&gt;</code></td>
 <td>Set a file comment</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>relabel &lt;device&gt; &lt;name&gt;</code></td>
 <td>Rename a volume</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>avail</code></td>
 <td>Show available memory</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>getenv &lt;name&gt;</code></td>
 <td>Read an environment variable</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>unset &lt;name&gt;</code></td>
 <td>Remove an environment variable</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>jobs</code></td>
 <td>List background jobs</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>install &lt;device&gt;</code></td>
 <td>Install a boot block</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>diskchange &lt;device&gt;</code></td>
 <td>Notify disk change</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>addbuffers &lt;device&gt; &lt;n&gt;</code></td>
 <td>Add disk buffers</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>requestchoice &lt;title&gt; &lt;body&gt; &lt;buttons...&gt;</code></td>
 <td>Choice dialog</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>requestfile [options]</code></td>
 <td>File requester dialog</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>changetaskpri &lt;pri&gt; [task]</code></td>
 <td>Change task priority</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>status</code></td>
 <td>Show system status</td>
 </tr>
@@ -2303,8 +2423,7 @@ and Amiga <code>.library</code> files</td>
 </tr>
 <tr class="even">
 <td>10</td>
-<td>Injects <code>grub.cfg</code> and the kickstart
-configuration</td>
+<td>Injects <code>grub.cfg</code> and the kickstart configuration</td>
 </tr>
 <tr class="odd">
 <td>11</td>
