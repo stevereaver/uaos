@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive   # emulation/musashi is required by the build
 
       - name: Install build dependencies
         run: |
@@ -21,6 +23,7 @@ jobs:
           sudo apt-get install -y \
             nasm gcc binutils xorriso \
             grub-pc-bin grub-common \
+            lhasa wget \
             python3
 
       - name: Assemble kernel entry (NASM)
@@ -75,9 +78,7 @@ jobs:
             -o build/uaos-kernel.elf
 
       - name: Package bootable ISO
-        run: |
-          chmod +x scripts/build_iso.sh
-          ./scripts/build_iso.sh
+        run: make -j"$(nproc)"
 
       - name: Upload ISO artefact
         uses: actions/upload-artifact@v4

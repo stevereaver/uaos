@@ -64,7 +64,7 @@ fi
 SERIAL_LOG=/tmp/uaos_serial.log
 echo "Serial debug log: $SERIAL_LOG"
 
-qemu-system-x86_64 \
+exec qemu-system-x86_64 \
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file="$OVMF_VARS" \

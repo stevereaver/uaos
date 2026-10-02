@@ -71,7 +71,7 @@ uaos/
 │   ├── gnu/            # POSIX directory skeleton exposed via the `gnu:` assign
 │   └── S/              # Startup-Sequence, network, NTP, timezone configs
 ├── scripts/
-│   ├── build_iso.sh    # Full build pipeline
+│   ├── build_iso.sh    # Wrapper: forwards to the top-level Makefile
 │   └── grub.cfg        # GRUB2 multiboot2 configuration
 ├── tests/              # Host-side test harnesses and disk-image fixtures
 │   ├── smoke.sh        # Headless QEMU + telnet command battery
@@ -112,17 +112,20 @@ sudo apt install \
 
 ## Building the ISO
 
-From the repository root:
+From the repository root (GNU Make; parallel and incremental):
 
 ```bash
-bash scripts/build_iso.sh
+make -j$(nproc)
 ```
 
 To do a clean rebuild from scratch:
 
 ```bash
-bash scripts/build_iso.sh --clean
+make clean && make -j$(nproc)
 ```
+
+(`scripts/build_iso.sh` remains as a compatibility wrapper —
+`build_iso.sh` and `build_iso.sh --clean` still work.)
 
 On success the ISO is written to:
 
@@ -197,8 +200,8 @@ gnu:
 
 ### Available utilities (86 tools)
 
-Sources live in `system/gnusrc/` and are compiled by Step 2ga of
-`scripts/build_iso.sh`:
+Sources live in `system/gnusrc/` and are compiled by the Makefile's
+`gnusrc` rules (part of the default `iso` target):
 
 | Category | Tools |
 |----------|-------|
@@ -296,7 +299,7 @@ Or log to a file:
 before the first kernel instruction runs.
 
 ```bash
-./scripts/build_iso.sh            # build the ISO first
+make -j$(nproc)                   # build the ISO first
 ./scripts/debug_qemu.sh           # QEMU waits on :1234
 
 gdb build/uaos-kernel.elf

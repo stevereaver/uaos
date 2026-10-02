@@ -1858,6 +1858,27 @@ static void exec_OpenLibrary(void)
         }
     }
 
+    /* Trace every OpenLibrary name + requested version + outcome.
+     * This is the primary tool for discovering what an m68k app needs. */
+    {
+        uint32_t ver = m68k_get_reg(NULL, M68K_REG_D0);
+        const char *tag = (result == FAKE_LIB_BASE) ? "MISSING" : "ok";
+        char msg[128];
+        int i = 0;
+        const char *pfx = "[emu] OpenLibrary(\"";
+        while (pfx[i] && i < 100) { msg[i] = pfx[i]; i++; }
+        for (int j = 0; name[j] && i < 110; j++) msg[i++] = name[j];
+        const char *mid = "\",v";
+        for (int j = 0; mid[j] && i < 116; j++) msg[i++] = mid[j];
+        char n[12]; u32_dec(ver, n, 12);
+        for (int j = 0; n[j] && i < 122; j++) msg[i++] = n[j];
+        msg[i++] = ')'; msg[i++] = '-'; msg[i++] = '>';
+        msg[i++] = ' ';
+        for (int j = 0; tag[j] && i < 126; j++) msg[i++] = tag[j];
+        msg[i++] = '\n'; msg[i] = '\0';
+        emu_print(msg);
+    }
+
     m68k_set_reg(M68K_REG_D0, result);
 
     /* Update the Z flag in SR so caller's beq/bne tests work correctly.

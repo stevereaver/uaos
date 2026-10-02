@@ -2,9 +2,9 @@
 type: Infrastructure
 title: UAOS Build System
 description: Details of the toolchain and process used to build UAOS.
-resource: /scripts/
-tags: [build, gcc, nasm, grub, iso]
-timestamp: 2026-07-01T00:30:00Z
+resource: /Makefile
+tags: [build, gcc, nasm, grub, iso, make]
+timestamp: 2026-10-02T17:23:31Z
 ---
 
 # UAOS Build System
@@ -20,7 +20,29 @@ UAOS uses a custom build pipeline to produce a hybrid BIOS/UEFI bootable ISO ima
 
 ## Build Process
 
-The primary build script is `scripts/build_iso.sh`.
+The primary build driver is the **top-level `Makefile`** (GNU Make ≥ 4.3). It is
+parallel-safe (`make -j`) and incremental — all compilation units generate
+`-MMD -MP` depfiles, so header edits only rebuild the objects that include
+them. The pipeline stages below are the same as the historical
+`scripts/build_iso.sh`, which is now a thin compatibility wrapper that maps
+`--clean` to `make clean` and forwards everything else to `make -j$(nproc)`.
+
+Primary targets:
+
+- `make` / `make iso` — full pipeline → `build/Ultimate_Amiga_OS.iso` (default).
+- `make kernel` — kernel objects + `build/uaos-kernel.elf` only.
+- `make check` — runs `ui_layout_test` + staging-tree sanity checks.
+- `make clean` — removes `build/` (objects, staging, ISO).
+- `make distclean` — `clean` plus downloaded/extracted externals under `build/` (`vasm/`, `ace/`, `rexx/`).
+- `make V=1` — verbose command echo (default is terse `CC path` lines).
+
+Kernel C sources are discovered with `$(wildcard kernel/**/*.c)` — new files
+are compiled *and* linked automatically (no separate object lists to keep in
+sync). Freestanding-link stubs previously heredoc'd by the shell script now
+live in `kernel/stubs.c`. External downloads (Regina Rexx, ACE Basic, vasm,
+vlink) use bounded timeouts and fall back to a local cache:
+`UAOS_CACHE_DIR` (default `/tmp/uaos-dl-cache`) is consulted before the
+network, so offline hosts can pre-seed tarballs there.
 
 1. **Staging**: Creates `build/` directories for object files and the ISO root.
 2. **Host Tools**: Builds `tools/gen_uaos_native`, `tools/gen_uaos_m68k`, `tools/gen_uaos_x64`, and `tools/gen_m68k_library`. Also builds and **runs** `tools/ui_layout_test` (compiled against the real `kernel/display/uitree.c`) — a layout-engine regression aborts the ISO build.
