@@ -9,8 +9,9 @@
 #define UAOS_BLANKER_H
 
 void Blanker_Init(void);
-void Blanker_Tick(void);          /* call once per second */
+void Blanker_Tick(void);          /* call once per second (IRQ-safe) */
 void Blanker_OnInput(void);       /* call on any mouse/keyboard activity */
+void Blanker_Flush(void);         /* event pump: paint a pending blank */
 
 int  Blanker_IsBlanked(void);
 void Blanker_SetTimeout(int seconds);

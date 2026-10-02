@@ -3,7 +3,7 @@ type: Hardware Platform
 title: MacBookPro4,1 bare-metal bring-up
 description: Verified hardware inventory of the MacBookPro4,1 (Early 2008) test machine and the UAOS support needed to boot on it. Tracked in Plane under UAOS-131.
 tags: [hardware, macbook, bare-metal, drivers]
-timestamp: 2026-09-29T00:00:00Z
+timestamp: 2026-10-02T00:00:00Z
 ---
 
 # MacBookPro4,1 as a UAOS target
@@ -317,3 +317,20 @@ Two real bugs found in `MTRR_MarkWC` + one gap:
 
 If the boot still hangs with MTRR enabled, the `[MTRR] base/slot/cr4`
 and per-slot dump lines localise it.
+
+## Display glitch follow-up (2026-10-02, UAOS-187..194)
+
+The photographed artifacts (stray/duplicated desktop pixels tracking the
+mouse) had software causes that are now fixed — the leading suspect was a
+torn cursor commit (`cursor_commit_draw` read the IRQ-updated position
+three separate times), plus IRQ-context framebuffer writes from the RTC
+blanker path and unserialised `WM_Redraw` frames from preemptible tasks.
+All render is now pump-serialised and cursor commits latch the position
+atomically (UAOS-189..193). **Metal-verified same day (UAOS-194):**
+booted the normal (MTRR WC) entry — desktop rendering is smooth with no
+artifacts during mouse movement, so the photographed glitches were fully
+explained by the software races, not WC ordering on the G84. WC is no
+longer considered suspect for this symptom; `nomtrr` remains available as
+a diagnostic escape hatch but is not needed. Bonus: once
+`g_bb_coherent` is set the cursor path never reads VRAM, which also
+helps any future `nomtrr` boot.

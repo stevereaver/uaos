@@ -16,6 +16,7 @@ static int  g_blanker_timeout = 60;   /* seconds of inactivity before blank */
 static int  g_blanker_idle    = 0;    /* current idle counter */
 static int  g_blanker_blanked = 0;    /* screen is currently blanked */
 static int  g_blanker_broker  = -1;   /* CX broker index */
+static volatile int g_blanker_pending = 0; /* IRQ requested a blank frame */
 
 static void blanker_on_enable(void *ud)
 {
@@ -77,14 +78,28 @@ void Blanker_Tick(void)
     g_blanker_idle++;
 
     if (g_blanker_idle >= g_blanker_timeout && !g_blanker_blanked) {
-        /* Blank the screen — fill with black directly to VRAM */
-        if (g_fb.valid) {
-            FB_BeginDraw();
-            FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, WB_BLACK);
-            FB_Flip();
-            g_blanker_blanked = 1;
-        }
+        /* UAOS-191: Blanker_Tick runs inside the RTC IRQ handler (via
+         * Desktop_UpdateClock) — it must not open a framebuffer frame
+         * here.  Flag the request; the event pump paints the black frame
+         * from task context in Blanker_Flush().  The RTC path wakes the
+         * pump on every tick, so the delay is at most one pump pass. */
+        g_blanker_pending = 1;
     }
+}
+
+/* Called once per event-pump iteration (task context).  Performs the blank
+ * requested by Blanker_Tick: BeginDraw/black fill/Flip are framebuffer
+ * frame operations and belong on the pump like every other paint. */
+void Blanker_Flush(void)
+{
+    if (!g_blanker_pending) return;
+    g_blanker_pending = 0;
+    if (g_blanker_blanked || !g_fb.valid) return;
+
+    FB_BeginDraw();
+    FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, WB_BLACK);
+    FB_Flip();
+    g_blanker_blanked = 1;
 }
 
 void Blanker_OnInput(void)

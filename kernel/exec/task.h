@@ -239,6 +239,12 @@ extern volatile int g_irq_depth;
  * requests a reschedule so the pump can run at interrupt exit. */
 void EventPump_Wake(void);
 
+/* Non-zero when the calling context IS the event pump task.  Used by the
+ * WM to decide whether a repaint request may paint synchronously (pump
+ * context, already serialized) or must be deferred as pending damage
+ * (any other preemptible task context). */
+int  EventPump_IsCurrent(void);
+
 /* -------------------------------------------------------------------------
  * Signal / Wait / Critical sections
  * ------------------------------------------------------------------------- */

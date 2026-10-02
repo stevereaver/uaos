@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-09-25T00:11:16Z
+timestamp: 2026-10-02T00:00:00Z
 ---
 
 # Display and Window Manager
@@ -20,14 +20,14 @@ The framebuffer is initialized during boot via Multiboot2 tags. UAOS supports 32
 
 ### Double Buffering and Dirty-Rect Tracking
 
-All WM-driven rendering goes through a back buffer (`g_backbuf`, 1280×1024 max in BSS). The pipeline is:
+All WM-driven rendering goes through a back buffer (`g_backbuf`, 1440×1024 max in BSS). The pipeline is:
 
-1. `FB_BeginDraw()` — switches primitives to back-buffer mode and resets the dirty rectangle.
-2. Primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`, `FB_BlitARGB`, `FB_PutPixel`) paint into the back buffer and extend a bounding-box dirty rectangle (`g_dirty_x0/y0/x1/y1`).
+1. `FB_BeginDraw()` — switches primitives to back-buffer mode and resets the dirty rectangle. BeginDraw/Flip nest (`g_draw_depth`): an inner pair merges into the outermost frame's dirty box and only the depth-0 Flip commits — a paint callback that re-enters the frame machinery can no longer reset the in-flight dirty rect or drop `g_drawing` mid-frame (UAOS-190).
+2. Primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`, `FB_BlitARGB`, `FB_BlitRow`, `FB_PutPixel`) paint into the back buffer and extend a bounding-box dirty rectangle (`g_dirty_x0/y0/x1/y1`).
 3. `Cursor_Redraw()` draws the cursor sprite into the back buffer (its pixels are included in the dirty rect automatically).
-4. `FB_Flip()` — `memcpy`s only the dirty rows from the back buffer to VRAM (32bpp uses row `memcpy`; 24bpp uses a per-pixel loop). If nothing changed, the flip is a no-op.
+4. `FB_Flip()` — `memcpy`s only the dirty rows from the back buffer to VRAM (32bpp uses row `memcpy`; 24bpp uses a per-pixel loop). If nothing changed, the flip is a no-op. A flip whose dirty box covers the whole screen sets `g_bb_coherent`.
 
-Direct-mode drawing (when `FB_IsDrawing()` is false) writes straight to VRAM and bypasses dirty tracking. `FB_DirtyInclude()` lets callers that touch VRAM directly during a back-buffered frame extend the dirty box.
+**Direct-mode mirroring (UAOS-193):** every primitive also mirrors its writes into `g_backbuf` when not drawing, so the back buffer converges to screen contents even outside BeginDraw frames. Once one full-screen flip has run (`g_bb_coherent == 1`) the back buffer is authoritative for every pixel: `FB_GetPixel()` and the cursor's background save read ordinary cached RAM instead of VRAM — each uncached VRAM read is a bus transaction on the MBP4,1 G84 (which boots `nomtrr`). `FB_BackbufRow(y)` exposes a row for direct copies (cursor save/restore) and `FB_BackbufCoherent()` reports validity; before coherence, readers fall back to VRAM.
 
 ### Scene Clip Rectangle
 
@@ -35,11 +35,11 @@ Direct-mode drawing (when `FB_IsDrawing()` is false) writes straight to VRAM and
 
 ### Fast Row-Based Primitives
 
-The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`) hoist the `g_drawing` and `bpp` branches out of the per-pixel loop, resolve the target row pointer once, and run a tight inner loop. `FB_BlitARGB` provides a clipped ARGB row blit (alpha-keyed, optional colour inversion) used by `icon_render.c` instead of per-pixel `FB_PutPixel` calls. `FB_FillRectDithered` paints a 1px two-colour checkerboard rect (pattern anchored to the rect origin) with the same hoisted structure — used by the scrollbar track (UAOS-103).
+The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`, `FB_PutCharSmall`) hoist the `g_drawing` and `bpp` branches out of the per-pixel loop, resolve the target row pointer once, and run a tight inner loop. Solid fills (`FB_FillRect`, `FB_DrawHLine`) use `rep stosl` dword stores in both the back-buffer and 32bpp VRAM paths (UAOS-193). `FB_BlitARGB` provides a clipped ARGB row blit (alpha-keyed, optional colour inversion) used by `icon_render.c` and the cursor sprite instead of per-pixel `FB_PutPixel` calls; `FB_BlitRow` is its opaque variant (no alpha test, straight copy). `FB_FillRectDithered` paints a 1px two-colour checkerboard rect (pattern anchored to the rect origin) with the same hoisted structure — used by the scrollbar track (UAOS-103). The freestanding `memcpy`/`memset` emitted by `scripts/build_iso.sh` (`build/obj/stubs.c`, do not edit directly) use `rep movsl`/`rep stosl` dword bodies plus byte tails — integer-only, no SSE (the scheduler does not context-switch XMM state); this alone removes most of the per-flip VRAM copy cost (UAOS-193).
 
 ### Mode-Size Clamp
 
-`FB_Init` clamps `g_fb.width`/`g_fb.height` to the back-buffer dimensions (`BB_MAX_W` × `BB_MAX_H` = 1280×1024) so the desktop always lays out inside the drawable region even if GRUB selects a larger mode.
+`FB_Init` clamps `g_fb.width`/`g_fb.height` to the back-buffer dimensions (`BB_MAX_W` × `BB_MAX_H` = 1440×1024) so the desktop always lays out inside the drawable region even if GRUB selects a larger mode.
 
 ### String Clipping
 
@@ -69,7 +69,7 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 
 ### Damage-Scoped Repaint (UAOS-101)
 
-`WM_Redraw()` previously repainted the entire scene (backdrop, every icon, every window, menu, cursor) on every event — scrollbar clicks, menu hover, drag/resize mouse moves, focus changes, and the 1 Hz clock tick. Event handlers now instead merge a damaged screen rectangle into `g_dmg_*` bounds (`damage_add`) and the idle loop repaints the union once per iteration via `WM_FlushRedraw()` → `repaint_damaged()`:
+`WM_Redraw()` previously repainted the entire scene (backdrop, every icon, every window, menu, cursor) on every event — scrollbar clicks, menu hover, drag/resize mouse moves, focus changes, and the 1 Hz clock tick. Event handlers now instead merge a damaged screen rectangle into `g_dmg_*` bounds (`damage_add`) and the event pump repaints the union once per iteration via `WM_FlushRedraw()` → `repaint_damaged()`:
 
 1. `FB_BeginDraw()` — switches to the persistent back buffer (pixels outside the damage keep their previous contents).
 2. `FB_SetClipRect()` constrains every write primitive to the damage rect for the rest of the scene pass. This is required for correctness (UAOS-121): `repaint_window()` paints each intersecting window's *full* footprint and `FB_Flip()` copies the union dirty box, so without the clip a lower window's repaint overwrites the back-buffer pixels of a front window that was skipped for not intersecting the damage — it appeared to pop to the front during title-bar drags until a later repaint restored it.
@@ -80,7 +80,9 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 
 Menu footprint caveat (UAOS-122): `g_menu_*`/`g_submenu_*` are normally only refreshed inside `draw_menu_dropdown()` — i.e. at repaint time, *after* damage is collected. `menu_invalidate()`/`menu_invalidate_items()` therefore call `menu_update_geometry()` (which replicates the draw-time layout math) and damage the union of the last-drawn rect and the rect the current state will produce. Without this, opening or switching to a menu whose footprint differs from the previously drawn one clips the new dropdown to the stale damage rect — visible as items cut off mid-glyph at the panel edge.
 
-Two invalidation APIs mark damage: `WM_InvalidateRect()` (only window content changed) and `WM_InvalidateDesktopRect()` (the rect may expose backdrop/icons/menubar — a window vacated it, or desktop content itself changed). Callers: window drag/resize/zoom/depth, scrollbar and gadget presses, focus changes, `WM_SetWindowTitle` (title strip only), `WM_CloseWindow` (vacated footprint + new focus title bar), desktop menu open/close/switch, lasso old/new outline, icon select/drag/drop footprints, menubar clock tick, and `Desktop_SetScreenTitle`. A burst of input coalesces into one repaint instead of one per event. `WM_Redraw()` remains for true full-scene updates and clears pending damage.
+Two invalidation APIs mark damage: `WM_InvalidateRect()` (only window content changed) and `WM_InvalidateDesktopRect()` (the rect may expose backdrop/icons/menubar — a window vacated it, or desktop content itself changed). Callers: window drag/resize/zoom/depth, scrollbar and gadget presses, focus changes, `WM_SetWindowTitle` (title strip only), `WM_CloseWindow` (vacated footprint + new focus title bar), desktop menu open/close/switch, lasso old/new outline, icon select/drag/drop footprints, menubar clock tick, `Desktop_SetScreenTitle`, and all prefs-window gadget handlers (UAOS-192). A burst of input coalesces into one repaint instead of one per event.
+
+**Frame ownership / serialization (UAOS-190):** the damage merge in `damage_add()` and the bounds snapshot+clear at the top of `repaint_damaged()` run under `irq_save()` — cli blocks the PIT tick, so a preempted task can't tear a half-merged damage box. `WM_FlushRedraw()` wraps `repaint_damaged()` in `Forbid()` so no other task can enter `FB_BeginDraw`/`FB_Flip` while the pump owns `g_drawing`, the FB dirty rect and the clip. `WM_Redraw()` itself no longer paints on arbitrary contexts (UAOS-192): off the event pump it just damages the full screen and wakes the pump (`EventPump_IsCurrent()` decides); on the pump it still paints synchronously (`redraw_full()`), which callers like the Format window's "Formatting..." status rely on before blocking. Consequently every `FB_BeginDraw..FB_Flip` frame in the system runs on pump context only — IRQ paths and other tasks only ever enqueue damage.
 
 Because the sprite is painted into the back buffer at frame end and the back buffer persists, `repaint_damaged` first damages `Cursor_GetSpriteRect()` (union of the sprite's front- and back-buffer footprints) so the scene repaint erases stale sprite pixels before `cursor_save_bg` samples the new position — prevents ghosting and save-buffer contamination.
 
@@ -106,10 +108,11 @@ Every window gets an always-on right (vertical) and bottom (horizontal) scrollba
 
 The software cursor (`cursor.c`) uses save/restore of background pixels for flicker-free movement. Key rules:
 
-- **IRQ-time moves** (UAOS-104): `Cursor_Move` is called from `PS2Mouse_IRQHandler` but only records the target position and sets `cur_moved` — the save/restore/draw passes no longer run at IRQ time. The idle loop applies a pending move once per iteration via `Cursor_Flush()` (restore old background, save new, draw — all on the visible buffer in direct mode), and `Cursor_Redraw()` at the end of a back-buffered repaint paints at the live position. Packet bursts coalesce to a single paint per frame; `UAOS_Intuition_CheckPendingPointer()` now runs from `Cursor_Flush`/`Cursor_Redraw` instead of IRQ context. `Cursor_GetSpriteRect()` exposes the sprite's footprint in either buffer so damage repaints can erase it (see Damage-Scoped Repaint).
-- **Row-memcpy save/restore**: `cursor_save_bg`/`cursor_restore_bg` use whole-row `memcpy` in 32bpp direct mode instead of per-pixel `FB_GetPixel`/`FB_PutPixel` (VRAM reads are expensive on write-combining memory).
-- **Sprite scaling**: The 32×32 and 48×48 arrow pointers are generated at boot by integer-scaling the verified 16×16 sprite (2× and 3× respectively). The previous hand-typed tables had wrong per-row element counts and produced skewed sprites.
-- **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` (back buffer when drawing, VRAM otherwise — both authoritative after the last flip). `cursor_restore_bg` is a no-op during back-buffered drawing since the repainted region covers the sprite footprint (damage repaints always include `Cursor_GetSpriteRect()`).
+- **IRQ-time moves** (UAOS-104): `Cursor_Move` is called from `PS2Mouse_IRQHandler` but only records the target position and sets `cur_moved` — the save/restore/draw passes no longer run at IRQ time. The pump applies a pending move once per iteration via `Cursor_Flush()` (restore old background, save new, draw — all on the visible buffer in direct mode), and `Cursor_Redraw()` at the end of a back-buffered repaint paints at the live position. Packet bursts coalesce to a single paint per frame; `UAOS_Intuition_CheckPendingPointer()` now runs from `Cursor_Flush`/`Cursor_Redraw` instead of IRQ context. `Cursor_GetSpriteRect()` exposes the sprite's footprint in either buffer so damage repaints can erase it (see Damage-Scoped Repaint).
+- **Atomic position snapshot** (UAOS-189): `cursor_commit_draw()` latches `cur_x`/`cur_y` once under `irq_save()` and clears `cur_moved` in the same section. Previously it re-read the shared position for save, draw and the `drw_x/y` record separately — an IRQ-side `Cursor_Move` landing mid-commit produced a torn commit (background saved at A, sprite painted at B) whose later restore stamped stale pixels at the wrong spot — the stray-fragment glitch seen on the MBP4,1. `cur_x`/`cur_y` are `volatile`; a move arriving during the paint stays pending for the next flush.
+- **Back-buffer save + mirrored restore**: `cursor_save_bg` copies rows out of `g_backbuf` via `FB_BackbufRow()` whenever the back buffer is authoritative (in-flight frame or `FB_BackbufCoherent()` — always true once the WM has flipped the full screen), falling back to a 32bpp VRAM row `memcpy` and then per-pixel `FB_GetPixel`. `cursor_restore_bg` writes rows back to VRAM *and* mirrors them into the back buffer so the shadow stays correct; the 24bpp path uses `FB_PutPixel`, which mirrors itself.
+- **Row-blit sprite draw**: `cursor_draw` assembles one ARGB scanline per sprite row (`0xFF` alpha for opaque, `0` for transparent; double-pixel mode widens runs in place) and calls `FB_BlitARGB` once per row — ~16 blits for the stock pointer instead of ~230 function-called `FB_PutPixel`s.
+- **Background save/restore**: `cursor_save_bg` reads via `FB_GetPixel` when neither fast path applies. `cursor_restore_bg` is a no-op during back-buffered drawing since the repainted region covers the sprite footprint (damage repaints always include `Cursor_GetSpriteRect()`).
 - **Default colours**: `CURSOR_DEFAULT_BODY` is `0xFF2200` — the classic Workbench 3.x red arrow — with a black outline/shadow (`cursor.h`; UAOS-4). Pointer Prefs has no colour constants of its own; it reads and applies `Cursor_GetSettings()`/`Cursor_SetColors()`.
 
 ## Workbench Elements
@@ -267,7 +270,7 @@ The display layer includes several Workbench-style application windows in additi
 - **Preferences Suite (`prefs_win.c`)**: GUI editors for all AmigaOS 3.x Prefs programs — Palette, Time, IControl, Input, ScreenMode, WBPattern, Font, Serial, Printer, Locale. Each opens a WM window with AmigaOS-style gadgets (buttons, cycle gadgets, sliders, checkboxes). Palette editor persists to `ENVARC:Sys/palette.prefs` via IFF PREF format. Time editor reads/writes the RTC via `RTC_ReadDateTime()`/`RTC_SetDateTime()`.
 - **Commodities Framework (`commodities.h/c`)**: Broker registry for commodities — background tools that can be controlled from Exchange. Supports up to 16 brokers with Active/Sleeping/Disabled states and enable/disable/sleep/wake callbacks.
 - **Exchange Window (`exchange_win.c`)**: GUI window listing all registered commodity brokers with status indicators and Enable/Disable/Sleep/Wake/Cycle controls.
-- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity. While `Blanker_IsBlanked()`, `WM_Redraw()` is a no-op so the 1 Hz clock flush (or any other composed repaint) can't undo the blank; un-blank paths clear the flag before redrawing.
+- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity. `Blanker_Tick` runs inside the RTC IRQ handler and must not touch the framebuffer — it only latches `g_blanker_pending` (UAOS-191); the event pump performs the actual `FB_BeginDraw`/black-fill/`FB_Flip` from task context in `Blanker_Flush()` once per iteration (the RTC tick wakes the pump every second anyway). While `Blanker_IsBlanked()`, `WM_Redraw()` is a no-op and `WM_FlushRedraw()` drops queued damage so the 1 Hz clock flush (or any other repaint request) can't undo the blank; un-blank paths clear the flag before redrawing.
 - **Format Window (`format_win.c`)**: AmigaOS-style Format window opened from Icons ▸ Format. Lists formattable block devices in a cycle gadget, a volume name text field, a **Trashcan checkbox** (the GUI equivalent of Format NOICON — unchecked formats without a `VOL:Trashcan`), and a Format button that confirms via requester then invokes `FAT32_Format()`, auto-mounts the result via `VFS_MountPartition()`, and calls `VFS_CreateTrashcan()` on the new volume.
 - **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-0 userspace programs that use the GUI syscall interface.
 

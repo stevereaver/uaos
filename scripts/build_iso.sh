@@ -646,16 +646,25 @@ int  _setjmp(jmp_buf *e)          { (void)e; return 0; }
 void longjmp(jmp_buf *e, int v)   { (void)e; (void)v;
     for(;;) __asm__ volatile("hlt"); }
 
-/* String / memory stubs */
+/* String / memory stubs — dword string ops for the bulk then byte tail.
+ * rep movsl/stosl move 4 bytes per iteration instead of 1 (the framebuffer
+ * flip memcpys MBs per repaint), and stay integer-only: no SSE, which the
+ * scheduler does not context-switch. */
 void *memset(void *d, int c, unsigned long n) {
     unsigned char *p = (unsigned char *)d;
-    while (n--) *p++ = (unsigned char)c;
+    unsigned long cc = (unsigned char)c;
+    cc |= cc << 8; cc |= cc << 16;
+    unsigned long nq = n >> 2, nb = n & 3;
+    __asm__ volatile("rep stosl" : "+D"(p), "+c"(nq) : "a"(cc) : "memory");
+    __asm__ volatile("rep stosb" : "+D"(p), "+c"(nb) : "a"(cc) : "memory");
     return d;
 }
 void *memcpy(void *d, const void *s, unsigned long n) {
     unsigned char *dp = (unsigned char *)d;
     const unsigned char *sp = (const unsigned char *)s;
-    while (n--) *dp++ = *sp++;
+    unsigned long nq = n >> 2, nb = n & 3;
+    __asm__ volatile("rep movsl" : "+D"(dp), "+S"(sp), "+c"(nq) :: "memory");
+    __asm__ volatile("rep movsb" : "+D"(dp), "+S"(sp), "+c"(nb) :: "memory");
     return d;
 }
 int memcmp(const void *a, const void *b, unsigned long n) {

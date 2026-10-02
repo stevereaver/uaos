@@ -7,6 +7,7 @@
 #include "blanker.h"
 #include "filebrowser.h"
 #include "../exec/task.h"
+#include "../irq/irq.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -126,6 +127,11 @@ static void damage_add(int x, int y, int w, int h, int desktop)
     int x1 = x + w;  if (x1 > (int)g_fb.width)  x1 = (int)g_fb.width;
     int y1 = y + h;  if (y1 > (int)g_fb.height) y1 = (int)g_fb.height;
     if (x0 >= x1 || y0 >= y1) return;
+    /* Atomic merge: damage callers run on preemptible task contexts (and
+     * repaint_damaged's snapshot below), so the read-modify-write of the
+     * shared bounds must not tear (UAOS-190).  cli blocks the PIT tick, so
+     * no reschedule can interleave the merge. */
+    uint64_t irqf = irq_save();
     if (!g_dmg_pending) {
         g_dmg_x0 = x0; g_dmg_y0 = y0;
         g_dmg_x1 = x1; g_dmg_y1 = y1;
@@ -137,6 +143,7 @@ static void damage_add(int x, int y, int w, int h, int desktop)
     }
     g_dmg_desktop |= desktop;
     g_dmg_pending = 1;
+    irq_restore(irqf);
     /* New damage needs a WM_FlushRedraw from the event pump — signal it
      * so a blocked pump wakes now rather than at its timeout.  Safe in
      * both task and IRQ context. */
@@ -1297,10 +1304,16 @@ static void repaint_damaged(void)
             damage_add(cx, cy, cw, ch, 1);
     }
 
+    /* Snapshot and clear pending damage atomically: a damage_add from a
+     * preempted task resuming mid-repaint must land as NEW pending damage
+     * for the next flush, not get folded into (or lost under) the bounds
+     * this repaint already snapshotted (UAOS-190). */
+    uint64_t irqf = irq_save();
     int x0 = g_dmg_x0, y0 = g_dmg_y0, x1 = g_dmg_x1, y1 = g_dmg_y1;
     int desktop = g_dmg_desktop;
     g_dmg_pending = 0;
     g_dmg_desktop = 0;
+    irq_restore(irqf);
 
     FB_BeginDraw();
 
@@ -1359,23 +1372,34 @@ void WM_FlushRedraw(void)
     if (!g_dmg_pending) return;
     /* While blanked, drop pending damage — un-blank repaints via WM_Redraw. */
     if (Blanker_IsBlanked()) {
+        uint64_t irqf = irq_save();
         g_dmg_pending = 0;
         g_dmg_desktop = 0;
+        irq_restore(irqf);
         return;
     }
+    /* The repaint must not be preempted mid-frame: Forbid() holds off task
+     * switches so no other context can enter BeginDraw/Flip while this
+     * frame owns g_drawing, the dirty rect and the clip (UAOS-190).
+     * Nests safely inside the pump's own Forbid. */
+    Forbid();
     repaint_damaged();
+    Permit();
 }
 
-void WM_Redraw(void)
+/* Immediate full-scene repaint — only ever invoked on the event-pump
+ * context (see WM_Redraw), where it is already serialized by the pump's
+ * Forbid.  Kept for callers that must see the frame completed before they
+ * run on (e.g. a "Formatting..." status line ahead of a blocking op). */
+static void redraw_full(void)
 {
-    /* While the screen blanker holds the display, a composed repaint
-     * would undo the blank (e.g. the 1 Hz clock flush).  Input un-blanks
-     * via Blanker_OnInput(), which clears the flag before redrawing. */
-    if (Blanker_IsBlanked()) return;
-
     /* A full repaint covers any accumulated damage. */
-    g_dmg_pending = 0;
-    g_dmg_desktop = 0;
+    {
+        uint64_t irqf = irq_save();
+        g_dmg_pending = 0;
+        g_dmg_desktop = 0;
+        irq_restore(irqf);
+    }
 
     FB_BeginDraw();
 
@@ -1407,6 +1431,31 @@ void WM_Redraw(void)
     /* Cursor on top, then flip entire frame to screen in one blit */
     Cursor_Redraw();
     FB_Flip();
+}
+
+void WM_Redraw(void)
+{
+    /* While the screen blanker holds the display, a composed repaint
+     * would undo the blank (e.g. the 1 Hz clock flush).  Input un-blanks
+     * via Blanker_OnInput(), which clears the flag before redrawing. */
+    if (Blanker_IsBlanked()) return;
+
+    /* UAOS-190/192: a WM_Redraw caller used to paint the whole scene
+     * synchronously on its own (preemptible) task context — ~70 call
+     * sites, several per input event, interruptible mid-BeginDraw..Flip
+     * by the PIT tick into the pump's own repaint.  Now only the event
+     * pump paints: pump-context callers keep the synchronous full
+     * repaint they relied on, while every other context (M68k guest
+     * tasks, commodity callbacks, Exec paths) just marks the full screen
+     * damaged and wakes the pump — burst calls coalesce into a single
+     * repaint and no non-pump context ever opens a framebuffer frame. */
+    if (EventPump_IsCurrent()) {
+        Forbid();
+        redraw_full();
+        Permit();
+        return;
+    }
+    damage_add(0, 0, (int)g_fb.width, (int)g_fb.height, 1);
 }
 
 int WM_GetFocus(void)

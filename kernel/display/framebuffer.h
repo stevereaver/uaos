@@ -45,11 +45,20 @@ void FB_Init(uint32_t mb2_info_phys);
 
 /* Double buffering — call BeginDraw before any drawing, Flip to push to screen.
  * While drawing is active, all primitives paint into a back buffer and track
- * a dirty bounding rectangle; FB_Flip memcpy's only that rectangle to VRAM. */
+ * a dirty bounding rectangle; FB_Flip memcpy's only that rectangle to VRAM.
+ * BeginDraw/Flip nest: inner pairs merge into the outermost frame's dirty box.
+ * In direct mode every primitive also mirrors its writes into the back buffer,
+ * so after one full-screen flip the back buffer is authoritative for the whole
+ * screen (FB_BackbufCoherent() == 1). */
 void     FB_BeginDraw(void);
 void     FB_Flip(void);
 int      FB_IsDrawing(void);   /* returns 1 while back buffer is active */
-uint32_t FB_GetPixel(int x, int y); /* reads from back buf if drawing, physical fb otherwise */
+uint32_t FB_GetPixel(int x, int y); /* reads back buf when coherent, else VRAM */
+
+/* Persistent back-buffer access — the same buffer that receives mirrored
+ * direct-mode writes.  Valid whenever FB_BackbufCoherent() is true. */
+uint32_t *FB_BackbufRow(int y);    /* NULL when y is out of range   */
+int       FB_BackbufCoherent(void);/* 1 when back buf mirrors screen */
 
 /* Extend the dirty rectangle (no-op when not drawing). Used by callers that
  * touch VRAM directly while a back-buffer frame is in progress (e.g. the
@@ -76,6 +85,10 @@ void FB_PutPixel(int x, int y, uint32_t colour);
  * channels are XORed with 0xFFFFFF before writing.  Hoisted branch version
  * of the per-pixel loops in icon_render.c. */
 void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert);
+
+/* Blit a horizontal run of opaque RGB pixels — every pixel writes, no alpha
+ * test.  Faster than FB_BlitARGB for sprites with a separate mask pass. */
+void FB_BlitRow(int x, int y, int n, const uint32_t *rgb);
 
 /* Text rendering — 8×16 bitmap font ---------------------------------------- */
 extern const uint8_t g_font8x16[95][16];

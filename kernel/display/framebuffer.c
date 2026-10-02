@@ -60,7 +60,16 @@ void WB_InitPalette(void)
 #define BB_MAX_W 1440
 #define BB_MAX_H 1024
 static uint32_t g_backbuf[BB_MAX_H][BB_MAX_W];
-static int g_drawing = 0;  /* 1 = drawing to back buffer, 0 = direct */
+static int g_drawing = 0;      /* 1 = drawing to back buffer, 0 = direct */
+static int g_draw_depth = 0;   /* nested BeginDraw count; only depth 0 owns the frame */
+
+/* Every write primitive mirrors direct-mode writes into g_backbuf, so the
+ * back buffer converges to screen contents even outside BeginDraw frames.
+ * g_bb_coherent flips to 1 once a flip has pushed a full-screen dirty box —
+ * after that the back buffer is authoritative for every pixel and readers
+ * (FB_GetPixel, cursor save) never need to touch VRAM again (VRAM reads are
+ * brutally slow on uncached apertures — MBP4,1 boots with nomtrr). */
+static int g_bb_coherent = 0;
 
 /* Dirty rectangle (in back-buffer space) accumulated between FB_BeginDraw
  * and FB_Flip.  FB_Flip memcpy's only these rows to VRAM.  Invalid (empty)
@@ -146,10 +155,24 @@ void FB_DirtyInclude(int x, int y, int w, int h)
     dirty_add(x, y, x + w, y + h);
 }
 
+/* Fill n 32-bit pixels with rep stosl — used for the solid-fill fast paths. */
+static inline void fill32(uint32_t *dst, uint32_t v, int n)
+{
+    __asm__ volatile ("rep stosl"
+                      : "+D"(dst), "+c"(n)
+                      : "a"(v)
+                      : "memory");
+}
+
 void FB_BeginDraw(void)
 {
-    g_drawing = 1;
-    dirty_reset();
+    /* Nested frames merge into the outermost one: a BeginDraw issued while
+     * a frame is in flight (e.g. a paint callback that repaints) must not
+     * reset the in-flight dirty box or prematurely drop drawing mode. */
+    if (++g_draw_depth == 1) {
+        g_drawing = 1;
+        dirty_reset();
+    }
 }
 
 int FB_IsDrawing(void)
@@ -159,7 +182,10 @@ int FB_IsDrawing(void)
 
 uint32_t FB_GetPixel(int x, int y)
 {
-    if (g_drawing) {
+    /* The back buffer mirrors every primitive write and is authoritative
+     * once a full-screen flip has run — read it instead of VRAM (uncached
+     * framebuffer reads are a bus transaction each on real GPUs). */
+    if (g_drawing || g_bb_coherent) {
         /* Back-buffer space is BB_MAX_W × BB_MAX_H; the WM-visible region
          * may be smaller (clamped in FB_Init) but the back buffer always
          * covers the full BB_MAX grid, so bounds-check against BB_MAX. */
@@ -167,7 +193,7 @@ uint32_t FB_GetPixel(int x, int y)
         return g_backbuf[y][x];
     }
     if (!g_fb.valid) return 0;
-    /* Direct mode: bounds-check against the actual framebuffer. */
+    /* Direct mode, pre-coherent: bounds-check against the actual framebuffer. */
     if ((unsigned)x >= g_fb.width || (unsigned)y >= g_fb.height) return 0;
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -179,9 +205,28 @@ uint32_t FB_GetPixel(int x, int y)
     }
 }
 
+/* Row of the persistent back buffer, or NULL when out of range.  Used by
+ * cursor.c to save/restore sprite backgrounds without touching VRAM. */
+uint32_t *FB_BackbufRow(int y)
+{
+    if ((unsigned)y >= BB_MAX_H) return NULL;
+    return g_backbuf[y];
+}
+
+int FB_BackbufCoherent(void)
+{
+    /* Authoritative while drawing (the in-flight frame lives there) and
+     * after a full-screen flip has pushed every pixel. */
+    return g_drawing || g_bb_coherent;
+}
+
 void FB_Flip(void)
 {
     if (!g_fb.valid || !g_drawing) return;
+    /* Inner Flip of a nested frame just unwinds — the outermost Flip
+     * commits the union dirty box. */
+    if (--g_draw_depth > 0) return;
+    g_draw_depth = 0;
     uint8_t *dst = (uint8_t *)(uintptr_t)g_fb.phys_addr;
 
     if (dirty_empty()) {
@@ -207,6 +252,10 @@ void FB_Flip(void)
                 memcpy(row_dst, &g_backbuf[y][x0],
                        (size_t)(x1 - x0) * 4);
             }
+            /* A full-screen flip makes the back buffer authoritative for
+             * every pixel — mirrored direct writes keep it that way. */
+            if (x0 == 0 && y0 == 0 && x1 >= W && y1 >= H)
+                g_bb_coherent = 1;
         } else {
             for (int y = y0; y < y1; y++) {
                 uint8_t *row_dst = dst + (uint32_t)y * g_fb.pitch + (uint32_t)x0 * 3;
@@ -306,11 +355,9 @@ void FB_Init(uint32_t mb2_info_phys)
 static inline void put_pixel32(uint8_t *base, uint32_t pitch,
                                 int x, int y, uint32_t colour)
 {
-    if (g_drawing) {
-        if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
-            g_backbuf[y][x] = colour;
-        return;
-    }
+    if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
+        g_backbuf[y][x] = colour;   /* target in drawing mode, mirror otherwise */
+    if (g_drawing) return;
     uint32_t *px = (uint32_t *)(base + (uint32_t)y * pitch + (uint32_t)x * 4);
     *px = colour;
 }
@@ -318,11 +365,9 @@ static inline void put_pixel32(uint8_t *base, uint32_t pitch,
 static inline void put_pixel24(uint8_t *base, uint32_t pitch,
                                 int x, int y, uint32_t colour)
 {
-    if (g_drawing) {
-        if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
-            g_backbuf[y][x] = colour;
-        return;
-    }
+    if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
+        g_backbuf[y][x] = colour;
+    if (g_drawing) return;
     uint8_t *px = base + (uint32_t)y * pitch + (uint32_t)x * 3;
     px[0] = (uint8_t)(colour & 0xFF);
     px[1] = (uint8_t)((colour >> 8) & 0xFF);
@@ -358,20 +403,21 @@ void FB_DrawHLine(int x, int y, int len, uint32_t colour)
     }
     if (x0 >= x1) return;
 
+    /* Mirror the span into the back buffer (single copy handles both
+     * drawing-mode target and direct-mode shadow). */
+    if ((unsigned)y < BB_MAX_H) {
+        int bx1 = x1 < BB_MAX_W ? x1 : BB_MAX_W;
+        fill32(&g_backbuf[y][x0], colour, bx1 - x0);
+    }
     if (g_drawing) {
-        if ((unsigned)y < BB_MAX_H) {
-            uint32_t *row = g_backbuf[y];
-            for (int px = x0; px < x1; px++)
-                if ((unsigned)px < BB_MAX_W) row[px] = colour;
-        }
         dirty_add(x0, y, x1, y + 1);
         return;
     }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
-        uint32_t *row = (uint32_t *)(base + (uint32_t)y * g_fb.pitch);
-        for (int px = x0; px < x1; px++) row[px] = colour;
+        fill32((uint32_t *)(base + (uint32_t)y * g_fb.pitch) + x0,
+               colour, x1 - x0);
     } else {
         uint8_t *row = base + (uint32_t)y * g_fb.pitch;
         for (int px = x0; px < x1; px++) {
@@ -397,11 +443,14 @@ void FB_DrawVLine(int x, int y, int len, uint32_t colour)
     }
     if (y0 >= y1) return;
 
+    /* Mirror into the back buffer (drawing-mode target and direct-mode
+     * shadow are the same write). */
+    if ((unsigned)x < BB_MAX_W) {
+        int by1 = y1 < BB_MAX_H ? y1 : BB_MAX_H;
+        for (int py = y0; py < by1; py++)
+            g_backbuf[py][x] = colour;
+    }
     if (g_drawing) {
-        if ((unsigned)x < BB_MAX_W) {
-            for (int py = y0; py < y1; py++)
-                if ((unsigned)py < BB_MAX_H) g_backbuf[py][x] = colour;
-        }
         dirty_add(x, y0, x + 1, y1);
         return;
     }
@@ -432,23 +481,24 @@ void FB_FillRect(int x, int y, int w, int h, uint32_t colour)
     if (!clip_rect(&x0, &y0, &x1, &y1)) return;
     if (x0 >= x1 || y0 >= y1) return;
 
-    if (g_drawing) {
+    /* Mirror rows into the back buffer — covers the drawing-mode target
+     * and keeps the shadow current in direct mode. */
+    {
         int bx1 = x1 < BB_MAX_W ? x1 : BB_MAX_W;
         int by1 = y1 < BB_MAX_H ? y1 : BB_MAX_H;
-        for (int py = y0; py < by1; py++) {
-            uint32_t *row = g_backbuf[py];
-            for (int px = x0; px < bx1; px++) row[px] = colour;
-        }
+        for (int py = y0; py < by1; py++)
+            fill32(&g_backbuf[py][x0], colour, bx1 - x0);
+    }
+    if (g_drawing) {
         dirty_add(x0, y0, x1, y1);
         return;
     }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
-        for (int py = y0; py < y1; py++) {
-            uint32_t *row = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
-            for (int px = x0; px < x1; px++) row[px] = colour;
-        }
+        for (int py = y0; py < y1; py++)
+            fill32((uint32_t *)(base + (uint32_t)py * g_fb.pitch) + x0,
+                   colour, x1 - x0);
     } else {
         for (int py = y0; py < y1; py++) {
             uint8_t *row = base + (uint32_t)py * g_fb.pitch;
@@ -481,7 +531,9 @@ void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t co
 
     const uint32_t cols[2] = { col_a, col_b };
 
-    if (g_drawing) {
+    /* Mirror into the back buffer — drawing-mode target and direct-mode
+     * shadow are the same write. */
+    {
         int bx1 = x1 < BB_MAX_W ? x1 : BB_MAX_W;
         int by1 = y1 < BB_MAX_H ? y1 : BB_MAX_H;
         for (int py = y0; py < by1; py++) {
@@ -490,6 +542,8 @@ void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t co
             for (int px = x0; px < bx1; px++)
                 row[px] = cols[(rpar + px - x) & 1];
         }
+    }
+    if (g_drawing) {
         dirty_add(x0, y0, x1, y1);
         return;
     }
@@ -546,18 +600,20 @@ void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert)
     const uint32_t *src = argb + skip;
     int n = x1 - x0;
 
-    if (g_drawing) {
-        if ((unsigned)y < BB_MAX_H) {
-            uint32_t *row = g_backbuf[y];
-            for (int i = 0; i < n; i++) {
-                uint32_t a = src[i] >> 24;
-                if (a == 0) continue;
-                uint32_t c = src[i] & 0x00FFFFFF;
-                if (invert) c ^= 0x00FFFFFF;
-                int px = x0 + i;
-                if ((unsigned)px < BB_MAX_W) row[px] = c;
-            }
+    /* Mirror opaque pixels into the back buffer (drawing-mode target and
+     * direct-mode shadow are the same write). */
+    if ((unsigned)y < BB_MAX_H) {
+        uint32_t *row = g_backbuf[y];
+        for (int i = 0; i < n; i++) {
+            uint32_t a = src[i] >> 24;
+            if (a == 0) continue;
+            uint32_t c = src[i] & 0x00FFFFFF;
+            if (invert) c ^= 0x00FFFFFF;
+            int px = x0 + i;
+            if ((unsigned)px < BB_MAX_W) row[px] = c;
         }
+    }
+    if (g_drawing) {
         dirty_add(x0, y, x1, y + 1);
         return;
     }
@@ -579,6 +635,52 @@ void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert)
             if (a == 0) continue;
             uint32_t c = src[i] & 0x00FFFFFF;
             if (invert) c ^= 0x00FFFFFF;
+            uint8_t *p = row + (x0 + i) * 3;
+            p[0] = (uint8_t)(c & 0xFF);
+            p[1] = (uint8_t)((c >> 8) & 0xFF);
+            p[2] = (uint8_t)((c >> 16) & 0xFF);
+        }
+    }
+}
+
+/* Blit one row of opaque RGB pixels — every source pixel writes, no alpha
+ * test.  Cursor sprite runs and other opaque spans use this; unlike
+ * FB_BlitARGB it is a straight copy so it can use a tight loop. */
+void FB_BlitRow(int x, int y, int n, const uint32_t *rgb)
+{
+    if (!g_fb.valid || n <= 0) return;
+    if (y < 0 || (unsigned)y >= g_fb.height) return;
+    if (g_clip_on && (y < g_clip_y0 || y >= g_clip_y1)) return;
+    int x0 = x < 0 ? 0 : x;
+    int x1 = x + n;
+    if (x1 > (int)g_fb.width) x1 = (int)g_fb.width;
+    {
+        int cy0 = y, cy1 = y + 1;
+        if (!clip_rect(&x0, &cy0, &x1, &cy1)) return;
+    }
+    const uint32_t *src = rgb + (x0 - x);
+    int cnt = x1 - x0;
+    if (cnt <= 0) return;
+
+    if ((unsigned)y < BB_MAX_H) {
+        uint32_t *row = g_backbuf[y];
+        int bn = cnt;
+        if (x0 + bn > BB_MAX_W) bn = BB_MAX_W - x0;
+        for (int i = 0; i < bn; i++) row[x0 + i] = src[i];
+    }
+    if (g_drawing) {
+        dirty_add(x0, y, x1, y + 1);
+        return;
+    }
+
+    uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    if (g_fb.bpp == 32) {
+        memcpy((uint32_t *)(base + (uint32_t)y * g_fb.pitch) + x0,
+               src, (size_t)cnt * 4);
+    } else {
+        uint8_t *row = base + (uint32_t)y * g_fb.pitch;
+        for (int i = 0; i < cnt; i++) {
+            uint32_t c = src[i];
             uint8_t *p = row + (x0 + i) * 3;
             p[0] = (uint8_t)(c & 0xFF);
             p[1] = (uint8_t)((c >> 8) & 0xFF);
@@ -733,11 +835,14 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
             if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint32_t *dst = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
+            uint32_t *shadow = g_backbuf[py];
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
                 if (px < 0 || (unsigned)px >= g_fb.width) continue;
                 if (!clip_point(px, py)) continue;
-                dst[px] = (bits & (0x80 >> col)) ? fg : bg;
+                uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
+                dst[px] = colour;
+                if ((unsigned)px < BB_MAX_W) shadow[px] = colour; /* mirror */
             }
         }
     } else {
@@ -756,6 +861,7 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
                 p[0] = (uint8_t)(colour & 0xFF);
                 p[1] = (uint8_t)((colour >> 8) & 0xFF);
                 p[2] = (uint8_t)((colour >> 16) & 0xFF);
+                if ((unsigned)px < BB_MAX_W) g_backbuf[py][px] = colour;
             }
         }
     }
@@ -936,11 +1042,14 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
             if (g_clip_on && (py < g_clip_y0 || py >= g_clip_y1)) continue;
             uint8_t bits = glyph[row];
             uint32_t *dst = (uint32_t *)(base + (uint32_t)py * g_fb.pitch);
+            uint32_t *shadow = g_backbuf[py];
             for (int col = 0; col < 8; col++) {
                 int px = x + col;
                 if (px < 0 || (unsigned)px >= g_fb.width) continue;
                 if (!clip_point(px, py)) continue;
-                dst[px] = (bits & (0x80 >> col)) ? fg : bg;
+                uint32_t colour = (bits & (0x80 >> col)) ? fg : bg;
+                dst[px] = colour;
+                if ((unsigned)px < BB_MAX_W) shadow[px] = colour; /* mirror */
             }
         }
     } else {
@@ -959,6 +1068,7 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
                 p[0] = (uint8_t)(colour & 0xFF);
                 p[1] = (uint8_t)((colour >> 8) & 0xFF);
                 p[2] = (uint8_t)((colour >> 16) & 0xFF);
+                if ((unsigned)px < BB_MAX_W) g_backbuf[py][px] = colour;
             }
         }
     }

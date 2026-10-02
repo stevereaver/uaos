@@ -673,6 +673,11 @@ void EventPump_Wake(void)
         Task_ScheduleFromIRQ();
 }
 
+int EventPump_IsCurrent(void)
+{
+    return g_eventpump_task != NULL && Task_Current() == g_eventpump_task;
+}
+
 void Task_EventPumpEntry(void *arg)
 {
     (void)arg;
@@ -740,6 +745,11 @@ void Task_EventPumpEntry(void *arg)
 
         /* Clock redraw */
         Desktop_FlushClockRedraw();
+
+        /* Screen-blank request from the RTC-tick path (UAOS-191): the
+         * IRQ only flags it — the black-frame paint runs here in task
+         * context under Forbid like every other framebuffer frame. */
+        Blanker_Flush();
 
         /* Network */
         net_stack_poll();

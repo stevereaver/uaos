@@ -224,17 +224,18 @@ static void pal_click(int handle, int mx, int my)
         int ry = ly + i * 22;
         if (mx >= lx - 2 && mx < lx + 120 && my >= ry - 2 && my < ry + 18) {
             g_pal_sel = i;
-            WM_Redraw();
+            WM_RepaintWindow(g_pal_handle);
             return;
         }
     }
 
-    /* Slider clicks */
-    if (gad_hit(&g_pal_r, mx, my)) { g_pal_drag_slider = 1; gad_slider_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_Redraw(); return; }
-    if (gad_hit(&g_pal_g, mx, my)) { g_pal_drag_slider = 2; gad_slider_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_Redraw(); return; }
-    if (gad_hit(&g_pal_b, mx, my)) { g_pal_drag_slider = 3; gad_slider_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_Redraw(); return; }
+    /* Slider clicks — preview changes only inside this window */
+    if (gad_hit(&g_pal_r, mx, my)) { g_pal_drag_slider = 1; gad_slider_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_RepaintWindow(g_pal_handle); return; }
+    if (gad_hit(&g_pal_g, mx, my)) { g_pal_drag_slider = 2; gad_slider_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_RepaintWindow(g_pal_handle); return; }
+    if (gad_hit(&g_pal_b, mx, my)) { g_pal_drag_slider = 3; gad_slider_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_RepaintWindow(g_pal_handle); return; }
 
-    /* Buttons */
+    /* Buttons — Apply/Save rewrite the global WB_* palette so every
+     * window's chrome must repaint: keep the full deferred WM_Redraw. */
     if (gad_hit(&g_pal_apply, mx, my)) { pal_apply_colors(); WM_Redraw(); return; }
     if (gad_hit(&g_pal_save, mx, my)) { pal_apply_colors(); pal_save_prefs(); WM_Redraw(); return; }
     if (gad_hit(&g_pal_close, mx, my)) { WM_CloseWindow(g_pal_handle); g_pal_handle = -1; return; }
@@ -243,9 +244,11 @@ static void pal_click(int handle, int mx, int my)
 static void pal_mouse_move(int handle, int mx, int my)
 {
     (void)handle; (void)my;
-    if (g_pal_drag_slider == 1) { gad_slider_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_Redraw(); }
-    else if (g_pal_drag_slider == 2) { gad_slider_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_Redraw(); }
-    else if (g_pal_drag_slider == 3) { gad_slider_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_Redraw(); }
+    /* One window-scoped damage per pump pass instead of a full-scene
+     * repaint per mouse-move tick (UAOS-192). */
+    if (g_pal_drag_slider == 1) { gad_slider_from_mouse(&g_pal_r, mx); g_pal_colors[g_pal_sel].r = g_pal_r.val; WM_RepaintWindow(g_pal_handle); }
+    else if (g_pal_drag_slider == 2) { gad_slider_from_mouse(&g_pal_g, mx); g_pal_colors[g_pal_sel].g = g_pal_g.val; WM_RepaintWindow(g_pal_handle); }
+    else if (g_pal_drag_slider == 3) { gad_slider_from_mouse(&g_pal_b, mx); g_pal_colors[g_pal_sel].b = g_pal_b.val; WM_RepaintWindow(g_pal_handle); }
 }
 
 static void pal_mouse_release(int handle, int mx, int my)
@@ -422,11 +425,11 @@ static void time_key(char c)
     }
     if (c == 9) { /* Tab - next field */
         g_time_field = (g_time_field + 1) % 6;
-        WM_Redraw();
+        WM_RepaintWindow(g_time_handle);
         return;
     }
-    if (c == '+' || c == '=') { time_adjust_field(g_time_field, 1); WM_Redraw(); return; }
-    if (c == '-') { time_adjust_field(g_time_field, -1); WM_Redraw(); return; }
+    if (c == '+' || c == '=') { time_adjust_field(g_time_field, 1); WM_RepaintWindow(g_time_handle); return; }
+    if (c == '-') { time_adjust_field(g_time_field, -1); WM_RepaintWindow(g_time_handle); return; }
 }
 
 static void time_click(int handle, int mx, int my)
@@ -445,7 +448,7 @@ static void time_click(int handle, int mx, int my)
         /* Field click - select */
         if (mx >= bx && mx < bx + bw && my >= fy - 2 && my < fy + 16) {
             g_time_field = i;
-            WM_Redraw();
+            WM_RepaintWindow(g_time_handle);
             return;
         }
 
@@ -454,14 +457,14 @@ static void time_click(int handle, int mx, int my)
         if (mx >= upx && mx < upx + 20 && my >= fy - 2 && my < fy + 7) {
             time_adjust_field(i, 1);
             g_time_field = i;
-            WM_Redraw();
+            WM_RepaintWindow(g_time_handle);
             return;
         }
         /* - button */
         if (mx >= upx && mx < upx + 20 && my >= fy + 7 && my < fy + 16) {
             time_adjust_field(i, -1);
             g_time_field = i;
-            WM_Redraw();
+            WM_RepaintWindow(g_time_handle);
             return;
         }
     }
@@ -561,12 +564,12 @@ static void ic_key(char c)
 static void ic_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_event(&g_ic_click_front, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_event(&g_ic_menu_popup, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_event(&g_ic_boopsi, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_event(&g_ic_timeout, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_hit(&g_ic_apply, mx, my)) { WM_Redraw(); return; }
-    if (gad_hit(&g_ic_save, mx, my)) { WM_Redraw(); return; }
+    if (gad_event(&g_ic_click_front, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_ic_handle); return; }
+    if (gad_event(&g_ic_menu_popup, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_ic_handle); return; }
+    if (gad_event(&g_ic_boopsi, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_ic_handle); return; }
+    if (gad_event(&g_ic_timeout, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_ic_handle); return; }
+    if (gad_hit(&g_ic_apply, mx, my)) { WM_RepaintWindow(g_ic_handle); return; }
+    if (gad_hit(&g_ic_save, mx, my)) { WM_RepaintWindow(g_ic_handle); return; }
     if (gad_hit(&g_ic_close, mx, my)) { WM_CloseWindow(g_ic_handle); g_ic_handle = -1; return; }
 }
 
@@ -639,11 +642,11 @@ static void in_key(char c)
 static void in_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_hit(&g_in_accel, mx, my)) { gad_slider_from_mouse(&g_in_accel, mx); WM_Redraw(); return; }
-    if (gad_hit(&g_in_repeat_rate, mx, my)) { gad_slider_from_mouse(&g_in_repeat_rate, mx); WM_Redraw(); return; }
-    if (gad_hit(&g_in_repeat_delay, mx, my)) { gad_slider_from_mouse(&g_in_repeat_delay, mx); WM_Redraw(); return; }
-    if (gad_hit(&g_in_apply, mx, my)) { WM_Redraw(); return; }
-    if (gad_hit(&g_in_save, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_in_accel, mx, my)) { gad_slider_from_mouse(&g_in_accel, mx); WM_RepaintWindow(g_in_handle); return; }
+    if (gad_hit(&g_in_repeat_rate, mx, my)) { gad_slider_from_mouse(&g_in_repeat_rate, mx); WM_RepaintWindow(g_in_handle); return; }
+    if (gad_hit(&g_in_repeat_delay, mx, my)) { gad_slider_from_mouse(&g_in_repeat_delay, mx); WM_RepaintWindow(g_in_handle); return; }
+    if (gad_hit(&g_in_apply, mx, my)) { WM_RepaintWindow(g_in_handle); return; }
+    if (gad_hit(&g_in_save, mx, my)) { WM_RepaintWindow(g_in_handle); return; }
     if (gad_hit(&g_in_close, mx, my)) { WM_CloseWindow(g_in_handle); g_in_handle = -1; return; }
 }
 
@@ -732,9 +735,9 @@ static void sm_click(int handle, int mx, int my)
 {
     (void)handle;
     if (gad_event(&g_sm_mode, GAD_DOWN, mx, my) == GADE_CHANGE) {
-        WM_Redraw(); return;
+        WM_RepaintWindow(g_sm_handle); return;
     }
-    if (gad_hit(&g_sm_apply, mx, my)) { WM_Redraw(); return; }
+    if (gad_hit(&g_sm_apply, mx, my)) { WM_RepaintWindow(g_sm_handle); return; }
     if (gad_hit(&g_sm_close, mx, my)) { WM_CloseWindow(g_sm_handle); g_sm_handle = -1; return; }
 }
 
@@ -825,9 +828,9 @@ static void wp_key(char c)
 static void wp_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_event(&g_wp_pattern, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_hit(&g_wp_apply, mx, my)) { WM_Redraw(); return; }
-    if (gad_hit(&g_wp_save, mx, my)) { WM_Redraw(); return; }
+    if (gad_event(&g_wp_pattern, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_wp_handle); return; }
+    if (gad_hit(&g_wp_apply, mx, my)) { WM_RepaintWindow(g_wp_handle); return; }
+    if (gad_hit(&g_wp_save, mx, my)) { WM_RepaintWindow(g_wp_handle); return; }
     if (gad_hit(&g_wp_close, mx, my)) { WM_CloseWindow(g_wp_handle); g_wp_handle = -1; return; }
 }
 
@@ -893,7 +896,7 @@ static void ft_key(char c)
 static void ft_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_event(&g_ft_font, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_ft_font, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_ft_handle); return; }
     if (gad_hit(&g_ft_close, mx, my)) { WM_CloseWindow(g_ft_handle); g_ft_handle = -1; return; }
 }
 
@@ -961,8 +964,8 @@ static void sr_key(char c)
 static void sr_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_event(&g_sr_baud, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_event(&g_sr_parity, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_sr_baud, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_sr_handle); return; }
+    if (gad_event(&g_sr_parity, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_sr_handle); return; }
     if (gad_hit(&g_sr_close, mx, my)) { WM_CloseWindow(g_sr_handle); g_sr_handle = -1; return; }
 }
 
@@ -1030,8 +1033,8 @@ static void pr_key(char c)
 static void pr_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_event(&g_pr_type, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_event(&g_pr_port, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_pr_type, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_pr_handle); return; }
+    if (gad_event(&g_pr_port, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_pr_handle); return; }
     if (gad_hit(&g_pr_close, mx, my)) { WM_CloseWindow(g_pr_handle); g_pr_handle = -1; return; }
 }
 
@@ -1099,8 +1102,8 @@ static void lo_key(char c)
 static void lo_click(int handle, int mx, int my)
 {
     (void)handle;
-    if (gad_event(&g_lo_lang, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
-    if (gad_event(&g_lo_country, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_Redraw(); return; }
+    if (gad_event(&g_lo_lang, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_lo_handle); return; }
+    if (gad_event(&g_lo_country, GAD_DOWN, mx, my) == GADE_CHANGE) { WM_RepaintWindow(g_lo_handle); return; }
     if (gad_hit(&g_lo_close, mx, my)) { WM_CloseWindow(g_lo_handle); g_lo_handle = -1; return; }
 }
 
