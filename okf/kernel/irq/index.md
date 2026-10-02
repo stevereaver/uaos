@@ -11,6 +11,10 @@ timestamp: 2026-06-24T17:00:00Z
 
 UAOS manages hardware interrupts and basic device drivers to provide a foundation for higher-level subsystems.
 
+## Critical sections — `irq_save()`/`irq_restore()`
+
+`irq.h` exports the shared critical-section pair every short atomic region must use (UAOS-172/176): `irq_save()` is `pushfq; pop; cli` (returns the caller's RFLAGS with IF now clear) and `irq_restore(f)` is `push f; popfq`. A bare `cli`…`sti` pair unconditionally re-enables interrupts on exit, silently breaking a caller that entered with IF=0 (`Disable()`, IRQ context, an outer `irq_save` region); restoring the saved flags preserves whatever IF the caller had, so the pair nests correctly and is safe from both task and IRQ context. Audited exceptions where raw `sti` remains legitimate: the boot PIT/IO-APIC probe, the scheduler idle loop and the `sti;hlt`+`cli` wakeup fallback *inside* `irq_save` regions, `Enable()` (unconditional `sti` is its defined semantics), new-task entry in `task_switch.asm`, and terminal `cli;hlt` panic/halt paths.
+
 ## Interrupt Descriptor Table (IDT)
 
 The kernel sets up a 256-vector IDT in 64-bit mode.

@@ -147,7 +147,7 @@ The 4 MiB static arena in `elf64_loader.c` (`g_x64_heap`) backs every x86-64 use
 - **Validation**: free rejects NULL (no-op), out-of-arena, bad magic, double-free (`!USED`), insane size, and inconsistent prev/next links — each rejection logs to klog (`[ELF64] free: ...`) and leaves the heap untouched.
 - **Reclamation**: `ELF64_ReclaimHeap()` still runs from `Task_Exit` and resets the arena to a single free block once no X64 task remains — now acting as a defrag/sweep for ownerless strays rather than the sole reclaim path.
 - **Accounting**: `ELF64_HeapUsed()` returns bytes held in live used blocks (`g_x64_live`), not a high-water mark — `avail`/`SYSCALL_MEMINFO` reflect real occupancy.
-- **Concurrency**: all list mutation runs under the pushfq/cli + conditional-sti critical-section idiom (same as `Memcheck_Scan`), so a PIT preemption can never observe a half-split chain.
+- **Concurrency**: all list mutation runs under `irq_save()`/`irq_restore()` critical sections (the pushfq/cli + conditional-sti idiom, same as `Memcheck_Scan`), so a PIT preemption can never observe a half-split chain.
 
 ## M68k Integration
 

@@ -556,8 +556,14 @@ void Telnetd_Stop(void)
      * until the next IRQ.  The ~1 s deadline bounds the shutdown. */
     uint64_t deadline = g_pit_ticks + 100;
     while ((g_running || g_pump_count > 0) && g_pit_ticks < deadline) {
-        if (!Task_Yield())
+        if (!Task_Yield()) {
+            /* irq_save/irq_restore around sti;hlt: the sti is needed for
+             * the hlt to wake on IRQs, but a bare sti would leak IF=1 to
+             * a caller that entered with interrupts off (UAOS-176). */
+            uint64_t fl = irq_save();
             __asm__ volatile ("sti; hlt" ::: "memory");
+            irq_restore(fl);
+        }
     }
 }
 

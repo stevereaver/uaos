@@ -223,7 +223,9 @@ and any in-progress session pump both unwind, the listener is
 `tcp_close()`d, `g_running` clears, and the task exits.  `Telnetd_Stop`
 waits for `g_running` and `g_pump_count` to drain by calling
 `Task_Yield()` — a real reschedule since UAOS-169, so the daemon runs
-immediately — with an `sti;hlt` fallback when no switch is possible and
+immediately — with an `irq_save`-wrapped `sti;hlt` fallback when no
+switch is possible (UAOS-176: the `sti` is needed for the `hlt` to wake
+on IRQs, but the caller's IF is restored afterwards) and
 a ~1 s `g_pit_ticks` deadline;
 in contexts where the scheduler cannot preempt — Startup-Sequence
 executes in kernel-main context before `Task_StartFirst()`, and `&`
