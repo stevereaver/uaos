@@ -3,7 +3,7 @@ type: System Layout
 title: UAOS System Layout
 description: Overview of the Amiga-style system directory structure in UAOS, including the GNU coreutils layer.
 tags: [layout, filesystem, workbench, gnu, coreutils]
-timestamp: 2026-07-01T00:30:00Z
+timestamp: 2026-10-02T04:15:00Z
 ---
 
 # UAOS System Layout
@@ -79,7 +79,7 @@ The following programs are compiled as x86-64 ELF64 PIE binaries, wrapped with a
 
 ## GNU Core Utilities (`system/gnusrc/`)
 
-The GNU tool set (88 utilities) is built as x86-64 ELF64 PIE binaries (same toolchain as the native `C:` commands) and staged into `SYS_ROOT/gnu/usr/bin/`. They use GNU-style flags via `uaos_getopt.h` and coexist with the AmigaDOS-style commands in `C:` (e.g., the Amiga `sort` remains in `C:` while the GNU `sort` lives in `gnu/usr/bin/`).
+The GNU tool set (90 utilities) is built as x86-64 ELF64 PIE binaries (same toolchain as the native `C:` commands) and staged into `SYS_ROOT/gnu/usr/bin/`. They use GNU-style flags via `uaos_getopt.h` and coexist with the AmigaDOS-style commands in `C:` (e.g., the Amiga `sort` remains in `C:` while the GNU `sort` lives in `gnu/usr/bin/`).
 
 ### Core Text Utilities
 - `cat` — concatenate files (`-n`, `-b`, `-s`, `-A`, `-E`, `-T`, `-v`).
@@ -110,6 +110,8 @@ The GNU tool set (88 utilities) is built as x86-64 ELF64 PIE binaries (same tool
 - `base32` — RFC 4648 base32 encode/decode (`-d`, `-w`, `-i`).
 - `base64` — base64 encode/decode (`-d`, `-w`, `-i`).
 - `basenc` — multi-encoding (`--base16`, `--base32`, `--base64`, `--base64url`, `-d`, `-w`).
+- `uuencode` — binary-to-ASCII encoder (`-m`/`--base64`; `[infile] remotefile`, stdin default). Emits `begin <mode> <name>` + 45-byte uuencode groups (backtick zero-padding) + `` ` `` + `end`; `-m` emits `begin-base64` + 76-col base64 + `====`. The octal mode is derived from AmigaDOS protection bits (owner rwx inverse of the gnu chmod map; group/other get r-x).
+- `uudecode` — uudecode decoder (`-o`/`--output-file`, `-`/dev/stdout = stdout). Skips preamble text to the `begin`/`begin-base64` header, auto-detects base64 bodies, accepts both space and backtick padding, names the output from the header unless `-o` overrides, and maps the octal mode back to FIBF protection bits.
 - `od` — octal/decimal/hex/char dump (`-A`, `-t`, `-j`, `-N`, `-v`).
 - `sum` — BSD/SysV checksum (`-r`, `-s`).
 - `cksum` — POSIX CRC32 checksum and byte count (`--algorithm`).
