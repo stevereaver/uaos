@@ -13,10 +13,11 @@ UAOS includes a native IPv4 networking stack implemented in `kernel/net/`. It su
 
 ## Initialization
 
-`net/stack.c` provides the top-level API. At boot (or on `C:NetStart`), the stack auto-probes for a network device:
+`net/stack.c` provides the top-level API. At boot (or on `C:NetStart`), the stack auto-probes for a network device (`netdev_probe()` in `net_device.c`):
 
-1. Try Intel e1000 (`kernel/drivers/e1000.c`).
-2. If no e1000 is found, try VirtIO-Net (`kernel/drivers/virtio_net.c`).
+1. Try Marvell sky2 (`kernel/drivers/sky2.c`) — the MacBookPro4,1's real NIC.
+2. If no sky2 is found, try Intel e1000 (`kernel/drivers/e1000.c`).
+3. If no e1000 is found, try VirtIO-Net (`kernel/drivers/virtio_net.c`).
 
 Once a device is registered through `netdev_register()`, the stack can send and receive Ethernet frames.
 
@@ -138,6 +139,7 @@ The device layer pads Ethernet frames to the minimum 60 bytes and exposes the MA
 
 ## Drivers
 
+- **Marvell sky2 (`kernel/drivers/sky2.c`, UAOS-137)**: Yukon-2 driver (88E8058 "EC Ultra" in the MacBookPro4,1, plus the wider Yukon-2 device-ID family). 16 KB MMIO BAR0 with the PCI config window mapped at BAR0+0x1C00; RAM-based list-element architecture — TX/RX rings of 8-byte LEs fed to the prefetch units, completions reported via a shared status ring (OP_RXSTAT / OP_TXINDEXLE). Rings must be 32 KB aligned: the prefetch/status base registers drop address bits [11:0]. Synchronous TX (`sky2_send` drains the status ring until the TX index passes its LE, frame staged in a per-LE bounce buffer); the drain is cli-protected and only *records* completions — RX frames are delivered from `sky2_poll` task context via an atomic pop+copy+resubmit so IRQ/send/poll can never re-enter the net stack. IRQ: MSI first, INTx fallback; `B0_IMSK` gates status-BMU writeback on this silicon so it is unmasked even in poll mode, and `B0_Y2_SP_ISRC2` must never be read outside the handler (the read masks device IRQs until `B0_Y2_SP_LISR`). **Metal-verified** on the MacBook: MSI vec 97, 1000baseT FD, DHCP/DNS/NTP/ping/telnetd all live, concurrent remote sessions OK.
 - **Intel e1000 (`kernel/drivers/e1000.c`)**: 82540EM "PRO/1000 MT Desktop" driver. Uses 128 KB MMIO BAR0, legacy TX/RX descriptor rings, and ICR-based IRQ handling.
 - **VirtIO-Net (`kernel/drivers/virtio_net.c`)**: VirtIO network device supporting both transports: legacy/transitional `1af4:1000` (BAR0 I/O-port registers) and modern non-transitional `1af4:1041` (virtio-1.0 vendor-capability transport — common config, notify, ISR and device-config regions; `VIRTIO_F_VERSION_1` + `VIRTIO_NET_F_MAC` negotiated, 12-byte `virtio_net_hdr`). Modern regions are accessed by MMIO dereference when the BAR maps inside the identity-mapped 4 GB, or via the `VIRTIO_PCI_CAP_PCI_CFG` config-space window when firmware places the BAR above 4 GB (OVMF on q35 puts the 64-bit BAR at ~768 GB). Split virtqueues for RX and TX, with INTx support. The legacy `QUEUE_SIZE` register is read-only, so the driver honours the device-reported queue size when laying out rings (QEMU = 256, VirtualBox = 1024; hardcoding 256 placed the avail/used rings at wrong offsets under VirtualBox and broke all TX/RX). Up to 1024-entry queues are supported; at most 256 RX buffers are posted.
 

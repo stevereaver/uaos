@@ -2,6 +2,8 @@
 
 ## 2026-10-02
 
+* **Verified** (UAOS-137, metal): sky2 acceptance met — live telnet session to the MBP4,1 over wired Ethernet (`ifconfig`: sky2 UP 1000baseT FD, DHCP 192.168.10.149, MAC 00:23:32:94:26:B6). The last open item — real-HW validation of the SIGF_NET wake path — confirmed: MSI vector 97 dispatching and counting with traffic (755→1180 across ~2.5 min of session use), interactive echo immediate, `ping` gateway + LAN peer 4/4, external `nslookup` OK, second concurrent telnet session accepted and closed cleanly, `dmesg warn` shows zero sky2 entries. Card closed.
+
 * **Fixed** (UAOS-176): IRQ-state audit closed — the last bare `sti` reachable outside the exempted paths is gone. The named bugs were already fixed in f167460: `net_rx_notify_arm/disarm` (`kernel/net/stack.c`) and `Wait`/`Task_SleepTicks`/`Task_WaitTicks`/`Signal` (`kernel/exec/task.c`) run under shared `irq_save()`/`irq_restore()` (`kernel/irq/irq.h`), which restore the caller's RFLAGS instead of unconditionally re-enabling IF — a bare `cli`…`sti` inside `Disable()`/IRQ context silently broke the caller's atomicity. Full grep audit of `sti`/`popfq`: remaining `sti` sites are only the boot PIT/IO-APIC probe (`uaos_kernel_main.c`), the scheduler idle loop and the `sti;hlt`+`cli` hlt-wakeup fallback inside the blockers' `irq_save` regions (`task.c`), `Enable()` (unconditional `sti` is its defined semantics), new-task entry (`task_switch.asm`), and terminal `cli;hlt` halts (panic/reboot paths). New fix: `Telnetd_Stop()`'s `sti;hlt` fallback is now wrapped in `irq_save`/`irq_restore` — it was only reachable with IF=1 (via `cmd_telnetd`), but an IF=0 caller would have leaked IF=1 on return. Compiles clean under kernel flags.
 
 ## 2026-10-01
