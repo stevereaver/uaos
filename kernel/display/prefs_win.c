@@ -399,20 +399,29 @@ static void time_adjust_field(int field, int delta)
             if (g_time_dt.day > 31) g_time_dt.day = 1;
             break;
         case 3: /* Hour */
-            g_time_dt.hour += delta;
-            if (g_time_dt.hour > 23) g_time_dt.hour = 0;
-            if (g_time_dt.hour < 0) g_time_dt.hour = 23;
+        {
+            int v = (int)g_time_dt.hour + delta;
+            if (v > 23) v = 0;
+            if (v < 0) v = 23;
+            g_time_dt.hour = (uint8_t)v;
             break;
+        }
         case 4: /* Min */
-            g_time_dt.min += delta;
-            if (g_time_dt.min > 59) g_time_dt.min = 0;
-            if (g_time_dt.min < 0) g_time_dt.min = 59;
+        {
+            int v = (int)g_time_dt.min + delta;
+            if (v > 59) v = 0;
+            if (v < 0) v = 59;
+            g_time_dt.min = (uint8_t)v;
             break;
+        }
         case 5: /* Sec */
-            g_time_dt.sec += delta;
-            if (g_time_dt.sec > 59) g_time_dt.sec = 0;
-            if (g_time_dt.sec < 0) g_time_dt.sec = 59;
+        {
+            int v = (int)g_time_dt.sec + delta;
+            if (v > 59) v = 0;
+            if (v < 0) v = 59;
+            g_time_dt.sec = (uint8_t)v;
             break;
+        }
     }
 }
 

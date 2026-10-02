@@ -147,7 +147,9 @@ static uint32_t shade(uint32_t c, int factor)
     r += ((255 - r) * factor) / 4;
     g += ((255 - g) * factor) / 4;
     b += ((255 - b) * factor) / 4;
-    if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
@@ -159,7 +161,9 @@ static uint32_t darken(uint32_t c, int factor)
     r -= (r * factor) / 4;
     g -= (g * factor) / 4;
     b -= (b * factor) / 4;
-    if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
+    if (r < 0) r = 0;
+    if (g < 0) g = 0;
+    if (b < 0) b = 0;
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 

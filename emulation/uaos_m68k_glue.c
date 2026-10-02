@@ -2939,7 +2939,6 @@ int m68k_illg_instr_callback(int opcode)
     /* Diagnostic: trace library calls to diagnose hangs */
     {
         static uint32_t g_thunk_count = 0;
-        static uint32_t g_last_lib = 0xFF, g_last_fn = 0xFF;
         g_thunk_count++;
         /* Print first 50 calls, then every 1000th, and always on lib/fn change to unknown */
         if (g_thunk_count <= 50 || (g_thunk_count % 10000) == 0) {
@@ -2954,7 +2953,6 @@ int m68k_illg_instr_callback(int opcode)
             buf[i++]='\n'; buf[i]='\0';
             emu_print(buf);
         }
-        g_last_lib = lib; g_last_fn = fn;
     }
 
     /* Advance PC past the 2-byte dispatch word */

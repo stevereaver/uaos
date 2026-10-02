@@ -47,7 +47,7 @@ void Cmd_CrossDOS(NativeCmdCtx *ctx, const char *args)
         char msg[CMD_MAX_LINE];
         while ((prev = DosList_Next(prev)) != NULL) {
             /* Only list PC-format volumes (name starts with PC) */
-            const char *name = prev->dol_Name ? (const char *)(uintptr_t)prev->dol_Name : "";
+            const char *name = prev->dol_Name;
             if (name[0] == 'P' && name[1] == 'C') {
                 cmd_scopy(msg, "  ", CMD_MAX_LINE);
                 cmd_scat(msg, name, CMD_MAX_LINE);

@@ -495,7 +495,6 @@ for src in \
     "${REPO_ROOT}/kernel/shell/cmd_resident.c" \
     "${REPO_ROOT}/kernel/shell/cmd_ps.c" \
     "${REPO_ROOT}/kernel/shell/cmd_list.c" \
-    "${REPO_ROOT}/kernel/shell/cmd_search.c" \
     "${REPO_ROOT}/kernel/shell/cmd_sort.c" \
     "${REPO_ROOT}/kernel/shell/cmd_join.c" \
     "${REPO_ROOT}/kernel/shell/cmd_wait.c" \
@@ -1013,7 +1012,6 @@ ld -z noexecstack -T "${KERNEL_LD}" \
     "${BUILD_DIR}/obj/cmd_resident.o" \
     "${BUILD_DIR}/obj/cmd_ps.o" \
     "${BUILD_DIR}/obj/cmd_list.o" \
-    "${BUILD_DIR}/obj/cmd_search.o" \
     "${BUILD_DIR}/obj/cmd_sort.o" \
     "${BUILD_DIR}/obj/cmd_join.o" \
     "${BUILD_DIR}/obj/cmd_wait.o" \

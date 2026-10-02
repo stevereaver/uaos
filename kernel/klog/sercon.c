@@ -25,6 +25,7 @@
  */
 
 #include "klog.h"
+#include "../boot/kprint.h"
 #include "../exec/task.h"
 #include "../irq/idt.h"
 #include "../dbg/diag.h"

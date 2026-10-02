@@ -1053,6 +1053,7 @@ void FileBrowser_Open(const char *volume)
     if (g_n_browsers < 0) g_n_browsers = 0;
     if (g_n_browsers > MAX_BROWSERS) g_n_browsers = MAX_BROWSERS;
 
+#if FB_DEBUG
     /* Dump WM state */
     FB_LOG_SCREEN("WM:");
     for (int w = 0; w < WM_MAX_WINDOWS; w++) {
@@ -1082,6 +1083,7 @@ void FileBrowser_Open(const char *volume)
         sum[si] = '\0';
         FB_LOG_SCREEN(sum);
     }
+#endif
     FB_LOG("[FB] Current browsers: "); FB_LOG_DEC(g_n_browsers); FB_LOG("\n");
 
     /* Find existing browser for this exact volume path */

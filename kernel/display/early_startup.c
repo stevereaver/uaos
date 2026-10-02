@@ -187,7 +187,7 @@ static void draw_menu(int selected)
         /* Key */
         const char *k = es_menu[i].key;
         int ki = 0;
-        while (k[ki] && li < 78) line[li++] = k[ki++];
+        while (k[ki] && li < 75) line[li++] = k[ki++];
         line[li++] = ' ';
         line[li++] = '-';
         line[li++] = ' ';

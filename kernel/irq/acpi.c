@@ -159,8 +159,12 @@ typedef struct __attribute__((packed)) {
 
 static const Rsdp *scan_bios_area(void)
 {
-    /* EBDA segment is at 0x40:0x0E; scan it first if sane, then 0xE0000. */
-    uint16_t ebda_seg = *(volatile uint16_t *)(uintptr_t)0x40E;
+    /* EBDA segment is at 0x40:0x0E; scan it first if sane, then 0xE0000.
+     * The barrier hides the constant address so GCC doesn't model the BDA
+     * read as an out-of-bounds access on a zero-size object at address 0. */
+    uintptr_t ebda_ptr = 0x40E;
+    __asm__ volatile ("" : "+r"(ebda_ptr));
+    uint16_t ebda_seg = *(volatile uint16_t *)ebda_ptr;
     uint32_t ebda = ((uint32_t)ebda_seg) << 4;
     if (ebda >= 0x80000 && ebda < 0xA0000) {
         const uint8_t *p = (const uint8_t *)(uintptr_t)ebda;
