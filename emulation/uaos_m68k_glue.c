@@ -47,6 +47,11 @@ extern int  Strace_IsEnabled(void);
 extern void Strace_M68kEntry(uint8_t lib, uint8_t fn, M68kCPUState *cpu);
 extern void Strace_M68kExit(uint8_t lib, uint8_t fn, int32_t result);
 
+/* Forward decls for the instr hook's low-reentry diagnostic (defined below). */
+static void     emu_print(const char *s);
+static void     u32_hex(uint32_t v, char *buf);
+static uint32_t guest_read_be32(uint32_t addr);
+
 /* Debug: control-flow edge ring (M68K_INSTRUCTION_HOOK).  Records only
  * discontinuities — the destination is stored with bit0 set (PCs are always
  * even) preceded by the source — so a crash-driven linear march through
@@ -56,19 +61,98 @@ extern void Strace_M68kExit(uint8_t lib, uint8_t fn, int32_t result);
 uint32_t g_m68k_pc_ring[M68K_PC_RING_SZ];
 int      g_m68k_pc_ring_idx = 0;
 uint32_t g_m68k_first_wild_pc = 0;
+uint32_t g_m68k_first_wild_prev = 0;
+static int g_m68k_saw_app_code = 0;   /* pc >= 0x800000 seen (post-decrunch) */
+static int g_m68k_low_reentry = 0;    /* first wild re-entry logged          */
+
+/* Amiga custom chip/CIA register window — declared early for the instr
+ * hook's wild-PC check (the full comment lives with the memory callbacks). */
+#define CHIP_WINDOW_START 0x00B00000u
+#define CHIP_WINDOW_END   0x00DFFFFFu
+
+/* Wild-PC circuit breaker.  When the guest branches outside its 16 MB
+ * window (or to address 0) the memory callbacks only return 0xFF — the CPU
+ * then marches through data executing store instructions that shred the
+ * whole arena (observed: OctaMED's decrunched image wiped to zeros inside
+ * m68k_isr_call's 4M-cycle guard loop).  Ending the timeslice on the first
+ * out-of-window instruction bounds the damage to a handful of cycles and —
+ * inside host-invoked hook/ISR calls — lets the caller restore the saved
+ * context instead of running wild until the guard expires. */
+int g_m68k_wild_abort = 0;
+
 void uaos_m68k_instr_hook(unsigned int pc)
 {
     static uint32_t prev = 0;
-    uint32_t d = pc - prev;
-    if (pc < 0x10000u) {
-        if (d < 2 || d > 8) {
-            int i = g_m68k_pc_ring_idx;
-            g_m68k_pc_ring[i & (M68K_PC_RING_SZ - 1)] = prev;
-            g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
-            g_m68k_pc_ring_idx = i + 2;
+    if (pc >= GUEST_RAM_SIZE || pc < 0x100u ||
+        (pc >= CHIP_WINDOW_START && pc <= CHIP_WINDOW_END)) {
+        g_m68k_wild_abort = 1;
+        static int wild_logs = 0;
+        if (wild_logs < 8) {
+            wild_logs++;
+            char b[64]; int i = 0;
+            const char *t = "[m68k] WILD-PC pc=0x";
+            while (t[i]) { b[i] = t[i]; i++; }
+            char n[12]; u32_hex(pc, n); int j = 0;
+            while (n[j] && i < 60) b[i++] = n[j++];
+            t = " from=0x"; j = 0; while (t[j]) b[i++] = t[j++];
+            u32_hex(prev, n); j = 0;
+            while (n[j] && i < 60) b[i++] = n[j++];
+            b[i++] = '\n'; b[i] = '\0';
+            emu_print(b);
         }
-    } else if (!g_m68k_first_wild_pc) {
+        m68k_end_timeslice();
+    }
+    uint32_t d = pc - prev;
+    if (d < 2 || d > 8) {
+        int i = g_m68k_pc_ring_idx;
+        g_m68k_pc_ring[i & (M68K_PC_RING_SZ - 1)] = prev;
+        g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
+        g_m68k_pc_ring_idx = i + 2;
+    }
+    if (pc >= 0x800000u)
+        g_m68k_saw_app_code = 1;
+    else if (g_m68k_saw_app_code && g_m68k_low_reentry < 4 &&
+             pc >= 0x20000u && pc < 0x80000u) {
+        /* After the decrunched program is running in fast RAM, execution
+         * must never return to [0x20000,0x80000): that band holds the
+         * dead packed input hunks.  Pool/generation addresses above
+         * 0x80000 (including the 0x1EF000 hook-return trap and OctaMED's
+         * generated code in chip RAM) are legitimate code.  Catch the
+         * entry edge and the guest stack to identify the caller that
+         * branched into dead data. */
+        g_m68k_low_reentry++;
+        char b[64]; int i = 0;
+        const char *t = "[m68k] LOW-REENTRY pc=0x";
+        while (t[i]) { b[i] = t[i]; i++; }
+        char n[12]; u32_hex(pc, n); int j = 0;
+        while (n[j] && i < 60) b[i++] = n[j++];
+        t = " from=0x"; j = 0; while (t[j]) b[i++] = t[j++];
+        u32_hex(prev, n); j = 0;
+        while (n[j] && i < 60) b[i++] = n[j++];
+        t = " sp=0x"; j = 0; while (t[j]) b[i++] = t[j++];
+        uint32_t sp = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+        u32_hex(sp, n); j = 0;
+        while (n[j] && i < 62) b[i++] = n[j++];
+        b[i++] = '\n'; b[i] = '\0';
+        emu_print(b);
+        /* Top-of-stack dwords — return-address candidates. */
+        for (int k = 0; k < 12; k++) {
+            i = 0; t = "[m68k]   stk+";
+            while (t[i]) { b[i] = t[i]; i++; }
+            u32_hex((uint32_t)(k * 4), n); j = 0;
+            while (n[j] && i < 56) b[i++] = n[j++];
+            t = " = 0x"; j = 0; while (t[j]) b[i++] = t[j++];
+            uint32_t v = (sp + (uint32_t)(k*4) + 4 <= GUEST_RAM_SIZE)
+                       ? guest_read_be32(sp + (uint32_t)(k*4)) : 0;
+            u32_hex(v, n); j = 0;
+            while (n[j] && i < 60) b[i++] = n[j++];
+            b[i++] = '\n'; b[i] = '\0';
+            emu_print(b);
+        }
+    }
+    if (pc >= 0x10000u && !g_m68k_first_wild_pc) {
         g_m68k_first_wild_pc = pc;
+        g_m68k_first_wild_prev = prev;
         int i = g_m68k_pc_ring_idx;
         g_m68k_pc_ring[i & (M68K_PC_RING_SZ - 1)] = prev;
         g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
@@ -89,12 +173,9 @@ char g_uaos_cwd[64] = "RAM:";
 
 static void emu_print(const char *s)
 {
-    if (g_print) {
-        g_print(s);
-    } else {
-        extern void kprint(const char *);
-        kprint(s);
-    }
+    extern void kprint(const char *);
+    kprint(s);   /* always mirror guest-side prints to serial */
+    if (g_print) g_print(s);
 }
 
 /* Guest memory base for BPTR-to-native conversion */
@@ -178,10 +259,21 @@ static void u32_dec(uint32_t v, char *buf, int max) {
  *   0x800000–0xFF0000   AllocMem(MEMF_FAST) pool (fast RAM)
  */
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
-#define PROG_BASE       0x001000  /* program hunks load here */
+/* Program hunks load above the reserved system zone: LVO stub tables for
+ * graphics/intuition/gadtools live at 0x7BDC-0xA000, the lib base structs at
+ * 0x8000-0xA100, and loadable .library blobs at 0xA000-0x1A000 (16 × 4K).
+ * Loading a program at the old 0x1000 overwrote the stubs — OctaMED's
+ * OpenScreenTagList jumped into packed hunk data and ran wild. */
+#define PROG_BASE       0x020000  /* program hunks load here */
 
 static uint8_t g_default_ram[GUEST_RAM_SIZE] __attribute__((section(".guest_ram"), aligned(4096)));
 uint8_t *g_ram = g_default_ram;
+/* The "system" guest RAM context — the buffer host-side code (Intuition
+ * rendering, chipset DMA, console echo) may legitimately write to when no
+ * M68k task is current.  do_schedule() rebinds g_ram to this when switching
+ * to a non-M68k task so host writes never scribble on a suspended guest's
+ * per-task address space. */
+uint8_t *g_shared_ram = g_default_ram;
 int      g_emu_halted   = 0;  /* set by dos_Exit to break the execute loop */
 uint32_t g_cmdline_bptr = 0;  /* BPTR to CLI arg BSTR, set at startup */
 uint64_t g_m68k_cycles  = 0;  /* cumulative M68k cycles executed */
@@ -196,8 +288,10 @@ uint32_t g_uaos_heap_ptr = PROG_BASE;
  * when the bridge is unavailable (e.g. during freestanding validation builds). */
 void UAOS_Glue_SetRamBase(uint8_t *base)
 {
-    if (base != NULL)
+    if (base != NULL) {
         g_ram = base;
+        g_shared_ram = base;
+    }
 }
 
 static uint32_t heap_alloc(uint32_t size)
@@ -278,13 +372,11 @@ static int guest_read_filelock(uint32_t lock_bptr,
  * Musashi memory callbacks
  * ========================================================================= */
 
-/* Route accesses to the Amiga custom chip/CIA window (0xB00000-0xDFFFFF)
- * through the chipset emulator.  This is the same range handled by the x86_64
- * page fault handler for native code; M68k code must use it too, since the
+/* Route accesses to the Amiga custom chip/CIA window (0xB00000-0xDFFFFF —
+ * CHIP_WINDOW_START/END defined near the top of this file) through the
+ * chipset emulator.  This is the same range handled by the x86_64 page
+ * fault handler for native code; M68k code must use it too, since the
  * Musashi emulator does not trigger host page faults. */
-#define CHIP_WINDOW_START 0x00B00000u
-#define CHIP_WINDOW_END   0x00DFFFFFu
-
 static inline int is_chip_window(unsigned int addr)
 {
     return addr >= CHIP_WINDOW_START && addr <= CHIP_WINDOW_END;
@@ -305,7 +397,7 @@ unsigned int m68k_read_memory_16(unsigned int addr)
 {
     if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END)
         return chip_emu_read(addr - CHIP_WINDOW_START, 2);
-    if (addr + 1 < GUEST_RAM_SIZE) {
+    if (addr < GUEST_RAM_SIZE - 1) {
         if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr] << 8) | g_ram[addr+1];
     }
@@ -316,7 +408,7 @@ unsigned int m68k_read_memory_32(unsigned int addr)
 {
     if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END)
         return chip_emu_read(addr - CHIP_WINDOW_START, 4);
-    if (addr + 3 < GUEST_RAM_SIZE) {
+    if (addr < GUEST_RAM_SIZE - 3) {
         if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 0);
         return ((unsigned int)g_ram[addr]   << 24) |
                ((unsigned int)g_ram[addr+1] << 16) |
@@ -354,12 +446,36 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
         GUEST_WRITE_BARRIER();
         return;
     }
-    if (addr + 1 < GUEST_RAM_SIZE) {
+    if (addr < GUEST_RAM_SIZE - 1) {
         if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 1);
         g_ram[addr]   = (uint8_t)(val >> 8);
         g_ram[addr+1] = (uint8_t)(val);
     }
     GUEST_WRITE_BARRIER();
+}
+
+/* tar-binary compat hacks (UAOS legacy): SAS/C startup of the embedded
+ * `tar` resident binary writes a bad stack limit to absolute 0x89EC and a
+ * corrupt BPTR at PC 0x2770.  These rewrites corrupt ANY other m68k program
+ * that happens to write those addresses — OctaMED's decruncher passes data
+ * through 0x89EC — so they are gated to the tar binary by name. */
+int g_m68k_tar_compat = 0;
+
+static int m68k_name_is_tar(const char *n)
+{
+    if (!n) return 0;
+    const char *base = n;
+    for (const char *p = n; *p; p++)
+        if (*p == '/' || *p == ':' || *p == '\\') base = p + 1;
+    return (base[0] == 't' || base[0] == 'T') &&
+           (base[1] == 'a' || base[1] == 'A') &&
+           (base[2] == 'r' || base[2] == 'R') &&
+           (base[3] == '\0' || base[3] == '.');
+}
+
+void UAOS_Emu_SetTarCompat(const char *name)
+{
+    g_m68k_tar_compat = m68k_name_is_tar(name);
 }
 
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
@@ -369,26 +485,28 @@ void m68k_write_memory_32(unsigned int addr, unsigned int val)
         GUEST_WRITE_BARRIER();
         return;
     }
-    if (addr + 3 < GUEST_RAM_SIZE) {
+    if (addr < GUEST_RAM_SIZE - 3) {
         if (addr < 0x00800000u && !g_chipset_sync_disabled) chip_emu_cpu_chipram_access(addr, 1);
-        /* Fix: SAS/C startup writes a bad stack limit to 0x89EC because the
-         * stack size parameter on the stack is 0. Override with a safe limit.
-         * limit should be low enough that SP > limit. Use SPLower + 0x80. */
-        if (addr == 0x89EC) {
-            uint32_t safe_limit = 0x1B0080; /* tc_SPLower (0x1B0000) + 128 */
-            val = safe_limit;
-        }
-        /* Patch D1 at PC=0x2770 to use correct BPTR from _ufb[3] instead of corrupted 0x140 */
-        uint32_t pc = m68k_get_reg(NULL, M68K_REG_PC);
-        if (pc == 0x2770) {
-            uint32_t d1 = m68k_get_reg(NULL, M68K_REG_D1);
-            if (d1 == 0x00000140) {
-                /* Get correct BPTR from _ufb[3] */
-                uint32_t a4 = m68k_get_reg(NULL, M68K_REG_A4);
-                uint32_t ufb_base = a4 + 0x14F0;
-                uint32_t ufb_addr = ufb_base + 3 * 24;
-                uint16_t correct_bptr = m68k_read_memory_16(ufb_addr);
-                m68k_set_reg(M68K_REG_D1, correct_bptr);
+        if (g_m68k_tar_compat) {
+            /* Fix: SAS/C startup writes a bad stack limit to PROG_BASE+0x79EC
+             * (was 0x89EC when PROG_BASE was 0x1000) because the stack size
+             * parameter on the stack is 0. Override with a safe limit. */
+            if (addr == (PROG_BASE + 0x79ECu)) {
+                uint32_t safe_limit = 0x1B0080; /* tc_SPLower (0x1B0000) + 128 */
+                val = safe_limit;
+            }
+            /* Patch D1 at PC=PROG_BASE+0x1770 (was 0x2770) to use correct BPTR from _ufb[3] instead of corrupted 0x140 */
+            uint32_t pc = m68k_get_reg(NULL, M68K_REG_PC);
+            if (pc == (PROG_BASE + 0x1770u)) {
+                uint32_t d1 = m68k_get_reg(NULL, M68K_REG_D1);
+                if (d1 == 0x00000140) {
+                    /* Get correct BPTR from _ufb[3] */
+                    uint32_t a4 = m68k_get_reg(NULL, M68K_REG_A4);
+                    uint32_t ufb_base = a4 + 0x14F0;
+                    uint32_t ufb_addr = ufb_base + 3 * 24;
+                    uint16_t correct_bptr = m68k_read_memory_16(ufb_addr);
+                    m68k_set_reg(M68K_REG_D1, correct_bptr);
+                }
             }
         }
         g_ram[addr]   = (uint8_t)(val >> 24);
@@ -425,6 +543,36 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_GRAPHICS    4
 #define LIB_INTUITION   5
 #define LIB_GADTOOLS    6
+#define LIB_GENERIC     7   /* fake lib base — log lvo, return 0 */
+#define LIB_UTILITY     8   /* utility.library → ROM dispatch */
+#define LIB_AUDIODEV    9   /* audio.device → UAOS-240 arbitration */
+
+#define AUDEV_LVO_OPEN    0   /* -6  */
+#define AUDEV_LVO_CLOSE   1   /* -12 */
+#define AUDEV_LVO_BEGINIO 2   /* -42 */
+#define AUDEV_LVO_ABORTIO 3   /* -48 */
+
+/* MEMF_* attribute bits (exec/memory.h) */
+#define MEMF_PUBLIC      0x00000001u
+#define MEMF_CHIP        0x00000002u
+#define MEMF_FAST        0x00000004u
+#define MEMF_24BITDMA    0x00020000u
+#define MEMF_CLEAR_FLAG  0x00010000u
+
+#define NT_LIBRARY       9
+
+/* Allocator bridge implemented in kernel/exec/dos_lib.c */
+extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
+extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
+extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest);
+
+/* Guest memory accessors (big-endian via Musashi callbacks) */
+#define glue_r8(a)   ((uint32_t)m68k_read_memory_8(a))
+#define glue_r16(a)  ((uint32_t)m68k_read_memory_16(a))
+#define glue_r32(a)  ((uint32_t)m68k_read_memory_32(a))
+#define glue_w8(a,v)  m68k_write_memory_8((a),(v))
+#define glue_w16(a,v) m68k_write_memory_16((a),(v))
+#define glue_w32(a,v) m68k_write_memory_32((a),(v))
 
 /* exec.library function indices */
 #define EXEC_OPEN_LIBRARY   1
@@ -441,6 +589,72 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define EXEC_GET_MSG       12
 #define EXEC_REPLY_MSG     13
 #define EXEC_WAIT_PORT     14
+#define EXEC_CACHE_CLEAR_U 15   /* CacheClearU — no-op (Musashi has no icache) */
+#define EXEC_INIT_STRUCT       16
+#define EXEC_DISABLE           17
+#define EXEC_ENABLE            18
+#define EXEC_FORBID            19
+#define EXEC_PERMIT            20
+#define EXEC_SUPER_STATE       21
+#define EXEC_USER_STATE        22
+#define EXEC_AVAIL_MEM         23
+#define EXEC_ALLOC_ENTRY       24
+#define EXEC_FREE_ENTRY        25
+#define EXEC_INSERT            26
+#define EXEC_ADD_HEAD          27
+#define EXEC_ADD_TAIL          28
+#define EXEC_REMOVE            29
+#define EXEC_REM_HEAD          30
+#define EXEC_REM_TAIL          31
+#define EXEC_ENQUEUE           32
+#define EXEC_FIND_NAME         33
+#define EXEC_SET_TASK_PRI      34
+#define EXEC_SET_EXCEPT        35
+#define EXEC_ALLOC_TRAP        36
+#define EXEC_FREE_TRAP         37
+#define EXEC_ADD_PORT          38
+#define EXEC_REM_PORT          39
+#define EXEC_FIND_PORT         40
+#define EXEC_OLD_OPEN_LIBRARY  41
+#define EXEC_SET_FUNCTION      42
+#define EXEC_OPEN_DEVICE       43
+#define EXEC_CLOSE_DEVICE      44
+#define EXEC_DO_IO             45
+#define EXEC_SEND_IO           46
+#define EXEC_CHECK_IO          47
+#define EXEC_WAIT_IO           48
+#define EXEC_ABORT_IO          49
+#define EXEC_OPEN_RESOURCE     50
+#define EXEC_GETCC             51
+#define EXEC_TYPE_OF_MEM       52
+#define EXEC_PROCURE           53
+#define EXEC_VACATE            54
+#define EXEC_INIT_SEMAPHORE    55
+#define EXEC_OBTAIN_SEM        56
+#define EXEC_RELEASE_SEM       57
+#define EXEC_ATTEMPT_SEM       58
+#define EXEC_COPY_MEM          59
+#define EXEC_COPY_MEM_QUICK    60
+#define EXEC_CACHE_CLEAR_E     61
+#define EXEC_CACHE_CONTROL     62
+#define EXEC_CREATE_IOREQUEST  63
+#define EXEC_DELETE_IOREQUEST  64
+#define EXEC_CREATE_MSGPORT    65
+#define EXEC_DELETE_MSGPORT    66
+#define EXEC_OBTAIN_SEM_SHARED 67
+#define EXEC_ALLOC_VEC         68
+#define EXEC_FREE_VEC          69
+#define EXEC_OBTAIN_SEM_LIST   70
+#define EXEC_RELEASE_SEM_LIST  71
+#define EXEC_FIND_SEMAPHORE    72
+#define EXEC_ADD_SEMAPHORE     73
+#define EXEC_REM_SEMAPHORE     74
+#define EXEC_SET_INT_VECTOR    75
+#define EXEC_ADD_INT_SERVER    76
+#define EXEC_REM_INT_SERVER    77
+#define EXEC_CAUSE             78
+#define EXEC_RAW_DO_FMT        79
+#define EXEC_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* bsdsocket.library function indices */
 #define BSD_FN_SOCKET        1
@@ -517,6 +731,21 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define DOS_GET_CONSOLE_TASK 54
 #define DOS_SET_CONSOLE_TASK 55
 #define DOS_CREATE_SEG_LIST 56
+#define DOS_CURRENT_DIR    57
+#define DOS_SET_PROGRAM_DIR 58
+#define DOS_GET_PROGRAM_DIR 59
+#define DOS_SET_IO_ERR     60
+#define DOS_CLI            61
+#define DOS_FIND_CLI_PROC  62
+#define DOS_WRITE_CHARS    63
+#define DOS_FREE_ARGS      64
+#define DOS_FLUSH          65
+#define DOS_SELECT_INPUT   66
+#define DOS_SELECT_OUTPUT  67
+#define DOS_EXECUTE        68
+#define DOS_DEVICE_PROC    69
+#define DOS_FAULT          70
+#define DOS_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* intuition.library function indices */
 #define INTUITION_OPEN_LIBRARY      1
@@ -745,23 +974,22 @@ static void install_stub(int lib_id, int func_idx)
  * ========================================================================= */
 
 #define EXEC_BASE    0x0300   /* must be > largest |LVO| = 552 = 0x228 */
-#define FAKE_LIB_BASE 0xF000   /* returned for unknown libraries — has RTS at LVO slots
-                                 * LVO range: 0xED0C–0xEFFA, above LHA data hunk (ends ~0xDF88) */
+#define FAKE_LIB_BASE 0xF000   /* returned for unknown libraries — has RTS at LVO slots.
+                                * LVO range: 0xED0C-0xEFFA, above LHA data hunk (ends ~0xDF88) */
+#define AUDIO_DEV_BASE 0xE000  /* audio.device base — trapped LVO table (UAOS-240) */
 
 /* Fake Process struct layout (AmigaOS offsets):
  * Task struct embedded at start, then Process extensions.
  * pr_CLI  is at Process+0xAC (172) — non-zero means launched from CLI.
- * pr_CIS  is at Process+0x32  — CLI input stream (we set to DOS_STDIN_BPTR).
- * pr_COS  is at Process+0x36  — CLI output stream (we set to DOS_STDOUT_BPTR). */
-#define FAKE_PROCESS_ADDR  0x10000  /* well above hunk data */
-#define FAKE_CLI_ADDR      0x10100  /* fake CLI struct */
+ * pr_CIS  is at Process+0x9C  — CLI input stream (we set to DOS_STDIN_BPTR).
+ * pr_COS  is at Process+0xA0  — CLI output stream (we set to DOS_STDOUT_BPTR). */
 #define PR_CLI_OFFSET      0xAC
-#define PR_CIS_OFFSET      0x32
-#define PR_COS_OFFSET      0x36
+#define PR_CIS_OFFSET      0x9C
+#define PR_COS_OFFSET      0xA0
 
 /* Fake file handle BPTRs (defined here so install_library_tables can use them) */
-#define FAKE_STDOUT_ADDR   0x0500
-#define FAKE_STDIN_ADDR    0x0504
+#define FAKE_STDOUT_ADDR   0x0400   /* below DOS stub floor (0x800-996=0x41C) */
+#define FAKE_STDIN_ADDR    0x0404
 #define DOS_STDOUT_BPTR    (FAKE_STDOUT_ADDR >> 2)
 #define DOS_STDIN_BPTR     (FAKE_STDIN_ADDR  >> 2)
 
@@ -808,72 +1036,209 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_FREE_MEM       (-210)
 #define LVO_FIND_TASK      (-294)
 
-#define LVO_DOS_OUTPUT     (-60)
-#define LVO_DOS_WRITE      (-48)
-#define LVO_DOS_OPEN       (-30)
-#define LVO_DOS_CLOSE      (-36)
-#define LVO_DOS_READ       (-42)
-#define LVO_DOS_EXIT       (-144)
-#define LVO_DOS_IO_ERR     (-132)
-#define LVO_DOS_INPUT      (-54)
-#define LVO_DOS_VFPRINTF   (-936)  /* correct AmigaDOS offset */
-#define LVO_DOS_FPUTS      (-930)
-#define LVO_DOS_PUTSTR     (-918)
-#define LVO_DOS_VPRINTF    (-924)
-#define LVO_DOS_PRINTF     (-924)  /* alias VPrintf */
-#define LVO_DOS_VFWRITEF   (-732)
-#define LVO_DOS_READARGS   (-756)
-#define LVO_DOS_GETARGSTR  (-462)
-#define LVO_DOS_ISINTERACTIVE (-366)
-#define LVO_DOS_DELETEFILE (-78)
-#define LVO_DOS_RENAME     (-84)
-#define LVO_DOS_SETPROTECTION (-90)
-#define LVO_DOS_GETVAR     (-132)
-#define LVO_DOS_SETVAR     (-138)
-#define LVO_DOS_SEEK       (-66)
-#define LVO_DOS_LOCK       (-72)
-#define LVO_DOS_UNLOCK     (-78)
-#define LVO_DOS_EXAMINE    (-84)
-#define LVO_DOS_EXAMINE_NEXT (-90)
-#define LVO_DOS_CREATE_DIR (-96)
-#define LVO_DOS_DUPLOCK    (-102)
-#define LVO_DOS_PARENT     (-108)
-#define LVO_DOS_DATE_STAMP (-192)
-#define LVO_DOS_DELAY      (-198)
-#define LVO_DOS_DATE_TO_STR (-678)
-#define LVO_DOS_PARSE_PATTERN       (-474)
-#define LVO_DOS_MATCH_PATTERN       (-506)
-#define LVO_DOS_PARSE_PATTERN_NO_CASE (-480)
-#define LVO_DOS_MATCH_PATTERN_NO_CASE (-512)
-#define LVO_DOS_LOADSEG    (-156)
-#define LVO_DOS_UNLOADSEG  (-150)
-#define LVO_DOS_CREATE_PROC    (-120)
-#define LVO_DOS_SYSTEM_TAG_LIST (-774)
-#define LVO_DOS_RUN_COMMAND    (-630)
-#define LVO_DOS_SEND_PKT       (-174)
-#define LVO_DOS_WAIT_PKT       (-180)
-#define LVO_DOS_REPLY_PKT      (-186)
-#define LVO_DOS_ADD_PART       (-522)
-#define LVO_DOS_COMPARE_NAMES  (-546)
-#define LVO_DOS_STR_TO_DATE    (-672)
-#define LVO_DOS_CHECK_SIGNAL   (-300)
-#define LVO_DOS_WAIT_FOR_CHAR  (-204)
-#define LVO_DOS_NAME_FROM_LOCK (-498)
-#define LVO_DOS_LOCK_RECORD    (-516)
-#define LVO_DOS_UNLOCK_RECORD  (-510)
-#define LVO_DOS_GET_CONSOLE_TASK (-294)
-#define LVO_DOS_SET_CONSOLE_TASK (-288)
+/* dos.library LVO offsets — canonical AmigaDOS (dos_lib.i V40). */
+#define LVO_DOS_OPEN        (-30)
+#define LVO_DOS_CLOSE       (-36)
+#define LVO_DOS_READ        (-42)
+#define LVO_DOS_WRITE       (-48)
+#define LVO_DOS_INPUT       (-54)
+#define LVO_DOS_OUTPUT      (-60)
+#define LVO_DOS_SEEK        (-66)
+#define LVO_DOS_DELETEFILE  (-72)
+#define LVO_DOS_RENAME      (-78)
+#define LVO_DOS_LOCK        (-84)
+#define LVO_DOS_UNLOCK      (-90)
+#define LVO_DOS_DUPLOCK     (-96)
+#define LVO_DOS_EXAMINE     (-102)
+#define LVO_DOS_EXAMINE_NEXT (-108)
+#define LVO_DOS_INFO        (-114)
+#define LVO_DOS_CREATE_DIR  (-120)
+#define LVO_DOS_CURRENT_DIR (-126)
+#define LVO_DOS_IO_ERR      (-132)
+#define LVO_DOS_CREATE_PROC (-138)
+#define LVO_DOS_EXIT        (-144)
+#define LVO_DOS_LOADSEG     (-150)
+#define LVO_DOS_UNLOADSEG   (-156)
+#define LVO_DOS_GET_PACKET  (-162)
+#define LVO_DOS_QUEUE_PKT   (-168)
+#define LVO_DOS_DEVICE_PROC (-174)
+#define LVO_DOS_SET_COMMENT (-180)
+#define LVO_DOS_SETPROTECTION (-186)
+#define LVO_DOS_DATE_STAMP  (-192)
+#define LVO_DOS_DELAY       (-198)
+#define LVO_DOS_WAIT_FOR_CHAR (-204)
+#define LVO_DOS_PARENT      (-210)
+#define LVO_DOS_ISINTERACTIVE (-216)
+#define LVO_DOS_EXECUTE     (-222)
+#define LVO_DOS_ALLOC_DOS_OBJECT (-228)
+#define LVO_DOS_FREE_DOS_OBJECT (-234)
+#define LVO_DOS_DO_PKT      (-240)
+#define LVO_DOS_SEND_PKT    (-246)
+#define LVO_DOS_WAIT_PKT    (-252)
+#define LVO_DOS_REPLY_PKT   (-258)
+#define LVO_DOS_ABORT_PKT   (-264)
+#define LVO_DOS_LOCK_RECORD (-270)
+#define LVO_DOS_LOCK_RECORDS (-276)
+#define LVO_DOS_UNLOCK_RECORD (-282)
+#define LVO_DOS_UNLOCK_RECORDS (-288)
+#define LVO_DOS_SELECT_INPUT (-294)
+#define LVO_DOS_SELECT_OUTPUT (-300)
+#define LVO_DOS_FGETC       (-306)
+#define LVO_DOS_FPUTC       (-312)
+#define LVO_DOS_UNGETC      (-318)
+#define LVO_DOS_FREAD       (-324)
+#define LVO_DOS_FWRITE      (-330)
+#define LVO_DOS_FGETS       (-336)
+#define LVO_DOS_FPUTS       (-342)
+#define LVO_DOS_VFWRITEF    (-348)
+#define LVO_DOS_VFPRINTF    (-354)
+#define LVO_DOS_FLUSH       (-360)
+#define LVO_DOS_SET_VBUF    (-366)
+#define LVO_DOS_DUP_LOCK_FROM_FH (-372)
+#define LVO_DOS_OPEN_FROM_LOCK (-378)
+#define LVO_DOS_PARENT_OF_FH (-384)
+#define LVO_DOS_EXAMINE_FH  (-390)
+#define LVO_DOS_SET_FILE_DATE (-396)
+#define LVO_DOS_NAME_FROM_LOCK (-402)
+#define LVO_DOS_NAME_FROM_FH (-408)
+#define LVO_DOS_SPLIT_NAME  (-414)
+#define LVO_DOS_SAME_LOCK   (-420)
+#define LVO_DOS_SET_MODE    (-426)
+#define LVO_DOS_EX_ALL      (-432)
+#define LVO_DOS_READ_LINK   (-438)
+#define LVO_DOS_MAKE_LINK   (-444)
+#define LVO_DOS_CHANGE_MODE (-450)
+#define LVO_DOS_SET_FILE_SIZE (-456)
+#define LVO_DOS_SET_IO_ERR  (-462)
+#define LVO_DOS_FAULT       (-468)
+#define LVO_DOS_PRINT_FAULT (-474)
+#define LVO_DOS_ERROR_REPORT (-480)
+#define LVO_DOS_CLI         (-492)
+#define LVO_DOS_CREATE_NEW_PROC (-498)
+#define LVO_DOS_RUN_COMMAND (-504)
+#define LVO_DOS_GET_CONSOLE_TASK (-510)
+#define LVO_DOS_SET_CONSOLE_TASK (-516)
+#define LVO_DOS_GET_ARG_STR (-534)
+#define LVO_DOS_SET_ARG_STR (-540)
+#define LVO_DOS_FIND_CLI_PROC (-546)
+#define LVO_DOS_MAX_CLI     (-552)
+#define LVO_DOS_SET_PROGRAM_NAME (-570)
+#define LVO_DOS_GET_PROGRAM_NAME (-576)
+#define LVO_DOS_SET_PROGRAM_DIR (-594)
+#define LVO_DOS_GET_PROGRAM_DIR (-600)
+#define LVO_DOS_SYSTEM_TAG_LIST (-606)
+#define LVO_DOS_GET_DEVICE_PROC (-642)
+#define LVO_DOS_LOCK_DOS_LIST (-654)
+#define LVO_DOS_DATE_TO_STR (-744)
+#define LVO_DOS_STR_TO_DATE (-750)
+#define LVO_DOS_CHECK_SIGNAL (-792)
+#define LVO_DOS_READARGS    (-798)
+#define LVO_DOS_STR_TO_LONG (-816)
+#define LVO_DOS_MATCH_FIRST (-822)
+#define LVO_DOS_MATCH_NEXT  (-828)
+#define LVO_DOS_MATCH_END   (-834)
+#define LVO_DOS_PARSE_PATTERN (-840)
+#define LVO_DOS_MATCH_PATTERN (-846)
+#define LVO_DOS_FREE_ARGS   (-858)
+#define LVO_DOS_FILE_PART   (-870)
+#define LVO_DOS_PATH_PART   (-876)
+#define LVO_DOS_ADD_PART    (-882)
+#define LVO_DOS_SETVAR      (-900)
+#define LVO_DOS_GETVAR      (-906)
+#define LVO_DOS_CLI_INIT_NEWCLI (-930)
+#define LVO_DOS_CLI_INIT_RUN (-936)
+#define LVO_DOS_WRITE_CHARS (-942)
+#define LVO_DOS_PUTSTR      (-948)
+#define LVO_DOS_VPRINTF     (-954)
+#define LVO_DOS_PRINTF      (-954)  /* alias VPrintf */
+#define LVO_DOS_PARSE_PATTERN_NO_CASE (-966)
+#define LVO_DOS_MATCH_PATTERN_NO_CASE (-972)
 
-/* exec.library LVO offsets */
-#define LVO_WAIT            (-318)
-#define LVO_SIGNAL          (-324)
-#define LVO_SETSIGNAL       (-306)
-#define LVO_ALLOC_SIGNAL    (-330)
-#define LVO_FREE_SIGNAL     (-336)
-#define LVO_PUT_MSG         (-366)
-#define LVO_GET_MSG         (-372)
-#define LVO_REPLY_MSG       (-378)
-#define LVO_WAIT_PORT       (-384)
+/* exec.library LVO offsets — canonical exec_lib.i (V37+). */
+#define LVO_INIT_STRUCT       (-78)
+#define LVO_DISABLE           (-120)
+#define LVO_ENABLE            (-126)
+#define LVO_FORBID            (-132)
+#define LVO_PERMIT            (-138)
+#define LVO_SUPER_STATE       (-150)
+#define LVO_USER_STATE        (-156)
+#define LVO_SET_INT_VECTOR    (-162)
+#define LVO_ADD_INT_SERVER    (-168)
+#define LVO_REM_INT_SERVER    (-174)
+#define LVO_CAUSE             (-180)
+#define LVO_AVAIL_MEM         (-216)
+#define LVO_ALLOC_ENTRY       (-222)
+#define LVO_FREE_ENTRY        (-228)
+#define LVO_INSERT            (-234)
+#define LVO_ADD_HEAD          (-240)
+#define LVO_ADD_TAIL          (-246)
+#define LVO_REMOVE            (-252)
+#define LVO_REM_HEAD          (-258)
+#define LVO_REM_TAIL          (-264)
+#define LVO_ENQUEUE           (-270)
+#define LVO_FIND_NAME         (-276)
+#define LVO_ADD_TASK          (-282)
+#define LVO_REM_TASK          (-288)
+#define LVO_SET_TASK_PRI      (-300)
+#define LVO_SET_EXCEPT        (-312)
+#define LVO_WAIT              (-318)
+#define LVO_SIGNAL            (-324)
+#define LVO_SETSIGNAL         (-306)
+#define LVO_ALLOC_SIGNAL      (-330)
+#define LVO_FREE_SIGNAL       (-336)
+#define LVO_ALLOC_TRAP        (-342)
+#define LVO_FREE_TRAP         (-348)
+#define LVO_ADD_PORT          (-354)
+#define LVO_REM_PORT          (-360)
+#define LVO_PUT_MSG           (-366)
+#define LVO_GET_MSG           (-372)
+#define LVO_REPLY_MSG         (-378)
+#define LVO_WAIT_PORT         (-384)
+#define LVO_FIND_PORT         (-390)
+#define LVO_ADD_LIBRARY       (-396)
+#define LVO_REM_LIBRARY       (-402)
+#define LVO_OLD_OPEN_LIBRARY  (-408)
+#define LVO_SET_FUNCTION      (-420)
+#define LVO_ADD_DEVICE        (-432)
+#define LVO_REM_DEVICE        (-438)
+#define LVO_OPEN_DEVICE       (-444)
+#define LVO_CLOSE_DEVICE      (-450)
+#define LVO_DO_IO             (-456)
+#define LVO_SEND_IO           (-462)
+#define LVO_CHECK_IO          (-468)
+#define LVO_WAIT_IO           (-474)
+#define LVO_ABORT_IO          (-480)
+#define LVO_ADD_RESOURCE      (-486)
+#define LVO_REM_RESOURCE      (-492)
+#define LVO_OPEN_RESOURCE     (-498)
+#define LVO_RAW_DO_FMT        (-522)
+#define LVO_GETCC             (-528)
+#define LVO_TYPE_OF_MEM       (-534)
+#define LVO_PROCURE           (-540)
+#define LVO_VACATE            (-546)
+#define LVO_INIT_SEMAPHORE    (-558)
+#define LVO_OBTAIN_SEM        (-564)
+#define LVO_RELEASE_SEM       (-570)
+#define LVO_ATTEMPT_SEM       (-576)
+#define LVO_OBTAIN_SEM_LIST   (-582)
+#define LVO_RELEASE_SEM_LIST  (-588)
+#define LVO_FIND_SEMAPHORE    (-594)
+#define LVO_ADD_SEMAPHORE     (-600)
+#define LVO_REM_SEMAPHORE     (-606)
+#define LVO_SUM_KICK_DATA     (-612)
+#define LVO_ADD_MEM_LIST      (-618)
+#define LVO_COPY_MEM          (-624)
+#define LVO_COPY_MEM_QUICK    (-630)
+#define LVO_CACHE_CLEAR_U     (-636)
+#define LVO_CACHE_CLEAR_E     (-642)
+#define LVO_CACHE_CONTROL     (-648)
+#define LVO_CREATE_IOREQUEST  (-654)
+#define LVO_DELETE_IOREQUEST  (-660)
+#define LVO_CREATE_MSGPORT    (-666)
+#define LVO_DELETE_MSGPORT    (-672)
+#define LVO_OBTAIN_SEM_SHARED (-678)
+#define LVO_ALLOC_VEC         (-684)
+#define LVO_FREE_VEC          (-690)
 
 /* intuition.library LVO offsets — official AmigaOS 3.1 (V39) and V40 values.
 
@@ -1095,6 +1460,66 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case EXEC_GET_MSG:       return (uint32_t)((int)EXEC_BASE + LVO_GET_MSG);
             case EXEC_REPLY_MSG:     return (uint32_t)((int)EXEC_BASE + LVO_REPLY_MSG);
             case EXEC_WAIT_PORT:     return (uint32_t)((int)EXEC_BASE + LVO_WAIT_PORT);
+            case EXEC_CACHE_CLEAR_U: return (uint32_t)((int)EXEC_BASE + LVO_CACHE_CLEAR_U);
+            case EXEC_INIT_STRUCT:   return (uint32_t)((int)EXEC_BASE + LVO_INIT_STRUCT);
+            case EXEC_DISABLE:       return (uint32_t)((int)EXEC_BASE + LVO_DISABLE);
+            case EXEC_ENABLE:        return (uint32_t)((int)EXEC_BASE + LVO_ENABLE);
+            case EXEC_FORBID:        return (uint32_t)((int)EXEC_BASE + LVO_FORBID);
+            case EXEC_PERMIT:        return (uint32_t)((int)EXEC_BASE + LVO_PERMIT);
+            case EXEC_SUPER_STATE:   return (uint32_t)((int)EXEC_BASE + LVO_SUPER_STATE);
+            case EXEC_USER_STATE:    return (uint32_t)((int)EXEC_BASE + LVO_USER_STATE);
+            case EXEC_AVAIL_MEM:     return (uint32_t)((int)EXEC_BASE + LVO_AVAIL_MEM);
+            case EXEC_ALLOC_ENTRY:   return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_ENTRY);
+            case EXEC_FREE_ENTRY:    return (uint32_t)((int)EXEC_BASE + LVO_FREE_ENTRY);
+            case EXEC_INSERT:        return (uint32_t)((int)EXEC_BASE + LVO_INSERT);
+            case EXEC_ADD_HEAD:      return (uint32_t)((int)EXEC_BASE + LVO_ADD_HEAD);
+            case EXEC_ADD_TAIL:      return (uint32_t)((int)EXEC_BASE + LVO_ADD_TAIL);
+            case EXEC_REMOVE:        return (uint32_t)((int)EXEC_BASE + LVO_REMOVE);
+            case EXEC_REM_HEAD:      return (uint32_t)((int)EXEC_BASE + LVO_REM_HEAD);
+            case EXEC_REM_TAIL:      return (uint32_t)((int)EXEC_BASE + LVO_REM_TAIL);
+            case EXEC_ENQUEUE:       return (uint32_t)((int)EXEC_BASE + LVO_ENQUEUE);
+            case EXEC_FIND_NAME:     return (uint32_t)((int)EXEC_BASE + LVO_FIND_NAME);
+            case EXEC_SET_TASK_PRI:  return (uint32_t)((int)EXEC_BASE + LVO_SET_TASK_PRI);
+            case EXEC_SET_EXCEPT:    return (uint32_t)((int)EXEC_BASE + LVO_SET_EXCEPT);
+            case EXEC_ALLOC_TRAP:    return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_TRAP);
+            case EXEC_FREE_TRAP:     return (uint32_t)((int)EXEC_BASE + LVO_FREE_TRAP);
+            case EXEC_ADD_PORT:      return (uint32_t)((int)EXEC_BASE + LVO_ADD_PORT);
+            case EXEC_REM_PORT:      return (uint32_t)((int)EXEC_BASE + LVO_REM_PORT);
+            case EXEC_FIND_PORT:     return (uint32_t)((int)EXEC_BASE + LVO_FIND_PORT);
+            case EXEC_OLD_OPEN_LIBRARY: return (uint32_t)((int)EXEC_BASE + LVO_OLD_OPEN_LIBRARY);
+            case EXEC_SET_FUNCTION:  return (uint32_t)((int)EXEC_BASE + LVO_SET_FUNCTION);
+            case EXEC_OPEN_DEVICE:   return (uint32_t)((int)EXEC_BASE + LVO_OPEN_DEVICE);
+            case EXEC_CLOSE_DEVICE:  return (uint32_t)((int)EXEC_BASE + LVO_CLOSE_DEVICE);
+            case EXEC_DO_IO:         return (uint32_t)((int)EXEC_BASE + LVO_DO_IO);
+            case EXEC_SEND_IO:       return (uint32_t)((int)EXEC_BASE + LVO_SEND_IO);
+            case EXEC_CHECK_IO:      return (uint32_t)((int)EXEC_BASE + LVO_CHECK_IO);
+            case EXEC_WAIT_IO:       return (uint32_t)((int)EXEC_BASE + LVO_WAIT_IO);
+            case EXEC_ABORT_IO:      return (uint32_t)((int)EXEC_BASE + LVO_ABORT_IO);
+            case EXEC_OPEN_RESOURCE: return (uint32_t)((int)EXEC_BASE + LVO_OPEN_RESOURCE);
+            case EXEC_GETCC:         return (uint32_t)((int)EXEC_BASE + LVO_GETCC);
+            case EXEC_TYPE_OF_MEM:   return (uint32_t)((int)EXEC_BASE + LVO_TYPE_OF_MEM);
+            case EXEC_PROCURE:       return (uint32_t)((int)EXEC_BASE + LVO_PROCURE);
+            case EXEC_VACATE:        return (uint32_t)((int)EXEC_BASE + LVO_VACATE);
+            case EXEC_INIT_SEMAPHORE: return (uint32_t)((int)EXEC_BASE + LVO_INIT_SEMAPHORE);
+            case EXEC_OBTAIN_SEM: return (uint32_t)((int)EXEC_BASE + LVO_OBTAIN_SEM);
+            case EXEC_RELEASE_SEM: return (uint32_t)((int)EXEC_BASE + LVO_RELEASE_SEM);
+            case EXEC_ATTEMPT_SEM: return (uint32_t)((int)EXEC_BASE + LVO_ATTEMPT_SEM);
+            case EXEC_COPY_MEM:      return (uint32_t)((int)EXEC_BASE + LVO_COPY_MEM);
+            case EXEC_COPY_MEM_QUICK: return (uint32_t)((int)EXEC_BASE + LVO_COPY_MEM_QUICK);
+            case EXEC_CACHE_CONTROL: return (uint32_t)((int)EXEC_BASE + LVO_CACHE_CONTROL);
+            case EXEC_CACHE_CLEAR_E: return (uint32_t)((int)EXEC_BASE + LVO_CACHE_CLEAR_E);
+            case EXEC_CREATE_IOREQUEST: return (uint32_t)((int)EXEC_BASE + LVO_CREATE_IOREQUEST);
+            case EXEC_DELETE_IOREQUEST: return (uint32_t)((int)EXEC_BASE + LVO_DELETE_IOREQUEST);
+            case EXEC_CREATE_MSGPORT:   return (uint32_t)((int)EXEC_BASE + LVO_CREATE_MSGPORT);
+            case EXEC_DELETE_MSGPORT:   return (uint32_t)((int)EXEC_BASE + LVO_DELETE_MSGPORT);
+            case EXEC_OBTAIN_SEM_LIST:  return (uint32_t)((int)EXEC_BASE + LVO_OBTAIN_SEM_LIST);
+            case EXEC_RELEASE_SEM_LIST: return (uint32_t)((int)EXEC_BASE + LVO_RELEASE_SEM_LIST);
+            case EXEC_FIND_SEMAPHORE:   return (uint32_t)((int)EXEC_BASE + LVO_FIND_SEMAPHORE);
+            case EXEC_ADD_SEMAPHORE:    return (uint32_t)((int)EXEC_BASE + LVO_ADD_SEMAPHORE);
+            case EXEC_REM_SEMAPHORE:    return (uint32_t)((int)EXEC_BASE + LVO_REM_SEMAPHORE);
+            case EXEC_OBTAIN_SEM_SHARED: return (uint32_t)((int)EXEC_BASE + LVO_OBTAIN_SEM_SHARED);
+            case EXEC_ALLOC_VEC:     return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_VEC);
+            case EXEC_FREE_VEC:      return (uint32_t)((int)EXEC_BASE + LVO_FREE_VEC);
         }
     } else if (lib_id == LIB_DOS) {
         switch (func_idx) {
@@ -1106,7 +1531,7 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_VPRINTF:        return (uint32_t)((int)DOS_BASE + LVO_DOS_VPRINTF);
             case DOS_VFWRITEF:       return (uint32_t)((int)DOS_BASE + LVO_DOS_VFWRITEF);
             case DOS_READARGS:       return (uint32_t)((int)DOS_BASE + LVO_DOS_READARGS);
-            case DOS_GETARGSTR:      return (uint32_t)((int)DOS_BASE + LVO_DOS_GETARGSTR);
+            case DOS_GETARGSTR:      return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_ARG_STR);
             case DOS_ISINTERACTIVE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_ISINTERACTIVE);
             case DOS_DELETEFILE:     return (uint32_t)((int)DOS_BASE + LVO_DOS_DELETEFILE);
             case DOS_RENAME:         return (uint32_t)((int)DOS_BASE + LVO_DOS_RENAME);
@@ -1143,7 +1568,7 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_WAIT_PKT:       return (uint32_t)((int)DOS_BASE + LVO_DOS_WAIT_PKT);
             case DOS_REPLY_PKT:      return (uint32_t)((int)DOS_BASE + LVO_DOS_REPLY_PKT);
             case DOS_ADD_PART:       return (uint32_t)((int)DOS_BASE + LVO_DOS_ADD_PART);
-            case DOS_COMPARE_NAMES:  return (uint32_t)((int)DOS_BASE + LVO_DOS_COMPARE_NAMES);
+            /* DOS_COMPARE_NAMES has no public LVO — internal-only fn id */
             case DOS_STR_TO_DATE:    return (uint32_t)((int)DOS_BASE + LVO_DOS_STR_TO_DATE);
             case DOS_CHECK_SIGNAL:   return (uint32_t)((int)DOS_BASE + LVO_DOS_CHECK_SIGNAL);
             case DOS_WAIT_FOR_CHAR:  return (uint32_t)((int)DOS_BASE + LVO_DOS_WAIT_FOR_CHAR);
@@ -1152,6 +1577,20 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_UNLOCK_RECORD:  return (uint32_t)((int)DOS_BASE + LVO_DOS_UNLOCK_RECORD);
             case DOS_GET_CONSOLE_TASK: return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_CONSOLE_TASK);
             case DOS_SET_CONSOLE_TASK: return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_CONSOLE_TASK);
+            case DOS_CURRENT_DIR:    return (uint32_t)((int)DOS_BASE + LVO_DOS_CURRENT_DIR);
+            case DOS_SET_PROGRAM_DIR: return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_PROGRAM_DIR);
+            case DOS_GET_PROGRAM_DIR: return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_PROGRAM_DIR);
+            case DOS_SET_IO_ERR:     return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_IO_ERR);
+            case DOS_CLI:            return (uint32_t)((int)DOS_BASE + LVO_DOS_CLI);
+            case DOS_FIND_CLI_PROC:  return (uint32_t)((int)DOS_BASE + LVO_DOS_FIND_CLI_PROC);
+            case DOS_WRITE_CHARS:    return (uint32_t)((int)DOS_BASE + LVO_DOS_WRITE_CHARS);
+            case DOS_FREE_ARGS:      return (uint32_t)((int)DOS_BASE + LVO_DOS_FREE_ARGS);
+            case DOS_FLUSH:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FLUSH);
+            case DOS_SELECT_INPUT:   return (uint32_t)((int)DOS_BASE + LVO_DOS_SELECT_INPUT);
+            case DOS_SELECT_OUTPUT:  return (uint32_t)((int)DOS_BASE + LVO_DOS_SELECT_OUTPUT);
+            case DOS_EXECUTE:        return (uint32_t)((int)DOS_BASE + LVO_DOS_EXECUTE);
+            case DOS_DEVICE_PROC:    return (uint32_t)((int)DOS_BASE + LVO_DOS_DEVICE_PROC);
+            case DOS_FAULT:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FAULT);
         }
     } else if (lib_id == LIB_INTUITION) {
         switch (func_idx) {
@@ -1356,19 +1795,97 @@ static void install_lvo(uint32_t base, int lvo, int lib_id, int func_idx)
 
 static void install_loadable_libs(void);
 
+/* Guest-visible Process/CLI/RDArgs addresses — allocated post-hunk_load by
+ * UAOS_Emu_SetupProcess() so they can never sit inside the program image. */
+uint32_t g_guest_proc_addr   = 0;
+uint32_t g_guest_cli_addr    = 0;
+uint32_t g_guest_rdargs_addr = 0;
+
+/* Allocate and populate the guest-side Process/CLI environment.
+ * Call AFTER hunk_load (the bump allocator hands these out past the
+ * program hunks).  cmdname_bptr is the BSTR BPTR of the command name.
+ * Returns the Process struct address (0 on OOM). */
+uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
+{
+    uint32_t proc = heap_alloc(0x100);
+    uint32_t cli  = heap_alloc(0x80);
+    uint32_t rda  = heap_alloc(0x40);
+    if (!proc || !cli || !rda) return 0;
+    g_guest_proc_addr   = proc;
+    g_guest_cli_addr    = cli;
+    g_guest_rdargs_addr = rda;
+
+    /* Real Amiga Process layout (exec 39.x):
+     *   pr_CLI at +0xAC (BPTR to CommandLineInterface)
+     *   pr_CIS at +0x9C, pr_COS at +0xA0 (BPTR file handles)
+     * Self-decrunchers read pr_CLI and stamp cli_Module (+0x3C). */
+    guest_write_be32(proc + PR_CLI_OFFSET, cli >> 2);
+    guest_write_be32(proc + 0x9C,          DOS_STDIN_BPTR);   /* pr_CIS */
+    guest_write_be32(proc + 0xA0,          DOS_STDOUT_BPTR);  /* pr_COS */
+
+    g_ram[cli] = 0x01;                        /* non-zero/readable */
+    guest_write_be32(cli + 0x10, cmdname_bptr);   /* cli_CommandName */
+    guest_write_be32(cli + 0x2C, g_cmdline_bptr); /* cli_CommandLine */
+
+    /* ExecBase+0x114 = ThisTask — guest programs read their Process here. */
+    guest_write_be32(EXEC_BASE + 0x114, proc);
+    return proc;
+}
+
 void install_library_tables(void)
 {
-    /* Pre-fill all DOS LVO slots with MOVEQ #0,D0 + RTS
-     * Specific stubs below override the ones LHA actually uses. */
-    for (int lvo = -6; lvo >= -936; lvo -= 6) {
+    /* Pre-fill ALL DOS LVO slots (-6 .. -996) with ILLEGAL catch-all stubs
+     * so an unimplemented call logs "[dos] unimpl lvo=N" instead of silently
+     * returning 0 or wandering off.  Real handlers install over these. */
+    for (int lvo = -6; lvo >= -996; lvo -= 6) {
         uint32_t addr = (uint32_t)((int)DOS_BASE + lvo);
-        if (addr < GUEST_RAM_SIZE - 5) {
-            g_ram[addr]   = 0x70; g_ram[addr+1] = 0x00; /* MOVEQ #0,D0 */
-            g_ram[addr+2] = 0x4E; g_ram[addr+3] = 0x75; /* RTS */
-        }
+        if (addr < 0x40) break;
+        install_lvo(DOS_BASE, lvo, LIB_DOS, DOS_STUB_LVO);
     }
 
-    /* exec.library at EXEC_BASE */
+    /* exec.library at EXEC_BASE — catch-all stubs for every LVO we do not
+     * implement so a guest call logs "[exec] unimpl lvo=…" instead of
+     * marching into zeroed RAM.  Stubs sit at EXEC_BASE+lvo, floor 0x40. */
+    for (int lvo = -6; lvo >= -720; lvo -= 6) {
+        uint32_t a = (uint32_t)((int)EXEC_BASE + lvo);
+        if (a < 0x40) break;
+        install_lvo(EXEC_BASE, lvo, LIB_EXEC, EXEC_STUB_LVO);
+    }
+
+    /* exec.library identification (struct Library): version at +20.
+     * Report 37 (Kickstart 2.04) — OctaMED requires WB 2.04+. */
+    guest_write_be16(EXEC_BASE + 20, 37);
+    guest_write_be16(EXEC_BASE + 22, 0);
+    g_ram[EXEC_BASE + 8] = NT_LIBRARY;
+
+    /* Dynamic system fields: nest counters start at -1 (enabled),
+     * AttnFlags claims a 68020. */
+    g_ram[EXEC_BASE + 0x126] = (uint8_t)-1;  /* IDNestCnt */
+    g_ram[EXEC_BASE + 0x127] = (uint8_t)-1;  /* TDNestCnt */
+    guest_write_be16(EXEC_BASE + 0x128, 0x0003); /* AttnFlags: 68010+68020 */
+    g_ram[EXEC_BASE + 0x212] = 50;           /* VBlankFrequency  (V36) */
+    g_ram[EXEC_BASE + 0x213] = 50;           /* PowerSupplyFreq  (V36) */
+
+    /* System list headers — canonical execbase.i offsets.  An Amiga List
+     * header is: lh_Head=&lh_Tail, lh_Tail=NULL, lh_TailPred=&lh_Head. */
+    static const uint16_t eb_lists[] = {
+        0x142, /* MemList */
+        0x150, /* ResourceList */
+        0x15E, /* DeviceList */
+        0x16C, /* IntrList */
+        0x17A, /* LibList */
+        0x188, /* PortList */
+        0x196, /* TaskReady */
+        0x1A4, /* TaskWait */
+        0x214, /* SemaphoreList (V36) */
+    };
+    for (unsigned li = 0; li < sizeof(eb_lists)/sizeof(eb_lists[0]); li++) {
+        uint32_t h = EXEC_BASE + eb_lists[li];
+        guest_write_be32(h + 0, h + 4);
+        guest_write_be32(h + 4, 0);
+        guest_write_be32(h + 8, h);
+    }
+
     install_lvo(EXEC_BASE, LVO_OPEN_LIBRARY,  LIB_EXEC, EXEC_OPEN_LIBRARY);
     install_lvo(EXEC_BASE, LVO_CLOSE_LIBRARY, LIB_EXEC, EXEC_CLOSE_LIBRARY);
     install_lvo(EXEC_BASE, LVO_ALLOC_MEM,     LIB_EXEC, EXEC_ALLOC_MEM);
@@ -1383,6 +1900,71 @@ void install_library_tables(void)
     install_lvo(EXEC_BASE, LVO_GET_MSG,       LIB_EXEC, EXEC_GET_MSG);
     install_lvo(EXEC_BASE, LVO_REPLY_MSG,     LIB_EXEC, EXEC_REPLY_MSG);
     install_lvo(EXEC_BASE, LVO_WAIT_PORT,     LIB_EXEC, EXEC_WAIT_PORT);
+    install_lvo(EXEC_BASE, LVO_CACHE_CLEAR_U, LIB_EXEC, EXEC_CACHE_CLEAR_U);
+    install_lvo(EXEC_BASE, LVO_INIT_STRUCT,   LIB_EXEC, EXEC_INIT_STRUCT);
+    install_lvo(EXEC_BASE, LVO_DISABLE,       LIB_EXEC, EXEC_DISABLE);
+    install_lvo(EXEC_BASE, LVO_ENABLE,        LIB_EXEC, EXEC_ENABLE);
+    install_lvo(EXEC_BASE, LVO_FORBID,        LIB_EXEC, EXEC_FORBID);
+    install_lvo(EXEC_BASE, LVO_PERMIT,        LIB_EXEC, EXEC_PERMIT);
+    install_lvo(EXEC_BASE, LVO_SUPER_STATE,   LIB_EXEC, EXEC_SUPER_STATE);
+    install_lvo(EXEC_BASE, LVO_USER_STATE,    LIB_EXEC, EXEC_USER_STATE);
+    install_lvo(EXEC_BASE, LVO_SET_INT_VECTOR, LIB_EXEC, EXEC_SET_INT_VECTOR);
+    install_lvo(EXEC_BASE, LVO_ADD_INT_SERVER, LIB_EXEC, EXEC_ADD_INT_SERVER);
+    install_lvo(EXEC_BASE, LVO_REM_INT_SERVER, LIB_EXEC, EXEC_REM_INT_SERVER);
+    install_lvo(EXEC_BASE, LVO_CAUSE,          LIB_EXEC, EXEC_CAUSE);
+    install_lvo(EXEC_BASE, LVO_AVAIL_MEM,     LIB_EXEC, EXEC_AVAIL_MEM);
+    install_lvo(EXEC_BASE, LVO_ALLOC_ENTRY,   LIB_EXEC, EXEC_ALLOC_ENTRY);
+    install_lvo(EXEC_BASE, LVO_FREE_ENTRY,    LIB_EXEC, EXEC_FREE_ENTRY);
+    install_lvo(EXEC_BASE, LVO_INSERT,        LIB_EXEC, EXEC_INSERT);
+    install_lvo(EXEC_BASE, LVO_ADD_HEAD,      LIB_EXEC, EXEC_ADD_HEAD);
+    install_lvo(EXEC_BASE, LVO_ADD_TAIL,      LIB_EXEC, EXEC_ADD_TAIL);
+    install_lvo(EXEC_BASE, LVO_REMOVE,        LIB_EXEC, EXEC_REMOVE);
+    install_lvo(EXEC_BASE, LVO_REM_HEAD,      LIB_EXEC, EXEC_REM_HEAD);
+    install_lvo(EXEC_BASE, LVO_REM_TAIL,      LIB_EXEC, EXEC_REM_TAIL);
+    install_lvo(EXEC_BASE, LVO_ENQUEUE,       LIB_EXEC, EXEC_ENQUEUE);
+    install_lvo(EXEC_BASE, LVO_FIND_NAME,     LIB_EXEC, EXEC_FIND_NAME);
+    install_lvo(EXEC_BASE, LVO_SET_TASK_PRI,  LIB_EXEC, EXEC_SET_TASK_PRI);
+    install_lvo(EXEC_BASE, LVO_SET_EXCEPT,    LIB_EXEC, EXEC_SET_EXCEPT);
+    install_lvo(EXEC_BASE, LVO_ALLOC_TRAP,    LIB_EXEC, EXEC_ALLOC_TRAP);
+    install_lvo(EXEC_BASE, LVO_FREE_TRAP,     LIB_EXEC, EXEC_FREE_TRAP);
+    install_lvo(EXEC_BASE, LVO_ADD_PORT,      LIB_EXEC, EXEC_ADD_PORT);
+    install_lvo(EXEC_BASE, LVO_REM_PORT,      LIB_EXEC, EXEC_REM_PORT);
+    install_lvo(EXEC_BASE, LVO_FIND_PORT,     LIB_EXEC, EXEC_FIND_PORT);
+    install_lvo(EXEC_BASE, LVO_OLD_OPEN_LIBRARY, LIB_EXEC, EXEC_OLD_OPEN_LIBRARY);
+    install_lvo(EXEC_BASE, LVO_SET_FUNCTION,  LIB_EXEC, EXEC_SET_FUNCTION);
+    install_lvo(EXEC_BASE, LVO_OPEN_DEVICE,   LIB_EXEC, EXEC_OPEN_DEVICE);
+    install_lvo(EXEC_BASE, LVO_CLOSE_DEVICE,  LIB_EXEC, EXEC_CLOSE_DEVICE);
+    install_lvo(EXEC_BASE, LVO_DO_IO,         LIB_EXEC, EXEC_DO_IO);
+    install_lvo(EXEC_BASE, LVO_SEND_IO,       LIB_EXEC, EXEC_SEND_IO);
+    install_lvo(EXEC_BASE, LVO_CHECK_IO,      LIB_EXEC, EXEC_CHECK_IO);
+    install_lvo(EXEC_BASE, LVO_WAIT_IO,       LIB_EXEC, EXEC_WAIT_IO);
+    install_lvo(EXEC_BASE, LVO_ABORT_IO,      LIB_EXEC, EXEC_ABORT_IO);
+    install_lvo(EXEC_BASE, LVO_OPEN_RESOURCE, LIB_EXEC, EXEC_OPEN_RESOURCE);
+    install_lvo(EXEC_BASE, LVO_GETCC,         LIB_EXEC, EXEC_GETCC);
+    install_lvo(EXEC_BASE, LVO_TYPE_OF_MEM,   LIB_EXEC, EXEC_TYPE_OF_MEM);
+    install_lvo(EXEC_BASE, LVO_PROCURE,       LIB_EXEC, EXEC_PROCURE);
+    install_lvo(EXEC_BASE, LVO_VACATE,        LIB_EXEC, EXEC_VACATE);
+    install_lvo(EXEC_BASE, LVO_INIT_SEMAPHORE, LIB_EXEC, EXEC_INIT_SEMAPHORE);
+    install_lvo(EXEC_BASE, LVO_OBTAIN_SEM, LIB_EXEC, EXEC_OBTAIN_SEM);
+    install_lvo(EXEC_BASE, LVO_RELEASE_SEM, LIB_EXEC, EXEC_RELEASE_SEM);
+    install_lvo(EXEC_BASE, LVO_ATTEMPT_SEM, LIB_EXEC, EXEC_ATTEMPT_SEM);
+    install_lvo(EXEC_BASE, LVO_COPY_MEM,      LIB_EXEC, EXEC_COPY_MEM);
+    install_lvo(EXEC_BASE, LVO_COPY_MEM_QUICK, LIB_EXEC, EXEC_COPY_MEM_QUICK);
+    install_lvo(EXEC_BASE, LVO_CACHE_CONTROL, LIB_EXEC, EXEC_CACHE_CONTROL);
+    install_lvo(EXEC_BASE, LVO_CACHE_CLEAR_E, LIB_EXEC, EXEC_CACHE_CLEAR_E);
+    install_lvo(EXEC_BASE, LVO_RAW_DO_FMT,     LIB_EXEC, EXEC_RAW_DO_FMT);
+    install_lvo(EXEC_BASE, LVO_CREATE_IOREQUEST, LIB_EXEC, EXEC_CREATE_IOREQUEST);
+    install_lvo(EXEC_BASE, LVO_DELETE_IOREQUEST, LIB_EXEC, EXEC_DELETE_IOREQUEST);
+    install_lvo(EXEC_BASE, LVO_CREATE_MSGPORT,   LIB_EXEC, EXEC_CREATE_MSGPORT);
+    install_lvo(EXEC_BASE, LVO_DELETE_MSGPORT,   LIB_EXEC, EXEC_DELETE_MSGPORT);
+    install_lvo(EXEC_BASE, LVO_OBTAIN_SEM_LIST,  LIB_EXEC, EXEC_OBTAIN_SEM_LIST);
+    install_lvo(EXEC_BASE, LVO_RELEASE_SEM_LIST, LIB_EXEC, EXEC_RELEASE_SEM_LIST);
+    install_lvo(EXEC_BASE, LVO_FIND_SEMAPHORE,   LIB_EXEC, EXEC_FIND_SEMAPHORE);
+    install_lvo(EXEC_BASE, LVO_ADD_SEMAPHORE,    LIB_EXEC, EXEC_ADD_SEMAPHORE);
+    install_lvo(EXEC_BASE, LVO_REM_SEMAPHORE,    LIB_EXEC, EXEC_REM_SEMAPHORE);
+    install_lvo(EXEC_BASE, LVO_OBTAIN_SEM_SHARED, LIB_EXEC, EXEC_OBTAIN_SEM_SHARED);
+    install_lvo(EXEC_BASE, LVO_ALLOC_VEC,     LIB_EXEC, EXEC_ALLOC_VEC);
+    install_lvo(EXEC_BASE, LVO_FREE_VEC,      LIB_EXEC, EXEC_FREE_VEC);
 
     /* dos.library at DOS_BASE */
     install_lvo(DOS_BASE, LVO_DOS_OUTPUT,   LIB_DOS, DOS_OUTPUT);
@@ -1393,7 +1975,7 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_VPRINTF,       LIB_DOS, DOS_VPRINTF);
     install_lvo(DOS_BASE, LVO_DOS_VFWRITEF,      LIB_DOS, DOS_VFWRITEF);
     install_lvo(DOS_BASE, LVO_DOS_READARGS,      LIB_DOS, DOS_READARGS);
-    install_lvo(DOS_BASE, LVO_DOS_GETARGSTR,     LIB_DOS, DOS_GETARGSTR);
+    install_lvo(DOS_BASE, LVO_DOS_GET_ARG_STR,   LIB_DOS, DOS_GETARGSTR);
     install_lvo(DOS_BASE, LVO_DOS_ISINTERACTIVE, LIB_DOS, DOS_ISINTERACTIVE);
     install_lvo(DOS_BASE, LVO_DOS_WRITE,  LIB_DOS, DOS_WRITE);
     install_lvo(DOS_BASE, LVO_DOS_OPEN,   LIB_DOS, DOS_OPEN);
@@ -1430,7 +2012,19 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_WAIT_PKT,       LIB_DOS, DOS_WAIT_PKT);
     install_lvo(DOS_BASE, LVO_DOS_REPLY_PKT,      LIB_DOS, DOS_REPLY_PKT);
     install_lvo(DOS_BASE, LVO_DOS_ADD_PART,       LIB_DOS, DOS_ADD_PART);
-    install_lvo(DOS_BASE, LVO_DOS_COMPARE_NAMES,  LIB_DOS, DOS_COMPARE_NAMES);
+    install_lvo(DOS_BASE, LVO_DOS_CURRENT_DIR,   LIB_DOS, DOS_CURRENT_DIR);
+    install_lvo(DOS_BASE, LVO_DOS_SET_PROGRAM_DIR, LIB_DOS, DOS_SET_PROGRAM_DIR);
+    install_lvo(DOS_BASE, LVO_DOS_GET_PROGRAM_DIR, LIB_DOS, DOS_GET_PROGRAM_DIR);
+    install_lvo(DOS_BASE, LVO_DOS_SET_IO_ERR,    LIB_DOS, DOS_SET_IO_ERR);
+    install_lvo(DOS_BASE, LVO_DOS_CLI,           LIB_DOS, DOS_CLI);
+    install_lvo(DOS_BASE, LVO_DOS_FIND_CLI_PROC, LIB_DOS, DOS_FIND_CLI_PROC);
+    install_lvo(DOS_BASE, LVO_DOS_WRITE_CHARS,   LIB_DOS, DOS_WRITE_CHARS);
+    install_lvo(DOS_BASE, LVO_DOS_FREE_ARGS,     LIB_DOS, DOS_FREE_ARGS);
+    install_lvo(DOS_BASE, LVO_DOS_FLUSH,         LIB_DOS, DOS_FLUSH);
+    install_lvo(DOS_BASE, LVO_DOS_SELECT_INPUT,  LIB_DOS, DOS_SELECT_INPUT);
+    install_lvo(DOS_BASE, LVO_DOS_SELECT_OUTPUT, LIB_DOS, DOS_SELECT_OUTPUT);
+    install_lvo(DOS_BASE, LVO_DOS_EXECUTE,       LIB_DOS, DOS_EXECUTE);
+    install_lvo(DOS_BASE, LVO_DOS_DEVICE_PROC,   LIB_DOS, DOS_DEVICE_PROC);
     install_lvo(DOS_BASE, LVO_DOS_STR_TO_DATE,    LIB_DOS, DOS_STR_TO_DATE);
     install_lvo(DOS_BASE, LVO_DOS_CHECK_SIGNAL,   LIB_DOS, DOS_CHECK_SIGNAL);
     install_lvo(DOS_BASE, LVO_DOS_WAIT_FOR_CHAR,  LIB_DOS, DOS_WAIT_FOR_CHAR);
@@ -1439,6 +2033,7 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_UNLOCK_RECORD,  LIB_DOS, DOS_UNLOCK_RECORD);
     install_lvo(DOS_BASE, LVO_DOS_GET_CONSOLE_TASK, LIB_DOS, DOS_GET_CONSOLE_TASK);
     install_lvo(DOS_BASE, LVO_DOS_SET_CONSOLE_TASK, LIB_DOS, DOS_SET_CONSOLE_TASK);
+    install_lvo(DOS_BASE, LVO_DOS_FAULT,           LIB_DOS, DOS_FAULT);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {
@@ -1663,6 +2258,13 @@ void install_library_tables(void)
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_VISUAL_INFO,        LIB_GADTOOLS, GADTOOLS_FREE_VISUAL_INFO);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_GET_GADGET_ATTRS_A,   LIB_GADTOOLS, GADTOOLS_GT_GET_GADGET_ATTRS_A);
 
+    /* audio.device — real jump table so BeginIO/AbortIO dispatch to the
+     * channel-arbitration implementation (UAOS-240). */
+    install_lvo(AUDIO_DEV_BASE, -6,  LIB_AUDIODEV, AUDEV_LVO_OPEN);
+    install_lvo(AUDIO_DEV_BASE, -12, LIB_AUDIODEV, AUDEV_LVO_CLOSE);
+    install_lvo(AUDIO_DEV_BASE, -42, LIB_AUDIODEV, AUDEV_LVO_BEGINIO);
+    install_lvo(AUDIO_DEV_BASE, -48, LIB_AUDIODEV, AUDEV_LVO_ABORTIO);
+
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
      * For FAKE_LIB_BASE we just put RTS everywhere (D0=0 is the default return). */
@@ -1677,47 +2279,9 @@ void install_library_tables(void)
     /* Install real M68k binary libraries loaded from disk */
     install_loadable_libs();
 
-    /* Build fake Process struct so LHA sees a CLI launch:
-     * pr_CLI (offset 0xAC) must be non-zero (BPTR to CLI struct)
-     * pr_COS (offset 0x36) = stdout BPTR
-     * pr_CIS (offset 0x32) = stdin BPTR */
-    {
-        uint32_t base = FAKE_PROCESS_ADDR;
-        /* Zero the struct area */
-        for (int i = 0; i < 0x100; i++) g_ram[base + i] = 0;
-        /* pr_CLI: BPTR to fake CLI struct (BPTR = addr >> 2) */
-        uint32_t cli_bptr = FAKE_CLI_ADDR >> 2;
-        g_ram[base + PR_CLI_OFFSET]     = (cli_bptr >> 24) & 0xFF;
-        g_ram[base + PR_CLI_OFFSET + 1] = (cli_bptr >> 16) & 0xFF;
-        g_ram[base + PR_CLI_OFFSET + 2] = (cli_bptr >>  8) & 0xFF;
-        g_ram[base + PR_CLI_OFFSET + 3] = (cli_bptr      ) & 0xFF;
-        /* pr_COS: stdout */
-        uint32_t cout = DOS_STDOUT_BPTR;
-        g_ram[base + PR_COS_OFFSET]     = (cout >> 24) & 0xFF;
-        g_ram[base + PR_COS_OFFSET + 1] = (cout >> 16) & 0xFF;
-        g_ram[base + PR_COS_OFFSET + 2] = (cout >>  8) & 0xFF;
-        g_ram[base + PR_COS_OFFSET + 3] = (cout      ) & 0xFF;
-        /* pr_CIS: stdin */
-        uint32_t cin = DOS_STDIN_BPTR;
-        g_ram[base + PR_CIS_OFFSET]     = (cin >> 24) & 0xFF;
-        g_ram[base + PR_CIS_OFFSET + 1] = (cin >> 16) & 0xFF;
-        g_ram[base + PR_CIS_OFFSET + 2] = (cin >>  8) & 0xFF;
-        g_ram[base + PR_CIS_OFFSET + 3] = (cin      ) & 0xFF;
-        /* Minimal fake CLI struct (just needs to be non-zero and readable) */
-        for (int i = 0; i < 0x80; i++) g_ram[FAKE_CLI_ADDR + i] = 0;
-        g_ram[FAKE_CLI_ADDR] = 0x01; /* version / any non-zero byte */
-    }
-
-    /* LHA startup: MOVEA.L (0x4).W,A6 loads EXEC_BASE into A6, then
-     * MOVEA.L 0x114(A6),A3 reads the Process pointer from EXEC_BASE+0x114.
-     * Store FAKE_PROCESS_ADDR at that offset in the exec base area. */
-    {
-        uint32_t proc_slot = EXEC_BASE + 0x114;
-        g_ram[proc_slot]   = (FAKE_PROCESS_ADDR >> 24) & 0xFF;
-        g_ram[proc_slot+1] = (FAKE_PROCESS_ADDR >> 16) & 0xFF;
-        g_ram[proc_slot+2] = (FAKE_PROCESS_ADDR >>  8) & 0xFF;
-        g_ram[proc_slot+3] = (FAKE_PROCESS_ADDR      ) & 0xFF;
-    }
+    /* The Process/CLI/RDArgs structs are allocated AFTER hunk_load by
+     * UAOS_Emu_SetupProcess() — fixed addresses here would sit inside the
+     * program image and get stomped for anything > ~60 KB. */
 
     /* Store exec_base at absolute address 4 (SysBase) */
     g_ram[4] = (EXEC_BASE >> 24) & 0xFF;
@@ -1794,57 +2358,175 @@ static void install_loadable_libs(void)
 
 /* g_last_err replaced by global g_dos_last_ioerr via SetIoErr()/IoErr() */
 
+/* -------------------------------------------------------------------------
+ * Generated library bases (OpenLibrary for modules without a fixed base)
+ *
+ * Each bound library gets a guest block:  [960B stub area][64B Library
+ * struct][64B name/idstring].  Stubs are ILLEGAL dispatch words tagged
+ * LIB_GENERIC (fake: log+return 0) or LIB_UTILITY (real ROM dispatch).
+ * ------------------------------------------------------------------------- */
+#define GENLIB_STUB_AREA  960          /* covers LVO -6 .. -960 */
+#define GENLIB_BLK_SIZE   (GENLIB_STUB_AREA + 0x40 + 0x40)
+
+typedef struct {
+    uint32_t base;
+    char     name[48];
+    int      utility;   /* bound to utility.library ROM funcs */
+    int      cia;       /* 0=CIAA, 1=CIAB for cia*.resource, else -1 */
+    uint32_t icr_tab;   /* guest addr of 8-entry ICR Interrupt* table */
+} GenLib;
+
+static GenLib g_genlibs[16];
+static int    g_genlib_count = 0;
+
+/* Genlib blocks are carved from the 64 KB guard band at the top of chip
+ * RAM (0x7F0000-0x800000) — deliberately outside every free-list pool so
+ * guest heap activity can never recycle or clobber the LVO stubs.  The
+ * fast pool flat-covers 0x800000-0xFF0000 and self-decrunching programs
+ * (OctaMED unpacks to 0x800000+) write their image into the same range:
+ * pool-allocated lib bases there got stomped and jsr@(-60) ran guest
+ * data instead of dispatching.  16 libs × ~1.1 KB fits with room to
+ * spare. */
+#define GENLIB_ARENA_START 0x007F0000u
+#define GENLIB_ARENA_END   0x00800000u
+static uint32_t g_genlib_heap = GENLIB_ARENA_START;
+
+/* Per-task guest RAM windows are cleared on launch — callers reset this
+ * so stale bases are not handed out into a fresh window. */
+void emu_reset_genlibs(void)
+{
+    g_genlib_count = 0;
+    g_genlib_heap  = GENLIB_ARENA_START;
+}
+
+/* Name lookup for LIB_GENERIC dispatch logging */
+const char *emu_fake_lib_name(uint32_t base)
+{
+    for (int i = 0; i < g_genlib_count; i++)
+        if (g_genlibs[i].base == base) return g_genlibs[i].name;
+    return NULL;
+}
+
+/* Canonical utility.library LVOs → util_funcs[] indices (utility_lib.fd).
+ * Index 0 in this table means "install a catch-all stub". */
+static const struct { int lvo; uint8_t fn; } g_utility_lvo_map[] = {
+    {  -36, 12 },   /* GetTagData   */
+    {  -48, 11 },   /* NextTagItem  */
+    { -138,  9 },   /* SMult32      */
+    { -144, 10 },   /* UMult32      */
+    { -162,  5 },   /* Stricmp      */
+    { -168,  6 },   /* Strnicmp     */
+    { -174,  7 },   /* ToUpper      */
+    { -180,  8 },   /* ToLower      */
+    { -552,  1 },   /* OpenLibrary  */
+    { -414,  2 },   /* CloseLibrary */
+};
+
+/* Allocate a guest library base for `name`, fill the Library struct, and
+ * install stubs: real LVO->fn map for utility.library, LIB_GENERIC
+ * catch-alls elsewhere.  Returns the base or 0. */
+static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver)
+{
+    if (g_genlib_count >= 16) return 0;
+
+    /* ciaa.resource / ciab.resource get an extra 8-entry ICR Interrupt
+     * table at base+0x80 for AddICRVector/RemICRVector (UAOS-241). */
+    int cia = -1;
+    if (name[0] == 'c' && name[1] == 'i' && name[2] == 'a' &&
+        name[4] == '.' && name[5] == 'r') {
+        if (name[3] == 'a') cia = 0;
+        else if (name[3] == 'b') cia = 1;
+    }
+    uint32_t blk_size = GENLIB_BLK_SIZE + ((cia >= 0) ? 0x40u : 0u);
+
+    uint32_t blk = g_genlib_heap;
+    if (blk + blk_size > GENLIB_ARENA_END) return 0;
+    g_genlib_heap = blk + ((blk_size + 3u) & ~3u);
+    for (uint32_t i = 0; i < blk_size; i++) g_ram[blk + i] = 0;
+
+    uint32_t base     = blk + GENLIB_STUB_AREA;
+    uint32_t name_ptr = blk + GENLIB_STUB_AREA + 0x40;
+
+    GenLib *e = &g_genlibs[g_genlib_count++];
+    e->base = base;
+    e->cia  = cia;
+    e->icr_tab = (cia >= 0) ? base + 0x80 : 0;
+    int k = 0;
+    while (name[k] && k < 47) { e->name[k] = name[k]; g_ram[name_ptr + k] = (uint8_t)name[k]; k++; }
+    e->name[k] = '\0';
+    g_ram[name_ptr + k] = 0;
+
+    int is_utility = 0;
+    const char *un = "utility.library";
+    int u = 0;
+    while (un[u] && name[u] == un[u]) u++;
+    is_utility = (un[u] == 0 && name[u] == 0);
+    e->utility = is_utility;
+
+    /* struct Library: Node + flags + sizes + version + idstring + opencnt */
+    g_ram[base + 8] = 9;                        /* ln_Type = NT_LIBRARY */
+    glue_w32(base + 10, name_ptr);              /* ln_Name */
+    glue_w16(base + 16, (uint16_t)GENLIB_STUB_AREA); /* lib_NegSize */
+    glue_w16(base + 18, 34);                    /* lib_PosSize */
+    uint16_t ver = req_ver ? (uint16_t)req_ver : 39;
+    glue_w16(base + 20, ver);                   /* lib_Version */
+    glue_w16(base + 22, 0);                     /* lib_Revision */
+    glue_w32(base + 24, name_ptr);              /* lib_IdString */
+    glue_w16(base + 32, 1);                     /* lib_OpenCnt */
+
+    uint8_t lib_id = is_utility ? LIB_UTILITY : LIB_GENERIC;
+    for (int lvo = -6; lvo >= -(int)GENLIB_STUB_AREA; lvo -= 6)
+        install_lvo(base, lvo, lib_id, 0xEE);   /* 0xEE = unmapped */
+
+    if (is_utility) {
+        for (unsigned i = 0; i < sizeof(g_utility_lvo_map)/sizeof(g_utility_lvo_map[0]); i++)
+            install_lvo(base, g_utility_lvo_map[i].lvo, LIB_UTILITY,
+                        g_utility_lvo_map[i].fn);
+    }
+    return base;
+}
+
+static uint32_t emu_gen_find(const char *name)
+{
+    for (int i = 0; i < g_genlib_count; i++) {
+        const char *n = g_genlibs[i].name;
+        int j = 0;
+        while (n[j] && name[j] == n[j]) j++;
+        if (n[j] == 0 && name[j] == 0) return g_genlibs[i].base;
+    }
+    return 0;
+}
+
 static void exec_OpenLibrary(void)
 {
     /* A1 = library name string, D0 = version — returns base in D0 */
     uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t req_ver  = m68k_get_reg(NULL, M68K_REG_D0);
     char name[64];
     int i = 0;
     while (i < 63 && name_ptr + i < GUEST_RAM_SIZE)
         { name[i] = (char)g_ram[name_ptr+i]; if (!name[i]) break; i++; }
     name[i] = '\0';
 
-    /* Match known libraries */
-    uint32_t result = FAKE_LIB_BASE; /* default: return a stub base for unknown libs */
-
-    const char *exec_name = "exec.library";
-    int exec_match = 1;
-    for (int j = 0; exec_name[j]; j++)
-        if (name[j] != exec_name[j]) { exec_match = 0; break; }
-    if (exec_match) result = EXEC_BASE;
-
-    const char *dos_name = "dos.library";
-    int dos_match = 1;
-    for (int j = 0; dos_name[j]; j++)
-        if (name[j] != dos_name[j]) { dos_match = 0; break; }
-    if (dos_match) result = DOS_BASE;
-
-    const char *bsd_name = "bsdsocket.library";
-    int bsd_match = 1;
-    for (int j = 0; bsd_name[j]; j++)
-        if (name[j] != bsd_name[j]) { bsd_match = 0; break; }
-    if (bsd_match) result = BSD_BASE;
-
-    const char *gfx_name = "graphics.library";
-    int gfx_match = 1;
-    for (int j = 0; gfx_name[j]; j++)
-        if (name[j] != gfx_name[j]) { gfx_match = 0; break; }
-    if (gfx_match) result = GRAPHICS_BASE;
-
-    const char *intuition_name = "intuition.library";
-    int intuition_match = 1;
-    for (int j = 0; intuition_name[j]; j++)
-        if (name[j] != intuition_name[j]) { intuition_match = 0; break; }
-    if (intuition_match) result = INTUITION_BASE;
-
-    const char *gadtools_name = "gadtools.library";
-    int gadtools_match = 1;
-    for (int j = 0; gadtools_name[j]; j++)
-        if (name[j] != gadtools_name[j]) { gadtools_match = 0; break; }
-    if (gadtools_match) result = GADTOOLS_BASE;
+    /* Match known libraries — tables of {name, base} pairs */
+    static const struct { const char *n; uint32_t b; } fixed[] = {
+        { "exec.library",      EXEC_BASE },
+        { "dos.library",       DOS_BASE },
+        { "bsdsocket.library", BSD_BASE },
+        { "graphics.library",  GRAPHICS_BASE },
+        { "intuition.library", INTUITION_BASE },
+        { "gadtools.library",  GADTOOLS_BASE },
+    };
+    uint32_t result = 0;
+    for (unsigned f = 0; f < sizeof(fixed)/sizeof(fixed[0]); f++) {
+        const char *fn_ = fixed[f].n;
+        int j = 0;
+        while (fn_[j] && name[j] == fn_[j]) j++;
+        if (fn_[j] == 0 && name[j] == 0) { result = fixed[f].b; break; }
+    }
 
     /* Check loadable libraries (real M68k binaries loaded from disk) */
-    if (result == FAKE_LIB_BASE) {
+    if (!result) {
         for (int li = 0; li < g_glue_lib_count; li++) {
             if (!g_glue_libs[li].loaded) continue;
             const char *ln = g_glue_libs[li].name;
@@ -1858,11 +2540,18 @@ static void exec_OpenLibrary(void)
         }
     }
 
+    /* Everything else gets a generated versioned base — real ROM-bound
+     * stubs for utility.library, traced catch-alls for the rest
+     * (keymap/locale/asl/iffparse/icon/amigaguide/…).  This mirrors the
+     * host-harness strategy: enumerate the call surface instead of
+     * dying at the first missing library. */
+    if (!result) result = emu_gen_find(name);
+    if (!result) result = emu_gen_lib_base(name, req_ver);
+
     /* Trace every OpenLibrary name + requested version + outcome.
      * This is the primary tool for discovering what an m68k app needs. */
     {
-        uint32_t ver = m68k_get_reg(NULL, M68K_REG_D0);
-        const char *tag = (result == FAKE_LIB_BASE) ? "MISSING" : "ok";
+        const char *tag = result ? "ok" : "MISSING";
         char msg[128];
         int i = 0;
         const char *pfx = "[emu] OpenLibrary(\"";
@@ -1870,14 +2559,22 @@ static void exec_OpenLibrary(void)
         for (int j = 0; name[j] && i < 110; j++) msg[i++] = name[j];
         const char *mid = "\",v";
         for (int j = 0; mid[j] && i < 116; j++) msg[i++] = mid[j];
-        char n[12]; u32_dec(ver, n, 12);
+        char n[12]; u32_dec(req_ver, n, 12);
         for (int j = 0; n[j] && i < 122; j++) msg[i++] = n[j];
         msg[i++] = ')'; msg[i++] = '-'; msg[i++] = '>';
         msg[i++] = ' ';
-        for (int j = 0; tag[j] && i < 126; j++) msg[i++] = tag[j];
+        for (int j = 0; tag[j] && i < 120; j++) msg[i++] = tag[j];
+        /* base address for correlation with "[lib] x lvo=" logs */
+        msg[i++] = ' '; msg[i++] = '@'; msg[i++] = '0'; msg[i++] = 'x';
+        u32_hex(result, n);
+        for (int j = 0; n[j] && i < 126; j++) msg[i++] = n[j];
         msg[i++] = '\n'; msg[i] = '\0';
         emu_print(msg);
     }
+
+    /* bump lib_OpenCnt for realism */
+    if (result && result + 33 < GUEST_RAM_SIZE)
+        glue_w16(result + 32, glue_r16(result + 32) + 1);
 
     m68k_set_reg(M68K_REG_D0, result);
 
@@ -1891,19 +2588,225 @@ static void exec_OpenLibrary(void)
     m68k_set_reg(M68K_REG_SR, sr);
 }
 
+static void exec_OpenResource(void)
+{
+    /* OpenResource(resName=a1) → D0=resource base.  Same fake-base scheme:
+     * cia.resource/potgo.resource/etc get generated bases so callers see
+     * a valid pointer; their LVO calls log via LIB_GENERIC. */
+    uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    char name[64];
+    int i = 0;
+    while (i < 63 && name_ptr + i < GUEST_RAM_SIZE)
+        { name[i] = (char)g_ram[name_ptr+i]; if (!name[i]) break; i++; }
+    name[i] = '\0';
+    uint32_t base = emu_gen_find(name);
+    if (!base) base = emu_gen_lib_base(name, 0);
+    m68k_set_reg(M68K_REG_D0, base);
+}
+
 static void exec_CloseLibrary(void) { /* no-op */ }
 
-/* AllocMem / FreeMem — delegate to the dos_lib free-list allocator.
- * The functions are defined in dos_lib.c but we need them here via a thin
- * wrapper that forwards the M68k register arguments. */
-extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
-extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
+/* -------------------------------------------------------------------------
+ * Guest interrupt vectors (UAOS-241)
+ *
+ * ExecBase.IntVects[16] at +0x54: struct IntVector { iv_Data, iv_Code,
+ * iv_Node }.  SetIntVector installs a direct handler; AddIntServer converts
+ * the slot to a chain (iv_Code = IV_CHAIN sentinel, iv_Node = head) with
+ * Interrupt nodes linked via is_Node.ln_Succ.  Interrupt.is_Data / is_Code
+ * sit at +14 / +18 (after the 14-byte Node).
+ *
+ * Handlers are invoked with the Amiga convention — D0 = pending INTREQ bit,
+ * A0 = $DFF000 (custom regs in the guest window), A1 = is_Data,
+ * A5 = IntVector address, A6 = SysBase — and return via RTS to the shared
+ * hook-return trap.  Delivery is polled from the exec_task slice loop and
+ * from the blocking-wait paths (Wait/WaitPort/WaitIO); the Musashi
+ * m68k_set_irq() path stays unused for per-task contexts because their
+ * exception-vector tables are unpopulated. */
+#define EB_INTVECTS   (EXEC_BASE + 0x54)
+#define IV_DATA        0
+#define IV_CODE        4
+#define IV_NODE        8
+#define IV_CHAIN       0xFFFFFFFFu
+#define IS_DATA       14
+#define IS_CODE       18
 
+static uint32_t m68k_isr_call(uint32_t entry, uint32_t d0, uint32_t a1,
+                              uint32_t a5);
+void UAOS_M68k_DeliverInterrupts(void);
+extern uint32_t g_blocked_in;
+
+static void exec_SetIntVector(void)
+{
+    /* SetIntVector(intNumber=d0, interrupt=a1) -> D0 = old iv_Code */
+    uint32_t num  = m68k_get_reg(NULL, M68K_REG_D0) & 15u;
+    uint32_t intr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t iv   = EB_INTVECTS + num * 12u;
+    uint32_t old  = guest_read_be32(iv + IV_CODE);
+    if (intr) {
+        guest_write_be32(iv + IV_DATA, guest_read_be32(intr + IS_DATA));
+        guest_write_be32(iv + IV_CODE, guest_read_be32(intr + IS_CODE));
+        guest_write_be32(iv + IV_NODE, intr);
+    }
+    {
+        char m[56]; int i = 0;
+        const char *t = "[irq] SetIntVector vec="; while (t[i]) { m[i]=t[i]; i++; }
+        char n8[12]; u32_dec(num, n8, 12); int j = 0;
+        while (n8[j] && i < 40) m[i++] = n8[j++];
+        const char *t2 = " code=0x"; j = 0; while (t2[j]) m[i++] = t2[j++];
+        u32_hex(guest_read_be32(iv + IV_CODE), n8); j = 0;
+        while (n8[j] && i < 52) m[i++] = n8[j++];
+        m[i++]='\n'; m[i]='\0'; emu_print(m);
+    }
+    m68k_set_reg(M68K_REG_D0, old);
+}
+
+static void exec_AddIntServer(void)
+{
+    /* AddIntServer(intNumber=d0, interrupt=a1) — chain of Interrupt nodes */
+    uint32_t num  = m68k_get_reg(NULL, M68K_REG_D0) & 15u;
+    uint32_t intr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t iv   = EB_INTVECTS + num * 12u;
+    if (!intr) return;
+    guest_write_be32(intr, 0);              /* ln_Succ = NULL */
+    uint32_t code = guest_read_be32(iv + IV_CODE);
+    uint32_t node = guest_read_be32(iv + IV_NODE);
+    if (code == 0 && node == 0) {
+        guest_write_be32(iv + IV_CODE, IV_CHAIN);
+        guest_write_be32(iv + IV_NODE, intr);
+        return;
+    }
+    if (code != IV_CHAIN && node) {
+        /* A direct SetIntVector handler occupies the slot — make it the
+         * chain head (its ln_Succ may be uninitialized, terminate it). */
+        guest_write_be32(node, 0);
+        guest_write_be32(iv + IV_CODE, IV_CHAIN);
+    } else if (!node) {
+        guest_write_be32(iv + IV_NODE, intr);
+        return;
+    }
+    /* Append to chain tail (priority ordering skipped). */
+    uint32_t n = guest_read_be32(iv + IV_NODE);
+    while (guest_read_be32(n)) n = guest_read_be32(n);
+    guest_write_be32(n, intr);
+}
+
+static void exec_RemIntServer(void)
+{
+    /* RemIntServer(intNumber=d0, interrupt=a1) */
+    uint32_t num  = m68k_get_reg(NULL, M68K_REG_D0) & 15u;
+    uint32_t intr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t iv   = EB_INTVECTS + num * 12u;
+    uint32_t node = guest_read_be32(iv + IV_NODE);
+    if (!node || !intr) return;
+    if (node == intr) {
+        uint32_t next = guest_read_be32(intr);
+        guest_write_be32(iv + IV_NODE, next);
+        if (!next) guest_write_be32(iv + IV_CODE, 0);
+        return;
+    }
+    while (node) {
+        uint32_t next = guest_read_be32(node);
+        if (next == intr) { guest_write_be32(node, guest_read_be32(intr)); return; }
+        node = next;
+    }
+}
+
+static void exec_Cause(void)
+{
+    /* Cause(interrupt=a1) — invoke the software interrupt now. */
+    uint32_t intr = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!intr) return;
+    uint32_t code = guest_read_be32(intr + IS_CODE);
+    if (code) m68k_isr_call(code, 0x0004u /*SOFTINT*/,
+                            guest_read_be32(intr + IS_DATA), intr);
+}
+
+/* cia*.resource dispatch: AddICRVector(-6), RemICRVector(-12),
+ * AbleICR(-18), SetICR(-24).  The per-resource ICR table lives at
+ * base+0x80 inside the generated lib block (see emu_gen_lib_base). */
+static void cia_res_dispatch(uint32_t rbase, int32_t lvo)
+{
+    GenLib *e = NULL;
+    for (int i = 0; i < g_genlib_count; i++)
+        if (g_genlibs[i].base == rbase) e = &g_genlibs[i];
+    if (!e || e->cia < 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    uint32_t d0   = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t intr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t slot = e->icr_tab + (d0 & 7u) * 4u;
+    if (lvo == -6) {
+        /* AddICRVector: 0 on success, or the blocking Interrupt.
+         * Real cia.resource also enables the ICR bit here. */
+        uint32_t old = guest_read_be32(slot);
+        if (old) { m68k_set_reg(M68K_REG_D0, old); return; }
+        guest_write_be32(slot, intr);
+        {
+            char m[56]; int i = 0;
+            const char *t = "[icr] AddICRVector cia"; while (t[i]) { m[i]=t[i]; i++; }
+            m[i++] = (char)('a' + e->cia);
+            const char *t2 = " bit="; int j = 0; while (t2[j]) m[i++]=t2[j++];
+            char n8[12]; u32_dec(d0 & 7u, n8, 12); j = 0;
+            while (n8[j] && i < 44) m[i++] = n8[j++];
+            const char *t3 = " code=0x"; j = 0; while (t3[j]) m[i++] = t3[j++];
+            u32_hex(guest_read_be32(intr + IS_CODE), n8); j = 0;
+            while (n8[j] && i < 52) m[i++] = n8[j++];
+            m[i++]='\n'; m[i]='\0'; emu_print(m);
+        }
+        chip_emu_cia_able_icr(e->cia, (uint8_t)(0x80u | (1u << (d0 & 7u))));
+        m68k_set_reg(M68K_REG_D0, 0);
+    } else if (lvo == -12) {
+        /* RemICRVector: detach handler and disable the ICR bit. */
+        if (guest_read_be32(slot) == intr) {
+            guest_write_be32(slot, 0);
+            chip_emu_cia_able_icr(e->cia, (uint8_t)(1u << (d0 & 7u)));
+        }
+    } else if (lvo == -18) {
+        { char m[48]; int i = 0; const char *t = "[icr] AbleICR cia";
+          while (t[i]) { m[i] = t[i]; i++; }
+          m[i++] = (char)('a' + e->cia); m[i++] = ' '; m[i++] = '=';
+          const char *H = "0123456789abcdef";
+          m[i++] = H[(d0 >> 4) & 15]; m[i++] = H[d0 & 15];
+          m[i++] = '\n'; m[i] = 0; emu_print(m); }
+        m68k_set_reg(M68K_REG_D0,
+                     chip_emu_cia_able_icr(e->cia, (uint8_t)d0));
+    } else if (lvo == -24) {
+        { char m[48]; int i = 0; const char *t = "[icr] SetICR cia";
+          while (t[i]) { m[i] = t[i]; i++; }
+          m[i++] = (char)('a' + e->cia); m[i++] = ' '; m[i++] = '=';
+          const char *H = "0123456789abcdef";
+          m[i++] = H[(d0 >> 4) & 15]; m[i++] = H[d0 & 15];
+          m[i++] = '\n'; m[i] = 0; emu_print(m); }
+        m68k_set_reg(M68K_REG_D0,
+                     chip_emu_cia_set_icr(e->cia, (uint8_t)d0));
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+    }
+}
+
+/* AllocMem / FreeMem — delegate to the dos_lib free-list allocator
+ * (externs declared near the top of this file). */
 static void exec_AllocMem(void)
 {
     uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
     uint32_t reqs = m68k_get_reg(NULL, M68K_REG_D1);
     uint32_t addr = 0;
+    if (size > 0x400000u) {
+        /* Implausible alloc — dump caller state so we can see what table
+         * entry the program misread. */
+        uint32_t a3 = (uint32_t)m68k_get_reg(NULL, M68K_REG_A3);
+        char b[160]; int i = 0;
+        const char *t = "[allocmem] insane size; a3=0x";
+        while (t[i]) { b[i] = t[i]; i++; }
+        char n[12]; u32_hex(a3, n); int j = 0;
+        while (n[j] && i < 150) b[i++] = n[j++];
+        t = " mem="; j = 0; while (t[j]) b[i++] = t[j++];
+        for (int k = -8; k < 24 && i < 148; k += 4) {
+            u32_hex(guest_read_be32(a3 + (uint32_t)k), n); j = 0;
+            while (n[j] && i < 152) b[i++] = n[j++];
+            b[i++] = ' ';
+        }
+        b[i++] = '\n'; b[i] = '\0'; emu_print(b);
+    }
     dos_AllocMem_glue(size, reqs, &addr);
     m68k_set_reg(M68K_REG_D0, addr);
 }
@@ -1917,19 +2820,14 @@ static void exec_FreeMem(void)
 
 static void exec_FindTask(void)
 {
-    /* Return pointer to our fake Process struct */
-    m68k_set_reg(M68K_REG_D0, FAKE_PROCESS_ADDR);
+    /* Return pointer to the guest Process struct allocated post-load */
+    m68k_set_reg(M68K_REG_D0, g_guest_proc_addr);
 }
 
 /* -------------------------------------------------------------------------
- * Guest memory helpers for exec message-port functions
+ * Guest List/MinList helpers for exec message-port functions
+ * (glue read/write macros are defined near the top of this file)
  * ------------------------------------------------------------------------- */
-#define glue_r8(a)   ((uint32_t)m68k_read_memory_8(a))
-#define glue_r16(a)  ((uint32_t)m68k_read_memory_16(a))
-#define glue_r32(a)  ((uint32_t)m68k_read_memory_32(a))
-#define glue_w8(a,v)  m68k_write_memory_8((a),(v))
-#define glue_w16(a,v) m68k_write_memory_16((a),(v))
-#define glue_w32(a,v) m68k_write_memory_32((a),(v))
 
 /* Guest List/MinList offsets (AmigaOS standard) */
 #define LH_HEAD        0
@@ -1947,10 +2845,14 @@ static void exec_FindTask(void)
 #define MP_SIGBIT     15
 #define MP_SIGTASK    16
 #define MP_MSGLIST    20
+#define MSGPORT_SZ    0x22
+#define MLH_HEAD      0
+#define MLH_TAIL      4
+#define MLH_TAILPRED  8
 
 /* Guest Message offsets */
-#define MN_LENGTH     14
-#define MN_REPLYPORT  16
+#define MN_REPLYPORT  14
+#define MN_LENGTH     18
 #define MN_DATA       20
 
 static int glue_list_empty(uint32_t list)
@@ -1991,7 +2893,31 @@ static void glue_list_add_tail(uint32_t list, uint32_t node)
 static void exec_Wait(void)
 {
     uint32_t sigmask = m68k_get_reg(NULL, M68K_REG_D0);
-    m68k_set_reg(M68K_REG_D0, Wait(sigmask));
+    if (!sigmask) {
+        UAOS_M68k_DeliverInterrupts();
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    /* Wait() blocks the host task, so the m68k slice loop — where guest
+     * IRQs are normally dispatched — stops running.  Nap in 1-tick slices
+     * and deliver pending guest interrupts between them; handlers may
+     * Signal() this task (or PutMsg into a port it watches), which is how
+     * OctaMED's player/input engine wakes its main loop. */
+    uint32_t got = 0;
+    for (;;) {
+        g_blocked_in = 1;
+        got = Task_WaitTicks(sigmask, 1);
+        g_blocked_in = 0;
+        UAOS_M68k_DeliverInterrupts();
+        if (got) break;
+        UaosTask *t = Task_Current();
+        if (t && (t->tc_SigRecvd & sigmask)) {
+            got = t->tc_SigRecvd & sigmask;
+            t->tc_SigRecvd &= ~sigmask;
+            break;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, got);
 }
 
 static void exec_Signal(void)
@@ -2069,13 +2995,29 @@ static void exec_PutMsg(void)
     }
 }
 
+volatile uint32_t g_getmsg_calls, g_getmsg_hit;
 static void exec_GetMsg(void)
 {
     /* GetMsg(port) — A0 = port, returns message in D0 */
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t msg  = 0;
+    g_getmsg_calls++;
     if (port) msg = glue_list_remove_head(port + MP_MSGLIST);
-    (void)msg;
+    if (msg) {
+        g_getmsg_hit++;
+        if (g_getmsg_hit <= 40) {
+            char b[80]; int i = 0;
+            const char *t = "[getmsg] port=0x"; while (t[i]) { b[i]=t[i]; i++; }
+            char n[12]; u32_hex(port, n); int j = 0; while (n[j]) { b[i]=n[j]; i++; j++; }
+            t = " msg=0x"; j = 0; while (t[j]) { b[i]=t[j]; i++; j++; }
+            u32_hex(msg, n); j = 0; while (n[j]) { b[i]=n[j]; i++; j++; }
+            t = " class=0x"; j = 0; while (t[j]) { b[i]=t[j]; i++; j++; }
+            u32_hex(glue_r32(msg + 20), n); j = 0; while (n[j]) { b[i]=n[j]; i++; j++; }
+            t = " code=0x"; j = 0; while (t[j]) { b[i]=t[j]; i++; j++; }
+            u32_hex(glue_r16(msg + 24), n); j = 0; while (n[j]) { b[i]=n[j]; i++; j++; }
+            b[i++] = '\n'; b[i] = 0; emu_print(b);
+        }
+    }
     m68k_set_reg(M68K_REG_D0, msg);
 }
 
@@ -2094,6 +3036,203 @@ static void exec_ReplyMsg(void)
             Signal(t, 1U << sigbit);
         }
     }
+}
+
+static void m68k_putch_call(uint32_t proc, uint8_t ch, uint32_t data);
+
+/* exec RawDoFmt(fmt=a3, dataStream=a2, putChProc=a1, putChData=a0)
+ *
+ * Walks the format string and invokes the guest PutChProc once per output
+ * character.  DataStream is an array of ULONG slots consumed in order;
+ * word-sized conversions (d/u/x without 'l') take the slot's low word.
+ * Supports %% and %d %u %x %X %s %c %b with flags '-'/'0', decimal or
+ * '*' width and limit, 'l' length, and the 'n$' parameter selector.
+ * Returns a pointer to the format string's terminator in D0. */
+static void exec_RawDoFmt(void)
+{
+    uint32_t fmt  = m68k_get_reg(NULL, M68K_REG_A3);
+    uint32_t data = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t proc = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t pd   = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!fmt || fmt >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+
+    uint32_t pc = fmt;
+    uint32_t argidx = 0;
+    int guard = 8192;
+
+    while (guard-- > 0) {
+        uint8_t c = glue_r8(pc);
+        if (!c) break;
+        pc++;
+        if (c != '%') { m68k_putch_call(proc, c, pd); continue; }
+
+        uint8_t n = glue_r8(pc);
+        if (n == '%') { m68k_putch_call(proc, '%', pd); pc++; continue; }
+        if (!n) break;
+
+        /* [param$] — 1-based parameter selector for the value argument */
+        uint32_t sel = 0;
+        {
+            uint32_t save = pc;
+            uint32_t v = 0;
+            while (glue_r8(pc) >= '0' && glue_r8(pc) <= '9') {
+                v = v * 10 + (glue_r8(pc) - '0'); pc++;
+            }
+            if (glue_r8(pc) == '$' && v > 0) { sel = v; pc++; }
+            else pc = save;
+        }
+
+        /* flags */
+        int leftjust = 0, zeropad = 0;
+        for (;;) {
+            uint8_t f = glue_r8(pc);
+            if (f == '-') { leftjust = 1; pc++; }
+            else if (f == '0') { zeropad = 1; pc++; }
+            else break;
+        }
+
+        /* width — decimal or '*' (next arg) */
+        int width = 0;
+        if (glue_r8(pc) == '*') {
+            width = (int)glue_r32(data + argidx * 4); argidx++; pc++;
+        } else {
+            while (glue_r8(pc) >= '0' && glue_r8(pc) <= '9') {
+                width = width * 10 + (glue_r8(pc) - '0'); pc++;
+            }
+        }
+
+        /* limit — '.' then decimal or '*' */
+        int limit = -1;
+        if (glue_r8(pc) == '.') {
+            pc++;
+            if (glue_r8(pc) == '*') {
+                limit = (int)glue_r32(data + argidx * 4); argidx++; pc++;
+            } else {
+                limit = 0;
+                while (glue_r8(pc) >= '0' && glue_r8(pc) <= '9') {
+                    limit = limit * 10 + (glue_r8(pc) - '0'); pc++;
+                }
+            }
+        }
+
+        /* length */
+        int islong = 0;
+        if (glue_r8(pc) == 'l') { islong = 1; pc++; }
+
+        uint8_t type = glue_r8(pc);
+        if (!type) break;
+        pc++;
+
+        uint32_t validx = sel ? (sel - 1) : argidx;
+        if (!sel) argidx++;
+
+        char num[24];
+        int  numlen = 0;
+        const char *strp = NULL;         /* string content (host ptr into RAM) */
+        uint32_t strp_addr = 0;          /* guest addr if strp NULL */
+        int  str_len = 0;
+        int  numeric = 0, neg = 0;
+        uint32_t uv = 0;
+
+        switch (type) {
+        case 'd': case 'u': {
+            numeric = 1;
+            int32_t sv;
+            if (islong) { sv = (int32_t)glue_r32(data + validx * 4); }
+            else        { sv = (int16_t)(glue_r32(data + validx * 4) & 0xFFFF); }
+            uv = (uint32_t)sv;
+            if (type == 'd' && sv < 0) { neg = 1; uv = (uint32_t)(-sv); }
+            char tmp[16]; int tl = 0;
+            if (uv == 0) tmp[tl++] = '0';
+            while (uv) { tmp[tl++] = (char)('0' + uv % 10); uv /= 10; }
+            while (tl) num[numlen++] = tmp[--tl];
+            break;
+        }
+        case 'x': case 'X': {
+            numeric = 1;
+            if (islong) uv = glue_r32(data + validx * 4);
+            else        uv = glue_r32(data + validx * 4) & 0xFFFF;
+            char tmp[16]; int tl = 0;
+            if (uv == 0) tmp[tl++] = '0';
+            while (uv) {
+                uint32_t d = uv & 15;
+                tmp[tl++] = (char)(d < 10 ? '0' + d
+                                  : (type == 'x' ? 'a' + d - 10 : 'A' + d - 10));
+                uv >>= 4;
+            }
+            while (tl) num[numlen++] = tmp[--tl];
+            break;
+        }
+        case 'c': {
+            numeric = 1;
+            num[numlen++] = (char)(glue_r32(data + validx * 4) & 0xFF);
+            break;
+        }
+        case 's': {
+            strp_addr = glue_r32(data + validx * 4);
+            if (strp_addr && strp_addr < GUEST_RAM_SIZE) {
+                int l = 0;
+                while (strp_addr + l < GUEST_RAM_SIZE && glue_r8(strp_addr + l)
+                       && (limit < 0 || l < limit)) l++;
+                str_len = l;
+            }
+            break;
+        }
+        case 'b': {
+            /* BSTR: longword BPTR (addr>>2); first byte = length */
+            uint32_t bp = glue_r32(data + validx * 4);
+            strp_addr = bp << 2;
+            if (strp_addr && strp_addr < GUEST_RAM_SIZE) {
+                int l = glue_r8(strp_addr);
+                if (limit >= 0 && l > limit) l = limit;
+                strp_addr++;
+                str_len = l;
+            }
+            break;
+        }
+        default:
+            /* unknown conversion — emit it literally */
+            num[numlen++] = '%'; num[numlen++] = (char)type;
+            numeric = 1;
+            break;
+        }
+
+        /* Emit with justification/padding. */
+        int content;
+        if (str_len || type == 's' || type == 'b') {
+            content = str_len;
+        } else {
+            content = numlen + (neg ? 1 : 0);
+        }
+        int zerolen = 0;
+        if (numeric && limit > numlen) zerolen = limit - numlen;
+        if (numeric && zerolen) content += zerolen;
+        if (width < content) width = content;
+        int pad = width - content;
+        char pc2 = (zeropad && !leftjust && numeric && limit < 0) ? '0' : ' ';
+
+        if (!leftjust) {
+            if (pc2 == '0' && neg) { m68k_putch_call(proc, '-', pd); neg = 0; }
+            for (int i = 0; i < pad; i++) m68k_putch_call(proc, pc2, pd);
+        }
+        if (neg) m68k_putch_call(proc, '-', pd);
+        for (int i = 0; i < zerolen; i++) m68k_putch_call(proc, '0', pd);
+        if (str_len || type == 's' || type == 'b') {
+            for (int i = 0; i < str_len; i++) {
+                uint8_t sc = glue_r8(strp_addr + i);
+                m68k_putch_call(proc, sc, pd);
+            }
+        } else {
+            for (int i = 0; i < numlen; i++) m68k_putch_call(proc, (uint8_t)num[i], pd);
+        }
+        if (leftjust)
+            for (int i = 0; i < pad; i++) m68k_putch_call(proc, ' ', pd);
+    }
+
+    m68k_set_reg(M68K_REG_D0, pc);
 }
 
 static void exec_WaitPort(void)
@@ -2139,10 +3278,14 @@ static void exec_WaitPort(void)
     while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
         if (!g_chipset_sync_disabled)
             UAOS_Intuition_PostIntuiTicks();
+        else
+            UAOS_M68k_DeliverInterrupts();   /* per-task ctx: keep guest IRQs flowing */
         /* One-tick nap as a real blocking wait (UAOS-169): the task
          * deschedules immediately instead of sti;hlt-ing as g_current,
          * and wakes early when PutMsg signals the port's sigbit. */
+        g_blocked_in = 2;
         Task_WaitTicks(mask, 1);
+        g_blocked_in = 0;
         /* Consume the port signal — it only means "check the list"; a
          * leftover edge must not skip every future nap. */
         if (mask && (self->tc_SigRecvd & mask))
@@ -2152,6 +3295,778 @@ static void exec_WaitPort(void)
     m68k_set_reg(M68K_REG_D0,
                  glue_list_empty(port + MP_MSGLIST) ? 0 : port);
 }
+
+/* -------------------------------------------------------------------------
+ * Task nesting counters — Forbid/Permit/Disable/Enable
+ * TDNestCnt @ SysBase+0x127, IDNestCnt @ SysBase+0x126, both init -1.
+ * ------------------------------------------------------------------------- */
+
+/* Forbid/Permit nest on TDNestCnt (ExecBase+0x127); Disable/Enable on
+ * IDNestCnt (ExecBase+0x126).  Both start at -1 (enabled). */
+static void exec_Forbid(void)  { glue_w8(EXEC_BASE + 0x127, glue_r8(EXEC_BASE + 0x127) + 1); }
+static void exec_Permit(void)  { glue_w8(EXEC_BASE + 0x127, glue_r8(EXEC_BASE + 0x127) - 1); }
+static void exec_Disable(void) { glue_w8(EXEC_BASE + 0x126, glue_r8(EXEC_BASE + 0x126) + 1); }
+static void exec_Enable(void)  { glue_w8(EXEC_BASE + 0x126, glue_r8(EXEC_BASE + 0x126) - 1); }
+
+static void exec_SuperState(void) { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_UserState(void)  { }
+
+static void exec_InitStruct(void)
+{
+    /* InitStruct(initTable=a1, memory=a2, size=d0).  Only the NULL-table
+     * (zero-fill) form for now — tables are rare enough that the catch-all
+     * log will flag if real parsing is needed. */
+    uint32_t table = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t mem   = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t size  = m68k_get_reg(NULL, M68K_REG_D0);
+    if (!table && mem + size < GUEST_RAM_SIZE) {
+        for (uint32_t i = 0; i < size; i++) g_ram[mem + i] = 0;
+    }
+}
+
+static void exec_CopyMem(int quick)
+{
+    /* CopyMem(src=a0, dst=a1, size=d0) — handles overlap; Quick = forward */
+    uint32_t src = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t dst = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t len = m68k_get_reg(NULL, M68K_REG_D0);
+    if (src >= GUEST_RAM_SIZE || dst >= GUEST_RAM_SIZE) return;
+    if (src + len > GUEST_RAM_SIZE) len = GUEST_RAM_SIZE - src;
+    if (dst + len > GUEST_RAM_SIZE) len = GUEST_RAM_SIZE - dst;
+    if (!quick && dst > src && dst < src + len) {
+        for (uint32_t i = len; i > 0; i--) g_ram[dst + i - 1] = g_ram[src + i - 1];
+    } else {
+        for (uint32_t i = 0; i < len; i++) g_ram[dst + i] = g_ram[src + i];
+    }
+}
+
+static void exec_AvailMem(void)
+{
+    uint32_t attrs = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t total = 0, largest = 0;
+    dos_AvailMem_glue(attrs, &total, &largest);
+    m68k_set_reg(M68K_REG_D0, total);
+}
+
+static void exec_TypeOfMem(void)
+{
+    uint32_t addr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t t = MEMF_PUBLIC | MEMF_FAST;
+    if (addr < 0x800000u) t = MEMF_PUBLIC | MEMF_CHIP | MEMF_24BITDMA;
+    m68k_set_reg(M68K_REG_D0, t);
+}
+
+/* AllocEntry(memList=a0) — real MemList layout:
+ *   +0  struct Node (14 bytes)
+ *   +14 UWORD ml_NumEntries
+ *   +16 MemEntry[n]: { me_Un.meu_Reqs|me_Addr, me_Length } 8 bytes each
+ * Allocates each entry, fills me_Addr, returns a NEW MemList in D0. */
+static void exec_AllocEntry(void)
+{
+    uint32_t ml  = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!ml || ml + 18 >= GUEST_RAM_SIZE) { m68k_set_reg(M68K_REG_D0, 0x80000000u); return; }
+    uint32_t n   = glue_r16(ml + 14);
+    uint32_t out = 0;
+
+    uint32_t result = 0;
+    dos_AllocMem_glue(16 + n * 8, MEMF_PUBLIC, &result);
+    if (!result) { m68k_set_reg(M68K_REG_D0, 0x80000000u); return; }
+    for (uint32_t i = 0; i < 16 + n * 8; i++) g_ram[result + i] = 0;
+    glue_w16(result + 14, (uint16_t)n);
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t me   = ml + 16 + i * 8;
+        uint32_t reqs = glue_r32(me);
+        uint32_t len  = glue_r32(me + 4);
+        uint32_t addr = 0;
+        dos_AllocMem_glue(len, reqs, &addr);
+        if (!addr) { out = 0x80000000u | i; break; }
+        glue_w32(result + 16 + i * 8,     addr);
+        glue_w32(result + 16 + i * 8 + 4, len);
+        /* also patch the caller's list — SAS/C rt reads me_Addr back */
+        glue_w32(me, addr);
+    }
+    m68k_set_reg(M68K_REG_D0, out ? out : result);
+}
+
+static void exec_FreeEntry(void)
+{
+    uint32_t ml = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!ml || ml + 18 >= GUEST_RAM_SIZE) return;
+    uint32_t n = glue_r16(ml + 14);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t addr = glue_r32(ml + 16 + i * 8);
+        uint32_t len  = glue_r32(ml + 16 + i * 8 + 4);
+        if (addr && len) dos_FreeMem_glue(addr, len);
+    }
+    dos_FreeMem_glue(ml, 16 + n * 8);
+}
+
+/* ---- guest List operations (exec/lists.h semantics) -------------------- */
+
+static void glue_list_new(uint32_t list)
+{
+    glue_w32(list + LH_HEAD,     list + LH_TAIL);
+    glue_w32(list + LH_TAIL,     0);
+    glue_w32(list + LH_TAILPRED, list + LH_HEAD);
+}
+
+static void exec_Insert(void)
+{
+    /* Insert(list=a0, node=a1, listNode=a2) — node after listNode */
+    uint32_t node = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t prev = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t succ = glue_r32(prev + LN_SUCC);
+    glue_w32(node + LN_SUCC, succ);
+    glue_w32(node + LN_PRED, prev);
+    glue_w32(prev + LN_SUCC, node);
+    glue_w32(succ + LN_PRED, node);
+}
+
+static void exec_AddHead(void)
+{
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t node = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t head = glue_r32(list + LH_HEAD);
+    glue_w32(node + LN_SUCC, head);
+    glue_w32(node + LN_PRED, list + LH_HEAD);
+    glue_w32(head + LN_PRED, node);
+    glue_w32(list + LH_HEAD, node);
+}
+
+static void exec_AddTail_glue(void)
+{
+    glue_list_add_tail(m68k_get_reg(NULL, M68K_REG_A0),
+                       m68k_get_reg(NULL, M68K_REG_A1));
+}
+
+static void exec_Remove(void)
+{
+    uint32_t node = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t succ = glue_r32(node + LN_SUCC);
+    uint32_t pred = glue_r32(node + LN_PRED);
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+}
+
+static void exec_RemHead(void)
+{
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t node = glue_r32(list + LH_HEAD);
+    uint32_t succ = node ? glue_r32(node + LN_SUCC) : 0;
+    if (!node || !succ) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    glue_w32(list + LH_HEAD, succ);
+    glue_w32(succ + LN_PRED, list + LH_HEAD);
+    m68k_set_reg(M68K_REG_D0, node);
+}
+
+static void exec_RemTail(void)
+{
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t node = glue_r32(list + LH_TAILPRED);
+    uint32_t pred = node ? glue_r32(node + LN_PRED) : 0;
+    if (!node || !pred) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    glue_w32(list + LH_TAILPRED, pred);
+    glue_w32(pred + LN_SUCC, list + LH_TAIL);
+    m68k_set_reg(M68K_REG_D0, node);
+}
+
+static void exec_Enqueue(void)
+{
+    /* Enqueue(list=a0, node=a1) — insert by descending ln_Pri */
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t node = m68k_get_reg(NULL, M68K_REG_A1);
+    int8_t   pri  = (int8_t)glue_r8(node + LN_PRI);
+    uint32_t cur  = glue_r32(list + LH_HEAD);
+    while (cur && glue_r32(cur + LN_SUCC) &&
+           (int8_t)glue_r8(cur + LN_PRI) >= pri)
+        cur = glue_r32(cur + LN_SUCC);
+    /* insert before cur (after cur's pred) */
+    uint32_t pred = glue_r32(cur + LN_PRED);
+    glue_w32(node + LN_SUCC, cur);
+    glue_w32(node + LN_PRED, pred);
+    glue_w32(pred + LN_SUCC, node);
+    glue_w32(cur + LN_PRED, node);
+}
+
+static void exec_FindName(void)
+{
+    /* FindName(list=a0, name=a1) → D0=node or 0 */
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t cur  = glue_r32(list + LH_HEAD);
+    while (cur && glue_r32(cur + LN_SUCC)) {
+        uint32_t nn = glue_r32(cur + LN_NAME);
+        int match = 1;
+        if (nn && nn < GUEST_RAM_SIZE && name < GUEST_RAM_SIZE) {
+            for (int i = 0; i < 128; i++) {
+                uint8_t a = g_ram[name + i], b = g_ram[nn + i];
+                if (a != b || !a) { if (a != b) match = 0; break; }
+            }
+        } else match = 0;
+        if (match) { m68k_set_reg(M68K_REG_D0, cur); return; }
+        cur = glue_r32(cur + LN_SUCC);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* ---- ports ------------------------------------------------------------- */
+
+#define PORTLIST_ADDR (EXEC_BASE + 0x188)   /* SysBase PortList */
+
+static void exec_AddPort(void)
+{
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A1);
+    glue_list_add_tail(PORTLIST_ADDR, port);
+}
+
+static void exec_RemPort(void)
+{
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t succ = glue_r32(port + LN_SUCC);
+    uint32_t pred = glue_r32(port + LN_PRED);
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+}
+
+static void exec_FindPort(void)
+{
+    /* FindPort(name=a1) — walk SysBase PortList */
+    m68k_set_reg(M68K_REG_A0, PORTLIST_ADDR);
+    uint32_t save_a0 = 0;
+    (void)save_a0;
+    /* reuse FindName on the port list */
+    uint32_t list = PORTLIST_ADDR;
+    uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t cur  = glue_r32(list + LH_HEAD);
+    while (cur && glue_r32(cur + LN_SUCC)) {
+        uint32_t nn = glue_r32(cur + LN_NAME);
+        int match = 0;
+        if (nn && nn < GUEST_RAM_SIZE && name < GUEST_RAM_SIZE) {
+            match = 1;
+            for (int i = 0; i < 128; i++) {
+                uint8_t a = g_ram[name + i], b = g_ram[nn + i];
+                if (a != b) { match = 0; break; }
+                if (!a) break;
+            }
+        }
+        if (match) { m68k_set_reg(M68K_REG_D0, cur); return; }
+        cur = glue_r32(cur + LN_SUCC);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static int exec_alloc_sigbit(void)
+{
+    UaosTask *t = Task_Current();
+    if (!t) return -1;
+    for (int i = 0; i < 32; i++)
+        if ((t->tc_SigAlloc >> i) & 1) { t->tc_SigAlloc &= ~(1U << i); return i; }
+    return -1;
+}
+
+static void exec_CreateMsgPort(void)
+{
+    uint32_t port = 0;
+    dos_AllocMem_glue(MSGPORT_SZ, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &port);
+    if (!port) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (uint32_t i = 0; i < MSGPORT_SZ; i++) g_ram[port + i] = 0;
+    g_ram[port + LN_TYPE]  = 4;   /* NT_MSGPORT */
+    g_ram[port + MP_FLAGS] = 0;   /* PA_SIGNAL */
+    int sb = exec_alloc_sigbit();
+    if (sb < 0) { dos_FreeMem_glue(port, MSGPORT_SZ); m68k_set_reg(M68K_REG_D0, 0); return; }
+    g_ram[port + MP_SIGBIT] = (uint8_t)sb;
+    glue_w32(port + MP_SIGTASK, g_guest_proc_addr);
+    glue_list_new(port + MP_MSGLIST);
+    m68k_set_reg(M68K_REG_D0, port);
+}
+
+static void exec_DeleteMsgPort(void)
+{
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!port) return;
+    uint32_t sb = glue_r8(port + MP_SIGBIT);
+    UaosTask *t = Task_Current();
+    if (t && sb < 32) t->tc_SigAlloc |= (1U << sb);
+    dos_FreeMem_glue(port, MSGPORT_SZ);
+}
+
+/* ---- IORequest / devices ------------------------------------------------ */
+
+#define IO_DEVICE     20
+#define IO_UNIT       24
+#define IO_COMMAND    28
+#define IO_FLAGS      30
+#define IO_ERROR      31
+#define IOSTD_SIZE    48
+
+static uint8_t  g_audio_alloc_mask;
+static uint8_t  g_audio_alloc_key;
+static uint32_t g_audio_open_cnt;
+#define IOF_QUICK     0x01
+#define NT_REPLYMSG   6
+
+static void exec_CreateIORequest(void)
+{
+    /* CreateIORequest(ioReplyPort=a0, size=d0) → D0=IORequest */
+    uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    if (size < IOSTD_SIZE) size = IOSTD_SIZE;
+    uint32_t io = 0;
+    dos_AllocMem_glue(size, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &io);
+    if (!io) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    for (uint32_t i = 0; i < size; i++) g_ram[io + i] = 0;
+    g_ram[io + LN_TYPE] = NT_REPLYMSG;
+    glue_w32(io + MN_REPLYPORT, port);
+    glue_w16(io + MN_LENGTH, size);
+    m68k_set_reg(M68K_REG_D0, io);
+}
+
+static void exec_DeleteIORequest(void)
+{
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!io) return;
+    uint32_t len = glue_r16(io + MN_LENGTH);
+    if (!len) len = IOSTD_SIZE;
+    dos_FreeMem_glue(io, len);
+}
+
+static void exec_OpenDevice(void)
+{
+    /* OpenDevice(devName=a0, unit=d0, ioRequest=a1, flags=d1)
+     * -> D0 = io_Error (0 = success).  Bring-up stub: the ioreq gets a
+     * fake device base and calls complete immediately; real device
+     * dispatch (timer/console/keyboard/audio) is UAOS-240. */
+    uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t ioreq    = m68k_get_reg(NULL, M68K_REG_A1);
+    char name[64];
+    int i = 0;
+    while (i < 63 && name_ptr + i < GUEST_RAM_SIZE)
+        { name[i] = (char)g_ram[name_ptr + i]; if (!name[i]) break; i++; }
+    name[i] = '\0';
+    {
+        char msg[80] = "[exec] OpenDevice '";
+        int k = emu_strlen(msg);
+        for (int j = 0; name[j] && k < 76; j++) msg[k++] = name[j];
+        msg[k++]='\''; msg[k++]='\n'; msg[k]='\0';
+        emu_print(msg);
+    }
+    if (ioreq && ioreq + IOSTD_SIZE < GUEST_RAM_SIZE) {
+        uint32_t devbase = FAKE_LIB_BASE;
+        static const char AUDNAME[] = "audio.device";
+        int eq = 1;
+        for (int k = 0; AUDNAME[k]; k++) if (name[k] != AUDNAME[k]) { eq = 0; break; }
+        if (eq && !name[12]) {
+            devbase = AUDIO_DEV_BASE;
+            g_audio_open_cnt++;
+        }
+        glue_w32(ioreq + IO_DEVICE, devbase);  /* fake or real device base */
+        glue_w32(ioreq + IO_UNIT, m68k_get_reg(NULL, M68K_REG_D0));
+        g_ram[ioreq + IO_ERROR] = 0;
+    }
+    m68k_set_reg(M68K_REG_D0, 0);   /* success */
+}
+
+static void exec_CloseDevice(void)
+{
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE &&
+        glue_r32(io + IO_DEVICE) == AUDIO_DEV_BASE) {
+        if (g_audio_open_cnt) g_audio_open_cnt--;
+        if (!g_audio_open_cnt) g_audio_alloc_mask = 0;
+    }
+}
+
+/* Route an IORequest to its device when it's one we emulate (audio.device).
+ * Real exec DoIO/SendIO call the device's BeginIO internally.
+ * Returns nonzero when the request was handled by a device. */
+static void audio_dev_BeginIO(void);
+static int io_dispatch_device(uint32_t io)
+{
+    if (io + IOSTD_SIZE >= GUEST_RAM_SIZE) return 0;
+    if (glue_r32(io + IO_DEVICE) != AUDIO_DEV_BASE) return 0;
+    uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
+    m68k_set_reg(M68K_REG_A1, io);
+    audio_dev_BeginIO();
+    m68k_set_reg(M68K_REG_A1, saved_a1);
+    return 1;
+}
+
+static void exec_DoIO(void)
+{
+    /* DoIO(ioRequest=a1) → D0=io_Error.  Fake devices complete instantly. */
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
+    io_dispatch_device(io);
+    uint8_t err = g_ram[io + IO_ERROR];
+    m68k_set_reg(M68K_REG_D0, err);
+}
+
+static void exec_SendIO(void)
+{
+    /* SendIO(ioRequest=a1): mark in-flight then immediately complete by
+     * replying to the reply port — WaitIO/CheckIO then find it. */
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!io) return;
+    g_ram[io + IO_FLAGS] &= ~IOF_QUICK;
+    if (io_dispatch_device(io)) return;   /* device handler completed+replied */
+    g_ram[io + IO_ERROR]  = 0;
+    uint32_t port = glue_r32(io + MN_REPLYPORT);
+    if (port) {
+        glue_list_add_tail(port + MP_MSGLIST, io);
+        uint32_t sigtask = glue_r32(port + MP_SIGTASK);
+        UaosTask *t = Task_FindByM68kAddr(sigtask);
+        if (!t) t = Task_Current();
+        if (t) Signal(t, 1U << glue_r8(port + MP_SIGBIT));
+    }
+}
+
+static void exec_CheckIO(void)
+{
+    /* CheckIO(ioRequest=a1) → D0=ioreq if complete else 0.
+     * Our SendIO replies instantly, so check the reply port list. */
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    m68k_set_reg(M68K_REG_D0, io ? io : 0);
+}
+
+static void exec_WaitIO(void)
+{
+    /* WaitIO(ioRequest=a1) → D0=io_Error; wait for the reply port msg. */
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
+    uint32_t port = glue_r32(io + MN_REPLYPORT);
+    if (port) {
+        UaosTask *self = Task_Current();
+        if (self && glue_r32(port + MP_SIGTASK)) {
+            uint32_t sigbit = glue_r8(port + MP_SIGBIT);
+            uint32_t mask   = (sigbit < 32) ? (1U << sigbit) : 0;
+            extern volatile uint64_t g_pit_ticks;
+            uint64_t deadline = g_pit_ticks + 10;
+            while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
+                g_blocked_in = 3;
+                Task_WaitTicks(mask, 1);
+                g_blocked_in = 0;
+                UAOS_M68k_DeliverInterrupts();
+            }
+        }
+        /* pop our message if queued */
+        glue_list_remove_head(port + MP_MSGLIST);
+    }
+    m68k_set_reg(M68K_REG_D0, g_ram[io + IO_ERROR]);
+}
+
+static void audio_dev_AbortIO(void);
+static void exec_AbortIO(void)
+{
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE &&
+        glue_r32(io + IO_DEVICE) == AUDIO_DEV_BASE) {
+        uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
+        audio_dev_AbortIO();
+        m68k_set_reg(M68K_REG_A1, saved_a1);
+        return;
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* ---- audio.device (UAOS-240) ---------------------------------------------
+ * Trackers (OctaMED) use audio.device only for channel arbitration, then
+ * drive Paula registers directly.  Enough of the command set to make
+ * ADCMD_ALLOCATE/FREE behave correctly; everything else completes as a
+ * successful no-op.  Device base = AUDIO_DEV_BASE with trapped LVOs for
+ * BeginIO/AbortIO; OpenDevice/CloseDevice return this base for
+ * "audio.device".
+ *
+ * struct IOAudio (m68k, word-aligned fields):
+ *   +0   IORequest ioa_Request (32)
+ *   +32  WORD   ioa_AllocKey
+ *   +34  UBYTE *ioa_Data   — byte array of channel bitmask combos
+ *   +38  ULONG  ioa_Length
+ *   +42  UWORD  ioa_Period
+ *   +44  UWORD  ioa_Volume
+ *   +46  UWORD  ioa_Cycles
+ * ------------------------------------------------------------------------- */
+#define IOA_ALLOCKEY     32
+#define IOA_DATA         34
+#define IOA_LENGTH       38
+#define IOA_PERIOD       42
+#define IOA_VOLUME       44
+#define IOA_CYCLES       46
+
+#define CMD_RESET        1
+#define CMD_WRITE        3
+#define CMD_UPDATE       4
+#define CMD_CLEAR        5
+#define CMD_STOP         6
+#define CMD_START        7
+#define CMD_FLUSH        8
+#define ADCMD_ALLOCATE   9    /* CMD_NONSTD+0 */
+#define ADCMD_FREE       10
+#define ADCMD_SETPREC    11
+#define ADCMD_FINISH     12
+#define ADCMD_PERVOL     13
+#define ADCMD_LOCK       14
+#define ADCMD_WAITCYCLE  15
+
+#define ADIOERR_ALLOCFAILED  (-11)
+
+static void audio_dev_reply(uint32_t io)
+{
+    /* Complete a non-QUICK request: reply it to its port like SendIO. */
+    if (g_ram[io + IO_FLAGS] & IOF_QUICK) return;
+    uint32_t port = glue_r32(io + MN_REPLYPORT);
+    if (!port) return;
+    glue_list_add_tail(port + MP_MSGLIST, io);
+    uint32_t sigtask = glue_r32(port + MP_SIGTASK);
+    UaosTask *t = Task_FindByM68kAddr(sigtask);
+    if (!t) t = Task_Current();
+    if (t) Signal(t, 1U << glue_r8(port + MP_SIGBIT));
+}
+
+static void audio_dev_BeginIO(void)
+{
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) return;
+    uint16_t cmd = glue_r16(io + IO_COMMAND);
+    { char m[48]; const char *P = "[audcmd] "; int n = 0;
+      while (*P) m[n++] = *P++;
+      const char *H = "0123456789abcdef";
+      m[n++] = H[(cmd >> 12) & 15]; m[n++] = H[(cmd >> 8) & 15];
+      m[n++] = H[(cmd >> 4) & 15]; m[n++] = H[cmd & 15];
+      m[n++] = '\n'; m[n] = 0; emu_print(m); }
+    int8_t err = 0;
+
+    switch (cmd) {
+    case ADCMD_ALLOCATE: {
+        /* ioa_Data = array of channel-bitmask combinations to try in order;
+         * ioa_Length = array size.  On success: io_Unit = chosen mask,
+         * ioa_AllocKey nonzero.  We never steal — all-or-nothing. */
+        uint32_t data = glue_r32(io + IOA_DATA);
+        uint32_t len  = glue_r32(io + IOA_LENGTH);
+        uint8_t chosen = 0;
+        int got = 0;
+        if (len == 0) { got = 1; }
+        else {
+            for (uint32_t i = 0; i < len && i < 64 && data + i < GUEST_RAM_SIZE; i++) {
+                uint8_t want = g_ram[data + i] & 0x0F;
+                if (want && !(g_audio_alloc_mask & want)) { chosen = want; got = 1; break; }
+            }
+        }
+        if (got) {
+            g_audio_alloc_mask |= chosen;
+            int16_t key = (int16_t)glue_r16(io + IOA_ALLOCKEY);
+            if (!key) key = (int16_t)(++g_audio_alloc_key ? g_audio_alloc_key
+                                                         : (g_audio_alloc_key = 1));
+            glue_w16(io + IOA_ALLOCKEY, (uint16_t)key);
+            glue_w32(io + IO_UNIT, chosen);   /* channel bitmap in io_Unit */
+        } else {
+            glue_w32(io + IO_UNIT, 0);
+            err = ADIOERR_ALLOCFAILED;
+        }
+        break;
+    }
+    case ADCMD_FREE: {
+        /* io_Unit low nibble = channel mask to release. */
+        g_audio_alloc_mask &= (uint8_t)~glue_r32(io + IO_UNIT);
+        break;
+    }
+    /* Everything else (CMD_RESET/WRITE/PERVOL/SETC/LOCK/START/STOP/FLUSH…)
+     * succeeds immediately — playback itself goes through the Paula register
+     * emulation, which the guest drives directly. */
+    default:
+        break;
+    }
+    g_ram[io + IO_ERROR] = (uint8_t)err;
+    audio_dev_reply(io);
+}
+
+static void audio_dev_AbortIO(void)
+{
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE) {
+        uint16_t cmd = glue_r16(io + IO_COMMAND);
+        if (cmd == ADCMD_ALLOCATE)
+            g_audio_alloc_mask &= (uint8_t)~glue_r32(io + IO_UNIT);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void audio_dev_Open(void)
+{
+    /* Device Open (d0=unit, a1=ioreq? device Open gets d0=unit): bump open
+     * count, return device base in D0. */
+    g_audio_open_cnt++;
+    m68k_set_reg(M68K_REG_D0, AUDIO_DEV_BASE);
+}
+
+static void audio_dev_Close(void)
+{
+    if (g_audio_open_cnt) g_audio_open_cnt--;
+    if (!g_audio_open_cnt) g_audio_alloc_mask = 0;   /* release all channels */
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* ---- semaphores (single-context approximation) ---------------------------
+ * SignalSemaphore (exec/semaphores.h):
+ *   +0  Node ss_Link (14)
+ *   +14 SHORT ss_NestCount
+ *   +16 MinList ss_WaitQueue (12)
+ *   +28 APTR ss_Owner
+ *   +32 SHORT ss_QueueCnt
+ *   +34 WORD ss_Link wait count pad
+ * ------------------------------------------------------------------------- */
+#define SS_NESTCOUNT 14
+#define SS_WAITQUEUE 16
+#define SS_OWNER     28
+#define SS_QUEUECNT  32
+#define SEM_SIZE     46
+
+static void sem_init(uint32_t sem)
+{
+    g_ram[sem + LN_TYPE] = 15;              /* NT_SIGNALSEM */
+    glue_w16(sem + SS_NESTCOUNT, 0);
+    glue_w32(sem + SS_WAITQUEUE + MLH_HEAD,     sem + SS_WAITQUEUE + MLH_TAIL);
+    glue_w32(sem + SS_WAITQUEUE + MLH_TAIL,     0);
+    glue_w32(sem + SS_WAITQUEUE + MLH_TAILPRED, sem + SS_WAITQUEUE + MLH_HEAD);
+    glue_w32(sem + SS_OWNER, 0);
+    glue_w16(sem + SS_QUEUECNT, (uint16_t)-1);
+}
+
+static void exec_InitSemaphore(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    if (sem && sem + SEM_SIZE < GUEST_RAM_SIZE) sem_init(sem);
+}
+
+static void exec_ObtainSem(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!sem) return;
+    glue_w32(sem + SS_OWNER, g_guest_proc_addr);
+    glue_w16(sem + SS_NESTCOUNT, glue_r16(sem + SS_NESTCOUNT) + 1);
+}
+
+static void exec_ReleaseSem(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!sem) return;
+    uint32_t n = glue_r16(sem + SS_NESTCOUNT);
+    if (n) n--;
+    glue_w16(sem + SS_NESTCOUNT, n);
+    if (!n) glue_w32(sem + SS_OWNER, 0);
+}
+
+static void exec_AttemptSem(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t owner = sem ? glue_r32(sem + SS_OWNER) : 0;
+    if (!owner || owner == g_guest_proc_addr) {
+        if (sem) {
+            glue_w32(sem + SS_OWNER, g_guest_proc_addr);
+            glue_w16(sem + SS_NESTCOUNT, glue_r16(sem + SS_NESTCOUNT) + 1);
+        }
+        m68k_set_reg(M68K_REG_D0, 1);
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+    }
+}
+
+static void exec_Procure(void)   { m68k_set_reg(M68K_REG_D0, 1); }
+static void exec_Vacate(void)    { }
+static void exec_ObtainSemList(void)  { }
+static void exec_ReleaseSemList(void) { }
+static void exec_FindSemaphore(void)  { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_AddSemaphore(void)   { }
+static void exec_RemSemaphore(void)   { }
+
+/* ---- misc -------------------------------------------------------------- */
+
+static void exec_GetCC(void)
+{
+    m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_SR) & 0x1F);
+}
+
+static void exec_SetTaskPri(void)
+{
+    uint32_t task = m68k_get_reg(NULL, M68K_REG_A1);
+    uint8_t  old  = task ? g_ram[task + LN_PRI] : 0;
+    if (task) g_ram[task + LN_PRI] = (uint8_t)m68k_get_reg(NULL, M68K_REG_D0);
+    m68k_set_reg(M68K_REG_D0, old);
+}
+
+static void exec_SetExcept(void)
+{
+    /* SetExcept(newSignals=d0, signalSet=d1) → D0=old & mask */
+    uint32_t proc = g_guest_proc_addr;
+    uint32_t mask = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t old  = proc ? glue_r32(proc + 0x1E) : 0;   /* tc_SigExcept */
+    if (proc) glue_w32(proc + 0x1E,
+                       (old & ~mask) | (m68k_get_reg(NULL, M68K_REG_D0) & mask));
+    m68k_set_reg(M68K_REG_D0, old & mask);
+}
+
+static void exec_AllocTrap(void)
+{
+    /* AllocTrap(trapNum=d0) → D0=trap or -1; bitmap in task tc_TrapAlloc */
+    uint32_t proc = g_guest_proc_addr;
+    int32_t num = (int32_t)m68k_get_reg(NULL, M68K_REG_D0);
+    if (!proc) { m68k_set_reg(M68K_REG_D0, -1); return; }
+    uint32_t alloc = glue_r16(proc + 0x22);   /* tc_TrapAlloc (bits = avail) */
+    if (num == -1) {
+        for (int i = 0; i < 16; i++)
+            if ((alloc >> i) & 1) { num = i; break; }
+    }
+    if (num < 0 || num > 15 || !((alloc >> num) & 1)) {
+        m68k_set_reg(M68K_REG_D0, -1); return;
+    }
+    glue_w16(proc + 0x22, alloc & ~(1u << num));
+    m68k_set_reg(M68K_REG_D0, (uint32_t)num);
+}
+
+static void exec_FreeTrap(void)
+{
+    uint32_t proc = g_guest_proc_addr;
+    uint32_t num  = m68k_get_reg(NULL, M68K_REG_D0);
+    if (proc && num < 16)
+        glue_w16(proc + 0x22, glue_r16(proc + 0x22) | (1u << num));
+}
+
+static void exec_AllocVec(void)
+{
+    /* AllocVec(size=d0, attrs=d1) → mem with 4-byte size header */
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t attrs = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t blk = 0;
+    dos_AllocMem_glue(size + 4, attrs, &blk);
+    if (!blk) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    glue_w32(blk, size + 4);
+    m68k_set_reg(M68K_REG_D0, blk + 4);
+}
+
+static void exec_FreeVec(void)
+{
+    uint32_t mem = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!mem) return;
+    dos_FreeMem_glue(mem - 4, glue_r32(mem - 4));
+}
+
+static void exec_SetFunction(void)
+{
+    /* SetFunction(library=a1, funcOffset=a0 (negative), newFunc=d0? no:
+     * SetFunction(library=a1, funcOffset=a0, newFunc=d0) → D0=old vector.
+     * Real proto: SetFunction(a1=lib, a0=lvo, d0=newfunc). */
+    uint32_t lib = m68k_get_reg(NULL, M68K_REG_A1);
+    int32_t  lvo = (int32_t)m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t fn  = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t addr = (uint32_t)((int)lib + lvo);
+    m68k_set_reg(M68K_REG_D0, addr);   /* "old" = the stub addr */
+    if (addr + 6 <= GUEST_RAM_SIZE && fn) {
+        g_ram[addr+0] = 0x4E; g_ram[addr+1] = 0xF9;  /* JMP abs.l */
+        glue_w32(addr + 2, fn);
+    }
+}
+
+static void exec_CacheControl(void) { m68k_set_reg(M68K_REG_D0, 0); }
 
 /* Public exec dispatcher for use by other host library code (e.g. gadtools). */
 void UAOS_Exec_Dispatch(uint32_t fn)
@@ -2171,6 +4086,92 @@ void UAOS_Exec_Dispatch(uint32_t fn)
         case EXEC_GET_MSG:       exec_GetMsg();       break;
         case EXEC_REPLY_MSG:     exec_ReplyMsg();     break;
         case EXEC_WAIT_PORT:     exec_WaitPort();     break;
+        case EXEC_CACHE_CLEAR_U: break;               /* no icache in Musashi */
+        case EXEC_INIT_STRUCT:   exec_InitStruct();   break;
+        case EXEC_DISABLE:       exec_Disable();      break;
+        case EXEC_ENABLE:        exec_Enable();       break;
+        case EXEC_FORBID:        exec_Forbid();       break;
+        case EXEC_PERMIT:        exec_Permit();       break;
+        case EXEC_SUPER_STATE:   exec_SuperState();   break;
+        case EXEC_USER_STATE:    exec_UserState();    break;
+        case EXEC_SET_INT_VECTOR: exec_SetIntVector(); break;
+        case EXEC_ADD_INT_SERVER: exec_AddIntServer(); break;
+        case EXEC_REM_INT_SERVER: exec_RemIntServer(); break;
+        case EXEC_CAUSE:          exec_Cause();        break;
+        case EXEC_AVAIL_MEM:     exec_AvailMem();     break;
+        case EXEC_ALLOC_ENTRY:   exec_AllocEntry();   break;
+        case EXEC_FREE_ENTRY:    exec_FreeEntry();    break;
+        case EXEC_INSERT:        exec_Insert();       break;
+        case EXEC_ADD_HEAD:      exec_AddHead();      break;
+        case EXEC_ADD_TAIL:      exec_AddTail_glue(); break;
+        case EXEC_REMOVE:        exec_Remove();       break;
+        case EXEC_REM_HEAD:      exec_RemHead();      break;
+        case EXEC_REM_TAIL:      exec_RemTail();      break;
+        case EXEC_ENQUEUE:       exec_Enqueue();      break;
+        case EXEC_FIND_NAME:     exec_FindName();     break;
+        case EXEC_SET_TASK_PRI:  exec_SetTaskPri();   break;
+        case EXEC_SET_EXCEPT:    exec_SetExcept();    break;
+        case EXEC_ALLOC_TRAP:    exec_AllocTrap();    break;
+        case EXEC_FREE_TRAP:     exec_FreeTrap();     break;
+        case EXEC_ADD_PORT:      exec_AddPort();      break;
+        case EXEC_REM_PORT:      exec_RemPort();      break;
+        case EXEC_FIND_PORT:     exec_FindPort();     break;
+        case EXEC_OLD_OPEN_LIBRARY:
+            m68k_set_reg(M68K_REG_D0, 0);             /* any version */
+            exec_OpenLibrary(); break;
+        case EXEC_SET_FUNCTION:  exec_SetFunction();  break;
+        case EXEC_OPEN_DEVICE:   exec_OpenDevice();   break;
+        case EXEC_CLOSE_DEVICE:  exec_CloseDevice();  break;
+        case EXEC_DO_IO:         exec_DoIO();         break;
+        case EXEC_SEND_IO:       exec_SendIO();       break;
+        case EXEC_CHECK_IO:      exec_CheckIO();      break;
+        case EXEC_WAIT_IO:       exec_WaitIO();       break;
+        case EXEC_ABORT_IO:      exec_AbortIO();      break;
+        case EXEC_OPEN_RESOURCE: exec_OpenResource(); break;
+        case EXEC_GETCC:         exec_GetCC();        break;
+        case EXEC_TYPE_OF_MEM:   exec_TypeOfMem();    break;
+        case EXEC_PROCURE:       exec_Procure();      break;
+        case EXEC_VACATE:        exec_Vacate();       break;
+        case EXEC_INIT_SEMAPHORE:    exec_InitSemaphore(); break;
+        case EXEC_OBTAIN_SEM:  exec_ObtainSem();     break;
+        case EXEC_RELEASE_SEM: exec_ReleaseSem();   break;
+        case EXEC_ATTEMPT_SEM: exec_AttemptSem();   break;
+        case EXEC_OBTAIN_SEM_SHARED: exec_ObtainSem();    break;
+        case EXEC_OBTAIN_SEM_LIST:   exec_ObtainSemList(); break;
+        case EXEC_RELEASE_SEM_LIST:  exec_ReleaseSemList(); break;
+        case EXEC_FIND_SEMAPHORE:    exec_FindSemaphore(); break;
+        case EXEC_ADD_SEMAPHORE:     exec_AddSemaphore();  break;
+        case EXEC_REM_SEMAPHORE:     exec_RemSemaphore();  break;
+        case EXEC_COPY_MEM:       exec_CopyMem(0);    break;
+        case EXEC_COPY_MEM_QUICK: exec_CopyMem(1);    break;
+        case EXEC_CACHE_CONTROL:  exec_CacheControl(); break;
+        case EXEC_CACHE_CLEAR_E:  break;              /* no icache */
+        case EXEC_RAW_DO_FMT:     exec_RawDoFmt();    break;
+        case EXEC_CREATE_IOREQUEST: exec_CreateIORequest(); break;
+        case EXEC_DELETE_IOREQUEST: exec_DeleteIORequest(); break;
+        case EXEC_CREATE_MSGPORT:   exec_CreateMsgPort();  break;
+        case EXEC_DELETE_MSGPORT:   exec_DeleteMsgPort();  break;
+        case EXEC_ALLOC_VEC:      exec_AllocVec();    break;
+        case EXEC_FREE_VEC:       exec_FreeVec();     break;
+        default: {
+            /* Catch-all stub (EXEC_STUB_LVO) or unmapped fn — log the LVO
+             * via the stub address (PC-4) and return 0. */
+            uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
+            uint32_t a6  = m68k_get_reg(NULL, M68K_REG_A6);
+            int32_t lvo = (int32_t)spc - 4 - (int32_t)a6;
+            static int32_t last_lvo = 0;
+            if (lvo != last_lvo) {
+                last_lvo = lvo;
+                char msg[48] = "[exec] unimpl lvo=-";
+                char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
+                int i = emu_strlen(msg), j = 0;
+                while (n[j] && i < 44) msg[i++] = n[j++];
+                msg[i++] = '\n'; msg[i] = '\0';
+                emu_print(msg);
+            }
+            m68k_set_reg(M68K_REG_D0, 0);
+            break;
+        }
     }
 }
 
@@ -2250,7 +4251,7 @@ static void dos_VPrintf(void)
 }
 
 /* Fake RDArgs struct returned by ReadArgs */
-#define FAKE_RDARGS_ADDR   0x10200
+/* RDArgs buffer address now lives in g_guest_rdargs_addr (allocated post-load) */
 #define FAKE_ARGARRAY_ADDR 0x10280  /* array of ULONG results from ReadArgs */
 
 static void dos_VFWritef(void)
@@ -2279,9 +4280,13 @@ static void dos_ReadArgs(void)
     if (array_ptr && array_ptr + 64 < GUEST_RAM_SIZE) {
         for (int i = 0; i < 64; i++) g_ram[array_ptr + i] = 0;
     }
-    /* Return fake RDArgs struct */
-    for (int i = 0; i < 0x40; i++) g_ram[FAKE_RDARGS_ADDR + i] = 0;
-    m68k_set_reg(M68K_REG_D0, FAKE_RDARGS_ADDR >> 2);  /* Return BPTR to RDArgs */
+    /* Return fake RDArgs struct (buffer allocated post-load) */
+    if (g_guest_rdargs_addr) {
+        for (int i = 0; i < 0x40; i++) g_ram[g_guest_rdargs_addr + i] = 0;
+        m68k_set_reg(M68K_REG_D0, g_guest_rdargs_addr >> 2);
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+    }
 }
 
 static void dos_GetArgStr(void)
@@ -2831,7 +4836,20 @@ static void dos_CreateDir(void)
 static void dos_Exit(void)
 {
     uint32_t rc = m68k_get_reg(NULL, M68K_REG_D1);
-    (void)rc;
+    /* Diagnostic: where did the program exit from?  The caller's return
+     * address sits at (SP) — for the top-level RTS path it's our stub. */
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_SP);
+    uint32_t ra = (sp + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(sp) : 0;
+    char msg[64] = "[dos] Exit rc=";
+    char n[12]; u32_dec(rc, n, 12);
+    int i = emu_strlen(msg), j = 0;
+    while (n[j] && i < 40) msg[i++] = n[j++];
+    const char *tail = " retpc=0x";
+    j = 0; while (tail[j]) msg[i++] = tail[j++];
+    u32_hex(ra, n); j = 0;
+    while (n[j] && i < 60) msg[i++] = n[j++];
+    msg[i++] = '\n'; msg[i] = '\0';
+    emu_print(msg);
     /* Stop the execute loop */
     g_emu_halted = 1;
     m68k_end_timeslice();
@@ -2911,7 +4929,8 @@ uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32
     m68k_set_reg(M68K_REG_A2, a2);
     m68k_set_reg(M68K_REG_PC, entry);
 
-    while (!g_hook_return_detected[level]) {
+    g_m68k_wild_abort = 0;
+    while (!g_hook_return_detected[level] && !g_m68k_wild_abort) {
         m68k_execute(1000);
         Chiptrace_PcSample();
     }
@@ -2923,6 +4942,210 @@ uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32
     m68k_set_context(g_hook_saved_context[level]);
 
     return d0;
+}
+
+/* Call a guest interrupt handler: JSR-style entry that returns via RTS to
+ * the shared return trap.  Same nest-level machinery as hooks — handlers
+ * may themselves invoke library calls (which may nest further). */
+static uint32_t m68k_isr_call_a0(uint32_t entry, uint32_t d0, uint32_t a1,
+                                 uint32_t a5, uint32_t a0)
+{
+    if (!entry || entry >= GUEST_RAM_SIZE) return 0;
+    if (g_hook_nest_level >= MAX_NESTED_HOOKS) return 0;
+
+    unsigned int ctx_size = m68k_context_size();
+    if (ctx_size > sizeof(g_hook_saved_context[0])) ctx_size = sizeof(g_hook_saved_context[0]);
+    int level = g_hook_nest_level;
+    m68k_get_context(g_hook_saved_context[level]);
+    g_hook_return_detected[level] = 0;
+    g_hook_nest_level++;
+
+    if (HOOK_RETURN_TRAP_ADDR + 4 <= GUEST_RAM_SIZE) {
+        g_ram[HOOK_RETURN_TRAP_ADDR + 0] = 0x4A;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 1] = 0xFC;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 2] = HOOK_RETURN_TRAP_LIB;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 3] = HOOK_RETURN_TRAP_FN;
+    }
+
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 4;
+    if (sp + 4 <= GUEST_RAM_SIZE) {
+        guest_write_be32(sp, HOOK_RETURN_TRAP_ADDR);
+    }
+    m68k_set_reg(M68K_REG_A7, sp);
+
+    /* Amiga interrupt server convention: D0=pending INTREQ bit,
+     * A0=$DFF000 custom regs (or CIA base for cia.resource ICR vectors),
+     * A1=is_Data, A5=IntVector addr, A6=SysBase. */
+    m68k_set_reg(M68K_REG_D0, d0);
+    m68k_set_reg(M68K_REG_A0, a0);
+    m68k_set_reg(M68K_REG_A1, a1);
+    m68k_set_reg(M68K_REG_A5, a5);
+    m68k_set_reg(M68K_REG_A6, EXEC_BASE);
+    m68k_set_reg(M68K_REG_PC, entry);
+
+    /* Run until RTS hits the return trap — bounded so a wedged handler
+     * cannot hang the host task (~4M cycles ≈ 0.5 s of guest time).  The
+     * wild-PC breaker (set by the instr hook when the handler branches out
+     * of the 16 MB window) aborts far sooner — before the runaway CPU can
+     * shred the arena executing data as code. */
+    uint32_t guard = 0;
+    g_m68k_wild_abort = 0;
+    while (!g_hook_return_detected[level] && guard++ < 4000 &&
+           !g_m68k_wild_abort)
+        m68k_execute(1000);
+
+    uint32_t ret = (uint32_t)m68k_get_reg(NULL, M68K_REG_D0);
+    g_hook_nest_level--;
+    m68k_set_context(g_hook_saved_context[level]);
+    return ret;
+}
+
+static uint32_t m68k_isr_call(uint32_t entry, uint32_t d0, uint32_t a1,
+                              uint32_t a5)
+{
+    return m68k_isr_call_a0(entry, d0, a1, a5, 0x00DFF000u);
+}
+
+/* Call a guest character-output callback (exec RawDoFmt PutChProc):
+ * convention is D0.B = character, A3 = PutChData, A6 = SysBase.
+ * Same nest machinery as hooks — the callback may invoke library calls. */
+static void m68k_putch_call(uint32_t proc, uint8_t ch, uint32_t data)
+{
+    if (!proc || proc >= GUEST_RAM_SIZE) return;
+    if (g_hook_nest_level >= MAX_NESTED_HOOKS) return;
+
+    unsigned int ctx_size = m68k_context_size();
+    if (ctx_size > sizeof(g_hook_saved_context[0])) ctx_size = sizeof(g_hook_saved_context[0]);
+    int level = g_hook_nest_level;
+    m68k_get_context(g_hook_saved_context[level]);
+    g_hook_return_detected[level] = 0;
+    g_hook_nest_level++;
+
+    if (HOOK_RETURN_TRAP_ADDR + 4 <= GUEST_RAM_SIZE) {
+        g_ram[HOOK_RETURN_TRAP_ADDR + 0] = 0x4A;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 1] = 0xFC;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 2] = HOOK_RETURN_TRAP_LIB;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 3] = HOOK_RETURN_TRAP_FN;
+    }
+
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 4;
+    guest_write_be32(sp, HOOK_RETURN_TRAP_ADDR);
+    m68k_set_reg(M68K_REG_A7, sp);
+
+    m68k_set_reg(M68K_REG_D0, ch);
+    m68k_set_reg(M68K_REG_A3, data);
+    m68k_set_reg(M68K_REG_A6, EXEC_BASE);
+    m68k_set_reg(M68K_REG_PC, proc);
+
+    uint32_t guard = 0;
+    g_m68k_wild_abort = 0;
+    while (!g_hook_return_detected[level] && guard++ < 4000 &&
+           !g_m68k_wild_abort)
+        m68k_execute(1000);
+
+    g_hook_nest_level--;
+    m68k_set_context(g_hook_saved_context[level]);
+}
+
+/* Poll chipset interrupt state and invoke the guest's installed exec
+ * Interrupt structures.  Called between m68k_execute() slices in
+ * exec_task.c and from the blocking-wait paths (exec_Wait et al.) so
+ * handlers fire even while the guest task is descheduled.  Only usable in
+ * a per-task context (g_chipset_sync_disabled) — the shared boot context
+ * uses the real m68k_set_irq() path. */
+uint32_t g_dlv_calls = 0;   /* UAOS-241 diag: deliveries attempted */
+uint32_t g_dlv_pend  = 0;   /* last pending mask seen */
+uint32_t g_dlv_isr   = 0;   /* guest handlers actually invoked */
+uint32_t g_blocked_in = 0;  /* 0=running 1=Wait 2=WaitPort 3=WaitIO */
+
+void UAOS_M68k_DeliverInterrupts(void)
+{
+    g_dlv_calls++;
+    if (!g_ram || !g_chipset_sync_disabled) return;
+
+    extern uint16_t g_intreq;   /* chip_emu.c — requests, incl. unmasked */
+    uint16_t intena = chip_emu_intena_shadow();
+    uint16_t pend = g_intreq & intena & 0x7FFFu;
+    /* CIAB pending synthesizes the EXTER bit for guest vector dispatch. */
+    if (chip_emu_cia_b_pending() && (intena & 0x2000u)) pend |= 0x2000u;
+    if (pend) g_dlv_pend = pend;
+
+    static uint32_t s_irq_seen = 0;
+    for (int n = 0; n < 15 && pend; n++) {
+        uint16_t bit = (uint16_t)(1u << n);
+        if (!(pend & bit)) continue;
+        pend = (uint16_t)(pend & ~bit);
+        uint32_t iv   = EB_INTVECTS + (uint32_t)n * 12u;
+        uint32_t code = guest_read_be32(iv + IV_CODE);
+        uint32_t node = guest_read_be32(iv + IV_NODE);
+        if (code == IV_CHAIN) {
+            /* Server chain: each handler gets a shot until one claims it
+             * (returns non-zero in D0), per exec's server dispatch. */
+            int hops = 0;
+            for (uint32_t in = node; in && in + 22 <= GUEST_RAM_SIZE && hops++ < 16;
+                 in = guest_read_be32(in)) {
+                uint32_t ic = guest_read_be32(in + IS_CODE);
+                if (ic) g_dlv_isr++;
+                if (ic && m68k_isr_call(ic, bit,
+                                        guest_read_be32(in + IS_DATA), iv))
+                    break;
+            }
+        } else if (code && code < GUEST_RAM_SIZE) {
+            if (!(s_irq_seen & bit)) {
+                s_irq_seen |= bit;
+                char m[48]; int i2 = 0;
+                const char *t2 = "[irq] deliver vec=";
+                while (t2[i2]) { m[i2] = t2[i2]; i2++; }
+                char n8[12]; u32_dec((uint32_t)n, n8, 12); int j2 = 0;
+                while (n8[j2] && i2 < 40) m[i2++] = n8[j2++];
+                const char *t3 = " code=0x"; j2 = 0; while (t3[j2]) m[i2++] = t3[j2++];
+                u32_hex(code, n8); j2 = 0; while (n8[j2] && i2 < 44) m[i2++] = n8[j2++];
+                m[i2++]='\n'; m[i2]='\0'; emu_print(m);
+            }
+            g_dlv_isr++;
+            m68k_isr_call(code, bit, guest_read_be32(iv + IV_DATA), iv);
+        }
+        /* An unacknowledged bit stays set in g_intreq and will be
+         * redelivered on the next poll — matching level-triggered HW. */
+    }
+
+    /* cia*.resource ICR vectors — dispatch each masked-enabled pending bit
+     * to the Interrupt registered by AddICRVector.  The resource's own
+     * dispatch mimics the PORTS/EXTER ISR path on real hardware; we ack
+     * each delivered bit so it doesn't refire continuously. */
+    for (int i = 0; i < g_genlib_count; i++) {
+        if (g_genlibs[i].cia < 0 || !g_genlibs[i].icr_tab) continue;
+        int cia = g_genlibs[i].cia;
+        uint8_t icr = chip_emu_cia_icr_pending(cia);
+        if (!icr) continue;
+        for (int b = 0; b < 8; b++) {
+            if (!(icr & (1u << b))) continue;
+            uint32_t in = guest_read_be32(g_genlibs[i].icr_tab + (uint32_t)b * 4u);
+            if (!in) continue;
+            chip_emu_cia_icr_ack(cia, (uint8_t)(1u << b));
+            uint32_t ic = guest_read_be32(in + IS_CODE);
+            if (ic && in + 22 <= GUEST_RAM_SIZE) {
+                static uint16_t s_icr_seen = 0;
+                if (!(s_icr_seen & (1u << b))) {
+                    s_icr_seen |= (uint16_t)(1u << b);
+                    char m[48]; int i2 = 0;
+                    const char *t2 = "[icr] cia"; while (t2[i2]) { m[i2]=t2[i2]; i2++; }
+                    m[i2++] = (char)('a' + cia);
+                    const char *t3 = " bit="; int j2 = 0; while (t3[j2]) m[i2++]=t3[j2++];
+                    char n8[8]; u32_dec((uint32_t)b, n8, 8); j2 = 0;
+                    while (n8[j2] && i2 < 44) m[i2++] = n8[j2++];
+                    m[i2++]='\n'; m[i2]='\0'; emu_print(m);
+                }
+                /* ICR handler convention: A0 = CIA chip base, A1 = is_Data. */
+                g_dlv_isr++;
+                m68k_isr_call_a0(ic, (uint32_t)b,
+                                 guest_read_be32(in + IS_DATA), 0,
+                                 cia ? 0x00BFD000u : 0x00BFE001u);
+            }
+        }
+    }
 }
 
 /* Stub for 68881 PMMU ops — referenced by generated m68kops.c when
@@ -2938,9 +5161,9 @@ void m68881_mmu_ops(void) { }
  * and dispatches to work in a task context.  No-op on the shared path. */
 void UAOS_Emu_MirrorSharedRegion(uint32_t off, uint32_t len)
 {
-    if (g_ram == g_default_ram) return;
+    if (g_ram == g_shared_ram) return;
     if (off + len <= GUEST_RAM_SIZE)
-        emu_memcpy(g_ram + off, g_default_ram + off, len);
+        emu_memcpy(g_ram + off, g_shared_ram + off, len);
 }
 
 /* =========================================================================
@@ -2962,15 +5185,29 @@ int m68k_illg_instr_callback(int opcode)
         static uint32_t g_thunk_count = 0;
         g_thunk_count++;
         /* Print first 50 calls, then every 1000th, and always on lib/fn change to unknown */
-        if (g_thunk_count <= 50 || (g_thunk_count % 10000) == 0) {
-            char buf[64] = "[trace] #";
+        if (g_thunk_count <= 600 || (g_thunk_count % 10000) == 0) {
+            char buf[80] = "[trace] #";
             char n[12]; u32_dec(g_thunk_count, n, 12);
             int i = emu_strlen(buf), j = 0;
-            while (n[j] && i < 60) buf[i++] = n[j++];
+            while (n[j] && i < 76) buf[i++] = n[j++];
             buf[i++]=' '; buf[i++]='l'; buf[i++]='i'; buf[i++]='b';
-            buf[i++]='='; u32_dec(lib, n, 12); j=0; while (n[j]&&i<60) buf[i++]=n[j++];
+            buf[i++]='='; u32_dec(lib, n, 12); j=0; while (n[j]&&i<76) buf[i++]=n[j++];
             buf[i++]=' '; buf[i++]='f'; buf[i++]='n'; buf[i++]='=';
-            u32_dec(fn, n, 12); j=0; while (n[j]&&i<60) buf[i++]=n[j++];
+            u32_dec(fn, n, 12); j=0; while (n[j]&&i<76) buf[i++]=n[j++];
+            /* args d0/d1 — shows what the caller asked for */
+            {
+                const char *t = " d0=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
+                u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_D0), n);
+                j = 0; while (n[j] && i < 78) buf[i++] = n[j++];
+                t = " d1=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
+                u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_D1), n);
+                j = 0; while (n[j] && i < 78) buf[i++] = n[j++];
+            }
+            /* caller return address = *(SP) — shows who invoked the stub */
+            uint32_t tsp = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+            uint32_t ra = (tsp + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(tsp) : 0;
+            const char *t = " from=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
+            u32_hex(ra, n); j = 0; while (n[j] && i < 78) buf[i++] = n[j++];
             buf[i++]='\n'; buf[i]='\0';
             emu_print(buf);
         }
@@ -2978,6 +5215,12 @@ int m68k_illg_instr_callback(int opcode)
 
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);
+
+    int trace_this = 0;
+    {
+        static uint32_t g_thunk_traced = 0;
+        if (g_thunk_traced < 700) { g_thunk_traced++; trace_this = 1; }
+    }
 
     if (lib == HOOK_RETURN_TRAP_LIB && fn == HOOK_RETURN_TRAP_FN) {
         /* Hook return trap: the m68k hook has RTS'd back to the stub we
@@ -3020,17 +5263,100 @@ int m68k_illg_instr_callback(int opcode)
             case EXEC_GET_MSG:       exec_GetMsg();       break;
             case EXEC_REPLY_MSG:     exec_ReplyMsg();     break;
             case EXEC_WAIT_PORT:     exec_WaitPort();     break;
+            case EXEC_CACHE_CLEAR_U: break;               /* no icache */
+            case EXEC_INIT_STRUCT:   exec_InitStruct();   break;
+            case EXEC_DISABLE:       exec_Disable();      break;
+            case EXEC_ENABLE:        exec_Enable();       break;
+            case EXEC_FORBID:        exec_Forbid();       break;
+            case EXEC_PERMIT:        exec_Permit();       break;
+            case EXEC_SUPER_STATE:   exec_SuperState();   break;
+            case EXEC_USER_STATE:    exec_UserState();    break;
+            case EXEC_SET_INT_VECTOR: exec_SetIntVector(); break;
+            case EXEC_ADD_INT_SERVER: exec_AddIntServer(); break;
+            case EXEC_REM_INT_SERVER: exec_RemIntServer(); break;
+            case EXEC_CAUSE:          exec_Cause();        break;
+            case EXEC_AVAIL_MEM:     exec_AvailMem();     break;
+            case EXEC_ALLOC_ENTRY:   exec_AllocEntry();   break;
+            case EXEC_FREE_ENTRY:    exec_FreeEntry();    break;
+            case EXEC_INSERT:        exec_Insert();       break;
+            case EXEC_ADD_HEAD:      exec_AddHead();      break;
+            case EXEC_ADD_TAIL:      exec_AddTail_glue(); break;
+            case EXEC_REMOVE:        exec_Remove();       break;
+            case EXEC_REM_HEAD:      exec_RemHead();      break;
+            case EXEC_REM_TAIL:      exec_RemTail();      break;
+            case EXEC_ENQUEUE:       exec_Enqueue();      break;
+            case EXEC_FIND_NAME:     exec_FindName();     break;
+            case EXEC_SET_TASK_PRI:  exec_SetTaskPri();   break;
+            case EXEC_SET_EXCEPT:    exec_SetExcept();    break;
+            case EXEC_ALLOC_TRAP:    exec_AllocTrap();    break;
+            case EXEC_FREE_TRAP:     exec_FreeTrap();     break;
+            case EXEC_ADD_PORT:      exec_AddPort();      break;
+            case EXEC_REM_PORT:      exec_RemPort();      break;
+            case EXEC_FIND_PORT:     exec_FindPort();     break;
+            case EXEC_OLD_OPEN_LIBRARY:
+                m68k_set_reg(M68K_REG_D0, 0);
+                exec_OpenLibrary(); break;
+            case EXEC_SET_FUNCTION:  exec_SetFunction();  break;
+            case EXEC_OPEN_DEVICE:   exec_OpenDevice();   break;
+            case EXEC_CLOSE_DEVICE:  exec_CloseDevice();  break;
+            case EXEC_DO_IO:         exec_DoIO();         break;
+            case EXEC_SEND_IO:       exec_SendIO();       break;
+            case EXEC_CHECK_IO:      exec_CheckIO();      break;
+            case EXEC_WAIT_IO:       exec_WaitIO();       break;
+            case EXEC_ABORT_IO:      exec_AbortIO();      break;
+            case EXEC_OPEN_RESOURCE: exec_OpenResource(); break;
+            case EXEC_GETCC:         exec_GetCC();        break;
+            case EXEC_TYPE_OF_MEM:   exec_TypeOfMem();    break;
+            case EXEC_PROCURE:       exec_Procure();      break;
+            case EXEC_VACATE:        exec_Vacate();       break;
+            case EXEC_INIT_SEMAPHORE:    exec_InitSemaphore(); break;
+            case EXEC_OBTAIN_SEM:  exec_ObtainSem();     break;
+            case EXEC_RELEASE_SEM: exec_ReleaseSem();   break;
+            case EXEC_ATTEMPT_SEM: exec_AttemptSem();   break;
+            case EXEC_OBTAIN_SEM_SHARED: exec_ObtainSem();    break;
+            case EXEC_OBTAIN_SEM_LIST:   exec_ObtainSemList(); break;
+            case EXEC_RELEASE_SEM_LIST:  exec_ReleaseSemList(); break;
+            case EXEC_FIND_SEMAPHORE:    exec_FindSemaphore(); break;
+            case EXEC_ADD_SEMAPHORE:     exec_AddSemaphore();  break;
+            case EXEC_REM_SEMAPHORE:     exec_RemSemaphore();  break;
+            case EXEC_COPY_MEM:       exec_CopyMem(0);    break;
+            case EXEC_COPY_MEM_QUICK: exec_CopyMem(1);    break;
+            case EXEC_CACHE_CONTROL:  exec_CacheControl(); break;
+            case EXEC_CACHE_CLEAR_E:  break;              /* no icache */
+            case EXEC_RAW_DO_FMT:     exec_RawDoFmt();    break;
+            case EXEC_CREATE_IOREQUEST: exec_CreateIORequest(); break;
+            case EXEC_DELETE_IOREQUEST: exec_DeleteIORequest(); break;
+            case EXEC_CREATE_MSGPORT:   exec_CreateMsgPort();  break;
+            case EXEC_DELETE_MSGPORT:   exec_DeleteMsgPort();  break;
+            case EXEC_ALLOC_VEC:      exec_AllocVec();    break;
+            case EXEC_FREE_VEC:       exec_FreeVec();     break;
             default: {
-                char msg[40] = "[exec] unknown fn=";
-                char n[4]; u32_dec(fn, n, 4);
-                int i = emu_strlen(msg), j = 0;
-                while (n[j] && i<38) msg[i++]=n[j++];
-                msg[i++]='\n'; msg[i]='\0';
-                emu_print(msg);
+                /* PC was advanced to stub+4 → recover the LVO hit. */
+                uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
+                int32_t lvo = (int32_t)spc - 4 - (int32_t)EXEC_BASE;
+                /* Rate-limit: suppress consecutive repeats + global cap so
+                 * Forbid/Permit-style loops don't flood the UART. */
+                static int32_t last_lvo = 0;
+                static int unimpl_prints = 0;
+                if (lvo != last_lvo && unimpl_prints < 100) {
+                    last_lvo = lvo;
+                    unimpl_prints++;
+                    char msg[48] = "[exec] unimpl lvo=";
+                    char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
+                    int i = emu_strlen(msg), j = 0;
+                    msg[i++]='-'; while (n[j] && i<40) msg[i++]=n[j++];
+                    j = 0; const char *tail = " fn=";
+                    while (tail[j]) msg[i++]=tail[j++];
+                    u32_dec(fn, n, 12); j=0;
+                    while (n[j] && i<44) msg[i++]=n[j++];
+                    msg[i++]='\n'; msg[i]='\0';
+                    emu_print(msg);
+                }
+                m68k_set_reg(M68K_REG_D0, 0);   /* safe default */
             }
         }
-    } else if (lib == LIB_DOS) {
-        /* Delegate dos.library to ROM module dispatcher */
+    } else if (lib == LIB_DOS || lib == LIB_UTILITY) {
+        /* Delegate to ROM module dispatcher — marshal all regs */
         M68kCPUState cpu;
         cpu.d[0] = m68k_get_reg(NULL, M68K_REG_D0);
         cpu.d[1] = m68k_get_reg(NULL, M68K_REG_D1);
@@ -3051,7 +5377,8 @@ int m68k_illg_instr_callback(int opcode)
         cpu.pc   = m68k_get_reg(NULL, M68K_REG_PC);
         cpu.sr   = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
 
-        void *rom_fn = UAOS_ROM_NativeFunc("dos.library", (uint16_t)fn);
+        void *rom_fn = UAOS_ROM_NativeFunc(
+            lib == LIB_DOS ? "dos.library" : "utility.library", (uint16_t)fn);
         if (rom_fn) {
             void (*fn_ptr)(M68kCPUState *) = (void (*)(M68kCPUState *))rom_fn;
             fn_ptr(&cpu);
@@ -3076,13 +5403,106 @@ int m68k_illg_instr_callback(int opcode)
             if (g_emu_halted)
                 m68k_end_timeslice();
         } else {
-            char msg[40] = "[dos] unknown fn=";
-            char n[4]; u32_dec(fn, n, 4);
-            int i = emu_strlen(msg), j = 0;
-            while (n[j] && i<38) msg[i++]=n[j++];
+            /* Unimplemented LVO (catch-all stub) or bad fn id.
+             * stub_addr = PC-4 at this point; lvo = stub - a6. */
+            uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
+            uint32_t a6  = m68k_get_reg(NULL, M68K_REG_A6);
+            int32_t lvo = (int32_t)spc - 4 - (int32_t)a6;
+            static int32_t last_lvo = 0;
+            static int unimpl_prints = 0;
+            if (lvo != last_lvo && unimpl_prints < 100) {
+                last_lvo = lvo;
+                unimpl_prints++;
+                char msg[48];
+                const char *pfx = (lib == LIB_DOS) ? "[dos] unimpl lvo=-"
+                                                 : "[util] unimpl lvo=-";
+                int i = 0; while (pfx[i]) { msg[i] = pfx[i]; i++; }
+                char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
+                int j = 0;
+                while (n[j] && i<44) msg[i++]=n[j++];
+                msg[i++]='\n'; msg[i]='\0';
+                emu_print(msg);
+            }
+            m68k_set_reg(M68K_REG_D0, 0);
+        }
+    } else if (lib == LIB_GENERIC) {
+        /* Fake library base — log the call (lvo via a6), return 0. */
+        uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
+        uint32_t a6  = m68k_get_reg(NULL, M68K_REG_A6);
+        int32_t lvo = (int32_t)spc - 4 - (int32_t)a6;
+        const char *lname = emu_fake_lib_name(a6);
+        static int32_t last_lvo = 0;
+        if (lvo != last_lvo) {
+            last_lvo = lvo;
+            char msg[80];
+            int i = 0;
+            const char *p = "[lib] "; while (p[i]) { msg[i] = p[i]; i++; }
+            const char *q = lname ? lname : "?";
+            for (int j = 0; q[j] && i < 60; j++) msg[i++] = q[j];
+            const char *t = " lvo=-"; for (int j = 0; t[j]; j++) msg[i++] = t[j];
+            char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
+            for (int j = 0; n[j] && i < 76; j++) msg[i++] = n[j];
             msg[i++]='\n'; msg[i]='\0';
             emu_print(msg);
         }
+        /* locale.library GetCatalogStr (LVO -72) must yield the caller's
+         * built-in default string (a1) when no catalog was loaded —
+         * returning NULL blanks every menu/gadget label. */
+        int is_locale = lname && lname[0]=='l' && lname[6]=='.' &&
+                        lname[1]=='o' && lname[2]=='c' && lname[3]=='a' &&
+                        lname[4]=='l' && lname[5]=='e';
+        /* asl.library: requester block lifecycle plus the native WM file
+         * requester (UAOS-242).  LVO map (v37+):
+         *   -30 AllocFileRequest   -36 FreeFileRequest   -42 RequestFile
+         *   -48 AllocAslRequest    -54 FreeAslRequest    -60 AslRequest */
+        int is_asl = lname && lname[0]=='a' && lname[1]=='s' &&
+                     lname[2]=='l' && lname[3]=='.';
+        if (is_asl) {
+            /* Trace every ASL call with its return address (UAOS-242 debug). */
+            uint32_t tsp2 = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+            uint32_t ra2  = (tsp2 + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(tsp2) : 0;
+            char msg2[80]; int i2 = 0;
+            const char *p2 = "[frq] call lvo="; while (p2[i2]) { msg2[i2]=p2[i2]; i2++; }
+            char n2[12]; u32_dec((uint32_t)(-lvo), n2, 12);
+            int j2 = 0; while (n2[j2]) msg2[i2++]=n2[j2++];
+            const char *t2 = " ra="; j2 = 0; while (t2[j2]) msg2[i2++]=t2[j2++];
+            u32_hex(ra2, n2); j2 = 0; while (n2[j2] && i2<76) msg2[i2++]=n2[j2++];
+            msg2[i2++]='\n'; msg2[i2]='\0';
+            emu_print(msg2);
+        }
+        /* cia*.resource: AddICRVector(-6)/RemICRVector(-12)/AbleICR(-18)/
+         * SetICR(-24) — real implementations so guests can take CIA timer
+         * and keyboard interrupts (UAOS-241). */
+        int is_cia = lname && lname[0]=='c' && lname[1]=='i' &&
+                     lname[2]=='a' && lname[4]=='.';
+        if (is_cia && (lvo == -6 || lvo == -12 || lvo == -18 || lvo == -24))
+            cia_res_dispatch(a6, lvo);
+        else if (is_locale && lvo == -72)
+            m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A1));
+        else if (is_asl && (lvo == -30 || lvo == -48)) {
+            /* AllocFileRequest / AllocAslRequest — zeroed 512-byte block.
+             * Result strings live inside it (drawer at +256, file at +384)
+             * so no separate allocation bookkeeping is needed. */
+            uint32_t fr = 0;
+            dos_AllocMem_glue(512, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &fr);
+            m68k_set_reg(M68K_REG_D0, fr);
+        }
+        else if (is_asl && (lvo == -36 || lvo == -54)) {
+            uint32_t fr = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
+            if (fr) dos_FreeMem_glue(fr, 512);
+            m68k_set_reg(M68K_REG_D0, 0);
+        }
+        else if (is_asl && (lvo == -42 || lvo == -60)) {
+            /* RequestFile / AslRequest: a0=requester, a1=taglist */
+            extern int UAOS_Intuition_AslFileRequest(uint32_t req, uint32_t tags);
+            uint32_t fr   = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
+            uint32_t tags = (uint32_t)m68k_get_reg(NULL, M68K_REG_A1);
+            emu_print("[frq] AslRequest dispatch\n");
+            m68k_set_reg(M68K_REG_D0,
+                         (uint32_t)UAOS_Intuition_AslFileRequest(fr, tags));
+        }
+        else
+            m68k_set_reg(M68K_REG_D0, 0);
     } else if (lib == LIB_BSDSOCKET) {
         extern void BsdSocket_Dispatch(uint32_t fn, uint32_t *regs);
         BsdSocket_Dispatch((uint32_t)fn, (uint32_t*)0);
@@ -3095,6 +5515,13 @@ int m68k_illg_instr_callback(int opcode)
     } else if (lib == LIB_GADTOOLS) {
         extern void UAOS_GADTOOLS_Dispatch(uint32_t fn);
         UAOS_GADTOOLS_Dispatch((uint32_t)fn);
+    } else if (lib == LIB_AUDIODEV) {
+        switch (fn) {
+        case AUDEV_LVO_OPEN:    audio_dev_Open();    break;
+        case AUDEV_LVO_CLOSE:   audio_dev_Close();   break;
+        case AUDEV_LVO_BEGINIO: audio_dev_BeginIO(); break;
+        case AUDEV_LVO_ABORTIO: audio_dev_AbortIO(); break;
+        }
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
         char n[4]; u32_dec(lib, n, 4);
@@ -3106,6 +5533,21 @@ int m68k_illg_instr_callback(int opcode)
 
     if (strace_on)
         Strace_M68kExit(lib, fn, (int32_t)m68k_get_reg(NULL, M68K_REG_D0));
+
+    if (trace_this) {
+        char buf[48] = "    ->d0=0x";
+        char n[12];
+        u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_D0), n);
+        int i = emu_strlen(buf), j = 0;
+        while (n[j] && i < 24) buf[i++] = n[j++];
+        /* caller PC = *(SP) for jsr'd stubs */
+        uint32_t tsp = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+        uint32_t ra = (tsp + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(tsp) : 0;
+        const char *t = " ra=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
+        u32_hex(ra, n); j = 0; while (n[j] && i < 40) buf[i++] = n[j++];
+        buf[i++]='\n'; buf[i]='\0';
+        emu_print(buf);
+    }
 
     return 1; /* handled — continue execution */
 }
@@ -3178,14 +5620,29 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
     if (n_hunks > MAX_HUNKS) { emu_print("[hunk] too many hunks\n"); return 0; }
     (void)table_size;
 
-    /* Read hunk sizes and allocate guest RAM */
+    /* Read hunk sizes and allocate guest RAM.
+     * Each hunk gets a real AmigaDOS segment header like LoadSeg produces:
+     *   [block+0] total block size in bytes (header + data)
+     *   [block+4] BPTR to next segment's link field (0 = last)
+     *   [block+8] hunk data — this is what g_hunk_base[] records.
+     * Self-decrunching binaries (e.g. OctaMED V5) walk this layout: they read
+     * (hunk0_data-4) as the next-segment BPTR and (hunkN_data-8) as the byte
+     * size of the block.  Without the headers they decrypt/scan garbage. */
+    static uint32_t g_hunk_blk[MAX_HUNKS];
     g_hunk_count = (int)n_hunks;
     for (uint32_t i = 0; i < n_hunks; i++) {
         if (p + 4 > end) { emu_print("[hunk] size table truncated\n"); return 0; }
         uint32_t words = be32(p) & 0x3FFFFFFF; p += 4;  /* mask off mem flags */
         uint32_t bytes = words * 4;
-        g_hunk_base[i] = heap_alloc(bytes ? bytes : 4);
-        if (!g_hunk_base[i]) { emu_print("[hunk] OOM\n"); return 0; }
+        uint32_t blk = heap_alloc(bytes + 8);
+        if (!blk) { emu_print("[hunk] OOM\n"); return 0; }
+        g_hunk_blk[i] = blk;
+        g_hunk_base[i] = blk + 8;
+        guest_write_be32(blk, bytes + 8);  /* total block size in bytes */
+    }
+    for (uint32_t i = 0; i < n_hunks; i++) {
+        uint32_t next = (i + 1 < n_hunks) ? ((g_hunk_blk[i + 1] + 4) >> 2) : 0;
+        guest_write_be32(g_hunk_blk[i] + 4, next);
     }
 
     /* Load hunk bodies */
@@ -3326,6 +5783,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     g_uaos_heap_ptr = PROG_BASE;
     SetIoErr(0);
     g_hunk_count = 0;
+    g_genlib_count = 0;
     g_emu_halted  = 0;
     g_stdin_reads = 0;
 
@@ -3376,35 +5834,20 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     g_ram[bstr_ptr] = (uint8_t)(cmdlen < 255 ? cmdlen : 255);
     emu_memcpy(g_ram + bstr_ptr + 1, cmdline, (unsigned int)cmdlen);
     g_cmdline_bptr = bstr_ptr >> 2;  /* BPTR = addr >> 2 */
-    
-    /* Build a separate BSTR for cli_CommandName (just "tar") */
+
+    /* Build a separate BSTR for cli_CommandName */
     sp -= 8;
     uint32_t cmdname_bstr_ptr = sp;
-    const char *cmdname = "tar";
-    uint8_t cmdname_len = 3;
+    const char *cmdname = (argv && argv[0]) ? argv[0] : "m68k";
+    UAOS_Emu_SetTarCompat(cmdname);
+    uint8_t cmdname_len = 0;
+    while (cmdname_len < 15 && cmdname[cmdname_len]) cmdname_len++;
     g_ram[cmdname_bstr_ptr] = cmdname_len;
     emu_memcpy(g_ram + cmdname_bstr_ptr + 1, cmdname, cmdname_len);
     uint32_t cmdname_bptr = cmdname_bstr_ptr >> 2;
 
-    /* Patch cli_CommandName (offset +0x10 in CLI struct) to cmdname BSTR */
-    {
-        uint32_t cn_slot = FAKE_CLI_ADDR + 0x10;
-        uint32_t bptr = cmdname_bptr;
-        g_ram[cn_slot]   = (bptr >> 24) & 0xFF;
-        g_ram[cn_slot+1] = (bptr >> 16) & 0xFF;
-        g_ram[cn_slot+2] = (bptr >>  8) & 0xFF;
-        g_ram[cn_slot+3] = (bptr      ) & 0xFF;
-    }
-    
-    /* Patch cli_CommandLine (offset +0x2C in CLI struct) to our cmdline BSTR */
-    {
-        uint32_t cl_slot = FAKE_CLI_ADDR + 0x2C;
-        uint32_t bptr = g_cmdline_bptr;
-        g_ram[cl_slot]   = (bptr >> 24) & 0xFF;
-        g_ram[cl_slot+1] = (bptr >> 16) & 0xFF;
-        g_ram[cl_slot+2] = (bptr >>  8) & 0xFF;
-        g_ram[cl_slot+3] = (bptr      ) & 0xFF;
-    }
+    /* Allocate + populate Process/CLI/RDArgs past the loaded hunks */
+    UAOS_Emu_SetupProcess(cmdname_bptr);
 
     /* Push return address — our DOS Exit stub so RTS ends execution */
     uint32_t exit_stub = stub_addr(LIB_DOS, DOS_EXIT);

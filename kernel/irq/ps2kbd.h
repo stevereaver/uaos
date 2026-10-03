@@ -22,6 +22,13 @@ int PS2Kbd_HasChar(void);
  * Used by the USB HID keyboard driver so both paths share the queue. */
 void PS2Kbd_PushChar(char c);
 
+/* Rawkey event ring — Amiga rawkey transitions for every physical key
+ * event (code in low 7 bits, bit7 set on release), including modifiers
+ * and releases that produce no cooked character.  The event pump drains
+ * this and posts IDCMP_RAWKEY to the focused window. */
+int  PS2Kbd_HasRawKey(void);
+int  PS2Kbd_GetRawKey(void);   /* returns code|0x80*up, or -1 if empty */
+
 /* Modifier state */
 typedef struct {
     int shift;

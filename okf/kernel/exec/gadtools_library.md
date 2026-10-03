@@ -20,7 +20,7 @@ UAOS provides a native host implementation of `gadtools.library` that builds sta
 - Provide screen-specific drawing information: `GetVisualInfoA()` / `FreeVisualInfo()`.
 - Relay Intuition/Exec message helpers to the existing host implementations: `GT_GetIMsg()`, `GT_ReplyIMsg()`, `GT_BeginRefresh()`, `GT_EndRefresh()`.
 - Create GadTools menu trees from `NewMenu` arrays: `CreateMenusA()` / `FreeMenus()`, `LayoutMenuItemsA()`, `LayoutMenusA()`.
-- Bevel-box function is currently stubbed: `DrawBevelBoxA()`.
+- Bevel boxes: `DrawBevelBoxA()` renders recessed/raised frames directly into the target RastPort's bitplanes (via `blit_surface_from_rastport` pen writes) and flushes the affected region through `UAOS_Intuition_FlushScreenBitmap`, so bevels drawn onto custom-screen bitmaps reach the compositor.
 
 ## Implemented gadget kinds
 
@@ -35,6 +35,7 @@ UAOS provides a native host implementation of `gadtools.library` that builds sta
 | `INTEGER_KIND` | `GTYP_INTGADGET` | Same as string gadget but initialised from `GTIN_Number`. |
 | `LISTVIEW_KIND` | `GTYP_LISTVIEW` | UAOS simple listview extension (items/count/selected/top). |
 | `NUMBER_KIND` / `TEXT_KIND` | `GTYP_BOOLGADGET` | Non-interactive display gadget; activation cleared. |
+| `GENERIC_KIND` | bare `Gadget` | Honors the `NewGadget` fields only; the application fills in `GadgetType`, imagery, and rendering itself. Required by OctaMED's custom UI gadgets — returning NULL here aborts its startup with "Failed to create gadgets." |
 
 ## Key structures and constants
 
@@ -92,7 +93,7 @@ These are used for gadget structures, `StringInfo`, `IntuiText` labels, and the 
 
 ## Current limitations
 
-- `DrawBevelBoxA()` is a stub; bevel boxes are not rendered.
+- `GT_RefreshWindow()` invalidates the window rectangle through the WM; the application's own redraw (bitplane writes) is picked up by the front-screen bitplane poll rather than by a gadget-level repaint.
 - `GT_FilterIMsg()` / `GT_PostFilterIMsg()` are pass-throughs; no keyboard/mouse filtering is applied.
 - `NUMBER_KIND` and `TEXT_KIND` are rendered as non-interactive boolean gadgets (a visual placeholder).
 - ListView supports single selection only; `GTLV_ReadOnly` and multi-select are not yet implemented.

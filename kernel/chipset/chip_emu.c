@@ -15,6 +15,8 @@
 #include "chipset/chiptrace.h"
 #include "chipset/floppy.h"
 #include "display/framebuffer.h"
+#include "irq/ps2kbd.h"
+#include "irq/ps2mouse.h"
 #include "uaos_emu.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -226,6 +228,10 @@ static uint32_t regoff_to_index(uint32_t regoff)
  * ----------------------------------------------------------------------- */
 
 #define REG_SERDATR  0x018
+#define REG_JOY0DAT  0x00A
+#define REG_JOY1DAT  0x00C
+#define REG_POTGOR   0x016   /* read-only; shares offset with CLXCON write */
+#define REG_POTGO    0x034   /* write-only pot output enables */
 #define REG_DSKDAT   0x026
 #define REG_DSKLEN   0x024
 #define REG_DSKPTH   0x020
@@ -640,6 +646,23 @@ static void dma_slot_alloc_bitplanes(void)
 static void blitter_line_step(void);
 static void blitter_area_step(void);
 
+/* The blitter runs as a DMA engine stepped from beam ticks — which can fire
+ * while a different task's RAM window is bound to g_ram.  Capture the RAM
+ * window that was active when the blit was launched so D-channel writes and
+ * source fetches stay in the launching task's address space. */
+static uint8_t *g_blit_ram = NULL;
+
+/* Same for the display engine: the front screen's copper list and bitplane
+ * data live in the RAM window that was bound when COP1LC was last written.
+ * chip_emu_beam_tick() binds this so scanline DMA resolves the right space
+ * regardless of which task is scheduled. */
+static uint8_t *g_display_ram = NULL;
+
+/* Likewise for Paula audio: the mixer fetches DMA words in whatever task
+ * context is current, so capture the RAM window bound when the guest last
+ * programmed a channel's location registers. */
+static uint8_t *g_audio_ram = NULL;
+
 /* Allocate up to `max_slots` odd-numbered free slots to the Copper. */
 static void dma_slot_alloc_copper(int max_slots)
 {
@@ -658,6 +681,10 @@ static void dma_slot_alloc_copper(int max_slots)
 static void dma_slot_alloc_blitter(void)
 {
     if (!g_blitter_busy) return;
+    /* Bind the RAM window that was current when the blit was launched —
+     * beam ticks run in whatever task context happens to be scheduled. */
+    uint8_t *saved_ram = g_ram;
+    if (g_blit_ram) g_ram = g_blit_ram;
     int yield = 0;
     for (int i = 0; i < g_dma_slots_per_line && g_blitter_words_remaining > 0; i++) {
         if (g_dma_slots[i] != DMA_CHAN_COUNT) continue;
@@ -680,6 +707,7 @@ static void dma_slot_alloc_blitter(void)
         g_blitter_busy = 0;
         g_blitter_words_remaining = 0;
     }
+    g_ram = saved_ram;
 }
 
 static uint16_t g_diwstart; /* display window start */
@@ -930,12 +958,26 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         }
         case REG_DSKSYNC: g_dsk_sync = (uint16_t)value; break;
         case REG_DMACON: g_dmacon = update_setclr(g_dmacon, (uint16_t)value); break;
-        case REG_INTENA: g_intena = update_setclr(g_intena, (uint16_t)value); chip_emu_update_irq(); break;
+        case REG_INTENA: {
+            g_intena = update_setclr(g_intena, (uint16_t)value);
+            if (g_chipset_sync_disabled) {
+                static const char hx[] = "0123456789ABCDEF";
+                char b[40]; int i = 0;
+                const char *t = "[wreg] INTENA=0x"; while (t[i]) { b[i]=t[i]; i++; }
+                uint32_t v = (uint16_t)value;
+                for (int s = 12; s >= 0; s -= 4) b[i++] = hx[(v >> s) & 15];
+                t = " ->0x"; { int j=0; while (t[j]) b[i++]=t[j++]; }
+                for (int s = 12; s >= 0; s -= 4) b[i++] = hx[(g_intena >> s) & 15];
+                b[i++]='\n'; b[i]='\0'; kprint(b);
+            }
+            chip_emu_update_irq();
+            break;
+        }
         case REG_INTREQ: g_intreq = update_setclr(g_intreq, (uint16_t)value); chip_emu_update_irq(); break;
         case REG_ADKCON: g_adkcon = update_setclr(g_adkcon, (uint16_t)value); break;
 
-        case REG_COP1LC:     g_cop1lc = (width_bytes >= 4) ? value : ((g_cop1lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); break;
-        case REG_COP1LC + 2: g_cop1lc = (g_cop1lc & 0xFFFF0000u) | (value & 0xFFFFu); break;
+        case REG_COP1LC:     g_cop1lc = (width_bytes >= 4) ? value : ((g_cop1lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); g_display_ram = g_ram; break;
+        case REG_COP1LC + 2: g_cop1lc = (g_cop1lc & 0xFFFF0000u) | (value & 0xFFFFu); g_display_ram = g_ram; break;
         case REG_COP2LC:     g_cop2lc = (width_bytes >= 4) ? value : ((g_cop2lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); break;
         case REG_COP2LC + 2: g_cop2lc = (g_cop2lc & 0xFFFF0000u) | (value & 0xFFFFu); break;
         case REG_COPJMP1: g_copjmp1 = 1; break;
@@ -1026,8 +1068,8 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
 #undef SPR_WRITE_CASES
 
 #define AUD_WRITE_CASES(idx) \
-        case REG_AUDxLCH(idx): g_audio[idx].ptr = (width_bytes >= 4) ? value : ((g_audio[idx].ptr & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); break; \
-        case REG_AUDxLCH(idx) + 2: g_audio[idx].ptr = (g_audio[idx].ptr & 0xFFFF0000u) | (value & 0xFFFFu); break; \
+        case REG_AUDxLCH(idx): g_audio[idx].ptr = (width_bytes >= 4) ? value : ((g_audio[idx].ptr & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); g_audio_ram = g_ram; break; \
+        case REG_AUDxLCH(idx) + 2: g_audio[idx].ptr = (g_audio[idx].ptr & 0xFFFF0000u) | (value & 0xFFFFu); g_audio_ram = g_ram; break; \
         case REG_AUDxLEN(idx): g_audio[idx].len = (uint16_t)value; break; \
         case REG_AUDxPER(idx): g_audio[idx].per = (uint16_t)value; g_audio[idx].counter = (uint16_t)value; break; \
         case REG_AUDxVOL(idx): g_audio[idx].vol = (uint16_t)(value & 0x40u ? (value & 0x3Fu) : (value & 0x3Fu)); break; \
@@ -1067,10 +1109,18 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
     }
 }
 
+/* UAOS-241 diagnostics: which hardware registers does a per-task m68k
+ * guest actually poll?  Indexed counters, peekable from the shell:
+ *   g_emu_reg_reads[regoff>>1]  — chip regs below 0x80 (JOY0DAT=5, POTGOR=0xB ...)
+ *   g_emu_cia_reads[cia][reg]   — CIA-A/B register reads by reg index */
+uint32_t g_emu_reg_reads[64];
+uint32_t g_emu_cia_reads[2][16];
+
 static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
 {
     int cia_id, cia_reg = cia_offset_to_reg(offset, &cia_id);
     if (cia_reg >= 0) {
+        if (g_chipset_sync_disabled) g_emu_cia_reads[cia_id & 1][cia_reg & 15]++;
         return cia_read(cia_state(cia_id), cia_reg, width_bytes);
     }
 
@@ -1080,6 +1130,8 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
     } else if (offset >= 0x1000u) {
         return 0; /* outside AGA register area: harmless zero */
     }
+    if (g_chipset_sync_disabled && regoff < 0x80u && !(regoff & 1))
+        g_emu_reg_reads[regoff >> 1]++;
 
     /* 32-bit reads combine the upper and lower halves of the addressed register.
      * This is needed for long reads of COP1LC, BPLxPT, SPRxPT, etc. by the
@@ -1132,7 +1184,28 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
             g_clxdat = 0; /* read and clear */
             break;
         }
-        case REG_CLXCON: value = g_clxcon; break;
+        case REG_POTGOR: {
+            /* POTGOR ($DFF016): pot/digitizer data inputs — mouse buttons
+             * 2/3 live here on real hardware (active-low):
+             *   bit 10 = right button port 0, bit 8 = middle button port 0. */
+            uint32_t v = 0xFFFFu;
+            if (g_mouse.btn_right)  v &= ~(1u << 10);
+            if (g_mouse.btn_middle) v &= ~(1u << 8);
+            value = v;
+            break;
+        }
+        case REG_JOY0DAT: {
+            /* Mouse counters: high byte = V, low byte = H, counting
+             * position mod 256 with the counter LSB quadrature-folded
+             * (bit0 = count bit0 ^ count bit1) — real hardware encoding. */
+            uint8_t mx = (uint8_t)(g_mouse.x & 0xFF);
+            uint8_t my = (uint8_t)(g_mouse.y & 0xFF);
+            uint8_t fx = (uint8_t)((mx & 0xFEu) | (((mx >> 1) ^ mx) & 1u));
+            uint8_t fy = (uint8_t)((my & 0xFEu) | (((my >> 1) ^ my) & 1u));
+            value = ((uint32_t)fy << 8) | fx;
+            break;
+        }
+        case REG_JOY1DAT: value = 0; break;   /* port 1: no joystick */
         case REG_DMACONR:
             value = g_dmacon;
             if (g_blitter_busy) value |= 0x4000u; /* BLITZ busy flag */
@@ -1502,6 +1575,7 @@ static void blitter_execute(uint16_t size)
 {
     int width  = (size >> 6) & 0x3FF;
     int height = size & 0x3F;
+    g_blit_ram = g_ram;
     if (width == 0)  width = 1024;
     if (height == 0) height = 64;
 
@@ -1746,8 +1820,13 @@ void chip_emu_vblank(void)
 void chip_emu_beam_tick(uint32_t tick_counter)
 {
     (void)tick_counter;
-    /* PIT only drives host sync; chipset advancement is cycle-driven. */
+    /* PIT only drives host sync; chipset advancement is cycle-driven.
+     * Bind the front screen's RAM window: this runs in timer-ISR context
+     * where g_ram may be a suspended guest's window or the shared base. */
+    uint8_t *saved_ram = g_ram;
+    if (g_display_ram) g_ram = g_display_ram;
     chip_emu_run_to_cycle(chip_emu_m68k_cycles());
+    g_ram = saved_ram;
 }
 
 uint32_t chip_emu_vblank_count(void)
@@ -1806,8 +1885,10 @@ static void kbd_sdr_push(uint8_t c)
     g_kbd_sdr_buf[g_kbd_sdr_tail] = c;
     g_kbd_sdr_tail = next;
     g_cia_a.icr |= 0x08u; /* keyboard serial interrupt */
-    g_intreq |= 0x0008u;  /* PORTS level-1 interrupt */
-    chip_emu_update_irq();
+    if (g_cia_a.icr_mask & 0x08u) {
+        g_intreq |= 0x0008u;  /* PORTS interrupt — only when ICR bit 3 enabled */
+        chip_emu_update_irq();
+    }
 }
 
 static int kbd_sdr_pop(void)
@@ -1818,18 +1899,99 @@ static int kbd_sdr_pop(void)
     return (int)c;
 }
 
+/* ASCII char -> Amiga 7-bit raw keycode (matrix position, per HRM). */
+static int amiga_keycode(char c)
+{
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c >= '1' && c <= '9') return 0x01 + (c - '1');
+    if (c >= 'Q' && c <= 'P') return 0x10 + (c - 'Q');
+    if (c >= 'A' && c <= 'L') return 0x20 + (c - 'A');
+    if (c >= 'Z' && c <= 'M') return 0x31 + (c - 'Z');
+    switch (c) {
+        case '0':   return 0x0A;
+        case '-':   return 0x0B;
+        case '=':   return 0x0C;
+        case '\\':  return 0x0D;
+        case '`':   return 0x00;
+        case '[':   return 0x1A;
+        case ']':   return 0x1B;
+        case ';':   return 0x29;
+        case '\'':  return 0x2A;
+        case ',':   return 0x38;
+        case '.':   return 0x39;
+        case '/':   return 0x3A;
+        case ' ':   return 0x40;
+        case '\x08': return 0x41;  /* backspace */
+        case '\x09': return 0x42;  /* tab */
+        case '\r':
+        case '\n':  return 0x44;   /* return */
+        case '\x1B': return 0x45;  /* escape */
+        case '\x7F': return 0x46;  /* delete */
+        default:    return -1;
+    }
+}
+
+/* Amiga keyboard wire encoding: the 7-bit code plus bit7 = key-up flag,
+ * rotated left one bit then complemented (serial line is active-low).
+ * Verified: LeftShift ($60) down transmits $3F. */
+static uint8_t amiga_kbd_byte(int code, int up)
+{
+    uint8_t v = (uint8_t)(code | (up ? 0x80u : 0u));
+    v = (uint8_t)((v << 1) | (v >> 7));
+    return (uint8_t)~v;
+}
+
+/* Key-release bytes are queued and flushed one per poll tick so a press
+ * has ~10 ms of width for guests that sample SDR at interrupt rate. */
+#define KBD_REL_SIZE 16
+static uint8_t g_kbd_rel[KBD_REL_SIZE];
+static int g_kbd_rel_head = 0, g_kbd_rel_tail = 0;
+
+static void kbd_rel_queue(uint8_t b)
+{
+    int next = (g_kbd_rel_tail + 1) % KBD_REL_SIZE;
+    if (next == g_kbd_rel_head) return;
+    g_kbd_rel[g_kbd_rel_tail] = b;
+    g_kbd_rel_tail = next;
+}
+
+/* Feed one host ASCII key event into the CIA-A keyboard path (press now,
+ * release next tick).  Called by the event pump when a guest screen owns
+ * the display, and by the PIT poll for stragglers. */
+void chip_emu_push_key(char c)
+{
+    int code = amiga_keycode(c);
+    if (code < 0) return;
+    kbd_sdr_push(amiga_kbd_byte(code, 0));
+    kbd_rel_queue(amiga_kbd_byte(code, 1));
+}
+
+/* Push one Amiga raw keycode event (press or release) — used by the PS/2
+ * driver for modifier transitions, which produce no cooked character. */
+void chip_emu_push_keycode(int code, int up)
+{
+    if (code < 0 || code > 0x7F) return;
+    kbd_sdr_push(amiga_kbd_byte(code, up));
+}
+
+/* Amiga raw keycode for a cooked ASCII char — for IDCMP RAWKEY code. */
+int chip_emu_amiga_keycode(char c)
+{
+    return amiga_keycode(c);
+}
+
 /* Poll the PS/2 driver and feed translated bytes to the CIA-A SDR buffer.
  * Called from the PIT tick path. */
 void chip_emu_poll_ps2_keyboard(void)
 {
     if (!g_kbd_route_to_cia) return;
-    while (PS2Kbd_HasChar()) {
-        char c = PS2Kbd_GetChar();
-        if (c == 0) continue;
-        /* Simple identity mapping: PS/2 ASCII -> Amiga keyboard raw byte.
-         * A full translation would map Amiga keycodes; this is sufficient
-         * for a first pass. */
-        kbd_sdr_push((uint8_t)c);
+    /* Flush one queued key-release per tick (~10 ms press width).  Do NOT
+     * drain the PS/2 char queue here — the event pump is the sole consumer
+     * (a second reader silently ate Amiga-key command chars like 0x80|'O'
+     * before the pump could route them to the Intuition menu path). */
+    if (g_kbd_rel_head != g_kbd_rel_tail) {
+        kbd_sdr_push(g_kbd_rel[g_kbd_rel_head]);
+        g_kbd_rel_head = (g_kbd_rel_head + 1) % KBD_REL_SIZE;
     }
 }
 
@@ -1867,11 +2029,26 @@ static void cia_write_timer_hi(CIA_Timer *t, uint8_t v)
     if (!(t->cra & 1u)) t->counter = t->latch;
 }
 
+/* UAOS-241 diag: per-reg read counters for CIAA (peek via nm). */
+volatile uint32_t g_ciaa_rd[16];
+
 static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
 {
     (void)width_bytes;
+    if (cia == &g_cia_a && reg >= 0 && reg < 16)
+        g_ciaa_rd[reg]++;
     switch (reg) {
-        case CIA_REG_PRA:  return cia->pra;
+        case CIA_REG_PRA: {
+            /* Bits 7:6 are button inputs (active low): bit6 = LMB (port 0
+             * mouse fire), bit7 = joystick port 1 fire.  Merge the host
+             * mouse state over the data register's output bits. */
+            if (cia == &g_cia_a) {
+                uint32_t v = cia->pra | 0xC0u;
+                if (g_mouse.btn_left) v &= ~0x40u;
+                return v;
+            }
+            return cia->pra;
+        }
         case CIA_REG_PRB: {
             uint8_t c = 0;
             lpt1_recv(&c);
@@ -1913,6 +2090,17 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
 {
     (void)width_bytes;
     uint8_t v = (uint8_t)(value & 0xFFu);
+    if (g_chipset_sync_disabled && cia == &g_cia_a &&
+        (reg == CIA_REG_TALO || reg == CIA_REG_TAHI ||
+         reg == CIA_REG_CRA  || reg == CIA_REG_ICR)) {
+        static const char hx[] = "0123456789ABCDEF";
+        char b[32]; int i = 0;
+        const char *t = "[ciaa wr] r"; while (t[i]) { b[i]=t[i]; i++; }
+        b[i++] = hx[reg & 15];
+        b[i++] = '='; b[i++] = '0'; b[i++] = 'x';
+        b[i++] = hx[(v >> 4) & 15]; b[i++] = hx[v & 15];
+        b[i++]='\n'; b[i]='\0'; kprint(b);
+    }
     switch (reg) {
         case CIA_REG_PRA:  cia->pra  = v; break;
         case CIA_REG_PRB: {
@@ -1968,6 +2156,52 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
     }
 }
 
+/* Per-task guest interrupt state accessors (UAOS-241).  Per-task M68k
+ * contexts do not use m68k_set_irq() — exec_task polls these bits between
+ * execution slices and invokes the guest's exec Interrupt structures
+ * directly, using the task's own g_ram copy of ExecBase.IntVects. */
+uint16_t chip_emu_intena_shadow(void)  { return g_intena; }
+int      chip_emu_cia_b_pending(void)  { return g_cia_b_irq; }
+
+/* CIA ICR helpers for cia*.resource emulation: pending = icr & icr_mask
+ * (only enabled sources actually raise PORTS/EXTER on real hardware). */
+uint8_t chip_emu_cia_icr_pending(int id)
+{
+    CIA_State *c = cia_state(id);
+    return (uint8_t)(c->icr & c->icr_mask);
+}
+
+void chip_emu_cia_icr_ack(int id, uint8_t bits)
+{
+    cia_state(id)->icr &= (uint8_t)~bits;
+}
+
+/* AbleICR(v): bit7 set => enable bits in v, clear => disable.  Returns the
+ * previous mask. */
+uint8_t chip_emu_cia_able_icr(int id, uint8_t v)
+{
+    CIA_State *c = cia_state(id);
+    uint8_t old = c->icr_mask;
+    if (v & 0x80u) c->icr_mask |= (v & 0x7Fu);
+    else           c->icr_mask &= (uint8_t)~(v & 0x7Fu);
+    return old;
+}
+
+/* SetICR(v): force/clear pending ICR bits (same set/clear encoding), then
+ * re-evaluate the interrupt line.  Returns the new pending value. */
+uint8_t chip_emu_cia_set_icr(int id, uint8_t v)
+{
+    CIA_State *c = cia_state(id);
+    if (v & 0x80u) c->icr |= (v & 0x7Fu);
+    else           c->icr &= (uint8_t)~(v & 0x7Fu);
+    if (c->icr & c->icr_mask) {
+        if (id == 0) g_intreq |= 0x0008u;   /* CIAA -> PORTS */
+        else         g_cia_b_irq = 1;       /* CIAB -> EXTER (level 6) */
+        chip_emu_update_irq();
+    }
+    return c->icr;
+}
+
 /* Return the current 8-bit signed sample for a Paula audio channel.
  * The high byte of the current 16-bit DMA word is played first, then the
  * low byte. */
@@ -2002,6 +2236,7 @@ void chip_emu_audio_set_channel(int ch, uint32_t ptr, uint16_t len, uint16_t per
     a->counter = per;
     a->vol = (uint16_t)(vol & 0x3Fu);
     a->byte_sel = 0;
+    g_audio_ram = g_ram;
     /* Fetch the first word so the channel starts immediately. */
     if (a->ptr + 1 < GUEST_RAM_SIZE) {
         a->dat = chip_read_u16(a->ptr);
@@ -2021,6 +2256,9 @@ void chip_emu_audio_set_dmacon(uint16_t dmacon)
 void chip_emu_audio_advance(uint32_t amiga_cycles)
 {
     if (!(g_dmacon & 0x0200u)) return; /* master DMA disabled */
+
+    uint8_t *saved_ram = g_ram;
+    if (g_audio_ram) g_ram = g_audio_ram;
 
     for (int ch = 0; ch < AUDIO_CHANNELS; ch++) {
         if (!(g_dmacon & (1u << ch))) continue; /* channel DMA disabled */
@@ -2054,6 +2292,8 @@ void chip_emu_audio_advance(uint32_t amiga_cycles)
             }
         }
     }
+
+    g_ram = saved_ram;
 }
 
 /* Legacy one-tick advance.  A tick is no longer tied to a fixed host rate,
@@ -2065,7 +2305,14 @@ void chip_emu_audio_tick(void)
      * calling chip_emu_audio_advance() with the correct Amiga-clock delta. */
 }
 
-/* Advance CIA timers. Called from the PIT tick path. */
+/* Advance CIA timers. Called from the PIT tick path (100 Hz).  Real 8520
+ * timers count E-clock at ~709.379 kHz (PAL), so each host tick advances
+ * the counter by ~7094 counts — decrementing once per tick would run the
+ * guest's timers ~7000x slow (UAOS-241: OctaMED's player tick is CIA-A
+ * Timer A via ciaa.resource/AddICRVector). */
+#define CIA_E_CLOCK_HZ      709379u
+#define CIA_TICKS_PER_PIT   (CIA_E_CLOCK_HZ / 100u)
+
 void chip_emu_cia_tick(void)
 {
     if (g_blitter_busy && g_blitter_busy_ticks > 0) {
@@ -2080,23 +2327,29 @@ void chip_emu_cia_tick(void)
         for (int t = 0; t < 2; t++) {
             CIA_Timer *tm = (t == 0) ? &cia->ta : &cia->tb;
             if (!(tm->cra & 1u)) continue; /* not running */
-            if (tm->counter > 0) tm->counter--;
-            if (tm->counter == 0) {
-                if (tm->cra & 0x08u) {
-                    /* one-shot: stop */
+            uint32_t dec = CIA_TICKS_PER_PIT;
+            uint8_t tbit = (t == 0) ? 0x01u : 0x02u;
+            int guard = 64;
+            while (dec && guard-- > 0) {
+                if (tm->counter > dec) { tm->counter -= (uint16_t)dec; break; }
+                /* underflow during this tick */
+                dec -= tm->counter;
+                if (tm->cra & 0x08u) {          /* one-shot: reload, stop */
+                    tm->counter = tm->latch;
                     tm->cra &= ~1u;
-                } else {
-                    /* continuous: reload */
+                    dec = 0;
+                } else {                        /* continuous: reload */
                     tm->counter = tm->latch;
                 }
-                /* set timer interrupt */
-                cia->icr |= (t == 0) ? 0x01u : 0x02u;
-                if (i == 0) {
-                    g_intreq |= (t == 0) ? 0x2000u : 0x4000u; /* CIA-A TIMERA/TIMERB */
-                } else {
-                    g_cia_b_irq = 1; /* CIA-B uses M68k level 6 */
+                cia->icr |= tbit;
+                if (cia->icr_mask & tbit) {
+                    if (i == 0) {
+                        g_intreq |= 0x0008u; /* CIAA -> PORTS */
+                    } else {
+                        g_cia_b_irq = 1; /* CIA-B -> EXTER (level 6) */
+                    }
+                    chip_emu_update_irq();
                 }
-                chip_emu_update_irq();
             }
         }
     }
@@ -2205,6 +2458,7 @@ void chip_emu_copper_jump(int list, uint32_t addr)
         if (addr) g_cop1lc = addr;
         g_copjmp1 = 1;
         g_copper_pc = g_cop1lc;
+        g_display_ram = g_ram; /* display fetches must read the owner's window */
         copper_run_to_beam(100); /* allow a burst at copper restart */
     } else if (list == 2) {
         if (addr) g_cop2lc = addr;
@@ -2566,6 +2820,11 @@ static void render_sprites_on_scanline(int y, int bytes_per_row)
 void chip_emu_render_frame(void)
 {
     if (!g_fb.valid) return;
+    /* Bitplane/copper/sprite DMA resolves through g_ram — bind the window
+     * that installed the display list so the front screen renders correctly
+     * even when the caller runs in another task's (or the shared) context. */
+    uint8_t *saved_ram = g_ram;
+    if (g_display_ram) g_ram = g_display_ram;
 
     /* Reset copper and sprite DMA pointers at the start of each frame.  This
      * must happen before the scheduler advance so the copper runs from the fresh
@@ -2649,6 +2908,7 @@ void chip_emu_render_frame(void)
     }
 
     update_sprite_collisions();
+    g_ram = saved_ram;
 }
 
 /* Reset all chipset state to hardware-correct initial values.
@@ -2658,7 +2918,10 @@ void chip_emu_reset(void)
     for (uint32_t i = 0; i < AGA_REG_SIZE; i++) g_aga_regs[i] = 0;
 
     g_dmacon = 0;
-    g_intena = 0;
+    /* AmigaOS keeps master + PORTS (CIA keyboard/timer) + VERTB enabled at
+     * OS level; guests like OctaMED rely on this and only arm their CIA ICR
+     * masks, never writing INTENA themselves. */
+    g_intena = 0x8028u;
     g_intreq = 0x4020u; /* VBlank and blitter-zero flags commonly set after reset */
     g_adkcon = 0;
     g_clxdat = 0;

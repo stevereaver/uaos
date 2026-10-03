@@ -33,6 +33,9 @@ extern void m68k_set_reg(int reg, unsigned int val);
 #include "chipset/chip_emu.h"
 extern uint8_t *g_ram;
 extern int g_emu_halted;
+/* Arm the packed-hunk write watch (decrunch-corruption debug).  Poke to 1
+ * before launching a guest binary: poke &g_watch_mem 1 FORCE. */
+volatile int g_watch_mem = 1;
 extern uint32_t g_uaos_heap_ptr;
 extern uint64_t g_m68k_cycles;
 extern uint32_t heap_alloc(uint32_t size);
@@ -40,11 +43,14 @@ extern uint32_t heap_alloc(uint32_t size);
 /* Forward declarations from uaos_m68k_glue.c */
 extern void install_library_tables(void);
 extern uint32_t hunk_load(const uint8_t *binary, uint32_t bin_size);
+extern uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr);
 extern void UAOS_Emu_SetCwd(const char *cwd);
 
 /* Stack top for M68k guest */
 #define STACK_TOP  0x1F0000
-#define PROG_BASE  0x001000
+/* Must match emulation/uaos_m68k_glue.c — hunks load above the reserved
+ * system zone (stub tables + lib bases + loadable libs, 0x1000-0x1A000). */
+#define PROG_BASE  0x020000
 
 /* Per-task M68k RAM pool */
 #define MAX_M68K_TASKS  4
@@ -173,6 +179,10 @@ static void m68k_wrapper_entry(void *arg)
     for (uint32_t i = 0; i < bin_save; i++)
         g_ram[i] = 0;
 
+    /* Generated library bases were allocated out of the RAM we just
+     * cleared — drop the cache before reinstalling the jump tables. */
+    { extern void emu_reset_genlibs(void); emu_reset_genlibs(); }
+
     /* Install library jump tables (per-task) */
     install_library_tables();
 
@@ -230,6 +240,7 @@ static void m68k_wrapper_entry(void *arg)
     sp -= 8;
     uint32_t cmdname_bstr_ptr = sp;
     const char *cmdname = task->m68k_argv[0] ? task->m68k_argv[0] : task->m68k_name;
+    { extern void UAOS_Emu_SetTarCompat(const char *); UAOS_Emu_SetTarCompat(cmdname); }
     uint8_t cmdname_len = 0;
     while (cmdname_len < 15 && cmdname[cmdname_len]) cmdname_len++;
     g_ram[cmdname_bstr_ptr] = cmdname_len;
@@ -237,11 +248,17 @@ static void m68k_wrapper_entry(void *arg)
         g_ram[cmdname_bstr_ptr + 1 + i] = (uint8_t)cmdname[i];
     uint32_t cmdname_bptr = cmdname_bstr_ptr >> 2;
 
-    /* Build minimal Process struct */
-    uint32_t proc_addr = 0x10000;
-    uint32_t cli_addr  = 0x10100;
-    guest_memset(proc_addr, 0, 0x100);
-    guest_memset(cli_addr,  0, 0x80);
+    /* Build the guest Process/CLI/RDArgs environment AFTER hunk_load so the
+     * structs land past the program image (fixed 0x10000 sat inside large
+     * binaries and got stomped — OctaMED's decrunched payload is ~258 KB).
+     * Uses real Amiga Process offsets (pr_CLI=0xAC, pr_CIS=0x9C,
+     * pr_COS=0xA0) and publishes the Process at ExecBase+0x114. */
+    uint32_t proc_addr = UAOS_Emu_SetupProcess(cmdname_bptr);
+    if (!proc_addr) {
+        extern void kprint(const char *);
+        kprint("[M68K] process setup OOM, exiting\n");
+        Task_Exit();
+    }
 
     /* Link the Process struct to the host-side task so that
      * Task_FindByM68kAddr() can locate this task when Intuition needs to
@@ -249,20 +266,6 @@ static void m68k_wrapper_entry(void *arg)
      * stays 0 and every M68k task collides on the same lookup key. */
     task->m68k_task_struct = proc_addr;
 
-    /* pr_CLI = BPTR to CLI */
-    guest_w32(proc_addr + PR_CLI_OFFSET, cli_addr >> 2);
-    /* pr_CIS = stdin BPTR */
-    guest_w32(proc_addr + PR_CIS_OFFSET, DOS_STDIN_BPTR);
-    /* pr_COS = stdout BPTR */
-    guest_w32(proc_addr + PR_COS_OFFSET, DOS_STDOUT_BPTR);
-    /* Minimal CLI struct (just needs to be non-zero) */
-    g_ram[cli_addr] = 0x01;
-    /* Publish command name and command line in the CLI struct */
-    guest_w32(cli_addr + CLI_COMMAND_NAME_OFFSET, cmdname_bptr);
-    guest_w32(cli_addr + CLI_COMMAND_LINE_OFFSET, g_cmdline_bptr);
-
-    /* Store Process pointer at ExecBase+0x114 */
-    guest_w32(EXEC_BASE + 0x114, proc_addr);
     /* Store SysBase at absolute address 4 */
     guest_w32(4, EXEC_BASE);
 
@@ -308,6 +311,7 @@ static void m68k_wrapper_entry(void *arg)
      * (~70 seconds at 7 MHz), we abort it. */
     g_emu_halted = 0;
     task->m68k_halted = 0;
+    task->m68k_budget_dumped = 0;
     {
         extern uint32_t g_m68k_first_wild_pc;
         extern int g_m68k_pc_ring_idx;
@@ -317,6 +321,32 @@ static void m68k_wrapper_entry(void *arg)
     task->m68k_entry = entry;
     task->m68k_stack_top = sp;
     uint64_t cycle_budget = 100000000ULL;  /* 100M cycles (~14s at 7MHz) */
+
+    /* DEBUG watch: the loaded hunk blocks [0x20000, watch_hi) are the
+     * decruncher's *input* — nothing in the guest should write them once
+     * running.  Checksum each 4KB page per exec chunk; a divergence means
+     * a host-side path (ISR/compositor/DMA) wrote into this task's window
+     * while it was current.  Report the live Musashi PC at detection. */
+#define WATCH_LO 0x00020000u
+#define WATCH_HI 0x00080000u
+#define WATCH_PG 0x00001000u
+#define WATCH_NP ((WATCH_HI - WATCH_LO) / WATCH_PG)
+    static uint32_t watch_sum[WATCH_NP];
+    static uint8_t  watch_hit[WATCH_NP];
+    static uint8_t watch_ref_buf[WATCH_HI - WATCH_LO];
+    static uint8_t *watch_ref = watch_ref_buf;
+    if (g_watch_mem) {
+        extern void kprint(const char *);
+        for (uint32_t p = 0; p < WATCH_NP; p++) {
+            const uint32_t *w = (const uint32_t *)(g_ram + WATCH_LO + p * WATCH_PG);
+            uint32_t s = 0;
+            for (int i = 0; i < (int)(WATCH_PG / 4); i++) s += w[i];
+            watch_sum[p] = s; watch_hit[p] = 0;
+            if (watch_ref)
+                __builtin_memcpy(watch_ref + p * WATCH_PG, w, WATCH_PG);
+        }
+        kprint("[watch] armed 0x20000-0x80000\n");
+    }
 
     /* Save initial context so ISR can restore it on first switch */
     unsigned int ctx_size = m68k_context_size();
@@ -331,6 +361,12 @@ static void m68k_wrapper_entry(void *arg)
         m68k_execute(10000);
         Chiptrace_PcSample();
         g_m68k_cycles += (uint64_t)m68k_cycles_run();
+
+        /* Deliver pending guest interrupts (VERTB, AUDx, CIA) to the exec
+         * Interrupt structures in this task's ExecBase.  The real
+         * m68k_set_irq path is unusable here — per-task contexts have no
+         * populated exception vectors. */
+        { extern void UAOS_M68k_DeliverInterrupts(void); UAOS_M68k_DeliverInterrupts(); }
         /* Note: chip_emu_run_to_cycle() is NOT called here because the
          * chipset emulator uses global blitter/copper state that is
          * shared across all tasks.  Driving it from a per-task M68k
@@ -339,28 +375,84 @@ static void m68k_wrapper_entry(void *arg)
          * other tasks or the Workbench.  The chipset emulator is
          * driven by the global timer ISR instead. */
 
+        /* DEBUG watch: detect external writes into the packed-hunk region */
+        for (uint32_t p = 0; g_watch_mem && p < WATCH_NP; p++) {
+            const uint32_t *w = (const uint32_t *)(g_ram + WATCH_LO + p * WATCH_PG);
+            uint32_t s = 0;
+            for (int i = 0; i < (int)(WATCH_PG / 4); i++) s += w[i];
+            if (s != watch_sum[p] && !watch_hit[p]) {
+                watch_hit[p] = 1;
+                extern void kprint(const char *);
+                extern unsigned int m68k_get_reg(void *ctx, int reg);
+                extern volatile int g_irq_depth;
+                /* Find the first byte that differs from the armed snapshot */
+                int first = 0;
+                if (watch_ref) {
+                    const uint8_t *rp = watch_ref + p * WATCH_PG;
+                    const uint8_t *cp = g_ram + WATCH_LO + p * WATCH_PG;
+                    while (first < (int)WATCH_PG && rp[first] == cp[first]) first++;
+                }
+                char wb[200]; int wj = 0;
+                const char *wl = "[watch] page +0x";
+                while (wl[wj]) { wb[wj] = wl[wj]; wj++; }
+                static const char hxw[] = "0123456789ABCDEF";
+                uint32_t pa = WATCH_LO + p * WATCH_PG;
+                for (int b = 7; b >= 0; b--) wb[wj++] = hxw[(pa >> (b*4)) & 15];
+                const char *wm = " off=0x";
+                for (int i = 0; wm[i]; i++) wb[wj++] = wm[i];
+                for (int b = 2; b >= 0; b--) wb[wj++] = hxw[(first >> (b*4)) & 15];
+                const char *mp = " pc=0x";
+                for (int i = 0; mp[i]; i++) wb[wj++] = mp[i];
+                uint32_t pcv = (uint32_t)m68k_get_reg(NULL, 16 /*M68K_REG_PC*/);
+                for (int b = 7; b >= 0; b--) wb[wj++] = hxw[(pcv >> (b*4)) & 15];
+                const char *mi = " irq=";
+                for (int i = 0; mi[i]; i++) wb[wj++] = mi[i];
+                wb[wj++] = hxw[g_irq_depth & 15];
+                const char *md = " new=";
+                for (int i = 0; md[i]; i++) wb[wj++] = md[i];
+                for (int i = 0; i < 24 && wj < 170; i++) {
+                    uint8_t bv = g_ram[pa + (uint32_t)first + (uint32_t)i];
+                    wb[wj++] = hxw[(bv >> 4) & 15];
+                    wb[wj++] = hxw[bv & 15];
+                }
+                wb[wj] = 0;
+                kprint(wb); kprint("\n");
+            }
+            watch_sum[p] = s;
+        }
+
         /* Check if the binary called Exit */
         if (g_emu_halted) {
             task->m68k_halted = 1;
             break;
         }
 
-        /* Timeout: abort if the binary exceeds the cycle budget */
-        if (g_m68k_cycles >= cycle_budget) {
+        /* Soft cycle budget: long-running interactive applications (OctaMED
+         * sits in a Wait() loop for hours) must not be aborted.  Keep one
+         * diagnostic PC-ring dump at the first crossing for hang analysis,
+         * but let the task continue — the timer ISR still preempts it, so
+         * the host shell stays responsive. */
+        if (g_m68k_cycles >= cycle_budget && !task->m68k_budget_dumped) {
             extern void kprint(const char *);
             extern uint32_t g_m68k_pc_ring[];
             extern int g_m68k_pc_ring_idx;
             extern uint32_t g_m68k_first_wild_pc;
+            extern uint32_t g_m68k_first_wild_prev;
 #define M68K_PC_RING_SZ_DUMP 256
-            kprint("[m68k] cycle budget exceeded, aborting task\n");
+            task->m68k_budget_dumped = 1;
+            kprint("[m68k] soft cycle budget crossed — dumping PCs, continuing\n");
             kprint("[m68k] last-PCs (newest first, 8/line):\n");
             {
-                char wb[40]; int wj = 0;
+                char wb[56]; int wj = 0;
                 uint32_t wp = g_m68k_first_wild_pc;
+                uint32_t wprev = g_m68k_first_wild_prev;
                 static const char hx2[] = "0123456789ABCDEF";
                 const char *wl = "[m68k] first wild PC: 0x";
                 while (wl[wj]) { wb[wj] = wl[wj]; wj++; }
                 for (int b = 7; b >= 0; b--) wb[wj++] = hx2[(wp >> (b*4)) & 15];
+                const char *wl2 = " from 0x";
+                for (int q = 0; wl2[q]; q++) wb[wj++] = wl2[q];
+                for (int b = 7; b >= 0; b--) wb[wj++] = hx2[(wprev >> (b*4)) & 15];
                 wb[wj] = 0;
                 kprint(wb); kprint("\n");
             }
@@ -376,8 +468,6 @@ static void m68k_wrapper_entry(void *arg)
                 rb[t] = 0;
                 kprint(rb); kprint("\n");
             }
-            task->m68k_halted = 1;
-            break;
         }
 
         /* Diagnostic: print if task has been running for a long time */

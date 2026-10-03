@@ -1725,7 +1725,21 @@ static void graphics_WaitTOF(void)
         /* Clear any already-pending VBlank signal so we wait for the next one. */
         t->tc_SigRecvd &= ~sigmask;
         g_wait_tof_task = t;
-        Wait(sigmask);
+        /* Poll-deliver guest interrupts while blocked — the exec_task
+         * slice loop is suspended inside Wait(), so CIA/audio handlers
+         * would otherwise stall for the whole VBlank wait (UAOS-241). */
+        {
+            extern uint32_t g_blocked_in;
+            extern void UAOS_M68k_DeliverInterrupts(void);
+            uint32_t got = 0;
+            for (;;) {
+                g_blocked_in = 4;
+                got = Task_WaitTicks(sigmask, 1);
+                g_blocked_in = 0;
+                UAOS_M68k_DeliverInterrupts();
+                if (got) break;
+            }
+        }
         g_wait_tof_task = NULL;
         WM_Redraw();
         return;
@@ -1756,12 +1770,51 @@ static void graphics_ChangeVPBitMap(void)
     m68k_write_memory_32(ri + RI_OFF_BITMAP, bm);
 }
 
-/* Render a single character from the built-in 8×16 font.
+/* Render a single character.  When the RastPort has a font with real
+ * glyph data (tf_CharData), pixels come straight from that bitmap — this
+ * honours custom application fonts and characters outside ASCII.
+ * Otherwise fall back to the built-in 8×16 font.
  * For JAM1 only foreground pixels are drawn (transparent background).
  * For JAM2 the cell is opaque. */
 static void draw_text_char(uint32_t rp, int x, int y, char ch, uint32_t fg, int mode, uint32_t bg)
 {
     uint8_t c = (uint8_t)ch;
+    uint32_t font = rp ? m68k_read_memory_32(rp + RP_OFF_FONT) : 0;
+    uint32_t chardata = font ? m68k_read_memory_32(font + TF_OFF_CHARDATA) : 0;
+
+    /* Guest-supplied fonts (not one of our builtin instances, whose
+     * CharData uses a simpler per-glyph layout) render from their real
+     * bitmap: Amiga layout packs every glyph side-by-side, glyph n's bits
+     * starting at bit n*tf_XSize, rows tf_Modulo bytes apart. */
+    if (font && chardata && !font_entry_by_addr(font)) {
+        uint8_t  lo     = m68k_read_memory_8 (font + TF_OFF_LOCHAR);
+        uint8_t  hi     = m68k_read_memory_8 (font + TF_OFF_HICHAR);
+        int      xs     = (int)m68k_read_memory_16(font + TF_OFF_XSIZE);
+        int      ys     = (int)m68k_read_memory_16(font + TF_OFF_YSIZE);
+        uint16_t modulo = m68k_read_memory_16(font + TF_OFF_MODULO);
+        if (xs <= 0 || ys <= 0 || ys > 64 || modulo == 0)
+            goto builtin;
+        if (c < lo || c > hi) {
+            /* Out-of-range char: use '?' if the font has it, else skip. */
+            if (lo <= 0x3F && 0x3F <= hi) c = 0x3F;
+            else return;
+        }
+        if (mode != JAM1)
+            rp_fill_rect(rp, x, y, xs, ys, bg);
+        int bit_base = (c - lo) * xs;
+        for (int row = 0; row < ys; row++) {
+            uint32_t row_addr = chardata + row * modulo;
+            for (int col = 0; col < xs; col++) {
+                int bit = bit_base + col;
+                uint8_t b = m68k_read_memory_8(row_addr + (bit >> 3));
+                if (b & (0x80 >> (bit & 7)))
+                    rp_put_pixel(rp, x + col, y + row, fg);
+            }
+        }
+        return;
+    }
+
+builtin:
     if (c < 0x20 || c > 0x7E) c = '?';
     const uint8_t *glyph = g_font8x16[c - 0x20];
 

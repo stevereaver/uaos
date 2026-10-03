@@ -241,6 +241,11 @@ int floppy_decode_track(const uint8_t *mfm_bits, uint32_t bits_len,
 
 FloppyState g_floppy;
 
+/* Disk DMA streams into/out of the RAM window that was bound when the
+ * transfer was launched — floppy_tick() runs in timer-ISR context where
+ * g_ram may point at another task's window (or the shared one). */
+static uint8_t *g_floppy_dma_ram = NULL;
+
 static void regenerate_track(void)
 {
     if (!g_floppy.adf_loaded) return;
@@ -451,11 +456,14 @@ void floppy_tick(void)
     if (bits_per_tick == 0) bits_per_tick = 1;
 
     if (g_floppy.dma_active) {
+        uint8_t *saved_ram = g_ram;
+        if (g_floppy_dma_ram) g_ram = g_floppy_dma_ram;
         if (g_floppy.dma_write) {
             dma_write_words(bits_per_tick);
         } else {
             dma_transfer_words(bits_per_tick);
         }
+        g_ram = saved_ram;
     }
 
     /* Advance rotation. */
@@ -480,6 +488,7 @@ int floppy_dma_read(uint32_t dskpt, uint16_t dsklen, uint16_t dsk_sync)
     g_floppy.dma_sync_found = 0;
     g_floppy.dma_active = 1;
     g_floppy.dma_write = 0;
+    g_floppy_dma_ram = g_ram;
     return 1;
 }
 
@@ -495,6 +504,7 @@ int floppy_dma_write(uint32_t dskpt, uint16_t dsklen)
     g_floppy.dma_sync_found = 0;
     g_floppy.dma_active = 1;
     g_floppy.dma_write = 1;
+    g_floppy_dma_ram = g_ram;
     return 1;
 }
 

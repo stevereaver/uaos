@@ -107,6 +107,7 @@ typedef struct UaosTask {
     int      m68k_initial_cycles; /* saved m68ki_initial_cycles */
     int      m68k_remaining_cycles; /* saved m68ki_remaining_cycles */
     uint8_t  m68k_halted;       /* set when dos_Exit called */
+    uint8_t  m68k_budget_dumped;/* one-shot PC-ring dump at soft cycle budget */
     void    *m68k_print_fn;       /* GluePrintFn for output */
 
     /* M68k CLI argument storage — copied at creation so asynchronous

@@ -551,6 +551,14 @@ static void do_schedule(int from_irq)
             m68ki_remaining_cycles = next->m68k_remaining_cycles;
         }
         g_ram = next->m68k_ram;
+    } else {
+        /* Leaving an M68k context: rebind g_ram to the shared system
+         * window.  Otherwise host-side writers (Intuition rendering,
+         * chipset DMA, console echo) would keep targeting the suspended
+         * guest's per-task RAM and corrupt it — observed as ASCII text
+         * landing inside OctaMED's decrunch buffers. */
+        extern uint8_t *g_shared_ram;
+        g_ram = g_shared_ram;
     }
 
     /* ---- Accounting (taskstat / watchdog / irqaudit) ----
@@ -767,12 +775,27 @@ void Task_EventPumpEntry(void *arg)
             }
         }
 
+        /* Raw key transitions -> focused window (IDCMP_RAWKEY path).
+         * Drained before the cooked queue so RAWKEY precedes VANILLAKEY
+         * for the same physical press, matching real AmigaOS ordering. */
+        while (PS2Kbd_HasRawKey()) {
+            int rk = PS2Kbd_GetRawKey();
+            if (rk < 0) break;
+            Blanker_OnInput();
+            WM_RawKeyEvent(rk & 0xFF, (rk >> 8) & 0xFF);
+        }
+
         /* Keyboard -> WM (Amiga key combos first, then command-key
          * shortcuts, then regular keys) */
         while (PS2Kbd_HasChar()) {
             char c = PS2Kbd_GetChar();
             unsigned char uc = (unsigned char)c;
             Blanker_OnInput();
+
+            /* CIA-A SDR mirroring happens at IRQ time in ps2kbd via
+             * chip_emu_push_keycode for every real key transition — no
+             * cooked-char feed here (that path raced a second kbuf
+             * consumer in the PIT poll). */
 
             /* LAmiga+M/N — screen cycling */
             if (uc == (unsigned char)AMIGA_LM) {
@@ -790,11 +813,12 @@ void Task_EventPumpEntry(void *arg)
                 uc == (unsigned char)AMIGA_LB)
                 continue;
 
-            /* RAmiga+letter — menu shortcut via Intuition command key */
+            /* Amiga+letter — menu shortcut via Intuition command key.
+             * On a miss the real keymap suppresses the vanilla char, so
+             * nothing further is delivered (the RAWKEY pair already went). */
             if (IS_AMIGA_RKEY(c)) {
                 char letter = AMIGA_RLETTER(c);
-                if (!Intuition_InvokeCommandKey(letter))
-                    WM_KeyEvent(c);
+                Intuition_InvokeCommandKey(letter);
                 continue;
             }
 
@@ -818,6 +842,13 @@ void Task_EventPumpEntry(void *arg)
         if (!PS2Kbd_HasChar())
             ShellWin_PollJobs();
 
+        /* Guest-owned front screen: apps like OctaMED draw straight into
+         * their screen BitMap's planes with CPU stores — no library call
+         * to hook.  Poll-marks the screen damaged so FlushRedraw re-decodes
+         * the planes (~hardware bitmap fetch), and shortens the wait below
+         * so the refresh runs at ~20 Hz instead of the 100-tick fallback. */
+        int guest_screen_front = UAOS_Intuition_PollFrontScreenBitmap();
+
         /* Coalesced repaint: event handlers accumulate damage instead of
          * repainting per event — flush once per iteration (UAOS-101).
          * Then apply any IRQ-deferred cursor move (UAOS-104). */
@@ -833,7 +864,8 @@ void Task_EventPumpEntry(void *arg)
          * that landed during the work body are latched in tc_SigRecvd,
          * so this returns immediately when there is pending input.
          * The timeout is only a safety net for unsignalled producers. */
-        Task_WaitTicks(SIGF_EVENTPUMP | SIGF_NET | SIGF_CHILD, 100);
+        Task_WaitTicks(SIGF_EVENTPUMP | SIGF_NET | SIGF_CHILD,
+                       guest_screen_front ? 5 : 100);
     }
 }
 
@@ -1313,6 +1345,19 @@ void Task_DiagDump(void *ctx, void (*emit)(void *ctx, const char *line),
                 dl_ch(&l, '/');
                 dl_dec(&l, (uint64_t)(uint32_t)t->m68k_initial_cycles);
                 dl_emit(&l, ctx, emit);
+                /* Saved Musashi context: dar[16]+dar_save[16] then ppc,pc.
+                 * dar[0..7]=d0-d7, dar[8..15]=a0-a7. */
+                if (t->m68k_context_buf) {
+                    const uint32_t *cr =
+                        (const uint32_t *)t->m68k_context_buf;
+                    dl_add(&l, "  m68kctx: pc="); dl_hex(&l, cr[33]);
+                    dl_add(&l, " ppc="); dl_hex(&l, cr[32]);
+                    dl_add(&l, " d0="); dl_hex(&l, cr[0]);
+                    dl_add(&l, " a3="); dl_hex(&l, cr[8 + 3]);
+                    dl_add(&l, " a4="); dl_hex(&l, cr[8 + 4]);
+                    dl_add(&l, " a6="); dl_hex(&l, cr[8 + 6]);
+                    dl_emit(&l, ctx, emit);
+                }
             } else {
                 task_dump_frame(t, ctx, emit);
             }

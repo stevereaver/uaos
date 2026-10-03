@@ -77,4 +77,5 @@ exec qemu-system-x86_64 \
   ${NETDEV_ARGS} -device virtio-net-pci,netdev=n0,disable-modern=on \
   -object filter-dump,id=dump0,netdev=n0,file=/tmp/uaos_net.pcap \
   -serial "file:${SERIAL_LOG}" \
+  ${QEMU_EXTRA:-} \
   -m 512M -vga virtio -no-reboot -no-shutdown

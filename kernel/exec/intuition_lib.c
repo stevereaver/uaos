@@ -16,6 +16,8 @@
 #include "../display/desktop.h"
 #include "../display/cursor.h"
 #include "task.h"
+#include "../dos/vfs.h"
+#include "../klog/klog.h"
 #include "irq/rtc.h"
 #include "irq/ps2kbd.h"
 #include <stdint.h>
@@ -287,12 +289,23 @@ typedef struct {
     uint16_t active_string_sel_start;
     uint16_t active_string_sel_end;
 
+    /* Menu verify handshake: set when we posted IDCMP_MENUVERIFY on a
+     * right-button press; cleared when the MENUPICK(MENUNULL) goes out on
+     * release.  Apps like OctaMED populate their menu strip lazily during
+     * MENUVERIFY, so command-key (Amiga+letter) matching depends on it. */
+    uint8_t  menu_verify;
+
     /* Drag state for proportional gadget knobs / listview scrollbars */
     uint32_t drag_gad;
     uint8_t  drag_kind;     /* 1 = prop knob, 2 = listview scrollbar */
     int16_t  drag_start_x, drag_start_y;
     uint16_t drag_start_hpot, drag_start_vpot;
     int16_t  drag_start_top;
+
+    /* Owning task — the m68k task that called OpenWindow.  Guest addresses
+     * (win_ptr, user_port, gadgets) only resolve in that task's per-task RAM
+     * window; host-side delivery must bind it before touching g_ram. */
+    UaosTask *owner;
 } IntuitionSlot;
 
 static IntuitionSlot g_intu_wins[MAX_INTUITION_WINS];
@@ -440,6 +453,23 @@ static uint32_t create_guest_msgport(uint8_t sigbit)
 {
     uint32_t port = intu_alloc(MP_SIZE);
     if (!port) return 0;
+    {
+        extern void kprint(const char *);
+        char b[96]; int i = 0;
+        const char *m = "[intu] msgport port=0x";
+        while (m[i]) { b[i] = m[i]; i++; }
+        static const char hx[] = "0123456789ABCDEF";
+        for (int s = 7; s >= 0; s--) b[i++] = hx[(port >> (s*4)) & 15];
+        const char *m2 = " ram=0x";
+        int j = 0; while (m2[j]) b[i++] = m2[j++];
+        uint32_t rv = (uint32_t)(uintptr_t)g_ram;
+        for (int s = 7; s >= 0; s--) b[i++] = hx[(rv >> (s*4)) & 15];
+        const char *m3 = " sig=";
+        j = 0; while (m3[j]) b[i++] = m3[j++];
+        b[i++] = hx[sigbit & 15];
+        b[i++] = '\n'; b[i] = 0;
+        kprint(b);
+    }
 
     mem_w32(port + MP_OFF_LN_SUCC, port);
     mem_w32(port + MP_OFF_LN_PRED, port);
@@ -588,18 +618,31 @@ static void remove_oldest_port_message_by_class(uint32_t port, uint32_t class_ma
     }
 }
 
+/* UAOS-241 diag: counters for IDCMP post stages (peek via nm). */
+volatile uint32_t g_imsg_calls = 0, g_imsg_posted = 0,
+                  g_imsg_noidcmp = 0, g_imsg_noport = 0, g_imsg_allocfail = 0;
+
 static void post_intui_message(uint32_t win_ptr, uint32_t class, uint16_t code, uint16_t qualifier, int16_t mouse_x, int16_t mouse_y, uint32_t iaddress)
 {
+    g_imsg_calls++;
     if (!win_ptr) return;
+    /* The window's guest structs live in the owning m68k task's per-task RAM
+     * window.  When we are invoked from a native context (event pump / WM /
+     * input), bind that task's window so reads/writes land in the right
+     * address space instead of the shared context — or worse, a suspended
+     * guest's program memory. */
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    uint8_t *saved_ram = g_ram;
+    if (slot && slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
     uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
-    if (!idcmp || !(idcmp & class)) return;
+    if (!idcmp || !(idcmp & class)) { g_imsg_noidcmp++; g_ram = saved_ram; return; }
 
     uint32_t user_port = mem_u32(win_ptr + WIN_OFF_USERPORT);
-    if (!user_port) return;
+    if (!user_port) { g_imsg_noport++; g_ram = saved_ram; return; }
 
     /* Enforce WA_MouseQueue / WA_RptQueue limits.  Mouse moves are limited by
      * mouse_queue; mouse button events are limited by rpt_queue. */
-    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
     if (slot) {
         if (class == IDCMP_MOUSEMOVE && slot->mouse_queue > 0) {
             while (count_port_messages_by_class(user_port, IDCMP_MOUSEMOVE) >= (int)slot->mouse_queue)
@@ -611,7 +654,7 @@ static void post_intui_message(uint32_t win_ptr, uint32_t class, uint16_t code, 
     }
 
     uint32_t msg = intu_alloc(IM_SIZE);
-    if (!msg) return;
+    if (!msg) { g_imsg_allocfail++; g_ram = saved_ram; return; }
 
     uint32_t window_port = mem_u32(win_ptr + WIN_OFF_WINDOWPORT);
     init_guest_message(msg, IM_SIZE, window_port, 0);
@@ -638,6 +681,8 @@ static void post_intui_message(uint32_t win_ptr, uint32_t class, uint16_t code, 
     UaosTask *t = Task_FindByM68kAddr(sigtask_addr);
     if (!t) t = Task_Current();
     if (t) Signal(t, 1U << sigbit);
+    g_imsg_posted++;
+    g_ram = saved_ram;
 }
 
 static uint32_t create_guest_gadget(uint32_t next, int16_t left, int16_t top,
@@ -979,7 +1024,23 @@ static void apply_window_zoom(IntuitionSlot *slot, int wm_handle, uint32_t win_p
         post_intui_message(win_ptr, IDCMP_NEWSIZE, 0, 0, 0, 0, 0);
 }
 
+static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, int p2, int p3);
+
+/* WM events arrive in the native event-pump/WM task context — g_ram points
+ * at the shared window (or worse, a suspended guest's).  Bind the window
+ * owner's m68k RAM before touching any guest structures. */
 static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, int p3)
+{
+    IntuitionSlot *slot = get_slot_from_handle(wm_handle);
+    uint8_t *saved = g_ram;
+    if (slot && slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
+    int r = intu_wm_event_handler_bound(wm_handle, event_type, p1, p2, p3);
+    g_ram = saved;
+    return r;
+}
+
+static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, int p2, int p3)
 {
     uint32_t win_ptr = get_guest_window_from_handle(wm_handle);
     if (!win_ptr) return 1;
@@ -1021,6 +1082,21 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
         }
 
         case WM_EVT_MOUSE_DOWN: {
+            /* Right button is the menu button: on a menu-equipped window
+             * Intuition intercepts it and opens menu state — it does NOT
+             * deliver IDCMP_MOUSEBUTTONS MENUDOWN.  If the app subscribed to
+             * IDCMP_MENUVERIFY it gets a verify message first; apps that
+             * build their strip lazily (OctaMED) populate it here, which the
+             * Amiga+letter command-key search then sees. */
+            if (p1 == 1 && slot) {
+                if (idcmp & IDCMP_MENUVERIFY) {
+                    post_intui_message(win_ptr, IDCMP_MENUVERIFY,
+                                       0, 0, 0, 0, 0);
+                    KLOG(KLOG_DISP, KLOG_INFO, "[mver] wh=%d\n", wm_handle);
+                }
+                slot->menu_verify = 1;
+                return 0;
+            }
             int relx = p2 - wx;
             int rely = p3 - wy;
             gzz_mouse_to_content(slot, &relx, &rely);
@@ -1117,6 +1193,16 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
         }
 
         case WM_EVT_MOUSE_UP: {
+            /* End of menu state: after a MENUVERIFY the release without a
+             * selection posts IDCMP_MENUPICK with MENUNULL, giving the app
+             * the cue to tear down a lazily-built strip. */
+            if (p1 == 1 && slot && slot->menu_verify) {
+                slot->menu_verify = 0;
+                if (idcmp & IDCMP_MENUPICK)
+                    post_intui_message(win_ptr, IDCMP_MENUPICK,
+                                       MENUNULL, 0, 0, 0, 0);
+                return 0;
+            }
             int relx = p2 - wx;
             int rely = p3 - wy;
             gzz_mouse_to_content(slot, &relx, &rely);
@@ -1230,10 +1316,37 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
                 }
                 return 0;
             }
-            if (idcmp & IDCMP_RAWKEY)
-                post_intui_message(win_ptr, IDCMP_RAWKEY, (uint16_t)p1, 0, 0, 0, 0);
-            if (idcmp & IDCMP_VANILLAKEY)
-                post_intui_message(win_ptr, IDCMP_VANILLAKEY, (uint16_t)p1, 0, 0, 0, 0);
+            {
+                /* Build the Amiga qualifier from live modifier + mouse state
+                 * (IEQUALIFIER_*).  Without it combos like Shift+Space
+                 * ("play song" in OctaMED) arrive as plain keys. */
+                uint16_t qual = 0;
+                if (g_kbd_mods.shift)       qual |= 0x0001;
+                if (g_kbd_mods.caps_lock)   qual |= 0x0004;
+                if (g_kbd_mods.ctrl)        qual |= 0x0008;
+                if (g_kbd_mods.alt)         qual |= 0x0010;
+                if (g_kbd_mods.super_left)  qual |= 0x0040;
+                if (g_kbd_mods.super_right) qual |= 0x0080;
+                if (idcmp & IDCMP_VANILLAKEY)
+                    post_intui_message(win_ptr, IDCMP_VANILLAKEY,
+                                       (uint16_t)p1, qual, 0, 0, 0);
+            }
+            return 0;
+
+        case WM_EVT_RAWKEY:
+            /* Every physical key transition (press AND release, including
+             * modifiers) posts IDCMP_RAWKEY with the live qualifier —
+             * p1 carries the Amiga rawkey code with bit7 = release. */
+            if (idcmp & IDCMP_RAWKEY) {
+                /* p2 carries the qualifier snapshot captured when the key
+                 * event was generated — live g_kbd_mods would race against
+                 * later transitions before the event is delivered. */
+                uint16_t qual = (uint16_t)p2;
+                KLOG(KLOG_DISP, KLOG_INFO,
+                     "[rawkey] code=%02x qual=%02x\n", p1 & 0xFF, qual);
+                post_intui_message(win_ptr, IDCMP_RAWKEY,
+                                   (uint16_t)p1, qual, 0, 0, 0);
+            }
             return 0;
 
         case WM_EVT_RESIZE:
@@ -1244,6 +1357,15 @@ static int intu_wm_event_handler(int wm_handle, int event_type, int p1, int p2, 
             return 0;
 
         case WM_EVT_FOCUS:
+            /* Mirror WFLG_WINDOWACTIVE into the guest Window.Flags — apps
+             * like OctaMED gate key handling on the active flag, not just
+             * on IDCMP_ACTIVEWINDOW messages. */
+            {
+                uint32_t wf = mem_u32(win_ptr + WIN_OFF_FLAGS);
+                if (p1) wf |=  0x00004000u;
+                else    wf &= ~0x00004000u;
+                mem_w32(win_ptr + WIN_OFF_FLAGS, wf);
+            }
             if (p1 && (idcmp & IDCMP_ACTIVEWINDOW))
                 post_intui_message(win_ptr, IDCMP_ACTIVEWINDOW, 0, 0, 0, 0, 0);
             if (!p1 && (idcmp & IDCMP_INACTIVEWINDOW))
@@ -2225,10 +2347,59 @@ static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
 {
     int wh = WM_CurrentDrawHandle;
     if (wh < 0) return;
-    uint32_t win_ptr = get_guest_window_from_handle(wh);
-    if (!win_ptr) return;
-
     IntuitionSlot *slot = get_slot_from_handle(wh);
+
+    /* WM draw callback — native context.  The window's guest structures,
+     * its screen's BitMap and any SuperBitMap all live in the owning m68k
+     * task's RAM window, so bind it before touching guest memory. */
+    uint8_t *saved = g_ram;
+    if (slot && slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
+
+    uint32_t win_ptr = get_guest_window_from_handle(wh);
+    if (!win_ptr) { g_ram = saved; return; }
+
+    /* Diagnostic: dump guest window geometry, gadget chain and IDCMP flags
+     * on the first few repaints so custom-screen apps (OctaMED) can be
+     * checked for "window present but empty". */
+    {
+        static int g_windump = 0;
+        if (g_windump < 8 && slot) {
+            g_windump++;
+            uint32_t gad0 = mem_u32(win_ptr + WIN_OFF_FIRSTGADGET);
+            int ngad = 0;
+            for (uint32_t g = gad0; g && ngad < 40; g = mem_u32(g + GAD_OFF_NEXTGADGET)) {
+                if (ngad < 8)
+                    KLOG(KLOG_DISP, KLOG_INFO,
+                         "  gad[%d]=%x t=%x fl=%x act=%x geo=%d,%d %dx%d sp=%x\n",
+                         ngad, g,
+                         (int)mem_u16(g + GAD_OFF_GADGETTYPE),
+                         (int)mem_u16(g + GAD_OFF_FLAGS),
+                         (int)mem_u16(g + GAD_OFF_ACTIVATION),
+                         (int)mem_s16(g + GAD_OFF_LEFTEDGE),
+                         (int)mem_s16(g + GAD_OFF_TOPEDGE),
+                         (int)mem_s16(g + GAD_OFF_WIDTH),
+                         (int)mem_s16(g + GAD_OFF_HEIGHT),
+                         mem_u32(g + GAD_OFF_SPECIALINFO));
+                ngad++;
+            }
+            KLOG(KLOG_DISP, KLOG_INFO,
+                 "windump wh=%d win=%x geo=%d,%d %dx%d flg=%x idcmp=%x scr=%x rp=%x gad0=%x ngad=%d sbm=%x own=%p\n",
+                 wh, win_ptr,
+                 (int)mem_s16(win_ptr + WIN_OFF_LEFTEDGE),
+                 (int)mem_s16(win_ptr + WIN_OFF_TOPEDGE),
+                 (int)mem_s16(win_ptr + WIN_OFF_WIDTH),
+                 (int)mem_s16(win_ptr + WIN_OFF_HEIGHT),
+                 (int)mem_u32(win_ptr + WIN_OFF_FLAGS),
+                 (int)mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS),
+                 mem_u32(win_ptr + WIN_OFF_WSCREEN),
+                 mem_u32(win_ptr + WIN_OFF_RPORT),
+                 gad0, ngad,
+                 slot->super_bitmap,
+                 (void *)slot->owner);
+        }
+    }
+
     int off_x = (slot && slot->gimme_zero_zero) ? slot->border_left : 0;
     int off_y = (slot && slot->gimme_zero_zero) ? slot->border_top : 0;
 
@@ -2334,6 +2505,7 @@ static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
             post_intui_message(win_ptr, IDCMP_REFRESHWINDOW, 0, 0, 0, 0, 0);
         }
     }
+    g_ram = saved;
 }
 
 /* =========================================================================
@@ -2423,6 +2595,20 @@ static int req_event_handler(int wh, int event_type, int p1, int p2, int p3)
 
     if (event_type == WM_EVT_MOUSE_DOWN) {
         int mx = p2, my = p3;
+        /* btn_x/btn_y are window-relative; mx/my arrive in screen coords. */
+        int wx, wy, ww, wheight;
+        if (WM_GetWindowRect(wh, &wx, &wy, &ww, &wheight)) {
+            mx -= wx;
+            my -= wy;
+        }
+        {   /* UAOS-245 diag */
+            kprint("[req] md wh="); kprintdec(wh);
+            kprint(" mx="); kprintdec(mx);
+            kprint(" my="); kprintdec(my);
+            kprint(" b0="); kprintdec(g_req_slot.btn_x[0]);
+            kprint(",");      kprintdec(g_req_slot.btn_y[0]);
+            kprint("\n");
+        }
         for (int i = 0; i < g_req_slot.num_buttons; i++) {
             int bx = g_req_slot.btn_x[i];
             int by = g_req_slot.btn_y[i];
@@ -2442,6 +2628,7 @@ static int create_requester_window(int x, int y, int w, int h, const char *title
     int wh = WM_AddWindow(x, y, w, h, title, req_draw_fn, NULL);
     if (wh < 0) return -1;
     WM_SetEventHandler(wh, req_event_handler);
+    WM_SetModal(wh);
     WM_RequestFocus(wh);
     return wh;
 }
@@ -2541,11 +2728,529 @@ static void free_requester_internal(void)
 static int wait_requester_internal(void)
 {
     if (!g_req_slot.active || !g_req_slot.task || !g_req_slot.sigmask) return 0;
+    extern void UAOS_M68k_DeliverInterrupts(void);
     while (g_req_slot.active) {
-        uint32_t sigs = Wait(g_req_slot.sigmask);
+        /* Poll with a short timeout so guest interrupt handlers (CIA timer,
+         * audio) keep running while the requester is up — a plain Wait()
+         * would starve them for the duration. */
+        uint32_t sigs = (uint32_t)Task_WaitTicks(g_req_slot.sigmask, 1);
+        UAOS_M68k_DeliverInterrupts();
         if (sigs & g_req_slot.sigmask) break;
     }
     return g_req_slot.result;
+}
+
+/* =========================================================================
+ * asl.library file requester (AslRequest / RequestFile)
+ *
+ * A native WM window, modal like EasyRequest: the calling M68k task blocks
+ * on a signal while EventPump drives the mouse.  The event handler only
+ * touches host-side state (it runs on EventPump's task where g_ram is the
+ * shared buffer, not the caller's arena); guest-visible FileRequester fields
+ * are filled after the wait loop returns, still inside the lib dispatch.
+ *
+ * Result fields written (all inside the caller-allocated 512-byte block):
+ *   +4  -> file name string    (OctaMED V5's layout: file@+4, drawer@+8)
+ *   +8  -> drawer path string
+ *   +16 -> fr_File   (standard FileRequester offsets, belt & braces)
+ *   +20 -> fr_Drawer
+ * Strings live inside the block at +256 (drawer) and +384 (file).
+ * ========================================================================= */
+
+#define FRQ_MAX_ENTS   96
+#define FRQ_ROWS       12
+#define FRQ_ROW_H      14
+#define FRQ_BTN_W      76
+#define FRQ_BTN_H      18
+#define FRQ_WIN_W      460
+/* The WM's right and bottom WM_SCROLLBAR_W-wide strips swallow clicks
+ * (invisible here since draw_fn overpaints the chrome), so all interactive
+ * elements must clear them. */
+#define FRQ_LIST_Y     (WM_TITLEBAR_H + 30)
+#define FRQ_FILE_Y     (FRQ_LIST_Y + FRQ_ROWS * FRQ_ROW_H + 8)
+#define FRQ_BTN_Y      (FRQ_FILE_Y + 20)
+#define FRQ_WIN_H      (FRQ_BTN_Y + FRQ_BTN_H + 4 + WM_SCROLLBAR_W)
+#define FRQ_STR_DRAWER 256   /* in-block string offsets */
+#define FRQ_STR_FILE   384
+
+#define FRQ_BTN_VOLUMES 0
+#define FRQ_BTN_PARENT  1
+#define FRQ_BTN_OK      2
+#define FRQ_BTN_CANCEL  3
+#define FRQ_NUM_BTNS    4
+
+typedef struct {
+    int       wm_handle;
+    int       active;
+    int       done;          /* 0 running, 1 accepted, 2 cancelled */
+    int       sel;           /* selected entry index, -1 none */
+    int       top;           /* first visible row */
+    int       nent;
+    int       vol_mode;      /* listing volumes instead of files */
+    int       rescan;        /* handler asked for dir reload */
+    uint64_t  last_click;    /* double-click detect */
+    int       last_sel_click;
+    char      title[64];
+    char      drawer[160];
+    char      file[64];
+    char      ok_txt[24];
+    char      cancel_txt[24];
+    VfsDirEnt ents[FRQ_MAX_ENTS];
+    int       btn_x[FRQ_NUM_BTNS];
+    int       btn_y;
+    uint8_t   sigbit;
+    uint32_t  sigmask;
+    UaosTask *task;
+} FrqSlot;
+
+static FrqSlot g_frq;
+
+static int frq_cmp_name(const char *a, const char *b)
+{
+    for (;;) {
+        int ca = *a ? ((*a >= 'a' && *a <= 'z') ? *a - 32 : *a) : 0;
+        int cb = *b ? ((*b >= 'a' && *b <= 'z') ? *b - 32 : *b) : 0;
+        if (ca != cb) return ca - cb;
+        if (!ca) return 0;
+        a++; b++;
+    }
+}
+
+static void frq_insert_sorted(const VfsDirEnt *e)
+{
+    if (g_frq.nent >= FRQ_MAX_ENTS) return;
+    int i = g_frq.nent;
+    /* dirs before files, alphabetical within each group */
+    while (i > 0) {
+        const VfsDirEnt *p = &g_frq.ents[i - 1];
+        if (p->is_dir > e->is_dir) break;
+        if (p->is_dir == e->is_dir &&
+            frq_cmp_name(p->name, e->name) <= 0) break;
+        g_frq.ents[i] = *p;
+        i--;
+    }
+    g_frq.ents[i] = *e;
+    g_frq.nent++;
+}
+
+/* Rebuild g_frq.ents for the current drawer/vol_mode.  Runs in the caller's
+ * task context (DoPkt-capable), never from the WM event handler. */
+static void frq_scan(void)
+{
+    g_frq.nent   = 0;
+    g_frq.top    = 0;
+    g_frq.sel    = -1;
+    g_frq.rescan = 0;
+
+    if (g_frq.vol_mode) {
+        int n = VFS_GetMountCount();
+        for (int i = 0; i < n && g_frq.nent < FRQ_MAX_ENTS; i++) {
+            char unit[32];
+            if (!VFS_GetMountName(i, unit, sizeof(unit))) continue;
+            VfsDirEnt e;
+            int j = 0;
+            while (unit[j] && j < (int)sizeof(e.name) - 2) { e.name[j] = unit[j]; j++; }
+            e.name[j++] = ':';
+            e.name[j]   = '\0';
+            e.is_dir    = 1;
+            e.size      = 0;
+            e.mtime     = 0;
+            frq_insert_sorted(&e);
+        }
+        return;
+    }
+
+    VfsDirEnt tmp[FRQ_MAX_ENTS];
+    int n = VFS_ReadDir(g_frq.drawer, tmp, FRQ_MAX_ENTS);
+    for (int i = 0; i < n; i++) frq_insert_sorted(&tmp[i]);
+}
+
+/* "DH0:OCTAMED/S" -> "DH0:OCTAMED"; "DH0:OCTAMED" -> "DH0:";
+ * "DH0:" -> volumes mode. */
+static void frq_go_parent(void)
+{
+    if (g_frq.vol_mode) { g_frq.rescan = 1; return; }
+    int len = 0;
+    while (g_frq.drawer[len]) len++;
+    if (len == 0) { g_frq.vol_mode = 1; g_frq.rescan = 1; return; }
+    /* sitting at a volume root "VOL:" (no '/' in path) -> volume list */
+    if (g_frq.drawer[len - 1] == ':' &&
+        local_strchr(g_frq.drawer, '/') == NULL) {
+        g_frq.vol_mode = 1;
+        g_frq.rescan = 1;
+        return;
+    }
+    while (len > 0 && g_frq.drawer[len - 1] != '/' && g_frq.drawer[len - 1] != ':')
+        len--;
+    if (len > 0 && g_frq.drawer[len - 1] == '/') len--;
+    g_frq.drawer[len] = '\0';
+    g_frq.rescan = 1;
+}
+
+static void frq_enter(const char *name)
+{
+    int len = 0;
+    while (g_frq.drawer[len]) len++;
+    if (g_frq.vol_mode || len == 0) {
+        /* name is "VOL:" — replaces the drawer entirely */
+        len = 0;
+        int i = 0;
+        while (name[i] && len < (int)sizeof(g_frq.drawer) - 1)
+            g_frq.drawer[len++] = name[i++];
+        g_frq.drawer[len] = '\0';
+        g_frq.vol_mode = 0;
+    } else {
+        if (g_frq.drawer[len - 1] != ':' && len < (int)sizeof(g_frq.drawer) - 1)
+            g_frq.drawer[len++] = '/';
+        int i = 0;
+        while (name[i] && len < (int)sizeof(g_frq.drawer) - 1)
+            g_frq.drawer[len++] = name[i++];
+        g_frq.drawer[len] = '\0';
+    }
+    g_frq.rescan = 1;
+}
+
+static void frq_draw_fn(int win_x, int win_y, int win_w, int win_h)
+{
+    (void)win_w; (void)win_h;
+    if (!g_frq.active) return;
+
+    FB_FillRect(win_x, win_y, win_w, win_h, WB_LIGHT_GREY);
+    FB_DrawRect(win_x, win_y, win_w, win_h, WB_BLACK);
+    FB_FillRect(win_x + 1, win_y + 1, win_w - 2, WM_TITLEBAR_H - 1, WB_BLUE);
+    if (g_frq.title[0])
+        FB_PutStrCentred(win_x + 1, win_y + 1, win_w - 2, WM_TITLEBAR_H - 1,
+                         g_frq.title, WB_WHITE, WB_BLUE);
+
+    /* drawer line */
+    {
+        char line[96];
+        int i = 0;
+        const char *p = "Drawer: ";
+        while (*p && i < 90) line[i++] = *p++;
+        p = g_frq.vol_mode ? "(volumes)" : g_frq.drawer;
+        while (*p && i < 90) line[i++] = *p++;
+        line[i] = '\0';
+        FB_PutStr(win_x + 10, win_y + WM_TITLEBAR_H + 8, line,
+                  WB_BLACK, WB_LIGHT_GREY);
+    }
+
+    /* list box (right edge clears the invisible right-scrollbar strip) */
+    int lx = win_x + 8;
+    int ly = win_y + FRQ_LIST_Y;
+    int lw = win_w - 16 - WM_SCROLLBAR_W;
+    int lh = FRQ_ROWS * FRQ_ROW_H;
+    FB_FillRect(lx, ly, lw, lh, WB_WHITE);
+    FB_DrawRect(lx, ly, lw, lh, WB_BLACK);
+
+    for (int r = 0; r < FRQ_ROWS; r++) {
+        int idx = g_frq.top + r;
+        if (idx >= g_frq.nent) break;
+        int ry = ly + r * FRQ_ROW_H;
+        const VfsDirEnt *e = &g_frq.ents[idx];
+        if (idx == g_frq.sel) {
+            FB_FillRect(lx + 1, ry + 1, lw - 2, FRQ_ROW_H - 2, WB_BLUE);
+            char nm[48];
+            int i = 0;
+            while (e->name[i] && i < 44) { nm[i] = e->name[i]; i++; }
+            if (e->is_dir && (i == 0 || nm[i - 1] != ':') && i < 46) nm[i++] = '/';
+            nm[i] = '\0';
+            FB_PutStr(lx + 6, ry + 3, nm, WB_WHITE, WB_BLUE);
+        } else {
+            char nm[48];
+            int i = 0;
+            while (e->name[i] && i < 44) { nm[i] = e->name[i]; i++; }
+            if (e->is_dir && (i == 0 || nm[i - 1] != ':') && i < 46) nm[i++] = '/';
+            nm[i] = '\0';
+            FB_PutStr(lx + 6, ry + 3, nm,
+                      e->is_dir ? WB_BLUE : WB_BLACK, WB_WHITE);
+        }
+    }
+
+    /* scroll indicators */
+    if (g_frq.top > 0)
+        FB_PutStr(lx + lw - 14, ly + 2, "^", WB_BLACK, WB_WHITE);
+    if (g_frq.top + FRQ_ROWS < g_frq.nent)
+        FB_PutStr(lx + lw - 14, ly + lh - 12, "v", WB_BLACK, WB_WHITE);
+
+    /* file line */
+    {
+        char line[80];
+        int i = 0;
+        const char *p = "File: ";
+        while (*p && i < 70) line[i++] = *p++;
+        p = g_frq.file;
+        while (*p && i < 70) line[i++] = *p++;
+        line[i] = '\0';
+        FB_PutStr(win_x + 10, win_y + FRQ_FILE_Y + 4, line,
+                  WB_BLACK, WB_LIGHT_GREY);
+    }
+
+    /* buttons: Volumes Parent ... OK Cancel */
+    const char *labels[FRQ_NUM_BTNS] = {
+        "Volumes", "Parent", g_frq.ok_txt, g_frq.cancel_txt
+    };
+    int bx = win_x + 10;
+    for (int i = 0; i < FRQ_NUM_BTNS; i++) {
+        int rx = (i >= FRQ_BTN_OK)
+               ? win_x + win_w - WM_SCROLLBAR_W - 10 -
+                 (FRQ_NUM_BTNS - i) * (FRQ_BTN_W + 8)
+               : bx;
+        g_frq.btn_x[i] = rx - win_x;
+        FB_FillRect(rx, win_y + g_frq.btn_y, FRQ_BTN_W, FRQ_BTN_H, WB_GREY);
+        FB_DrawRect(rx, win_y + g_frq.btn_y, FRQ_BTN_W, FRQ_BTN_H, WB_BLACK);
+        FB_PutStrCentred(rx, win_y + g_frq.btn_y, FRQ_BTN_W, FRQ_BTN_H,
+                         labels[i], WB_BLACK, WB_GREY);
+        if (i < FRQ_BTN_OK) bx += FRQ_BTN_W + 8;
+    }
+}
+
+static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
+{
+    if (!g_frq.active || g_frq.wm_handle != wh) return 1;
+
+    if (event_type == WM_EVT_CLOSE_REQUEST) {
+        g_frq.done = 2;
+        if (g_frq.task && g_frq.sigmask)
+            Signal(g_frq.task, g_frq.sigmask);
+        return 0;   /* veto WM close; dispatch frees the window */
+    }
+
+    if (event_type == WM_EVT_RAWKEY) {
+        int code = p1 & 0x7F;
+        int up   = p1 & 0x80;
+        if (up) return 0;
+        if (code == 0x45) {                     /* Esc → cancel */
+            g_frq.done = 2;
+        } else if (code == 0x44) {              /* Return → open/accept */
+            if (g_frq.sel >= 0 && g_frq.sel < g_frq.nent &&
+                g_frq.ents[g_frq.sel].is_dir) {
+                frq_enter(g_frq.ents[g_frq.sel].name);
+            } else if (g_frq.sel >= 0 || g_frq.file[0]) {
+                g_frq.done = 1;
+            }
+        } else if (code == 0x4C) {              /* cursor up */
+            if (g_frq.sel > 0) {
+                g_frq.sel--;
+                if (g_frq.sel < g_frq.top) g_frq.top = g_frq.sel;
+            } else if (g_frq.top > 0) {
+                g_frq.top--;
+            }
+        } else if (code == 0x4D) {              /* cursor down */
+            if (g_frq.sel < g_frq.nent - 1) {
+                g_frq.sel++;
+                if (g_frq.sel >= g_frq.top + FRQ_ROWS)
+                    g_frq.top = g_frq.sel - FRQ_ROWS + 1;
+            } else if (g_frq.sel < 0 && g_frq.nent > 0) {
+                g_frq.sel = 0;
+            }
+        }
+        if (g_frq.sel >= 0 && g_frq.sel < g_frq.nent &&
+            !g_frq.ents[g_frq.sel].is_dir)
+            local_str_copy(g_frq.file, g_frq.ents[g_frq.sel].name,
+                           sizeof(g_frq.file));
+        WM_InvalidateRect(0, 0, 65535, 65535);
+        if (g_frq.done && g_frq.task && g_frq.sigmask)
+            Signal(g_frq.task, g_frq.sigmask);
+        return 0;
+    }
+
+    if (event_type != WM_EVT_MOUSE_DOWN || p1 != 0) return 0;  /* left btn only */
+
+    {
+        int mx = p2, my = p3;
+        int wx, wy, ww, wheight;
+        if (WM_GetWindowRect(wh, &wx, &wy, &ww, &wheight)) {
+            mx -= wx;
+            my -= wy;
+        }
+
+        /* buttons */
+        for (int i = 0; i < FRQ_NUM_BTNS; i++) {
+            if (mx >= g_frq.btn_x[i] && mx < g_frq.btn_x[i] + FRQ_BTN_W &&
+                my >= g_frq.btn_y   && my < g_frq.btn_y   + FRQ_BTN_H) {
+                if (i == FRQ_BTN_VOLUMES) {
+                    g_frq.vol_mode = 1;
+                    g_frq.rescan = 1;
+                } else if (i == FRQ_BTN_PARENT) {
+                    frq_go_parent();
+                } else if (i == FRQ_BTN_OK) {
+                    if (g_frq.sel >= 0 &&
+                        g_frq.sel < g_frq.nent &&
+                        g_frq.ents[g_frq.sel].is_dir) {
+                        frq_enter(g_frq.ents[g_frq.sel].name);
+                    } else if (g_frq.sel >= 0 || g_frq.file[0]) {
+                        g_frq.done = 1;
+                    }
+                } else {
+                    g_frq.done = 2;
+                }
+                if (g_frq.done && g_frq.task && g_frq.sigmask)
+                    Signal(g_frq.task, g_frq.sigmask);
+                WM_InvalidateRect(0, 0, 65535, 65535);
+                return 0;
+            }
+        }
+
+        /* ^ / v scroll strip along the list's right edge (checked before
+         * the row test, which would otherwise swallow it) */
+        int ly = FRQ_LIST_Y;
+        int ss_left = ww - WM_SCROLLBAR_W - 20;
+        if (mx >= ss_left && mx < ss_left + 16 &&
+            my >= ly && my < ly + FRQ_ROWS * FRQ_ROW_H &&
+            (g_frq.top > 0 || g_frq.top + FRQ_ROWS < g_frq.nent)) {
+            int mid = ly + (FRQ_ROWS * FRQ_ROW_H) / 2;
+            if (my < mid && g_frq.top > 0) g_frq.top--;
+            else if (my >= mid && g_frq.top + FRQ_ROWS < g_frq.nent) g_frq.top++;
+        } else if (mx >= 8 && mx < ss_left &&
+                   my >= ly && my < ly + FRQ_ROWS * FRQ_ROW_H) {
+            int idx = g_frq.top + (my - ly) / FRQ_ROW_H;
+            if (idx < g_frq.nent) {
+                if (g_frq.ents[idx].is_dir) {
+                    frq_enter(g_frq.ents[idx].name);
+                } else {
+                    int dbl = (idx == g_frq.last_sel_click &&
+                               g_pit_ticks - g_frq.last_click < 50);
+                    g_frq.sel = idx;
+                    local_str_copy(g_frq.file, g_frq.ents[idx].name,
+                                   sizeof(g_frq.file));
+                    if (dbl) g_frq.done = 1;
+                    g_frq.last_sel_click = idx;
+                    g_frq.last_click     = g_pit_ticks;
+                }
+            }
+        }
+
+        if (g_frq.done && g_frq.task && g_frq.sigmask)
+            Signal(g_frq.task, g_frq.sigmask);
+        WM_InvalidateRect(0, 0, 65535, 65535);
+        return 0;
+    }
+}
+
+/* Parse the AslRequest taglist (a1).  Tags are {u32 tag, u32 data} pairs in
+ * guest RAM ending at tag 0.  We recognise the handful OctaMED/typical apps
+ * pass; unknown tags are ignored. */
+static void frq_parse_tags(uint32_t tags)
+{
+    if (!tags || tags >= GUEST_RAM_SIZE - 8) return;
+    for (int i = 0; i < 64; i++) {
+        uint32_t tag  = mem_u32(tags + i * 8);
+        uint32_t data = mem_u32(tags + i * 8 + 4);
+        if (tag == 0) break;                        /* TAG_DONE */
+        if (tag == 0xFFFFFFFF) break;
+        /* Any tag whose data is a plausible guest string pointer may carry
+         * text (TitleText / Hail / OKText / CancelText / InitialDrawer /
+         * InitialFile).  Distinguish by content: a string containing ':'
+         * that resolves to a directory is a drawer; the first string tag is
+         * the title. */
+        if (data > 0x100 && data < GUEST_RAM_SIZE - 64) {
+            char s[64];
+            guest_str(s, data, sizeof(s));
+            if (!s[0]) continue;
+            int has_colon = local_strchr(s, ':') != NULL;
+            int printable = 1;
+            for (int j = 0; s[j]; j++)
+                if ((uint8_t)s[j] < 32) { printable = 0; break; }
+            if (!printable) continue;
+            if (has_colon && VFS_IsDir(s)) {
+                local_str_copy(g_frq.drawer, s, sizeof(g_frq.drawer));
+                g_frq.vol_mode = 0;
+            } else if (!g_frq.title[0] && tag == 0x80080001) {
+                local_str_copy(g_frq.title, s, sizeof(g_frq.title));
+            }
+        }
+    }
+}
+
+/* Synchronous file requester.  Called from the asl.library dispatch in
+ * uaos_m68k_glue.c with a0 = requester block, a1 = taglist (or 0).
+ * Returns 1 on accept, 0 on cancel/error. */
+int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
+{
+    if (!req_ptr || req_ptr >= GUEST_RAM_SIZE - 512) return 0;
+    if (g_frq.active) return 0;                    /* reentrancy guard */
+
+    memset(&g_frq, 0, sizeof(g_frq));
+    g_frq.wm_handle = -1;
+    g_frq.sel       = -1;
+    local_str_copy(g_frq.ok_txt,     "OK",     sizeof(g_frq.ok_txt));
+    local_str_copy(g_frq.cancel_txt, "Cancel", sizeof(g_frq.cancel_txt));
+    local_str_copy(g_frq.title,      "Select file", sizeof(g_frq.title));
+
+    /* initial drawer: tag override, else the guest process cwd */
+    {
+        extern char g_uaos_cwd[64];
+        if (g_uaos_cwd[0])
+            local_str_copy(g_frq.drawer, g_uaos_cwd, sizeof(g_frq.drawer));
+        if (!g_frq.drawer[0] || !VFS_IsDir(g_frq.drawer))
+            g_frq.vol_mode = 1;
+    }
+    frq_parse_tags(tags);
+
+    int sig = alloc_intuition_signal();
+    if (sig < 0) return 0;
+    g_frq.sigbit  = (uint8_t)sig;
+    g_frq.sigmask = 1U << sig;
+    g_frq.task    = Task_Current();
+    g_frq.btn_y   = FRQ_BTN_Y;
+
+    frq_scan();
+
+    int wh = WM_AddWindow(200, 160, FRQ_WIN_W, FRQ_WIN_H, g_frq.title,
+                          frq_draw_fn, NULL);
+    if (wh < 0) {
+        free_intuition_signal(sig);
+        return 0;
+    }
+    g_frq.wm_handle = wh;
+    g_frq.active    = 1;
+    WM_SetEventHandler(wh, frq_event_handler);
+    WM_SetModal(wh);
+    WM_RequestFocus(wh);
+    WM_Redraw();
+
+    extern void UAOS_M68k_DeliverInterrupts(void);
+    while (g_frq.active && !g_frq.done) {
+        Task_WaitTicks(g_frq.sigmask, 1);
+        UAOS_M68k_DeliverInterrupts();
+        if (g_frq.rescan) {
+            frq_scan();
+            WM_Redraw();
+        }
+    }
+
+    int accepted = (g_frq.done == 1 && g_frq.file[0]);
+    WM_CloseWindow(wh);
+    g_frq.active = 0;
+    free_intuition_signal(sig);
+
+    if (!accepted) return 0;
+
+    /* Fill the requester block (caller's arena — still in dispatch). */
+    mem_w32(req_ptr + FRQ_STR_DRAWER, 0);
+    {
+        int i = 0;
+        while (g_frq.drawer[i] && i < 120) {
+            mem_w8(req_ptr + FRQ_STR_DRAWER + i, (uint8_t)g_frq.drawer[i]);
+            i++;
+        }
+        mem_w8(req_ptr + FRQ_STR_DRAWER + i, 0);
+        i = 0;
+        while (g_frq.file[i] && i < 120) {
+            mem_w8(req_ptr + FRQ_STR_FILE + i, (uint8_t)g_frq.file[i]);
+            i++;
+        }
+        mem_w8(req_ptr + FRQ_STR_FILE + i, 0);
+    }
+    mem_w32(req_ptr + 4,  req_ptr + FRQ_STR_FILE);    /* OctaMED layout */
+    mem_w32(req_ptr + 8,  req_ptr + FRQ_STR_DRAWER);
+    mem_w32(req_ptr + 16, req_ptr + FRQ_STR_FILE);    /* fr_File   */
+    mem_w32(req_ptr + 20, req_ptr + FRQ_STR_DRAWER);  /* fr_Drawer */
+    mem_w32(req_ptr + 24, 0x00280028);                /* LeftEdge|TopEdge  */
+    mem_w32(req_ptr + 28, 0x012C00F0);                /* Width|Height      */
+    mem_w32(req_ptr + 32, 0);                         /* fr_Flags          */
+    return 1;
 }
 
 /* =========================================================================
@@ -2655,6 +3360,7 @@ static int create_alert_window(int x, int y, int w, int h)
     int wh = WM_AddWindow(x, y, w, h, "Alert", alert_draw_fn, NULL);
     if (wh < 0) return -1;
     WM_SetEventHandler(wh, alert_event_handler);
+    WM_SetModal(wh);
     WM_RequestFocus(wh);
     return wh;
 }
@@ -2888,6 +3594,10 @@ typedef struct ScreenSlot {
     uint8_t  owns_colormap; /* 1 = ColorMap was allocated by us */
     uint32_t rastport;      /* guest Screen.RastPort */
     uint32_t viewport;      /* guest ViewPort (carries the ColorMap) */
+    /* Owning task — the m68k task that called OpenScreen.  The screen
+     * BitMap, ColorMap and RastPort live in that task's per-task RAM
+     * window; host-side compositing must bind it before reading g_ram. */
+    UaosTask *owner;
 } ScreenSlot;
 
 static ScreenSlot g_intu_screens[MAX_INTUITION_SCREENS];
@@ -3016,9 +3726,9 @@ static void scr_build_lut(uint32_t cmap, uint32_t lut[256])
         count = (uint32_t)mem_u16(cmap + CM_OFF_COUNT);
     }
     for (uint32_t pen = 0; pen < 256; pen++)
-        lut[pen] = (table && pen < count)
+        lut[pen] = ((table && pen < count)
                  ? mem_u32(table + pen * 4)
-                 : amiga_pen_to_rgb((uint8_t)pen);
+                 : amiga_pen_to_rgb((uint8_t)pen)) | 0xFF000000u;
 }
 
 /* Emit a host-framebuffer rectangle from the pen cache through the LUT.
@@ -3055,6 +3765,54 @@ static void scr_cache_ensure(ScreenSlot *slot)
     const uint32_t bm = slot->bitmap;
     const int bw = (int)mem_u16(bm + BM_OFF_BYTESPERROW) * 8;
     const int bh = (int)mem_u16(bm + BM_OFF_ROWS);
+
+    /* Diagnostic: dump all screen slots + the front screen's plane-0
+     * checksum so we can tell "empty planes" apart from "wrong RAM
+     * window" and see which screen is actually front. */
+    {
+        static uint32_t g_scr_diag = 0;
+        if (g_scr_diag < 12) {
+            g_scr_diag++;
+            for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+                ScreenSlot *s = &g_intu_screens[i];
+                if (!s->active) continue;
+                KLOG(KLOG_DISP, KLOG_INFO,
+                     "scrdiag slot%d scr=%x front=%d bm=%x %dx%d own=%p ram=%p '%s'\n",
+                     i, s->guest_screen, (int)s->is_front, s->bitmap,
+                     (int)s->width, (int)s->height,
+                     (void *)s->owner,
+                     (void *)(s->owner ? s->owner->m68k_ram : NULL),
+                     s->title);
+            }
+            if (bm) {
+                uint32_t sum = 0;
+                uint32_t p0 = mem_u32(bm + BM_OFF_PLANES);
+                const uint16_t bpr = mem_u16(bm + BM_OFF_BYTESPERROW);
+                uint32_t rows = mem_u16(bm + BM_OFF_ROWS);
+                if (p0 && p0 + (uint32_t)bpr * rows < GUEST_RAM_SIZE)
+                    for (uint32_t i = 0; i < (uint32_t)bpr * rows; i++)
+                        sum += mem_u8(p0 + i);
+                uint32_t cmap = screen_colormap(slot);
+                uint32_t ctab = cmap ? mem_u32(cmap + CM_OFF_COLORTABLE) : 0;
+                uint32_t ccnt = cmap ? mem_u16(cmap + CM_OFF_COUNT) : 0;
+                uint32_t c0 = ctab ? mem_u32(ctab + 0) : 0;
+                uint32_t c1 = ctab ? mem_u32(ctab + 4) : 0;
+                uint32_t c2 = ctab ? mem_u32(ctab + 8) : 0;
+                uint32_t c3 = ctab ? mem_u32(ctab + 12) : 0;
+                /* Also checksum the decoded pen cache itself so we can tell
+                 * "empty planes" apart from "black palette". */
+                uint32_t psum = 0;
+                if (g_scr_cache_bm == bm && g_scr_cache_w > 0)
+                    for (uint32_t i = 0; i < (uint32_t)g_scr_cache_w * g_scr_cache_h; i += 977)
+                        psum += g_scr_pens[i];
+                KLOG(KLOG_DISP, KLOG_INFO,
+                     "scrdiag front bm=%x depth=%d bpr=%d p0sum=%x cmap=%x cnt=%d c0..3=%x,%x,%x,%x pensum=%x\n",
+                     bm, (int)mem_u8(bm + BM_OFF_DEPTH), (int)bpr, sum,
+                     cmap, (int)ccnt, c0, c1, c2, c3, psum);
+            }
+        }
+    }
+
     if (g_scr_cache_bm == bm && g_scr_cache_w == bw && g_scr_cache_h == bh)
         return;
     g_scr_cache_bm = 0;            /* invalidate during decode */
@@ -3080,11 +3838,27 @@ static void scr_cache_refresh(uint32_t bm, int x0, int y0, int x1, int y1)
     scr_decode_pens(bm, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 }
 
+/* Bind the front screen owner's RAM window for a host-side render pass.
+ * Returns the saved g_ram so the caller can restore it. */
+static uint8_t *bind_front_screen_ram(void)
+{
+    uint8_t *saved = g_ram;
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (slot->active && slot->is_front &&
+            slot->owner && slot->owner->m68k_ram) {
+            g_ram = slot->owner->m68k_ram;
+            break;
+        }
+    }
+    return saved;
+}
+
 /* Render the front Intuition screen's BitMap into the host framebuffer.
  * SA_BackFill runs first so the hook/pen fill lands inside the screen
  * BitMap (or directly on the framebuffer when the screen has none).
  * Returns 1 if a screen was rendered, 0 otherwise. */
-int UAOS_Intuition_RenderScreenBackdrop(void)
+static int render_screen_backdrop_impl(void)
 {
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
@@ -3191,12 +3965,20 @@ int UAOS_Intuition_RenderScreenBackdrop(void)
     return 0;
 }
 
+int UAOS_Intuition_RenderScreenBackdrop(void)
+{
+    uint8_t *saved = bind_front_screen_ram();
+    int rc = render_screen_backdrop_impl();
+    g_ram = saved;
+    return rc;
+}
+
 /* Region variant used by the WM's damage-scoped repaints (UAOS-101):
  * re-renders only the given host-framebuffer rectangle of the front
  * screen's BitMap.  SA_BackFill is not re-run — the screen BitMap already
  * holds the backfilled pixels from the last full render.  Returns 1 if a
  * front screen bitmap was rendered, 0 otherwise. */
-int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h)
+static int render_screen_backdrop_region_impl(int x, int y, int w, int h)
 {
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
@@ -3215,6 +3997,14 @@ int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h)
         return 1;
     }
     return 0;
+}
+
+int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h)
+{
+    uint8_t *saved = bind_front_screen_ram();
+    int rc = render_screen_backdrop_region_impl(x, y, w, h);
+    g_ram = saved;
+    return rc;
 }
 
 /* Re-render a dirty rectangle of a screen (or WA_SuperBitMap window)
@@ -3260,6 +4050,48 @@ void UAOS_Intuition_FlushScreenBitmap(uint32_t bm, int x0, int y0, int x1, int y
     }
 }
 
+/* GT_RefreshWindow() equivalent: invalidate a guest window's WM rect so the
+ * next damage flush repaints its chrome and gadget imagery. */
+void UAOS_Intuition_RefreshWindow(uint32_t guest_win)
+{
+    if (!guest_win) return;
+    IntuitionSlot *slot = find_slot_by_guest(guest_win);
+    if (!slot) return;
+    int x, y, w, h;
+    if (WM_GetWindowRect(slot->wm_handle, &x, &y, &w, &h))
+        WM_InvalidateRect(x, y, w, h);
+}
+
+/* A guest app may draw straight into its screen BitMap with CPU stores, with
+ * no library call to hook — on real hardware the Denise re-fetches the planes
+ * every scanline regardless.  Called from the event pump: while the front
+ * screen is owned by an m68k task, invalidate the pen cache and damage the
+ * whole screen so the next WM_FlushRedraw re-decodes the planes.
+ * Returns 1 while such a screen is front so the pump can shorten its wait. */
+int UAOS_Intuition_PollFrontScreenBitmap(void)
+{
+    extern volatile uint64_t g_pit_ticks;
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (!slot->active || !slot->is_front || !slot->bitmap) continue;
+        if (!slot->owner || !slot->owner->m68k_ram) return 0;
+        /* Rate-limit the re-decode to ~5 Hz: the pump wakes us every few
+         * ticks while a guest screen is front, but a full 1024×768
+         * pen-decode + emit under Forbid every pass saturates the pump
+         * (measured >100% busy).  The decode itself runs later, in the
+         * render path which rebinds the screen owner's RAM window — just
+         * drop the cache key and mark damage here. */
+        static uint64_t s_last_poll = 0;
+        if (g_pit_ticks - s_last_poll < 20) return 1;
+        s_last_poll = g_pit_ticks;
+        g_scr_cache_bm = 0;
+        WM_InvalidateDesktopRect(slot->left, slot->top,
+                                 slot->width, slot->height);
+        return 1;
+    }
+    return 0;
+}
+
 /* WM vacate hook: when a window moves, resizes, zooms, or closes, erase
  * the vacated rectangle in the parent screen's BitMap (pen 0 backdrop)
  * so the next backdrop render does not resurrect stale pixels. */
@@ -3269,6 +4101,12 @@ static void intu_screen_vacate(int wh, int x, int y, int w, int h)
     if (!slot || !slot->screen) return;
     ScreenSlot *sslot = find_screen_slot(slot->screen);
     if (!sslot || !sslot->bitmap || !sslot->rastport) return;
+
+    /* WM callback — runs in native context; the screen RastPort/BitMap live
+     * in the screen owner's RAM window. */
+    uint8_t *saved = g_ram;
+    if (sslot->owner && sslot->owner->m68k_ram)
+        g_ram = sslot->owner->m68k_ram;
 
     int x0 = x - sslot->left;
     int y0 = y - sslot->top;
@@ -3281,6 +4119,8 @@ static void intu_screen_vacate(int wh, int x, int y, int w, int h)
     m68k_set_reg(M68K_REG_D2, (uint32_t)(x0 + w - 1));
     m68k_set_reg(M68K_REG_D3, (uint32_t)(y0 + h - 1));
     UAOS_Graphics_Dispatch(GFX_SLOT_RECTFILL);
+
+    g_ram = saved;
 }
 
 /* Compute the allowed display rectangle for a screen based on its stored
@@ -3471,10 +4311,15 @@ void UAOS_Intuition_ApplyFrontScreenPalette(void)
             break;
         }
     }
+    /* Color/pens tables live in the screen owner's RAM window. */
+    uint8_t *saved = g_ram;
+    if (front && front->owner && front->owner->m68k_ram)
+        g_ram = front->owner->m68k_ram;
     if (front && (front->colors || front->colors32 || front->pens))
         apply_screen_palette(front);
     else
         WB_InitPalette();
+    g_ram = saved;
 }
 
 /* WM palette callback: keep the host Workbench chrome palette.
@@ -3818,6 +4663,7 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     slot->owns_bitmap       = 0;
     slot->owns_colormap     = 0;
     slot->rastport          = 0;
+    slot->owner             = Task_Current();
 
     /* Every screen is backed by a real planar BitMap.  If the guest did
      * not supply one via SA_BitMap, allocate one matching the screen
@@ -4311,6 +5157,7 @@ static void intuition_OpenWindowTagList(void)
 
     slot->guest_win = win_ptr;
     slot->wm_handle = wh;
+    slot->owner     = Task_Current();
     slot->screen    = wscreen;
     slot->min_w     = min_w;
     slot->min_h     = min_h;
@@ -4402,8 +5249,14 @@ static void intuition_OpenWindowTagList(void)
         UAOS_Layout_AttachWindow(win_ptr);
     }
 
-    if (flags & WFLG_ACTIVATE)
+    if (flags & WFLG_ACTIVATE) {
+        /* Reflect activation in the guest Flags word immediately — the
+         * window already has focus from WM_AddWindow, so no WM_EVT_FOCUS
+         * will fire to set WFLG_WINDOWACTIVE later. */
+        mem_w32(win_ptr + WIN_OFF_FLAGS,
+                mem_u32(win_ptr + WIN_OFF_FLAGS) | 0x00004000u);
         WM_RequestFocus(wh);
+    }
 
     m68k_set_reg(M68K_REG_D0, win_ptr);
 }
@@ -4580,6 +5433,7 @@ static void intuition_ModifyIDCMP(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t flags   = m68k_get_reg(NULL, M68K_REG_D0);
+    KLOG(KLOG_DISP, KLOG_INFO, "[midcmp] win=%x flags=%x\n", win_ptr, flags);
     if (win_ptr) {
         mem_w32(win_ptr + WIN_OFF_IDCMPFLAGS, flags);
 
@@ -4687,6 +5541,8 @@ static void intuition_SetWindowAttrsA(void)
                 if (slot) slot->screen_title = data;
                 break;
             case WA_IDCMP:
+                KLOG(KLOG_DISP, KLOG_INFO, "[swa] win=%x idcmp=%x\n",
+                     win_ptr, data);
                 mem_w32(win_ptr + WIN_OFF_IDCMPFLAGS, data);
                 break;
             case WA_Flags:
@@ -5387,6 +6243,7 @@ static uint32_t open_workbench_internal(void)
     slot->interleaved = 0;
     slot->like_workbench = 1;
     slot->minimize_isg = 0;
+    slot->owner = Task_Current();
 
     /* The Workbench screen is backed by a planar BitMap too, so windows
      * and the screen RastPort draw on real bitplanes.  Pen 0 is the
@@ -5441,6 +6298,7 @@ static void intuition_CloseWorkbench(void)
             slot->colormap = 0;
             intu_free(g_workbench_screen);
             slot->active = 0;
+            slot->owner = NULL;
             update_desktop_title();
         }
         g_workbench_screen = 0;
@@ -5890,6 +6748,7 @@ static void intuition_CloseScreen(void)
         slot->bitmap = 0;
         slot->colormap = 0;
         slot->active = 0;
+        slot->owner = NULL;
         update_desktop_title();
     }
     m68k_set_reg(M68K_REG_D0, 1);  /* success */
@@ -7177,8 +8036,14 @@ static void intuition_SetMenuStrip(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t menu    = m68k_get_reg(NULL, M68K_REG_A1);
+    KLOG(KLOG_DISP, KLOG_INFO,
+         "[sms] win=%x strip=%x first=%x name=%x\n",
+         win_ptr, menu,
+         menu ? mem_u32(menu + MENU_OFF_FIRSTITEM) : 0,
+         menu ? mem_u32(menu + MENU_OFF_MENUNAME) : 0);
     if (win_ptr)
         mem_w32(win_ptr + WIN_OFF_MENUSTRIP, menu);
+    m68k_set_reg(M68K_REG_D0, 1); /* BOOL — apps fall back on FALSE */
 }
 
 /* ClearMenuStrip(window) — A0 */
@@ -7187,6 +8052,7 @@ static void intuition_ClearMenuStrip(void)
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     if (win_ptr)
         mem_w32(win_ptr + WIN_OFF_MENUSTRIP, 0);
+    m68k_set_reg(M68K_REG_D0, 1);
 }
 
 /* ResetMenuStrip(window, menu) — A0/A1 */
@@ -7196,6 +8062,7 @@ static void intuition_ResetMenuStrip(void)
     uint32_t menu    = m68k_get_reg(NULL, M68K_REG_A1);
     if (win_ptr)
         mem_w32(win_ptr + WIN_OFF_MENUSTRIP, menu);
+    m68k_set_reg(M68K_REG_D0, 1);
 }
 
 /* ItemAddress(menuStrip, menuNumber) — A0, D0; returns MenuItem* in D0 */
@@ -7293,9 +8160,18 @@ uint32_t Intuition_GetActiveWindowMenuStrip(void)
 {
     int focus = WM_GetFocus();
     if (focus < 0) return 0;
-    uint32_t win_ptr = get_guest_window_from_handle(focus);
+    IntuitionSlot *slot = get_slot_from_handle(focus);
+    uint32_t win_ptr = slot ? slot->guest_win : 0;
     if (!win_ptr) return 0;
-    return mem_u32(win_ptr + WIN_OFF_MENUSTRIP);
+    /* The guest Window lives in the owning m68k task's RAM — bind it so the
+     * MenuStrip field reads from the right address space when we are called
+     * from a native context (event pump / desktop). */
+    uint8_t *saved_ram = g_ram;
+    if (slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
+    uint32_t strip = mem_u32(win_ptr + WIN_OFF_MENUSTRIP);
+    g_ram = saved_ram;
+    return strip;
 }
 
 /* Post an IDCMP_MENUPICK message to the focused WM window. */
@@ -7322,7 +8198,8 @@ static int find_command_key_in_menu(HostMenu *menus, int menu_count, char key,
                 char cmd = mi->command_key;
                 if (cmd == key || (cmd >= 'A' && cmd <= 'Z' && cmd + 32 == key) ||
                     (cmd >= 'a' && cmd <= 'z' && cmd - 32 == key)) {
-                    *out_menu_number = (uint32_t)((m & 0x1F) | ((i & 0x3F) << 5));
+                    *out_menu_number = (uint32_t)((m & 0x1F) | ((i & 0x3F) << 5) |
+                                                  (NOSUB << 11));
                     *out_guest_item = mi->guest_item;
                     *out_toggle = mi->toggle;
                     return 1;
@@ -7355,12 +8232,27 @@ static int find_command_key_in_menu(HostMenu *menus, int menu_count, char key,
  * Returns 1 if a menu item was invoked, 0 otherwise. */
 int Intuition_InvokeCommandKey(char c)
 {
-    uint32_t strip = Intuition_GetActiveWindowMenuStrip();
-    if (!strip) return 0;
+    int focus = WM_GetFocus();
+    if (focus < 0) return 0;
+    IntuitionSlot *slot = get_slot_from_handle(focus);
+    uint32_t win_ptr = slot ? slot->guest_win : 0;
+    if (!win_ptr) return 0;
+    /* Menu structures live in the owning m68k task's RAM — bind it for the
+     * whole operation (strip lookup, menu parse, check-state update). */
+    uint8_t *saved_ram = g_ram;
+    if (slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
+    uint32_t strip = mem_u32(win_ptr + WIN_OFF_MENUSTRIP);
+    if (!strip) { g_ram = saved_ram; return 0; }
 
-    HostMenu menus[HOST_MENU_MAX];
+    /* HostMenu is ~3.4 KB — HOST_MENU_MAX of them must not live on the
+     * EventPump stack (overflows the task canary).  Single-threaded pump,
+     * so a static pool is safe here. */
+    static HostMenu menus[HOST_MENU_MAX];
     int count = Intuition_GetHostMenuStrip(strip, menus, HOST_MENU_MAX);
-    if (count <= 0) return 0;
+    KLOG(KLOG_DISP, KLOG_INFO, "[ck] c='%c' strip=%x menus=%d\n",
+         (c >= 32 && c < 127) ? c : '?', strip, count);
+    if (count <= 0) { g_ram = saved_ram; return 0; }
 
     /* Convert a control code (Ctrl+A..Ctrl+Z) to the corresponding uppercase
      * letter, so command keys can be triggered with a Ctrl modifier. */
@@ -7370,12 +8262,15 @@ int Intuition_InvokeCommandKey(char c)
 
     uint32_t menu_number = 0, guest_item = 0;
     int toggle = 0;
-    if (find_command_key_in_menu(menus, count, key, &menu_number, &guest_item, &toggle)) {
+    int hit = find_command_key_in_menu(menus, count, key,
+                                       &menu_number, &guest_item, &toggle);
+    if (hit) {
         Intuition_UpdateMenuItemCheck(guest_item, toggle);
-        Intuition_PostMenuPick(menu_number);
-        return 1;
+        post_intui_message(win_ptr, IDCMP_MENUPICK,
+                           (uint16_t)menu_number, 0, 0, 0, 0);
     }
-    return 0;
+    g_ram = saved_ram;
+    return hit;
 }
 
 /* Small pool of host submenus used while parsing a guest menu strip.
@@ -7416,7 +8311,7 @@ static int parse_host_menu_items(uint32_t first_item, HostMenuItem *items, int m
 
         uint16_t flags = mem_u16(item + MENUITEM_OFF_FLAGS);
         if (!(flags & ITEMENABLED)) mi->enabled = 0;
-        if (flags & CHECKIT) { mi->has_checkmark = 1; mi->checked = 1; }
+        if (flags & CHECKIT) { mi->has_checkmark = 1; mi->checked = (flags & CHECKED) != 0; }
         if (flags & MENUTOGGLE) mi->toggle = 1;
         if (flags & COMMSEQ) mi->command_key = (char)mem_u8(item + MENUITEM_OFF_COMMAND);
 
@@ -7474,8 +8369,8 @@ void Intuition_UpdateMenuItemCheck(uint32_t guest_item, int toggle)
     if (!guest_item) return;
     uint16_t flags = mem_u16(guest_item + MENUITEM_OFF_FLAGS);
     if (flags & CHECKIT) {
-        if (toggle) flags ^= CHECKIT;
-        else        flags |= CHECKIT;
+        if (toggle) flags ^= CHECKED;
+        else        flags |= CHECKED;
         mem_w16(guest_item + MENUITEM_OFF_FLAGS, flags);
     }
 }
@@ -7840,7 +8735,11 @@ void UAOS_Intuition_PostIntuiTicks(void)
     for (int i = 0; i < MAX_INTUITION_WINS; i++) {
         IntuitionSlot *slot = &g_intu_wins[i];
         if (!slot->active || !slot->guest_win) continue;
+        uint8_t *saved = g_ram;
+        if (slot->owner && slot->owner->m68k_ram)
+            g_ram = slot->owner->m68k_ram;
         uint32_t idcmp = mem_u32(slot->guest_win + WIN_OFF_IDCMPFLAGS);
+        g_ram = saved;
         if (idcmp & IDCMP_INTUITICKS)
             post_intui_message(slot->guest_win, IDCMP_INTUITICKS, 0, 0, 0, 0, 0);
     }
@@ -7854,7 +8753,11 @@ void UAOS_Intuition_NotifyDepthChange(int wm_handle)
     if (!win_ptr) return;
     IntuitionSlot *slot = get_slot_from_handle(wm_handle);
     if (!slot || !slot->notify_depth) return;
+    uint8_t *saved = g_ram;
+    if (slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
     uint32_t idcmp = mem_u32(win_ptr + WIN_OFF_IDCMPFLAGS);
+    g_ram = saved;
     if (idcmp & IDCMP_NEWSIZE)
         post_intui_message(win_ptr, IDCMP_NEWSIZE, 0, 0, 0, 0, 0);
 }

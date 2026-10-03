@@ -58,6 +58,7 @@ typedef void (*WM_VacateFn)(int win_handle, int x, int y, int w, int h);
 #define WM_EVT_FOCUS         7
 #define WM_EVT_GADGET_DOWN   8
 #define WM_EVT_GADGET_UP     9
+#define WM_EVT_RAWKEY        10  /* p1 = Amiga rawkey code | (up<<7)      */
 
 #define WM_GADGET_CLOSE 1
 #define WM_GADGET_DRAG  2
@@ -84,6 +85,7 @@ typedef struct {
     /* Zoom / maximise state */
     int        zoomed;        /* 1 = currently maximised                   */
     int        restore_x, restore_y, restore_w, restore_h;
+    int        modal;         /* 1 = only this window may be hit-tested    */
 } WmWindow;
 
 /* Register a window — returns handle (0..WM_MAX_WINDOWS-1) or -1 on fail */
@@ -97,6 +99,11 @@ void WM_SetMouseReleaseHandler(int handle, WM_MouseReleaseFn on_release);
 
 /* Set the generic event hook for Intuition IDCMP forwarding */
 void WM_SetEventHandler(int handle, WM_EventFn on_event);
+
+/* Mark a window modal: while any modal window exists, hit_test ignores all
+ * other windows so a modal requester can never be buried under a raised
+ * window (which deadlocks the blocked caller). */
+void WM_SetModal(int handle);
 
 /* Set a global palette callback invoked before each window's chrome is drawn.
  * Pass NULL to disable. */
@@ -127,6 +134,10 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right);
 
 /* Feed a keystroke to the focused window */
 void WM_KeyEvent(char c);
+
+/* Deliver a raw key transition (Amiga rawkey code, bit7 = release) to the
+ * focused window's on_event hook as WM_EVT_RAWKEY — for IDCMP_RAWKEY. */
+void WM_RawKeyEvent(int amiga_code_with_up_bit, int qualifier);
 
 /* Redraw all windows back-to-front, then cursor */
 void WM_Redraw(void);

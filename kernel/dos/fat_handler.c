@@ -12,6 +12,7 @@
 #include "dos/vfs.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------
@@ -136,6 +137,9 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
                 file = FAT32_CreateFile(fs, path);
             }
         }
+        if (!file)
+            printf("[fat] open failed: '%s' type=%ld\n",
+                   path ? path : "?", (long)pkt->dp_Type);
 
         /* Open() on a directory is an error in AmigaDOS — without this
          * check a dir opened for read looks like an empty 0-byte file

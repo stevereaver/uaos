@@ -54,6 +54,29 @@ static int bstr_to_c(uint32_t bptr_bptr, char *dst, int max)
     return (int)len;
 }
 
+/* Decode a dos.library string argument.  The real AmigaDOS ABI passes a
+ * STRPTR (NUL-terminated C string) in D1; legacy UAOS guest callers passed
+ * a BPTR to a BSTR.  Try C-string first — it is the ABI for real Amiga
+ * binaries — and fall back to BSTR only when the C decode fails or the
+ * bytes aren't printable. */
+static int dos_arg_to_c(uint32_t a1, char *dst, int max)
+{
+    dst[0] = '\0';
+    if (!a1 || a1 >= GUEST_RAM_SIZE || max < 2) return 0;
+    int i = 0;
+    while (i < max - 1 && a1 + i < GUEST_RAM_SIZE) {
+        uint8_t c = g_ram[a1 + i];
+        if (!c) break;
+        dst[i++] = (char)c;
+    }
+    dst[i] = '\0';
+    int ok = (i > 0);
+    for (int j = 0; j < i; j++)
+        if ((uint8_t)dst[j] < 0x20) { ok = 0; break; }
+    if (ok) return i;
+    return bstr_to_c(a1, dst, max);
+}
+
 /* Extract volume name from a path like "RAM:dir/file" into dst[max].
  * Returns length or 0 if no colon. */
 static int extract_vol_name(const char *path, char *dst, int max)
@@ -119,28 +142,104 @@ static uint32_t guest_read_be32(uint32_t addr)
 #define HEAP_FAST_END   0x00FF0000u
 #define HEAP_ANY_END    HEAP_FAST_END
 
-/* Address in guest RAM of the free-list heads (BPTR words) in reserved 0x200-0x2FF */
-#define HEAP_LIST_SLOT_CHIP 0x0200u
-#define HEAP_LIST_SLOT_FAST 0x0204u
+/* Address in guest RAM of the free-list heads (BPTR words).  They live in
+ * the unused exception-vector band 0x10-0x1F — the previous home at
+ * 0x200-0x20F collides with exec.library LVO stubs (EXEC_BASE-252/-258 =
+ * 0x204/0x1FE) once every exec slot carries an ILLEGAL dispatch stub. */
+#define HEAP_LIST_SLOT_CHIP 0x0010u
+#define HEAP_LIST_SLOT_FAST 0x0014u
+/* Init-sentinel slots: each M68k task gets its own guest RAM window that is
+ * cleared on start, so readiness must live IN the window — a host-side flag
+ * would leave later tasks with a zeroed head pointer and every AllocMem
+ * returning NULL. */
+#define HEAP_MAGIC_SLOT_CHIP 0x0018u
+#define HEAP_MAGIC_SLOT_FAST 0x001Cu
+#define HEAP_POOL_MAGIC      0xBEEFCAFEu
 
-/* memcheck (UAOS-69) constants — defined early so heap_free_fl_pool can
- * poison freed blocks.  See the "memcheck" section below for details. */
-#define MC_GUARD_WORD 0xC0FFEE42u   /* guard signature (stored big-endian) */
-#define MC_FREE_SIG   0xFEEDFACEu   /* marks a poisoned free block         */
-#define MC_POISON     0xABu         /* fill byte for freed block payloads  */
-#define MC_ALLOC_FILL 0xDEu         /* fill byte for non-MEMF_CLEAR allocs */
-#define MC_MAX_RECS   192
+/* Host-side free-list head mirror, keyed by the bound guest RAM window.
+ * The in-window head/magic words sit in the exception-vector band
+ * (0x10-0x1F); a guest that pokes vectors clobbers them, and the next
+ * AllocMem then re-initialized the pool as one giant free block —
+ * handing out memory that was already allocated (this is how OctaMED's
+ * decrunched image overwrote asl.library's jump table).  The live head
+ * now lives host-side; the guest words remain only a compatibility
+ * mirror. */
+static struct {
+    const uint8_t *win;
+    uint32_t       chip_head;   /* BPTRs */
+    uint32_t       fast_head;
+    uint8_t        chip_init;
+    uint8_t        fast_init;
+} g_heap_heads[8];
+static int g_heap_head_count;
 
-static int g_memcheck_on = 0;
-
-static int g_heap_ready = 0;
-static int g_fast_heap_ready = 0;
-
-static void heap_freelist_init_pool(uint32_t list_slot, uint32_t pool_start, uint32_t pool_end,
-                                    int *ready_flag)
+static int heap_head_find(void)
 {
-    if (*ready_flag) return;
-    *ready_flag = 1;
+    for (int i = 0; i < g_heap_head_count; i++)
+        if (g_heap_heads[i].win == g_ram) return i;
+    if (g_heap_head_count >= (int)(sizeof(g_heap_heads)/sizeof(g_heap_heads[0])))
+        return -1;
+    int i = g_heap_head_count++;
+    g_heap_heads[i].win       = g_ram;
+    g_heap_heads[i].chip_head = 0;
+    g_heap_heads[i].fast_head = 0;
+    g_heap_heads[i].chip_init = 0;
+    g_heap_heads[i].fast_init = 0;
+    return i;
+}
+
+static uint32_t heap_head_read(uint32_t list_slot)
+{
+    int i = heap_head_find();
+    if (i >= 0) {
+        int fast = (list_slot == HEAP_LIST_SLOT_FAST);
+        uint8_t init = fast ? g_heap_heads[i].fast_init
+                            : g_heap_heads[i].chip_init;
+        if (init)
+            return fast ? g_heap_heads[i].fast_head
+                        : g_heap_heads[i].chip_head;
+    }
+    return guest_read_be32(list_slot);
+}
+
+static void heap_head_write(uint32_t list_slot, uint32_t bptr)
+{
+    int i = heap_head_find();
+    if (i >= 0) {
+        if (list_slot == HEAP_LIST_SLOT_FAST) {
+            g_heap_heads[i].fast_head = bptr;
+            g_heap_heads[i].fast_init = 1;
+        } else {
+            g_heap_heads[i].chip_head = bptr;
+            g_heap_heads[i].chip_init = 1;
+        }
+    }
+    guest_write_be32(list_slot, bptr);
+}
+
+static void heap_freelist_init_pool(uint32_t list_slot, uint32_t magic_slot,
+                                    uint32_t pool_start, uint32_t pool_end)
+{
+    /* If this window's pool was already initialized, the host-side head is
+     * authoritative — a guest write that clobbered the in-window head/magic
+     * must not trigger a re-init (which would rebuild the pool as one giant
+     * free block over live allocations). */
+    int idx = heap_head_find();
+    int fast = (list_slot == HEAP_LIST_SLOT_FAST);
+    if (idx >= 0 && (fast ? g_heap_heads[idx].fast_init
+                          : g_heap_heads[idx].chip_init)) {
+        uint32_t head = heap_head_read(list_slot);
+        if (guest_read_be32(magic_slot) != HEAP_POOL_MAGIC ||
+            guest_read_be32(list_slot) != head) {
+            extern void kprint(const char *);
+            kprint("[heap] pool head/magic clobbered — restoring mirror\n");
+            guest_write_be32(list_slot, head);
+            guest_write_be32(magic_slot, HEAP_POOL_MAGIC);
+        }
+        return;
+    }
+    if (idx < 0 && guest_read_be32(magic_slot) == HEAP_POOL_MAGIC)
+        return;  /* host table full — keep legacy in-window semantics */
 
     uint32_t start = pool_start;
     start = (start + 3u) & ~3u;
@@ -153,22 +252,33 @@ static void heap_freelist_init_pool(uint32_t list_slot, uint32_t pool_start, uin
     guest_write_be32(start + 0, blk_size); /* size (no magic) */
     guest_write_be32(start + 4, 0);         /* next = NULL     */
 
-    /* Store its BPTR in the list-head slot */
-    guest_write_be32(list_slot, start >> 2);
+    /* Store its BPTR in the head (host mirror + window), then arm magic */
+    heap_head_write(list_slot, start >> 2);
+    guest_write_be32(magic_slot, HEAP_POOL_MAGIC);
 }
+
+/* memcheck (UAOS-69) constants — defined early so heap_free_fl_pool can
+ * poison freed blocks.  See the "memcheck" section below for details. */
+#define MC_GUARD_WORD 0xC0FFEE42u   /* guard signature (stored big-endian) */
+#define MC_FREE_SIG   0xFEEDFACEu   /* marks a poisoned free block         */
+#define MC_POISON     0xABu         /* fill byte for freed block payloads  */
+#define MC_ALLOC_FILL 0xDEu         /* fill byte for non-MEMF_CLEAR allocs */
+#define MC_MAX_RECS   192
+
+static int g_memcheck_on = 0;
 
 static void heap_freelist_init(void)
 {
     /* Chip pool covers the remaining bump-pointer space up to the 8 MB line. */
-    heap_freelist_init_pool(HEAP_LIST_SLOT_CHIP, g_uaos_heap_ptr, HEAP_CHIP_END,
-                            &g_heap_ready);
+    heap_freelist_init_pool(HEAP_LIST_SLOT_CHIP, HEAP_MAGIC_SLOT_CHIP,
+                            g_uaos_heap_ptr, HEAP_CHIP_END);
 }
 
 static void heap_freelist_init_fast(void)
 {
     /* Fast pool covers the upper 8 MB of guest RAM. */
-    heap_freelist_init_pool(HEAP_LIST_SLOT_FAST, HEAP_FAST_START, HEAP_FAST_END,
-                            &g_fast_heap_ready);
+    heap_freelist_init_pool(HEAP_LIST_SLOT_FAST, HEAP_MAGIC_SLOT_FAST,
+                            HEAP_FAST_START, HEAP_FAST_END);
 }
 
 /* Allocate 'size' bytes from a specific free list.  Returns guest addr or 0. */
@@ -178,7 +288,7 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
     uint32_t need = size + HEAP_HDR;
 
     uint32_t prev_slot = list_slot;  /* address of the pointer to current */
-    uint32_t cur_bptr  = guest_read_be32(list_slot);
+    uint32_t cur_bptr  = heap_head_read(list_slot);
 
     while (cur_bptr) {
         uint32_t cur = cur_bptr << 2;
@@ -193,7 +303,10 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
                 guest_write_be32(rem + 0, rem_size);
                 guest_write_be32(rem + 4, next_bptr);
                 /* Link split block in place of cur */
-                guest_write_be32(prev_slot, rem >> 2);
+                if (prev_slot == list_slot)
+                    heap_head_write(list_slot, rem >> 2);
+                else
+                    guest_write_be32(prev_slot, rem >> 2);
                 /* The header must record the allocated span (need), not
                  * the original free-block size — otherwise a later free
                  * returns a block that overlaps the remainder still on
@@ -201,7 +314,10 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
                 blk_size = need;
             } else {
                 /* Use whole block — unlink cur */
-                guest_write_be32(prev_slot, next_bptr);
+                if (prev_slot == list_slot)
+                    heap_head_write(list_slot, next_bptr);
+                else
+                    guest_write_be32(prev_slot, next_bptr);
             }
 
             /* Mark allocated */
@@ -243,8 +359,8 @@ static void heap_free_fl_pool(uint32_t addr, uint32_t list_slot)
         return;
     }
     guest_write_be32(blk + 0, blk_size);                        /* clear magic */
-    guest_write_be32(blk + 4, guest_read_be32(list_slot));     /* prepend     */
-    guest_write_be32(list_slot, blk >> 2);
+    guest_write_be32(blk + 4, heap_head_read(list_slot));      /* prepend     */
+    heap_head_write(list_slot, blk >> 2);
 
     /* memcheck: sign + poison the freed payload so use-after-free writes
      * corrupt MC_POISON and are caught by the next free-list scan.  The
@@ -472,7 +588,7 @@ int Memcheck_LiveCount(void)
 static uint32_t mc_scan_freelist(uint32_t list_slot, const char *pool_name)
 {
     uint32_t bad = 0;
-    uint32_t bptr = guest_read_be32(list_slot);
+    uint32_t bptr = heap_head_read(list_slot);
     int guard = 8192;   /* loop bound against corrupt next pointers */
     while (bptr && guard-- > 0) {
         uint32_t cur = bptr << 2;
@@ -664,10 +780,17 @@ static int guest_read_filelock(uint32_t lock_bptr,
 /* =========================================================================
  * Fake file handle BPTRs
  * ========================================================================= */
-#define FAKE_STDOUT_ADDR   0x0500
-#define FAKE_STDIN_ADDR    0x0504
+#define FAKE_STDOUT_ADDR   0x0400   /* below the DOS stub floor (0x41C) */
+#define FAKE_STDIN_ADDR    0x0404
 #define DOS_STDOUT_BPTR    (FAKE_STDOUT_ADDR >> 2)
 #define DOS_STDIN_BPTR     (FAKE_STDIN_ADDR  >> 2)
+
+/* Guest library base addresses (must match uaos_m68k_glue.c) */
+#define EXEC_BASE_GLUE   0x0300u
+#define DOS_BASE_GLOBVEC 0x0800u
+/* LVO_DOS_EXIT stub address — pushed as the return PC on a child's stack
+ * so an RTS at the end of a process lands on Exit(). */
+#define DOS_EXIT_STUB    (DOS_BASE_GLOBVEC + (uint32_t)(-144))
 
 /* =========================================================================
  * dos.library function implementations
@@ -753,7 +876,7 @@ static void dos_VFWritef(M68kCPUState *cpu)
 {
     uint32_t fmt = cpu->d[2];
     char tmp[256];
-    bstr_to_c(fmt, tmp, sizeof(tmp));
+    dos_arg_to_c(fmt, tmp, sizeof(tmp));
     kprint(tmp);
     cpu->d[0] = 0;
 }
@@ -779,8 +902,47 @@ static void dos_IsInteractive(M68kCPUState *cpu)
     }
 }
 
+/* ---- Sequential child-process model ------------------------------------
+ * AmigaOS CreateProc() spawns a process that SHARES the parent's address
+ * space — OctaMED's startup does exactly this (the parent installs a small
+ * trampoline seglist then Exit()s, and the child reads the parent's
+ * Process/globals).  UAOS per-task guests each get a private 16 MB guest
+ * RAM window, so spawning a separate M68k host task would run the child in
+ * an empty space.  Instead CreateProc queues the child and Exit() respawns
+ * THIS m68k context at the child's entry — the same sequential model the
+ * host-side Musashi harness proved out against real OctaMED startup.
+ */
+#define MAX_PENDING_PROC 8
+typedef struct {
+    uint32_t entry;      /* guest PC at start */
+    uint32_t stack_top;  /* initial SP (with Exit-stub return pushed) */
+    uint32_t proc;       /* guest Process struct */
+    uint32_t proc_port;  /* proc + PR_MSGPORT — CreateProc return value */
+} PendingProc;
+static PendingProc g_pending_procs[MAX_PENDING_PROC];
+static int         g_pending_head = 0, g_pending_tail = 0;
+
+extern uint32_t g_guest_proc_addr;   /* uaos_m68k_glue.c — FindTask(NULL) */
+
 static void dos_Exit(M68kCPUState *cpu)
 {
+    /* If a CreateProc'd child is queued, respawn this context at its
+     * entry instead of halting — the parent has finished its job. */
+    if (g_pending_head != g_pending_tail) {
+        PendingProc *pp = &g_pending_procs[g_pending_head];
+        g_pending_head = (g_pending_head + 1) % MAX_PENDING_PROC;
+
+        guest_write_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK, pp->proc);
+        g_guest_proc_addr = pp->proc;
+
+        cpu->pc    = pp->entry;
+        cpu->a[7]  = pp->stack_top;
+        cpu->a[6]  = EXEC_BASE_GLUE;
+        cpu->d[0]  = 0;
+        cpu->a[0]  = 0;
+        kprint("[dos] Exit: spawning queued process\n");
+        return;   /* g_emu_halted stays 0 — m68k_execute continues */
+    }
     (void)cpu;
     g_emu_halted = 1;
 }
@@ -788,6 +950,84 @@ static void dos_Exit(M68kCPUState *cpu)
 static void dos_IoErr(M68kCPUState *cpu)
 {
     cpu->d[0] = (uint32_t)IoErr();
+}
+
+/* Fault(code=d1, header=d2, buffer=d3, len=d4): format a standard IoErr
+ * message as "<header>: <text>" (or just "<text>" when header is NULL),
+ * NUL-terminated and clipped to len bytes.  Returns TRUE when code != 0. */
+static void dos_Fault(M68kCPUState *cpu)
+{
+    uint32_t code = cpu->d[1];
+    uint32_t hdrp = cpu->d[2];
+    uint32_t buf  = cpu->d[3];
+    uint32_t len  = cpu->d[4];
+    if (!buf || !len || code == 0) { cpu->d[0] = 0; return; }
+
+    static const struct { int code; const char *text; } tab[] = {
+        { 103, "not enough memory available" },
+        { 105, "task table full" },
+        { 114, "bad template" },
+        { 115, "bad number" },
+        { 116, "required argument missing" },
+        { 117, "keyword needs argument" },
+        { 118, "too many arguments" },
+        { 119, "unmatched quotes" },
+        { 120, "line too long" },
+        { 121, "file is not an object" },
+        { 122, "invalid resident library" },
+        { 123, "invalid directory" },
+        { 202, "object is in use" },
+        { 203, "object already exists" },
+        { 204, "directory not found" },
+        { 205, "object not found" },
+        { 206, "bad stream name" },
+        { 207, "object too large" },
+        { 209, "action not known" },
+        { 210, "invalid component name" },
+        { 212, "object is not of required type" },
+        { 215, "device not mounted" },
+        { 216, "not a DOS disk" },
+        { 218, "seek error" },
+        { 219, "comment too big" },
+        { 220, "disk is full" },
+        { 221, "disk is full" },
+        { 222, "disk is write-protected" },
+        { 223, "file is protected against deletion" },
+        { 224, "file is protected against writing" },
+        { 225, "no disk in drive" },
+        { 226, "file is protected against reading" },
+        { 232, "not a valid DOS file" },
+        { 234, "bad hunk" },
+        { 235, "not implemented" },
+    };
+
+    const char *text = NULL;
+    for (unsigned i = 0; i < sizeof(tab)/sizeof(tab[0]); i++)
+        if ((int)code == tab[i].code) { text = tab[i].text; break; }
+
+    char num[32];
+    if (!text) {
+        char *p = num;
+        const char *pfx = "error code ";
+        while (*pfx) *p++ = *pfx++;
+        uint32_t v = code;
+        char d[10]; int nd = 0;
+        do { d[nd++] = (char)('0' + v % 10); v /= 10; } while (v && nd < 10);
+        while (nd) *p++ = d[--nd];
+        *p = '\0';
+        text = num;
+    }
+
+    uint32_t w = 0;
+    if (hdrp) {
+        uint8_t c;
+        while (w + 1 < len && (c = g_ram[hdrp++]) != 0) g_ram[buf + w++] = c;
+        if (w && w + 2 < len) { g_ram[buf + w++] = ':'; g_ram[buf + w++] = ' '; }
+    }
+    while (w + 1 < len && *text) g_ram[buf + w++] = (uint8_t)*text++;
+    g_ram[buf + w] = 0;
+    cpu->d[0] = 1;
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Fault(%ld) -> '%s'\n", (long)code, (char *)g_ram + buf);
 }
 
 
@@ -799,7 +1039,7 @@ static void dos_Open(M68kCPUState *cpu)
 {
     uint32_t bptr = cpu->d[1];
     char name[128];
-    int blen = bstr_to_c(bptr, name, sizeof(name));
+    int blen = dos_arg_to_c(bptr, name, sizeof(name));
     if (blen == 0) {
         cpu->d[0] = DOS_STDOUT_BPTR;
         return;
@@ -828,24 +1068,36 @@ static void dos_Open(M68kCPUState *cpu)
         full_name[i] = '\0';
     }
 
-    char vol_name[16];
-    extract_vol_name(full_name, vol_name, sizeof(vol_name));
-    MsgPort *port = VFS_GetHandlerPort(vol_name);
-    if (!port) {
+    /* Route through VFS_Open so the result is a HandleTable handle —
+     * dos_Read/Write/Seek/Close all use HandleTable_Get.  Calling the
+     * volume handler's DoPkt directly returned handler-native handle
+     * numbers, which only worked for RAM: (its handler happens to return
+     * HandleTable IDs); for FAT32 volumes the namespaces diverged and
+     * every Read() on the returned handle failed. */
+    uint32_t mode = cpu->d[2];
+    int vflags;
+    if (mode == 1006)      vflags = VFS_WRITE | VFS_CREATE | VFS_TRUNC;
+    else if (mode == 1004) vflags = VFS_READ | VFS_WRITE;
+    else                   vflags = VFS_READ;
+
+    VfsFile fh = {0};
+    if (!VFS_Open(&fh, full_name, vflags)) {
         cpu->d[0] = 0;
-        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+        SetIoErr(IoErr() ? IoErr() : ERROR_OBJECT_NOT_FOUND);
+        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Open('%s') mode=%u -> 0 ioerr=%ld\n",
+             full_name, (unsigned)mode, (long)IoErr());
         return;
     }
-
-    uint32_t mode = cpu->d[2];
-    int32_t action = (mode == 1006) ? ACTION_FINDOUTPUT : ACTION_FINDINPUT;
-    int32_t handle = DoPkt(port, action, (intptr_t)full_name, (int32_t)mode, 0, 0, 0);
-    if (handle == 0) {
+    uint32_t handle = HandleTable_AllocFile(full_name, &fh, vflags);
+    if (!handle) {
+        VFS_Close(&fh);
         cpu->d[0] = 0;
-        SetIoErr(IoErr());
-    } else {
-        cpu->d[0] = (uint32_t)handle;
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return;
     }
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Open('%s') mode=%u -> %lu\n",
+         full_name, (unsigned)mode, (unsigned long)handle);
+    cpu->d[0] = handle;
 }
 
 static void dos_Close(M68kCPUState *cpu)
@@ -856,10 +1108,11 @@ static void dos_Close(M68kCPUState *cpu)
         return;
     }
     HandleEntry *ent = HandleTable_Get(fh);
-    if (ent && ent->type == HTYPE_FILE && ent->u.file.fh.node) {
+    if (ent && ent->type == HTYPE_FILE) {
         VFS_Close(&ent->u.file.fh);
     }
     HandleTable_Free(fh);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Close(fh=%x)\n", (unsigned)fh);
     cpu->d[0] = 0;
 }
 
@@ -880,17 +1133,22 @@ static void dos_Read(M68kCPUState *cpu)
     }
 
     HandleEntry *ent = HandleTable_Get(fh);
-    if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
+    if (!ent || ent->type != HTYPE_FILE) {
         cpu->d[0] = (uint32_t)-1;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Read(fh=%x) bad handle\n", (unsigned)fh);
         return;
     }
     if (buf + len >= GUEST_RAM_SIZE) {
         cpu->d[0] = (uint32_t)-1;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Read(fh=%x) buf=%x+%x out of range\n", (unsigned)fh,
+                (unsigned)buf, (unsigned)len);
         return;
     }
     cpu->d[0] = VFS_Read(&ent->u.file.fh, g_ram + buf, len);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Read(fh=%x,%x,%x) -> %ld\n", (unsigned)fh,
+            (unsigned)buf, (unsigned)len, (long)cpu->d[0]);
 }
 
 static void dos_Write(M68kCPUState *cpu)
@@ -915,7 +1173,7 @@ static void dos_Write(M68kCPUState *cpu)
     }
 
     HandleEntry *ent = HandleTable_Get(fh);
-    if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
+    if (!ent || ent->type != HTYPE_FILE) {
         cpu->d[0] = (uint32_t)-1;
         return;
     }
@@ -939,7 +1197,7 @@ static void dos_Seek(M68kCPUState *cpu)
     }
 
     HandleEntry *ent = HandleTable_Get(fh);
-    if (!ent || ent->type != HTYPE_FILE || !ent->u.file.fh.node) {
+    if (!ent || ent->type != HTYPE_FILE) {
         cpu->d[0] = (uint32_t)-1;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
@@ -954,13 +1212,17 @@ static void dos_Seek(M68kCPUState *cpu)
     else                               new_pos = (uint32_t)offset;
     cpu->d[0] = f->pos;
     VFS_Seek(f, new_pos);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Seek(fh=%x off=%ld mode=%ld) pos %ld->%ld size=%ld ra=%x\n",
+         (unsigned)fh, (long)offset, (long)mode, (long)cpu->d[0],
+         (long)new_pos, (long)size,
+         (unsigned)((cpu->a[7] + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(cpu->a[7]) : 0));
 }
 
 static void dos_DeleteFile(M68kCPUState *cpu)
 {
     uint32_t bptr = cpu->d[1];
     char name[128];
-    int blen = bstr_to_c(bptr, name, sizeof(name));
+    int blen = dos_arg_to_c(bptr, name, sizeof(name));
     if (blen == 0) {
         cpu->d[0] = (uint32_t)DOSFALSE;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
@@ -1000,8 +1262,8 @@ static void dos_Rename(M68kCPUState *cpu)
     uint32_t old_bptr = cpu->d[1];
     uint32_t new_bptr = cpu->d[2];
     char old_name[128], new_name[128];
-    bstr_to_c(old_bptr, old_name, sizeof(old_name));
-    bstr_to_c(new_bptr, new_name, sizeof(new_name));
+    dos_arg_to_c(old_bptr, old_name, sizeof(old_name));
+    dos_arg_to_c(new_bptr, new_name, sizeof(new_name));
 
     char old_full[128], new_full[128];
     int o_dev = 0, n_dev = 0;
@@ -1051,7 +1313,7 @@ static void dos_SetProtection(M68kCPUState *cpu)
     uint32_t bptr = cpu->d[1];
     int32_t mask  = (int32_t)cpu->d[2];
     char name[128];
-    bstr_to_c(bptr, name, sizeof(name));
+    dos_arg_to_c(bptr, name, sizeof(name));
 
     char full_name[128];
     int has_device = 0;
@@ -1101,7 +1363,7 @@ static void dos_Lock(M68kCPUState *cpu)
     uint32_t bptr  = cpu->d[1];
     int32_t  mode  = (int32_t)cpu->d[2];
     char name[128];
-    int blen = bstr_to_c(bptr, name, sizeof(name));
+    int blen = dos_arg_to_c(bptr, name, sizeof(name));
 
     char full_name[128];
     int has_device = 0;
@@ -1131,9 +1393,11 @@ static void dos_Lock(M68kCPUState *cpu)
     if (handle == 0) {
         cpu->d[0] = 0;
         SetIoErr(IoErr());
+        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Lock('%s') failed ioerr=%ld\n", full_name, (long)IoErr());
         return;
     }
 
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Lock('%s') ok\n", full_name);
     uint32_t lock_bptr = guest_alloc_filelock((uint32_t)handle, mode);
     if (lock_bptr == 0) {
         HandleTable_Free((uint32_t)handle);
@@ -1327,7 +1591,7 @@ static void dos_CreateDir(M68kCPUState *cpu)
 {
     uint32_t bptr = cpu->d[1];
     char name[128];
-    int blen = bstr_to_c(bptr, name, sizeof(name));
+    int blen = dos_arg_to_c(bptr, name, sizeof(name));
 
     char full_name[128];
     int has_device = 0;
@@ -1739,16 +2003,20 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
         if (p + 4 > end) return 0;
         uint32_t words = ls_be32(p) & 0x3FFFFFFF; p += 4;
         uint32_t bytes = words * 4;
-        uint32_t seg_size = 4 + (bytes ? bytes : 4);
-        seg_size = (seg_size + 3) & ~3u;
+        /* Real LoadSeg layout: [total_size_bytes][next_seg_BPTR][data].
+         * The seglist BPTR points at the link field, so
+         *   link_addr = allocated+4, data = allocated+8. */
+        uint32_t seg_size = (8 + (bytes ? bytes : 4) + 3u) & ~3u;
         allocated[i] = heap_alloc_fl(seg_size);
         if (!allocated[i]) return 0;
-        hunk_base[i] = allocated[i] + 4;
+        hunk_base[i] = allocated[i] + 8;
+        guest_write_be32(allocated[i] + 0, bytes + 8);
     }
 
-    /* Write SegList next pointers */
+    /* Write SegList next pointers (BPTR to next segment's link field) */
     for (uint32_t i = 0; i < n_hunks; i++) {
-        guest_write_be32(allocated[i], (i + 1 < n_hunks) ? (allocated[i + 1] >> 2) : 0);
+        guest_write_be32(allocated[i] + 4,
+                         (i + 1 < n_hunks) ? ((allocated[i + 1] + 4) >> 2) : 0);
     }
 
     int cur = 0;
@@ -1800,14 +2068,16 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
         }
     }
 
-    return allocated[0];
+    /* Seglist head = address of the first segment's link field;
+     * its BPTR = ret>>2, entry point = ret+4 (hunk data). */
+    return allocated[0] + 4;
 }
 
 static void dos_LoadSeg(M68kCPUState *cpu)
 {
     uint32_t bptr = cpu->d[1];
     char name[128];
-    int blen = bstr_to_c(bptr, name, sizeof(name));
+    int blen = dos_arg_to_c(bptr, name, sizeof(name));
     if (blen == 0) {
         cpu->d[0] = 0;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
@@ -1905,20 +2175,20 @@ static void dos_UnLoadSeg(M68kCPUState *cpu)
     uint32_t seg_bptr = cpu->d[1];
     if (!seg_bptr) return;
 
-    /* Walk the seglist chain and free each segment via the free-list allocator.
-     * Each segment header layout (set up by loadseg_hunk_load):
-     *   [0..3] BPTR to next segment (or 0)
-     *   [4..]  segment data (code / data / bss)
-     * All segments allocated via heap_alloc_fl are tracked in g_seglists.
-     * We walk the chain and free each segment through the free-list allocator. */
+    /* Walk the seglist chain and free each segment via the free-list
+     * allocator.  Segment layout (set up by loadseg_hunk_load):
+     *   [seglist+0] BPTR to next segment's link field (0 = last)
+     *   [seglist-4] total block size in bytes
+     *   [seglist+4] segment data
+     * seglist addresses here are the link-field addresses (allocated+4);
+     * the heap payload to free is allocated = link_field - 4. */
 
     uint32_t tracked_addr = seglist_untrack(seg_bptr);
     if (tracked_addr) {
-        /* Walk the chain and free each segment's payload through free-list */
         uint32_t cur = tracked_addr;
         while (cur && cur < GUEST_RAM_SIZE) {
             uint32_t next_bptr = guest_read_be32(cur + 0);
-            heap_free_fl(cur + 4);  /* payload starts at +4 */
+            heap_free_fl(cur - 4);
             cur = next_bptr ? (next_bptr << 2) : 0;
         }
     }
@@ -1972,50 +2242,90 @@ extern unsigned int m68k_get_reg(void *context, int reg);
  * ========================================================================= */
 
 /* Allocate & build a minimal Process struct in guest RAM.
- * Returns the guest address or 0. */
-static uint32_t build_process_struct(uint8_t pri)
+ * Returns the guest address or 0.
+ *
+ * Layout follows AmigaOS dos/dosextens.h (see amiga_task.h):
+ *   Task node at +0, embedded pr_MsgPort at +0x5C, process fields to +0xE4.
+ * pr_CLI stays 0 for detached (CreateProc-style) children — the parent
+ * writes its own trampoline which reads ThisTask/pr_SegList itself. */
+static uint32_t build_process_struct(const char *name, uint8_t pri,
+                                     uint32_t seg_bptr, uint32_t stack_top,
+                                     uint32_t stack_low)
 {
-    uint32_t proc_addr = heap_alloc_fl(PROCESS_SIZE + CLI_SIZE + 32);
+    uint32_t name_len = 0;
+    if (name) while (name[name_len] && name_len < 63) name_len++;
+    uint32_t proc_addr = heap_alloc_fl(PROCESS_SIZE + CLI_SIZE + 32 + name_len + 2);
     if (!proc_addr) return 0;
 
-    uint32_t cli_addr = proc_addr + PROCESS_SIZE;
+    uint32_t cli_addr  = proc_addr + PROCESS_SIZE;
+    uint32_t name_addr = proc_addr + PROCESS_SIZE + CLI_SIZE + 32;
 
     /* Zero the whole block */
-    for (uint32_t i = 0; i < PROCESS_SIZE + CLI_SIZE + 32; i++)
+    for (uint32_t i = 0; i < PROCESS_SIZE + CLI_SIZE + 32 + name_len + 2; i++)
         g_ram[proc_addr + i] = 0;
 
     /* Task node header */
-    g_ram[proc_addr + TASK_LN_TYPE] = NT_PROCESS;
-    g_ram[proc_addr + TASK_LN_PRI]  = (uint8_t)pri;
+    g_ram[proc_addr + TASK_LN_TYPE]  = NT_PROCESS;
+    g_ram[proc_addr + TASK_LN_PRI]   = (uint8_t)pri;
+    g_ram[proc_addr + TASK_TC_STATE] = TS_RUN;
+    guest_write_be32(proc_addr + TASK_LN_NAME, name_addr);
+    for (uint32_t i = 0; i <= name_len; i++)
+        g_ram[name_addr + i] = (uint8_t)name[i];
 
     /* tc_SigAlloc: all bits free */
     guest_write_be32(proc_addr + TASK_TC_SIGALLOC, 0xFFFFFFFFu);
+    /* tc_SP bounds (stack checking / runtime diagnostics) */
+    guest_write_be32(proc_addr + TASK_TC_SPLOWER, stack_low);
+    guest_write_be32(proc_addr + TASK_TC_SPUPPER, stack_top);
+    guest_write_be32(proc_addr + TASK_TC_SPREG,   stack_top);
 
-    /* pr_CLI = BPTR to CLI */
-    guest_write_be32(proc_addr + PR_CLI_OFFSET, cli_addr >> 2);
-    /* pr_CIS, pr_COS — fake console handles */
-    guest_write_be32(proc_addr + PR_CIS_OFFSET, DOS_STDIN_BPTR);
-    guest_write_be32(proc_addr + PR_COS_OFFSET, DOS_STDOUT_BPTR);
+    /* pr_MsgPort at +0x5C: node type + owning task so PutMsg/ReplyMsg
+     * signal correctly.  mp_SigBit stays 0 — processes in UAOS's
+     * sequential model never sleep on the process port. */
+    {
+        uint32_t mp = proc_addr + PR_MSGPORT;
+        g_ram[mp + LN_TYPE] = NT_MSGPORT;
+        g_ram[mp + MP_FLAGS] = PA_SIGNAL;
+        g_ram[mp + MP_SIGBIT] = 0;
+        guest_write_be32(mp + MP_SIGTASK, proc_addr);
+        /* init mp_MsgList as empty List: head->tail, tailpred->head */
+        guest_write_be32(mp + MP_MSGLIST + LH_HEAD,     mp + MP_MSGLIST + LH_TAIL);
+        guest_write_be32(mp + MP_MSGLIST + LH_TAIL,     0);
+        guest_write_be32(mp + MP_MSGLIST + LH_TAILPRED, mp + MP_MSGLIST + LH_HEAD);
+        g_ram[mp + MP_MSGLIST + LH_TYPE] = 0;
+    }
 
-    /* Minimal CLI struct */
-    g_ram[cli_addr] = 0x01;
+    guest_write_be32(proc_addr + PR_SEGLIST,   seg_bptr);
+    guest_write_be32(proc_addr + PR_STACKSIZE, stack_top - stack_low);
+    guest_write_be32(proc_addr + PR_GLOBVEC,   DOS_BASE_GLOBVEC);
+    guest_write_be32(proc_addr + PR_STACKBASE, stack_low >> 2);
+    guest_write_be32(proc_addr + PR_CIS,       DOS_STDIN_BPTR);
+    guest_write_be32(proc_addr + PR_COS,       DOS_STDOUT_BPTR);
+    guest_write_be32(proc_addr + PR_WINDOWPTR, 0xFFFFFFFFu); /* no req window */
 
+    /* pr_CLI stays 0 — this is a detached process, not a CLI command. */
+    (void)cli_addr;
     return proc_addr;
 }
 
 static void dos_CreateProc(M68kCPUState *cpu)
 {
     /* AmigaOS: D1=BSTR name, D2=LONG pri, D3=BPTR seglist, D4=ULONG stackSize
-     * → D0=struct MsgPort * (process port) or NULL */
+     * → D0=struct MsgPort * (the new process's pr_MsgPort) or NULL.
+     *
+     * Sequential model (see dos_Exit): we build the child Process + stack in
+     * THIS guest window, queue it, and return.  The child runs when the
+     * parent calls Exit() — dos_Exit respawns this m68k context at the
+     * child's entry point. */
     uint32_t name_bptr = cpu->d[1];
     int8_t   pri       = (int8_t)(cpu->d[2] & 0xFF);
     uint32_t seg_bptr  = cpu->d[3];
     uint32_t stacksize = cpu->d[4];
-    (void)stacksize;
+    if (stacksize < 0x800) stacksize = 0x800;      /* sanity floor */
+    if (stacksize > 0x40000) stacksize = 0x40000;
 
-    /* Decode name */
     char proc_name[64];
-    bstr_to_c(name_bptr, proc_name, sizeof(proc_name));
+    dos_arg_to_c(name_bptr, proc_name, sizeof(proc_name));
     if (!proc_name[0]) {
         int i = 0;
         const char *dflt = "NewProc";
@@ -2023,90 +2333,58 @@ static void dos_CreateProc(M68kCPUState *cpu)
         proc_name[i] = '\0';
     }
 
-    /* Validate seglist */
     if (!seg_bptr) {
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         cpu->d[0] = 0;
         return;
     }
-
-    /* Resolve entry point: first code word after the seglist header.
-     * Seglist BPTR points to (seg_bptr<<2) which holds the next-BPTR at [0]
-     * and code/data starting at [4].  The entry point is seg_base+4. */
-    uint32_t seg_addr  = seg_bptr << 2;
+    uint32_t seg_addr = seg_bptr << 2;
     if (seg_addr + 8 > GUEST_RAM_SIZE) {
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         cpu->d[0] = 0;
         return;
     }
-    uint32_t entry = seg_addr + 4;  /* standard AmigaOS calling convention */
+    /* Segment layout: [BPTR next][data...] — entry is first code byte. */
+    uint32_t entry = seg_addr + 4;
 
-    /* Build a minimal Process struct in the current task's guest RAM */
-    uint32_t proc_addr = build_process_struct(pri);
+    if ((g_pending_tail + 1) % MAX_PENDING_PROC == g_pending_head) {
+        SetIoErr(ERROR_TASK_TABLE_FULL);
+        cpu->d[0] = 0;
+        return;
+    }
+
+    /* Child stack: allocated in the shared window, DOS_Exit stub on top so
+     * an RTS at the end of the child lands on Exit(). */
+    uint32_t stack_low = heap_alloc_fl(stacksize);
+    if (!stack_low) {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        cpu->d[0] = 0;
+        return;
+    }
+    uint32_t stack_top = stack_low + stacksize - 4;
+    guest_write_be32(stack_top, DOS_EXIT_STUB);
+
+    uint32_t proc_addr = build_process_struct(proc_name, (uint8_t)pri,
+                                              seg_bptr, stack_top, stack_low);
     if (!proc_addr) {
+        heap_free_fl(stack_low);
         SetIoErr(ERROR_NO_FREE_STORE);
         cpu->d[0] = 0;
         return;
     }
 
-    /* Store process struct in ExecBase so it is visible to FindTask */
-    guest_write_be32(0x0300 + 0x114, proc_addr);
+    PendingProc *pp = &g_pending_procs[g_pending_tail];
+    pp->entry     = entry;
+    pp->stack_top = stack_top;
+    pp->proc      = proc_addr;
+    pp->proc_port = proc_addr + PR_MSGPORT;
+    g_pending_tail = (g_pending_tail + 1) % MAX_PENDING_PROC;
 
-    /* Calculate total seglist size by walking the hunks.
-     * Read actual segment sizes from heap allocation metadata. */
-    uint32_t total_size = 0;
-    uint32_t cur_seg = seg_addr;
-    while (cur_seg && cur_seg >= HEAP_HDR && cur_seg < GUEST_RAM_SIZE) {
-        uint32_t next_bptr = guest_read_be32(cur_seg);
-        /* Read segment size from heap header (at cur_seg - HEAP_HDR) */
-        uint32_t seg_size = 4096;  /* Default fallback */
-        if (cur_seg >= HEAP_HDR + 4) {
-            uint32_t blk = cur_seg - HEAP_HDR;
-            uint32_t magic_size = guest_read_be32(blk);
-            if (magic_size & HEAP_MAGIC) {
-                seg_size = (magic_size & ~HEAP_MAGIC) - HEAP_HDR;
-            }
-        }
-        total_size += seg_size;
-        if (next_bptr == 0) break;
-        cur_seg = next_bptr << 2;
-    }
-
-    /* Create M68k task to run the seglist
-     * We pass the first segment's address as the binary pointer
-     * The entry point is seg_addr + 4 as per AmigaOS convention
-     * The task wrapper will handle setting up the execution context */
-    if (total_size > 0 && total_size < GUEST_RAM_SIZE) {
-        /* Copy seglist data to a temporary buffer for Task_CreateM68k */
-        static uint8_t seglist_buf[256 * 1024];  /* 256KB max for CreateProc */
-        if (total_size > sizeof(seglist_buf)) total_size = sizeof(seglist_buf);
-
-        /* Copy first segment - this is what the task will execute from */
-        uint32_t first_seg_size = total_size;
-        if (first_seg_size > sizeof(seglist_buf)) first_seg_size = sizeof(seglist_buf);
-        for (uint32_t i = 0; i < first_seg_size && (seg_addr + i) < GUEST_RAM_SIZE; i++) {
-            seglist_buf[i] = g_ram[seg_addr + i];
-        }
-
-        /* Create the task - it will use the seglist buffer */
-        UaosTask *new_task = Task_CreateM68k(proc_name, pri, seglist_buf, first_seg_size, NULL, NULL);
-        if (new_task) {
-            /* Store the entry point for the task */
-            new_task->m68k_entry = entry;
-            /* Link the process struct to the task */
-            new_task->m68k_task_struct = proc_addr;
-            kprint("[dos] CreateProc: launched task '");
-        } else {
-            kprint("[dos] CreateProc: failed to create task '");
-        }
-    } else {
-        kprint("[dos] CreateProc: invalid seglist size '");
-    }
+    kprint("[dos] CreateProc '");
     kprint(proc_name);
-    kprint("'\n");
+    kprint("' queued\n");
 
-    /* Return the MsgPort BPTR (pr_MsgPort starts at PROCESS + PR_PORT = 0x5A) */
-    cpu->d[0] = (proc_addr + PR_PORT) >> 2;
+    cpu->d[0] = proc_addr + PR_MSGPORT;   /* struct MsgPort * (APTR) */
 }
 
 static void dos_RunCommand(M68kCPUState *cpu)
@@ -2374,72 +2652,57 @@ static void dos_SystemTagList(M68kCPUState *cpu)
         proc_name[ni] = '\0';
     }
 
-    /* Build process struct */
-    uint32_t proc_addr = build_process_struct((int8_t)np_priority);
+    /* Build child stack + process struct, then queue for sequential run —
+     * same model as dos_CreateProc (the child shares this address space). */
+    if ((g_pending_tail + 1) % MAX_PENDING_PROC == g_pending_head) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_TASK_TABLE_FULL);
+        return;
+    }
+
+    uint32_t stack_low = heap_alloc_fl(np_stacksize);
+    if (!stack_low) {
+        cpu->d[0] = (uint32_t)DOSFALSE;
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return;
+    }
+    uint32_t stack_top = stack_low + np_stacksize - 4;
+    guest_write_be32(stack_top, DOS_EXIT_STUB);
+
+    uint32_t proc_addr = build_process_struct(proc_name, (int8_t)np_priority,
+                                              np_seglist >> 2,
+                                              stack_top, stack_low);
     if (!proc_addr) {
+        heap_free_fl(stack_low);
         cpu->d[0] = (uint32_t)DOSFALSE;
         SetIoErr(ERROR_NO_FREE_STORE);
         return;
     }
 
-    /* Store process struct in ExecBase */
-    guest_write_be32(0x0300 + 0x114, proc_addr);
+    /* np_seglist is the seglist ADDRESS; entry is +4 past the next-BPTR link */
+    PendingProc *pp = &g_pending_procs[g_pending_tail];
+    pp->entry     = np_seglist + 4;
+    pp->stack_top = stack_top;
+    pp->proc      = proc_addr;
+    pp->proc_port = proc_addr + PR_MSGPORT;
+    g_pending_tail = (g_pending_tail + 1) % MAX_PENDING_PROC;
 
-    /* Calculate total seglist size for task creation */
-    uint32_t total_size = 0;
-    uint32_t cur_seg = np_seglist;
-    while (cur_seg && cur_seg < GUEST_RAM_SIZE) {
-        uint32_t next_bptr = guest_read_be32(cur_seg);
-        total_size += 4096;  /* Estimate 4KB per segment */
-        if (next_bptr == 0) break;
-        cur_seg = next_bptr << 2;
-    }
-
-    /* Copy seglist data to buffer for task creation */
-    static uint8_t seglist_buf[256 * 1024];
-    if (total_size > sizeof(seglist_buf)) total_size = sizeof(seglist_buf);
-
-    uint32_t first_seg_size = total_size;
-    if (first_seg_size > sizeof(seglist_buf)) first_seg_size = sizeof(seglist_buf);
-    for (uint32_t i = 0; i < first_seg_size && (np_seglist + i) < GUEST_RAM_SIZE; i++) {
-        seglist_buf[i] = g_ram[np_seglist + i];
-    }
-
-    /* Create M68k task */
-    UaosTask *new_task = Task_CreateM68k(proc_name, (int8_t)np_priority,
-                                          seglist_buf, first_seg_size, NULL, NULL);
-    if (new_task) {
-        uint32_t entry = np_seglist + 4;
-        new_task->m68k_entry = entry;
-        new_task->m68k_task_struct = proc_addr;
-
-        /* Set up arguments if provided */
-        if (np_argptr && np_arglen) {
-            uint32_t arg_buf = heap_alloc_fl(np_arglen + 1);
-            if (arg_buf) {
-                for (uint32_t i = 0; i < np_arglen && (np_argptr + i) < GUEST_RAM_SIZE; i++) {
-                    g_ram[arg_buf + i] = g_ram[np_argptr + i];
-                }
-                g_ram[arg_buf + np_arglen] = '\0';
-                /* Arguments are now in guest RAM, task will access via A0 */
-                (void)arg_buf;  /* Suppress unused warning - used by guest code */
-            }
+    /* Stash arguments on the child's stack frame if provided */
+    if (np_argptr && np_arglen) {
+        uint32_t arg_buf = heap_alloc_fl(np_arglen + 1);
+        if (arg_buf) {
+            for (uint32_t i = 0; i < np_arglen && (np_argptr + i) < GUEST_RAM_SIZE; i++)
+                g_ram[arg_buf + i] = g_ram[np_argptr + i];
+            g_ram[arg_buf + np_arglen] = '\0';
+            guest_write_be32(proc_addr + PR_ARGUMENTS, arg_buf);
         }
-
-        kprint("[dos] SystemTagList: launched process '\"");
-        kprint(proc_name);
-        kprint("\"'\n");
-        cpu->d[0] = (uint32_t)DOSTRUE;
-    } else {
-        kprint("[dos] SystemTagList: failed to create process '\"");
-        kprint(proc_name);
-        kprint("\"'\n");
-        cpu->d[0] = (uint32_t)DOSFALSE;
-        SetIoErr(ERROR_NO_FREE_STORE);
     }
 
-    /* Return process message port BPTR */
-    cpu->a[0] = (proc_addr + 0x5A) >> 2;
+    kprint("[dos] SystemTagList: queued process '");
+    kprint(proc_name);
+    kprint("'\n");
+    /* Return process message port APTR */
+    cpu->a[0] = proc_addr + PR_MSGPORT;
     (void)sys_asynch;  /* Synchronous execution for now */
     (void)np_cwd;      /* CWD handling not yet implemented */
 }
@@ -2807,6 +3070,156 @@ static void dos_SetConsoleTask(M68kCPUState *cpu)
 }
 
 /* =========================================================================
+ * CurrentDir / ProgramDir / misc 2.x DOS calls (OctaMED bring-up set)
+ * ========================================================================= */
+
+/* Lock a host path and return a guest FileLock BPTR (0 on failure). */
+static uint32_t dos_lock_path(const char *path)
+{
+    char vol_name[16];
+    extract_vol_name(path, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) return 0;
+    int32_t h = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)path,
+                      -2 /* SHARED_LOCK */, 0, 0, 0);
+    if (!h) return 0;
+    uint32_t bptr = guest_alloc_filelock((uint32_t)h, -2);
+    if (!bptr) HandleTable_Free((uint32_t)h);
+    return bptr;
+}
+
+/* PROGDIR: lock — lazily bound to the launch directory.  For now the
+ * launch directory IS the cwd (the shell CDs or passes full paths). */
+static uint32_t g_program_dir = 0;
+
+static void dos_CurrentDir(M68kCPUState *cpu)
+{
+    /* AmigaOS: D1=BPTR lock → D0=old lock; pr_CurrentDir at Process+0x98. */
+    uint32_t lock = cpu->d[1];
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    uint32_t old  = proc ? guest_read_be32(proc + PR_CURRENTDIR) : 0;
+    if (proc) guest_write_be32(proc + PR_CURRENTDIR, lock);
+
+    /* Keep the host-side cwd string in sync so relative Opens follow. */
+    if (lock) {
+        uint32_t handle = 0;
+        if (guest_read_filelock(lock, &handle, NULL) && handle) {
+            HandleEntry *ent = HandleTable_GetLockEntry(handle, NULL);
+            if (ent && ent->path[0]) {
+                int i = 0;
+                while (i < 63 && ent->path[i]) { g_uaos_cwd[i] = ent->path[i]; i++; }
+                g_uaos_cwd[i] = '\0';
+            }
+        }
+    }
+    cpu->d[0] = old;
+}
+
+static void dos_SetProgramDir(M68kCPUState *cpu)
+{
+    /* D1=BPTR lock → D0=old */
+    uint32_t old = g_program_dir;
+    g_program_dir = cpu->d[1];
+    cpu->d[0] = old;
+}
+
+static void dos_GetProgramDir(M68kCPUState *cpu)
+{
+    if (!g_program_dir)
+        g_program_dir = dos_lock_path(g_uaos_cwd);
+    cpu->d[0] = g_program_dir;
+}
+
+static void dos_SetIoErr(M68kCPUState *cpu)
+{
+    /* D1=new result code → D0=old; also pr_Result2 of the current proc. */
+    cpu->d[0] = (uint32_t)IoErr();
+    SetIoErr((int32_t)cpu->d[1]);
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    if (proc) guest_write_be32(proc + PR_RESULT2, cpu->d[1]);
+}
+
+static void dos_Cli(M68kCPUState *cpu)
+{
+    /* → D0=1 if the process has a CLI struct */
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    cpu->d[0] = (proc && guest_read_be32(proc + PR_CLI)) ? DOSTRUE : DOSFALSE;
+}
+
+static void dos_FindCliProc(M68kCPUState *cpu)
+{
+    /* D1=process number → D0=struct Process* — return ThisTask for slot 1 */
+    cpu->d[0] = (cpu->d[1] == 1)
+        ? guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK) : 0;
+}
+
+static void dos_WriteChars(M68kCPUState *cpu)
+{
+    /* D1=STRPTR buffer, D2=ULONG length → D0=chars written (console out) */
+    uint32_t buf = cpu->d[1], len = cpu->d[2];
+    if (buf + len >= GUEST_RAM_SIZE || len > 4096) { cpu->d[0] = 0; return; }
+    char tmp[4097];
+    uint32_t i;
+    for (i = 0; i < len; i++) tmp[i] = (char)g_ram[buf + i];
+    tmp[i] = '\0';
+    kprint(tmp);
+    cpu->d[0] = len;
+}
+
+static void dos_SelectInput(M68kCPUState *cpu)
+{
+    /* D1=fh → D0=old input fh (updates pr_CIS) */
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    uint32_t old  = proc ? guest_read_be32(proc + PR_CIS) : DOS_STDIN_BPTR;
+    if (proc) guest_write_be32(proc + PR_CIS, cpu->d[1]);
+    cpu->d[0] = old;
+}
+
+static void dos_SelectOutput(M68kCPUState *cpu)
+{
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    uint32_t old  = proc ? guest_read_be32(proc + PR_COS) : DOS_STDOUT_BPTR;
+    if (proc) guest_write_be32(proc + PR_COS, cpu->d[1]);
+    cpu->d[0] = old;
+}
+
+static void dos_FreeArgs(M68kCPUState *cpu)
+{
+    /* D1=RDArgs — our ReadArgs used a fixed guest buffer; nothing to free */
+    cpu->d[0] = DOSTRUE;
+}
+
+static void dos_Flush(M68kCPUState *cpu)
+{
+    cpu->d[0] = DOSTRUE;
+}
+
+static void dos_Execute(M68kCPUState *cpu)
+{
+    /* D1=command string, D2=input fh, D3=output fh — script/command
+     * execution isn't routed through the shell yet. */
+    (void)cpu;
+    kprint("[dos] Execute() not implemented\n");
+    cpu->d[0] = DOSFALSE;
+    SetIoErr(ERROR_ACTION_NOT_KNOWN);
+}
+
+static void dos_DeviceProc(M68kCPUState *cpu)
+{
+    /* D1=BSTR device/volume name → D0=APTR MsgPort of the handler.
+     * Handler ports are host-side objects; expose a sentinel so callers
+     * can distinguish "mounted" from "not mounted". */
+    uint32_t name_bptr = cpu->d[1];
+    char name[64];
+    dos_arg_to_c(name_bptr, name, sizeof(name));
+    char vol[16];
+    extract_vol_name(name, vol, sizeof(vol));
+    MsgPort *port = VFS_GetHandlerPort(vol);
+    cpu->d[0] = port ? 0xFFFFFFFFu : 0;   /* guest can test for NULL */
+    if (!port) SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+}
+
+/* =========================================================================
  * CreateSegList stub
  * ========================================================================= */
 
@@ -2892,8 +3305,8 @@ static void *dos_funcs[] = {
     dos_Delay,         /* index 32 */
     dos_DateToStr,     /* index 33 */
     dos_ParsePattern,       /* index 34 */
-    dos_ParsePatternNoCase, /* index 35 */
-    dos_MatchPattern,       /* index 36 */
+    dos_MatchPattern,       /* index 35 */
+    dos_ParsePatternNoCase, /* index 36 */
     dos_MatchPatternNoCase, /* index 37 */
     dos_LoadSeg,            /* index 38 */
     dos_UnLoadSeg,          /* index 39 */
@@ -2914,6 +3327,20 @@ static void *dos_funcs[] = {
     dos_GetConsoleTask,     /* index 54 */
     dos_SetConsoleTask,     /* index 55 */
     dos_CreateSegList,      /* index 56 */
+    dos_CurrentDir,         /* index 57 */
+    dos_SetProgramDir,      /* index 58 */
+    dos_GetProgramDir,      /* index 59 */
+    dos_SetIoErr,           /* index 60 */
+    dos_Cli,                /* index 61 */
+    dos_FindCliProc,        /* index 62 */
+    dos_WriteChars,         /* index 63 */
+    dos_FreeArgs,           /* index 64 */
+    dos_Flush,              /* index 65 */
+    dos_SelectInput,        /* index 66 */
+    dos_SelectOutput,       /* index 67 */
+    dos_Execute,            /* index 68 */
+    dos_DeviceProc,         /* index 69 */
+    dos_Fault,              /* index 70 */
 };
 
 /* =========================================================================
@@ -2945,4 +3372,30 @@ void dos_FreeMem_glue(uint32_t addr, uint32_t size)
 {
     (void)size; /* our free-list tracks block sizes internally */
     mc_free(addr);
+}
+
+/* AvailMem: sum free blocks in the pool(s) selected by 'attrs'.
+ * MEMF_CHIP only → chip pool; MEMF_FAST only → fast pool; anything else
+ * (plain PUBLIC / EXECUTABLE etc.) counts both pools. */
+static void availmem_walk(uint32_t list_slot, uint32_t *total, uint32_t *largest)
+{
+    uint32_t bptr = heap_head_read(list_slot);
+    int guard = 0;
+    while (bptr && guard++ < 4096) {
+        uint32_t cur = bptr << 2;
+        uint32_t sz  = guest_read_be32(cur + 0) & ~HEAP_MAGIC;
+        if (sz > HEAP_HDR) {
+            uint32_t usable = sz - HEAP_HDR;
+            *total += usable;
+            if (usable > *largest) *largest = usable;
+        }
+        bptr = guest_read_be32(cur + 4);
+    }
+}
+
+void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest)
+{
+    *total = *largest = 0;
+    if (!(attrs & MEMF_FAST)) { heap_freelist_init();      availmem_walk(HEAP_LIST_SLOT_CHIP, total, largest); }
+    if (!(attrs & MEMF_CHIP)) { heap_freelist_init_fast(); availmem_walk(HEAP_LIST_SLOT_FAST, total, largest); }
 }

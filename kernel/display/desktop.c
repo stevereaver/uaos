@@ -2677,7 +2677,8 @@ void Desktop_RightButtonRelease(int mx, int my)
         } else if (g_menu_hover >= 0) {
             mi = &g_active_menus[g_menu_index].items[g_menu_hover];
             menu_number = (uint32_t)((g_menu_index & 0x1F) |
-                                     ((g_menu_hover & 0x3F) << 5));
+                                     ((g_menu_hover & 0x3F) << 5) |
+                                     (NOSUB << 11));
         }
         if (mi) {
             Intuition_UpdateMenuItemCheck(mi->guest_item, mi->toggle);

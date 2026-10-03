@@ -678,10 +678,15 @@ static void move_in_front_of(int src, int behind)
 /* Hit-test: returns window handle at (mx,my) in z-order (topmost first) */
 static int hit_test(int mx, int my)
 {
+    int modal_wh = -1;
+    for (int i = 0; i < WM_MAX_WINDOWS; i++) {
+        if (g_wins[i].active && g_wins[i].modal) { modal_wh = i; break; }
+    }
     for (int i = g_nwins - 1; i >= 0; i--) {
         int wh = g_zorder[i];
         WmWindow *w = &g_wins[wh];
         if (!w->active) continue;
+        if (modal_wh >= 0 && wh != modal_wh) continue;
         if (mx >= w->x && mx < w->x + w->w &&
             my >= w->y && my < w->y + w->h)
             return wh;
@@ -922,6 +927,12 @@ void WM_SetEventHandler(int handle, WM_EventFn on_event)
     g_wins[handle].on_event = on_event;
 }
 
+void WM_SetModal(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
+    g_wins[handle].modal = 1;
+}
+
 void WM_SetPaletteFn(WM_PaletteFn fn)
 {
     g_palette_fn = fn;
@@ -966,6 +977,13 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 
     if (btn_left_pressed) {
         WM_LOG("[WM] Mouse press at "); WM_LOG_DEC(mx); WM_LOG(","); WM_LOG_DEC(my); WM_LOG("\n");
+        {   /* UAOS-245 diag */
+            extern void kprint(const char *);
+            extern void kprintdec(uint32_t);
+            kprint("[mpress] mx="); kprintdec(mx); kprint(" my="); kprintdec(my);
+            int wh = hit_test(mx, my);
+            kprint(" wh="); kprintdec(wh); kprint("\n");
+        }
         int wh = hit_test(mx, my);
         g_press_was_desktop = (wh < 0);
         if (wh < 0) {
@@ -1284,6 +1302,14 @@ void WM_KeyEvent(char c)
         w->on_key(c);
     if (w->active && w->on_event)
         w->on_event(g_focus, WM_EVT_KEY, (int)(unsigned char)c, 0, 0);
+}
+
+void WM_RawKeyEvent(int code, int qual)
+{
+    if (g_focus < 0) return;
+    WmWindow *w = &g_wins[g_focus];
+    if (w->active && w->on_event)
+        w->on_event(g_focus, WM_EVT_RAWKEY, code & 0xFF, qual & 0xFF, 0);
 }
 
 /* Damage-scoped repaint: paint only what intersects the accumulated damage

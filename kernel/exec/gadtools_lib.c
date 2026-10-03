@@ -9,6 +9,8 @@
 
 #include "exec/gadtools_lib.h"
 #include "exec/rom_modules.h"
+#include "amiga_graphics.h"
+#include "../display/wm.h"
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
@@ -441,6 +443,29 @@ static void gadtools_CreateGadgetA(void)
     }
 
     switch (kind) {
+        case GENERIC_KIND: {
+            /* GENERIC_KIND: bare gadget honoring NewGadget fields; the app
+             * sets GadgetType/GadgetRender/Activation itself afterwards.
+             * GadgetText becomes an IntuiText when supplied. */
+            int16_t left = gt_s16(ng + NG_OFF_LEFTEDGE);
+            int16_t top  = gt_s16(ng + NG_OFF_TOPEDGE);
+            int16_t w    = gt_s16(ng + NG_OFF_WIDTH);
+            int16_t h    = gt_s16(ng + NG_OFF_HEIGHT);
+            uint16_t id  = gt_u16(ng + NG_OFF_GADGETID);
+            uint32_t text_ptr = gt_u32(ng + NG_OFF_GADGETTEXT);
+            uint32_t label = 0;
+            uint16_t flags = 0;
+            if (text_ptr) {
+                char text[80];
+                gt_guest_str(text, text_ptr, sizeof(text));
+                label = create_label_itext(text,
+                                           gt_u32(ng + NG_OFF_TEXTATTR), 1, 0);
+                if (label) flags |= GFLG_LABELITEXT;
+            }
+            result = alloc_gadget(prev, left, top, w, h, 0, id, flags, 0,
+                                  0, label, gt_u32(ng + NG_OFF_USERDATA));
+            break;
+        }
         case BUTTON_KIND:
             result = create_boolean_kind(prev, ng, tags, GTYP_BOOLGADGET, 0);
             break;
@@ -751,10 +776,93 @@ static void gadtools_FreeVisualInfo(void)
 /* =========================================================================
  * DrawBevelBoxA
  * ========================================================================= */
+/* Write one pen value into a planar BitMap.  bm geometry is supplied by the
+ * caller so the hline/vline loops don't re-read the header per pixel. */
+static void bev_put(uint32_t bm, int x, int y, int pen,
+                    uint16_t bpr, int bmw, int rows, int depth)
+{
+    if (x < 0 || y < 0 || x >= bmw || y >= rows) return;
+    uint32_t off = (uint32_t)y * bpr + (uint32_t)(x >> 3);
+    uint8_t mask = (uint8_t)(0x80 >> (x & 7));
+    for (int p = 0; p < depth; p++) {
+        uint32_t base = gt_u32(bm + BM_OFF_PLANES + p * 4);
+        if (!base || base + off >= GUEST_RAM_SIZE) continue;
+        uint8_t b = gt_u8(base + off);
+        b = (pen & (1 << p)) ? (uint8_t)(b | mask) : (uint8_t)(b & ~mask);
+        gt_w8(base + off, b);
+    }
+}
+
 static void gadtools_DrawBevelBoxA(void)
 {
-    /* Stub: guests normally call this to draw recessed/raised boxes.
-     * For now just return success. */
+    /* DrawBevelBoxA(rp=a0, left=d0, top=d1, width=d2, height=d3, tags=a1)
+     * Draws a 2-pixel 3D frame into the RastPort's BitMap planes — shine
+     * top/left + shadow bottom/right, swapped for GTBB_Recessed — then
+     * flushes the dirty rect so the screen compositor picks it up. */
+    uint32_t rp   = m68k_get_reg(NULL, M68K_REG_A0);
+    int32_t left  = (int32_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int32_t top   = (int32_t)m68k_get_reg(NULL, M68K_REG_D1);
+    int32_t w     = (int32_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int32_t h     = (int32_t)m68k_get_reg(NULL, M68K_REG_D3);
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A1);
+
+    if (!rp || w <= 0 || h <= 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    /* Shine/shadow pens from the GT_VisualInfo DrawInfo when supplied. */
+    int shine = 1, shadow = 0;
+    uint32_t vi = find_tag_data(tags, GT_VisualInfo, 0);
+    if (vi) {
+        uint32_t dri = gt_u32(vi + GTVI_OFF_DRAWINFO);
+        if (dri) {
+            shine  = gt_u16(dri + DRINFO_OFF_PENS + DRI_SHINEPEN  * 2);
+            shadow = gt_u16(dri + DRINFO_OFF_PENS + DRI_SHADOWPEN * 2);
+        }
+    }
+    int recessed = (int)find_tag_data(tags, GT_TagBase + 20 /*GTBB_Recessed*/, 0);
+    int pen_tl = recessed ? shadow : shine;
+    int pen_br = recessed ? shine : shadow;
+
+    uint32_t bm = gt_u32(rp + RP_OFF_BITMAP);
+    if (!bm) { m68k_set_reg(M68K_REG_D0, 0); return; }
+
+    /* A window RastPort draws in window-relative coordinates; translate to
+     * screen-bitmap space like graphics_lib's blit_surface_from_rastport. */
+    int dx = 0, dy = 0;
+    uint32_t win = gt_u32(rp + RP_OFF_LAYER);
+    if (win) {
+        uint32_t scr = gt_u32(win + WIN_OFF_WSCREEN);
+        if (scr && gt_u32(scr + SCR_OFF_BITMA) == bm) {
+            dx = (int)gt_s16(win + WIN_OFF_LEFTEDGE) -
+                 (int)gt_s16(scr + SCR_OFF_LEFTEDGE);
+            dy = (int)gt_s16(win + WIN_OFF_TOPEDGE) -
+                 (int)gt_s16(scr + SCR_OFF_TOPEDGE);
+            if (gt_u32(win + WIN_OFF_FLAGS) & WFLG_GIMMEZEROZERO) {
+                dx += WM_BORDER;
+                dy += WM_TITLEBAR_H;
+            }
+        }
+    }
+
+    uint16_t bpr   = gt_u16(bm + BM_OFF_BYTESPERROW);
+    int      rows  = gt_u16(bm + BM_OFF_ROWS);
+    int      bmw   = (int)bpr * 8;
+    int      depth = gt_u8(bm + BM_OFF_DEPTH);
+    if (!depth) depth = 1;
+    if (depth > 8) depth = 8;
+
+    for (int t = 0; t < 2; t++) {
+        for (int i = 0; i < w; i++) {
+            bev_put(bm, dx + left + i, dy + top + t,         pen_tl, bpr, bmw, rows, depth);
+            bev_put(bm, dx + left + i, dy + top + h - 1 - t, pen_br, bpr, bmw, rows, depth);
+        }
+        for (int i = 0; i < h; i++) {
+            bev_put(bm, dx + left + t,         dy + top + i, pen_tl, bpr, bmw, rows, depth);
+            bev_put(bm, dx + left + w - 1 - t, dy + top + i, pen_br, bpr, bmw, rows, depth);
+        }
+    }
+
+    UAOS_Intuition_FlushScreenBitmap(bm, dx + left, dy + top,
+                                     dx + left + w - 1, dy + top + h - 1);
     m68k_set_reg(M68K_REG_D0, 1);
 }
 
@@ -773,9 +881,9 @@ static uint32_t alloc_menu(void)
 
 static uint32_t alloc_menuitem(void)
 {
-    uint32_t mi = intu_alloc(MENUITEM_OFF_SIZE);
+    uint32_t mi = intu_alloc(MENUITEM_ALLOC_SIZE);
     if (mi) {
-        for (int i = 0; i < MENUITEM_OFF_SIZE; i++) gt_w8(mi + i, 0);
+        for (int i = 0; i < MENUITEM_ALLOC_SIZE; i++) gt_w8(mi + i, 0);
     }
     return mi;
 }
@@ -887,18 +995,30 @@ static uint32_t create_menuitem_from_newmenu(uint32_t nm, uint32_t *sub_item_hea
 
     uint16_t flags = read_newmenu_flags(nm);
     flags |= ITEMTEXT | ITEMENABLED;
-    gt_w16(mi + MENUITEM_OFF_FLAGS, flags);
     gt_w32(mi + MENUITEM_OFF_MUTUALEX, read_newmenu_mutual(nm));
 
     uint32_t it = alloc_intuitext(text);
     if (it) gt_w32(mi + MENUITEM_OFF_ITEMFILL, it);
 
+    /* GadTools sets the MenuItem COMMSEQ flag whenever nm_CommKey holds a
+     * valid string pointer — the flag does not have to be repeated in
+     * nm_Flags (OctaMED passes flags=0 with a CommKey).  NM_BARLABEL (-1)
+     * is a separator, not a key. */
     uint32_t key = read_newmenu_key(nm);
-    if (key && (flags & COMMSEQ)) {
+    if (key && key != 0xFFFFFFFFu) {
         char kbuf[8] = "";
         gt_guest_str(kbuf, key, sizeof(kbuf));
-        if (kbuf[0]) gt_w8(mi + MENUITEM_OFF_COMMAND, (uint8_t)kbuf[0]);
+        if (kbuf[0]) {
+            flags |= COMMSEQ;
+            gt_w8(mi + MENUITEM_OFF_COMMAND, (uint8_t)kbuf[0]);
+        }
     }
+    gt_w16(mi + MENUITEM_OFF_FLAGS, flags);
+
+    /* GadTools copies nm_UserData into the longword following the
+     * MenuItem (GTMENUITEM_USERDATA).  OctaMED stores a handler
+     * pointer there and calls through it on MENUPICK. */
+    gt_w32(mi + MENUITEM_OFF_USERDATA, read_newmenu_userdata(nm));
 
     return mi;
 }
@@ -1088,8 +1208,11 @@ static void gadtools_GT_ReplyIMsg(void)
 }
 static void gadtools_GT_RefreshWindow(void)
 {
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
+    /* GT_RefreshWindow(window=a0, req/tags=a1): gadget imagery is rendered
+     * host-side by the WM, so "refresh" means invalidate the window rect. */
+    uint32_t win = m68k_get_reg(NULL, M68K_REG_A0);
     (void)m68k_get_reg(NULL, M68K_REG_A1);
+    UAOS_Intuition_RefreshWindow(win);
     m68k_set_reg(M68K_REG_D0, 1);
 }
 static void gadtools_GT_BeginRefresh(void)

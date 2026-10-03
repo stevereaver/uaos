@@ -81,6 +81,23 @@ Localization and date formatting.
 
 `FormatDate` converts a `DateStamp` to a Unix timestamp using the current NTP/RTC epoch before formatting.
 
+Catalogs: when no catalog is loaded, `GetCatalogStr` (LVO -72, handled in the generic-library dispatch in `emulation/uaos_m68k_glue.c`) returns the caller's `defaultString` argument — returning NULL instead blanks every application string (observed with OctaMED's ~160 startup string fetches). `OpenCatalogA` may legitimately return NULL when no catalog exists.
+
+## asl.library (generic dispatch)
+
+The file requester is implemented natively on top of the WM (`UAOS_Intuition_AslFileRequest` in `kernel/exec/intuition_lib.c`, dispatched from `emulation/uaos_m68k_glue.c`).
+
+| Function | Status | Notes |
+|---|---|---|
+| `AllocFileRequest` (LVO -30) | Implemented | Zeroed 512-byte block in guest memory; result strings live inside it (drawer at +256, file at +384). |
+| `FreeFileRequest` (LVO -36) | Implemented | Frees the block. |
+| `RequestFile` (LVO -42) | Implemented | Shares the `AslRequest` path: a0=requester block, a1=taglist. |
+| `AllocAslRequest` (LVO -48) | Implemented | Same 512-byte block as `AllocFileRequest`. |
+| `FreeAslRequest` (LVO -54) | Implemented | Frees the block. |
+| `AslRequest` (LVO -60) | Implemented | Native modal file requester. |
+
+`AslRequest` opens a modal WM window (460 px, volume list / directory list modes) and blocks the calling M68k task on a signal bit while the EventPump drives input; `UAOS_M68k_DeliverInterrupts()` is pumped inside the wait loop so CIA/audio keep running. Navigation: **Volumes** lists mounted volumes (`OCTAMED:`, `RAM:`, `Workbench:`), **Parent** pops a path component, clicking a directory enters it, clicking a file selects it, **OK**/**Cancel** finish. The drawer/file fields are written into the requester block (`fr_File`/`fr_Drawer` and the standard `+16`/`+20` slots) after the wait returns, still inside the lib dispatch, so they land in the caller's arena. The requester window is marked `WM_SetModal` so it can never be buried under a raised window while the guest is blocked (a buried modal used to deadlock the boot).
+
 ## ixemul.library (`kernel/exec/ixemul_lib.c`)
 
 Unix compatibility layer. **All functions in this library are currently stubs** that print a diagnostic to stderr and return an error or safe default. They exist so that Amiga binaries linked against `ixemul.library` can load and report missing functionality rather than crashing on an unresolved symbol.

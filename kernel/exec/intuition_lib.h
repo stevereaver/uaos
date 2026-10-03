@@ -30,6 +30,16 @@ int UAOS_Intuition_RenderScreenBackdropRegion(int x, int y, int w, int h);
 void UAOS_Intuition_FlushScreenBitmap(uint32_t bm,
                                       int x0, int y0, int x1, int y1);
 
+/* Invalidate a guest window's WM rect so the next damage flush repaints it
+ * (host-side equivalent of GT_RefreshWindow). */
+void UAOS_Intuition_RefreshWindow(uint32_t guest_win);
+
+/* Called by the event pump: while the front screen belongs to an m68k task,
+ * invalidate the compositor pen cache and damage the screen so guest plane
+ * writes made without library calls (direct bitmap pokes) are re-decoded.
+ * Returns 1 while such a screen is front. */
+int UAOS_Intuition_PollFrontScreenBitmap(void);
+
 /* Apply the frontmost screen's SA_Colors/SA_Colors32/SA_Pens palette to the
  * host Workbench palette globals.  Falls back to the default palette if no
  * front screen has custom colors. */
@@ -160,7 +170,10 @@ typedef struct {
 #define WFLG_RMBTRAP         0x00010000
 #define WFLG_WBENCHWINDOW    0x02000000
 
-/* IDCMP flags */
+/* IDCMP flags — real AmigaOS bit assignments (intuition/idcmp.h).  Guests
+ * read/write these values directly in Window.IDCMPFlags and IntuiMessage
+ * .Class, so the map must match real hardware or message classes arrive
+ * mistranslated (e.g. RAWKEY landing as CLOSEWINDOW). */
 #define IDCMP_SIZEVERIFY     0x00000001
 #define IDCMP_NEWSIZE        0x00000002
 #define IDCMP_REFRESHWINDOW  0x00000004
@@ -168,22 +181,28 @@ typedef struct {
 #define IDCMP_MOUSEMOVE      0x00000010
 #define IDCMP_GADGETDOWN     0x00000020
 #define IDCMP_GADGETUP       0x00000040
-#define IDCMP_MENUPICK       0x00000080
-#define IDCMP_CLOSEWINDOW    0x00000100
-#define IDCMP_RAWKEY         0x00000200
-#define IDCMP_REQVERIFY      0x00000400
-#define IDCMP_REQSET         0x00000800
-#define IDCMP_IDCMPUPDATE    0x00001000
-#define IDCMP_DELTAMOVE      0x00002000
-#define IDCMP_INTUITICKS     0x00004000
-#define IDCMP_ACTIVEWINDOW   0x00008000
-#define IDCMP_INACTIVEWINDOW 0x00010000
-#define IDCMP_DISKINSERTED   0x00020000
-#define IDCMP_DISKREMOVED    0x00040000
-#define IDCMP_WBENCHMESSAGE  0x00080000
-#define IDCMP_HELP           0x00100000
+#define IDCMP_REQSET         0x00000080
+#define IDCMP_MENUPICK       0x00000100
+#define IDCMP_CLOSEWINDOW    0x00000200
+#define IDCMP_RAWKEY         0x00000400
+#define IDCMP_REQVERIFY      0x00000800
+#define IDCMP_REQCLEAR       0x00001000
+#define IDCMP_MENUVERIFY     0x00002000
+#define IDCMP_NEWPREFS       0x00004000
+#define IDCMP_DISKINSERTED   0x00008000
+#define IDCMP_DISKREMOVED    0x00010000
+#define IDCMP_WBENCHMESSAGE  0x00020000
+#define IDCMP_ACTIVEWINDOW   0x00040000
+#define IDCMP_INACTIVEWINDOW 0x00080000
+#define IDCMP_DELTAMOVE      0x00100000
 #define IDCMP_VANILLAKEY     0x00200000
-#define IDCMP_MENUHELP       0x20000000
+#define IDCMP_INTUITICKS     0x00400000
+#define IDCMP_IDCMPUPDATE    0x00800000
+#define IDCMP_MENUHELP       0x01000000
+#define IDCMP_CHANGEWINDOW   0x02000000
+#define IDCMP_GADGETHELP     0x04000000
+/* UAOS-internal extensions on bits unused by classic IDCMP. */
+#define IDCMP_HELP           IDCMP_GADGETHELP
 #define IDCMP_TABLET         0x40000000
 
 /* -------------------------------------------------------------------------
@@ -211,22 +230,22 @@ typedef struct {
 #define MSG_OFF_LN_TYPE    8
 #define MSG_OFF_LN_PRI     9
 #define MSG_OFF_LN_NAME   10
-#define MSG_OFF_LENGTH    14
-#define MSG_OFF_REPLYPORT 16
+#define MSG_OFF_REPLYPORT 14
+#define MSG_OFF_LENGTH    18
 #define MSG_OFF_DATA      20
 #define MSG_SIZE          24
 
 #define IM_OFF_EXECMSG     0
-#define IM_OFF_CLASS      24
-#define IM_OFF_CODE       28
-#define IM_OFF_QUALIFIER  30
-#define IM_OFF_IADDRESS   32
-#define IM_OFF_MOUSEX     36
-#define IM_OFF_MOUSEY     38
-#define IM_OFF_SECONDS    40
-#define IM_OFF_MICROS     44
-#define IM_OFF_IDCMPWINDOW 48
-#define IM_OFF_SPECIALLINK 52
+#define IM_OFF_CLASS      20
+#define IM_OFF_CODE       24
+#define IM_OFF_QUALIFIER  26
+#define IM_OFF_IADDRESS   28
+#define IM_OFF_MOUSEX     32
+#define IM_OFF_MOUSEY     34
+#define IM_OFF_SECONDS    36
+#define IM_OFF_MICROS     40
+#define IM_OFF_IDCMPWINDOW 44
+#define IM_OFF_SPECIALLINK 48
 #define IM_SIZE           56
 
 #define NT_MSGPORT         4
@@ -384,9 +403,14 @@ typedef struct {
 #define MENUITEM_OFF_ITEMFILL   18
 #define MENUITEM_OFF_SELECTFILL 22
 #define MENUITEM_OFF_COMMAND    26
-#define MENUITEM_OFF_SUBITEM    27
-#define MENUITEM_OFF_NEXTSELECT 31
-#define MENUITEM_OFF_SIZE       35
+#define MENUITEM_OFF_SUBITEM    28
+#define MENUITEM_OFF_NEXTSELECT 32
+#define MENUITEM_OFF_SIZE       34
+/* GadTools appends nm_UserData immediately after the MenuItem
+ * (GTMENUITEM_USERDATA reads ((item)+1)).  Allocated size must
+ * include this trailing longword. */
+#define MENUITEM_OFF_USERDATA   34
+#define MENUITEM_ALLOC_SIZE     38
 
 /* Menu number extraction (classic 16-bit menu numbers) */
 #define MENUNULL 0xFFFF
@@ -397,12 +421,13 @@ typedef struct {
 #define ITEMNUM(n)  (((n) >> 5) & 0x003F)
 #define SUBNUM(n)   (((n) >> 11) & 0x001F)
 
-/* MenuItem flags */
-#define ITEMTEXT     0x0001
-#define ITEMENABLED  0x0002
+/* MenuItem flags (real AmigaOS values) */
+#define CHECKIT      0x0001
+#define ITEMTEXT     0x0002
 #define COMMSEQ      0x0004
-#define CHECKIT      0x0008
-#define MENUTOGGLE   0x0010
+#define MENUTOGGLE   0x0008
+#define ITEMENABLED  0x0010
+#define CHECKED      0x0100
 #define ITEMEXTENDED 0x0020
 
 /* Menu flags */

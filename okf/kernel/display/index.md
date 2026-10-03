@@ -63,6 +63,7 @@ The Window Manager (`wm.c`) manages a z-ordered stack of windows. It handles use
 
 ### Key Features
 - **Z-Order Management**: Windows are stacked, with the top window receiving focus.
+- **Modal windows**: `WM_SetModal()` marks a window modal. While any active window has `modal` set, `hit_test` skips every non-modal window — the modal can never be buried under a raised window (which would deadlock a caller blocked waiting for its click). Cleared automatically when the slot is recycled by `WM_AddWindow`'s `memset`. Used by Intuition requesters, alerts, and the ASL file requester.
 - **Click-to-Focus**: Clicking a window title bar or client area raises it to the top.
 - **Raise / Lower**: `WM_RaiseWindow` brings a window to the front; `WM_LowerWindow` sends it to the back. `WM_MoveWindowInFrontOf` and the depth gadget also reorder the z-stack. Whenever the z-order of a window changes, `UAOS_Intuition_NotifyDepthChange()` is called so windows with `WA_NotifyDepth` can receive `IDCMP_NEWSIZE`.
 - **Repaint Requests**: `WM_RepaintWindow` requests a chrome/content redraw of a window — damage-scoped (UAOS-101): only the window's footprint plus other windows intersecting it are repainted at the next flush.

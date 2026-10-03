@@ -32,6 +32,9 @@ void     chip_emu_render_frame(void);
 void     chip_emu_reset(void);
 int      chip_emu_power_led(void);
 void     chip_emu_poll_ps2_keyboard(void);
+void     chip_emu_push_key(char c);   /* mirror a host key into CIA-A SDR */
+void     chip_emu_push_keycode(int code, int up); /* raw Amiga keycode event */
+int      chip_emu_amiga_keycode(char c);          /* cooked char -> raw code */
 void     chip_emu_serial_poll(void);
 void     chip_emu_set_keyboard_route(int to_cia);
 uint64_t chip_emu_m68k_cycles(void);
@@ -67,6 +70,16 @@ int      chip_emu_timing_lock_test(void);
 
 /* Tier 5: CIA timers */
 void     chip_emu_cia_tick(void);
+
+/* Guest interrupt state for per-task M68k dispatch (UAOS-241): per-task
+ * Musashi contexts have no usable exception-vector table, so exec polls
+ * these and invokes the guest's exec Interrupt structures directly. */
+uint16_t chip_emu_intena_shadow(void);
+int      chip_emu_cia_b_pending(void);
+uint8_t  chip_emu_cia_icr_pending(int id);   /* icr & icr_mask */
+void     chip_emu_cia_icr_ack(int id, uint8_t bits);
+uint8_t  chip_emu_cia_able_icr(int id, uint8_t v);  /* AbleICR */
+uint8_t  chip_emu_cia_set_icr(int id, uint8_t v);   /* SetICR */
 
 /* Tier 5: Paula audio */
 void     chip_emu_audio_tick(void);          /* legacy one-tick stub */

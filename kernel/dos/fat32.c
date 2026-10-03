@@ -908,11 +908,11 @@ uint32_t FAT32_Read(Fat32File *file, void *buffer, uint32_t len)
     while (n < len) {
         if (file->cluster < 2 || FAT32_IS_EOC(file->cluster)) break;
 
-        /* Read current cluster if we're at the start of it */
-        if (file->offset == 0) {
-            if (fat32_read_cluster(file->fs, file->cluster,
-                                   g_cluster_buf) != 0) break;
-        }
+        /* g_cluster_buf is shared across all files and dir scans, so it
+         * cannot be trusted to hold file->cluster's data (e.g. after a
+         * mid-cluster seek).  Re-read the cluster unconditionally. */
+        if (fat32_read_cluster(file->fs, file->cluster,
+                               g_cluster_buf) != 0) break;
 
         uint32_t chunk = cluster_size - file->offset;
         if (chunk > len - n) chunk = len - n;

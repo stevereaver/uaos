@@ -199,7 +199,25 @@ static void stub_RemTask(M68kCPUState *cpu)
 static void stub_Wait(M68kCPUState *cpu)
 {
     uint32_t sigmask = cpu->d[0];
-    cpu->d[0] = Wait(sigmask);
+    if (!sigmask) { cpu->d[0] = 0; return; }
+    /* Nap in 1-tick slices and deliver pending guest interrupts between
+     * them — while this task is blocked in native Wait() the exec_task
+     * slice loop is suspended, so without this OctaMED's CIA timer/SDR
+     * handlers would never run (UAOS-241). */
+    extern void UAOS_M68k_DeliverInterrupts(void);
+    uint32_t got = 0;
+    for (;;) {
+        got = Task_WaitTicks(sigmask, 1);
+        UAOS_M68k_DeliverInterrupts();
+        if (got) break;
+        UaosTask *t = Task_Current();
+        if (t && (t->tc_SigRecvd & sigmask)) {
+            got = t->tc_SigRecvd & sigmask;
+            t->tc_SigRecvd &= ~sigmask;
+            break;
+        }
+    }
+    cpu->d[0] = got;
 }
 
 static void stub_Signal(M68kCPUState *cpu)

@@ -52,14 +52,14 @@ void UAOS_GADTOOLS_Register(void);
 #define NG_OFF_USERDATA     26
 #define NG_SIZE             30
 
-/* NewMenu structure offsets (AmigaOS 3.x packed layout) */
+/* NewMenu structure offsets (AmigaOS 3.x layout — m68k 2-byte alignment) */
 #define NM_OFF_TYPE          0
-#define NM_OFF_LABEL         4
-#define NM_OFF_COMMKEY       8
-#define NM_OFF_FLAGS          12
-#define NM_OFF_MUTUALEXCLUDE  14
-#define NM_OFF_USERDATA       18
-#define NM_SIZE               22
+#define NM_OFF_LABEL         2
+#define NM_OFF_COMMKEY       6
+#define NM_OFF_FLAGS         10
+#define NM_OFF_MUTUALEXCLUDE 12
+#define NM_OFF_USERDATA      16
+#define NM_SIZE              20
 
 #define NM_TITLE  1
 #define NM_ITEM   2
