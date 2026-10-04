@@ -68,6 +68,7 @@ void CmdTemplate_Parse(const char *template_str, CmdTemplateResult *out)
 {
     const char *p = template_str;
     out->count = 0;
+    out->multi_used = 0;
     out->error[0] = '\0';
 
     while (*p) {
@@ -86,6 +87,7 @@ void CmdTemplate_Parse(const char *template_str, CmdTemplateResult *out)
             char *base = (char *)item;
             for (int i = 0; i < (int)sizeof(CmdTemplateItem); i++) base[i] = 0;
         }
+        item->value_index = -1;
 
         /* Read item name */
         const char *name_start = p;
@@ -109,7 +111,18 @@ void CmdTemplate_Parse(const char *template_str, CmdTemplateResult *out)
                 case 'k': item->keyword = 1; break;
                 case 's': item->sw = 1; break;
                 case 'n': item->number = 1; break;
-                case 'm': item->multiple = 1; break;
+                case 'm':
+                    item->multiple = 1;
+                    /* Claim a contiguous value block from the shared pool. */
+                    if (item->value_index < 0) {
+                        if (out->multi_used >= CMD_MAX_MULT_ITEMS) {
+                            ct_scopy(out->error, "too many /M template items",
+                                     CMD_MAX_TEMPLATE_VAL);
+                            return;
+                        }
+                        item->value_index = out->multi_used++;
+                    }
+                    break;
                 case 'f': item->free_arg = 1; break;
                 default:  break;
             }
@@ -225,8 +238,9 @@ void CmdTemplate_MatchArgs(CmdTemplateResult *out, const char *args)
                         it->present = 1;
                     } else {
                         if (it->multiple && it->value_count < CMD_MAX_MULT_VALUES) {
-                            ct_scopy_n(it->values[it->value_count], val,
-                                       vallen, CMD_MAX_TEMPLATE_VAL);
+                            ct_scopy_n(out->multi_pool[it->value_index]
+                                                  [it->value_count],
+                                       val, vallen, CMD_MAX_TEMPLATE_VAL);
                             it->value_count++;
                         } else {
                             ct_scopy(it->value, val, CMD_MAX_TEMPLATE_VAL);
@@ -258,8 +272,9 @@ void CmdTemplate_MatchArgs(CmdTemplateResult *out, const char *args)
                 const char *val = ta.tok[i + 1];
                 int vallen = ct_slen(val);
                 if (it->multiple && it->value_count < CMD_MAX_MULT_VALUES) {
-                    ct_scopy_n(it->values[it->value_count], val,
-                               vallen, CMD_MAX_TEMPLATE_VAL);
+                    ct_scopy_n(out->multi_pool[it->value_index]
+                                          [it->value_count],
+                               val, vallen, CMD_MAX_TEMPLATE_VAL);
                     it->value_count++;
                 } else {
                     ct_scopy(it->value, val, CMD_MAX_TEMPLATE_VAL);
@@ -307,8 +322,8 @@ void CmdTemplate_MatchArgs(CmdTemplateResult *out, const char *args)
             }
 
             if (it->multiple && it->value_count < CMD_MAX_MULT_VALUES) {
-                ct_scopy(it->values[it->value_count], ta.tok[i],
-                         CMD_MAX_TEMPLATE_VAL);
+                ct_scopy(out->multi_pool[it->value_index][it->value_count],
+                         ta.tok[i], CMD_MAX_TEMPLATE_VAL);
                 it->value_count++;
                 it->present = 1;
                 ta.used[i] = 1;
@@ -418,5 +433,5 @@ const char *CmdTemplate_GetMulti(const CmdTemplateResult *res,
 {
     CmdTemplateItem *it = find_item((CmdTemplateResult *)res, name);
     if (!it || idx < 0 || idx >= it->value_count) return NULL;
-    return it->values[idx];
+    return res->multi_pool[it->value_index][idx];
 }

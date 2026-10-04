@@ -22,6 +22,7 @@
 #define CMD_MAX_TEMPLATE_NAME  32
 #define CMD_MAX_TEMPLATE_VAL   128
 #define CMD_MAX_MULT_VALUES    8
+#define CMD_MAX_MULT_ITEMS     2   /* /M items supported per template */
 #define CMD_MAX_TOKENS         32
 
 typedef struct {
@@ -34,14 +35,23 @@ typedef struct {
     int   free_arg;      /* /F */
     int   present;
     char  value[CMD_MAX_TEMPLATE_VAL];
-    char  values[CMD_MAX_MULT_VALUES][CMD_MAX_TEMPLATE_VAL];
+    int   value_index;   /* /M value block in the result's multi_pool */
     int   value_count;
 } CmdTemplateItem;
 
 typedef struct CmdTemplateResult {
     CmdTemplateItem items[CMD_MAX_TEMPLATE_ITEMS];
-    int             count;
-    char            error[CMD_MAX_TEMPLATE_VAL];
+    /* /M items draw their value strings from this shared pool — each /M
+     * item claims one block of CMD_MAX_MULT_VALUES slots at parse time.
+     * A per-item values[8][128] put ~19.5 KB on the stack of every
+     * templated command dispatch (NativeCmd_Run keeps the result live
+     * across the handler call), driving the Shell task to 96% of its
+     * 32 KB stack (UAOS-228).  The pool brings it to ~5.4 KB. */
+    char  multi_pool[CMD_MAX_MULT_ITEMS][CMD_MAX_MULT_VALUES]
+                    [CMD_MAX_TEMPLATE_VAL];
+    int   multi_used;   /* pool blocks claimed so far */
+    int   count;
+    char  error[CMD_MAX_TEMPLATE_VAL];
 } CmdTemplateResult;
 
 /* -------------------------------------------------------------------------
@@ -52,7 +62,7 @@ void CmdTemplate_Parse(const char *template_str, CmdTemplateResult *out);
 
 /* -------------------------------------------------------------------------
  * Match an argument string against a parsed template.
- * Fills in .present, .value and .values for each item.
+ * Fills in .present, .value and the /M multi_pool slots for each item.
  * On error, sets out->error to a descriptive message.
  * ------------------------------------------------------------------------- */
 void CmdTemplate_MatchArgs(CmdTemplateResult *out, const char *args);

@@ -48,7 +48,8 @@ static int exec_find_key(const char *script, char *out, int max)
  * the corresponding $n positional variable.  Switches yield "1" when
  * present, "" otherwise.  /M items join all collected values with spaces.
  * /F and regular items use .value directly. */
-static void exec_item_value(const CmdTemplateItem *it, char *out, int max)
+static void exec_item_value(const CmdTemplateResult *tr,
+                            const CmdTemplateItem *it, char *out, int max)
 {
     if (it->sw) {
         cmd_scopy(out, it->present ? "1" : "", max);
@@ -58,11 +59,56 @@ static void exec_item_value(const CmdTemplateItem *it, char *out, int max)
         out[0] = '\0';
         for (int i = 0; i < it->value_count; i++) {
             if (i > 0) cmd_scat(out, " ", max);
-            cmd_scat(out, it->values[i], max);
+            cmd_scat(out, tr->multi_pool[it->value_index][i], max);
         }
         return;
     }
     cmd_scopy(out, it->present ? it->value : "", max);
+}
+
+/* Parse the script's .key template, match the raw argument string against
+ * it, and bind $1..$9 to the template items in declaration order.
+ * Returns 1 when the template matched (caller skips the raw positional
+ * fallback), 0 otherwise.  Keeping the ~5 KB CmdTemplateResult inside
+ * this helper stops it occupying Cmd_Execute's frame for the whole
+ * script run — the old 19.5 KB result, held across run_script, was a
+ * stack-overflow hazard on the Shell task's 32 KB stack (UAOS-228). */
+static int exec_bind_template(NativeCmdCtx *ctx, const char *key_spec,
+                              const char *raw_args)
+{
+    CmdTemplateResult tr;
+    CmdTemplate_Parse(key_spec, &tr);
+    if (tr.error[0]) return 0;
+
+    CmdTemplate_MatchArgs(&tr, raw_args);
+    if (tr.error[0]) {
+        /* Template match failed — warn but continue with raw
+         * positional fallback so the script still runs. */
+        char msg[CMD_MAX_LINE];
+        cmd_scopy(msg, "execute: ", CMD_MAX_LINE);
+        cmd_scat(msg, tr.error, CMD_MAX_LINE);
+        PRINT(msg);
+        return 0;
+    }
+
+    /* Set $1..$9 in template-item order.  Each item maps to the
+     * positional variable matching its index, so <argname> (which
+     * resolves name -> position -> $n) gets the right value, including
+     * /K keyword args passed as name=value or name value. */
+    int nitems = tr.count;
+    if (nitems > MAX_EXEC_ARGS) nitems = MAX_EXEC_ARGS;
+    for (int n = 0; n < nitems; n++) {
+        char varname[3] = { '1' + n, '\0' };
+        char val[CMD_MAX_PATH];
+        exec_item_value(&tr, &tr.items[n], val, CMD_MAX_PATH);
+        ctx->set_env(ctx->shell_extra, varname, val);
+    }
+    /* Clear unused $n variables */
+    for (int n = nitems; n < MAX_EXEC_ARGS; n++) {
+        char varname[3] = { '1' + n, '\0' };
+        ctx->set_env(ctx->shell_extra, varname, "");
+    }
+    return 1;
 }
 
 void Cmd_Execute(NativeCmdCtx *ctx, const char *args)
@@ -144,35 +190,6 @@ void Cmd_Execute(NativeCmdCtx *ctx, const char *args)
     g_exec_buf[nread] = '\0';
     VFS_Close(&fh);
 
-    /* --- Template-aware argument binding --- */
-    /* If the script contains a .key declaration, parse it with the
-     * AmigaDOS template parser and match the raw arguments against it.
-     * The positional $1..$9 variables are then set in template-item
-     * order so that <argname> references (which map names to positions)
-     * resolve correctly, including /K keyword args passed as
-     * name=value or name value.  Falls back to raw positional splitting
-     * when there is no .key or the match fails. */
-    char key_spec[CMD_MAX_LINE];
-    int use_template = 0;
-    CmdTemplateResult tr;
-
-    if (exec_find_key(g_exec_buf, key_spec, CMD_MAX_LINE) && key_spec[0]) {
-        CmdTemplate_Parse(key_spec, &tr);
-        if (!tr.error[0]) {
-            CmdTemplate_MatchArgs(&tr, raw_args);
-            if (!tr.error[0]) {
-                use_template = 1;
-            } else {
-                /* Template match failed — warn but continue with raw
-                 * positional fallback so the script still runs. */
-                char msg[CMD_MAX_LINE];
-                cmd_scopy(msg, "execute: ", CMD_MAX_LINE);
-                cmd_scat(msg, tr.error, CMD_MAX_LINE);
-                PRINT(msg);
-            }
-        }
-    }
-
     /* Save existing argument variables */
     if (ctx->get_env && ctx->set_env && ctx->shell_extra) {
         /* Save $* */
@@ -189,24 +206,21 @@ void Cmd_Execute(NativeCmdCtx *ctx, const char *args)
         /* Set $* (always the raw argument string) */
         ctx->set_env(ctx->shell_extra, "*", arg_all);
 
-        if (use_template) {
-            /* Set $1..$9 in template-item order.  Each item maps to the
-             * positional variable matching its index, so <argname> (which
-             * resolves name -> position -> $n) gets the right value. */
-            int nitems = tr.count;
-            if (nitems > MAX_EXEC_ARGS) nitems = MAX_EXEC_ARGS;
-            for (int n = 0; n < nitems; n++) {
-                char varname[3] = { '1' + n, '\0' };
-                char val[CMD_MAX_PATH];
-                exec_item_value(&tr.items[n], val, CMD_MAX_PATH);
-                ctx->set_env(ctx->shell_extra, varname, val);
-            }
-            /* Clear unused $n variables */
-            for (int n = nitems; n < MAX_EXEC_ARGS; n++) {
-                char varname[3] = { '1' + n, '\0' };
-                ctx->set_env(ctx->shell_extra, varname, "");
-            }
-        } else {
+        /* --- Template-aware argument binding ---
+         * If the script contains a .key declaration, parse it with the
+         * AmigaDOS template parser and match the raw arguments against
+         * it.  The positional $1..$9 variables are then set in
+         * template-item order so that <argname> references (which map
+         * names to positions) resolve correctly, including /K keyword
+         * args passed as name=value or name value.  Falls back to raw
+         * positional splitting when there is no .key or the match
+         * fails. */
+        char key_spec[CMD_MAX_LINE];
+        int use_template = 0;
+        if (exec_find_key(g_exec_buf, key_spec, CMD_MAX_LINE) && key_spec[0])
+            use_template = exec_bind_template(ctx, key_spec, raw_args);
+
+        if (!use_template) {
             /* Raw positional fallback */
             for (int n = 0; n < arg_count; n++) {
                 char varname[3] = { '1' + n, '\0' };

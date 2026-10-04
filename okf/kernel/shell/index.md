@@ -105,6 +105,8 @@ AmigaDOS-style script template arguments are implemented across two files:
   
   When a `.key` template is present, `$1`..`$9` are set in **template-item order** (the order names appear in the `.key` line), not raw token order. This ensures `<argname>` resolves correctly even when `/K` keyword args are passed out of order. If template matching fails, `execute` prints a warning and falls back to raw positional assignment. When there is no `.key` declaration, `$1`..`$9` remain raw positional tokens (backward compatible). `$*` always holds the full raw argument string.
 
+  The parse/match/bind step lives in the `exec_bind_template()` helper so its `CmdTemplateResult` leaves the stack before `run_script` runs — holding it across nested script dispatch previously kept ~19.5 KB live on the Shell task's 32 KB stack (UAOS-228).
+
 - **`shell_win.c` (script runner)**: `run_script_text()` pre-scans for the first `.key` line and populates a per-nest-level key map (`g_script_keys[]`) via `script_parse_keys()`. At most 16 names are recorded per script; nested `execute` scripts get their own key map. `expand_vars()` then resolves `<argname>` references by looking up the name in the active key map, mapping it to its positional index, and reading the corresponding `$n` variable. `<argname>` only fires when the name matches a declared key and is terminated by `>`; otherwise `<` is emitted literally so I/O redirection (`< file`) still works. Outside a script (no active key map), `<...>` is never consumed.
 
 ### Backtick Command Substitution
@@ -125,6 +127,10 @@ Both template tokenizers (`tokenise()` in `cmd_template.c` and `uaos_tmpl_tokeni
 ### Keyword Binding
 
 Matching AmigaDOS `ReadArgs` semantics, **every** template item name acts as a keyword — `/K` merely makes the keyword *required*. `search FROM RAM: SEARCH plain` now binds `FROM={RAM:}`, `SEARCH=plain` (previously the literal `FROM`/`SEARCH` tokens were absorbed positionally into `FROM/M`, so `uaos_opendir` was called on `cwd/FROM` — UAOS-112). Quoted tokens never match a keyword. As on real AmigaDOS, a filename that collides with a template item name must be quoted to be taken positionally.
+
+### `CmdTemplateResult` stack footprint (UAOS-228)
+
+`CmdTemplateResult` lives on the caller's stack — `NativeCmd_Run` keeps one live across the whole command handler via `ctx->template`, and `exec_bind_template` holds one while binding script `$n` vars. The kernel parser (`kernel/shell/cmd_template.{h,c}`) therefore keeps `/M` multi-values in a shared `multi_pool[2][8][128]` inside the result: each `/M` template item claims one 8-slot block at parse time (`value_index`, capped by `CMD_MAX_MULT_ITEMS`; a third `/M` item is a parse error). This shrank `CmdTemplateItem` from ~1.2 KB (embedded `values[8][128]`) to ~160 B and `CmdTemplateResult` from ~19.5 KB to ~5 KB — plus ~4.4 KB of `TokArray` in `CmdTemplate_MatchArgs` — taking the Shell task's worst-case peak from ~31.4 KB (96 %, near-overflow) to ~2.5 KB for ordinary commands and ~25.9 KB through nested `execute` (the residual is the X64-launch/dispatch path, not the template). `CmdTemplate_GetMulti()` reads pool slots; the accessor API is unchanged. The userspace parser (`system/libuaos/uaos_template.h`) runs in per-process address space and was left alone.
 
 ### Single-line IF / FOR at the prompt
 

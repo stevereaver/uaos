@@ -59,6 +59,19 @@ switch (dead canary → klog + flag, reported by `taskdump`/`stack`).
 frame at `native_rsp` (same layout as `isr_common`) — RIP/CS/RFLAGS/RSP/SS
 plus r15..rax.
 
+Reading the watermark (UAOS-228): interrupt handlers run on the
+*interrupted* task's stack — there is no dedicated IRQ stack — so a
+task's peak includes whatever ISR work landed while it was current.
+`Idle`'s high peak is genuine IRQ-context usage, not a boot artifact:
+`uaos_kernel_main` runs on a dedicated 64 KB BSS stack
+(`stack_bottom`/`stack_top` in `uaos_kernel_entry.asm`) before tasks
+start, while the PIT handler calls `timer_ProcessTicks()` →
+`chip_emu_beam_tick()`/`chip_emu_run_to_cycle()` (per-scanline DMA state
+machines), `USB_Poll`, `net_stack_tick`, `Task_WakeTimers`,
+`Watchdog_Tick`, and `Task_ScheduleFromIRQ`. Any Idle watermark is the
+deepest of those chains, so Idle (or any usually-current task) can
+report a peak far above what its own entry function uses.
+
 ## New C: commands
 
 | Command | What it does |
