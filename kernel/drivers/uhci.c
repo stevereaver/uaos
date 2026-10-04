@@ -505,9 +505,14 @@ static void uhci_scan_intr(UhciHc *h)
         int eflag = 0;           /* 1 = hard error, 2 = NAK suspend */
         for (int t = p->ndone; t < p->ntd; t++) {
             uint32_t st = tds[t].status;
-            if (st & TD_ST_ACTIVE) continue;
+            /* Completion evidence outranks ACTIVE: a NAKed TD keeps
+             * its ACTIVE bit set — the HC retries it every frame and
+             * only clears NAK|ACTIVE when a transaction succeeds.
+             * Testing ACTIVE first read a healthy NAKing pipe as
+             * "still armed" and stalled it forever (UAOS-226). */
             if (st & TD_ST_ERRMSK) { end = t; eflag = 1; break; }
             if (st & TD_ST_NAK)    { end = t; eflag = 2; break; }
+            if (st & TD_ST_ACTIVE) continue;
             if (t == p->ntd - 1 ||
                 (int)TD_ST_ACTLEN(st) + 1 < p->mps) { end = t; break; }
         }
@@ -524,15 +529,17 @@ static void uhci_scan_intr(UhciHc *h)
                 klog_puts(KLOG_USB, KLOG_WARN, " idle td0=");
                 klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
                              tds[p->ndone].status);
+                klog_puts(KLOG_USB, KLOG_WARN, " elem=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             p->qh->element);
                 klog_puts(KLOG_USB, KLOG_WARN, "\n");
             }
             continue;
         }
-        /* NAK-suspend is the normal idle state — it must NOT reset the
-         * stall counter or the idle log re-fires forever on devices
-         * whose NAK retires interleave with all-active stretches. */
-        if (eflag != 2)
-            p->stall_n = 0;
+        /* Any HC writeback — completion, error or NAK — proves the HC
+         * reached this pipe, so the stall counter resets.  A wedged
+         * pipe shows only bare-ACTIVE TDs with no evidence at all. */
+        p->stall_n = 0;
 
         /* Count newly completed TDs (indices p->ndone .. end-1, plus
          * end itself when it completed normally). */
@@ -565,12 +572,19 @@ static void uhci_scan_intr(UhciHc *h)
         }
 
         if (eflag == 2) {
-            /* NAK suspend — device has no more data right now.
-             * td[end] retired NAKed; re-arm it and everything after,
-             * resume where the stream left off.  p->toggle stays put —
-             * it is the toggle of report packet 0, and td[t] always
-             * carries p->toggle ^ (t&1) regardless of where we resume. */
-            uhci_intr_rearm(p, p->ndone);
+            /* NAK suspend — device has no data at td[end] right now.
+             * On real silicon the TD stays ACTIVE and the QH element
+             * keeps pointing at it, so the HC retries it every frame
+             * on its own; only re-arm if the element ran past (QEMU
+             * leaves it too, but cover HCs that advance it anyway).
+             * Rewriting status/token of a TD the HC may be executing
+             * races its writeback — skip it when not needed.
+             * p->toggle stays put — it is the toggle of report packet
+             * 0, and td[t] always carries p->toggle ^ (t&1) regardless
+             * of where we resume. */
+            if ((p->qh->element & ~0xFu) !=
+                (uint32_t)(uintptr_t)&tds[p->ndone])
+                uhci_intr_rearm(p, p->ndone);
             continue;
         }
 
@@ -862,9 +876,40 @@ int UHCI_DiagRead(int idx, UhciDiag *d)
     return 0;
 }
 
+/* Firmware can leave EHCI companions running with USBINTR enabled on
+ * the same INTx as a UHCI.  With no driver to ack their USBSTS, a
+ * latched completion asserts the shared level line forever and reads
+ * as a spurious-IRQ storm on our vector (UAOS-226: EHCI 00:1D.7/
+ * 00:26.7 share gsi21 with uhci4 on MBP4,1).  PCI command INTxDIS
+ * silences the pin without touching the controller's MMIO schedule. */
+static void ehci_quiesce_intx(void)
+{
+    for (uint16_t b = 0; b < 256; b++)
+        for (uint8_t d = 0; d < 32; d++)
+            for (uint8_t f = 0; f < 8; f++) {
+                if (pci_r32((uint8_t)b, d, f, 0x00) == 0xFFFFFFFF) {
+                    if (f == 0) break;
+                    continue;
+                }
+                if ((pci_r32((uint8_t)b, d, f, 0x08) >> 8) != 0x0C0320u)
+                    continue;                       /* serial/USB/EHCI */
+                uint16_t cmd = pci_r16((uint8_t)b, d, f, 0x04);
+                if (cmd & (1u << 10)) continue;     /* already off */
+                pci_w16((uint8_t)b, d, f, 0x04,
+                        (uint16_t)(cmd | (1u << 10)));
+                klog_puts(KLOG_USB, KLOG_WARN,
+                          "uhci: quiesced ehci INTx ");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             ((uint32_t)b << 16) | ((uint32_t)d << 8) | f);
+                klog_puts(KLOG_USB, KLOG_WARN, " (unridden "
+                          "companion)\n");
+            }
+}
+
 /* Called from kernel main after IRQ_Init: attach INTx for each HC. */
 void UHCI_SetupIRQs(void)
 {
+    ehci_quiesce_intx();
     for (int i = 0; i < g_nhc; i++) {
         UhciHc *h = &g_hc[i];
         int vec = IRQ_AttachPCI(h->bus, h->dev, h->fn,

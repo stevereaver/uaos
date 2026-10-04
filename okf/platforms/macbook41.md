@@ -79,6 +79,15 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   one TD per QH visit; IOC goes on the last TD only; a chain is done when
   the last TD clears ACTIVE, an earlier TD completes short (<mps), or a
   NAK/error bit sets.
+- **A NAKed TD keeps ACTIVE set (UAOS-226).** Real silicon (and QEMU's
+  `TD_RESULT_NEXT_QH` path) writes back `status |= NAK` without clearing
+  ACTIVE or advancing `qh->element`, and fires no IOC — the HC retries
+  the TD every frame until a success clears `ACTIVE|NAK` and writes
+  `actlen` (a 0-byte NAK reads back actlen=0x7FF on ICH8). So the scan
+  must test NAK/error evidence *before* ACTIVE, a NAKed pipe needs no
+  re-arm while `qh->element` still points at the resume TD, and NAKs do
+  not cause interrupts. EHCI companions sharing a UHCI INTx with no
+  driver are silenced via PCI command INTxDIS in `UHCI_SetupIRQs`.
 
 ## Boot-media / debug-console notes (2026-09-30)
 
