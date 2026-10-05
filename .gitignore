@@ -15,3 +15,6 @@ documentation/*_body.html
 # Raw binaries (no extension) and their generated _bin.c / _bin.h wrappers
 emulation/binaries/*
 !emulation/binaries/.gitkeep
+
+tests/*.hdf
+tests/*.vdi
