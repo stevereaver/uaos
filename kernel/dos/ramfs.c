@@ -612,15 +612,17 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name)
 
 void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes)
 {
-    /* Per-volume used: walk this volume's node tree, summing pool bytes
-     * held by files that actually consume pool.  ext_bdev proxy files are
-     * skipped — their content lives on the backing block device. */
+    /* Per-volume used: walk this volume's node tree, summing the bytes
+     * each file contributes to the volume.  ext_bdev proxy files consume
+     * no pool, but their content still belongs to the volume (read from
+     * the backing device on demand), so count their size — otherwise an
+     * all-proxy volume like the ISO9660 sysroot reports 0 bytes used. */
     uint32_t used = 0;
     if (vol && vol->root) {
         RamFsNode *n = vol->root;
         while (n) {
-            if (n->type == RAMFS_TYPE_FILE && !n->ext_bdev)
-                used += n->alloc;
+            if (n->type == RAMFS_TYPE_FILE)
+                used += n->ext_bdev ? n->size : n->alloc;
             /* Iterative DFS: child, else sibling, else climb to a sibling */
             RamFsNode *next = n->first_child ? n->first_child
                                              : n->next_sibling;

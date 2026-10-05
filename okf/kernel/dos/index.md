@@ -67,7 +67,7 @@ RAMFS uses a shared 8 MB data pool (`g_pool` in `kernel/dos/ramfs.c`) for file c
 
 `RamFS_Read`'s ext-backed proxy path caches the last filesystem block read (`g_sec_buf`, keyed on bdev + block size + device sector): sequential 256 B reads that land in the same 2048-byte ISO block now cost one `BlockDev_Read` per block instead of one per call (~8x I/O amplification removed).
 
-Volume stats are per-volume: `RamFS_GetVolumeStats` walks the volume's own node tree summing `node->alloc` for pool-backed files only (ext_bdev proxy files consume no pool) and reports `total = used + pool_free` where `pool_free = pool_size - g_pool_used` — so every volume's `free` reflects the shared pool while `used` is its own.
+Volume stats are per-volume: `RamFS_GetVolumeStats` walks the volume's own node tree summing each file's contribution — `node->alloc` for pool-backed files, `node->size` for ext_bdev proxy files (their content consumes no pool but still belongs to the volume; without it the all-proxy `Workbench:` sysroot mount reported `used = 0`, UAOS-222) — and reports `total = used + pool_free` where `pool_free = pool_size - g_pool_used`, so every volume's `free` is the shared pool's writable headroom while `used` is its own.
 
 `DEFAULT_PROTECTION` in `amiga_dos_types.h` is `FIBF_OTR_WRITE|FIBF_OTR_EXECUTE|FIBF_OTR_DELETE|FIBF_GRP_WRITE|FIBF_GRP_EXECUTE|FIBF_GRP_DELETE` (0xEE00): all R/W/E/D bits use inverted logic (bit set = denied), so owner rwed and group/other read stay clear (allowed) while group/other write+execute+delete are denied. The previous `0xFFE0|GRP_READ|OTR_READ` encoding (= 0xFFE0) set `FIBF_DELETE` on every new node, making fresh files undeletable/unrenamable.
 

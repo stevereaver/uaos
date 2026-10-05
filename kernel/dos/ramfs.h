@@ -130,8 +130,9 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name);
 int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path);
 
 /* Get volume capacity statistics.
- * used  = pool bytes held by this volume's files (ext_bdev proxy files
- *         excluded — they consume no pool),
+ * used  = bytes held by this volume's files: pool allocation for RAM
+ *         files plus content size for ext_bdev proxy files (their data
+ *         stays on the backing device but belongs to the volume),
  * total = used + pool bytes still free pool-wide (all RAM volumes share
  *         the pool), so callers get free = total - used. */
 void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes);
