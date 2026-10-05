@@ -148,14 +148,25 @@ static void enumerate_port(UsbHc *hc, int port)
     /* First 8 bytes of the device descriptor → ep0 max packet.
      * Devices (hubs especially) need recovery time after port reset —
      * the spec minimum is 10 ms but real hardware often wants more.
-     * Retry with a settle delay rather than abandoning enumeration. */
+     * Retry with a settle delay rather than abandoning enumeration.
+     * A device left wedged by the firmware or a bouncing attach can
+     * stay deaf through the whole first round — a second port reset
+     * is the classic recovery (UAOS-225), so the retries are split
+     * across two resets before giving up. */
     int ok = 0;
-    for (int attempt = 0; attempt < 8; attempt++) {
-        if (get_desc(dev, USB_DESC_DEVICE, 0, dd, 8) == 0) {
-            ok = 1;
-            break;
+    for (int round = 0; round < 2 && !ok; round++) {
+        if (round) {
+            int s2 = hc->port_reset(hc, port);
+            if (s2 < 0) break;                 /* device went away */
+            dev->speed = (uint8_t)s2;
         }
-        usb_msleep(100);
+        for (int attempt = 0; attempt < 4; attempt++) {
+            if (get_desc(dev, USB_DESC_DEVICE, 0, dd, 8) == 0) {
+                ok = 1;
+                break;
+            }
+            usb_msleep(100);
+        }
     }
     if (!ok) {
         klog_puts(KLOG_USB, KLOG_WARN, "usb: GET_DESCRIPTOR(8) failed\n");

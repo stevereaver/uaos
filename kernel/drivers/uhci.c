@@ -365,7 +365,37 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
     }
 
     if (err != 0) {
-        klog_puts(KLOG_USB, KLOG_WARN, "uhci: ctrl sts=");
+        /* Stage instrumentation (UAOS-225): td[0] is the SETUP packet,
+         * td[ntd-1] the status stage, everything between is DATA.  The
+         * first TD carrying error bits (or, failing that, the first
+         * still-ACTIVE TD) names the stage the transfer died on —
+         * all-ACTIVE means the HC never walked the QH at all. */
+        int bad = -1;
+        for (int i = 0; i < ntd; i++)
+            if (tds[i].status & TD_ST_ERRMSK) { bad = i; break; }
+        if (bad < 0)
+            for (int i = 0; i < ntd; i++)
+                if (tds[i].status & TD_ST_ACTIVE) { bad = i; break; }
+        const char *stage = (bad < 0)         ? "all-retired" :
+                            (bad == 0)        ? "setup" :
+                            (bad == ntd - 1)  ? "status" : "data";
+
+        klog_puts(KLOG_USB, KLOG_WARN, "uhci: ctrl fail req=");
+        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)bReq);
+        klog_puts(KLOG_USB, KLOG_WARN, " wval=");
+        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)wVal);
+        klog_puts(KLOG_USB, KLOG_WARN, " dev=");
+        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->addr);
+        klog_puts(KLOG_USB, KLOG_WARN, " port=");
+        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
+        klog_puts(KLOG_USB, KLOG_WARN, " stage=");
+        klog_puts(KLOG_USB, KLOG_WARN, stage);
+        if (dev->port >= 0 && dev->port <= 1) {
+            klog_puts(KLOG_USB, KLOG_WARN, " psc=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                         rg16(h, (uint16_t)(U_PORTSC1 + dev->port * 2)));
+        }
+        klog_puts(KLOG_USB, KLOG_WARN, " sts=");
         klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_USBSTS));
         klog_puts(KLOG_USB, KLOG_WARN, " frnum=");
         klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_FRNUM));
@@ -724,6 +754,12 @@ static int uhci_port_reset(UsbHc *pub, int port)
     for (int i = 0; i < 20 && !(rg16(h, r) & PSC_PE); i++)
         msleep(1);
 
+    /* Reset-recovery settle — the USB spec minimum is 10 ms but
+     * firmware-abandoned devices (and Apple's built-ins) are slower to
+     * come back; answering the first SETUP reliably needs a wider
+     * margin (UAOS-225). */
+    msleep(50);
+
     v = rg16(h, r);
     if (!(v & PSC_PE) || !(v & PSC_CCS))
         return -1;
@@ -802,6 +838,77 @@ static int uhci_controller_init(UhciHc *h, uint8_t bus, uint8_t dev, uint8_t fn)
     return 0;
 }
 
+/* EHCI operational-register offsets (BAR0 + CAPLENGTH) */
+#define EH_USBCMD    0x00
+#define EH_USBSTS    0x04
+#define EH_USBINTR   0x08
+#define EH_CFGFLAG   0x40
+#define EH_STS_HCH   (1u << 12)         /* HCHalted */
+
+/* Release every EHCI-owned root port to its UHCI companion.
+ *
+ * ICH8 routes each root port through an ownership mux: while EHCI's
+ * CONFIGFLAG is 1, ports stay on the (driverless) EHCI — yet the
+ * companion UHCI still reports the attach in PORTSC.CCS, so
+ * enumeration resets a port whose data lines are muxed away and every
+ * control transfer dies on the wire (UAOS-225: GET_DESCRIPTOR(8)
+ * timing out on two MBP4,1 ports).  Firmware that ran its USB2 boot
+ * stack leaves CF=1 behind.  With no EHCI driver the right hand-off
+ * is CF=0: every port routes to its companion UHCI, and HS devices
+ * fall back to full-speed.  The EHCI schedule is stopped first so a
+ * zombie list can't reference ports it no longer owns; USBINTR is
+ * cleared as well (belt-and-braces with the INTxDIS in
+ * ehci_quiesce_intx). */
+static void ehci_release_ports(void)
+{
+    int released = 0;
+    for (uint16_t b = 0; b < 256; b++)
+        for (uint8_t d = 0; d < 32; d++)
+            for (uint8_t f = 0; f < 8; f++) {
+                if (pci_r32((uint8_t)b, d, f, 0x00) == 0xFFFFFFFF) {
+                    if (f == 0) break;
+                    continue;
+                }
+                if ((pci_r32((uint8_t)b, d, f, 0x08) >> 8) != 0x0C0320u)
+                    continue;                       /* serial/USB/EHCI */
+                uint32_t bar = pci_r32((uint8_t)b, d, f, 0x10);
+                uint32_t base = bar & ~0xFu;
+                if (!base || (bar & 1)) continue;   /* need MMIO BAR0 */
+                /* The BAR is firmware-assigned; just make sure MEMSE
+                 * decoding is on so it answers. */
+                uint16_t cmd = pci_r16((uint8_t)b, d, f, 0x04);
+                if (!(cmd & 0x02))
+                    pci_w16((uint8_t)b, d, f, 0x04, (uint16_t)(cmd | 0x02));
+                volatile uint8_t *cap =
+                    (volatile uint8_t *)(uintptr_t)base;
+                uint8_t caplen = cap[0];
+                if (!caplen || caplen > 0x40) continue;   /* dead BAR */
+                volatile uint32_t *op =
+                    (volatile uint32_t *)(cap + caplen);
+
+                if (op[EH_USBCMD / 4] & 1) {           /* RS — stop */
+                    op[EH_USBCMD / 4] &= ~1u;
+                    for (int i = 0; i < 100 &&
+                         !(op[EH_USBSTS / 4] & EH_STS_HCH); i++)
+                        msleep(1);
+                }
+                op[EH_USBINTR / 4] = 0;
+
+                uint32_t cf = op[EH_CFGFLAG / 4];
+                if (!(cf & 1)) continue;        /* companions already own */
+                op[EH_CFGFLAG / 4] = cf & ~1u;
+                released = 1;
+                klog_puts(KLOG_USB, KLOG_WARN,
+                          "uhci: released ehci ports ");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             ((uint32_t)b << 16) | ((uint32_t)d << 8) | f);
+                klog_puts(KLOG_USB, KLOG_WARN, " to companion\n");
+            }
+    /* A re-muxed device presents as a fresh attach — give it a moment
+     * before port probes read PORTSC. */
+    if (released) msleep(50);
+}
+
 /* ------------------------------------------------------------------ */
 /* Public entry: find all UHCI controllers, register them with the USB  */
 /* core, and enumerate ports.                                           */
@@ -809,6 +916,10 @@ static int uhci_controller_init(UhciHc *h, uint8_t bus, uint8_t dev, uint8_t fn)
 int UHCI_Init(void)
 {
     int found = 0;
+    /* Route every root port to the UHCI companions before probing —
+     * ports left EHCI-owned by the firmware are unreachable ghosts
+     * (UAOS-225). */
+    ehci_release_ports();
     for (uint16_t b = 0; b < 256 && g_nhc < MAX_UHCI; b++)
         for (uint8_t d = 0; d < 32 && g_nhc < MAX_UHCI; d++)
             for (uint8_t f = 0; f < 8 && g_nhc < MAX_UHCI; f++) {

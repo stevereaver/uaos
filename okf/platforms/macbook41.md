@@ -88,6 +88,19 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   re-arm while `qh->element` still points at the resume TD, and NAKs do
   not cause interrupts. EHCI companions sharing a UHCI INTx with no
   driver are silenced via PCI command INTxDIS in `UHCI_SetupIRQs`.
+- **EHCI `CONFIGFLAG` must be cleared or ghost ports appear on UHCI
+  (UAOS-225).** Firmware that ran its USB2 stack leaves EHCI `CF=1`,
+  keeping every root port muxed to the (driverless) EHCI — the
+  companion UHCI still reports `PORTSC.CCS`, so enumeration resets and
+  polls a port whose data lines go elsewhere: control transfers retire
+  with STALL/CRC/timeout (`td0=0x01450007` — SETUP went out, device
+  never answered). `UHCI_Init` calls `ehci_release_ports()` first:
+  scans PCI for EHCI (class `0x0C0320`), stops any live schedule
+  (RS→0, waits `HCHalted`), clears `USBINTR`, writes `CF=0`, and
+  settles 50 ms — every port then routes to its companion, HS devices
+  falling back to full-speed. With no EHCI driver this is the
+  documented USB-1.1-only hand-off; a real EHCI driver (UAOS-134)
+  would replace it with proper `CF`+`PortOwner` handling.
 
 ## Boot-media / debug-console notes (2026-09-30)
 
@@ -170,8 +183,9 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   skipped → frames fetched but never pushed to the wire.  Fixed.
 - USB enumeration on metal: **4 devices / 7 ifs** — internal Apple
   `05ac:02xx` bound (`hid: kbd armed`, `bcm5974: trackpad + button
-  armed`); one port fails GET_DESCRIPTOR(8) (EHCI-owned HS device,
-  expected).  Input at the desktop still unverified.
+  armed`); one port fails GET_DESCRIPTOR(8) — later found to be
+  EHCI-owned ghost attach (UAOS-225, fixed via `CF=0` release —
+  see UHCI driver notes).  Input at the desktop still unverified.
 - TX-timeout diagnostic dump retained (get/stput/qcsr/hwe/pfctl/stctl/
   st0/ram) — bisects fetch vs status vs error stages.
 
