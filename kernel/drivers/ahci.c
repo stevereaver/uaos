@@ -178,16 +178,60 @@ typedef struct {
 static AhciPort g_ports[MAX_PORTS];
 static int      g_ndisks = 0;
 static volatile int g_irq_seen = 0;
+static volatile uint32_t g_irq_is[MAX_PORTS]; /* PxIS bits acked by IRQ */
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static uint64_t g_tsc_khz = 0;      /* TSC ticks per ms, 0 = uncalibrated */
+
+/* AHCI_Init runs before the PIT tick and interrupts exist, so
+ * g_pit_ticks cannot drive timing here.  Calibrate the TSC against PIT
+ * channel 2 (speaker timer): one-shot count of 59659 ticks at
+ * 1.193182 MHz = exactly 50 ms — the same trick dhcp.c uses. */
+static void calibrate_tsc(void)
+{
+    if (g_tsc_khz) return;
+
+    uint8_t old;
+    __asm__ volatile("inb $0x61,%0" : "=a"(old));
+    __asm__ volatile("outb %0,$0x61" :: "a"((uint8_t)((old & ~0x02) | 0x01)));
+    __asm__ volatile("outb %0,$0x43" :: "a"((uint8_t)0xB0));
+    __asm__ volatile("outb %0,$0x42" :: "a"((uint8_t)(59659 & 0xFF)));
+    __asm__ volatile("outb %0,$0x42" :: "a"((uint8_t)(59659 >> 8)));
+    __asm__ volatile("outb %0,$0x61" :: "a"((uint8_t)((old & ~0x02) | 0x01)));
+
+    uint64_t t0 = rdtsc();
+    uint8_t s;
+    do { __asm__ volatile("inb $0x61,%0" : "=a"(s)); } while (!(s & 0x20));
+    uint64_t t1 = rdtsc();
+
+    __asm__ volatile("outb %0,$0x61" :: "a"(old));
+
+    g_tsc_khz = ((t1 - t0) * 20) / 1000;      /* ticks per ms */
+    if (!g_tsc_khz) g_tsc_khz = 1;
+    kprint("[AHCI] TSC ~"); kprintdec((uint32_t)(g_tsc_khz / 1000));
+    kprint(" MHz\n");
+}
+
 static void ms_spin(uint32_t ms)
 {
-    for (uint32_t m = 0; m < ms; m++)
-        for (volatile int i = 0; i < 2000; i++)
-            __asm__ volatile ("pause");
+    if (!g_tsc_khz) {
+        /* Uncalibrated fallback: port-0x80 reads (~1 us each on LPC). */
+        for (uint32_t i = 0; i < ms * 1000; i++)
+            __asm__ volatile ("inb $0x80, %%al" ::: "eax");
+        return;
+    }
+    uint64_t end = rdtsc() + g_tsc_khz * ms;
+    while (rdtsc() < end) __asm__ volatile ("pause");
 }
 
 static int wait_not_busy(int port, int timeout_ms)
@@ -204,6 +248,22 @@ static void ahci_irq_handler(uint64_t vector, uint64_t error_code)
 {
     (void)vector; (void)error_code;
     g_irq_seen = 1;
+    /* Ack at the source: latch then clear each pending port's PxIS
+     * (W1C), then clear the port's bit in HBA IS (also W1C).  The latch
+     * keeps a TFES visible to the polling loop even when the IRQ wins
+     * the race to clear PxIS first. */
+    if (g_hba) {
+        uint32_t is = g_hba[HBA_IS / 4];
+        for (int port = 0; port < MAX_PORTS; port++) {
+            if (!(is & (1u << port))) continue;
+            uint32_t pis = *px(port, PX_IS);
+            if (pis) {
+                g_irq_is[port] |= pis;
+                *px(port, PX_IS) = pis;
+            }
+        }
+        if (is) g_hba[HBA_IS / 4] = is;
+    }
     IRQ_EOI((int)vector);
 }
 
@@ -250,12 +310,13 @@ static int ahci_cmd(AhciPort *p, uint8_t cmd, uint64_t lba, uint16_t count,
     p->ct->prdt[0].reserved = 0;
     p->ct->prdt[0].dbc  = bytes - 1;              /* IOC=0 */
 
+    g_irq_is[port] = 0;
     *px(port, PX_IS) = 0xFFFFFFFF;                /* clear pending */
     *px(port, PX_CI) = 1;                         /* issue slot 0 */
 
     /* Wait for CI bit0 to clear (poll; IRQ also acknowledged by handler) */
     for (int i = 0; i < 5000; i++) {
-        uint32_t is = *px(port, PX_IS);
+        uint32_t is = *px(port, PX_IS) | g_irq_is[port];
         if (is & IS_TFES) {
             *px(port, PX_IS) = is;
             kprint("[AHCI] TFES error serr=");
@@ -445,6 +506,9 @@ int AHCI_Init(void)
     g_hba = (volatile uint32_t *)(uintptr_t)(bar5 & 0xFFFFFFF0u);
     kprint("[AHCI] ABAR="); kprinthex(bar5 & 0xFFFFFFF0u); kprint("\n");
 
+    /* Calibrate ms_spin before the ownership handoff / HBA reset waits */
+    calibrate_tsc();
+
     /* Enable memory space + bus mastering */
     uint16_t cmd = pci_r16(g_bus, g_dev, g_fn, 0x04);
     pci_w16(g_bus, g_dev, g_fn, 0x04, (uint16_t)(cmd | 0x06));
@@ -573,6 +637,7 @@ void AHCI_DiagDump(void *ctx, void (*emit)(void *, const char *))
         dl_add(&l, " SERR="); dl_hex(&l, pr[0x30/4]);   /* error */
         dl_add(&l, " CI=");  dl_hex(&l, pr[0x38/4]);   /* cmds in flight */
         dl_add(&l, " IS=");  dl_hex(&l, pr[0x10/4]);   /* port int status */
+        dl_add(&l, " IS_ack="); dl_hex(&l, g_irq_is[i]); /* acked by IRQ */
         dl_emit(&l, ctx, emit);
     }
 }
