@@ -6,8 +6,9 @@
  *   - Passive listen/accept
  *   - Data send/receive with ACK
  *   - Connection teardown (FIN/FIN-ACK)
- *   - Retransmit timer with exponential backoff (tcp_tick, called at 10 Hz)
- *   - Connect timeout (SYN_SENT), TIME_WAIT expiry, half-open cleanup
+ *   - Retransmit timer with exponential backoff (tcp_tick, from the 100 Hz PIT)
+ *   - Connect timeout (SYN_SENT), TIME_WAIT expiry, half-open cleanup,
+ *     CLOSE_WAIT linger bound, FIN_WAIT_2 wait bound
  *   - Peer-window enforcement and a single-segment in-flight limit on send
  *   - RFC 793 RST generation for segments that match no socket
  *
@@ -300,12 +301,31 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
          * window is still taken from any ACK (dup ACKs carry fresh
          * window information). */
         if (seq_gt(ack_num, s->snd_una) && !seq_gt(ack_num, s->snd_nxt)) {
-            s->snd_una    = ack_num;
-            s->retx_timer = 0;
-            s->retx_count = 0;
-            s->retx_len   = 0;
+            s->snd_una = ack_num;
+            if (s->snd_una == s->snd_nxt) {
+                /* Everything in flight acked — disarm. */
+                s->retx_timer = 0;
+                s->retx_count = 0;
+                s->retx_len   = 0;
+            } else {
+                /* Partial ACK: progress, but the tail is still unacked.
+                 * Keep the saved segment and restart the RTO — clearing
+                 * the timer here left snd_una < snd_nxt forever, which
+                 * wedged fin_pending sockets in CLOSE_WAIT (UAOS-223). */
+                s->retx_timer = TCP_RETX_TICKS_INIT;
+                s->retx_count = 0;
+            }
         }
         s->snd_wnd = net_ntohs(h->window);
+    }
+
+    /* A RST tears the connection down in every synchronized state —
+     * only SYN_SENT/ESTABLISHED used to honor it, so a force-closing
+     * peer (RST/RST|ACK in CLOSE_WAIT, LAST_ACK, FIN_WAIT_x, ...) was
+     * ignored and the slot leaked (UAOS-223). */
+    if (flags & TCP_RST) {
+        s->state = TCP_CLOSED;
+        return;
     }
 
     switch (s->state) {
@@ -315,8 +335,6 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
             s->rcv_nxt = seq + 1;
             s->state   = TCP_ESTABLISHED;
             tcp_send_seg(s, TCP_ACK, 0, 0);
-        } else if (flags & TCP_RST) {
-            s->state = TCP_CLOSED;
         }
         break;
 
@@ -332,14 +350,14 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_ESTABLISHED:
-        if (flags & TCP_RST) { s->state = TCP_CLOSED; break; }
         /* Queue received data; the FIN only counts once every byte
          * before it has actually been delivered to the ring. */
         if (data_len > 0)
             tcp_rx_data(s, seq, data, data_len);
         if ((flags & TCP_FIN) && seq + data_len == s->rcv_nxt) {
             s->rcv_nxt++;
-            s->state = TCP_CLOSE_WAIT;
+            s->state      = TCP_CLOSE_WAIT;
+            s->conn_timer = 0;   /* start the linger bound (tcp_tick) */
             tcp_send_seg(s, TCP_ACK, 0, 0);
         }
         break;
@@ -347,7 +365,14 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
     case TCP_FIN_WAIT_1:
         if (data_len > 0)
             tcp_rx_data(s, seq, data, data_len);
-        if (flags & TCP_ACK) s->state = TCP_FIN_WAIT_2;
+        /* Only an ACK covering our FIN (snd_nxt — the FIN consumed one
+         * sequence number) may advance us to FIN_WAIT_2; a dup ACK must
+         * leave us here where the retransmit machinery still owns the
+         * outstanding FIN. */
+        if ((flags & TCP_ACK) && ack_num == s->snd_nxt) {
+            s->state      = TCP_FIN_WAIT_2;
+            s->conn_timer = 0;   /* start the wait-for-peer-FIN bound */
+        }
         if ((flags & TCP_FIN) && seq + data_len == s->rcv_nxt) {
             s->rcv_nxt++;
             tcp_send_seg(s, TCP_ACK, 0, 0);
@@ -357,8 +382,10 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_FIN_WAIT_2:
-        if (data_len > 0)
+        if (data_len > 0) {
             tcp_rx_data(s, seq, data, data_len);
+            s->conn_timer = 0;   /* peer still talking — extend wait */
+        }
         if ((flags & TCP_FIN) && seq + data_len == s->rcv_nxt) {
             s->rcv_nxt++;
             tcp_send_seg(s, TCP_ACK, 0, 0);
@@ -378,7 +405,11 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_LAST_ACK:
-        if (flags & TCP_ACK) s->state = TCP_CLOSED;
+        /* Only an ACK covering our FIN ends the connection; a stale
+         * dup must not close it early (the FIN's retransmits still
+         * bound the wait via tcp_tick). */
+        if ((flags & TCP_ACK) && ack_num == s->snd_nxt)
+            s->state = TCP_CLOSED;
         break;
 
     case TCP_TIME_WAIT:
@@ -474,9 +505,14 @@ int tcp_accept(int listen_sock)
     if (g_socks[listen_sock].state != TCP_LISTEN) return -1;
     /* Return the first connection that completed its handshake and has
      * not been claimed yet.  Without the accepted mark an active session
-     * socket — also ESTABLISHED on this port — would be returned again. */
+     * socket — also ESTABLISHED on this port — would be returned again.
+     * CLOSE_WAIT is returned too: a peer that FINs between handshake and
+     * accept must still be handed to a reader (which will drain the ring
+     * and close) instead of orphaning the slot (UAOS-223). */
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
-        if (g_socks[i].state == TCP_ESTABLISHED && !g_socks[i].accepted &&
+        if ((g_socks[i].state == TCP_ESTABLISHED ||
+             g_socks[i].state == TCP_CLOSE_WAIT) &&
+            !g_socks[i].accepted &&
             g_socks[i].local_port == g_socks[listen_sock].local_port) {
             g_socks[i].accepted = 1;
             return i;
@@ -505,6 +541,8 @@ int tcp_send(int sock, const uint8_t *data, uint16_t len)
     if (len > TCP_MSS) len = TCP_MSS;
 
     tcp_send_seg(s, TCP_PSH | TCP_ACK, data, len);
+    if (s->state == TCP_CLOSE_WAIT)
+        s->conn_timer = 0;   /* owner still working — extend linger */
     return len;
 }
 
@@ -515,6 +553,8 @@ int tcp_recv(int sock, uint8_t *buf, uint16_t maxlen)
     uint16_t free_before = rbuf_free(s->rx_head, s->rx_tail, TCP_RX_BUF_SIZE);
     int n = rbuf_get(s->rx_buf, &s->rx_head, &s->rx_tail,
                      TCP_RX_BUF_SIZE, buf, maxlen);
+    if (n > 0 && s->state == TCP_CLOSE_WAIT)
+        s->conn_timer = 0;   /* owner still draining — extend linger */
     /* Draining a non-empty ring freed space the peer's stream was
      * probably blocked on: every ACK we sent while queuing advertised a
      * shrinking window, so the sender parks in zero-window persist mode
@@ -625,11 +665,36 @@ void tcp_tick(void)
                 s->state = TCP_CLOSED;
             break;
 
+        /* ── FIN_WAIT_2: bound the wait for the peer's FIN ──────────────── */
+        case TCP_FIN_WAIT_2:
+            /* Our FIN is acked; a peer that never closes (dead app,
+             * deliberate half-open) would pin the slot forever.  Peer
+             * data refreshes conn_timer in tcp_rx. */
+            s->conn_timer++;
+            if (s->conn_timer >= TCP_FINWAIT2_TICKS)
+                s->state = TCP_CLOSED;
+            break;
+
+        /* ── CLOSE_WAIT: bound the linger, then shared retx handling ────── */
+        case TCP_CLOSE_WAIT:
+            /* The peer already sent FIN; a live owner drains the ring
+             * and closes promptly.  Owner activity (tcp_send/tcp_recv
+             * progress) resets conn_timer, so reaching the bound means
+             * the socket is abandoned — take over the close ourselves
+             * instead of leaking the slot (UAOS-223).  If data is still
+             * in flight tcp_close defers via fin_pending and the shared
+             * retransmit path below bounds the rest. */
+            s->conn_timer++;
+            if (s->conn_timer >= TCP_CLOSEWAIT_TICKS) {
+                s->conn_timer = 0;
+                tcp_close(i);
+            }
+            /* fall through */
+
         /* ── States with retransmittable data ───────────────────────────── */
         case TCP_ESTABLISHED:
         case TCP_FIN_WAIT_1:
         case TCP_LAST_ACK:
-        case TCP_CLOSE_WAIT:
             /* A FIN deferred by tcp_close while data was in flight goes
              * out once the peer has acknowledged everything.  While
              * still waiting, fall through to normal retransmit handling
@@ -642,13 +707,17 @@ void tcp_tick(void)
                 tcp_send_seg(s, TCP_FIN | TCP_ACK, 0, 0);
                 break;
             }
-            /* Only retransmit if there is actually unacked data/control */
-            if (s->retx_timer == 0) break;       /* nothing armed */
             if (s->snd_una == s->snd_nxt) {      /* everything acked */
                 s->retx_timer = 0;
                 s->retx_count = 0;
                 break;
             }
+            /* Unacked data with a disarmed timer is a wedge: re-arm so
+             * the segment retransmits (or aborts after
+             * TCP_RETX_MAX_TRIES) — a deferred FIN can never pin the
+             * slot again (UAOS-223). */
+            if (s->retx_timer == 0)
+                s->retx_timer = TCP_RETX_TICKS_INIT;
 
             s->retx_timer--;
             if (s->retx_timer > 0) break;        /* not yet */

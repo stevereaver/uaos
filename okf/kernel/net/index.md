@@ -4,7 +4,7 @@ title: TCP/IP Network Stack
 description: The native IPv4 networking stack, device drivers, and higher-level protocols in UAOS.
 resource: /kernel/net/
 tags: [network, tcp, udp, ip, dhcp, dns, ntp]
-timestamp: 2026-09-25T01:20:00Z
+timestamp: 2026-10-05T06:00:00Z
 ---
 
 # TCP/IP Network Stack
@@ -63,14 +63,34 @@ Full TCP state machine including:
 
 - `CLOSED`, `LISTEN`, `SYN_SENT`, `SYN_RECEIVED`, `ESTABLISHED`, `FIN_WAIT_1`, `FIN_WAIT_2`, `CLOSING`, `TIME_WAIT`, `CLOSE_WAIT`, `LAST_ACK`.
 - Active `connect()`, passive `listen()`/`accept()`.  `tcp_accept`
-  returns only unclaimed `ESTABLISHED` sockets on the listen port and
-  marks each with `accepted` on the way out — without the mark, a live
-  session socket (also `ESTABLISHED` on that port) would be handed out
-  again to the next caller.  Outbound `tcp_connect` sockets are born
-  `accepted` so they can never be mistaken for pending accepts.
+  returns only unclaimed sockets on the listen port — `ESTABLISHED` or
+  `CLOSE_WAIT` (UAOS-223: a peer that FINs between handshake and accept
+  must still reach a reader, which drains the ring and closes, instead
+  of orphaning the slot) — and marks each with `accepted` on the way
+  out — without the mark, a live session socket (also `ESTABLISHED` on
+  that port) would be handed out again to the next caller.  Outbound
+  `tcp_connect` sockets are born `accepted` so they can never be
+  mistaken for pending accepts.
 - Send/receive with ACK handling and ring buffers.
-- Retransmit timer with exponential backoff (10 Hz tick).
-- Connect timeout, half-open cleanup, and `TIME_WAIT` expiry.
+- Retransmit timer with exponential backoff (`tcp_tick` runs at the
+  100 Hz PIT rate via `net_stack_tick()` in `PIT_IRQHandler`).
+- Connect timeout, half-open cleanup, `TIME_WAIT` expiry, and teardown
+  bounds (UAOS-223): an incoming RST now closes the socket in **every**
+  synchronized state (previously honored only in `SYN_SENT`/
+  `ESTABLISHED`, so a force-closing peer's RST/RST|ACK was ignored in
+  `CLOSE_WAIT`, `LAST_ACK`, `FIN_WAIT_*`, `SYN_RECEIVED` and the slot
+  leaked).  `CLOSE_WAIT` carries a 30 s idle linger bound — real owner
+  activity (`tcp_send`/`tcp_recv` progress) refreshes `conn_timer`, so
+  only abandoned sockets are reaped, by driving the normal close path.
+  `FIN_WAIT_2` is bounded at 120 s (peer data refreshes it) — a peer
+  that never sends FIN can no longer pin a slot.  `snd_una` no longer
+  disarms the retransmit timer on a *partial* ACK (the saved segment
+  and a fresh RTO are kept), and `tcp_tick` re-arms the RTO whenever
+  data is unacked but the timer is dead — so a `fin_pending` deferred
+  FIN can never wedge a socket again.  `FIN_WAIT_1`→`FIN_WAIT_2` and
+  `LAST_ACK`→`CLOSED` now require an ACK covering our FIN, so a stale
+  dup ACK can neither skip the FIN's retransmissions nor close the
+  socket early.
 - Duplicate-SYN handling: a retransmitted SYN matching a `SYN_RECEIVED`
   socket replays the saved SYN-ACK segment.  `ip_send` no longer drops
   on an ARP miss (see the ARP-miss pending queue under IPv4), but real

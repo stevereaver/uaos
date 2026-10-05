@@ -51,19 +51,26 @@ typedef enum {
 /* Max payload per segment (Ethernet MTU 1500 - IP hdr 20 - TCP hdr 20) */
 #define TCP_MSS             1460
 
-/* Retransmit tuning (tcp_tick runs at 10 Hz)
+/* Retransmit / timeout tuning (tcp_tick runs at the 100 Hz PIT rate)
  *
- *  TCP_RETX_TICKS_INIT   — initial RTO: 10 ticks = 1 s
- *  TCP_RETX_BACKOFF_MAX  — max RTO doubling steps (1→2→4→8→16 s, then give up)
+ *  TCP_RETX_TICKS_INIT   — initial RTO: 10 ticks = 100 ms
+ *  TCP_RETX_BACKOFF_MAX  — max RTO doubling steps (100→200→...→1600 ms, then give up)
  *  TCP_RETX_MAX_TRIES    — total attempts before aborting the connection
- *  TCP_CONN_TIMEOUT_TICKS— SYN_SENT hard deadline: 75 ticks = 7.5 s
- *  TCP_TIMEWAIT_TICKS    — TIME_WAIT duration: 20 ticks = 2 s (2×MSL for QEMU)
+ *  TCP_CONN_TIMEOUT_TICKS— SYN_SENT/SYN_RECEIVED deadline: 75 ticks = 0.75 s
+ *  TCP_TIMEWAIT_TICKS    — TIME_WAIT duration: 20 ticks = 200 ms (QEMU LAN)
+ *  TCP_CLOSEWAIT_TICKS   — CLOSE_WAIT idle bound: 3000 ticks = 30 s; an
+ *                          owner that never closes loses the slot to the
+ *                          stack, which drives the close itself (UAOS-223)
+ *  TCP_FINWAIT2_TICKS    — wait for the peer's FIN after ours was acked:
+ *                          12000 ticks = 120 s (peer data refreshes it)
  */
 #define TCP_RETX_TICKS_INIT     10u
 #define TCP_RETX_BACKOFF_MAX    4u
 #define TCP_RETX_MAX_TRIES      5u
 #define TCP_CONN_TIMEOUT_TICKS  75u
 #define TCP_TIMEWAIT_TICKS      20u
+#define TCP_CLOSEWAIT_TICKS     3000u
+#define TCP_FINWAIT2_TICKS      12000u
 
 /* Retransmit buffer: holds the payload of the last sent-but-unacked segment.
  * We only need one outstanding segment (single-segment send model). */
@@ -94,7 +101,8 @@ typedef struct {
     uint8_t   retx_count;  /* number of retransmits already attempted        */
     uint8_t   fin_pending; /* tcp_close deferred while data is unacked       */
     uint8_t   accepted;    /* claimed by tcp_accept — never handed out twice */
-    uint16_t  conn_timer;  /* general connection timer (TIME_WAIT, SYN wait) */
+    uint16_t  conn_timer;  /* general connection timer (SYN wait, TIME_WAIT,
+                            * CLOSE_WAIT linger, FIN_WAIT_2 wait-for-FIN) */
 } TcpSocket;
 
 /* Handle incoming TCP segment */
