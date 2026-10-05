@@ -714,68 +714,6 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         kprint("[BOOT] Floppy block device registration failed.\n");
     }
 
-    if (run_selftests) {
-    kprint("[BOOT] Running floppy block-device test...\n");
-    int floppy_blk_test = floppy_block_device_test();
-    kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
-
-    kprint("[BOOT] Running floppy block-device write test...\n");
-    int floppy_write_test = floppy_block_device_write_test();
-    kprint(floppy_write_test ? "[BOOT] Floppy block-device write test PASSED\n" : "[BOOT] Floppy block-device write test FAILED\n");
-
-    kprint("[BOOT] Running floppy write-protect test...\n");
-    int wp_test = floppy_write_protect_test();
-    kprint(wp_test ? "[BOOT] Floppy write-protect test PASSED\n" : "[BOOT] Floppy write-protect test FAILED\n");
-
-    kprint("[BOOT] Running floppy DMA write test...\n");
-    int dma_write_test = floppy_dma_write_test();
-    kprint(dma_write_test ? "[BOOT] Floppy DMA write test PASSED\n" : "[BOOT] Floppy DMA write test FAILED\n");
-
-    kprint("[BOOT] Running parallel port test...\n");
-    int parallel_test = chip_emu_parallel_test();
-    kprint(parallel_test ? "[BOOT] Parallel port test PASSED\n" : "[BOOT] Parallel port test FAILED\n");
-
-    kprint("[BOOT] Running serial port test...\n");
-    int serial_test = chip_emu_serial_test();
-    kprint(serial_test ? "[BOOT] Serial port test PASSED\n" : "[BOOT] Serial port test FAILED\n");
-
-    kprint("[BOOT] Running CPU/chipset timing-lock test...\n");
-    int timing_lock_test = chip_emu_timing_lock_test();
-    kprint(timing_lock_test ? "[BOOT] Timing-lock test PASSED\n" : "[BOOT] Timing-lock test FAILED\n");
-
-    kprint("[BOOT] Running chip RAM timing-contention test...\n");
-    int timing_contention_test = chip_emu_timing_contention_test();
-    kprint(timing_contention_test ? "[BOOT] Timing-contention test PASSED\n" : "[BOOT] Timing-contention test FAILED\n");
-
-    kprint("[BOOT] Running horizontal-blanking timing test...\n");
-    int hblank_test = chip_emu_hblank_test();
-    kprint(hblank_test ? "[BOOT] H-blanking test PASSED\n" : "[BOOT] H-blanking test FAILED\n");
-
-    kprint("[BOOT] Running AGA HAM8 display test...\n");
-    int ham8_test = chip_emu_ham8_test();
-    kprint(ham8_test ? "[BOOT] HAM8 test PASSED\n" : "[BOOT] HAM8 test FAILED\n");
-
-    kprint("[BOOT] Running AGA 64-colour display test...\n");
-    int color64_test = chip_emu_64color_test();
-    kprint(color64_test ? "[BOOT] 64-colour test PASSED\n" : "[BOOT] 64-colour test FAILED\n");
-
-    kprint("[BOOT] Running AGA DIWHIGH register test...\n");
-    int diwhigh_test = chip_emu_diwhigh_test();
-    kprint(diwhigh_test ? "[BOOT] DIWHIGH test PASSED\n" : "[BOOT] DIWHIGH test FAILED\n");
-
-    kprint("[BOOT] Running Agnus slot table test...\n");
-    int agnus_test = chip_emu_agnus_slot_test();
-    kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
-    } /* run_selftests */
-
-    /* The chipset self-tests scribble into the framebuffer — restore the
-     * splash so it stays up through the driver/storage init phase, and
-     * hold it briefly (init is fast enough that it would only flash by). */
-    if (run_selftests) {
-        Splash_Show();
-        Splash_Dwell();
-    }
-
     /* Initialise VirtIO block device driver */
     kprint("[BOOT] Scanning for VirtIO block devices...\n");
     if (virtio_blk_init() == 0) {
@@ -984,6 +922,74 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * until accessed, so this must run after vector 14 is registered. */
     if (rc == 0 && UAOS_Bridge_PostInitProbe() != 0)
         kprint("[BOOT] WARNING: M68k guest window probe failed — emulation may be broken.\n");
+
+    /* Second self-test battery (floppy write paths + chipset diagnostics).
+     * Must run after vector 14 is registered: several tests read/write
+     * g_ram, which now points at the demand-paged guest VA window — its
+     * pages are only committed by the #PF handler (UAOS-257).  It still
+     * runs before the PIT is programmed, so floppy_tick() remains driven
+     * solely by the tests and IRQs can't interleave. */
+    if (run_selftests) {
+    kprint("[BOOT] Running floppy block-device test...\n");
+    int floppy_blk_test = floppy_block_device_test();
+    kprint(floppy_blk_test ? "[BOOT] Floppy block-device test PASSED\n" : "[BOOT] Floppy block-device test FAILED\n");
+
+    kprint("[BOOT] Running floppy block-device write test...\n");
+    int floppy_write_test = floppy_block_device_write_test();
+    kprint(floppy_write_test ? "[BOOT] Floppy block-device write test PASSED\n" : "[BOOT] Floppy block-device write test FAILED\n");
+
+    kprint("[BOOT] Running floppy write-protect test...\n");
+    int wp_test = floppy_write_protect_test();
+    kprint(wp_test ? "[BOOT] Floppy write-protect test PASSED\n" : "[BOOT] Floppy write-protect test FAILED\n");
+
+    kprint("[BOOT] Running floppy DMA write test...\n");
+    int dma_write_test = floppy_dma_write_test();
+    kprint(dma_write_test ? "[BOOT] Floppy DMA write test PASSED\n" : "[BOOT] Floppy DMA write test FAILED\n");
+
+    kprint("[BOOT] Running parallel port test...\n");
+    int parallel_test = chip_emu_parallel_test();
+    kprint(parallel_test ? "[BOOT] Parallel port test PASSED\n" : "[BOOT] Parallel port test FAILED\n");
+
+    kprint("[BOOT] Running serial port test...\n");
+    int serial_test = chip_emu_serial_test();
+    kprint(serial_test ? "[BOOT] Serial port test PASSED\n" : "[BOOT] Serial port test FAILED\n");
+
+    kprint("[BOOT] Running CPU/chipset timing-lock test...\n");
+    int timing_lock_test = chip_emu_timing_lock_test();
+    kprint(timing_lock_test ? "[BOOT] Timing-lock test PASSED\n" : "[BOOT] Timing-lock test FAILED\n");
+
+    kprint("[BOOT] Running chip RAM timing-contention test...\n");
+    int timing_contention_test = chip_emu_timing_contention_test();
+    kprint(timing_contention_test ? "[BOOT] Timing-contention test PASSED\n" : "[BOOT] Timing-contention test FAILED\n");
+
+    kprint("[BOOT] Running horizontal-blanking timing test...\n");
+    int hblank_test = chip_emu_hblank_test();
+    kprint(hblank_test ? "[BOOT] H-blanking test PASSED\n" : "[BOOT] H-blanking test FAILED\n");
+
+    kprint("[BOOT] Running AGA HAM8 display test...\n");
+    int ham8_test = chip_emu_ham8_test();
+    kprint(ham8_test ? "[BOOT] HAM8 test PASSED\n" : "[BOOT] HAM8 test FAILED\n");
+
+    kprint("[BOOT] Running AGA 64-colour display test...\n");
+    int color64_test = chip_emu_64color_test();
+    kprint(color64_test ? "[BOOT] 64-colour test PASSED\n" : "[BOOT] 64-colour test FAILED\n");
+
+    kprint("[BOOT] Running AGA DIWHIGH register test...\n");
+    int diwhigh_test = chip_emu_diwhigh_test();
+    kprint(diwhigh_test ? "[BOOT] DIWHIGH test PASSED\n" : "[BOOT] DIWHIGH test FAILED\n");
+
+    kprint("[BOOT] Running Agnus slot table test...\n");
+    int agnus_test = chip_emu_agnus_slot_test();
+    kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
+    } /* run_selftests */
+
+    /* The chipset self-tests scribble into the framebuffer — restore the
+     * splash so it stays up through the rest of init, and hold it
+     * briefly (init is fast enough that it would only flash by). */
+    if (run_selftests) {
+        Splash_Show();
+        Splash_Dwell();
+    }
 
     /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
      * kernel timing (network poll pacing, yield_ms, ntp guards) and must
