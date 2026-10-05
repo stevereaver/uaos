@@ -54,7 +54,7 @@ Implements echo request/reply (ping). The `ping` shell command uses this layer a
 ### UDP (`udp.c`)
 
 - Socket table with ephemeral port allocation (`49152`–`65535`). Ports are drawn at random from the kernel entropy source (UAOS-168) with a sequential-counter fallback, so DNS/NTP source ports aren't predictable.
-- Ring-buffer RX path.
+- Datagram-oriented RX path (UAOS-185): each socket keeps a FIFO of up to `UDP_RX_QUEUE` (8) `{src_ip, src_port, len}` records whose payloads occupy contiguous spans of the 2048-byte `rx_buf` ring.  `udp_recv` pops exactly one datagram per call and returns that datagram's real peer — BSD `recvfrom` semantics — and an undersized buffer truncates the datagram (unread tail discarded).  A datagram that doesn't fit the queue or ring whole is dropped whole; a partial record would corrupt FIFO accounting.  Queue/payload operations are `irq_save`-guarded because the RX poll path and socket readers run on different preemptable tasks.  (Previously a flat byte ring merged all datagrams into a stream attributed to the last sender.)
 - Used by DHCP, DNS, and NTP.
 
 ### TCP (`tcp.c`)

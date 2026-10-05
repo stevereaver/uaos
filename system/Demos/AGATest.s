@@ -22,12 +22,8 @@
 ;
 
 ; ---------------------------------------------------------------------------
-; Library bases returned by OpenLibrary
+; SysBase is fetched from absolute address $4 (standard AmigaOS convention).
 ; ---------------------------------------------------------------------------
-EXEC_BASE       equ $00000300
-DOS_BASE        equ $00000800
-GRAPHICS_BASE   equ $00008000
-INTUITION_BASE  equ $00009000
 
 ; ---------------------------------------------------------------------------
 ; Exec LVOs (standard AmigaOS offsets)
@@ -57,11 +53,6 @@ LVO_OpenScreenTags  equ -612
 LVO_OpenWindowTags  equ -606
 LVO_CloseScreen     equ -66
 LVO_CloseWindow     equ -72
-
-; ---------------------------------------------------------------------------
-; DOS LVO
-; ---------------------------------------------------------------------------
-LVO_DOS_Exit        equ -144
 
 ; ---------------------------------------------------------------------------
 ; Tag base values
@@ -147,7 +138,7 @@ start:
         ; --- Open exec.library ------------------------------------------
         move.l  #libname_exec,a1
         moveq   #0,d0
-        movea.l #EXEC_BASE,a6
+        movea.l 4.w,a6
         jsr     LVO_OpenLibrary(a6)
         movea.l d0,a6
         beq.w   exit
@@ -377,9 +368,7 @@ close_intuition:
         movea.l intuition_base,a1
         jsr     LVO_CloseLibrary(a6)
 exit:
-        movea.l #DOS_BASE,a6
-        jsr     LVO_DOS_Exit(a6)
-        bra     exit
+        rts                             ; return address is the DOS Exit stub
 
 ; ---------------------------------------------------------------------------
 ; init_chunky - fill the chunky buffer with pen = (x + y) & $FF

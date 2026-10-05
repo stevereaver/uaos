@@ -9,5 +9,7 @@
 .key name/A/K,age/K/N
 echo Hello <name>, you are <age> years old.
 echo Today is `date`
-echo The first positional arg ($1) is: $1
+; 'first' is quoted below — it collides with Echo's FIRST keyword, and a
+; quoted token is exempt from ReadArgs keyword matching.
+echo "The first positional arg" ($1) is: $1
 echo The second positional arg ($2) is: $2

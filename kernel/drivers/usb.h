@@ -144,6 +144,10 @@ typedef struct UsbHc {
     /* Port helpers (root hub) */
     int  (*port_connected)(struct UsbHc *hc, int port); /* -1 = none */
     int  (*port_reset)(struct UsbHc *hc, int port);     /* returns speed */
+    /* Optional: return 1 when a connect-status-change latched since the
+     * last call, clearing it (W1C).  NULL → the deferred enum task
+     * falls back to tracking the CCS bit itself (UAOS-258). */
+    int  (*port_csc)(struct UsbHc *hc, int port);
     int   nports;
 } UsbHc;
 
@@ -181,6 +185,11 @@ int  USB_Init(void);
 /* Periodic service — drains completed interrupt transfers on all HCs
  * that lack IRQ delivery (safe to call even when IRQs work). */
 void USB_Poll(void);
+
+/* Spawn the deferred re-enumeration task — call once the scheduler
+ * exists (post-TaskScheduler_Init).  Re-probes ports that reported
+ * attached-but-deaf at boot, plus real post-boot hotplug (UAOS-258). */
+void USB_StartEnumTask(void);
 
 /* Host-controller entry points (defined in uhci.c). */
 int  UHCI_Init(void);

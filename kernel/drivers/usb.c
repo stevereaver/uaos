@@ -9,12 +9,14 @@
 #include "usb.h"
 #include "../klog/klog.h"
 #include "../dos/dma.h"
+#include "../exec/task.h"
 #include <string.h>
 
 #define USB_MAX_DEVS   16
 #define USB_MAX_IFS    32
 #define USB_MAX_CLASSES 4
 #define USB_MAX_HCS     8
+#define USB_MAX_PORTS   8
 
 static UsbDev g_devs[USB_MAX_DEVS];
 static UsbIf  g_ifs [USB_MAX_IFS];
@@ -26,6 +28,8 @@ static int g_nclasses = 0;
 
 static UsbHc *g_hcs[USB_MAX_HCS];
 static int    g_nhcs = 0;
+
+extern volatile uint64_t g_pit_ticks;      /* 100 Hz */
 
 /* ------------------------------------------------------------------ */
 /* Standard request wrapper                                            */
@@ -54,6 +58,13 @@ void USB_RegisterHc(UsbHc *hc)
 
 static void usb_msleep(uint32_t ms)
 {
+    /* In task context (the deferred enum task, UAOS-258) yield to the
+     * scheduler instead of busy-spinning; before the scheduler exists
+     * there is nothing to switch to, so spin on port-0x80 reads. */
+    if (Task_Current()) {
+        Task_SleepTicks((ms + 9) / 10);   /* 100 Hz tick */
+        return;
+    }
     for (uint32_t i = 0; i < ms; i++)
         for (volatile int j = 0; j < 8000; j++)
             __asm__ volatile("inb $0x80, %%al" ::: "eax");
@@ -126,14 +137,14 @@ static void parse_config(UsbDev *dev, const uint8_t *buf, uint16_t len)
 }
 
 /* ------------------------------------------------------------------ */
-/* Enumerate one port                                                  */
+/* Enumerate one port — returns 1 when a device was bound              */
 /* ------------------------------------------------------------------ */
-static void enumerate_port(UsbHc *hc, int port)
+static int enumerate_port(UsbHc *hc, int port)
 {
     int speed = hc->port_reset(hc, port);
-    if (speed < 0) return;
+    if (speed < 0) return 0;
 
-    if (g_ndevs >= USB_MAX_DEVS) return;
+    if (g_ndevs >= USB_MAX_DEVS) return 0;
     UsbDev *dev = &g_devs[g_ndevs];
     memset(dev, 0, sizeof(*dev));
     dev->hc     = hc;
@@ -143,7 +154,7 @@ static void enumerate_port(UsbHc *hc, int port)
     dev->ep0_mps = 8;                    /* safe default for addr 0 */
 
     UsbDeviceDesc *dd = (UsbDeviceDesc *)DMA_Alloc(256, 64);
-    if (!dd) return;
+    if (!dd) return 0;
 
     /* First 8 bytes of the device descriptor → ep0 max packet.
      * Devices (hubs especially) need recovery time after port reset —
@@ -237,13 +248,30 @@ static void enumerate_port(UsbHc *hc, int port)
             if (g_classes[c](ifc))
                 ifc->used = 1;
     }
-    return;
+    return 1;
 
 out_cd:
     DMA_Free(cd, 4096);
 out_dd:
     DMA_Free(dd, 256);
+    return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Deferred enumeration state (UAOS-258) — see usb_enum_task below     */
+/* ------------------------------------------------------------------ */
+#define USB_ENUM_SCAN_TICKS    10     /* 100 ms port scan cadence */
+#define USB_ENUM_MAX_ATTEMPTS  5      /* retries before parking */
+
+typedef struct {
+    UsbHc   *hc;
+    int      port;
+    uint8_t  last_ccs;      /* CCS seen on the previous scan */
+    uint8_t  attempts;      /* retries consumed since the last edge */
+    uint64_t next_tick;     /* g_pit_ticks when the next retry is due */
+} UsbPortWatch;
+
+static UsbPortWatch g_watch[USB_MAX_HCS][USB_MAX_PORTS];
 
 /* ------------------------------------------------------------------ */
 /* USB_Init — enumerate every registered host controller               */
@@ -256,11 +284,21 @@ int USB_Init(void)
     for (int i = 0; i < g_nhcs; i++) {
         UsbHc *hc = g_hcs[i];
         for (int p = 0; p < hc->nports; p++) {
-            if (hc->port_connected(hc, p) > 0) {
-                int before = g_ndevs;
-                enumerate_port(hc, p);
-                total += g_ndevs - before;
-            }
+            if (hc->port_connected(hc, p) > 0)
+                total += enumerate_port(hc, p);
+        }
+    }
+    /* Record every port in the watch table so the deferred enum task
+     * can retry the deaf ones and pick up post-boot attaches. */
+    for (int i = 0; i < g_nhcs; i++) {
+        UsbHc *hc = g_hcs[i];
+        for (int p = 0; p < hc->nports && p < USB_MAX_PORTS; p++) {
+            UsbPortWatch *w = &g_watch[i][p];
+            w->hc        = hc;
+            w->port      = p;
+            w->last_ccs  = (uint8_t)(hc->port_connected(hc, p) > 0);
+            w->attempts  = 0;
+            w->next_tick = 0;
         }
     }
     klog_puts(KLOG_USB, KLOG_DEBUG, "usb: ");
@@ -269,6 +307,92 @@ int USB_Init(void)
     klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", g_nifs);
     klog_puts(KLOG_USB, KLOG_DEBUG, " ifs\n");
     return total;
+}
+
+/* ------------------------------------------------------------------ */
+/* Deferred enumeration task (UAOS-258)                                */
+/*                                                                     */
+/* Boot enumeration is one-shot: a port reporting connected that never */
+/* ACKs SETUP (SMC-gated silicon like the MBP4,1 Bluetooth/IR, a hub   */
+/* port that comes online late) — or a device hotplugged after boot —  */
+/* is permanently invisible: USB_Poll runs in IRQ context and only     */
+/* drains interrupt pipes.  This task re-probes connected-but-         */
+/* unenumerated ports with bounded exponential backoff (1..16 s), then */
+/* parks the port until a connect-status edge revives it.              */
+/*                                                                     */
+/* Removal isn't tracked: a port whose device bound earlier keeps its  */
+/* (now stale) UsbDev, so unplug→replug on an enumerated port does not */
+/* re-enumerate — hot-remove/teardown is a separate problem.           */
+/* ------------------------------------------------------------------ */
+static int port_has_dev(UsbHc *hc, int port)
+{
+    for (int i = 0; i < g_ndevs; i++)
+        if (g_devs[i].hc == hc && g_devs[i].port == port &&
+            g_devs[i].addr)
+            return 1;
+    return 0;
+}
+
+static void usb_enum_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        for (int i = 0; i < g_nhcs; i++) {
+            UsbHc *hc = g_hcs[i];
+            for (int p = 0; p < hc->nports && p < USB_MAX_PORTS; p++) {
+                UsbPortWatch *w = &g_watch[i][p];
+                int ccs  = hc->port_connected(hc, p) > 0;
+                /* A latched CSC or a raw CCS flip both count as edges —
+                 * either revives a parked port for another round. */
+                int edge = (ccs != w->last_ccs) ||
+                           (hc->port_csc && hc->port_csc(hc, p) > 0);
+                w->last_ccs = (uint8_t)ccs;
+                if (edge) {
+                    w->attempts  = 0;
+                    w->next_tick = 0;
+                }
+                if (!ccs || port_has_dev(hc, p) ||
+                    w->attempts >= USB_ENUM_MAX_ATTEMPTS ||
+                    g_pit_ticks < w->next_tick)
+                    continue;
+                if (enumerate_port(hc, p)) {
+                    /* Name the device — on the MBP4,1 a port that
+                     * answers late is the disambiguating evidence for
+                     * which SMC-gated peripheral lives there. */
+                    UsbDev *nd = &g_devs[g_ndevs - 1];
+                    klog_puts(KLOG_USB, KLOG_INFO, "usb: late enum hc=");
+                    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", i);
+                    klog_puts(KLOG_USB, KLOG_INFO, " port=");
+                    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", p);
+                    klog_puts(KLOG_USB, KLOG_INFO, " vid=");
+                    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", nd->vid);
+                    klog_puts(KLOG_USB, KLOG_INFO, " pid=");
+                    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", nd->pid);
+                    klog_puts(KLOG_USB, KLOG_INFO, "\n");
+                } else {
+                    w->attempts++;
+                    w->next_tick = g_pit_ticks +
+                                   (100ull << (w->attempts - 1));
+                    if (w->attempts >= USB_ENUM_MAX_ATTEMPTS) {
+                        klog_puts(KLOG_USB, KLOG_WARN,
+                                  "usb: port deaf after retries — "
+                                  "parked until connect edge hc=");
+                        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+                        klog_puts(KLOG_USB, KLOG_WARN, " port=");
+                        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", p);
+                        klog_puts(KLOG_USB, KLOG_WARN, "\n");
+                    }
+                }
+            }
+        }
+        Task_SleepTicks(USB_ENUM_SCAN_TICKS);
+    }
+}
+
+void USB_StartEnumTask(void)
+{
+    if (g_nhcs)
+        Task_CreateNative("usb-enum", 0, usb_enum_task, 0);
 }
 
 void USB_Poll(void)

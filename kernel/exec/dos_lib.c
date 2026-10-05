@@ -37,6 +37,35 @@ extern unsigned int m68k_cycles_run(void);
  * ========================================================================= */
 extern void kprint(const char *s);
 
+/* ---- Per-task cwd -------------------------------------------------------
+ * The launcher sets the global g_uaos_cwd before Task_CreateM68k(), which
+ * snapshots it into the task's task_cwd.  From then on a guest's
+ * cd/CurrentDir only affects its own task — previously g_uaos_cwd was a
+ * single global shared by every M68k task, so launching a second binary
+ * (or one guest's cd) silently rewired the first task's relative paths.
+ * Non-task callers (early boot, desktop launchers) fall back to the
+ * global. */
+const char *m68k_cur_cwd(void)
+{
+    extern UaosTask *Task_Current(void);
+    UaosTask *cur = Task_Current();
+    if (cur && cur->type == TASK_TYPE_M68K && cur->task_cwd[0])
+        return cur->task_cwd;
+    return g_uaos_cwd;
+}
+
+void m68k_set_cur_cwd(const char *path)
+{
+    extern UaosTask *Task_Current(void);
+    UaosTask *cur = Task_Current();
+    int is_task = (cur && cur->type == TASK_TYPE_M68K);
+    char *dst = is_task ? cur->task_cwd : g_uaos_cwd;
+    int   max = is_task ? (int)sizeof(cur->task_cwd) : (int)sizeof(g_uaos_cwd);
+    int i = 0;
+    while (i < max - 1 && path && path[i]) { dst[i] = path[i]; i++; }
+    dst[i] = '\0';
+}
+
 /* =========================================================================
  * BSTR / path helpers
  * ========================================================================= */
@@ -780,14 +809,14 @@ static int guest_read_filelock(uint32_t lock_bptr,
 /* =========================================================================
  * Fake file handle BPTRs
  * ========================================================================= */
-#define FAKE_STDOUT_ADDR   0x0400   /* below the DOS stub floor (0x41C) */
+#define FAKE_STDOUT_ADDR   0x0400   /* below the exec stub floor (0xC1C) */
 #define FAKE_STDIN_ADDR    0x0404
 #define DOS_STDOUT_BPTR    (FAKE_STDOUT_ADDR >> 2)
 #define DOS_STDIN_BPTR     (FAKE_STDIN_ADDR  >> 2)
 
-/* Guest library base addresses (must match uaos_m68k_glue.c) */
-#define EXEC_BASE_GLUE   0x0300u
-#define DOS_BASE_GLOBVEC 0x0800u
+/* Guest library base addresses (must match uaos_m68k_glue.c, UAOS-252) */
+#define EXEC_BASE_GLUE   0x1000u
+#define DOS_BASE_GLOBVEC 0x2000u
 /* LVO_DOS_EXIT stub address — pushed as the return PC on a child's stack
  * so an RTS at the end of a process lands on Exit(). */
 #define DOS_EXIT_STUB    (DOS_BASE_GLOBVEC + (uint32_t)(-144))
@@ -941,6 +970,22 @@ static void dos_Exit(M68kCPUState *cpu)
         cpu->d[0]  = 0;
         cpu->a[0]  = 0;
         kprint("[dos] Exit: spawning queued process\n");
+        /* The launcher process ends here; on real AmigaOS the shell's
+         * Wait() on the launched process would return now — the queued
+         * child runs detached.  The UAOS host task respawns in place, so
+         * without this signal the launching shell stays parked in
+         * Wait(SIGF_CHILD) forever (foreground apps look like they hung).
+         * The final Task_Exit fires SIGF_CHILD again — harmless: shells
+         * clear stale SIGF_CHILD before each launch wait. */
+        {
+            extern UaosTask *Task_Current(void);
+            UaosTask *cur = Task_Current();
+            if (cur && cur->parent && cur->parent->tc_State != TASK_REMOVED) {
+                extern void Signal(UaosTask *t, uint32_t sigs);
+                Signal(cur->parent, SIGF_CHILD);
+                cur->parent = NULL;  /* detached: don't signal again at exit */
+            }
+        }
         return;   /* g_emu_halted stays 0 — m68k_execute continues */
     }
     (void)cpu;
@@ -1060,9 +1105,10 @@ static void dos_Open(M68kCPUState *cpu)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1236,9 +1282,10 @@ static void dos_DeleteFile(M68kCPUState *cpu)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1274,9 +1321,10 @@ static void dos_Rename(M68kCPUState *cpu)
         int i = 0; while (old_name[i]) { old_full[i] = old_name[i]; i++; }
         old_full[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { old_full[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { old_full[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             old_full[i++] = '/';
         int j = 0; while (old_name[j] && i < 127) { old_full[i++] = old_name[j++]; }
         old_full[i] = '\0';
@@ -1286,9 +1334,10 @@ static void dos_Rename(M68kCPUState *cpu)
         int i = 0; while (new_name[i]) { new_full[i] = new_name[i]; i++; }
         new_full[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { new_full[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { new_full[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             new_full[i++] = '/';
         int j = 0; while (new_name[j] && i < 127) { new_full[i++] = new_name[j++]; }
         new_full[i] = '\0';
@@ -1322,9 +1371,10 @@ static void dos_SetProtection(M68kCPUState *cpu)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1372,9 +1422,10 @@ static void dos_Lock(M68kCPUState *cpu)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1600,9 +1651,10 @@ static void dos_CreateDir(M68kCPUState *cpu)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -1753,8 +1805,15 @@ static void dos_Delay(M68kCPUState *cpu)
 
     /* Amiga ticks are 1/50 s = 2 PIT ticks at 100 Hz.  Block on the
      * wait queue instead of busy-waiting so a Delay()ing guest task
-     * does not stay runnable and starve lower priorities. */
-    Task_SleepTicks((uint64_t)ticks * 2);
+     * does not stay runnable and starve lower priorities.  Sleep in
+     * 1-tick slices and pump interrupt delivery so handlers (CIAB
+     * player tick etc.) still fire while the guest is blocked. */
+    extern void UAOS_M68k_DeliverInterrupts(void);
+    uint64_t remaining = (uint64_t)ticks * 2;
+    while (remaining-- > 0) {
+        Task_SleepTicks(1);
+        UAOS_M68k_DeliverInterrupts();
+    }
 }
 
 /* =========================================================================
@@ -2091,9 +2150,10 @@ static void dos_LoadSeg(M68kCPUState *cpu)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len - 1] != ':' && g_uaos_cwd[cwd_len - 1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len - 1] != ':' && cwd[cwd_len - 1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -3059,14 +3119,20 @@ static uint32_t g_console_task = 0;
 
 static void dos_GetConsoleTask(M68kCPUState *cpu)
 {
-    /* Amiga: → D0=struct MsgPort* */
-    cpu->d[0] = g_console_task;
+    /* Amiga: → D0=struct MsgPort*.  The canonical store is the running
+     * process's pr_ConsoleTask (+0xA4) so each M68k task sees the console
+     * port materialised in its own guest window (UAOS-237); the static is
+     * only a fallback for pre-process contexts. */
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    cpu->d[0] = proc ? guest_read_be32(proc + PR_CONSOLETASK) : g_console_task;
 }
 
 static void dos_SetConsoleTask(M68kCPUState *cpu)
 {
     /* Amiga: D1=struct MsgPort* */
     g_console_task = cpu->d[1];
+    uint32_t proc = guest_read_be32(EXEC_BASE_GLUE + EXECBASE_THIS_TASK);
+    if (proc) guest_write_be32(proc + PR_CONSOLETASK, cpu->d[1]);
 }
 
 /* =========================================================================
@@ -3090,7 +3156,19 @@ static uint32_t dos_lock_path(const char *path)
 
 /* PROGDIR: lock — lazily bound to the launch directory.  For now the
  * launch directory IS the cwd (the shell CDs or passes full paths). */
-static uint32_t g_program_dir = 0;
+/* Per-task pr program dir lock — the BPTR addresses memory in the owning
+ * task's guest RAM window, so it must not be shared across M68k tasks.
+ * The static below only serves non-task contexts (pre-scheduler use). */
+static uint32_t g_program_dir_boot = 0;
+
+static uint32_t *program_dir_slot(void)
+{
+    extern UaosTask *Task_Current(void);
+    UaosTask *cur = Task_Current();
+    if (cur && cur->type == TASK_TYPE_M68K)
+        return &cur->m68k_program_dir;
+    return &g_program_dir_boot;
+}
 
 static void dos_CurrentDir(M68kCPUState *cpu)
 {
@@ -3106,9 +3184,7 @@ static void dos_CurrentDir(M68kCPUState *cpu)
         if (guest_read_filelock(lock, &handle, NULL) && handle) {
             HandleEntry *ent = HandleTable_GetLockEntry(handle, NULL);
             if (ent && ent->path[0]) {
-                int i = 0;
-                while (i < 63 && ent->path[i]) { g_uaos_cwd[i] = ent->path[i]; i++; }
-                g_uaos_cwd[i] = '\0';
+                m68k_set_cur_cwd(ent->path);
             }
         }
     }
@@ -3118,16 +3194,18 @@ static void dos_CurrentDir(M68kCPUState *cpu)
 static void dos_SetProgramDir(M68kCPUState *cpu)
 {
     /* D1=BPTR lock → D0=old */
-    uint32_t old = g_program_dir;
-    g_program_dir = cpu->d[1];
+    uint32_t *slot = program_dir_slot();
+    uint32_t old = *slot;
+    *slot = cpu->d[1];
     cpu->d[0] = old;
 }
 
 static void dos_GetProgramDir(M68kCPUState *cpu)
 {
-    if (!g_program_dir)
-        g_program_dir = dos_lock_path(g_uaos_cwd);
-    cpu->d[0] = g_program_dir;
+    uint32_t *slot = program_dir_slot();
+    if (!*slot)
+        *slot = dos_lock_path(m68k_cur_cwd());
+    cpu->d[0] = *slot;
 }
 
 static void dos_SetIoErr(M68kCPUState *cpu)

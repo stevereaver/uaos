@@ -80,12 +80,46 @@ static int g_m68k_low_reentry = 0;    /* first wild re-entry logged          */
  * context instead of running wild until the guard expires. */
 int g_m68k_wild_abort = 0;
 
+/* Defined near the hook machinery below — used by the instr hook to decide
+ * whether a wild PC is fatal (main execution) or just aborts the current
+ * host-invoked hook/ISR call (context is restored on return). */
+static int g_hook_nest_level;
+
+/* Reset all instruction-hook state between M68k tasks — these globals are
+ * shared by every task using the glue, so without this a second launch
+ * inherits saw_app_code=1 and the decruncher's legitimate 0x2xxxx PCs
+ * look like wild re-entries.  Also clears the hook's `prev` so task N+1's
+ * first instruction doesn't record an edge from task N's last PC. */
+static uint32_t g_m68k_hook_prev = 0;
+
+void m68k_reset_wild_state(void)
+{
+    g_m68k_first_wild_pc   = 0;
+    g_m68k_first_wild_prev = 0;
+    g_m68k_pc_ring_idx     = 0;
+    g_m68k_saw_app_code    = 0;
+    g_m68k_low_reentry     = 0;
+    g_m68k_wild_abort      = 0;
+    g_m68k_hook_prev       = 0;
+}
+
 void uaos_m68k_instr_hook(unsigned int pc)
 {
-    static uint32_t prev = 0;
+    uint32_t prev = g_m68k_hook_prev;
+    /* Wild floor is the exception-vector page: with EXEC_BASE at 0x1000
+     * the deepest LVO stub (-996) sits at 0xC1C, so no legitimate code
+     * executes below 0x100.  (While EXEC_BASE was 0x300 the floor had to
+     * be 0x40 — deep exec stubs lived inside the vector page itself.) */
     if (pc >= GUEST_RAM_SIZE || pc < 0x100u ||
         (pc >= CHIP_WINDOW_START && pc <= CHIP_WINDOW_END)) {
         g_m68k_wild_abort = 1;
+        /* A PC outside the 16 MB window can never come back.  Inside a
+         * host-invoked hook/ISR call, abort+context-restore recovers — but
+         * in main execution there is no way back, so halt the task outright
+         * instead of letting it march data-as-code between timeslice aborts
+         * (that path previously shredded the arena and once panicked the
+         * host with a corrupted Musashi context). */
+        if (!g_hook_nest_level) g_emu_halted = 1;
         static int wild_logs = 0;
         if (wild_logs < 8) {
             wild_logs++;
@@ -149,6 +183,12 @@ void uaos_m68k_instr_hook(unsigned int pc)
             b[i++] = '\n'; b[i] = '\0';
             emu_print(b);
         }
+        /* Post-decrunch there is no valid code in this band — the CPU is
+         * wild.  Kill the task now (outside a hook call): letting it
+         * continue marches through data-as-code and shreds the arena. */
+        g_m68k_wild_abort = 1;
+        if (!g_hook_nest_level) g_emu_halted = 1;
+        m68k_end_timeslice();
     }
     if (pc >= 0x10000u && !g_m68k_first_wild_pc) {
         g_m68k_first_wild_pc = pc;
@@ -158,7 +198,7 @@ void uaos_m68k_instr_hook(unsigned int pc)
         g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
         g_m68k_pc_ring_idx = i + 2;
     }
-    prev = pc;
+    g_m68k_hook_prev = pc;
 }
 
 /* =========================================================================
@@ -174,7 +214,20 @@ char g_uaos_cwd[64] = "RAM:";
 static void emu_print(const char *s)
 {
     extern void kprint(const char *);
-    kprint(s);   /* always mirror guest-side prints to serial */
+    /* Diagnostics are serial-only: echoing them to the task's console via
+     * g_print floods the launching shell window with trace lines and stalls
+     * the launch for seconds per print-heavy burst.  Real guest stdout
+     * (dos PutStr/FPuts/Printf paths in dos_lib.c) calls g_print directly,
+     * so nothing user-facing is lost. */
+    kprint(s);
+}
+
+/* Console echo — for messages the launching user must see (load/launch
+ * failures).  Serial + the task's print hook. */
+static void emu_cprint(const char *s)
+{
+    extern void kprint(const char *);
+    kprint(s);
     if (g_print) g_print(s);
 }
 
@@ -251,19 +304,30 @@ static void u32_dec(uint32_t v, char *buf, int max) {
  * ========================================================================= */
 
 /* Guest RAM layout (GUEST_RAM_SIZE is defined in uaos_emu.h as 16 MB):
- *   0x000000–0x000100   Exception vectors (minimal: SSP at 0, PC at 4)
- *   0x000100–0x000200   Library jump table stubs (ILLEGAL + lib_id word)
- *   0x000200–0x001000   Stack (grows down from 0x001000)
- *   0x001000–0x7F0000   Program segments + AllocMem(MEMF_CHIP) pool
+ *   0x000000–0x000100   Exception vectors (minimal: SSP at 0, SysBase at 4)
+ *   0x000100–0x000C1C   Low system band: heap list slots (0x10-0x1F),
+ *                       legacy jump table (0x100), fake DOS handles (0x400),
+ *                       library name/idstring arena (0x800)
+ *   0x000C1C–0x001000   exec.library jump-table stubs (EXEC_BASE = 0x1000)
+ *   0x001000–0x001280   ExecBase (SysBase) struct
+ *   0x001C1C–0x002000   dos.library jump-table stubs (DOS_BASE = 0x2000)
+ *   0x002F28–0x003000   bsdsocket.library stubs (BSD_BASE = 0x3000)
+ *   0x007BE0–0x00A000   graphics/intuition/gadtools stubs + fake bases
+ *   0x00A000–0x01A000   loadable .library blobs (16 x 4 KB)
+ *   0x01B000–0x01B400   Process environment (Process/CLI/RDArgs/ports),
+ *                       dedicated region outside the program heap (UAOS-237)
+ *   0x020000–0x7F0000   Program segments + AllocMem(MEMF_CHIP) pool
  *                       (chip RAM, accessible by custom chips)
+ *   0x7F0000–0x800000   Generated-library stub arena (genlibs)
  *   0x800000–0xFF0000   AllocMem(MEMF_FAST) pool (fast RAM)
  */
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
-/* Program hunks load above the reserved system zone: LVO stub tables for
- * graphics/intuition/gadtools live at 0x7BDC-0xA000, the lib base structs at
- * 0x8000-0xA100, and loadable .library blobs at 0xA000-0x1A000 (16 × 4K).
- * Loading a program at the old 0x1000 overwrote the stubs — OctaMED's
- * OpenScreenTagList jumped into packed hunk data and ran wild. */
+/* Program hunks load above the reserved system zone: exec/dos jump tables
+ * live at 0xC1C-0x2000, LVO stub tables for graphics/intuition/gadtools at
+ * 0x7BDC-0xA000, the lib base structs at 0x8000-0xA100, and loadable
+ * .library blobs at 0xA000-0x1A000 (16 x 4K).  Loading a program at the
+ * old 0x1000 overwrote the stubs — OctaMED's OpenScreenTagList jumped
+ * into packed hunk data and ran wild. */
 #define PROG_BASE       0x020000  /* program hunks load here */
 
 static uint8_t g_default_ram[GUEST_RAM_SIZE] __attribute__((section(".guest_ram"), aligned(4096)));
@@ -282,6 +346,13 @@ int      g_chipset_sync_disabled = 0;  /* set during per-task M68k exec */
 /* Bump allocator — starts after program load area.
  * Will be set to first free address after hunk loading. */
 uint32_t g_uaos_heap_ptr = PROG_BASE;
+
+/* Loaded-program hunk table — populated by hunk_load(), read by
+ * UAOS_Emu_SetupProcess() to publish pr_SegList/cli_Module (UAOS-237). */
+#define MAX_HUNKS  32
+static uint32_t g_hunk_base[MAX_HUNKS];
+static uint32_t g_hunk_blk[MAX_HUNKS];
+static int      g_hunk_count = 0;
 
 /* Allow the UAE bridge to point the glue layer at the 4 GB guest physical
  * window.  A NULL base is ignored so the static default RAM remains in use
@@ -546,6 +617,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_GENERIC     7   /* fake lib base — log lvo, return 0 */
 #define LIB_UTILITY     8   /* utility.library → ROM dispatch */
 #define LIB_AUDIODEV    9   /* audio.device → UAOS-240 arbitration */
+#define LIB_IRQ        10   /* autovector dispatch stub — fn carries level */
 
 #define AUDEV_LVO_OPEN    0   /* -6  */
 #define AUDEV_LVO_CLOSE   1   /* -12 */
@@ -654,6 +726,7 @@ extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest
 #define EXEC_REM_INT_SERVER    77
 #define EXEC_CAUSE             78
 #define EXEC_RAW_DO_FMT        79
+#define EXEC_STACK_SWAP        80
 #define EXEC_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* bsdsocket.library function indices */
@@ -964,22 +1037,24 @@ static void install_stub(int lib_id, int func_idx)
 /* =========================================================================
  * exec.library pseudo-base address
  * Amiga programs call exec via negative offsets from the exec base pointer
- * stored at address 4 in the Amiga memory map.
- * We fake it: exec_base = 0x200, and each LVO offset jumps to our stub.
+ * stored at address 4 in the Amiga memory map.  Each negative slot holds
+ * a 4-byte ILLEGAL dispatch stub (with an RTS right after it).
  *
- * Standard exec LVO offsets (negative from base):
- *   OpenLibrary  = -552  (0xFFFFFFD8 = -40 decimal for simplified model)
- * For simplicity we use a lookup table approach — the program must call
- * exec via our pre-patched jump table at exec_base.
+ * Layout (UAOS-252): every base keeps its full negative jump table clear
+ * of the exception-vector page and of its neighbours' positive structs.
+ * The old EXEC_BASE=0x300/DOS_BASE=0x800 placement overlapped ExecBase
+ * fields with the DOS jump table and pushed deep exec LVOs (-516 and
+ * beyond) into the vector page, tripping the WILD-PC breaker.
  * ========================================================================= */
 
-#define EXEC_BASE    0x0300   /* must be > largest |LVO| = 552 = 0x228 */
+#define EXEC_BASE    0x1000   /* stubs -6..-996 → 0xC1C-0xFFA, clear of vectors */
 #define FAKE_LIB_BASE 0xF000   /* returned for unknown libraries — has RTS at LVO slots.
                                 * LVO range: 0xED0C-0xEFFA, above LHA data hunk (ends ~0xDF88) */
 #define AUDIO_DEV_BASE 0xE000  /* audio.device base — trapped LVO table (UAOS-240) */
 
-/* Fake Process struct layout (AmigaOS offsets):
- * Task struct embedded at start, then Process extensions.
+/* Process struct layout (AmigaOS offsets — mirror kernel/exec/amiga_task.h;
+ * keep the two in sync).  Task struct embedded at start, then Process
+ * extensions.
  * pr_CLI  is at Process+0xAC (172) — non-zero means launched from CLI.
  * pr_CIS  is at Process+0x9C  — CLI input stream (we set to DOS_STDIN_BPTR).
  * pr_COS  is at Process+0xA0  — CLI output stream (we set to DOS_STDOUT_BPTR). */
@@ -987,8 +1062,62 @@ static void install_stub(int lib_id, int func_idx)
 #define PR_CIS_OFFSET      0x9C
 #define PR_COS_OFFSET      0xA0
 
+/* Embedded Task node + task fields */
+#define PRC_LN_TYPE        0x08
+#define PRC_LN_PRI         0x09
+#define PRC_LN_NAME        0x0A
+#define PRC_TC_FLAGS       0x0E
+#define PRC_TC_STATE       0x0F
+#define PRC_TC_IDNEST      0x10
+#define PRC_TC_TDNEST      0x11
+#define PRC_TC_SIGALLOC    0x12
+#define PRC_TC_SPREG       0x36
+#define PRC_TC_SPLOWER     0x3A
+#define PRC_TC_SPUPPER     0x3E
+#define PRC_MSGPORT        0x5C   /* embedded struct MsgPort (34 bytes) */
+#define PRC_SEGLIST        0x80   /* BPTR */
+#define PRC_STACKSIZE      0x84   /* LONG */
+#define PRC_GLOBVEC        0x88   /* APTR — DOS library base */
+#define PRC_TASKNUM        0x8C   /* LONG */
+#define PRC_STACKBASE      0x90   /* BPTR */
+#define PRC_RESULT2        0x94   /* LONG */
+#define PRC_CONSOLETASK    0xA4   /* APTR MsgPort* */
+#define PRC_WINDOWPTR      0xB8   /* APTR Window*; -1 suppresses requesters */
+#define PRC_LOCALVARS      0xD0   /* embedded struct MinList (12 bytes) */
+
+/* MsgPort sub-offsets (relative to PRC_MSGPORT / a standalone port) */
+#define PMP_LN_TYPE        0x08
+#define PMP_FLAGS          0x0E
+#define PMP_SIGBIT         0x0F
+#define PMP_SIGTASK        0x10
+#define PMP_MSGLIST        0x14   /* embedded struct List (14 bytes) */
+
+/* CommandLineInterface offsets (UAOS extended layout — amiga_task.h) */
+#define CLI_SETNAME        0x04
+#define CLI_COMMANDNAME    0x10
+#define CLI_FAILLEVEL      0x14
+#define CLI_PROMPT         0x18
+#define CLI_DEFAULTINPUT   0x1C
+#define CLI_DEFAULTOUTPUT  0x20
+#define CLI_ERRORLEVEL     0x24
+#define CLI_CURRENTINPUT   0x2C
+#define CLI_CURRENTOUTPUT  0x30
+#define CLI_CURRENTDIRNAME 0x38
+#define CLI_INTERACTIVE    0x44
+#define CLI_MODULE         0x58   /* BPTR seglist of running command */
+#define CLI_MODULE_SC      0x3C   /* same slot, SAS/C + classic-NDK layout */
+
+/* Node types / task state / port flags */
+#define NT_MSGPORT_G       4
+#define NT_LIBRARY_G       9
+#define NT_DEVICE_G        10
+#define NT_PROCESS_G       13
+#define PA_SIGNAL_G        0
+#define TS_RUN_G           2
+#define TF_PROCTASK_G      0x01
+
 /* Fake file handle BPTRs (defined here so install_library_tables can use them) */
-#define FAKE_STDOUT_ADDR   0x0400   /* below DOS stub floor (0x800-996=0x41C) */
+#define FAKE_STDOUT_ADDR   0x0400   /* below the exec stub floor (0xC1C) */
 #define FAKE_STDIN_ADDR    0x0404
 #define DOS_STDOUT_BPTR    (FAKE_STDOUT_ADDR >> 2)
 #define DOS_STDIN_BPTR     (FAKE_STDIN_ADDR  >> 2)
@@ -1004,11 +1133,19 @@ static void install_stub(int lib_id, int func_idx)
  */
 
 /* Fake library bases */
-#define DOS_BASE       0x0800  /* moved to 0x0800 so VFPrintf@-354 = 0x69E, clear of EXEC */
+#define DOS_BASE       0x2000  /* stubs -6..-996 → 0x1C1C-0x1FFA, clear of ExecBase */
 #define BSD_BASE       0x3000  /* bsdsocket.library base — clear of DOS range */
 #define GRAPHICS_BASE  0x8000  /* graphics.library base — room for LVOs -30..-1056 */
 #define INTUITION_BASE 0x9000  /* intuition.library base — clear of graphics range */
 #define GADTOOLS_BASE  0xA000  /* gadtools.library base — clear of intuition range */
+
+/* Autovector dispatch stubs (UAOS-241): each autovector (level 1-7) points
+ * at a 4-byte ILLEGAL word tagged (LIB_IRQ, level).  Musashi pushes the
+ * 68020 exception frame and enters the illg callback, which runs the
+ * level's exec IntVects / cia.resource ICR servers and emulates RTE back
+ * to the interrupted code.  Placed just above HOOK_RETURN_TRAP_ADDR
+ * (0x1EF000) in the unused band below the guest stack. */
+#define IRQ_STUB_BASE  0x1EF040u
 
 /* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
 #define LVO_BSD_SOCKET        (-30)
@@ -1239,6 +1376,13 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_OBTAIN_SEM_SHARED (-678)
 #define LVO_ALLOC_VEC         (-684)
 #define LVO_FREE_VEC          (-690)
+#define LVO_CREATE_POOL       (-696)  /* V39 */
+#define LVO_DELETE_POOL       (-702)
+#define LVO_ALLOC_POOLED      (-708)
+#define LVO_FREE_POOLED       (-714)
+#define LVO_ATTEMPT_SEM_SHARED (-720)
+#define LVO_COLD_REBOOT       (-726)
+#define LVO_STACK_SWAP        (-732)  /* V37 */
 
 /* intuition.library LVO offsets — official AmigaOS 3.1 (V39) and V40 values.
 
@@ -1793,39 +1937,220 @@ static void install_lvo(uint32_t base, int lvo, int lib_id, int func_idx)
     g_ram[addr+4] = 0x4E; g_ram[addr+5] = 0x75; /* RTS */
 }
 
-static void install_loadable_libs(void);
+/* Boot-time sanity check (UAOS-252): every fixed library keeps its whole
+ * negative jump table (below the base) and positive base struct clear of
+ * the exception-vector page and of every other library's range.  Runs
+ * once — install_library_tables is also called per-task. */
+static void libmap_selfcheck(void)
+{
+    static int done = 0;
+    if (done) return;
+    done = 1;
+    static const struct { const char *n; uint32_t b, neg, pos; } r[] = {
+        { "exec.library",      EXEC_BASE,       996,  0x280 },
+        { "dos.library",       DOS_BASE,        996,  0x080 },
+        { "bsdsocket.library", BSD_BASE,        216,  0x040 },
+        { "graphics.library",  GRAPHICS_BASE,   1056, 0x040 },
+        { "intuition.library", INTUITION_BASE,  1236, 0x040 },
+        { "gadtools.library",  GADTOOLS_BASE,   174,  0x040 },
+        { "audio.device",      AUDIO_DEV_BASE,  48,   0x040 },
+        { "fakelib",           FAKE_LIB_BASE,   756,  0x040 },
+    };
+    int bad = 0;
+    for (unsigned i = 0; i < sizeof(r)/sizeof(r[0]); i++) {
+        uint32_t lo = r[i].b - r[i].neg, hi = r[i].b + r[i].pos;
+        if (lo < 0x100u || hi > GUEST_RAM_SIZE) {
+            bad++;
+            char m[64]; int k = 0;
+            const char *t = "[emu] libmap OUT-OF-RANGE ";
+            while (t[k]) { m[k] = t[k]; k++; }
+            for (int j = 0; r[i].n[j] && k < 60; j++) m[k++] = r[i].n[j];
+            m[k++] = '\n'; m[k] = '\0';
+            emu_print(m);
+        }
+        for (unsigned j = i + 1; j < sizeof(r)/sizeof(r[0]); j++) {
+            uint32_t lo2 = r[j].b - r[j].neg, hi2 = r[j].b + r[j].pos;
+            if (lo < hi2 && lo2 < hi) {
+                bad++;
+                char m[80]; int k = 0;
+                const char *t = "[emu] libmap OVERLAP ";
+                while (t[k]) { m[k] = t[k]; k++; }
+                for (int q = 0; r[i].n[q] && k < 66; q++) m[k++] = r[i].n[q];
+                m[k++] = ' '; m[k++] = '/'; m[k++] = ' ';
+                for (int q = 0; r[j].n[q] && k < 76; q++) m[k++] = r[j].n[q];
+                m[k++] = '\n'; m[k] = '\0';
+                emu_print(m);
+            }
+        }
+    }
+    if (!bad) emu_print("[emu] libmap selfcheck OK\n");
+}
 
-/* Guest-visible Process/CLI/RDArgs addresses — allocated post-hunk_load by
+/* Library name/idstring arena (UAOS-237): a small C-string pool in the
+ * unused low band between the legacy jump table / fake handles and the
+ * exec stub floor (0xC1C).  Install-time only — written per window. */
+#define LIBSTR_ARENA   0x00000800u
+
+static uint32_t libstr_write(uint32_t *next, const char *s)
+{
+    uint32_t a = *next, i = 0;
+    while (s[i]) { g_ram[a + i] = (uint8_t)s[i]; i++; }
+    g_ram[a + i] = 0;
+    *next = a + i + 1;
+    return a;
+}
+
+/* AddTail for guest List headers (same protocol as glue_list_add_tail but
+ * usable at table-install time before that helper is defined). */
+static void guest_list_add_tail(uint32_t list, uint32_t node)
+{
+    uint32_t tailpred = guest_read_be32(list + 8);
+    guest_write_be32(node + 0, list + 4);
+    guest_write_be32(node + 4, tailpred);
+    guest_write_be32(tailpred + 0, node);
+    guest_write_be32(list + 8, node);
+}
+
+static void install_loadable_libs(void);
+static int  exec_alloc_sigbit(void);
+
+/* Guest-visible Process/CLI/RDArgs addresses — fixed region published by
  * UAOS_Emu_SetupProcess() so they can never sit inside the program image. */
 uint32_t g_guest_proc_addr   = 0;
 uint32_t g_guest_cli_addr    = 0;
 uint32_t g_guest_rdargs_addr = 0;
 
-/* Allocate and populate the guest-side Process/CLI environment.
- * Call AFTER hunk_load (the bump allocator hands these out past the
- * program hunks).  cmdname_bptr is the BSTR BPTR of the command name.
- * Returns the Process struct address (0 on OOM). */
+/* Dedicated process-environment region (UAOS-237): the whole per-launch
+ * Process environment lives at fixed offsets between the loadable-library
+ * arena (ends 0x1A000) and the hook-return trap (0x1EF000), well below
+ * PROG_BASE.  Both the shared-context and per-task setup paths use these
+ * addresses, so no program image — however large — can overlap them, and
+ * they are outside every guest allocator (bump heap 0x20000+, chip/fast
+ * free lists, genlib arena 0x7F0000+). */
+#define PROC_ENV_BASE   0x0001B000u
+#define PROC_PROC       (PROC_ENV_BASE + 0x000)  /* struct Process (0xE4)  */
+#define PROC_CLI        (PROC_ENV_BASE + 0x100)  /* CommandLineInterface   */
+#define PROC_RDARGS     (PROC_ENV_BASE + 0x180)  /* ReadArgs scratch block */
+#define PROC_CONPORT    (PROC_ENV_BASE + 0x1C0)  /* console MsgPort        */
+#define PROC_NAME_STR   (PROC_ENV_BASE + 0x200)  /* task ln_Name C string  */
+#define PROC_SETNAME    (PROC_ENV_BASE + 0x240)  /* BSTR cli_SetName       */
+#define PROC_PROMPT     (PROC_ENV_BASE + 0x250)  /* BSTR cli_Prompt        */
+#define PROC_CURDIR     (PROC_ENV_BASE + 0x260)  /* BSTR current dir name  */
+#define PROC_ENV_END    (PROC_ENV_BASE + 0x400)
+
+/* Stack bounds advertised in the Process (tc_SPLower/tc_SPUpper,
+ * pr_StackSize, pr_StackBase) — the real SP starts at STACK_TOP. */
+#define PROC_STACK_SIZE 0x00010000u   /* 64 KB */
+
+/* Write a BSTR (len byte + chars) into guest RAM. */
+static void proc_env_bstr(uint32_t addr, const char *s, uint32_t max)
+{
+    uint32_t n = 0;
+    while (s && s[n] && n < max - 1) n++;
+    g_ram[addr] = (uint8_t)n;
+    for (uint32_t i = 0; i < n; i++) g_ram[addr + 1 + i] = (uint8_t)s[i];
+}
+
+/* Initialise a MsgPort at `mp` owned by guest task `owner` with a real
+ * allocated signal bit (PA_SIGNAL semantics). */
+static void proc_env_msgport(uint32_t mp, uint32_t owner)
+{
+    int sb = exec_alloc_sigbit();
+    if (sb < 0) sb = 0;
+    g_ram[mp + PMP_LN_TYPE] = NT_MSGPORT_G;
+    g_ram[mp + PMP_FLAGS]   = PA_SIGNAL_G;
+    g_ram[mp + PMP_SIGBIT]  = (uint8_t)sb;
+    guest_write_be32(mp + PMP_SIGTASK, owner);
+    guest_write_be32(mp + PMP_MSGLIST + 0, mp + PMP_MSGLIST + 4);
+    guest_write_be32(mp + PMP_MSGLIST + 4, 0);
+    guest_write_be32(mp + PMP_MSGLIST + 8, mp + PMP_MSGLIST + 0);
+}
+
+/* Populate the guest-side Process/Task/CLI environment in the dedicated
+ * PROC_ENV region.  Call AFTER hunk_load so pr_SegList/cli_Module can
+ * point at the loaded seglist.  cmdname_bptr is the BSTR BPTR of the
+ * command name.  Returns the Process struct address. */
 uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
 {
-    uint32_t proc = heap_alloc(0x100);
-    uint32_t cli  = heap_alloc(0x80);
-    uint32_t rda  = heap_alloc(0x40);
-    if (!proc || !cli || !rda) return 0;
+    uint32_t proc = PROC_PROC;
+    uint32_t cli  = PROC_CLI;
+    emu_memset(g_ram + PROC_ENV_BASE, 0, PROC_ENV_END - PROC_ENV_BASE);
     g_guest_proc_addr   = proc;
     g_guest_cli_addr    = cli;
-    g_guest_rdargs_addr = rda;
+    g_guest_rdargs_addr = PROC_RDARGS;
 
-    /* Real Amiga Process layout (exec 39.x):
-     *   pr_CLI at +0xAC (BPTR to CommandLineInterface)
-     *   pr_CIS at +0x9C, pr_COS at +0xA0 (BPTR file handles)
-     * Self-decrunchers read pr_CLI and stamp cli_Module (+0x3C). */
-    guest_write_be32(proc + PR_CLI_OFFSET, cli >> 2);
-    guest_write_be32(proc + 0x9C,          DOS_STDIN_BPTR);   /* pr_CIS */
-    guest_write_be32(proc + 0xA0,          DOS_STDOUT_BPTR);  /* pr_COS */
+    /* Task name = the command-name BSTR text as a C string. */
+    {
+        uint32_t nb = cmdname_bptr << 2;
+        uint32_t n  = (nb + 1 < GUEST_RAM_SIZE) ? g_ram[nb] : 0;
+        if (n > 31) n = 31;
+        for (uint32_t i = 0; i < n; i++)
+            g_ram[PROC_NAME_STR + i] = g_ram[nb + 1 + i];
+        g_ram[PROC_NAME_STR + n] = 0;
+    }
 
-    g_ram[cli] = 0x01;                        /* non-zero/readable */
-    guest_write_be32(cli + 0x10, cmdname_bptr);   /* cli_CommandName */
-    guest_write_be32(cli + 0x2C, g_cmdline_bptr); /* cli_CommandLine */
+    /* Task node + fields — FindTask(NULL) returns this address, so make
+     * it a real NT_PROCESS node for name/type/stack probes. */
+    g_ram[proc + PRC_LN_TYPE]  = NT_PROCESS_G;
+    g_ram[proc + PRC_LN_PRI]   = 0;
+    guest_write_be32(proc + PRC_LN_NAME, PROC_NAME_STR);
+    g_ram[proc + PRC_TC_FLAGS]  = TF_PROCTASK_G;
+    g_ram[proc + PRC_TC_STATE]  = TS_RUN_G;
+    g_ram[proc + PRC_TC_IDNEST] = (uint8_t)-1;
+    g_ram[proc + PRC_TC_TDNEST] = (uint8_t)-1;
+    guest_write_be32(proc + PRC_TC_SIGALLOC, 0xFFFFFFFFu);
+    guest_write_be32(proc + PRC_TC_SPREG,   STACK_TOP);
+    guest_write_be32(proc + PRC_TC_SPLOWER, STACK_TOP - PROC_STACK_SIZE);
+    guest_write_be32(proc + PRC_TC_SPUPPER, STACK_TOP);
+
+    /* pr_MsgPort (+0x5C) and the console port: real signal-allocated ports
+     * so WaitPort/PutMsg on them behaves like AmigaOS.  pr_ConsoleTask is
+     * what dos.library/GetConsoleTask returns and what startup code uses
+     * to reach the console handler. */
+    proc_env_msgport(proc + PRC_MSGPORT, proc);
+    proc_env_msgport(PROC_CONPORT, proc);
+
+    /* Seglist BPTR of the loaded program (hunk_load writes LoadSeg-style
+     * [size][next][data] headers; the seglist is the first link field). */
+    uint32_t seglist = (g_hunk_count > 0) ? ((g_hunk_blk[0] + 4) >> 2) : 0;
+
+    guest_write_be32(proc + PRC_SEGLIST,     seglist);
+    guest_write_be32(proc + PRC_STACKSIZE,   PROC_STACK_SIZE);
+    guest_write_be32(proc + PRC_GLOBVEC,     DOS_BASE);
+    guest_write_be32(proc + PRC_TASKNUM,     1);
+    guest_write_be32(proc + PRC_STACKBASE,   (STACK_TOP - PROC_STACK_SIZE) >> 2);
+    guest_write_be32(proc + PR_CIS_OFFSET,   DOS_STDIN_BPTR);   /* pr_CIS */
+    guest_write_be32(proc + PR_COS_OFFSET,   DOS_STDOUT_BPTR);  /* pr_COS */
+    guest_write_be32(proc + PRC_CONSOLETASK, PROC_CONPORT);
+    /* pr_FileSystemTask (+0xA8) stays 0 — packets go through the host VFS. */
+    guest_write_be32(proc + PR_CLI_OFFSET,   cli >> 2);
+    guest_write_be32(proc + PRC_WINDOWPTR,   0xFFFFFFFFu); /* no req window */
+    /* pr_LocalVars (+0xD0): initialise as an empty MinList. */
+    guest_write_be32(proc + PRC_LOCALVARS + 0, proc + PRC_LOCALVARS + 4);
+    guest_write_be32(proc + PRC_LOCALVARS + 4, 0);
+    guest_write_be32(proc + PRC_LOCALVARS + 8, proc + PRC_LOCALVARS + 0);
+
+    /* CommandLineInterface — the fields a CLI-launched binary checks for
+     * Workbench-vs-CLI detection (pr_CLI), argument retrieval
+     * (cli_CommandName/cli_CommandLine), module identity (cli_Module) and
+     * console state. */
+    proc_env_bstr(PROC_SETNAME, "SYS:", 16);
+    proc_env_bstr(PROC_PROMPT,  "%N.%S>", 16);
+    proc_env_bstr(PROC_CURDIR,  g_uaos_cwd[0] ? g_uaos_cwd : "SYS:", 160);
+    guest_write_be32(cli + CLI_SETNAME,        PROC_SETNAME >> 2);
+    guest_write_be32(cli + CLI_COMMANDNAME,    cmdname_bptr);
+    guest_write_be32(cli + CLI_FAILLEVEL,      10);
+    guest_write_be32(cli + CLI_PROMPT,         PROC_PROMPT >> 2);
+    guest_write_be32(cli + CLI_DEFAULTINPUT,   DOS_STDIN_BPTR);
+    guest_write_be32(cli + CLI_DEFAULTOUTPUT,  DOS_STDOUT_BPTR);
+    guest_write_be32(cli + CLI_ERRORLEVEL,     10);
+    /* cli_Background (+0x28) = 0 — foreground command. */
+    guest_write_be32(cli + CLI_CURRENTINPUT,   g_cmdline_bptr); /* cli_CommandLine */
+    guest_write_be32(cli + CLI_CURRENTOUTPUT,  DOS_STDOUT_BPTR);
+    guest_write_be32(cli + CLI_CURRENTDIRNAME, PROC_CURDIR >> 2);
+    guest_write_be32(cli + CLI_MODULE_SC,      seglist); /* classic/SAS-C slot */
+    guest_write_be32(cli + CLI_INTERACTIVE,    1);
+    guest_write_be32(cli + CLI_MODULE,         seglist); /* extended slot */
 
     /* ExecBase+0x114 = ThisTask — guest programs read their Process here. */
     guest_write_be32(EXEC_BASE + 0x114, proc);
@@ -1834,29 +2159,36 @@ uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
 
 void install_library_tables(void)
 {
+    /* Exception vectors: autovectors 1-7 -> IRQ dispatch stubs (UAOS-241).
+     * Vector number 24+level at byte address 0x60+level*4; the stub is a
+     * 4-byte ILLEGAL word tagged (LIB_IRQ, level).  Every context (shared
+     * boot and per-task) gets these so real m68k_set_irq() delivery never
+     * vectors to a zero entry. */
+    for (int lvl = 1; lvl <= 7; lvl++) {
+        uint32_t s = IRQ_STUB_BASE + (uint32_t)lvl * 4u;
+        g_ram[s + 0] = 0x4A; g_ram[s + 1] = 0xFC;
+        g_ram[s + 2] = LIB_IRQ; g_ram[s + 3] = (uint8_t)lvl;
+        guest_write_be32(0x60u + (uint32_t)lvl * 4u, s);
+    }
+
     /* Pre-fill ALL DOS LVO slots (-6 .. -996) with ILLEGAL catch-all stubs
      * so an unimplemented call logs "[dos] unimpl lvo=N" instead of silently
      * returning 0 or wandering off.  Real handlers install over these. */
     for (int lvo = -6; lvo >= -996; lvo -= 6) {
         uint32_t addr = (uint32_t)((int)DOS_BASE + lvo);
-        if (addr < 0x40) break;
+        if (addr < 0x100) break;
         install_lvo(DOS_BASE, lvo, LIB_DOS, DOS_STUB_LVO);
     }
 
     /* exec.library at EXEC_BASE — catch-all stubs for every LVO we do not
      * implement so a guest call logs "[exec] unimpl lvo=…" instead of
-     * marching into zeroed RAM.  Stubs sit at EXEC_BASE+lvo, floor 0x40. */
-    for (int lvo = -6; lvo >= -720; lvo -= 6) {
+     * marching into zeroed RAM.  Stubs cover -6..-996 (all of V40) and now
+     * land at 0xC1C+, clear of the exception-vector page (UAOS-252). */
+    for (int lvo = -6; lvo >= -996; lvo -= 6) {
         uint32_t a = (uint32_t)((int)EXEC_BASE + lvo);
-        if (a < 0x40) break;
+        if (a < 0x100) break;
         install_lvo(EXEC_BASE, lvo, LIB_EXEC, EXEC_STUB_LVO);
     }
-
-    /* exec.library identification (struct Library): version at +20.
-     * Report 37 (Kickstart 2.04) — OctaMED requires WB 2.04+. */
-    guest_write_be16(EXEC_BASE + 20, 37);
-    guest_write_be16(EXEC_BASE + 22, 0);
-    g_ram[EXEC_BASE + 8] = NT_LIBRARY;
 
     /* Dynamic system fields: nest counters start at -1 (enabled),
      * AttnFlags claims a 68020. */
@@ -1884,6 +2216,44 @@ void install_library_tables(void)
         guest_write_be32(h + 0, h + 4);
         guest_write_be32(h + 4, 0);
         guest_write_be32(h + 8, h);
+    }
+
+    /* Real struct Library headers on every guest-visible base (UAOS-237):
+     * ln_Type + ln_Name + lib_NegSize/PosSize + lib_Version/lib_Revision +
+     * lib_IdString + lib_OpenCnt, so OpenLibrary("x.library", 37) version
+     * checks and FindName(&SysBase->LibList) see plausible data instead of
+     * zeros.  Names/idstrings live in the low-band string arena (0x800).
+     * Report version 37 (Kickstart 2.04) — OctaMED requires WB 2.04+. */
+    {
+        uint32_t strp = LIBSTR_ARENA;
+        static const struct {
+            uint32_t base; const char *name;
+            uint16_t neg, pos; uint8_t ntype; uint16_t list;
+        } hdrs[] = {
+            { EXEC_BASE,      "exec.library",      0x3EA, 0x280, NT_LIBRARY_G, 0x17A },
+            { DOS_BASE,       "dos.library",       0x3EA, 0x080, NT_LIBRARY_G, 0x17A },
+            { BSD_BASE,       "bsdsocket.library", 0x0D8, 0x040, NT_LIBRARY_G, 0x17A },
+            { GRAPHICS_BASE,  "graphics.library",  0x420, 0x040, NT_LIBRARY_G, 0x17A },
+            { INTUITION_BASE, "intuition.library", 0x4D4, 0x040, NT_LIBRARY_G, 0x17A },
+            { GADTOOLS_BASE,  "gadtools.library",  0x0AE, 0x040, NT_LIBRARY_G, 0x17A },
+            { AUDIO_DEV_BASE, "audio.device",      0x030, 0x040, NT_DEVICE_G,  0x15E },
+            { FAKE_LIB_BASE,  "fakelib.library",   0x2F4, 0x040, NT_LIBRARY_G, 0x000 },
+        };
+        for (unsigned i = 0; i < sizeof(hdrs)/sizeof(hdrs[0]); i++) {
+            uint32_t b   = hdrs[i].base;
+            uint32_t np  = libstr_write(&strp, hdrs[i].name);
+            uint32_t ids = libstr_write(&strp, hdrs[i].name);
+            g_ram[b + 8] = hdrs[i].ntype;                /* ln_Type      */
+            guest_write_be32(b + 10, np);                /* ln_Name      */
+            guest_write_be16(b + 16, hdrs[i].neg);       /* lib_NegSize  */
+            guest_write_be16(b + 18, hdrs[i].pos);       /* lib_PosSize  */
+            guest_write_be16(b + 20, 37);                /* lib_Version  */
+            guest_write_be16(b + 22, 3);                 /* lib_Revision */
+            guest_write_be32(b + 24, ids);               /* lib_IdString */
+            guest_write_be16(b + 32, 1);                 /* lib_OpenCnt  */
+            if (hdrs[i].list)
+                guest_list_add_tail(EXEC_BASE + hdrs[i].list, b);
+        }
     }
 
     install_lvo(EXEC_BASE, LVO_OPEN_LIBRARY,  LIB_EXEC, EXEC_OPEN_LIBRARY);
@@ -1965,6 +2335,7 @@ void install_library_tables(void)
     install_lvo(EXEC_BASE, LVO_OBTAIN_SEM_SHARED, LIB_EXEC, EXEC_OBTAIN_SEM_SHARED);
     install_lvo(EXEC_BASE, LVO_ALLOC_VEC,     LIB_EXEC, EXEC_ALLOC_VEC);
     install_lvo(EXEC_BASE, LVO_FREE_VEC,      LIB_EXEC, EXEC_FREE_VEC);
+    install_lvo(EXEC_BASE, LVO_STACK_SWAP,    LIB_EXEC, EXEC_STACK_SWAP);
 
     /* dos.library at DOS_BASE */
     install_lvo(DOS_BASE, LVO_DOS_OUTPUT,   LIB_DOS, DOS_OUTPUT);
@@ -2290,6 +2661,8 @@ void install_library_tables(void)
     g_ram[7] = (EXEC_BASE      ) & 0xFF;
 
     /* Also store at 0 (reset SSP will be patched separately) */
+
+    libmap_selfcheck();
 }
 
 /* =========================================================================
@@ -2344,7 +2717,9 @@ static void install_loadable_libs(void)
     for (int i = 0; i < g_glue_lib_count; i++) {
         GlueLoadableLib *e = &g_glue_libs[i];
         if (e->loaded) continue;
-        if (e->base_addr + e->bin_size > GUEST_RAM_SIZE) continue;
+        /* Blobs live at 0xA000+; they must end before the dedicated
+         * process-environment region at 0x1B000 (UAOS-237). */
+        if (e->base_addr + e->bin_size > 0x0001B000u) continue;
 
         for (uint32_t j = 0; j < e->bin_size; j++)
             g_ram[e->base_addr + j] = e->binary[j];
@@ -2371,6 +2746,7 @@ static void install_loadable_libs(void)
 typedef struct {
     uint32_t base;
     char     name[48];
+    uint8_t *ram;       /* owning guest-RAM window — entries are per-task */
     int      utility;   /* bound to utility.library ROM funcs */
     int      cia;       /* 0=CIAA, 1=CIAB for cia*.resource, else -1 */
     uint32_t icr_tab;   /* guest addr of 8-entry ICR Interrupt* table */
@@ -2392,10 +2768,16 @@ static int    g_genlib_count = 0;
 static uint32_t g_genlib_heap = GENLIB_ARENA_START;
 
 /* Per-task guest RAM windows are cleared on launch — callers reset this
- * so stale bases are not handed out into a fresh window. */
+ * so stale bases are not handed out into a fresh window.  Entries belong
+ * to the window that created them: a relaunch drops only this window's
+ * entries, so other live M68k tasks keep their generated libraries (and
+ * their cia.resource ICR registrations) intact. */
 void emu_reset_genlibs(void)
 {
-    g_genlib_count = 0;
+    int w = 0;
+    for (int i = 0; i < g_genlib_count; i++)
+        if (g_genlibs[i].ram != g_ram) g_genlibs[w++] = g_genlibs[i];
+    g_genlib_count = w;
     g_genlib_heap  = GENLIB_ARENA_START;
 }
 
@@ -2403,7 +2785,8 @@ void emu_reset_genlibs(void)
 const char *emu_fake_lib_name(uint32_t base)
 {
     for (int i = 0; i < g_genlib_count; i++)
-        if (g_genlibs[i].base == base) return g_genlibs[i].name;
+        if (g_genlibs[i].base == base && g_genlibs[i].ram == g_ram)
+            return g_genlibs[i].name;
     return NULL;
 }
 
@@ -2424,8 +2807,11 @@ static const struct { int lvo; uint8_t fn; } g_utility_lvo_map[] = {
 
 /* Allocate a guest library base for `name`, fill the Library struct, and
  * install stubs: real LVO->fn map for utility.library, LIB_GENERIC
- * catch-alls elsewhere.  Returns the base or 0. */
-static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver)
+ * catch-alls elsewhere.  `ntype`/`list_off` publish the node: ln_Type and
+ * the ExecBase list offset to link into (LibList 0x17A for libraries,
+ * ResourceList 0x150 for resources).  Returns the base or 0. */
+static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
+                                 uint8_t ntype, uint32_t list_off)
 {
     if (g_genlib_count >= 16) return 0;
 
@@ -2449,6 +2835,7 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver)
 
     GenLib *e = &g_genlibs[g_genlib_count++];
     e->base = base;
+    e->ram  = g_ram;
     e->cia  = cia;
     e->icr_tab = (cia >= 0) ? base + 0x80 : 0;
     int k = 0;
@@ -2464,7 +2851,7 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver)
     e->utility = is_utility;
 
     /* struct Library: Node + flags + sizes + version + idstring + opencnt */
-    g_ram[base + 8] = 9;                        /* ln_Type = NT_LIBRARY */
+    g_ram[base + 8] = ntype;                    /* ln_Type */
     glue_w32(base + 10, name_ptr);              /* ln_Name */
     glue_w16(base + 16, (uint16_t)GENLIB_STUB_AREA); /* lib_NegSize */
     glue_w16(base + 18, 34);                    /* lib_PosSize */
@@ -2473,6 +2860,11 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver)
     glue_w16(base + 22, 0);                     /* lib_Revision */
     glue_w32(base + 24, name_ptr);              /* lib_IdString */
     glue_w16(base + 32, 1);                     /* lib_OpenCnt */
+
+    /* Publish on the matching ExecBase list so FindName(&SysBase->LibList
+     * or ->ResourceList) resolves it (UAOS-237). */
+    if (list_off)
+        guest_list_add_tail(EXEC_BASE + list_off, base);
 
     uint8_t lib_id = is_utility ? LIB_UTILITY : LIB_GENERIC;
     for (int lvo = -6; lvo >= -(int)GENLIB_STUB_AREA; lvo -= 6)
@@ -2489,6 +2881,9 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver)
 static uint32_t emu_gen_find(const char *name)
 {
     for (int i = 0; i < g_genlib_count; i++) {
+        /* Base addresses repeat across windows — only match an entry
+         * materialised in *this* task's guest RAM. */
+        if (g_genlibs[i].ram != g_ram) continue;
         const char *n = g_genlibs[i].name;
         int j = 0;
         while (n[j] && name[j] == n[j]) j++;
@@ -2546,7 +2941,7 @@ static void exec_OpenLibrary(void)
      * host-harness strategy: enumerate the call surface instead of
      * dying at the first missing library. */
     if (!result) result = emu_gen_find(name);
-    if (!result) result = emu_gen_lib_base(name, req_ver);
+    if (!result) result = emu_gen_lib_base(name, req_ver, NT_LIBRARY_G, 0x17A);
 
     /* Trace every OpenLibrary name + requested version + outcome.
      * This is the primary tool for discovering what an m68k app needs. */
@@ -2600,7 +2995,7 @@ static void exec_OpenResource(void)
         { name[i] = (char)g_ram[name_ptr+i]; if (!name[i]) break; i++; }
     name[i] = '\0';
     uint32_t base = emu_gen_find(name);
-    if (!base) base = emu_gen_lib_base(name, 0);
+    if (!base) base = emu_gen_lib_base(name, 0, 8 /*NT_RESOURCE*/, 0x150);
     m68k_set_reg(M68K_REG_D0, base);
 }
 
@@ -2728,7 +3123,8 @@ static void cia_res_dispatch(uint32_t rbase, int32_t lvo)
 {
     GenLib *e = NULL;
     for (int i = 0; i < g_genlib_count; i++)
-        if (g_genlibs[i].base == rbase) e = &g_genlibs[i];
+        if (g_genlibs[i].base == rbase && g_genlibs[i].ram == g_ram)
+            e = &g_genlibs[i];
     if (!e || e->cia < 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
 
     uint32_t d0   = m68k_get_reg(NULL, M68K_REG_D0);
@@ -4050,6 +4446,42 @@ static void exec_FreeVec(void)
     dos_FreeMem_glue(mem - 4, glue_r32(mem - 4));
 }
 
+/* StackSwap(sss=a0) — V37.  Swaps the task's stack bounds and SP with the
+ * values in the StackSwapStruct; the struct receives the old values so a
+ * second call restores the original stack.  No stack contents are copied.
+ *
+ * The jsr'd return address sits on the OLD stack, so like the ROM we pop
+ * it off and re-push it on the new stack: the stub RTS that follows our
+ * dispatch then returns to the caller running on the new stack. */
+static void exec_StackSwap(void)
+{
+    uint32_t sss  = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t sp   = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+    if (sss + 12 > GUEST_RAM_SIZE) return;
+
+    uint32_t retaddr = (sp + 4 <= GUEST_RAM_SIZE) ? glue_r32(sp) : 0;
+    uint32_t nlo = glue_r32(sss + 0);   /* stk_LowerBound */
+    uint32_t nhi = glue_r32(sss + 4);   /* stk_UpperBound */
+    uint32_t nsp = glue_r32(sss + 8);   /* stk_Pointer    */
+
+    uint32_t task = glue_r32(EXEC_BASE + 0x114);   /* ThisTask */
+    uint32_t olo = 0, ohi = 0;
+    if (task && task + 0x42 <= GUEST_RAM_SIZE) {
+        olo = glue_r32(task + 0x3A);    /* tc_SPLower */
+        ohi = glue_r32(task + 0x3E);    /* tc_SPUpper */
+        glue_w32(task + 0x3A, nlo);
+        glue_w32(task + 0x3E, nhi);
+    }
+    glue_w32(sss + 0, olo);
+    glue_w32(sss + 4, ohi);
+    glue_w32(sss + 8, sp + 4);          /* old SP past the jsr'd retaddr */
+
+    if (nsp >= 4 && nsp + 4 <= GUEST_RAM_SIZE) {
+        glue_w32(nsp - 4, retaddr);
+        m68k_set_reg(M68K_REG_SP, nsp - 4);
+    }
+}
+
 static void exec_SetFunction(void)
 {
     /* SetFunction(library=a1, funcOffset=a0 (negative), newFunc=d0? no:
@@ -4153,6 +4585,7 @@ void UAOS_Exec_Dispatch(uint32_t fn)
         case EXEC_DELETE_MSGPORT:   exec_DeleteMsgPort();  break;
         case EXEC_ALLOC_VEC:      exec_AllocVec();    break;
         case EXEC_FREE_VEC:       exec_FreeVec();     break;
+        case EXEC_STACK_SWAP:     exec_StackSwap();   break;
         default: {
             /* Catch-all stub (EXEC_STUB_LVO) or unmapped fn — log the LVO
              * via the stub address (PC-4) and return 0. */
@@ -4330,9 +4763,10 @@ static void dos_Open(void)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -4471,9 +4905,10 @@ static void dos_DeleteFile(void)
         int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -4528,9 +4963,10 @@ static void dos_SetProtection(void)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -4579,9 +5015,10 @@ static void dos_Lock(void)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -4812,9 +5249,10 @@ static void dos_CreateDir(void)
         int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
         full_name[i] = '\0';
     } else {
-        int cwd_len = 0; while (g_uaos_cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = g_uaos_cwd[i]; i++; }
-        if (cwd_len > 0 && g_uaos_cwd[cwd_len-1] != ':' && g_uaos_cwd[cwd_len-1] != '/')
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
             full_name[i++] = '/';
         int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
         full_name[i] = '\0';
@@ -5052,72 +5490,89 @@ static void m68k_putch_call(uint32_t proc, uint8_t ch, uint32_t data)
 /* Poll chipset interrupt state and invoke the guest's installed exec
  * Interrupt structures.  Called between m68k_execute() slices in
  * exec_task.c and from the blocking-wait paths (exec_Wait et al.) so
- * handlers fire even while the guest task is descheduled.  Only usable in
- * a per-task context (g_chipset_sync_disabled) — the shared boot context
- * uses the real m68k_set_irq() path. */
+ * handlers fire even while the guest task is descheduled; the real
+ * m68k_set_irq() autovector path services the same IntVects while the
+ * guest is executing — both routes funnel through the helpers below. */
 uint32_t g_dlv_calls = 0;   /* UAOS-241 diag: deliveries attempted */
 uint32_t g_dlv_pend  = 0;   /* last pending mask seen */
 uint32_t g_dlv_isr   = 0;   /* guest handlers actually invoked */
 uint32_t g_blocked_in = 0;  /* 0=running 1=Wait 2=WaitPort 3=WaitIO */
 
-void UAOS_M68k_DeliverInterrupts(void)
-{
-    g_dlv_calls++;
-    if (!g_ram || !g_chipset_sync_disabled) return;
+/* INTREQ bit -> interrupt level (real Amiga mapping):
+ *   TBE/DSKBLK/SOFTINT (0-2) -> L1    PORTS/CIAA (3)     -> L2
+ *   COPER/VERTB/BLIT   (4-6) -> L3    AUD0-3     (7-10)  -> L4
+ *   RBF/DSKSYN        (11-12)-> L5    EXTER/CIAB (13-14) -> L6 */
+static const uint8_t g_irq_bit_level[15] = {
+    1, 1, 1,  2,  3, 3, 3,  4, 4, 4, 4,  5, 5,  6, 6
+};
 
+/* Enabled-and-requested INTREQ bits, with the CIAB line synthesized into
+ * the EXTER bit (real hardware has no EXTER register bit — the CIA pulls
+ * the level-6 line directly). */
+static uint16_t irq_pending_bits(void)
+{
     extern uint16_t g_intreq;   /* chip_emu.c — requests, incl. unmasked */
     uint16_t intena = chip_emu_intena_shadow();
-    uint16_t pend = g_intreq & intena & 0x7FFFu;
-    /* CIAB pending synthesizes the EXTER bit for guest vector dispatch. */
+    uint16_t pend = (uint16_t)(g_intreq & intena & 0x7FFFu);
     if (chip_emu_cia_b_pending() && (intena & 0x2000u)) pend |= 0x2000u;
-    if (pend) g_dlv_pend = pend;
+    return pend;
+}
 
+static int guest_ipl(void)
+{
+    return (int)((m68k_get_reg(NULL, M68K_REG_SR) >> 8) & 7);
+}
+
+/* Invoke the exec Interrupt structures registered for INTREQ bit n:
+ * chain dispatch for AddIntServer slots, direct call for SetIntVector. */
+static void deliver_intvect_bit(int n)
+{
     static uint32_t s_irq_seen = 0;
-    for (int n = 0; n < 15 && pend; n++) {
-        uint16_t bit = (uint16_t)(1u << n);
-        if (!(pend & bit)) continue;
-        pend = (uint16_t)(pend & ~bit);
-        uint32_t iv   = EB_INTVECTS + (uint32_t)n * 12u;
-        uint32_t code = guest_read_be32(iv + IV_CODE);
-        uint32_t node = guest_read_be32(iv + IV_NODE);
-        if (code == IV_CHAIN) {
-            /* Server chain: each handler gets a shot until one claims it
-             * (returns non-zero in D0), per exec's server dispatch. */
-            int hops = 0;
-            for (uint32_t in = node; in && in + 22 <= GUEST_RAM_SIZE && hops++ < 16;
-                 in = guest_read_be32(in)) {
-                uint32_t ic = guest_read_be32(in + IS_CODE);
-                if (ic) g_dlv_isr++;
-                if (ic && m68k_isr_call(ic, bit,
-                                        guest_read_be32(in + IS_DATA), iv))
-                    break;
-            }
-        } else if (code && code < GUEST_RAM_SIZE) {
-            if (!(s_irq_seen & bit)) {
-                s_irq_seen |= bit;
-                char m[48]; int i2 = 0;
-                const char *t2 = "[irq] deliver vec=";
-                while (t2[i2]) { m[i2] = t2[i2]; i2++; }
-                char n8[12]; u32_dec((uint32_t)n, n8, 12); int j2 = 0;
-                while (n8[j2] && i2 < 40) m[i2++] = n8[j2++];
-                const char *t3 = " code=0x"; j2 = 0; while (t3[j2]) m[i2++] = t3[j2++];
-                u32_hex(code, n8); j2 = 0; while (n8[j2] && i2 < 44) m[i2++] = n8[j2++];
-                m[i2++]='\n'; m[i2]='\0'; emu_print(m);
-            }
-            g_dlv_isr++;
-            m68k_isr_call(code, bit, guest_read_be32(iv + IV_DATA), iv);
+    uint16_t bit  = (uint16_t)(1u << n);
+    uint32_t iv   = EB_INTVECTS + (uint32_t)n * 12u;
+    uint32_t code = guest_read_be32(iv + IV_CODE);
+    uint32_t node = guest_read_be32(iv + IV_NODE);
+    if (code == IV_CHAIN) {
+        /* Server chain: each handler gets a shot until one claims it
+         * (returns non-zero in D0), per exec's server dispatch. */
+        int hops = 0;
+        for (uint32_t in = node; in && in + 22 <= GUEST_RAM_SIZE && hops++ < 16;
+             in = guest_read_be32(in)) {
+            uint32_t ic = guest_read_be32(in + IS_CODE);
+            if (ic) g_dlv_isr++;
+            if (ic && m68k_isr_call(ic, bit,
+                                    guest_read_be32(in + IS_DATA), iv))
+                break;
         }
-        /* An unacknowledged bit stays set in g_intreq and will be
-         * redelivered on the next poll — matching level-triggered HW. */
+    } else if (code && code < GUEST_RAM_SIZE) {
+        if (!(s_irq_seen & bit)) {
+            s_irq_seen |= bit;
+            char m[48]; int i2 = 0;
+            const char *t2 = "[irq] deliver vec=";
+            while (t2[i2]) { m[i2] = t2[i2]; i2++; }
+            char n8[12]; u32_dec((uint32_t)n, n8, 12); int j2 = 0;
+            while (n8[j2] && i2 < 40) m[i2++] = n8[j2++];
+            const char *t3 = " code=0x"; j2 = 0; while (t3[j2]) m[i2++] = t3[j2++];
+            u32_hex(code, n8); j2 = 0; while (n8[j2] && i2 < 44) m[i2++] = n8[j2++];
+            m[i2++]='\n'; m[i2]='\0'; emu_print(m);
+        }
+        g_dlv_isr++;
+        m68k_isr_call(code, bit, guest_read_be32(iv + IV_DATA), iv);
     }
+    /* An unacknowledged bit stays set in g_intreq and is redelivered on
+     * the next delivery round — matching level-triggered hardware. */
+}
 
-    /* cia*.resource ICR vectors — dispatch each masked-enabled pending bit
-     * to the Interrupt registered by AddICRVector.  The resource's own
-     * dispatch mimics the PORTS/EXTER ISR path on real hardware; we ack
-     * each delivered bit so it doesn't refire continuously. */
+/* Dispatch pending+enabled ICR bits for this CIA to the Interrupt
+ * structures installed via AddICRVector on its cia*.resource.  Entries are
+ * window-scoped — only this task's guest RAM is consulted.  We ack each
+ * delivered bit so it doesn't refire continuously (the real PORTS/EXTER
+ * servers do the same by reading ICR). */
+static void deliver_cia_icr(int cia)
+{
     for (int i = 0; i < g_genlib_count; i++) {
-        if (g_genlibs[i].cia < 0 || !g_genlibs[i].icr_tab) continue;
-        int cia = g_genlibs[i].cia;
+        if (g_genlibs[i].cia != cia || !g_genlibs[i].icr_tab) continue;
+        if (g_genlibs[i].ram != g_ram) continue;
         uint8_t icr = chip_emu_cia_icr_pending(cia);
         if (!icr) continue;
         for (int b = 0; b < 8; b++) {
@@ -5148,6 +5603,62 @@ void UAOS_M68k_DeliverInterrupts(void)
     }
 }
 
+void UAOS_M68k_DeliverInterrupts(void)
+{
+    g_dlv_calls++;
+    if (!g_ram) return;
+
+    uint16_t pend = irq_pending_bits();
+    if (pend) g_dlv_pend = pend;
+
+    /* Honour guest IPL masking like the real 68k: a source only preempts
+     * while its level is above the SR interrupt mask. */
+    int ipl = guest_ipl();
+    for (int n = 0; n < 15 && pend; n++) {
+        uint16_t bit = (uint16_t)(1u << n);
+        if (!(pend & bit)) continue;
+        pend = (uint16_t)(pend & ~bit);
+        if (g_irq_bit_level[n] <= ipl) continue;
+        deliver_intvect_bit(n);
+    }
+
+    /* cia*.resource ICR vectors — the resource's servers are called by the
+     * level's interrupt chain on real hardware; drive them here too so a
+     * guest that never installs an exec server still gets ICR delivery. */
+    if (ipl < 2) deliver_cia_icr(0);   /* CIAA -> PORTS level 2 */
+    if (ipl < 6) deliver_cia_icr(1);   /* CIAB -> EXTER level 6 */
+}
+
+/* Autovector dispatch — entered via the 4-byte (LIB_IRQ,level) ILLEGAL
+ * stub after Musashi takes a real interrupt exception: supervisor mode,
+ * SR.IPL = level, and a 68020 format-0 frame [SR:w][PC:l][fmt:w] pushed on
+ * the supervisor stack.  Runs the level's pending sources, then pops the
+ * frame — an emulated RTE back to the interrupted code (UAOS-241). */
+uint32_t g_dlv_vec = 0;   /* UAOS-241 diag: real autovector deliveries */
+
+static void irq_vector_entry(int level)
+{
+    g_dlv_vec++;
+    uint16_t pend = irq_pending_bits();
+    for (int n = 0; n < 15; n++) {
+        if ((pend & (1u << n)) && g_irq_bit_level[n] == level)
+            deliver_intvect_bit(n);
+    }
+    if (level == 2) deliver_cia_icr(0);
+    if (level == 6) deliver_cia_icr(1);
+
+    /* Emulated RTE: restore the interrupted SR/PC from the exception frame. */
+    uint32_t sp = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+    if (sp + 8 <= GUEST_RAM_SIZE) {
+        uint16_t osr = guest_read_be16(sp);
+        uint32_t opc = guest_read_be32(sp + 2);
+        /* guest_read_be16(sp + 6) = format/vector word — format 0 expected */
+        m68k_set_reg(M68K_REG_SP, sp + 8);
+        m68k_set_reg(M68K_REG_PC, opc);
+        m68k_set_reg(M68K_REG_SR, osr);  /* restores pre-exception IPL */
+    }
+}
+
 /* Stub for 68881 PMMU ops — referenced by generated m68kops.c when
  * 68020 emulation is enabled, but PMMU is disabled in uaos_m68kconf.h.
  * This stub satisfies the linker; it should never be called at runtime. */
@@ -5170,6 +5681,22 @@ void UAOS_Emu_MirrorSharedRegion(uint32_t off, uint32_t len)
  * ILLEGAL opcode callback — dispatches library calls
  * ========================================================================= */
 
+/* A 0x4AFC outside the regions where we (or the guest) install dispatch
+ * stubs is data executed by a wandering CPU — decoding its trailing bytes
+ * as (lib,fn) can dispatch a REAL host function (FreeMem/CopyMem/...) with
+ * garbage registers and shred the guest arena.  Refuse to dispatch; just
+ * skip the word (behaves like the old unknown-lib no-op). */
+static int is_stub_addr(uint32_t a)
+{
+    if (a >= EXEC_BASE - 996 && a < EXEC_BASE) return 1; /* exec jump table */
+    if (a >= DOS_BASE - 996  && a < DOS_BASE)  return 1; /* dos jump table  */
+    if (a >= 0x2000  && a < 0xC000)   return 1;  /* bsd/gfx/intui/gadtools/loadables */
+    if (a >= 0x1EF000u && a < 0x1EF080u) return 1; /* hook trap + IRQ stubs */
+    if (a >= 0x7F0000u && a < 0x800000u) return 1; /* genlib stub arena      */
+    if (a >= 0xE000  && a < 0x10000)  return 1;  /* fake-lib band           */
+    return 0;
+}
+
 int m68k_illg_instr_callback(int opcode)
 {
     /* We only intercept 0x4AFC (ILLEGAL) — opcode is the full 16-bit word */
@@ -5179,6 +5706,21 @@ int m68k_illg_instr_callback(int opcode)
     uint32_t pc  = m68k_get_reg(NULL, M68K_REG_PC);
     uint8_t  lib = g_ram[pc];     /* pc already advanced past ILLEGAL word */
     uint8_t  fn  = g_ram[pc + 1];
+
+    if (!is_stub_addr(pc - 2)) {
+        static uint32_t stray_count = 0;
+        if (++stray_count <= 20 || (stray_count % 100000) == 0) {
+            extern void kprint(const char *);
+            char msg[64] = "[emu] stray ILLEGAL pc=";
+            char n[12]; u32_hex(pc - 2, n);
+            int i = emu_strlen(msg), j = 0;
+            while (n[j] && i < 60) msg[i++] = n[j++];
+            msg[i++]='\n'; msg[i]='\0';
+            kprint(msg);
+        }
+        m68k_set_reg(M68K_REG_PC, pc + 2);
+        return 1;
+    }
 
     /* Diagnostic: trace library calls to diagnose hangs */
     {
@@ -5231,6 +5773,14 @@ int m68k_illg_instr_callback(int opcode)
         if (level >= 0 && level < MAX_NESTED_HOOKS)
             g_hook_return_detected[level] = 1;
         m68k_end_timeslice();
+        return 1;
+    }
+
+    if (lib == LIB_IRQ) {
+        /* Autovector stub — fn carries the interrupt level (1-7).  Musashi
+         * already pushed the 68020 exception frame; dispatch the level's
+         * sources and emulate RTE to resume the interrupted code. */
+        irq_vector_entry(fn);
         return 1;
     }
 
@@ -5330,6 +5880,7 @@ int m68k_illg_instr_callback(int opcode)
             case EXEC_DELETE_MSGPORT:   exec_DeleteMsgPort();  break;
             case EXEC_ALLOC_VEC:      exec_AllocVec();    break;
             case EXEC_FREE_VEC:       exec_FreeVec();     break;
+            case EXEC_STACK_SWAP:     exec_StackSwap();   break;
             default: {
                 /* PC was advanced to stub+4 → recover the LVO hit. */
                 uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
@@ -5587,21 +6138,19 @@ static uint16_t be16(const uint8_t *p)
 #define HUNK_DREL32      0x3F7   /* data-relative 16-bit relocations (like RELOC32SHORT) */
 #define HUNK_RELOC32SHORT 0x3FE  /* compact 16-bit relocations */
 
-#define MAX_HUNKS  32
-
-static uint32_t g_hunk_base[MAX_HUNKS];
-static int      g_hunk_count = 0;
+/* g_hunk_base / g_hunk_blk / g_hunk_count / MAX_HUNKS are declared near the
+ * top of this file (SetupProcess reads the seglist from them). */
 
 /* Returns start PC (first hunk base) or 0 on error */
 uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
 {
-    if (bin_size < 8) { emu_print("[hunk] too small\n"); return 0; }
+    if (bin_size < 8) { emu_cprint("[hunk] too small\n"); return 0; }
 
     const uint8_t *p   = bin;
     const uint8_t *end = bin + bin_size;
 
     /* HUNK_HEADER */
-    if (be32(p) != HUNK_HEADER) { emu_print("[hunk] bad magic\n"); return 0; }
+    if (be32(p) != HUNK_HEADER) { emu_cprint("[hunk] bad magic\n"); return 0; }
     p += 4;
 
     /* Skip resident library names */
@@ -5611,13 +6160,13 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
         p += cnt * 4;
     }
 
-    if (p + 12 > end) { emu_print("[hunk] truncated header\n"); return 0; }
+    if (p + 12 > end) { emu_cprint("[hunk] truncated header\n"); return 0; }
     uint32_t table_size = be32(p); p += 4;
     uint32_t first_hunk = be32(p); p += 4;
     uint32_t last_hunk  = be32(p); p += 4;
 
     uint32_t n_hunks = last_hunk - first_hunk + 1;
-    if (n_hunks > MAX_HUNKS) { emu_print("[hunk] too many hunks\n"); return 0; }
+    if (n_hunks > MAX_HUNKS) { emu_cprint("[hunk] too many hunks\n"); return 0; }
     (void)table_size;
 
     /* Read hunk sizes and allocate guest RAM.
@@ -5627,15 +6176,16 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
      *   [block+8] hunk data — this is what g_hunk_base[] records.
      * Self-decrunching binaries (e.g. OctaMED V5) walk this layout: they read
      * (hunk0_data-4) as the next-segment BPTR and (hunkN_data-8) as the byte
-     * size of the block.  Without the headers they decrypt/scan garbage. */
-    static uint32_t g_hunk_blk[MAX_HUNKS];
+     * size of the block.  Without the headers they decrypt/scan garbage.
+     * g_hunk_blk[0]+4 is also the program seglist BPTR published in
+     * pr_SegList / cli_Module by UAOS_Emu_SetupProcess (UAOS-237). */
     g_hunk_count = (int)n_hunks;
     for (uint32_t i = 0; i < n_hunks; i++) {
-        if (p + 4 > end) { emu_print("[hunk] size table truncated\n"); return 0; }
+        if (p + 4 > end) { emu_cprint("[hunk] size table truncated\n"); return 0; }
         uint32_t words = be32(p) & 0x3FFFFFFF; p += 4;  /* mask off mem flags */
         uint32_t bytes = words * 4;
         uint32_t blk = heap_alloc(bytes + 8);
-        if (!blk) { emu_print("[hunk] OOM\n"); return 0; }
+        if (!blk) { emu_cprint("[hunk] OOM\n"); return 0; }
         g_hunk_blk[i] = blk;
         g_hunk_base[i] = blk + 8;
         guest_write_be32(blk, bytes + 8);  /* total block size in bytes */
@@ -5654,7 +6204,7 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
             if (p + 4 > end) break;
             uint32_t words = be32(p); p += 4;
             uint32_t bytes = words * 4;
-            if (p + bytes > end) { emu_print("[hunk] CODE/DATA overflow\n"); return 0; }
+            if (p + bytes > end) { emu_cprint("[hunk] CODE/DATA overflow\n"); return 0; }
             emu_memcpy(g_ram + g_hunk_base[cur], p, bytes);
             p += bytes;
 
@@ -5793,7 +6343,7 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     /* Load the binary */
     uint32_t entry = hunk_load(binary, bin_size);
     if (!entry) {
-        emu_print("[emu] Failed to load binary\n");
+        emu_cprint("[emu] Failed to load binary\n");
         return -1;
     }
 
@@ -5822,21 +6372,24 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
     cmdlen++;
     cmdline[cmdlen] = '\0';
 
-    /* Place cmdline string just below SP */
+    /* Place cmdline string just below SP.  BPTRs are (addr >> 2): every
+     * pointer handed to the guest as a BPTR must be 4-byte aligned — keep
+     * sp aligned after each reservation (UAOS-237). */
     sp -= (uint32_t)((cmdlen + 2) & ~1u);
+    sp &= ~3u;
     uint32_t cmdline_ptr = sp;
     emu_memcpy(g_ram + cmdline_ptr, cmdline, (unsigned int)cmdlen);
 
-    /* Build a BSTR version for GetArgStr (byte[0]=len, byte[1..len]=chars)
-     * Place it 4 bytes below cmdline_ptr, 4-byte aligned */
+    /* Build a BSTR version for GetArgStr (byte[0]=len, byte[1..len]=chars) */
     sp -= (uint32_t)((cmdlen + 2 + 4) & ~3u);
+    sp &= ~3u;
     uint32_t bstr_ptr = sp;
     g_ram[bstr_ptr] = (uint8_t)(cmdlen < 255 ? cmdlen : 255);
     emu_memcpy(g_ram + bstr_ptr + 1, cmdline, (unsigned int)cmdlen);
     g_cmdline_bptr = bstr_ptr >> 2;  /* BPTR = addr >> 2 */
 
-    /* Build a separate BSTR for cli_CommandName */
-    sp -= 8;
+    /* Build a separate BSTR for cli_CommandName (up to 1+15 bytes). */
+    sp -= 16;
     uint32_t cmdname_bstr_ptr = sp;
     const char *cmdname = (argv && argv[0]) ? argv[0] : "m68k";
     UAOS_Emu_SetTarCompat(cmdname);
@@ -5869,6 +6422,10 @@ int UAOS_Emu_LoadAndRun_Internal(const uint8_t *binary, uint32_t bin_size,
 
     /* Restore SysBase at address 4 (pulse_reset consumed it as PC) */
     m68k_write_memory_32(4, EXEC_BASE);
+
+    /* pulse_reset starts at IPL 7 — drop to supervisor/IPL 0 like a real
+     * exec task so chipset autovectors can preempt the guest. */
+    m68k_set_reg(M68K_REG_SR, 0x2000);
 
     /* Set entry registers per Amiga CLI convention */
     m68k_set_reg(M68K_REG_A0, cmdline_ptr);       /* command line ptr */

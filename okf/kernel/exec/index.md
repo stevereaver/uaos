@@ -153,6 +153,8 @@ The 4 MiB static arena in `elf64_loader.c` (`g_x64_heap`) backs every x86-64 use
 
 Exec provides the bridge for emulated M68k tasks, including "LVO" (Library Vector Offset) stubs that allow M68k code to call native C functions.
 
+Library bases live in `emulation/uaos_m68k_glue.c`: `EXEC_BASE = 0x1000` (negative stub band `0xC1C–0xFFA`, positive ExecBase image above), `DOS_BASE = 0x2000` (stub band `0x1C1C–0x1FFA`), then bsdsocket `0x3000`, graphics `0x8000`, intuition `0x9000`, gadtools `0xA000`, audio.device `0xE000`, generic fake `0xF000`. Both exec and DOS pre-fill every LVO slot `-6`…`-996` with a catch-all stub before overlaying implemented functions — nothing in the exception-vector page. `exec.library/StackSwap` (`-732`, `EXEC_STACK_SWAP`) swaps the task's `tc_SPLower`/`tc_SPUpper`/SP with a guest `StackSwapStruct`, migrating the jsr'd return address onto the new stack AROS-style so the stub's RTS returns the caller on the new stack. `libmap_selfcheck()` asserts the bands are pairwise-disjoint on every table install. The same constants are duplicated in `kernel/exec/exec_task.c` and `kernel/exec/dos_lib.c` — keep all three in sync (UAOS-252).
+
 ## Guest Memory Layout
 
 The emulated M68k guest RAM is wired into the 4 GB guest physical window at offset `0x00000000`.  `GUEST_RAM_SIZE` is defined as 16 MB, split into:

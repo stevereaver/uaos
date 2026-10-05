@@ -141,6 +141,12 @@ typedef struct UaosTask {
     /* Per-task current working directory (copied at creation). */
     char     task_cwd[128];
 
+    /* Per-task guest BPTR from dos SetProgramDir/GetProgramDir — the
+     * lock address lives in this task's guest RAM window, so sharing it
+     * across M68k tasks would hand one task a pointer into another's
+     * arena. */
+    uint32_t m68k_program_dir;
+
     /* Output routing for X64/native userspace tasks.
      * raw output is accumulated in task_out and flushed line-by-line
      * through native_print_fn when a newline is seen or on task exit. */

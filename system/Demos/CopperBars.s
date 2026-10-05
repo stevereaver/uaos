@@ -12,12 +12,8 @@
 ;
 
 ; ---------------------------------------------------------------------------
-; Library bases returned by OpenLibrary
+; SysBase is fetched from absolute address $4 (standard AmigaOS convention).
 ; ---------------------------------------------------------------------------
-EXEC_BASE       equ $00000300
-DOS_BASE        equ $00000800
-GRAPHICS_BASE   equ $00008000
-INTUITION_BASE  equ $00009000
 
 ; ---------------------------------------------------------------------------
 ; Exec LVOs (standard AmigaOS offsets)
@@ -41,11 +37,6 @@ LVO_WaitTOF      equ -270   ; slot 45
 LVO_OpenWindow   equ -204
 LVO_CloseWindow  equ -72
 LVO_ModifyIDCMP  equ -174
-
-; ---------------------------------------------------------------------------
-; DOS LVO
-; ---------------------------------------------------------------------------
-LVO_DOS_Exit     equ -144
 
 ; ---------------------------------------------------------------------------
 ; IDCMP and window flags
@@ -132,7 +123,7 @@ start:
         ; --- Open exec.library ------------------------------------------
         move.l  #libname_exec,a1
         moveq   #0,d0
-        movea.l #EXEC_BASE,a6
+        movea.l 4.w,a6
         jsr     LVO_OpenLibrary(a6)
         movea.l d0,a6
         beq.w   exit
@@ -272,9 +263,7 @@ close_exec:
         ; exec.library is never closed.
 
 exit:
-        movea.l #DOS_BASE,a6
-        jsr     LVO_DOS_Exit(a6)
-        bra     exit
+        rts                             ; return address is the DOS Exit stub
 
 ; ---------------------------------------------------------------------------
 ; render_bars - update bar positions and draw them with RectFill.

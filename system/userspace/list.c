@@ -154,7 +154,12 @@ static void list_dir(const char *path, int all, int dates, int inter, int keys,
     long dd = uaos_opendir(path);
     if (dd < 0) return;
 
-    static struct list_entry ents[LIST_MAX_ENTRIES];
+    /* Per-level allocation: a static array is shared across the ALL
+     * recursion and the child's enumeration clobbers the parent's. */
+    struct list_entry *ents =
+        (struct list_entry *)uaos_alloc(sizeof(struct list_entry) * LIST_MAX_ENTRIES);
+    if (!ents) { uaos_closedir((int)dd); return; }
+
     int count = 0;
     struct uaos_dirent de;
     while (uaos_readdir((int)dd, &de) > 0 && count < LIST_MAX_ENTRIES) {
@@ -208,6 +213,8 @@ static void list_dir(const char *path, int all, int dates, int inter, int keys,
                      total_lines, total_files, total_dirs, total_size);
         }
     }
+
+    uaos_free(ents);
 }
 
 int main(int argc, const char **argv)

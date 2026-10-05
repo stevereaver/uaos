@@ -140,8 +140,8 @@ static void guest_memcpy(uint32_t dst, const uint8_t *src, uint32_t n)
  * M68k wrapper task — runs a loaded binary in time-sliced chunks
  * ------------------------------------------------------------------------- */
 
-/* Stub addresses for library dispatch (from uaos_m68k_glue.c) */
-#define EXEC_BASE       0x0300
+/* Stub addresses for library dispatch (from uaos_m68k_glue.c, UAOS-252) */
+#define EXEC_BASE       0x1000
 #define FAKE_LIB_BASE   0xF000
 #define DOS_STDIN_BPTR  0x00000200
 #define DOS_STDOUT_BPTR 0x00000204
@@ -224,20 +224,27 @@ static void m68k_wrapper_entry(void *arg)
     cmdlen++;
     cmdline[cmdlen] = '\0';
 
-    /* Place cmdline string just below SP */
+    /* Place cmdline string just below SP.  BPTRs are (addr >> 2), so every
+     * pointer handed to the guest as a BPTR must be 4-byte aligned — keep
+     * sp aligned after each reservation (UAOS-237: a 2-aligned cmdline_ptr
+     * cascaded into a misaligned cmdname BSTR and produced an empty
+     * Process ln_Name). */
     sp -= (uint32_t)((cmdlen + 2) & ~1u);
+    sp &= ~3u;
     uint32_t cmdline_ptr = sp;
     guest_memcpy(cmdline_ptr, (const uint8_t *)cmdline, (uint32_t)cmdlen);
 
     /* Build a BSTR version for GetArgStr (byte[0]=len, byte[1..len]=chars) */
     sp -= (uint32_t)((cmdlen + 2 + 4) & ~3u);
+    sp &= ~3u;
     uint32_t bstr_ptr = sp;
     g_ram[bstr_ptr] = (uint8_t)(cmdlen < 255 ? cmdlen : 255);
     guest_memcpy(bstr_ptr + 1, (const uint8_t *)cmdline, (uint32_t)cmdlen);
     g_cmdline_bptr = bstr_ptr >> 2;
 
-    /* Build a BSTR for the command name (argv[0] / task name) */
-    sp -= 8;
+    /* Build a BSTR for the command name (argv[0] / task name) — up to
+     * 1+15 bytes, so reserve 16. */
+    sp -= 16;
     uint32_t cmdname_bstr_ptr = sp;
     const char *cmdname = task->m68k_argv[0] ? task->m68k_argv[0] : task->m68k_name;
     { extern void UAOS_Emu_SetTarCompat(const char *); UAOS_Emu_SetTarCompat(cmdname); }
@@ -248,11 +255,10 @@ static void m68k_wrapper_entry(void *arg)
         g_ram[cmdname_bstr_ptr + 1 + i] = (uint8_t)cmdname[i];
     uint32_t cmdname_bptr = cmdname_bstr_ptr >> 2;
 
-    /* Build the guest Process/CLI/RDArgs environment AFTER hunk_load so the
-     * structs land past the program image (fixed 0x10000 sat inside large
-     * binaries and got stomped — OctaMED's decrunched payload is ~258 KB).
-     * Uses real Amiga Process offsets (pr_CLI=0xAC, pr_CIS=0x9C,
-     * pr_COS=0xA0) and publishes the Process at ExecBase+0x114. */
+    /* Build the guest Process/Task/CLI/console-port environment AFTER
+     * hunk_load so pr_SegList/cli_Module can point at the loaded seglist.
+     * The structs live in the dedicated region at 0x1B000 — outside the
+     * program image and every guest allocator (UAOS-237). */
     uint32_t proc_addr = UAOS_Emu_SetupProcess(cmdname_bptr);
     if (!proc_addr) {
         extern void kprint(const char *);
@@ -270,10 +276,10 @@ static void m68k_wrapper_entry(void *arg)
     guest_w32(4, EXEC_BASE);
 
     /* Push return address — DOS Exit stub so RTS ends execution.
-     * The stub address = DOS_BASE + LVO_DOS_EXIT = 0x800 + (-144) = 0x770.
+     * The stub address = DOS_BASE + LVO_DOS_EXIT = 0x2000 + (-144) = 0x1F70.
      * When the program does RTS at the end, it returns to the Exit stub
      * which triggers the illegal instruction handler and halts. */
-    #define DOS_BASE_LOCAL  0x0800
+    #define DOS_BASE_LOCAL  0x2000
     #define LVO_DOS_EXIT_LOCAL (-144)
     sp -= 4;
     guest_w32(sp, (uint32_t)((int)DOS_BASE_LOCAL + LVO_DOS_EXIT_LOCAL));
@@ -296,6 +302,10 @@ static void m68k_wrapper_entry(void *arg)
     m68k_pulse_reset();
     m68k_write_memory_32(4, EXEC_BASE);
 
+    /* pulse_reset starts at IPL 7 — drop to supervisor/IPL 0 like a real
+     * exec task so chipset autovectors can preempt the guest (UAOS-241). */
+    m68k_set_reg(17 /*M68K_REG_SR*/, 0x2000);
+
     /* CLI entry registers per Amiga CLI convention.
      * In Musashi: M68K_REG_D0=0, M68K_REG_A0=8, M68K_REG_A6=14.
      * A0 = command line pointer, D0 = command line length.
@@ -303,7 +313,7 @@ static void m68k_wrapper_entry(void *arg)
      * by the loader, especially ACE-compiled binaries. */
     m68k_set_reg(8, cmdline_ptr);        /* A0 = command line pointer */
     m68k_set_reg(0, (unsigned int)cmdlen); /* D0 = command line length */
-    m68k_set_reg(14, 0x0300);           /* A6 = EXEC_BASE (SysBase) */
+    m68k_set_reg(14, EXEC_BASE);        /* A6 = EXEC_BASE (SysBase) */
 
     /* Run in time-sliced chunks.
      * A cycle budget prevents runaway programs from locking the system
@@ -313,10 +323,12 @@ static void m68k_wrapper_entry(void *arg)
     task->m68k_halted = 0;
     task->m68k_budget_dumped = 0;
     {
-        extern uint32_t g_m68k_first_wild_pc;
-        extern int g_m68k_pc_ring_idx;
-        g_m68k_first_wild_pc = 0;
-        g_m68k_pc_ring_idx = 0;
+        /* Full wild-PC/instr-hook state reset — includes saw_app_code,
+         * low_reentry, wild_abort and the hook's prev edge.  Without this
+         * a second launch inherits stale flags and the decruncher's own
+         * 0x2xxxx code PCs look like wild re-entries. */
+        extern void m68k_reset_wild_state(void);
+        m68k_reset_wild_state();
     }
     task->m68k_entry = entry;
     task->m68k_stack_top = sp;
@@ -364,8 +376,9 @@ static void m68k_wrapper_entry(void *arg)
 
         /* Deliver pending guest interrupts (VERTB, AUDx, CIA) to the exec
          * Interrupt structures in this task's ExecBase.  The real
-         * m68k_set_irq path is unusable here — per-task contexts have no
-         * populated exception vectors. */
+         * m68k_set_irq autovector path also fires at the next execute()
+         * boundary — this poll covers the case where the guest never
+         * drops IPL below 7. */
         { extern void UAOS_M68k_DeliverInterrupts(void); UAOS_M68k_DeliverInterrupts(); }
         /* Note: chip_emu_run_to_cycle() is NOT called here because the
          * chipset emulator uses global blitter/copper state that is
@@ -520,6 +533,19 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     }
 
     t->type = TASK_TYPE_M68K;
+    /* Snapshot the launcher-selected cwd (g_uaos_cwd) into the task so
+     * later launches and other guests' cd calls can't rewire this task's
+     * relative paths (dos_lib path resolution reads task_cwd via
+     * m68k_cur_cwd). */
+    {
+        extern char g_uaos_cwd[64];
+        int i = 0;
+        while (i < (int)sizeof(t->task_cwd) - 1 && g_uaos_cwd[i]) {
+            t->task_cwd[i] = g_uaos_cwd[i];
+            i++;
+        }
+        t->task_cwd[i] = '\0';
+    }
     t->m68k_ram = g_ram_pool[slot];
     t->m68k_context_size = ctx_size;
     t->m68k_bin_size = bin_size;

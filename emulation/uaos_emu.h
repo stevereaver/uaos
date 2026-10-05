@@ -30,8 +30,14 @@ extern uint32_t g_uaos_heap_ptr;
 /* BPTR to the CLI argument BSTR, set at startup for GetArgStr() */
 extern uint32_t g_cmdline_bptr;
 
-/* Current working directory for resolving relative paths */
+/* Current working directory for resolving relative paths.
+ * Launchers set this global before Task_CreateM68k(); the task snapshots
+ * it into its own task_cwd.  Path resolution goes through the per-task
+ * helpers so one guest's cd/CurrentDir (or another launch) cannot rewire
+ * a running task's paths. */
 extern char g_uaos_cwd[64];
+const char *m68k_cur_cwd(void);
+void m68k_set_cur_cwd(const char *path);
 
 /* Emulation halt flag — set by dos_Exit to break the execute loop */
 extern int g_emu_halted;

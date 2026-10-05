@@ -3,10 +3,9 @@
 #include "cmd_internal.h"
 #include "dos/vfs.h"
 #include "../net/ntp.h"
+#include "../exec/elf64_loader.h"
 
 #define DIR_MAX_ENTRIES 256
-
-static VfsDirEnt g_dir_entries[DIR_MAX_ENTRIES];
 
 static const char *k_months_short[] = {
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -103,9 +102,16 @@ static void dir_list(NativeCmdCtx *ctx, const char *path, const char *pat,
                      int opt_alpha, int opt_dirfirst,
                      int *total_lines)
 {
-    VfsDirEnt *ents = g_dir_entries;
+    /* Per-level allocation: a shared buffer is clobbered by the ALL
+     * recursion — the child's enumeration overwrites the parent's
+     * entries mid-iteration.  The x64 heap is the only native kernel
+     * heap; the block is task-owned so it is reclaimed even on an
+     * early command abort. */
+    VfsDirEnt *ents = (VfsDirEnt *)ELF64_HeapAlloc(
+        sizeof(VfsDirEnt) * DIR_MAX_ENTRIES, 16);
+    if (!ents) return;
     int count = VFS_ReadDir(path, ents, DIR_MAX_ENTRIES);
-    if (count == 0) return;
+    if (count == 0) { ELF64_HeapFree(ents); return; }
 
     /* Sort */
     if (opt_dirfirst) {
@@ -158,6 +164,8 @@ static void dir_list(NativeCmdCtx *ctx, const char *path, const char *pat,
             dir_list(ctx, sub, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst, total_lines);
         }
     }
+
+    ELF64_HeapFree(ents);
 }
 
 void Cmd_Dir(NativeCmdCtx *ctx, const char *args)

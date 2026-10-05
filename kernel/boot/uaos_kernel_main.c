@@ -1130,6 +1130,16 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         BCM5974_StartWorker();
     }
 
+    /* Deferred USB re-enumeration task — retries ports that reported
+     * connected-but-deaf at boot with bounded backoff, then parks them
+     * until a connect-status edge; also picks up real post-boot
+     * hotplug.  Like the bcm5974 worker it must be spawned after
+     * TaskScheduler_Init (UAOS-258). */
+    {
+        extern void USB_StartEnumTask(void);
+        USB_StartEnumTask();
+    }
+
     kprint("[BOOT] Initialising userspace GUI windows...\n");
     UserWindow_Init();
 

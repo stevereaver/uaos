@@ -2643,12 +2643,35 @@ static void build_req_guest_window(uint32_t win_ptr)
     mem_w32(win_ptr + WIN_OFF_IDCMPFLAGS, IDCMP_GADGETUP | IDCMP_RAWKEY | IDCMP_CLOSEWINDOW);
 }
 
-static void guest_itext_text(char *out, uint32_t itext_ptr, size_t out_size)
+/* sep: '\n' for requester bodies (multi-line), ' ' for single-line labels */
+static void guest_itext_text_sep(char *out, uint32_t itext_ptr, size_t out_size,
+                                 char sep)
 {
     out[0] = '\0';
     if (!itext_ptr || !out_size) return;
-    uint32_t text_ptr = mem_u32(itext_ptr + ITEXT_OFF_ITEXT);
-    if (text_ptr) guest_str(out, text_ptr, out_size);
+    /* Requester bodies are commonly a chain of IntuiText nodes, one per
+     * displayed line — reading only the head renders a near-empty body. */
+    size_t len = 0;
+    int guard = 0;
+    while (itext_ptr && itext_ptr + ITEXT_SIZE <= GUEST_RAM_SIZE && guard++ < 32) {
+        uint32_t text_ptr = mem_u32(itext_ptr + ITEXT_OFF_ITEXT);
+        if (text_ptr) {
+            char node[128];
+            guest_str(node, text_ptr, sizeof(node));
+            size_t n = 0;
+            while (node[n]) n++;
+            if (len && len + 1 < out_size) out[len++] = sep;
+            for (size_t i = 0; i < n && len + 1 < out_size; i++)
+                out[len++] = node[i];
+            out[len] = '\0';
+        }
+        itext_ptr = mem_u32(itext_ptr + ITEXT_OFF_NEXTTEXT);
+    }
+}
+
+static void guest_itext_text(char *out, uint32_t itext_ptr, size_t out_size)
+{
+    guest_itext_text_sep(out, itext_ptr, out_size, '\n');
 }
 
 static uint32_t build_requester_internal(uint32_t parent_win, const char *title,
@@ -2696,6 +2719,11 @@ static uint32_t build_requester_internal(uint32_t parent_win, const char *title,
 
     local_str_copy(g_req_slot.title, title, sizeof(g_req_slot.title));
     local_str_copy(g_req_slot.body_text, body, sizeof(g_req_slot.body_text));
+    {   /* UAOS-242 diag: dump requester content once */
+        kprint("[req] build title='"); kprint(g_req_slot.title);
+        kprint("' body='"); kprint(g_req_slot.body_text);
+        kprint("' nbtn="); kprintdec(num_buttons); kprint("\n");
+    }
 
     int total_btn_w = num_buttons * REQ_BTN_W + (num_buttons - 1) * 10;
     int start_x = (width - total_btn_w) / 2;
@@ -3180,9 +3208,9 @@ int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
 
     /* initial drawer: tag override, else the guest process cwd */
     {
-        extern char g_uaos_cwd[64];
-        if (g_uaos_cwd[0])
-            local_str_copy(g_frq.drawer, g_uaos_cwd, sizeof(g_frq.drawer));
+        const char *cwd = m68k_cur_cwd();
+        if (cwd[0])
+            local_str_copy(g_frq.drawer, cwd, sizeof(g_frq.drawer));
         if (!g_frq.drawer[0] || !VFS_IsDir(g_frq.drawer))
             g_frq.vol_mode = 1;
     }
@@ -6569,12 +6597,17 @@ static void intuition_AutoRequest(void)
 
     (void)pos_flags; (void)neg_flags;
 
+    {   /* UAOS-242 diag */
+        kprint("[req] AutoRequest body="); kprinthex(body_ptr);
+        kprint(" pos="); kprinthex(pos_ptr);
+        kprint(" neg="); kprinthex(neg_ptr); kprint("\n");
+    }
     char body[256] = "";
     char pos[32]   = "OK";
     char neg[32]   = "Cancel";
     guest_itext_text(body, body_ptr, sizeof(body));
-    if (pos_ptr) guest_itext_text(pos, pos_ptr, sizeof(pos));
-    if (neg_ptr) guest_itext_text(neg, neg_ptr, sizeof(neg));
+    if (pos_ptr) guest_itext_text_sep(pos, pos_ptr, sizeof(pos), ' ');
+    if (neg_ptr) guest_itext_text_sep(neg, neg_ptr, sizeof(neg), ' ');
 
     const char *buttons[2];
     int num_buttons = 0;
@@ -6608,12 +6641,17 @@ static void intuition_BuildSysRequest(void)
 
     (void)flags;
 
+    {   /* UAOS-242 diag */
+        kprint("[req] BuildSysRequest body="); kprinthex(body_ptr);
+        kprint(" pos="); kprinthex(pos_ptr);
+        kprint(" neg="); kprinthex(neg_ptr); kprint("\n");
+    }
     char body[256] = "";
     char pos[32]   = "OK";
     char neg[32]   = "Cancel";
     guest_itext_text(body, body_ptr, sizeof(body));
-    if (pos_ptr) guest_itext_text(pos, pos_ptr, sizeof(pos));
-    if (neg_ptr) guest_itext_text(neg, neg_ptr, sizeof(neg));
+    if (pos_ptr) guest_itext_text_sep(pos, pos_ptr, sizeof(pos), ' ');
+    if (neg_ptr) guest_itext_text_sep(neg, neg_ptr, sizeof(neg), ' ');
 
     const char *buttons[2];
     int num_buttons = 0;
@@ -9102,12 +9140,28 @@ static void intuition_Request(void)
         return;
     }
 
+    {   /* UAOS-242 diag: dump the Requester text chain */
+        uint32_t rt = mem_u32(req + REQ_OFF_REQTEXT);
+        kprint("[req] Request req="); kprinthex(req);
+        kprint(" reqtext="); kprinthex(rt);
+        for (int i = 0; i < 4 && rt; i++) {
+            kprint(" ["); kprintdec(i); kprint("] itext=");
+            kprinthex(mem_u32(rt + ITEXT_OFF_ITEXT));
+            kprint(" next=");
+            rt = mem_u32(rt + ITEXT_OFF_NEXTTEXT);
+            kprinthex(rt);
+        }
+        kprint("\n");
+    }
+
     char body[256] = "";
     uint32_t text_ptr = mem_u32(req + REQ_OFF_REQTEXT);
     if (text_ptr) {
-        /* Treat it as an IntuiText* first, then fall back to raw text. */
+        /* Treat it as an IntuiText* first, then fall back to raw text.
+         * The chain walk matters here: OctaMED's startup requester bodies
+         * are multi-node IntuiText lists, one node per line. */
         uint32_t itext = mem_u32(text_ptr + ITEXT_OFF_ITEXT);
-        if (itext) guest_str(body, itext, sizeof(body));
+        if (itext) guest_itext_text(body, text_ptr, sizeof(body));
         else       guest_str(body, text_ptr, sizeof(body));
     }
 
@@ -9122,7 +9176,8 @@ static void intuition_Request(void)
         if (label) {
             uint32_t label_text = mem_u32(label + ITEXT_OFF_ITEXT);
             if (label_text)
-                guest_str(btn_labels[num_buttons], label_text, sizeof(btn_labels[num_buttons]));
+                guest_itext_text_sep(btn_labels[num_buttons], label,
+                                     sizeof(btn_labels[num_buttons]), ' ');
         }
         if (!btn_labels[num_buttons][0])
             local_str_copy(btn_labels[num_buttons], "OK", sizeof(btn_labels[num_buttons]));

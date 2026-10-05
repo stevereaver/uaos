@@ -20,11 +20,12 @@
 
 #include <stdint.h>
 
-#define UAOS_TMPL_MAX_ITEMS  16
-#define UAOS_TMPL_MAX_NAME   32
-#define UAOS_TMPL_MAX_VAL    128
-#define UAOS_TMPL_MAX_MULTI  4
-#define UAOS_TMPL_MAX_TOKENS 32
+#define UAOS_TMPL_MAX_ITEMS       16
+#define UAOS_TMPL_MAX_NAME        32
+#define UAOS_TMPL_MAX_VAL         128
+#define UAOS_TMPL_MAX_MULT_ITEMS  2   /* /M items supported per template */
+#define UAOS_TMPL_MAX_MULT_VALUES 32  /* values per /M item (== MAX_TOKENS) */
+#define UAOS_TMPL_MAX_TOKENS      32
 
 typedef struct {
     char name[UAOS_TMPL_MAX_NAME];
@@ -36,12 +37,22 @@ typedef struct {
     int  free_arg;      /* /F */
     int  present;
     char value[UAOS_TMPL_MAX_VAL];
-    char values[UAOS_TMPL_MAX_MULTI][UAOS_TMPL_MAX_VAL];
+    int  value_index;   /* /M value block in the result's multi_pool */
     int  value_count;
 } UaosTmplItem;
 
 typedef struct {
     UaosTmplItem items[UAOS_TMPL_MAX_ITEMS];
+    /* /M items draw their value strings from this shared pool — each /M
+     * item claims one block of UAOS_TMPL_MAX_MULT_VALUES slots at parse
+     * time.  The old per-item values[4][128] silently dropped every
+     * value past the fourth (echo printed only the first four words of
+     * a line — UAOS-256); the pool covers the tokenizer's full token
+     * count for one fixed cost instead of scaling per item. */
+    char         multi_pool[UAOS_TMPL_MAX_MULT_ITEMS]
+                           [UAOS_TMPL_MAX_MULT_VALUES]
+                           [UAOS_TMPL_MAX_VAL];
+    int          multi_used;   /* pool blocks claimed so far */
     int          count;
     char         error[UAOS_TMPL_MAX_VAL];
 } UaosTmpl;
@@ -109,6 +120,7 @@ static inline void uaos_tmpl_parse(const char *template_str, UaosTmpl *out)
 {
     const char *p = template_str;
     out->count = 0;
+    out->multi_used = 0;
     out->error[0] = '\0';
 
     while (*p) {
@@ -123,6 +135,7 @@ static inline void uaos_tmpl_parse(const char *template_str, UaosTmpl *out)
         UaosTmplItem *item = &out->items[out->count];
         char *base = (char *)item;
         for (int i = 0; i < (int)sizeof(UaosTmplItem); i++) base[i] = 0;
+        item->value_index = -1;
 
         const char *name_start = p;
         while (*p && *p != '/' && *p != ',' && *p != ' ' && *p != '\t') p++;
@@ -144,7 +157,18 @@ static inline void uaos_tmpl_parse(const char *template_str, UaosTmpl *out)
                 case 'k': item->keyword = 1; break;
                 case 's': item->sw = 1; break;
                 case 'n': item->number = 1; break;
-                case 'm': item->multiple = 1; break;
+                case 'm':
+                    item->multiple = 1;
+                    /* Claim a contiguous value block from the shared pool. */
+                    if (item->value_index < 0) {
+                        if (out->multi_used >= UAOS_TMPL_MAX_MULT_ITEMS) {
+                            uaos_tmpl_scopy(out->error, "too many /M template items",
+                                            UAOS_TMPL_MAX_VAL);
+                            return;
+                        }
+                        item->value_index = out->multi_used++;
+                    }
+                    break;
                 case 'f': item->free_arg = 1; break;
                 default:  break;
             }
@@ -254,9 +278,10 @@ static inline void uaos_tmpl_match(UaosTmpl *out, const char *args)
                     if (it->sw) {
                         it->present = 1;
                     } else {
-                        if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULTI) {
-                            uaos_tmpl_scopy_n(it->values[it->value_count], val,
-                                              vallen, UAOS_TMPL_MAX_VAL);
+                        if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULT_VALUES) {
+                            uaos_tmpl_scopy_n(out->multi_pool[it->value_index]
+                                                         [it->value_count],
+                                              val, vallen, UAOS_TMPL_MAX_VAL);
                             it->value_count++;
                         } else {
                             uaos_tmpl_scopy(it->value, val, UAOS_TMPL_MAX_VAL);
@@ -285,9 +310,10 @@ static inline void uaos_tmpl_match(UaosTmpl *out, const char *args)
             if (i + 1 < ta.n && !ta.used[i + 1]) {
                 const char *val = ta.tok[i + 1];
                 int vallen = uaos_tmpl_slen(val);
-                if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULTI) {
-                    uaos_tmpl_scopy_n(it->values[it->value_count], val,
-                                      vallen, UAOS_TMPL_MAX_VAL);
+                if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULT_VALUES) {
+                    uaos_tmpl_scopy_n(out->multi_pool[it->value_index]
+                                                 [it->value_count],
+                                      val, vallen, UAOS_TMPL_MAX_VAL);
                     it->value_count++;
                 } else {
                     uaos_tmpl_scopy(it->value, val, UAOS_TMPL_MAX_VAL);
@@ -330,9 +356,9 @@ static inline void uaos_tmpl_match(UaosTmpl *out, const char *args)
                 if (free_toks <= needed) continue;
             }
 
-            if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULTI) {
-                uaos_tmpl_scopy(it->values[it->value_count], ta.tok[i],
-                                UAOS_TMPL_MAX_VAL);
+            if (it->multiple && it->value_count < UAOS_TMPL_MAX_MULT_VALUES) {
+                uaos_tmpl_scopy(out->multi_pool[it->value_index][it->value_count],
+                                ta.tok[i], UAOS_TMPL_MAX_VAL);
                 it->value_count++;
                 it->present = 1;
                 ta.used[i] = 1;
@@ -432,7 +458,7 @@ static inline const char *uaos_tmpl_multi(const UaosTmpl *res, const char *name,
 {
     UaosTmplItem *it = uaos_tmpl_find((UaosTmpl *)res, name);
     if (!it || idx < 0 || idx >= it->value_count) return NULL;
-    return it->values[idx];
+    return res->multi_pool[it->value_index][idx];
 }
 
 #endif /* UAOS_TEMPLATE_H */

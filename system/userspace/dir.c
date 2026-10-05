@@ -73,12 +73,18 @@ static int prompt_yn(const char *msg)
 static void dir_list(const char *path, const char *pat,
                      int all, int dates, int inter, int keys,
                      int opt_alpha, int opt_dirfirst,
-                     int dirs_only, int files_only, int *lines)
+                     int dirs_only, int files_only, int *lines,
+                     int *items, uint32_t *bytes)
 {
     long dd = uaos_opendir(path);
     if (dd < 0) return;
 
-    static struct dir_entry ents[DIR_MAX_ENTRIES];
+    /* Per-level allocation: a static array is shared across the ALL
+     * recursion and the child's enumeration clobbers the parent's. */
+    struct dir_entry *ents =
+        (struct dir_entry *)uaos_alloc(sizeof(struct dir_entry) * DIR_MAX_ENTRIES);
+    if (!ents) { uaos_closedir((int)dd); return; }
+
     int count = 0;
     struct uaos_dirent de;
     while (uaos_readdir((int)dd, &de) > 0 && count < DIR_MAX_ENTRIES) {
@@ -121,6 +127,8 @@ static void dir_list(const char *path, const char *pat,
         }
         print_entry(&ents[i], dates);
         (*lines)++;
+        (*items)++;
+        if (!ents[i].is_dir) *bytes += ents[i].size;
         if (keys && (*lines) % 20 == 0) {
             put_line("-- Press any key --");
             uaos_readkey();
@@ -129,9 +137,11 @@ static void dir_list(const char *path, const char *pat,
             char sub[UAOS_CMD_PATH_MAX];
             cmd_join_path(path, ents[i].name, sub, sizeof(sub));
             dir_list(sub, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst,
-                     dirs_only, files_only, lines);
+                     dirs_only, files_only, lines, items, bytes);
         }
     }
+
+    uaos_free(ents);
 }
 
 int main(int argc, const char **argv)
@@ -191,26 +201,15 @@ int main(int argc, const char **argv)
     uaos_closedir((int)dd);
 
     int lines = 2;
+    int items = 0;
+    uint32_t bytes_used = 0;
     dir_list(path, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst,
-             dirs_only, files_only, &lines);
+             dirs_only, files_only, &lines, &items, &bytes_used);
 
     put_line("");
 
-    /* Summary: count + bytes used by matching files + free space. */
-    uint32_t bytes_used = 0;
-    int count = 0;
-    long dd2 = uaos_opendir(path);
-    if (dd2 >= 0) {
-        struct uaos_dirent de;
-        while (uaos_readdir((int)dd2, &de) > 0) {
-            if (!pat[0] || cmd_pattern_match(de.name, pat)) {
-                count++;
-                if (!de.is_dir) bytes_used += de.size;
-            }
-        }
-        uaos_closedir((int)dd2);
-    }
-
+    /* Summary: count + bytes used cover everything the walk printed
+     * (whole tree under ALL), plus free space. */
     uint32_t total = 0, used = 0;
     uaos_getvolumeinfo(path, &total, &used);
     uint32_t free_bytes = (total > used) ? (total - used) : 0;
@@ -218,7 +217,7 @@ int main(int argc, const char **argv)
     char summary[UAOS_CMD_LINE_MAX];
     summary[0] = '\0';
     char cn[8];
-    uint_to_dec((uint32_t)count, cn, sizeof(cn));
+    uint_to_dec((uint32_t)items, cn, sizeof(cn));
     uaos_strlcat(summary, cn, sizeof(summary));
     uaos_strlcat(summary, " item(s)  ", sizeof(summary));
     char bu[12];

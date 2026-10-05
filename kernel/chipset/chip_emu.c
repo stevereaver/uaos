@@ -788,22 +788,25 @@ void chip_emu_update_irq(void)
     int level = 0;
     uint16_t pending = g_intreq & g_intena & 0x7FFFu;
     if (pending) {
-        if (pending & 0xE000u) level = 4;       /* bits 13-14 */
-        else if (pending & 0x1E00u) level = 3;   /* bits 9-12 */
-        else if (pending & 0x01E0u) level = 2;   /* bits 5-8 */
-        else level = 1;
+        /* Real Amiga bit->level map: TBE/DSKBLK/SOFTINT (0-2) -> L1,
+         * PORTS (3) -> L2, COPER/VERTB/BLIT (4-6) -> L3, AUD0-3 (7-10) -> L4,
+         * RBF/DSKSYN (11-12) -> L5, EXTER/INTEN (13-14) -> L6. */
+        if (pending & 0x6000u)      level = 6;
+        else if (pending & 0x1800u) level = 5;
+        else if (pending & 0x0780u) level = 4;
+        else if (pending & 0x0070u) level = 3;
+        else if (pending & 0x0008u) level = 2;
+        else                        level = 1;
     }
     if (g_cia_b_irq) {
         if (level < 6) level = 6;
     }
-    /* Don't inject chipset IRQs while a per-task M68k guest context is
-     * installed (g_chipset_sync_disabled).  Per-task guests run with a
-     * zeroed exception vector table — an injected interrupt vectors to
-     * PC=0 and spins the cycle-budget abort.  The pending INTREQ/INTENA
-     * state persists and is delivered the next time the shared context
-     * is active. */
-    if (!g_chipset_sync_disabled)
-        m68k_set_irq((unsigned int)level);
+    /* Safe to inject in any context: every guest (shared boot context and
+     * per-task) has populated autovector entries pointing at ILLEGAL
+     * dispatch stubs that run the exec IntVects/cia.resource servers and
+     * emulate RTE to resume the interrupted code (UAOS-241).  The pending
+     * INTREQ/INTENA state persists for sources the guest has masked. */
+    m68k_set_irq((unsigned int)level);
 }
 
 /* -----------------------------------------------------------------------
@@ -1876,6 +1879,8 @@ typedef struct CIA_State {
 
 static CIA_State g_cia_a, g_cia_b;
 
+static void cia_irq_reval(int id);  /* fwd — defined after cia_state() */
+
 /* Push an Amiga keyboard byte into the CIA-A SDR buffer and raise the
  * keyboard interrupt (CIA-A ICR bit 3, mapped to INTREQ PORTS). */
 static void kbd_sdr_push(uint8_t c)
@@ -1885,10 +1890,7 @@ static void kbd_sdr_push(uint8_t c)
     g_kbd_sdr_buf[g_kbd_sdr_tail] = c;
     g_kbd_sdr_tail = next;
     g_cia_a.icr |= 0x08u; /* keyboard serial interrupt */
-    if (g_cia_a.icr_mask & 0x08u) {
-        g_intreq |= 0x0008u;  /* PORTS interrupt — only when ICR bit 3 enabled */
-        chip_emu_update_irq();
-    }
+    cia_irq_reval(0);
 }
 
 static int kbd_sdr_pop(void)
@@ -2012,6 +2014,25 @@ static CIA_State *cia_state(int id)
     return (id == 0) ? &g_cia_a : &g_cia_b;
 }
 
+/* Re-evaluate a CIA's interrupt line after icr/icr_mask changes.  On real
+ * 8520 hardware the INT output is the combinational (icr & icr_mask) != 0
+ * at every instant: enabling a mask bit with an already-pending source
+ * raises the line, masking the last pending source drops it.  CIA-A drives
+ * INTREQ PORTS (bit 3); CIA-B drives the level-6 EXTER line via
+ * g_cia_b_irq.  Always call this after touching icr or icr_mask. */
+static void cia_irq_reval(int id)
+{
+    CIA_State *c = cia_state(id);
+    int line = (c->icr & c->icr_mask) != 0;
+    if (id == 0) {
+        if (line) g_intreq |=  0x0008u;
+        else      g_intreq &= ~0x0008u;
+    } else {
+        g_cia_b_irq = line;
+    }
+    chip_emu_update_irq();
+}
+
 static uint16_t cia_read_timer(CIA_Timer *t)
 {
     return t->counter;
@@ -2074,10 +2095,7 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
         case CIA_REG_ICR: {
             uint32_t v = cia->icr;
             cia->icr = 0;
-            if (cia == &g_cia_b) {
-                g_cia_b_irq = 0;
-                chip_emu_update_irq();
-            }
+            cia_irq_reval(cia == &g_cia_a ? 0 : 1);
             return v;
         }
         case CIA_REG_CRA: return cia->ta.cra;
@@ -2140,6 +2158,7 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         case CIA_REG_ICR: {
             if (v & 0x80u) cia->icr_mask |= (v & 0x7Fu);
             else cia->icr_mask &= ~(v & 0x7Fu);
+            cia_irq_reval(cia == &g_cia_a ? 0 : 1);
             break;
         }
         case CIA_REG_CRA: {
@@ -2157,9 +2176,9 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
 }
 
 /* Per-task guest interrupt state accessors (UAOS-241).  Per-task M68k
- * contexts do not use m68k_set_irq() — exec_task polls these bits between
- * execution slices and invokes the guest's exec Interrupt structures
- * directly, using the task's own g_ram copy of ExecBase.IntVects. */
+ * contexts also get real m68k_set_irq() autovector delivery now — these
+ * accessors back both the exec_task slice-poll path and the vector stub
+ * dispatch in uaos_m68k_glue.c. */
 uint16_t chip_emu_intena_shadow(void)  { return g_intena; }
 int      chip_emu_cia_b_pending(void)  { return g_cia_b_irq; }
 
@@ -2174,6 +2193,7 @@ uint8_t chip_emu_cia_icr_pending(int id)
 void chip_emu_cia_icr_ack(int id, uint8_t bits)
 {
     cia_state(id)->icr &= (uint8_t)~bits;
+    cia_irq_reval(id);
 }
 
 /* AbleICR(v): bit7 set => enable bits in v, clear => disable.  Returns the
@@ -2184,6 +2204,7 @@ uint8_t chip_emu_cia_able_icr(int id, uint8_t v)
     uint8_t old = c->icr_mask;
     if (v & 0x80u) c->icr_mask |= (v & 0x7Fu);
     else           c->icr_mask &= (uint8_t)~(v & 0x7Fu);
+    cia_irq_reval(id);
     return old;
 }
 
@@ -2194,11 +2215,7 @@ uint8_t chip_emu_cia_set_icr(int id, uint8_t v)
     CIA_State *c = cia_state(id);
     if (v & 0x80u) c->icr |= (v & 0x7Fu);
     else           c->icr &= (uint8_t)~(v & 0x7Fu);
-    if (c->icr & c->icr_mask) {
-        if (id == 0) g_intreq |= 0x0008u;   /* CIAA -> PORTS */
-        else         g_cia_b_irq = 1;       /* CIAB -> EXTER (level 6) */
-        chip_emu_update_irq();
-    }
+    cia_irq_reval(id);
     return c->icr;
 }
 
@@ -2342,14 +2359,7 @@ void chip_emu_cia_tick(void)
                     tm->counter = tm->latch;
                 }
                 cia->icr |= tbit;
-                if (cia->icr_mask & tbit) {
-                    if (i == 0) {
-                        g_intreq |= 0x0008u; /* CIAA -> PORTS */
-                    } else {
-                        g_cia_b_irq = 1; /* CIA-B -> EXTER (level 6) */
-                    }
-                    chip_emu_update_irq();
-                }
+                cia_irq_reval(i);
             }
         }
     }

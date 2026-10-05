@@ -4510,7 +4510,10 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                                       (slot >= 0 && slot < TOTAL_SHELLS)
                                           ? raw_m68k_print[slot]
                                           : NULL);
-        (void)t;
+        if (!t) {
+            inst_print(s, "M68K binary: failed to create task");
+            return -2;
+        }
         return 0;
     }
 

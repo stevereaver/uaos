@@ -207,14 +207,18 @@ The display window derivation has been improved:
 
 ### Interrupt Delivery
 
-The chip emulator now computes the highest enabled M68k interrupt level from `INTREQ` & `INTENA` and calls `m68k_set_irq()`:
+`chip_emu_update_irq()` computes the highest enabled M68k interrupt level from `INTREQ` & `INTENA` and calls `m68k_set_irq()`, using the real Amiga bit→level map:
 
-- INTREQ bits 0–4 → level 1
-- INTREQ bits 5–8 → level 2
-- INTREQ bits 9–12 → level 3
-- INTREQ bits 13–14 → level 4
+- INTREQ bits 0–2 (TBE/DSKBLK/SOFTINT) → level 1
+- INTREQ bit 3 (PORTS, incl. CIA-A) → level 2
+- INTREQ bits 4–6 (COPER/VERTB/BLIT) → level 3
+- INTREQ bits 7–10 (AUD0–3) → level 4
+- INTREQ bits 11–12 (RBF/DSKSYN) → level 5
+- INTREQ bits 13–14 (EXTER/INTEN) → level 6; the CIA-B interrupt line also pulls level 6
 
-VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive the Musashi interrupt line.  CIA-A timers map to `TIMERA`/`TIMERB` (bits 13/14); CIA-B timers are mapped to `EXTER` (level 1) until a dedicated level-6 path is added.
+VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive the Musashi interrupt line.  `m68k_set_irq()` is injected in **every** context (shared boot and per-task): all guest RAM windows have populated autovector entries pointing at `ILLEGAL` dispatch stubs, so delivery never vectors to a zero entry (UAOS-241).  Pending `INTREQ`/`INTENA` persists for sources the guest has masked, so nothing is lost while a task runs at a higher IPL or is descheduled.
+
+**CIA interrupt-line model** — `cia_irq_reval(id)` re-evaluates a CIA's interrupt output after every `icr`/`icr_mask` change, matching the real 8520's combinational `INT = (icr & icr_mask) != 0`: enabling a mask bit with an already-pending source raises the line; masking the last pending source drops it without needing an ICR read.  CIA-A drives `INTREQ` PORTS (bit 3); CIA-B drives the level-6 line via `g_cia_b_irq`.  Called from `cia_tick` underflows, the `ICR` mask write, `AbleICR`, `SetICR`, `chip_emu_cia_icr_ack`, and the ICR register read (which clears `icr`).
 
 ### Reset State and LEDs
 
@@ -243,7 +247,7 @@ A host audio subsystem in `kernel/audio/` provides a 48 kHz stereo mixer and a p
 - `ICR` read clears pending interrupt status; writing `ICR` sets/clear interrupt masks.
 - Basic 24-bit TOD counter registers.
 - Port A/B data and direction registers are maintained; power LED is tracked through CIAA `PRA` bit 3.
-- CIA-B interrupts now drive M68k level 6 (the real Amiga routing).  CIA-A timers continue to use `INTREQ` bits 13/14 (level 4); keyboard serial data uses `INTREQ` bit 3 (level 1).
+- CIA-B interrupts drive M68k level 6 (the real Amiga routing) via `g_cia_b_irq`.  CIA-A drives `INTREQ` bit 3 PORTS (level 2); keyboard serial data arrives on the same line (ICR bit 3).
 - CIA-A `SDR` is wired to the PS/2 keyboard driver: `chip_emu_poll_ps2_keyboard()` drains the PS/2 ring buffer every PIT tick and pushes translated bytes into the CIA-A SDR queue, raising the keyboard interrupt.  Reading CIAA `SDR` pops the next byte.  CIA-A SDR writes (keyboard commands) are accepted and ignored for now.
 
 ### Paula Disk/Serial/Parallel

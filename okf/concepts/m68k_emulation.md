@@ -47,7 +47,7 @@ The `HUNK_DREL32` and `HUNK_RELOC32SHORT` types use compact 16-bit relocation en
 When the shell launches an M68k binary via `Task_CreateM68k`, the binary payload is copied into the tail of the task's guest RAM **before** the task starts running. This prevents the static `g_bin_payload` buffer from being overwritten by other tasks or by the guest RAM clear loop. The wrapper task (`m68k_wrapper_entry`) then clears the lower portion of guest RAM, installs library tables, and calls `hunk_load` with the saved copy.
 
 Key startup conventions for per-task M68k execution:
-- **A6** is pre-set to `EXEC_BASE` (0x300) — many programs (especially ACE-compiled binaries) expect SysBase in A6 without explicitly loading it from address 4.
+- **A6** is pre-set to `EXEC_BASE` (0x1000) — many programs (especially ACE-compiled binaries) expect SysBase in A6 without explicitly loading it from address 4. Well-behaved programs read SysBase from absolute `4`, which also holds `EXEC_BASE`.
 - **A0** = command line pointer, **D0** = command line length (Amiga CLI convention).
 - A **DOS_EXIT stub** return address is pushed onto the stack so that when the program does RTS at the end, it returns to the Exit handler and halts cleanly.
 

@@ -230,29 +230,37 @@ static UhciQH *qh_alloc(void)
 /* Queue manipulation                                                  */
 /* ------------------------------------------------------------------ */
 
-/* Insert a QH right after the anchor (head of transfer chain). */
+/* Insert a QH right after the anchor (head of transfer chain).
+ * Forbid() guards the pointer splice: post-boot, control transfers
+ * can race (usb-enum task vs bcm5974-reset, UAOS-258) and IRQ-context
+ * code only ever writes a pipe's own qh->element, never the links. */
 static void qh_insert_head(UhciHc *h, UhciQH *qh)
 {
+    Forbid();
     qh->link = h->anchor->link;      /* inherit old head / T */
     __asm__ volatile("mfence" ::: "memory");
     h->anchor->link = ((uint32_t)(uintptr_t)qh) | TD_LINK_Q;
+    Permit();
 }
 
 /* Remove a QH — linear walk of the chain starting at anchor. */
 static void qh_remove(UhciHc *h, UhciQH *qh)
 {
+    Forbid();
     volatile uint32_t *prev = &h->anchor->link;
     UhciQH *cur = (UhciQH *)(uintptr_t)(*prev & ~0xFu);
     while (cur) {
         if (cur == qh) {
             *prev = cur->link;
             __asm__ volatile("mfence" ::: "memory");
+            Permit();
             return;
         }
         prev = &cur->link;
         uint32_t l = cur->link;
         cur = (l & TD_LINK_T) ? 0 : (UhciQH *)(uintptr_t)(l & ~0xFu);
     }
+    Permit();
 }
 
 static void td_init(UhciTD *td, uint8_t pid, uint8_t dev, uint8_t ep,
@@ -734,6 +742,23 @@ static int uhci_port_connected(UsbHc *pub, int port)
     return (rg16(h, U_PORTSC1 + port * 2) & PSC_CCS) ? 1 : 0;
 }
 
+/* Latched connect-status-change read for the deferred enum task
+ * (UAOS-258): returns 1 when CSC was set since the last call and
+ * clears it, so a parked port wakes on any attach/detach edge —
+ * including a late-powered device whose CCS was already high. */
+static int uhci_port_csc(UsbHc *pub, int port)
+{
+    UhciHc *h = (UhciHc *)pub;
+    if (port < 0 || port > 1) return -1;
+    uint16_t r = (uint16_t)(U_PORTSC1 + port * 2);
+    uint16_t v = rg16(h, r);
+    if (!(v & PSC_CSC)) return 0;
+    /* W1C: write the value back — clears CSC (and any latched PESC)
+     * while preserving the RW bits (PE/RD/PR/SUSP). */
+    uoutw(h->io + r, v);
+    return 1;
+}
+
 static int uhci_port_reset(UsbHc *pub, int port)
 {
     UhciHc *h = (UhciHc *)pub;
@@ -936,6 +961,7 @@ int UHCI_Init(void)
                 h->pub.intr_in        = uhci_intr_in;
                 h->pub.port_connected = uhci_port_connected;
                 h->pub.port_reset     = uhci_port_reset;
+                h->pub.port_csc       = uhci_port_csc;
                 h->pub.nports         = 2;
                 h->irq_vec = -1;
 

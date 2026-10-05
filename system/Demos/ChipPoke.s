@@ -8,9 +8,6 @@
 ; Link:     vlink -bamigahunk -o ChipPoke.hunk ChipPoke.o
 ;
 
-DOS_BASE        equ $00000800
-LVO_DOS_Exit    equ -144
-
 CUSTOM          equ $00DFF000
 CIA_A_PRA       equ $00BFE001        ; CIA-A PRA (odd byte lane)
 CIA_B_DDRA      equ $00BFD200        ; CIA-B DDRA (reg 2 * $100)
@@ -49,10 +46,7 @@ start:
         move.b  #$FF,CIA_A_PRA
         move.b  #$55,CIA_B_DDRA
 
-        ; exit back to DOS
-        movea.l #DOS_BASE,a6
-        moveq   #0,d0
-        jsr     LVO_DOS_Exit(a6)
-.exit:  bra     .exit
+        ; exit back to DOS (return address is the DOS Exit stub)
+        rts
 
         end
