@@ -173,3 +173,11 @@ The Amiga custom chip / CIA register window at `0x00B00000–0x00DFFFFF` is mapp
 ## Allocation tracking on task exit (memcheck)
 
 When `memcheck` is on, every tracked `AllocMem` records its allocating task (`MemchkRec.owner` = `Task_Current()` at alloc time) alongside the task-name label. `Task_Exit` calls `Memcheck_FreeByOwner()` for M68k tasks while `g_ram` still maps the dying task's guest RAM, so blocks a guest allocated are reclaimed on both normal `Exit()` and the cycle-budget abort — `memcheck` shows 0 live tracked allocs afterwards instead of leaking records that could alias a recycled RAM slot's new allocations.
+
+### Per-window records (UAOS-266)
+
+`g_ram` is rebound on every context switch — each M68k task runs against its own 16 MB window and native tasks see `g_shared_ram` — so a guest address alone does not identify a block. Every `MemchkRec` therefore also stores `ram` = the `g_ram` window the allocation came from:
+
+- Guard checks (`mc_check_guards`) read through the record's own window, not the caller's binding — `Memcheck_Scan` run from the shell/telnet (shared window) no longer reports every live M68k-owned block as FRONT+TAIL corrupt.
+- `mc_find` prefers a same-window match (guest addresses are only unique per window) and falls back to a cross-window match so native teardown paths can free a guest's block into the heap it came from; `mc_free`/`Memcheck_FreeByOwner` rebind `g_ram` IRQ-off around the guard check + freelist free.
+- `Memcheck_Scan` walks the free lists of *every* registered window (`g_heap_heads[]`, the host-side pool-head table already keyed by window) rather than only the caller's — log lines label pools `chip[n]`/`fast[n]` by window index.

@@ -270,7 +270,10 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
                     ns->snd_una     = g_isn_counter;
                     g_isn_counter  += 0x10000;
                     tcp_send_seg(ns, TCP_SYN | TCP_ACK, 0, 0);
-                    ns->snd_una = ns->snd_nxt;
+                    /* The SYN-ACK stays in flight (snd_una < snd_nxt) so
+                     * tcp_tick retransmits it on RTO expiry — a peer whose
+                     * handshake-completing ACK was lost would otherwise pin
+                     * the half-open until the conn_timer reap (UAOS-260). */
                     return;
                 }
                 /* Socket table full — fall through and refuse the SYN */
@@ -339,7 +342,10 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
         break;
 
     case TCP_SYN_RECEIVED:
-        if (flags & TCP_ACK) {
+        /* The completing ACK must cover our SYN-ACK (ack == snd_nxt);
+         * a bare or out-of-window ACK must not promote a still-unacked
+         * half-open into ESTABLISHED. */
+        if ((flags & TCP_ACK) && ack_num == s->snd_nxt) {
             s->state = TCP_ESTABLISHED;
         } else if (flags & TCP_SYN) {
             /* Duplicate SYN — our SYN-ACK was lost (e.g. dropped while
@@ -632,6 +638,60 @@ static void tcp_retransmit(TcpSocket *s)
     s->snd_nxt = saved_nxt;            /* restore real snd_nxt */
 }
 
+/* -------------------------------------------------------------------------
+ * Shared per-tick retransmit handling — runs in every state that can hold
+ * an unacked seq-carrying segment: SYN in SYN_SENT, SYN-ACK in
+ * SYN_RECEIVED, data/FIN in ESTABLISHED and the teardown states.  Gives up
+ * (RST + CLOSED) after TCP_RETX_MAX_TRIES so no half-dead state can pin a
+ * socket slot forever.
+ * ------------------------------------------------------------------------- */
+static void tcp_tick_retx(TcpSocket *s)
+{
+    /* A FIN deferred by tcp_close while data was in flight goes out once
+     * the peer has acknowledged everything. */
+    if (s->fin_pending && s->snd_una == s->snd_nxt &&
+        (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT)) {
+        s->fin_pending = 0;
+        s->state = (s->state == TCP_CLOSE_WAIT) ? TCP_LAST_ACK
+                                              : TCP_FIN_WAIT_1;
+        tcp_send_seg(s, TCP_FIN | TCP_ACK, 0, 0);
+        return;
+    }
+    if (s->snd_una == s->snd_nxt) {      /* everything acked */
+        s->retx_timer = 0;
+        s->retx_count = 0;
+        return;
+    }
+    /* Unacked data with a disarmed timer is a wedge: re-arm so the
+     * segment retransmits (or aborts after TCP_RETX_MAX_TRIES) — a
+     * deferred FIN can never pin the slot again (UAOS-223). */
+    if (s->retx_timer == 0)
+        s->retx_timer = TCP_RETX_TICKS_INIT;
+
+    s->retx_timer--;
+    if (s->retx_timer > 0) return;       /* not yet */
+
+    /* Timer expired — retransmit or abort */
+    s->retx_count++;
+    if (s->retx_count > TCP_RETX_MAX_TRIES) {
+        /* Too many retries: send RST and close */
+        tcp_send_seg(s, TCP_RST, 0, 0);
+        s->state = TCP_CLOSED;
+        return;
+    }
+
+    /* Retransmit the saved segment */
+    tcp_retransmit(s);
+
+    /* Exponential backoff: double the RTO, capped at max shift */
+    {
+        uint8_t  shift  = s->retx_count < TCP_RETX_BACKOFF_MAX
+                          ? s->retx_count : TCP_RETX_BACKOFF_MAX;
+        uint16_t new_to = (uint16_t)(TCP_RETX_TICKS_INIT << shift);
+        s->retx_timer   = new_to;
+    }
+}
+
 void tcp_tick(void)
 {
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
@@ -647,22 +707,20 @@ void tcp_tick(void)
                 s->state = TCP_CLOSED;
             break;
 
-        /* ── SYN_SENT: hard connect timeout ─────────────────────────────── */
+        /* ── SYN_SENT / SYN_RECEIVED: bounded handshake ───────────────────
+         * conn_timer is the hard half-open deadline, counted ONCE per tick
+         * (the old fall-through double-counted it, halving the budget —
+         * UAOS-260).  The SYN / SYN-ACK ride the shared retransmit path so
+         * a single lost handshake segment no longer fails the connect —
+         * the retx abort (~4.7 s) normally wins before this deadline. */
         case TCP_SYN_SENT:
+        case TCP_SYN_RECEIVED:
             s->conn_timer++;
             if (s->conn_timer >= TCP_CONN_TIMEOUT_TICKS) {
                 s->state = TCP_CLOSED;   /* give up */
                 break;
             }
-            /* Fall through to retransmit logic for SYN retry */
-            /* fall through */
-
-        /* ── SYN_RECEIVED: half-open — reap if the peer never completes
-         * the handshake (duplicate SYNs re-send SYN-ACK via tcp_rx). ── */
-        case TCP_SYN_RECEIVED:
-            s->conn_timer++;
-            if (s->conn_timer >= TCP_CONN_TIMEOUT_TICKS)
-                s->state = TCP_CLOSED;
+            tcp_tick_retx(s);
             break;
 
         /* ── FIN_WAIT_2: bound the wait for the peer's FIN ──────────────── */
@@ -695,52 +753,7 @@ void tcp_tick(void)
         case TCP_ESTABLISHED:
         case TCP_FIN_WAIT_1:
         case TCP_LAST_ACK:
-            /* A FIN deferred by tcp_close while data was in flight goes
-             * out once the peer has acknowledged everything.  While
-             * still waiting, fall through to normal retransmit handling
-             * for the outstanding segment. */
-            if (s->fin_pending && s->snd_una == s->snd_nxt &&
-                (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT)) {
-                s->fin_pending = 0;
-                s->state = (s->state == TCP_CLOSE_WAIT) ? TCP_LAST_ACK
-                                                      : TCP_FIN_WAIT_1;
-                tcp_send_seg(s, TCP_FIN | TCP_ACK, 0, 0);
-                break;
-            }
-            if (s->snd_una == s->snd_nxt) {      /* everything acked */
-                s->retx_timer = 0;
-                s->retx_count = 0;
-                break;
-            }
-            /* Unacked data with a disarmed timer is a wedge: re-arm so
-             * the segment retransmits (or aborts after
-             * TCP_RETX_MAX_TRIES) — a deferred FIN can never pin the
-             * slot again (UAOS-223). */
-            if (s->retx_timer == 0)
-                s->retx_timer = TCP_RETX_TICKS_INIT;
-
-            s->retx_timer--;
-            if (s->retx_timer > 0) break;        /* not yet */
-
-            /* Timer expired — retransmit or abort */
-            s->retx_count++;
-            if (s->retx_count > TCP_RETX_MAX_TRIES) {
-                /* Too many retries: send RST and close */
-                tcp_send_seg(s, TCP_RST, 0, 0);
-                s->state = TCP_CLOSED;
-                break;
-            }
-
-            /* Retransmit the saved segment */
-            tcp_retransmit(s);
-
-            /* Exponential backoff: double the RTO, capped at max shift */
-            {
-                uint8_t  shift  = s->retx_count < TCP_RETX_BACKOFF_MAX
-                                  ? s->retx_count : TCP_RETX_BACKOFF_MAX;
-                uint16_t new_to = (uint16_t)(TCP_RETX_TICKS_INIT << shift);
-                s->retx_timer   = new_to;
-            }
+            tcp_tick_retx(s);
             break;
 
         default:

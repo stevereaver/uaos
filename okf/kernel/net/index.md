@@ -4,7 +4,7 @@ title: TCP/IP Network Stack
 description: The native IPv4 networking stack, device drivers, and higher-level protocols in UAOS.
 resource: /kernel/net/
 tags: [network, tcp, udp, ip, dhcp, dns, ntp]
-timestamp: 2026-10-05T06:00:00Z
+timestamp: 2026-10-05T07:00:00Z
 ---
 
 # TCP/IP Network Stack
@@ -73,7 +73,16 @@ Full TCP state machine including:
   mistaken for pending accepts.
 - Send/receive with ACK handling and ring buffers.
 - Retransmit timer with exponential backoff (`tcp_tick` runs at the
-  100 Hz PIT rate via `net_stack_tick()` in `PIT_IRQHandler`).
+  100 Hz PIT rate via `net_stack_tick()` in `PIT_IRQHandler`).  The
+  shared retx path (`tcp_tick_retx`) covers **every** state holding an
+  unacked seq-carrying segment — SYN in `SYN_SENT`, SYN-ACK in
+  `SYN_RECEIVED`, data/FIN in `ESTABLISHED` and the teardown states —
+  and aborts (RST + CLOSED) after `TCP_RETX_MAX_TRIES` (~4.7 s total
+  with backoff).  UAOS-260: `SYN_SENT` previously never retransmitted
+  (a single lost SYN failed the connect outright), and the `SYN_SENT`→
+  `SYN_RECEIVED` fall-through double-counted `conn_timer`, halving the
+  effective connect deadline.  `TCP_CONN_TIMEOUT_TICKS` is now a 5 s
+  hard backstop; the retx abort normally wins first.
 - Connect timeout, half-open cleanup, `TIME_WAIT` expiry, and teardown
   bounds (UAOS-223): an incoming RST now closes the socket in **every**
   synchronized state (previously honored only in `SYN_SENT`/
@@ -95,7 +104,12 @@ Full TCP state machine including:
   socket replays the saved SYN-ACK segment.  `ip_send` no longer drops
   on an ARP miss (see the ARP-miss pending queue under IPv4), but real
   loss still happens — without the replay a half-open connection whose
-  SYN-ACK was lost could never complete.  `SYN_RECEIVED` sockets also
+  SYN-ACK was lost could never complete.  Since UAOS-260 the SYN-ACK
+  also rides the timer-driven retx path (the spawned socket keeps
+  `snd_una < snd_nxt` so the SYN-ACK counts as in flight) and the
+  `SYN_RECEIVED`→`ESTABLISHED` promotion requires the completing ACK
+  to cover it (`ack == snd_nxt`) — a bare or out-of-window ACK no
+  longer promotes an unacked half-open.  `SYN_RECEIVED` sockets also
   have a `conn_timer` timeout so dead half-opens do not leak socket
   slots.
 - Receive flow control: every outgoing segment advertises the RX ring's

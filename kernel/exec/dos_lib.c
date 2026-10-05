@@ -448,6 +448,14 @@ static void heap_free_fl(uint32_t addr)
  *   - Freeing an untracked address is reported (double-free / wild free).
  *   - Memcheck_Scan() walks live allocations and both free lists,
  *     reporting corrupted guard bands and modified free blocks.
+ *
+ * Each M68k task has a private guest-RAM window and g_ram is rebound on
+ * every context switch, so guest addresses are only meaningful relative
+ * to the window they were allocated in.  Every record therefore carries
+ * its RAM window, and all checks/frees run against that window rather
+ * than the caller's current g_ram binding (UAOS-266: scanning from the
+ * shell otherwise reads foreign memory and reports every live M68k
+ * block as FRONT+TAIL corrupt).
  * ========================================================================= */
 
 typedef struct {
@@ -455,6 +463,7 @@ typedef struct {
     uint32_t size;      /* requested payload size               */
     uint32_t blk;       /* block base: guest addr of heap header */
     void    *owner;     /* allocating task (Task_Current())      */
+    uint8_t *ram;       /* guest-RAM window the block lives in   */
     char     task[20];  /* allocating task name                  */
 } MemchkRec;
 
@@ -478,6 +487,7 @@ static void mc_record(uint32_t payload, uint32_t size, uint32_t blk)
             g_mc[i].size    = size;
             g_mc[i].blk     = blk;
             g_mc[i].owner   = Task_Current();
+            g_mc[i].ram     = g_ram;
             int j = 0;
             while (n[j] && j < 19) { g_mc[i].task[j] = n[j]; j++; }
             g_mc[i].task[j] = '\0';
@@ -490,21 +500,42 @@ static void mc_record(uint32_t payload, uint32_t size, uint32_t blk)
 
 static MemchkRec *mc_find(uint32_t payload)
 {
+    /* Guest addresses are only unique within a RAM window — prefer a
+     * record in the caller's current window so a wild free can't alias a
+     * different task's block that happens to sit at the same address. */
     for (int i = 0; i < MC_MAX_RECS; i++)
-        if (g_mc[i].payload == payload) return &g_mc[i];
+        if (g_mc[i].payload == payload && g_mc[i].ram == g_ram)
+            return &g_mc[i];
+    /* Native teardown paths can free a pointer owned by another guest
+     * window; fall back to a cross-window match so the free lands in the
+     * window the block was actually allocated from. */
+    for (int i = 0; i < MC_MAX_RECS; i++)
+        if (g_mc[i].payload == payload)
+            return &g_mc[i];
     return 0;
+}
+
+/* Guest dword read against an explicit RAM window — a record may live in
+ * a different task's private g_ram than the caller's current binding. */
+static uint32_t mc_rd32(const uint8_t *ram, uint32_t addr)
+{
+    return ((uint32_t)ram[addr + 0] << 24)
+         | ((uint32_t)ram[addr + 1] << 16)
+         | ((uint32_t)ram[addr + 2] <<  8)
+         | ((uint32_t)ram[addr + 3]      );
 }
 
 static int mc_check_guards(const MemchkRec *r, const char *what)
 {
     int bad = 0;
-    if (guest_read_be32(r->payload - 4) != MC_GUARD_WORD) {
+    const uint8_t *ram = r->ram ? r->ram : g_ram;
+    if (mc_rd32(ram, r->payload - 4) != MC_GUARD_WORD) {
         KLOG(KLOG_EXEC, KLOG_ERR,
              "[memchk] %s block @0x%x (%u bytes, alloc by '%s'): FRONT guard corrupted\n",
              what, (unsigned)r->payload, (unsigned)r->size, r->task);
         bad = 1;
     }
-    if (guest_read_be32(r->payload + r->size) != MC_GUARD_WORD) {
+    if (mc_rd32(ram, r->payload + r->size) != MC_GUARD_WORD) {
         KLOG(KLOG_EXEC, KLOG_ERR,
              "[memchk] %s block @0x%x (%u bytes, alloc by '%s'): TAIL guard corrupted\n",
              what, (unsigned)r->payload, (unsigned)r->size, r->task);
@@ -565,8 +596,19 @@ static void mc_free(uint32_t addr)
         heap_free_fl(addr);
         return;
     }
-    mc_check_guards(r, "freed");
-    heap_free_fl(r->payload - 4);   /* gross payload → real heap header */
+    /* The block lives in its allocator's RAM window, which may not be
+     * the caller's current g_ram binding (native teardown paths freeing
+     * on a guest's behalf).  Rebind g_ram IRQ-off so the guard check and
+     * the freelist free both target the owning window. */
+    {
+        uint64_t flags = irq_save();
+        uint8_t *saved = g_ram;
+        if (r->ram) g_ram = r->ram;
+        mc_check_guards(r, "freed");
+        heap_free_fl(r->payload - 4);   /* gross payload → real heap header */
+        g_ram = saved;
+        irq_restore(flags);
+    }
     r->payload = 0;                 /* drop tracking */
 }
 
@@ -578,20 +620,26 @@ int Memcheck_IsEnabled(void)          { return g_memcheck_on; }
  * A task that dies or is aborted (e.g. the M68k cycle-budget kill) leaves
  * its AllocMem blocks allocated; without this sweep they'd sit in the
  * tracking table as "live" forever — and when the guest RAM slot is
- * recycled, stale records can alias a new task's allocations.  Must be
- * called while g_ram still maps the dying task's guest RAM. */
+ * recycled, stale records can alias a new task's allocations.  Each
+ * record carries its RAM window, so the sweep frees into the right heap
+ * no matter which window is currently bound to g_ram. */
 uint32_t Memcheck_FreeByOwner(void *owner)
 {
     if (!owner) return 0;
+    uint64_t flags = irq_save();
+    uint8_t *saved = g_ram;
     uint32_t freed = 0;
     for (int i = 0; i < MC_MAX_RECS; i++) {
         if (g_mc[i].payload && g_mc[i].owner == owner) {
+            if (g_mc[i].ram) g_ram = g_mc[i].ram;
             mc_check_guards(&g_mc[i], "task-exit");
             heap_free_fl(g_mc[i].payload - 4);
             g_mc[i].payload = 0;
             freed++;
         }
     }
+    g_ram = saved;
+    irq_restore(flags);
     if (freed) {
         KLOG(KLOG_EXEC, KLOG_INFO,
              "[memchk] task exit: reclaimed %u tracked alloc(s)\n", (unsigned)freed);
@@ -661,20 +709,53 @@ static uint32_t mc_scan_freelist(uint32_t list_slot, const char *pool_name)
     return bad;
 }
 
-/* Scan live tracked allocs + both free lists.  Returns violation count.
- * Runs under cli so preempted tasks can't alloc/free mid-walk — otherwise
- * a transient split-block header looks like corruption. */
+/* Build a pool label like "fast[2]" so multi-window scan output says
+ * which guest-RAM window a violation belongs to. */
+static void mc_pool_name(char *out, const char *base, int idx)
+{
+    int i = 0;
+    while (base[i]) { out[i] = base[i]; i++; }
+    out[i++] = '[';
+    out[i++] = (char)('0' + idx);
+    out[i++] = ']';
+    out[i] = '\0';
+}
+
+/* Scan live tracked allocs + every window's free lists.  Returns
+ * violation count.  Runs IRQ-off so tasks can't alloc/free mid-walk —
+ * otherwise a transient split-block header looks like corruption.
+ * Free lists and guard bands live inside each guest-RAM window, so the
+ * walk rebinds g_ram per window; records carry their window so live
+ * blocks check correctly regardless of the caller's binding (UAOS-266). */
 uint32_t Memcheck_Scan(void)
 {
     uint64_t flags = irq_save();
+    uint8_t *saved = g_ram;
 
     uint32_t bad = 0;
     for (int i = 0; i < MC_MAX_RECS; i++)
         if (g_mc[i].payload)
             bad += mc_check_guards(&g_mc[i], "live");
-    bad += mc_scan_freelist(HEAP_LIST_SLOT_CHIP, "chip");
-    bad += mc_scan_freelist(HEAP_LIST_SLOT_FAST, "fast");
 
+    int scanned_current = 0;
+    for (int w = 0; w < g_heap_head_count; w++) {
+        char nm[16];
+        if (g_heap_heads[w].win == (const uint8_t *)saved)
+            scanned_current = 1;
+        g_ram = (uint8_t *)g_heap_heads[w].win;
+        mc_pool_name(nm, "chip", w);
+        bad += mc_scan_freelist(HEAP_LIST_SLOT_CHIP, nm);
+        mc_pool_name(nm, "fast", w);
+        bad += mc_scan_freelist(HEAP_LIST_SLOT_FAST, nm);
+    }
+    /* The caller's window may have no registered pools yet — scan it too. */
+    if (!scanned_current && saved) {
+        g_ram = saved;
+        bad += mc_scan_freelist(HEAP_LIST_SLOT_CHIP, "chip");
+        bad += mc_scan_freelist(HEAP_LIST_SLOT_FAST, "fast");
+    }
+
+    g_ram = saved;
     irq_restore(flags);
     return bad;
 }

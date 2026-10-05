@@ -56,7 +56,9 @@ typedef enum {
  *  TCP_RETX_TICKS_INIT   — initial RTO: 10 ticks = 100 ms
  *  TCP_RETX_BACKOFF_MAX  — max RTO doubling steps (100→200→...→1600 ms, then give up)
  *  TCP_RETX_MAX_TRIES    — total attempts before aborting the connection
- *  TCP_CONN_TIMEOUT_TICKS— SYN_SENT/SYN_RECEIVED deadline: 75 ticks = 0.75 s
+ *  TCP_CONN_TIMEOUT_TICKS— SYN_SENT/SYN_RECEIVED hard deadline: 500 ticks =
+ *                          5 s; a backstop only — handshake retransmits abort
+ *                          on their own at ~4.7 s via TCP_RETX_MAX_TRIES
  *  TCP_TIMEWAIT_TICKS    — TIME_WAIT duration: 20 ticks = 200 ms (QEMU LAN)
  *  TCP_CLOSEWAIT_TICKS   — CLOSE_WAIT idle bound: 3000 ticks = 30 s; an
  *                          owner that never closes loses the slot to the
@@ -67,7 +69,7 @@ typedef enum {
 #define TCP_RETX_TICKS_INIT     10u
 #define TCP_RETX_BACKOFF_MAX    4u
 #define TCP_RETX_MAX_TRIES      5u
-#define TCP_CONN_TIMEOUT_TICKS  75u
+#define TCP_CONN_TIMEOUT_TICKS  500u
 #define TCP_TIMEWAIT_TICKS      20u
 #define TCP_CLOSEWAIT_TICKS     3000u
 #define TCP_FINWAIT2_TICKS      12000u

@@ -101,9 +101,10 @@ int usock_connect(int us, uint32_t ip, uint16_t port)
         return USOCK_EMFILE;
 
     /* tcp_connect() returns the socket in SYN_SENT; wait for the
-     * handshake.  tcp_tick() already bounds half-opens at
-     * TCP_CONN_TIMEOUT_TICKS (7.5 s) and drops the socket to CLOSED —
-     * the same signal a RST produces — so CLOSED means "failed". */
+     * handshake.  tcp_tick() bounds half-opens via handshake retransmit
+     * abort (~4.7 s) and TCP_CONN_TIMEOUT_TICKS (5 s), dropping the
+     * socket to CLOSED — the same signal a RST produces — so CLOSED
+     * means "failed". */
     uint64_t deadline = g_pit_ticks + MS_TO_TICKS(u->conn_to_ms);
     for (;;) {
         TcpState st = tcp_state(ns);
