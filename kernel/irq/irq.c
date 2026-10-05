@@ -406,6 +406,91 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
     return 16 + pirq;
 }
 
+/* ------------------------------------------------------------------ */
+/* Unridden-line INTx quiesce (UAOS-255)                                */
+/* ------------------------------------------------------------------ */
+
+/* PCI command bit 10 — INTx emulation disable. */
+#define PCI_CMD_INTX_DIS 0x0400
+
+/* BDFs that have a handler armed through IRQ_AttachPCI — the quiesce
+ * scan must never silence a device whose interrupts are serviced. */
+#define IRQ_BDF_MAX 32
+static uint16_t g_attached_bdf[IRQ_BDF_MAX];
+static uint8_t  g_attached_bdf_n;
+
+static uint16_t irq_pack_bdf(uint8_t bus, uint8_t dev, uint8_t fn)
+{
+    return (uint16_t)(((uint16_t)bus << 8) | ((uint16_t)dev << 3) | fn);
+}
+static int irq_bdf_attached(uint16_t bdf)
+{
+    for (int i = 0; i < g_attached_bdf_n; i++)
+        if (g_attached_bdf[i] == bdf) return 1;
+    return 0;
+}
+static void irq_bdf_record(uint8_t bus, uint8_t dev, uint8_t fn)
+{
+    if (g_attached_bdf_n >= IRQ_BDF_MAX) return;
+    g_attached_bdf[g_attached_bdf_n++] = irq_pack_bdf(bus, dev, fn);
+}
+
+/* Clear INTx-disable on the attaching function — a driver that came up
+ * through this path owns the device and needs its asserts.  Called only
+ * AFTER the handler is armed so the device can never interrupt into a
+ * window where nobody is chained to drain the shared level line. */
+static void irq_intx_enable(uint8_t bus, uint8_t dev, uint8_t fn)
+{
+    uint16_t cmd = pci_r16(bus, dev, fn, 0x04);
+    if (cmd & PCI_CMD_INTX_DIS) {
+        pci_w16(bus, dev, fn, 0x04, (uint16_t)(cmd & ~PCI_CMD_INTX_DIS));
+        kprint("[IRQ] cleared INTx-disable on ");
+        kprinthex(bus); kprint(":"); kprinthex(dev); kprint(".");
+        kprintdec(fn); kprint("\n");
+    }
+}
+
+/* Silence INTx on every unhandled root-bus function routed to `gsi`
+ * before the line is unmasked.  Firmware (EFI GOP, boot-ROM drivers)
+ * can leave an INTx assert pending on a device we never drive — on QEMU
+ * q35 the virtio-gpu and SMBus functions share IRQ10 with virtio-blk1 /
+ * virtio-net — and a level line nobody can ack storms the vector dead,
+ * taking every real driver on it down with it.  Devices attached later
+ * clear their own INTxDIS in irq_intx_enable(), so quiescing only mutes
+ * sources that will never get a handler. */
+static void irq_quiesce_line(int gsi, uint8_t abus, uint8_t adev, uint8_t afn)
+{
+    for (uint8_t dev = 0; dev < 32; dev++) {
+        for (uint8_t fn = 0; fn < 8; fn++) {
+            if (abus == 0 && dev == adev && fn == afn) continue;
+            uint32_t id = pci_r32(0, dev, fn, 0x00);
+            if (id == 0xFFFFFFFF) {
+                if (fn == 0) break;
+                continue;
+            }
+            uint8_t pin = pci_r8(0, dev, fn, 0x3D);
+            if (pin < 1 || pin > 4) continue;
+            /* intline match covers every bus-0 function; devices 25-31
+             * may additionally decode through ICH DxxIP/DxxIR. */
+            int match = (pci_r8(0, dev, fn, 0x3C) == (uint8_t)gsi);
+            if (!match && dev >= 25) {
+                IrqRouteInfo ri;
+                if (IRQ_RouteInspect(0, dev, fn, &ri) == 0 && ri.gsi == gsi)
+                    match = 1;
+            }
+            if (!match) continue;
+            if (irq_bdf_attached(irq_pack_bdf(0, dev, fn))) continue;
+            uint16_t cmd = pci_r16(0, dev, fn, 0x04);
+            if (cmd & PCI_CMD_INTX_DIS) continue;
+            pci_w16(0, dev, fn, 0x04, (uint16_t)(cmd | PCI_CMD_INTX_DIS));
+            kprint("[IRQ] quiesced INTx on 0:");
+            kprinthex(dev); kprint("."); kprintdec(fn);
+            kprint(" (shares gsi "); kprintdec((uint32_t)gsi);
+            kprint(", undriven)\n");
+        }
+    }
+}
+
 /* Public resolver: chipset decode first, then the firmware-programmed
  * interrupt line register (SeaBIOS/QEMU writes the GSI here). */
 int IRQ_ResolvePCI(uint8_t bus, uint8_t dev, uint8_t fn)
@@ -558,13 +643,13 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
     if (g_mode == IRQ_MODE_PIC || g_pic_fallback) {
         uint8_t line = pci_r8(bus, dev, fn, 0x3C);
         if (line == 0xFF || line >= 16) return -1;
-        uint16_t cmd = pci_r16(bus, dev, fn, 0x04);
-        if (cmd & 0x0400)
-            pci_w16(bus, dev, fn, 0x04, (uint16_t)(cmd & ~0x0400u));
         int vec = 32 + line;
         IDT_SetHandler((uint8_t)vec, handler, name);
         g_kind[vec] = VEC_PIC;
         g_gsi[vec]  = line;
+        irq_quiesce_line(line, bus, dev, fn);
+        irq_intx_enable(bus, dev, fn);
+        irq_bdf_record(bus, dev, fn);
         PIC_UnmaskIRQ(line);
         return vec;
     }
@@ -577,29 +662,22 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
         return -1;
     }
 
-    /* Ensure INTx is allowed to assert — firmware may have left the
-     * PCI command INTx-disable bit (bit 10) set. */
-    {
-        uint16_t cmd = pci_r16(bus, dev, fn, 0x04);
-        if (cmd & 0x0400) {
-            pci_w16(bus, dev, fn, 0x04, (uint16_t)(cmd & ~0x0400u));
-            kprint("[IRQ] cleared INTx-disable on ");
-            kprinthex(bus); kprint(":"); kprinthex(dev); kprint(".");
-            kprintdec(fn); kprint("\n");
-        }
-    }
-
     int vec = 32 + gsi;
     if (g_kind[vec] == VEC_APIC) {
         /* Another PCI device already owns this GSI — level-triggered
          * lines are shared, so chain the handler instead of replacing
          * it.  Re-unmask in case the storm failsafe masked it while no
-         * handler could ack the line. */
+         * handler could ack the line.  INTx is re-enabled only after
+         * the handler is chained: enabling it earlier opened a window
+         * where the device could assert with nobody armed to ack —
+         * exactly the storm this layer exists to prevent. */
         if (irq_shared_add(vec, handler, name) != 0) {
             kprint("[IRQ] shared-vector table full for gsi ");
             kprintdec((uint32_t)gsi); kprint("\n");
             return -1;
         }
+        irq_intx_enable(bus, dev, fn);
+        irq_bdf_record(bus, dev, fn);
         IOAPIC_Unmask((uint32_t)gsi);
         return vec;
     }
@@ -610,6 +688,9 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
     g_pri[vec]  = handler;
     g_kind[vec] = VEC_APIC;
     g_gsi[vec]  = (uint8_t)gsi;
+    irq_quiesce_line(gsi, bus, dev, fn);
+    irq_intx_enable(bus, dev, fn);
+    irq_bdf_record(bus, dev, fn);
     IOAPIC_Unmask((uint32_t)gsi);
     return vec;
 }

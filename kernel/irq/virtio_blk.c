@@ -81,7 +81,14 @@
 #define VIRTIO_PCI_STATUS          0x12
 #define VIRTIO_PCI_DEVICE_FEATURES 0x00
 #define VIRTIO_PCI_DRIVER_FEATURES 0x04
-#define VIRTIO_PCI_ISR             0x19
+/* ISR status register is at offset 19 DECIMAL (0x13) — virtio_net.c and
+ * virtio_scsi.c agree.  The old 0x19 read a byte inside the device
+ * config capacity field and never cleared the interrupt: every blk
+ * completion left INTx asserted forever, storming the shared level line
+ * and getting the vector masked (killing anything chained onto it —
+ * virtio-net on QEMU q35 shares gsi10 with the second virtio-blk,
+ * UAOS-255). */
+#define VIRTIO_PCI_ISR             0x13
 
 /* VirtIO PCI Configuration Space offsets */
 #define PCI_INTERRUPT_LINE_OFFSET  0x3C
