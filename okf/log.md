@@ -1,14 +1,21 @@
 # OKF Change Log
 
-<<<<<<< /home/reaver/workspaces/uaos/uaos/okf/log.md
-<<<<<<< /home/reaver/workspaces/uaos/uaos/okf/log.md
+## 2026-10-06 — CPU frequency scaling + menubar CPU% (UAOS-272)
+
+* **Diagnosed** (bare-metal `taskstat` on the MBP4,1): the reported idle heat was not a busy loop — `Idle` already `hlt`-loops at ~100 % share; the T9300 sat at max FID/VID with no P-state scaling ever driven.
+* **Added** `kernel/drivers/cpufreq.{c,h}`: EIST detection (CPUID.1 ECX bit7), `MSR_IA32_MISC_ENABLE` bit16 enable respecting bit20 lock, C1E via `MSR_POWER_CTL` bit1, P-state table from ACPI `_PSS` via new `ACPI_Dsdt()` (`kernel/irq/acpi.c`, FADT X_DSDT @140 / DSDT @40) and a minimal AML constant-package scanner; synthesised same-VID high/low fallback when `_PSS` is absent, TM1 duty-modulation fallback when EST is absent, MSR writes whitelisted to family-6 models 0x0F/0x17, `nocpufreq` boot flag.
+* **Added** ondemand governor: `CpuFreq_Tick` from `PIT_IRQHandler` samples every 10 ticks — busy% = 100·(Δpit − Δidle cpu_ticks)/Δpit — ramps to top state ≥25 % busy, drops to bottom after ~0.8 s <10 %.
+* **Changed** `do_schedule` accounting (`kernel/exec/task.c`): `cpu_ticks` charged at entry to `g_current` for elapsed ticks regardless of whether a dispatch happens — Idle now accrues its `hlt` time even as the sole runnable task; taskstat idle share and the governor busy% both depend on it.
+* **Added** `C:cpu` (`kernel/shell/cmd_cpu.c`, registered + `Makefile` `NATIVE_C_ALL`): family/model, EIST/C1E/TM1 status, P-state table, current index, busy%, PERF_STATUS.
+* **Added** `CPU nn%` to the Workbench menubar (`kernel/display/desktop.c`), tick-cached with the existing clock/mem strings, left of the free-memory readout and outside `menubar_clock_hit()`'s zone.
+* **Verified** in QEMU: clean boot, `[CPUFREQ] not GenuineIntel — inactive` (TCG qemu64 is AMD-vendor), `cpu`/`taskstat`/`screenshot` all healthy, menubar shows `CPU 0%  6963K Free  14:34:32`.
+* **Documented** in `okf/kernel/exec/index.md` (Scheduling Model), `okf/kernel/display/index.md` (menubar), `okf/platforms/macbook41.md` (CPU row).
+
 ## 2026-10-06 — EventPump descheduled-in-critical fix + crit-block diagnostic (UAOS-271)
 
 * **Found** (live `irqaudit`, metal): EventPump `crit-sw=10` — switched out while `Forbid()` nested, same class as UAOS-169/170/176. Added a `crit_block_warn()` diagnostic in `task.c`: `Wait()`/`Task_SleepTicks()`/`Task_WaitTicks()` now kprint a `[TASK] WARN: '<name>' blocked in <fn>() while critical (ID=.. TD=..) caller=0x..` line when entered with nesting held — the caller PC symbolizes straight to the offending path (`tools/symbolize.sh`). Under QEMU it fired 13× at boot, always at `shell_yield_ms` (`shell_win.c`) — `run >NIL: C:ntpd` in Startup-Sequence enqueues a background job (`Cmd_Run` → `dispatch_line` → `&` → `bg_enqueue`), and the pump's `ShellWin_PollJobs` → `bg_run_next` → `run_cmd` → `ntpd_poll` → `CMD_YIELD` slept 1 tick per poll *inside the pump's outer Forbid*.
 * **Fixed** (`kernel/exec/task.c`, `kernel/display/shell_win.c`): `ShellWin_PollJobs()` moved out of the pump's `Forbid` region — command dispatch is arbitrary blocking-capable code (yield sleeps, remote-shell TX waits on ACK window, filesystem packet round-trips `Wait()` on a reply) and must never run inside a critical section. `bg_run_next` now takes its own `Forbid` only around the queue surgery (reaper scan, `bg_remove_done`, job pick, `g_bg_running`/`g_task_bg_job` bookkeeping) — that was the mutual exclusion the pump's outer Forbid implicitly provided vs `bg_enqueue()` on shell tasks — and runs `run_cmd`/`inst_dispatch` plus the `[n] done` prints unlocked (`bg_job_done` split into mark-under-Forbid + `bg_job_done_print` outside, since `inst_print` on a remote shell blocks in `remote_send_raw`).
 * **Verified** in QEMU: clean boot with `run >NIL: C:ntpd` + `telnetd` auto-start produces zero crit-block warnings (previously 13 in the first minute); over telnet `wait 3 &`/`wait 2 &`/`runback ping 10.0.2.2` dispatch, yield, and reap correctly with `[n] done` prints and `irqaudit` reports `crit-sw=0` for every task. Screenshot confirms Workbench/shell/menubar rendering and the `[1] done` reaper message on the console. **Bare-metal verified** (MBP4,1 @ 192.168.10.158, same box as the original audit): `irqaudit` table fully empty post-boot (previously `crit-sw=10` on EventPump), and `wait 3 &`/`runback ping` dispatched and reaped clean with the audit still empty afterwards.
-=======
-=======
 ## 2026-10-06 — asl.library v37+ file requester (UAOS-242)
 
 * **Built out** the native ASL file requester in `kernel/exec/intuition_lib.c` (`FrqSlot g_frq`, `UAOS_Intuition_Asl*`): full V36 `ASL_*` / V38 `ASLFR_*` tag parsing into a private per-requester config persisted inside the 512-byte guest block (type +56, Flags1/2 +60/+64, geometry +68..+74, owned ArgList +76/+80, option bits +96); multi-select with marked entries building a guest `WBArg` array (`fr_NumArgs`/`fr_ArgList`, real `wa_Lock` drawer locks via new `dos_LockPath_glue`/`dos_UnLockBPTR_glue` exports); save mode accepting non-existent names; drawers-only picker (`FIL1F_NOFILES`); pattern filtering incl. accept/reject patterns, reject-icons, filtered drawers; editable Drawer/File/Pattern text fields with click-to-focus + rawkey→ASCII input; `AbortAslRequest` (LVO -66) and `ActivateFileRequest` (LVO -72) added to the glue dispatch.
@@ -20,7 +27,6 @@
 * **Verified** OctaMED regression `tests/qemu_octamed_iff_test.py`: requester opens with guest's `ASLFR_TitleText` ("Load Instrument(s)"), `InitialPattern`+`DoPatterns` gadget, initial drawer/file fields; navigation Volumes→OCTAMED:→select→OK → `Open('OCTAMED:TEST~1.8SV')` → Read/Seek all land.
 * **Documented** in `okf/kernel/exec/other_libraries.md` (asl section rewrite) and `okf/kernel/dos/handler_system.md` (VFS return-convention pitfall).
 
->>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/okf/log.md
 ## 2026-10-06 — iffparse.library v39 implemented (UAOS-243)
 
 * **Implemented** `kernel/exec/iffparse_lib.c` (~1400 lines): full AmigaOS iffparse.library at real NDK FD numbering (`AllocIFF` -30 … `IDtoStr` -270). AROS-faithful parser FSM (COMPOSITE→PUSHCHUNK→ATOMIC→SCANEXIT→EXIT→POPCHUNK), SCAN/STEP/RAWSTEP modes, guest `Hook` entry/exit handlers via `UAOS_InvokeM68kHook`, `IFF_RETURN2CLIENT` stop semantics, stored properties + collections as scoped LCIs, local context items (IFFSLI_ROOT/TOP/PROP), write-mode `PushChunk`/`PopChunk` with unknown-size backpatch + odd-pad + parent scan accounting, `InitIFFasDOS` builtin DOS-stream hook (`VFS_Read/Write/Seek`), custom `InitIFF` stream hooks, `GoodID`/`GoodType`/`IDtoStr`.
@@ -31,10 +37,6 @@
 * **Observed** (pre-existing, unrelated): `[dos] unimpl lvo=-870` on module load, `-876` on save — dos.library gaps, not iffparse. OctaMED's known `WILD-PC pc=0` NULL-call flake fired once after the second instrument load (UAOS-234).
 * **Added** `system/Demos/IFFTest.s` (m68k asm guest test) and `tests/qemu_octamed_iff_test.py` (scripted QEMU acceptance driver).
 * **Documented** in `okf/kernel/exec/iffparse_library.md`.
-<<<<<<< /home/reaver/workspaces/uaos/uaos/okf/log.md
->>>>>>> /home/reaver/.windsurf/worktrees/uaos/uaos-steel-darwin/okf/log.md
-=======
->>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/okf/log.md
 
 ## 2026-10-06 — Scheduler queue atomicity: stranded-EventPump desktop freeze (UAOS-265 follow-up)
 
@@ -629,3 +631,16 @@
 * **Changed**: the entry array is now allocated per recursion level — `uaos_alloc`/`uaos_free` in the two userspace commands (~11 KB `dir` / ~28 KB `list` per level; x64 tasks have 256 KB stacks so stack placement was not an option), `ELF64_HeapAlloc`/`ELF64_HeapFree` in `cmd_dir.c` (task-owned block, reclaimed by `Task_Exit` even on abort). Enumeration order, sorting, and INTER/KEYS handling unchanged.
 * **Changed**: `dir`'s trailing summary (`N item(s) N bytes used N bytes free`) no longer re-enumerates only the top level — `dir_list` accumulates `items`/`bytes` as it prints, so under `ALL` the totals cover the whole printed tree (and respect DIRS/FILES filters and INTER skips).
 * **Verified** in QEMU via telnet: nested `RAM:t` tree (2 dirs + nested grandchild + files) lists each entry exactly once in correct DFS order under `dir ALL`, `dir ALL OPT D`, and `list ALL`; `dir SYS:ACE ALL` (the volume reported broken) walks 211 items across 4+ levels with no duplicated subtrees and a whole-tree summary.
+
+## 2026-10-06 — UAOS-272: _PSS decode — Apple hides it behind a method (structural fallback)
+
+* **Diagnosed on metal**: `cpu DBG` hex-dump of the two `_PSS` hits showed they are method-body references (`Store (_PSS, Arg0)` → `While (LLess (Arg3, SizeOf (TSSI)))` + `Index`/`DerefOf` surgery), not declarations — Apple's CpuPm SSDT keeps the P-state package under a private name (`TSSI`) and rewrites it into a scratch `_PSS` at runtime. No `Name (_PSS,…)`/`Method (_PSS,…)` decl exists, so name-directed scanning can never succeed.
+* **Changed**: `scan_pss` additionally resolves `Alias (src, …_PSS)` (nearest preceding `0x06` names the real package) and `Return (NAME)` → `Name`d package. New last-resort `scan_pkg_any` + `pss_sane`: first constant package of ≥2 monotone-MHz 6-int sub-packages whose ctl looks like a Penryn PERF_CTL word (FID 4–0x40, VID 0x0C–0x40, upper bits clear) — reported as `pstates: acpi (heuristic)`. `cpu DBG` now dumps 128 B starting 16 B before each hit.
+* **Verified**: QEMU boot clean; **metal verified** — `busy: 0%` → `perf_status 0x0617` (1200 MHz @ 1.00 V), `busy: 100%` → `0x4c24` (2500 MHz @ 1.16 V) stable under load, menubar `CPU 0%` live on Workbench screenshot.
+
+## 2026-10-06 — UAOS-272: no _PSS on MBP4,1 (it's _TSS); real Penryn ladder
+
+* **Diagnosed on metal**: `peek`-dumped the whole `Cpu0tSst` SSDT (607 B at 0xbfec6000) over telnet and disassembled by hand. The two `_PSS` byte-hits are inside `Method (_TSS)`: `If (LAnd(LNot(TSSF), CondRefOf(_PSS)))` → copies field [1] of each entry into `TSSI`/`TSSM` — 5-element *throttling-state* packages, not 6-element `_PSS`. Apple's firmware never defines `_PSS`; macOS drives EIST through `ACPI_SMC_PlatformPlugin` (StepDataDict, 9 states for MBP4,1).
+* **Corrected encoding** (verified against real Core 2 `_PSS` tables): PERF_CTL ctl = (fid<<8)|vid; fid = bus multiplier with bit6 (0x40) = +0.5 step → 0x0C=2400, 0x4C=2500, 0x06=1200 on the T9300's 200 MHz bus (previous synth assumed freq/100 units — direction was right but labels wrong). VID = 12.5 mV steps above 712.5 mV → boot 0x17 = 1.00 V.
+* **Changed**: model-0x17 synth fallback is now a full 8-state Penryn ladder (2500→1200 MHz, VIDs 0x24→0x17, clamped ≥ boot VID); generic 2-state synth kept for other models; `cpu DBG` records scanned table base/len (`tbl@`) for `peek` walks.
+* **Verified**: QEMU boot clean; **metal verified** — `busy: 0%` → `perf_status 0x0617` (1200 MHz @ 1.00 V), `busy: 100%` → `0x4c24` (2500 MHz @ 1.16 V) stable under load, menubar `CPU 0%` live on Workbench screenshot.

@@ -56,6 +56,13 @@ int ACPI_IsaToGsi(int isa_irq, uint16_t *flags_out);
 /* PCIe ECAM (enhanced config) base from MCFG, 0 if absent. */
 uint64_t ACPI_EcamBase(void);
 
+/* DSDT header pointer via the FADT (X_DSDT/DSDT fields), NULL if absent.
+ * The AML byte stream starts at header + 36. */
+const void *ACPI_Dsdt(void);
+
+/* Nth table with this signature (SSDTs etc. appear multiple times). */
+const void *ACPI_FindTableN(const char sig[4], int index);
+
 /* MADT flags bit0 — system has a dual-8259 PIC (PC-AT compatible), so an
  * IMCR register (ports 0x22/0x23) may gate interrupt routing. */
 int ACPI_PcatCompat(void);

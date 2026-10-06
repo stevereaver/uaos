@@ -15,7 +15,7 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
 
 | Subsystem | Hardware | IDs / BARs | UAOS status |
 |---|---|---|---|
-| CPU | Core 2 Duo T9300, 2 cores, x86_64 | — | OK (BSP only) |
+| CPU | Core 2 Duo T9300, 2 cores, x86_64 | — | OK (BSP only). **UAOS-272:** idle heat came from the CPU parked at max FID/VID — the `Idle` task already `hlt`s (~100 % idle share via `taskstat`). `kernel/drivers/cpufreq.c` now drives EIST: `_PSS` from the DSDT (new `ACPI_Dsdt()` + minimal AML constant-package scan) else a synthesised same-VID high/low table, ondemand governor ticked at 100 ms from the PIT ISR, TM1 duty fallback when EIST is off/locked, `nocpufreq` boot flag to disable. **Gotcha:** `MSR_POWER_CTL` (0x1FC, C1E) does not exist on Core 2 — rdmsr #GP-panics at boot; CPUID.ECX.EST reads 0 under this firmware yet `MISC_ENABLE.16` is still writeable, so the driver trusts the MSR readback |
 | Chipset | Intel PM965 + ICH8M | `8086:2a00` | CF8 PCI config works |
 | Firmware | Apple EFI v1.1, **64-bit** | `fw_platform_size=64` | `build/bootx64.efi` usable; no BIOS unless CSM set up |
 | Video | NVIDIA G84M GeForce 8600M GT, LVDS 1440x900 | `10de:0407` @01:00.0; FB @0xc0060000 | GOP → multiboot2 FB tag should work day-1; VBIOS at `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom` (v60.84.49.03.00) |

@@ -28,6 +28,7 @@ typedef struct {
 static const NativeCmdEntry k_native_cmds[] = {
     CMD ("version",    Cmd_Version  ),
     CMD ("mem",        Cmd_Mem      ),
+    CMD ("cpu",        Cmd_Cpu      ),
     CMD ("libs",       Cmd_Libs     ),
     CMD ("clear",      Cmd_Clear    ),
     CMD ("reboot",     Cmd_Reboot   ),

@@ -193,6 +193,7 @@ int NativeCmd_Exists(const char *name);
  * ------------------------------------------------------------------------- */
 void Cmd_Version (NativeCmdCtx *ctx, const char *args);
 void Cmd_Mem     (NativeCmdCtx *ctx, const char *args);
+void Cmd_Cpu     (NativeCmdCtx *ctx, const char *args);
 void Cmd_Libs    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Clear   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Reboot  (NativeCmdCtx *ctx, const char *args);
