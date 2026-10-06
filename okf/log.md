@@ -1,12 +1,26 @@
 # OKF Change Log
 
 <<<<<<< /home/reaver/workspaces/uaos/uaos/okf/log.md
+<<<<<<< /home/reaver/workspaces/uaos/uaos/okf/log.md
 ## 2026-10-06 — EventPump descheduled-in-critical fix + crit-block diagnostic (UAOS-271)
 
 * **Found** (live `irqaudit`, metal): EventPump `crit-sw=10` — switched out while `Forbid()` nested, same class as UAOS-169/170/176. Added a `crit_block_warn()` diagnostic in `task.c`: `Wait()`/`Task_SleepTicks()`/`Task_WaitTicks()` now kprint a `[TASK] WARN: '<name>' blocked in <fn>() while critical (ID=.. TD=..) caller=0x..` line when entered with nesting held — the caller PC symbolizes straight to the offending path (`tools/symbolize.sh`). Under QEMU it fired 13× at boot, always at `shell_yield_ms` (`shell_win.c`) — `run >NIL: C:ntpd` in Startup-Sequence enqueues a background job (`Cmd_Run` → `dispatch_line` → `&` → `bg_enqueue`), and the pump's `ShellWin_PollJobs` → `bg_run_next` → `run_cmd` → `ntpd_poll` → `CMD_YIELD` slept 1 tick per poll *inside the pump's outer Forbid*.
 * **Fixed** (`kernel/exec/task.c`, `kernel/display/shell_win.c`): `ShellWin_PollJobs()` moved out of the pump's `Forbid` region — command dispatch is arbitrary blocking-capable code (yield sleeps, remote-shell TX waits on ACK window, filesystem packet round-trips `Wait()` on a reply) and must never run inside a critical section. `bg_run_next` now takes its own `Forbid` only around the queue surgery (reaper scan, `bg_remove_done`, job pick, `g_bg_running`/`g_task_bg_job` bookkeeping) — that was the mutual exclusion the pump's outer Forbid implicitly provided vs `bg_enqueue()` on shell tasks — and runs `run_cmd`/`inst_dispatch` plus the `[n] done` prints unlocked (`bg_job_done` split into mark-under-Forbid + `bg_job_done_print` outside, since `inst_print` on a remote shell blocks in `remote_send_raw`).
 * **Verified** in QEMU: clean boot with `run >NIL: C:ntpd` + `telnetd` auto-start produces zero crit-block warnings (previously 13 in the first minute); over telnet `wait 3 &`/`wait 2 &`/`runback ping 10.0.2.2` dispatch, yield, and reap correctly with `[n] done` prints and `irqaudit` reports `crit-sw=0` for every task. Screenshot confirms Workbench/shell/menubar rendering and the `[1] done` reaper message on the console. **Bare-metal verified** (MBP4,1 @ 192.168.10.158, same box as the original audit): `irqaudit` table fully empty post-boot (previously `crit-sw=10` on EventPump), and `wait 3 &`/`runback ping` dispatched and reaped clean with the audit still empty afterwards.
 =======
+=======
+## 2026-10-06 — asl.library v37+ file requester (UAOS-242)
+
+* **Built out** the native ASL file requester in `kernel/exec/intuition_lib.c` (`FrqSlot g_frq`, `UAOS_Intuition_Asl*`): full V36 `ASL_*` / V38 `ASLFR_*` tag parsing into a private per-requester config persisted inside the 512-byte guest block (type +56, Flags1/2 +60/+64, geometry +68..+74, owned ArgList +76/+80, option bits +96); multi-select with marked entries building a guest `WBArg` array (`fr_NumArgs`/`fr_ArgList`, real `wa_Lock` drawer locks via new `dos_LockPath_glue`/`dos_UnLockBPTR_glue` exports); save mode accepting non-existent names; drawers-only picker (`FIL1F_NOFILES`); pattern filtering incl. accept/reject patterns, reject-icons, filtered drawers; editable Drawer/File/Pattern text fields with click-to-focus + rawkey→ASCII input; `AbortAslRequest` (LVO -66) and `ActivateFileRequest` (LVO -72) added to the glue dispatch.
+* **Fixed** (tag control constants): `TAG_IGNORE`/`TAG_MORE`/`TAG_SKIP`/`TAG_JUMP` are raw utility values 1–4, not `TAG_USER`-offset — the parser had them as `0x80000001..4` so chained taglists were walked linearly past chunk ends, cross-contaminating options between OctaMED's ~10 `TAG_MORE`-linked tag chunks (an open requester inherited `multi`+`drawers_only` from neighbouring allocs). Hop cap raised 4→16.
+* **Fixed** (`ram_handler.c`): `ACTION_DELETE_OBJECT`/`ACTION_CREATE_DIR` tested `VFS_Delete`/`VFS_MkDir` as nonzero-success, but those return `int` 0=ok/-1=fail — every guest packet delete/mkdir on `RAM:` reported the inverted result. Now `== 0` like fat/ffs handlers.
+* **Added** dos LVOs `FilePart` (-870) and `PathPart` (-876) in `kernel/exec/dos_lib.c` (both return the last `/`/`:` boundary; OctaMED's save flow calls them).
+* **Upgraded** `pattern_match` to full AmigaDOS syntax — `~` negation, `(a|b)` alternation groups, `'c` quoting, `#x` repetition — OctaMED's `~(#?.info|backdrop)` instrument pattern now filters correctly.
+* **Verified** `tests/qemu_asl_test.py` driving new `system/Demos/ASLTest.s` guest demo: **15/15** — multi-select requester applies `multi`+drawer+pattern, two marked files yield WBArg entries that `Open()` via `wa_Lock`, save mode preserves initial file + creates `OCTAMED:ASLTEST.SAV`, delete phase `DeleteFile('RAM:ASLDEL.TMP')` succeeds, cancel→`AslRequest` FALSE, clean exit (`ASLPASS` sentinel).
+* **Verified** OctaMED regression `tests/qemu_octamed_iff_test.py`: requester opens with guest's `ASLFR_TitleText` ("Load Instrument(s)"), `InitialPattern`+`DoPatterns` gadget, initial drawer/file fields; navigation Volumes→OCTAMED:→select→OK → `Open('OCTAMED:TEST~1.8SV')` → Read/Seek all land.
+* **Documented** in `okf/kernel/exec/other_libraries.md` (asl section rewrite) and `okf/kernel/dos/handler_system.md` (VFS return-convention pitfall).
+
+>>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/okf/log.md
 ## 2026-10-06 — iffparse.library v39 implemented (UAOS-243)
 
 * **Implemented** `kernel/exec/iffparse_lib.c` (~1400 lines): full AmigaOS iffparse.library at real NDK FD numbering (`AllocIFF` -30 … `IDtoStr` -270). AROS-faithful parser FSM (COMPOSITE→PUSHCHUNK→ATOMIC→SCANEXIT→EXIT→POPCHUNK), SCAN/STEP/RAWSTEP modes, guest `Hook` entry/exit handlers via `UAOS_InvokeM68kHook`, `IFF_RETURN2CLIENT` stop semantics, stored properties + collections as scoped LCIs, local context items (IFFSLI_ROOT/TOP/PROP), write-mode `PushChunk`/`PopChunk` with unknown-size backpatch + odd-pad + parent scan accounting, `InitIFFasDOS` builtin DOS-stream hook (`VFS_Read/Write/Seek`), custom `InitIFF` stream hooks, `GoodID`/`GoodType`/`IDtoStr`.
@@ -17,7 +31,10 @@
 * **Observed** (pre-existing, unrelated): `[dos] unimpl lvo=-870` on module load, `-876` on save — dos.library gaps, not iffparse. OctaMED's known `WILD-PC pc=0` NULL-call flake fired once after the second instrument load (UAOS-234).
 * **Added** `system/Demos/IFFTest.s` (m68k asm guest test) and `tests/qemu_octamed_iff_test.py` (scripted QEMU acceptance driver).
 * **Documented** in `okf/kernel/exec/iffparse_library.md`.
+<<<<<<< /home/reaver/workspaces/uaos/uaos/okf/log.md
 >>>>>>> /home/reaver/.windsurf/worktrees/uaos/uaos-steel-darwin/okf/log.md
+=======
+>>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/okf/log.md
 
 ## 2026-10-06 — Scheduler queue atomicity: stranded-EventPump desktop freeze (UAOS-265 follow-up)
 

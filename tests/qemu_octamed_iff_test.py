@@ -116,11 +116,43 @@ end
             time.sleep(1)
         return None
 
+<<<<<<< /home/reaver/workspaces/uaos/uaos/tests/qemu_octamed_iff_test.py
     def frq_select_and_ok(row_y):
         uaos.move_to(300, row_y)
         uaos.click()
         time.sleep(1.5)
         uaos.move_to(500, 415)   # OK button
+=======
+    def await_frq_window(timeout=20):
+        """The ASL requester is a native WM window whose title is either the
+        app's ASLFR_TitleText ('Load Instrument(s)') or our 'Select file'
+        default — so match anything that isn't the shell or OctaMED's own
+        windows."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            for w in probe()["wins"]:
+                if w["title"] in ("Shell 1", "", "Request"):
+                    continue
+                return w
+            time.sleep(1)
+        return None
+
+    def frq_geom(field):
+        out = uaos.gdb.run(f'printf "@@G %d\\n", {FRQ}.{field}')
+        return int(re.search(r"@@G (\d+)", out[0]).group(1)) if out else 0
+
+    def frq_btn(win, idx):
+        """Screen coords of requester button idx (0=Volumes 1=Parent 2=OK)."""
+        return (win["x"] + frq_geom(f"btn_x[{idx}]") + 38,
+                win["y"] + frq_geom("btn_y") + 9)
+
+    def frq_select_and_ok(win, row):
+        row_y = win["y"] + frq_geom("list_y") + row * 14 + 7
+        uaos.move_to(win["x"] + 60, row_y)
+        uaos.click()
+        time.sleep(1.5)
+        uaos.move_to(*frq_btn(win, 2))   # OK button
+>>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/tests/qemu_octamed_iff_test.py
         uaos.click()
         time.sleep(4)
 
@@ -152,12 +184,42 @@ end
         check("OctaMED: iffparse.library opened (v37)", iff_opened)
 
         # --- load 8SVX instrument: Shift+I -> req OK -> ASL --------------
+<<<<<<< /home/reaver/workspaces/uaos/uaos/tests/qemu_octamed_iff_test.py
         uaos.move_to(160, 25)     # focus OctaMED window
+=======
+        # OctaMED can pop its own "Request" windows late (missing config
+        # warnings).  They are modal, which makes the WM swallow clicks on
+        # every other window — clear any that are pending before focusing.
+        t0 = time.time()
+        while time.time() - t0 < 20:
+            if dismiss_request():
+                t0 = time.time()      # another may follow
+                continue
+            break
+        time.sleep(2)
+        while dismiss_request():
+            time.sleep(1)
+
+        # OctaMED relocates its window during startup — focus it by probing
+        # for the largest non-shell window instead of fixed coordinates.
+        octa_win = None
+        for w in probe()["wins"]:
+            if "Shell" in w["title"] or w["title"] == "Request":
+                continue
+            if octa_win is None or w["w"] * w["h"] > octa_win["w"] * octa_win["h"]:
+                octa_win = w
+        if octa_win:
+            uaos.move_to(octa_win["x"] + octa_win["w"] // 2,
+                         octa_win["y"] + 8)
+        else:
+            uaos.move_to(160, 25)
+>>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/tests/qemu_octamed_iff_test.py
         uaos.click()
         time.sleep(1)
         uaos.mon.send("sendkey shift-i")
         time.sleep(3)
         dismiss_request()
+<<<<<<< /home/reaver/workspaces/uaos/uaos/tests/qemu_octamed_iff_test.py
         asl = await_win("Select file", 20)
         check("ASL: 'Select file' requester opened", bool(asl))
 
@@ -173,6 +235,49 @@ end
             log = open(serial, errors="replace").read()
             check("8SVX: guest opened and read the file",
                   "TEST~1.8SV') mode=1005 -> 3" in log or "TEST.8SVX" in log)
+=======
+        asl = await_frq_window(20)
+        check("ASL: file requester opened", bool(asl),
+              f"title={asl['title']!r}" if asl else "")
+
+        def frq_names():
+            out = uaos.gdb.run(
+                f'set $i = 0\n'
+                f'while $i < {FRQ}.nent\n'
+                f'  printf "@@N %s\\n", {FRQ}.ents[$i].name\n'
+                f'  set $i = $i + 1\n'
+                f'end\n')
+            return [l[4:] for l in out if l.startswith("@@N ")]
+
+        if asl:
+            uaos.move_to(*frq_btn(asl, 0)); uaos.click(); time.sleep(2)  # Volumes
+            names = frq_names()
+            vol_row = next((i for i, n in enumerate(names)
+                            if n.rstrip("/") == "OCTAMED:"), 0)
+            row_y = asl["y"] + frq_geom("list_y") + vol_row * 14 + 7
+            uaos.move_to(asl["x"] + 60, row_y); uaos.click(); time.sleep(2)
+            # scroll the list to the bottom via the right-edge scroll strip
+            for _ in range(30):
+                if frq_geom("top") + frq_geom("rows") >= frq_geom("nent"):
+                    break
+                uaos.move_to(asl["x"] + asl["w"] - 30,
+                             asl["y"] + frq_geom("list_y")
+                             + frq_geom("rows") * 14 - 5)
+                uaos.click(); time.sleep(0.5)
+            # TEST.8SVX is FAT 8.3-folded to TEST~1.8SV; click its visible row
+            names = frq_names()
+            top = frq_geom("top")
+            row = next((i - top for i, n in enumerate(names)
+                        if ("8SV" in n.upper() or "TEST" in n.upper())
+                        and i >= top), -1)
+            check("ASL: TEST.8SVX visible in requester", row >= 0)
+            if row >= 0:
+                frq_select_and_ok(asl, row)
+            time.sleep(4)
+            log = open(serial, errors="replace").read()
+            check("8SVX: guest opened and read the file",
+                  "TEST~1.8SV" in log or "TEST.8SVX" in log)
+>>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/tests/qemu_octamed_iff_test.py
 
         # --- verdict ------------------------------------------------------
         iff_calls = strace_stats(lib=11)

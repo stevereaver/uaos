@@ -31,6 +31,8 @@ typedef struct Handler {
 4. **Handler Processing**: The handler (e.g., `ram_handler.c`) receives the packet, performs the I/O, and sets the results in the packet.
 5. **Reply**: The packet is returned to the client's reply port.
 
+> **Return-convention pitfall**: the `VFS_*` layer (`VFS_Open` aside, which returns 1/0) reports `int` results with **0 = success, negative = failure** (`VFS_Delete`, `VFS_MkDir`, `VFS_Rename`, ...). Packets invert that to AmigaOS `DOSTRUE`/`DOSFALSE`, so handler cases must test `== 0`, never bare `if (VFS_*(...))`. `ram_handler.c`'s `ACTION_DELETE_OBJECT`/`ACTION_CREATE_DIR` once had this backwards — every guest `DeleteFile`/`CreateDir` on `RAM:` reported the inverted result (fixed for UAOS-242).
+
 ## Filesystem vs. Device Handlers
 
 - **Filesystem Handlers**: Manage directories and files (e.g., `RAMFS`, `FAT32`).

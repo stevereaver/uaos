@@ -21,6 +21,7 @@
 #include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "chipset/chip_emu.h"
 #include "chipset/chiptrace.h"
 #include "irq/rtc.h"
@@ -1395,6 +1396,8 @@ static void dos_DeleteFile(M68kCPUState *cpu)
     }
 
     int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (intptr_t)full_name, 0, 0, 0, 0);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] DeleteFile('%s') -> %ld\n",
+         full_name, (long)res);
     cpu->d[0] = (uint32_t)res;
 }
 
@@ -1823,51 +1826,147 @@ static void uint_to_str_2d(uint32_t v, char *buf)
  * Pattern matching helpers — shared by ParsePattern / MatchPattern
  * ========================================================================= */
 
+/* AmigaDOS wildcard matcher: '?', '%', '*', '#x' repetition (incl. '#?'),
+ * "'c" quoting, '(a|b|c)' alternation groups, '~' complement.
+ * NFA over name positions — each set bit i means "i chars of n consumed";
+ * groups and '#' backtrack correctly without exponential recursion. */
+#define PM_MAXLEN 256
+
+static int pm_ci_eq(char a, char b)
+{
+    if (a >= 'A' && a <= 'Z') a += 32;
+    if (b >= 'A' && b <= 'Z') b += 32;
+    return a == b;
+}
+
+/* pointer past one pattern unit starting at p (< pend) */
+static const char *pm_unit_end(const char *p, const char *pend)
+{
+    if (*p == '\'') return (p + 2 < pend) ? p + 2 : pend;
+    if (*p == '(') {
+        int d = 1;
+        p++;
+        while (p < pend && d) {
+            if (*p == '(') d++;
+            else if (*p == ')') d--;
+            p++;
+        }
+        return p;
+    }
+    return p + 1;
+}
+
+static void pm_run(const char *n, const char *p, const char *pend,
+                   uint8_t st[]);
+
+/* Apply one unit u..ue: st positions -> positions after the unit. */
+static void pm_unit_step(const char *n, const char *u, const char *ue,
+                         uint8_t st[])
+{
+    uint8_t out[PM_MAXLEN + 1];
+    memset(out, 0, sizeof(out));
+    if (*u == '%') return;                  /* epsilon: positions unchanged */
+    if (*u == '(' && ue > u + 1 && ue[-1] == ')') {
+        /* alternatives u+1..ue-1 split by top-level '|' */
+        const char *ge = ue - 1, *s = u + 1;
+        int depth = 0;
+        for (const char *q = u + 1; q <= ge; q++) {
+            if (q != ge) {
+                if (*q == '(') { depth++; continue; }
+                if (*q == ')') { depth--; continue; }
+                if (*q != '|' || depth) continue;
+            }
+            /* alternative s..q, run from the same start positions */
+            uint8_t sub[PM_MAXLEN + 1];
+            memcpy(sub, st, sizeof(sub));
+            pm_run(n, s, q, sub);
+            for (int i = 0; i <= PM_MAXLEN; i++)
+                if (sub[i]) out[i] = 1;
+            s = q + 1;
+        }
+    } else {
+        for (int i = 0; n[i] && i < PM_MAXLEN; i++) {
+            if (!st[i]) continue;
+            if (*u == '?' ||
+                (*u == '\'' && u + 1 < ue && pm_ci_eq(n[i], u[1])) ||
+                (*u != '\'' && pm_ci_eq(n[i], *u)))
+                out[i + 1] = 1;
+        }
+    }
+    memcpy(st, out, sizeof(out));
+}
+
+/* Run segment p..pend as a prefix match over the position set st. */
+static void pm_run(const char *n, const char *p, const char *pend,
+                   uint8_t st[])
+{
+    int nl = (int)strlen(n);
+    if (nl > PM_MAXLEN) nl = PM_MAXLEN;
+    while (p < pend) {
+        if (*p == '~') {
+            /* complement: positions whose remaining name does NOT match
+             * the rest of this level advance to end-of-string */
+            uint8_t out[PM_MAXLEN + 1];
+            memset(out, 0, sizeof(out));
+            for (int i = 0; i <= nl; i++) {
+                if (!st[i]) continue;
+                uint8_t sub[PM_MAXLEN + 1];
+                memset(sub, 0, sizeof(sub));
+                sub[i] = 1;
+                pm_run(n, p + 1, pend, sub);
+                if (!sub[nl]) out[nl] = 1;
+            }
+            memcpy(st, out, sizeof(out));
+            return;
+        }
+        if (*p == '#') {
+            const char *u  = ++p;
+            const char *ue = pm_unit_end(u, pend);
+            /* >=0 repetitions: fixed-point closure */
+            uint8_t cur[PM_MAXLEN + 1], prev[PM_MAXLEN + 1];
+            memcpy(cur, st, sizeof(cur));
+            for (;;) {
+                uint8_t step[PM_MAXLEN + 1];
+                memcpy(prev, cur, sizeof(cur));
+                memcpy(step, cur, sizeof(step));
+                pm_unit_step(n, u, ue, step);
+                int same = 1;
+                for (int i = 0; i <= nl; i++) {
+                    cur[i] |= step[i];
+                    if (cur[i] != prev[i]) same = 0;
+                }
+                if (same) break;
+            }
+            memcpy(st, cur, sizeof(cur));
+            p = ue;
+            continue;
+        }
+        if (*p == '*') {
+            /* '*' == '#?' — all positions from the earliest set bit on */
+            for (int i = 0; i <= nl; i++) {
+                if (st[i]) {
+                    for (int j = i; j <= nl; j++) st[j] = 1;
+                    break;
+                }
+            }
+            p++;
+            continue;
+        }
+        const char *ue = pm_unit_end(p, pend);
+        pm_unit_step(n, p, ue, st);
+        p = ue;
+    }
+}
+
 static int pattern_match(const char *name, const char *pat)
 {
-    const char *n = name;
-    const char *p = pat;
-    const char *star_n = NULL;
-    const char *star_p = NULL;
-
-    while (*n) {
-        char pc = *p;
-        char nc = *n;
-        if (pc >= 'A' && pc <= 'Z') pc += 32;
-        if (nc >= 'A' && nc <= 'Z') nc += 32;
-
-        if (pc == '%') {
-            /* % matches the empty (NULL) string */
-            p++;
-            continue;
-        } else if (pc == '*' || (pc == '#' && p[1] == '?')) {
-            if (pc == '#') p++;
-            star_p = ++p;
-            star_n = n;
-            continue;
-        } else if (pc == '?') {
-            p++;
-            n++;
-            continue;
-        } else if (pc == nc) {
-            p++;
-            n++;
-            continue;
-        }
-
-        if (star_p) {
-            p = star_p;
-            n = ++star_n;
-            continue;
-        }
-        return 0;
-    }
-
-    while (*p == '*' || (*p == '#' && p[1] == '?') || *p == '%') {
-        if (*p == '#') p++;
-        p++;
-    }
-    return *p == '\0';
+    int nl = (int)strlen(name);
+    if (nl > PM_MAXLEN) return 0;
+    uint8_t st[PM_MAXLEN + 1];
+    memset(st, 0, sizeof(st));
+    st[0] = 1;
+    pm_run(name, pat, pat + strlen(pat), st);
+    return st[nl] != 0;
 }
 
 /* =========================================================================
@@ -2965,6 +3064,30 @@ static void dos_AddPart(M68kCPUState *cpu)
     cpu->d[0] = (uint32_t)DOSTRUE;
 }
 
+static void dos_FilePart(M68kCPUState *cpu)
+{
+    /* Amiga: D1=STRPTR path → D0 = ptr to char after last '/' or ':' */
+    uint32_t p = cpu->d[1], filepart = p;
+    if (p >= GUEST_RAM_SIZE) { cpu->d[0] = p; return; }
+    while (p < GUEST_RAM_SIZE && g_ram[p]) {
+        uint8_t c = g_ram[p++];
+        if (c == '/' || c == ':') filepart = p;
+    }
+    cpu->d[0] = filepart;
+}
+
+static void dos_PathPart(M68kCPUState *cpu)
+{
+    /* Amiga: D1=STRPTR path → D0 = ptr to last '/' or ':' (or start) */
+    uint32_t p = cpu->d[1], pathpart = p;
+    if (p >= GUEST_RAM_SIZE) { cpu->d[0] = p; return; }
+    while (p < GUEST_RAM_SIZE && g_ram[p]) {
+        if (g_ram[p] == '/' || g_ram[p] == ':') pathpart = p;
+        p++;
+    }
+    cpu->d[0] = pathpart;
+}
+
 static void dos_CompareNames(M68kCPUState *cpu)
 {
     /* Amiga: D1=LONG type, D2=STRPTR name1, D3=STRPTR name2 → D0=LONG */
@@ -3520,6 +3643,8 @@ static void *dos_funcs[] = {
     dos_Execute,            /* index 68 */
     dos_DeviceProc,         /* index 69 */
     dos_Fault,              /* index 70 */
+    dos_FilePart,           /* index 71 */
+    dos_PathPart,           /* index 72 */
 };
 
 /* =========================================================================
@@ -3577,4 +3702,43 @@ void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest)
     *total = *largest = 0;
     if (!(attrs & MEMF_FAST)) { heap_freelist_init();      availmem_walk(HEAP_LIST_SLOT_CHIP, total, largest); }
     if (!(attrs & MEMF_CHIP)) { heap_freelist_init_fast(); availmem_walk(HEAP_LIST_SLOT_FAST, total, largest); }
+}
+
+/* =========================================================================
+ * Host-side helpers for the asl.library file requester (UAOS-242)
+ * ========================================================================= */
+
+/* Lock() for a native C path — same ACTION_LOCATE_OBJECT plumbing as
+ * dos_Lock but without an M68kCPUState.  Returns a FileLock BPTR or 0.
+ * The 16-byte guest FileLock rides the never-freed bump heap like every
+ * other lock; the caller frees the handler-side node via
+ * dos_UnLockBPTR_glue. */
+uint32_t dos_LockPath_glue(const char *path)
+{
+    char vol_name[16];
+    extract_vol_name(path, vol_name, sizeof(vol_name));
+    MsgPort *port = VFS_GetHandlerPort(vol_name);
+    if (!port) return 0;
+    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)path,
+                           SHARED_LOCK, 0, 0, 0);
+    if (!handle) return 0;
+    uint32_t bptr = guest_alloc_filelock((uint32_t)handle, SHARED_LOCK);
+    if (!bptr) HandleTable_Free((uint32_t)handle);
+    return bptr;
+}
+
+/* UnLock() for a FileLock BPTR — releases the handler-side lock node via
+ * ACTION_FREE_LOCK.  The guest struct itself is bump-heap, never freed. */
+void dos_UnLockBPTR_glue(uint32_t lock_bptr)
+{
+    uint32_t handle = 0;
+    if (guest_read_filelock(lock_bptr, &handle, NULL) && handle)
+        VFS_FreeLock(handle);
+}
+
+/* Host-callable wrapper around the ParsePattern wildcard matcher — used by
+ * the asl file requester to filter its listview (UAOS-242). */
+int dos_pattern_match_glue(const char *name, const char *pat)
+{
+    return pattern_match(name, pat);
 }

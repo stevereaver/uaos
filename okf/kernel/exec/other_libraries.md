@@ -85,18 +85,32 @@ Catalogs: when no catalog is loaded, `GetCatalogStr` (LVO -72, handled in the ge
 
 ## asl.library (generic dispatch)
 
-The file requester is implemented natively on top of the WM (`UAOS_Intuition_AslFileRequest` in `kernel/exec/intuition_lib.c`, dispatched from `emulation/uaos_m68k_glue.c`).
+The file requester is implemented natively on top of the WM (`UAOS_Intuition_AslFileRequest` in `kernel/exec/intuition_lib.c`, dispatched from `emulation/uaos_m68k_glue.c`). It targets V37+ semantics and is sufficient for OctaMED's load/save flows.
 
 | Function | Status | Notes |
 |---|---|---|
-| `AllocFileRequest` (LVO -30) | Implemented | Zeroed 512-byte block in guest memory; result strings live inside it (drawer at +256, file at +384). |
-| `FreeFileRequest` (LVO -36) | Implemented | Frees the block. |
+| `AllocFileRequest` (LVO -30) | Implemented | Zeroed 512-byte block in guest memory; result strings live inside it (drawer at +256, file at +384). V36 alias of `AllocAslRequest(ASL_FileRequest,...)`. |
+| `FreeFileRequest` (LVO -36) | Implemented | Frees the block plus any owned ArgList. |
 | `RequestFile` (LVO -42) | Implemented | Shares the `AslRequest` path: a0=requester block, a1=taglist. |
-| `AllocAslRequest` (LVO -48) | Implemented | Same 512-byte block as `AllocFileRequest`. |
-| `FreeAslRequest` (LVO -54) | Implemented | Frees the block. |
-| `AslRequest` (LVO -60) | Implemented | Native modal file requester. |
+| `AllocAslRequest` (LVO -48) | Implemented | Type 0 (`ASL_FileRequest`) accepted; taglist parsed at alloc time and persisted in the block. |
+| `FreeAslRequest` (LVO -54) | Implemented | Frees the block plus any owned ArgList/dir-lock. |
+| `AslRequest` (LVO -60) | Implemented | Native modal file requester. Re-applies the call-time taglist so per-call overrides work. |
+| `AbortAslRequest` (LVO -66) | Implemented | Cancels a pending requester (sets the done flag). |
+| `ActivateFileRequest` (LVO -72) | Implemented | V36 noop-compat stub returning success. |
 
-`AslRequest` opens a modal WM window (460 px, volume list / directory list modes) and blocks the calling M68k task on a signal bit while the EventPump drives input; `UAOS_M68k_DeliverInterrupts()` is pumped inside the wait loop so CIA/audio keep running. Navigation: **Volumes** lists mounted volumes (`OCTAMED:`, `RAM:`, `Workbench:`), **Parent** pops a path component, clicking a directory enters it, clicking a file selects it, **OK**/**Cancel** finish. The drawer/file fields are written into the requester block (`fr_File`/`fr_Drawer` and the standard `+16`/`+20` slots) after the wait returns, still inside the lib dispatch, so they land in the caller's arena. The requester window is marked `WM_SetModal` so it can never be buried under a raised window while the guest is blocked (a buried modal used to deadlock the boot).
+Private per-requester config is kept inside the 512-byte block: requester type +56, Flags1 +60, Flags2 +64, geometry +68..+74, owned `fr_ArgList` pointer/size +76/+80, and effective option bits +96. `fr_LeftEdge/TopEdge/Width/Height` (+22..+28), `fr_NumArgs`/`fr_ArgList` (+32/+36), `fr_UserData` (+40), `fr_Pattern` (+52) match the V36/V44 `FileRequester` layout.
+
+Tag parsing (`frq_apply_tags`) accepts both V36 `ASL_*` and V38 `ASLFR_*` numbering (they share base `TAG_USER+0x80000`): title, window, geometry, initial file/drawer/pattern, OK/Cancel text, FuncFlags (+20), ExtFlags1/2 (+22/+24), SaveMode (+44), MultiSelect (+45), DoPatterns/DoMultiSelect/DrawersOnly (+46..). Control tags are raw utility values (`TAG_IGNORE=1`, `TAG_MORE=2`, `TAG_SKIP=3`, `TAG_JUMP=4` — NOT `TAG_USER`-offset); OctaMED chains its taglists across ~10 `TAG_MORE` hops, so the walker follows up to 16. FuncFlag bits: `FILF_PATGAD`=1, `FILF_MULTISELECT`=8, `FILF_NEWIDCMP`=0x10, `FILF_SAVE`=0x20; ExtFlags1: `FIL1F_NOFILES`=1 (drawers-only picker), `FIL1F_MATCHDIRS`=2.
+
+`AslRequest` opens a modal WM window and blocks the calling M68k task on a signal bit while the EventPump drives input; `UAOS_M68k_DeliverInterrupts()` is pumped inside the wait loop so CIA/audio keep running. Navigation: **Volumes** lists mounted volumes, **Parent** pops a path component, clicking a directory enters it (in drawers-only mode a click *selects* instead), clicking a file selects it (toggles a mark in multi-select), **OK**/**Cancel** finish. Drawer, file and pattern gadgets are editable text fields (click to focus, rawkey→ASCII cooked input, Backspace/Return). The requester window is marked `WM_SetModal` so it can never be buried under a raised window while the guest is blocked.
+
+Filtering honours `ASLFR_Pattern`/`ASL_InitialPattern` via the AmigaDOS pattern matcher (`pattern_match` in `kernel/exec/dos_lib.c`, upgraded to full syntax: `~` negation, `(a|b)` groups, `'c` quoting, `#x` repetition — OctaMED's `~(#?.info|backdrop)` works), `ASLFR_RejectIcons`, `ASLFR_DrawersOnly`, `ASLFR_FilterDrawers`, plus `ASLFR_AcceptPattern`/`ASLFR_RejectPattern`.
+
+Multi-select (`ASLFR_DoMultiSelect`/`FILF_MULTISELECT`) builds a guest `WBArg` array in caller-visible memory: `fr_NumArgs` entries, each `wa_Lock` a real dos lock on the parent drawer (shared locks on `Lock()`-resolved path via `dos_LockPath_glue`) and `wa_Name` pointing into the block. Save mode (`FILF_SAVE`/`ASLFR_SaveMode`) accepts non-existent filenames and keeps the initial file text editable. On accept the result lands in `fr_Drawer`/`fr_File` so the guest reads a full AmigaDOS path.
+
+Verified end-to-end by `tests/qemu_asl_test.py` driving `system/Demos/ASLTest.s` (multi-select WBArg opens via `wa_Lock`, save-path creation, delete via `DeleteFile`, cancel→FALSE) and by the OctaMED instrument-load regression `tests/qemu_octamed_iff_test.py`.
+
+One host-side fix this surfaced: `ram_handler.c` treated `VFS_Delete`/`VFS_MkDir` as boolean-success when they return `int` (0=ok/-1=fail), so every guest packet delete/mkdir on `RAM:` reported the result inverted — now `== 0` checks like the FAT/FFS handlers. Also added `FilePart`/`PathPart` dos LVOs (-870/-876) which OctaMED's save flow needs.
 
 ## ixemul.library (`kernel/exec/ixemul_lib.c`)
 

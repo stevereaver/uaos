@@ -173,7 +173,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Delete object ===== */
     case ACTION_DELETE_OBJECT: {
         const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
-        if (VFS_Delete(path)) {
+        if (VFS_Delete(path) == 0) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
             pkt->dp_Res1 = DOSFALSE;
@@ -185,7 +185,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Create directory ===== */
     case ACTION_CREATE_DIR: {
         const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
-        if (VFS_MkDir(path)) {
+        if (VFS_MkDir(path) == 0) {
             pkt->dp_Res1 = DOSTRUE;
         } else {
             pkt->dp_Res1 = DOSFALSE;

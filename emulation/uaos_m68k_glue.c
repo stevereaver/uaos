@@ -819,6 +819,8 @@ extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest
 #define DOS_EXECUTE        68
 #define DOS_DEVICE_PROC    69
 #define DOS_FAULT          70
+#define DOS_FILE_PART      71
+#define DOS_PATH_PART      72
 #define DOS_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* intuition.library function indices */
@@ -1736,6 +1738,8 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_EXECUTE:        return (uint32_t)((int)DOS_BASE + LVO_DOS_EXECUTE);
             case DOS_DEVICE_PROC:    return (uint32_t)((int)DOS_BASE + LVO_DOS_DEVICE_PROC);
             case DOS_FAULT:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FAULT);
+            case DOS_FILE_PART:      return (uint32_t)((int)DOS_BASE + LVO_DOS_FILE_PART);
+            case DOS_PATH_PART:      return (uint32_t)((int)DOS_BASE + LVO_DOS_PATH_PART);
         }
     } else if (lib_id == LIB_INTUITION) {
         switch (func_idx) {
@@ -2406,6 +2410,8 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_GET_CONSOLE_TASK, LIB_DOS, DOS_GET_CONSOLE_TASK);
     install_lvo(DOS_BASE, LVO_DOS_SET_CONSOLE_TASK, LIB_DOS, DOS_SET_CONSOLE_TASK);
     install_lvo(DOS_BASE, LVO_DOS_FAULT,           LIB_DOS, DOS_FAULT);
+    install_lvo(DOS_BASE, LVO_DOS_FILE_PART,       LIB_DOS, DOS_FILE_PART);
+    install_lvo(DOS_BASE, LVO_DOS_PATH_PART,       LIB_DOS, DOS_PATH_PART);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {
@@ -6164,22 +6170,10 @@ int m68k_illg_instr_callback(int opcode)
         /* asl.library: requester block lifecycle plus the native WM file
          * requester (UAOS-242).  LVO map (v37+):
          *   -30 AllocFileRequest   -36 FreeFileRequest   -42 RequestFile
-         *   -48 AllocAslRequest    -54 FreeAslRequest    -60 AslRequest */
+         *   -48 AllocAslRequest    -54 FreeAslRequest    -60 AslRequest
+         *   -66 AbortAslRequest    -72 ActivateFileRequest */
         int is_asl = lname && lname[0]=='a' && lname[1]=='s' &&
                      lname[2]=='l' && lname[3]=='.';
-        if (is_asl) {
-            /* Trace every ASL call with its return address (UAOS-242 debug). */
-            uint32_t tsp2 = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
-            uint32_t ra2  = (tsp2 + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(tsp2) : 0;
-            char msg2[80]; int i2 = 0;
-            const char *p2 = "[frq] call lvo="; while (p2[i2]) { msg2[i2]=p2[i2]; i2++; }
-            char n2[12]; u32_dec((uint32_t)(-lvo), n2, 12);
-            int j2 = 0; while (n2[j2]) msg2[i2++]=n2[j2++];
-            const char *t2 = " ra="; j2 = 0; while (t2[j2]) msg2[i2++]=t2[j2++];
-            u32_hex(ra2, n2); j2 = 0; while (n2[j2] && i2<76) msg2[i2++]=n2[j2++];
-            msg2[i2++]='\n'; msg2[i2]='\0';
-            emu_print(msg2);
-        }
         /* cia*.resource: AddICRVector(-6)/RemICRVector(-12)/AbleICR(-18)/
          * SetICR(-24) — real implementations so guests can take CIA timer
          * and keyboard interrupts (UAOS-241). */
@@ -6190,26 +6184,56 @@ int m68k_illg_instr_callback(int opcode)
         else if (is_locale && lvo == -72)
             m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A1));
         else if (is_asl && (lvo == -30 || lvo == -48)) {
-            /* AllocFileRequest / AllocAslRequest — zeroed 512-byte block.
-             * Result strings live inside it (drawer at +256, file at +384)
-             * so no separate allocation bookkeeping is needed. */
-            uint32_t fr = 0;
-            dos_AllocMem_glue(512, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &fr);
-            m68k_set_reg(M68K_REG_D0, fr);
+            /* AllocFileRequest / AllocAslRequest — 512-byte block whose
+             * private zone persists alloc-time tags as AslRequest
+             * defaults.  AllocAslRequest passes d0=type, a0=taglist;
+             * AllocFileRequest documents no args but we accept an
+             * optional taglist in a0. */
+            extern uint32_t UAOS_Intuition_AslAllocRequest(uint32_t type,
+                                                           uint32_t tags);
+            uint32_t type = (lvo == -48)
+                          ? (uint32_t)m68k_get_reg(NULL, M68K_REG_D0) : 0;
+            uint32_t tags = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
+            m68k_set_reg(M68K_REG_D0,
+                         UAOS_Intuition_AslAllocRequest(type, tags));
         }
         else if (is_asl && (lvo == -36 || lvo == -54)) {
-            uint32_t fr = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
-            if (fr) dos_FreeMem_glue(fr, 512);
+            /* FreeFileRequest / FreeAslRequest — frees the block plus any
+             * ArgList/lock attached by a completed request. */
+            extern void UAOS_Intuition_AslFreeRequest(uint32_t req);
+            UAOS_Intuition_AslFreeRequest(
+                (uint32_t)m68k_get_reg(NULL, M68K_REG_A0));
             m68k_set_reg(M68K_REG_D0, 0);
         }
-        else if (is_asl && (lvo == -42 || lvo == -60)) {
-            /* RequestFile / AslRequest: a0=requester, a1=taglist */
+        else if (is_asl && lvo == -42) {
+            /* RequestFile(fileReq=a0) — no taglist arg; the block's stored
+             * config (from AllocFileRequest-time tags) applies. */
+            extern int UAOS_Intuition_AslFileRequest(uint32_t req, uint32_t tags);
+            uint32_t fr = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
+            m68k_set_reg(M68K_REG_D0,
+                         (uint32_t)UAOS_Intuition_AslFileRequest(fr, 0));
+        }
+        else if (is_asl && lvo == -60) {
+            /* AslRequest(requester=a0, taglist=a1) */
             extern int UAOS_Intuition_AslFileRequest(uint32_t req, uint32_t tags);
             uint32_t fr   = (uint32_t)m68k_get_reg(NULL, M68K_REG_A0);
             uint32_t tags = (uint32_t)m68k_get_reg(NULL, M68K_REG_A1);
-            emu_print("[frq] AslRequest dispatch\n");
             m68k_set_reg(M68K_REG_D0,
                          (uint32_t)UAOS_Intuition_AslFileRequest(fr, tags));
+        }
+        else if (is_asl && lvo == -66) {
+            /* AbortAslRequest(requester=a0) */
+            extern void UAOS_Intuition_AslAbortRequest(uint32_t req);
+            UAOS_Intuition_AslAbortRequest(
+                (uint32_t)m68k_get_reg(NULL, M68K_REG_A0));
+            m68k_set_reg(M68K_REG_D0, 0);
+        }
+        else if (is_asl && lvo == -72) {
+            /* ActivateFileRequest(fileReq=a0) → BOOL */
+            extern int UAOS_Intuition_AslActivateRequest(uint32_t req);
+            m68k_set_reg(M68K_REG_D0,
+                (uint32_t)UAOS_Intuition_AslActivateRequest(
+                    (uint32_t)m68k_get_reg(NULL, M68K_REG_A0)));
         }
         else
             m68k_set_reg(M68K_REG_D0, 0);

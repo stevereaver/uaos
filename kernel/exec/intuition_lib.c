@@ -48,6 +48,9 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2);
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
+extern uint32_t dos_LockPath_glue(const char *path);
+extern void     dos_UnLockBPTR_glue(uint32_t lock_bptr);
+extern int      dos_pattern_match_glue(const char *name, const char *pat);
 
 #define M68K_REG_D0  0
 #define M68K_REG_D1  1
@@ -2756,11 +2759,6 @@ static uint32_t build_requester_internal(uint32_t parent_win, const char *title,
 
     local_str_copy(g_req_slot.title, title, sizeof(g_req_slot.title));
     local_str_copy(g_req_slot.body_text, body, sizeof(g_req_slot.body_text));
-    {   /* UAOS-242 diag: dump requester content once */
-        kprint("[req] build title='"); kprint(g_req_slot.title);
-        kprint("' body='"); kprint(g_req_slot.body_text);
-        kprint("' nbtn="); kprintdec(num_buttons); kprint("\n");
-    }
 
     int total_btn_w = num_buttons * REQ_BTN_W + (num_buttons - 1) * 10;
     int start_x = (width - total_btn_w) / 2;
@@ -2809,43 +2807,111 @@ static int wait_requester_internal(void)
 }
 
 /* =========================================================================
- * asl.library file requester (AslRequest / RequestFile)
+ * asl.library file requester — AslRequest / RequestFile (UAOS-242)
  *
  * A native WM window, modal like EasyRequest: the calling M68k task blocks
- * on a signal while EventPump drives the mouse.  The event handler only
- * touches host-side state (it runs on EventPump's task where g_ram is the
- * shared buffer, not the caller's arena); guest-visible FileRequester fields
- * are filled after the wait loop returns, still inside the lib dispatch.
+ * on a signal while EventPump drives input.  The event handler only touches
+ * host-side state (it runs on EventPump's task where g_ram is the shared
+ * buffer, not the caller's arena); guest-visible FileRequester fields are
+ * written after the wait loop returns, still inside the lib dispatch.
  *
- * Result fields written (all inside the caller-allocated 512-byte block):
- *   +4  -> file name string    (OctaMED V5's layout: file@+4, drawer@+8)
- *   +8  -> drawer path string
- *   +16 -> fr_File   (standard FileRequester offsets, belt & braces)
- *   +20 -> fr_Drawer
- * Strings live inside the block at +256 (drawer) and +384 (file).
+ * Requester block (512 bytes, caller's arena):
+ *   +0  .. +55   public struct FileRequester — the V36 rf_* and V38 fr_*
+ *                spellings share offsets: file @+4, drawer/dir @+8,
+ *                LeftEdge/TopEdge/Width/Height @+22/+24/+26/+28,
+ *                NumArgs @+32, ArgList @+36 (struct WBArg: wa_Lock @+0,
+ *                wa_Name @+4), UserData @+40, Pat/Pattern @+52.
+ *   +16 / +20    also carry file/drawer pointers — OctaMED V5 reads them.
+ *   +56 .. +255  private config persisted across AllocAslRequest() →
+ *                AslRequest() so alloc-time tags act as defaults.
+ *   +256 / +384  drawer / file result strings.
+ *
+ * Tag numbering: the V36 (ASL_*) and V38 (ASLFR_*) spellings deliberately
+ * share tag values wherever their meaning coincides (both are
+ * TAG_USER+0x80000+N), so one switch handles apps linked against either
+ * generation of the API.
  * ========================================================================= */
 
 #define FRQ_MAX_ENTS   96
 #define FRQ_ROWS       12
 #define FRQ_ROW_H      14
+#define FRQ_FIELD_H    16
 #define FRQ_BTN_W      76
 #define FRQ_BTN_H      18
 #define FRQ_WIN_W      460
+#define FRQ_DEF_ROWS   12
 /* The WM's right and bottom WM_SCROLLBAR_W-wide strips swallow clicks
  * (invisible here since draw_fn overpaints the chrome), so all interactive
  * elements must clear them. */
-#define FRQ_LIST_Y     (WM_TITLEBAR_H + 30)
-#define FRQ_FILE_Y     (FRQ_LIST_Y + FRQ_ROWS * FRQ_ROW_H + 8)
-#define FRQ_BTN_Y      (FRQ_FILE_Y + 20)
-#define FRQ_WIN_H      (FRQ_BTN_Y + FRQ_BTN_H + 4 + WM_SCROLLBAR_W)
+#define FRQ_DRAWER_Y   (WM_TITLEBAR_H + 8)
 #define FRQ_STR_DRAWER 256   /* in-block string offsets */
 #define FRQ_STR_FILE   384
+#define FRQ_BLK_SIZE   512
 
 #define FRQ_BTN_VOLUMES 0
 #define FRQ_BTN_PARENT  1
 #define FRQ_BTN_OK      2
 #define FRQ_BTN_CANCEL  3
 #define FRQ_NUM_BTNS    4
+
+/* Private zone of the requester block — the public FileRequester ends at
+ * +56 ("more reserved fields follow" per the NDK), so +56..+255 is ours. */
+#define FRQP_TYPE      56   /* u32 ASL requester type (0 = ASL_FileRequest) */
+#define FRQP_FLAGS1    60   /* u32 Flags1/FuncFlags as passed            */
+#define FRQP_FLAGS2    64   /* u32 Flags2/ExtFlags1                      */
+#define FRQP_LEFT      68   /* s16 window geometry, 0xFFFF = unset       */
+#define FRQP_TOP       70
+#define FRQP_WIDTH     72
+#define FRQP_HEIGHT    74
+#define FRQP_ARGLIST   76   /* u32 owned guest WBArg[] + name pool       */
+#define FRQP_ARGSIZE   80   /* u32 its byte size                          */
+#define FRQP_DIRLOCK   84   /* u32 BPTR lock on the result drawer         */
+#define FRQP_SCREEN    88   /* u32 raw ASLFR_Screen tag data              */
+#define FRQP_WINDOW    92   /* u32 raw ASLFR_Window tag data              */
+#define FRQP_OPT       96   /* u16 FRQF_* effective option bits           */
+#define FRQP_TITLE     104  /* char[40] */
+#define FRQP_OK        144  /* char[16] */
+#define FRQP_CANCEL    160  /* char[16] */
+#define FRQP_PATTERN   176  /* char[32] — fr_Pattern points here          */
+#define FRQP_REJPAT    208  /* char[24] */
+#define FRQP_ACCPAT    232  /* char[24] */
+
+/* Effective option bits stored at FRQP_OPT. */
+#define FRQF_MULTI        0x0001   /* DoMultiSelect / FRF_DOMULTISELECT  */
+#define FRQF_SAVE         0x0002   /* DoSaveMode    / FRF_DOSAVEMODE     */
+#define FRQF_PATTERNS     0x0004   /* DoPatterns    / FRF_DOPATTERNS     */
+#define FRQF_REJICONS     0x0008   /* RejectIcons   / FRF_REJECTICONS    */
+#define FRQF_DRAWERSONLY  0x0010   /* DrawersOnly   / FRF_DRAWERSONLY    */
+#define FRQF_FILTDRAWERS  0x0020   /* FilterDrawers / FRF_FILTERDRAWERS  */
+#define FRQF_HAVEPAT      0x0040   /* a pattern string was supplied      */
+#define FRQF_HAVEREJPAT   0x0080
+#define FRQF_HAVEACCPAT   0x0100
+
+/* Flags1 bits — FILF_* (V36) and FRF_* (V38) share positions. */
+#define FRQ_F1_DOPATTERNS   0x01u
+#define FRQ_F1_DOMULTI      0x08u
+#define FRQ_F1_DOSAVE       0x20u
+/* Flags2 bits — FIL1F_* (V36) and the second FRF_* bank (V38). */
+#define FRQ_F2_DRAWERSONLY  0x01u
+#define FRQ_F2_FILTDRAWERS  0x02u
+#define FRQ_F2_REJICONS     0x04u
+
+/* Tag ids: ASL_Dummy = ASL_TB = TAG_USER + 0x80000.  The utility control
+ * tags are raw values below TAG_USER (TAG_IGNORE=1, TAG_MORE=2, TAG_SKIP=3,
+ * TAG_JUMP=4) — not TAG_USER-relative. */
+#define FRQ_TAG_BASE   0x80080000u
+#define FRQ_TAG_IGNORE 0x00000001u
+#define FRQ_TAG_MORE   0x00000002u
+#define FRQ_TAG_SKIP   0x00000003u
+#define FRQ_TAG_JUMP   0x00000004u
+
+#define FRQ_MEMF_PUBLIC  0x00000001u
+#define FRQ_MEMF_CLEAR   0x00010000u
+
+/* String-gadget focus: file / drawer / pattern. */
+#define FRQ_EDIT_FILE    0
+#define FRQ_EDIT_DRAWER  1
+#define FRQ_EDIT_PATTERN 2
 
 typedef struct {
     int       wm_handle;
@@ -2854,18 +2920,35 @@ typedef struct {
     int       sel;           /* selected entry index, -1 none */
     int       top;           /* first visible row */
     int       nent;
+    int       rows;          /* visible rows this window height allows */
     int       vol_mode;      /* listing volumes instead of files */
     int       rescan;        /* handler asked for dir reload */
+    int       enter_typed;   /* drawer field committed — validate in ctx */
     uint64_t  last_click;    /* double-click detect */
     int       last_sel_click;
+    int       edit_field;    /* FRQ_EDIT_* */
+    int       nsel;          /* marked entries in multi mode */
+    /* effective options (mirror of the block's FRQP_OPT) */
+    int       multi, save_mode, show_pattern, reject_icons;
+    int       drawers_only, filt_drawers;
+    int       have_pat, have_rejpat, have_accpat;
+    uint32_t  req_ptr;       /* guest block being filled */
     char      title[64];
     char      drawer[160];
-    char      file[64];
+    char      drawer_commit[160]; /* last scanned path, for revert */
+    char      file[96];
+    char      pattern[32];
+    char      rejpat[24];
+    char      accpat[24];
     char      ok_txt[24];
     char      cancel_txt[24];
     VfsDirEnt ents[FRQ_MAX_ENTS];
+    uint8_t   msel[FRQ_MAX_ENTS]; /* per-entry marks, multi mode */
     int       btn_x[FRQ_NUM_BTNS];
     int       btn_y;
+    int       list_y;        /* row-0 y — shifts when pattern field shown */
+    int       file_y;
+    int       pat_y;
     uint8_t   sigbit;
     uint32_t  sigmask;
     UaosTask *task;
@@ -2882,6 +2965,43 @@ static int frq_cmp_name(const char *a, const char *b)
         if (!ca) return 0;
         a++; b++;
     }
+}
+
+/* Case-insensitive ".info" suffix test for ASLFR_RejectIcons. */
+static int frq_is_icon(const char *name)
+{
+    int n = 0;
+    while (name[n]) n++;
+    if (n < 5) return 0;
+    const char *s = name + n - 5;
+    return s[0] == '.' &&
+           (s[1] == 'i' || s[1] == 'I') && (s[2] == 'n' || s[2] == 'N') &&
+           (s[3] == 'f' || s[3] == 'F') && (s[4] == 'o' || s[4] == 'O');
+}
+
+/* The AmigaDOS wildcard matcher ('?', '*', '#?', '%') lives in dos_lib.c
+ * behind ParsePattern/MatchPattern — reuse it for the requester's pattern
+ * gadget and the Reject/AcceptPattern tags (dos_pattern_match_glue). */
+
+/* Should `e` appear in the listview?  Drawers pass unless FilterDrawers or
+ * DrawersOnly says otherwise; files are filtered by the pattern gadget
+ * (when supplied), RejectIcons, and the reject/accept patterns. */
+static int frq_ent_pass(const VfsDirEnt *e)
+{
+    if (g_frq.vol_mode) return 1;   /* volumes are never pattern-filtered */
+    if (e->is_dir) {
+        if (!g_frq.filt_drawers) return 1;
+    } else if (g_frq.drawers_only) {
+        return 0;
+    }
+    if (g_frq.reject_icons && frq_is_icon(e->name)) return 0;
+    if (g_frq.have_pat && g_frq.pattern[0] &&
+        !dos_pattern_match_glue(e->name, g_frq.pattern)) return 0;
+    if (g_frq.have_accpat && g_frq.accpat[0] &&
+        !dos_pattern_match_glue(e->name, g_frq.accpat)) return 0;
+    if (g_frq.have_rejpat && g_frq.rejpat[0] &&
+        dos_pattern_match_glue(e->name, g_frq.rejpat)) return 0;
+    return 1;
 }
 
 static void frq_insert_sorted(const VfsDirEnt *e)
@@ -2909,6 +3029,10 @@ static void frq_scan(void)
     g_frq.top    = 0;
     g_frq.sel    = -1;
     g_frq.rescan = 0;
+    g_frq.nsel   = 0;
+    memset(g_frq.msel, 0, sizeof(g_frq.msel));
+    local_str_copy(g_frq.drawer_commit, g_frq.drawer,
+                   sizeof(g_frq.drawer_commit));
 
     if (g_frq.vol_mode) {
         int n = VFS_GetMountCount();
@@ -2930,7 +3054,8 @@ static void frq_scan(void)
 
     VfsDirEnt tmp[FRQ_MAX_ENTS];
     int n = VFS_ReadDir(g_frq.drawer, tmp, FRQ_MAX_ENTS);
-    for (int i = 0; i < n; i++) frq_insert_sorted(&tmp[i]);
+    for (int i = 0; i < n; i++)
+        if (frq_ent_pass(&tmp[i])) frq_insert_sorted(&tmp[i]);
 }
 
 /* "DH0:OCTAMED/S" -> "DH0:OCTAMED"; "DH0:OCTAMED" -> "DH0:";
@@ -2978,6 +3103,27 @@ static void frq_enter(const char *name)
     g_frq.rescan = 1;
 }
 
+/* One editable string gadget: label + boxed text + caret when focused. */
+static void frq_draw_field(int wx, int wy, int w, const char *label,
+                           const char *text, int focused)
+{
+    FB_PutStr(wx + 10, wy + 4, label, WB_BLACK, WB_LIGHT_GREY);
+    int bx = wx + 70;
+    int bw = w - 70 - WM_SCROLLBAR_W - 12;
+    FB_FillRect(bx, wy, bw, FRQ_FIELD_H, WB_WHITE);
+    FB_DrawRect(bx, wy, bw, FRQ_FIELD_H, focused ? WB_BLUE : WB_BLACK);
+    char disp[52];
+    int i = 0;
+    while (text[i] && i < 50) { disp[i] = text[i]; i++; }
+    disp[i] = '\0';
+    if (disp[0]) FB_PutStr(bx + 4, wy + 4, disp, WB_BLACK, WB_WHITE);
+    if (focused) {
+        int cx = bx + 4 + i * 8;
+        if (cx > bx + bw - 4) cx = bx + bw - 4;
+        FB_FillRect(cx, wy + 2, 2, FRQ_FIELD_H - 4, WB_BLACK);
+    }
+}
+
 static void frq_draw_fn(int win_x, int win_y, int win_w, int win_h)
 {
     (void)win_w; (void)win_h;
@@ -2990,46 +3136,36 @@ static void frq_draw_fn(int win_x, int win_y, int win_w, int win_h)
         FB_PutStrCentred(win_x + 1, win_y + 1, win_w - 2, WM_TITLEBAR_H - 1,
                          g_frq.title, WB_WHITE, WB_BLUE);
 
-    /* drawer line */
-    {
-        char line[96];
-        int i = 0;
-        const char *p = "Drawer: ";
-        while (*p && i < 90) line[i++] = *p++;
-        p = g_frq.vol_mode ? "(volumes)" : g_frq.drawer;
-        while (*p && i < 90) line[i++] = *p++;
-        line[i] = '\0';
-        FB_PutStr(win_x + 10, win_y + WM_TITLEBAR_H + 8, line,
-                  WB_BLACK, WB_LIGHT_GREY);
-    }
+    /* Drawer string gadget — editable, assign-aware via VFS_IsDir on
+     * commit (handled in the caller-context wait loop). */
+    frq_draw_field(win_x, win_y + FRQ_DRAWER_Y, win_w, "Drawer:",
+                   g_frq.vol_mode ? "(volumes)" : g_frq.drawer,
+                   g_frq.edit_field == FRQ_EDIT_DRAWER && !g_frq.vol_mode);
 
     /* list box (right edge clears the invisible right-scrollbar strip) */
     int lx = win_x + 8;
-    int ly = win_y + FRQ_LIST_Y;
+    int ly = win_y + g_frq.list_y;
     int lw = win_w - 16 - WM_SCROLLBAR_W;
-    int lh = FRQ_ROWS * FRQ_ROW_H;
+    int lh = g_frq.rows * FRQ_ROW_H;
     FB_FillRect(lx, ly, lw, lh, WB_WHITE);
     FB_DrawRect(lx, ly, lw, lh, WB_BLACK);
 
-    for (int r = 0; r < FRQ_ROWS; r++) {
+    for (int r = 0; r < g_frq.rows; r++) {
         int idx = g_frq.top + r;
         if (idx >= g_frq.nent) break;
         int ry = ly + r * FRQ_ROW_H;
         const VfsDirEnt *e = &g_frq.ents[idx];
-        if (idx == g_frq.sel) {
+        int marked = g_frq.multi && g_frq.msel[idx];
+        char nm[48];
+        int i = 0;
+        if (marked) nm[i++] = '*';
+        while (e->name[i - marked] && i < 44) { nm[i] = e->name[i - marked]; i++; }
+        if (e->is_dir && (i == 0 || nm[i - 1] != ':') && i < 46) nm[i++] = '/';
+        nm[i] = '\0';
+        if (idx == g_frq.sel || marked) {
             FB_FillRect(lx + 1, ry + 1, lw - 2, FRQ_ROW_H - 2, WB_BLUE);
-            char nm[48];
-            int i = 0;
-            while (e->name[i] && i < 44) { nm[i] = e->name[i]; i++; }
-            if (e->is_dir && (i == 0 || nm[i - 1] != ':') && i < 46) nm[i++] = '/';
-            nm[i] = '\0';
             FB_PutStr(lx + 6, ry + 3, nm, WB_WHITE, WB_BLUE);
         } else {
-            char nm[48];
-            int i = 0;
-            while (e->name[i] && i < 44) { nm[i] = e->name[i]; i++; }
-            if (e->is_dir && (i == 0 || nm[i - 1] != ':') && i < 46) nm[i++] = '/';
-            nm[i] = '\0';
             FB_PutStr(lx + 6, ry + 3, nm,
                       e->is_dir ? WB_BLUE : WB_BLACK, WB_WHITE);
         }
@@ -3038,21 +3174,17 @@ static void frq_draw_fn(int win_x, int win_y, int win_w, int win_h)
     /* scroll indicators */
     if (g_frq.top > 0)
         FB_PutStr(lx + lw - 14, ly + 2, "^", WB_BLACK, WB_WHITE);
-    if (g_frq.top + FRQ_ROWS < g_frq.nent)
+    if (g_frq.top + g_frq.rows < g_frq.nent)
         FB_PutStr(lx + lw - 14, ly + lh - 12, "v", WB_BLACK, WB_WHITE);
 
-    /* file line */
-    {
-        char line[80];
-        int i = 0;
-        const char *p = "File: ";
-        while (*p && i < 70) line[i++] = *p++;
-        p = g_frq.file;
-        while (*p && i < 70) line[i++] = *p++;
-        line[i] = '\0';
-        FB_PutStr(win_x + 10, win_y + FRQ_FILE_Y + 4, line,
-                  WB_BLACK, WB_LIGHT_GREY);
-    }
+    /* File string gadget — always editable so save mode can take names
+     * that don't exist yet. */
+    frq_draw_field(win_x, win_y + g_frq.file_y, win_w, "File:",
+                   g_frq.file, g_frq.edit_field == FRQ_EDIT_FILE);
+
+    if (g_frq.show_pattern)
+        frq_draw_field(win_x, win_y + g_frq.pat_y, win_w, "Pattern:",
+                       g_frq.pattern, g_frq.edit_field == FRQ_EDIT_PATTERN);
 
     /* buttons: Volumes Parent ... OK Cancel */
     const char *labels[FRQ_NUM_BTNS] = {
@@ -3073,6 +3205,90 @@ static void frq_draw_fn(int win_x, int win_y, int win_w, int win_h)
     }
 }
 
+/* Shared OK/Return action: dir selection navigates, otherwise the current
+ * file field / marked set is accepted when it would produce a result. */
+static void frq_accept(void)
+{
+    if (g_frq.sel >= 0 && g_frq.sel < g_frq.nent &&
+        g_frq.ents[g_frq.sel].is_dir) {
+        const char *nm = g_frq.ents[g_frq.sel].name;
+        if (g_frq.drawers_only && !g_frq.vol_mode && strcmp(nm, "..") != 0) {
+            /* a drawer requester returns the selected drawer itself */
+            int dl = (int)strlen(g_frq.drawer), nl = (int)strlen(nm);
+            if (dl + nl + 2 < (int)sizeof(g_frq.drawer)) {
+                int sep = (dl > 0 && g_frq.drawer[dl - 1] != ':' &&
+                           g_frq.drawer[dl - 1] != '/');
+                if (sep) g_frq.drawer[dl++] = '/';
+                memcpy(g_frq.drawer + dl, nm, (size_t)nl + 1);
+            }
+            g_frq.done = 1;
+            return;
+        }
+        frq_enter(nm);
+        return;
+    }
+    if (g_frq.drawers_only) {
+        g_frq.done = 1;             /* the drawer itself is the result */
+        return;
+    }
+    if (g_frq.multi ? (g_frq.nsel > 0 || g_frq.file[0])
+                   : (g_frq.sel >= 0 || g_frq.file[0]))
+        g_frq.done = 1;
+}
+
+/* Cooked keystrokes feed the focused string gadget (file / drawer /
+ * pattern).  RAWKEY arrows+Esc+Return are handled in frq_event_handler;
+ * Return also arrives here as '\r' — the done flag dedupes the double
+ * delivery.  Runs on the event-pump task: no VFS calls here — path
+ * validation is deferred via enter_typed/rescan to the wait loop. */
+static void frq_on_key(char c)
+{
+    if (!g_frq.active || g_frq.done) return;
+
+    char *buf; int max;
+    if (g_frq.edit_field == FRQ_EDIT_DRAWER) {
+        buf = g_frq.drawer;  max = (int)sizeof(g_frq.drawer);
+    } else if (g_frq.edit_field == FRQ_EDIT_PATTERN) {
+        buf = g_frq.pattern; max = (int)sizeof(g_frq.pattern);
+    } else {
+        buf = g_frq.file;    max = (int)sizeof(g_frq.file);
+    }
+
+    if (c == '\t') {
+        int nf = g_frq.show_pattern ? 3 : 2;
+        g_frq.edit_field = (g_frq.edit_field + 1) % nf;
+    } else if (c == '\b' || c == 0x7F) {
+        int n = 0;
+        while (buf[n]) n++;
+        if (n) buf[n - 1] = 0;
+        if (g_frq.edit_field == FRQ_EDIT_PATTERN) {
+            g_frq.have_pat = buf[0] != 0;
+            g_frq.rescan = 1;
+        }
+    } else if (c == '\r' || c == '\n') {
+        if (g_frq.edit_field == FRQ_EDIT_DRAWER) {
+            g_frq.enter_typed = 1;      /* VFS_IsDir in the wait loop */
+            g_frq.rescan = 1;
+        } else if (g_frq.edit_field == FRQ_EDIT_PATTERN) {
+            g_frq.have_pat = g_frq.pattern[0] != 0;
+            g_frq.rescan = 1;
+        } else {
+            frq_accept();
+        }
+    } else if ((uint8_t)c >= 32) {
+        int n = 0;
+        while (buf[n]) n++;
+        if (n < max - 1) { buf[n] = c; buf[n + 1] = 0; }
+        if (g_frq.edit_field == FRQ_EDIT_PATTERN) {
+            g_frq.have_pat = 1;
+            g_frq.rescan = 1;
+        }
+    }
+    if (g_frq.done && g_frq.task && g_frq.sigmask)
+        Signal(g_frq.task, g_frq.sigmask);
+    WM_InvalidateRect(0, 0, 65535, 65535);
+}
+
 static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
 {
     if (!g_frq.active || g_frq.wm_handle != wh) return 1;
@@ -3091,12 +3307,7 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
         if (code == 0x45) {                     /* Esc → cancel */
             g_frq.done = 2;
         } else if (code == 0x44) {              /* Return → open/accept */
-            if (g_frq.sel >= 0 && g_frq.sel < g_frq.nent &&
-                g_frq.ents[g_frq.sel].is_dir) {
-                frq_enter(g_frq.ents[g_frq.sel].name);
-            } else if (g_frq.sel >= 0 || g_frq.file[0]) {
-                g_frq.done = 1;
-            }
+            frq_accept();
         } else if (code == 0x4C) {              /* cursor up */
             if (g_frq.sel > 0) {
                 g_frq.sel--;
@@ -3107,8 +3318,8 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
         } else if (code == 0x4D) {              /* cursor down */
             if (g_frq.sel < g_frq.nent - 1) {
                 g_frq.sel++;
-                if (g_frq.sel >= g_frq.top + FRQ_ROWS)
-                    g_frq.top = g_frq.sel - FRQ_ROWS + 1;
+                if (g_frq.sel >= g_frq.top + g_frq.rows)
+                    g_frq.top = g_frq.sel - g_frq.rows + 1;
             } else if (g_frq.sel < 0 && g_frq.nent > 0) {
                 g_frq.sel = 0;
             }
@@ -3133,6 +3344,27 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
             my -= wy;
         }
 
+        /* string-gadget focus: click on the field box selects it */
+        if (my >= FRQ_DRAWER_Y && my < FRQ_DRAWER_Y + FRQ_FIELD_H &&
+            mx >= 78) {
+            g_frq.edit_field = FRQ_EDIT_DRAWER;
+            WM_InvalidateRect(0, 0, 65535, 65535);
+            return 0;
+        }
+        if (my >= g_frq.file_y && my < g_frq.file_y + FRQ_FIELD_H &&
+            mx >= 78) {
+            g_frq.edit_field = FRQ_EDIT_FILE;
+            WM_InvalidateRect(0, 0, 65535, 65535);
+            return 0;
+        }
+        if (g_frq.show_pattern &&
+            my >= g_frq.pat_y && my < g_frq.pat_y + FRQ_FIELD_H &&
+            mx >= 78) {
+            g_frq.edit_field = FRQ_EDIT_PATTERN;
+            WM_InvalidateRect(0, 0, 65535, 65535);
+            return 0;
+        }
+
         /* buttons */
         for (int i = 0; i < FRQ_NUM_BTNS; i++) {
             if (mx >= g_frq.btn_x[i] && mx < g_frq.btn_x[i] + FRQ_BTN_W &&
@@ -3143,13 +3375,7 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
                 } else if (i == FRQ_BTN_PARENT) {
                     frq_go_parent();
                 } else if (i == FRQ_BTN_OK) {
-                    if (g_frq.sel >= 0 &&
-                        g_frq.sel < g_frq.nent &&
-                        g_frq.ents[g_frq.sel].is_dir) {
-                        frq_enter(g_frq.ents[g_frq.sel].name);
-                    } else if (g_frq.sel >= 0 || g_frq.file[0]) {
-                        g_frq.done = 1;
-                    }
+                    frq_accept();
                 } else {
                     g_frq.done = 2;
                 }
@@ -3162,29 +3388,45 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
 
         /* ^ / v scroll strip along the list's right edge (checked before
          * the row test, which would otherwise swallow it) */
-        int ly = FRQ_LIST_Y;
+        int ly = g_frq.list_y;
         int ss_left = ww - WM_SCROLLBAR_W - 20;
         if (mx >= ss_left && mx < ss_left + 16 &&
-            my >= ly && my < ly + FRQ_ROWS * FRQ_ROW_H &&
-            (g_frq.top > 0 || g_frq.top + FRQ_ROWS < g_frq.nent)) {
-            int mid = ly + (FRQ_ROWS * FRQ_ROW_H) / 2;
+            my >= ly && my < ly + g_frq.rows * FRQ_ROW_H &&
+            (g_frq.top > 0 || g_frq.top + g_frq.rows < g_frq.nent)) {
+            int mid = ly + (g_frq.rows * FRQ_ROW_H) / 2;
             if (my < mid && g_frq.top > 0) g_frq.top--;
-            else if (my >= mid && g_frq.top + FRQ_ROWS < g_frq.nent) g_frq.top++;
+            else if (my >= mid && g_frq.top + g_frq.rows < g_frq.nent)
+                g_frq.top++;
         } else if (mx >= 8 && mx < ss_left &&
-                   my >= ly && my < ly + FRQ_ROWS * FRQ_ROW_H) {
+                   my >= ly && my < ly + g_frq.rows * FRQ_ROW_H) {
             int idx = g_frq.top + (my - ly) / FRQ_ROW_H;
             if (idx < g_frq.nent) {
+                int dbl = (idx == g_frq.last_sel_click &&
+                           g_pit_ticks - g_frq.last_click < 50);
+                g_frq.last_sel_click = idx;
+                g_frq.last_click     = g_pit_ticks;
                 if (g_frq.ents[idx].is_dir) {
-                    frq_enter(g_frq.ents[idx].name);
+                    /* drawers-only mode selects a drawer with one click and
+                     * descends on double-click; volume names always
+                     * descend (they carry a trailing ':') */
+                    if (g_frq.drawers_only && !dbl && !g_frq.vol_mode) {
+                        g_frq.sel = idx;
+                    } else {
+                        frq_enter(g_frq.ents[idx].name);
+                    }
                 } else {
-                    int dbl = (idx == g_frq.last_sel_click &&
-                               g_pit_ticks - g_frq.last_click < 50);
                     g_frq.sel = idx;
                     local_str_copy(g_frq.file, g_frq.ents[idx].name,
                                    sizeof(g_frq.file));
-                    if (dbl) g_frq.done = 1;
-                    g_frq.last_sel_click = idx;
-                    g_frq.last_click     = g_pit_ticks;
+                    if (g_frq.multi) {
+                        /* click toggles the entry's mark; double-click on
+                         * an already-marked file still accepts */
+                        if (g_frq.msel[idx]) { g_frq.msel[idx] = 0; g_frq.nsel--; }
+                        else                 { g_frq.msel[idx] = 1; g_frq.nsel++; }
+                        if (dbl) g_frq.done = 1;
+                    } else if (dbl) {
+                        g_frq.done = 1;
+                    }
                 }
             }
         }
@@ -3196,77 +3438,350 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
     }
 }
 
-/* Parse the AslRequest taglist (a1).  Tags are {u32 tag, u32 data} pairs in
- * guest RAM ending at tag 0.  We recognise the handful OctaMED/typical apps
- * pass; unknown tags are ignored. */
-static void frq_parse_tags(uint32_t tags)
+/* Copy a NUL-terminated guest string into the requester block. */
+static void frq_blk_str(uint32_t req, int off, int max, uint32_t src)
 {
-    if (!tags || tags >= GUEST_RAM_SIZE - 8) return;
-    for (int i = 0; i < 64; i++) {
-        uint32_t tag  = mem_u32(tags + i * 8);
-        uint32_t data = mem_u32(tags + i * 8 + 4);
-        if (tag == 0) break;                        /* TAG_DONE */
-        if (tag == 0xFFFFFFFF) break;
-        /* Any tag whose data is a plausible guest string pointer may carry
-         * text (TitleText / Hail / OKText / CancelText / InitialDrawer /
-         * InitialFile).  Distinguish by content: a string containing ':'
-         * that resolves to a directory is a drawer; the first string tag is
-         * the title. */
-        if (data > 0x100 && data < GUEST_RAM_SIZE - 64) {
-            char s[64];
-            guest_str(s, data, sizeof(s));
-            if (!s[0]) continue;
-            int has_colon = local_strchr(s, ':') != NULL;
-            int printable = 1;
-            for (int j = 0; s[j]; j++)
-                if ((uint8_t)s[j] < 32) { printable = 0; break; }
-            if (!printable) continue;
-            if (has_colon && VFS_IsDir(s)) {
-                local_str_copy(g_frq.drawer, s, sizeof(g_frq.drawer));
-                g_frq.vol_mode = 0;
-            } else if (!g_frq.title[0] && tag == 0x80080001) {
-                local_str_copy(g_frq.title, s, sizeof(g_frq.title));
-            }
+    int i = 0;
+    if (src && src < GUEST_RAM_SIZE - 1) {
+        while (i < max - 1 && src + i < GUEST_RAM_SIZE) {
+            uint8_t c = g_ram[src + i];
+            if (!c) break;
+            mem_w8(req + off + i, c);
+            i++;
         }
+    }
+    mem_w8(req + off + i, 0);
+}
+
+/* Copy a host string into the requester block. */
+static void frq_blk_str_h(uint32_t req, int off, int max, const char *src)
+{
+    int i = 0;
+    while (src[i] && i < max - 1) {
+        mem_w8(req + off + i, (uint8_t)src[i]);
+        i++;
+    }
+    mem_w8(req + off + i, 0);
+}
+
+/* Apply a taglist to the requester block's private zone + string slots.
+ * Runs in the caller's task context both at AllocAslRequest() time (tags
+ * become defaults persisted in the block) and at AslRequest() time
+ * (overrides).  Unknown tags — HookFunc/FilterFunc/IntuiMsgFunc/Locale/
+ * TextAttr/PubScreenName/PrivateIDCMP/SleepWindow and the font tags — are
+ * recorded nowhere and ignored. */
+static void frq_apply_tags(uint32_t req, uint32_t tags)
+{
+    uint16_t opt = mem_u16(req + FRQP_OPT);
+    for (int hop = 0, n = 0; tags && tags + 8 <= GUEST_RAM_SIZE &&
+         hop < 64 && n < 128; n++) {
+        uint32_t tag  = mem_u32(tags + n * 8);
+        uint32_t data = mem_u32(tags + n * 8 + 4);
+        if (tag == 0) break;                        /* TAG_DONE / TAG_END */
+        if (tag == FRQ_TAG_IGNORE) continue;
+        if (tag == FRQ_TAG_SKIP) { n += (int)data; continue; }
+        if (tag == FRQ_TAG_MORE || tag == FRQ_TAG_JUMP) {
+            tags = data; n = -1; hop++; continue;
+        }
+        switch (tag - FRQ_TAG_BASE) {
+        case 1:  /* ASLFR_TitleText / ASL_Hail */
+            frq_blk_str(req, FRQP_TITLE, 40, data); break;
+        case 2:  /* ASLFR_Window / ASL_Window — parent for placement */
+            mem_w32(req + FRQP_WINDOW, data); break;
+        case 3:  mem_w16(req + FRQP_LEFT,   (uint16_t)data); break;
+        case 4:  mem_w16(req + FRQP_TOP,    (uint16_t)data); break;
+        case 5:  mem_w16(req + FRQP_WIDTH,  (uint16_t)data); break;
+        case 6:  mem_w16(req + FRQP_HEIGHT, (uint16_t)data); break;
+        case 8:  /* ASLFR_InitialFile / ASL_File */
+            frq_blk_str(req, FRQ_STR_FILE, 128, data); break;
+        case 9:  /* ASLFR_InitialDrawer / ASL_Dir */
+            frq_blk_str(req, FRQ_STR_DRAWER, 128, data); break;
+        case 10: /* ASLFR_InitialPattern / ASL_Pattern */
+            frq_blk_str(req, FRQP_PATTERN, 32, data);
+            if (data) opt |= FRQF_HAVEPAT;
+            break;
+        case 18: /* ASLFR_PositiveText / ASL_OKText */
+            frq_blk_str(req, FRQP_OK, 16, data); break;
+        case 19: /* ASLFR_NegativeText / ASL_CancelText */
+            frq_blk_str(req, FRQP_CANCEL, 16, data); break;
+        case 20: /* ASLFR_Flags1 / ASL_FuncFlags */
+            mem_w32(req + FRQP_FLAGS1, data);
+            opt = (uint16_t)((opt & ~(FRQF_SAVE | FRQF_MULTI | FRQF_PATTERNS)) |
+                  (data & FRQ_F1_DOSAVE     ? FRQF_SAVE     : 0) |
+                  (data & FRQ_F1_DOMULTI    ? FRQF_MULTI    : 0) |
+                  (data & FRQ_F1_DOPATTERNS ? FRQF_PATTERNS : 0));
+            break;
+        case 22: /* ASLFR_Flags2 / ASL_ExtFlags1 */
+            mem_w32(req + FRQP_FLAGS2, data);
+            opt = (uint16_t)((opt & ~(FRQF_DRAWERSONLY | FRQF_FILTDRAWERS |
+                                      FRQF_REJICONS)) |
+                  (data & FRQ_F2_DRAWERSONLY ? FRQF_DRAWERSONLY : 0) |
+                  (data & FRQ_F2_FILTDRAWERS ? FRQF_FILTDRAWERS : 0) |
+                  (data & FRQ_F2_REJICONS    ? FRQF_REJICONS    : 0));
+            break;
+        case 40: /* ASLFR_Screen — open on the caller's screen; the WM
+                  * window is modal so it fronts whatever is displayed.
+                  * Stored for geometry clamping. */
+            mem_w32(req + FRQP_SCREEN, data); break;
+        case 44: opt = (uint16_t)(data ? (opt | FRQF_SAVE)
+                                      : (opt & ~FRQF_SAVE)); break;
+        case 45: opt = (uint16_t)(data ? (opt | FRQF_MULTI)
+                                      : (opt & ~FRQF_MULTI)); break;
+        case 46: opt = (uint16_t)(data ? (opt | FRQF_PATTERNS)
+                                      : (opt & ~FRQF_PATTERNS)); break;
+        case 47: opt = (uint16_t)(data ? (opt | FRQF_DRAWERSONLY)
+                                      : (opt & ~FRQF_DRAWERSONLY)); break;
+        case 52: mem_w32(req + 40, data); break;  /* ASLFR_UserData */
+        case 60: opt = (uint16_t)(data ? (opt | FRQF_REJICONS)
+                                      : (opt & ~FRQF_REJICONS)); break;
+        case 61: frq_blk_str(req, FRQP_REJPAT, 24, data);
+                 if (data) opt |= FRQF_HAVEREJPAT;
+                 break;
+        case 62: frq_blk_str(req, FRQP_ACCPAT, 24, data);
+                 if (data) opt |= FRQF_HAVEACCPAT;
+                 break;
+        case 63: opt = (uint16_t)(data ? (opt | FRQF_FILTDRAWERS)
+                                      : (opt & ~FRQF_FILTDRAWERS)); break;
+        default: break;
+        }
+    }
+    mem_w16(req + FRQP_OPT, opt);
+}
+
+/* Load the block's private zone into the live slot. */
+static void frq_load_conf(uint32_t req)
+{
+    uint16_t opt = mem_u16(req + FRQP_OPT);
+    /* save mode wins over multiselect (FILF_MULTISELECT is ignored when
+     * FILB_SAVE is on, per the NDK) */
+    g_frq.save_mode    = (opt & FRQF_SAVE) != 0;
+    g_frq.multi        = (opt & FRQF_MULTI) && !g_frq.save_mode;
+    g_frq.show_pattern = (opt & FRQF_PATTERNS) != 0;
+    g_frq.reject_icons = (opt & FRQF_REJICONS) != 0;
+    g_frq.drawers_only = (opt & FRQF_DRAWERSONLY) != 0;
+    g_frq.filt_drawers = (opt & FRQF_FILTDRAWERS) != 0;
+    g_frq.have_pat     = (opt & FRQF_HAVEPAT) != 0;
+    g_frq.have_rejpat  = (opt & FRQF_HAVEREJPAT) != 0;
+    g_frq.have_accpat  = (opt & FRQF_HAVEACCPAT) != 0;
+    guest_str(g_frq.title,      req + FRQP_TITLE,      sizeof(g_frq.title));
+    guest_str(g_frq.ok_txt,     req + FRQP_OK,         sizeof(g_frq.ok_txt));
+    guest_str(g_frq.cancel_txt, req + FRQP_CANCEL,     sizeof(g_frq.cancel_txt));
+    guest_str(g_frq.pattern,    req + FRQP_PATTERN,    sizeof(g_frq.pattern));
+    guest_str(g_frq.rejpat,     req + FRQP_REJPAT,     sizeof(g_frq.rejpat));
+    guest_str(g_frq.accpat,     req + FRQP_ACCPAT,     sizeof(g_frq.accpat));
+    guest_str(g_frq.drawer,     req + FRQ_STR_DRAWER,  sizeof(g_frq.drawer));
+    guest_str(g_frq.file,       req + FRQ_STR_FILE,    sizeof(g_frq.file));
+}
+
+/* AllocFileRequest / AllocAslRequest — 512-byte requester block with the
+ * private config zone.  AllocAslRequest passes d0=type (only
+ * ASL_FileRequest=0 has a requester; other types still allocate so the
+ * app's alloc/free bookkeeping works and AslRequest fails cleanly).
+ * The alloc-time taglist in a0 becomes the AslRequest defaults. */
+uint32_t UAOS_Intuition_AslAllocRequest(uint32_t type, uint32_t tags)
+{
+    uint32_t req = 0;
+    dos_AllocMem_glue(FRQ_BLK_SIZE, FRQ_MEMF_PUBLIC | FRQ_MEMF_CLEAR, &req);
+    if (!req || req + FRQ_BLK_SIZE > GUEST_RAM_SIZE) return 0;
+    mem_w32(req + FRQP_TYPE, type);
+    mem_w16(req + FRQP_LEFT,   0xFFFF);
+    mem_w16(req + FRQP_TOP,    0xFFFF);
+    mem_w16(req + FRQP_WIDTH,  0xFFFF);
+    mem_w16(req + FRQP_HEIGHT, 0xFFFF);
+    frq_apply_tags(req, tags);
+    return req;
+}
+
+/* FreeAslRequest / FreeFileRequest — releases the block plus anything the
+ * request phase attached to it (ArgList memory, drawer lock). */
+void UAOS_Intuition_AslFreeRequest(uint32_t req)
+{
+    if (!req || req + FRQ_BLK_SIZE > GUEST_RAM_SIZE) return;
+    uint32_t al   = mem_u32(req + FRQP_ARGLIST);
+    uint32_t alsz = mem_u32(req + FRQP_ARGSIZE);
+    uint32_t lock = mem_u32(req + FRQP_DIRLOCK);
+    if (al)   { dos_FreeMem_glue(al, alsz); mem_w32(req + FRQP_ARGLIST, 0); }
+    if (lock) { dos_UnLockBPTR_glue(lock);  mem_w32(req + FRQP_DIRLOCK, 0); }
+    dos_FreeMem_glue(req, FRQ_BLK_SIZE);
+}
+
+/* AbortAslRequest — cancel the live requester belonging to this block.
+ * AslRequest is synchronous, so this only matters if a hook or another
+ * task aborts mid-request. */
+void UAOS_Intuition_AslAbortRequest(uint32_t req)
+{
+    if (g_frq.active && g_frq.req_ptr == req) {
+        g_frq.done = 2;
+        if (g_frq.task && g_frq.sigmask)
+            Signal(g_frq.task, g_frq.sigmask);
     }
 }
 
+/* ActivateFileRequest — raise/focus the live requester window. */
+int UAOS_Intuition_AslActivateRequest(uint32_t req)
+{
+    if (!g_frq.active || g_frq.req_ptr != req || g_frq.wm_handle < 0)
+        return 0;
+    WM_RequestFocus(g_frq.wm_handle);
+    WM_InvalidateRect(0, 0, 65535, 65535);
+    return 1;
+}
+
+/* Build the WBArg result list inside one guest allocation:
+ * [n WBArg][n 32-byte name strings].  wa_Lock gets a shared lock on the
+ * drawer so apps can CurrentDir()/NameFromLock() like real ASL results.
+ * The block+lock are owned by the requester and freed by FreeAslRequest. */
+static uint32_t frq_build_arglist(uint32_t req, int *out_nargs)
+{
+    int count = 0;
+    if (g_frq.multi) {
+        count = g_frq.nsel;
+        if (!count && g_frq.file[0]) count = 1;
+    } else if (g_frq.file[0] && !g_frq.drawers_only) {
+        count = 1;
+    }
+    *out_nargs = 0;
+    if (!count) return 0;
+
+    /* a previous AslRequest on this requester may have left a list */
+    uint32_t old_al   = mem_u32(req + FRQP_ARGLIST);
+    uint32_t old_lock = mem_u32(req + FRQP_DIRLOCK);
+    if (old_al)   dos_FreeMem_glue(old_al, mem_u32(req + FRQP_ARGSIZE));
+    if (old_lock) dos_UnLockBPTR_glue(old_lock);
+    mem_w32(req + FRQP_ARGLIST, 0);
+    mem_w32(req + FRQP_DIRLOCK, 0);
+
+    uint32_t bytes = (uint32_t)count * 8u + (uint32_t)count * 32u;
+    uint32_t al = 0;
+    dos_AllocMem_glue(bytes, FRQ_MEMF_PUBLIC | FRQ_MEMF_CLEAR, &al);
+    if (!al || al + bytes > GUEST_RAM_SIZE) return 0;
+
+    uint32_t lock  = g_frq.vol_mode ? 0 : dos_LockPath_glue(g_frq.drawer);
+    uint32_t names = al + (uint32_t)count * 8u;
+    int w = 0;
+    if (!g_frq.multi || !g_frq.nsel) {
+        mem_w32(al + 0, lock);
+        mem_w32(al + 4, names);
+        {
+            int i = 0;
+            while (g_frq.file[i] && i < 31) {
+                mem_w8(names + i, (uint8_t)g_frq.file[i]); i++;
+            }
+            mem_w8(names + i, 0);
+        }
+        w = 1;
+    } else {
+        for (int i = 0; i < g_frq.nent && w < count; i++) {
+            if (!g_frq.msel[i] || g_frq.ents[i].is_dir) continue;
+            mem_w32(al + w * 8, lock);
+            mem_w32(al + w * 8 + 4, names + (uint32_t)w * 32u);
+            int j = 0;
+            while (g_frq.ents[i].name[j] && j < 31) {
+                mem_w8(names + w * 32 + j, (uint8_t)g_frq.ents[i].name[j]);
+                j++;
+            }
+            mem_w8(names + w * 32 + j, 0);
+            w++;
+        }
+    }
+    *out_nargs = w;
+    mem_w32(req + FRQP_ARGLIST, al);
+    mem_w32(req + FRQP_ARGSIZE, bytes);
+    mem_w32(req + FRQP_DIRLOCK, lock);
+    return al;
+}
+
 /* Synchronous file requester.  Called from the asl.library dispatch in
- * uaos_m68k_glue.c with a0 = requester block, a1 = taglist (or 0).
+ * uaos_m68k_glue.c — AslRequest passes a0 = requester block, a1 = taglist;
+ * RequestFile passes a0 = requester block and no taglist (tags given at
+ * AllocFileRequest time persist in the block's private zone).
  * Returns 1 on accept, 0 on cancel/error. */
 int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
 {
-    if (!req_ptr || req_ptr >= GUEST_RAM_SIZE - 512) return 0;
+    if (!req_ptr || req_ptr + FRQ_BLK_SIZE > GUEST_RAM_SIZE) return 0;
     if (g_frq.active) return 0;                    /* reentrancy guard */
+    if (mem_u32(req_ptr + FRQP_TYPE) != 0) return 0; /* file requests only */
+    if (tags) frq_apply_tags(req_ptr, tags);
 
     memset(&g_frq, 0, sizeof(g_frq));
-    g_frq.wm_handle = -1;
-    g_frq.sel       = -1;
-    local_str_copy(g_frq.ok_txt,     "OK",     sizeof(g_frq.ok_txt));
-    local_str_copy(g_frq.cancel_txt, "Cancel", sizeof(g_frq.cancel_txt));
-    local_str_copy(g_frq.title,      "Select file", sizeof(g_frq.title));
+    g_frq.req_ptr    = req_ptr;
+    g_frq.wm_handle  = -1;
+    g_frq.sel        = -1;
+    g_frq.edit_field = FRQ_EDIT_FILE;
+    frq_load_conf(req_ptr);
+    if (!g_frq.ok_txt[0])
+        local_str_copy(g_frq.ok_txt, g_frq.save_mode ? "Save" : "OK",
+                       sizeof(g_frq.ok_txt));
+    if (!g_frq.cancel_txt[0])
+        local_str_copy(g_frq.cancel_txt, "Cancel", sizeof(g_frq.cancel_txt));
+    if (!g_frq.title[0])
+        local_str_copy(g_frq.title,
+                       g_frq.save_mode ? "Save file" : "Select file",
+                       sizeof(g_frq.title));
 
-    /* initial drawer: tag override, else the guest process cwd */
-    {
+    /* initial drawer: stored default, else the guest process cwd */
+    if (!g_frq.drawer[0]) {
         const char *cwd = m68k_cur_cwd();
         if (cwd[0])
             local_str_copy(g_frq.drawer, cwd, sizeof(g_frq.drawer));
-        if (!g_frq.drawer[0] || !VFS_IsDir(g_frq.drawer))
-            g_frq.vol_mode = 1;
     }
-    frq_parse_tags(tags);
+    if (!g_frq.drawer[0] || !VFS_IsDir(g_frq.drawer))
+        g_frq.vol_mode = 1;
 
     int sig = alloc_intuition_signal();
     if (sig < 0) return 0;
     g_frq.sigbit  = (uint8_t)sig;
     g_frq.sigmask = 1U << sig;
     g_frq.task    = Task_Current();
-    g_frq.btn_y   = FRQ_BTN_Y;
+
+    /* Window geometry: geometry tags (V36 ASL_LeftEdge… / V38
+     * ASLFR_Initial…) override the defaults; the result is clamped to the
+     * ASLFR_Screen target or the framebuffer. */
+    int16_t gl = mem_s16(req_ptr + FRQP_LEFT);
+    int16_t gt = mem_s16(req_ptr + FRQP_TOP);
+    int16_t gw = mem_s16(req_ptr + FRQP_WIDTH);
+    int16_t gh = mem_s16(req_ptr + FRQP_HEIGHT);
+    int wx = (gl == -1) ? 200 : gl;
+    int wy = (gt == -1) ? 160 : gt;
+    int win_w = (gw > 0) ? gw : FRQ_WIN_W;
+    int pat_extra = g_frq.show_pattern ? FRQ_FIELD_H + 6 : 0;
+    int min_h = FRQ_DRAWER_Y + FRQ_FIELD_H + 8 + FRQ_DEF_ROWS * FRQ_ROW_H +
+                8 + FRQ_FIELD_H + 6 + pat_extra + FRQ_BTN_H + 4 +
+                WM_SCROLLBAR_W;
+    int win_h = (gh > 0) ? gh : min_h;
+    if (win_w < 320) win_w = 320;
+    if (win_h < FRQ_DRAWER_Y + FRQ_FIELD_H + 8 + 4 * FRQ_ROW_H + 8 +
+                FRQ_FIELD_H + 6 + pat_extra + FRQ_BTN_H + 4 +
+                WM_SCROLLBAR_W)
+        win_h = FRQ_DRAWER_Y + FRQ_FIELD_H + 8 + 4 * FRQ_ROW_H + 8 +
+                FRQ_FIELD_H + 6 + pat_extra + FRQ_BTN_H + 4 +
+                WM_SCROLLBAR_W;
+
+    g_frq.list_y = FRQ_DRAWER_Y + FRQ_FIELD_H + 8;
+    {
+        int list_h = win_h - WM_SCROLLBAR_W - g_frq.list_y - 8 -
+                     FRQ_FIELD_H - 6 - pat_extra - FRQ_BTN_H - 4;
+        g_frq.rows = list_h / FRQ_ROW_H;
+        if (g_frq.rows < 4)  g_frq.rows = 4;
+        if (g_frq.rows > 32) g_frq.rows = 32;
+    }
+    g_frq.file_y = g_frq.list_y + g_frq.rows * FRQ_ROW_H + 8;
+    g_frq.pat_y  = g_frq.file_y + FRQ_FIELD_H + 6;
+    g_frq.btn_y  = (g_frq.show_pattern ? g_frq.pat_y : g_frq.file_y) +
+                   FRQ_FIELD_H + 6;
+
+    {
+        uint32_t scr = mem_u32(req_ptr + FRQP_SCREEN);
+        int16_t cx = (int16_t)wx, cy = (int16_t)wy;
+        auto_adjust_window_geometry(&cx, &cy, (int16_t)win_w,
+                                    (int16_t)win_h, scr);
+        wx = cx; wy = cy;
+    }
 
     frq_scan();
 
-    int wh = WM_AddWindow(200, 160, FRQ_WIN_W, FRQ_WIN_H, g_frq.title,
-                          frq_draw_fn, NULL);
+    int wh = WM_AddWindow(wx, wy, win_w, win_h, g_frq.title,
+                          frq_draw_fn, frq_on_key);
     if (wh < 0) {
         free_intuition_signal(sig);
         return 0;
@@ -3284,12 +3799,29 @@ int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
         Task_WaitTicks(g_frq.sigmask, 1);
         UAOS_M68k_DeliverInterrupts();
         if (g_frq.rescan) {
+            /* a drawer path typed into the field is validated here, in the
+             * caller's context (VFS_IsDir is DoPkt-capable); a bad path
+             * reverts to the last scanned drawer. */
+            if (g_frq.enter_typed) {
+                g_frq.enter_typed = 0;
+                if (!g_frq.drawer[0]) {
+                    g_frq.vol_mode = 1;
+                } else if (VFS_IsDir(g_frq.drawer)) {
+                    g_frq.vol_mode = 0;
+                } else {
+                    local_str_copy(g_frq.drawer, g_frq.drawer_commit,
+                                   sizeof(g_frq.drawer));
+                }
+            }
             frq_scan();
             WM_Redraw();
         }
     }
 
-    int accepted = (g_frq.done == 1 && g_frq.file[0]);
+    int accepted = (g_frq.done == 1) &&
+                   (g_frq.file[0] || g_frq.nsel > 0 || g_frq.drawers_only);
+    int rwx = 0, rwy = 0, rww = 0, rwh = 0;
+    WM_GetWindowRect(wh, &rwx, &rwy, &rww, &rwh);
     WM_CloseWindow(wh);
     g_frq.active = 0;
     free_intuition_signal(sig);
@@ -3297,28 +3829,28 @@ int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
     if (!accepted) return 0;
 
     /* Fill the requester block (caller's arena — still in dispatch). */
-    mem_w32(req_ptr + FRQ_STR_DRAWER, 0);
+    int nargs = 0;
+    uint32_t arglist = frq_build_arglist(req_ptr, &nargs);
+    frq_blk_str_h(req_ptr, FRQ_STR_DRAWER, 128, g_frq.drawer);
+    frq_blk_str_h(req_ptr, FRQ_STR_FILE,   128, g_frq.file);
+    frq_blk_str_h(req_ptr, FRQP_PATTERN,    32, g_frq.pattern);
+    mem_w32(req_ptr + 4,  req_ptr + FRQ_STR_FILE);    /* rf_File   */
+    mem_w32(req_ptr + 8,  req_ptr + FRQ_STR_DRAWER);  /* rf_Dir    */
+    mem_w32(req_ptr + 16, req_ptr + FRQ_STR_FILE);    /* OctaMED compat */
+    mem_w32(req_ptr + 20, req_ptr + FRQ_STR_DRAWER);
+    mem_w16(req_ptr + 22, (uint16_t)rwx);             /* rf_LeftEdge */
+    mem_w16(req_ptr + 24, (uint16_t)rwy);             /* rf_TopEdge  */
+    mem_w16(req_ptr + 26, (uint16_t)rww);             /* rf_Width    */
+    mem_w16(req_ptr + 28, (uint16_t)rwh);             /* rf_Height   */
+    mem_w32(req_ptr + 32, (uint32_t)nargs);           /* rf_NumArgs  */
+    mem_w32(req_ptr + 36, arglist);                   /* rf_ArgList  */
+    mem_w32(req_ptr + 52, req_ptr + FRQP_PATTERN);    /* rf_Pat      */
+    /* keep the stored pattern-present bit in sync for requester reuse */
     {
-        int i = 0;
-        while (g_frq.drawer[i] && i < 120) {
-            mem_w8(req_ptr + FRQ_STR_DRAWER + i, (uint8_t)g_frq.drawer[i]);
-            i++;
-        }
-        mem_w8(req_ptr + FRQ_STR_DRAWER + i, 0);
-        i = 0;
-        while (g_frq.file[i] && i < 120) {
-            mem_w8(req_ptr + FRQ_STR_FILE + i, (uint8_t)g_frq.file[i]);
-            i++;
-        }
-        mem_w8(req_ptr + FRQ_STR_FILE + i, 0);
+        uint16_t opt = mem_u16(req_ptr + FRQP_OPT);
+        if (g_frq.pattern[0]) opt |= FRQF_HAVEPAT; else opt &= ~FRQF_HAVEPAT;
+        mem_w16(req_ptr + FRQP_OPT, opt);
     }
-    mem_w32(req_ptr + 4,  req_ptr + FRQ_STR_FILE);    /* OctaMED layout */
-    mem_w32(req_ptr + 8,  req_ptr + FRQ_STR_DRAWER);
-    mem_w32(req_ptr + 16, req_ptr + FRQ_STR_FILE);    /* fr_File   */
-    mem_w32(req_ptr + 20, req_ptr + FRQ_STR_DRAWER);  /* fr_Drawer */
-    mem_w32(req_ptr + 24, 0x00280028);                /* LeftEdge|TopEdge  */
-    mem_w32(req_ptr + 28, 0x012C00F0);                /* Width|Height      */
-    mem_w32(req_ptr + 32, 0);                         /* fr_Flags          */
     return 1;
 }
 
@@ -6798,11 +7330,6 @@ static void intuition_AutoRequest(void)
 
     (void)pos_flags; (void)neg_flags;
 
-    {   /* UAOS-242 diag */
-        kprint("[req] AutoRequest body="); kprinthex(body_ptr);
-        kprint(" pos="); kprinthex(pos_ptr);
-        kprint(" neg="); kprinthex(neg_ptr); kprint("\n");
-    }
     char body[256] = "";
     char pos[32]   = "OK";
     char neg[32]   = "Cancel";
@@ -6842,11 +7369,6 @@ static void intuition_BuildSysRequest(void)
 
     (void)flags;
 
-    {   /* UAOS-242 diag */
-        kprint("[req] BuildSysRequest body="); kprinthex(body_ptr);
-        kprint(" pos="); kprinthex(pos_ptr);
-        kprint(" neg="); kprinthex(neg_ptr); kprint("\n");
-    }
     char body[256] = "";
     char pos[32]   = "OK";
     char neg[32]   = "Cancel";
@@ -9353,20 +9875,6 @@ static void intuition_Request(void)
     if (g_req_slot.active) {
         m68k_set_reg(M68K_REG_D0, 0);
         return;
-    }
-
-    {   /* UAOS-242 diag: dump the Requester text chain */
-        uint32_t rt = mem_u32(req + REQ_OFF_REQTEXT);
-        kprint("[req] Request req="); kprinthex(req);
-        kprint(" reqtext="); kprinthex(rt);
-        for (int i = 0; i < 4 && rt; i++) {
-            kprint(" ["); kprintdec(i); kprint("] itext=");
-            kprinthex(mem_u32(rt + ITEXT_OFF_ITEXT));
-            kprint(" next=");
-            rt = mem_u32(rt + ITEXT_OFF_NEXTTEXT);
-            kprinthex(rt);
-        }
-        kprint("\n");
     }
 
     char body[256] = "";
