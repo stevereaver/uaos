@@ -12,11 +12,12 @@
 #include "../exec/task.h"
 #include <string.h>
 
-#define USB_MAX_DEVS   16
-#define USB_MAX_IFS    32
+/* Hubs count as devices and publish pseudo-HCs: leave headroom for
+ * 5 UHCIs + a few hubs + their children (UAOS-134). */
+#define USB_MAX_DEVS   24
+#define USB_MAX_IFS    48
 #define USB_MAX_CLASSES 4
-#define USB_MAX_HCS     8
-#define USB_MAX_PORTS   8
+#define USB_MAX_HCS    16
 
 static UsbDev g_devs[USB_MAX_DEVS];
 static UsbIf  g_ifs [USB_MAX_IFS];
@@ -388,6 +389,17 @@ static void usb_enum_task(void *arg)
             UsbHc *hc = g_hcs[i];
             for (int p = 0; p < hc->nports && p < USB_MAX_PORTS; p++) {
                 UsbPortWatch *w = &g_watch[i][p];
+                /* An HC registered after USB_Init (a hub bound by
+                 * late enumeration, UAOS-134) has no watch row yet —
+                 * initialise it on first sight. */
+                if (w->hc != hc) {
+                    w->hc        = hc;
+                    w->port      = p;
+                    w->last_ccs  = (uint8_t)(hc->port_connected(hc, p) > 0);
+                    w->attempts  = 0;
+                    w->parked    = 0;
+                    w->next_tick = 0;
+                }
                 int ccs  = hc->port_connected(hc, p) > 0;
                 /* A latched CSC or a raw CCS flip both count as edges —
                  * either revives a parked port for another round. */

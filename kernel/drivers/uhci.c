@@ -431,7 +431,12 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
             klog_puts(KLOG_USB, KLOG_WARN, " stage=");
             klog_puts(KLOG_USB, KLOG_WARN, stage);
-            if (dev->port >= 0 && dev->port <= 1) {
+            /* dev->port only names a root PORTSC for devices plugged
+             * straight into this HC — a hub child (dev->hc = pseudo-HC,
+             * UAOS-134) shares the port-number space of its hub, not
+             * the root hub's. */
+            if (dev->hc && (UhciHc *)dev->hc->priv == h &&
+                dev->port >= 0 && dev->port <= 1) {
                 klog_puts(KLOG_USB, KLOG_WARN, " psc=");
                 klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
                              rg16(h, (uint16_t)(U_PORTSC1 + dev->port * 2)));

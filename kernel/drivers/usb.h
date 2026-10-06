@@ -48,8 +48,14 @@
 #define USB_RT_DEV   0x00
 #define USB_RT_IF    0x01
 #define USB_RT_EP    0x02
+#define USB_RT_OTHER 0x03
 
 #define USB_CLASS_HID        0x03
+#define USB_CLASS_HUB        0x09
+
+/* HC port-index bound shared by the core's per-port watch table and
+ * hub drivers clamping their downstream count. */
+#define USB_MAX_PORTS   8
 #define USB_IFPROTO_KBD      0x01
 #define USB_IFPROTO_MOUSE    0x02
 
@@ -145,7 +151,10 @@ typedef struct UsbHc {
                    uint16_t mps, void *buf, uint16_t buflen,
                    void (*cb)(void *ctx, void *buf, int len), void *ctx);
 
-    /* Port helpers (root hub) */
+    /* Port helpers — root-hub ports on real HCs; hub drivers also
+     * publish a UsbHc whose helpers run hub-class requests instead
+     * (control/intr_in forward to the real HC), so the core can
+     * enumerate downstream ports identically (UAOS-134). */
     int  (*port_connected)(struct UsbHc *hc, int port); /* -1 = none */
     int  (*port_reset)(struct UsbHc *hc, int port);     /* returns speed */
     /* Optional: return 1 when a connect-status-change latched since the
@@ -209,6 +218,11 @@ void UHCI_Poll(void);
  * storm masks, mid-dispatch catches) — task context only, the usb-enum
  * task runs it once per scan round (UAOS-294). */
 void UHCI_DiagFlush(void);
+
+/* Hub class driver (usbhub.c) — registers a probe; each bound hub
+ * publishes a pseudo-UsbHc so downstream ports enumerate through the
+ * normal path. */
+void USBHUB_Init(void);
 
 /* Read-only register snapshot for C:usbdiag (UAOS-183). */
 typedef struct {

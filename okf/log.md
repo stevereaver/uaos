@@ -274,6 +274,43 @@
 * **Added** `CPU nn%` to the Workbench menubar (`kernel/display/desktop.c`), tick-cached with the existing clock/mem strings, left of the free-memory readout and outside `menubar_clock_hit()`'s zone.
 * **Verified** in QEMU: clean boot, `[CPUFREQ] not GenuineIntel — inactive` (TCG qemu64 is AMD-vendor), `cpu`/`taskstat`/`screenshot` all healthy, menubar shows `CPU 0%  6963K Free  14:34:32`.
 * **Documented** in `okf/kernel/exec/index.md` (Scheduling Model), `okf/kernel/display/index.md` (menubar), `okf/platforms/macbook41.md` (CPU row).
+## 2026-10-06 — USB hub class driver: pseudo-HC downstream enumeration (UAOS-134)
+
+* **Added** `kernel/drivers/usbhub.c` (~240 lines): hub-class (0x09) driver
+  that publishes each bound hub as a **pseudo-`UsbHc`** — `control`/`intr_in`
+  forward to the real host controller (USB addressing is flat, so children
+  need no topology in the HC), while `port_connected`/`port_reset`/`port_csc`
+  run hub-class requests (`GET_STATUS`/`SET_FEATURE`/`CLEAR_FEATURE`, port
+  arg 1-based) against the hub's own `UsbDev`. `USB_Init`'s `i < g_nhcs`
+  loop picks the pseudo-HC up mid-pass, so downstream ports enumerate
+  depth-first in the same sweep; the `usb-enum` task lazily initialises
+  watch rows for HCs registered post-boot, so hub-port hotplug and
+  connected-but-deaf retries work exactly like root ports.
+* **Mechanics**: probe reads the class 0x29 hub descriptor (`bNbrPorts`,
+  `bPwrOn2PwrGood`), powers all ports via `SET_FEATURE PORT_POWER` +
+  settle, then registers. `hub_port_reset` does `SET_FEATURE PORT_RESET`,
+  polls `wPortChange.C_PORT_RESET`, acks with `CLEAR_FEATURE`, settles
+  50 ms, and returns speed from `wPortStatus.PORT_LOW_SPEED` (the TD
+  low-speed bit still keys off `dev->speed`). The hub's interrupt-IN
+  status endpoint is intentionally not armed — the enum task's 100 ms
+  `port_csc` poll covers it.
+* **Supporting changes**: `usb.h` gains `USB_CLASS_HUB`/`USB_RT_OTHER`/
+  `USB_MAX_PORTS` + `USBHUB_Init`; `usb.c` bumps `USB_MAX_{DEVS,IFS,HCS}`
+  to 24/48/16 (hubs count as devices and publish HCs); `uhci.c`'s
+  ctrl-fail `psc=` dump now only prints for devices on the real HC
+  (`dev->hc->priv == h`) since a hub child's `dev->port` names a
+  downstream port, not a root PORTSC; boot calls `USBHUB_Init()` before
+  `BCM5974_Init`/`USBHID_Init`.
+* **QEMU-verified**: `piix3-usb-uhci` + unpinned `usb-kbd`/`usb-mouse`
+  (QEMU auto-inserts its `usb-hub` 0409:55aa). Log shows kbd dev1 on a
+  root port, hub bound as dev2 (`hub: vid=0x0409 pid=0x55AA ports=8`),
+  mouse dev3 behind the hub (QEMU port 2.1, `if cls=3 proto=2`),
+  interrupt pipes armed for both HIDs, `3 devices, 3 ifs`, zero warns/
+  stalls/errors — including after `sendkey`/`mouse_move` traffic.
+* **Implication for MBP4,1**: the internal BCM2046 hub's downstream
+  devices (Bluetooth HCI, Apple IR) should now enumerate; QEMU `port=`
+  pinning is no longer required. Remaining on the card: EHCI driver
+  (phase 2 — mass storage/iSight), and metal re-validation.
 
 ## 2026-10-06 — EventPump descheduled-in-critical fix + crit-block diagnostic (UAOS-271)
 
