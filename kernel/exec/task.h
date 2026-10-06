@@ -30,6 +30,7 @@
 #define SIGB_TP        6   /* bcm5974 mode-reset worker */
 #define SIGB_BREAKF    8
 #define SIGB_EVENTPUMP 9   /* wake bit for the EventPump service task */
+#define SIGB_ATP       10  /* appletouch (Geyser) idle-reinit worker */
 
 #define SIGF_ABORT     (1U << SIGB_ABORT)
 #define SIGF_CHILD     (1U << SIGB_CHILD)
@@ -40,6 +41,7 @@
 #define SIGF_TP        (1U << SIGB_TP)
 #define SIGF_BREAKF    (1U << SIGB_BREAKF)
 #define SIGF_EVENTPUMP (1U << SIGB_EVENTPUMP)
+#define SIGF_ATP       (1U << SIGB_ATP)
 
 /* -------------------------------------------------------------------------
  * Task type

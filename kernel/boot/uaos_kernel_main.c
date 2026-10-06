@@ -776,10 +776,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         extern int  UHCI_Init(void);
         extern void USBHID_Init(void);
         extern void BCM5974_Init(void);
+        extern void AppleTouch_Init(void);
         extern int  USB_Init(void);
         int nuhci = UHCI_Init();
         if (nuhci > 0) {
             BCM5974_Init();         /* Apple trackpad claims tp/bt ifs first */
+            AppleTouch_Init();      /* Geyser pads (05ac:021x/022x) next */
             USBHID_Init();          /* register HID class driver */
             int ndev = USB_Init();  /* enumerate all HC ports */
             if (ndev == 0)
@@ -1140,7 +1142,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * created here). */
     {
         extern void BCM5974_StartWorker(void);
+        extern void AppleTouch_StartWorker(void);
         BCM5974_StartWorker();
+        AppleTouch_StartWorker();
     }
 
     /* Deferred USB re-enumeration task — retries ports that reported

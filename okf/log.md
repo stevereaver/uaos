@@ -1,5 +1,12 @@
 # OKF Change Log
 
+## 2026-10-06 — trackpad is Geyser IV, not bcm5974 (UAOS-135)
+
+* **Found** (live `peek` over telnet, box @192.168.10.158): two-finger click did nothing because `g_tp` was all-zero — `bcm5974_probe` never claimed. Device table decoded from `g_devs`/`g_ifs`/`g_hid`: the internal kbd/trackpad composite enumerates **`05ac:021a` (Geyser IV)** — appletouch-class, *not* the `05ac:0230` Wellspring2 the card assumed. usbhid bound the tp interface (ifnum1, ep1, mps=64) as a generic boot mouse → basic motion/click, no finger data. Siblings on the bus: `05ac:8242` IR, `0930:1400` Toshiba BT, `05ac:1000`, `062a:4101` wireless dongle.
+* **Added** `kernel/drivers/appletouch.c` — Geyser3/4 port (`drivers/input/mouse/appletouch.c`): vendor-mode switch (read req1 / write req9, wval `0x300`, `data[0]=0x04`, verify+retry); 64-byte frame decode (Y sensors bytes 1-15, X 19-48 as `-,v1,v2` triplets, status byte 63 = button/baseline/from-reset); per-sensor deltas vs baseline snapshot on BASE_UPDATE frames; finger census via rising-hump count (threshold 5), smoothed centroid position → relative motion re-based on touch/finger-count change; button emulation latched at press edge (1=left, 2=right, 3+=middle); idle-stream reinit worker (`SIGF_ATP`, bit 10) plus malformed-frame re-switch kick. PIDs matched: `0217-0219`, `021a-021c`, `0229-022b`. Registered between `BCM5974_Init` and `USBHID_Init`; `AppleTouch_StartWorker` spawns post-scheduler next to bcm5974's.
+* **Verified**: `make` clean, ISO rebuilt. Metal verification pending — unknowns: Y-axis sign (inverted like bcm5974 — flip `dy` if the cursor runs backwards) and whether `0x04` echoes in the mode-block readback (probe is best-effort either way; the pipe-side retry recovers).
+* **Documented** in `okf/platforms/macbook41.md` (Input row).
+
 ## 2026-10-06 — FAT32 VFAT long file names (UAOS-254)
 
 * **Added** (`kernel/dos/fat32.c`): VFAT LFN read — lookups and `FAT32_ReadDir` assemble checksum/sequence-validated LFN chains (UCS-2 → Latin-1) and match long names or 8.3 aliases case-insensitively; NT lowercase flags honoured for 8.3-only names. `dir OCTAMED:OCTAMED` now lists `OctaMED.guide` / `OctaMED.V5.info` instead of `OCTAME~1.GUI` / `OCTAME~1.INF`.
