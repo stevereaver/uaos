@@ -84,6 +84,20 @@ void Cmd_Tickcheck(NativeCmdCtx *ctx, const char *args)
         cmd_uint_to_dec((uint32_t)(exp / 1000), num, sizeof(num));
         cmd_scat(line, num, CMD_MAX_LINE); cmd_scat(line, "k", CMD_MAX_LINE);
         PRINT(line);
+
+        /* Where the extremes landed — a short delta preceded by a long
+         * one is a delayed-tick complement; a lone short delta is a
+         * spurious dispatch. */
+        cmd_scopy(line, "  min@sample ", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)s.pit_min_idx, num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        cmd_scat(line, " (prev=", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)(s.pit_min_prev / 1000), num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        cmd_scat(line, "k)  max@sample ", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)s.pit_max_idx, num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        PRINT(line);
     }
 
     PRINT("irq dispatch latency (log2 cycles):");

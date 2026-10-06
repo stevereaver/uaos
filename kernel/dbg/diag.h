@@ -108,6 +108,8 @@ void Tickmon_IrqDur(uint8_t vector, uint64_t cycles); /* from ISR_Dispatch   */
 typedef struct {
     uint64_t pit_last_tsc;
     uint64_t pit_min_delta, pit_max_delta, pit_sum_delta, pit_samples;
+    uint64_t pit_min_idx, pit_max_idx;           /* sample # of extremes     */
+    uint64_t pit_min_prev;                       /* delta preceding the min  */
     uint64_t irq_hist[TICKMON_LAT_BUCKETS];      /* all vectors, log2 cycles */
     uint64_t vec_max_cycles[256];                /* worst single dispatch    */
 } TickmonStats;

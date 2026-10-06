@@ -20,6 +20,10 @@
 
 static volatile uint64_t g_pit_last_tsc;
 static volatile uint64_t g_pit_min = ~0ULL, g_pit_max, g_pit_sum, g_pit_n;
+static volatile uint64_t g_pit_min_idx, g_pit_max_idx;   /* sample # of extremes */
+static volatile uint64_t g_pit_min_prev;               /* delta before the min */
+static volatile uint64_t g_pit_last_d;
+static volatile uint8_t  g_pit_warm;    /* drop the first delta after seeding */
 
 static volatile uint64_t g_irq_hist[TICKMON_LAT_BUCKETS];
 static volatile uint64_t g_vec_max[256];
@@ -33,11 +37,22 @@ void Tickmon_PitTick(uint64_t tsc)
 {
     uint64_t prev = g_pit_last_tsc;
     g_pit_last_tsc = tsc;
-    if (!prev) return;
+    if (!prev) { g_pit_warm = 1; return; }
+
+    /* The delta after the seed is not a period: the seeding dispatch can
+     * be a PIT edge latched while IF=0 during early init, delivered at
+     * an arbitrary phase of the 10 ms cycle when interrupts first open
+     * (UAOS-270).  Drop it — it pins min with a bogus sub-period sample. */
+    if (g_pit_warm) { g_pit_warm = 0; return; }
 
     uint64_t d = tsc - prev;
-    if (d < g_pit_min) g_pit_min = d;
-    if (d > g_pit_max) g_pit_max = d;
+    if (d < g_pit_min) {
+        g_pit_min      = d;
+        g_pit_min_idx  = g_pit_n + 1;
+        g_pit_min_prev = g_pit_last_d;   /* long prev => delayed-tick pair */
+    }
+    if (d > g_pit_max) { g_pit_max = d; g_pit_max_idx = g_pit_n + 1; }
+    g_pit_last_d = d;
     g_pit_sum += d;
     g_pit_n++;
     if (g_pit_n >= 100)
@@ -66,6 +81,9 @@ void Tickmon_Snapshot(TickmonStats *out)
     out->pit_max_delta = g_pit_max;
     out->pit_sum_delta = g_pit_sum;
     out->pit_samples   = g_pit_n;
+    out->pit_min_idx   = g_pit_min_idx;
+    out->pit_max_idx   = g_pit_max_idx;
+    out->pit_min_prev  = g_pit_min_prev;
     for (int i = 0; i < TICKMON_LAT_BUCKETS; i++)
         out->irq_hist[i] = g_irq_hist[i];
     for (int i = 0; i < 256; i++)
@@ -78,6 +96,7 @@ void Tickmon_Clear(void)
     uint64_t fl = irq_save();
     g_pit_min = ~0ULL;
     g_pit_max = g_pit_sum = g_pit_n = 0;
+    g_pit_min_idx = g_pit_max_idx = g_pit_min_prev = g_pit_last_d = 0;
     for (int i = 0; i < TICKMON_LAT_BUCKETS; i++) g_irq_hist[i] = 0;
     for (int i = 0; i < 256; i++) g_vec_max[i] = 0;
     irq_restore(fl);
