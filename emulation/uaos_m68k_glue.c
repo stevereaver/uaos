@@ -618,6 +618,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_UTILITY     8   /* utility.library → ROM dispatch */
 #define LIB_AUDIODEV    9   /* audio.device → UAOS-240 arbitration */
 #define LIB_IRQ        10   /* autovector dispatch stub — fn carries level */
+#define LIB_IFFPARSE   11   /* iffparse.library → ROM dispatch (UAOS-243) */
 
 #define AUDEV_LVO_OPEN    0   /* -6  */
 #define AUDEV_LVO_CLOSE   1   /* -12 */
@@ -2805,6 +2806,51 @@ static const struct { int lvo; uint8_t fn; } g_utility_lvo_map[] = {
     { -414,  2 },   /* CloseLibrary */
 };
 
+/* Canonical iffparse.library LVOs → iffparse_funcs[] indices
+ * (iffparse_lib.c, real AmigaOS FD numbering — UAOS-243). */
+static const struct { int lvo; uint8_t fn; } g_iffparse_lvo_map[] = {
+    {  -30,  1 },   /* AllocIFF            */
+    {  -36,  2 },   /* OpenIFF             */
+    {  -42,  3 },   /* ParseIFF            */
+    {  -48,  4 },   /* CloseIFF            */
+    {  -54,  5 },   /* FreeIFF             */
+    {  -60,  6 },   /* ReadChunkBytes      */
+    {  -66,  7 },   /* WriteChunkBytes     */
+    {  -72,  8 },   /* ReadChunkRecords    */
+    {  -78,  9 },   /* WriteChunkRecords   */
+    {  -84, 10 },   /* PushChunk           */
+    {  -90, 11 },   /* PopChunk            */
+    { -102, 12 },   /* EntryHandler        */
+    { -108, 13 },   /* ExitHandler         */
+    { -114, 14 },   /* PropChunk           */
+    { -120, 15 },   /* PropChunks          */
+    { -126, 16 },   /* StopChunk           */
+    { -132, 17 },   /* StopChunks          */
+    { -138, 18 },   /* CollectionChunk     */
+    { -144, 19 },   /* CollectionChunks    */
+    { -150, 20 },   /* StopOnExit          */
+    { -156, 21 },   /* FindProp            */
+    { -162, 22 },   /* FindCollection      */
+    { -168, 23 },   /* FindPropContext     */
+    { -174, 24 },   /* CurrentChunk        */
+    { -180, 25 },   /* ParentChunk         */
+    { -186, 26 },   /* AllocLocalItem      */
+    { -192, 27 },   /* LocalItemData       */
+    { -198, 28 },   /* SetLocalItemPurge   */
+    { -204, 29 },   /* FreeLocalItem       */
+    { -210, 30 },   /* FindLocalItem       */
+    { -216, 31 },   /* StoreLocalItem      */
+    { -222, 32 },   /* StoreItemInContext  */
+    { -228, 33 },   /* InitIFF             */
+    { -234, 34 },   /* InitIFFasDOS        */
+    { -240, 35 },   /* InitIFFasClip       */
+    { -246, 36 },   /* OpenClipboard       */
+    { -252, 37 },   /* CloseClipboard      */
+    { -258, 38 },   /* GoodID              */
+    { -264, 39 },   /* GoodType            */
+    { -270, 40 },   /* IDtoStr             */
+};
+
 /* Allocate a guest library base for `name`, fill the Library struct, and
  * install stubs: real LVO->fn map for utility.library, LIB_GENERIC
  * catch-alls elsewhere.  `ntype`/`list_off` publish the node: ln_Type and
@@ -2843,11 +2889,15 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
     e->name[k] = '\0';
     g_ram[name_ptr + k] = 0;
 
-    int is_utility = 0;
+    int is_utility = 0, is_iffparse = 0;
     const char *un = "utility.library";
+    const char *in = "iffparse.library";
     int u = 0;
     while (un[u] && name[u] == un[u]) u++;
     is_utility = (un[u] == 0 && name[u] == 0);
+    u = 0;
+    while (in[u] && name[u] == in[u]) u++;
+    is_iffparse = (in[u] == 0 && name[u] == 0);
     e->utility = is_utility;
 
     /* struct Library: Node + flags + sizes + version + idstring + opencnt */
@@ -2866,7 +2916,8 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
     if (list_off)
         guest_list_add_tail(EXEC_BASE + list_off, base);
 
-    uint8_t lib_id = is_utility ? LIB_UTILITY : LIB_GENERIC;
+    uint8_t lib_id = is_utility  ? LIB_UTILITY  :
+                     is_iffparse ? LIB_IFFPARSE : LIB_GENERIC;
     for (int lvo = -6; lvo >= -(int)GENLIB_STUB_AREA; lvo -= 6)
         install_lvo(base, lvo, lib_id, 0xEE);   /* 0xEE = unmapped */
 
@@ -2874,6 +2925,11 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
         for (unsigned i = 0; i < sizeof(g_utility_lvo_map)/sizeof(g_utility_lvo_map[0]); i++)
             install_lvo(base, g_utility_lvo_map[i].lvo, LIB_UTILITY,
                         g_utility_lvo_map[i].fn);
+    }
+    if (is_iffparse) {
+        for (unsigned i = 0; i < sizeof(g_iffparse_lvo_map)/sizeof(g_iffparse_lvo_map[0]); i++)
+            install_lvo(base, g_iffparse_lvo_map[i].lvo, LIB_IFFPARSE,
+                        g_iffparse_lvo_map[i].fn);
     }
     return base;
 }
@@ -5998,7 +6054,7 @@ int m68k_illg_instr_callback(int opcode)
                 m68k_set_reg(M68K_REG_D0, 0);   /* safe default */
             }
         }
-    } else if (lib == LIB_DOS || lib == LIB_UTILITY) {
+    } else if (lib == LIB_DOS || lib == LIB_UTILITY || lib == LIB_IFFPARSE) {
         /* Delegate to ROM module dispatcher — marshal all regs */
         M68kCPUState cpu;
         cpu.d[0] = m68k_get_reg(NULL, M68K_REG_D0);
@@ -6020,8 +6076,10 @@ int m68k_illg_instr_callback(int opcode)
         cpu.pc   = m68k_get_reg(NULL, M68K_REG_PC);
         cpu.sr   = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
 
-        void *rom_fn = UAOS_ROM_NativeFunc(
-            lib == LIB_DOS ? "dos.library" : "utility.library", (uint16_t)fn);
+        const char *rom_name = lib == LIB_DOS      ? "dos.library"      :
+                               lib == LIB_UTILITY  ? "utility.library"  :
+                                                     "iffparse.library";
+        void *rom_fn = UAOS_ROM_NativeFunc(rom_name, (uint16_t)fn);
         if (rom_fn) {
             void (*fn_ptr)(M68kCPUState *) = (void (*)(M68kCPUState *))rom_fn;
             fn_ptr(&cpu);
@@ -6066,7 +6124,8 @@ int m68k_illg_instr_callback(int opcode)
                 unimpl_prints++;
                 char msg[48];
                 const char *pfx = (lib == LIB_DOS) ? "[dos] unimpl lvo=-"
-                                                 : "[util] unimpl lvo=-";
+                                : (lib == LIB_UTILITY) ? "[util] unimpl lvo=-"
+                                                       : "[iff] unimpl lvo=-";
                 int i = 0; while (pfx[i]) { msg[i] = pfx[i]; i++; }
                 char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
                 int j = 0;

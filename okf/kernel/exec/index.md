@@ -48,6 +48,7 @@ UAOS provides native thunk implementations of classic AmigaOS libraries and devi
 - [dos.library](/kernel/dos/index.md) — file I/O, directories, processes, and AmigaDOS packets.
 - [workbench.library](workbench_library.md) — app icons, app windows, and Workbench integration.
 - [bsdsocket.library](bsdsocket_library.md) — BSD socket API mapped to the native TCP/IP stack.
+- [iffparse.library](iffparse_library.md) — IFF FORM/chunk parser (FORM/LIST/CAT/PROP, SCAN/STEP/RAWSTEP, hooks, properties, collections, local context items).
 - [Other Libraries & Devices](other_libraries.md) — `utility.library`, `mathffp.library`, `locale.library`, `ixemul.library`, `console.device`, `keyboard.device`, `timer.device`.
 
 ## Preferences Persistence (`prefs_lib.c`)

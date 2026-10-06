@@ -171,6 +171,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register dos.library */
     UAOS_DOS_Register();
 
+    /* Register iffparse.library */
+    UAOS_IFFPARSE_Register();
+
     /* Register bsdsocket.library */
     UAOS_BSDSOCKET_Register();
 
