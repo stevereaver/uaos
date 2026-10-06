@@ -144,6 +144,7 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
     g_kbd_mods.alt         = !!(mods & 0x44);
     g_kbd_mods.super_left  = !!(mods & 0x08);
     g_kbd_mods.super_right = !!(mods & 0x80);
+    PS2Kbd_CheckResetChord();   /* Ctrl + LAmiga + RAmiga — reset */
 
     /* Newly-pressed keys = present now, absent from the previous report */
     for (int i = 2; i < 8; i++) {

@@ -9,6 +9,7 @@
 #include "idt.h"
 #include "irq.h"
 #include "../exec/task.h"
+#include "../exec/system_reboot.h"
 #include "../chipset/chip_emu.h"
 #include <stdint.h>
 
@@ -204,6 +205,15 @@ static const int8_t ps2_to_amiga[89] = {
 
 KbdMods g_kbd_mods = { 0, 0, 0, 0, 0, 0 };
 
+/* Amiga three-finger salute: Ctrl + LAmiga + RAmiga resets the machine.
+ * The check runs after every modifier transition, so whichever key is
+ * pressed last completes the chord; releases can never satisfy it. */
+void PS2Kbd_CheckResetChord(void)
+{
+    if (g_kbd_mods.ctrl && g_kbd_mods.super_left && g_kbd_mods.super_right)
+        System_Reboot();
+}
+
 /* =========================================================================
  * PS2Kbd_Init
  * ========================================================================= */
@@ -250,6 +260,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             g_kbd_mods.super_left = !is_break;
             chip_emu_push_keycode(0x66, is_break);
             kraw_push(0x66, is_break);
+            PS2Kbd_CheckResetChord();
             IRQ_EOI((int)vector); return;
         }
         /* Right Super/Windows key → RAmiga (E0 5C make / E0 DC break) */
@@ -257,6 +268,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             g_kbd_mods.super_right = !is_break;
             chip_emu_push_keycode(0x67, is_break);
             kraw_push(0x67, is_break);
+            PS2Kbd_CheckResetChord();
             IRQ_EOI((int)vector); return;
         }
         /* Right Alt → Amiga RALT (E0 38) */
@@ -264,6 +276,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             g_kbd_mods.alt = !is_break;
             chip_emu_push_keycode(0x65, is_break);
             kraw_push(0x65, is_break);
+            PS2Kbd_CheckResetChord();
             IRQ_EOI((int)vector); return;
         }
         /* Right Ctrl → Amiga CTRL (E0 1D) */
@@ -271,6 +284,7 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             g_kbd_mods.ctrl = !is_break;
             chip_emu_push_keycode(0x63, is_break);
             kraw_push(0x63, is_break);
+            PS2Kbd_CheckResetChord();
             IRQ_EOI((int)vector); return;
         }
         /* Extended keys with Amiga rawkey equivalents (cursor keys,
@@ -309,24 +323,28 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
         g_kbd_mods.shift = !is_break;
         chip_emu_push_keycode(key == 0x2A ? 0x60 : 0x61, is_break);
         kraw_push(key == 0x2A ? 0x60 : 0x61, is_break);
+        PS2Kbd_CheckResetChord();
         IRQ_EOI((int)vector); return;
     }
     if (key == 0x1D) { /* Ctrl */
         g_kbd_mods.ctrl = !is_break;
         chip_emu_push_keycode(0x63, is_break);
         kraw_push(0x63, is_break);
+        PS2Kbd_CheckResetChord();
         IRQ_EOI((int)vector); return;
     }
     if (key == 0x38) { /* Alt */
         g_kbd_mods.alt = !is_break;
         chip_emu_push_keycode(0x64, is_break);
         kraw_push(0x64, is_break);
+        PS2Kbd_CheckResetChord();
         IRQ_EOI((int)vector); return;
     }
     if (key == 0x3A) { /* Caps Lock — down event only changes state */
         if (!is_break) g_kbd_mods.caps_lock ^= 1;
         chip_emu_push_keycode(0x62, is_break);
         kraw_push(0x62, is_break);
+        PS2Kbd_CheckResetChord();
         IRQ_EOI((int)vector); return;
     }
 

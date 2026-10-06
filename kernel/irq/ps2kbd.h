@@ -41,6 +41,12 @@ typedef struct {
 
 extern KbdMods g_kbd_mods;
 
+/* Amiga three-finger reset: reboot when Ctrl + LAmiga + RAmiga are all
+ * held.  Call after every g_kbd_mods update from any input source
+ * (PS/2 IRQ handler, USB HID reports) so the last key of the chord
+ * triggers it. */
+void PS2Kbd_CheckResetChord(void);
+
 /* -------------------------------------------------------------------------
  * Amiga key mapping — Super/Windows key → Amiga key
  *

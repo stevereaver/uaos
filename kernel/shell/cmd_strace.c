@@ -59,6 +59,9 @@ static int g_in_trace_output = 0;
 static VfsFile g_out_file;
 static int g_out_file_open = 0;   /* 0 = not tried, 1 = open, -1 = failed */
 
+/* KLOG_STRACE threshold saved by Strace_Enable; -1 = none to restore */
+static int g_saved_klog_level = -1;
+
 /* Forward declarations for thunk names */
 static const char *thunk_name(uint32_t idx);
 
@@ -802,6 +805,15 @@ void Strace_M68kExit(uint8_t lib, uint8_t fn, int32_t result)
  * ------------------------------------------------------------------------- */
 void Strace_Enable(void)
 {
+    /* Trace lines are program output the user explicitly asked for, not
+     * ambient debug chatter — but they emit at KLOG_DEBUG, which the
+     * "loglevel=info" normal-boot default silently drops (UAOS-264).
+     * Raise the strace threshold while tracing; Strace_Disable restores
+     * it, and an explicit "klog strace=off" mid-trace still wins. */
+    g_saved_klog_level = klog_get_level(KLOG_STRACE);
+    if (g_saved_klog_level < KLOG_DEBUG)
+        klog_set_level(KLOG_STRACE, KLOG_DEBUG);
+
     g_trace_enabled = 1;
     g_start_ticks = 0;
     g_out_file_open = 0;
@@ -859,6 +871,15 @@ void Strace_Disable(void)
 
     g_trace_enabled = 0;
     trace_flush();
+
+    /* Restore the pre-trace threshold, unless someone changed it
+     * mid-trace (e.g. sercon "klog strace=off" — that explicit mask
+     * wins over our saved value). */
+    if (g_saved_klog_level >= 0 && g_saved_klog_level < KLOG_DEBUG &&
+        klog_get_level(KLOG_STRACE) == KLOG_DEBUG) {
+        klog_set_level(KLOG_STRACE, g_saved_klog_level);
+    }
+    g_saved_klog_level = -1;
 }
 
 int Strace_IsEnabled(void)

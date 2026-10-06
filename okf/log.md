@@ -1,5 +1,11 @@
 # OKF Change Log
 
+## 2026-10-06 — Ctrl+LAmiga+RAmiga three-finger reset (UAOS-178)
+
+* **Added** (`kernel/irq/ps2kbd.{c,h}`): `PS2Kbd_CheckResetChord()` — reboots via `System_Reboot()` when `g_kbd_mods.ctrl && super_left && super_right` are all held. Called after every modifier transition in the PS/2 IRQ handler (all 8 branches: L/R Super, L/R Alt, L/R Ctrl, Shift, Caps) so the last key of the chord completes it; release transitions can never satisfy the check.
+* **Added** (`kernel/drivers/usbhid.c`): the same check runs in `hid_kbd_report` right after the mods byte is decoded — this is the path that matters on the MBP4,1, where input is USB-only and Cmd keys are the GUI modifiers (`super_left`=bit3, `super_right`=bit7). No hardware/firmware reset chord exists on this machine (Mac reset chords need the power button), so the salute is implemented purely in-OS.
+* **Verified**: `make kernel` builds and links `build/uaos-kernel.elf` clean; `PS2Kbd_CheckResetChord` resolves from both `ps2kbd.o` and `usbhid.o`. `System_Reboot` is terminal from IRQ/poll context by design (`cli` first, then 0xCF9/8042/triple-fault fallbacks). Metal verification pending on the MBP4,1 — QEMU was skipped per user direction (feature targets USB-HID-on-metal only).
+
 ## 2026-10-06 — CPU frequency scaling + menubar CPU% (UAOS-272)
 
 * **Diagnosed** (bare-metal `taskstat` on the MBP4,1): the reported idle heat was not a busy loop — `Idle` already `hlt`-loops at ~100 % share; the T9300 sat at max FID/VID with no P-state scaling ever driven.
