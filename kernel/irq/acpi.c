@@ -235,7 +235,7 @@ static const Rsdp *find_rsdp(uint32_t mb2_phys)
 /* Table walking                                                       */
 /* ------------------------------------------------------------------ */
 
-const void *ACPI_FindTable(const char sig[4])
+const void *ACPI_FindTableN(const char sig[4], int index)
 {
     if (!g_acpi_ok) return 0;
     if (g_use_xsdt) {
@@ -245,7 +245,7 @@ const void *ACPI_FindTable(const char sig[4])
         for (uint32_t i = 0; i < n; i++) {
             const SdtHeader *h = (const SdtHeader *)(uintptr_t)ents[i];
             if (h->sig[0] == sig[0] && h->sig[1] == sig[1] &&
-                h->sig[2] == sig[2] && h->sig[3] == sig[3])
+                h->sig[2] == sig[2] && h->sig[3] == sig[3] && index-- == 0)
                 return h;
         }
     } else {
@@ -255,11 +255,16 @@ const void *ACPI_FindTable(const char sig[4])
         for (uint32_t i = 0; i < n; i++) {
             const SdtHeader *h = (const SdtHeader *)(uintptr_t)ents[i];
             if (h->sig[0] == sig[0] && h->sig[1] == sig[1] &&
-                h->sig[2] == sig[2] && h->sig[3] == sig[3])
+                h->sig[2] == sig[2] && h->sig[3] == sig[3] && index-- == 0)
                 return h;
         }
     }
     return 0;
+}
+
+const void *ACPI_FindTable(const char sig[4])
+{
+    return ACPI_FindTableN(sig, 0);
 }
 
 static void parse_madt(const SdtHeader *madt)
@@ -354,6 +359,27 @@ const AcpiIoApic *ACPI_IoApic(int i) { return (i >= 0 && i < g_nioapics) ? &g_io
 int      ACPI_NumIsos(void)        { return g_nisos; }
 const AcpiIso *ACPI_Iso(int i)     { return (i >= 0 && i < g_nisos) ? &g_isos[i] : 0; }
 uint64_t ACPI_EcamBase(void)       { return g_ecam; }
+
+/* Locate the DSDT via the FADT.  X_DSDT (offset 140, 64-bit) exists on
+ * FADT revision >= 2 and wins when present; the legacy 32-bit DSDT
+ * pointer sits at offset 40.  Returns the (identity-mapped) SDT header
+ * or NULL. */
+const void *ACPI_Dsdt(void)
+{
+    const SdtHeader *fadt = (const SdtHeader *)ACPI_FindTable("FACP");
+    if (!fadt) return 0;
+    uint64_t addr = 0;
+    if (fadt->length >= 148)
+        addr = *(const uint64_t *)((const uint8_t *)fadt + 140);
+    if (!addr && fadt->length >= 44)
+        addr = *(const uint32_t *)((const uint8_t *)fadt + 40);
+    if (!addr) return 0;
+    const SdtHeader *d = (const SdtHeader *)(uintptr_t)addr;
+    if (d->sig[0] != 'D' || d->sig[1] != 'S' ||
+        d->sig[2] != 'D' || d->sig[3] != 'T')
+        return 0;
+    return d;
+}
 
 int ACPI_IsaToGsi(int isa_irq, uint16_t *flags_out)
 {

@@ -531,6 +531,19 @@ static void do_schedule(int from_irq)
      * stay safe outside this window. */
     uint64_t sched_fl = irq_save();
 
+    /* Charge the elapsed ticks to whoever currently owns the CPU — up
+     * front, before the early-outs below.  Every path that returns
+     * without dispatching leaves g_current running (armed switch pending,
+     * suppressed reschedule, queues empty, or self-dispatch), so the
+     * window belongs to it either way.  This also keeps the Idle task's
+     * cpu_ticks advancing while it hlt-loops alone, which is what makes
+     * CpuFreq_Tick()'s busy% and taskstat's idle share work (UAOS-272). */
+    {
+        uint64_t now = g_pit_ticks;
+        g_current->cpu_ticks += now - g_acct_last_tick;
+        g_acct_last_tick = now;
+    }
+
     /* A syscall-side switch is armed but not yet consumed — defer (see
      * g_sched_switch_pending above).  Applies to both paths: an IRQ may
      * nest in the trap-gate window, and a nested int $0x80 issued before
@@ -624,10 +637,8 @@ static void do_schedule(int from_irq)
     }
 
     /* ---- Accounting (taskstat / watchdog / irqaudit) ----
-     * Charge the outgoing task the PIT ticks since the last switch — the
-     * whole window belongs to it regardless of nested IRQ time. */
-    prev->cpu_ticks += g_pit_ticks - g_acct_last_tick;
-    g_acct_last_tick = g_pit_ticks;
+     * The tick charge already ran at entry; only the switch counters
+     * remain here. */
     g_ctx_switches++;
     next->ctx_switches++;
     if (prev->tc_IDNestCnt > 0 || prev->tc_TDNestCnt > 0)

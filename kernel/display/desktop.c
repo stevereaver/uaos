@@ -28,6 +28,7 @@
 #include "blanker.h"
 #include "format_win.h"
 #include "../exec/system_reboot.h"
+#include "../drivers/cpufreq.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -1294,8 +1295,8 @@ static void draw_menubar(int W)
         int title_w = 0;
         for (const char *p = g_screen_title; *p; p++) title_w += 8;
         int title_x = mx + 16;
-        if (title_x + title_w > W - 120)
-            title_x = W - 120 - title_w;
+        if (title_x + title_w > W - 320)   /* reserve: clock + mem + CPU% */
+            title_x = W - 320 - title_w;
         if (title_x > mx && title_w > 0)
             FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
@@ -1306,6 +1307,7 @@ static void draw_menubar(int W)
      * once per second anyway. */
     static char g_clock_str[16];
     static char g_mem_str[24];
+    static char g_cpu_str[12];
     static uint32_t g_menubar_strs_tick = 0xFFFFFFFFu;
     if (g_menubar_strs_tick != Desktop_GetTick()) {
         g_menubar_strs_tick = Desktop_GetTick();
@@ -1331,17 +1333,39 @@ static void draw_menubar(int W)
         g_clock_str[ci++] = (char)('0' + cs % 10);
         g_clock_str[ci] = '\0';
         mem_free_str(g_mem_str, (int)sizeof(g_mem_str));
+        {
+            uint32_t pct = CpuFreq_BusyPercent();
+            int i = 0;
+            g_cpu_str[i++] = 'C'; g_cpu_str[i++] = 'P';
+            g_cpu_str[i++] = 'U'; g_cpu_str[i++] = ' ';
+            if (pct >= 100) {
+                g_cpu_str[i++] = '1'; g_cpu_str[i++] = '0'; g_cpu_str[i++] = '0';
+            } else if (pct >= 10) {
+                g_cpu_str[i++] = (char)('0' + pct / 10);
+                g_cpu_str[i++] = (char)('0' + pct % 10);
+            } else {
+                g_cpu_str[i++] = (char)('0' + pct % 10);
+            }
+            g_cpu_str[i++] = '%';
+            g_cpu_str[i] = '\0';
+        }
     }
     int clk_len = 0;
     for (const char *p = g_clock_str; *p; p++) clk_len++;
     int clk_x = W - clk_len * 8 - 8;
     FB_PutStr(clk_x, 2, g_clock_str, WB_WHITE, WB_BLUE);
 
-    /* Memory display — show free memory just left of the clock */
+    /* Memory display — show free memory just left of the clock,
+     * and the CPU busy% (UAOS-272) left of that.  Both sit outside the
+     * menubar_clock_hit() zone, so clicks never reach the clock. */
     {
         int mlen = 0;
         for (const char *p = g_mem_str; *p; p++) mlen++;
-        FB_PutStr(clk_x - mlen * 8 - 16, 2, g_mem_str, WB_CREAM, WB_BLUE);
+        int mem_x = clk_x - mlen * 8 - 16;
+        FB_PutStr(mem_x, 2, g_mem_str, WB_CREAM, WB_BLUE);
+        int clen = 0;
+        for (const char *p = g_cpu_str; *p; p++) clen++;
+        FB_PutStr(mem_x - clen * 8 - 16, 2, g_cpu_str, WB_CREAM, WB_BLUE);
     }
 }
 

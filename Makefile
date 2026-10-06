@@ -197,7 +197,7 @@ vpath %.c $(sort $(dir $(BEARSSL_SRCS)))
 # userspace < bas download < system/ copies — later writers win.  Make needs
 # one owner per file, so each name is assigned to the last writer.
 
-NATIVE_C_ALL := version mem libs clear reboot pwd info date which disks fdisk \
+NATIVE_C_ALL := version mem cpu libs clear reboot pwd info date which disks fdisk \
     format fsck pointer run assign execute loadwb ifconfig ping route \
     nslookup ntpd netstart netstop vim ed ps netinfo wait prompt stack why \
     failat quit endcli relabel getenv unset jobs install diskchange \

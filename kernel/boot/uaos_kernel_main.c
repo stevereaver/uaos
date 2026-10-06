@@ -26,6 +26,7 @@
 #include "../irq/virtio_blk.h"
 #include "../irq/virtio_scsi.h"
 #include "../drivers/virtio_net.h"
+#include "../drivers/cpufreq.h"
 #include "../drivers/entropy.h"
 #include "../net/stack.h"
 #include "../exec/bsdsocket_lib.h"
@@ -286,6 +287,7 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
     timer_ProcessTicks();
     Task_WakeTimers();       /* re-ready tasks whose sleep deadline passed */
     Watchdog_Tick();         /* stall detector: runs before schedule */
+    CpuFreq_Tick();          /* busy% sampler + ondemand governor (UAOS-272) */
     Task_ScheduleFromIRQ();
 }
 
@@ -1092,6 +1094,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     kprint("[BOOT] Detecting vmmouse...\n");
     VMMouse_Init();
+    /* EIST P-state scaling + C1E — needs the IDT (in case an MSR is
+     * absent) but wants to run before the first idle hlt.  No-op under
+     * QEMU; boot flag "nocpufreq" disables it for bisecting (UAOS-272). */
+    CpuFreq_Init(mb2_info_phys);
+
     if (VMMouse_Detect())
         kprint("[BOOT] vmmouse active (absolute mode).\n");
     else
