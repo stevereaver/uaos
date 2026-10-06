@@ -82,6 +82,7 @@ typedef struct {
     uint32_t  cluster_size;   /* Cluster size in bytes */
     uint32_t  total_clusters; /* Total data clusters */
     int32_t   free_clusters;  /* Cached free-cluster count (-1 = unknown) */
+    uint8_t   fsinfo_stale;   /* FSINFO free count already marked unknown */
     uint8_t  *fat_cache;      /* FAT cache (simplified) */
     uint32_t  fat_cache_sec;  /* Cached FAT sector */
 } Fat32FS;
@@ -113,11 +114,14 @@ Fat32FS *FAT32_Mount(BlockDev *bdev);
 void FAT32_Unmount(Fat32FS *fs);
 
 /* Open a file/directory by path (e.g. "WB:dir/file" or "dir/file").
- * The volume prefix (e.g. "WB:") is stripped automatically.
+ * The volume prefix (e.g. "WB:") is stripped automatically.  Components
+ * match VFAT long names or 8.3 aliases, case-insensitively.
  * Returns a Fat32File* (from a static pool) or NULL on error. */
 Fat32File *FAT32_Open(Fat32FS *fs, const char *path);
 
-/* Create a new file (truncate if exists). Returns Fat32File* or NULL. */
+/* Create a new file (truncate if exists).  Names that aren't plain 8.3
+ * get a VFAT LFN chain plus a unique "~N" alias.  Returns Fat32File* or
+ * NULL. */
 Fat32File *FAT32_CreateFile(Fat32FS *fs, const char *path);
 
 /* Close a file (returns it to the pool; flushes size to dir entry). */
@@ -136,10 +140,13 @@ void FAT32_Seek(Fat32File *file, uint32_t pos);
 uint32_t FAT32_Size(Fat32File *file);
 
 /* Read next directory entry. Call repeatedly until it returns 0.
- * Skips LFN, volume label, deleted, and . / .. entries.
- * wrt_time/wrt_date receive the entry's FAT modify timestamp (may be NULL).
- * Returns 1 on success (entry found), 0 on end-of-directory. */
-int FAT32_ReadDir(Fat32File *dir, char *name, uint32_t *size, uint8_t *is_dir,
+ * Returns the VFAT long name when one is present (UCS-2 -> Latin-1),
+ * else the 8.3 name; a long name that doesn't fit name_max (incl. NUL)
+ * falls back to its 8.3 alias.  Skips volume label, deleted, and . / ..
+ * entries.  wrt_time/wrt_date receive the entry's FAT modify timestamp
+ * (may be NULL).  Returns 1 on success (entry found), 0 at end. */
+int FAT32_ReadDir(Fat32File *dir, char *name, int name_max,
+                  uint32_t *size, uint8_t *is_dir,
                   uint16_t *wrt_time, uint16_t *wrt_date);
 
 /* Create a directory at the given path. Returns 0 on success, -1 on error. */
@@ -149,9 +156,10 @@ int FAT32_CreateDir(Fat32FS *fs, const char *path);
 int FAT32_Delete(Fat32FS *fs, const char *path);
 
 /* Rename within a single directory (AmigaDOS allows same-dir rename only
- * for this handler).  Patching the name bytes in place preserves the
- * cluster, attributes, size, and timestamps.  Returns 0 on success,
- * -1 on failure (missing source, cross-directory move, name collision). */
+ * for this handler).  The entry is re-created under the new name (fresh
+ * 8.3 alias + LFN chain as needed) carrying the cluster, attributes,
+ * size, and timestamps.  Returns 0 on success, -1 on failure (missing
+ * source, cross-directory move, name collision, name not FAT-legal). */
 int FAT32_Rename(Fat32FS *fs, const char *old_path, const char *new_path);
 
 /* Set a file's write timestamp from an Amiga DateStamp

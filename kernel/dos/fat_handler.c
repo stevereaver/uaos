@@ -332,11 +332,12 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
             break;
         }
-        char name[32];
+        char name[108];   /* fib_FileName */
         uint32_t size;
         uint8_t is_dir;
         uint16_t wt, wd;
-        if (FAT32_ReadDir(dir, name, &size, &is_dir, &wt, &wd)) {
+        if (FAT32_ReadDir(dir, name, (int)sizeof(name), &size, &is_dir,
+                          &wt, &wd)) {
             memset(fib, 0, sizeof(*fib));
             fib->fib_DirEntryType = is_dir ? ST_USERDIR : ST_FILE;
             fib->fib_EntryType    = is_dir ? ST_USERDIR : ST_FILE;
@@ -502,11 +503,12 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res2 = ERROR_NO_MORE_ENTRIES;
             break;
         }
-        char name[32];
+        char name[108];   /* fib_FileName */
         uint32_t size;
         uint8_t is_dir;
         uint16_t wt, wd;
-        if (FAT32_ReadDir(dir, name, &size, &is_dir, &wt, &wd)) {
+        if (FAT32_ReadDir(dir, name, (int)sizeof(name), &size, &is_dir,
+                          &wt, &wd)) {
             memset(fib, 0, sizeof(*fib));
             fib->fib_DirEntryType = is_dir ? ST_USERDIR : ST_FILE;
             fib->fib_EntryType    = is_dir ? ST_USERDIR : ST_FILE;
@@ -529,7 +531,7 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 
     /* ===== Rename object ===== */
     case ACTION_RENAME_OBJECT: {
-        /* Same-directory rename: patch the 8.3 name bytes in place. */
+        /* Same-directory rename (long names supported, UAOS-254). */
         const char *old_path = (const char *)(intptr_t)pkt->dp_Arg1;
         const char *new_path = (const char *)(intptr_t)pkt->dp_Arg2;
         if (FAT32_Rename(fs, old_path, new_path) == 0) {
@@ -602,6 +604,7 @@ int FatHandler_ReadDir(Handler *handler, const char *path,
     int n = 0;
     uint16_t wt, wd;
     while (n < max && FAT32_ReadDir(dir, entries[n].name,
+                                    (int)sizeof(entries[n].name),
                                     &entries[n].size, &entries[n].is_dir,
                                     &wt, &wd)) {
         entries[n].mtime = FAT32_FatstampToUnix(wd, wt);

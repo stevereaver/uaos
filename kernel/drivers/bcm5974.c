@@ -10,8 +10,11 @@
  * Ported from Linux drivers/input/mouse/bcm5974.c (TYPE1/WELLSPRING2
  * layout; TYPE2+ devices need their own config rows).
  *
- * Finger reports become absolute pointer motion on g_mouse; the
+ * Finger reports become relative pointer motion on g_mouse; the
  * physical click button arrives on the separate button endpoint.
+ * There is only one mechanical button, so the live finger count at
+ * click time emulates the missing Amiga buttons: 1 finger = left,
+ * 2 = right, 3+ = middle (UAOS-135).
  */
 
 #include "usb.h"
@@ -85,6 +88,8 @@ typedef struct {
     int      resets;             /* mode-reset attempts so far */
     int      px, py;             /* last tracked pad position */
     int      fslot;              /* finger slot being tracked */
+    int      nfingers;           /* live fingers in the latest report */
+    int      btn_emu;            /* latched emulated button (0..3) */
 } Bcm5974;
 
 static Bcm5974 g_tp;
@@ -214,12 +219,19 @@ static void bcm5974_tp_cb(void *ctx, void *buf, int len)
         return;
     }
 
-    int nfingers = (len - TP_HEADER_T1) / TP_FSIZE_T1;
+    int nslots = (len - TP_HEADER_T1) / TP_FSIZE_T1;
     int mx = (int)g_fb_width_irq  - 1;
     int my = (int)g_fb_height_irq - 1;
 
+    /* Live-finger census — the button endpoint rides a separate pipe,
+     * so bt_cb can't recount at click time. */
+    g_tp.nfingers = 0;
+    for (int i = 0; i < nslots; i++)
+        if (rd16s(d + TP_HEADER_T1 + i * TP_FSIZE_T1 + TF_TOUCH_MAJ) != 0)
+            g_tp.nfingers++;
+
     /* Single-finger pointer: first finger with a real touch reading */
-    for (int i = 0; i < nfingers; i++) {
+    for (int i = 0; i < nslots; i++) {
         const uint8_t *f = d + TP_HEADER_T1 + i * TP_FSIZE_T1;
         if (rd16s(f + TF_TOUCH_MAJ) == 0)
             continue;                       /* finger lifted */
@@ -266,7 +278,21 @@ static void bcm5974_bt_cb(void *ctx, void *buf, int len)
     (void)ctx;
     if (len != BT_DATALEN_T1) return;
     const uint8_t *d = (const uint8_t *)buf;
-    g_mouse.btn_left = d[1] ? 1 : 0;
+
+    /* Button emulation: the finger census at press time picks which
+     * Amiga button to report — 1 = left, 2 = right, 3+ = middle.
+     * The pick latches until release so lifting a finger mid-drag
+     * can't emit a mismatched release (right-down then left-up). */
+    if (d[1]) {
+        if (!g_tp.btn_emu)
+            g_tp.btn_emu = g_tp.nfingers >= 3 ? 3 :
+                           g_tp.nfingers == 2 ? 2 : 1;
+    } else {
+        g_tp.btn_emu = 0;
+    }
+    g_mouse.btn_left   = (g_tp.btn_emu == 1);
+    g_mouse.btn_right  = (g_tp.btn_emu == 2);
+    g_mouse.btn_middle = (g_tp.btn_emu == 3);
     EventPump_Wake();
 }
 

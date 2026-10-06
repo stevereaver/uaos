@@ -1,5 +1,20 @@
 # OKF Change Log
 
+## 2026-10-06 — FAT32 VFAT long file names (UAOS-254)
+
+* **Added** (`kernel/dos/fat32.c`): VFAT LFN read — lookups and `FAT32_ReadDir` assemble checksum/sequence-validated LFN chains (UCS-2 → Latin-1) and match long names or 8.3 aliases case-insensitively; NT lowercase flags honoured for 8.3-only names. `dir OCTAMED:OCTAMED` now lists `OctaMED.guide` / `OctaMED.V5.info` instead of `OCTAME~1.GUI` / `OCTAME~1.INF`.
+* **Added** LFN write — `fat32_add_entry` (create, mkdir, rename) emits a unique Windows-style `~N` alias plus the LFN chain into a consecutive free-slot run; delete removes the whole chain. Rename re-creates the entry (restores on failure) and retargets open handles; truncate patches in place to keep the alias/checksum.
+* **Changed** API: `FAT32_ReadDir` gains `name_max` (long names that don't fit fall back to the alias); `fat_handler.c` EXAMINE paths use 108-byte buffers. `fat32_walk_path` takes names, not 8.3 bytes. Removed `fat32_name_to_83`, `fat32_find_free_dir_slot`, `fat32_resolve_parent`.
+* **Fixed**: `FAT32_ReadDir` trusted the shared `g_cluster_buf` between ExNext calls — now uses a private cluster-tagged `g_dir_buf` invalidated on every write/open. New dirs' `..` = 0 under root (fsck.fat error); FSINFO free count marked unknown on first FAT change (fsck.fat "free cluster summary wrong").
+* **Verified**: host harness (`fat32.c` + file-backed BlockDev, ASan/UBSan) on an mtools-built FAT32 image — 40 checks: long/alias/case-insensitive opens, 60-entry multi-cluster dir with interleaved opens, Latin-1 + 200-char names, alias collisions, case-only/short→long rename, open-handle-across-rename, chain delete, slot reuse; `fsck.fat -n` rc 0 and mtools `mdir`/`mtype` read back every name/content. QEMU with `octamed.img`: `dir`/`list OCTAMED:OCTAMED` show long names, create/type (case-insensitive)/makedir/copy-to-spaced-name/rename/delete over telnet; image then passes `fsck.fat` and lists correctly in mtools.
+
+## 2026-10-06 — bcm5974 multitouch right-button emulation (UAOS-135)
+
+* **Added** (`kernel/drivers/bcm5974.c`): live-finger census — every TYPE1 report counts fingers with `touch_maj != 0` into `g_tp.nfingers`. The mechanical button rides a separate endpoint (EP0x84), so `bcm5974_bt_cb` couldn't recount at click time.
+* **Added** right/middle-button emulation: on the press edge `bt_cb` latches `btn_emu` from the census — 1 finger = `btn_left`, 2 = `btn_right`, 3+ = `btn_middle` — and holds it until release, so lifting a finger mid-drag can't emit a mismatched release (right-down/left-up). Motion still tracks the leading finger slot only.
+* **Verified**: `make` builds clean, ISO produced. Metal verification pending on the MBP4,1.
+* **Documented** in `okf/platforms/macbook41.md` (Input row).
+
 ## 2026-10-06 — Ctrl+LAmiga+RAmiga three-finger reset (UAOS-178)
 
 * **Added** (`kernel/irq/ps2kbd.{c,h}`): `PS2Kbd_CheckResetChord()` — reboots via `System_Reboot()` when `g_kbd_mods.ctrl && super_left && super_right` are all held. Called after every modifier transition in the PS/2 IRQ handler (all 8 branches: L/R Super, L/R Alt, L/R Ctrl, Shift, Caps) so the last key of the chord completes it; release transitions can never satisfy the check.
