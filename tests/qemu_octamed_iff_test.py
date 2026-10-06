@@ -116,13 +116,6 @@ end
             time.sleep(1)
         return None
 
-<<<<<<< /home/reaver/workspaces/uaos/uaos/tests/qemu_octamed_iff_test.py
-    def frq_select_and_ok(row_y):
-        uaos.move_to(300, row_y)
-        uaos.click()
-        time.sleep(1.5)
-        uaos.move_to(500, 415)   # OK button
-=======
     def await_frq_window(timeout=20):
         """The ASL requester is a native WM window whose title is either the
         app's ASLFR_TitleText ('Load Instrument(s)') or our 'Select file'
@@ -152,7 +145,6 @@ end
         uaos.click()
         time.sleep(1.5)
         uaos.move_to(*frq_btn(win, 2))   # OK button
->>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/tests/qemu_octamed_iff_test.py
         uaos.click()
         time.sleep(4)
 
@@ -184,9 +176,6 @@ end
         check("OctaMED: iffparse.library opened (v37)", iff_opened)
 
         # --- load 8SVX instrument: Shift+I -> req OK -> ASL --------------
-<<<<<<< /home/reaver/workspaces/uaos/uaos/tests/qemu_octamed_iff_test.py
-        uaos.move_to(160, 25)     # focus OctaMED window
-=======
         # OctaMED can pop its own "Request" windows late (missing config
         # warnings).  They are modal, which makes the WM swallow clicks on
         # every other window — clear any that are pending before focusing.
@@ -213,29 +202,11 @@ end
                          octa_win["y"] + 8)
         else:
             uaos.move_to(160, 25)
->>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/tests/qemu_octamed_iff_test.py
         uaos.click()
         time.sleep(1)
         uaos.mon.send("sendkey shift-i")
         time.sleep(3)
         dismiss_request()
-<<<<<<< /home/reaver/workspaces/uaos/uaos/tests/qemu_octamed_iff_test.py
-        asl = await_win("Select file", 20)
-        check("ASL: 'Select file' requester opened", bool(asl))
-
-        if asl:
-            uaos.move_to(230, 415); uaos.click(); time.sleep(2)  # Volumes
-            uaos.move_to(220, 219); uaos.click(); time.sleep(2)  # OCTAMED:
-            # scroll list to bottom via the right-edge scroll strip
-            for _ in range(6):
-                uaos.move_to(628, 350); uaos.click(); time.sleep(0.5)
-            # TEST.8SVX sorts last; last visible row = real y ~371
-            frq_select_and_ok(371)
-            time.sleep(4)
-            log = open(serial, errors="replace").read()
-            check("8SVX: guest opened and read the file",
-                  "TEST~1.8SV') mode=1005 -> 3" in log or "TEST.8SVX" in log)
-=======
         asl = await_frq_window(20)
         check("ASL: file requester opened", bool(asl),
               f"title={asl['title']!r}" if asl else "")
@@ -277,7 +248,6 @@ end
             log = open(serial, errors="replace").read()
             check("8SVX: guest opened and read the file",
                   "TEST~1.8SV" in log or "TEST.8SVX" in log)
->>>>>>> /home/reaver/.windsurf/worktrees/uaos-steel-darwin/uaos-steel-darwin-brass-crank/tests/qemu_octamed_iff_test.py
 
         # --- verdict ------------------------------------------------------
         iff_calls = strace_stats(lib=11)
