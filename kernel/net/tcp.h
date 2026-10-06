@@ -105,6 +105,9 @@ typedef struct {
     uint8_t   accepted;    /* claimed by tcp_accept — never handed out twice */
     uint16_t  conn_timer;  /* general connection timer (SYN wait, TIME_WAIT,
                             * CLOSE_WAIT linger, FIN_WAIT_2 wait-for-FIN) */
+    uint32_t  conn_gen;    /* connection-generation token, stamped at alloc —
+                            * a saved (sock, gen) pair proves the slot still
+                            * holds the same connection (UAOS-263)          */
 } TcpSocket;
 
 /* Handle incoming TCP segment */
@@ -116,8 +119,13 @@ int  tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port);
 /* Listen on a port (passive). Returns socket index or -1. */
 int  tcp_listen(uint16_t local_port);
 
-/* Accept an incoming connection on a listening socket. Returns new socket or -1. */
-int  tcp_accept(int listen_sock);
+/* Accept an incoming connection on a listening socket.  Returns the new
+ * socket index or -1; when gen_out is non-NULL it receives the accepted
+ * connection's generation token — the mark and the read are done under
+ * one irq_save so the token provably belongs to the returned socket
+ * (the slot could be RST-freed and reallocated by tcp_rx before a
+ * separate tcp_conn_gen() call ran — UAOS-263). */
+int  tcp_accept(int listen_sock, uint32_t *gen_out);
 
 /* Send data over a TCP socket.  Returns bytes sent; 0 when the socket is
  * busy (a segment is still unacked) or the peer window is closed — the
@@ -137,6 +145,29 @@ void tcp_abort(int sock);
 
 /* Query socket state */
 TcpState tcp_state(int sock);
+
+/* Connection-generation query + checked operations (UAOS-263).
+ *
+ * tcp_rx (NIC IRQ / net_stack_poll) and tcp_tick (PIT) can retire a
+ * socket — RST, retransmit exhaustion, teardown timers — while a task
+ * still holds its index, and the freed slot can be reissued to a new
+ * connection before the owner notices.  A bare index therefore does not
+ * identify a connection; the conn_gen token does.  Each tcp_conn_* call
+ * verifies the generation under irq_save and performs the operation only
+ * when the slot still holds the caller's connection — a stale owner can
+ * no longer read from, write to, or close a different connection that
+ * recycled the slot.
+ *
+ * tcp_conn_close() only drives a graceful close from the live states
+ * (SYN_RECEIVED, ESTABLISHED, CLOSE_WAIT); a connection already in
+ * FIN_WAIT/LAST_ACK/TIME_WAIT teardown is left for tcp_tick's bounds —
+ * a second closer must not abort a teardown already in flight. */
+uint32_t tcp_conn_gen(int sock);
+TcpState tcp_conn_state(int sock, uint32_t gen);
+int  tcp_conn_send(int sock, uint32_t gen, const uint8_t *data, uint16_t len);
+int  tcp_conn_recv(int sock, uint32_t gen, uint8_t *buf, uint16_t maxlen);
+void tcp_conn_close(int sock, uint32_t gen);
+void tcp_conn_abort(int sock, uint32_t gen);
 
 /* Read the peer address/port of a socket (for connection logging and
  * session listings).  Returns 0 on success, -1 for a bad index. */

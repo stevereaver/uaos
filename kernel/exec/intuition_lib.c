@@ -413,7 +413,27 @@ static void free_slot(IntuitionSlot *slot)
         slot->drag_start_hpot = 0;
         slot->drag_start_vpot = 0;
         slot->drag_start_top = 0;
+        slot->owner = NULL;
     }
+}
+
+/* UAOS-265: a window's guest structures live in the owning task's per-task
+ * RAM window.  Once the owner exits the window is released — and can be
+ * reissued to another task — so any further guest-pointer dereference
+ * resolves foreign memory through whatever g_ram is currently bound. */
+static int window_is_orphaned(const IntuitionSlot *slot)
+{
+    return slot->owner && slot->owner->type == TASK_TYPE_M68K &&
+           !slot->owner->m68k_ram;
+}
+
+/* How many active Intuition windows `t` still owns (UAOS-247). */
+static int intu_owner_window_count(const UaosTask *t)
+{
+    int n = 0;
+    for (int i = 0; i < MAX_INTUITION_WINS; i++)
+        if (g_intu_wins[i].active && g_intu_wins[i].owner == t) n++;
+    return n;
 }
 
 /* =========================================================================
@@ -1064,6 +1084,22 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
             if (idcmp & IDCMP_CLOSEWINDOW) {
                 post_intui_message(win_ptr, IDCMP_CLOSEWINDOW, 0, 0, 0, 0, 0);
                 return 0; /* veto WM close; guest will call CloseWindow */
+            }
+            /* The program never subscribed to IDCMP_CLOSEWINDOW, so it can
+             * never act on the request — closing its last window would
+             * leave a windowless guest parked in WaitPort forever
+             * (UAOS-247).  When this is the owner's last window, ask the
+             * guest to exit instead: m68k_halted breaks its blocked-wait
+             * nap loops, ends the current timeslice, and drops the wrapper
+             * into Task_Exit(), where UAOS_Intuition_CleanupTask() retires
+             * this window slot (including the WM window we veto here). */
+            if (slot && slot->owner &&
+                slot->owner->type == TASK_TYPE_M68K &&
+                slot->owner->m68k_ram &&
+                slot->owner->tc_State != TASK_REMOVED &&
+                intu_owner_window_count(slot->owner) == 1) {
+                slot->owner->m68k_halted = 1;
+                return 0;   /* veto: teardown closes the WM window */
             }
             return 1;
 
@@ -2353,6 +2389,7 @@ static void intu_draw_fn(int win_x, int win_y, int win_w, int win_h)
      * its screen's BitMap and any SuperBitMap all live in the owning m68k
      * task's RAM window, so bind it before touching guest memory. */
     uint8_t *saved = g_ram;
+    if (slot && window_is_orphaned(slot)) { g_ram = saved; return; }
     if (slot && slot->owner && slot->owner->m68k_ram)
         g_ram = slot->owner->m68k_ram;
 
@@ -2760,7 +2797,10 @@ static int wait_requester_internal(void)
     while (g_req_slot.active) {
         /* Poll with a short timeout so guest interrupt handlers (CIA timer,
          * audio) keep running while the requester is up — a plain Wait()
-         * would starve them for the duration. */
+         * would starve them for the duration.  Bail if the task is being
+         * externally halted so teardown isn't vetoed by a modal requester
+         * (UAOS-247). */
+        if (g_req_slot.task->m68k_halted) break;
         uint32_t sigs = (uint32_t)Task_WaitTicks(g_req_slot.sigmask, 1);
         UAOS_M68k_DeliverInterrupts();
         if (sigs & g_req_slot.sigmask) break;
@@ -3240,6 +3280,7 @@ int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
 
     extern void UAOS_M68k_DeliverInterrupts(void);
     while (g_frq.active && !g_frq.done) {
+        if (g_frq.task->m68k_halted) break;
         Task_WaitTicks(g_frq.sigmask, 1);
         UAOS_M68k_DeliverInterrupts();
         if (g_frq.rescan) {
@@ -3509,6 +3550,7 @@ static int wait_alert_internal(void)
 {
     if (!g_alert_slot.active || !g_alert_slot.task || !g_alert_slot.sigmask) return 0;
     while (g_alert_slot.active) {
+        if (g_alert_slot.task->m68k_halted) break;
         if (g_alert_slot.timeout_frames) {
             uint64_t elapsed = g_pit_ticks - g_alert_slot.timeout_start;
             /* Approximate 50 fps PAL: frames * 2 ticks */
@@ -3517,7 +3559,9 @@ static int wait_alert_internal(void)
                 break;
             }
         }
-        uint32_t sigs = Wait(g_alert_slot.sigmask);
+        /* Timed wait so the halted check above stays live — a bare Wait()
+         * would park the task past teardown (UAOS-247). */
+        uint32_t sigs = (uint32_t)Task_WaitTicks(g_alert_slot.sigmask, 1);
         if (sigs & g_alert_slot.sigmask) break;
     }
     return g_alert_slot.result;
@@ -3709,6 +3753,39 @@ static int      g_scr_cache_w = 0, g_scr_cache_h = 0;
 static uint32_t g_scr_bf_key = 0, g_scr_bf_key2 = 0;
 static uint32_t g_scr_bf_key3 = 0, g_scr_bf_key4 = 0;
 
+/* UAOS-265: a screen's guest structures (Screen, BitMap, ColorMap,
+ * RastPort) live in the owning task's per-task RAM window.  Once the owner
+ * exits that window is released and can be reissued to another task, so
+ * decoding the BitMap/ColorMap through whatever g_ram is then bound reads
+ * foreign memory — foreign bitplanes emitted through a foreign palette
+ * paint a transient alien-coloured frame over the damaged region. */
+static int screen_is_orphaned(const ScreenSlot *slot)
+{
+    return slot->owner && slot->owner->type == TASK_TYPE_M68K &&
+           !slot->owner->m68k_ram;
+}
+
+/* Retire an orphaned screen slot: with no RAM window left to bind there is
+ * no coherent content to render, so drop it before the emit path reads
+ * dangling guest pointers. */
+static void retire_orphaned_screen(ScreenSlot *slot)
+{
+    if (g_scr_cache_bm == slot->bitmap) {
+        g_scr_cache_bm = 0;
+        g_scr_cache_w = g_scr_cache_h = 0;
+    }
+    slot->is_front = 0;
+    slot->active = 0;
+    slot->owner = NULL;
+    slot->guest_screen = 0;
+    slot->bitmap = 0;
+    slot->colormap = 0;
+    slot->rastport = 0;
+    slot->viewport = 0;
+    update_desktop_title();
+    WM_Redraw();
+}
+
 static int scr_cache_fits(int w, int h)
 {
     return w > 0 && h > 0 && w <= SCR_CACHE_MAX_W && h <= SCR_CACHE_MAX_H;
@@ -3769,9 +3846,24 @@ static void scr_emit_pens(ScreenSlot *slot, int x, int y, int w, int h)
     if (x + w > (int)g_fb.width)  w = (int)g_fb.width  - x;
     if (y + h > (int)g_fb.height) h = (int)g_fb.height - y;
     int bx0 = x - slot->left, by0 = y - slot->top;
+    /* Clamp to the decoded cache extent on both sides: a negative bx0/by0
+     * (damage reaching past the screen's left/top edge) would index before
+     * the row/buffer and emit neighbouring memory as pens (UAOS-265). */
+    if (bx0 < 0) { w += bx0; x = slot->left; bx0 = 0; }
+    if (by0 < 0) { h += by0; y = slot->top; by0 = 0; }
     if (bx0 + w > g_scr_cache_w) w = g_scr_cache_w - bx0;
     if (by0 + h > g_scr_cache_h) h = g_scr_cache_h - by0;
     if (w <= 0 || h <= 0) return;
+
+    {
+        static int s_emit_log = 0;
+        if (s_emit_log < 12) {
+            s_emit_log++;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "scremit: %d,%d %dx%d lut0=%06x lut1=%06x ra=%p",
+                 x, y, w, h, 0, 0, __builtin_return_address(0));
+        }
+    }
 
     uint32_t lut[256];
     scr_build_lut(screen_colormap(slot), lut);
@@ -3891,6 +3983,7 @@ static int render_screen_backdrop_impl(void)
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
         if (!slot->active || !slot->is_front) continue;
+        if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
         uint32_t screen = slot->guest_screen;
         if (!screen) continue;
         uint32_t bm = slot->bitmap;
@@ -4011,6 +4104,7 @@ static int render_screen_backdrop_region_impl(int x, int y, int w, int h)
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
         if (!slot->active || !slot->is_front) continue;
+        if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
         uint32_t bm = slot->bitmap;
         if (!bm) return slot->backfill ? 1 : 0;
         /* The damage means the back buffer's copy is stale — emit the
@@ -4044,36 +4138,41 @@ void UAOS_Intuition_FlushScreenBitmap(uint32_t bm, int x0, int y0, int x1, int y
 {
     if (!bm || x1 < x0 || y1 < y0 || !g_fb.valid) return;
 
-    /* Front screen's BitMap: map bitmap coords through the screen origin.
-     * Keep the pen cache coherent with the planar write, then emit the
-     * dirty rectangle from pens (UAOS-102). */
+    /* Front screen's BitMap: refresh the pen cache for the dirty rect, then
+     * route the repaint through the WM damage path.  Emitting straight to
+     * the framebuffer here runs in direct mode outside any composed frame —
+     * the blit punches through host windows that overlap the screen rect
+     * (the "Calc flashes over the demo" artefact, UAOS-265).  The pump's
+     * repaint emits the same pens, then paints the overlapping windows back
+     * on top inside one frame.  The BitMap and ColorMap live in the screen
+     * owner's RAM window — bind it; the caller may be a different m68k task
+     * whose own window would alias the addresses. */
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
         if (!slot->active || !slot->is_front || slot->bitmap != bm) continue;
+        if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
+        uint8_t *saved = g_ram;
+        if (slot->owner && slot->owner->m68k_ram)
+            g_ram = slot->owner->m68k_ram;
         scr_cache_ensure(slot);
         scr_cache_refresh(bm, x0, y0, x1, y1);
-        if (g_scr_cache_bm == bm) {
-            scr_emit_pens(slot, slot->left + x0, slot->top + y0,
-                          x1 - x0 + 1, y1 - y0 + 1);
-        } else {
-            render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
-                x0, y0, slot->left + x0, slot->top + y0,
-                x1 - x0 + 1, y1 - y0 + 1);
-        }
+        g_ram = saved;
+        WM_InvalidateDesktopRect(slot->left + x0, slot->top + y0,
+                                 x1 - x0 + 1, y1 - y0 + 1);
         return;
     }
 
-    /* WA_SuperBitMap windows: map bitmap coords into the window's client
-     * area position on the host framebuffer. */
+    /* WA_SuperBitMap windows: repaint the window's client area through the
+     * WM — the draw callback renders the bitmap into the composed frame
+     * with proper clipping instead of a direct framebuffer blit. */
     for (int i = 0; i < MAX_INTUITION_WINS; i++) {
         IntuitionSlot *slot = &g_intu_wins[i];
         if (!slot->active || slot->super_bitmap != bm) continue;
+        if (window_is_orphaned(slot)) continue;
         int wx, wy, ww, wh;
         if (!WM_GetWindowRect(slot->wm_handle, &wx, &wy, &ww, &wh)) return;
-        render_bitmap_region_to_framebuffer(bm,
-            get_window_colormap(slot->guest_win),
-            x0, y0, wx + 1 + x0, wy + WM_TITLEBAR_H + y0,
-            x1 - x0 + 1, y1 - y0 + 1);
+        WM_InvalidateRect(wx + 1 + x0, wy + WM_TITLEBAR_H + y0,
+                          x1 - x0 + 1, y1 - y0 + 1);
         return;
     }
 }
@@ -4102,6 +4201,7 @@ int UAOS_Intuition_PollFrontScreenBitmap(void)
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
         if (!slot->active || !slot->is_front || !slot->bitmap) continue;
+        if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
         if (!slot->owner || !slot->owner->m68k_ram) return 0;
         /* Rate-limit the re-decode to ~5 Hz: the pump wakes us every few
          * ticks while a guest screen is front, but a full 1024×768
@@ -4129,6 +4229,7 @@ static void intu_screen_vacate(int wh, int x, int y, int w, int h)
     if (!slot || !slot->screen) return;
     ScreenSlot *sslot = find_screen_slot(slot->screen);
     if (!sslot || !sslot->bitmap || !sslot->rastport) return;
+    if (screen_is_orphaned(sslot)) { retire_orphaned_screen(sslot); return; }
 
     /* WM callback — runs in native context; the screen RastPort/BitMap live
      * in the screen owner's RAM window. */
@@ -4292,6 +4393,17 @@ static void apply_screen_palette(ScreenSlot *slot)
     uint32_t palette[32];
     extract_screen_palette(slot, palette, count);
 
+    {
+        static int s_pal_log = 0;
+        if (s_pal_log < 12) {
+            s_pal_log++;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "scrpal: n=%d p=%06x,%06x,%06x,%06x ra=%p",
+                 count, palette[0], palette[1], palette[2], palette[3],
+                 __builtin_return_address(0));
+        }
+    }
+
     uint32_t grey  = palette[0];
     uint32_t black = palette[1];
     uint32_t white = palette[2];
@@ -4338,6 +4450,10 @@ void UAOS_Intuition_ApplyFrontScreenPalette(void)
             front = &g_intu_screens[i];
             break;
         }
+    }
+    if (front && screen_is_orphaned(front)) {
+        retire_orphaned_screen(front);
+        front = NULL;
     }
     /* Color/pens tables live in the screen owner's RAM window. */
     uint8_t *saved = g_ram;
@@ -6322,6 +6438,10 @@ static void intuition_CloseWorkbench(void)
             }
             if (slot->owns_bitmap)   free_screen_bitmap(slot->bitmap);
             if (slot->owns_colormap) free_screen_colormap(slot->colormap);
+            if (g_scr_cache_bm == slot->bitmap) {
+                g_scr_cache_bm = 0;
+                g_scr_cache_w = g_scr_cache_h = 0;
+            }
             slot->bitmap = 0;
             slot->colormap = 0;
             intu_free(g_workbench_screen);
@@ -6333,6 +6453,87 @@ static void intuition_CloseWorkbench(void)
         m68k_set_reg(M68K_REG_D0, 1);
     } else {
         m68k_set_reg(M68K_REG_D0, 0);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Per-task teardown (UAOS-265)
+ *
+ * A task's Intuition objects — screens, windows, their BitMaps, ColorMaps,
+ * RastPorts, gadget lists — are guest structures inside the task's per-task
+ * RAM window.  Task_Exit() releases that window and the pool slot can be
+ * reissued to a different task, so any screen/window slot left armed would
+ * decode foreign memory through whichever g_ram is bound at render time:
+ * another task's identically-laid-out structures, the shared system arena,
+ * or freed bytes — emitting alien pens and LUT colours over the damaged
+ * region (the transient false-color corruption of UAOS-265).
+ *
+ * Retire every Intuition slot owned by the dying task.  Guest-side frees
+ * are skipped on purpose — the whole RAM window is being released; only
+ * host-side state (WM windows, slots, caches, front-screen status) needs
+ * to be unwound.
+ * ------------------------------------------------------------------------- */
+void UAOS_Intuition_CleanupTask(UaosTask *t)
+{
+    if (!t) return;
+    int changed = 0;
+
+    /* Modal requesters / alerts the task left up reference it as the
+     * signal target — a dead task would leave the requester stuck. */
+    if (g_req_slot.active && g_req_slot.task == t) {
+        if (g_req_slot.wm_handle >= 0) WM_CloseWindow(g_req_slot.wm_handle);
+        clear_req_slot();
+        changed = 1;
+    }
+    if (g_alert_slot.active && g_alert_slot.task == t) {
+        if (g_alert_slot.wm_handle >= 0) WM_CloseWindow(g_alert_slot.wm_handle);
+        clear_alert_slot();
+        changed = 1;
+    }
+
+    /* Windows owned by the dying task. */
+    for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+        IntuitionSlot *w = &g_intu_wins[i];
+        if (!w->active || w->owner != t) continue;
+        if (w->wm_handle >= 0) WM_CloseWindow(w->wm_handle);
+        free_slot(w);
+        changed = 1;
+    }
+
+    /* Screens owned by the dying task.  Windows that other (still-live)
+     * tasks opened on a dying screen lose their render surface — their
+     * screen pointer dangles — so retire those slots too. */
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *s = &g_intu_screens[i];
+        if (!s->active || s->owner != t) continue;
+
+        for (int j = 0; j < MAX_INTUITION_WINS; j++) {
+            IntuitionSlot *w = &g_intu_wins[j];
+            if (!w->active || w->screen != s->guest_screen) continue;
+            if (w->wm_handle >= 0) WM_CloseWindow(w->wm_handle);
+            free_slot(w);
+        }
+
+        if (g_scr_cache_bm == s->bitmap) {
+            g_scr_cache_bm = 0;
+            g_scr_cache_w = g_scr_cache_h = 0;
+        }
+        if (g_workbench_screen == s->guest_screen)
+            g_workbench_screen = 0;
+        s->is_front = 0;
+        s->active = 0;
+        s->owner = NULL;
+        s->guest_screen = 0;
+        s->bitmap = 0;
+        s->colormap = 0;
+        s->rastport = 0;
+        s->viewport = 0;
+        changed = 1;
+    }
+
+    if (changed) {
+        update_desktop_title();
+        WM_Redraw();
     }
 }
 
@@ -6783,6 +6984,10 @@ static void intuition_CloseScreen(void)
         }
         if (slot->owns_bitmap)   free_screen_bitmap(slot->bitmap);
         if (slot->owns_colormap) free_screen_colormap(slot->colormap);
+        if (g_scr_cache_bm == slot->bitmap) {
+            g_scr_cache_bm = 0;
+            g_scr_cache_w = g_scr_cache_h = 0;
+        }
         slot->bitmap = 0;
         slot->colormap = 0;
         slot->active = 0;
@@ -8894,6 +9099,16 @@ static void apply_prefs(void)
     uint16_t c1 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR1]);
     uint16_t c2 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR2]);
     uint16_t c3 = read_host_u16(&g_intu_prefs[PREF_OFF_COLOR3]);
+
+    {
+        static int s_pref_log = 0;
+        if (s_pref_log < 12) {
+            s_pref_log++;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "applyprefs: c=%04x,%04x,%04x,%04x ra=%p",
+                 c0, c1, c2, c3, __builtin_return_address(0));
+        }
+    }
 
     WB_GREY       = amiga_color_to_rgb(c0);
     WB_BLACK      = amiga_color_to_rgb(c1);

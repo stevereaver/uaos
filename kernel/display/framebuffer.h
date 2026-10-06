@@ -59,6 +59,7 @@ uint32_t FB_GetPixel(int x, int y); /* reads back buf when coherent, else VRAM *
  * direct-mode writes.  Valid whenever FB_BackbufCoherent() is true. */
 uint32_t *FB_BackbufRow(int y);    /* NULL when y is out of range   */
 int       FB_BackbufCoherent(void);/* 1 when back buf mirrors screen */
+void      FB_Watchdog(void);       /* UAOS-265: backbuf/VRAM spot check */
 
 /* Extend the dirty rectangle (no-op when not drawing). Used by callers that
  * touch VRAM directly while a back-buffer frame is in progress (e.g. the

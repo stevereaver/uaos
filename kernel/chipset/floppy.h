@@ -83,6 +83,12 @@ int  floppy_dma_write(uint32_t dskpt, uint16_t dsklen);
 uint16_t floppy_dskdat_read(void);
 void     floppy_dskdat_write(uint16_t value);
 
+/* Called when an M68k task's RAM window is being released.  If a disk DMA
+ * was launched against that window it is disarmed so floppy_tick() cannot
+ * write into the next tenant of the slot.  Returns 1 if a binding was
+ * cleared (caller may then drop the DSKEN bit in DMACON). */
+int  floppy_unbind_ram(uint8_t *ram);
+
 /* Decode an entire MFM track into the 11 sector data buffers.  Returns the
  * number of sectors successfully decoded. */
 int floppy_decode_track(const uint8_t *mfm_bits, uint32_t bits_len,

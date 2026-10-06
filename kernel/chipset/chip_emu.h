@@ -30,6 +30,10 @@ void     chip_emu_render_frame(void);
 
 /* Reset and timing */
 void     chip_emu_reset(void);
+/* Task lifecycle: unbind/disarm all DMA engine state that was launched
+ * against the given guest RAM window (display/copper, blitter, audio,
+ * floppy).  Called before the window is released for reuse. */
+void     chip_emu_unbind_ram(uint8_t *ram);
 int      chip_emu_power_led(void);
 void     chip_emu_poll_ps2_keyboard(void);
 void     chip_emu_push_key(char c);   /* mirror a host key into CIA-A SDR */

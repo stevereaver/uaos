@@ -54,6 +54,9 @@ HandleEntry *HandleTable_Get(uint32_t handle);
 /* Convenience: get file handle VfsFile*.  Returns NULL if not a file handle. */
 VfsFile *HandleTable_GetFile(uint32_t handle);
 
+/* Free every handle owned by `owner` (task teardown).  Returns the count. */
+uint32_t HandleTable_FreeByOwner(void *owner);
+
 /* Convenience: get lock entry.  Returns NULL if not a lock.
  * If access_out is non-NULL, writes the lock's access mode. */
 HandleEntry *HandleTable_GetLockEntry(uint32_t handle, int32_t *access_out);

@@ -35,4 +35,9 @@ uint16_t Telnetd_Port(void);
 int Telnetd_SessionInfo(int idx, ipv4_t *ip, uint16_t *port,
                         uint32_t *up_secs);
 
+/* Task_Exit hook: reclaim any pump context, remote session and socket
+ * owned by a pump task that died without running its cleanup path
+ * (UAOS-263).  Same pattern as usock_cleanup_task(). */
+void Telnetd_CleanupTask(void *task);
+
 #endif /* UAOS_TELNETD_H */

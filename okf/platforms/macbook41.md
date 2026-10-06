@@ -110,6 +110,14 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   device ever wakes, the port edge revives it and `usb: late enum
   vid= pid=` names it (BT HCI vs Apple IR `05ac:824x`). If it never
   wakes, the remaining fix is SMC/ACPI power control — not USB.
+- **Deaf ports are quiet + cheap now (UAOS-262).** The retry loop used
+  to emit ~50 verbose `ctrl fail` dumps and burn ~20 s per deaf port
+  before parking. `uhci_control` early-outs after ~40 ms of zero TD
+  progress, returns -2 for no-answer failures (timeout/CRC, NAK
+  exhaustion, never-ran), and the dump is throttled to 2 verbose +
+  power-of-two `xN` markers per HC. `enumerate_port` stops a round
+  after 2 consecutive -2s; the "port deaf" park line is the single
+  ERR-level verdict.
 
 ## Boot-media / debug-console notes (2026-09-30)
 
@@ -366,3 +374,16 @@ longer considered suspect for this symptom; `nomtrr` remains available as
 a diagnostic escape hatch but is not needed. Bonus: once
 `g_bb_coherent` is set the cursor path never reads VRAM, which also
 helps any future `nomtrr` boot.
+## Transient false-color corruption (2026-10-05, UAOS-265)
+
+The audit's pink/magenta full-screen frames below a horizontal boundary
+(faint ghosted window/text outlines, self-healing on repaint) traced to
+stale Intuition screen/window ownership, not hardware: an M68k task's
+guest `BitMap`/`ColorMap` lives in its private RAM window, and after the
+task exited its screen slot stayed `active`/`is_front`, so the planar
+emit decoded freed or foreign memory through ambient `g_ram` — the
+nibble-quantized OCS palette in the corrupt frame was a foreign ColorMap.
+`UAOS_Intuition_CleanupTask()` now retires the dying task's slots before
+its window is released (`Task_Exit`/`stub_RemTask`), and every emit path
+guards orphaned owners. QEMU-verified via `Demos:LeakTest` (opens a
+screen+window, exits) across repeated cycles; metal re-verify pending.

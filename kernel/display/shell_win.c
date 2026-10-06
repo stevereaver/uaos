@@ -186,6 +186,9 @@ struct ShellInstance {
      * MAX_SHELLS..TOTAL_SHELLS-1 and have wm_handle == -1. */
     int          remote;         /* 1 = remote session, not a WM window */
     int          remote_sock;    /* TCP socket index, -1 when detached */
+    uint32_t     remote_gen;     /* socket's connection generation — the
+                                  * index alone can be recycled to a new
+                                  * connection under us (UAOS-263) */
     volatile int remote_dead;    /* 1 = session over; task should exit */
     volatile int remote_inuse;   /* 1 = remote slot allocated */
     int          remote_noecho;  /* 1 = peer sent DONT ECHO (linemode
@@ -341,9 +344,14 @@ static void remote_send_raw(ShellInstance *s, const uint8_t *data, int len)
     uint64_t stall_start = g_pit_ticks;
     while (len > 0) {
         int chunk = len > 1400 ? 1400 : len;   /* stay under one segment */
-        int sent = tcp_send(s->remote_sock, data, (uint16_t)chunk);
+        /* Generation-checked send: tcp_rx/tcp_tick can retire the socket
+         * and reissue its slot while we hold the bare index — without the
+         * gen token a stale session would write its output onto somebody
+         * else's connection (UAOS-263). */
+        int sent = tcp_conn_send(s->remote_sock, s->remote_gen,
+                                 data, (uint16_t)chunk);
         if (sent <= 0) {
-            TcpState t = tcp_state(s->remote_sock);
+            TcpState t = tcp_conn_state(s->remote_sock, s->remote_gen);
             if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) {
                 s->remote_dead = 1;
                 return;
@@ -6135,8 +6143,18 @@ static void shell_task_entry(void *arg)
     for (;;) {
         char c;
         /* Remote session ended (peer disconnect or ENDCLI) — release
-         * the slot so the daemon can hand it to a new connection. */
+         * the slot so the daemon can hand it to a new connection.  The
+         * socket-nobody-closed case is covered too: if the pump task is
+         * gone without having closed the socket (task lost before its
+         * cleanup ran), the generation check sees our connection either
+         * dead or still live — a live one is ours to close here as the
+         * backstop so it cannot leak in ESTABLISHED (UAOS-263). */
+        if (s->remote && s->remote_sock >= 0 &&
+            tcp_conn_state(s->remote_sock, s->remote_gen) == TCP_CLOSED)
+            s->remote_dead = 1;
         if (s->remote && s->remote_dead) {
+            if (s->remote_sock >= 0)
+                tcp_conn_close(s->remote_sock, s->remote_gen);
             s->remote_inuse = 0;
             s->remote_sock  = -1;
             Task_Exit();
@@ -6235,7 +6253,7 @@ static ShellInstance *open_shell(int stagger)
  * are sent synchronously from the caller's context.
  * ========================================================================= */
 
-static ShellInstance *open_remote_shell(int sock)
+static ShellInstance *open_remote_shell(int sock, uint32_t gen)
 {
     for (int i = MAX_SHELLS; i < TOTAL_SHELLS; i++) {
         ShellInstance *s = &g_shells[i];
@@ -6246,6 +6264,7 @@ static ShellInstance *open_remote_shell(int sock)
         s->index      = i;
         s->remote     = 1;
         s->remote_sock= sock;
+        s->remote_gen = gen;
         s->remote_dead= 0;
         s->remote_noecho = 0;
         s->remote_token = g_remote_token_next++;
@@ -6295,6 +6314,16 @@ static ShellInstance *open_remote_shell(int sock)
         remote_send_prompt(s);
 
         s->task = Task_CreateNative("Shell", 0, shell_task_entry, s);
+        if (!s->task) {
+            /* No session task means nothing ever services input or
+             * clears remote_inuse — the slot would stay claimed forever
+             * (UAOS-263).  Roll back so the caller falls into the busy
+             * path and the slot can be handed out again. */
+            s->remote_inuse = 0;
+            s->remote_sock  = -1;
+            s->remote_token = 0;
+            return NULL;
+        }
         return s;
     }
     return NULL;
@@ -6486,9 +6515,9 @@ static ShellInstance *remote_from_handle(void *h)
     return s;
 }
 
-void *ShellWin_RemoteOpen(int tcp_sock)
+void *ShellWin_RemoteOpen(int tcp_sock, uint32_t gen)
 {
-    ShellInstance *s = open_remote_shell(tcp_sock);
+    ShellInstance *s = open_remote_shell(tcp_sock, gen);
     if (!s) return NULL;
     return (void *)(uintptr_t)(((uintptr_t)s->remote_token << 16) |
                                (uintptr_t)(s->index + 1));
@@ -6518,4 +6547,22 @@ void ShellWin_RemoteSetEcho(void *session, int on)
     ShellInstance *s = remote_from_handle(session);
     if (!s) return;
     s->remote_noecho = !on;
+}
+
+/* Task_Exit hook — a remote session's Shell task that dies without
+ * reaching shell_task_entry's exit path (RemTask-style removal skips
+ * Task_Exit cleanup) would pin remote_inuse forever, permanently
+ * consuming the slot (UAOS-263).  Freeing the slot is enough: the
+ * session's pump sees RemoteIsDead and closes the socket. */
+void ShellWin_RemoteCleanupTask(void *task)
+{
+    if (!task) return;
+    for (int i = MAX_SHELLS; i < TOTAL_SHELLS; i++) {
+        ShellInstance *s = &g_shells[i];
+        if (s->remote_inuse && s->task == task) {
+            s->remote_dead  = 1;
+            s->remote_inuse = 0;
+            s->remote_sock  = -1;
+        }
+    }
 }

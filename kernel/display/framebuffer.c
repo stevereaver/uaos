@@ -6,6 +6,7 @@
  */
 
 #include "framebuffer.h"
+#include "../klog/klog.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>   /* memcpy for dirty-rect flip */
@@ -218,6 +219,74 @@ int FB_BackbufCoherent(void)
     /* Authoritative while drawing (the in-flight frame lives there) and
      * after a full-screen flip has pushed every pixel. */
     return g_drawing || g_bb_coherent;
+}
+
+/* UAOS-265 diagnostic: spot-check that the back buffer and VRAM agree at a
+ * few bare-desktop sample points.  Called once per event-pump iteration.
+ * Any divergence means a writer touched one buffer but not the other, or a
+ * frame ran with a non-default palette — log the evidence to the ring,
+ * once per divergence episode per sample point. */
+void FB_Watchdog(void)
+{
+    if (!g_fb.valid || g_drawing || g_fb.bpp != 32) return;
+
+    static const int rel[3][2] = { {24, -12}, {-24, -12}, {0, -40} };
+    static int alarmed[3];
+    static int alien_alarm = 0;
+    uint8_t *vram = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    for (int i = 0; i < 3; i++) {
+        int x = rel[i][0] >= 0 ? rel[i][0] : (int)g_fb.width + rel[i][0];
+        int y = (int)g_fb.height + rel[i][1];
+        if (x < 0 || x >= BB_MAX_W || y < 0 || y >= BB_MAX_H ||
+            x >= (int)g_fb.width) continue;
+        uint32_t bb = g_backbuf[y][x];
+        uint32_t vv = *(volatile uint32_t *)(vram + (uint32_t)y * g_fb.pitch
+                                             + (uint32_t)x * 4);
+        int bad = (bb != vv);
+        if (bad != alarmed[i]) {
+            alarmed[i] = bad;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "fbwatch: (%d,%d) %s bb=%06x vram=%06x coh=%d grey=%06x",
+                 x, y, bad ? "DIVERGE" : "heal",
+                 (unsigned)(bb & 0xFFFFFF), (unsigned)(vv & 0xFFFFFF),
+                 g_bb_coherent, (unsigned)(WB_GREY & 0xFFFFFF));
+        }
+    }
+
+    /* Alien-flood probe: sample a coarse grid in the lower half of the back
+     * buffer and count pixels matching no WB_* palette entry.  A UAOS-265
+     * event floods broad regions in palette-external colours — if >= 4 of 12
+     * samples are alien, dump the evidence once per episode. */
+    {
+        static const int gx[4] = { 40, 200, 500, 800 };
+        static const int gy[3] = { -30, -80, -140 };
+        int alien = 0;
+        uint32_t seen[4] = { 0, 0, 0, 0 };
+        int nseen = 0;
+        for (int r = 0; r < 3; r++) {
+            int y = (int)g_fb.height + gy[r];
+            for (int cix = 0; cix < 4; cix++) {
+                int x = gx[cix];
+                if (x >= (int)g_fb.width || y < 0) continue;
+                uint32_t p = g_backbuf[y][x] & 0xFFFFFF;
+                if (p == WB_GREY || p == WB_LIGHT_GREY || p == WB_DARK_GREY ||
+                    p == WB_BLACK || p == WB_WHITE || p == WB_BLUE ||
+                    p == WB_LIGHT_BLUE || p == WB_ORANGE || p == WB_CREAM ||
+                    p == WB_RED || p == WB_GREEN) continue;
+                alien++;
+                if (nseen < 4) seen[nseen++] = p;
+            }
+        }
+        int is_alien = (alien >= 4);
+        if (is_alien != alien_alarm) {
+            alien_alarm = is_alien;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "fbwatch: %s n=%d c=%06x,%06x,%06x,%06x grey=%06x coh=%d",
+                 is_alien ? "ALIEN" : "alien-heal", alien,
+                 seen[0], seen[1], seen[2], seen[3],
+                 (unsigned)(WB_GREY & 0xFFFFFF), g_bb_coherent);
+        }
+    }
 }
 
 void FB_Flip(void)

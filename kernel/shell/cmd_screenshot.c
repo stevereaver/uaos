@@ -17,6 +17,7 @@
 #include "../display/framebuffer.h"
 #include "../display/jpeg_enc.h"
 #include "../irq/rtc.h"
+#include "../klog/klog.h"
 #include "../net/ntp.h"
 #include "../net/timezone.h"
 
@@ -37,9 +38,32 @@ static int shot_write(void *ud, const uint8_t *data, uint32_t len)
     return 0;
 }
 
+static int g_shot_src = -1;   /* UAOS-265 diag: which buffer GetPixel used */
+
 static uint32_t shot_pixel(void *ud, int x, int y)
 {
     (void)ud;
+    /* The corruption in UAOS-265 is a torn frame: rows below an MCU
+     * boundary show an alien render.  Log the sampled-source at MCU row
+     * starts and cross-check a sparse grid against raw VRAM so we can tell
+     * "backbuf torn mid-encode" from "VRAM-only writer". */
+    if (x == 0 && (y & 15) == 0) {
+        int src = FB_BackbufCoherent();
+        if (src != g_shot_src)
+            klog_emit(KLOG_DISP, KLOG_WARN,
+                      "shot: src %d->%d at y=%d", g_shot_src, src, y);
+        g_shot_src = src;
+        if (g_fb.valid && g_fb.bpp == 32) {
+            uint32_t vv = *(volatile uint32_t *)
+                ((uint8_t *)(uintptr_t)g_fb.phys_addr +
+                 (uint32_t)y * g_fb.pitch);
+            uint32_t bb = FB_GetPixel(x, y);
+            if (vv != bb)
+                klog_emit(KLOG_DISP, KLOG_WARN,
+                          "shot: y=%d bb=%06x vram=%06x", y,
+                          (unsigned)(bb & 0xFFFFFF), (unsigned)(vv & 0xFFFFFF));
+        }
+    }
     return FB_GetPixel(x, y);
 }
 
@@ -158,9 +182,15 @@ void Cmd_Screenshot(NativeCmdCtx *ctx, const char *args)
     ShotSink sink;
     sink.fh = &fh; sink.bytes = 0; sink.err = 0;
 
+    g_shot_src = -1;
+    klog_emit(KLOG_DISP, KLOG_WARN, "shot: begin %ux%u coh=%d grey=%06x",
+              (unsigned)g_fb.width, (unsigned)g_fb.height,
+              FB_BackbufCoherent(), (unsigned)(WB_GREY & 0xFFFFFF));
     int rc = Jpeg_Encode(shot_write, &sink, shot_pixel, NULL,
                          (int)g_fb.width, (int)g_fb.height, quality);
     VFS_Close(&fh);
+    klog_emit(KLOG_DISP, KLOG_WARN, "shot: end coh=%d grey=%06x rc=%d",
+              FB_BackbufCoherent(), (unsigned)(WB_GREY & 0xFFFFFF), rc);
 
     if (rc || sink.err) {
         VFS_Delete(path);

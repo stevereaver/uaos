@@ -98,6 +98,10 @@ int  VFS_Open(VfsFile *fh, const char *path, int flags);
 /* Close a file handle. */
 void VFS_Close(VfsFile *fh);
 
+/* Release a handler-backed lock handle (sends ACTION_FREE_LOCK so the
+ * handler frees its lock node).  Safe fallback when no handler remains. */
+void VFS_FreeLock(uint32_t handle);
+
 /* Read up to len bytes into buf.  Returns bytes read. */
 uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len);
 

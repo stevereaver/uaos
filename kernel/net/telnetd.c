@@ -97,8 +97,15 @@ static uint16_t     g_port    = 0;   /* port the listener is bound to */
 typedef struct {
     volatile int inuse;
     int          sock;
+    uint32_t     conn_gen;    /* socket's connection generation — the pump
+                               * must never act on a recycled slot whose
+                               * index it still holds (UAOS-263) */
     void        *sess;
     uint32_t     gen;
+    void        *task;        /* the pump task itself — lets Task_Exit's
+                               * cleanup hook reclaim the ctx, session and
+                               * socket if the task dies without running
+                               * its exit path (UAOS-263) */
     ipv4_t       peer_ip;     /* for connect/disconnect logging + STATUS */
     uint16_t     peer_port;
     uint64_t     t_connect;   /* PIT tick when the session was accepted */
@@ -108,15 +115,17 @@ static PumpCtx           g_pump_ctx[TCP_MAX_SOCKETS];
 static volatile int      g_pump_count  = 0;
 static volatile uint32_t g_generation  = 0;
 
-static int send_buf(int sock, const uint8_t *b, int len)
+static int send_buf(int sock, uint32_t gen, const uint8_t *b, int len)
 {
     /* tcp_send allows only one in-flight segment per socket and returns
      * 0 while busy — keep retrying so negotiation bytes are not dropped,
-     * but bound the wait (~250 ms) so a dead peer cannot wedge us. */
+     * but bound the wait (~250 ms) so a dead peer cannot wedge us.  All
+     * socket ops are generation-checked: if our socket was retired and
+     * the slot reissued, they fail instead of touching the new tenant. */
     uint64_t deadline = g_pit_ticks + 25;
     for (;;) {
-        if (tcp_send(sock, b, (uint16_t)len) > 0) return 1;
-        TcpState t = tcp_state(sock);
+        if (tcp_conn_send(sock, gen, b, (uint16_t)len) > 0) return 1;
+        TcpState t = tcp_conn_state(sock, gen);
         if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) return 0;
         if (g_pit_ticks >= deadline) return 0;
         net_stack_poll();
@@ -124,10 +133,10 @@ static int send_buf(int sock, const uint8_t *b, int len)
     }
 }
 
-static void send_neg(int sock, uint8_t cmd, uint8_t opt)
+static void send_neg(int sock, uint32_t gen, uint8_t cmd, uint8_t opt)
 {
     uint8_t b[3] = { TN_IAC, cmd, opt };
-    send_buf(sock, b, 3);
+    send_buf(sock, gen, b, 3);
 }
 
 /* One-shot initial negotiation — ask the client to let us echo and to
@@ -136,21 +145,22 @@ static void send_neg(int sock, uint8_t cmd, uint8_t opt)
  * still be in flight when the next arrives and tcp_send would drop it —
  * a client that sees WILL ECHO but not WILL SGA switches off local echo
  * yet stays in line mode, so typed keys stay invisible until Enter. */
-static void send_greeting_neg(int sock)
+static void send_greeting_neg(int sock, uint32_t gen)
 {
     static const uint8_t neg[] = {
         TN_IAC, TN_WILL, TN_OPT_ECHO,
         TN_IAC, TN_WILL, TN_OPT_SGA,
         TN_IAC, TN_DO,   TN_OPT_SGA
     };
-    send_buf(sock, neg, (int)sizeof(neg));
+    send_buf(sock, gen, neg, (int)sizeof(neg));
 }
 
 /* Feed a data byte through the NVT filter into the shell.
  * st[] carries: [0] parser state, [1] saved neg command, [2] first CSI
  * parameter digit (0 = none seen).  Returns the byte to enqueue —
  * including the negative SHELL_VKEY_* codes — or -1 to drop it. */
-static int nvt_filter(uint8_t *st, uint8_t c, int sock, void *sess)
+static int nvt_filter(uint8_t *st, uint8_t c, int sock, uint32_t gen,
+                    void *sess)
 {
     switch (*st) {
     case NVT_IAC:
@@ -184,7 +194,7 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock, void *sess)
             /* Are You There — the classic liveness check: answer with
              * a short banner so the client sees the session is alive. */
             *st = NVT_DATA;
-            send_buf(sock, (const uint8_t *)"\r\n[UAOS yes]\r\n", 14);
+            send_buf(sock, gen, (const uint8_t *)"\r\n[UAOS yes]\r\n", 14);
             return -1;
         default:
             *st = NVT_DATA;
@@ -206,9 +216,9 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock, void *sess)
             uint8_t cmd = st[1];
             st[1] = 0;
             if (cmd == TN_DO && c != TN_OPT_ECHO && c != TN_OPT_SGA)
-                send_neg(sock, TN_WONT, c);
+                send_neg(sock, gen, TN_WONT, c);
             if (cmd == TN_WILL && c != TN_OPT_SGA)
-                send_neg(sock, TN_DONT, c);
+                send_neg(sock, gen, TN_DONT, c);
             /* DONT ECHO — the client declined our WILL ECHO and does
              * its own echo (linemode): suppress our per-keystroke line
              * repaint or it would double every character. */
@@ -285,7 +295,7 @@ static int nvt_filter(uint8_t *st, uint8_t c, int sock, void *sess)
          * else means the CR stood alone: re-filter this byte as data. */
         *st = NVT_DATA;
         if (c == '\n' || c == 0) return -1;
-        return nvt_filter(st, c, sock, sess);
+        return nvt_filter(st, c, sock, gen, sess);
     case NVT_DATA:
     default:
         if (c == TN_IAC) { *st = NVT_IAC; return -1; }
@@ -307,8 +317,10 @@ static void pump_task(void *arg)
 {
     PumpCtx *ctx  = (PumpCtx *)arg;
     int      sock = ctx->sock;
+    uint32_t cgen = ctx->conn_gen;   /* connection identity — see below */
     void    *sess = ctx->sess;
     uint32_t gen  = ctx->gen;
+    ctx->task = Task_Current();      /* for Telnetd_CleanupTask() */
 
     /* nvt state: [0] = state, [1] = saved neg cmd, [2] = CSI param digit */
     uint8_t st[3] = { NVT_DATA, 0, 0 };
@@ -334,12 +346,18 @@ static void pump_task(void *arg)
         if (g_stop || gen != g_generation || !net_stack_is_up())
             break;
 
-        /* Socket gone (peer closed / RST / probe retx exhaustion) */
-        TcpState t = tcp_state(sock);
+        /* Socket gone (peer closed / RST / probe retx exhaustion) — or
+         * the slot was retired under us and reissued to a different
+         * connection: tcp_rx/tcp_tick free sockets asynchronously, so a
+         * bare index is not proof of ownership.  The generation check
+         * reports CLOSED on any mismatch — without it a slow pump would
+         * steal a recycled slot's input and, on exit, close a live
+         * connection that isn't ours (UAOS-263). */
+        TcpState t = tcp_conn_state(sock, cgen);
         if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT)
             break;
 
-        int n = tcp_recv(sock, buf, sizeof(buf));
+        int n = tcp_conn_recv(sock, cgen, buf, sizeof(buf));
         /* Half-close: peer sent FIN and RX buffer is drained */
         if (n <= 0 && t == TCP_CLOSE_WAIT)
             break;
@@ -353,7 +371,7 @@ static void pump_task(void *arg)
             if (st[0] == NVT_IAC &&
                 (c == TN_WILL || c == TN_WONT || c == TN_DO || c == TN_DONT))
                 st[1] = c;
-            int k = nvt_filter(st, c, sock, sess);
+            int k = nvt_filter(st, c, sock, cgen, sess);
             if (k != -1) {
                 /* A pasted burst can fill the shell's key queue while a
                  * command runs.  Wait for the session to drain it rather
@@ -382,13 +400,14 @@ static void pump_task(void *arg)
             uint64_t idle = g_pit_ticks - last_rx;
             if (!probed && idle >= TELNETD_IDLE_PROBE_TICKS) {
                 static const uint8_t ayt[] = { TN_IAC, TN_AYT };
-                send_buf(sock, ayt, (int)sizeof(ayt));
+                send_buf(sock, cgen, ayt, (int)sizeof(ayt));
                 probed = 1;
             }
             if (idle >= TELNETD_IDLE_TICKS) {
                 static const char to[] =
                     "\r\n[telnetd: idle timeout — closing]\r\n";
-                send_buf(sock, (const uint8_t *)to, (int)sizeof(to) - 1);
+                send_buf(sock, cgen, (const uint8_t *)to,
+                         (int)sizeof(to) - 1);
                 break;
             }
         }
@@ -423,14 +442,15 @@ static void pump_task(void *arg)
         ShellWin_RemoteKill(sess);
     if (net_stack_is_up()) {
         static const char bye[] = "\r\n[session closed]\r\n";
-        send_buf(sock, (const uint8_t *)bye, (int)sizeof(bye) - 1);
-        tcp_close(sock);
+        send_buf(sock, cgen, (const uint8_t *)bye, (int)sizeof(bye) - 1);
+        tcp_conn_close(sock, cgen);
     } else {
-        tcp_abort(sock);
+        tcp_conn_abort(sock, cgen);
     }
     uint64_t fl = irq_save();
     g_pump_count--;
     irq_restore(fl);
+    ctx->task  = NULL;
     ctx->inuse = 0;
     Task_Exit();
 }
@@ -456,7 +476,8 @@ static void telnetd_task(void *arg)
      * when no slot (or pump context) is free the connection is answered
      * with a busy banner and closed rather than left silent. */
     while (!g_stop && net_stack_is_up()) {
-        int csock = tcp_accept(lsock);
+        uint32_t cgen = 0;
+        int csock = tcp_accept(lsock, &cgen);
         if (csock >= 0) {
             /* Log every accepted connection (peer ip:port) — an
              * unauthenticated service should at least leave a trace. */
@@ -471,8 +492,8 @@ static void telnetd_task(void *arg)
                 kprintdec(peer_port);
                 kprint("\n");
             }
-            send_greeting_neg(csock);
-            void *sess = ShellWin_RemoteOpen(csock);
+            send_greeting_neg(csock, cgen);
+            void *sess = ShellWin_RemoteOpen(csock, cgen);
             PumpCtx *ctx = NULL;
             if (sess) {
                 for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
@@ -482,12 +503,14 @@ static void telnetd_task(void *arg)
             if (!sess || !ctx) {
                 static const char busy[] =
                     "\r\nUAOS: no remote shell slots free, try later\r\n";
-                send_buf(csock, (const uint8_t *)busy, (int)sizeof(busy) - 1);
-                tcp_close(csock);
+                send_buf(csock, cgen,
+                         (const uint8_t *)busy, (int)sizeof(busy) - 1);
+                tcp_conn_close(csock, cgen);
                 if (sess) ShellWin_RemoteKill(sess);
             } else {
                 ctx->inuse     = 1;
                 ctx->sock      = csock;
+                ctx->conn_gen  = cgen;
                 ctx->sess      = sess;
                 ctx->gen       = g_generation;
                 ctx->peer_ip   = peer_ip;
@@ -503,7 +526,7 @@ static void telnetd_task(void *arg)
                     g_pump_count--;
                     irq_restore(fl);
                     ShellWin_RemoteKill(sess);
-                    tcp_close(csock);
+                    tcp_conn_close(csock, cgen);
                 }
             }
         }
@@ -575,6 +598,30 @@ int Telnetd_IsRunning(void)
 uint16_t Telnetd_Port(void)
 {
     return g_port;
+}
+
+/* Task_Exit hook — a pump task that dies without reaching its exit path
+ * (RemTask-style removal skips Task_Exit cleanup) would otherwise leak
+ * its socket — ESTABLISHED has no stack-side bound — plus the remote
+ * shell slot and this pump context (UAOS-263). */
+void Telnetd_CleanupTask(void *task)
+{
+    if (!task) return;
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        PumpCtx *ctx = &g_pump_ctx[i];
+        if (!ctx->inuse || ctx->task != task) continue;
+        if (!ShellWin_RemoteIsDead(ctx->sess))
+            ShellWin_RemoteKill(ctx->sess);
+        if (net_stack_is_up())
+            tcp_conn_close(ctx->sock, ctx->conn_gen);
+        else
+            tcp_conn_abort(ctx->sock, ctx->conn_gen);
+        uint64_t fl = irq_save();
+        g_pump_count--;
+        irq_restore(fl);
+        ctx->task  = NULL;
+        ctx->inuse = 0;
+    }
 }
 
 int Telnetd_SessionInfo(int idx, ipv4_t *ip, uint16_t *port,

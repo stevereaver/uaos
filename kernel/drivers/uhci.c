@@ -151,6 +151,9 @@ typedef struct {
     uint32_t    poll_usbint;      /* USBSTS.USBINT found latched by poll */
     uint64_t    t_irq_armed;      /* tick when USBINTR was enabled */
     int         irq_dead_logged;  /* one-shot "irq silent" warning */
+    uint32_t    cf_n;             /* consecutive ctrl-fail count (dump
+                                   * throttle, UAOS-262) — resets on the
+                                   * first successful transfer */
 } UhciHc;
 
 #define MAX_UHCI 6
@@ -350,17 +353,31 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
     int sched = (Task_Current() != NULL);
     int max_iter = sched ? 56 : 500;        /* 6 ms spin + ~500 ms sleep */
     int err = -1;
+    int deaf = 0;                           /* HC never ran the chain */
+    int dead_ms = 0;                        /* ms with zero TD progress */
     for (int i = 0; i < max_iter; i++) {
         if (!(tds[ntd - 1].status & TD_ST_ACTIVE)) { err = 0; break; }
-        int harderr = 0;
+        int harderr = 0, progress = 0;
         for (int t = 0; t < ntd - 1; t++) {
             uint32_t st = tds[t].status;
             if (!(st & TD_ST_ACTIVE) && (st & TD_ST_ERRMSK)) {
                 harderr = 1;
                 break;
             }
+            if (!(st & TD_ST_ACTIVE)) progress = 1;
         }
         if (harderr) break;
+        /* Every TD still ACTIVE and no error bits means the HC has
+         * never walked the QH (dead port, wedged schedule): on real
+         * silicon a visited TD either retires or errors out within a
+         * few frames.  Waiting the full ~500 ms per transfer anyway
+         * let the enum retry storm burn ~20 s per deaf port
+         * (UAOS-262).  ~40 ms of zero progress is dead air. */
+        if (progress) dead_ms = 0;
+        else if ((dead_ms += (i < 6 || !sched) ? 1 : 10) >= 40) {
+            deaf = 1;
+            break;
+        }
         if (i < 6 || !sched) msleep(1);
         else                 Task_SleepTicks(1);
     }
@@ -384,36 +401,65 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
         if (bad < 0)
             for (int i = 0; i < ntd; i++)
                 if (tds[i].status & TD_ST_ACTIVE) { bad = i; break; }
+        /* -2 = "deaf": nobody answered — wire timeout/CRC, a TD NAKed
+         * until CERR expired, or the chain never ran at all.  Retrying
+         * an unanswered request is pointless, so callers can back off
+         * sooner (UAOS-262).  A bare STALL is a live device talking
+         * protocol — stays -1. */
+        uint32_t badst = (bad >= 0) ? tds[bad].status : 0;
+        if (deaf || (badst & (TD_ST_CRC | TD_ST_NAK | TD_ST_ACTIVE)))
+            err = -2;
         const char *stage = (bad < 0)         ? "all-retired" :
                             (bad == 0)        ? "setup" :
                             (bad == ntd - 1)  ? "status" : "data";
 
-        klog_puts(KLOG_USB, KLOG_WARN, "uhci: ctrl fail req=");
-        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)bReq);
-        klog_puts(KLOG_USB, KLOG_WARN, " wval=");
-        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)wVal);
-        klog_puts(KLOG_USB, KLOG_WARN, " dev=");
-        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->addr);
-        klog_puts(KLOG_USB, KLOG_WARN, " port=");
-        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
-        klog_puts(KLOG_USB, KLOG_WARN, " stage=");
-        klog_puts(KLOG_USB, KLOG_WARN, stage);
-        if (dev->port >= 0 && dev->port <= 1) {
-            klog_puts(KLOG_USB, KLOG_WARN, " psc=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
-                         rg16(h, (uint16_t)(U_PORTSC1 + dev->port * 2)));
+        /* An unanswered port fails identically dozens of times during
+         * the enum backoff retries — ~50 dumps once evicted half the
+         * klog ring at boot (UAOS-262).  Keep the first two failures
+         * verbose, then a one-line marker at power-of-two counts; a
+         * successful transfer resets the run. */
+        if (++h->cf_n <= 2) {
+            klog_puts(KLOG_USB, KLOG_WARN, "uhci: ctrl fail req=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)bReq);
+            klog_puts(KLOG_USB, KLOG_WARN, " wval=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)wVal);
+            klog_puts(KLOG_USB, KLOG_WARN, " dev=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->addr);
+            klog_puts(KLOG_USB, KLOG_WARN, " port=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
+            klog_puts(KLOG_USB, KLOG_WARN, " stage=");
+            klog_puts(KLOG_USB, KLOG_WARN, stage);
+            if (dev->port >= 0 && dev->port <= 1) {
+                klog_puts(KLOG_USB, KLOG_WARN, " psc=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                             rg16(h, (uint16_t)(U_PORTSC1 + dev->port * 2)));
+            }
+            klog_puts(KLOG_USB, KLOG_WARN, " sts=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_USBSTS));
+            klog_puts(KLOG_USB, KLOG_WARN, " frnum=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_FRNUM));
+            for (int i = 0; i < ntd; i++) {
+                klog_puts(KLOG_USB, KLOG_WARN, " td");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+                klog_puts(KLOG_USB, KLOG_WARN, "=");
+                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", tds[i].status);
+            }
+            klog_puts(KLOG_USB, KLOG_WARN, "\n");
+        } else if (!(h->cf_n & (h->cf_n - 1))) {
+            klog_puts(KLOG_USB, KLOG_WARN, "uhci: ctrl fail x");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", h->cf_n);
+            klog_puts(KLOG_USB, KLOG_WARN, " req=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)bReq);
+            klog_puts(KLOG_USB, KLOG_WARN, " dev=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->addr);
+            klog_puts(KLOG_USB, KLOG_WARN, " port=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
+            klog_puts(KLOG_USB, KLOG_WARN, " stage=");
+            klog_puts(KLOG_USB, KLOG_WARN, stage);
+            klog_puts(KLOG_USB, KLOG_WARN, " (suppressed)\n");
         }
-        klog_puts(KLOG_USB, KLOG_WARN, " sts=");
-        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_USBSTS));
-        klog_puts(KLOG_USB, KLOG_WARN, " frnum=");
-        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_FRNUM));
-        for (int i = 0; i < ntd; i++) {
-            klog_puts(KLOG_USB, KLOG_WARN, " td");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
-            klog_puts(KLOG_USB, KLOG_WARN, "=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", tds[i].status);
-        }
-        klog_puts(KLOG_USB, KLOG_WARN, "\n");
+    } else {
+        h->cf_n = 0;
     }
 
     qh_remove(h, qh);

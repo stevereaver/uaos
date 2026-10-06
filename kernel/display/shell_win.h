@@ -67,10 +67,14 @@ void ShellWin_DispatchLine(const char *line);
 #define SHELL_VKEY_END    KBD_VKEY_END
 #define SHELL_VKEY_DEL    KBD_VKEY_DEL
 
-/* Open a remote shell session bound to an accepted TCP socket index.
- * Sends the banner and prompt immediately, then spawns the session task.
- * Returns an opaque session handle, or NULL if no remote slot is free. */
-void *ShellWin_RemoteOpen(int tcp_sock);
+/* Open a remote shell session bound to an accepted TCP socket index and
+ * its connection-generation token (tcp_accept's gen_out).  The token lets
+ * the session prove the socket index still names its own connection —
+ * slots are retired and reissued asynchronously by tcp_rx/tcp_tick
+ * (UAOS-263).  Sends the banner and prompt immediately, then spawns the
+ * session task.  Returns an opaque session handle, or NULL if no remote
+ * slot is free. */
+void *ShellWin_RemoteOpen(int tcp_sock, uint32_t gen);
 
 /* Feed one character into the session's input queue (NVT-decoded by the
  * caller: printable ASCII, '\r', '\b', '\t', or SHELL_VKEY_*).  Feeding
@@ -96,5 +100,10 @@ void  ShellWin_RemoteKill(void *session);
  * per-keystroke line repaint is suppressed so it does not double the
  * display.  Command output and prompts still flow.  Default on. */
 void  ShellWin_RemoteSetEcho(void *session, int on);
+
+/* Task_Exit hook: release any remote shell slot whose session task died
+ * without running its exit path (UAOS-263).  Same pattern as
+ * usock_cleanup_task()/Telnetd_CleanupTask(). */
+void  ShellWin_RemoteCleanupTask(void *task);
 
 #endif

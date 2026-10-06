@@ -16,10 +16,12 @@
 #include "../display/wm.h"
 #include "../net/stack.h"
 #include "../net/usock.h"
+#include "../net/telnetd.h"
 #include "../display/shell_win.h"
 #include "../display/blanker.h"
 #include "intuition_lib.h"
 #include "memcheck.h"
+#include "../dos/handle_table.h"
 #include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -109,6 +111,12 @@ static uint64_t g_ready_map[4];      /* bit i set if ready queue i is non-empty 
 static UaosTask g_wait_head;
 static int      g_wait_count = 0;
 
+/* Per-slot votes for the stranded-task scan in Task_WakeTimers — a task
+ * must be seen unlinked-but-active on two consecutive ticks before it
+ * is re-linked, so the list_init->enqueue window during task creation
+ * is never mistaken for a strand (UAOS-265). */
+static uint8_t g_strand_votes[MAX_TASKS];
+
 /* -------------------------------------------------------------------------
  * Helpers
  * ------------------------------------------------------------------------- */
@@ -158,18 +166,29 @@ static inline int pri_to_idx(int8_t pri)
  * Ready queue management
  * ------------------------------------------------------------------------- */
 
+/* Every queue primitive runs IRQ-atomic: the int $0x80 gate is a trap
+ * gate that preserves IF, so do_schedule(0) reached via Task_Yield /
+ * Task_CheckResched / Task_Exit executes these with interrupts live,
+ * and task creation runs under Forbid which does not mask IRQs either.
+ * An IRQ-side Signal/dequeue/schedule landing between the node and head
+ * stores tears the list — observed as the EventPump node half-linked
+ * into the pri-0 head (queue self-linked, node pointing in), stranding
+ * a READY/WAITING task the scheduler could never reach (UAOS-265). */
 void ready_enqueue(UaosTask *task)
 {
+    uint64_t fl = irq_save();
     int idx = pri_to_idx(task->ln_Pri);
     list_append(&g_ready_heads[idx], task);
     g_ready_map[idx >> 6] |= 1ULL << (idx & 63);
     task->tc_State = TASK_READY;
+    irq_restore(fl);
 }
 
 /* Remove a task from its ready queue (e.g. SetTaskPri reprioritising).
  * Caller must guarantee the task is currently queued. */
 void ready_remove(UaosTask *task)
 {
+    uint64_t fl = irq_save();
     int idx = pri_to_idx(task->ln_Pri);
     uint64_t bit = 1ULL << (idx & 63);
     list_remove(task);
@@ -179,10 +198,13 @@ void ready_remove(UaosTask *task)
     g_ready_map[idx >> 6] &= ~bit;
     if (!list_empty(&g_ready_heads[idx]))
         g_ready_map[idx >> 6] |= bit;
+    irq_restore(fl);
 }
 
 static UaosTask *ready_dequeue_highest(void)
 {
+    UaosTask *res = NULL;
+    uint64_t fl = irq_save();
     /* Highest set bitmap bit = highest non-empty priority queue. */
     for (int w = 3; w >= 0; w--) {
         while (g_ready_map[w]) {
@@ -196,12 +218,17 @@ static UaosTask *ready_dequeue_highest(void)
             g_ready_map[w] &= ~(1ULL << (idx & 63));
             if (!list_empty(&g_ready_heads[idx]))
                 g_ready_map[w] |= 1ULL << (idx & 63);
-            if (t->tc_State != TASK_REMOVED)
-                return t;
+            if (!t) continue;   /* map bit set but queue drained */
+            if (t->tc_State != TASK_REMOVED) {
+                res = t;
+                goto out;
+            }
             /* Marked REMOVED while still queued (e.g. RemTask): drop it. */
         }
     }
-    return NULL;
+out:
+    irq_restore(fl);
+    return res;
 }
 
 /* -------------------------------------------------------------------------
@@ -210,15 +237,19 @@ static UaosTask *ready_dequeue_highest(void)
 
 static void wait_enqueue(UaosTask *task)
 {
+    uint64_t fl = irq_save();
     list_append(&g_wait_head, task);
     g_wait_count++;
     task->tc_State = TASK_WAITING;
+    irq_restore(fl);
 }
 
 void wait_remove(UaosTask *task)
 {
+    uint64_t fl = irq_save();
     list_remove(task);
     if (g_wait_count > 0) g_wait_count--;
+    irq_restore(fl);
 }
 
 /* -------------------------------------------------------------------------
@@ -261,7 +292,10 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
     list_init(t);
 
     t->tc_Flags = 0;
-    t->tc_State = TASK_READY;
+    /* REMOVED until ready_enqueue() births the task: g_task_count was
+     * already bumped above, so IRQ-side walkers (WakeTimers, diag dumps)
+     * can see this slot before it is fully built and linked. */
+    t->tc_State = TASK_REMOVED;
     t->tc_IDNestCnt = 0;
     t->tc_TDNestCnt = 0;
     t->tc_SigAlloc = 0xFFFF;
@@ -381,6 +415,18 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     UaosTask *t = &g_tasks[slot];
     uint8_t *stack = g_task_stacks[slot];
 
+    /* A REMOVED task can still be linked into a ready queue (RemTask on
+     * a READY victim leaves it queued for the next dequeue to drop) —
+     * unlink it before memset, or the zeroed node would sever whatever
+     * list it sat in and strand its neighbours (UAOS-265).  Fresh slots
+     * have ln_Succ == NULL and skip the unlink. */
+    {
+        uint64_t fl = irq_save();
+        if (t->ln_Succ != NULL && t->ln_Succ != t)
+            list_remove(t);
+        irq_restore(fl);
+    }
+
     for (int i = 0; i < (int)sizeof(UaosTask); i++)
         ((uint8_t *)t)[i] = 0;
 
@@ -390,7 +436,9 @@ UaosTask *Task_CreateX64(const char *name, int8_t pri,
     list_init(t);
 
     t->tc_Flags = 0;
-    t->tc_State = TASK_READY;
+    /* REMOVED until ready_enqueue() births the task — see
+     * Task_CreateNative. */
+    t->tc_State = TASK_REMOVED;
     t->tc_IDNestCnt = 0;
     t->tc_TDNestCnt = 0;
     t->tc_SigAlloc = 0xFFFF;
@@ -474,6 +522,15 @@ static void do_schedule(int from_irq)
 {
     if (!g_current) return;
 
+    /* Queue surgery runs IRQ-atomic.  The syscall path (int $0x80 is a
+     * trap gate — IF preserved) can be reached with interrupts live via
+     * Task_Yield/Task_CheckResched/Task_Exit, so without this an IRQ
+     * could tear the ready-queue mutations below mid-sequence — the
+     * stranded-EventPump freeze (UAOS-265).  The queue primitives are
+     * irq_save'd themselves as well, so callers that only touch one list
+     * stay safe outside this window. */
+    uint64_t sched_fl = irq_save();
+
     /* A syscall-side switch is armed but not yet consumed — defer (see
      * g_sched_switch_pending above).  Applies to both paths: an IRQ may
      * nest in the trap-gate window, and a nested int $0x80 issued before
@@ -481,6 +538,7 @@ static void do_schedule(int from_irq)
      * incoming task and misfile the physical RSP just the same. */
     if (g_sched_switch_pending) {
         g_need_resched = 1;
+        irq_restore(sched_fl);
         return;
     }
 
@@ -493,8 +551,10 @@ static void do_schedule(int from_irq)
      * real outgoing task later resumes a stale frame (UAOS-181: #GP at
      * the syscall iretq on MBP4,1, task bcm5974-reset).  The armed switch
      * stands; anything readied since is picked up at the next tick. */
-    if (Task_SwitchNext)
+    if (Task_SwitchNext) {
+        irq_restore(sched_fl);
         return;
+    }
 
     if (from_irq) {
         /* Honour Forbid / Disable nesting — timer ISR only.  Record the
@@ -502,6 +562,7 @@ static void do_schedule(int from_irq)
          * when the nesting unwinds instead of dropping it outright. */
         if (g_current->tc_TDNestCnt > 0 || g_current->tc_IDNestCnt > 0) {
             g_need_resched = 1;
+            irq_restore(sched_fl);
             return;
         }
     }
@@ -514,12 +575,13 @@ static void do_schedule(int from_irq)
     }
 
     UaosTask *next = ready_dequeue_highest();
-    if (!next) return;   /* nothing else to run */
+    if (!next) { irq_restore(sched_fl); return; }   /* nothing else to run */
 
     if (next == prev) {
         /* We were the only runnable task; keep running */
         g_current = prev;
         prev->tc_State = TASK_RUNNING;
+        irq_restore(sched_fl);
         return;
     }
 
@@ -578,6 +640,7 @@ static void do_schedule(int from_irq)
     Task_SwitchPrev = prev;
     Task_SwitchNext = next;
 
+    irq_restore(sched_fl);
 }
 
 void Task_ScheduleFromIRQ(void)
@@ -625,12 +688,30 @@ void Task_Exit(void)
             extern int g_chipset_sync_disabled;
             g_chipset_sync_disabled = 0;   /* may bypass wrapper cleanup */
             Memcheck_FreeByOwner(g_current);
+            /* Glue-side globals the guest may still hold: audio.device
+             * channels/opens and a stale g_blocked_in flag (UAOS-247). */
+            extern void UAOS_M68k_ReleaseTaskResources(UaosTask *t);
+            UAOS_M68k_ReleaseTaskResources(g_current);
         }
+        /* Reclaim files/locks the task left open — the handle table entry
+         * (and the handler-side file/lock object behind it) would leak
+         * otherwise (UAOS-247). */
+        HandleTable_FreeByOwner(g_current);
+        /* Retire the task's Intuition windows/screens before its RAM window
+         * is released — armed slots would keep decoding dangling guest
+         * pointers through whatever g_ram is bound (UAOS-265). */
+        UAOS_Intuition_CleanupTask(g_current);
         /* Release M68k guest RAM so the slot can be reused. */
         Task_ReleaseM68kRam(g_current);
         /* Close any userspace sockets this task left open so the
          * usock/tcp slots are not leaked by a killed command. */
         usock_cleanup_task(g_current);
+        /* Same reclaim for telnetd pump tasks (socket + session + pump
+         * ctx — an ESTABLISHED socket has no stack-side bound) and for
+         * remote shell tasks (remote_inuse slot) that die without
+         * reaching their own exit paths (UAOS-263). */
+        Telnetd_CleanupTask(g_current);
+        ShellWin_RemoteCleanupTask(g_current);
         /* Drop the task's net RX-notify slot so a stale TCB pointer can
          * never be signalled by a later net_rx_kick(). */
         net_rx_notify_disarm(g_current);
@@ -858,6 +939,9 @@ void Task_EventPumpEntry(void *arg)
         Permit();
         /* --- End protected section --- */
 
+        /* UAOS-265: cheap back-buffer/VRAM consistency spot-check. */
+        FB_Watchdog();
+
         /* Block until the next event instead of spinning on hlt: the
          * producers above Signal() us and IRQ-side wakes reschedule at
          * interrupt exit (or at Permit via g_need_resched).  Signals
@@ -1066,6 +1150,34 @@ void Task_WakeTimers(void)
             ready_enqueue(t);
         }
         t = next;
+    }
+
+    /* Stranded-task safety net (UAOS-265): if a queue op is ever torn —
+     * a task left READY/WAITING with self-linked node pointers is not in
+     * any list, so neither a Signal() wake nor a timer expiry can ever
+     * reach it (the EventPump froze exactly like this, killing input,
+     * WM redraw and cursor while the rest of the kernel stayed live).
+     * Two consecutive ticks unlinked = stranded; re-link and log so the
+     * residual cause stays visible instead of silently freezing.  The
+     * 2-tick vote skips the brief list_init->enqueue window of a task
+     * under construction (which is now marked REMOVED until linked). */
+    for (int i = 0; i < g_task_count; i++) {
+        UaosTask *s = &g_tasks[i];
+        uint8_t st = s->tc_State;
+        if (s == g_current || (st != TASK_READY && st != TASK_WAITING) ||
+            s->ln_Succ != s || s->ln_Pred != s) {
+            g_strand_votes[i] = 0;
+            continue;
+        }
+        if (++g_strand_votes[i] < 2)
+            continue;
+        g_strand_votes[i] = 0;
+        kprint("[TASK] WARN: '");
+        kprint(s->ln_Name ? s->ln_Name : "?");
+        kprint(st == TASK_READY ? "' stranded READY-unlinked — re-queued\n"
+                                : "' stranded WAITING-unlinked — re-queued\n");
+        if (st == TASK_READY) ready_enqueue(s);
+        else                wait_enqueue(s);
     }
 }
 

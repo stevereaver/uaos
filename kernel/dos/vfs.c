@@ -654,6 +654,24 @@ void VFS_Close(VfsFile *fh)
     fh->handler_port= NULL;
 }
 
+/* Release a lock handle created by a packet handler.  The handler owns the
+ * lock node (Fat32File, FfsLockNode, …), so it must see ACTION_FREE_LOCK —
+ * a bare HandleTable_Free would leak the node (UAOS-247).  The handler frees
+ * the table entry itself; the trailing HandleTable_Free covers handlers
+ * that don't, and volumes whose handler is already gone. */
+void VFS_FreeLock(uint32_t handle)
+{
+    HandleEntry *le = HandleTable_GetLockEntry(handle, NULL);
+    if (!le) return;
+    char vol_name[16];
+    if (extract_vol(le->path, vol_name, sizeof(vol_name))) {
+        Handler *h = find_handler(vol_name);
+        if (h)
+            DoPkt(&h->port, ACTION_FREE_LOCK, (int32_t)handle, 0, 0, 0, 0);
+    }
+    HandleTable_Free(handle);
+}
+
 uint32_t VFS_Read(VfsFile *fh, uint8_t *buf, uint32_t len)
 {
     if (fh->nil) return 0; /* EOF immediately */

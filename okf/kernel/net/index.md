@@ -71,6 +71,23 @@ Full TCP state machine including:
   that port) would be handed out again to the next caller.  Outbound
   `tcp_connect` sockets are born `accepted` so they can never be
   mistaken for pending accepts.
+- Connection generations (UAOS-263): `tcp_rx` and `tcp_tick` can retire
+  a socket from IRQ/poll context while a task-context owner still holds
+  its index, and `alloc_sock()` reissues freed slots — so a bare index
+  does not identify a connection (a stale owner could send on, read
+  from, or close an innocent new connection that reused the slot).
+  Every `TcpSocket` is stamped with a monotonically increasing
+  `conn_gen` at allocation (active connect, passive SYN spawn, and
+  `tcp_listen` itself).  `tcp_accept()` takes an optional `gen_out` and
+  returns the slot index + generation atomically under `irq_save()`.
+  Long-lived owners that span reschedules and RX events (telnetd pumps,
+  remote shells) use the `tcp_conn_*` wrappers —
+  `tcp_conn_state`/`send`/`recv`/`close`/`abort` — which validate the
+  `(index, conn_gen)` pair under one interrupt-off critical section and
+  fail closed on mismatch instead of touching the recycled slot.
+  A SYN matching a `TIME_WAIT` socket also retires that entry so a
+  fast reconnect proceeds through the normal listener path instead of
+  being RST'd by the dying incarnation.
 - Send/receive with ACK handling and ring buffers.
 - Retransmit timer with exponential backoff (`tcp_tick` runs at the
   100 Hz PIT rate via `net_stack_tick()` in `PIT_IRQHandler`).  The
@@ -246,6 +263,18 @@ the socket, so a graceful close would leak the slot in `FIN_WAIT_1`).
 `g_pump_count` tracks live pumps so `Telnetd_Stop()` can wait for them;
 the counter updates are cli/sti-guarded because `++` in the listener and
 `--` in pump tasks would otherwise race.
+
+Since UAOS-263 every pump carries the connection generation handed back
+by `tcp_accept(sock, &gen)` in `PumpCtx.conn_gen`, and all of its socket
+operations (state poll, `recv`, negotiation/`send`, close, abort) go
+through the generation-checked `tcp_conn_*` API — so RX/tick-side
+teardown plus slot reuse can never turn a dying pump into an operator
+on a different client's recycled socket.  `Telnetd_CleanupTask(task)`
+is hooked from `Task_Exit()` next to `usock_cleanup_task()`: a pump
+task that dies without reaching its own exit path still has its
+`PumpCtx` reclaimed, its remote shell killed, and its socket
+closed/aborted — an `ESTABLISHED` socket has no stack-side timeout, so
+without the backstop a killed pump leaks the slot until reboot.
 
 Remote session handles are tokenized: `ShellWin_RemoteOpen()` stamps a
 monotonically increasing token into the opaque handle alongside the slot

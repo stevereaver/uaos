@@ -201,7 +201,7 @@ static void bsd_accept(void)
     if (fd < 0 || fd >= BSD_MAX_FD || g_fds[fd].type != BSD_TCP) {
         m68k_set_reg(M68K_REG_D0, (unsigned int)-1); return;
     }
-    int new_idx = tcp_accept(g_fds[fd].sock_idx);
+    int new_idx = tcp_accept(g_fds[fd].sock_idx, NULL);
     if (new_idx < 0) {
         m68k_set_reg(M68K_REG_D0, (unsigned int)-1); return;
     }

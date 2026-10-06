@@ -55,7 +55,7 @@ Key startup conventions for per-task M68k execution:
 
 The chipset emulator (`chip_emu.c`) uses global blitter/copper state shared across all tasks. When a per-task M68k program accesses chip RAM (addresses < 0x800000), the memory callbacks in `uaos_m68k_glue.c` normally call `chip_emu_cpu_chipram_access()` to synchronize the chipset. However, during per-task M68k execution, this synchronization is disabled via the `g_chipset_sync_disabled` flag (set in `m68k_wrapper_entry`, cleared on exit). Without this, the blitter could operate on the wrong task's `g_ram` using addresses set up by another task, causing kernel page faults (e.g., when running `vlink` after the Workbench).
 
-The same flag also gates **IRQ injection**: `chip_emu_update_irq()` skips `m68k_set_irq()` while `g_chipset_sync_disabled` is set. Per-task guests run with a zeroed exception vector table, so an injected chipset interrupt (e.g. CIA-B level 6) vectors to PC=0 and marches through zeroed RAM until the cycle budget aborts — the classic intermittent "wild PC" crash. Pending INTREQ/INTENA state persists and is delivered when the shared context runs again. `Task_Exit()` also clears the flag since early task exits (e.g. `hunk_load` failure) can bypass the wrapper's cleanup path.
+The same flag also gates **IRQ injection**: `chip_emu_update_irq()` skips `m68k_set_irq()` while `g_chipset_sync_disabled` is set. Per-task guests run with a zeroed exception vector table, so an injected chipset interrupt (e.g. CIA-B level 6) vectors to PC=0 and marches through zeroed RAM until the wild-PC circuit breaker or the spin watchdog's diagnostic dump — the classic intermittent "wild PC" crash. Pending INTREQ/INTENA state persists and is delivered when the shared context runs again. `Task_Exit()` also clears the flag since early task exits (e.g. `hunk_load` failure) can bypass the wrapper's cleanup path.
 
 ## Per-Task Guest RAM vs Boot-Time Structures
 
@@ -63,7 +63,7 @@ Each per-task M68k program gets its own `g_ram` window, but structures registere
 
 ## Instruction-PC Ring (crash diagnostics)
 
-`uaos_m68k_glue.c` implements a 256-entry control-flow edge ring behind `M68K_INSTRUCTION_HOOK` (`m68k_set_instr_hook_callback`, wired in both `UAOS_Emu_LoadAndRun_Internal` and `m68k_wrapper_entry` — the callback lives in `m68ki_cpu` state, so per-task contexts must re-install it after `m68k_init`). To survive a crash that marches linearly through data, the ring records only *discontinuities* (delta <2 or >8, or any backward edge): each entry pair stores source PC then destination with bit0 set. Recording stops once the PC escapes all code regions (<0x10000) — the escape is captured in `g_m68k_first_wild_pc`. On cycle-budget abort, `exec_task.c` dumps the first wild PC plus the full ring; the ring and flag are reset per task.
+`uaos_m68k_glue.c` implements a 256-entry control-flow edge ring behind `M68K_INSTRUCTION_HOOK` (`m68k_set_instr_hook_callback`, wired in both `UAOS_Emu_LoadAndRun_Internal` and `m68k_wrapper_entry` — the callback lives in `m68ki_cpu` state, so per-task contexts must re-install it after `m68k_init`). To survive a crash that marches linearly through data, the ring records only *discontinuities* (delta <2 or >8, or any backward edge): each entry pair stores source PC then destination with bit0 set. Recording stops once the PC escapes all code regions (<0x10000) — the escape is captured in `g_m68k_first_wild_pc`. When the spin watchdog fires (100M *unblocked* cycles, UAOS-247), `exec_task.c` dumps the first wild PC plus the full ring; the ring and flag are reset per task.
 
 ## Task Scheduling and Wait/Signal
 
@@ -72,7 +72,7 @@ M68k wrapper tasks run at priority -128 (same as the shell and idle tasks), allo
 - **`Wait()` deschedules via `int $0x80`/`SYSCALL_SCHEDULE`** (UAOS-169) — a trap executed inside the blocker's `cli` region, so the syscall-ISR epilogue switches to the next ready task immediately; `sti;hlt` remains only as the nothing-else-runnable fallback. (The old `sti; hlt` implementation documented here predates that path.)
 - **`Task_ClearSig(SIGF_CHILD)`** is called before `Wait()` to clear any stale signal from a previous child exit, ensuring `Wait()` blocks until the current child actually exits.
 - **`Task_Exit()`** signals the parent task with `SIGF_CHILD`, waking the shell.
-- The M68k wrapper has a cycle budget timeout (100M cycles) to prevent infinite loops (e.g., Workbench tools that wait for WBStartup messages when run from CLI).
+- The M68k wrapper counts *unblocked* guest cycles toward a 100M-cycle liveness watchdog (UAOS-247) — the glue bumps `g_m68k_block_marks` whenever the guest naps in `Wait`/`WaitPort`/`WaitIO`/`WaitTOF`, and the slice loop resets its spin counter when the mark changes, so an app parked on IDCMP stays alive indefinitely. Crossing the budget emits a one-shot diagnostic PC-ring dump and lets the guest continue; it no longer kills the task. Teardown is via `dos_Exit`/`g_emu_halted` or the `m68k_halted` flag (close-window-quit, `stub_RemTask`, external halt) — every blocking path polls it, including the host-side modal requester/ASL/alert wait loops.
 
 ## DOS Print Functions
 

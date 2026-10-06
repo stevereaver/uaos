@@ -126,7 +126,11 @@ typedef struct UsbHc {
     void       *priv;
 
     /* Synchronous control transfer on endpoint 0 (or given ep).
-     * Returns 0 on success, <0 on error/timeout. */
+     * Returns 0 on success, <0 on error/timeout: -1 for a protocol
+     * level failure from a live device (STALL, babble, ...), -2 when
+     * nothing answered at all (wire timeout/CRC, NAK exhaustion, or
+     * the HC never ran the chain) so callers can back off sooner
+     * instead of re-poking a deaf port (UAOS-262). */
     int (*control)(struct UsbHc *hc, struct UsbDev *dev, uint8_t ep,
                    uint8_t bmRequestType, uint8_t bRequest,
                    uint16_t wValue, uint16_t wIndex,

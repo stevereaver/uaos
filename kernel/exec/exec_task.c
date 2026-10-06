@@ -91,6 +91,16 @@ static void free_m68k_ram_slot(uint8_t *ram)
 void Task_ReleaseM68kRam(UaosTask *t)
 {
     if (t && t->type == TASK_TYPE_M68K && t->m68k_ram) {
+        /* Detach the dead task's window from the chipset DMA engines
+         * before the slot is freed — the PIT-driven copper/blitter/audio/
+         * floppy paths remember which window they were launched against
+         * and would otherwise scribble into the next tenant (UAOS-247). */
+        chip_emu_unbind_ram(t->m68k_ram);
+        /* Drop the host-side heap free-list mirror for this window — it is
+         * keyed by window pointer, so a stale entry would hand the next
+         * tenant the dead task's freelist head (UAOS-247). */
+        { extern void UAOS_Heap_ReleaseWindow(uint8_t *ram);
+          UAOS_Heap_ReleaseWindow(t->m68k_ram); }
         free_m68k_ram_slot(t->m68k_ram);
         t->m68k_ram = NULL;
     }
@@ -316,9 +326,14 @@ static void m68k_wrapper_entry(void *arg)
     m68k_set_reg(14, EXEC_BASE);        /* A6 = EXEC_BASE (SysBase) */
 
     /* Run in time-sliced chunks.
-     * A cycle budget prevents runaway programs from locking the system
-     * forever — if the binary doesn't call dos_Exit within 500M cycles
-     * (~70 seconds at 7 MHz), we abort it. */
+     * Liveness watchdog (UAOS-247): instead of a cumulative cycle budget —
+     * which killed any interactive app after ~14 s — count only cycles
+     * burned *without ever blocking*.  The glue bumps g_m68k_block_marks
+     * every time the guest naps in Wait/WaitPort/WaitIO/WaitTOF, so an app
+     * parked in an IDCMP loop stays at spin_cycles == 0 and runs for hours,
+     * while a task that truly spins CPU-only crosses the budget and gets a
+     * one-shot PC-ring dump.  The dump is diagnostic only: the timer ISR
+     * still preempts a spinning guest, so the host never locks up. */
     g_emu_halted = 0;
     task->m68k_halted = 0;
     task->m68k_budget_dumped = 0;
@@ -332,7 +347,10 @@ static void m68k_wrapper_entry(void *arg)
     }
     task->m68k_entry = entry;
     task->m68k_stack_top = sp;
-    uint64_t cycle_budget = 100000000ULL;  /* 100M cycles (~14s at 7MHz) */
+    const uint64_t cycle_budget = 100000000ULL;  /* 100M *unblocked* cycles (~14s at 7MHz) */
+    uint64_t spin_cycles = 0;                  /* cycles since the guest last blocked */
+    extern volatile uint32_t g_m68k_block_marks;
+    uint32_t marks_seen = g_m68k_block_marks;
 
     /* DEBUG watch: the loaded hunk blocks [0x20000, watch_hi) are the
      * decruncher's *input* — nothing in the guest should write them once
@@ -372,7 +390,17 @@ static void m68k_wrapper_entry(void *arg)
         /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles */
         m68k_execute(10000);
         Chiptrace_PcSample();
-        g_m68k_cycles += (uint64_t)m68k_cycles_run();
+        uint32_t ran = m68k_cycles_run();
+        g_m68k_cycles += (uint64_t)ran;
+
+        /* Liveness: any blocking nap during this slice proves the guest
+         * can still be descheduled — reset its spin budget. */
+        if (g_m68k_block_marks != marks_seen) {
+            marks_seen = g_m68k_block_marks;
+            spin_cycles = 0;
+        } else {
+            spin_cycles += ran;
+        }
 
         /* Deliver pending guest interrupts (VERTB, AUDx, CIA) to the exec
          * Interrupt structures in this task's ExecBase.  The real
@@ -440,12 +468,13 @@ static void m68k_wrapper_entry(void *arg)
             break;
         }
 
-        /* Soft cycle budget: long-running interactive applications (OctaMED
-         * sits in a Wait() loop for hours) must not be aborted.  Keep one
+        /* Spin watchdog: only cycles burned without ever blocking count
+         * (UAOS-247) — a guest parked in Wait/WaitPort resets spin_cycles
+         * every slice, so interactive apps never trigger this.  Keep one
          * diagnostic PC-ring dump at the first crossing for hang analysis,
          * but let the task continue — the timer ISR still preempts it, so
          * the host shell stays responsive. */
-        if (g_m68k_cycles >= cycle_budget && !task->m68k_budget_dumped) {
+        if (spin_cycles >= cycle_budget && !task->m68k_budget_dumped) {
             extern void kprint(const char *);
             extern uint32_t g_m68k_pc_ring[];
             extern int g_m68k_pc_ring_idx;
@@ -453,7 +482,8 @@ static void m68k_wrapper_entry(void *arg)
             extern uint32_t g_m68k_first_wild_prev;
 #define M68K_PC_RING_SZ_DUMP 256
             task->m68k_budget_dumped = 1;
-            kprint("[m68k] soft cycle budget crossed — dumping PCs, continuing\n");
+            spin_cycles = 0;
+            kprint("[m68k] spin watchdog fired (100M unblocked cycles) — dumping PCs, continuing\n");
             kprint("[m68k] last-PCs (newest first, 8/line):\n");
             {
                 char wb[56]; int wj = 0;
@@ -483,10 +513,12 @@ static void m68k_wrapper_entry(void *arg)
             }
         }
 
-        /* Diagnostic: print if task has been running for a long time */
-        if ((g_m68k_cycles & 0x3FFFFFF) == 0 && g_m68k_cycles > 0) {
+        /* Diagnostic: print while the guest is continuously CPU-bound —
+         * a blocked guest accumulates nothing, so this stays quiet for
+         * interactive apps (UAOS-247). */
+        if ((spin_cycles & 0x3FFFFFF) == 0 && spin_cycles > 0) {
             extern void kprint(const char *);
-            kprint("[m68k] still running (64M+ cycles)\n");
+            kprint("[m68k] still running (64M+ unblocked cycles)\n");
         }
 
         /* Yield to other tasks — the timer ISR preempts us during

@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include "rom_modules.h"
 #include "task.h"
+#include "intuition_lib.h"
+#include "../dos/handle_table.h"
 
 /* M68kCPUState is defined in rom_modules.h (shared with ROM stubs) */
 
@@ -185,6 +187,22 @@ static void stub_RemTask(M68kCPUState *cpu)
         if (t->tc_State == TASK_WAITING)
             wait_remove(t);
         t->tc_State = TASK_REMOVED;
+        /* Retire the victim's Intuition windows/screens while its RAM
+         * window is still bound — the task slot can be memset and reissued
+         * without ever running Task_Exit(), which would leave armed slots
+         * decoding freed/foreign memory (UAOS-265).  The window itself is
+         * only released when removing another task: a self-removing task
+         * is still executing out of it. */
+        if (t->type == TASK_TYPE_M68K) {
+            UAOS_Intuition_CleanupTask(t);
+            /* Same reclaim Task_Exit() does — a RemTask'd victim bypasses
+             * it entirely (UAOS-247). */
+            extern void UAOS_M68k_ReleaseTaskResources(UaosTask *t);
+            UAOS_M68k_ReleaseTaskResources(t);
+            HandleTable_FreeByOwner(t);
+            if (t != Task_Current())
+                Task_ReleaseM68kRam(t);
+        }
         /* Also update the guest task struct if accessible */
         if (task_addr + TASK_TC_STATE_OFF <= 0xFFFFFFFFu) {
             uint8_t *state_ptr = (uint8_t *)UAOS_AMIGA_TO_HOST(task_addr + TASK_TC_STATE_OFF);

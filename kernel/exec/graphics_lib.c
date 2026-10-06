@@ -16,6 +16,7 @@
 #include "../display/framebuffer.h"
 #include "../display/wm.h"
 #include "../boot/kprint.h"
+#include "../klog/klog.h"
 #include "task.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -32,6 +33,7 @@ UaosTask *g_wait_tof_task = NULL;
  * ========================================================================= */
 
 extern unsigned int m68k_get_reg(void *context, int reg);
+extern void m68k_end_timeslice(void);
 extern void         m68k_set_reg(int reg, unsigned int value);
 extern unsigned int m68k_read_memory_8(unsigned int addr);
 extern unsigned int m68k_read_memory_16(unsigned int addr);
@@ -1406,6 +1408,15 @@ void render_bitmap_region_to_framebuffer(uint32_t bm, uint32_t cmap,
     BlitSurface s;
     blit_surface_from_bitmap(&s, bm);
     if (s.is_fb) return;
+    {
+        static int s_rbf_log = 0;
+        if (s_rbf_log < 12) {
+            s_rbf_log++;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "bmrender: bm=%x cmap=%x d=%d,%d %dx%d ra=%p",
+                 bm, cmap, dx, dy, w, h, __builtin_return_address(0));
+        }
+    }
 
     /* Clip the source rect to the bitmap, adjusting the destination. */
     if (sx < 0) { dx -= sx; w += sx; sx = 0; }
@@ -1730,10 +1741,14 @@ static void graphics_WaitTOF(void)
          * would otherwise stall for the whole VBlank wait (UAOS-241). */
         {
             extern uint32_t g_blocked_in;
+            extern volatile uint32_t g_m68k_block_marks;
             extern void UAOS_M68k_DeliverInterrupts(void);
             uint32_t got = 0;
             for (;;) {
+                /* External halt (window-close quit, UAOS-247). */
+                if (t->m68k_halted) { m68k_end_timeslice(); break; }
                 g_blocked_in = 4;
+                g_m68k_block_marks++;
                 got = Task_WaitTicks(sigmask, 1);
                 g_blocked_in = 0;
                 UAOS_M68k_DeliverInterrupts();

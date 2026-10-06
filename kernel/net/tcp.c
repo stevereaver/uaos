@@ -23,6 +23,18 @@
 static TcpSocket g_socks[TCP_MAX_SOCKETS];
 static uint32_t  g_isn_counter = 0x12345678;  /* initial seq number seed */
 
+/* Connection-generation counter — stamped into every freshly allocated
+ * socket so a saved (index, gen) pair identifies one connection even
+ * after the slot is retired and reissued (UAOS-263).  Never 0. */
+static uint32_t  g_conn_gen_next = 1;
+
+static uint32_t next_conn_gen(void)
+{
+    uint32_t g = g_conn_gen_next++;
+    if (!g_conn_gen_next) g_conn_gen_next = 1;
+    return g;
+}
+
 static void tcp_retransmit(TcpSocket *s);   /* defined below tcp_rx */
 
 /* TCP sequence comparison (wraparound-safe) */
@@ -251,6 +263,14 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
 
     /* Find matching socket */
     TcpSocket *s = find_sock(src_ip, src_port, dst_port, 0);
+    /* A SYN carrying the tuple of a socket still in TIME_WAIT is a fast
+     * reconnect, not a stray retransmit: retire the 2MSL remnant and let
+     * the listener path below spawn a fresh connection instead of
+     * silently swallowing the SYN for the remnant's remaining wait. */
+    if (s && (flags & TCP_SYN) && s->state == TCP_TIME_WAIT) {
+        s->state = TCP_CLOSED;
+        s = 0;
+    }
     if (!s) {
         /* Check for listener */
         if (flags & TCP_SYN) {
@@ -260,6 +280,7 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
                 TcpSocket *ns = alloc_sock();
                 if (ns) {
                     net_memset(ns, 0, sizeof(*ns));
+                    ns->conn_gen    = next_conn_gen();
                     ns->state       = TCP_SYN_RECEIVED;
                     ns->local_ip    = ip_get_local();
                     ns->local_port  = dst_port;
@@ -468,6 +489,7 @@ int tcp_connect(ipv4_t dst_ip, uint16_t dst_port, uint16_t local_port)
     TcpSocket *s = alloc_sock();
     if (!s) return -1;
     net_memset(s, 0, sizeof(*s));
+    s->conn_gen    = next_conn_gen();
     s->state       = TCP_SYN_SENT;
     s->local_ip    = ip_get_local();
     s->local_port  = local_port ? local_port : pick_ephemeral_port();
@@ -497,6 +519,7 @@ int tcp_listen(uint16_t local_port)
     TcpSocket *s = alloc_sock();
     if (!s) { irq_restore(fl); return -1; }
     net_memset(s, 0, sizeof(*s));
+    s->conn_gen   = next_conn_gen();
     s->state      = TCP_LISTEN;
     s->local_ip   = ip_get_local();
     s->local_port = local_port;
@@ -505,7 +528,7 @@ int tcp_listen(uint16_t local_port)
     return idx;
 }
 
-int tcp_accept(int listen_sock)
+int tcp_accept(int listen_sock, uint32_t *gen_out)
 {
     if (listen_sock < 0 || listen_sock >= TCP_MAX_SOCKETS) return -1;
     if (g_socks[listen_sock].state != TCP_LISTEN) return -1;
@@ -514,16 +537,22 @@ int tcp_accept(int listen_sock)
      * socket — also ESTABLISHED on this port — would be returned again.
      * CLOSE_WAIT is returned too: a peer that FINs between handshake and
      * accept must still be handed to a reader (which will drain the ring
-     * and close) instead of orphaning the slot (UAOS-223). */
+     * and close) instead of orphaning the slot (UAOS-223).  The claim and
+     * the conn_gen read happen under one irq_save: tcp_rx could otherwise
+     * retire the socket and reissue the slot between the two (UAOS-263). */
+    uint64_t fl = irq_save();
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
         if ((g_socks[i].state == TCP_ESTABLISHED ||
              g_socks[i].state == TCP_CLOSE_WAIT) &&
             !g_socks[i].accepted &&
             g_socks[i].local_port == g_socks[listen_sock].local_port) {
             g_socks[i].accepted = 1;
+            if (gen_out) *gen_out = g_socks[i].conn_gen;
+            irq_restore(fl);
             return i;
         }
     }
+    irq_restore(fl);
     return -1;
 }
 
@@ -604,6 +633,80 @@ TcpState tcp_state(int sock)
 {
     if (sock < 0 || sock >= TCP_MAX_SOCKETS) return TCP_CLOSED;
     return g_socks[sock].state;
+}
+
+/* -------------------------------------------------------------------------
+ * Connection-generation checked operations (UAOS-263)
+ *
+ * A bare socket index does not identify a connection: tcp_rx (NIC IRQ or
+ * another task's net_stack_poll) and tcp_tick (PIT) can retire it — RST,
+ * retransmit exhaustion, teardown bounds — and the slot can be reissued
+ * to a different connection while the old owner is still holding the
+ * index.  Each wrapper verifies the caller's generation under irq_save
+ * (which also blocks the PIT tick and NIC IRQ, making check+op atomic on
+ * this single-CPU kernel) and refuses to act on a recycled slot.
+ * ------------------------------------------------------------------------- */
+static int conn_matches(int sock, uint32_t gen)
+{
+    return sock >= 0 && sock < TCP_MAX_SOCKETS &&
+           g_socks[sock].state != TCP_CLOSED &&
+           g_socks[sock].conn_gen == gen;
+}
+
+uint32_t tcp_conn_gen(int sock)
+{
+    if (sock < 0 || sock >= TCP_MAX_SOCKETS) return 0;
+    return g_socks[sock].conn_gen;
+}
+
+TcpState tcp_conn_state(int sock, uint32_t gen)
+{
+    uint64_t fl = irq_save();
+    TcpState st = conn_matches(sock, gen) ? g_socks[sock].state
+                                        : TCP_CLOSED;
+    irq_restore(fl);
+    return st;
+}
+
+int tcp_conn_send(int sock, uint32_t gen, const uint8_t *data, uint16_t len)
+{
+    uint64_t fl = irq_save();
+    int n = conn_matches(sock, gen) ? tcp_send(sock, data, len) : 0;
+    irq_restore(fl);
+    return n;
+}
+
+int tcp_conn_recv(int sock, uint32_t gen, uint8_t *buf, uint16_t maxlen)
+{
+    uint64_t fl = irq_save();
+    int n = conn_matches(sock, gen) ? tcp_recv(sock, buf, maxlen) : 0;
+    irq_restore(fl);
+    return n;
+}
+
+void tcp_conn_close(int sock, uint32_t gen)
+{
+    uint64_t fl = irq_save();
+    if (conn_matches(sock, gen)) {
+        TcpState st = g_socks[sock].state;
+        /* Drive a graceful close only from the live states.  A socket
+         * already in FIN_WAIT/LAST_ACK/TIME_WAIT is being torn down —
+         * either by us earlier or by the connection's other owner — and
+         * tcp_tick's bounds retire it; stomping it with a second close
+         * would hard-drop a teardown in flight. */
+        if (st == TCP_SYN_RECEIVED || st == TCP_ESTABLISHED ||
+            st == TCP_CLOSE_WAIT)
+            tcp_close(sock);
+    }
+    irq_restore(fl);
+}
+
+void tcp_conn_abort(int sock, uint32_t gen)
+{
+    uint64_t fl = irq_save();
+    if (conn_matches(sock, gen))
+        g_socks[sock].state = TCP_CLOSED;
+    irq_restore(fl);
 }
 
 int tcp_peer(int sock, ipv4_t *ip, uint16_t *port)

@@ -10,6 +10,7 @@
 #include "wm.h"
 #include "../irq/rtc.h"
 #include "../exec/prefs_lib.h"
+#include "../klog/klog.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -82,6 +83,17 @@ static void pal_load_current(void)
 
 static void pal_apply_colors(void)
 {
+    {
+        static int s_pal_log = 0;
+        if (s_pal_log < 12) {
+            s_pal_log++;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "palapply: c=%02x%02x%02x,%02x%02x%02x ra=%p",
+                 g_pal_colors[0].r, g_pal_colors[0].g, g_pal_colors[0].b,
+                 g_pal_colors[5].r, g_pal_colors[5].g, g_pal_colors[5].b,
+                 __builtin_return_address(0));
+        }
+    }
     WB_GREY       = FB_RGB(g_pal_colors[0].r, g_pal_colors[0].g, g_pal_colors[0].b);
     WB_LIGHT_GREY = FB_RGB(g_pal_colors[1].r, g_pal_colors[1].g, g_pal_colors[1].b);
     WB_DARK_GREY  = FB_RGB(g_pal_colors[2].r, g_pal_colors[2].g, g_pal_colors[2].b);

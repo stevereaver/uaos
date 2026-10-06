@@ -508,6 +508,14 @@ int floppy_dma_write(uint32_t dskpt, uint16_t dsklen)
     return 1;
 }
 
+int floppy_unbind_ram(uint8_t *ram)
+{
+    if (!ram || g_floppy_dma_ram != ram) return 0;
+    g_floppy_dma_ram = NULL;
+    g_floppy.dma_active = 0;
+    return 1;
+}
+
 uint16_t floppy_dskdat_read(void)
 {
     if (!g_floppy.adf_loaded || !g_floppy.dma_active) return 0;

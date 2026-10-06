@@ -217,6 +217,19 @@ static int heap_head_find(void)
     return i;
 }
 
+/* Release the host-side free-list mirror for a guest RAM window when its
+ * owning M68k task dies (UAOS-247).  Entries are keyed by window pointer,
+ * so without this the next tenant of the slot inherits the dead task's
+ * freelist head — its nodes then point into the fresh program image and
+ * AllocMem hands out overlapping blocks with insane sizes. */
+void UAOS_Heap_ReleaseWindow(uint8_t *ram)
+{
+    int w = 0;
+    for (int i = 0; i < g_heap_head_count; i++)
+        if (g_heap_heads[i].win != ram) g_heap_heads[w++] = g_heap_heads[i];
+    g_heap_head_count = w;
+}
+
 static uint32_t heap_head_read(uint32_t list_slot)
 {
     int i = heap_head_find();
@@ -1547,7 +1560,9 @@ static void dos_Unlock(M68kCPUState *cpu)
 
     uint32_t handle = 0;
     guest_read_filelock(lock, &handle, NULL);
-    if (handle) HandleTable_Free(handle);
+    /* ACTION_FREE_LOCK round-trip — a bare HandleTable_Free would leak the
+     * handler-side lock node (UAOS-247). */
+    if (handle) VFS_FreeLock(handle);
     cpu->d[0] = (uint32_t)DOSTRUE;
 }
 
@@ -1890,8 +1905,13 @@ static void dos_Delay(M68kCPUState *cpu)
      * 1-tick slices and pump interrupt delivery so handlers (CIAB
      * player tick etc.) still fire while the guest is blocked. */
     extern void UAOS_M68k_DeliverInterrupts(void);
+    UaosTask *self = Task_Current();
     uint64_t remaining = (uint64_t)ticks * 2;
     while (remaining-- > 0) {
+        /* External halt (window-close quit, UAOS-247): abandon the rest of
+         * the delay so the wrapper's teardown isn't held up. */
+        if (self && self->type == TASK_TYPE_M68K && self->m68k_halted)
+            break;
         Task_SleepTicks(1);
         UAOS_M68k_DeliverInterrupts();
     }

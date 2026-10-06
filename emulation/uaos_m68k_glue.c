@@ -3029,6 +3029,7 @@ static uint32_t m68k_isr_call(uint32_t entry, uint32_t d0, uint32_t a1,
                               uint32_t a5);
 void UAOS_M68k_DeliverInterrupts(void);
 extern uint32_t g_blocked_in;
+extern volatile uint32_t g_m68k_block_marks;
 
 static void exec_SetIntVector(void)
 {
@@ -3301,12 +3302,19 @@ static void exec_Wait(void)
      * OctaMED's player/input engine wakes its main loop. */
     uint32_t got = 0;
     for (;;) {
+        UaosTask *t = Task_Current();
+        /* External halt (window-close quit, UAOS-247): drop out of the
+         * wait and end the timeslice so the wrapper's teardown runs. */
+        if (t && t->type == TASK_TYPE_M68K && t->m68k_halted) {
+            m68k_end_timeslice();
+            break;
+        }
         g_blocked_in = 1;
+        g_m68k_block_marks++;
         got = Task_WaitTicks(sigmask, 1);
         g_blocked_in = 0;
         UAOS_M68k_DeliverInterrupts();
         if (got) break;
-        UaosTask *t = Task_Current();
         if (t && (t->tc_SigRecvd & sigmask)) {
             got = t->tc_SigRecvd & sigmask;
             t->tc_SigRecvd &= ~sigmask;
@@ -3672,6 +3680,12 @@ static void exec_WaitPort(void)
     uint64_t deadline = g_pit_ticks + 10;   /* ~100 ms cap per call */
 
     while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
+        /* External halt (window-close quit, UAOS-247): bail now so the
+         * wrapper's teardown isn't delayed by the ~100 ms cap. */
+        if (self->type == TASK_TYPE_M68K && self->m68k_halted) {
+            m68k_end_timeslice();
+            break;
+        }
         if (!g_chipset_sync_disabled)
             UAOS_Intuition_PostIntuiTicks();
         else
@@ -3680,6 +3694,7 @@ static void exec_WaitPort(void)
          * deschedules immediately instead of sti;hlt-ing as g_current,
          * and wakes early when PutMsg signals the port's sigbit. */
         g_blocked_in = 2;
+        g_m68k_block_marks++;
         Task_WaitTicks(mask, 1);
         g_blocked_in = 0;
         /* Consume the port signal — it only means "check the list"; a
@@ -3999,6 +4014,65 @@ static void exec_DeleteMsgPort(void)
 static uint8_t  g_audio_alloc_mask;
 static uint8_t  g_audio_alloc_key;
 static uint32_t g_audio_open_cnt;
+/* Ownership for task-exit reclaim (UAOS-247): each allocated channel bit
+ * records the task that took it, and each open counts against the task
+ * that made it, so a dying task releases exactly its own resources. */
+static UaosTask *g_audio_ch_owner[4];
+static struct { UaosTask *t; uint32_t n; } g_audio_openers[8];
+
+static void audio_note_open(void)
+{
+    UaosTask *t = Task_Current();
+    g_audio_open_cnt++;
+    if (!t) return;
+    int free_i = -1;
+    for (int i = 0; i < 8; i++) {
+        if (g_audio_openers[i].t == t) { g_audio_openers[i].n++; return; }
+        if (!g_audio_openers[i].t && free_i < 0) free_i = i;
+    }
+    if (free_i >= 0) { g_audio_openers[free_i].t = t; g_audio_openers[free_i].n = 1; }
+}
+
+static void audio_note_close(void)
+{
+    UaosTask *t = Task_Current();
+    for (int i = 0; i < 8; i++) {
+        if (g_audio_openers[i].t == t && g_audio_openers[i].n) {
+            if (--g_audio_openers[i].n == 0) g_audio_openers[i].t = NULL;
+            break;
+        }
+    }
+    if (g_audio_open_cnt) g_audio_open_cnt--;
+    if (!g_audio_open_cnt) g_audio_alloc_mask = 0;
+}
+
+/* Release every audio.resource a dying task still holds (UAOS-247):
+ * channel allocations and outstanding device opens.  Called from
+ * Task_Exit() / stub_RemTask before the task's RAM window is released. */
+void UAOS_M68k_ReleaseTaskResources(UaosTask *t)
+{
+    if (!t) return;
+    for (int i = 0; i < 4; i++) {
+        if (g_audio_ch_owner[i] == t) {
+            g_audio_ch_owner[i] = NULL;
+            g_audio_alloc_mask &= (uint8_t)~(1u << i);
+        }
+    }
+    for (int i = 0; i < 8; i++) {
+        if (g_audio_openers[i].t == t) {
+            if (g_audio_open_cnt >= g_audio_openers[i].n)
+                g_audio_open_cnt -= g_audio_openers[i].n;
+            else
+                g_audio_open_cnt = 0;
+            g_audio_openers[i].t = NULL;
+            g_audio_openers[i].n = 0;
+        }
+    }
+    if (!g_audio_open_cnt) g_audio_alloc_mask = 0;
+    /* If the dying task left a blocking-wait flag set (killed mid-nap),
+     * clear it — the flag is global and the writer is gone. */
+    g_blocked_in = 0;
+}
 #define IOF_QUICK     0x01
 #define NT_REPLYMSG   6
 
@@ -4054,7 +4128,7 @@ static void exec_OpenDevice(void)
         for (int k = 0; AUDNAME[k]; k++) if (name[k] != AUDNAME[k]) { eq = 0; break; }
         if (eq && !name[12]) {
             devbase = AUDIO_DEV_BASE;
-            g_audio_open_cnt++;
+            audio_note_open();
         }
         glue_w32(ioreq + IO_DEVICE, devbase);  /* fake or real device base */
         glue_w32(ioreq + IO_UNIT, m68k_get_reg(NULL, M68K_REG_D0));
@@ -4068,8 +4142,7 @@ static void exec_CloseDevice(void)
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE &&
         glue_r32(io + IO_DEVICE) == AUDIO_DEV_BASE) {
-        if (g_audio_open_cnt) g_audio_open_cnt--;
-        if (!g_audio_open_cnt) g_audio_alloc_mask = 0;
+        audio_note_close();
     }
 }
 
@@ -4139,7 +4212,12 @@ static void exec_WaitIO(void)
             extern volatile uint64_t g_pit_ticks;
             uint64_t deadline = g_pit_ticks + 10;
             while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
+                if (self->type == TASK_TYPE_M68K && self->m68k_halted) {
+                    m68k_end_timeslice();
+                    break;
+                }
                 g_blocked_in = 3;
+                g_m68k_block_marks++;
                 Task_WaitTicks(mask, 1);
                 g_blocked_in = 0;
                 UAOS_M68k_DeliverInterrupts();
@@ -4250,6 +4328,8 @@ static void audio_dev_BeginIO(void)
         }
         if (got) {
             g_audio_alloc_mask |= chosen;
+            for (int c = 0; c < 4; c++)
+                if (chosen & (1u << c)) g_audio_ch_owner[c] = Task_Current();
             int16_t key = (int16_t)glue_r16(io + IOA_ALLOCKEY);
             if (!key) key = (int16_t)(++g_audio_alloc_key ? g_audio_alloc_key
                                                          : (g_audio_alloc_key = 1));
@@ -4263,7 +4343,10 @@ static void audio_dev_BeginIO(void)
     }
     case ADCMD_FREE: {
         /* io_Unit low nibble = channel mask to release. */
-        g_audio_alloc_mask &= (uint8_t)~glue_r32(io + IO_UNIT);
+        uint32_t rel = glue_r32(io + IO_UNIT);
+        g_audio_alloc_mask &= (uint8_t)~rel;
+        for (int c = 0; c < 4; c++)
+            if (rel & (1u << c)) g_audio_ch_owner[c] = NULL;
         break;
     }
     /* Everything else (CMD_RESET/WRITE/PERVOL/SETC/LOCK/START/STOP/FLUSH…)
@@ -4281,8 +4364,12 @@ static void audio_dev_AbortIO(void)
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE) {
         uint16_t cmd = glue_r16(io + IO_COMMAND);
-        if (cmd == ADCMD_ALLOCATE)
-            g_audio_alloc_mask &= (uint8_t)~glue_r32(io + IO_UNIT);
+        if (cmd == ADCMD_ALLOCATE) {
+            uint32_t rel = glue_r32(io + IO_UNIT);
+            g_audio_alloc_mask &= (uint8_t)~rel;
+            for (int c = 0; c < 4; c++)
+                if (rel & (1u << c)) g_audio_ch_owner[c] = NULL;
+        }
     }
     m68k_set_reg(M68K_REG_D0, 0);
 }
@@ -4291,14 +4378,13 @@ static void audio_dev_Open(void)
 {
     /* Device Open (d0=unit, a1=ioreq? device Open gets d0=unit): bump open
      * count, return device base in D0. */
-    g_audio_open_cnt++;
+    audio_note_open();
     m68k_set_reg(M68K_REG_D0, AUDIO_DEV_BASE);
 }
 
 static void audio_dev_Close(void)
 {
-    if (g_audio_open_cnt) g_audio_open_cnt--;
-    if (!g_audio_open_cnt) g_audio_alloc_mask = 0;   /* release all channels */
+    audio_note_close();
     m68k_set_reg(M68K_REG_D0, 0);
 }
 
@@ -5496,7 +5582,13 @@ static void m68k_putch_call(uint32_t proc, uint8_t ch, uint32_t data)
 uint32_t g_dlv_calls = 0;   /* UAOS-241 diag: deliveries attempted */
 uint32_t g_dlv_pend  = 0;   /* last pending mask seen */
 uint32_t g_dlv_isr   = 0;   /* guest handlers actually invoked */
-uint32_t g_blocked_in = 0;  /* 0=running 1=Wait 2=WaitPort 3=WaitIO */
+uint32_t g_blocked_in = 0;  /* 0=running 1=Wait 2=WaitPort 3=WaitIO 4=WaitTOF */
+/* Liveness marks for the per-task slice loop (UAOS-247): bumped every time
+ * a guest enters a blocking nap.  exec_task.c resets its spin-cycle watchdog
+ * whenever the count changes, so an app parked in Wait/WaitPort never
+ * accumulates "CPU spin" time — only a guest that truly never blocks can
+ * trip the budget diagnostic. */
+volatile uint32_t g_m68k_block_marks = 0;
 
 /* INTREQ bit -> interrupt level (real Amiga mapping):
  *   TBE/DSKBLK/SOFTINT (0-2) -> L1    PORTS/CIAA (3)     -> L2
@@ -5951,8 +6043,16 @@ int m68k_illg_instr_callback(int opcode)
             m68k_set_reg(M68K_REG_A6, cpu.a[6]);
             m68k_set_reg(M68K_REG_A7, cpu.a[7]);
             m68k_set_reg(M68K_REG_PC, cpu.pc);
-            if (g_emu_halted)
-                m68k_end_timeslice();
+            /* Also cut the slice short when the task was externally halted
+             * (window-close quit, UAOS-247) inside a ROM-dispatched call —
+             * e.g. dos_Delay's sliced sleep — so the wrapper's teardown
+             * runs without waiting out the delay. */
+            {
+                UaosTask *ct = Task_Current();
+                if (g_emu_halted ||
+                    (ct && ct->type == TASK_TYPE_M68K && ct->m68k_halted))
+                    m68k_end_timeslice();
+            }
         } else {
             /* Unimplemented LVO (catch-all stub) or bad fn id.
              * stub_addr = PC-4 at this point; lvo = stub - a6. */

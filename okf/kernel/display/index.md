@@ -105,6 +105,8 @@ Each window provides callbacks for:
 
 `WM_SetVacateFn()` registers an optional `WM_VacateFn` callback invoked with a window's old screen rectangle just before that rectangle is vacated (title-bar drag, `WM_MoveWindow`, `WM_SetWindowGeometry`, zoom toggle, resize drag, and `WM_CloseWindow`). Intuition registers `intu_screen_vacate`, which erases the vacated rectangle in the parent screen's planar `BitMap` (pen 0) so the next backdrop render does not resurrect stale window pixels — needed now that window `RastPort`s draw into the screen `BitMap` rather than directly into the framebuffer.
 
+**Guest-screen emit ownership (UAOS-265):** the planar `BitMap`/`ColorMap` a front screen emits through live in the *owning M68k task's* RAM window, so `scr_decode_pens`/`scr_build_lut`/`scr_emit_pens` must run with `g_ram` bound to that owner — never ambient `g_ram` (the shared window on native context, or a *reused* window after the owner dies: same addresses, foreign memory → alien pen indices and LUT colours painted mid-frame). `UAOS_Intuition_FlushScreenBitmap` binds `slot->owner->m68k_ram` around the emit, and every render/palette/poll/vacate entry point first retires orphaned slots via `screen_is_orphaned()`. Owner teardown lives in `UAOS_Intuition_CleanupTask()` (see `okf/kernel/exec/intuition_library.md`), hooked from `Task_Exit` before `Task_ReleaseM68kRam` and from `stub_RemTask`.
+
 ### Scrollbars
 
 Every window gets an always-on right (vertical) and bottom (horizontal) scrollbar: an `WM_ARROW_LEN` (11px) arrow button at each end, a dithered track between them (drawn by `FB_FillRectDithered`, a hoisted two-colour checkerboard fill that replaces ~`live_w×len` `FB_PutPixel` calls per scrollbar per repaint — UAOS-103), and a hollow raised-bevel thumb sized proportionally to `view/content` (minimum 8px). The thumb top travels `track_len - thumb_len` pixels over the scroll range `[0, content - view]`. Thumb drags map pointer delta to scroll delta through **that same travel range** (`dm * max_s / travel`) so the thumb tracks the pointer 1:1 — the drag handler must replicate `draw_scrollbar`'s geometry exactly (track = rect − `WM_ARROW_LEN`×2, same thumb clamp). `view` is `WmWindow.view_h` when set via `WM_SetScrollInfoEx` (shell/ed/vim reserve a status bar), else the client height; `draw_chrome`, `scroll_by`, `WM_SetScrollY`, and the drag handler all use it consistently so the drawn thumb position, the scroll clamp, and the drag inverse all agree. Both arrow buttons are skipped when the scrollbar's long axis can't fit them (`th`/`tw < WM_ARROW_LEN*2`), so degenerate rects never paint stray arrows over chrome.
@@ -291,10 +293,14 @@ reserved so the window-shell allocator and the `WM_IsWindowActive`
 reclaim path never see them; a remote instance has `wm_handle == -1`,
 `remote == 1`, and owns a TCP socket index.
 
-- `ShellWin_RemoteOpen(sock)` initialises a slot, sends the banner and
-  prompt, and spawns the usual `shell_task_entry` task — so command
+- `ShellWin_RemoteOpen(sock, gen)` initialises a slot, sends the banner
+  and prompt, and spawns the usual `shell_task_entry` task — so command
   dispatch, aliases, env vars, pipes, background jobs and `NativeCmdCtx`
-  callbacks behave identically to a window shell.  It returns an opaque
+  callbacks behave identically to a window shell.  The `gen` argument is
+  the TCP connection generation from `tcp_accept()` (UAOS-263), stored
+  in the instance as `remote_gen`; if `Task_CreateNative()` fails the
+  remote slot is rolled back (previously `remote_inuse` stayed set
+  forever).  It returns an opaque
   handle: the slot index in the low 16 bits plus a per-open token in the
   high bits (`remote_token`, never 0).  `RemoteIsDead`/`RemoteKill`/
   `RemoteFeed` decode the handle and refuse it when the slot was
@@ -303,13 +309,23 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   slot (UAOS-53).
 - Output: `inst_print`/`shell_print_raw` route through `remote_send()`,
   which IAC-escapes literal `0xFF` bytes (RFC 854) over
-  `remote_send_raw()` before pushing bytes with `tcp_send()` and marks
-  the session dead if the socket dies (UAOS-51).  `tcp_send` returns 0
+  `remote_send_raw()` before pushing bytes and marks
+  the session dead if the socket dies (UAOS-51).  `remote_send_raw`
+  sends through `tcp_conn_send(remote_sock, remote_gen, ...)` — the
+  generation check keeps a live session from ever writing onto a
+  different connection that reused the freed TCP slot (UAOS-263).
+  `tcp_send` returns 0
   while a segment is still unacked or the peer window is closed
   (UAOS-55), so `remote_send_raw` polls the stack
   and retries with a ~60 s `g_pit_ticks` stall bound.  `clear` sends ANSI clear-screen; `endcli` sets
   `remote_dead` via the existing `close_shell` callback, which makes the
-  session task exit and releases the slot.
+  session task exit and releases the slot.  `ShellWin_RemoteCleanupTask()`
+  is hooked from `Task_Exit()` (UAOS-263): a remote shell task that dies
+  without reaching `shell_task_entry`'s exit path still sets
+  `remote_dead` and releases `remote_inuse`/`remote_sock` — otherwise
+  the remote slot would stay allocated forever.  The socket itself is
+  then reclaimed by the pump, which sees `RemoteIsDead` (a released
+  handle decodes dead) and runs its normal close path.
 - Input: `ShellWin_RemoteFeed()` enqueues NVT-decoded bytes into the
   instance's normal key ring (256 bytes, `SHELL_KB_BUFSIZE`) and returns
   whether every byte was accepted; when the ring is full it returns

@@ -13,6 +13,7 @@
 
 #include "chipset/chip_emu.h"
 #include "chipset/chiptrace.h"
+#include "../klog/klog.h"
 #include "chipset/floppy.h"
 #include "display/framebuffer.h"
 #include "irq/ps2kbd.h"
@@ -2830,6 +2831,16 @@ static void render_sprites_on_scanline(int y, int bytes_per_row)
 void chip_emu_render_frame(void)
 {
     if (!g_fb.valid) return;
+    {
+        static int s_rf_log = 0;
+        if (s_rf_log < 12) {
+            s_rf_log++;
+            KLOG(KLOG_DISP, KLOG_WARN,
+                 "chiprender: frame dmacon=%04x bplcon0=%04x diw=%08x/%08x ra=%p",
+                 g_dmacon, g_bplcon0, g_diwstart, g_diwstop,
+                 __builtin_return_address(0));
+        }
+    }
     /* Bitplane/copper/sprite DMA resolves through g_ram — bind the window
      * that installed the display list so the front screen renders correctly
      * even when the caller runs in another task's (or the shared) context. */
@@ -3038,6 +3049,57 @@ void chip_emu_reset(void)
 
     com1_probe();
     lpt1_probe();
+}
+
+/* Called when an M68k task's RAM window is about to be released for reuse.
+ * The beam/PIT-driven DMA engines remember which window they were launched
+ * against (g_display_ram, g_blit_ram, g_audio_ram, and floppy's
+ * g_floppy_dma_ram); if the dead task owned any of them, the engine would
+ * keep executing its copper list / blits / audio/disk DMA and scribble into
+ * the next guest that reuses the slot.  Unbind and disarm only the state
+ * bound to that window — bindings owned by another live task are left
+ * alone (UAOS-247). */
+void chip_emu_unbind_ram(uint8_t *ram)
+{
+    if (!ram) return;
+
+    if (g_display_ram == ram) {
+        g_display_ram = NULL;
+        /* Copper list and bitplane/sprite fetch pointers lived in this
+         * window — stop the display engine resolving guest addresses
+         * through the next tenant. */
+        g_copper_pc = 0;
+        g_copjmp1 = 0;
+        g_copjmp2 = 0;
+        for (int i = 0; i < 8; i++) {
+            g_bpl_pt[i] = 0;
+            g_spr_pt[i] = 0;
+            g_spr_in_use[i] = 0;
+        }
+        g_dmacon &= ~(0x0100u | 0x0080u | 0x0020u); /* BPLEN COPEN SPREN */
+    }
+
+    if (g_blit_ram == ram) {
+        g_blit_ram = NULL;
+        g_blitter_busy = 0;
+        g_blitter_busy_ticks = 0;
+        g_blitter_words_remaining = 0;
+        g_line_state.active = 0;
+        g_area_state.active = 0;
+        g_dmacon &= ~0x0040u; /* BLTEN */
+    }
+
+    if (g_audio_ram == ram) {
+        g_audio_ram = NULL;
+        for (int i = 0; i < AUDIO_CHANNELS; i++) {
+            g_audio[i].ptr = 0;
+            g_audio[i].len = 0;
+        }
+        g_dmacon &= ~0x000Fu; /* AUD0-3EN */
+    }
+
+    if (floppy_unbind_ram(ram))
+        g_dmacon &= ~0x0010u; /* DSKEN */
 }
 
 /* Return the current power-LED state (1 = on, 0 = off).

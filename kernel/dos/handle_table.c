@@ -100,6 +100,29 @@ HandleEntry *HandleTable_GetLockEntry(uint32_t handle, int32_t *access_out)
     return NULL;
 }
 
+/* Free every handle owned by `owner` (called from Task_Exit / RemTask —
+ * UAOS-247).  A task that dies holding files or locks would otherwise leak
+ * the table entries and the handler-side objects behind them.  Files get a
+ * real VFS_Close (ACTION_END round-trip for handler-backed handles); locks
+ * go through VFS_FreeLock so the handler frees its lock node too. */
+uint32_t HandleTable_FreeByOwner(void *owner)
+{
+    if (!owner) return 0;
+    uint32_t freed = 0;
+    for (uint32_t i = 0; i < MAX_HANDLES; i++) {
+        HandleEntry *e = &g_entries[i];
+        if (e->type == HTYPE_FREE || e->owner != owner) continue;
+        if (e->type == HTYPE_FILE) {
+            VFS_Close(&e->u.file.fh);
+            HandleTable_Free(i + 1);
+        } else if (e->type == HTYPE_LOCK) {
+            VFS_FreeLock(i + 1);
+        }
+        freed++;
+    }
+    return freed;
+}
+
 void *HandleTable_LockIterate(uint32_t handle)
 {
     HandleEntry *e = HandleTable_Get(handle);

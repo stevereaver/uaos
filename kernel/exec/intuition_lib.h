@@ -56,6 +56,15 @@ void UAOS_Intuition_Dispatch(uint32_t fn);
  * screen, bringing it to the front.  Called by LAmiga+M / LAmiga+N. */
 void UAOS_Intuition_CycleScreen(int direction);
 
+/* Retire every Intuition window/screen/requester owned by a task that is
+ * about to lose its per-task RAM window (UAOS-265).  Called from
+ * Task_Exit() before Task_ReleaseM68kRam(); without it, screen slots keep
+ * dangling guest pointers that the render path decodes through whatever
+ * g_ram is bound — reused or foreign memory — producing transient
+ * false-color framebuffer corruption. */
+struct UaosTask;
+void UAOS_Intuition_CleanupTask(struct UaosTask *t);
+
 /* -------------------------------------------------------------------------
  * Minimal AmigaOS NewWindow struct (classic layout)
  * ------------------------------------------------------------------------- */

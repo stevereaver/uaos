@@ -171,16 +171,39 @@ static int enumerate_port(UsbHc *hc, int port)
             if (s2 < 0) break;                 /* device went away */
             dev->speed = (uint8_t)s2;
         }
+        /* -2 from the HC means dead air — the request never got an
+         * answer.  Two consecutive silences is enough evidence: burning
+         * the rest of the round just floods klog and stalls the enum
+         * task, while the outer backoff retries still give the port a
+         * chance to wake up (UAOS-262).  Retries after a talking-
+         * device failure (-1) get an escalating settle delay instead. */
+        int deaf = 0;
+        uint32_t wait = 50;
         for (int attempt = 0; attempt < 4; attempt++) {
-            if (get_desc(dev, USB_DESC_DEVICE, 0, dd, 8) == 0) {
+            int r = get_desc(dev, USB_DESC_DEVICE, 0, dd, 8);
+            if (r == 0) {
                 ok = 1;
                 break;
             }
-            usb_msleep(100);
+            if (r == -2) {
+                if (++deaf >= 2) break;
+            } else {
+                deaf = 0;
+            }
+            usb_msleep(wait);
+            if (wait < 400) wait <<= 1;
         }
     }
     if (!ok) {
-        klog_puts(KLOG_USB, KLOG_WARN, "usb: GET_DESCRIPTOR(8) failed\n");
+        int hcn = -1;
+        for (int i = 0; i < g_nhcs; i++)
+            if (g_hcs[i] == hc) { hcn = i; break; }
+        klog_puts(KLOG_USB, KLOG_DEBUG,
+                  "usb: GET_DESCRIPTOR(8) failed hc=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)hcn);
+        klog_puts(KLOG_USB, KLOG_DEBUG, " port=");
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)port);
+        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
         goto out_dd;
     }
     dev->ep0_mps = dd->bMaxPacketSize0 ? dd->bMaxPacketSize0 : 8;
@@ -374,13 +397,16 @@ static void usb_enum_task(void *arg)
                     w->next_tick = g_pit_ticks +
                                    (100ull << (w->attempts - 1));
                     if (w->attempts >= USB_ENUM_MAX_ATTEMPTS) {
-                        klog_puts(KLOG_USB, KLOG_WARN,
+                        /* UAOS-262: intermediate failures stay quiet
+                         * (throttled uhci dumps + DEBUG core lines);
+                         * the final verdict is the one loud message. */
+                        klog_puts(KLOG_USB, KLOG_ERR,
                                   "usb: port deaf after retries — "
                                   "parked until connect edge hc=");
-                        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
-                        klog_puts(KLOG_USB, KLOG_WARN, " port=");
-                        klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", p);
-                        klog_puts(KLOG_USB, KLOG_WARN, "\n");
+                        klog_appendf(KLOG_USB, KLOG_ERR, "0x%08X", i);
+                        klog_puts(KLOG_USB, KLOG_ERR, " port=");
+                        klog_appendf(KLOG_USB, KLOG_ERR, "0x%08X", p);
+                        klog_puts(KLOG_USB, KLOG_ERR, "\n");
                     }
                 }
             }
