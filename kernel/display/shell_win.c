@@ -818,7 +818,18 @@ static int bg_job_alive(const BgJob *job)
     return 0;
 }
 
+/* Split bg_job_done into mark + print: the mark runs under Forbid()
+ * (queue surgery must stay atomic vs bg_enqueue on another task), while
+ * the "[n] done" print runs unlocked — inst_print on a remote shell
+ * blocks in Task_WaitTicks waiting for TCP window, and blocking under
+ * Forbid deschedules the caller mid-critical-section (UAOS-271). */
 static void bg_job_done(BgJob *job)
+{
+    job->active = 0;
+    job->done   = 1;
+}
+
+static void bg_job_done_print(const BgJob *job)
 {
     char done_msg[MAX_LINE_LEN];
     scopy(done_msg, "[", MAX_LINE_LEN);
@@ -827,9 +838,6 @@ static void bg_job_done(BgJob *job)
     scat(done_msg, num, MAX_LINE_LEN);
     scat(done_msg, "] done", MAX_LINE_LEN);
     inst_print(job->shell, done_msg);
-
-    job->active = 0;
-    job->done   = 1;
 }
 
 static void bg_run_next(void)
@@ -838,14 +846,30 @@ static void bg_run_next(void)
 
     /* Reap finished jobs: a backgrounded command completes when the last
      * task it spawned has exited — not when dispatch returns, since
-     * binaries run as their own scheduled tasks. */
-    for (int i = 0; i < g_bg_job_count; i++) {
-        if (g_bg_jobs[i].active && !bg_job_alive(&g_bg_jobs[i]))
-            bg_job_done(&g_bg_jobs[i]);
+     * binaries run as their own scheduled tasks.  The scan runs under
+     * Forbid() so a bg_enqueue() landing mid-scan can't tear the list;
+     * the "[n] done" print runs after Permit() because inst_print can
+     * block (remote shell TX) and this function is invoked on the event
+     * pump — blocking under Forbid is the descheduled-in-critical bug
+     * class (UAOS-271). */
+    for (;;) {
+        BgJob *done = NULL;
+        Forbid();
+        for (int i = 0; i < g_bg_job_count; i++) {
+            if (g_bg_jobs[i].active && !g_bg_jobs[i].done &&
+                !bg_job_alive(&g_bg_jobs[i])) {
+                bg_job_done(&g_bg_jobs[i]);
+                done = &g_bg_jobs[i];
+                break;
+            }
+        }
+        Permit();
+        if (!done) break;
+        bg_job_done_print(done);
     }
 
+    Forbid();
     bg_remove_done();
-    if (g_bg_job_count == 0) return;
 
     /* Find first queued (not active) job */
     int idx = -1;
@@ -855,7 +879,7 @@ static void bg_run_next(void)
             break;
         }
     }
-    if (idx < 0) return;
+    if (idx < 0) { Permit(); return; }
 
     BgJob *job = &g_bg_jobs[idx];
     job->active = 1;
@@ -863,13 +887,21 @@ static void bg_run_next(void)
     /* Stamp every task spawned by this dispatch with the job number so
      * the pump can later detect when the backgrounded command exits. */
     g_task_bg_job = job->number;
+    Permit();
 
     /* Suppress prompt echo for background execution by calling run_cmd
      * directly — inst_dispatch would print the command again.  If the
      * command contains redirects or pipes, run_cmd won't handle them,
      * so for now we fall back to inst_dispatch and accept the extra echo.
      * A cleaner future approach would be to refactor redirect/pipe logic
-     * into a shared helper callable from here. */
+     * into a shared helper callable from here.
+     *
+     * The dispatch is deliberately NOT under Forbid: command bodies
+     * legitimately block (CMD_YIELD sleeps, remote-shell output waits on
+     * ACKs, filesystem packet round-trips Wait() on a reply), and the
+     * pump must never be descheduled mid-critical-section (UAOS-271).
+     * g_bg_running/g_task_bg_job stay set across it so nested dispatches
+     * are still suppressed and spawned tasks keep the job stamp. */
     char check[MAX_LINE_LEN];
     scopy(check, job->cmd, MAX_LINE_LEN);
     int has_pipe = 0, has_redir = 0;
@@ -885,15 +917,23 @@ static void bg_run_next(void)
         inst_dispatch(job->shell, job->cmd);
     }
 
-    g_task_bg_job = 0;
-    g_bg_running = 0;
-
     /* If the command spawned a detached task that is still running, the
      * job stays active — "[n] done" is printed by the reaper above when
      * the task exits.  Synchronous commands (builtins, scripts, native
-     * C: commands) are complete as soon as dispatch returns. */
-    if (!bg_job_alive(job))
+     * C: commands) are complete as soon as dispatch returns.  The done
+     * flag is set under Forbid and printed after Permit(), same split
+     * as the reaper. */
+    int print_done = 0;
+    Forbid();
+    if (!bg_job_alive(job)) {
         bg_job_done(job);
+        print_done = 1;
+    }
+    g_task_bg_job = 0;
+    g_bg_running = 0;
+    Permit();
+    if (print_done)
+        bg_job_done_print(job);
 }
 
 static void pipe_print(void *shell, const char *line)

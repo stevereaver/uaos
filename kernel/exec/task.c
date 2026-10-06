@@ -919,10 +919,6 @@ void Task_EventPumpEntry(void *arg)
         /* Network */
         net_stack_poll();
 
-        /* Background jobs */
-        if (!PS2Kbd_HasChar())
-            ShellWin_PollJobs();
-
         /* Guest-owned front screen: apps like OctaMED draw straight into
          * their screen BitMap's planes with CPU stores — no library call
          * to hook.  Poll-marks the screen damaged so FlushRedraw re-decodes
@@ -938,6 +934,16 @@ void Task_EventPumpEntry(void *arg)
 
         Permit();
         /* --- End protected section --- */
+
+        /* Background jobs — dispatched OUTSIDE the Forbid region: the
+         * job pump runs arbitrary command bodies that legitimately
+         * block (yield_ms sleeps, remote-shell TX waits, filesystem
+         * packet round-trips), and blocking while Forbid'd deschedules
+         * the pump mid-critical-section — the UAOS-169/170/176 bug
+         * class counted by irqaudit's crit-sw (UAOS-271).  bg_run_next
+         * takes its own Forbid for queue surgery only. */
+        if (!PS2Kbd_HasChar())
+            ShellWin_PollJobs();
 
         /* UAOS-265: cheap back-buffer/VRAM consistency spot-check. */
         FB_Watchdog();
@@ -1023,9 +1029,34 @@ void Signal(UaosTask *task, uint32_t sigmask)
     irq_restore(fl);
 }
 
+/* UAOS-271 diagnostic: entering a blocking primitive while Disable()/
+ * Forbid() nested deschedules the task mid-critical-section — exactly
+ * the UAOS-169/170/176 bug class irqaudit's crit-sw column counts.
+ * Log the caller PC so the offending path can be symbolized instead of
+ * inferred from the bare counter. */
+static void crit_block_warn(const char *fn, void *caller)
+{
+    if (!g_current ||
+        (g_current->tc_IDNestCnt <= 0 && g_current->tc_TDNestCnt <= 0))
+        return;
+    kprint("[TASK] WARN: '");
+    kprint(g_current->ln_Name ? g_current->ln_Name : "?");
+    kprint("' blocked in ");
+    kprint(fn);
+    kprint("() while critical (ID=");
+    kprinthex((uint64_t)(int)g_current->tc_IDNestCnt);
+    kprint(" TD=");
+    kprinthex((uint64_t)(int)g_current->tc_TDNestCnt);
+    kprint(") caller=");
+    kprinthex((uint64_t)(uintptr_t)caller);
+    kprint("\n");
+}
+
 uint32_t Wait(uint32_t sigmask)
 {
     uint32_t result;
+
+    crit_block_warn("Wait", __builtin_return_address(0));
 
     /* Save/restore IF: a bare sti at exit would silently re-enable
      * interrupts if the caller entered with IF=0 (Disable() nesting or
@@ -1070,6 +1101,7 @@ uint32_t Wait(uint32_t sigmask)
 void Task_SleepTicks(uint64_t ticks)
 {
     if (!g_current || ticks == 0) return;
+    crit_block_warn("Task_SleepTicks", __builtin_return_address(0));
     uint64_t deadline = g_pit_ticks + ticks;
 
     uint64_t fl = irq_save();           /* UAOS-176: restore caller's IF */
@@ -1101,6 +1133,7 @@ void Task_SleepTicks(uint64_t ticks)
 uint32_t Task_WaitTicks(uint32_t sigmask, uint64_t ticks)
 {
     if (!g_current) return 0;
+    crit_block_warn("Task_WaitTicks", __builtin_return_address(0));
     if (!sigmask) { Task_SleepTicks(ticks); return 0; }
 
     uint64_t deadline = g_pit_ticks + ticks;
