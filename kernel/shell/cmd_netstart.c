@@ -159,8 +159,10 @@ void Cmd_Netstart(NativeCmdCtx *ctx, const char *args)
 
     BsdSocket_Init();
 
-    /* Apply DNS if configured (for static or dhcp fallback) */
-    if (dns) net_stack_set_dns(dns);
+    /* Apply DNS if configured — as a fallback only: a DHCP lease that
+     * carried option 6 already installed its resolver and must win
+     * (net_stack_init_ex stores it in g_dns). */
+    if (dns && !net_stack_get_dns()) net_stack_set_dns(dns);
 
     {
         char line[80];

@@ -18,20 +18,27 @@ static long copy_one(const char *src, const char *dst,
     long out = uaos_open(dst, UAOS_O_WRONLY | UAOS_O_CREAT | UAOS_O_TRUNC);
     if (out < 0) {
         uaos_close((int)fd);
-        if (!quiet) { put_s("Failed to copy: "); put_line(src); }
+        if (!quiet) { put_s("Failed to copy: "); put_line(dst); }
         return -1;
     }
 
     char buf[256];
     long total = 0;
+    int failed = 0;
     for (;;) {
         long n = uaos_read_file((int)fd, (uint8_t *)buf, sizeof(buf));
         if (n <= 0) break;
-        uaos_write_file((int)out, (const uint8_t *)buf, (uint32_t)n);
-        total += n;
+        long w = uaos_write_file((int)out, (const uint8_t *)buf, (uint32_t)n);
+        if (w < n) { failed = 1; break; }
+        total += w;
     }
     uaos_close((int)fd);
     uaos_close((int)out);
+    if (failed) {
+        uaos_delete(dst);   /* drop the partial destination */
+        if (!quiet) { put_s("Failed to copy: "); put_line(dst); }
+        return -1;
+    }
 
     if (clone && !nopro) {
         long prot = uaos_getprotection(src);

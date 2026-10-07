@@ -1002,13 +1002,6 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
 
     if (btn_left_pressed) {
         WM_LOG("[WM] Mouse press at "); WM_LOG_DEC(mx); WM_LOG(","); WM_LOG_DEC(my); WM_LOG("\n");
-        {   /* UAOS-245 diag */
-            extern void kprint(const char *);
-            extern void kprintdec(uint32_t);
-            kprint("[mpress] mx="); kprintdec(mx); kprint(" my="); kprintdec(my);
-            int wh = hit_test(mx, my);
-            kprint(" wh="); kprintdec(wh); kprint("\n");
-        }
         int wh = hit_test(mx, my);
         g_press_was_desktop = (wh < 0);
         if (wh < 0) {

@@ -9,8 +9,10 @@ static void copy_one(NativeCmdCtx *ctx, const char *src, const char *dst,
     if (rc < 0) {
         if (!quiet) {
             char msg[CMD_MAX_LINE];
+            /* -1 = source open failed; -2 = dest create failed; -3 = mid-copy
+             * error — name the side that actually failed. */
             cmd_scopy(msg, "Failed to copy: ", CMD_MAX_LINE);
-            cmd_scat(msg, src, CMD_MAX_LINE);
+            cmd_scat(msg, (rc == -1) ? src : dst, CMD_MAX_LINE);
             PRINT(msg);
         }
         return;

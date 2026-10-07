@@ -376,9 +376,10 @@ static inline int cmd_prompt_yn(NativeCmdCtx *ctx, const char *msg)
     return 0;
 }
 
-/* Copy a single file from src to dst. Returns bytes copied or -1 on error.
- * A short VFS_Write (e.g. RAMFS pool exhausted) aborts the copy and the
- * partial destination is removed. */
+/* Copy a single file from src to dst. Returns bytes copied, or a negative
+ * error code naming the failing side: -1 = source open, -2 = dest create,
+ * -3 = write/read error mid-copy.  A short VFS_Write (e.g. RAMFS pool
+ * exhausted) aborts the copy and the partial destination is removed. */
 static inline int cmd_copy_file(const char *src, const char *dst)
 {
     VfsFile fsrc;
@@ -386,7 +387,7 @@ static inline int cmd_copy_file(const char *src, const char *dst)
     VfsFile fdst;
     if (!VFS_Open(&fdst, dst, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
         VFS_Close(&fsrc);
-        return -1;
+        return -2;
     }
     char buf[4096];
     int total = 0;
@@ -394,7 +395,7 @@ static inline int cmd_copy_file(const char *src, const char *dst)
         int n = (int)VFS_Read(&fsrc, (uint8_t *)buf, sizeof(buf));
         if (n <= 0) break;
         uint32_t w = VFS_Write(&fdst, (const uint8_t *)buf, (uint32_t)n);
-        if (w < (uint32_t)n) { total = -1; break; }
+        if (w < (uint32_t)n) { total = -3; break; }
         total += (int)w;
     }
     VFS_Close(&fsrc);

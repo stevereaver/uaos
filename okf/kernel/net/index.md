@@ -196,7 +196,7 @@ The device layer pads Ethernet frames to the minimum 60 bytes and exposes the MA
 
 ## Shell Integration
 
-Network commands in `kernel/shell/` include `netstart`, `netstop`, `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netinfo` (opens the network info window), and `telnetd`. Configuration is read from `S:net.conf`.
+Network commands in `kernel/shell/` include `netstart`, `netstop`, `ifconfig`, `route`, `ping`, `nslookup`, `ntpd`, `netinfo` (opens the network info window), and `telnetd`. Configuration is read from `S:net.conf`. DNS precedence: a DHCP lease carrying option 6 wins; the `dns` value in `S:net.conf` is applied only when the lease supplied no resolver (or in static mode) — it is a fallback, not an override.
 
 ## Telnet Daemon (`telnetd.c`)
 
