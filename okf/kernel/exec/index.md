@@ -107,7 +107,7 @@ X64 userspace tasks communicate with the kernel via INT 0x80 syscalls (`syscall_
 
 - **x86-64 userspace heap** — total/used/free from the ELF64 loader arena (`ELF64_HeapSize()` / `ELF64_HeapUsed()`). This arena backs ELF64 segment loading, initial stacks, and `sys_alloc`/`sys_free`; `used` counts live allocated block bytes, so it shrinks on `free` and on task exit (per-task blocks are reclaimed by `ELF64_FreeTaskBlocks()`, and `ELF64_ReclaimHeap()` resets the whole arena once no X64 tasks remain).
 - **Emulated M68k guest RAM slots** — per-task RAM pool count from `Task_M68kSlotCount()` and the per-slot size (`GUEST_RAM_SIZE`).
-- **Scheduler task table** — total/running/waiting counts from `Task_GetCounts()`.
+- **Scheduler task table** — total/running/waiting counts from `Task_GetCounts()`. `running` counts both `TASK_RUNNING` and `TASK_READY` (same runnable-set semantics as `Task_RunnableCount()`), matching the `tasks_running` field's documented "RUN/READY state" contract.
 
 The same `Mem_GetInfo()` helper is consumed directly by the resident `C:mem` command, so kernel and userspace memory reports stay consistent. The on-disk `C:avail` userspace command queries this API to render real memory statistics.
 

@@ -1349,7 +1349,8 @@ void Task_GetCounts(int *out_total, int *out_running, int *out_waiting)
     for (int i = 0; i < g_task_count; i++) {
         if (g_tasks[i].tc_State == TASK_REMOVED) continue;
         total++;
-        if (g_tasks[i].tc_State == TASK_RUNNING) running++;
+        if (g_tasks[i].tc_State == TASK_RUNNING ||
+            g_tasks[i].tc_State == TASK_READY) running++;
         else if (g_tasks[i].tc_State == TASK_WAITING) waiting++;
     }
     if (out_total)   *out_total   = total;

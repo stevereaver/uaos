@@ -361,6 +361,32 @@ static void draw_scrollbar(int tx, int ty, int tw, int th,
     }
 }
 
+/* Paint both scrollbar wells of window 'wh'.  Extracted from draw_chrome so
+ * repaint_window can repaint just the scrollbars when the client's draw
+ * pass changed the scroll metrics for a new geometry (see repaint_window). */
+static void draw_scrollbars(int wh, uint32_t bg)
+{
+    WmWindow *w = &g_wins[wh];
+    int cx, cy, cw, ch;
+    client_rect(w, &cx, &cy, &cw, &ch);
+
+    /* Right scrollbar */
+    int rx, ry, rw, rh;
+    sb_right_rect(w, &rx, &ry, &rw, &rh);
+    int vh = (w->view_h > 0) ? w->view_h : ch;
+    int sv = (w->content_h > vh) ? w->content_h : vh + 1;
+    if (w->scroll_y < 0) w->scroll_y = 0;
+    draw_scrollbar(rx, ry, rw, rh, WM_ARROW_LEN,
+                   w->scroll_y, sv, vh, 0, bg);
+
+    /* Bottom scrollbar */
+    int bx, by, bw, bh;
+    sb_bottom_rect(w, &bx, &by, &bw, &bh);
+    int sh = (w->content_w > 0) ? w->content_w : (cw + 1);
+    draw_scrollbar(bx, by, bw, bh, WM_ARROW_LEN,
+                   w->scroll_x, sh, cw, 1, bg);
+}
+
 /* =========================================================================
  * System gadget imagery (close/zoom/depth)
  *
@@ -547,21 +573,7 @@ static void draw_chrome(int wh)
     client_rect(w, &cx, &cy, &cw, &ch);
     FB_FillRect(cx, cy, cw, ch, WB_GREY);
 
-    /* Right scrollbar */
-    int rx, ry, rw, rh;
-    sb_right_rect(w, &rx, &ry, &rw, &rh);
-    int vh = (w->view_h > 0) ? w->view_h : ch;
-    int sv = w->content_h > vh ? w->content_h : vh + 1;
-    if (w->scroll_y < 0) w->scroll_y = 0;
-    draw_scrollbar(rx, ry, rw, rh, WM_ARROW_LEN,
-                   w->scroll_y, sv, vh, 0, tbar_col);
-
-    /* Bottom scrollbar */
-    int bx, by, bw, bh;
-    sb_bottom_rect(w, &bx, &by, &bw, &bh);
-    int sh = (w->content_w > 0) ? w->content_w : (cw + 1);
-    draw_scrollbar(bx, by, bw, bh, WM_ARROW_LEN,
-                   w->scroll_x, sh, cw, 1, tbar_col);
+    draw_scrollbars(wh, tbar_col);
 
     /* Sizing gadget — bottom-right corner. Pixel-measured from a genuine
      * AmigaOS 3.x window's default sizing-gadget corner: a 1px white
@@ -861,12 +873,25 @@ static int hit_scrollbars(int wh, int mx, int my)
 /* Repaint a single window in-place without full desktop repaint */
 static void repaint_window(int wh)
 {
-    draw_chrome(wh);
     WmWindow *w = &g_wins[wh];
+    draw_chrome(wh);
     if (w->draw) {
+        /* Chrome (and its scrollbars) must paint before the client so the
+         * body background doesn't erase chrome, but a client that learns
+         * its new geometry only inside the draw callback (shell, ed, vim)
+         * pushes fresh scroll metrics via WM_SetScrollInfoEx there — too
+         * late for the scrollbars just drawn.  Repaint both wells with the
+         * post-draw metrics so a zoom/resize repaint never leaves a thumb
+         * sized or positioned for the previous geometry. */
+        int o_cw = w->content_w, o_ch = w->content_h, o_vh = w->view_h;
+        int o_sx = w->scroll_x,  o_sy = w->scroll_y;
         WM_CurrentDrawHandle = wh;
         w->draw(w->x, w->y, w->w, w->h);
         WM_CurrentDrawHandle = -1;
+        if (w->content_w != o_cw || w->content_h != o_ch ||
+            w->view_h != o_vh ||
+            w->scroll_x != o_sx || w->scroll_y != o_sy)
+            draw_scrollbars(wh, (wh == g_focus) ? WB_BLUE : WB_GREY);
     }
 }
 
@@ -1443,12 +1468,7 @@ static void redraw_full(void)
         int wh = g_zorder[i];
         WmWindow *w = &g_wins[wh];
         if (!w->active) continue;
-        draw_chrome(wh);
-        if (w->draw) {
-            WM_CurrentDrawHandle = wh;
-            w->draw(w->x, w->y, w->w, w->h);
-            WM_CurrentDrawHandle = -1;
-        }
+        repaint_window(wh);
     }
 
     /* Workbench menu dropdown must float above all windows. */
@@ -1566,11 +1586,33 @@ void WM_SetClickHandler(int handle, WM_ClickFn on_click)
     g_wins[handle].on_click = on_click;
 }
 
+/* Keep scroll offsets inside the range implied by the current content/view
+ * metrics — same clamp WM_SetScrollX/WM_SetScrollY apply.  Called from the
+ * scroll-info setters because a shrinking view or content (zoom, resize,
+ * buffer clear) can strand an offset beyond the new maximum: the thumb is
+ * only clamped visually at draw time, while clients read the stale offset
+ * back through WM_GetScrollY (the shell derived its first history line from
+ * it, leaving a blank tail after zooming larger). */
+static void clamp_scroll(int handle)
+{
+    WmWindow *w = &g_wins[handle];
+    int cx, cy, cw, ch;
+    client_rect(w, &cx, &cy, &cw, &ch);
+    int vh = (w->view_h > 0) ? w->view_h : ch;
+    int max_sy = (w->content_h > vh) ? w->content_h - vh : 0;
+    if (w->scroll_y > max_sy) w->scroll_y = max_sy;
+    if (w->scroll_y < 0) w->scroll_y = 0;
+    int max_sx = (w->content_w > cw) ? w->content_w - cw : 0;
+    if (w->scroll_x > max_sx) w->scroll_x = max_sx;
+    if (w->scroll_x < 0) w->scroll_x = 0;
+}
+
 void WM_SetScrollInfo(int handle, int content_w, int content_h)
 {
     if (handle < 0 || handle >= WM_MAX_WINDOWS) return;
     g_wins[handle].content_w = content_w;
     g_wins[handle].content_h = content_h;
+    clamp_scroll(handle);
 }
 
 void WM_SetScrollInfoEx(int handle, int content_w, int content_h, int view_h)
@@ -1579,6 +1621,7 @@ void WM_SetScrollInfoEx(int handle, int content_w, int content_h, int view_h)
     g_wins[handle].content_w = content_w;
     g_wins[handle].content_h = content_h;
     g_wins[handle].view_h    = view_h;
+    clamp_scroll(handle);
 }
 
 int WM_GetScrollX(int handle)

@@ -125,26 +125,33 @@ void Cmd_Pciscan(NativeCmdCtx *ctx, const char *args)
                     uint32_t io = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
                                                 (uint8_t)fn, 0x1C);
                     cmd_scat(line, "io=", CMD_MAX_LINE);
-                    if (io & 0xF0F0) {   /* any base/limit nibble set */
-                        hexn(line, (io & 0xF0) << 8, 4);
+                    uint32_t iob = (io & 0xF0) << 8;
+                    uint32_t iol = ((io >> 8) & 0xF0) << 8;
+                    /* base > limit (or all-zero) = disabled window */
+                    if ((io & 0xF0F0) && iob <= iol) {
+                        hexn(line, iob, 4);
                         cmd_scat(line, "-", CMD_MAX_LINE);
-                        hexn(line, (((io >> 8) & 0xF0) << 8) | 0xFFF, 4);
+                        hexn(line, iol | 0xFFF, 4);
                     } else cmd_scat(line, "-", CMD_MAX_LINE);
                     uint32_t mw = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
                                                 (uint8_t)fn, 0x20);
                     cmd_scat(line, " mem=", CMD_MAX_LINE);
-                    if (mw & 0xFFF0FFF0) {
-                        hexn(line, (mw & 0xFFF0) << 16, 8);
+                    uint32_t mb = (mw & 0xFFF0) << 16;
+                    uint32_t ml = ((mw >> 16) & 0xFFF0) << 16;
+                    if ((mw & 0xFFF0FFF0) && mb <= ml) {
+                        hexn(line, mb, 8);
                         cmd_scat(line, "-", CMD_MAX_LINE);
-                        hexn(line, (((mw >> 16) & 0xFFF0) << 16) | 0xFFFFF, 8);
+                        hexn(line, ml | 0xFFFFF, 8);
                     } else cmd_scat(line, "-", CMD_MAX_LINE);
                     uint32_t pw = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
                                                 (uint8_t)fn, 0x24);
                     cmd_scat(line, " pmem=", CMD_MAX_LINE);
-                    if (pw & 0xFFF0FFF0) {
-                        hexn(line, (pw & 0xFFF0) << 16, 8);
+                    uint32_t pb = (pw & 0xFFF0) << 16;
+                    uint32_t pl = ((pw >> 16) & 0xFFF0) << 16;
+                    if ((pw & 0xFFF0FFF0) && pb <= pl) {
+                        hexn(line, pb, 8);
                         cmd_scat(line, "-", CMD_MAX_LINE);
-                        hexn(line, (((pw >> 16) & 0xFFF0) << 16) | 0xFFFFF, 8);
+                        hexn(line, pl | 0xFFFFF, 8);
                     } else cmd_scat(line, "-", CMD_MAX_LINE);
                     PRINT(line);
                 } else {
