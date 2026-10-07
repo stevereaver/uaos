@@ -1,5 +1,30 @@
 # OKF Change Log
 
+## 2026-10-07 — capacity display math honours sector_size (UAOS-267)
+
+* **Fixed**: every capacity print that hardcoded a 512-byte sector now
+  multiplies the sector count by the real `sector_size`, so
+  non-512B devices (sysroot0/atapi0 at 2048 B) report correct sizes —
+  sysroot0's 5542×2048 ≈ 10.8 MiB was shown as "2 MB".
+  `kernel/shell/cmd_disks.c` and `kernel/shell/cmd_fdisk.c` (`-l`)
+  use `dev->sector_size`; `kernel/shell/cmd_fsck.c` `fsck list`
+  replaces `num_sectors >> 11` with `(num_sectors * sector_size) >> 20`;
+  the dead-code mirrors in `kernel/display/shell_win.c`
+  (`inst_cmd_disks`, `inst_cmd_fdisk -l`, fdisk 'n' message) fixed the
+  same way.
+* **`PartitionTable` gains `sector_size`** (`kernel/dos/partition.h`),
+  populated alongside `disk_sectors` in `partition_read`/`mbr_read`/
+  `rdb_read`; `mbr_print_partitions` uses it for the Size column.
+  `fsck.c`'s `print_size` takes a `sector_size` parameter —
+  device-sector callers pass `dev->sector_size`, the FFS caller passes
+  `vol->block_size`. `rdb_print_partitions` left as-is:
+  `rdb_part_size_sectors` deliberately returns 512-byte units.
+* **Verified** live under QEMU + telnet: `disks` prints
+  `sysroot0 5542 sectors (10 MB)`, `atapi0 28438 (55 MB)`,
+  `virtio0 2097152 (1024 MB)`, `floppy0 1760 (0 MB)`; `fdisk -l` and
+  `fsck list` agree (10/55/1024/0). `make` kernel+ISO clean, zero
+  warnings.
+
 ## 2026-10-07 — s:os-release build serial on every ISO (UAOS-283)
 
 * **Added** (`Makefile`): every `make iso` now writes

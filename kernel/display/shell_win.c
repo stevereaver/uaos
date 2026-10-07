@@ -2939,7 +2939,7 @@ static void inst_cmd_disks(ShellInstance *s, const char *arg)
         inst_print(s, msg);
         
         uint64_t capacity = BlockDev_GetCapacity(dev);
-        uint64_t mb = (capacity * 512) / (1024 * 1024);
+        uint64_t mb = (capacity * dev->sector_size) / (1024 * 1024);
         
         scopy(msg, "  Capacity: ", MAX_LINE_LEN);
         uint_to_dec_s(capacity, msg + slen(msg), MAX_LINE_LEN - slen(msg));
@@ -3030,7 +3030,9 @@ static void fdisk_handle_cmd(ShellInstance *s, const char *cmd)
                     msg[18] = '1' + idx;
                     msg[19] = '\0';
                     scat(msg, " (Linux, ", MAX_LINE_LEN);
-                    uint64_t mb = ((uint64_t)count * 512) / (1024 * 1024);
+                    uint64_t mb = ((uint64_t)count *
+                                   (pt->sector_size ? pt->sector_size : 512)) /
+                                  (1024 * 1024);
                     uint_to_dec_s((uint32_t)mb, msg + slen(msg), MAX_LINE_LEN - slen(msg));
                     scat(msg, " MB)", MAX_LINE_LEN);
                     inst_print(s, msg);
@@ -3388,7 +3390,7 @@ static void inst_cmd_fdisk(ShellInstance *s, const char *arg)
             scat(msg, " - ", MAX_LINE_LEN);
             
             uint64_t capacity = BlockDev_GetCapacity(dev);
-            uint64_t mb = (capacity * 512) / (1024 * 1024);
+            uint64_t mb = (capacity * dev->sector_size) / (1024 * 1024);
             uint_to_dec_s(mb, msg + slen(msg), MAX_LINE_LEN - slen(msg));
             scat(msg, " MB", MAX_LINE_LEN);
             

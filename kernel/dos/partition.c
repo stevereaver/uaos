@@ -118,6 +118,7 @@ int mbr_read(BlockDev *dev, PartitionTable *pt)
         pt->scheme = PART_SCHEME_MBR;
         pt->num_partitions = 0;
         pt->disk_sectors = dev->num_sectors;
+        pt->sector_size = dev->sector_size;
         pt->disk_id = 0;
         pt->mbr_modified = 1;
         return 0;
@@ -128,6 +129,7 @@ int mbr_read(BlockDev *dev, PartitionTable *pt)
     pt->valid = 1;
     pt->scheme = PART_SCHEME_MBR;
     pt->disk_sectors = dev->num_sectors;
+    pt->sector_size = dev->sector_size;
     pt->mbr_modified = 0;
 
     /* Count active partitions */
@@ -322,7 +324,9 @@ void mbr_print_partitions(PartitionTable *pt, void (*print_fn)(const char *))
             scat(msg, " ", 256);
 
             /* Size in MB */
-            uint64_t mb = ((uint64_t)p->sector_count * 512) / (1024 * 1024);
+            uint64_t mb = ((uint64_t)p->sector_count *
+                           (pt->sector_size ? pt->sector_size : 512)) /
+                          (1024 * 1024);
             uint64_to_str(mb, num, 32);
             nl = 0;
             while (num[nl]) nl++;
@@ -441,6 +445,7 @@ int rdb_read(BlockDev *dev, PartitionTable *pt)
     pt->num_partitions = 0;
     pt->rdb_fshd_count = 0;
     pt->disk_sectors = dev->num_sectors;
+    pt->sector_size = dev->sector_size;
     pt->rdb_modified = 0;
 
     /* Walk the partition chain.  Every PART block holds a drive
@@ -619,6 +624,7 @@ int partition_read(BlockDev *dev, PartitionTable *pt)
 
     memset(pt, 0, sizeof(PartitionTable));
     pt->disk_sectors = dev->num_sectors;
+    pt->sector_size = dev->sector_size;
 
     /* Try RDB first — an RDB disk has no 55AA MBR signature, but an
      * MBR disk can never carry an RDSK block in the first 16 sectors. */

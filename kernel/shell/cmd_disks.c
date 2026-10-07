@@ -22,7 +22,7 @@ void Cmd_Disks(NativeCmdCtx *ctx, const char *args)
             PRINT(msg);
 
             uint64_t capacity = BlockDev_GetCapacity(dev);
-            uint64_t mb = (capacity * 512ULL) / (1024ULL * 1024ULL);
+            uint64_t mb = (capacity * dev->sector_size) / (1024ULL * 1024ULL);
 
             cmd_scopy(msg, "  Capacity: ", CMD_MAX_LINE);
             cmd_uint_to_dec((uint32_t)capacity, msg + cmd_slen(msg),

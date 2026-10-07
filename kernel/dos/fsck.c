@@ -181,7 +181,7 @@ void fsck_yield(FsckCtx *ctx)
  * Filesystem probes — each returns 1 when its on-disk signature matches
  * ========================================================================= */
 
-static char *print_size(uint64_t sectors, char *buf, int max);
+static char *print_size(uint64_t sectors, uint32_t sector_size, char *buf, int max);
 
 static int rd0(BlockDev *dev)
 {
@@ -436,7 +436,7 @@ static int info_ffs(BlockDev *dev, FsckCtx *ctx)
         fk_cat(line, "  blocks ", LINE_MAX);
         fk_cat(line, fk_dec(vol->num_blocks, num2, sizeof(num2)), LINE_MAX);
         fk_cat(line, " (", LINE_MAX);
-        fk_cat(line, print_size(vol->num_blocks, sz, sizeof(sz)), LINE_MAX);
+        fk_cat(line, print_size(vol->num_blocks, vol->block_size, sz, sizeof(sz)), LINE_MAX);
         fk_cat(line, ")", LINE_MAX);
         fsck_out(ctx, line);
         line[0] = 0;
@@ -776,9 +776,9 @@ int FSCK_RunCheck(BlockDev *dev, FsckCtx *ctx)
  * Whole-disk analysis — MBR / GPT / RDB
  * ========================================================================= */
 
-static char *print_size(uint64_t sectors, char *buf, int max)
+static char *print_size(uint64_t sectors, uint32_t sector_size, char *buf, int max)
 {
-    fk_human(sectors * 512ULL, buf, max);
+    fk_human(sectors * sector_size, buf, max);
     return buf;
 }
 
@@ -817,7 +817,7 @@ static int mbr_check(BlockDev *dev, FsckCtx *ctx)
         fk_cat(line, " + ", LINE_MAX);
         fk_cat(line, fk_dec(pe->sector_count, num, sizeof(num)), LINE_MAX);
         fk_cat(line, " (", LINE_MAX);
-        fk_cat(line, print_size(pe->sector_count, sz, sizeof(sz)), LINE_MAX);
+        fk_cat(line, print_size(pe->sector_count, dev->sector_size, sz, sizeof(sz)), LINE_MAX);
         fk_cat(line, ")", LINE_MAX);
         fsck_out(ctx, line);
 
@@ -1026,7 +1026,7 @@ static int gpt_check(BlockDev *dev, FsckCtx *ctx)
             fk_cat(line, "-", LINE_MAX);
             fk_cat(line, fk_dec(l1, num2, sizeof(num2)), LINE_MAX);
             fk_cat(line, " (", LINE_MAX);
-            fk_cat(line, print_size(l1 - l0 + 1, sz, sizeof(sz)), LINE_MAX);
+            fk_cat(line, print_size(l1 - l0 + 1, dev->sector_size, sz, sizeof(sz)), LINE_MAX);
             fk_cat(line, ")", LINE_MAX);
             fsck_out(ctx, line);
 
@@ -1183,7 +1183,7 @@ int FSCK_DiskCheck(BlockDev *dev, FsckCtx *ctx)
     fk_cat(line, " — ", LINE_MAX);
     fk_cat(line, fk_dec(dev->num_sectors, num, sizeof(num)), LINE_MAX);
     fk_cat(line, " sectors (", LINE_MAX);
-    fk_cat(line, print_size(dev->num_sectors, sz, sizeof(sz)), LINE_MAX);
+    fk_cat(line, print_size(dev->num_sectors, dev->sector_size, sz, sizeof(sz)), LINE_MAX);
     fk_cat(line, ")", LINE_MAX);
     fsck_out(ctx, line);
 

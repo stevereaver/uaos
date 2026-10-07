@@ -216,6 +216,7 @@ typedef struct {
     int       scheme;          /* PART_SCHEME_MBR/GPT/RDB */
     int       num_partitions;  /* Number of active partitions */
     uint64_t  disk_sectors;    /* Total disk size in sectors */
+    uint32_t  sector_size;     /* Bytes per sector on the source device */
     uint32_t  disk_id;         /* Disk identifier (MBR) */
     /* MBR specific */
     MbrSector mbr;

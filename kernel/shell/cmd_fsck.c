@@ -188,7 +188,7 @@ void Cmd_Fsck(NativeCmdCtx *ctx, const char *args)
                 cmd_scat(msg, ")", CMD_MAX_LINE);
             }
             cmd_scat(msg, "  ", CMD_MAX_LINE);
-            cmd_uint_to_dec((uint32_t)(d->num_sectors >> 11),
+            cmd_uint_to_dec((uint32_t)((d->num_sectors * d->sector_size) >> 20),
                             msg + cmd_slen(msg),
                             CMD_MAX_LINE - cmd_slen(msg));
             cmd_scat(msg, " MiB  ", CMD_MAX_LINE);

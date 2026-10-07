@@ -19,7 +19,7 @@ void Cmd_Fdisk(NativeCmdCtx *ctx, const char *args)
             cmd_scat(msg, " - ", CMD_MAX_LINE);
 
             uint64_t capacity = BlockDev_GetCapacity(dev);
-            uint64_t mb = (capacity * 512ULL) / (1024ULL * 1024ULL);
+            uint64_t mb = (capacity * dev->sector_size) / (1024ULL * 1024ULL);
             cmd_uint_to_dec((uint32_t)mb, msg + cmd_slen(msg),
                             CMD_MAX_LINE - cmd_slen(msg));
             cmd_scat(msg, " MB", CMD_MAX_LINE);
