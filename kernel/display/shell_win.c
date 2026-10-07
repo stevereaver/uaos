@@ -655,6 +655,40 @@ static void inst_draw_input(ShellInstance *s)
     }
 }
 
+/* -------------------------------------------------------------------------
+ * Damage-based repaint requests (UAOS-284).
+ *
+ * The shell task must not paint straight into VRAM: direct-mode fills and
+ * redraws land on screen one primitive at a time, so on uncached-framebuffer
+ * hardware (the MBP4,1 boots nomtrr — every VRAM store is a bus transaction)
+ * the black erase phase of inst_draw_history/inst_draw_input is visible as a
+ * flash on every keystroke.  Damaging the region instead lets the event pump
+ * repaint it inside the persistent back buffer and flip only the dirty rows:
+ * the intermediate erase never reaches the screen, and per-keystroke VRAM
+ * writes shrink to the input-bar band.
+ * ------------------------------------------------------------------------- */
+
+/* Repaint just the input-bar strip — for line editing that leaves the
+ * history untouched (printable chars, backspace, cursor moves, history
+ * recall, tab completion). */
+static void inst_invalidate_input(ShellInstance *s)
+{
+    if (s->remote || s->wm_handle < 0) return;
+    WM_InvalidateRect(s->wx + BORDER_L,
+                      s->wy + s->wh - INPUTBAR_H - WM_SCROLLBAR_W,
+                      s->ww - BORDER_L - BORDER_R,
+                      INPUTBAR_H);
+}
+
+/* Repaint everything below the title bar — history body, separator, input
+ * bar and both scrollbars (a scroll change moves the thumb too). */
+static void inst_invalidate_client(ShellInstance *s)
+{
+    if (s->remote || s->wm_handle < 0) return;
+    WM_InvalidateRect(s->wx, s->wy + TITLEBAR_H,
+                      s->ww, s->wh - TITLEBAR_H);
+}
+
 /* =========================================================================
  * Command dispatch (operates on a specific instance)
  * ========================================================================= */
@@ -1042,7 +1076,13 @@ static void inst_print(ShellInstance *s, const char *line)
     scopy(g_hist_buf[s->index][slot], line, MAX_LINE_LEN);
     s->hist_count++;
     s->auto_scroll = 1;
-    WM_Redraw();
+    /* Only this window's content changed — damage its footprint rather than
+     * the whole screen so a line burst coalesces into one window-sized flip
+     * (full-screen damage per printed line was heavy on uncached VRAM). */
+    if (s->wm_handle >= 0)
+        WM_RepaintWindow(s->wm_handle);
+    else
+        WM_Redraw();   /* pre-open banner lines — the open ends in WM_Redraw */
 }
 
 static void inst_cmd_help(ShellInstance *s)
@@ -3964,6 +4004,7 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                     s->input_buf[s->input_len] = '\0';
                     if (s->remote && !s->remote_noecho)
                         remote_send_str(s, "\b \b");
+                    inst_invalidate_input(s);
                 }
                 continue;
             }
@@ -3975,6 +4016,7 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                 s->input_buf[s->input_len] = '\0';
                 if (s->remote && !s->remote_noecho)
                     remote_send(s, &c, 1);
+                inst_invalidate_input(s);
                 /* Copy to result buffer */
                 s->ask_result[s->input_len] = '\0';
                 for (int i = 0; i < s->input_len; i++) {
@@ -5943,9 +5985,7 @@ static void inst_handle_key(ShellInstance *s, char c)
             s->vim_mode = 0;
             s->vim_slot = -1;
         }
-        inst_draw_contents(s);
-        inst_draw_history(s);
-        inst_draw_input(s);
+        inst_invalidate_client(s);
         return;
     }
     if (s->ed_mode) {
@@ -5954,9 +5994,7 @@ static void inst_handle_key(ShellInstance *s, char c)
             s->ed_mode = 0;
             s->ed_slot = -1;
         }
-        inst_draw_contents(s);
-        inst_draw_history(s);
-        inst_draw_input(s);
+        inst_invalidate_client(s);
         return;
     }
 
@@ -5972,7 +6010,7 @@ static void inst_handle_key(ShellInstance *s, char c)
             if (sy < 0) sy = 0;
             WM_SetScrollY(s->wm_handle, sy);
         }
-        inst_draw_history(s);
+        inst_invalidate_client(s);
         return;
     }
     if (c == VKEY_PGDN) {
@@ -5985,35 +6023,34 @@ static void inst_handle_key(ShellInstance *s, char c)
             if (sy > max_sy) sy = max_sy;
             WM_SetScrollY(s->wm_handle, sy);
         }
-        inst_draw_history(s);
+        inst_invalidate_client(s);
         return;
     }
     if (c == '\t') {
         if (!s->fdisk_mode) {
             inst_tab_complete(s);
-            inst_draw_history(s);
-            inst_draw_input(s);
+            inst_invalidate_input(s);
         }
         return;
     }
     if (c == VKEY_LEFT) {
         if (s->input_cur > 0) s->input_cur--;
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == VKEY_RIGHT) {
         if (s->input_cur < s->input_len) s->input_cur++;
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == VKEY_HOME) {
         if (s->input_cur > 0) s->input_cur = 0;
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == VKEY_END) {
         if (s->input_cur != s->input_len) s->input_cur = s->input_len;
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == VKEY_DEL) {
@@ -6026,7 +6063,7 @@ static void inst_handle_key(ShellInstance *s, char c)
             s->input_len--;
             s->input_buf[s->input_len] = 0;
         }
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == VKEY_UP) {
@@ -6040,7 +6077,7 @@ static void inst_handle_key(ShellInstance *s, char c)
         s->input_len = 0;
         while (s->input_buf[s->input_len]) s->input_len++;
         s->input_cur = s->input_len;
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == VKEY_DOWN) {
@@ -6055,7 +6092,7 @@ static void inst_handle_key(ShellInstance *s, char c)
         s->input_len = 0;
         while (s->input_buf[s->input_len]) s->input_len++;
         s->input_cur = s->input_len;
-        inst_draw_input(s);
+        inst_invalidate_input(s);
         return;
     }
     if (c == 0x03) {     /* Ctrl-C — cancel the input line */
@@ -6065,8 +6102,7 @@ static void inst_handle_key(ShellInstance *s, char c)
         s->input_buf[0] = 0;
         s->cmd_hist_nav = 0;
         inst_print(s, "^C");
-        inst_draw_history(s);
-        inst_draw_input(s);
+        inst_invalidate_client(s);
         return;
     }
     if (c == '\n' || c == '\r') {
@@ -6125,8 +6161,9 @@ static void inst_handle_key(ShellInstance *s, char c)
             s->input_buf[s->input_len] = 0;
         }
     }
-    inst_draw_history(s);
-    inst_draw_input(s);
+    /* Only the input line changed here (fdisk-Enter output already damaged
+     * the screen via inst_print) — repaint just that strip. */
+    inst_invalidate_input(s);
 }
 
 /* =========================================================================
