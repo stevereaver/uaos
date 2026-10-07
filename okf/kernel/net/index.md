@@ -355,6 +355,16 @@ freezing the machine on the first telnet burst.  `virtio_net_poll()`
 also only rings the RX doorbell when it actually re-added descriptors;
 the doorbell write is a VM exit and callers poll in tight loops.
 
+UAOS-273 shrunk the IF=0 window further: the drain wait itself used to
+run *inside* `Disable()`, so a busy TX queue held interrupts off for the
+whole bounded spin (~22 ms on hosts with slow `pause`, seen by irqaudit
+as `EventPump if0_max_ms=22` during boot DHCP — enough to stall the PIT
+tick).  The device advances `used->idx` by DMA with no CPU help, so the
+wait now spins with interrupts enabled; `Disable()` covers only the
+atomic outstanding-check, the claim, and the fill/notify (~µs).  A
+sender that loses the recheck race loops back to the IF=1 wait instead
+of overwriting an in-flight frame.
+
 ## Emulated BSD Socket API
 
 M68k Amiga programs can use the network through `bsdsocket.library` (see [bsdsocket.library](/kernel/exec/bsdsocket_library.md)), which maps `socket`, `connect`, `send`, `recv`, etc., to the native TCP/UDP stack.

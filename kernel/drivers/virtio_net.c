@@ -1074,31 +1074,49 @@ int virtio_net_send(const uint8_t *data, uint16_t len)
      * from task context AND from the NIC IRQ handler (e.g. TCP ACKs sent
      * by tcp_rx inside virtio_net_poll), so g_tx_hdr_buf and descriptor 0
      * must be claimed, filled and kicked atomically or concurrent frames
-     * overwrite each other and leave the wire with corrupt packets. */
-    Disable();
-
-    /* Wait for the previous TX submission to be consumed before
-     * overwriting g_tx_hdr_buf/desc0.  "Outstanding" is avail->idx -
-     * used->idx.  VirtualBox posts TX used entries and drains this
-     * quickly; QEMU consumes avail entries without posting used ones,
-     * so after a bounded spin with no used-ring progress we stop
-     * waiting entirely (QEMU forwards the frame regardless).
+     * overwrite each other and leave the wire with corrupt packets.
+     *
+     * UAOS-273: the drain wait used to run inside the Disable() region —
+     * up to 200k pause iterations with IF=0 (~22 ms), stalling the PIT
+     * tick and every IRQ dispatch whenever TX was busy (irqaudit:
+     * EventPump if0_max_ms=22 during early init).  The device advances
+     * used->idx by DMA with no CPU help, so the wait runs with interrupts
+     * ENABLED; only the outstanding==0 recheck, the claim and the
+     * fill/notify stay under Disable(), keeping them atomic with each
+     * other.  A sender that loses the recheck race loops back to wait
+     * again instead of overwriting an in-flight frame.
+     *
+     * "Outstanding" is avail->idx - used->idx.  VirtualBox posts TX used
+     * entries and drains this quickly; QEMU consumes avail entries
+     * without posting used ones, so after a bounded spin with no
+     * used-ring progress we stop waiting entirely (QEMU forwards the
+     * frame regardless).
      * The old check (last_used != used->idx) was inverted: on hosts
      * that do post used entries it was true after the first send and
-     * could never clear, so every send spun the full bound with IRQs
-     * disabled — freezing the machine under VirtualBox. */
-    if (!g_tx_no_used) {
-        uint16_t used_before = g_txq_used->idx;
-        uint32_t spin = 0;
-        while ((uint16_t)(g_txq_avail->idx - g_txq_used->idx) != 0) {
+     * could never clear, so every send spun the full bound — freezing
+     * the machine under VirtualBox. */
+    uint16_t used_before = g_txq_used->idx;
+    uint32_t spin = 200000;
+    for (;;) {
+        Disable();
+        if (g_tx_no_used ||
+            (uint16_t)(g_txq_avail->idx - g_txq_used->idx) == 0 ||
+            !spin)
+            break;                  /* desc0 claimed (or bound hit) */
+        Enable();
+
+        /* Drain wait with IF=1 — the PIT tick and IRQs keep running. */
+        while (spin &&
+               (uint16_t)(g_txq_avail->idx - g_txq_used->idx) != 0) {
             __asm__ volatile("pause" ::: "memory");
-            if (++spin > 200000) {
-                if (g_txq_used->idx == used_before)
-                    g_tx_no_used = 1;   /* never posts TX used entries */
-                break;
-            }
+            spin--;
         }
+        /* Zero used-ring progress across the whole budget: this host
+         * never posts TX used entries — stop waiting for good. */
+        if (!spin && g_txq_used->idx == used_before)
+            g_tx_no_used = 1;
     }
+
     /* Drain whatever came back so last_used tracks used->idx */
     g_txq_last_used = g_txq_used->idx;
     /* Always use descriptor slot 0 (single-packet TX model) */
