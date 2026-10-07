@@ -36,8 +36,23 @@ static uint16_t pci_config_read_word(uint8_t bus, uint8_t dev, uint8_t func, uin
 }
 static uint8_t pci_config_read_byte(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset) {
     uint32_t dw = pci_config_read_dword(bus, dev, func, offset & 0xFC);
-    return (uint8_t)(dw >> ((offset & 2) * 8));
+    return (uint8_t)(dw >> ((offset & 3) * 8));
 }
+static void pci_config_write_word(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset, uint16_t val) {
+    uint32_t addr = (1u << 31) | (bus << 16) | (dev << 11) | (func << 8) | (offset & 0xFC);
+    __asm__ volatile ("outl %0, %1" :: "a"(addr), "Nd"(PCI_CONFIG_ADDRESS));
+    int shift = (offset & 2) * 8;
+    uint32_t cur; __asm__ volatile ("inl %1, %0" : "=a"(cur) : "Nd"(PCI_CONFIG_DATA));
+    cur = (cur & ~(0xFFFFu << shift)) | ((uint32_t)val << shift);
+    __asm__ volatile ("outl %0, %1" :: "a"(cur), "Nd"(PCI_CONFIG_DATA));
+}
+
+#define PCI_REG_COMMAND        0x04
+#define PCI_CMD_IO_SPACE       0x01
+#define PCI_CMD_BUS_MASTER     0x04
+#define PCI_REG_INTERRUPT_LINE 0x3C
+#define PCI_REG_HEADER_TYPE    0x0E
+#define PCI_HEADER_MULTIFUNC   0x80
 
 /* Globals */
 static IdeChannel g_channels[2];
@@ -271,6 +286,68 @@ static void setup_compat_ports(int ch) {
     }
 }
 
+/* Setup PCI-native ports: cmd_base is the channel command block (BAR & ~3),
+ * ctl_base the control block; the alt status/device control port is ctl_base+2.
+ * Native channels interrupt on the PCI INTx line, not IRQ14/15. */
+static void setup_native_ports(int ch, uint16_t cmd_base, uint16_t ctl_base, int irq) {
+    IdeChannelPorts *p = &g_channels[ch].ports;
+    p->data_port     = cmd_base;
+    p->err_feat_port = cmd_base + 1;
+    p->seccount_port = cmd_base + 2;
+    p->lba0_port     = cmd_base + 3;
+    p->lba1_port     = cmd_base + 4;
+    p->lba2_port     = cmd_base + 5;
+    p->devsel_port   = cmd_base + 6;
+    p->cmd_stat_port = cmd_base + 7;
+    p->ctl_alt_port  = ctl_base + 2;
+    g_channels[ch].irq_line = irq;
+}
+
+/* Decode a PCI I/O BAR into a port base; 0 if unusable (memory BAR,
+ * unassigned, or above the 16-bit I/O space). */
+static uint16_t ide_io_bar(uint32_t bar) {
+    if (!(bar & 1)) return 0;
+    uint32_t base = bar & ~3u;
+    return (base > 0xFFFF) ? 0 : (uint16_t)base;
+}
+
+/* Configure both channels of a PCI IDE controller (class 01/01).
+ * Prog-IF bit0/bit2 select native vs compatibility mode per channel. */
+static void setup_pci_controller(uint8_t bus, uint8_t dev, uint8_t func, uint8_t pif) {
+    uint32_t bar0 = pci_config_read_dword(bus, dev, func, 0x10);
+    uint32_t bar1 = pci_config_read_dword(bus, dev, func, 0x14);
+    uint32_t bar2 = pci_config_read_dword(bus, dev, func, 0x18);
+    uint32_t bar3 = pci_config_read_dword(bus, dev, func, 0x1C);
+
+    /* Enable I/O space decoding + bus mastering */
+    uint16_t cmd = pci_config_read_word(bus, dev, func, PCI_REG_COMMAND);
+    pci_config_write_word(bus, dev, func, PCI_REG_COMMAND,
+                          (uint16_t)(cmd | PCI_CMD_IO_SPACE | PCI_CMD_BUS_MASTER));
+    (void)pci_config_read_word(bus, dev, func, PCI_REG_COMMAND);
+
+    int intline = pci_config_read_byte(bus, dev, func, PCI_REG_INTERRUPT_LINE);
+    if (intline == 0xFF) intline = -1;
+
+    kprint("[IDE] PCI IDE controller at ");
+    kprinthex((uint64_t)bus); kprint(":");
+    kprinthex((uint64_t)dev); kprint(".");
+    kprinthex((uint64_t)func);
+    kprint(" progif="); kprinthex((uint64_t)pif); kprint("\n");
+
+    uint16_t pcmd = ide_io_bar(bar0), pctl = ide_io_bar(bar1);
+    uint16_t scmd = ide_io_bar(bar2), sctl = ide_io_bar(bar3);
+    if ((pif & 0x01) && pcmd && pctl) {
+        setup_native_ports(0, pcmd, pctl, intline);
+        kprint("[IDE]   ch0 native cmd="); kprinthex((uint64_t)pcmd);
+        kprint(" ctl="); kprinthex((uint64_t)(pctl + 2)); kprint("\n");
+    } else setup_compat_ports(0);
+    if ((pif & 0x04) && scmd && sctl) {
+        setup_native_ports(1, scmd, sctl, intline);
+        kprint("[IDE]   ch1 native cmd="); kprinthex((uint64_t)scmd);
+        kprint(" ctl="); kprinthex((uint64_t)(sctl + 2)); kprint("\n");
+    } else setup_compat_ports(1);
+}
+
 int IDE_Init(void) {
     kprint("[IDE] Initialising IDE controller...\n");
     for (int ch = 0; ch < 2; ch++) {
@@ -283,29 +360,25 @@ int IDE_Init(void) {
     }
     g_num_channels = 0;
 
+    /* PCI scan: all buses, all functions (same walker as C:pciscan).
+     * Honour the header-type multifunction bit so e.g. ICH8M PATA at
+     * 0:31.1 is found even though function 0 is the LPC bridge. */
     int pci_found = 0;
-    for (int bus = 0; bus < 4 && !pci_found; bus++) {
+    for (int bus = 0; bus < 256 && !pci_found; bus++) {
         for (int dev = 0; dev < 32 && !pci_found; dev++) {
-            uint16_t vendor = pci_config_read_word(bus, dev, 0, 0);
-            if (vendor == 0xFFFF) continue;
-            uint8_t cls = pci_config_read_byte(bus, dev, 0, 0x0B);
-            uint8_t sub = pci_config_read_byte(bus, dev, 0, 0x0A);
-            uint8_t pif = pci_config_read_byte(bus, dev, 0, 0x09);
-            if (cls == 0x01 && sub == 0x01) {
-                uint32_t bar0 = pci_config_read_dword(bus, dev, 0, 0x10);
-                uint32_t bar1 = pci_config_read_dword(bus, dev, 0, 0x14);
-                uint32_t bar2 = pci_config_read_dword(bus, dev, 0, 0x18);
-                uint32_t bar3 = pci_config_read_dword(bus, dev, 0, 0x1C);
-                (void)bar3; (void)bar0; (void)bar1; (void)bar2;
-                if (pif & 0x01) {
-                    /* native mode primary - simplified: use compatibility */
-                    setup_compat_ports(0);
-                } else setup_compat_ports(0);
-                if (pif & 0x04) {
-                    /* native mode secondary - simplified: use compatibility */
-                    setup_compat_ports(1);
-                } else setup_compat_ports(1);
-                pci_found = 1;
+            for (int func = 0; func < 8 && !pci_found; func++) {
+                uint16_t vendor = pci_config_read_word(bus, dev, func, 0);
+                if (vendor == 0xFFFF || vendor == 0) { if (!func) break; continue; }
+                uint8_t cls = pci_config_read_byte(bus, dev, func, 0x0B);
+                uint8_t sub = pci_config_read_byte(bus, dev, func, 0x0A);
+                uint8_t pif = pci_config_read_byte(bus, dev, func, 0x09);
+                if (cls == 0x01 && sub == 0x01) {
+                    setup_pci_controller((uint8_t)bus, (uint8_t)dev, (uint8_t)func, pif);
+                    pci_found = 1;
+                }
+                if (func == 0 &&
+                    !(pci_config_read_byte(bus, dev, 0, PCI_REG_HEADER_TYPE) & PCI_HEADER_MULTIFUNC))
+                    break;
             }
         }
     }

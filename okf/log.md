@@ -1,5 +1,32 @@
 # OKF Change Log
 
+## 2026-10-07 — IDE PCI scan: all fns/buses + native-mode BARs (UAOS-275)
+
+* **Root cause of the MBP4,1 invisible SuperDrive**: `IDE_Init` scanned
+  only PCI fn 0 on buses 0-3 — the ICH8M PATA (`8086:2850` @00:1f.1) lives
+  at fn 1, so it was never matched. And both prog-if branches called
+  `setup_compat_ports()` regardless, so even a matched *native-mode*
+  controller (which does not decode 0x1F0/0x170) would probe nothing.
+* **Latent bug fixed on the way**: `pci_config_read_byte` shifted by
+  `(offset & 2)` instead of `& 3`, so odd config offsets (prog-if 0x09)
+  returned the previous byte — the old check only worked because QEMU's
+  PIIX3 reports class == subclass == 0x01.
+* **Fixed** (`kernel/drivers/ide.c`): scan now walks all 256 buses × 32
+  devs × 8 fns honouring the header-type multifunction bit (same walker
+  as `C:pciscan`). `setup_pci_controller()` enables PCI I/O space +
+  bus-master and, per prog-if bit0/bit2, takes native channel ports from
+  BAR0/1 and BAR2/3 (`& ~3`, ctl = ctlBAR+2); BAR-0/unassigned or compat
+  bits fall back to legacy 0x1F0/0x3F6 / 0x170/0x376 with IRQ14/15.
+  Native channels store the PCI INTx line (driver is PIO/polling —
+  informational only).
+* **Verified in QEMU**: q35 `piix3-ide` now found via PCI scan
+  (`controller at 0:2.0 progif=0x80` → compat), ATAPI QEMU DVD-ROM
+  probed, `CD0:` registered, clean boot to desktop.
+* **Metal re-verify pending**: needs a USB-stick boot on the MBP4,1 —
+  expect `[IDE] PCI IDE controller at 0:1f.1` then `ch0/ch1 native
+  cmd=0x8108/0x8100` and an ATAPI device (SuperDrive) on one channel.
+* **Documented**: `okf/platforms/macbook41.md` Optical row corrected.
+
 ## 2026-10-06 — appletouch rewritten Linux-faithful; wobble root-caused (UAOS-135)
 
 * **Root cause of the chronic wobble** (live `peek` telemetry): the re-init worker invalidated `base_valid` on every run, and with the pad streaming ~125 fps the worker fired every ~80 ms of idle → the baseline was re-seeded from whatever frame came next, finger included. Light touches (near `ATP_THRESHOLD` → counted "idle") got baked into the baseline and the centroid was computed against a corrupted reference — unpredictable at light pressure, tolerable hard. BASE_UPDATE frames *do* arrive on this pad (36 counted, 35 with FROM_RESET) — earlier claims that none arrive were wrong, an artifact of the constant re-seeding.
