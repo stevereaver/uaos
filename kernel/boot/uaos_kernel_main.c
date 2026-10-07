@@ -1079,16 +1079,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
             UHCI_SetupIRQs();
     }
 
+    /* Probe the i8042 before claiming it: USB-only machines
+     * (MacBookPro4,1) have no controller at all — the old code ran
+     * the init sequence against a floating bus and then announced
+     * "PS/2 mouse active" anyway. */
+    int ps2_present = PS2Ctl_Detect();
+
     /* Initialise PS/2 mouse/keyboard and RTC only when a display is present */
     if (g_fb.valid) {
         g_fb_width_irq  = g_fb.width;
         g_fb_height_irq = g_fb.height;
 
-        /* Probe the i8042 before claiming it: USB-only machines
-         * (MacBookPro4,1) have no controller at all — the old code ran
-         * the init sequence against a floating bus and then announced
-         * "PS/2 mouse active" anyway. */
-        if (PS2Ctl_Detect()) {
+        if (ps2_present) {
             kprint("[BOOT] Initialising PS/2 mouse...\n");
             IRQ_AttachISA(12, PS2Mouse_IRQHandler, "PS/2 mouse");
             PS2Mouse_Init();
@@ -1130,8 +1132,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     if (VMMouse_Detect())
         kprint("[BOOT] vmmouse active (absolute mode).\n");
-    else
+    else if (ps2_present)
         kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
+    else
+        kprint("[BOOT] vmmouse not found — input is USB HID only.\n");
 
     kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
 
