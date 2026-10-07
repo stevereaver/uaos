@@ -1,5 +1,24 @@
 # OKF Change Log
 
+## 2026-10-07 — s:os-release build serial on every ISO (UAOS-283)
+
+* **Added** (`Makefile`): every `make iso` now writes
+  `SYS_ROOT/S/os-release` containing `UAOS-ddmmyyhhmmss` stamped at
+  sysroot-image build time.  The `uaos-sysroot.img` target gained a
+  phony `FORCE` prerequisite so the serial — and the sysroot module
+  plus final ISO containing it — regenerates on every build rather
+  than only when sysroot contents change.  The same staged file lands
+  in both the multiboot module image and the ISO's `SYS_ROOT/S/`, so
+  `type s:os-release` works identically from module-mounted and
+  CD-mounted Workbench volumes.
+* **Skill**: `.devin/skills/uaos-debug/SKILL.md` documents checking
+  `type s:os-release` against `build/iso-staging/SYS_ROOT/S/os-release`
+  to prove a live system is running the latest build before trusting
+  debug output (added to the boot section and the standard workflow).
+* **Verified**: two consecutive `make iso` runs produced serials
+  `UAOS-071026202817` and `UAOS-071026202846`; xorriso extraction
+  confirms the file inside `uaos-sysroot.img` and the final ISO.
+
 ## 2026-10-07 — showconfig/version report live hardware, PS/2 gated on i8042 self-test (UAOS-278)
 
 * **Fixed**: `showconfig` and `version` printed hardcoded QEMU-era

@@ -293,7 +293,12 @@ endif
 # ============================================================================
 
 .PHONY: all iso kernel tools sysroot userspace gnusrc demos check \
-        clean distclean help
+        clean distclean help FORCE
+
+# Always-out-of-date prerequisite: anything depending on FORCE rebuilds on
+# every make invocation.  Used so the os-release serial is stamped with the
+# actual ISO build time rather than the last time sysroot contents changed.
+FORCE:
 
 all: iso
 iso: $(ISO)
@@ -694,10 +699,16 @@ $(SYSROOT_STAMP): $(SYSROOT_CONTENTS) $(SYS_FILES) $(DEMO_EXTRAS) | $(DIRS_STAMP
 	$(Q)touch $@
 
 # --- sysroot multiboot module (ISO9660 image of SYS_ROOT) -------------------------
+# s:os-release carries the build serial (UAOS-ddmmyyhhmmss) so a running
+# system can be matched to the ISO that produced it (UAOS-283).  FORCE keeps
+# the serial fresh: the sysroot image — and therefore the ISO — is repacked
+# on every `make` run, and the stamp lands in both the module image and the
+# ISO-visible SYS_ROOT/S/ (the same staged tree feeds both).
 
-$(SYSROOT_IMG): $(SYSROOT_STAMP)
+$(SYSROOT_IMG): $(SYSROOT_STAMP) FORCE
 	@echo "  MKISOFS $@"
 	@test -n "$(MKISOFS)" || { echo "[FATAL] xorriso/genisoimage/mkisofs not found"; exit 1; }
+	$(Q)printf 'UAOS-%s\n' "$$(date '+%d%m%y%H%M%S')" > $(SYSROOT)/S/os-release
 	$(Q)$(MKISOFS) -o $@ -V UAOS_SYSROOT -r -J -iso-level 3 -graft-points \
 	    SYS_ROOT=$(SYSROOT)
 	@du -h $@ | sed 's/^/  /'

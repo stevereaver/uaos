@@ -26,6 +26,30 @@ The stock script captures:
 - **Serial log** → `/tmp/uaos_serial.log` (all klog UART output lands here)
 - **Packet capture** → `/tmp/uaos_net.pcap` (QEMU `filter-dump`, tcpdump/Wireshark-readable)
 
+### Verify the running build is current (UAOS-283)
+
+Every `make iso` writes a build serial into `s:os-release` — content is
+`UAOS-ddmmyyhhmmss` stamped at image-build time. Before trusting any debug
+output from a live system, confirm it is running the build you just made:
+
+```bash
+# host side — what the ISO carries:
+cat build/iso-staging/SYS_ROOT/S/os-release    # or extract from the ISO:
+xorriso -osirrox on -indev build/Ultimate_Amiga_OS.iso \
+    -extract /SYS_ROOT/S/os-release /tmp/rel.txt && cat /tmp/rel.txt
+```
+
+```bash
+# guest side (telnet or console shell):
+type s:os-release                              # -> e.g. UAOS-071026202817
+```
+
+If the serials differ, the target booted stale media (old USB stick, cached
+cdrom, `-cdrom` pointing at a previous ISO) — reflash/repoint and reboot
+before drawing conclusions from klog/dmesg/strace output. On bare metal with
+no telnet, type it in the shell window and read it off the screen (or via
+`screenshot` + uuencode exfil).
+
 ### Exposing telnetd to the host (NAT mode)
 
 `run_with_disk.sh` has **no hostfwd** — add it to the `-netdev user` line to reach the guest's port 23 from the host:
@@ -242,8 +266,9 @@ Either way, verify locally: `file shot.jpg` → `JPEG image data`, or
 2. Boot with `scripts/run_with_disk.sh` — add `hostfwd=tcp::2323-:23` to the `-netdev user` args first if you want host telnet (or use `debug_qemu.sh` when you need GDB).
 3. In the Workbench shell: `telnetd` (or pre-seed `C:telnetd` in `system/S/User-Startup`).
 4. `telnet localhost 2323` from the host → remote `RAM:>` shell.
-5. Drive the investigation: `klog <subsys>=trace` for the suspect subsystem, reproduce, then `dmesg <subsys>` / read `/tmp/uaos_serial.log`. Use `strace` for call-level visibility and `irqstat`/`memcheck`/`chiptrace` for IRQ, heap, and chipset problems.
-6. On a panic: capture the dump from the serial log and run `tools/symbolize.sh` on it.
+5. `type s:os-release` and compare with `cat build/iso-staging/SYS_ROOT/S/os-release` — mismatch means stale media; fix the boot target before proceeding (see "Verify the running build is current" above).
+6. Drive the investigation: `klog <subsys>=trace` for the suspect subsystem, reproduce, then `dmesg <subsys>` / read `/tmp/uaos_serial.log`. Use `strace` for call-level visibility and `irqstat`/`memcheck`/`chiptrace` for IRQ, heap, and chipset problems.
+7. On a panic: capture the dump from the serial log and run `tools/symbolize.sh` on it.
 
 ## Gotchas
 
