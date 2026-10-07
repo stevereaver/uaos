@@ -1,5 +1,16 @@
 # OKF Change Log
 
+## 2026-10-08 — boot log: vmmouse fallback names the real input path (UAOS-295)
+
+* **Fixed** (`kernel/boot/uaos_kernel_main.c`): the "vmmouse not found"
+  line always said "using PS/2 relative" even on machines with no i8042
+  (MBP4,1), right after logging "No i8042 controller — PS/2 absent".
+  `PS2Ctl_Detect()` is now hoisted above the `g_fb.valid` block so its
+  cached result is populated headless too; the fallback prints "using
+  PS/2 relative" only when the i8042 is present, and "input is USB HID
+  only" otherwise.
+* **Verified**: `make kernel` clean.
+
 ## 2026-10-07 — NTP epoch burst guard derives from UAOS_PIT_HZ (UAOS-276)
 
 * **Fixed** (`kernel/net/ntp.c`): `NTP_TICK_GUARD_PIT` was `8` ticks with
