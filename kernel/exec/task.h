@@ -164,7 +164,7 @@ typedef struct UaosTask {
     uint64_t irqoff_max_ticks;  /* longest single Disable() hold       */
     uint32_t irqoff_long;       /* holds exceeding IRQAUDIT threshold  */
     uint32_t switch_while_crit; /* descheduled while Disable/Forbid held */
-    uint64_t disable_enter_tick;/* g_pit_ticks when IDNest went 0->1   */
+    uint64_t disable_enter_tick;/* TSC when IDNest went 0->1           */
     uint8_t  stack_overflowed;  /* stack-base canary was scribbled on  */
 } UaosTask;
 
@@ -346,8 +346,9 @@ uint32_t Task_StackPeakUsed(UaosTask *t);
 void Task_DiagDump(void *ctx, void (*emit)(void *ctx, const char *line),
                    const char *name, int full);
 
-/* Disable() hold threshold in PIT ticks at which irqoff_long counts and
- * klog warns (default ~50 ms at 100 Hz). */
-#define TASK_IRQOFF_LONG_TICKS 5
+/* Disable() hold threshold in milliseconds at which irqoff_long counts
+ * and kprint warns.  Enable() converts to TSC cycles via the
+ * self-calibrated Tickmon_TscHz(). */
+#define TASK_IRQOFF_LONG_MS 50
 
 #endif /* UAOS_TASK_H */

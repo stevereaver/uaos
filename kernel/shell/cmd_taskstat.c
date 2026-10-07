@@ -60,7 +60,10 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
     uint64_t dt = g_pit_ticks - t0;
     if (!dt) dt = 1;
 
-    PRINT("  #  name                 state    cpu%   sw/s   irqoff_ms  wait  pri");
+    if (now)
+        PRINT("  #  name                 state    cpu_t  switches irqoff_ms  wait  pri");
+    else
+        PRINT("  #  name                 state    cpu%   sw/s   irqoff_ms  wait  pri");
     char line[CMD_MAX_LINE], num[24];
     uint64_t busy_total = 0;
 
@@ -87,10 +90,15 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
         cmd_scat(line, stn[t->tc_State & 3], CMD_MAX_LINE);
         sl = cmd_slen(line); while (sl++ < 34) cmd_scat(line, " ", CMD_MAX_LINE);
 
-        /* cpu% over window: delta_ticks * 100 / window ticks */
-        uint32_t pct = now ? 0 : (uint32_t)(dcpu * 100 / dt);
-        cmd_uint_to_dec(pct, num, sizeof(num));
-        cmd_scat(line, num, CMD_MAX_LINE); cmd_scat(line, now ? "(cum)" : "%", CMD_MAX_LINE);
+        /* window mode: cpu% = delta_ticks * 100 / window ticks.
+         * NOW mode: cumulative cpu_ticks under the cpu_t column. */
+        if (now) {
+            cmd_uint_to_dec((uint32_t)dcpu, num, sizeof(num));
+            cmd_scat(line, num, CMD_MAX_LINE);
+        } else {
+            cmd_uint_to_dec((uint32_t)(dcpu * 100 / dt), num, sizeof(num));
+            cmd_scat(line, num, CMD_MAX_LINE); cmd_scat(line, "%", CMD_MAX_LINE);
+        }
         sl = cmd_slen(line); while (sl++ < 41) cmd_scat(line, " ", CMD_MAX_LINE);
 
         cmd_uint_to_dec((uint32_t)(now ? dsw : dsw * 100 / dt), num, sizeof(num));
@@ -132,12 +140,20 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
         PRINT(line);
     }
 
-    cmd_scopy(line, "window: ", CMD_MAX_LINE);
-    cmd_uint_to_dec((uint32_t)dt, num, sizeof(num));
-    cmd_scat(line, num, CMD_MAX_LINE);
-    cmd_scat(line, " ticks, busy-total ", CMD_MAX_LINE);
-    cmd_uint_to_dec((uint32_t)busy_total, num, sizeof(num));
-    cmd_scat(line, num, CMD_MAX_LINE);
-    cmd_scat(line, " (idle share = window - busy)", CMD_MAX_LINE);
-    PRINT(line);
+    if (now) {
+        cmd_scopy(line, "cumulative counters (no window), busy-total ", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)busy_total, num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        cmd_scat(line, " cpu ticks", CMD_MAX_LINE);
+        PRINT(line);
+    } else {
+        cmd_scopy(line, "window: ", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)dt, num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        cmd_scat(line, " ticks, busy-total ", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)busy_total, num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        cmd_scat(line, " (idle share = window - busy)", CMD_MAX_LINE);
+        PRINT(line);
+    }
 }

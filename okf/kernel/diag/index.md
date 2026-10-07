@@ -77,18 +77,18 @@ report a peak far above what its own entry function uses.
 | Command | What it does |
 |---|---|
 | `taskdump [TASK=n|FULL]` | Live task table: state, pri, cpu ticks, ctx switches, stack peak, wait mask, nest levels; per-task saved-frame decode. (UAOS-195) |
-| `taskstat [<sec>\|NOW]` | Per-task CPU% + switches/s sampled over a window. (UAOS-197) |
+| `taskstat [<sec>\|NOW]` | Per-task CPU% + switches/s sampled over a window; `NOW` prints cumulative counters under `cpu_t`/`switches` headers (no window). (UAOS-197, NOW-mode headers UAOS-282) |
 | `watchdog [MS=n\|OFF\|TEST]` | Arm/status/self-test the stall watchdog. `TEST` holds `Forbid()` past the budget — interrupts still fire, no reschedules — exactly the condition it guards. (UAOS-198) |
 | `ports` | Handler MsgPort pending queues + async packet pool. (UAOS-200) |
 | `timers` | Pending `TimeRequest`s: fire tick, delta, sigmask, owner. (UAOS-201) |
 | `handles` | Open-file/lock handle table with owning task + flags. (UAOS-202) |
 | `netstat` | TCP sockets (state/addrs/queue depths/retx), UDP sockets, usock layer. (UAOS-203) |
 | `diskdiag [TEST=dev]` | Blockdev registry + IDE/AHCI/VirtIO-blk/VirtIO-scsi/floppy stage dumps with live status regs; `TEST=` does a timed 1-sector read. (UAOS-204) |
-| `pciscan [BUS=n]` | Full PCI enumeration: bdf, class, vendor:dev, pin/line, BARs. (UAOS-199) |
+| `pciscan [BUS=n]` | Full PCI enumeration: bdf, class, vendor:dev, pin/line, BARs (64-bit BARs combined). Header-type aware: type-1 bridges get `sec=`/`sub=` bus numbers plus decoded `io`/`mem`/`pmem` forwarding windows on a continuation line; CardBus shows 1 BAR. (UAOS-199, bridge decode UAOS-282) |
 | `irqroute [BDF=b:d.f]` | pin→PIRQ→GSI→vector decode per device: ICH DxxIP/DxxIR override, PIRQA-H→IO-APIC 16-23, intline fallback, resolved vector + name. `vec=UNASSIGNED` and `* UNRESOLVED ROUTE *` are the verdicts. (UAOS-199) |
 | `peek <addr> [LEN=n] [W=8\|16\|32\|64]` | Physical/MMIO read (identity map). (UAOS-205) |
 | `poke <addr> <val> [W=..] FORCE` | MMIO write; refuses without `FORCE`, reports before/write/readback. (UAOS-205) |
-| `irqaudit` | Per-task Disable/Forbid audit: current nest, total IF=0 time, max hold, >50 ms holds, descheduled-in-crit count. (UAOS-206) |
+| `irqaudit` | Per-task Disable/Forbid audit: current nest, total IF=0 time, max hold, >50 ms holds (threshold is `TASK_IRQOFF_LONG_MS` converted via self-calibrated `Tickmon_TscHz()`, with a ~50M-cycle fallback before calibration), descheduled-in-crit count. (UAOS-206, threshold fix UAOS-282) |
 | `sercon ON\|OFF` | Serial console control (below). (UAOS-207) |
 | `tickcheck [SEC=n]` | PIT period vs calibrated TSC, IRQ latency histogram, worst vectors; `SEC=` measures TSC/PIT drift in ppm. (UAOS-208) |
 | `etrace [MASK=n\|OFF\|TAIL n\|FILE=path]` | Event ring control; `FILE=` writes the binary dump for `tools/etrace_decode.py`. (UAOS-209) |

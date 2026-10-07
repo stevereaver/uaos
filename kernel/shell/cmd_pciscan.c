@@ -50,7 +50,7 @@ void Cmd_Pciscan(NativeCmdCtx *ctx, const char *args)
     const char *b = cmd_kv_find(args, "bus");
     if (b) { uint64_t v; if (cmd_parse_uint(b, &v)) only_bus = (int)v; }
 
-    PRINT("  bdf      cls           vendor:dev     pin line  bars");
+    PRINT("  bdf      cls           vendor:dev     pin line  bars / bridge");
     for (int bus = 0; bus < 256; bus++) {
         if (only_bus >= 0 && bus != only_bus) continue;
         for (int dev = 0; dev < 32; dev++) {
@@ -83,21 +83,80 @@ void Cmd_Pciscan(NativeCmdCtx *ctx, const char *args)
                 cmd_uint_to_dec(iline, num, sizeof(num)); cmd_scat(line, num, CMD_MAX_LINE);
                 sl = cmd_slen(line); while (sl++ < 41) cmd_scat(line, " ", CMD_MAX_LINE);
 
-                /* BARs (type 0 header only, offsets 0x10-0x27) */
-                for (int bi = 0; bi < 6; bi++) {
+                /* BAR count and layout depend on the header type:
+                 * type 0 = endpoint (6 BARs), type 1 = PCI-PCI bridge
+                 * (2 BARs + bus/window regs), type 2 = CardBus (1 BAR). */
+                uint8_t htr = IRQ_PciRead8((uint8_t)bus, (uint8_t)dev,
+                                           (uint8_t)fn, 0x0E);
+                uint8_t ht = htr & 0x7F;
+                int nbar = (ht == 0) ? 6 : (ht == 1) ? 2 : (ht == 2) ? 1 : 0;
+                for (int bi = 0; bi < nbar; bi++) {
                     uint32_t bar = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
                                                  (uint8_t)fn, (uint8_t)(0x10 + bi * 4));
                     if (!bar) continue;
                     cmd_scat(line, " ", CMD_MAX_LINE);
-                    hexn(line, bar, 8);
+                    /* 64-bit memory BAR: the next dword is the high half */
+                    if (!(bar & 1) && (bar & 6) == 4 && bi + 1 < nbar) {
+                        uint32_t hi = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
+                                                    (uint8_t)fn, (uint8_t)(0x10 + (bi + 1) * 4));
+                        hexn(line, ((uint64_t)hi << 32) | (bar & ~0xFULL), 16);
+                        bi++;
+                    } else {
+                        hexn(line, bar, 8);
+                    }
                 }
-                PRINT(line);
+
+                if (ht == 1) {
+                    /* Type-1 header: 0x18/0x1C/0x20/0x24 are secondary/
+                     * subordinate bus numbers and the IO/mem/prefetch
+                     * forwarding windows — not BARs.  Decode them on a
+                     * continuation line. */
+                    uint32_t bn = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
+                                                (uint8_t)fn, 0x18);
+                    cmd_scat(line, " sec=", CMD_MAX_LINE);
+                    cmd_uint_to_dec((bn >> 8) & 0xFF, num, sizeof(num));
+                    cmd_scat(line, num, CMD_MAX_LINE);
+                    cmd_scat(line, " sub=", CMD_MAX_LINE);
+                    cmd_uint_to_dec((bn >> 16) & 0xFF, num, sizeof(num));
+                    cmd_scat(line, num, CMD_MAX_LINE);
+                    PRINT(line);
+
+                    cmd_scopy(line, "    ", CMD_MAX_LINE);
+                    uint32_t io = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
+                                                (uint8_t)fn, 0x1C);
+                    cmd_scat(line, "io=", CMD_MAX_LINE);
+                    if (io & 0xF0F0) {   /* any base/limit nibble set */
+                        hexn(line, (io & 0xF0) << 8, 4);
+                        cmd_scat(line, "-", CMD_MAX_LINE);
+                        hexn(line, (((io >> 8) & 0xF0) << 8) | 0xFFF, 4);
+                    } else cmd_scat(line, "-", CMD_MAX_LINE);
+                    uint32_t mw = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
+                                                (uint8_t)fn, 0x20);
+                    cmd_scat(line, " mem=", CMD_MAX_LINE);
+                    if (mw & 0xFFF0FFF0) {
+                        hexn(line, (mw & 0xFFF0) << 16, 8);
+                        cmd_scat(line, "-", CMD_MAX_LINE);
+                        hexn(line, (((mw >> 16) & 0xFFF0) << 16) | 0xFFFFF, 8);
+                    } else cmd_scat(line, "-", CMD_MAX_LINE);
+                    uint32_t pw = IRQ_PciRead32((uint8_t)bus, (uint8_t)dev,
+                                                (uint8_t)fn, 0x24);
+                    cmd_scat(line, " pmem=", CMD_MAX_LINE);
+                    if (pw & 0xFFF0FFF0) {
+                        hexn(line, (pw & 0xFFF0) << 16, 8);
+                        cmd_scat(line, "-", CMD_MAX_LINE);
+                        hexn(line, (((pw >> 16) & 0xFFF0) << 16) | 0xFFFFF, 8);
+                    } else cmd_scat(line, "-", CMD_MAX_LINE);
+                    PRINT(line);
+                } else {
+                    if (ht > 2) {
+                        cmd_scat(line, " hdr=0x", CMD_MAX_LINE);
+                        hexn(line, ht, 2);
+                    }
+                    PRINT(line);
+                }
 
                 /* skip functions if not multi-function */
-                if (fn == 0) {
-                    uint8_t ht = IRQ_PciRead8((uint8_t)bus, (uint8_t)dev, 0, 0x0E);
-                    if (!(ht & 0x80)) break;
-                }
+                if (fn == 0 && !(htr & 0x80)) break;
             }
         }
     }

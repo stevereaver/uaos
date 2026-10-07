@@ -1303,20 +1303,33 @@ void Enable(void)
     if (--g_current->tc_IDNestCnt <= 0) {
         g_current->tc_IDNestCnt = 0;
         /* Close the IF=0 hold interval started by Disable().  PIT ticks
-         * cannot advance while IF=0 so this is measured in TSC cycles;
-         * ~50M cycles is roughly 17–100 ms depending on the machine —
+         * cannot advance while IF=0 so this is measured in TSC cycles,
+         * converted to ms with the self-calibrated TSC frequency —
          * a hold that long is a bug signature, not a critical section. */
         uint64_t dur = diag_rdtsc() - g_current->disable_enter_tick;
         g_current->irqoff_ticks += dur;
         if (dur > g_current->irqoff_max_ticks)
             g_current->irqoff_max_ticks = dur;
-        if (dur > 50000000ULL) {
+        uint64_t hz = Tickmon_TscHz();
+        /* Uncalibrated (first ~100 PIT ticks): ~50M cycles is roughly
+         * 17-100 ms depending on the machine — close enough. */
+        uint64_t thresh = hz ? hz / (1000 / TASK_IRQOFF_LONG_MS)
+                             : 50000000ULL;
+        if (dur > thresh) {
             g_current->irqoff_long++;
             kprint("[TASK] WARN: '");
             kprint(g_current->ln_Name ? g_current->ln_Name : "?");
             kprint("' held Disable() for ");
-            kprinthex(dur);
-            kprint(" cycles (IF=0)\n");
+            if (hz) {
+                kprintdec((uint32_t)(dur * 1000 / hz));
+                kprint(" ms (");
+                kprinthex(dur);
+                kprint(" cycles)");
+            } else {
+                kprinthex(dur);
+                kprint(" cycles");
+            }
+            kprint(" (IF=0)\n");
         }
         __asm__ volatile ("sti");
         /* Interrupts are back on — a deferred reschedule can dispatch.

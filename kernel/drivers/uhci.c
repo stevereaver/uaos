@@ -438,11 +438,16 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_USBSTS));
             klog_puts(KLOG_USB, KLOG_WARN, " frnum=");
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", rg16(h, U_FRNUM));
+            /* TD status words go in separate entries: klog caps a line at
+             * 160 bytes and the words — the useful part — were being
+             * silently truncated off the end (UAOS-282).  ~7 TDs fit per
+             * entry; chunk longer chains. */
             for (int i = 0; i < ntd; i++) {
-                klog_puts(KLOG_USB, KLOG_WARN, " td");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
-                klog_puts(KLOG_USB, KLOG_WARN, "=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", tds[i].status);
+                if (i % 7 == 0)
+                    klog_puts(KLOG_USB, KLOG_WARN,
+                              i ? "\nuhci: ctrl fail tds+" : "\nuhci: ctrl fail tds");
+                klog_appendf(KLOG_USB, KLOG_WARN, " td%d=0x%08X",
+                             i, tds[i].status);
             }
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         } else if (!(h->cf_n & (h->cf_n - 1))) {

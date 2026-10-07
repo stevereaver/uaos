@@ -402,6 +402,9 @@ static int ahci_identify(AhciPort *p)
         p->model[i * 2 + 1] = (char)(w & 0xFF);
     }
     p->model[40] = 0;
+    /* IDENTIFY space-pads the field to 40 chars — strip trailing pads
+     * (same as ide.c's ata_parse_identify). */
+    for (int i = 39; i >= 0 && p->model[i] == ' '; i--) p->model[i] = 0;
     return 0;
 }
 
