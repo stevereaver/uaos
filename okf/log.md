@@ -22,9 +22,20 @@
 * **Verified in QEMU**: q35 `piix3-ide` now found via PCI scan
   (`controller at 0:2.0 progif=0x80` → compat), ATAPI QEMU DVD-ROM
   probed, `CD0:` registered, clean boot to desktop.
-* **Metal re-verify pending**: needs a USB-stick boot on the MBP4,1 —
-  expect `[IDE] PCI IDE controller at 0:1f.1` then `ch0/ch1 native
-  cmd=0x8108/0x8100` and an ATAPI device (SuperDrive) on one channel.
+* **Metal verification (MBP4,1)**: scan+BARs landed but channels probed
+  empty. The extended `IDE_DiagDump` live SRST re-probe showed the
+  SuperDrive's signature sitting at `sc=01 lba=01/14/eb` — the drive was
+  there all along. Root cause #2: `ide_identify_device` treated
+  `status == 0` as absent, but this drive idles at `stat=0x00` (and
+  doesn't post ERR instantly on 0xEC like QEMU's emulation). Probing is
+  now signature-first: classify by post-reset signature regs before
+  writing the command block, then issue 0xEC (ATA) or 0xA1 (ATAPI)
+  directly. Also: waits converted to real-ms port-0x80 spins (the
+  iter-count loop under-waited ~3x on real PCI I/O), 200 ms post-SRST
+  settle, second probe attempt per empty channel, PM cap walked to D0,
+  and `wait_drq_or_err` tolerates a ~4 ms BSY-assertion ramp.
+* **Result**: `dev0 ATAPI: HL-DT-ST DVDRW GSA-S10N`, `atapi0`/`CD0:`
+  blockdev registered — verified live over telnetd on the metal box.
 * **Documented**: `okf/platforms/macbook41.md` Optical row corrected.
 
 ## 2026-10-06 — appletouch rewritten Linux-faithful; wobble root-caused (UAOS-135)

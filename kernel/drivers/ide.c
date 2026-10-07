@@ -58,25 +58,36 @@ static void pci_config_write_word(uint8_t bus, uint8_t dev, uint8_t func, uint8_
 static IdeChannel g_channels[2];
 static IdeDeviceInfo g_devices[2][2];
 static int g_num_channels = 0;
+static int g_pci_bus = -1, g_pci_dev = -1, g_pci_fn = -1;
+static int g_pci_pif = -1, g_pci_intline = -1;
 
-/* Wait helpers */
+/* ~1 ms busy-spin via port-0x80 reads (~1 us each on LPC). */
+static void ide_ms_spin(uint32_t ms) {
+    for (uint32_t i = 0; i < ms * 1000; i++)
+        __asm__ volatile ("inb $0x80, %%al" ::: "eax");
+}
+
+/* Wait helpers — one ide_ms_spin per loop so timeout_ms is real ms on
+ * metal (an iteration count of ~100 at PCI I/O speed under-waits ~3x). */
 static int wait_bsy_clear(const IdeChannelPorts *p, int timeout_ms) {
-    for (int i = 0; i < timeout_ms * 100; i++) {
+    for (int i = 0; i < timeout_ms; i++) {
         uint8_t s = inb(p->cmd_stat_port);
         if (s == 0xFF) return -1; /* No device present (floating bus) */
         if (!(s & ATA_SR_BSY)) return 0;
-        io_wait();
+        ide_ms_spin(1);
     }
     return -1;
 }
 static int wait_drq_or_err(const IdeChannelPorts *p, int timeout_ms) {
-    for (int i = 0; i < timeout_ms * 100; i++) {
+    for (int i = 0; i < timeout_ms; i++) {
         uint8_t s = inb(p->cmd_stat_port);
         if (s == 0xFF) return -1;
         if (s & ATA_SR_ERR) return -1;
         if (s & ATA_SR_DRQ) return 1;
-        if (!(s & ATA_SR_BSY)) return 0;
-        io_wait();
+        /* Not-BSY with no DRQ = command done. Tolerate a few ms of idle-
+         * looking status first: real drives may not have raised BSY yet. */
+        if (!(s & ATA_SR_BSY) && i >= 4) return 0;
+        ide_ms_spin(1);
     }
     return -2;
 }
@@ -86,6 +97,9 @@ static void ide_soft_reset(const IdeChannelPorts *p) {
     outb(p->ctl_alt_port, 0x04); io_wait(); io_wait(); io_wait(); io_wait();
     outb(p->ctl_alt_port, 0x00); io_wait(); io_wait(); io_wait(); io_wait();
     wait_bsy_clear(p, 2000);
+    /* ATAPI devices may run self-diagnostics without asserting BSY; give
+     * the signature registers a moment to settle before probing. */
+    ide_ms_spin(200);
 }
 
 /* Select device */
@@ -127,27 +141,30 @@ static void atapi_parse_identify(uint16_t *buf, IdeDeviceInfo *info) {
     for (int i = 39; i >= 0; i--) { if (info->model[i] != ' ') break; info->model[i] = '\0'; }
 }
 
-/* Send IDENTIFY to a device */
+/* Send IDENTIFY to a device.
+ * Presence is decided by the post-reset signature registers, read BEFORE
+ * any command-block writes clobber them: ATAPI = sc01/lba01/14/eb,
+ * ATA = sc01/lba01/00/00. A floating or undriven bus (0xff, 0x00, stale
+ * values) means absent. Status alone is NOT reliable — real drives can
+ * idle at stat=0x00 (ICH8M PATA SuperDrive does). */
 static int ide_identify_device(const IdeChannelPorts *p, int device, IdeDeviceInfo *info) {
     ide_select_device(p, device);
     wait_bsy_clear(p, 1000);
-    outb(p->seccount_port, 0); outb(p->lba0_port, 0); outb(p->lba1_port, 0); outb(p->lba2_port, 0);
-    outb(p->cmd_stat_port, ATA_CMD_IDENTIFY);
-    io_wait(); io_wait();
-    uint8_t status = inb(p->cmd_stat_port);
-    if (status == 0) { info->present = 0; return -1; }
+
+    uint8_t sc   = inb(p->seccount_port);
+    uint8_t lba0 = inb(p->lba0_port);
     uint8_t lba1 = inb(p->lba1_port);
     uint8_t lba2 = inb(p->lba2_port);
-    int is_atapi = (lba1 == 0x14 && lba2 == 0xEB) ? 1 : 0;
+    int is_atapi = (sc == 0x01 && lba0 == 0x01 && lba1 == 0x14 && lba2 == 0xEB);
+    int is_ata   = (sc == 0x01 && lba0 == 0x01 && lba1 == 0x00 && lba2 == 0x00);
+    if (!is_atapi && !is_ata) { info->present = 0; return -1; }
+    if (inb(p->cmd_stat_port) == 0xFF) { info->present = 0; return -1; }
+
+    outb(p->seccount_port, 0); outb(p->lba0_port, 0); outb(p->lba1_port, 0); outb(p->lba2_port, 0);
+    outb(p->cmd_stat_port, is_atapi ? ATAPI_CMD_IDENTIFY : ATA_CMD_IDENTIFY);
+    io_wait(); io_wait();
     if (wait_bsy_clear(p, 5000) != 0) { info->present = 0; return -1; }
-    status = inb(p->cmd_stat_port);
-    if (status & ATA_SR_ERR) {
-        if (is_atapi) {
-            outb(p->cmd_stat_port, ATAPI_CMD_IDENTIFY);
-            io_wait(); io_wait();
-            if (wait_bsy_clear(p, 5000) != 0) { info->present = 0; return -1; }
-        } else { info->present = 0; return -1; }
-    }
+    if (inb(p->cmd_stat_port) & ATA_SR_ERR) { info->present = 0; return -1; }
     if (wait_drq_or_err(p, 5000) <= 0) { info->present = 0; return -1; }
     uint16_t buf[256];
     for (int i = 0; i < 256; i++) buf[i] = inw(p->data_port);
@@ -319,6 +336,25 @@ static void setup_pci_controller(uint8_t bus, uint8_t dev, uint8_t func, uint8_t
     uint32_t bar2 = pci_config_read_dword(bus, dev, func, 0x18);
     uint32_t bar3 = pci_config_read_dword(bus, dev, func, 0x1C);
 
+    /* Wake to D0 via the PM capability — firmware may have parked an
+     * unused optical controller in D3hot, where the I/O BARs don't
+     * decode and every port read floats to 0xFF. */
+    if (pci_config_read_word(bus, dev, func, 0x06) & 0x10) {
+        uint8_t cap = (uint8_t)(pci_config_read_byte(bus, dev, func, 0x34) & ~3u);
+        for (int i = 0; i < 48 && cap; i++) {
+            if (pci_config_read_byte(bus, dev, func, cap) == 0x01) {
+                uint16_t pmcsr = pci_config_read_word(bus, dev, func, cap + 4);
+                if (pmcsr & 3) {
+                    pci_config_write_word(bus, dev, func, cap + 4, (uint16_t)(pmcsr & ~3u));
+                    (void)pci_config_read_word(bus, dev, func, cap + 4);
+                    ide_ms_spin(10);
+                }
+                break;
+            }
+            cap = (uint8_t)(pci_config_read_byte(bus, dev, func, cap + 1) & ~3u);
+        }
+    }
+
     /* Enable I/O space decoding + bus mastering */
     uint16_t cmd = pci_config_read_word(bus, dev, func, PCI_REG_COMMAND);
     pci_config_write_word(bus, dev, func, PCI_REG_COMMAND,
@@ -327,6 +363,9 @@ static void setup_pci_controller(uint8_t bus, uint8_t dev, uint8_t func, uint8_t
 
     int intline = pci_config_read_byte(bus, dev, func, PCI_REG_INTERRUPT_LINE);
     if (intline == 0xFF) intline = -1;
+
+    g_pci_bus = bus; g_pci_dev = dev; g_pci_fn = func;
+    g_pci_pif = pif; g_pci_intline = intline;
 
     kprint("[IDE] PCI IDE controller at ");
     kprinthex((uint64_t)bus); kprint(":");
@@ -390,9 +429,12 @@ int IDE_Init(void) {
     for (int ch = 0; ch < 2; ch++) {
         const IdeChannelPorts *p = &g_channels[ch].ports;
         kprint("[IDE] Probing channel "); kprinthex((uint64_t)ch); kprint("...\n");
-        ide_soft_reset(p);
         int any = 0;
-        for (int dev = 0; dev < 2; dev++) {
+        /* Second pass after a grace delay: real ATAPI drives can still be
+         * running post-reset diagnostics when the first IDENTIFY lands. */
+        for (int attempt = 0; attempt < 2 && !any; attempt++) {
+            ide_soft_reset(p);
+            for (int dev = 0; dev < 2; dev++) {
             if (ide_identify_device(p, dev, &g_devices[ch][dev]) == 0 && g_devices[ch][dev].present) {
                 any = 1;
                 kprint("[IDE]   dev "); kprinthex((uint64_t)dev); kprint(" ");
@@ -410,6 +452,7 @@ int IDE_Init(void) {
                         g_devices[ch][dev].sector_size = 2048;
                     }
                 }
+            }
             }
         }
         g_channels[ch].present = any;
@@ -590,26 +633,63 @@ void IDE_RegisterBlockDevs(void) {
  * ------------------------------------------------------------------------- */
 #include "../dbg/diag.h"
 
+static void ide_dump_regs(void *ctx, void (*emit)(void *, const char *),
+                          const char *tag, const IdeChannelPorts *p)
+{
+    DiagLine l;
+    dl_reset(&l);
+    dl_add(&l, tag);
+    dl_add(&l, " stat="); dl_hex(&l, inb(p->cmd_stat_port));
+    dl_add(&l, " alt=");  dl_hex(&l, inb(p->ctl_alt_port));
+    dl_add(&l, " err=");  dl_hex(&l, inb(p->err_feat_port));
+    dl_add(&l, " sc=");   dl_hex(&l, inb(p->seccount_port));
+    dl_add(&l, " lba=");  dl_hex(&l, inb(p->lba0_port));
+    dl_ch(&l, '/');       dl_hex(&l, inb(p->lba1_port));
+    dl_ch(&l, '/');       dl_hex(&l, inb(p->lba2_port));
+    dl_add(&l, " dsel="); dl_hex(&l, inb(p->devsel_port));
+    dl_emit(&l, ctx, emit);
+}
+
 void IDE_DiagDump(void *ctx, void (*emit)(void *, const char *))
 {
     DiagLine l;
-    if (!g_num_channels) { emit(ctx, " ide: no channels"); return; }
 
-    for (int c = 0; c < g_num_channels; c++) {
+    dl_reset(&l);
+    if (g_pci_bus >= 0) {
+        dl_add(&l, " ide pci=");
+        dl_dec(&l, (uint64_t)g_pci_bus); dl_ch(&l, ':');
+        dl_dec(&l, (uint64_t)g_pci_dev); dl_ch(&l, '.');
+        dl_dec(&l, (uint64_t)g_pci_fn);
+        dl_add(&l, " progif="); dl_hex(&l, (uint64_t)g_pci_pif);
+        dl_add(&l, " cmd="); dl_hex(&l, pci_config_read_word(
+            (uint8_t)g_pci_bus, (uint8_t)g_pci_dev, (uint8_t)g_pci_fn, PCI_REG_COMMAND));
+        dl_add(&l, " intline="); dl_sdec(&l, g_pci_intline);
+    } else {
+        dl_add(&l, " ide: no pci controller, compat ports");
+    }
+    dl_emit(&l, ctx, emit);
+
+    for (int c = 0; c < 2; c++) {
         IdeChannel *ch = &g_channels[c];
+        const IdeChannelPorts *p = &ch->ports;
+
         dl_reset(&l);
         dl_add(&l, " ide ch"); dl_dec(&l, (uint64_t)c);
-        dl_add(&l, " io="); dl_hex(&l, ch->ports.data_port);
-        dl_add(&l, " ctl="); dl_hex(&l, ch->ports.ctl_alt_port);
+        dl_add(&l, " io="); dl_hex(&l, p->data_port);
+        dl_add(&l, " ctl="); dl_hex(&l, p->ctl_alt_port);
         dl_add(&l, " irq="); dl_sdec(&l, ch->irq_line);
-        /* live status + alt-status reads — the classic "stuck BSY" tell */
-        uint8_t st  = inb(ch->ports.cmd_stat_port);
-        uint8_t alt = inb(ch->ports.ctl_alt_port);
-        dl_add(&l, " stat="); dl_hex(&l, st);
-        dl_add(&l, " alt="); dl_hex(&l, alt);
-        if (st & ATA_SR_BSY) dl_add(&l, " *BSY*");
-        if (st & ATA_SR_ERR) dl_add(&l, " *ERR*");
+        dl_add(&l, ch->present ? " [present]" : " [empty]");
         dl_emit(&l, ctx, emit);
+        ide_dump_regs(ctx, emit, "   ", p);
+
+        /* Empty at boot — live SRST re-probe so diskdiag answers "is the
+         * drive there at all?". Signature after SRST should settle to
+         * sc=0x01 lba=0x01/0x14/0xeb for ATAPI (0x01/0x00/0x00 for ATA). */
+        if (!ch->present) {
+            ide_soft_reset(p);
+            ide_ms_spin(1000);
+            ide_dump_regs(ctx, emit, "   after-srst:", p);
+        }
 
         for (int d = 0; d < 2; d++) {
             IdeDeviceInfo *di = &g_devices[c][d];
