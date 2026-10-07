@@ -8,21 +8,20 @@
  * 64-byte frames of per-sensor readings — deltas from an untouched
  * baseline, not absolute coordinates.
  *
- * Frame layout (Geyser3/4, datalen 64 — drivers/input/mouse/appletouch.c):
+ * Faithful port of drivers/input/mouse/appletouch.c (Geyser 3/4 path:
+ * atp_geyser_init, atp_calculate_abs, atp_complete_geyser_3_4,
+ * atp_reinit).  Linux reports absolute coordinates and leaves relative
+ * conversion to userspace; here the 7/8-EMA absolute position is
+ * differenced into cursor motion directly.
+ *
+ * Frame layout (datalen 64):
  *   bytes 1..15   Y sensors, triplets "-,Y1,Y2" at j=1,4,7,10,13
  *   bytes 19..48  X sensors, triplets "-,X1,X2" at j=19,22,...,46
  *   byte  63      status: bit0 = physical button, bit2 = base update,
  *                 bit4 = from-reset
  *
- * Finger count comes from counting rising "humps" across the sensor
- * delta arrays (Jason Parekh's heuristic upstream), position from a
- * smoothed centroid.  The single mechanical button is emulated to
- * left/right/middle from the live finger count at press (UAOS-135).
- *
- * Geysers keep streaming empty packets after the first touch; Linux
- * re-issues the mode switch after ~10 idle frames to stop them —
- * mirrored here via a deferred worker (IRQ context can't do control
- * transfers).
+ * The single mechanical button is emulated to left/right/middle from
+ * the live finger count at press (UAOS-135).
  */
 
 #include "usb.h"
@@ -58,11 +57,17 @@
 
 #define ATP_STATUS_BUTTON    0x01
 #define ATP_STATUS_BASE_UPD  0x04
+#define ATP_STATUS_FROM_RST  0x10
 
 #define ATP_THRESHOLD        5       /* sensor delta noise floor */
 #define ATP_SCALE            12      /* fixed-point shift for smoothing */
 #define ATP_SMOOTHSZ         34      /* nb_sensors + 4 pad either side */
 #define ATP_IDLE_FRAMES      10      /* empties before re-init */
+#define ATP_MOVE_TH          2       /* filtered pad units before cursor moves */
+
+/* Cursor gain: screen px per pad unit, 8.8 fixed point — ~1.5 screen
+ * widths per full pad sweep (same feel as bcm5974). */
+#define ATP_GAIN_FP(px, rng) (((px) * 3 * 256) / (2 * (rng)))
 
 extern unsigned int g_fb_width_irq;
 extern unsigned int g_fb_height_irq;
@@ -74,17 +79,25 @@ typedef struct {
     UaosTask *reinit_task;
     int      reinit_pending;
     int      reinits;           /* mode re-switch attempts so far */
-    int      idle;              /* consecutive fingerless frames */
+    int      saw_raw;           /* first 64-byte frame seen */
+    int      base_valid;        /* baseline seeded */
+    int      idlecount;         /* consecutive empty frames */
 
-    int8_t   base[ATP_NSENS];   /* untouched-pad baseline */
-    int      acc [ATP_NSENS];   /* per-sensor deltas */
+    int8_t   xy_old[ATP_NSENS]; /* untouched-pad baseline */
+    int      xy_acc[ATP_NSENS]; /* per-sensor deltas */
     int      smooth[ATP_SMOOTHSZ];
     int      smooth_tmp[ATP_SMOOTHSZ];
 
-    int      had_finger;
-    int      px, py;            /* last tracked pad position */
-    int      fingers;           /* live finger census */
+    int      x_old, y_old;      /* EMA'd absolute position, -1 = none */
+    int      fingers_old;
+    int      adx, ady;          /* accumulating deadband (pad units) */
+    int      rem_x, rem_y;      /* sub-pixel remainder, 8.8 */
     int      btn_emu;           /* latched emulated button (0..3) */
+
+    /* Telemetry (peek): status-frame counters and last-32 trajectory */
+    int      n_base_upd, n_from_reset, n_frames;
+    int      dbg_ring[32][6];   /* rx, ry, fx, fy, fingers|xz<<8|yz<<20, seq */
+    int      dbg_ridx;
 } Atp;
 
 static Atp g_atp;
@@ -97,53 +110,36 @@ static void udelay(unsigned int us)
 static void msleep(uint32_t ms) { udelay(ms * 1000); }
 
 /* ------------------------------------------------------------------ */
-/* Vendor-mode switch                                                   */
+/* Vendor-mode switch — atp_geyser_init: one read, one write.          */
 /* ------------------------------------------------------------------ */
-static int atp_vendor_mode(UsbDev *dev, int on)
+static int atp_geyser_init(UsbDev *dev)
 {
     uint8_t *data = (uint8_t *)DMA_Alloc(ATP_MODE_SIZE, 8);
+    int ret = -1;
     if (!data) return -1;
 
     if (usb_ctrl(dev, USB_RT_IN | USB_RT_CLASS | USB_RT_IF,
                  ATP_MODE_READ_REQ, ATP_MODE_REQ_VAL, ATP_MODE_REQ_IDX,
                  data, ATP_MODE_SIZE) != 0) {
         klog_puts(KLOG_USB, KLOG_WARN, "appletouch: mode read failed\n");
-        goto fail;
+        goto out;
     }
-
-    /* Write + verify loop — Geyser ACKs a write it doesn't apply, same
-     * class of race bcm5974 shows (drained control response). */
-    for (int attempt = 0; attempt < 4; attempt++) {
-        data[0] = on ? ATP_MODE_VENDOR : 0;
-        if (usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
-                     ATP_MODE_WRITE_REQ, ATP_MODE_REQ_VAL, ATP_MODE_REQ_IDX,
-                     data, ATP_MODE_SIZE) != 0) {
-            klog_puts(KLOG_USB, KLOG_WARN, "appletouch: mode write failed\n");
-            goto fail;
-        }
-        msleep(20);
-        memset(data, 0, ATP_MODE_SIZE);
-        if (usb_ctrl(dev, USB_RT_IN | USB_RT_CLASS | USB_RT_IF,
-                     ATP_MODE_READ_REQ, ATP_MODE_REQ_VAL, ATP_MODE_REQ_IDX,
-                     data, ATP_MODE_SIZE) != 0) {
-            klog_puts(KLOG_USB, KLOG_WARN, "appletouch: mode vfy read failed\n");
-            goto fail;
-        }
-        if (data[0] == (uint8_t)(on ? ATP_MODE_VENDOR : 0)) {
-            DMA_Free(data, ATP_MODE_SIZE);
-            return 0;
-        }
-        msleep(50);
+    data[0] = ATP_MODE_VENDOR;
+    if (usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
+                 ATP_MODE_WRITE_REQ, ATP_MODE_REQ_VAL, ATP_MODE_REQ_IDX,
+                 data, ATP_MODE_SIZE) != 0) {
+        klog_puts(KLOG_USB, KLOG_WARN, "appletouch: mode write failed\n");
+        goto out;
     }
-    klog_puts(KLOG_USB, KLOG_WARN, "appletouch: mode switch did not stick\n");
-fail:
+    ret = 0;
+out:
     DMA_Free(data, ATP_MODE_SIZE);
-    return -1;
+    return ret;
 }
 
 /* ------------------------------------------------------------------ */
-/* Re-init worker — the pad keeps streaming empty frames after a touch  */
-/* ends; re-issuing the mode switch silences it (upstream atp_reinit).  */
+/* Re-init worker — atp_reinit.  Geysers 3/4 keep streaming after the  */
+/* first touch; re-issuing the mode switch puts the pad to sleep.      */
 /* ------------------------------------------------------------------ */
 static void atp_reinit_task(void *arg)
 {
@@ -152,50 +148,48 @@ static void atp_reinit_task(void *arg)
         Task_WaitTicks(SIGF_ATP, UINT64_MAX / 2);
         if (!g_atp.claimed || !g_atp.dev)
             continue;
+        g_atp.reinits++;
+        atp_geyser_init(g_atp.dev);
         g_atp.reinit_pending = 0;
-        klog_puts(KLOG_USB, KLOG_DEBUG, "appletouch: reinit #");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)g_atp.reinits);
-        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
-        atp_vendor_mode(g_atp.dev, 1);
-        memset(g_atp.base, 0, sizeof(g_atp.base));
-        g_atp.had_finger = 0;
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Sensor deltas → finger humps + smoothed centroid                     */
-/* (atp_calculate_abs port; returns position in sensor*fact units)      */
+/* atp_calculate_abs — hump census + smoothed centroid                 */
 /* ------------------------------------------------------------------ */
-static int atp_humps(const int *s, int n)
+static int atp_calculate_abs(int offset, int nb_sensors, int fact,
+                             int *z, int *fingers)
 {
-    int fingers = 0, increasing = 0;
+    int *xy_sensors = g_atp.xy_acc + offset;
+    int pcum = 0, psum = 0;
+    int is_increasing = 0;
+    int i, pass;
 
-    for (int i = 0; i < n; i++) {
-        if (s[i] < ATP_THRESHOLD) {
-            increasing = 0;
-        } else if (i < 1 || (!increasing && s[i - 1] < s[i])) {
-            fingers++;
-            increasing = 1;
-        } else if (i > 0 && s[i - 1] - s[i] > ATP_THRESHOLD) {
-            increasing = 0;
+    *fingers = 0;
+    for (i = 0; i < nb_sensors; i++) {
+        if (xy_sensors[i] < ATP_THRESHOLD) {
+            if (is_increasing)
+                is_increasing = 0;
+        } else if (i < 1 ||
+                   (!is_increasing && xy_sensors[i - 1] < xy_sensors[i])) {
+            (*fingers)++;
+            is_increasing = 1;
+        } else if (i > 0 &&
+                   (xy_sensors[i - 1] - xy_sensors[i] > ATP_THRESHOLD)) {
+            is_increasing = 0;
         }
     }
-    return fingers;
-}
-
-static int atp_centroid(const int *s, int n, int fact, int *z)
-{
-    int pcum = 0, psum = 0;
+    if (*fingers < 1)
+        return 0;
 
     memset(g_atp.smooth, 0, 4 * sizeof(int));
-    for (int i = 0; i < n; i++)
-        g_atp.smooth[i + 4] = s[i] << ATP_SCALE;
-    memset(&g_atp.smooth[n + 4], 0, 4 * sizeof(int));
+    for (i = 0; i < nb_sensors; i++)
+        g_atp.smooth[i + 4] = xy_sensors[i] << ATP_SCALE;
+    memset(&g_atp.smooth[nb_sensors + 4], 0, 4 * sizeof(int));
 
-    for (int pass = 0; pass < 4; pass++) {
-        int i;
+    for (pass = 0; pass < 4; pass++) {
         g_atp.smooth_tmp[0] = (g_atp.smooth[0] + g_atp.smooth[1]) / 2;
-        for (i = 1; i < n + 7; i++)
+        for (i = 1; i < nb_sensors + 7; i++)
             g_atp.smooth_tmp[i] = (g_atp.smooth[i - 1] +
                                    g_atp.smooth[i] * 2 +
                                    g_atp.smooth[i + 1]) / 4;
@@ -203,134 +197,160 @@ static int atp_centroid(const int *s, int n, int fact, int *z)
         memcpy(g_atp.smooth, g_atp.smooth_tmp, sizeof(g_atp.smooth));
     }
 
-    for (int i = 0; i < n + 8; i++)
+    for (i = 0; i < nb_sensors + 8; i++) {
         if ((g_atp.smooth[i] >> ATP_SCALE) > 0) {
             pcum += g_atp.smooth[i] * i;
             psum += g_atp.smooth[i];
         }
-    if (psum <= 0) return 0;
-    *z = psum >> ATP_SCALE;
-    return pcum * fact / psum;
+    }
+    if (psum > 0) {
+        *z = psum >> ATP_SCALE;
+        return pcum * fact / psum;
+    }
+    return 0;
+}
+
+/* Relative motion from the EMA'd absolute position (what userspace
+ * does with ABS_X/ABS_Y on Linux), with sub-pixel remainder carry. */
+static void atp_move(int dx, int dy)
+{
+    int mx = (int)g_fb_width_irq  - 1;
+    int my = (int)g_fb_height_irq - 1;
+
+    g_atp.rem_x += dx * ATP_GAIN_FP(mx, ATP_XRANGE);
+    g_atp.rem_y += dy * ATP_GAIN_FP(my, ATP_YRANGE);
+    int px = g_atp.rem_x / 256, py = g_atp.rem_y / 256;
+    g_atp.rem_x -= px * 256;
+    g_atp.rem_y -= py * 256;
+    if (!px && !py) return;
+
+    int nx = g_mouse.x + px, ny = g_mouse.y + py;
+    if (nx < 0) nx = 0; else if (nx > mx) nx = mx;
+    if (ny < 0) ny = 0; else if (ny > my) ny = my;
+    if (nx != g_mouse.x || ny != g_mouse.y) {
+        g_mouse.x = nx;
+        g_mouse.y = ny;
+        Cursor_Move(nx, ny);
+    }
 }
 
 /* ------------------------------------------------------------------ */
-/* Report handler — IRQ/poll context                                    */
+/* Report handler — atp_complete_geyser_3_4 (IRQ/poll context)         */
 /* ------------------------------------------------------------------ */
 static void atp_cb(void *ctx, void *buf, int len)
 {
     (void)ctx;
     uint8_t *d = (uint8_t *)buf;
+    int x, y, x_z = 0, y_z = 0, x_f, y_f;
+    int i, j, key, fingers;
 
-    static int dbg_n;
-    if (dbg_n < 24) {
-        dbg_n++;
-        klog_puts(KLOG_USB, KLOG_DEBUG, "appletouch: rx len=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)len);
-        klog_puts(KLOG_USB, KLOG_DEBUG, " d0=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
-                     len >= 4 ? (uint32_t)(d[0] | (d[1]<<8) |
-                              (d[2]<<16) | ((uint32_t)d[3]<<24)) : 0);
-        klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
-    }
-
-    /* Short frames (e.g. the 8-byte Report-ID-2 HID packets the pad
-     * emits pre-switch) mean vendor mode didn't stick — kick the
-     * worker to re-switch.  IRQ context; the worker does the control
-     * transfers. */
+    /* Short frames before the first raw report mean vendor mode
+     * didn't stick — kick the worker to re-switch.  Once raw frames
+     * are flowing, non-64-byte packets are ignored. */
     if (len != ATP_DATALEN) {
-        if (len > 2 && g_atp.reinit_task && !g_atp.reinit_pending &&
-            g_atp.reinits < 16) {
-            g_atp.reinits++;
+        if (!g_atp.saw_raw && len > 2 && g_atp.reinit_task &&
+            !g_atp.reinit_pending && g_atp.reinits < 16) {
             g_atp.reinit_pending = 1;
             Signal(g_atp.reinit_task, SIGF_ATP);
         }
         return;
     }
+    g_atp.saw_raw = 1;
+    g_atp.n_frames++;
     uint8_t status = d[ATP_DATALEN - 1];
-    int     key    = status & ATP_STATUS_BUTTON;
+    if (status & ATP_STATUS_FROM_RST) g_atp.n_from_reset++;
 
-    /* Baseline refresh frames carry the untouched pad — snapshot and
-     * stop (they must not count toward the idle reinit). */
+    int8_t xy_cur[ATP_NSENS];
+    for (i = 0, j = 19; i < ATP_XSENS; i += 2, j += 3) {
+        xy_cur[i]     = (int8_t)d[j + 1];
+        xy_cur[i + 1] = (int8_t)d[j + 2];
+    }
+    for (i = 0, j = 1; i < ATP_YSENS - 1; i += 2, j += 3) {
+        xy_cur[ATP_XSENS + i]     = (int8_t)d[j + 1];
+        xy_cur[ATP_XSENS + i + 1] = (int8_t)d[j + 2];
+    }
+
+    /* Baseline: BASE_UPDATE frames carry the untouched pad (Linux
+     * takes the baseline only from these).  Metal fallback: if none
+     * has arrived yet, seed from the first raw frame after arm. */
     if (status & ATP_STATUS_BASE_UPD) {
-        int i, j;
-        for (i = 0, j = 1; i < ATP_YSENS - 1; i += 2, j += 3) {
-            g_atp.base[ATP_XSENS + i]     = (int8_t)d[j + 1];
-            g_atp.base[ATP_XSENS + i + 1] = (int8_t)d[j + 2];
-        }
-        for (i = 0, j = 19; i < ATP_XSENS; i += 2, j += 3) {
-            g_atp.base[i]     = (int8_t)d[j + 1];
-            g_atp.base[i + 1] = (int8_t)d[j + 2];
-        }
+        g_atp.n_base_upd++;
+        memcpy(g_atp.xy_old, xy_cur, sizeof(g_atp.xy_old));
+        g_atp.base_valid = 1;
+        return;
+    }
+    if (!g_atp.base_valid) {
+        memcpy(g_atp.xy_old, xy_cur, sizeof(g_atp.xy_old));
+        g_atp.base_valid = 1;
         return;
     }
 
-    /* Per-sensor deltas vs baseline (round-robin wrap handling, clamp
-     * negatives — mirrors upstream). */
-    {
-        int8_t cur[ATP_NSENS];
-        int i, j;
-        for (i = 0, j = 1; i < ATP_YSENS - 1; i += 2, j += 3) {
-            cur[ATP_XSENS + i]     = (int8_t)d[j + 1];
-            cur[ATP_XSENS + i + 1] = (int8_t)d[j + 2];
-        }
-        for (i = 0, j = 19; i < ATP_XSENS; i += 2, j += 3) {
-            cur[i]     = (int8_t)d[j + 1];
-            cur[i + 1] = (int8_t)d[j + 2];
-        }
-        for (i = 0; i < ATP_NSENS; i++) {
-            int delta = cur[i] - g_atp.base[i];
-            if (delta > 127)  delta -= 256;
-            if (delta < -127) delta += 256;
-            g_atp.acc[i] = delta < 0 ? 0 : delta;
-        }
+    for (i = 0; i < ATP_NSENS; i++) {
+        g_atp.xy_acc[i] = xy_cur[i] - g_atp.xy_old[i];
+        if (g_atp.xy_acc[i] > 127)  g_atp.xy_acc[i] -= 256;
+        if (g_atp.xy_acc[i] < -127) g_atp.xy_acc[i] += 256;
+        if (g_atp.xy_acc[i] < 0)    g_atp.xy_acc[i] = 0;
     }
 
-    int x_f = atp_humps(g_atp.acc, ATP_XSENS);
-    int y_f = atp_humps(g_atp.acc + ATP_XSENS, ATP_YSENS);
-    int fingers = x_f > y_f ? x_f : y_f;
-    int prev_fingers = g_atp.fingers;
-    g_atp.fingers = fingers;
+    x = atp_calculate_abs(0, ATP_XSENS, ATP_XFACT, &x_z, &x_f);
+    y = atp_calculate_abs(ATP_XSENS, ATP_YSENS, ATP_YFACT, &y_z, &y_f);
+    int xr = x, yr = y;
+    key = status & ATP_STATUS_BUTTON;
+    fingers = x_f > y_f ? x_f : y_f;
 
-    int x = 0, y = 0, x_z = 0, y_z = 0;
-    if (fingers) {
-        x = atp_centroid(g_atp.acc, ATP_XSENS, ATP_XFACT, &x_z);
-        y = atp_centroid(g_atp.acc + ATP_XSENS, ATP_YSENS, ATP_YFACT, &y_z);
-    }
-
-    /* Motion: re-base on touch start or finger-count change, else
-     * apply the pad delta scaled to ~1.5 screen widths per sweep
-     * (same feel as bcm5974).  Pad y runs inverted vs screen. */
-    if (x && y) {
-        if (!g_atp.had_finger || fingers != prev_fingers) {
-            g_atp.px = x;
-            g_atp.py = y;
-            g_atp.had_finger = 1;
-        } else {
-            int dx = x - g_atp.px;
-            int dy = g_atp.py - y;
-            int mx = (int)g_fb_width_irq  - 1;
-            int my = (int)g_fb_height_irq - 1;
-            g_atp.px = x;
-            g_atp.py = y;
-
-            int nx = g_mouse.x + dx * 3 * mx / (2 * ATP_XRANGE);
-            int ny = g_mouse.y + dy * 3 * my / (2 * ATP_YRANGE);
-            if (nx < 0) nx = 0; else if (nx > mx) nx = mx;
-            if (ny < 0) ny = 0; else if (ny > my) ny = my;
-            if (nx != g_mouse.x || ny != g_mouse.y) {
-                g_mouse.x = nx;
-                g_mouse.y = ny;
-                Cursor_Move(nx, ny);
+    if (x && y && fingers == g_atp.fingers_old) {
+        if (g_atp.x_old != -1) {
+            x = (g_atp.x_old * 7 + x) >> 3;
+            y = (g_atp.y_old * 7 + y) >> 3;
+            /* Motion only under single-finger contact: a second
+             * finger resting for a right-click must not drag the
+             * cursor (two-finger gestures are userspace on Linux).
+             * Accumulating deadband: the EMA still passes ±1-2 unit
+             * tremor at light touch (metal trace: raw ±15, filtered
+             * ±2) — alternating deltas cancel in the accumulator so
+             * a resting finger stays put, while real motion crosses
+             * the band and is delivered whole. */
+            if (fingers == 1) {
+                g_atp.adx += x - g_atp.x_old;
+                g_atp.ady += y - g_atp.y_old;
+                int ax = g_atp.adx < 0 ? -g_atp.adx : g_atp.adx;
+                int ay = g_atp.ady < 0 ? -g_atp.ady : g_atp.ady;
+                if (ax >= ATP_MOVE_TH || ay >= ATP_MOVE_TH) {
+                    atp_move(g_atp.adx, g_atp.ady);
+                    g_atp.adx = g_atp.ady = 0;
+                }
             }
         }
-    } else {
-        g_atp.had_finger = 0;
+        g_atp.x_old = x;
+        g_atp.y_old = y;
+    } else if (!x && !y) {
+        g_atp.x_old = g_atp.y_old = -1;
+        g_atp.fingers_old = 0;
+        g_atp.adx = g_atp.ady = 0;
+        g_atp.rem_x = g_atp.rem_y = 0;
+        memset(g_atp.xy_acc, 0, sizeof(g_atp.xy_acc));
     }
 
-    /* Button emulation: same latch as bcm5974 — the census at the
-     * press edge picks 1=left, 2=right, 3+=middle, held until
-     * release.  Here the button rides the same report, so the census
-     * and click are always consistent. */
+    if (fingers != g_atp.fingers_old) {
+        g_atp.x_old = g_atp.y_old = -1;
+        g_atp.adx = g_atp.ady = 0;
+        g_atp.rem_x = g_atp.rem_y = 0;
+    }
+    g_atp.fingers_old = fingers;
+
+    if (fingers > 0) {
+        int *r = g_atp.dbg_ring[g_atp.dbg_ridx & 31];
+        g_atp.dbg_ridx++;
+        r[0] = xr;
+        r[1] = yr;
+        r[2] = g_atp.x_old;
+        r[3] = g_atp.y_old;
+        r[4] = fingers | (x_z << 8) | (y_z << 20);
+        r[5] = g_atp.dbg_ridx;
+    }
+
+    /* Button emulation: census at the press edge picks 1=left,
+     * 2=right, 3+=middle, held until release. */
     if (key) {
         if (!g_atp.btn_emu)
             g_atp.btn_emu = fingers >= 3 ? 3 : fingers == 2 ? 2 : 1;
@@ -342,16 +362,19 @@ static void atp_cb(void *ctx, void *buf, int len)
     g_mouse.btn_middle = (g_atp.btn_emu == 3);
     EventPump_Wake();
 
-    /* Stream silence: after a run of empty frames kick the worker to
-     * re-issue the mode switch so the pad stops pacing the HC. */
-    if (!fingers && !key && g_atp.reinit_task && !g_atp.reinit_pending) {
-        if (++g_atp.idle >= ATP_IDLE_FRAMES) {
-            g_atp.idle = 0;
-            g_atp.reinit_pending = 1;
-            Signal(g_atp.reinit_task, SIGF_ATP);
+    /* Idle: after 10 empty frames re-init so the pad stops streaming
+     * (Linux: schedule_work(atp_reinit)). */
+    if (!x && !y && !key) {
+        if (++g_atp.idlecount == ATP_IDLE_FRAMES) {
+            g_atp.idlecount = 0;
+            g_atp.x_old = g_atp.y_old = -1;
+            if (g_atp.reinit_task && !g_atp.reinit_pending) {
+                g_atp.reinit_pending = 1;
+                Signal(g_atp.reinit_task, SIGF_ATP);
+            }
         }
-    } else if (fingers || key) {
-        g_atp.idle = 0;
+    } else {
+        g_atp.idlecount = 0;
     }
 }
 
@@ -380,12 +403,9 @@ static int atp_probe(UsbIf *ifc)
              HID_REQ_SET_IDLE, 0, ifc->ifnum, 0, 0);
     msleep(10);
 
-    /* Vendor mode before traffic starts.  Best-effort: a Geyser that
-     * applies the write but doesn't echo 0x04 on readback would fail
-     * verification — arming anyway costs nothing (the pipe-side retry
-     * in atp_cb re-switches if raw frames never come) and keeps us
-     * from losing the pad to a cosmetic verify quirk. */
-    atp_vendor_mode(dev, 1);
+    /* Vendor mode before traffic starts (best-effort: the pipe-side
+     * retry in atp_cb re-switches if raw frames never come). */
+    atp_geyser_init(dev);
 
     g_atp.buf = (uint8_t *)DMA_Alloc(ATP_DATALEN, 64);
     if (!g_atp.buf) return 0;
@@ -394,6 +414,7 @@ static int atp_probe(UsbIf *ifc)
         return 0;
     g_atp.dev = dev;
     g_atp.claimed = 1;
+    g_atp.x_old = g_atp.y_old = -1;
     klog_puts(KLOG_USB, KLOG_DEBUG, "appletouch: trackpad armed\n");
     return 1;
 }
@@ -401,6 +422,7 @@ static int atp_probe(UsbIf *ifc)
 void AppleTouch_Init(void)
 {
     memset(&g_atp, 0, sizeof(g_atp));
+    g_atp.x_old = g_atp.y_old = -1;
     USB_RegisterClass(atp_probe);
 }
 
