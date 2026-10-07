@@ -109,7 +109,10 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   write (an I/O-port write even on `st == 0`) is skipped now. The
   remaining spurious `count=1` per line is a genuinely foreign assert
   — typically a leftover device assert delivered the moment the GSI
-  unmasks — benign.
+  unmasks — benign. Metal-verified on the MBP4,1: gsi16 still logged
+  its one `count=1`, but v48's worst dispatch fell 525k→21k cycles
+  (~210→8.4 µs) and v53's 627k→11k (~251→4.4 µs); `late=0` on all 5
+  HCs, no masks.
 - **EHCI `CONFIGFLAG` must be cleared or ghost ports appear on UHCI
   (UAOS-225).** Firmware that ran its USB2 stack leaves EHCI `CF=1`,
   keeping every root port muxed to the (driverless) EHCI — the
