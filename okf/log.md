@@ -908,9 +908,17 @@
 * **Verified**: `make kernel`/`make iso` clean; QEMU boot
   (piix3-usb-uhci + usb-kbd) reaches desktop with no usb WARNs;
   monitor `device_add usb-mouse,port=2` → `usb: late enum hc=0 port=1
-  vid=0x0627 pid=0x0001` in ~2 s (edge→probe path exercised).  A truly
-  deaf port isn't emulatable — the heartbeat path is code-verified
-  only; metal re-verify on MBP4,1 pending.
+  vid=0x0627 pid=0x0001` in ~2 s (edge→probe path exercised).
+* **Metal-verified** (MBP4,1 @192.168.10.150, build UAOS-081026100354):
+  hc3 (00:1D.1) port1 still deaf — parked with `psc=0x0095` (CCS|PE —
+  connected, enabled, silent; full-speed), heartbeat probes visible at
+  `klog usb=debug` as `parked port still deaf … psc=0x95` ~60 s apart
+  (Normal Boot's `loglevel=info` hides them — intended).  `usbdiag`
+  confirms PE+CCS latched, USBINTR=0xF, the SETUP TD dies
+  `0x01450007` (STALL|timeout) — the device genuinely ignores the wire;
+  heartbeats will keep re-resetting it, so if it ever wakes we get the
+  vid/pid that names it.  Persistent deafness past this points at
+  SMC/ACPI power gating, not USB sequencing.
 
 ## 2026-10-08 — UAOS-294: UHCI ~250 µs shared-vector worst case was the in-handler klog line
 
