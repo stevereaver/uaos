@@ -401,6 +401,17 @@ void FB_Init(uint32_t mb2_info_phys)
                  * the drawable region; the extra VRAM rows stay untouched. */
                 if (g_fb.width  > BB_MAX_W) g_fb.width  = BB_MAX_W;
                 if (g_fb.height > BB_MAX_H) g_fb.height = BB_MAX_H;
+
+                /* UAOS-139: log the achieved mode so bare-metal bring-up
+                 * can record which GOP/VESA mode the firmware picked. */
+                KLOG(KLOG_DISP, KLOG_INFO,
+                     "fb: %ux%u@%u pitch=%u addr=0x%x -> visible %ux%u",
+                     (unsigned)fb->framebuffer_width,
+                     (unsigned)fb->framebuffer_height,
+                     (unsigned)fb->framebuffer_bpp,
+                     (unsigned)fb->framebuffer_pitch,
+                     (unsigned)fb->framebuffer_addr,
+                     (unsigned)g_fb.width, (unsigned)g_fb.height);
             }
             break;
         }

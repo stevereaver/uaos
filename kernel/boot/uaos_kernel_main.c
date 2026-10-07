@@ -1121,6 +1121,13 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * QEMU; boot flag "nocpufreq" disables it for bisecting (UAOS-272). */
     CpuFreq_Init(mb2_info_phys);
 
+    /* NVIDIA SOR-PWM backlight (UAOS-139) — probe is read-only, so it
+     * is a silent no-op everywhere but real NVIDIA metal. */
+    {
+        extern int NV50BL_Init(void);
+        NV50BL_Init();
+    }
+
     if (VMMouse_Detect())
         kprint("[BOOT] vmmouse active (absolute mode).\n");
     else

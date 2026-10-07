@@ -18,7 +18,7 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
 | CPU | Core 2 Duo T9300, 2 cores, x86_64 | — | OK (BSP only). **UAOS-272:** idle heat came from the CPU parked at max FID/VID — the `Idle` task already `hlt`s (~100 % idle share via `taskstat`). `kernel/drivers/cpufreq.c` now drives EIST: `_PSS` from the DSDT (new `ACPI_Dsdt()` + minimal AML constant-package scan) else a synthesised same-VID high/low table, ondemand governor ticked at 100 ms from the PIT ISR, TM1 duty fallback when EIST is off/locked, `nocpufreq` boot flag to disable. **Gotcha:** `MSR_POWER_CTL` (0x1FC, C1E) does not exist on Core 2 — rdmsr #GP-panics at boot; CPUID.ECX.EST reads 0 under this firmware yet `MISC_ENABLE.16` is still writeable, so the driver trusts the MSR readback |
 | Chipset | Intel PM965 + ICH8M | `8086:2a00` | CF8 PCI config works |
 | Firmware | Apple EFI v1.1, **64-bit** | `fw_platform_size=64` | `build/bootx64.efi` usable; no BIOS unless CSM set up |
-| Video | NVIDIA G84M GeForce 8600M GT, LVDS 1440x900 | `10de:0407` @01:00.0; FB @0xc0060000 | GOP → multiboot2 FB tag should work day-1; VBIOS at `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom` (v60.84.49.03.00) |
+| Video | NVIDIA G84M GeForce 8600M GT, LVDS 1440x900 | `10de:0407` @01:00.0; FB @0xc0060000 | GOP → multiboot2 FB tag — metal-verified reaching the desktop at 1024x768; `gfxmode` now prefers `1440x900x32` (native panel mode) and `FB_Init` logs `[disp] fb: WxH@bpp … -> visible WxH` for mode recording. Backlight: `kernel/drivers/nv50bl.c` drives the SOR PWM (BAR0+0x61c084, duty 0–1025, NEW-commit — nouveau-verified contract) behind the `backlight [0-100]` shell command. VBIOS at `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom` (v60.84.49.03.00) |
 | SSD | ICH8M SATA **AHCI** | `8086:2829` @00:1f.2, ABAR 0xdb504000 | `kernel/drivers/ahci.c` — **metal-verified**: Hitachi HTS542525K9SA00 detected, RDB partitions `ahci01`/`ahci02` (DH0:/DH1:) registered, MSI vec 96 delivering, `ms_spin` TSC-calibrated (PIT ch2 gate) + IRQ handler acks PxIS/HBA IS (UAOS-224) |
 | Optical | ICH8M PATA (PCI-native) | `8086:2850` @00:1f.1, I/O BARs 0x8108/0x811c/0x8100/0x8118/0x80e0 | `kernel/drivers/ide.c` — **metal-verified**: HL-DT-ST DVDRW GSA-S10N detected on native ch0, `atapi0`/`CD0:` blockdev (UAOS-275). Three metal-only layers fixed: PCI scan was fn-0/buses-0-3-only (this ctl is fn 1); native prog-if ignored BARs (ctl never decoded 0x1F0); and `ide_identify_device` treated `status==0` as absent — the SuperDrive genuinely idles at stat=0x00, so probe now classifies by post-reset signature regs (sc01/lba01/14/eb) before touching the command block. Waits are real-ms (port-0x80 spin) + PM cap forced to D0 |
 | USB | 5× UHCI + 2× EHCI | `8086:2830–2835`, `2836`, `283a` | `kernel/drivers/uhci.c` + `usb.c` — **QEMU-verified** (enum, control, interrupt-IN); EHCI + hub support not yet implemented |
@@ -390,3 +390,32 @@ nibble-quantized OCS palette in the corrupt frame was a foreign ColorMap.
 its window is released (`Task_Exit`/`stub_RemTask`), and every emit path
 guards orphaned owners. QEMU-verified via `Demos:LeakTest` (opens a
 screen+window, exits) across repeated cycles; metal re-verify pending.
+
+## Video: native mode + backlight (2026-10-07, UAOS-139)
+
+- GOP → multiboot2 → `FB_Init` was already proven on metal (desktop
+  reached in prior USB boots) — GRUB was picking `1024x768x32`, the
+  first entry in `gfxmode`.  `scripts/grub.cfg` now lists
+  `1440x900x32` first in both EFI and legacy branches so the firmware
+  selects the LVDS panel's native mode when GOP offers it; fallbacks
+  unchanged.  `BB_MAX_W/H = 1440x1024` already covers 1440x900 — no
+  back-buffer change needed (if a mode larger than 1440x1024 arrives,
+  `FB_Init` still clamps and the desktop renders top-left).
+- `FB_Init` now emits `[disp] fb: <tag W>x<tag H>@<bpp> pitch=… addr=…
+  -> visible <W>x<H>` — the achieved-mode record for metal bring-up
+  (`sysinfo`/`version` also report the visible geometry).
+- New `kernel/drivers/nv50bl.c`: NVIDIA NV50+ backlight via the SOR
+  PWM regs (`BAR0+0x61c084+i*0x800`, bit31 NEW commit, duty 0–1025).
+  Probe scans PCI for `10de` + display class, takes BAR0 (<4G,
+  identity-mapped), picks the first SOR with nonzero CTL, and never
+  writes anything itself — only the `backlight` shell command does
+  (`backlight` reports, `backlight 60` sets).  Contract identical to
+  nouveau / mbp_nv50_bl (`~/workspaces/macbook41/mbp41-nv50-backlight/
+  okf/register-interface.md`).  QEMU-verified no-op path
+  ("no supported GPU PWM found"); smoke.sh 24/24.
+- Metal verification pending: machine unreachable on
+  192.168.10.149/.176 at change time.  On next USB boot check the
+  `fb:` klog line for 1440x900 and try `backlight 50`.
+- Deferred per card scope: VBIOS int10 (needs x86 emu or CSM boot) and
+  native G84 modesetting — both major efforts, VBIOS reference at
+  `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom`.

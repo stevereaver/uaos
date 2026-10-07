@@ -289,6 +289,7 @@ void Cmd_PrefsLocale     (NativeCmdCtx *ctx, const char *args);
 /* Tools & Commodities */
 void Cmd_Exchange        (NativeCmdCtx *ctx, const char *args);
 void Cmd_Blanker         (NativeCmdCtx *ctx, const char *args);
+void Cmd_Backlight       (NativeCmdCtx *ctx, const char *args);
 
 /* Printing */
 void Cmd_Print           (NativeCmdCtx *ctx, const char *args);

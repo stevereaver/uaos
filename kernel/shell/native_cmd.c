@@ -126,6 +126,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     /* Tools & Commodities */
     CMD ("exchange",        Cmd_Exchange    ),
     CMD ("blanker",         Cmd_Blanker     ),
+    CMD ("backlight",       Cmd_Backlight   ),
     /* Printing & CrossDOS */
     CMD ("print",           Cmd_Print       ),
     CMD ("crossdos",        Cmd_CrossDOS    ),
