@@ -130,4 +130,9 @@ still lands in the log either way.
 `IRQ_RouteInspect()` — a read-only pin→GSI decode that mirrors the
 resolver's ICH DxxIP/DxxIR + intline fallback logic without mutating
 routing state.  `IRQ_DiagIch()` snapshots the ICH PIRQ/DxxIP/DxxIR/OIC
-register set (shared with `usbdiag`).
+register set (shared with `usbdiag`). `IRQ_VecShared(vec)` returns the
+chained-handler count for a vector — 0/1 means a sole owner (a driver's
+handler is deduped per vector, so two UHCIs on one PIRQ still read 1),
+≥2 means foreign drivers fan out through `irq_shared_dispatch`; UHCI
+uses it to tell a genuinely foreign assert from the neighbour's IRQ
+when a shared-line dispatch finds no USBSTS bits latched (UAOS-294).

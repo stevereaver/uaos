@@ -380,6 +380,10 @@ static void usb_enum_task(void *arg)
 {
     (void)arg;
     for (;;) {
+        /* Emit IRQ-deferred diagnostics from task context — a klog
+         * line inside the INTx dispatch was the ~250µs per-vector
+         * worst case on MBP4,1 (UAOS-294). */
+        UHCI_DiagFlush();
         for (int i = 0; i < g_nhcs; i++) {
             UsbHc *hc = g_hcs[i];
             for (int p = 0; p < hc->nports && p < USB_MAX_PORTS; p++) {

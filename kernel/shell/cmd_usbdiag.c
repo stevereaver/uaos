@@ -107,6 +107,7 @@ static void ud_print_hc(NativeCmdCtx *ctx, int i, const UhciDiag *d)
     if (d->irq_vec >= 0) ud_dec(l, (uint32_t)d->irq_vec); else ud_s(l, "none");
     if (gsi >= 0) { ud_s(l, " gsi="); ud_dec(l, (uint32_t)gsi); }
     ud_s(l, " irq_hits="); ud_dec(l, d->irq_hits);
+    ud_s(l, " late="); ud_dec(l, d->irq_late);
     ud_s(l, " poll_usbint="); ud_dec(l, d->poll_usbint);
     PRINT(l);
 

@@ -534,6 +534,17 @@ uint8_t IRQ_PciRead8(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off)
 int IRQ_VecKind(int vec) { return (vec >= 0 && vec < 256) ? g_kind[vec] : 0; }
 int IRQ_VecGsi(int vec)  { return (vec >= 0 && vec < 256) ? g_gsi[vec] : -1; }
 
+/* Handlers chained on a vector: 0/1 = single owner (a driver's handler
+ * that services all of its devices on the line is deduped, so a UHCI
+ * pair sharing one PIRQ still counts 1), >=2 = foreign drivers fan out
+ * through irq_shared_dispatch.  Lets a handler tell "nothing latched"
+ * (genuinely foreign assert on a solely-owned line) from "the IRQ was
+ * the neighbour's" on a shared vector (UAOS-294). */
+int IRQ_VecShared(int vec)
+{
+    return (vec >= 0 && vec < 256) ? g_shared_n[vec] : 0;
+}
+
 int IRQ_VecForGsi(int gsi)
 {
     for (int v = 0; v < 256; v++)

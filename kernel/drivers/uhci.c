@@ -148,6 +148,8 @@ typedef struct {
     UhciIntr    intr[UHCI_MAX_INTR];
     int         irq_vec;
     uint32_t    irq_hits;         /* dispatches seen on our vector */
+    uint32_t    irq_late;         /* completions caught by the
+                                 * post-dispatch USBSTS recheck */
     uint32_t    poll_usbint;      /* USBSTS.USBINT found latched by poll */
     uint64_t    t_irq_armed;      /* tick when USBINTR was enabled */
     int         irq_dead_logged;  /* one-shot "irq silent" warning */
@@ -740,25 +742,62 @@ void UHCI_Poll(void)
 /* ------------------------------------------------------------------ */
 /* IRQ handler — IOC completions land here                             */
 /* ------------------------------------------------------------------ */
+
+/* Deferred diagnostics (UAOS-294): emitting a klog line inside the
+ * INTx dispatch costs a polled UART (+fbcon) write per character —
+ * measured as the ~200-250µs per-vector worst case on MBP4,1, on
+ * exactly the vectors that logged a spurious IRQ.  IRQ context only
+ * records; UHCI_DiagFlush() formats the lines from the usb-enum task. */
+static volatile uint32_t g_spur_pend[64];    /* gsi -> count to print  */
+static volatile uint32_t g_late_pend[64];    /* gsi -> recheck rescues */
+static volatile uint8_t  g_mask_pend[64];    /* gsi -> storm mask note */
+
+/* Service every HC riding `vector`: W1C-ack latched USBSTS bits, then
+ * retire completed interrupt-pipe TDs.  Returns a bitmask of the g_hc
+ * indices that had status — also used to attribute late catches. */
+static uint32_t uhci_service_vector(int vector, int count_hits)
+{
+    uint32_t serviced = 0;
+    for (int i = 0; i < g_nhc; i++) {
+        UhciHc *h = &g_hc[i];
+        if (h->irq_vec != vector) continue;
+        if (count_hits) h->irq_hits++;
+        uint16_t st = rg16(h, U_USBSTS);
+        if (st) {
+            serviced |= 1u << i;
+            w16(h, U_USBSTS, st);            /* W1C ack */
+        }
+        uhci_scan_intr(h);
+    }
+    return serviced;
+}
+
 static void uhci_irq_handler(uint64_t vector, uint64_t error_code)
 {
     (void)error_code;
-    int serviced = 0;
-    for (int i = 0; i < g_nhc; i++) {
-        UhciHc *h = &g_hc[i];
-        if (h->irq_vec != (int)vector) continue;
-        h->irq_hits++;
-        uint16_t st = rg16(h, U_USBSTS);
-        if (st) serviced = 1;
-        w16(h, U_USBSTS, st);            /* W1C ack */
-        uhci_scan_intr(h);
+    uint32_t serviced = uhci_service_vector((int)vector, 1);
+    if (!serviced) {
+        /* Recheck once before calling the dispatch spurious: on a
+         * shared line the IRQ may have been a neighbour's assert while
+         * one of our HCs latched a completion in between — service it
+         * here instead of mislabeling the race and waiting out the
+         * level re-fire (UAOS-294).  A dispatch that still finds no
+         * status bits really is a foreign assert. */
+        serviced = uhci_service_vector((int)vector, 0);
+        if (serviced) {
+            uint64_t g = vector - 32;
+            if (g < 64) g_late_pend[g]++;
+            for (int i = 0; i < g_nhc; i++)
+                if (serviced & (1u << i)) g_hc[i].irq_late++;
+        }
     }
     IRQ_EOI((int)vector);
 
     /* Shared level-triggered line: a dispatch where no HC had any
      * status bits means another function on the PIRQ asserted it and
-     * we cannot clear it.  Log occasionally; if it turns into a storm,
-     * mask the GSI rather than wedge the machine. */
+     * we cannot clear it.  Count + mask here, log from task context;
+     * if it turns into a storm, mask the GSI rather than wedge the
+     * machine. */
     if (!serviced) {
         /* Storm = rate, not lifetime total: a never-reset counter would
          * eventually mask a healthy shared line on long uptimes (UAOS-184). */
@@ -767,18 +806,55 @@ static void uhci_irq_handler(uint64_t vector, uint64_t error_code)
         uint64_t g = vector - 32;
         if (g >= 64) return;
         if (g_pit_ticks - win[g] >= 100) { win[g] = g_pit_ticks; spur[g] = 0; }
-        uint32_t t = ++total[g];
-        if (t == 1 || (t & 0x3FF) == 0) {
+        if (++spur[g] >= 20000) {          /* >= 20k/s with nothing to ack */
+            IRQ_Mask((int)g);
+            g_mask_pend[g] = 1;
+            spur[g] = 0;
+        }
+        /* UAOS-294: a vector chained with foreign handlers also fires on
+         * the neighbour's IRQs — nothing-latched there is routine, not
+         * spurious.  Only a solely-uhci vector with zero status across
+         * all HCs means a genuinely foreign assert (both UHCIs of a
+         * shared PIRQ use this one handler, deduped, so their vector
+         * stays sole-owned). */
+        if (IRQ_VecShared((int)vector) <= 1) {
+            uint32_t t = ++total[g];
+            if (t == 1 || (t & 0x3FF) == 0)
+                g_spur_pend[g] = t;
+        }
+    }
+}
+
+/* Emit the diagnostics deferred out of the INTx dispatch — called by
+ * the usb-enum task once per scan round, so polled-UART/fbcon writes
+ * never sit inside a shared-vector dispatch (UAOS-294). */
+void UHCI_DiagFlush(void)
+{
+    for (uint32_t g = 0; g < 64; g++) {
+        if (g_spur_pend[g]) {
+            uint32_t t = g_spur_pend[g];
+            g_spur_pend[g] = 0;
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: spurious irq gsi=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)g);
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", g);
             klog_puts(KLOG_USB, KLOG_WARN, " count=");
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", t);
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         }
-        if (++spur[g] >= 20000) {          /* >= 20k/s with nothing to ack */
-            IRQ_Mask((int)g);
-            klog_puts(KLOG_USB, KLOG_WARN, "uhci: masked storming gsi\n");
-            spur[g] = 0;
+        if (g_late_pend[g]) {
+            uint32_t t = g_late_pend[g];
+            g_late_pend[g] = 0;
+            klog_puts(KLOG_USB, KLOG_WARN,
+                      "uhci: completion latched mid-dispatch gsi=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", g);
+            klog_puts(KLOG_USB, KLOG_WARN, " count=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", t);
+            klog_puts(KLOG_USB, KLOG_WARN, "\n");
+        }
+        if (g_mask_pend[g]) {
+            g_mask_pend[g] = 0;
+            klog_puts(KLOG_USB, KLOG_WARN, "uhci: masked storming gsi=");
+            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", g);
+            klog_puts(KLOG_USB, KLOG_WARN, "\n");
         }
     }
 }
@@ -1052,6 +1128,7 @@ int UHCI_DiagRead(int idx, UhciDiag *d)
     d->bus = h->bus; d->dev = h->dev; d->fn = h->fn; d->io = h->io;
     d->irq_vec = h->irq_vec;
     d->irq_hits = h->irq_hits;
+    d->irq_late = h->irq_late;
     d->poll_usbint = h->poll_usbint;
     d->usbcmd  = rg16(h, U_USBCMD);
     d->usbsts  = rg16(h, U_USBSTS);

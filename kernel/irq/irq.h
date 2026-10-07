@@ -110,6 +110,7 @@ uint8_t  IRQ_PciRead8 (uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
 int  IRQ_VecKind(int vec);          /* IRQ_VEC_*               */
 int  IRQ_VecGsi(int vec);           /* GSI behind a vector, -1 */
 int  IRQ_VecForGsi(int gsi);        /* first vector on a GSI   */
+int  IRQ_VecShared(int vec);        /* handlers chained on vec; >1 = foreign drivers share it */
 
 #define IRQ_ROUTE_NONE     0
 #define IRQ_ROUTE_ICH      1   /* decoded via ICH DxxIP/DxxIR */

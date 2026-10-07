@@ -88,6 +88,28 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   re-arm while `qh->element` still points at the resume TD, and NAKs do
   not cause interrupts. EHCI companions sharing a UHCI INTx with no
   driver are silenced via PCI command INTxDIS in `UHCI_SetupIRQs`.
+- **The ~250 µs UHCI dispatch worst-case was the log line itself
+  (UAOS-294).** `tickcheck` showed v48/v53 (the two UHCI vectors, one
+  PIRQ-shared HC pair each) at ~210/251 µs max — exactly the two
+  vectors that had logged `uhci: spurious irq count=1`. The handler
+  emitted that WARN inside the dispatch; a klog line costs one polled
+  UART write (~1-4 µs on real LPC port-IO) plus an fbcon glyph paint
+  per character, so ~60 chars ≈ 200-300 µs. IRQ context now only
+  records into `g_spur_pend`/`g_late_pend`/`g_mask_pend` per-GSI slots
+  and `UHCI_DiagFlush()` formats the lines from the `usb-enum` task's
+  100 ms round. While in there: a zero-status dispatch re-reads
+  `USBSTS` once before declaring the assert foreign — a completion
+  latched mid-dispatch is serviced immediately instead of waiting for
+  the level line to re-fire (counted per-HC in `irq_late`, surfaced as
+  `late=` in `usbdiag` and a deferred `latched mid-dispatch` line);
+  zero-status on a vector shared with *foreign* handlers
+  (`IRQ_VecShared(vec) > 1`) is the neighbour's IRQ and no longer
+  counts as uhci-spurious at all (the 20k/s storm mask stays
+  unconditional); and the old handler's unconditional `USBSTS` W1C
+  write (an I/O-port write even on `st == 0`) is skipped now. The
+  remaining spurious `count=1` per line is a genuinely foreign assert
+  — typically a leftover device assert delivered the moment the GSI
+  unmasks — benign.
 - **EHCI `CONFIGFLAG` must be cleared or ghost ports appear on UHCI
   (UAOS-225).** Firmware that ran its USB2 stack leaves EHCI `CF=1`,
   keeping every root port muxed to the (driverless) EHCI — the

@@ -205,12 +205,18 @@ int  UHCI_Init(void);
 void UHCI_SetupIRQs(void);
 void UHCI_Poll(void);
 
+/* Emit diagnostics the IRQ handler deferred (spurious-IRQ counts,
+ * storm masks, mid-dispatch catches) — task context only, the usb-enum
+ * task runs it once per scan round (UAOS-294). */
+void UHCI_DiagFlush(void);
+
 /* Read-only register snapshot for C:usbdiag (UAOS-183). */
 typedef struct {
     uint8_t  bus, dev, fn, int_line, int_pin;
     uint16_t io;
     int      irq_vec;
     uint32_t irq_hits;      /* dispatches seen on our vector */
+    uint32_t irq_late;      /* completions caught on the post-dispatch recheck */
     uint32_t poll_usbint;   /* times the poll path found USBSTS.USBINT latched */
     uint16_t usbcmd, usbsts, usbintr, frnum, portsc[2];
     uint16_t pci_cmd, pci_sts, legsup;
