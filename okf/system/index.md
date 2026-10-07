@@ -226,6 +226,8 @@ The `bas` script uses `rx` for inline string manipulation (checking prefixes, tr
 
 `system/Startup-Sequence` is an Amiga-style boot script that runs after kernel initialization. It sets up assigns (`ENV:`, `T:`, `Clips:`, `REXX:`, `LIBS:`), environment variables, network startup (`C:NetStart`), and optionally executes `S:User-Startup` before loading the Workbench with `C:LoadWB`.
 
+`S:User-Startup` extends the boot shell's command search path with `gnu:usr/bin` via `path gnu:usr/bin ADD` (appended last so `C:` commands keep winning name collisions). The `path` built-in (`inst_cmd_path`, `kernel/display/shell_win.c`) replaces the whole space-separated list by default; a trailing case-insensitive `ADD` keyword appends instead. Note the search path is per-ShellInstance: newcli and telnet shells still get the hardcoded default in `kernel/display/shell_win.c` and do not inherit the User-Startup change.
+
 Configuration files in `S:` include:
 
 - `net.conf` — DHCP or static IPv4 configuration.

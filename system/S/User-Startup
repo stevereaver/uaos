@@ -1,5 +1,11 @@
 ; User-Startup — runs after scheduler is active
 ; ACE and vlink can be tested interactively from the shell prompt.
 
+; Add GNU coreutils to the command search path.  Appended last so
+; AmigaDOS commands in C: keep winning name collisions (e.g. sort).
+path gnu:usr/bin ADD
+
+alias vi vim
+
 C:telnetd
 echo "User-Startup complete. Try: ace:bin/ace or ace:bin/vlink"

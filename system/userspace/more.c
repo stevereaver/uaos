@@ -63,7 +63,9 @@ int main(int argc, const char **argv)
             put_line("--More-- [Space=page  Enter=line  q=quit]");
             long k = uaos_readkey();
             put_line("");
-            if (k == 'q' || k == 'Q' || k == 27) {
+            /* k < 0: the owning session went away (e.g. telnet drop) —
+             * no point paging output nobody will see. */
+            if (k < 0 || k == 'q' || k == 'Q' || k == 27 || k == 0x03) {
                 uaos_close((int)fd);
                 return 0;
             } else if (k == '\r' || k == '\n') {

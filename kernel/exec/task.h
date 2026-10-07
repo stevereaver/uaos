@@ -157,6 +157,13 @@ typedef struct UaosTask {
     char     task_out[256];
     int      task_out_len;
 
+    /* Input source for stdin syscalls: opaque pointer to the owning
+     * shell instance, set when a shell spawns the task and inherited by
+     * sys_spawn children.  sys_read/sys_readkey consume that shell's
+     * input queue so remote (telnet) sessions can satisfy interactive
+     * reads; NULL falls back to the PS/2 keyboard (UAOS-287). */
+    void    *key_src;
+
     /* ---- Diagnostics (taskstat / irqaudit / stack watermark) ---- */
     uint64_t cpu_ticks;         /* PIT ticks charged while running     */
     uint32_t ctx_switches;      /* times this task was dispatched      */

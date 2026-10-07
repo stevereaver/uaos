@@ -364,6 +364,27 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   refused on remote sessions.
 - `ShellWin_RemoteIsDead`/`ShellWin_RemoteKill` let the daemon detect a
   finished session and force-terminate one whose peer went away.
+  `RemoteKill` also signals the session task with `SIGF_BREAKF`
+  (UAOS-287): the foreground-child `Wait(SIGF_CHILD|SIGF_BREAKF)` loops
+  bail on `remote_dead`, so a remote shell parked inside a blocking
+  command (e.g. `more` waiting on a key) wakes and tears down instead
+  of pinning the slot.  A session task that exits while a pipe stage
+  is still running is handled by per-shell pipe state (see below).
+- Spawned-command input (UAOS-287): x86-64 tasks launched by a shell
+  carry `UaosTask::key_src` pointing at that `ShellInstance`, inherited
+  through `sys_spawn`.  `sys_read`/`sys_readkey` route through
+  `ShellWin_KeySrcGet(key_src)`, which pops this instance's `kb` ring —
+  the same queue `RemoteFeed` fills — so interactive userspace commands
+  (`more`, `dir KEYS/INTER`) read telnet keystrokes rather than the
+  physical PS/2 keyboard.  On a dead remote it returns -1 so the child
+  exits; tasks with `key_src == NULL` keep the old PS/2 path.
+- Pipe state is per-shell (UAOS-287): the pipeline input filename /
+  active flag live on the `ShellInstance` (`pipe_in_file` /
+  `pipe_in_active`) rather than globals, and the `T:pipeN` temp name is
+  derived from the shell slot index, so two shells — or a dead session's
+  abandoned pipe — can't inject a stale `T:pipe0` argument into another
+  shell's next command.  `NativeCmdCtx.pipe_file` and the argv
+  augmentation in the X64-bin launcher both read the instance fields.
 
 ## Debug Logging
 

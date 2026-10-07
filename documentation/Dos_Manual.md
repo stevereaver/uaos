@@ -129,12 +129,13 @@ Remove a local environment variable.
 UAOS> unset greeting
 ```
 
-### `path [dirs...]`
-Show or set the command search path. The path is a space-separated list of directories searched when a command is not a built-in or native binary.
+### `path [dirs...] [ADD]`
+Show or set the command search path. The path is a space-separated list of directories searched when a command is not a built-in or native binary. A trailing `ADD` keyword appends the directories to the existing path instead of replacing it.
 
 ```
-UAOS> path           ; show current path
-UAOS> path C: S:     ; set path to C: and S:
+UAOS> path                 ; show current path
+UAOS> path C: S:           ; set path to C: and S:
+UAOS> path gnu:usr/bin ADD ; append gnu:usr/bin to the path
 ```
 
 ### `setenv <name> <value>`

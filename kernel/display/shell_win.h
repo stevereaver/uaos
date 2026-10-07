@@ -106,4 +106,14 @@ void  ShellWin_RemoteSetEcho(void *session, int on);
  * usock_cleanup_task()/Telnetd_CleanupTask(). */
 void  ShellWin_RemoteCleanupTask(void *task);
 
+/* sys_read/sys_readkey support: tasks spawned by a shell carry a key_src
+ * back-pointer (UaosTask.key_src) so their stdin reads consume the same
+ * input queue the shell's line editor uses — this is what lets
+ * interactive commands (more, dir INTER/KEYS) work over telnet, where
+ * input never reaches the PS/2 driver.  Returns the queued key byte
+ * (0..255), -1 when the queue is empty, or -2 when the owning session is
+ * gone and the caller must abandon the wait rather than hang on a
+ * channel nobody will feed (UAOS-287). */
+int   ShellWin_KeySrcGet(void *key_src);
+
 #endif

@@ -123,6 +123,10 @@ AmigaDOS-style script template arguments are implemented across two files:
 
 Backtick substitution applies everywhere `expand_vars()` runs — command lines, `echo` arguments, and `IF` condition strings — but not in the prompt string (`expand_prompt()` is separate).
 
+### Pipes (`|`)
+
+`a | b` redirects `a`'s stdout into a temp file `T:pipe<S>` (where `<S>` is the shell slot index, so temp names never collide across shells) and then runs `b` with that file as its input. For a native command `b`, the filename is passed via `NativeCmdCtx.pipe_file`; for a userspace X64 binary it is appended to argv so commands that take a `FILE` template arg (e.g. `C:more`) read it positionally. The active-input state (`pipe_in_active`/`pipe_in_file`) lives on the `ShellInstance`, not in globals (UAOS-287): previously `g_pipe_in_active`/`g_pipe_in_file` survived an interrupted pipeline, so a `more` that blocked forever on a telnet session left the flag set and the *next* command in any shell got `T:pipe0` appended to its argv — observed as `dir` printing `Directory of T:pipe0`.
+
 ### Quote Stripping & Quoted Tokens
 
 Both template tokenizers (`tokenise()` in `cmd_template.c` and `uaos_tmpl_tokenise()` in `uaos_template.h`) treat `"..."` as a single token that may contain spaces, strip the quotes, and mark the token `quoted` so it is exempt from keyword matching (UAOS-110). This makes the documented AmigaDOS escape work — `echo "FOR x=1 TO 3"` prints literally instead of `TO` binding `3` as Echo's `TO/K` destination. A quote pair that happens to fill a whole whitespace-delimited word is still stripped and marked quoted. The `SET` built-in (`inst_cmd_set` in `shell_win.c`) strips one layer of surrounding double-quotes as before.

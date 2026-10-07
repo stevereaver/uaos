@@ -208,6 +208,14 @@ struct ShellInstance {
      * dispatch entry check would otherwise be consumed without the loop
      * ever noticing, so callers re-check this after each dispatch. */
     volatile int dispatch_broken;
+
+    /* Pipe (`|`) staging — per-shell so a wedged or concurrent pipeline
+     * cannot leak the armed flag (and its stale T:pipe file name) into
+     * other shells' spawned-command argv (UAOS-287). */
+    int          pipe_in_active;
+    char         pipe_in_file[64];
+    int          pipe_next_idx;
+
     UaosTask    *task;           /* the shell task running this instance */
 };
 typedef struct ShellInstance ShellInstance;
@@ -775,9 +783,6 @@ typedef struct {
 
 static PipeBuf g_pipe_buf;
 static int     g_pipe_active = 0;
-static int     g_pipe_next_idx = 0;
-static char    g_pipe_in_file[64];
-static int     g_pipe_in_active = 0;
 
 /* -------------------------------------------------------------------------
  * Background job support
@@ -1059,8 +1064,11 @@ static void inst_print(ShellInstance *s, const char *line)
         _ser_putc('\n');
     }
 
-    /* If stdout is redirected, write to file instead of shell history */
-    if (g_redir.active) {
+    /* If stdout is redirected, write to file instead of shell history.
+     * The redirect belongs to a specific shell (g_redir.shell) — without
+     * the match, lines printed by *other* shells mid-redirect would be
+     * captured into the file and lost from their own output. */
+    if (g_redir.active && g_redir.shell == s) {
         if (g_redir.null) return;
         VFS_Write(&g_redir.fh, (const uint8_t *)line, (uint32_t)slen(line));
         uint8_t nl = '\n';
@@ -1097,7 +1105,7 @@ static void inst_cmd_help(ShellInstance *s)
     inst_print(s, "  unalias <name>     remove an alias");
     inst_print(s, "  set [name val]     set/list local environment variable");
     inst_print(s, "  unset <name>       remove local environment variable");
-    inst_print(s, "  path [dirs...]     show/set command search path");
+    inst_print(s, "  path [dirs..] [ADD] show/set/add command search path");
     inst_print(s, "");
     inst_print(s, "C: binaries (type 'which <cmd>' to locate):");
     inst_print(s, "  version            OS version info");
@@ -2909,6 +2917,40 @@ static void inst_cmd_path(ShellInstance *s, const char *arg)
         return;
     }
 
+    /* AmigaDOS form "path <dir...> ADD" appends to the existing path.
+     * Detect a trailing case-insensitive ADD keyword. */
+    char argbuf[256];
+    scopy(argbuf, arg, 256);
+    int alen = slen(argbuf);
+    while (alen > 0 && argbuf[alen - 1] == ' ') argbuf[--alen] = '\0';
+
+    int add = 0;
+    if (alen >= 3) {
+        char *kw = argbuf + alen - 3;
+        if (seq_ci(kw, "add") && (kw == argbuf || kw[-1] == ' ')) {
+            add = 1;
+            while (kw > argbuf && kw[-1] == ' ') kw--;
+            *kw = '\0';
+        }
+    }
+
+    if (add) {
+        int dlen = slen(argbuf);
+        int cur = slen(s->path);
+        if (dlen == 0) {
+            inst_print(s, "Usage: path <dir...> ADD");
+            return;
+        }
+        if (cur + (cur ? 1 : 0) + dlen >= 256) {
+            inst_print(s, "path: search path too long");
+            return;
+        }
+        if (cur) scat(s->path, " ", 256);
+        scat(s->path, argbuf, 256);
+        inst_print(s, "Added to command search path.");
+        return;
+    }
+
     /* Set new path - copy the argument directly */
     scopy(s->path, arg, 256);
 
@@ -4252,7 +4294,7 @@ static NativeCmdCtx shell_make_ctx(ShellInstance *s)
     ctx.change_task_pri = shell_change_task_pri;
     ctx.quit_script    = shell_quit_script;
     ctx.break_pending  = shell_break_pending;
-    ctx.pipe_file      = g_pipe_in_active ? g_pipe_in_file : NULL;
+    ctx.pipe_file      = s->pipe_in_active ? s->pipe_in_file : NULL;
     ctx.out_redirect   = g_redir.active ? g_redir.path : NULL;
     return ctx;
 }
@@ -4369,9 +4411,9 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             if (args && *args) {
                 while (*args && ai < 254) m68k_argstore[ai++] = *args++;
             }
-            if (g_pipe_in_active && ai < 254) {
+            if (s->pipe_in_active && ai < 254) {
                 if (ai > 0) m68k_argstore[ai++] = ' ';
-                const char *pf = g_pipe_in_file;
+                const char *pf = s->pipe_in_file;
                 while (*pf && ai < 254) m68k_argstore[ai++] = *pf++;
             }
             m68k_argstore[ai] = '\0';
@@ -4418,6 +4460,12 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                 for (;;) {
                     uint32_t got = Wait(SIGF_CHILD | SIGF_BREAKF);
                     if (got & SIGF_CHILD) break;
+                    /* Remote session died under us (peer gone): stop
+                     * waiting — a child blocked on input unblocks itself
+                     * via the dead key_src and exits on its own.  Without
+                     * this check the session task parks here forever,
+                     * pinning the slot and mid-command state (UAOS-287). */
+                    if (s->remote && s->remote_dead) break;
                     /* Ctrl-C while a foreground binary runs: forward the
                      * break to the child — AmigaOS semantics, programs
                      * poll CheckSignal(SIGBREAKF_CTRL_C) and abort.  The
@@ -4452,9 +4500,9 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
             if (args && *args) {
                 while (*args && ai < 254) x64_argstore[ai++] = *args++;
             }
-            if (g_pipe_in_active && ai < 254) {
+            if (s->pipe_in_active && ai < 254) {
                 if (ai > 0) x64_argstore[ai++] = ' ';
-                const char *pf = g_pipe_in_file;
+                const char *pf = s->pipe_in_file;
                 while (*pf && ai < 254) x64_argstore[ai++] = *pf++;
             }
             x64_argstore[ai] = '\0';
@@ -4493,6 +4541,11 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
              * Task_Exit reclaims them when it dies. */
             ELF64_HeapOwn(t, (void *)(uintptr_t)result.image_base);
             ELF64_HeapOwn(t, (void *)(uintptr_t)result.initial_rsp);
+            /* Route the child's stdin reads (sys_read/sys_readkey) through
+             * this shell's input queue — over telnet that queue is the only
+             * place keystrokes land, and a PS/2-only read would wedge the
+             * command and the session behind it (UAOS-287). */
+            t->key_src = s;
             /* Wait for the foreground X64 command to finish before
              * returning to the prompt, so output appears before the
              * next prompt line. When the shell is not running as a
@@ -4513,6 +4566,10 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                 for (;;) {
                     uint32_t got = Wait(SIGF_CHILD | SIGF_BREAKF);
                     if (got & SIGF_CHILD) break;
+                    /* Remote session died under us — stop waiting; the
+                     * child's key_src reads return dead-session and it
+                     * exits on its own (UAOS-287). */
+                    if (s->remote && s->remote_dead) break;
                     /* Ctrl-C — forward the break to the child task; the
                      * flag stays set so the enclosing loop stops too. */
                     Signal(t, SIGF_BREAKF);
@@ -4564,9 +4621,9 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
         if (args && *args) {
             while (*args && ai < 254) m68k_argstore[ai++] = *args++;
         }
-        if (g_pipe_in_active && ai < 254) {
+        if (s->pipe_in_active && ai < 254) {
             if (ai > 0) m68k_argstore[ai++] = ' ';
-            const char *pf = g_pipe_in_file;
+            const char *pf = s->pipe_in_file;
             while (*pf && ai < 254) m68k_argstore[ai++] = *pf++;
         }
         m68k_argstore[ai] = '\0';
@@ -5461,12 +5518,17 @@ static void inst_dispatch(ShellInstance *s, const char *line)
     int pipe_count = parse_pipes(cmd_only, pipe_segs);
     if (pipe_count > 1) {
         char pipe_files[MAX_PIPE_SEGMENTS][64];
-        int start_idx = g_pipe_next_idx;
+        int start_idx = s->pipe_next_idx;
         for (int i = 0; i < pipe_count - 1; i++) {
             char path[64];
+            /* Temp names carry the shell slot so pipelines running on
+             * concurrent shells can never collide on T:pipe0. */
             scopy(path, "T:pipe", 64);
             char idx_str[8];
-            uint_to_dec_s((uint32_t)g_pipe_next_idx++, idx_str, 8);
+            uint_to_dec_s((uint32_t)s->index, idx_str, 8);
+            scat(path, idx_str, 64);
+            scat(path, "_", 64);
+            uint_to_dec_s((uint32_t)s->pipe_next_idx++, idx_str, 8);
             scat(path, idx_str, 64);
             scopy(pipe_files[i], path, 64);
             if (!VFS_Open(&g_redir.fh, path, VFS_WRITE | VFS_CREATE | VFS_TRUNC)) {
@@ -5487,16 +5549,16 @@ static void inst_dispatch(ShellInstance *s, const char *line)
             VFS_Close(&g_redir.fh);
         }
         /* Run last segment with pipe input */
-        g_pipe_in_active = 1;
-        scopy(g_pipe_in_file, pipe_files[pipe_count - 2], 64);
+        s->pipe_in_active = 1;
+        scopy(s->pipe_in_file, pipe_files[pipe_count - 2], 64);
         run_cmd(s, pipe_segs[pipe_count - 1]);
-        g_pipe_in_active = 0;
+        s->pipe_in_active = 0;
         check_failat(s);
         /* Clean up temp files */
         for (int i = 0; i < pipe_count - 1; i++) {
             VFS_Delete(pipe_files[i]);
         }
-        g_pipe_next_idx = start_idx; /* reuse indices */
+        s->pipe_next_idx = start_idx; /* reuse indices */
         return;
     }
 
@@ -6287,6 +6349,9 @@ static ShellInstance *open_shell(int stagger)
     s->remote_token = 0;
     s->break_req = 0;
     s->dispatch_broken = 0;
+    s->pipe_in_active = 0;
+    s->pipe_in_file[0] = '\0';
+    s->pipe_next_idx = 0;
     s->task = NULL;
     scopy(s->cwd, "RAM:", 64);
     /* Default AmigaDOS-style search path */
@@ -6371,6 +6436,9 @@ static ShellInstance *open_remote_shell(int sock, uint32_t gen)
         s->quit_flag = 0;
         s->break_req = 0;
         s->dispatch_broken = 0;
+        s->pipe_in_active = 0;
+        s->pipe_in_file[0] = '\0';
+        s->pipe_next_idx = 0;
         s->task = NULL;
         scopy(s->cwd, "RAM:", 64);
         scopy(s->path, "C: S: SYS:Tools SYS:Utilities SYS:Prefs", 256);
@@ -6610,6 +6678,25 @@ void ShellWin_RemoteKill(void *session)
     ShellInstance *s = remote_from_handle(session);
     if (!s) return;
     s->remote_dead = 1;
+    /* Wake a session parked in the foreground-child Wait — the
+     * remote_dead check there unwinds dispatch (closing redirects and
+     * clearing pipe state) before the task exits.  A bare flag set left
+     * it blocked forever (UAOS-287). */
+    if (s->task) Signal(s->task, SIGF_BREAKF);
+}
+
+int ShellWin_KeySrcGet(void *key_src)
+{
+    ShellInstance *s = (ShellInstance *)key_src;
+    if (!s) return -2;
+    if (s->remote) {
+        if (s->remote_dead || !s->remote_inuse) return -2;
+    } else if (!s->task || s->task->tc_State == TASK_REMOVED) {
+        /* Owning console shell exited — nobody will feed this queue. */
+        return -2;
+    }
+    char c;
+    return shell_kb_dequeue(s, &c) ? (int)(unsigned char)c : -1;
 }
 
 void ShellWin_RemoteSetEcho(void *session, int on)

@@ -131,9 +131,9 @@ Native x86-64 userspace tasks have access to a Workbench-style widget toolkit vi
 
 **Userspace API**: `uaos_gui_init()` binds a GUI context to a window handle. `uaos_gui_create_gadget()` allocates widgets from a `uaos_newgadget_t` descriptor. `uaos_gui_handle_event()` dispatches mouse/keyboard events to the appropriate widget (button press, checkbox toggle, radio group selection, slider drag, string cursor/edit). `uaos_gui_poll()` is a combined event-loop helper that polls, handles, and redraws. `uaos_gui_get_int()`/`uaos_gui_set_int()` and `uaos_gui_get_str()`/`uaos_gui_set_str()` query and update widget state. `uaos_gui_draw_group()` renders a recessed frame with title text for visual grouping.
 
-### stdin read (`sys_read`, fd=0)
+### stdin read (`sys_read`, fd=0) and `sys_readkey`
 
-`sys_read` blocks until a newline is received from the PS/2 keyboard. When no key is available it calls `Task_SleepTicks(1)`, which parks the task on the wait queue and context-switches away immediately (UAOS-169); `Task_WakeTimers()` re-readies it at the next tick and it re-checks for input when re-dispatched.
+Both syscalls take their input from the task's **key source** — `UaosTask::key_src`, an opaque pointer to the owning `ShellInstance` set when the shell spawns the task and inherited by `sys_spawn` children (UAOS-287). With a key source, `sys_read`/`sys_readkey` drain that shell's keyboard ring via `ShellWin_KeySrcGet()`, so remote (telnet) sessions — where `ShellWin_RemoteFeed()` enqueues NVT-decoded bytes — can satisfy interactive reads (`more`, `dir KEYS/INTER`, stdin filters). `ShellWin_KeySrcGet` returns -1 when the owning remote session is dead, letting blocked commands exit instead of hanging forever; `C:more` treats `<0` and `0x03` (Ctrl-C) as quit. With no key source (key_src NULL) the syscalls fall back to the PS/2 keyboard as before. When no key is available the wait calls `Task_SleepTicks(1)`, which parks the task on the wait queue and context-switches away immediately (UAOS-169); `Task_WakeTimers()` re-readies it at the next tick and it re-checks for input when re-dispatched.
 
 ### Trap Gate for Vector 0x80
 

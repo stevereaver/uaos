@@ -12,6 +12,7 @@
 #include "elf64_loader.h"
 #include "../irq/ps2kbd.h"
 #include "../boot/kprint.h"
+#include "../display/shell_win.h"
 #include "../display/user_window.h"
 #include "../net/usock.h"
 #include "../net/ntp.h"
@@ -251,10 +252,27 @@ static int sys_read(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     if (fd != 0)
         return -1;   /* EBADF */
 
+    /* Prefer the owning shell's input queue when the task has one —
+     * telnet sessions never touch the PS/2 driver, so a shell child that
+     * read stdin from PS2Kbd would block forever on a remote session
+     * (UAOS-287). */
+    UaosTask *self = Task_Current();
+    void *key_src = self ? self->key_src : NULL;
+
     size_t i = 0;
     for (;;) {
-        if (PS2Kbd_HasChar()) {
-            char c = PS2Kbd_GetChar();
+        int c = -1;
+        if (key_src) {
+            c = ShellWin_KeySrcGet(key_src);
+            if (c == -2) {           /* owning session is gone */
+                if (i < max)
+                    buf[i] = '\0';
+                return (int)i;
+            }
+        } else if (PS2Kbd_HasChar()) {
+            c = (unsigned char)PS2Kbd_GetChar();
+        }
+        if (c >= 0) {
             if (c == '\n' || c == '\r') {
                 if (i < max)
                     buf[i] = '\0';
@@ -265,7 +283,7 @@ static int sys_read(uint64_t rdi, uint64_t rsi, uint64_t rdx)
                 continue;
             }
             if (c >= 32 && c < 127 && i < max) {
-                buf[i++] = c;
+                buf[i++] = (char)c;
             }
         }
         /* Block until the next tick, then re-check.  Task_SleepTicks
@@ -451,6 +469,7 @@ static int sys_spawn(uint64_t rdi, uint64_t rsi, uint64_t rdx)
      * reclaims them when it dies. */
     ELF64_HeapOwn(child, (void *)(uintptr_t)res.image_base);
     ELF64_HeapOwn(child, (void *)(uintptr_t)res.initial_rsp);
+    child->key_src = parent ? parent->key_src : NULL;
 
     return (int)(child - g_tasks);   /* simple task index as PID */
 }
@@ -797,12 +816,23 @@ static int sys_readkey(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     (void)rdi; (void)rsi; (void)rdx;
 
+    /* Tasks spawned by a shell read the shell's input queue so remote
+     * (telnet) sessions work — their keystrokes arrive via
+     * ShellWin_RemoteFeed and never touch the PS/2 driver (UAOS-287). */
+    UaosTask *self = Task_Current();
+    void *key_src = self ? self->key_src : NULL;
+
     /* Block until a key is available.  Task_SleepTicks parks the task
      * on the wait queue between polls so a blocked reader does not
      * stay permanently runnable and starve the -128 Idle task. */
     for (;;) {
-        if (PS2Kbd_HasChar())
+        if (key_src) {
+            int k = ShellWin_KeySrcGet(key_src);
+            if (k >= 0) return k;
+            if (k == -2) return -1;   /* owning session went away */
+        } else if (PS2Kbd_HasChar()) {
             return (int)(unsigned char)PS2Kbd_GetChar();
+        }
         Task_SleepTicks(1);
     }
 }

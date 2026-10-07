@@ -312,7 +312,10 @@ Session watchdog and logging (UAOS-60/61): each pump tracks `last_rx`
 sends `IAC AYT` as a liveness probe; at ~10 min
 (`TELNETD_IDLE_TICKS`) it closes the socket and kills the shell via
 `ShellWin_RemoteKill()`, so a peer that vanishes without FIN/RST can no
-longer pin a remote slot forever.  Connects and disconnects are logged
+longer pin a remote slot forever.  `RemoteKill` signals the session
+task with `SIGF_BREAKF` so a shell parked in a foreground-child `Wait`
+(e.g. `more` blocking on a keypress) actually wakes and exits
+(UAOS-287).  Connects and disconnects are logged
 to klog/serial with peer IP:port and session duration, and `telnetd
 STATUS` lists live sessions.  Because the daemon is unauthenticated,
 remote sessions are also policy-guarded at the shell's `run_cmd` choke
