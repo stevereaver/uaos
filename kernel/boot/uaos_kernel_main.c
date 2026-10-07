@@ -22,6 +22,7 @@
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
 #include "../irq/vmmouse.h"
+#include "../irq/pit.h"
 #include "../irq/rtc.h"
 #include "../irq/virtio_blk.h"
 #include "../irq/virtio_scsi.h"
@@ -914,6 +915,11 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     APIC_Init();
     kprint("[BOOT] Initialising IRQ routing (ACPI/IO-APIC)...\n");
     IRQ_Init(mb2_info_phys);
+
+    /* Snapshot the hardware inventory used by showconfig/version — the
+     * mb2 info pointer isn't retained anywhere else, so RAM total and
+     * the PCI display device are captured here while it's at hand. */
+    SysInfo_Init(mb2_info_phys);
     /* PIT is programmed and unmasked later, after its handler is registered */
 
     /* Register the custom chip-window page fault handler (vector 14).
@@ -995,10 +1001,12 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         Splash_Dwell();
     }
 
-    /* Program PIT at 100 Hz unconditionally — g_pit_ticks is used for all
-     * kernel timing (network poll pacing, yield_ms, ntp guards) and must
-     * tick regardless of whether a framebuffer is present. */
-    kprint("[BOOT] Programming PIT (100 Hz)...\n");
+    /* Program PIT at UAOS_PIT_HZ unconditionally — g_pit_ticks is used
+     * for all kernel timing (network poll pacing, yield_ms, ntp guards)
+     * and must tick regardless of whether a framebuffer is present. */
+    kprint("[BOOT] Programming PIT (");
+    kprintdec(UAOS_PIT_HZ);
+    kprint(" Hz)...\n");
     int pit_vec;
     {
         pit_vec = IRQ_AttachISA(0, PIT_IRQHandler, "PIT timer");
@@ -1006,7 +1014,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
             kprint("[BOOT] WARNING: PIT IRQ0 not routed\n");
     }
     {
-        uint16_t divisor = (uint16_t)(1193180UL / 100UL);
+        uint16_t divisor = (uint16_t)(1193180UL / UAOS_PIT_HZ);
         outb(0x43, 0x36);
         outb(0x40, (uint8_t)(divisor & 0xFF));
         outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
@@ -1076,16 +1084,28 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         g_fb_width_irq  = g_fb.width;
         g_fb_height_irq = g_fb.height;
 
-        kprint("[BOOT] Initialising PS/2 mouse...\n");
-        IRQ_AttachISA(12, PS2Mouse_IRQHandler, "PS/2 mouse");
-        PS2Mouse_Init();
-        Cursor_Init(g_mouse.x, g_mouse.y);
-        kprint("[BOOT] PS/2 mouse active.\n");
+        /* Probe the i8042 before claiming it: USB-only machines
+         * (MacBookPro4,1) have no controller at all — the old code ran
+         * the init sequence against a floating bus and then announced
+         * "PS/2 mouse active" anyway. */
+        if (PS2Ctl_Detect()) {
+            kprint("[BOOT] Initialising PS/2 mouse...\n");
+            IRQ_AttachISA(12, PS2Mouse_IRQHandler, "PS/2 mouse");
+            PS2Mouse_Init();
+            kprint("[BOOT] PS/2 mouse active.\n");
 
-        kprint("[BOOT] Initialising PS/2 keyboard...\n");
-        IRQ_AttachISA(1, PS2Kbd_IRQHandler, "PS/2 keyboard");
-        PS2Kbd_Init();
-        kprint("[BOOT] PS/2 keyboard active.\n");
+            kprint("[BOOT] Initialising PS/2 keyboard...\n");
+            IRQ_AttachISA(1, PS2Kbd_IRQHandler, "PS/2 keyboard");
+            PS2Kbd_Init();
+            kprint("[BOOT] PS/2 keyboard active.\n");
+        } else {
+            /* Keep the cursor centred — USB HID/bcm5974 still feeds it */
+            g_mouse.x = (int)(g_fb_width_irq  >> 1);
+            g_mouse.y = (int)(g_fb_height_irq >> 1);
+            kprint("[BOOT] No i8042 controller — PS/2 absent, "
+                   "input is USB HID only.\n");
+        }
+        Cursor_Init(g_mouse.x, g_mouse.y);
 
         kprint("[BOOT] Initialising RTC clock...\n");
         IRQ_AttachISA(8, RTC_IRQHandler, "RTC");

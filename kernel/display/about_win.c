@@ -13,6 +13,7 @@
 #include "about_win.h"
 #include "wm.h"
 #include "framebuffer.h"
+#include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -136,9 +137,21 @@ static void about_draw(int wx, int wy, int ww, int wh)
     res[ri++] = 'b'; res[ri++] = 'p'; res[ri++] = 'p'; res[ri] = '\0';
     draw_row(cx, &y, cw, "Display:   ", res, lc, vc, bg);
 
-    draw_row(cx, &y, cw, "RAM:       ", "512 MB", lc, vc, bg);
+    {
+        char ram[32];
+        uint64_t bytes = SysInfo_RamBytes();
+        uint_to_dec((uint32_t)(bytes / (1024 * 1024)), num, 12);
+        int i = 0;
+        for (ni = 0; num[ni]; ni++) ram[i++] = num[ni];
+        ram[i++] = ' '; ram[i++] = 'M'; ram[i++] = 'B'; ram[i] = '\0';
+        draw_row(cx, &y, cw, "RAM:       ", bytes ? ram : "unknown", lc, vc, bg);
+    }
     draw_row(cx, &y, cw, "Emulation: ", "M68k JIT thunk dispatch", lc, vc, bg);
-    draw_row(cx, &y, cw, "Input:     ", "PS/2 mouse + keyboard (IRQ1/12)", lc, vc, bg);
+    {
+        char inp[64];
+        SysInfo_InputDesc(inp, sizeof(inp));
+        draw_row(cx, &y, cw, "Input:     ", inp, lc, vc, bg);
+    }
 
     /* ── Separator ─────────────────────────────────────────── */
     FB_DrawHLine(cx + PAD, y, cw - PAD * 2, WB_DARK_GREY);

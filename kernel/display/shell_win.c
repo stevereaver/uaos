@@ -37,6 +37,7 @@
 #include "../irq/ps2mouse.h"
 #include "../irq/ps2kbd.h"
 #include "../irq/irq.h"
+#include "../dbg/diag.h"
 #include "../exec/task.h"
 #include "../klog/klog.h"
 #include <stdint.h>
@@ -1154,60 +1155,49 @@ static void inst_cmd_version(ShellInstance *s)
     inst_print(s, "Ultimate Amiga OS  v0.1.0-dev");
     inst_print(s, "Kernel: x86_64 ELF64, Multiboot2, long mode");
 
-    char res[48];
-    scopy(res, "Display: ", 48);
+    char res[96];
+    scopy(res, "Display: ", 96);
     char num[12];
-    uint_to_dec_s(g_fb.width,  num, 12); scat(res, num, 48);
-    scat(res, "x", 48);
-    uint_to_dec_s(g_fb.height, num, 12); scat(res, num, 48);
-    scat(res, " ", 48);
-    uint_to_dec_s(g_fb.bpp,   num, 12); scat(res, num, 48);
-    scat(res, "bpp linear framebuffer", 48);
+    uint_to_dec_s(g_fb.width,  num, 12); scat(res, num, 96);
+    scat(res, "x", 96);
+    uint_to_dec_s(g_fb.height, num, 12); scat(res, num, 96);
+    scat(res, " ", 96);
+    uint_to_dec_s(g_fb.bpp,   num, 12); scat(res, num, 96);
+    scat(res, "bpp linear framebuffer", 96);
     inst_print(s, res);
 
-    inst_print(s, "Input: PS/2 keyboard + mouse, IRQ1/IRQ12");
+    char inp[64];
+    SysInfo_InputDesc(inp, sizeof(inp));
+    scopy(res, "Input: ", 96);
+    scat(res, inp, 96);
+    inst_print(s, res);
+}
+
+/* Emit shim for the diag dump — inst_print is (ShellInstance *, line). */
+static void shell_diag_emit(void *ctx, const char *line)
+{
+    inst_print((ShellInstance *)ctx, line);
 }
 
 static void inst_cmd_showconfig(ShellInstance *s)
 {
-    char line[MAX_LINE_LEN];
-    char num[16];
-
-    /* PROCESSOR */
-    inst_print(s, "PROCESSOR:    CPU x86_64 (64-bit, long mode)");
-
-    /* CUSTOM CHIPS — equivalent: our display/input subsystem */
-    scopy(line, "DISPLAY:      ", MAX_LINE_LEN);
-    uint_to_dec_s(g_fb.width,  num, 16); scat(line, num, MAX_LINE_LEN);
-    scat(line, "x", MAX_LINE_LEN);
-    uint_to_dec_s(g_fb.height, num, 16); scat(line, num, MAX_LINE_LEN);
-    scat(line, ", ", MAX_LINE_LEN);
-    uint_to_dec_s(g_fb.bpp,    num, 16); scat(line, num, MAX_LINE_LEN);
-    scat(line, "bpp linear framebuffer (VirtIO VGA)", MAX_LINE_LEN);
-    inst_print(s, line);
-
-    /* VERSION */
-    inst_print(s, "VERS:         UAOS v0.1.0-dev, Kernel build 1, Exec 1.0");
-
-    /* RAM — describe regions in AmigaDOS ShowConfig style */
-    inst_print(s, "RAM:");
-    inst_print(s, "      Node type $A, Attributes $005 (FAST), at $0000000-$1FFFFFFF (512.0 meg)");
-    inst_print(s, "      Node type $A, Attributes $703 (CHIP), at $0000000-$000FFFFF (~1.0 meg)");
-
-    /* BOARDS / expansion — list hardware we know about */
-    inst_print(s, "BOARDS:");
-    inst_print(s, "  Board (UEFI GOP framebuffer):  VirtIO VGA, linear");
-    scopy(line, "  Board (PS/2 controller):       IRQ1 keyboard, IRQ12 mouse", MAX_LINE_LEN);
-    inst_print(s, line);
-    inst_print(s, "  Board (APIC/PIC):              8259A-compat PIC, APIC mapped $FEE00000");
-    inst_print(s, "  Board (PIT timer):             8253/8254, 10 Hz, IRQ0");
-    inst_print(s, "  Board (UART):                  16550A COM1 $3F8, IRQ4");
-    inst_print(s, "  Board (RTC):                   MC146818 CMOS RTC, IRQ8");
+    SysInfo_DumpConfig(s, shell_diag_emit);
 }
 
 static void inst_cmd_mem(ShellInstance *s)
 {
-    inst_print(s, "RAM:  512 MB (QEMU)");
+    char line[MAX_LINE_LEN];
+    char num[16];
+    scopy(line, "RAM:  ", MAX_LINE_LEN);
+    uint64_t ram = SysInfo_RamBytes();
+    if (ram) {
+        uint_to_dec_s((uint32_t)(ram / (1024 * 1024)), num, 16);
+        scat(line, num, MAX_LINE_LEN);
+        scat(line, " MB", MAX_LINE_LEN);
+    } else {
+        scat(line, "size unknown", MAX_LINE_LEN);
+    }
+    inst_print(s, line);
     inst_print(s, "Kernel load: 0x0000000000100000");
     inst_print(s, "Framebuffer: mapped (GOP physical address)");
     inst_print(s, "Stack: 16 KB (bootstrap), no heap allocator yet");

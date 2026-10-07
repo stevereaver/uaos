@@ -229,4 +229,10 @@ void USB_RegisterClass(usb_class_probe_fn probe);
 /* Number of enumerated devices. */
 int  USB_DeviceCount(void);
 
+/* Bound HID-class interfaces (boot-protocol keyboard/mouse), for
+ * inventory reporting — 0/0 on machines with no USB input. */
+int  USBHid_DeviceCount(void);
+int  USBHid_KbdCount(void);
+int  USBHid_MouseCount(void);
+
 #endif /* UAOS_USB_H */

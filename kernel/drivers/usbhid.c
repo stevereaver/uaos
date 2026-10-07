@@ -101,6 +101,12 @@ typedef struct {
 #define HID_MAX_DEVS 8
 static HidDev g_hid[HID_MAX_DEVS];
 static int    g_nhid = 0;
+static int    g_nhid_kbd = 0;
+static int    g_nhid_mouse = 0;
+
+int USBHid_DeviceCount(void) { return g_nhid; }
+int USBHid_KbdCount(void)    { return g_nhid_kbd; }
+int USBHid_MouseCount(void)  { return g_nhid_mouse; }
 
 extern unsigned int g_fb_width_irq;
 extern unsigned int g_fb_height_irq;
@@ -254,6 +260,7 @@ static int hid_probe(UsbIf *ifc)
         return 0;
     }
 
+    if (is_kbd) g_nhid_kbd++; else g_nhid_mouse++;
     klog_puts(KLOG_USB, KLOG_DEBUG, is_kbd ? "hid: kbd" : "hid: mouse");
     klog_puts(KLOG_USB, KLOG_DEBUG, " on if ");
     klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", ifnum);

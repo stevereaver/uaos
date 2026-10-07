@@ -81,6 +81,45 @@ int Mb2_CmdlineHas(uint32_t mb2_info_phys, const char *tok)
 
 /* ------------------------------------------------------------------ */
 
+typedef struct __attribute__((packed)) {
+    uint32_t type;          /* 6 */
+    uint32_t size;
+    uint32_t entry_size;
+    uint32_t entry_version;
+    /* array of { u64 base, u64 length, u32 type, u32 reserved } follows */
+} Mb2TagMmap;
+
+uint64_t Mb2_TotalRAM(uint32_t mb2_info_phys)
+{
+    if (!mb2_info_phys) return 0;
+
+    Mb2InfoHdr *hdr = (Mb2InfoHdr *)(uintptr_t)mb2_info_phys;
+    const uint8_t *p   = (const uint8_t *)(uintptr_t)(mb2_info_phys + 8);
+    const uint8_t *end = (const uint8_t *)(uintptr_t)(mb2_info_phys + hdr->total_size);
+
+    while (p < end) {
+        Mb2TagHdr *tag = (Mb2TagHdr *)p;
+        if (tag->type == 0 || tag->size < 8) break;
+
+        if (tag->type == 6) {                    /* memory map */
+            Mb2TagMmap *mm = (Mb2TagMmap *)p;
+            uint64_t total = 0;
+            uint32_t esz = mm->entry_size;
+            if (esz < 24) return 0;
+            const uint8_t *e  = p + 16;
+            const uint8_t *ee = p + tag->size;
+            for (; e + 24 <= ee; e += esz) {
+                uint64_t len = *(const uint64_t *)(e + 8);
+                uint32_t et  = *(const uint32_t *)(e + 16);
+                if (et == 1) total += len;       /* 1 = available RAM */
+            }
+            return total;
+        }
+        p += (tag->size + 7) & ~7U;
+    }
+    return 0;
+}
+
 /* Copy the value of a "name=value" cmdline token into out[max].
  * Returns 1 when found.  Stops at whitespace or end of cmdline. */
 int Mb2_CmdlineParam(uint32_t mb2_info_phys, const char *name,

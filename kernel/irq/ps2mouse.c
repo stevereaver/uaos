@@ -139,6 +139,30 @@ static void ps2_mouse_cmd(uint8_t byte)
     ps2_drain();
 }
 
+/* =========================================================================
+ * PS2Ctl_Detect / PS2_Present — i8042 presence probe
+ * ========================================================================= */
+
+static int g_ps2_present = 0;
+
+int PS2_Present(void) { return g_ps2_present; }
+
+int PS2Ctl_Detect(void)
+{
+    /* An absent i8042 leaves port 0x64 floating — reads return 0xFF.
+     * A live status byte can carry every bit only transiently, so this
+     * is a cheap early reject on USB-only machines (MacBookPro4,1). */
+    if (inb(PS2_STATUS) == 0xFF) { g_ps2_present = 0; return 0; }
+
+    /* Controller self-test: command 0xAA must answer 0x55 on the data
+     * port.  Bounded wait — a phantom controller never sets OBF. */
+    ps2_cmd(0xAA);
+    int timeout = 100000;
+    while (!(inb(PS2_STATUS) & PS2_STAT_OBF) && --timeout) {}
+    g_ps2_present = (timeout > 0 && inb(PS2_DATA) == 0x55);
+    return g_ps2_present;
+}
+
 void PS2Mouse_Init(void)
 {
     ps2_drain();

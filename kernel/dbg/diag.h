@@ -171,4 +171,13 @@ void Failalloc_Config(int on, uint32_t rate, uint32_t after, uint32_t seed);
 int  Failalloc_ShouldFail(int pool);        /* call at top of alloc paths */
 void Failalloc_Status(void *ctx, DiagEmitFn emit);
 
+/* -------------------------------------------------------------------------
+ * sysinfo.c — live hardware inventory (UAOS-278)
+ * ------------------------------------------------------------------------- */
+void     SysInfo_Init(uint32_t mb2_phys);      /* call once at boot */
+uint64_t SysInfo_RamBytes(void);               /* usable RAM, 0 = unknown */
+void     SysInfo_CpuBrand(char *out, int max); /* CPUID brand string */
+void     SysInfo_InputDesc(char *out, int max);/* "PS/2 ..." / "USB HID ..." */
+void     SysInfo_DumpConfig(void *ctx, DiagEmitFn emit);
+
 #endif /* UAOS_DIAG_H */

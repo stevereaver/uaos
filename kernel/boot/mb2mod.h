@@ -22,6 +22,11 @@ int Mb2_FindModule(uint32_t mb2_info_phys, const char *name,
 
 /* Returns 1 if the kernel command line (tag 1) contains the token. */
 int Mb2_CmdlineHas(uint32_t mb2_info_phys, const char *tok);
+
+/* Total usable RAM in bytes, summed from the Multiboot2 memory map
+ * (tag type 6, entries with type 1 = available).  0 when the tag is
+ * absent or the info pointer is invalid. */
+uint64_t Mb2_TotalRAM(uint32_t mb2_info_phys);
 /* Copy "name=value" token's value into out[max]. 1 when found. */
 int Mb2_CmdlineParam(uint32_t mb2_info_phys, const char *name,
                      char *out, int max);

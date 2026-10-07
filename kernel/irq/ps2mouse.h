@@ -5,6 +5,16 @@
 
 #include <stdint.h>
 
+/* i8042 presence probe — runs the controller self-test (0xAA -> 0x55)
+ * with bounded waits and caches the result.  On machines with no i8042
+ * (USB-only boards like the MacBookPro4,1) the status port floats at
+ * 0xFF and the self-test never answers.  Call once at boot before the
+ * port drivers are initialised. */
+int  PS2Ctl_Detect(void);
+
+/* Cached result of PS2Ctl_Detect() — 0 when no i8042 was found. */
+int  PS2_Present(void);
+
 /* Initialise PS/2 controller, enable aux port, set stream mode */
 void PS2Mouse_Init(void);
 

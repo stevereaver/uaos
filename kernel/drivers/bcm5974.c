@@ -358,6 +358,11 @@ void BCM5974_Init(void)
     USB_RegisterClass(bcm5974_probe);
 }
 
+/* 1 when a Wellspring trackpad interface was claimed — used by the
+ * showconfig/version input summary (trackpad isn't a HID proto device
+ * so USBHid_MouseCount() never sees it). */
+int BCM5974_Present(void) { return g_tp.claimed_tp; }
+
 /* Called after TaskScheduler_Init — USB enum runs before the scheduler
  * exists, so the reset worker must be spawned late. */
 void BCM5974_StartWorker(void)
