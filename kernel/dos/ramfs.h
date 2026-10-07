@@ -67,6 +67,9 @@ typedef struct {
     char      name[16];   /* volume name, e.g. "RAM"                         */
     RamFsNode *root;      /* root directory node                             */
     int        valid;     /* non-zero if mounted                             */
+    int        read_only; /* non-zero: volume rejects all mutations — used
+                          * for ISO9660 proxy mounts whose file data lives
+                          * on a read-only backing device                  */
 } RamFsVol;
 
 /* -------------------------------------------------------------------------
@@ -78,6 +81,17 @@ void RamFS_Init(void);
 
 /* Create and mount a new RAM volume.  Returns pointer or NULL on failure. */
 RamFsVol *RamFS_MountVol(const char *name);
+
+/* Mark a volume read-only (or writable again with ro=0).  Read-only
+ * volumes reject every mutating call (Create, MkDir, Write, Delete,
+ * Rename, attribute/protection changes). */
+void RamFS_SetReadOnly(RamFsVol *vol, int ro);
+
+/* Non-zero if the volume is read-only. */
+int RamFS_IsReadOnly(RamFsVol *vol);
+
+/* Non-zero if the node sits on a read-only volume. */
+int RamFS_NodeReadOnly(RamFsNode *node);
 
 /* Resolve an absolute path (e.g. "RAM:T/foo.txt") to a node.
  * Returns NULL if not found.  vol must be the matching mounted volume. */
@@ -134,7 +148,8 @@ int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path);
  *         files plus content size for ext_bdev proxy files (their data
  *         stays on the backing device but belongs to the volume),
  * total = used + pool bytes still free pool-wide (all RAM volumes share
- *         the pool), so callers get free = total - used. */
+ *         the pool), so callers get free = total - used.  Read-only
+ *         volumes cannot grow, so total = used (free = 0). */
 void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes);
 
 #endif

@@ -1814,7 +1814,8 @@ static void inst_cmd_info(ShellInstance *s, const char *arg)
              * falls back to capacity/0 when the volume is not mounted. */
             uint32_t vol_total = 0, vol_used = 0;
             int have_stats = (VFS_GetVolumeInfo(name,
-                                                &vol_total, &vol_used) == 0);
+                                                &vol_total, &vol_used,
+                                                NULL) == 0);
             char used_sz[16] = "0", free_sz[16] = "0", pct[8] = "0%";
             if (have_stats) {
                 uint32_t vol_free =

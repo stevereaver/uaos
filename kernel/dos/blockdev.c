@@ -294,17 +294,33 @@ int BlockDev_ReadVolLabel(BlockDev *dev, char *buf, int max)
     if (blockdev_boot_sector[510] != 0x55 || blockdev_boot_sector[511] != 0xAA)
         return 0;
 
-    /* FAT32 volume label at offset 71, 11 bytes, space-padded.
-     * Strip trailing spaces (don't stop at the first space, since
-     * labels like "MY DISK" contain internal spaces). */
+    /* The BPB volume-label field depends on the FAT variant: FAT32 keeps
+     * it at offset 71, FAT12/16 at offset 43.  Pick by the fs-type string
+     * stored at offset 82 (FAT32) or 54 (FAT12/16); an unrecognised BPB
+     * has no reliable label field. */
+    int off;
+    if (blockdev_boot_sector[82] == 'F' && blockdev_boot_sector[83] == 'A' &&
+        blockdev_boot_sector[84] == 'T' && blockdev_boot_sector[85] == '3')
+        off = 71;
+    else if (blockdev_boot_sector[54] == 'F' && blockdev_boot_sector[55] == 'A' &&
+             blockdev_boot_sector[56] == 'T')
+        off = 43;
+    else
+        return 0;
+
+    /* 11-byte label, space-padded.  Reject non-printable bytes so a
+     * mis-detected BPB can't leak garbage into displays.  Strip trailing
+     * spaces (don't stop at the first space, since labels like "MY DISK"
+     * contain internal spaces). */
     int last_non_space = -1;
     for (int i = 0; i < 11; i++) {
-        uint8_t c = blockdev_boot_sector[71 + i];
+        uint8_t c = blockdev_boot_sector[off + i];
+        if (c < 0x20 || c > 0x7E) return 0;
         if (c != ' ') last_non_space = i;
     }
     int n = 0;
     for (int i = 0; i <= last_non_space && n < max - 1; i++) {
-        buf[n++] = blockdev_boot_sector[71 + i];
+        buf[n++] = blockdev_boot_sector[off + i];
     }
     buf[n] = '\0';
     return n > 0 ? 1 : 0;

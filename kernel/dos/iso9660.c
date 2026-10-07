@@ -402,6 +402,9 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
                 if (VFS_MountExistingVol("Workbench", wb_vol) == 0) {
                     /* Traverse SYS-ROOT to populate Workbench: with proxy files */
                     iso_traverse_dir(bdev, sys_lba, sys_size, wb_vol, "Workbench:", 1);
+                    /* Proxy file data lives on the read-only ISO image —
+                     * the volume is a CD: report and enforce read-only. */
+                    RamFS_SetReadOnly(wb_vol, 1);
                     kprint("[ISO9660] Workbench: mounted from SYS-ROOT\n");
                 } else {
                     kprint("[ISO9660] VFS_MountExistingVol Workbench failed\n");
@@ -432,5 +435,8 @@ int ISO9660_MountCD(BlockDev *bdev, const char *vol_name)
     root_path[i] = ':'; root_path[i + 1] = '\0';
 
     iso_traverse_dir(bdev, root_lba, root_size, vol, root_path, is_workbench_mount ? 1 : 0);
+    /* Proxy mounts serve file data straight from the read-only ISO —
+     * the volume cannot accept writes. */
+    if (is_workbench_mount) RamFS_SetReadOnly(vol, 1);
     return 0;
 }

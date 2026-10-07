@@ -158,6 +158,23 @@ static RamFsNode *find_child(RamFsNode *dir, const char *name)
     return NULL;
 }
 
+/* Find the volume owning a node (climb to the root, match g_vols). */
+static RamFsVol *vol_of_node(RamFsNode *node)
+{
+    while (node && node->parent) node = node->parent;
+    for (int i = 0; i < MAX_VOLS; i++)
+        if (g_vols[i].valid && g_vols[i].root == node)
+            return &g_vols[i];
+    return NULL;
+}
+
+/* Non-zero if the node sits on a read-only volume. */
+static int node_vol_read_only(RamFsNode *node)
+{
+    RamFsVol *v = vol_of_node(node);
+    return v ? v->read_only : 0;
+}
+
 /* Allocate bytes from the data pool.  Returns NULL when no chunk fits. */
 uint8_t *RamFS_AllocPool(uint32_t bytes)
 {
@@ -304,6 +321,7 @@ RamFsVol *RamFS_MountVol(const char *name)
             root->name[0] = '\0'; /* root has no name */
             g_vols[i].root  = root;
             g_vols[i].valid = 1;
+            g_vols[i].read_only = 0;
             return &g_vols[i];
         }
     }
@@ -319,9 +337,24 @@ RamFsNode *RamFS_Resolve(RamFsVol *vol, const char *path)
     return resolve_from(vol->root, p);
 }
 
+void RamFS_SetReadOnly(RamFsVol *vol, int ro)
+{
+    if (vol && vol->valid) vol->read_only = ro ? 1 : 0;
+}
+
+int RamFS_IsReadOnly(RamFsVol *vol)
+{
+    return (vol && vol->valid) ? vol->read_only : 0;
+}
+
+int RamFS_NodeReadOnly(RamFsNode *node)
+{
+    return node_vol_read_only(node);
+}
+
 RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
 {
-    if (!vol || !vol->valid) return NULL;
+    if (!vol || !vol->valid || vol->read_only) return NULL;
     const char *p = skip_vol_prefix(path);
     if (*p == '/') p++;
 
@@ -371,7 +404,7 @@ RamFsNode *RamFS_MkDir(RamFsVol *vol, const char *path)
 
 RamFsNode *RamFS_Create(RamFsVol *vol, const char *path)
 {
-    if (!vol || !vol->valid) return NULL;
+    if (!vol || !vol->valid || vol->read_only) return NULL;
     const char *p = skip_vol_prefix(path);
     if (*p == '/') p++;
 
@@ -421,6 +454,7 @@ int RamFS_Write(RamFsNode *node, const uint8_t *data, uint32_t len)
 {
     if (!node || node->type != RAMFS_TYPE_FILE) return -1;
     if (node->attrs & RAMFS_ATTR_READONLY) return -2; /* read-only */
+    if (node_vol_read_only(node)) return -2; /* read-only volume */
     if (node->ext_bdev) return -3; /* proxy file — read-only */
     if (len == 0) { node->size = 0; return 0; }
 
@@ -488,6 +522,7 @@ uint32_t RamFS_Read(RamFsNode *node, uint32_t offset,
 
 int RamFS_Delete(RamFsVol *vol, const char *path)
 {
+    if (vol && vol->read_only) return -5; /* read-only volume */
     RamFsNode *node = RamFS_Resolve(vol, path);
     if (!node) return -1;
     if (node->type == RAMFS_TYPE_DIR && node->first_child) return -2; /* not empty */
@@ -515,6 +550,7 @@ int RamFS_Delete(RamFsVol *vol, const char *path)
 int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path)
 {
     if (!vol || !vol->valid) return -1;
+    if (vol->read_only) return -5; /* read-only volume */
 
     /* Resolve source */
     RamFsNode *src = RamFS_Resolve(vol, old_path);
@@ -584,6 +620,7 @@ uint8_t RamFS_GetAttrs(RamFsNode *node)
 int RamFS_SetAttrs(RamFsNode *node, uint8_t attrs)
 {
     if (!node) return -1;
+    if (node_vol_read_only(node)) return -1;
     node->attrs = attrs;
     return 0;
 }
@@ -597,6 +634,7 @@ uint16_t RamFS_GetProtection(RamFsNode *node)
 int RamFS_SetProtection(RamFsNode *node, uint16_t prot)
 {
     if (!node) return -1;
+    if (node_vol_read_only(node)) return -1;
     node->protection = prot;
     return 0;
 }
@@ -604,6 +642,7 @@ int RamFS_SetProtection(RamFsNode *node, uint16_t prot)
 int RamFS_RenameVol(RamFsVol *vol, const char *new_name)
 {
     if (!vol || !vol->valid || !new_name || !*new_name) return -1;
+    if (vol->read_only) return -1;
     int i = 0;
     while (i < 15 && new_name[i]) { vol->name[i] = new_name[i]; i++; }
     vol->name[i] = '\0';
@@ -636,9 +675,11 @@ void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_b
 
     /* All RAM volumes draw from the same pool: total is this volume's own
      * usage plus whatever the pool can still supply (free = pool_sz -
-     * pool_used, including header overhead and unreclaimed fragments). */
+     * pool_used, including header overhead and unreclaimed fragments).
+     * Read-only volumes (e.g. an ISO9660 proxy mount) cannot grow — pool
+     * headroom isn't theirs, so total = used and free = 0. */
     uint32_t pool_sz  = (uint32_t)sizeof(g_pool);
     uint32_t pool_free = pool_sz - g_pool_used;
     *used_bytes  = used;
-    *total_bytes = used + pool_free;
+    *total_bytes = (vol && vol->read_only) ? used : used + pool_free;
 }

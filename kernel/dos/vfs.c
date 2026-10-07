@@ -551,6 +551,8 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
             /* Try RAMFS first */
             RamFsVol *vol = find_vol(rvol);
             if (vol) {
+                if (vol->read_only && (flags & (VFS_WRITE | VFS_TRUNC)))
+                    continue;
                 RamFsNode *node = RamFS_Resolve(vol, resolved_path);
                 if (node && node->type == RAMFS_TYPE_FILE) {
                     if (flags & VFS_TRUNC) node->size = 0;
@@ -605,6 +607,8 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
             g_vfs_change_seq++;
         } else {
             if (node->type == RAMFS_TYPE_DIR) return 0; /* can't open dir as file */
+            if (vol->read_only && (flags & (VFS_WRITE | VFS_TRUNC)))
+                return 0; /* read-only volume */
             if (flags & VFS_TRUNC) { node->size = 0; g_vfs_change_seq++; }
         }
 
@@ -712,6 +716,7 @@ uint32_t VFS_Write(VfsFile *fh, const uint8_t *buf, uint32_t len)
     }
 
     if (!fh->node || fh->node->type != RAMFS_TYPE_FILE) return 0;
+    if (RamFS_NodeReadOnly(fh->node)) return 0; /* read-only volume */
 
     uint32_t end = fh->pos + len;
     if (end > RAMFS_MAX_FILESIZE) {
@@ -1284,6 +1289,7 @@ int VFS_SetComment(const char *path, const char *comment)
     if (!extract_vol(resolved_path, vol_name, 16)) return -1;
     RamFsVol *vol = find_vol(vol_name);
     if (vol) {
+        if (vol->read_only) return -1;
         RamFsNode *node = RamFS_Resolve(vol, resolved_path);
         if (!node) return -1;
         int i = 0;
@@ -1345,7 +1351,8 @@ int VFS_Rename(const char *old_path, const char *new_path)
     return -1;
 }
 
-int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_bytes)
+int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes,
+                      uint32_t *used_bytes, int *read_only)
 {
     if (!path || !*path || !total_bytes || !used_bytes) return -1;
 
@@ -1357,6 +1364,7 @@ int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_by
     RamFsVol *vol = find_vol(vol_name);
     if (vol) {
         RamFS_GetVolumeStats(vol, total_bytes, used_bytes);
+        if (read_only) *read_only = vol->read_only;
         return 0;
     }
 
@@ -1370,6 +1378,8 @@ int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_by
         if (res == DOSTRUE) {
             *total_bytes = (uint32_t)id.id_NumBlocks * (uint32_t)id.id_BytesPerBlock;
             *used_bytes  = (uint32_t)id.id_NumBlocksUsed * (uint32_t)id.id_BytesPerBlock;
+            if (read_only)
+                *read_only = (id.id_DiskState == ID_WRITE_PROTECTED);
             return 0;
         }
     }

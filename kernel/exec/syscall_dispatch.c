@@ -764,7 +764,7 @@ static int sys_getvolumeinfo(uint64_t rdi, uint64_t rsi, uint64_t rdx)
     char abs_path[UAOS_PATH_MAX];
     make_abs_path(t ? t->task_cwd : "", path, abs_path, sizeof(abs_path));
 
-    return VFS_GetVolumeInfo(abs_path, total, used);
+    return VFS_GetVolumeInfo(abs_path, total, used, NULL);
 }
 
 static int sys_sleep_ms(uint64_t rdi, uint64_t rsi, uint64_t rdx)

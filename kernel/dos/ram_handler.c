@@ -326,7 +326,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         id->id_NumBlocks     = (int32_t)(total_bytes / 512);
         id->id_NumBlocksUsed = (int32_t)(used_bytes / 512);
         id->id_BytesPerBlock = 512;
-        id->id_DiskState     = ID_VALIDATED;
+        id->id_DiskState     = vol->read_only ? ID_WRITE_PROTECTED
+                                            : ID_VALIDATED;
         id->id_NumSoftErrors = 0;
         id->id_UnitNumber    = 0;
         id->id_DiskType      = ID_DOS_DISK;

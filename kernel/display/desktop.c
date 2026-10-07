@@ -601,7 +601,7 @@ static void menu_action_icon_information(void)
 
     /* Gather file info */
     uint32_t total = 0, used = 0;
-    VFS_GetVolumeInfo(path, &total, &used);
+    VFS_GetVolumeInfo(path, &total, &used, NULL);
     uint16_t prot = VFS_GetProtection(path);
 
     /* Check if it's a directory */

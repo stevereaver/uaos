@@ -184,8 +184,11 @@ int VFS_RenameVol(const char *old_name, const char *new_name);
 int VFS_Rename(const char *old_path, const char *new_path);
 
 /* Get volume capacity statistics for a path (uses volume prefix).
- * Returns 0 on success, -1 if volume not found. */
-int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes, uint32_t *used_bytes);
+ * If read_only is non-NULL it receives the volume's write-protect state
+ * (RAMFS read-only flag, or ID_WRITE_PROTECTED from a handler's
+ * ACTION_DISK_INFO).  Returns 0 on success, -1 if volume not found. */
+int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes,
+                      uint32_t *used_bytes, int *read_only);
 
 /* -------------------------------------------------------------------------
  * AmigaDOS Handler Support
