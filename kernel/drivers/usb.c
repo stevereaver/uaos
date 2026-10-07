@@ -284,13 +284,15 @@ out_dd:
 /* Deferred enumeration state (UAOS-258) — see usb_enum_task below     */
 /* ------------------------------------------------------------------ */
 #define USB_ENUM_SCAN_TICKS    10     /* 100 ms port scan cadence */
-#define USB_ENUM_MAX_ATTEMPTS  5      /* retries before parking */
+#define USB_ENUM_MAX_ATTEMPTS  5      /* fast retries before parking */
+#define USB_ENUM_PARK_TICKS    6000   /* parked re-probe cadence — 60 s */
 
 typedef struct {
     UsbHc   *hc;
     int      port;
     uint8_t  last_ccs;      /* CCS seen on the previous scan */
     uint8_t  attempts;      /* retries consumed since the last edge */
+    uint8_t  parked;        /* fast retries exhausted — heartbeat mode */
     uint64_t next_tick;     /* g_pit_ticks when the next retry is due */
 } UsbPortWatch;
 
@@ -321,6 +323,7 @@ int USB_Init(void)
             w->port      = p;
             w->last_ccs  = (uint8_t)(hc->port_connected(hc, p) > 0);
             w->attempts  = 0;
+            w->parked    = 0;
             w->next_tick = 0;
         }
     }
@@ -341,7 +344,11 @@ int USB_Init(void)
 /* is permanently invisible: USB_Poll runs in IRQ context and only     */
 /* drains interrupt pipes.  This task re-probes connected-but-         */
 /* unenumerated ports with bounded exponential backoff (1..16 s), then */
-/* parks the port until a connect-status edge revives it.              */
+/* parks the port: a connect-status edge still revives it instantly,   */
+/* and failing that a quiet heartbeat re-probe (a fresh port re-reset) */
+/* runs every 60 s forever — an SMC-gated device that powers up late   */
+/* raises no edge (CCS was already latched), so park-until-edge alone  */
+/* guaranteed permanent invisibility (UAOS-293).                       */
 /*                                                                     */
 /* Removal isn't tracked: a port whose device bound earlier keeps its  */
 /* (now stale) UsbDev, so unplug→replug on an enumerated port does not */
@@ -354,6 +361,19 @@ static int port_has_dev(UsbHc *hc, int port)
             g_devs[i].addr)
             return 1;
     return 0;
+}
+
+/* Append the raw port status (UHCI PORTSC) to a verdict line when the
+ * HC can report it — CCS|PE set means "connected, enabled, silent"
+ * while PE clear points at a port that never finished enable
+ * (UAOS-293). */
+static void port_psc_log(UsbHc *hc, int port, int lvl)
+{
+    if (!hc->port_status) return;
+    int ps = hc->port_status(hc, port);
+    if (ps < 0) return;
+    klog_puts(KLOG_USB, lvl, " psc=");
+    klog_appendf(KLOG_USB, lvl, "0x%08X", (uint32_t)ps);
 }
 
 static void usb_enum_task(void *arg)
@@ -373,9 +393,18 @@ static void usb_enum_task(void *arg)
                 if (edge) {
                     w->attempts  = 0;
                     w->next_tick = 0;
+                    if (w->parked) {
+                        w->parked = 0;
+                        klog_puts(KLOG_USB, KLOG_INFO,
+                                  "usb: connect edge — re-probing "
+                                  "parked port hc=");
+                        klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", i);
+                        klog_puts(KLOG_USB, KLOG_INFO, " port=");
+                        klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", p);
+                        klog_puts(KLOG_USB, KLOG_INFO, "\n");
+                    }
                 }
                 if (!ccs || port_has_dev(hc, p) ||
-                    w->attempts >= USB_ENUM_MAX_ATTEMPTS ||
                     g_pit_ticks < w->next_tick)
                     continue;
                 if (enumerate_port(hc, p)) {
@@ -383,6 +412,7 @@ static void usb_enum_task(void *arg)
                      * answers late is the disambiguating evidence for
                      * which SMC-gated peripheral lives there. */
                     UsbDev *nd = &g_devs[g_ndevs - 1];
+                    w->parked = 0;
                     klog_puts(KLOG_USB, KLOG_INFO, "usb: late enum hc=");
                     klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", i);
                     klog_puts(KLOG_USB, KLOG_INFO, " port=");
@@ -392,22 +422,40 @@ static void usb_enum_task(void *arg)
                     klog_puts(KLOG_USB, KLOG_INFO, " pid=");
                     klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", nd->pid);
                     klog_puts(KLOG_USB, KLOG_INFO, "\n");
-                } else {
+                } else if (!w->parked) {
                     w->attempts++;
                     w->next_tick = g_pit_ticks +
                                    (100ull << (w->attempts - 1));
                     if (w->attempts >= USB_ENUM_MAX_ATTEMPTS) {
                         /* UAOS-262: intermediate failures stay quiet
                          * (throttled uhci dumps + DEBUG core lines);
-                         * the final verdict is the one loud message. */
+                         * the final verdict is the one loud message.
+                         * Parking is not terminal (UAOS-293): the port
+                         * keeps a 60 s heartbeat re-probe afterwards. */
+                        w->parked = 1;
+                        w->next_tick = g_pit_ticks + USB_ENUM_PARK_TICKS;
                         klog_puts(KLOG_USB, KLOG_ERR,
                                   "usb: port deaf after retries — "
-                                  "parked until connect edge hc=");
+                                  "parked, probing every 60 s or on "
+                                  "connect edge hc=");
                         klog_appendf(KLOG_USB, KLOG_ERR, "0x%08X", i);
                         klog_puts(KLOG_USB, KLOG_ERR, " port=");
                         klog_appendf(KLOG_USB, KLOG_ERR, "0x%08X", p);
+                        port_psc_log(hc, p, KLOG_ERR);
                         klog_puts(KLOG_USB, KLOG_ERR, "\n");
                     }
+                } else {
+                    /* Parked-heartbeat failure — one quiet DEBUG line a
+                     * minute while the SMC-gated/straggler device keeps
+                     * ignoring SETUP. */
+                    w->next_tick = g_pit_ticks + USB_ENUM_PARK_TICKS;
+                    klog_puts(KLOG_USB, KLOG_DEBUG,
+                              "usb: parked port still deaf hc=");
+                    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", i);
+                    klog_puts(KLOG_USB, KLOG_DEBUG, " port=");
+                    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", p);
+                    port_psc_log(hc, p, KLOG_DEBUG);
+                    klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
                 }
             }
         }

@@ -810,6 +810,17 @@ static int uhci_port_csc(UsbHc *pub, int port)
     return 1;
 }
 
+/* Raw PORTSC for the deferred enum task's deaf-port verdicts
+ * (UAOS-293): connected+enabled-but-silent reads differently from a
+ * port that never completed enable, and the difference names whether
+ * the device is ignoring SETUP or was never brought out of reset. */
+static int uhci_port_status(UsbHc *pub, int port)
+{
+    UhciHc *h = (UhciHc *)pub;
+    if (port < 0 || port > 1) return -1;
+    return rg16(h, (uint16_t)(U_PORTSC1 + port * 2));
+}
+
 static int uhci_port_reset(UsbHc *pub, int port)
 {
     UhciHc *h = (UhciHc *)pub;
@@ -1013,6 +1024,7 @@ int UHCI_Init(void)
                 h->pub.port_connected = uhci_port_connected;
                 h->pub.port_reset     = uhci_port_reset;
                 h->pub.port_csc       = uhci_port_csc;
+                h->pub.port_status    = uhci_port_status;
                 h->pub.nports         = 2;
                 h->irq_vec = -1;
 

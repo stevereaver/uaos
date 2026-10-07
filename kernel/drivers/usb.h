@@ -152,6 +152,11 @@ typedef struct UsbHc {
      * last call, clearing it (W1C).  NULL → the deferred enum task
      * falls back to tracking the CCS bit itself (UAOS-258). */
     int  (*port_csc)(struct UsbHc *hc, int port);
+    /* Optional: raw root-port status register (UHCI PORTSC) — the
+     * deaf-port verdict logs it so "connected-but-silent" vs
+     * "port never enabled" is visible in klog (UAOS-293).  Returns
+     * -1 for an invalid port; NULL → callers skip the detail. */
+    int  (*port_status)(struct UsbHc *hc, int port);
     int   nports;
 } UsbHc;
 
