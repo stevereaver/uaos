@@ -149,8 +149,11 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   PS/2 controller → infinite loop, boot stopped at "Initialising PS/2
   keyboard".  Same latent pattern in `uart_putchar`, ps2mouse's
   `_ser_putc`, and both RTC UIP waits — all now bounded spins.
-  The PS/2 init calls are harmless on this hardware once bounded:
-  writes go nowhere, timeouts expire.
+  Since UAOS-278 the PS/2 init calls aren't even reached here: boot runs
+  `PS2Ctl_Detect()` (i8042 self-test 0xAA→0x55; a floating status port
+  reads 0xFF) and skips IRQ1/IRQ12 attach + port init when the
+  controller is absent, logging "No i8042 controller" instead of the old
+  phantom "PS/2 mouse active."
 - **GPU framebuffer needs an MTRR WC entry or it is unusably slow.**
   Apple EFI leaves the 8600M GT aperture uncached; per-pixel writes were
   one bus transaction each → visible scanline-by-scanline drawing, and

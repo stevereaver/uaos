@@ -1,5 +1,35 @@
 # OKF Change Log
 
+## 2026-10-07 — showconfig/version report live hardware, PS/2 gated on i8042 self-test (UAOS-278)
+
+* **Fixed**: `showconfig` and `version` printed hardcoded QEMU-era
+  literals — VirtIO VGA, 10 Hz PIT, PS/2 IRQ1/IRQ12, "8259A-compat PIC",
+  fixed 512 MB — that were all wrong on the MBP4,1.  New
+  `kernel/dbg/sysinfo.c` builds the report from probed state:
+  `SysInfo_Init(mb2_phys)` snapshots usable RAM from the Multiboot2
+  memory map (`Mb2_TotalRAM`, tag 6) and the first PCI display-class
+  function at boot; `SysInfo_DumpConfig()` then reads live state —
+  CPUID brand string + cpufreq max MHz, `g_fb` geometry,
+  `IRQ_Mode()`/`IRQ_PicFallbackActive()`/`ACPI_LapicBase()` for the
+  interrupt line, `UAOS_PIT_HZ` (new `kernel/irq/pit.h`) + the ACPI ISO
+  GSI remap for the PIT line, a 16550 scratch-register probe for COM1,
+  `UHCI_DiagCount()`/`USB_DeviceCount()`, `netdev_name()`, and the
+  `BlockDev` registry.  The M68k guest CHIP/FAST node lines now print
+  the real 8 MB + 8 MB ranges ($0–$7FFFFF / $800000–$FFFFFF) instead of
+  overlapping fiction.
+* **i8042 gate**: `PS2Ctl_Detect()` in `ps2mouse.c` rejects a floating
+  0xFF status port and then requires the controller self-test (0xAA →
+  0x55); `PS2_Present()` caches it.  Boot skips the IRQ12/IRQ1 attaches
+  and init calls when absent and logs "No i8042 controller — PS/2
+  absent" — the old "PS/2 mouse active." noise on USB-only hardware is
+  gone.  `SysInfo_InputDesc()` (PS/2 vs `USBHid_KbdCount/MouseCount`)
+  drives the `Input:` line shared by `version`, `showconfig`, and the
+  About window.
+* **Verified in QEMU** (q35): `showconfig` prints "QEMU Virtual CPU
+  version 2.5+", "VirtIO 1af4:1050 @ 0:1.0", "505.7 meg installed",
+  IO-APIC + LAPIC $FEE00000, "8253/8254, 100 Hz, IRQ0->GSI2", live
+  blockdev list; PS/2 still detected correctly (i8042 present).
+
 ## 2026-10-07 — IDE PCI scan: all fns/buses + native-mode BARs (UAOS-275)
 
 * **Root cause of the MBP4,1 invisible SuperDrive**: `IDE_Init` scanned

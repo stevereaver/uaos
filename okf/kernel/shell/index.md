@@ -84,6 +84,8 @@ The following commands are now on-disk x86-64 ELF64 userspace binaries in `syste
 
 For full syntax and examples, see the `README.md` and `documentation/Dos_Manual.md` in the repository root.
 
+`showconfig` (shell built-in) and `C:version`/`mem`/the About window report *live* hardware state via `kernel/dbg/sysinfo.c` (UAOS-278): CPUID brand + cpufreq max MHz, framebuffer geometry + the PCI display-class device, installed RAM summed from the Multiboot2 memory map, `IRQ_Mode()`/`ACPI_LapicBase()` interrupt topology, `UAOS_PIT_HZ` (`kernel/irq/pit.h`) for the PIT line, a 16550 scratch-register probe for the UART, `PS2_Present()` for the i8042, UHCI/USB-HID counts, `netdev_name()`, and the BlockDev list. The i8042 itself is probed once at boot by `PS2Ctl_Detect()` (self-test 0xAA→0x55, floating-0xFF reject) in `ps2mouse.c`; when it fails the boot skips the PS/2 IRQ attaches and reports "not present" instead of announcing phantom PS/2 devices.
+
 ## File Browser Launching
 
 Double-clicking an icon in the Workbench file browser (`filebrowser.c`) calls `ExecFile_Run()` in `exec_file.c`. The loader reads the first four bytes of the selected file to determine whether it is a UAOS wrapper binary (e.g. `UAOS` for a native command), an Amiga Hunk executable, or an ELF64 binary. Native commands are dispatched through `NativeCmd_Run()`, which constructs a minimal `NativeCmdCtx` and invokes the corresponding `Cmd_` function registered in the native command table.
