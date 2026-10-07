@@ -874,3 +874,29 @@
 ## 2026-10-07 — UAOS-289: path ADD keyword (AmigaDOS-style append)
 
 * **Changed** (`kernel/display/shell_win.c` `inst_cmd_path`): a trailing case-insensitive `ADD` keyword now appends the given dirs to `s->path` instead of replacing it — `path gnu:usr/bin ADD`. The keyword is only recognised on a space boundary (or as the whole argument) so a directory literally named `add`/`xadd` isn't misparsed; `path ADD` alone prints usage, and the append is bounds-checked against the 256-byte `s->path` ("search path too long"). Help line and `documentation/Dos_Manual.md` updated; `S:User-Startup` simplified from the full restated default to `path gnu:usr/bin ADD`.
+
+## 2026-10-08 — UAOS-293: deaf UHCI port parked forever (MBP4,1 hc3 port1)
+
+* **Fixed** (`kernel/drivers/{usb.c,usb.h,uhci.c}`): the deferred
+  `usb-enum` task parked a connected-but-silent port after 5 backoff
+  retries and only revived it on a connect-status edge — but an
+  SMC-gated device that powers up late (the MBP4,1 BT/IR suspect)
+  never raises CSC, since CCS was latched before our first scan, so
+  park-until-edge meant permanently invisible.  `UsbPortWatch` gains a
+  `parked` flag: after `USB_ENUM_MAX_ATTEMPTS` the port still parks,
+  but now re-probes on a 60 s heartbeat (`USB_ENUM_PARK_TICKS`) — each
+  probe is a full `enumerate_port` (fresh port re-reset + SETUP),
+  which is also the "port re-reset" the card asked to try.  A connect
+  edge still unparks instantly (logged `connect edge — re-probing
+  parked port`) and resets the fast-retry budget; heartbeat failures
+  are one quiet DEBUG line a minute.  New optional `port_status`
+  vtable op (`uhci_port_status` returns raw `PORTSC`) feeds `psc=` on
+  the ERR park verdict and DEBUG heartbeat lines, so
+  "connected+enabled but silent" vs "never finished enable" is
+  distinguishable in klog without a live `usbdiag` session.
+* **Verified**: `make kernel`/`make iso` clean; QEMU boot
+  (piix3-usb-uhci + usb-kbd) reaches desktop with no usb WARNs;
+  monitor `device_add usb-mouse,port=2` → `usb: late enum hc=0 port=1
+  vid=0x0627 pid=0x0001` in ~2 s (edge→probe path exercised).  A truly
+  deaf port isn't emulatable — the heartbeat path is code-verified
+  only; metal re-verify on MBP4,1 pending.

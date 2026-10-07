@@ -101,15 +101,21 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   falling back to full-speed. With no EHCI driver this is the
   documented USB-1.1-only hand-off; a real EHCI driver (UAOS-134)
   would replace it with proper `CF`+`PortOwner` handling.
-- **Post-boot re-enumeration exists (UAOS-258).** A `usb-enum` task
+- **Post-boot re-enumeration exists (UAOS-258/293).** A `usb-enum` task
   (`USB_StartEnumTask`, spawned after `TaskScheduler_Init`) re-probes
   connected-but-unenumerated ports at 100 ms cadence with bounded
-  backoff (5 tries, 1→16 s), then parks until a connect-status edge
-  (CCS flip or latched `PORTSC.CSC` via `uhci_port_csc`). This covers
-  both real hotplug and the uhci0 port1 suspect: if that SMC-gated
-  device ever wakes, the port edge revives it and `usb: late enum
-  vid= pid=` names it (BT HCI vs Apple IR `05ac:824x`). If it never
-  wakes, the remaining fix is SMC/ACPI power control — not USB.
+  backoff (5 tries, 1→16 s), then parks. Parking is *not* terminal
+  (UAOS-293): a connect-status edge (CCS flip or latched `PORTSC.CSC`
+  via `uhci_port_csc`) revives the port instantly, and failing that a
+  quiet heartbeat re-probe — a fresh port re-reset — runs every 60 s
+  forever, since an SMC-gated device that powers up late raises no
+  edge (CCS was already latched). The ERR park verdict and the DEBUG
+  heartbeat line both print raw `PORTSC` (`psc=`) via the new optional
+  `port_status` vtable op, so "connected+enabled but silent" vs
+  "never finished enable" is visible in klog without `usbdiag`.
+  `usb: late enum vid= pid=` still names whatever answers (BT HCI vs
+  Apple IR `05ac:824x`). If it never wakes, the remaining fix is
+  SMC/ACPI power control — not USB.
 - **Deaf ports are quiet + cheap now (UAOS-262).** The retry loop used
   to emit ~50 verbose `ctrl fail` dumps and burn ~20 s per deaf port
   before parking. `uhci_control` early-outs after ~40 ms of zero TD
