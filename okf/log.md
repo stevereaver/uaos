@@ -1,5 +1,23 @@
 # OKF Change Log
 
+## 2026-10-07 — NTP epoch burst guard derives from UAOS_PIT_HZ (UAOS-276)
+
+* **Fixed** (`kernel/net/ntp.c`): `NTP_TICK_GUARD_PIT` was `8` ticks with
+  comments claiming a 10 Hz PIT (~800 ms), but the PIT has run at 100 Hz
+  for a long time — the guard was really 80 ms, so queued RTC UIE bursts
+  spaced 80–900 ms apart each advanced `g_epoch` by a second and the wall
+  clock ran fast until the next NTP sync.  The guard is now expressed in
+  real time: `NTP_TICK_GUARD_MS` = 900 ms, converted to PIT ticks via
+  `UAOS_PIT_HZ` (`kernel/irq/pit.h`) → 90 ticks.  Stale comments fixed
+  ("10 Hz", "record the TSC", "elapsed ≥ 10").
+* **Audit**: all other `g_pit_ticks` users already assume 100 Hz
+  correctly (`intuition_lib` INTUITICKS throttle is a real 10 Hz by
+  design; `uhci.c`'s "~10 Hz sweep" is the deliberate post-dispatch
+  demotion).  `kernel/net/telnetd.c`'s two tick→seconds conversions
+  (`/ 100`) now divide by `UAOS_PIT_HZ`; tcp.h tick constants were
+  already correct and documented at 100 Hz.
+* **Verified**: `make kernel` clean, zero warnings.
+
 ## 2026-10-07 — capacity display math honours sector_size (UAOS-267)
 
 * **Fixed**: every capacity print that hardcoded a 512-byte sector now

@@ -43,6 +43,7 @@
 #include "stack.h"
 #include "../exec/task.h"
 #include "../irq/irq.h"
+#include "../irq/pit.h"
 #include "../display/shell_win.h"
 #include "../boot/kprint.h"
 
@@ -429,7 +430,7 @@ static void pump_task(void *arg)
         kprint(":");
         kprintdec(ctx->peer_port);
         kprint(" (up ");
-        kprintdec((uint32_t)((g_pit_ticks - ctx->t_connect) / 100));
+        kprintdec((uint32_t)((g_pit_ticks - ctx->t_connect) / UAOS_PIT_HZ));
         kprint("s)\n");
     }
 
@@ -635,7 +636,7 @@ int Telnetd_SessionInfo(int idx, ipv4_t *ip, uint16_t *port,
             if (port) *port    = g_pump_ctx[i].peer_port;
             if (up_secs)
                 *up_secs = (uint32_t)((g_pit_ticks -
-                                       g_pump_ctx[i].t_connect) / 100);
+                                       g_pump_ctx[i].t_connect) / UAOS_PIT_HZ);
             return 1;
         }
     }

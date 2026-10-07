@@ -26,6 +26,7 @@
 #include "stack.h"
 #include "net.h"
 #include "../klog/klog.h"
+#include "../irq/pit.h"
 
 /* -------------------------------------------------------------------------
  * Epoch keeper — live UTC Unix seconds, ticked by RTC IRQ
@@ -36,8 +37,8 @@
  * during a cli window, or a heavy repaint loop).  A burst of rapid ticks
  * makes the clock display jump ahead visibly.
  *
- * Guard: record the TSC at the last tick and refuse to advance the epoch
- * if less than ~900 ms of real time has elapsed since the previous one.
+ * Guard: record the PIT tick count at the last accepted tick and refuse to
+ * advance the epoch if less than ~900 ms has elapsed since the previous one.
  * This absorbs any burst without losing real seconds (the RTC counter in
  * CMOS is the ground truth; we re-derive from it if we get too far behind).
  * ------------------------------------------------------------------------- */
@@ -48,18 +49,21 @@ static volatile uint32_t g_epoch         = 0;
  * real UIE tick is always accepted — without bypassing the guard. */
 static volatile uint64_t g_last_tick_pit = (uint64_t)-1;
 
-/* PIT runs at 10 Hz; guard = 8 ticks (~800 ms).  This absorbs any burst of
- * queued RTC UIE interrupts without ever blocking a genuine 1-per-second tick. */
-#define NTP_TICK_GUARD_PIT  8ULL
+/* Guard window expressed in real time: refuse a tick if less than ~900 ms
+ * has elapsed since the previous one.  At the UAOS_PIT_HZ tick rate this is
+ * 90 ticks — it absorbs any burst of queued RTC UIE interrupts without ever
+ * blocking a genuine 1-per-second tick. */
+#define NTP_TICK_GUARD_MS   900ULL
+#define NTP_TICK_GUARD_PIT  (NTP_TICK_GUARD_MS * UAOS_PIT_HZ / 1000ULL)
 
-/* Provided by uaos_kernel_main.c — incremented at 10 Hz by PIT IRQ0 */
+/* Provided by uaos_kernel_main.c — incremented at UAOS_PIT_HZ by PIT IRQ0 */
 extern volatile uint64_t g_pit_ticks;
 
 void ntp_set_epoch(uint32_t unix_utc)
 {
     g_epoch         = unix_utc;
     /* Record "now" so the guard is active from this point.  The first real
-     * UIE (≥1 s away) will see elapsed ≥ 10, which passes the guard of 8.
+     * UIE (≥1 s away) will see elapsed ≥ UAOS_PIT_HZ, which passes the guard.
      * Any burst arriving sooner will be rejected. */
     g_last_tick_pit = g_pit_ticks;
 }

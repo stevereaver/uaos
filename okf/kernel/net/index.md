@@ -171,7 +171,7 @@ Spoof-resistance (UAOS-168): the transaction ID comes from `entropy_fill` (the o
 
 ### NTP (`ntp.c`)
 
-SNTP client (RFC 4330). Sends a 48-byte request and extracts the Transmit Timestamp. Converts from the NTP epoch (1900) to the Unix epoch (1970) and maintains an epoch counter synchronized against the TSC to avoid RTC interrupt bursts.
+SNTP client (RFC 4330). Sends a 48-byte request and extracts the Transmit Timestamp. Converts from the NTP epoch (1900) to the Unix epoch (1970) and maintains a live epoch counter ticked once per second by the RTC UIE IRQ. A burst guard (`NTP_TICK_GUARD_MS` = 900 ms, converted to `UAOS_PIT_HZ` PIT ticks) refuses to advance the epoch when less than ~900 ms has passed since the previous accepted tick, absorbing queued UIE bursts after IRQ-off windows (UAOS-276).
 
 ### Timezone (`timezone.c`)
 
