@@ -214,6 +214,13 @@ typedef struct {
 #define IDCMP_HELP           IDCMP_GADGETHELP
 #define IDCMP_TABLET         0x40000000
 
+/* IDCMP_MOUSEBUTTONS .Code values (devices/inputevent.h IECODE_*).
+ * Up transitions carry IECODE_UP_PREFIX. */
+#define IECODE_LBUTTON    0x68    /* SELECTDOWN / SELECTUP = 0xE8 */
+#define IECODE_RBUTTON    0x69    /* MENUDOWN   / MENUUP   = 0xE9 */
+#define IECODE_MBUTTON    0x6A    /* MIDDLEDOWN / MIDDLEUP = 0xEA */
+#define IECODE_UP_PREFIX  0x80
+
 /* -------------------------------------------------------------------------
  * Exec MsgPort / Message / IntuiMessage offsets
  * ------------------------------------------------------------------------- */

@@ -75,11 +75,20 @@ static void gt_guest_str(char *dst, uint32_t src, int max)
     dst[i] = '\0';
 }
 
+/* Guest pointer sanity, overflow-safe: p + len <= GUEST_RAM_SIZE wraps for
+ * p near 4 GB, so write it as two checks.  A wild guest pointer must never
+ * let an LVC stub page-fault the kernel (g_ram + ~0xFFFFFFFF lands just
+ * below the RAM window). */
+static int gt_ok(uint32_t p, uint32_t len)
+{
+    return p < GUEST_RAM_SIZE && len <= GUEST_RAM_SIZE - p;
+}
+
 static uint32_t count_label_array(uint32_t labels)
 {
     uint32_t count = 0;
     if (!labels) return 0;
-    while (labels + count * 4 < GUEST_RAM_SIZE) {
+    while (gt_ok(labels + count * 4, 4)) {
         uint32_t p = gt_u32(labels + count * 4);
         if (!p) break;
         count++;
@@ -136,7 +145,7 @@ static uint32_t find_tag_data(uint32_t tag_list, uint32_t tag, uint32_t def)
 {
     if (!tag_list) return def;
     uint32_t p = tag_list;
-    while (p + 8 <= GUEST_RAM_SIZE) {
+    while (gt_ok(p, 8)) {
         uint32_t t = gt_u32(p);
         uint32_t d = gt_u32(p + 4);
         if (t == TAG_DONE) break;
@@ -586,16 +595,20 @@ static void gadtools_GT_SetGadgetAttrsA(void)
     uint32_t tags = m68k_get_reg(NULL, M68K_REG_D0);
     (void)win; (void)req;
 
-    if (!gad) {
+    /* Guest-supplied pointers are unchecked — a wild gadget address must
+     * not let a bad app page-fault the kernel (g_ram + ~0xFFFFFFFF wraps
+     * below the RAM window). */
+    if (!gad || !gt_ok(gad, GAD_SIZE)) {
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
 
     uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F;
     uint32_t special = gt_u32(gad + GAD_OFF_SPECIALINFO);
+    int special_ok = special && gt_ok(special, SI_SIZE);
 
     uint32_t p = tags;
-    while (p + 8 <= GUEST_RAM_SIZE) {
+    while (gt_ok(p, 8)) {
         uint32_t tag = gt_u32(p);
         uint32_t data = gt_u32(p + 4);
         if (tag == TAG_DONE) break;
@@ -613,10 +626,10 @@ static void gadtools_GT_SetGadgetAttrsA(void)
                 }
                 break;
             case GTST_String:
-                if (type == GTYP_STRGADGET && special) {
+                if (type == GTYP_STRGADGET && special_ok) {
                     uint32_t buf = gt_u32(special + SI_OFF_BUFFER);
                     uint16_t maxchars = gt_u16(special + SI_OFF_MAXCHARS);
-                    if (buf && data) {
+                    if (buf && data && gt_ok(buf, maxchars)) {
                         char tmp[256];
                         gt_guest_str(tmp, data, sizeof(tmp));
                         int n = (int)strlen(tmp);
@@ -630,10 +643,10 @@ static void gadtools_GT_SetGadgetAttrsA(void)
                 }
                 break;
             case GTIN_Number:
-                if (type == GTYP_INTGADGET && special) {
+                if (type == GTYP_INTGADGET && special_ok) {
                     uint32_t buf = gt_u32(special + SI_OFF_BUFFER);
                     uint16_t maxchars = gt_u16(special + SI_OFF_MAXCHARS);
-                    if (buf) {
+                    if (buf && gt_ok(buf, maxchars)) {
                         char tmp[16];
                         int n = gt_itoa_decimal((int32_t)data, tmp, sizeof(tmp));
                         if (n < 0) n = 0;
@@ -657,13 +670,13 @@ static void gadtools_GT_SetGadgetAttrsA(void)
                 }
                 break;
             case GTLV_Selected:
-                if (type == GTYP_LISTVIEW && special) {
+                if (type == GTYP_LISTVIEW && special_ok) {
                     uint32_t count = gt_u32(special + LV_OFF_COUNT);
                     if (data < count) gt_w32(special + LV_OFF_SELECTED, data);
                 }
                 break;
             case GTLV_Top:
-                if (type == GTYP_LISTVIEW && special) {
+                if (type == GTYP_LISTVIEW && special_ok) {
                     gt_w32(special + LV_OFF_TOP, data);
                 }
                 break;
@@ -682,12 +695,13 @@ static void gadtools_GT_GetGadgetAttrsA(void)
     (void)win; (void)req;
 
     int ok = 0;
-    if (gad && tags) {
+    if (gad && gt_ok(gad, GAD_SIZE) && tags) {
         uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F;
         uint32_t special = gt_u32(gad + GAD_OFF_SPECIALINFO);
+        int special_ok = special && gt_ok(special, SI_SIZE);
 
         uint32_t p = tags;
-        while (p + 8 <= GUEST_RAM_SIZE) {
+        while (gt_ok(p, 8)) {
             uint32_t tag = gt_u32(p);
             uint32_t store = gt_u32(p + 4);
             if (tag == TAG_DONE) break;
@@ -698,13 +712,13 @@ static void gadtools_GT_GetGadgetAttrsA(void)
             int matched = 0;
             switch (tag) {
                 case GTST_String:
-                    if (type == GTYP_STRGADGET && special) {
+                    if (type == GTYP_STRGADGET && special_ok) {
                         value = gt_u32(special + SI_OFF_BUFFER);
                         matched = 1;
                     }
                     break;
                 case GTIN_Number:
-                    if (type == GTYP_INTGADGET && special) {
+                    if (type == GTYP_INTGADGET && special_ok) {
                         uint32_t buf = gt_u32(special + SI_OFF_BUFFER);
                         if (buf) {
                             char tmp[32];
@@ -721,7 +735,7 @@ static void gadtools_GT_GetGadgetAttrsA(void)
                     }
                     break;
                 case GTLV_Selected:
-                    if (type == GTYP_LISTVIEW && special) {
+                    if (type == GTYP_LISTVIEW && special_ok) {
                         value = gt_u32(special + LV_OFF_SELECTED);
                         matched = 1;
                     }
@@ -731,7 +745,7 @@ static void gadtools_GT_GetGadgetAttrsA(void)
                     matched = 1;
                     break;
             }
-            if (matched) {
+            if (matched && gt_ok(store, 4)) {
                 gt_w32(store, value);
                 ok++;
             }

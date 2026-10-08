@@ -20,6 +20,7 @@
 #include "../klog/klog.h"
 #include "irq/rtc.h"
 #include "irq/ps2kbd.h"
+#include "irq/ps2mouse.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -97,6 +98,16 @@ static inline void mem_w32(uint32_t addr, uint32_t v)
     g_ram[addr + 1] = (uint8_t)(v >> 16);
     g_ram[addr + 2] = (uint8_t)(v >>  8);
     g_ram[addr + 3] = (uint8_t)v;
+}
+
+/* Guest pointer sanity for structure walks: menu strips and gadget lists
+ * are read while the owning task is live (MENUVERIFY handlers populate
+ * strips lazily), so a mid-write/torn pointer must never be dereferenced —
+ * g_ram + wild_ptr can land outside the RAM window and page-fault the
+ * kernel. */
+static int guest_ok(uint32_t p, uint32_t len)
+{
+    return p && p < GUEST_RAM_SIZE && len <= GUEST_RAM_SIZE - p;
 }
 
 static void guest_str(char *dst, uint32_t src, int max)
@@ -1121,24 +1132,37 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
         }
 
         case WM_EVT_MOUSE_DOWN: {
-            /* Right button is the menu button: on a menu-equipped window
-             * Intuition intercepts it and opens menu state — it does NOT
-             * deliver IDCMP_MOUSEBUTTONS MENUDOWN.  If the app subscribed to
-             * IDCMP_MENUVERIFY it gets a verify message first; apps that
-             * build their strip lazily (OctaMED) populate it here, which the
-             * Amiga+letter command-key search then sees. */
+            int relx = p2 - wx;
+            int rely = p3 - wy;
+            gzz_mouse_to_content(slot, &relx, &rely);
+
+            /* Right button is the menu button: Intuition intercepts it and
+             * opens menu state — it does NOT deliver IDCMP_MOUSEBUTTONS
+             * MENUDOWN unless the window set WFLG_RMBTRAP, which asks for
+             * the menu button to be reported like the select button.
+             * If the app subscribed to IDCMP_MENUVERIFY it gets a verify
+             * message first; apps that build their strip lazily (OctaMED)
+             * populate it here, which the Amiga+letter command-key search
+             * and the deferred menu-open reparse then see. */
             if (p1 == 1 && slot) {
+                if (mem_u32(win_ptr + WIN_OFF_FLAGS) & WFLG_RMBTRAP) {
+                    if (idcmp & IDCMP_MOUSEBUTTONS)
+                        post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS,
+                                           IECODE_RBUTTON, PS2Kbd_IEQualifier(),
+                                           (int16_t)relx, (int16_t)rely, 0);
+                    return 0;
+                }
                 if (idcmp & IDCMP_MENUVERIFY) {
                     post_intui_message(win_ptr, IDCMP_MENUVERIFY,
                                        0, 0, 0, 0, 0);
                     KLOG(KLOG_DISP, KLOG_INFO, "[mver] wh=%d\n", wm_handle);
                 }
                 slot->menu_verify = 1;
+                /* Amiga-style: menu state begins wherever the menu button
+                 * goes down; dragging onto the screen bar opens a strip. */
+                Desktop_MenuStateBegin();
                 return 0;
             }
-            int relx = p2 - wx;
-            int rely = p3 - wy;
-            gzz_mouse_to_content(slot, &relx, &rely);
             uint32_t gad = gadget_at(win_ptr, relx, rely);
             if (gad && !(mem_u16(gad + GAD_OFF_FLAGS) & GFLG_DISABLED)) {
                 if (gad_is_listview(gad)) {
@@ -1225,21 +1249,31 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 deactivate_string_gadget(slot);
                 WM_Redraw();
             } else if (idcmp & IDCMP_MOUSEBUTTONS) {
-                post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS, (uint16_t)p1, 0,
+                post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS,
+                                   IECODE_LBUTTON, PS2Kbd_IEQualifier(),
                                    (int16_t)relx, (int16_t)rely, 0);
             }
             return 0;
         }
 
         case WM_EVT_MOUSE_UP: {
-            /* End of menu state: after a MENUVERIFY the release without a
-             * selection posts IDCMP_MENUPICK with MENUNULL, giving the app
-             * the cue to tear down a lazily-built strip. */
-            if (p1 == 1 && slot && slot->menu_verify) {
-                slot->menu_verify = 0;
-                if (idcmp & IDCMP_MENUPICK)
-                    post_intui_message(win_ptr, IDCMP_MENUPICK,
-                                       MENUNULL, 0, 0, 0, 0);
+            /* Menu-button release: the button was eaten by menu state
+             * (entered on the down); the MENUPICK terminator goes out from
+             * Desktop_RightButtonRelease after any selection so the pick
+             * precedes MENUNULL like on real Intuition.  Only RMBTRAP
+             * windows — which never enter menu state — see MENUUP here. */
+            if (p1 == 1) {
+                if (slot) slot->menu_verify = 0;
+                uint32_t wflags = mem_u32(win_ptr + WIN_OFF_FLAGS);
+                if ((wflags & WFLG_RMBTRAP) && (idcmp & IDCMP_MOUSEBUTTONS)) {
+                    int mrelx = p2 - wx;
+                    int mrely = p3 - wy;
+                    gzz_mouse_to_content(slot, &mrelx, &mrely);
+                    post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS,
+                                       IECODE_RBUTTON | IECODE_UP_PREFIX,
+                                       PS2Kbd_IEQualifier(),
+                                       (int16_t)mrelx, (int16_t)mrely, 0);
+                }
                 return 0;
             }
             int relx = p2 - wx;
@@ -1298,7 +1332,9 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
             }
             if (!hit_gad && (idcmp & IDCMP_MOUSEBUTTONS))
-                post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS, (uint16_t)(0x100 + p1), 0,
+                post_intui_message(win_ptr, IDCMP_MOUSEBUTTONS,
+                                   IECODE_LBUTTON | IECODE_UP_PREFIX,
+                                   PS2Kbd_IEQualifier(),
                                    (int16_t)relx, (int16_t)rely, 0);
             if (redraw) WM_Redraw();
             return 0;
@@ -1321,7 +1357,8 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 return 0;
             }
             if (idcmp & IDCMP_MOUSEMOVE)
-                post_intui_message(win_ptr, IDCMP_MOUSEMOVE, 0, 0,
+                post_intui_message(win_ptr, IDCMP_MOUSEMOVE, 0,
+                                   PS2Kbd_IEQualifier(),
                                    (int16_t)relx, (int16_t)rely, 0);
             return 0;
         }
@@ -1356,16 +1393,10 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 return 0;
             }
             {
-                /* Build the Amiga qualifier from live modifier + mouse state
-                 * (IEQUALIFIER_*).  Without it combos like Shift+Space
-                 * ("play song" in OctaMED) arrive as plain keys. */
-                uint16_t qual = 0;
-                if (g_kbd_mods.shift)       qual |= 0x0001;
-                if (g_kbd_mods.caps_lock)   qual |= 0x0004;
-                if (g_kbd_mods.ctrl)        qual |= 0x0008;
-                if (g_kbd_mods.alt)         qual |= 0x0010;
-                if (g_kbd_mods.super_left)  qual |= 0x0040;
-                if (g_kbd_mods.super_right) qual |= 0x0080;
+                /* Full Amiga ie_Qualifier from live modifier + mouse state.
+                 * Without it combos like Shift+Space ("play song" in
+                 * OctaMED) arrive as plain keys. */
+                uint16_t qual = PS2Kbd_IEQualifier();
                 if (idcmp & IDCMP_VANILLAKEY)
                     post_intui_message(win_ptr, IDCMP_VANILLAKEY,
                                        (uint16_t)p1, qual, 0, 0, 0);
@@ -8804,8 +8835,8 @@ static void intuition_SetMenuStrip(void)
     KLOG(KLOG_DISP, KLOG_INFO,
          "[sms] win=%x strip=%x first=%x name=%x\n",
          win_ptr, menu,
-         menu ? mem_u32(menu + MENU_OFF_FIRSTITEM) : 0,
-         menu ? mem_u32(menu + MENU_OFF_MENUNAME) : 0);
+         guest_ok(menu, MENU_OFF_SIZE) ? mem_u32(menu + MENU_OFF_FIRSTITEM) : 0,
+         guest_ok(menu, MENU_OFF_SIZE) ? mem_u32(menu + MENU_OFF_MENUNAME) : 0);
     if (win_ptr)
         mem_w32(win_ptr + WIN_OFF_MENUSTRIP, menu);
     m68k_set_reg(M68K_REG_D0, 1); /* BOOL — apps fall back on FALSE */
@@ -8843,19 +8874,19 @@ static void intuition_ItemAddress(void)
         int sub_idx  = SUBNUM(menu_num);
 
         uint32_t menu = menu_strip;
-        for (int m = 0; menu && m < menu_idx; m++)
+        for (int m = 0; guest_ok(menu, MENU_OFF_SIZE) && m < menu_idx; m++)
             menu = mem_u32(menu + MENU_OFF_NEXTMENU);
 
-        if (menu) {
+        if (guest_ok(menu, MENU_OFF_SIZE)) {
             uint32_t item = mem_u32(menu + MENU_OFF_FIRSTITEM);
-            for (int i = 0; item && i < item_idx; i++)
+            for (int i = 0; guest_ok(item, MENUITEM_ALLOC_SIZE) && i < item_idx; i++)
                 item = mem_u32(item + MENUITEM_OFF_NEXTITEM);
 
-            if (item && sub_idx != NOSUB) {
+            if (guest_ok(item, MENUITEM_ALLOC_SIZE) && sub_idx != NOSUB) {
                 uint32_t sub = mem_u32(item + MENUITEM_OFF_SUBITEM);
-                for (int s = 0; sub && s < sub_idx; s++)
+                for (int s = 0; guest_ok(sub, MENUITEM_ALLOC_SIZE) && s < sub_idx; s++)
                     sub = mem_u32(sub + MENUITEM_OFF_NEXTITEM);
-                result = sub;
+                result = guest_ok(sub, MENUITEM_ALLOC_SIZE) ? sub : 0;
             } else {
                 result = item;
             }
@@ -8874,23 +8905,23 @@ static void set_menu_item_enabled(uint32_t menu_strip, uint32_t menu_number, int
     int sub_idx  = SUBNUM(menu_number);
 
     uint32_t menu = menu_strip;
-    for (int m = 0; menu && m < menu_idx; m++)
+    for (int m = 0; guest_ok(menu, MENU_OFF_SIZE) && m < menu_idx; m++)
         menu = mem_u32(menu + MENU_OFF_NEXTMENU);
-    if (!menu) return;
+    if (!guest_ok(menu, MENU_OFF_SIZE)) return;
 
     uint32_t item = mem_u32(menu + MENU_OFF_FIRSTITEM);
-    for (int i = 0; item && i < item_idx; i++)
+    for (int i = 0; guest_ok(item, MENUITEM_ALLOC_SIZE) && i < item_idx; i++)
         item = mem_u32(item + MENUITEM_OFF_NEXTITEM);
-    if (!item) return;
+    if (!guest_ok(item, MENUITEM_ALLOC_SIZE)) return;
 
     if (sub_idx != NOSUB) {
         uint32_t sub = mem_u32(item + MENUITEM_OFF_SUBITEM);
-        for (int s = 0; sub && s < sub_idx; s++)
+        for (int s = 0; guest_ok(sub, MENUITEM_ALLOC_SIZE) && s < sub_idx; s++)
             sub = mem_u32(sub + MENUITEM_OFF_NEXTITEM);
         item = sub;
     }
 
-    if (item) {
+    if (guest_ok(item, MENUITEM_ALLOC_SIZE)) {
         uint16_t flags = mem_u16(item + MENUITEM_OFF_FLAGS);
         if (enabled) flags |= ITEMENABLED;
         else         flags &= ~ITEMENABLED;
@@ -8939,14 +8970,52 @@ uint32_t Intuition_GetActiveWindowMenuStrip(void)
     return strip;
 }
 
-/* Post an IDCMP_MENUPICK message to the focused WM window. */
+/* Post an IDCMP_MENUPICK message to the focused WM window.  Like real
+ * Intuition the message carries the live qualifier and the pointer
+ * position in window coordinates. */
 void Intuition_PostMenuPick(uint32_t menu_number)
 {
     int focus = WM_GetFocus();
     if (focus < 0) return;
     uint32_t win_ptr = get_guest_window_from_handle(focus);
     if (!win_ptr) return;
-    post_intui_message(win_ptr, IDCMP_MENUPICK, (uint16_t)menu_number, 0, 0, 0, 0);
+    IntuitionSlot *slot = get_slot_from_handle(focus);
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    WM_GetWindowRect(focus, &wx, &wy, &ww, &wh);
+    int relx = g_mouse.x - wx;
+    int rely = g_mouse.y - wy;
+    gzz_mouse_to_content(slot, &relx, &rely);
+    KLOG(KLOG_DISP, KLOG_INFO, "[menupick] num=%04x\n", menu_number);
+    post_intui_message(win_ptr, IDCMP_MENUPICK, (uint16_t)menu_number,
+                       PS2Kbd_IEQualifier(),
+                       (int16_t)relx, (int16_t)rely, 0);
+}
+
+/* Post an IDCMP_MENUVERIFY to the focused window if it subscribed.
+ * The desktop calls this when the menu button goes down on the screen
+ * bar directly (menu state entered without a window hit) so apps that
+ * populate their strip lazily still get their verify message. */
+void Intuition_PostMenuVerify(void)
+{
+    int focus = WM_GetFocus();
+    if (focus < 0) return;
+    uint32_t win_ptr = get_guest_window_from_handle(focus);
+    if (!win_ptr) return;
+    IntuitionSlot *slot = get_slot_from_handle(focus);
+    if (slot) slot->menu_verify = 1;
+    /* post_intui_message masks on the window's IDCMP flags itself. */
+    post_intui_message(win_ptr, IDCMP_MENUVERIFY, 0, 0, 0, 0, 0);
+}
+
+/* Clear a pending menu-verify handshake on the focused window — called by
+ * the desktop when menu state ends (release), so a stale flag can't leak
+ * into the next gesture. */
+void Intuition_MenuVerifyDone(void)
+{
+    int focus = WM_GetFocus();
+    if (focus < 0) return;
+    IntuitionSlot *slot = get_slot_from_handle(focus);
+    if (slot) slot->menu_verify = 0;
 }
 
 /* Search the parsed menu strip for an enabled item whose command key matches
@@ -8954,7 +9023,9 @@ void Intuition_PostMenuPick(uint32_t menu_number)
  * match is found, otherwise 0. */
 static int find_command_key_in_menu(HostMenu *menus, int menu_count, char key,
                                     uint32_t *out_menu_number,
-                                    uint32_t *out_guest_item, int *out_toggle)
+                                    uint32_t *out_guest_item,
+                                    uint32_t *out_guest_head,
+                                    int *out_toggle)
 {
     for (int m = 0; m < menu_count; m++) {
         for (int i = 0; i < menus[m].item_count; i++) {
@@ -8966,6 +9037,7 @@ static int find_command_key_in_menu(HostMenu *menus, int menu_count, char key,
                     *out_menu_number = (uint32_t)((m & 0x1F) | ((i & 0x3F) << 5) |
                                                   (NOSUB << 11));
                     *out_guest_item = mi->guest_item;
+                    *out_guest_head = mi->guest_head;
                     *out_toggle = mi->toggle;
                     return 1;
                 }
@@ -8981,6 +9053,7 @@ static int find_command_key_in_menu(HostMenu *menus, int menu_count, char key,
                                                           ((i & 0x3F) << 5) |
                                                           ((s & 0x1F) << 11));
                             *out_guest_item = smi->guest_item;
+                            *out_guest_head = smi->guest_head;
                             *out_toggle = smi->toggle;
                             return 1;
                         }
@@ -9025,14 +9098,21 @@ int Intuition_InvokeCommandKey(char c)
     if ((unsigned char)c >= 1 && (unsigned char)c <= 26)
         key = (char)('A' + c - 1);
 
-    uint32_t menu_number = 0, guest_item = 0;
+    uint32_t menu_number = 0, guest_item = 0, guest_head = 0;
     int toggle = 0;
     int hit = find_command_key_in_menu(menus, count, key,
-                                       &menu_number, &guest_item, &toggle);
+                                       &menu_number, &guest_item,
+                                       &guest_head, &toggle);
     if (hit) {
-        Intuition_UpdateMenuItemCheck(guest_item, toggle);
+        KLOG(KLOG_DISP, KLOG_INFO, "[commseq] key=%c num=%04x\n",
+             key, (unsigned)menu_number);
+        Intuition_UpdateMenuItemCheck(guest_head, guest_item, toggle);
         post_intui_message(win_ptr, IDCMP_MENUPICK,
-                           (uint16_t)menu_number, 0, 0, 0, 0);
+                           (uint16_t)menu_number, PS2Kbd_IEQualifier(),
+                           0, 0, 0);
+        /* MENUPICK streams always end with MENUNULL. */
+        post_intui_message(win_ptr, IDCMP_MENUPICK,
+                           MENUNULL, PS2Kbd_IEQualifier(), 0, 0, 0);
     }
     g_ram = saved_ram;
     return hit;
@@ -9062,7 +9142,7 @@ static int parse_host_menu_items(uint32_t first_item, HostMenuItem *items, int m
 {
     int count = 0;
     uint32_t item = first_item;
-    while (item && count < max_items) {
+    while (guest_ok(item, MENUITEM_ALLOC_SIZE) && count < max_items) {
         HostMenuItem *mi = &items[count];
         mi->label[0] = '\0';
         mi->enabled = 1;
@@ -9073,6 +9153,7 @@ static int parse_host_menu_items(uint32_t first_item, HostMenuItem *items, int m
         mi->has_submenu = 0;
         mi->submenu = NULL;
         mi->guest_item = item;
+        mi->guest_head = first_item;
 
         uint16_t flags = mem_u16(item + MENUITEM_OFF_FLAGS);
         if (!(flags & ITEMENABLED)) mi->enabled = 0;
@@ -9081,13 +9162,13 @@ static int parse_host_menu_items(uint32_t first_item, HostMenuItem *items, int m
         if (flags & COMMSEQ) mi->command_key = (char)mem_u8(item + MENUITEM_OFF_COMMAND);
 
         uint32_t item_fill = mem_u32(item + MENUITEM_OFF_ITEMFILL);
-        if (item_fill && (flags & ITEMTEXT)) {
+        if (guest_ok(item_fill, ITEXT_SIZE) && (flags & ITEMTEXT)) {
             uint32_t text_ptr = mem_u32(item_fill + ITEXT_OFF_ITEXT);
             guest_str(mi->label, text_ptr, HOST_MENU_LABEL_SIZE);
         }
 
         uint32_t subitem = mem_u32(item + MENUITEM_OFF_SUBITEM);
-        if (subitem) {
+        if (guest_ok(subitem, MENUITEM_ALLOC_SIZE)) {
             HostMenu *sm = alloc_host_submenu();
             if (sm) {
                 sm->item_count = parse_host_menu_items(subitem, sm->items, HOST_MENU_ITEM_MAX);
@@ -9113,8 +9194,17 @@ int Intuition_GetHostMenuStrip(uint32_t menu_strip, HostMenu *menus, int max_men
 
     int count = 0;
     uint32_t menu = menu_strip;
-    while (menu && count < max_menus) {
+    while (guest_ok(menu, MENU_OFF_SIZE) && count < max_menus) {
         uint32_t name_ptr = mem_u32(menu + MENU_OFF_MENUNAME);
+        /* GadTools strips point MenuName at an IntuiText whose IText holds
+         * the title (OctaMED); plain menus point at the string itself.
+         * An IntuiText has a zero pad byte at +3 and a valid IText pointer
+         * at +12 — a 3+-letter title has a nonzero byte at +3. */
+        if (guest_ok(name_ptr, ITEXT_SIZE) && g_ram[name_ptr + 3] == 0) {
+            uint32_t t = mem_u32(name_ptr + ITEXT_OFF_ITEXT);
+            if (guest_ok(t, 1) && g_ram[t] >= 0x20 && g_ram[t] < 0x7F)
+                name_ptr = t;
+        }
         guest_str(menus[count].label, name_ptr, HOST_MENU_LABEL_SIZE);
         menus[count].item_count = 0;
 
@@ -9127,16 +9217,78 @@ int Intuition_GetHostMenuStrip(uint32_t menu_strip, HostMenu *menus, int max_men
     return count;
 }
 
-/* Toggle/set a guest MenuItem's CHECKIT state after it has been selected.
- * For MENUTOGGLE items the state is toggled; for plain CHECKIT items it is set. */
-void Intuition_UpdateMenuItemCheck(uint32_t guest_item, int toggle)
+/* Bound variant for native callers (desktop menubar): the strip lives in
+ * the focused window's *owner* RAM window, which is not bound when we run
+ * from the event pump — parsing under the wrong g_ram yields empty menus. */
+int Intuition_GetActiveWindowHostMenuStrip(HostMenu *menus, int max_menus)
 {
-    if (!guest_item) return;
+    int focus = WM_GetFocus();
+    if (focus < 0) return 0;
+    IntuitionSlot *slot = get_slot_from_handle(focus);
+    uint32_t win_ptr = slot ? slot->guest_win : 0;
+    if (!win_ptr) return 0;
+    uint8_t *saved_ram = g_ram;
+    if (slot->owner && slot->owner->m68k_ram)
+        g_ram = slot->owner->m68k_ram;
+    uint32_t strip = mem_u32(win_ptr + WIN_OFF_MENUSTRIP);
+    int n = strip ? Intuition_GetHostMenuStrip(strip, menus, max_menus) : 0;
+    g_ram = saved_ram;
+    return n;
+}
+
+/* Toggle/set a guest MenuItem's CHECKIT state after it has been selected.
+ * For MENUTOGGLE items the state is toggled; for plain CHECKIT items it is
+ * set.  When the item ends up checked, mutual exclusion applies: siblings
+ * named in its MutualExclude bitmask (bit i = i-th item of the same item
+ * list) are unchecked, and so are siblings in the same contiguous run of
+ * CHECKIT items — classic Intuition treats adjacent checkmarked items as
+ * a radio group.  `list_head` is the head of the guest MenuItem list the
+ * picked item belongs to (top-level item list or a SubItem list). */
+void Intuition_UpdateMenuItemCheck(uint32_t list_head, uint32_t guest_item, int toggle)
+{
+    if (!guest_ok(guest_item, MENUITEM_ALLOC_SIZE)) return;
     uint16_t flags = mem_u16(guest_item + MENUITEM_OFF_FLAGS);
-    if (flags & CHECKIT) {
-        if (toggle) flags ^= CHECKED;
-        else        flags |= CHECKED;
-        mem_w16(guest_item + MENUITEM_OFF_FLAGS, flags);
+    if (!(flags & CHECKIT)) return;
+    if (toggle) flags ^= CHECKED;
+    else        flags |= CHECKED;
+    mem_w16(guest_item + MENUITEM_OFF_FLAGS, flags);
+    if (!(flags & CHECKED) || !guest_ok(list_head, MENUITEM_ALLOC_SIZE)) return;
+
+    /* Position of the picked item within its sibling list (mask bits and
+     * contiguous runs are defined over these indices, max 32 items). */
+    int sel_idx = -1, idx = 0;
+    for (uint32_t it = list_head; guest_ok(it, MENUITEM_ALLOC_SIZE) && idx < 32;
+         it = mem_u32(it + MENUITEM_OFF_NEXTITEM), idx++) {
+        if (it == guest_item) { sel_idx = idx; break; }
+    }
+    if (sel_idx < 0) return;
+
+    uint32_t mex = mem_u32(guest_item + MENUITEM_OFF_MUTUALEX);
+    idx = 0;
+    for (uint32_t it = list_head; guest_ok(it, MENUITEM_ALLOC_SIZE) && idx < 32;
+         it = mem_u32(it + MENUITEM_OFF_NEXTITEM), idx++) {
+        if (idx == sel_idx) continue;
+        uint16_t f = mem_u16(it + MENUITEM_OFF_FLAGS);
+        if (!(f & CHECKED)) continue;
+        int excluded = (int)((mex >> idx) & 1);
+        if (!excluded) {
+            /* In the same contiguous run of CHECKIT items? */
+            int lo = idx < sel_idx ? idx : sel_idx;
+            int hi = idx < sel_idx ? sel_idx : idx;
+            int j = 0, contiguous = 1;
+            for (uint32_t p = list_head;
+                 guest_ok(p, MENUITEM_ALLOC_SIZE) && j <= hi;
+                 p = mem_u32(p + MENUITEM_OFF_NEXTITEM), j++) {
+                if (j < lo) continue;
+                if (!(mem_u16(p + MENUITEM_OFF_FLAGS) & CHECKIT)) {
+                    contiguous = 0;
+                    break;
+                }
+            }
+            excluded = contiguous;
+        }
+        if (excluded)
+            mem_w16(it + MENUITEM_OFF_FLAGS, (uint16_t)(f & ~CHECKED));
     }
 }
 
@@ -9491,6 +9643,7 @@ void UAOS_Intuition_CheckPendingPointer(void)
 /* Post IDCMP_INTUITICKS to every active window whose IDCMP has the flag set.
  * Called periodically (10 Hz) from the main emulation loop. */
 static uint64_t g_last_intuiticks_ticks = 0;
+int g_iticks_posts = 0;   /* debug: delivered IDCMP_INTUITICKS count */
 
 void UAOS_Intuition_PostIntuiTicks(void)
 {
@@ -9505,8 +9658,10 @@ void UAOS_Intuition_PostIntuiTicks(void)
             g_ram = slot->owner->m68k_ram;
         uint32_t idcmp = mem_u32(slot->guest_win + WIN_OFF_IDCMPFLAGS);
         g_ram = saved;
-        if (idcmp & IDCMP_INTUITICKS)
+        if (idcmp & IDCMP_INTUITICKS) {
             post_intui_message(slot->guest_win, IDCMP_INTUITICKS, 0, 0, 0, 0, 0);
+            g_iticks_posts++;
+        }
     }
 }
 

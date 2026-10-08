@@ -180,15 +180,17 @@ The varargs wrappers read tag/value pairs from the guest stack starting at the r
 
 | Event class | Status | Notes |
 |-------------|--------|-------|
-| `IDCMP_MOUSEBUTTONS` | Implemented | Mouse button press/release on the window client area is converted to window-relative coordinates and posted to the `UserPort`. |
-| `IDCMP_MOUSEMOVE` | Implemented | Mouse moves over the focused window are posted with window-relative coordinates. |
-| `IDCMP_RAWKEY` / `IDCMP_VANILLAKEY` | Implemented | WM keystrokes are posted as raw/vanilla key events unless they are consumed by an active string gadget (character insertion, backspace, cursor movement, selection, etc.). |
+| `IDCMP_MOUSEBUTTONS` | Implemented | Mouse button press/release on the window client area is converted to window-relative coordinates and posted to the `UserPort`. `Code` carries genuine IECODE values (`0x68`/`0xE8` LMB, `0x69`/`0xE9` RMB, `0x6A`/`0xEA` MMB) and `Qualifier` the live `ie_Qualifier` snapshot. `WFLG_RMBTRAP` windows receive right-button events instead of entering menu state. |
+| `IDCMP_MOUSEMOVE` | Implemented | Mouse moves over the focused window are posted with window-relative coordinates and the live qualifier. |
+| `IDCMP_RAWKEY` / `IDCMP_VANILLAKEY` | Implemented | Genuine Amiga rawkey codes (bit 7 = release) with the full 16-bit `ie_Qualifier` (L/R shift, caps, control, L/R alt, L/R Amiga, numeric-pad, repeat, mouse buttons) — PS/2 and USB HID feed a shared ring. Rawkey messages precede cooked `IDCMP_VANILLAKEY` characters. Amiga+letter sequences route through `COMMSEQ` menu matching; plain keys always reach the app. WM keystrokes are posted unless consumed by an active string gadget (character insertion, backspace, cursor movement, selection, etc.). |
+| `IDCMP_MENUPICK` | Implemented | Posts on menu selection and on `COMMSEQ` hits with qualifier + pointer coords; every pick stream terminates with `MENUNULL`. `CHECKIT`/`MENUTOGGLE` state is updated on the guest `MenuItem`, honoring `MutualExclude` masks and contiguous CHECKIT-run radio groups. |
+| `IDCMP_MENUVERIFY` | Implemented | Posted when menu state begins (menu-button press over a window or the screen bar) so apps can populate their strip lazily; the host reparses the strip before showing it. |
 | `IDCMP_CLOSEWINDOW` | Implemented | Clicking the window close gadget is vetoed at the WM level and posted as an `IDCMP_CLOSEWINDOW` message; the guest must call `CloseWindow()` to actually close it. |
 | `IDCMP_GADGETDOWN` / `IDCMP_GADGETUP` | Implemented | The WM's existing system gadgets (close, drag, depth, size) are exposed as guest `Gadget` structures and linked into `Window.FirstGadget`. Pressing and releasing a system gadget posts the corresponding `IDCMP_GADGETDOWN`/`IDCMP_GADGETUP` message with the gadget pointer in `IAddress`. |
 | `IDCMP_NEWSIZE` | Implemented | Posted when the window is resized via the resize grip or via `SizeWindow()`. |
 | `IDCMP_ACTIVEWINDOW` / `IDCMP_INACTIVEWINDOW` | Implemented | Focus changes (raise/lower/close/click-to-focus) are posted to the `UserPort`. |
 | `IDCMP_HELP` | Implemented | The F1 key is mapped to a help keystroke and posts an `IDCMP_HELP` message; if `WA_HelpGroupWindow` is set, the message is sent to that window instead of the focused window. |
-| `IDCMP_INTUITICKS` | Implemented | Posted to every active window whose IDCMP has this flag set at approximately 10 Hz (every 10 PIT ticks). |
+| `IDCMP_INTUITICKS` | Implemented | Posted to every active window whose IDCMP has this flag set at approximately 10 Hz (every 10 PIT ticks). Delivered from the per-task exec slice loop, so it reaches windows whose owners block in `Wait()`/`WaitIO`/`WaitPort` alike. |
 
 | Function | Status | Notes |
 |----------|--------|-------|

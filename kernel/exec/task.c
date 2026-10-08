@@ -874,7 +874,7 @@ void Task_EventPumpEntry(void *arg)
             int rk = PS2Kbd_GetRawKey();
             if (rk < 0) break;
             Blanker_OnInput();
-            WM_RawKeyEvent(rk & 0xFF, (rk >> 8) & 0xFF);
+            WM_RawKeyEvent(rk & 0xFF, (rk >> 8) & 0xFFFF);
         }
 
         /* Keyboard -> WM (Amiga key combos first, then command-key
@@ -905,18 +905,19 @@ void Task_EventPumpEntry(void *arg)
                 uc == (unsigned char)AMIGA_LB)
                 continue;
 
-            /* Amiga+letter — menu shortcut via Intuition command key.
-             * On a miss the real keymap suppresses the vanilla char, so
-             * nothing further is delivered (the RAWKEY pair already went). */
+            /* Amiga+letter — menu shortcut via Intuition command key
+             * (COMMSEQ).  On a miss the real keymap suppresses the vanilla
+             * char, so nothing further is delivered (the RAWKEY pair
+             * already went).  Plain keys never fire COMMSEQ — they belong
+             * to the app (tracker note entry uses the letter rows). */
             if (IS_AMIGA_RKEY(c)) {
                 char letter = AMIGA_RLETTER(c);
                 Intuition_InvokeCommandKey(letter);
                 continue;
             }
 
-            /* Regular key — try command key first, then WM */
-            if (!Intuition_InvokeCommandKey(c))
-                WM_KeyEvent(c);
+            /* Regular key — straight to the focused window */
+            WM_KeyEvent(c);
         }
 
         /* Clock redraw */

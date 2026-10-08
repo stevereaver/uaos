@@ -29,14 +29,46 @@ void PS2Kbd_PushChar(char c);
 int  PS2Kbd_HasRawKey(void);
 int  PS2Kbd_GetRawKey(void);   /* returns code|0x80*up, or -1 if empty */
 
+/* Push an Amiga rawkey transition (code 0x00-0x7F, up=1 on release) into
+ * the rawkey ring — used by the USB HID driver so both paths share the
+ * queue. */
+void PS2Kbd_PushRawKey(int amiga_code, int up);
+
+/* ie_Qualifier bits (devices/inputevent.h) — carried in IntuiMessage
+ * .Qualifier for RAWKEY/VANILLAKEY/MOUSEBUTTONS/MENUPICK messages. */
+#define IEQUALIFIER_LSHIFT     0x0001
+#define IEQUALIFIER_RSHIFT     0x0002
+#define IEQUALIFIER_CAPSLOCK   0x0004
+#define IEQUALIFIER_CONTROL    0x0008
+#define IEQUALIFIER_LALT       0x0010
+#define IEQUALIFIER_RALT       0x0020
+#define IEQUALIFIER_LCOMMAND   0x0040   /* Left Amiga  */
+#define IEQUALIFIER_RCOMMAND   0x0080   /* Right Amiga */
+#define IEQUALIFIER_NUMERICPAD 0x0100
+#define IEQUALIFIER_REPEAT     0x0200
+#define IEQUALIFIER_INTERRUPT  0x0400
+#define IEQUALIFIER_MULTIBCAST 0x0800
+#define IEQUALIFIER_MIDBUTTON  0x1000
+#define IEQUALIFIER_RBUTTON    0x2000
+#define IEQUALIFIER_LBUTTON    0x4000
+
+/* Live ie_Qualifier snapshot: current modifier + mouse-button state.
+ * NUMERICPAD/REPEAT are per-key attributes and only ever set on the
+ * rawkey ring. */
+uint16_t PS2Kbd_IEQualifier(void);
+
 /* Modifier state */
 typedef struct {
-    int shift;
-    int ctrl;
-    int alt;
+    int shift;        /* any Shift held (L or R) */
+    int ctrl;         /* any Ctrl held */
+    int alt;          /* any Alt held (L or R) */
     int caps_lock;
     int super_left;   /* Left Super/Windows key → LAmiga */
     int super_right;  /* Right Super/Windows key → RAmiga */
+    int lshift;       /* per-side tracking for ie_Qualifier */
+    int rshift;
+    int lalt;
+    int ralt;
 } KbdMods;
 
 extern KbdMods g_kbd_mods;

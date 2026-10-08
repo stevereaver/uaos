@@ -977,10 +977,11 @@ void WM_MouseEvent(int mx, int my, int btn_left, int btn_right)
     g_btn_left_prev = btn_left;
     g_btn_right_prev = btn_right;
 
-    /* When a Workbench menu is open the desktop owns all mouse input, even
-     * if the dropdown overlaps a window. Without this the window hit-test
-     * swallows the events and menu items stop highlighting/activating. */
-    if (Desktop_IsMenuOpen()) {
+    /* While menu state is active (RMB held) the desktop owns all mouse
+     * input, even before a dropdown opens or if it overlaps a window.
+     * Without this the window hit-test swallows the events and menu items
+     * stop highlighting/activating. */
+    if (Desktop_MenuStateActive()) {
         if (btn_left_pressed) {
             g_press_was_desktop = 1;
             Desktop_MouseEvent(mx, my, 1, 0);
@@ -1327,7 +1328,7 @@ void WM_RawKeyEvent(int code, int qual)
     if (g_focus < 0) return;
     WmWindow *w = &g_wins[g_focus];
     if (w->active && w->on_event)
-        w->on_event(g_focus, WM_EVT_RAWKEY, code & 0xFF, qual & 0xFF, 0);
+        w->on_event(g_focus, WM_EVT_RAWKEY, code & 0xFF, qual & 0xFFFF, 0);
 }
 
 /* Damage-scoped repaint: paint only what intersects the accumulated damage

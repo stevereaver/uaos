@@ -431,6 +431,10 @@ static void m68k_wrapper_entry(void *arg)
          * boundary — this poll covers the case where the guest never
          * drops IPL below 7. */
         { extern void UAOS_M68k_DeliverInterrupts(void); UAOS_M68k_DeliverInterrupts(); }
+        /* IDCMP_INTUITICKS pacing: deliver ticks from the exec slice loop
+         * so they reach windows whose owners block in Wait()/WaitIO too,
+         * not only the WaitPort spin (OctaMED's main loop uses Wait()). */
+        { extern void UAOS_Intuition_PostIntuiTicks(void); UAOS_Intuition_PostIntuiTicks(); }
         /* Note: chip_emu_run_to_cycle() is NOT called here because the
          * chipset emulator uses global blitter/copper state that is
          * shared across all tasks.  Driving it from a per-task M68k

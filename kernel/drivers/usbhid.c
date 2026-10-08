@@ -17,6 +17,7 @@
 #include "usb.h"
 #include "../irq/ps2kbd.h"
 #include "../irq/ps2mouse.h"
+#include "../chipset/chip_emu.h"
 #include "../display/cursor.h"
 #include "../exec/task.h"
 #include "../klog/klog.h"
@@ -68,6 +69,41 @@ static const char hid_shifted[128] = {
     [0x38]='?',
 };
 
+/* HID usage → Amiga rawkey matrix code (-1 = unmapped), US layout.
+ * Feeds the shared rawkey ring so IDCMP_RAWKEY works on metal too. */
+static const int8_t hid_to_amiga[128] = {
+    [0x04]=0x20,[0x05]=0x35,[0x06]=0x33,[0x07]=0x22,[0x08]=0x12,
+    [0x09]=0x23,[0x0A]=0x24,[0x0B]=0x25,[0x0C]=0x17,[0x0D]=0x26,
+    [0x0E]=0x27,[0x0F]=0x28,[0x10]=0x37,[0x11]=0x36,[0x12]=0x18,
+    [0x13]=0x19,[0x14]=0x10,[0x15]=0x13,[0x16]=0x21,[0x17]=0x14,
+    [0x18]=0x16,[0x19]=0x34,[0x1A]=0x11,[0x1B]=0x32,[0x1C]=0x15,
+    [0x1D]=0x31,
+    [0x1E]=0x01,[0x1F]=0x02,[0x20]=0x03,[0x21]=0x04,[0x22]=0x05,
+    [0x23]=0x06,[0x24]=0x07,[0x25]=0x08,[0x26]=0x09,[0x27]=0x0A,
+    [0x28]=0x44,[0x29]=0x45,[0x2A]=0x41,[0x2B]=0x42,[0x2C]=0x40,
+    [0x2D]=0x0B,[0x2E]=0x0C,[0x2F]=0x1A,[0x30]=0x1B,[0x31]=0x0D,
+    [0x32]=0x30,
+    [0x33]=0x29,[0x34]=0x2A,[0x35]=0x00,[0x36]=0x38,[0x37]=0x39,
+    [0x38]=0x3A,[0x39]=0x62,
+    [0x3A]=0x50,[0x3B]=0x51,[0x3C]=0x52,[0x3D]=0x53,[0x3E]=0x54,
+    [0x3F]=0x55,[0x40]=0x56,[0x41]=0x57,[0x42]=0x58,[0x43]=0x59,
+    [0x4A]=0x5F,                    /* Home -> Help (as PS/2 path) */
+    [0x4C]=0x46,                    /* Delete */
+    [0x4F]=0x4D,[0x50]=0x4F,[0x51]=0x4E,[0x52]=0x4C, /* cursor R/L/D/U */
+    /* keypad */
+    [0x54]=0x5C,[0x55]=0x5D,[0x56]=0x4A,[0x57]=0x5E,[0x58]=0x43,
+    [0x59]=0x1D,[0x5A]=0x1E,[0x5B]=0x1F,[0x5C]=0x2D,[0x5D]=0x2E,
+    [0x5E]=0x2F,[0x5F]=0x3D,[0x60]=0x3E,[0x61]=0x3F,[0x62]=0x0F,
+    [0x63]=0x3C,
+};
+
+/* Modifier bitmask → Amiga rawkey code, in USB modifier-bit order
+ * (LCtrl LShift LAlt LGUI RCtrl RShift RAlt RGUI).  Both Ctrls share
+ * the single Amiga CTRL key 0x63. */
+static const int8_t hid_mod_amiga[8] = {
+    0x63, 0x60, 0x64, 0x66, 0x63, 0x61, 0x65, 0x67
+};
+
 /* Virtual keys matching ps2kbd.h */
 static char hid_vkey(uint8_t usage)
 {
@@ -98,6 +134,7 @@ typedef struct {
     uint8_t  is_kbd;
     uint8_t  is_apple;        /* Apple kbd kept in report protocol */
     uint8_t  fn_on;           /* Apple Fn currently held */
+    uint8_t  prev_mods;       /* last modifier byte (rawkey transitions) */
     uint8_t  prev_rpt[16];    /* last raw report (dump dedup) */
     int      dump_left;       /* bounded raw-report klog dumps */
 } HidDev;
@@ -213,12 +250,49 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
     } else if (len < 8) return;
 
     uint8_t mods = r[off + 0];
-    g_kbd_mods.shift       = !!(mods & 0x22);
+    if (mods != hd->prev_mods) {
+        /* Each modifier edge is a rawkey transition; update its mod field
+         * before pushing so the qualifier snapshot is post-transition. */
+        uint8_t mdiff = (uint8_t)(mods ^ hd->prev_mods);
+        for (int b = 0; b < 8; b++) {
+            if (!(mdiff & (1 << b))) continue;
+            int down = (mods >> b) & 1;
+            switch (b) {
+            case 1: g_kbd_mods.lshift      = down; break;
+            case 2: g_kbd_mods.lalt        = down; break;
+            case 3: g_kbd_mods.super_left  = down; break;
+            case 5: g_kbd_mods.rshift      = down; break;
+            case 6: g_kbd_mods.ralt        = down; break;
+            case 7: g_kbd_mods.super_right = down; break;
+            default: break;   /* both Ctrl bits fold into .ctrl below */
+            }
+            g_kbd_mods.ctrl = !!(mods & 0x11);
+            if (hid_mod_amiga[b] >= 0) {
+                PS2Kbd_PushRawKey(hid_mod_amiga[b], !down);
+                chip_emu_push_keycode(hid_mod_amiga[b], !down);
+            }
+        }
+        hd->prev_mods = mods;
+    }
+    g_kbd_mods.shift       = g_kbd_mods.lshift || g_kbd_mods.rshift;
     g_kbd_mods.ctrl        = !!(mods & 0x11);
-    g_kbd_mods.alt         = !!(mods & 0x44);
+    g_kbd_mods.alt         = g_kbd_mods.lalt || g_kbd_mods.ralt;
     g_kbd_mods.super_left  = !!(mods & 0x08);
     g_kbd_mods.super_right = !!(mods & 0x80);
     PS2Kbd_CheckResetChord();   /* Ctrl + LAmiga + RAmiga — reset */
+
+    /* Keys released since the last report → rawkey/CIA up transitions. */
+    for (int j = 0; j < 6; j++) {
+        uint8_t pu = hd->prev_keys[j];
+        if (!pu || pu == 1 || pu >= 0x80) continue;
+        int still = 0;
+        for (int i = 2; i < 8 && off + i < len; i++)
+            if (r[off + i] == pu) { still = 1; break; }
+        if (!still && hid_to_amiga[pu] >= 0) {
+            PS2Kbd_PushRawKey(hid_to_amiga[pu], 1);
+            chip_emu_push_keycode(hid_to_amiga[pu], 1);
+        }
+    }
 
     /* Newly-pressed keys = present now, absent from the previous report */
     for (int i = 2; i < 8; i++) {
@@ -229,6 +303,13 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
         for (int j = 0; j < 6; j++)
             if (hd->prev_keys[j] == u) { was_held = 1; break; }
         if (was_held) continue;
+
+        /* Rawkey down transition first — qualifier snapshot reflects the
+         * modifiers already updated above (same ordering as PS/2). */
+        if (u < 0x80 && hid_to_amiga[u] >= 0) {
+            PS2Kbd_PushRawKey(hid_to_amiga[u], 0);
+            chip_emu_push_keycode(hid_to_amiga[u], 0);
+        }
 
         /* Caps Lock on keypress */
         if (u == 0x39) { g_kbd_mods.caps_lock ^= 1; continue; }

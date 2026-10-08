@@ -6,6 +6,7 @@
  */
 
 #include "ps2kbd.h"
+#include "ps2mouse.h"
 #include "idt.h"
 #include "irq.h"
 #include "../exec/task.h"
@@ -125,32 +126,66 @@ void PS2Kbd_PushChar(char c)
  * ========================================================================= */
 
 #define KRAW_SIZE 64
-static volatile uint16_t kraw[KRAW_SIZE];
+/* 32 bits per event: byte0 = code|0x80*up, bits8-23 = full ie_Qualifier. */
+static volatile uint32_t kraw[KRAW_SIZE];
 static volatile uint8_t  kraw_head = 0;
 static volatile uint8_t  kraw_tail = 0;
 
 /* IEQUALIFIER_* snapshot taken at event time — the queue may sit for a
  * pump cycle during which later transitions would corrupt a live read. */
-static uint16_t kraw_qual(void)
+uint16_t PS2Kbd_IEQualifier(void)
 {
     uint16_t q = 0;
-    if (g_kbd_mods.shift)       q |= 0x0001;
-    if (g_kbd_mods.caps_lock)   q |= 0x0004;
-    if (g_kbd_mods.ctrl)        q |= 0x0008;
-    if (g_kbd_mods.alt)         q |= 0x0010;
-    if (g_kbd_mods.super_left)  q |= 0x0040;
-    if (g_kbd_mods.super_right) q |= 0x0080;
+    if (g_kbd_mods.lshift)      q |= IEQUALIFIER_LSHIFT;
+    if (g_kbd_mods.rshift)      q |= IEQUALIFIER_RSHIFT;
+    if (g_kbd_mods.caps_lock)   q |= IEQUALIFIER_CAPSLOCK;
+    if (g_kbd_mods.ctrl)        q |= IEQUALIFIER_CONTROL;
+    if (g_kbd_mods.lalt)        q |= IEQUALIFIER_LALT;
+    if (g_kbd_mods.ralt)        q |= IEQUALIFIER_RALT;
+    if (g_kbd_mods.super_left)  q |= IEQUALIFIER_LCOMMAND;
+    if (g_kbd_mods.super_right) q |= IEQUALIFIER_RCOMMAND;
+    if (g_mouse.btn_left)       q |= IEQUALIFIER_LBUTTON;
+    if (g_mouse.btn_right)      q |= IEQUALIFIER_RBUTTON;
+    if (g_mouse.btn_middle)     q |= IEQUALIFIER_MIDBUTTON;
     return q;
 }
+
+/* Amiga rawkey codes that live on the numeric keypad — their events carry
+ * IEQUALIFIER_NUMERICPAD (input.device marks the event's source). */
+static int amiga_is_keypad(int code)
+{
+    return code == 0x0F ||
+           (code >= 0x1D && code <= 0x1F) ||
+           (code >= 0x2D && code <= 0x2F) ||
+           (code >= 0x3C && code <= 0x3F) ||
+           code == 0x43 || code == 0x4A ||
+           (code >= 0x5C && code <= 0x5E);
+}
+
+/* Held-key bitmap so PS/2 typematic repeats can be marked
+ * IEQUALIFIER_REPEAT like real input.device repeat events. */
+static uint8_t kraw_held[16];
 
 static void kraw_push(int amiga_code, int up)
 {
     if (amiga_code < 0 || amiga_code > 0x7F) return;
+    uint16_t q = PS2Kbd_IEQualifier();
+    int held = (kraw_held[amiga_code >> 3] >> (amiga_code & 7)) & 1;
+    if (!up && held) q |= IEQUALIFIER_REPEAT;
+    if (amiga_is_keypad(amiga_code)) q |= IEQUALIFIER_NUMERICPAD;
+    if (up) kraw_held[amiga_code >> 3] &= (uint8_t)~(1 << (amiga_code & 7));
+    else    kraw_held[amiga_code >> 3] |= (uint8_t)(1 << (amiga_code & 7));
     uint8_t next = (kraw_tail + 1) & (KRAW_SIZE - 1);
     if (next == kraw_head) return;
-    kraw[kraw_tail] = (uint16_t)((amiga_code | (up ? 0x80 : 0)) |
-                                 ((int)kraw_qual() << 8));
+    kraw[kraw_tail] = ((uint32_t)q << 8) |
+                      (uint32_t)(amiga_code | (up ? 0x80 : 0));
     kraw_tail = next;
+}
+
+/* Public hook so the USB HID driver can feed the same rawkey ring. */
+void PS2Kbd_PushRawKey(int amiga_code, int up)
+{
+    kraw_push(amiga_code, up);
 }
 
 int PS2Kbd_HasRawKey(void)
@@ -161,9 +196,9 @@ int PS2Kbd_HasRawKey(void)
 int PS2Kbd_GetRawKey(void)
 {
     if (kraw_head == kraw_tail) return -1;
-    int v = kraw[kraw_head];
+    int v = (int)kraw[kraw_head];
     kraw_head = (kraw_head + 1) & (KRAW_SIZE - 1);
-    return v;   /* low byte: code|0x80*up, high byte: qualifier snapshot */
+    return v;   /* byte0: code|0x80*up, bits8-23: qualifier snapshot */
 }
 
 /* PS/2 set-1 scancode -> Amiga rawkey matrix code (-1 = unmapped). */
@@ -203,7 +238,7 @@ static const int8_t ps2_to_amiga[89] = {
  * Modifier state
  * ========================================================================= */
 
-KbdMods g_kbd_mods = { 0, 0, 0, 0, 0, 0 };
+KbdMods g_kbd_mods = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 /* Amiga three-finger salute: Ctrl + LAmiga + RAmiga resets the machine.
  * The check runs after every modifier transition, so whichever key is
@@ -273,7 +308,8 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
         }
         /* Right Alt → Amiga RALT (E0 38) */
         if (key == 0x38) {
-            g_kbd_mods.alt = !is_break;
+            g_kbd_mods.ralt = !is_break;
+            g_kbd_mods.alt  = g_kbd_mods.lalt || g_kbd_mods.ralt;
             chip_emu_push_keycode(0x65, is_break);
             kraw_push(0x65, is_break);
             PS2Kbd_CheckResetChord();
@@ -320,7 +356,9 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
     /* Update modifiers on both make and break; mirror each transition into
      * the emulated CIA-A keyboard stream so low-level guests see them. */
     if (key == 0x2A || key == 0x36) { /* L/R Shift */
-        g_kbd_mods.shift = !is_break;
+        if (key == 0x2A) g_kbd_mods.lshift = !is_break;
+        else             g_kbd_mods.rshift = !is_break;
+        g_kbd_mods.shift = g_kbd_mods.lshift || g_kbd_mods.rshift;
         chip_emu_push_keycode(key == 0x2A ? 0x60 : 0x61, is_break);
         kraw_push(key == 0x2A ? 0x60 : 0x61, is_break);
         PS2Kbd_CheckResetChord();
@@ -333,8 +371,9 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
         PS2Kbd_CheckResetChord();
         IRQ_EOI((int)vector); return;
     }
-    if (key == 0x38) { /* Alt */
-        g_kbd_mods.alt = !is_break;
+    if (key == 0x38) { /* L-Alt */
+        g_kbd_mods.lalt = !is_break;
+        g_kbd_mods.alt  = g_kbd_mods.lalt || g_kbd_mods.ralt;
         chip_emu_push_keycode(0x64, is_break);
         kraw_push(0x64, is_break);
         PS2Kbd_CheckResetChord();

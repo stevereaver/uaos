@@ -81,6 +81,7 @@ typedef struct {
     int  has_submenu;
     HostMenu *submenu;  /* pointer to parsed sub-item list */
     uint32_t guest_item; /* guest MenuItem pointer for state updates */
+    uint32_t guest_head; /* head of the guest item list this item is in */
 } HostMenuItem;
 
 struct HostMenu {
@@ -91,8 +92,20 @@ struct HostMenu {
 
 uint32_t Intuition_GetActiveWindowMenuStrip(void);
 void     Intuition_PostMenuPick(uint32_t menu_number);
+void     Intuition_PostMenuVerify(void);
+void     Intuition_MenuVerifyDone(void);
 int      Intuition_GetHostMenuStrip(uint32_t menu_strip, HostMenu *menus, int max_menus);
-void     Intuition_UpdateMenuItemCheck(uint32_t guest_item, int toggle);
+/* Bound variant: resolves the focused window's strip under its owner's
+ * RAM window — safe from native (event pump / desktop) contexts. */
+int      Intuition_GetActiveWindowHostMenuStrip(HostMenu *menus, int max_menus);
+void     Intuition_UpdateMenuItemCheck(uint32_t list_head, uint32_t guest_item, int toggle);
 int      Intuition_InvokeCommandKey(char c);
+
+/* Amiga-style menu state: begins when the menu button goes down over a
+ * menu-equipped window (or the screen bar) and ends on release.  While
+ * active the desktop owns all mouse input; dragging onto the menubar
+ * opens the strip under the pointer. */
+void     Desktop_MenuStateBegin(void);
+int      Desktop_MenuStateActive(void);
 
 #endif

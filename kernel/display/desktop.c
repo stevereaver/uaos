@@ -905,6 +905,31 @@ static HostMenu  g_active_menus[HOST_MENU_MAX];
 static int       g_active_menu_count = 0;
 static int       g_guest_menu_active = 0;  /* 1 = use g_active_menus, post IDCMP_MENUPICK */
 
+/* Amiga-style menu state: set while the menu (right) button is held after
+ * a press that entered menu mode — over a guest window (IDCMP_MENUVERIFY
+ * path) or on the screen bar.  While active the desktop owns all mouse
+ * input; dragging onto the menubar opens the strip under the pointer. */
+static int       g_menu_state = 0;
+/* Deferred strip re-parse: apps that build their strip lazily in the
+ * MENUVERIFY handler (OctaMED) run after the press event, so the first
+ * hover inside menu state re-reads the strip before it is shown. */
+static int       g_menu_pending_refresh = 0;
+/* Last pointer position while menu state is held — used to open the
+ * dropdown from the periodic refresh when no hover event arrives (guest
+ * populated the strip late and the user is holding still). */
+static int       g_menu_mx = 0, g_menu_my = 0;
+
+void Desktop_MenuStateBegin(void)
+{
+    g_menu_state = 1;
+    g_menu_pending_refresh = 1;
+}
+
+int Desktop_MenuStateActive(void)
+{
+    return g_menu_state || g_menu_index >= 0;
+}
+
 static int menu_item_count(const MenuItem *items)
 {
     int n = 0;
@@ -921,16 +946,19 @@ static uint32_t g_menu_strip_key = 0xFFFFFFFFu;
 static uint32_t g_menu_strip_tick = 0xFFFFFFFFu;
 static int      g_menu_focus_key = -2;
 
+/* While menu state is held with the pointer over the screen bar, open the
+ * dropdown under the pointer — defined with the menu hit-test helpers. */
+static void menu_state_try_open(void);
+
 static void refresh_active_menus_impl(void)
 {
-    uint32_t strip = Intuition_GetActiveWindowMenuStrip();
-    if (strip) {
-        int n = Intuition_GetHostMenuStrip(strip, g_active_menus, HOST_MENU_MAX);
-        if (n > 0) {
-            g_active_menu_count = n;
-            g_guest_menu_active = 1;
-            return;
-        }
+    int n = Intuition_GetActiveWindowHostMenuStrip(g_active_menus,
+                                                   HOST_MENU_MAX);
+    if (n > 0) {
+        g_active_menu_count = n;
+        g_guest_menu_active = 1;
+        menu_state_try_open();
+        return;
     }
     g_active_menu_count = 0;
     g_guest_menu_active = 0;
@@ -941,7 +969,10 @@ static void refresh_active_menus(void)
     const uint32_t strip = Intuition_GetActiveWindowMenuStrip();
     const int focus = WM_GetFocus();
     if (strip == g_menu_strip_key && focus == g_menu_focus_key &&
-        Desktop_GetTick() == g_menu_strip_tick)
+        Desktop_GetTick() == g_menu_strip_tick &&
+        /* keep retrying while a menu-state open is pending — the strip may
+         * have been torn at press time under an unchanged pointer */
+        !(g_menu_state && g_menu_index < 0))
         return;
     refresh_active_menus_impl();
     g_menu_strip_key = strip;
@@ -2497,8 +2528,54 @@ static void menu_invalidate_items(void)
                                  g_submenu_w + 4, g_submenu_h + 4);
 }
 
+/* While menu state is held with the pointer over the screen bar, open the
+ * dropdown under the pointer.  Retried from every strip refresh so a strip
+ * that was torn/empty at press time (lazy MENUVERIFY build) still opens
+ * once the parse produces real titles — even when the mouse never moves. */
+static void menu_state_try_open(void)
+{
+    if (!g_menu_state || g_menu_index >= 0) return;
+    if (g_menu_my < 0 || g_menu_my >= MENUBAR_H) return;
+    int menu = menubar_hit(g_menu_mx, g_menu_my);
+    if (menu >= 0 && menu < active_menu_count()) {
+        g_menu_index = menu;
+        g_menu_hover = -1;
+        g_submenu_item = -1;
+        g_submenu_hover = -1;
+        menu_invalidate();
+    }
+}
+
 static void menu_update_hover(int mx, int my)
 {
+    g_menu_mx = mx;
+    g_menu_my = my;
+
+    /* Deferred guest-strip reparse: MENUVERIFY handlers that build the
+     * strip lazily have had a chance to run by the time the first hover
+     * event inside menu state arrives, so the titles hit-test correctly. */
+    if (g_menu_state && g_menu_pending_refresh) {
+        g_menu_pending_refresh = 0;
+        refresh_active_menus_forced();
+        if (g_menu_index >= 0)
+            menu_invalidate();
+    }
+
+    /* In menu state with no dropdown open yet (menu button went down over
+     * a window, Amiga-style), reaching the screen bar opens the menu under
+     * the pointer — this is the RMB-anywhere drag gesture. */
+    if (g_menu_state && g_menu_index < 0 && my >= 0 && my < MENUBAR_H) {
+        int menu = menubar_hit(mx, my);
+        if (menu >= 0 && menu < active_menu_count()) {
+            g_menu_index = menu;
+            g_menu_hover = -1;
+            g_submenu_item = -1;
+            g_submenu_hover = -1;
+            menu_invalidate();
+        }
+        return;
+    }
+
     if (g_menu_index < 0) return;
 
     /* Switch menus if the cursor moves over another menu title. */
@@ -2567,6 +2644,15 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
 
     /* ── Right-click on menubar: open the selected menu ───── */
     if (right_pressed && my >= 0 && my < MENUBAR_H) {
+        /* Pressing the menu button straight on the bar still owes the
+         * focused guest its IDCMP_MENUVERIFY (masked on IDCMP flags) — the
+         * lazy-strip populate runs before the first hover's deferred
+         * reparse.  Menu state is active from this press on. */
+        Intuition_PostMenuVerify();
+        g_menu_state = 1;
+        g_menu_pending_refresh = 1;
+        g_menu_mx = mx;
+        g_menu_my = my;
         /* Item enable/check state is only visible while open — reparse the
          * guest strip on open rather than trusting the cached copy. */
         refresh_active_menus_forced();
@@ -2589,14 +2675,21 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
         return 1;
     }
 
-    /* Left-click while a menu is open: close the menu without triggering an
-     * action.  This lets the user dismiss a menu with the left button. */
-    if (left_pressed && g_menu_index >= 0) {
+    /* Left-click while a menu is open or menu state is active: cancel —
+     * real Intuition aborts the menu gesture and terminates the guest's
+     * MENUPICK stream with MENUNULL. */
+    if (left_pressed && Desktop_MenuStateActive()) {
         menu_invalidate();
         g_menu_index = -1;
         g_menu_hover = -1;
         g_submenu_item = -1;
         g_submenu_hover = -1;
+        g_menu_state = 0;
+        g_menu_pending_refresh = 0;
+        if (g_guest_menu_active) {
+            Intuition_PostMenuPick(MENUNULL);
+            Intuition_MenuVerifyDone();
+        }
         return 1;
     }
 
@@ -2685,7 +2778,19 @@ void Desktop_RightButtonRelease(int mx, int my)
 {
     (void)mx; (void)my;
 
-    if (g_menu_index < 0) return;
+    if (g_menu_index < 0) {
+        /* Menu state ended without a dropdown ever opening (menu button
+         * released over the window): real Intuition still terminates the
+         * MENUPICK stream with MENUNULL so a MENUVERIFY app tears down a
+         * lazily-built strip. */
+        if (g_menu_state) {
+            g_menu_state = 0;
+            g_menu_pending_refresh = 0;
+            Intuition_PostMenuPick(MENUNULL);
+            Intuition_MenuVerifyDone();
+        }
+        return;
+    }
 
     if (g_guest_menu_active) {
         HostMenuItem *mi = NULL;
@@ -2705,9 +2810,14 @@ void Desktop_RightButtonRelease(int mx, int my)
                                      (NOSUB << 11));
         }
         if (mi) {
-            Intuition_UpdateMenuItemCheck(mi->guest_item, mi->toggle);
+            Intuition_UpdateMenuItemCheck(mi->guest_head, mi->guest_item,
+                                          mi->toggle);
             Intuition_PostMenuPick(menu_number);
         }
+        /* The MENUPICK stream always terminates with MENUNULL — selected
+         * item first, terminator after (real Intuition ordering). */
+        Intuition_PostMenuPick(MENUNULL);
+        Intuition_MenuVerifyDone();
     } else {
         /* Fallback menu — dispatch submenu or top-level item */
         if (g_submenu_item >= 0 && g_submenu_hover >= 0) {
@@ -2732,6 +2842,8 @@ void Desktop_RightButtonRelease(int mx, int my)
     g_menu_hover = -1;
     g_submenu_item = -1;
     g_submenu_hover = -1;
+    g_menu_state = 0;
+    g_menu_pending_refresh = 0;
 }
 
 /* Forward declaration — used by Desktop_MouseMove and draw_drop_target_highlight. */

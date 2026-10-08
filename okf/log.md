@@ -1,5 +1,77 @@
 # OKF Change Log
 
+## 2026-10-08 — IDCMP input completeness for the tracker UI (UAOS-245)
+
+* **Changed** (`kernel/irq/ps2kbd.{c,h}`): rawkey ring widened to `uint32_t`
+  entries — low byte = Amiga rawkey (bit 7 = release), bits 8-23 = a full
+  `ie_Qualifier` snapshot.  `KbdMods` now tracks L/R Shift and L/R Alt
+  independently plus the two Amiga (GUI) keys, and exports
+  `PS2Kbd_IEQualifier()` (live modifier + mouse-button bits) and
+  `PS2Kbd_PushRawKey()` for the USB HID path.  Numeric-keypad codes get
+  `IEQUALIFIER_NUMERICPAD`; typematic repeats get `IEQUALIFIER_REPEAT`.
+* **Changed** (`kernel/drivers/usbhid.c`): HID usage→Amiga rawkey table;
+  presses and releases feed the shared rawkey ring (incl. modifier edges)
+  via `PS2Kbd_PushRawKey`.
+* **Changed** (`kernel/exec/task.c`, `kernel/display/wm.c`): qualifier
+  snapshots propagate `& 0xFFFF` end-to-end (was truncated to 8 bits).
+  The event pump drains rawkeys before cooked chars; only Amiga+letter
+  encodings route to `Intuition_InvokeCommandKey` (COMMSEQ) — plain keys
+  go straight to `WM_KeyEvent`, so tracker note entry is no longer eaten
+  by menu matching.  A missed command key suppresses the cooked char.
+* **Changed** (`kernel/exec/intuition_lib.{c,h}`): `IDCMP_MOUSEBUTTONS`
+  now posts genuine IECODE values (0x68/0xE8 LMB, 0x69/0xE9 RMB, 0x6A/0xEA
+  MMB) with qualifier + window-content-relative coords; `WFLG_RMBTRAP`
+  keeps right-button events in-app instead of entering menu state.
+  `IDCMP_MENUVERIFY` is posted on menu-state entry; `MENUPICK` messages
+  carry qualifier + coords and every pick stream terminates with
+  `MENUNULL`.  `Intuition_UpdateMenuItemCheck` applies CHECKIT/MENUTOGGLE
+  and mutual exclusion (explicit `MutualExclude` mask plus contiguous
+  CHECKIT-run radio groups).  Guest `Menu.MenuName` may be a GadTools
+  `IntuiText` — the host parser follows `IText` for menu titles.
+  `Intuition_GetActiveWindowHostMenuStrip` is a new bound variant that
+  parses the focused window's strip under its owner task's RAM window.
+* **Changed** (`kernel/display/desktop.{c,h}`): `g_menu_state` covers the
+  whole RMB press→release gesture (not just open dropdowns); the WM routes
+  all mouse input to the desktop while it is active.  Menu strips are
+  reparsed after lazy `MENUVERIFY` population (`g_menu_pending_refresh`)
+  and `menu_state_try_open` retries opening the dropdown under the held
+  pointer from every strip refresh — needed when the pointer never moves.
+  Left-click cancels with `MENUNULL`; release posts selection + `MENUNULL`.
+* **Changed** (`kernel/exec/exec_task.c`): `UAOS_Intuition_PostIntuiTicks`
+  now runs from the per-task exec slice loop — ticks reach windows whose
+  owners block in `Wait()`/`WaitIO`, not only the `WaitPort` spin (OctaMED
+  waits via `Wait()`).
+* **Fixed** (kernel page-fault robustness): guest pointer walks now bounds-
+  check overflow-safely — `guest_ok`/`gt_ok` use `p < SIZE && len <= SIZE-p`
+  because `p + len <= SIZE` wraps near 4 GB.  Covered: menu-strip/menu-item
+  chains and `ItemAddress`/`OnMenu`/`OffMenu` walks (intuition_lib.c),
+  `GT_SetGadgetAttrsA`/`GT_GetGadgetAttrsA` gadget/special/buffer/tag-list
+  derefs (gadtools_lib.c).  Previously a torn lazy menu strip (OctaMED's
+  MENUVERIFY-time `SetMenuStrip`) or a wild gadget pointer let a guest
+  LVC call page-fault the kernel below the RAM window.
+* **Verified**: `tests/qemu_idcmp_input_test.py` — 16/16 under QEMU:
+  RAWKEY make/break 0x60/0x17/0x97/0xE0 with LSHIFT qualifier, plain
+  letters reach the app unmolested, RAmiga (0x67) + COMMSEQ menu match,
+  RMB menu state opens the guest strip, release posts MENUNULL, MENUVERIFY
+  delivered, INTUITICKS ~10 Hz (223→257 posts).  OctaMED V5 launches and
+  opens its tracker window.  Note: guest binary launches remain subject
+  to the pre-existing decrunch-load corruption lottery (UAOS-234) — build
+  layout determines which binaries hit it; it is unrelated to this path.
+
+## 2026-10-08 — README refresh for post-Oct-2 subsystem growth (UAOS-301)
+
+* **Changed** (`README.md`): rewrote the stale sections to match the tree —
+  grouped feature list (desktop/GUI, input incl. USB HID + Apple trackpads,
+  shell, M68k + custom-chip emulation, ROM modules incl. gadtools/iffparse/
+  icon/loadable LIBS:, storage incl. AHCI/VirtIO-SCSI/floppy, audio, debug
+  tooling), repository layout (`kernel/audio`, `kernel/chipset`, `kernel/dbg`,
+  `kernel/klog`, `system/bearssl`, `system/Demos`, expanded `tests/`/`tools/`),
+  dependency list (+`wget`, `lhasa`), build-step table (vasm/Regina/ACE
+  fetches, BearSSL lib, M68k demos), userspace table (25 programs), GNU
+  utilities (~90 + `wget`/`curl`/`uuencode`/`uudecode`), shell command tables
+  regrouped by category (~113 built-ins), boot-flow diagram, and known
+  limitations (audio stub, UHCI-only USB).
+
 ## 2026-10-08 — Ship demo sources on ISO under `Demos:src/` (UAOS-298)
 
 * **Moved** `system/Demos/*.s` → `system/Demos/src/*.s` (14 files) so the
