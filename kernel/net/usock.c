@@ -2,8 +2,8 @@
  * usock.c — userspace socket layer for native x86-64 tasks
  *
  * Small blocking socket API layered over kernel/net tcp.c + dns.c.
- * The kernel TCP primitives are non-blocking (tcp_send returns 0 while a
- * segment is in flight, tcp_recv returns 0 while the RX ring is empty),
+ * The kernel TCP primitives are non-blocking (tcp_send returns 0 while
+ * the send window is full, tcp_recv returns 0 while the RX ring is empty),
  * so each operation here pumps net_stack_poll() and sleeps in
  * Task_SleepTicks() quanta until completion, EOF, or a per-socket
  * deadline.  Sockets are owned by the creating task and reclaimed by

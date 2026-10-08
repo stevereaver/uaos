@@ -45,7 +45,6 @@ typedef enum {
 
 /* Max TCP sockets */
 #define TCP_MAX_SOCKETS     8
-#define TCP_TX_BUF_SIZE     4096
 #define TCP_RX_BUF_SIZE     4096
 
 /* Max payload per segment (Ethernet MTU 1500 - IP hdr 20 - TCP hdr 20) */
@@ -74,9 +73,19 @@ typedef enum {
 #define TCP_CLOSEWAIT_TICKS     3000u
 #define TCP_FINWAIT2_TICKS      12000u
 
-/* Retransmit buffer: holds the payload of the last sent-but-unacked segment.
- * We only need one outstanding segment (single-segment send model). */
+/* Retransmit queue: payload copies of sent-but-unacked segments.
+ * Up to TCP_RETX_SLOTS seq-carrying segments may be in flight per socket
+ * (still bounded by the peer's advertised window); cumulative ACKs retire
+ * entries oldest-first.  TCP_RETX_BUF_SIZE is one segment's payload. */
 #define TCP_RETX_BUF_SIZE  1460
+#define TCP_RETX_SLOTS     8u
+
+typedef struct {
+    uint32_t seq;                        /* first seq of the segment        */
+    uint8_t  flags;                      /* TCP flags as sent               */
+    uint16_t len;                        /* payload bytes (0 for SYN/FIN)   */
+    uint8_t  data[TCP_RETX_BUF_SIZE];    /* payload copy for replay         */
+} TcpRetxSeg;
 
 typedef struct {
     TcpState  state;
@@ -88,20 +97,16 @@ typedef struct {
     uint32_t  snd_una;      /* oldest unacknowledged seq */
     uint32_t  rcv_nxt;      /* next expected from remote */
     uint16_t  snd_wnd;      /* remote receive window */
-    /* TX buffer (unsent or unacked data) */
-    uint8_t   tx_buf[TCP_TX_BUF_SIZE];
-    uint16_t  tx_head, tx_tail;
     /* RX buffer (received data ready for app) */
     uint8_t   rx_buf[TCP_RX_BUF_SIZE];
     uint16_t  rx_head, rx_tail;
-    /* Retransmit state */
-    uint8_t   retx_buf[TCP_RETX_BUF_SIZE]; /* copy of last sent payload     */
-    uint16_t  retx_len;    /* length of retx_buf (0 = nothing pending)       */
-    uint8_t   retx_flags;  /* TCP flags of the last sent segment             */
-    uint32_t  retx_seq;    /* snd_nxt at the time the segment was sent       */
-    uint16_t  retx_timer;  /* ticks until next retransmit (counts down)      */
-    uint8_t   retx_count;  /* number of retransmits already attempted        */
-    uint8_t   fin_pending; /* tcp_close deferred while data is unacked       */
+    /* Retransmit queue (oldest-first ring of unacked segments) */
+    TcpRetxSeg retx_q[TCP_RETX_SLOTS];
+    uint8_t   retx_head;   /* index of the oldest unacked segment           */
+    uint8_t   retx_nseg;   /* queued segments == seq-carrying in flight     */
+    uint16_t  retx_timer;  /* ticks until next retransmit (counts down)     */
+    uint8_t   retx_count;  /* retransmits attempted on the head segment     */
+    uint8_t   fin_pending; /* tcp_close deferred while data is unacked      */
     uint8_t   accepted;    /* claimed by tcp_accept — never handed out twice */
     uint16_t  conn_timer;  /* general connection timer (SYN wait, TIME_WAIT,
                             * CLOSE_WAIT linger, FIN_WAIT_2 wait-for-FIN) */
@@ -127,9 +132,9 @@ int  tcp_listen(uint16_t local_port);
  * separate tcp_conn_gen() call ran — UAOS-263). */
 int  tcp_accept(int listen_sock, uint32_t *gen_out);
 
-/* Send data over a TCP socket.  Returns bytes sent; 0 when the socket is
- * busy (a segment is still unacked) or the peer window is closed — the
- * caller should poll the stack and retry. */
+/* Send data over a TCP socket.  Returns bytes sent; 0 when the send
+ * window is full (TCP_RETX_SLOTS segments already in flight) or the
+ * peer window is closed — the caller should poll the stack and retry. */
 int  tcp_send(int sock, const uint8_t *data, uint16_t len);
 
 /* Receive data from a TCP socket (non-blocking). Returns bytes read or 0. */

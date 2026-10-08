@@ -118,8 +118,8 @@ static volatile uint32_t g_generation  = 0;
 
 static int send_buf(int sock, uint32_t gen, const uint8_t *b, int len)
 {
-    /* tcp_send allows only one in-flight segment per socket and returns
-     * 0 while busy — keep retrying so negotiation bytes are not dropped,
+    /* tcp_send returns 0 while its in-flight segment window is full —
+     * keep retrying so negotiation bytes are not dropped,
      * but bound the wait (~250 ms) so a dead peer cannot wedge us.  All
      * socket ops are generation-checked: if our socket was retired and
      * the slot reissued, they fail instead of touching the new tenant. */
@@ -142,8 +142,7 @@ static void send_neg(int sock, uint32_t gen, uint8_t cmd, uint8_t opt)
 
 /* One-shot initial negotiation — ask the client to let us echo and to
  * suppress go-ahead (character-at-a-time mode).  All nine bytes go out
- * in a single segment: sent one WILL/DO at a time, the first send could
- * still be in flight when the next arrives and tcp_send would drop it —
+ * in a single segment so the client sees the whole negotiation at once —
  * a client that sees WILL ECHO but not WILL SGA switches off local echo
  * yet stays in line mode, so typed keys stay invisible until Enter. */
 static void send_greeting_neg(int sock, uint32_t gen)

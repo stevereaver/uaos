@@ -341,7 +341,7 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   `\r` + `ESC[2K` + prompt + buffer instead of the framebuffer input bar.
   For the common case — a printable character appended at end of line —
   it echoes just that character instead of repainting the whole line,
-  which keeps typing usable over the single-segment TCP path
+  which keeps typing usable over a latency-bound TCP link
   (UAOS-58); mid-line edits, history recall, tab completion and
   Delete still trigger a full repaint.
 - Remote command policy (UAOS-59): because telnetd is unauthenticated,

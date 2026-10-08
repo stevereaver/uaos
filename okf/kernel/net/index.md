@@ -140,22 +140,33 @@ Full TCP state machine including:
   `CLOSE_WAIT` (pre-FIN retransmits; dup FINs are re-ACKed).  `tcp_recv`
   pushes a window-update ACK when draining reopens a previously full
   ring, so the peer does not sit out its zero-window persist backoff.
-- Send flow control (UAOS-55): `tcp_send` enforces the peer's advertised
-  receive window (`snd_wnd`) and allows only **one seq-carrying segment
-  in flight** per socket — `retx_buf` holds a single segment, so a second
-  send while the first is unacked would leave a hole retransmit could
-  never fill.  It returns 0 when busy or when the window is closed, and
-  callers (`remote_send`, `bsd_send`, telnetd `send_buf`) poll the stack
-  and retry.  `tcp_close` defers its FIN (`fin_pending`) while data is
-  unacked so the FIN cannot clobber the outstanding segment's retx
-  state; `tcp_tick` releases it once `snd_una` catches up.  `snd_una`
-  only advances on ACKs inside `(snd_una, snd_nxt]` — stale/reordered or
-  out-of-range ACKs can no longer rewind it — while `snd_wnd` is still
-  taken from any ACK (dup ACKs carry fresh window information, e.g. a
-  reopened zero window).  Segments that match no socket get an RFC 793
-  RST (`tcp_send_reset`) so closed ports refuse connections instead of
-  silently dropping; RSTs are never answered with RST, and only segments
-  actually addressed to the local IP are answered.
+- Send flow control (UAOS-55, multi-segment since UAOS-196): `tcp_send`
+  enforces the peer's advertised receive window (`snd_wnd`) and allows
+  up to `TCP_RETX_SLOTS` (8) seq-carrying segments in flight per socket.
+  Every seq-carrying segment is copied into the socket's retransmit
+  queue `retx_q` (an oldest-first ring of `{seq, flags, len, payload}`
+  slots) at send time — `tcp_emit` is the raw sender used both for new
+  segments (via `tcp_send_seg`, which advances `snd_nxt` and queues) and
+  for replay (`tcp_retransmit` emits the queue head with its original
+  seq; no `snd_nxt` rewind hack).  A cumulative ACK retires every entry
+  it fully covers; a segment straddling the ACK stays at the head for
+  replay (the peer trims the overlap), and a partial ACK restarts the
+  RTO for the new head.  `tcp_send` returns 0 when the queue is full or
+  `snd_nxt - snd_una` reaches `snd_wnd`, and callers (`remote_send`,
+  `bsd_send`, telnetd `send_buf`) poll the stack and retry — so bulk
+  throughput is now ~8 MSS per RTT instead of ~1.  `tcp_close` defers
+  its FIN (`fin_pending`) while data is unacked so the FIN lands on an
+  empty queue; `tcp_tick` releases it once `snd_una` catches up.
+  `snd_una` only advances on ACKs inside `(snd_una, snd_nxt]` —
+  stale/reordered or out-of-range ACKs can no longer rewind it — while
+  `snd_wnd` is still taken from any ACK (dup ACKs carry fresh window
+  information, e.g. a reopened zero window).  Segments that match no
+  socket get an RFC 793 RST (`tcp_send_reset`) so closed ports refuse
+  connections instead of silently dropping; RSTs are never answered
+  with RST, and only segments actually addressed to the local IP are
+  answered.  The dead `tx_buf`/`tx_head`/`tx_tail` fields were removed;
+  `netstat`'s `tx` column now shows bytes in flight
+  (`snd_nxt - snd_una`).
 
 ## Higher-Level Protocols
 
@@ -211,11 +222,10 @@ no login.
 Telnet protocol handling is deliberately small:
 
 - On connect the daemon sends `WILL ECHO`, `WILL SGA`, `DO SGA`
-  (server-echo, character-at-a-time mode) as **one** 9-byte segment.
-  Sending each option separately risked tearing: `tcp_send` accepts only
-  one in-flight segment, so `WILL SGA` could be dropped when `WILL ECHO`
-  was still unacked — leaving the client in line mode with local echo
-  off and typed keys invisible until Enter.
+  (server-echo, character-at-a-time mode) as **one** 9-byte segment —
+  the client sees the whole negotiation atomically.  A client that sees
+  `WILL ECHO` but not `WILL SGA` switches off local echo yet stays in
+  line mode, so typed keys stay invisible until Enter.
 - An NVT state machine in the pump strips `IAC` command sequences,
   consumes sub-negotiations (`SB ... SE`), answers `DO`/`DONT`/`WILL`/
   `WONT` per RFC 854 (`DO` for unoffered options gets `WONT`, `WILL`
@@ -340,8 +350,7 @@ handler can also inject sends (TCP ACKs from `tcp_rx` inside
 `virtio_net_poll`), the function wraps the whole claim/fill/notify
 sequence in `Disable()`/`Enable()` (cli/sti with nesting).  Without this,
 concurrent senders overwrote each other's frames mid-flight; corrupted
-segments failed the peer's checksum, left sequence holes the
-single-segment TCP retransmit model cannot fill, and stalled
+segments failed the peer's checksum, left sequence holes, and stalled
 connections.  Found and verified during the telnetd work.
 
 Before overwriting the shared buffer the send path waits for the
@@ -390,7 +399,7 @@ Native x86-64 tasks reach the same TCP/DNS stack through the
   `tcp_tick` half-open reaper bounds the wait regardless.
 - `NET_SEND`/`NET_RECV` (0x3A/0x3B) — block-with-deadline wrappers that
   hide the kernel's non-blocking primitives: `tcp_send` returns 0 while
-  the single in-flight segment is unacked or the peer window is closed,
+  the in-flight segment window is full or the peer window is closed,
   and `tcp_recv` returns 0 while the RX ring is empty, so usock polls
   and sleeps in tick quanta instead of busy-spinning.  EOF (peer
   FIN + drained ring) returns 0 to the caller.

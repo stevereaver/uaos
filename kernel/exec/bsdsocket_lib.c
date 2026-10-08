@@ -219,8 +219,8 @@ static void bsd_send(void)
         m68k_set_reg(M68K_REG_D0, (unsigned int)-1); return;
     }
     if (len > 1460) len = 1460;
-    /* tcp_send returns 0 while a segment is still unacked or the peer
-     * window is closed — poll and retry so send() keeps its blocking
+    /* tcp_send returns 0 while the in-flight segment window is full or
+     * the peer window is closed — poll and retry so send() keeps its blocking
      * flavour for emulated programs (bounded: a dead or permanently
      * zero-windowed peer eventually fails). */
     extern volatile uint64_t g_pit_ticks;   /* 100 Hz */

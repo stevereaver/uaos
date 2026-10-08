@@ -1,5 +1,35 @@
 # OKF Change Log
 
+## 2026-10-08 — TCP send path: multi-segment in-flight retransmit queue (UAOS-196)
+
+* **Changed** (`kernel/net/tcp.{c,h}`): `tcp_send` no longer caps a socket
+  at one seq-carrying segment in flight — bulk throughput was bounded at
+  ~1 MSS per RTT.  The single `retx_buf` is replaced by `retx_q`, an
+  8-slot (`TCP_RETX_SLOTS`) oldest-first ring of `{seq, flags, len,
+  payload}` copies.  `tcp_send` accepts a segment while a slot is free
+  *and* `snd_nxt - snd_una` stays inside `snd_wnd` (clamp to the window
+  remainder); it still returns 0 when either bound is hit, so the
+  callers' poll-and-retry contract is unchanged.  A cumulative ACK
+  retires every fully covered entry; a straddling head stays for replay.
+* **Refactored**: segment emission split into `tcp_emit` (raw send with an
+  explicit seq, no retx state) and `tcp_send_seg` (advances `snd_nxt`,
+  queues).  `tcp_retransmit` now replays the queue head via `tcp_emit`
+  — the old "rewind `snd_nxt`, clear `retx_count`, restore" trick is
+  gone.  New sends no longer restart the RTO mid-flight (the timer is
+  armed only when stopped); it is still restarted when `snd_una`
+  advances.
+* **Removed** the dead `tx_buf`/`tx_head`/`tx_tail` fields (never
+  populated); `netstat`'s `tx` column now shows bytes in flight
+  (`snd_nxt - snd_una`).
+* **Verified** with a host-side harness linking the real `tcp.c` (stub
+  `ip_send`/`irq_save`): 37 checks — connect, 8 segments in flight with
+  sequential seqs, queue-full backpressure, cumulative-ACK drain,
+  partial-ACK head retention, RTO replay of the oldest segment with
+  original seq+payload, window clamp to `snd_wnd` remainder, deferred
+  FIN release + FIN_WAIT/TIME_WAIT teardown, dup-SYN SYN-ACK replay,
+  and retransmit-exhaustion RST abort at ~470 ticks.
+  `make kernel` builds clean.
+
 ## 2026-10-08 — generic ROM-module binding to guest OpenLibrary/OpenDevice (UAOS-238)
 
 * **Added** (`kernel/exec/rom_modules.{c,h}`): `UaosRomLvo` LVO→fn maps,

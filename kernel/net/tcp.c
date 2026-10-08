@@ -9,12 +9,13 @@
  *   - Retransmit timer with exponential backoff (tcp_tick, from the 100 Hz PIT)
  *   - Connect timeout (SYN_SENT), TIME_WAIT expiry, half-open cleanup,
  *     CLOSE_WAIT linger bound, FIN_WAIT_2 wait bound
- *   - Peer-window enforcement and a single-segment in-flight limit on send
+ *   - Peer-window enforcement and a bounded in-flight segment count on send
  *   - RFC 793 RST generation for segments that match no socket
  *
- * Single-segment send (no Nagle, no window splitting): at most one
- * seq-carrying segment is in flight per socket, so the single retx_buf
- * always holds exactly the segment that needs replaying.
+ * Send window (no Nagle): up to TCP_RETX_SLOTS seq-carrying segments may
+ * be in flight per socket, bounded further by the peer's advertised
+ * window.  Every such segment is kept in the retx queue until a
+ * cumulative ACK covers it; RTO expiry replays the oldest entry.
  */
 #include "tcp.h"
 #include "ip.h"
@@ -107,10 +108,12 @@ static uint16_t tcp_checksum(ipv4_t src_ip, ipv4_t dst_ip,
 }
 
 /* -------------------------------------------------------------------------
- * Send a TCP segment
+ * Emit a TCP segment with an explicit sequence number.  Does not touch
+ * snd_nxt or the retransmit queue — used both for fresh sends (via
+ * tcp_send_seg) and for retransmission replay (via tcp_retransmit).
  * ------------------------------------------------------------------------- */
-static void tcp_send_seg(TcpSocket *s, uint8_t flags,
-                          const uint8_t *data, uint16_t data_len)
+static void tcp_emit(TcpSocket *s, uint32_t seq, uint8_t flags,
+                     const uint8_t *data, uint16_t data_len)
 {
     uint8_t seg[TCP_HDR_LEN + TCP_MSS];
     if (data_len > TCP_MSS) data_len = TCP_MSS;
@@ -119,7 +122,7 @@ static void tcp_send_seg(TcpSocket *s, uint8_t flags,
     TcpHdr *h = (TcpHdr *)seg;
     h->src_port  = net_htons(s->local_port);
     h->dst_port  = net_htons(s->remote_port);
-    h->seq       = net_htonl(s->snd_nxt);
+    h->seq       = net_htonl(seq);
     h->ack       = (flags & TCP_ACK) ? net_htonl(s->rcv_nxt) : 0;
     h->data_off  = (TCP_HDR_LEN / 4) << 4;
     h->flags     = flags;
@@ -132,30 +135,46 @@ static void tcp_send_seg(TcpSocket *s, uint8_t flags,
         net_memcpy(seg + TCP_HDR_LEN, data, data_len);
 
     h->checksum = tcp_checksum(s->local_ip, s->remote_ip, seg, seg_len);
+    ip_send(s->remote_ip, IP_PROTO_TCP, seg, seg_len);
+}
 
-    /* Record snd_nxt BEFORE advancing, for retransmit replay */
+/* -------------------------------------------------------------------------
+ * Send a new TCP segment at snd_nxt, advancing it, and queue a copy for
+ * retransmit if it carries sequence space.  Callers guarantee a free
+ * retx slot: tcp_send checks retx_nseg, and SYN/FIN sends happen only
+ * with an empty queue (socket alloc, deferred-FIN release).
+ * ------------------------------------------------------------------------- */
+static void tcp_send_seg(TcpSocket *s, uint8_t flags,
+                          const uint8_t *data, uint16_t data_len)
+{
+    if (data_len > TCP_MSS) data_len = TCP_MSS;
+
+    /* Record snd_nxt BEFORE advancing, for the queue entry */
     uint32_t seq_before = s->snd_nxt;
 
-    ip_send(s->remote_ip, IP_PROTO_TCP, seg, seg_len);
+    tcp_emit(s, seq_before, flags, data, data_len);
 
     /* Advance snd_nxt for data and SYN/FIN (each consumes 1 seq) */
     if (flags & (TCP_SYN | TCP_FIN)) s->snd_nxt++;
     s->snd_nxt += data_len;
 
-    /* Save segment for retransmit — but not for pure ACKs (nothing to replay) */
-    int carries_seq = (flags & (TCP_SYN | TCP_FIN)) || data_len > 0;
-    if (carries_seq) {
-        s->retx_seq   = seq_before;
-        s->retx_flags = flags;
-        if (data && data_len && data_len <= TCP_RETX_BUF_SIZE) {
-            net_memcpy(s->retx_buf, data, data_len);
-            s->retx_len = data_len;
-        } else {
-            s->retx_len = 0;    /* SYN/FIN — no payload to store */
+    /* Queue segment for retransmit — but not pure ACKs (nothing to replay) */
+    if ((flags & (TCP_SYN | TCP_FIN)) || data_len > 0) {
+        uint8_t idx = (uint8_t)((s->retx_head + s->retx_nseg) % TCP_RETX_SLOTS);
+        TcpRetxSeg *r = &s->retx_q[idx];
+        r->seq   = seq_before;
+        r->flags = flags;
+        r->len   = 0;
+        if (data && data_len) {
+            net_memcpy(r->data, data, data_len);
+            r->len = data_len;
         }
-        /* Arm the retransmit timer; count is NOT reset here — that happens
-         * only when snd_una advances (i.e. the remote ACKs our data). */
-        if (s->retx_count == 0)
+        s->retx_nseg++;
+        /* Arm the retransmit timer only when it is stopped — the RTO
+         * belongs to the oldest unacked segment, so a send while others
+         * are in flight does not restart it.  retx_count is NOT reset
+         * here — that happens only when snd_una advances. */
+        if (s->retx_timer == 0)
             s->retx_timer = TCP_RETX_TICKS_INIT;
     }
 }
@@ -326,14 +345,25 @@ void tcp_rx(ipv4_t src_ip, ipv4_t dst_ip, const uint8_t *pkt, uint16_t len)
          * window information). */
         if (seq_gt(ack_num, s->snd_una) && !seq_gt(ack_num, s->snd_nxt)) {
             s->snd_una = ack_num;
+            /* Retire queue entries fully covered by this cumulative ACK.
+             * A segment straddling ack_num is only partially delivered —
+             * it stays at the head for retransmit. */
+            while (s->retx_nseg) {
+                TcpRetxSeg *r = &s->retx_q[s->retx_head];
+                uint32_t end = r->seq + r->len +
+                               ((r->flags & TCP_SYN) ? 1u : 0u) +
+                               ((r->flags & TCP_FIN) ? 1u : 0u);
+                if (seq_gt(end, ack_num)) break;
+                s->retx_head = (uint8_t)((s->retx_head + 1) % TCP_RETX_SLOTS);
+                s->retx_nseg--;
+            }
             if (s->snd_una == s->snd_nxt) {
                 /* Everything in flight acked — disarm. */
                 s->retx_timer = 0;
                 s->retx_count = 0;
-                s->retx_len   = 0;
             } else {
                 /* Partial ACK: progress, but the tail is still unacked.
-                 * Keep the saved segment and restart the RTO — clearing
+                 * Restart the RTO for the new oldest segment — clearing
                  * the timer here left snd_una < snd_nxt forever, which
                  * wedged fin_pending sockets in CLOSE_WAIT (UAOS-223). */
                 s->retx_timer = TCP_RETX_TICKS_INIT;
@@ -563,16 +593,14 @@ int tcp_send(int sock, const uint8_t *data, uint16_t len)
     if (s->state != TCP_ESTABLISHED && s->state != TCP_CLOSE_WAIT) return 0;
     if (len == 0 || s->fin_pending) return 0;   /* close already requested */
 
-    /* One seq-carrying segment in flight at a time: retx_buf can hold
-     * only a single segment, so sending while the previous one is still
-     * unacked would leave a hole no retransmit could fill.  Return 0 and
-     * let the caller poll/retry. */
-    if (s->snd_una != s->snd_nxt) return 0;
-
-    /* Honor the peer's advertised receive window. */
-    uint32_t wnd = s->snd_wnd;
-    if (wnd == 0) return 0;
-    if (len > wnd)     len = (uint16_t)wnd;
+    /* Bounded in-flight: the retx queue must have a free slot, and
+     * unacked bytes must stay inside the peer's advertised window.
+     * Return 0 and let the caller poll/retry when either bound is hit. */
+    if (s->retx_nseg >= TCP_RETX_SLOTS) return 0;
+    uint32_t in_flight = s->snd_nxt - s->snd_una;
+    if (in_flight >= s->snd_wnd) return 0;
+    uint32_t avail = s->snd_wnd - in_flight;
+    if (len > avail)   len = (uint16_t)avail;
     if (len > TCP_MSS) len = TCP_MSS;
 
     tcp_send_seg(s, TCP_PSH | TCP_ACK, data, len);
@@ -718,27 +746,16 @@ int tcp_peer(int sock, ipv4_t *ip, uint16_t *port)
 }
 
 /* -------------------------------------------------------------------------
- * Retransmit helper — resend the saved segment with the original seq number.
- * We temporarily roll snd_nxt back so tcp_send_seg builds the right header,
- * then restore it.  The retransmit itself does NOT re-save retx state (that
- * would reset the counter); we update the timer manually after the call.
+ * Retransmit helper — replay the oldest unacked segment with its original
+ * seq number.  tcp_emit sends raw: snd_nxt is untouched and the segment is
+ * already queued, so no retx state changes here.  (tcp_rx also uses this
+ * to replay a lost SYN-ACK when a duplicate SYN arrives in SYN_RECEIVED.)
  * ------------------------------------------------------------------------- */
 static void tcp_retransmit(TcpSocket *s)
 {
-    uint32_t saved_nxt = s->snd_nxt;
-    s->snd_nxt = s->retx_seq;          /* rewind so header uses original seq */
-
-    const uint8_t *payload = (s->retx_len > 0) ? s->retx_buf : 0;
-    uint16_t       plen    = s->retx_len;
-
-    /* Build and send; temporarily clear retx_count so tcp_send_seg
-     * re-arms the timer (we override it right after). */
-    uint8_t saved_count = s->retx_count;
-    s->retx_count = 0;
-    tcp_send_seg(s, s->retx_flags, payload, plen);
-    s->retx_count = saved_count;       /* restore — we increment it below */
-
-    s->snd_nxt = saved_nxt;            /* restore real snd_nxt */
+    if (s->retx_nseg == 0) return;
+    const TcpRetxSeg *r = &s->retx_q[s->retx_head];
+    tcp_emit(s, r->seq, r->flags, r->len ? r->data : 0, r->len);
 }
 
 /* -------------------------------------------------------------------------
@@ -783,7 +800,7 @@ static void tcp_tick_retx(TcpSocket *s)
         return;
     }
 
-    /* Retransmit the saved segment */
+    /* Retransmit the oldest unacked segment */
     tcp_retransmit(s);
 
     /* Exponential backoff: double the RTO, capped at max shift */
@@ -904,7 +921,7 @@ void Tcp_DiagDump(void *ctx, void (*emit)(void *, const char *))
         d_ip(&l, s->remote_ip); dl_ch(&l, ':'); dl_dec(&l, s->remote_port);
         dl_pad(&l, 53);
         uint32_t rxq = (uint16_t)(s->rx_head - s->rx_tail);
-        uint32_t txq = (uint16_t)(s->tx_head - s->tx_tail);
+        uint32_t txq = s->snd_nxt - s->snd_una;   /* bytes in flight */
         dl_dec(&l, rxq); dl_pad(&l, 58);
         dl_dec(&l, txq); dl_pad(&l, 63);
         dl_dec(&l, s->retx_count);
