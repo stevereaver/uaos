@@ -28,7 +28,6 @@ The audit was performed in two phases:
 | M68k PMMU (`m68kmmu.h`) | R. Belmont / MAME Team | MAME license | `emulation/musashi/m68kmmu.h` |
 | Musashi example/test harness | Karl Stenerud (upstream) | MIT | `emulation/musashi/example/`, `emulation/musashi/test/` |
 | UAOS kernel + AmigaOS libraries | UAOS Development Team (clean-room) | MIT | `kernel/**`, `emulation/uaos_*.c` |
-| `powerpacker.library` | UAOS-generated stub wrapper (not real PowerPacker); generated into the ISO by `build_iso.sh` | MIT | `SYS_ROOT/LIBS/powerpacker.library` |
 | Build scripts, tools, docs | UAOS Development Team | MIT | `scripts/`, `tools/`, `documentation/` |
 
 **No source code from the AROS project is present in this repository.**

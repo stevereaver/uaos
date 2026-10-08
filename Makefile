@@ -283,8 +283,7 @@ DEMO_EXTRAS := $(shell find system/Demos -type f 2>/dev/null)
 
 SYSROOT_CONTENTS := $(NATIVE_BINS) $(WRAP_BINS) $(USER_BINS) $(BAS_BIN) \
                     $(TOOL_BINS) $(UTIL_BINS) $(PREF_BINS) $(GUIDE_BIN) \
-                    $(GNU_BINS) $(DEMO_BINS) $(REXX_BIN) $(ACE_STAMP) \
-                    $(SYSROOT)/LIBS/powerpacker.library
+                    $(GNU_BINS) $(DEMO_BINS) $(REXX_BIN) $(ACE_STAMP)
 ifneq ($(GUIDE_SRC),)
 SYSROOT_CONTENTS += $(GUIDE_DB)
 endif
@@ -487,10 +486,6 @@ $(KERNEL_ELF): $(KERNEL_LD) $(KERNEL_ALL_OBJS) | $(STAMPS)/uitest
 	@echo "  kernel: $$(du -h $@ | cut -f1)"
 
 # --- SYS_ROOT generated binaries ------------------------------------------------
-
-$(SYSROOT)/LIBS/powerpacker.library: $(GEN_M68KLIB) | $(DIRS_STAMP)
-	@echo "  GEN     LIBS:powerpacker.library"
-	$(Q)$(GEN_M68KLIB) powerpacker.library 1 4 $@
 
 $(NATIVE_BINS): $(SYSROOT)/C/%: $(GEN_NATIVE) | $(DIRS_STAMP)
 	$(Q)$(GEN_NATIVE) $* $@

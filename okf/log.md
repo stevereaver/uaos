@@ -1,5 +1,36 @@
 # OKF Change Log
 
+## 2026-10-09 — optional OctaMED support libraries: clean-disable semantics (UAOS-249)
+
+* **Added** (`emulation/uaos_m68k_glue.c`): `emu_declined_names` — a
+  declined list consulted by `exec_OpenLibrary` (after fixed, loadable,
+  and ROM-module resolution, before the fake-base fallback) and
+  `exec_OpenDevice`.  Matching is case-insensitive on the basename so
+  `libs:` paths decline too.  `amigaguide.library`, `powerpacker.library`,
+  `lh.library`, and `rexxsyslib.library` now return `NULL` from
+  `OpenLibrary`; `serial.device` fails `OpenDevice` with
+  `IOERR_OPENFAIL`.  Optional features (help viewer, PP/SFCD save
+  options, MIDI) now disable the way they do on a real Amiga missing the
+  file, instead of opening a fake base whose calls all return 0.
+* **Added** (`kernel/exec/diskfont_lib.c`): ROM-registered
+  `diskfont.library` v37 stub — opens like the real ROM-resident module
+  (KS2.0+), but `OpenDiskFont`/`NewFontContents`/`NewScaledDiskFont`
+  return NULL, `AvailFonts` reports `afh_NumEntries = 0`, and
+  `DisposeFontContents` is a no-op.  Non-topaz font loads fall back to
+  the built-in font.
+* **Removed** (`Makefile`): the `SYS_ROOT/LIBS/powerpacker.library`
+  generated demo blob — it made PowerPacker appear installed while every
+  call returned 0.  `tools/gen_m68k_library` remains for future blobs.
+* **Verified**: `OpenLibrary("amigaguide.library",v34)-> MISSING` in the
+  OctaMED V5.04 startup trace (locale.library v38 already resolved via
+  the ROM registry; `rexxsyslib.library`, `powerpacker.library`,
+  `lh.library`, `diskfont.library`, and `serial.device` never appear in
+  the startup trace — they are probed lazily).  New guest regression
+  `system/Demos/src/OptLibsTest.s` + `tests/qemu_optlibs_test.py`:
+  `OPTLIBS PASS` covering all declined names, the `libs:` basename path,
+  the diskfont stub, serial.device `IOERR_OPENFAIL`, and an unaffected
+  `utility.library` open.
+
 ## 2026-10-08 — exec.library coverage to the OS-2.x application set (UAOS-239)
 
 * **Added** (`emulation/uaos_m68k_glue.c`): real implementations for the

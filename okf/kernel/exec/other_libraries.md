@@ -1,7 +1,7 @@
 ---
 type: Kernel Library
 title: Other AmigaOS Libraries and Devices
-description: Native thunk implementations of utility.library, mathffp.library, mathieeesingbas.library, mathtrans.library, locale.library, ixemul.library, and device stubs in UAOS.
+description: Native thunk implementations of utility.library, mathffp.library, mathieeesingbas.library, mathtrans.library, locale.library, diskfont.library, ixemul.library, and device stubs in UAOS.
 resource: /kernel/exec/
 tags: [utility, mathffp, mathieeesingbas, mathtrans, locale, ixemul, console, keyboard, timer, m68k, thunking]
 timestamp: 2026-09-23T23:35:38Z
@@ -112,6 +112,18 @@ Verified end-to-end by `tests/qemu_asl_test.py` driving `system/Demos/src/ASLTes
 
 One host-side fix this surfaced: `ram_handler.c` treated `VFS_Delete`/`VFS_MkDir` as boolean-success when they return `int` (0=ok/-1=fail), so every guest packet delete/mkdir on `RAM:` reported the result inverted — now `== 0` checks like the FAT/FFS handlers. Also added `FilePart`/`PathPart` dos LVOs (-870/-876) which OctaMED's save flow needs.
 
+## diskfont.library (`kernel/exec/diskfont_lib.c`)
+
+Disk-font loading stub (UAOS-249). diskfont.library has been ROM-resident since Kickstart 2.0, so it registers like the real thing — `OpenLibrary` succeeds — but every font operation reports "no fonts", letting callers (OctaMED) fall back to the built-in topaz font.
+
+|| Function | Status | Notes |
+|---|---|---|
+|| `OpenDiskFont` (LVO -30) | Stub | Returns NULL — font not found. |
+|| `AvailFonts` (LVO -36) | Stub | Writes `afh_NumEntries = 0`, returns success — empty font list. |
+|| `NewFontContents` (LVO -42) | Stub | Returns NULL. |
+|| `DisposeFontContents` (LVO -48) | Stub | No-op. |
+|| `NewScaledDiskFont` (LVO -54) | Stub | Returns NULL. |
+
 ## ixemul.library (`kernel/exec/ixemul_lib.c`)
 
 Unix compatibility layer. **All functions in this library are currently stubs** that print a diagnostic to stderr and return an error or safe default. They exist so that Amiga binaries linked against `ixemul.library` can load and report missing functionality rather than crashing on an unresolved symbol.
@@ -160,7 +172,7 @@ Every registered module carries an `lvo_map` (`UaosRomLvo` entries, bound via `U
 
 Guest `OpenLibrary` resolves names through `UAOS_ROM_Find()` before falling back to the loadable-library and fake-base paths. A registered module gets a *generated* library base in the per-task arena at `0x007F0000–0x00800000`: a stub block (`ILLEGAL` catch-alls for the full vector area plus per-vector stubs for each `lvo_map` entry), a Library node carrying the registered `lib_Version`, and the name/id string. The version argument is honoured — requesting a newer version than `module.version` returns `NULL`. Generated bases dispatch through `emu_rom_call()` (`LIB_ROM`), which marshals D0–D7/A0–A7 into `M68kCPUState` and invokes `UAOS_ROM_NativeFunc()`. `OpenDevice` binds ROM-registered devices (`timer.device`, `console.device`, `keyboard.device`) the same way, with `audio.device` keeping its dedicated base.
 
-Unmapped LVOs on a generated base fail predictably: the catch-all stub returns 0, except `-6` (returns the base, matching `Open` semantics) and `locale.library` `-72` (GetCatalogStr — returns the caller's default string). Unknown names still get the fake base whose vectors are no-op 0s.
+Unmapped LVOs on a generated base fail predictably: the catch-all stub returns 0, except `-6` (returns the base, matching `Open` semantics) and `locale.library` `-72` (GetCatalogStr — returns the caller's default string). Unknown names still get the fake base whose vectors are no-op 0s — *except* the declined list (`emu_declined_names` in `emulation/uaos_m68k_glue.c`, UAOS-249): `amigaguide.library`, `powerpacker.library`, `lh.library`, `rexxsyslib.library` return `NULL` from `OpenLibrary`, and `serial.device` fails `OpenDevice` with `IOERR_OPENFAIL`, so apps probing for optional modules disable the feature cleanly instead of driving a working-looking stub. Matching is case-insensitive on the basename, so `libs:` paths decline too; loadable `.library` blobs in `LIBS:` still resolve first, so dropping a real implementation into `LIBS:` re-enables the feature.
 
 Two footguns the generated path exposes: guest memory is big-endian, so module functions that dereference guest structs must read/write through byte-wise BE helpers (see `util_r32`/`util_w32`, `timer_r32`/`timer_w32` — `NextTagItem`, `GetTagData`, `AddTime`/`SubTime`/`CmpTime`, `GetSysTime`, `ReadEClock` were all converted); and functions must never leak host pointers into guest-visible registers or memory.
 

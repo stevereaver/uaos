@@ -120,6 +120,9 @@ void UAOS_IFFPARSE_Register(void);
 /* Register icon.library (UAOS-253) */
 void UAOS_ICON_Register(void);
 
+/* Register diskfont.library (UAOS-249) */
+void UAOS_DISKFONT_Register(void);
+
 /* Global guest RAM base for Amiga address translation */
 extern uint8_t *uaos_ram_base;
 

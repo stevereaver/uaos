@@ -46,7 +46,7 @@ network, so offline hosts can pre-seed tarballs there.
 
 1. **Staging**: Creates `build/` directories for object files and the ISO root.
 2. **Host Tools**: Builds `tools/gen_uaos_native`, `tools/gen_uaos_m68k`, `tools/gen_uaos_x64`, and `tools/gen_m68k_library`. Also builds and **runs** `tools/ui_layout_test` (compiled against the real `kernel/display/uitree.c`) — a layout-engine regression aborts the ISO build.
-3. **M68k Library Generation**: Generates loadable Amiga `.library` wrappers (e.g., `powerpacker.library`) into the ISO staging `SYS_ROOT/LIBS/`.
+3. **M68k Library Generation**: `tools/gen_m68k_library` can emit loadable Amiga `.library` wrappers into `SYS_ROOT/LIBS/` (currently none are generated — the `powerpacker.library` demo blob was removed in UAOS-249 so `OpenLibrary` reports it absent).
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
 5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/musashi/m68kops.c`) if it is missing.
 6. **Chipset Emulator**: Compiles the real AGA/ECS custom chip emulator (`kernel/chipset/chip_emu.c`) and links it into the kernel.

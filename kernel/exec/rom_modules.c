@@ -217,6 +217,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register icon.library (UAOS-253: GetDiskObject/tooltypes) */
     UAOS_ICON_Register();
 
+    /* Register diskfont.library (UAOS-249: opens, reports no disk fonts) */
+    UAOS_DISKFONT_Register();
+
     /* Register workbench.library */
     UAOS_WORKBENCH_Register();
 

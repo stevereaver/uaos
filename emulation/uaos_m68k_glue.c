@@ -3334,6 +3334,45 @@ static int emu_is_device_name(const char *n)
     return 1;
 }
 
+/* UAOS-249 — optional AmigaOS modules that apps (OctaMED) probe for but
+ * UAOS doesn't implement.  Report them as *absent* — NULL from
+ * OpenLibrary, IOERR_OPENFAIL from OpenDevice — so the optional feature
+ * disables cleanly instead of driving a fake base that returns 0 for
+ * every call.  Loadable .library blobs in LIBS: resolve earlier, so
+ * dropping a real implementation into LIBS: re-enables the feature.
+ * diskfont.library is deliberately absent from this list: it's a real
+ * ROM-registered stub that opens and reports "no fonts". */
+static const char *const emu_declined_names[] = {
+    "amigaguide.library",   /* help viewer is native-only (SYS:Tools/Guide) */
+    "powerpacker.library",  /* PP module compression not implemented        */
+    "lh.library",           /* third-party SFCD compression                 */
+    "rexxsyslib.library",   /* OctaMED V5.04 never opens it (verified)      */
+    "serial.device",        /* MIDI needs a UART backend we don't have      */
+    NULL
+};
+
+/* Case-insensitive basename match ("libs:amigaguide.library" declines
+ * just like "amigaguide.library"). */
+static int emu_name_is_declined(const char *name)
+{
+    const char *base = name;
+    for (const char *p = name; *p; p++)
+        if (*p == ':' || *p == '/') base = p + 1;
+    for (int i = 0; emu_declined_names[i]; i++) {
+        const char *d = emu_declined_names[i];
+        int j = 0;
+        while (d[j] && base[j]) {
+            char c1 = base[j], c2 = d[j];
+            if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+            if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+            if (c1 != c2) break;
+            j++;
+        }
+        if (d[j] == 0 && base[j] == 0) return 1;
+    }
+    return 0;
+}
+
 /* Resolve the native_funcs index a guest LVO maps to for module `m`
  * (0 = unmapped).  Slot-indexed modules serve vector -6*s from
  * native_funcs[s], i.e. func index s+1. */
@@ -3466,7 +3505,7 @@ static void exec_OpenLibrary(void)
     UaosRomModule *rom = UAOS_ROM_Find(name);
     if (rom && req_ver && req_ver > rom->version) {
         result = 0;
-    } else if (!result) {
+    } else if (!result && !emu_name_is_declined(name)) {
         result = emu_gen_find(name);
         if (!result) {
             int dev = emu_is_device_name(name);
@@ -4671,6 +4710,17 @@ static void exec_OpenDevice(void)
         for (int j = 0; name[j] && k < 76; j++) msg[k++] = name[j];
         msg[k++]='\''; msg[k++]='\n'; msg[k]='\0';
         emu_print(msg);
+    }
+    /* UAOS-249 — declined devices fail the open so the app disables the
+     * feature (e.g. serial.device -> OctaMED's MIDI path) rather than
+     * talking to a fake base. */
+    if (emu_name_is_declined(name)) {
+        if (ioreq && ioreq + IOSTD_SIZE < GUEST_RAM_SIZE) {
+            glue_w32(ioreq + IO_DEVICE, 0);
+            g_ram[ioreq + IO_ERROR] = (uint8_t)-6;   /* IOERR_OPENFAIL */
+        }
+        m68k_set_reg(M68K_REG_D0, (uint32_t)-6);
+        return;
     }
     if (ioreq && ioreq + IOSTD_SIZE < GUEST_RAM_SIZE) {
         uint32_t devbase = FAKE_LIB_BASE;
