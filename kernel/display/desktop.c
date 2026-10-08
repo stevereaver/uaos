@@ -2979,8 +2979,10 @@ void Desktop_MouseRelease(int mx, int my)
                     if (ic->leaveout_is_dir) {
                         FileBrowser_Open(ic->leaveout_path);
                     } else {
-                        extern void ExecFile_Run(const char *path, const char *args);
-                        ExecFile_Run(ic->leaveout_path, "");
+                        /* Workbench launch semantics (UAOS-253) */
+                        extern int ExecFile_RunWB(const char *path,
+                                                  const char **x, int n);
+                        ExecFile_RunWB(ic->leaveout_path, NULL, 0);
                     }
                 } else if (ic->volume) {
                     FileBrowser_Open(ic->volume);

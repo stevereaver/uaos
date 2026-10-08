@@ -15,6 +15,8 @@
 #include "../dos/blockdev.h"
 #include "../dos/vfs.h"
 #include "../dos/ramfs.h"
+#include "../irq/ps2kbd.h"
+#include "../exec/task.h"   /* WB_MAX_ARGS */
 #include <stdint.h>
 #include <stddef.h>
 
@@ -557,15 +559,39 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             }
             FileBrowser_Open(child_path);
         } else if (e && e[icon].name) {
-            /* FILE or any other type: try to execute it generically */
+            /* FILE or any other type: Workbench launch (UAOS-253).
+             * The clicked icon's .info supplies stack/tooltypes; project
+             * icons defer to their default tool.  Every *other* selected
+             * icon (shift-click multi-selection) becomes an extra WBArg,
+             * in grid order. */
             char file_path[128];
             build_path(b->volume, e[icon].name, file_path, 128);
-            ExecFile_Run(file_path, "");
+
+            const char *extras[WB_MAX_ARGS];
+            char extra_paths[WB_MAX_ARGS][128];
+            int n_extra = 0;
+            for (int i = 0; i < MAX_BROWSER_ENTRIES &&
+                            n_extra < WB_MAX_ARGS; i++) {
+                if (i == icon || !b->selected[i] || !e[i].name) continue;
+                build_path(b->volume, e[i].name,
+                           extra_paths[n_extra], 128);
+                extras[n_extra] = extra_paths[n_extra];
+                n_extra++;
+            }
+            ExecFile_RunWB(file_path, extras, n_extra);
         }
     } else {
-        /* First click — select icon, record for double-click detection and start drag */
-        for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
-        b->selected[icon] = 1;
+        /* First click — select icon, record for double-click detection
+         * and start drag.  Shift-click toggles the icon in the existing
+         * selection (Amiga multi-select); plain click replaces it. */
+        if (g_kbd_mods.shift) {
+            b->selected[icon] = !b->selected[icon];
+            /* Don't arm the drag timer for a deselect-click */
+            if (!b->selected[icon]) { b->last_click_icon = -1; return; }
+        } else {
+            for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
+            b->selected[icon] = 1;
+        }
         b->last_click_icon = icon;
         b->last_click_tick = now;
         b->lasso_active = 0;

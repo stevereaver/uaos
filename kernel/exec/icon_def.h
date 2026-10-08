@@ -109,6 +109,8 @@ typedef struct {
     char     default_tool[ICON_MAX_LABEL];
     char     tool_types[ICON_MAX_TOOLTYPES][ICON_MAX_TOOLTYPE_LEN];
     int      tool_type_count;
+    int32_t  stack_size;                /* do_StackSize (UAOS-253) */
+    char     tool_window[ICON_MAX_LABEL]; /* do_ToolWindow */
 } ParsedIcon;
 
 #endif /* UAOS_ICON_DEF_H */

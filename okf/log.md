@@ -1,5 +1,19 @@
 # OKF Change Log
 
+## 2026-10-08 — Ship demo sources on ISO under `Demos:src/` (UAOS-298)
+
+* **Moved** `system/Demos/*.s` → `system/Demos/src/*.s` (14 files) so the
+  source tree mirrors the shipped drawer layout.
+* **Changed** (`Makefile`): `DEMOS` wildcard and the `vasm` object rule now
+  read `system/Demos/src/*.s`; `DEMO_EXTRAS` tracks all of `system/Demos`
+  (including sources); the SYS_ROOT staging loop now `cp -r`s
+  subdirectories, so `src/` ships verbatim as `Demos:src/` on the ISO
+  while top-level non-source files (`.info` icons) still copy alongside
+  the compiled binaries.
+* **Verified**: `make sysroot` stages `SYS_ROOT/Demos/src/` with all 14
+  `.s` files matching `system/Demos/src/`; touching a source re-triggers
+  the VASM→VLINK→WRAP chain.
+
 ## 2026-10-08 — TCP send path: multi-segment in-flight retransmit queue (UAOS-196)
 
 * **Changed** (`kernel/net/tcp.{c,h}`): `tcp_send` no longer caps a socket
@@ -1006,3 +1020,12 @@
 * **Reported**: after un-zooming (zoom gadget restore) the shell window showed the *top* of the scrollback instead of the live prompt — `scroll_y` kept whatever offset the maximised window had (0 when the whole history fitted), and nothing re-anchored it. Same on any sizing-gadget shrink.
 * **Changed** (`kernel/display/shell_win.c`): the `shell_draw_N` shim now sets `s->auto_scroll = 1` on geometry change, so the existing pin-to-bottom path (`WM_SetScrollY(hist_count - rows)`) fires in the same repaint — the view follows the bottom of the buffer like a real console. vim/ed inline sessions are untouched: they re-push their own `scroll_y` via `vim/ed_sync_scroll_wm` later in the same draw.
 * **Verified** in QEMU (monitor `sendkey`/`mouse_move`, GDB probe of `g_wins[]`, screendump thumb measurement): after `help` fills scrollback, zoom → `scroll_y=992=max`, restore → `scroll_y=1392=max`, sizing-drag → `1488=max`; measured thumb rect matches `draw_scrollbar` math within 2 px in all four states.
+
+## 2026-10-08 — UAOS-253: Workbench launch semantics for M68k tools
+
+* **Added** `icon.library` (`kernel/exec/icon_lib.c`, registered via the LIB_ROM generated-base machinery): a real classic `.info` parser (`Icon_ParseBuf`/`Icon_ReadInfo`/`Icon_LoadMeta`) handling the 78-byte `DiskObject` header, presence-flag pointer fields, positional DrawerData/Image/string sections and the `(count+1)*4` tooltype block; a guest `DiskObject` builder that copies the header verbatim and patches stale pointers to real guest addresses; and LVO handlers for `GetDiskObject` (-78), `PutDiskObject` (-84), `FreeDiskObject` (-90), `FindToolType` (-96), `MatchToolValue` (-102), `BumpRevision` (-108), `GetDefDiskObject` (-120), `PutDefDiskObject` (-126), `GetDiskObjectNew` (-132), `DeleteDiskObject` (-138). `PutDiskObject` serialises a valid real-format `.info` back through the VFS.
+* **Added** Workbench launch path: `UaosWbLaunch` descriptor + `g_wb_pending` (task.h/exec_task.c) consumed once by `Task_CreateM68k`; `ExecFile_RunWB()` (exec_file.c) parses the clicked icon, resolves project `do_DefaultTool` (absolute or project-drawer-relative), applies `do_StackSize`/`do_ToolWindow`, builds the WBArg list (tool + project + shift-clicked extras) and sets the task cwd to the tool's drawer. `UAOS_Emu_SetupWbLaunch()` (uaos_m68k_glue.c, PROC_ENV extended to 0x1000) builds a Process with `pr_CLI=0`, real `pr_MsgPort`, `pr_CurrentDir` lock, `pr_StackSize`, and a queued 40-byte `WBStartup` (`sm_Segment`=seglist, `sm_Process`=&pr_MsgPort) whose reply port is a fake Workbench Process — teardown logs whether the guest `ReplyMsg`ed. Entry regs are A0=0/D0=0. `wbrun` native command exposes the same path from the shell; filebrowser double-click and desktop Leave-Out icons use it (shift-click toggles multi-selection into extra WBArgs).
+* **Rewrote** `Icon_Load`/`Icon_Save`/`Icon_SavePosition` (icon_loader.c) onto the real format — the old compact/native layout (32-byte header, file-offset pointers, s16 position) was incompatible with genuine Amiga `.info` files.
+* **Fixed** guest stdout with no shell: `PutStr`/`FPuts`/`Printf`/`VPrintf` fall back to `kprint` when `g_print` is NULL so WB-launched tools remain observable on serial.
+* **Verified**: `tests/qemu_wblaunch_test.py` 6/6 (tool launch: `pr_CLI=0`, WBStartup received, tooltypes read + `MatchToolValue`, `PutDiskObject` round-trip to `RAM:WBPUT.info`, `ReplyMsg` confirmed, clean exit; project launch: default tool resolved, `sm_NumArgs=2`) and `qemu_m68k_lifecycle_test.py` 24/24 regression (CLI launches, OctaMED soak, teardown unchanged). Acceptance for OctaMED.V5 icon double-click and shift-click multi-select is the same `ExecFile_RunWB` path driven by the GUI.
+* **Docs**: new `okf/kernel/exec/icon_library.md`; `okf/concepts/icons.md` + `okf/kernel/exec/index.md` updated.

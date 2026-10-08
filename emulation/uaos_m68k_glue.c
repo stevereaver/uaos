@@ -1086,6 +1086,7 @@ static void install_stub(int lib_id, int func_idx)
 #define PRC_TASKNUM        0x8C   /* LONG */
 #define PRC_STACKBASE      0x90   /* BPTR */
 #define PRC_RESULT2        0x94   /* LONG */
+#define PRC_CURRENTDIR     0x98   /* BPTR FileLock — CurrentDir() */
 #define PRC_CONSOLETASK    0xA4   /* APTR MsgPort* */
 #define PRC_WINDOWPTR      0xB8   /* APTR Window*; -1 suppresses requesters */
 #define PRC_LOCALVARS      0xD0   /* embedded struct MinList (12 bytes) */
@@ -1113,6 +1114,7 @@ static void install_stub(int lib_id, int func_idx)
 #define CLI_MODULE_SC      0x3C   /* same slot, SAS/C + classic-NDK layout */
 
 /* Node types / task state / port flags */
+#define NT_MESSAGE_G       5
 #define NT_MSGPORT_G       4
 #define NT_LIBRARY_G       9
 #define NT_DEVICE_G        10
@@ -2043,7 +2045,13 @@ uint32_t g_guest_rdargs_addr = 0;
 #define PROC_SETNAME    (PROC_ENV_BASE + 0x240)  /* BSTR cli_SetName       */
 #define PROC_PROMPT     (PROC_ENV_BASE + 0x250)  /* BSTR cli_Prompt        */
 #define PROC_CURDIR     (PROC_ENV_BASE + 0x260)  /* BSTR current dir name  */
-#define PROC_ENV_END    (PROC_ENV_BASE + 0x400)
+/* Workbench launch arena (UAOS-253) — WBStartup + WBArg[] + name pool +
+ * a fake Workbench "Process" whose message port collects the reply. */
+#define PROC_WBMSG      (PROC_ENV_BASE + 0x400)  /* struct WBStartup (0x28) */
+#define PROC_WBARGS     (PROC_ENV_BASE + 0x440)  /* struct WBArg[WB_MAX+1] */
+#define PROC_WBPOOL     (PROC_ENV_BASE + 0x4A0)  /* wa_Name/tw C strings    */
+#define PROC_WBPROC     (PROC_ENV_BASE + 0x800)  /* fake WB Process (0xE4)  */
+#define PROC_ENV_END    (PROC_ENV_BASE + 0x1000)
 
 /* Stack bounds advertised in the Process (tc_SPLower/tc_SPUpper,
  * pr_StackSize, pr_StackBase) — the real SP starts at STACK_TOP. */
@@ -2160,6 +2168,149 @@ uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
     guest_write_be32(cli + CLI_MODULE,         seglist); /* extended slot */
 
     /* ExecBase+0x114 = ThisTask — guest programs read their Process here. */
+    guest_write_be32(EXEC_BASE + 0x114, proc);
+    return proc;
+}
+
+/* =========================================================================
+ * Workbench launch environment (UAOS-253)
+ *
+ * Identical Process setup to UAOS_Emu_SetupProcess() but with pr_CLI = 0
+ * and a queued WBStartup message on pr_MsgPort.  WBArg[0] is the tool
+ * itself; extras (project icons, shift-clicked selections) follow.
+ *
+ * Message offsets (struct Message = Node(14) + mn_ReplyPort + mn_Length):
+ *   +0x0E mn_ReplyPort  +0x12 mn_Length   payload starts at +0x14
+ * struct WBStartup:
+ *   +0x14 sm_Process    +0x18 sm_Segment  +0x1C sm_NumArgs
+ *   +0x20 sm_ToolWindow +0x24 sm_ArgList          total 0x28 bytes
+ * struct WBArg: +0 wa_Lock (BPTR)  +4 wa_Name (STRPTR)    = 8 bytes
+ * ========================================================================= */
+#define WBM_REPLY   0x0E
+#define WBM_LENGTH  0x12
+#define WBS_PROCESS 0x14
+#define WBS_SEGMENT 0x18
+#define WBS_NUMARGS 0x1C
+#define WBS_TOOLWIN 0x20
+#define WBS_ARGLIST 0x24
+
+extern uint32_t dos_LockPath_glue(const char *path);  /* dos_lib.c */
+
+/* Did the guest reply to the WBStartup message?  ReplyMsg delivers the
+ * message to mn_ReplyPort — the fake Workbench port's list then has the
+ * WBStartup node on it (head != tail). */
+int UAOS_Emu_WbStartupReplied(void)
+{
+    uint32_t list = PROC_WBPROC + PRC_MSGPORT + PMP_MSGLIST;
+    return guest_read_be32(list + 0) != (list + 4);
+}
+
+uint32_t UAOS_Emu_SetupWbLaunch(const UaosWbLaunch *wb, uint32_t cmdname_bptr)
+{
+    uint32_t proc = PROC_PROC;
+    emu_memset(g_ram + PROC_ENV_BASE, 0, PROC_ENV_END - PROC_ENV_BASE);
+    g_guest_proc_addr   = proc;
+    g_guest_cli_addr    = 0;                    /* WB launch: no CLI */
+    g_guest_rdargs_addr = PROC_RDARGS;
+
+    /* Task name = tool name (C string). */
+    {
+        uint32_t i = 0;
+        while (i < 31 && wb->tool_name[i]) {
+            g_ram[PROC_NAME_STR + i] = (uint8_t)wb->tool_name[i];
+            i++;
+        }
+        g_ram[PROC_NAME_STR + i] = 0;
+    }
+
+    g_ram[proc + PRC_LN_TYPE]  = NT_PROCESS_G;
+    g_ram[proc + PRC_LN_PRI]   = 0;
+    guest_write_be32(proc + PRC_LN_NAME, PROC_NAME_STR);
+    g_ram[proc + PRC_TC_FLAGS]  = TF_PROCTASK_G;
+    g_ram[proc + PRC_TC_STATE]  = TS_RUN_G;
+    g_ram[proc + PRC_TC_IDNEST] = (uint8_t)-1;
+    g_ram[proc + PRC_TC_TDNEST] = (uint8_t)-1;
+    guest_write_be32(proc + PRC_TC_SIGALLOC, 0xFFFFFFFFu);
+    guest_write_be32(proc + PRC_TC_SPREG,   STACK_TOP);
+    guest_write_be32(proc + PRC_TC_SPLOWER, STACK_TOP - PROC_STACK_SIZE);
+    guest_write_be32(proc + PRC_TC_SPUPPER, STACK_TOP);
+
+    proc_env_msgport(proc + PRC_MSGPORT, proc);
+    proc_env_msgport(PROC_CONPORT, proc);
+
+    /* Fake Workbench Process — the WBStartup reply port lives inside it.
+     * No host task owns it, so ReplyMsg just leaves the message on its
+     * list (which UAOS_Emu_WbStartupReplied() inspects at teardown). */
+    g_ram[PROC_WBPROC + PRC_LN_TYPE] = NT_PROCESS_G;
+    g_ram[PROC_WBPROC + PRC_LN_PRI]  = 0;
+    g_ram[PROC_WBPROC + PRC_TC_FLAGS] = TF_PROCTASK_G;
+    g_ram[PROC_WBPROC + PRC_TC_STATE] = TS_RUN_G;
+    proc_env_msgport(PROC_WBPROC + PRC_MSGPORT, PROC_WBPROC);
+
+    uint32_t seglist = (g_hunk_count > 0) ? ((g_hunk_blk[0] + 4) >> 2) : 0;
+    uint32_t stack   = (wb->stack_size > 0) ? (uint32_t)wb->stack_size
+                                            : PROC_STACK_SIZE;
+
+    guest_write_be32(proc + PRC_SEGLIST,     seglist);
+    guest_write_be32(proc + PRC_STACKSIZE,   stack);
+    guest_write_be32(proc + PRC_GLOBVEC,     DOS_BASE);
+    guest_write_be32(proc + PRC_TASKNUM,     1);
+    guest_write_be32(proc + PRC_STACKBASE,   (STACK_TOP - PROC_STACK_SIZE) >> 2);
+    guest_write_be32(proc + PR_CIS_OFFSET,   DOS_STDIN_BPTR);
+    guest_write_be32(proc + PR_COS_OFFSET,   DOS_STDOUT_BPTR);
+    guest_write_be32(proc + PRC_CONSOLETASK, PROC_CONPORT);
+    guest_write_be32(proc + PR_CLI_OFFSET,   0);   /* pr_CLI = 0 → WB */
+    guest_write_be32(proc + PRC_WINDOWPTR,   0xFFFFFFFFu);
+    guest_write_be32(proc + PRC_LOCALVARS + 0, proc + PRC_LOCALVARS + 4);
+    guest_write_be32(proc + PRC_LOCALVARS + 4, 0);
+    guest_write_be32(proc + PRC_LOCALVARS + 8, proc + PRC_LOCALVARS + 0);
+
+    /* ---- WBArg[] + locks -------------------------------------------
+     * wa_Lock = FileLock BPTR for the containing drawer; wa_Name = leaf.
+     * Lock failures leave wa_Lock = 0 — tools fall back to cwd, which is
+     * already the tool's drawer. */
+    uint32_t pool = PROC_WBPOOL;
+    int nargs = 1 + (wb->num_extra > 0 ? wb->num_extra : 0);
+    if (nargs > WB_MAX_ARGS + 1) nargs = WB_MAX_ARGS + 1;
+
+    uint32_t tool_lock = dos_LockPath_glue(wb->tool_dir);
+    guest_write_be32(proc + PRC_CURRENTDIR, tool_lock);
+
+    for (int i = 0; i < nargs; i++) {
+        const char *dir  = (i == 0) ? wb->tool_dir  : wb->extra_dir[i - 1];
+        const char *name = (i == 0) ? wb->tool_name : wb->extra_name[i - 1];
+        uint32_t lock = (i == 0) ? tool_lock : dos_LockPath_glue(dir);
+        uint32_t arg = PROC_WBARGS + (uint32_t)i * 8;
+        guest_write_be32(arg + 0, lock);
+        guest_write_be32(arg + 4, pool);
+        for (int j = 0; name[j] && pool < PROC_WBPROC - 4; j++)
+            g_ram[pool++] = (uint8_t)name[j];
+        g_ram[pool++] = 0;
+    }
+
+    /* ---- WBStartup message ------------------------------------------ */
+    uint32_t msg = PROC_WBMSG;
+    uint32_t wbport = PROC_WBPROC + PRC_MSGPORT;
+    g_ram[msg + 8] = NT_MESSAGE_G;
+    guest_write_be32(msg + WBM_REPLY,   wbport);
+    guest_write_be32(msg + WBM_LENGTH,  0x28);  /* mn_Length: payload size */
+    guest_write_be32(msg + WBS_PROCESS, proc + PRC_MSGPORT);
+    guest_write_be32(msg + WBS_SEGMENT, seglist);
+    guest_write_be32(msg + WBS_NUMARGS, (uint32_t)nargs);
+    if (wb->toolwindow[0]) {
+        guest_write_be32(msg + WBS_TOOLWIN, pool);
+        for (int j = 0; wb->toolwindow[j] && pool < PROC_WBPROC - 4; j++)
+            g_ram[pool++] = (uint8_t)wb->toolwindow[j];
+        g_ram[pool++] = 0;
+    } else {
+        guest_write_be32(msg + WBS_TOOLWIN, 0);
+    }
+    guest_write_be32(msg + WBS_ARGLIST, PROC_WBARGS);
+
+    /* Queue it on the process message port before the guest runs — the
+     * startup code's WaitPort()/GetMsg() picks it up immediately. */
+    guest_list_add_tail(proc + PRC_MSGPORT + PMP_MSGLIST, msg);
+
     guest_write_be32(EXEC_BASE + 0x114, proc);
     return proc;
 }

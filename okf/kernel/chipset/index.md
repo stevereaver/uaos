@@ -113,7 +113,7 @@ For unknown instructions, the handler falls back to a 32-bit read/write and adva
 - **Guest PC**: when the current task is `TASK_TYPE_M68K`, the Musashi `M68K_REG_PC` is appended (`pc=00100C`).
 - **PC disassembly**: `chiptrace pc [N]` enables sampled instruction tracing — `Chiptrace_PcSample()` runs after each `m68k_execute()` slice (exec_task.c, dos_lib.c, uaos_m68k_glue.c) and emits `PC 00114A  jsr (-$180,A6)` via Musashi's `m68k_disassemble` at most once per N 10 ms ticks.  `m68kdasm.c` is linked into the kernel; the build's `stubs.c` supplies real `sprintf`/`strcat`/`strcpy`/`qsort` for it.
 - **Commands**: `chiptrace` (status), `on`/`off`, `<class> [on|off]`, `pc [N|off]`, `test` (emits one access per class through `chip_emu` — safe registers only), `clear` (zero counters).  Counters reset on each `on`.
-- **Verification demo**: `system/Demos/ChipPoke.s` pokes one register per class then exits — `chiptrace on ; Demos/ChipPoke ; chiptrace off` prints the full decoded sequence with guest PCs.
+- **Verification demo**: `system/Demos/src/ChipPoke.s` pokes one register per class then exits — `chiptrace on ; Demos/ChipPoke ; chiptrace off` prints the full decoded sequence with guest PCs.
 
 ## Integration with graphics.library
 
@@ -127,7 +127,7 @@ The display-mode database (`graphics_lib.c`) includes AGA variants of each mode 
 
 ## Demo: CopperBars
 
-The M68k demo `system/Demos/CopperBars.s` is a worked example of using `graphics.library` to create a `View`/`ViewPort` and then replacing the merged copper list with a custom one to draw animated horizontal raster bars. It is built automatically by `scripts/build_iso.sh` and installed into `SYS_ROOT/Demos/CopperBars`. The program:
+The M68k demo `system/Demos/src/CopperBars.s` is a worked example of using `graphics.library` to create a `View`/`ViewPort` and then replacing the merged copper list with a custom one to draw animated horizontal raster bars. It is built automatically by `scripts/build_iso.sh` and installed into `SYS_ROOT/Demos/CopperBars`. The program:
 
 1. Opens `graphics.library` and `intuition.library`.
 2. Allocates a `View`, `ViewPort`, `RasInfo`, dummy `BitMap` and `ColorMap`.

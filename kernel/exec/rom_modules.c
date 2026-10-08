@@ -214,6 +214,9 @@ void UAOS_ROM_RegisterAll(void)
     /* Register bsdsocket.library */
     UAOS_BSDSOCKET_Register();
 
+    /* Register icon.library (UAOS-253: GetDiskObject/tooltypes) */
+    UAOS_ICON_Register();
+
     /* Register workbench.library */
     UAOS_WORKBENCH_Register();
 

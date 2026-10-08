@@ -117,6 +117,9 @@ void UAOS_INTUITION_Register(void);
 /* Register iffparse.library */
 void UAOS_IFFPARSE_Register(void);
 
+/* Register icon.library (UAOS-253) */
+void UAOS_ICON_Register(void);
+
 /* Global guest RAM base for Amiga address translation */
 extern uint8_t *uaos_ram_base;
 

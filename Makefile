@@ -206,7 +206,7 @@ NATIVE_C_ALL := version mem cpu libs clear reboot pwd info date which disks fdis
     memcheck chiptrace taskdump taskstat watchdog ports timers handles \
     netstat diskdiag pciscan irqroute peek poke irqaudit sercon tickcheck \
     etrace prof failalloc pktmon screenshot runback alias unalias path skip \
-    lab resload
+    lab resload wbrun
 
 C_FROM_USER   := $(USERSPACE_PROGS)
 C_FROM_WRAP   := $(filter-out $(C_FROM_USER) bas,$(BIN_LC))
@@ -229,7 +229,7 @@ PREF_BINS := $(SYSROOT)/Prefs/Pointer $(SYSROOT)/Prefs/ScreenMode \
 
 # --- M68k demos / downloads ---------------------------------------------------
 
-DEMOS     := $(basename $(notdir $(wildcard system/Demos/*.s)))
+DEMOS     := $(basename $(notdir $(wildcard system/Demos/src/*.s)))
 DEMO_BINS := $(addprefix $(SYSROOT)/Demos/,$(DEMOS))
 
 VASM_STAMP    := $(STAMPS)/vasm-built
@@ -272,13 +272,14 @@ OPT_STAGED += $(EFI_STAGED)
 endif
 
 # system/ subtrees copied wholesale into SYS_ROOT (Demos handled separately —
-# *.s sources are excluded).  SYS_FILES tracks their contents for rebuilds.
+# top-level *.s sources are excluded, but Demos/src/ ships as-is so the ISO
+# carries the demo sources).  SYS_FILES tracks their contents for rebuilds.
 SYS_SUBDIRS := S C LIBS DEVS L SYS Tools Utilities Prefs Classes Fonts \
                Locale Storage gnu
 SYS_FILES   := $(shell find $(addprefix system/,$(SYS_SUBDIRS)) \
                  -type f 2>/dev/null) \
                system/Startup-Sequence
-DEMO_EXTRAS := $(shell find system/Demos -type f ! -name '*.s' 2>/dev/null)
+DEMO_EXTRAS := $(shell find system/Demos -type f 2>/dev/null)
 
 SYSROOT_CONTENTS := $(NATIVE_BINS) $(WRAP_BINS) $(USER_BINS) $(BAS_BIN) \
                     $(TOOL_BINS) $(UTIL_BINS) $(PREF_BINS) $(GUIDE_BIN) \
@@ -618,7 +619,7 @@ $(VASM_STAMP): $(VASM_DIR)/vasm.tar.gz $(VASM_DIR)/vlink.tar.gz | $(STAMPS)
 	$(Q)touch $@
 
 ifneq ($(DEMOS),)
-$(BUILD)/%.o: system/Demos/%.s $(VASM_STAMP)
+$(BUILD)/%.o: system/Demos/src/%.s $(VASM_STAMP)
 	@echo "  VASM    $<"
 	$(Q)$(VASM_BIN) -Fhunk -o $@ $<
 
@@ -691,7 +692,9 @@ $(SYSROOT_STAMP): $(SYSROOT_CONTENTS) $(SYS_FILES) $(DEMO_EXTRAS) | $(DIRS_STAMP
 	done
 	$(Q)if [ -d system/Demos ]; then \
 	    for f in system/Demos/*; do \
-	        if [[ -f "$$f" && "$$f" != *.s ]]; then \
+	        if [[ -d "$$f" ]]; then \
+	            cp -r "$$f" "$(SYSROOT)/Demos/"; \
+	        elif [[ -f "$$f" && "$$f" != *.s ]]; then \
 	            cp "$$f" "$(SYSROOT)/Demos/"; \
 	        fi; \
 	    done; \

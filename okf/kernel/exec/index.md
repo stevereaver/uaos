@@ -47,6 +47,7 @@ UAOS provides native thunk implementations of classic AmigaOS libraries and devi
 - [gadtools.library](gadtools_library.md) — high-level gadget creation (buttons, checkboxes, sliders, string/integer gadgets, listviews, cycle gadgets) and layout helpers.
 - [dos.library](/kernel/dos/index.md) — file I/O, directories, processes, and AmigaDOS packets.
 - [workbench.library](workbench_library.md) — app icons, app windows, and Workbench integration.
+- [icon.library](icon_library.md) — guest `DiskObject`s from real `.info` files, tooltypes, and Workbench launch semantics (`WBStartup`, `pr_CLI=0`, project default tools).
 - [bsdsocket.library](bsdsocket_library.md) — BSD socket API mapped to the native TCP/IP stack.
 - [iffparse.library](iffparse_library.md) — IFF FORM/chunk parser (FORM/LIST/CAT/PROP, SCAN/STEP/RAWSTEP, hooks, properties, collections, local context items).
 - [Other Libraries & Devices](other_libraries.md) — `utility.library`, `mathffp.library`, `locale.library`, `ixemul.library`, `console.device`, `keyboard.device`, `timer.device`.

@@ -44,7 +44,15 @@ extern uint32_t heap_alloc(uint32_t size);
 extern void install_library_tables(void);
 extern uint32_t hunk_load(const uint8_t *binary, uint32_t bin_size);
 extern uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr);
+extern uint32_t UAOS_Emu_SetupWbLaunch(const UaosWbLaunch *wb,
+                                       uint32_t cmdname_bptr);
+extern int  UAOS_Emu_WbStartupReplied(void);
 extern void UAOS_Emu_SetCwd(const char *cwd);
+
+/* Pending Workbench launch descriptor (UAOS-253) — filled by
+ * ExecFile_RunWB() / the desktop icon path and consumed by the next
+ * Task_CreateM68k() call, then cleared. */
+UaosWbLaunch g_wb_pending;
 
 /* Stack top for M68k guest */
 #define STACK_TOP  0x1F0000
@@ -268,12 +276,20 @@ static void m68k_wrapper_entry(void *arg)
     /* Build the guest Process/Task/CLI/console-port environment AFTER
      * hunk_load so pr_SegList/cli_Module can point at the loaded seglist.
      * The structs live in the dedicated region at 0x1B000 — outside the
-     * program image and every guest allocator (UAOS-237). */
-    uint32_t proc_addr = UAOS_Emu_SetupProcess(cmdname_bptr);
+     * program image and every guest allocator (UAOS-237).
+     * Workbench launches (UAOS-253) get the WBStartup environment
+     * instead: pr_CLI = 0 and a queued WBStartup message on pr_MsgPort. */
+    uint32_t proc_addr = task->m68k_is_wb
+        ? UAOS_Emu_SetupWbLaunch(&task->m68k_wb, cmdname_bptr)
+        : UAOS_Emu_SetupProcess(cmdname_bptr);
     if (!proc_addr) {
         extern void kprint(const char *);
         kprint("[M68K] process setup OOM, exiting\n");
         Task_Exit();
+    }
+    if (task->m68k_is_wb) {
+        /* GetProgramDir()/tool-dir lock for programs that consult it. */
+        task->m68k_program_dir = guest_r32(proc_addr + 0x98);
     }
 
     /* Link the Process struct to the host-side task so that
@@ -324,6 +340,13 @@ static void m68k_wrapper_entry(void *arg)
     m68k_set_reg(8, cmdline_ptr);        /* A0 = command line pointer */
     m68k_set_reg(0, (unsigned int)cmdlen); /* D0 = command line length */
     m68k_set_reg(14, EXEC_BASE);        /* A6 = EXEC_BASE (SysBase) */
+
+    /* Workbench convention (UAOS-253): argc=0/argv=NULL — startup code
+     * fetches the WBStartup message from pr_MsgPort itself. */
+    if (task->m68k_is_wb) {
+        m68k_set_reg(8, 0);              /* A0 = NULL */
+        m68k_set_reg(0, 0);              /* D0 = 0    */
+    }
 
     /* Run in time-sliced chunks.
      * Liveness watchdog (UAOS-247): instead of a cumulative cycle budget —
@@ -530,6 +553,19 @@ static void m68k_wrapper_entry(void *arg)
     extern int g_chipset_sync_disabled;
     g_chipset_sync_disabled = 0;
 
+    /* Workbench launch teardown (UAOS-253): the WBStartup reply arrives
+     * on the fake Workbench port via ReplyMsg — check it so unreplied
+     * startups surface in the log.  The loaded seglist blocks were
+     * allocated from this task's guest RAM window; freeing the window
+     * (Task_ReleaseM68kRam via Task_Exit) releases them, and the guest
+     * heap is torn down wholesale — nothing more to do. */
+    if (task->m68k_is_wb) {
+        extern void kprint(const char *);
+        kprint(UAOS_Emu_WbStartupReplied()
+               ? "[wb] startup message replied — process clean exit\n"
+               : "[wb] WARN: program exited without ReplyMsg(WBStartup)\n");
+    }
+
     Task_Exit();
 }
 
@@ -584,6 +620,13 @@ UaosTask *Task_CreateM68k(const char *name, int8_t pri,
     t->m68k_context_buf = ctx_buf;
     t->native_arg = t;                /* pass task pointer to wrapper */
     t->m68k_print_fn = (void *)print_fn;
+
+    /* Consume any pending Workbench launch descriptor (UAOS-253).  The
+     * launcher fills g_wb_pending right before calling us; snapshot it
+     * and clear so the next launch defaults back to CLI semantics. */
+    t->m68k_wb = g_wb_pending;
+    t->m68k_is_wb = g_wb_pending.used;
+    g_wb_pending.used = 0;
 
     /* Copy the binary payload into the tail of the task's guest RAM NOW,
      * before the task starts running.  The caller's static buffer

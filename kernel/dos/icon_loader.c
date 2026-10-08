@@ -9,6 +9,7 @@
 #include "vfs.h"
 #include "ramfs.h"
 #include "../display/framebuffer.h"
+#include "../exec/icon_lib.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -97,167 +98,81 @@ int Icon_Load(const char *path, ParsedIcon *out)
 
     if (!path || path[0] == '\0') return 0;
 
-    /* Build .info path: append ".info" */
-    char info_path[128];
-    int plen = 0;
-    while (path[plen] && plen < (int)sizeof(info_path) - 6) {
-        info_path[plen] = path[plen];
-        plen++;
-    }
-    const char *suffix = ".info";
-    for (int i = 0; i < 5; i++) info_path[plen++] = suffix[i];
-    info_path[plen] = '\0';
+    /* Real classic .info format via the shared parser (UAOS-253):
+     * 78-byte DiskObject header, optional DrawerData/Image sections at
+     * computed file offsets, length-prefixed strings. */
+    static uint8_t buf[32768];
+    uint32_t size = Icon_ReadInfo(path, buf, sizeof(buf));
+    if (!size) return 0;
 
-    /* Try VFS read */
-    VfsFile fh;
-    if (!VFS_Open(&fh, info_path, VFS_READ)) {
-        /* No .info file — caller should fall back to procedural icon */
+    IconMeta m;
+    if (!Icon_ParseBuf(buf, size, &m)) {
+        fprintf(stderr, "[ICON] Parse failed for %s.info\n", path);
         return 0;
     }
 
-    RamFsNode *node = fh.node;
-    if (!node || !node->data || node->size == 0) {
-        VFS_Close(&fh);
-        return 0;
+    out->type        = m.type;
+    out->pos_x       = (int16_t)m.cur_x;
+    out->pos_y       = (int16_t)m.cur_y;
+    out->stack_size  = m.stack_size;
+
+    int i = 0;
+    while (i < ICON_MAX_LABEL - 1 && m.default_tool[i]) {
+        out->default_tool[i] = m.default_tool[i]; i++;
     }
-
-    const uint8_t *data = (const uint8_t *)node->data;
-    size_t         size = node->size;
-
-    if (size < 78) return 0;  /* Minimum DiskObject header size */
-
-    /* Verify magic */
-    uint16_t magic = get_u16(data, 0);
-    if (magic != WB_DISKOBJECT_MAGIC) {
-        fprintf(stderr, "[ICON] Bad magic 0x%04X for %s\n", magic, info_path);
-        return 0;
+    out->default_tool[i] = '\0';
+    i = 0;
+    while (i < ICON_MAX_LABEL - 1 && m.tool_window[i]) {
+        out->tool_window[i] = m.tool_window[i]; i++;
     }
+    out->tool_window[i] = '\0';
 
-    uint16_t version = get_u16(data, 2);
-    (void)version;
-
-    /* DiskObject fields */
-    uint32_t gadget_ptr = get_u32(data, 4);
-    uint8_t  type       = get_u8 (data, 8);
-    uint32_t def_tool   = get_u32(data, 10);
-    uint32_t tool_types = get_u32(data, 14);
-    int16_t  cur_x      = (int16_t)get_u16(data, 18);
-    int16_t  cur_y      = (int16_t)get_u16(data, 20);
-    (void)gadget_ptr;
-
-    out->type = type;
-    out->pos_x = cur_x;
-    out->pos_y = cur_y;
-
-    /* Default tool string */
-    if (def_tool && def_tool < size) {
-        int i = 0;
-        while (i < ICON_MAX_LABEL - 1 && (def_tool + i) < size && data[def_tool + i]) {
-            out->default_tool[i] = (char)data[def_tool + i];
-            i++;
-        }
-        out->default_tool[i] = '\0';
+    int tt = m.tooltype_count;
+    if (tt > ICON_MAX_TOOLTYPES) tt = ICON_MAX_TOOLTYPES;
+    for (i = 0; i < tt; i++) {
+        memcpy(out->tool_types[i], m.tooltypes[i], ICON_MAX_TOOLTYPE_LEN);
     }
+    out->tool_type_count = tt;
 
-    /* Tool types array */
-    if (tool_types && tool_types < size) {
-        int tt_count = 0;
-        uint32_t entry_off = tool_types;
-        while (tt_count < ICON_MAX_TOOLTYPES && entry_off + 3 < size) {
-            uint32_t str_ptr = get_u32(data, (int)entry_off);
-            if (str_ptr == 0) break;
-            if (str_ptr < size) {
-                int j = 0;
-                while (j < ICON_MAX_TOOLTYPE_LEN - 1 && (str_ptr + j) < size && data[str_ptr + j]) {
-                    out->tool_types[tt_count][j] = (char)data[str_ptr + j];
-                    j++;
+    /* Image records: 20-byte Image header (LeftEdge/TopEdge/Width/
+     * Height/Depth/ImageData/PlanePick/PlaneOnOff/NextImage) followed
+     * directly by the planar data. */
+    if (m.img_off) {
+        uint16_t n_w     = get_u16(buf, (int)m.img_off + 4);
+        uint16_t n_h     = get_u16(buf, (int)m.img_off + 6);
+        uint16_t n_depth = get_u16(buf, (int)m.img_off + 8);
+        uint32_t data_off = m.img_off + ICON_IMAGE_HDR;
+
+        if (n_w > 0 && n_w <= ICON_MAX_WIDTH && n_h > 0 &&
+            n_h <= ICON_MAX_HEIGHT && n_depth > 0 &&
+            n_depth <= ICON_MAX_PLANES) {
+            out->image.width  = n_w;
+            out->image.height = n_h;
+            out->image.depth  = n_depth;
+            planar_to_argb(buf + data_off, out->image.normal,
+                           n_w, n_h, n_depth, 0x00000000);
+
+            if (m.sel_off) {
+                uint16_t s_w     = get_u16(buf, (int)m.sel_off + 4);
+                uint16_t s_h     = get_u16(buf, (int)m.sel_off + 6);
+                uint16_t s_depth = get_u16(buf, (int)m.sel_off + 8);
+                if (s_w == n_w && s_h == n_h && s_depth == n_depth) {
+                    planar_to_argb(buf + m.sel_off + ICON_IMAGE_HDR,
+                                   out->image.selected,
+                                   s_w, s_h, s_depth, 0x00000000);
+                    out->image.has_selected = 1;
                 }
-                out->tool_types[tt_count][j] = '\0';
-                tt_count++;
             }
-            entry_off += 4;
-            /* safety break if we seem to be reading garbage */
-            if (entry_off > size) break;
-        }
-        out->tool_type_count = tt_count;
-    }
-
-    /* Gadget / Image data starts after the fixed-size header.
-     * For simplicity we parse the raw image from offsets following
-     * the header rather than following the guest pointer chain.
-     * Classic .info layout:
-     *   0-3:   magic + version
-     *   4-7:   gadget_ptr
-     *   8:     type, pad
-     *   10-13: default_tool
-     *   14-17: tool_types
-     *   18-21: current_x, current_y
-     *   22-25: drawer_data
-     *   26-29: tool_window
-     *   30-31: stack_size
-     *   32+:   Gadget struct (14 bytes)
-     *   46+:   normal Image struct (12 bytes)
-     *   58+:   selected Image struct (12 bytes)
-     *   70+:   image data
-     */
-
-    if (size < 82) return 1;  /* enough for header but no images */
-
-    int gadget_off = 32;
-    int img_n_off  = gadget_off + 14;
-    int img_s_off  = img_n_off  + 12;
-    int data_off   = img_s_off  + 12;
-
-    /* Normal image dimensions */
-    uint16_t n_w     = get_u16(data, img_n_off + 0);
-    uint16_t n_h     = get_u16(data, img_n_off + 2);
-    uint16_t n_depth = get_u16(data, img_n_off + 4);
-    uint16_t n_dsize = get_u16(data, img_n_off + 6);
-
-    if (n_w > 0 && n_w <= ICON_MAX_WIDTH && n_h > 0 && n_h <= ICON_MAX_HEIGHT
-        && n_depth > 0 && n_depth <= ICON_MAX_PLANES && data_off + n_dsize <= (int)size) {
-        out->image.width  = n_w;
-        out->image.height = n_h;
-        out->image.depth  = n_depth;
-        out->image.has_selected = 0;
-
-        /* Convert normal image */
-        planar_to_argb(data + data_off,
-                       out->image.normal,
-                       n_w, n_h, n_depth,
-                       0x00000000);
-
-        /* Selected image follows normal image data */
-        int sel_off = data_off + n_dsize;
-        if (sel_off + 12 <= (int)size) {
-            uint16_t s_w     = get_u16(data, sel_off + 0);
-            uint16_t s_h     = get_u16(data, sel_off + 2);
-            uint16_t s_depth = get_u16(data, sel_off + 4);
-            uint16_t s_dsize = get_u16(data, sel_off + 6);
-            int s_data_off = sel_off + 12;
-
-            if (s_w == n_w && s_h == n_h && s_depth == n_depth
-                && s_data_off + s_dsize <= (int)size) {
-                planar_to_argb(data + s_data_off,
-                               out->image.selected,
-                               s_w, s_h, s_depth,
-                               0x00000000);
-                out->image.has_selected = 1;
-            } else {
-                /* If selected image is missing or mismatched, use normal */
+            if (!out->image.has_selected)
                 memcpy(out->image.selected, out->image.normal,
                        sizeof(out->image.normal));
-            }
-        } else {
-            memcpy(out->image.selected, out->image.normal,
-                   sizeof(out->image.normal));
         }
     }
 
     /* Derive label from base filename */
     const char *base = path;
     int last_slash = -1;
-    for (int i = 0; path[i]; i++) {
+    for (i = 0; path[i]; i++) {
         if (path[i] == '/' || path[i] == ':') last_slash = i;
     }
     if (last_slash >= 0) base = path + last_slash + 1;
@@ -269,7 +184,6 @@ int Icon_Load(const char *path, ParsedIcon *out)
     }
     out->label[li] = '\0';
 
-    VFS_Close(&fh);
     return 1;
 }
 
@@ -402,114 +316,105 @@ int Icon_Save(const char *path, const ParsedIcon *icon)
     uint16_t plane_size = bpr * h;
     uint16_t img_data_size = plane_size * depth;
 
-    /* Layout:
-     *   0-31:  DiskObject header (32 bytes)
-     *   32-45: Gadget (14 bytes)
-     *   46-57: Normal Image header (12 bytes)
-     *   58-69: Selected Image header (12 bytes)
-     *   70+:   Normal image data (img_data_size bytes)
-     *          Selected image data (img_data_size bytes)
-     *          Default tool string (null-terminated)
-     *          Tool type BPTR array (4 * (count+1) bytes)
-     *          Tool type strings (null-terminated, sequential)
-     */
-    uint32_t data_off = 70;
-    uint32_t sel_data_off = data_off + img_data_size;
-    uint32_t def_tool_off = sel_data_off + img_data_size;
-    uint32_t tt_array_off = def_tool_off;
-
-    /* Include default tool string in layout */
-    if (icon->default_tool[0]) {
-        tt_array_off += strlen(icon->default_tool) + 1;
-    }
-
     uint32_t tt_count = (uint32_t)icon->tool_type_count;
     if (tt_count > ICON_MAX_TOOLTYPES) tt_count = ICON_MAX_TOOLTYPES;
+    int has_deftool = icon->default_tool[0] != '\0';
+    int has_toolwin = icon->tool_window[0] != '\0';
 
-    uint32_t tt_strings_off = tt_array_off + 4 * (tt_count + 1);
-
-    /* Compute total size */
-    uint32_t total_size = tt_strings_off;
-    for (uint32_t i = 0; i < tt_count; i++) {
-        total_size += strlen(icon->tool_types[i]) + 1;
+    /* Real classic .info layout (UAOS-253):
+     *   0-77:  DiskObject header (magic+version+44B embedded Gadget+fields)
+     *   78+:   normal Image (20B hdr + planes), selected Image likewise,
+     *          default tool (u32 len incl. NUL + bytes),
+     *          tooltypes (u32 (count+1)*4 + len-prefixed strings),
+     *          tool window (len-prefixed)
+     * Pointer fields in the header are presence flags on disk. */
+    uint32_t img_rec = (w > 0) ? ICON_IMAGE_HDR + img_data_size : 0;
+    uint32_t p = ICON_HDR_SIZE;
+    uint32_t img1_off = 0, img2_off = 0, deftool_off = 0,
+             tt_off = 0, tw_off = 0;
+    if (w > 0)            { img1_off = p; p += img_rec; }
+    if (w > 0)            { img2_off = p; p += img_rec; }
+    if (has_deftool)      { deftool_off = p; p += 4 + strlen(icon->default_tool) + 1; }
+    if (tt_count) {
+        tt_off = p; p += 4;
+        for (uint32_t i = 0; i < tt_count; i++)
+            p += 4 + strlen(icon->tool_types[i]) + 1;
     }
+    if (has_toolwin)      { tw_off = p; p += 4 + strlen(icon->tool_window) + 1; }
+    uint32_t total_size = p;
 
-    /* Allocate buffer (on heap via VFS pool or static) */
-    static uint8_t buf[4096];
+    static uint8_t buf[8192];
     if (total_size > sizeof(buf)) return 0;
     memset(buf, 0, total_size);
 
     /* DiskObject header */
     put_u16(buf, 0, WB_DISKOBJECT_MAGIC);
     put_u16(buf, 2, WB_DISKVERSION);
-    put_u32(buf, 4, 0);              /* gadget ptr (unused) */
-    buf[8] = icon->type;
-    buf[9] = 0;                       /* pad */
-    put_u32(buf, 10, icon->default_tool[0] ? def_tool_off : 0);
-    put_u32(buf, 14, tt_count > 0 ? tt_array_off : 0);
-    put_u16(buf, 18, (uint16_t)icon->pos_x);
-    put_u16(buf, 20, (uint16_t)icon->pos_y);
-    put_u32(buf, 22, 0);             /* drawer data */
-    put_u32(buf, 26, 0);             /* tool window */
-    put_u16(buf, 30, 4096);          /* stack size */
+    /* Embedded Gadget (44 bytes at offset 4) */
+    put_u16(buf, ICON_GAD_LEFT,   0);
+    put_u16(buf, ICON_GAD_TOP,    0);
+    put_u16(buf, ICON_GAD_WIDTH,  w);
+    put_u16(buf, ICON_GAD_HEIGHT, h);
+    put_u16(buf, ICON_GAD_FLAGS,  0x0003);       /* GADGHIMAGE */
+    put_u16(buf, ICON_GAD_TYPE,   GTYP_CUSTOM);
+    put_u32(buf, ICON_GAD_RENDER, w > 0 ? 1 : 0);
+    put_u32(buf, ICON_GAD_SELREN, w > 0 ? 1 : 0);
+    /* Type / pad / presence flags / position / stack */
+    buf[ICON_TYPE_OFF] = icon->type;
+    buf[ICON_TYPE_OFF + 1] = 0;
+    put_u32(buf, ICON_DEFTOOL_OFF, has_deftool ? 1 : 0);
+    put_u32(buf, ICON_TTYPES_OFF,  tt_count ? 1 : 0);
+    put_u32(buf, ICON_CURX_OFF, (uint32_t)(int32_t)icon->pos_x);
+    put_u32(buf, ICON_CURY_OFF, (uint32_t)(int32_t)icon->pos_y);
+    put_u32(buf, ICON_DRAWER_OFF, 0);
+    put_u32(buf, ICON_TOOLWIN_OFF, has_toolwin ? 1 : 0);
+    put_u32(buf, ICON_STACK_OFF,
+            (uint32_t)(icon->stack_size ? icon->stack_size : 4096));
 
-    /* Gadget (14 bytes) */
-    put_u16(buf, 32, GTYP_CUSTOM);   /* gadgetType */
-    put_u16(buf, 34, 0);             /* render flags */
-    put_u32(buf, 36, w > 0 ? 46 : 0); /* gadgetRender → normal image */
-    put_u32(buf, 40, w > 0 ? 58 : 0); /* selectRender → selected image */
-    put_u16(buf, 44, 0);             /* leftEdge */
-
-    /* Normal Image header (12 bytes) */
-    if (w > 0) {
-        put_u16(buf, 46, w);
-        put_u16(buf, 48, h);
-        put_u16(buf, 50, depth);
-        put_u16(buf, 52, img_data_size);
-        put_u32(buf, 54, data_off);  /* image data offset */
+    /* Image records — 20B header (ImageData/NextImage = stale markers) */
+    for (int which = 0; which < 2; which++) {
+        uint32_t io = which ? img2_off : img1_off;
+        if (!io) continue;
+        put_u16(buf, io + 0, 0);                    /* LeftEdge  */
+        put_u16(buf, io + 2, 0);                    /* TopEdge   */
+        put_u16(buf, io + 4, w);
+        put_u16(buf, io + 6, h);
+        put_u16(buf, io + 8, depth);
+        put_u32(buf, io + 10, 1);                   /* ImageData (marker) */
+        buf[io + 14] = 0;                           /* PlanePick */
+        buf[io + 15] = 0;                           /* PlaneOnOff */
+        put_u32(buf, io + 16, 0);                   /* NextImage */
+        const uint32_t *src = which ? icon->image.selected
+                                    : icon->image.normal;
+        if (which && !icon->image.has_selected)
+            src = icon->image.normal;
+        argb_to_planar(src, buf + io + ICON_IMAGE_HDR, w, h, depth);
     }
 
-    /* Selected Image header (12 bytes) */
-    if (w > 0) {
-        put_u16(buf, 58, w);
-        put_u16(buf, 60, h);
-        put_u16(buf, 62, depth);
-        put_u16(buf, 64, img_data_size);
-        put_u32(buf, 66, sel_data_off);
+    /* Default tool — u32 length (incl NUL) + bytes */
+    if (deftool_off) {
+        uint32_t dl = strlen(icon->default_tool) + 1;
+        put_u32(buf, deftool_off, dl);
+        memcpy(buf + deftool_off + 4, icon->default_tool, dl);
     }
 
-    /* Normal image planar data */
-    if (w > 0 && img_data_size > 0) {
-        argb_to_planar(icon->image.normal, buf + data_off, w, h, depth);
-    }
-
-    /* Selected image planar data */
-    if (w > 0 && img_data_size > 0) {
-        if (icon->image.has_selected) {
-            argb_to_planar(icon->image.selected, buf + sel_data_off, w, h, depth);
-        } else {
-            memcpy(buf + sel_data_off, buf + data_off, img_data_size);
+    /* Tool types — u32 (count+1)*4 then len-prefixed strings */
+    if (tt_off) {
+        put_u32(buf, tt_off, (tt_count + 1) * 4);
+        uint32_t q = tt_off + 4;
+        for (uint32_t i = 0; i < tt_count; i++) {
+            uint32_t sl = strlen(icon->tool_types[i]) + 1;
+            put_u32(buf, q, sl);
+            memcpy(buf + q + 4, icon->tool_types[i], sl);
+            q += 4 + sl;
         }
     }
 
-    /* Default tool string */
-    if (icon->default_tool[0]) {
-        int dl = strlen(icon->default_tool);
-        memcpy(buf + def_tool_off, icon->default_tool, dl);
-        buf[def_tool_off + dl] = '\0';
+    if (tw_off) {
+        uint32_t tl = strlen(icon->tool_window) + 1;
+        put_u32(buf, tw_off, tl);
+        memcpy(buf + tw_off + 4, icon->tool_window, tl);
     }
-
-    /* Tool type BPTR array + strings */
-    uint32_t str_off = tt_strings_off;
-    for (uint32_t i = 0; i < tt_count; i++) {
-        put_u32(buf, tt_array_off + i * 4, str_off);
-        int sl = strlen(icon->tool_types[i]);
-        memcpy(buf + str_off, icon->tool_types[i], sl);
-        buf[str_off + sl] = '\0';
-        str_off += sl + 1;
-    }
-    /* Terminator BPTR (NULL) */
-    put_u32(buf, tt_array_off + tt_count * 4, 0);
 
     /* Write to VFS */
     VfsFile fh;
@@ -545,18 +450,18 @@ int Icon_SavePosition(const char *path, int16_t x, int16_t y)
 
     /* Read existing file */
     uint32_t size = VFS_Size(&fh);
-    static uint8_t buf[4096];
-    if (size > sizeof(buf) || size < 32) {
+    static uint8_t buf[32768];
+    if (size > sizeof(buf) || size < ICON_HDR_SIZE) {
         VFS_Close(&fh);
         return 0;
     }
     uint32_t rd = VFS_Read(&fh, buf, size);
     VFS_Close(&fh);
-    if (rd < 32) return 0;
+    if (rd < ICON_HDR_SIZE) return 0;
 
-    /* Update position fields */
-    put_u16(buf, 18, (uint16_t)x);
-    put_u16(buf, 20, (uint16_t)y);
+    /* Update position fields (real format: s32 at 58/62) */
+    put_u32(buf, ICON_CURX_OFF, (uint32_t)(int32_t)x);
+    put_u32(buf, ICON_CURY_OFF, (uint32_t)(int32_t)y);
 
     /* Write back */
     if (!VFS_Open(&fh, info_path, VFS_WRITE | VFS_TRUNC)) {

@@ -207,6 +207,7 @@ void Cmd_Format  (NativeCmdCtx *ctx, const char *args);
 void Cmd_Fsck    (NativeCmdCtx *ctx, const char *args);
 void Cmd_Pointer (NativeCmdCtx *ctx, const char *args);
 void Cmd_Run     (NativeCmdCtx *ctx, const char *args);
+void Cmd_WBRun   (NativeCmdCtx *ctx, const char *args);
 void Cmd_Assign  (NativeCmdCtx *ctx, const char *args);
 void Cmd_Execute (NativeCmdCtx *ctx, const char *args);
 void Cmd_LoadWB  (NativeCmdCtx *ctx, const char *args);

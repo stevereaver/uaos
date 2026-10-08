@@ -141,6 +141,24 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   `usb: late enum vid= pid=` still names whatever answers (BT HCI vs
   Apple IR `05ac:824x`). If it never wakes, the remaining fix is
   SMC/ACPI power control — not USB.
+
+## Metal USB validation (2026-10-08, build UAOS-081026114140)
+
+- INTx delivery confirmed on metal: all 5 UHCI vectors dispatch
+  (v48/GSI16, v50/GSI18, v53/GSI21 all >1k hits); PCI cmd INTxDis=0.
+- `g_devs`/`g_ifs` walk via `peek` (symbols from build ELF): **5 devs /
+  8 ifs** — `0a5c:4500` BCM2046 hub (uhci0p0, unbound: `usbhub.c` was
+  still on branch `marble-camshaft`, unmerged), `0930:1400` flash stick
+  (uhci0p1, MSC if parsed, unbound), `062a:4101` wireless kbd+mouse
+  dongle (uhci2p0, both ifs bound), `05ac:8242` IR (uhci4p0, proto-0 if
+  unclaimed), `05ac:0230` internal kbd/trackpad (uhci4p1, 3 ifs bound,
+  trackpad ep1 mps=64 raw stream armed). **Wire pid readback today:
+  0x0230** — contradicts the earlier 0x021a note above; both were live
+  readbacks, treat the exact pid as uncertain (may vary by sub-rev).
+- uhci3/00:1D.1 p1 deaf (PORTSC=0x95, LS lines, SETUP unanswered,
+  td0=0x01450007) — proven NOT an EHCI ghost: EHCI 00:1D.7 CF=0, halted,
+  all 6 PORTSC=0x3000 (PortOwner=companion). Genuine no-talk device,
+  likely SMC-gated; heartbeat re-probe active.
 - **Deaf ports are quiet + cheap now (UAOS-262).** The retry loop used
   to emit ~50 verbose `ctrl fail` dumps and burn ~20 s per deaf port
   before parking. `uhci_control` early-outs after ~40 ms of zero TD

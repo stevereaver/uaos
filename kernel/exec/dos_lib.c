@@ -945,6 +945,7 @@ static void dos_VFPrintf(M68kCPUState *cpu)
         }
         tmp[i] = '\0';
         if (g_print) g_print(tmp);
+        else kprint(tmp);
     }
     cpu->d[0] = 0;
 }
@@ -960,6 +961,7 @@ static void dos_FPuts(M68kCPUState *cpu)
         }
         tmp[i] = '\0';
         if (g_print) g_print(tmp);
+        else kprint(tmp);
     }
     cpu->d[0] = 0;
 }
@@ -975,6 +977,7 @@ static void dos_PutStr(M68kCPUState *cpu)
         }
         tmp[i] = '\0';
         if (g_print) g_print(tmp);
+        else kprint(tmp);
     }
     cpu->d[0] = 0;
 }
@@ -992,6 +995,7 @@ static void dos_VPrintf(M68kCPUState *cpu)
         }
         tmp[i] = '\0';
         if (g_print) g_print(tmp);
+        else kprint(tmp);
     }
     cpu->d[0] = 0;
 }

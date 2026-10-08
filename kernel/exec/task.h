@@ -53,6 +53,32 @@ typedef enum {
 } TaskType;
 
 /* -------------------------------------------------------------------------
+ * Workbench launch descriptor (UAOS-253)
+ *
+ * Populated by ExecFile_RunWB() / C:wbrun / desktop icon double-click in
+ * g_wb_pending immediately before Task_CreateM68k().  The create call
+ * copies it into the new task and clears the global so plain CLI/background
+ * launches are unaffected.  The M68k wrapper uses it to publish a WBStartup
+ * message (with pr_CLI == 0) instead of a CLI environment.
+ * ------------------------------------------------------------------------- */
+#define WB_MAX_ARGS 8   /* extra WBArgs beyond the tool itself */
+
+typedef struct {
+    uint8_t  used;                          /* 1 = WB launch            */
+    char     tool_dir[96];                  /* drawer containing tool   */
+    char     tool_name[64];                 /* leaf name (WBArg[0])     */
+    char     toolwindow[80];                /* icon do_ToolWindow       */
+    int32_t  stack_size;                    /* icon do_StackSize        */
+    int      num_extra;                     /* extra WBArgs count       */
+    char     extra_dir[WB_MAX_ARGS][96];    /* lock dir per extra arg   */
+    char     extra_name[WB_MAX_ARGS][64];   /* leaf name per extra arg  */
+} UaosWbLaunch;
+
+/* Pending WB launch — written by the launcher, consumed once by
+ * Task_CreateM68k(). */
+extern UaosWbLaunch g_wb_pending;
+
+/* -------------------------------------------------------------------------
  * Unified Task Control Block
  *
  * AmigaOS 3.1 Task struct fields are embedded for exact compatibility.
@@ -148,6 +174,12 @@ typedef struct UaosTask {
      * across M68k tasks would hand one task a pointer into another's
      * arena. */
     uint32_t m68k_program_dir;
+
+    /* Workbench launch context (UAOS-253): snapshot of g_wb_pending at
+     * creation.  m68k_is_wb selects the WBStartup process environment;
+     * the reply/seglist accounting happens at task teardown. */
+    UaosWbLaunch m68k_wb;
+    uint8_t      m68k_is_wb;
 
     /* Output routing for X64/native userspace tasks.
      * raw output is accumulated in task_out and flushed line-by-line

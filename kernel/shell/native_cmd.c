@@ -44,6 +44,7 @@ static const NativeCmdEntry k_native_cmds[] = {
          "VERBOSE/S,SURFACE/S,DUMP/K/N,ALL/S"),
     CMD ("pointer",    Cmd_Pointer  ),
     CMD ("run",        Cmd_Run      ),
+    CMD ("wbrun",      Cmd_WBRun    ),
     CMD ("assign",     Cmd_Assign   ),
     CMD ("execute",    Cmd_Execute  ),
     CMD ("loadwb",     Cmd_LoadWB   ),
