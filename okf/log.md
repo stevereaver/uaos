@@ -43,6 +43,13 @@
   FIN release + FIN_WAIT/TIME_WAIT teardown, dup-SYN SYN-ACK replay,
   and retransmit-exhaustion RST abort at ~470 ticks.
   `make kernel` builds clean.
+* **QEMU-verified** (virtio-net, user NAT): guest `curl --data-binary`
+  POST of 56 KB to a host sink — 0.189 s before vs 0.008 s after (~24×;
+  the old path burned a ~10 ms `Task_SleepTicks` quantum per segment).
+* **Metal-verified** (MBP4,1, sky2, real LAN): same 56 KB POST to a LAN
+  sink — in-guest `pktmon` shows clean 8×1460 B back-to-back bursts
+  between ACK batches, zero retransmitted seqs, fully in-order; body on
+  the wire in 40 ms (~1.4 MiB/s).
 
 ## 2026-10-08 — generic ROM-module binding to guest OpenLibrary/OpenDevice (UAOS-238)
 
