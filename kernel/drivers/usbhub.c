@@ -182,12 +182,21 @@ static int hub_probe(UsbIf *ifc)
     UsbDev *dev = ifc->dev;
 
     /* Hub descriptor (type 0x29, device recipient): bNbrPorts at
-     * offset 2, bPwrOn2PwrGood (2 ms units) at offset 5. */
+     * offset 2, bPwrOn2PwrGood (2 ms units) at offset 5 — everything
+     * we use is inside the 9-byte fixed header, so request exactly
+     * that.  Over-reading stalls on real silicon: the MBP4,1's BCM2046
+     * returned two data packets then STALLed the surplus IN tokens of
+     * a 64-byte read (QEMU's hub tolerated it).  One retry covers a
+     * hub still waking up after SET_CONFIGURATION. */
     uint8_t *hd = (uint8_t *)DMA_Alloc(64, 8);
     if (!hd) return 0;
-    int r = usb_ctrl(dev, USB_RT_IN | USB_RT_CLASS | USB_RT_DEV,
+    int r = -1;
+    for (int t = 0; t < 2 && r != 0; t++) {
+        if (t) hub_msleep(30);
+        r = usb_ctrl(dev, USB_RT_IN | USB_RT_CLASS | USB_RT_DEV,
                      USB_REQ_GET_DESCRIPTOR, HUB_DESC_TYPE << 8, 0,
-                     hd, 64);
+                     hd, 9);
+    }
     if (r != 0 || hd[0] < 9 || hd[1] != HUB_DESC_TYPE) {
         DMA_Free(hd, 64);
         return 0;
