@@ -7,6 +7,7 @@
  */
 
 #include "fat32.h"
+#include "amiga_dos_types.h"
 #include "../irq/rtc.h"
 #include <stdio.h>
 #include <string.h>
@@ -1638,6 +1639,79 @@ int FAT32_GetDate(Fat32File *file, uint16_t *fat_time, uint16_t *fat_date)
                       g_sector_buf, 1) != 0) return -1;
     if (fat_time) *fat_time = le16(&g_sector_buf[file->dir_offset + 22]);
     if (fat_date) *fat_date = le16(&g_sector_buf[file->dir_offset + 24]);
+    return 0;
+}
+
+/* =========================================================================
+ * Set file size (ACTION_SET_FILE_SIZE) — UAOS-248
+ * ========================================================================= */
+
+int FAT32_SetFileSize(Fat32File *file, uint32_t new_size)
+{
+    if (!file || !file->fs || file->is_dir) return -1;
+
+    uint32_t old_size = file->size;
+    if (new_size > old_size) {
+        /* Extend with zeros through the normal write path (allocates
+         * clusters as needed).  Keep g_cluster_buf for the FS internals
+         * and use a small dedicated zero block. */
+        static const uint8_t zeros[512] = {0};
+        uint32_t save_pos = file->pos;
+        FAT32_Seek(file, old_size);
+        uint32_t remaining = new_size - old_size;
+        while (remaining) {
+            uint32_t chunk = remaining > sizeof(zeros)
+                             ? (uint32_t)sizeof(zeros) : remaining;
+            if (FAT32_Write(file, zeros, chunk) != chunk) {
+                FAT32_Seek(file, save_pos);
+                return -1;
+            }
+            remaining -= chunk;
+        }
+        FAT32_Seek(file, save_pos);
+    } else {
+        /* Shrink: adjust the logical size.  Trailing clusters stay
+         * allocated — unreachable past EOF — until a later write or
+         * truncate reuses them. */
+        file->size = new_size;
+        if (file->pos > new_size) FAT32_Seek(file, new_size);
+    }
+
+    /* Flush the size to the directory entry immediately */
+    if (file->dir_sector != 0 &&
+        BlockDev_Read(file->fs->bdev, file->dir_sector,
+                      g_sector_buf, 1) == 0) {
+        put_le32(&g_sector_buf[file->dir_offset + 28], file->size);
+        fat32_stamp_entry(&g_sector_buf[file->dir_offset], 0);
+        fat32_bwrite(file->fs->bdev, file->dir_sector, g_sector_buf, 1);
+    }
+    return 0;
+}
+
+/* =========================================================================
+ * Set protection (ACTION_SET_PROTECT) — UAOS-248
+ * FAT has no Amiga-style protection bits; the closest real attribute is
+ * ATTR_READ_ONLY, mapped from the Amiga 'w' (write-protected) bit.
+ * ========================================================================= */
+
+int FAT32_SetProtection(Fat32FS *fs, const char *path, uint32_t mask)
+{
+    if (!fs || !path) return -1;
+    const char *rel = strip_vol_prefix(path);
+    if (*rel == '\0') return -1;
+
+    uint32_t entry_sec = 0, entry_off = 0;
+    if (fat32_walk_path(fs, rel, fs->root_cluster,
+                        NULL, NULL, NULL, NULL,
+                        &entry_sec, &entry_off) != 1)
+        return -1;
+
+    if (BlockDev_Read(fs->bdev, entry_sec, g_sector_buf, 1) != 0) return -1;
+    uint8_t attr = g_sector_buf[entry_off + 11];
+    if (mask & FIBF_WRITE) attr |=  FAT32_ATTR_READ_ONLY;
+    else                   attr &= (uint8_t)~FAT32_ATTR_READ_ONLY;
+    g_sector_buf[entry_off + 11] = attr;
+    if (fat32_bwrite(fs->bdev, entry_sec, g_sector_buf, 1) != 0) return -1;
     return 0;
 }
 

@@ -141,11 +141,12 @@ typedef struct InfoData {
     int32_t id_InUse;           /* in-use flag */
 } InfoData;
 
-/* Disk state values */
-#define ID_VALIDATED         0
-#define ID_WRITE_PROTECTED   1
-#define ID_ERROR             2
-#define ID_NO_DISK_PRESENT   3
+/* Disk state values — real dos.h: 'P' write-protected, 'Q' validated,
+ * 'R' not-really-DOS.  Guests compare id_DiskState against these so they
+ * must be the canonical numbers, not a 0..3 enum. */
+#define ID_WRITE_PROTECTED   80   /* 'P' */
+#define ID_VALIDATED         81   /* 'Q' */
+#define ID_NOT_REALLY_DOS    82   /* 'R' */
 
 /* Common disk type IDs */
 #define ID_DOS_DISK     0x444F5300  /* 'DOS\0' */

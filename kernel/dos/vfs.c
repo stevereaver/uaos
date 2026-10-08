@@ -270,6 +270,10 @@ void VFS_SetupWorkbenchAssigns(void)
     /* Create standard AmigaDOS assigns pointing to Workbench subdirectories */
     if (VFS_AddAssign("C", "Workbench:C", 0, 0) == 0) kprint("[VFS]  C: -> Workbench:C\n");
     if (VFS_AddAssign("S", "Workbench:S", 0, 0) == 0) kprint("[VFS]  S: -> Workbench:S\n");
+    /* Workbench: proxies the read-only ISO — give S: a writable second
+     * target so config writes ("S:foo") land in RAM: like a real CD boot
+     * would fall back to a writable S: (UAOS-248). */
+    if (VFS_AddAssign("S", "RAM:S", 1, 0) == 0) kprint("[VFS]  S: +-> RAM:S\n");
     if (VFS_AddAssign("L", "Workbench:L", 0, 0) == 0) kprint("[VFS]  L: -> Workbench:L\n");
     if (VFS_AddAssign("DEVS", "Workbench:DEVS", 0, 0) == 0) kprint("[VFS]  DEVS: -> Workbench:DEVS\n");
     if (VFS_AddAssign("LIBS", "Workbench:LIBS", 0, 0) == 0) kprint("[VFS]  LIBS: -> Workbench:LIBS\n");
@@ -518,6 +522,16 @@ static int is_nil(const char *path)
     return 0;
 }
 
+/* Record the canonical resolved path a successful open landed on —
+ * callers (dos.library) store it in the handle entry so follow-up
+ * operations target the same assign target that won the search. */
+static void open_set_resolved(VfsFile *fh, const char *resolved)
+{
+    int i = 0;
+    while (i < 127 && resolved[i]) { fh->resolved_path[i] = resolved[i]; i++; }
+    fh->resolved_path[i] = '\0';
+}
+
 int VFS_Open(VfsFile *fh, const char *path, int flags)
 {
     fh->node        = NULL;
@@ -525,6 +539,7 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
     fh->nil         = 0;
     fh->handle_id   = 0;
     fh->handler_port= NULL;
+    fh->resolved_path[0] = '\0';
 
     /* Check if this is a multi-assign path */
     char vol_name[16];
@@ -533,41 +548,101 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
     int target_count = 0;
     if (vl) target_count = VFS_GetAssignTargetCount(vol_name);
 
-    if (target_count > 1 && !(flags & VFS_CREATE)) {
-        /* Multi-assign file search: try each target in order */
+    if (target_count > 1) {
+        /* Multi-assign file search: try each target in order.
+         * Write/create opens keep searching past read-only targets so the
+         * file lands in the first writable assign dir — AmigaDOS assign
+         * list semantics (UAOS-248). */
         char resolved_path[128];
+        int want_w = (flags & (VFS_WRITE | VFS_TRUNC)) != 0;
+        int want_c = (flags & VFS_CREATE) != 0;
+
+        /* Phase 1 — locate an existing file in assign order.  Update
+         * opens must modify the copy that exists, not shadow it in an
+         * earlier target. */
         for (int t = 0; t < target_count; t++) {
             const char *target = VFS_GetAssignTarget(vol_name, t);
             if (!target) continue;
             expand_with_target(path, vl, target, resolved_path,
                                sizeof(resolved_path));
-            /* Targets may themselves route through assigns */
             resolve_assign_path(resolved_path, resolved_path,
                                 sizeof(resolved_path));
 
             char rvol[16];
             if (!extract_vol(resolved_path, rvol, 16)) continue;
 
-            /* Try RAMFS first */
             RamFsVol *vol = find_vol(rvol);
             if (vol) {
-                if (vol->read_only && (flags & (VFS_WRITE | VFS_TRUNC)))
-                    continue;
+                if (want_w && vol->read_only) continue;
                 RamFsNode *node = RamFS_Resolve(vol, resolved_path);
                 if (node && node->type == RAMFS_TYPE_FILE) {
                     if (flags & VFS_TRUNC) node->size = 0;
                     fh->node = node;
                     fh->pos = 0;
+                    open_set_resolved(fh, resolved_path);
                     return 1;
                 }
                 continue;
             }
 
-            /* Try handler-backed filesystem */
             Handler *h = find_handler(rvol);
             if (h) {
-                int32_t action = (flags & VFS_WRITE)
-                                 ? ACTION_FINDUPDATE : ACTION_FINDINPUT;
+                /* Probe with FINDINPUT first so FINDUPDATE (which may
+                 * create) doesn't shadow a file in a later target. */
+                int32_t probe = DoPkt(&h->port, ACTION_FINDINPUT,
+                                      (intptr_t)resolved_path, 0, 0, 0, 0);
+                if (probe == 0 || probe == DOSFALSE) continue;
+                if (!want_w) {
+                    fh->handle_id    = (uint32_t)probe;
+                    fh->handler_port = &h->port;
+                    fh->pos          = 0;
+                    open_set_resolved(fh, resolved_path);
+                    return 1;
+                }
+                DoPkt(&h->port, ACTION_END, probe, 0, 0, 0, 0);
+                int32_t res = DoPkt(&h->port, ACTION_FINDUPDATE,
+                                    (intptr_t)resolved_path, 0, 0, 0, 0);
+                if (res != 0 && res != DOSFALSE) {
+                    fh->handle_id    = (uint32_t)res;
+                    fh->handler_port = &h->port;
+                    fh->pos          = 0;
+                    open_set_resolved(fh, resolved_path);
+                    return 1;
+                }
+            }
+        }
+
+        /* Phase 2 — no target held the file: create it in the first
+         * writable target. */
+        if (!want_c && !(flags & VFS_TRUNC)) return 0;
+        for (int t = 0; t < target_count; t++) {
+            const char *target = VFS_GetAssignTarget(vol_name, t);
+            if (!target) continue;
+            expand_with_target(path, vl, target, resolved_path,
+                               sizeof(resolved_path));
+            resolve_assign_path(resolved_path, resolved_path,
+                                sizeof(resolved_path));
+
+            char rvol[16];
+            if (!extract_vol(resolved_path, rvol, 16)) continue;
+
+            RamFsVol *vol = find_vol(rvol);
+            if (vol) {
+                if (vol->read_only) continue;
+                RamFsNode *node = RamFS_Create(vol, resolved_path);
+                if (!node || node->type != RAMFS_TYPE_FILE) continue;
+                g_vfs_change_seq++;
+                if (flags & VFS_TRUNC) node->size = 0;
+                fh->node = node;
+                fh->pos = 0;
+                open_set_resolved(fh, resolved_path);
+                return 1;
+            }
+
+            Handler *h = find_handler(rvol);
+            if (h) {
+                int32_t action = (flags & VFS_TRUNC)
+                                 ? ACTION_FINDOUTPUT : ACTION_FINDUPDATE;
                 int32_t res = DoPkt(&h->port, action,
                                     (intptr_t)resolved_path,
                                     0, 0, 0, 0);
@@ -575,11 +650,11 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
                     fh->handle_id    = (uint32_t)res;
                     fh->handler_port = &h->port;
                     fh->pos          = 0;
+                    open_set_resolved(fh, resolved_path);
                     return 1;
                 }
             }
         }
-        /* Not found in any target */
         return 0;
     }
 
@@ -589,6 +664,7 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
 
     if (is_nil(resolved_path)) {
         fh->nil = 1;
+        open_set_resolved(fh, resolved_path);
         return 1;
     }
 
@@ -614,6 +690,7 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
 
         fh->node = node;
         fh->pos  = 0;
+        open_set_resolved(fh, resolved_path);
         return 1;
     }
 
@@ -636,6 +713,7 @@ int VFS_Open(VfsFile *fh, const char *path, int flags)
             fh->handle_id    = (uint32_t)res;
             fh->handler_port = &h->port;
             fh->pos          = 0;
+            open_set_resolved(fh, resolved_path);
             return 1;
         }
         return 0;
@@ -1673,6 +1751,11 @@ int VFS_ListAssigns(char *buf, int max)
 
 /* Static buffer for expand result */
 static char g_expand_buf[128];
+
+const char *VFS_ResolveAssignPath(const char *path, char *dst, int max)
+{
+    return resolve_assign_path(path, dst, max);
+}
 
 const char *VFS_ExpandAssigns(const char *path, char *dst, int max)
 {

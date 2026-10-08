@@ -823,6 +823,37 @@ extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest
 #define DOS_FAULT          70
 #define DOS_FILE_PART      71
 #define DOS_PATH_PART      72
+/* UAOS-248 — OctaMED gap-fill */
+#define DOS_INFO              73
+#define DOS_EXAMINE_FH        74
+#define DOS_PARENT_OF_FH      75
+#define DOS_DUP_LOCK_FROM_FH  76
+#define DOS_OPEN_FROM_LOCK    77
+#define DOS_SAME_LOCK         78
+#define DOS_SET_FILE_SIZE     79
+#define DOS_EX_ALL            80
+#define DOS_EX_ALL_END        81
+#define DOS_IS_FILESYSTEM     82
+#define DOS_INHIBIT           83
+#define DOS_SET_COMMENT       84
+#define DOS_ASSIGN_LOCK       85
+#define DOS_ASSIGN_LATE       86
+#define DOS_ASSIGN_PATH       87
+#define DOS_ASSIGN_ADD        88
+#define DOS_GET_DEVICE_PROC   89
+#define DOS_FREE_DEVICE_PROC  90
+#define DOS_LOCK_DOS_LIST     91
+#define DOS_UNLOCK_DOS_LIST   92
+#define DOS_ATTEMPT_LOCK_DOS_LIST 93
+#define DOS_NEXT_DOS_ENTRY    94
+#define DOS_FGETC             95
+#define DOS_FPUTC             96
+#define DOS_UNGETC            97
+#define DOS_FREAD             98
+#define DOS_FWRITE            99
+#define DOS_FGETS            100
+#define DOS_SET_VBUF         101
+#define DOS_SET_MODE         102
 #define DOS_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* intuition.library function indices */
@@ -1271,8 +1302,18 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_SET_PROGRAM_DIR (-594)
 #define LVO_DOS_GET_PROGRAM_DIR (-600)
 #define LVO_DOS_SYSTEM_TAG_LIST (-606)
+#define LVO_DOS_ASSIGN_LOCK   (-612)
+#define LVO_DOS_ASSIGN_LATE   (-618)
+#define LVO_DOS_ASSIGN_PATH   (-624)
+#define LVO_DOS_ASSIGN_ADD    (-630)
 #define LVO_DOS_GET_DEVICE_PROC (-642)
+#define LVO_DOS_FREE_DEVICE_PROC (-648)
 #define LVO_DOS_LOCK_DOS_LIST (-654)
+#define LVO_DOS_UNLOCK_DOS_LIST (-660)
+#define LVO_DOS_ATTEMPT_LOCK_DOS_LIST (-666)
+#define LVO_DOS_NEXT_DOS_ENTRY (-690)
+#define LVO_DOS_IS_FILESYSTEM (-708)
+#define LVO_DOS_INHIBIT       (-726)
 #define LVO_DOS_DATE_TO_STR (-744)
 #define LVO_DOS_STR_TO_DATE (-750)
 #define LVO_DOS_CHECK_SIGNAL (-792)
@@ -1297,6 +1338,7 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_PRINTF      (-954)  /* alias VPrintf */
 #define LVO_DOS_PARSE_PATTERN_NO_CASE (-966)
 #define LVO_DOS_MATCH_PATTERN_NO_CASE (-972)
+#define LVO_DOS_EX_ALL_END    (-990)
 
 /* exec.library LVO offsets — canonical exec_lib.i (V37+). */
 #define LVO_INIT_STRUCT       (-78)
@@ -1744,6 +1786,36 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_FAULT:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FAULT);
             case DOS_FILE_PART:      return (uint32_t)((int)DOS_BASE + LVO_DOS_FILE_PART);
             case DOS_PATH_PART:      return (uint32_t)((int)DOS_BASE + LVO_DOS_PATH_PART);
+            case DOS_INFO:           return (uint32_t)((int)DOS_BASE + LVO_DOS_INFO);
+            case DOS_EXAMINE_FH:     return (uint32_t)((int)DOS_BASE + LVO_DOS_EXAMINE_FH);
+            case DOS_PARENT_OF_FH:   return (uint32_t)((int)DOS_BASE + LVO_DOS_PARENT_OF_FH);
+            case DOS_DUP_LOCK_FROM_FH: return (uint32_t)((int)DOS_BASE + LVO_DOS_DUP_LOCK_FROM_FH);
+            case DOS_OPEN_FROM_LOCK: return (uint32_t)((int)DOS_BASE + LVO_DOS_OPEN_FROM_LOCK);
+            case DOS_SAME_LOCK:      return (uint32_t)((int)DOS_BASE + LVO_DOS_SAME_LOCK);
+            case DOS_SET_FILE_SIZE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_FILE_SIZE);
+            case DOS_EX_ALL:         return (uint32_t)((int)DOS_BASE + LVO_DOS_EX_ALL);
+            case DOS_EX_ALL_END:     return (uint32_t)((int)DOS_BASE + LVO_DOS_EX_ALL_END);
+            case DOS_IS_FILESYSTEM:  return (uint32_t)((int)DOS_BASE + LVO_DOS_IS_FILESYSTEM);
+            case DOS_INHIBIT:        return (uint32_t)((int)DOS_BASE + LVO_DOS_INHIBIT);
+            case DOS_SET_COMMENT:    return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_COMMENT);
+            case DOS_ASSIGN_LOCK:    return (uint32_t)((int)DOS_BASE + LVO_DOS_ASSIGN_LOCK);
+            case DOS_ASSIGN_LATE:    return (uint32_t)((int)DOS_BASE + LVO_DOS_ASSIGN_LATE);
+            case DOS_ASSIGN_PATH:    return (uint32_t)((int)DOS_BASE + LVO_DOS_ASSIGN_PATH);
+            case DOS_ASSIGN_ADD:     return (uint32_t)((int)DOS_BASE + LVO_DOS_ASSIGN_ADD);
+            case DOS_GET_DEVICE_PROC: return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_DEVICE_PROC);
+            case DOS_FREE_DEVICE_PROC: return (uint32_t)((int)DOS_BASE + LVO_DOS_FREE_DEVICE_PROC);
+            case DOS_LOCK_DOS_LIST:  return (uint32_t)((int)DOS_BASE + LVO_DOS_LOCK_DOS_LIST);
+            case DOS_UNLOCK_DOS_LIST: return (uint32_t)((int)DOS_BASE + LVO_DOS_UNLOCK_DOS_LIST);
+            case DOS_ATTEMPT_LOCK_DOS_LIST: return (uint32_t)((int)DOS_BASE + LVO_DOS_ATTEMPT_LOCK_DOS_LIST);
+            case DOS_NEXT_DOS_ENTRY: return (uint32_t)((int)DOS_BASE + LVO_DOS_NEXT_DOS_ENTRY);
+            case DOS_FGETC:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FGETC);
+            case DOS_FPUTC:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FPUTC);
+            case DOS_UNGETC:         return (uint32_t)((int)DOS_BASE + LVO_DOS_UNGETC);
+            case DOS_FREAD:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FREAD);
+            case DOS_FWRITE:         return (uint32_t)((int)DOS_BASE + LVO_DOS_FWRITE);
+            case DOS_FGETS:          return (uint32_t)((int)DOS_BASE + LVO_DOS_FGETS);
+            case DOS_SET_VBUF:       return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_VBUF);
+            case DOS_SET_MODE:       return (uint32_t)((int)DOS_BASE + LVO_DOS_SET_MODE);
         }
     } else if (lib_id == LIB_INTUITION) {
         switch (func_idx) {
@@ -2569,6 +2641,37 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_FAULT,           LIB_DOS, DOS_FAULT);
     install_lvo(DOS_BASE, LVO_DOS_FILE_PART,       LIB_DOS, DOS_FILE_PART);
     install_lvo(DOS_BASE, LVO_DOS_PATH_PART,       LIB_DOS, DOS_PATH_PART);
+    /* UAOS-248 — OctaMED gap-fill */
+    install_lvo(DOS_BASE, LVO_DOS_INFO,            LIB_DOS, DOS_INFO);
+    install_lvo(DOS_BASE, LVO_DOS_EXAMINE_FH,      LIB_DOS, DOS_EXAMINE_FH);
+    install_lvo(DOS_BASE, LVO_DOS_PARENT_OF_FH,    LIB_DOS, DOS_PARENT_OF_FH);
+    install_lvo(DOS_BASE, LVO_DOS_DUP_LOCK_FROM_FH, LIB_DOS, DOS_DUP_LOCK_FROM_FH);
+    install_lvo(DOS_BASE, LVO_DOS_OPEN_FROM_LOCK,  LIB_DOS, DOS_OPEN_FROM_LOCK);
+    install_lvo(DOS_BASE, LVO_DOS_SAME_LOCK,       LIB_DOS, DOS_SAME_LOCK);
+    install_lvo(DOS_BASE, LVO_DOS_SET_FILE_SIZE,   LIB_DOS, DOS_SET_FILE_SIZE);
+    install_lvo(DOS_BASE, LVO_DOS_EX_ALL,          LIB_DOS, DOS_EX_ALL);
+    install_lvo(DOS_BASE, LVO_DOS_EX_ALL_END,      LIB_DOS, DOS_EX_ALL_END);
+    install_lvo(DOS_BASE, LVO_DOS_IS_FILESYSTEM,   LIB_DOS, DOS_IS_FILESYSTEM);
+    install_lvo(DOS_BASE, LVO_DOS_INHIBIT,         LIB_DOS, DOS_INHIBIT);
+    install_lvo(DOS_BASE, LVO_DOS_SET_COMMENT,     LIB_DOS, DOS_SET_COMMENT);
+    install_lvo(DOS_BASE, LVO_DOS_ASSIGN_LOCK,     LIB_DOS, DOS_ASSIGN_LOCK);
+    install_lvo(DOS_BASE, LVO_DOS_ASSIGN_LATE,     LIB_DOS, DOS_ASSIGN_LATE);
+    install_lvo(DOS_BASE, LVO_DOS_ASSIGN_PATH,     LIB_DOS, DOS_ASSIGN_PATH);
+    install_lvo(DOS_BASE, LVO_DOS_ASSIGN_ADD,      LIB_DOS, DOS_ASSIGN_ADD);
+    install_lvo(DOS_BASE, LVO_DOS_GET_DEVICE_PROC, LIB_DOS, DOS_GET_DEVICE_PROC);
+    install_lvo(DOS_BASE, LVO_DOS_FREE_DEVICE_PROC, LIB_DOS, DOS_FREE_DEVICE_PROC);
+    install_lvo(DOS_BASE, LVO_DOS_LOCK_DOS_LIST,   LIB_DOS, DOS_LOCK_DOS_LIST);
+    install_lvo(DOS_BASE, LVO_DOS_UNLOCK_DOS_LIST, LIB_DOS, DOS_UNLOCK_DOS_LIST);
+    install_lvo(DOS_BASE, LVO_DOS_ATTEMPT_LOCK_DOS_LIST, LIB_DOS, DOS_ATTEMPT_LOCK_DOS_LIST);
+    install_lvo(DOS_BASE, LVO_DOS_NEXT_DOS_ENTRY,  LIB_DOS, DOS_NEXT_DOS_ENTRY);
+    install_lvo(DOS_BASE, LVO_DOS_FGETC,           LIB_DOS, DOS_FGETC);
+    install_lvo(DOS_BASE, LVO_DOS_FPUTC,           LIB_DOS, DOS_FPUTC);
+    install_lvo(DOS_BASE, LVO_DOS_UNGETC,          LIB_DOS, DOS_UNGETC);
+    install_lvo(DOS_BASE, LVO_DOS_FREAD,           LIB_DOS, DOS_FREAD);
+    install_lvo(DOS_BASE, LVO_DOS_FWRITE,          LIB_DOS, DOS_FWRITE);
+    install_lvo(DOS_BASE, LVO_DOS_FGETS,           LIB_DOS, DOS_FGETS);
+    install_lvo(DOS_BASE, LVO_DOS_SET_VBUF,        LIB_DOS, DOS_SET_VBUF);
+    install_lvo(DOS_BASE, LVO_DOS_SET_MODE,        LIB_DOS, DOS_SET_MODE);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {

@@ -16,6 +16,7 @@
 #include "dos/handle_table.h"
 #include "dos/dospacket.h"
 #include "dos/amiga_dos_types.h"
+#include "dos/dos_list.h"
 #include "exec/task.h"
 #include "exec/amiga_task.h"
 #include "../dbg/diag.h"
@@ -115,6 +116,181 @@ static int extract_vol_name(const char *path, char *dst, int max)
     while (path[i] && path[i] != ':' && i < max - 1) { dst[i] = path[i]; i++; }
     dst[i] = '\0';
     return (path[i] == ':') ? i : 0;
+}
+
+/* Build an absolute path for a guest name: names without a device/assign
+ * prefix are resolved against the task's cwd. */
+static void dos_cwd_prefix(const char *name, char *out, int max)
+{
+    int has_device = 0;
+    for (int i = 0; name[i]; i++) if (name[i] == ':') { has_device = 1; break; }
+    int i = 0;
+    if (has_device) {
+        while (i < max - 1 && name[i]) { out[i] = name[i]; i++; }
+    } else {
+        const char *cwd = m68k_cur_cwd();
+        int cwd_len = 0;
+        while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
+        while (i < max - 1 && i < cwd_len) { out[i] = cwd[i]; i++; }
+        if (cwd_len > 0 && cwd[cwd_len - 1] != ':' &&
+            cwd[cwd_len - 1] != '/' && i < max - 1)
+            out[i++] = '/';
+        int j = 0;
+        while (j < 127 && name[j] && i < max - 1) { out[i++] = name[j++]; }
+    }
+    out[i] = '\0';
+}
+
+/* Canonicalise a guest path for packet dispatch: cwd-prefix relative
+ * names, then fully expand assigns ("LIBS:x" -> "Workbench:LIBS/x").
+ * Handlers strip only the "VOL:" prefix, so dispatching an unresolved
+ * "ASSIGN:dir/file" would silently lose the assign's directory part;
+ * and a bare "ASSIGN:" would return the volume ROOT instead of the
+ * assign's subdirectory (UAOS-248).
+ *
+ * "PROGDIR:" is a per-process pseudo-assign: it resolves to the current
+ * task's program directory (the cwd when none was set). */
+static uint32_t *program_dir_slot(void);
+static uint32_t dos_program_dir_path(char *dst, int max);
+
+static int dos_resolve_path(const char *name, char *out, int max)
+{
+    char full[128];
+    dos_cwd_prefix(name, full, sizeof(full));
+
+    char vol[16];
+    int vl = extract_vol_name(full, vol, sizeof(vol));
+    if (vl > 0 && vol[0] == 'P' &&
+        (vol[1] == 'R' || vol[1] == 'r') &&
+        (vol[2] == 'O' || vol[2] == 'o') &&
+        (vol[3] == 'G' || vol[3] == 'g') &&
+        (vol[4] == 'D' || vol[4] == 'd') &&
+        (vol[5] == 'I' || vol[5] == 'i') &&
+        (vol[6] == 'R' || vol[6] == 'r') && vol[7] == '\0') {
+        /* "PROGDIR:rest" -> "<progdir>/rest" */
+        char pdir[128];
+        dos_program_dir_path(pdir, sizeof(pdir));
+        int i = 0;
+        while (i < max - 1 && pdir[i]) { out[i] = pdir[i]; i++; }
+        const char *rest = full + vl + 1;
+        if (*rest) {
+            if (i < max - 1 && out[i - 1] != ':') out[i++] = '/';
+            while (i < max - 1 && *rest) out[i++] = *rest++;
+        }
+        out[i] = '\0';
+        return VFS_ResolveAssignPath(out, out, max) != NULL;
+    }
+    return VFS_ResolveAssignPath(full, out, max) != NULL;
+}
+
+static int guest_read_filelock(uint32_t lock_bptr,
+                               uint32_t *out_handle, int32_t *out_access);
+static uint32_t dos_lock_path(const char *path);
+static int32_t dos_examine_pkt(MsgPort *port, int32_t action,
+                               int32_t handle, uint32_t fib_guest);
+
+/* Extract a FileLock BPTR's underlying handler lock entry.
+ * Returns the HandleEntry or NULL. */
+static HandleEntry *dos_lock_entry(uint32_t lock_bptr)
+{
+    uint32_t handle = 0;
+    if (!guest_read_filelock(lock_bptr, &handle, NULL) || handle == 0)
+        return NULL;
+    HandleEntry *ent = HandleTable_GetLockEntry(handle, NULL);
+    return (ent && ent->type == HTYPE_LOCK) ? ent : NULL;
+}
+
+/* Handler port for a lock entry (its path is canonical). */
+static MsgPort *dos_lock_port(HandleEntry *ent)
+{
+    char vol[16];
+    extract_vol_name(ent->path, vol, sizeof(vol));
+    return VFS_GetHandlerPort(vol);
+}
+
+/* Dispatch an fh-based packet action.  Handler-backed files take their
+ * native handle id; RAMFS files take the HandleTable id (the ram handler
+ * resolves it via HandleTable_GetFile).  Returns dp_Res1. */
+static int32_t dos_fh_dispatch(HandleEntry *ent, uint32_t fh,
+                               int32_t action, intptr_t a2, intptr_t a3)
+{
+    VfsFile *vf = &ent->u.file.fh;
+    MsgPort *port = vf->handler_port;
+    int32_t arg1;
+    if (port) {
+        arg1 = (int32_t)vf->handle_id;
+    } else {
+        char vol[16];
+        extract_vol_name(ent->path, vol, sizeof(vol));
+        port = VFS_GetHandlerPort(vol);
+        arg1 = (int32_t)fh;
+    }
+    if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return DOSFALSE; }
+    /* DoPkt() stores dp_Res2 in the global IoErr on the way back. */
+    return DoPkt(port, action, arg1, a2, a3, 0, 0);
+}
+
+/* Expand "VOL:rest" through assign target `idx` of VOL — the target may
+ * itself route through another assign, so the result is fully resolved.
+ * Returns 1 on success with the resolved path in `out`. */
+static int dos_expand_target(const char *vol, const char *rest, int idx,
+                             char *out, int max)
+{
+    const char *target = VFS_GetAssignTarget(vol, idx);
+    if (!target) return 0;
+    int i = 0;
+    while (i < max - 1 && target[i]) { out[i] = target[i]; i++; }
+    if (*rest) {
+        if (i < max - 1 && i > 0 && out[i - 1] != ':') out[i++] = '/';
+        while (i < max - 1 && *rest) out[i++] = *rest++;
+    }
+    out[i] = '\0';
+    return VFS_ResolveAssignPath(out, out, max) != NULL;
+}
+
+/* Dispatch a path-based packet action with multi-assign search semantics:
+ * a name through a multi-target assign (Assign ... ADD) is tried against
+ * every target in order — the same order VFS_Open and dos_Lock use — so
+ * write/create requests fall through a read-only target to a writable
+ * one (UAOS-248).  On success `hit`/`hit_port` (optional) receive the
+ * winning resolved path and handler port. */
+static int32_t dos_path_pkt(const char *name, int32_t action,
+                            intptr_t a2, intptr_t a3,
+                            char *hit, int hmax, MsgPort **hit_port)
+{
+    char full[128];
+    dos_cwd_prefix(name, full, sizeof(full));
+
+    char vol_name[16];
+    int vl = extract_vol_name(full, vol_name, sizeof(vol_name));
+    int targets = vl ? VFS_GetAssignTargetCount(vol_name) : 0;
+    int ntry = targets > 0 ? targets : 1;
+    int32_t res = DOSFALSE;
+    char resolved[128];
+    for (int t = 0; t < ntry; t++) {
+        if (targets) {
+            if (!dos_expand_target(vol_name, full + vl + 1, t,
+                                   resolved, sizeof(resolved)))
+                continue;
+        } else if (!dos_resolve_path(name, resolved, sizeof(resolved))) {
+            continue;
+        }
+        char rvol[16];
+        if (!extract_vol_name(resolved, rvol, sizeof(rvol))) continue;
+        MsgPort *port = VFS_GetHandlerPort(rvol);
+        if (!port) continue;
+        res = DoPkt(port, action, (intptr_t)resolved, a2, a3, 0, 0);
+        if (res != DOSFALSE && res != 0) {
+            if (hit) {
+                int i = 0;
+                while (i < hmax - 1 && resolved[i]) { hit[i] = resolved[i]; i++; }
+                hit[i] = '\0';
+            }
+            if (hit_port) *hit_port = port;
+            break;
+        }
+    }
+    return res;
 }
 
 /* =========================================================================
@@ -952,18 +1128,29 @@ static void dos_VFPrintf(M68kCPUState *cpu)
 
 static void dos_FPuts(M68kCPUState *cpu)
 {
+    /* FPuts(fh=D1, str=D2): write the NUL-terminated string to the fh.
+     * Console handles still print; real files get a VFS_Write. */
+    uint32_t fh = cpu->d[1];
     uint32_t sp = cpu->d[2];
-    if (sp < GUEST_RAM_SIZE) {
-        char tmp[256];
-        int i = 0;
-        while (i < 255 && sp + i < GUEST_RAM_SIZE && g_ram[sp + i]) {
-            tmp[i] = (char)g_ram[sp + i]; i++;
-        }
-        tmp[i] = '\0';
-        if (g_print) g_print(tmp);
-        else kprint(tmp);
-    }
     cpu->d[0] = 0;
+    if (sp >= GUEST_RAM_SIZE) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return; }
+    uint32_t len = 0;
+    while (sp + len < GUEST_RAM_SIZE && g_ram[sp + len] && len < 65536) len++;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (ent && ent->type == HTYPE_FILE) {
+        int32_t n = VFS_Write(&ent->u.file.fh, g_ram + sp, len);
+        cpu->d[0] = (n == (int32_t)len) ? DOSTRUE : DOSFALSE;
+        if (n != (int32_t)len) SetIoErr(ERROR_WRITE_PROTECTED);
+        return;
+    }
+    /* stdout/stderr console */
+    char tmp[256];
+    uint32_t i;
+    for (i = 0; i < len && i < 255; i++) tmp[i] = (char)g_ram[sp + i];
+    tmp[i] = '\0';
+    if (g_print) g_print(tmp);
+    else kprint(tmp);
+    cpu->d[0] = DOSTRUE;
 }
 
 static void dos_PutStr(M68kCPUState *cpu)
@@ -1225,6 +1412,27 @@ static void dos_Open(M68kCPUState *cpu)
     else if (mode == 1004) vflags = VFS_READ | VFS_WRITE;
     else                   vflags = VFS_READ;
 
+    /* PROGDIR: is a per-task pseudo-assign VFS_Open can't see — rewrite
+     * it to the task's program directory before dispatch (UAOS-248). */
+    if (full_name[0] == 'P' && full_name[1] == 'R' &&
+        full_name[2] == 'O' && full_name[3] == 'G' &&
+        full_name[4] == 'D' && full_name[5] == 'I' &&
+        full_name[6] == 'R' && full_name[7] == ':') {
+        char pd[128];
+        dos_program_dir_path(pd, sizeof(pd));
+        char tmp[128];
+        int i = 0;
+        while (i < 127 && pd[i]) { tmp[i] = pd[i]; i++; }
+        const char *rest = full_name + 8;
+        if (*rest) {
+            if (i < 127 && tmp[i - 1] != ':') tmp[i++] = '/';
+            while (i < 127 && *rest) tmp[i++] = *rest++;
+        }
+        tmp[i] = '\0';
+        int j = 0;
+        while (j <= i) { full_name[j] = tmp[j]; j++; }
+    }
+
     VfsFile fh = {0};
     if (!VFS_Open(&fh, full_name, vflags)) {
         cpu->d[0] = 0;
@@ -1233,7 +1441,13 @@ static void dos_Open(M68kCPUState *cpu)
              full_name, (unsigned)mode, (long)IoErr());
         return;
     }
-    uint32_t handle = HandleTable_AllocFile(full_name, &fh, vflags);
+    /* Store the canonical resolved path (winning assign target) so
+     * follow-up ops — DupLockFromFH, SetComment via S:, etc. — hit the
+     * target that actually holds the file, not the first assign dir
+     * (UAOS-248). */
+    const char *entry_path =
+        fh.resolved_path[0] ? fh.resolved_path : full_name;
+    uint32_t handle = HandleTable_AllocFile(entry_path, &fh, vflags);
     if (!handle) {
         VFS_Close(&fh);
         cpu->d[0] = 0;
@@ -1374,35 +1588,13 @@ static void dos_DeleteFile(M68kCPUState *cpu)
         return;
     }
 
-    char full_name[128];
-    int has_device = 0;
-    for (int i = 0; i < blen; i++) if (name[i] == ':') { has_device = 1; break; }
-    if (has_device) {
-        int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
-        full_name[i] = '\0';
-    } else {
-        const char *cwd = m68k_cur_cwd();
-        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
-        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
-            full_name[i++] = '/';
-        int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
-        full_name[i] = '\0';
-    }
-
-    char vol_name[16];
-    extract_vol_name(full_name, vol_name, sizeof(vol_name));
-    MsgPort *port = VFS_GetHandlerPort(vol_name);
-    if (!port) {
-        cpu->d[0] = (uint32_t)DOSFALSE;
-        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
-        return;
-    }
-
-    int32_t res = DoPkt(port, ACTION_DELETE_OBJECT, (intptr_t)full_name, 0, 0, 0, 0);
-    KLOG(KLOG_DOS, KLOG_INFO, "[dos] DeleteFile('%s') -> %ld\n",
-         full_name, (long)res);
+    char hit[128] = "";
+    int32_t res = dos_path_pkt(name, ACTION_DELETE_OBJECT, 0, 0,
+                               hit, sizeof(hit), NULL);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] DeleteFile('%s' -> '%s') -> %ld\n",
+         name, hit, (long)res);
     cpu->d[0] = (uint32_t)res;
+    if (res == DOSFALSE && !IoErr()) SetIoErr(ERROR_OBJECT_NOT_FOUND);
 }
 
 static void dos_Rename(M68kCPUState *cpu)
@@ -1414,48 +1606,66 @@ static void dos_Rename(M68kCPUState *cpu)
     dos_arg_to_c(new_bptr, new_name, sizeof(new_name));
 
     char old_full[128], new_full[128];
-    int o_dev = 0, n_dev = 0;
-    for (int i = 0; old_name[i]; i++) if (old_name[i] == ':') { o_dev = 1; break; }
-    for (int i = 0; new_name[i]; i++) if (new_name[i] == ':') { n_dev = 1; break; }
+    dos_cwd_prefix(old_name, old_full, sizeof(old_full));
+    dos_cwd_prefix(new_name, new_full, sizeof(new_full));
 
-    if (o_dev) {
-        int i = 0; while (old_name[i]) { old_full[i] = old_name[i]; i++; }
-        old_full[i] = '\0';
-    } else {
-        const char *cwd = m68k_cur_cwd();
-        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { old_full[i] = cwd[i]; i++; }
-        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
-            old_full[i++] = '/';
-        int j = 0; while (old_name[j] && i < 127) { old_full[i++] = old_name[j++]; }
-        old_full[i] = '\0';
+    char ovol[16], nvol[16];
+    int ovl = extract_vol_name(old_full, ovol, sizeof(ovol));
+    int nvl = extract_vol_name(new_full, nvol, sizeof(nvol));
+
+    /* AmigaDOS Rename is same-volume only.  When both paths share a
+     * multi-assign prefix, expand both through the same target index so
+     * the pair stays on one backing volume (UAOS-248). */
+    int targets = 0;
+    if (ovl && nvl) {
+        int same = 1;
+        for (int i = 0; ovol[i] || nvol[i]; i++) {
+            char a = ovol[i], b = nvol[i];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) { same = 0; break; }
+        }
+        if (same) targets = VFS_GetAssignTargetCount(ovol);
     }
-
-    if (n_dev) {
-        int i = 0; while (new_name[i]) { new_full[i] = new_name[i]; i++; }
-        new_full[i] = '\0';
-    } else {
-        const char *cwd = m68k_cur_cwd();
-        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { new_full[i] = cwd[i]; i++; }
-        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
-            new_full[i++] = '/';
-        int j = 0; while (new_name[j] && i < 127) { new_full[i++] = new_name[j++]; }
-        new_full[i] = '\0';
-    }
-
-    char vol_name[16];
-    extract_vol_name(old_full, vol_name, sizeof(vol_name));
-    MsgPort *port = VFS_GetHandlerPort(vol_name);
-    if (!port) {
+    if (!ovl || !nvl) {
         cpu->d[0] = (uint32_t)DOSFALSE;
-        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_RENAME_OBJECT,
-                        (intptr_t)old_full, (intptr_t)new_full, 0, 0, 0);
+    int ntry = targets > 0 ? targets : 1;
+    int32_t res = DOSFALSE;
+    for (int t = 0; t < ntry; t++) {
+        char rold[128], rnew[128], rv1[16], rv2[16];
+        if (targets) {
+            if (!dos_expand_target(ovol, old_full + ovl + 1, t,
+                                   rold, sizeof(rold)) ||
+                !dos_expand_target(ovol, new_full + nvl + 1, t,
+                                   rnew, sizeof(rnew)))
+                continue;
+        } else {
+            if (!dos_resolve_path(old_name, rold, sizeof(rold)) ||
+                !dos_resolve_path(new_name, rnew, sizeof(rnew)))
+                break;
+        }
+        if (!extract_vol_name(rold, rv1, sizeof(rv1)) ||
+            !extract_vol_name(rnew, rv2, sizeof(rv2))) continue;
+        int eq = 1;
+        for (int i = 0; rv1[i] || rv2[i]; i++) {
+            char a = rv1[i], b = rv2[i];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) { eq = 0; break; }
+        }
+        if (!eq) break;   /* resolved to different volumes — illegal */
+        MsgPort *port = VFS_GetHandlerPort(rv1);
+        if (!port) continue;
+        res = DoPkt(port, ACTION_RENAME_OBJECT,
+                    (intptr_t)rold, (intptr_t)rnew, 0, 0, 0);
+        if (res != DOSFALSE) break;
+    }
     cpu->d[0] = (uint32_t)res;
+    if (res == DOSFALSE && !IoErr()) SetIoErr(ERROR_OBJECT_NOT_FOUND);
 }
 
 static void dos_SetProtection(M68kCPUState *cpu)
@@ -1465,33 +1675,10 @@ static void dos_SetProtection(M68kCPUState *cpu)
     char name[128];
     dos_arg_to_c(bptr, name, sizeof(name));
 
-    char full_name[128];
-    int has_device = 0;
-    for (int i = 0; name[i]; i++) if (name[i] == ':') { has_device = 1; break; }
-    if (has_device) {
-        int i = 0; while (name[i]) { full_name[i] = name[i]; i++; }
-        full_name[i] = '\0';
-    } else {
-        const char *cwd = m68k_cur_cwd();
-        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
-        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
-            full_name[i++] = '/';
-        int j = 0; while (name[j] && i < 127) { full_name[i++] = name[j++]; }
-        full_name[i] = '\0';
-    }
-
-    char vol_name[16];
-    extract_vol_name(full_name, vol_name, sizeof(vol_name));
-    MsgPort *port = VFS_GetHandlerPort(vol_name);
-    if (!port) {
-        cpu->d[0] = (uint32_t)DOSFALSE;
-        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
-        return;
-    }
-
-    int32_t res = DoPkt(port, ACTION_SET_PROTECT, (intptr_t)full_name, mask, 0, 0, 0);
+    int32_t res = dos_path_pkt(name, ACTION_SET_PROTECT, (intptr_t)mask,
+                               0, NULL, 0, NULL);
     cpu->d[0] = (uint32_t)res;
+    if (res == DOSFALSE && !IoErr()) SetIoErr(ERROR_OBJECT_NOT_FOUND);
 }
 
 static void dos_GetVar(M68kCPUState *cpu)
@@ -1517,39 +1704,45 @@ static void dos_Lock(M68kCPUState *cpu)
     int blen = dos_arg_to_c(bptr, name, sizeof(name));
 
     char full_name[128];
-    int has_device = 0;
-    for (int i = 0; i < blen; i++) if (name[i] == ':') { has_device = 1; break; }
-    if (has_device) {
-        int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
-        full_name[i] = '\0';
-    } else {
-        const char *cwd = m68k_cur_cwd();
-        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
-        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
-            full_name[i++] = '/';
-        int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
-        full_name[i] = '\0';
-    }
+    dos_cwd_prefix(name, full_name, sizeof(full_name));
 
+    /* Assigns are expanded before handler dispatch (UAOS-248).  For a
+     * multi-assign name (Assign ... ADD) each target is tried in order —
+     * first hit wins, mirroring AmigaDOS search semantics and the
+     * VFS_Open multi-assign path. */
     char vol_name[16];
-    extract_vol_name(full_name, vol_name, sizeof(vol_name));
-    MsgPort *port = VFS_GetHandlerPort(vol_name);
-    if (!port) {
-        cpu->d[0] = 0;
-        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
-        return;
-    }
+    int vl = extract_vol_name(full_name, vol_name, sizeof(vol_name));
+    int targets = vl ? VFS_GetAssignTargetCount(vol_name) : 0;
+    int ntry = targets > 0 ? targets : 1;
+    int32_t handle = 0;
+    char resolved[128];
+    for (int t = 0; t < ntry; t++) {
+        if (targets) {
+            /* Targets may themselves route through assigns */
+            if (!dos_expand_target(vol_name, full_name + vl + 1, t,
+                                   resolved, sizeof(resolved)))
+                continue;
+        } else {
+            VFS_ResolveAssignPath(full_name, resolved, sizeof(resolved));
+        }
 
-    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)full_name, mode, 0, 0, 0);
+        char rvol[16];
+        if (!extract_vol_name(resolved, rvol, sizeof(rvol))) continue;
+        MsgPort *port = VFS_GetHandlerPort(rvol);
+        if (!port) continue;
+        handle = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)resolved,
+                       mode, 0, 0, 0);
+        if (handle) break;
+    }
     if (handle == 0) {
         cpu->d[0] = 0;
-        SetIoErr(IoErr());
-        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Lock('%s') failed ioerr=%ld\n", full_name, (long)IoErr());
+        SetIoErr(IoErr() ? IoErr() : ERROR_OBJECT_NOT_FOUND);
+        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Lock('%s') failed ioerr=%ld\n",
+             full_name, (long)IoErr());
         return;
     }
 
-    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Lock('%s') ok\n", full_name);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Lock('%s') -> '%s'\n", full_name, resolved);
     uint32_t lock_bptr = guest_alloc_filelock((uint32_t)handle, mode);
     if (lock_bptr == 0) {
         HandleTable_Free((uint32_t)handle);
@@ -1697,9 +1890,8 @@ static void dos_Examine(M68kCPUState *cpu)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_EXAMINE_OBJECT, (int32_t)handle,
-                        (intptr_t)(g_ram + fib_ptr), 0, 0, 0);
-    cpu->d[0] = (uint32_t)res;
+    cpu->d[0] = (uint32_t)dos_examine_pkt(port, ACTION_EXAMINE_OBJECT,
+                                          (int32_t)handle, fib_ptr);
 }
 
 static void dos_ExamineNext(M68kCPUState *cpu)
@@ -1736,9 +1928,8 @@ static void dos_ExamineNext(M68kCPUState *cpu)
         return;
     }
 
-    int32_t res = DoPkt(port, ACTION_EXAMINE_NEXT, (int32_t)handle,
-                        (intptr_t)(g_ram + fib_ptr), 0, 0, 0);
-    cpu->d[0] = (uint32_t)res;
+    cpu->d[0] = (uint32_t)dos_examine_pkt(port, ACTION_EXAMINE_NEXT,
+                                          (int32_t)handle, fib_ptr);
 }
 
 static void dos_CreateDir(M68kCPUState *cpu)
@@ -1746,34 +1937,26 @@ static void dos_CreateDir(M68kCPUState *cpu)
     uint32_t bptr = cpu->d[1];
     char name[128];
     int blen = dos_arg_to_c(bptr, name, sizeof(name));
+    (void)blen;
 
-    char full_name[128];
-    int has_device = 0;
-    for (int i = 0; i < blen; i++) if (name[i] == ':') { has_device = 1; break; }
-    if (has_device) {
-        int i = 0; while (i < blen) { full_name[i] = name[i]; i++; }
-        full_name[i] = '\0';
-    } else {
-        const char *cwd = m68k_cur_cwd();
-        int cwd_len = 0; while (cwd[cwd_len] && cwd_len < 63) cwd_len++;
-        int i = 0; while (i < cwd_len) { full_name[i] = cwd[i]; i++; }
-        if (cwd_len > 0 && cwd[cwd_len-1] != ':' && cwd[cwd_len-1] != '/')
-            full_name[i++] = '/';
-        int j = 0; while (j < blen && i < 127) { full_name[i++] = name[j++]; }
-        full_name[i] = '\0';
-    }
-
-    char vol_name[16];
-    extract_vol_name(full_name, vol_name, sizeof(vol_name));
-    MsgPort *port = VFS_GetHandlerPort(vol_name);
-    if (!port) {
+    char hit[128] = "";
+    MsgPort *port = NULL;
+    int32_t res = dos_path_pkt(name, ACTION_CREATE_DIR, 0, 0,
+                               hit, sizeof(hit), &port);
+    if (res == 0 || res == DOSFALSE) {
         cpu->d[0] = 0;
-        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+        if (!IoErr()) SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
-
-    int32_t res = DoPkt(port, ACTION_CREATE_DIR, (intptr_t)full_name, 0, 0, 0, 0);
-    cpu->d[0] = (uint32_t)res;
+    /* Handlers disagree on the return: some give a lock handle, others
+     * just DOSTRUE.  Release any handler-side lock and take a fresh one
+     * so the caller always gets a real FileLock BPTR (AmigaDOS semantics).
+     * The lock must be taken on the resolved winning target, not the
+     * unresolved assign name (UAOS-248). */
+    if (res != DOSTRUE && port)
+        DoPkt(port, ACTION_FREE_LOCK, res, 0, 0, 0, 0);
+    cpu->d[0] = dos_lock_path(hit[0] ? hit : name);
+    if (!cpu->d[0]) SetIoErr(ERROR_OBJECT_NOT_FOUND);
 }
 
 /* =========================================================================
@@ -3367,14 +3550,19 @@ static void dos_SetConsoleTask(M68kCPUState *cpu)
  * CurrentDir / ProgramDir / misc 2.x DOS calls (OctaMED bring-up set)
  * ========================================================================= */
 
-/* Lock a host path and return a guest FileLock BPTR (0 on failure). */
+/* Lock a host path and return a guest FileLock BPTR (0 on failure).
+ * Path may still carry an assign prefix — resolve before dispatch. */
 static uint32_t dos_lock_path(const char *path)
 {
+    char resolved[128];
+    const char *p = path;
+    if (VFS_ResolveAssignPath(path, resolved, sizeof(resolved)))
+        p = resolved;
     char vol_name[16];
-    extract_vol_name(path, vol_name, sizeof(vol_name));
+    extract_vol_name(p, vol_name, sizeof(vol_name));
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) return 0;
-    int32_t h = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)path,
+    int32_t h = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)p,
                       -2 /* SHARED_LOCK */, 0, 0, 0);
     if (!h) return 0;
     uint32_t bptr = guest_alloc_filelock((uint32_t)h, -2);
@@ -3514,13 +3702,14 @@ static void dos_DeviceProc(M68kCPUState *cpu)
 {
     /* D1=BSTR device/volume name → D0=APTR MsgPort of the handler.
      * Handler ports are host-side objects; expose a sentinel so callers
-     * can distinguish "mounted" from "not mounted". */
-    uint32_t name_bptr = cpu->d[1];
-    char name[64];
-    dos_arg_to_c(name_bptr, name, sizeof(name));
-    char vol[16];
-    extract_vol_name(name, vol, sizeof(vol));
-    MsgPort *port = VFS_GetHandlerPort(vol);
+     * can distinguish "mounted" from "not mounted".  The name may be an
+     * assign ("S:") — resolve to the backing volume first (UAOS-248). */
+    char name[64], resolved[128], vol[16];
+    dos_arg_to_c(cpu->d[1], name, sizeof(name));
+    MsgPort *port = NULL;
+    if (dos_resolve_path(name, resolved, sizeof(resolved)) &&
+        extract_vol_name(resolved, vol, sizeof(vol)))
+        port = VFS_GetHandlerPort(vol);
     cpu->d[0] = port ? 0xFFFFFFFFu : 0;   /* guest can test for NULL */
     if (!port) SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
 }
@@ -3570,6 +3759,668 @@ static void dos_CreateSegList(M68kCPUState *cpu)
     seglist_track(blk >> 2, blk);
 
     cpu->d[0] = blk >> 2;  /* return BPTR */
+}
+
+/* =========================================================================
+ * UAOS-248 — OctaMED gap-fill
+ * Lock/fh metadata, assigns, DosList, and buffered I/O
+ * ========================================================================= */
+
+/* Native path for the task's program-dir lock (cwd when unset). */
+static uint32_t dos_program_dir_path(char *dst, int max)
+{
+    uint32_t lock = *program_dir_slot();
+    HandleEntry *ent = lock ? dos_lock_entry(lock) : NULL;
+    const char *src = (ent && ent->path[0]) ? ent->path : m68k_cur_cwd();
+    int i = 0;
+    while (i < max - 1 && src && src[i]) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+    return (uint32_t)i;
+}
+
+/* Marshal a native (little-endian) FileInfoBlock into guest RAM
+ * big-endian.  Handlers write C structs — the guest expects Amiga layout:
+ *   DiskKey 0, DirEntryType 4, FileName 8..115, Protection 116,
+ *   EntryType 120, Size 124, NumBlocks 128, DateStamp 132/136/140,
+ *   Comment 144..223, OwnerUID 224, OwnerGID 226, Reserved 228..259. */
+static void dos_fib_to_guest(uint32_t dst, const FileInfoBlock *f)
+{
+    for (int i = 0; i < 260; i++) g_ram[dst + i] = 0;
+    guest_write_be32(dst + 0,   (uint32_t)f->fib_DiskKey);
+    guest_write_be32(dst + 4,   (uint32_t)f->fib_DirEntryType);
+    for (int i = 0; i < 108; i++) g_ram[dst + 8 + i] = (uint8_t)f->fib_FileName[i];
+    guest_write_be32(dst + 116, (uint32_t)f->fib_Protection);
+    guest_write_be32(dst + 120, (uint32_t)f->fib_EntryType);
+    guest_write_be32(dst + 124, (uint32_t)f->fib_Size);
+    guest_write_be32(dst + 128, (uint32_t)f->fib_NumBlocks);
+    guest_write_be32(dst + 132, (uint32_t)f->fib_Date.ds_Days);
+    guest_write_be32(dst + 136, (uint32_t)f->fib_Date.ds_Minute);
+    guest_write_be32(dst + 140, (uint32_t)f->fib_Date.ds_Tick);
+    for (int i = 0; i < 80; i++) g_ram[dst + 144 + i] = (uint8_t)f->fib_Comment[i];
+    g_ram[dst + 224] = (uint8_t)(f->fib_OwnerUID >> 8);
+    g_ram[dst + 225] = (uint8_t)f->fib_OwnerUID;
+    g_ram[dst + 226] = (uint8_t)(f->fib_OwnerGID >> 8);
+    g_ram[dst + 227] = (uint8_t)f->fib_OwnerGID;
+}
+
+/* Examine-like packet call: handler fills a native fib, marshal to guest. */
+static int32_t dos_examine_pkt(MsgPort *port, int32_t action,
+                               int32_t handle, uint32_t fib_guest)
+{
+    if (!fib_guest || fib_guest + 260 > GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return DOSFALSE;
+    }
+    FileInfoBlock fib;
+    memset(&fib, 0, sizeof(fib));
+    int32_t res = DoPkt(port, action, handle, (intptr_t)&fib, 0, 0, 0);
+    if (res == DOSTRUE) dos_fib_to_guest(fib_guest, &fib);
+    return res;
+}
+
+/* --- Info (LVO -114): D1=lock BPTR, D2=InfoData* ----------------------- */
+static void dos_Info(M68kCPUState *cpu)
+{
+    cpu->d[0] = DOSFALSE;
+    uint32_t idp = cpu->d[2];
+    if (!idp || idp + 36 > GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    uint32_t handle = 0;
+    if (!guest_read_filelock(cpu->d[1], &handle, NULL) || !handle) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    HandleEntry *ent = HandleTable_GetLockEntry(handle, NULL);
+    if (!ent) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return; }
+    MsgPort *port = dos_lock_port(ent);
+    if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return; }
+    cpu->d[0] = (uint32_t)DoPkt(port, ACTION_INFO, (int32_t)handle,
+                                (intptr_t)(g_ram + idp), 0, 0, 0);
+}
+
+/* --- IsFileSystem (LVO -708): D1=name → D0 ---------------------------- */
+static void dos_IsFileSystem(M68kCPUState *cpu)
+{
+    char name[64], resolved[128], vol[16];
+    dos_arg_to_c(cpu->d[1], name, sizeof(name));
+    cpu->d[0] = DOSFALSE;
+    if (!dos_resolve_path(name, resolved, sizeof(resolved)) ||
+        !extract_vol_name(resolved, vol, sizeof(vol)))
+        return;
+    MsgPort *port = VFS_GetHandlerPort(vol);
+    if (!port) return;
+    cpu->d[0] = (uint32_t)DoPkt(port, ACTION_IS_FILESYSTEM,
+                                (intptr_t)resolved, 0, 0, 0, 0);
+}
+
+/* --- Inhibit (LVO -726): D1=name D2=onoff → D0 ------------------------ */
+static void dos_Inhibit(M68kCPUState *cpu)
+{
+    char name[64], resolved[128], vol[16];
+    dos_arg_to_c(cpu->d[1], name, sizeof(name));
+    cpu->d[0] = DOSFALSE;
+    if (!dos_resolve_path(name, resolved, sizeof(resolved)) ||
+        !extract_vol_name(resolved, vol, sizeof(vol))) {
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+        return;
+    }
+    MsgPort *port = VFS_GetHandlerPort(vol);
+    if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return; }
+    cpu->d[0] = (uint32_t)DoPkt(port, ACTION_INHIBIT,
+                                (intptr_t)resolved, (intptr_t)cpu->d[2], 0, 0, 0);
+}
+
+/* --- SetComment (LVO -180): D1=name D2=comment → D0 ------------------- */
+static void dos_SetComment(M68kCPUState *cpu)
+{
+    char name[128], comment[80];
+    dos_arg_to_c(cpu->d[1], name, sizeof(name));
+    dos_arg_to_c(cpu->d[2], comment, sizeof(comment));
+    int32_t res = dos_path_pkt(name, ACTION_SET_COMMENT,
+                               (intptr_t)comment, 0, NULL, 0, NULL);
+    cpu->d[0] = (uint32_t)res;
+    if (res == DOSFALSE && !IoErr()) SetIoErr(ERROR_OBJECT_NOT_FOUND);
+}
+
+/* --- SameLock (LVO -420): D1,D2=lock BPTRs → D0 ------------------------ */
+static void dos_SameLock(M68kCPUState *cpu)
+{
+    HandleEntry *e1 = dos_lock_entry(cpu->d[1]);
+    HandleEntry *e2 = dos_lock_entry(cpu->d[2]);
+    cpu->d[0] = DOSFALSE;
+    if (!e1 || !e2) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return; }
+    /* Same backing node is the strongest identity (covers DupLock'd
+     * locks whose stored path may differ from the original's). */
+    if (e1->u.lock.node && e1->u.lock.node == e2->u.lock.node) {
+        cpu->d[0] = DOSTRUE;
+        return;
+    }
+    if (!e1->path[0] || !e2->path[0]) return;
+    /* Lock entries carry canonical paths — case-fold compare is enough. */
+    int i = 0;
+    for (;;) {
+        char a = e1->path[i], b = e2->path[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) { cpu->d[0] = DOSFALSE; return; }
+        if (!a) { cpu->d[0] = DOSTRUE; return; }
+        i++;
+    }
+}
+
+/* --- SetFileSize (LVO -456): D1=fh D2=pos D3=mode → D0=new size ------- */
+static void dos_SetFileSize(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1];
+    cpu->d[0] = (uint32_t)-1;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    int32_t res = dos_fh_dispatch(ent, fh, ACTION_SET_FILE_SIZE,
+                                  (intptr_t)(int32_t)cpu->d[2],
+                                  (intptr_t)(int32_t)cpu->d[3]);
+    cpu->d[0] = (uint32_t)res;
+    KLOG(KLOG_DOS, KLOG_INFO,
+         "[dos] SetFileSize(fh=%x pos=%ld mode=%ld) -> %ld ioerr=%ld\n",
+         (unsigned)fh, (long)(int32_t)cpu->d[2], (long)(int32_t)cpu->d[3],
+         (long)res, (long)IoErr());
+}
+
+/* --- ExamineFH (LVO -390): D1=fh D2=fib → D0 -------------------------- */
+static void dos_ExamineFH(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1], fib = cpu->d[2];
+    cpu->d[0] = DOSFALSE;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    VfsFile *vf = &ent->u.file.fh;
+    MsgPort *port = vf->handler_port;
+    int32_t h = (int32_t)vf->handle_id;
+    if (!port) {
+        char vol[16];
+        extract_vol_name(ent->path, vol, sizeof(vol));
+        port = VFS_GetHandlerPort(vol);
+        h = (int32_t)fh;
+    }
+    if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return; }
+    cpu->d[0] = (uint32_t)dos_examine_pkt(port, ACTION_EXAMINE_FH, h, fib);
+}
+
+/* --- ParentOfFH (LVO -384): D1=fh → D0=lock BPTR ----------------------- */
+static void dos_ParentOfFH(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1];
+    cpu->d[0] = 0;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    int32_t ph = dos_fh_dispatch(ent, fh, ACTION_PARENT_FH, 0, 0);
+    if (ph <= 0) {
+        SetIoErr(IoErr() ? IoErr() : ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    uint32_t bptr = guest_alloc_filelock((uint32_t)ph, -2);
+    if (!bptr) { HandleTable_Free((uint32_t)ph); SetIoErr(ERROR_NO_FREE_STORE); return; }
+    cpu->d[0] = bptr;
+}
+
+/* --- DupLockFromFH (LVO -372): D1=fh → D0=lock BPTR -------------------- */
+static void dos_DupLockFromFH(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1];
+    cpu->d[0] = 0;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !ent->path[0]) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    char resolved[128];
+    VFS_ResolveAssignPath(ent->path, resolved, sizeof(resolved));
+    cpu->d[0] = dos_lock_path(resolved);
+    if (!cpu->d[0]) SetIoErr(ERROR_OBJECT_NOT_FOUND);
+}
+
+/* --- OpenFromLock (LVO -378): D1=lock → D0=fh ------------------------- */
+static void dos_OpenFromLock(M68kCPUState *cpu)
+{
+    uint32_t lock = cpu->d[1];
+    cpu->d[0] = 0;
+    HandleEntry *ent = dos_lock_entry(lock);
+    if (!ent || !ent->path[0]) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    VfsFile vf = {0};
+    if (!VFS_Open(&vf, ent->path, VFS_READ | VFS_WRITE)) {
+        /* Objects that only exist for reads still open MODE_OLDFILE. */
+        if (!VFS_Open(&vf, ent->path, VFS_READ)) {
+            SetIoErr(IoErr() ? IoErr() : ERROR_OBJECT_NOT_FOUND);
+            return;
+        }
+    }
+    const char *fpath = vf.resolved_path[0] ? vf.resolved_path : ent->path;
+    uint32_t handle = HandleTable_AllocFile(fpath, &vf,
+                                            VFS_READ | VFS_WRITE);
+    if (!handle) { VFS_Close(&vf); SetIoErr(ERROR_NO_FREE_STORE); return; }
+    cpu->d[0] = handle;
+}
+
+/* --- ExAll (LVO -432) / ExAllEnd (LVO -990) -----------------------------
+ * ExAllData sizes per data type: ED_NAME 8, ED_TYPE 12, ED_SIZE 16,
+ * ED_PROTECTION 20, ED_DATE 32, ED_COMMENT 36, ED_OWNER 40.
+ * ExAllControl: eac_Entries 0, eac_LastKey 4, eac_MatchString 8,
+ * eac_MatchFunc 12.  Name/comment strings are BSTRs carved from the
+ * free-list heap; ExAllEnd (or unlock) releases them. */
+static const uint8_t exall_sizes[8] = { 0, 8, 12, 16, 20, 32, 36, 40 };
+
+static uint32_t g_exall_strs[256];
+static int      g_exall_str_count;
+
+static uint32_t exall_bstr(const char *s)
+{
+    int len = 0;
+    while (s[len] && len < 255) len++;
+    uint32_t addr = heap_alloc_fl(4 + ((uint32_t)len + 1 + 3) / 4 * 4);
+    if (!addr) return 0;
+    g_ram[addr] = (uint8_t)len;
+    for (int i = 0; i < len; i++) g_ram[addr + 1 + i] = (uint8_t)s[i];
+    if (g_exall_str_count < 256)
+        g_exall_strs[g_exall_str_count++] = addr;
+    return addr >> 2;
+}
+
+static void exall_free_strs(void)
+{
+    for (int i = 0; i < g_exall_str_count; i++)
+        heap_free_fl(g_exall_strs[i]);
+    g_exall_str_count = 0;
+}
+
+static void dos_ExAll(M68kCPUState *cpu)
+{
+    uint32_t lock = cpu->d[1];
+    uint32_t buf  = cpu->d[2];
+    uint32_t size = cpu->d[3];
+    int32_t  type = cpu->d[4];
+    uint32_t ctrl = cpu->d[5];   /* ExAllControl* is D5 per the .fd */
+    cpu->d[0] = DOSFALSE;
+    if (type < 1 || type > 7 || !buf || !ctrl ||
+        ctrl + 16 > GUEST_RAM_SIZE || buf >= GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_BAD_NUMBER);
+        return;
+    }
+    uint32_t esz = exall_sizes[type];
+
+    uint32_t handle = 0;
+    if (!guest_read_filelock(lock, &handle, NULL) || !handle) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    HandleEntry *ent = HandleTable_GetLockEntry(handle, NULL);
+    if (!ent) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return; }
+    MsgPort *port = dos_lock_port(ent);
+    if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return; }
+
+    uint32_t p = buf;
+    uint32_t n = 0;
+    while (p + esz <= buf + size && p + esz <= GUEST_RAM_SIZE) {
+        FileInfoBlock fib;
+        memset(&fib, 0, sizeof(fib));
+        int32_t res = DoPkt(port, ACTION_EXAMINE_ALL, (int32_t)handle,
+                            (intptr_t)&fib, 0, 0, 0);
+        if (res != DOSTRUE) break;
+        uint32_t nb = exall_bstr(fib.fib_FileName);
+        guest_write_be32(p + 4, nb);
+        if (type >= 2) guest_write_be32(p + 8, (uint32_t)fib.fib_DirEntryType);
+        if (type >= 3) guest_write_be32(p + 12, (uint32_t)fib.fib_Size);
+        if (type >= 4) guest_write_be32(p + 16, (uint32_t)fib.fib_Protection);
+        if (type >= 5) {
+            guest_write_be32(p + 20, (uint32_t)fib.fib_Date.ds_Days);
+            guest_write_be32(p + 24, (uint32_t)fib.fib_Date.ds_Minute);
+            guest_write_be32(p + 28, (uint32_t)fib.fib_Date.ds_Tick);
+        }
+        if (type >= 6) guest_write_be32(p + 32, exall_bstr(fib.fib_Comment));
+        if (type >= 7) {
+            g_ram[p + 36] = 0; g_ram[p + 37] = 0;
+            g_ram[p + 38] = 0; g_ram[p + 39] = 0;
+        }
+        guest_write_be32(p + 0, p + esz);   /* ed_Next (APTR) */
+        p += esz;
+        n++;
+    }
+    if (n)
+        guest_write_be32(p - esz, 0);       /* terminate list */
+    guest_write_be32(ctrl + 0, guest_read_be32(ctrl + 0) + n); /* eac_Entries */
+    guest_write_be32(ctrl + 4, n ? p : guest_read_be32(ctrl + 4)); /* eac_LastKey */
+    cpu->d[0] = n ? DOSTRUE : DOSFALSE;
+    if (!n) SetIoErr(ERROR_NO_MORE_ENTRIES);
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] ExAll(lock=%u buf=%x type=%ld) -> %ld\n",
+         lock, (unsigned)buf, (long)type, (long)n);
+}
+
+static void dos_ExAllEnd(M68kCPUState *cpu)
+{
+    /* D1=lock D2=buf D3=size D4=data D5=control → free entry strings. */
+    (void)cpu;
+    exall_free_strs();
+    cpu->d[0] = DOSTRUE;
+}
+
+/* --- Assigns (LVO -612/-618/-624/-630) ---------------------------------
+ * AssignLock steals the caller's lock; AssignAdd appends the locked dir
+ * as a new target; AssignLate is deferred; AssignPath resolves now. */
+static void dos_assign_common(M68kCPUState *cpu, int add, int defer)
+{
+    char name[32], path[128];
+    dos_arg_to_c(cpu->d[1], name, sizeof(name));
+    cpu->d[0] = DOSFALSE;
+    if (!name[0]) { SetIoErr(ERROR_OBJECT_WRONG_TYPE); return; }
+
+    if (defer >= 0) {
+        /* Late/Path: D2 is a path STRPTR/BSTR. */
+        dos_arg_to_c(cpu->d[2], path, sizeof(path));
+        if (!path[0]) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return; }
+    } else {
+        /* Lock/Add: D2 is a FileLock BPTR whose path we adopt. */
+        uint32_t lock = cpu->d[2];
+        if (!lock) {
+            cpu->d[0] = (VFS_RemoveAssign(name) == 0) ? DOSTRUE : DOSFALSE;
+            return;
+        }
+        HandleEntry *ent = dos_lock_entry(lock);
+        if (!ent || !ent->path[0]) {
+            SetIoErr(ERROR_OBJECT_NOT_FOUND);
+            return;
+        }
+        int i = 0;
+        while (i < 127 && ent->path[i]) { path[i] = ent->path[i]; i++; }
+        path[i] = '\0';
+    }
+
+    char resolved[128];
+    const char *tgt = path;
+    if (VFS_ResolveAssignPath(path, resolved, sizeof(resolved)))
+        tgt = resolved;
+    cpu->d[0] = (VFS_AddAssign(name, tgt, add, defer > 0) == 0)
+                ? DOSTRUE : DOSFALSE;
+    KLOG(KLOG_DOS, KLOG_INFO, "[dos] Assign(%s -> %s) add=%d defer=%d -> %ld\n",
+         name, tgt, add, defer, (long)cpu->d[0]);
+}
+
+static void dos_AssignLock(M68kCPUState *cpu)
+{
+    dos_assign_common(cpu, 0, -1);
+    if ((int32_t)cpu->d[0] == DOSTRUE) {
+        /* The assign consumed the lock — drop the handle like the real
+         * AssignLock does (it takes ownership). */
+        uint32_t handle = 0;
+        if (guest_read_filelock(cpu->d[2], &handle, NULL) && handle)
+            VFS_FreeLock(handle);
+    }
+}
+static void dos_AssignLate(M68kCPUState *cpu) { dos_assign_common(cpu, 0, 1); }
+static void dos_AssignPath(M68kCPUState *cpu) { dos_assign_common(cpu, 0, 0); }
+static void dos_AssignAdd(M68kCPUState *cpu)  { dos_assign_common(cpu, 1, -1); }
+
+/* --- GetDeviceProc / FreeDeviceProc (LVO -642/-648) --------------------
+ * DevProc { dvp_Port 0, dvp_Lock 4, dvp_Flags 8, dvp_DevNode 12 }.  We
+ * hand out a 16-byte guest struct; dvp_Port is a sentinel (host ports are
+ * not guest objects) and dvp_Lock is a real lock on the resolved dir. */
+static uint32_t g_devprocs[32];
+static int      g_devproc_count;
+
+static void dos_GetDeviceProc(M68kCPUState *cpu)
+{
+    char name[64], resolved[128], vol[16];
+    dos_arg_to_c(cpu->d[1], name, sizeof(name));
+    uint32_t dvp = cpu->d[2];
+    int alloc = (dvp == 0);
+    cpu->d[0] = 0;
+
+    if (alloc) {
+        dvp = heap_alloc_fl(16);
+        if (!dvp) { SetIoErr(ERROR_NO_FREE_STORE); return; }
+    } else if (dvp + 16 > GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    MsgPort *port = NULL;
+    uint32_t lock = 0;
+    if (dos_resolve_path(name, resolved, sizeof(resolved)) &&
+        extract_vol_name(resolved, vol, sizeof(vol))) {
+        port = VFS_GetHandlerPort(vol);
+        if (port) lock = dos_lock_path(resolved);
+    }
+    if (!port) {
+        if (alloc) heap_free_fl(dvp);
+        SetIoErr(ERROR_DEVICE_NOT_MOUNTED);
+        return;
+    }
+    guest_write_be32(dvp + 0, 0xFFFFFFFFu);   /* sentinel port */
+    guest_write_be32(dvp + 4, lock);
+    guest_write_be32(dvp + 8, 0);
+    guest_write_be32(dvp + 12, 0);
+    if (alloc && g_devproc_count < 32)
+        g_devprocs[g_devproc_count++] = dvp;
+    cpu->d[0] = dvp;
+}
+
+static void dos_FreeDeviceProc(M68kCPUState *cpu)
+{
+    uint32_t dvp = cpu->d[1];
+    cpu->d[0] = DOSFALSE;
+    if (!dvp || dvp + 16 > GUEST_RAM_SIZE) return;
+    uint32_t lock = guest_read_be32(dvp + 4);
+    if (lock) {
+        uint32_t handle = 0;
+        if (guest_read_filelock(lock, &handle, NULL) && handle)
+            VFS_FreeLock(handle);
+    }
+    for (int i = 0; i < g_devproc_count; i++) {
+        if (g_devprocs[i] == dvp) {
+            heap_free_fl(dvp);
+            g_devprocs[i] = g_devprocs[--g_devproc_count];
+            break;
+        }
+    }
+    cpu->d[0] = DOSTRUE;
+}
+
+/* --- DosList iteration (LVO -654/-660/-666/-690) ------------------------
+ * Guest-visible DosList node (44 bytes):
+ *   dol_Next 0 (BPTR), dol_Type 4, dol_Task 8, dol_Lock 12,
+ *   union 16..39 (zeros), dol_Name 40 (BSTR BPTR).
+ * LockDosList builds a snapshot chain in the free-list heap; nodes live
+ * until UnlockDosList frees them. */
+#define GDOL_NODE_SIZE 48
+
+static uint32_t g_dol_nodes[64];
+static int      g_dol_count;
+
+static uint32_t doslist_bstr(const char *s)
+{
+    int len = 0;
+    while (s[len] && len < 30) len++;
+    uint32_t addr = heap_alloc_fl(4 + ((uint32_t)len + 1 + 3) / 4 * 4);
+    if (!addr) return 0;
+    g_ram[addr] = (uint8_t)len;
+    for (int i = 0; i < len; i++) g_ram[addr + 1 + i] = (uint8_t)s[i];
+    return addr >> 2;   /* BSTR BPTR */
+}
+
+static void dos_LockDosList(M68kCPUState *cpu)
+{
+    uint32_t flags = cpu->d[1];
+    /* LDF_DEVICES 1, LDF_VOLUMES 2, LDF_ASSIGNS 4.  0 = all. */
+    uint32_t head = 0, tail = 0;
+    DosList *n = NULL;
+    while ((n = DosList_Next(n)) != NULL) {
+        uint32_t gtype;
+        if (n->dol_Type == DLT_DEVICE) {
+            if (flags && !(flags & 1)) continue;
+            gtype = 1;
+        } else if (n->dol_Type == DLT_VOLUME) {
+            if (flags && !(flags & 2)) continue;
+            gtype = 2;
+        } else if (n->dol_Type == DLT_ASSIGN) {
+            if (flags && !(flags & 4)) continue;
+            /* bound assign = directory link, unbound = non-binding */
+            gtype = n->u.dol_Assign.dol_Lock ? 0 : 4;
+        } else {
+            continue;
+        }
+        if (g_dol_count >= 64) break;
+        uint32_t node = heap_alloc_fl(GDOL_NODE_SIZE);
+        if (!node) break;
+        for (int i = 0; i < GDOL_NODE_SIZE; i++) g_ram[node + i] = 0;
+        guest_write_be32(node + 4, gtype);
+        guest_write_be32(node + 40, doslist_bstr(n->dol_Name));
+        g_dol_nodes[g_dol_count++] = node;
+        if (!head) head = node;
+        if (tail) guest_write_be32(tail + 0, node >> 2);
+        tail = node;
+    }
+    cpu->d[0] = head;
+}
+
+static void dos_UnlockDosList(M68kCPUState *cpu)
+{
+    (void)cpu;
+    for (int i = 0; i < g_dol_count; i++) {
+        uint32_t node = g_dol_nodes[i];
+        uint32_t nb = guest_read_be32(node + 40);
+        if (nb) heap_free_fl(nb << 2);
+        heap_free_fl(node);
+    }
+    g_dol_count = 0;
+}
+
+static void dos_AttemptLockDosList(M68kCPUState *cpu) { dos_LockDosList(cpu); }
+
+static void dos_NextDosEntry(M68kCPUState *cpu)
+{
+    /* D1=APTR node → D0=APTR next */
+    uint32_t node = cpu->d[1];
+    cpu->d[0] = 0;
+    if (!node || node + GDOL_NODE_SIZE > GUEST_RAM_SIZE) return;
+    uint32_t nb = guest_read_be32(node + 0);
+    cpu->d[0] = nb ? (nb << 2) : 0;
+}
+
+/* --- Buffered I/O (LVO -306..-366) --------------------------------------
+ * UAOS files are unbuffered at the VFS layer; these are thin wrappers so
+ * guests calling the BCPL-style API still work. */
+static void dos_FGetC(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1];
+    cpu->d[0] = (uint32_t)-1;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE) return;
+    uint8_t ch;
+    if (VFS_Read(&ent->u.file.fh, &ch, 1) == 1) cpu->d[0] = ch;
+}
+
+static void dos_FPutC(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1];
+    uint8_t ch = (uint8_t)cpu->d[2];
+    cpu->d[0] = (uint32_t)-1;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE) {
+        if (fh == DOS_STDOUT_BPTR) {
+            char s[2] = { (char)ch, 0 };
+            kprint(s);
+            cpu->d[0] = ch;
+        }
+        return;
+    }
+    if (VFS_Write(&ent->u.file.fh, &ch, 1) == 1) cpu->d[0] = ch;
+}
+
+static void dos_UnGetC(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1];
+    int32_t ch = (int32_t)cpu->d[2];
+    cpu->d[0] = (uint32_t)-1;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE) return;
+    VfsFile *f = &ent->u.file.fh;
+    if (f->pos > 0) {
+        VFS_Seek(f, f->pos - 1);
+        cpu->d[0] = (uint32_t)ch;
+    } else {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+    }
+}
+
+static void dos_FRead(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1], block = cpu->d[2];
+    uint32_t blen = cpu->d[3], num = cpu->d[4];
+    cpu->d[0] = 0;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !blen || !num) return;
+    uint64_t total = (uint64_t)blen * num;
+    if (block + total > GUEST_RAM_SIZE) { SetIoErr(ERROR_BAD_NUMBER); return; }
+    int32_t n = VFS_Read(&ent->u.file.fh, g_ram + block, (uint32_t)total);
+    if (n > 0) cpu->d[0] = (uint32_t)n / blen;
+}
+
+static void dos_FWrite(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1], block = cpu->d[2];
+    uint32_t blen = cpu->d[3], num = cpu->d[4];
+    cpu->d[0] = 0;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !blen || !num) return;
+    uint64_t total = (uint64_t)blen * num;
+    if (block + total > GUEST_RAM_SIZE) { SetIoErr(ERROR_BAD_NUMBER); return; }
+    int32_t n = VFS_Write(&ent->u.file.fh, g_ram + block, (uint32_t)total);
+    if (n > 0) cpu->d[0] = (uint32_t)n / blen;
+}
+
+static void dos_FGets(M68kCPUState *cpu)
+{
+    uint32_t fh = cpu->d[1], buf = cpu->d[2], buflen = cpu->d[3];
+    cpu->d[0] = 0;
+    HandleEntry *ent = HandleTable_Get(fh);
+    if (!ent || ent->type != HTYPE_FILE || !buflen ||
+        buf + buflen > GUEST_RAM_SIZE) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+    uint32_t i = 0;
+    while (i < buflen - 1) {
+        uint8_t ch;
+        if (VFS_Read(&ent->u.file.fh, &ch, 1) != 1) break;
+        g_ram[buf + i++] = ch;
+        if (ch == '\n') break;
+    }
+    if (i) {
+        g_ram[buf + i] = 0;
+        cpu->d[0] = buf;
+    }
+}
+
+static void dos_SetVBuf(M68kCPUState *cpu)
+{
+    /* Unbuffered: acknowledge SetVBuf/SetMode so callers proceed. */
+    cpu->d[0] = DOSTRUE;
+}
+
+static void dos_SetMode(M68kCPUState *cpu)
+{
+    cpu->d[0] = DOSTRUE;
 }
 
 /* =========================================================================
@@ -3649,6 +4500,37 @@ static void *dos_funcs[] = {
     dos_Fault,              /* index 70 */
     dos_FilePart,           /* index 71 */
     dos_PathPart,           /* index 72 */
+    /* UAOS-248 — OctaMED gap-fill */
+    dos_Info,               /* index 73 */
+    dos_ExamineFH,          /* index 74 */
+    dos_ParentOfFH,         /* index 75 */
+    dos_DupLockFromFH,      /* index 76 */
+    dos_OpenFromLock,       /* index 77 */
+    dos_SameLock,           /* index 78 */
+    dos_SetFileSize,        /* index 79 */
+    dos_ExAll,              /* index 80 */
+    dos_ExAllEnd,           /* index 81 */
+    dos_IsFileSystem,       /* index 82 */
+    dos_Inhibit,            /* index 83 */
+    dos_SetComment,         /* index 84 */
+    dos_AssignLock,         /* index 85 */
+    dos_AssignLate,         /* index 86 */
+    dos_AssignPath,         /* index 87 */
+    dos_AssignAdd,          /* index 88 */
+    dos_GetDeviceProc,      /* index 89 */
+    dos_FreeDeviceProc,     /* index 90 */
+    dos_LockDosList,        /* index 91 */
+    dos_UnlockDosList,      /* index 92 */
+    dos_AttemptLockDosList, /* index 93 */
+    dos_NextDosEntry,       /* index 94 */
+    dos_FGetC,              /* index 95 */
+    dos_FPutC,              /* index 96 */
+    dos_UnGetC,             /* index 97 */
+    dos_FRead,              /* index 98 */
+    dos_FWrite,             /* index 99 */
+    dos_FGets,              /* index 100 */
+    dos_SetVBuf,            /* index 101 */
+    dos_SetMode,            /* index 102 */
 };
 
 /* =========================================================================
@@ -3719,11 +4601,15 @@ void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest)
  * dos_UnLockBPTR_glue. */
 uint32_t dos_LockPath_glue(const char *path)
 {
+    char resolved[128];
+    const char *p = path;
+    if (VFS_ResolveAssignPath(path, resolved, sizeof(resolved)))
+        p = resolved;
     char vol_name[16];
-    extract_vol_name(path, vol_name, sizeof(vol_name));
+    extract_vol_name(p, vol_name, sizeof(vol_name));
     MsgPort *port = VFS_GetHandlerPort(vol_name);
     if (!port) return 0;
-    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)path,
+    int32_t handle = DoPkt(port, ACTION_LOCATE_OBJECT, (intptr_t)p,
                            SHARED_LOCK, 0, 0, 0);
     if (!handle) return 0;
     uint32_t bptr = guest_alloc_filelock((uint32_t)handle, SHARED_LOCK);

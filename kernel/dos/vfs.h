@@ -30,6 +30,8 @@ typedef struct {
     int        nil;           /* 1 = NIL: handle (discard writes, EOF on read) */
     uint32_t   handle_id;     /* handler file-handle (0 = RAMFS or not tracked) */
     MsgPort   *handler_port;  /* handler port for DoPkt dispatch (NULL = RAMFS) */
+    char       resolved_path[128]; /* fully-resolved path of the winning
+                                    * assign target ("" until opened) */
 } VfsFile;
 
 /* -------------------------------------------------------------------------
@@ -248,5 +250,12 @@ int VFS_ListAssigns(char *buf, int max);
  * Writes resolved path to dst[max] and returns dst, or NULL if error.
  * The returned pointer is valid until next call. */
 const char *VFS_ExpandAssigns(const char *path, char *dst, int max);
+
+/* Fully resolve a path's assign prefix chain into dst[max] ("ACElib:x" ->
+ * "Workbench:ACE/lib/x"), first target for multi-assigns.  Unlike
+ * VFS_ExpandAssigns this expands chained assigns and is safe for in-place
+ * use (src may == dst).  Packet handlers must receive the resolved path —
+ * they strip only the "VOL:" prefix (UAOS-248). */
+const char *VFS_ResolveAssignPath(const char *path, char *dst, int max);
 
 #endif

@@ -27,6 +27,26 @@ static int slen(const char *s)
     int n = 0; while (s[n]) n++; return n;
 }
 
+/* "VOL:a/b/c" -> "VOL:a/b"; "VOL:a" -> "VOL:"; "VOL:" -> "VOL:" */
+static void parent_path_of(const char *path, char *dst, int max)
+{
+    int len = 0;
+    while (path[len] && len < max - 1) { dst[len] = path[len]; len++; }
+    while (len > 0 && dst[len - 1] == '/') len--;
+    int cut = len;
+    while (cut > 0 && dst[cut - 1] != '/' && dst[cut - 1] != ':') cut--;
+    dst[cut] = '\0';
+}
+
+/* A lock that will enumerate a directory starts its iterator at the
+ * first child — otherwise iter_next stays NULL and the first
+ * EXAMINE_NEXT / EXAMINE_ALL would wrongly report no entries. */
+static void prime_dir_iter(uint32_t handle, RamFsNode *node)
+{
+    if (handle && node && node->type == RAMFS_TYPE_DIR)
+        HandleTable_LockResetIter(handle, node->first_child);
+}
+
 /* -------------------------------------------------------------------------
  * Convert Unix epoch seconds to AmigaDOS DateStamp
  * AmigaDOS epoch is 1978-01-01 = Unix timestamp 252460800
@@ -155,13 +175,25 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             else if (mode == OFFSET_END)       new_size = size + (uint32_t)offset;
             else if (mode == OFFSET_BEGINNING) new_size = (uint32_t)offset;
             else                               new_size = (uint32_t)offset;
-            /* RamFS doesn't support explicit truncate without rewrite;
-             * we fake it by rewriting exactly new_size bytes. */
             if (new_size < size) {
-                uint8_t tmp[1];
-                VFS_Seek(fh, new_size);
-                VFS_Write(fh, tmp, 0); /* no-op trunc not supported directly */
+                /* Real truncate: the pool buffer stays allocated (cheap
+                 * and reusable) but the logical size shrinks. */
+                fh->node->size = new_size;
+            } else if (new_size > size) {
+                /* Extend with zeros through VFS_Write (grows the pool). */
+                static const uint8_t zeros[256] = {0};
+                uint32_t save = fh->pos;
+                VFS_Seek(fh, size);
+                uint32_t rem = new_size - size;
+                while (rem) {
+                    uint32_t c = rem > sizeof(zeros)
+                                 ? (uint32_t)sizeof(zeros) : rem;
+                    if (VFS_Write(fh, zeros, c) != c) break;
+                    rem -= c;
+                }
+                VFS_Seek(fh, save);
             }
+            if (fh->pos > new_size) VFS_Seek(fh, new_size);
             pkt->dp_Res1 = (int32_t)new_size;
         } else {
             pkt->dp_Res1 = -1;
@@ -209,6 +241,7 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         }
         if (node) {
             uint32_t handle = HandleTable_AllocLock(path, node, access);
+            prime_dir_iter(handle, node);
             pkt->dp_Res1 = (int32_t)handle;
             if (handle == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
         } else {
@@ -345,7 +378,10 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
         RamFsNode *node = le ? (RamFsNode *)le->u.lock.node : NULL;
         if (node && node->parent) {
-            uint32_t ph = HandleTable_AllocLock("", node->parent, access);
+            char ppath[128];
+            parent_path_of(le->path, ppath, sizeof(ppath));
+            uint32_t ph = HandleTable_AllocLock(ppath, node->parent, access);
+            prime_dir_iter(ph, node->parent);
             pkt->dp_Res1 = (int32_t)ph;
             if (ph == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
         } else {
@@ -361,7 +397,8 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         HandleEntry *le = HandleTable_GetLockEntry(handle, &access);
         RamFsNode *node = le ? (RamFsNode *)le->u.lock.node : NULL;
         if (node) {
-            uint32_t ph = HandleTable_AllocLock("", node, access);
+            uint32_t ph = HandleTable_AllocLock(le->path, node, access);
+            prime_dir_iter(ph, node);
             pkt->dp_Res1 = (int32_t)ph;
             if (ph == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
         } else {
@@ -432,7 +469,13 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
     /* ===== Current volume ===== */
     case ACTION_CURRENT_VOLUME: {
         /* Return a lock on the volume root */
-        uint32_t handle = HandleTable_AllocLock("", vol->root, SHARED_LOCK);
+        char vpath[20];
+        int i = 0;
+        while (i < 15 && vol->name[i]) { vpath[i] = vol->name[i]; i++; }
+        if (i < 19) vpath[i++] = ':';
+        vpath[i] = '\0';
+        uint32_t handle = HandleTable_AllocLock(vpath, vol->root, SHARED_LOCK);
+        prime_dir_iter(handle, vol->root);
         pkt->dp_Res1 = (int32_t)handle;
         if (handle == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
         break;
@@ -443,7 +486,12 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         uint32_t handle = (uint32_t)pkt->dp_Arg1;
         VfsFile *fh = HandleTable_GetFile(handle);
         if (fh && fh->node && fh->node->parent) {
-            uint32_t ph = HandleTable_AllocLock("", fh->node->parent, SHARED_LOCK);
+            char ppath[128] = "";
+            HandleEntry *fe = HandleTable_Get(handle);
+            if (fe) parent_path_of(fe->path, ppath, sizeof(ppath));
+            uint32_t ph = HandleTable_AllocLock(ppath, fh->node->parent,
+                                                SHARED_LOCK);
+            prime_dir_iter(ph, fh->node->parent);
             pkt->dp_Res1 = (int32_t)ph;
             if (ph == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
         } else {

@@ -574,10 +574,52 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         break;
     }
 
-    /* ===== Set protect / Set comment / Set file size ===== */
-    case ACTION_SET_PROTECT:
-    case ACTION_SET_COMMENT:
-    case ACTION_SET_FILE_SIZE:
+    /* ===== Set protection (FAT read-only attribute) ===== */
+    case ACTION_SET_PROTECT: {
+        const char *path = (const char *)(intptr_t)pkt->dp_Arg1;
+        uint32_t mask = (uint32_t)pkt->dp_Arg2;
+        if (FAT32_SetProtection(fs, path, mask) == 0) {
+            pkt->dp_Res1 = DOSTRUE;
+        } else {
+            pkt->dp_Res1 = DOSFALSE;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+        }
+        break;
+    }
+
+    /* ===== Set comment ===== */
+    case ACTION_SET_COMMENT: {
+        /* FAT dir entries carry no comment field — accept and drop so
+         * tools that stamp comments on every file still succeed. */
+        pkt->dp_Res1 = DOSTRUE;
+        break;
+    }
+
+    /* ===== Set file size (truncate/extend) ===== */
+    case ACTION_SET_FILE_SIZE: {
+        uint32_t handle = (uint32_t)pkt->dp_Arg1;
+        int32_t  offset = pkt->dp_Arg2;
+        int32_t  mode   = pkt->dp_Arg3;
+        Fat32File *file = fat_get_file_handle(handle);
+        if (!file || file->is_dir) {
+            pkt->dp_Res1 = -1;
+            pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
+            break;
+        }
+        uint32_t size = FAT32_Size(file);
+        uint32_t new_size;
+        if (mode == OFFSET_CURRENT)        new_size = file->pos + (uint32_t)offset;
+        else if (mode == OFFSET_END)       new_size = size + (uint32_t)offset;
+        else                               new_size = (uint32_t)offset;
+        if (FAT32_SetFileSize(file, new_size) == 0) {
+            pkt->dp_Res1 = (int32_t)new_size;
+        } else {
+            pkt->dp_Res1 = -1;
+            pkt->dp_Res2 = ERROR_WRITE_PROTECTED;
+        }
+        break;
+    }
+
     default: {
         pkt->dp_Res1 = DOSFALSE;
         pkt->dp_Res2 = ERROR_ACTION_NOT_KNOWN;

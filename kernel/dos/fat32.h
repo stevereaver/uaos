@@ -167,6 +167,15 @@ int FAT32_Rename(Fat32FS *fs, const char *old_path, const char *new_path);
 int FAT32_SetDate(Fat32FS *fs, const char *path,
                   int32_t days, int32_t mins, int32_t ticks);
 
+/* Truncate/extend an open file to new_size bytes (ACTION_SET_FILE_SIZE).
+ * The directory entry's size field is flushed immediately.
+ * Returns 0 on success, -1 on failure. */
+int FAT32_SetFileSize(Fat32File *file, uint32_t new_size);
+
+/* Map the Amiga protection mask onto the FAT read-only attribute
+ * (FIBF_WRITE set -> ATTR_READ_ONLY).  Returns 0 on success. */
+int FAT32_SetProtection(Fat32FS *fs, const char *path, uint32_t mask);
+
 /* Read an open handle's current write timestamp from its dir entry.
  * Returns 0 on success. */
 int FAT32_GetDate(Fat32File *file, uint16_t *fat_time, uint16_t *fat_date);
