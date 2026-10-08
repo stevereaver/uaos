@@ -96,6 +96,10 @@ typedef struct {
     uint16_t buflen;
     uint8_t  prev_keys[6];    /* last keyboard report key array */
     uint8_t  is_kbd;
+    uint8_t  is_apple;        /* Apple kbd kept in report protocol */
+    uint8_t  fn_on;           /* Apple Fn currently held */
+    uint8_t  prev_rpt[16];    /* last raw report (dump dedup) */
+    int      dump_left;       /* bounded raw-report klog dumps */
 } HidDev;
 
 #define HID_MAX_DEVS 8
@@ -140,11 +144,75 @@ static void hid_push_ascii(char ascii)
     PS2Kbd_PushChar(ascii);
 }
 
+/* Bounded raw-report dump for Apple keyboards (UAOS-139): klogs the
+ * first N *changed* reports so the Fn/vendor-byte position can be
+ * confirmed on metal without a descriptor parser.  Reports only arrive
+ * on change (SET_IDLE 0) so the cap lasts a whole debug session. */
+#define HID_DUMP_BUDGET 96
+
+static void hid_dump_report(HidDev *hd, const uint8_t *r, int len)
+{
+    if (hd->dump_left <= 0 || len > (int)sizeof(hd->prev_rpt)) return;
+    if (memcmp(hd->prev_rpt, r, (size_t)len) == 0) return;
+    memcpy(hd->prev_rpt, r, (size_t)len);
+    hd->dump_left--;
+    klog_puts(KLOG_USB, KLOG_DEBUG, "hid rpt:");
+    for (int i = 0; i < len; i++)
+        klog_appendf(KLOG_USB, KLOG_DEBUG, " %02x", r[i]);
+    klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
+}
+
+/* Fn-chord handling for Apple report-mode keyboards (UAOS-139).
+ * Agreed pattern: Fn+key activates the ancillary function — Fn+F1/F2 =
+ * display brightness down/up, Fn+arrows = PgUp/PgDn/Home/End,
+ * Fn+Backspace = Del — the chorded key is consumed and never reaches the
+ * key ring.  Returns 1 when the usage was consumed/handled. */
+static int hid_fn_chord(uint8_t u)
+{
+    char vk;
+    switch (u) {
+    case 0x3A: case 0x3B: {            /* F1 / F2 — brightness */
+        extern int NV50BL_Adjust(int);
+        NV50BL_Adjust(u == 0x3A ? -5 : 5);
+        return 1;
+    }
+    case 0x52: vk = KBD_VKEY_PGUP;  break;   /* Fn+Up    */
+    case 0x51: vk = KBD_VKEY_PGDN;  break;   /* Fn+Down  */
+    case 0x50: vk = KBD_VKEY_HOME;  break;   /* Fn+Left  */
+    case 0x4F: vk = KBD_VKEY_END;   break;   /* Fn+Right */
+    case 0x2A: vk = KBD_VKEY_DEL;   break;   /* Fn+Bksp = Del */
+    default: return 0;                      /* unchorded — normal key */
+    }
+    PS2Kbd_PushChar(vk);
+    return 1;
+}
+
 static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
 {
-    if (len < 8) return;
+    int off = 0;                    /* field offset: 1 = report-ID prefix */
 
-    uint8_t mods = r[0];
+    if (hd->is_apple) {
+        hid_dump_report(hd, r, len);
+        if (len < 1) return;
+        /* Apple top-case report protocol (10-byte keyboard report):
+         *   r[0]    = report ID (1 = keyboard, 0x52 = consumer/media)
+         *   r[1]    = modifiers, r[2] = reserved, r[3..8] = 6 keycodes
+         *   r[9]    = bit0 Consumer Eject | bits1-7 vendor 0xFF00:3 (Fn)
+         * An 8-byte report means the device ignored report mode and is
+         * speaking plain boot protocol — fall through with off=0. */
+        if (r[0] == 0x52) return;          /* media keys — unhandled */
+        if (r[0] != 0x01 || len < 10) {
+            /* not report-shaped — treat as boot protocol; the vendor
+             * byte isn't present so Fn can't be held */
+            if (len < 8) return;
+            hd->fn_on = 0;
+        } else {
+            off = 1;
+            hd->fn_on = (r[9] >> 1) != 0;
+        }
+    } else if (len < 8) return;
+
+    uint8_t mods = r[off + 0];
     g_kbd_mods.shift       = !!(mods & 0x22);
     g_kbd_mods.ctrl        = !!(mods & 0x11);
     g_kbd_mods.alt         = !!(mods & 0x44);
@@ -154,7 +222,7 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
 
     /* Newly-pressed keys = present now, absent from the previous report */
     for (int i = 2; i < 8; i++) {
-        uint8_t u = r[i];
+        uint8_t u = r[off + i];
         if (!u || u == 1) continue;              /* 0 = none, 1 = rollover err */
 
         int was_held = 0;
@@ -164,6 +232,9 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
 
         /* Caps Lock on keypress */
         if (u == 0x39) { g_kbd_mods.caps_lock ^= 1; continue; }
+
+        /* Fn-chorded keys (Apple report protocol only) */
+        if (hd->fn_on && hid_fn_chord(u)) continue;
 
         char vk = hid_vkey(u);
         if (vk) { PS2Kbd_PushChar(vk); continue; }
@@ -185,7 +256,7 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
 
     /* Snapshot the pressed-key array */
     for (int j = 0; j < 6; j++)
-        hd->prev_keys[j] = (j + 2 < len) ? r[j + 2] : 0;
+        hd->prev_keys[j] = (off + j + 2 < len) ? r[off + j + 2] : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -240,9 +311,16 @@ static int hid_probe(UsbIf *ifc)
     uint8_t ifnum = ifc->ifnum;
     int is_kbd = (ifc->proto == USB_IFPROTO_KBD);
 
-    /* Boot protocol + zero idle (report only on change) */
-    usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
-             HID_REQ_SET_PROTOCOL, HID_PROTO_BOOT, ifnum, 0, 0);
+    /* Apple keyboards (UAOS-139): skip SET_PROTOCOL(BOOT) — the Fn key
+     * is invisible in boot protocol (its code 0x01 collides with the
+     * rollover error).  The device powers up in report protocol, which
+     * carries the vendor-page Fn field.  Same pattern as hid-apple. */
+    int is_apple = is_kbd && dev->vid == 0x05AC;
+
+    if (!is_apple)
+        usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
+                 HID_REQ_SET_PROTOCOL, HID_PROTO_BOOT, ifnum, 0, 0);
+    /* Zero idle (report only on change) — valid in either protocol */
     usb_ctrl(dev, USB_RT_OUT | USB_RT_CLASS | USB_RT_IF,
              HID_REQ_SET_IDLE, 0, ifnum, 0, 0);
 
@@ -250,7 +328,10 @@ static int hid_probe(UsbIf *ifc)
     memset(hd, 0, sizeof(*hd));
     hd->ifc    = ifc;
     hd->is_kbd = (uint8_t)is_kbd;
-    hd->buflen = is_kbd ? 8 : (uint16_t)(ifc->int_mps ? ifc->int_mps : 8);
+    hd->is_apple = (uint8_t)is_apple;
+    hd->dump_left = is_apple ? HID_DUMP_BUDGET : 0;
+    hd->buflen = (!is_kbd || is_apple) && ifc->int_mps
+                 ? (uint16_t)ifc->int_mps : 8;
     hd->buf    = (uint8_t *)DMA_Alloc(hd->buflen + 8, 64);
     if (!hd->buf) { g_nhid--; return 0; }
 

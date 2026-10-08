@@ -120,6 +120,18 @@ int NV50BL_SetBrightness(int pct)
                  & NV50_PDISP_SOR_PWM_CTL_VAL);
 }
 
+/* Relative adjust (Fn-chord brightness keys); returns new percent. */
+int NV50BL_Adjust(int delta_pct)
+{
+    int cur = NV50BL_GetBrightness();
+    if (cur < 0) return -1;
+    cur += delta_pct;
+    if (cur < 0)   cur = 0;
+    if (cur > 100) cur = 100;
+    NV50BL_SetBrightness(cur);
+    return cur;
+}
+
 /* Find an NVIDIA display-class device, map BAR0, pick the SOR that owns
  * the panel PWM.  Returns 1 when a usable PWM was found. */
 int NV50BL_Init(void)

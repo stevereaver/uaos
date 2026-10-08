@@ -626,6 +626,12 @@ script in the newly opened shell (resolved relative to the invoking
 shell's current directory), mirroring the `S:Startup-Sequence` mechanism
 used at boot.
 
+Every new shell — the boot shell, `newcli` windows, and remote telnet
+sessions — first executes `S:Shell-Startup` if it exists. That script is
+the right place for per-shell environment like `path`, `alias`, and
+`set` (boot-once work belongs in `S:User-Startup`). A `from <script>`
+runs after `S:Shell-Startup`.
+
 ```
 UAOS> newcli
 UAOS> newcli from S:MySetup

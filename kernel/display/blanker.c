@@ -17,6 +17,28 @@ static int  g_blanker_idle    = 0;    /* current idle counter */
 static int  g_blanker_blanked = 0;    /* screen is currently blanked */
 static int  g_blanker_broker  = -1;   /* CX broker index */
 static volatile int g_blanker_pending = 0; /* IRQ requested a blank frame */
+static int  g_blanker_saved_pct = -1; /* brightness before blank (-1 none) */
+
+/* UAOS-139: on bare metal with the NV50 PWM driver a blank also drops
+ * the panel backlight to 0 — real backlight-off instead of just black
+ * pixels.  No-op where the driver found no GPU. */
+static void blanker_backlight(int on)
+{
+    extern int NV50BL_Present(void);
+    extern int NV50BL_GetBrightness(void);
+    extern int NV50BL_SetBrightness(int);
+    if (!NV50BL_Present()) return;
+    if (!on) {
+        int cur = NV50BL_GetBrightness();
+        if (cur > 0) {
+            g_blanker_saved_pct = cur;
+            NV50BL_SetBrightness(0);
+        }
+    } else if (g_blanker_saved_pct >= 0) {
+        NV50BL_SetBrightness(g_blanker_saved_pct);
+        g_blanker_saved_pct = -1;
+    }
+}
 
 static void blanker_on_enable(void *ud)
 {
@@ -31,6 +53,7 @@ static void blanker_on_disable(void *ud)
     /* Unblank if currently blanked */
     if (g_blanker_blanked) {
         g_blanker_blanked = 0;
+        blanker_backlight(1);
         WM_Redraw();
     }
     g_blanker_idle = 0;
@@ -42,6 +65,7 @@ static void blanker_on_sleep(void *ud)
     /* Unblank when going to sleep (pause blanking) */
     if (g_blanker_blanked) {
         g_blanker_blanked = 0;
+        blanker_backlight(1);
         WM_Redraw();
     }
 }
@@ -100,6 +124,7 @@ void Blanker_Flush(void)
     FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, WB_BLACK);
     FB_Flip();
     g_blanker_blanked = 1;
+    blanker_backlight(0);
 }
 
 void Blanker_OnInput(void)
@@ -109,6 +134,7 @@ void Blanker_OnInput(void)
 
     if (g_blanker_blanked) {
         g_blanker_blanked = 0;
+        blanker_backlight(1);
         WM_Redraw();
     }
 }

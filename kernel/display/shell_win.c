@@ -2838,6 +2838,37 @@ static void shell_run_script(void *shell_extra, const char *text)
     script_release_buf();
 }
 
+/* S:Shell-Startup — AmigaDOS-style per-shell startup script, run by
+ * every newly opened shell instance (boot shell, newcli/desktop
+ * windows, remote telnet sessions).  The script is optional: a
+ * missing file is silently ignored. */
+static void run_shell_startup(ShellInstance *s)
+{
+    VfsFile fh;
+    if (!VFS_Open(&fh, "S:Shell-Startup", VFS_READ)) return;
+
+    uint32_t size = VFS_Size(&fh);
+    if (size == 0 || size >= MAX_SCRIPT_SIZE) {
+        inst_print(s, "S:Shell-Startup empty or too large (max 4KB)");
+        VFS_Close(&fh);
+        return;
+    }
+
+    char *buf = script_acquire_buf();
+    if (!buf) {
+        inst_print(s, "S:Shell-Startup nesting too deep");
+        VFS_Close(&fh);
+        return;
+    }
+
+    uint32_t nread = VFS_Read(&fh, (uint8_t *)buf, size);
+    buf[nread] = '\0';
+    VFS_Close(&fh);
+
+    run_script_text(s, buf);
+    script_release_buf();
+}
+
 static void inst_cmd_execute(ShellInstance *s, const char *arg)
 {
     if (!arg || !*arg) {
@@ -6375,6 +6406,7 @@ static ShellInstance *open_shell(int stagger)
     s->kb_head = 0;
     s->kb_tail = 0;
     s->task = Task_CreateNative("Shell", 0, shell_task_entry, s);
+    run_shell_startup(s);
     WM_Redraw();
     return s;
 }
@@ -6449,7 +6481,6 @@ static ShellInstance *open_remote_shell(int sock, uint32_t gen)
         inst_print(s, "UAOS Shell  v0.1 - remote session");
         inst_print(s, "Type 'help' for commands, 'endcli' to disconnect.");
         inst_print(s, "");
-        remote_send_prompt(s);
 
         s->task = Task_CreateNative("Shell", 0, shell_task_entry, s);
         if (!s->task) {
@@ -6462,6 +6493,11 @@ static ShellInstance *open_remote_shell(int sock, uint32_t gen)
             s->remote_token = 0;
             return NULL;
         }
+
+        /* Run before the first prompt so script output lands between
+         * the banner and "RAM:>". */
+        run_shell_startup(s);
+        remote_send_prompt(s);
         return s;
     }
     return NULL;

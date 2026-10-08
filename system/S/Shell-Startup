@@ -1,0 +1,9 @@
+; Shell-Startup — runs in every new shell (boot shell, newcli windows,
+; and remote/telnet sessions).  Per-shell environment belongs here;
+; boot-once work goes in S:User-Startup.
+
+; GNU coreutils on the command search path.  Appended last so AmigaDOS
+; commands in C: keep winning name collisions (e.g. sort).
+path gnu:usr/bin ADD
+
+alias vi vim
