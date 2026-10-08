@@ -361,20 +361,46 @@ static uint32_t create_slider_kind(uint32_t prev, uint32_t ng, uint32_t tags)
     if (lvl < min) lvl = min;
     if (lvl > max) lvl = max;
 
+    /* Orientation follows gadget geometry (AmigaOS convention: the prop's
+     * freedom follows its long axis).  Vertical sliders — e.g. OctaMED's
+     * tempo/volume — drive VertPot instead of HorizPot. */
+    int vertical = (h >= w);
+
     uint32_t pi = intu_alloc(PROP_SIZE);
     if (!pi) return 0;
     for (int i = 0; i < PROP_SIZE; i++) gt_w8(pi + i, 0);
 
     uint16_t pot = 0;
-    if (max > min) pot = (uint16_t)(((lvl - min) * 65535) / (max - min));
-    gt_w16(pi + PROP_OFF_HORIZPOT, pot);
-    gt_w16(pi + PROP_OFF_VERTPOT, 0);
-    gt_w16(pi + PROP_OFF_HORIZBODY, 0xFFFF);
-    gt_w16(pi + PROP_OFF_VERTBODY, 0xFFFF);
+    if (max > min) pot = (uint16_t)((((int64_t)(lvl - min)) * 0xFFFF) / (max - min));
+
+    /* Fixed ~14px knob: Body is the knob fraction of the long axis. */
+    int extent = vertical ? h : w;
+    uint16_t body = 0xFFFF;
+    if (extent > 16) {
+        uint32_t b = ((uint32_t)14 * 0xFFFF) / (uint32_t)extent;
+        if (b < 0x0800) b = 0x0800;
+        body = (uint16_t)b;
+    }
+
+    gt_w16(pi + PROP_OFF_FLAGS, vertical ? PROP_FLAGS_FREEVERT
+                                         : PROP_FLAGS_FREEHORIZ);
+    if (vertical) {
+        gt_w16(pi + PROP_OFF_VERTPOT,  pot);
+        gt_w16(pi + PROP_OFF_VERTBODY, body);
+        gt_w16(pi + PROP_OFF_HORIZPOT, 0);
+        gt_w16(pi + PROP_OFF_HORIZBODY, 0xFFFF);
+    } else {
+        gt_w16(pi + PROP_OFF_HORIZPOT, pot);
+        gt_w16(pi + PROP_OFF_HORIZBODY, body);
+        gt_w16(pi + PROP_OFF_VERTPOT, 0);
+        gt_w16(pi + PROP_OFF_VERTBODY, 0xFFFF);
+    }
     gt_w16(pi + PROP_OFF_WIDTH, 0);
     gt_w16(pi + PROP_OFF_HEIGHT, 0);
     gt_w16(pi + PROP_OFF_HORIZSIG, 0);
     gt_w16(pi + PROP_OFF_VERTSIG, 0);
+    gt_w32(pi + PROP_OFF_GMIN, (uint32_t)min);
+    gt_w32(pi + PROP_OFF_GMAX, (uint32_t)max);
 
     uint16_t activation = GACT_IMMEDIATE | GACT_RELVERIFY | GACT_INTUITICKS;
     uint16_t flags = 0;
@@ -410,8 +436,12 @@ static uint32_t create_listview_kind(uint32_t prev, uint32_t ng, uint32_t tags)
     gt_w32(lv + LV_OFF_SELECTED, selected);
     gt_w32(lv + LV_OFF_VISIBLE, (uint32_t)visible);
     gt_w32(lv + LV_OFF_TOP, top_idx);
-    gt_w32(lv + LV_OFF_MULTI_SELECT, 0);
-    gt_w32(lv + LV_OFF_SELECTED_MASK, 0);
+    gt_w32(lv + LV_OFF_MULTI_SELECT,
+           find_tag_data(tags, GTLV_MultiSelect, 0) ? 1 : 0);
+    gt_w32(lv + LV_OFF_SELECTED_MASK,
+           (count && selected < count) ? (1u << selected) : 0);
+    gt_w32(lv + LV_OFF_READ_ONLY,
+           find_tag_data(tags, GTLV_ReadOnly, 0) ? 1 : 0);
 
     uint16_t activation = GACT_IMMEDIATE | GACT_RELVERIFY;
     uint16_t flags = 0;
@@ -423,16 +453,33 @@ static uint32_t create_listview_kind(uint32_t prev, uint32_t ng, uint32_t tags)
 
 static uint32_t create_cycle_kind(uint32_t prev, uint32_t ng, uint32_t tags)
 {
-    /* A cycle gadget is a boolean gadget that displays the active label. */
-    uint32_t gad = create_boolean_kind(prev, ng, tags, GTYP_BOOLGADGET, 0);
+    /* A cycle gadget displays the active label from GTCY_Labels and
+     * advances on click.  The label array + active index live in a
+     * private SpecialInfo block (CY_*) — packing them into UserData
+     * truncates the 32-bit label pointer and stomps application data. */
+    uint32_t gad = create_boolean_kind(prev, ng, tags, GTYP_CYCLE, 0);
     if (gad) {
         uint32_t labels = find_tag_data(tags, GTCY_Labels, 0);
         uint32_t active = find_tag_data(tags, GTCY_Active, 0);
         uint32_t count = count_label_array(labels);
+        uint32_t cy = intu_alloc(CY_SIZE);
+        if (!cy) {
+            uint32_t label = gt_u32(gad + GAD_OFF_GADGETTEXT);
+            if (label) {
+                uint32_t text = gt_u32(label + ITEXT_OFF_ITEXT);
+                if (text) intu_free(text);
+                intu_free(label);
+            }
+            intu_free(gad);
+            return 0;
+        }
         if (active >= count) active = 0;
-        gt_w32(gad + GAD_OFF_USERDATA, (labels << 16) | (active & 0xFFFF));
+        gt_w32(cy + CY_OFF_LABELS, labels);
+        gt_w32(cy + CY_OFF_ACTIVE, active);
+        gt_w32(cy + CY_OFF_COUNT,  count);
+        gt_w32(gad + GAD_OFF_SPECIALINFO, cy);
         gt_w16(gad + GAD_OFF_ACTIVATION,
-               GACT_IMMEDIATE | GACT_RELVERIFY | GACT_TOGGLESELECT);
+               GACT_IMMEDIATE | GACT_RELVERIFY);
     }
     return gad;
 }
@@ -593,7 +640,7 @@ static void gadtools_GT_SetGadgetAttrsA(void)
     uint32_t win  = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t req  = m68k_get_reg(NULL, M68K_REG_A2);
     uint32_t tags = m68k_get_reg(NULL, M68K_REG_D0);
-    (void)win; (void)req;
+    (void)req;
 
     /* Guest-supplied pointers are unchecked — a wild gadget address must
      * not let a bad app page-fault the kernel (g_ram + ~0xFFFFFFFF wraps
@@ -660,19 +707,53 @@ static void gadtools_GT_SetGadgetAttrsA(void)
                 }
                 break;
             case GTCY_Active:
-                if (type == GTYP_BOOLGADGET) {
-                    uint32_t userdata = gt_u32(gad + GAD_OFF_USERDATA);
-                    uint32_t labels = userdata >> 16;
-                    uint32_t count = count_label_array(labels);
-                    if (data < count) {
-                        gt_w32(gad + GAD_OFF_USERDATA, (labels << 16) | (data & 0xFFFF));
-                    }
+                if (type == GTYP_CYCLE && special && gt_ok(special, CY_SIZE)) {
+                    uint32_t count = gt_u32(special + CY_OFF_COUNT);
+                    if (data < count)
+                        gt_w32(special + CY_OFF_ACTIVE, data);
                 }
+                break;
+            case GTCY_Labels:
+                if (type == GTYP_CYCLE && special && gt_ok(special, CY_SIZE)) {
+                    gt_w32(special + CY_OFF_LABELS, data);
+                    uint32_t count = count_label_array(data);
+                    gt_w32(special + CY_OFF_COUNT, count);
+                    if (gt_u32(special + CY_OFF_ACTIVE) >= count)
+                        gt_w32(special + CY_OFF_ACTIVE, 0);
+                }
+                break;
+            case GTSL_Level:
+                if (type == GTYP_PROPGADGET && special_ok) {
+                    int32_t min = (int32_t)gt_u32(special + PROP_OFF_GMIN);
+                    int32_t max = (int32_t)gt_u32(special + PROP_OFF_GMAX);
+                    int32_t lvl = (int32_t)data;
+                    if (lvl < min) lvl = min;
+                    if (lvl > max) lvl = max;
+                    uint16_t pot = 0;
+                    if (max > min)
+                        pot = (uint16_t)((((int64_t)(lvl - min)) * 0xFFFF)
+                                         / (max - min));
+                    if (gt_u16(special + PROP_OFF_FLAGS) & PROP_FLAGS_FREEVERT)
+                        gt_w16(special + PROP_OFF_VERTPOT, pot);
+                    else
+                        gt_w16(special + PROP_OFF_HORIZPOT, pot);
+                }
+                break;
+            case GTSL_Min:
+                if (type == GTYP_PROPGADGET && special_ok)
+                    gt_w32(special + PROP_OFF_GMIN, data);
+                break;
+            case GTSL_Max:
+                if (type == GTYP_PROPGADGET && special_ok)
+                    gt_w32(special + PROP_OFF_GMAX, data);
                 break;
             case GTLV_Selected:
                 if (type == GTYP_LISTVIEW && special_ok) {
                     uint32_t count = gt_u32(special + LV_OFF_COUNT);
-                    if (data < count) gt_w32(special + LV_OFF_SELECTED, data);
+                    if (data < count) {
+                        gt_w32(special + LV_OFF_SELECTED, data);
+                        gt_w32(special + LV_OFF_SELECTED_MASK, 1u << data);
+                    }
                 }
                 break;
             case GTLV_Top:
@@ -680,8 +761,19 @@ static void gadtools_GT_SetGadgetAttrsA(void)
                     gt_w32(special + LV_OFF_TOP, data);
                 }
                 break;
+            case GTLV_MultiSelect:
+                if (type == GTYP_LISTVIEW && special_ok)
+                    gt_w32(special + LV_OFF_MULTI_SELECT, data ? 1 : 0);
+                break;
+            case GTLV_ReadOnly:
+                if (type == GTYP_LISTVIEW && special_ok)
+                    gt_w32(special + LV_OFF_READ_ONLY, data ? 1 : 0);
+                break;
         }
     }
+
+    if (win)
+        UAOS_Intuition_RefreshWindow(win);
 
     m68k_set_reg(M68K_REG_D0, 1);
 }
@@ -729,14 +821,52 @@ static void gadtools_GT_GetGadgetAttrsA(void)
                     }
                     break;
                 case GTCY_Active:
-                    if (type == GTYP_BOOLGADGET) {
-                        value = gt_u32(gad + GAD_OFF_USERDATA) & 0xFFFF;
+                    if (type == GTYP_CYCLE && special && gt_ok(special, CY_SIZE)) {
+                        value = gt_u32(special + CY_OFF_ACTIVE);
+                        matched = 1;
+                    }
+                    break;
+                case GTSL_Level:
+                    if (type == GTYP_PROPGADGET && special_ok) {
+                        int32_t min = (int32_t)gt_u32(special + PROP_OFF_GMIN);
+                        int32_t max = (int32_t)gt_u32(special + PROP_OFF_GMAX);
+                        uint16_t pot =
+                            (gt_u16(special + PROP_OFF_FLAGS) & PROP_FLAGS_FREEVERT)
+                                ? gt_u16(special + PROP_OFF_VERTPOT)
+                                : gt_u16(special + PROP_OFF_HORIZPOT);
+                        value = (uint32_t)(min +
+                            (int32_t)(((uint64_t)pot * (uint32_t)(max - min)
+                                       + 0x8000) / 0xFFFF));
+                        matched = 1;
+                    }
+                    break;
+                case GTSL_Min:
+                    if (type == GTYP_PROPGADGET && special_ok) {
+                        value = gt_u32(special + PROP_OFF_GMIN);
+                        matched = 1;
+                    }
+                    break;
+                case GTSL_Max:
+                    if (type == GTYP_PROPGADGET && special_ok) {
+                        value = gt_u32(special + PROP_OFF_GMAX);
                         matched = 1;
                     }
                     break;
                 case GTLV_Selected:
                     if (type == GTYP_LISTVIEW && special_ok) {
                         value = gt_u32(special + LV_OFF_SELECTED);
+                        matched = 1;
+                    }
+                    break;
+                case GTLV_MultiSelect:
+                    if (type == GTYP_LISTVIEW && special_ok) {
+                        value = gt_u32(special + LV_OFF_MULTI_SELECT);
+                        matched = 1;
+                    }
+                    break;
+                case GTLV_ReadOnly:
+                    if (type == GTYP_LISTVIEW && special_ok) {
+                        value = gt_u32(special + LV_OFF_READ_ONLY);
                         matched = 1;
                     }
                     break;

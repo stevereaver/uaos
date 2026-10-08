@@ -23,6 +23,7 @@
 #include "../dos/icon_loader.h"
 #include "../exec/workbench_lib.h"
 #include "../irq/rtc.h"
+#include "../irq/ps2kbd.h"
 #include "../net/ntp.h"
 #include "../net/timezone.h"
 #include "blanker.h"
@@ -61,6 +62,7 @@ static int str_eq(const char *a, const char *b)
  * ========================================================================= */
 
 /* MENUBAR_H is defined in desktop.h */
+#define SCRDEPTH_W     20   /* screen depth gadget, far right of the bar  */
 #define ICON_W         48
 #define ICON_H         56   /* 40px bitmap + 16px label */
 #define ICON_LABEL_H   16
@@ -1326,8 +1328,9 @@ static void draw_menubar(int W)
         int title_w = 0;
         for (const char *p = g_screen_title; *p; p++) title_w += 8;
         int title_x = mx + 16;
-        if (title_x + title_w > W - 320)   /* reserve: clock + mem + CPU% */
-            title_x = W - 320 - title_w;
+        /* reserve: clock + mem + CPU% + depth gadget */
+        if (title_x + title_w > W - 320 - SCRDEPTH_W)
+            title_x = W - 320 - SCRDEPTH_W - title_w;
         if (title_x > mx && title_w > 0)
             FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
@@ -1383,7 +1386,7 @@ static void draw_menubar(int W)
     }
     int clk_len = 0;
     for (const char *p = g_clock_str; *p; p++) clk_len++;
-    int clk_x = W - clk_len * 8 - 8;
+    int clk_x = W - clk_len * 8 - 8 - SCRDEPTH_W;
     FB_PutStr(clk_x, 2, g_clock_str, WB_WHITE, WB_BLUE);
 
     /* Memory display — show free memory just left of the clock,
@@ -1397,6 +1400,25 @@ static void draw_menubar(int W)
         int clen = 0;
         for (const char *p = g_cpu_str; *p; p++) clen++;
         FB_PutStr(mem_x - clen * 8 - 16, 2, g_cpu_str, WB_CREAM, WB_BLUE);
+    }
+
+    /* Screen depth gadget at the bar's right edge (Amiga convention):
+     * raised cell with an overlapping-rectangles glyph; click cycles
+     * screens (shift-click goes backwards).  Hit zone mirrors
+     * menubar_depth_hit(). */
+    {
+        int gx = W - SCRDEPTH_W;
+        int gy = 1, gw = SCRDEPTH_W - 2, gh = MENUBAR_H - 2;
+        FB_FillRect(gx, gy, gw, gh, WB_GREY);
+        FB_DrawHLine(gx, gy, gw, WB_WHITE);
+        FB_DrawVLine(gx, gy, gh, WB_WHITE);
+        FB_DrawHLine(gx, gy + gh - 1, gw, WB_DARK_GREY);
+        FB_DrawVLine(gx + gw - 1, gy, gh, WB_DARK_GREY);
+        /* glyph: back square top-left, front square bottom-right */
+        int sx0 = gx + 3, sy0 = gy + 2, sq = 7;
+        FB_DrawRect(sx0, sy0, sq, sq, WB_WHITE);
+        FB_DrawRect(sx0 + 5, sy0 + 5, sq, sq, WB_DARK_GREY);
+        FB_FillRect(sx0 + 6, sy0 + 6, sq - 2, sq - 2, WB_BLUE);
     }
 }
 
@@ -2328,13 +2350,20 @@ static int menubar_hit(int mx, int my)
     return -1;
 }
 
-/* Hit-test the menubar clock — the HH:MM:SS text at the far right.
- * Replicates the layout logic from draw_menubar. */
+/* Hit-test the menubar clock — the HH:MM:SS text right of the screen
+ * depth gadget.  Replicates the layout logic from draw_menubar. */
 static int menubar_clock_hit(int mx, int my)
 {
     if (my < 0 || my >= MENUBAR_H) return 0;
-    int clk_x = (int)g_fb.width - 8 * 8 - 8;  /* 8 chars + 8px right margin */
-    return mx >= clk_x - 4;
+    int clk_x = (int)g_fb.width - 8 * 8 - 8 - SCRDEPTH_W;
+    return mx >= clk_x - 4 && mx < (int)g_fb.width - SCRDEPTH_W;
+}
+
+/* Hit-test the screen depth gadget at the bar's right edge. */
+static int menubar_depth_hit(int mx, int my)
+{
+    if (my < 0 || my >= MENUBAR_H) return 0;
+    return mx >= (int)g_fb.width - SCRDEPTH_W;
 }
 
 /* Return the item index under (mx,my) when a menu is open,
@@ -2696,6 +2725,14 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     /* ── Left-click on menubar ──────────────────────────── */
     int menu = menubar_hit(mx, my);
     if (left_pressed && menu >= 0) {
+        return 1;
+    }
+
+    /* ── Left-press on the screen depth gadget: cycle screens.
+     * Amiga behaviour — plain click sends the front screen to back
+     * (next screen forward), shift-click steps the other way. ── */
+    if (left_pressed && menubar_depth_hit(mx, my)) {
+        UAOS_Intuition_CycleScreen(g_kbd_mods.shift ? -1 : 1);
         return 1;
     }
 

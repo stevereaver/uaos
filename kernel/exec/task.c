@@ -933,9 +933,9 @@ void Task_EventPumpEntry(void *arg)
 
         /* Guest-owned front screen: apps like OctaMED draw straight into
          * their screen BitMap's planes with CPU stores — no library call
-         * to hook.  Poll-marks the screen damaged so FlushRedraw re-decodes
-         * the planes (~hardware bitmap fetch), and shortens the wait below
-         * so the refresh runs at ~20 Hz instead of the 100-tick fallback. */
+         * to hook.  The poll hashes each plane row and damages only what
+         * changed (~hardware bitmap fetch); the shortened wait below gives
+         * ~50 Hz refresh instead of the 100-tick fallback. */
         int guest_screen_front = UAOS_Intuition_PollFrontScreenBitmap();
 
         /* Coalesced repaint: event handlers accumulate damage instead of
@@ -967,7 +967,7 @@ void Task_EventPumpEntry(void *arg)
          * so this returns immediately when there is pending input.
          * The timeout is only a safety net for unsignalled producers. */
         Task_WaitTicks(SIGF_EVENTPUMP | SIGF_NET | SIGF_CHILD,
-                       guest_screen_front ? 5 : 100);
+                       guest_screen_front ? 2 : 100);
     }
 }
 

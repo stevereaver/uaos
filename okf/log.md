@@ -1,5 +1,64 @@
 # OKF Change Log
 
+## 2026-10-09 — Intuition/GadTools gap-fill for the OctaMED UI (UAOS-246)
+
+* **Fixed** (`kernel/exec/gadtools_lib.c`, `intuition_lib.{c,h}`): the
+  cycle gadget.  `CYCLE_KIND` used to pack `labels<<16|active` into
+  `Gadget.UserData` — truncating the 32-bit label-array pointer and
+  stomping application data — rendered as a checkbox, and never
+  advanced.  It now creates a `GTYP_CYCLE` gadget with a private
+  `SpecialInfo` block (`CY_OFF_LABELS/ACTIVE/COUNT`), renders as a raised
+  box showing the active label with an up/down-arrow glyph cell,
+  advances on click (shift-click steps back, wraps both ends), and
+  `GTCY_Active`/`GTCY_Labels` are settable/gettable through
+  `GT_Set/GetGadgetAttrsA`.
+* **Fixed** (`kernel/exec/gadtools_lib.c`, `intuition_lib.h`): vertical
+  sliders.  `SLIDER_KIND` mapped `GTSL_Level` to `HorizPot` only, so
+  OctaMED's tempo/volume sliders were dead.  Orientation now follows the
+  gadget's long axis (`h >= w` → `VertPot` + `PROP_FLAGS_FREEVERT`), the
+  knob body is a ~14 px fixed fraction instead of `0xFFFF`, and
+  `GTSL_Min`/`Max`/`Level` are persisted in a `PropInfo` tail extension
+  (`PROP_OFF_GMIN/GMAX`) so `GT_Set/GetGadgetAttrsA` round-trips levels.
+* **Fixed** (`kernel/exec/gadtools_lib.{c,h}`, `intuition_lib.c`):
+  listview tags.  `GTLV_ReadOnly` (blocks item selection but keeps the
+  scrollbar live) and a UAOS-extension `GTLV_MultiSelect` tag now reach
+  `LV_OFF_READ_ONLY`/`LV_OFF_MULTI_SELECT`; `GTLV_Selected` sets the
+  `SelectedMask` bit too, and both are settable/gettable.
+* **Added** (`kernel/display/desktop.c`): a screen depth gadget at the
+  menubar's right edge (raised cell, overlapping-rectangles glyph) —
+  click cycles Intuition screens via `UAOS_Intuition_CycleScreen`,
+  shift-click steps backwards; the clock and `menubar_clock_hit` shifted
+  left to make room.
+* **Fixed** (`kernel/exec/intuition_lib.c`): screen-switch repaint.
+  `ScreenToFront`/`ScreenToBack`/`ScreenDepth`/`CycleScreen` now damage
+  the whole desktop (`front_screen_repaint`) so the backdrop repaints
+  from the newly-front screen's BitMap — previously the old screen stayed
+  visible until something else invalidated it.
+* **Fixed** (`kernel/exec/intuition_lib.c`, `task.c`): front-screen
+  poked-pixel refresh.  The poll used to drop the whole pen cache and
+  damage the full screen at ~5 Hz (20 PIT ticks — polling faster
+  saturated EventPump).  It now runs at ~50 Hz (2 ticks): FNV-1a hashes
+  each BitMap row's plane bytes (`scr_row_hash`), re-decodes only rows
+  that moved (`scr_decode_row` + scratch-row diff → `memcpy` into
+  `g_scr_pens`), and damages the union of changed spans; a quiet screen
+  costs only the hash pass.  Oversized bitmaps fall back to coarse
+  full-screen damage.  The pump's guest-screen-front wait dropped from
+  5 ticks to 2.
+* **Fixed** (`kernel/exec/boopsi_builtin.c`, `intuition_lib.h`):
+  `PropInfo.Flags` now carries real AmigaOS bit values (`FREEHORIZ` 0x2 /
+  `FREEVERT` 0x4 / `PROPBORDERLESS` 0x8 / `PROPNEWLOOK` 0x10) — the
+  propgclass setter used private bits that disagreed with the header.
+* **Verified** (QEMU + `build/octamed.img`, screendump-driven):
+  OctaMED V5 launches and its custom screen renders (653K non-black px —
+  tracker UI + "Project Display Song Block Track Instr Edit MIDI
+  Settings" menu strip), frames differ shot-to-shot under the 50 Hz poll,
+  and the menubar depth gadget cycles screens.  `tests/smoke.sh` 24/24.
+  Known pre-existing flake (unchanged): the `qemu_octamed_iff_test.py`
+  "ASL: file requester opened" check — OctaMED never receives the
+  monitor-injected `shift-i` RAWKEY because window activation doesn't
+  take; documented in this log under UAOS-239 and reproduces identically
+  without this change.
+
 ## 2026-10-09 — optional OctaMED support libraries: clean-disable semantics (UAOS-249)
 
 * **Added** (`emulation/uaos_m68k_glue.c`): `emu_declined_names` — a

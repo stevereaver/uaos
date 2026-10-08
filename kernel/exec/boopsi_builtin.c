@@ -1486,21 +1486,21 @@ static int propg_set_tag(uint32_t tag, uint32_t data, void *ctx)
         }
         case PGA_Freedom: {
             uint16_t flags = mem_u16(pi + PROP_OFF_FLAGS);
-            flags &= ~(0x0003);  /* clear FREEHORIZ/FREEVERT */
-            if (data == PGA_FREEHORIZ || data == PGA_FREEBOTH) flags |= 0x0001;
-            if (data == PGA_FREEVERT  || data == PGA_FREEBOTH) flags |= 0x0002;
+            flags &= ~(PROP_FLAGS_FREEHORIZ | PROP_FLAGS_FREEVERT);
+            if (data == PGA_FREEHORIZ || data == PGA_FREEBOTH) flags |= PROP_FLAGS_FREEHORIZ;
+            if (data == PGA_FREEVERT  || data == PGA_FREEBOTH) flags |= PROP_FLAGS_FREEVERT;
             mem_w16(pi + PROP_OFF_FLAGS, flags);
             break;
         }
         case PGA_NewLook: {
             uint16_t flags = mem_u16(pi + PROP_OFF_FLAGS);
-            if (data) flags |= 0x0004;  /* PROPNEWLOOK */
+            if (data) flags |= PROP_FLAGS_PROPNEWLOOK;
             mem_w16(pi + PROP_OFF_FLAGS, flags);
             break;
         }
         case PGA_Borderless: {
             uint16_t flags = mem_u16(pi + PROP_OFF_FLAGS);
-            if (data) flags |= 0x0010;  /* PROPBORDERLESS */
+            if (data) flags |= PROP_FLAGS_PROPBORDERLESS;
             mem_w16(pi + PROP_OFF_FLAGS, flags);
             break;
         }

@@ -803,6 +803,26 @@ static int gad_is_listview(uint32_t gad)
     return gad_type_id(gad) == GTYP_LISTVIEW;
 }
 
+static int gad_is_cycle(uint32_t gad)
+{
+    return gad_type_id(gad) == GTYP_CYCLE;
+}
+
+/* Advance a cycle gadget to the next (dir=+1) or previous (dir=-1) label,
+ * wrapping at both ends.  Returns 1 when the active index changed. */
+static int cycle_advance(uint32_t gad, int dir)
+{
+    uint32_t cy = mem_u32(gad + GAD_OFF_SPECIALINFO);
+    if (!cy) return 0;
+    int count = (int)mem_u32(cy + CY_OFF_COUNT);
+    if (count <= 0) return 0;
+    int active = (int)mem_u32(cy + CY_OFF_ACTIVE) + dir;
+    if (active < 0) active = count - 1;
+    else if (active >= count) active = 0;
+    mem_w32(cy + CY_OFF_ACTIVE, (uint32_t)active);
+    return 1;
+}
+
 static int gad_is_string_gadget(uint32_t gad)
 {
     int type = gad_type_id(gad);
@@ -1180,7 +1200,7 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                         int item = listview_hit(gad, gx, gy);
                         if (item >= 0) {
                             uint32_t lv = mem_u32(gad + GAD_OFF_SPECIALINFO);
-                            if (lv) {
+                            if (lv && !mem_u32(lv + LV_OFF_READ_ONLY)) {
                                 int multi = (int)mem_u32(lv + LV_OFF_MULTI_SELECT);
                                 uint32_t mask = mem_u32(lv + LV_OFF_SELECTED_MASK);
                                 if (multi) {
@@ -1314,6 +1334,12 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 }
                 if (idcmp & IDCMP_GADGETUP)
                     post_intui_message(win_ptr, IDCMP_GADGETUP, 0, 0, 0, 0, hit_gad);
+            } else if (hit_gad && gad_is_cycle(hit_gad) &&
+                       !(mem_u16(hit_gad + GAD_OFF_FLAGS) & GFLG_DISABLED)) {
+                /* Cycle gadget: shift-click steps back, plain click steps
+                 * forward, wrapping at both ends. */
+                if (cycle_advance(hit_gad, g_kbd_mods.shift ? -1 : 1))
+                    redraw = 1;
             }
 
             /* Clear the momentary press highlight on every gadget — but
@@ -2249,6 +2275,50 @@ static void draw_listview_gadget(int gx, int gy, int w, int h, uint32_t fg, uint
     }
 }
 
+/* Draw a GadTools cycle gadget: a raised box showing the active label with
+ * an up/down-arrow glyph cell on the right. */
+static void draw_cycle_gadget(int gx, int gy, int w, int h, uint32_t fg, uint32_t bg,
+                              uint32_t gad)
+{
+    uint32_t cy = mem_u32(gad + GAD_OFF_SPECIALINFO);
+    int pressed = (mem_u16(gad + GAD_OFF_FLAGS) & GFLG_SELECTED) ? 1 : 0;
+
+    int cell_w = 16;
+    if (cell_w > w / 3) cell_w = w / 3;
+
+    FB_FillRect(gx, gy, w, h, bg);
+    /* Pressed state swaps the bevel like a recessed button. */
+    uint32_t tl = pressed ? WB_DARK_GREY : WB_WHITE;
+    uint32_t br = pressed ? WB_WHITE : WB_DARK_GREY;
+    FB_DrawHLine(gx, gy, w, tl);
+    FB_DrawVLine(gx, gy, h, tl);
+    FB_DrawHLine(gx, gy + h - 1, w, br);
+    FB_DrawVLine(gx + w - 1, gy, h, br);
+    FB_DrawRect(gx, gy, w, h, fg);
+
+    char text[64] = "";
+    if (cy) {
+        uint32_t labels = mem_u32(cy + CY_OFF_LABELS);
+        uint32_t active = mem_u32(cy + CY_OFF_ACTIVE);
+        if (labels) {
+            uint32_t item = mem_u32(labels + active * 4);
+            if (item) guest_str(text, item, sizeof(text));
+        }
+    }
+    if (text[0])
+        FB_PutStrCentred(gx + 1, gy + 1, w - cell_w - 2, h - 2, text, fg, bg);
+
+    /* Glyph cell: vertical divider + up/down triangles. */
+    int cx = gx + w - cell_w - 1;
+    FB_DrawVLine(cx, gy + 1, h - 2, fg);
+    int mx = cx + cell_w / 2;
+    int cy_mid = gy + h / 2;
+    for (int i = 0; i < 4; i++) {
+        FB_DrawHLine(mx - 3 + i, cy_mid - 3 + i, 7 - 2 * i, fg);
+        FB_DrawHLine(mx - 3 + i, cy_mid + 4 - i, 7 - 2 * i, fg);
+    }
+}
+
 /* Render the window's custom gadget list.  Boolean gadgets are rendered as
  * buttons, checkboxes, or radio buttons depending on activation flags; integer
  * gadgets show their numeric value; listviews show a scrollable item list; and
@@ -2342,6 +2412,8 @@ static void render_custom_gadgets(int win_x, int win_y, int off_x, int off_y, ui
                                     active ? (int)slot->active_string_sel_end : 0);
         } else if (type_id == GTYP_LISTVIEW) {
             draw_listview_gadget(gx, gy, w, h, fg, bg, special);
+        } else if (type_id == GTYP_CYCLE) {
+            draw_cycle_gadget(gx, gy, w, h, fg, bg, gad);
         } else if (type_id == GTYP_BOOLGADGET) {
             char label[64];
             gadget_label_text(gad, label, sizeof(label));
@@ -4752,34 +4824,140 @@ void UAOS_Intuition_RefreshWindow(uint32_t guest_win)
         WM_InvalidateRect(x, y, w, h);
 }
 
+/* FNV-1a hash of one BitMap row's plane bytes — used by the front-screen
+ * poll to find rows the guest poked without a full pen re-decode. */
+static uint32_t scr_row_hash(uint32_t bm, int y, int wbytes, int depth)
+{
+    const uint16_t bpr = mem_u16(bm + BM_OFF_BYTESPERROW);
+    if (wbytes > (int)bpr) wbytes = (int)bpr;
+    uint32_t h = 2166136261u;
+    for (int p = 0; p < depth; p++) {
+        const uint32_t base = mem_u32(bm + BM_OFF_PLANES + p * 4);
+        uint32_t row = base + (uint32_t)y * bpr;
+        if (!base || row + (uint32_t)wbytes > GUEST_RAM_SIZE) {
+            h = h * 16777619u + (uint32_t)p;
+            continue;
+        }
+        for (int i = 0; i < wbytes; i++) {
+            h ^= mem_u8(row + (uint32_t)i);
+            h *= 16777619u;
+        }
+    }
+    return h;
+}
+
+/* Decode one BitMap row (columns 0..w-1 of row y) into a pen buffer. */
+static void scr_decode_row(uint32_t bm, int y, int w, uint8_t *dst)
+{
+    const uint16_t bpr = mem_u16(bm + BM_OFF_BYTESPERROW);
+    uint8_t depth = mem_u8(bm + BM_OFF_DEPTH);
+    if (depth == 0) depth = 1;
+    if (depth > 8) depth = 8;
+    memset(dst, 0, (size_t)w);
+    for (int p = 0; p < depth; p++) {
+        const uint32_t base = mem_u32(bm + BM_OFF_PLANES + p * 4);
+        uint32_t row = base + (uint32_t)y * bpr;
+        if (!base || row + (uint32_t)bpr > GUEST_RAM_SIZE) continue;
+        for (int x = 0; x < w; x++) {
+            if (mem_u8(row + (uint32_t)(x >> 3)) & (0x80 >> (x & 7)))
+                dst[x] |= (uint8_t)(1u << p);
+        }
+    }
+}
+
 /* A guest app may draw straight into its screen BitMap with CPU stores, with
  * no library call to hook — on real hardware the Denise re-fetches the planes
  * every scanline regardless.  Called from the event pump: while the front
- * screen is owned by an m68k task, invalidate the pen cache and damage the
- * whole screen so the next WM_FlushRedraw re-decodes the planes.
- * Returns 1 while such a screen is front so the pump can shorten its wait. */
+ * screen is owned by an m68k task, FNV-hash each row of each bitplane, and
+ * re-decode + damage only the rows that changed.  Scanning a quiet
+ * 1024×768×4 bitmap is ~400K byte reads (<1 ms) versus the old path's
+ * full-cache drop + full-screen decode + full-screen damage every ~200 ms,
+ * so poked-pixel animation (OctaMED's pattern view and scopes) flushes at
+ * near pump cadence.  Returns 1 while such a screen is front so the pump
+ * can shorten its wait. */
 int UAOS_Intuition_PollFrontScreenBitmap(void)
 {
     extern volatile uint64_t g_pit_ticks;
+    /* Per-row plane hashes, indexed by BitMap row. */
+    static uint32_t s_row_hash[SCR_CACHE_MAX_H];
+    static uint32_t s_hash_bm = 0;
+    /* Scratch row for the diff decode — avoids touching the cache unless
+     * the pens actually changed. */
+    static uint8_t s_scratch[SCR_CACHE_MAX_W];
+
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         ScreenSlot *slot = &g_intu_screens[i];
         if (!slot->active || !slot->is_front || !slot->bitmap) continue;
         if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
         if (!slot->owner || !slot->owner->m68k_ram) return 0;
-        /* Rate-limit the re-decode to ~5 Hz: the pump wakes us every few
-         * ticks while a guest screen is front, but a full 1024×768
-         * pen-decode + emit under Forbid every pass saturates the pump
-         * (measured >100% busy).  The decode itself runs later, in the
-         * render path which rebinds the screen owner's RAM window — just
-         * drop the cache key and mark damage here. */
+
+        /* ~50 Hz cap: poked-pixel updates flush within ~20 ms. */
         static uint64_t s_last_poll = 0;
-        if (g_pit_ticks - s_last_poll < 20) return 1;
+        if (g_pit_ticks - s_last_poll < 2) return 1;
         s_last_poll = g_pit_ticks;
-        g_scr_cache_bm = 0;
-        WM_InvalidateDesktopRect(slot->left, slot->top,
-                                 slot->width, slot->height);
+
+        /* The BitMap lives in the screen owner's RAM window — bind it for
+         * the hash/decode pass; the caller may be the event pump. */
+        uint8_t *saved = g_ram;
+        g_ram = slot->owner->m68k_ram;
+
+        const uint32_t bm = slot->bitmap;
+        scr_cache_ensure(slot);
+        if (g_scr_cache_bm != bm) {
+            /* BitMap too large for the pen cache — keep the old coarse
+             * behaviour: damage the whole screen and let the render path
+             * emit straight from the planes. */
+            g_ram = saved;
+            WM_InvalidateDesktopRect(slot->left, slot->top,
+                                   slot->width, slot->height);
+            return 1;
+        }
+
+        uint8_t depth = mem_u8(bm + BM_OFF_DEPTH);
+        if (depth == 0) depth = 1;
+        if (depth > 8) depth = 8;
+        const int wbytes = (g_scr_cache_w + 7) / 8;
+
+        if (s_hash_bm != bm) {
+            /* Cache was just (re)built — the render path already repainted
+             * the screen; take a hash baseline, no damage needed. */
+            s_hash_bm = bm;
+            for (int y = 0; y < g_scr_cache_h; y++)
+                s_row_hash[y] = scr_row_hash(bm, y, wbytes, depth);
+            g_ram = saved;
+            return 1;
+        }
+
+        /* Diff each row's planes; re-decode only rows whose bits moved. */
+        int dx0 = 0x7FFFFFFF, dx1 = -1, dy0 = 0x7FFFFFFF, dy1 = -1;
+        const int w = g_scr_cache_w;
+        for (int y = 0; y < g_scr_cache_h; y++) {
+            uint32_t h = scr_row_hash(bm, y, wbytes, depth);
+            if (h == s_row_hash[y]) continue;
+            s_row_hash[y] = h;
+            scr_decode_row(bm, y, w, s_scratch);
+            uint8_t *crow = g_scr_pens + (size_t)y * SCR_CACHE_MAX_W;
+            int rx0 = -1, rx1 = -1;
+            for (int x = 0; x < w; x++) {
+                if (s_scratch[x] != crow[x]) {
+                    if (rx0 < 0) rx0 = x;
+                    rx1 = x;
+                }
+            }
+            if (rx0 < 0) continue;   /* bits moved outside displayed width */
+            memcpy(crow + rx0, s_scratch + rx0, (size_t)(rx1 - rx0 + 1));
+            if (rx0 < dx0) dx0 = rx0;
+            if (rx1 > dx1) dx1 = rx1;
+            if (y < dy0) dy0 = y;
+            if (y > dy1) dy1 = y;
+        }
+        g_ram = saved;
+        if (dx1 >= 0)
+            WM_InvalidateDesktopRect(slot->left + dx0, slot->top + dy0,
+                                     dx1 - dx0 + 1, dy1 - dy0 + 1);
         return 1;
     }
+    s_hash_bm = 0;
     return 0;
 }
 
@@ -8594,6 +8772,14 @@ static void intuition_MoveScreen(void)
     }
 }
 
+/* Damage the whole desktop so the next flush repaints the backdrop for the
+ * newly-front screen — ScreenToFront/ToBack/ScreenDepth/CycleScreen change
+ * which BitMap the backdrop renders from. */
+static void front_screen_repaint(void)
+{
+    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, (int)g_fb.height);
+}
+
 /* ScreenToFront(screen) — A0 */
 static void intuition_ScreenToFront(void)
 {
@@ -8604,6 +8790,7 @@ static void intuition_ScreenToFront(void)
             g_intu_screens[i].is_front = 0;
         slot->is_front = 1;
         update_desktop_title();
+        front_screen_repaint();
         screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
     }
 }
@@ -8640,6 +8827,7 @@ void UAOS_Intuition_CycleScreen(int direction)
     g_intu_screens[indices[next_idx]].is_front = 1;
 
     update_desktop_title();
+    front_screen_repaint();
     screen_notify_event(g_intu_screens[indices[next_idx]].guest_screen,
                         SNOTIFY_TYPE_DEPTH);
 }
@@ -8659,6 +8847,7 @@ static void intuition_ScreenToBack(void)
             }
         }
         update_desktop_title();
+        front_screen_repaint();
         screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
     }
 }
@@ -8688,6 +8877,7 @@ static void intuition_ScreenDepth(void)
         slot->is_front = 1;
     }
     update_desktop_title();
+    front_screen_repaint();
     screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
 }
 

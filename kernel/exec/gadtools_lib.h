@@ -150,6 +150,9 @@ void UAOS_GADTOOLS_Register(void);
 #define GTLV_MaxPen      (GT_TagBase + 84)
 #define GTTX_Clipped     (GT_TagBase + 85)
 #define GTNM_Clipped     (GT_TagBase + 85)
+
+/* UAOS extension: shift/ctrl multi-select listview (no real gadtools.h tag). */
+#define GTLV_MultiSelect (GT_TagBase + 86)
 #define GT_Reserved0     (GTST_EditHook)
 
 /* GTSL_LevelPlace values */

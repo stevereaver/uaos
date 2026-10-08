@@ -326,7 +326,8 @@ typedef struct {
 #define GACT_STRINGLONGEST 0x0018
 #define GACT_RELTOP        0x0020
 
-/* AmigaOS PropInfo structure offsets */
+/* AmigaOS PropInfo structure offsets (UAOS tail extends it with the
+ * GadTools slider Min/Max so GTSL_Level can round-trip through pot) */
 #define PROP_OFF_FLAGS       0
 #define PROP_OFF_HORIZPOT    2
 #define PROP_OFF_VERTPOT     4
@@ -336,7 +337,9 @@ typedef struct {
 #define PROP_OFF_HEIGHT      12
 #define PROP_OFF_HORIZSIG    14
 #define PROP_OFF_VERTSIG     16
-#define PROP_SIZE            18
+#define PROP_OFF_GMIN        18   /* UAOS: GadTools slider minimum (s32)   */
+#define PROP_OFF_GMAX        22   /* UAOS: GadTools slider maximum (s32)   */
+#define PROP_SIZE            26
 
 /* AmigaOS StringInfo structure offsets (minimal) */
 #define SI_OFF_BUFFER        0
@@ -357,12 +360,22 @@ typedef struct {
 #define LV_OFF_TOP          16
 #define LV_OFF_MULTI_SELECT 20
 #define LV_OFF_SELECTED_MASK 24
-#define LV_SIZE             28
+#define LV_OFF_READ_ONLY    28
+#define LV_SIZE             32
 
+/* UAOS cycle-gadget state (stored in SpecialInfo; keeps Gadget.UserData
+ * free for the application — real GadTools keeps this private too). */
+#define CY_OFF_LABELS        0    /* STRPTR* NULL-terminated label array  */
+#define CY_OFF_ACTIVE        4    /* currently displayed label index      */
+#define CY_OFF_COUNT         8    /* number of labels                     */
+#define CY_SIZE             12
+
+/* PropInfo.Flags — real AmigaOS bit values (guest-visible). */
 #define PROP_FLAGS_AUTOKNOB  0x0001
-#define PROP_FLAGS_FREEVERT  0x0002
-#define PROP_FLAGS_FREEHORIZ  0x0004
+#define PROP_FLAGS_FREEHORIZ 0x0002
+#define PROP_FLAGS_FREEVERT  0x0004
 #define PROP_FLAGS_PROPBORDERLESS 0x0008
+#define PROP_FLAGS_PROPNEWLOOK    0x0010
 #define PROP_FLAGS_KNOBHIT   0x0100
 #define PROP_FLAGS_DRAWRELX  0x0200
 #define PROP_FLAGS_DRAWRELY  0x0400
@@ -380,6 +393,7 @@ typedef struct {
 #define GTYP_STRGADGET      0x0004
 #define GTYP_CUSTOMGADGET   0x0005
 #define GTYP_LISTVIEW       0x0006   /* UAOS simple listview as custom gadget subtype */
+#define GTYP_CYCLE          0x0007   /* UAOS GadTools cycle gadget subtype */
 
 #define SYSGAD_CLOSE        1
 #define SYSGAD_DRAG         2

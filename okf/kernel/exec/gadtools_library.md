@@ -28,12 +28,12 @@ UAOS provides a native host implementation of `gadtools.library` that builds sta
 |------|----------------------------|-------|
 | `BUTTON_KIND` | `GTYP_BOOLGADGET` | Plain push-button; label rendered from `ng_GadgetText`. |
 | `CHECKBOX_KIND` | `GTYP_BOOLGADGET` | Toggle-select boolean gadget. |
-| `CYCLE_KIND` | `GTYP_BOOLGADGET` | Stores label array/active index in `UserData`. |
+| `CYCLE_KIND` | `GTYP_CYCLE` | Label array/active index/count in a private `SpecialInfo` block (`CY_*`); click advances the label (shift-click steps back), `GTCY_Active`/`GTCY_Labels` are settable/gettable. |
 | `MX_KIND` / `RADIO_KIND` | `GTYP_BOOLGADGET` | Mutual-exclude flag set via `MutualExclude`. |
-| `SLIDER_KIND` | `GTYP_PROPGADGET` | `GTSL_Min`/`Max`/`Level` mapped to horizontal pot value. |
+| `SLIDER_KIND` | `GTYP_PROPGADGET` | `GTSL_Min`/`Max`/`Level` mapped to the pot on the gadget's long axis — vertical geometry drives `VertPot` (OctaMED's tempo/volume sliders). Min/Max are kept in the `PropInfo` tail (`PROP_OFF_GMIN/GMAX`) so `GTSL_Level`/`GTSL_Min`/`GTSL_Max` round-trip through `GT_Set/GetGadgetAttrsA`. |
 | `STRING_KIND` | `GTYP_STRGADGET` | `StringInfo` with `GTST_String`/`GTST_MaxChars`. |
 | `INTEGER_KIND` | `GTYP_INTGADGET` | Same as string gadget but initialised from `GTIN_Number`. |
-| `LISTVIEW_KIND` | `GTYP_LISTVIEW` | UAOS simple listview extension (items/count/selected/top). |
+| `LISTVIEW_KIND` | `GTYP_LISTVIEW` | UAOS simple listview extension (items/count/selected/top + `SelectedMask`). `GTLV_ReadOnly` blocks selection changes; `GTLV_MultiSelect` (UAOS extension tag) enables shift/ctrl multi-select. |
 | `NUMBER_KIND` / `TEXT_KIND` | `GTYP_BOOLGADGET` | Non-interactive display gadget; activation cleared. |
 | `GENERIC_KIND` | bare `Gadget` | Honors the `NewGadget` fields only; the application fills in `GadgetType`, imagery, and rendering itself. Required by OctaMED's custom UI gadgets — returning NULL here aborts its startup with "Failed to create gadgets." |
 
@@ -96,8 +96,8 @@ These are used for gadget structures, `StringInfo`, `IntuiText` labels, and the 
 - `GT_RefreshWindow()` invalidates the window rectangle through the WM; the application's own redraw (bitplane writes) is picked up by the front-screen bitplane poll rather than by a gadget-level repaint.
 - `GT_FilterIMsg()` / `GT_PostFilterIMsg()` are pass-throughs; no keyboard/mouse filtering is applied.
 - `NUMBER_KIND` and `TEXT_KIND` are rendered as non-interactive boolean gadgets (a visual placeholder).
-- ListView supports single selection only; `GTLV_ReadOnly` and multi-select are not yet implemented.
-- Slider is horizontal only; vertical sliders and custom level formatting are not yet implemented.
+- ListView multi-select is a UAOS extension (`GTLV_MultiSelect`, `GT_TagBase + 86`); stock `gadtools.h` has no such tag.
+- `GTSL_LevelFormat`/`GTSL_DispFunc` custom level formatting is not implemented; the slider shows no level readout.
 
 ## Build verification
 
