@@ -4564,6 +4564,75 @@ void dos_FreeMem_glue(uint32_t addr, uint32_t size)
     mc_free(addr);
 }
 
+/* AllocAbs: carve exactly [addr, addr+size) out of the owning pool's free
+ * list (UAOS-239).  The payload must begin at `addr`, so the heap header
+ * lands at addr-HEAP_HDR — the free block containing the range must cover
+ * [addr-HEAP_HDR, addr+size).  Any leading/trailing slop is re-linked as
+ * free blocks.  Returns 0 on failure (range not wholly free, or the split
+ * edges can't hold a free node).
+ *
+ * Not tracked by memcheck: the exact-address contract can't honour the
+ * +8 guard-band layout.  A later FreeMem on an AllocAbs block still works —
+ * the mc_find miss path falls back to the pool free. */
+void dos_AllocAbs_glue(uint32_t addr, uint32_t size, uint32_t *out_addr)
+{
+    *out_addr = 0;
+    if (!size || addr < HEAP_HDR || addr >= GUEST_RAM_SIZE) return;
+
+    uint32_t list_slot = (addr >= HEAP_FAST_START) ? HEAP_LIST_SLOT_FAST
+                                                   : HEAP_LIST_SLOT_CHIP;
+    if (addr >= HEAP_FAST_START) heap_freelist_init_fast();
+    else                         heap_freelist_init();
+
+    uint32_t want_lo = addr - HEAP_HDR;                  /* header base   */
+    uint32_t want_hi = addr + ((size + 3u) & ~3u);       /* exclusive end */
+
+    uint32_t prev_slot = list_slot;   /* address of the link to current */
+    uint32_t cur_bptr  = heap_head_read(list_slot);
+
+    while (cur_bptr) {
+        uint32_t cur      = cur_bptr << 2;
+        uint32_t blk_size = guest_read_be32(cur + 0) & ~HEAP_MAGIC;
+        uint32_t next_bptr= guest_read_be32(cur + 4);
+        uint32_t blk_end  = cur + blk_size;
+
+        if (want_lo >= cur && want_hi <= blk_end) {
+            uint32_t lead = want_lo - cur;          /* leading free slop */
+            uint32_t tail = blk_end - want_hi;      /* trailing free slop */
+
+            /* A split edge must be zero or big enough for a free node. */
+            if ((lead && lead < HEAP_HDR) || (tail && tail < HEAP_HDR))
+                return;
+
+            if (tail) {
+                guest_write_be32(want_hi + 0, tail);
+                guest_write_be32(want_hi + 4, next_bptr);
+            }
+            if (lead) {
+                guest_write_be32(cur + 0, lead);
+                guest_write_be32(cur + 4, tail ? (want_hi >> 2) : next_bptr);
+                if (prev_slot == list_slot) heap_head_write(list_slot, cur_bptr);
+                else                        guest_write_be32(prev_slot, cur_bptr);
+            } else if (tail) {
+                if (prev_slot == list_slot) heap_head_write(list_slot, want_hi >> 2);
+                else                        guest_write_be32(prev_slot, want_hi >> 2);
+            } else {
+                /* exact fit — unlink the whole block */
+                if (prev_slot == list_slot) heap_head_write(list_slot, next_bptr);
+                else                        guest_write_be32(prev_slot, next_bptr);
+            }
+
+            guest_write_be32(want_lo + 0, (want_hi - want_lo) | HEAP_MAGIC);
+            guest_write_be32(want_lo + 4, 0);
+            *out_addr = addr;
+            return;
+        }
+
+        prev_slot = cur + 4;
+        cur_bptr  = next_bptr;
+    }
+}
+
 /* AvailMem: sum free blocks in the pool(s) selected by 'attrs'.
  * MEMF_CHIP only → chip pool; MEMF_FAST only → fast pool; anything else
  * (plain PUBLIC / EXECUTABLE etc.) counts both pools. */

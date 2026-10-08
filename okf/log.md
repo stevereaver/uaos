@@ -1,5 +1,51 @@
 # OKF Change Log
 
+## 2026-10-08 — exec.library coverage to the OS-2.x application set (UAOS-239)
+
+* **Added** (`emulation/uaos_m68k_glue.c`): real implementations for the
+  remaining OS-2.x exec vectors — `Supervisor`/`SetSR`/`GetCC`;
+  `AllocAbs`/`Allocate`/`Deallocate`/`AddMemList`;
+  `AddTask`/`RemTask`/`FindTask` (TaskReady + TaskWait);
+  `AddLibrary`/`RemLibrary`/`AddDevice`/`RemDevice`/`AddResource`/`RemResource`
+  (priority-enqueue on the ExecBase lists); `SumLibrary`/`SumKickData`/`Debug`/
+  `Alert` (logged stubs); `RawIOInit`/`RawMayGetChar`/`RawPutChar`;
+  `FindResident`/`InitResident`; `MakeFunctions`/`MakeLibrary`;
+  `CreatePool`/`AllocPooled`/`FreePooled`/`DeletePool`;
+  `CachePreDMA`/`CachePostDMA`; `AddMemHandler`/`RemMemHandler`; `Child*`
+  stubs; semaphore-list calls (`ObtainSemaphoreList`, `ReleaseSemaphoreList`,
+  `FindSemaphore`, `AddSemaphore`, `RemSemaphore`,
+  `AttemptSemaphoreShared`).  `FindName`/`FindTask`/`FindSemaphore` now share
+  `glue_find_name`, which stops the chain walk when a node's links are
+  corrupt instead of following them into data.  All new vectors are wired
+  into both dispatchers and the `stub_addr` reverse map, and named in the
+  strace table so acceptance stats report `exec.X` instead of numbers.
+* **Added** (`kernel/exec/dos_lib.c`): `dos_AllocAbs_glue()` — exact-address
+  allocation against the guest heap.  The `HEAP_HDR` (8 B) precedes the
+  payload, so `AllocAbs` must cover `addr-8 .. addr+size` and may split an
+  enclosing free block on both sides; busy/overlapping ranges fail like real
+  Exec.
+* **Fixed** (`emulation/uaos_m68k_glue.c`): loadable-library address
+  collision.  `g_next_loadable_base` started at `0xA000`, so the first
+  registered `Workbench:LIBS/*.library` blob (powerpacker.library, 88 B)
+  was copied on top of `GADTOOLS_BASE`'s Library node on every per-task
+  `install_library_tables()` — `LibList` then walked into the blob's
+  `UAOS` file-header magic.  The band now starts at `0xB000` and skips the
+  reserved `0xE000`/`0xF000` pages; blobs still end before the `0x1B000`
+  process environment.
+* **Added** (`system/Demos/src/ExecTest.s`, `tests/qemu_exec_coverage_test.py`):
+  guest-level regression — calls each new vector from real M68k code and
+  prints `EXECTEST PASS`/`FAIL <stage>` via `RawPutChar` (serial-visible);
+  the harness reassembles the per-character `[trace] lib=1 fn=98` stream.
+  Verified: `EXECTEST PASS`, zero `[exec] unimpl` hits; OctaMED acceptance
+  still shows zero unimplemented exec LVOs; `qemu_m68k_lifecycle_test.py`
+  24/24 including the 150 s OctaMED soak.
+* **Observed** (pre-existing, unrelated): `qemu_octamed_iff_test.py`'s
+  "ASL: file requester opened" check fails identically with the UAOS-239
+  changes stashed — OctaMED never receives the RAWKEY IDCMP for the
+  monitor-injected `shift-i` (window activation didn't take; host-side WM
+  routing, not guest exec).  The `WILD-PC pc=0` flake is the known
+  UAOS-234 NULL-call.
+
 ## 2026-10-08 — IDCMP input completeness for the tracker UI (UAOS-245)
 
 * **Changed** (`kernel/irq/ps2kbd.{c,h}`): rawkey ring widened to `uint32_t`

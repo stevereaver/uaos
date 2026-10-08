@@ -325,7 +325,8 @@ static void u32_dec(uint32_t v, char *buf, int max) {
 /* Program hunks load above the reserved system zone: exec/dos jump tables
  * live at 0xC1C-0x2000, LVO stub tables for graphics/intuition/gadtools at
  * 0x7BDC-0xA000, the lib base structs at 0x8000-0xA100, and loadable
- * .library blobs at 0xA000-0x1A000 (16 x 4K).  Loading a program at the
+ * .library blobs at 0xB000-0x1A000 (skipping the 0xE000/0xF000 bases).
+ * Loading a program at the
  * old 0x1000 overwrote the stubs — OctaMED's OpenScreenTagList jumped
  * into packed hunk data and ran wild. */
 #define PROG_BASE       0x020000  /* program hunks load here */
@@ -640,6 +641,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest);
+extern void dos_AllocAbs_glue(uint32_t addr, uint32_t size, uint32_t *out_addr);
 
 /* Guest memory accessors (big-endian via Musashi callbacks) */
 #define glue_r8(a)   ((uint32_t)m68k_read_memory_8(a))
@@ -730,6 +732,45 @@ extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest
 #define EXEC_CAUSE             78
 #define EXEC_RAW_DO_FMT        79
 #define EXEC_STACK_SWAP        80
+#define EXEC_SUPERVISOR        81
+#define EXEC_SET_SR            82
+#define EXEC_ALLOC_ABS         83
+#define EXEC_ALLOCATE          84
+#define EXEC_DEALLOCATE        85
+#define EXEC_ADD_MEM_LIST      86
+#define EXEC_ADD_TASK          87
+#define EXEC_REM_TASK          88
+#define EXEC_ADD_LIBRARY       89
+#define EXEC_REM_LIBRARY       90
+#define EXEC_SUM_LIBRARY       91
+#define EXEC_ADD_DEVICE        92
+#define EXEC_REM_DEVICE        93
+#define EXEC_ADD_RESOURCE      94
+#define EXEC_REM_RESOURCE      95
+#define EXEC_RAW_IO_INIT       96
+#define EXEC_RAW_MAY_GET_CHAR  97
+#define EXEC_RAW_PUT_CHAR      98
+#define EXEC_ALERT             99
+#define EXEC_DEBUG_FN         100
+#define EXEC_FIND_RESIDENT    101
+#define EXEC_INIT_RESIDENT    102
+#define EXEC_MAKE_LIBRARY     103
+#define EXEC_MAKE_FUNCTIONS   104
+#define EXEC_SUM_KICK_DATA    105
+#define EXEC_ATTEMPT_SEM_SHARED 106
+#define EXEC_COLD_REBOOT      107
+#define EXEC_CREATE_POOL      108
+#define EXEC_DELETE_POOL      109
+#define EXEC_ALLOC_POOLED     110
+#define EXEC_FREE_POOLED      111
+#define EXEC_CACHE_PRE_DMA    112
+#define EXEC_CACHE_POST_DMA   113
+#define EXEC_ADD_MEM_HANDLER  114
+#define EXEC_REM_MEM_HANDLER  115
+#define EXEC_CHILD_FREE       116
+#define EXEC_CHILD_ORPHAN     117
+#define EXEC_CHILD_STATUS     118
+#define EXEC_CHILD_WAIT       119
 #define EXEC_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* bsdsocket.library function indices */
@@ -1341,17 +1382,28 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_DOS_EX_ALL_END    (-990)
 
 /* exec.library LVO offsets — canonical exec_lib.i (V37+). */
+#define LVO_SUPERVISOR        (-30)
+#define LVO_MAKE_LIBRARY      (-84)
+#define LVO_MAKE_FUNCTIONS    (-90)
+#define LVO_FIND_RESIDENT     (-96)
+#define LVO_INIT_RESIDENT    (-102)
+#define LVO_ALERT            (-108)
+#define LVO_DEBUG            (-114)
 #define LVO_INIT_STRUCT       (-78)
 #define LVO_DISABLE           (-120)
 #define LVO_ENABLE            (-126)
 #define LVO_FORBID            (-132)
 #define LVO_PERMIT            (-138)
+#define LVO_SET_SR            (-144)
 #define LVO_SUPER_STATE       (-150)
 #define LVO_USER_STATE        (-156)
 #define LVO_SET_INT_VECTOR    (-162)
 #define LVO_ADD_INT_SERVER    (-168)
 #define LVO_REM_INT_SERVER    (-174)
 #define LVO_CAUSE             (-180)
+#define LVO_ALLOCATE          (-186)
+#define LVO_DEALLOCATE        (-192)
+#define LVO_ALLOC_ABS         (-204)
 #define LVO_AVAIL_MEM         (-216)
 #define LVO_ALLOC_ENTRY       (-222)
 #define LVO_FREE_ENTRY        (-228)
@@ -1385,6 +1437,7 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_REM_LIBRARY       (-402)
 #define LVO_OLD_OPEN_LIBRARY  (-408)
 #define LVO_SET_FUNCTION      (-420)
+#define LVO_SUM_LIBRARY       (-426)
 #define LVO_ADD_DEVICE        (-432)
 #define LVO_REM_DEVICE        (-438)
 #define LVO_OPEN_DEVICE       (-444)
@@ -1397,6 +1450,9 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_ADD_RESOURCE      (-486)
 #define LVO_REM_RESOURCE      (-492)
 #define LVO_OPEN_RESOURCE     (-498)
+#define LVO_RAW_IO_INIT       (-504)
+#define LVO_RAW_MAY_GET_CHAR  (-510)
+#define LVO_RAW_PUT_CHAR      (-516)
 #define LVO_RAW_DO_FMT        (-522)
 #define LVO_GETCC             (-528)
 #define LVO_TYPE_OF_MEM       (-534)
@@ -1432,6 +1488,14 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_ATTEMPT_SEM_SHARED (-720)
 #define LVO_COLD_REBOOT       (-726)
 #define LVO_STACK_SWAP        (-732)  /* V37 */
+#define LVO_CHILD_FREE        (-738)  /* V40 */
+#define LVO_CHILD_ORPHAN      (-744)
+#define LVO_CHILD_STATUS      (-750)
+#define LVO_CHILD_WAIT        (-756)
+#define LVO_CACHE_PRE_DMA     (-762)
+#define LVO_CACHE_POST_DMA    (-768)
+#define LVO_ADD_MEM_HANDLER   (-774)
+#define LVO_REM_MEM_HANDLER   (-780)
 
 /* intuition.library LVO offsets — official AmigaOS 3.1 (V39) and V40 values.
 
@@ -1713,6 +1777,51 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case EXEC_OBTAIN_SEM_SHARED: return (uint32_t)((int)EXEC_BASE + LVO_OBTAIN_SEM_SHARED);
             case EXEC_ALLOC_VEC:     return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_VEC);
             case EXEC_FREE_VEC:      return (uint32_t)((int)EXEC_BASE + LVO_FREE_VEC);
+            case EXEC_SET_INT_VECTOR: return (uint32_t)((int)EXEC_BASE + LVO_SET_INT_VECTOR);
+            case EXEC_ADD_INT_SERVER: return (uint32_t)((int)EXEC_BASE + LVO_ADD_INT_SERVER);
+            case EXEC_REM_INT_SERVER: return (uint32_t)((int)EXEC_BASE + LVO_REM_INT_SERVER);
+            case EXEC_CAUSE:         return (uint32_t)((int)EXEC_BASE + LVO_CAUSE);
+            case EXEC_RAW_DO_FMT:    return (uint32_t)((int)EXEC_BASE + LVO_RAW_DO_FMT);
+            case EXEC_STACK_SWAP:    return (uint32_t)((int)EXEC_BASE + LVO_STACK_SWAP);
+            case EXEC_SUPERVISOR:    return (uint32_t)((int)EXEC_BASE + LVO_SUPERVISOR);
+            case EXEC_SET_SR:        return (uint32_t)((int)EXEC_BASE + LVO_SET_SR);
+            case EXEC_ALLOC_ABS:     return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_ABS);
+            case EXEC_ALLOCATE:      return (uint32_t)((int)EXEC_BASE + LVO_ALLOCATE);
+            case EXEC_DEALLOCATE:    return (uint32_t)((int)EXEC_BASE + LVO_DEALLOCATE);
+            case EXEC_ADD_MEM_LIST:  return (uint32_t)((int)EXEC_BASE + LVO_ADD_MEM_LIST);
+            case EXEC_ADD_TASK:      return (uint32_t)((int)EXEC_BASE + LVO_ADD_TASK);
+            case EXEC_REM_TASK:      return (uint32_t)((int)EXEC_BASE + LVO_REM_TASK);
+            case EXEC_ADD_LIBRARY:   return (uint32_t)((int)EXEC_BASE + LVO_ADD_LIBRARY);
+            case EXEC_REM_LIBRARY:   return (uint32_t)((int)EXEC_BASE + LVO_REM_LIBRARY);
+            case EXEC_SUM_LIBRARY:   return (uint32_t)((int)EXEC_BASE + LVO_SUM_LIBRARY);
+            case EXEC_ADD_DEVICE:    return (uint32_t)((int)EXEC_BASE + LVO_ADD_DEVICE);
+            case EXEC_REM_DEVICE:    return (uint32_t)((int)EXEC_BASE + LVO_REM_DEVICE);
+            case EXEC_ADD_RESOURCE:  return (uint32_t)((int)EXEC_BASE + LVO_ADD_RESOURCE);
+            case EXEC_REM_RESOURCE:  return (uint32_t)((int)EXEC_BASE + LVO_REM_RESOURCE);
+            case EXEC_RAW_IO_INIT:   return (uint32_t)((int)EXEC_BASE + LVO_RAW_IO_INIT);
+            case EXEC_RAW_MAY_GET_CHAR: return (uint32_t)((int)EXEC_BASE + LVO_RAW_MAY_GET_CHAR);
+            case EXEC_RAW_PUT_CHAR:  return (uint32_t)((int)EXEC_BASE + LVO_RAW_PUT_CHAR);
+            case EXEC_ALERT:         return (uint32_t)((int)EXEC_BASE + LVO_ALERT);
+            case EXEC_DEBUG_FN:      return (uint32_t)((int)EXEC_BASE + LVO_DEBUG);
+            case EXEC_FIND_RESIDENT: return (uint32_t)((int)EXEC_BASE + LVO_FIND_RESIDENT);
+            case EXEC_INIT_RESIDENT: return (uint32_t)((int)EXEC_BASE + LVO_INIT_RESIDENT);
+            case EXEC_MAKE_LIBRARY:  return (uint32_t)((int)EXEC_BASE + LVO_MAKE_LIBRARY);
+            case EXEC_MAKE_FUNCTIONS: return (uint32_t)((int)EXEC_BASE + LVO_MAKE_FUNCTIONS);
+            case EXEC_SUM_KICK_DATA: return (uint32_t)((int)EXEC_BASE + LVO_SUM_KICK_DATA);
+            case EXEC_ATTEMPT_SEM_SHARED: return (uint32_t)((int)EXEC_BASE + LVO_ATTEMPT_SEM_SHARED);
+            case EXEC_COLD_REBOOT:   return (uint32_t)((int)EXEC_BASE + LVO_COLD_REBOOT);
+            case EXEC_CREATE_POOL:   return (uint32_t)((int)EXEC_BASE + LVO_CREATE_POOL);
+            case EXEC_DELETE_POOL:   return (uint32_t)((int)EXEC_BASE + LVO_DELETE_POOL);
+            case EXEC_ALLOC_POOLED:  return (uint32_t)((int)EXEC_BASE + LVO_ALLOC_POOLED);
+            case EXEC_FREE_POOLED:   return (uint32_t)((int)EXEC_BASE + LVO_FREE_POOLED);
+            case EXEC_CACHE_PRE_DMA: return (uint32_t)((int)EXEC_BASE + LVO_CACHE_PRE_DMA);
+            case EXEC_CACHE_POST_DMA: return (uint32_t)((int)EXEC_BASE + LVO_CACHE_POST_DMA);
+            case EXEC_ADD_MEM_HANDLER: return (uint32_t)((int)EXEC_BASE + LVO_ADD_MEM_HANDLER);
+            case EXEC_REM_MEM_HANDLER: return (uint32_t)((int)EXEC_BASE + LVO_REM_MEM_HANDLER);
+            case EXEC_CHILD_FREE:    return (uint32_t)((int)EXEC_BASE + LVO_CHILD_FREE);
+            case EXEC_CHILD_ORPHAN:  return (uint32_t)((int)EXEC_BASE + LVO_CHILD_ORPHAN);
+            case EXEC_CHILD_STATUS:  return (uint32_t)((int)EXEC_BASE + LVO_CHILD_STATUS);
+            case EXEC_CHILD_WAIT:    return (uint32_t)((int)EXEC_BASE + LVO_CHILD_WAIT);
         }
     } else if (lib_id == LIB_DOS) {
         switch (func_idx) {
@@ -2571,6 +2680,48 @@ void install_library_tables(void)
     install_lvo(EXEC_BASE, LVO_FREE_VEC,      LIB_EXEC, EXEC_FREE_VEC);
     install_lvo(EXEC_BASE, LVO_STACK_SWAP,    LIB_EXEC, EXEC_STACK_SWAP);
 
+    /* UAOS-239 — OS-2.x exec coverage gap-fill: every remaining canonical
+     * LVO gets a named handler instead of the catch-all. */
+    install_lvo(EXEC_BASE, LVO_SUPERVISOR,    LIB_EXEC, EXEC_SUPERVISOR);
+    install_lvo(EXEC_BASE, LVO_SET_SR,        LIB_EXEC, EXEC_SET_SR);
+    install_lvo(EXEC_BASE, LVO_ALLOC_ABS,     LIB_EXEC, EXEC_ALLOC_ABS);
+    install_lvo(EXEC_BASE, LVO_ALLOCATE,      LIB_EXEC, EXEC_ALLOCATE);
+    install_lvo(EXEC_BASE, LVO_DEALLOCATE,    LIB_EXEC, EXEC_DEALLOCATE);
+    install_lvo(EXEC_BASE, LVO_ADD_MEM_LIST,  LIB_EXEC, EXEC_ADD_MEM_LIST);
+    install_lvo(EXEC_BASE, LVO_ADD_TASK,      LIB_EXEC, EXEC_ADD_TASK);
+    install_lvo(EXEC_BASE, LVO_REM_TASK,      LIB_EXEC, EXEC_REM_TASK);
+    install_lvo(EXEC_BASE, LVO_ADD_LIBRARY,   LIB_EXEC, EXEC_ADD_LIBRARY);
+    install_lvo(EXEC_BASE, LVO_REM_LIBRARY,   LIB_EXEC, EXEC_REM_LIBRARY);
+    install_lvo(EXEC_BASE, LVO_SUM_LIBRARY,   LIB_EXEC, EXEC_SUM_LIBRARY);
+    install_lvo(EXEC_BASE, LVO_ADD_DEVICE,    LIB_EXEC, EXEC_ADD_DEVICE);
+    install_lvo(EXEC_BASE, LVO_REM_DEVICE,    LIB_EXEC, EXEC_REM_DEVICE);
+    install_lvo(EXEC_BASE, LVO_ADD_RESOURCE,  LIB_EXEC, EXEC_ADD_RESOURCE);
+    install_lvo(EXEC_BASE, LVO_REM_RESOURCE,  LIB_EXEC, EXEC_REM_RESOURCE);
+    install_lvo(EXEC_BASE, LVO_RAW_IO_INIT,   LIB_EXEC, EXEC_RAW_IO_INIT);
+    install_lvo(EXEC_BASE, LVO_RAW_MAY_GET_CHAR, LIB_EXEC, EXEC_RAW_MAY_GET_CHAR);
+    install_lvo(EXEC_BASE, LVO_RAW_PUT_CHAR,  LIB_EXEC, EXEC_RAW_PUT_CHAR);
+    install_lvo(EXEC_BASE, LVO_ALERT,         LIB_EXEC, EXEC_ALERT);
+    install_lvo(EXEC_BASE, LVO_DEBUG,         LIB_EXEC, EXEC_DEBUG_FN);
+    install_lvo(EXEC_BASE, LVO_FIND_RESIDENT, LIB_EXEC, EXEC_FIND_RESIDENT);
+    install_lvo(EXEC_BASE, LVO_INIT_RESIDENT, LIB_EXEC, EXEC_INIT_RESIDENT);
+    install_lvo(EXEC_BASE, LVO_MAKE_LIBRARY,  LIB_EXEC, EXEC_MAKE_LIBRARY);
+    install_lvo(EXEC_BASE, LVO_MAKE_FUNCTIONS, LIB_EXEC, EXEC_MAKE_FUNCTIONS);
+    install_lvo(EXEC_BASE, LVO_SUM_KICK_DATA, LIB_EXEC, EXEC_SUM_KICK_DATA);
+    install_lvo(EXEC_BASE, LVO_ATTEMPT_SEM_SHARED, LIB_EXEC, EXEC_ATTEMPT_SEM_SHARED);
+    install_lvo(EXEC_BASE, LVO_COLD_REBOOT,   LIB_EXEC, EXEC_COLD_REBOOT);
+    install_lvo(EXEC_BASE, LVO_CREATE_POOL,   LIB_EXEC, EXEC_CREATE_POOL);
+    install_lvo(EXEC_BASE, LVO_DELETE_POOL,   LIB_EXEC, EXEC_DELETE_POOL);
+    install_lvo(EXEC_BASE, LVO_ALLOC_POOLED,  LIB_EXEC, EXEC_ALLOC_POOLED);
+    install_lvo(EXEC_BASE, LVO_FREE_POOLED,   LIB_EXEC, EXEC_FREE_POOLED);
+    install_lvo(EXEC_BASE, LVO_CACHE_PRE_DMA, LIB_EXEC, EXEC_CACHE_PRE_DMA);
+    install_lvo(EXEC_BASE, LVO_CACHE_POST_DMA, LIB_EXEC, EXEC_CACHE_POST_DMA);
+    install_lvo(EXEC_BASE, LVO_ADD_MEM_HANDLER, LIB_EXEC, EXEC_ADD_MEM_HANDLER);
+    install_lvo(EXEC_BASE, LVO_REM_MEM_HANDLER, LIB_EXEC, EXEC_REM_MEM_HANDLER);
+    install_lvo(EXEC_BASE, LVO_CHILD_FREE,    LIB_EXEC, EXEC_CHILD_FREE);
+    install_lvo(EXEC_BASE, LVO_CHILD_ORPHAN,  LIB_EXEC, EXEC_CHILD_ORPHAN);
+    install_lvo(EXEC_BASE, LVO_CHILD_STATUS,  LIB_EXEC, EXEC_CHILD_STATUS);
+    install_lvo(EXEC_BASE, LVO_CHILD_WAIT,    LIB_EXEC, EXEC_CHILD_WAIT);
+
     /* dos.library at DOS_BASE */
     install_lvo(DOS_BASE, LVO_DOS_OUTPUT,   LIB_DOS, DOS_OUTPUT);
     install_lvo(DOS_BASE, LVO_DOS_INPUT,    LIB_DOS, DOS_INPUT);
@@ -2950,7 +3101,11 @@ typedef struct {
 
 static GlueLoadableLib g_glue_libs[MAX_GLUE_LOADABLE_LIBS];
 static int             g_glue_lib_count = 0;
-static uint32_t        g_next_loadable_base = 0xA000;
+/* First blob slot is 0xB000 — 0xA000 is GADTOOLS_BASE's struct page and
+ * dropping a file image there clobbers its LibList node (the chain then
+ * walks into the blob's "UAOS" header).  0xE000 audio.device and 0xF000
+ * fakelib are likewise reserved and skipped below. */
+static uint32_t        g_next_loadable_base = 0xB000;
 
 void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
                                   uint32_t size, uint32_t *out_base)
@@ -2974,7 +3129,8 @@ void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
     e->binary = data;
     e->bin_size = size;
     e->base_addr = g_next_loadable_base;
-    g_next_loadable_base += 0x1000;
+    do { g_next_loadable_base += 0x1000; }
+    while (g_next_loadable_base == 0xE000 || g_next_loadable_base == 0xF000);
     *out_base = e->base_addr;
 }
 
@@ -2984,7 +3140,7 @@ static void install_loadable_libs(void)
     for (int i = 0; i < g_glue_lib_count; i++) {
         GlueLoadableLib *e = &g_glue_libs[i];
         if (e->loaded) continue;
-        /* Blobs live at 0xA000+; they must end before the dedicated
+        /* Blobs live at 0xB000+; they must end before the dedicated
          * process-environment region at 0x1B000 (UAOS-237). */
         if (e->base_addr + e->bin_size > 0x0001B000u) continue;
 
@@ -3592,10 +3748,17 @@ static void exec_FreeMem(void)
     dos_FreeMem_glue(addr, size);
 }
 
+static uint32_t glue_find_name(uint32_t list, uint32_t name);
+
 static void exec_FindTask(void)
 {
-    /* Return pointer to the guest Process struct allocated post-load */
-    m68k_set_reg(M68K_REG_D0, g_guest_proc_addr);
+    /* FindTask(name=a1): NULL → our task; otherwise search the system
+     * TaskReady then TaskWait lists (AddTask links guest tasks there). */
+    uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!name) { m68k_set_reg(M68K_REG_D0, g_guest_proc_addr); return; }
+    uint32_t hit = glue_find_name(EXEC_BASE + 0x196, name);   /* TaskReady */
+    if (!hit) hit = glue_find_name(EXEC_BASE + 0x1A4, name);  /* TaskWait  */
+    m68k_set_reg(M68K_REG_D0, hit);
 }
 
 /* -------------------------------------------------------------------------
@@ -4277,25 +4440,36 @@ static void exec_Enqueue(void)
     glue_w32(cur + LN_PRED, node);
 }
 
+/* FindName-style walk of a guest List: returns the first node whose
+ * ln_Name C string matches `name` (case-sensitive, like the ROM), or 0.
+ * Shared by FindName/FindSemaphore/FindTask-by-name. */
+static uint32_t glue_find_name(uint32_t list, uint32_t name)
+{
+    if (!name || name >= GUEST_RAM_SIZE) return 0;
+    uint32_t cur = glue_r32(list + LH_HEAD);
+    int guard = 0;
+    while (cur && glue_r32(cur + LN_SUCC) && guard++ < 1024) {
+        uint32_t nn = glue_r32(cur + LN_NAME);
+        if (nn && nn < GUEST_RAM_SIZE) {
+            int match = 1;
+            for (int i = 0; i < 128; i++) {
+                uint8_t a = g_ram[name + i], b = g_ram[nn + i];
+                if (a != b) { match = 0; break; }
+                if (!a) break;
+            }
+            if (match) return cur;
+        }
+        cur = glue_r32(cur + LN_SUCC);
+    }
+    return 0;
+}
+
 static void exec_FindName(void)
 {
     /* FindName(list=a0, name=a1) → D0=node or 0 */
-    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
-    uint32_t cur  = glue_r32(list + LH_HEAD);
-    while (cur && glue_r32(cur + LN_SUCC)) {
-        uint32_t nn = glue_r32(cur + LN_NAME);
-        int match = 1;
-        if (nn && nn < GUEST_RAM_SIZE && name < GUEST_RAM_SIZE) {
-            for (int i = 0; i < 128; i++) {
-                uint8_t a = g_ram[name + i], b = g_ram[nn + i];
-                if (a != b || !a) { if (a != b) match = 0; break; }
-            }
-        } else match = 0;
-        if (match) { m68k_set_reg(M68K_REG_D0, cur); return; }
-        cur = glue_r32(cur + LN_SUCC);
-    }
-    m68k_set_reg(M68K_REG_D0, 0);
+    m68k_set_reg(M68K_REG_D0,
+        glue_find_name(m68k_get_reg(NULL, M68K_REG_A0),
+                       m68k_get_reg(NULL, M68K_REG_A1)));
 }
 
 /* ---- ports ------------------------------------------------------------- */
@@ -4869,11 +5043,57 @@ static void exec_AttemptSem(void)
 
 static void exec_Procure(void)   { m68k_set_reg(M68K_REG_D0, 1); }
 static void exec_Vacate(void)    { }
-static void exec_ObtainSemList(void)  { }
-static void exec_ReleaseSemList(void) { }
-static void exec_FindSemaphore(void)  { m68k_set_reg(M68K_REG_D0, 0); }
-static void exec_AddSemaphore(void)   { }
-static void exec_RemSemaphore(void)   { }
+
+#define SEMLIST_ADDR (EXEC_BASE + 0x214)   /* SysBase SemaphoreList */
+
+static void exec_ObtainSemList(void)
+{
+    /* ObtainSemaphoreList(list=a0) — MinList of SignalSemaphores; obtain
+     * every node in order (same non-blocking semantics as ObtainSem). */
+    uint32_t cur = glue_r32(m68k_get_reg(NULL, M68K_REG_A0));
+    int guard = 0;
+    while (cur && glue_r32(cur + LN_SUCC) && guard++ < 256) {
+        glue_w32(cur + SS_OWNER, g_guest_proc_addr);
+        glue_w16(cur + SS_NESTCOUNT, glue_r16(cur + SS_NESTCOUNT) + 1);
+        cur = glue_r32(cur + LN_SUCC);
+    }
+}
+
+static void exec_ReleaseSemList(void)
+{
+    uint32_t cur = glue_r32(m68k_get_reg(NULL, M68K_REG_A0));
+    int guard = 0;
+    while (cur && glue_r32(cur + LN_SUCC) && guard++ < 256) {
+        uint32_t n = glue_r16(cur + SS_NESTCOUNT);
+        if (n) n--;
+        glue_w16(cur + SS_NESTCOUNT, n);
+        if (!n) glue_w32(cur + SS_OWNER, 0);
+        cur = glue_r32(cur + LN_SUCC);
+    }
+}
+
+static void exec_FindSemaphore(void)
+{
+    /* FindSemaphore(name=a1) → D0 = SignalSemaphore* or 0 */
+    uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
+    m68k_set_reg(M68K_REG_D0, glue_find_name(SEMLIST_ADDR, name));
+}
+
+static void exec_AddSemaphore(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A1);
+    if (sem) glue_list_add_tail(SEMLIST_ADDR, sem);
+}
+
+static void exec_RemSemaphore(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!sem) return;
+    uint32_t succ = glue_r32(sem + LN_SUCC);
+    uint32_t pred = glue_r32(sem + LN_PRED);
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+}
 
 /* ---- misc -------------------------------------------------------------- */
 
@@ -4998,6 +5218,418 @@ static void exec_SetFunction(void)
     }
 }
 
+/* -------------------------------------------------------------------------
+ * UAOS-239 — OS-2.x exec coverage gap-fill.
+ *
+ * The bring-up harness shows OctaMED hitting zero unimplemented exec LVOs,
+ * so this block completes the canonical V37/V40 table for the rest of the
+ * OS-2.x application set: real implementations where the semantics are
+ * self-contained (list/memory/semaphore ops, SetSR, MakeFunctions, pools),
+ * safe no-ops where the function only matters on real hardware (cache ops,
+ * SumLibrary, SumKickData, Debug), and list-backed bookkeeping for the
+ * SysBase-registered object types (tasks, libraries, devices, resources,
+ * memhandlers).  Exec-internal scheduler/ROM vectors (ExitIntr, Schedule,
+ * Reschedule, Switch, Dispatch, Exception, InitCode) remain on the
+ * catch-all stub — applications never call them.
+ * ------------------------------------------------------------------------- */
+
+static void exec_Supervisor(void)
+{
+    /* Supervisor(userFunc=a5): run a5 in "supervisor mode".  The guest is
+     * always supervisor anyway, so just jump into the function — the
+     * caller's return address is still on the stack, so the function's
+     * RTS returns straight to the jsr site. */
+    uint32_t fn = m68k_get_reg(NULL, M68K_REG_A5);
+    if (fn && fn < GUEST_RAM_SIZE)
+        m68k_set_reg(M68K_REG_PC, fn);
+}
+
+static void exec_SetSR(void)
+{
+    /* SetSR(newSR=d0, mask=d1) → D0 = old SR */
+    uint32_t old = m68k_get_reg(NULL, M68K_REG_SR);
+    uint32_t m   = m68k_get_reg(NULL, M68K_REG_D1);
+    m68k_set_reg(M68K_REG_SR,
+                 (old & ~m) | (m68k_get_reg(NULL, M68K_REG_D0) & m));
+    m68k_set_reg(M68K_REG_D0, old);
+}
+
+static void exec_AllocAbs(void)
+{
+    /* AllocAbs(byteSize=d0, location=a1) → D0 = location or 0 */
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t loc  = m68k_get_reg(NULL, M68K_REG_A1);
+    dos_AllocAbs_glue(loc, size, &loc);
+    m68k_set_reg(M68K_REG_D0, loc);
+}
+
+/* struct MemHeader / MemChunk (exec/memory.h) for Allocate/Deallocate/
+ * AddMemList — the guest points these at its own private pools. */
+#define MH_ATTR     14
+#define MH_FIRST    16
+#define MH_LOWER    20
+#define MH_UPPER    24
+#define MH_FREE     28
+#define MH_SIZE     32
+#define MC_NEXT      0
+#define MC_BYTES     4
+#define NT_MEMORY_G 10
+
+static void exec_Allocate(void)
+{
+    /* Allocate(memHeader=a0, byteSize=d0) → D0 = block or 0.
+     * First-fit over the MemChunk list; carve from the chunk's top. */
+    uint32_t mh    = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size  = (m68k_get_reg(NULL, M68K_REG_D0) + 7u) & ~7u;
+    uint32_t prev  = mh + MH_FIRST;      /* address of the link to cur */
+    uint32_t cur   = glue_r32(mh + MH_FIRST);
+    int guard = 0;
+    while (cur && cur + 8 <= GUEST_RAM_SIZE && guard++ < 4096) {
+        uint32_t bytes = glue_r32(cur + MC_BYTES);
+        if (bytes >= size) {
+            uint32_t ret;
+            if (bytes == size) {
+                glue_w32(prev, glue_r32(cur + MC_NEXT));
+                ret = cur;
+            } else {
+                glue_w32(cur + MC_BYTES, bytes - size);
+                ret = cur + bytes - size;
+            }
+            glue_w32(mh + MH_FREE, glue_r32(mh + MH_FREE) - size);
+            m68k_set_reg(M68K_REG_D0, ret);
+            return;
+        }
+        prev = cur;
+        cur  = glue_r32(cur + MC_NEXT);
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+static void exec_Deallocate(void)
+{
+    /* Deallocate(memHeader=a0, memory=a1, size=d0): insert the block back
+     * into the address-sorted chunk list, coalescing neighbours. */
+    uint32_t mh  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t mem = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t sz  = (m68k_get_reg(NULL, M68K_REG_D0) + 7u) & ~7u;
+    if (!mh || !mem || sz < 8) return;
+
+    uint32_t prev = mh + MH_FIRST;
+    uint32_t cur  = glue_r32(mh + MH_FIRST);
+    int guard = 0;
+    while (cur && cur < mem && guard++ < 4096) { prev = cur; cur = glue_r32(cur + MC_NEXT); }
+
+    if (cur && mem + sz == cur) {
+        /* forward merge: block absorbs the following chunk */
+        glue_w32(mem + MC_NEXT,  glue_r32(cur + MC_NEXT));
+        glue_w32(mem + MC_BYTES, sz + glue_r32(cur + MC_BYTES));
+    } else {
+        glue_w32(mem + MC_NEXT,  cur);
+        glue_w32(mem + MC_BYTES, sz);
+    }
+    glue_w32(prev, mem);
+
+    /* backward merge: previous chunk absorbs the block if contiguous */
+    if (prev != mh + MH_FIRST) {
+        uint32_t pbytes = glue_r32(prev + MC_BYTES);
+        if (prev + pbytes == mem) {
+            glue_w32(prev + MC_BYTES, pbytes + glue_r32(mem + MC_BYTES));
+            glue_w32(prev + MC_NEXT,  glue_r32(mem + MC_NEXT));
+        }
+    }
+    glue_w32(mh + MH_FREE, glue_r32(mh + MH_FREE) + sz);
+}
+
+static void guest_list_enqueue(uint32_t list, uint32_t node)
+{
+    /* exec/Enqueue semantics: insert sorted by ln_Pri (highest first,
+     * after existing nodes of equal priority). */
+    int8_t pri = (int8_t)g_ram[node + LN_PRI];
+    uint32_t cur = glue_r32(list + LH_HEAD);
+    int guard = 0;
+    while (glue_r32(cur + LN_SUCC) && guard++ < 1024) {
+        if ((int8_t)g_ram[cur + LN_PRI] < pri) break;
+        cur = glue_r32(cur + LN_SUCC);
+    }
+    uint32_t pred = glue_r32(cur + LN_PRED);
+    glue_w32(node + LN_SUCC, cur);
+    glue_w32(node + LN_PRED, pred);
+    glue_w32(pred + LN_SUCC, node);
+    glue_w32(cur + LN_PRED, node);
+}
+
+static void exec_AddMemList(void)
+{
+    /* AddMemList(byteSize=d0, attributes=d1, pri=d2, base=a0, name=a3):
+     * format a MemHeader at `base` and Enqueue it on SysBase.MemList. */
+    uint32_t size  = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t attrs = m68k_get_reg(NULL, M68K_REG_D1);
+    uint32_t pri   = m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t base  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t name  = m68k_get_reg(NULL, M68K_REG_A3);
+    if (!base || base + MH_SIZE + 8 > GUEST_RAM_SIZE || size <= MH_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    g_ram[base + LN_TYPE] = NT_MEMORY_G;
+    g_ram[base + LN_PRI]  = (uint8_t)pri;
+    glue_w32(base + LN_NAME, name);
+    glue_w16(base + MH_ATTR, (uint16_t)attrs);
+    uint32_t lo = (base + MH_SIZE + 7u) & ~7u;
+    uint32_t hi = base + size;
+    glue_w32(base + MH_FIRST, lo);
+    glue_w32(base + MH_LOWER, lo);
+    glue_w32(base + MH_UPPER, hi);
+    glue_w32(base + MH_FREE,  hi - lo);
+    glue_w32(lo + MC_NEXT,  0);
+    glue_w32(lo + MC_BYTES, hi - lo);
+    guest_list_enqueue(EXEC_BASE + 0x142, base);   /* SysBase MemList */
+    m68k_set_reg(M68K_REG_D0, base);
+}
+
+#define TS_WAIT_G 4
+
+static void exec_AddTask(void)
+{
+    /* AddTask(task=a1, initPC=a2, finalPC=a3) → D0 = task.
+     * We cannot actually schedule a second m68k context in this window,
+     * so the node is linked on TaskWait (priority-ordered) where
+     * FindTask()/Signal() can see it. */
+    uint32_t task = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!task || task + 0x14 > GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    g_ram[task + PRC_TC_STATE] = TS_WAIT_G;
+    guest_list_enqueue(EXEC_BASE + 0x1A4, task);   /* TaskWait */
+    m68k_set_reg(M68K_REG_D0, task);
+}
+
+static void exec_RemTask(void)
+{
+    /* RemTask(task=a1): NULL or our own Process = self-removal — end the
+     * guest like stub_RemTask/dos_Exit do.  Otherwise just unlink it. */
+    uint32_t task = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!task || task == g_guest_proc_addr) {
+        UaosTask *t = Task_Current();
+        if (t && t->type == TASK_TYPE_M68K) t->m68k_halted = 1;
+        m68k_end_timeslice();
+        return;
+    }
+    uint32_t succ = glue_r32(task + LN_SUCC);
+    uint32_t pred = glue_r32(task + LN_PRED);
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+}
+
+/* SysBase-registered object lists — AddX/RemX are pure list ops. */
+#define EB_LIBLIST  (EXEC_BASE + 0x17A)
+#define EB_DEVLIST  (EXEC_BASE + 0x15E)
+#define EB_RESLIST  (EXEC_BASE + 0x150)
+
+static void guest_node_remove(uint32_t node)
+{
+    uint32_t succ = glue_r32(node + LN_SUCC);
+    uint32_t pred = glue_r32(node + LN_PRED);
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+}
+
+static void exec_AddLibrary(void)
+{
+    guest_list_enqueue(EB_LIBLIST, m68k_get_reg(NULL, M68K_REG_A1));
+}
+static void exec_RemLibrary(void)  { guest_node_remove(m68k_get_reg(NULL, M68K_REG_A1)); }
+static void exec_AddDevice(void)   { guest_list_enqueue(EB_DEVLIST,  m68k_get_reg(NULL, M68K_REG_A1)); }
+static void exec_RemDevice(void)   { guest_node_remove(m68k_get_reg(NULL, M68K_REG_A1)); }
+static void exec_AddResource(void) { guest_list_enqueue(EB_RESLIST,  m68k_get_reg(NULL, M68K_REG_A1)); }
+static void exec_RemResource(void) { guest_node_remove(m68k_get_reg(NULL, M68K_REG_A1)); }
+
+static void exec_SumLibrary(void)  { /* kickstart consistency sum — nothing to verify */ }
+static void exec_SumKickData(void) { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_Debug(void)       { }
+
+static void exec_Alert(void)
+{
+    /* Alert(alertNum=d7): fatal on real hardware; log it — continuing is
+     * more useful for bring-up than wedging the guest. */
+    static uint32_t prints = 0;
+    if (prints++ < 20) {
+        char m[40] = "[exec] Alert 0x";
+        char n[12]; u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_D7), n);
+        int i = emu_strlen(m), j = 0;
+        while (n[j] && i < 36) m[i++] = n[j++];
+        m[i++] = '\n'; m[i] = '\0';
+        emu_print(m);
+    }
+}
+
+static void exec_RawIOInit(void)      { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_RawMayGetChar(void)  { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); }
+static void exec_RawPutChar(void)
+{
+    /* RawPutChar(chr=d0): serial debug output, like the ROM's raw port. */
+    char b[2];
+    b[0] = (char)m68k_get_reg(NULL, M68K_REG_D0);
+    b[1] = '\0';
+    if (b[0]) emu_print(b);
+}
+
+static void exec_FindResident(void)   { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_InitResident(void)   { m68k_set_reg(M68K_REG_D0, 0); }
+
+static void exec_MakeFunctions(void)
+{
+    /* MakeFunctions(target=a0, funcArray=a1, funcDispBase=a2): the array
+     * is {int16 offset, APTR function} pairs ending in offset -1.  Writes
+     * JMP abs.l at target+offset.  A negative "function" is an offset
+     * relative to funcDispBase (ROM vector-compression form). */
+    uint32_t target = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t fp     = m68k_get_reg(NULL, M68K_REG_A1);
+    int32_t  fbase  = (int32_t)m68k_get_reg(NULL, M68K_REG_A2);
+    int guard = 0;
+    while (fp && fp + 6 <= GUEST_RAM_SIZE && guard++ < 512) {
+        int32_t off = (int16_t)glue_r16(fp); fp += 2;
+        if (off == -1) break;
+        uint32_t fn = glue_r32(fp); fp += 4;
+        if ((int32_t)fn < 0) fn = (uint32_t)(fbase + (int32_t)fn);
+        uint32_t dest = (uint32_t)((int32_t)target + off);
+        if (dest + 6 <= GUEST_RAM_SIZE) {
+            g_ram[dest + 0] = 0x4E; g_ram[dest + 1] = 0xF9;  /* JMP abs.l */
+            glue_w32(dest + 2, fn);
+        }
+    }
+}
+
+static void exec_MakeLibrary(void)
+{
+    /* MakeLibrary(funcInit=a0, structInit=a1, init=a2, dataSize=d0,
+     * segList=d1) → D0 = new library base or 0.
+     * Allocates the vector area + struct, builds the JMP table below the
+     * base via MakeFunctions, and copies a flat structInit image.  The
+     * init callback would need a nested guest call — logged and skipped. */
+    uint32_t vectors  = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t structi  = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t initfn   = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t datasize = m68k_get_reg(NULL, M68K_REG_D0);
+
+    uint32_t fp = vectors, negsz = 0;
+    int guard = 0;
+    while (vectors && fp + 6 <= GUEST_RAM_SIZE && guard++ < 256) {
+        int32_t off = (int16_t)glue_r16(fp); fp += 2;
+        if (off == -1) break;
+        fp += 4;
+        if (off < 0 && (uint32_t)(-off) > negsz) negsz = (uint32_t)(-off);
+    }
+    negsz = (negsz + 3u) & ~3u;
+
+    uint32_t mem = 0;
+    dos_AllocMem_glue(negsz + (datasize ? datasize : 0x20), MEMF_PUBLIC, &mem);
+    if (!mem) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    uint32_t base = mem + negsz;
+
+    if (structi && datasize && structi + datasize <= GUEST_RAM_SIZE)
+        emu_memcpy(g_ram + base, g_ram + structi, datasize);
+    g_ram[base + 8] = NT_LIBRARY_G;
+    glue_w16(base + 16, (uint16_t)negsz);                    /* lib_NegSize */
+    glue_w16(base + 18, (uint16_t)datasize);                 /* lib_PosSize */
+
+    m68k_set_reg(M68K_REG_A0, base);
+    m68k_set_reg(M68K_REG_A1, vectors);
+    m68k_set_reg(M68K_REG_A2, 0);
+    exec_MakeFunctions();
+
+    if (initfn) {
+        static int logged = 0;
+        if (!logged++) emu_print("[exec] MakeLibrary: init callback not run\n");
+    }
+    m68k_set_reg(M68K_REG_D0, base);
+}
+
+static void exec_ColdReboot(void)
+{
+    UaosTask *t = Task_Current();
+    if (t && t->type == TASK_TYPE_M68K) t->m68k_halted = 1;
+    m68k_end_timeslice();
+}
+
+/* Memory pools (V39): pool = 32-byte block {MinList head(12), attrs,
+ * puddleSize, threshSize}; each pooled alloc carries an 8-byte header
+ * [next][payload size] and is singly-linked into the pool list. */
+static void exec_CreatePool(void)
+{
+    uint32_t pool = 0;
+    dos_AllocMem_glue(32, MEMF_PUBLIC, &pool);
+    if (!pool) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    glue_w32(pool + 0,  pool + 4);   /* mlh_Head     */
+    glue_w32(pool + 4,  0);          /* mlh_Tail     */
+    glue_w32(pool + 8,  pool + 0);   /* mlh_TailPred */
+    glue_w32(pool + 12, m68k_get_reg(NULL, M68K_REG_D0));  /* requirements */
+    glue_w32(pool + 16, m68k_get_reg(NULL, M68K_REG_D1));  /* puddleSize   */
+    glue_w32(pool + 20, m68k_get_reg(NULL, M68K_REG_D2));  /* threshSize   */
+    m68k_set_reg(M68K_REG_D0, pool);
+}
+
+static void exec_AllocPooled(void)
+{
+    uint32_t pool = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t size = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t attrs = pool ? glue_r32(pool + 12) : MEMF_PUBLIC;
+    uint32_t blk = 0;
+    dos_AllocMem_glue(size + 8, attrs, &blk);
+    if (!blk) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    glue_w32(blk + 0, glue_r32(pool + 0));   /* link at head */
+    glue_w32(blk + 4, size);
+    glue_w32(pool + 0, blk);
+    m68k_set_reg(M68K_REG_D0, blk + 8);
+}
+
+static void exec_FreePooled(void)
+{
+    uint32_t pool = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t mem  = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!pool || mem < 8) return;
+    uint32_t blk  = mem - 8;
+    uint32_t prev = pool;                        /* pool+0 = head field */
+    uint32_t cur  = glue_r32(pool + 0);
+    int guard = 0;
+    while (cur && cur != blk && guard++ < 65536) { prev = cur; cur = glue_r32(cur); }
+    if (cur == blk) glue_w32(prev, glue_r32(blk));
+    dos_FreeMem_glue(blk, glue_r32(blk + 4) + 8);
+}
+
+static void exec_DeletePool(void)
+{
+    uint32_t pool = m68k_get_reg(NULL, M68K_REG_A0);
+    if (!pool) return;
+    uint32_t cur = glue_r32(pool + 0);
+    int guard = 0;
+    while (cur && guard++ < 65536) {
+        uint32_t next = glue_r32(cur);
+        dos_FreeMem_glue(cur, glue_r32(cur + 4) + 8);
+        cur = next;
+    }
+    dos_FreeMem_glue(pool, 32);
+}
+
+/* V40 cache-DMA barriers: no caches/dma-coherency issue under Musashi —
+ * PreDMA returns the (identity-mapped) address, PostDMA does nothing. */
+static void exec_CachePreDMA(void)  { m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A0)); }
+static void exec_CachePostDMA(void) { }
+
+/* V40 low-memory handlers: accept + report success.  Handlers are never
+ * invoked (invoking a guest callback inside AllocMem failure handling is
+ * an AsyncTrap risk), so this is bookkeeping only. */
+static void exec_AddMemHandler(void) { m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A1)); }
+static void exec_RemMemHandler(void) { m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A1)); }
+
+/* V40 child-process tracking: no guest-visible child table — report
+ * "no children" for all four entry points. */
+static void exec_ChildFree(void)   { }
+static void exec_ChildOrphan(void) { }
+static void exec_ChildStatus(void) { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_ChildWait(void)   { m68k_set_reg(M68K_REG_D0, 0); }
+
 static void exec_CacheControl(void) { m68k_set_reg(M68K_REG_D0, 0); }
 
 /* Public exec dispatcher for use by other host library code (e.g. gadtools). */
@@ -5086,6 +5718,45 @@ void UAOS_Exec_Dispatch(uint32_t fn)
         case EXEC_ALLOC_VEC:      exec_AllocVec();    break;
         case EXEC_FREE_VEC:       exec_FreeVec();     break;
         case EXEC_STACK_SWAP:     exec_StackSwap();   break;
+        case EXEC_SUPERVISOR:     exec_Supervisor();  break;
+        case EXEC_SET_SR:         exec_SetSR();       break;
+        case EXEC_ALLOC_ABS:      exec_AllocAbs();    break;
+        case EXEC_ALLOCATE:       exec_Allocate();    break;
+        case EXEC_DEALLOCATE:     exec_Deallocate();  break;
+        case EXEC_ADD_MEM_LIST:   exec_AddMemList();  break;
+        case EXEC_ADD_TASK:       exec_AddTask();     break;
+        case EXEC_REM_TASK:       exec_RemTask();     break;
+        case EXEC_ADD_LIBRARY:    exec_AddLibrary();  break;
+        case EXEC_REM_LIBRARY:    exec_RemLibrary();  break;
+        case EXEC_SUM_LIBRARY:    exec_SumLibrary();  break;
+        case EXEC_ADD_DEVICE:     exec_AddDevice();   break;
+        case EXEC_REM_DEVICE:     exec_RemDevice();   break;
+        case EXEC_ADD_RESOURCE:   exec_AddResource(); break;
+        case EXEC_REM_RESOURCE:   exec_RemResource(); break;
+        case EXEC_RAW_IO_INIT:    exec_RawIOInit();   break;
+        case EXEC_RAW_MAY_GET_CHAR: exec_RawMayGetChar(); break;
+        case EXEC_RAW_PUT_CHAR:   exec_RawPutChar();  break;
+        case EXEC_ALERT:          exec_Alert();       break;
+        case EXEC_DEBUG_FN:       exec_Debug();       break;
+        case EXEC_FIND_RESIDENT:  exec_FindResident(); break;
+        case EXEC_INIT_RESIDENT:  exec_InitResident(); break;
+        case EXEC_MAKE_LIBRARY:   exec_MakeLibrary(); break;
+        case EXEC_MAKE_FUNCTIONS: exec_MakeFunctions(); break;
+        case EXEC_SUM_KICK_DATA:  exec_SumKickData(); break;
+        case EXEC_ATTEMPT_SEM_SHARED: exec_AttemptSem(); break;
+        case EXEC_COLD_REBOOT:    exec_ColdReboot();  break;
+        case EXEC_CREATE_POOL:    exec_CreatePool();  break;
+        case EXEC_DELETE_POOL:    exec_DeletePool();  break;
+        case EXEC_ALLOC_POOLED:   exec_AllocPooled(); break;
+        case EXEC_FREE_POOLED:    exec_FreePooled();  break;
+        case EXEC_CACHE_PRE_DMA:  exec_CachePreDMA(); break;
+        case EXEC_CACHE_POST_DMA: exec_CachePostDMA(); break;
+        case EXEC_ADD_MEM_HANDLER: exec_AddMemHandler(); break;
+        case EXEC_REM_MEM_HANDLER: exec_RemMemHandler(); break;
+        case EXEC_CHILD_FREE:     exec_ChildFree();   break;
+        case EXEC_CHILD_ORPHAN:   exec_ChildOrphan(); break;
+        case EXEC_CHILD_STATUS:   exec_ChildStatus(); break;
+        case EXEC_CHILD_WAIT:     exec_ChildWait();   break;
         default: {
             /* Catch-all stub (EXEC_STUB_LVO) or unmapped fn — log the LVO
              * via the stub address (PC-4) and return 0. */
@@ -6387,6 +7058,45 @@ int m68k_illg_instr_callback(int opcode)
             case EXEC_ALLOC_VEC:      exec_AllocVec();    break;
             case EXEC_FREE_VEC:       exec_FreeVec();     break;
             case EXEC_STACK_SWAP:     exec_StackSwap();   break;
+            case EXEC_SUPERVISOR:     exec_Supervisor();  break;
+            case EXEC_SET_SR:         exec_SetSR();       break;
+            case EXEC_ALLOC_ABS:      exec_AllocAbs();    break;
+            case EXEC_ALLOCATE:       exec_Allocate();    break;
+            case EXEC_DEALLOCATE:     exec_Deallocate();  break;
+            case EXEC_ADD_MEM_LIST:   exec_AddMemList();  break;
+            case EXEC_ADD_TASK:       exec_AddTask();     break;
+            case EXEC_REM_TASK:       exec_RemTask();     break;
+            case EXEC_ADD_LIBRARY:    exec_AddLibrary();  break;
+            case EXEC_REM_LIBRARY:    exec_RemLibrary();  break;
+            case EXEC_SUM_LIBRARY:    exec_SumLibrary();  break;
+            case EXEC_ADD_DEVICE:     exec_AddDevice();   break;
+            case EXEC_REM_DEVICE:     exec_RemDevice();   break;
+            case EXEC_ADD_RESOURCE:   exec_AddResource(); break;
+            case EXEC_REM_RESOURCE:   exec_RemResource(); break;
+            case EXEC_RAW_IO_INIT:    exec_RawIOInit();   break;
+            case EXEC_RAW_MAY_GET_CHAR: exec_RawMayGetChar(); break;
+            case EXEC_RAW_PUT_CHAR:   exec_RawPutChar();  break;
+            case EXEC_ALERT:          exec_Alert();       break;
+            case EXEC_DEBUG_FN:       exec_Debug();       break;
+            case EXEC_FIND_RESIDENT:  exec_FindResident(); break;
+            case EXEC_INIT_RESIDENT:  exec_InitResident(); break;
+            case EXEC_MAKE_LIBRARY:   exec_MakeLibrary(); break;
+            case EXEC_MAKE_FUNCTIONS: exec_MakeFunctions(); break;
+            case EXEC_SUM_KICK_DATA:  exec_SumKickData(); break;
+            case EXEC_ATTEMPT_SEM_SHARED: exec_AttemptSem(); break;
+            case EXEC_COLD_REBOOT:    exec_ColdReboot();  break;
+            case EXEC_CREATE_POOL:    exec_CreatePool();  break;
+            case EXEC_DELETE_POOL:    exec_DeletePool();  break;
+            case EXEC_ALLOC_POOLED:   exec_AllocPooled(); break;
+            case EXEC_FREE_POOLED:    exec_FreePooled();  break;
+            case EXEC_CACHE_PRE_DMA:  exec_CachePreDMA(); break;
+            case EXEC_CACHE_POST_DMA: exec_CachePostDMA(); break;
+            case EXEC_ADD_MEM_HANDLER: exec_AddMemHandler(); break;
+            case EXEC_REM_MEM_HANDLER: exec_RemMemHandler(); break;
+            case EXEC_CHILD_FREE:     exec_ChildFree();   break;
+            case EXEC_CHILD_ORPHAN:   exec_ChildOrphan(); break;
+            case EXEC_CHILD_STATUS:   exec_ChildStatus(); break;
+            case EXEC_CHILD_WAIT:     exec_ChildWait();   break;
             default: {
                 /* PC was advanced to stub+4 → recover the LVO hit. */
                 uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
