@@ -153,6 +153,15 @@ static void *keyboard_funcs[] = {
     keyboard_KbdRemap,     /* index 10 */
 };
 
+/* Device vectors -> keyboard_funcs[] indices (Open -6, Close -12,
+ * BeginIO -42, AbortIO -48). */
+static const UaosRomLvo keyboard_lvo_map[] = {
+    {  -6, 1 },   /* Open     */
+    { -12, 2 },   /* Close    */
+    { -42, 3 },   /* BeginIO  */
+    { -48, 4 },   /* AbortIO  */
+};
+
 /* =========================================================================
  * Registration function
  * ========================================================================= */
@@ -162,4 +171,6 @@ void UAOS_KEYBOARD_Register(void)
     UAOS_ROM_Register("keyboard.device", 40, 0x000000B0,
                       (uint16_t)(sizeof(keyboard_funcs) / sizeof(keyboard_funcs[0])),
                       keyboard_funcs);
+    UAOS_ROM_BindLvoMap("keyboard.device", keyboard_lvo_map,
+                        (uint16_t)(sizeof(keyboard_lvo_map) / sizeof(keyboard_lvo_map[0])));
 }

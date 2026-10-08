@@ -29,6 +29,8 @@
 #define UTIL_NEXT_TAG_ITEM  11
 #define UTIL_GET_TAG_DATA   12
 #define UTIL_DATE_MATCH     13
+#define UTIL_SMULT64        14
+#define UTIL_UMULT64        15
 
 /* =========================================================================
  * TagItem structure (AmigaOS compatible)
@@ -68,6 +70,23 @@ static char to_upper(char c)
  * to be accessed through g_ram */
 extern uint8_t *g_ram;
 #define M68K_TO_HOST(addr) ((void *)(g_ram + (addr)))
+
+/* Guest memory is big-endian — read/write 32-bit words byte-wise. */
+static uint32_t util_r32(uint32_t addr)
+{
+    return ((uint32_t)g_ram[addr + 0] << 24)
+         | ((uint32_t)g_ram[addr + 1] << 16)
+         | ((uint32_t)g_ram[addr + 2] <<  8)
+         | ((uint32_t)g_ram[addr + 3]      );
+}
+
+static void util_w32(uint32_t addr, uint32_t val)
+{
+    g_ram[addr + 0] = (uint8_t)(val >> 24);
+    g_ram[addr + 1] = (uint8_t)(val >> 16);
+    g_ram[addr + 2] = (uint8_t)(val >>  8);
+    g_ram[addr + 3] = (uint8_t)(val      );
+}
 
 /* =========================================================================
  * utility.library function implementations
@@ -145,12 +164,11 @@ static void util_UcStr(M68kCPUState *cpu)
      * A0 = string pointer
      * Returns: A0 = same string pointer */
     char *s = (char *)M68K_TO_HOST(cpu->a[0]);
-    char *start = s;
     while (*s) {
         *s = to_upper(*s);
         s++;
     }
-    cpu->a[0] = (uint32_t)(uintptr_t)start;
+    /* A0 already holds the guest string pointer — no write-back. */
 }
 
 static void util_LcStr(M68kCPUState *cpu)
@@ -159,12 +177,11 @@ static void util_LcStr(M68kCPUState *cpu)
      * A0 = string pointer
      * Returns: A0 = same string pointer */
     char *s = (char *)M68K_TO_HOST(cpu->a[0]);
-    char *start = s;
     while (*s) {
         *s = to_lower(*s);
         s++;
     }
-    cpu->a[0] = (uint32_t)(uintptr_t)start;
+    /* A0 already holds the guest string pointer — no write-back. */
 }
 
 static void util_SMult32(M68kCPUState *cpu)
@@ -203,88 +220,97 @@ static void util_UMult32(M68kCPUState *cpu)
 static void util_NextTagItem(M68kCPUState *cpu)
 {
     /* NextTagItem - iterate through tag list
-     * A0 = pointer to tag list pointer (updated to next item)
-     * Returns: D0 = current tag item pointer or NULL if end */
-    TagItem **tag_list_ptr = (TagItem **)M68K_TO_HOST(cpu->a[0]);
-    TagItem *current = *tag_list_ptr;
+     * A0 = guest pointer to tag list pointer (updated to next item)
+     * Returns: D0 = current tag item guest pointer or NULL if end.
+     * Guest RAM is big-endian and returns must be guest addresses, not
+     * host pointers. */
+    uint32_t ptr_addr = cpu->a[0];
+    uint32_t cur      = util_r32(ptr_addr);
+    int guard = 0;
 
-    if (!current) {
-        cpu->d[0] = 0;
-        return;
-    }
-
-    TagItem *item = (TagItem *)M68K_TO_HOST((uint32_t)(uintptr_t)current);
-    uint32_t tag = item->ti_Tag;
-
-    /* Handle special tag control codes */
-    switch (tag) {
-        case TAG_DONE:
-        case TAG_END:
-            *tag_list_ptr = NULL;
+    for (;;) {
+        if (!cur || guard++ > 4096) {
             cpu->d[0] = 0;
             return;
+        }
+        uint32_t tag  = util_r32(cur);
+        uint32_t data = util_r32(cur + 4);
 
-        case TAG_MORE:
-            /* Jump to new tag list */
-            *tag_list_ptr = (TagItem *)M68K_TO_HOST(item->ti_Data);
-            cpu->d[0] = cpu->a[0];
+        if (tag == TAG_DONE || tag == TAG_END) {
+            util_w32(ptr_addr, 0);
+            cpu->d[0] = 0;
             return;
-
-        case TAG_JUMP:
-            /* Jump to absolute address */
-            *tag_list_ptr = (TagItem *)M68K_TO_HOST(item->ti_Data);
-            cpu->d[0] = cpu->a[0];
+        }
+        if (tag == TAG_MORE || tag == TAG_JUMP) {
+            /* Chain to the tag list at ti_Data; return the link item. */
+            util_w32(ptr_addr, data);
+            cpu->d[0] = cur;
             return;
-
-        case TAG_IGNORE:
-            /* Skip this item */
-            *tag_list_ptr = current + 1;
-            cpu->d[0] = (uint32_t)(uintptr_t)current;
-            return;
-
-        default:
-            /* Normal tag - advance to next and return current */
-            *tag_list_ptr = current + 1;
-            cpu->d[0] = (uint32_t)(uintptr_t)current;
-            return;
+        }
+        if (tag == TAG_IGNORE) {
+            cur += 8;              /* skip and process the next item */
+            continue;
+        }
+        /* Normal tag - advance to next and return current */
+        util_w32(ptr_addr, cur + 8);
+        cpu->d[0] = cur;
+        return;
     }
 }
 
 static void util_GetTagData(M68kCPUState *cpu)
 {
     /* GetTagData - get data value for a tag from tag list
-     * D0 = tag ID to search for, A0 = tag list, D1 = default value
+     * D0 = tag ID to search for, A0 = tag list (guest addr), D1 = default
      * Returns: D0 = tag data value or default if not found */
-    uint32_t tag_id = cpu->d[0];
-    TagItem *tag_list = (TagItem *)M68K_TO_HOST(cpu->a[0]);
+    uint32_t tag_id      = cpu->d[0];
+    uint32_t tl          = cpu->a[0];
     uint32_t default_val = cpu->d[1];
+    int guard = 0;
 
-    if (!tag_list) {
+    if (!tl) {
         cpu->d[0] = default_val;
         return;
     }
 
-    while (1) {
-        uint32_t tag = tag_list->ti_Tag;
+    while (guard++ < 4096) {
+        uint32_t tag  = util_r32(tl);
+        uint32_t data = util_r32(tl + 4);
 
-        if (tag == TAG_DONE || tag == TAG_END) {
+        if (tag == TAG_DONE || tag == TAG_END)
             break;
-        }
-
         if (tag == tag_id) {
-            cpu->d[0] = tag_list->ti_Data;
+            cpu->d[0] = data;
             return;
         }
-
         if (tag == TAG_MORE || tag == TAG_JUMP) {
-            tag_list = (TagItem *)M68K_TO_HOST(tag_list->ti_Data);
+            tl = data;
             continue;
         }
-
-        tag_list++;
+        tl += 8;
     }
 
     cpu->d[0] = default_val;
+}
+
+static void util_SMult64(M68kCPUState *cpu)
+{
+    /* SMult64 - signed 32x32->64 multiply
+     * D0 = factor1, D1 = factor2
+     * Returns: D0:D1 = 64-bit product (D0 high, D1 low) */
+    int64_t result = (int64_t)(int32_t)cpu->d[0] * (int64_t)(int32_t)cpu->d[1];
+    cpu->d[0] = (uint32_t)((uint64_t)result >> 32);
+    cpu->d[1] = (uint32_t)result;
+}
+
+static void util_UMult64(M68kCPUState *cpu)
+{
+    /* UMult64 - unsigned 32x32->64 multiply
+     * D0 = factor1, D1 = factor2
+     * Returns: D0:D1 = 64-bit product (D0 high, D1 low) */
+    uint64_t result = (uint64_t)cpu->d[0] * (uint64_t)cpu->d[1];
+    cpu->d[0] = (uint32_t)(result >> 32);
+    cpu->d[1] = (uint32_t)result;
 }
 
 static void util_DateMatch(M68kCPUState *cpu)
@@ -312,6 +338,26 @@ static void *util_funcs[] = {
     util_NextTagItem,   /* index 11 */
     util_GetTagData,    /* index 12 */
     util_DateMatch,     /* index 13 */
+    util_SMult64,       /* index 14 */
+    util_UMult64,       /* index 15 */
+};
+
+/* Canonical utility.library LVOs -> util_funcs[] indices.
+ * The -552/-414 entries keep legacy guest calls that reach for an exec-style
+ * OpenLibrary/CloseLibrary through the utility base working. */
+static const UaosRomLvo util_lvo_map[] = {
+    {  -36, UTIL_GET_TAG_DATA },   /* GetTagData   */
+    {  -48, UTIL_NEXT_TAG_ITEM },  /* NextTagItem  */
+    { -138, UTIL_SMULT32 },        /* SMult32      */
+    { -144, UTIL_UMULT32 },        /* UMult32      */
+    { -150, UTIL_SMULT64 },        /* SMult64      */
+    { -156, UTIL_UMULT64 },        /* UMult64      */
+    { -162, UTIL_STR_ICMP },       /* Stricmp      */
+    { -168, UTIL_STR_NICMP },      /* Strnicmp     */
+    { -174, UTIL_UC_STR },         /* ToUpper      */
+    { -180, UTIL_LC_STR },         /* ToLower      */
+    { -552, UTIL_OPEN_LIBRARY },
+    { -414, UTIL_CLOSE_LIBRARY },
 };
 
 /* =========================================================================
@@ -323,4 +369,6 @@ void UAOS_UTILITY_Register(void)
     UAOS_ROM_Register("utility.library", 37, 0x00000050,
                       (uint16_t)(sizeof(util_funcs) / sizeof(util_funcs[0])),
                       util_funcs);
+    UAOS_ROM_BindLvoMap("utility.library", util_lvo_map,
+                        (uint16_t)(sizeof(util_lvo_map) / sizeof(util_lvo_map[0])));
 }

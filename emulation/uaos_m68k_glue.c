@@ -619,6 +619,8 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define LIB_AUDIODEV    9   /* audio.device → UAOS-240 arbitration */
 #define LIB_IRQ        10   /* autovector dispatch stub — fn carries level */
 #define LIB_IFFPARSE   11   /* iffparse.library → ROM dispatch (UAOS-243) */
+#define LIB_ROM        12   /* generated base bound to a registered ROM module;
+                             * fn = 1-based native_funcs index (UAOS-238)    */
 
 #define AUDEV_LVO_OPEN    0   /* -6  */
 #define AUDEV_LVO_CLOSE   1   /* -12 */
@@ -2252,7 +2254,11 @@ void install_library_tables(void)
             guest_write_be32(b + 10, np);                /* ln_Name      */
             guest_write_be16(b + 16, hdrs[i].neg);       /* lib_NegSize  */
             guest_write_be16(b + 18, hdrs[i].pos);       /* lib_PosSize  */
-            guest_write_be16(b + 20, 37);                /* lib_Version  */
+            /* Report the registered ROM-module version when one exists
+             * so lib_Version matches what OpenLibrary gates on (UAOS-238);
+             * otherwise keep the Kickstart-2.04 placeholder. */
+            UaosRomModule *hm = UAOS_ROM_Find(hdrs[i].name);
+            guest_write_be16(b + 20, hm ? hm->version : 37); /* lib_Version */
             guest_write_be16(b + 22, 3);                 /* lib_Revision */
             guest_write_be32(b + 24, ids);               /* lib_IdString */
             guest_write_be16(b + 32, 1);                 /* lib_OpenCnt  */
@@ -2745,7 +2751,8 @@ static void install_loadable_libs(void)
  *
  * Each bound library gets a guest block:  [960B stub area][64B Library
  * struct][64B name/idstring].  Stubs are ILLEGAL dispatch words tagged
- * LIB_GENERIC (fake: log+return 0) or LIB_UTILITY (real ROM dispatch).
+ * LIB_GENERIC (fake: log+return 0) or LIB_ROM (dispatch through the ROM
+ * module registry, UAOS-238).
  * ------------------------------------------------------------------------- */
 #define GENLIB_STUB_AREA  960          /* covers LVO -6 .. -960 */
 #define GENLIB_BLK_SIZE   (GENLIB_STUB_AREA + 0x40 + 0x40)
@@ -2753,13 +2760,13 @@ static void install_loadable_libs(void)
 typedef struct {
     uint32_t base;
     char     name[48];
-    uint8_t *ram;       /* owning guest-RAM window — entries are per-task */
-    int      utility;   /* bound to utility.library ROM funcs */
+    uint8_t *ram;          /* owning guest-RAM window — entries are per-task */
+    UaosRomModule *rom;    /* bound ROM module, NULL for fake catch-all libs */
     int      cia;       /* 0=CIAA, 1=CIAB for cia*.resource, else -1 */
     uint32_t icr_tab;   /* guest addr of 8-entry ICR Interrupt* table */
 } GenLib;
 
-static GenLib g_genlibs[16];
+static GenLib g_genlibs[32];
 static int    g_genlib_count = 0;
 
 /* Genlib blocks are carved from the 64 KB guard band at the top of chip
@@ -2797,75 +2804,32 @@ const char *emu_fake_lib_name(uint32_t base)
     return NULL;
 }
 
-/* Canonical utility.library LVOs → util_funcs[] indices (utility_lib.fd).
- * Index 0 in this table means "install a catch-all stub". */
-static const struct { int lvo; uint8_t fn; } g_utility_lvo_map[] = {
-    {  -36, 12 },   /* GetTagData   */
-    {  -48, 11 },   /* NextTagItem  */
-    { -138,  9 },   /* SMult32      */
-    { -144, 10 },   /* UMult32      */
-    { -162,  5 },   /* Stricmp      */
-    { -168,  6 },   /* Strnicmp     */
-    { -174,  7 },   /* ToUpper      */
-    { -180,  8 },   /* ToLower      */
-    { -552,  1 },   /* OpenLibrary  */
-    { -414,  2 },   /* CloseLibrary */
-};
-
-/* Canonical iffparse.library LVOs → iffparse_funcs[] indices
- * (iffparse_lib.c, real AmigaOS FD numbering — UAOS-243). */
-static const struct { int lvo; uint8_t fn; } g_iffparse_lvo_map[] = {
-    {  -30,  1 },   /* AllocIFF            */
-    {  -36,  2 },   /* OpenIFF             */
-    {  -42,  3 },   /* ParseIFF            */
-    {  -48,  4 },   /* CloseIFF            */
-    {  -54,  5 },   /* FreeIFF             */
-    {  -60,  6 },   /* ReadChunkBytes      */
-    {  -66,  7 },   /* WriteChunkBytes     */
-    {  -72,  8 },   /* ReadChunkRecords    */
-    {  -78,  9 },   /* WriteChunkRecords   */
-    {  -84, 10 },   /* PushChunk           */
-    {  -90, 11 },   /* PopChunk            */
-    { -102, 12 },   /* EntryHandler        */
-    { -108, 13 },   /* ExitHandler         */
-    { -114, 14 },   /* PropChunk           */
-    { -120, 15 },   /* PropChunks          */
-    { -126, 16 },   /* StopChunk           */
-    { -132, 17 },   /* StopChunks          */
-    { -138, 18 },   /* CollectionChunk     */
-    { -144, 19 },   /* CollectionChunks    */
-    { -150, 20 },   /* StopOnExit          */
-    { -156, 21 },   /* FindProp            */
-    { -162, 22 },   /* FindCollection      */
-    { -168, 23 },   /* FindPropContext     */
-    { -174, 24 },   /* CurrentChunk        */
-    { -180, 25 },   /* ParentChunk         */
-    { -186, 26 },   /* AllocLocalItem      */
-    { -192, 27 },   /* LocalItemData       */
-    { -198, 28 },   /* SetLocalItemPurge   */
-    { -204, 29 },   /* FreeLocalItem       */
-    { -210, 30 },   /* FindLocalItem       */
-    { -216, 31 },   /* StoreLocalItem      */
-    { -222, 32 },   /* StoreItemInContext  */
-    { -228, 33 },   /* InitIFF             */
-    { -234, 34 },   /* InitIFFasDOS        */
-    { -240, 35 },   /* InitIFFasClip       */
-    { -246, 36 },   /* OpenClipboard       */
-    { -252, 37 },   /* CloseClipboard      */
-    { -258, 38 },   /* GoodID              */
-    { -264, 39 },   /* GoodType            */
-    { -270, 40 },   /* IDtoStr             */
-};
+/* ROM module bound to a generated base (NULL for fake libs) */
+static UaosRomModule *emu_gen_rom(uint32_t base)
+{
+    for (int i = 0; i < g_genlib_count; i++)
+        if (g_genlibs[i].base == base && g_genlibs[i].ram == g_ram)
+            return g_genlibs[i].rom;
+    return NULL;
+}
 
 /* Allocate a guest library base for `name`, fill the Library struct, and
- * install stubs: real LVO->fn map for utility.library, LIB_GENERIC
- * catch-alls elsewhere.  `ntype`/`list_off` publish the node: ln_Type and
- * the ExecBase list offset to link into (LibList 0x17A for libraries,
+ * install stubs.  When `m` is a registered ROM module the stubs dispatch
+ * through UAOS_ROM_NativeFunc() (LIB_ROM): real LVO->fn stubs come from
+ * the module's lvo_map (or the whole jump table when it is LVO-slot
+ * indexed) and unmapped vectors stay traced catch-alls.  With m == NULL
+ * the base is a fake LIB_GENERIC catch-all — the documented policy for
+ * unregistered libraries: OpenLibrary succeeds but every vector is a
+ * no-op logged via "[lib] x lvo=-N" so missing libs fail predictably
+ * rather than returning NULL (which crashes sloppy callers) or silently
+ * succeeding (UAOS-238).  `ntype`/`list_off` publish the node: ln_Type
+ * and the ExecBase list offset to link into (LibList 0x17A for libraries,
  * ResourceList 0x150 for resources).  Returns the base or 0. */
 static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
-                                 uint8_t ntype, uint32_t list_off)
+                                 uint8_t ntype, uint32_t list_off,
+                                 UaosRomModule *m)
 {
-    if (g_genlib_count >= 16) return 0;
+    if (g_genlib_count >= 32) return 0;
 
     /* ciaa.resource / ciab.resource get an extra 8-entry ICR Interrupt
      * table at base+0x80 for AddICRVector/RemICRVector (UAOS-241). */
@@ -2888,6 +2852,7 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
     GenLib *e = &g_genlibs[g_genlib_count++];
     e->base = base;
     e->ram  = g_ram;
+    e->rom  = m;
     e->cia  = cia;
     e->icr_tab = (cia >= 0) ? base + 0x80 : 0;
     int k = 0;
@@ -2895,23 +2860,14 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
     e->name[k] = '\0';
     g_ram[name_ptr + k] = 0;
 
-    int is_utility = 0, is_iffparse = 0;
-    const char *un = "utility.library";
-    const char *in = "iffparse.library";
-    int u = 0;
-    while (un[u] && name[u] == un[u]) u++;
-    is_utility = (un[u] == 0 && name[u] == 0);
-    u = 0;
-    while (in[u] && name[u] == in[u]) u++;
-    is_iffparse = (in[u] == 0 && name[u] == 0);
-    e->utility = is_utility;
-
     /* struct Library: Node + flags + sizes + version + idstring + opencnt */
     g_ram[base + 8] = ntype;                    /* ln_Type */
     glue_w32(base + 10, name_ptr);              /* ln_Name */
     glue_w16(base + 16, (uint16_t)GENLIB_STUB_AREA); /* lib_NegSize */
     glue_w16(base + 18, 34);                    /* lib_PosSize */
-    uint16_t ver = req_ver ? (uint16_t)req_ver : 39;
+    /* ROM-bound bases report the module's real version so guest
+     * lib_Version checks (and our OpenLibrary version gate) agree. */
+    uint16_t ver = m ? m->version : (req_ver ? (uint16_t)req_ver : 39);
     glue_w16(base + 20, ver);                   /* lib_Version */
     glue_w16(base + 22, 0);                     /* lib_Revision */
     glue_w32(base + 24, name_ptr);              /* lib_IdString */
@@ -2922,20 +2878,24 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
     if (list_off)
         guest_list_add_tail(EXEC_BASE + list_off, base);
 
-    uint8_t lib_id = is_utility  ? LIB_UTILITY  :
-                     is_iffparse ? LIB_IFFPARSE : LIB_GENERIC;
+    /* Catch-all stubs over the whole jump table.  ROM-bound libs log via
+     * the LIB_ROM unmapped path; fake libs via LIB_GENERIC. */
+    uint8_t lib_id = m ? LIB_ROM : LIB_GENERIC;
     for (int lvo = -6; lvo >= -(int)GENLIB_STUB_AREA; lvo -= 6)
         install_lvo(base, lvo, lib_id, 0xEE);   /* 0xEE = unmapped */
 
-    if (is_utility) {
-        for (unsigned i = 0; i < sizeof(g_utility_lvo_map)/sizeof(g_utility_lvo_map[0]); i++)
-            install_lvo(base, g_utility_lvo_map[i].lvo, LIB_UTILITY,
-                        g_utility_lvo_map[i].fn);
-    }
-    if (is_iffparse) {
-        for (unsigned i = 0; i < sizeof(g_iffparse_lvo_map)/sizeof(g_iffparse_lvo_map[0]); i++)
-            install_lvo(base, g_iffparse_lvo_map[i].lvo, LIB_IFFPARSE,
-                        g_iffparse_lvo_map[i].fn);
+    /* Real per-vector stubs from the module's LVO map, or the whole
+     * slot-indexed table (graphics-style: vector -6*s -> func index s+1). */
+    if (m && m->lvo_slot_indexed) {
+        for (uint16_t s = 1; s < m->func_count && s * 6 <= GENLIB_STUB_AREA; s++)
+            if (m->native_funcs[s])
+                install_lvo(base, -(int)(s * 6), LIB_ROM, s + 1);
+    } else if (m) {
+        for (uint16_t i = 0; i < m->lvo_count; i++) {
+            int lvo = m->lvo_map[i].lvo;
+            if (lvo <= -6 && lvo >= -(int)GENLIB_STUB_AREA)
+                install_lvo(base, lvo, LIB_ROM, m->lvo_map[i].fn);
+        }
     }
     return base;
 }
@@ -2952,6 +2912,95 @@ static uint32_t emu_gen_find(const char *name)
         if (n[j] == 0 && name[j] == 0) return g_genlibs[i].base;
     }
     return 0;
+}
+
+static int emu_is_device_name(const char *n)
+{
+    /* ".device" suffix match — device nodes go on ExecBase.DeviceList. */
+    int l = 0; while (n[l]) l++;
+    const char *s = ".device";
+    if (l < 7) return 0;
+    for (int i = 0; i < 7; i++) if (n[l - 7 + i] != s[i]) return 0;
+    return 1;
+}
+
+/* Resolve the native_funcs index a guest LVO maps to for module `m`
+ * (0 = unmapped).  Slot-indexed modules serve vector -6*s from
+ * native_funcs[s], i.e. func index s+1. */
+static int rom_lvo_fn(const UaosRomModule *m, int lvo)
+{
+    if (!m || lvo > -6 || (-lvo) % 6) return 0;
+    if (m->lvo_slot_indexed) {
+        uint16_t s = (uint16_t)(-lvo / 6);
+        if (s > 0 && s < m->func_count && m->native_funcs[s])
+            return s + 1;
+        return 0;
+    }
+    for (uint16_t i = 0; i < m->lvo_count; i++)
+        if (m->lvo_map[i].lvo == lvo) return m->lvo_map[i].fn;
+    return 0;
+}
+
+/* Marshal the live m68k registers into an M68kCPUState, invoke the ROM
+ * module's native handler for func index `fn`, and write the registers
+ * back.  Returns nonzero when a handler ran; 0 when the module has no
+ * func at that index.  (UAOS-238 — shared by the LIB_* ILLEGAL dispatch
+ * and the OpenDevice/DoIO device path.) */
+static int emu_rom_call(const char *rom_name, uint16_t fn)
+{
+    void *rom_fn = UAOS_ROM_NativeFunc(rom_name, fn);
+    if (!rom_fn) return 0;
+
+    M68kCPUState cpu;
+    cpu.d[0] = m68k_get_reg(NULL, M68K_REG_D0);
+    cpu.d[1] = m68k_get_reg(NULL, M68K_REG_D1);
+    cpu.d[2] = m68k_get_reg(NULL, M68K_REG_D2);
+    cpu.d[3] = m68k_get_reg(NULL, M68K_REG_D3);
+    cpu.d[4] = m68k_get_reg(NULL, M68K_REG_D4);
+    cpu.d[5] = m68k_get_reg(NULL, M68K_REG_D5);
+    cpu.d[6] = m68k_get_reg(NULL, M68K_REG_D6);
+    cpu.d[7] = m68k_get_reg(NULL, M68K_REG_D7);
+    cpu.a[0] = m68k_get_reg(NULL, M68K_REG_A0);
+    cpu.a[1] = m68k_get_reg(NULL, M68K_REG_A1);
+    cpu.a[2] = m68k_get_reg(NULL, M68K_REG_A2);
+    cpu.a[3] = m68k_get_reg(NULL, M68K_REG_A3);
+    cpu.a[4] = m68k_get_reg(NULL, M68K_REG_A4);
+    cpu.a[5] = m68k_get_reg(NULL, M68K_REG_A5);
+    cpu.a[6] = m68k_get_reg(NULL, M68K_REG_A6);
+    cpu.a[7] = m68k_get_reg(NULL, M68K_REG_A7);
+    cpu.pc   = m68k_get_reg(NULL, M68K_REG_PC);
+    cpu.sr   = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+
+    void (*fn_ptr)(M68kCPUState *) = (void (*)(M68kCPUState *))rom_fn;
+    fn_ptr(&cpu);
+
+    m68k_set_reg(M68K_REG_D0, cpu.d[0]);
+    m68k_set_reg(M68K_REG_D1, cpu.d[1]);
+    m68k_set_reg(M68K_REG_D2, cpu.d[2]);
+    m68k_set_reg(M68K_REG_D3, cpu.d[3]);
+    m68k_set_reg(M68K_REG_D4, cpu.d[4]);
+    m68k_set_reg(M68K_REG_D5, cpu.d[5]);
+    m68k_set_reg(M68K_REG_D6, cpu.d[6]);
+    m68k_set_reg(M68K_REG_D7, cpu.d[7]);
+    m68k_set_reg(M68K_REG_A0, cpu.a[0]);
+    m68k_set_reg(M68K_REG_A1, cpu.a[1]);
+    m68k_set_reg(M68K_REG_A2, cpu.a[2]);
+    m68k_set_reg(M68K_REG_A3, cpu.a[3]);
+    m68k_set_reg(M68K_REG_A4, cpu.a[4]);
+    m68k_set_reg(M68K_REG_A5, cpu.a[5]);
+    m68k_set_reg(M68K_REG_A6, cpu.a[6]);
+    m68k_set_reg(M68K_REG_A7, cpu.a[7]);
+    m68k_set_reg(M68K_REG_PC, cpu.pc);
+
+    /* Cut the slice short when the task was externally halted inside a
+     * ROM-dispatched call (window-close quit, UAOS-247) — e.g. dos_Delay's
+     * sliced sleep — so the wrapper's teardown runs without waiting out
+     * the delay. */
+    UaosTask *ct = Task_Current();
+    if (g_emu_halted ||
+        (ct && ct->type == TASK_TYPE_M68K && ct->m68k_halted))
+        m68k_end_timeslice();
+    return 1;
 }
 
 static void exec_OpenLibrary(void)
@@ -2997,13 +3046,25 @@ static void exec_OpenLibrary(void)
         }
     }
 
-    /* Everything else gets a generated versioned base — real ROM-bound
-     * stubs for utility.library, traced catch-alls for the rest
-     * (keymap/locale/asl/iffparse/icon/amigaguide/…).  This mirrors the
-     * host-harness strategy: enumerate the call surface instead of
-     * dying at the first missing library. */
-    if (!result) result = emu_gen_find(name);
-    if (!result) result = emu_gen_lib_base(name, req_ver, NT_LIBRARY_G, 0x17A);
+    /* ROM module registry (UAOS-238): every registered module resolves
+     * here.  Fixed-base modules returned above still honour the version
+     * argument; the rest get a generated base whose vectors dispatch
+     * through UAOS_ROM_NativeFunc().  A request newer than the registered
+     * version fails like real AmigaOS (OctaMED requires asl/iffparse v37+).
+     * Unregistered names keep the fake-base policy: a generated base of
+     * traced no-op stubs so missing libraries fail predictably. */
+    UaosRomModule *rom = UAOS_ROM_Find(name);
+    if (rom && req_ver && req_ver > rom->version) {
+        result = 0;
+    } else if (!result) {
+        result = emu_gen_find(name);
+        if (!result) {
+            int dev = emu_is_device_name(name);
+            result = emu_gen_lib_base(name, req_ver,
+                                      dev ? NT_DEVICE_G : NT_LIBRARY_G,
+                                      dev ? 0x15E : 0x17A, rom);
+        }
+    }
 
     /* Trace every OpenLibrary name + requested version + outcome.
      * This is the primary tool for discovering what an m68k app needs. */
@@ -3057,7 +3118,7 @@ static void exec_OpenResource(void)
         { name[i] = (char)g_ram[name_ptr+i]; if (!name[i]) break; i++; }
     name[i] = '\0';
     uint32_t base = emu_gen_find(name);
-    if (!base) base = emu_gen_lib_base(name, 0, 8 /*NT_RESOURCE*/, 0x150);
+    if (!base) base = emu_gen_lib_base(name, 0, 8 /*NT_RESOURCE*/, 0x150, NULL);
     m68k_set_reg(M68K_REG_D0, base);
 }
 
@@ -4191,6 +4252,17 @@ static void exec_OpenDevice(void)
         if (eq && !name[12]) {
             devbase = AUDIO_DEV_BASE;
             audio_note_open();
+        } else {
+            /* ROM-registered devices (timer/keyboard/console, UAOS-238):
+             * io_Device gets a generated base whose Open/BeginIO/AbortIO
+             * stubs dispatch into the module's native funcs. */
+            UaosRomModule *dm = UAOS_ROM_Find(name);
+            if (dm) {
+                devbase = emu_gen_find(name);
+                if (!devbase)
+                    devbase = emu_gen_lib_base(name, 0, NT_DEVICE_G, 0x15E, dm);
+                if (!devbase) devbase = FAKE_LIB_BASE;
+            }
         }
         glue_w32(ioreq + IO_DEVICE, devbase);  /* fake or real device base */
         glue_w32(ioreq + IO_UNIT, m68k_get_reg(NULL, M68K_REG_D0));
@@ -4202,9 +4274,19 @@ static void exec_OpenDevice(void)
 static void exec_CloseDevice(void)
 {
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
-    if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE &&
-        glue_r32(io + IO_DEVICE) == AUDIO_DEV_BASE) {
-        audio_note_close();
+    if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE) {
+        uint32_t dev = glue_r32(io + IO_DEVICE);
+        if (dev == AUDIO_DEV_BASE) {
+            audio_note_close();
+        } else {
+            /* ROM-registered device: run its Close vector (UAOS-238). */
+            UaosRomModule *dm = emu_gen_rom(dev);
+            int fn = dm ? rom_lvo_fn(dm, -12) : 0;
+            if (fn) {
+                m68k_set_reg(M68K_REG_A1, io);
+                emu_rom_call(dm->name, (uint16_t)fn);
+            }
+        }
     }
 }
 
@@ -4212,15 +4294,31 @@ static void exec_CloseDevice(void)
  * Real exec DoIO/SendIO call the device's BeginIO internally.
  * Returns nonzero when the request was handled by a device. */
 static void audio_dev_BeginIO(void);
+static void audio_dev_reply(uint32_t io);
 static int io_dispatch_device(uint32_t io)
 {
     if (io + IOSTD_SIZE >= GUEST_RAM_SIZE) return 0;
-    if (glue_r32(io + IO_DEVICE) != AUDIO_DEV_BASE) return 0;
-    uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
-    m68k_set_reg(M68K_REG_A1, io);
-    audio_dev_BeginIO();
-    m68k_set_reg(M68K_REG_A1, saved_a1);
-    return 1;
+    uint32_t dev = glue_r32(io + IO_DEVICE);
+    if (dev == AUDIO_DEV_BASE) {
+        uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
+        m68k_set_reg(M68K_REG_A1, io);
+        audio_dev_BeginIO();
+        m68k_set_reg(M68K_REG_A1, saved_a1);
+        return 1;
+    }
+    /* ROM-registered device with a generated base: run its BeginIO
+     * vector (LVO -42) so DoIO/SendIO reach the module (UAOS-238). */
+    UaosRomModule *dm = emu_gen_rom(dev);
+    int fn = dm ? rom_lvo_fn(dm, -42) : 0;
+    if (fn) {
+        uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
+        m68k_set_reg(M68K_REG_A1, io);
+        emu_rom_call(dm->name, (uint16_t)fn);
+        m68k_set_reg(M68K_REG_A1, saved_a1);
+        audio_dev_reply(io);   /* generic non-QUICK completion */
+        return 1;
+    }
+    return 0;   /* no BeginIO vector — caller completes the request */
 }
 
 static void exec_DoIO(void)
@@ -6060,86 +6158,62 @@ int m68k_illg_instr_callback(int opcode)
                 m68k_set_reg(M68K_REG_D0, 0);   /* safe default */
             }
         }
-    } else if (lib == LIB_DOS || lib == LIB_UTILITY || lib == LIB_IFFPARSE) {
-        /* Delegate to ROM module dispatcher — marshal all regs */
-        M68kCPUState cpu;
-        cpu.d[0] = m68k_get_reg(NULL, M68K_REG_D0);
-        cpu.d[1] = m68k_get_reg(NULL, M68K_REG_D1);
-        cpu.d[2] = m68k_get_reg(NULL, M68K_REG_D2);
-        cpu.d[3] = m68k_get_reg(NULL, M68K_REG_D3);
-        cpu.d[4] = m68k_get_reg(NULL, M68K_REG_D4);
-        cpu.d[5] = m68k_get_reg(NULL, M68K_REG_D5);
-        cpu.d[6] = m68k_get_reg(NULL, M68K_REG_D6);
-        cpu.d[7] = m68k_get_reg(NULL, M68K_REG_D7);
-        cpu.a[0] = m68k_get_reg(NULL, M68K_REG_A0);
-        cpu.a[1] = m68k_get_reg(NULL, M68K_REG_A1);
-        cpu.a[2] = m68k_get_reg(NULL, M68K_REG_A2);
-        cpu.a[3] = m68k_get_reg(NULL, M68K_REG_A3);
-        cpu.a[4] = m68k_get_reg(NULL, M68K_REG_A4);
-        cpu.a[5] = m68k_get_reg(NULL, M68K_REG_A5);
-        cpu.a[6] = m68k_get_reg(NULL, M68K_REG_A6);
-        cpu.a[7] = m68k_get_reg(NULL, M68K_REG_A7);
-        cpu.pc   = m68k_get_reg(NULL, M68K_REG_PC);
-        cpu.sr   = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
-
+    } else if (lib == LIB_DOS || lib == LIB_UTILITY || lib == LIB_IFFPARSE ||
+               lib == LIB_ROM) {
+        /* Delegate to the ROM module dispatcher (UAOS-238).  LIB_ROM
+         * resolves the module through the generated base in A6; the
+         * legacy fixed ids name their module directly. */
+        uint32_t a6 = m68k_get_reg(NULL, M68K_REG_A6);
+        UaosRomModule *rom = (lib == LIB_ROM) ? emu_gen_rom(a6) : NULL;
         const char *rom_name = lib == LIB_DOS      ? "dos.library"      :
                                lib == LIB_UTILITY  ? "utility.library"  :
-                                                     "iffparse.library";
-        void *rom_fn = UAOS_ROM_NativeFunc(rom_name, (uint16_t)fn);
-        if (rom_fn) {
-            void (*fn_ptr)(M68kCPUState *) = (void (*)(M68kCPUState *))rom_fn;
-            fn_ptr(&cpu);
-            /* Write back registers that may have been modified */
-            m68k_set_reg(M68K_REG_D0, cpu.d[0]);
-            m68k_set_reg(M68K_REG_D1, cpu.d[1]);
-            m68k_set_reg(M68K_REG_D2, cpu.d[2]);
-            m68k_set_reg(M68K_REG_D3, cpu.d[3]);
-            m68k_set_reg(M68K_REG_D4, cpu.d[4]);
-            m68k_set_reg(M68K_REG_D5, cpu.d[5]);
-            m68k_set_reg(M68K_REG_D6, cpu.d[6]);
-            m68k_set_reg(M68K_REG_D7, cpu.d[7]);
-            m68k_set_reg(M68K_REG_A0, cpu.a[0]);
-            m68k_set_reg(M68K_REG_A1, cpu.a[1]);
-            m68k_set_reg(M68K_REG_A2, cpu.a[2]);
-            m68k_set_reg(M68K_REG_A3, cpu.a[3]);
-            m68k_set_reg(M68K_REG_A4, cpu.a[4]);
-            m68k_set_reg(M68K_REG_A5, cpu.a[5]);
-            m68k_set_reg(M68K_REG_A6, cpu.a[6]);
-            m68k_set_reg(M68K_REG_A7, cpu.a[7]);
-            m68k_set_reg(M68K_REG_PC, cpu.pc);
-            /* Also cut the slice short when the task was externally halted
-             * (window-close quit, UAOS-247) inside a ROM-dispatched call —
-             * e.g. dos_Delay's sliced sleep — so the wrapper's teardown
-             * runs without waiting out the delay. */
-            {
-                UaosTask *ct = Task_Current();
-                if (g_emu_halted ||
-                    (ct && ct->type == TASK_TYPE_M68K && ct->m68k_halted))
-                    m68k_end_timeslice();
-            }
-        } else {
+                               lib == LIB_IFFPARSE ? "iffparse.library" :
+                               rom                ? rom->name          : NULL;
+        int dispatched = rom_name && emu_rom_call(rom_name, (uint16_t)fn);
+        if (!dispatched) {
             /* Unimplemented LVO (catch-all stub) or bad fn id.
-             * stub_addr = PC-4 at this point; lvo = stub - a6. */
+             * stub_addr = PC-4 at this point; lvo = stub - a6.
+             * Generic semantics for unmapped vectors on ROM-bound bases:
+             * lib Open (-6) returns the base, Close (-12) succeeds, and
+             * locale GetCatalogStr (-72) yields the caller's built-in
+             * default string — mirrored from the LIB_GENERIC specials.
+             * Those get a defined result, so only genuinely-unhandled
+             * vectors log "unimpl". */
             uint32_t spc = m68k_get_reg(NULL, M68K_REG_PC);
-            uint32_t a6  = m68k_get_reg(NULL, M68K_REG_A6);
             int32_t lvo = (int32_t)spc - 4 - (int32_t)a6;
-            static int32_t last_lvo = 0;
-            static int unimpl_prints = 0;
-            if (lvo != last_lvo && unimpl_prints < 100) {
-                last_lvo = lvo;
-                unimpl_prints++;
-                char msg[48];
-                const char *pfx = (lib == LIB_DOS) ? "[dos] unimpl lvo=-"
-                                : (lib == LIB_UTILITY) ? "[util] unimpl lvo=-"
-                                                       : "[iff] unimpl lvo=-";
-                int i = 0; while (pfx[i]) { msg[i] = pfx[i]; i++; }
-                char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
-                int j = 0;
-                while (n[j] && i<44) msg[i++]=n[j++];
-                msg[i++]='\n'; msg[i]='\0';
-                emu_print(msg);
+            int is_locale = rom_name && rom_name[0]=='l' && rom_name[6]=='.' &&
+                            rom_name[1]=='o' && rom_name[2]=='c' &&
+                            rom_name[3]=='a' && rom_name[4]=='l' &&
+                            rom_name[5]=='e';
+            if (lvo == -6)
+                m68k_set_reg(M68K_REG_D0, a6);
+            else if (is_locale && lvo == -72)
+                m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A1));
+            else {
+                m68k_set_reg(M68K_REG_D0, 0);
+                static int32_t last_lvo = 0;
+                static int unimpl_prints = 0;
+                if (lvo != last_lvo && unimpl_prints < 100) {
+                    last_lvo = lvo;
+                    unimpl_prints++;
+                    char msg[64];
+                    const char *pfx = (lib == LIB_DOS) ? "[dos] unimpl lvo=-"
+                                    : (lib == LIB_ROM) ? "[rom] unimpl "
+                                                       : "[lib] unimpl lvo=-";
+                    int i = 0; while (pfx[i]) { msg[i] = pfx[i]; i++; }
+                    if (lib == LIB_ROM) {
+                        const char *q = rom_name ? rom_name : "?";
+                        for (int j = 0; q[j] && i < 56; j++) msg[i++] = q[j];
+                        const char *t = " lvo=-";
+                        for (int j = 0; t[j] && i < 60; j++) msg[i++] = t[j];
+                    }
+                    char n[12]; u32_dec((uint32_t)(-lvo), n, 12);
+                    int j = 0;
+                    while (n[j] && i<60) msg[i++]=n[j++];
+                    msg[i++]='\n'; msg[i]='\0';
+                    emu_print(msg);
+                }
             }
-            m68k_set_reg(M68K_REG_D0, 0);
         }
     } else if (lib == LIB_GENERIC) {
         /* Fake library base — log the call (lvo via a6), return 0. */

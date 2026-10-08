@@ -244,6 +244,29 @@ static void *mathffp_funcs[] = {
     mathffp_SPAcos,        /* index 20 */
 };
 
+/* Canonical mathffp.library LVOs -> mathffp_funcs[] indices.
+ * (FFP transcendental vectors live at -102..-192; SPAtan has no vector
+ * in the mathffp jump table, so index 18 is intentionally unmapped.) */
+static const UaosRomLvo mathffp_lvo_map[] = {
+    {  -30, MATHFFP_SP_FIX },    /* SPFix   */
+    {  -36, MATHFFP_SP_FLT },    /* SPFlt   */
+    {  -42, MATHFFP_SP_CMP },    /* SPCmp   */
+    {  -54, MATHFFP_SP_ABS },    /* SPAbs   */
+    {  -60, MATHFFP_SP_NEG },    /* SPNeg   */
+    {  -66, MATHFFP_SP_ADD },    /* SPAdd   */
+    {  -72, MATHFFP_SP_SUB },    /* SPSub   */
+    {  -78, MATHFFP_SP_MUL },    /* SPMul   */
+    {  -84, MATHFFP_SP_DIV },    /* SPDiv   */
+    { -102, MATHFFP_SP_SIN },    /* SPSin   */
+    { -108, MATHFFP_SP_COS },    /* SPCos   */
+    { -114, MATHFFP_SP_TAN },    /* SPTan   */
+    { -144, MATHFFP_SP_EXP },    /* SPExp   */
+    { -150, MATHFFP_SP_LOG },    /* SPLog   */
+    { -162, MATHFFP_SP_SQRT },   /* SPSqrt  */
+    { -180, MATHFFP_SP_ASIN },   /* SPAsin  */
+    { -186, MATHFFP_SP_ACOS },   /* SPAcos  */
+};
+
 /* =========================================================================
  * Registration function
  * ========================================================================= */
@@ -253,4 +276,6 @@ void UAOS_MATHFFP_Register(void)
     UAOS_ROM_Register("mathffp.library", 40, 0x00000060,
                       (uint16_t)(sizeof(mathffp_funcs) / sizeof(mathffp_funcs[0])),
                       mathffp_funcs);
+    UAOS_ROM_BindLvoMap("mathffp.library", mathffp_lvo_map,
+                        (uint16_t)(sizeof(mathffp_lvo_map) / sizeof(mathffp_lvo_map[0])));
 }

@@ -252,8 +252,8 @@ end
         # --- verdict ------------------------------------------------------
         iff_calls = strace_stats(lib=11)
         check("iffparse: zero unimplemented-LVO hits",
-              "unimpl" not in open(serial, errors="replace").read()
-              or "iff" not in open(serial, errors="replace").read())
+              not any("unimpl" in l and "iff" in l for l in open(
+                  serial, errors="replace")))
         # Documented upstream behaviour: OctaMED V5 never calls iffparse —
         # it has built-in IFF readers.  lib=11 stats must simply be empty
         # or composed only of successfully-dispatched fns.

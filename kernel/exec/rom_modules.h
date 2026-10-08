@@ -24,6 +24,16 @@ typedef struct {
 } M68kCPUState;
 
 /* -----------------------------------------------------------------------
+ * LVO map entry — binds a guest jump-table vector (negative offset from
+ * the library base) to a 1-based native_funcs index.
+ * ----------------------------------------------------------------------- */
+
+typedef struct {
+    int16_t  lvo;               /* e.g. -36                                   */
+    uint16_t fn;                /* 1-based index into native_funcs            */
+} UaosRomLvo;
+
+/* -----------------------------------------------------------------------
  * ROM module descriptor
  * ----------------------------------------------------------------------- */
 
@@ -33,6 +43,9 @@ typedef struct UaosRomModule {
     uint32_t    amiga_base;     /* 32-bit Amiga address of the library base   */
     uint16_t    func_count;     /* number of exported jump table vectors      */
     void      **native_funcs;   /* array of native function pointers          */
+    const UaosRomLvo *lvo_map;  /* optional guest LVO -> func index table     */
+    uint16_t    lvo_count;      /* entries in lvo_map                         */
+    uint8_t     lvo_slot_indexed; /* nonzero: native_funcs[i] serves LVO -6*i */
 } UaosRomModule;
 
 /* Register a ROM module at boot time */
@@ -45,6 +58,13 @@ UaosRomModule *UAOS_ROM_Find(const char *name);
 
 /* Resolve function index to native handler */
 void *UAOS_ROM_NativeFunc(const char *lib_name, uint16_t func_idx);
+
+/* Attach a guest LVO->func map to a registered module (0 on success) */
+int UAOS_ROM_BindLvoMap(const char *name, const UaosRomLvo *map,
+                        uint16_t count);
+
+/* Mark a module whose native_funcs[] is indexed by LVO slot (|lvo|/6) */
+int UAOS_ROM_MarkSlotIndexed(const char *name);
 
 /* List all registered modules */
 int UAOS_ROM_ListAll(char *names[], uint16_t versions[], int max_count);

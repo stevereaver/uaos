@@ -178,6 +178,24 @@ static void *mt_funcs[] = {
     mt_SPPow,    /* index 16 */
 };
 
+/* Canonical mathtrans.library LVOs -> mt_funcs[] indices.
+ * SPFloor/SPCeil (indices 14/15) have no mathtrans jump-table vector and
+ * stay reachable by index only. */
+static const UaosRomLvo mt_lvo_map[] = {
+    {  -30, MT_SPATAN },    /* SPAtan    */
+    {  -36, MT_SPSIN },     /* SPSin     */
+    {  -42, MT_SPCOS },     /* SPCos     */
+    {  -48, MT_SPTAN },     /* SPTan     */
+    {  -54, MT_SPSINCOS },  /* SPSincos  */
+    {  -78, MT_SPEXP },     /* SPExp     */
+    {  -84, MT_SPLOG },     /* SPLog     */
+    {  -90, MT_SPPOW },     /* SPPow     */
+    {  -96, MT_SPSQRT },    /* SPSqrt    */
+    { -114, MT_SPASIN },    /* SPAsin    */
+    { -120, MT_SPACOS },    /* SPAcos    */
+    { -126, MT_SPLOG10 },   /* SPLog10   */
+};
+
 /* =========================================================================
  * Registration
  * ========================================================================= */
@@ -187,4 +205,6 @@ void UAOS_MATHTRANS_Register(void)
     UAOS_ROM_Register("mathtrans.library", 40, 0x00000080,
                       (uint16_t)(sizeof(mt_funcs) / sizeof(mt_funcs[0])),
                       mt_funcs);
+    UAOS_ROM_BindLvoMap("mathtrans.library", mt_lvo_map,
+                        (uint16_t)(sizeof(mt_lvo_map) / sizeof(mt_lvo_map[0])));
 }

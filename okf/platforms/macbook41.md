@@ -444,9 +444,13 @@ screen+window, exits) across repeated cycles; metal re-verify pending.
   nouveau / mbp_nv50_bl (`~/workspaces/macbook41/mbp41-nv50-backlight/
   okf/register-interface.md`).  QEMU-verified no-op path
   ("no supported GPU PWM found"); smoke.sh 24/24.
-- Metal verification pending: machine unreachable on
-  192.168.10.149/.176 at change time.  On next USB boot check the
-  `fb:` klog line for 1440x900 and try `backlight 50`.
+- **Metal-verified 2026-10-08** (USB boot, telnet on 192.168.10.150):
+  GOP selected the native panel mode — `fb: 1440x900@32 pitch=8192
+  addr=0xc0060000 -> visible 1440x900`, desktop fills the whole screen
+  (screenshot-exfil confirmed).  `nv50bl` probed `GPU 0407 @01:00.0
+  bar0=0xd2000000 SOR0 duty=160 div=0x3e` (DIV 0x3e = the 62 Linux
+  saw); `backlight 50` wrote duty 512 and read back 49 %, restore to
+  the firmware's ~15 % worked — the panel visibly dimmed/brightened.
 - Deferred per card scope: VBIOS int10 (needs x86 emu or CSM boot) and
   native G84 modesetting — both major efforts, VBIOS reference at
   `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom`.

@@ -151,6 +151,20 @@ static void *misb_funcs[] = {
     misb_SPDiv,   /* index 12 */
 };
 
+/* Canonical mathieeesingbas.library LVOs -> misb_funcs[] indices. */
+static const UaosRomLvo misb_lvo_map[] = {
+    { -30, MIEEESB_SPFIX },   /* IEEESPFix */
+    { -36, MIEEESB_SPFLT },   /* IEEESPFlt */
+    { -42, MIEEESB_SPCMP },   /* IEEESPCmp */
+    { -48, MIEEESB_SPTST },   /* IEEESPTst */
+    { -54, MIEEESB_SPABS },   /* IEEESPAbs */
+    { -60, MIEEESB_SPNEG },   /* IEEESPNeg */
+    { -66, MIEEESB_SPADD },   /* IEEESPAdd */
+    { -72, MIEEESB_SPSUB },   /* IEEESPSub */
+    { -78, MIEEESB_SPMUL },   /* IEEESPMul */
+    { -84, MIEEESB_SPDIV },   /* IEEESPDiv */
+};
+
 /* =========================================================================
  * Registration
  * ========================================================================= */
@@ -160,4 +174,6 @@ void UAOS_MATHIEEESINGBAS_Register(void)
     UAOS_ROM_Register("mathieeesingbas.library", 40, 0x00000070,
                       (uint16_t)(sizeof(misb_funcs) / sizeof(misb_funcs[0])),
                       misb_funcs);
+    UAOS_ROM_BindLvoMap("mathieeesingbas.library", misb_lvo_map,
+                        (uint16_t)(sizeof(misb_lvo_map) / sizeof(misb_lvo_map[0])));
 }

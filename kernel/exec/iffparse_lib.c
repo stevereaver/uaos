@@ -1402,9 +1402,56 @@ static void *iffparse_funcs[] = {
     iff_fn_IDtoStr,             /* 40 -270 IDtoStr           */
 };
 
+/* Canonical iffparse.library LVOs -> iffparse_funcs[] indices
+ * (real AmigaOS FD numbering — UAOS-243). */
+static const UaosRomLvo iff_lvo_map[] = {
+    {  -30,  1 },   /* AllocIFF            */
+    {  -36,  2 },   /* OpenIFF             */
+    {  -42,  3 },   /* ParseIFF            */
+    {  -48,  4 },   /* CloseIFF            */
+    {  -54,  5 },   /* FreeIFF             */
+    {  -60,  6 },   /* ReadChunkBytes      */
+    {  -66,  7 },   /* WriteChunkBytes     */
+    {  -72,  8 },   /* ReadChunkRecords    */
+    {  -78,  9 },   /* WriteChunkRecords   */
+    {  -84, 10 },   /* PushChunk           */
+    {  -90, 11 },   /* PopChunk            */
+    { -102, 12 },   /* EntryHandler        */
+    { -108, 13 },   /* ExitHandler         */
+    { -114, 14 },   /* PropChunk           */
+    { -120, 15 },   /* PropChunks          */
+    { -126, 16 },   /* StopChunk           */
+    { -132, 17 },   /* StopChunks          */
+    { -138, 18 },   /* CollectionChunk     */
+    { -144, 19 },   /* CollectionChunks    */
+    { -150, 20 },   /* StopOnExit          */
+    { -156, 21 },   /* FindProp            */
+    { -162, 22 },   /* FindCollection      */
+    { -168, 23 },   /* FindPropContext     */
+    { -174, 24 },   /* CurrentChunk        */
+    { -180, 25 },   /* ParentChunk         */
+    { -186, 26 },   /* AllocLocalItem      */
+    { -192, 27 },   /* LocalItemData       */
+    { -198, 28 },   /* SetLocalItemPurge   */
+    { -204, 29 },   /* FreeLocalItem       */
+    { -210, 30 },   /* FindLocalItem       */
+    { -216, 31 },   /* StoreLocalItem      */
+    { -222, 32 },   /* StoreItemInContext  */
+    { -228, 33 },   /* InitIFF             */
+    { -234, 34 },   /* InitIFFasDOS        */
+    { -240, 35 },   /* InitIFFasClip       */
+    { -246, 36 },   /* OpenClipboard       */
+    { -252, 37 },   /* CloseClipboard      */
+    { -258, 38 },   /* GoodID              */
+    { -264, 39 },   /* GoodType            */
+    { -270, 40 },   /* IDtoStr             */
+};
+
 void UAOS_IFFPARSE_Register(void)
 {
     UAOS_ROM_Register("iffparse.library", 39, 0x00000060,
                       (uint16_t)(sizeof(iffparse_funcs) / sizeof(iffparse_funcs[0])),
                       iffparse_funcs);
+    UAOS_ROM_BindLvoMap("iffparse.library", iff_lvo_map,
+                        (uint16_t)(sizeof(iff_lvo_map) / sizeof(iff_lvo_map[0])));
 }

@@ -97,6 +97,23 @@ static TimerQueueEntry_t *g_timer_queue_head = NULL;
 extern uint8_t *g_ram;
 #define M68K_TO_HOST(addr) ((void *)(g_ram + (addr)))
 
+/* Guest memory is big-endian — read/write 32-bit words byte-wise. */
+static uint32_t timer_r32(uint32_t addr)
+{
+    return ((uint32_t)g_ram[addr + 0] << 24)
+         | ((uint32_t)g_ram[addr + 1] << 16)
+         | ((uint32_t)g_ram[addr + 2] <<  8)
+         | ((uint32_t)g_ram[addr + 3]      );
+}
+
+static void timer_w32(uint32_t addr, uint32_t val)
+{
+    g_ram[addr + 0] = (uint8_t)(val >> 24);
+    g_ram[addr + 1] = (uint8_t)(val >> 16);
+    g_ram[addr + 2] = (uint8_t)(val >>  8);
+    g_ram[addr + 3] = (uint8_t)(val      );
+}
+
 /* =========================================================================
  * Timer Queue Management
  * ========================================================================= */
@@ -443,10 +460,8 @@ static void timer_GetSysTime(M68kCPUState *cpu)
     }
 
     uint32_t epoch = ntp_get_epoch();
-    timeval_t *tv = (timeval_t *)M68K_TO_HOST(time_ptr);
-
-    tv->tv_sec = epoch;
-    tv->tv_usec = 0;  /* We only have second precision from ntp_get_epoch */
+    timer_w32(time_ptr,     epoch);
+    timer_w32(time_ptr + 4, 0);  /* only second precision from ntp_get_epoch */
 
     cpu->d[0] = 0;  /* Success */
 }
@@ -471,9 +486,8 @@ static void timer_ReadEClock(M68kCPUState *cpu)
         return;
     }
 
-    EClockVal_t *ev = (EClockVal_t *)M68K_TO_HOST(eclock_ptr);
-    ev->ev_hi = (uint32_t)(g_eclock_value >> 32);
-    ev->ev_lo = (uint32_t)g_eclock_value;
+    timer_w32(eclock_ptr,     (uint32_t)(g_eclock_value >> 32));
+    timer_w32(eclock_ptr + 4, (uint32_t)g_eclock_value);
 
     /* Return E-clock frequency (~709379 ticks per second on PAL Amiga) */
     cpu->d[0] = 709379;
@@ -492,17 +506,22 @@ static void timer_AddTime(M68kCPUState *cpu)
         return;
     }
 
-    timeval_t *dst = (timeval_t *)M68K_TO_HOST(dst_ptr);
-    timeval_t *src = (timeval_t *)M68K_TO_HOST(src_ptr);
+    uint32_t dsec  = timer_r32(dst_ptr);
+    uint32_t dusec = timer_r32(dst_ptr + 4);
+    uint32_t ssec  = timer_r32(src_ptr);
+    uint32_t susec = timer_r32(src_ptr + 4);
 
-    dst->tv_sec += src->tv_sec;
-    dst->tv_usec += src->tv_usec;
+    dsec  += ssec;
+    dusec += susec;
 
     /* Normalize microseconds */
-    if (dst->tv_usec >= 1000000) {
-        dst->tv_sec += 1;
-        dst->tv_usec -= 1000000;
+    if (dusec >= 1000000) {
+        dsec  += 1;
+        dusec -= 1000000;
     }
+
+    timer_w32(dst_ptr,     dsec);
+    timer_w32(dst_ptr + 4, dusec);
 
     cpu->d[0] = 0;  /* Success */
 }
@@ -520,17 +539,22 @@ static void timer_SubTime(M68kCPUState *cpu)
         return;
     }
 
-    timeval_t *dst = (timeval_t *)M68K_TO_HOST(dst_ptr);
-    timeval_t *src = (timeval_t *)M68K_TO_HOST(src_ptr);
+    uint32_t dsec  = timer_r32(dst_ptr);
+    uint32_t dusec = timer_r32(dst_ptr + 4);
+    uint32_t ssec  = timer_r32(src_ptr);
+    uint32_t susec = timer_r32(src_ptr + 4);
 
     /* Handle microseconds underflow */
-    if (dst->tv_usec < src->tv_usec) {
-        dst->tv_sec -= 1;
-        dst->tv_usec += 1000000;
+    if (dusec < susec) {
+        dsec  -= 1;
+        dusec += 1000000;
     }
 
-    dst->tv_usec -= src->tv_usec;
-    dst->tv_sec -= src->tv_sec;
+    dusec -= susec;
+    dsec  -= ssec;
+
+    timer_w32(dst_ptr,     dsec);
+    timer_w32(dst_ptr + 4, dusec);
 
     cpu->d[0] = 0;  /* Success */
 }
@@ -548,23 +572,15 @@ static void timer_CmpTime(M68kCPUState *cpu)
         return;
     }
 
-    timeval_t *t1 = (timeval_t *)M68K_TO_HOST(t1_ptr);
-    timeval_t *t2 = (timeval_t *)M68K_TO_HOST(t2_ptr);
+    uint32_t t1s = timer_r32(t1_ptr), t1u = timer_r32(t1_ptr + 4);
+    uint32_t t2s = timer_r32(t2_ptr), t2u = timer_r32(t2_ptr + 4);
 
-    if (t1->tv_sec < t2->tv_sec) {
+    if (t1s < t2s || (t1s == t2s && t1u < t2u))
         cpu->d[0] = (uint32_t)-1;
-    } else if (t1->tv_sec > t2->tv_sec) {
+    else if (t1s > t2s || (t1s == t2s && t1u > t2u))
         cpu->d[0] = 1;
-    } else {
-        /* Seconds equal, compare microseconds */
-        if (t1->tv_usec < t2->tv_usec) {
-            cpu->d[0] = (uint32_t)-1;
-        } else if (t1->tv_usec > t2->tv_usec) {
-            cpu->d[0] = 1;
-        } else {
-            cpu->d[0] = 0;
-        }
-    }
+    else
+        cpu->d[0] = 0;
 }
 
 /* =========================================================================
@@ -584,6 +600,21 @@ static void *timer_funcs[] = {
     timer_CmpTime,      /* index 10 */
 };
 
+/* timer.device LVOs -> timer_funcs[] indices.
+ * -6/-12 are the device Open/Close vectors, -42/-48 BeginIO/AbortIO,
+ * and the timer "library" calls live at -66..-90 (canonical timer.fd). */
+static const UaosRomLvo timer_lvo_map[] = {
+    {  -6, 1 },   /* Open        */
+    { -12, 2 },   /* Close       */
+    { -42, 3 },   /* BeginIO     */
+    { -48, 4 },   /* AbortIO     */
+    { -66, 8 },   /* AddTime     */
+    { -72, 9 },   /* SubTime     */
+    { -78, 10 },  /* CmpTime     */
+    { -84, 7 },   /* ReadEClock  */
+    { -90, 5 },   /* GetSysTime  */
+};
+
 /* =========================================================================
  * Registration function
  * ========================================================================= */
@@ -593,4 +624,6 @@ void UAOS_TIMER_Register(void)
     UAOS_ROM_Register("timer.device", 40, 0x000000A0,
                       (uint16_t)(sizeof(timer_funcs) / sizeof(timer_funcs[0])),
                       timer_funcs);
+    UAOS_ROM_BindLvoMap("timer.device", timer_lvo_map,
+                        (uint16_t)(sizeof(timer_lvo_map) / sizeof(timer_lvo_map[0])));
 }

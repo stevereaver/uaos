@@ -344,6 +344,16 @@ static void *workbench_funcs[] = {
     workbench_AddAppWindowA,      /* 15 */
 };
 
+/* Canonical workbench.library LVOs -> workbench_funcs[] indices
+ * (workbench_lib.fd V36: AddAppWindowA -48, RemoveAppWindow -54,
+ * AddAppIconA -60, RemoveAppIcon -66). */
+static const UaosRomLvo workbench_lvo_map[] = {
+    { -48, WORKBENCH_ADD_APP_WINDOWA },  /* AddAppWindowA  */
+    { -54, WORKBENCH_REMOVE_APP_WINDOW },/* RemoveAppWindow*/
+    { -60, WORKBENCH_ADD_APP_ICONA },    /* AddAppIconA    */
+    { -66, WORKBENCH_REMOVE_APP_ICON },  /* RemoveAppIcon  */
+};
+
 /* =========================================================================
  * Registration
  * ========================================================================= */
@@ -353,6 +363,8 @@ void UAOS_WORKBENCH_Register(void)
     UAOS_ROM_Register("workbench.library", 45, 0x00000000,
                       (uint16_t)(sizeof(workbench_funcs) / sizeof(workbench_funcs[0])),
                       workbench_funcs);
+    UAOS_ROM_BindLvoMap("workbench.library", workbench_lvo_map,
+                        (uint16_t)(sizeof(workbench_lvo_map) / sizeof(workbench_lvo_map[0])));
 }
 
 /* =========================================================================

@@ -28,6 +28,10 @@ To allow emulated M68k programs to call system functions (like `dos.library/Open
 
 For the low-level native ABI used by some ROM patches, see [Thunking](/concepts/thunking.md).
 
+### Generic ROM-module binding (UAOS-238)
+
+In addition to the fixed jump-table bases (exec `0x1000`, DOS, intuition, etc.), any library or device registered in the kernel ROM module registry (`kernel/exec/rom_modules.c`) is reachable from guest code. `exec_OpenLibrary` resolves names via `UAOS_ROM_Find()`, builds a *generated* library base in the arena at `0x007F0000–0x00800000` (stub block + Library node with the registered `lib_Version` + name string), installs `ILLEGAL` stubs for every `lvo_map` entry plus catch-alls, and dispatches them through `emu_rom_call()` → `UAOS_ROM_NativeFunc()`. `exec_OpenDevice` does the same for registered devices. The `OpenLibrary` version argument is honoured (newer-than-registered → `NULL`); unknown names still get the predictable fake base whose vectors are no-op 0s, and unmapped LVOs on a generated base return 0 (with defined specials for `-6` and locale `-72`).
+
 ## Memory Mapping
 
 The M68k address space is mapped into the x86_64 address space. The bare-metal build gives each M68k task a private 16 MB guest RAM pool (8 MB chip + 8 MB fast); the UAE bridge path reserves a 4 GB guest **virtual** window at 16–20 GB (inside the sandbox PML4's 0–512 GB coverage, outside the 0–4 GB identity map) whose 2 MB pages start non-present and are committed on demand from a static `.guest_ram` backing pool by the page-fault handler (`UAOS_VM_GuestWindowFault` — see `kernel/exec/mmu_sandbox.c`), and points the glue layer at offset 0. No contiguous 4 GB physical allocation is involved (UAOS-162). The first 16 MB of both layouts follow the same exception-vector / jump-table / stack / program layout so that Hunk binaries and library stubs can run in either environment.

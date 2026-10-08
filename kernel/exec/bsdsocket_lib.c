@@ -480,10 +480,32 @@ static void *bsd_funcs[] = {
     bsd_stub_gethostbyname, /* index 16 — gethostbyname() */
 };
 
+/* bsdsocket.library LVOs -> bsd_funcs[] indices (canonical LVO order). */
+static const UaosRomLvo bsd_lvo_map[] = {
+    {  -30, BSD_FN_SOCKET },        /* socket        */
+    {  -36, BSD_FN_BIND },          /* bind          */
+    {  -42, BSD_FN_LISTEN },        /* listen        */
+    {  -48, BSD_FN_ACCEPT },        /* accept        */
+    {  -54, BSD_FN_CONNECT },       /* connect       */
+    {  -60, BSD_FN_SEND },          /* send          */
+    {  -66, BSD_FN_SENDTO },        /* sendto        */
+    {  -72, BSD_FN_RECV },          /* recv          */
+    {  -78, BSD_FN_RECVFROM },      /* recvfrom      */
+    {  -84, BSD_FN_CLOSESOCKET },   /* CloseSocket   */
+    {  -96, BSD_FN_SETSOCKOPT },    /* setsockopt    */
+    { -102, BSD_FN_GETSOCKOPT },    /* getsockopt    */
+    { -108, BSD_FN_IOCTLSOCKET },   /* IoctlSocket   */
+    { -132, BSD_FN_INET_ADDR },     /* inet_addr     */
+    { -138, BSD_FN_INET_NTOA },     /* inet_ntoa     */
+    { -210, BSD_FN_GETHOSTBYNAME }, /* gethostbyname */
+};
+
 void UAOS_BSDSOCKET_Register(void)
 {
     /* BSD_BASE = 0x3000 (guest RAM address of bsdsocket.library base) */
     UAOS_ROM_Register("bsdsocket.library", 4, 0x00003000,
                       (uint16_t)(sizeof(bsd_funcs) / sizeof(bsd_funcs[0])),
                       bsd_funcs);
+    UAOS_ROM_BindLvoMap("bsdsocket.library", bsd_lvo_map,
+                        (uint16_t)(sizeof(bsd_lvo_map) / sizeof(bsd_lvo_map[0])));
 }

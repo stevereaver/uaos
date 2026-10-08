@@ -1,5 +1,44 @@
 # OKF Change Log
 
+## 2026-10-08 — generic ROM-module binding to guest OpenLibrary/OpenDevice (UAOS-238)
+
+* **Added** (`kernel/exec/rom_modules.{c,h}`): `UaosRomLvo` LVO→fn maps,
+  `UAOS_ROM_BindLvoMap`, `UAOS_ROM_MarkSlotIndexed` — module-owned
+  vector tables since `native_funcs[]` ordering is per-module
+  (sequential, gapped, or slot-indexed like graphics).
+* **Added** per-module `lvo_map` tables in utility, iffparse, mathffp,
+  mathieeesingbas, mathtrans, locale, workbench, bsdsocket, timer,
+  console, keyboard; graphics marked slot-indexed. utility gained
+  `SMult64`/`UMult64`.
+* **Changed** (`emulation/uaos_m68k_glue.c`): `exec_OpenLibrary`
+  resolves names via `UAOS_ROM_Find()` and builds generated library
+  bases (arena `0x007F0000–0x00800000`, per-task tracked) with real
+  `lib_Version`; version arg honoured (`req > registered` → `NULL`).
+  New `LIB_ROM` dispatch id + shared `emu_rom_call()` marshaler;
+  `exec_OpenDevice`/`CloseDevice`/`DoIO` bind ROM-registered devices
+  (timer/console/keyboard) through the same path. Unmapped LVOs return
+  0 (specials: `-6`→base, locale `-72`→default string); unknown names
+  keep the no-op fake base.
+* **Fixed** (endianness, exposed by the new binding): `utility_lib`
+  `NextTagItem`/`GetTagData`/`ToUpper`/`ToLower` and `timer_device`
+  `AddTime`/`SubTime`/`CmpTime`/`GetSysTime`/`ReadEClock` dereferenced
+  big-endian guest structs natively — tag reads came back byte-swapped,
+  `NextTagItem` returned host pointers, `AddTime`'s usec normalize
+  fired on swapped magnitudes. Converted to byte-wise BE r/w helpers.
+* **Fixed** (`tests/qemu_octamed_iff_test.py`): the "zero unimpl-LVO"
+  check grepped the whole serial for "unimpl"; now scoped to iffparse
+  lines as documented.
+* **Added** `system/Demos/UtilTest.s` — guest acceptance demo.
+* **Verified** in QEMU: `SYS:Demos/UtilTest` PASS (v99 rejected, v37
+  base works, SMult32/UMult64/NextTagItem/GetTagData, mathieeesingbas
+  IEEESPAdd, timer OpenDevice+AddTime, unknown lib clean no-op);
+  `qemu_octamed_iff_test` 9/9, `qemu_m68k_lifecycle_test` 24/24,
+  `qemu_asl_test` 15/15, `tests/smoke.sh` all-pass.
+  `qemu_layout_test` fails 2/3 identically on the pre-change baseline
+  (stashed A/B) — pre-existing rot, not a regression. Device-request
+  path (BeginIO `IORequest` handling) still has host-layout issues —
+  unreachable from guests; tracked under UAOS-240.
+
 ## 2026-10-08 — boot log: vmmouse fallback names the real input path (UAOS-295)
 
 * **Fixed** (`kernel/boot/uaos_kernel_main.c`): the "vmmouse not found"

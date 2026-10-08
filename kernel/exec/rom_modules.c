@@ -43,6 +43,9 @@ int UAOS_ROM_Register(const char *name, uint16_t version,
     m->amiga_base   = amiga_base;
     m->func_count   = func_count;
     m->native_funcs = native_funcs;
+    m->lvo_map         = NULL;
+    m->lvo_count       = 0;
+    m->lvo_slot_indexed = 0;
 
     fprintf(stderr, "[ROM] Registered \"%s\" v%u @ 0x%08X (%u vectors)\n",
             name, version, amiga_base, func_count);
@@ -77,6 +80,40 @@ void *UAOS_ROM_NativeFunc(const char *lib_name, uint16_t func_idx)
     if (m == NULL) return NULL;
     if (func_idx == 0 || func_idx > m->func_count) return NULL;
     return m->native_funcs[func_idx - 1];
+}
+
+/* -----------------------------------------------------------------------
+ * UAOS_ROM_BindLvoMap — attach a guest LVO->func index table to a module
+ *
+ * The M68k glue uses this to auto-install per-vector ILLEGAL stubs on a
+ * generated library base so every registered module is callable from
+ * guest code without a hand-maintained stub table.
+ * ----------------------------------------------------------------------- */
+
+int UAOS_ROM_BindLvoMap(const char *name, const UaosRomLvo *map,
+                        uint16_t count)
+{
+    UaosRomModule *m = UAOS_ROM_Find(name);
+    if (m == NULL || map == NULL) return -1;
+    m->lvo_map   = map;
+    m->lvo_count = count;
+    return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * UAOS_ROM_MarkSlotIndexed — declare native_funcs[] to be LVO-slot indexed
+ *
+ * For modules like graphics.library whose function table is indexed by
+ * |lvo| / 6, no explicit map is needed: vector -6*s resolves to
+ * native_funcs[s] (func index s+1).
+ * ----------------------------------------------------------------------- */
+
+int UAOS_ROM_MarkSlotIndexed(const char *name)
+{
+    UaosRomModule *m = UAOS_ROM_Find(name);
+    if (m == NULL) return -1;
+    m->lvo_slot_indexed = 1;
+    return 0;
 }
 
 /* -----------------------------------------------------------------------

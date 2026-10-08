@@ -153,3 +153,15 @@ When a queued timer request expires, the device signals the requesting task so i
 ## ROM Module Registration
 
 All of the above libraries and devices are registered at boot by `kernel/exec/rom_modules.c` via `UAOS_ROM_RegisterAll()`. The ROM module table supports up to 64 modules and maps names to version, base, and native function tables. The registered set also includes `exec.library`, `dos.library`, `graphics.library`, `intuition.library`, `bsdsocket.library`, `workbench.library`, `mathieeesingbas.library`, and `mathtrans.library`.
+
+### Guest binding (UAOS-238)
+
+Every registered module carries an `lvo_map` (`UaosRomLvo` entries, bound via `UAOS_ROM_BindLvoMap`) translating guest LVOs into 1-based `native_funcs` indices — the tables are arbitrarily ordered per module, so the map lives next to the func table it describes. Modules whose `native_funcs[]` is already indexed by `abs(LVO)/6` (graphics) instead call `UAOS_ROM_MarkSlotIndexed`.
+
+Guest `OpenLibrary` resolves names through `UAOS_ROM_Find()` before falling back to the loadable-library and fake-base paths. A registered module gets a *generated* library base in the per-task arena at `0x007F0000–0x00800000`: a stub block (`ILLEGAL` catch-alls for the full vector area plus per-vector stubs for each `lvo_map` entry), a Library node carrying the registered `lib_Version`, and the name/id string. The version argument is honoured — requesting a newer version than `module.version` returns `NULL`. Generated bases dispatch through `emu_rom_call()` (`LIB_ROM`), which marshals D0–D7/A0–A7 into `M68kCPUState` and invokes `UAOS_ROM_NativeFunc()`. `OpenDevice` binds ROM-registered devices (`timer.device`, `console.device`, `keyboard.device`) the same way, with `audio.device` keeping its dedicated base.
+
+Unmapped LVOs on a generated base fail predictably: the catch-all stub returns 0, except `-6` (returns the base, matching `Open` semantics) and `locale.library` `-72` (GetCatalogStr — returns the caller's default string). Unknown names still get the fake base whose vectors are no-op 0s.
+
+Two footguns the generated path exposes: guest memory is big-endian, so module functions that dereference guest structs must read/write through byte-wise BE helpers (see `util_r32`/`util_w32`, `timer_r32`/`timer_w32` — `NextTagItem`, `GetTagData`, `AddTime`/`SubTime`/`CmpTime`, `GetSysTime`, `ReadEClock` were all converted); and functions must never leak host pointers into guest-visible registers or memory.
+
+Guest-verified by `SYS:Demos/UtilTest` (version gate, `SMult32`/`UMult64`, tag iteration, `mathieeesingbas` `IEEESPAdd`, `timer.device` `OpenDevice`+`AddTime`, unknown-library no-op).

@@ -587,6 +587,23 @@ static void *locale_funcs[] = {
     locale_IsPunct,        /* index 33 */
 };
 
+/* Canonical locale.library LVOs (AmigaOS V38) -> locale_funcs[] indices.
+ * GetCatalogStr (-72) has no native func; the glue returns the caller's
+ * built-in default string for it. */
+static const UaosRomLvo locale_lvo_map[] = {
+    {  -42, LOCALE_CLOSE_LOCALE },   /* CloseLocale  */
+    {  -60, LOCALE_FORMAT_DATE },    /* FormatDate   */
+    {  -78, LOCALE_GET_LOCALE_STR }, /* GetLocaleStr */
+    {  -90, LOCALE_IS_ALPHA },       /* IsAlpha      */
+    { -102, LOCALE_IS_DIGIT },       /* IsDigit      */
+    { -114, LOCALE_IS_LOWER },       /* IsLower      */
+    { -126, LOCALE_IS_PUNCT },       /* IsPunct      */
+    { -132, LOCALE_IS_SPACE },       /* IsSpace      */
+    { -138, LOCALE_IS_UPPER },       /* IsUpper      */
+    { -156, LOCALE_OPEN_LOCALE },    /* OpenLocale   */
+    { -162, LOCALE_PARSE_DATE },     /* ParseDate    */
+};
+
 /* =========================================================================
  * Registration function
  * ========================================================================= */
@@ -620,4 +637,6 @@ void UAOS_LOCALE_Register(void)
     UAOS_ROM_Register("locale.library", 38, 0x000000B0,
                       (uint16_t)(sizeof(locale_funcs) / sizeof(locale_funcs[0])),
                       locale_funcs);
+    UAOS_ROM_BindLvoMap("locale.library", locale_lvo_map,
+                        (uint16_t)(sizeof(locale_lvo_map) / sizeof(locale_lvo_map[0])));
 }

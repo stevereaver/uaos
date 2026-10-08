@@ -91,6 +91,15 @@ static void *console_funcs[] = {
     console_RawWrite,     /* index 8  */
 };
 
+/* Device vectors -> console_funcs[] indices (Open -6, Close -12,
+ * BeginIO -42, AbortIO -48).  All command I/O flows through BeginIO. */
+static const UaosRomLvo console_lvo_map[] = {
+    {  -6, 1 },   /* Open     */
+    { -12, 2 },   /* Close    */
+    { -42, 3 },   /* BeginIO  */
+    { -48, 4 },   /* AbortIO  */
+};
+
 /* =========================================================================
  * Registration function
  * ========================================================================= */
@@ -100,4 +109,6 @@ void UAOS_CONSOLE_Register(void)
     UAOS_ROM_Register("console.device", 40, 0x00000060,
                       (uint16_t)(sizeof(console_funcs) / sizeof(console_funcs[0])),
                       console_funcs);
+    UAOS_ROM_BindLvoMap("console.device", console_lvo_map,
+                        (uint16_t)(sizeof(console_lvo_map) / sizeof(console_lvo_map[0])));
 }

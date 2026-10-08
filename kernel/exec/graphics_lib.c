@@ -4741,4 +4741,6 @@ void UAOS_GRAPHICS_Register(void)
     UAOS_ROM_Register("graphics.library", 40, 0x000000C0,
                       (uint16_t)(sizeof(graphics_funcs) / sizeof(graphics_funcs[0])),
                       graphics_funcs);
+    /* The func table is indexed by LVO slot (|lvo|/6) — no explicit map. */
+    UAOS_ROM_MarkSlotIndexed("graphics.library");
 }
