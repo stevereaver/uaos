@@ -6262,8 +6262,13 @@ static void shell_draw_##N(int wx,int wy,int ww,int wh) { \
     int old_ww = s->ww, old_wh = s->wh; \
     s->wx=wx;s->wy=wy;s->ww=ww;s->wh=wh; \
     if (s->wm_handle >= 0 && (ww != old_ww || wh != old_wh)) { \
-        /* Window resized — update WM content size for proper scrollbar thumb */ \
+        /* Window resized — update WM content size for proper scrollbar thumb, \
+         * and re-anchor the view to the bottom of the scrollback (the live \
+         * prompt) instead of keeping whatever offset the old geometry had — \
+         * after a restore-from-zoom that offset is often 0, leaving the \
+         * window showing the top of history (UAOS-297). */ \
         inst_update_scrollinfo(s); \
+        s->auto_scroll = 1; \
     } \
     if (s->auto_scroll) { \
         s->auto_scroll = 0; \
