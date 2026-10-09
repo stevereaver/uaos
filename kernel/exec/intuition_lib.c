@@ -4301,6 +4301,11 @@ typedef struct ScreenSlot {
     uint8_t  owns_colormap; /* 1 = ColorMap was allocated by us */
     uint32_t rastport;      /* guest Screen.RastPort */
     uint32_t viewport;      /* guest ViewPort (carries the ColorMap) */
+    /* Monotonically increasing stamp bumped each time the screen comes to
+     * the front — UAOS tracks no full screen stack, so the non-front
+     * screen with the highest stamp is "the screen behind" for the
+     * pull-down reveal compositing (UAOS-9). */
+    uint32_t front_seq;
     /* Owning task — the m68k task that called OpenScreen.  The screen
      * BitMap, ColorMap and RastPort live in that task's per-task RAM
      * window; host-side compositing must bind it before reading g_ram. */
@@ -4385,8 +4390,16 @@ static void update_desktop_title(void)
 static uint8_t  g_scr_pens[SCR_CACHE_MAX_W * SCR_CACHE_MAX_H];
 static uint32_t g_scr_cache_bm = 0;
 static int      g_scr_cache_w = 0, g_scr_cache_h = 0;
+/* Reveal cache (UAOS-9): the screen directly behind the front one is
+ * composited wherever a pulled-down/offset front screen leaves the
+ * framebuffer uncovered.  It needs its own pen decode — sharing the
+ * front cache would thrash it with alternating full decodes. */
+static uint8_t  g_scr_pens2[SCR_CACHE_MAX_W * SCR_CACHE_MAX_H];
+static uint32_t g_scr_cache2_bm = 0;
+static int      g_scr_cache2_w = 0, g_scr_cache2_h = 0;
 static uint32_t g_scr_bf_key = 0, g_scr_bf_key2 = 0;
 static uint32_t g_scr_bf_key3 = 0, g_scr_bf_key4 = 0;
+static uint32_t g_front_seq = 0;   /* bumped on every front change */
 
 /* UAOS-265: a screen's guest structures (Screen, BitMap, ColorMap,
  * RastPort) live in the owning task's per-task RAM window.  Once the owner
@@ -4400,6 +4413,14 @@ static int screen_is_orphaned(const ScreenSlot *slot)
            !slot->owner->m68k_ram;
 }
 
+/* Bring a screen to the front and stamp the ordering recency used to
+ * pick the composited "screen behind" (UAOS-9). */
+static void mark_screen_front(ScreenSlot *slot)
+{
+    slot->is_front = 1;
+    slot->front_seq = ++g_front_seq;
+}
+
 /* Retire an orphaned screen slot: with no RAM window left to bind there is
  * no coherent content to render, so drop it before the emit path reads
  * dangling guest pointers. */
@@ -4408,6 +4429,10 @@ static void retire_orphaned_screen(ScreenSlot *slot)
     if (g_scr_cache_bm == slot->bitmap) {
         g_scr_cache_bm = 0;
         g_scr_cache_w = g_scr_cache_h = 0;
+    }
+    if (g_scr_cache2_bm == slot->bitmap) {
+        g_scr_cache2_bm = 0;
+        g_scr_cache2_w = g_scr_cache2_h = 0;
     }
     slot->is_front = 0;
     slot->active = 0;
@@ -4427,8 +4452,9 @@ static int scr_cache_fits(int w, int h)
 }
 
 /* Decode a rectangle of a planar guest BitMap into pen bytes.
- * sx,sy,w,h are BitMap coordinates; out is indexed by the same coords. */
-static void scr_decode_pens(uint32_t bm, int sx, int sy, int w, int h)
+ * sx,sy,w,h are BitMap coordinates; `pens` is indexed by the same coords
+ * with a SCR_CACHE_MAX_W row stride. */
+static void scr_decode_pens(uint8_t *pens, uint32_t bm, int sx, int sy, int w, int h)
 {
     const uint16_t bpr = mem_u16(bm + BM_OFF_BYTESPERROW);
     uint8_t depth = mem_u8(bm + BM_OFF_DEPTH);
@@ -4440,7 +4466,7 @@ static void scr_decode_pens(uint32_t bm, int sx, int sy, int w, int h)
             const int ax = sx + x;
             const int bit = ax & 7;
             const int n = (8 - bit < w - x) ? 8 - bit : w - x;
-            uint8_t *dst = g_scr_pens + (size_t)(sy + y) * SCR_CACHE_MAX_W + ax;
+            uint8_t *dst = pens + (size_t)(sy + y) * SCR_CACHE_MAX_W + ax;
             memset(dst, 0, (size_t)n);
             for (int p = 0; p < depth; p++) {
                 const uint32_t base = mem_u32(bm + BM_OFF_PLANES + p * 4);
@@ -4471,9 +4497,11 @@ static void scr_build_lut(uint32_t cmap, uint32_t lut[256])
                  : amiga_pen_to_rgb((uint8_t)pen)) | 0xFF000000u;
 }
 
-/* Emit a host-framebuffer rectangle from the pen cache through the LUT.
- * (x,y,w,h) are screen coordinates; the cache is indexed by BitMap coords. */
-static void scr_emit_pens(ScreenSlot *slot, int x, int y, int w, int h)
+/* Emit a host-framebuffer rectangle from a pen cache through the LUT.
+ * (x,y,w,h) are host-framebuffer coordinates; `pens` is indexed by BitMap
+ * coords with a SCR_CACHE_MAX_W row stride, decoded (cw,ch) pixels. */
+static void scr_emit_pens(ScreenSlot *slot, const uint8_t *pens,
+                          int cw, int ch, int x, int y, int w, int h)
 {
     /* Clip to the framebuffer and the BitMap's decoded extent. */
     if (x < 0) { w += x; x = 0; }
@@ -4486,8 +4514,8 @@ static void scr_emit_pens(ScreenSlot *slot, int x, int y, int w, int h)
      * the row/buffer and emit neighbouring memory as pens (UAOS-265). */
     if (bx0 < 0) { w += bx0; x = slot->left; bx0 = 0; }
     if (by0 < 0) { h += by0; y = slot->top; by0 = 0; }
-    if (bx0 + w > g_scr_cache_w) w = g_scr_cache_w - bx0;
-    if (by0 + h > g_scr_cache_h) h = g_scr_cache_h - by0;
+    if (bx0 + w > cw) w = cw - bx0;
+    if (by0 + h > ch) h = ch - by0;
     if (w <= 0 || h <= 0) return;
 
     {
@@ -4506,7 +4534,7 @@ static void scr_emit_pens(ScreenSlot *slot, int x, int y, int w, int h)
     uint32_t argb[SCR_CACHE_MAX_W];
     for (int r = 0; r < h; r++) {
         const uint8_t *row =
-            g_scr_pens + (size_t)(by0 + r) * SCR_CACHE_MAX_W + bx0;
+            pens + (size_t)(by0 + r) * SCR_CACHE_MAX_W + bx0;
         for (int c = 0; c < w; c++) argb[c] = lut[row[c]];
         FB_BlitARGB(x, y + r, w, argb, 0);
     }
@@ -4575,22 +4603,54 @@ static void scr_cache_ensure(ScreenSlot *slot)
     if (!scr_cache_fits(bw, bh)) return;
     const int dw = (slot->width < bw) ? slot->width : bw;
     const int dh = (slot->height < bh) ? slot->height : bh;
-    scr_decode_pens(bm, 0, 0, dw, dh);
+    scr_decode_pens(g_scr_pens, bm, 0, 0, dw, dh);
     g_scr_cache_bm = bm;
     g_scr_cache_w = dw;
     g_scr_cache_h = dh;
 }
 
+/* Same as scr_cache_ensure but for the reveal (screen-behind) cache. */
+static void scr_cache2_ensure(ScreenSlot *slot)
+{
+    const uint32_t bm = slot->bitmap;
+    const int bw = (int)mem_u16(bm + BM_OFF_BYTESPERROW) * 8;
+    const int bh = (int)mem_u16(bm + BM_OFF_ROWS);
+    if (g_scr_cache2_bm == bm && g_scr_cache2_w == bw && g_scr_cache2_h == bh)
+        return;
+    g_scr_cache2_bm = 0;
+    g_scr_cache2_w = g_scr_cache2_h = 0;
+    if (!scr_cache_fits(bw, bh)) return;
+    const int dw = (slot->width < bw) ? slot->width : bw;
+    const int dh = (slot->height < bh) ? slot->height : bh;
+    scr_decode_pens(g_scr_pens2, bm, 0, 0, dw, dh);
+    g_scr_cache2_bm = bm;
+    g_scr_cache2_w = dw;
+    g_scr_cache2_h = dh;
+}
+
 /* Refresh a dirty BitMap rectangle inside the cache (BitMap coords). */
 static void scr_cache_refresh(uint32_t bm, int x0, int y0, int x1, int y1)
 {
-    if (bm != g_scr_cache_bm) return;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 >= g_scr_cache_w) x1 = g_scr_cache_w - 1;
-    if (y1 >= g_scr_cache_h) y1 = g_scr_cache_h - 1;
-    if (x1 < x0 || y1 < y0) return;
-    scr_decode_pens(bm, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    if (bm == g_scr_cache_bm) {
+        int cx0 = x0 < 0 ? 0 : x0;
+        int cy0 = y0 < 0 ? 0 : y0;
+        int cx1 = x1 >= g_scr_cache_w ? g_scr_cache_w - 1 : x1;
+        int cy1 = y1 >= g_scr_cache_h ? g_scr_cache_h - 1 : y1;
+        if (cx1 >= cx0 && cy1 >= cy0)
+            scr_decode_pens(g_scr_pens, bm, cx0, cy0,
+                            cx1 - cx0 + 1, cy1 - cy0 + 1);
+    }
+    /* Keep the reveal cache coherent too — the screen behind is composited
+     * (and visible) while the front screen is pulled down (UAOS-9). */
+    if (bm == g_scr_cache2_bm) {
+        int cx0 = x0 < 0 ? 0 : x0;
+        int cy0 = y0 < 0 ? 0 : y0;
+        int cx1 = x1 >= g_scr_cache2_w ? g_scr_cache2_w - 1 : x1;
+        int cy1 = y1 >= g_scr_cache2_h ? g_scr_cache2_h - 1 : y1;
+        if (cx1 >= cx0 && cy1 >= cy0)
+            scr_decode_pens(g_scr_pens2, bm, cx0, cy0,
+                            cx1 - cx0 + 1, cy1 - cy0 + 1);
+    }
 }
 
 /* Bind the front screen owner's RAM window for a host-side render pass.
@@ -4609,9 +4669,70 @@ static uint8_t *bind_front_screen_ram(void)
     return saved;
 }
 
+/* The frontmost active Intuition screen, or NULL. */
+static ScreenSlot *find_front_screen(void)
+{
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (slot->active && slot->is_front && !screen_is_orphaned(slot))
+            return slot;
+    }
+    return NULL;
+}
+
+/* 1 if the host rectangle (x,y,w,h) lies entirely inside the screen's
+ * display rectangle — i.e. the screen fully covers it. */
+static int screen_covers_rect(const ScreenSlot *slot, int x, int y, int w, int h)
+{
+    return x >= slot->left && y >= slot->top &&
+           x + w <= slot->left + slot->width &&
+           y + h <= slot->top + slot->height;
+}
+
+/* The screen composited into whatever area the front screen leaves
+ * uncovered (UAOS-9 pull-down drag).  UAOS tracks no full screen stack;
+ * the best proxy for "directly behind" is the non-front screen that was
+ * front most recently (front_seq), falling back to the first other
+ * active screen for screens that have never been fronted. */
+static ScreenSlot *reveal_screen(void)
+{
+    ScreenSlot *best = NULL, *first = NULL;
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (!slot->active || slot->is_front || screen_is_orphaned(slot))
+            continue;
+        if (!first) first = slot;
+        if (slot->front_seq && (!best || slot->front_seq > best->front_seq))
+            best = slot;
+    }
+    return best ? best : first;
+}
+
+/* Emit the reveal screen's BitMap for the host rectangle (x,y,w,h) into
+ * the framebuffer — runs before the front screen's emit so the front
+ * screen overdraws wherever it covers. */
+static void emit_reveal_screen(int x, int y, int w, int h)
+{
+    ScreenSlot *behind = reveal_screen();
+    if (!behind || !behind->bitmap) return;
+
+    /* The behind screen's BitMap/ColorMap live in *its* owner's RAM
+     * window, which may differ from the front screen's. */
+    uint8_t *saved = g_ram;
+    if (behind->owner && behind->owner->m68k_ram)
+        g_ram = behind->owner->m68k_ram;
+    scr_cache2_ensure(behind);
+    if (g_scr_cache2_bm == behind->bitmap)
+        scr_emit_pens(behind, g_scr_pens2, g_scr_cache2_w, g_scr_cache2_h,
+                      x, y, w, h);
+    g_ram = saved;
+}
+
 /* Render the front Intuition screen's BitMap into the host framebuffer.
  * SA_BackFill runs first so the hook/pen fill lands inside the screen
  * BitMap (or directly on the framebuffer when the screen has none).
+ * Where the front screen leaves the framebuffer uncovered (pull-down
+ * drag), the screen behind is composited underneath first.
  * Returns 1 if a screen was rendered, 0 otherwise. */
 static int render_screen_backdrop_impl(void)
 {
@@ -4622,6 +4743,9 @@ static int render_screen_backdrop_impl(void)
         uint32_t screen = slot->guest_screen;
         if (!screen) continue;
         uint32_t bm = slot->bitmap;
+
+        if (!screen_covers_rect(slot, 0, 0, (int)g_fb.width, (int)g_fb.height))
+            emit_reveal_screen(0, 0, (int)g_fb.width, (int)g_fb.height);
 
         /* SA_BackFill lands inside the screen BitMap, which retains the
          * pixels — re-run it only when its (hook/pen, bitmap, rastport,
@@ -4707,7 +4831,8 @@ static int render_screen_backdrop_impl(void)
         if (bm) {
             scr_cache_ensure(slot);
             if (g_scr_cache_bm == bm) {
-                scr_emit_pens(slot, slot->left, slot->top,
+                scr_emit_pens(slot, g_scr_pens, g_scr_cache_w, g_scr_cache_h,
+                              slot->left, slot->top,
                               slot->width, slot->height);
             } else {
                 render_bitmap_to_framebuffer(bm, cmap,
@@ -4742,11 +4867,16 @@ static int render_screen_backdrop_region_impl(int x, int y, int w, int h)
         if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
         uint32_t bm = slot->bitmap;
         if (!bm) return slot->backfill ? 1 : 0;
+        /* Where the damage reaches past the front screen's rect the
+         * screen behind is composited underneath first (UAOS-9). */
+        if (!screen_covers_rect(slot, x, y, w, h))
+            emit_reveal_screen(x, y, w, h);
         /* The damage means the back buffer's copy is stale — emit the
          * current pen-cache contents for the region (UAOS-102). */
         scr_cache_ensure(slot);
         if (g_scr_cache_bm == bm) {
-            scr_emit_pens(slot, x, y, w, h);
+            scr_emit_pens(slot, g_scr_pens, g_scr_cache_w, g_scr_cache_h,
+                          x, y, w, h);
         } else {
             render_bitmap_region_to_framebuffer(bm, screen_colormap(slot),
                 x - slot->left, y - slot->top, x, y, w, h);
@@ -4790,6 +4920,25 @@ void UAOS_Intuition_FlushScreenBitmap(uint32_t bm, int x0, int y0, int x1, int y
         if (slot->owner && slot->owner->m68k_ram)
             g_ram = slot->owner->m68k_ram;
         scr_cache_ensure(slot);
+        scr_cache_refresh(bm, x0, y0, x1, y1);
+        g_ram = saved;
+        WM_InvalidateDesktopRect(slot->left + x0, slot->top + y0,
+                                 x1 - x0 + 1, y1 - y0 + 1);
+        return;
+    }
+
+    /* The screen behind is composited wherever the front screen leaves
+     * the framebuffer uncovered (UAOS-9 pull-down): a write to its BitMap
+     * refreshes the reveal cache and damages the on-screen rect — the
+     * repaint emits it behind the front screen's emit. */
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
+        ScreenSlot *slot = &g_intu_screens[i];
+        if (!slot->active || slot->is_front || slot->bitmap != bm) continue;
+        if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
+        if (bm != g_scr_cache2_bm) break;
+        uint8_t *saved = g_ram;
+        if (slot->owner && slot->owner->m68k_ram)
+            g_ram = slot->owner->m68k_ram;
         scr_cache_refresh(bm, x0, y0, x1, y1);
         g_ram = saved;
         WM_InvalidateDesktopRect(slot->left + x0, slot->top + y0,
@@ -4961,11 +5110,17 @@ int UAOS_Intuition_PollFrontScreenBitmap(void)
     return 0;
 }
 
+/* Set while windows are moved as ride-alongs of a screen drag (UAOS-9):
+ * the screen's BitMap moves as a unit, so the vacated-rect erase must not
+ * run — it would punch a stale hole into pixels that are still correct. */
+static int g_screen_ride = 0;
+
 /* WM vacate hook: when a window moves, resizes, zooms, or closes, erase
  * the vacated rectangle in the parent screen's BitMap (pen 0 backdrop)
  * so the next backdrop render does not resurrect stale pixels. */
 static void intu_screen_vacate(int wh, int x, int y, int w, int h)
 {
+    if (g_screen_ride) return;
     IntuitionSlot *slot = get_slot_from_handle(wh);
     if (!slot || !slot->screen) return;
     ScreenSlot *sslot = find_screen_slot(slot->screen);
@@ -5501,7 +5656,7 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     slot->width        = width;
     slot->height       = height;
     slot->show_title   = show_title;
-    slot->is_front     = 1;
+    mark_screen_front(slot);
     slot->lock_count   = 0;
     slot->title[0]     = '\0';
     slot->pub_name[0]  = '\0';
@@ -7100,7 +7255,7 @@ static uint32_t open_workbench_internal(void)
     slot->width = (int16_t)g_fb.width;
     slot->height = (int16_t)g_fb.height;
     slot->show_title = 1;
-    slot->is_front = 1;
+    mark_screen_front(slot);
     slot->lock_count = 0;
     slot->title[0] = '\0';
     local_str_copy(slot->pub_name, "Workbench", sizeof(slot->pub_name));
@@ -7183,6 +7338,10 @@ static void intuition_CloseWorkbench(void)
                 g_scr_cache_bm = 0;
                 g_scr_cache_w = g_scr_cache_h = 0;
             }
+            if (g_scr_cache2_bm == slot->bitmap) {
+                g_scr_cache2_bm = 0;
+                g_scr_cache2_w = g_scr_cache2_h = 0;
+            }
             slot->bitmap = 0;
             slot->colormap = 0;
             intu_free(g_workbench_screen);
@@ -7258,6 +7417,10 @@ void UAOS_Intuition_CleanupTask(UaosTask *t)
         if (g_scr_cache_bm == s->bitmap) {
             g_scr_cache_bm = 0;
             g_scr_cache_w = g_scr_cache_h = 0;
+        }
+        if (g_scr_cache2_bm == s->bitmap) {
+            g_scr_cache2_bm = 0;
+            g_scr_cache2_w = g_scr_cache2_h = 0;
         }
         if (g_workbench_screen == s->guest_screen)
             g_workbench_screen = 0;
@@ -7718,6 +7881,10 @@ static void intuition_CloseScreen(void)
         if (g_scr_cache_bm == slot->bitmap) {
             g_scr_cache_bm = 0;
             g_scr_cache_w = g_scr_cache_h = 0;
+        }
+        if (g_scr_cache2_bm == slot->bitmap) {
+            g_scr_cache2_bm = 0;
+            g_scr_cache2_w = g_scr_cache2_h = 0;
         }
         slot->bitmap = 0;
         slot->colormap = 0;
@@ -8788,7 +8955,7 @@ static void intuition_ScreenToFront(void)
     if (slot) {
         for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
             g_intu_screens[i].is_front = 0;
-        slot->is_front = 1;
+        mark_screen_front(slot);
         update_desktop_title();
         front_screen_repaint();
         screen_notify_event(screen_ptr, SNOTIFY_TYPE_DEPTH);
@@ -8824,12 +8991,89 @@ void UAOS_Intuition_CycleScreen(int direction)
     /* Bring the selected screen to front */
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
         g_intu_screens[i].is_front = 0;
-    g_intu_screens[indices[next_idx]].is_front = 1;
+    mark_screen_front(&g_intu_screens[indices[next_idx]]);
 
     update_desktop_title();
     front_screen_repaint();
     screen_notify_event(g_intu_screens[indices[next_idx]].guest_screen,
                         SNOTIFY_TYPE_DEPTH);
+}
+
+/* -------------------------------------------------------------------------
+ * Screen pull-down drag (UAOS-9)
+ *
+ * Grabbing the screen bar and dragging downward slides the front screen
+ * down the display, revealing the screen behind in the uncovered strip —
+ * the classic Amiga screen drag.  The menubar itself stays fixed at the
+ * top (it is the drag handle); the drop position persists, so the bar
+ * can be grabbed again to pull the screen back up.  SA_Draggable=FALSE
+ * screens refuse the gesture.
+ * ------------------------------------------------------------------------- */
+
+int UAOS_Intuition_FrontScreenDraggable(void)
+{
+    ScreenSlot *s = find_front_screen();
+    return s && s->draggable;
+}
+
+int UAOS_Intuition_FrontScreenTop(void)
+{
+    ScreenSlot *s = find_front_screen();
+    return s ? (int)s->top : 0;
+}
+
+int UAOS_Intuition_DragScreenTo(int new_top)
+{
+    ScreenSlot *s = find_front_screen();
+    if (!s || !s->draggable || !s->guest_screen) return 0;
+
+    /* Keep a sliver of the screen on the display; can't drag above 0. */
+    int max_top = (int)g_fb.height - 8;
+    if (max_top < 0) max_top = 0;
+    if (new_top > max_top) new_top = max_top;
+    if (new_top < 0) new_top = 0;
+    int dy = new_top - s->top;
+    if (!dy) return 0;
+    int old_top = s->top;
+    s->top = (int16_t)new_top;
+
+    /* Guest Screen.TopEdge lives in the owning task's RAM window. */
+    {
+        uint8_t *saved = g_ram;
+        if (s->owner && s->owner->m68k_ram)
+            g_ram = s->owner->m68k_ram;
+        mem_w16(s->guest_screen + SCR_OFF_TOPEDGE, s->top);
+        g_ram = saved;
+    }
+
+    /* Windows bound to this screen ride along with it — on the Amiga the
+     * same effect falls out of screen-relative window coordinates.  Guest
+     * Window.TopEdge stays framebuffer-absolute, so bump it by the same
+     * delta.  g_screen_ride keeps the WM vacate hook from erasing the
+     * "vacated" rect in the screen BitMap — the BitMap moves as a unit,
+     * nothing is actually vacated. */
+    g_screen_ride = 1;
+    for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+        IntuitionSlot *w = &g_intu_wins[i];
+        if (!w->active || w->screen != s->guest_screen) continue;
+        if (window_is_orphaned(w)) continue;
+        int wx, wy, ww, wh;
+        if (!WM_GetWindowRect(w->wm_handle, &wx, &wy, &ww, &wh)) continue;
+        WM_MoveWindow(w->wm_handle, wx, wy + dy);
+        uint8_t *saved = g_ram;
+        if (w->owner && w->owner->m68k_ram)
+            g_ram = w->owner->m68k_ram;
+        mem_w16(w->guest_win + WIN_OFF_TOPEDGE, (int16_t)(wy + dy));
+        g_ram = saved;
+    }
+    g_screen_ride = 0;
+
+    /* Damage the vertical union of the old and new screen extents —
+     * covers the moved screen plus the newly revealed strip. */
+    int y0 = old_top < new_top ? old_top : new_top;
+    int y1 = (old_top < new_top ? new_top : old_top) + s->height;
+    WM_InvalidateDesktopRect(0, y0, (int)g_fb.width, y1 - y0);
+    return 1;
 }
 
 /* ScreenToBack(screen) — A0 */
@@ -8842,7 +9086,7 @@ static void intuition_ScreenToBack(void)
         /* Pick another active screen as front, if any */
         for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
             if (g_intu_screens[i].active && &g_intu_screens[i] != slot) {
-                g_intu_screens[i].is_front = 1;
+                mark_screen_front(&g_intu_screens[i]);
                 break;
             }
         }
@@ -8867,14 +9111,14 @@ static void intuition_ScreenDepth(void)
         slot->is_front = 0;
         for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
             if (g_intu_screens[i].active && &g_intu_screens[i] != slot) {
-                g_intu_screens[i].is_front = 1;
+                mark_screen_front(&g_intu_screens[i]);
                 break;
             }
         }
     } else {
         for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
             g_intu_screens[i].is_front = 0;
-        slot->is_front = 1;
+        mark_screen_front(slot);
     }
     update_desktop_title();
     front_screen_repaint();

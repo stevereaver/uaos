@@ -1508,6 +1508,14 @@ static int      g_icon_drag_orig_x = 0;
 static int      g_icon_drag_orig_y = 0;
 static int      g_drop_target_idx = -1;  /* highlighted drop target during drag */
 
+/* Screen pull-down drag (UAOS-9): an LMB press on the screen bar that
+ * misses every menu title, the clock, and the depth gadget arms this;
+ * Desktop_MouseMove then drives the front screen's TopEdge from the
+ * pointer delta and the release leaves the screen dropped in place. */
+static int      g_scrbar_drag     = 0;
+static int      g_scrbar_drag_my  = 0;
+static int      g_scrbar_drag_top = 0;
+
 /* Desktop lasso (rubber-band) selection state.
  * Active when the user presses the left button on empty desktop backdrop
  * and drags — a dashed rectangle follows the cursor and any icon whose
@@ -2742,12 +2750,19 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
         return 1;
     }
 
-    /* Any other left press inside the menubar band is consumed — LMB on
-     * the screen bar does nothing on Workbench.  Without this the press
-     * falls through to the desktop path, arming the backdrop double-click
-     * and starting an invisible lasso anchored in the menubar. */
-    if (left_pressed && my >= 0 && my < MENUBAR_H)
+    /* Any other left press inside the menubar band arms a screen
+     * pull-down drag (UAOS-9) — the move handler drives it and release
+     * leaves the screen dropped.  The press is still consumed so it
+     * can't arm the backdrop double-click or start an invisible lasso
+     * anchored in the menubar. */
+    if (left_pressed && my >= 0 && my < MENUBAR_H) {
+        if (UAOS_Intuition_FrontScreenDraggable()) {
+            g_scrbar_drag     = 1;
+            g_scrbar_drag_my  = my;
+            g_scrbar_drag_top = UAOS_Intuition_FrontScreenTop();
+        }
         return 1;
+    }
 
     /* ── Desktop icon press (start potential drag) ─────── */
     int n;
@@ -2888,6 +2903,15 @@ static int icon_at_pos(IconState *icons, int n, int mx, int my, int exclude);
 
 void Desktop_MouseMove(int mx, int my, int btn_left)
 {
+    /* Screen pull-down drag (UAOS-9) — the bar the button went down on
+     * owns the gesture until release. */
+    if (g_scrbar_drag) {
+        if (!btn_left) { g_scrbar_drag = 0; return; }
+        UAOS_Intuition_DragScreenTo(g_scrbar_drag_top +
+                                  (my - g_scrbar_drag_my));
+        return;
+    }
+
     (void)btn_left;
 
     /* Menu hover tracking while the button is held. */
@@ -3104,6 +3128,13 @@ static void desktop_do_copy(const char *src_path, const char *name,
 void Desktop_MouseRelease(int mx, int my)
 {
     (void)mx; (void)my;
+
+    /* Screen pull-down drag ends — the screen stays at its dropped
+     * TopEdge (Amiga behaviour: drag the bar again to pull it back). */
+    if (g_scrbar_drag) {
+        g_scrbar_drag = 0;
+        return;
+    }
 
     if (g_icon_drag_idx >= 0) {
         int n;

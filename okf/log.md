@@ -1,5 +1,37 @@
 # OKF Change Log
 
+## 2026-10-09 — Menubar screen pull-down drag (UAOS-9)
+
+* **Added** (`kernel/display/desktop.c`): the screen-bar LMB press that
+  misses menu titles, the clock, and the depth gadget now arms a screen
+  drag (`g_scrbar_drag`).  `Desktop_MouseMove` feeds the pointer delta
+  to `UAOS_Intuition_DragScreenTo()` while the button is held; release
+  leaves the screen at its dropped `TopEdge` (Amiga semantics — grab
+  the bar again to pull it back up).  `SA_Draggable=FALSE` screens and
+  the no-front-screen case (native Workbench desktop) refuse the
+  gesture.
+* **Added** (`kernel/exec/intuition_lib.{c,h}`): screen-drag support
+  APIs `UAOS_Intuition_FrontScreenDraggable()` /
+  `UAOS_Intuition_FrontScreenTop()` / `UAOS_Intuition_DragScreenTo()`.
+  The drag writes `ScreenSlot.top` + guest `Screen.TopEdge` (bound via
+  the owner task's RAM window) and moves every guest window bound to the
+  screen by the same delta (`WM_MoveWindow` + `Window.TopEdge` write)
+  with `g_screen_ride` suppressing the `intu_screen_vacate` erase — the
+  screen `BitMap` moves as a unit, nothing is vacated.
+* **Added** reveal compositing: a second decoded pen cache
+  (`g_scr_pens2`/`g_scr_cache2_*`) renders the screen *behind* the front
+  screen wherever the front screen leaves the framebuffer uncovered —
+  picked by `front_seq` recency (bumped in the new `mark_screen_front`
+  helper at every front transition).  `scr_cache_refresh` now maintains
+  both caches, and both are invalidated at every screen-bitmap teardown
+  path (`CloseScreen`, `CloseWorkBench`, `UAOS_Intuition_CleanupTask`,
+  `retire_orphaned_screen`).
+* **Verified** (QEMU, headless monitor-driven mouse): pressing the
+  screen bar and dragging down slides the front screen (AGATest's
+  400×300 custom screen, top 30→270) with its window riding along; the
+  drop persists after release; a second `AGATest` instance's screen is
+  composited into the vacated strip when the front screen is dropped.
+
 ## 2026-10-09 — guest device I/O framework: OpenDevice + IORequest completion (UAOS-240)
 
 * **Added** (`emulation/uaos_m68k_glue.c`, `emulation/uaos_emu.h`): real

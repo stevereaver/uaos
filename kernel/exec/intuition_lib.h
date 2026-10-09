@@ -56,6 +56,15 @@ void UAOS_Intuition_Dispatch(uint32_t fn);
  * screen, bringing it to the front.  Called by LAmiga+M / LAmiga+N. */
 void UAOS_Intuition_CycleScreen(int direction);
 
+/* Menubar pull-down screen drag (UAOS-9): FrontScreenDraggable reports
+ * whether the front screen may be grabbed (SA_Draggable), FrontScreenTop
+ * reads its current TopEdge, and DragScreenTo moves it to a new host
+ * TopEdge (clamped to the display) — its guest windows ride along and the
+ * screen behind is composited into the uncovered strip. */
+int UAOS_Intuition_FrontScreenDraggable(void);
+int UAOS_Intuition_FrontScreenTop(void);
+int UAOS_Intuition_DragScreenTo(int new_top);
+
 /* Retire every Intuition window/screen/requester owned by a task that is
  * about to lose its per-task RAM window (UAOS-265).  Called from
  * Task_Exit() before Task_ReleaseM68kRam(); without it, screen slots keep
