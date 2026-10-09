@@ -7408,6 +7408,29 @@ static uint16_t be16(const uint8_t *p)
 #define HUNK_DEBUG    0x3F1
 #define HUNK_DREL32      0x3F7   /* data-relative 16-bit relocations (like RELOC32SHORT) */
 #define HUNK_RELOC32SHORT 0x3FE  /* compact 16-bit relocations */
+#define HUNK_OVERLAY   0x3F5
+#define HUNK_BREAK     0x3F6
+
+/* Top two bits of a hunk size longword select the memory type
+ * (dos/doshunks.h).  Both bits set means a full MEMF_* requirements
+ * longword follows the size word in the header table. */
+#define HUNKF_MEM_CHIP   0x40000000u
+#define HUNKF_MEM_FAST   0x80000000u
+#define HUNKF_MEM_MASK   0xC0000000u
+
+/* LoadSeg overlay/SFX convention: when scatter loading stops at an
+ * overlay (or the file simply carries the marker), AmigaDOS checks
+ * hunk0_data[4] for the $0000ABCD magic and, if present and the binary
+ * has at least two hunks and hunk0 is at least 32 bytes, keeps the
+ * executable file open and publishes four longwords into the image:
+ *   hunk0+8   file handle of the still-open executable
+ *   hunk0+12  pointer to the loaded HUNK_OVERLAY table
+ *   hunk0+16  BPTR to the hunk table (BPTRs to each segment link field)
+ *   hunk0+20  BPTR to the dos.library globvec (BCPL linkage)
+ * Self-extracting archives (LhASFX .run files, e.g. lha.run) rely on
+ * this: their stub reads the handle at hunk0+8 and Seek/Reads the
+ * archive appended after the last hunk.  UAOS-236. */
+#define HUNK_SFX_MAGIC   0x0000ABCDu
 
 /* g_hunk_base / g_hunk_blk / g_hunk_count / MAX_HUNKS are declared near the
  * top of this file (SetupProcess reads the seglist from them). */
@@ -7453,9 +7476,28 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
     g_hunk_count = (int)n_hunks;
     for (uint32_t i = 0; i < n_hunks; i++) {
         if (p + 4 > end) { emu_cprint("[hunk] size table truncated\n"); return 0; }
-        uint32_t words = be32(p) & 0x3FFFFFFF; p += 4;  /* mask off mem flags */
+        uint32_t spec  = be32(p); p += 4;
+        uint32_t flags = spec & HUNKF_MEM_MASK;
+        uint32_t words = spec & ~HUNKF_MEM_MASK;
+        uint32_t mem_req = MEMF_CHIP;      /* default placement: chip pool */
+        if (flags == HUNKF_MEM_MASK) {
+            /* Both bits set: a full MEMF_* requirements longword follows
+             * inline in the size table (AROS InternalLoadSeg semantics). */
+            if (p + 4 > end) { emu_cprint("[hunk] memflag word truncated\n"); return 0; }
+            mem_req = be32(p); p += 4;
+        } else if (flags == HUNKF_MEM_FAST) {
+            mem_req = MEMF_FAST;
+        }
         uint32_t bytes = words * 4;
-        uint32_t blk = heap_alloc(bytes + 8);
+        uint32_t blk;
+        if (mem_req & MEMF_FAST) {
+            /* FAST hunks go to the upper 8 MB pool so decrunched code
+             * lands where chip-DMA can't reach anyway — matches real
+             * LoadSeg placement (UAOS-236). */
+            dos_AllocMem_glue(bytes + 8, MEMF_FAST | MEMF_CLEAR_FLAG, &blk);
+        } else {
+            blk = heap_alloc(bytes + 8);
+        }
         if (!blk) { emu_cprint("[hunk] OOM\n"); return 0; }
         g_hunk_blk[i] = blk;
         g_hunk_base[i] = blk + 8;
@@ -7554,6 +7596,68 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
             msg[i++]='\n'; msg[i]='\0';
             emu_print(msg);
             break;
+        }
+    }
+
+    /* Trailing hunk records after the last resident hunk: an overlay
+     * executable carries a HUNK_OVERLAY table (and optionally a
+     * HUNK_BREAK sentinel), then arbitrary non-hunk payload — for
+     * LhASFX archives that payload is the archive itself. */
+    uint32_t ovtab_addr = 0;
+    while (p + 8 <= end) {
+        uint32_t type = be32(p) & 0x3FFFFFFF;
+        if (type == HUNK_OVERLAY) {
+            p += 4;
+            uint32_t lcount = be32(p); p += 4;   /* table size in longwords */
+            if (lcount == 0 || lcount > 0x1000 || p + lcount * 4 > end) break;
+            ovtab_addr = heap_alloc(lcount * 4);
+            if (ovtab_addr) {
+                for (uint32_t k = 0; k < lcount; k++) {
+                    guest_write_be32(ovtab_addr + k * 4, be32(p));
+                    p += 4;
+                }
+            } else {
+                p += lcount * 4;
+            }
+            continue;
+        }
+        if (type == HUNK_BREAK) { p += 4; continue; }
+        break;   /* not a hunk record — appended data (e.g. SFX archive) */
+    }
+
+    /* AmigaDOS overlay/SFX convention (see HUNK_SFX_MAGIC above):
+     * keep the executable image readable as a "file" and publish
+     * { fh, ovtab, hunktab, globvec } at hunk0_data+8..+20.  The fh is a
+     * memory-backed HandleTable handle over the whole load image, so the
+     * stub's Seek/Read see the exact bytes it was loaded from — including
+     * the appended archive.  (UAOS-236: lha.run extracts itself.) */
+    uint32_t h0_size = guest_read_be32(g_hunk_blk[0]) - 8;  /* hunk0 data bytes */
+    if (n_hunks > 1 && h0_size >= 32 &&
+        guest_read_be32(g_hunk_base[0] + 4) == HUNK_SFX_MAGIC) {
+        uint32_t hunktab = heap_alloc(n_hunks * 4);
+        uint32_t img     = heap_alloc(bin_size);
+        uint32_t fh      = 0;
+        if (img) {
+            emu_memcpy(g_ram + img, bin, bin_size);
+            fh = HandleTable_AllocMemFile("sfx-image", img, bin_size);
+        }
+        if (hunktab) {
+            for (uint32_t i = 0; i < n_hunks; i++)
+                guest_write_be32(hunktab + i * 4, (g_hunk_blk[i] + 4) >> 2);
+        }
+        uint32_t h0 = g_hunk_base[0];
+        guest_write_be32(h0 +  8, fh);
+        guest_write_be32(h0 + 12, ovtab_addr);
+        guest_write_be32(h0 + 16, hunktab ? (hunktab >> 2) : 0);
+        guest_write_be32(h0 + 20, DOS_BASE >> 2);   /* globvec surrogate */
+        {
+            char msg[64]; char hex[9];
+            int i = emu_strlen("[hunk] SFX/overlay: fh=0x");
+            emu_memcpy(msg, "[hunk] SFX/overlay: fh=0x", i + 1);
+            u32_hex(fh, hex); int j = 0;
+            while (hex[j] && i < 60) msg[i++] = hex[j++];
+            msg[i++] = '\n'; msg[i] = '\0';
+            emu_print(msg);
         }
     }
 

@@ -1492,10 +1492,31 @@ static void dos_Read(M68kCPUState *cpu)
     }
 
     HandleEntry *ent = HandleTable_Get(fh);
-    if (!ent || ent->type != HTYPE_FILE) {
+    if (!ent || (ent->type != HTYPE_FILE && ent->type != HTYPE_MEMFILE)) {
         cpu->d[0] = (uint32_t)-1;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         KLOG(KLOG_DOS, KLOG_INFO, "[dos] Read(fh=%x) bad handle\n", (unsigned)fh);
+        return;
+    }
+    if (ent->type == HTYPE_MEMFILE) {
+        /* In-memory image (overlay/SFX executable kept open by the hunk
+         * loader).  Read is a straight guest-RAM copy; reads past the end
+         * return short/0 like EOF. */
+        uint32_t pos   = ent->u.memfile.pos;
+        uint32_t avail = (pos < ent->u.memfile.size)
+                       ? ent->u.memfile.size - pos : 0;
+        uint32_t n = (len < avail) ? len : avail;
+        uint32_t src = ent->u.memfile.ram_addr + pos;
+        if (buf + n > GUEST_RAM_SIZE ||
+            src + n > GUEST_RAM_SIZE) {
+            cpu->d[0] = (uint32_t)-1;
+            SetIoErr(ERROR_OBJECT_NOT_FOUND);
+            return;
+        }
+        for (uint32_t i = 0; i < n; i++)
+            g_ram[buf + i] = g_ram[src + i];
+        ent->u.memfile.pos = pos + n;
+        cpu->d[0] = n;
         return;
     }
     if (buf + len >= GUEST_RAM_SIZE) {
@@ -1556,9 +1577,27 @@ static void dos_Seek(M68kCPUState *cpu)
     }
 
     HandleEntry *ent = HandleTable_Get(fh);
-    if (!ent || ent->type != HTYPE_FILE) {
+    if (!ent || (ent->type != HTYPE_FILE && ent->type != HTYPE_MEMFILE)) {
         cpu->d[0] = (uint32_t)-1;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return;
+    }
+
+    if (ent->type == HTYPE_MEMFILE) {
+        /* In-memory image: OFFSET_BEGINNING(-1)/CURRENT(0)/END(+1) with
+         * signed offset; seeks past the end are legal (reads hit EOF). */
+        int64_t np;
+        uint32_t pos = ent->u.memfile.pos;
+        uint32_t size = ent->u.memfile.size;
+        if (mode == OFFSET_CURRENT)        np = (int64_t)pos + offset;
+        else if (mode == OFFSET_END)       np = (int64_t)size + offset;
+        else                               np = offset;   /* OFFSET_BEGINNING */
+        cpu->d[0] = pos;
+        if (np < 0) np = 0;
+        ent->u.memfile.pos = (uint32_t)np;
+        KLOG(KLOG_DOS, KLOG_INFO, "[dos] Seek(memfh=%x off=%ld mode=%ld) pos %ld->%ld size=%ld\n",
+             (unsigned)fh, (long)offset, (long)mode,
+             (long)pos, (long)np, (long)size);
         return;
     }
 
@@ -2447,13 +2486,28 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
 
     for (uint32_t i = 0; i < n_hunks; i++) {
         if (p + 4 > end) return 0;
-        uint32_t words = ls_be32(p) & 0x3FFFFFFF; p += 4;
+        uint32_t spec  = ls_be32(p); p += 4;
+        uint32_t flags = spec & 0xC0000000u;
+        uint32_t words = spec & ~0xC0000000u;
+        /* Both flag bits set means a full MEMF_* requirements longword
+         * follows the size word (dos/doshunks.h HUNKF_…). */
+        uint32_t mem_req = 0;
+        if (flags == 0xC0000000u) {
+            if (p + 4 > end) return 0;
+            mem_req = ls_be32(p); p += 4;
+        } else if (flags == 0x80000000u) {
+            mem_req = MEMF_FAST;
+        } else if (flags == 0x40000000u) {
+            mem_req = MEMF_CHIP;
+        }
         uint32_t bytes = words * 4;
         /* Real LoadSeg layout: [total_size_bytes][next_seg_BPTR][data].
          * The seglist BPTR points at the link field, so
          *   link_addr = allocated+4, data = allocated+8. */
         uint32_t seg_size = (8 + (bytes ? bytes : 4) + 3u) & ~3u;
-        allocated[i] = heap_alloc_fl(seg_size);
+        allocated[i] = (mem_req & MEMF_CHIP) ? heap_alloc_fl_chip(seg_size)
+                     : (mem_req & MEMF_FAST) ? heap_alloc_fl_fast(seg_size)
+                     : heap_alloc_fl(seg_size);
         if (!allocated[i]) return 0;
         hunk_base[i] = allocated[i] + 8;
         guest_write_be32(allocated[i] + 0, bytes + 8);

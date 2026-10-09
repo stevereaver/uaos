@@ -64,6 +64,24 @@ uint32_t HandleTable_AllocLock(const char *path, void *node, int32_t access)
     return h;
 }
 
+uint32_t HandleTable_AllocMemFile(const char *path, uint32_t ram_addr,
+                                  uint32_t size)
+{
+    Forbid();
+    uint32_t h = find_free_slot();
+    if (h == 0) { Permit(); return 0; }
+
+    HandleEntry *e = &g_entries[h - 1];
+    e->type = HTYPE_MEMFILE;
+    e->owner = Task_Current();
+    scopy(e->path, path ? path : "", sizeof(e->path));
+    e->u.memfile.ram_addr = ram_addr;
+    e->u.memfile.size     = size;
+    e->u.memfile.pos      = 0;
+    Permit();
+    return h;
+}
+
 void HandleTable_Free(uint32_t handle)
 {
     if (handle == 0 || handle > MAX_HANDLES) return;
@@ -117,6 +135,8 @@ uint32_t HandleTable_FreeByOwner(void *owner)
             HandleTable_Free(i + 1);
         } else if (e->type == HTYPE_LOCK) {
             VFS_FreeLock(i + 1);
+        } else {
+            HandleTable_Free(i + 1);
         }
         freed++;
     }
@@ -162,9 +182,15 @@ void HandleTable_DiagDump(void *ctx, void (*emit)(void *, const char *))
         dl_reset(&l);
         dl_ch(&l, ' ');
         dl_dec(&l, (uint64_t)(i + 1)); dl_pad(&l, 5);
-        dl_add(&l, e->type == HTYPE_FILE ? "file" : "lock"); dl_pad(&l, 12);
+        dl_add(&l, e->type == HTYPE_FILE    ? "file"
+                 : e->type == HTYPE_MEMFILE ? "memf" : "lock");
+        dl_pad(&l, 12);
         dl_add(&l, (o && o->ln_Name) ? o->ln_Name : "-"); dl_pad(&l, 31);
-        if (e->type == HTYPE_FILE) {
+        if (e->type == HTYPE_MEMFILE) {
+            dl_dec(&l, e->u.memfile.pos);
+            dl_pad(&l, 44);
+            dl_add(&l, "ram");
+        } else if (e->type == HTYPE_FILE) {
             dl_dec(&l, e->u.file.fh.pos);
             dl_pad(&l, 44);
             dl_dec(&l, (uint64_t)e->u.file.flags);

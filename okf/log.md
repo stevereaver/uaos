@@ -1,5 +1,40 @@
 # OKF Change Log
 
+## 2026-10-09 — overlay/SFX executable contract + hunk memory flags (UAOS-236)
+
+* **Added** (`emulation/uaos_m68k_glue.c`): AmigaDOS overlay/self-extracting
+  executable support in `hunk_load`.  The loader now parses trailing
+  `HUNK_OVERLAY` tables + `HUNK_BREAK` sentinels after the last resident
+  hunk, and when hunk0 carries the `$0000ABCD` SFX magic at data+4 (with
+  ≥2 hunks and hunk0 ≥32 bytes) it implements the LoadSeg overlay
+  contract: keeps the executable image open as a memory-backed file and
+  publishes `{ fh, ovtab, hunktab_BPTR, globvec_BPTR }` at
+  hunk0_data+8..+20.  This is exactly what LhASFX `.run` stubs need —
+  their code reads a file handle out of data+8 (the `SFX!` longword in the
+  unpatched image) and `Seek`/`Read` the archive appended after the hunks.
+* **Added** (`kernel/dos/handle_table.{c,h}`, `kernel/exec/dos_lib.c`):
+  `HTYPE_MEMFILE` — a read-only HandleTable file handle over a guest-RAM
+  image.  `dos_Read`/`dos_Seek` service it directly (BEGINNING/CURRENT/END
+  seeks, EOF short reads); `HandleTable_FreeByOwner` frees it on task exit
+  and `HandleTable_DiagDump` renders it.
+* **Fixed** (both loaders): hunk size-longword memory flags are honoured,
+  not just masked — `MEMF_FAST` segments allocate from the fast pool, and
+  the both-bits-set form consumes the extra MEMF_* requirements longword
+  (previously `loadseg_hunk_load` would desync the size table on such
+  files).
+* **Verified in guest** (QEMU, `build/octamed.img` + FAT32 test image):
+  `DH0:lha.run -l` walks the archive to EOF; `DH0:lha.run -x` extracts
+  `LhA.guide`, `lha_68k`, `lha_68020`, `lha_68040`, `lha_68k.readme` to
+  RAM:; the extracted `lha_68k` itself runs and prints its full usage —
+  proving byte-exact `-lh5-` decompression.  `OctaMED.V5` (packed binary:
+  652-byte decrunch stub + 257 KB packed hunk) decrunches in-guest and
+  reaches the real entry point; first calls observed are the library opens
+  (`dos`/`intuition`/`keymap`/`graphics`/`locale`/`gadtools`/`asl`/
+  `iffparse`/`utility`/`icon`), then the full tracker UI runs.
+* Known limitation: `dos.library/LoadSeg` (guest-called) still lacks the
+  overlay/SFX patch — the shell `exec` path (`hunk_load`) is the one that
+  matters for `.run` files; port it if a guest ever `LoadSeg`s an SFX.
+
 ## 2026-10-09 — Intuition/GadTools gap-fill for the OctaMED UI (UAOS-246)
 
 * **Fixed** (`kernel/exec/gadtools_lib.c`, `intuition_lib.{c,h}`): the

@@ -13,9 +13,13 @@
 #include "dos/ramfs.h"
 
 /* Handle type tags */
-#define HTYPE_FREE   0
-#define HTYPE_FILE   1
-#define HTYPE_LOCK   2
+#define HTYPE_FREE    0
+#define HTYPE_FILE    1
+#define HTYPE_LOCK    2
+#define HTYPE_MEMFILE 3   /* read-only file image living in guest RAM
+                           * (overlay/SFX executables keep their own
+                           * executable open for Seek/Read — see
+                           * hunk_load in emulation/uaos_m68k_glue.c) */
 
 /* Per-handle entry */
 typedef struct {
@@ -32,6 +36,11 @@ typedef struct {
             int32_t    access;     /* SHARED_LOCK / EXCLUSIVE_LOCK */
             void      *iter_next;  /* next child for ExamineNext (handler-specific) */
         } lock;
+        struct {
+            uint32_t   ram_addr;     /* guest RAM offset of the file image */
+            uint32_t   size;         /* image size in bytes                */
+            uint32_t   pos;          /* current read position              */
+        } memfile;
     } u;
 } HandleEntry;
 
@@ -44,6 +53,12 @@ uint32_t HandleTable_AllocFile(const char *path, const VfsFile *fh, int flags);
 
 /* Allocate a lock handle.  Returns 0 on failure. */
 uint32_t HandleTable_AllocLock(const char *path, void *node, int32_t access);
+
+/* Allocate a memory-backed file handle over a guest-RAM image.
+ * Read/Seek are serviced from g_ram[ram_addr..ram_addr+size); there is no
+ * VFS object behind it.  Returns 0 on failure. */
+uint32_t HandleTable_AllocMemFile(const char *path, uint32_t ram_addr,
+                                  uint32_t size);
 
 /* Free a handle (any type). */
 void HandleTable_Free(uint32_t handle);
