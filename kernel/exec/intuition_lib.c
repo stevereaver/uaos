@@ -47,6 +47,8 @@ extern void         m68k_set_reg(int reg, unsigned int value);
 extern void         m68k_write_memory_8(unsigned int addr, unsigned int val);
 extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2);
+extern uint32_t uaos_gfx_default_font(void);
+extern void     uaos_gfx_set_vp_modeid(uint32_t vp, uint32_t modeid);
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern uint32_t dos_LockPath_glue(const char *path);
@@ -72,13 +74,18 @@ extern int      dos_pattern_match_glue(const char *name, const char *pat);
  * Guest memory helpers
  * ========================================================================= */
 
-static inline uint8_t  mem_u8 (uint32_t addr) { return g_ram[addr]; }
+/* Bounds: wild guest pointers must fault the guest, never the host.
+ * Subtractive comparisons stay wrap-safe near 0xFFFFFFFF. */
+static inline uint8_t  mem_u8 (uint32_t addr)
+    { return (addr < GUEST_RAM_SIZE) ? g_ram[addr] : 0; }
 static inline uint16_t mem_u16(uint32_t addr)
-    { return (uint16_t)((g_ram[addr] << 8) | g_ram[addr + 1]); }
+    { return (addr <= GUEST_RAM_SIZE - 2u)
+        ? (uint16_t)((g_ram[addr] << 8) | g_ram[addr + 1]) : 0; }
 static inline int16_t  mem_s16(uint32_t addr)
     { return (int16_t)mem_u16(addr); }
 static inline uint32_t mem_u32(uint32_t addr)
 {
+    if (addr > GUEST_RAM_SIZE - 4u) return 0;
     return ((uint32_t)g_ram[addr]     << 24) |
            ((uint32_t)g_ram[addr + 1] << 16) |
            ((uint32_t)g_ram[addr + 2] <<  8) |
@@ -86,14 +93,17 @@ static inline uint32_t mem_u32(uint32_t addr)
 }
 static inline int32_t mem_s32(uint32_t addr)
     { return (int32_t)mem_u32(addr); }
-static inline void mem_w8 (uint32_t addr, uint8_t  v) { g_ram[addr] = v; }
+static inline void mem_w8 (uint32_t addr, uint8_t  v)
+    { if (addr < GUEST_RAM_SIZE) g_ram[addr] = v; }
 static inline void mem_w16(uint32_t addr, uint16_t v)
 {
+    if (addr > GUEST_RAM_SIZE - 2u) return;
     g_ram[addr]     = (uint8_t)(v >> 8);
     g_ram[addr + 1] = (uint8_t)v;
 }
 static inline void mem_w32(uint32_t addr, uint32_t v)
 {
+    if (addr > GUEST_RAM_SIZE - 4u) return;
     g_ram[addr]     = (uint8_t)(v >> 24);
     g_ram[addr + 1] = (uint8_t)(v >> 16);
     g_ram[addr + 2] = (uint8_t)(v >>  8);
@@ -159,8 +169,11 @@ static char *local_strchr(const char *s, int c)
 
 /* Each allocation is preceded by an 8-byte header:
  *   +0: total block size (including header)
- *   +4: 0 when in use, otherwise next free block address
- * The data pointer returned to callers is block + 8. */
+ *   +4: INTU_BLOCK_MAGIC when in use; next free block (or 0) when free
+ * The data pointer returned to callers is block + 8.  The magic lets
+ * intu_free distinguish a live block from an already-freed one (double
+ * free) or a wild pointer, instead of corrupting the free list. */
+#define INTU_BLOCK_MAGIC  0x1A10C4EDu
 static uint32_t intu_heap_top = INTUITION_HEAP_BASE;
 static uint32_t intu_free_list = 0;
 
@@ -170,12 +183,20 @@ uint32_t intu_alloc(uint32_t size)
     if (size < 8) size = 8;
     uint32_t total = size + 8;
 
-    /* Search the free list for a block that fits. */
+    /* Search the free list for a block that fits.  Guard the walk so a
+     * corrupt next-pointer can't loop forever or read out of the heap. */
     uint32_t prev = 0;
     uint32_t cur = intu_free_list;
-    while (cur) {
+    int guard = 0;
+    while (cur && guard++ < 8192) {
+        if (!guest_ok(cur, 8) || cur < INTUITION_HEAP_BASE ||
+            cur >= INTUITION_HEAP_BASE + INTUITION_HEAP_SIZE)
+            break;                                   /* corrupt link */
         uint32_t bsize = mem_u32(cur);
         uint32_t next = mem_u32(cur + 4);
+        if (bsize < 8 || (bsize & 7) ||
+            bsize > INTUITION_HEAP_SIZE)
+            break;                                   /* corrupt header */
         if (bsize >= total) {
             if (prev) mem_w32(prev + 4, next);
             else      intu_free_list = next;
@@ -190,7 +211,7 @@ uint32_t intu_alloc(uint32_t size)
                 bsize = total;
             }
             mem_w32(cur, bsize);
-            mem_w32(cur + 4, 0);
+            mem_w32(cur + 4, INTU_BLOCK_MAGIC);
             for (uint32_t i = 8; i < bsize; i++) g_ram[cur + i] = 0;
             return cur + 8;
         }
@@ -203,7 +224,7 @@ uint32_t intu_alloc(uint32_t size)
     uint32_t block = intu_heap_top;
     intu_heap_top += total;
     mem_w32(block, total);
-    mem_w32(block + 4, 0);
+    mem_w32(block + 4, INTU_BLOCK_MAGIC);
     for (uint32_t i = 8; i < total; i++) g_ram[block + i] = 0;
     return block + 8;
 }
@@ -214,13 +235,20 @@ void intu_free(uint32_t user_addr)
     if (user_addr < INTUITION_HEAP_BASE + 8 ||
         user_addr >= INTUITION_HEAP_BASE + INTUITION_HEAP_SIZE)
         return;
+    if (user_addr & 7) return;                       /* not a block base */
     uint32_t block = user_addr - 8;
     uint32_t size = mem_u32(block);
-    if (size < 16 || size > INTUITION_HEAP_SIZE) return;
+    if (size < 16 || size > INTUITION_HEAP_SIZE || (size & 7)) return;
+    if (block + size > INTUITION_HEAP_BASE + INTUITION_HEAP_SIZE) return;
+    /* Refuse anything that isn't a live block — catches double-free and
+     * wild pointers into the heap that would poison the free list. */
+    if (mem_u32(block + 4) != INTU_BLOCK_MAGIC) return;
 
     /* If this is the topmost allocated block, lower the heap top instead
-     * of adding to the free list. */
+     * of adding to the free list.  Clear the magic first so a second free
+     * of the same block is rejected rather than re-shrinking the heap. */
     if (block + size == intu_heap_top) {
+        mem_w32(block + 4, 0);
         intu_heap_top = block;
         return;
     }
@@ -230,14 +258,21 @@ void intu_free(uint32_t user_addr)
     intu_free_list = block;
 }
 
+static uint32_t intu_resolve_font_attr(uint32_t text_attr);
+
 static void init_guest_rastport(uint32_t rp, uint32_t win_ptr)
 {
-    for (int i = 0; i < RP_SIZE_MIN; i++) g_ram[rp + i] = 0;
+    for (int i = 0; i < RP_SIZEOF; i++) g_ram[rp + i] = 0;
     g_ram[rp + RP_OFF_FGPEN]    = 1;   /* white */
     g_ram[rp + RP_OFF_BGPEN]    = 0;   /* black */
     g_ram[rp + RP_OFF_DRAWMODE] = JAM2;
     g_ram[rp + RP_OFF_MASK]     = 0xFF;/* all bitplanes writable */
     mem_w32(rp + RP_OFF_LAYER, win_ptr);
+    /* Intuition-created RastPorts (windows, screens, GI rastports) come
+     * up with the system default font selected — AmigaOS sets the screen
+     * font on open and copies it into window RastPorts. */
+    uint32_t def_font = uaos_gfx_default_font();
+    if (def_font) mem_w32(rp + RP_OFF_FONT, def_font);
 }
 
 /* =========================================================================
@@ -2458,8 +2493,8 @@ static uint32_t get_window_colormap(uint32_t win_ptr)
 {
     uint32_t screen = mem_u32(win_ptr + WIN_OFF_WSCREEN);
     if (!screen) return 0;
-    uint32_t vp = mem_u32(screen + SCR_OFF_VIEWPORT);
-    if (!vp) return 0;
+    /* The ViewPort is embedded in the Screen (screen->ViewPort). */
+    uint32_t vp = screen + SCR_OFF_VIEWPORT;
     return mem_u32(vp + VP_OFF_COLORMAP);
 }
 
@@ -4301,6 +4336,7 @@ typedef struct ScreenSlot {
     uint8_t  owns_colormap; /* 1 = ColorMap was allocated by us */
     uint32_t rastport;      /* guest Screen.RastPort */
     uint32_t viewport;      /* guest ViewPort (carries the ColorMap) */
+    uint32_t rasinfo;       /* guest RasInfo for the embedded ViewPort */
     /* Monotonically increasing stamp bumped each time the screen comes to
      * the front — UAOS tracks no full screen stack, so the non-front
      * screen with the highest stamp is "the screen behind" for the
@@ -4336,6 +4372,23 @@ static ScreenSlot *alloc_screen_slot(void)
     return NULL;
 }
 
+/* Mirror the canonical screen BitMap header into the embedded
+ * screen->BitMap so that &screen->BitMap and screen->RastPort.BitMap
+ * stay valid after bitmap swaps.  Bounds-checked: `bm` may come straight
+ * from a guest SA_BitMap tag. */
+static void sync_screen_bitmap(uint32_t scr, uint32_t bm)
+{
+    if (!scr) return;
+    uint32_t ebm = scr + SCR_OFF_BITMAP;
+    if (bm && guest_ok(bm, 40)) {
+        for (int i = 0; i < 40; i++)
+            mem_w8(ebm + i, mem_u8(bm + i));
+    } else {
+        for (int i = 0; i < 40; i++)
+            mem_w8(ebm + i, 0);
+    }
+}
+
 static void init_guest_screen(uint32_t scr, ScreenSlot *slot, uint16_t type_flags)
 {
     memset(&g_ram[scr], 0, SCR_SIZE);
@@ -4352,6 +4405,47 @@ static void init_guest_screen(uint32_t scr, ScreenSlot *slot, uint16_t type_flag
     mem_w32(scr + SCR_OFF_BITMA,     slot->bitmap);
     mem_w32(scr + SCR_OFF_DISPLAYID, slot->display_id);
     mem_w32(scr + SCR_OFF_COLORS,    slot->colors);
+    /* Title-bar height + window border metrics.  Guests read these to
+     * offset window content, so expose the values the WM actually uses.
+     * MouseX/MouseY are already 0 from the memset. */
+    mem_w8(scr + SCR_OFF_BARHEIGHT,  WM_TITLEBAR_H);
+    mem_w8(scr + SCR_OFF_WBORTOP,    WM_TITLEBAR_H);
+    mem_w8(scr + SCR_OFF_WBORLEFT,   WM_BORDER);
+    mem_w8(scr + SCR_OFF_WBORRIGHT,  WM_BORDER);
+    mem_w8(scr + SCR_OFF_WBORBOTTOM, WM_BORDER);
+
+    /* Embedded ViewPort (screen->ViewPort at +44). */
+    uint32_t vp = scr + SCR_OFF_VIEWPORT;
+    mem_w32(vp + VP_OFF_COLORMAP, slot->colormap);
+    mem_w16(vp + VP_OFF_DWIDTH,   (uint16_t)slot->width);
+    mem_w16(vp + VP_OFF_DHEIGHT,  (uint16_t)slot->height);
+    mem_w16(vp + VP_OFF_MODES,    (uint16_t)(slot->display_id & 0xFFFF));
+    uaos_gfx_set_vp_modeid(vp, slot->display_id);
+
+    /* RasInfo for the embedded ViewPort: real screens have
+     * ViewPort.RasInfo->BitMap = &screen->BitMap; ChangeVPBitMap and the
+     * copper builder require it. */
+    if (!slot->rasinfo)
+        slot->rasinfo = intu_alloc(12);
+    mem_w32(vp + VP_OFF_RASINFO, slot->rasinfo);
+    if (slot->rasinfo) {
+        mem_w32(slot->rasinfo + RI_OFF_NEXT,   0);
+        mem_w32(slot->rasinfo + RI_OFF_BITMAP, scr + SCR_OFF_BITMAP);
+        mem_w16(slot->rasinfo + RI_OFF_RXOFFSET, 0);
+        mem_w16(slot->rasinfo + RI_OFF_RYOFFSET, 0);
+    }
+
+    /* Embedded RastPort (screen->RastPort at +84): guests commonly do
+     * &screen->RastPort, so this must be a real RastPort. */
+    uint32_t rp = scr + SCR_OFF_RASTPORT;
+    init_guest_rastport(rp, 0);
+    /* screen->RastPort.BitMap = &screen->BitMap */
+    mem_w32(rp + RP_OFF_BITMAP, scr + SCR_OFF_BITMAP);
+
+    /* Embedded BitMap (screen->BitMap at +184): mirror the canonical
+     * screen BitMap header so &screen->BitMap yields a valid struct
+     * sharing the same bitplanes. */
+    sync_screen_bitmap(scr, slot->bitmap);
 }
 
 static void update_desktop_title(void)
@@ -4752,7 +4846,7 @@ static int render_screen_backdrop_impl(void)
          * colormap) key moves instead of every repaint (UAOS-102). */
         uint32_t rport = slot->rastport
                          ? slot->rastport
-                         : mem_u32(screen + SCR_OFF_RASTPORT);
+                         : screen + SCR_OFF_RASTPORT;
         const uint32_t cmap = screen_colormap(slot);
         if (slot->backfill && bm && !rport && slot->backfill < 256) {
             /* No RastPort to fill the BitMap through — the pen colour has
@@ -5451,25 +5545,10 @@ static void free_screen_colormap(uint32_t cm)
  * the ViewPort's ColorMap if present, else the one built at OpenScreen. */
 static uint32_t screen_colormap(ScreenSlot *slot)
 {
-    uint32_t vp = mem_u32(slot->guest_screen + SCR_OFF_VIEWPORT);
+    /* The ViewPort is embedded in the guest Screen struct. */
+    uint32_t vp = slot->guest_screen ? slot->guest_screen + SCR_OFF_VIEWPORT : 0;
     uint32_t cmap = vp ? mem_u32(vp + VP_OFF_COLORMAP) : 0;
     return cmap ? cmap : slot->colormap;
-}
-
-/* Allocate a minimal guest ViewPort for a screen so GetVPColorMap /
- * ViewPortAddress and the window colormap lookup resolve the screen's
- * ColorMap. */
-#define VP_ALLOC_SIZE 40
-static uint32_t alloc_screen_viewport(ScreenSlot *slot)
-{
-    uint32_t vp = intu_alloc(VP_ALLOC_SIZE);
-    if (!vp) return 0;
-    memset(&g_ram[vp], 0, VP_ALLOC_SIZE);
-    mem_w32(vp + VP_OFF_COLORMAP, slot->colormap);
-    mem_w16(vp + VP_OFF_DWIDTH,  (uint16_t)slot->width);
-    mem_w16(vp + VP_OFF_DHEIGHT, (uint16_t)slot->height);
-    mem_w32(vp + VP_OFF_DISPLAYID, slot->display_id);
-    return vp;
 }
 
 static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_ptr)
@@ -5715,22 +5794,26 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     slot->colormap = build_screen_colormap(slot);
     slot->owns_colormap = slot->colormap ? 1 : 0;
 
-    /* Screen.RastPort draws into the screen BitMap. */
-    slot->rastport = intu_alloc(RP_SIZE_MIN);
-    if (slot->rastport) {
-        init_guest_rastport(slot->rastport, 0);
-        mem_w32(slot->rastport + RP_OFF_BITMAP, slot->bitmap);
-    }
-    slot->viewport = alloc_screen_viewport(slot);
+    /* screen->RastPort and screen->ViewPort are embedded in the guest
+     * Screen struct (real AmigaOS layout), so guests taking their
+     * address get usable objects. */
+    slot->rastport = guest_screen + SCR_OFF_RASTPORT;
+    slot->viewport = guest_screen + SCR_OFF_VIEWPORT;
 
     uint16_t screen_flags = type | (show_title ? SHOWTITLE : 0);
     init_guest_screen(guest_screen, slot, screen_flags);
-    mem_w32(guest_screen + SCR_OFF_RASTPORT, slot->rastport);
-    mem_w32(guest_screen + SCR_OFF_VIEWPORT, slot->viewport);
     if (title_ptr)
         mem_w32(guest_screen + SCR_OFF_TITLE, title_ptr);
-    if (font_ptr)
+    if (font_ptr) {
+        /* SA_Font / NewScreen.Font is a TextAttr — resolve it through
+         * OpenFont and select the result into the screen's RastPort,
+         * exactly as real intuition does.  The attr pointer itself is
+         * what struct Screen.Font holds. */
         mem_w32(guest_screen + SCR_OFF_FONT, font_ptr);
+        uint32_t scr_font = intu_resolve_font_attr(font_ptr);
+        if (scr_font)
+            mem_w32(guest_screen + SCR_OFF_RASTPORT + RP_OFF_FONT, scr_font);
+    }
     mem_w8(guest_screen + SCR_OFF_DETAILPEN, detail_pen);
     mem_w8(guest_screen + SCR_OFF_BLOCKPEN, block_pen);
 
@@ -6059,19 +6142,35 @@ static void intuition_OpenWindowTagList(void)
     uint8_t  wbench_window = 0;
 
     if (nw_ptr) {
+        /* struct NewWindow (real AmigaOS layout):
+         *   0 LeftEdge  2 TopEdge  4 Width  6 Height
+         *   8 DetailPen 9 BlockPen
+         *  10 IDCMPFlags (ULONG)   14 Flags (ULONG)
+         *  18 FirstGadget         22 CheckMark
+         *  26 Title               30 Screen
+         *  34 BitMap
+         *  38 MinWidth 40 MinHeight 42 MaxWidth 44 MaxHeight
+         *  46 Type */
         left         = mem_s16(nw_ptr + 0);
         top          = mem_s16(nw_ptr + 2);
         width        = mem_s16(nw_ptr + 4);
         height       = mem_s16(nw_ptr + 6);
-        idcmp        = mem_u16(nw_ptr + 10);
-        flags        = mem_u16(nw_ptr + 12);
-        first_gadget = mem_u32(nw_ptr + 14);
-        checkmark    = mem_u32(nw_ptr + 18);
-        title_ptr    = mem_u32(nw_ptr + 22);
-        min_w        = mem_s16(nw_ptr + 34);
-        min_h        = mem_s16(nw_ptr + 36);
-        max_w        = mem_s16(nw_ptr + 38);
-        max_h        = mem_s16(nw_ptr + 40);
+        detail_pen   = mem_u8 (nw_ptr + 8);
+        block_pen    = mem_u8 (nw_ptr + 9);
+        idcmp        = mem_u32(nw_ptr + 10);
+        flags        = mem_u32(nw_ptr + 14);
+        first_gadget = mem_u32(nw_ptr + 18);
+        checkmark    = mem_u32(nw_ptr + 22);
+        title_ptr    = mem_u32(nw_ptr + 26);
+        pub_screen_ptr = mem_u32(nw_ptr + 30);
+        super_bitmap = mem_u32(nw_ptr + 34);
+        min_w        = mem_s16(nw_ptr + 38);
+        min_h        = mem_s16(nw_ptr + 40);
+        max_w        = mem_s16(nw_ptr + 42);
+        max_h        = mem_s16(nw_ptr + 44);
+        /* CheckMark == (APTR)-1 is the documented "default checkmark"
+         * sentinel, not a real pointer. */
+        if (checkmark == 0xFFFFFFFF) checkmark = 0;
     }
 
     if (tag_list) {
@@ -6168,6 +6267,11 @@ static void intuition_OpenWindowTagList(void)
             if (sslot && sslot->bitmap)
                 mem_w32(rp_ptr + RP_OFF_BITMAP, sslot->bitmap);
         }
+        /* The window RastPort inherits the screen's font. */
+        if (wscreen) {
+            uint32_t sfont = mem_u32(wscreen + SCR_OFF_RASTPORT + RP_OFF_FONT);
+            if (sfont) mem_w32(rp_ptr + RP_OFF_FONT, sfont);
+        }
     }
     /* Build an AmigaOS-compatible Window structure. */
     memset(&g_ram[win_ptr], 0, sizeof(AmigaWindow));
@@ -6199,6 +6303,13 @@ static void intuition_OpenWindowTagList(void)
     slot->wm_handle = wh;
     slot->owner     = Task_Current();
     slot->screen    = wscreen;
+    /* Link into screen->FirstWindow / window->NextWindow so the screen's
+     * window list matches real AmigaOS (Screen.FirstWindow @4). */
+    if (wscreen && guest_ok(wscreen + SCR_OFF_FIRSTWINDOW, 4)) {
+        mem_w32(win_ptr + WIN_OFF_NEXTWINDOW,
+                mem_u32(wscreen + SCR_OFF_FIRSTWINDOW));
+        mem_w32(wscreen + SCR_OFF_FIRSTWINDOW, win_ptr);
+    }
     slot->min_w     = min_w;
     slot->min_h     = min_h;
     slot->max_w     = max_w;
@@ -6317,6 +6428,18 @@ static void intuition_CloseWindow(void)
     if (!win_ptr) return;
 
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
+    /* Unlink from screen->FirstWindow / NextWindow chain. */
+    uint32_t scr = mem_u32(win_ptr + WIN_OFF_WSCREEN);
+    if (scr && guest_ok(scr + SCR_OFF_FIRSTWINDOW, 4)) {
+        uint32_t link_addr = scr + SCR_OFF_FIRSTWINDOW;
+        uint32_t node = mem_u32(link_addr);
+        while (node && guest_ok(node + WIN_OFF_NEXTWINDOW, 4)) {
+            uint32_t next = mem_u32(node + WIN_OFF_NEXTWINDOW);
+            if (node == win_ptr) { mem_w32(link_addr, next); break; }
+            link_addr = node + WIN_OFF_NEXTWINDOW;
+            node = next;
+        }
+    }
     if (slot) {
         int wm_handle = slot->wm_handle;
         free_window_idcmp(win_ptr);
@@ -6998,6 +7121,10 @@ static void intuition_SetScreenAttrsA(void)
                 mem_w32(screen_ptr + SCR_OFF_BITMA, data);
                 if (slot) slot->bitmap = data;
                 if (data) sa_set_flag(screen_ptr, 1, CUSTOMBITMAP);
+                /* Keep the embedded screen->BitMap in sync so guests
+                 * using &screen->BitMap / screen->RastPort see the new
+                 * bitplanes. */
+                sync_screen_bitmap(screen_ptr, data);
                 redraw = 1;
                 break;
             case SA_DisplayID:
@@ -7092,6 +7219,8 @@ static void intuition_SetScreenAttrsA(void)
                         else      flags &= ~1;
                         mem_w8(bm + BM_OFF_FLAGS, flags);
                     }
+                    /* Propagate the flag change into the embedded copy. */
+                    sync_screen_bitmap(screen_ptr, bm);
                 }
                 break;
             case SA_LikeWorkbench:
@@ -7227,27 +7356,10 @@ static uint32_t open_workbench_internal(void)
     if (!slot) return 0;
 
     uint32_t guest_screen = intu_alloc(SCR_SIZE);
-    uint32_t rport = intu_alloc(RP_SIZE_MIN);
-    if (!guest_screen || !rport) {
-        intu_free(guest_screen);
-        intu_free(rport);
+    if (!guest_screen) {
         slot->active = 0;
         return 0;
     }
-
-    init_guest_rastport(rport, 0);
-    memset(&g_ram[guest_screen], 0, SCR_SIZE);
-    mem_w16(guest_screen + SCR_OFF_LEFTEDGE, 0);
-    mem_w16(guest_screen + SCR_OFF_TOPEDGE, 0);
-    mem_w16(guest_screen + SCR_OFF_WIDTH, (int16_t)g_fb.width);
-    mem_w16(guest_screen + SCR_OFF_HEIGHT, (int16_t)g_fb.height);
-    mem_w16(guest_screen + SCR_OFF_FLAGS, (uint16_t)(WBENCHSCREEN | PUBLICSCREEN | SHOWTITLE));
-    mem_w32(guest_screen + SCR_OFF_TITLE, 0);
-    mem_w32(guest_screen + SCR_OFF_DEFAULTTITLE, 0);
-    mem_w32(guest_screen + SCR_OFF_FONT, 0);
-    mem_w32(guest_screen + SCR_OFF_RASTPORT, rport);
-    mem_w8(guest_screen + SCR_OFF_DETAILPEN, 0);
-    mem_w8(guest_screen + SCR_OFF_BLOCKPEN, 1);
 
     slot->guest_screen = guest_screen;
     slot->left = 0;
@@ -7293,16 +7405,14 @@ static uint32_t open_workbench_internal(void)
     slot->owns_bitmap = slot->bitmap ? 1 : 0;
     slot->colormap = build_screen_colormap(slot);
     slot->owns_colormap = slot->colormap ? 1 : 0;
-    slot->rastport = rport;
-    if (rport)
-        mem_w32(rport + RP_OFF_BITMAP, slot->bitmap);
-    slot->viewport = alloc_screen_viewport(slot);
+    /* screen->RastPort / screen->ViewPort are embedded in the Screen. */
+    slot->rastport = guest_screen + SCR_OFF_RASTPORT;
+    slot->viewport = guest_screen + SCR_OFF_VIEWPORT;
 
-    mem_w8(guest_screen + SCR_OFF_DEPTH, slot->depth);
-    mem_w32(guest_screen + SCR_OFF_BITMA, slot->bitmap);
-    mem_w32(guest_screen + SCR_OFF_VIEWPORT, slot->viewport);
-    mem_w32(guest_screen + SCR_OFF_DISPLAYID, 0);
-    mem_w32(guest_screen + SCR_OFF_COLORS, 0);
+    init_guest_screen(guest_screen, slot,
+                      (uint16_t)(WBENCHSCREEN | PUBLICSCREEN | SHOWTITLE));
+    mem_w8(guest_screen + SCR_OFF_DETAILPEN, 0);
+    mem_w8(guest_screen + SCR_OFF_BLOCKPEN, 1);
 
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         if (g_intu_screens[i].active && &g_intu_screens[i] != slot)
@@ -7326,12 +7436,10 @@ static void intuition_CloseWorkbench(void)
     if (g_workbench_screen) {
         ScreenSlot *slot = find_screen_slot(g_workbench_screen);
         if (slot) {
-            uint32_t rport = mem_u32(g_workbench_screen + SCR_OFF_RASTPORT);
-            intu_free(rport);
-            if (slot->viewport) {
-                intu_free(slot->viewport);
-                slot->viewport = 0;
-            }
+            /* RastPort/ViewPort are embedded in the Screen alloc. */
+            slot->rastport = 0;
+            slot->viewport = 0;
+            if (slot->rasinfo) { intu_free(slot->rasinfo); slot->rasinfo = 0; }
             if (slot->owns_bitmap)   free_screen_bitmap(slot->bitmap);
             if (slot->owns_colormap) free_screen_colormap(slot->colormap);
             if (g_scr_cache_bm == slot->bitmap) {
@@ -7344,6 +7452,7 @@ static void intuition_CloseWorkbench(void)
             }
             slot->bitmap = 0;
             slot->colormap = 0;
+            slot->guest_screen = 0;
             intu_free(g_workbench_screen);
             slot->active = 0;
             slot->owner = NULL;
@@ -7457,6 +7566,16 @@ static void intuition_DisposeObject(void);
 #define GFX_SLOT_TEXT                10
 #define GFX_SLOT_SETFONT             11
 #define GFX_SLOT_OPENFONT            12
+
+/* Resolve a TextAttr through graphics.library OpenFont — used for
+ * SA_Font/NewScreen.Font before the GFX_SLOT block is in scope. */
+static uint32_t intu_resolve_font_attr(uint32_t text_attr)
+{
+    if (!text_attr) return 0;
+    m68k_set_reg(M68K_REG_A0, text_attr);
+    UAOS_Graphics_Dispatch(GFX_SLOT_OPENFONT);
+    return m68k_get_reg(NULL, M68K_REG_D0);
+}
 #define GFX_SLOT_BLTTEMPLATE          6
 #define GFX_SLOT_MOVE                40
 #define GFX_SLOT_DRAW                41
@@ -7665,10 +7784,14 @@ static void intuition_PrintIText(void)
         m68k_set_reg(M68K_REG_D0, draw_mode);
         UAOS_Graphics_Dispatch(GFX_SLOT_SETDRMD);
 
-        /* Move(rp, x, y) */
+        /* Move(rp, x, y).  IntuiText.TopEdge is the text *top*; Text()
+         * draws the glyph with its baseline at cp_y, so Move to
+         * top + tf_Baseline (as real Intuition's PrintIText does). */
+        uint32_t cur_font = mem_u32(rp + RP_OFF_FONT);
+        int baseline = cur_font ? (int)mem_u16(cur_font + TF_OFF_BASELINE) : 0;
         m68k_set_reg(M68K_REG_A1, rp);
         m68k_set_reg(M68K_REG_D0, x);
-        m68k_set_reg(M68K_REG_D1, y);
+        m68k_set_reg(M68K_REG_D1, y + baseline);
         UAOS_Graphics_Dispatch(GFX_SLOT_MOVE);
 
         /* Text(rp, string, length) — A1 = rp, A0 = string, D0 = length */
@@ -7767,7 +7890,7 @@ static void intuition_FreeSysRequest(void)
 }
 
 /* EasyRequestArgs(window, easyStruct, idcmpPtr, args)
- * A0/A1/A2/A3
+ * A0 = window, A1 = easyStruct, A2 = idcmpPtr, A3 = args
  * Returns selected gadget index in D0 (0 for rightmost, 1..n-1 for others). */
 static void intuition_EasyRequestArgs(void)
 {
@@ -7863,19 +7986,26 @@ static void intuition_CloseScreen(void)
     uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     ScreenSlot *slot = find_screen_slot(screen_ptr);
     if (slot) {
+        /* Real AmigaOS refuses to close a screen that still has windows
+         * open on it or is held by LockPubScreen/LockScreen callers. */
+        if (slot->lock_count > 0) { m68k_set_reg(M68K_REG_D0, 0); return; }
+        for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+            if (g_intu_wins[i].active &&
+                g_intu_wins[i].screen == screen_ptr) {
+                m68k_set_reg(M68K_REG_D0, 0);
+                return;
+            }
+        }
+
         screen_notify_event(screen_ptr, SNOTIFY_TYPE_CLOSE);
         if (slot->pub_name_guest) {
             intu_free(slot->pub_name_guest);
             slot->pub_name_guest = 0;
         }
-        if (slot->rastport) {
-            intu_free(slot->rastport);
-            slot->rastport = 0;
-        }
-        if (slot->viewport) {
-            intu_free(slot->viewport);
-            slot->viewport = 0;
-        }
+        /* RastPort/ViewPort are embedded in the guest Screen alloc. */
+        slot->rastport = 0;
+        slot->viewport = 0;
+        if (slot->rasinfo) { intu_free(slot->rasinfo); slot->rasinfo = 0; }
         if (slot->owns_bitmap)   free_screen_bitmap(slot->bitmap);
         if (slot->owns_colormap) free_screen_colormap(slot->colormap);
         if (g_scr_cache_bm == slot->bitmap) {
@@ -7888,11 +8018,17 @@ static void intuition_CloseScreen(void)
         }
         slot->bitmap = 0;
         slot->colormap = 0;
+        intu_free(screen_ptr);       /* free the guest Screen block */
+        slot->guest_screen = 0;
+        if (g_workbench_screen == screen_ptr)
+            g_workbench_screen = 0;
         slot->active = 0;
         slot->owner = NULL;
         update_desktop_title();
+        m68k_set_reg(M68K_REG_D0, 1);
+        return;
     }
-    m68k_set_reg(M68K_REG_D0, 1);  /* success */
+    m68k_set_reg(M68K_REG_D0, 0);
 }
 
 /* =========================================================================
@@ -7906,16 +8042,19 @@ static void intuition_CloseScreen(void)
  * ========================================================================= */
 
 /* ScreenBuffer structure offsets (partial, matches AmigaOS). */
-#define SBUFF_OFF_EXECMSG     0    /* struct Message (20 bytes) */
-#define SBUFF_OFF_SCREEN     20    /* struct Screen * */
-#define SBUFF_OFF_BITMAP     24    /* struct BitMap * */
-#define SBUFF_OFF_DBUFINFO   28    /* struct DBufInfo * */
-#define SBUFF_OFF_FLAGS      32    /* ULONG — SB_COPY_BITMAP / SB_SCREEN_BITMAP */
-#define SBUFF_SIZE           40
+/* Real AmigaOS struct ScreenBuffer is only 8 bytes: sb_BitMap @0,
+ * sb_DBufInfo @4.  UAOS bookkeeping (screen, flags) lives in the tail past
+ * the public struct so guests reading the documented fields see the real
+ * layout.  SB_COPY_BITMAP = 2, SB_SCREEN_BITMAP = 1. */
+#define SBUFF_OFF_BITMAP      0    /* struct BitMap *  (real sb_BitMap)    */
+#define SBUFF_OFF_DBUFINFO    4    /* struct DBufInfo * (real sb_DBufInfo) */
+#define SBUFF_OFF_SCREEN      8    /* UAOS-internal */
+#define SBUFF_OFF_FLAGS      12    /* UAOS-internal — SB_* flags           */
+#define SBUFF_SIZE           16
 
 /* AllocScreenBuffer(screen, bitmap, flags) — A0, A1, D0
  * Returns a ScreenBuffer* in D0, or NULL on failure.
- * SB_COPY_BITMAP (0) means allocate a new BitMap matching the screen.
+ * SB_COPY_BITMAP (2) means allocate a new BitMap matching the screen.
  * SB_SCREEN_BITMAP (1) means use the screen's existing BitMap. */
 static void intuition_AllocScreenBuffer(void)
 {
@@ -7928,8 +8067,6 @@ static void intuition_AllocScreenBuffer(void)
     if (!sb) { m68k_set_reg(M68K_REG_D0, 0); return; }
     for (int i = 0; i < SBUFF_SIZE; i++) m68k_write_memory_8(sb + i, 0);
 
-    /* LN_TYPE = NT_MESSAGE (6) so the OS can reply it. */
-    m68k_write_memory_8(sb + 8, 6);
     m68k_write_memory_32(sb + SBUFF_OFF_SCREEN, screen_ptr);
 
     if (flags & 0x00000001u) {
@@ -7946,18 +8083,16 @@ static void intuition_AllocScreenBuffer(void)
     m68k_write_memory_32(sb + SBUFF_OFF_BITMAP, bitmap);
     m68k_write_memory_32(sb + SBUFF_OFF_FLAGS, flags);
 
-    /* Allocate a DBufInfo via graphics.library's AllocDBufInfo.  The
-     * ViewPort is at SCR_OFF_VIEWPORT in the Screen structure. */
-    uint32_t vp = mem_u32(screen_ptr + SCR_OFF_VIEWPORT);
+    /* Allocate a DBufInfo.  Real AllocDBufInfo fills dbi_SafeMessage with
+     * a Message; the rest is scratch the OS owns. */
     uint32_t dbi = 0;
     dos_AllocMem_glue(64, 0, &dbi);
     if (dbi) {
         for (int i = 0; i < 64; i++) m68k_write_memory_8(dbi + i, 0);
-        m68k_write_memory_8(dbi + 8, 6);  /* NT_MESSAGE */
-        m68k_write_memory_32(dbi + 28, bitmap);  /* BufferRastPort → BitMap */
+        /* dbi_SafeMessage.mn_Node.ln_Type = NT_MESSAGE (6) at dbi+8. */
+        m68k_write_memory_8(dbi + 8, 6);
     }
     m68k_write_memory_32(sb + SBUFF_OFF_DBUFINFO, dbi);
-    (void)vp;
 
     m68k_set_reg(M68K_REG_D0, sb);
 }
@@ -7980,6 +8115,22 @@ static void intuition_FreeScreenBuffer(void)
     dos_FreeMem_glue(sb, SBUFF_SIZE);
 }
 
+/* Repoint the RastPort.BitMap of every non-SuperBitMap window that lives on
+ * `screen_ptr` at `new_bm`.  Windows normally draw into the screen's BitMap;
+ * after a buffer swap the old BitMap is retired so their RastPorts must be
+ * re-aimed or they'd keep rendering into dead planes. */
+static void repoint_screen_window_bitmaps(uint32_t screen_ptr, uint32_t new_bm)
+{
+    if (!new_bm) return;
+    for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+        IntuitionSlot *w = &g_intu_wins[i];
+        if (!w->active || w->screen != screen_ptr || w->super_bitmap) continue;
+        uint32_t rp = mem_u32(w->guest_win + WIN_OFF_RPORT);
+        if (rp && guest_ok(rp + RP_OFF_BITMAP, 4))
+            mem_w32(rp + RP_OFF_BITMAP, new_bm);
+    }
+}
+
 /* ChangeScreenBuffer(screen, screenBuffer, flags) — A0, A1, D0
  * Returns TRUE in D0 if the buffer swap was scheduled. */
 static void intuition_ChangeScreenBuffer(void)
@@ -7999,6 +8150,15 @@ static void intuition_ChangeScreenBuffer(void)
         mem_w32(screen_ptr + SCR_OFF_BITMA, new_bm);
         ScreenSlot *slot = find_screen_slot(screen_ptr);
         if (slot) slot->bitmap = new_bm;
+        /* Keep &screen->BitMap / screen->RastPort.BitMap valid — guests
+         * drawing through the embedded RastPort must hit the new planes. */
+        sync_screen_bitmap(screen_ptr, new_bm);
+        /* Repoint ViewPort.RasInfo at the new bitmap too. */
+        uint32_t vp = screen_ptr + SCR_OFF_VIEWPORT;
+        uint32_t ri = mem_u32(vp + VP_OFF_RASINFO);
+        if (ri && guest_ok(ri + RI_OFF_BITMAP, 4))
+            mem_w32(ri + RI_OFF_BITMAP, new_bm);
+        repoint_screen_window_bitmaps(screen_ptr, new_bm);
     }
 
     /* Trigger a redraw so the new bitmap is rendered to the framebuffer. */
@@ -8307,8 +8467,8 @@ static void intuition_ScrollWindowRaster(void)
     UAOS_Graphics_Dispatch(GFX_SLOT_SCROLLRASTER);
 }
 
-/* BuildEasyRequestArgs(window, easyStruct, idcmpPtr, args)
- * A0 = window, A1 = easyStruct, A2 = idcmpPtr, A3 = args
+/* BuildEasyRequestArgs(window, easyStruct, idcmp, args)
+ * A0 = window, A1 = easyStruct, D0 = idcmp (ULONG value), A3 = args
  * Async variant of EasyRequestArgs — builds the requester but does NOT
  * block.  Returns the requester window pointer in D0 so the caller can
  * poll SysReqHandler.  When the caller is done, they call FreeSysRequest. */
@@ -8316,7 +8476,7 @@ static void intuition_BuildEasyRequestArgs(void)
 {
     uint32_t win_ptr  = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t easy_ptr = m68k_get_reg(NULL, M68K_REG_A1);
-    uint32_t idcmp_ptr = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t idcmp_ptr = m68k_get_reg(NULL, M68K_REG_D0);
     uint32_t args_ptr = m68k_get_reg(NULL, M68K_REG_A3);
     (void)idcmp_ptr; (void)args_ptr;
 
@@ -8670,10 +8830,12 @@ static void intuition_GetHalfPens(void)
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
-    /* If we have a DrawInfo, copy its pen table; otherwise use defaults. */
-    if (dri && dri + DRINFO_OFF_PENS + 24 <= GUEST_RAM_SIZE) {
+    /* If we have a DrawInfo, copy its pen table; otherwise use defaults.
+     * dri_Pens is a pointer to the pen array, not an inline table. */
+    uint32_t pens = dri ? mem_u32(dri + DRINFO_OFF_PENS) : 0;
+    if (pens && pens + DRI_PEN_MAX * 2 <= GUEST_RAM_SIZE) {
         for (int i = 0; i < DRI_PEN_MAX; i++) {
-            uint16_t pen = mem_u16(dri + DRINFO_OFF_PENS + i * 2);
+            uint16_t pen = mem_u16(pens + i * 2);
             mem_w16(halfpens + i * 2, pen);
         }
     } else {
@@ -8798,35 +8960,60 @@ static void intuition_DoMethodA(void);
 static void intuition_DoSuperMethodA(void);
 static void intuition_CoerceMethodA(void);
 static void intuition_SetSuperAttrsA(void);
+static uint32_t boopsi_super_dispatch_class(uint32_t cl, uint32_t object,
+                                            uint32_t method, uint32_t msg);
+static uint32_t alloc_stack_msg(uint32_t method, uint32_t p1, uint32_t p2);
+static void     free_stack_msg(uint32_t size);
 
-/* IDoMethodA(object, msg) — A0 = object, A1 = msg
- * V40: Intuition-owned DoMethodA.  Same as DoMethodA but dispatched
- * through Intuition's internal class table instead of amiga.lib.
- * The implementation is identical — we just call the existing dispatcher. */
+/* The real IDo/ISet/ICoerce LVOs take (cl, object, msg) with the MethodID
+ * stored in msg[0].  The amiga.lib-style implementations instead take the
+ * MethodID in D0.  Bridge the conventions here: read the MethodID out of
+ * msg[0] into D0 and (for the Super calls) push the caller's class so the
+ * superclass dispatch starts at cl->cl_Super. */
+static uint32_t boopsi_msg_method(uint32_t msg)
+{
+    return (msg && guest_ok(msg, 4)) ? mem_u32(msg) : 0;
+}
+
+/* IDoMethodA(object, msg) — A0 = object, A1 = msg */
 static void intuition_IDoMethodA(void)
 {
-    intuition_DoMethodA();
+    uint32_t msg = m68k_get_reg(NULL, M68K_REG_A1);
+    m68k_set_reg(M68K_REG_D0, boopsi_msg_method(msg));
+    intuition_DoMethodA();   /* object=A0, method=D0, msg=A1 */
 }
 
-/* IDoSuperMethodA(object, msg) — A0 = object, A1 = msg
- * V40: Intuition-owned DoSuperMethodA.  Same as DoSuperMethodA. */
+/* IDoSuperMethodA(cl, object, msg) — A0, A1, A2 */
 static void intuition_IDoSuperMethodA(void)
 {
-    intuition_DoSuperMethodA();
+    uint32_t cl     = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t object = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t msg    = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t method = boopsi_msg_method(msg);
+    m68k_set_reg(M68K_REG_D0, boopsi_super_dispatch_class(cl, object, method, msg));
 }
 
-/* ICoerceMethodA(class, object, msg) — A0 = class, A1 = object, A2 = msg
- * V40: Intuition-owned CoerceMethodA.  Same as CoerceMethodA. */
+/* ICoerceMethodA(cl, object, msg) — A0, A1, A2 */
 static void intuition_ICoerceMethodA(void)
 {
+    uint32_t msg = m68k_get_reg(NULL, M68K_REG_A2);
+    /* Inner CoerceMethodA reads cls=A0, object=A1, method=D0, msg=A2 — the
+     * registers already line up; only the MethodID needs moving to D0. */
+    m68k_set_reg(M68K_REG_D0, boopsi_msg_method(msg));
     intuition_CoerceMethodA();
 }
 
-/* ISetSuperAttrsA(object, tagList, ginfo) — A0, A1, A2
- * V40: Intuition-owned SetSuperAttrsA.  Same as SetSuperAttrsA. */
+/* ISetSuperAttrsA(cl, object, tagList) — A0, A1, A2 */
 static void intuition_ISetSuperAttrsA(void)
 {
-    intuition_SetSuperAttrsA();
+    uint32_t cl       = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t object   = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t tag_list = m68k_get_reg(NULL, M68K_REG_A2);
+    if (!object) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    uint32_t msg = alloc_stack_msg(OM_SET, tag_list, 0);
+    uint32_t result = boopsi_super_dispatch_class(cl, object, OM_SET, msg);
+    free_stack_msg(12);
+    m68k_set_reg(M68K_REG_D0, result);
 }
 
 /* Global screen-list lock counter. */
@@ -9201,22 +9388,30 @@ static uint32_t alloc_screen_draw_info(uint32_t screen)
 
     uint8_t detail = mem_u8(screen + SCR_OFF_DETAILPEN);
     uint8_t block  = mem_u8(screen + SCR_OFF_BLOCKPEN);
-    uint32_t font  = mem_u32(screen + SCR_OFF_FONT);
+    uint8_t depth  = mem_u8(screen + SCR_OFF_DEPTH);
+    /* DrawInfo.dri_Font is the screen's resolved TextFont — the screen
+     * RastPort's Font — not the TextAttr kept in Screen.Font. */
+    uint32_t font  = mem_u32(screen + SCR_OFF_RASTPORT + RP_OFF_FONT);
+
+    /* dri_Pens is a UWORD* pointing at a separately allocated pen array. */
+    uint32_t pens = intu_alloc(DRINFO_PEN_COUNT * 2);
+    if (!pens) { intu_free(dri); return 0; }
 
     static const uint16_t default_pens[DRINFO_PEN_COUNT] = {
         0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1
     };
 
-    mem_w16(dri + DRINFO_OFF_VERSION, 1);
+    mem_w16(dri + DRINFO_OFF_VERSION, 2);   /* DRI_VERSION */
     mem_w16(dri + DRINFO_OFF_NUMPENS, DRINFO_PEN_COUNT);
+    mem_w32(dri + DRINFO_OFF_PENS, pens);
     for (int i = 0; i < DRINFO_PEN_COUNT; i++) {
         uint16_t pen = default_pens[i];
         if (pen == 0) pen = detail;
         else if (pen == 1) pen = block;
-        mem_w16(dri + DRINFO_OFF_PENS + i * 2, pen);
+        mem_w16(pens + i * 2, pen);
     }
     mem_w32(dri + DRINFO_OFF_FONT, font);
-    mem_w8(dri + DRINFO_OFF_DEPTH, 2);
+    mem_w16(dri + DRINFO_OFF_DEPTH, depth);
     mem_w16(dri + DRINFO_OFF_RESX, 72);
     mem_w16(dri + DRINFO_OFF_RESY, 72);
     mem_w32(dri + DRINFO_OFF_FLAGS, 0);
@@ -9256,7 +9451,11 @@ static void intuition_FreeVisualInfo(void)
     uint32_t vi = m68k_get_reg(NULL, M68K_REG_A0);
     if (vi) {
         uint32_t dri = mem_u32(vi + VI_OFF_DRAWINFO);
-        if (dri) intu_free(dri);
+        if (dri) {
+            uint32_t pens = mem_u32(dri + DRINFO_OFF_PENS);
+            if (pens) intu_free(pens);
+            intu_free(dri);
+        }
         intu_free(vi);
     }
 }
@@ -10558,7 +10757,9 @@ static void intuition_GetScreenData(void)
     uint32_t screen = m68k_get_reg(NULL, M68K_REG_A1);
 
     if (!buf) return;
-    if (size > 256) size = 256;
+    if (size > SCR_AMIGA_SIZE) size = SCR_AMIGA_SIZE;
+    /* buf is guest-supplied — bounds-check before writing into g_ram. */
+    if (!guest_ok(buf, size)) return;
 
     uint32_t src = 0;
     switch (type) {
@@ -10579,7 +10780,7 @@ static void intuition_GetScreenData(void)
             break;
     }
 
-    if (src) {
+    if (src && guest_ok(src, size)) {
         for (uint32_t i = 0; i < size; i++)
             mem_w8(buf + i, mem_u8(src + i));
     } else {
@@ -10848,7 +11049,12 @@ static void intuition_FreeScreenDrawInfo(void)
 {
     (void)m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t dri = m68k_get_reg(NULL, M68K_REG_A1);
-    intu_free(dri);
+    if (dri) {
+        /* dri_Pens is a separately allocated UWORD array — free it too. */
+        uint32_t pens = mem_u32(dri + DRINFO_OFF_PENS);
+        if (pens) intu_free(pens);
+        intu_free(dri);
+    }
 }
 
 /* MoveWindowInFrontOf(window, behind) — A0, A1
@@ -10873,8 +11079,12 @@ static void intuition_SetEditHook(void)
     uint32_t hook = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t old = 0;
     if (gad) {
-        old = mem_u32(gad + GAD_OFF_USERDATA);
-        mem_w32(gad + GAD_OFF_USERDATA, hook);
+        /* Real SetEditHook writes si->EditHook, not gad->UserData. */
+        uint32_t si = mem_u32(gad + GAD_OFF_SPECIALINFO);
+        if (si) {
+            old = mem_u32(si + SI_OFF_EDITHOOK);
+            mem_w32(si + SI_OFF_EDITHOOK, hook);
+        }
     }
     m68k_set_reg(M68K_REG_D0, old);
 }
@@ -11057,9 +11267,14 @@ static uint32_t boopsi_dispatch(uint32_t object, uint32_t method,
             result = ((NativeDispatcher)(uintptr_t)native)(cls, object, use_msg);
         }
     } else {
+        /* cl_Dispatcher is an embedded struct Hook (h_Entry at +8) — pass
+         * its address, not the pre-read entry: InvokeM68kHook dereferences
+         * hook+8 itself, so handing it the raw entry makes it jump to a
+         * longword decoded from inside the dispatcher's machine code. */
         uint32_t entry = mem_u32(cls + CLASS_OFF_DISPATCHER_ENTRY);
         if (entry) {
-            result = UAOS_InvokeM68kHook(entry, cls, object, use_msg);
+            result = UAOS_InvokeM68kHook(cls + CLASS_OFF_DISPATCHER,
+                                         cls, object, use_msg);
         }
     }
 
@@ -11081,6 +11296,23 @@ static uint32_t boopsi_super_dispatch(uint32_t object, uint32_t method,
     uint32_t super = mem_u32(current + CLASS_OFF_SUPER);
     if (!super) return 0;
     return boopsi_dispatch(object, method, msg, super);
+}
+
+/* Dispatch a method to the superclass of an explicit class `cl` — the real
+ * DoSuperMethodA/IDoSuperMethodA/SetSuperAttrsA convention.  The nested
+ * super dispatch takes "current" from the boopsi nest stack, so push cl
+ * first (and only when it isn't already the current handler). */
+static uint32_t boopsi_super_dispatch_class(uint32_t cl, uint32_t object,
+                                            uint32_t method, uint32_t msg)
+{
+    int pushed = 0;
+    if (cl && g_boopsi_nest < MAX_BOOPSI_NEST) {
+        g_boopsi_class_stack[g_boopsi_nest++] = cl;
+        pushed = 1;
+    }
+    uint32_t result = boopsi_super_dispatch(object, method, msg);
+    if (pushed) g_boopsi_nest--;
+    return result;
 }
 
 static uint32_t alloc_boopsi_object(uint32_t cls)
@@ -11710,13 +11942,19 @@ static void intuition_SetGadgetAttrsA(void)
     uint32_t window    = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t requester = m68k_get_reg(NULL, M68K_REG_A2);
     uint32_t tag_list  = m68k_get_reg(NULL, M68K_REG_A3);
-    (void)requester;
+    (void)window; (void)requester;
 
-    /* Minimal implementation: pass the window pointer as the GadgetInfo to
-     * the generic OM_SET dispatcher. */
+    /* Only dispatch OM_SET for real BOOPSI objects — for a plain
+     * struct Gadget the class probe reads whatever precedes the gadget
+     * and would OM_SET a garbage "class".  Pass NULL gInfo rather than
+     * the Window pointer, which dispatchers would read as GadgetInfo. */
+    if (!gadget_is_boopsi_object(gadget)) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
     m68k_set_reg(M68K_REG_A0, gadget);
     m68k_set_reg(M68K_REG_A1, tag_list);
-    m68k_set_reg(M68K_REG_A2, window);
+    m68k_set_reg(M68K_REG_A2, 0);
     intuition_SetAttrsA();
 }
 
@@ -11879,36 +12117,23 @@ static void intuition_SetWindowPointer(void)
     restore_stack(old_sp);
 }
 
-/* OpenWindowTags(newWindow, tag1, ...) — A0 + varargs on stack */
+/* OpenWindowTagList LVO -606 — also reached by the amiga.lib
+ * OpenWindowTags stub, which arrives with A1 = &stacked tag1.  So A1 is
+ * always the tag list pointer for both calling conventions; only fall
+ * back to stack varargs when a caller reaches us with A1 clear. */
+/* LVO -606 = OpenWindowTagList(nw=A0, tags=A1).  On real AmigaOS the
+ * amiga.lib OpenWindowTags varargs stub also reaches this entry with
+ * A1 = its stacked TagItem array, so A1 is the tag list for both calling
+ * conventions.  A NULL tag list opens a default window. */
 static void intuition_OpenWindowTags(void)
 {
-    uint32_t new_window = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t old_sp     = m68k_get_reg(NULL, M68K_REG_A7);
-    uint32_t tag_list   = build_varargs_taglist(old_sp, 32);
-    if (!tag_list) {
-        m68k_set_reg(M68K_REG_D0, 0);
-        return;
-    }
-    m68k_set_reg(M68K_REG_A0, new_window);
-    m68k_set_reg(M68K_REG_A1, tag_list);
     intuition_OpenWindowTagList();
-    restore_stack(old_sp);
 }
 
-/* OpenScreenTags(newScreen, tag1, ...) — A0 + varargs on stack */
+/* OpenScreenTagList LVO -612 — same A1 convention as OpenWindowTagList. */
 static void intuition_OpenScreenTags(void)
 {
-    uint32_t new_screen = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t old_sp     = m68k_get_reg(NULL, M68K_REG_A7);
-    uint32_t tag_list   = build_varargs_taglist(old_sp, 32);
-    if (!tag_list) {
-        m68k_set_reg(M68K_REG_D0, 0);
-        return;
-    }
-    m68k_set_reg(M68K_REG_A0, new_screen);
-    m68k_set_reg(M68K_REG_A1, tag_list);
     intuition_OpenScreenTagList();
-    restore_stack(old_sp);
 }
 
 /* DoGadgetMethod(gadget, window, requester, method, ...) — A0, A1, A2, D0 + varargs */

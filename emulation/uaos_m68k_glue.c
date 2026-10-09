@@ -62,6 +62,11 @@ uint32_t g_m68k_pc_ring[M68K_PC_RING_SZ];
 int      g_m68k_pc_ring_idx = 0;
 uint32_t g_m68k_first_wild_pc = 0;
 uint32_t g_m68k_first_wild_prev = 0;
+/* Last host-dispatched guest callback (hook/ISR/putch) — tagged so a
+ * wild-PC inside callback context can name the entry it came from. */
+uint32_t g_m68k_last_cb_entry = 0;
+uint32_t g_m68k_last_cb_data  = 0;
+uint32_t g_m68k_last_cb_kind  = 0;   /* 1=hook 2=isr 3=putch */
 static int g_m68k_saw_app_code = 0;   /* pc >= 0x800000 seen (post-decrunch) */
 static int g_m68k_low_reentry = 0;    /* first wild re-entry logged          */
 
@@ -131,6 +136,17 @@ void uaos_m68k_instr_hook(unsigned int pc)
             t = " from=0x"; j = 0; while (t[j]) b[i++] = t[j++];
             u32_hex(prev, n); j = 0;
             while (n[j] && i < 60) b[i++] = n[j++];
+            if (g_hook_nest_level) {
+                t = " cb=0x"; j = 0; while (t[j]) b[i++] = t[j++];
+                u32_hex(g_m68k_last_cb_entry, n); j = 0;
+                while (n[j] && i < 60) b[i++] = n[j++];
+                t = "/0x"; j = 0; while (t[j]) b[i++] = t[j++];
+                u32_hex(g_m68k_last_cb_data, n); j = 0;
+                while (n[j] && i < 60) b[i++] = n[j++];
+                t = " k="; j = 0; while (t[j]) b[i++] = t[j++];
+                u32_hex(g_m68k_last_cb_kind, n); j = 0;
+                while (n[j] && i < 60) b[i++] = n[j++];
+            }
             b[i++] = '\n'; b[i] = '\0';
             emu_print(b);
         }
@@ -387,8 +403,12 @@ static uint32_t heap_alloc(uint32_t size)
  *   offset 12: fl_Volume (DosList BPTR, 0 for now)
  * ========================================================================= */
 
+/* Bounds: every accessor must stay inside the 16 MB window — a wild or
+ * corrupted guest pointer must fault the guest, never the host.  The
+ * subtractive comparisons are wrap-safe for addr near 0xFFFFFFFF. */
 static void guest_write_be32(uint32_t addr, uint32_t val)
 {
+    if (addr > GUEST_RAM_SIZE - 4u) return;
     g_ram[addr + 0] = (uint8_t)(val >> 24);
     g_ram[addr + 1] = (uint8_t)(val >> 16);
     g_ram[addr + 2] = (uint8_t)(val >>  8);
@@ -397,6 +417,7 @@ static void guest_write_be32(uint32_t addr, uint32_t val)
 
 static uint32_t guest_read_be32(uint32_t addr)
 {
+    if (addr > GUEST_RAM_SIZE - 4u) return 0;
     return ((uint32_t)g_ram[addr + 0] << 24)
          | ((uint32_t)g_ram[addr + 1] << 16)
          | ((uint32_t)g_ram[addr + 2] <<  8)
@@ -405,12 +426,14 @@ static uint32_t guest_read_be32(uint32_t addr)
 
 static void guest_write_be16(uint32_t addr, uint16_t val)
 {
+    if (addr > GUEST_RAM_SIZE - 2u) return;
     g_ram[addr + 0] = (uint8_t)(val >> 8);
     g_ram[addr + 1] = (uint8_t)(val     );
 }
 
 static uint16_t guest_read_be16(uint32_t addr)
 {
+    if (addr > GUEST_RAM_SIZE - 2u) return 0;
     return ((uint16_t)g_ram[addr + 0] << 8)
          | ((uint16_t)g_ram[addr + 1]     );
 }
@@ -3655,9 +3678,11 @@ static void exec_AddIntServer(void)
         guest_write_be32(iv + IV_NODE, intr);
         return;
     }
-    /* Append to chain tail (priority ordering skipped). */
+    /* Append to chain tail (priority ordering skipped).  Hop-bound the
+     * walk — a corrupt or self-referential chain must not spin the host. */
     uint32_t n = guest_read_be32(iv + IV_NODE);
-    while (guest_read_be32(n)) n = guest_read_be32(n);
+    int hops = 0;
+    while (guest_read_be32(n) && hops++ < 64) n = guest_read_be32(n);
     guest_write_be32(n, intr);
 }
 
@@ -3675,7 +3700,8 @@ static void exec_RemIntServer(void)
         if (!next) guest_write_be32(iv + IV_CODE, 0);
         return;
     }
-    while (node) {
+    int hops = 0;
+    while (node && hops++ < 64) {
         uint32_t next = guest_read_be32(node);
         if (next == intr) { guest_write_be32(node, guest_read_be32(intr)); return; }
         node = next;
@@ -4270,7 +4296,8 @@ static void exec_WaitPort(void)
         /* Nobody could ever signal this port — keep the old immediate
          * return so callers polling dead ports can't hang. */
         m68k_set_reg(M68K_REG_D0,
-                     glue_list_empty(port + MP_MSGLIST) ? 0 : port);
+                     glue_list_empty(port + MP_MSGLIST) ? 0
+                     : glue_r32(port + MP_MSGLIST));
         return;
     }
 
@@ -4306,8 +4333,11 @@ static void exec_WaitPort(void)
             Task_ClearSig(mask);
     }
 
+    /* WaitPort returns a pointer to the FIRST queued message (peek — the
+     * node stays linked; GetMsg removes it), never the port itself. */
     m68k_set_reg(M68K_REG_D0,
-                 glue_list_empty(port + MP_MSGLIST) ? 0 : port);
+                 glue_list_empty(port + MP_MSGLIST) ? 0
+                 : glue_r32(port + MP_MSGLIST));
 }
 
 /* -------------------------------------------------------------------------
@@ -4327,14 +4357,64 @@ static void exec_UserState(void)  { }
 
 static void exec_InitStruct(void)
 {
-    /* InitStruct(initTable=a1, memory=a2, size=d0).  Only the NULL-table
-     * (zero-fill) form for now — tables are rare enough that the catch-all
-     * log will flag if real parsing is needed. */
+    /* InitStruct(initTable=a1, memory=a2, size=d0).
+     *
+     * Clears `size` bytes at memory, then replays the command stream:
+     * each command byte is ddssnnnn —
+     *   dd: 00 = use running dest offset, nnnn = count
+     *       01 = use running dest offset, nnnn = repeat (one source item)
+     *       10 = dest offset = next byte,       nnnn = count
+     *       11 = dest offset = next 24 bits,    nnnn = count
+     *   ss: 00 = long, 01 = word, 10 = byte (11 is illegal)
+     *   nnnn = items-1.  Commands are read at even addresses; word/long
+     *   source items are read from the next even byte.  A zero command
+     *   byte terminates the stream. */
     uint32_t table = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t mem   = m68k_get_reg(NULL, M68K_REG_A2);
     uint32_t size  = m68k_get_reg(NULL, M68K_REG_D0);
-    if (!table && mem + size < GUEST_RAM_SIZE) {
-        for (uint32_t i = 0; i < size; i++) g_ram[mem + i] = 0;
+    if (mem >= GUEST_RAM_SIZE) return;
+    /* Subtractive compare — mem+size can wrap past 0xFFFFFFFF into a
+     * multi-GB memset that smashes the host heap. */
+    if (size <= GUEST_RAM_SIZE - mem)
+        memset(&g_ram[mem], 0, size);
+    if (!table || table >= GUEST_RAM_SIZE) return;
+
+    uint32_t t = table, rptr = 0;
+    int guard = 0;
+    for (;;) {
+        if (guard++ > 8192) break;
+        t = (t + 1u) & ~1u;                       /* commands at even addrs */
+        if (t >= GUEST_RAM_SIZE) break;
+        uint8_t cmd = g_ram[t++];
+        if (!cmd) break;
+        uint32_t dd = cmd >> 6, ss = (cmd >> 4) & 3, n = (cmd & 15) + 1;
+        if (ss == 3) break;
+        uint32_t isz = (ss == 0) ? 4 : (ss == 1) ? 2 : 1;
+        if (dd == 2) {                                   /* 8-bit offset */
+            if (t >= GUEST_RAM_SIZE) break;
+            rptr = g_ram[t++];
+        } else if (dd == 3) {                            /* 24-bit offset */
+            if (t + 3 > GUEST_RAM_SIZE) break;
+            rptr = ((uint32_t)g_ram[t] << 16) |
+                   ((uint32_t)g_ram[t + 1] << 8) | g_ram[t + 2];
+            t += 3;
+        }
+        uint32_t srcs = (dd == 1) ? 1 : n;
+        for (uint32_t i = 0; i < srcs; i++) {
+            if (isz > 1) t = (t + 1u) & ~1u;
+            if (t + isz > GUEST_RAM_SIZE) return;
+            uint32_t v = 0;
+            for (uint32_t b = 0; b < isz; b++)
+                v = (v << 8) | g_ram[t + b];
+            t += isz;
+            uint32_t writes = (dd == 1) ? n : 1;
+            for (uint32_t k = 0; k < writes; k++) {
+                if (mem + rptr + isz > GUEST_RAM_SIZE) return;
+                for (uint32_t b = 0; b < isz; b++)
+                    g_ram[mem + rptr + b] = (uint8_t)(v >> ((isz - 1 - b) * 8));
+                rptr += isz;
+            }
+        }
     }
 }
 
@@ -4345,8 +4425,9 @@ static void exec_CopyMem(int quick)
     uint32_t dst = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t len = m68k_get_reg(NULL, M68K_REG_D0);
     if (src >= GUEST_RAM_SIZE || dst >= GUEST_RAM_SIZE) return;
-    if (src + len > GUEST_RAM_SIZE) len = GUEST_RAM_SIZE - src;
-    if (dst + len > GUEST_RAM_SIZE) len = GUEST_RAM_SIZE - dst;
+    /* Subtractive clamps — src+len / dst+len wrap near 0xFFFFFFFF. */
+    if (len > GUEST_RAM_SIZE - src) len = GUEST_RAM_SIZE - src;
+    if (len > GUEST_RAM_SIZE - dst) len = GUEST_RAM_SIZE - dst;
     if (!quick && dst > src && dst < src + len) {
         for (uint32_t i = len; i > 0; i--) g_ram[dst + i - 1] = g_ram[src + i - 1];
     } else {
@@ -5393,7 +5474,17 @@ static void exec_SetFunction(void)
     int32_t  lvo = (int32_t)m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t fn  = m68k_get_reg(NULL, M68K_REG_D0);
     uint32_t addr = (uint32_t)((int)lib + lvo);
-    m68k_set_reg(M68K_REG_D0, addr);   /* "old" = the stub addr */
+    /* "Old" is the previously installed routine: if the slot already holds
+     * a JMP abs.l (an earlier SetFunction), that's its 32-bit target — NOT
+     * the slot address, which would chain the caller back into its own
+     * replacement and self-recurse.  For an ILLEGAL dispatch stub the slot
+     * address itself remains callable (it still reaches the native impl),
+     * so it is the correct old value. */
+    uint32_t old = addr;
+    if (addr + 6 <= GUEST_RAM_SIZE &&
+        g_ram[addr] == 0x4E && g_ram[addr + 1] == 0xF9)
+        old = glue_r32(addr + 2);
+    m68k_set_reg(M68K_REG_D0, old);
     if (addr + 6 <= GUEST_RAM_SIZE && fn) {
         g_ram[addr+0] = 0x4E; g_ram[addr+1] = 0xF9;  /* JMP abs.l */
         glue_w32(addr + 2, fn);
@@ -5422,8 +5513,12 @@ static void exec_Supervisor(void)
      * caller's return address is still on the stack, so the function's
      * RTS returns straight to the jsr site. */
     uint32_t fn = m68k_get_reg(NULL, M68K_REG_A5);
-    if (fn && fn < GUEST_RAM_SIZE)
+    if (fn && fn < GUEST_RAM_SIZE) {
+        g_m68k_last_cb_entry = fn;
+        g_m68k_last_cb_data  = 0;
+        g_m68k_last_cb_kind  = 4;   /* Supervisor */
         m68k_set_reg(M68K_REG_PC, fn);
+    }
 }
 
 static void exec_SetSR(void)
@@ -6718,10 +6813,17 @@ uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32
     m68k_set_reg(M68K_REG_A0, a0);
     m68k_set_reg(M68K_REG_A1, a1);
     m68k_set_reg(M68K_REG_A2, a2);
+    g_m68k_last_cb_entry = entry;
+    g_m68k_last_cb_data  = hook_ptr;
+    g_m68k_last_cb_kind  = 1;
     m68k_set_reg(M68K_REG_PC, entry);
 
+    /* Bounded like m68k_isr_call_a0 — a hook that loops legally or calls a
+     * blocking LVO must not hang the host task (~4M cycles ≈ 0.5 s). */
+    uint32_t guard = 0;
     g_m68k_wild_abort = 0;
-    while (!g_hook_return_detected[level] && !g_m68k_wild_abort) {
+    while (!g_hook_return_detected[level] && guard++ < 4000 &&
+           !g_m68k_wild_abort) {
         m68k_execute(1000);
         Chiptrace_PcSample();
     }
@@ -6773,6 +6875,9 @@ static uint32_t m68k_isr_call_a0(uint32_t entry, uint32_t d0, uint32_t a1,
     m68k_set_reg(M68K_REG_A1, a1);
     m68k_set_reg(M68K_REG_A5, a5);
     m68k_set_reg(M68K_REG_A6, EXEC_BASE);
+    g_m68k_last_cb_entry = entry;
+    g_m68k_last_cb_data  = a1;
+    g_m68k_last_cb_kind  = 2;
     m68k_set_reg(M68K_REG_PC, entry);
 
     /* Run until RTS hits the return trap — bounded so a wedged handler
@@ -6822,12 +6927,16 @@ static void m68k_putch_call(uint32_t proc, uint8_t ch, uint32_t data)
 
     uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
     sp -= 4;
-    guest_write_be32(sp, HOOK_RETURN_TRAP_ADDR);
+    if (sp <= GUEST_RAM_SIZE - 4u)
+        guest_write_be32(sp, HOOK_RETURN_TRAP_ADDR);
     m68k_set_reg(M68K_REG_A7, sp);
 
     m68k_set_reg(M68K_REG_D0, ch);
     m68k_set_reg(M68K_REG_A3, data);
     m68k_set_reg(M68K_REG_A6, EXEC_BASE);
+    g_m68k_last_cb_entry = proc;
+    g_m68k_last_cb_data  = data;
+    g_m68k_last_cb_kind  = 3;
     m68k_set_reg(M68K_REG_PC, proc);
 
     uint32_t guard = 0;
@@ -6893,15 +7002,19 @@ static void deliver_intvect_bit(int n)
     uint32_t node = guest_read_be32(iv + IV_NODE);
     if (code == IV_CHAIN) {
         /* Server chain: each handler gets a shot until one claims it
-         * (returns non-zero in D0), per exec's server dispatch. */
+         * (returns non-zero in D0), per exec's server dispatch.  Snapshot
+         * every field BEFORE invoking the handler — the handler may free
+         * or re-link its Interrupt node, so post-call reads can come back
+         * as free-list metadata or a fresh allocation's contents. */
         int hops = 0;
-        for (uint32_t in = node; in && in + 22 <= GUEST_RAM_SIZE && hops++ < 16;
-             in = guest_read_be32(in)) {
-            uint32_t ic = guest_read_be32(in + IS_CODE);
+        for (uint32_t in = node; in && in <= GUEST_RAM_SIZE - 22u && hops++ < 16; ) {
+            uint32_t next = guest_read_be32(in);
+            uint32_t ic   = guest_read_be32(in + IS_CODE);
+            uint32_t idat = guest_read_be32(in + IS_DATA);
             if (ic) g_dlv_isr++;
-            if (ic && m68k_isr_call(ic, bit,
-                                    guest_read_be32(in + IS_DATA), iv))
+            if (ic && m68k_isr_call(ic, bit, idat, iv))
                 break;
+            in = next;
         }
     } else if (code && code < GUEST_RAM_SIZE) {
         if (!(s_irq_seen & bit)) {
@@ -6940,7 +7053,7 @@ static void deliver_cia_icr(int cia)
             if (!in) continue;
             chip_emu_cia_icr_ack(cia, (uint8_t)(1u << b));
             uint32_t ic = guest_read_be32(in + IS_CODE);
-            if (ic && in + 22 <= GUEST_RAM_SIZE) {
+            if (ic && in <= GUEST_RAM_SIZE - 22u) {
                 static uint16_t s_icr_seen = 0;
                 if (!(s_icr_seen & (1u << b))) {
                     s_icr_seen |= (uint16_t)(1u << b);
@@ -7031,9 +7144,13 @@ void m68881_mmu_ops(void) { }
  * and dispatches to work in a task context.  No-op on the shared path. */
 void UAOS_Emu_MirrorSharedRegion(uint32_t off, uint32_t len)
 {
-    if (g_ram == g_shared_ram) return;
+    /* Source is g_default_ram — the buffer ROM registration wrote the boot
+     * image into.  g_shared_ram is repointed to the bridge VA window by
+     * UAOS_Bridge_Init() AFTER registration, so it never holds the class
+     * image in kernel mode. */
+    if (g_ram == g_default_ram) return;
     if (off + len <= GUEST_RAM_SIZE)
-        emu_memcpy(g_ram + off, g_shared_ram + off, len);
+        emu_memcpy(g_ram + off, g_default_ram + off, len);
 }
 
 /* =========================================================================
@@ -7087,28 +7204,44 @@ int m68k_illg_instr_callback(int opcode)
         g_thunk_count++;
         /* Print first 50 calls, then every 1000th, and always on lib/fn change to unknown */
         if (g_thunk_count <= 600 || (g_thunk_count % 10000) == 0) {
-            char buf[80] = "[trace] #";
+            char buf[128] = "[trace] #";
             char n[12]; u32_dec(g_thunk_count, n, 12);
             int i = emu_strlen(buf), j = 0;
             while (n[j] && i < 76) buf[i++] = n[j++];
             buf[i++]=' '; buf[i++]='l'; buf[i++]='i'; buf[i++]='b';
-            buf[i++]='='; u32_dec(lib, n, 12); j=0; while (n[j]&&i<76) buf[i++]=n[j++];
+            buf[i++]='='; u32_dec(lib, n, 12); j=0; while (n[j]&&i<120) buf[i++]=n[j++];
             buf[i++]=' '; buf[i++]='f'; buf[i++]='n'; buf[i++]='=';
-            u32_dec(fn, n, 12); j=0; while (n[j]&&i<76) buf[i++]=n[j++];
+            u32_dec(fn, n, 12); j=0; while (n[j]&&i<120) buf[i++]=n[j++];
             /* args d0/d1 — shows what the caller asked for */
             {
                 const char *t = " d0=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
                 u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_D0), n);
-                j = 0; while (n[j] && i < 78) buf[i++] = n[j++];
+                j = 0; while (n[j] && i < 120) buf[i++] = n[j++];
                 t = " d1=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
                 u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_D1), n);
-                j = 0; while (n[j] && i < 78) buf[i++] = n[j++];
+                j = 0; while (n[j] && i < 120) buf[i++] = n[j++];
             }
             /* caller return address = *(SP) — shows who invoked the stub */
             uint32_t tsp = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
             uint32_t ra = (tsp + 4 <= GUEST_RAM_SIZE) ? guest_read_be32(tsp) : 0;
             const char *t = " from=0x"; j = 0; while (t[j]) buf[i++] = t[j++];
-            u32_hex(ra, n); j = 0; while (n[j] && i < 78) buf[i++] = n[j++];
+            u32_hex(ra, n); j = 0; while (n[j] && i < 120) buf[i++] = n[j++];
+            /* LIB_ROM: also emit the bound module name + A6 so unmapped
+             * (fn==0xEE) calls can be traced back to their library. */
+            if (lib == LIB_ROM) {
+                uint32_t a6 = (uint32_t)m68k_get_reg(NULL, M68K_REG_A6);
+                UaosRomModule *rm = emu_gen_rom(a6);
+                const char *t2 = " a6=0x"; j = 0; while (t2[j]) buf[i++] = t2[j++];
+                u32_hex(a6, n); j = 0; while (n[j] && i < 120) buf[i++] = n[j++];
+                t2 = " lvo=-0x"; j = 0; while (t2[j]) buf[i++] = t2[j++];
+                /* pc advanced past the 2-byte ILLEGAL; stub = pc-2 = a6+lvo */
+                u32_hex((uint32_t)((int32_t)a6 - ((int32_t)pc - 2)), n);
+                j = 0; while (n[j] && i < 120) buf[i++] = n[j++];
+                if (rm && rm->name) {
+                    t2 = " "; j = 0; while (t2[j]) buf[i++] = t2[j++];
+                    for (int k = 0; rm->name[k] && i < 120; k++) buf[i++] = rm->name[k];
+                }
+            }
             buf[i++]='\n'; buf[i]='\0';
             emu_print(buf);
         }
@@ -7501,6 +7634,24 @@ int m68k_illg_instr_callback(int opcode)
         u32_hex(ra, n); j = 0; while (n[j] && i < 40) buf[i++] = n[j++];
         buf[i++]='\n'; buf[i]='\0';
         emu_print(buf);
+    }
+
+    /* Reflect D0 into NZVC so the caller's `jsr _LVOx; beq/bne/mi/pl`
+     * sequences test the return value, not stale pre-call flags.  The
+     * ILLEGAL trap bypasses instruction execution, so without this every
+     * pointer-returning LVO branches on garbage (UAOS-234 flake).
+     * Skip the flag-mutating exec calls: SetSR must leave exactly what
+     * the caller asked for, GetCC's D0 is the flag word itself, and
+     * Supervisor's caller-visible flags belong to the function's exit
+     * state, not f(D0). */
+    if (!(lib == LIB_EXEC && (fn == EXEC_SET_SR || fn == EXEC_GETCC ||
+                              fn == EXEC_SUPERVISOR))) {
+        uint32_t d0v = (uint32_t)m68k_get_reg(NULL, M68K_REG_D0);
+        uint16_t sr  = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+        sr &= (uint16_t)~0x000F;                 /* clear XNZVC low nibble */
+        if (d0v == 0)            sr |= 0x0004;   /* Z */
+        if (d0v & 0x80000000u)   sr |= 0x0008;   /* N */
+        m68k_set_reg(M68K_REG_SR, sr);
     }
 
     return 1; /* handled — continue execution */

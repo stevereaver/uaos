@@ -68,7 +68,7 @@ IDCMP_CLOSEWINDOW   equ $00000100
 ; ---------------------------------------------------------------------------
 WIN_OFF_RPORT       equ 50
 WIN_OFF_USERPORT    equ 86
-IM_OFF_CLASS        equ 24
+IM_OFF_CLASS        equ 20
 
 ; ---------------------------------------------------------------------------
 ; RastPort pen indices (AmigaOS standard)
@@ -145,6 +145,7 @@ start:
         move.l  #WIN_X,-(sp)                   ; WA_Left
         move.l  #WA_Left,-(sp)
         movea.l intuition_base,a6
+        movea.l sp,a1                          ; A1 = stacked tag list
         jsr     LVO_OpenWindowTags(a6)
         lea     96(sp),sp                      ; 12 tag pairs = 96 bytes
         move.l  d0,window

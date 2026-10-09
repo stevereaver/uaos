@@ -299,6 +299,7 @@ static int32_t dos_path_pkt(const char *name, int32_t action,
 
 static void guest_write_be32(uint32_t addr, uint32_t val)
 {
+    if (addr > GUEST_RAM_SIZE - 4u) return;
     g_ram[addr + 0] = (uint8_t)(val >> 24);
     g_ram[addr + 1] = (uint8_t)(val >> 16);
     g_ram[addr + 2] = (uint8_t)(val >>  8);
@@ -307,6 +308,7 @@ static void guest_write_be32(uint32_t addr, uint32_t val)
 
 static uint32_t guest_read_be32(uint32_t addr)
 {
+    if (addr > GUEST_RAM_SIZE - 4u) return 0;
     return ((uint32_t)g_ram[addr + 0] << 24)
          | ((uint32_t)g_ram[addr + 1] << 16)
          | ((uint32_t)g_ram[addr + 2] <<  8)
@@ -3076,6 +3078,10 @@ static void dos_SystemTagList(M68kCPUState *cpu)
     /* Extract tag values */
     uint32_t np_name = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Name);
     uint32_t np_seglist = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Seglist);
+    /* A caller-supplied NP_Seglist is a BPTR (seglist addr >> 2); the
+     * loadseg path below produces a raw address instead — track which we
+     * have so the entry point and pr_SegList come out right either way. */
+    int seglist_is_bptr = np_seglist != 0;
     uint32_t np_stacksize = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_StackSize);
     uint32_t np_priority = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_Priority);
     uint32_t np_argptr = parse_tag_item((uint32_t *)(uintptr_t)tags_ptr, NP_ArgPtr);
@@ -3133,6 +3139,7 @@ static void dos_SystemTagList(M68kCPUState *cpu)
             np_seglist = loadseg_hunk_load(g_loadseg_buf, bin_size);
             if (np_seglist) {
                 seglist_track(np_seglist >> 2, np_seglist);
+                seglist_is_bptr = 0;
                 break;
             }
         }
@@ -3176,8 +3183,11 @@ static void dos_SystemTagList(M68kCPUState *cpu)
     uint32_t stack_top = stack_low + np_stacksize - 4;
     guest_write_be32(stack_top, DOS_EXIT_STUB);
 
+    /* pr_SegList is stored as a BPTR; a caller-supplied seglist already is
+     * one, while our loadseg result is a raw address needing >> 2. */
+    uint32_t pr_seglist = seglist_is_bptr ? np_seglist : (np_seglist >> 2);
     uint32_t proc_addr = build_process_struct(proc_name, (int8_t)np_priority,
-                                              np_seglist >> 2,
+                                              pr_seglist,
                                               stack_top, stack_low);
     if (!proc_addr) {
         heap_free_fl(stack_low);
@@ -3186,9 +3196,11 @@ static void dos_SystemTagList(M68kCPUState *cpu)
         return;
     }
 
-    /* np_seglist is the seglist ADDRESS; entry is +4 past the next-BPTR link */
+    /* The seglist's first longword is the next-BPTR link; code begins +4
+     * past it.  A caller-supplied BPTR must be shifted back to an address. */
+    uint32_t seg_addr = seglist_is_bptr ? (np_seglist << 2) : np_seglist;
     PendingProc *pp = &g_pending_procs[g_pending_tail];
-    pp->entry     = np_seglist + 4;
+    pp->entry     = seg_addr + 4;
     pp->stack_top = stack_top;
     pp->proc      = proc_addr;
     pp->proc_port = proc_addr + PR_MSGPORT;
@@ -3210,6 +3222,10 @@ static void dos_SystemTagList(M68kCPUState *cpu)
     kprint("'\n");
     /* Return process message port APTR */
     cpu->a[0] = proc_addr + PR_MSGPORT;
+    /* V36+ System() returns 0 when the command was started (or an error
+     * code).  Leaving D0 stale makes callers that test the result read
+     * whatever was in D0 on entry. */
+    cpu->d[0] = 0;
     (void)sys_asynch;  /* Synchronous execution for now */
     (void)np_cwd;      /* CWD handling not yet implemented */
 }

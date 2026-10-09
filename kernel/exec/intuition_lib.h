@@ -84,18 +84,18 @@ typedef struct {
     int16_t  Height;          /*  6 */
     uint8_t  DetailPen;       /*  8 */
     uint8_t  BlockPen;        /*  9 */
-    uint16_t IDCMPFlags;      /* 10 */
-    uint16_t Flags;           /* 12 */
-    uint32_t FirstGadget;     /* 14 */
-    uint32_t CheckMark;       /* 18 */
-    uint32_t Title;           /* 22 */
-    uint32_t Screen;          /* 26 */
-    uint32_t BitMap;          /* 30 */
-    int16_t  MinWidth;        /* 34 */
-    int16_t  MinHeight;       /* 36 */
-    int16_t  MaxWidth;        /* 38 */
-    int16_t  MaxHeight;       /* 40 */
-    uint16_t Type;            /* 42 */
+    uint32_t IDCMPFlags;      /* 10 */
+    uint32_t Flags;           /* 14 */
+    uint32_t FirstGadget;     /* 18 */
+    uint32_t CheckMark;       /* 22 */
+    uint32_t Title;           /* 26 */
+    uint32_t Screen;          /* 30 */
+    uint32_t BitMap;          /* 34 */
+    int16_t  MinWidth;        /* 38 */
+    int16_t  MinHeight;       /* 40 */
+    uint16_t MaxWidth;        /* 42 */
+    uint16_t MaxHeight;       /* 44 */
+    uint16_t Type;            /* 46 */
 } AmigaNewWindow;
 
 /* -------------------------------------------------------------------------
@@ -359,7 +359,8 @@ typedef struct {
 #define SI_OFF_NUMCHARS      16
 #define SI_OFF_MIN           20
 #define SI_OFF_MAX           24
-#define SI_SIZE              28
+#define SI_OFF_EDITHOOK      36   /* real StringInfo layout — SetEditHook target */
+#define SI_SIZE              40
 
 /* UAOS simple ListView gadget extension (stored in SpecialInfo) */
 #define LV_OFF_ITEMS         0
@@ -504,7 +505,10 @@ typedef struct {
 #define NS_SIZE            28
 
 /* -------------------------------------------------------------------------
- * AmigaOS Screen structure offsets (packed, partial)
+ * AmigaOS Screen structure offsets (intuition/screens.h, V37 layout)
+ * ViewPort, RastPort, BitMap and Layer_Info are EMBEDDED structures:
+ *   sc_ViewPort = screen+44, sc_RastPort = screen+84, sc_BitMap = screen+184,
+ *   sc_LayerInfo = screen+224.
  * ------------------------------------------------------------------------- */
 #define SCR_OFF_NEXTSCREEN    0
 #define SCR_OFF_FIRSTWINDOW   4
@@ -515,41 +519,51 @@ typedef struct {
 #define SCR_OFF_MOUSEY       16
 #define SCR_OFF_MOUSEX       18
 #define SCR_OFF_FLAGS        20
-#define SCR_OFF_TITLE        24
-#define SCR_OFF_DEFAULTTITLE  28
-#define SCR_OFF_BARHEIGHT    32
-#define SCR_OFF_VBOR        33
-#define SCR_OFF_HBOR        34
-#define SCR_OFF_MVBOR       35
-#define SCR_OFF_MHBOR       36
-#define SCR_OFF_WBORTOP     37
-#define SCR_OFF_WBORLEFT    38
-#define SCR_OFF_WBORRIGHT   39
-#define SCR_OFF_WBORBOTTOM  40
-#define SCR_OFF_FONT         42
-#define SCR_OFF_VIEWPORT     46
-#define SCR_OFF_DETAILPEN    70
-#define SCR_OFF_BLOCKPEN     71
-#define SCR_OFF_RASTPORT     80
-#define SCR_OFF_DEPTH        84
-#define SCR_OFF_BITMA        88
-#define SCR_OFF_DISPLAYID    92
-#define SCR_OFF_COLORS       96
-#define SCR_SIZE            256
+#define SCR_OFF_TITLE        22
+#define SCR_OFF_DEFAULTTITLE 26
+#define SCR_OFF_BARHEIGHT    30
+#define SCR_OFF_VBOR        31
+#define SCR_OFF_HBOR        32
+#define SCR_OFF_MVBOR       33
+#define SCR_OFF_MHBOR       34
+#define SCR_OFF_WBORTOP     35
+#define SCR_OFF_WBORLEFT    36
+#define SCR_OFF_WBORRIGHT   37
+#define SCR_OFF_WBORBOTTOM  38
+#define SCR_OFF_FONT         40   /* struct TextAttr * */
+#define SCR_OFF_VIEWPORT     44   /* embedded ViewPort  (40 bytes)  */
+#define SCR_OFF_RASTPORT     84   /* embedded RastPort  (100 bytes) */
+#define SCR_OFF_BITMAP      184   /* embedded BitMap    (40 bytes)  */
+#define SCR_OFF_LAYERINFO   224   /* embedded Layer_Info(44 bytes)  */
+#define SCR_OFF_FIRSTGADGET 268
+#define SCR_OFF_DETAILPEN   272
+#define SCR_OFF_BLOCKPEN    273
+#define SCR_OFF_SAVECOLOR0  274
+#define SCR_OFF_BARLAYER    276
+#define SCR_OFF_EXTDATA     280
+#define SCR_OFF_USERDATA    284
+#define SCR_AMIGA_SIZE      288   /* real sc_SIZEOF */
+
+/* UAOS-private fields, past the real structure so guests never see them. */
+#define SCR_OFF_DEPTH       292   /* BYTE  bitplane depth            */
+#define SCR_OFF_BITMA       296   /* APTR  canonical BitMap struct   */
+#define SCR_OFF_DISPLAYID   300   /* ULONG display mode id           */
+#define SCR_OFF_COLORS      304   /* APTR  SA_Colors table           */
+#define SCR_SIZE            320
 
 /* -------------------------------------------------------------------------
  * AmigaOS DrawInfo structure offsets (packed, partial)
  * ------------------------------------------------------------------------- */
 #define DRINFO_OFF_VERSION   0
 #define DRINFO_OFF_NUMPENS   2
-#define DRINFO_OFF_PENS      4
+#define DRINFO_OFF_PENS      4   /* UWORD* pointer to the pen array */
 #define DRINFO_PEN_COUNT    16
-#define DRINFO_OFF_FONT     36
-#define DRINFO_OFF_DEPTH    40
-#define DRINFO_OFF_RESX     42
-#define DRINFO_OFF_RESY     44
-#define DRINFO_OFF_FLAGS    48
-#define DRINFO_SIZE         64
+#define DRINFO_OFF_FONT      8   /* TextFont* */
+#define DRINFO_OFF_DEPTH    12
+#define DRINFO_OFF_RESX     14
+#define DRINFO_OFF_RESY     16
+#define DRINFO_OFF_FLAGS    18
+#define DRINFO_SIZE         50
 
 /* -------------------------------------------------------------------------
  * Screen attribute tags (SA_*)

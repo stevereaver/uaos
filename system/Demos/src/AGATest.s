@@ -97,7 +97,7 @@ IDCMP_CLOSEWINDOW   equ $00000100
 SCR_OFF_VIEWPORT    equ 46
 WIN_OFF_RPORT       equ 50
 WIN_OFF_USERPORT    equ 86
-IM_OFF_CLASS        equ 24
+IM_OFF_CLASS        equ 20
 VP_OFF_COLORMAP     equ 18
 RP_OFF_MASK         equ 40
 
@@ -221,6 +221,7 @@ vp_clr:
         move.l  #40,-(sp)                      ; SA_Left
         move.l  #SA_Left,-(sp)
         movea.l intuition_base,a6
+        movea.l sp,a1                          ; A1 = stacked tag list
         jsr     LVO_OpenScreenTags(a6)
         lea     72(sp),sp                      ; 9 tag pairs = 72 bytes
         move.l  d0,screen
@@ -262,6 +263,7 @@ vp_clr:
         move.l  screen,-(sp)                   ; WA_CustomScreen
         move.l  #WA_CustomScreen,-(sp)
         movea.l intuition_base,a6
+        movea.l sp,a1                          ; A1 = stacked tag list
         jsr     LVO_OpenWindowTags(a6)
         lea     104(sp),sp                     ; 13 tag pairs = 104 bytes
         move.l  d0,window

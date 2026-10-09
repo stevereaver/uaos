@@ -99,8 +99,8 @@ IDCMP_GADGETDOWN    equ $00000020
 IDCMP_GADGETUP      equ $00000040
 IDCMP_CLOSEWINDOW   equ $00000100
 
-IM_OFF_CLASS        equ 24
-IM_OFF_IADDRESS     equ 32
+IM_OFF_CLASS        equ 20
+IM_OFF_IADDRESS     equ 28
 GAD_OFF_GADGETID    equ 38
 WIN_OFF_USERPORT    equ 86
 
@@ -286,6 +286,7 @@ start:
         move.l  #220,-(sp)                      ; WA_Left
         move.l  #WA_Left,-(sp)
         movea.l intuition_base,a6
+        movea.l sp,a1                           ; A1 = stacked tag list
         jsr     LVO_OpenWindowTags(a6)
         lea     112(sp),sp                      ; 14 tag pairs
         move.l  d0,window

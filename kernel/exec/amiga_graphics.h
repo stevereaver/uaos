@@ -10,28 +10,50 @@
 #include <stdint.h>
 
 /* -------------------------------------------------------------------------
- * RastPort offsets (classic AmigaOS)
+ * RastPort offsets (classic AmigaOS struct RastPort, graphics/rastport.h)
  * ------------------------------------------------------------------------- */
 #define RP_OFF_LAYER        0
 #define RP_OFF_BITMAP       4
 #define RP_OFF_AREAPTRN     8
-#define RP_OFF_TMPBUF       12
-#define RP_OFF_FLAGS        16
-#define RP_OFF_DRAWMODE     17
-#define RP_OFF_AREACNTN     18
-#define RP_OFF_AREAPNCTR    19
-#define RP_OFF_LINPATN      20
-#define RP_OFF_CP_X         22
-#define RP_OFF_CP_Y         24
-#define RP_OFF_FGPEN        26
-#define RP_OFF_BGPEN        27
-#define RP_OFF_AOLPEN       28
-#define RP_OFF_OLNPEN       29
-#define RP_OFF_FONT         30
-#define RP_OFF_SOFTSTYLE    44   /* soft font style (JAM1/JAM2 etc.) */
-#define RP_OFF_MASK         40   /* write mask (V39) */
-#define RP_OFF_MAXPEN       41   /* max pen used in RastPort (V39) */
-#define RP_SIZE_MIN         64   /* enough to cover fields we touch */
+#define RP_OFF_TMPRAS       12
+#define RP_OFF_AREAINFO     16
+#define RP_OFF_GELSINFO     20
+#define RP_OFF_MASK         24   /* write mask */
+#define RP_OFF_FGPEN        25
+#define RP_OFF_BGPEN        26
+#define RP_OFF_AOLPEN       27   /* area outline pen */
+#define RP_OFF_DRAWMODE     28
+#define RP_OFF_AREAPTSZ     29
+#define RP_OFF_LINPATCNT    30
+#define RP_OFF_FLAGS        32   /* UWORD */
+#define RP_OFF_LINEPTRN     34
+#define RP_OFF_CP_X         36
+#define RP_OFF_CP_Y         38
+#define RP_OFF_MINTERMS     40   /* 8 bytes */
+#define RP_OFF_PENWIDTH     48
+#define RP_OFF_PENHEIGHT    50
+#define RP_OFF_FONT         52
+#define RP_OFF_ALGOSTYLE    56   /* soft font style */
+#define RP_OFF_TXFLAGS      57
+#define RP_OFF_TXHEIGHT     58
+#define RP_OFF_TXWIDTH      60
+#define RP_OFF_TXBASELINE   62
+#define RP_OFF_TXSPACING    64
+#define RP_OFF_RP_USER      66
+/* rp_longreserved[2] at 70, rp_wordreserved[7] at 78, rp_reserved[8] at 92 */
+#define RP_SIZEOF          100
+
+/* UAOS-private fields in the V38 reserved tail of the struct */
+#define RP_OFF_MAXPEN       78   /* wordreserved[0] low byte */
+
+/* Compatibility aliases for older UAOS code */
+#define RP_OFF_TMPBUF       RP_OFF_TMPRAS
+#define RP_OFF_AREACNTN     RP_OFF_AREAPTSZ
+#define RP_OFF_AREAPNCTR    RP_OFF_LINPATCNT
+#define RP_OFF_LINPATN      RP_OFF_LINEPTRN
+#define RP_OFF_OLNPEN       RP_OFF_AOLPEN
+#define RP_OFF_SOFTSTYLE    RP_OFF_ALGOSTYLE
+#define RP_SIZE_MIN        104   /* allocation size (rp_SIZEOF + pad) */
 
 /* BitMap flags for AllocBitMap / GetBitMapAttr */
 #define BMF_CLEAR        0x00000001
@@ -40,22 +62,25 @@
 #define BMF_STANDARD     0x00000008
 #define BMF_MINPLANES    0x00000010
 
-/* TextFont structure offsets */
+/* TextFont structure offsets (graphics/text.h — starts after
+ * struct Message, so tf_YSize lands at 20) */
 #define TF_OFF_NODE          0
-#define TF_OFF_YSIZE        14
-#define TF_OFF_STYLE        16
-#define TF_OFF_FLAGS        17
-#define TF_OFF_XSIZE        18
-#define TF_OFF_BASELINE     20
-#define TF_OFF_BOLDSMEAR    22
-#define TF_OFF_ACCESSORS    24
-#define TF_OFF_LOCHAR       26
-#define TF_OFF_HICHAR       27
-#define TF_OFF_CHARDATA     28
-#define TF_OFF_MODULO       32
-#define TF_OFF_CHARSPACE    34
-#define TF_OFF_CHARKERN     38
-#define TF_SIZE             42
+#define TF_OFF_NAME         10   /* ln_Name within tf_Message */
+#define TF_OFF_YSIZE        20
+#define TF_OFF_STYLE        22
+#define TF_OFF_FLAGS        23
+#define TF_OFF_XSIZE        24
+#define TF_OFF_BASELINE     26
+#define TF_OFF_BOLDSMEAR    28
+#define TF_OFF_ACCESSORS    30
+#define TF_OFF_LOCHAR       32
+#define TF_OFF_HICHAR       33
+#define TF_OFF_CHARDATA     34
+#define TF_OFF_MODULO       38
+#define TF_OFF_CHARLOC      40   /* 2 words per char: bit offset, width */
+#define TF_OFF_CHARSPACE    44
+#define TF_OFF_CHARKERN     48
+#define TF_SIZE             52
 
 /* TextAttr structure offsets */
 #define TA_OFF_NAME          0
@@ -136,24 +161,33 @@ extern void render_bitmap_region_to_framebuffer(uint32_t bm, uint32_t cmap,
 #define VIEW_OFF_DY          10
 #define VIEW_OFF_FLAGS       12
 
-/* ViewPort offsets */
+/* ViewPort offsets (graphics/view.h, V37 vp_SIZEOF = 40) */
 #define VP_OFF_NEXT          0
-#define VP_OFF_RASINFO      14
-#define VP_OFF_COLORMAP     18
-#define VP_OFF_DWIDTH       22
-#define VP_OFF_DHEIGHT      24
-#define VP_OFF_DXOFFSET     26
-#define VP_OFF_DYOFFSET     28
-#define VP_OFF_MODES        30
-#define VP_OFF_SPRITE       32
-#define VP_OFF_COLORSET     34
-#define VP_OFF_DISPLAYID    36
+#define VP_OFF_COLORMAP      4
+#define VP_OFF_DSPINS        8
+#define VP_OFF_SPRINS       12
+#define VP_OFF_CLRINS       16
+#define VP_OFF_UCOPINS      20
+#define VP_OFF_DWIDTH       24
+#define VP_OFF_DHEIGHT      26
+#define VP_OFF_DXOFFSET     28
+#define VP_OFF_DYOFFSET     30
+#define VP_OFF_MODES        32
+#define VP_OFF_SPRITEPRI    34
+#define VP_OFF_EXTFLAGS     35
+#define VP_OFF_RASINFO      36
+#define VP_SIZEOF           40
+/* UAOS-private extension past the V37 struct */
+#define VP_OFF_DISPLAYID    44
+#define VP_OFF_COLORSET     VP_OFF_EXTFLAGS
+#define VP_OFF_SPRITE       VP_OFF_SPRITEPRI
 
-/* RasInfo offsets */
-#define RI_OFF_BITMAP        0
-#define RI_OFF_NEXT          4
+/* RasInfo offsets (graphics/view.h) */
+#define RI_OFF_NEXT          0
+#define RI_OFF_BITMAP        4
 #define RI_OFF_RXOFFSET      8
-#define RI_OFF_RYOFFSET      10
+#define RI_OFF_RYOFFSET     10
+#define RI_SIZEOF           12
 
 /* ColorMap offsets */
 #define CM_OFF_TYPE          0

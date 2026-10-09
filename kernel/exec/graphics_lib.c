@@ -327,6 +327,10 @@ static uint8_t rgb_to_grey8(uint32_t rgb)
     return (uint8_t)((r + g + b) / 3);
 }
 
+static void font_glyph_geometry(uint32_t font, uint8_t c,
+                                int *bit_off, int *width);
+static int font_char_advance(uint32_t font, uint8_t c);
+
 /* =========================================================================
  * Font / text metric helpers
  * ========================================================================= */
@@ -338,23 +342,25 @@ typedef struct {
     uint16_t    baseline;
     uint8_t     style;
     uint8_t     flags;
-    uint32_t    font_addr;   /* guest TextFont instance */
-    uint32_t    bitmap_addr; /* guest char bitmap */
+    uint32_t    font_addr;    /* guest TextFont instance */
+    uint32_t    bitmap_addr;  /* guest char bitmap (tf_CharData) */
+    uint32_t    charloc_addr; /* guest tf_CharLoc table */
+    uint32_t    charspace_addr;/* guest tf_CharSpace table */
     uint32_t    ref_count;
 } UaosFontEntry;
 
 static UaosFontEntry font_entries[] = {
-    {"topaz.font",     8,  8, 16, 12, 0, 0, 0, 0},
-    {"topaz.font",    11,  8, 11,  8, 0, 0, 0, 0},
-    {"topaz.font",    13,  8, 13, 10, 0, 0, 0, 0},
-    {"emerald.font",   8,  8, 16, 12, 0, 0, 0, 0},
-    {"sapphire.font",  8,  8, 16, 12, 0, 0, 0, 0},
-    {"ruby.font",      8,  8, 16, 12, 0, 0, 0, 0},
-    {"garnet.font",    8,  8, 16, 12, 0, 0, 0, 0},
-    {"crystal.font",    11,  8, 11,  8, 0, 0, 0, 0},
-    {"diamond.font",    11,  8, 11,  8, 0, 0, 0, 0},
-    {"platinum.font",   8,  8, 16, 12, 0, 0, 0, 0},
-    {"tiffany.font",    8,  8, 16, 12, 0, 0, 0, 0},
+    {"topaz.font",     8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
+    {"topaz.font",    11,  8,  9,  0, 0, 0, 0, 0, 0, 0},
+    {"topaz.font",    13,  8, 11,  0, 0, 0, 0, 0, 0, 0},
+    {"emerald.font",   8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
+    {"sapphire.font",  8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
+    {"ruby.font",      8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
+    {"garnet.font",    8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
+    {"crystal.font",    11,  8,  9,  0, 0, 0, 0, 0, 0, 0},
+    {"diamond.font",    11,  8,  9,  0, 0, 0, 0, 0, 0, 0},
+    {"platinum.font",   8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
+    {"tiffany.font",    8,  8,  6,  0, 0, 0, 0, 0, 0, 0},
 };
 #define UAOS_FONT_COUNT (sizeof(font_entries) / sizeof(font_entries[0]))
 
@@ -370,20 +376,91 @@ static int match_font_name(const char *name, const char *expected)
     }
 }
 
+/* Real topaz fonts cover the whole byte range (tf_LoChar=0,
+ * tf_HiChar=255); characters outside the printable ASCII set carry
+ * whatever glyphs the ROM font defines.  UAOS has no ROM font data for
+ * those codepoints, so they get blank glyphs — this is what applications
+ * such as OctaMED rely on when they Text() fixed-width field buffers
+ * padded with NUL bytes: on real AmigaOS the padding shows nothing, not
+ * a run of '?' placeholders. */
+#define FONT_FIRST_CHAR  0x00
+#define FONT_LAST_CHAR   0xFF
+#define FONT_NUM_CHARS   (FONT_LAST_CHAR - FONT_FIRST_CHAR + 1)
+#define FONT_ASCII_FIRST 0x20
+#define FONT_ASCII_LAST  0x7E
+
+/* Build a real AmigaOS "strike" font bitmap: all glyphs packed
+ * side-by-side into a single 1-bit-deep bitmap whose row stride is
+ * tf_Modulo bytes, with a tf_CharLoc table of (bit offset, width)
+ * word pairs per character, and a tf_CharSpace advance table.
+ * This is the exact layout real AmigaOS apps expect when they draw
+ * text themselves via tf_CharData/tf_CharLoc. */
 static uint32_t create_font_bitmap(UaosFontEntry *e)
 {
     if (e->bitmap_addr) return e->bitmap_addr;
 
-    uint32_t bitmap_addr = 0;
-    dos_AllocMem_glue(95 * 16, 0, &bitmap_addr);
-    if (!bitmap_addr) return 0;
+    uint16_t xs     = e->xSize;
+    uint16_t ys     = e->ySize;
+    int total_bits  = FONT_NUM_CHARS * xs;
+    uint16_t modulo = (uint16_t)(((total_bits + 15) / 16) * 2);
+    uint32_t bmp_size = (uint32_t)modulo * ys;
 
-    for (int i = 0; i < 95 * 16; i++) {
-        int ch = i / 16;
-        int row = i % 16;
-        m68k_write_memory_8(bitmap_addr + i, g_font8x16[ch][row]);
+    uint32_t bitmap_addr = 0;
+    dos_AllocMem_glue(bmp_size, 0, &bitmap_addr);
+    if (!bitmap_addr) return 0;
+    for (uint32_t i = 0; i < bmp_size; i++)
+        m68k_write_memory_8(bitmap_addr + i, 0);
+
+    /* g_font8x16 holds 16 rows of 8 pixels per glyph covering the
+     * printable ASCII range; pack each glyph's row bits at its CharLoc
+     * bit offset.  Characters outside 0x20..0x7E keep their zeroed
+     * (blank) glyph slots.  Fonts shorter than 16 rows downsample the
+     * source glyph rows so the full glyph (including descenders) is kept. */
+    for (int ch = FONT_ASCII_FIRST; ch <= FONT_ASCII_LAST; ch++) {
+        int bit_base = (ch - FONT_FIRST_CHAR) * xs;
+        for (int row = 0; row < ys; row++) {
+            /* Map the destination row onto the full 16-row source glyph so
+             * fonts shorter than 16 rows keep the whole glyph (incl.
+             * descenders) rather than clipping to the top ys rows. */
+            int src_row = (ys >= 16) ? row : (row * 15) / (ys - 1);
+            uint8_t bits = g_font8x16[ch - FONT_ASCII_FIRST][src_row];
+            uint32_t row_addr = bitmap_addr + row * modulo;
+            for (int col = 0; col < xs && col < 8; col++) {
+                if (bits & (0x80 >> col)) {
+                    int bit = bit_base + col;
+                    uint32_t addr = row_addr + (bit >> 3);
+                    m68k_write_memory_8(addr,
+                        (uint8_t)(m68k_read_memory_8(addr) | (0x80 >> (bit & 7))));
+                }
+            }
+        }
     }
-    e->bitmap_addr = bitmap_addr;
+
+    /* tf_CharLoc: (FONT_NUM_CHARS + 1) pairs of UWORDs —
+     * bit offset then size; the last entry is the "default" glyph
+     * used for out-of-range characters (point it at '?'). */
+    uint32_t loc_addr = 0;
+    dos_AllocMem_glue((FONT_NUM_CHARS + 1) * 4, 0, &loc_addr);
+    if (!loc_addr) { e->bitmap_addr = bitmap_addr; return bitmap_addr; }
+    for (int ch = 0; ch < FONT_NUM_CHARS; ch++) {
+        m68k_write_memory_16(loc_addr + ch * 4,     (uint16_t)(ch * xs));
+        m68k_write_memory_16(loc_addr + ch * 4 + 2, xs);
+    }
+    int def = ('?' - FONT_FIRST_CHAR);
+    m68k_write_memory_16(loc_addr + FONT_NUM_CHARS * 4,     (uint16_t)(def * xs));
+    m68k_write_memory_16(loc_addr + FONT_NUM_CHARS * 4 + 2, xs);
+
+    /* tf_CharSpace: per-char advance in pixels (fixed width here). */
+    uint32_t spc_addr = 0;
+    dos_AllocMem_glue(FONT_NUM_CHARS * 2, 0, &spc_addr);
+    if (spc_addr) {
+        for (int ch = 0; ch < FONT_NUM_CHARS; ch++)
+            m68k_write_memory_16(spc_addr + ch * 2, xs);
+    }
+
+    e->bitmap_addr    = bitmap_addr;
+    e->charloc_addr   = loc_addr;
+    e->charspace_addr = spc_addr;
     return bitmap_addr;
 }
 
@@ -394,6 +471,10 @@ static uint32_t create_font_instance(UaosFontEntry *e)
     uint32_t bitmap = create_font_bitmap(e);
     if (!bitmap) return 0;
 
+    uint16_t xs     = e->xSize;
+    int total_bits  = FONT_NUM_CHARS * xs;
+    uint16_t modulo = (uint16_t)(((total_bits + 15) / 16) * 2);
+
     uint32_t font_addr = 0;
     dos_AllocMem_glue(TF_SIZE, 0, &font_addr);
     if (!font_addr) return 0;
@@ -403,17 +484,19 @@ static uint32_t create_font_instance(UaosFontEntry *e)
 
     m68k_write_memory_16(font_addr + TF_OFF_YSIZE,     e->ySize);
     m68k_write_memory_8 (font_addr + TF_OFF_STYLE,     e->style);
-    m68k_write_memory_8 (font_addr + TF_OFF_FLAGS,     e->flags);
+    /* FPF_ROMFONT | FPF_DESIGNED: a resident, non-proportional font. */
+    m68k_write_memory_8 (font_addr + TF_OFF_FLAGS,     0x41);
     m68k_write_memory_16(font_addr + TF_OFF_XSIZE,     e->xSize);
     m68k_write_memory_16(font_addr + TF_OFF_BASELINE,  e->baseline);
     m68k_write_memory_16(font_addr + TF_OFF_BOLDSMEAR, 1);
     m68k_write_memory_16(font_addr + TF_OFF_ACCESSORS, 1);
-    m68k_write_memory_8 (font_addr + TF_OFF_LOCHAR,  0x20);
-    m68k_write_memory_8 (font_addr + TF_OFF_HICHAR,  0x7E);
-    m68k_write_memory_32(font_addr + TF_OFF_CHARDATA, bitmap);
-    m68k_write_memory_16(font_addr + TF_OFF_MODULO,    1);
-    m68k_write_memory_32(font_addr + TF_OFF_CHARSPACE, 0);
-    m68k_write_memory_32(font_addr + TF_OFF_CHARKERN, 0);
+    m68k_write_memory_8 (font_addr + TF_OFF_LOCHAR,    FONT_FIRST_CHAR);
+    m68k_write_memory_8 (font_addr + TF_OFF_HICHAR,    FONT_LAST_CHAR);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARDATA,  bitmap);
+    m68k_write_memory_16(font_addr + TF_OFF_MODULO,    modulo);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARLOC,   e->charloc_addr);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARSPACE, e->charspace_addr);
+    m68k_write_memory_32(font_addr + TF_OFF_CHARKERN,  0);
 
     e->font_addr = font_addr;
     return font_addr;
@@ -475,6 +558,15 @@ static void font_close(uint32_t font)
 static uint32_t create_builtin_font(void)
 {
     return font_open("topaz.font", 8, 0, 0);
+}
+
+/* GfxBase->DefaultFont equivalent: the system font used by Text() and
+ * the metric helpers whenever a RastPort's Font field is NULL. */
+uint32_t uaos_gfx_default_font(void)
+{
+    static uint32_t def_font;
+    if (!def_font) def_font = create_builtin_font();
+    return def_font;
 }
 
 static int text_char_width(uint32_t rp)
@@ -909,9 +1001,14 @@ static int text_baseline(uint32_t rp)
 
 static int text_width(uint32_t rp, uint32_t str, int len)
 {
-    (void)str;
     if (len < 0) len = 0;
-    return len * text_char_width(rp);
+    uint32_t font = rp ? m68k_read_memory_32(rp + RP_OFF_FONT) : 0;
+    if (!font || !str)
+        return len * text_char_width(rp);
+    int w = 0;
+    for (int i = 0; i < len; i++)
+        w += font_char_advance(font, m68k_read_memory_8(str + i));
+    return w;
 }
 
 static int text_height(uint32_t rp)
@@ -1323,7 +1420,7 @@ static void graphics_InitRastPort(void)
     /* InitRastPort — zero out the guest RastPort structure */
     uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
     if (!rp) return;
-    for (int i = 0; i < RP_SIZE_MIN; i++)
+    for (int i = 0; i < RP_SIZEOF; i++)
         m68k_write_memory_8(rp + i, 0);
     /* Default pen = 1 (white), draw mode = JAM2 (Workbench default).
      * Mask = 0xFF — all bitplanes writable (AmigaOS InitRastPort default). */
@@ -1336,35 +1433,39 @@ static void graphics_InitRastPort(void)
 static void graphics_InitView(void)
 {
     /* InitView(view) — A1 = view
-     * Zero the View structure and mark it as empty.
-     */
+     * Zero the View structure and mark it as empty.  struct View is 18
+     * bytes (ColorMap, LOF/SHF cprlists, Dx/DyOffset, Modes) — zeroing
+     * more clobbers whatever follows the caller's struct. */
     uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
     if (!view) return;
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < 18; i++)
         m68k_write_memory_8(view + i, 0);
 }
 
 static void graphics_InitVPort(void)
 {
-    /* InitVPort(vport) — A1 = vport
-     * Zero the ViewPort structure.
-     */
-    uint32_t vport = m68k_get_reg(NULL, M68K_REG_A1);
+    /* InitVPort(vport) — A0 = vport (the A0 register call; InitView and
+     * InitRastPort are the A1 variants). */
+    uint32_t vport = m68k_get_reg(NULL, M68K_REG_A0);
     if (!vport) return;
-    for (int i = 0; i < 80; i++)
+    /* A ViewPort is 40 bytes; zeroing more would run into the struct that
+     * follows it (e.g. a screen's embedded RastPort at screen+84). */
+    for (int i = 0; i < 40; i++)
         m68k_write_memory_8(vport + i, 0);
+    /* Real InitVPort leaves SpritePriorities = 0x24 (V1.2+). */
+    m68k_write_memory_8(vport + 34, 0x24);
 }
 
 static void graphics_InitBitMap(void)
 {
-    /* InitBitMap(bm, width, height, depth)
-     * A1 = bm, D0 = width, D1 = height, D2 = depth
+    /* InitBitMap(bm, depth, width, height)
+     * A0 = bm, D0 = depth, D1 = width, D2 = height
      * Set up the BitMap header and clear plane pointers.
      */
-    uint32_t bm = m68k_get_reg(NULL, M68K_REG_A1);
-    int w = (int)m68k_get_reg(NULL, M68K_REG_D0);
-    int h = (int)m68k_get_reg(NULL, M68K_REG_D1);
-    int d = (int)m68k_get_reg(NULL, M68K_REG_D2);
+    uint32_t bm = m68k_get_reg(NULL, M68K_REG_A0);
+    int d = (int)m68k_get_reg(NULL, M68K_REG_D0);
+    int w = (int)m68k_get_reg(NULL, M68K_REG_D1);
+    int h = (int)m68k_get_reg(NULL, M68K_REG_D2);
     if (!bm) return;
     uint16_t bytes_per_row = (uint16_t)(((w + 15) / 16) * 2);
     if (bytes_per_row < 2) bytes_per_row = 2;
@@ -1528,6 +1629,34 @@ static void cop_end(uint32_t *p)
 static uint32_t s_vp_copper[MAX_VIEWPORTS];
 static uint32_t s_view_copper = 0;
 
+/* Host-side ViewPort→DisplayID map.  A real V37 ViewPort is only 40 bytes
+ * and has no room for the 32-bit DisplayID (vp->Modes holds just the low
+ * word), and for a screen-embedded ViewPort any field past offset 40 lands
+ * inside the embedded RastPort.  Keep the full modeid here, keyed by the
+ * guest ViewPort address; populated when a screen registers its mode. */
+static struct { uint32_t vp; uint32_t modeid; } s_vp_modeid[MAX_VIEWPORTS];
+
+void uaos_gfx_set_vp_modeid(uint32_t vp, uint32_t modeid)
+{
+    if (!vp) return;
+    for (int i = 0; i < MAX_VIEWPORTS; i++) {
+        if (s_vp_modeid[i].vp == vp || s_vp_modeid[i].vp == 0) {
+            s_vp_modeid[i].vp     = vp;
+            s_vp_modeid[i].modeid = modeid;
+            return;
+        }
+    }
+}
+
+static uint32_t vp_modeid(uint32_t vp)
+{
+    if (!vp) return 0;
+    for (int i = 0; i < MAX_VIEWPORTS; i++)
+        if (s_vp_modeid[i].vp == vp) return s_vp_modeid[i].modeid;
+    /* Unknown viewport: fall back to the low word in vp->Modes. */
+    return m68k_read_memory_16(vp + VP_OFF_MODES);
+}
+
 static int vp_index(uint32_t vp)
 {
     for (int i = 0; i < MAX_VIEWPORTS; i++)
@@ -1548,7 +1677,7 @@ static uint32_t build_viewport_copper(uint32_t vp)
     if (!bm) return 0;
 
     uint32_t cmap = m68k_read_memory_32(vp + VP_OFF_COLORMAP);
-    uint32_t mode_id = m68k_read_memory_32(vp + VP_OFF_MODES);
+    uint32_t mode_id = vp_modeid(vp);   /* vp->Modes is a 16-bit field */
     uint32_t di = disp_find_mode(mode_id);
 
     int depth = (int)m68k_read_memory_8(bm + BM_OFF_DEPTH);
@@ -1791,35 +1920,81 @@ static void graphics_ChangeVPBitMap(void)
  * Otherwise fall back to the built-in 8×16 font.
  * For JAM1 only foreground pixels are drawn (transparent background).
  * For JAM2 the cell is opaque. */
+/* Fetch the strike-bitmap geometry for glyph c of a font:
+ * bit offset and width (bits) of the glyph within a tf_Modulo-strided
+ * row.  Honors tf_CharLoc (proportional fonts) and falls back to
+ * fixed-width packing when it is absent. */
+static void font_glyph_geometry(uint32_t font, uint8_t c,
+                                int *bit_off, int *width)
+{
+    uint8_t  lo   = m68k_read_memory_8(font + TF_OFF_LOCHAR);
+    uint8_t  hi   = m68k_read_memory_8(font + TF_OFF_HICHAR);
+    int      xs   = (int)m68k_read_memory_16(font + TF_OFF_XSIZE);
+    uint32_t loc  = m68k_read_memory_32(font + TF_OFF_CHARLOC);
+    int nch = hi - lo + 1;   /* CharLoc has nch+1 entries; the extra is notdef */
+    int idx = (int)c - (int)lo;
+    if (idx < 0 || idx > nch) idx = nch;   /* out of range → notdef entry */
+    if (loc) {
+        int bo = (int)m68k_read_memory_16(loc + idx * 4);
+        int w  = (int)m68k_read_memory_16(loc + idx * 4 + 2);
+        if (w > 0) { *bit_off = bo; *width = w; return; }
+    }
+    *bit_off = idx * xs;
+    *width   = xs;
+}
+
+/* Per-character advance in pixels: tf_CharSpace when present,
+ * otherwise the glyph width from tf_CharLoc, else tf_XSize. */
+static int font_char_advance(uint32_t font, uint8_t c)
+{
+    uint8_t  lo   = m68k_read_memory_8(font + TF_OFF_LOCHAR);
+    uint8_t  hi   = m68k_read_memory_8(font + TF_OFF_HICHAR);
+    int      xs   = (int)m68k_read_memory_16(font + TF_OFF_XSIZE);
+    uint32_t spc  = m68k_read_memory_32(font + TF_OFF_CHARSPACE);
+    int nch = hi - lo + 1;   /* CharSpace has exactly nch entries (lo..hi) */
+    int idx = (int)c - (int)lo;
+    if (spc && idx >= 0 && idx < nch)
+        return (int)m68k_read_memory_16(spc + idx * 2);
+    /* Out of range or no CharSpace: use the glyph's own bit width. */
+    int bo, w;
+    font_glyph_geometry(font, c, &bo, &w);
+    if (w > 0) return w;
+    return xs;
+}
+
 static void draw_text_char(uint32_t rp, int x, int y, char ch, uint32_t fg, int mode, uint32_t bg)
 {
     uint8_t c = (uint8_t)ch;
     uint32_t font = rp ? m68k_read_memory_32(rp + RP_OFF_FONT) : 0;
+    /* AmigaOS Text() draws with GfxBase->DefaultFont when the RastPort
+     * has no font set. */
+    if (!font) font = uaos_gfx_default_font();
     uint32_t chardata = font ? m68k_read_memory_32(font + TF_OFF_CHARDATA) : 0;
 
-    /* Guest-supplied fonts (not one of our builtin instances, whose
-     * CharData uses a simpler per-glyph layout) render from their real
-     * bitmap: Amiga layout packs every glyph side-by-side, glyph n's bits
-     * starting at bit n*tf_XSize, rows tf_Modulo bytes apart. */
-    if (font && chardata && !font_entry_by_addr(font)) {
+    /* Render from the font's real strike bitmap: glyph c's bits start
+     * at the tf_CharLoc bit offset for the char (or (c-lo)*xSize when
+     * CharLoc is absent), each row tf_Modulo bytes apart. */
+    if (font && chardata) {
         uint8_t  lo     = m68k_read_memory_8 (font + TF_OFF_LOCHAR);
         uint8_t  hi     = m68k_read_memory_8 (font + TF_OFF_HICHAR);
-        int      xs     = (int)m68k_read_memory_16(font + TF_OFF_XSIZE);
         int      ys     = (int)m68k_read_memory_16(font + TF_OFF_YSIZE);
+        int      xs     = (int)m68k_read_memory_16(font + TF_OFF_XSIZE);
         uint16_t modulo = m68k_read_memory_16(font + TF_OFF_MODULO);
-        if (xs <= 0 || ys <= 0 || ys > 64 || modulo == 0)
+        if (xs <= 0 || xs > 64 || ys <= 0 || ys > 64 || modulo == 0)
             goto builtin;
         if (c < lo || c > hi) {
-            /* Out-of-range char: use '?' if the font has it, else skip. */
+            /* Out-of-range char: use the default glyph ('?' position). */
             if (lo <= 0x3F && 0x3F <= hi) c = 0x3F;
             else return;
         }
+        int bit_base, gw;
+        font_glyph_geometry(font, c, &bit_base, &gw);
+        if (gw <= 0 || gw > 64) goto builtin;
         if (mode != JAM1)
-            rp_fill_rect(rp, x, y, xs, ys, bg);
-        int bit_base = (c - lo) * xs;
+            rp_fill_rect(rp, x, y, gw, ys, bg);
         for (int row = 0; row < ys; row++) {
             uint32_t row_addr = chardata + row * modulo;
-            for (int col = 0; col < xs; col++) {
+            for (int col = 0; col < gw; col++) {
                 int bit = bit_base + col;
                 uint8_t b = m68k_read_memory_8(row_addr + (bit >> 3));
                 if (b & (0x80 >> (bit & 7)))
@@ -1830,7 +2005,7 @@ static void draw_text_char(uint32_t rp, int x, int y, char ch, uint32_t fg, int 
     }
 
 builtin:
-    if (c < 0x20 || c > 0x7E) c = '?';
+    if (c < 0x20 || c > 0x7E) return;   /* no glyph data: blank */
     const uint8_t *glyph = g_font8x16[c - 0x20];
 
     if (mode == JAM1) {
@@ -1865,7 +2040,7 @@ static void graphics_Text(void)
     if (!rp || !str || len <= 0) return;
 
     int x = (int)rp_s16(rp, RP_OFF_CP_X);
-    int y = (int)rp_s16(rp, RP_OFF_CP_Y);
+    int y = (int)rp_s16(rp, RP_OFF_CP_Y);   /* cp_y is the pen baseline */
 
     uint32_t fg = current_fg(rp);
     uint32_t bg = current_bg(rp);
@@ -1873,21 +2048,27 @@ static void graphics_Text(void)
     int mode    = current_mode(rp);
     int outline = (mode & OUTLINE) ? 1 : 0;
 
-    int cw = text_char_width(rp);
+    uint32_t font = m68k_read_memory_32(rp + RP_OFF_FONT);
+    if (!font) font = uaos_gfx_default_font();
+    /* AmigaOS Text() renders so the font baseline lands at cp_y — the
+     * glyph top is cp_y - tf_Baseline.  This matches what TextExtent
+     * reports (Min.Y = -baseline). */
+    int baseline = font ? (int)m68k_read_memory_16(font + TF_OFF_BASELINE) : 0;
+    int top_y = y - baseline;
     for (int i = 0; i < len; i++) {
-        char ch = (char)m68k_read_memory_8(str + i);
+        uint8_t ch = m68k_read_memory_8(str + i);
         if (outline) {
             /* Draw a simple outline: render the character shifted to all 8
              * neighbours with the outline pen, then draw the glyph normally. */
             for (int oy = -1; oy <= 1; oy++) {
                 for (int ox = -1; ox <= 1; ox++) {
                     if (ox == 0 && oy == 0) continue;
-                    draw_text_char(rp, x + ox, y + oy, ch, ol, JAM1, bg);
+                    draw_text_char(rp, x + ox, top_y + oy, (char)ch, ol, JAM1, bg);
                 }
             }
         }
-        draw_text_char(rp, x, y, ch, fg, mode, bg);
-        x += cw;
+        draw_text_char(rp, x, top_y, (char)ch, fg, mode, bg);
+        x += font_char_advance(font, ch);
     }
 
     rp_w_s16(rp, RP_OFF_CP_X, (int16_t)x);
@@ -1931,10 +2112,10 @@ static void graphics_TextLength(void)
      * A1 = rp, A0 = string, D0 = length
      * Returns pixel width in D0.
      */
-    uint32_t rp = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t rp  = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t str = m68k_get_reg(NULL, M68K_REG_A0);
     int len = (int)m68k_get_reg(NULL, M68K_REG_D0);
-    if (len < 0) len = 0;
-    m68k_set_reg(M68K_REG_D0, (unsigned int)(len * text_char_width(rp)));
+    m68k_set_reg(M68K_REG_D0, (unsigned int)text_width(rp, str, len));
 }
 
 static void graphics_OpenFont(void)
@@ -1960,7 +2141,8 @@ static void graphics_OpenFont(void)
         }
     }
 
-    m68k_set_reg(M68K_REG_D0, font_open(name, ySize, style, flags));
+    uint32_t result = font_open(name, ySize, style, flags);
+    m68k_set_reg(M68K_REG_D0, result);
 }
 
 static void graphics_CloseFont(void)
@@ -3041,6 +3223,11 @@ static void graphics_FreeBitMap(void)
     uint32_t bm = m68k_get_reg(NULL, M68K_REG_A1);
     if (!bm) return;
 
+    /* The embedded screen->BitMap (inside the intuition heap) is a mirror
+     * of the canonical screen bitmap, not an owned allocation — freeing
+     * it would release shared planes out from under the compositor. */
+    if (bm >= 0x1E0000 && bm < 0x1F0000) return;
+
     uint8_t depth = m68k_read_memory_8(bm + BM_OFF_DEPTH);
     if (depth == 0) depth = 1;
     if (depth > 8) depth = 8;
@@ -3568,8 +3755,9 @@ static void graphics_GetVPModeID(void)
      * Returns the ViewPort DisplayID in D0.
      */
     uint32_t vp = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t modeid = vp ? m68k_read_memory_32(vp + VP_OFF_DISPLAYID) : 0;
-    m68k_set_reg(M68K_REG_D0, modeid);
+    /* The full DisplayID lives in the host-side vp→modeid map (a V37
+     * ViewPort has no 32-bit field for it); fall back to vp->Modes. */
+    m68k_set_reg(M68K_REG_D0, vp_modeid(vp));
 }
 
 static void graphics_GetBitMapAttr(void)

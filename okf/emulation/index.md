@@ -71,7 +71,27 @@ ExecBase `IntVects[16]` lives at `EXEC_BASE+0x54` as 12-byte `IntVector` entries
 
 Both honour guest masking: `pend = INTREQ & INTENA` (plus the CIA-B line synthesized into the EXTER bit), and a source only preempts while its level exceeds the guest's `SR.IPL` (or reaches the vector path via Musashi's own level check). Unacknowledged bits persist in `g_intreq` and refire — matching level-triggered hardware.
 
-**cia.resource** — `ciaa.resource`/`ciab.resource` open as generated-library blocks with an extra 8-entry `Interrupt*` table at `base+0x80`. `AddICRVector`(-6)/`RemICRVector`(-12)/`AbleICR`(-18)/`SetICR`(-24) dispatch to `chip_emu_cia_*` helpers; pending `icr & icr_mask` bits are delivered to the registered handlers (A0 = CIA base, A1 = `is_Data`, D0 = bit) and acked on delivery. GenLib entries are window-scoped (`GenLib.ram`) so concurrent M68k tasks keep independent resource registrations.
+**cia.resource** — `ciaa.resource`/`ciab.resource` open as generated-library blocks with an extra 8-entry `Interrupt*` table at `base+0x80`. `AddICRVector`(-6)/`RemICRVector`(-12)/`AbleICR`(-18)/`SetICR`(-24) dispatch to `chip_emu_cia_*` helpers; pending `icr & icr_mask` bits are delivered to the registered handlers (A0 = CIA base, A1 = `is_Data`, D0 = bit) and acked on delivery. GenLib entries are window-scoped (`GenLib.ram`) so concurrent M68k tasks keep independent resource registrations. Interrupt-chain traversal snapshots `ln_Succ`/`is_Data`/`is_Code` before invoking each handler — a handler may legally remove its own node.
+
+## ABI Correctness Notes (UAOS-234)
+
+* **`WaitPort`** peeks at `lh_Head` — returns the first queued `struct Message` without dequeuing it (GetMsg dequeues). Returning the port makes callers parse MsgPort fields as a message.
+* **`SetFunction`** must return the *previous* vector target: the stored `JMP abs.l` address when re-patching, the stub slot address itself otherwise (an unpatched ILLEGAL stub still re-enters the native impl when called).
+* **`InitStruct`** implements the full `ddssnnnn` table format: `dd` = dest offset mode (running/8-bit/24-bit + count vs. repeat), `ss` = source size (long/word/byte), `nnnn` = items−1; command bytes at even addresses; word/long source items read from the next even byte; `0` terminates.
+* **Post-dispatch NZVC** — after every LVO the dispatch writes D0-derived Z/N into SR so `jsr _LVOx; beq` works (the ILLEGAL trap never executes an instruction that would set flags). `SetSR`/`GetCC` are exempt — their contract is the flag word itself.
+* **BOOPSI m68k dispatch** passes `cls + CLASS_OFF_DISPATCHER` (the embedded `struct Hook`, `h_Entry` at +8) to `UAOS_InvokeM68kHook` — the helper dereferences `hook+8` itself, so handing it the raw entry pointer makes it jump into the dispatcher's own instruction bytes.
+* **Per-task shared-region mirror** copies boot-time structures (BOOPSI class registry, exec lists) from `g_default_ram`, not `g_shared_ram` — the bridge init repoints `g_shared_ram` to the empty 4 GB guest VA window, so sourcing it mirrored zeros and broke `find_public_class` for every per-task guest.
+* **`NP_Seglist`** for `SystemTagList`/`CreateNewProc` is a **BPTR** — a caller-supplied value needs `<<2` before use; internally loaded seglists (`loadseg_hunk_load`) are raw addresses. `pr_SegList` is stored as a BPTR either way; the entry point is `seg_addr + 4` (first longword = next-BPTR link).
+* **Callback tagging** — `g_m68k_last_cb_{entry,data,kind}` records the last host-dispatched guest entry point (hook/ISR/putch/Supervisor), printed by the wild-PC diagnostic so a crash inside callback context names the routine.
+* **`Supervisor`** runs `a5` in place — the pushed return address returns to the caller. OctaMED uses it inside its CIAA ICR handler to run an `audio.device`-introspecting routine; fields that are 0 in our generated device base produce absorbed wild-PCs the callback context recovers from. Supervisor is exempt from the NZVC fixup — the caller-visible flags are the supervised function's exit state, not f(D0).
+
+### Guest-pointer hardening (UAOS-234 review)
+
+* **All guest-memory accessors are bounds-checked** — `guest_read/write_be16/32` (glue + dos), `mem_u8/16/32`/`mem_w8/16/32` (intuition) reject addresses outside the 16 MB window using *subtractive* compares (`addr <= SIZE - n`), which stay correct when `addr` is near `0xFFFFFFFF`. A wild guest pointer faults the guest (reads 0, writes dropped); it must never touch host memory outside `g_ram`.
+* **Wrap-safe range checks** — `InitStruct`'s clear range and `CopyMem`'s clamp use `size <= SIZE - base` form; additive `base + size <= SIZE` wraps into a multi-GB `memcpy`/`memset` that smashes the host heap.
+* **Chain walks are hop-bounded** — `AddIntServer`/`RemIntServer`/`deliver_intvect_bit` cap list traversal; a corrupt or self-referential `ln_Succ` chain can't spin the host task.
+* **Callback invocations are bounded** — `UAOS_InvokeM68kHook`, `m68k_isr_call_a0`, `m68k_putch_call` all run `m68k_execute` under a cycle guard (≈4M cycles) plus the wild-PC breaker; a wedged hook/ISR returns control instead of hanging the host.
+* **Register-file ABI details** — `InitVPort(vp)` takes **A0** (not A1 — InitView/InitRastPort are the A1 calls) and leaves `vp_SpritePriorities = 0x24`; `InitView` zeroes exactly `sizeof(struct View)` = 18 bytes; `System()`/`SystemTagList` returns 0 in D0 on successful launch (stale D0 read as failure by callers); `SetEditHook` writes `StringInfo->EditHook` (+36), not `Gadget->UserData`; `SetGadgetAttrsA` only dispatches OM_SET for real BOOPSI objects and passes NULL `gInfo`; `FreeScreenDrawInfo`/`FreeVisualInfo` release the separately allocated `dri_Pens` array.
 
 ## Trap System
 

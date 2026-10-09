@@ -54,6 +54,7 @@ start:
         move.l  #SA_ShowTitle,-(sp)
         move.l  #1,-(sp)                  ; SA_Quiet = TRUE
         move.l  #SA_Quiet,-(sp)
+        movea.l sp,a1                     ; A1 = stacked tag list
         jsr     LVO_OpenScreenTags(a5)
         lea     24(sp),sp                 ; 3 tag pairs
         move.l  d0,d7                     ; d7 = screen
@@ -83,6 +84,7 @@ start:
         move.l  #WA_Left,-(sp)
         move.l  d7,-(sp)                  ; WA_CustomScreen
         move.l  #WA_CustomScreen,-(sp)
+        movea.l sp,a1                     ; A1 = stacked tag list
         jsr     LVO_OpenWindowTags(a5)
         lea     88(sp),sp                 ; 11 tag pairs
 

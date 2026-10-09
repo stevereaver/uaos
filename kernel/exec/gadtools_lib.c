@@ -30,6 +30,7 @@ extern void         m68k_set_reg(int reg, unsigned int value);
 #define M68K_REG_A0  8
 #define M68K_REG_A1  9
 #define M68K_REG_A2  10
+#define M68K_REG_A3  11
 #define M68K_REG_A7  15
 
 /* =========================================================================
@@ -171,22 +172,30 @@ static uint32_t alloc_screen_draw_info(uint32_t screen)
 
     uint8_t detail = gt_u8(screen + SCR_OFF_DETAILPEN);
     uint8_t block  = gt_u8(screen + SCR_OFF_BLOCKPEN);
-    uint32_t font  = gt_u32(screen + SCR_OFF_FONT);
+    uint8_t depth  = gt_u8(screen + SCR_OFF_DEPTH);
+    /* dri_Font is the screen's resolved TextFont (RastPort.Font), not the
+     * TextAttr stored in Screen.Font. */
+    uint32_t font  = gt_u32(screen + SCR_OFF_RASTPORT + RP_OFF_FONT);
+
+    /* dri_Pens is a UWORD* pointing at a separately allocated pen array. */
+    uint32_t pens = intu_alloc(DRINFO_PEN_COUNT * 2);
+    if (!pens) { intu_free(dri); return 0; }
 
     static const uint16_t default_pens[DRINFO_PEN_COUNT] = {
         0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1
     };
 
-    gt_w16(dri + DRINFO_OFF_VERSION, 1);
+    gt_w16(dri + DRINFO_OFF_VERSION, 2);   /* DRI_VERSION */
     gt_w16(dri + DRINFO_OFF_NUMPENS, DRINFO_PEN_COUNT);
+    gt_w32(dri + DRINFO_OFF_PENS, pens);
     for (int i = 0; i < DRINFO_PEN_COUNT; i++) {
         uint16_t pen = default_pens[i];
         if (pen == 0) pen = detail;
         else if (pen == 1) pen = block;
-        gt_w16(dri + DRINFO_OFF_PENS + i * 2, pen);
+        gt_w16(pens + i * 2, pen);
     }
     gt_w32(dri + DRINFO_OFF_FONT, font);
-    gt_w8(dri + DRINFO_OFF_DEPTH, 2);
+    gt_w16(dri + DRINFO_OFF_DEPTH, depth);
     gt_w16(dri + DRINFO_OFF_RESX, 72);
     gt_w16(dri + DRINFO_OFF_RESY, 72);
     gt_w32(dri + DRINFO_OFF_FLAGS, 0);
@@ -640,10 +649,11 @@ static void gadtools_FreeGadgets(void)
  * ========================================================================= */
 static void gadtools_GT_SetGadgetAttrsA(void)
 {
+    /* GT_SetGadgetAttrsA(gad, win, req, tagList) = A0, A1, A2, A3 */
     uint32_t gad  = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t win  = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t req  = m68k_get_reg(NULL, M68K_REG_A2);
-    uint32_t tags = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A3);
     (void)req;
 
     /* Guest-supplied pointers are unchecked — a wild gadget address must
@@ -784,10 +794,11 @@ static void gadtools_GT_SetGadgetAttrsA(void)
 
 static void gadtools_GT_GetGadgetAttrsA(void)
 {
+    /* GT_GetGadgetAttrsA(gad, win, req, tagList) = A0, A1, A2, A3 */
     uint32_t gad  = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t win  = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t req  = m68k_get_reg(NULL, M68K_REG_A2);
-    uint32_t tags = m68k_get_reg(NULL, M68K_REG_D0);
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A3);
     (void)win; (void)req;
 
     int ok = 0;
@@ -961,9 +972,11 @@ static void gadtools_DrawBevelBoxA(void)
     uint32_t vi = find_tag_data(tags, GT_VisualInfo, 0);
     if (vi) {
         uint32_t dri = gt_u32(vi + GTVI_OFF_DRAWINFO);
-        if (dri) {
-            shine  = gt_u16(dri + DRINFO_OFF_PENS + DRI_SHINEPEN  * 2);
-            shadow = gt_u16(dri + DRINFO_OFF_PENS + DRI_SHADOWPEN * 2);
+        /* dri_Pens is a pointer to the pen array, not an inline table. */
+        uint32_t pens = dri ? gt_u32(dri + DRINFO_OFF_PENS) : 0;
+        if (pens) {
+            shine  = gt_u16(pens + DRI_SHINEPEN  * 2);
+            shadow = gt_u16(pens + DRI_SHADOWPEN * 2);
         }
     }
     int recessed = (int)find_tag_data(tags, GT_TagBase + 20 /*GTBB_Recessed*/, 0);

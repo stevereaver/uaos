@@ -35,7 +35,7 @@ extern uint8_t *g_ram;
 extern int g_emu_halted;
 /* Arm the packed-hunk write watch (decrunch-corruption debug).  Poke to 1
  * before launching a guest binary: poke &g_watch_mem 1 FORCE. */
-volatile int g_watch_mem = 1;
+volatile int g_watch_mem = 0;
 extern uint32_t g_uaos_heap_ptr;
 extern uint64_t g_m68k_cycles;
 extern uint32_t heap_alloc(uint32_t size);
