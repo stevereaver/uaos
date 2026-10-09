@@ -13,29 +13,37 @@ UAOS provides a growing set of native AmigaOS-compatible libraries and devices f
 
 ## utility.library (`kernel/exec/utility_lib.c`)
 
-String, memory, and tag-list helpers.
+String, character, integer, tag-list, date, and hook helpers.
 
 | Function | Status | Notes |
 |---|---|---|
-| `StrIcmp` / `StrNicmp` | Implemented | Case-insensitive string comparison. |
-| `UCStr` / `LCStr` | Implemented | Convert strings to upper/lower case. |
-| `SMult32` / `UMult32` | Implemented | 32×32 multiply and 32-bit scaling. |
-| `NextTagItem` / `GetTagData` | Implemented | Walk and query AmigaOS `TagItem` lists. |
+| `Stricmp` / `Strnicmp` (LVO -162/-168) | Implemented | Case-insensitive byte comparison; result is the sign-extended 8-bit difference of the first mismatching pair. Case folding applies only when both bytes are non-zero. |
+| `ToUpper` / `ToLower` (LVO -174/-180) | Implemented | Single character in D0 → folded character in D0. Covers ASCII plus the international ranges: upper folds `0xE0-0xFE` (except `0xF7`) onto `0xC0-0xDE`; lower folds `0x41-0x5A` and `0xC0-0xDE`. |
+| `SMult32` / `UMult32` (LVO -138/-144) | Implemented | Two-operand `D0 × D1` → low 32 bits in D0. |
+| `SDivMod32` / `UDivMod32` (LVO -150/-156) | Implemented | Two-operand `D0 ÷ D1` → quotient in D0, remainder in D1. |
+| `SMult64` / `UMult64` (LVO -198/-204) | Implemented | 32×32 → 64-bit product in D0:D1 (high:low). |
+| `FindTagItem` / `GetTagData` / `NextTagItem` (LVO -30/-36/-48) | Implemented | Walk and query `TagItem` lists. |
+| `PackBoolTags` / `FilterTagChanges` / `MapTags` / `RefreshTagItemClones` / `TagInArray` / `FilterTagItems` / `ApplyTagChanges` (LVO -42/-54/-60/-84/-90/-96/-186) | Implemented | Tag-list filtering, remapping, and clone refresh. |
+| `CallHookPkt` (LVO -102) | Implemented | Invokes the hook's `h_Entry` via `UAOS_InvokeM68kHook` (A0=hook, A2=object, A1=param packet). |
+| `Amiga2Date` / `Date2Amiga` / `CheckDate` (LVO -120/-126/-132) | Implemented | Seconds-since-1978 ↔ `ClockData` (seven BE `UWORD`s). March-based Gregorian arithmetic with the `0x000b05d6` epoch offset; `CheckDate` validates by round-tripping. |
 | `AllocItem` / `FreeItem` | Stub | Reserved for future use. |
 | `DateMatch` | Stub | Reserved for future use. |
 
-Tag list parsing follows the AmigaOS convention: `TAG_DONE`, `TAG_MORE`, `TAG_IGNORE`, `TAG_JUMP`, and `TAG_END` are recognised and skipped as needed.
+Tag-list traversal uses the canonical control-tag values `TAG_DONE`/`TAG_END`=0, `TAG_IGNORE`=1, `TAG_MORE`=2, `TAG_SKIP`=3 (user tags are ≥ `TAG_USER`/`0x80000000`). `NextTagItem` and the shared walker silently skip `TAG_IGNORE` items, follow `TAG_MORE` chains, honour `TAG_SKIP` counts, and never surface control entries as tags. The same traversal rules are applied by the internal tag walkers in `dos_lib.c` (`SystemTagList`), `intuition_lib.c` (ASL `frq_apply_tags`), `gadtools_lib.c`, `boopsi_builtin.c`, and `graphics_lib.c`.
 
 ## mathffp.library (`kernel/exec/mathffp_lib.c`)
 
-Software single-precision floating-point library.
+Software floating-point library using the Motorola Fast Floating Point (FFP) format: the upper 24 bits hold a normalized mantissa, and the low byte packs the sign (bit 7) with an excess-64 exponent, so `SPFlt(1)` yields `0x80000041`. Sign operations live in the low byte — `SPNeg` toggles bit 7, `SPAbs` clears it — and `SPCmp` takes its operands in D1,D0 order. Basic arithmetic is implemented natively over the FFP fields with normalization, round-half-up, and saturation at the exponent limits.
 
 | Function | Status | Notes |
 |---|---|---|
-| `SPAdd`, `SPSub`, `SPMul`, `SPDiv` | Implemented | Basic IEEE 754 arithmetic. |
-| `SPCmp`, `SPNeg`, `SPAbs` | Implemented | Comparison and sign operations. |
-| `SPFix`, `SPFlt` | Implemented | Float↔integer conversion. |
-| `SPSqrt`, `SPLog`, `SPExp`, `SPSin`, `SPCos`, `SPTan`, `SPAtan`, `SPAsin`, `SPAcos` | Implemented | Call the shared freestanding helpers in `float_math.c` (same code as `mathtrans.library`). `SPLog` is the natural logarithm (ln). |
+| `SPFix` / `SPFlt` (LVO -30/-36) | Implemented | Integer↔FFP conversion (truncate toward zero). |
+| `SPCmp` / `SPTst` (LVO -42/-48) | Implemented | FFP compare (first operand in D1) / test against zero (operand in D1). |
+| `SPAbs` / `SPNeg` (LVO -54/-60) | Implemented | Clear / toggle the sign bit in the low byte. |
+| `SPAdd`, `SPSub`, `SPMul`, `SPDiv` (LVO -66/-72/-78/-84) | Implemented | FFP field arithmetic. |
+| `SPFloor` / `SPCeil` (LVO -90/-96) | Implemented | Integer rounding in FFP space. |
+| `SPSin`, `SPCos`, `SPTan`, `SPSinCos`, `SPSinh`, `SPCosh`, `SPTanh`, `SPExp`, `SPLog`, `SPPow`, `SPSqrt`, `SPAsin`, `SPAcos`, `SPAtan` (LVO -102..-192) | Implemented | Convert FFP→IEEE 754, run the shared freestanding helpers in `float_math.c` (same code as `mathtrans.library`), convert back. `SPSinCos` returns sin in D0 and cos in D1; `SPPow` takes base in D0, power in D1. |
+| `SPTieee` / `SPFieee` (LVO -168/-174) | Implemented | Raw IEEE 754 single bits ↔ FFP conversion. |
 
 ## mathieeesingbas.library (`kernel/exec/mathieeesingbas_lib.c`)
 
@@ -48,7 +56,7 @@ IEEE 754 single-precision basic floating-point operations. Required by ACE Basic
 | `SPAbs`, `SPNeg` | Implemented | Absolute value and negation via sign-bit manipulation. |
 | `SPAdd`, `SPSub`, `SPMul`, `SPDiv` | Implemented | Basic IEEE 754 arithmetic using native C float. |
 
-Registered at base address `0x00000070`. Uses the same IEEE 754 conversion helpers as mathffp.library.
+Registered at base address `0x00000070`. Unlike `mathffp.library` (Motorola FFP), this library operates on IEEE 754 single-precision bit patterns directly.
 
 ## mathtrans.library (`kernel/exec/mathtrans_lib.c`)
 
@@ -173,4 +181,4 @@ Unmapped LVOs on a generated base fail predictably: the catch-all stub returns 0
 
 Two footguns the generated path exposes: guest memory is big-endian, so module functions that dereference guest structs must read/write through byte-wise BE helpers (see `util_r32`/`util_w32`, `timer_r32`/`timer_w32` — `NextTagItem`, `GetTagData`, `AddTime`/`SubTime`/`CmpTime`, `GetSysTime`, `ReadEClock` were all converted); and functions must never leak host pointers into guest-visible registers or memory.
 
-Guest-verified by `SYS:Demos/UtilTest` (version gate, `SMult32`/`UMult64`, tag iteration, `mathieeesingbas` `IEEESPAdd`, `timer.device` `OpenDevice`+`AddTime`, unknown-library no-op).
+Guest-verified by `SYS:Demos/UtilTest` (version gate, `SMult32`/`UMult64` at LVO -204, `NextTagItem`/`GetTagData` including `TAG_MORE` chains and `TAG_SKIP`, `ToUpper`/`ToLower` character ABI with the international ranges, `mathffp` FFP `SPFlt`/`SPNeg`/`SPCmp` operand order, `dos` `StrToLong`, `mathieeesingbas` `IEEESPAdd`, `timer.device` `OpenDevice`+`AddTime`, unknown-library no-op).

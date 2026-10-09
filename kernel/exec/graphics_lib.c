@@ -4124,24 +4124,35 @@ static void graphics_VBeamPos(void)
 static uint32_t taglist_get(uint32_t tags, uint32_t tag)
 {
     if (!tags) return 0;
-    for (uint32_t p = tags; ; p += 8) {
+    int guard = 0;
+    for (uint32_t p = tags; guard++ < 16384; ) {
         uint32_t t = m68k_read_memory_32(p);
         uint32_t v = m68k_read_memory_32(p + 4);
         if (t == TAG_DONE || t == TAG_END) return 0;
+        if (t == 1 /* TAG_IGNORE */) { p += 8;           continue; }
+        if (t == 2 /* TAG_MORE   */) { p = v;            continue; }
+        if (t == 3 /* TAG_SKIP   */) { p += 8 * (v + 1); continue; }
         if (t == tag) return v;
+        p += 8;
     }
+    return 0;
 }
 
 static void taglist_set(uint32_t tags, uint32_t tag, uint32_t value)
 {
     if (!tags) return;
-    for (uint32_t p = tags; ; p += 8) {
+    int guard = 0;
+    for (uint32_t p = tags; guard++ < 16384; ) {
         uint32_t t = m68k_read_memory_32(p);
         if (t == TAG_DONE || t == TAG_END) return;
+        if (t == 1 /* TAG_IGNORE */) { p += 8;           continue; }
+        if (t == 2 /* TAG_MORE   */) { p = m68k_read_memory_32(p + 4); continue; }
+        if (t == 3 /* TAG_SKIP   */) { p += 8 * (m68k_read_memory_32(p + 4) + 1); continue; }
         if (t == tag) {
             m68k_write_memory_32(p + 4, value);
             return;
         }
+        p += 8;
     }
 }
 

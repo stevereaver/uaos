@@ -145,10 +145,14 @@ static uint32_t find_tag_data(uint32_t tag_list, uint32_t tag, uint32_t def)
 {
     if (!tag_list) return def;
     uint32_t p = tag_list;
-    while (gt_ok(p, 8)) {
+    int guard = 0;
+    while (gt_ok(p, 8) && guard++ < 16384) {
         uint32_t t = gt_u32(p);
         uint32_t d = gt_u32(p + 4);
         if (t == TAG_DONE) break;
+        if (t == 1 /* TAG_IGNORE */) { p += 8;         continue; }
+        if (t == 2 /* TAG_MORE   */) { p = d;          continue; }
+        if (t == 3 /* TAG_SKIP   */) { p += 8 * (d + 1); continue; }
         if (t == tag) return d;
         p += 8;
     }

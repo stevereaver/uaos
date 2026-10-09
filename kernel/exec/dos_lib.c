@@ -3006,9 +3006,9 @@ static void dos_RunCommand(M68kCPUState *cpu)
 
 /* Tag list control tags */
 #define TAG_DONE        0
-#define TAG_MORE        0x80000001
-#define TAG_IGNORE      0x80000002
-#define TAG_JUMP        0x80000003
+#define TAG_IGNORE      1
+#define TAG_MORE        2
+#define TAG_SKIP        3
 
 typedef struct TagItem {
     uint32_t ti_Tag;
@@ -3017,9 +3017,10 @@ typedef struct TagItem {
 
 static uint32_t parse_tag_item(uint32_t *tag_ptr, uint32_t tag_to_find)
 {
+    int guard = 0;
     if (!tag_ptr) return 0;
 
-    while (1) {
+    while (guard++ < 16384) {
         uint32_t tag = guest_read_be32((uint32_t)(uintptr_t)tag_ptr);
         uint32_t data = guest_read_be32((uint32_t)(uintptr_t)tag_ptr + 4);
 
@@ -3027,13 +3028,18 @@ static uint32_t parse_tag_item(uint32_t *tag_ptr, uint32_t tag_to_find)
             break;
         }
 
-        if (tag == TAG_MORE || tag == TAG_JUMP) {
+        if (tag == TAG_IGNORE) {
+            tag_ptr += 2;
+            continue;
+        }
+
+        if (tag == TAG_MORE) {
             tag_ptr = (uint32_t *)(uintptr_t)data;
             continue;
         }
 
-        if (tag == TAG_IGNORE) {
-            tag_ptr += 2;
+        if (tag == TAG_SKIP) {
+            tag_ptr += 2 * (data + 1);
             continue;
         }
 
@@ -3254,79 +3260,132 @@ static void dos_ReplyPkt(M68kCPUState *cpu)
 
 static void dos_AddPart(M68kCPUState *cpu)
 {
-    /* Amiga: D1=STRPTR dirname, D2=STRPTR filename, D3=ULONG size → D0=BOOL */
+    /* Amiga: D1=STRPTR dirname, D2=STRPTR filename, D3=ULONG size → D0=BOOL
+     *
+     * If the filename contains ':' it replaces the directory part: a
+     * leading ':' writes over dirname's first ':' (keeping its volume
+     * prefix), any other ':' restarts at the buffer start.  Otherwise the
+     * filename is appended, with '/' inserted when dirname doesn't end in
+     * '/' or ':'.  The whole result is validated against the buffer size
+     * before anything is written; overflow fails with IoErr=120. */
     uint32_t dir_ptr = cpu->d[1];
     uint32_t file_ptr = cpu->d[2];
     uint32_t max_size = cpu->d[3];
-    if (dir_ptr >= GUEST_RAM_SIZE || file_ptr >= GUEST_RAM_SIZE || max_size < 2) {
+    uint32_t file_len = 0, dest;
+    int has_colon = 0, separator = 0;
+
+    if (dir_ptr >= GUEST_RAM_SIZE || file_ptr >= GUEST_RAM_SIZE) {
         cpu->d[0] = (uint32_t)DOSFALSE;
         return;
     }
 
-    /* Read dirname */
-    char dir[128];
-    int i = 0;
-    while (i < 127 && dir_ptr + i < GUEST_RAM_SIZE && g_ram[dir_ptr + i]) {
-        dir[i] = (char)g_ram[dir_ptr + i]; i++;
+    while (file_ptr + file_len < GUEST_RAM_SIZE && g_ram[file_ptr + file_len]) {
+        if (g_ram[file_ptr + file_len] == ':') has_colon = 1;
+        ++file_len;
     }
-    dir[i] = '\0';
 
-    /* Read filename */
-    char file[128];
-    i = 0;
-    while (i < 127 && file_ptr + i < GUEST_RAM_SIZE && g_ram[file_ptr + i]) {
-        file[i] = (char)g_ram[file_ptr + i]; i++;
+    if (has_colon) {
+        if (g_ram[file_ptr] == ':') {
+            /* leading ':' keeps dirname's volume prefix */
+            uint32_t c = dir_ptr;
+            while (c < GUEST_RAM_SIZE && g_ram[c] && g_ram[c] != ':') ++c;
+            dest = (c < GUEST_RAM_SIZE && g_ram[c] == ':') ? c : dir_ptr;
+        } else {
+            dest = dir_ptr;
+        }
+    } else {
+        uint32_t end = dir_ptr;
+        while (end < GUEST_RAM_SIZE && g_ram[end]) ++end;
+        dest = end;
+        if (end > dir_ptr && g_ram[end - 1] != ':' && g_ram[end - 1] != '/')
+            separator = 1;
     }
-    file[i] = '\0';
 
-    /* If dirname doesn't end with / or :, append / */
-    int dir_len = 0;
-    while (dir[dir_len]) dir_len++;
-    int need_slash = 0;
-    if (dir_len > 0 && dir[dir_len - 1] != ':' && dir[dir_len - 1] != '/')
-        need_slash = 1;
-
-    int file_len = 0;
-    while (file[file_len]) file_len++;
-
-    if ((uint32_t)(dir_len + need_slash + file_len + 1) > max_size) {
+    if (dest - dir_ptr + (uint32_t)separator + file_len + 1 > max_size) {
+        SetIoErr(120);  /* ERROR_LINE_TOO_LONG */
         cpu->d[0] = (uint32_t)DOSFALSE;
         return;
     }
 
-    uint32_t out_ptr = dir_ptr;
-    if (need_slash) {
-        g_ram[out_ptr + dir_len] = '/';
-        dir_len++;
-    }
-    for (int j = 0; j < file_len; j++)
-        g_ram[out_ptr + dir_len + j] = (uint8_t)file[j];
-    g_ram[out_ptr + dir_len + file_len] = '\0';
+    if (separator)
+        g_ram[dest++] = '/';
+    for (uint32_t i = 0; i <= file_len; i++)
+        g_ram[dest + i] = g_ram[file_ptr + i];
     cpu->d[0] = (uint32_t)DOSTRUE;
+}
+
+/* PathPart core: the parent path of `p` ends at the last '/' — except
+ * when that slash is at the start or follows '/' or ':', in which case it
+ * is part of the parent — or, with no '/', just after the first ':'. */
+static uint32_t dos_path_part(uint32_t p)
+{
+    uint32_t last_slash = 0, s;
+    if (p >= GUEST_RAM_SIZE) return p;
+    for (s = p; s < GUEST_RAM_SIZE && g_ram[s]; s++)
+        if (g_ram[s] == '/') last_slash = s;
+    if (!last_slash) {
+        for (s = p; s < GUEST_RAM_SIZE && g_ram[s]; s++)
+            if (g_ram[s] == ':') return s + 1;
+        return p;
+    }
+    if (last_slash == p || g_ram[last_slash - 1] == '/' ||
+        g_ram[last_slash - 1] == ':')
+        ++last_slash;
+    return last_slash;
 }
 
 static void dos_FilePart(M68kCPUState *cpu)
 {
-    /* Amiga: D1=STRPTR path → D0 = ptr to char after last '/' or ':' */
-    uint32_t p = cpu->d[1], filepart = p;
-    if (p >= GUEST_RAM_SIZE) { cpu->d[0] = p; return; }
-    while (p < GUEST_RAM_SIZE && g_ram[p]) {
-        uint8_t c = g_ram[p++];
-        if (c == '/' || c == ':') filepart = p;
-    }
-    cpu->d[0] = filepart;
+    /* Amiga: D1=STRPTR path → D0 = ptr to filename component */
+    uint32_t part = dos_path_part(cpu->d[1]);
+    if (part < GUEST_RAM_SIZE && g_ram[part] == '/')
+        ++part;
+    cpu->d[0] = part;
 }
 
 static void dos_PathPart(M68kCPUState *cpu)
 {
-    /* Amiga: D1=STRPTR path → D0 = ptr to last '/' or ':' (or start) */
-    uint32_t p = cpu->d[1], pathpart = p;
-    if (p >= GUEST_RAM_SIZE) { cpu->d[0] = p; return; }
-    while (p < GUEST_RAM_SIZE && g_ram[p]) {
-        if (g_ram[p] == '/' || g_ram[p] == ':') pathpart = p;
-        p++;
+    /* Amiga: D1=STRPTR path → D0 = ptr just past the parent directory */
+    cpu->d[0] = dos_path_part(cpu->d[1]);
+}
+
+static void dos_StrToLong(M68kCPUState *cpu)
+{
+    /* Amiga: D1=STRPTR string, D2=LONG *value → D0 = characters consumed
+     * (including skipped whitespace), or -1 when no digits converted.
+     * Accepts '-' only; accumulation stops cleanly at 32-bit overflow
+     * boundaries. */
+    uint32_t str = cpu->d[1], val_ptr = cpu->d[2], cursor = str;
+    uint32_t acc = 0;
+    int negative = 0, converted = 0;
+
+    while (cursor < GUEST_RAM_SIZE &&
+           (g_ram[cursor] == ' ' || g_ram[cursor] == '\t'))
+        ++cursor;
+    negative = (cursor < GUEST_RAM_SIZE && g_ram[cursor] == '-');
+    if (negative)
+        ++cursor;
+    while (cursor < GUEST_RAM_SIZE &&
+           g_ram[cursor] >= '0' && g_ram[cursor] <= '9') {
+        uint32_t prev = acc, before;
+        int32_t signed_prev = (int32_t)prev;
+        acc <<= 3;
+        if (signed_prev > 268435455 || signed_prev < -268435456)
+            break;
+        before = acc;
+        acc += prev;
+        if ((before ^ acc) & (prev ^ acc) & 0x80000000u)
+            break;
+        before = acc;
+        acc += prev;
+        if ((before ^ acc) & (prev ^ acc) & 0x80000000u)
+            break;
+        acc += (uint32_t)(g_ram[cursor] - '0');
+        converted = 1;
+        ++cursor;
     }
-    cpu->d[0] = pathpart;
+    guest_write_be32(val_ptr, negative ? 0u - acc : acc);
+    cpu->d[0] = converted ? cursor - str : (uint32_t)-1;
 }
 
 static void dos_CompareNames(M68kCPUState *cpu)
@@ -4585,6 +4644,7 @@ static void *dos_funcs[] = {
     dos_FGets,              /* index 100 */
     dos_SetVBuf,            /* index 101 */
     dos_SetMode,            /* index 102 */
+    dos_StrToLong,          /* index 103 */
 };
 
 /* =========================================================================

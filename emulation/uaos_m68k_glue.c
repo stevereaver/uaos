@@ -895,6 +895,7 @@ extern void dos_AllocAbs_glue(uint32_t addr, uint32_t size, uint32_t *out_addr);
 #define DOS_FGETS            100
 #define DOS_SET_VBUF         101
 #define DOS_SET_MODE         102
+#define DOS_STR_TO_LONG      103
 #define DOS_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* intuition.library function indices */
@@ -1833,6 +1834,7 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_VPRINTF:        return (uint32_t)((int)DOS_BASE + LVO_DOS_VPRINTF);
             case DOS_VFWRITEF:       return (uint32_t)((int)DOS_BASE + LVO_DOS_VFWRITEF);
             case DOS_READARGS:       return (uint32_t)((int)DOS_BASE + LVO_DOS_READARGS);
+            case DOS_STR_TO_LONG:    return (uint32_t)((int)DOS_BASE + LVO_DOS_STR_TO_LONG);
             case DOS_GETARGSTR:      return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_ARG_STR);
             case DOS_ISINTERACTIVE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_ISINTERACTIVE);
             case DOS_DELETEFILE:     return (uint32_t)((int)DOS_BASE + LVO_DOS_DELETEFILE);
@@ -2823,6 +2825,7 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_FGETS,           LIB_DOS, DOS_FGETS);
     install_lvo(DOS_BASE, LVO_DOS_SET_VBUF,        LIB_DOS, DOS_SET_VBUF);
     install_lvo(DOS_BASE, LVO_DOS_SET_MODE,        LIB_DOS, DOS_SET_MODE);
+    install_lvo(DOS_BASE, LVO_DOS_STR_TO_LONG,     LIB_DOS, DOS_STR_TO_LONG);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {

@@ -122,10 +122,14 @@ static uint32_t find_tag(uint32_t taglist, uint32_t tag, uint32_t def)
 {
     if (!taglist) return def;
     uint32_t p = taglist;
-    while (p + 8 <= GUEST_RAM_SIZE) {
+    int guard = 0;
+    while (p + 8 <= GUEST_RAM_SIZE && guard++ < 16384) {
         uint32_t t = mem_u32(p);
         uint32_t d = mem_u32(p + 4);
         if (t == TAG_DONE) break;
+        if (t == 1 /* TAG_IGNORE */) { p += 8;           continue; }
+        if (t == 2 /* TAG_MORE   */) { p = d;            continue; }
+        if (t == 3 /* TAG_SKIP   */) { p += 8 * (d + 1); continue; }
         if (t == tag) return d;
         p += 8;
     }
@@ -138,10 +142,15 @@ static int walk_tags(uint32_t taglist,
 {
     if (!taglist) return 1;
     uint32_t p = taglist;
-    while (p + 8 <= GUEST_RAM_SIZE) {
+    int guard = 0;
+    while (p + 8 <= GUEST_RAM_SIZE && guard++ < 16384) {
         uint32_t t = mem_u32(p);
+        uint32_t d;
         if (t == TAG_DONE) break;
-        uint32_t d = mem_u32(p + 4);
+        d = mem_u32(p + 4);
+        if (t == 1 /* TAG_IGNORE */) { p += 8;           continue; }
+        if (t == 2 /* TAG_MORE   */) { p = d;            continue; }
+        if (t == 3 /* TAG_SKIP   */) { p += 8 * (d + 1); continue; }
         if (!cb(t, d, ctx)) return 0;
         p += 8;
     }
