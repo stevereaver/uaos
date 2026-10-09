@@ -242,6 +242,32 @@ static int uart_present(void)
     return g_uart_present;
 }
 
+/* True when 'part' is a partition device of 'parent': part_offset set and
+ * name = parent name + digit — the same test BlockDev_UnregisterPartitions
+ * uses (BlockDev stores no parent pointer). */
+static int bd_is_part_of(const BlockDev *part, const BlockDev *parent)
+{
+    if (!part->part_offset || !part->name || !parent->name) return 0;
+    int i = 0;
+    while (parent->name[i]) {
+        if (part->name[i] != parent->name[i]) return 0;
+        i++;
+    }
+    return part->name[i] >= '0' && part->name[i] <= '9';
+}
+
+static void dl_disk_size(DiagLine *l, const BlockDev *bd)
+{
+    uint64_t bytes = bd->num_sectors * (uint64_t)bd->sector_size;
+    if (bytes >= 1024 * 1024) {
+        dl_dec(l, bytes / (1024 * 1024));
+        dl_add(l, " MB");
+    } else {
+        dl_dec(l, bytes / 1024);
+        dl_add(l, " KB");
+    }
+}
+
 /* -------------------------------------------------------------------------
  * SysInfo_DumpConfig — ShowConfig-style hardware report
  * ------------------------------------------------------------------------- */
@@ -371,18 +397,47 @@ void SysInfo_DumpConfig(void *ctx, DiagEmitFn emit)
     }
 
     for (BlockDev *bd = BlockDev_GetList(); bd; bd = bd->next) {
+        /* Partition blockdevs (part_offset != 0) are logical slices, not
+         * separate boards — they print indented under their parent disk
+         * so e.g. ahci0 + ahci01 don't read as two identical drives. */
+        if (bd->part_offset != 0) continue;
         dl_add(&l, "  Board (disk ");
         dl_add(&l, bd->name ? bd->name : "?");
         dl_add(&l, "): ");
         dl_pad(&l, 32);
-        uint64_t bytes = bd->num_sectors * (uint64_t)bd->sector_size;
-        if (bytes >= 1024 * 1024) {
-            dl_dec(&l, bytes / (1024 * 1024));
-            dl_add(&l, " MB");
-        } else {
-            dl_dec(&l, bytes / 1024);
-            dl_add(&l, " KB");
+        dl_disk_size(&l, bd);
+        dl_emit(&l, ctx, emit);
+
+        for (BlockDev *pd = BlockDev_GetList(); pd; pd = pd->next) {
+            if (!bd_is_part_of(pd, bd)) continue;
+            dl_add(&l, "    part ");
+            dl_add(&l, pd->name);
+            if (pd->display_name && pd->display_name[0]) {
+                dl_add(&l, " (");
+                dl_add(&l, pd->display_name);
+                dl_ch(&l, ')');
+            }
+            dl_add(&l, ": ");
+            dl_pad(&l, 32);
+            dl_disk_size(&l, pd);
+            dl_emit(&l, ctx, emit);
         }
+    }
+
+    /* Orphaned partition devices (parent disk not in the list — shouldn't
+     * happen, but don't drop them silently either). */
+    for (BlockDev *pd = BlockDev_GetList(); pd; pd = pd->next) {
+        if (pd->part_offset == 0) continue;
+        int has_parent = 0;
+        for (BlockDev *bd = BlockDev_GetList(); bd; bd = bd->next) {
+            if (bd_is_part_of(pd, bd)) { has_parent = 1; break; }
+        }
+        if (has_parent) continue;
+        dl_add(&l, "  Board (disk ");
+        dl_add(&l, pd->name ? pd->name : "?");
+        dl_add(&l, ", partition, no parent): ");
+        dl_pad(&l, 32);
+        dl_disk_size(&l, pd);
         dl_emit(&l, ctx, emit);
     }
 }
