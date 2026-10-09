@@ -3852,6 +3852,27 @@ static uint32_t glue_list_remove_head(uint32_t list)
     return head;
 }
 
+/* Unlink a specific node if it is currently linked in `list`.
+ * (WaitIO consumes only its own reply — the old remove_head() pop could
+ * steal an unrelated message sitting ahead of it.) */
+static int glue_list_remove_msg(uint32_t list, uint32_t node)
+{
+    uint32_t tail = list + LH_TAIL;
+    uint32_t cur  = glue_r32(list + LH_HEAD);
+    int guard = 0;
+    while (cur && cur != tail && guard++ < 512) {
+        if (cur == node) {
+            uint32_t succ = glue_r32(cur + LN_SUCC);
+            uint32_t pred = glue_r32(cur + LN_PRED);
+            glue_w32(pred + LN_SUCC, succ);
+            glue_w32(succ + LN_PRED, pred);
+            return 1;
+        }
+        cur = glue_r32(cur + LN_SUCC);
+    }
+    return 0;
+}
+
 static void glue_list_add_tail(uint32_t list, uint32_t node)
 {
     uint32_t tailpred = glue_r32(list + LH_TAILPRED);
@@ -4636,12 +4657,22 @@ static void audio_note_close(void)
     if (!g_audio_open_cnt) g_audio_alloc_mask = 0;
 }
 
+/* Drop every device-side pending request a dying task still holds —
+ * timer queue, console/keyboard pending reads (UAOS-240).  Externs live
+ * in the device modules under kernel/exec/. */
+void IODev_DropTaskRequests(UaosTask *t);   /* timer.device queue   */
+void ConDev_DropTaskRequests(UaosTask *t);  /* console pending reads */
+void KbdDev_DropTaskRequests(UaosTask *t);  /* keyboard pending reads */
+
 /* Release every audio.resource a dying task still holds (UAOS-247):
  * channel allocations and outstanding device opens.  Called from
  * Task_Exit() / stub_RemTask before the task's RAM window is released. */
 void UAOS_M68k_ReleaseTaskResources(UaosTask *t)
 {
     if (!t) return;
+    IODev_DropTaskRequests(t);
+    ConDev_DropTaskRequests(t);
+    KbdDev_DropTaskRequests(t);
     for (int i = 0; i < 4; i++) {
         if (g_audio_ch_owner[i] == t) {
             g_audio_ch_owner[i] = NULL;
@@ -4663,8 +4694,59 @@ void UAOS_M68k_ReleaseTaskResources(UaosTask *t)
      * clear it — the flag is global and the writer is gone. */
     g_blocked_in = 0;
 }
-#define IOF_QUICK     0x01
+#define IOF_QUICK     0x01   /* io_Flags: device may complete synchronously */
+#define IOF_QUEUED    0x10   /* io_Flags: device is holding the request     */
+#define IOF_DONE      0x80   /* io_Flags: request completed (OS3.x model)   */
 #define NT_REPLYMSG   6
+
+/* -------------------------------------------------------------------------
+ * UAOS-240 — IORequest completion model
+ *
+ * A device marks a request in-flight by setting IOF_QUEUED (and clearing
+ * IOF_QUICK — a queued request is never synchronous).  Completion is
+ * UAOS_Emu_IOReply(): sets IOF_DONE, ln_Type = NT_REPLYMSG, then a PutMsg
+ * into mn_ReplyPort plus Signal(mp_SigTask, 1<<mp_SigBit) — the same
+ * protocol exec_PutMsg uses, so WaitPort/Wait/GetMsg all see it.
+ *
+ * The ram argument is the requester's guest window: ISR/tick-context
+ * completions (timer expiry, input events) run while another task's window
+ * is bound to g_ram, so devices record the issuing window at BeginIO time.
+ * ------------------------------------------------------------------------- */
+static uint32_t ram_r32(uint8_t *ram, uint32_t a)
+{
+    return ((uint32_t)ram[a] << 24) | ((uint32_t)ram[a+1] << 16) |
+           ((uint32_t)ram[a+2] <<  8) |  (uint32_t)ram[a+3];
+}
+static void ram_w32(uint8_t *ram, uint32_t a, uint32_t v)
+{
+    ram[a] = (uint8_t)(v >> 24); ram[a+1] = (uint8_t)(v >> 16);
+    ram[a+2] = (uint8_t)(v >> 8); ram[a+3] = (uint8_t)v;
+}
+
+void UAOS_Emu_IOReply(uint8_t *ram, uint32_t io)
+{
+    if (!ram || !io) return;
+    uint8_t fl = ram[io + IO_FLAGS];
+    /* Idempotent: a request already fully completed (DONE, not QUEUED)
+     * must not be appended to the port a second time. */
+    if ((fl & (IOF_QUEUED | IOF_DONE)) == IOF_DONE) return;
+    ram[io + IO_FLAGS] = (fl & ~IOF_QUEUED) | IOF_DONE;
+    ram[io + LN_TYPE]  = NT_REPLYMSG;
+    if (fl & IOF_QUICK) return;   /* synchronous completion — no port reply */
+
+    uint32_t port = ram_r32(ram, io + MN_REPLYPORT);
+    if (!port) return;
+    /* AddTail: node.succ = &lh_Tail, node.pred = old tailpred. */
+    uint32_t tailpred = ram_r32(ram, port + MP_MSGLIST + LH_TAILPRED);
+    ram_w32(ram, io + LN_SUCC, port + MP_MSGLIST + LH_TAIL);
+    ram_w32(ram, io + LN_PRED, tailpred);
+    ram_w32(ram, tailpred + LN_SUCC, io);
+    ram_w32(ram, port + MP_MSGLIST + LH_TAILPRED, io);
+
+    uint32_t sigtask = ram_r32(ram, port + MP_SIGTASK);
+    UaosTask *t = Task_FindByM68kAddr(sigtask);
+    if (t) Signal(t, 1U << ram[port + MP_SIGBIT]);
+}
 
 static void exec_CreateIORequest(void)
 {
@@ -4694,9 +4776,10 @@ static void exec_DeleteIORequest(void)
 static void exec_OpenDevice(void)
 {
     /* OpenDevice(devName=a0, unit=d0, ioRequest=a1, flags=d1)
-     * -> D0 = io_Error (0 = success).  Bring-up stub: the ioreq gets a
-     * fake device base and calls complete immediately; real device
-     * dispatch (timer/console/keyboard/audio) is UAOS-240. */
+     * -> D0 = io_Error (0 = success).  io_Device gets a generated device
+     * base whose LVO stubs dispatch into the ROM-registered module's
+     * native funcs; the device Open vector (-6) runs here so the module
+     * can vet the unit / count opens (UAOS-240). */
     uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t ioreq    = m68k_get_reg(NULL, M68K_REG_A1);
     char name[64];
@@ -4724,6 +4807,7 @@ static void exec_OpenDevice(void)
     }
     if (ioreq && ioreq + IOSTD_SIZE < GUEST_RAM_SIZE) {
         uint32_t devbase = FAKE_LIB_BASE;
+        UaosRomModule *dm = NULL;
         static const char AUDNAME[] = "audio.device";
         int eq = 1;
         for (int k = 0; AUDNAME[k]; k++) if (name[k] != AUDNAME[k]) { eq = 0; break; }
@@ -4734,7 +4818,7 @@ static void exec_OpenDevice(void)
             /* ROM-registered devices (timer/keyboard/console, UAOS-238):
              * io_Device gets a generated base whose Open/BeginIO/AbortIO
              * stubs dispatch into the module's native funcs. */
-            UaosRomModule *dm = UAOS_ROM_Find(name);
+            dm = UAOS_ROM_Find(name);
             if (dm) {
                 devbase = emu_gen_find(name);
                 if (!devbase)
@@ -4745,6 +4829,20 @@ static void exec_OpenDevice(void)
         glue_w32(ioreq + IO_DEVICE, devbase);  /* fake or real device base */
         glue_w32(ioreq + IO_UNIT, m68k_get_reg(NULL, M68K_REG_D0));
         g_ram[ioreq + IO_ERROR] = 0;
+        /* Device Open vector (-6): real OpenDevice runs it so the module
+         * can count the open / vet the unit.  A nonzero io_Error left by
+         * the handler fails the open (D0 = io_Error, Amiga semantics). */
+        if (dm && devbase != FAKE_LIB_BASE) {
+            int ofn = rom_lvo_fn(dm, -6);
+            if (ofn) {
+                uint32_t saved_a6 = m68k_get_reg(NULL, M68K_REG_A6);
+                m68k_set_reg(M68K_REG_A6, devbase);
+                emu_rom_call(dm->name, (uint16_t)ofn);
+                m68k_set_reg(M68K_REG_A6, saved_a6);
+            }
+        }
+        m68k_set_reg(M68K_REG_D0, g_ram[ioreq + IO_ERROR]);
+        return;
     }
     m68k_set_reg(M68K_REG_D0, 0);   /* success */
 }
@@ -4768,11 +4866,11 @@ static void exec_CloseDevice(void)
     }
 }
 
-/* Route an IORequest to its device when it's one we emulate (audio.device).
- * Real exec DoIO/SendIO call the device's BeginIO internally.
+/* Route an IORequest to its device when it's one we emulate (audio.device
+ * or a ROM-registered device bound to a generated base).  Real exec
+ * DoIO/SendIO call the device's BeginIO internally.
  * Returns nonzero when the request was handled by a device. */
 static void audio_dev_BeginIO(void);
-static void audio_dev_reply(uint32_t io);
 static int io_dispatch_device(uint32_t io)
 {
     if (io + IOSTD_SIZE >= GUEST_RAM_SIZE) return 0;
@@ -4782,6 +4880,9 @@ static int io_dispatch_device(uint32_t io)
         m68k_set_reg(M68K_REG_A1, io);
         audio_dev_BeginIO();
         m68k_set_reg(M68K_REG_A1, saved_a1);
+        /* audio.device always completes inside BeginIO. */
+        if (!(g_ram[io + IO_FLAGS] & IOF_QUEUED))
+            UAOS_Emu_IOReply(g_ram, io);
         return 1;
     }
     /* ROM-registered device with a generated base: run its BeginIO
@@ -4793,92 +4894,133 @@ static int io_dispatch_device(uint32_t io)
         m68k_set_reg(M68K_REG_A1, io);
         emu_rom_call(dm->name, (uint16_t)fn);
         m68k_set_reg(M68K_REG_A1, saved_a1);
-        audio_dev_reply(io);   /* generic non-QUICK completion */
+        /* A device that didn't leave IOF_QUEUED set finished inside
+         * BeginIO — complete it now (idempotent if it self-replied). */
+        if (!(g_ram[io + IO_FLAGS] & IOF_QUEUED))
+            UAOS_Emu_IOReply(g_ram, io);
         return 1;
     }
     return 0;   /* no BeginIO vector — caller completes the request */
 }
 
+/* Block until io leaves the device queue (IOF_QUEUED clears).  Naps on the
+ * reply port's signal bit — the completion reply lands via
+ * UAOS_Emu_IOReply's PutMsg+Signal — but the flag itself is the wait
+ * condition so QUICK-path and port-less completions also wake us.
+ * Afterwards consumes our reply node from the port if one arrived. */
+static void io_wait_req(uint32_t io)
+{
+    UaosTask *self = Task_Current();
+    uint32_t port = glue_r32(io + MN_REPLYPORT);
+    uint32_t mask = 0;
+    if (port && self && glue_r32(port + MP_SIGTASK)) {
+        uint32_t sb = glue_r8(port + MP_SIGBIT);
+        if (sb < 32) mask = 1U << sb;
+    }
+    while (g_ram[io + IO_FLAGS] & IOF_QUEUED) {
+        if (self && self->type == TASK_TYPE_M68K && self->m68k_halted) {
+            m68k_end_timeslice();
+            break;
+        }
+        g_blocked_in = 3;
+        g_m68k_block_marks++;
+        Task_WaitTicks(mask, 1);
+        g_blocked_in = 0;
+        /* Consume the port signal edge — it only means "check the flag". */
+        if (mask && (self->tc_SigRecvd & mask)) Task_ClearSig(mask);
+        UAOS_M68k_DeliverInterrupts();
+    }
+    if (port) glue_list_remove_msg(port + MP_MSGLIST, io);
+}
+
 static void exec_DoIO(void)
 {
-    /* DoIO(ioRequest=a1) → D0=io_Error.  Fake devices complete instantly. */
+    /* DoIO(ioRequest=a1) → D0=io_Error.  BeginIO+WaitIO semantics: the
+     * QUICK flag tells the device a synchronous finish is welcome; a
+     * device that leaves IOF_QUEUED set (timer TR_ADDREQUEST, a pending
+     * console/keyboard read) gets the same blocking wait WaitIO does. */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
+    g_ram[io + IO_FLAGS] = (g_ram[io + IO_FLAGS] | IOF_QUICK) &
+                           (uint8_t)~(IOF_QUEUED | IOF_DONE);
     io_dispatch_device(io);
-    uint8_t err = g_ram[io + IO_ERROR];
-    m68k_set_reg(M68K_REG_D0, err);
+    if (g_ram[io + IO_FLAGS] & IOF_QUEUED)
+        io_wait_req(io);
+    m68k_set_reg(M68K_REG_D0, g_ram[io + IO_ERROR]);
 }
 
 static void exec_SendIO(void)
 {
-    /* SendIO(ioRequest=a1): mark in-flight then immediately complete by
-     * replying to the reply port — WaitIO/CheckIO then find it. */
+    /* SendIO(ioRequest=a1): always asynchronous from the caller's view —
+     * clear QUICK and start the request.  Devices that finish inside
+     * BeginIO get an immediate port reply (io_dispatch_device completes
+     * them); devices that leave IOF_QUEUED set reply later from their own
+     * context (PIT tick, event pump) via UAOS_Emu_IOReply(). */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) return;
-    g_ram[io + IO_FLAGS] &= ~IOF_QUICK;
-    if (io_dispatch_device(io)) return;   /* device handler completed+replied */
-    g_ram[io + IO_ERROR]  = 0;
-    uint32_t port = glue_r32(io + MN_REPLYPORT);
-    if (port) {
-        glue_list_add_tail(port + MP_MSGLIST, io);
-        uint32_t sigtask = glue_r32(port + MP_SIGTASK);
-        UaosTask *t = Task_FindByM68kAddr(sigtask);
-        if (!t) t = Task_Current();
-        if (t) Signal(t, 1U << glue_r8(port + MP_SIGBIT));
-    }
+    g_ram[io + IO_FLAGS] &= (uint8_t)~(IOF_QUICK | IOF_QUEUED | IOF_DONE);
+    g_ram[io + LN_TYPE] = NT_MESSAGE_G;
+    if (io_dispatch_device(io)) return;
+    /* No emulated device behind this base — complete instantly (fake-base
+     * policy: calls succeed predictably rather than faulting). */
+    g_ram[io + IO_ERROR] = 0;
+    UAOS_Emu_IOReply(g_ram, io);
 }
 
 static void exec_CheckIO(void)
 {
-    /* CheckIO(ioRequest=a1) → D0=ioreq if complete else 0.
-     * Our SendIO replies instantly, so check the reply port list. */
+    /* CheckIO(ioRequest=a1) → D0=ioreq if complete else 0 while the
+     * device still holds it (IOF_QUEUED). */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
-    m68k_set_reg(M68K_REG_D0, io ? io : 0);
+    if (!io) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    uint8_t fl = g_ram[io + IO_FLAGS];
+    m68k_set_reg(M68K_REG_D0, (fl & IOF_QUEUED) ? 0 : io);
 }
 
 static void exec_WaitIO(void)
 {
-    /* WaitIO(ioRequest=a1) → D0=io_Error; wait for the reply port msg. */
+    /* WaitIO(ioRequest=a1) → D0=io_Error. */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
-    uint32_t port = glue_r32(io + MN_REPLYPORT);
-    if (port) {
-        UaosTask *self = Task_Current();
-        if (self && glue_r32(port + MP_SIGTASK)) {
-            uint32_t sigbit = glue_r8(port + MP_SIGBIT);
-            uint32_t mask   = (sigbit < 32) ? (1U << sigbit) : 0;
-            extern volatile uint64_t g_pit_ticks;
-            uint64_t deadline = g_pit_ticks + 10;
-            while (glue_list_empty(port + MP_MSGLIST) && g_pit_ticks < deadline) {
-                if (self->type == TASK_TYPE_M68K && self->m68k_halted) {
-                    m68k_end_timeslice();
-                    break;
-                }
-                g_blocked_in = 3;
-                g_m68k_block_marks++;
-                Task_WaitTicks(mask, 1);
-                g_blocked_in = 0;
-                UAOS_M68k_DeliverInterrupts();
-            }
-        }
-        /* pop our message if queued */
-        glue_list_remove_head(port + MP_MSGLIST);
-    }
+    io_wait_req(io);
     m68k_set_reg(M68K_REG_D0, g_ram[io + IO_ERROR]);
 }
 
 static void audio_dev_AbortIO(void);
 static void exec_AbortIO(void)
 {
+    /* AbortIO(ioRequest=a1): run the device's AbortIO vector.  If it was
+     * holding the request, deliver the abort reply — an aborted request
+     * still gets replied (IOERR_ABORTED) so a following WaitIO/WaitPort
+     * returns instead of hanging. */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
-    if (io && io + IOSTD_SIZE < GUEST_RAM_SIZE &&
-        glue_r32(io + IO_DEVICE) == AUDIO_DEV_BASE) {
+    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, -3);   /* IOERR_NOCMD */
+        return;
+    }
+    int was_queued = (g_ram[io + IO_FLAGS] & IOF_QUEUED) != 0;
+    uint32_t dev = glue_r32(io + IO_DEVICE);
+    if (dev == AUDIO_DEV_BASE) {
         uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
         audio_dev_AbortIO();
         m68k_set_reg(M68K_REG_A1, saved_a1);
         return;
     }
-    m68k_set_reg(M68K_REG_D0, 0);
+    UaosRomModule *dm = emu_gen_rom(dev);
+    int fn = dm ? rom_lvo_fn(dm, -48) : 0;
+    if (fn) {
+        uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
+        m68k_set_reg(M68K_REG_A1, io);
+        emu_rom_call(dm->name, (uint16_t)fn);
+        m68k_set_reg(M68K_REG_A1, saved_a1);
+    }
+    if (was_queued) {
+        if (!g_ram[io + IO_ERROR])
+            g_ram[io + IO_ERROR] = (uint8_t)-2;   /* IOERR_ABORTED */
+        UAOS_Emu_IOReply(g_ram, io);
+    }
+    /* D0 keeps the device AbortIO result (or the stale register value for
+     * devices without an AbortIO vector — callers check io_Error). */
 }
 
 /* ---- audio.device (UAOS-240) ---------------------------------------------
@@ -4921,19 +5063,6 @@ static void exec_AbortIO(void)
 #define ADCMD_WAITCYCLE  15
 
 #define ADIOERR_ALLOCFAILED  (-11)
-
-static void audio_dev_reply(uint32_t io)
-{
-    /* Complete a non-QUICK request: reply it to its port like SendIO. */
-    if (g_ram[io + IO_FLAGS] & IOF_QUICK) return;
-    uint32_t port = glue_r32(io + MN_REPLYPORT);
-    if (!port) return;
-    glue_list_add_tail(port + MP_MSGLIST, io);
-    uint32_t sigtask = glue_r32(port + MP_SIGTASK);
-    UaosTask *t = Task_FindByM68kAddr(sigtask);
-    if (!t) t = Task_Current();
-    if (t) Signal(t, 1U << glue_r8(port + MP_SIGBIT));
-}
 
 static void audio_dev_BeginIO(void)
 {
@@ -4994,7 +5123,7 @@ static void audio_dev_BeginIO(void)
         break;
     }
     g_ram[io + IO_ERROR] = (uint8_t)err;
-    audio_dev_reply(io);
+    UAOS_Emu_IOReply(g_ram, io);
 }
 
 static void audio_dev_AbortIO(void)

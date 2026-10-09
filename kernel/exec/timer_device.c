@@ -3,18 +3,26 @@
  *
  * AmigaOS timer.device provides timing functions including
  * system time, delays, and interval timers. This is a native
- * implementation for UAOS using the NTP RTC driver.
+ * implementation for UAOS using the NTP RTC driver and the PIT tick
+ * (~100 Hz) as the timing source for all units.
+ *
+ * Guest-visible structures live in the requester's guest RAM window and
+ * are big-endian: every field is accessed through the tr_r / tr_w helpers
+ * below, never via native structs (UAOS-240 — the original code aliased
+ * native structs onto guest memory, which is both endian- and
+ * layout-wrong: io_Command is at +28, not +20, and guests are BE).
  */
 
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
 #include "rom_modules.h"
 #include "task.h"
 #include "chipset/chip_emu.h"
 #include "chipset/floppy.h"
 #include "audio/audio.h"
-#include <stdint.h>
-#include <stddef.h>
-#include <string.h>
-#include <stdio.h>
+#include "../../emulation/uaos_emu.h"
 
 /* =========================================================================
  * NTP/RTC interface
@@ -22,62 +30,41 @@
 extern uint32_t ntp_get_epoch(void);
 
 /* =========================================================================
- * AmigaOS-compatible Device I/O Structures
+ * AmigaOS-compatible guest structure offsets (big-endian guest RAM)
  * ========================================================================= */
 
-/* timeval - matches AmigaOS structure */
-typedef struct timeval {
-    uint32_t tv_sec;   /* Seconds */
-    uint32_t tv_usec;  /* Microseconds */
-} timeval_t;
+/* struct IORequest (32 bytes) */
+#define IO_MN_REPLYPORT  14
+#define IO_MN_LENGTH     18
+#define IO_DEVICE        20
+#define IO_UNIT          24
+#define IO_COMMAND       28
+#define IO_FLAGS         30
+#define IO_ERROR         31
+#define IOSTD_SIZE       48
 
-/* EClockVal structure for ReadEClock */
-typedef struct EClockVal {
-    uint32_t ev_hi;    /* High 32 bits */
-    uint32_t ev_lo;    /* Low 32 bits */
-} EClockVal_t;
-
-/* Message structure (minimal) */
-typedef struct Message {
-    struct Message *mn_Next;
-    uint32_t        mn_ReplyPort;  /* MsgPort pointer */
-    uint16_t        mn_Length;
-    uint8_t         mn_Data[0];
-} Message_t;
-
-/* IORequest structure (AmigaOS compatible) */
-typedef struct IORequest {
-    Message_t       io_Message;
-    uint32_t        io_Device;      /* Device pointer */
-    uint32_t        io_Unit;        /* Unit pointer */
-    uint16_t        io_Command;
-    uint8_t         io_Flags;
-    int8_t          io_Error;
-} IORequest_t;
-
-/* TimeRequest structure for timer.device */
-typedef struct TimeRequest {
-    IORequest_t     tr_node;
-    timeval_t       tr_time;
-} TimeRequest_t;
-
-/* Timer request queue entry (host-side tracking) */
-typedef struct TimerQueueEntry {
-    struct TimerQueueEntry *next;
-    uint32_t               request_addr;  /* Guest address of TimeRequest */
-    uint32_t               target_ticks;  /* Target tick count */
-    uint32_t               sigmask;       /* Signal mask to send */
-    UaosTask              *task;          /* Task to signal */
-    uint8_t                active;        /* Request is active */
-} TimerQueueEntry_t;
+/* struct TimeRequest: IORequest tr_node + timeval tr_time */
+#define TR_SECS          32
+#define TR_MICRO         36
 
 /* =========================================================================
- * Timer Device Commands (AmigaOS compatible)
+ * Timer Device Commands (AmigaOS compatible — devices/timer.h)
  * ========================================================================= */
 
-#define TR_ADDREQUEST   0x0001  /* Add a timer request */
-#define TR_SETSYSTIME   0x0002  /* Set system time */
-#define TR_GETSYSTIME   0x0003  /* Get system time */
+#define CMD_INVALID      0x0000
+#define CMD_RESET        0x0001
+#define CMD_READ         0x0002
+#define CMD_WRITE        0x0003
+#define CMD_FLUSH        0x0008
+#define CMD_NONSTD       0x0009
+
+#define TR_ADDREQUEST    (CMD_NONSTD + 0)   /* 9  — queue a delay         */
+#define TR_GETSYSTIME    (CMD_NONSTD + 1)   /* 10 — wall clock            */
+#define TR_SETSYSTIME    (CMD_NONSTD + 2)   /* 11 — set wall clock        */
+
+/* exec/io.h result codes */
+#define IOERR_ABORTED    (-2)
+#define IOERR_NOCMD      (-3)
 
 /* =========================================================================
  * Global State
@@ -86,33 +73,57 @@ typedef struct TimerQueueEntry {
 static uint64_t g_eclock_value = 0;  /* E-clock counter in microseconds */
 static uint32_t g_tick_counter = 0;  /* Global tick counter (~100Hz) */
 
+/* Timer request queue entry (host-side tracking).
+ * `ram` is the *requester's* guest window — timer expiry runs in PIT-ISR
+ * context where g_ram may be bound to a different M68k task, so the
+ * window is captured at BeginIO time. */
+typedef struct TimerQueueEntry {
+    struct TimerQueueEntry *next;
+    uint32_t               request_addr;  /* Guest address of TimeRequest */
+    uint8_t               *ram;           /* Requester's guest RAM window */
+    uint32_t               target_ticks;  /* Target tick count */
+    UaosTask              *task;          /* Task that issued the request */
+    uint8_t                active;        /* Request is active */
+} TimerQueueEntry_t;
+
 /* Timer request queue (simple linked list) */
 #define MAX_TIMER_ENTRIES 32
 static TimerQueueEntry_t g_timer_entries[MAX_TIMER_ENTRIES];
 static TimerQueueEntry_t *g_timer_queue_head = NULL;
 
 /* =========================================================================
- * Memory access helper
+ * Guest memory access helpers — big-endian, any task's window
  * ========================================================================= */
+
+static uint8_t tr_r8(uint8_t *ram, uint32_t a) { return ram[a]; }
+static void    tr_w8(uint8_t *ram, uint32_t a, uint8_t v) { ram[a] = v; }
+
+static uint16_t tr_r16(uint8_t *ram, uint32_t a)
+{
+    return (uint16_t)(((uint16_t)ram[a] << 8) | ram[a + 1]);
+}
+
+static uint32_t tr_r32(uint8_t *ram, uint32_t a)
+{
+    return ((uint32_t)ram[a + 0] << 24)
+         | ((uint32_t)ram[a + 1] << 16)
+         | ((uint32_t)ram[a + 2] <<  8)
+         | ((uint32_t)ram[a + 3]      );
+}
+
+static void tr_w32(uint8_t *ram, uint32_t a, uint32_t v)
+{
+    ram[a + 0] = (uint8_t)(v >> 24);
+    ram[a + 1] = (uint8_t)(v >> 16);
+    ram[a + 2] = (uint8_t)(v >>  8);
+    ram[a + 3] = (uint8_t)(v      );
+}
+
+/* Current-context convenience wrappers (BeginIO/Open run inside the
+ * issuing task's emulation slice, so g_ram is the requester's window). */
 extern uint8_t *g_ram;
-#define M68K_TO_HOST(addr) ((void *)(g_ram + (addr)))
-
-/* Guest memory is big-endian — read/write 32-bit words byte-wise. */
-static uint32_t timer_r32(uint32_t addr)
-{
-    return ((uint32_t)g_ram[addr + 0] << 24)
-         | ((uint32_t)g_ram[addr + 1] << 16)
-         | ((uint32_t)g_ram[addr + 2] <<  8)
-         | ((uint32_t)g_ram[addr + 3]      );
-}
-
-static void timer_w32(uint32_t addr, uint32_t val)
-{
-    g_ram[addr + 0] = (uint8_t)(val >> 24);
-    g_ram[addr + 1] = (uint8_t)(val >> 16);
-    g_ram[addr + 2] = (uint8_t)(val >>  8);
-    g_ram[addr + 3] = (uint8_t)(val      );
-}
+static uint32_t timer_r32(uint32_t a)            { return tr_r32(g_ram, a); }
+static void     timer_w32(uint32_t a, uint32_t v){ tr_w32(g_ram, a, v); }
 
 /* =========================================================================
  * Timer Queue Management
@@ -173,21 +184,40 @@ static int timer_dequeue(TimerQueueEntry_t *entry)
     return 0;
 }
 
-/* Find queue entry by guest request address */
-static TimerQueueEntry_t *timer_find_by_request(uint32_t request_addr)
+/* Find queue entry by guest request — the same numeric address can exist
+ * in two tasks' windows, so match the window pointer too. */
+static TimerQueueEntry_t *timer_find_by_request(uint32_t request_addr,
+                                                uint8_t *ram)
 {
     TimerQueueEntry_t *current = g_timer_queue_head;
     while (current) {
-        if (current->request_addr == request_addr) {
+        if (current->request_addr == request_addr && current->ram == ram)
             return current;
-        }
         current = current->next;
     }
     return NULL;
 }
 
 /* =========================================================================
- * Timer Tick Processing — called from timer ISR periodically
+ * Task-exit purge (UAOS-240): a dead guest's RAM window is recycled, so
+ * its queued timer requests must never complete into it.
+ * ========================================================================= */
+void IODev_DropTaskRequests(UaosTask *t)
+{
+    if (!t) return;
+    TimerQueueEntry_t *cur = g_timer_queue_head;
+    while (cur) {
+        TimerQueueEntry_t *next = cur->next;
+        if (cur->task == t) {
+            timer_dequeue(cur);
+            timer_free_entry(cur);
+        }
+        cur = next;
+    }
+}
+
+/* =========================================================================
+ * Timer Tick Processing — called from the PIT ISR periodically
  * ========================================================================= */
 
 void timer_ProcessTicks(void)
@@ -228,14 +258,14 @@ void timer_ProcessTicks(void)
         TimerQueueEntry_t *next = current->next;
 
         if (g_tick_counter >= current->target_ticks) {
-            /* Timer expired - signal the task and remove from queue */
-            if (current->task) {
-                Signal(current->task, current->sigmask);
-            }
-
-            /* Update IORequest io_Error to 0 (success) */
-            IORequest_t *ior = (IORequest_t *)M68K_TO_HOST(current->request_addr);
-            ior->io_Error = 0;
+            /* Timer expired — complete the request in the *requester's*
+             * guest window and deliver the reply-port message + signal
+             * (UAOS-240).  io_Error is left as BeginIO wrote it (0). */
+            uint8_t *ram = current->ram;
+            uint32_t io  = current->request_addr;
+            if (ram)
+                tr_w8(ram, io + IO_ERROR, 0);
+            UAOS_Emu_IOReply(ram, io);
 
             /* Remove from queue */
             if (prev) {
@@ -268,7 +298,7 @@ void TimerDevice_DiagDump(void *ctx, void (*emit)(void *, const char *))
     dl_add(&l, "  (PIT rate ~100 Hz)");
     dl_emit(&l, ctx, emit);
 
-    emit(ctx, " req#  target-tick  delta  sigmask    task             req-addr");
+    emit(ctx, " req#  target-tick  delta  task             req-addr");
     for (int i = 0; i < MAX_TIMER_ENTRIES; i++) {
         TimerQueueEntry_t *e = &g_timer_entries[i];
         if (!e->active) continue;
@@ -281,11 +311,10 @@ void TimerDevice_DiagDump(void *ctx, void (*emit)(void *, const char *))
         if (delta < 0) { dl_add(&l, "OVERDUE by "); dl_dec(&l, (uint64_t)(-delta)); }
         else           { dl_dec(&l, (uint64_t)delta); }
         dl_pad(&l, 26);
-        dl_hex(&l, e->sigmask); dl_pad(&l, 37);
         dl_add(&l, (e->task && e->task->ln_Name) ? e->task->ln_Name : "-");
         if (e->task && e->task->tc_State == TASK_REMOVED)
             dl_add(&l, " *dead*");
-        dl_pad(&l, 54);
+        dl_pad(&l, 45);
         dl_hex(&l, e->request_addr);
         dl_emit(&l, ctx, emit);
     }
@@ -313,138 +342,119 @@ void TimerDevice_DiagDump(void *ctx, void (*emit)(void *, const char *))
 
 static void timer_OpenDevice(M68kCPUState *cpu)
 {
-    /* OpenDevice - open timer device
-     * A0 = IORequest pointer, D0 = unit number, D1 = flags
-     * Returns: D0 = 0 for success, non-zero for error */
+    /* Device Open vector (-6): A1 = IORequest, D0 = unit, D1 = flags.
+     * Every unit (MICROHZ/VBLANK/ECLOCK…) shares the PIT tick. */
     (void)cpu;
     cpu->d[0] = 0;  /* Success */
 }
 
 static void timer_CloseDevice(M68kCPUState *cpu)
 {
-    /* CloseDevice - close timer device
-     * A1 = IORequest pointer */
+    /* Device Close vector (-12): A1 = IORequest */
     (void)cpu;
 }
 
 static void timer_BeginIO(M68kCPUState *cpu)
 {
-    /* BeginIO - start I/O operation
-     * A1 = IORequest pointer
+    /* BeginIO vector (-42): A1 = IORequest.
      *
-     * For timer.device, this queues a TR_ADDREQUEST for the specified time.
-     * When the time expires, the requesting task is signaled.
-     */
-    uint32_t ior_addr = cpu->a[1];
-    if (!ior_addr) {
+     * TR_ADDREQUEST queues the delay and leaves IOF_QUEUED set — the PIT
+     * tick path replies the request when it expires.  TR_GETSYSTIME and
+     * the rest complete synchronously; the glue turns them into a
+     * reply-port message for non-QUICK callers. */
+    uint32_t io = cpu->a[1];
+    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) {
         cpu->d[0] = (uint32_t)-1;
         return;
     }
 
-    IORequest_t *ior = (IORequest_t *)M68K_TO_HOST(ior_addr);
+    uint16_t cmd = tr_r16(g_ram, io + IO_COMMAND);
 
-    switch (ior->io_Command) {
+    switch (cmd) {
         case TR_ADDREQUEST: {
-            /* Read the timeval from the TimeRequest */
-            TimeRequest_t *tr = (TimeRequest_t *)ior;
-            uint32_t seconds = tr->tr_time.tv_sec;
-            uint32_t micros = tr->tr_time.tv_usec;
+            /* timeval at tr_node+32 */
+            uint32_t seconds = timer_r32(io + TR_SECS);
+            uint32_t micros  = timer_r32(io + TR_MICRO);
 
-            /* Convert to ticks (~100Hz = 10ms per tick, 100 ticks = 1 second) */
+            /* ~100 Hz tick: 100 ticks/s, 10 ms each */
             uint32_t ticks = (seconds * 100) + (micros / 10000);
             if (ticks == 0) ticks = 1;  /* Minimum 1 tick */
 
-            /* Allocate a timer queue entry */
             TimerQueueEntry_t *entry = timer_alloc_entry();
             if (!entry) {
-                ior->io_Error = -1;  /* No free entries */
+                tr_w8(g_ram, io + IO_ERROR, (uint8_t)-1);  /* table full */
                 cpu->d[0] = (uint32_t)-1;
                 return;
             }
 
-            /* Set up the timer request */
-            entry->request_addr = ior_addr;
+            entry->request_addr = io;
+            entry->ram          = g_ram;
             entry->target_ticks = g_tick_counter + ticks;
-            entry->task = Task_Current();
-
-            /* Use signal bit from ReplyPort or default to SIGB_SINGLE */
-            if (ior->io_Message.mn_ReplyPort) {
-                /* For now, use a default signal - in full implementation,
-                 * we'd read the MsgPort's signal bit */
-                entry->sigmask = SIGF_SINGLE;
-            } else {
-                entry->sigmask = SIGF_SINGLE;
-            }
-
-            /* Queue the request */
+            entry->task         = Task_Current();
             timer_enqueue(entry);
 
-            /* Set io_Flags to indicate request is pending */
-            ior->io_Flags |= 0x01;  /* IOF_QUEUED */
-            ior->io_Error = 0;
+            /* In-flight: device holds it until expiry.  Clearing QUICK is
+             * the Amiga contract for "this could not complete inline". */
+            tr_w8(g_ram, io + IO_FLAGS,
+                  (uint8_t)((tr_r8(g_ram, io + IO_FLAGS) | UIOF_QUEUED)
+                            & ~UIOF_QUICK));
+            g_ram[io + 8] = 5;             /* ln_Type = NT_MESSAGE */
+            tr_w8(g_ram, io + IO_ERROR, 0);
 
-            cpu->d[0] = 0;  /* Success - queued */
+            cpu->d[0] = 0;  /* Accepted */
+            break;
+        }
+
+        case TR_GETSYSTIME: {
+            uint32_t epoch = ntp_get_epoch();
+            timer_w32(io + TR_SECS,  epoch);
+            timer_w32(io + TR_MICRO, 0);  /* only second precision from RTC */
+            tr_w8(g_ram, io + IO_ERROR, 0);
+            cpu->d[0] = 0;
             break;
         }
 
         case TR_SETSYSTIME:
-            /* Set system time - not implemented yet */
-            ior->io_Error = -1;
-            cpu->d[0] = (uint32_t)-1;
+            /* Read-only wall clock for now. */
+            tr_w8(g_ram, io + IO_ERROR, (uint8_t)IOERR_NOCMD);
+            cpu->d[0] = (uint32_t)IOERR_NOCMD;
             break;
 
-        case TR_GETSYSTIME:
-            /* Get system time via IORequest - use same logic as GetSysTime */
-            {
-                uint32_t time_ptr = (uint32_t)(uintptr_t)&((TimeRequest_t *)ior)->tr_time;
-                uint32_t epoch = ntp_get_epoch();
-                timeval_t *tv = (timeval_t *)M68K_TO_HOST(time_ptr);
-                tv->tv_sec = epoch;
-                tv->tv_usec = 0;
-                ior->io_Error = 0;
-                cpu->d[0] = 0;
-            }
+        case CMD_RESET:
+            /* Drop every pending request this task queued. */
+            IODev_DropTaskRequests(Task_Current());
+            tr_w8(g_ram, io + IO_ERROR, 0);
+            cpu->d[0] = 0;
             break;
 
         default:
-            /* Unknown command */
-            ior->io_Error = -1;
-            cpu->d[0] = (uint32_t)-1;
+            tr_w8(g_ram, io + IO_ERROR, (uint8_t)IOERR_NOCMD);
+            cpu->d[0] = (uint32_t)IOERR_NOCMD;
             break;
     }
 }
 
 static void timer_AbortIO(M68kCPUState *cpu)
 {
-    /* AbortIO - abort I/O operation
-     * A1 = IORequest pointer
+    /* AbortIO vector (-48): A1 = IORequest.
      *
-     * Attempts to remove a pending TR_ADDREQUEST from the timer queue.
-     * Returns 0 if successful, non-zero if request already completed.
-     */
-    uint32_t ior_addr = cpu->a[1];
-    if (!ior_addr) {
+     * Removes a pending TR_ADDREQUEST from the queue; the glue completes
+     * it with IOERR_ABORTED and the usual reply.  D0 = -1 when the
+     * request wasn't ours (already done or never queued). */
+    uint32_t io = cpu->a[1];
+    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) {
         cpu->d[0] = (uint32_t)-1;
         return;
     }
 
-    IORequest_t *ior = (IORequest_t *)M68K_TO_HOST(ior_addr);
-
-    /* Find the timer queue entry for this request */
-    TimerQueueEntry_t *entry = timer_find_by_request(ior_addr);
+    TimerQueueEntry_t *entry = timer_find_by_request(io, g_ram);
     if (entry) {
-        /* Found - remove from queue and mark as aborted */
         timer_dequeue(entry);
         timer_free_entry(entry);
-
-        /* Mark IORequest as aborted */
-        ior->io_Flags &= ~0x01;  /* Clear IOF_QUEUED */
-        ior->io_Error = -2;      /* IOERR_ABORTED */
-
-        cpu->d[0] = 0;  /* Success - aborted */
+        tr_w8(g_ram, io + IO_ERROR, (uint8_t)IOERR_ABORTED);
+        cpu->d[0] = 0;
     } else {
-        /* Request not found (already completed or never queued) */
-        cpu->d[0] = (uint32_t)-1;  /* Already done */
+        cpu->d[0] = (uint32_t)-1;  /* Already done / not queued */
     }
 }
 
@@ -486,10 +496,21 @@ static void timer_ReadEClock(M68kCPUState *cpu)
         return;
     }
 
+    /* Advance the free-running eclock by elapsed PIT ticks so it ticks
+     * even when nobody calls ECLOCK_UPDATE (UAOS-240). */
+    static uint32_t eclock_last_tick = 0;
+    if (g_tick_counter != eclock_last_tick) {
+        g_eclock_value += (uint64_t)(g_tick_counter - eclock_last_tick)
+                          * 10000;               /* 10 ms per tick */
+        eclock_last_tick = g_tick_counter;
+    }
+
     timer_w32(eclock_ptr,     (uint32_t)(g_eclock_value >> 32));
     timer_w32(eclock_ptr + 4, (uint32_t)g_eclock_value);
 
-    /* Return E-clock frequency (~709379 ticks per second on PAL Amiga) */
+    /* Return E-clock frequency (~709379 ticks per second on PAL Amiga;
+     * we drive it in microseconds — callers only use the value for
+     * elapsed-time scaling, so a rounded PAL rate keeps intervals sane) */
     cpu->d[0] = 709379;
 }
 

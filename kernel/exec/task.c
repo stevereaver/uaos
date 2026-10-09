@@ -28,6 +28,12 @@
 
 extern volatile uint64_t g_pit_ticks;
 
+/* Guest device feed hooks (kernel/exec/console_device.c /
+ * keyboard_device.c, UAOS-240): pending guest IORequests get a copy of
+ * each cooked char / rawkey transition as the pump drains them. */
+extern void ConDev_FeedChar(char c);
+extern void KbdDev_OnRawKey(int code, uint16_t qual);
+
 /* Musashi M68k context save/restore (for switching between M68k tasks) */
 extern unsigned int m68k_get_context(void *dst);
 extern void m68k_set_context(void *src);
@@ -869,11 +875,15 @@ void Task_EventPumpEntry(void *arg)
 
         /* Raw key transitions -> focused window (IDCMP_RAWKEY path).
          * Drained before the cooked queue so RAWKEY precedes VANILLAKEY
-         * for the same physical press, matching real AmigaOS ordering. */
+         * for the same physical press, matching real AmigaOS ordering.
+         * A pending guest keyboard.device KBD_READEVENT also sees the
+         * transition (UAOS-240) — it gets a copy, the IDCMP delivery is
+         * not stolen. */
         while (PS2Kbd_HasRawKey()) {
             int rk = PS2Kbd_GetRawKey();
             if (rk < 0) break;
             Blanker_OnInput();
+            KbdDev_OnRawKey(rk & 0xFF, (uint16_t)((rk >> 8) & 0xFFFF));
             WM_RawKeyEvent(rk & 0xFF, (rk >> 8) & 0xFFFF);
         }
 
@@ -916,8 +926,11 @@ void Task_EventPumpEntry(void *arg)
                 continue;
             }
 
-            /* Regular key — straight to the focused window */
+            /* Regular key — straight to the focused window.  A pending
+             * guest console.device CMD_READ also sees the cooked char
+             * (UAOS-240) — copy, not steal. */
             WM_KeyEvent(c);
+            ConDev_FeedChar(c);
         }
 
         /* Clock redraw */

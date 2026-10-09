@@ -1,5 +1,48 @@
 # OKF Change Log
 
+## 2026-10-09 — guest device I/O framework: OpenDevice + IORequest completion (UAOS-240)
+
+* **Added** (`emulation/uaos_m68k_glue.c`, `emulation/uaos_emu.h`): real
+  async IORequest completion. `UAOS_Emu_IOReply(ram, io)` — exported for
+  device modules — sets `IOF_DONE` + `ln_Type = NT_REPLYMSG`, AddTails
+  the node onto `mn_ReplyPort`, and `Signal()`s `mp_SigTask` with
+  `1 << mp_SigBit` (same protocol as `exec_PutMsg`); `IOF_QUICK`
+  completions skip the port put. `DoIO`/`SendIO` dispatch the device's
+  BeginIO vector (`-42` on generated bases, `audio.device` dedicated
+  base); `CheckIO` reports `IOF_QUEUED`; `WaitIO`/`DoIO` nap on the reply
+  port's signal bit and consume the reply node; `AbortIO` runs the `-48`
+  vector then replies held requests with `IOERR_ABORTED`.
+  `OpenDevice`/`CloseDevice` now run the ROM module's Open(`-6`)/Close
+  (`-12`) vectors; `serial.device` stays on the declined list
+  (`IOERR_OPENFAIL`) so OctaMED's MIDI path disables gracefully.
+* **Rewrote** (`kernel/exec/timer_device.c`): guest `TimeRequest` fields
+  are accessed through byte-wise BE helpers with correct `timerequest`
+  offsets (`tr_secs`/`tr_micro` at +32/+36) — the old code aliased native
+  structs over BE guest memory and used wrong command numbers. Queued
+  `TR_ADDREQUEST` entries record the requester's RAM window so PIT-tick
+  expiry replies into the right guest space. `TR_GETSYSTIME`, `ReadEClock`
+  (free-running via elapsed PIT ticks), `AddTime`/`SubTime`/`CmpTime`.
+* **Rewrote** (`kernel/exec/console_device.c`): `CMD_WRITE` emits through
+  the task's `g_print` hook; `CMD_READ` pends and is fed cooked input by
+  the event pump via `ConDev_FeedChar()` (copy, not steal); keymap
+  commands report the built-in map.
+* **Rewrote** (`kernel/exec/keyboard_device.c`): `KBD_READEVENT` fills a
+  guest `InputEvent` (`IECLASS_RAWKEY`, release-bit code, qualifier
+  snapshot, timestamp) and pends until the event pump taps a rawkey
+  transition via `KbdDev_OnRawKey()`; `KBD_READMATRIX`; `AbortIO`.
+* **Added** event-pump feed hooks (`kernel/exec/task.c`) and task-exit
+  purges (`UAOS_M68k_ReleaseTaskResources` drops timer queue + console /
+  keyboard pending reads for a dying task so no completion fires into a
+  freed RAM window).
+* **Added** `system/Demos/src/DevIOTest.s` + `tests/qemu_devio_test.py`:
+  guest-verified in QEMU — timer open, `SendIO(TR_ADDREQUEST)` pends then
+  arrives on `mn_ReplyPort` with the configured signal, `Wait`+`GetMsg`
+  return it, `CheckIO`/`WaitIO` correct, console `CMD_WRITE` emits,
+  `serial.device` declines, keyboard pending read aborts cleanly.
+* **Docs**: `okf/kernel/exec/other_libraries.md` rewritten for the three
+  devices + IO model; `okf/concepts/m68k_emulation.md`,
+  `okf/kernel/exec/index.md` updated.
+
 ## 2026-10-09 — overlay/SFX executable contract + hunk memory flags (UAOS-236)
 
 * **Added** (`emulation/uaos_m68k_glue.c`): AmigaDOS overlay/self-extracting

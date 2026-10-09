@@ -130,23 +130,19 @@ Unix compatibility layer. **All functions in this library are currently stubs** 
 
 Stubbed categories include: file I/O (`open`, `read`, `write`, `lseek`, `ioctl`, `stat`, `fstat`), directory I/O (`opendir`, `readdir`, `chdir`, `getcwd`), memory (`malloc`, `free`, `calloc`, `realloc`, `strdup`), environment (`getenv`, `setenv`, `putenv`), process control (`fork`, `execve`, `wait`, `waitpid`, `kill`, `signal`), and IPC (`pipe`, `dup`, `dup2`, `fcntl`).
 
+## Guest device I/O model (UAOS-240)
+
+Guest `IORequest`/`IOStdReq`/`MsgPort` structures live in the requester's big-endian guest RAM window (`IO_DEVICE` +20, `IO_UNIT` +24, `IO_COMMAND` +28, `IO_FLAGS` +30, `IO_ERROR` +31; `IOStdReq`: `io_Actual` +32, `io_Length` +36, `io_Data` +40). `exec_DoIO`/`exec_SendIO` route a request to the device's `BeginIO` vector (generated-base LVO `-42`, or `audio.device`'s dedicated base); `exec_AbortIO` runs the `-48` vector.
+
+Completion is asynchronous: a device that cannot finish inside `BeginIO` sets `IOF_QUEUED` (and clears `IOF_QUICK`), then replies later from its own context (PIT tick, event pump) via the exported `UAOS_Emu_IOReply(ram, io)`. The reply sets `IOF_DONE` + `ln_Type = NT_REPLYMSG`, AddTails the node onto `mn_ReplyPort`, and `Signal()`s `mp_SigTask` with `1 << mp_SigBit` — the same protocol `exec_PutMsg` uses, so `WaitPort`/`Wait`/`GetMsg` observe it. `QUICK` completions skip the port put entirely. `exec_CheckIO` returns the request iff `IOF_QUEUED` has cleared; `exec_WaitIO`/`DoIO` nap on the port's signal bit (flag is the wait condition so port-less completions wake too) and consume the reply node afterwards. Task-exit cleanup (`UAOS_M68k_ReleaseTaskResources`) drops the task's pending device requests via `IODev_DropTaskRequests`/`ConDev_DropTaskRequests`/`KbdDev_DropTaskRequests` so completions never fire into a dead RAM window.
+
 ## console.device (`kernel/exec/console_device.c`)
 
-AmigaOS console I/O device. **Currently stubbed**: `OpenDevice`, `CloseDevice`, `BeginIO`, `AbortIO`, `RawKey`, `Read`, `Write`, and `RawWrite` all print a diagnostic and return a default value. Console output from M68k programs is currently handled by the `dos.library` Output/Write path rather than `console.device`.
+AmigaOS console I/O device — real BeginIO since UAOS-240. `CMD_WRITE` emits `io_Data`/`io_Length` bytes through the task's `g_print` hook (shell window + serial) and sets `io_Actual`. `CMD_READ` completes inline when cooked input is buffered in the device's 64-byte input ring; otherwise the request pends and the event pump feeds typed characters via `ConDev_FeedChar()` (copy, not steal — GUI `WM_KeyEvent` still gets the char). Keymap commands (`CD_ASKKEYMAP`/`CD_SETKEYMAP`/`CD_ASKDEFAULTKEYMAP`/`CD_SETDEFAULTKEYMAP`) report the built-in map. `AbortIO` pulls a pending read; `Close`/`CMD_RESET` drop the task's pending reads.
 
 ## keyboard.device (`kernel/exec/keyboard_device.c`)
 
-AmigaOS keyboard input device.
-
-| Function | Status | Notes |
-|---|---|---|
-| `OpenDevice` / `CloseDevice` | Stub | Returns success. |
-| `BeginIO` / `AbortIO` | Stub | Returns success. |
-| `Read` | Implemented | Reads a translated character from the PS/2 keyboard ring buffer via `PS2Kbd_GetChar()`. |
-| `Write` | Stub | LED control (TODO). |
-| `RawKey` | Stub | Raw keycode read (TODO). |
-
-The device passes `InputEvent` structures to the guest but currently only character input is wired to the PS/2 driver.
+AmigaOS keyboard input device — real BeginIO since UAOS-240. `KBD_READEVENT` fills a guest `InputEvent` (`ie_Class = IECLASS_RAWKEY`, `ie_Code` = raw key with the `0x80` release bit, `ie_Qualifier` from `PS2Kbd_IEQualifier`, timestamped) and pends when no raw key is buffered; the event pump taps each drained `PS2Kbd_GetRawKey` transition through `KbdDev_OnRawKey()` so pending guests get a copy without stealing the IDCMP delivery. `KBD_READMATRIX` writes the qualifier byte; reset-handler commands complete as no-ops; `AbortIO` pulls a pending event read.
 
 ## timer.device (`kernel/exec/timer_device.c`)
 
@@ -155,12 +151,13 @@ AmigaOS timing device.
 | Function | Status | Notes |
 |---|---|---|
 | `OpenDevice` / `CloseDevice` | Implemented | Opens/closes the device unit. |
-| `BeginIO` | Implemented | Queues `TR_ADDREQUEST` timer requests in a 32-entry queue. |
+| `BeginIO` | Implemented | `TR_ADDREQUEST` queues a `TimeRequest` in a 32-entry queue (guest fields read/written via BE helpers — `tr_secs`/`tr_micro` at +32/+36); `TR_GETSYSTIME` completes inline. |
+| `AbortIO` | Implemented | Dequeues a pending `TR_ADDREQUEST`; the glue replies it with `IOERR_ABORTED`. |
 | `GetSysTime` | Implemented | Returns the current time using the NTP/RTC epoch. |
-| `EClockUpdate` / `ReadEClock` | Implemented | E-clock counter in microseconds. |
+| `EClockUpdate` / `ReadEClock` | Implemented | E-clock counter in microseconds (free-running, advanced by elapsed PIT ticks). |
 | `AddTime` / `SubTime` / `CmpTime` | Implemented | `timeval` arithmetic. |
 
-When a queued timer request expires, the device signals the requesting task so it can `Wait()` on the timer signal bit.
+When a queued timer request expires (from `timer_ProcessTicks`, ~100 Hz), the entry's recorded requester RAM window gets the `UAOS_Emu_IOReply` treatment: `IOF_DONE`, node onto `mn_ReplyPort`, `Signal(mp_SigTask, 1<<mp_SigBit)`.
 
 ## ROM Module Registration
 

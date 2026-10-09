@@ -23,6 +23,23 @@ extern uint8_t *g_ram;
 typedef void (*GluePrintFn)(const char *s);
 extern GluePrintFn g_print;
 
+/* Device I/O completion (UAOS-240).  A ROM-registered device module calls
+ * this when an IORequest finishes: it sets IOF_DONE, clears IOF_QUEUED,
+ * marks ln_Type = NT_REPLYMSG, then appends the request to mn_ReplyPort
+ * and signals mp_SigTask with 1<<mp_SigBit — the same PutMsg protocol the
+ * guest WaitPort/GetMsg path observes.  `ram` is the requester's guest
+ * window (g_ram in the caller's own m68k context, or the window recorded
+ * at BeginIO time when completing from ISR/event-pump context).
+ *
+ * io_Flags protocol (exec/io.h values): a device holds a pending request
+ * by setting UIOF_QUEUED and clearing UIOF_QUICK in BeginIO; completion
+ * (sync or async) runs through UAOS_Emu_IOReply, which skips the port
+ * append when the requester asked for quick I/O. */
+#define UIOF_QUICK   0x01
+#define UIOF_QUEUED  0x10
+#define UIOF_DONE    0x80
+void UAOS_Emu_IOReply(uint8_t *ram, uint32_t io);
+
 /* Bump allocator pointer — shared so ROM stubs can allocate guest
  * FileLock structs, BSTRs, etc. */
 extern uint32_t g_uaos_heap_ptr;
