@@ -240,10 +240,7 @@ int floppy_decode_track(const uint8_t *mfm_bits, uint32_t bits_len,
  * Floppy state — four drives, DF0:..DF3:
  * ------------------------------------------------------------------------- */
 
-FloppyState g_floppy[FLOPPY_UNITS] = {
-    [0].disk_changed = 1, [1].disk_changed = 1,
-    [2].disk_changed = 1, [3].disk_changed = 1,
-};
+FloppyState g_floppy[FLOPPY_UNITS];
 
 /* Drive-control bookkeeping (CIAB PRB): previous port value for edge
  * detection, the currently selected unit, and whether any /SEL is low. */
@@ -277,7 +274,7 @@ int floppy_load_adf(int unit, const uint8_t *data, size_t size)
     f->head = 0;
     f->bit_pos = 0;
     f->dma_active = 0;
-    f->disk_changed = 1;
+    f->chng_cleared = 0;
     regenerate_track(f);
     return 1;
 }
@@ -291,7 +288,7 @@ void floppy_eject(int unit)
     f->dma_ram = NULL;
     f->motor = 0;
     f->mfm_bits = 0;
-    f->disk_changed = 1;
+    f->chng_cleared = 0;
 }
 
 int floppy_unit_loaded(int unit)
@@ -327,7 +324,7 @@ void floppy_make_test_adf(int unit)
     f->cyl = 0;
     f->head = 0;
     f->bit_pos = 0;
-    f->disk_changed = 1;
+    f->chng_cleared = 0;
     regenerate_track(f);
 }
 
@@ -390,7 +387,7 @@ void floppy_drive_control(uint8_t prb)
         for (int u = 0; u < FLOPPY_UNITS; u++) {
             if (!(prb & (1u << (3 + u)))) {
                 floppy_step(u, dir);
-                if (g_floppy[u].adf_loaded) g_floppy[u].disk_changed = 0;
+                if (g_floppy[u].adf_loaded) g_floppy[u].chng_cleared = 1;
             }
         }
     }
@@ -415,7 +412,7 @@ uint8_t floppy_ciaa_pra_bits(void)
     if (!g_floppy_sel_active) return 0x3Cu;
     FloppyState *f = &g_floppy[g_floppy_selected];
     uint8_t bits = 0x3Cu;
-    if (f->disk_changed)                 bits &= ~0x04u; /* /CHNG */
+    if (!f->chng_cleared)                bits &= ~0x04u; /* /CHNG */
     if (f->adf_loaded && f->write_protect) bits &= ~0x08u; /* /WPRO */
     if (f->cyl == 0)                     bits &= ~0x10u; /* /TK0 */
     if (f->motor && f->adf_loaded)       bits &= ~0x20u; /* /RDY */

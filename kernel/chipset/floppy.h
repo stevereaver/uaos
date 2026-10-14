@@ -44,7 +44,7 @@ typedef struct {
     int      head;
     int      motor;
     int      write_protect;
-    int      disk_changed;  /* DSKCHANGE latch: set on eject/load, cleared by step */
+    int      chng_cleared;  /* 0 = /CHNG asserted (reset/eject/load); set by a step with disk in */
 
     /* Rotation state: current bit position in the current MFM track. */
     uint32_t bit_pos;

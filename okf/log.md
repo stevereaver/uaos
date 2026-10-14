@@ -1554,3 +1554,12 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 ## 2026-10-14 — NT_DEVICE_G accuracy analysis (no code change)
 
 * **Documented** (`okf/kernel/exec/other_libraries.md`): UAOS's `NT_DEVICE_G` = 10 is real `NT_MEMORY`, and built-in device bases sit on `SysBase->DeviceList` with that type. The only code that depends on it is the `is_devbase` check in the LIB_ROM unmapped path (glue ~8101). Changing the define to 3 is safe.
+
+## 2026-10-14 — UAOS-154: floppy multi-drive model DF0:-DF3:
+
+* **Changed** (`kernel/chipset/floppy.{c,h}`): `g_floppy` → `g_floppy[FLOPPY_UNITS=4]`, per-unit ADF/MFM/DMA state (`dma_ram` replaces `g_floppy_dma_ram`, `chng_cleared` models the DSKCHANGE latch); unit parameter threaded through the whole API; new `floppy_eject`, `floppy_unit_loaded`, `floppy_drive_control`, `floppy_selected_unit`, `floppy_ciaa_pra_bits`. Array stays zero-initialised in .bss (no `.data` growth).
+* **Changed** (`kernel/chipset/chip_emu.c`): CIAB PRB/DDRB writes drive /SEL/MTR/STEP/DIR/SIDE; CIAA PRA bits 2–5 report the selected unit's /CHNG/WPRO/TK0/RDY; DSKLEN/DSKDAT route to the selected unit.
+* **Changed** (`kernel/drivers/floppy_blk.{c,h}`): per-unit `floppyN`/`DFN:` devices with `FloppyBlk_Attach/Detach`, per-unit diskdiag dump, new `floppy_multi_unit_test`.
+* **Fixed** (`kernel/dos/blockdev.c`): Register reuses unregistered slots and no longer `strcmp`s their NULL names; Unregister logs the name captured before the memset.
+* **Changed** (`kernel/boot/uaos_kernel_main.c`): phantom test ADF on DF0: now only under `selftest`; multi-unit test added to the second battery.
+* **Verified**: `make` clean; selftest boot — disk DMA, floppy block-device, write, write-protect, DMA write, multi-unit, parallel tests all PASS, 0 FAILED; normal boot shows "Floppy: no disks inserted." with no floppy blockdevs; `tests/smoke.sh` 24/24.
