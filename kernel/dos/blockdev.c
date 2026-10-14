@@ -37,24 +37,35 @@ int BlockDev_Register(BlockDev *dev)
         return -1;
     }
 
-    if (g_num_blockdevs >= MAX_BLOCKDEVS) {
-        printf("[BLOCKDEV] Maximum block devices reached\n");
-        return -1;
-    }
-
-    /* Check for duplicate name */
+    /* Check for duplicate name; dead slots (name == NULL) are skipped and
+     * the first one is remembered for reuse. */
+    int reuse = -1;
     for (uint32_t i = 0; i < g_num_blockdevs; i++) {
+        if (!g_blockdevs[i].name) {
+            if (reuse < 0) reuse = (int)i;
+            continue;
+        }
         if (strcmp(g_blockdevs[i].name, dev->name) == 0) {
             printf("[BLOCKDEV] Device '%s' already registered\n", dev->name);
             return -1;
         }
     }
 
+    uint32_t slot;
+    if (reuse >= 0) {
+        slot = (uint32_t)reuse;
+    } else {
+        if (g_num_blockdevs >= MAX_BLOCKDEVS) {
+            printf("[BLOCKDEV] Maximum block devices reached\n");
+            return -1;
+        }
+        slot = g_num_blockdevs++;
+    }
+
     /* Copy device to array */
-    memcpy(&g_blockdevs[g_num_blockdevs], dev, sizeof(BlockDev));
-    g_blockdevs[g_num_blockdevs].next = g_blockdev_list;
-    g_blockdev_list = &g_blockdevs[g_num_blockdevs];
-    g_num_blockdevs++;
+    memcpy(&g_blockdevs[slot], dev, sizeof(BlockDev));
+    g_blockdevs[slot].next = g_blockdev_list;
+    g_blockdev_list = &g_blockdevs[slot];
 
     printf("[BLOCKDEV] Registered device '%s' (%llu sectors)\n", 
            dev->name, dev->num_sectors);
@@ -75,7 +86,9 @@ void BlockDev_Unregister(BlockDev *dev)
         pp = &(*pp)->next;
     }
 
-    /* Clear device entry */
+    /* Clear device entry; the name pointer dies with the slot, so keep a
+     * copy for the log line below. */
+    const char *name = dev->name;
     for (uint32_t i = 0; i < g_num_blockdevs; i++) {
         if (&g_blockdevs[i] == dev) {
             memset(&g_blockdevs[i], 0, sizeof(BlockDev));
@@ -83,7 +96,7 @@ void BlockDev_Unregister(BlockDev *dev)
         }
     }
 
-    printf("[BLOCKDEV] Unregistered device '%s'\n", dev->name);
+    printf("[BLOCKDEV] Unregistered device '%s'\n", name ? name : "?");
 }
 
 BlockDev *BlockDev_Find(const char *name)

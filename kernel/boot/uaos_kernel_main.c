@@ -337,12 +337,8 @@ extern void chip_emu_reset(void);
 extern void audio_init(void);
 extern void audio_sine_test(void);
 extern void audio_pattern_test(void);
-extern void floppy_make_test_adf(void);
 extern int chip_emu_disk_dma_test(void);
 extern int floppy_block_device_test(void);
-extern int floppy_block_device_write_test(void);
-extern int floppy_write_protect_test(void);
-extern int floppy_dma_write_test(void);
 extern int chip_emu_dma_test(void);
 extern uint16_t g_intreq;
 extern int chip_emu_line_test(void);
@@ -616,7 +612,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     /* Run audio subsystem tests */
     kprint("[BOOT] Initialising floppy subsystem...\n");
-    floppy_make_test_adf();   /* loads the RAM ADF that backs DF0: */
+    if (run_selftests)
+        floppy_make_test_adf(0);   /* selftest ADF backing DF0: */
 
     if (run_selftests) {
     kprint("[BOOT] Running audio sine-wave test...\n");
@@ -710,11 +707,14 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     BlockDev_Init();
     kprint("[BOOT] Block device layer initialised.\n");
 
-    kprint("[BOOT] Registering floppy block device...\n");
-    if (FloppyBlockDev_Init() == 0) {
-        kprint("[BOOT] Floppy block device DF0: registered.\n");
+    kprint("[BOOT] Registering floppy block devices...\n");
+    int floppy_drives = FloppyBlockDev_Init();
+    if (floppy_drives > 0) {
+        kprint("[BOOT] Floppy: ");
+        kprintdec((uint32_t)floppy_drives);
+        kprint(" drive(s) with media registered (DF0:-DF3:).\n");
     } else {
-        kprint("[BOOT] Floppy block device registration failed.\n");
+        kprint("[BOOT] Floppy: no disks inserted.\n");
     }
 
     /* Initialise VirtIO block device driver */
@@ -957,6 +957,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running floppy DMA write test...\n");
     int dma_write_test = floppy_dma_write_test();
     kprint(dma_write_test ? "[BOOT] Floppy DMA write test PASSED\n" : "[BOOT] Floppy DMA write test FAILED\n");
+
+    kprint("[BOOT] Running floppy multi-unit test...\n");
+    int multi_unit_test = floppy_multi_unit_test();
+    kprint(multi_unit_test ? "[BOOT] Floppy multi-unit test PASSED\n" : "[BOOT] Floppy multi-unit test FAILED\n");
 
     kprint("[BOOT] Running parallel port test...\n");
     int parallel_test = chip_emu_parallel_test();
@@ -1237,7 +1241,7 @@ int chip_emu_disk_dma_test(void)
     if (dst + 1024 > GUEST_RAM_SIZE) return 0;
 
     /* Ensure the virtual drive is spinning. */
-    floppy_set_motor(1);
+    floppy_set_motor(0, 1);
 
     /* Set disk DMA pointer. */
     chip_emu_write(0x020, (dst >> 16) & 0xFFFFu, 2); /* DSKPTH */

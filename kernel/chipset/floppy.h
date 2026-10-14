@@ -1,9 +1,11 @@
 /*
  * floppy.h — UAOS Amiga MFM floppy controller
  *
- * Exposes an ADF-backed floppy that can be read through the Paula disk DMA
- * registers (DSKSYNC, DSKLEN, DSKDAT, DSKPT).  Tracks are encoded to MFM on
- * demand and streamed to chip RAM as the virtual disk rotates.
+ * Exposes up to four ADF-backed floppy drives (DF0:-DF3:) that can be read
+ * through the Paula disk DMA registers (DSKSYNC, DSKLEN, DSKDAT, DSKPT).
+ * Tracks are encoded to MFM on demand and streamed to chip RAM as the
+ * virtual disk rotates.  Drive select/motor/step/head control follows the
+ * Amiga CIAB PRB / CIAA PRA semantics.
  */
 
 #ifndef UAOS_FLOPPY_H
@@ -11,6 +13,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+
+#define FLOPPY_UNITS        4
 
 #define FLOPPY_TRACKS       80
 #define FLOPPY_HEADS        2
@@ -40,6 +44,7 @@ typedef struct {
     int      head;
     int      motor;
     int      write_protect;
+    int      disk_changed;  /* DSKCHANGE latch: set on eject/load, cleared by step */
 
     /* Rotation state: current bit position in the current MFM track. */
     uint32_t bit_pos;
@@ -55,33 +60,50 @@ typedef struct {
     uint16_t dma_words;      /* words remaining to transfer */
     uint16_t dma_sync;       /* sync word expected before transfer */
     int      dma_sync_found; /* 1 after sync has been seen */
+    uint8_t *dma_ram;        /* RAM window the DMA was launched against */
 } FloppyState;
 
-extern FloppyState g_floppy;
+extern FloppyState g_floppy[FLOPPY_UNITS];
 
-/* Load an 880 KiB ADF image into the floppy. */
-int  floppy_load_adf(const uint8_t *data, size_t size);
+/* Load an 880 KiB ADF image into a drive (unit 0..3). */
+int  floppy_load_adf(int unit, const uint8_t *data, size_t size);
 
-/* Generate a simple non-DOS test ADF in the internal buffer. */
-void floppy_make_test_adf(void);
+/* Remove the disk from a drive. */
+void floppy_eject(int unit);
+
+/* Returns 1 if the unit has a disk loaded. */
+int  floppy_unit_loaded(int unit);
+
+/* Generate a simple non-DOS test ADF in the unit's internal buffer. */
+void floppy_make_test_adf(int unit);
 
 /* Motor / head / cylinder control. */
-void floppy_set_motor(int on);
-void floppy_seek(int cyl, int head);
-void floppy_step(int dir);
+void floppy_set_motor(int unit, int on);
+void floppy_seek(int unit, int cyl, int head);
+void floppy_step(int unit, int dir);
 
-/* Per-PIT-tick rotation and DMA advance. */
+/* Per-PIT-tick rotation and DMA advance for all units. */
 void floppy_tick(void);
 
 /* Start a disk DMA read.  Returns 1 if accepted, 0 if no disk loaded. */
-int  floppy_dma_read(uint32_t dskpt, uint16_t dsklen, uint16_t dsk_sync);
+int  floppy_dma_read(int unit, uint32_t dskpt, uint16_t dsklen, uint16_t dsk_sync);
 
 /* Start a disk DMA write (supported only for the synthetic buffer path). */
-int  floppy_dma_write(uint32_t dskpt, uint16_t dsklen);
+int  floppy_dma_write(int unit, uint32_t dskpt, uint16_t dsklen);
 
 /* Single-word DSKDAT access. */
-uint16_t floppy_dskdat_read(void);
-void     floppy_dskdat_write(uint16_t value);
+uint16_t floppy_dskdat_read(int unit);
+void     floppy_dskdat_write(int unit, uint16_t value);
+
+/* Drive control port (Amiga CIAB PRB): /STEP, DIR, /SIDE, /SEL0-3, /MTR. */
+void     floppy_drive_control(uint8_t prb);
+
+/* Unit currently selected by the drive-control port (last /SEL low, else 0). */
+int      floppy_selected_unit(void);
+
+/* CIAA PRA bits 2-5 for the selected drive: /CHNG, /WPRO, /TK0, /RDY
+ * (active low).  Returns 0x3C (all inactive) when no drive is selected. */
+uint8_t  floppy_ciaa_pra_bits(void);
 
 /* Called when an M68k task's RAM window is being released.  If a disk DMA
  * was launched against that window it is disarmed so floppy_tick() cannot
@@ -95,13 +117,13 @@ int floppy_decode_track(const uint8_t *mfm_bits, uint32_t bits_len,
                         uint8_t sectors[FLOPPY_SECTORS][FLOPPY_SECTOR_SIZE]);
 
 /* Direct decoded sector read, useful for DOS handlers and diagnostics. */
-int floppy_read_sector(int track, int sector, uint8_t *out);
+int floppy_read_sector(int unit, int track, int sector, uint8_t *out);
 
 /* Direct decoded sector write. */
-int floppy_write_sector(int track, int sector, const uint8_t *data);
+int floppy_write_sector(int unit, int track, int sector, const uint8_t *data);
 
 /* Write-protect control and diagnostics. */
-void floppy_set_write_protect(int wp);
+void floppy_set_write_protect(int unit, int wp);
 int floppy_write_protect_test(void);
 int floppy_dma_write_test(void);
 

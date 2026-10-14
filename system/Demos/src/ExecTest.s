@@ -352,6 +352,22 @@ start:
         jsr     LV_RemLibrary(a6)
 
 ; ---- AddDevice / AddResource: same list plumbing ---------------------
+        ; UAOS-308: built-in device bases publish real NT_DEVICE (3)
+        movea.l exec_base,a0
+        add.l   #SB_DEVLIST,a0
+        lea     aud_name(pc),a1
+        jsr     LV_FindName(a6)
+        tst.l   d0
+        bne.s   .aud_found
+        lea     s_fdevfind(pc),a1
+        bra     do_fail
+.aud_found:
+        movea.l d0,a1
+        cmp.b   #3,8(a1)                ; NT_DEVICE
+        beq.s   .aud_type
+        lea     s_fdevtype(pc),a1
+        bra     do_fail
+.aud_type:
         lea     fakedev(pc),a1
         move.b  #3,8(a1)                ; NT_DEVICE
         lea     fd_name(pc),a0
@@ -630,6 +646,7 @@ ir_datatab: dc.b $a0,8                  ; INITBYTE ln_Type
             even
 
 dos_name:   dc.b "dos.library",0
+aud_name:   dc.b "audio.device",0
 fl_name:    dc.b "exectest.library",0
 fd_name:    dc.b "exectest.device",0
 fr_name:    dc.b "exectest.resource",0
@@ -662,6 +679,8 @@ s_fdealloc: dc.b "EXECTEST FAIL Deallocate",10,0
 s_faddml:   dc.b "EXECTEST FAIL AddMemList",10,0
 s_fmlfind:  dc.b "EXECTEST FAIL MemList FindName",10,0
 s_faddlib:  dc.b "EXECTEST FAIL AddLibrary/FindName",10,0
+s_fdevfind: dc.b "EXECTEST FAIL DeviceList FindName",10,0
+s_fdevtype: dc.b "EXECTEST FAIL DeviceList ln_Type",10,0
 s_fadddev:  dc.b "EXECTEST FAIL AddDevice/FindName",10,0
 s_faddres:  dc.b "EXECTEST FAIL AddResource/FindName",10,0
 s_faddtask: dc.b "EXECTEST FAIL AddTask",10,0

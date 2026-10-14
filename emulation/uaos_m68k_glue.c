@@ -1237,7 +1237,7 @@ static void install_stub(int lib_id, int func_idx)
 #define NT_REPLYMSG        7
 #define NT_MSGPORT_G       4
 #define NT_LIBRARY_G       9
-#define NT_DEVICE_G        10
+#define NT_DEVICE_G        3
 #define NT_PROCESS_G       13
 #define PA_SIGNAL_G        0
 #define TS_RUN_G           2
@@ -8096,10 +8096,10 @@ int m68k_illg_instr_callback(int opcode)
                             rom_name[3]=='a' && rom_name[4]=='l' &&
                             rom_name[5]=='e';
             /* amiga.lib BeginIO/AbortIO land at the real device LVOs
-             * -30/-36; generated *device* bases (ln_Type == NT_DEVICE_G)
-             * map them onto the native -42/-48 paths (UAOS-306). */
-            int is_devbase = a6 < GUEST_RAM_SIZE &&
-                             g_ram[a6 + 8] == NT_DEVICE_G;
+             * -30/-36; *device* bases (keyed on the module's ".device"
+             * name, not the guest-writable ln_Type) map them onto the
+             * native -42/-48 paths (UAOS-306). */
+            int is_devbase = rom_name && emu_is_device_name(rom_name);
             if (is_devbase && lvo == -30) {
                 uint32_t ior = m68k_get_reg(NULL, M68K_REG_A1);
                 if (ior && ior + IOSTD_SIZE < GUEST_RAM_SIZE)

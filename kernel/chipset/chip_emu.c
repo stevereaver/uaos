@@ -945,19 +945,17 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
             g_dsklen = (uint16_t)value;
             if (value & 0x8000u) { /* DMAEN */
                 if (value & 0x4000u) {
-                    if (!floppy_dma_write(g_dskpt, (uint16_t)value)) {
-                        /* Write-protected or no disk; don't leave DMA active. */
-                        g_floppy.dma_active = 0;
-                    }
+                    /* Write-protected or no disk: nothing is armed. */
+                    floppy_dma_write(floppy_selected_unit(), g_dskpt, (uint16_t)value);
                 } else {
-                    floppy_dma_read(g_dskpt, (uint16_t)value, g_dsk_sync);
+                    floppy_dma_read(floppy_selected_unit(), g_dskpt, (uint16_t)value, g_dsk_sync);
                 }
             }
             break;
         }
         case REG_DSKDAT: {
             g_dskdat = (uint16_t)value;
-            floppy_dskdat_write((uint16_t)value);
+            floppy_dskdat_write(floppy_selected_unit(), (uint16_t)value);
             break;
         }
         case REG_DSKSYNC: g_dsk_sync = (uint16_t)value; break;
@@ -1178,7 +1176,7 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
         case REG_DSKPTH: value = (g_dskpt >> 16) & 0xFFFFu; break;
         case REG_DSKDAT: {
             if (g_dsklen & 0x8000u) {
-                g_dskdat = floppy_dskdat_read();
+                g_dskdat = floppy_dskdat_read(floppy_selected_unit());
             }
             value = g_dskdat;
             break;
@@ -2065,7 +2063,9 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
              * mouse fire), bit7 = joystick port 1 fire.  Merge the host
              * mouse state over the data register's output bits. */
             if (cia == &g_cia_a) {
-                uint32_t v = cia->pra | 0xC0u;
+                /* Bits 5:2 carry the selected drive's status lines
+                 * (/RDY /TK0 /WPRO /CHNG, active low). */
+                uint32_t v = (cia->pra & ~0x3Cu) | floppy_ciaa_pra_bits() | 0xC0u;
                 if (g_mouse.btn_left) v &= ~0x40u;
                 return v;
             }
@@ -2128,6 +2128,9 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
                 /* Only drive the bits that are configured as outputs. */
                 uint8_t out = v & cia->ddrb;
                 lpt1_send(out);
+                /* PRB also carries the floppy drive-control lines; input
+                 * bits float high. */
+                floppy_drive_control((uint8_t)(out | ~cia->ddrb));
             }
             break;
         }
@@ -2140,6 +2143,10 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
                 uint8_t c = 0;
                 lpt1_recv(&c);
                 (void)c;
+            }
+            if (cia == &g_cia_b) {
+                /* A DDRB change alters which drive-control bits are driven. */
+                floppy_drive_control((uint8_t)((cia->prb & cia->ddrb) | ~cia->ddrb));
             }
             break;
         }
@@ -3054,7 +3061,7 @@ void chip_emu_reset(void)
 /* Called when an M68k task's RAM window is about to be released for reuse.
  * The beam/PIT-driven DMA engines remember which window they were launched
  * against (g_display_ram, g_blit_ram, g_audio_ram, and floppy's
- * g_floppy_dma_ram); if the dead task owned any of them, the engine would
+ * per-unit dma_ram); if the dead task owned any of them, the engine would
  * keep executing its copper list / blits / audio/disk DMA and scribble into
  * the next guest that reuses the slot.  Unbind and disarm only the state
  * bound to that window — bindings owned by another live task are left

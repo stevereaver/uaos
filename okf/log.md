@@ -1,5 +1,22 @@
 # OKF Change Log
 
+## 2026-10-14 — built-in device bases use real NT_DEVICE (UAOS-308)
+
+* **Fixed** (`emulation/uaos_m68k_glue.c`): `NT_DEVICE_G` is now the real
+  `NT_DEVICE` (3) instead of 10 (which is `NT_MEMORY`).  Applies to
+  `audio.device`'s fixed header, generated ROM device bases from
+  `OpenDevice` (timer/console/keyboard), and fake `.device` bases from
+  `OpenLibrary` — all linked on `SysBase->DeviceList`.
+* **Fixed**: the LIB_ROM unmapped-vector `is_devbase` check (amiga.lib
+  BeginIO/AbortIO `-30`/`-36` → `io_dispatch_device`/`io_abort_device`)
+  now keys on `emu_is_device_name(rom->name)` instead of the
+  guest-writable `ln_Type` byte.
+* **Added** regression in `system/Demos/src/ExecTest.s`:
+  `FindName(&SysBase->DeviceList, "audio.device")` must return a node
+  with `ln_Type == 3`.
+* **Verified**: `qemu_devload_test.py` PASS (covers `jsr -30(a6)` on
+  timer.device), `qemu_exec_coverage_test.py` PASS (`EXECTEST PASS`).
+
 ## 2026-10-14 — real hunk-format .device loader + BeginIO/AbortIO LVO fix (UAOS-306)
 
 * **Added** (`emulation/uaos_m68k_glue.c`): `OpenDevice` loads real
@@ -1533,3 +1550,7 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Fixed** (`kernel/dbg/sysinfo.c`): `SysInfo_DumpConfig` BOARDS section no longer lists partition blockdevs as separate drives. Whole disks (`part_offset == 0`) still print `Board (disk <name>)`; their partitions now print indented `part <name> (<display_name>)` lines beneath the parent — e.g. `ahci01` under `ahci0` instead of a second 57240 MB "board". Parent matching uses the same test as `BlockDev_UnregisterPartitions` (`part_offset != 0` + name = parent name + digit; `BlockDev` stores no parent pointer). Orphaned partitions whose parent isn't in the list still print, annotated `partition, no parent`. Size formatting factored into `dl_disk_size()`.
 * **Verified** live in QEMU: booted `run_with_disk.sh` with a scratch 64 MB raw image carrying one MBR partition as DISK2 — `showconfig` over telnet prints `Board (disk virtio1): 64 MB` + `    part virtio11 (DH0:): 63 MB`. `make kernel` clean.
 * **Docs**: `okf/kernel/diag/index.md` sysinfo row updated.
+
+## 2026-10-14 — NT_DEVICE_G accuracy analysis (no code change)
+
+* **Documented** (`okf/kernel/exec/other_libraries.md`): UAOS's `NT_DEVICE_G` = 10 is real `NT_MEMORY`, and built-in device bases sit on `SysBase->DeviceList` with that type. The only code that depends on it is the `is_devbase` check in the LIB_ROM unmapped path (glue ~8101). Changing the define to 3 is safe.
