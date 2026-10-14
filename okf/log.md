@@ -1586,3 +1586,11 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
   unmounted. `discard` drops the changes. At insert, a source that cannot be opened for writing makes the drive write-protected.
 * **Changed** `C:adf`: `eject <unit> [discard]`, relative insert paths resolved against cwd, and `list` shows `write-protected`.
 * **Docs**: `okf/kernel/dos/index.md` § ADF mount service.
+
+## 2026-10-15 — UAOS-158: Requester_Choice multi-button requester
+
+* **Added** `Requester_Choice` (`kernel/display/requester.{c,h}`): up to 5 buttons with per-button ghosting, index callback,
+  `REQ_BTN_NONE` on Esc/close, and Enter = first enabled button.
+* **Changed** `kernel/display/gadgets.c` `draw_button`: disabled buttons draw a ghosted label and never sink.
+* **Fixed** requester mouse presses: the WM routes MOUSE_DOWN to `on_event`, so `req_event` now forwards it to `req_click`.
+* **Docs**: `okf/kernel/display/index.md` § Requesters.

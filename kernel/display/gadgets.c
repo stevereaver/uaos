@@ -121,15 +121,17 @@ void gad_btn_row(Gad *apply, Gad *save, Gad *close,
 
 static void draw_button(const Gad *g)
 {
-    uint32_t bg = (g->pressed && !(g->flags & GADF_DISABLED))
-                  ? GC_BTN_PRS : GC_BTN;
+    int dis = (g->flags & GADF_DISABLED) != 0;
+    uint32_t bg = (g->pressed && !dis) ? GC_BTN_PRS : GC_BTN;
     FB_FillRect(g->x, g->y, g->w, g->h, bg);
-    gad_bevel(g->x, g->y, g->w, g->h, !(g->pressed));
+    gad_bevel(g->x, g->y, g->w, g->h, !(g->pressed && !dis));
     if (g->text) {
         int tw = gad_slen(g->text) * 8;
+        /* Disabled buttons draw their label ghosted and never sink. */
+        uint32_t fg = dis ? WB_DARK_GREY : GC_LABEL;
         FB_PutStr(g->x + (g->w - tw) / 2,
                   g->y + (g->h - 16) / 2,
-                  g->text, GC_LABEL, bg);
+                  g->text, fg, bg);
     }
 }
 

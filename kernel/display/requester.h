@@ -45,6 +45,22 @@ void Requester_String(const char *title, const char *prompt,
                       const char *initial, int max_chars,
                       ReqCallback cb, void *user_data);
 
+#define REQ_CHOICE_MAX 5
+
+/* Open a multi-button choice requester (e.g. the DF0:-DF3: drive picker).
+ * title: window title bar text
+ * body:  message text (1-3 lines, \n separated)
+ * labels: button labels[0..n-1]
+ * enabled: NULL = all enabled, else enabled[i]==0 ghosts button i
+ * n:     number of buttons (clamped to 1..REQ_CHOICE_MAX)
+ * cb:    callback on button press (button = clicked index 0..n-1,
+ *        or REQ_BTN_NONE (-1) on Esc / close gadget).
+ *        Callers include their own "Cancel" button as an ordinary entry.
+ * user_data: opaque pointer passed to callback */
+void Requester_Choice(const char *title, const char *body,
+                      const char *const labels[], const int enabled[], int n,
+                      ReqCallback cb, void *user_data);
+
 /* Open an information requester with a single OK button.
  * title: window title bar text
  * lines: array of text lines (NULL-terminated)

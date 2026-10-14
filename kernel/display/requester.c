@@ -25,12 +25,13 @@
 #define REQ_MAX_TEXT    128
 #define REQ_MAX_LINES    8
 #define REQ_MAX_LABEL   64
-#define REQ_BTN_MAX      2
+#define REQ_BTN_MAX      REQ_CHOICE_MAX
 
 typedef enum {
     REQ_TYPE_CONFIRM,
     REQ_TYPE_STRING,
     REQ_TYPE_INFO,
+    REQ_TYPE_CHOICE,
 } ReqType;
 
 typedef struct {
@@ -40,6 +41,7 @@ typedef struct {
     char         body_lines[REQ_MAX_LINES][REQ_MAX_LABEL];
     int          n_lines;
     char         btn_labels[REQ_BTN_MAX][16];
+    int          btn_enabled[REQ_BTN_MAX]; /* CHOICE only; 0 = ghosted */
     int          n_buttons;
     char         text[REQ_MAX_TEXT];
     int          max_chars;
@@ -95,7 +97,9 @@ static void record_last_message(void)
 #define REQ_BTN_H     22
 #define REQ_TF_H      22
 #define REQ_MIN_W    260
-#define REQ_MAX_W    420
+#define REQ_MAX_W    420   /* fits 5 x 72px buttons + padding (408) */
+
+static int req_btn_enabled(int i);
 
 /* =========================================================================
  * Split body text into lines on '\n'
@@ -220,9 +224,17 @@ static void req_draw(int wx, int wy, int ww, int wh)
         b->w = REQ_BTN_W;
         b->h = REQ_BTN_H;
         b->text = g_req.btn_labels[i];
+        b->flags = req_btn_enabled(i) ? 0 : GADF_DISABLED;
         b->pressed = (g_req.btn_pressed && g_req.active_btn == i);
         gad_draw(b);
     }
+}
+
+/* A button is enabled unless this is a CHOICE requester and the caller
+ * ghosted it via enabled[].  All other types always run enabled. */
+static int req_btn_enabled(int i)
+{
+    return g_req.type != REQ_TYPE_CHOICE || g_req.btn_enabled[i];
 }
 
 /* =========================================================================
@@ -254,19 +266,32 @@ static void req_key(char c)
             WM_Redraw();
     } else {
         /* Non-string requester: Enter = first button, Esc = cancel/close.
-         * Close before the callback so focus returns first. */
+         * CHOICE: Enter = first ENABLED button (no-op if all ghosted),
+         * Esc = REQ_BTN_NONE.  Close before the callback so focus
+         * returns first. */
         if (c == '\n' || c == '\r') {
+            int btn_id = REQ_BTN_OK;
+            if (g_req.type == REQ_TYPE_CHOICE) {
+                btn_id = -1;
+                for (int i = 0; i < g_req.n_buttons; i++) {
+                    if (g_req.btn_enabled[i]) { btn_id = i; break; }
+                }
+                if (btn_id < 0) return;   /* all disabled — Enter is a no-op */
+            }
             ReqCallback cb = g_req.callback;
             void *ud = g_req.user_data;
             Requester_Close();
-            if (cb) cb(REQ_BTN_OK, NULL, ud);
+            if (cb) cb(btn_id, NULL, ud);
             return;
         }
         if (c == 27) {
-            ReqCallback cb = (g_req.n_buttons > 1) ? g_req.callback : NULL;
+            ReqCallback cb = (g_req.type == REQ_TYPE_CHOICE ||
+                              g_req.n_buttons > 1) ? g_req.callback : NULL;
             void *ud = g_req.user_data;
+            int esc_id = (g_req.type == REQ_TYPE_CHOICE)
+                         ? REQ_BTN_NONE : REQ_BTN_CANCEL;
             Requester_Close();
-            if (cb) cb(REQ_BTN_CANCEL, NULL, ud);
+            if (cb) cb(esc_id, NULL, ud);
             return;
         }
     }
@@ -290,9 +315,9 @@ static void req_click(int handle, int mx, int my)
         g_req.tf.focused = 0;
     }
 
-    /* Check button hits */
+    /* Check button hits (disabled buttons never arm) */
     for (int i = 0; i < g_req.n_buttons; i++) {
-        if (gad_hit(&g_req.btns[i], mx, my)) {
+        if (req_btn_enabled(i) && gad_hit(&g_req.btns[i], mx, my)) {
             g_req.active_btn = i;
             g_req.btn_pressed = 1;
             WM_Redraw();
@@ -307,7 +332,7 @@ static void req_move(int handle, int mx, int my)
     /* Update button hover */
     int new_active = -1;
     for (int i = 0; i < g_req.n_buttons; i++) {
-        if (gad_hit(&g_req.btns[i], mx, my)) {
+        if (req_btn_enabled(i) && gad_hit(&g_req.btns[i], mx, my)) {
             new_active = i;
             break;
         }
@@ -324,11 +349,13 @@ static void req_release(int handle, int mx, int my)
     (void)handle;
     if (g_req.btn_pressed && g_req.active_btn >= 0) {
         int btn = g_req.active_btn;
-        /* Verify release is still on the button */
-        if (gad_hit(&g_req.btns[btn], mx, my)) {
+        /* Verify release is still on an enabled button */
+        if (req_btn_enabled(btn) && gad_hit(&g_req.btns[btn], mx, my)) {
             g_req.btn_pressed = 0;
-            /* Map button index to OK/CANCEL */
-            int btn_id = (btn == 0) ? REQ_BTN_OK : REQ_BTN_CANCEL;
+            /* CHOICE passes the raw index; others map to OK/CANCEL */
+            int btn_id = (g_req.type == REQ_TYPE_CHOICE)
+                         ? btn
+                         : ((btn == 0) ? REQ_BTN_OK : REQ_BTN_CANCEL);
             const char *text = (g_req.type == REQ_TYPE_STRING) ? g_req.text : NULL;
             ReqCallback cb = g_req.callback;
             void *ud = g_req.user_data;
@@ -350,11 +377,17 @@ static int req_event(int handle, int event, int a, int b, int c)
     if (event == WM_EVT_CLOSE_REQUEST) {
         ReqCallback cb = g_req.callback;
         void *ud = g_req.user_data;
-        int fire_cancel = (g_req.type == REQ_TYPE_STRING || g_req.n_buttons > 1);
+        int fire = (g_req.type == REQ_TYPE_STRING || g_req.n_buttons > 1);
+        int btn_id = (g_req.type == REQ_TYPE_CHOICE)
+                     ? REQ_BTN_NONE : REQ_BTN_CANCEL;
         Requester_Close();
-        if (cb && fire_cancel) cb(REQ_BTN_CANCEL, NULL, ud);
+        if (cb && fire) cb(btn_id, NULL, ud);
         return 0;   /* veto the WM's own close — already closed */
     }
+    /* The WM dispatches MOUSE_DOWN to on_event instead of on_click when
+     * both are set (wm.c), so forward it here or button presses never arm. */
+    if (event == WM_EVT_MOUSE_DOWN && a == 0)
+        req_click(handle, b, c);
     return 1;
 }
 
@@ -383,6 +416,50 @@ void Requester_Confirm(const char *title, const char *body,
     if (btn1) { str_cp(g_req.btn_labels[0], btn1, sizeof(g_req.btn_labels[0])); g_req.n_buttons++; }
     if (btn2) { str_cp(g_req.btn_labels[1], btn2, sizeof(g_req.btn_labels[1])); g_req.n_buttons++; }
     if (g_req.n_buttons == 0) { str_cp(g_req.btn_labels[0], "OK", 16); g_req.n_buttons = 1; }
+
+    int w, h;
+    compute_size(&w, &h);
+
+    int sx = (int)g_fb.width;
+    int sy = (int)g_fb.height;
+    int wx = (sx - w) / 2;
+    int wy = (sy - h) / 2;
+    if (wy < WM_TITLEBAR_H + 4) wy = WM_TITLEBAR_H + 4;
+
+    g_req.wm_handle = WM_AddWindow(wx, wy, w, h, g_req.title, req_draw, req_key);
+    if (g_req.wm_handle < 0) return;
+    WM_SetEventHandler(g_req.wm_handle, req_event);
+    WM_SetClickHandler(g_req.wm_handle, req_click);
+    WM_SetMouseMoveHandler(g_req.wm_handle, req_move);
+    WM_SetMouseReleaseHandler(g_req.wm_handle, req_release);
+    record_last_message();
+    WM_RaiseWindow(g_req.wm_handle);
+    WM_Redraw();
+}
+
+void Requester_Choice(const char *title, const char *body,
+                      const char *const labels[], const int enabled[], int n,
+                      ReqCallback cb, void *user_data)
+{
+    if (g_req.wm_handle >= 0 &&
+        WM_GetDrawFn(g_req.wm_handle) == req_draw) return;
+
+    memset(&g_req, 0, sizeof(g_req));
+    g_req.type = REQ_TYPE_CHOICE;
+    g_req.callback = cb;
+    g_req.user_data = user_data;
+    g_req.tf.focused = 0;
+    str_cp(g_req.title, title, sizeof(g_req.title));
+    split_lines(body);
+
+    if (n < 1) n = 1;
+    if (n > REQ_CHOICE_MAX) n = REQ_CHOICE_MAX;
+    g_req.n_buttons = n;
+    for (int i = 0; i < n; i++) {
+        str_cp(g_req.btn_labels[i], labels[i] ? labels[i] : "",
+               sizeof(g_req.btn_labels[i]));
+        g_req.btn_enabled[i] = (!enabled || enabled[i]) ? 1 : 0;
+    }
 
     int w, h;
     compute_size(&w, &h);
