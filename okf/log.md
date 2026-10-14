@@ -1563,3 +1563,8 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Fixed** (`kernel/dos/blockdev.c`): Register reuses unregistered slots and no longer `strcmp`s their NULL names; Unregister logs the name captured before the memset.
 * **Changed** (`kernel/boot/uaos_kernel_main.c`): phantom test ADF on DF0: now only under `selftest`; multi-unit test added to the second battery.
 * **Verified**: `make` clean; selftest boot — disk DMA, floppy block-device, write, write-protect, DMA write, multi-unit, parallel tests all PASS, 0 FAILED; normal boot shows "Floppy: no disks inserted." with no floppy blockdevs; `tests/smoke.sh` 24/24.
+
+## 2026-10-14 — UAOS-156: VFS unmount + handler teardown
+
+* **Added** `VFS_Unmount`/`VFS_FindMountByDev` (`kernel/dos/vfs.c`), `Handler_Destroy` + dead-slot reuse (`handler.c`), per-volume busy counts (`FfsHandler_BusyCount`, `FatHandler_BusyCount`/`FAT32_OpenCount`), real `FAT32_Unmount`, and the `C:dismount` shell command.
+* **Verified** in QEMU with a scratch copy of test-ffs.hdf: dismount/remount cycles reuse the same handler slot; dismount is refused (rc 10) while a background `copy` holds files open, refused for RAM: and for the SYS: target volume; stale assigns fail cleanly and resolve again after remount; smoke.sh 24/24.

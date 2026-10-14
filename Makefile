@@ -199,7 +199,7 @@ vpath %.c $(sort $(dir $(BEARSSL_SRCS)))
 NATIVE_C_ALL := version mem cpu libs clear reboot pwd info date which disks fdisk \
     format fsck pointer run assign execute loadwb ifconfig ping route \
     nslookup ntpd netstart netstop vim ed ps netinfo wait prompt stack why \
-    failat quit endcli relabel getenv unset jobs install diskchange \
+    failat quit endcli relabel getenv unset jobs install diskchange dismount \
     addbuffers requestchoice requestfile changetaskpri status rx telnetd \
     strace print crossdos guide klog debug dmesg irqstat usbdiag crash \
     memcheck chiptrace taskdump taskstat watchdog ports timers handles \

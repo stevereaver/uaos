@@ -25,9 +25,14 @@ typedef struct Handler {
  * Lifecycle
  * ------------------------------------------------------------------------- */
 
-/* Create a handler.  Returns NULL if handler pool exhausted. */
+/* Create a handler.  Returns NULL if handler pool exhausted.
+ * Reuses the first dead slot (destroyed handler) before appending. */
 Handler *Handler_Create(const char *name, void *private,
                         void (*proc)(struct Handler *, DosPacket *));
+
+/* Destroy a handler: clears name/private/ProcessPacket so stale ports
+ * fail DoPkt cleanly with ERROR_DEVICE_NOT_MOUNTED. */
+void Handler_Destroy(Handler *h);
 
 /* -------------------------------------------------------------------------
  * Packet dispatch (synchronous — UAOS is single-threaded)

@@ -633,6 +633,14 @@ int FatHandler_Is(const Handler *handler)
     return handler && handler->ProcessPacket == FatHandler_ProcessPacket;
 }
 
+/* Open files and dir locks are both pooled Fat32File objects bound to
+ * the handler's Fat32FS — the open count covers both. */
+int FatHandler_BusyCount(const Handler *h)
+{
+    if (!FatHandler_Is(h)) return 0;
+    return FAT32_OpenCount((Fat32FS *)h->private);
+}
+
 int FatHandler_ReadDir(Handler *handler, const char *path,
                        struct VfsDirEnt *entries, int max)
 {

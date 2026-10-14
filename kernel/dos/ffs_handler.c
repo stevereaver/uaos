@@ -22,6 +22,7 @@
 #define FFS_MAX_LOCKS  16
 
 static struct {
+    FfsVolume *vol;
     uint32_t key;
     uint32_t pos;
     uint32_t size;
@@ -29,11 +30,13 @@ static struct {
     int      in_use;
 } g_ffs_files[FFS_MAX_FILES];
 
-static uint32_t ffs_alloc_file(uint32_t key, uint32_t size, int writable)
+static uint32_t ffs_alloc_file(FfsVolume *vol, uint32_t key,
+                               uint32_t size, int writable)
 {
     for (int i = 0; i < FFS_MAX_FILES; i++) {
         if (!g_ffs_files[i].in_use) {
             g_ffs_files[i].in_use = 1;
+            g_ffs_files[i].vol = vol;
             g_ffs_files[i].key = key;
             g_ffs_files[i].pos = 0;
             g_ffs_files[i].size = size;
@@ -59,12 +62,14 @@ static void ffs_free_file(uint32_t handle)
 {
     if (handle == 0 || handle > FFS_MAX_FILES) return;
     g_ffs_files[handle - 1].in_use = 0;
+    g_ffs_files[handle - 1].vol = NULL;
 }
 
 /* -------------------------------------------------------------------------
  * Lock nodes — directory blocks plus enumeration cursor
  * ------------------------------------------------------------------------- */
 typedef struct {
+    FfsVolume *vol;
     uint32_t   key;
     FfsDirIter iter;
     int        in_use;
@@ -72,11 +77,12 @@ typedef struct {
 
 static FfsLockNode g_ffs_locks[FFS_MAX_LOCKS];
 
-static FfsLockNode *ffs_alloc_lock(uint32_t key)
+static FfsLockNode *ffs_alloc_lock(FfsVolume *vol, uint32_t key)
 {
     for (int i = 0; i < FFS_MAX_LOCKS; i++) {
         if (!g_ffs_locks[i].in_use) {
             g_ffs_locks[i].in_use = 1;
+            g_ffs_locks[i].vol = vol;
             g_ffs_locks[i].key = key;
             FFS_DirIterInit(&g_ffs_locks[i].iter);
             return &g_ffs_locks[i];
@@ -87,7 +93,7 @@ static FfsLockNode *ffs_alloc_lock(uint32_t key)
 
 static void ffs_free_lock_node(FfsLockNode *n)
 {
-    if (n) n->in_use = 0;
+    if (n) { n->in_use = 0; n->vol = NULL; }
 }
 
 /* -------------------------------------------------------------------------
@@ -167,7 +173,7 @@ static void FfsHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
             break;
         }
-        uint32_t handle = ffs_alloc_file(key, e.byte_size, want_write);
+        uint32_t handle = ffs_alloc_file(vol, key, e.byte_size, want_write);
         pkt->dp_Res1 = (int32_t)handle;
         if (handle == 0) pkt->dp_Res2 = ERROR_NO_FREE_STORE;
         break;
@@ -266,7 +272,7 @@ static void FfsHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
             break;
         }
-        FfsLockNode *node = ffs_alloc_lock(key);
+        FfsLockNode *node = ffs_alloc_lock(vol, key);
         if (!node) {
             pkt->dp_Res1 = 0;
             pkt->dp_Res2 = ERROR_NO_FREE_STORE;
@@ -382,7 +388,7 @@ static void FfsHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         if (node) {
             FfsEntry e;
             if (FFS_ReadEntry(vol, node->key, &e) == 0 && e.parent_key) {
-                FfsLockNode *par = ffs_alloc_lock(e.parent_key);
+                FfsLockNode *par = ffs_alloc_lock(vol, e.parent_key);
                 if (par) {
                     uint32_t ph = HandleTable_AllocLock(le->path, par,
                                                         SHARED_LOCK);
@@ -402,7 +408,7 @@ static void FfsHandler_ProcessPacket(Handler *h, DosPacket *pkt)
         FfsLockNode *node = le ? (FfsLockNode *)le->u.lock.node : NULL;
         pkt->dp_Res1 = 0;
         if (node) {
-            FfsLockNode *dup = ffs_alloc_lock(node->key);
+            FfsLockNode *dup = ffs_alloc_lock(vol, node->key);
             if (dup) {
                 uint32_t ph = HandleTable_AllocLock(le->path, dup, access);
                 if (ph) pkt->dp_Res1 = (int32_t)ph;
@@ -458,7 +464,7 @@ static void FfsHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
             break;
         }
-        FfsLockNode *node = ffs_alloc_lock(key);
+        FfsLockNode *node = ffs_alloc_lock(vol, key);
         if (!node) {
             pkt->dp_Res1 = DOSFALSE;
             pkt->dp_Res2 = ERROR_NO_FREE_STORE;
@@ -569,6 +575,19 @@ static void FfsHandler_ProcessPacket(Handler *h, DosPacket *pkt)
 int FfsHandler_Is(const Handler *handler)
 {
     return handler && handler->ProcessPacket == FfsHandler_ProcessPacket;
+}
+
+/* In-use file handles + lock nodes bound to this handler's volume.
+ * VFS_Unmount refuses to tear down a handler while this is non-zero. */
+int FfsHandler_BusyCount(const Handler *h)
+{
+    if (!FfsHandler_Is(h)) return 0;
+    int n = 0;
+    for (int i = 0; i < FFS_MAX_FILES; i++)
+        if (g_ffs_files[i].in_use && g_ffs_files[i].vol == h->private) n++;
+    for (int i = 0; i < FFS_MAX_LOCKS; i++)
+        if (g_ffs_locks[i].in_use && g_ffs_locks[i].vol == h->private) n++;
+    return n;
 }
 
 /* -------------------------------------------------------------------------

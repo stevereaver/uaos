@@ -84,6 +84,10 @@ A volume is marked read-only with `RamFS_SetReadOnly` — used by `ISO9660_Mount
 
 `DEFAULT_PROTECTION` in `amiga_dos_types.h` is `FIBF_OTR_WRITE|FIBF_OTR_EXECUTE|FIBF_OTR_DELETE|FIBF_GRP_WRITE|FIBF_GRP_EXECUTE|FIBF_GRP_DELETE` (0xEE00): all R/W/E/D bits use inverted logic (bit set = denied), so owner rwed and group/other read stay clear (allowed) while group/other write+execute+delete are denied. The previous `0xFFE0|GRP_READ|OTR_READ` encoding (= 0xFFE0) set `FIBF_DELETE` on every new node, making fresh files undeletable/unrenamable.
 
+### Unmount (`VFS_Unmount`, UAOS-156)
+
+`VFS_Unmount(name)` removes a handler-backed FFS or FAT mount. `name` is the unit name or volume label, with or without the `:`; assigns are not resolved. It returns `VFS_UNMOUNT_OK` (0) or one of: `NOTFOUND` (-1); `NOTSUPP` (-2: no bdev, e.g. RAM:/ISO proxy mounts, or the handler is not FFS/FAT); `SYSVOL` (-4: the volume `SYS:` resolves to); `BUSY` (-3: `FfsHandler_BusyCount`/`FatHandler_BusyCount` > 0. FFS file/lock pool entries now record their `FfsVolume`; FAT counts pooled `Fat32File`s per fs). Teardown order is FS unmount → `Handler_Destroy` → shift the mount table down → `VFS_NoteChange`. The FAT `Fat32FS` is only released when no other mount shares it, because FAT32 still uses a single static instance. `Handler_Destroy` clears the port name, so stale `VfsFile`/lock ports get `ERROR_DEVICE_NOT_MOUNTED`; `Handler_Create` reuses dead pool slots. Assigns that point at a removed volume stay in the table and stop resolving until it is remounted. `VFS_FindMountByDev(bdev)` maps a block device to a mount index. Shell: `C:dismount <volume>` (rc 0 / 10 busy / 20 error); remount with `diskchange <dev>`.
+
 ## Block Devices and Partitioning
 
 - **Block device layer (`blockdev.c`)**: Unified interface for storage devices. `BlockDev_CheckFormatted` recognises FAT-style boot sectors and Amiga `DOS\x` bootblocks.

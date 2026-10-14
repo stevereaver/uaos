@@ -505,6 +505,78 @@ BlockDev *VFS_GetMountDev(int idx)
     return g_mounts[idx].bdev;
 }
 
+int VFS_FindMountByDev(BlockDev *bdev)
+{
+    if (!bdev) return -1;
+    for (int i = 0; i < g_n_mounts; i++)
+        if (g_mounts[i].bdev == bdev) return i;
+    return -1;
+}
+
+/* =========================================================================
+ * Unmount — tear down a handler-backed filesystem volume
+ * ========================================================================= */
+
+int VFS_Unmount(const char *name)
+{
+    if (!name || !*name) return VFS_UNMOUNT_NOTFOUND;
+
+    /* Accept "NAME" or "NAME:" — never resolve assigns. */
+    char vname[16];
+    {
+        int i = 0;
+        while (name[i] && name[i] != ':' && i < 15) { vname[i] = name[i]; i++; }
+        vname[i] = '\0';
+    }
+    if (!vname[0]) return VFS_UNMOUNT_NOTFOUND;
+
+    /* Direct mount lookup: unit name first, then filesystem label. */
+    int idx = -1;
+    for (int i = 0; i < g_n_mounts && idx < 0; i++)
+        if (seq_ci(g_mounts[i].vol_name, vname)) idx = i;
+    for (int i = 0; i < g_n_mounts && idx < 0; i++)
+        if (g_mounts[i].vol_label[0] && seq_ci(g_mounts[i].vol_label, vname))
+            idx = i;
+    if (idx < 0) return VFS_UNMOUNT_NOTFOUND;
+
+    MountEntry *m = &g_mounts[idx];
+    Handler *h = m->handler;
+    int is_ffs = FfsHandler_Is(h);
+    int is_fat = FatHandler_Is(h);
+    if (!m->bdev || (!is_ffs && !is_fat)) return VFS_UNMOUNT_NOTSUPP;
+
+    /* Refuse to pull the volume SYS: resolves to out from under the
+     * running system. */
+    const char *sys = VFS_ResolveAssign("SYS");
+    if (sys) {
+        char svol[16];
+        if (extract_vol(sys, svol, sizeof(svol)) &&
+            (seq_ci(svol, m->vol_name) ||
+             (m->vol_label[0] && seq_ci(svol, m->vol_label))))
+            return VFS_UNMOUNT_SYSVOL;
+    }
+
+    int busy = is_ffs ? FfsHandler_BusyCount(h) : FatHandler_BusyCount(h);
+    if (busy > 0) return VFS_UNMOUNT_BUSY;
+
+    /* FAT32 currently backs every FAT mount with one shared Fat32FS, so
+     * only release it when no other mount still references it. */
+    int shared = 0;
+    for (int i = 0; i < g_n_mounts; i++)
+        if (i != idx && g_mounts[i].handler &&
+            g_mounts[i].handler->private == h->private) shared = 1;
+    if (is_ffs) FFS_Unmount((FfsVolume *)h->private);
+    else if (!shared) FAT32_Unmount((Fat32FS *)h->private);
+    Handler_Destroy(h);
+
+    for (int i = idx; i < g_n_mounts - 1; i++)
+        g_mounts[i] = g_mounts[i + 1];
+    g_n_mounts--;
+    memset(&g_mounts[g_n_mounts], 0, sizeof(MountEntry));
+    VFS_NoteChange();
+    return VFS_UNMOUNT_OK;
+}
+
 /* =========================================================================
  * VFS_Open
  * ========================================================================= */

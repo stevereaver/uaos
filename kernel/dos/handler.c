@@ -55,14 +55,29 @@ static int           g_pending_used = 0;
 Handler *Handler_Create(const char *name, void *private,
                         void (*proc)(struct Handler *, DosPacket *))
 {
-    if (g_pool_used >= MAX_HANDLERS) return NULL;
-    Handler *h = &g_pool[g_pool_used++];
+    Handler *h = NULL;
+    for (int i = 0; i < g_pool_used; i++) {
+        if (!g_pool[i].ProcessPacket) { h = &g_pool[i]; break; }
+    }
+    if (!h) {
+        if (g_pool_used >= MAX_HANDLERS) return NULL;
+        h = &g_pool[g_pool_used++];
+    }
     h->port.mp_MsgList = NULL;
     h->port.mp_Name    = name;
     h->name            = name;
     h->private         = private;
     h->ProcessPacket   = proc;
     return h;
+}
+
+void Handler_Destroy(Handler *h)
+{
+    if (!h) return;
+    h->port.mp_Name  = NULL;
+    h->name          = NULL;
+    h->private       = NULL;
+    h->ProcessPacket = NULL;
 }
 
 /* -------------------------------------------------------------------------
@@ -182,6 +197,7 @@ void Handler_DiagDump(void *ctx, void (*emit)(void *, const char *))
     emit(ctx, " handler            pending  private");
     for (int i = 0; i < g_pool_used; i++) {
         Handler *h = &g_pool[i];
+        if (!h->ProcessPacket) continue;   /* dead slot */
         dl_reset(&l);
         dl_ch(&l, ' ');
         dl_add(&l, h->name ? h->name : "(null)");

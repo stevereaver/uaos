@@ -94,6 +94,22 @@ int VFS_GetMountInfo(int idx, char *unit, int unit_max,
  * RAMFS-backed mounts (RAM:, ISO9660 extracts) and out-of-range idx. */
 BlockDev *VFS_GetMountDev(int idx);
 
+/* Find the mount-table index of the mount backed by bdev, or -1. */
+int VFS_FindMountByDev(BlockDev *bdev);
+
+/* Unmount result codes for VFS_Unmount. */
+#define VFS_UNMOUNT_OK        0   /* volume unmounted */
+#define VFS_UNMOUNT_NOTFOUND -1   /* no direct mount of that name/label */
+#define VFS_UNMOUNT_NOTSUPP  -2   /* RAMFS mount or non-FFS/FAT handler */
+#define VFS_UNMOUNT_BUSY     -3   /* open files or locks on the volume */
+#define VFS_UNMOUNT_SYSVOL   -4   /* volume is the SYS: assign target */
+
+/* Unmount a block-device filesystem volume by unit name or volume label
+ * ("DH0" or "DH0:").  Direct mounts only — assign names are not resolved.
+ * Destroys the packet handler and removes the mount entry; assigns that
+ * pointed at the volume remain but stop resolving. */
+int VFS_Unmount(const char *name);
+
 /* Open a file.  Returns 1 on success, 0 on failure. */
 int  VFS_Open(VfsFile *fh, const char *path, int flags);
 

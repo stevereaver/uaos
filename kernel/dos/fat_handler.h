@@ -18,6 +18,9 @@ struct VfsDirEnt;
 
 Handler *FatHandler_Create(const char *name, Fat32FS *fs);
 int FatHandler_Is(const Handler *handler);
+
+/* Count open files + locks bound to the handler's filesystem. */
+int FatHandler_BusyCount(const Handler *h);
 int FatHandler_ReadDir(Handler *handler, const char *path,
                        struct VfsDirEnt *entries, int max);
 

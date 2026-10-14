@@ -1066,7 +1066,25 @@ Fat32FS *FAT32_Mount(BlockDev *bdev)
 
 void FAT32_Unmount(Fat32FS *fs)
 {
-    (void)fs;
+    if (!fs) return;
+    /* Retire any pooled handles still bound to this fs.  Callers gate
+     * unmount on FAT32_OpenCount, so this only clears stale entries. */
+    for (int i = 0; i < FAT32_MAX_FILES; i++)
+        if (g_fat32_files[i].in_use && g_fat32_files[i].fs == fs)
+            g_fat32_files[i].in_use = 0;
+    g_dir_buf_cluster = 0;
+    fs->bdev = NULL;
+    fs->fat_cache = NULL;
+}
+
+/* Open file handles and directory locks both live in the same pool. */
+int FAT32_OpenCount(Fat32FS *fs)
+{
+    if (!fs) return 0;
+    int n = 0;
+    for (int i = 0; i < FAT32_MAX_FILES; i++)
+        if (g_fat32_files[i].in_use && g_fat32_files[i].fs == fs) n++;
+    return n;
 }
 
 /* =========================================================================

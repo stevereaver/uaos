@@ -12,4 +12,7 @@ Handler *FfsHandler_Create(const char *name, FfsVolume *vol);
 /* Identity test for direct-dispatch optimizations. */
 int FfsHandler_Is(const Handler *handler);
 
+/* Count open file handles + lock nodes bound to the handler's volume. */
+int FfsHandler_BusyCount(const Handler *h);
+
 #endif /* UAOS_FFS_HANDLER_H */

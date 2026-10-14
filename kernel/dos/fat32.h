@@ -110,8 +110,12 @@ typedef struct {
 /* Mount a FAT32 filesystem on a block device */
 Fat32FS *FAT32_Mount(BlockDev *bdev);
 
-/* Unmount a FAT32 filesystem */
+/* Unmount a FAT32 filesystem: releases pooled handles bound to it and
+ * invalidates the directory-scan cache. */
 void FAT32_Unmount(Fat32FS *fs);
+
+/* Count in-use pool handles (open files + directory locks) bound to fs. */
+int FAT32_OpenCount(Fat32FS *fs);
 
 /* Open a file/directory by path (e.g. "WB:dir/file" or "dir/file").
  * The volume prefix (e.g. "WB:") is stripped automatically.  Components
