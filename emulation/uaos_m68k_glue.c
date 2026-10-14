@@ -29,6 +29,7 @@
 #include "musashi/m68k.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "uaos_emu.h"
 #include "chipset/chip_emu.h"
 #include "chipset/chiptrace.h"
@@ -66,7 +67,7 @@ uint32_t g_m68k_first_wild_prev = 0;
  * wild-PC inside callback context can name the entry it came from. */
 uint32_t g_m68k_last_cb_entry = 0;
 uint32_t g_m68k_last_cb_data  = 0;
-uint32_t g_m68k_last_cb_kind  = 0;   /* 1=hook 2=isr 3=putch */
+uint32_t g_m68k_last_cb_kind  = 0;   /* 1=hook 2=isr 3=putch 4=supervisor 5=libcall */
 static int g_m68k_saw_app_code = 0;   /* pc >= 0x800000 seen (post-decrunch) */
 static int g_m68k_low_reentry = 0;    /* first wild re-entry logged          */
 
@@ -89,6 +90,13 @@ int g_m68k_wild_abort = 0;
  * whether a wild PC is fatal (main execution) or just aborts the current
  * host-invoked hook/ISR call (context is restored on return). */
 static int g_hook_nest_level;
+
+/* Disk-loaded / MakeLibrary'd libraries place real guest code on the heap
+ * (usually the FAST pool above 0x800000).  The hook exempts PCs inside
+ * these registered ranges from the saw_app_code / low-reentry tripwires,
+ * which exist to catch decruncher re-entry into dead packed data, not
+ * legitimate library vectors.  Defined with the generated-lib tables. */
+static int emu_guest_code_range(uint32_t pc);
 
 /* Reset all instruction-hook state between M68k tasks — these globals are
  * shared by every task using the glue, so without this a second launch
@@ -159,10 +167,16 @@ void uaos_m68k_instr_hook(unsigned int pc)
         g_m68k_pc_ring[(i + 1) & (M68K_PC_RING_SZ - 1)] = pc | 1;
         g_m68k_pc_ring_idx = i + 2;
     }
-    if (pc >= 0x800000u)
-        g_m68k_saw_app_code = 1;
-    else if (g_m68k_saw_app_code && g_m68k_low_reentry < 4 &&
-             pc >= 0x20000u && pc < 0x80000u) {
+    if (pc >= 0x800000u) {
+        /* Library code loaded from LIBS: lives on the heap — legitimately
+         * executable, so it neither arms saw_app_code nor trips the
+         * low-reentry kill.  emu_guest_code_range is only consulted in
+         * the two branches that need it (per-instruction cost). */
+        if (!emu_guest_code_range(pc))
+            g_m68k_saw_app_code = 1;
+    } else if (g_m68k_saw_app_code && g_m68k_low_reentry < 4 &&
+               pc >= 0x20000u && pc < 0x80000u &&
+               !emu_guest_code_range(pc)) {
         /* After the decrunched program is running in fast RAM, execution
          * must never return to [0x20000,0x80000): that band holds the
          * dead packed input hunks.  Pool/generation addresses above
@@ -329,7 +343,8 @@ static void u32_dec(uint32_t v, char *buf, int max) {
  *   0x001C1C–0x002000   dos.library jump-table stubs (DOS_BASE = 0x2000)
  *   0x002F28–0x003000   bsdsocket.library stubs (BSD_BASE = 0x3000)
  *   0x007BE0–0x00A000   graphics/intuition/gadtools stubs + fake bases
- *   0x00A000–0x01A000   loadable .library blobs (16 x 4 KB)
+ *   0x00A000–0x01A000   reserved (was the private-blob band; real
+ *                       .library files now load onto the guest heap)
  *   0x01B000–0x01B400   Process environment (Process/CLI/RDArgs/ports),
  *                       dedicated region outside the program heap (UAOS-237)
  *   0x020000–0x7F0000   Program segments + AllocMem(MEMF_CHIP) pool
@@ -340,8 +355,9 @@ static void u32_dec(uint32_t v, char *buf, int max) {
 #define STACK_TOP       0x1F0000  /* top of guest stack — grows downward */
 /* Program hunks load above the reserved system zone: exec/dos jump tables
  * live at 0xC1C-0x2000, LVO stub tables for graphics/intuition/gadtools at
- * 0x7BDC-0xA000, the lib base structs at 0x8000-0xA100, and loadable
- * .library blobs at 0xB000-0x1A000 (skipping the 0xE000/0xF000 bases).
+ * 0x7BDC-0xA000, the lib base structs at 0x8000-0xA100, and the
+ * 0xA000-0x1A000 band is left reserved (it once held the private blob
+ * libraries — real .library files are heap-loaded now).
  * Loading a program at the
  * old 0x1000 overwrote the stubs — OctaMED's OpenScreenTagList jumped
  * into packed hunk data and ran wild. */
@@ -665,6 +681,10 @@ extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest);
 extern void dos_AllocAbs_glue(uint32_t addr, uint32_t size, uint32_t *out_addr);
+/* Hunk loader — LoadSeg by resolved path (returns the seglist link-field
+ * address, not a BPTR) / UnLoadSeg by seglist BPTR (kernel/exec/dos_lib.c). */
+extern uint32_t UAOS_DOS_LoadSegPath(const char *path);
+extern void     UAOS_DOS_UnLoadSeg(uint32_t seglist_bptr);
 
 /* Guest memory accessors (big-endian via Musashi callbacks) */
 #define glue_r8(a)   ((uint32_t)m68k_read_memory_8(a))
@@ -2226,7 +2246,6 @@ static void guest_list_add_tail(uint32_t list, uint32_t node)
     guest_write_be32(list + 8, node);
 }
 
-static void install_loadable_libs(void);
 static int  exec_alloc_sigbit(void);
 
 /* Guest-visible Process/CLI/RDArgs addresses — fixed region published by
@@ -3091,8 +3110,8 @@ void install_library_tables(void)
         }
     }
 
-    /* Install real M68k binary libraries loaded from disk */
-    install_loadable_libs();
+    /* Real .library files in LIBS: are hunk-loaded on demand by
+     * exec_OpenLibrary now — nothing to pre-install here. */
 
     /* The Process/CLI/RDArgs structs are allocated AFTER hunk_load by
      * UAOS_Emu_SetupProcess() — fixed addresses here would sit inside the
@@ -3107,73 +3126,6 @@ void install_library_tables(void)
     /* Also store at 0 (reset SSP will be patched separately) */
 
     libmap_selfcheck();
-}
-
-/* =========================================================================
- * Loadable library registry — real M68k binaries loaded from disk
- * ========================================================================= */
-
-#define MAX_GLUE_LOADABLE_LIBS  16
-#define MAX_GLUE_LIB_NAME       64
-
-typedef struct {
-    char     name[MAX_GLUE_LIB_NAME];
-    uint32_t base_addr;
-    uint16_t func_count;
-    uint8_t  loaded;
-    const uint8_t *binary;
-    uint32_t bin_size;
-} GlueLoadableLib;
-
-static GlueLoadableLib g_glue_libs[MAX_GLUE_LOADABLE_LIBS];
-static int             g_glue_lib_count = 0;
-/* First blob slot is 0xB000 — 0xA000 is GADTOOLS_BASE's struct page and
- * dropping a file image there clobbers its LibList node (the chain then
- * walks into the blob's "UAOS" header).  0xE000 audio.device and 0xF000
- * fakelib are likewise reserved and skipped below. */
-static uint32_t        g_next_loadable_base = 0xB000;
-
-void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
-                                  uint32_t size, uint32_t *out_base)
-{
-    if (!name || !data || !size || !out_base) return;
-    if (g_glue_lib_count >= MAX_GLUE_LOADABLE_LIBS) return;
-    if (size < 64 ||
-        data[0] != 'U' || data[1] != 'A' ||
-        data[2] != 'O' || data[3] != 'S' || data[4] != 2) {
-        return;
-    }
-
-    GlueLoadableLib *e = &g_glue_libs[g_glue_lib_count++];
-    int i = 0;
-    while (i < MAX_GLUE_LIB_NAME - 1 && name[i]) {
-        e->name[i] = name[i]; i++;
-    }
-    e->name[i] = '\0';
-    e->func_count = (uint16_t)(((uint16_t)data[6] << 8) | (uint16_t)data[7]);
-    e->loaded = 0;
-    e->binary = data;
-    e->bin_size = size;
-    e->base_addr = g_next_loadable_base;
-    do { g_next_loadable_base += 0x1000; }
-    while (g_next_loadable_base == 0xE000 || g_next_loadable_base == 0xF000);
-    *out_base = e->base_addr;
-}
-
-/* Install all registered loadable libraries into g_ram */
-static void install_loadable_libs(void)
-{
-    for (int i = 0; i < g_glue_lib_count; i++) {
-        GlueLoadableLib *e = &g_glue_libs[i];
-        if (e->loaded) continue;
-        /* Blobs live at 0xB000+; they must end before the dedicated
-         * process-environment region at 0x1B000 (UAOS-237). */
-        if (e->base_addr + e->bin_size > 0x0001B000u) continue;
-
-        for (uint32_t j = 0; j < e->bin_size; j++)
-            g_ram[e->base_addr + j] = e->binary[j];
-        e->loaded = 1;
-    }
 }
 
 /* =========================================================================
@@ -3217,11 +3169,127 @@ static int    g_genlib_count = 0;
 #define GENLIB_ARENA_END   0x00800000u
 static uint32_t g_genlib_heap = GENLIB_ARENA_START;
 
+/* -------------------------------------------------------------------------
+ * Guest code ranges — heap-resident M68k code the instr hook must not
+ * mistake for decruncher artifacts.  Disk-loaded .library segments and
+ * MakeLibrary vector blocks register here (they allocate from the FAST
+ * pool above 0x800000, which would otherwise arm saw_app_code and kill
+ * the chip-resident caller on return via the low-reentry tripwire).
+ * Per guest-RAM window; dropped with the genlibs on task reset.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    uint32_t lo, hi;
+    uint8_t *ram;
+} EmuCodeRange;
+
+#define MAX_CODE_RANGES 96
+static EmuCodeRange g_code_ranges[MAX_CODE_RANGES];
+static int          g_code_range_count = 0;
+
+static void emu_code_range_add(uint32_t lo, uint32_t hi)
+{
+    if (hi <= lo || g_code_range_count >= MAX_CODE_RANGES) return;
+    EmuCodeRange *r = &g_code_ranges[g_code_range_count++];
+    r->lo = lo; r->hi = hi; r->ram = g_ram;
+}
+
+static int emu_guest_code_range(uint32_t pc)
+{
+    for (int i = 0; i < g_code_range_count; i++)
+        if (g_code_ranges[i].ram == g_ram &&
+            pc >= g_code_ranges[i].lo && pc < g_code_ranges[i].hi)
+            return 1;
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Disk-loaded .library registry (UAOS-305) — real hunk-format libraries
+ * loaded from LIBS: on first OpenLibrary.  Entries are per guest-RAM
+ * window: guest addresses repeat across windows, and a relaunch clears
+ * the RAM underneath them.  `seg` keeps the seglist for UnLoadSeg on a
+ * failed init; g_disklib_miss records names that failed to load so an
+ * app polling a missing library does not redo the VFS scan each call.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    char     name[48];     /* basename, as asked (case-preserved) */
+    uint32_t base;         /* library base in this window */
+    uint32_t seg;          /* seglist link-field address */
+    uint32_t romtag;       /* Resident struct address */
+    uint8_t *ram;
+} DiskLib;
+
+#define MAX_DISK_LIBS   32
+#define MAX_DISK_MISS   16
+static DiskLib g_disklibs[MAX_DISK_LIBS];
+static int     g_disklib_count = 0;
+static struct { char name[48]; uint8_t *ram; } g_disklib_miss[MAX_DISK_MISS];
+static int     g_disklib_miss_count = 0;
+
+/* Case-insensitive basename compare: "LIBS:Foo.Library" matches a lib
+ * recorded as "foo.library". */
+static int emu_libname_match(const char *asked, const char *stored)
+{
+    const char *base = asked;
+    for (const char *p = asked; *p; p++)
+        if (*p == ':' || *p == '/') base = p + 1;
+    int i = 0;
+    for (;;) {
+        char a = base[i], b = stored[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) return 0;
+        if (!a) return 1;
+        i++;
+        if (i > 64) return 0;
+    }
+}
+
+static uint32_t emu_disklib_find(const char *name)
+{
+    for (int i = 0; i < g_disklib_count; i++)
+        if (g_disklibs[i].ram == g_ram &&
+            emu_libname_match(name, g_disklibs[i].name))
+            return g_disklibs[i].base;
+    return 0;
+}
+
+static int emu_disklib_is_base(uint32_t base)
+{
+    for (int i = 0; i < g_disklib_count; i++)
+        if (g_disklibs[i].ram == g_ram && g_disklibs[i].base == base)
+            return 1;
+    return 0;
+}
+
+static int emu_disklib_missed(const char *name)
+{
+    for (int i = 0; i < g_disklib_miss_count; i++)
+        if (g_disklib_miss[i].ram == g_ram &&
+            emu_libname_match(name, g_disklib_miss[i].name))
+            return 1;
+    return 0;
+}
+
+static void emu_disklib_miss_add(const char *name)
+{
+    if (g_disklib_miss_count >= MAX_DISK_MISS) return;
+    char *d = g_disklib_miss[g_disklib_miss_count].name;
+    const char *base = name;
+    for (const char *p = name; *p; p++)
+        if (*p == ':' || *p == '/') base = p + 1;
+    int i = 0;
+    while (i < 47 && base[i]) { d[i] = base[i]; i++; }
+    d[i] = '\0';
+    g_disklib_miss[g_disklib_miss_count].ram = g_ram;
+    g_disklib_miss_count++;
+}
+
 /* Per-task guest RAM windows are cleared on launch — callers reset this
  * so stale bases are not handed out into a fresh window.  Entries belong
  * to the window that created them: a relaunch drops only this window's
  * entries, so other live M68k tasks keep their generated libraries (and
- * their cia.resource ICR registrations) intact. */
+ * their cia.resource ICR registrations) intact.  The same window-drop
+ * applies to disk-loaded libraries, load-misses and code ranges. */
 void emu_reset_genlibs(void)
 {
     int w = 0;
@@ -3229,6 +3297,19 @@ void emu_reset_genlibs(void)
         if (g_genlibs[i].ram != g_ram) g_genlibs[w++] = g_genlibs[i];
     g_genlib_count = w;
     g_genlib_heap  = GENLIB_ARENA_START;
+
+    w = 0;
+    for (int i = 0; i < g_disklib_count; i++)
+        if (g_disklibs[i].ram != g_ram) g_disklibs[w++] = g_disklibs[i];
+    g_disklib_count = w;
+    w = 0;
+    for (int i = 0; i < g_disklib_miss_count; i++)
+        if (g_disklib_miss[i].ram != g_ram) g_disklib_miss[w++] = g_disklib_miss[i];
+    g_disklib_miss_count = w;
+    w = 0;
+    for (int i = 0; i < g_code_range_count; i++)
+        if (g_code_ranges[i].ram != g_ram) g_code_ranges[w++] = g_code_ranges[i];
+    g_code_range_count = w;
 }
 
 /* Name lookup for LIB_GENERIC dispatch logging */
@@ -3478,6 +3559,182 @@ static int emu_rom_call(const char *rom_name, uint16_t fn)
     return 1;
 }
 
+/* -------------------------------------------------------------------------
+ * Disk-loaded .library support (UAOS-305)
+ *
+ * OpenLibrary resolves names that no fixed base, disk-lib cache entry or
+ * ROM module claims by LoadSeg-ing "LIBS:<name>" (or the caller's own
+ * path) through UAOS_DOS_LoadSegPath, scanning the loaded segments for a
+ * Resident (RomTag: matchword 0x4AFC, matchtag pointing at itself), then
+ * running InitResident — the standard RTF_AUTOINIT path builds the
+ * library via MakeLibrary, runs its init routine, and enqueues the node
+ * on ExecBase.LibList.  The Open vector is then invoked like real Exec.
+ * ------------------------------------------------------------------------- */
+
+static uint32_t emu_guest_call(uint32_t pc, uint32_t d0, uint32_t d1,
+                               uint32_t a0, uint32_t a1, uint32_t a6);
+static uint32_t emu_init_resident(uint32_t resident, uint32_t seglist);
+
+#define RT_MATCHWORD   0x4AFCu
+#define RT_SIZE        26
+#define RT_TYPE_LIB    9    /* NT_LIBRARY  */
+#define RT_TYPE_DEV    3    /* NT_DEVICE   */
+#define RT_TYPE_RES    8    /* NT_RESOURCE */
+
+/* Run a disk lib's Open vector (-6): version in D0, base in A6; the lib
+ * itself bumps lib_OpenCnt.  Version too old -> 0 without calling. */
+static uint32_t emu_disklib_open(uint32_t base, uint32_t req_ver)
+{
+    if (req_ver && (uint16_t)glue_r16(base + 20) < req_ver) return 0;
+    return emu_guest_call(base - 6, req_ver, 0, 0, 0, base);
+}
+
+static void emu_disklib_log(const char *what, const char *bname,
+                            const char *extra, uint32_t base)
+{
+    char msg[128]; int i = 0;
+    const char *p = "[lib] ";
+    while (p[i] && i < 90) { msg[i] = p[i]; i++; }
+    for (int j = 0; what[j] && i < 100; j++) msg[i++] = what[j];
+    msg[i++] = ' ';
+    const char *l = "LIBS:";
+    for (int j = 0; l[j] && i < 104; j++) msg[i++] = l[j];
+    for (int j = 0; bname[j] && i < 116; j++) msg[i++] = bname[j];
+    if (extra) {
+        msg[i++] = ' ';
+        for (int j = 0; extra[j] && i < 120; j++) msg[i++] = extra[j];
+    }
+    if (base) {
+        const char *b = " base=0x";
+        for (int j = 0; b[j] && i < 122; j++) msg[i++] = b[j];
+        char n[12]; u32_hex(base, n);
+        for (int j = 0; n[j] && i < 126; j++) msg[i++] = n[j];
+    }
+    msg[i++] = '\n'; msg[i] = '\0';
+    emu_print(msg);
+}
+
+/* LoadSeg LIBS:<name> (or the explicit path in `name`), find the RomTag,
+ * InitResident it, and record the result in this window's disk-lib table.
+ * Returns the library base, or 0 (with the failure logged once per name). */
+static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
+{
+    (void)req_ver;
+    /* Snapshot the code-range table — segments (and the MakeLibrary
+     * block) register ranges as they are found, and a failed load must
+     * not leave stale ranges pointing at freed memory. */
+    int saved_ranges = g_code_range_count;
+    /* basename for the registry / log */
+    const char *bn = name;
+    for (const char *p = name; *p; p++)
+        if (*p == ':' || *p == '/') bn = p + 1;
+    if (!*bn) { g_code_range_count = saved_ranges; return 0; }
+    if (emu_disklib_missed(name)) { g_code_range_count = saved_ranges; return 0; }
+
+    char path[96];
+    int has_colon = 0, has_slash = 0;
+    for (const char *p = name; *p; p++)
+        { if (*p == ':') has_colon = 1; else if (*p == '/') has_slash = 1; }
+    int i = 0;
+    if (has_colon) {
+        while (name[i] && i < 95) { path[i] = name[i]; i++; }
+    } else if (has_slash) {
+        /* relative path — resolve against the current dir like dos */
+        const char *cwd = m68k_cur_cwd();
+        while (cwd[i] && i < 80) { path[i] = cwd[i]; i++; }
+        if (i && path[i-1] != ':' && path[i-1] != '/') path[i++] = '/';
+        int j = 0; while (name[j] && i < 95) path[i++] = name[j++];
+    } else {
+        const char *l = "LIBS:";
+        while (l[i]) { path[i] = l[i]; i++; }
+        int j = 0; while (name[j] && i < 95) path[i++] = name[j++];
+    }
+    path[i] = '\0';
+
+    uint32_t seg = UAOS_DOS_LoadSegPath(path);
+    if (!seg) {
+        g_code_range_count = saved_ranges;
+        emu_disklib_miss_add(name);
+        emu_disklib_log("not found", bn, 0, 0);
+        return 0;
+    }
+
+    /* Walk the seglist; scan each segment's data (even aligned) for a
+     * Resident: matchword 0x4AFC with rt_MatchTag pointing at itself.
+     * Segments hold live code — register them so the instr hook treats
+     * their PCs as legitimate (see emu_guest_code_range). */
+    uint32_t romtag = 0;
+    uint32_t link = seg;
+    int guard = 0;
+    while (link && link + 8 <= GUEST_RAM_SIZE && guard++ < 64) {
+        uint32_t total = guest_read_be32(link - 4);
+        uint32_t data  = link + 4;
+        uint32_t dlen  = (total > 8) ? total - 8 : 0;
+        if (dlen > GUEST_RAM_SIZE - data) break;
+        emu_code_range_add(data, data + dlen);
+        if (!romtag) {
+            for (uint32_t off = 0; off + RT_SIZE <= dlen; off += 2) {
+                if (guest_read_be16(data + off) == RT_MATCHWORD &&
+                    guest_read_be32(data + off + 2) == data + off) {
+                    romtag = data + off;
+                    break;
+                }
+            }
+        }
+        uint32_t next = guest_read_be32(link);
+        link = next ? next << 2 : 0;
+    }
+
+    if (!romtag) {
+        g_code_range_count = saved_ranges;
+        UAOS_DOS_UnLoadSeg(seg >> 2);
+        emu_disklib_miss_add(name);
+        emu_disklib_log("no RomTag", bn, 0, 0);
+        return 0;
+    }
+    if (g_ram[romtag + 12] != RT_TYPE_LIB) {
+        g_code_range_count = saved_ranges;
+        UAOS_DOS_UnLoadSeg(seg >> 2);
+        emu_disklib_miss_add(name);
+        emu_disklib_log("not NT_LIBRARY", bn, 0, 0);
+        return 0;
+    }
+
+    uint32_t base = emu_init_resident(romtag, seg >> 2);
+    if (!base) {
+        g_code_range_count = saved_ranges;
+        UAOS_DOS_UnLoadSeg(seg >> 2);
+        emu_disklib_miss_add(name);
+        emu_disklib_log("init failed", bn, 0, 0);
+        return 0;
+    }
+
+    if (g_disklib_count < MAX_DISK_LIBS) {
+        DiskLib *e = &g_disklibs[g_disklib_count++];
+        int j = 0;
+        while (j < 47 && bn[j]) { e->name[j] = bn[j]; j++; }
+        e->name[j] = '\0';
+        e->base = base; e->seg = seg; e->romtag = romtag; e->ram = g_ram;
+    } else {
+        emu_disklib_log("table full", bn, 0, 0);
+    }
+
+    {
+        char vb[24]; int vi = 0;
+        const char *vpfx = "v";
+        while (vpfx[vi]) { vb[vi] = vpfx[vi]; vi++; }
+        char n[12];
+        u32_dec(glue_r16(base + 20), n, 12);
+        int j = 0; while (n[j] && vi < 20) vb[vi++] = n[j++];
+        vb[vi++] = '.';
+        u32_dec(glue_r16(base + 22), n, 12);
+        j = 0; while (n[j] && vi < 22) vb[vi++] = n[j++];
+        vb[vi] = '\0';
+        emu_disklib_log("loaded", bn, vb, base);
+    }
+    return base;
+}
+
 static void exec_OpenLibrary(void)
 {
     /* A1 = library name string, D0 = version — returns base in D0 */
@@ -3506,19 +3763,14 @@ static void exec_OpenLibrary(void)
         if (fn_[j] == 0 && name[j] == 0) { result = fixed[f].b; break; }
     }
 
-    /* Check loadable libraries (real M68k binaries loaded from disk) */
+    /* Per-window disk-library cache: a lib already loaded into this RAM
+     * window resolves by basename before anything else runs its Open
+     * vector again.  A too-old disk lib fails outright (no fallback —
+     * the real lib shadows the fake-base policy once it is resident). */
+    int disklib_tried = 0;
     if (!result) {
-        for (int li = 0; li < g_glue_lib_count; li++) {
-            if (!g_glue_libs[li].loaded) continue;
-            const char *ln = g_glue_libs[li].name;
-            int lmatch = 1;
-            for (int j = 0; ln[j]; j++)
-                if (name[j] != ln[j]) { lmatch = 0; break; }
-            if (lmatch && name[emu_strlen(ln)] == '\0') {
-                result = g_glue_libs[li].base_addr;
-                break;
-            }
-        }
+        uint32_t lb = emu_disklib_find(name);
+        if (lb) { disklib_tried = 1; result = emu_disklib_open(lb, req_ver); }
     }
 
     /* ROM module registry (UAOS-238): every registered module resolves
@@ -3526,14 +3778,24 @@ static void exec_OpenLibrary(void)
      * argument; the rest get a generated base whose vectors dispatch
      * through UAOS_ROM_NativeFunc().  A request newer than the registered
      * version fails like real AmigaOS (OctaMED requires asl/iffparse v37+).
-     * Unregistered names keep the fake-base policy: a generated base of
+     * Unregistered names next try a real hunk .library in LIBS:, then the
+     * declined list, then the fake-base policy: a generated base of
      * traced no-op stubs so missing libraries fail predictably. */
     UaosRomModule *rom = UAOS_ROM_Find(name);
     if (rom && req_ver && req_ver > rom->version) {
-        result = 0;
-    } else if (!result && !emu_name_is_declined(name)) {
+        /* Registered version too old — hard fail.  A disk lib that
+         * already answered keeps its result: it gated on its own
+         * lib_Version and deliberately shadows the ROM entry. */
+        if (!disklib_tried) result = 0;
+    } else if (!result && !disklib_tried) {
         result = emu_gen_find(name);
-        if (!result) {
+        if (!result && !rom) {
+            uint32_t lb = emu_open_disk_library(name, req_ver);
+            if (lb) { disklib_tried = 1; result = emu_disklib_open(lb, req_ver); }
+        }
+        /* A refused disk-lib open must not fall through to the fake
+         * base — the real lib answered and declined the version. */
+        if (!result && !disklib_tried && !emu_name_is_declined(name)) {
             int dev = emu_is_device_name(name);
             result = emu_gen_lib_base(name, req_ver,
                                       dev ? NT_DEVICE_G : NT_LIBRARY_G,
@@ -3565,8 +3827,9 @@ static void exec_OpenLibrary(void)
         emu_print(msg);
     }
 
-    /* bump lib_OpenCnt for realism */
-    if (result && result + 33 < GUEST_RAM_SIZE)
+    /* bump lib_OpenCnt for realism — disk-loaded libs do it themselves
+     * inside their real Open vector (called above), so skip them here. */
+    if (result && !disklib_tried && result + 33 < GUEST_RAM_SIZE)
         glue_w16(result + 32, glue_r16(result + 32) + 1);
 
     m68k_set_reg(M68K_REG_D0, result);
@@ -3597,7 +3860,17 @@ static void exec_OpenResource(void)
     m68k_set_reg(M68K_REG_D0, base);
 }
 
-static void exec_CloseLibrary(void) { /* no-op */ }
+static void exec_CloseLibrary(void)
+{
+    /* CloseLibrary(library=a1): a disk-loaded lib gets its real Close
+     * vector (base-12) executed with A6 = base.  The seglist it returns
+     * is deliberately ignored — loaded libs stay resident for the life
+     * of the RAM window (no expunge/unload; guest RAM is recycled whole
+     * on task exit anyway).  Non-disk bases keep the historical no-op. */
+    uint32_t lib = m68k_get_reg(NULL, M68K_REG_A1);
+    if (emu_disklib_is_base(lib))
+        emu_guest_call(lib - 12, 0, 0, 0, 0, lib);
+}
 
 /* -------------------------------------------------------------------------
  * Guest interrupt vectors (UAOS-241)
@@ -4355,28 +4628,11 @@ static void exec_Enable(void)  { glue_w8(EXEC_BASE + 0x126, glue_r8(EXEC_BASE + 
 static void exec_SuperState(void) { m68k_set_reg(M68K_REG_D0, 0); }
 static void exec_UserState(void)  { }
 
-static void exec_InitStruct(void)
+/* Replay an InitStruct command stream against `mem` (no clearing — the
+ * caller decides).  Shared by exec_InitStruct and MakeLibrary, which is
+ * handed an already-cleared allocation. */
+static void emu_init_struct(uint32_t table, uint32_t mem)
 {
-    /* InitStruct(initTable=a1, memory=a2, size=d0).
-     *
-     * Clears `size` bytes at memory, then replays the command stream:
-     * each command byte is ddssnnnn —
-     *   dd: 00 = use running dest offset, nnnn = count
-     *       01 = use running dest offset, nnnn = repeat (one source item)
-     *       10 = dest offset = next byte,       nnnn = count
-     *       11 = dest offset = next 24 bits,    nnnn = count
-     *   ss: 00 = long, 01 = word, 10 = byte (11 is illegal)
-     *   nnnn = items-1.  Commands are read at even addresses; word/long
-     *   source items are read from the next even byte.  A zero command
-     *   byte terminates the stream. */
-    uint32_t table = m68k_get_reg(NULL, M68K_REG_A1);
-    uint32_t mem   = m68k_get_reg(NULL, M68K_REG_A2);
-    uint32_t size  = m68k_get_reg(NULL, M68K_REG_D0);
-    if (mem >= GUEST_RAM_SIZE) return;
-    /* Subtractive compare — mem+size can wrap past 0xFFFFFFFF into a
-     * multi-GB memset that smashes the host heap. */
-    if (size <= GUEST_RAM_SIZE - mem)
-        memset(&g_ram[mem], 0, size);
     if (!table || table >= GUEST_RAM_SIZE) return;
 
     uint32_t t = table, rptr = 0;
@@ -4416,6 +4672,31 @@ static void exec_InitStruct(void)
             }
         }
     }
+}
+
+static void exec_InitStruct(void)
+{
+    /* InitStruct(initTable=a1, memory=a2, size=d0).
+     *
+     * Clears `size` bytes at memory, then replays the command stream:
+     * each command byte is ddssnnnn —
+     *   dd: 00 = use running dest offset, nnnn = count
+     *       01 = use running dest offset, nnnn = repeat (one source item)
+     *       10 = dest offset = next byte,       nnnn = count
+     *       11 = dest offset = next 24 bits,    nnnn = count
+     *   ss: 00 = long, 01 = word, 10 = byte (11 is illegal)
+     *   nnnn = items-1.  Commands are read at even addresses; word/long
+     *   source items are read from the next even byte.  A zero command
+     *   byte terminates the stream. */
+    uint32_t table = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t mem   = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t size  = m68k_get_reg(NULL, M68K_REG_D0);
+    if (mem >= GUEST_RAM_SIZE) return;
+    /* Subtractive compare — mem+size can wrap past 0xFFFFFFFF into a
+     * multi-GB memset that smashes the host heap. */
+    if (size <= GUEST_RAM_SIZE - mem)
+        memset(&g_ram[mem], 0, size);
+    emu_init_struct(table, mem);
 }
 
 static void exec_CopyMem(int quick)
@@ -5752,75 +6033,207 @@ static void exec_RawPutChar(void)
     if (b[0]) emu_print(b);
 }
 
-static void exec_FindResident(void)   { m68k_set_reg(M68K_REG_D0, 0); }
-static void exec_InitResident(void)   { m68k_set_reg(M68K_REG_D0, 0); }
+static void exec_FindResident(void)
+{
+    /* FindResident(name=a1) → D0 = Resident* for a disk-loaded lib in this
+     * window (its RomTag stays mapped at the seglist address), else 0.
+     * Real Exec walks the ROM resident list — ours is the disk-lib table. */
+    uint32_t name_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    char name[64];
+    int i = 0;
+    while (i < 63 && name_ptr + i < GUEST_RAM_SIZE)
+        { name[i] = (char)g_ram[name_ptr+i]; if (!name[i]) break; i++; }
+    name[i] = '\0';
+
+    uint32_t hit = 0;
+    for (int d = 0; d < g_disklib_count && !hit; d++) {
+        DiskLib *e = &g_disklibs[d];
+        if (e->ram != g_ram) continue;
+        uint32_t rt = e->romtag;
+        if (!rt || rt + RT_SIZE > GUEST_RAM_SIZE) continue;
+        uint32_t rn = guest_read_be32(rt + 14);    /* rt_Name */
+        if (!rn || rn >= GUEST_RAM_SIZE) continue;
+        int j = 0, eq = 1;
+        for (; j < 63; j++) {
+            uint8_t b = (rn + j < GUEST_RAM_SIZE) ? g_ram[rn + j] : 0;
+            if (b != (uint8_t)name[j]) { eq = 0; break; }
+            if (!b) break;
+        }
+        if (eq) hit = rt;
+    }
+    m68k_set_reg(M68K_REG_D0, hit);
+}
+
+/* ---------------------------------------------------------------------
+ * Real Exec semantics — MakeFunctions / MakeLibrary / InitResident.
+ * These are C helpers taking explicit args (the disk-lib loader calls
+ * them too); the LVO handlers below are thin register wrappers.
+ *
+ * Resident (exec/resident.h):
+ *   +0  rt_MatchWord   (0x4AFC)
+ *   +2  rt_MatchTag    APTR → this struct
+ *   +6  rt_EndSkip     APTR
+ *   +10 rt_Flags       UBYTE (RTF_AUTOINIT = 0x80)
+ *   +11 rt_Version     UBYTE
+ *   +12 rt_Type        UBYTE (NT_*)
+ *   +13 rt_Pri         BYTE
+ *   +14 rt_Name        APTR
+ *   +18 rt_IdString    APTR
+ *   +22 rt_Init        APTR → init fn, or AUTOINIT InitTable:
+ *                       {dataSize, funcTable, dataTable, initFunc}
+ * ------------------------------------------------------------------- */
+#define RT_AUTOINIT   0x80u
+
+static uint32_t emu_make_functions(uint32_t target, uint32_t farray,
+                                   uint32_t dispbase)
+{
+    /* MakeFunctions(target=a0, funcArray=a1, funcDispBase=a2):
+     *   dispBase == 0 → farray = LONG absolute function pointers,
+     *                   terminated by 0xFFFFFFFF.
+     *   dispBase != 0 → farray = WORD displacements added to dispBase,
+     *                   terminated by WORD -1.
+     * Vector i is a JMP abs.l at target-6*(i+1).
+     * Returns the byte count of vectors generated. */
+    uint32_t n = 0;
+    int guard = 0;
+    if (!target || !farray) return 0;
+    while (n * 6 + 6 <= target && guard++ < 512) {
+        uint32_t fn;
+        if (!dispbase) {
+            if (farray + n * 4 + 4 > GUEST_RAM_SIZE) break;
+            fn = guest_read_be32(farray + n * 4);
+            if (fn == 0xFFFFFFFFu) break;
+        } else {
+            if (farray + n * 2 + 2 > GUEST_RAM_SIZE) break;
+            int32_t d = (int16_t)guest_read_be16(farray + n * 2);
+            if (d == -1) break;
+            fn = dispbase + d;
+        }
+        uint32_t dest = target - 6 * (n + 1);
+        if (dest + 6 > GUEST_RAM_SIZE) break;
+        g_ram[dest + 0] = 0x4E; g_ram[dest + 1] = 0xF9;  /* JMP abs.l */
+        glue_w32(dest + 2, fn);
+        n++;
+    }
+    return n * 6;
+}
+
+static uint32_t emu_make_library(uint32_t vectors, uint32_t structi,
+                                 uint32_t initfn, uint32_t datasize,
+                                 uint32_t seglist)
+{
+    /* MakeLibrary(vectors=a0, struct=a1, init=a2, dataSize=d0,
+     * segList=d1) → D0 = new library base or 0.
+     *
+     * vectors may be a LONG table (absolute pointers, -1L terminator)
+     * or the WORD-displacement form: a leading -1 word followed by
+     * WORD offsets relative to the table itself (also -1 terminated).
+     * The block is [NegSize vectors][PosSize data]; the base sits
+     * between them.  struct is an InitStruct command table replayed
+     * over the already-cleared struct area; init runs as a nested guest
+     * call with D0 = base, A0 = segList, A6 = SysBase. */
+    uint32_t farray = vectors, dispbase = 0, count = 0;
+    if (vectors && vectors + 2 <= GUEST_RAM_SIZE &&
+        guest_read_be16(vectors) == 0xFFFF) {
+        farray = vectors + 2;
+        dispbase = vectors;
+        while (count < 512 &&
+               farray + count * 2 + 2 <= GUEST_RAM_SIZE &&
+               guest_read_be16(farray + count * 2) != 0xFFFF)
+            count++;
+    } else if (vectors) {
+        while (count < 512 &&
+               farray + count * 4 + 4 <= GUEST_RAM_SIZE &&
+               guest_read_be32(farray + count * 4) != 0xFFFFFFFFu)
+            count++;
+    }
+    uint32_t negsz = (count * 6 + 3u) & ~3u;
+
+    uint32_t mem = 0;
+    dos_AllocMem_glue(negsz + datasize, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &mem);
+    if (!mem) return 0;
+    uint32_t base = mem + negsz;
+
+    emu_make_functions(base, farray, dispbase);
+    glue_w16(base + 16, (uint16_t)negsz);     /* lib_NegSize */
+    glue_w16(base + 18, (uint16_t)datasize);  /* lib_PosSize */
+
+    /* The block holds real guest code (the JMP vectors) — register it so
+     * the instr hook doesn't treat calls through them as wild. */
+    emu_code_range_add(mem, base + datasize);
+
+    if (structi) emu_init_struct(structi, base);
+    if (initfn)
+        return emu_guest_call(initfn, base, 0, seglist, 0, EXEC_BASE);
+    return base;
+}
+
+static uint32_t emu_init_resident(uint32_t resident, uint32_t seglist)
+{
+    /* InitResident(resident=a1, segList=d1) → D0 = new object base.
+     * Validates the matchword and the self-pointing MatchTag, then:
+     *  RTF_AUTOINIT → MakeLibrary over the InitTable, lenient field
+     *                 fill from the RomTag, and enqueue on the Exec list
+     *                 matching rt_Type (Library/Device/Resource).
+     *  otherwise    → call rt_Init directly (D0 return is the result). */
+    if (!resident || resident + RT_SIZE > GUEST_RAM_SIZE) return 0;
+    if (guest_read_be16(resident + 0) != RT_MATCHWORD) return 0;
+    if (guest_read_be32(resident + 2) != resident) return 0;
+    uint8_t  flags   = g_ram[resident + 10];
+    uint8_t  rtype   = g_ram[resident + 12];
+    uint32_t rt_init = guest_read_be32(resident + 22);
+    if (!rt_init || rt_init >= GUEST_RAM_SIZE) return 0;
+
+    if (flags & RT_AUTOINIT) {
+        if (rt_init + 16 > GUEST_RAM_SIZE) return 0;
+        uint32_t lib = emu_make_library(guest_read_be32(rt_init + 4),
+                                        guest_read_be32(rt_init + 8),
+                                        guest_read_be32(rt_init + 12),
+                                        guest_read_be32(rt_init + 0),
+                                        seglist);
+        if (!lib || lib + 34 > GUEST_RAM_SIZE) return 0;
+        /* Leniency for libs with a bare/minimal data table: fill the
+         * node fields from the RomTag so the list is always usable. */
+        if (!glue_r32(lib + 10)) glue_w32(lib + 10, guest_read_be32(resident + 14));
+        if (!g_ram[lib + 8])     g_ram[lib + 8]  = rtype;
+        if (!glue_r16(lib + 20)) glue_w16(lib + 20, g_ram[resident + 11]);
+        if (!glue_r32(lib + 24)) glue_w32(lib + 24, guest_read_be32(resident + 18));
+        switch (rtype) {
+        case RT_TYPE_LIB: guest_list_enqueue(EB_LIBLIST, lib); break;
+        case RT_TYPE_DEV: guest_list_enqueue(EB_DEVLIST, lib); break;
+        case RT_TYPE_RES: guest_list_enqueue(EB_RESLIST, lib); break;
+        default: break;
+        }
+        return lib;
+    }
+
+    /* Non-AUTOINIT: call the init routine directly. */
+    return emu_guest_call(rt_init, 0, 0, seglist, 0, EXEC_BASE);
+}
+
+static void exec_InitResident(void)
+{
+    uint32_t resident = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t seglist  = m68k_get_reg(NULL, M68K_REG_D1);
+    m68k_set_reg(M68K_REG_D0, emu_init_resident(resident, seglist));
+}
 
 static void exec_MakeFunctions(void)
 {
-    /* MakeFunctions(target=a0, funcArray=a1, funcDispBase=a2): the array
-     * is {int16 offset, APTR function} pairs ending in offset -1.  Writes
-     * JMP abs.l at target+offset.  A negative "function" is an offset
-     * relative to funcDispBase (ROM vector-compression form). */
-    uint32_t target = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t fp     = m68k_get_reg(NULL, M68K_REG_A1);
-    int32_t  fbase  = (int32_t)m68k_get_reg(NULL, M68K_REG_A2);
-    int guard = 0;
-    while (fp && fp + 6 <= GUEST_RAM_SIZE && guard++ < 512) {
-        int32_t off = (int16_t)glue_r16(fp); fp += 2;
-        if (off == -1) break;
-        uint32_t fn = glue_r32(fp); fp += 4;
-        if ((int32_t)fn < 0) fn = (uint32_t)(fbase + (int32_t)fn);
-        uint32_t dest = (uint32_t)((int32_t)target + off);
-        if (dest + 6 <= GUEST_RAM_SIZE) {
-            g_ram[dest + 0] = 0x4E; g_ram[dest + 1] = 0xF9;  /* JMP abs.l */
-            glue_w32(dest + 2, fn);
-        }
-    }
+    uint32_t r = emu_make_functions(m68k_get_reg(NULL, M68K_REG_A0),
+                                    m68k_get_reg(NULL, M68K_REG_A1),
+                                    m68k_get_reg(NULL, M68K_REG_A2));
+    m68k_set_reg(M68K_REG_D0, r);
 }
 
 static void exec_MakeLibrary(void)
 {
-    /* MakeLibrary(funcInit=a0, structInit=a1, init=a2, dataSize=d0,
-     * segList=d1) → D0 = new library base or 0.
-     * Allocates the vector area + struct, builds the JMP table below the
-     * base via MakeFunctions, and copies a flat structInit image.  The
-     * init callback would need a nested guest call — logged and skipped. */
-    uint32_t vectors  = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t structi  = m68k_get_reg(NULL, M68K_REG_A1);
-    uint32_t initfn   = m68k_get_reg(NULL, M68K_REG_A2);
-    uint32_t datasize = m68k_get_reg(NULL, M68K_REG_D0);
-
-    uint32_t fp = vectors, negsz = 0;
-    int guard = 0;
-    while (vectors && fp + 6 <= GUEST_RAM_SIZE && guard++ < 256) {
-        int32_t off = (int16_t)glue_r16(fp); fp += 2;
-        if (off == -1) break;
-        fp += 4;
-        if (off < 0 && (uint32_t)(-off) > negsz) negsz = (uint32_t)(-off);
-    }
-    negsz = (negsz + 3u) & ~3u;
-
-    uint32_t mem = 0;
-    dos_AllocMem_glue(negsz + (datasize ? datasize : 0x20), MEMF_PUBLIC, &mem);
-    if (!mem) { m68k_set_reg(M68K_REG_D0, 0); return; }
-    uint32_t base = mem + negsz;
-
-    if (structi && datasize && structi + datasize <= GUEST_RAM_SIZE)
-        emu_memcpy(g_ram + base, g_ram + structi, datasize);
-    g_ram[base + 8] = NT_LIBRARY_G;
-    glue_w16(base + 16, (uint16_t)negsz);                    /* lib_NegSize */
-    glue_w16(base + 18, (uint16_t)datasize);                 /* lib_PosSize */
-
-    m68k_set_reg(M68K_REG_A0, base);
-    m68k_set_reg(M68K_REG_A1, vectors);
-    m68k_set_reg(M68K_REG_A2, 0);
-    exec_MakeFunctions();
-
-    if (initfn) {
-        static int logged = 0;
-        if (!logged++) emu_print("[exec] MakeLibrary: init callback not run\n");
-    }
-    m68k_set_reg(M68K_REG_D0, base);
+    uint32_t r = emu_make_library(m68k_get_reg(NULL, M68K_REG_A0),
+                                  m68k_get_reg(NULL, M68K_REG_A1),
+                                  m68k_get_reg(NULL, M68K_REG_A2),
+                                  m68k_get_reg(NULL, M68K_REG_D0),
+                                  m68k_get_reg(NULL, M68K_REG_D1));
+    m68k_set_reg(M68K_REG_D0, r);
 }
 
 static void exec_ColdReboot(void)
@@ -6901,6 +7314,63 @@ static uint32_t m68k_isr_call(uint32_t entry, uint32_t d0, uint32_t a1,
                               uint32_t a5)
 {
     return m68k_isr_call_a0(entry, d0, a1, a5, 0x00DFF000u);
+}
+
+/* General nested guest call: run `pc` with the given registers until it
+ * RTS-es into the shared return trap, then restore the interrupted
+ * context and return the callee's D0.  Same nest-level/context-save
+ * machinery as UAOS_InvokeM68kHook / m68k_isr_call_a0 — used to invoke
+ * disk-library vectors (Open/Close) and init routines from inside LVO
+ * handlers.  Registers not listed keep their live values. */
+static uint32_t emu_guest_call(uint32_t pc, uint32_t d0, uint32_t d1,
+                               uint32_t a0, uint32_t a1, uint32_t a6)
+{
+    if (!pc || pc >= GUEST_RAM_SIZE) return 0;
+    if (g_hook_nest_level >= MAX_NESTED_HOOKS) return 0;
+
+    unsigned int ctx_size = m68k_context_size();
+    if (ctx_size > sizeof(g_hook_saved_context[0]))
+        ctx_size = sizeof(g_hook_saved_context[0]);
+    int level = g_hook_nest_level;
+    m68k_get_context(g_hook_saved_context[level]);
+    g_hook_return_detected[level] = 0;
+    g_hook_nest_level++;
+
+    if (HOOK_RETURN_TRAP_ADDR + 4 <= GUEST_RAM_SIZE) {
+        g_ram[HOOK_RETURN_TRAP_ADDR + 0] = 0x4A;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 1] = 0xFC;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 2] = HOOK_RETURN_TRAP_LIB;
+        g_ram[HOOK_RETURN_TRAP_ADDR + 3] = HOOK_RETURN_TRAP_FN;
+    }
+
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_A7);
+    sp -= 4;
+    if (sp + 4 <= GUEST_RAM_SIZE)
+        guest_write_be32(sp, HOOK_RETURN_TRAP_ADDR);
+    m68k_set_reg(M68K_REG_A7, sp);
+
+    m68k_set_reg(M68K_REG_D0, d0);
+    m68k_set_reg(M68K_REG_D1, d1);
+    m68k_set_reg(M68K_REG_A0, a0);
+    m68k_set_reg(M68K_REG_A1, a1);
+    m68k_set_reg(M68K_REG_A6, a6);
+    g_m68k_last_cb_entry = pc;
+    g_m68k_last_cb_data  = a1;
+    g_m68k_last_cb_kind  = 5;
+    m68k_set_reg(M68K_REG_PC, pc);
+
+    /* Same bound as the ISR path — a wedged library routine must not
+     * hang the host task; the wild-PC breaker aborts far sooner. */
+    uint32_t guard = 0;
+    g_m68k_wild_abort = 0;
+    while (!g_hook_return_detected[level] && guard++ < 4000 &&
+           !g_m68k_wild_abort)
+        m68k_execute(1000);
+
+    uint32_t ret = (uint32_t)m68k_get_reg(NULL, M68K_REG_D0);
+    g_hook_nest_level--;
+    m68k_set_context(g_hook_saved_context[level]);
+    return ret;
 }
 
 /* Call a guest character-output callback (exec RawDoFmt PutChProc):

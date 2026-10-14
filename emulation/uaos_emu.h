@@ -81,12 +81,13 @@ int UAOS_Emu_LoadAndRun(const uint8_t *binary, uint32_t bin_size,
  * dos_Open calls from emulated programs. Call before RunByName/LoadAndRun. */
 void UAOS_Emu_SetCwd(const char *cwd);
 
-/* Register a loadable library binary for installation into guest RAM.
- * Call at boot after scanning LIBS:.  The binary pointer must remain
- * valid until the first M68k program starts (install_library_tables
- * copies it into g_ram).  out_base receives the assigned guest address. */
-void UAOS_Emu_RegisterLoadableLib(const char *name, const uint8_t *data,
-                                  uint32_t size, uint32_t *out_base);
+/* Hunk seglist loader (kernel/exec/dos_lib.c): resolve `path` through
+ * VFS (assigns like LIBS: work), LoadSeg it, and return the seglist
+ * link-field address — the raw address, NOT a BPTR — or 0.  Loaded
+ * seglists are tracked; UAOS_DOS_UnLoadSeg takes the seglist BPTR
+ * (link-field address >> 2) and frees every segment. */
+uint32_t UAOS_DOS_LoadSegPath(const char *path);
+void     UAOS_DOS_UnLoadSeg(uint32_t seglist_bptr);
 
 /* Set the guest RAM base used by the M68k glue layer.  Called by the UAE
  * bridge after allocating the 4 GB guest physical window.  Passing NULL

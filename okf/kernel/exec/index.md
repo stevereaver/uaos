@@ -30,7 +30,7 @@ The Exec library is the central "kernel" library in UAOS, following the design o
 - `syscall_dispatch.c`: Handling register-based system call routing and implementation for Ring-0 userspace programs.
 - `mem_info.c` / `mem_info.h`: Kernel-exported memory query API (`Mem_GetInfo()`), backing both the resident `C:mem` command and the `SYSCALL_MEMINFO` (0x2D) syscall consumed by the on-disk `C:avail` userspace command.
 - `elf64_loader.c`: ELF64 PIE/EXEC loader for native x86-64 userspace binaries, plus the x64 heap allocator — see "X64 Heap Allocator" below.
-- `loadable_lib.c`: Scans `Workbench:LIBS/` for loadable Amiga `.library` files and registers them with the emulation layer.
+- `loadable_lib.c`: Boot-scans `Workbench:LIBS/` and records each `.library` name + RomTag version for `C:libs` (metadata only — actual loading is on demand in `OpenLibrary`, UAOS-305).
 - `float_math.c` / `float_math.h`: Shared freestanding IEEE 754 single-precision transcendental helpers (`uaos_sinf`, `uaos_sqrtf`, `uaos_expf`, ...) used by `mathffp.library` and `mathtrans.library`.
 - `mmu_sandbox.c`: Paging and memory protection setup for the 4 GB Amiga address space.
 - `page_fault_handler.c`: Handles page faults, including custom chip-window accesses from M68k code.  Decodes common `MOV`, `OR`, `AND`, and `XOR` instruction forms.  Installed at IDT vector 14 after `IDT_Init()` so that M68k accesses to the non-present `0x00B00000-0x00DFFFFF` window are emulated rather than raising an unhandled #PF.  Non-chip page faults from X64 userspace tasks kill the task gracefully instead of halting the system.

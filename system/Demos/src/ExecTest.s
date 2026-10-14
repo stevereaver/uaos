@@ -162,15 +162,21 @@ start:
         jsr     LV_FreeMem(a6)
 
 ; ---- MakeFunctions(-90): build vectors, call through them ------------
-        ; target = mflib+$80; vectors land below it
+        ; real form: LONG absolute function pointers, -1L terminator,
+        ; dispBase = 0; vector i lands at target-6*(i+1)
         movea.l exec_base,a6
         lea     mflib+$80(pc),a0
         lea     func_array(pc),a1
         suba.l  a2,a2
         jsr     LV_MakeFunctions(a6)
-        ; jsr -30(mflib+$80) -> ret42 -> d0=42
+        cmp.l   #12,d0                  ; two 6-byte vectors generated
+        beq.s   .mf_szok
+        lea     s_fmkfn(pc),a1
+        bra     do_fail
+.mf_szok:
+        ; jsr -6(mflib+$80) -> ret42 -> d0=42
         lea     mflib+$80(pc),a6
-        jsr     -30(a6)
+        jsr     -6(a6)
         cmp.l   #42,d0
         beq.s   .mf_ok
         lea     s_fmkfn(pc),a1
@@ -178,8 +184,10 @@ start:
 .mf_ok:
 
 ; ---- MakeLibrary(-84): returns base with a working vector ------------
+        ; WORD-displacement form: leading -1 then WORD offsets relative
+        ; to the table's own address, -1 terminated
         movea.l exec_base,a6
-        lea     func_array(pc),a0
+        lea     wfunctab(pc),a0
         suba.l  a1,a1                   ; no structInit
         suba.l  a2,a2                   ; no init fn
         moveq   #$40,d0                 ; dataSize
@@ -191,35 +199,64 @@ start:
         bra     do_fail
 .ml_ok:
         move.l  d0,a3                   ; a3 = new lib base
-        ; lib_NegSize (+16) >= 36 and a vector call returns 42
-        cmp.w   #36,16(a3)
+        ; two vectors -> lib_NegSize (+16) = 12
+        cmp.w   #12,16(a3)
         bhs.s   .ml_szok
         lea     s_fmksize(pc),a1
         bra     do_fail
 .ml_szok:
-        ; verify the generated vector: JMP abs.l at base-30 -> ret42.
-        ; (cannot call through it: heap PCs arm the low-reentry watchdog,
-        ; which kills the task on return into this code's 0x2xxxx band)
-        move.l  a3,a0
-        sub.l   #30,a0
-        cmp.w   #$4EF9,(a0)+
-        bne.s   .ml_badvec
-        lea     ret42(pc),a1
-        cmp.l   (a0),a1
-        bne.s   .ml_badvec
-        bra.s   .ml_vecok
-.ml_badvec:
+        ; call through the generated vector: jsr -6(a3) -> ret42 -> 42.
+        ; (the lib block is registered guest code now, so heap PCs are
+        ; exempt from the low-reentry watchdog)
+        movea.l a3,a6
+        jsr     -6(a6)
+        cmp.l   #42,d0
+        beq.s   .ml_vecok
         lea     s_fmkvec(pc),a1
         bra     do_fail
 .ml_vecok:
-        ; free: base-NegSize, size NegSize+PosSize
         movea.l exec_base,a6
+        ; free: base-NegSize, size NegSize+PosSize
         move.l  a3,a1
         moveq   #0,d0
         move.w  16(a3),d0
         sub.l   d0,a1
         add.w   18(a3),d0
         jsr     LV_FreeMem(a6)
+
+; ---- InitResident(-102): AUTOINIT RomTag -> live lib on LibList --------
+        movea.l exec_base,a6
+        lea     irt(pc),a1
+        moveq   #0,d1                   ; segList
+        jsr     LV_InitResident(a6)
+        tst.l   d0
+        bne.s   .ir_ok
+        lea     s_fires(pc),a1
+        bra     do_fail
+.ir_ok:
+        move.l  d0,a3
+        ; it must be discoverable on SysBase.LibList by name
+        movea.l exec_base,a6
+        move.l  a6,a0
+        add.l   #SB_LIBLIST,a0
+        lea     ir_name(pc),a1
+        jsr     LV_FindName(a6)
+        cmp.l   a3,d0
+        beq.s   .ir_find
+        lea     s_firfind(pc),a1
+        bra     do_fail
+.ir_find:
+        ; call through its generated vector: jsr -6 -> ret42 -> 42
+        movea.l a3,a6
+        jsr     -6(a6)
+        cmp.l   #42,d0
+        beq.s   .ir_vecok
+        lea     s_firvec(pc),a1
+        bra     do_fail
+.ir_vecok:
+        movea.l exec_base,a6
+        move.l  a3,a1
+        jsr     LV_RemLibrary(a6)
 
 ; ---- Allocate/Deallocate on a manual MemHeader -----------------------
         ; init MemHeader at membuf: First→chunk, Free=$1C0, Lower/Upper
@@ -551,11 +588,45 @@ ret43:
         even
 exec_base:  dc.l 0
 dos_base:   dc.l 0
-func_array: dc.w -30
-            dc.l ret42
-            dc.w -36
+; real MakeFunctions LONG form: absolute pointers, -1L terminator
+func_array: dc.l ret42
             dc.l ret43
+            dc.l -1
+; real AUTOINIT WORD-displacement form: leading -1, then WORD offsets
+; relative to the table itself, -1 terminated
+wfunctab:   dc.w -1
+            dc.w ret42-wfunctab
+            dc.w ret43-wfunctab
             dc.w -1
+            even
+
+; AUTOINIT Resident for the InitResident test
+irt:        dc.w $4afc                  ; RT_MATCHWORD
+            dc.l irt                    ; RT_MATCHTAG -> self
+            dc.l 0                      ; RT_ENDSKIP
+            dc.b $80                    ; RTF_AUTOINIT
+            dc.b 1                      ; RT_VERSION
+            dc.b 9                      ; RT_TYPE = NT_LIBRARY
+            dc.b 0                      ; RT_PRI
+            dc.l ir_name
+            dc.l ir_idstr
+            dc.l ir_inittab
+ir_inittab: dc.l $40                    ; dataSize
+            dc.l ir_functab
+            dc.l ir_datatab
+            dc.l 0                      ; no init routine
+ir_functab: dc.w -1
+            dc.w ret42-ir_functab
+            dc.w -1
+ir_datatab: dc.b $a0,8                  ; INITBYTE ln_Type
+            dc.b 9,0                    ;   = NT_LIBRARY
+            dc.b $80,10                 ; INITLONG ln_Name
+            dc.l ir_name
+            dc.b $90,20                 ; INITWORD lib_Version
+            dc.w 1
+            dc.b $80,24                 ; INITLONG lib_IdString
+            dc.l ir_idstr
+            dc.l 0
             even
 
 dos_name:   dc.b "dos.library",0
@@ -566,6 +637,8 @@ ft_name:    dc.b "exectest task",0
 semname:    dc.b "exectest sem",0
 ml_name:    dc.b "exectest memlist",0
 res_name:   dc.b "exectest resident",0
+ir_name:    dc.b "exectest.autolib",0
+ir_idstr:   dc.b "exectest 1.0 autoinit",13,10,0
 
 s_start:    dc.b "EXECTEST begin",10,0
 s_pass:     dc.b "EXECTEST PASS",10,0
@@ -580,6 +653,9 @@ s_fmkfn:    dc.b "EXECTEST FAIL MakeFunctions",10,0
 s_fmklib:   dc.b "EXECTEST FAIL MakeLibrary NULL",10,0
 s_fmksize:  dc.b "EXECTEST FAIL MakeLibrary NegSize",10,0
 s_fmkvec:   dc.b "EXECTEST FAIL MakeLibrary vector",10,0
+s_fires:    dc.b "EXECTEST FAIL InitResident NULL",10,0
+s_firfind:  dc.b "EXECTEST FAIL InitResident FindName",10,0
+s_firvec:   dc.b "EXECTEST FAIL InitResident vector",10,0
 s_fallocate: dc.b "EXECTEST FAIL Allocate NULL",10,0
 s_fallocrng: dc.b "EXECTEST FAIL Allocate range",10,0
 s_fdealloc: dc.b "EXECTEST FAIL Deallocate",10,0

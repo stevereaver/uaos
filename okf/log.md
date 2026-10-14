@@ -1,5 +1,62 @@
 # OKF Change Log
 
+## 2026-10-14 — real hunk-format .library loader (UAOS-305)
+
+* **Added** (`emulation/uaos_m68k_glue.c`): on-demand disk library
+  loading.  `exec_OpenLibrary` order is now fixed → per-window disk-lib
+  table → ROM registry → genlib cache → `emu_open_disk_library`
+  (`LIBS:<name>` or caller path) → declined → fake.  Loader: LoadSeg,
+  RomTag scan (0x4AFC + self MatchTag), NT_LIBRARY check,
+  `emu_init_resident`, then the lib's own Open vector via the new
+  `emu_guest_call` nested-call helper.  `CloseLibrary` runs the Close
+  vector (no expunge).  ROM-registered names never probe disk; a refused
+  (too-old) disk open returns NULL, not a fake base.
+* **Fixed** exec to real AmigaOS semantics: `MakeFunctions` (LONG /
+  WORD-displacement tables), `MakeLibrary` (both forms, InitStruct, init
+  routine actually run), `InitResident` (AUTOINIT + direct), and
+  `FindResident` for disk RomTags.  Old `{WORD,LONG}`-pair format gone;
+  `ExecTest.s` updated.
+* **Changed** (`kernel/exec/dos_lib.c`): `loadseg_hunk_load` gained
+  HUNK_RELOC32SHORT/DREL32 and frees partial loads on failure; new
+  `UAOS_DOS_LoadSegPath` / `UAOS_DOS_UnLoadSeg` exports.
+* **Changed** instr hook: heap-resident library code is registered as
+  guest code ranges, exempting it from the decruncher tripwires (checked
+  only in the two branches that need it).
+* **Removed**: private "UAOS\x02" blob path (`UAOS_Emu_RegisterLoadableLib`,
+  `install_loadable_libs`, `tools/gen_m68k_library.c`).  `loadable_lib.c`
+  is now a metadata-only boot scan for `C:libs`.  0xB000-0x1A000 left
+  reserved.
+* **Added** tests: `system/LIBS/src/uaostest.library.s` (3-hunk AUTOINIT
+  lib), `system/Demos/src/LibLoadTest.s`, `tests/qemu_libload_test.py`.
+* **Verified**: libload, exec_coverage, optlibs PASS; smoke 24/24;
+  lifecycle 24/24 incl. 150 s OctaMED soak (its 3 `WILD-PC pc=0`
+  cb=0x801A8C lines are the known pre-existing CIAA/Supervisor NULL
+  calls).  Real-world: amiga_libs `version.library` 40.43 (reports rev 42
+  — faithful to the original binary) and `xpkNONE.library` 1.5 load from
+  `LIBS:` and answer `OpenLibrary`.
+
+## 2026-10-14 — amiga_libs repo review (UAOS-304)
+
+* **Added** (`okf/concepts/amiga_libs_repo.md`): survey of the sibling
+  `~/workspaces/amiga_libs` repo (~1,480 .library binaries, ~170 OKF
+  bundles, ~140 with reconstructed buildable C source) and its use as
+  input to UAOS.
+* **Finding**: `UAOS_Emu_RegisterLoadableLib` only accepts the private
+  "UAOS\x02" stub format (<=1 KB, 16 libs, fixed 0xB000-0x1A000 band);
+  real hunk-format `.library` binaries cannot be loaded.  `hunk_load()`
+  already has the parser/relocator needed — the unlock is RomTag +
+  RTF_AUTOINIT InitTable handling plus a bigger allocation path.
+* **Finding**: UAOS has no mathieeedoubbas / mathieeesingtrans /
+  mathieeedoubtrans — guests get a fake base of zero-returning stubs.
+  amiga_libs has fully reconstructed C source for all three (10.881 +
+  40.6); port semantics natively (Musashi FPU is disabled, so the
+  binaries would trap).
+* **Finding**: zlib_3.2 (full recovered source), ~40 xpk sublibraries,
+  version.library, iffparse 40.1 (per-LVO conformance docs) are ready to
+  ship once real-lib loading lands.  amigaguide/powerpacker/rexxsyslib/
+  lh remain declined; binaries exist in amiga_libs without
+  reconstruction — RE backlog candidates.
+
 ## 2026-10-09 — Menubar screen pull-down drag (UAOS-9)
 
 * **Added** (`kernel/display/desktop.c`): the screen-bar LMB press that

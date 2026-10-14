@@ -99,7 +99,6 @@ VLINK_BIN    := $(VASM_DIR)/vlink/vlink
 GEN_NATIVE  := $(BUILD)/gen_uaos_native
 GEN_M68K    := $(BUILD)/gen_uaos_m68k
 GEN_X64     := $(BUILD)/gen_uaos_x64
-GEN_M68KLIB := $(BUILD)/gen_m68k_library
 
 # --- Flags -------------------------------------------------------------------
 
@@ -232,6 +231,10 @@ PREF_BINS := $(SYSROOT)/Prefs/Pointer $(SYSROOT)/Prefs/ScreenMode \
 DEMOS     := $(basename $(notdir $(wildcard system/Demos/src/*.s)))
 DEMO_BINS := $(addprefix $(SYSROOT)/Demos/,$(DEMOS))
 
+# Real hunk-format test library for the on-demand .library loader
+# (UAOS-305) — assembled raw, not wrapped by gen_uaos_m68k.
+UAOSTEST_LIB := $(SYSROOT)/LIBS/uaostest.library
+
 VASM_STAMP    := $(STAMPS)/vasm-built
 REGINA_LHA    := $(BUILD)/Regina.lha
 REGINA_DIR    := $(BUILD)/regina-0.08i
@@ -283,7 +286,8 @@ DEMO_EXTRAS := $(shell find system/Demos -type f 2>/dev/null)
 
 SYSROOT_CONTENTS := $(NATIVE_BINS) $(WRAP_BINS) $(USER_BINS) $(BAS_BIN) \
                     $(TOOL_BINS) $(UTIL_BINS) $(PREF_BINS) $(GUIDE_BIN) \
-                    $(GNU_BINS) $(DEMO_BINS) $(REXX_BIN) $(ACE_STAMP)
+                    $(GNU_BINS) $(DEMO_BINS) $(REXX_BIN) $(ACE_STAMP) \
+                    $(UAOSTEST_LIB)
 ifneq ($(GUIDE_SRC),)
 SYSROOT_CONTENTS += $(GUIDE_DB)
 endif
@@ -304,7 +308,7 @@ all: iso
 iso: $(ISO)
 kernel: $(KERNEL_ELF)
 tools: $(BUILD)/gen_uaos_native $(BUILD)/gen_uaos_m68k $(BUILD)/gen_uaos_x64 \
-       $(BUILD)/gen_m68k_library $(BUILD)/m68kmake $(BUILD)/ui_layout_test
+       $(BUILD)/m68kmake $(BUILD)/ui_layout_test
 sysroot: $(SYSROOT_IMG)
 userspace: $(USER_BINS) $(GUIDE_BIN)
 gnusrc: $(GNU_BINS)
@@ -343,8 +347,8 @@ $(DIRS_STAMP): | $(BUILD) $(STAMPS)
 
 # --- Host-side generator tools ------------------------------------------------
 
-$(BUILD)/gen_uaos_native $(BUILD)/gen_uaos_m68k $(BUILD)/gen_uaos_x64 \
-$(BUILD)/gen_m68k_library: $(BUILD)/%: tools/%.c | $(BUILD)
+$(BUILD)/gen_uaos_native $(BUILD)/gen_uaos_m68k $(BUILD)/gen_uaos_x64: \
+$(BUILD)/%: tools/%.c | $(BUILD)
 	@echo "  HOSTCC  $@"
 	$(Q)$(CC) -O2 -o $@ $<
 
@@ -626,6 +630,21 @@ $(DEMO_BINS): $(SYSROOT)/Demos/%: $(BUILD)/%.hunk $(GEN_M68K) | $(DIRS_STAMP)
 	@echo "  WRAP    Demos:$*"
 	$(Q)$(GEN_M68K) $* $< $@
 endif
+
+# uaostest.library ships as a real Amiga hunk-format binary — no
+# gen_uaos_m68k wrapper — so exec/OpenLibrary exercises the real
+# .library loader (RomTag + RTF_AUTOINIT) instead of the stub path.
+$(BUILD)/uaostest_library.o: system/LIBS/src/uaostest.library.s $(VASM_STAMP) | $(BUILD)
+	@echo "  VASM    $<"
+	$(Q)$(VASM_BIN) -Fhunk -o $@ $<
+
+$(BUILD)/uaostest_library.hunk: $(BUILD)/uaostest_library.o
+	@echo "  VLINK   $@"
+	$(Q)$(VLINK_BIN) -bamigahunk -o $@ $<
+
+$(UAOSTEST_LIB): $(BUILD)/uaostest_library.hunk | $(DIRS_STAMP)
+	@echo "  LIBS    $@"
+	$(Q)cp $< $@
 
 # --- Regina Rexx ------------------------------------------------------------------
 

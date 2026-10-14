@@ -2444,6 +2444,8 @@ static void dos_MatchPatternNoCase(M68kCPUState *cpu)
 #define LS_HUNK_END      0x3F2
 #define LS_HUNK_SYMBOL   0x3F0
 #define LS_HUNK_DEBUG    0x3F1
+#define LS_HUNK_DREL32   0x3F7
+#define LS_HUNK_RELOC32SHORT 0x3FC
 
 #define MAX_LOADSEG_HUNKS  32
 
@@ -2457,6 +2459,19 @@ static uint32_t ls_be32(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] <<  8) | ((uint32_t)p[3]);
+}
+
+static uint16_t ls_be16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+/* Free every segment allocation made so far — called on any load failure
+ * so a rejected file leaks nothing into the guest heap. */
+static void loadseg_free_partial(uint32_t *allocated, uint32_t count)
+{
+    for (uint32_t i = 0; i < count; i++)
+        if (allocated[i]) heap_free_fl(allocated[i]);
 }
 
 static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
@@ -2481,13 +2496,14 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
     (void)table_size;
 
     uint32_t n_hunks = last_hunk - first_hunk + 1;
-    if (n_hunks > MAX_LOADSEG_HUNKS) return 0;
+    if (n_hunks == 0 || n_hunks > MAX_LOADSEG_HUNKS) return 0;
 
     uint32_t hunk_base[MAX_LOADSEG_HUNKS];
     uint32_t allocated[MAX_LOADSEG_HUNKS];
+    for (uint32_t i = 0; i < n_hunks; i++) allocated[i] = 0;
 
     for (uint32_t i = 0; i < n_hunks; i++) {
-        if (p + 4 > end) return 0;
+        if (p + 4 > end) goto fail;
         uint32_t spec  = ls_be32(p); p += 4;
         uint32_t flags = spec & 0xC0000000u;
         uint32_t words = spec & ~0xC0000000u;
@@ -2495,7 +2511,7 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
          * follows the size word (dos/doshunks.h HUNKF_…). */
         uint32_t mem_req = 0;
         if (flags == 0xC0000000u) {
-            if (p + 4 > end) return 0;
+            if (p + 4 > end) goto fail;
             mem_req = ls_be32(p); p += 4;
         } else if (flags == 0x80000000u) {
             mem_req = MEMF_FAST;
@@ -2510,7 +2526,7 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
         allocated[i] = (mem_req & MEMF_CHIP) ? heap_alloc_fl_chip(seg_size)
                      : (mem_req & MEMF_FAST) ? heap_alloc_fl_fast(seg_size)
                      : heap_alloc_fl(seg_size);
-        if (!allocated[i]) return 0;
+        if (!allocated[i]) goto fail;
         hunk_base[i] = allocated[i] + 8;
         guest_write_be32(allocated[i] + 0, bytes + 8);
     }
@@ -2521,58 +2537,125 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
                          (i + 1 < n_hunks) ? ((allocated[i + 1] + 4) >> 2) : 0);
     }
 
-    int cur = 0;
-    while (p + 4 <= end && cur < (int)n_hunks) {
-        uint32_t type = ls_be32(p) & 0x3FFFFFFF; p += 4;
+    {
+        int cur = 0;
+        while (p + 4 <= end && cur < (int)n_hunks) {
+            uint32_t type = ls_be32(p) & 0x3FFFFFFF; p += 4;
 
-        if (type == LS_HUNK_CODE || type == LS_HUNK_DATA) {
-            if (p + 4 > end) break;
-            uint32_t words = ls_be32(p); p += 4;
-            uint32_t bytes = words * 4;
-            if (p + bytes > end) return 0;
-            for (uint32_t i = 0; i < bytes; i++)
-                g_ram[hunk_base[cur] + i] = p[i];
-            p += bytes;
-        } else if (type == LS_HUNK_BSS) {
-            if (p + 4 > end) break;
-            p += 4;
-        } else if (type == LS_HUNK_RELOC32) {
-            while (p + 4 <= end) {
-                uint32_t n_offsets = ls_be32(p); p += 4;
-                if (!n_offsets) break;
-                if (p + 4 > end) break;
-                uint32_t ref_hunk = ls_be32(p); p += 4;
-                if (ref_hunk >= n_hunks) { p += n_offsets * 4; continue; }
-                uint32_t base = hunk_base[ref_hunk];
-                for (uint32_t r = 0; r < n_offsets; r++) {
-                    if (p + 4 > end) break;
-                    uint32_t offset = ls_be32(p); p += 4;
-                    uint32_t patch_addr = hunk_base[cur] + offset;
-                    if (patch_addr + 4 <= GUEST_RAM_SIZE) {
-                        uint32_t old_val = guest_read_be32(patch_addr);
-                        guest_write_be32(patch_addr, old_val + base);
+            if (type == LS_HUNK_CODE || type == LS_HUNK_DATA) {
+                if (p + 4 > end) goto fail;
+                uint32_t words = ls_be32(p); p += 4;
+                uint32_t bytes = words * 4;
+                if (p + bytes > end) goto fail;
+                for (uint32_t i = 0; i < bytes; i++)
+                    g_ram[hunk_base[cur] + i] = p[i];
+                p += bytes;
+            } else if (type == LS_HUNK_BSS) {
+                if (p + 4 > end) goto fail;
+                p += 4;
+            } else if (type == LS_HUNK_RELOC32) {
+                while (p + 4 <= end) {
+                    uint32_t n_offsets = ls_be32(p); p += 4;
+                    if (!n_offsets) break;
+                    if (p + 4 > end) goto fail;
+                    uint32_t ref_hunk = ls_be32(p); p += 4;
+                    if (ref_hunk >= n_hunks) { p += n_offsets * 4; continue; }
+                    uint32_t base = hunk_base[ref_hunk];
+                    for (uint32_t r = 0; r < n_offsets; r++) {
+                        if (p + 4 > end) goto fail;
+                        uint32_t offset = ls_be32(p); p += 4;
+                        uint32_t patch_addr = hunk_base[cur] + offset;
+                        if (patch_addr + 4 <= GUEST_RAM_SIZE) {
+                            uint32_t old_val = guest_read_be32(patch_addr);
+                            guest_write_be32(patch_addr, old_val + base);
+                        }
                     }
                 }
+                continue;
+            } else if (type == LS_HUNK_DREL32 ||
+                       type == LS_HUNK_RELOC32SHORT) {
+                /* Compact 16-bit relocations: series of
+                 *   count(u16) target_hunk(u16) count offsets(u16)
+                 * terminated by a zero count; the block is padded to a
+                 * 4-byte boundary afterwards (hunk types are 32-bit).
+                 * Applied exactly like HUNK_RELOC32. */
+                while (p + 2 <= end) {
+                    uint16_t n_offsets = ls_be16(p); p += 2;
+                    if (!n_offsets) break;
+                    if (p + 2 > end) goto fail;
+                    uint16_t ref_hunk = ls_be16(p); p += 2;
+                    if (ref_hunk >= n_hunks) { p += n_offsets * 2; continue; }
+                    uint32_t base = hunk_base[ref_hunk];
+                    for (uint16_t r = 0; r < n_offsets; r++) {
+                        if (p + 2 > end) goto fail;
+                        uint32_t offset = (uint32_t)ls_be16(p); p += 2;
+                        uint32_t patch_addr = hunk_base[cur] + offset;
+                        if (patch_addr + 4 <= GUEST_RAM_SIZE) {
+                            uint32_t old_val = guest_read_be32(patch_addr);
+                            guest_write_be32(patch_addr, old_val + base);
+                        }
+                    }
+                }
+                /* Realign to the next 4-byte file offset */
+                {
+                    uint32_t off = (uint32_t)(p - bin);
+                    off = (off + 3u) & ~3u;
+                    p = bin + off;
+                }
+                continue;
+            } else if (type == LS_HUNK_SYMBOL || type == LS_HUNK_DEBUG) {
+                while (p + 4 <= end) {
+                    uint32_t len = ls_be32(p); p += 4;
+                    if (!len) break;
+                    p += len * 4 + 4;
+                }
+                continue;
+            } else if (type == LS_HUNK_END) {
+                cur++;
+                continue;
+            } else {
+                /* Unknown hunk record — tolerate like the old loader:
+                 * wire up whatever was loaded rather than failing. */
+                break;
             }
-            continue;
-        } else if (type == LS_HUNK_SYMBOL || type == LS_HUNK_DEBUG) {
-            while (p + 4 <= end) {
-                uint32_t len = ls_be32(p); p += 4;
-                if (!len) break;
-                p += len * 4 + 4;
-            }
-            continue;
-        } else if (type == LS_HUNK_END) {
-            cur++;
-            continue;
-        } else {
-            break;
         }
     }
 
     /* Seglist head = address of the first segment's link field;
      * its BPTR = ret>>2, entry point = ret+4 (hunk data). */
     return allocated[0] + 4;
+
+fail:
+    loadseg_free_partial(allocated, n_hunks);
+    return 0;
+}
+
+/* LoadSeg by already-resolved path — VFS_Open expands assigns, so
+ * "LIBS:name" and full volume paths work unchanged.  Returns the seglist
+ * link-field address (raw address, NOT the BPTR handed to guests) or 0.
+ * A successful load is tracked so UnLoadSeg can free it. */
+uint32_t UAOS_DOS_LoadSegPath(const char *path)
+{
+    if (!path || !path[0]) return 0;
+
+    VfsFile fh;
+    if (!VFS_Open(&fh, path, VFS_READ)) return 0;
+
+    uint32_t size = VFS_Size(&fh);
+    if (size == 0 || size > sizeof(g_loadseg_buf)) {
+        VFS_Close(&fh);
+        return 0;
+    }
+
+    uint32_t read = VFS_Read(&fh, g_loadseg_buf, size);
+    VFS_Close(&fh);
+    if (read != size) return 0;
+
+    uint32_t seglist = loadseg_hunk_load(g_loadseg_buf, size);
+    if (!seglist) return 0;
+
+    seglist_track(seglist >> 2, seglist);
+    return seglist;
 }
 
 static void dos_LoadSeg(M68kCPUState *cpu)
@@ -2602,38 +2685,12 @@ static void dos_LoadSeg(M68kCPUState *cpu)
         full_name[i] = '\0';
     }
 
-    VfsFile fh;
-    if (!VFS_Open(&fh, full_name, VFS_READ)) {
-        cpu->d[0] = 0;
-        SetIoErr(ERROR_OBJECT_NOT_FOUND);
-        return;
-    }
-
-    uint32_t size = VFS_Size(&fh);
-    if (size == 0 || size > sizeof(g_loadseg_buf)) {
-        VFS_Close(&fh);
-        cpu->d[0] = 0;
-        SetIoErr(ERROR_OBJECT_NOT_FOUND);
-        return;
-    }
-
-    uint32_t read = VFS_Read(&fh, g_loadseg_buf, size);
-    VFS_Close(&fh);
-    if (read != size) {
-        cpu->d[0] = 0;
-        SetIoErr(ERROR_OBJECT_NOT_FOUND);
-        return;
-    }
-
-    uint32_t seglist = loadseg_hunk_load(g_loadseg_buf, size);
+    uint32_t seglist = UAOS_DOS_LoadSegPath(full_name);
     if (seglist == 0) {
         cpu->d[0] = 0;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return;
     }
-
-    /* Track the seglist so UnLoadSeg can free it */
-    seglist_track(seglist >> 2, seglist);
 
     cpu->d[0] = seglist >> 2;
 }
@@ -2672,19 +2729,16 @@ static uint32_t seglist_untrack(uint32_t bptr)
     return 0;
 }
 
-static void dos_UnLoadSeg(M68kCPUState *cpu)
+/* UnLoadSeg by BPTR — walks the seglist chain and frees each segment
+ * via the free-list allocator.  Segment layout (set up by loadseg_hunk_load):
+ *   [seglist+0] BPTR to next segment's link field (0 = last)
+ *   [seglist-4] total block size in bytes
+ *   [seglist+4] segment data
+ * seglist addresses here are the link-field addresses (allocated+4);
+ * the heap payload to free is allocated = link_field - 4. */
+void UAOS_DOS_UnLoadSeg(uint32_t seg_bptr)
 {
-    /* AmigaOS: D1=BPTR seglist */
-    uint32_t seg_bptr = cpu->d[1];
     if (!seg_bptr) return;
-
-    /* Walk the seglist chain and free each segment via the free-list
-     * allocator.  Segment layout (set up by loadseg_hunk_load):
-     *   [seglist+0] BPTR to next segment's link field (0 = last)
-     *   [seglist-4] total block size in bytes
-     *   [seglist+4] segment data
-     * seglist addresses here are the link-field addresses (allocated+4);
-     * the heap payload to free is allocated = link_field - 4. */
 
     uint32_t tracked_addr = seglist_untrack(seg_bptr);
     if (tracked_addr) {
@@ -2696,6 +2750,12 @@ static void dos_UnLoadSeg(M68kCPUState *cpu)
         }
     }
     /* If not tracked, silently no-op (should not happen with properly loaded seglists) */
+}
+
+static void dos_UnLoadSeg(M68kCPUState *cpu)
+{
+    /* AmigaOS: D1=BPTR seglist */
+    UAOS_DOS_UnLoadSeg(cpu->d[1]);
 }
 
 /* =========================================================================

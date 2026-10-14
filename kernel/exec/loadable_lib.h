@@ -1,8 +1,9 @@
 /*
  * loadable_lib.h — UAOS Loadable Library System
  *
- * Scans LIBS: for .library files at boot, reads the full M68k binary,
- * and registers it with the emulation layer for loading into guest RAM.
+ * Scans LIBS: for .library files at boot and records name + RomTag
+ * version for the listing.  Actual loading happens on demand through
+ * exec.library/OpenLibrary -> LoadSeg -> InitResident.
  */
 
 #ifndef UAOS_LOADABLE_LIB_H

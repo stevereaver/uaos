@@ -16,3 +16,4 @@ Cross-cutting concepts that span multiple subsystems.
 - [Thunking](/okf/concepts/thunking.md) - Calling native libraries from emulated M68k code.
 - [Userspace & Syscalls](/okf/concepts/userspace_syscalls.md) - The Ring-0 task execution model, `INT 0x80` syscall ABI, and native userspace programs.
 - [Network Stack](/okf/kernel/net/index.md) - TCP/IP networking, DHCP, DNS, NTP, and the BSD socket API for emulated tasks.
+- [amiga_libs Repository](/okf/concepts/amiga_libs_repo.md) - Sister repo of AmigaOS .library binaries + reconstructed sources usable as UAOS inputs (Plane: UAOS-304).

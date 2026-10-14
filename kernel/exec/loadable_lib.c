@@ -1,15 +1,19 @@
 /*
  * loadable_lib.c — UAOS Loadable Library System
  *
- * Scans Workbench:LIBS/ for *.library files at boot,
- * reads the full M68k binary, and registers it with the
- * emulation layer for installation into guest RAM.
+ * Scans Workbench:LIBS/ for *.library files at boot and records each
+ * name + version for the C:libs listing.  This is metadata only: real
+ * hunk-format libraries are loaded on demand by exec.library/OpenLibrary
+ * (it LoadSegs LIBS:<name> through the emulation layer, finds the RomTag,
+ * and runs InitResident).  Version detection: read up to the first 4 KB,
+ * locate a Resident tag (0x4AFC matchword, rt_Type byte at +12 == 9
+ * NT_LIBRARY) and take rt_Version at +11; files without a valid RomTag
+ * are recorded with version 0.
  */
 
 #include "loadable_lib.h"
 #include "dos/vfs.h"
 #include "boot/kprint.h"
-#include "../../emulation/uaos_emu.h"
 #include <stddef.h>
 
 /* -------------------------------------------------------------------------
@@ -50,6 +54,7 @@ static void scat(char *dst, const char *src, int max)
 
 #define MAX_SCANNED 16
 #define MAX_NAME_LEN 64
+#define SCAN_BYTES  4096
 
 typedef struct {
     char     name[MAX_NAME_LEN];
@@ -59,6 +64,25 @@ typedef struct {
 
 static ScannedLib g_scanned[MAX_SCANNED];
 static int        g_scanned_count = 0;
+
+#define RT_MATCHWORD_HI 0x4A
+#define RT_MATCHWORD_LO 0xFC
+#define NT_LIBRARY      9
+
+/* Find the RomTag version in the first `size` bytes of a library image,
+ * or 0 when there is none.  The matchword is 0x4AFC at an even offset;
+ * the Resident layout puts rt_Version at +11 and rt_Type at +12. */
+static uint16_t librom_version(const uint8_t *buf, uint32_t size)
+{
+    uint32_t off = 0;
+    while (off + 13 < size) {
+        if (buf[off] == RT_MATCHWORD_HI && buf[off + 1] == RT_MATCHWORD_LO &&
+            buf[off + 12] == NT_LIBRARY)
+            return buf[off + 11];
+        off += 2;
+    }
+    return 0;
+}
 
 /* -------------------------------------------------------------------------
  * Boot scan
@@ -75,6 +99,8 @@ void UAOS_LoadableLib_Init(void)
         return;
     }
 
+    static uint8_t scan_buf[SCAN_BYTES];
+
     int found = 0;
     while (node) {
         if (node->type == RAMFS_TYPE_FILE && ends_with(node->name, ".library")) {
@@ -85,40 +111,29 @@ void UAOS_LoadableLib_Init(void)
             VfsFile fh;
             if (VFS_Open(&fh, path, VFS_READ)) {
                 uint32_t size = VFS_Size(&fh);
-                if (size > 0 && size <= 8192) {
-                    static uint8_t lib_buf[16][1024];
-                    static int lib_buf_idx = 0;
-
-                    if (lib_buf_idx < 16 && size <= 1024) {
-                        uint32_t got = VFS_Read(&fh, lib_buf[lib_buf_idx], size);
-                        if (got == size) {
-                            uint32_t base = 0;
-                            UAOS_Emu_RegisterLoadableLib(node->name,
-                                lib_buf[lib_buf_idx], size, &base);
-
-                            /* Record for C:libs listing */
-                            if (g_scanned_count < MAX_SCANNED) {
-                                ScannedLib *s = &g_scanned[g_scanned_count++];
-                                scopy(s->name, node->name, MAX_NAME_LEN);
-                                s->version = (size > 9)
-                                    ? (uint16_t)(((uint16_t)lib_buf[lib_buf_idx][8] << 8)
-                                                  | (uint16_t)lib_buf[lib_buf_idx][9])
-                                    : 0;
-                                s->active = 1;
-                            }
-
-                            kprint("[LOADABLE] Registered ");
-                            kprint(node->name);
-                            kprint(" (");
-                            kprintdec(size);
-                            kprint(" bytes) base=0x");
-                            kprinthex(base);
-                            kprint("\n");
-                            lib_buf_idx++;
-                        }
-                    }
+                uint32_t want = size < SCAN_BYTES ? size : SCAN_BYTES;
+                uint16_t version = 0;
+                if (want > 0) {
+                    uint32_t got = VFS_Read(&fh, scan_buf, want);
+                    if (got == want)
+                        version = librom_version(scan_buf, got);
                 }
                 VFS_Close(&fh);
+
+                if (g_scanned_count < MAX_SCANNED) {
+                    ScannedLib *s = &g_scanned[g_scanned_count++];
+                    scopy(s->name, node->name, MAX_NAME_LEN);
+                    s->version = version;
+                    s->active = 1;
+                }
+
+                kprint("[LOADABLE] Found ");
+                kprint(node->name);
+                kprint(" (");
+                kprintdec(size);
+                kprint(" bytes) v");
+                kprintdec(version);
+                kprint("\n");
             }
             found++;
         }
