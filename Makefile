@@ -234,6 +234,9 @@ DEMO_BINS := $(addprefix $(SYSROOT)/Demos/,$(DEMOS))
 # Real hunk-format test library for the on-demand .library loader
 # (UAOS-305) — assembled raw, not wrapped by gen_uaos_m68k.
 UAOSTEST_LIB := $(SYSROOT)/LIBS/uaostest.library
+# Real hunk-format test device for the on-demand .device loader
+# (UAOS-306) — same treatment, staged into DEVS:.
+UAOSTEST_DEV := $(SYSROOT)/DEVS/uaostest.device
 
 VASM_STAMP    := $(STAMPS)/vasm-built
 REGINA_LHA    := $(BUILD)/Regina.lha
@@ -287,7 +290,7 @@ DEMO_EXTRAS := $(shell find system/Demos -type f 2>/dev/null)
 SYSROOT_CONTENTS := $(NATIVE_BINS) $(WRAP_BINS) $(USER_BINS) $(BAS_BIN) \
                     $(TOOL_BINS) $(UTIL_BINS) $(PREF_BINS) $(GUIDE_BIN) \
                     $(GNU_BINS) $(DEMO_BINS) $(REXX_BIN) $(ACE_STAMP) \
-                    $(UAOSTEST_LIB)
+                    $(UAOSTEST_LIB) $(UAOSTEST_DEV)
 ifneq ($(GUIDE_SRC),)
 SYSROOT_CONTENTS += $(GUIDE_DB)
 endif
@@ -644,6 +647,20 @@ $(BUILD)/uaostest_library.hunk: $(BUILD)/uaostest_library.o
 
 $(UAOSTEST_LIB): $(BUILD)/uaostest_library.hunk | $(DIRS_STAMP)
 	@echo "  LIBS    $@"
+	$(Q)cp $< $@
+
+# uaostest.device — same raw-hunk treatment as the test library, staged
+# into DEVS: so exec/OpenDevice exercises the real .device loader.
+$(BUILD)/uaostest_device.o: system/DEVS/src/uaostest.device.s $(VASM_STAMP) | $(BUILD)
+	@echo "  VASM    $<"
+	$(Q)$(VASM_BIN) -Fhunk -o $@ $<
+
+$(BUILD)/uaostest_device.hunk: $(BUILD)/uaostest_device.o
+	@echo "  VLINK   $@"
+	$(Q)$(VLINK_BIN) -bamigahunk -o $@ $<
+
+$(UAOSTEST_DEV): $(BUILD)/uaostest_device.hunk | $(DIRS_STAMP)
+	@echo "  DEVS    $@"
 	$(Q)cp $< $@
 
 # --- Regina Rexx ------------------------------------------------------------------

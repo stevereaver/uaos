@@ -46,7 +46,7 @@ network, so offline hosts can pre-seed tarballs there.
 
 1. **Staging**: Creates `build/` directories for object files and the ISO root.
 2. **Host Tools**: Builds `tools/gen_uaos_native`, `tools/gen_uaos_m68k`, and `tools/gen_uaos_x64`. Also builds and **runs** `tools/ui_layout_test` (compiled against the real `kernel/display/uitree.c`) — a layout-engine regression aborts the ISO build.
-3. **M68k Libraries**: `system/LIBS/src/uaostest.library.s` is assembled with vasm (`-Fhunk`) + vlink (`-bamigahunk`) and copied raw (no `gen_uaos_m68k` wrapper) to `SYS_ROOT/LIBS/uaostest.library` — the test fixture for the real `.library` loader (UAOS-305). `tools/gen_m68k_library` and its stub-blob format were removed.
+3. **M68k Libraries/Devices**: `system/LIBS/src/uaostest.library.s` and `system/DEVS/src/uaostest.device.s` are assembled with vasm (`-Fhunk`) + vlink (`-bamigahunk`) and copied raw (no `gen_uaos_m68k` wrapper) to `SYS_ROOT/LIBS/uaostest.library` / `SYS_ROOT/DEVS/uaostest.device` — the test fixtures for the real `.library` (UAOS-305) and `.device` (UAOS-306) loaders. `tools/gen_m68k_library` and its stub-blob format were removed.
 4. **Assembly**: Assembles `.asm` files (`uaos_kernel_entry.asm`, `idt_stubs.asm`, `task_switch.asm`) with `nasm`.
 5. **Musashi Generation**: Generates the Musashi M68k opcode table (`emulation/musashi/m68kops.c`) if it is missing.
 6. **Chipset Emulator**: Compiles the real AGA/ECS custom chip emulator (`kernel/chipset/chip_emu.c`) and links it into the kernel.

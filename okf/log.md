@@ -1,5 +1,29 @@
 # OKF Change Log
 
+## 2026-10-14 — real hunk-format .device loader + BeginIO/AbortIO LVO fix (UAOS-306)
+
+* **Added** (`emulation/uaos_m68k_glue.c`): `OpenDevice` loads real
+  devices from `DEVS:` (shared `emu_open_disk_module`, type-aware disk
+  table/miss cache, `[dev] …` logs).  Order: audio → ROM → disk table →
+  DEVS: load → declined → fake.  Real Exec open/close protocol (guest
+  Open/Close vectors, io_Device poisoned to -1 on close).
+* **Added** real Exec IO semantics for disk devices: DoIO/SendIO via
+  BeginIO -30, CheckIO/WaitIO on `ln_Type`/`IOF_QUICK`, AbortIO -36.
+* **Fixed** exec messages: `PutMsg` sets NT_MESSAGE, `ReplyMsg` sets
+  NT_REPLYMSG / NT_FREEMSG; the private `NT_REPLYMSG` define was 6
+  (NT_FREEMSG) — now 7.  `io_Error` returns sign-extended everywhere.
+* **Fixed** built-in timer/console/keyboard/audio devices: real BeginIO
+  `-30` / AbortIO `-36` entry points added (amiga.lib `BeginIO()`), with
+  `-42`/`-48` kept.
+* **Added** tests: `system/DEVS/src/uaostest.device.s` (unit 0 immediate,
+  unit 1 completed by a VERTB AddIntServer handler, AbortIO),
+  `system/Demos/src/DevLoadTest.s`, `tests/qemu_devload_test.py`.
+* **Verified**: devload, libload, devio, exec_coverage, optlibs PASS;
+  idcmp_input 16/16; asl 15/15; smoke 24/24; lifecycle 24/24 (same 3
+  pre-existing `WILD-PC pc=0 cb=0x801A8C` OctaMED CIAA lines).
+* **Open**: guest background tasks aren't scheduled (UAOS-307), so
+  task-based drivers complete only synchronous requests.
+
 ## 2026-10-14 — real hunk-format .library loader (UAOS-305)
 
 * **Added** (`emulation/uaos_m68k_glue.c`): on-demand disk library

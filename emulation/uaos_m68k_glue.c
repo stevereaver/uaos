@@ -666,6 +666,8 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define AUDEV_LVO_CLOSE   1   /* -12 */
 #define AUDEV_LVO_BEGINIO 2   /* -42 */
 #define AUDEV_LVO_ABORTIO 3   /* -48 */
+#define AUDEV_LVO_BEGINIO_D 4 /* -30 — real Exec BeginIO LVO (UAOS-306) */
+#define AUDEV_LVO_ABORTIO_D 5 /* -36 — real Exec AbortIO LVO (UAOS-306) */
 
 /* MEMF_* attribute bits (exec/memory.h) */
 #define MEMF_PUBLIC      0x00000001u
@@ -1231,6 +1233,8 @@ static void install_stub(int lib_id, int func_idx)
 
 /* Node types / task state / port flags */
 #define NT_MESSAGE_G       5
+#define NT_FREEMSG         6
+#define NT_REPLYMSG        7
 #define NT_MSGPORT_G       4
 #define NT_LIBRARY_G       9
 #define NT_DEVICE_G        10
@@ -3098,6 +3102,10 @@ void install_library_tables(void)
     install_lvo(AUDIO_DEV_BASE, -12, LIB_AUDIODEV, AUDEV_LVO_CLOSE);
     install_lvo(AUDIO_DEV_BASE, -42, LIB_AUDIODEV, AUDEV_LVO_BEGINIO);
     install_lvo(AUDIO_DEV_BASE, -48, LIB_AUDIODEV, AUDEV_LVO_ABORTIO);
+    /* Real amiga.lib BeginIO/AbortIO live at -30/-36 — the -42/-48 map is
+     * the UAOS-native pair.  Trap both pairs (UAOS-306). */
+    install_lvo(AUDIO_DEV_BASE, -30, LIB_AUDIODEV, AUDEV_LVO_BEGINIO_D);
+    install_lvo(AUDIO_DEV_BASE, -36, LIB_AUDIODEV, AUDEV_LVO_ABORTIO_D);
 
     /* Fill FAKE_LIB_BASE area with RTS so any JSR into unknown lib returns cleanly.
      * Each LVO slot is 6 bytes: ILLEGAL(2) + dispatch(2) + RTS(2).
@@ -3203,18 +3211,25 @@ static int emu_guest_code_range(uint32_t pc)
 }
 
 /* -------------------------------------------------------------------------
- * Disk-loaded .library registry (UAOS-305) — real hunk-format libraries
- * loaded from LIBS: on first OpenLibrary.  Entries are per guest-RAM
- * window: guest addresses repeat across windows, and a relaunch clears
- * the RAM underneath them.  `seg` keeps the seglist for UnLoadSeg on a
- * failed init; g_disklib_miss records names that failed to load so an
- * app polling a missing library does not redo the VFS scan each call.
+ * Disk-loaded .library/.device registry (UAOS-305/UAOS-306) — real
+ * hunk-format modules loaded from LIBS:/DEVS: on first Open.  Entries
+ * are per guest-RAM window: guest addresses repeat across windows, and a
+ * relaunch clears the RAM underneath them.  `seg` keeps the seglist for
+ * UnLoadSeg on a failed init; g_disklib_miss records names that failed
+ * to load so an app polling a missing module does not redo the VFS scan
+ * each call.  `type` distinguishes NT_LIBRARY from NT_DEVICE entries —
+ * the two namespaces never cross-match.
  * ------------------------------------------------------------------------- */
+#define RT_TYPE_LIB    9    /* NT_LIBRARY  */
+#define RT_TYPE_DEV    3    /* NT_DEVICE   */
+#define RT_TYPE_RES    8    /* NT_RESOURCE */
+
 typedef struct {
     char     name[48];     /* basename, as asked (case-preserved) */
-    uint32_t base;         /* library base in this window */
+    uint32_t base;         /* library/device base in this window */
     uint32_t seg;          /* seglist link-field address */
     uint32_t romtag;       /* Resident struct address */
+    uint8_t  type;         /* RT_TYPE_LIB or RT_TYPE_DEV */
     uint8_t *ram;
 } DiskLib;
 
@@ -3222,7 +3237,7 @@ typedef struct {
 #define MAX_DISK_MISS   16
 static DiskLib g_disklibs[MAX_DISK_LIBS];
 static int     g_disklib_count = 0;
-static struct { char name[48]; uint8_t *ram; } g_disklib_miss[MAX_DISK_MISS];
+static struct { char name[48]; uint8_t type; uint8_t *ram; } g_disklib_miss[MAX_DISK_MISS];
 static int     g_disklib_miss_count = 0;
 
 /* Case-insensitive basename compare: "LIBS:Foo.Library" matches a lib
@@ -3244,33 +3259,34 @@ static int emu_libname_match(const char *asked, const char *stored)
     }
 }
 
-static uint32_t emu_disklib_find(const char *name)
+static uint32_t emu_diskmod_find(const char *name, int type)
 {
     for (int i = 0; i < g_disklib_count; i++)
-        if (g_disklibs[i].ram == g_ram &&
+        if (g_disklibs[i].ram == g_ram && g_disklibs[i].type == type &&
             emu_libname_match(name, g_disklibs[i].name))
             return g_disklibs[i].base;
     return 0;
 }
 
-static int emu_disklib_is_base(uint32_t base)
+static int emu_diskmod_is_base(uint32_t base, int type)
 {
     for (int i = 0; i < g_disklib_count; i++)
-        if (g_disklibs[i].ram == g_ram && g_disklibs[i].base == base)
+        if (g_disklibs[i].ram == g_ram && g_disklibs[i].type == type &&
+            g_disklibs[i].base == base)
             return 1;
     return 0;
 }
 
-static int emu_disklib_missed(const char *name)
+static int emu_diskmod_missed(const char *name, int type)
 {
     for (int i = 0; i < g_disklib_miss_count; i++)
-        if (g_disklib_miss[i].ram == g_ram &&
+        if (g_disklib_miss[i].ram == g_ram && g_disklib_miss[i].type == type &&
             emu_libname_match(name, g_disklib_miss[i].name))
             return 1;
     return 0;
 }
 
-static void emu_disklib_miss_add(const char *name)
+static void emu_diskmod_miss_add(const char *name, int type)
 {
     if (g_disklib_miss_count >= MAX_DISK_MISS) return;
     char *d = g_disklib_miss[g_disklib_miss_count].name;
@@ -3280,7 +3296,8 @@ static void emu_disklib_miss_add(const char *name)
     int i = 0;
     while (i < 47 && base[i]) { d[i] = base[i]; i++; }
     d[i] = '\0';
-    g_disklib_miss[g_disklib_miss_count].ram = g_ram;
+    g_disklib_miss[g_disklib_miss_count].type = (uint8_t)type;
+    g_disklib_miss[g_disklib_miss_count].ram  = g_ram;
     g_disklib_miss_count++;
 }
 
@@ -3577,9 +3594,6 @@ static uint32_t emu_init_resident(uint32_t resident, uint32_t seglist);
 
 #define RT_MATCHWORD   0x4AFCu
 #define RT_SIZE        26
-#define RT_TYPE_LIB    9    /* NT_LIBRARY  */
-#define RT_TYPE_DEV    3    /* NT_DEVICE   */
-#define RT_TYPE_RES    8    /* NT_RESOURCE */
 
 /* Run a disk lib's Open vector (-6): version in D0, base in A6; the lib
  * itself bumps lib_OpenCnt.  Version too old -> 0 without calling. */
@@ -3589,16 +3603,21 @@ static uint32_t emu_disklib_open(uint32_t base, uint32_t req_ver)
     return emu_guest_call(base - 6, req_ver, 0, 0, 0, base);
 }
 
-static void emu_disklib_log(const char *what, const char *bname,
+/* `[lib] <what> LIBS:<name>` / `[dev] <what> DEVS:<name>` — the serial
+ * tag + directory prefix track the module kind (lib for NT_LIBRARY,
+ * dev for NT_DEVICE). */
+static void emu_diskmod_log(int is_dev, const char *dir,
+                            const char *what, const char *bname,
                             const char *extra, uint32_t base)
 {
     char msg[128]; int i = 0;
-    const char *p = "[lib] ";
-    while (p[i] && i < 90) { msg[i] = p[i]; i++; }
-    for (int j = 0; what[j] && i < 100; j++) msg[i++] = what[j];
+    msg[i++] = '[';
+    const char *p = is_dev ? "dev" : "lib";
+    for (int j = 0; p[j] && i < 8; j++) msg[i++] = p[j];
+    msg[i++] = ']'; msg[i++] = ' ';
+    for (int j = 0; what[j] && i < 96; j++) msg[i++] = what[j];
     msg[i++] = ' ';
-    const char *l = "LIBS:";
-    for (int j = 0; l[j] && i < 104; j++) msg[i++] = l[j];
+    for (int j = 0; dir[j] && i < 104; j++) msg[i++] = dir[j];
     for (int j = 0; bname[j] && i < 116; j++) msg[i++] = bname[j];
     if (extra) {
         msg[i++] = ' ';
@@ -3614,12 +3633,15 @@ static void emu_disklib_log(const char *what, const char *bname,
     emu_print(msg);
 }
 
-/* LoadSeg LIBS:<name> (or the explicit path in `name`), find the RomTag,
- * InitResident it, and record the result in this window's disk-lib table.
- * Returns the library base, or 0 (with the failure logged once per name). */
-static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
+/* LoadSeg <dir><name> (or the explicit path in `name`), find the RomTag,
+ * InitResident it, and record the result in this window's disk-module
+ * table.  Returns the module base, or 0 (failure logged once per name).
+ * rt_type is NT_LIBRARY (LIBS:) or NT_DEVICE (DEVS:). */
+static uint32_t emu_open_disk_module(const char *name, const char *dir,
+                                     uint8_t rt_type)
 {
-    (void)req_ver;
+    int is_dev = (rt_type == RT_TYPE_DEV);
+    const char *nt_name = is_dev ? "not NT_DEVICE" : "not NT_LIBRARY";
     /* Snapshot the code-range table — segments (and the MakeLibrary
      * block) register ranges as they are found, and a failed load must
      * not leave stale ranges pointing at freed memory. */
@@ -3629,7 +3651,7 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
     for (const char *p = name; *p; p++)
         if (*p == ':' || *p == '/') bn = p + 1;
     if (!*bn) { g_code_range_count = saved_ranges; return 0; }
-    if (emu_disklib_missed(name)) { g_code_range_count = saved_ranges; return 0; }
+    if (emu_diskmod_missed(name, rt_type)) { g_code_range_count = saved_ranges; return 0; }
 
     char path[96];
     int has_colon = 0, has_slash = 0;
@@ -3645,8 +3667,7 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
         if (i && path[i-1] != ':' && path[i-1] != '/') path[i++] = '/';
         int j = 0; while (name[j] && i < 95) path[i++] = name[j++];
     } else {
-        const char *l = "LIBS:";
-        while (l[i]) { path[i] = l[i]; i++; }
+        while (dir[i] && i < 90) { path[i] = dir[i]; i++; }
         int j = 0; while (name[j] && i < 95) path[i++] = name[j++];
     }
     path[i] = '\0';
@@ -3654,8 +3675,8 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
     uint32_t seg = UAOS_DOS_LoadSegPath(path);
     if (!seg) {
         g_code_range_count = saved_ranges;
-        emu_disklib_miss_add(name);
-        emu_disklib_log("not found", bn, 0, 0);
+        emu_diskmod_miss_add(name, rt_type);
+        emu_diskmod_log(is_dev, dir, "not found", bn, 0, 0);
         return 0;
     }
 
@@ -3688,15 +3709,15 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
     if (!romtag) {
         g_code_range_count = saved_ranges;
         UAOS_DOS_UnLoadSeg(seg >> 2);
-        emu_disklib_miss_add(name);
-        emu_disklib_log("no RomTag", bn, 0, 0);
+        emu_diskmod_miss_add(name, rt_type);
+        emu_diskmod_log(is_dev, dir, "no RomTag", bn, 0, 0);
         return 0;
     }
-    if (g_ram[romtag + 12] != RT_TYPE_LIB) {
+    if (g_ram[romtag + 12] != rt_type) {
         g_code_range_count = saved_ranges;
         UAOS_DOS_UnLoadSeg(seg >> 2);
-        emu_disklib_miss_add(name);
-        emu_disklib_log("not NT_LIBRARY", bn, 0, 0);
+        emu_diskmod_miss_add(name, rt_type);
+        emu_diskmod_log(is_dev, dir, nt_name, bn, 0, 0);
         return 0;
     }
 
@@ -3704,8 +3725,8 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
     if (!base) {
         g_code_range_count = saved_ranges;
         UAOS_DOS_UnLoadSeg(seg >> 2);
-        emu_disklib_miss_add(name);
-        emu_disklib_log("init failed", bn, 0, 0);
+        emu_diskmod_miss_add(name, rt_type);
+        emu_diskmod_log(is_dev, dir, "init failed", bn, 0, 0);
         return 0;
     }
 
@@ -3714,9 +3735,10 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
         int j = 0;
         while (j < 47 && bn[j]) { e->name[j] = bn[j]; j++; }
         e->name[j] = '\0';
-        e->base = base; e->seg = seg; e->romtag = romtag; e->ram = g_ram;
+        e->base = base; e->seg = seg; e->romtag = romtag;
+        e->type = rt_type; e->ram = g_ram;
     } else {
-        emu_disklib_log("table full", bn, 0, 0);
+        emu_diskmod_log(is_dev, dir, "table full", bn, 0, 0);
     }
 
     {
@@ -3730,9 +3752,15 @@ static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
         u32_dec(glue_r16(base + 22), n, 12);
         j = 0; while (n[j] && vi < 22) vb[vi++] = n[j++];
         vb[vi] = '\0';
-        emu_disklib_log("loaded", bn, vb, base);
+        emu_diskmod_log(is_dev, dir, "loaded", bn, vb, base);
     }
     return base;
+}
+
+static uint32_t emu_open_disk_library(const char *name, uint32_t req_ver)
+{
+    (void)req_ver;
+    return emu_open_disk_module(name, "LIBS:", RT_TYPE_LIB);
 }
 
 static void exec_OpenLibrary(void)
@@ -3769,7 +3797,7 @@ static void exec_OpenLibrary(void)
      * the real lib shadows the fake-base policy once it is resident). */
     int disklib_tried = 0;
     if (!result) {
-        uint32_t lb = emu_disklib_find(name);
+        uint32_t lb = emu_diskmod_find(name, RT_TYPE_LIB);
         if (lb) { disklib_tried = 1; result = emu_disklib_open(lb, req_ver); }
     }
 
@@ -3868,7 +3896,7 @@ static void exec_CloseLibrary(void)
      * of the RAM window (no expunge/unload; guest RAM is recycled whole
      * on task exit anyway).  Non-disk bases keep the historical no-op. */
     uint32_t lib = m68k_get_reg(NULL, M68K_REG_A1);
-    if (emu_disklib_is_base(lib))
+    if (emu_diskmod_is_base(lib, RT_TYPE_LIB))
         emu_guest_call(lib - 12, 0, 0, 0, 0, lib);
 }
 
@@ -4286,11 +4314,14 @@ static void exec_FreeSignal(void)
 
 static void exec_PutMsg(void)
 {
-    /* PutMsg(port, message) — A0 = port, A1 = message */
+    /* PutMsg(port, message) — A0 = port, A1 = message.  Real Exec marks
+     * the node NT_MESSAGE so WaitIO/CheckIO can tell a live request from
+     * a replied one. */
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t msg  = m68k_get_reg(NULL, M68K_REG_A1);
     if (!port || !msg) return;
 
+    g_ram[msg + LN_TYPE] = NT_MESSAGE_G;
     glue_list_add_tail(port + MP_MSGLIST, msg);
 
     uint32_t sigtask = glue_r32(port + MP_SIGTASK);
@@ -4329,11 +4360,18 @@ static void exec_GetMsg(void)
 
 static void exec_ReplyMsg(void)
 {
-    /* ReplyMsg(message) — A1 = message */
+    /* ReplyMsg(message) — A1 = message.  Real Exec marks the node
+     * NT_REPLYMSG when it lands on a reply port and NT_FREEMSG when
+     * there is none (the message is dead — callers must not reuse it). */
     uint32_t msg = m68k_get_reg(NULL, M68K_REG_A1);
     if (!msg) return;
     uint32_t reply_port = glue_r32(msg + MN_REPLYPORT);
-    if (reply_port) {
+    if (!reply_port) {
+        g_ram[msg + LN_TYPE] = NT_FREEMSG;
+        return;
+    }
+    {
+        g_ram[msg + LN_TYPE] = NT_REPLYMSG;
         glue_list_add_tail(reply_port + MP_MSGLIST, msg);
         uint32_t sigtask = glue_r32(reply_port + MP_SIGTASK);
         UaosTask *t = Task_FindByM68kAddr(sigtask);
@@ -5062,7 +5100,6 @@ void UAOS_M68k_ReleaseTaskResources(UaosTask *t)
 #define IOF_QUICK     0x01   /* io_Flags: device may complete synchronously */
 #define IOF_QUEUED    0x10   /* io_Flags: device is holding the request     */
 #define IOF_DONE      0x80   /* io_Flags: request completed (OS3.x model)   */
-#define NT_REPLYMSG   6
 
 /* -------------------------------------------------------------------------
  * UAOS-240 — IORequest completion model
@@ -5159,19 +5196,8 @@ static void exec_OpenDevice(void)
         msg[k++]='\''; msg[k++]='\n'; msg[k]='\0';
         emu_print(msg);
     }
-    /* UAOS-249 — declined devices fail the open so the app disables the
-     * feature (e.g. serial.device -> OctaMED's MIDI path) rather than
-     * talking to a fake base. */
-    if (emu_name_is_declined(name)) {
-        if (ioreq && ioreq + IOSTD_SIZE < GUEST_RAM_SIZE) {
-            glue_w32(ioreq + IO_DEVICE, 0);
-            g_ram[ioreq + IO_ERROR] = (uint8_t)-6;   /* IOERR_OPENFAIL */
-        }
-        m68k_set_reg(M68K_REG_D0, (uint32_t)-6);
-        return;
-    }
     if (ioreq && ioreq + IOSTD_SIZE < GUEST_RAM_SIZE) {
-        uint32_t devbase = FAKE_LIB_BASE;
+        uint32_t devbase = 0;
         UaosRomModule *dm = NULL;
         static const char AUDNAME[] = "audio.device";
         int eq = 1;
@@ -5179,17 +5205,49 @@ static void exec_OpenDevice(void)
         if (eq && !name[12]) {
             devbase = AUDIO_DEV_BASE;
             audio_note_open();
-        } else {
+        } else if ((dm = UAOS_ROM_Find(name)) != NULL) {
             /* ROM-registered devices (timer/keyboard/console, UAOS-238):
              * io_Device gets a generated base whose Open/BeginIO/AbortIO
              * stubs dispatch into the module's native funcs. */
-            dm = UAOS_ROM_Find(name);
-            if (dm) {
-                devbase = emu_gen_find(name);
-                if (!devbase)
-                    devbase = emu_gen_lib_base(name, 0, NT_DEVICE_G, 0x15E, dm);
-                if (!devbase) devbase = FAKE_LIB_BASE;
+            devbase = emu_gen_find(name);
+            if (!devbase)
+                devbase = emu_gen_lib_base(name, 0, NT_DEVICE_G, 0x15E, dm);
+            if (!devbase) devbase = FAKE_LIB_BASE;
+        } else {
+            /* Real hunk-format .device in DEVS: (UAOS-306) — cached hit
+             * or on-demand load, then the real guest Open vector. */
+            devbase = emu_diskmod_find(name, RT_TYPE_DEV);
+            if (!devbase)
+                devbase = emu_open_disk_module(name, "DEVS:", RT_TYPE_DEV);
+        }
+        if (!devbase) {
+            /* UAOS-249 — declined devices fail the open so the app
+             * disables the feature (e.g. serial.device -> OctaMED's MIDI
+             * path) rather than talking to a fake base. */
+            if (emu_name_is_declined(name)) {
+                glue_w32(ioreq + IO_DEVICE, 0);
+                g_ram[ioreq + IO_ERROR] = (uint8_t)-6;   /* IOERR_OPENFAIL */
+                m68k_set_reg(M68K_REG_D0, (uint32_t)-6);
+                return;
             }
+            devbase = FAKE_LIB_BASE;
+        }
+        if (emu_diskmod_is_base(devbase, RT_TYPE_DEV)) {
+            /* Disk-loaded device — real Exec open protocol: io_Device +
+             * io_Flags + ln_Type=NT_REPLYMSG set, then the device Open
+             * vector (-6) runs as a nested guest call with A6=dev, D0=
+             * unit, A1=ioreq.  A nonzero io_Error fails the open. */
+            glue_w32(ioreq + IO_DEVICE, devbase);
+            g_ram[ioreq + IO_FLAGS] = (uint8_t)m68k_get_reg(NULL, M68K_REG_D1);
+            g_ram[ioreq + LN_TYPE]  = NT_REPLYMSG;
+            g_ram[ioreq + IO_ERROR] = 0;
+            emu_guest_call(devbase - 6, m68k_get_reg(NULL, M68K_REG_D0),
+                           m68k_get_reg(NULL, M68K_REG_D1), 0, ioreq,
+                           devbase);
+            int32_t err = (int8_t)g_ram[ioreq + IO_ERROR];
+            if (err) glue_w32(ioreq + IO_DEVICE, 0);
+            m68k_set_reg(M68K_REG_D0, (uint32_t)err);
+            return;
         }
         glue_w32(ioreq + IO_DEVICE, devbase);  /* fake or real device base */
         glue_w32(ioreq + IO_UNIT, m68k_get_reg(NULL, M68K_REG_D0));
@@ -5206,7 +5264,8 @@ static void exec_OpenDevice(void)
                 m68k_set_reg(M68K_REG_A6, saved_a6);
             }
         }
-        m68k_set_reg(M68K_REG_D0, g_ram[ioreq + IO_ERROR]);
+        m68k_set_reg(M68K_REG_D0,
+                     (uint32_t)(int32_t)(int8_t)g_ram[ioreq + IO_ERROR]);
         return;
     }
     m68k_set_reg(M68K_REG_D0, 0);   /* success */
@@ -5219,6 +5278,12 @@ static void exec_CloseDevice(void)
         uint32_t dev = glue_r32(io + IO_DEVICE);
         if (dev == AUDIO_DEV_BASE) {
             audio_note_close();
+        } else if (emu_diskmod_is_base(dev, RT_TYPE_DEV)) {
+            /* Disk-loaded device: run its real Close vector (-12), then
+             * poison io_Device/io_Unit like real Exec CloseDevice. */
+            emu_guest_call(dev - 12, 0, 0, 0, io, dev);
+            glue_w32(io + IO_DEVICE, 0xFFFFFFFFu);
+            glue_w32(io + IO_UNIT,   0xFFFFFFFFu);
         } else {
             /* ROM-registered device: run its Close vector (UAOS-238). */
             UaosRomModule *dm = emu_gen_rom(dev);
@@ -5298,20 +5363,76 @@ static void io_wait_req(uint32_t io)
     if (port) glue_list_remove_msg(port + MP_MSGLIST, io);
 }
 
+/* The disk-loaded .device case uses real Exec IO semantics — no
+ * IOF_QUEUED: "device still holds the request" is signalled by
+ * ln_Type == NT_MESSAGE (ReplyMsg flips it to NT_REPLYMSG). */
+
+/* Is `io` bound to a disk-loaded device in this window? -> dev base|0 */
+static uint32_t io_diskdev(uint32_t io)
+{
+    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) return 0;
+    uint32_t dev = glue_r32(io + IO_DEVICE);
+    return emu_diskmod_is_base(dev, RT_TYPE_DEV) ? dev : 0;
+}
+
+/* WaitIO for a disk device: block while the device still holds the
+ * request (ln_Type == NT_MESSAGE — the device ReplyMsg's it to
+ * NT_REPLYMSG on completion).  Same nap structure as io_wait_req: the
+ * VERTB/interrupt servers that will reply the request run via
+ * UAOS_M68k_DeliverInterrupts from this wait. */
+static void io_wait_dev(uint32_t io)
+{
+    UaosTask *self = Task_Current();
+    uint32_t port = glue_r32(io + MN_REPLYPORT);
+    uint32_t mask = 0;
+    if (port && self && glue_r32(port + MP_SIGTASK)) {
+        uint32_t sb = glue_r8(port + MP_SIGBIT);
+        if (sb < 32) mask = 1U << sb;
+    }
+    while (g_ram[io + LN_TYPE] == NT_MESSAGE_G) {
+        if (self && self->type == TASK_TYPE_M68K && self->m68k_halted) {
+            m68k_end_timeslice();
+            break;
+        }
+        g_blocked_in = 3;
+        g_m68k_block_marks++;
+        Task_WaitTicks(mask, 1);
+        g_blocked_in = 0;
+        /* Consume the port signal edge — it only means "check the node". */
+        if (mask && (self->tc_SigRecvd & mask)) Task_ClearSig(mask);
+        UAOS_M68k_DeliverInterrupts();
+    }
+    if (port) glue_list_remove_msg(port + MP_MSGLIST, io);
+}
+
 static void exec_DoIO(void)
 {
-    /* DoIO(ioRequest=a1) → D0=io_Error.  BeginIO+WaitIO semantics: the
-     * QUICK flag tells the device a synchronous finish is welcome; a
-     * device that leaves IOF_QUEUED set (timer TR_ADDREQUEST, a pending
-     * console/keyboard read) gets the same blocking wait WaitIO does. */
+    /* DoIO(ioRequest=a1) → D0=io_Error (sign-extended, like real Exec).
+     * BeginIO+WaitIO semantics: the QUICK flag tells the device a
+     * synchronous finish is welcome; a device that leaves IOF_QUEUED set
+     * (timer TR_ADDREQUEST, a pending console/keyboard read) gets the
+     * same blocking wait WaitIO does.  Disk devices run the real guest
+     * BeginIO vector (-30) instead. */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
+    uint32_t dev = io_diskdev(io);
+    if (dev) {
+        g_ram[io + IO_FLAGS] = (g_ram[io + IO_FLAGS] | IOF_QUICK) &
+                               (uint8_t)~(IOF_QUEUED | IOF_DONE);
+        emu_guest_call(dev - 30, 0, 0, 0, io, dev);
+        if (!(g_ram[io + IO_FLAGS] & IOF_QUICK))
+            io_wait_dev(io);
+        m68k_set_reg(M68K_REG_D0,
+                     (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
+        return;
+    }
     g_ram[io + IO_FLAGS] = (g_ram[io + IO_FLAGS] | IOF_QUICK) &
                            (uint8_t)~(IOF_QUEUED | IOF_DONE);
     io_dispatch_device(io);
     if (g_ram[io + IO_FLAGS] & IOF_QUEUED)
         io_wait_req(io);
-    m68k_set_reg(M68K_REG_D0, g_ram[io + IO_ERROR]);
+    m68k_set_reg(M68K_REG_D0,
+                 (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
 }
 
 static void exec_SendIO(void)
@@ -5320,9 +5441,17 @@ static void exec_SendIO(void)
      * clear QUICK and start the request.  Devices that finish inside
      * BeginIO get an immediate port reply (io_dispatch_device completes
      * them); devices that leave IOF_QUEUED set reply later from their own
-     * context (PIT tick, event pump) via UAOS_Emu_IOReply(). */
+     * context (PIT tick, event pump) via UAOS_Emu_IOReply().  Disk
+     * devices handle the reply themselves — no synthetic completion. */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) return;
+    uint32_t dev = io_diskdev(io);
+    if (dev) {
+        g_ram[io + IO_FLAGS] = 0;
+        g_ram[io + LN_TYPE]  = NT_MESSAGE_G;
+        emu_guest_call(dev - 30, 0, 0, 0, io, dev);
+        return;
+    }
     g_ram[io + IO_FLAGS] &= (uint8_t)~(IOF_QUICK | IOF_QUEUED | IOF_DONE);
     g_ram[io + LN_TYPE] = NT_MESSAGE_G;
     if (io_dispatch_device(io)) return;
@@ -5335,40 +5464,59 @@ static void exec_SendIO(void)
 static void exec_CheckIO(void)
 {
     /* CheckIO(ioRequest=a1) → D0=ioreq if complete else 0 while the
-     * device still holds it (IOF_QUEUED). */
+     * device still holds it (IOF_QUEUED for emulated devices, ln_Type ==
+     * NT_MESSAGE for disk-loaded ones). */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) { m68k_set_reg(M68K_REG_D0, 0); return; }
+    if (io_diskdev(io)) {
+        uint32_t res = io;
+        if (!(g_ram[io + IO_FLAGS] & IOF_QUICK) &&
+            g_ram[io + LN_TYPE] == NT_MESSAGE_G)
+            res = 0;
+        m68k_set_reg(M68K_REG_D0, res);
+        return;
+    }
     uint8_t fl = g_ram[io + IO_FLAGS];
     m68k_set_reg(M68K_REG_D0, (fl & IOF_QUEUED) ? 0 : io);
 }
 
 static void exec_WaitIO(void)
 {
-    /* WaitIO(ioRequest=a1) → D0=io_Error. */
+    /* WaitIO(ioRequest=a1) → D0=io_Error (sign-extended, like real Exec). */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
-    io_wait_req(io);
-    m68k_set_reg(M68K_REG_D0, g_ram[io + IO_ERROR]);
-}
-
-static void audio_dev_AbortIO(void);
-static void exec_AbortIO(void)
-{
-    /* AbortIO(ioRequest=a1): run the device's AbortIO vector.  If it was
-     * holding the request, deliver the abort reply — an aborted request
-     * still gets replied (IOERR_ABORTED) so a following WaitIO/WaitPort
-     * returns instead of hanging. */
-    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
-    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) {
-        m68k_set_reg(M68K_REG_D0, -3);   /* IOERR_NOCMD */
+    if (io_diskdev(io)) {
+        if (!(g_ram[io + IO_FLAGS] & IOF_QUICK))
+            io_wait_dev(io);
+        m68k_set_reg(M68K_REG_D0,
+                     (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
         return;
     }
+    io_wait_req(io);
+    m68k_set_reg(M68K_REG_D0,
+                 (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
+}
+
+/* Device part of exec_AbortIO — also reachable via a direct
+ * jsr -36(a6) (amiga.lib AbortIO) on a generated device base. */
+static void audio_dev_AbortIO(void);
+static void io_abort_device(uint32_t io)
+{
+    /* If the device was holding the request, deliver the abort reply —
+     * an aborted request still gets replied (IOERR_ABORTED) so a
+     * following WaitIO/WaitPort returns instead of hanging. */
     int was_queued = (g_ram[io + IO_FLAGS] & IOF_QUEUED) != 0;
     uint32_t dev = glue_r32(io + IO_DEVICE);
     if (dev == AUDIO_DEV_BASE) {
         uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
         audio_dev_AbortIO();
         m68k_set_reg(M68K_REG_A1, saved_a1);
+        return;
+    }
+    if (emu_diskmod_is_base(dev, RT_TYPE_DEV)) {
+        /* Disk device: real AbortIO vector (-36).  The device replies
+         * the request itself — no synthetic reply here. */
+        emu_guest_call(dev - 36, 0, 0, 0, io, dev);
         return;
     }
     UaosRomModule *dm = emu_gen_rom(dev);
@@ -5384,6 +5532,19 @@ static void exec_AbortIO(void)
             g_ram[io + IO_ERROR] = (uint8_t)-2;   /* IOERR_ABORTED */
         UAOS_Emu_IOReply(g_ram, io);
     }
+}
+
+static void exec_AbortIO(void)
+{
+    /* AbortIO(ioRequest=a1): run the device's AbortIO vector (-36 on a
+     * real device — our generated bases still take -48; the -36 stubs
+     * land here too via the LIB_ROM/audio dispatch special-cases). */
+    uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, -3);   /* IOERR_NOCMD */
+        return;
+    }
+    io_abort_device(io);
     /* D0 keeps the device AbortIO result (or the stale register value for
      * devices without an AbortIO vector — callers check io_Error). */
 }
@@ -7934,7 +8095,22 @@ int m68k_illg_instr_callback(int opcode)
                             rom_name[1]=='o' && rom_name[2]=='c' &&
                             rom_name[3]=='a' && rom_name[4]=='l' &&
                             rom_name[5]=='e';
-            if (lvo == -6)
+            /* amiga.lib BeginIO/AbortIO land at the real device LVOs
+             * -30/-36; generated *device* bases (ln_Type == NT_DEVICE_G)
+             * map them onto the native -42/-48 paths (UAOS-306). */
+            int is_devbase = a6 < GUEST_RAM_SIZE &&
+                             g_ram[a6 + 8] == NT_DEVICE_G;
+            if (is_devbase && lvo == -30) {
+                uint32_t ior = m68k_get_reg(NULL, M68K_REG_A1);
+                if (ior && ior + IOSTD_SIZE < GUEST_RAM_SIZE)
+                    io_dispatch_device(ior);
+                m68k_set_reg(M68K_REG_D0, 0);
+            } else if (is_devbase && lvo == -36) {
+                uint32_t ior = m68k_get_reg(NULL, M68K_REG_A1);
+                if (ior && ior + IOSTD_SIZE < GUEST_RAM_SIZE)
+                    io_abort_device(ior);
+                m68k_set_reg(M68K_REG_D0, 0);
+            } else if (lvo == -6)
                 m68k_set_reg(M68K_REG_D0, a6);
             else if (is_locale && lvo == -72)
                 m68k_set_reg(M68K_REG_D0, m68k_get_reg(NULL, M68K_REG_A1));
@@ -8078,6 +8254,27 @@ int m68k_illg_instr_callback(int opcode)
         case AUDEV_LVO_CLOSE:   audio_dev_Close();   break;
         case AUDEV_LVO_BEGINIO: audio_dev_BeginIO(); break;
         case AUDEV_LVO_ABORTIO: audio_dev_AbortIO(); break;
+        case AUDEV_LVO_BEGINIO_D: {
+            /* jsr -30(a6) — amiga.lib BeginIO: identical to what
+             * io_dispatch_device does for the -42 map entry, completion
+             * reply included. */
+            uint32_t ior = m68k_get_reg(NULL, M68K_REG_A1);
+            if (ior && ior + IOSTD_SIZE < GUEST_RAM_SIZE) {
+                g_ram[ior + IO_FLAGS] &= (uint8_t)~IOF_DONE;
+                audio_dev_BeginIO();
+                if (!(g_ram[ior + IO_FLAGS] & IOF_QUEUED))
+                    UAOS_Emu_IOReply(g_ram, ior);
+            }
+            break;
+        }
+        case AUDEV_LVO_ABORTIO_D: {
+            /* jsr -36(a6) — amiga.lib AbortIO: the same device part
+             * exec_AbortIO runs. */
+            uint32_t ior = m68k_get_reg(NULL, M68K_REG_A1);
+            if (ior && ior + IOSTD_SIZE < GUEST_RAM_SIZE)
+                io_abort_device(ior);
+            break;
+        }
         }
     } else {
         char msg[48] = "[emu] ILLEGAL: unknown lib=";
