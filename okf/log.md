@@ -1594,3 +1594,10 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Changed** `kernel/display/gadgets.c` `draw_button`: disabled buttons draw a ghosted label and never sink.
 * **Fixed** requester mouse presses: the WM routes MOUSE_DOWN to `on_event`, so `req_event` now forwards it to `req_click`.
 * **Docs**: `okf/kernel/display/index.md` § Requesters.
+
+## 2026-10-15 — UAOS-160: native menu disabled/ghosted items
+
+* **Added** `MenuItem.enabled_fn` + `MENU_ITEM_IF` (`kernel/display/desktop.c`). The predicate is evaluated live; disabled items draw
+  ghosted, have no hover highlight, are rejected by hit-tests and are re-checked before dispatch.
+* **Changed** Icons ▸ Put Away: enabled only while a Leave Out icon is selected.
+* **Docs**: `okf/kernel/display/index.md` § Menu Bar, Icons table.

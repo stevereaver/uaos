@@ -708,6 +708,15 @@ static void menu_action_icon_put_away(void)
     Desktop_LeaveOutRemoveSelected();
 }
 
+/* Icons ▸ Put Away is enabled only while a Leave Out shortcut icon is
+ * selected on the desktop (same test Desktop_LeaveOutRemoveSelected
+ * uses). */
+static int leaveout_icon_selected(void);
+static int menu_enabled_put_away(void)
+{
+    return leaveout_icon_selected();
+}
+
 static void menu_action_icon_format(void)
 {
     DT_LOG("[MENU] Format selected\n");
@@ -809,12 +818,21 @@ typedef struct MenuItem {
     int has_checkmark;          /* 1 = draw a check box column */
     int checked;                /* 1 = check box is filled */
     const struct MenuItem *submenu; /* submenu item list (NULL-terminated) */
+    int (*enabled_fn)(void);    /* NULL = always enabled; evaluated live */
 } MenuItem;
 
-#define MENU_ITEM(lbl, act) { lbl, act, 0, 0, 0, 0, NULL }
-#define MENU_CHECK(lbl, act, chk) { lbl, act, 0, 1, (chk), 0, NULL }
-#define MENU_DIVIDER        { NULL, NULL, 1, 0, 0, 0, NULL }
-#define MENU_END            { NULL, NULL, 0, 0, 0, 0, NULL }
+#define MENU_ITEM(lbl, act) { lbl, act, 0, 0, 0, 0, NULL, NULL }
+#define MENU_ITEM_IF(lbl, act, fn) { lbl, act, 0, 0, 0, 0, NULL, fn }
+#define MENU_CHECK(lbl, act, chk) { lbl, act, 0, 1, (chk), 0, NULL, NULL }
+#define MENU_DIVIDER        { NULL, NULL, 1, 0, 0, 0, NULL, NULL }
+#define MENU_END            { NULL, NULL, 0, 0, 0, 0, NULL, NULL }
+
+/* Live enabled test for a native menu item — dividers are never
+ * enabled; items without a predicate are always enabled. */
+static int menu_item_enabled(const MenuItem *it)
+{
+    return !it->is_divider && (!it->enabled_fn || it->enabled_fn());
+}
 
 /* View By flyout submenu.  The checked flags are updated dynamically by
  * update_view_by_checks() before the menu is drawn, so this array is
@@ -860,7 +878,7 @@ static const MenuItem * const g_menus[] = {
         MENU_ITEM("Clean Up",        menu_action_clean_up        ),
         MENU_ITEM("Snapshot",        menu_action_snapshot        ),
         MENU_ITEM("Show",            menu_action_show            ),
-        { "View By", NULL, 0, 1, 0, 0, g_view_by_submenu },
+        { "View By", NULL, 0, 1, 0, 0, g_view_by_submenu, NULL },
         MENU_END
     },
     (const MenuItem[]) {
@@ -870,7 +888,8 @@ static const MenuItem * const g_menus[] = {
         MENU_ITEM("Snapshot",        menu_action_icon_snapshot     ),
         MENU_ITEM("Unsnapshot",      menu_action_icon_unsnapshot   ),
         MENU_ITEM("Leave Out",       menu_action_icon_leave_out    ),
-        MENU_ITEM("Put Away",        menu_action_icon_put_away     ),
+        MENU_ITEM_IF("Put Away",     menu_action_icon_put_away,
+                                    menu_enabled_put_away          ),
         MENU_DIVIDER,
         MENU_ITEM("Delete",          menu_action_icon_delete       ),
         MENU_ITEM("Format",          menu_action_icon_format       ),
@@ -1224,6 +1243,10 @@ static void draw_menu_dropdown(int W)
         }
         uint32_t bg = (i == g_menu_hover) ? WB_BLUE : WB_GREY;
         uint32_t fg = (i == g_menu_hover) ? WB_WHITE : WB_BLACK;
+        if (!menu_item_enabled(&items[i])) {
+            bg = WB_GREY;               /* no hover highlight */
+            fg = WB_DARK_GREY;          /* ghosted label */
+        }
         FB_FillRect(g_menu_x + 2, iy, w - 4, item_h, bg);
 
         int cx = g_menu_x + pad_x;
@@ -1280,6 +1303,10 @@ static void draw_menu_dropdown(int W)
                 }
                 uint32_t bg = (j == g_submenu_hover) ? WB_BLUE : WB_GREY;
                 uint32_t fg = (j == g_submenu_hover) ? WB_WHITE : WB_BLACK;
+                if (!menu_item_enabled(&sub[j])) {
+                    bg = WB_GREY;               /* no hover highlight */
+                    fg = WB_DARK_GREY;          /* ghosted label */
+                }
                 FB_FillRect(sx + 2, iy, sw - 4, item_h, bg);
                 int cx2 = sx + pad_x;
                 if (sub[j].has_checkmark) {
@@ -2298,6 +2325,20 @@ void Desktop_LeaveOutAdd(const char *path, const char *name, int is_dir)
     }
 }
 
+/* 1 when at least one Leave Out shortcut icon is selected — the same
+ * selection test Desktop_LeaveOutRemoveSelected uses. */
+static int leaveout_icon_selected(void)
+{
+    int n;
+    IconState *icons = get_icons(&n);
+    for (int i = 0; i < n; i++) {
+        if (icons[i].is_leaveout && icons[i].is_selected &&
+            icons[i].leaveout_path)
+            return 1;
+    }
+    return 0;
+}
+
 void Desktop_LeaveOutRemoveSelected(void)
 {
     int n;
@@ -2398,7 +2439,7 @@ static int dropdown_hit(int mx, int my)
 
     const MenuItem *items = g_menus[g_menu_index];
     if (idx < 0 || idx >= menu_item_count(items)) return -1;
-    if (items[idx].is_divider) return -1;
+    if (!menu_item_enabled(&items[idx])) return -1;   /* dividers+disabled */
     return idx;
 }
 
@@ -2437,7 +2478,7 @@ static int submenu_hit(int mx, int my)
     const MenuItem *sub = items[g_submenu_item].submenu;
     int sn = menu_item_count(sub);
     if (idx < 0 || idx >= sn) return -1;
-    if (sub[idx].is_divider) return -1;
+    if (!menu_item_enabled(&sub[idx])) return -1;    /* dividers+disabled */
     return idx;
 }
 
@@ -2879,12 +2920,14 @@ void Desktop_RightButtonRelease(int mx, int my)
                 items[g_submenu_item].submenu) {
                 const MenuItem *sub = items[g_submenu_item].submenu;
                 int sn = menu_item_count(sub);
-                if (g_submenu_hover < sn && sub[g_submenu_hover].action)
+                if (g_submenu_hover < sn && sub[g_submenu_hover].action &&
+                    menu_item_enabled(&sub[g_submenu_hover]))
                     sub[g_submenu_hover].action();
             }
         } else if (g_menu_hover >= 0) {
             const MenuItem *items = g_menus[g_menu_index];
-            if (items[g_menu_hover].action)
+            if (items[g_menu_hover].action &&
+                menu_item_enabled(&items[g_menu_hover]))
                 items[g_menu_hover].action();
         }
     }

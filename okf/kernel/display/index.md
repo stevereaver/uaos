@@ -151,6 +151,8 @@ The menu bar displays the Workbench 3.1-style menu titles (`Workbench`, `Window`
 4. Dragging the cursor over another menu title while the right button is held switches to that menu.
 5. A left mouse click dismisses an open menu without triggering an action.
 
+Disabled native items (UAOS-160): `MenuItem.enabled_fn` (NULL means always enabled; set with `MENU_ITEM_IF(lbl, act, fn)`) is called live through `menu_item_enabled()` on every draw, hit-test and dispatch, so the state is always current when a menu drops down. A disabled item draws its label in `WB_DARK_GREY` with no hover bar. `dropdown_hit`/`submenu_hit` treat it like a divider, and `Desktop_RightButtonRelease` re-checks it before running the action. Native `MenuItem`s have no keyboard or shortcut path; guest COMMSEQ already checks `mi->enabled`.
+
 #### Workbench Drop-down Menu
 
 The `Workbench` menu contains the following items:
@@ -193,7 +195,7 @@ The `Icons` menu (opened with a right-click on the `Icons` title) contains the f
 | Snapshot | Saves the selected icon's current position in the drawer (in-memory). |
 | Unsnapshot | Clears the saved position of the selected icon. |
 | Leave Out | Places a desktop shortcut icon pointing to the selected file/drawer. Double-clicking opens (dir) or runs (file) the target. |
-| Put Away | Removes the currently-selected leave-out desktop shortcut icon. |
+| Put Away | Removes the currently-selected leave-out desktop shortcut icon. Ghosted unless a Leave Out icon is selected (UAOS-160). |
 | *divider* | Horizontal separator. |
 | Delete | Confirms and moves the selected file to its own volume's `VOL:Trashcan/` drawer (permanent delete when the volume has no Trashcan — e.g. formatted NOICON). |
 | Format | Opens the Format window for device selection and FAT32 formatting. |
