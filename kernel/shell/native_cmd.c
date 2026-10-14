@@ -78,6 +78,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDT("install",         Cmd_Install,       "DEVICE/A,NOBOOT/S" ),
     CMD ("diskchange",      Cmd_DiskChange    ),
     CMD ("dismount",        Cmd_Dismount      ),
+    CMD ("adf",             Cmd_Adf           ),
     CMD ("addbuffers",      Cmd_AddBuffers    ),
     CMDT("requestchoice",   Cmd_RequestChoice, "TITLE/A,BODY/A,BUTTON/M" ),
     CMDT("requestfile",     Cmd_RequestFile,   "TITLE/K,DRAWER/K,FILE/K,PATTERN/K,PUBSCREEN/K" ),

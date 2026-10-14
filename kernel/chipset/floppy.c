@@ -274,6 +274,7 @@ int floppy_load_adf(int unit, const uint8_t *data, size_t size)
     f->head = 0;
     f->bit_pos = 0;
     f->dma_active = 0;
+    f->dirty = 0;
     f->chng_cleared = 0;
     regenerate_track(f);
     return 1;
@@ -288,6 +289,7 @@ void floppy_eject(int unit)
     f->dma_ram = NULL;
     f->motor = 0;
     f->mfm_bits = 0;
+    f->dirty = 0;
     f->chng_cleared = 0;
 }
 
@@ -324,6 +326,7 @@ void floppy_make_test_adf(int unit)
     f->cyl = 0;
     f->head = 0;
     f->bit_pos = 0;
+    f->dirty = 0;
     f->chng_cleared = 0;
     regenerate_track(f);
 }
@@ -538,6 +541,7 @@ static void dma_write_words(FloppyState *f, uint32_t bits_per_tick)
                 uint8_t *cur = f->adf + track * FLOPPY_TRACK_SIZE + s * FLOPPY_SECTOR_SIZE;
                 if (memcmp(cur, sectors[s], FLOPPY_SECTOR_SIZE) != 0) {
                     memcpy(cur, sectors[s], FLOPPY_SECTOR_SIZE);
+                    f->dirty = 1;
                 }
             }
         }
@@ -670,6 +674,7 @@ void floppy_dskdat_write(int unit, uint16_t value)
                 uint8_t *cur = f->adf + track * FLOPPY_TRACK_SIZE + s * FLOPPY_SECTOR_SIZE;
                 if (memcmp(cur, sectors[s], FLOPPY_SECTOR_SIZE) != 0) {
                     memcpy(cur, sectors[s], FLOPPY_SECTOR_SIZE);
+                    f->dirty = 1;
                 }
             }
         }
@@ -699,10 +704,30 @@ int floppy_write_sector(int unit, int track, int sector, const uint8_t *data)
     if (sector < 0 || sector >= FLOPPY_SECTORS) return 0;
     uint8_t *sec = f->adf + track * FLOPPY_TRACK_SIZE + sector * FLOPPY_SECTOR_SIZE;
     memcpy(sec, data, FLOPPY_SECTOR_SIZE);
+    f->dirty = 1;
     if (f->cyl * FLOPPY_HEADS + f->head == track) {
         regenerate_track(f);
     }
     return 1;
+}
+
+int floppy_is_dirty(int unit)
+{
+    FloppyState *f = unit_state(unit);
+    return f ? f->dirty : 0;
+}
+
+void floppy_clear_dirty(int unit)
+{
+    FloppyState *f = unit_state(unit);
+    if (f) f->dirty = 0;
+}
+
+const uint8_t *floppy_adf_data(int unit)
+{
+    FloppyState *f = unit_state(unit);
+    if (!f || !f->adf_loaded) return NULL;
+    return f->adf;
 }
 
 /* Enable or disable the virtual write-protect tab. */

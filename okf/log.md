@@ -1568,3 +1568,13 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 
 * **Added** `VFS_Unmount`/`VFS_FindMountByDev` (`kernel/dos/vfs.c`), `Handler_Destroy` + dead-slot reuse (`handler.c`), per-volume busy counts (`FfsHandler_BusyCount`, `FatHandler_BusyCount`/`FAT32_OpenCount`), real `FAT32_Unmount`, and the `C:dismount` shell command.
 * **Verified** in QEMU with a scratch copy of test-ffs.hdf: dismount/remount cycles reuse the same handler slot; dismount is refused (rc 10) while a background `copy` holds files open, refused for RAM: and for the SYS: target volume; stale assigns fail cleanly and resolve again after remount; smoke.sh 24/24.
+
+## 2026-10-15 — UAOS-155: ADF mount service
+
+* **Added** `kernel/dos/adf_mount.{c,h}`: `AdfMount_Insert/Eject/UnitInfo/UnitForVolume/ErrorString`.
+  It inserts an ADF file into DF0:–DF3: and mounts it via `VFS_MountPartition`. Insert rejects wrong
+  size, NDOS, an occupied unit and volume-name clashes, and leaves no partial state on failure. Eject
+  refuses while files or locks are open on the volume.
+* **Added** a per-unit `dirty` flag in `kernel/chipset/floppy.c`, plus `floppy_is_dirty`, `floppy_clear_dirty` and `floppy_adf_data`.
+* **Added** `C:adf` (`list` / `insert <unit> <path>` / `eject <unit>`).
+* **Docs**: `okf/kernel/dos/index.md` § ADF mount service.

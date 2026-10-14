@@ -38,6 +38,7 @@ typedef struct {
     /* ADF data, 880 KiB. */
     uint8_t  adf[FLOPPY_DISK_SIZE];
     int      adf_loaded;
+    int      dirty;         /* ADF contents modified since load */
 
     /* Current physical position. */
     int      cyl;
@@ -121,6 +122,12 @@ int floppy_read_sector(int unit, int track, int sector, uint8_t *out);
 
 /* Direct decoded sector write. */
 int floppy_write_sector(int unit, int track, int sector, const uint8_t *data);
+
+/* Dirty tracking: set by sector/DMA writes, cleared by load/eject and
+ * floppy_clear_dirty.  floppy_adf_data returns the unit's ADF buffer. */
+int          floppy_is_dirty(int unit);
+void         floppy_clear_dirty(int unit);
+const uint8_t *floppy_adf_data(int unit);
 
 /* Write-protect control and diagnostics. */
 void floppy_set_write_protect(int unit, int wp);

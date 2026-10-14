@@ -240,6 +240,7 @@ void Cmd_UnSet           (NativeCmdCtx *ctx, const char *args);
 void Cmd_Install         (NativeCmdCtx *ctx, const char *args);
 void Cmd_DiskChange      (NativeCmdCtx *ctx, const char *args);
 void Cmd_Dismount        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Adf             (NativeCmdCtx *ctx, const char *args);
 void Cmd_AddBuffers      (NativeCmdCtx *ctx, const char *args);
 void Cmd_RequestChoice   (NativeCmdCtx *ctx, const char *args);
 void Cmd_RequestFile     (NativeCmdCtx *ctx, const char *args);
