@@ -1578,3 +1578,11 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Added** a per-unit `dirty` flag in `kernel/chipset/floppy.c`, plus `floppy_is_dirty`, `floppy_clear_dirty` and `floppy_adf_data`.
 * **Added** `C:adf` (`list` / `insert <unit> <path>` / `eject <unit>`).
 * **Docs**: `okf/kernel/dos/index.md` § ADF mount service.
+
+## 2026-10-15 — UAOS-161: ADF write-back on eject
+
+* **Changed** `AdfMount_Eject(unit, discard)`: it unmounts, then saves a dirty image in place over the source .adf
+  (FINDUPDATE, no truncate). On save failure it returns `ADF_ERR_WRITEBACK` and keeps the disk loaded, dirty and
+  unmounted. `discard` drops the changes. At insert, a source that cannot be opened for writing makes the drive write-protected.
+* **Changed** `C:adf`: `eject <unit> [discard]`, relative insert paths resolved against cwd, and `list` shows `write-protected`.
+* **Docs**: `okf/kernel/dos/index.md` § ADF mount service.

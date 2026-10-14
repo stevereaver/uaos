@@ -3,11 +3,14 @@
  * AdfMount_Insert reads an ADF file through the VFS, loads it into the
  * emulated drive, attaches its block device and mounts the filesystem.
  * AdfMount_Eject unmounts the volume (refusing while files or locks are
- * open), detaches the block device and ejects the disk.
+ * open), writes a dirty image back to its source file, detaches the
+ * block device and ejects the disk.
  *
- * Dirty ADF contents are discarded on eject — write-back to the source
- * file is UAOS-161; the floppy dirty flag and floppy_adf_data() are the
- * seam for it.
+ * Write-back policy (UAOS-161): a dirty ADF is saved to its source path
+ * on eject unless the caller passes discard=1.  If the source could not
+ * be opened for writing at insert time the drive is write-protected so
+ * nothing is lost silently.  A failed write-back leaves the disk
+ * loaded, dirty and unmounted so the eject can be retried or discarded.
  */
 #include "adf_mount.h"
 #include "vfs.h"
@@ -20,6 +23,7 @@
 /* Per-unit bookkeeping for disks inserted via AdfMount_Insert. */
 static struct {
     int  mounted;
+    int  write_protected;
     char path[128];
     char volume[32];
 } g_adf[FLOPPY_UNITS];
@@ -81,8 +85,23 @@ int AdfMount_Insert(int unit, const char *path)
           g_adf_stage[2] == 'S'))
         return ADF_ERR_NDOS;
 
+    /* Probe writability before the image goes live: an ADF on a
+     * read-only source (CD, protected file) inserts write-protected so
+     * FS writes fail visibly instead of being lost on eject.  A
+     * write-open without writes has no side effect on either handler —
+     * FFS FINDUPDATE only resolves the file key (ffs_handler.c) and
+     * FAT32 FINDUPDATE uses FAT32_Open (fat_handler.c). */
+    int writable = 0;
+    {
+        VfsFile pf;
+        if (VFS_Open(&pf, path, VFS_WRITE)) {
+            VFS_Close(&pf);
+            writable = 1;
+        }
+    }
+
     floppy_load_adf(unit, g_adf_stage, FLOPPY_DISK_SIZE);
-    floppy_set_write_protect(unit, 0);
+    floppy_set_write_protect(unit, writable ? 0 : 1);
     if (FloppyBlk_Attach(unit) != 0) {
         floppy_eject(unit);
         return ADF_ERR_MOUNT;
@@ -108,16 +127,42 @@ int AdfMount_Insert(int unit, const char *path)
     }
     g_adf[unit].path[i] = '\0';
     VFS_GetMountName(midx, g_adf[unit].volume, sizeof(g_adf[unit].volume));
+    g_adf[unit].write_protected = writable ? 0 : 1;
     g_adf[unit].mounted = 1;
     return ADF_OK;
 }
 
-int AdfMount_Eject(int unit)
+/* Write the in-memory ADF back to its source file.  The file is exactly
+ * FLOPPY_DISK_SIZE bytes, so a sequential VFS_Write from offset 0 is an
+ * in-place overwrite (VFS_WRITE without VFS_TRUNC -> ACTION_FINDUPDATE,
+ * which does not truncate on either handler).  Returns 0 on success. */
+static int adf_writeback(int unit)
+{
+    const uint8_t *img = floppy_adf_data(unit);
+    if (!img) return -1;
+
+    VfsFile fh;
+    if (!VFS_Open(&fh, g_adf[unit].path, VFS_WRITE)) return -1;
+    uint32_t done = 0;
+    while (done < FLOPPY_DISK_SIZE) {
+        uint32_t n = VFS_Write(&fh, img + done,
+                               (uint32_t)FLOPPY_DISK_SIZE - done);
+        if (n == 0) break;
+        done += n;
+    }
+    uint32_t sz = VFS_Size(&fh);
+    VFS_Close(&fh);
+    if (done != FLOPPY_DISK_SIZE || sz != FLOPPY_DISK_SIZE) return -1;
+    return 0;
+}
+
+int AdfMount_Eject(int unit, int discard)
 {
     if (unit < 0 || unit >= FLOPPY_UNITS) return ADF_ERR_UNIT;
     if (!floppy_unit_loaded(unit)) return ADF_ERR_EMPTY;
 
-    /* Unmount first if this unit's blockdev still has a mount. */
+    /* Unmount first if this unit's blockdev still has a mount — this is
+     * what flushes FS state into the floppy image before write-back. */
     int midx = adf_mount_index(unit);
     if (midx >= 0) {
         char unit_name[32];
@@ -128,7 +173,16 @@ int AdfMount_Eject(int unit)
         if (r != VFS_UNMOUNT_OK)  return ADF_ERR_MOUNT;
     }
 
-    /* UAOS-161 seam: flush dirty ADF back to g_adf[unit].path here. */
+    /* Write a dirty image back to its source.  Disks with no recorded
+     * path (the selftest disk) or discard=1 skip this.  On failure the
+     * disk stays loaded, dirty and unmounted — a retry saves again and
+     * `adf eject <u> discard` drops the changes. */
+    if (floppy_is_dirty(unit) && g_adf[unit].path[0] && !discard) {
+        if (adf_writeback(unit) != 0)
+            return ADF_ERR_WRITEBACK;
+        floppy_clear_dirty(unit);
+    }
+
     FloppyBlk_Detach(unit);
     floppy_eject(unit);
     memset(&g_adf[unit], 0, sizeof(g_adf[unit]));
@@ -141,6 +195,7 @@ int AdfMount_UnitInfo(int unit, AdfUnitInfo *out)
     memset(out, 0, sizeof(*out));
     out->loaded = floppy_unit_loaded(unit);
     out->dirty  = floppy_is_dirty(unit);
+    out->write_protected = g_adf[unit].write_protected;
     int midx = adf_mount_index(unit);
     out->mounted = (midx >= 0);
     if (midx >= 0)
@@ -183,6 +238,7 @@ const char *AdfMount_ErrorString(int err)
     case ADF_ERR_NAMECLASH: return "Volume name already in use";
     case ADF_ERR_EMPTY:     return "No disk in drive";
     case ADF_ERR_VOLBUSY:   return "Volume is in use";
+    case ADF_ERR_WRITEBACK: return "Could not save changes to ADF file";
     default:                return "Unknown error";
     }
 }

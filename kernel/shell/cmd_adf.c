@@ -2,11 +2,14 @@
  *
  * Syntax: adf [list]
  *         adf insert <unit> <path>
- *         adf eject  <unit>
+ *         adf eject  <unit> [discard]
  *
  * <unit> accepts 0-3, DF0-DF3 or DF0:-DF3: (case-insensitive).
- * <path> may be double-quoted.  insert loads a 901120-byte ADF file into
- * the drive and mounts it; eject unmounts and removes the disk.
+ * <path> may be double-quoted; a path without a volume name is resolved
+ * against the shell's cwd so a later eject can find the file from any
+ * shell.  insert loads a 901120-byte ADF file into the drive and mounts
+ * it; eject unmounts, writes a dirty disk back to its source file
+ * (unless discard is given) and removes the disk.
  *
  * Return codes: 0 = success, 10 = occupied/volume-busy/empty,
  *               20 = other errors.
@@ -81,6 +84,8 @@ static void adf_list(NativeCmdCtx *ctx)
             if (inf.dirty) cmd_scat(line, " modified", CMD_MAX_LINE);
             cmd_scat(line, " not mounted", CMD_MAX_LINE);
         }
+        if (inf.loaded && inf.write_protected)
+            cmd_scat(line, " write-protected", CMD_MAX_LINE);
         PRINT(line);
     }
 }
@@ -112,7 +117,7 @@ void Cmd_Adf(NativeCmdCtx *ctx, const char *args)
     if (!do_insert && !do_eject) {
         PRINT("Usage: adf [list]");
         PRINT("       adf insert <unit> <path>");
-        PRINT("       adf eject  <unit>");
+        PRINT("       adf eject  <unit> [discard]");
         if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 20);
         return;
     }
@@ -139,7 +144,11 @@ void Cmd_Adf(NativeCmdCtx *ctx, const char *args)
             if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 20);
             return;
         }
-        err = AdfMount_Insert(unit, path);
+        /* Anchor relative paths at the shell cwd so a later eject (from
+         * any shell, or a disk icon) finds the source file again. */
+        char abspath[128];
+        cmd_make_abs(ctx->cwd, path, abspath, sizeof(abspath));
+        err = AdfMount_Insert(unit, abspath);
         if (err == ADF_OK) {
             AdfUnitInfo inf;
             AdfMount_UnitInfo(unit, &inf);
@@ -151,7 +160,15 @@ void Cmd_Adf(NativeCmdCtx *ctx, const char *args)
             PRINT(msg);
         }
     } else {
-        err = AdfMount_Eject(unit);
+        while (*p == ' ') p++;
+        char kw[16] = {0};
+        adf_take_arg(p, kw, sizeof(kw));
+        if (kw[0] && !cmd_seq_ci(kw, "discard")) {
+            PRINT("Usage: adf eject <unit> [discard]");
+            if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 20);
+            return;
+        }
+        err = AdfMount_Eject(unit, kw[0] ? 1 : 0);
         if (err == ADF_OK) {
             cmd_scopy(msg, "adf: DF", CMD_MAX_LINE);
             cmd_uint_to_dec((uint32_t)unit, unit_arg, sizeof(unit_arg));
