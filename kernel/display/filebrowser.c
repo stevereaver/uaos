@@ -11,6 +11,7 @@
 #include "wm.h"
 #include "framebuffer.h"
 #include "desktop.h"
+#include "adf_picker.h"
 #include "../shell/exec_file.h"
 #include "../dos/blockdev.h"
 #include "../dos/vfs.h"
@@ -567,18 +568,24 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
             char file_path[128];
             build_path(b->volume, e[icon].name, file_path, 128);
 
-            const char *extras[WB_MAX_ARGS];
-            char extra_paths[WB_MAX_ARGS][128];
-            int n_extra = 0;
-            for (int i = 0; i < MAX_BROWSER_ENTRIES &&
-                            n_extra < WB_MAX_ARGS; i++) {
-                if (i == icon || !b->selected[i] || !e[i].name) continue;
-                build_path(b->volume, e[i].name,
-                           extra_paths[n_extra], 128);
-                extras[n_extra] = extra_paths[n_extra];
-                n_extra++;
+            if (AdfPicker_IsAdfPath(file_path)) {
+                /* .adf images open the DF0-DF3 drive picker (UAOS-158)
+                 * instead of being launched. */
+                AdfPicker_Open(file_path);
+            } else {
+                const char *extras[WB_MAX_ARGS];
+                char extra_paths[WB_MAX_ARGS][128];
+                int n_extra = 0;
+                for (int i = 0; i < MAX_BROWSER_ENTRIES &&
+                                n_extra < WB_MAX_ARGS; i++) {
+                    if (i == icon || !b->selected[i] || !e[i].name) continue;
+                    build_path(b->volume, e[i].name,
+                               extra_paths[n_extra], 128);
+                    extras[n_extra] = extra_paths[n_extra];
+                    n_extra++;
+                }
+                ExecFile_RunWB(file_path, extras, n_extra);
             }
-            ExecFile_RunWB(file_path, extras, n_extra);
         }
     } else {
         /* First click — select icon, record for double-click detection

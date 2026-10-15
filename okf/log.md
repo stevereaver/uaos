@@ -1587,7 +1587,7 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Changed** `C:adf`: `eject <unit> [discard]`, relative insert paths resolved against cwd, and `list` shows `write-protected`.
 * **Docs**: `okf/kernel/dos/index.md` § ADF mount service.
 
-## 2026-10-15 — UAOS-158: Requester_Choice multi-button requester
+## 2026-10-15 — UAOS-157: Requester_Choice multi-button requester (commit ba3a255, mislabelled UAOS-158 in its message)
 
 * **Added** `Requester_Choice` (`kernel/display/requester.{c,h}`): up to 5 buttons with per-button ghosting, index callback,
   `REQ_BTN_NONE` on Esc/close, and Enter = first enabled button.
@@ -1595,9 +1595,16 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Fixed** requester mouse presses: the WM routes MOUSE_DOWN to `on_event`, so `req_event` now forwards it to `req_click`.
 * **Docs**: `okf/kernel/display/index.md` § Requesters.
 
-## 2026-10-15 — UAOS-160: native menu disabled/ghosted items
+## 2026-10-15 — UAOS-159: native menu disabled/ghosted items (commit c69d3bf, mislabelled UAOS-160 in its message)
 
 * **Added** `MenuItem.enabled_fn` + `MENU_ITEM_IF` (`kernel/display/desktop.c`). The predicate is evaluated live; disabled items draw
   ghosted, have no hover highlight, are rejected by hit-tests and are re-checked before dispatch.
 * **Changed** Icons ▸ Put Away: enabled only while a Leave Out icon is selected.
 * **Docs**: `okf/kernel/display/index.md` § Menu Bar, Icons table.
+
+## 2026-10-15 — UAOS-158: double-click .adf → drive picker → mount
+
+* **Added** `kernel/display/adf_picker.{c,h}`: a `.adf` double-click in a file browser, or on a Leave Out shortcut, opens the
+  DF0:–DF3: picker (occupied drives ghosted) and mounts via `AdfMount_Insert`; errors are shown in an Info requester.
+* **Changed** `filebrowser.c` / `desktop.c` double-click file paths; non-.adf files still go to `ExecFile_RunWB`.
+* **Docs**: `okf/kernel/display/index.md` § Requesters. Also corrected the UAOS-157/159 numbering in earlier entries.

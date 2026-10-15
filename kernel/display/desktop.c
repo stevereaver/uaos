@@ -12,6 +12,7 @@
 #include "wm.h"
 #include "filebrowser.h"
 #include "requester.h"
+#include "adf_picker.h"
 #include "../exec/intuition_lib.h"
 #include "about_win.h"
 #include "shell_win.h"
@@ -3201,6 +3202,9 @@ void Desktop_MouseRelease(int mx, int my)
                     /* Leave Out shortcut — open (dir) or run (file) */
                     if (ic->leaveout_is_dir) {
                         FileBrowser_Open(ic->leaveout_path);
+                    } else if (AdfPicker_IsAdfPath(ic->leaveout_path)) {
+                        /* .adf shortcut → drive picker (UAOS-158) */
+                        AdfPicker_Open(ic->leaveout_path);
                     } else {
                         /* Workbench launch semantics (UAOS-253) */
                         extern int ExecFile_RunWB(const char *path,
