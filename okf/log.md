@@ -1608,3 +1608,13 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
   DF0:–DF3: picker (occupied drives ghosted) and mounts via `AdfMount_Insert`; errors are shown in an Info requester.
 * **Changed** `filebrowser.c` / `desktop.c` double-click file paths; non-.adf files still go to `ExecFile_RunWB`.
 * **Docs**: `okf/kernel/display/index.md` § Requesters. Also corrected the UAOS-157/159 numbering in earlier entries.
+
+## 2026-10-15 — UAOS-160: Icons ▸ Unmount for DF volumes
+
+* **Added** Icons ▸ Unmount (`kernel/display/desktop.c`) between Delete and Format. It is enabled only for a selected desktop icon on a
+  floppy mount; it confirms, closes browsers on the volume, then calls `AdfMount_Eject`. Busy shows an Info requester; a write-back failure offers Discard.
+* **Added** `FileBrowser_CloseVolume(vol)` (`filebrowser.{c,h}`).
+* **Fixed** `get_icons()` selection carry-over: old volume names are now snapshotted before the rebuild rewrites `vol_labels[]`, so a removed
+  disk's selection no longer leaks onto the icon that reuses its label slot.
+* **Changed** ADF insert (picker) and unmount success damage the whole desktop, so the icon appears/disappears without waiting for the next repaint.
+* **Docs**: `okf/kernel/display/index.md` Icons table.

@@ -198,6 +198,7 @@ The `Icons` menu (opened with a right-click on the `Icons` title) contains the f
 | Put Away | Removes the currently-selected leave-out desktop shortcut icon. Ghosted unless a Leave Out icon is selected (UAOS-159). |
 | *divider* | Horizontal separator. |
 | Delete | Confirms and moves the selected file to its own volume's `VOL:Trashcan/` drawer (permanent delete when the volume has no Trashcan — e.g. formatted NOICON). |
+| Unmount | Ghosted unless a desktop disk icon on a DF0:–DF3: floppy mount is selected (`selected_df_unit` → `AdfMount_UnitForVolume`; browser selections, Trashcan, RAM, DH and Leave Out icons don't count). Asks for confirmation, closes every browser on the volume (`FileBrowser_CloseVolume`), then `AdfMount_Eject(unit, 0)`. Busy → "DFn: is in use" Info. Write-back failure → "Discard / Cancel" confirm → `AdfMount_Eject(unit, 1)`. On success the desktop is damaged so the icon disappears straight away (UAOS-160). |
 | Format | Opens the Format window for device selection and FAT32 formatting. |
 | Empty Trash | Confirms and recursively deletes the contents of every mounted volume's `VOL:Trashcan` drawer (`VFS_ReadDir`-based, so handler-backed FAT32 volumes are covered; 6-deep nesting cap). |
 

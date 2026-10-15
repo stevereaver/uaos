@@ -1656,6 +1656,43 @@ void FileBrowser_Close(int wm_handle)
     b->lasso_active = 0;
 }
 
+/* 1 if the pre-colon part of `path` equals `vol` case-insensitively.
+ * `vol` may itself carry a trailing ':' — both sides stop at ':'. */
+static int vol_prefix_eq_ci(const char *path, const char *vol)
+{
+    int k = 0;
+    for (;;) {
+        char a = path[k], c = vol[k];
+        int aend = (a == '\0' || a == ':');
+        int cend = (c == '\0' || c == ':');
+        if (aend || cend) return aend && cend;
+        if (a >= 'A' && a <= 'Z') a += (char)('a' - 'A');
+        if (c >= 'A' && c <= 'Z') c += (char)('a' - 'A');
+        if (a != c) return 0;
+        k++;
+    }
+}
+
+void FileBrowser_CloseVolume(const char *vol)
+{
+    if (!vol || !vol[0]) return;
+    /* Scan-and-restart: FileBrowser_Close mutates the slot (and any close
+     * side-effects could touch other slots), so restart after each close
+     * instead of trusting a captured index to stay valid. */
+    for (;;) {
+        int h = -1;
+        for (int i = 0; i < MAX_BROWSERS; i++) {
+            if (g_browsers[i].wm_handle >= 0 &&
+                vol_prefix_eq_ci(g_browsers[i].volume, vol)) {
+                h = g_browsers[i].wm_handle;
+                break;
+            }
+        }
+        if (h < 0) break;
+        FileBrowser_Close(h);
+    }
+}
+
 void FileBrowser_CleanUp(int wm_handle)
 {
     /* Clean Up in AmigaOS re-arranges icons to a neat grid.

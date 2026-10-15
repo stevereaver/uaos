@@ -22,6 +22,7 @@
 #include "../dos/vfs.h"
 #include "../dos/ramfs.h"
 #include "../dos/icon_loader.h"
+#include "../dos/adf_mount.h"
 #include "../exec/workbench_lib.h"
 #include "../irq/rtc.h"
 #include "../irq/ps2kbd.h"
@@ -718,6 +719,100 @@ static int menu_enabled_put_away(void)
     return leaveout_icon_selected();
 }
 
+/* Icons ▸ Unmount — enabled while a desktop disk icon whose volume lives
+ * on a floppy drive is selected (UAOS-160).  AdfMount_UnitForVolume
+ * matches any live mount on floppyN, so disks inserted without AdfMount
+ * (the selftest disk, diskchange media) count too.  Selections inside
+ * file-browser windows do not qualify — browser icons carry no volume.
+ * Defined next to leaveout_icon_selected, after IconState. */
+static int selected_df_unit(void);
+static int menu_enabled_unmount(void)
+{
+    return selected_df_unit() >= 0;
+}
+
+static int  g_pending_unmount_unit = -1;
+static char g_pending_unmount_vol[32];
+
+static void unmount_discard_cb(int button, const char *text, void *ud)
+{
+    (void)text; (void)ud;
+    if (button == REQ_BTN_OK && g_pending_unmount_unit >= 0 &&
+        AdfMount_Eject(g_pending_unmount_unit, 1) == ADF_OK)
+        WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, (int)g_fb.height);
+    g_pending_unmount_unit = -1;
+}
+
+static void unmount_cb(int button, const char *text, void *ud)
+{
+    (void)text; (void)ud;
+    if (button != REQ_BTN_OK) return;
+    int unit = g_pending_unmount_unit;
+    if (unit < 0) return;
+    /* Close browser windows on this volume first so none are left
+     * pointing at a vanished mount.  Harmless if the eject then fails. */
+    FileBrowser_CloseVolume(g_pending_unmount_vol);
+    int err = AdfMount_Eject(unit, 0);
+    if (err == ADF_OK) {
+        g_pending_unmount_unit = -1;
+        WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, (int)g_fb.height);
+        return;
+    }
+    if (err == ADF_ERR_VOLBUSY) {
+        static char busy1[40];
+        int bi = 0;
+        const char *p = "DF";
+        while (*p && bi < 38) busy1[bi++] = *p++;
+        busy1[bi++] = (char)('0' + unit);
+        p = ": is in use.";
+        while (*p && bi < 38) busy1[bi++] = *p++;
+        busy1[bi] = '\0';
+        const char *lines[] = {
+            busy1, "Close open files and try again.", NULL
+        };
+        Requester_Info("Unmount", lines, NULL, NULL);
+        g_pending_unmount_unit = -1;
+    } else if (err == ADF_ERR_WRITEBACK) {
+        /* Keep g_pending_unmount_unit for the discard callback. */
+        Requester_Confirm("Unmount",
+            "Could not save changes to the ADF file.\n"
+            "Eject anyway and discard changes?",
+            "Discard", "Cancel", unmount_discard_cb, NULL);
+    } else {
+        const char *lines[] = { AdfMount_ErrorString(err), NULL };
+        Requester_Info("Unmount", lines, NULL, NULL);
+        g_pending_unmount_unit = -1;
+    }
+}
+
+static void menu_action_icon_unmount(void)
+{
+    DT_LOG("[MENU] Unmount selected\n");
+    int unit = selected_df_unit();
+    if (unit < 0) return;
+    AdfUnitInfo info;
+    if (AdfMount_UnitInfo(unit, &info) != ADF_OK) return;
+    g_pending_unmount_unit = unit;
+    scpy(g_pending_unmount_vol, info.volume,
+         (int)sizeof(g_pending_unmount_vol));
+
+    static char body[64];
+    int bi = 0;
+    const char *p = "Unmount DF";
+    while (*p && bi < 60) body[bi++] = *p++;
+    body[bi++] = (char)('0' + unit);
+    p = ": (";
+    while (*p && bi < 56) body[bi++] = *p++;
+    const char *v = info.volume;
+    while (*v && bi < 60) body[bi++] = *v++;
+    p = ")?";
+    while (*p && bi < 62) body[bi++] = *p++;
+    body[bi] = '\0';
+
+    Requester_Confirm("Unmount", body, "Unmount", "Cancel",
+                      unmount_cb, NULL);
+}
+
 static void menu_action_icon_format(void)
 {
     DT_LOG("[MENU] Format selected\n");
@@ -893,6 +988,8 @@ static const MenuItem * const g_menus[] = {
                                     menu_enabled_put_away          ),
         MENU_DIVIDER,
         MENU_ITEM("Delete",          menu_action_icon_delete       ),
+        MENU_ITEM_IF("Unmount",      menu_action_icon_unmount,
+                                    menu_enabled_unmount            ),
         MENU_ITEM("Format",          menu_action_icon_format       ),
         MENU_ITEM("Empty Trash",     menu_action_icon_empty_trash  ),
         MENU_END
@@ -1672,7 +1769,25 @@ static IconState *get_icons(int *count)
      * Must be static — ParsedIcon is huge (~32 KB) and 16 of them on the
      * kernel stack would overflow it. */
     static IconState old_icons[MAX_ICONS];
-    for (int i = 0; i < MAX_ICONS; i++) old_icons[i] = icons[i];
+    static char old_vol_strs[MAX_ICONS][32];
+    for (int i = 0; i < MAX_ICONS; i++) {
+        old_icons[i] = icons[i];
+        /* volume points into vol_labels[i], which the rebuild below
+         * rewrites in place — snapshot the string too so the name
+         * matches compare OLD names, otherwise a removed disk's
+         * is_selected leaks onto whichever icon reuses that slot's
+         * label buffer (UAOS-160). */
+        old_vol_strs[i][0] = '\0';
+        if (old_icons[i].volume) {
+            int k = 0;
+            while (old_icons[i].volume[k] && k < 31) {
+                old_vol_strs[i][k] = old_icons[i].volume[k];
+                k++;
+            }
+            old_vol_strs[i][k] = '\0';
+            old_icons[i].volume = old_vol_strs[i];
+        }
+    }
 
     int W  = (int)g_fb.width;
     int ix = W - ICON_W - 16;
@@ -2338,6 +2453,19 @@ static int leaveout_icon_selected(void)
             return 1;
     }
     return 0;
+}
+
+static int selected_df_unit(void)
+{
+    int n;
+    IconState *icons = get_icons(&n);
+    for (int i = 0; i < n; i++) {
+        IconState *ic = &icons[i];
+        if (ic->is_selected && ic->volume &&
+            !ic->is_trashcan && !ic->is_appicon && !ic->is_leaveout)
+            return AdfMount_UnitForVolume(ic->volume);
+    }
+    return -1;
 }
 
 void Desktop_LeaveOutRemoveSelected(void)

@@ -2,6 +2,8 @@
 
 #include "adf_picker.h"
 #include "requester.h"
+#include "wm.h"
+#include "framebuffer.h"
 #include "../dos/adf_mount.h"
 #include "../chipset/floppy.h"
 #include <stddef.h>
@@ -45,7 +47,11 @@ static void picker_cb(int button, const char *text, void *user_data)
     (void)text; (void)user_data;
     if (button < 0 || button > 3) return;   /* Cancel / REQ_BTN_NONE */
     int err = AdfMount_Insert(button, g_adf_path);
-    if (err == ADF_OK) return;
+    if (err == ADF_OK) {
+        /* Repaint the desktop now so the new disk icon shows at once. */
+        WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, (int)g_fb.height);
+        return;
+    }
 
     /* "Could not insert <basename>" — keep the whole line ≤63 chars. */
     char l0[64];

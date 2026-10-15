@@ -48,6 +48,12 @@ void FileBrowser_SelectAll(int wm_handle);
 /* Close the browser owning wm_handle. */
 void FileBrowser_Close(int wm_handle);
 
+/* Close every open browser whose path is on volume `vol` (e.g. "AdfTwo"
+ * or "AdfTwo:" — the part before ':' is compared case-insensitively).
+ * Runs before a volume is unmounted so no window is left browsing a
+ * vanished mount. */
+void FileBrowser_CloseVolume(const char *vol);
+
 /* Clean Up: re-arrange icons in a grid for the browser owning wm_handle. */
 void FileBrowser_CleanUp(int wm_handle);
 
