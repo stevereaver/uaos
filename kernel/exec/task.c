@@ -1240,7 +1240,11 @@ void Task_WakeTimers(void)
      * Two consecutive ticks unlinked = stranded; re-link and log so the
      * residual cause stays visible instead of silently freezing.  The
      * 2-tick vote skips the brief list_init->enqueue window of a task
-     * under construction (which is now marked REMOVED until linked). */
+     * under construction (which is now marked REMOVED until linked).
+     * UAOS-277: the O(g_task_count) scan runs every 64th tick (~640 ms) —
+     * a stranded task is a latent bug, not a latency-critical path. */
+    if ((g_pit_ticks % 64u) != 0)
+        return;
     for (int i = 0; i < g_task_count; i++) {
         UaosTask *s = &g_tasks[i];
         uint8_t st = s->tc_State;

@@ -231,10 +231,11 @@ void timer_ProcessTicks(void)
     chip_emu_cia_tick();
     floppy_tick();
     audio_tick();
-    chip_emu_poll_ps2_keyboard();
+    if ((g_tick_counter & 1u) == 0)
+        chip_emu_poll_ps2_keyboard();   /* 50 Hz — 20 ms worst-case key latency */
     /* USB interrupt-transfer completion scan — plain memory reads on the
-     * TD chain, safe at 100 Hz and complements the INTx IRQ path. */
-    {
+     * TD chain; complements the INTx IRQ path, so 50 Hz fallback suffices. */
+    if ((g_tick_counter & 1u) == 0) {
         extern void USB_Poll(void);
         USB_Poll();
     }
