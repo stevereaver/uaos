@@ -1656,3 +1656,14 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 ## 2026-10-17 — UAOS-178: Ctrl+LCmd+RCmd reset chord metal-verified
 
 * **Verified on metal** (MBP4,1, user report): the USB-HID three-key reset chord reboots the machine — closes the "metal verification pending" note from the 2026-10-06 entry.
+
+## 2026-10-17 — UAOS-313: extras/ staged into ISO at Workbench:extras
+
+* **Added** `EXTRAS_FILES := $(shell find extras 2>/dev/null)` (Makefile, no `-type f` so dir-mtime bumps catch deletions) and made it a `$(SYSROOT_STAMP)` prerequisite.
+* **Changed** the sysroot staging recipe to `rm -rf $(SYSROOT)/extras` then `cp -r extras/.` when the dir exists — the gitignored local payload lands at `Workbench:extras` (sysroot module = ISO9660 of `SYS_ROOT`). Missing `extras/` never fails the build.
+* **Verified** QEMU/telnet `list Workbench:extras` shows `StateOfTheArt.eXe` + `WORKBENCH3.1_Install_save.adf` (build UAOS-171026212617); STAGE re-runs only on extras changes.
+* **Docs**: `okf/build_system.md` item 14.
+
+## 2026-10-17 — UAOS-310: unmount fix metal-verified
+
+* **Verified on metal** (MBP4,1, UAOS-171026212617 — ISO repackaged, same kernel as the fix build): ADF insert → open DF0 browser → close gadget → Icons ▸ Unmount completes; `adf list` empty, no watchdog in `dmesg warn`, EventPump idle. Card closed.
