@@ -879,16 +879,37 @@ void Strace_Enable(void)
     }
 }
 
+/* One stats-table line: klog/file (trace_output) and, when a shell
+ * launched the trace, the console too — without this the -c summary is
+ * invisible to the user who asked for it (telnet/console show nothing). */
+static void stat_out(const char *line)
+{
+    trace_output(line);
+    trace_output("\n");
+    if (g_trace_ctx && g_trace_ctx->print)
+        g_trace_ctx->print(g_trace_ctx->shell, line);
+}
+
 void Strace_Disable(void)
 {
-    if (g_trace_enabled && g_trace_count_only) {
+    int do_stats = g_trace_enabled && g_trace_count_only;
+    /* Stop tracing before printing the table: writing it to the shell
+     * console can itself emit traced calls (net send, DOS packets) that
+     * would otherwise land mid-table. */
+    g_trace_enabled = 0;
+
+    if (do_stats) {
         /* Print statistics */
         trace_output("\n");
-        trace_output("syscall                count    errors\n");
-        trace_output("-------------------- ------- -------\n");
+        stat_out("syscall                count    errors");
+        stat_out("-------------------- ------- -------");
 
         char line[128];
         char tmp[32];
+
+        if (g_stat_count == 0) {
+            stat_out("(0 calls traced)");
+        }
 
         for (int i = 0; i < g_stat_count; i++) {
             line[0] = '\0';
@@ -910,8 +931,7 @@ void Strace_Disable(void)
             u32_to_dec((uint32_t)g_stats[i].errors, tmp);
             trace_strcat(line, tmp);
 
-            trace_output(line);
-            trace_output("\n");
+            stat_out(line);
         }
 
         trace_flush();
@@ -922,7 +942,6 @@ void Strace_Disable(void)
         g_out_file_open = 0;
     }
 
-    g_trace_enabled = 0;
     trace_flush();
 
     /* Restore the pre-trace threshold, unless someone changed it

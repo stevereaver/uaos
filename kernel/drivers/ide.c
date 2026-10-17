@@ -368,9 +368,9 @@ static void setup_pci_controller(uint8_t bus, uint8_t dev, uint8_t func, uint8_t
     g_pci_pif = pif; g_pci_intline = intline;
 
     kprint("[IDE] PCI IDE controller at ");
-    kprinthex((uint64_t)bus); kprint(":");
-    kprinthex((uint64_t)dev); kprint(".");
-    kprinthex((uint64_t)func);
+    kprintdec((uint32_t)bus); kprint(":");
+    kprintdec((uint32_t)dev); kprint(".");
+    kprintdec((uint32_t)func);
     kprint(" progif="); kprinthex((uint64_t)pif); kprint("\n");
 
     uint16_t pcmd = ide_io_bar(bar0), pctl = ide_io_bar(bar1);
@@ -428,7 +428,7 @@ int IDE_Init(void) {
 
     for (int ch = 0; ch < 2; ch++) {
         const IdeChannelPorts *p = &g_channels[ch].ports;
-        kprint("[IDE] Probing channel "); kprinthex((uint64_t)ch); kprint("...\n");
+        kprint("[IDE] Probing channel "); kprintdec((uint32_t)ch); kprint("...\n");
         int any = 0;
         /* Second pass after a grace delay: real ATAPI drives can still be
          * running post-reset diagnostics when the first IDENTIFY lands. */
@@ -437,7 +437,7 @@ int IDE_Init(void) {
             for (int dev = 0; dev < 2; dev++) {
             if (ide_identify_device(p, dev, &g_devices[ch][dev]) == 0 && g_devices[ch][dev].present) {
                 any = 1;
-                kprint("[IDE]   dev "); kprinthex((uint64_t)dev); kprint(" ");
+                kprint("[IDE]   dev "); kprintdec((uint32_t)dev); kprint(" ");
                 kprint(g_devices[ch][dev].type == IDE_DEV_ATAPI ? "ATAPI" : "ATA");
                 kprint(": "); kprint(g_devices[ch][dev].model);
                 kprint("\n");
@@ -458,7 +458,7 @@ int IDE_Init(void) {
         g_channels[ch].present = any;
         if (any) g_num_channels++;
     }
-    kprint("[IDE] Init complete, "); kprinthex((uint64_t)g_num_channels); kprint(" channel(s)\n");
+    kprint("[IDE] Init complete, "); kprintdec((uint32_t)g_num_channels); kprint(" channel(s)\n");
     return g_num_channels;
 }
 

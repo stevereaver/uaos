@@ -32,6 +32,16 @@ static inline uint64_t rdtsc_(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
+static void u64_to_dec(uint64_t v, char *buf, int max)
+{
+    char tmp[20];
+    int i = 0, j = 0;
+    if (!v) { buf[0] = '0'; buf[1] = 0; return; }
+    while (v && i < 20) { tmp[i++] = (char)('0' + v % 10); v /= 10; }
+    while (i-- && j < max - 1) buf[j++] = tmp[i];
+    buf[j] = 0;
+}
+
 void Cmd_Diskdiag(NativeCmdCtx *ctx, const char *args)
 {
     char line[CMD_MAX_LINE], num[24];
@@ -60,16 +70,31 @@ void Cmd_Diskdiag(NativeCmdCtx *ctx, const char *args)
         int rc = BlockDev_Read(b, 0, buf, 1);
         uint64_t dt = rdtsc_() - t0;
         uint64_t hz = Tickmon_TscHz();
-        uint64_t ms = hz ? dt * 1000 / hz : dt;
         cmd_scopy(line, "diskdiag: read ", CMD_MAX_LINE);
         cmd_scat(line, rc == 0 ? "OK" : "FAILED", CMD_MAX_LINE);
         cmd_scat(line, " rc=", CMD_MAX_LINE);
         cmd_sdec(rc, num, sizeof(num));
         cmd_scat(line, num, CMD_MAX_LINE);
         cmd_scat(line, " in ", CMD_MAX_LINE);
-        cmd_uint_to_dec((uint32_t)ms, num, sizeof(num));
-        cmd_scat(line, num, CMD_MAX_LINE);
-        cmd_scat(line, " ms", CMD_MAX_LINE);
+        if (hz) {
+            /* Report sub-10 ms reads in microseconds so fast devices
+             * don't truncate to "0 ms". */
+            uint64_t us = dt * 1000000 / hz;
+            if (us < 10000) {
+                cmd_uint_to_dec((uint32_t)us, num, sizeof(num));
+                cmd_scat(line, num, CMD_MAX_LINE);
+                cmd_scat(line, " us", CMD_MAX_LINE);
+            } else {
+                cmd_uint_to_dec((uint32_t)(us / 1000), num, sizeof(num));
+                cmd_scat(line, num, CMD_MAX_LINE);
+                cmd_scat(line, " ms", CMD_MAX_LINE);
+            }
+        } else {
+            /* TSC not calibrated yet — raw cycle count, labelled. */
+            u64_to_dec(dt, num, sizeof(num));
+            cmd_scat(line, num, CMD_MAX_LINE);
+            cmd_scat(line, " cycles (TSC uncalibrated)", CMD_MAX_LINE);
+        }
         PRINT(line);
         return;
     }
