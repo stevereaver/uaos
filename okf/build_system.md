@@ -4,7 +4,7 @@ title: UAOS Build System
 description: Details of the toolchain and process used to build UAOS.
 resource: /Makefile
 tags: [build, gcc, nasm, grub, iso, make]
-timestamp: 2026-10-02T17:23:31Z
+timestamp: 2026-10-17T10:28:11Z
 ---
 
 # UAOS Build System
@@ -57,7 +57,7 @@ network, so offline hosts can pre-seed tarballs there.
 11. **M68k Demos**: Assembles M68k assembly demos in `system/Demos/src/` (e.g., `CopperBars.s`) with `vasm` (Motorola syntax), links them into Amiga Hunk executables with `vlink`, and wraps the resulting binaries with `gen_uaos_m68k` for `SYS_ROOT/Demos/`. The `src/` drawer is staged verbatim into `SYS_ROOT/Demos/src/` so the ISO ships the demo sources; other top-level files in `system/Demos/` (e.g. `.info` icons) are copied alongside the binaries.
 12. **Regina Rexx**: Downloads Regina Rexx 0.08i from Aminet, extracts the `rexx` binary, wraps it with `gen_uaos_m68k`, and stages it into `SYS_ROOT/REXX/`.
 13. **ACE Basic**: Downloads ACE Basic 3.0.1 from GitHub, extracts and wraps the tool binaries (`ace`, `yap`, `vasmm68k_mot`, `vlink`, `parseusing`) into `SYS_ROOT/ACE/bin/`, stages support files (`lib/`, `bmaps/`, `include/`, `submods/`), and downloads the `bas` script into `SYS_ROOT/C/`.
-14. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`, `REXX:`, `ACE:`) into `SYS_ROOT`.
+14. **System Root**: Packages the `system/` directory (Amiga-style `C:`, `S:`, `LIBS:`, `DEVS:`, `L:`, `SYS:`, `Tools:`, `Demos:`, `REXX:`, `ACE:`) into `SYS_ROOT`. The `$(SYSROOT_STAMP)` recipe also stages the gitignored repo-root `extras/` into `SYS_ROOT/extras/` (visible as `Workbench:extras` on the running OS): it `rm -rf`s the staged copy then `cp -r extras/.` when `extras/` exists, so deletions propagate and a missing `extras/` never fails the build. `EXTRAS_FILES := $(shell find extras 2>/dev/null)` (no `-type f`, so directory mtime bumps catch deletions) is a `$(SYSROOT_STAMP)` prerequisite.
 15. **Build serial**: Immediately before packing `boot/uaos-sysroot.img`, the build writes `SYS_ROOT/S/os-release` containing `UAOS-ddmmyyhhmmss` (the image's build timestamp, UAOS-283). The sysroot-image target carries a phony `FORCE` prerequisite so the serial — and therefore the sysroot image and final ISO — is regenerated on every `make` run; the file lands in both the multiboot module image and the ISO-visible `SYS_ROOT/S/`. A live system's `type s:os-release` can be matched against `build/iso-staging/SYS_ROOT/S/os-release` to confirm it booted the latest build.
 16. **GRUB Config**: Injects `scripts/grub.cfg` and the kickstart configuration; also stages `splash.jpg` to `/boot/splash.jpg` on the ISO — `grub.cfg` loads `insmod jpeg` and sets it as the menu `background_image`.
 17. **ISO Generation**: Runs `grub-mkrescue` to create the final `build/Ultimate_Amiga_OS.iso`.

@@ -21,6 +21,7 @@
 #include "../klog/klog.h"
 #include "../dos/dma.h"
 #include "../exec/task.h"
+#include "../dbg/diag.h"
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -183,8 +184,20 @@ static inline void w32(UhciHc *h, uint16_t r, uint32_t v) { uoutl(h->io + r, v);
 static inline void w8 (UhciHc *h, uint16_t r, uint8_t  v) { uoutb(h->io + r, v); }
 static inline uint16_t rg16(UhciHc *h, uint16_t r) { return uinw(h->io + r); }
 
+/* The port-0x80 loop is uncalibrated: on the MBP4,1's LPC each inb
+ * costs ~1 µs, so one nominal microsecond of delay is ~8 µs of spin
+ * (UAOS-314).  Once tickmon publishes a TSC frequency (~1 s after the
+ * PIT starts) spin on rdtsc instead; before that the old loop stays —
+ * the boot path depends on the conservative timing. */
 static void udelay(uint32_t us)
 {
+    uint64_t hz = Tickmon_TscHz();
+    if (hz) {
+        uint64_t deadline = diag_rdtsc() + ((uint64_t)us * hz) / 1000000;
+        while (diag_rdtsc() < deadline)
+            __asm__ volatile("pause");
+        return;
+    }
     for (uint32_t i = 0; i < us; i++)
         for (volatile int j = 0; j < 8; j++)
             __asm__ volatile("inb $0x80, %%al" ::: "eax");

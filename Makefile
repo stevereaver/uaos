@@ -287,6 +287,11 @@ SYS_FILES   := $(shell find $(addprefix system/,$(SYS_SUBDIRS)) \
                system/Startup-Sequence
 DEMO_EXTRAS := $(shell find system/Demos -type f 2>/dev/null)
 
+# extras/ is gitignored, local-only payload copied to Workbench:extras.
+# No -type f: directories are included so deleting a file bumps a dir
+# mtime and re-triggers staging.
+EXTRAS_FILES := $(shell find extras 2>/dev/null)
+
 SYSROOT_CONTENTS := $(NATIVE_BINS) $(WRAP_BINS) $(USER_BINS) $(BAS_BIN) \
                     $(TOOL_BINS) $(UTIL_BINS) $(PREF_BINS) $(GUIDE_BIN) \
                     $(GNU_BINS) $(DEMO_BINS) $(REXX_BIN) $(ACE_STAMP) \
@@ -713,7 +718,7 @@ $(ACE_STAMP): $(ACE_XSTAMP) $(GEN_M68K) | $(STAMPS) $(DIRS_STAMP)
 # One ordered recipe: it must run after every generated SYS_ROOT file exists
 # so that system/ overlays keep their old "last writer wins" semantics.
 
-$(SYSROOT_STAMP): $(SYSROOT_CONTENTS) $(SYS_FILES) $(DEMO_EXTRAS) | $(DIRS_STAMP) $(STAMPS)
+$(SYSROOT_STAMP): $(SYSROOT_CONTENTS) $(SYS_FILES) $(DEMO_EXTRAS) $(EXTRAS_FILES) | $(DIRS_STAMP) $(STAMPS)
 	@echo "  STAGE   system/ -> SYS_ROOT"
 	$(Q)cp system/Startup-Sequence $(SYSROOT)/S/Startup-Sequence
 	$(Q)for d in $(SYS_SUBDIRS); do \
@@ -729,6 +734,10 @@ $(SYSROOT_STAMP): $(SYSROOT_CONTENTS) $(SYS_FILES) $(DEMO_EXTRAS) | $(DIRS_STAMP
 	            cp "$$f" "$(SYSROOT)/Demos/"; \
 	        fi; \
 	    done; \
+	fi
+	$(Q)rm -rf $(SYSROOT)/extras
+	$(Q)if [ -d extras ]; then \
+	    mkdir -p $(SYSROOT)/extras && cp -r extras/. $(SYSROOT)/extras/; \
 	fi
 	$(Q)touch $@
 
