@@ -282,11 +282,33 @@ UaosTask *Task_CreateNative(const char *name, int8_t pri,
 {
     Forbid();
 
-    if (g_task_count >= MAX_TASKS) { Permit(); return NULL; }
+    /* Find a free task slot — prefer reusing REMOVED tasks, then append.
+     * Without reuse every telnet session (shell + pump) burned two table
+     * entries forever; ~30 connects exhaust MAX_TASKS permanently. */
+    int slot = -1;
+    for (int i = 0; i < g_task_count; i++) {
+        if (g_tasks[i].tc_State == TASK_REMOVED) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (g_task_count >= MAX_TASKS) { Permit(); return NULL; }
+        slot = g_task_count;
+        g_task_count++;
+    }
 
-    UaosTask *t = &g_tasks[g_task_count];
-    uint8_t *stack = g_task_stacks[g_task_count];
-    g_task_count++;
+    UaosTask *t = &g_tasks[slot];
+    uint8_t *stack = g_task_stacks[slot];
+
+    /* A REMOVED task can still be linked into a wait/ready queue — unlink
+     * before memset or the zeroed node severs that list (UAOS-265). */
+    {
+        uint64_t fl = irq_save();
+        if (t->ln_Succ != NULL && t->ln_Succ != t)
+            list_remove(t);
+        irq_restore(fl);
+    }
 
     /* Zero struct */
     for (int i = 0; i < (int)sizeof(UaosTask); i++)

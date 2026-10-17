@@ -245,15 +245,22 @@ static int shell_kb_enqueue(ShellInstance *s, char c)
     int next = (s->kb_tail + 1) % SHELL_KB_BUFSIZE;
     if (next == s->kb_head) {
         irq_restore(fl);
+        /* Byte dropped, but a Ctrl-C's break flag was still set above —
+         * wake the shell so take_break sees it (no tick fallback now). */
+        if (c == 0x03 && s->task) Signal(s->task, SIGF_BREAKF);
         return 0;   /* full */
     }
     s->kb_buf[s->kb_tail] = c;
     s->kb_tail = next;
     irq_restore(fl);
-    /* Wake a shell parked in Wait(SIGF_CHILD|SIGF_BREAKF) while a
-     * foreground binary runs.  Done outside the cli section: Signal()
-     * brackets its own critical section and would re-enable interrupts
-     * early if nested inside ours. */
+    /* Wake a shell parked in the input wait; the signal stays pending
+     * if the byte is consumed by another reader first, which the
+     * check-then-Wait loop absorbs harmlessly.  Done outside the cli
+     * section: Signal() brackets its own critical section and would
+     * re-enable interrupts early if nested inside ours. */
+    if (s->task) Signal(s->task, SIGF_SHELLIN);
+    /* Also wake a shell parked in Wait(SIGF_CHILD|SIGF_BREAKF) while a
+     * foreground binary runs on Ctrl-C. */
     if (c == 0x03 && s->task) Signal(s->task, SIGF_BREAKF);
     return 1;
 }
@@ -3946,25 +3953,44 @@ static int shell_is_builtin(const char *name)
     return 0;
 }
 
-/* Cooperative yield — voluntary reschedule for approximately ms milliseconds.
- * Under the preemptive scheduler this simply calls Task_Yield() repeatedly;
- * the idle task handles mouse, keyboard, and network polling. */
+/* Block until input is queued (SIGF_SHELLIN) or a break lands
+ * (SIGF_BREAKF).  Callers re-check the queue and flags after this
+ * returns — signals are sticky, so check-then-wait is race-free as
+ * long as SIGF_SHELLIN is only cleared by the wait itself.  Remote
+ * shells keep a 1 s backstop so shell_task_entry's TCP_CLOSED poll
+ * still runs when nothing arrives; local shells wait indefinitely
+ * since every input producer signals. */
+static void shell_wait_input(ShellInstance *s)
+{
+    if (s->remote)
+        Task_WaitTicks(SIGF_SHELLIN | SIGF_BREAKF, 100);
+    else
+        Wait(SIGF_SHELLIN | SIGF_BREAKF);
+}
+
+/* Cooperative wait — park the shell for ~ms while still servicing the
+ * network stack at packet latency: SIGF_NET wakes the task the moment
+ * the NIC IRQ records RX, so net_stack_poll() runs then instead of on
+ * the next tick.  The loop keeps waiting until the full deadline
+ * because duration-based callers (wait, irqstat, taskstat, tickcheck)
+ * rely on the elapsed time; reply-waiting callers (ping, DNS, NTP)
+ * notice their flag sooner because the poll already ran.  A pending
+ * break cuts the wait short. */
 static void shell_yield_ms(void *shell_extra, uint32_t ms)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
-    /* PIT runs at 100 Hz → 1 tick = 10 ms.  Convert ms to ticks.
-     * Poll the network stack each iteration so that while the shell
-     * task is waiting, incoming packets (DNS replies, ICMP, NTP, …)
-     * still get processed even if the idle task hasn't run yet.  A
-     * pending break cuts the wait short so commands polling
-     * ctx->break_pending react promptly. */
+    /* PIT runs at 100 Hz → 1 tick = 10 ms.  Convert ms to ticks. */
     extern volatile uint64_t g_pit_ticks;
     uint64_t ticks = ms / 10;
     if (ticks == 0) ticks = 1;
     uint64_t start = g_pit_ticks;
-    while (g_pit_ticks - start < ticks && !(s && s->break_req)) {
+    while (g_pit_ticks - start < ticks) {
+        uint64_t left;
+        if (s && s->break_req) break;
+        net_rx_notify_arm();
         net_stack_poll();
-        Task_SleepTicks(1);
+        left = ticks - (g_pit_ticks - start);
+        Task_WaitTicks(SIGF_NET | SIGF_BREAKF, left);
     }
 }
 
@@ -3998,7 +4024,7 @@ static char shell_read_key(void *shell_extra)
         }
         if (shell_kb_dequeue(s, &c))
             return c;
-        Task_SleepTicks(1);
+        shell_wait_input(s);
     }
 }
 
@@ -4090,10 +4116,10 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
                 }
             }
         } else {
-            /* No key queued — block until the next tick rather than
-             * spin-yielding (a spinning shell starves the -128 Idle
-             * task that pumps GUI input). */
-            Task_SleepTicks(1);
+            /* No key queued — block on the input signal (a spinning
+             * shell would starve the -128 Idle task that pumps GUI
+             * input). */
+            shell_wait_input(s);
         }
     }
 }
@@ -6345,10 +6371,11 @@ static void shell_task_entry(void *arg)
             inst_handle_key(s, c);
             continue;
         }
-        /* Nothing queued — block until the next tick instead of
-         * spin-yielding: a permanently-ready shell at pri 0 starves the
-         * -128 Idle task (which pumps all GUI input). */
-        Task_SleepTicks(1);
+        /* Nothing queued — block on the input signal: a permanently-
+         * ready shell at pri 0 would starve the -128 Idle task (which
+         * pumps all GUI input).  Remote shells keep a 1 s backstop for
+         * the TCP_CLOSED poll at the top of this loop. */
+        shell_wait_input(s);
     }
 }
 

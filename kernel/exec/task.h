@@ -31,6 +31,8 @@
 #define SIGB_BREAKF    8
 #define SIGB_EVENTPUMP 9   /* wake bit for the EventPump service task */
 #define SIGB_ATP       10  /* appletouch (Geyser) idle-reinit worker */
+#define SIGB_SHELLIN   16  /* shell input queued; >=16 because tc_SigAlloc
+                            * (0xFFFF) lets AllocSignal hand out bits 0-15 */
 
 #define SIGF_ABORT     (1U << SIGB_ABORT)
 #define SIGF_CHILD     (1U << SIGB_CHILD)
@@ -42,6 +44,7 @@
 #define SIGF_BREAKF    (1U << SIGB_BREAKF)
 #define SIGF_EVENTPUMP (1U << SIGB_EVENTPUMP)
 #define SIGF_ATP       (1U << SIGB_ATP)
+#define SIGF_SHELLIN   (1U << SIGB_SHELLIN)
 
 /* -------------------------------------------------------------------------
  * Task type
