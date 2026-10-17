@@ -44,6 +44,12 @@
 #define FFS_T_DATA     8
 #define FFS_T_LIST     16
 
+/* AmigaDOS bitmaps carry no bits for the reserved boot blocks: bitmap
+ * bit i describes disk block i + FFS_BM_RESERVED (ADFlib does the same:
+ * sectOfMap = nSect - 2).  Bit order is LSB-first inside each big-endian
+ * longword. */
+#define FFS_BM_RESERVED  2
+
 /* longword indices inside a header block */
 #define FFS_LW_TYPE        0
 #define FFS_LW_HEADER_KEY  1

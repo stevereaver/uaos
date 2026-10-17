@@ -452,8 +452,10 @@ static int ffs_bitmap_bit(FfsVolume *vol, uint32_t block, int *is_free)
      * per query is acceptable for diagnostics. */
     if (!vol->bitmap_valid) return 0;
     const uint32_t bits_per_page = 127 * 32;
-    uint32_t page = block / bits_per_page;
-    uint32_t off = block % bits_per_page;
+    if (block < FFS_BM_RESERVED) { *is_free = 0; return 1; }
+    uint32_t map_off = block - FFS_BM_RESERVED;
+    uint32_t page = map_off / bits_per_page;
+    uint32_t off = map_off % bits_per_page;
 
     /* Read the root block for the first 25 page keys. */
     if (ffs_read_block(vol, vol->root_key, g_ffs_scan) != 0) return 0;
@@ -521,11 +523,13 @@ int32_t FFS_CountUsedBlocks(FfsVolume *vol)
 
     int32_t used = 0;
     uint32_t counted = 0;
-    for (int p = 0; p < n && counted < vol->num_blocks; p++) {
+    /* num_blocks - FFS_BM_RESERVED bits exist (boot blocks unmapped). */
+    const uint32_t nbits = vol->num_blocks - FFS_BM_RESERVED;
+    for (int p = 0; p < n && counted < nbits; p++) {
         if (ffs_read_block(vol, keys[p], g_ffs_scan) != 0) continue;
-        for (int i = 1; i < 128 && counted < vol->num_blocks; i++) {
+        for (int i = 1; i < 128 && counted < nbits; i++) {
             uint32_t w = blk_lw(g_ffs_scan, i);
-            uint32_t rem = vol->num_blocks - counted;
+            uint32_t rem = nbits - counted;
             /* bit set = free; count zeros, clamped at num_blocks */
             if (rem < 32) w &= (1u << rem) - 1;
             uint32_t free_bits = 0;
@@ -640,10 +644,11 @@ static int ffs_bitmap_pages(FfsVolume *vol, uint32_t *keys, int max)
 
 static int ffs_bitmap_set(FfsVolume *vol, uint32_t block, int free_it)
 {
-    if (block >= vol->num_blocks) return -1;
+    if (block < FFS_BM_RESERVED || block >= vol->num_blocks) return -1;
     const uint32_t bits_per_page = 127 * 32;
-    uint32_t page = block / bits_per_page;
-    uint32_t off  = block % bits_per_page;
+    uint32_t map_off = block - FFS_BM_RESERVED;
+    uint32_t page = map_off / bits_per_page;
+    uint32_t off  = map_off % bits_per_page;
     uint32_t keys[96];
     int n = ffs_bitmap_pages(vol, keys, 96);
     if (page >= (uint32_t)n) return -1;
@@ -683,21 +688,14 @@ uint32_t FFS_AllocBlock(FfsVolume *vol)
             uint32_t word = blk_lw(g_ffs_scan, w);
             if (!word) continue;   /* no free bits */
             for (int b = 0; b < 32; b++) {
-                uint32_t blkno = base + (uint32_t)(w - 1) * 32 + (uint32_t)b;
+                /* Bitmap bit i covers disk block i + FFS_BM_RESERVED —
+                 * the boot blocks have no bits at all. */
+                uint32_t blkno = FFS_BM_RESERVED + base +
+                                 (uint32_t)(w - 1) * 32 + (uint32_t)b;
                 if (blkno >= vol->num_blocks) break;
                 if (!(word & (1u << b))) continue;
                 word &= ~(1u << b);
                 blk_put32(g_ffs_scan, w, word);
-                /* Blocks 0-1 are the bootblock area and are never
-                 * allocatable.  The bitmap is advisory and may leave
-                 * them marked free (WinUAE does) — claim them here so
-                 * they are neither returned nor double-allocated. */
-                if (blkno < 2) {
-                    blk_fix_bm_checksum(g_ffs_scan);
-                    BlockDev_Write(vol->dev, keys[p], g_ffs_scan, 1);
-                    vol->used_blocks++;
-                    continue;
-                }
                 blk_fix_bm_checksum(g_ffs_scan);
                 if (BlockDev_Write(vol->dev, keys[p], g_ffs_scan, 1) != 0)
                     return 0;
