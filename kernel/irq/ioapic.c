@@ -64,10 +64,33 @@ void IOAPIC_Init(void)
         kprint(" ver="); kprintdec(ver & 0xFF);
         kprint(" pins="); kprintdec(maxredir);
         kprint(" gsi_base="); kprintdec(a->gsi_base); kprint("\n");
-        /* Mask everything — entries are programmed+unmasked on demand. */
+        /* Mask everything — entries are programmed+unmasked on demand.
+         * GSI >= 16 is PCI INTx territory on PC layouts: those pins must
+         * start LEVEL+LOW+masked rather than edge.  An INTx assert that
+         * arrives while its pin is still masked has to latch in the
+         * IO-APIC input register so it can be delivered on unmask; on
+         * edge+masked pins the assert is dropped outright and a device
+         * that raised INTx before its driver attached loses the
+         * interrupt forever (observed: virtio-net on QEMU q35 under
+         * acpi-prt routing — pin 20 asserted once pre-attach and the
+         * line never fired vec 52).  ISA-range pins keep the edge
+         * default but honour MADT ISO flags (QEMU i440fx steers PCI INTx
+         * onto ISA GSIs declared level/low). */
         for (int p = 0; p < maxredir; p++) {
-            io_w32(a->mmio_base, IOAPIC_REDTBL + 2 * p,
-                   RTE_MASK | (uint32_t)(32 + a->gsi_base + p));
+            uint32_t gsi = a->gsi_base + (uint32_t)p;
+            uint32_t lo  = RTE_MASK | (32 + gsi);
+            if (gsi >= 16) {
+                lo |= RTE_LEVEL | RTE_LOW;
+            } else {
+                for (int i = 0; i < ACPI_NumIsos(); i++) {
+                    const AcpiIso *iso = ACPI_Iso(i);
+                    if (!iso || (uint32_t)iso->gsi != gsi) continue;
+                    if ((iso->flags & 0xC) == 0xC) lo |= RTE_LEVEL;
+                    if ((iso->flags & 3) == 3)     lo |= RTE_LOW;
+                    break;
+                }
+            }
+            io_w32(a->mmio_base, IOAPIC_REDTBL + 2 * p,     lo);
             io_w32(a->mmio_base, IOAPIC_REDTBL + 2 * p + 1, 0);
         }
     }

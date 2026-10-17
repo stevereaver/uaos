@@ -16,6 +16,7 @@
 
 #include "irq.h"
 #include "acpi.h"
+#include "acpi_prt.h"
 #include "ioapic.h"
 #include "../boot/kprint.h"
 #include <stdint.h>
@@ -470,10 +471,16 @@ static void irq_quiesce_line(int gsi, uint8_t abus, uint8_t adev, uint8_t afn)
             }
             uint8_t pin = pci_r8(0, dev, fn, 0x3D);
             if (pin < 1 || pin > 4) continue;
-            /* intline match covers every bus-0 function; devices 25-31
-             * may additionally decode through ICH DxxIP/DxxIR. */
+            /* A PCI-PCI bridge's INTx pin is the wire its secondary-bus
+             * children assert through — silencing it would kill their
+             * interrupts (observed: quiesce muted the root port
+             * carrying an e1000's GSI on q35). */
+            if ((pci_r8(0, dev, fn, 0x0E) & 0x7F) == 1) continue;
+            /* intline match covers devices the firmware routed; the
+             * route inspect additionally catches ICH DxxIR decodes and
+             * ACPI _PRT answers on the same GSI. */
             int match = (pci_r8(0, dev, fn, 0x3C) == (uint8_t)gsi);
-            if (!match && dev >= 25) {
+            if (!match) {
                 IrqRouteInfo ri;
                 if (IRQ_RouteInspect(0, dev, fn, &ri) == 0 && ri.gsi == gsi)
                     match = 1;
@@ -491,8 +498,31 @@ static void irq_quiesce_line(int gsi, uint8_t abus, uint8_t adev, uint8_t afn)
     }
 }
 
-/* Public resolver: chipset decode first, then the firmware-programmed
- * interrupt line register (SeaBIOS/QEMU writes the GSI here). */
+/* QEMU models the ICH9 PIRQ delivery imperfectly: a PIRQ reaches the
+ * IO-APIC input (16+pirq) only when that PIRQ's 8259 routing is disabled
+ * in the LPC bridge's PIRQx_ROUT registers (00:1f.0 cfg 0x60-0x67,
+ * bit7=1 -> not routed to the PIC).  On real ICH silicon the APIC leg is
+ * hardwired and bit7 merely detaches the PIC leg, which is correct to do
+ * anyway once the OS runs in APIC mode (Linux does the same).  Call this
+ * when a PCI INTx resolves to an ICH PIRQ GSI so QEMU delivers on the
+ * pin we actually programmed. */
+static void ich_pirq_apic_enable(int gsi)
+{
+    if (gsi < 16 || gsi > 23) return;
+    if (!lpc_is_intel_ich()) return;
+    uint8_t off = (uint8_t)(0x60 + (gsi - 16));
+    uint8_t v = pci_r8(0, 31, 0, off);
+    if (!(v & 0x80)) {
+        pci_w8(0, 31, 0, off, (uint8_t)(v | 0x80));
+        kprint("[IRQ] PIRQ"); kprintdec((uint32_t)(gsi - 16));
+        kprint(" PIC routing disabled (gsi ");
+        kprintdec((uint32_t)gsi); kprint(" via ioapic)\n");
+    }
+}
+
+/* Public resolver: chipset decode first (ICH bus-0 devices), then the
+ * ACPI _PRT table (APIC mode), then the firmware-programmed interrupt
+ * line register (SeaBIOS/QEMU writes the GSI here). */
 int IRQ_ResolvePCI(uint8_t bus, uint8_t dev, uint8_t fn)
 {
     if (bus == 0) {
@@ -501,6 +531,19 @@ int IRQ_ResolvePCI(uint8_t bus, uint8_t dev, uint8_t fn)
             kprint("[IRQ] pci 0:"); kprintdec(dev); kprint(".");
             kprintdec(fn); kprint(" -> gsi ");
             kprintdec((uint32_t)gsi); kprint(" (ich-route)\n");
+            return gsi;
+        }
+    }
+    if (g_mode == IRQ_MODE_IOAPIC) {
+        uint8_t pin = pci_r8(bus, dev, fn, 0x3D);
+        int swz = 0;
+        int gsi = AcpiPrt_Route(bus, dev, fn, pin, &swz);
+        if (gsi >= 0) {
+            ich_pirq_apic_enable(gsi);
+            kprint("[IRQ] pci "); kprintdec(bus); kprint(":");
+            kprintdec(dev); kprint("."); kprintdec(fn);
+            kprint(" -> gsi "); kprintdec((uint32_t)gsi);
+            kprint(swz ? " (acpi-prt via swizzle)\n" : " (acpi-prt)\n");
             return gsi;
         }
     }
@@ -589,6 +632,21 @@ int IRQ_RouteInspect(uint8_t bus, uint8_t dev, uint8_t fn, IrqRouteInfo *out)
                     return 0;
                 }
             }
+        }
+    }
+
+    /* ACPI _PRT table — same order as IRQ_ResolvePCI: after the ICH
+     * decode, before the firmware intline.  APIC-mode only (the parsed
+     * GSIs are IO-APIC inputs). */
+    if (g_mode == IRQ_MODE_IOAPIC) {
+        int agsi = AcpiPrt_Route(bus, dev, fn, out->pin, &out->swizzled);
+        if (agsi >= 0) {
+            out->gsi = agsi;
+            out->source = IRQ_ROUTE_ACPI;
+            if (out->swizzled)
+                AcpiPrt_LastBridge(&out->bridge_bus, &out->bridge_dev,
+                                   &out->bridge_fn);
+            return 0;
         }
     }
 
@@ -806,6 +864,7 @@ int IRQ_DiagIch(IrqIchDiag *d)
 void IRQ_Init(uint32_t mb2_phys)
 {
     ACPI_Init(mb2_phys);
+    AcpiPrt_Init();          /* _PRT scan: needs ACPI tables + PCI cfg */
 
     if (ACPI_Present() && IOAPIC_Available()) {
         g_mode = IRQ_MODE_IOAPIC;

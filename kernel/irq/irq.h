@@ -115,6 +115,7 @@ int  IRQ_VecShared(int vec);        /* handlers chained on vec; >1 = foreign dri
 #define IRQ_ROUTE_NONE     0
 #define IRQ_ROUTE_ICH      1   /* decoded via ICH DxxIP/DxxIR */
 #define IRQ_ROUTE_INTLINE  2   /* firmware intline register   */
+#define IRQ_ROUTE_ACPI     3   /* ACPI _PRT table             */
 
 typedef struct {
     uint8_t  pin;         /* cfg 0x3D interrupt pin (0=none)      */
@@ -126,6 +127,8 @@ typedef struct {
     int      pirq;        /* decoded PIRQA-H (0-7), -1 unrouted   */
     int      gsi;         /* final resolved GSI, -1 = undecodable */
     int      source;      /* IRQ_ROUTE_*                          */
+    int      swizzled;    /* ACPI route via pin-swizzle through a bridge */
+    uint8_t  bridge_bus, bridge_dev, bridge_fn;   /* bridge traversed  */
 } IrqRouteInfo;
 int  IRQ_RouteInspect(uint8_t bus, uint8_t dev, uint8_t fn,
                       IrqRouteInfo *out);
