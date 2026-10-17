@@ -266,6 +266,7 @@ void Cmd_Netstat         (NativeCmdCtx *ctx, const char *args);
 void Cmd_Diskdiag        (NativeCmdCtx *ctx, const char *args);
 void Cmd_Pciscan         (NativeCmdCtx *ctx, const char *args);
 void Cmd_Irqroute        (NativeCmdCtx *ctx, const char *args);
+void Cmd_Audiotest       (NativeCmdCtx *ctx, const char *args);
 void Cmd_Peek            (NativeCmdCtx *ctx, const char *args);
 void Cmd_Poke            (NativeCmdCtx *ctx, const char *args);
 void Cmd_Irqaudit        (NativeCmdCtx *ctx, const char *args);

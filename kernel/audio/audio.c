@@ -93,6 +93,10 @@ int16_t audio_led_filter(int16_t in, int16_t *state)
 
 static void audio_select_backend(void)
 {
+    if (audio_backend_hda.init()) {
+        g_backend = &audio_backend_hda;
+        return;
+    }
     if (audio_backend_ac97.init()) {
         g_backend = &audio_backend_ac97;
         return;
@@ -173,10 +177,19 @@ static unsigned int audio_generate(void)
     return SAMPLES_PER_TICK;
 }
 
+static int g_ring_solo = 0;
+
+void audio_ring_solo(int on)
+{
+    g_ring_solo = on;
+}
+
 void audio_tick(void)
 {
-    unsigned int produced = audio_generate();
-    audio_ring_write(g_mix_buf, produced);
+    if (!g_ring_solo) {
+        unsigned int produced = audio_generate();
+        audio_ring_write(g_mix_buf, produced);
+    }
 
     if (g_backend && g_backend->service) {
         g_backend->service();

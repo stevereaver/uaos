@@ -2,8 +2,8 @@
  * audio.h — UAOS host audio subsystem API
  *
  * Provides a 48 kHz stereo mixer fed by the Paula emulator and a pluggable
- * host backend.  Backends are selected at boot: AC97 is preferred, with the PC
- * speaker as a fallback.
+ * host backend.  Backends are selected at boot: Intel HDA is preferred,
+ * then AC97, with the PC speaker as a fallback.
  */
 
 #ifndef UAOS_AUDIO_H
@@ -69,6 +69,11 @@ unsigned int audio_ring_write(const int16_t *src, unsigned int n);
  * number of frames actually read. */
 unsigned int audio_ring_read(int16_t *dst, unsigned int n);
 
+/* Test hook: while nonzero the mixer stops generating Paula frames into the
+ * ring (the backend keeps draining it), so a diagnostic can inject a known
+ * signal via audio_ring_write and measure it end to end. */
+void audio_ring_solo(int on);
+
 /* -------------------------------------------------------------------------
  * Paula→host helpers exposed to the mixer
  * ------------------------------------------------------------------------- */
@@ -92,6 +97,7 @@ extern void chip_emu_audio_set_dmacon(uint16_t dmacon);
  * Backend implementations
  * ------------------------------------------------------------------------- */
 
+extern AudioBackend audio_backend_hda;
 extern AudioBackend audio_backend_ac97;
 extern AudioBackend audio_backend_pcspk;
 
