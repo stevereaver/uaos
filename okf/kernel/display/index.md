@@ -356,7 +356,7 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   `k_remote_blocked`/`k_remote_logged` before any dispatch path —
   builtins, resident commands, the native registry, or PATH-exec'd
   binaries.  Framebuffer/desktop-only commands are refused with
-  "not available on remote shells" (rc 20); destructive/system-wide
+  "not available on remote shells" (rc 20) — `netinfo` is exempt and prints a text summary remotely (UAOS-177); destructive/system-wide
   commands run but are logged to klog/serial as
   `telnetd: remote shell ran '...'`.  `NativeCmdCtx.remote` marks a
   context as remote.

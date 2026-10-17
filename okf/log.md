@@ -1667,3 +1667,13 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 ## 2026-10-17 — UAOS-310: unmount fix metal-verified
 
 * **Verified on metal** (MBP4,1, UAOS-171026212617 — ISO repackaged, same kernel as the fix build): ADF insert → open DF0 browser → close gadget → Icons ▸ Unmount completes; `adf list` empty, no watchdog in `dmesg warn`, EventPump idle. Card closed.
+
+## 2026-10-17 — TODO sweep: UAOS-259/231/175/177/171/292
+
+* **Removed** (UAOS-259, 91e68ba): the `nouhciirq` cmdline flag (`UHCI_SetupIRQs()` is now always called) and the grub.cfg entries "No UHCI IRQs (bisect)" and "Safe bisect (nomtrr+nouhciirq)". "No MTRR (bisect)" is kept. Waiting on one MBP4,1 boot to confirm.
+* **Fixed** (UAOS-231, 8ad5e62): `diskdiag TEST=` reports µs below 10 ms, or cycles if the TSC is uncalibrated. `strace -c` now mirrors its table to the calling shell, stops tracing before printing, and prints `(0 calls traced)` when empty. IDE probe prints are decimal.
+* **Fixed** (UAOS-175, 32e3cd2): counts and indices print as decimal across 23 files. Removed the doubled `0x0x` prefixes (GDT TSS, ich-route). sky2/virtio_net MACs print colon-hex. The uhci idle-pipe line moved WARN→DEBUG. Added `kprintdec64()`. The USB, bcm5974 and sky2 lines still need a metal dmesg check.
+* **Fixed** (UAOS-177, 0a6310d): `ps` header aligned and retitled "CLI processes and windows:". `route` columns aligned. `ping` prints TSC RTT `time=` and an `rtt min/avg/max` line. `mem` gains a Kernel heap line (`ELF64_HeapKernelUsed()`). `netinfo` on remote shells prints a text summary and returns 0 instead of rc 20.
+* **Perf** (UAOS-171, efd15e6): shell input is signal-driven (`SIGF_SHELLIN` bit 16, `shell_wait_input()`), and `shell_yield_ms` waits on `SIGF_NET`. An idle console shell went from about 200 switches/s to 1 in 10 s. Also fixed `Task_CreateNative` leaking `TASK_REMOVED` slots: every telnet session used to burn two task slots.
+* **Added** (UAOS-292, 7cbd815): `kernel/irq/acpi_prt.{c,h}` adds ACPI _PRT routing with bridge swizzle, plus `irqroute PRT`. IO-APIC GSI≥16 pins now start level/low/masked. Quiesce skips bridges. PIRQx_ROUT bit7 is set for ACPI-routed PIRQs. Verified in QEMU only; Apple DSDT verification on metal is pending.
+* **Docs**: `okf/kernel/{exec,display,diag,irq}/index.md`.

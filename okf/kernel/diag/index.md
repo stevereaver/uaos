@@ -84,7 +84,7 @@ report a peak far above what its own entry function uses.
 | `timers` | Pending `TimeRequest`s: fire tick, delta, sigmask, owner. (UAOS-201) |
 | `handles` | Open-file/lock handle table with owning task + flags. (UAOS-202) |
 | `netstat` | TCP sockets (state/addrs/queue depths/retx), UDP sockets, usock layer. (UAOS-203) |
-| `diskdiag [TEST=dev]` | Blockdev registry + IDE/AHCI/VirtIO-blk/VirtIO-scsi/floppy stage dumps with live status regs; `TEST=` does a timed 1-sector read. (UAOS-204) |
+| `diskdiag [TEST=dev]` | Blockdev registry + IDE/AHCI/VirtIO-blk/VirtIO-scsi/floppy stage dumps with live status regs; `TEST=` does a timed 1-sector read, reported in µs below 10 ms (raw cycles if TSC is uncalibrated). (UAOS-204, UAOS-231) |
 | `pciscan [BUS=n]` | Full PCI enumeration: bdf, class, vendor:dev, pin/line, BARs (64-bit BARs combined). Header-type aware: type-1 bridges get `sec=`/`sub=` bus numbers plus decoded `io`/`mem`/`pmem` forwarding windows on a continuation line; CardBus shows 1 BAR. (UAOS-199, bridge decode UAOS-282) |
 | `irqroute [BDF=b:d.f]` | pin→PIRQ→GSI→vector decode per device: ICH DxxIP/DxxIR override, PIRQA-H→IO-APIC 16-23, intline fallback, resolved vector + name. `vec=UNASSIGNED` and `* UNRESOLVED ROUTE *` are the verdicts. (UAOS-199) |
 | `peek <addr> [LEN=n] [W=8\|16\|32\|64]` | Physical/MMIO read (identity map). (UAOS-205) |
