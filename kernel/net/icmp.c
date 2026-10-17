@@ -4,11 +4,15 @@
 #include "icmp.h"
 #include "ip.h"
 
-static int g_got_reply = 0;
+static int     g_got_reply = 0;
+static uint16_t g_expect_ident = 0x4141;
+static uint16_t g_expect_seq   = 0;
+static ipv4_t   g_expect_src   = 0;
+static uint8_t  g_reply_ttl    = 0;
+static ipv4_t   g_reply_src    = 0;
 
-void icmp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
+void icmp_rx(ipv4_t src_ip, uint8_t ttl, const uint8_t *pkt, uint16_t len)
 {
-    (void)src_ip;
     if (len < ICMP_HDR_LEN) return;
     const IcmpHdr *h = (const IcmpHdr *)pkt;
 
@@ -29,12 +33,22 @@ void icmp_rx(ipv4_t src_ip, const uint8_t *pkt, uint16_t len)
         ip_send(src_ip, IP_PROTO_ICMP, reply, (uint16_t)(ICMP_HDR_LEN + data_len));
 
     } else if (h->type == ICMP_ECHO_REPLY) {
-        g_got_reply = 1;
+        /* Only count replies matching the outstanding request — a stray
+         * echo reply must not satisfy a pending ping. */
+        if (net_ntohs(h->ident) == g_expect_ident &&
+            net_ntohs(h->seq)   == g_expect_seq &&
+            (!g_expect_src || src_ip == g_expect_src)) {
+            g_reply_ttl = ttl;
+            g_reply_src = src_ip;
+            g_got_reply = 1;
+        }
     }
 }
 
 void icmp_ping(ipv4_t dst_ip, uint16_t seq)
 {
+    g_expect_src = dst_ip;
+    g_expect_seq = seq;
     uint8_t pkt[ICMP_HDR_LEN + 32];
     IcmpHdr *h = (IcmpHdr *)pkt;
     h->type     = ICMP_ECHO_REQUEST;
@@ -50,3 +64,5 @@ void icmp_ping(ipv4_t dst_ip, uint16_t seq)
 
 int  icmp_got_reply(void)  { return g_got_reply; }
 void icmp_clear_reply(void){ g_got_reply = 0; }
+uint8_t icmp_reply_ttl(void){ return g_reply_ttl; }
+ipv4_t  icmp_reply_src(void){ return g_reply_src; }

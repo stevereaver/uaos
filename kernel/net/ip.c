@@ -185,7 +185,7 @@ void ip_rx(const uint8_t *pkt, uint16_t len)
 
     switch (h->protocol) {
     case IP_PROTO_ICMP:
-        icmp_rx(src_ip, payload, plen);
+        icmp_rx(src_ip, h->ttl, payload, plen);
         break;
     case IP_PROTO_UDP:
         udp_rx(src_ip, payload, plen);

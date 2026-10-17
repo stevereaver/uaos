@@ -143,13 +143,16 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
 
         if (got) {
             uint64_t dt = ping_rdtsc() - t0;
-            char ip_s[20]; net_ip_to_str(dst, ip_s);
+            char ip_s[20];
+            net_ip_to_str(icmp_reply_src() ? icmp_reply_src() : dst, ip_s);
             cmd_scopy(line, "32 bytes from ", sizeof(line));
             cmd_scat(line, ip_s, sizeof(line));
             cmd_scat(line, ": icmp_seq=", sizeof(line));
             char num[8]; cmd_uint_to_dec((uint32_t)seq, num, 8);
             cmd_scat(line, num, sizeof(line));
-            cmd_scat(line, " ttl=64", sizeof(line));
+            cmd_scat(line, " ttl=", sizeof(line));
+            cmd_uint_to_dec((uint32_t)icmp_reply_ttl(), num, 8);
+            cmd_scat(line, num, sizeof(line));
             if (tsc_hz) {
                 uint32_t us = (uint32_t)(dt * 1000000 / tsc_hz);
                 char ms_s[20];
