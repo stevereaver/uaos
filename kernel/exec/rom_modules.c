@@ -37,6 +37,20 @@ int UAOS_ROM_Register(const char *name, uint16_t version,
         return -1;
     }
 
+    /* amiga_base must be unique — colliding constants (0x60, 0xB0, ...)
+     * from the per-module registrations get auto-assigned from a
+     * synthetic range.  emu_gen_lib_base overwrites the field with the
+     * real bound guest base once the module is opened (UAOS-281). */
+    if (!amiga_base)
+        amiga_base = 0x00FE0000 + (uint32_t)rom_count * 0x100;
+    else {
+        for (int i = 0; i < rom_count; i++)
+            if (rom_registry[i].amiga_base == amiga_base) {
+                amiga_base = 0x00FE0000 + (uint32_t)rom_count * 0x100;
+                break;
+            }
+    }
+
     UaosRomModule *m = &rom_registry[rom_count++];
     m->name         = name;
     m->version      = version;

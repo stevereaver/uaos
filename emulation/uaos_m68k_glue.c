@@ -3389,6 +3389,10 @@ static uint32_t emu_gen_lib_base(const char *name, uint32_t req_ver,
     e->rom  = m;
     e->cia  = cia;
     e->icr_tab = (cia >= 0) ? base + 0x80 : 0;
+    /* Publish the real bound base in the registry — the synthetic
+     * amiga_base assigned at registration is just a uniqueness
+     * placeholder (UAOS-281). */
+    if (m) m->amiga_base = base;
     int k = 0;
     while (name[k] && k < 47) { e->name[k] = name[k]; g_ram[name_ptr + k] = (uint8_t)name[k]; k++; }
     e->name[k] = '\0';
@@ -3514,14 +3518,33 @@ static int rom_lvo_fn(const UaosRomModule *m, int lvo)
     return 0;
 }
 
+/* Module lookup with a tiny cache — the per-call UAOS_ROM_Find() did a
+ * linear strcmp over every registered module on every guest libcall
+ * (UAOS-281).  The registry is frozen after boot, so NULLs cache too. */
+static UaosRomModule *emu_rom_cached(const char *name)
+{
+    static struct { const char *name; UaosRomModule *m; } cache[4];
+    static int n;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(cache[i].name, name)) return cache[i].m;
+    UaosRomModule *m = UAOS_ROM_Find(name);
+    if (n < (int)(sizeof(cache) / sizeof(cache[0]))) {
+        cache[n].name = name;
+        cache[n].m = m;
+        n++;
+    }
+    return m;
+}
+
 /* Marshal the live m68k registers into an M68kCPUState, invoke the ROM
  * module's native handler for func index `fn`, and write the registers
  * back.  Returns nonzero when a handler ran; 0 when the module has no
  * func at that index.  (UAOS-238 — shared by the LIB_* ILLEGAL dispatch
  * and the OpenDevice/DoIO device path.) */
-static int emu_rom_call(const char *rom_name, uint16_t fn)
+static int emu_rom_call(const UaosRomModule *m, uint16_t fn)
 {
-    void *rom_fn = UAOS_ROM_NativeFunc(rom_name, fn);
+    if (!m || fn == 0 || fn > m->func_count) return 0;
+    void *rom_fn = m->native_funcs[fn - 1];
     if (!rom_fn) return 0;
 
     M68kCPUState cpu;
@@ -5260,7 +5283,7 @@ static void exec_OpenDevice(void)
             if (ofn) {
                 uint32_t saved_a6 = m68k_get_reg(NULL, M68K_REG_A6);
                 m68k_set_reg(M68K_REG_A6, devbase);
-                emu_rom_call(dm->name, (uint16_t)ofn);
+                emu_rom_call(dm, (uint16_t)ofn);
                 m68k_set_reg(M68K_REG_A6, saved_a6);
             }
         }
@@ -5290,7 +5313,7 @@ static void exec_CloseDevice(void)
             int fn = dm ? rom_lvo_fn(dm, -12) : 0;
             if (fn) {
                 m68k_set_reg(M68K_REG_A1, io);
-                emu_rom_call(dm->name, (uint16_t)fn);
+                emu_rom_call(dm, (uint16_t)fn);
             }
         }
     }
@@ -5322,7 +5345,7 @@ static int io_dispatch_device(uint32_t io)
     if (fn) {
         uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
         m68k_set_reg(M68K_REG_A1, io);
-        emu_rom_call(dm->name, (uint16_t)fn);
+        emu_rom_call(dm, (uint16_t)fn);
         m68k_set_reg(M68K_REG_A1, saved_a1);
         /* A device that didn't leave IOF_QUEUED set finished inside
          * BeginIO — complete it now (idempotent if it self-replied). */
@@ -5524,7 +5547,7 @@ static void io_abort_device(uint32_t io)
     if (fn) {
         uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
         m68k_set_reg(M68K_REG_A1, io);
-        emu_rom_call(dm->name, (uint16_t)fn);
+        emu_rom_call(dm, (uint16_t)fn);
         m68k_set_reg(M68K_REG_A1, saved_a1);
     }
     if (was_queued) {
@@ -8072,14 +8095,15 @@ int m68k_illg_instr_callback(int opcode)
                lib == LIB_ROM) {
         /* Delegate to the ROM module dispatcher (UAOS-238).  LIB_ROM
          * resolves the module through the generated base in A6; the
-         * legacy fixed ids name their module directly. */
+         * legacy fixed ids resolve theirs through a cached lookup. */
         uint32_t a6 = m68k_get_reg(NULL, M68K_REG_A6);
-        UaosRomModule *rom = (lib == LIB_ROM) ? emu_gen_rom(a6) : NULL;
-        const char *rom_name = lib == LIB_DOS      ? "dos.library"      :
-                               lib == LIB_UTILITY  ? "utility.library"  :
-                               lib == LIB_IFFPARSE ? "iffparse.library" :
-                               rom                ? rom->name          : NULL;
-        int dispatched = rom_name && emu_rom_call(rom_name, (uint16_t)fn);
+        UaosRomModule *rom =
+            (lib == LIB_ROM)      ? emu_gen_rom(a6)                       :
+            (lib == LIB_DOS)      ? emu_rom_cached("dos.library")         :
+            (lib == LIB_UTILITY)  ? emu_rom_cached("utility.library")     :
+                                    emu_rom_cached("iffparse.library");
+        const char *rom_name = rom ? rom->name : NULL;
+        int dispatched = rom && emu_rom_call(rom, (uint16_t)fn);
         if (!dispatched) {
             /* Unimplemented LVO (catch-all stub) or bad fn id.
              * stub_addr = PC-4 at this point; lvo = stub - a6.
