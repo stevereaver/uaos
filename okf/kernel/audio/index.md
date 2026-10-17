@@ -2,21 +2,23 @@
 type: Kernel Subsystem
 title: UAOS Audio Subsystem
 description: 48 kHz stereo mixer, ring buffer, and pluggable host audio backends for Paula emulation.
-tags: [kernel, audio, paula, ac97, pc-speaker]
-timestamp: 2026-07-01T00:00:00Z
+tags: [kernel, audio, paula, hda, ac97, pc-speaker]
+timestamp: 2026-10-17T16:30:00Z
 ---
 
 # UAOS Audio Subsystem
 
-The UAOS audio subsystem turns the four Paula audio channels into a playable 48 kHz stereo stream.  It lives in `kernel/audio/` and is designed to be host-backend agnostic: the same mixer drives either the Intel ICH AC97 controller or the legacy PC speaker.
+The UAOS audio subsystem turns the four Paula audio channels into a playable 48 kHz stereo stream.  It lives in `kernel/audio/` and is designed to be host-backend agnostic: the same mixer drives an Intel HD Audio controller, the Intel ICH AC97 controller, or the legacy PC speaker. They are selected in that order (HDA → AC97 → PC speaker, `audio_select_backend`).
 
 ## Files
 
 - `kernel/audio/audio.h` — public API: `AudioBackend` interface, ring buffer, mixer helpers.
 - `kernel/audio/audio.c` — 48 kHz mixer and ring buffer.
+- `kernel/audio/hda.c` — Intel HD Audio backend (UAOS-140), polled with no IRQs. It matches any class 04/03 controller (MBP4,1 ICH8 8086:284b, QEMU `ich9-intel-hda`/`intel-hda`). Bring-up: BAR0 MMIO, TCSEL clear, bounded GCTL.CRST reset, then CORB/RIRB (RIRBCTL=0x03, RIRBSTS cleared per response) with an Immediate Command (ICOI) fallback. It enumerates the AFG and runs a DFS from every Line-Out/Speaker/HP pin back to a DAC, setting D0, connection select, amps at 0 dB, pin OUT/HP and EAPD. Playback uses a 4-entry BDL on the first output stream (tag 1, 48 kHz/16-bit/2ch), refilled from the ring by polling LPIB in `service()`. Apple SSID 0x106b gets Linux's `ALC889_FIXUP_MBP_VREF` + `ALC882_FIXUP_GPIO1`. QEMU-verified with a WAV capture; audibility on MBP4,1 is still to be checked on metal.
 - `kernel/audio/ac97.c` / `kernel/audio/ac97.h` — Intel ICH AC97 backend.
 - `kernel/audio/pc_speaker.c` / `kernel/audio/pc_speaker.h` — PC speaker fallback backend.
 - `kernel/audio/audio_test.c` / `kernel/audio/audio_test.h` — sine-wave and pattern tests.
+- `kernel/shell/cmd_audiotest.c` — `audiotest` command. It prints the active backend, then uses `audio_ring_solo()` (which pauses the Paula mixer's ring writes) to inject a 2 s 1 kHz sine end to end.
 
 ## Paula Emulation
 
