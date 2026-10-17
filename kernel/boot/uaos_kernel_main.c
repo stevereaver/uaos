@@ -1075,14 +1075,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         AHCI_SetupIRQ();
     }
     {
-        /* "nouhciirq" bisect flag: skip INTx attach + USBINTR entirely,
-         * restoring the pure 100 Hz poll behaviour — A/B test for
-         * suspected INTx delivery problems on real hardware. */
         extern void UHCI_SetupIRQs(void);
-        if (Mb2_CmdlineHas(mb2_info_phys, "nouhciirq"))
-            kprint("[BOOT] nouhciirq — UHCI INTx skipped (poll only)\n");
-        else
-            UHCI_SetupIRQs();
+        UHCI_SetupIRQs();
     }
 
     /* Probe the i8042 before claiming it: USB-only machines
