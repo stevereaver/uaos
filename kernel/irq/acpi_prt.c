@@ -114,7 +114,7 @@ static int seg_eq4(const uint8_t *p, const char *nm)
 /* Container model — Devices and Scopes with byte ranges               */
 /* ------------------------------------------------------------------ */
 
-#define PRT_MAX_CONT 96
+#define PRT_MAX_CONT 128
 
 typedef struct {
     const uint8_t *t;          /* AML stream (after the SDT header)    */
@@ -461,8 +461,13 @@ static void prt_decode_pkg(prt_dec_t *out, uint32_t poff)
         r += w;
         if (r >= len) break;
         int gsi = -1;
-        if (t[r] == 0x00) {                       /* ZeroOp: idx = GSI */
-            r += 1;
+        uint32_t src, sw2 = aml_int(t, len, r, &src);
+        if (sw2) {
+            /* Integer Source (ZeroOp or a ByteConst 0 — iasl emits the
+             * latter): SourceIndex is the GSI directly.  A nonzero
+             * literal is invalid per spec. */
+            if (src != 0) break;
+            r += sw2;
             w = aml_int(t, len, r, &idx);
             if (!w) break;
             r += w;
@@ -596,25 +601,27 @@ static int is_pci_bridge(uint8_t bus, uint8_t dev, uint8_t fn)
     return (IRQ_PciRead8(bus, dev, fn, 0x0E) & 0x7F) == 1;
 }
 
-/* Bus number a device sits on: an _ADR ancestor that itself has an _ADR
- * ancestor is a real PCI-PCI bridge (our device lives on its secondary
- * bus); an ancestor with no _ADR ancestry is the host bridge and our
- * device sits on its routed bus. */
+/* Bus number a device sits on: the provider's bus, or the provider's
+ * secondary bus when it is a PCI-PCI bridge.  An ancestor with no _ADR
+ * is the host bridge (identified by _HID, not _ADR — Apple DSDTs) and
+ * our device sits on its routed bus.  An _ADR ancestor that is not a
+ * bridge shares our bus (e.g. hub children under a function). */
 static int bus_on(int ci, int depth)
 {
     if (depth > 8) return -1;
     int a = anc_dev(ci);
     if (a < 0) return 0;
     cont_t *A = &g_cont[a];
-    if (A->has_adr && has_adr_ancestor(a, depth + 1)) {
-        uint8_t ad = (uint8_t)(A->adr >> 16), af = (uint8_t)(A->adr & 0x1F);
-        int pb = bus_on(a, depth + 1);
-        if (pb < 0 || !is_pci_bridge((uint8_t)pb, ad, af)) return -1;
-        uint8_t sec = IRQ_PciRead8((uint8_t)pb, ad, af, 0x19);
-        if (!sec || sec == 0xFF || sec == pb) return -1;
+    if (!A->has_adr) return A->has_bbn ? (int)A->bbn : 0;
+    int ab = bus_on(a, depth + 1);
+    if (ab < 0) return -1;
+    uint8_t ad = (uint8_t)(A->adr >> 16), af = (uint8_t)(A->adr & 0x1F);
+    if (is_pci_bridge((uint8_t)ab, ad, af)) {
+        uint8_t sec = IRQ_PciRead8((uint8_t)ab, ad, af, 0x19);
+        if (!sec || sec == 0xFF || sec == ab) return -1;
         return sec;
     }
-    return A->has_bbn ? (int)A->bbn : 0;
+    return ab;
 }
 
 /* ------------------------------------------------------------------ */
@@ -677,23 +684,32 @@ static void scan_table(const uint8_t *aml, uint32_t len)
             continue;
         }
 
-        uint8_t bus, has_b = 0, bb = 0, bd = 0, bf = 0;
-        if (!has_adr_ancestor(di, 0)) {
-            bus = d->has_bbn ? (uint8_t)d->bbn : 0;      /* host bridge */
-        } else if (d->has_adr) {
+        uint8_t bus = 0, has_b = 0, bb = 0, bd = 0, bf = 0;
+        int keyed = 0;
+        if (d->has_adr) {
+            /* A _PRT owner that is itself a PCI-PCI bridge routes its
+             * secondary bus.  A non-bridge _ADR device with no _ADR
+             * ancestry is the host bridge instead (some DSDTs give the
+             * root _ADR 0). */
             uint8_t dd = (uint8_t)(d->adr >> 16), df = (uint8_t)(d->adr & 0x1F);
             int pb = bus_on(di, 0);
-            if (pb < 0 || pb > 255 || !is_pci_bridge((uint8_t)pb, dd, df)) {
+            if (pb >= 0 && pb <= 255 && is_pci_bridge((uint8_t)pb, dd, df)) {
+                uint8_t sec = IRQ_PciRead8((uint8_t)pb, dd, df, 0x19);
+                if (sec && sec != 0xFF && sec != pb) {
+                    bus = sec; has_b = 1;
+                    bb = (uint8_t)pb; bd = dd; bf = df;
+                    keyed = 1;
+                }
+            }
+        }
+        if (!keyed) {
+            if (has_adr_ancestor(di, 0)) {
                 KLOG(KLOG_KERN, KLOG_DEBUG,
                      "acpi-prt: %.4s _PRT but owner is no PCI bridge\n",
                      (const char *)d->name);
-                continue;
+                continue;   /* nested _PRT owner we can't key */
             }
-            uint8_t sec = IRQ_PciRead8((uint8_t)pb, dd, df, 0x19);
-            if (!sec || sec == 0xFF || sec == pb) continue;
-            bus = sec; has_b = 1; bb = (uint8_t)pb; bd = dd; bf = df;
-        } else {
-            continue;   /* nested _PRT owner without _ADR — can't key it */
+            bus = d->has_bbn ? (uint8_t)d->bbn : 0;      /* host bridge */
         }
 
         if (g_nsets >= PRT_MAX_SETS) break;
