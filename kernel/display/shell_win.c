@@ -4098,8 +4098,19 @@ static int shell_read_line(void *shell_extra, char *buf, int max)
     }
 }
 
+/* Pad `msg` with spaces to `col` so the next field starts at a fixed
+ * column — keeps ps rows aligned with the Task/Type/Info header. */
+static void shell_pad_to(char *msg, int max, int col)
+{
+    int l = 0;
+    while (msg[l]) l++;
+    while (l < col && l < max - 1) { msg[l++] = ' '; msg[l] = '\0'; }
+}
+
 /* Enumerate running tasks for the ps command.
- * idx starts at 0; returns 1 and fills out while tasks remain, 0 at end. */
+ * idx starts at 0; returns 1 and fills out while tasks remain, 0 at end.
+ * Row layout matches the Cmd_Ps header: name at 0 (20 wide), type at 22
+ * (8 wide), info at 32. */
 static int shell_enum_tasks(void *shell_extra, int idx, char *out, int max)
 {
     (void)shell_extra;
@@ -4114,7 +4125,9 @@ static int shell_enum_tasks(void *shell_extra, int idx, char *out, int max)
             char num[8];
             uint_to_dec_s((uint32_t)g_shells[i].number, num, sizeof(num));
             scat(msg, num, 96);
-            scat(msg, g_shells[i].remote ? "   Telnet " : "   Shell  ", 96);
+            shell_pad_to(msg, 96, 22);
+            scat(msg, g_shells[i].remote ? "Telnet" : "Shell", 96);
+            shell_pad_to(msg, 96, 32);
             scat(msg, g_shells[i].cwd, 96);
             if (g_shells[i].vim_mode) {
                 scat(msg, "  (vim)", 96);
@@ -4144,7 +4157,8 @@ static int shell_enum_tasks(void *shell_extra, int idx, char *out, int max)
             WM_GetWindowTitle(i, title, sizeof(title));
             char msg[96];
             scopy(msg, title, 96);
-            scat(msg, "   Window", 96);
+            shell_pad_to(msg, 96, 22);
+            scat(msg, "Window", 96);
             scopy(out, msg, max);
             return 1;
         }
@@ -4716,7 +4730,7 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
  * registry, and real binaries found by PATH search. */
 static const char *const k_remote_blocked[] = {
     "calculator", "clock", "exchange", "guide", "loadwb",
-    "netinfo", "newcli", "newshell", "pointer", "blanker",
+    "newcli", "newshell", "pointer", "blanker",
     /* prefs editors — all GUI panels */
     "screenmode", "font", "icontrol", "input", "palette",
     "wbpattern", "serial", "printer", "time", "locale",

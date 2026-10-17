@@ -7,6 +7,7 @@
 
 #include "cmd_internal.h"
 #include "../exec/mem_info.h"
+#include "../exec/elf64_loader.h"
 #include "../dos/dma.h"
 
 static void mem_fmt(uint32_t bytes, char *buf, int max)
@@ -44,6 +45,14 @@ void Cmd_Mem(NativeCmdCtx *ctx, const char *args)
     mem_fmt(m.x64_free, num, sizeof(num));
     cmd_scat(line, num, CMD_MAX_LINE);
     cmd_scat(line, " free", CMD_MAX_LINE);
+    PRINT(line);
+
+    /* Kernel-owned share of the x64 arena (task stacks, loader blocks) */
+    cmd_scopy(line, "Kernel heap:", CMD_MAX_LINE);
+    mem_fmt(ELF64_HeapKernelUsed(), num, sizeof(num));
+    cmd_scat(line, " ", CMD_MAX_LINE);
+    cmd_scat(line, num, CMD_MAX_LINE);
+    cmd_scat(line, " used (kernel-owned x64 blocks)", CMD_MAX_LINE);
     PRINT(line);
 
     /* Emulated M68k guest RAM slots */

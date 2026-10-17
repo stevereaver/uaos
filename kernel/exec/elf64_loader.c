@@ -444,6 +444,20 @@ uint32_t ELF64_HeapSize(void)
     return X64_HEAP_SIZE;
 }
 
+uint32_t ELF64_HeapKernelUsed(void)
+{
+    uint64_t irq = x64_irq_save();
+    uint64_t n = 0;
+    for (X64Blk *b = g_x64_first; b; b = b->next) {
+        if (b->magic != X64_BLK_MAGIC)
+            break;
+        if ((b->flags & X64_BLK_F_USED) && !b->owner)
+            n += b->size;
+    }
+    x64_irq_restore(irq);
+    return (uint32_t)n;
+}
+
 void *ELF64_HeapAlloc(uint32_t size, uint32_t align)
 {
     return x64_heap_alloc(size, align, Task_Current());

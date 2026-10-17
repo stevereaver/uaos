@@ -14,6 +14,29 @@
 #include "../net/arp.h"
 #include "../net/dns.h"
 
+extern uint64_t Tickmon_TscHz(void);
+
+static inline uint64_t ping_rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Format microseconds as "<ms>.<frac>" (3 decimals) for RTT display. */
+static void ping_fmt_us(uint32_t us, char *buf, int max)
+{
+    cmd_uint_to_dec(us / 1000, buf, max);
+    cmd_scat(buf, ".", max);
+    char frac[4];
+    uint32_t f = us % 1000;
+    frac[0] = (char)('0' + (f / 100) % 10);
+    frac[1] = (char)('0' + (f / 10) % 10);
+    frac[2] = (char)('0' + f % 10);
+    frac[3] = '\0';
+    cmd_scat(buf, frac, max);
+}
+
 /* DnsPollFn adapter: forward slice to CMD_YIELD */
 static void ping_dns_poll(void *arg, uint32_t ms)
 {
@@ -93,19 +116,24 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
     }
 
     int sent = 0, received = 0;
+    const uint64_t tsc_hz = Tickmon_TscHz();
+    uint32_t rtt_min = 0, rtt_max = 0;
+    uint64_t rtt_sum = 0;
     for (int seq = 1; seq <= count; seq++) {
         if (CMD_BREAK(ctx)) {
             PRINT("***Break");
             return;
         }
         icmp_clear_reply();
+        uint64_t t0 = ping_rdtsc();
         icmp_ping(dst, (uint16_t)seq);
         sent++;
 
-        /* Wait up to ~1000 ms for a reply, yielding each 100 ms slice */
+        /* Wait up to ~1000 ms for a reply; 5 ms slices keep the RTT
+         * measurement meaningful without reworking reply matching. */
         int got = 0;
-        for (int t = 0; t < 10; t++) {
-            CMD_YIELD(ctx, 100);
+        for (int t = 0; t < 200; t++) {
+            CMD_YIELD(ctx, 5);
             if (CMD_BREAK(ctx)) {
                 PRINT("***Break");
                 return;
@@ -114,6 +142,7 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
         }
 
         if (got) {
+            uint64_t dt = ping_rdtsc() - t0;
             char ip_s[20]; net_ip_to_str(dst, ip_s);
             cmd_scopy(line, "32 bytes from ", sizeof(line));
             cmd_scat(line, ip_s, sizeof(line));
@@ -121,6 +150,17 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
             char num[8]; cmd_uint_to_dec((uint32_t)seq, num, 8);
             cmd_scat(line, num, sizeof(line));
             cmd_scat(line, " ttl=64", sizeof(line));
+            if (tsc_hz) {
+                uint32_t us = (uint32_t)(dt * 1000000 / tsc_hz);
+                char ms_s[20];
+                ping_fmt_us(us, ms_s, sizeof(ms_s));
+                cmd_scat(line, " time=", sizeof(line));
+                cmd_scat(line, ms_s, sizeof(line));
+                cmd_scat(line, " ms", sizeof(line));
+                if (!received || us < rtt_min) rtt_min = us;
+                if (us > rtt_max) rtt_max = us;
+                rtt_sum += us;
+            }
             PRINT(line);
             received++;
         } else {
@@ -146,4 +186,19 @@ void Cmd_Ping(NativeCmdCtx *ctx, const char *args)
     cmd_scat(line, nr, sizeof(line));
     cmd_scat(line, " packets received", sizeof(line));
     PRINT(line);
+
+    if (received && tsc_hz) {
+        char mn[20], av[20], mx[20];
+        ping_fmt_us(rtt_min, mn, sizeof(mn));
+        ping_fmt_us((uint32_t)(rtt_sum / (uint64_t)received), av, sizeof(av));
+        ping_fmt_us(rtt_max, mx, sizeof(mx));
+        cmd_scopy(line, "rtt min/avg/max = ", sizeof(line));
+        cmd_scat(line, mn, sizeof(line));
+        cmd_scat(line, "/", sizeof(line));
+        cmd_scat(line, av, sizeof(line));
+        cmd_scat(line, "/", sizeof(line));
+        cmd_scat(line, mx, sizeof(line));
+        cmd_scat(line, " ms", sizeof(line));
+        PRINT(line);
+    }
 }

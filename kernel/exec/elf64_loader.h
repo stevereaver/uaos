@@ -152,6 +152,10 @@ uint32_t ELF64_HeapUsed(void);
 /* Return the total size of the x64 heap arena (bytes). */
 uint32_t ELF64_HeapSize(void);
 
+/* Bytes of the x64 heap held by kernel-owned (owner == NULL) blocks —
+ * task stacks and loader-internal allocations. */
+uint32_t ELF64_HeapKernelUsed(void);
+
 /* Allocate size bytes from the x64 heap; the returned payload is aligned
  * to `align` (16 minimum).  The block is owned by the calling task
  * (Task_Current) and released by Task_Exit even if never freed.

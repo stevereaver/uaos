@@ -73,10 +73,6 @@ void Cmd_Route(NativeCmdCtx *ctx, const char *args)
     const char *devname = netdev_name();
 
     /* ---- Routing table ---- */
-    PRINT("Kernel routing table:");
-    PRINT("  Destination      Netmask          Gateway          Flags  Iface");
-    PRINT("  ---------------  ---------------  ---------------  -----  -----");
-
     char line[96];
     char dst_s[20], nm_s[20], gw_s[20];
 
@@ -88,6 +84,26 @@ void Cmd_Route(NativeCmdCtx *ctx, const char *args)
         while (_n-- > 0 && _p < (int)sizeof(line)-1) line[_p++] = ' '; \
         line[_p] = '\0'; \
     } while(0)
+
+    PRINT("Kernel routing table:");
+
+    /* Header built through the same column widths as the rows below so
+     * the column starts and the separator dashes actually line up. */
+    cmd_scopy(line, "  ", sizeof(line));
+    COL("Destination", 17); cmd_scat(line, "  ", sizeof(line));
+    COL("Netmask",     17); cmd_scat(line, "  ", sizeof(line));
+    COL("Gateway",     17); cmd_scat(line, "  ", sizeof(line));
+    COL("Flags",        8);
+    cmd_scat(line, "Iface", sizeof(line));
+    PRINT(line);
+
+    cmd_scopy(line, "  ", sizeof(line));
+    COL("-----------------", 17); cmd_scat(line, "  ", sizeof(line));
+    COL("-----------------", 17); cmd_scat(line, "  ", sizeof(line));
+    COL("-----------------", 17); cmd_scat(line, "  ", sizeof(line));
+    COL("-----",            8);
+    cmd_scat(line, "-----", sizeof(line));
+    PRINT(line);
 
     /* Local subnet route */
     ipv4_t subnet = local & nm;

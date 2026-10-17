@@ -1,9 +1,11 @@
-/* cmd_ps.c — C:ps — list running tasks
+/* cmd_ps.c — C:ps — list running CLI processes
  *
- * Displays all active tasks in the system:
- *   - Shell CLI windows
+ * Displays the user-facing processes in the system:
+ *   - Shell CLI windows and live remote (telnet) sessions
  *   - Vim editors (inline and standalone)
  *   - Other WM windows
+ *
+ * (taskdump lists every kernel task; ps shows the CLI/app view.)
  *
  * Usage: ps
  */
@@ -19,8 +21,9 @@ void Cmd_Ps(NativeCmdCtx *ctx, const char *args)
         return;
     }
 
-    PRINT("Task                 Type     Info");
-    PRINT("----------------------------------------");
+    PRINT("CLI processes and windows:");
+    PRINT("Task                  Type      Info");
+    PRINT("--------------------  --------  ---------------------------");
 
     int idx = 0;
     char line[96];
