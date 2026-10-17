@@ -365,9 +365,9 @@ static int hub_probe(UsbIf *ifc)
     klog_puts(KLOG_USB, KLOG_INFO, " pid=");
     klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", dev->pid);
     klog_puts(KLOG_USB, KLOG_INFO, " ports=");
-    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", (uint32_t)nports);
+    klog_appendf(KLOG_USB, KLOG_INFO, "%u", (uint32_t)nports);
     klog_puts(KLOG_USB, KLOG_INFO, " intr=");
-    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", (uint32_t)hb->intr_ok);
+    klog_appendf(KLOG_USB, KLOG_INFO, "%u", (uint32_t)hb->intr_ok);
     klog_puts(KLOG_USB, KLOG_INFO, "\n");
     return 1;
 }

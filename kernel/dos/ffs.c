@@ -198,7 +198,7 @@ FfsVolume *FFS_Mount(BlockDev *dev)
     kprint("' dostype=DOS\\");
     kprinthex(vol->dostype);
     kprint(" root=");
-    kprinthex(vol->root_key);
+    kprintdec(vol->root_key);
     kprint("\n");
     return vol;
 }

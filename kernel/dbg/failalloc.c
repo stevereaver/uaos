@@ -62,7 +62,7 @@ int Failalloc_ShouldFail(int pool)
 
     g_fa_fails++;
     kprint("[failalloc] injected failure alloc#");
-    kprinthex(n);
+    kprintdec64(n);
     kprint(pool == FAILALLOC_X64 ? " pool=x64" : " pool=guest");
     kprint("\n");
     return 1;

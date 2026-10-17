@@ -123,7 +123,7 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
         uint64_t mfield = m & phys_mask & ~(uint64_t)MTRRMASK_VALID;
         uint64_t msize  = (~mfield & phys_mask) + 1;
         uint64_t mbase  = b & ~(msize - 1);
-        kprint("[MTRR] slot "); kprinthex(n);
+        kprint("[MTRR] slot "); kprintdec(n);
         kprint(" base="); kprinthex(mbase);
         kprint(" size="); kprinthex(msize);
         kprint(" type="); kprinthex(b & 0xFF);
@@ -132,10 +132,10 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
         if (mbase < rbase + p && mbase + msize > rbase) {
             if ((b & 0xFF) == MTRR_TYPE_WC) {
                 kprint("[MTRR] region already WC via slot ");
-                kprinthex(n); kprint("\n");
+                kprintdec(n); kprint("\n");
                 return 0;
             }
-            kprint("[MTRR] SKIP: overlaps slot "); kprinthex(n);
+            kprint("[MTRR] SKIP: overlaps slot "); kprintdec(n);
             kprint(" (type "); kprinthex(b & 0xFF);
             kprint(") — overlapping ranges are undefined\n");
             return -1;
@@ -153,7 +153,7 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
     uint64_t cr0 = read_cr0();
     uint64_t cr4 = read_cr4();
     kprint("[MTRR] base "); kprinthex(rbase); kprint(" size ");
-    kprinthex(p); kprint(" slot "); kprinthex((uint64_t)slot);
+    kprinthex(p); kprint(" slot "); kprintdec((uint32_t)slot);
     kprint(" cr4="); kprinthex(cr4); kprint("\n");
 
     /* Save/restore IF — cli for the CD window, then put flags back
@@ -193,7 +193,7 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
     kprint(" size ");
     kprinthex(p);
     kprint(" slot ");
-    kprinthex((uint64_t)slot);
+    kprintdec((uint32_t)slot);
     kprint("\n");
     return 0;
 }

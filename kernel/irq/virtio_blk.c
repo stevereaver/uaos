@@ -343,7 +343,7 @@ static int virtio_setup_queue(vblk_dev_t *d)
     /* Read max queue size (Queue Num is read-only in legacy PCI) */
     uint16_t max_queue_size = inw(d->mmio_base + VIRTIO_PCI_QUEUE_NUM);
     kprint("[VIRTIO] Max queue size: ");
-    kprinthex((uint64_t)max_queue_size);
+    kprintdec(max_queue_size);
     kprint("\n");
 
     if (max_queue_size == 0) {
@@ -684,9 +684,9 @@ static int virtio_blk_init_one(uint8_t bus, uint8_t dev, uint8_t func)
     d->mmio_base = bar0 & ~0x03;   /* strip I/O flag + low bits */
 
     kprint("[VIRTIO] virtio");
-    kprinthex(g_ndevs);
+    kprintdec(g_ndevs);
     kprint(" at pci ");
-    kprinthex(bus); kprint(":"); kprinthex(dev); kprint("."); kprinthex(func);
+    kprintdec(bus); kprint(":"); kprintdec(dev); kprint("."); kprintdec(func);
     kprint(" bar0=");
     kprinthex(d->mmio_base);
     kprint("\n");
@@ -699,7 +699,7 @@ static int virtio_blk_init_one(uint8_t bus, uint8_t dev, uint8_t func)
     /* Get IRQ line from PCI configuration */
     d->irq_line = pci_config_read_byte(bus, dev, func, PCI_INTERRUPT_LINE_OFFSET);
     kprint("[VIRTIO] IRQ line: ");
-    kprinthex(d->irq_line);
+    kprintdec(d->irq_line);
     kprint("\n");
 
     /* Initialize VirtIO device */
@@ -762,7 +762,7 @@ int virtio_blk_init(void)
     }
 
     kprint("[VIRTIO] Registered ");
-    kprinthex(g_ndevs);
+    kprintdec(g_ndevs);
     kprint(" virtio block device(s)\n");
     return 0;
 }
@@ -807,7 +807,7 @@ void virtio_blk_setup_irq(void)
             kprint("[VIRTIO] Interrupt handler registered for ");
             kprint(d->name);
             kprint(" vector ");
-            kprinthex((uint64_t)vec);
+            kprintdec((uint32_t)vec);
             kprint("\n");
         } else {
             kprint("[VIRTIO] IRQ not routed for ");

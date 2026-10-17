@@ -425,7 +425,7 @@ static int hid_probe(UsbIf *ifc)
     if (is_kbd) g_nhid_kbd++; else g_nhid_mouse++;
     klog_puts(KLOG_USB, KLOG_DEBUG, is_kbd ? "hid: kbd" : "hid: mouse");
     klog_puts(KLOG_USB, KLOG_DEBUG, " on if ");
-    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", ifnum);
+    klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", ifnum);
     klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
     return 1;
 }

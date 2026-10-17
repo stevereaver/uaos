@@ -559,7 +559,7 @@ static int vio_setup_queue(uint16_t qidx) {
     vio_queue_select(qidx);
     uint16_t qsize = vio_queue_size_read();
     if (qsize == 0) {
-        kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
+        kprint("[VIO-SCSI] Queue "); kprintdec(qidx);
         kprint(" not available\n");
         return -1;
     }
@@ -569,7 +569,7 @@ static int vio_setup_queue(uint16_t qidx) {
      * transports the same layout. */
     if (qsize > VIO_VQ_MAX_NUM) {
         if (g_transport == VIO_SCSI_LEGACY) {
-            kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
+            kprint("[VIO-SCSI] Queue "); kprintdec(qidx);
             kprint(" size too large for legacy transport\n");
             return -1;
         }
@@ -581,7 +581,7 @@ static int vio_setup_queue(uint16_t qidx) {
     uint32_t used_off    = (desc_bytes + avail_bytes + 4095) & ~4095U;
     uint32_t need        = used_off + 6 + (uint32_t)qsize * 8;
     if (need > VIO_VQ_SLOT) {
-        kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
+        kprint("[VIO-SCSI] Queue "); kprintdec(qidx);
         kprint(" ring does not fit slot\n");
         return -1;
     }
@@ -638,8 +638,8 @@ static int vio_setup_queue(uint16_t qidx) {
 
     if (qidx == VIO_Q_COMMAND) g_command_last_used = 0;
 
-    kprint("[VIO-SCSI] Queue "); kprinthex((uint64_t)qidx);
-    kprint(" setup OK (size="); kprinthex((uint64_t)qsize); kprint(")\n");
+    kprint("[VIO-SCSI] Queue "); kprintdec(qidx);
+    kprint(" setup OK (size="); kprintdec(qsize); kprint(")\n");
     return 0;
 }
 
@@ -712,7 +712,7 @@ static int vio_device_init(void) {
     /* 4. Set up virtqueues */
     for (int q = 0; q < VIO_NUM_QUEUES; q++) {
         if (vio_setup_queue((uint16_t)q) != 0) {
-            kprint("[VIO-SCSI] Failed to set up queue "); kprinthex((uint64_t)q); kprint("\n");
+            kprint("[VIO-SCSI] Failed to set up queue "); kprintdec((uint32_t)q); kprint("\n");
             return -1;
         }
     }
@@ -794,7 +794,7 @@ static uint64_t vio_relocate_bar32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t
     pci_write32(bus, dev, fn, (uint8_t)(off + 4), 0);
     uint64_t new_addr = pci_read_bar(bus, dev, fn, bar_idx);
     if (new_addr) {
-        kprint("[VIO-SCSI] Relocated BAR"); kprinthex((uint64_t)bar_idx);
+        kprint("[VIO-SCSI] Relocated BAR"); kprintdec((uint32_t)bar_idx);
         kprint(" to "); kprinthex(new_addr); kprint("\n");
     }
     return new_addr;
@@ -862,10 +862,10 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
                 cap->offset   = offset;
                 cap->length   = length;
                 cap->bar_addr = bar_addr;
-                kprint("[VIO-SCSI] Cap type="); kprinthex((uint64_t)cfg_type);
-                kprint(" bar="); kprinthex((uint64_t)bar_idx);
+                kprint("[VIO-SCSI] Cap type="); kprintdec(cfg_type);
+                kprint(" bar="); kprintdec((uint32_t)bar_idx);
                 kprint(" off="); kprinthex((uint64_t)offset);
-                kprint(" len="); kprinthex((uint64_t)length);
+                kprint(" len="); kprintdec(length);
                 kprint(" base="); kprinthex(bar_addr);
                 kprint(usable ? "\n" : " (not mappable)\n");
             }
@@ -875,9 +875,9 @@ static int vio_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn) {
 
     if (!found_common || !found_notify || !found_isr) {
         kprint("[VIO-SCSI] Missing required capabilities (common=");
-        kprinthex((uint64_t)found_common);
-        kprint(" notify="); kprinthex((uint64_t)found_notify);
-        kprint(" isr="); kprinthex((uint64_t)found_isr); kprint(")\n");
+        kprintdec(found_common);
+        kprint(" notify="); kprintdec(found_notify);
+        kprint(" isr="); kprintdec(found_isr); kprint(")\n");
         return -1;
     }
     if (g_notify_off_mult == 0) g_notify_off_mult = 1;
@@ -931,7 +931,7 @@ static int vio_find_device(void) {
 
                 /* Read IRQ line */
                 g_irq_line = pci_read8((uint8_t)bus, dev, fn, PCI_REG_INTERRUPT_LINE);
-                kprint("[VIO-SCSI] IRQ line: "); kprinthex((uint64_t)g_irq_line); kprint("\n");
+                kprint("[VIO-SCSI] IRQ line: "); kprintdec(g_irq_line); kprint("\n");
 
                 if (g_transport == VIO_SCSI_LEGACY) {
                     /* Legacy: read BAR0 (must be I/O space) */
@@ -1095,12 +1095,12 @@ static int vio_scsi_wait_completion_ext(uint8_t *out_response) {
             memory_barrier();
             if (out_response) *out_response = g_scsi_resp.response;
             if (g_scsi_resp.response != VIO_SCSI_RESP_OK) {
-                kprint("[VIO-SCSI] resp="); kprinthex((uint64_t)g_scsi_resp.response);
-                kprint(" status="); kprinthex((uint64_t)g_scsi_resp.status); kprint("\n");
+                kprint("[VIO-SCSI] resp="); kprintdec(g_scsi_resp.response);
+                kprint(" status="); kprintdec(g_scsi_resp.status); kprint("\n");
                 return -1;
             }
             if (g_scsi_resp.status != SCSI_STATUS_GOOD) {
-                kprint("[VIO-SCSI] SCSI status="); kprinthex((uint64_t)g_scsi_resp.status);
+                kprint("[VIO-SCSI] SCSI status="); kprintdec(g_scsi_resp.status);
                 kprint("\n");
                 return -1;
             }
@@ -1131,7 +1131,7 @@ static int vio_scsi_wait_completion(void) {
 /* INQUIRY — returns the peripheral device type (bits 4-0 of byte 0).
  * Returns the device type on success, or -1 on failure. */
 static int vio_scsi_inquiry(int port) {
-    kprint("[VIO-SCSI] Sending INQUIRY to port "); kprinthex((uint64_t)port); kprint("\n");
+    kprint("[VIO-SCSI] Sending INQUIRY to port "); kprintdec((uint32_t)port); kprint("\n");
 
     uint8_t cdb[32];
     uint64_t data_phys = DMA_VirtToPhys(g_data_buffer);
@@ -1156,11 +1156,11 @@ static int vio_scsi_inquiry(int port) {
          * the target genuinely can't answer INQUIRY. */
         if (inq_resp != 0xFF) break;
         kprint("[VIO-SCSI] INQUIRY timed out for port ");
-        kprinthex((uint64_t)port); kprint(", retrying\n");
+        kprintdec((uint32_t)port); kprint(", retrying\n");
     }
     if (!ok) {
-        kprint("[VIO-SCSI] INQUIRY wait failed for port "); kprinthex((uint64_t)port);
-        kprint(" (resp="); kprinthex((uint64_t)inq_resp); kprint(")\n");
+        kprint("[VIO-SCSI] INQUIRY wait failed for port "); kprintdec((uint32_t)port);
+        kprint(" (resp="); kprintdec(inq_resp); kprint(")\n");
         return -1;
     }
 
@@ -1173,7 +1173,7 @@ static int vio_scsi_inquiry(int port) {
     }
 
     kprint("[VIO-SCSI] INQUIRY data[0]="); kprinthex((uint64_t)g_data_buffer[0]);
-    kprint(" type="); kprinthex((uint64_t)(g_data_buffer[0] & 0x1F)); kprint("\n");
+    kprint(" type="); kprintdec(g_data_buffer[0] & 0x1F); kprint("\n");
     /* Byte 0: bits 4-0 = peripheral device type */
     return g_data_buffer[0] & 0x1F;
 }
@@ -1210,8 +1210,8 @@ static int vio_scsi_wait_unit_ready(int port, int max_retries) {
          * for not-ready media.  Retry after a longer delay to give the
          * CD-ROM time to spin up. */
         if (resp == VIO_SCSI_RESP_BUSY || resp == VIO_SCSI_RESP_OK) {
-            kprint("[VIO-SCSI] TUR not ready, retry "); kprinthex((uint64_t)i);
-            kprint(" (resp="); kprinthex((uint64_t)resp); kprint(")\n");
+            kprint("[VIO-SCSI] TUR not ready, retry "); kprintdec(i);
+            kprint(" (resp="); kprintdec(resp); kprint(")\n");
             for (volatile int d = 0; d < 500000; d++);
             continue;
         }
@@ -1255,10 +1255,10 @@ static int vio_scsi_read_capacity(int port, uint64_t *out_sectors,
             *out_sectors = (uint64_t)(max_lba + 1);
             if (out_blk_size) *out_blk_size = blk_size;
 
-            kprint("[VIO-SCSI] READ CAPACITY (port "); kprinthex((uint64_t)port);
-            kprint("): max_lba="); kprinthex((uint64_t)max_lba);
-            kprint(" blk_size="); kprinthex((uint64_t)blk_size);
-            kprint(" sectors="); kprinthex(*out_sectors); kprint("\n");
+            kprint("[VIO-SCSI] READ CAPACITY (port "); kprintdec((uint32_t)port);
+            kprint("): max_lba="); kprintdec64(max_lba);
+            kprint(" blk_size="); kprintdec(blk_size);
+            kprint(" sectors="); kprintdec64(*out_sectors); kprint("\n");
             return 0;
         }
 
@@ -1271,8 +1271,8 @@ static int vio_scsi_read_capacity(int port, uint64_t *out_sectors,
             if (attempt < 29) {
                 if (attempt % 5 == 0) {
                     kprint("[VIO-SCSI] READ CAPACITY BUSY (resp=");
-                    kprinthex((uint64_t)rc_resp);
-                    kprint("), retrying "); kprinthex((uint64_t)attempt);
+                    kprintdec(rc_resp);
+                    kprint("), retrying "); kprintdec((uint32_t)attempt);
                     kprint("/30...\n");
                 }
                 for (volatile int d = 0; d < 1000000; d++);
@@ -1281,8 +1281,8 @@ static int vio_scsi_read_capacity(int port, uint64_t *out_sectors,
         }
 
         kprint("[VIO-SCSI] READ CAPACITY: response=");
-        kprinthex((uint64_t)rc_resp);
-        kprint(" status="); kprinthex((uint64_t)g_scsi_resp.status);
+        kprintdec(rc_resp);
+        kprint(" status="); kprintdec(g_scsi_resp.status);
         kprint("\n");
         return -1;
     }
@@ -1345,12 +1345,12 @@ static int vio_scsi_bdev_read(BlockDev *bdev, uint64_t sector, void *buffer,
                 dst[i] = g_data_buffer[i];
             return 0;
         }
-        kprint("[VIO-SCSI] READ retry "); kprinthex((uint64_t)(attempt + 1));
-        kprint("/3 (sector="); kprinthex(sector); kprint(")\n");
+        kprint("[VIO-SCSI] READ retry "); kprintdec((uint32_t)(attempt + 1));
+        kprint("/3 (sector="); kprintdec64(sector); kprint(")\n");
         for (volatile int d = 0; d < 1000000; d++);
     }
-    kprint("[VIO-SCSI] READ exhausted retries (sector="); kprinthex(sector);
-    kprint(" nsec="); kprinthex((uint64_t)num_sectors); kprint(")\n");
+    kprint("[VIO-SCSI] READ exhausted retries (sector="); kprintdec64(sector);
+    kprint(" nsec="); kprintdec(num_sectors); kprint(")\n");
     return -1;
 }
 
@@ -1401,20 +1401,20 @@ static int vio_scsi_bdev_write(BlockDev *bdev, uint64_t sector, const void *buff
      * time after many large sequential writes (e.g. FAT zeroing). */
     for (int attempt = 0; attempt < 3; attempt++) {
         if (vio_scsi_submit(cdb, dev->port, dev->lun, data_phys, num_sectors * ss, 1) != 0) {
-            kprint("[VIO-SCSI] WRITE submit failed (sector="); kprinthex(sector); kprint(")\n");
+            kprint("[VIO-SCSI] WRITE submit failed (sector="); kprintdec64(sector); kprint(")\n");
             /* Brief delay before retry */
             for (volatile int d = 0; d < 100000; d++);
             continue;
         }
         int rc = vio_scsi_wait_completion();
         if (rc == 0) return 0;
-        kprint("[VIO-SCSI] WRITE retry "); kprinthex((uint64_t)(attempt + 1));
-        kprint("/3 (sector="); kprinthex(sector); kprint(")\n");
+        kprint("[VIO-SCSI] WRITE retry "); kprintdec((uint32_t)(attempt + 1));
+        kprint("/3 (sector="); kprintdec64(sector); kprint(")\n");
         /* Brief delay before retry */
         for (volatile int d = 0; d < 1000000; d++);
     }
-    kprint("[VIO-SCSI] WRITE exhausted retries (sector="); kprinthex(sector);
-    kprint(" nsec="); kprinthex((uint64_t)num_sectors); kprint(")\n");
+    kprint("[VIO-SCSI] WRITE exhausted retries (sector="); kprintdec64(sector);
+    kprint(" nsec="); kprintdec(num_sectors); kprint(")\n");
     return -1;
 }
 
@@ -1453,12 +1453,12 @@ static void vio_scsi_irq_handler(uint64_t vector, uint64_t error_code) {
 /* Scan a single port: probe with TEST UNIT READY + INQUIRY, then register
  * the appropriate block device.  Returns 1 if a device was registered. */
 static int vio_scsi_probe_port(int port) {
-    kprint("[VIO-SCSI] Probing port "); kprinthex((uint64_t)port); kprint("...\n");
+    kprint("[VIO-SCSI] Probing port "); kprintdec((uint32_t)port); kprint("...\n");
 
     /* Wait for the unit to become ready (CD-ROMs need spin-up time).
      * Use a generous retry count to handle slow spin-ups. */
     if (vio_scsi_wait_unit_ready(port, 20) != 0) {
-        kprint("[VIO-SCSI] Target "); kprinthex((uint64_t)port);
+        kprint("[VIO-SCSI] Target "); kprintdec((uint32_t)port);
         kprint(" not ready, skipping\n");
         return 0;
     }
@@ -1467,16 +1467,16 @@ static int vio_scsi_probe_port(int port) {
     int periph_type = vio_scsi_inquiry(port);
     if (periph_type < 0) {
         kprint("[VIO-SCSI] INQUIRY failed for port ");
-        kprinthex((uint64_t)port); kprint("\n");
+        kprintdec((uint32_t)port); kprint("\n");
         return 0;
     }
 
-    kprint("[VIO-SCSI] Target "); kprinthex((uint64_t)port);
-    kprint(" peripheral type="); kprinthex((uint64_t)periph_type); kprint("\n");
+    kprint("[VIO-SCSI] Target "); kprintdec((uint32_t)port);
+    kprint(" peripheral type="); kprintdec((uint32_t)periph_type); kprint("\n");
 
     if (g_num_devices >= VIO_SCSI_MAX_PORTS) {
         kprint("[VIO-SCSI] Max devices reached, skipping port ");
-        kprinthex((uint64_t)port); kprint("\n");
+        kprintdec((uint32_t)port); kprint("\n");
         return 0;
     }
 
@@ -1494,7 +1494,7 @@ static int vio_scsi_probe_port(int port) {
         uint32_t blk_size;
         if (vio_scsi_read_capacity(port, &capacity, &blk_size) != 0) {
             kprint("[VIO-SCSI] READ CAPACITY failed for CD-ROM port ");
-            kprinthex((uint64_t)port); kprint("\n");
+            kprintdec((uint32_t)port); kprint("\n");
             dev->active = 0;
             return 0;
         }
@@ -1519,7 +1519,7 @@ static int vio_scsi_probe_port(int port) {
         }
 
         kprint("[VIO-SCSI] Registered CD-ROM "); kprint(dev->name); kprint(" (");
-        kprinthex(capacity); kprint(" sectors, 2048-byte)\n");
+        kprintdec64(capacity); kprint(" sectors, 2048-byte)\n");
         g_num_devices++;
         g_num_cds++;
         return 1;
@@ -1536,7 +1536,7 @@ static int vio_scsi_probe_port(int port) {
         uint32_t blk_size;
         if (vio_scsi_read_capacity(port, &capacity, &blk_size) != 0) {
             kprint("[VIO-SCSI] READ CAPACITY failed for type-0 port ");
-            kprinthex((uint64_t)port);
+            kprintdec((uint32_t)port);
             kprint(", trying CD-ROM fallback (2048-byte)...\n");
 
             /* Try reading the ISO 9660 PVD at sector 16 with 2048-byte
@@ -1606,14 +1606,14 @@ static int vio_scsi_probe_port(int port) {
                     }
 
                     kprint("[VIO-SCSI] Registered CD-ROM "); kprint(dev->name); kprint(" (");
-                    kprinthex((uint64_t)vol_size); kprint(" sectors, 2048-byte)\n");
+                    kprintdec64(vol_size); kprint(" sectors, 2048-byte)\n");
                     g_num_devices++;
                     g_num_cds++;
                     return 1;
                 }
 
                 kprint("[VIO-SCSI] Read succeeded but no ISO 9660 magic (attempt ");
-                kprinthex((uint64_t)read_attempt); kprint(")\n");
+                kprintdec((uint32_t)read_attempt); kprint(")\n");
                 /* Dump first 8 bytes for debugging */
                 kprint("[VIO-SCSI]   data[0..7]=");
                 for (int b = 0; b < 8; b++) { kprinthex((uint64_t)g_data_buffer[b]); kprint(" "); }
@@ -1621,7 +1621,7 @@ static int vio_scsi_probe_port(int port) {
             }
 
             kprint("[VIO-SCSI] CD-ROM fallback failed for port ");
-            kprinthex((uint64_t)port); kprint("\n");
+            kprintdec((uint32_t)port); kprint("\n");
             dev->active = 0;
             return 0;
         }
@@ -1649,15 +1649,15 @@ static int vio_scsi_probe_port(int port) {
         }
 
         kprint("[VIO-SCSI] Registered disk "); kprint(dev->name); kprint(" (");
-        kprinthex(dev->capacity); kprint(" sectors, 512-byte)\n");
+        kprintdec64(dev->capacity); kprint(" sectors, 512-byte)\n");
         g_num_devices++;
         g_num_disks++;
         return 1;
 
     } else {
         kprint("[VIO-SCSI] Unsupported peripheral type ");
-        kprinthex((uint64_t)periph_type); kprint(" at port ");
-        kprinthex((uint64_t)port); kprint(", skipping\n");
+        kprintdec((uint32_t)periph_type); kprint(" at port ");
+        kprintdec((uint32_t)port); kprint(", skipping\n");
         dev->active = 0;
         return 0;
     }
@@ -1705,7 +1705,7 @@ void virtio_scsi_setup_irq(void) {
                             vio_scsi_irq_handler, "virtio-scsi");
     if (vec >= 0) {
         kprint("[VIO-SCSI] IRQ handler registered, vector ");
-        kprinthex((uint64_t)vec); kprint("\n");
+        kprintdec((uint32_t)vec); kprint("\n");
     } else {
         kprint("[VIO-SCSI] IRQ not routed, using polling only\n");
     }

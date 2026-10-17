@@ -739,9 +739,9 @@ void Task_Exit(void)
             kprint("[TASK] WARN: '");
             kprint(g_current->ln_Name ? g_current->ln_Name : "?");
             kprint("' exited with nesting ID=");
-            kprinthex((uint64_t)(int)g_current->tc_IDNestCnt);
+            kprintdec((uint32_t)g_current->tc_IDNestCnt);
             kprint(" TD=");
-            kprinthex((uint64_t)(int)g_current->tc_TDNestCnt);
+            kprintdec((uint32_t)g_current->tc_TDNestCnt);
             kprint("\n");
         }
         g_current->tc_State = TASK_REMOVED;
@@ -1069,9 +1069,9 @@ static void crit_block_warn(const char *fn, void *caller)
     kprint("' blocked in ");
     kprint(fn);
     kprint("() while critical (ID=");
-    kprinthex((uint64_t)(int)g_current->tc_IDNestCnt);
+    kprintdec((uint32_t)g_current->tc_IDNestCnt);
     kprint(" TD=");
-    kprinthex((uint64_t)(int)g_current->tc_TDNestCnt);
+    kprintdec((uint32_t)g_current->tc_TDNestCnt);
     kprint(") caller=");
     kprinthex((uint64_t)(uintptr_t)caller);
     kprint("\n");
@@ -1337,10 +1337,10 @@ void Enable(void)
             if (hz) {
                 kprintdec((uint32_t)(dur * 1000 / hz));
                 kprint(" ms (");
-                kprinthex(dur);
+                kprintdec64(dur);
                 kprint(" cycles)");
             } else {
-                kprinthex(dur);
+                kprintdec64(dur);
                 kprint(" cycles");
             }
             kprint(" (IF=0)\n");

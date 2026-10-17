@@ -177,7 +177,7 @@ static void bcm5974_reset_task(void *arg)
             continue;
         g_tp.resets++;
         klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: mode reset #");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)g_tp.resets);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", (uint32_t)g_tp.resets);
         klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
         if (bcm5974_wellspring_mode(g_tp.dev, 0) != 0)
             continue;
@@ -200,7 +200,7 @@ static void bcm5974_tp_cb(void *ctx, void *buf, int len)
     if (dbg_n < 24) {
         dbg_n++;
         klog_puts(KLOG_USB, KLOG_DEBUG, "bcm5974: tp rx len=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)len);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", (uint32_t)len);
         klog_puts(KLOG_USB, KLOG_DEBUG, " d0=");
         klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
                      len >= 4 ? (uint32_t)(d[0] | (d[1]<<8) |

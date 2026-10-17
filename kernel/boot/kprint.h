@@ -20,6 +20,9 @@ void kprinthex(uint64_t v);
 /* Print a decimal number to console */
 void kprintdec(uint32_t v);
 
+/* Print a 64-bit decimal number to console */
+void kprintdec64(uint64_t v);
+
 /* Print a fixed-length buffer to console */
 void kprintbuf(const char *s, size_t len);
 

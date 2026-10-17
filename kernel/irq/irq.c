@@ -303,8 +303,8 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
     uint8_t pin = pci_r8(bus, dev, fn, 0x3D);      /* interrupt pin */
     if (pin < 1 || pin > 4) {
         kprint("[IRQ] ich-route dev=");
-        kprinthex(dev); kprint("."); kprintdec(fn);
-        kprint(" fail: intpin="); kprinthex(pin); kprint("\n");
+        kprintdec(dev); kprint("."); kprintdec(fn);
+        kprint(" fail: intpin="); kprintdec(pin); kprint("\n");
         return -1;
     }
 
@@ -321,7 +321,7 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
     int roff = ich_dir_off(dev);
     if (ioff < 0 || roff < 0) {
         kprint("[IRQ] ich-route dev=");
-        kprinthex(dev); kprint(" no DxxIP/DxxIR (dev>31 range)\n");
+        kprintdec(dev); kprint(" no DxxIP/DxxIR (dev>31 range)\n");
         return -1;
     }
 
@@ -348,13 +348,13 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
         ir = *irp;
         if (((ir >> ((pin - 1) * 4)) & 0xF) != ((pin - 1) & 0x7)) {
             kprint("[IRQ] ich-route dev=");
-            kprinthex(dev); kprint("."); kprintdec(fn);
+            kprintdec(dev); kprint("."); kprintdec(fn);
             kprint(" dir read 0 and write failed — untrusted\n");
             return -1;      /* fall back to the PCI intline register */
         }
         kprint("[IRQ] ich-route dev=");
-        kprinthex(dev); kprint("."); kprintdec(fn);
-        kprint(" dir was 0x0 — programmed pin map, dir=0x");
+        kprintdec(dev); kprint("."); kprintdec(fn);
+        kprint(" dir was 0x0 — programmed pin map, dir=");
         kprinthex(ir); kprint("\n");
     }
 
@@ -373,22 +373,22 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
         pirq = (uint8_t)((ir >> ((pin - 1) * 4)) & 0xF);
         if (pirq > 7) {
             kprint("[IRQ] ich-route dev=");
-            kprinthex(dev); kprint("."); kprintdec(fn);
-            kprint(" pin="); kprinthex(pin);
-            kprint(" dip=0x"); kprinthex(ip);
-            kprint(" dir=0x"); kprinthex(ir);
+            kprintdec(dev); kprint("."); kprintdec(fn);
+            kprint(" pin="); kprintdec(pin);
+            kprint(" dip="); kprinthex(ip);
+            kprint(" dir="); kprinthex(ir);
             kprint(" fail: dir nibble unrouted\n");
             return -1;
         }
         kprint("[IRQ] ich-route dev=");
-        kprinthex(dev); kprint("."); kprintdec(fn);
-        kprint(" programmed dir pin="); kprinthex(pin);
-        kprint(" -> PIRQ"); kprinthex(pirq); kprint("\n");
+        kprintdec(dev); kprint("."); kprintdec(fn);
+        kprint(" programmed dir pin="); kprintdec(pin);
+        kprint(" -> PIRQ"); kprintdec(pirq); kprint("\n");
     }
     if (pirq > 7) {
         kprint("[IRQ] ich-route dev=");
-        kprinthex(dev); kprint("."); kprintdec(fn);
-        kprint(" fail: dir nibble="); kprinthex(nib); kprint("\n");
+        kprintdec(dev); kprint("."); kprintdec(fn);
+        kprint(" fail: dir nibble="); kprintdec(nib); kprint("\n");
         return -1;
     }
 
@@ -398,10 +398,10 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
      * (they read 0 on Apple EFI, which we mistook for "routed to GSI0"
      * -> level line stormed on vector 32). */
     kprint("[IRQ] ich-route dev=");
-    kprinthex(dev); kprint("."); kprintdec(fn);
-    kprint(" pin="); kprinthex(pin);
-    kprint(" dip=0x"); kprinthex(ip); kprint(" dir=0x"); kprinthex(ir);
-    kprint(" -> PIRQ"); kprinthex(pirq);
+    kprintdec(dev); kprint("."); kprintdec(fn);
+    kprint(" pin="); kprintdec(pin);
+    kprint(" dip="); kprinthex(ip); kprint(" dir="); kprinthex(ir);
+    kprint(" -> PIRQ"); kprintdec(pirq);
     kprint(" = gsi "); kprintdec((uint32_t)(16 + pirq)); kprint("\n");
     return 16 + pirq;
 }
@@ -445,7 +445,7 @@ static void irq_intx_enable(uint8_t bus, uint8_t dev, uint8_t fn)
     if (cmd & PCI_CMD_INTX_DIS) {
         pci_w16(bus, dev, fn, 0x04, (uint16_t)(cmd & ~PCI_CMD_INTX_DIS));
         kprint("[IRQ] cleared INTx-disable on ");
-        kprinthex(bus); kprint(":"); kprinthex(dev); kprint(".");
+        kprintdec(bus); kprint(":"); kprintdec(dev); kprint(".");
         kprintdec(fn); kprint("\n");
     }
 }
@@ -484,7 +484,7 @@ static void irq_quiesce_line(int gsi, uint8_t abus, uint8_t adev, uint8_t afn)
             if (cmd & PCI_CMD_INTX_DIS) continue;
             pci_w16(0, dev, fn, 0x04, (uint16_t)(cmd | PCI_CMD_INTX_DIS));
             kprint("[IRQ] quiesced INTx on 0:");
-            kprinthex(dev); kprint("."); kprintdec(fn);
+            kprintdec(dev); kprint("."); kprintdec(fn);
             kprint(" (shares gsi "); kprintdec((uint32_t)gsi);
             kprint(", undriven)\n");
         }
@@ -498,7 +498,7 @@ int IRQ_ResolvePCI(uint8_t bus, uint8_t dev, uint8_t fn)
     if (bus == 0) {
         int gsi = ich_route_gsi(bus, dev, fn);
         if (gsi >= 0) {
-            kprint("[IRQ] pci 0:"); kprinthex(dev); kprint(".");
+            kprint("[IRQ] pci 0:"); kprintdec(dev); kprint(".");
             kprintdec(fn); kprint(" -> gsi ");
             kprintdec((uint32_t)gsi); kprint(" (ich-route)\n");
             return gsi;
@@ -506,8 +506,8 @@ int IRQ_ResolvePCI(uint8_t bus, uint8_t dev, uint8_t fn)
     }
     uint8_t line = pci_r8(bus, dev, fn, 0x3C);
     if (line != 0xFF && line != 0) {
-        kprint("[IRQ] pci "); kprinthex(bus); kprint(":");
-        kprinthex(dev); kprint("."); kprintdec(fn);
+        kprint("[IRQ] pci "); kprintdec(bus); kprint(":");
+        kprintdec(dev); kprint("."); kprintdec(fn);
         kprint(" -> gsi "); kprintdec(line); kprint(" (intline)\n");
         return line;
     }
@@ -668,7 +668,7 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
     int gsi = IRQ_ResolvePCI(bus, dev, fn);
     if (gsi < 0 || gsi >= 64) {
         kprint("[IRQ] cannot resolve PCI IRQ for ");
-        kprinthex(bus); kprint(":"); kprinthex(dev); kprint(".");
+        kprintdec(bus); kprint(":"); kprintdec(dev); kprint(".");
         kprintdec(fn); kprint("\n");
         return -1;
     }
@@ -742,7 +742,7 @@ int IRQ_AttachMSI(uint8_t bus, uint8_t dev, uint8_t fn,
 
     IDT_SetHandler((uint8_t)vec, handler, name);
     g_kind[vec] = VEC_MSI;
-    kprint("[IRQ] MSI "); kprinthex(bus); kprint(":"); kprinthex(dev);
+    kprint("[IRQ] MSI "); kprintdec(bus); kprint(":"); kprintdec(dev);
     kprint("."); kprintdec(fn); kprint(" -> vector ");
     kprintdec((uint32_t)vec); kprint("\n");
     return vec;

@@ -1041,7 +1041,7 @@ static int sky2_drain_status(void)
         uint16_t length = le->length;
         uint32_t status = le->status;
         uint16_t count = (uint16_t)((status & GMR_FS_LEN) >> 16);
-        klog_puts(KLOG_SKY2, KLOG_TRACE, "st#"); klog_appendf(KLOG_SKY2, KLOG_TRACE, "0x%08X",
+        klog_puts(KLOG_SKY2, KLOG_TRACE, "st#"); klog_appendf(KLOG_SKY2, KLOG_TRACE, "%u",
             (uint32_t)g_st_idx);
         klog_puts(KLOG_SKY2, KLOG_TRACE, " op="); klog_appendf(KLOG_SKY2, KLOG_TRACE, "0x%08X",
             (uint32_t)opcode);
@@ -1299,8 +1299,8 @@ int sky2_init(void)
 
     g_regs = (volatile uint8_t *)(uintptr_t)bar0;
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "bar0="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", (uint32_t)bar0);
-    klog_puts(KLOG_SKY2, KLOG_DEBUG, " bdf="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X",
-        ((uint32_t)g_bus << 16) | ((uint32_t)g_dev << 8) | g_fn);
+    klog_puts(KLOG_SKY2, KLOG_DEBUG, " bdf="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%u:%u.%u",
+        (uint32_t)g_bus, (uint32_t)g_dev, (uint32_t)g_fn);
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
 
     /* Enable all clocks + clear software reset (PCI_DEV_REG3 write must
@@ -1336,7 +1336,7 @@ int sky2_init(void)
     for (int i = 0; i < 6; i++) g_mac[i] = mp[i];
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "mac=");
     for (int i = 0; i < 6; i++)
-        klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%s0x%08X", i ? ":" : "", g_mac[i]);
+        klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%s%02X", i ? ":" : "", (uint32_t)g_mac[i]);
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
 
     /* Allocate descriptor rings + buffers.  The prefetch-unit and
@@ -1496,8 +1496,8 @@ int sky2_send(const uint8_t *data, uint16_t len)
         spin++;
     }
     if (!sky2_tx_reached(target)) {
-        klog_puts(KLOG_SKY2, KLOG_DEBUG, "TX timeout done="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", g_tx_done);
-        klog_puts(KLOG_SKY2, KLOG_DEBUG, " want="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", target); klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, "TX timeout done="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%u", g_tx_done);
+        klog_puts(KLOG_SKY2, KLOG_DEBUG, " want="); klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%u", target); klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
         /* Pipeline stage levels, ordered to fit the fbcon width:
          * get  = LEs the prefetch unit consumed
          * pfl  = prefetch FIFO level (LEs fetched, not eaten by TX-BMU)
@@ -1582,6 +1582,6 @@ void sky2_setup_irq(void)
     w32(B0_IMSK, Y2_IS_BASE | Y2_IS_PORT_1);
     r32(B0_IMSK);
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "irq vector=");
-    klog_appendf(KLOG_SKY2, KLOG_DEBUG, "0x%08X", vec);
+    klog_appendf(KLOG_SKY2, KLOG_DEBUG, "%u", vec);
     klog_puts(KLOG_SKY2, KLOG_DEBUG, "\n");
 }

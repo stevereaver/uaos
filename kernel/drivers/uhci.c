@@ -439,9 +439,9 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
             klog_puts(KLOG_USB, KLOG_WARN, " wval=");
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)wVal);
             klog_puts(KLOG_USB, KLOG_WARN, " dev=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->addr);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", (uint32_t)dev->addr);
             klog_puts(KLOG_USB, KLOG_WARN, " port=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", (uint32_t)dev->port);
             klog_puts(KLOG_USB, KLOG_WARN, " stage=");
             klog_puts(KLOG_USB, KLOG_WARN, stage);
             /* dev->port only names a root PORTSC for devices plugged
@@ -472,13 +472,13 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         } else if (!(h->cf_n & (h->cf_n - 1))) {
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: ctrl fail x");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", h->cf_n);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", h->cf_n);
             klog_puts(KLOG_USB, KLOG_WARN, " req=");
             klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)bReq);
             klog_puts(KLOG_USB, KLOG_WARN, " dev=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->addr);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", (uint32_t)dev->addr);
             klog_puts(KLOG_USB, KLOG_WARN, " port=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", (uint32_t)dev->port);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", (uint32_t)dev->port);
             klog_puts(KLOG_USB, KLOG_WARN, " stage=");
             klog_puts(KLOG_USB, KLOG_WARN, stage);
             klog_puts(KLOG_USB, KLOG_WARN, " (suppressed)\n");
@@ -555,15 +555,15 @@ static int uhci_intr_in(UsbHc *pub, UsbDev *dev, uint8_t ep,
         h->intr[i].total  = 0;
         h->intr[i].stall_n = 0;
         klog_puts(KLOG_USB, KLOG_DEBUG, "uhci: intr arm pipe=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", i);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", i);
         klog_puts(KLOG_USB, KLOG_DEBUG, " dev=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", dev->addr);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", dev->addr);
         klog_puts(KLOG_USB, KLOG_DEBUG, " ep=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", ep);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", ep);
         klog_puts(KLOG_USB, KLOG_DEBUG, " mps=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", mps);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", mps);
         klog_puts(KLOG_USB, KLOG_DEBUG, " ntd=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", ntd);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", ntd);
         klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
         return 0;
     }
@@ -630,18 +630,18 @@ static void uhci_scan_intr(UhciHc *h)
              * means the device never answers (mode switch failed?) or
              * the HC never reaches the QH — log td[0] once to tell. */
             if (++p->stall_n == 400) {   /* ~4 s at 100 Hz poll */
-                klog_puts(KLOG_USB, KLOG_WARN, "uhci: intr hc=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                klog_puts(KLOG_USB, KLOG_DEBUG, "uhci: intr hc=");
+                klog_appendf(KLOG_USB, KLOG_DEBUG, "%u",
                              (uint32_t)(h - g_hc));
-                klog_puts(KLOG_USB, KLOG_WARN, " pipe=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
-                klog_puts(KLOG_USB, KLOG_WARN, " idle td0=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                klog_puts(KLOG_USB, KLOG_DEBUG, " pipe=");
+                klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", i);
+                klog_puts(KLOG_USB, KLOG_DEBUG, " idle td0=");
+                klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
                              tds[p->ndone].status);
-                klog_puts(KLOG_USB, KLOG_WARN, " elem=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
+                klog_puts(KLOG_USB, KLOG_DEBUG, " elem=");
+                klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
                              p->qh->element);
-                klog_puts(KLOG_USB, KLOG_WARN, "\n");
+                klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
             }
             continue;
         }
@@ -665,12 +665,12 @@ static void uhci_scan_intr(UhciHc *h)
             if (p->err_n < 16) {
                 p->err_n++;
                 klog_puts(KLOG_USB, KLOG_WARN, "uhci: intr err td=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", end);
+                klog_appendf(KLOG_USB, KLOG_WARN, "%u", end);
                 klog_puts(KLOG_USB, KLOG_WARN, " st=");
                 klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
                              tds[end].status);
                 klog_puts(KLOG_USB, KLOG_WARN, " pipe=");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+                klog_appendf(KLOG_USB, KLOG_WARN, "%u", i);
                 klog_puts(KLOG_USB, KLOG_WARN, "\n");
             }
             p->toggle ^= fresh & 1;   /* consumed packets flip parity */
@@ -749,7 +749,7 @@ void UHCI_Poll(void)
             g_pit_ticks - h->t_irq_armed > 3000) {
             h->irq_dead_logged = 1;
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: hc=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", i);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", i);
             klog_puts(KLOG_USB, KLOG_WARN,
                       " irq vec has fired 0 times in 30 s — INTx "
                       "delivery dead, poll fallback active\n");
@@ -853,9 +853,9 @@ void UHCI_DiagFlush(void)
             uint32_t t = g_spur_pend[g];
             g_spur_pend[g] = 0;
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: spurious irq gsi=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", g);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", g);
             klog_puts(KLOG_USB, KLOG_WARN, " count=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", t);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", t);
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         }
         if (g_late_pend[g]) {
@@ -863,15 +863,15 @@ void UHCI_DiagFlush(void)
             g_late_pend[g] = 0;
             klog_puts(KLOG_USB, KLOG_WARN,
                       "uhci: completion latched mid-dispatch gsi=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", g);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", g);
             klog_puts(KLOG_USB, KLOG_WARN, " count=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", t);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", t);
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         }
         if (g_mask_pend[g]) {
             g_mask_pend[g] = 0;
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: masked storming gsi=");
-            klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", g);
+            klog_appendf(KLOG_USB, KLOG_WARN, "%u", g);
             klog_puts(KLOG_USB, KLOG_WARN, "\n");
         }
     }
@@ -1081,8 +1081,8 @@ static void ehci_release_ports(void)
                 released = 1;
                 klog_puts(KLOG_USB, KLOG_WARN,
                           "uhci: released ehci ports ");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
-                             ((uint32_t)b << 16) | ((uint32_t)d << 8) | f);
+                klog_appendf(KLOG_USB, KLOG_WARN, "%u:%u.%u",
+                             (uint32_t)b, (uint32_t)d, (uint32_t)f);
                 klog_puts(KLOG_USB, KLOG_WARN, " to companion\n");
             }
     /* A re-muxed device presents as a fresh attach — give it a moment
@@ -1194,8 +1194,8 @@ static void ehci_quiesce_intx(void)
                         (uint16_t)(cmd | (1u << 10)));
                 klog_puts(KLOG_USB, KLOG_WARN,
                           "uhci: quiesced ehci INTx ");
-                klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X",
-                             ((uint32_t)b << 16) | ((uint32_t)d << 8) | f);
+                klog_appendf(KLOG_USB, KLOG_WARN, "%u:%u.%u",
+                             (uint32_t)b, (uint32_t)d, (uint32_t)f);
                 klog_puts(KLOG_USB, KLOG_WARN, " (unridden "
                           "companion)\n");
             }
@@ -1219,7 +1219,7 @@ void UHCI_SetupIRQs(void)
             h->t_irq_armed = g_pit_ticks;
         }
         klog_puts(KLOG_USB, KLOG_DEBUG, "uhci: irq vec=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)vec);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", (uint32_t)vec);
         klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
     }
 }

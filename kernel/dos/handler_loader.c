@@ -170,7 +170,7 @@ int HandlerLoader_ScanLDirectory(void)
     }
 
     kprint("[HandlerLoader] Scanned L:, found ");
-    kprinthex(found);
+    kprintdec((uint32_t)found);
     kprint(" handler(s)\n");
     return found;
 }

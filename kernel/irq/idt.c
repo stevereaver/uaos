@@ -328,9 +328,9 @@ void GDT_InitTSS(void)
     /* Load the TSS selector into TR */
     __asm__ volatile ("ltr %0" :: "r"((uint16_t)SEG_TSS) : "memory");
 
-    kprint("[GDT] TSS installed: base=0x");
+    kprint("[GDT] TSS installed: base=");
     kprinthex(base);
-    kprint(" rsp0=0x");
+    kprint(" rsp0=");
     kprinthex(g_tss.rsp0);
     kprint("\n");
 }

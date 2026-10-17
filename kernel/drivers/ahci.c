@@ -486,8 +486,8 @@ static int find_hba(uint8_t *bus, uint8_t *dev, uint8_t *fn)
                     (class_code == 0x01 && subclass == 0x06 && progif == 0x01)) {
                     *bus = (uint8_t)b; *dev = (uint8_t)d; *fn = (uint8_t)f;
                     kprint("[AHCI] HBA at ");
-                    kprinthex((uint64_t)b); kprint(":");
-                    kprinthex((uint64_t)d); kprint(".");
+                    kprintdec((uint32_t)b); kprint(":");
+                    kprintdec((uint32_t)d); kprint(".");
                     kprintdec((uint32_t)f); kprint(" id=");
                     kprinthex(id); kprint("\n");
                     return 1;
@@ -576,7 +576,7 @@ int AHCI_Init(void)
             g_ndisks++;
             kprint("[AHCI] "); kprint(p->name);
             kprint(": "); kprint(p->model);
-            kprint(" "); kprinthex(p->sectors);
+            kprint(" "); kprintdec64(p->sectors);
             kprint(" sectors\n");
         }
     }
@@ -598,7 +598,7 @@ void AHCI_SetupIRQ(void)
         vec = IRQ_AttachPCI(g_bus, g_dev, g_fn, ahci_irq_handler, "ahci");
     if (vec >= 0) {
         kprint("[AHCI] IRQ attached, vector ");
-        kprinthex((uint64_t)vec); kprint("\n");
+        kprintdec((uint32_t)vec); kprint("\n");
     } else {
         kprint("[AHCI] no IRQ route — polling only\n");
     }

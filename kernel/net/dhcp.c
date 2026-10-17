@@ -126,8 +126,7 @@ static void dhcp_calibrate_tsc(void)
 
     uint64_t diff = t1 - t0;   /* ticks in ~50 ms */
     g_tsc_hz = diff * 20;      /* extrapolate to 1 second */
-    klog_puts(KLOG_DHCP, KLOG_DEBUG, "TSC Hz="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", (uint32_t)(g_tsc_hz >> 32));
-    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%08X", (uint32_t)g_tsc_hz); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
+    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "TSC Hz=%lu\n", g_tsc_hz);
 }
 
 static void dhcp_delay_ms(uint32_t ms)
@@ -149,7 +148,7 @@ static void dhcp_delay_ms(uint32_t ms)
 static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
 {
     /* Log every frame seen during DHCP with first 32 bytes as hex */
-    klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx frame len="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", len);
+    klog_appendf(KLOG_DHCP, KLOG_DEBUG, "rx frame len=%u", len);
     uint16_t et = (uint16_t)((frame[12]<<8)|frame[13]);
     klog_puts(KLOG_DHCP, KLOG_DEBUG, " et="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", et);
     klog_puts(KLOG_DHCP, KLOG_DEBUG, " hdr=");
@@ -171,14 +170,14 @@ static void dhcp_rx_cb(const uint8_t *frame, uint16_t len)
     const uint8_t *ip = frame + ETH_HDR_LEN;
     if ((ip[0] >> 4) != 4) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not IPv4\n"); return; }
     uint8_t ihl = (ip[0] & 0xF) * 4;
-    if (ip[9] != 17) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not UDP (proto="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", ip[9]); klog_puts(KLOG_DHCP, KLOG_DEBUG, ")\n"); return; }
+    if (ip[9] != 17) { klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: not UDP (proto="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%u", ip[9]); klog_puts(KLOG_DHCP, KLOG_DEBUG, ")\n"); return; }
 
     const uint8_t *udp = ip + ihl;
     uint16_t src_port = (uint16_t)((udp[0]<<8)|udp[1]);
     uint16_t dst_port = (uint16_t)((udp[2]<<8)|udp[3]);
     if (src_port != 67 || dst_port != 68) {
-        klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: wrong ports src="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", src_port);
-        klog_puts(KLOG_DHCP, KLOG_DEBUG, " dst="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", dst_port); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, "rx: wrong ports src="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%u", src_port);
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, " dst="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%u", dst_port); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
         return;
     }
 
@@ -338,7 +337,7 @@ static void dhcp_send(uint8_t msg_type, ipv4_t requested_ip, ipv4_t server_ip)
     frame[12] = 0x08; frame[13] = 0x00;
 
     uint16_t total = (uint16_t)(ETH_HDR_LEN + ip_tot);
-    klog_puts(KLOG_DHCP, KLOG_DEBUG, "send len="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", total);
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, "send len="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%u", total);
     klog_puts(KLOG_DHCP, KLOG_DEBUG, " src=");
     for (int i = 0; i < 6; i++) {
         static const char hx[] = "0123456789ABCDEF";
@@ -439,7 +438,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
         klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[g_dhcp_mac[i] >> 4]); klog_putc(KLOG_DHCP, KLOG_DEBUG, hx[g_dhcp_mac[i] & 0xF]);
         if (i < 5) klog_putc(KLOG_DHCP, KLOG_DEBUG, ':');
     }
-    klog_puts(KLOG_DHCP, KLOG_DEBUG, " timeout_ms="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", timeout_ms); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
+    klog_puts(KLOG_DHCP, KLOG_DEBUG, " timeout_ms="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%u", timeout_ms); klog_putc(KLOG_DHCP, KLOG_DEBUG, '\n');
 
     /* Register temporary RX callback */
     netdev_set_rx_callback(dhcp_rx_cb);
@@ -454,7 +453,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     uint32_t next_discover = 0;  /* send immediately on first iteration */
     while (!g_dhcp_got && waited < timeout_ms) {
         if (waited >= next_discover) {
-            klog_puts(KLOG_DHCP, KLOG_DEBUG, "sending DISCOVER (t="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "0x%08X", waited); klog_puts(KLOG_DHCP, KLOG_DEBUG, ")\n");
+            klog_puts(KLOG_DHCP, KLOG_DEBUG, "sending DISCOVER (t="); klog_appendf(KLOG_DHCP, KLOG_DEBUG, "%u", waited); klog_puts(KLOG_DHCP, KLOG_DEBUG, ")\n");
             dhcp_send(DHCPDISCOVER, 0, 0);
             next_discover = waited + 1500;  /* retry every 1.5 s */
         }

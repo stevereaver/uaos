@@ -220,7 +220,7 @@ BlockDev *Mb2Mod_RegisterSysroot(uint32_t mb2_info_phys)
     kprint("[MB2MOD] sysroot module @ ");
     kprinthex(start);
     kprint(" size ");
-    kprinthex(size);
+    kprintdec64(size);
     kprint("\n");
     return &g_sysroot_bdev;
 }

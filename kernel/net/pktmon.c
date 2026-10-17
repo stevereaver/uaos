@@ -73,7 +73,7 @@ void Pktmon_Stop(void)
         VFS_Close(&g_cap);
         g_open = 0;
         kprint("[pktmon] stopped; ");
-        kprinthex(g_pkts);
+        kprintdec(g_pkts);
         kprint(" packets written to ");
         kprint(g_path);
         kprint("\n");

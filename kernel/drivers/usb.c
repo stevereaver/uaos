@@ -118,12 +118,12 @@ static void parse_config(UsbDev *dev, const uint8_t *buf, uint16_t len)
             const UsbEpDesc *ed = (const UsbEpDesc *)(buf + off);
             uint8_t xfer = ed->bmAttributes & 0x3;
             klog_puts(KLOG_USB, KLOG_DEBUG, "usb: ep if=");
-            klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", cur->ifnum);
+            klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", cur->ifnum);
             klog_puts(KLOG_USB, KLOG_DEBUG, " addr=");
             klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
                          ed->bEndpointAddress);
             klog_puts(KLOG_USB, KLOG_DEBUG, " mps=");
-            klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X",
+            klog_appendf(KLOG_USB, KLOG_DEBUG, "%u",
                          ed->wMaxPacketSize);
             klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
             if ((ed->bEndpointAddress & USB_EP_DIR_IN) &&
@@ -201,9 +201,9 @@ static int enumerate_port(UsbHc *hc, int port)
             if (g_hcs[i] == hc) { hcn = i; break; }
         klog_puts(KLOG_USB, KLOG_DEBUG,
                   "usb: GET_DESCRIPTOR(8) failed hc=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)hcn);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", (uint32_t)hcn);
         klog_puts(KLOG_USB, KLOG_DEBUG, " port=");
-        klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", (uint32_t)port);
+        klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", (uint32_t)port);
         klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
         goto out_dd;
     }
@@ -329,9 +329,9 @@ int USB_Init(void)
         }
     }
     klog_puts(KLOG_USB, KLOG_DEBUG, "usb: ");
-    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", g_ndevs);
+    klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", g_ndevs);
     klog_puts(KLOG_USB, KLOG_DEBUG, " devices, ");
-    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", g_nifs);
+    klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", g_nifs);
     klog_puts(KLOG_USB, KLOG_DEBUG, " ifs\n");
     return total;
 }
@@ -414,9 +414,9 @@ static void usb_enum_task(void *arg)
                         klog_puts(KLOG_USB, KLOG_INFO,
                                   "usb: connect edge — re-probing "
                                   "parked port hc=");
-                        klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", i);
+                        klog_appendf(KLOG_USB, KLOG_INFO, "%u", i);
                         klog_puts(KLOG_USB, KLOG_INFO, " port=");
-                        klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", p);
+                        klog_appendf(KLOG_USB, KLOG_INFO, "%u", p);
                         klog_puts(KLOG_USB, KLOG_INFO, "\n");
                     }
                 }
@@ -430,9 +430,9 @@ static void usb_enum_task(void *arg)
                     UsbDev *nd = &g_devs[g_ndevs - 1];
                     w->parked = 0;
                     klog_puts(KLOG_USB, KLOG_INFO, "usb: late enum hc=");
-                    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", i);
+                    klog_appendf(KLOG_USB, KLOG_INFO, "%u", i);
                     klog_puts(KLOG_USB, KLOG_INFO, " port=");
-                    klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", p);
+                    klog_appendf(KLOG_USB, KLOG_INFO, "%u", p);
                     klog_puts(KLOG_USB, KLOG_INFO, " vid=");
                     klog_appendf(KLOG_USB, KLOG_INFO, "0x%08X", nd->vid);
                     klog_puts(KLOG_USB, KLOG_INFO, " pid=");
@@ -454,9 +454,9 @@ static void usb_enum_task(void *arg)
                                   "usb: port deaf after retries — "
                                   "parked, probing every 60 s or on "
                                   "connect edge hc=");
-                        klog_appendf(KLOG_USB, KLOG_ERR, "0x%08X", i);
+                        klog_appendf(KLOG_USB, KLOG_ERR, "%u", i);
                         klog_puts(KLOG_USB, KLOG_ERR, " port=");
-                        klog_appendf(KLOG_USB, KLOG_ERR, "0x%08X", p);
+                        klog_appendf(KLOG_USB, KLOG_ERR, "%u", p);
                         port_psc_log(hc, p, KLOG_ERR);
                         klog_puts(KLOG_USB, KLOG_ERR, "\n");
                     }
@@ -467,9 +467,9 @@ static void usb_enum_task(void *arg)
                     w->next_tick = g_pit_ticks + USB_ENUM_PARK_TICKS;
                     klog_puts(KLOG_USB, KLOG_DEBUG,
                               "usb: parked port still deaf hc=");
-                    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", i);
+                    klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", i);
                     klog_puts(KLOG_USB, KLOG_DEBUG, " port=");
-                    klog_appendf(KLOG_USB, KLOG_DEBUG, "0x%08X", p);
+                    klog_appendf(KLOG_USB, KLOG_DEBUG, "%u", p);
                     port_psc_log(hc, p, KLOG_DEBUG);
                     klog_puts(KLOG_USB, KLOG_DEBUG, "\n");
                 }

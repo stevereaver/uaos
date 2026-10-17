@@ -254,8 +254,8 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
                 /* Log every Intel device so we can diagnose missed matches */
                 if (vendor == 0x8086) {
                     klog_puts(KLOG_E1000, KLOG_DEBUG, "Intel PCI dev="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", device);
-                    klog_puts(KLOG_E1000, KLOG_DEBUG, " bus="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bus);
-                    klog_puts(KLOG_E1000, KLOG_DEBUG, " slot="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", dev); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, " bus="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "%u", bus);
+                    klog_puts(KLOG_E1000, KLOG_DEBUG, " slot="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "%u", dev); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
                 }
 
                 if (vendor != 0x8086) continue;
@@ -288,7 +288,7 @@ static int pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out,
 
                 /* IRQ line */
                 uint8_t irq = (uint8_t)(pci_read32((uint8_t)bus, dev, fn, 0x3C) & 0xFF);
-                klog_puts(KLOG_E1000, KLOG_DEBUG, "IRQ="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
+                klog_puts(KLOG_E1000, KLOG_DEBUG, "IRQ="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "%u", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
                 /* Enable bus-master + memory space */
                 uint16_t cmd = pci_read16((uint8_t)bus, dev, fn, 0x04);
@@ -412,7 +412,7 @@ static void rx_init(void)
     g_rx_tail = 0;
 
     klog_puts(KLOG_E1000, KLOG_DEBUG, "rx_init rdbal="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", base);
-    klog_puts(KLOG_E1000, KLOG_DEBUG, " rdlen="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", E1000_NUM_RX_DESC * 16); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " rdlen="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "%u", (uint32_t)(E1000_NUM_RX_DESC * 16)); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -434,7 +434,7 @@ static void tx_init(void)
     g_tx_tail = 0;
 
     klog_puts(KLOG_E1000, KLOG_DEBUG, "tx_init tdbal="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", base);
-    klog_puts(KLOG_E1000, KLOG_DEBUG, " tdlen="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", E1000_NUM_TX_DESC * 16); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " tdlen="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "%u", (uint32_t)(E1000_NUM_TX_DESC * 16)); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -474,7 +474,7 @@ int e1000_init(void)
     g_bus  = bus; g_dev = dev; g_fn = fn;
 
     klog_puts(KLOG_E1000, KLOG_DEBUG, "bar0_base="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", bar0);
-    klog_puts(KLOG_E1000, KLOG_DEBUG, " irq="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "0x%08X", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
+    klog_puts(KLOG_E1000, KLOG_DEBUG, " irq="); klog_appendf(KLOG_E1000, KLOG_DEBUG, "%u", irq); klog_puts(KLOG_E1000, KLOG_DEBUG, "\n");
 
     /* 1. Disable all interrupts */
     mmio_w32(g_bar0, E1000_IMC, 0xFFFFFFFFU);

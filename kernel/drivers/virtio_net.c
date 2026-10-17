@@ -304,7 +304,7 @@ static uint64_t vnet_relocate_bar32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_
     pci_write32(bus, dev, fn, off, (lo & 0xFU) | addr);
     pci_write32(bus, dev, fn, (uint8_t)(off + 4), 0);
     uint64_t new_addr = pci_read_bar(bus, dev, fn, bar_idx);
-    _vn_ps("[VNET] relocated BAR"); _vn_ph(bar_idx);
+    _vn_ps("[VNET] relocated BAR"); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)bar_idx);
     _vn_ps(" to "); _vn_ph((uint32_t)new_addr); _vn_ps("\n");
     return new_addr;
 }
@@ -383,9 +383,9 @@ static int vnet_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn)
             cap->length   = length;
             cap->bar_addr = bar_addr;
             _vn_ps("[VNET] cap type="); _vn_ph(cfg_type);
-            _vn_ps(" bar="); _vn_ph(bar_idx);
+            _vn_ps(" bar="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)bar_idx);
             _vn_ps(" off="); _vn_ph(offset);
-            _vn_ps(" len="); _vn_ph(length);
+            _vn_ps(" len="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", length);
             _vn_ps(" base="); _vn_ph((uint32_t)(bar_addr >> 32));
             _vn_ph((uint32_t)bar_addr);
             _vn_ps(usable ? "\n" : " (not mappable)\n");
@@ -394,9 +394,9 @@ static int vnet_parse_capabilities(uint8_t bus, uint8_t dev, uint8_t fn)
     }
 
     if (!found_common || !found_notify || !found_isr) {
-        _vn_ps("[VNET] missing required caps common="); _vn_ph(found_common);
-        _vn_ps(" notify="); _vn_ph(found_notify);
-        _vn_ps(" isr="); _vn_ph(found_isr); _vn_ps("\n");
+        _vn_ps("[VNET] missing required caps common="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)found_common);
+        _vn_ps(" notify="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)found_notify);
+        _vn_ps(" isr="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)found_isr); _vn_ps("\n");
         return 0;
     }
     if (g_notify_off_mult == 0) g_notify_off_mult = 1;
@@ -777,8 +777,8 @@ static int pci_find_virtio_net(uint8_t *bus_out, uint8_t *dev_out,
                     /* Dump key PCI config regs for debug */
                     _vn_ps("[VNET] found dev="); _vn_ph(device);
                     _vn_ps(g_transport == VNET_MODERN ? " (modern)" : " (legacy)");
-                    _vn_ps(" bus="); _vn_ph(bus);
-                    _vn_ps(" slot="); _vn_ph(dev); _vn_ps("\n");
+                    _vn_ps(" bus="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)bus);
+                    _vn_ps(" slot="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)dev); _vn_ps("\n");
                     _vn_ps("[VNET] status="); _vn_ph(pci_read16((uint8_t)bus,dev,fn,0x06));
                     _vn_ps(" cmd="); _vn_ph(pci_read16((uint8_t)bus,dev,fn,0x04));
                     _vn_ps(" cap_ptr="); _vn_ph(pci_read8((uint8_t)bus,dev,fn,0x34)); _vn_ps("\n");
@@ -800,7 +800,7 @@ static int pci_find_virtio_net(uint8_t *bus_out, uint8_t *dev_out,
                     } else {
                         /* Modern: locate the MMIO capability regions */
                         for (int b = 0; b < 6; b++) {
-                            _vn_ps("[VNET] bar"); _vn_ph(b); _vn_ps("=");
+                            _vn_ps("[VNET] bar"); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)b); _vn_ps("=");
                             _vn_ph(pci_read32((uint8_t)bus, dev, fn,
                                               (uint8_t)(0x10 + b * 4)));
                             _vn_ps("\n");
@@ -835,14 +835,14 @@ static void vq_register(uint16_t iobase, uint16_t qidx, void *mem)
     uint16_t qsize = inw(iobase + VIRTIO_PCI_QUEUE_SIZE);
     /* Write guest physical address of queue (page number, 4K pages) */
     uint32_t pfn = (uint32_t)((uintptr_t)mem >> 12);
-    _vn_ps("[VNET] vq"); _vn_ph(qidx);
-    _vn_ps(" qsize="); _vn_ph(qsize);
+    _vn_ps("[VNET] vq"); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", qidx);
+    _vn_ps(" qsize="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", qsize);
     _vn_ps(" mem="); _vn_ph((uint32_t)(uintptr_t)mem);
     _vn_ps(" pfn="); _vn_ph(pfn); _vn_ps("\n");
     outl(iobase + VIRTIO_PCI_QUEUE_PFN, pfn);
     /* Read back PFN to confirm write was accepted */
     uint32_t pfn_rb = inl(iobase + VIRTIO_PCI_QUEUE_PFN);
-    _vn_ps("[VNET] vq"); _vn_ph(qidx); _vn_ps(" pfn_readback="); _vn_ph(pfn_rb); _vn_ps("\n");
+    _vn_ps("[VNET] vq"); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", qidx); _vn_ps(" pfn_readback="); _vn_ph(pfn_rb); _vn_ps("\n");
 }
 
 /* Modern transport: publish the queue through the common config.
@@ -872,7 +872,7 @@ static void vq_register_modern(uint16_t qidx,
 
     vn_w16(&g_common_cap, VNET_COMMON_QUEUE_ENABLE, 1);
 
-    _vn_ps("[VNET] vq"); _vn_ph(qidx);
+    _vn_ps("[VNET] vq"); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", qidx);
     _vn_ps(" desc="); _vn_ph((uint32_t)desc_addr);
     _vn_ps(" avail="); _vn_ph((uint32_t)avail_addr);
     _vn_ps(" used="); _vn_ph((uint32_t)used_addr);
@@ -890,8 +890,8 @@ static int vnet_setup_queue(uint16_t qidx,
 {
     vn_queue_select(qidx);
     uint16_t qsize = vn_queue_size_read();
-    _vn_ps("[VNET] queue "); _vn_ph(qidx);
-    _vn_ps(" size="); _vn_ph(qsize); _vn_ps("\n");
+    _vn_ps("[VNET] queue "); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", qidx);
+    _vn_ps(" size="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", qsize); _vn_ps("\n");
     if (qsize == 0 || qsize > VIRTQ_MAX_SIZE) {
         _vn_ps("[VNET] unsupported queue size\n");
         return 0;
@@ -1020,8 +1020,10 @@ int virtio_net_init(void)
         g_mac[0] = 0x52; g_mac[1] = 0x54; g_mac[2] = 0x00;
         g_mac[3] = 0x12; g_mac[4] = 0x34; g_mac[5] = 0x56;
     }
-    _vn_ps("[VNET] mac="); for (int i = 0; i < ETH_ALEN; i++) _vn_ph(g_mac[i]);
-    _vn_ps(" hdr_len="); _vn_ph(g_hdr_len); _vn_ps("\n");
+    _vn_ps("[VNET] mac=");
+    for (int i = 0; i < ETH_ALEN; i++)
+        klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%s%02X", i ? ":" : "", (uint32_t)g_mac[i]);
+    _vn_ps(" hdr_len="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", g_hdr_len); _vn_ps("\n");
 
     /* 5. Setup RX virtqueue (queue 0) — honour the device-reported queue
      * size: VirtualBox reports 1024, QEMU 256.  The ring layout must match
@@ -1207,7 +1209,7 @@ int virtio_net_is_up(void) { return g_up; }
 void virtio_net_setup_irq(void)
 {
     if (!g_up) return;
-    _vn_ps("[VNET] setup_irq line="); _vn_ph(g_irq_line);
+    _vn_ps("[VNET] setup_irq line="); klog_appendf(KLOG_VIRTIO, KLOG_DEBUG, "%u", (uint32_t)g_irq_line);
     _vn_ps(" iobase="); _vn_ph(g_io_base); _vn_ps("\n");
     IRQ_AttachPCI(g_pci_bus, g_pci_dev, g_pci_fn,
                   virtio_net_irq_handler, "virtio-net");

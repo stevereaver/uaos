@@ -244,16 +244,16 @@ void kprinthex(uint64_t v)
     kprint(buf);
 }
 
-void kprintdec(uint32_t v)
+void kprintdec64(uint64_t v)
 {
-    char buf[12];
+    char buf[21];
     int i = 0;
     if (v == 0) {
         buf[0] = '0'; buf[1] = '\0';
         kprint(buf);
         return;
     }
-    while (v > 0 && i < 11) {
+    while (v > 0 && i < 20) {
         buf[i++] = '0' + (v % 10);
         v /= 10;
     }
@@ -263,6 +263,11 @@ void kprintdec(uint32_t v)
         char t = buf[j]; buf[j] = buf[i - 1 - j]; buf[i - 1 - j] = t;
     }
     kprint(buf);
+}
+
+void kprintdec(uint32_t v)
+{
+    kprintdec64(v);
 }
 
 /* -----------------------------------------------------------------------
@@ -687,7 +692,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     int rc = UAOS_Bridge_Init();
     if (rc != 0) {
         kprint("[BOOT] WARNING: Bridge init returned ");
-        kprinthex((uint64_t)rc);
+        kprintdec((uint32_t)rc);
         kprint(" — emulation unavailable.\n");
         chip_emu_set_keyboard_route(0); /* native shell keeps keyboard input */
     } else {
@@ -1196,7 +1201,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     extern int EarlyStartup_Run(void);
     int boot_mode = EarlyStartup_Run();
     kprint("[BOOT] Boot mode: ");
-    kprinthex((uint64_t)boot_mode);
+    kprintdec((uint32_t)boot_mode);
     kprint("\n");
 
     kprint("[BOOT] Opening shell window...\n");
