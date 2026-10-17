@@ -49,7 +49,7 @@ Maintains a 16-entry ARP cache (`ARP_CACHE_SIZE`) with true LRU eviction — eac
 
 ### ICMP (`icmp.c`)
 
-Implements echo request/reply (ping). The `ping` shell command uses this layer and waits for `icmp_got_reply()`.
+Implements echo request/reply (ping). The `ping` shell command reports the reply's real IP TTL and RTT, and `icmp_got_reply()` only accepts a reply whose ident/sequence/source match the outstanding request (UAOS-290).
 
 ### UDP (`udp.c`)
 
@@ -217,7 +217,10 @@ Network commands in `kernel/shell/` include `netstart`, `netstop`, `ifconfig`, `
 bridged to a remote `ShellInstance` (see the "Remote Shell Sessions"
 section of [Display](/kernel/display/index.md)).  It is a debugging
 facility — anyone who can reach the port lands directly in a shell with
-no login.
+no login.  Both daemon tasks block on `SIGF_NET` (armed by
+`net_rx_notify`) with a 25-tick (~250 ms) housekeeping timeout
+(UAOS-229 — the old 1-tick timeout had each task waking ~101 times/s;
+RX still wakes instantly).
 
 Telnet protocol handling is deliberately small:
 
