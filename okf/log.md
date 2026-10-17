@@ -1,5 +1,35 @@
 # OKF Change Log
 
+## 2026-10-17 — FileBrowser_CloseVolume stale-slot hang fix (UAOS-310)
+
+* **Fixed** (`kernel/display/filebrowser.c`): Icons ▸ Unmount on a DF
+  (ADF) volume could hang the EventPump under Forbid (watchdog stall)
+  when a browser on that volume had been closed via its WM close gadget.
+  The gadget path kills the window without clearing the Browser slot, so
+  the slot's stale `wm_handle >= 0` + `volume` kept matching
+  `FileBrowser_CloseVolume`'s scan; `FileBrowser_Close` then bailed at
+  `find_browser_by_handle` (requires `WM_IsWindowActive`), the slot was
+  never cleared, and the restart loop found it forever.
+* **Added** `browser_slot_clear()` — resets wm_handle/volume/drag/lasso —
+  now used by `FileBrowser_Close` and the `browser_key` ESC path (the two
+  sites that open-coded the same reset).
+* **Added** `browser_owns_window()` — true only when the handle is active
+  AND `WM_GetWindowTitle` equals `b->volume` (browser windows are created
+  with title == volume), so a stale handle recycled by an unrelated
+  window is never closed.
+* **Changed** `FileBrowser_CloseVolume` to a single pass over all
+  `MAX_BROWSERS` slots: matching slots get `WM_CloseWindow` iff
+  `browser_owns_window`, then `browser_slot_clear` unconditionally.  No
+  restart loop needed — `WM_CloseWindow`'s only callbacks (vacate =
+  `intu_screen_vacate`, focus `on_event` handlers) cannot touch
+  `g_browsers`.
+* **Verified** end-to-end in QEMU (headless monitor mouse + GDB stub,
+  `build/repro-uaos311/`): pre-fix, the same drive produced
+  `[WATCHDOG] stall detected` with the interrupted RIP symbolizing to
+  `vol_prefix_eq_ci` (filebrowser.c:1669); post-fix, unmount completes —
+  `floppy0` unregistered, TestDisk: icon gone, slot cleared, zero
+  WATCHDOG lines in serial.
+
 ## 2026-10-14 — built-in device bases use real NT_DEVICE (UAOS-308)
 
 * **Fixed** (`emulation/uaos_m68k_glue.c`): `NT_DEVICE_G` is now the real
@@ -1618,3 +1648,11 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
   disk's selection no longer leaks onto the icon that reuses its label slot.
 * **Changed** ADF insert (picker) and unmount success damage the whole desktop, so the icon appears/disappears without waiting for the next repaint.
 * **Docs**: `okf/kernel/display/index.md` Icons table.
+
+## 2026-10-17 — UAOS-134: BCM2046 hub downstream enumeration metal-verified
+
+* **Verified on metal** (MBP4,1 @192.168.10.150, build UAOS-151026141407): after the a7d2e3d 9-byte hub-descriptor fix the BCM2046 (0a5c:4500, 3 ports) binds and its pseudo-HC enumerates all three downstream devices — 05ac:820f (class 0xE0, Bluetooth HCI), 05ac:820a / 05ac:820b (BT HID-proxy kbd/mouse). g_ndevs 5→8, g_nifs 8→19, g_nhcs=6. Read via telnet `peek` of `g_devs` (32-byte `UsbDev`; `peek` prints at most 16 rows, so dump in LEN=16 W=64 chunks). uhci3 p1 still deaf/parked.
+
+## 2026-10-17 — UAOS-178: Ctrl+LCmd+RCmd reset chord metal-verified
+
+* **Verified on metal** (MBP4,1, user report): the USB-HID three-key reset chord reboots the machine — closes the "metal verification pending" note from the 2026-10-06 entry.

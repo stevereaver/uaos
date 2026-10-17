@@ -286,6 +286,18 @@ typedef struct {
 static Browser g_browsers[MAX_BROWSERS];
 static int     g_n_browsers = 0;
 
+/* Reset a slot to the closed state — no live window, no in-flight
+ * drag/lasso.  Every path that kills a browser window goes through this
+ * so a stale wm_handle/volume can't be matched again later. */
+static void browser_slot_clear(Browser *b)
+{
+    b->wm_handle    = -1;
+    b->volume[0]    = '\0';
+    b->drag_icon    = -1;
+    b->drag_active  = 0;
+    b->lasso_active = 0;
+}
+
 /* Window snapshot table — stores saved position/size keyed by volume path.
  * Used by Window ▸ Snapshot to restore window geometry on reopen.
  * In-memory only (live CD). */
@@ -366,11 +378,7 @@ static void browser_key(char c)
     for (int i = 0; i < MAX_BROWSERS; i++) {
         if (g_browsers[i].wm_handle == fh) {
             WM_CloseWindow(fh);
-            g_browsers[i].wm_handle = -1;
-            g_browsers[i].volume[0] = '\0';
-            g_browsers[i].drag_icon   = -1;
-            g_browsers[i].drag_active = 0;
-            g_browsers[i].lasso_active = 0;
+            browser_slot_clear(&g_browsers[i]);
             return;
         }
     }
@@ -1649,11 +1657,7 @@ void FileBrowser_Close(int wm_handle)
     Browser *b = find_browser_by_handle(wm_handle);
     if (!b) return;
     WM_CloseWindow(wm_handle);
-    b->wm_handle = -1;
-    b->volume[0] = '\0';
-    b->drag_icon = -1;
-    b->drag_active = 0;
-    b->lasso_active = 0;
+    browser_slot_clear(b);
 }
 
 /* 1 if the pre-colon part of `path` equals `vol` case-insensitively.
@@ -1673,23 +1677,39 @@ static int vol_prefix_eq_ci(const char *path, const char *vol)
     }
 }
 
+/* 1 if b->wm_handle still names this browser's own live window.  A slot
+ * outlives its window when the window is killed via the WM close gadget
+ * (that path never clears the slot), and the freed handle can be recycled
+ * by an unrelated window — so an active handle alone isn't proof.
+ * Browser windows are created with title == volume and b->volume is only
+ * set at creation, so an exact title match identifies the slot's window. */
+static int browser_owns_window(const Browser *b)
+{
+    char title[32];
+    if (b->wm_handle < 0 || !WM_IsWindowActive(b->wm_handle))
+        return 0;
+    if (!WM_GetWindowTitle(b->wm_handle, title, sizeof(title)))
+        return 0;
+    return str_eq(title, b->volume);
+}
+
 void FileBrowser_CloseVolume(const char *vol)
 {
     if (!vol || !vol[0]) return;
-    /* Scan-and-restart: FileBrowser_Close mutates the slot (and any close
-     * side-effects could touch other slots), so restart after each close
-     * instead of trusting a captured index to stay valid. */
-    for (;;) {
-        int h = -1;
-        for (int i = 0; i < MAX_BROWSERS; i++) {
-            if (g_browsers[i].wm_handle >= 0 &&
-                vol_prefix_eq_ci(g_browsers[i].volume, vol)) {
-                h = g_browsers[i].wm_handle;
-                break;
-            }
+    /* Single pass over every slot: clear each slot keyed to `vol`, closing
+     * its window only when the handle is provably that slot's own window —
+     * a stale slot (window already gone via its close gadget) must just be
+     * cleared, and a recycled handle must not take an unrelated window
+     * down with it.  WM_CloseWindow cannot re-enter here: its only
+     * callbacks are the vacate/focus hooks, and none of them touch
+     * g_browsers, so no rescan is needed. */
+    for (int i = 0; i < MAX_BROWSERS; i++) {
+        Browser *b = &g_browsers[i];
+        if (b->wm_handle >= 0 && vol_prefix_eq_ci(b->volume, vol)) {
+            if (browser_owns_window(b))
+                WM_CloseWindow(b->wm_handle);
+            browser_slot_clear(b);
         }
-        if (h < 0) break;
-        FileBrowser_Close(h);
     }
 }
 
