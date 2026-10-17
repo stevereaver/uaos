@@ -130,7 +130,7 @@ static int send_buf(int sock, uint32_t gen, const uint8_t *b, int len)
         if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) return 0;
         if (g_pit_ticks >= deadline) return 0;
         net_stack_poll();
-        Task_WaitTicks(SIGF_NET, 1);   /* ACK arrival wakes us */
+        Task_WaitTicks(SIGF_NET, 25);  /* ACK arrival wakes us; 250 ms housekeeping cap (UAOS-229) */
     }
 }
 
@@ -413,10 +413,10 @@ static void pump_task(void *arg)
         }
 
         net_stack_poll();
-        /* Sleep until the next RX interrupt kicks us, or at most one
-         * tick — keeps the idle watchdog and dead-socket checks on a
-         * bounded cadence without paying ~10 ms per keystroke. */
-        Task_WaitTicks(SIGF_NET, 1);
+        /* Sleep until the next RX interrupt kicks us, or at most ~250 ms —
+         * the idle watchdogs are minutes-scale and dead-socket checks
+         * don't need a 10 ms cadence (UAOS-229). */
+        Task_WaitTicks(SIGF_NET, 25);
     }
 
     /* Connection log — the disconnect side pairs with the "connect
@@ -531,7 +531,7 @@ static void telnetd_task(void *arg)
             }
         }
         net_stack_poll();
-        Task_WaitTicks(SIGF_NET, 1);   /* wake on inbound SYN, not tick */
+        Task_WaitTicks(SIGF_NET, 25);  /* wake on inbound SYN; 250 ms housekeeping cap (UAOS-229) */
     }
     tcp_close(lsock);
     g_port = 0;
