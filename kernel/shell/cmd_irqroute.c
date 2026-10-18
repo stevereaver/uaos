@@ -22,6 +22,19 @@ static const char *route_src(int s)
     }
 }
 
+/* Capability list holds an MSI (0x05) capability — distinguishes a
+ * device that could run without INTx from one with a real route gap. */
+static int dev_msi_capable(uint8_t bus, uint8_t dev, uint8_t fn)
+{
+    if (!(IRQ_PciRead16(bus, dev, fn, 0x06) & (1 << 4))) return 0;
+    uint8_t ptr = IRQ_PciRead8(bus, dev, fn, 0x34) & 0xFC;
+    while (ptr) {
+        if (IRQ_PciRead8(bus, dev, fn, ptr) == 0x05) return 1;
+        ptr = IRQ_PciRead8(bus, dev, fn, (uint8_t)(ptr + 1)) & 0xFC;
+    }
+    return 0;
+}
+
 static void dump_one(NativeCmdCtx *ctx, uint8_t bus, uint8_t dev, uint8_t fn,
                      int verbose)
 {
@@ -88,22 +101,62 @@ static void dump_one(NativeCmdCtx *ctx, uint8_t bus, uint8_t dev, uint8_t fn,
         PRINT(line);
     }
 
+    /* The vector/name this function itself bound (PCI INTx or MSI) —
+     * IDT_VectorName on a shared line names whichever driver claimed it
+     * first, so "vec=50 (uhci)" on the ahci line reads as if uhci owned
+     * ahci's route.  Per-BDF binding tells them apart (UAOS-269). */
+    const char *bdf_name = NULL;
+    int bdf_vec = IRQ_BdfVec(bus, dev, fn, &bdf_name);
+
     if (ri.gsi >= 0) {
         int vec = IRQ_VecForGsi(ri.gsi);
         cmd_scopy(line, "   vec=", CMD_MAX_LINE);
         if (vec >= 0) {
             cmd_uint_to_dec((uint32_t)vec, num, sizeof(num));
             cmd_scat(line, num, CMD_MAX_LINE);
-            const char *nm = IDT_VectorName(vec);
-            if (nm) { cmd_scat(line, " (", CMD_MAX_LINE); cmd_scat(line, nm, CMD_MAX_LINE); cmd_scat(line, ")", CMD_MAX_LINE); }
+            if (bdf_vec == vec && bdf_name) {
+                cmd_scat(line, " (", CMD_MAX_LINE);
+                cmd_scat(line, bdf_name, CMD_MAX_LINE);
+                cmd_scat(line, ")", CMD_MAX_LINE);
+            } else {
+                const char *nm = IDT_VectorName(vec);
+                if (nm) {
+                    cmd_scat(line, " owner=", CMD_MAX_LINE);
+                    cmd_scat(line, nm, CMD_MAX_LINE);
+                }
+            }
             int kind = IRQ_VecKind(vec);
             cmd_scat(line, kind == IRQ_VEC_MSI ? " msi" : kind == IRQ_VEC_APIC ? " apic" : kind == IRQ_VEC_PIC ? " pic" : " ?", CMD_MAX_LINE);
         } else {
-            cmd_scat(line, "UNASSIGNED", CMD_MAX_LINE);
+            cmd_scat(line, "- (gsi routed, no handler)", CMD_MAX_LINE);
         }
         PRINT(line);
-    } else if (ri.pin) {
-        PRINT("   * UNRESOLVED ROUTE *");
+    }
+
+    /* An MSI-bound device may show no INTx route — expected, its
+     * interrupts arrive on the MSI vector instead of the shared line. */
+    if (bdf_vec >= 0 && IRQ_VecKind(bdf_vec) == IRQ_VEC_MSI) {
+        cmd_scopy(line, "   msi vec=", CMD_MAX_LINE);
+        cmd_uint_to_dec((uint32_t)bdf_vec, num, sizeof(num));
+        cmd_scat(line, num, CMD_MAX_LINE);
+        if (bdf_name) {
+            cmd_scat(line, " (", CMD_MAX_LINE);
+            cmd_scat(line, bdf_name, CMD_MAX_LINE);
+            cmd_scat(line, ")", CMD_MAX_LINE);
+        }
+        PRINT(line);
+    }
+
+    if (ri.pin && ri.gsi < 0) {
+        if (bdf_vec >= 0) {
+            PRINT("   intx: no route — driver bound elsewhere");
+        } else {
+            cmd_scopy(line, "   * no intx route", CMD_MAX_LINE);
+            if (dev_msi_capable(bus, dev, fn))
+                cmd_scat(line, " (msi capable)", CMD_MAX_LINE);
+            cmd_scat(line, " *", CMD_MAX_LINE);
+            PRINT(line);
+        }
     }
 }
 

@@ -66,6 +66,7 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
         PRINT("  #  name                 state    cpu%   sw/s   irqoff_ms  wait  pri");
     char line[CMD_MAX_LINE], num[24];
     uint64_t busy_total = 0;
+    UaosTask *idle_task = Task_FindByName("Idle");
 
     for (int i = 0; i < g_task_count; i++) {
         UaosTask *t = &g_tasks[i];
@@ -76,7 +77,6 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
 
         uint64_t dcpu = now ? t->cpu_ticks : after[i].cpu - before[i].cpu;
         uint64_t dsw  = now ? t->ctx_switches : after[i].sw - before[i].sw;
-        busy_total += dcpu;
 
         cmd_scopy(line, " ", CMD_MAX_LINE);
         cmd_uint_to_dec((uint32_t)i, num, sizeof(num));
@@ -89,6 +89,12 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
         static const char *stn[] = { "wait", "rdy", "run", "gone" };
         cmd_scat(line, stn[t->tc_State & 3], CMD_MAX_LINE);
         sl = cmd_slen(line); while (sl++ < 34) cmd_scat(line, " ", CMD_MAX_LINE);
+
+        /* busy-total counts work, not wall time: the Idle task hlt-loops
+         * to ~100% of every window, so including it collapses the
+         * "idle share = window - busy" arithmetic to zero (UAOS-269). */
+        if (t != idle_task)
+            busy_total += dcpu;
 
         /* window mode: cpu% = delta_ticks * 100 / window ticks.
          * NOW mode: cumulative cpu_ticks under the cpu_t column. */

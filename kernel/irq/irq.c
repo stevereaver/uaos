@@ -417,8 +417,10 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
 /* BDFs that have a handler armed through IRQ_AttachPCI — the quiesce
  * scan must never silence a device whose interrupts are serviced. */
 #define IRQ_BDF_MAX 32
-static uint16_t g_attached_bdf[IRQ_BDF_MAX];
-static uint8_t  g_attached_bdf_n;
+static uint16_t    g_attached_bdf[IRQ_BDF_MAX];
+static const char *g_attached_name[IRQ_BDF_MAX];
+static int16_t     g_attached_vec[IRQ_BDF_MAX];
+static uint8_t     g_attached_bdf_n;
 
 static uint16_t irq_pack_bdf(uint8_t bus, uint8_t dev, uint8_t fn)
 {
@@ -430,10 +432,21 @@ static int irq_bdf_attached(uint16_t bdf)
         if (g_attached_bdf[i] == bdf) return 1;
     return 0;
 }
-static void irq_bdf_record(uint8_t bus, uint8_t dev, uint8_t fn)
+static void irq_bdf_record(uint8_t bus, uint8_t dev, uint8_t fn,
+                           int vec, const char *name)
 {
+    uint16_t bdf = irq_pack_bdf(bus, dev, fn);
+    for (int i = 0; i < g_attached_bdf_n; i++) {
+        if (g_attached_bdf[i] == bdf) {
+            g_attached_vec[i]  = (int16_t)vec;
+            g_attached_name[i] = name;
+            return;
+        }
+    }
     if (g_attached_bdf_n >= IRQ_BDF_MAX) return;
-    g_attached_bdf[g_attached_bdf_n++] = irq_pack_bdf(bus, dev, fn);
+    g_attached_bdf[g_attached_bdf_n]   = bdf;
+    g_attached_name[g_attached_bdf_n]  = name;
+    g_attached_vec[g_attached_bdf_n++] = (int16_t)vec;
 }
 
 /* Clear INTx-disable on the attaching function — a driver that came up
@@ -595,6 +608,20 @@ int IRQ_VecForGsi(int gsi)
     return -1;
 }
 
+/* The interrupt a function actually bound through IRQ_AttachPCI /
+ * IRQ_AttachMSI — the driver's own vector and name, as opposed to the
+ * name of whichever handler first claimed a shared INTx vector. */
+int IRQ_BdfVec(uint8_t bus, uint8_t dev, uint8_t fn, const char **name)
+{
+    uint16_t bdf = irq_pack_bdf(bus, dev, fn);
+    for (int i = 0; i < g_attached_bdf_n; i++)
+        if (g_attached_bdf[i] == bdf) {
+            if (name) *name = g_attached_name[i];
+            return g_attached_vec[i];
+        }
+    return -1;
+}
+
 /* Read-only INTx route decode — same register walk as ich_route_gsi but
  * never writes (no DxxIR repair attempts), so C:irqroute is safe to run
  * at any time on any machine. */
@@ -718,7 +745,7 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
         g_gsi[vec]  = line;
         irq_quiesce_line(line, bus, dev, fn);
         irq_intx_enable(bus, dev, fn);
-        irq_bdf_record(bus, dev, fn);
+        irq_bdf_record(bus, dev, fn, vec, name);
         PIC_UnmaskIRQ(line);
         return vec;
     }
@@ -746,7 +773,7 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
             return -1;
         }
         irq_intx_enable(bus, dev, fn);
-        irq_bdf_record(bus, dev, fn);
+        irq_bdf_record(bus, dev, fn, vec, name);
         IOAPIC_Unmask((uint32_t)gsi);
         return vec;
     }
@@ -759,7 +786,7 @@ int IRQ_AttachPCI(uint8_t bus, uint8_t dev, uint8_t fn,
     g_gsi[vec]  = (uint8_t)gsi;
     irq_quiesce_line(gsi, bus, dev, fn);
     irq_intx_enable(bus, dev, fn);
-    irq_bdf_record(bus, dev, fn);
+    irq_bdf_record(bus, dev, fn, vec, name);
     IOAPIC_Unmask((uint32_t)gsi);
     return vec;
 }
@@ -800,6 +827,7 @@ int IRQ_AttachMSI(uint8_t bus, uint8_t dev, uint8_t fn,
 
     IDT_SetHandler((uint8_t)vec, handler, name);
     g_kind[vec] = VEC_MSI;
+    irq_bdf_record(bus, dev, fn, vec, name);
     kprint("[IRQ] MSI "); kprintdec(bus); kprint(":"); kprintdec(dev);
     kprint("."); kprintdec(fn); kprint(" -> vector ");
     kprintdec((uint32_t)vec); kprint("\n");
