@@ -16,8 +16,13 @@
 #include "early_startup.h"
 #include "framebuffer.h"
 #include "../irq/ps2kbd.h"
+#include "../irq/irq.h"
+#include "../irq/pit.h"
+#include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
+
+extern volatile uint64_t g_pit_ticks;   /* 100 Hz — uaos_kernel_main.c */
 
 /* =========================================================================
  * Helpers (no libc)
@@ -268,21 +273,51 @@ static void draw_sysinfo(void)
  * Input
  * ========================================================================= */
 
-/* Wait for a key, with timeout in PIT ticks (100 Hz, so 100 = 1 second).
- * Returns the key char, or 0 if timeout. */
-static char es_wait_key(int timeout_ticks)
+/* Early startup runs before Task_StartFirst with interrupts enabled for
+ * the duration of the menu (EarlyStartup_Run saves/restores IF), so the
+ * PIT tick keeps g_pit_ticks advancing and IRQ1/USB-HID IRQs fill the key
+ * ring.  Waits are g_pit_ticks deadlines with hlt between polls — the
+ * PIT wakes the CPU each tick.  If the PIT stops advancing entirely
+ * (broken timer hardware/QEMU), a bounded spin stands in so the boot can
+ * never hang here. */
+
+/* ~50 ms of no tick advance -> declare the PIT dead.  TSC frequency is
+ * uncalibrated at this point in boot, so this is only an order-of-
+ * magnitude bound: ~50 ms at 4 GHz, ~100 ms at 2 GHz. */
+#define ES_TICK_STALL_CYCLES  200000000ULL
+/* Dead-PIT fallback: iterations of the key-poll loop per "tick".
+ * Each iteration is a few hundred cycles at most, so this lands in the
+ * rough vicinity of the 10 ms a real tick represents — accuracy does not
+ * matter here, only that the countdown cannot hang. */
+#define ES_SPIN_PER_TICK      250000ULL
+
+/* Wait for a key, with timeout in PIT ticks (UAOS_PIT_HZ, so HZ ticks =
+ * 1 second).  Returns the key char, or 0 if timeout. */
+static char es_wait_key(uint64_t timeout_ticks)
 {
-    /* At this point interrupts may be enabled (PIT is running).
-     * PS2Kbd_HasChar checks the ring buffer filled by IRQ1. */
-    while (timeout_ticks > 0) {
+    uint64_t tick0     = g_pit_ticks;
+    uint64_t last_tick = tick0;
+    uint64_t stall_tsc = diag_rdtsc();
+    uint64_t spin      = 0;    /* dead-PIT fallback budget */
+
+    for (;;) {
         if (PS2Kbd_HasChar())
             return PS2Kbd_GetChar();
-        /* Busy-wait with a small delay — we can't use Task_Yield yet
-         * (scheduler not started). PIT is running so IRQ1 will fire. */
-        for (volatile int i = 0; i < 100000; i++);
-        timeout_ticks--;
+
+        uint64_t now = g_pit_ticks;
+        if (now != last_tick) {
+            last_tick  = now;
+            stall_tsc  = diag_rdtsc();
+        } else if (diag_rdtsc() - stall_tsc > ES_TICK_STALL_CYCLES) {
+            /* PIT not advancing — count iterations instead. */
+            if (++spin / ES_SPIN_PER_TICK >= timeout_ticks)
+                return 0;
+            continue;               /* no hlt: nothing may wake us */
+        }
+        if (now - tick0 >= timeout_ticks)
+            return 0;
+        __asm__ volatile ("hlt" ::: "memory");   /* IF=1 — any IRQ wakes */
     }
-    return 0;
 }
 
 static char es_wait_key_no_timeout(void)
@@ -290,8 +325,17 @@ static char es_wait_key_no_timeout(void)
     for (;;) {
         if (PS2Kbd_HasChar())
             return PS2Kbd_GetChar();
-        for (volatile int i = 0; i < 100000; i++);
+        __asm__ volatile ("hlt" ::: "memory");
     }
+}
+
+/* Drop every char currently in the ring — used after the countdown so a
+ * key (or key-repeat burst) that opened the menu does not immediately
+ * also select an item. */
+static void es_flush_keys(void)
+{
+    while (PS2Kbd_HasChar())
+        (void)PS2Kbd_GetChar();
 }
 
 /* =========================================================================
@@ -302,19 +346,35 @@ int EarlyStartup_Run(void)
 {
     if (!g_fb.valid) return 0;
 
-    /* Countdown: 2 seconds (200 PIT ticks at 100 Hz) */
+    /* The menu runs before Task_StartFirst with IF=0 on entry (the boot
+     * path's last cli is still in effect) — meaning no PIT ticks, no
+     * IRQ1 keystrokes, and no USB HID input would ever arrive.  Enable
+     * interrupts for the duration of the menu and restore the entry
+     * state on every exit path so the rest of boot is unaffected.
+     * Pre-scheduler this is safe: do_schedule() early-returns while
+     * g_current == NULL, the wait queues are empty, and every other PIT
+     * handler body (timer_ProcessTicks, CpuFreq_Tick, the RTC second
+     * tick, USB poll, EventPump_Wake) tolerates no-current-task. */
+    uint64_t saved_fl = irq_save();
+    __asm__ volatile ("sti" ::: "memory");
+
+    int mode = 0;
+
+    /* Countdown: 2 seconds (2 * UAOS_PIT_HZ ticks) */
     for (int sec = 2; sec > 0; sec--) {
         draw_countdown(sec);
-        /* 100 ticks = 1 second */
-        char c = es_wait_key(100);
+        char c = es_wait_key(UAOS_PIT_HZ);
         if (c != 0) {
-            /* Key pressed — show menu */
+            /* Key pressed — the countdown may have queued further chars
+             * (auto-repeat, a quick double tap); drop them so they can't
+             * also select a menu item, then show the menu. */
+            es_flush_keys();
             goto show_menu;
         }
     }
 
     /* No key pressed — normal boot */
-    return 0;
+    goto out;
 
 show_menu:
     {
@@ -333,15 +393,19 @@ show_menu:
                         /* Info screen */
                         draw_sysinfo();
                         es_wait_key_no_timeout();
+                        es_flush_keys();
                         continue;
                     }
-                    return action;
+                    mode = action;
+                    goto out;
                 }
             }
 
             /* ESC = normal boot */
-            if (c == 27)
-                return 0;
+            if (c == 27) {
+                mode = 0;
+                goto out;
+            }
 
             /* Enter = select current */
             if (c == '\n' || c == '\r') {
@@ -349,20 +413,27 @@ show_menu:
                 if (action == 3) {
                     draw_sysinfo();
                     es_wait_key_no_timeout();
+                    es_flush_keys();
                     continue;
                 }
-                return action;
+                mode = action;
+                goto out;
             }
 
-            /* Arrow up/down */
-            if (c == 0x48 || c == 'k') {  /* Up */
+            /* Arrow up/down — the ring delivers KBD_VKEY_* codes (both
+             * the PS/2 and USB HID paths translate to them). */
+            if (c == KBD_VKEY_UP || c == 'k') {
                 selected--;
                 if (selected < 0) selected = ES_MENU_COUNT - 1;
             }
-            if (c == 0x50 || c == 'j') {  /* Down */
+            if (c == KBD_VKEY_DOWN || c == 'j') {
                 selected++;
                 if (selected >= ES_MENU_COUNT) selected = 0;
             }
         }
     }
+
+out:
+    irq_restore(saved_fl);
+    return mode;
 }

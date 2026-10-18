@@ -124,6 +124,14 @@ void Watchdog_Tick(void)
 {
     if (!g_wd_budget_ms) return;
 
+    /* Scheduler not started yet (e.g. the Early Startup menu with IF=1):
+     * tasks exist on the ready list but nobody is dispatching — by
+     * definition not a scheduler stall. */
+    if (!Task_Current()) {
+        g_wd_last_prog = g_pit_ticks;
+        return;
+    }
+
     uint64_t now = g_pit_ticks;
 
     if (g_ctx_switches != g_wd_last_switch) {
