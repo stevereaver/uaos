@@ -191,8 +191,9 @@ void FAT32_FatstampToDs(uint16_t fat_date, uint16_t fat_time,
 /* FAT packed date/time -> Unix epoch seconds (for VfsDirEnt.mtime). */
 uint32_t FAT32_FatstampToUnix(uint16_t fat_date, uint16_t fat_time);
 
-/* Get volume statistics (total/used bytes). */
-void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_bytes);
+/* Get volume statistics (total/used bytes — 64-bit so volumes over
+ * 4 GiB report correctly). */
+void FAT32_GetVolumeStats(Fat32FS *fs, uint64_t *total_bytes, uint64_t *used_bytes);
 
 /* Copy the volume label (BPB vol_label, space-padded) into dst[max] with
  * trailing spaces stripped.  Returns label length, 0 if none/invalid. */

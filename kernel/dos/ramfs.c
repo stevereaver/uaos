@@ -649,14 +649,14 @@ int RamFS_RenameVol(RamFsVol *vol, const char *new_name)
     return 0;
 }
 
-void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes)
+void RamFS_GetVolumeStats(RamFsVol *vol, uint64_t *total_bytes, uint64_t *used_bytes)
 {
     /* Per-volume used: walk this volume's node tree, summing the bytes
      * each file contributes to the volume.  ext_bdev proxy files consume
      * no pool, but their content still belongs to the volume (read from
      * the backing device on demand), so count their size — otherwise an
      * all-proxy volume like the ISO9660 sysroot reports 0 bytes used. */
-    uint32_t used = 0;
+    uint64_t used = 0;
     if (vol && vol->root) {
         RamFsNode *n = vol->root;
         while (n) {
@@ -678,8 +678,8 @@ void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_b
      * pool_used, including header overhead and unreclaimed fragments).
      * Read-only volumes (e.g. an ISO9660 proxy mount) cannot grow — pool
      * headroom isn't theirs, so total = used and free = 0. */
-    uint32_t pool_sz  = (uint32_t)sizeof(g_pool);
-    uint32_t pool_free = pool_sz - g_pool_used;
+    uint64_t pool_sz  = (uint64_t)sizeof(g_pool);
+    uint64_t pool_free = pool_sz - g_pool_used;
     *used_bytes  = used;
     *total_bytes = (vol && vol->read_only) ? used : used + pool_free;
 }

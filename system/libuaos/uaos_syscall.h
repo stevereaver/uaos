@@ -398,7 +398,7 @@ static inline long uaos_setcomment(const char *path, const char *comment)
     return uaos_syscall2(UAOS_SYSCALL_SETCOMMENT, (long)path, (long)comment);
 }
 
-static inline long uaos_getvolumeinfo(const char *path, uint32_t *total, uint32_t *used)
+static inline long uaos_getvolumeinfo(const char *path, uint64_t *total, uint64_t *used)
 {
     return uaos_syscall3(UAOS_SYSCALL_GETVOLUMEINFO, (long)path, (long)total, (long)used);
 }

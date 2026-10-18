@@ -367,10 +367,18 @@ static void FatHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             pkt->dp_Res2 = ERROR_OBJECT_NOT_FOUND;
             break;
         }
-        uint32_t total_bytes = 0, used_bytes = 0;
+        uint64_t total_bytes = 0, used_bytes = 0;
         FAT32_GetVolumeStats(fs, &total_bytes, &used_bytes);
-        id->id_NumBlocks     = (int32_t)(total_bytes / 512);
-        id->id_NumBlocksUsed = (int32_t)(used_bytes / 512);
+        /* Blocks are reported in units of id_BytesPerBlock — keep the
+         * divisor consistent with it, not a hard-coded 512.  InfoData
+         * counts are signed 32-bit, so clamp rather than wrap. */
+        uint64_t bpb = fs->bytes_per_sec;
+        uint64_t tot_blk = bpb ? total_bytes / bpb : 0;
+        uint64_t use_blk = bpb ? used_bytes  / bpb : 0;
+        if (tot_blk > INT32_MAX) tot_blk = INT32_MAX;
+        if (use_blk > INT32_MAX) use_blk = INT32_MAX;
+        id->id_NumBlocks     = (int32_t)tot_blk;
+        id->id_NumBlocksUsed = (int32_t)use_blk;
         id->id_BytesPerBlock = (int32_t)fs->bytes_per_sec;
         id->id_DiskState     = ID_VALIDATED;
         id->id_NumSoftErrors = 0;

@@ -632,7 +632,7 @@ static void menu_action_icon_information(void)
     if (!name) return;
 
     /* Gather file info */
-    uint32_t total = 0, used = 0;
+    uint64_t total = 0, used = 0;
     VFS_GetVolumeInfo(path, &total, &used, NULL);
     uint16_t prot = VFS_GetProtection(path);
 

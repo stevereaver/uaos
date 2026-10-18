@@ -69,10 +69,10 @@ void Cmd_Info(NativeCmdCtx *ctx, const char *args)
             if (cmd_slen(vol_path) > 0 && vol_path[cmd_slen(vol_path) - 1] != ':')
                 cmd_scat(vol_path, ":", sizeof(vol_path));
 
-            uint32_t total = 0, used = 0;
+            uint64_t total = 0, used = 0;
             int vol_ro = 0;
             if (VFS_GetVolumeInfo(vol_path, &total, &used, &vol_ro) == 0) {
-                uint32_t free = (total > used) ? (total - used) : 0;
+                uint64_t free = (total > used) ? (total - used) : 0;
                 char sz[16], usz[16], fsz[16];
                 sz[0] = usz[0] = fsz[0] = '\0';
                 format_cap(total, sz, 16);
@@ -159,14 +159,14 @@ void Cmd_Info(NativeCmdCtx *ctx, const char *args)
         /* Query the mounted filesystem for real used/free figures;
          * falls back to the backing device's capacity when the
          * filesystem reports no stats. */
-        uint32_t vol_total = 0, vol_used = 0;
+        uint64_t vol_total = 0, vol_used = 0;
         int vol_ro = 0;
         int have_stats =
             (VFS_GetVolumeInfo(unit_col, &vol_total, &vol_used,
                                &vol_ro) == 0);
         char sz[16] = "0", used_sz[16] = "0", free_sz[16] = "0", pct[8] = "0%";
         if (have_stats) {
-            uint32_t vol_free =
+            uint64_t vol_free =
                 (vol_total > vol_used) ? vol_total - vol_used : 0;
             format_cap(vol_total, sz, 16);
             format_cap(vol_used, used_sz, 16);

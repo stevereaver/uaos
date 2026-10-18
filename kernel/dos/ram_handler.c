@@ -353,11 +353,15 @@ static void RamHandler_ProcessPacket(Handler *h, DosPacket *pkt)
             break;
         }
 
-        uint32_t total_bytes = 0, used_bytes = 0;
+        uint64_t total_bytes = 0, used_bytes = 0;
         RamFS_GetVolumeStats(vol, &total_bytes, &used_bytes);
 
-        id->id_NumBlocks     = (int32_t)(total_bytes / 512);
-        id->id_NumBlocksUsed = (int32_t)(used_bytes / 512);
+        uint64_t tot_blk = total_bytes / 512;
+        uint64_t use_blk = used_bytes / 512;
+        if (tot_blk > INT32_MAX) tot_blk = INT32_MAX;
+        if (use_blk > INT32_MAX) use_blk = INT32_MAX;
+        id->id_NumBlocks     = (int32_t)tot_blk;
+        id->id_NumBlocksUsed = (int32_t)use_blk;
         id->id_BytesPerBlock = 512;
         id->id_DiskState     = vol->read_only ? ID_WRITE_PROTECTED
                                             : ID_VALIDATED;

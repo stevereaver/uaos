@@ -85,19 +85,19 @@ static void stat_fs(const char *fname)
 {
     char path[UAOS_CMD_PATH_MAX];
     cmd_make_abs(fname, path, sizeof(path));
-    uint32_t total = 0, used = 0;
+    uint64_t total = 0, used = 0;
     if (uaos_getvolumeinfo(path, &total, &used) != 0) {
         put_s("stat: cannot read filesystem info for '");
         put_s(fname); put_line("'");
         return;
     }
     put_s("  File: \""); put_s(fname); put_s("\"\n");
-    char buf[16];
-    put_s("  Size: "); uint_to_dec(total - used, buf, sizeof(buf)); put_s(buf);
+    char buf[24];
+    put_s("  Size: "); u64_to_dec(total - used, buf, sizeof(buf)); put_s(buf);
     put_s("  Type: ramfs\n");
-    put_s("  Total: "); uint_to_dec(total, buf, sizeof(buf)); put_s(buf); put_c('\n');
-    put_s("  Used: ");  uint_to_dec(used, buf, sizeof(buf));  put_s(buf); put_c('\n');
-    put_s("  Free: ");  uint_to_dec(total - used, buf, sizeof(buf)); put_s(buf); put_c('\n');
+    put_s("  Total: "); u64_to_dec(total, buf, sizeof(buf)); put_s(buf); put_c('\n');
+    put_s("  Used: ");  u64_to_dec(used, buf, sizeof(buf));  put_s(buf); put_c('\n');
+    put_s("  Free: ");  u64_to_dec(total - used, buf, sizeof(buf)); put_s(buf); put_c('\n');
 }
 
 int main(int argc, const char **argv)

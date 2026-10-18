@@ -1757,10 +1757,10 @@ uint32_t FAT32_FatstampToUnix(uint16_t fat_date, uint16_t fat_time)
  * Volume statistics
  * ========================================================================= */
 
-void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_bytes)
+void FAT32_GetVolumeStats(Fat32FS *fs, uint64_t *total_bytes, uint64_t *used_bytes)
 {
     if (!fs) return;
-    uint32_t total = fs->total_clusters * fs->cluster_size;
+    uint64_t total = (uint64_t)fs->total_clusters * fs->cluster_size;
 
     /* The free count is cached in fs->free_clusters and maintained by
      * fat32_alloc_cluster/fat32_free_chain.  Compute it with a full FAT
@@ -1801,9 +1801,10 @@ void FAT32_GetVolumeStats(Fat32FS *fs, uint32_t *total_bytes, uint32_t *used_byt
         if (scan_ok) fs->free_clusters = (int32_t)free_cnt;
     }
 
-    uint32_t used = 0;
-    if (fs->free_clusters <= (int32_t)fs->total_clusters)
-        used = (fs->total_clusters - (uint32_t)fs->free_clusters)
+    uint64_t used = 0;
+    if (fs->free_clusters >= 0 &&
+        fs->free_clusters <= (int32_t)fs->total_clusters)
+        used = ((uint64_t)fs->total_clusters - (uint32_t)fs->free_clusters)
                * fs->cluster_size;
 
     if (total_bytes) *total_bytes = total;

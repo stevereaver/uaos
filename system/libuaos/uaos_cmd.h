@@ -99,6 +99,17 @@ static inline void uint_to_dec(uint32_t v, char *buf, int max)
     buf[j] = '\0';
 }
 
+/* unsigned 64-bit decimal into buf[max] — volume sizes and file sizes
+ * exceed 32 bits on multi-GiB volumes. */
+static inline void u64_to_dec(uint64_t v, char *buf, int max)
+{
+    char tmp[20]; int i = 0, j = 0;
+    if (!v) { buf[j++] = '0'; buf[j] = '\0'; return; }
+    while (v && i < 20) { tmp[i++] = (char)('0' + v % 10); v /= 10; }
+    while (i-- && j < max - 1) buf[j++] = tmp[i];
+    buf[j] = '\0';
+}
+
 static inline void int_to_dec(int32_t v, char *buf, int max)
 {
     if (v < 0) { buf[0] = '-'; uint_to_dec((uint32_t)(-v), buf + 1, max - 1); }

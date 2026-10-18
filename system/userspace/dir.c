@@ -210,9 +210,9 @@ int main(int argc, const char **argv)
 
     /* Summary: count + bytes used cover everything the walk printed
      * (whole tree under ALL), plus free space. */
-    uint32_t total = 0, used = 0;
+    uint64_t total = 0, used = 0;
     uaos_getvolumeinfo(path, &total, &used);
-    uint32_t free_bytes = (total > used) ? (total - used) : 0;
+    uint64_t free_bytes = (total > used) ? (total - used) : 0;
 
     char summary[UAOS_CMD_LINE_MAX];
     summary[0] = '\0';
@@ -224,8 +224,8 @@ int main(int argc, const char **argv)
     uint_to_dec(bytes_used, bu, sizeof(bu));
     uaos_strlcat(summary, bu, sizeof(summary));
     uaos_strlcat(summary, " bytes used  ", sizeof(summary));
-    char bf[12];
-    uint_to_dec(free_bytes, bf, sizeof(bf));
+    char bf[24];
+    u64_to_dec(free_bytes, bf, sizeof(bf));
     uaos_strlcat(summary, bf, sizeof(summary));
     uaos_strlcat(summary, " bytes free", sizeof(summary));
     put_line(summary);

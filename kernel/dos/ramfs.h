@@ -150,6 +150,6 @@ int RamFS_Rename(RamFsVol *vol, const char *old_path, const char *new_path);
  * total = used + pool bytes still free pool-wide (all RAM volumes share
  *         the pool), so callers get free = total - used.  Read-only
  *         volumes cannot grow, so total = used (free = 0). */
-void RamFS_GetVolumeStats(RamFsVol *vol, uint32_t *total_bytes, uint32_t *used_bytes);
+void RamFS_GetVolumeStats(RamFsVol *vol, uint64_t *total_bytes, uint64_t *used_bytes);
 
 #endif

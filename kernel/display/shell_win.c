@@ -1845,13 +1845,13 @@ static void inst_cmd_info(ShellInstance *s, const char *arg)
 
             /* Query the mounted filesystem for real used/free figures;
              * falls back to capacity/0 when the volume is not mounted. */
-            uint32_t vol_total = 0, vol_used = 0;
+            uint64_t vol_total = 0, vol_used = 0;
             int have_stats = (VFS_GetVolumeInfo(name,
                                                 &vol_total, &vol_used,
                                                 NULL) == 0);
             char used_sz[16] = "0", free_sz[16] = "0", pct[8] = "0%";
             if (have_stats) {
-                uint32_t vol_free =
+                uint64_t vol_free =
                     (vol_total > vol_used) ? vol_total - vol_used : 0;
                 format_cap(vol_used, used_sz, 16);
                 format_cap(vol_free, free_sz, 16);

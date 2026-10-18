@@ -1501,8 +1501,8 @@ int VFS_Rename(const char *old_path, const char *new_path)
     return -1;
 }
 
-int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes,
-                      uint32_t *used_bytes, int *read_only)
+int VFS_GetVolumeInfo(const char *path, uint64_t *total_bytes,
+                      uint64_t *used_bytes, int *read_only)
 {
     if (!path || !*path || !total_bytes || !used_bytes) return -1;
 
@@ -1526,8 +1526,10 @@ int VFS_GetVolumeInfo(const char *path, uint32_t *total_bytes,
         int32_t res = DoPkt(&h->port, ACTION_DISK_INFO,
                             0, (intptr_t)&id, 0, 0, 0);
         if (res == DOSTRUE) {
-            *total_bytes = (uint32_t)id.id_NumBlocks * (uint32_t)id.id_BytesPerBlock;
-            *used_bytes  = (uint32_t)id.id_NumBlocksUsed * (uint32_t)id.id_BytesPerBlock;
+            *total_bytes = (uint64_t)(uint32_t)id.id_NumBlocks
+                         * (uint64_t)(uint32_t)id.id_BytesPerBlock;
+            *used_bytes  = (uint64_t)(uint32_t)id.id_NumBlocksUsed
+                         * (uint64_t)(uint32_t)id.id_BytesPerBlock;
             if (read_only)
                 *read_only = (id.id_DiskState == ID_WRITE_PROTECTED);
             return 0;

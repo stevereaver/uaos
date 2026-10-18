@@ -773,8 +773,8 @@ static int sys_setcomment(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 static int sys_getvolumeinfo(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     const char *path = (const char *)(uintptr_t)rdi;
-    uint32_t *total = (uint32_t *)(uintptr_t)rsi;
-    uint32_t *used  = (uint32_t *)(uintptr_t)rdx;
+    uint64_t *total = (uint64_t *)(uintptr_t)rsi;
+    uint64_t *used  = (uint64_t *)(uintptr_t)rdx;
 
     if (!total || !used)
         return -1;

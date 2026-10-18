@@ -12,27 +12,27 @@ static int opt_human = 0;
 static int opt_kibi = 0;
 static int opt_inodes = 0;
 
-static void format_h(uint32_t sz, char *buf, int max)
+static void format_h(uint64_t sz, char *buf, int max)
 {
     if (opt_human) {
-        if (sz >= 1073741824U) { uint_to_dec(sz / 1073741824U, buf, max); uaos_strlcat(buf, "G", max); }
-        else if (sz >= 1048576U) { uint_to_dec(sz / 1048576U, buf, max); uaos_strlcat(buf, "M", max); }
-        else if (sz >= 1024) { uint_to_dec(sz / 1024, buf, max); uaos_strlcat(buf, "K", max); }
-        else { uint_to_dec(sz, buf, max); }
+        if (sz >= 1073741824ULL) { u64_to_dec(sz / 1073741824ULL, buf, max); uaos_strlcat(buf, "G", max); }
+        else if (sz >= 1048576ULL) { u64_to_dec(sz / 1048576ULL, buf, max); uaos_strlcat(buf, "M", max); }
+        else if (sz >= 1024) { u64_to_dec(sz / 1024, buf, max); uaos_strlcat(buf, "K", max); }
+        else { u64_to_dec(sz, buf, max); }
     } else {
         /* default 1K blocks */
-        uint_to_dec((sz + 1023) / 1024, buf, max);
+        u64_to_dec((sz + 1023) / 1024, buf, max);
     }
 }
 
 static void print_volume(const char *name, const char *mount)
 {
-    uint32_t total = 0, used = 0;
+    uint64_t total = 0, used = 0;
     if (uaos_getvolumeinfo(mount, &total, &used) != 0) return;
-    uint32_t avail = total - used;
-    uint32_t pct = total > 0 ? (used * 100 / total) : 0;
+    uint64_t avail = (total > used) ? total - used : 0;
+    uint32_t pct = total > 0 ? (uint32_t)(used * 100 / total) : 0;
 
-    char tbuf[16], ubuf[16], abuf[16];
+    char tbuf[20], ubuf[20], abuf[20];
     format_h(total, tbuf, sizeof(tbuf));
     format_h(used, ubuf, sizeof(ubuf));
     format_h(avail, abuf, sizeof(abuf));
