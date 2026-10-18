@@ -1794,3 +1794,12 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
 * **New card** (UAOS-318): AHCI zero-copy + task killed mid-DMA can leave the HBA writing freed task memory.
 * Verified: `irqroute`/`taskstat`/`diskdiag` live in QEMU; smoke 17/17 on the final build.
 * **Docs**: `okf/build_system.md`, `okf/kernel/{audio,diag,dos}/index.md`, `okf/system/index.md`.
+
+## 2026-10-18 — MBP4,1 input fixes + drag-lag root cause (UAOS-317/319)
+
+* **Fixed** (UAOS-317, 04fc3bf): `USB_MAX_CLASSES` was 4 but five class drivers register at boot (`hub → msc → bcm5974 → appletouch → hid`) — `USBHID_Init` was silently dropped, so no HID interface ever bound (dead keyboard + USB mouse on metal; trackpad survived via earlier bcm5974/appletouch slots). Table raised to 8 and overflow now logs KLOG_ERR. Diagnosed by `peek`-dumping `g_ifs` on the live box: every HID if showed `used=0`.
+* **Metal-verified** (UAOS-317): both ICH8M EHCIs driven on the MBP4,1 (~116 IRQ hits each, INTx); Toshiba stick → HS on EHCI → BOT → BlockDev → FAT32 mounted as DH0:; BCM2046 hub correctly released to its UHCI companion (CONFIGFLAG PortOwner); iSight stays on EHCI unbound; 9 devs / 29 ifs. Remaining: `poll_usbint=3` on uhci2 — occasional completions caught by the PIT poll rather than INTx, under investigation as possible residual cause of mouse "sticking".
+* **Fixed** (UAOS-319, c76b99b): **window-drag lag root cause** — `get_icons()` probed `<vol>:Trashcan` via `VFS_IsDir` per mount on every call, and `Desktop_RedrawRect` calls it on every damage flush. Synchronous handler packets end in `BlockDev_Read`; on metal (ISO9660-ATAPI + FAT32-over-EHCI) the probe set cost ~96 ms inside the EventPump's Forbid section. Evidence: `etrace MASK=3` during a `g_mouse`-poke drag showed ~96-100 ms pump slices; `prof` put ~10% of CPU on the single address `BlockDev_Read+0x32`. At ~125 Hz mouse reports the pump coalesced input to ~10 updates/s. Probe is now TTL'd to 2 s (mount-table fingerprint still instant).
+* **New tool** (`c76b99b`): `C:minject` — synthetic pointer injection via `g_mouse`+`Cursor_Move`+`EventPump_Wake`; `DRAG X0= Y0= X1= Y1= [STEPS=] [MS=]` does a paced titlebar sweep — lets a remote session reproduce and profile drags on metal.
+* Verified: QEMU `minject DRAG` moves the Shell window (peek on `g_wins`); icons/menubar render; EventPump prof samples moved off `BlockDev_Read` onto `fill32`/`clip_point`/`FB_PutChar`. Metal retest pending user reflash (ISO `UAOS-181026152412`).
+* **Docs**: `okf/kernel/{diag,display}/index.md`.

@@ -97,6 +97,8 @@ report a peak far above what its own entry function uses.
 | `failalloc ON RATE=n\|AFTER=n [SEED=n] \| OFF` | Alloc-failure injection. (UAOS-211) |
 | `stack` | Now prints per-task peak usage from the fill watermark + canary state. (UAOS-212) |
 | `pktmon START FILE=path [MAX=n] \| STOP` | In-guest pcap writer at the netdev TX/RX tap — works on bare metal where QEMU `filter-dump` can't. (UAOS-214) |
+| `minject X=x Y=y [L=] [R=]` \| `minject DRAG X0= Y0= X1= Y1= [STEPS=n] [MS=n]` | Synthetic pointer injection through `g_mouse`+`Cursor_Move`+`EventPump_Wake` — the same path a HID report takes. `DRAG` holds the left button at (x0,y0), sweeps to (x1,y1) in paced steps, releases, and prints wall time. Used to reproduce window drags over telnet on the MBP4,1 (UAOS-319). |
+| `screenshot [FILE=path] [Q=1..100]` | Whole-screen baseline JPEG to RAM: — the only way to *see* the display headless/on metal. Exfiltrate via `gnu:usr/bin/base64`/`uuencode`. (UAOS-218) |
 
 ## Boot cmdline additions (`Mb2_CmdlineParam`)
 
