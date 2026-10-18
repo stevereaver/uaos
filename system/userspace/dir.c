@@ -179,6 +179,30 @@ int main(int argc, const char **argv)
         pat[0] = '\0';
     }
 
+    /* Probe the object first: a missing object must fail loudly
+     * (rc 20 / ERROR_OBJECT_NOT_FOUND) instead of printing an empty
+     * listing and rc 0.  An existing but empty directory still opens
+     * and gets the normal empty listing; an existing file is listed
+     * as a single entry. */
+    struct uaos_stat st;
+    int is_file = 0;
+    long dd = uaos_opendir(path);
+    if (dd < 0) {
+        if (uaos_stat(path, &st) == 0 && !st.is_dir) {
+            is_file = 1;
+        } else {
+            char msg[UAOS_CMD_LINE_MAX];
+            msg[0] = '\0';
+            uaos_strlcat(msg, "dir: ", sizeof(msg));
+            uaos_strlcat(msg, path, sizeof(msg));
+            uaos_strlcat(msg, " - object not found", sizeof(msg));
+            put_line(msg);
+            return 20;
+        }
+    } else {
+        uaos_closedir((int)dd);
+    }
+
     char hdr[UAOS_CMD_LINE_MAX];
     hdr[0] = '\0';
     uaos_strlcat(hdr, "Directory of ", sizeof(hdr));
@@ -191,20 +215,28 @@ int main(int argc, const char **argv)
     put_line(hdr);
     put_line("");
 
-    long dd = uaos_opendir(path);
-    if (dd < 0) {
-        put_line("  (empty or not found)");
-        put_line("");
-        return 0;
-    }
-    /* Reopen for dir_list (it opens its own handle). */
-    uaos_closedir((int)dd);
-
     int lines = 2;
     int items = 0;
     uint32_t bytes_used = 0;
-    dir_list(path, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst,
-             dirs_only, files_only, &lines, &items, &bytes_used);
+    if (is_file) {
+        /* dir <file> — list the file itself (basename). */
+        if (!dirs_only) {
+            const char *base = path;
+            const char *q = path;
+            while (*q) { if (*q == ':' || *q == '/') base = q + 1; q++; }
+            struct dir_entry fe;
+            fe.name[0] = '\0';
+            uaos_strlcat(fe.name, base, sizeof(fe.name));
+            fe.size   = st.size;
+            fe.is_dir = 0;
+            fe.mtime  = st.mtime;
+            print_entry(&fe, dates);
+            lines++; items++; bytes_used += st.size;
+        }
+    } else {
+        dir_list(path, pat, all, dates, inter, keys, opt_alpha, opt_dirfirst,
+                 dirs_only, files_only, &lines, &items, &bytes_used);
+    }
 
     put_line("");
 

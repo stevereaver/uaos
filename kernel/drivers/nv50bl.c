@@ -184,7 +184,7 @@ int NV50BL_Init(void)
                 }
 
                 KLOG(KLOG_DISP, KLOG_INFO,
-                     "nv50bl: GPU %04x @%02x:%02x.%d bar0=0x%x — "
+                     "nv50bl: GPU %04x @%02x:%02x.%d bar0=0x%x -- "
                      "no live SOR PWM",
                      (unsigned)(id >> 16), bus, dev, fn, (unsigned)bar);
                 g_bl_regs = 0;

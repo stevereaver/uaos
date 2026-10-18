@@ -515,7 +515,7 @@ static void m68k_wrapper_entry(void *arg)
 #define M68K_PC_RING_SZ_DUMP 256
             task->m68k_budget_dumped = 1;
             spin_cycles = 0;
-            kprint("[m68k] spin watchdog fired (100M unblocked cycles) — dumping PCs, continuing\n");
+            kprint("[m68k] spin watchdog fired (100M unblocked cycles) -- dumping PCs, continuing\n");
             kprint("[m68k] last-PCs (newest first, 8/line):\n");
             {
                 char wb[56]; int wj = 0;
@@ -571,7 +571,7 @@ static void m68k_wrapper_entry(void *arg)
     if (task->m68k_is_wb) {
         extern void kprint(const char *);
         kprint(UAOS_Emu_WbStartupReplied()
-               ? "[wb] startup message replied — process clean exit\n"
+               ? "[wb] startup message replied -- process clean exit\n"
                : "[wb] WARN: program exited without ReplyMsg(WBStartup)\n");
     }
 

@@ -159,7 +159,7 @@ int fsck_should_fix(FsckCtx *ctx)
     if (ctx->mode == FSCK_MODE_INTERACTIVE && ctx->confirm)
         return ctx->confirm(ctx->ud, "Fix this problem");
     if (ctx->mode == FSCK_MODE_CHECK)
-        fsck_out(ctx, "  (read-only — rerun with REPAIR to fix)");
+        fsck_out(ctx, "  (read-only -- rerun with REPAIR to fix)");
     return 0;
 }
 
@@ -381,7 +381,7 @@ static int check_ext(BlockDev *dev, FsckCtx *ctx)
         fsck_warn(ctx, "filesystem was not unmounted cleanly (state dirty)");
     if (state & 2)
         fsck_err(ctx, "filesystem flagged with errors (s_state & ERRORS)");
-    fsck_warn(ctx, "ext* repair not implemented — run e2fsck on a Linux host");
+    fsck_warn(ctx, "ext* repair not implemented -- run e2fsck on a Linux host");
     return 0;
 }
 
@@ -584,7 +584,7 @@ static int check_ffs(BlockDev *dev, FsckCtx *ctx)
     /* g_s1 already holds block 1 from info_ffs when it could be read. */
     for (int i = 0; i < 128; i++) sum += fk_be32(g_s1 + i * 4);
     if (bb_stored == 0) {
-        fsck_out(ctx, "  boot block checksum unset (hardfile) — skipped");
+        fsck_out(ctx, "  boot block checksum unset (hardfile) -- skipped");
     } else if (sum != 0) {
         fsck_err(ctx, "FFS boot block checksum mismatch");
         if (fsck_should_fix(ctx)) {
@@ -610,7 +610,7 @@ static int check_ffs(BlockDev *dev, FsckCtx *ctx)
     /* Structural pass: mount, then walk the whole directory tree. */
     FfsVolume *vol = FFS_Mount(dev);
     if (!vol) {
-        fsck_err(ctx, "no valid root block — volume not mountable");
+        fsck_err(ctx, "no valid root block -- volume not mountable");
         return 1;
     }
 
@@ -639,7 +639,7 @@ static int check_ffs(BlockDev *dev, FsckCtx *ctx)
         fk_cat(line, " (advisory)", LINE_MAX);
         fsck_out(ctx, line);
     } else {
-        fsck_warn(ctx, "bitmap flag clear — volume would be validated on AmigaOS");
+        fsck_warn(ctx, "bitmap flag clear -- volume would be validated on AmigaOS");
     }
 
     FFS_Unmount(vol);
@@ -748,7 +748,7 @@ int FSCK_RunCheck(BlockDev *dev, FsckCtx *ctx)
 {
     const FsckFS *f = FSCK_Detect(dev);
     if (!f) {
-        fsck_err(ctx, "no recognised filesystem — nothing to check");
+        fsck_err(ctx, "no recognised filesystem -- nothing to check");
         fsck_out(ctx, "Sector 0 dump follows for manual inspection:");
         FSCK_DumpSector(dev, 0, ctx);
         return -1;
@@ -764,7 +764,7 @@ int FSCK_RunCheck(BlockDev *dev, FsckCtx *ctx)
         line[0] = 0;
         fk_cat(line, "  no checker for ", LINE_MAX);
         fk_cat(line, f->name, LINE_MAX);
-        fk_cat(line, " — interrogation only:", LINE_MAX);
+        fk_cat(line, " -- interrogation only:", LINE_MAX);
         fsck_out(ctx, line);
         if (f->info) return f->info(dev, ctx);
         return 0;
@@ -1180,7 +1180,7 @@ int FSCK_DiskCheck(BlockDev *dev, FsckCtx *ctx)
     line[0] = 0;
     fk_cat(line, "Disk ", LINE_MAX);
     fk_cat(line, dev->display_name ? dev->display_name : dev->name, LINE_MAX);
-    fk_cat(line, " — ", LINE_MAX);
+    fk_cat(line, " -- ", LINE_MAX);
     fk_cat(line, fk_dec(dev->num_sectors, num, sizeof(num)), LINE_MAX);
     fk_cat(line, " sectors (", LINE_MAX);
     fk_cat(line, print_size(dev->num_sectors, dev->sector_size, sz, sizeof(sz)), LINE_MAX);
@@ -1191,7 +1191,7 @@ int FSCK_DiskCheck(BlockDev *dev, FsckCtx *ctx)
     if (rdb_check(dev, ctx) > 0)  return 0;
     if (mbr_check(dev, ctx) > 0)  return 0;
 
-    fsck_out(ctx, "  no partition table — probing as single filesystem");
+    fsck_out(ctx, "  no partition table -- probing as single filesystem");
     return FSCK_RunCheck(dev, ctx);
 }
 
@@ -1234,7 +1234,7 @@ int FSCK_SurfaceScan(BlockDev *dev, FsckCtx *ctx)
         if ((s & 0x3FFF) == 0) {
             fsck_yield(ctx);
             if (fsck_break(ctx)) {
-                fsck_out(ctx, "  ^C — scan aborted");
+                fsck_out(ctx, "  ^C -- scan aborted");
                 return -1;
             }
         }

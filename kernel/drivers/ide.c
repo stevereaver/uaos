@@ -371,19 +371,19 @@ static void setup_pci_controller(uint8_t bus, uint8_t dev, uint8_t func, uint8_t
     kprintdec((uint32_t)bus); kprint(":");
     kprintdec((uint32_t)dev); kprint(".");
     kprintdec((uint32_t)func);
-    kprint(" progif="); kprinthex((uint64_t)pif); kprint("\n");
+    kprint(" progif="); kprinthex_min((uint64_t)pif); kprint("\n");
 
     uint16_t pcmd = ide_io_bar(bar0), pctl = ide_io_bar(bar1);
     uint16_t scmd = ide_io_bar(bar2), sctl = ide_io_bar(bar3);
     if ((pif & 0x01) && pcmd && pctl) {
         setup_native_ports(0, pcmd, pctl, intline);
-        kprint("[IDE]   ch0 native cmd="); kprinthex((uint64_t)pcmd);
-        kprint(" ctl="); kprinthex((uint64_t)(pctl + 2)); kprint("\n");
+        kprint("[IDE]   ch0 native cmd="); kprinthex_min((uint64_t)pcmd);
+        kprint(" ctl="); kprinthex_min((uint64_t)(pctl + 2)); kprint("\n");
     } else setup_compat_ports(0);
     if ((pif & 0x04) && scmd && sctl) {
         setup_native_ports(1, scmd, sctl, intline);
-        kprint("[IDE]   ch1 native cmd="); kprinthex((uint64_t)scmd);
-        kprint(" ctl="); kprinthex((uint64_t)(sctl + 2)); kprint("\n");
+        kprint("[IDE]   ch1 native cmd="); kprinthex_min((uint64_t)scmd);
+        kprint(" ctl="); kprinthex_min((uint64_t)(sctl + 2)); kprint("\n");
     } else setup_compat_ports(1);
 }
 

@@ -139,7 +139,7 @@ void Watchdog_Tick(void)
         g_wd_last_prog = now;
         if (g_wd_stalled) {
             g_wd_stalled = 0;
-            kprint("[WATCHDOG] scheduler resumed — stall cleared\n");
+            kprint("[WATCHDOG] scheduler resumed -- stall cleared\n");
         }
         return;
     }

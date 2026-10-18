@@ -105,7 +105,7 @@ void Cmd_Ntpd(NativeCmdCtx *ctx, const char *args)
         char line[128];
         cmd_scopy(line, "ntpd: unknown timezone '", sizeof(line));
         cmd_scat(line, tz_name, sizeof(line));
-        cmd_scat(line, "' — using UTC", sizeof(line));
+        cmd_scat(line, "' -- using UTC", sizeof(line));
         PRINT(line);
         tz = tz_find("UTC");
     }

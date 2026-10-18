@@ -307,7 +307,7 @@ void UAOS_PageFaultHandler(InterruptFrame *frame, SavedRegs *regs)
             kprinthex(frame->rip);
             kprint(" fault_addr=");
             kprinthex(fault_addr);
-            kprint(" — killing task\n");
+            kprint(" -- killing task\n");
             Task_Exit();
             __builtin_unreachable();
         }

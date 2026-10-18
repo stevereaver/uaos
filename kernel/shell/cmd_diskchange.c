@@ -99,15 +99,15 @@ void Cmd_DiskChange(NativeCmdCtx *ctx, const char *args)
         if (volname[0]) {
             int mret = VFS_MountPartition(volname);
             if (mret == 0) {
-                cmd_scat(msg, " — remounted as ", CMD_MAX_LINE);
+                cmd_scat(msg, " -- remounted as ", CMD_MAX_LINE);
                 cmd_scat(msg, volname, CMD_MAX_LINE);
                 cmd_scat(msg, ":", CMD_MAX_LINE);
             } else {
-                cmd_scat(msg, " — remount skipped (already mounted or error)", CMD_MAX_LINE);
+                cmd_scat(msg, " -- remount skipped (already mounted or error)", CMD_MAX_LINE);
             }
         }
     } else {
-        cmd_scat(msg, " — no filesystem found on new medium", CMD_MAX_LINE);
+        cmd_scat(msg, " -- no filesystem found on new medium", CMD_MAX_LINE);
     }
 
     PRINT(msg);

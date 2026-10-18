@@ -1572,7 +1572,7 @@ static int vio_scsi_probe_port(int port) {
                     g_data_buffer[1] == 'C' && g_data_buffer[2] == 'D' &&
                     g_data_buffer[3] == '0' && g_data_buffer[4] == '0' &&
                     g_data_buffer[5] == '1') {
-                    kprint("[VIO-SCSI] ISO 9660 magic found — treating as CD-ROM\n");
+                    kprint("[VIO-SCSI] ISO 9660 magic found -- treating as CD-ROM\n");
                     dev->is_cdrom    = 1;
                     dev->sector_size = 2048;
                     /* Volume space size at PVD offset 80 (LE) or 84 (BE) */

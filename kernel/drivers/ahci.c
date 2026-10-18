@@ -414,7 +414,7 @@ static int ahci_cmd(AhciPort *p, uint8_t cmd, uint64_t lba, uint16_t count,
         if (is & IS_TFES) {
             *px(port, PX_IS) = is;
             kprint("[AHCI] TFES error serr=");
-            kprinthex(*px(port, PX_SERR)); kprint("\n");
+            kprinthex_min(*px(port, PX_SERR)); kprint("\n");
             break;
         }
         if (!(*px(port, PX_CI) & 1)) { rc = 0; break; }
@@ -619,7 +619,7 @@ static int find_hba(uint8_t *bus, uint8_t *dev, uint8_t *fn)
                     kprintdec((uint32_t)b); kprint(":");
                     kprintdec((uint32_t)d); kprint(".");
                     kprintdec((uint32_t)f); kprint(" id=");
-                    kprinthex(id); kprint("\n");
+                    kprinthex_min(id); kprint("\n");
                     return 1;
                 }
             }
@@ -633,7 +633,7 @@ int AHCI_Init(void)
 
     uint32_t bar5 = pci_r32(g_bus, g_dev, g_fn, 0x24);
     if (bar5 & 1) {
-        kprint("[AHCI] BAR5 is I/O space — not supported\n");
+        kprint("[AHCI] BAR5 is I/O space -- not supported\n");
         return -1;
     }
     g_hba = (volatile uint32_t *)(uintptr_t)(bar5 & 0xFFFFFFF0u);
@@ -669,14 +669,14 @@ int AHCI_Init(void)
     g_hba[HBA_GHC / 4] |= GHC_AE | GHC_IE;
 
     uint32_t pi = g_hba[HBA_PI / 4];
-    kprint("[AHCI] ports-implemented="); kprinthex(pi); kprint("\n");
+    kprint("[AHCI] ports-implemented="); kprinthex_min(pi); kprint("\n");
 
     int nports = CAP_NP(cap);
     for (int port = 0; port < nports && port < MAX_PORTS; port++) {
         if (!(pi & (1u << port))) continue;
         uint32_t ssts = *px(port, PX_SSTS);
         kprint("[AHCI] port "); kprintdec((uint32_t)port);
-        kprint(" ssts="); kprinthex(ssts); kprint("\n");
+        kprint(" ssts="); kprinthex_min(ssts); kprint("\n");
         if ((ssts & 0xF) != 3) continue;          /* device not detected */
 
         AhciPort *p = &g_ports[port];
@@ -731,7 +731,7 @@ void AHCI_SetupIRQ(void)
         kprint("[AHCI] IRQ attached, vector ");
         kprintdec((uint32_t)vec); kprint("\n");
     } else {
-        kprint("[AHCI] no IRQ route — polling only\n");
+        kprint("[AHCI] no IRQ route -- polling only\n");
     }
 }
 

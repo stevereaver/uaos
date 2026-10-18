@@ -170,6 +170,10 @@ struct ShellInstance {
     /* FAILAT threshold — minimum return code treated as failure (default 10) */
     int          failat_threshold;
 
+    /* >0 while a script is executing (execute/startup scripts only —
+     * FAILAT aborts scripts, never interactive command entry) */
+    int          script_depth;
+
     /* Script quit flag (set by QUIT command) */
     int          quit_flag;
 
@@ -1886,7 +1890,7 @@ static void inst_cmd_info(ShellInstance *s, const char *arg)
         pad_field(line, "RAM:",      MAX_LINE_LEN, 10);
         pad_field(line, "Dynamic",   MAX_LINE_LEN, 11);
         pad_field(line, "0",         MAX_LINE_LEN, 11);
-        pad_field(line, "—",         MAX_LINE_LEN, 11);
+        pad_field(line, "--",         MAX_LINE_LEN, 11);
         pad_field(line, "0%",        MAX_LINE_LEN, 6);
         pad_field(line, "0",         MAX_LINE_LEN, 5);
         pad_field(line, "Read/Write",MAX_LINE_LEN, 14);
@@ -2792,6 +2796,8 @@ static void run_script_text(ShellInstance *s, char *text)
     const char *lines[MAX_SCRIPT_LINES];
     int line_count = 0;
 
+    s->script_depth++;
+
     char *p = text;
     while (*p && line_count < MAX_SCRIPT_LINES) {
         lines[line_count++] = p;
@@ -2847,6 +2853,7 @@ static void run_script_text(ShellInstance *s, char *text)
     script_run_block(s, lines, line_count, 0, line_count);
     s->quit_flag = 0;
     s->dispatch_broken = 0;
+    s->script_depth--;
 }
 
 static void shell_run_script(void *shell_extra, const char *text)
@@ -3565,7 +3572,7 @@ static void inst_cmd_format(ShellInstance *s, const char *arg)
         inst_print(s, "");
         inst_print(s, "Supported filesystems: fat32");
         inst_print(s, "");
-        inst_print(s, "Options: NOICON — format without creating a Trashcan");
+        inst_print(s, "Options: NOICON -- format without creating a Trashcan");
         inst_print(s, "");
         inst_print(s, "Note: Format a partition (e.g. virtio01 or DH0:),");
         inst_print(s, "      not the whole disk (virtio0).");
@@ -4275,9 +4282,12 @@ static void shell_set_failat(void *shell_extra, int threshold)
     s->failat_threshold = threshold;
 }
 
-/* Check if last_rc meets or exceeds FAILAT threshold and print a message */
+/* Check if last_rc meets or exceeds FAILAT threshold and print a message.
+ * AmigaDOS semantics: FAILAT aborts scripts — interactive commands never
+ * print or abort, so this is gated on script_depth. */
 static void check_failat(ShellInstance *s)
 {
+    if (!s->script_depth) return;
     if (s->last_rc != 0 && s->last_rc >= s->failat_threshold) {
         char msg[MAX_LINE_LEN];
         char num[8], th[8];
@@ -4288,6 +4298,7 @@ static void check_failat(ShellInstance *s)
         scat(msg, " >= threshold ", MAX_LINE_LEN);
         scat(msg, th, MAX_LINE_LEN);
         inst_print(s, msg);
+        s->quit_flag = 1;   /* abort the running script */
     }
 }
 
@@ -4656,8 +4667,9 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                  * before the X64 task has run — redirect output then goes
                  * to the shell window instead of the redirect file. */
                 Task_ClearSig(SIGF_CHILD | SIGF_BREAKF);
+                uint32_t got = 0;
                 for (;;) {
-                    uint32_t got = Wait(SIGF_CHILD | SIGF_BREAKF);
+                    got = Wait(SIGF_CHILD | SIGF_BREAKF);
                     if (got & SIGF_CHILD) break;
                     /* Remote session died under us — stop waiting; the
                      * child's key_src reads return dead-session and it
@@ -4667,6 +4679,12 @@ static int inst_exec_uaos_bin(ShellInstance *s, const char *full_path,
                      * flag stays set so the enclosing loop stops too. */
                     Signal(t, SIGF_BREAKF);
                 }
+                /* Propagate the command's exit status to last_rc so WHY
+                 * (and script FAILAT) see external commands' failures.
+                 * The slot persists until re-used; a clobbered read is
+                 * at worst a stale rc. */
+                if (got & SIGF_CHILD)
+                    s->last_rc = t->exit_code;
             }
             return 0;
         }
@@ -6445,6 +6463,7 @@ static ShellInstance *open_shell(int stagger)
     s->last_rc = 0;
     s->prev_rc = 0;
     s->failat_threshold = 10;
+    s->script_depth = 0;
     s->quit_flag = 0;
     s->remote = 0;
     s->remote_sock = -1;
@@ -6539,6 +6558,7 @@ static ShellInstance *open_remote_shell(int sock, uint32_t gen)
         s->last_rc = 0;
         s->prev_rc = 0;
         s->failat_threshold = 10;
+        s->script_depth = 0;
         s->quit_flag = 0;
         s->break_req = 0;
         s->dispatch_broken = 0;

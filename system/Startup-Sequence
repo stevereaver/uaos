@@ -17,6 +17,10 @@
 ; This script now refines and extends those fallback assigns, exactly as
 ; AmigaDOS does after Kickstart hooks up the pre-assigns.
 
+; A failed optional step (missing assign target, NetStart without a NIC,
+; telnetd already running) must not abort the script before LoadWB.
+FailAt 21
+
 C:Version >NIL:
 
 ; RAM-based transient assigns

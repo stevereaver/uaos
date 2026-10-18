@@ -124,9 +124,9 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
         uint64_t msize  = (~mfield & phys_mask) + 1;
         uint64_t mbase  = b & ~(msize - 1);
         kprint("[MTRR] slot "); kprintdec(n);
-        kprint(" base="); kprinthex(mbase);
-        kprint(" size="); kprinthex(msize);
-        kprint(" type="); kprinthex(b & 0xFF);
+        kprint(" base="); kprinthex_min(mbase);
+        kprint(" size="); kprinthex_min(msize);
+        kprint(" type="); kprinthex_min(b & 0xFF);
         kprint("\n");
         /* Overlap with our intended region? */
         if (mbase < rbase + p && mbase + msize > rbase) {
@@ -136,8 +136,8 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
                 return 0;
             }
             kprint("[MTRR] SKIP: overlaps slot "); kprintdec(n);
-            kprint(" (type "); kprinthex(b & 0xFF);
-            kprint(") — overlapping ranges are undefined\n");
+            kprint(" (type "); kprinthex_min(b & 0xFF);
+            kprint(") -- overlapping ranges are undefined\n");
             return -1;
         }
     }
@@ -152,9 +152,9 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
      *   MTRRs on, wbinvd; restore CR0; flush TLB; restore CR4. */
     uint64_t cr0 = read_cr0();
     uint64_t cr4 = read_cr4();
-    kprint("[MTRR] base "); kprinthex(rbase); kprint(" size ");
-    kprinthex(p); kprint(" slot "); kprintdec((uint32_t)slot);
-    kprint(" cr4="); kprinthex(cr4); kprint("\n");
+    kprint("[MTRR] base "); kprinthex_min(rbase); kprint(" size ");
+    kprinthex_min(p); kprint(" slot "); kprintdec((uint32_t)slot);
+    kprint(" cr4="); kprinthex_min(cr4); kprint("\n");
 
     /* Save/restore IF — cli for the CD window, then put flags back
      * exactly (the caller may legitimately run with IRQs off). */
@@ -189,9 +189,9 @@ int MTRR_MarkWC(uint64_t base, uint64_t size)
     irq_restore(rflags);
 
     kprint("[MTRR] WC region @ ");
-    kprinthex(rbase);
+    kprinthex_min(rbase);
     kprint(" size ");
-    kprinthex(p);
+    kprinthex_min(p);
     kprint(" slot ");
     kprintdec((uint32_t)slot);
     kprint("\n");

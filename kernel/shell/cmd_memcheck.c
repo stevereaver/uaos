@@ -36,7 +36,7 @@ void Cmd_Memcheck(NativeCmdCtx *ctx, const char *args)
         }
         if (cmd_seq_ci(args, "on")) {
             Memcheck_SetEnabled(1);
-            PRINT("memcheck: ON — AllocMem guard bands + free poison active");
+            PRINT("memcheck: ON -- AllocMem guard bands + free poison active");
             return;
         }
         if (cmd_seq_ci(args, "off")) {
@@ -49,7 +49,7 @@ void Cmd_Memcheck(NativeCmdCtx *ctx, const char *args)
             cmd_scopy(line, "memcheck test: ", CMD_MAX_LINE);
             cmd_uint_to_dec(bad, num, sizeof(num));
             cmd_scat(line, num, CMD_MAX_LINE);
-            cmd_scat(line, bad ? " violation(s) reported — see dmesg exec"
+            cmd_scat(line, bad ? " violation(s) reported -- see dmesg exec"
                               : " violations (unexpected!)",
                      CMD_MAX_LINE);
             PRINT(line);
@@ -71,7 +71,7 @@ void Cmd_Memcheck(NativeCmdCtx *ctx, const char *args)
     cmd_scopy(line, "scan: ", CMD_MAX_LINE);
     cmd_uint_to_dec(bad, num, sizeof(num));
     cmd_scat(line, num, CMD_MAX_LINE);
-    cmd_scat(line, bad ? " violation(s) — see dmesg exec for details"
+    cmd_scat(line, bad ? " violation(s) -- see dmesg exec for details"
                        : " violations",
              CMD_MAX_LINE);
     PRINT(line);

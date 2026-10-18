@@ -468,7 +468,7 @@ static void uaos_tls_close(void)
 static const char *uaos_tls_errstr(int err)
 {
     switch (err) {
-    case UAOS_TLS_E_NOTIME: return "system clock unset (run ntpd) — cannot verify certificates";
+    case UAOS_TLS_E_NOTIME: return "system clock unset (run ntpd) -- cannot verify certificates";
     case UAOS_TLS_E_SEED:   return "kernel entropy unavailable";
     case UAOS_TLS_E_IO:     return "TLS transport failure";
     case UAOS_TLS_E_ARGS:   return "TLS init failure";

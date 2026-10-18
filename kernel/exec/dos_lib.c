@@ -453,7 +453,7 @@ static void heap_freelist_init_pool(uint32_t list_slot, uint32_t magic_slot,
         if (guest_read_be32(magic_slot) != HEAP_POOL_MAGIC ||
             guest_read_be32(list_slot) != head) {
             extern void kprint(const char *);
-            kprint("[heap] pool head/magic clobbered — restoring mirror\n");
+            kprint("[heap] pool head/magic clobbered -- restoring mirror\n");
             guest_write_be32(list_slot, head);
             guest_write_be32(magic_slot, HEAP_POOL_MAGIC);
         }
@@ -575,7 +575,7 @@ static void heap_free_fl_pool(uint32_t addr, uint32_t list_slot)
     if (blk_size < HEAP_HDR + 4u || blk_size > GUEST_RAM_SIZE ||
         blk + blk_size > GUEST_RAM_SIZE) {
         KLOG(KLOG_EXEC, KLOG_WARN,
-             "[heap] FreeMem(0x%x): implausible block size 0x%x — ignored\n",
+             "[heap] FreeMem(0x%x): implausible block size 0x%x -- ignored\n",
              (unsigned)addr, (unsigned)blk_size);
         return;
     }
@@ -686,7 +686,7 @@ static void mc_record(uint32_t payload, uint32_t size, uint32_t blk)
             return;
         }
     }
-    KLOG(KLOG_EXEC, KLOG_WARN, "[memchk] tracking table full — %u-byte alloc at 0x%x not tracked\n",
+    KLOG(KLOG_EXEC, KLOG_WARN, "[memchk] tracking table full -- %u-byte alloc at 0x%x not tracked\n",
          (unsigned)size, (unsigned)payload);
 }
 

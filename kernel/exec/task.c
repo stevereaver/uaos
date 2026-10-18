@@ -79,7 +79,7 @@ static void stack_canary_check(UaosTask *t)
         t->stack_overflowed = 1;
         kprint("[TASK] STACK OVERFLOW: '");
         kprint(t->ln_Name ? t->ln_Name : "?");
-        kprint("' base canary dead — stack grew past SPLower\n");
+        kprint("' base canary dead -- stack grew past SPLower\n");
     }
 }
 
@@ -1265,8 +1265,8 @@ void Task_WakeTimers(void)
         g_strand_votes[i] = 0;
         kprint("[TASK] WARN: '");
         kprint(s->ln_Name ? s->ln_Name : "?");
-        kprint(st == TASK_READY ? "' stranded READY-unlinked — re-queued\n"
-                                : "' stranded WAITING-unlinked — re-queued\n");
+        kprint(st == TASK_READY ? "' stranded READY-unlinked -- re-queued\n"
+                                : "' stranded WAITING-unlinked -- re-queued\n");
         if (st == TASK_READY) ready_enqueue(s);
         else                wait_enqueue(s);
     }
@@ -1475,7 +1475,7 @@ static void task_dump_frame(UaosTask *t, void *ctx, DiagEmitFn emit)
     uint64_t lo = (uint64_t)(uintptr_t)t->native_stack_base;
     uint64_t hi = lo + t->native_stack_size;
     if (t->native_rsp < lo || t->native_rsp + 22 * 8 > hi) {
-        dl_add(&l, "  <native_rsp outside stack range — frame stale/corrupt>");
+        dl_add(&l, "  <native_rsp outside stack range -- frame stale/corrupt>");
         dl_emit(&l, ctx, emit);
         return;
     }

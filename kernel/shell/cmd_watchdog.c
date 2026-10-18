@@ -36,8 +36,8 @@ void Cmd_Watchdog(NativeCmdCtx *ctx, const char *args)
         return;
     }
     if (cmd_kw_find(args, "test")) {
-        if (!Watchdog_Enabled()) { PRINT("watchdog is OFF — arm it first"); return; }
-        PRINT("watchdog: holding Forbid() past budget — watch for dump...");
+        if (!Watchdog_Enabled()) { PRINT("watchdog is OFF -- arm it first"); return; }
+        PRINT("watchdog: holding Forbid() past budget -- watch for dump...");
         Watchdog_Test();
         PRINT("watchdog: released (dump should be in dmesg)");
         return;

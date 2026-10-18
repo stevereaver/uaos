@@ -333,7 +333,7 @@ static void stub_FreeVec(M68kCPUState *cpu)
 int UAOS_HandleThunk(M68kCPUState *cpu)
 {
     if (uaos_ram_base == NULL) {
-        fprintf(stderr, "[THUNK] ERROR: RAM base not set — call UAOS_SetRamBase() first\n");
+        fprintf(stderr, "[THUNK] ERROR: RAM base not set -- call UAOS_SetRamBase() first\n");
         return -1;
     }
 

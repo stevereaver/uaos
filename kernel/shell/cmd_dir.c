@@ -199,6 +199,24 @@ void Cmd_Dir(NativeCmdCtx *ctx, const char *args)
         pat[0] = '\0';
     }
 
+    /* A missing object must fail loudly (rc 20) rather than printing an
+     * empty listing with rc 0.  An existing empty dir opens fine; an
+     * existing file is not a dir but still a valid object. */
+    if (!VFS_IsDir(path)) {
+        VfsFile t;
+        int is_file = VFS_Open(&t, path, VFS_READ);
+        if (is_file) VFS_Close(&t);
+        if (!is_file) {
+            char msg[CMD_MAX_LINE];
+            cmd_scopy(msg, "dir: ", CMD_MAX_LINE);
+            cmd_scat(msg, path, CMD_MAX_LINE);
+            cmd_scat(msg, " - object not found", CMD_MAX_LINE);
+            PRINT(msg);
+            if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 20);
+            return;
+        }
+    }
+
     char hdr[CMD_MAX_LINE];
     cmd_scopy(hdr, "Directory of ", CMD_MAX_LINE);
     cmd_scat(hdr, path, CMD_MAX_LINE);

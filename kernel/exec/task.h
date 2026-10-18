@@ -210,6 +210,10 @@ typedef struct UaosTask {
     uint32_t switch_while_crit; /* descheduled while Disable/Forbid held */
     uint64_t disable_enter_tick;/* TSC when IDNest went 0->1           */
     uint8_t  stack_overflowed;  /* stack-base canary was scribbled on  */
+
+    /* Exit status passed to sys_exit (x64 command return code); read by
+     * the spawning shell after SIGF_CHILD to set the command's rc. */
+    int      exit_code;
 } UaosTask;
 
 /* -------------------------------------------------------------------------

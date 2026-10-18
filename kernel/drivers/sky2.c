@@ -1573,7 +1573,7 @@ void sky2_setup_irq(void)
     if (vec < 0)
         vec = IRQ_AttachPCI(g_bus, g_dev, g_fn, sky2_irq_handler, "sky2");
     if (vec < 0) {
-        klog_puts(KLOG_SKY2, KLOG_WARN, "IRQ attach failed — poll mode\n");
+        klog_puts(KLOG_SKY2, KLOG_WARN, "IRQ attach failed -- poll mode\n");
         return;
     }
     attached = 1;

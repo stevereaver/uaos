@@ -365,7 +365,7 @@ int main(int argc, const char **argv)
             put_line("UAOS wget 1.0 (compatible subset)");
             return 0;
         case '?':
-            put_line("wget: unknown or invalid option — try --help");
+            put_line("wget: unknown or invalid option -- try --help");
             return 1;
         default:
             return 1;
@@ -373,7 +373,7 @@ int main(int argc, const char **argv)
     }
 
     if (uaos_operands_count(argc) < 1) {
-        put_line("wget: missing URL — try --help");
+        put_line("wget: missing URL -- try --help");
         return 1;
     }
 

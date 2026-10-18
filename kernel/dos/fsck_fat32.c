@@ -451,7 +451,7 @@ static int phase_fat_scan(BlockDev *dev, FkGeo *g, FkFatStat *st, FsckCtx *ctx)
         uint32_t n = (g->fat_sz - s > 128) ? 128 : g->fat_sz - s;
         uint32_t sec = g->fat_start + s;
         if (fk_rd(dev, sec, g_scan, n) != 0) {
-            fsck_err(ctx, "cannot read FAT — aborting scan");
+            fsck_err(ctx, "cannot read FAT -- aborting scan");
             return -1;
         }
         uint32_t ents = n * (g->bps / 4);
@@ -872,7 +872,7 @@ static int scan_dir(BlockDev *dev, FkGeo *g, FsckCtx *ctx,
                             char nm[16];
                             nm83(de, nm);
                             if (push_frame(nc, dir_cluster, nm) != 0)
-                                fsck_warn(ctx, "directory nesting too deep — subtree skipped");
+                                fsck_warn(ctx, "directory nesting too deep -- subtree skipped");
                         } else if (!nc) {
                             fsck_err(ctx, "no free cluster to repair directory");
                         }
@@ -882,14 +882,14 @@ static int scan_dir(BlockDev *dev, FkGeo *g, FsckCtx *ctx,
                 if (ref_get(start)) {
                     line[0] = 0;
                     l_cat(line, what, LINE_MAX);
-                    l_cat(line, ": subdirectory cross-linked — not recursing", LINE_MAX);
+                    l_cat(line, ": subdirectory cross-linked -- not recursing", LINE_MAX);
                     fsck_err(ctx, line);
                     continue;
                 }
                 char nm[16];
                 nm83(de, nm);
                 if (push_frame(start, dir_cluster, nm) != 0) {
-                    fsck_warn(ctx, "directory nesting too deep — subtree skipped");
+                    fsck_warn(ctx, "directory nesting too deep -- subtree skipped");
                 }
             } else {
                 st->files++;

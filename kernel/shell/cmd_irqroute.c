@@ -149,7 +149,7 @@ static void dump_one(NativeCmdCtx *ctx, uint8_t bus, uint8_t dev, uint8_t fn,
 
     if (ri.pin && ri.gsi < 0) {
         if (bdf_vec >= 0) {
-            PRINT("   intx: no route — driver bound elsewhere");
+            PRINT("   intx: no route -- driver bound elsewhere");
         } else {
             cmd_scopy(line, "   * no intx route", CMD_MAX_LINE);
             if (dev_msi_capable(bus, dev, fn))

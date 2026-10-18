@@ -73,7 +73,7 @@ void Cmd_Telnetd(NativeCmdCtx *ctx, const char *args)
         int v;
         if (!CmdTemplate_GetInt(ctx->template, "PORT", &v) ||
             v <= 0 || v > 65535) {
-            PRINT("telnetd: bad arguments — usage: telnetd [PORT=n] [STOP]");
+            PRINT("telnetd: bad arguments -- usage: telnetd [PORT=n] [STOP]");
             set_rc(ctx, 20);
             return;
         }

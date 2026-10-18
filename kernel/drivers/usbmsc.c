@@ -348,7 +348,7 @@ static int msc_probe(UsbIf *ifc)
         klog_appendf(KLOG_USB, KLOG_WARN, "%u", blksz);
         klog_puts(KLOG_USB, KLOG_WARN, " lba=");
         klog_appendf(KLOG_USB, KLOG_WARN, "0x%08X", last_lba);
-        klog_puts(KLOG_USB, KLOG_WARN, " — skipped\n");
+        klog_puts(KLOG_USB, KLOG_WARN, " -- skipped\n");
         return 0;
     }
 

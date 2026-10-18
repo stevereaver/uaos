@@ -270,7 +270,7 @@ static uint32_t fat32_alloc_cluster(Fat32FS *fs)
         }
         (void)total_fat_sectors;
     }
-    printf("[FAT32] Disk full — no free clusters\n");
+    printf("[FAT32] Disk full -- no free clusters\n");
     return 0;
 }
 

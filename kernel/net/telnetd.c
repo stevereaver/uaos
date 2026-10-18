@@ -417,7 +417,7 @@ static void pump_task(void *arg)
             uint64_t idle = g_pit_ticks - last_rx;
             if (idle >= TELNETD_IDLE_TICKS) {
                 static const char to[] =
-                    "\r\n[telnetd: idle timeout — closing]\r\n";
+                    "\r\n[telnetd: idle timeout -- closing]\r\n";
                 send_buf(sock, cgen, (const uint8_t *)to,
                          (int)sizeof(to) - 1);
                 why = "idle timeout";

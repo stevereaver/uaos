@@ -81,7 +81,7 @@ void Blanker_Init(void)
 {
     g_blanker_broker = Cx_Register(
         "Blanker",
-        "Screen blanker — blanks after idle timeout",
+        "Screen blanker -- blanks after idle timeout",
         0,  /* no input handler flag */
         NULL,
         blanker_on_enable,

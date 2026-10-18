@@ -61,9 +61,9 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
     if (!dt) dt = 1;
 
     if (now)
-        PRINT("  #  name                 state    cpu_t  switches irqoff_ms  wait  pri");
+        PRINT("  #  name                 state    cpu_t  switches irqoff_ms  wait    pri");
     else
-        PRINT("  #  name                 state    cpu%   sw/s   irqoff_ms  wait  pri");
+        PRINT("  #  name                 state    cpu%   sw/s   irqoff_ms  wait    pri");
     char line[CMD_MAX_LINE], num[24];
     uint64_t busy_total = 0;
     UaosTask *idle_task = Task_FindByName("Idle");
@@ -139,7 +139,8 @@ void Cmd_Taskstat(NativeCmdCtx *ctx, const char *args)
             cmd_scat(num, h, sizeof(num));
             cmd_scat(line, num, CMD_MAX_LINE);
         } else cmd_scat(line, "-", CMD_MAX_LINE);
-        sl = cmd_slen(line); while (sl++ < 68) cmd_scat(line, " ", CMD_MAX_LINE);
+        /* wait masks up to 8 hex digits (0x10100) must not run into pri */
+        sl = cmd_slen(line); while (sl++ < 72) cmd_scat(line, " ", CMD_MAX_LINE);
 
         cmd_sdec((int32_t)t->ln_Pri, num, sizeof(num));
         cmd_scat(line, num, CMD_MAX_LINE);

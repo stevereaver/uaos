@@ -173,7 +173,7 @@ static void sercon_exec(char *line)
         uart_puts("rebooting\n");
         System_Reboot();
     } else {
-        uart_puts("? unknown command — try 'help'\n");
+        uart_puts("? unknown command -- try 'help'\n");
     }
     uart_puts("sercon> ");
 }

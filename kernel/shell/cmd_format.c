@@ -12,7 +12,7 @@ void Cmd_Format(NativeCmdCtx *ctx, const char *args)
         PRINT("");
         PRINT("Supported filesystems: fat32");
         PRINT("");
-        PRINT("Options: NOICON — format without creating a Trashcan");
+        PRINT("Options: NOICON -- format without creating a Trashcan");
         PRINT("");
         PRINT("Note: Format a partition (e.g. virtio01 or DH0:),");
         PRINT("      not the whole disk (virtio0).");

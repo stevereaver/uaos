@@ -448,7 +448,7 @@ static void hda_apple_fixup(void)
     ms_spin(1);                 /* alc_write_gpio: macpro needs a delay */
     hda_set(g_afg, 0x715 /*SET_GPIO_DATA*/, 0x01);
     g_apple_quirk = 1;
-    KLOG(KLOG_AUDIO, KLOG_DEBUG, "hda: Apple SSID — GPIO1 fixup applied\n");
+    KLOG(KLOG_AUDIO, KLOG_DEBUG, "hda: Apple SSID -- GPIO1 fixup applied\n");
 }
 
 /* Configure one pin→DAC path: power, connselects, amps, pin ctl, EAPD. */
@@ -670,7 +670,7 @@ static int hda_backend_init(void)
     /* BAR0: memory space, may be 64-bit. */
     uint32_t bar0 = pci_read32(bus, dev, fn, 0x10);
     if (bar0 & 1) {
-        kprint("[HDA] BAR0 is I/O space — not supported\n");
+        kprint("[HDA] BAR0 is I/O space -- not supported\n");
         return 0;
     }
     uint64_t mmio = bar0 & 0xFFFFFFF0u;

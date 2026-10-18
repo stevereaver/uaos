@@ -603,7 +603,7 @@ int e1000_send(const uint8_t *data, uint16_t len)
     while (!(g_tx_desc[slot].sta & E1000_DESC_DD)) {
         __asm__ volatile("pause" ::: "memory");
         if (++spin2 > 1000000) {
-            klog_puts(KLOG_E1000, KLOG_DEBUG, "TX no DD — frame not sent\n");
+            klog_puts(KLOG_E1000, KLOG_DEBUG, "TX no DD -- frame not sent\n");
             return 0;
         }
     }

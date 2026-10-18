@@ -33,7 +33,7 @@ int UAOS_ROM_Register(const char *name, uint16_t version,
                       uint16_t func_count, void **native_funcs)
 {
     if (rom_count >= UAOS_MAX_ROM_MODULES) {
-        fprintf(stderr, "[ROM] Registry full — cannot register \"%s\"\n", name);
+        fprintf(stderr, "[ROM] Registry full -- cannot register \"%s\"\n", name);
         return -1;
     }
 

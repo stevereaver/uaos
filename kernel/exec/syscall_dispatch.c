@@ -363,10 +363,12 @@ static int sys_exit(uint64_t rdi, uint64_t rsi, uint64_t rdx)
 {
     int code = (int)rdi;
     (void)rsi; (void)rdx;
-    (void)code;
+
+    UaosTask *self = Task_Current();
+    if (self) self->exit_code = code;
 
     /* Flush any buffered stdout before terminating. */
-    task_flush_all(Task_Current());
+    task_flush_all(self);
 
     /* Does not return. */
     Task_Exit();

@@ -55,7 +55,7 @@ void USB_RegisterClass(usb_class_probe_fn probe)
 {
     if (g_nclasses >= USB_MAX_CLASSES) {
         klog_puts(KLOG_USB, KLOG_ERR,
-                  "usb: class table full — driver dropped\n");
+                  "usb: class table full -- driver dropped\n");
         return;
     }
     g_classes[g_nclasses++] = probe;
@@ -435,7 +435,7 @@ static void usb_enum_task(void *arg)
                     if (w->parked) {
                         w->parked = 0;
                         klog_puts(KLOG_USB, KLOG_INFO,
-                                  "usb: connect edge — re-probing "
+                                  "usb: connect edge -- re-probing "
                                   "parked port hc=");
                         klog_appendf(KLOG_USB, KLOG_INFO, "%u", i);
                         klog_puts(KLOG_USB, KLOG_INFO, " port=");
@@ -474,7 +474,7 @@ static void usb_enum_task(void *arg)
                         w->parked = 1;
                         w->next_tick = g_pit_ticks + USB_ENUM_PARK_TICKS;
                         klog_puts(KLOG_USB, KLOG_ERR,
-                                  "usb: port deaf after retries — "
+                                  "usb: port deaf after retries -- "
                                   "parked, probing every 60 s or on "
                                   "connect edge hc=");
                         klog_appendf(KLOG_USB, KLOG_ERR, "%u", i);

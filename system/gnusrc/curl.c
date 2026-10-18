@@ -404,7 +404,7 @@ int main(int argc, const char **argv)
             put_line("UAOS curl 1.0 (compatible subset)");
             return 0;
         case '?':
-            eprint("curl: unknown or invalid option — try --help\n");
+            eprint("curl: unknown or invalid option -- try --help\n");
             return CURL_E_USAGE;
         default:
             return CURL_E_USAGE;
@@ -412,7 +412,7 @@ int main(int argc, const char **argv)
     }
 
     if (uaos_operands_count(argc) < 1) {
-        eprint("curl: (2) no URL specified — try --help\n");
+        eprint("curl: (2) no URL specified -- try --help\n");
         return CURL_E_USAGE;
     }
 

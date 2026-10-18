@@ -493,7 +493,7 @@ void CpuFreq_Init(uint32_t mb2_phys)
 
     cpuid1(0, &a, &b, &c, &d);
     if (b != 0x756E6547u || d != 0x49656E69u || c != 0x6C65746Eu) {
-        kprint("[CPUFREQ] not GenuineIntel — inactive\n");
+        kprint("[CPUFREQ] not GenuineIntel -- inactive\n");
         return;
     }
 
@@ -511,13 +511,13 @@ void CpuFreq_Init(uint32_t mb2_phys)
     /* MSR writes are validated only on the Core 2 family. */
     g_msr_ok = (family == 6 && (model == 0x0F || model == 0x17));
     kprint("[CPUFREQ] fam="); kprintdec((uint32_t)family);
-    kprint(" model="); kprinthex((uint64_t)model);
+    kprint(" model="); kprinthex_min((uint64_t)model);
     kprint(" est="); kprintdec((uint32_t)g_cf.est);
     kprint(" invtsc="); kprintdec((uint32_t)g_cf.inv_tsc);
     kprint("\n");
 
     if (!g_msr_ok) {
-        kprint("[CPUFREQ] unsupported model — meter only\n");
+        kprint("[CPUFREQ] unsupported model -- meter only\n");
         return;
     }
 
@@ -636,7 +636,7 @@ void CpuFreq_Init(uint32_t mb2_phys)
                 n++;
             }
             g_cf.table_source = 2;
-            kprint("[CPUFREQ] no _PSS — Penryn ladder\n");
+            kprint("[CPUFREQ] no _PSS -- Penryn ladder\n");
         } else {
             /* Synthesised fallback: the boot PERF_STATUS state plus the
              * model LFM at the same VID — same-VID writes can never
@@ -657,15 +657,15 @@ void CpuFreq_Init(uint32_t mb2_phys)
                 g_states[n].mhz = synth_mhz(model, lo); n++;
             }
             g_cf.table_source = 2;
-            kprint("[CPUFREQ] no _PSS — synthesised table\n");
+            kprint("[CPUFREQ] no _PSS -- synthesised table\n");
         }
         g_cf.n_states = n;
         g_cf.scale_ok = 1;
         for (int i = 0; i < n; i++) {
             kprint("[CPUFREQ] P"); kprintdec((uint32_t)i);
             kprint(" mhz="); kprintdec(g_states[i].mhz);
-            kprint(" ctl="); kprinthex(g_states[i].ctl);
-            kprint(" sts="); kprinthex(g_states[i].sts);
+            kprint(" ctl="); kprinthex_min(g_states[i].ctl);
+            kprint(" sts="); kprinthex_min(g_states[i].sts);
             kprint("\n");
         }
     }
@@ -674,7 +674,7 @@ void CpuFreq_Init(uint32_t mb2_phys)
     if (!g_cf.scale_ok && tm_cap) {
         g_cf.tm1 = 1;
         g_cf.scale_ok = 1;
-        kprint("[CPUFREQ] no EIST — TM1 duty modulation fallback\n");
+        kprint("[CPUFREQ] no EIST -- TM1 duty modulation fallback\n");
     }
 
     if (g_cf.scale_ok) {
@@ -683,8 +683,8 @@ void CpuFreq_Init(uint32_t mb2_phys)
         uint32_t cur = (uint32_t)(rdmsr64(MSR_IA32_PERF_STATUS) & 0xFFFF);
         for (int i = 0; i < g_cf.n_states; i++)
             if (g_states[i].sts == cur) { g_cf.cur_idx = i; break; }
-        kprint("[CPUFREQ] governor on — perf_status=");
-        kprinthex(cur);
+        kprint("[CPUFREQ] governor on -- perf_status=");
+        kprinthex_min(cur);
         kprint(" idx="); kprintdec((uint32_t)(g_cf.cur_idx < 0 ? 0 : g_cf.cur_idx));
         kprint("\n");
     } else {

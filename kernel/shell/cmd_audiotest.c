@@ -49,7 +49,7 @@ void Cmd_Audiotest(NativeCmdCtx *ctx, const char *args)
     char line[CMD_MAX_LINE];
     cmd_scopy(line, "audiotest: backend=", CMD_MAX_LINE);
     cmd_scat(line, name ? name : "none", CMD_MAX_LINE);
-    cmd_scat(line, " — 1 kHz sine, 2 s", CMD_MAX_LINE);
+    cmd_scat(line, " -- 1 kHz sine, 2 s", CMD_MAX_LINE);
     PRINT(line);
 
     if (!name) {

@@ -465,7 +465,7 @@ static void exc_dump(const IsrFrame *f, const UaosTask *cur)
             sp += 32;
         }
     } else {
-        pd_hex("Stack @RSP", f->rsp); kprint(" out of range — skipped\n");
+        pd_hex("Stack @RSP", f->rsp); kprint(" out of range -- skipped\n");
     }
     kprint("================================================\n");
 }
@@ -552,7 +552,7 @@ void ISR_Dispatch(uint64_t vector, uint64_t error_code, uint64_t rip,
             __builtin_unreachable();
         }
         /* Kernel-mode exception — panic */
-        kprint("[PANIC] unhandled kernel exception — halting.\n");
+        kprint("[PANIC] unhandled kernel exception -- halting.\n");
         __asm__ volatile ("cli; hlt");
     }
     /* Send EOI — the IRQ layer knows whether the vector is owned by the

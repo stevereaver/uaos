@@ -26,12 +26,14 @@ void Cmd_Irqaudit(NativeCmdCtx *ctx, const char *args)
     uint64_t hz = Tickmon_TscHz();
 
     PRINT("  #  name                 D  F  if0_tot_ms  if0_max_ms  long  crit-sw");
+    int any = 0;
     for (int i = 0; i < g_task_count; i++) {
         UaosTask *t = &g_tasks[i];
         if (t->tc_State == TASK_REMOVED) continue;
         /* skip tasks that never entered a critical section */
         if (!t->irqoff_ticks && !t->tc_IDNestCnt && !t->irqoff_long
             && !t->switch_while_crit) continue;
+        any = 1;
 
         cmd_scopy(line, " ", CMD_MAX_LINE);
         cmd_uint_to_dec((uint32_t)i, num, sizeof(num)); cmd_scat(line, num, CMD_MAX_LINE);
@@ -57,5 +59,7 @@ void Cmd_Irqaudit(NativeCmdCtx *ctx, const char *args)
         cmd_uint_to_dec(t->switch_while_crit, num, sizeof(num)); cmd_scat(line, num, CMD_MAX_LINE);
         PRINT(line);
     }
+    if (!any)
+        PRINT("  no Disable/Forbid holds recorded");
     PRINT("(D=Disable nest  F=Forbid nest  long=holds>50ms  crit-sw=descheduled in crit)");
 }

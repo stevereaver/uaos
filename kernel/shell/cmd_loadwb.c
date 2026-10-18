@@ -7,7 +7,7 @@
 void Cmd_LoadWB(NativeCmdCtx *ctx, const char *args)
 {
     (void)args;
-    PRINT("LoadWB — launching Workbench desktop...");
+    PRINT("LoadWB -- launching Workbench desktop...");
     if (ctx->loadwb) {
         ctx->loadwb();
     } else {

@@ -86,6 +86,6 @@ void Cmd_Poke(NativeCmdCtx *ctx, const char *args)
     cmd_scat(line, "  readback ", CMD_MAX_LINE);
     hexn(line, after, (int)w / 4);
     if (after != (val & ((w == 64) ? ~0ULL : ((1ULL << w) - 1))))
-        cmd_scat(line, "  (differs — read-only or side-effect reg)", CMD_MAX_LINE);
+        cmd_scat(line, "  (differs -- read-only or side-effect reg)", CMD_MAX_LINE);
     PRINT(line);
 }

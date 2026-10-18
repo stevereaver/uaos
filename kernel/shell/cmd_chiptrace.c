@@ -85,7 +85,7 @@ void Cmd_Chiptrace(NativeCmdCtx *ctx, const char *args)
 
     if (cmd_seq_ci(args, "on") || cmd_seq_ci(args, "all")) {
         Chiptrace_Enable(CT_ALLREG);
-        PRINT("chiptrace: tracing all register classes — watch serial/dmesg chip");
+        PRINT("chiptrace: tracing all register classes -- watch serial/dmesg chip");
         return;
     }
     if (cmd_seq_ci(args, "off") || cmd_seq_ci(args, "stop")) {
@@ -113,7 +113,7 @@ void Cmd_Chiptrace(NativeCmdCtx *ctx, const char *args)
         chip_emu_write(0x2FF000 + 0x0A8, 0, 2);        /* AUD0VOL=0 */
         chip_emu_write(0x2FF000 + 0x07E, 0x4489, 2);   /* DSKSYNC */
         if (prev) Chiptrace_Enable(prev); else Chiptrace_Disable();
-        PRINT("chiptrace: test accesses emitted — check dmesg chip");
+        PRINT("chiptrace: test accesses emitted -- check dmesg chip");
         return;
     }
 

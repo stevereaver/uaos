@@ -12,7 +12,7 @@ void Cmd_Sercon(NativeCmdCtx *ctx, const char *args)
 {
     if (args && cmd_kw_find(args, "on")) {
         Sercon_Start();
-        PRINT("sercon: enabled — serial console live on COM1");
+        PRINT("sercon: enabled -- serial console live on COM1");
         return;
     }
     if (args && cmd_kw_find(args, "off")) {
@@ -22,5 +22,5 @@ void Cmd_Sercon(NativeCmdCtx *ctx, const char *args)
     }
     PRINT(Sercon_Running()
           ? "sercon: running (type 'help' on the serial line)"
-          : "sercon: off — 'sercon on' to enable, or boot arg 'sercon'");
+          : "sercon: off -- 'sercon on' to enable, or boot arg 'sercon'");
 }

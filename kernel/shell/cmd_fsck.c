@@ -100,7 +100,7 @@ static void run_one(BlockDev *dev, NativeCmdCtx *ctx, int mode,
     PRINT(msg);
 
     if (mode != FSCK_MODE_CHECK && dev_mounted(dev)) {
-        PRINT("WARN:  volume appears to be mounted — repairs may confuse");
+        PRINT("WARN:  volume appears to be mounted -- repairs may confuse");
         PRINT("       the live filesystem handler. Unmount first if possible.");
     }
 
@@ -264,7 +264,7 @@ void Cmd_Fsck(NativeCmdCtx *ctx, const char *args)
             run_one(d, ctx, mode, verbose, surface);
             any++;
             if (ctx->break_pending && ctx->break_pending(ctx->shell_extra)) {
-                PRINT("^C — stopped");
+                PRINT("^C -- stopped");
                 break;
             }
         }

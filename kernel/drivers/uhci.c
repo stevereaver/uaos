@@ -836,7 +836,7 @@ void UHCI_Poll(void)
         if (rg16(h, U_USBINTR) == 0) {
             w16(h, U_USBINTR, INTR_IOC | INTR_SPI | INTR_TOCRC | INTR_RESUME);
             klog_puts(KLOG_USB, KLOG_WARN,
-                      "uhci: USBINTR was cleared — re-armed\n");
+                      "uhci: USBINTR was cleared -- re-armed\n");
         }
 
         /* The poll path retires TDs without touching USBSTS — a status
@@ -855,7 +855,7 @@ void UHCI_Poll(void)
             klog_puts(KLOG_USB, KLOG_WARN, "uhci: hc=");
             klog_appendf(KLOG_USB, KLOG_WARN, "%u", i);
             klog_puts(KLOG_USB, KLOG_WARN,
-                      " irq vec has fired 0 times in 30 s — INTx "
+                      " irq vec has fired 0 times in 30 s -- INTx "
                       "delivery dead, poll fallback active\n");
         }
     }
