@@ -16,7 +16,7 @@
  * 5 UHCIs + a few hubs + their children (UAOS-134). */
 #define USB_MAX_DEVS   24
 #define USB_MAX_IFS    48
-#define USB_MAX_CLASSES 4
+#define USB_MAX_CLASSES 8
 #define USB_MAX_HCS    16
 
 static UsbDev g_devs[USB_MAX_DEVS];
@@ -53,8 +53,12 @@ int usb_bulk(UsbDev *dev, uint8_t ep, int dir_in, void *data,
 
 void USB_RegisterClass(usb_class_probe_fn probe)
 {
-    if (g_nclasses < USB_MAX_CLASSES)
-        g_classes[g_nclasses++] = probe;
+    if (g_nclasses >= USB_MAX_CLASSES) {
+        klog_puts(KLOG_USB, KLOG_ERR,
+                  "usb: class table full — driver dropped\n");
+        return;
+    }
+    g_classes[g_nclasses++] = probe;
 }
 
 int USB_DeviceCount(void) { return g_ndevs; }
