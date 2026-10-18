@@ -21,7 +21,7 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
 | Video | NVIDIA G84M GeForce 8600M GT, LVDS 1440x900 | `10de:0407` @01:00.0; FB @0xc0060000 | GOP → multiboot2 FB tag — metal-verified reaching the desktop at 1024x768; `gfxmode` now prefers `1440x900x32` (native panel mode) and `FB_Init` logs `[disp] fb: WxH@bpp … -> visible WxH` for mode recording. Backlight: `kernel/drivers/nv50bl.c` drives the SOR PWM (BAR0+0x61c084, duty 0–1025, NEW-commit — nouveau-verified contract) behind the `backlight [0-100]` shell command. VBIOS at `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom` (v60.84.49.03.00) |
 | SSD | ICH8M SATA **AHCI** | `8086:2829` @00:1f.2, ABAR 0xdb504000 | `kernel/drivers/ahci.c` — **metal-verified**: Hitachi HTS542525K9SA00 detected, RDB partitions `ahci01`/`ahci02` (DH0:/DH1:) registered, MSI vec 96 delivering, `ms_spin` TSC-calibrated (PIT ch2 gate) + IRQ handler acks PxIS/HBA IS (UAOS-224) |
 | Optical | ICH8M PATA (PCI-native) | `8086:2850` @00:1f.1, I/O BARs 0x8108/0x811c/0x8100/0x8118/0x80e0 | `kernel/drivers/ide.c` — **metal-verified**: HL-DT-ST DVDRW GSA-S10N detected on native ch0, `atapi0`/`CD0:` blockdev (UAOS-275). Three metal-only layers fixed: PCI scan was fn-0/buses-0-3-only (this ctl is fn 1); native prog-if ignored BARs (ctl never decoded 0x1F0); and `ide_identify_device` treated `status==0` as absent — the SuperDrive genuinely idles at stat=0x00, so probe now classifies by post-reset signature regs (sc01/lba01/14/eb) before touching the command block. Waits are real-ms (port-0x80 spin) + PM cap forced to D0 |
-| USB | 5× UHCI + 2× EHCI | `8086:2830–2835`, `2836`, `283a` | `kernel/drivers/{uhci,usb,usbhid,usbhub}.c` — **QEMU-verified** (enum, control, interrupt-IN, hub downstream ports); **metal-verified** 2026-10-08: INTx delivery on all 5 UHCI vectors, 5 devs/8 ifs enumerated (BCM2046 hub, flash stick, wireless dongle, IR, kbd/trackpad). EHCI not yet implemented (phase 2) |
+| USB | 5× UHCI + 2× EHCI | `8086:2830–2835`, `2836`, `283a` | `kernel/drivers/{uhci,usb,usbhid,usbhub}.c` — **QEMU-verified** (enum, control, interrupt-IN, hub downstream ports); **metal-verified** 2026-10-08: INTx delivery on all 5 UHCI vectors, 5 devs/8 ifs enumerated (BCM2046 hub, flash stick, wireless dongle, IR, kbd/trackpad); **metal-verified** 2026-10-17: hub downstream enum — 8 devs/19 ifs, `05ac:820f` BT HCI + `05ac:820a`/`05ac:820b` BT kbd/mouse stand-ins behind the BCM2046 (UAOS-134). EHCI not yet implemented (phase 2) |
 | Input | Internal kbd/trackpad = USB HID `05ac:021a` (**Geyser IV**, *not* bcm5974 `05ac:0230` as first assumed — live `UsbDev` readback on the box shows pid `0x021a`; Linux `appletouch` drives it) | UHCI bus, fs/ls | `kernel/drivers/{usbhid,appletouch,bcm5974}.c` — kbd types, **report protocol** for `05ac` kbds (no SET_PROTOCOL(BOOT)) so the vendor-byte Fn key is visible — Fn+F1/F2 = backlight −5/+5 via nv50bl, Fn+arrows = PgUp/PgDn/Home/End, Fn+Bksp = Del (hid-apple `fnmode=2` semantics; raw-report dumps bounded at 96 for metal bring-up); the TP interface (proto2 mouse, ep1, mps 64) needs the **vendor-mode** switch (`atp_geyser_init`: read req1/write req9, wval `0x300`, `data[0]=0x04`) then streams 64-byte raw-sensor frames — Y sensors at bytes 1-15, X at 19-48 (triplets `-,v1,v2`), status byte 63 (bit0 button, bit2 baseline refresh). Deltas vs baseline → hump-count fingers + smoothed centroid; 1-finger click = left, 2 = right, 3+ = middle (latched till release). bcm5974 driver retained for `05ac:0230`-class Wellspring pads. **Metal-verified appletouch pipeline** (UAOS-135, after a long wobble hunt): line-faithful port of the Linux `atp_complete_geyser_3_4` path — single read+write mode switch, whole-pad smoothed centroid, 7/8 EMA on absolute position emitted only while census is unchanged, idle→reinit at 10 empty frames, baseline from BASE_UPDATE (they DO arrive — don't re-seed it yourself, that was the wobble root cause: re-seeding every ~80 ms baked a resting finger into the baseline) — plus an accumulating deadband of 2 pad units on the filtered delta for light-touch tremor. UHCI intr-IN chains resume on mid-chain NAK |
 | Ethernet | Marvell Yukon-2 88E8058 PCIe GbE | `11ab:436a` @0c:00.0, BAR0 0xd7200000 | `kernel/drivers/sky2.c` (Linux sky2 port, MSI-first/INTx) — **metal-verified**: MSI vec 97, 1000baseT FD, DHCP/DNS/NTP/ping + telnetd live, SIGF_NET wake path confirmed (UAOS-137). QEMU cannot emulate this NIC |
 | Wi-Fi | Broadcom BCM4321 | `14e4:4328` | Deferred (firmware + 802.11) |
@@ -169,6 +169,27 @@ kernel 7.1.8. DMI says **MacBookPro4,1** (not MacBook4,1), board Mac-F42C89C8.
   power-of-two `xN` markers per HC. `enumerate_port` stops a round
   after 2 consecutive -2s; the "port deaf" park line is the single
   ERR-level verdict.
+- **usb-enum steady-state CPU fixed on metal (UAOS-314, 23ac4aa).**
+  Two compounding costs kept `usb-enum` at ~67 % CPU here: the 100 ms
+  port scan ran `port_connected`+`port_csc` on every downstream hub
+  port — each a hub GET_STATUS control transfer (~60/s through the
+  BCM2046) — and `uhci.c`'s `udelay()` was an uncalibrated
+  `inb $0x80` loop, ~8× slow on the LPC so each nominal-1 ms poll
+  spun ~8 ms. `udelay` now spins on rdtsc once `Tickmon_TscHz()` is
+  live (the port-0x80 loop is retained pre-calibration — early boot
+  depends on its conservative timing). `usbhub.c` arms the hub
+  status-change interrupt EP: the IRQ callback only ORs report bytes
+  into `change_bits`, `port_connected` serves a `conn[]` snapshot
+  taken at probe, and `port_csc` issues GET_STATUS + acks all change
+  latches only for bitmap-flagged ports (bit re-set on transfer
+  failure so no edge is lost; polling fallback kept if the EP can't
+  arm; the hub probe log gains `intr=`). Metal (UAOS-181026032742):
+  `taskstat 5` Idle 100 % / usb-enum 0 % (was 67 % @ 73 sw/s);
+  lifetime 2083 cpu-ticks over 82 min vs 12934 in 279 s before the
+  fix; `dmesg warn` clean; deaf uhci3p1 still parked (PORTSC=0x95,
+  ~60 s retry IRQ cadence on v50). QEMU: hotplug through hub + root
+  port still late-enumerates. Known remaining gap: unplug/replug on
+  the same port doesn't re-enum — no `UsbDev` teardown yet.
 
 ## Boot-media / debug-console notes (2026-09-30)
 

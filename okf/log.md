@@ -1,5 +1,26 @@
 # OKF Change Log
 
+## 2026-10-18 — usb-enum idle CPU burn fixed + metal-verified (UAOS-314)
+
+* **Root cause** (two compounding costs, MBP4,1): the 100 ms port scan
+  issued a hub GET_STATUS per downstream port per op
+  (`port_connected`+`port_csc`, ~60 ctrl transfers/s through the
+  BCM2046), and `uhci.c` `udelay()` was an uncalibrated `inb $0x80`
+  loop ~8× slow on the LPC — each nominal 1 ms poll spun ~8 ms.
+  `taskstat 5` showed usb-enum 67 % / Idle 32 %.
+* **Fixed** (23ac4aa, bundled with the unrelated extras/ Makefile
+  staging): `udelay` spins on rdtsc once `Tickmon_TscHz()` is live;
+  `usbhub.c` arms the hub status-change interrupt EP (IRQ callback
+  only ORs `change_bits`; `conn[]` snapshot serves `port_connected`;
+  `port_csc` GET_STATUS+acks only flagged ports; polling fallback).
+* **Metal-verified** (UAOS-181026032742): `taskstat 5` Idle 100 % /
+  usb-enum 0 %; lifetime 2083 cpu-ticks/82 min vs 12934/279 s pre-fix;
+  `dmesg warn` clean; deaf uhci3p1 still parked with ~60 s heartbeat
+  IRQ cadence. QEMU: hub `intr=1`, hub + root hotplug late-enumerates.
+  Known gap: same-port unplug/replug needs UsbDev teardown.
+* **Docs**: `okf/platforms/macbook41.md` (new bullet + USB table row
+  now records 8 devs/19 ifs metal readback).
+
 ## 2026-10-17 — FileBrowser_CloseVolume stale-slot hang fix (UAOS-310)
 
 * **Fixed** (`kernel/display/filebrowser.c`): Icons ▸ Unmount on a DF
