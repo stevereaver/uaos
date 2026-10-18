@@ -119,4 +119,8 @@ extern AudioBackend audio_backend_hda;
 extern AudioBackend audio_backend_ac97;
 extern AudioBackend audio_backend_pcspk;
 
+/* Live codec/widget state dump for diagnostics (C:hdadump).  emit is
+ * called once per formatted line; a no-op when the HDA backend isn't bound. */
+void HDA_DumpState(void (*emit)(const char *line, void *ud), void *ud);
+
 #endif /* UAOS_AUDIO_H */

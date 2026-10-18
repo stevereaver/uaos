@@ -268,6 +268,7 @@ void Cmd_Pciscan         (NativeCmdCtx *ctx, const char *args);
 void Cmd_Irqroute        (NativeCmdCtx *ctx, const char *args);
 void Cmd_Audiotest       (NativeCmdCtx *ctx, const char *args);
 void Cmd_Volume          (NativeCmdCtx *ctx, const char *args);
+void Cmd_HdaDump         (NativeCmdCtx *ctx, const char *args);
 void Cmd_Peek            (NativeCmdCtx *ctx, const char *args);
 void Cmd_Poke            (NativeCmdCtx *ctx, const char *args);
 void Cmd_Irqaudit        (NativeCmdCtx *ctx, const char *args);

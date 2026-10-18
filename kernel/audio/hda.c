@@ -269,6 +269,14 @@ static void hda_set(int nid, uint32_t verb, uint32_t parm)
     uint32_t r;
     hda_verb(g_cad, nid, verb, parm, &r);
 }
+/* Config default is its own verb (0xF1C), not a GET_PARAMETER index —
+ * real codecs don't answer parameter 0x1C. */
+static uint32_t hda_get_defcfg(int nid)
+{
+    uint32_t r = 0;
+    hda_verb(g_cad, nid, 0xF1C /*GET_CONFIG_DEFAULT*/, 0, &r);
+    return r;
+}
 
 /* -------------------------------------------------------------------------
  * Codec/widget walk
@@ -382,29 +390,34 @@ static void hda_unmute_in(int nid, uint32_t wcaps, int idx)
     hda_set(nid, 0x300, 0x7000 | ((uint32_t)idx << 8) | gain);
 }
 
-/* Widgets carrying the master volume — one out-amp per configured path,
- * preferring the DAC (deepest nid) so attenuation doesn't compound across
- * the pin/mixer hops.  caps = amp-capabilities parameter (0x12). */
-#define HDA_MAX_VOL 8
-static struct { uint8_t nid; uint32_t caps; } g_vol[HDA_MAX_VOL];
-static int g_nvol = 0;
+/* Configured pin→DAC paths + the widget that carries the master volume in
+ * each (DAC preferred so attenuation doesn't compound across hops).
+ * Kept for runtime set_volume and for C:hdadump diagnostics. */
+#define HDA_MAX_PATHS 8
+static struct {
+    struct hda_path p;
+    uint8_t  vol_nid;      /* widget with the controlled out-amp, 0 = none */
+    uint32_t vol_caps;     /* its output-amp capabilities (param 0x12) */
+} g_out[HDA_MAX_PATHS];
+static int g_nout = 0;
 
 static void hda_vol_register(const struct hda_path *p)
 {
-    if (g_nvol >= HDA_MAX_VOL) return;
+    if (g_nout >= HDA_MAX_PATHS) return;
+    g_out[g_nout].p = *p;
+    g_out[g_nout].vol_nid = 0;
+    g_out[g_nout].vol_caps = 0;
     for (int i = p->n - 1; i >= 0; i--) {
         int nid = p->nids[i];
         uint32_t wcaps = hda_get_param(nid, 0x09);
         if (!(wcaps & (1u << 2))) continue;          /* no output amp */
         uint32_t caps = (wcaps & (1u << 3)) ? hda_get_param(nid, 0x12) : 0;
         if (!(caps & 0x7F)) continue;               /* no steps to attenuate */
-        for (int j = 0; j < g_nvol; j++)            /* shared DAC: once */
-            if (g_vol[j].nid == (uint8_t)nid) return;
-        g_vol[g_nvol].nid = (uint8_t)nid;
-        g_vol[g_nvol].caps = caps;
-        g_nvol++;
-        return;
+        g_out[g_nout].vol_nid = (uint8_t)nid;
+        g_out[g_nout].vol_caps = caps;
+        break;
     }
+    g_nout++;
 }
 
 /* Master volume → codec out-amps.  Gain is linear in the widget's step
@@ -412,12 +425,13 @@ static void hda_vol_register(const struct hda_path *p)
 static void hda_backend_set_volume(int pct, int muted)
 {
     if (!g_ready) return;
-    for (int i = 0; i < g_nvol; i++) {
-        uint32_t steps = g_vol[i].caps & 0x7F;
+    for (int i = 0; i < g_nout; i++) {
+        if (!g_out[i].vol_nid) continue;
+        uint32_t steps = g_out[i].vol_caps & 0x7F;
         uint32_t gain = muted ? 0 : (steps * (uint32_t)pct) / 100;
         uint32_t pay = 0xB000 | gain;               /* out amp, L+R, idx 0 */
         if (muted || pct == 0) pay |= 0x80;         /* SET_AMP mute bit */
-        hda_set(g_vol[i].nid, 0x300, pay);
+        hda_set(g_out[i].vol_nid, 0x300, pay);
     }
 }
 
@@ -441,7 +455,7 @@ static void hda_apple_fixup(void)
 static void hda_enable_path(const struct hda_path *p)
 {
     int pin = p->nids[0];
-    int pin_is_hp = (DEFCFG_DEV(hda_get_param(pin, 0x1C)) == 2);
+    int pin_is_hp = (DEFCFG_DEV(hda_get_defcfg(pin)) == 2);
 
     for (int i = 0; i < p->n; i++) {
         int nid = p->nids[i];
@@ -709,11 +723,6 @@ static int hda_backend_init(void)
     g_cad = (uint8_t)cad;
 
     uint32_t vid = hda_get_param(0, 0x00);
-    uint32_t ssid;
-    if (hda_verb(g_cad, 0, 0xF20 /*GET_SUBSYSTEM_ID*/, 0, &ssid) != 0)
-        ssid = pci_read32(bus, dev, fn, 0x2C);
-    KLOG(KLOG_AUDIO, KLOG_DEBUG, "hda: codec %u vid=%x ssid=%x\n",
-         (uint32_t)g_cad, vid, ssid);
 
     /* Find the Audio Function Group under the root node. */
     uint32_t nc = hda_get_param(0, 0x04);
@@ -730,11 +739,22 @@ static int hda_backend_init(void)
     KLOG(KLOG_AUDIO, KLOG_DEBUG, "hda: afg nid=%x\n", (uint32_t)g_afg);
     hda_set(g_afg, 0x705, 0);               /* AFG to D0 */
 
+    /* GET_SUBSYSTEM_ID is an AFG verb — addressed to the function group,
+     * not the codec root (nid 0 returns garbage on real codecs, which is
+     * why the Apple quirk silently never fired on metal). */
+    uint32_t ssid = 0;
+    if (hda_verb(g_cad, g_afg, 0xF20 /*GET_SUBSYSTEM_ID*/, 0, &ssid) != 0)
+        ssid = 0;
+    uint32_t pci_ssid = pci_read32(bus, dev, fn, 0x2C);
+    KLOG(KLOG_AUDIO, KLOG_DEBUG, "hda: codec %u vid=%x ssid=%x pci-ssid=%x\n",
+         (uint32_t)g_cad, vid, ssid, pci_ssid);
+
     /* Apple quirk (patch_realtek.c ALC889_FIXUP_MBP_VREF /
      * ALC885_FIXUP_MACPRO_GPIO — both take the GPIO path; VREF applied
-     * per-pin in hda_enable_path).  SSID layout mirrors PCI cfg 0x2C:
-     * subsystem vendor in the low word. */
-    if ((ssid & 0xFFFF) == 0x106B || (ssid >> 16) == 0x106B)
+     * per-pin in hda_enable_path).  Apple shows up in either the codec
+     * SSID or the controller's PCI subsystem vendor. */
+    if ((ssid & 0xFFFF) == 0x106B || (ssid >> 16) == 0x106B ||
+        (pci_ssid & 0xFFFF) == 0x106B)
         hda_apple_fixup();
 
     /* Enumerate AFG widgets; wire every usable output pin to a DAC. */
@@ -748,7 +768,7 @@ static int hda_backend_init(void)
         if (WIDGET_TYPE(wcaps) != WCAP_PIN) continue;
         uint32_t pcaps = hda_get_param(nid, 0x0C);
         if (!(pcaps & (1u << 4))) continue;   /* not output-capable */
-        uint32_t def = hda_get_param(nid, 0x1C);
+        uint32_t def = hda_get_defcfg(nid);
         if (DEFCFG_CONN(def) == 1) continue;  /* no physical connection */
         uint32_t devt = DEFCFG_DEV(def);
         if (devt != 0 && devt != 1 && devt != 2) continue; /* LO/Spk/HP */
@@ -815,6 +835,111 @@ static void hda_backend_shutdown(void)
     uint32_t sd = SD_BASE + g_sd_index * SD_STRIDE;
     wl(sd + SD_CTL, rl(sd + SD_CTL) & ~0x2u); /* clear RUN */
     g_ready = 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Diagnostics — C:hdadump reads live widget state through the verb path.
+ * ------------------------------------------------------------------------- */
+
+static void hd_hex(char *l, int *i, uint32_t v, int digits)
+{
+    for (int d = digits - 1; d >= 0; d--)
+        l[(*i)++] = "0123456789abcdef"[(v >> (d * 4)) & 0xF];
+    l[*i] = '\0';
+}
+static void hd_dec(char *l, int *i, uint32_t v)
+{
+    char t[12]; int n = 0;
+    if (!v) { l[(*i)++] = '0'; l[*i] = 0; return; }
+    while (v && n < 11) { t[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n) l[(*i)++] = t[--n];
+    l[*i] = '\0';
+}
+static void hd_str(char *l, int *i, const char *s)
+{
+    while (*s) l[(*i)++] = *s++;
+    l[*i] = '\0';
+}
+
+static void hda_dump_line(void (*emit)(const char *, void *), void *ud,
+                          const char *s)
+{
+    char line[120];
+    int i = 0;
+    hd_str(line, &i, s);
+    emit(line, ud);
+}
+
+void HDA_DumpState(void (*emit)(const char *line, void *ud), void *ud)
+{
+    if (!g_ready) {
+        hda_dump_line(emit, ud, "hda: not ready");
+        return;
+    }
+    {
+        char l[120]; int i = 0;
+        hd_str(l, &i, "hda: cad=0x"); hd_hex(l, &i, g_cad, 2);
+        hd_str(l, &i, " afg=0x"); hd_hex(l, &i, g_afg, 2);
+        hd_str(l, &i, " dac=0x"); hd_hex(l, &i, (uint32_t)g_dac, 2);
+        hd_str(l, &i, " corb="); hd_dec(l, &i, (uint32_t)g_corb_ok);
+        hd_str(l, &i, " quirk="); hd_dec(l, &i, (uint32_t)g_apple_quirk);
+        hd_str(l, &i, " gpio=0x");
+        {
+            uint32_t gd = 0;
+            hda_verb(g_cad, g_afg, 0xF15 /*GET_GPIO_DATA*/, 0, &gd);
+            hd_hex(l, &i, gd & 0xFF, 2);
+        }
+        hd_str(l, &i, " sd="); hd_dec(l, &i, (uint32_t)g_sd_index);
+        hd_str(l, &i, " lpib=0x");
+        hd_hex(l, &i, rl(SD_BASE + g_sd_index * SD_STRIDE + SD_LPIB), 8);
+        hd_str(l, &i, " ctl=0x");
+        hd_hex(l, &i, rl(SD_BASE + g_sd_index * SD_STRIDE + SD_CTL), 8);
+        emit(l, ud);
+    }
+    for (int p = 0; p < g_nout; p++) {
+        const struct hda_path *path = &g_out[p].p;
+        char l[120]; int i = 0;
+        hd_str(l, &i, "path"); hd_dec(l, &i, (uint32_t)p);
+        hd_str(l, &i, " pin 0x"); hd_hex(l, &i, path->nids[0], 2);
+        hd_str(l, &i, " -> dac 0x");
+        hd_hex(l, &i, path->nids[path->n - 1], 2);
+        hd_str(l, &i, " volnid=0x");
+        hd_hex(l, &i, g_out[p].vol_nid, 2);
+        emit(l, ud);
+        for (int j = 0; j < path->n; j++) {
+            int nid = path->nids[j];
+            uint32_t wcaps = hda_get_param(nid, 0x09);
+            int type = WIDGET_TYPE(wcaps);
+            uint32_t pwr = 0, amp = 0, pct = 0, eapd = 0, def = 0, fmt = 0;
+            hda_verb(g_cad, nid, 0xF05, 0, &pwr);
+            if (wcaps & (1u << 2))
+                hda_verb(g_cad, nid, 0xB00, 0x8000, &amp);
+            if (type == WCAP_PIN) {
+                hda_verb(g_cad, nid, 0xF07, 0, &pct);
+                hda_verb(g_cad, nid, 0xF0C, 0, &eapd);
+                def = hda_get_defcfg(nid);
+            }
+            if (type == WCAP_DAC) {
+                hda_verb(g_cad, nid, 0xA00, 0, &fmt);
+            }
+            i = 0;
+            hd_str(l, &i, "  nid 0x"); hd_hex(l, &i, (uint32_t)nid, 2);
+            hd_str(l, &i, " t="); hd_dec(l, &i, (uint32_t)type);
+            hd_str(l, &i, " pwr=0x"); hd_hex(l, &i, pwr & 0xFF, 2);
+            if (wcaps & (1u << 2)) {
+                hd_str(l, &i, " amp=0x"); hd_hex(l, &i, amp & 0xFF, 2);
+            }
+            if (type == WCAP_PIN) {
+                hd_str(l, &i, " pinctl=0x"); hd_hex(l, &i, pct & 0xFF, 2);
+                hd_str(l, &i, " eapd=0x"); hd_hex(l, &i, eapd & 0xFF, 2);
+                hd_str(l, &i, " dev="); hd_dec(l, &i, DEFCFG_DEV(def));
+            }
+            if (type == WCAP_DAC) {
+                hd_str(l, &i, " fmt=0x"); hd_hex(l, &i, fmt & 0xFFFF, 4);
+            }
+            emit(l, ud);
+        }
+    }
 }
 
 AudioBackend audio_backend_hda = {
