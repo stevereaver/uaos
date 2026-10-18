@@ -95,6 +95,13 @@ typedef struct NetDevice {
      */
     void (*setup_irq)(struct NetDevice *dev);
 
+    /*
+     * link_up() — report physical carrier/link state.
+     * Returns 1 when link is up, 0 when down.
+     * May be NULL — the device cannot report link (virtio-net).
+     */
+    int  (*link_up)(struct NetDevice *dev);
+
     /* Private driver data — the driver may store anything here */
     void *priv;
 } NetDevice;
@@ -121,6 +128,7 @@ void        netdev_set_rx_callback(netdev_rx_fn cb);
 void        netdev_setup_irq(void);
 void        netdev_shutdown(void);
 int         netdev_is_up(void);
+int         netdev_link_up(void); /* 1 up, 0 down, -1 unknown (no driver op) */
 const char *netdev_name(void);   /* returns driver name, e.g. "e1000" or "virtio-net" */
 
 /*

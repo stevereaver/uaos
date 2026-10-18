@@ -41,6 +41,7 @@ int  e1000_init(void);
 
 /* Returns 1 if the device was found and initialised. */
 int  e1000_is_up(void);
+int  e1000_link_up(void);  /* 1 link up, 0 link down */
 
 /* Copy the device MAC address into buf[ETH_ALEN]. */
 void e1000_get_mac(uint8_t *buf);

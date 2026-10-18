@@ -503,7 +503,14 @@ int EarlyStartup_Run(void)
         }
     }
 
-    /* No key pressed — normal boot */
+    /* No key pressed — normal boot.  The ES framebuffer stays on the
+     * panel until the WM comes up, so replace the countdown with a
+     * status line first — otherwise the screen sits on "press any key"
+     * looking frozen while Startup-Sequence runs (UAOS-336: a slow
+     * DHCP timeout held it ~48 s on sky2). */
+    draw_banner();
+    es_center(7, "Starting UAOS...", WB_WHITE, WB_BLUE);
+    es_center(9, "(running Startup-Sequence)", WB_CREAM, WB_BLUE);
     goto out;
 
 show_menu:

@@ -1440,6 +1440,14 @@ int sky2_init(void)
 
 int sky2_is_up(void) { return g_up; }
 
+/* PHY carrier state: 1 when the negotiated link is up (UAOS-336 —
+ * lets DHCP skip its timeout entirely on an unplugged cable). */
+int sky2_link_up(void)
+{
+    if (!g_up) return 0;
+    return (gm_phy_read(0, PHY_MARV_PHY_STAT) & PHY_M_PS_LINK_UP) != 0;
+}
+
 void sky2_get_mac(uint8_t *buf)
 {
     for (int i = 0; i < 6; i++) buf[i] = g_mac[i];

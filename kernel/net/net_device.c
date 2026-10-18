@@ -87,6 +87,14 @@ void netdev_poll(void)
         g_netdev->poll(g_netdev);
 }
 
+/* Link/carrier query (UAOS-336): 1 up, 0 down, -1 when the active
+ * driver cannot report link state — callers treat -1 as "proceed". */
+int netdev_link_up(void)
+{
+    if (!g_up || !g_netdev || !g_netdev->link_up) return -1;
+    return g_netdev->link_up(g_netdev);
+}
+
 void netdev_set_rx_callback(netdev_rx_fn cb)
 {
     if (g_netdev && g_netdev->set_rx_callback)
@@ -230,6 +238,12 @@ static void e1k_setup_irq(NetDevice *dev)
     e1000_setup_irq();
 }
 
+static int e1k_link_up(NetDevice *dev)
+{
+    (void)dev;
+    return e1000_link_up();
+}
+
 static NetDevice g_e1000_device = {
     .name            = "e1000",
     .init            = e1k_init,
@@ -238,6 +252,7 @@ static NetDevice g_e1000_device = {
     .poll            = e1k_poll,
     .set_rx_callback = e1k_set_rx_callback,
     .setup_irq       = e1k_setup_irq,
+    .link_up         = e1k_link_up,
     .priv            = 0,
 };
 
@@ -289,6 +304,12 @@ static void sk_setup_irq(NetDevice *dev)
     sky2_setup_irq();
 }
 
+static int sk_link_up(NetDevice *dev)
+{
+    (void)dev;
+    return sky2_link_up();
+}
+
 static NetDevice g_sky2_device = {
     .name            = "sky2",
     .init            = sk_init,
@@ -297,6 +318,7 @@ static NetDevice g_sky2_device = {
     .poll            = sk_poll,
     .set_rx_callback = sk_set_rx_callback,
     .setup_irq       = sk_setup_irq,
+    .link_up         = sk_link_up,
     .priv            = 0,
 };
 

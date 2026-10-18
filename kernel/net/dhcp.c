@@ -141,6 +141,17 @@ static void dhcp_delay_ms(uint32_t ms)
     while (rdtsc() < end) __asm__ volatile("pause");
 }
 
+/* Wall-clock milliseconds elapsed since t0 (rdtsc), via the calibrated
+ * TSC.  The negotiation loops measure elapsed time this way instead of
+ * summing the nominal 10 ms delay: netdev_poll() cost varies wildly by
+ * driver (cheap on virtio, expensive on sky2), so a summed timeout
+ * stretched a 15 s budget to ~48 s on the MBP4,1 sky2 (UAOS-336). */
+static uint32_t dhcp_elapsed_ms(uint64_t t0)
+{
+    if (!g_tsc_hz) return 0;
+    return (uint32_t)(((rdtsc() - t0) * 1000ULL) / g_tsc_hz);
+}
+
 /* -------------------------------------------------------------------------
  * DHCP RX callback — registered temporarily during negotiation
  * Parses raw Ethernet frames and extracts DHCP replies.
@@ -415,6 +426,26 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
 {
     dhcp_calibrate_tsc();
 
+    /* Link-down short-circuit (UAOS-336): with no carrier there is no
+     * DHCP server to answer, so don't burn the whole timeout — give the
+     * PHY up to 3 s to come up (cable plugged mid-boot), then bail so
+     * NetStart falls through to its fallback/static path.  Unknown
+     * link state (-1, e.g. virtio-net) proceeds as before. */
+    if (netdev_link_up() == 0) {
+        uint64_t lt0 = rdtsc();
+        uint32_t lwaited = 0;
+        while (netdev_link_up() == 0 && lwaited < 3000) {
+            dhcp_delay_ms(10);
+            netdev_poll();
+            lwaited = g_tsc_hz ? dhcp_elapsed_ms(lt0) : lwaited + 10;
+        }
+        if (netdev_link_up() == 0) {
+            klog_puts(KLOG_DHCP, KLOG_WARN, "no link -- skipping DHCP\n");
+            return 0;
+        }
+        klog_puts(KLOG_DHCP, KLOG_DEBUG, "link came up during wait\n");
+    }
+
     netdev_get_mac(g_dhcp_mac);
     g_dhcp_got = 0;
     g_server_ip = 0;
@@ -449,6 +480,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
      * ~1.4 s to deliver the OFFER after the DISCOVER arrives.  Retrying
      * too quickly (e.g. every 500 ms) floods the server and causes it to
      * batch all its OFFERs together, arriving AFTER our window closes. */
+    uint64_t t0 = rdtsc();
     uint32_t waited = 0;
     uint32_t next_discover = 0;  /* send immediately on first iteration */
     while (!g_dhcp_got && waited < timeout_ms) {
@@ -459,7 +491,7 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
         }
         dhcp_delay_ms(10);
         netdev_poll();
-        waited += 10;
+        waited = g_tsc_hz ? dhcp_elapsed_ms(t0) : waited + 10;
     }
     if (!g_dhcp_got) {
         klog_puts(KLOG_DHCP, KLOG_DEBUG, "no OFFER received\n");
@@ -494,11 +526,12 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
     klog_puts(KLOG_DHCP, KLOG_DEBUG, "sending REQUEST\n");
     dhcp_send(DHCPREQUEST, offered_ip, g_server_ip);
 
+    t0 = rdtsc();
     waited = 0;
     while (!g_dhcp_got && waited < timeout_ms) {
         dhcp_delay_ms(10);
         netdev_poll();
-        waited += 10;
+        waited = g_tsc_hz ? dhcp_elapsed_ms(t0) : waited + 10;
     }
     if (!g_dhcp_got) {
         klog_puts(KLOG_DHCP, KLOG_DEBUG, "no ACK received\n");
@@ -531,15 +564,17 @@ int dhcp_request(DhcpLease *lease, uint32_t timeout_ms)
 
 int dhcp_renew(DhcpLease *lease, uint32_t timeout_ms)
 {
+    dhcp_calibrate_tsc();
     g_dhcp_got = 0;
     netdev_set_rx_callback(dhcp_rx_cb);
     dhcp_send(DHCPREQUEST, lease->ip, g_server_ip);
 
+    uint64_t t0 = rdtsc();
     uint32_t waited = 0;
     while (!g_dhcp_got && waited < timeout_ms) {
         dhcp_delay_ms(10);
         netdev_poll();
-        waited += 10;
+        waited = g_tsc_hz ? dhcp_elapsed_ms(t0) : waited + 10;
     }
     if (!g_dhcp_got) return 0;
     parse_offer(&g_dhcp_reply, lease);

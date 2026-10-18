@@ -557,6 +557,14 @@ int e1000_init(void)
 
 int e1000_is_up(void) { return g_up; }
 
+/* Link/carrier state via STATUS.LU (UAOS-336 — lets DHCP skip its
+ * timeout entirely on an unplugged cable). */
+int e1000_link_up(void)
+{
+    if (!g_up) return 0;
+    return (mmio_r32(g_bar0, E1000_STATUS) & E1000_STATUS_LU) != 0;
+}
+
 void e1000_get_mac(uint8_t *buf)
 {
     for (int i = 0; i < E1000_ETH_ALEN; i++) buf[i] = g_mac[i];

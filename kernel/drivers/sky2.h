@@ -31,6 +31,7 @@ int  sky2_init(void);
 
 /* Returns 1 if the device was found and initialised. */
 int  sky2_is_up(void);
+int  sky2_link_up(void);  /* 1 link up, 0 link down */
 
 /* Copy the device MAC address into buf[ETH_ALEN]. */
 void sky2_get_mac(uint8_t *buf);
