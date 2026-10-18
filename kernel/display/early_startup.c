@@ -18,11 +18,16 @@
 #include "../irq/ps2kbd.h"
 #include "../irq/irq.h"
 #include "../irq/pit.h"
+#include "../irq/idt.h"
+#include "../irq/ioapic.h"
+#include "../irq/acpi.h"
+#include "../boot/kprint.h"
 #include "../dbg/diag.h"
 #include <stdint.h>
 #include <stddef.h>
 
 extern volatile uint64_t g_pit_ticks;   /* 100 Hz — uaos_kernel_main.c */
+extern volatile int      g_irq_depth;   /* idt.c */
 
 /* =========================================================================
  * Helpers (no libc)
@@ -58,6 +63,18 @@ static void es_puthex(uint32_t v, char *buf)
     int j = 2;
     while (i--) buf[j++] = tmp[i];
     buf[j] = '\0';
+    (void)pos;
+}
+
+static inline void es_outb(uint16_t port, uint8_t val)
+{
+    __asm__ volatile ("outb %0, %1" :: "a"(val), "Nd"(port));
+}
+static inline uint8_t es_inb(uint16_t port)
+{
+    uint8_t v;
+    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
 }
 
 /* =========================================================================
@@ -278,18 +295,111 @@ static void draw_sysinfo(void)
  * PIT tick keeps g_pit_ticks advancing and IRQ1/USB-HID IRQs fill the key
  * ring.  Waits are g_pit_ticks deadlines with hlt between polls — the
  * PIT wakes the CPU each tick.  If the PIT stops advancing entirely
- * (broken timer hardware/QEMU), a bounded spin stands in so the boot can
- * never hang here. */
+ * (broken timer hardware/QEMU), a TSC-bounded spin stands in so the boot
+ * can never hang here. */
 
 /* ~50 ms of no tick advance -> declare the PIT dead.  TSC frequency is
  * uncalibrated at this point in boot, so this is only an order-of-
  * magnitude bound: ~50 ms at 4 GHz, ~100 ms at 2 GHz. */
 #define ES_TICK_STALL_CYCLES  200000000ULL
-/* Dead-PIT fallback: iterations of the key-poll loop per "tick".
- * Each iteration is a few hundred cycles at most, so this lands in the
- * rough vicinity of the 10 ms a real tick represents — accuracy does not
- * matter here, only that the countdown cannot hang. */
-#define ES_SPIN_PER_TICK      250000ULL
+
+/* =========================================================================
+ * IRQ diagnostic snapshot (UAOS-336)
+ * ========================================================================= */
+
+/* On the MBP4,1 the menu held boot ~48 s: no PIT/RTC IRQs arrived at all
+ * during the menu despite sti, so es_wait_key fell into the dead-PIT
+ * spin for its whole (iteration-estimated) budget.  This dump captures
+ * the interrupt-delivery state at three points — entry, first stall,
+ * exit — so the next metal boot identifies where delivery stops
+ * (IF clear in flags? vectors armed but LAPIC TPR/LINT0 masking them?
+ * IO-APIC RTE masked? PIC still the route?). */
+
+static uint64_t es_t0, es_tick0;    /* captured at EarlyStartup_Run entry */
+static uint64_t es_wt0;             /* captured at each es_wait_key entry */
+static int      es_fallback;        /* set when the dead-PIT path fired  */
+
+static void es_irq_snapshot(const char *tag)
+{
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+
+    /* Line 1: IF, elapsed TSC/ticks vs ES entry and wait entry, per-
+     * vector dispatch counts (34=PIT GSI2, 40=RTC IRQ8 on QEMU), the
+     * nonzero-vector list, IRQ depth, fallback flag, IRQ mode. */
+    kprint("[ES] "); kprint(tag);
+    kprint(": if=");  kprintdec((uint32_t)((fl >> 9) & 1));
+    kprint(" +t=");   kprintdec64(diag_rdtsc() - es_t0);
+    kprint(" +ticks="); kprintdec64(g_pit_ticks - es_tick0);
+    if (tag[0] == 's') {   /* stall: also TSC since wait entry */
+        kprint(" +wt=");
+        kprintdec64(diag_rdtsc() - es_wt0);
+    }
+    kprint(" v34=");  kprintdec64(IDT_VectorCount(34));
+    kprint(" v40=");  kprintdec64(IDT_VectorCount(40));
+    {
+        uint64_t tot = 0;
+        for (int v = 0; v < 256; v++) tot += IDT_VectorCount(v);
+        kprint(" vt="); kprintdec64(tot);
+        kprint(" [");
+        for (int v = 0; v < 256; v++) {
+            uint64_t c = IDT_VectorCount(v);
+            if (c) {
+                kprint("v"); kprintdec((uint32_t)v);
+                kprint("="); kprintdec64(c); kprint(" ");
+            }
+        }
+        kprint("]");
+    }
+    kprint(" irqd="); kprintdec((uint32_t)g_irq_depth);
+    kprint(" fb=");   kprintdec((uint32_t)es_fallback);
+    kprint(" mode="); kprint(IRQ_Mode() == IRQ_MODE_IOAPIC ? "ioapic" : "pic");
+    kprint("\n");
+
+    /* Line 2: LAPIC state (TPR/PPR/SVR/LINT0 + nonzero ISR/IRR words),
+     * IO-APIC RTEs for the two timer GSIs, 8259 IMR/ISR. */
+    if (ACPI_LapicBase()) {
+        kprint("  lapic tpr="); kprinthex_min(LAPIC_Read(0x080));
+        kprint(" ppr=");        kprinthex_min(LAPIC_Read(0x0A0));
+        kprint(" svr=");        kprinthex_min(LAPIC_Read(0x0F0));
+        kprint(" lint0=");      kprinthex_min(LAPIC_Read(0x350));
+        for (int i = 0; i < 8; i++) {
+            uint32_t v = LAPIC_Read(0x100 + (uint32_t)i * 0x10);
+            if (v) { kprint(" isr"); kprintdec((uint32_t)i);
+                     kprint("="); kprinthex_min(v); }
+        }
+        for (int i = 0; i < 8; i++) {
+            uint32_t v = LAPIC_Read(0x200 + (uint32_t)i * 0x10);
+            if (v) { kprint(" irr"); kprintdec((uint32_t)i);
+                     kprint("="); kprinthex_min(v); }
+        }
+    } else {
+        kprint("  lapic=none");
+    }
+    {
+        uint32_t lo, hi;
+        if (IOAPIC_ReadRTE(2, &lo, &hi) == 0) {
+            kprint(" rte2="); kprinthex_min(lo);
+        }
+        if (IOAPIC_ReadRTE(8, &lo, &hi) == 0) {
+            kprint(" rte8="); kprinthex_min(lo);
+        }
+    }
+    {
+        uint8_t imr1 = es_inb(0x21), imr2 = es_inb(0xA1);
+        es_outb(0x20, 0x0B);            /* OCW3: read ISR on next inb */
+        uint8_t isr1 = es_inb(0x20);
+        es_outb(0x20, 0x0A);            /* restore: read IRR (POR def.) */
+        es_outb(0xA0, 0x0B);
+        uint8_t isr2 = es_inb(0xA0);
+        es_outb(0xA0, 0x0A);
+        kprint(" pic imr1="); kprinthex_min(imr1);
+        kprint(" imr2="); kprinthex_min(imr2);
+        kprint(" isr1="); kprinthex_min(isr1);
+        kprint(" isr2="); kprinthex_min(isr2);
+    }
+    kprint("\n");
+}
 
 /* Wait for a key, with timeout in PIT ticks (UAOS_PIT_HZ, so HZ ticks =
  * 1 second).  Returns the key char, or 0 if timeout. */
@@ -297,8 +407,18 @@ static char es_wait_key(uint64_t timeout_ticks)
 {
     uint64_t tick0     = g_pit_ticks;
     uint64_t last_tick = tick0;
-    uint64_t stall_tsc = diag_rdtsc();
-    uint64_t spin      = 0;    /* dead-PIT fallback budget */
+    uint64_t start_tsc = diag_rdtsc();
+    uint64_t stall_tsc = start_tsc;
+    es_wt0 = start_tsc;
+
+    /* TSC bound for the dead-PIT fallback: end the wait once the
+     * requested timeout's worth of wall time has elapsed, so a menu on
+     * a box with dead IRQ delivery costs ~timeout, not however long the
+     * iteration estimate happens to take on that CPU (UAOS-336). */
+    uint64_t hz = Tickmon_TscHz();
+    if (hz == 0) hz = 3000000000ULL;
+    uint64_t tsc_deadline =
+        start_tsc + (timeout_ticks * hz) / UAOS_PIT_HZ;
 
     for (;;) {
         if (PS2Kbd_HasChar())
@@ -309,8 +429,13 @@ static char es_wait_key(uint64_t timeout_ticks)
             last_tick  = now;
             stall_tsc  = diag_rdtsc();
         } else if (diag_rdtsc() - stall_tsc > ES_TICK_STALL_CYCLES) {
-            /* PIT not advancing — count iterations instead. */
-            if (++spin / ES_SPIN_PER_TICK >= timeout_ticks)
+            /* PIT not advancing — bounded by TSC, not iterations.
+             * Snapshot once per boot on the first stall. */
+            if (!es_fallback) {
+                es_fallback = 1;
+                es_irq_snapshot("stall");
+            }
+            if (diag_rdtsc() >= tsc_deadline)
                 return 0;
             continue;               /* no hlt: nothing may wake us */
         }
@@ -357,6 +482,11 @@ int EarlyStartup_Run(void)
      * tick, USB poll, EventPump_Wake) tolerates no-current-task. */
     uint64_t saved_fl = irq_save();
     __asm__ volatile ("sti" ::: "memory");
+
+    es_t0        = diag_rdtsc();
+    es_tick0     = g_pit_ticks;
+    es_fallback  = 0;
+    es_irq_snapshot("entry");
 
     int mode = 0;
 
@@ -434,6 +564,7 @@ show_menu:
     }
 
 out:
+    es_irq_snapshot("exit");
     irq_restore(saved_fl);
     return mode;
 }
