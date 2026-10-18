@@ -51,6 +51,7 @@
 #define USB_RT_OTHER 0x03
 
 #define USB_CLASS_HID        0x03
+#define USB_CLASS_MSC        0x08
 #define USB_CLASS_HUB        0x09
 
 /* HC port-index bound shared by the core's per-port watch table and
@@ -151,6 +152,18 @@ typedef struct UsbHc {
                    uint16_t mps, void *buf, uint16_t buflen,
                    void (*cb)(void *ctx, void *buf, int len), void *ctx);
 
+    /* Synchronous bulk transfer on (dev, ep).  Same error contract as
+     * control: -1 protocol failure (STALL/error), -2 dead air.
+     * *toggle carries the caller's DATA-toggle state in/out — bulk
+     * endpoints keep their toggle across transfers (NULL → HC tracks
+     * it in the QH, valid only while the QH persists).  *actual
+     * receives bytes moved; a short IN is not an error (BOT relies on
+     * it for CBW residue).  NULL → HC has no bulk path (USBMSC skips
+     * the interface). */
+    int (*bulk)(struct UsbHc *hc, struct UsbDev *dev, uint8_t ep,
+                int dir_in, void *data, uint32_t len, uint16_t mps,
+                int *toggle, uint32_t *actual);
+
     /* Port helpers — root-hub ports on real HCs; hub drivers also
      * publish a UsbHc whose helpers run hub-class requests instead
      * (control/intr_in forward to the real HC), so the core can
@@ -187,6 +200,10 @@ typedef struct UsbIf {
     uint8_t  int_ep;           /* endpoint number (0-15), 0 if none */
     uint16_t int_mps;
     uint8_t  int_interval;
+    uint8_t  bulk_in_ep;       /* first bulk-IN/-OUT ep (0-15), 0 none */
+    uint8_t  bulk_out_ep;
+    uint16_t bulk_in_mps;
+    uint16_t bulk_out_mps;
     uint8_t  used;             /* claimed by a class driver */
 } UsbIf;
 
@@ -209,10 +226,22 @@ void USB_Poll(void);
  * attached-but-deaf at boot, plus real post-boot hotplug (UAOS-258). */
 void USB_StartEnumTask(void);
 
-/* Host-controller entry points (defined in uhci.c). */
+/* Host-controller entry points (defined in uhci.c / ehci.c). */
 int  UHCI_Init(void);
 void UHCI_SetupIRQs(void);
 void UHCI_Poll(void);
+
+/* EHCI (USB 2.0 high-speed) — ehci.c.  EHCI_Init must run BEFORE
+ * UHCI_Init: it claims the port-ownership mux (CONFIGFLAG=1) on every
+ * controller it drives; uhci.c's release/quiesce passes consult
+ * EHCI_IsDriven() so they leave driven companions alone. */
+int  EHCI_Init(void);
+void EHCI_SetupIRQs(void);
+void EHCI_Poll(void);
+int  EHCI_IsDriven(uint8_t bus, uint8_t dev, uint8_t fn);
+
+/* USB mass-storage (BOT/SCSI) class driver — usbmsc.c. */
+void USBMSC_Init(void);
 
 /* Emit diagnostics the IRQ handler deferred (spurious-IRQ counts,
  * storm masks, mid-dispatch catches) — task context only, the usb-enum
@@ -239,9 +268,25 @@ typedef struct {
 int  UHCI_DiagCount(void);
 int  UHCI_DiagRead(int idx, UhciDiag *d);
 
+/* Read-only register snapshot for C:usbdiag (UAOS-317). */
+typedef struct {
+    uint8_t  bus, dev, fn, nports;
+    int      irq_vec;
+    uint32_t irq_hits;
+    uint32_t usbcmd, usbsts, cfgflag;
+    uint32_t portsc[8];
+    int      npipes;
+} EhciDiag;
+int  EHCI_DiagCount(void);
+int  EHCI_DiagRead(int idx, EhciDiag *d);
+
 /* Synchronous standard request helper. */
 int  usb_ctrl(UsbDev *dev, uint8_t bmRequestType, uint8_t bRequest,
               uint16_t wValue, uint16_t wIndex, void *data, uint16_t len);
+
+/* Synchronous bulk transfer helper — wraps hc->bulk. */
+int  usb_bulk(UsbDev *dev, uint8_t ep, int dir_in, void *data,
+              uint32_t len, uint16_t mps, int *toggle, uint32_t *actual);
 
 /* Class-driver registration: probe() is called for every interface of
  * every enumerated device; return non-zero to claim it. */

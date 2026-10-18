@@ -500,6 +500,110 @@ static int uhci_control(UsbHc *pub, UsbDev *dev, uint8_t ep,
 }
 
 /* ------------------------------------------------------------------ */
+/* Synchronous bulk transfer                                           */
+/*                                                                     */
+/* One QH, one vertical chain of IN or OUT TDs — same mechanics as    */
+/* uhci_control minus the setup/status stages.  SPD on every TD so a  */
+/* short packet ends the chain (BOT relies on this for CBW residue).  */
+/* The caller keeps the DATA toggle in *toggle so it survives across  */
+/* transfers; *actual reports bytes moved (including partial moves    */
+/* when a late TD errors out).                                        */
+/* ------------------------------------------------------------------ */
+static int uhci_bulk(UsbHc *pub, UsbDev *dev, uint8_t ep, int dir_in,
+                     void *data, uint32_t len, uint16_t mps,
+                     int *toggle, uint32_t *actual)
+{
+    UhciHc *h = (UhciHc *)pub;
+    if (!mps) mps = 64;
+    int ls = (dev->speed == USB_SPEED_LOW);
+    int t0 = toggle ? (*toggle & 1) : 0;
+    if (actual) *actual = 0;
+
+    int ntd = (int)((len + mps - 1) / mps);
+    if (ntd < 1) ntd = 1;                 /* zero-length: single TD */
+
+    UhciQH *qh  = qh_alloc();
+    UhciTD *tds = (UhciTD *)DMA_Alloc((size_t)ntd * sizeof(UhciTD), 16);
+    if (!qh || !tds) {
+        if (qh)  DMA_Free(qh, sizeof(UhciQH));
+        if (tds) DMA_Free(tds, (size_t)ntd * sizeof(UhciTD));
+        return -1;
+    }
+
+    for (int t = 0; t < ntd; t++) {
+        uint32_t off = (uint32_t)t * mps;
+        uint16_t chunk = (uint16_t)(len - off > mps ? mps : len - off);
+        td_init(&tds[t], dir_in ? TD_PID_IN : TD_PID_OUT,
+                dev->addr, ep, t0 ^ (t & 1),
+                (uint8_t *)data + off, chunk, ls);
+        tds[t].status = TD_ST_ACTIVE | TD_ST_SPD | TD_ST_CERR(3) |
+                        (t == ntd - 1 ? TD_ST_IOC : 0) |
+                        (ls ? TD_ST_LS : 0);
+        tds[t].link = (t + 1 < ntd)
+            ? (uint32_t)(uintptr_t)&tds[t + 1] | TD_LINK_VF
+            : TD_LINK_T;
+    }
+
+    qh->element = (uint32_t)(uintptr_t)&tds[0];
+    qh->link    = TD_LINK_T;
+    qh_insert_head(h, qh);
+
+    /* Wait for chain retirement — same discipline as uhci_control:
+     * any hard error or all-inactive ends the wait; ~40 ms of zero
+     * progress is dead air (-2). */
+    int sched = (Task_Current() != NULL);
+    int max_iter = sched ? 56 : 500;
+    int err = -1;
+    int deaf = 0;
+    int dead_ms = 0;
+    for (int i = 0; i < max_iter; i++) {
+        int harderr = 0, progress = 0, allret = 1;
+        for (int t = 0; t < ntd; t++) {
+            uint32_t st = tds[t].status;
+            if (st & TD_ST_ACTIVE) { allret = 0; continue; }
+            progress = 1;
+            if (st & TD_ST_ERRMSK) { harderr = 1; break; }
+        }
+        if (harderr || allret) { err = harderr ? -1 : 0; break; }
+        if (progress) dead_ms = 0;
+        else if ((dead_ms += (i < 6 || !sched) ? 1 : 10) >= 40) {
+            deaf = 1;
+            break;
+        }
+        if (i < 6 || !sched) msleep(1);
+        else                 Task_SleepTicks(1);
+    }
+
+    /* Bytes moved + toggle advance come from the retired TDs. */
+    uint32_t moved = 0;
+    int consumed = 0;
+    for (int t = 0; t < ntd; t++) {
+        uint32_t st = tds[t].status;
+        if (st & TD_ST_ACTIVE) break;
+        if (st & TD_ST_ERRMSK) { err = -1; break; }
+        moved += (uint32_t)TD_ST_ACTLEN(st) + 1;
+        consumed++;
+        /* SPD ended the chain on a short packet — remaining TDs are
+         * still ACTIVE; that's a clean finish, not an error. */
+        if (dir_in && (int)TD_ST_ACTLEN(st) + 1 < mps) { err = 0; break; }
+    }
+    if (actual) *actual = moved;
+    if (toggle) *toggle = (t0 ^ (consumed & 1)) & 1;
+    if (deaf) err = -2;
+    if (err != 0 && moved == 0 && err == -1) {
+        /* A first-TD NAK/CRC with nothing moved reads as dead air. */
+        uint32_t st = tds[0].status;
+        if (st & (TD_ST_NAK | TD_ST_CRC)) err = -2;
+    }
+
+    qh_remove(h, qh);
+    msleep(2);                          /* HC may cache the QH ptr */
+    DMA_Free(qh, sizeof(UhciQH));
+    DMA_Free(tds, (size_t)ntd * sizeof(UhciTD));
+    return err;
+}
+
+/* ------------------------------------------------------------------ */
 /* Persistent interrupt-IN pipe                                        */
 /* ------------------------------------------------------------------ */
 static int uhci_intr_in(UsbHc *pub, UsbDev *dev, uint8_t ep,
@@ -1026,7 +1130,10 @@ static int uhci_controller_init(UhciHc *h, uint8_t bus, uint8_t dev, uint8_t fn)
 #define EH_CFGFLAG   0x40
 #define EH_STS_HCH   (1u << 12)         /* HCHalted */
 
-/* Release every EHCI-owned root port to its UHCI companion.
+/* Release every DRIVERLESS EHCI's root ports to the UHCI companions.
+ * Controllers claimed by the EHCI driver (EHCI_IsDriven) are skipped:
+ * their ports stay EHCI-owned and the EHCI driver itself hands
+ * full/low-speed devices to the companions via PortOwner (UAOS-317).
  *
  * ICH8 routes each root port through an ownership mux: while EHCI's
  * CONFIGFLAG is 1, ports stay on the (driverless) EHCI — yet the
@@ -1052,6 +1159,8 @@ static void ehci_release_ports(void)
                 }
                 if ((pci_r32((uint8_t)b, d, f, 0x08) >> 8) != 0x0C0320u)
                     continue;                       /* serial/USB/EHCI */
+                if (EHCI_IsDriven((uint8_t)b, d, f))
+                    continue;                       /* ours — keep CF=1 */
                 uint32_t bar = pci_r32((uint8_t)b, d, f, 0x10);
                 uint32_t base = bar & ~0xFu;
                 if (!base || (bar & 1)) continue;   /* need MMIO BAR0 */
@@ -1115,6 +1224,7 @@ int UHCI_Init(void)
                 h->pub.priv = h;
                 h->pub.control        = uhci_control;
                 h->pub.intr_in        = uhci_intr_in;
+                h->pub.bulk           = uhci_bulk;
                 h->pub.port_connected = uhci_port_connected;
                 h->pub.port_reset     = uhci_port_reset;
                 h->pub.port_csc       = uhci_port_csc;
@@ -1188,6 +1298,8 @@ static void ehci_quiesce_intx(void)
                 }
                 if ((pci_r32((uint8_t)b, d, f, 0x08) >> 8) != 0x0C0320u)
                     continue;                       /* serial/USB/EHCI */
+                if (EHCI_IsDriven((uint8_t)b, d, f))
+                    continue;                       /* driven — keep IRQs */
                 uint16_t cmd = pci_r16((uint8_t)b, d, f, 0x04);
                 if (cmd & (1u << 10)) continue;     /* already off */
                 pci_w16((uint8_t)b, d, f, 0x04,

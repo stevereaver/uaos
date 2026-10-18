@@ -269,6 +269,16 @@ static int hub_intr_in(UsbHc *pub, UsbDev *dev, uint8_t ep, uint16_t mps,
     return hb->root->intr_in(hb->root, dev, ep, mps, buf, buflen, cb, ctx);
 }
 
+static int hub_bulk(UsbHc *pub, UsbDev *dev, uint8_t ep, int dir_in,
+                    void *data, uint32_t len, uint16_t mps,
+                    int *toggle, uint32_t *actual)
+{
+    UsbHub *hb = (UsbHub *)pub;
+    if (!hb->root->bulk) return -1;
+    return hb->root->bulk(hb->root, dev, ep, dir_in, data, len, mps,
+                          toggle, actual);
+}
+
 /* ------------------------------------------------------------------ */
 /* Class probe                                                        */
 /* ------------------------------------------------------------------ */
@@ -313,6 +323,7 @@ static int hub_probe(UsbIf *ifc)
     hb->pub.priv = hb;
     hb->pub.control        = hub_control;
     hb->pub.intr_in        = hub_intr_in;
+    hb->pub.bulk           = hub_bulk;
     hb->pub.port_connected = hub_port_connected;
     hb->pub.port_reset     = hub_port_reset;
     hb->pub.port_csc       = hub_port_csc;

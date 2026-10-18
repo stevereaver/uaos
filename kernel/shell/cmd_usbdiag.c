@@ -172,6 +172,40 @@ static void ud_print_hc(NativeCmdCtx *ctx, int i, const UhciDiag *d)
     }
 }
 
+/* EHCI snapshot — same read-only idea, much shorter dump (UAOS-317). */
+static void ud_print_ehci(NativeCmdCtx *ctx)
+{
+    char l[CMD_MAX_LINE];
+    int n = EHCI_DiagCount();
+    if (!n) return;
+    if (n > 4) n = 4;
+    for (int i = 0; i < n; i++) {
+        EhciDiag d;
+        if (EHCI_DiagRead(i, &d) != 0) continue;
+        cmd_scopy(l, "ehci", CMD_MAX_LINE); ud_dec(l, (uint32_t)i);
+        ud_s(l, " "); ud_hexd(l, d.bus, 2); ud_s(l, ":");
+        ud_hexd(l, d.dev, 2); ud_s(l, "."); ud_dec(l, d.fn);
+        ud_s(l, " vec=");
+        if (d.irq_vec >= 0) ud_dec(l, (uint32_t)d.irq_vec);
+        else ud_s(l, "none");
+        ud_s(l, " irq_hits="); ud_dec(l, d.irq_hits);
+        ud_s(l, " pipes="); ud_dec(l, (uint32_t)d.npipes);
+        PRINT(l);
+        cmd_scopy(l, "  HC   USBCMD=", CMD_MAX_LINE);
+        ud_hex(l, d.usbcmd, 8);
+        ud_s(l, " USBSTS="); ud_hex(l, d.usbsts, 8);
+        ud_s(l, " CF="); ud_hex(l, d.cfgflag, 1);
+        ud_s(l, " ports="); ud_dec(l, d.nports);
+        PRINT(l);
+        cmd_scopy(l, "       PORTSC=", CMD_MAX_LINE);
+        for (int p = 0; p < d.nports && p < 8; p++) {
+            if (p) ud_s(l, "/");
+            ud_hex(l, d.portsc[p], 8);
+        }
+        PRINT(l);
+    }
+}
+
 #define UD_MAX 8
 
 typedef struct {
@@ -207,6 +241,7 @@ void Cmd_Usbdiag(NativeCmdCtx *ctx, const char *args)
     UhciDiag d[UD_MAX];
     for (int i = 0; i < n; i++) UHCI_DiagRead(i, &d[i]);
     for (int i = 0; i < n; i++) ud_print_hc(ctx, i, &d[i]);
+    ud_print_ehci(ctx);
     if (!secs || !n) return;
 
     static UdSample s[UD_MAX];

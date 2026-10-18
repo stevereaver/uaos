@@ -379,7 +379,7 @@ extern unsigned int g_fb_height_irq;
  * Always mounts formatted partitions at boot so they appear on the
  * desktop and in info — shared by the virtio-blk and virtio-scsi paths.
  * ----------------------------------------------------------------------- */
-static void boot_automount_partitions(BlockDev *vdev)
+void boot_automount_partitions(BlockDev *vdev)
 {
     if (!vdev) return;
 
@@ -779,15 +779,24 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * in UHCI_SetupIRQ() and USB_Poll() also runs from the PIT tick. */
     kprint("[BOOT] Scanning for USB host controllers...\n");
     {
+        extern int  EHCI_Init(void);
         extern int  UHCI_Init(void);
         extern void USBHUB_Init(void);
         extern void USBHID_Init(void);
+        extern void USBMSC_Init(void);
         extern void BCM5974_Init(void);
         extern void AppleTouch_Init(void);
         extern int  USB_Init(void);
+        /* EHCI first: it claims the port-ownership mux (CONFIGFLAG=1)
+         * on its controllers; UHCI_Init's release pass leaves driven
+         * EHCIs alone so high-speed devices stay USB2.  Full/low-speed
+         * devices get handed to the companions per-port by the EHCI
+         * reset path. */
+        int nehci = EHCI_Init();
         int nuhci = UHCI_Init();
-        if (nuhci > 0) {
+        if (nehci > 0 || nuhci > 0) {
             USBHUB_Init();          /* hub class first — children enumerate next */
+            USBMSC_Init();          /* BOT mass-storage → blockdev */
             BCM5974_Init();         /* Apple trackpad claims tp/bt ifs first */
             AppleTouch_Init();      /* Geyser pads (05ac:021x/022x) next */
             USBHID_Init();          /* register HID class driver */
@@ -801,8 +810,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     /* Mount Workbench: from the multiboot sysroot module first — GRUB
      * loads it into RAM on every boot medium, so this works even when
-     * the boot device itself is unreadable (USB stick on the MacBook
-     * needs EHCI + mass-storage we don't have yet). */
+     * the boot device itself is unreadable. */
     {
         BlockDev *sr = Mb2Mod_RegisterSysroot(mb2_info_phys);
         if (sr) {
@@ -1081,6 +1089,8 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     }
     {
         extern void UHCI_SetupIRQs(void);
+        extern void EHCI_SetupIRQs(void);
+        EHCI_SetupIRQs();
         UHCI_SetupIRQs();
     }
 

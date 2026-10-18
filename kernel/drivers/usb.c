@@ -43,6 +43,14 @@ int usb_ctrl(UsbDev *dev, uint8_t bmRT, uint8_t bReq,
                             data, len);
 }
 
+int usb_bulk(UsbDev *dev, uint8_t ep, int dir_in, void *data,
+             uint32_t len, uint16_t mps, int *toggle, uint32_t *actual)
+{
+    if (!dev || !dev->hc || !dev->hc->bulk) return -1;
+    return dev->hc->bulk(dev->hc, dev, ep, dir_in, data, len, mps,
+                         toggle, actual);
+}
+
 void USB_RegisterClass(usb_class_probe_fn probe)
 {
     if (g_nclasses < USB_MAX_CLASSES)
@@ -131,6 +139,17 @@ static void parse_config(UsbDev *dev, const uint8_t *buf, uint16_t len)
                 cur->int_ep = ed->bEndpointAddress & 0x0F;
                 cur->int_mps = ed->wMaxPacketSize;
                 cur->int_interval = ed->bInterval;
+            } else if (xfer == USB_EP_XFER_BULK) {
+                uint8_t ep = ed->bEndpointAddress & 0x0F;
+                if ((ed->bEndpointAddress & USB_EP_DIR_IN) &&
+                    !cur->bulk_in_ep) {
+                    cur->bulk_in_ep  = ep;
+                    cur->bulk_in_mps = ed->wMaxPacketSize;
+                } else if (!(ed->bEndpointAddress & USB_EP_DIR_IN) &&
+                           !cur->bulk_out_ep) {
+                    cur->bulk_out_ep  = ep;
+                    cur->bulk_out_mps = ed->wMaxPacketSize;
+                }
             }
         }
         off += blen;
@@ -488,4 +507,5 @@ void USB_StartEnumTask(void)
 void USB_Poll(void)
 {
     UHCI_Poll();
+    EHCI_Poll();
 }
