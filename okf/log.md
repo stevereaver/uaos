@@ -1,5 +1,9 @@
 # OKF Change Log
 
+## 2026-10-19 — UAOS-336 metal Early Startup hold (~48 s) — instrumented
+* **Found** on MBP4,1 (192.168.10.222): tickcheck max PIT period ~148.9G cycles at sample 200 (ES entry); RTC count froze too — no external IRQs reached the CPU during the menu despite `sti`. `es_wait_key`'s iteration-count fallback then took ~48 s. Metal tickcheck otherwise: gate off (single-edge), 100.0/s vs RTC, worst PIT dispatch 169k cyc (timer=150k).
+* **003d532**: fallback now TSC-bounded (`Tickmon_TscHz`, 3 GHz if uncalibrated); `[ES] entry/stall/exit` klog snapshots (IF, vector counts, LAPIC TPR/PPR/SVR/LINT0/ISR/IRR, IOAPIC RTE2/8, PIC IMR/ISR). QEMU verified, smoke 24/24. Root cause pending metal boot.
+
 ## 2026-10-18 — TODO sweep part 6: UAOS-322/326/327/333/15/334+332/331
 
 * **UAOS-322** (`43c8091`): dead telnet sessions reclaimed — `shell_yield_ms` and `shell_take_break` treat `remote_dead` like a break (single point covers all CMD_YIELD users); telnetd pump sends `IAC NOP` every 60 s of no RX (`TELNETD_KEEPALIVE_TICKS`) so a silently dead peer's unacked keepalive exhausts retransmits (~5 s → CLOSE); full idle close kept at 10 min; disconnect log now carries a reason. Verified: `wait 60` + client kill frees the slot ~1 s, 4/4 concurrent logins, `ff f1` in pcap.
