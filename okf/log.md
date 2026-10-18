@@ -1720,3 +1720,7 @@ Second-pass review (`subagent_explore` audit of the diff vs. real autodocs/FDs) 
 * **Command**: `C:volume` prints `volume: NN|MUTE (backend X)`; `volume N` sets, `volume MUTE` toggles.
 * **Verified QEMU** (intel-hda + usb-kbd + virtio-net): `volume` → 100 default, 50, MUTE toggle, `audiotest` completes; screenshot exfil shows `VOL 50` in the menubar; smoke 24/24. Audibility on MBP4,1 pending — this change also raised the codec amp to max gain at boot (previous init parked it at the 0dB offset).
 * **Docs**: `okf/kernel/{audio,display}/index.md`, `okf/platforms/macbook41.md`.
+
+### Metal diagnosis + fix (ba024b1)
+
+User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection over telnet proved the host side was healthy — SD4 RUN/tag1, CBL 0x4000, LPIB advancing, and nonzero sine samples in the DMA buffer mid-tone — so the failure was codec-side. Decoding the CORB ring showed init sent no GPIO verbs: `GET_SUBSYSTEM_ID` had been issued to codec nid 0 (root) before the AFG was located, which real codecs don't answer, so the `0x106B` Apple check never matched and `hda_apple_fixup()` never ran — leaving GPIO1 (the MacBook speaker-amp power pin) low. Fixed by querying the AFG and also accepting the PCI subsystem vendor as Apple evidence; CONFIG_DEFAULT now uses verb `0xF1C` instead of `GET_PARAMETER(0x1C)`. Added `C:hdadump` (live widget dump: pwr/amp/pinctl/eapd/gpio/LPIB) — verified on QEMU, awaiting user retest on metal.
