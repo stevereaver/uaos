@@ -68,15 +68,16 @@ no telnet, type it in the shell window and read it off the screen (or via
 |---|---|
 | `telnetd` | Start daemon on TCP port 23 |
 | `telnetd PORT=2323` | Start on a custom port |
-| `telnetd STOP` | Stop daemon (kills listener + in-progress session) |
+| `telnetd STOP` | Stop daemon (kills listener + in-progress sessions) |
 
 Requirements and behavior:
 - The net stack must be up — `netstart` runs automatically in `Startup-Sequence`. `telnetd` refuses with "network stack is down" otherwise.
 - **Starting it**: type `telnetd` in the Workbench shell window, or add `C:telnetd` to `system/S/User-Startup` before building so it auto-starts (User-Startup runs after the scheduler is active; putting it in `Startup-Sequence` itself also works but the task only gets its first timeslice later).
 - **Connect from host**: `telnet localhost 2323` (NAT + hostfwd) or `telnet <guest-ip> 23` (bridge). `nc` also works — the daemon speaks minimal RFC 854 (`WILL ECHO`, `WILL SGA`, `DO SGA`) and gives per-keystroke echo.
-- **One session at a time**: extra connections get a busy banner and clean close (`MAX_REMOTE_SHELLS` = 4 slots but sessions are serialized).
+- **Concurrent sessions**: each accepted socket gets its own pump task; up to `MAX_REMOTE_SHELLS` (4) remote shells run at once — extra connections get a busy banner and clean close.
 - `endcli` in the remote shell closes the session cleanly; arrow keys and command history work.
-- Known issues (tracked under UAOS-47): CR LF produces double newlines, non-arrow CSI sequences leak literal bytes, Ctrl-C collides with the UP vkey, output is not IAC-escaped, no dead-peer/idle timeout.
+- **Dead-session reclamation (UAOS-322)**: a peer FIN/RST frees the slot immediately; a silently dead peer is killed by an `IAC NOP` keepalive after 60 s of no RX (its unacked retransmits exhaust `tcp_tick_retx` ~5 s later) plus a hard 10-min idle close; a dead peer mid-command wakes the command via SIGF_BREAKF/`remote_dead` and frees the slot in ~1 s.
+- Known issues (tracked under UAOS-47): CR LF produces double newlines, non-arrow CSI sequences leak literal bytes, Ctrl-C collides with the UP vkey, output is not IAC-escaped.
 - The daemon exits on its own when the net stack goes down (`netstop`); after `netstart` a fresh `telnetd` binds cleanly.
 
 ## klog — unified kernel logging
@@ -170,7 +171,7 @@ strace -o RAM:trace.txt run <m68k binary>
 | `peek` / `poke` | Physical/MMIO access (identity-mapped): `peek <addr> [LEN=n] [W=8\|16\|32\|64]`; `poke <addr> <val> FORCE` reports before/write/readback. (UAOS-205) |
 | `irqaudit` | Per-task Disable()/Forbid() audit: nest levels, total/max IF=0 time, >50 ms holds, descheduled-in-critical-section count — the UAOS-169/170/176 bug class. (UAOS-206) |
 | `sercon` | Two-way serial console: `sercon on|off` (or boot arg `sercon`/`console=ttyS0`). Polled UART RX task with `help ps taskdump dmesg irqstat klog mem tick reboot` — works when IRQ delivery itself is broken. (UAOS-207) |
-| `tickcheck` | PIT period vs self-calibrated TSC, IRQ dispatch latency histogram + worst vectors; `tickcheck SEC=n` measures TSC/PIT drift in ppm. (UAOS-208) |
+| `tickcheck` | PIT period vs self-calibrated TSC, IRQ dispatch latency histogram + worst vectors (with `@t=` tick-of-worst stamps); `tickcheck SEC=n` measures TSC/PIT drift in ppm; `RTC=n` (2–30, default on) cross-checks the tick rate against real RTC IRQ8 seconds and warns when off `UAOS_PIT_HZ` by >2%; `CLEAR` re-baselines all counters; prints the `pit out0 gate:` state and PIT ISR per-phase maxima + worst-dispatch breakdown. (UAOS-208, UAOS-332, UAOS-334) |
 | `etrace` | Binary kernel event ring (ftrace-lite — no UART cost): `etrace MASK=n` (bit0 irq,1 sched,2 signal,3 dos,4 net), `TAIL n` prints recent records, `FILE=path` dumps for `tools/etrace_decode.py`. (UAOS-209) |
 | `prof` | PIT-sampled RIP profiler: `prof START|STOP|REPORT [n]|FILE=path`; host-side `tools/prof_report.py` symbolizes. (UAOS-210) |
 | `failalloc` | Deterministic alloc-failure injection: `failalloc ON RATE=n|AFTER=n [SEED=n]` — both guest AllocMem and x64 heap. (UAOS-211) |
@@ -235,8 +236,9 @@ Either way, verify locally: `file shot.jpg` → `JPEG image data`, or
 
 - Sizing: a 1024×768 Workbench shot is ~70 KB → ~1200 lines of encoded
   text; keep the post-command sleep ≥20 s and the `nc -w` generous.
-- telnetd serves one session at a time — run the whole sequence in one
-  connection (as above) rather than separate probes.
+- telnetd serves up to 4 concurrent sessions — the sequence above still
+  works fine in one connection, and extra probes can run on parallel
+  connections if needed.
 - The pointer sprite is drawn to VRAM at flip time and is NOT captured.
 - Remote shell runs the same native table, so `screenshot` works from
   telnet exactly as in the console window.
@@ -273,10 +275,10 @@ Either way, verify locally: `file shot.jpg` → `JPEG image data`, or
 ## Gotchas
 
 - The serial device is write-only from the host side (`-serial file:`) — no input channel for sercon in the stock script. To exercise `sercon`, change `-serial` to `-serial tcp::4444,server,nowait` (then `nc localhost 4444`) or a pty; with `file:` the console still logs normally but guest RX sees nothing.
-- `telnetd` serves one session; if a client wedges the session, `telnetd STOP` frees it.
+- `telnetd` serves up to 4 sessions; dead peers are reclaimed automatically (60 s `IAC NOP` keepalive → TCP retransmit teardown, or the 10 min idle close), so `telnetd STOP` is only needed to take the whole service down.
 - `dmesg` reads the 288-entry ring — long traces overflow; for big captures use `strace -o RAM:file`, `etrace FILE=RAM:x` (binary ring — no UART cost), or read the serial log on the host.
 - klog/strace/chiptrace output deliberately bypasses the console — if you "see nothing", check `dmesg` or the serial log, not the shell window.
 - `etrace MASK=0x1f` traces at IRQ/sched rate with ~zero overhead — use it instead of `klog all=trace` when chasing timing bugs; the UART starvation incident is exactly what it avoids.
 - `watchdog` is armed by default (5 s). On bare metal a trip paints the task dump via dbgcon even with no serial — read it off the screen or the ring.
 - `crash`, `poke ... FORCE`, and `format`/`install`-class commands are destructive — `poke` to an MMIO register can wedge the bus.
-- Boot args for diagnostics: `watchdog=<ms>` (budget, 0=off), `sercon` or `console=ttyS0` (serial console at boot).
+- Boot args for diagnostics: `watchdog=<ms>` (budget, 0=off), `sercon` or `console=ttyS0` (serial console at boot), `pitgate=on|off` (override the adaptive PIT OUT0 gate — `off` drops the per-tick read-back entirely; on QEMU you'll then see ~200 dispatches/s, which is expected, since QEMU delivers both mode-3 phases).

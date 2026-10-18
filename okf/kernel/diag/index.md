@@ -4,7 +4,7 @@ title: UAOS Diagnostics Toolkit
 description: Kernel diagnostic modules (watchdog, tickmon, etrace, prof, failalloc), the C: debug command suite, serial console, in-guest pcap, and host-side decoders.
 resource: /kernel/dbg/
 tags: [kernel, debug, diagnostics, watchdog, etrace, prof, sercon, pktmon]
-timestamp: 2026-10-01T00:00:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # UAOS Diagnostics Toolkit
@@ -28,7 +28,7 @@ sampling modules.
 | Module | Purpose | Entry points |
 |---|---|---|
 | `watchdog.c` | Stall detector (UAOS-198). PIT-tick driven: trips if `g_ctx_switches` doesn't advance within the budget while ≥2 tasks are runnable, or if the tick ISR itself stops (armed via RTC second tick). | `Watchdog_SetBudget/Tick/RtcSecond/Test`, `watchdog=<ms>` cmdline, `C:watchdog` |
-| `tickmon.c` | Tick/jitter instrumentation (UAOS-208): PIT period min/avg/max vs self-calibrated TSC Hz; per-vector IRQ dispatch latency (log2 histogram + worst-cycle table). First delta after seeding is dropped — the seed can be a PIT edge latched while IF=0 during init, delivered at arbitrary phase (UAOS-270). Extremes are attributed via `pit_min_idx`/`pit_max_idx`/`pit_min_prev` so short deltas classify as delayed-tick complements vs lone early dispatches. | `Tickmon_PitTick/IrqDur/Snapshot/TscHz`, `C:tickcheck` |
+| `tickmon.c` | Tick/jitter instrumentation (UAOS-208): PIT period min/avg/max vs self-calibrated TSC Hz; per-vector IRQ dispatch latency (log2 histogram + worst-cycle table, each worst now stamped `@t=<sec>s` with the `g_pit_ticks` at which it was recorded — UAOS-332). First delta after seeding is dropped — the seed can be a PIT edge latched while IF=0 during init, delivered at arbitrary phase (UAOS-270). Extremes are attributed via `pit_min_idx`/`pit_max_idx`/`pit_min_prev` so short deltas classify as delayed-tick complements vs lone early dispatches. UAOS-334 adds ch0 OUT-pin read-back sampling (`Tickmon_PitPhase`, active only while the adaptive gate keeps read-back enabled — see `C:tickcheck`) and UAOS-332 adds `Tickmon_PitPhases` — per-phase max cycles + tick-of-max plus the full per-phase breakdown of the single worst whole-handler dispatch; `Tickmon_Clear` re-baselines everything (period stats, vector table, phases) via `tickcheck CLEAR`. | `Tickmon_PitTick/IrqDur/PitPhase/PitPhases/Snapshot/TscHz/Clear`, `C:tickcheck` |
 | `etrace.c` | Binary event trace ring — ftrace-lite (UAOS-209). 16384 × 16 B records `(tsc, event, arg0, arg1)`; class mask keeps disabled emission at ~2 cycles. Avoids the UART starvation that killed `klog all=trace` sessions. | `Etrace_Emit/SetMask/DumpFile/Tail`, `C:etrace` |
 | `prof.c` | PIT-sampled RIP profiler (UAOS-210). Samples the outermost stashed `IsrFrame` RIP + task index each tick into an open-addressed table. | `Prof_Start/Stop/Tick/Report/DumpFile`, `C:prof` |
 | `failalloc.c` | Deterministic allocation-failure injection (UAOS-211): 1-in-N or every-after-N with LCG seed. Both heaps: guest `AllocMem` (`exec/dos_lib.c`) and x64 userspace heap (`exec/elf64_loader.c`). | `Failalloc_Config/ShouldFail/Status`, `C:failalloc` |
@@ -46,7 +46,10 @@ sampling modules.
 - `Signal()` → `ETRACE_SIGNAL`; `DoPkt`/`SendPktAsync` → `ETRACE_DOPKT`;
   `netdev_send`/`stack_rx` → `ETRACE_PKT_TX/RX` + `Pktmon_Record`.
 - PIT handler (`uaos_kernel_main.c`): `Tickmon_PitTick`, `Prof_Tick`,
-  `Watchdog_Tick`.  RTC IRQ8 → `Watchdog_RtcSecond`.
+  `Watchdog_Tick`, plus a `diag_rdtsc()` bracket around each of the
+  ~11 ISR call sites feeding `Tickmon_PitPhases` (UAOS-332), and the
+  ch0 read-back/OUT0-gate logic of UAOS-334.  RTC IRQ8 →
+  `Watchdog_RtcSecond`.
 
 ## Scheduler/task instrumentation (`kernel/exec/task.{c,h}`)
 
@@ -78,7 +81,7 @@ report a peak far above what its own entry function uses.
 | Command | What it does |
 |---|---|
 | `taskdump [TASK=n|FULL]` | Live task table: state, pri, cpu ticks, ctx switches, stack peak, wait mask, nest levels; per-task saved-frame decode. (UAOS-195) |
-| `taskstat [<sec>\|NOW]` | Per-task CPU% + switches/s sampled over a window; `NOW` prints cumulative counters under `cpu_t`/`switches` headers (no window). The `busy-total` footer excludes the Idle task so `idle share = window - busy` is meaningful (UAOS-269). (UAOS-197, NOW-mode headers UAOS-282) |
+| `taskstat [<sec>\|NOW]` | Per-task CPU% + switches/s sampled over a window; `NOW` prints cumulative counters under `cpu_t`/`switches` headers (no window). The `busy-total` footer excludes the Idle task so `idle share = window - busy` is meaningful (UAOS-269). The wait-mask and priority columns always carry a space separator (UAOS-331 — Shell tasks' `0x10100` wait mask used to run into the `0` pri as `0x101000`). (UAOS-197, NOW-mode headers UAOS-282) |
 | `watchdog [MS=n\|OFF\|TEST]` | Arm/status/self-test the stall watchdog. `TEST` holds `Forbid()` past the budget — interrupts still fire, no reschedules — exactly the condition it guards. (UAOS-198) |
 | `ports` | Handler MsgPort pending queues + async packet pool. (UAOS-200) |
 | `timers` | Pending `TimeRequest`s: fire tick, delta, sigmask, owner. (UAOS-201) |
@@ -89,9 +92,9 @@ report a peak far above what its own entry function uses.
 | `irqroute [BDF=b:d.f]` | pin→PIRQ→GSI→vector decode per device: ICH DxxIP/DxxIR override, PIRQA-H→IO-APIC 16-23, intline fallback, resolved vector + name. Since UAOS-269 the vec name is the device's own bound driver (`IRQ_BdfVec`) — a foreign shared line prints `owner=<drv>`; a routed-but-unarmed GSI prints `gsi routed, no handler`; INTx-unresolved devices show `intx: no route` with an `(msi capable)` hint, and MSI bindings get a `msi vec=N (drv)` line. (UAOS-199, labels UAOS-269) |
 | `peek <addr> [LEN=n] [W=8\|16\|32\|64]` | Physical/MMIO read (identity map). (UAOS-205) |
 | `poke <addr> <val> [W=..] FORCE` | MMIO write; refuses without `FORCE`, reports before/write/readback. (UAOS-205) |
-| `irqaudit` | Per-task Disable/Forbid audit: current nest, total IF=0 time, max hold, >50 ms holds (threshold is `TASK_IRQOFF_LONG_MS` converted via self-calibrated `Tickmon_TscHz()`, with a ~50M-cycle fallback before calibration), descheduled-in-crit count. (UAOS-206, threshold fix UAOS-282) |
+| `irqaudit` | Per-task Disable/Forbid audit: current nest, total IF=0 time, max hold, >50 ms holds (threshold is `TASK_IRQOFF_LONG_MS` converted via self-calibrated `Tickmon_TscHz()`, with a ~50M-cycle fallback before calibration), descheduled-in-crit count. Prints `no Disable/Forbid holds recorded` rather than a bare header when the table is empty (UAOS-331). (UAOS-206, threshold fix UAOS-282) |
 | `sercon ON\|OFF` | Serial console control (below). (UAOS-207) |
-| `tickcheck [SEC=n]` | PIT period vs calibrated TSC, IRQ latency histogram, worst vectors; `SEC=` measures TSC/PIT drift in ppm. (UAOS-208) |
+| `tickcheck [SEC=n\|RTC=n\|CLEAR]` | PIT period vs calibrated TSC, IRQ latency histogram, worst vectors (`@t=` stamp per worst); `SEC=` measures TSC/PIT drift in ppm. UAOS-334/332: `CLEAR` calls `Tickmon_Clear` and re-baselines all counters; the default output gains an **RTC cross-check** (`RTC=n`, 2–30 IRQ8 seconds, default 3) that counts `g_pit_ticks` and ch0 counter-wraps against real RTC seconds and prints a WARNING when pit_ticks/s deviates >2% from `UAOS_PIT_HZ` — the check TSC calibration can't provide since it self-calibrates *from* PIT ticks; a `pit isr phases` section (per-phase max cycles + tick-of-max) and a `worst pit dispatch breakdown` (phase deltas of the single worst handler run); and a `pit out0 gate:` line reporting the adaptive-gate state (below). Phase/read-back stats only exist while the gate keeps read-back active. (UAOS-208, UAOS-332, UAOS-334) |
 | `etrace [MASK=n\|OFF\|TAIL n\|FILE=path]` | Event ring control; `FILE=` writes the binary dump for `tools/etrace_decode.py`. (UAOS-209) |
 | `prof START\|STOP\|REPORT [n]\|FILE=path` | RIP profiler; `FILE=` writes `rip taskidx count` for `tools/prof_report.py`. (UAOS-210) |
 | `failalloc ON RATE=n\|AFTER=n [SEED=n] \| OFF` | Alloc-failure injection. (UAOS-211) |
@@ -105,6 +108,54 @@ report a peak far above what its own entry function uses.
 - `watchdog=<ms>` — stall budget at boot (default armed at 5000 ms;
   `watchdog=0` disables).
 - `sercon` / `console=ttyS0` — start the serial console task at boot.
+- `pitgate=on|off` — override the adaptive PIT OUT0 gate (UAOS-334).
+  `on` forces the read-back gate, `off` disables read-back and the
+  gate unconditionally; with no override the boot-time calibration
+  decides (see below).
+
+## PIT IRQ0 double-edge delivery and the adaptive OUT0 gate (UAOS-334)
+
+QEMU's i8254 model calls the interrupt line on **both** mode-3 OUT0
+transitions (rising and falling half-periods), so every OUT0 period
+produced two IRQ0 dispatches and `g_pit_ticks` ran at ~200 Hz —
+halving every tick-derived timeout and skewing the TSC
+self-calibration ~2x low (tickcheck's TSC Hz is calibrated *from*
+PIT ticks, so it could not see this itself).  Real i8254 hardware
+raises IRQ0 only on the rising edge.
+
+`PIT_IRQHandler` therefore starts with an **OUT-pin gate** active:
+each dispatch latches ch0 status via the i8254 read-back command
+(0xE2 — bit7 = OUT pin) and drops dispatches observed with OUT=0.
+The gate is *adaptive*, because an unconditional gate would cost
+4 port I/Os per tick on metal and would drop a legitimate tick
+whenever ISR latency exceeded half a period (OUT already back to 0 —
+exactly the delayed-tick case UAOS-332 profiles):
+
+- Over the first **256 dispatches** the handler counts dispatches
+  seen with OUT=0.
+- OUT=0 fraction **≥ 25%** → double-edge delivery confirmed → gate
+  stays on permanently (QEMU takes this path — the OUT0 samples
+  alternate 1/0 almost perfectly).
+- **< 10%** → single-edge delivery → the gate **and** the read-back
+  are disabled entirely (metal path: zero per-tick overhead, no
+  dropped late ticks).
+- In between → ambiguous, the gate stays on and the decision is
+  logged.
+- `pitgate=on|off` on the multiboot cmdline overrides calibration
+  (`[BOOT] PIT OUT0 gate forced on/off`).
+
+The decision is logged once via kprint (`[PIT] double-edge IRQ0
+delivery detected -- OUT0 gate on` / `single-edge -- gate off`) and
+reported by `tickcheck` (`pit out0 gate: on|off`).  The
+`Tickmon_PitPhase` out=1/out=0/alt counters and the `Tickmon_PitPhases`
+per-phase data only exist while read-back is active.  On QEMU with
+the gate the RTC cross-check reports `pit=100.0/s`; forced
+`pitgate=off` on QEMU shows ~200 dispatches/s (both edges dispatched
+— proving one dispatch is counted as one tick) and fires the >2%
+WARNING.  The tick vector is also exempted from `IRQ_StormTick`
+masking — a periodic edge source cannot produce the level storm that
+failsafe exists for, and masking it would freeze `g_pit_ticks`
+(kernel/irq/irq.c).
 
 ## Serial console (`kernel/klog/sercon.c`, UAOS-207)
 

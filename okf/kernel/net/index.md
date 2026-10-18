@@ -4,7 +4,7 @@ title: TCP/IP Network Stack
 description: The native IPv4 networking stack, device drivers, and higher-level protocols in UAOS.
 resource: /kernel/net/
 tags: [network, tcp, udp, ip, dhcp, dns, ntp]
-timestamp: 2026-10-05T07:00:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # TCP/IP Network Stack
@@ -295,6 +295,36 @@ index, so a pump task can never feed input to a different session that
 later reuses the same remote slot (see the "Remote Shell Sessions"
 section of [Display](/kernel/display/index.md)).
 
+Dead-session lifecycle (UAOS-322 — fixed, commit 43c8091):
+a peer FIN or RST still tears everything down promptly (pump sees
+`CLOSE_WAIT`-drained/`CLOSED`, `RemoteKill`s the shell,
+`tcp_conn_close` frees the socket).  A *silently* dead peer (no
+FIN/RST — the "dropped connection" case) is now bounded at two
+levels.  The pump emits a telnet `IAC NOP` (`ff f1`) keepalive after
+`TELNETD_KEEPALIVE_TICKS` (60 s) with no RX — invisible to a live
+peer, it exists purely to give the kernel TCP a seq-carrying segment
+to retransmit, so a dead peer's unacked keepalive exhausts
+`tcp_tick_retx` (~4.7 s total with backoff) and RSTs the socket;
+the pump then sees `CLOSED` and reclaims the slot on its next pass.
+The keepalive does not touch `last_rx`, so it can't keep a session
+alive — `TELNETD_IDLE_TICKS` (60000, ~10 min) still closes an idle
+session outright regardless.  (The earlier 5-min `IAC AYT` probe was
+removed — a NAT/slirp hop ACKs it on the dead client's behalf, so it
+never produced traffic that could fail.)  Separately, a peer that
+dies while a blocking remote command runs now frees the shell slot
+promptly: `shell_yield_ms` breaks early on `s->remote_dead` exactly
+like `break_req`, and `shell_take_break` reports a dead remote
+session as a break — one point covers every `CMD_YIELD` user
+(`wait`, script FOR/execute dispatchers, all break-polled loops), so
+`RemoteKill`'s SIGF_BREAKF wakes the command and the slot frees
+within ~1 s (previously `wait 60` pinned it for the duration).
+`remote_send_raw` also re-checks `remote_dead` inside its 60 s send
+stall bound.  Note: QEMU delivers IRQ0 on both mode-3 OUT0
+transitions, so `g_pit_ticks` used to run at ~200 Hz and all
+tick-based timeouts fired ~2x early there; UAOS-334's adaptive OUT0
+gate restores the true 100 Hz (see
+[Diagnostics](/kernel/diag/index.md)).
+
 Lifecycle (UAOS-54): `telnetd STOP` maps to `Telnetd_Stop()`, which sets
 a `g_stop` flag the daemon checks every loop iteration — the accept loop
 and any in-progress session pump both unwind, the listener is
@@ -320,12 +350,16 @@ cannot leave the service permanently "running".
 `tcp_close()`: it forces the socket to `TCP_CLOSED` unconditionally,
 for teardown when the peer can no longer be reached.
 
-Session watchdog and logging (UAOS-60/61): each pump tracks `last_rx`
-(last received input).  At ~5 min idle (`TELNETD_IDLE_PROBE_TICKS`) it
-sends `IAC AYT` as a liveness probe; at ~10 min
+Session watchdog and logging (UAOS-60/61, keepalive rework UAOS-322):
+each pump tracks `last_rx` (last received input).  At 60 s of no RX
+(`TELNETD_KEEPALIVE_TICKS`) it sends an `IAC NOP` keepalive — a
+seq-carrying segment whose retransmits expose a dead peer at the TCP
+level (see "Dead-session lifecycle" above); at ~10 min idle
 (`TELNETD_IDLE_TICKS`) it closes the socket and kills the shell via
 `ShellWin_RemoteKill()`, so a peer that vanishes without FIN/RST can no
-longer pin a remote slot forever.  `RemoteKill` signals the session
+longer pin a remote slot forever.  Every disconnect is logged with a
+reason (`peer closed`, `socket dead`, `shell ended`, `idle timeout`,
+`stopped`).  `RemoteKill` signals the session
 task with `SIGF_BREAKF` so a shell parked in a foreground-child `Wait`
 (e.g. `more` blocking on a keypress) actually wakes and exits
 (UAOS-287).  Connects and disconnects are logged

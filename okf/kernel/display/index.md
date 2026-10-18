@@ -4,7 +4,7 @@ title: Display and Window Manager
 description: The UAOS graphical environment, including the linear framebuffer and windowing system.
 resource: /kernel/display/
 tags: [display, wm, framebuffer, gui]
-timestamp: 2026-10-02T00:00:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # Display and Window Manager
@@ -227,6 +227,8 @@ The active guest menu strip is cached (UAOS-105): `refresh_active_menus()` repar
 
 **ADF drive picker (UAOS-158).** `adf_picker.{c,h}`: when a file is double-clicked in a browser (or its Leave Out shortcut on the desktop) and `AdfPicker_IsAdfPath` matches (case-insensitive `.adf` suffix, extension only), it calls `AdfPicker_Open(path)` instead of `ExecFile_RunWB`. That opens `Requester_Choice("Insert Disk", 'Insert "<name>" into which drive?', DF0:–DF3: + Cancel)`, with a drive's button ghosted while `floppy_unit_loaded` is set for it. The picked unit is passed to `AdfMount_Insert`. A failure shows `Requester_Info` with `AdfMount_ErrorString`; success needs nothing more, because the disk icon comes from the mount-table fingerprint. The path is copied to a static buffer, since the callback runs after the browser's stack buffer is gone.
 
+**Launch-failure requesters (UAOS-15).** Every other double-click dispatch (browser entries, desktop icons, leave-out shortcuts) goes through `ExecFile_RunWB` and gets user-visible feedback on failure: a negative return opens `Requester_Info("Workbench", ...)` with "Unable to open `<leaf>`" plus a reason line — `-3` "No default tool", `-1` "Default tool not found: `<tool>`" (or "Not an executable" / "Object not found" as appropriate), `-2` load/bad-format errors. `C:wbrun` prints the same message text and returns rc 20. See `kernel/exec/icon_library.md` for the default-tool search path and argument forwarding.
+
 ### Icon Selection State
 Desktop icons can be selected with a single click or by lasso (rubber-band) drag. The selected icon is rendered using one of two methods:
 
@@ -285,7 +287,7 @@ The display layer includes several Workbench-style application windows in additi
 - **Vim Editor (`vim_win.c`)**: Modal text editor with Normal/Insert/Visual/Command modes, search, undo, and `S:vim.conf` configuration.
 - **ED Editor (`ed_win.c`)**: AmigaED-style line editor with edit mode (type text, cursor movement) and command mode (ESC for commands: `w` save, `q` quit, `wq` save+quit, `/pat` search, `N` goto line). Supports both standalone WM windows and inline shell integration. Simpler than Vim — no modal confusion.
 - **AmigaGuide Viewer (`system/userspace/guide.c`)**: Userspace x86-64 binary that parses and renders `.guide` files. Supports `@NODE`/`@ENDNODE`/`@PREV`/`@NEXT`/`@TITLE` directives, `@{"label" LINK target}` navigation links, `@{"label" SYSTEM command}` sensitivity links, bold/italic text attributes, word wrap, scrolling, and keyboard navigation. Launched via `C:guide` or `Tools:Guide`.
-- **Early Startup Control (`early_startup.c`)**: Boot-time menu that appears during a 2-second countdown after kernel initialization. If a key is pressed, presents options: Normal Boot, Boot without Startup-Sequence, Boot to Shell only (no Workbench), and Display System Information. Uses the framebuffer directly (pre-scheduler, pre-WM). Sets `ShellWin_SetShellOnlyMode()` to prevent `LoadWB` in shell-only mode.
+- **Early Startup Control (`early_startup.c`)**: Boot-time menu that appears during a 2-second countdown after kernel initialization. If a key is pressed, presents options: Normal Boot, Boot without Startup-Sequence, Boot to Shell only (no Workbench), and Display System Information. Uses the framebuffer directly (pre-scheduler, pre-WM). Sets `ShellWin_SetShellOnlyMode()` to prevent `LoadWB` in shell-only mode. UAOS-333 made it actually responsive: `EarlyStartup_Run` runs before `Task_StartFirst` at a point where the last `cli` has already run, so it now does `irq_save` → `sti` for the menu's duration and `irq_restore` on every exit — IRQ1/USB-HID can fill the key ring and the PIT ticks. The countdown and menu waits run on `g_pit_ticks` deadlines with `hlt` between polls (bounded TSC-iteration fallback if ticks stall, so a broken PIT can't hang boot); keys consumed during the countdown are flushed at menu entry so the first press only opens the menu. Arrow keys match the ring's `KBD_VKEY_UP/DOWN` codes (PS/2 and USB-HID both feed these — MBP4,1 has no i8042, so USB is its only path), `j`/`k` still work, and Enter accepts `\r`/`\n`. `Watchdog_Tick` treats `Task_Current()==NULL` (scheduler not started) as not-a-stall so the open-ended menu wait can't trip the no-context-switch watchdog.
 - **Pointer Preferences (`pointer_prefs.c`)**: Cursor size, double-pixel mode, and acceleration settings. Declarative UI (UAOS-125): the entire window is a `UINode` tree bound via `uibind` — labelled weight-1 button groups with `pressed` selection markers, centred Apply/Close row, ESC/close-gadget via `UIEV_KEY`/`UIEV_CLOSE`. Auto-sized and reflows on resize.
 - **Preferences Suite (`prefs_win.c`)**: GUI editors for all AmigaOS 3.x Prefs programs — Palette, Time, IControl, Input, ScreenMode, WBPattern, Font, Serial, Printer, Locale. Each opens a WM window with AmigaOS-style gadgets (buttons, cycle gadgets, sliders, checkboxes). Palette editor persists to `ENVARC:Sys/palette.prefs` via IFF PREF format. Time editor reads/writes the RTC via `RTC_ReadDateTime()`/`RTC_SetDateTime()`.
 - **Commodities Framework (`commodities.h/c`)**: Broker registry for commodities — background tools that can be controlled from Exchange. Supports up to 16 brokers with Active/Sleeping/Disabled states and enable/disable/sleep/wake callbacks.
@@ -379,8 +381,16 @@ reclaim path never see them; a remote instance has `wm_handle == -1`,
   (UAOS-287): the foreground-child `Wait(SIGF_CHILD|SIGF_BREAKF)` loops
   bail on `remote_dead`, so a remote shell parked inside a blocking
   command (e.g. `more` waiting on a key) wakes and tears down instead
-  of pinning the slot.  A session task that exits while a pipe stage
-  is still running is handled by per-shell pipe state (see below).
+  of pinning the slot.  UAOS-322 extended the same wake to every
+  yield-based wait: `shell_yield_ms` breaks early on `remote_dead`
+  exactly like `break_req`, and `shell_take_break` reports a dead
+  remote session as a break — one point covering `wait`, the script
+  FOR/execute dispatchers and all break-polled loops, so a killed
+  connection frees its slot within ~1 s even mid-command; a session
+  that outlives its socket is the one case a blocking command could
+  previously pin for its full duration.  A session task that exits
+  while a pipe stage is still running is handled by per-shell pipe
+  state (see below).
 - Spawned-command input (UAOS-287): x86-64 tasks launched by a shell
   carry `UaosTask::key_src` pointing at that `ShellInstance`, inherited
   through `sys_spawn`.  `sys_read`/`sys_readkey` route through

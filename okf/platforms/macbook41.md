@@ -3,7 +3,7 @@ type: Hardware Platform
 title: MacBookPro4,1 bare-metal bring-up
 description: Verified hardware inventory of the MacBookPro4,1 (Early 2008) test machine and the UAOS support needed to boot on it. Tracked in Plane under UAOS-131.
 tags: [hardware, macbook, bare-metal, drivers]
-timestamp: 2026-10-18T02:08:42Z
+timestamp: 2026-10-18T10:09:16Z
 ---
 
 # MacBookPro4,1 as a UAOS target
@@ -505,3 +505,24 @@ screen+window, exits) across repeated cycles; metal re-verify pending.
 - Deferred per card scope: VBIOS int10 (needs x86 emu or CSM boot) and
   native G84 modesetting — both major efforts, VBIOS reference at
   `~/workspaces/macbook41/mbp41-8600mgt-vbios.rom`.
+
+## Metal check pass (2026-10-18, build UAOS-181026204207 @ 192.168.10.150)
+
+Box now answers on **192.168.10.150** (UAOS DHCP lease; the .149 Debian address is
+the Linux install). Booted from the SanDisk USB stick, sysroot as GRUB module,
+**normal MTRR entry** (WC at 0xC0000000 slot 5 — nomtrr no longer required).
+UAOS-132 (EFI64 boot + USB media) closed Done.
+
+Health: Idle 100%, ~25 sw/s idle, `dmesg err` empty, stack canaries ok, all
+5 UHCI + 2 EHCI on INTx (`poll_usbint` 0-1), AHCI MSI v96, sky2 MSI v97.
+
+Findings filed: UAOS-327 (`info` volume sizes wrap at 4 GiB — `VFS_GetVolumeInfo`
+is uint32), UAOS-328 (no GPT parse: the OCZ SSD's 0xEE protective entry is
+registered as `ahci01`, and default `DHn:` naming is per-disk so it collides with
+the USB stick's DH0:), UAOS-329 (`Handler_Create` aliases the caller's stack
+name — `ports` shows the FAT handler as "8"), UAOS-330 (volume icons load
+`VOL:.info` not `VOL:Disk.info` → all volumes draw as grey NDOS), UAOS-331
+(shell/diag UX nits), UAOS-332 (one 15 ms PIT gap; PIT ISR worst still 1.08 ms).
+
+Exfil note: the host has no `uudecode`; decode the `uuencode` capture with
+Python `binascii.a2b_uu` per line between `begin`/`end`.

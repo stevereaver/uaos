@@ -4,7 +4,7 @@ title: M68k Emulation Layer
 description: Integration of the Musashi M68k emulator and the UAOS kernel.
 resource: /emulation/
 tags: [m68k, musashi, glue]
-timestamp: 2026-08-30T15:00:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # M68k Emulation Layer
@@ -70,6 +70,8 @@ ExecBase `IntVects[16]` lives at `EXEC_BASE+0x54` as 12-byte `IntVector` entries
 - **Poll path** — `UAOS_M68k_DeliverInterrupts()` is called between `m68k_execute` slices in `exec_task.c` and pumped inside the blocking-wait paths (`exec_Wait`, `WaitPort`, `WaitIO`, `dos_Delay` sliced sleeps, the ASL requester wait) so handlers also fire while the guest task is descheduled or while it runs at IPL 7. Diag: `g_dlv_calls`/`g_dlv_pend`/`g_dlv_isr`/`g_blocked_in`.
 
 Both honour guest masking: `pend = INTREQ & INTENA` (plus the CIA-B line synthesized into the EXTER bit), and a source only preempts while its level exceeds the guest's `SR.IPL` (or reaches the vector path via Musashi's own level check). Unacknowledged bits persist in `g_intreq` and refire — matching level-triggered hardware.
+
+**Exec-side INTREQ acknowledgement (UAOS-326):** `deliver_intvect_bit` now acknowledges the bit itself after every `IV_CHAIN` server-chain dispatch — claimed or not — and for handler-less vectors. On real hardware an interrupt-server chain is expected to clear the source, but a chain where no server claims (or a bit with no handler at all) used to leave the INTREQ bit set forever: the level line stayed asserted and every subsequent poll redispatched the same sources (~300+/s under OctaMED's VERTB/PORTS mix, masking real work). `exec_intack()` routes the ack by bit: PORTS (3) and EXTER (13) — whose pending state lives in the CIA ICR, not `g_intreq` — are delivered through `deliver_cia_icr` then `chip_emu_cia_icr_ack`; every other bit goes through `chip_emu_clear_intreq()` (a guest INTREQ write with SET/CLR=0, which calls `chip_emu_update_irq`). Direct `SetIntVector` handlers keep Amiga self-ack semantics — they must write `INTREQ = 1<<bit` themselves. Verified: AGATest's level-3 autovector dispatches fell to ~5/s.
 
 **cia.resource** — `ciaa.resource`/`ciab.resource` open as generated-library blocks with an extra 8-entry `Interrupt*` table at `base+0x80`. `AddICRVector`(-6)/`RemICRVector`(-12)/`AbleICR`(-18)/`SetICR`(-24) dispatch to `chip_emu_cia_*` helpers; pending `icr & icr_mask` bits are delivered to the registered handlers (A0 = CIA base, A1 = `is_Data`, D0 = bit) and acked on delivery. GenLib entries are window-scoped (`GenLib.ram`) so concurrent M68k tasks keep independent resource registrations. Interrupt-chain traversal snapshots `ln_Succ`/`is_Data`/`is_Code` before invoking each handler — a handler may legally remove its own node.
 

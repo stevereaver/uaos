@@ -4,7 +4,7 @@ title: UAOS Shell
 description: The command-line interface for UAOS.
 resource: /kernel/shell/
 tags: [shell, cli, commands, scripting, template, backtick]
-timestamp: 2026-08-30T00:00:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # UAOS Shell
@@ -51,6 +51,25 @@ command that just ran actually failed — previously a stale nonzero
 `last_rc` survived across successful commands and the warning repeated
 after every command until the shell was closed.  `rx` still reads the
 just-dispatched command's rc through `get_last_rc` for propagation.
+
+FAILAT is **script-only** (UAOS-331): `check_failat()` is gated on
+`script_depth != 0`, so a failing command at an interactive prompt
+(console or telnet) prints nothing and never aborts the shell —
+matching AmigaDOS, where FailAt governs script aborts.  Inside a
+script (`execute`, `Startup-Sequence`, `S:Shell-Startup`, `newcli
+from`) an rc ≥ threshold prints the line *and* sets `quit_flag`, so
+the script aborts at the next line.  `S:Startup-Sequence` runs
+`FailAt 21` near its header so benign optional-step failures
+(`NetStart` with no NIC, an Assign whose target is missing, a second
+`telnetd` returning rc 10) can no longer skip `C:LoadWB` — the
+default threshold of 10 would otherwise abort the whole boot script.
+
+`dir <path>` on a nonexistent object prints `dir: <path> - object not
+found` and returns rc 20 (setting the `why` error
+`ERROR_OBJECT_NOT_FOUND`), in both the kernel path and the userspace
+`C:dir` (UAOS-331).  An existing-but-empty directory still prints the
+normal listing with rc 0 — "(empty or not found)" conflated the two
+cases at rc 0 before.
 
 ## Command Reference
 
@@ -103,7 +122,7 @@ For full syntax and examples, see the `README.md` and `documentation/Dos_Manual.
 
 ## File Browser Launching
 
-Double-clicking an icon in the Workbench file browser (`filebrowser.c`) calls `ExecFile_Run()` in `exec_file.c`. The loader reads the first four bytes of the selected file to determine whether it is a UAOS wrapper binary (e.g. `UAOS` for a native command), an Amiga Hunk executable, or an ELF64 binary. Native commands are dispatched through `NativeCmd_Run()`, which constructs a minimal `NativeCmdCtx` and invokes the corresponding `Cmd_` function registered in the native command table.
+Double-clicking an icon in the Workbench file browser (`filebrowser.c`) calls `ExecFile_RunWB()` in `exec_file.c` — the Workbench-launch path: project icons resolve `do_DefaultTool`, tools run via real `WBStartup` messages (`pr_CLI == 0`, WBArgs), and failures return distinct codes reported via `Requester_Info`. The loader reads the first four bytes of the selected file to determine whether it is a UAOS wrapper binary (e.g. `UAOS` for a native command), an Amiga Hunk executable, or an ELF64 binary. Native commands are dispatched through `NativeCmd_Run()`, which constructs a minimal `NativeCmdCtx` and invokes the corresponding `Cmd_` function registered in the native command table. See `kernel/exec/icon_library.md` for the Tool Types / default-tool details.
 
 ## Scripting
 

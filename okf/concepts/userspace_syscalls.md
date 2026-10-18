@@ -3,7 +3,7 @@ type: Concept
 title: Userspace and System Calls
 description: Details of the Ring-0 user-space task execution model, software interrupt INT 0x80 system call dispatching, and native userspace utility execution in UAOS.
 tags: [userspace, syscalls, ring0, elf64, uaos-binary]
-timestamp: 2026-08-29T19:00:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # Userspace and System Calls
@@ -92,7 +92,7 @@ Added to support the migration of DOS commands from kernel-resident C: stubs to 
 | `0x24` | `sys_getprotection` | Read AmigaDOS protection bits from a file. |
 | `0x25` | `sys_getcomment` | Read a file's comment string. |
 | `0x26` | `sys_setcomment` | Set a file's comment string. |
-| `0x27` | `sys_getvolumeinfo` | Query total/used bytes for a volume path. |
+| `0x27` | `sys_getvolumeinfo` | Query total/used bytes for a volume path. Out-params are `uint64_t *` since UAOS-327 (ABI change — the whole volume-info chain was widened so >4 GiB volumes report correctly). |
 | `0x28` | `sys_readkey` | Read a single keypress (yields until input available). |
 | `0x29` | `sys_getattrs` | Retrieve file attributes (size, type, timestamps). |
 | `0x2A` | `sys_setattrs` | Set file attributes. |

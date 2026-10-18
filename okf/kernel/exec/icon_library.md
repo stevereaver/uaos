@@ -4,7 +4,7 @@ title: icon.library
 description: UAOS native implementation of the AmigaOS icon.library (DiskObject, tooltypes) and Workbench launch semantics (WBStartup) for M68k tasks.
 resource: /kernel/exec/icon_lib.c
 tags: [workbench, library, m68k, icons, wbstartup, launch]
-timestamp: 2026-10-08T02:21:00Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # icon.library + Workbench launch (UAOS-253)
@@ -49,9 +49,11 @@ Registration rides the `LIB_ROM` generated-base machinery (`UAOS_ICON_Register` 
 `ExecFile_RunWB(path, extra_paths, n)` is entered by the filebrowser/desktop/`wbrun` instead of `ExecFile_Run`:
 
 - Parses the clicked icon's `.info` (`IconMeta`): type, stack size, tool window, tooltypes.
-- `WB_PROJECT` icons resolve `do_DefaultTool` (absolute, or relative to the project's drawer) and enqueue the project as `WBArg[1]`.
+- `WB_PROJECT` icons resolve `do_DefaultTool` and enqueue the project as `WBArg[1]`.  A default tool containing a volume/assign (`:`) is used as-is; a **bare** tool name is searched in order (UAOS-15): the project's drawer, `C:`, `SYS:Utilities/`, `SYS:Tools/`, `SYS:System/`, `SYS:` — first `VFS_Open` hit wins.
 - Extra paths (shift-click multi-selection) append as further WBArgs; `WBArg[0]` is always the tool itself.
 - Fills `g_wb_pending` (consumed once by `Task_CreateM68k` into `task->m68k_wb`), sets `g_uaos_cwd` to the tool's drawer, and creates the M68k task.
+- **Native (X64) tools** get the project path followed by the extra paths as their argument string — space-separated, each wrapped in double quotes when it contains a space (UAOS-15; previously the args were dropped and the tool ran with `""`).
+- **Return codes** (UAOS-15): `-1` tool/file not found, `-2` bad format / load error, `-3` project icon has no default tool.  GUI callers (filebrowser double-click, desktop leave-out) map these onto `Requester_Info("Workbench", "Unable to open <leaf>" + reason)`; `C:wbrun` prints the matching message (`No default tool`, `Default tool not found: <tool>`, `Not an executable`) and returns rc 20.
 
 `UAOS_Emu_SetupWbLaunch()` then builds a Process with `pr_CLI = 0`, a real `pr_MsgPort`, `pr_CurrentDir` = `dos_LockPath_glue(tool_dir)`, `pr_StackSize` from the icon, and a queued 40-byte `WBStartup` (`sm_Segment` = loaded seglist BPTR, `sm_NumArgs`, `sm_ArgList`, `sm_ToolWindow`, `sm_Process` = `&pr_MsgPort`). The reply port is a fake Workbench Process at `PROC_ENV_BASE+0x800`; at task teardown `UAOS_Emu_WbStartupReplied()` reports whether the guest `ReplyMsg`ed. Entry registers follow WB convention (A0=NULL, D0=0).
 

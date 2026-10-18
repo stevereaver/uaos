@@ -4,7 +4,7 @@ title: AGA/ECS Custom Chipset Emulator
 description: Sparse register emulator for the Amiga AGA/ECS custom chip and CIA window at 0xDFF000.
 resource: /kernel/chipset/
 tags: [aga, ecs, chipset, chip_emu, copper, dma, palette]
-timestamp: 2026-10-14T09:08:39Z
+timestamp: 2026-10-18T15:13:53Z
 ---
 
 # AGA/ECS Custom Chipset Emulator
@@ -216,7 +216,7 @@ The display window derivation has been improved:
 - INTREQ bits 11–12 (RBF/DSKSYN) → level 5
 - INTREQ bits 13–14 (EXTER/INTEN) → level 6; the CIA-B interrupt line also pulls level 6
 
-VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive the Musashi interrupt line.  `m68k_set_irq()` is injected in **every** context (shared boot and per-task): all guest RAM windows have populated autovector entries pointing at `ILLEGAL` dispatch stubs, so delivery never vectors to a zero entry (UAOS-241).  Pending `INTREQ`/`INTENA` persists for sources the guest has masked, so nothing is lost while a task runs at a higher IPL or is descheduled.
+VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive the Musashi interrupt line.  `m68k_set_irq()` is injected in **every** context (shared boot and per-task): all guest RAM windows have populated autovector entries pointing at `ILLEGAL` dispatch stubs, so delivery never vectors to a zero entry (UAOS-241).  Pending `INTREQ`/`INTENA` persists for sources the guest has masked, so nothing is lost while a task runs at a higher IPL or is descheduled.  `chip_emu_clear_intreq(bits)` (UAOS-326) performs a guest-equivalent INTREQ write with SET/CLR=0 — clearing a bit through the normal register path and re-evaluating the Musashi line via `chip_emu_update_irq()` — and is how the exec side acknowledges interrupt-server-chain and unhandled-vector dispatches (see [Emulation](/emulation/index.md)).
 
 **CIA interrupt-line model** — `cia_irq_reval(id)` re-evaluates a CIA's interrupt output after every `icr`/`icr_mask` change, matching the real 8520's combinational `INT = (icr & icr_mask) != 0`: enabling a mask bit with an already-pending source raises the line; masking the last pending source drops it without needing an ICR read.  CIA-A drives `INTREQ` PORTS (bit 3); CIA-B drives the level-6 line via `g_cia_b_irq`.  Called from `cia_tick` underflows, the `ICR` mask write, `AbleICR`, `SetICR`, `chip_emu_cia_icr_ack`, and the ICR register read (which clears `icr`).
 

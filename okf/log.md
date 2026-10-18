@@ -1,5 +1,34 @@
 # OKF Change Log
 
+## 2026-10-18 — TODO sweep part 6: UAOS-322/326/327/333/15/334+332/331
+
+* **UAOS-322** (`43c8091`): dead telnet sessions reclaimed — `shell_yield_ms` and `shell_take_break` treat `remote_dead` like a break (single point covers all CMD_YIELD users); telnetd pump sends `IAC NOP` every 60 s of no RX (`TELNETD_KEEPALIVE_TICKS`) so a silently dead peer's unacked keepalive exhausts retransmits (~5 s → CLOSE); full idle close kept at 10 min; disconnect log now carries a reason. Verified: `wait 60` + client kill frees the slot ~1 s, 4/4 concurrent logins, `ff f1` in pcap.
+* **UAOS-326** (`2ed0a5d`): guest level-3 IRQ storm fixed — exec-side INTREQ ack: after an `IV_CHAIN` server-chain dispatch (claimed or not) and for handler-less vectors, `deliver_intvect_bit` acknowledges the bit (`chip_emu_clear_intreq`, guest-write path); PORTS/EXTER ack via CIA ICR; direct `SetIntVector` handlers unchanged. AGATest autovector dispatch dropped from ~300+/s to ~5/s.
+* **UAOS-327** (`3d997dc`): volume-info chain widened to 64-bit bytes — `FAT32_GetVolumeStats`/`RamFS_GetVolumeStats`/`VFS_GetVolumeInfo`/`sys_getvolumeinfo` (0x27) take `uint64_t *`; `uaos_getvolumeinfo` ABI widened + `u64_to_dec` helper in `uaos_cmd.h`; handlers fill `InfoData` NumBlocks = bytes/BytesPerBlock (was hardcoded /512), clamped to INT32_MAX. 16 GiB FAT32 reports ~15G correctly in `info`/`df`/`dir`.
+* **UAOS-333** (`dbbe071`): Early Startup Control menu works — `EarlyStartup_Run` does `irq_save`/`sti`/`irq_restore` so IRQ1/USB fill the key ring; countdown + menu waits use `g_pit_ticks` deadlines + `hlt` (TSC-stall fallback); arrows use `KBD_VKEY_UP/DOWN`; watchdog treats `Task_Current()==NULL` as non-stall.
+* **UAOS-15** (`805f542`): Workbench launch gaps closed — bare default-tool search path (project drawer → `C:` → `SYS:Utilities/` → `SYS:Tools/` → `SYS:System/` → `SYS:`); native/X64 tools get project+extras as a quoted arg string; `ExecFile_RunWB` returns -1 not-found / -2 bad-format / -3 no-default-tool; filebrowser + desktop leave-out show `Requester_Info("Workbench", ...)`; `wbrun` prints the message + rc 20.
+* **UAOS-334 + UAOS-332** (`269ba8a`): QEMU delivers IRQ0 on both mode-3 OUT0 transitions (~200 Hz ticks). Adaptive fix: read-back+gate start ON, calibrate over first 256 dispatches — OUT=0 ≥25% keeps gate (QEMU), <10% disables gate AND read-back (metal: zero overhead, no dropped late ticks), ambiguous band keeps it; `pitgate=on|off` cmdline override; decision logged once, shown in `tickcheck`. Tick vector exempt from storm masking. tickcheck gained `CLEAR`, RTC cross-check with >2% WARNING, per-vector worst `@t=` stamps, and PIT ISR per-phase maxima + worst-dispatch breakdown. QEMU: pit=100.0/s vs RTC; TSC self-cal now correct (~3.73 GHz). UAOS-335 filed (Backlog): metal re-measure + `timer_ProcessTicks` ~2 ms worst on QEMU.
+* **UAOS-331** (`171b5dd`): console string literals swept to ASCII (no more "???"); FAILAT prints/aborts only inside scripts (`script_depth`-gated, sets `quit_flag`); `Startup-Sequence` runs `FailAt 21` so optional steps can't skip `LoadWB`; `dir NOSUCH:` → "object not found" rc 20 (native + userspace dir); `taskstat` wait/pri separated; `irqaudit` reports an empty table; screenshot diagnostics demoted to DEBUG; `kprinthex_min` for boot-log hex.
+* **Docs**: `okf/kernel/{net,dos,display,diag,irq,shell}/index.md`, `okf/emulation/index.md`, `okf/kernel/exec/icon_library.md`, `okf/concepts/userspace_syscalls.md`, `okf/system/index.md`, `.devin/skills/uaos-debug/SKILL.md`.
+
+## 2026-10-18 — UAOS-322 telnetd dead-session leak root-caused (repro only)
+
+* **Investigated** (no code changes; QEMU headless, `build/repro-uaos322/`):
+  FIN/RST teardown is clean in all patterns (SIGKILL, instant-kill,
+  clean close) — slirp always propagates FIN.  Two real gaps:
+  (1) silently-dead peers (no FIN/RST) are reclaimed only by the pump
+  idle watchdog — AYT probe at 30000 ticks is a no-op behind ACKing
+  middleboxes, outright close at 60000 ticks — so ≥4 dead sessions
+  pin all `MAX_REMOTE_SHELLS` slots for ~10 min nominal.
+  (2) a peer dying mid-command frees the socket but pins the shell
+  slot for the command's remaining duration — `shell_yield_ms`
+  (shell_win.c:3989) never checks `s->remote_dead`.
+* **Side anomaly**: `g_pit_ticks` measured ~200 Hz on IRQ0/vec34 under
+  QEMU (PIT hardware verified 100 Hz via tickcheck) — tick-based
+  timeouts ran ~2x short; likely double IRQ0 dispatch, needs own card.
+* **Docs**: `okf/kernel/net/index.md` telnetd section gained a
+  dead-session lifecycle paragraph.
+
 ## 2026-10-18 — TODO sweep part 5: UAOS-6/7 menus, UAOS-299 key repeat, UAOS-302 root-caused
 
 * **UAOS-6 + UAOS-7 done** (`9b6f13f`): Workbench menus — Icons ▸ Open
@@ -1896,3 +1925,10 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
 * **Docs**: `okf/concepts/m68k_emulation.md` (Guest Subtask Scheduling),
   `okf/kernel/exec/index.md`, `okf/kernel/exec/other_libraries.md`,
   `okf/emulation/index.md`.
+
+## 2026-10-18 — MBP4,1 metal check pass (ISO UAOS-181026204207 @ 192.168.10.150)
+
+* **Verified + closed**: UAOS-132 — Apple EFI → GRUB → MB2 kernel, GOP 1440x900, USB-stick boot with sysroot module, MTRR WC on the normal entry; full desktop on the panel.
+* **Checked, kept open**: UAOS-244 (HDA live, AUDx IRQ PASS; audible .med blocked on UAOS-320), UAOS-131 umbrella (health snapshot comment), UAOS-234.
+* **Filed**: UAOS-327 (info 4 GiB wrap), UAOS-328 (GPT protective MBR as partition + duplicate DH0:), UAOS-329 (handler name dangling pointer), UAOS-330 (volume icons → NDOS fallback, wrong Disk.info path), UAOS-331 (shell/diag UX nits), UAOS-332 (PIT gap / ISR worst-case).
+* **Docs**: `okf/platforms/macbook41.md` (metal check pass section).
