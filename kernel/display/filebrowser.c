@@ -16,6 +16,7 @@
 #include "../dos/blockdev.h"
 #include "../dos/vfs.h"
 #include "../dos/ramfs.h"
+#include "../dos/icon_loader.h"
 #include "../irq/ps2kbd.h"
 #include "../exec/task.h"   /* WB_MAX_ARGS */
 #include <stdint.h>
@@ -118,22 +119,20 @@ static int parent_path(const char *vol, char *dst, int max)
      * is the last character, no slash after it). */
     int len = str_len(vol);
 
-    /* Find the last '/' */
-    int last_slash = -1;
+    /* Find the last '/' and the volume ':' */
+    int last_slash = -1, last_colon = -1;
     for (int i = len - 1; i >= 0; i--) {
-        if (vol[i] == '/') { last_slash = i; break; }
+        if (vol[i] == '/' && last_slash < 0) last_slash = i;
+        if (vol[i] == ':' && last_colon < 0) last_colon = i;
     }
 
-    if (last_slash <= 0) return 0;  /* no slash — root volume */
-
-    /* Strip everything from the last '/' onward */
-    int plen = last_slash;          /* e.g. "UAOS:" has len 5, slash at 5 */
-
-    /* Special case: if the result would end in ':' it is a root volume
-     * key like "UAOS:" — keep it as-is. */
-    /* If the result ends in a plain name with no ':', it is also a valid
-     * root key (e.g. "RAM Disk"). */
-    if (plen <= 0) return 0;
+    int plen;
+    if (last_slash > 0)
+        plen = last_slash;              /* "UAOS:a/b" → "UAOS:a" */
+    else if (last_colon >= 0 && last_colon < len - 1)
+        plen = last_colon + 1;          /* "UAOS:a" → "UAOS:" — keep ':' */
+    else
+        return 0;                       /* root volume — no parent */
 
     if (plen >= max) plen = max - 1;
     for (int i = 0; i < plen; i++) dst[i] = vol[i];
@@ -188,36 +187,46 @@ typedef struct {
 /* Load entries from path into a specific browser's buffer.
  * VFS_ReadDir works for both RAMFS and handler-backed (FAT32) volumes;
  * the result is a snapshot — callers reload when VFS_ChangeSeq() moves. */
-static const FileEntry *load_entries_for_browser(const char *path, BrowserEntryBuffer *buf)
+static const FileEntry *load_entries_for_browser(const char *path, BrowserEntryBuffer *buf,
+                                                 int only_icons)
 {
     if (!buf) return NULL;
 
     VfsDirEnt ents[MAX_BROWSER_ENTRIES];
     int n = VFS_ReadDir(path, ents, MAX_BROWSER_ENTRIES);
     if (n > 0 || VFS_IsDir(path)) {
+        int o = 0;
         for (int i = 0; i < n; i++) {
+            /* Window ▸ Show ▸ Only Icons: entries without a .info file
+             * are hidden (no pseudo-icons), matching WB 3.1. */
+            if (only_icons) {
+                char full[96];
+                build_path(path, ents[i].name, full, (int)sizeof(full));
+                if (!Icon_ExistsFor(full)) continue;
+            }
             int ni = 0;
             while (ni < MAX_ENTRY_NAME_LEN - 1 && ents[i].name[ni]) {
-                buf->names[i][ni] = ents[i].name[ni];
+                buf->names[o][ni] = ents[i].name[ni];
                 ni++;
             }
-            buf->names[i][ni] = '\0';
-            buf->entries[i].name = buf->names[i];
+            buf->names[o][ni] = '\0';
+            buf->entries[o].name = buf->names[o];
 
             if (ents[i].is_dir) {
-                buf->types[i][0] = 'D'; buf->types[i][1] = 'I';
-                buf->types[i][2] = 'R'; buf->types[i][3] = '\0';
+                buf->types[o][0] = 'D'; buf->types[o][1] = 'I';
+                buf->types[o][2] = 'R'; buf->types[o][3] = '\0';
             } else {
-                buf->types[i][0] = 'F'; buf->types[i][1] = 'I';
-                buf->types[i][2] = 'L'; buf->types[i][3] = 'E';
-                buf->types[i][4] = '\0';
+                buf->types[o][0] = 'F'; buf->types[o][1] = 'I';
+                buf->types[o][2] = 'L'; buf->types[o][3] = 'E';
+                buf->types[o][4] = '\0';
             }
-            buf->entries[i].type = buf->types[i];
-            buf->entries[i].size = ents[i].size;
-            buf->entries[i].mtime = ents[i].mtime;
+            buf->entries[o].type = buf->types[o];
+            buf->entries[o].size = ents[i].size;
+            buf->entries[o].mtime = ents[i].mtime;
+            o++;
         }
-        buf->entries[n].name = NULL;
-        buf->entries[n].type = NULL;
+        buf->entries[o].name = NULL;
+        buf->entries[o].type = NULL;
         return buf->entries;
     }
 
@@ -273,6 +282,9 @@ typedef struct {
     int              lasso_moved;
     /* View mode (Window ▸ View By flyout) */
     ViewMode         view_mode;
+    /* Show mode (Window ▸ Show flyout) — SHOW_ONLY_ICONS hides entries
+     * that have no .info file */
+    ShowMode         show_mode;
     /* VFS change counter value when entries were last loaded — draw
      * reloads the listing when it differs (shell/guest-side changes). */
     uint32_t         seen_seq;
@@ -296,6 +308,7 @@ static void browser_slot_clear(Browser *b)
     b->drag_icon    = -1;
     b->drag_active  = 0;
     b->lasso_active = 0;
+    b->show_mode    = SHOW_ALL_FILES;
 }
 
 /* Window snapshot table — stores saved position/size keyed by volume path.
@@ -484,6 +497,71 @@ static int browser_cell_at_pos(Browser *b, int wx, int wy, int ww, int wh,
     return idx;
 }
 
+/* Open/launch entry `icon` of browser b — drawers open a child browser,
+ * .adf images open the drive picker, files get a Workbench launch with
+ * every other selected icon as extra WBArgs.  Shared by the double-click
+ * path and Icons ▸ Open. */
+static void browser_open_entry(Browser *b, int icon)
+{
+    const FileEntry *e = b->entries;
+    if (e && e[icon].name && e[icon].type[0] == 'D') {
+        /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS, Tools) */
+        const char *nm = e[icon].name;
+        int is_top_level_assign = 0;
+        if (str_eq(nm, "C") || str_eq(nm, "DEVS") || str_eq(nm, "L") ||
+            str_eq(nm, "LIBS") || str_eq(nm, "S") || str_eq(nm, "SYS") ||
+            str_eq(nm, "Tools")) {
+            is_top_level_assign = 1;
+        }
+
+        char child_path[64];
+        if (is_top_level_assign) {
+            /* For top-level assigns, construct "Workbench:ASSIGN" directly */
+            int vi = 0;
+            /* Copy base volume up to colon (e.g., "Workbench:") */
+            while (vi < 63 && b->volume[vi] && b->volume[vi] != ':') {
+                child_path[vi] = b->volume[vi]; vi++;
+            }
+            if (vi < 63 && b->volume[vi] == ':') {
+                child_path[vi++] = ':';
+            }
+            /* Add assign name */
+            while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
+            child_path[vi] = '\0';
+        } else {
+            build_path(b->volume, nm, child_path, 64);
+        }
+        FileBrowser_Open(child_path);
+    } else if (e && e[icon].name) {
+        /* FILE or any other type: Workbench launch (UAOS-253).
+         * The clicked icon's .info supplies stack/tooltypes; project
+         * icons defer to their default tool.  Every *other* selected
+         * icon (shift-click multi-selection) becomes an extra WBArg,
+         * in grid order. */
+        char file_path[128];
+        build_path(b->volume, e[icon].name, file_path, 128);
+
+        if (AdfPicker_IsAdfPath(file_path)) {
+            /* .adf images open the DF0-DF3 drive picker (UAOS-158)
+             * instead of being launched. */
+            AdfPicker_Open(file_path);
+        } else {
+            const char *extras[WB_MAX_ARGS];
+            char extra_paths[WB_MAX_ARGS][128];
+            int n_extra = 0;
+            for (int i = 0; i < MAX_BROWSER_ENTRIES &&
+                            n_extra < WB_MAX_ARGS; i++) {
+                if (i == icon || !b->selected[i] || !e[i].name) continue;
+                build_path(b->volume, e[i].name,
+                           extra_paths[n_extra], 128);
+                extras[n_extra] = extra_paths[n_extra];
+                n_extra++;
+            }
+            ExecFile_RunWB(file_path, extras, n_extra);
+        }
+    }
+}
+
 /* Called by WM on client-area click for a browser window */
 static void browser_click_impl(Browser *b, int wh, int mx, int my)
 {
@@ -538,63 +616,7 @@ static void browser_click_impl(Browser *b, int wh, int mx, int my)
         b->last_click_icon = -1;
         b->drag_icon = -1;
         b->lasso_active = 0;
-        const FileEntry *e = b->entries;
-        if (e && e[icon].name && e[icon].type[0] == 'D') {
-            /* Check if this is a top-level assign directory (C, DEVS, L, LIBS, S, SYS, Tools) */
-            const char *nm = e[icon].name;
-            int is_top_level_assign = 0;
-            if (str_eq(nm, "C") || str_eq(nm, "DEVS") || str_eq(nm, "L") ||
-                str_eq(nm, "LIBS") || str_eq(nm, "S") || str_eq(nm, "SYS") ||
-                str_eq(nm, "Tools")) {
-                is_top_level_assign = 1;
-            }
-
-            char child_path[64];
-            if (is_top_level_assign) {
-                /* For top-level assigns, construct "Workbench:ASSIGN" directly */
-                int vi = 0;
-                /* Copy base volume up to colon (e.g., "Workbench:") */
-                while (vi < 63 && b->volume[vi] && b->volume[vi] != ':') {
-                    child_path[vi] = b->volume[vi]; vi++;
-                }
-                if (vi < 63 && b->volume[vi] == ':') {
-                    child_path[vi++] = ':';
-                }
-                /* Add assign name */
-                while (vi < 63 && *nm) { child_path[vi++] = *nm++; }
-                child_path[vi] = '\0';
-            } else {
-                build_path(b->volume, nm, child_path, 64);
-            }
-            FileBrowser_Open(child_path);
-        } else if (e && e[icon].name) {
-            /* FILE or any other type: Workbench launch (UAOS-253).
-             * The clicked icon's .info supplies stack/tooltypes; project
-             * icons defer to their default tool.  Every *other* selected
-             * icon (shift-click multi-selection) becomes an extra WBArg,
-             * in grid order. */
-            char file_path[128];
-            build_path(b->volume, e[icon].name, file_path, 128);
-
-            if (AdfPicker_IsAdfPath(file_path)) {
-                /* .adf images open the DF0-DF3 drive picker (UAOS-158)
-                 * instead of being launched. */
-                AdfPicker_Open(file_path);
-            } else {
-                const char *extras[WB_MAX_ARGS];
-                char extra_paths[WB_MAX_ARGS][128];
-                int n_extra = 0;
-                for (int i = 0; i < MAX_BROWSER_ENTRIES &&
-                                n_extra < WB_MAX_ARGS; i++) {
-                    if (i == icon || !b->selected[i] || !e[i].name) continue;
-                    build_path(b->volume, e[i].name,
-                               extra_paths[n_extra], 128);
-                    extras[n_extra] = extra_paths[n_extra];
-                    n_extra++;
-                }
-                ExecFile_RunWB(file_path, extras, n_extra);
-            }
-        }
+        browser_open_entry(b, icon);
     } else {
         /* First click — select icon, record for double-click detection
          * and start drag.  Shift-click toggles the icon in the existing
@@ -1483,7 +1505,8 @@ static void sort_entries(Browser *b)
 /* Reload a browser's listing from VFS and stamp the change counter. */
 static void browser_reload(Browser *b)
 {
-    b->entries = load_entries_for_browser(b->volume, &b->entry_buffer);
+    b->entries = load_entries_for_browser(b->volume, &b->entry_buffer,
+                                          b->show_mode == SHOW_ONLY_ICONS);
     sort_entries(b);
     b->seen_seq = VFS_ChangeSeq();
 }
@@ -1536,6 +1559,57 @@ ViewMode FileBrowser_GetViewMode(int wm_handle)
     Browser *b = find_browser_by_handle(wm_handle);
     if (!b) return VIEW_ICON;
     return b->view_mode;
+}
+
+/* ── Show mode (Window ▸ Show flyout) ── */
+
+void FileBrowser_SetShowMode(int wm_handle, ShowMode mode)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return;
+    if (b->show_mode == mode) return;
+    b->show_mode = mode;
+    /* The filter changes which entries exist — drop the selection so a
+     * hidden entry can't be acted on, then reload the listing. */
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) b->selected[i] = 0;
+    browser_reload(b);
+    WM_Redraw();
+}
+
+ShowMode FileBrowser_GetShowMode(int wm_handle)
+{
+    Browser *b = find_browser_by_handle(wm_handle);
+    if (!b) return SHOW_ALL_FILES;
+    return b->show_mode;
+}
+
+/* ── Window ▸ Open Parent ── */
+
+void FileBrowser_OpenParent(void)
+{
+    const char *path = FileBrowser_GetFocusedPath();
+    if (!path) return;
+    char par[64];
+    if (parent_path(path, par, 64))
+        FileBrowser_Open(par);
+}
+
+/* ── Icons ▸ Open ── */
+
+int FileBrowser_OpenSelected(void)
+{
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh < 0) return 0;
+    Browser *b = find_browser_by_handle(fh);
+    if (!b || !b->entries) return 0;
+    int opened = 0;
+    for (int i = 0; i < MAX_BROWSER_ENTRIES; i++) {
+        if (b->selected[i] && b->entries[i].name) {
+            browser_open_entry(b, i);
+            opened = 1;
+        }
+    }
+    return opened;
 }
 
 /* ── Icon snapshot (Icons ▸ Snapshot / Unsnapshot) ── */

@@ -13,6 +13,13 @@ typedef enum {
     VIEW_MODE_COUNT
 } ViewMode;
 
+/* Show modes for the Window ▸ Show flyout. */
+typedef enum {
+    SHOW_ALL_FILES = 0, /* every entry; pseudo-icons for .info-less files */
+    SHOW_ONLY_ICONS,    /* only entries that have a .info file (WB 3.1) */
+    SHOW_MODE_COUNT
+} ShowMode;
+
 /* Open (or bring to front) a drawer window for the given volume.
  * volume: "RAM Disk" or "UAOS:"
  * Registers with the WM; safe to call multiple times (idempotent). */
@@ -64,6 +71,20 @@ void FileBrowser_Snapshot(int wm_handle);
 /* Set/get the view mode (View By flyout) for the browser owning wm_handle. */
 void FileBrowser_SetViewMode(int wm_handle, ViewMode mode);
 ViewMode FileBrowser_GetViewMode(int wm_handle);
+
+/* Set/get the show mode (Show flyout) for the browser owning wm_handle. */
+void FileBrowser_SetShowMode(int wm_handle, ShowMode mode);
+ShowMode FileBrowser_GetShowMode(int wm_handle);
+
+/* Open the focused browser's parent directory (Window ▸ Open Parent).
+ * No-op when no browser is focused or it is already at a root. */
+void FileBrowser_OpenParent(void);
+
+/* Open the focused browser's selected entries (Icons ▸ Open) using
+ * the same dispatch as a double-click (drawer → browser, .adf → picker,
+ * file → Workbench launch).  Returns 1 if a selection was opened, 0 if
+ * no browser is focused or nothing is selected. */
+int FileBrowser_OpenSelected(void);
 
 /* Snapshot the selected icon's current position (Icons ▸ Snapshot). */
 void FileBrowser_SnapshotIcon(int wm_handle);

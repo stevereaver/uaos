@@ -285,6 +285,14 @@ static void menu_action_new_drawer(void)
                      "", 30, new_drawer_cb, NULL);
 }
 
+static void menu_action_open_parent(void)
+{
+    DT_LOG("[MENU] Open Parent selected\n");
+    /* Opens the focused browser's parent directory — same as the
+     * up-arrow gadget in the path bar. */
+    FileBrowser_OpenParent();
+}
+
 static void menu_action_open_drawer(void)
 {
     DT_LOG("[MENU] Open Drawer selected\n");
@@ -342,14 +350,19 @@ static void menu_action_snapshot(void)
     if (fh >= 0) FileBrowser_Snapshot(fh);
 }
 
-/* Forward declaration — Show menu item calls Information */
-static void menu_action_icon_information(void);
-
-static void menu_action_show(void)
+/* Show flyout actions — one per show mode. */
+static void menu_action_show_icons(void)
 {
-    DT_LOG("[MENU] Show selected\n");
-    /* Show .info for selected icon — opens Information requester */
-    menu_action_icon_information();
+    DT_LOG("[MENU] Show Only Icons selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetShowMode(fh, SHOW_ONLY_ICONS);
+}
+
+static void menu_action_show_all(void)
+{
+    DT_LOG("[MENU] Show All Files selected\n");
+    int fh = FileBrowser_GetFocusedHandle();
+    if (fh >= 0) FileBrowser_SetShowMode(fh, SHOW_ALL_FILES);
 }
 
 /* View By flyout actions — one per view mode. */
@@ -389,6 +402,20 @@ static void menu_action_view_by_type(void)
 }
 
 /* Icons menu actions */
+
+/* Forward declaration — Icons ▸ Open falls back to the selected desktop
+ * icon when no browser selection exists (defined after IconState). */
+static void desktop_open_selected_icon(void);
+
+static void menu_action_icon_open(void)
+{
+    DT_LOG("[MENU] Open selected\n");
+    /* Browser selection first: drawers open a child browser, files get a
+     * Workbench launch — the same dispatch as a double-click. */
+    if (FileBrowser_OpenSelected()) return;
+    /* No browser selection — activate the selected desktop icon. */
+    desktop_open_selected_icon();
+}
 
 static void menu_action_icon_copy(void)
 {
@@ -953,6 +980,24 @@ static void update_view_by_checks(void)
         g_view_by_submenu[i].checked = (i == (int)vm) ? 1 : 0;
 }
 
+/* Show flyout submenu (WB 3.1: Only Icons / All Files).  Mutable like
+ * g_view_by_submenu — check marks are refreshed before every draw. */
+static MenuItem g_show_submenu[] = {
+    MENU_CHECK("Only Icons", menu_action_show_icons, 0),
+    MENU_CHECK("All Files",  menu_action_show_all,   1),
+    MENU_END
+};
+
+/* Refresh the check marks on the Show submenu to reflect the focused
+ * browser's current show mode.  Called from draw_menu_dropdown. */
+static void update_show_checks(void)
+{
+    int fh = FileBrowser_GetFocusedHandle();
+    ShowMode sm = (fh >= 0) ? FileBrowser_GetShowMode(fh) : SHOW_ALL_FILES;
+    for (int i = 0; i < (int)SHOW_MODE_COUNT; i++)
+        g_show_submenu[i].checked = (i == (int)sm) ? 1 : 0;
+}
+
 /* Menu table: index 0 = Workbench, index 1 = Window, index 2 = Icons,
  * index 3 = Tools, index 4 = Shell, index 5 = UAOS */
 static const MenuItem * const g_menus[] = {
@@ -969,16 +1014,18 @@ static const MenuItem * const g_menus[] = {
     (const MenuItem[]) {
         MENU_ITEM("New Drawer",      menu_action_new_drawer      ),
         MENU_ITEM("Open Drawer",     menu_action_open_drawer     ),
+        MENU_ITEM("Open Parent",     menu_action_open_parent     ),
         MENU_ITEM("Close",           menu_action_close           ),
         MENU_ITEM("Update",          menu_action_update          ),
         MENU_ITEM("Select Contents", menu_action_select_contents ),
         MENU_ITEM("Clean Up",        menu_action_clean_up        ),
         MENU_ITEM("Snapshot",        menu_action_snapshot        ),
-        MENU_ITEM("Show",            menu_action_show            ),
+        { "Show",    NULL, 0, 1, 0, 0, g_show_submenu,    NULL },
         { "View By", NULL, 0, 1, 0, 0, g_view_by_submenu, NULL },
         MENU_END
     },
     (const MenuItem[]) {
+        MENU_ITEM("Open",            menu_action_icon_open         ),
         MENU_ITEM("Copy",            menu_action_icon_copy         ),
         MENU_ITEM("Rename",          menu_action_icon_rename       ),
         MENU_ITEM("Information",     menu_action_icon_information  ),
@@ -991,7 +1038,7 @@ static const MenuItem * const g_menus[] = {
         MENU_ITEM("Delete",          menu_action_icon_delete       ),
         MENU_ITEM_IF("Unmount",      menu_action_icon_unmount,
                                     menu_enabled_unmount            ),
-        MENU_ITEM("Format",          menu_action_icon_format       ),
+        MENU_ITEM("Format Disk",     menu_action_icon_format       ),
         MENU_ITEM("Empty Trash",     menu_action_icon_empty_trash  ),
         MENU_END
     },
@@ -1303,8 +1350,9 @@ static void draw_menu_dropdown(int W)
 
     if (g_menu_index < 0 || g_menu_index >= (int)NUM_MENUS) return;
 
-    /* Update View By checkmarks before drawing */
+    /* Update View By / Show checkmarks before drawing */
     update_view_by_checks();
+    update_show_checks();
 
     const MenuItem *items = g_menus[g_menu_index];
     int n = menu_item_count(items);
@@ -3340,6 +3388,49 @@ static void desktop_do_copy(const char *src_path, const char *name,
     }
 }
 
+/* Activate a desktop icon — the dispatch shared by double-click and
+ * Icons ▸ Open: disk → browser, Leave Out → open dir / .adf picker /
+ * Workbench launch, AppIcon → log. */
+static void desktop_icon_activate(IconState *ic)
+{
+    if (ic->is_appicon) {
+        /* AppIcon — would send AppMessage to the registered msg port.
+         * For now, log it. */
+        DT_LOG("[DT] AppIcon activated, id=");
+        DT_LOG_DEC(ic->appicon_id);
+        DT_LOG("\n");
+    } else if (ic->is_leaveout && ic->leaveout_path) {
+        /* Leave Out shortcut — open (dir) or run (file) */
+        if (ic->leaveout_is_dir) {
+            FileBrowser_Open(ic->leaveout_path);
+        } else if (AdfPicker_IsAdfPath(ic->leaveout_path)) {
+            /* .adf shortcut → drive picker (UAOS-158) */
+            AdfPicker_Open(ic->leaveout_path);
+        } else {
+            /* Workbench launch semantics (UAOS-253) */
+            extern int ExecFile_RunWB(const char *path,
+                                      const char **x, int n);
+            ExecFile_RunWB(ic->leaveout_path, NULL, 0);
+        }
+    } else if (ic->volume) {
+        FileBrowser_Open(ic->volume);
+    }
+}
+
+/* Icons ▸ Open fallback — activate the first selected desktop icon when
+ * no browser window has a selection. */
+static void desktop_open_selected_icon(void)
+{
+    int n;
+    IconState *icons = get_icons(&n);
+    for (int i = 0; i < n; i++) {
+        if (icons[i].is_selected) {
+            desktop_icon_activate(&icons[i]);
+            return;
+        }
+    }
+}
+
 void Desktop_MouseRelease(int mx, int my)
 {
     (void)mx; (void)my;
@@ -3363,28 +3454,7 @@ void Desktop_MouseRelease(int mx, int my)
                 DT_LOG(" vol='"); DT_LOG(ic->volume ? ic->volume : "(null)");
                 DT_LOG("'\n");
                 ic->click_count = 0;
-                if (ic->is_appicon) {
-                    /* AppIcon double-click — would send AppMessage to
-                     * the registered msg port.  For now, log it. */
-                    DT_LOG("[DT] AppIcon activated, id=");
-                    DT_LOG_DEC(ic->appicon_id);
-                    DT_LOG("\n");
-                } else if (ic->is_leaveout && ic->leaveout_path) {
-                    /* Leave Out shortcut — open (dir) or run (file) */
-                    if (ic->leaveout_is_dir) {
-                        FileBrowser_Open(ic->leaveout_path);
-                    } else if (AdfPicker_IsAdfPath(ic->leaveout_path)) {
-                        /* .adf shortcut → drive picker (UAOS-158) */
-                        AdfPicker_Open(ic->leaveout_path);
-                    } else {
-                        /* Workbench launch semantics (UAOS-253) */
-                        extern int ExecFile_RunWB(const char *path,
-                                                  const char **x, int n);
-                        ExecFile_RunWB(ic->leaveout_path, NULL, 0);
-                    }
-                } else if (ic->volume) {
-                    FileBrowser_Open(ic->volume);
-                }
+                desktop_icon_activate(ic);
             } else {
                 DT_LOG("[DT] First click (release)\n");
                 ic->click_count = 1;
