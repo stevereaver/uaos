@@ -157,30 +157,34 @@ extern unsigned int g_fb_height_irq;
 /* ------------------------------------------------------------------ */
 /* Keyboard report processing                                          */
 /* ------------------------------------------------------------------ */
-static void hid_push_ascii(char ascii)
+/* Push the cooked char for a key make; returns the byte pushed (0 when
+ * nothing was pushed) so the caller can arm software key repeat with it. */
+static char hid_push_ascii(char ascii)
 {
-    if (!ascii) return;
+    if (!ascii) return 0;
 
     /* Mirror the PS/2 driver's Amiga-key mapping */
     if (g_kbd_mods.super_right) {
         char upper = ascii;
         if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
         if (upper >= 'A' && upper <= 'Z') {
-            PS2Kbd_PushChar((char)(0x80 | (unsigned char)upper));
-            return;
+            char c = (char)(0x80 | (unsigned char)upper);
+            PS2Kbd_PushChar(c);
+            return c;
         }
     }
     if (g_kbd_mods.super_left) {
         char upper = ascii;
         if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
         switch (upper) {
-            case 'V': PS2Kbd_PushChar(AMIGA_LV); return;
-            case 'B': PS2Kbd_PushChar(AMIGA_LB); return;
-            case 'M': PS2Kbd_PushChar(AMIGA_LM); return;
-            case 'N': PS2Kbd_PushChar(AMIGA_LN); return;
+            case 'V': PS2Kbd_PushChar(AMIGA_LV); return AMIGA_LV;
+            case 'B': PS2Kbd_PushChar(AMIGA_LB); return AMIGA_LB;
+            case 'M': PS2Kbd_PushChar(AMIGA_LM); return AMIGA_LM;
+            case 'N': PS2Kbd_PushChar(AMIGA_LN); return AMIGA_LN;
         }
     }
     PS2Kbd_PushChar(ascii);
+    return ascii;
 }
 
 /* Bounded raw-report dump for Apple keyboards (UAOS-139): klogs the
@@ -295,13 +299,20 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
     /* Keys released since the last report → rawkey/CIA up transitions. */
     for (int j = 0; j < 6; j++) {
         uint8_t pu = hd->prev_keys[j];
-        if (!pu || pu == 1 || pu >= 0x80) continue;
+        if (!pu || pu == 1) continue;
         int still = 0;
         for (int i = 2; i < 8 && off + i < len; i++)
             if (r[off + i] == pu) { still = 1; break; }
-        if (!still && hid_to_amiga[pu] >= 0) {
-            PS2Kbd_PushRawKey(hid_to_amiga[pu], 1);
-            chip_emu_push_keycode(hid_to_amiga[pu], 1);
+        if (!still) {
+            /* Disarm repeat even for codeless keys — they may have been
+             * armed under a 0x100|usage id (UAOS-299). */
+            int rid = (pu < 0x80 && hid_to_amiga[pu] >= 0)
+                          ? hid_to_amiga[pu] : 0x100 | pu;
+            PS2Kbd_RepeatRelease(rid);
+            if (pu < 0x80 && hid_to_amiga[pu] >= 0) {
+                PS2Kbd_PushRawKey(hid_to_amiga[pu], 1);
+                chip_emu_push_keycode(hid_to_amiga[pu], 1);
+            }
         }
     }
 
@@ -328,22 +339,33 @@ static void hid_kbd_report(HidDev *hd, const uint8_t *r, int len)
         /* Fn-chorded keys (Apple report protocol only) */
         if (hd->fn_on && hid_fn_chord(u)) continue;
 
+        char pushed = 0;
         char vk = hid_vkey(u);
-        if (vk) { PS2Kbd_PushChar(vk); continue; }
-        if (u >= 0x80) continue;
+        if (vk) {
+            pushed = vk;
+            PS2Kbd_PushChar(vk);
+        } else if (u < 0x80) {
+            int shift = g_kbd_mods.shift;
+            char base = hid_normal[u];
+            if (g_kbd_mods.caps_lock && base >= 'a' && base <= 'z')
+                shift ^= 1;
+            char ascii = shift ? hid_shifted[u] : base;
 
-        int shift = g_kbd_mods.shift;
-        char base = hid_normal[u];
-        if (g_kbd_mods.caps_lock && base >= 'a' && base <= 'z')
-            shift ^= 1;
-        char ascii = shift ? hid_shifted[u] : base;
+            if (g_kbd_mods.ctrl && ascii >= 'a' && ascii <= 'z')
+                ascii = (char)(ascii - 'a' + 1);
+            else if (g_kbd_mods.ctrl && ascii >= 'A' && ascii <= 'Z')
+                ascii = (char)(ascii - 'A' + 1);
 
-        if (g_kbd_mods.ctrl && ascii >= 'a' && ascii <= 'z')
-            ascii = (char)(ascii - 'a' + 1);
-        else if (g_kbd_mods.ctrl && ascii >= 'A' && ascii <= 'Z')
-            ascii = (char)(ascii - 'A' + 1);
+            pushed = hid_push_ascii(ascii);
+        }
 
-        hid_push_ascii(ascii);
+        /* Arm software repeat (UAOS-299): keys with an Amiga rawkey code
+         * repeat it (REPEAT-flagged); the cooked byte — vkey or ASCII —
+         * repeats into the char ring.  Codeless keys still repeat their
+         * cooked byte under a 0x100|usage id. */
+        int rid = (u < 0x80 && hid_to_amiga[u] >= 0) ? hid_to_amiga[u]
+                                                   : 0x100 | u;
+        PS2Kbd_RepeatArm(rid, pushed);
     }
 
     /* Snapshot the pressed-key array */

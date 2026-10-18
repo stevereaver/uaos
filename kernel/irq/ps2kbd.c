@@ -188,6 +188,62 @@ void PS2Kbd_PushRawKey(int amiga_code, int up)
     kraw_push(amiga_code, up);
 }
 
+/* =========================================================================
+ * Software key repeat (UAOS-299)
+ *
+ * USB HID keyboards never generate typematic — the host must synthesize
+ * repeats — and QEMU's emulated PS/2 keyboard doesn't either.  A key's
+ * make arms the repeater, its break disarms it; PS2Kbd_RepeatTick() runs
+ * from the 100 Hz PIT handler.  Re-makes of the armed key (real hardware
+ * typematic) only push the deadline out, so hardware and software repeat
+ * never double up.
+ *
+ * key_id identifies the held key for release matching: the Amiga rawkey
+ * code when one exists, else 0x100|scancode (keys with no rawkey, e.g.
+ * PgUp/PgDn — they still repeat their cooked vkey).  Each repeat pushes
+ * the same cooked byte the make produced plus a rawkey down event that
+ * kraw_push marks IEQUALIFIER_REPEAT (the held bit stays set).
+ * ========================================================================= */
+
+extern volatile uint64_t g_pit_ticks;
+
+#define KBD_REPEAT_DELAY_TICKS 50   /* 0.5 s before the first repeat */
+#define KBD_REPEAT_RATE_TICKS  10   /* 10 Hz repeat rate */
+
+static volatile int      g_rep_id   = -1;
+static volatile char     g_rep_char = 0;
+static volatile uint64_t g_rep_next = 0;
+
+void PS2Kbd_RepeatArm(int key_id, char cooked)
+{
+    uint64_t now = g_pit_ticks;
+    if (g_rep_id == key_id) {
+        /* Re-make while held — hardware typematic arrived; refresh the
+         * cooked byte (qualifiers may have changed) and re-arm at the
+         * repeat rate rather than the initial delay. */
+        g_rep_char = cooked;
+        g_rep_next = now + KBD_REPEAT_RATE_TICKS;
+        return;
+    }
+    g_rep_id   = key_id;
+    g_rep_char = cooked;
+    g_rep_next = now + KBD_REPEAT_DELAY_TICKS;
+}
+
+void PS2Kbd_RepeatRelease(int key_id)
+{
+    if (g_rep_id == key_id) { g_rep_id = -1; g_rep_char = 0; }
+}
+
+void PS2Kbd_RepeatTick(void)
+{
+    int id = g_rep_id;
+    if (id < 0 || g_pit_ticks < g_rep_next) return;
+    g_rep_next = g_pit_ticks + KBD_REPEAT_RATE_TICKS;
+    if (id <= 0x7F) kraw_push(id, 0);   /* held bit → IEQUALIFIER_REPEAT */
+    if (g_rep_char) kbuf_push(g_rep_char);
+}
+
 int PS2Kbd_HasRawKey(void)
 {
     return kraw_head != kraw_tail;
@@ -326,29 +382,32 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
         /* Extended keys with Amiga rawkey equivalents (cursor keys,
          * keypad enter/divide, delete). */
         {
-            int ac = -1;
+            int  ac = -1;
+            char vk = 0;
             switch (key) {
-                case 0x48: ac = 0x4C; break; /* Up    */
-                case 0x4B: ac = 0x4F; break; /* Left  */
-                case 0x50: ac = 0x4E; break; /* Down  */
-                case 0x4D: ac = 0x4D; break; /* Right */
+                case 0x48: ac = 0x4C; vk = KBD_VKEY_UP;    break; /* Up    */
+                case 0x4B: ac = 0x4F; vk = KBD_VKEY_LEFT;  break; /* Left  */
+                case 0x50: ac = 0x4E; vk = KBD_VKEY_DOWN;  break; /* Down  */
+                case 0x4D: ac = 0x4D; vk = KBD_VKEY_RIGHT; break; /* Right */
                 case 0x1C: ac = 0x43; break; /* KP Enter */
                 case 0x35: ac = 0x5C; break; /* KP / */
                 case 0x53: ac = 0x46; break; /* Delete */
                 case 0x47: ac = 0x5F; break; /* Home -> Help */
+                case 0x49: vk = KBD_VKEY_PGUP; break; /* Page Up   */
+                case 0x51: vk = KBD_VKEY_PGDN; break; /* Page Down */
             }
             if (ac >= 0) {
                 kraw_push(ac, is_break);
                 chip_emu_push_keycode(ac, is_break);
             }
-        }
-        if (!is_break) {
-            if (key == 0x49) { kbuf_push(KBD_VKEY_PGUP);  } /* Page Up   */
-            if (key == 0x51) { kbuf_push(KBD_VKEY_PGDN);  } /* Page Down */
-            if (key == 0x48) { kbuf_push(KBD_VKEY_UP);    } /* Up arrow  */
-            if (key == 0x50) { kbuf_push(KBD_VKEY_DOWN);  } /* Down arrow*/
-            if (key == 0x4B) { kbuf_push(KBD_VKEY_LEFT);  } /* Left arrow*/
-            if (key == 0x4D) { kbuf_push(KBD_VKEY_RIGHT); } /* Right arrow*/
+            /* Arm/disarm software repeat (UAOS-299): cursor keys repeat
+             * their vkey, other extended keys repeat rawkey-only. */
+            {
+                int rid = (ac >= 0) ? ac : (0x100 | key);
+                if (is_break)       PS2Kbd_RepeatRelease(rid);
+                else if (ac >= 0 || vk) PS2Kbd_RepeatArm(rid, vk);
+            }
+            if (!is_break && vk) kbuf_push(vk);
         }
         IRQ_EOI((int)vector); return;
     }
@@ -393,8 +452,10 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
      * real transitions; the cooked-char feed (chip_emu_push_key) was a
      * racy second consumer of the same kbuf the event pump drains. */
     if (key < 89 && ps2_to_amiga[key] >= 0) {
-        kraw_push(ps2_to_amiga[key], is_break);
-        chip_emu_push_keycode(ps2_to_amiga[key], is_break);
+        int ac = ps2_to_amiga[key];
+        kraw_push(ac, is_break);
+        chip_emu_push_keycode(ac, is_break);
+        if (is_break) PS2Kbd_RepeatRelease(ac);
     }
 
     /* Only process make codes past this point */
@@ -417,38 +478,36 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
     else if (g_kbd_mods.ctrl && ascii >= 'A' && ascii <= 'Z')
         ascii = (char)(ascii - 'A' + 1);
 
+    char pushed = 0;
     if (ascii) {
         /* Amiga key mapping: Super/Windows → Amiga */
-        if (g_kbd_mods.super_right) {
+        char upper = ascii;
+        if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
+        pushed = ascii;
+        if (g_kbd_mods.super_right && upper >= 'A' && upper <= 'Z') {
             /* RAmiga + letter → menu shortcut (0x80 | uppercase) */
-            char upper = ascii;
-            if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
-            if (upper >= 'A' && upper <= 'Z') {
-                kbuf_push((char)(0x80 | (unsigned char)upper));
-                IRQ_EOI((int)vector); return;
-            }
-        }
-        if (g_kbd_mods.super_left) {
-            /* LAmiga + V/B/M/N → special requester/screen codes */
-            char upper = ascii;
-            if (ascii >= 'a' && ascii <= 'z') upper = (char)(ascii - 'a' + 'A');
+            pushed = (char)(0x80 | (unsigned char)upper);
+        } else if (g_kbd_mods.super_left && upper >= 'A' && upper <= 'Z') {
+            /* LAmiga + V/B/M/N → special requester/screen codes; other
+             * LAmiga+letters are command-key (menu shortcut) candidates,
+             * same as RAmiga+letter — encode 0x80|upper so the pump
+             * routes them to Intuition menu matching instead of leaking
+             * a plain VANILLAKEY the real keymap would suppress. */
             switch (upper) {
-                case 'V': kbuf_push(AMIGA_LV); IRQ_EOI((int)vector); return;
-                case 'B': kbuf_push(AMIGA_LB); IRQ_EOI((int)vector); return;
-                case 'M': kbuf_push(AMIGA_LM); IRQ_EOI((int)vector); return;
-                case 'N': kbuf_push(AMIGA_LN); IRQ_EOI((int)vector); return;
-            }
-            /* Other LAmiga+letters are command-key (menu shortcut)
-             * candidates, same as RAmiga+letter — encode 0x80|upper so the
-             * pump routes them to Intuition menu matching instead of
-             * leaking a plain VANILLAKEY the real keymap would suppress. */
-            if (upper >= 'A' && upper <= 'Z') {
-                kbuf_push((char)(0x80 | (unsigned char)upper));
-                IRQ_EOI((int)vector); return;
+                case 'V': pushed = AMIGA_LV; break;
+                case 'B': pushed = AMIGA_LB; break;
+                case 'M': pushed = AMIGA_LM; break;
+                case 'N': pushed = AMIGA_LN; break;
+                default:  pushed = (char)(0x80 | (unsigned char)upper); break;
             }
         }
-        kbuf_push(ascii);
+        kbuf_push(pushed);
     }
+
+    /* Arm software repeat (UAOS-299): the cooked byte repeats, keys with
+     * no cooked byte (F2-F10 etc.) repeat rawkey-only. */
+    if (key < 89 && ps2_to_amiga[key] >= 0)
+        PS2Kbd_RepeatArm(ps2_to_amiga[key], pushed);
 
     IRQ_EOI((int)vector);
 }

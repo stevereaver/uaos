@@ -278,6 +278,7 @@ volatile uint64_t g_pit_ticks = 0;
 extern void Task_ScheduleFromIRQ(void);
 extern void Task_WakeTimers(void);
 extern void timer_ProcessTicks(void);
+extern void PS2Kbd_RepeatTick(void);
 extern int FloppyBlockDev_Init(void);
 extern BlockDev *BlockDev_Find(const char *name);
 extern int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t num_sectors);
@@ -290,6 +291,7 @@ void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
     Prof_Tick();                   /* sampling profiler             */
     IRQ_StormTick();
     net_stack_tick();
+    PS2Kbd_RepeatTick();     /* software key repeat (UAOS-299) */
     timer_ProcessTicks();
     Task_WakeTimers();       /* re-ready tasks whose sleep deadline passed */
     Watchdog_Tick();         /* stall detector: runs before schedule */

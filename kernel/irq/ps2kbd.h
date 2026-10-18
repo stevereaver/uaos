@@ -34,6 +34,16 @@ int  PS2Kbd_GetRawKey(void);   /* returns code|0x80*up, or -1 if empty */
  * queue. */
 void PS2Kbd_PushRawKey(int amiga_code, int up);
 
+/* Software key repeat (UAOS-299): arm on a key's make, disarm on its
+ * break; RepeatTick runs from the 100 Hz PIT handler and re-pushes the
+ * cooked byte plus a REPEAT-flagged rawkey while the key stays held.
+ * key_id: Amiga rawkey code, or 0x100|scancode for keys with no rawkey.
+ * Re-makes of the armed key only push the deadline out, so hardware
+ * typematic and software repeat never double up. */
+void PS2Kbd_RepeatArm(int key_id, char cooked);
+void PS2Kbd_RepeatRelease(int key_id);
+void PS2Kbd_RepeatTick(void);
+
 /* ie_Qualifier bits (devices/inputevent.h) — carried in IntuiMessage
  * .Qualifier for RAWKEY/VANILLAKEY/MOUSEBUTTONS/MENUPICK messages. */
 #define IEQUALIFIER_LSHIFT     0x0001
