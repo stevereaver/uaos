@@ -74,3 +74,17 @@ network, so offline hosts can pre-seed tarballs there.
 UAOS supports both legacy BIOS and UEFI via a hybrid ISO:
 - **BIOS**: Uses GRUB's `i386-pc` core.
 - **UEFI**: Includes a standalone GRUB EFI image (`bootx64.efi`).
+
+### GRUB toolchain (UAOS-316)
+
+ISO creation uses a locally built GRUB **2.14** rather than the distro
+GRUB 2.12.  `scripts/build_grub.sh` compiles the vendored source tarball
+(`build/grub-2.14/grub-2.14.tar.xz`) twice — `i386-pc` and `x86_64-efi` —
+and installs into `build/grub-2.14/install/`.  `make grub` (re)builds it
+via the `$(GRUB_STAMP)` prerequisite; the ISO targets prefer
+`$(GRUB_PREFIX)/bin` when the stamp exists and fall back to `grub-*`
+from `PATH` (set `GRUB_PREFIX` empty to force distro tools).  The
+unicode font comes from `grub-mkfont` when built, else the script stages
+the host `/usr/share/grub/unicode.pf2` (the pf2 format is version-stable).
+Verified: SeaBIOS serial log shows `GNU GRUB version 2.14`; the OVMF
+path boots `bootx64.efi` to telnetd.

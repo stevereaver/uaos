@@ -78,7 +78,7 @@ report a peak far above what its own entry function uses.
 | Command | What it does |
 |---|---|
 | `taskdump [TASK=n|FULL]` | Live task table: state, pri, cpu ticks, ctx switches, stack peak, wait mask, nest levels; per-task saved-frame decode. (UAOS-195) |
-| `taskstat [<sec>\|NOW]` | Per-task CPU% + switches/s sampled over a window; `NOW` prints cumulative counters under `cpu_t`/`switches` headers (no window). (UAOS-197, NOW-mode headers UAOS-282) |
+| `taskstat [<sec>\|NOW]` | Per-task CPU% + switches/s sampled over a window; `NOW` prints cumulative counters under `cpu_t`/`switches` headers (no window). The `busy-total` footer excludes the Idle task so `idle share = window - busy` is meaningful (UAOS-269). (UAOS-197, NOW-mode headers UAOS-282) |
 | `watchdog [MS=n\|OFF\|TEST]` | Arm/status/self-test the stall watchdog. `TEST` holds `Forbid()` past the budget — interrupts still fire, no reschedules — exactly the condition it guards. (UAOS-198) |
 | `ports` | Handler MsgPort pending queues + async packet pool. (UAOS-200) |
 | `timers` | Pending `TimeRequest`s: fire tick, delta, sigmask, owner. (UAOS-201) |
@@ -86,7 +86,7 @@ report a peak far above what its own entry function uses.
 | `netstat` | TCP sockets (state/addrs/queue depths/retx), UDP sockets, usock layer. (UAOS-203) |
 | `diskdiag [TEST=dev]` | Blockdev registry + IDE/AHCI/VirtIO-blk/VirtIO-scsi/floppy stage dumps with live status regs; `TEST=` does a timed 1-sector read, reported in µs below 10 ms (raw cycles if TSC is uncalibrated). (UAOS-204, UAOS-231) |
 | `pciscan [BUS=n]` | Full PCI enumeration: bdf, class, vendor:dev, pin/line, BARs (64-bit BARs combined). Header-type aware: type-1 bridges get `sec=`/`sub=` bus numbers plus decoded `io`/`mem`/`pmem` forwarding windows on a continuation line; CardBus shows 1 BAR. (UAOS-199, bridge decode UAOS-282) |
-| `irqroute [BDF=b:d.f]` | pin→PIRQ→GSI→vector decode per device: ICH DxxIP/DxxIR override, PIRQA-H→IO-APIC 16-23, intline fallback, resolved vector + name. `vec=UNASSIGNED` and `* UNRESOLVED ROUTE *` are the verdicts. (UAOS-199) |
+| `irqroute [BDF=b:d.f]` | pin→PIRQ→GSI→vector decode per device: ICH DxxIP/DxxIR override, PIRQA-H→IO-APIC 16-23, intline fallback, resolved vector + name. Since UAOS-269 the vec name is the device's own bound driver (`IRQ_BdfVec`) — a foreign shared line prints `owner=<drv>`; a routed-but-unarmed GSI prints `gsi routed, no handler`; INTx-unresolved devices show `intx: no route` with an `(msi capable)` hint, and MSI bindings get a `msi vec=N (drv)` line. (UAOS-199, labels UAOS-269) |
 | `peek <addr> [LEN=n] [W=8\|16\|32\|64]` | Physical/MMIO read (identity map). (UAOS-205) |
 | `poke <addr> <val> [W=..] FORCE` | MMIO write; refuses without `FORCE`, reports before/write/readback. (UAOS-205) |
 | `irqaudit` | Per-task Disable/Forbid audit: current nest, total IF=0 time, max hold, >50 ms holds (threshold is `TASK_IRQOFF_LONG_MS` converted via self-calibrated `Tickmon_TscHz()`, with a ~50M-cycle fallback before calibration), descheduled-in-crit count. (UAOS-206, threshold fix UAOS-282) |
@@ -136,3 +136,8 @@ handler is deduped per vector, so two UHCIs on one PIRQ still read 1),
 ≥2 means foreign drivers fan out through `irq_shared_dispatch`; UHCI
 uses it to tell a genuinely foreign assert from the neighbour's IRQ
 when a shared-line dispatch finds no USBSTS bits latched (UAOS-294).
+`IRQ_BdfVec(bus,dev,fn,&name)` (UAOS-269) returns the vector and driver
+name a function itself bound through `IRQ_AttachPCI`/`IRQ_AttachMSI` —
+the BDF-record table the INTx-quiesce scan already keeps now carries
+name+vec — which lets `irqroute` label the device's own driver instead
+of whichever handler claimed a shared INTx vector first.

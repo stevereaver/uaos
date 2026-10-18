@@ -56,6 +56,20 @@ Because the buffer is larger than one AC97 half-buffer, the backend can consume 
 
 Metal debugging (commit `ba024b1`): `GET_SUBSYSTEM_ID` was addressed to codec nid 0 *before* the AFG had been found — real codecs only answer that verb on the function group, so the Apple SSID check never matched and the ALC889 GPIO1 fixup (speaker-amp power on MacBooks) silently never ran.  The read now targets the AFG and falls back to the controller's PCI subsystem vendor (0x2C, `0x106B` = Apple).  `CONFIG_DEFAULT` is read via its proper verb `0xF1C` rather than `GET_PARAMETER(0x1C)`, which real codecs don't answer as a parameter.  `C:hdadump` dumps live per-widget state (power, out-amp readback, pin ctl, EAPD, GPIO data, stream LPIB/CTL) through the verb path for bring-up debugging.  Before this fix, the metal DMA path was already proven healthy: SD4 showed RUN+tag1, CBL `0x4000`, LPIB advancing, and the BDL-pointed PCM buffer contained nonzero 1 kHz sine samples during `audiotest`.
 
+## Error Beep (UAOS-19)
+
+`audio_beep(freq, ms)` queues a square-wave burst mixed at generation
+time — the samples enter the normal mixer/ring path so the beep works on
+every backend (it is suppressed while `audio_ring_solo` is active, since
+solo skips `audio_generate()` entirely).  `audio_beep_default()`
+uses 880 Hz for 120 ms.  `DisplayBeep` now flashes *and* beeps, and the
+alert-type requesters (`Requester_Confirm`, `Requester_Choice`,
+`Requester_Info`) beep on open; `Requester_String` does not.  The PC
+speaker backend computes mean *absolute* sample energy — signed-sample
+averaging read a symmetric square wave as ~0 and would have left the
+beep silent on machines with no DAC.  QEMU WAV capture (pcspk audiodev)
+shows a ~90 ms tone burst per `SYS:Demos/BeepTest` trigger.
+
 ## Backends
 
 ### AC97
@@ -66,7 +80,7 @@ The DMA buffer is 4096 stereo frames (16 KiB) split into two 2048-frame halves. 
 
 ### PC Speaker
 
-`audio_backend_pcspk` is the fallback.  It reads the mix output, computes the average sample energy, and updates the PIT channel 2 square-wave frequency once per tick.  It is intentionally low-fidelity.
+`audio_backend_pcspk` is the fallback.  It reads the mix output, computes the mean *absolute* sample energy (since UAOS-19 — signed averaging made AC-coupled waveforms like the square beep read as silence), and updates the PIT channel 2 square-wave frequency once per tick.  It is intentionally low-fidelity.
 
 ## Boot-Time Tests
 
