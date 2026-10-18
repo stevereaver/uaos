@@ -67,10 +67,22 @@ else
 MKISOFS := $(XORRISO)
 endif
 
+# A locally-built GRUB (scripts/build_grub.sh → build/grub-<ver>/install)
+# takes precedence over the distro tools; set GRUB_PREFIX= to force the
+# system installation.
+GRUB_PREFIX ?= $(firstword $(wildcard build/grub-*/install))
+ifneq ($(GRUB_PREFIX),)
+GRUB_MKRESCUE     := $(GRUB_PREFIX)/bin/grub-mkrescue
+GRUB_MKSTANDALONE := $(GRUB_PREFIX)/bin/grub-mkstandalone
+GRUB_EFI_MODS     := $(GRUB_PREFIX)/lib/grub/x86_64-efi
+else
 GRUB_MKRESCUE := $(firstword $(foreach t,grub-mkrescue grub2-mkrescue,\
                    $(notdir $(shell command -v $t 2>/dev/null))))
-HAVE_EFI      := $(and $(shell command -v grub-mkstandalone 2>/dev/null),\
-                   $(wildcard /usr/lib/grub/x86_64-efi))
+GRUB_MKSTANDALONE := $(firstword $(foreach t,grub-mkstandalone grub2-mkstandalone,\
+                   $(notdir $(shell command -v $t 2>/dev/null))))
+GRUB_EFI_MODS := /usr/lib/grub/x86_64-efi
+endif
+HAVE_EFI      := $(and $(GRUB_MKSTANDALONE),$(wildcard $(GRUB_EFI_MODS)))
 
 # --- Layout ------------------------------------------------------------------
 
@@ -304,7 +316,7 @@ endif
 # Phony targets
 # ============================================================================
 
-.PHONY: all iso kernel tools sysroot userspace gnusrc demos check \
+.PHONY: all iso kernel tools sysroot userspace gnusrc demos check grub \
         clean distclean help FORCE
 
 # Always-out-of-date prerequisite: anything depending on FORCE rebuilds on
@@ -323,6 +335,11 @@ gnusrc: $(GNU_BINS)
 demos: $(DEMO_BINS)
 check: $(STAMPS)/uitest
 
+# Build the local GRUB 2.14 toolchain used by the ISO targets when present
+# (build/grub-2.14/install).  One-time; ~5 min.
+grub:
+	bash scripts/build_grub.sh
+
 help:
 	@echo "UAOS build targets:"
 	@echo "  make / make iso   build $(ISO)"
@@ -330,6 +347,7 @@ help:
 	@echo "  make sysroot      build the SYS_ROOT module image only"
 	@echo "  make tools        host-side generator tools only"
 	@echo "  make check        build + run the uitree layout self-test"
+	@echo "  make grub         build local GRUB 2.14 toolchain (one-time)"
 	@echo "  make clean        remove build/"
 	@echo "  make distclean    clean + generated in-tree files (_bin.*, m68kops.*)"
 	@echo "  make V=1          verbose commands"
@@ -783,7 +801,7 @@ endif
 ifneq ($(HAVE_EFI),)
 $(EFI_STAGED): scripts/grub.cfg | $(DIRS_STAMP)
 	@echo "  EFI     $@"
-	$(Q)grub-mkstandalone --format=x86_64-efi \
+	$(Q)$(GRUB_MKSTANDALONE) --format=x86_64-efi \
 	    --output=$(BUILD)/bootx64.efi \
 	    --modules="normal multiboot2 ls cat echo all_video serial" \
 	    "boot/grub/grub.cfg=$(CURDIR)/scripts/grub.cfg"
