@@ -1,5 +1,45 @@
 # OKF Change Log
 
+## 2026-10-18 — TODO sweep part 5: UAOS-6/7 menus, UAOS-299 key repeat, UAOS-302 root-caused
+
+* **UAOS-6 + UAOS-7 done** (`9b6f13f`): Workbench menus — Icons ▸ Open
+  (opens selected desktop icon or browser entries, all selected),
+  Window ▸ Open Parent (fixed `parent_path()` to also split on `:` so
+  first-level dirs like `Workbench:ACE` go up to `Workbench:` — the
+  browser up-button had the same latent gap), Format → Format Disk,
+  Window ▸ Show submenu with Only Icons (hides `.info`-less files via
+  `Icon_ExistsFor`) and All Files. QEMU-verified end-to-end incl. menu
+  pixel geometry.
+* **UAOS-299 done** (`1b23b0b`): software key repeat — `PS2Kbd_RepeatArm/
+  Release/Tick` driven from the 100 Hz PIT (~0.5 s delay, ~10 Hz rate);
+  hardware typematic re-makes just re-arm the deadline so PS/2 and USB
+  HID paths coexist without double-repeat. USB release path fixed to
+  disarm keys with codes ≥0x80 (previously skipped by the `pu >= 0x80`
+  guard). QEMU-verified: ~36–48 chars per 2–2.5 s hold.
+* **UAOS-302 closed — not a compositor bug**: the "front guest screen
+  renders whole framebuffer black" report was the **60 s input-idle
+  screen blanker**. Proved by trapping every direct-mode FB writer
+  (none fired), sampling `g_backbuf` per repaint (correct composed
+  frame at every boundary), and a whole-backbuf black-transition alarm
+  in `FB_Watchdog`: backbuf goes all-zero exactly when
+  `Blanker_Flush()` engages, repaints then stop because
+  `WM_FlushRedraw` drops damage while blanked, and any real input
+  (`Blanker_OnInput`) instantly restores the full composite — including
+  the AGATest screen, its plasma window, and desktop chrome. The card's
+  own "drag the screen and content reappears" clue is just the unblank
+  on input. Headless note: telnet shell commands do NOT count as
+  input, so every screenshot >60 s after boot is intentionally black.
+  **Change committed** (`99467a5`): blanker now KLOGs blank/unblank
+  transitions so the next investigator sees it immediately.
+* **New cards**: UAOS-325 (file browser selection cleared by unrelated
+  `VFS_ChangeSeq` bump — e.g. `screenshot` file write reloads the
+  listing and drops selection), UAOS-326 (AGATest level-3 ISR
+  dispatched at ~300 Hz+ — likely un-acked interrupt source, CPU burn).
+* **UAOS-131/132 → In Progress**: `reaver@192.168.10.149` (MBP4,1) is
+  unreachable from this workspace (no route to host); both hardware
+  cards carry status comments. Metal debugging note: a fully black
+  panel after ~60 s idle is the blanker, not a hang — now klogged.
+
 ## 2026-10-18 — TODO sweep part 4: UAOS-186/279/227/318 done, 317 implemented
 
 * **UAOS-186 fixed** (`a124123`): resident loader decoded the

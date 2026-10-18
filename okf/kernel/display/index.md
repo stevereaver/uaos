@@ -182,7 +182,8 @@ The `Window` menu contains the following items:
 | Select Contents | Selects all entries in the focused browser. |
 | Clean Up | Clears drag offsets and redraws the focused browser. |
 | Snapshot | Saves the focused browser's window position/size (in-memory); restored on reopen. |
-| Show | Shows information about the selected icon (same as Icons ▸ Information). |
+| Open Parent | Opens/raises the browser for the focused browser's parent directory (UAOS-6). `parent_path()` splits on the last `/` *or* the volume `:` so first-level drawers like `Workbench:ACE` correctly go up to `Workbench:` — the browser up-button shares this path. |
+| Show ▸ | **Flyout submenu** with checkmark items (UAOS-7): Only Icons hides files that have no `.info` icon (`Icon_ExistsFor` check — pseudo-icons for `.info`-less files are not drawn); All Files restores the full listing. |
 | View By ▸ | **Flyout submenu** with checkmark items: Icon (grid), Name (list, alphabetical), Date (list, newest first), Size (list, largest first), Type (list, by type then name). Switches the focused browser's view mode and re-sorts entries. |
 
 #### Icons Drop-down Menu
@@ -191,6 +192,7 @@ The `Icons` menu (opened with a right-click on the `Icons` title) contains the f
 
 | Item | Action |
 |------|--------|
+| Open | Opens the selected desktop icon or browser entries — every selected entry is opened (dir → new browser window, file → run; UAOS-6). Shares the same dispatch as double-click. |
 | Copy | Copies the selected file to `RAM:`. |
 | Rename | Prompts for a new name and renames the selected entry. |
 | Information | Shows an information requester with name, type, size, protection flags, and path. |
@@ -201,7 +203,7 @@ The `Icons` menu (opened with a right-click on the `Icons` title) contains the f
 | *divider* | Horizontal separator. |
 | Delete | Confirms and moves the selected file to its own volume's `VOL:Trashcan/` drawer (permanent delete when the volume has no Trashcan — e.g. formatted NOICON). |
 | Unmount | Ghosted unless a desktop disk icon on a DF0:–DF3: floppy mount is selected (`selected_df_unit` → `AdfMount_UnitForVolume`; browser selections, Trashcan, RAM, DH and Leave Out icons don't count). Asks for confirmation, closes every browser on the volume (`FileBrowser_CloseVolume`), then `AdfMount_Eject(unit, 0)`. Busy → "DFn: is in use" Info. Write-back failure → "Discard / Cancel" confirm → `AdfMount_Eject(unit, 1)`. On success the desktop is damaged so the icon disappears straight away (UAOS-160). `FileBrowser_CloseVolume` is a single pass over all slots (UAOS-310): each matching slot is closed via `WM_CloseWindow` only when `browser_owns_window` proves the handle still names that slot's own window (active + title == volume) and is then always cleared with `browser_slot_clear` — a stale slot left by a close-gadget kill can no longer hang the loop or drop a recycled handle onto an unrelated window. |
-| Format | Opens the Format window for device selection and FAT32 formatting. |
+| Format Disk | Opens the Format window for device selection and FAT32 formatting (renamed from Format, UAOS-6). |
 | Empty Trash | Confirms and recursively deletes the contents of every mounted volume's `VOL:Trashcan` drawer (`VFS_ReadDir`-based, so handler-backed FAT32 volumes are covered; 6-deep nesting cap). |
 
 #### Tools Drop-down Menu
@@ -288,7 +290,7 @@ The display layer includes several Workbench-style application windows in additi
 - **Preferences Suite (`prefs_win.c`)**: GUI editors for all AmigaOS 3.x Prefs programs — Palette, Time, IControl, Input, ScreenMode, WBPattern, Font, Serial, Printer, Locale. Each opens a WM window with AmigaOS-style gadgets (buttons, cycle gadgets, sliders, checkboxes). Palette editor persists to `ENVARC:Sys/palette.prefs` via IFF PREF format. Time editor reads/writes the RTC via `RTC_ReadDateTime()`/`RTC_SetDateTime()`.
 - **Commodities Framework (`commodities.h/c`)**: Broker registry for commodities — background tools that can be controlled from Exchange. Supports up to 16 brokers with Active/Sleeping/Disabled states and enable/disable/sleep/wake callbacks.
 - **Exchange Window (`exchange_win.c`)**: GUI window listing all registered commodity brokers with status indicators and Enable/Disable/Sleep/Wake/Cycle controls.
-- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity. `Blanker_Tick` runs inside the RTC IRQ handler and must not touch the framebuffer — it only latches `g_blanker_pending` (UAOS-191); the event pump performs the actual `FB_BeginDraw`/black-fill/`FB_Flip` from task context in `Blanker_Flush()` once per iteration (the RTC tick wakes the pump every second anyway). While `Blanker_IsBlanked()`, `WM_Redraw()` is a no-op and `WM_FlushRedraw()` drops queued damage so the 1 Hz clock flush (or any other repaint request) can't undo the blank; un-blank paths clear the flag before redrawing.
+- **Screen Blanker (`blanker.h/c`)**: A commodity that blanks the screen after configurable inactivity timeout (default 60 seconds). Registers with the Commodities framework. `Blanker_Tick()` called from `Desktop_UpdateClock()` once per second; `Blanker_OnInput()` called from the event loop on any mouse/keyboard activity. `Blanker_Tick` runs inside the RTC IRQ handler and must not touch the framebuffer — it only latches `g_blanker_pending` (UAOS-191); the event pump performs the actual `FB_BeginDraw`/black-fill/`FB_Flip` from task context in `Blanker_Flush()` once per iteration (the RTC tick wakes the pump every second anyway). While `Blanker_IsBlanked()`, `WM_Redraw()` is a no-op and `WM_FlushRedraw()` drops queued damage so the 1 Hz clock flush (or any other repaint request) can't undo the blank; un-blank paths clear the flag before redrawing. **Debugging gotcha (UAOS-302):** only real keyboard/mouse input resets the idle counter — telnet shell commands do not, so any headless screenshot taken >60 s after boot shows an intentional all-black framebuffer even while the compositor is healthy. `Blanker_Flush`/`Blanker_OnInput` now KLOG the blank/unblank transitions (commit `99467a5`) — check for `blanker: screen blanked after NNs idle` before investigating a "black screen" report; on bare metal a black panel after ~60 s idle is the blanker, not a hang.
 - **Format Window (`format_win.c`)**: AmigaOS-style Format window opened from Icons ▸ Format. Lists formattable block devices in a cycle gadget, a volume name text field, a **Trashcan checkbox** (the GUI equivalent of Format NOICON — unchecked formats without a `VOL:Trashcan`), and a Format button that confirms via requester then invokes `FAT32_Format()`, auto-mounts the result via `VFS_MountPartition()`, and calls `VFS_CreateTrashcan()` on the new volume.
 - **Userspace GUI Window (`user_window.c`)**: Backing for native Ring-0 userspace programs that use the GUI syscall interface.
 
