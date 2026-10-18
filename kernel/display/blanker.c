@@ -9,6 +9,7 @@
 #include "commodities.h"
 #include "framebuffer.h"
 #include "wm.h"
+#include "../klog/klog.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -125,6 +126,11 @@ void Blanker_Flush(void)
     FB_Flip();
     g_blanker_blanked = 1;
     blanker_backlight(0);
+    /* Log the transition — an invisible black screen with damage being
+     * silently dropped has repeatedly been mistaken for a compositor
+     * fault (UAOS-302). */
+    KLOG(KLOG_DISP, KLOG_WARN, "blanker: screen blanked after %ds idle",
+         g_blanker_idle);
 }
 
 void Blanker_OnInput(void)
@@ -135,6 +141,7 @@ void Blanker_OnInput(void)
     if (g_blanker_blanked) {
         g_blanker_blanked = 0;
         blanker_backlight(1);
+        KLOG(KLOG_DISP, KLOG_WARN, "blanker: input - screen unblanked");
         WM_Redraw();
     }
 }
