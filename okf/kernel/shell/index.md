@@ -54,6 +54,20 @@ just-dispatched command's rc through `get_last_rc` for propagation.
 
 ## Command Reference
 
+Since UAOS-279, `help` and tab-completion are generated from the native
+command registry rather than hand-maintained lists: each `k_native_cmds[]`
+entry in `native_cmd.c` carries a one-line `desc`, and `native_cmd.c`
+exposes `NativeCmd_PrintHelp()` plus count/name iterators. `help` prints
+the builtins, walks the registry, then enumerates `C:` via `VFS_ReadDir`
+so userspace binaries appear without a second static list; `help <cmd>`
+prints that entry's usage/description and an unknown name reports
+`no native command '<name>'`. The resident loader (`resident_cmd.c`)
+decodes the wrapped-binary type as the documented BE16 field at header
+offset 4 (`uaos_bin_u16(data + 4)`, same as `exec_file.c`) — it previously
+read `data[6]`, part of the flags field, which classified every wrapped
+M68K binary as SCRIPT and bypassed the shared emulation context
+(UAOS-186).
+
 The following native C: commands are still implemented in `kernel/shell/`:
 
 | Category | Commands |

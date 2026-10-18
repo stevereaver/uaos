@@ -1,5 +1,42 @@
 # OKF Change Log
 
+## 2026-10-18 — TODO sweep part 4: UAOS-186/279/227/318 done, 317 implemented
+
+* **UAOS-186 fixed** (`a124123`): resident loader decoded the
+  wrapped-binary type at `data[6]` (flags field) instead of the BE16
+  field at offset 4 — every M68K resident binary ran as a script.
+  QEMU-verified: `resident helloworld` lists M68K and runs through the
+  shared emulation context.
+* **UAOS-279 done** (`aeba882`, `a85b447`): `help` + tab-completion are
+  generated from the native command registry (`desc` per entry +
+  iterator APIs); userspace C: binaries enumerate via VFS. QEMU-verified
+  (~125 commands, `help <cmd>`, unknown-cmd diagnostic).
+* **UAOS-227 closed**: live MBP4,1 `irqroute` confirms all bridge
+  devices (1:0.0, 11:0.0, 12:0.0, 13:3.0) resolve via `acpi-prt` — the
+  INTx-swizzle requirement was already met by the UAOS-292 resolver.
+* **UAOS-318 fixed** (`d8bce29`): `Task_Exit` calls `AHCI_TaskDying()`
+  before freeing task memory — drains `PxCI`, force-quiesces the port
+  after 500 ms (zero-copy owner death can no longer DMA into freed
+  memory).
+* **UAOS-317 implemented** (`11092b3`) — moved to In Progress pending
+  metal reflash:
+  - `kernel/drivers/ehci.c`: EHCI HCD (PCI `0x0C0320`) — USBLEGSUP
+    handoff, `CONFIGFLAG=1`, async QH/qTD ring for control+bulk,
+    periodic anchor chain for interrupt-IN, per-port `PortOwner`
+    release to UHCI companions, INTx + `EhciDiag` export.
+  - `kernel/drivers/usbmsc.c`: BOT (CBW/CSW + halt recovery) + SCSI
+    (TUR/INQUIRY/READ_CAPACITY/READ(10)/WRITE(10)/REQUEST_SENSE) →
+    `usbN` blockdev + automount.
+  - `hc->bulk` vtable op added (EHCI + UHCI impls; usbhub forwards);
+    uhci's `ehci_release_ports`/`ehci_quiesce_intx` skip driven HCs;
+    `usbdiag` prints an EHCI section.
+  - QEMU-verified: usb-ehci + usb-storage + usb-tablet — both ports
+    HS-enabled, `usb0` probes + mounts FAT32, `dir usb0:` lists,
+    `irq_hits>0` on the EHCI vector.
+  - Metal verification needed: BCM2046 hub FS-release path on ICH8M,
+    iSight HS enumeration, Toshiba stick as `usb0`.
+* **Regression**: `tests/smoke.sh` 21/21 PASS on the post-317 build.
+
 ## 2026-10-18 — UAOS-134 closed; EHCI/MSC split to UAOS-317
 
 * **Verified** (QEMU, current ISO, headless telnetd+monitor): 2 UHCI HCs
