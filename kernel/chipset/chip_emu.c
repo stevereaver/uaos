@@ -874,6 +874,12 @@ void chip_emu_raise_intreq(uint16_t bits)
     chip_emu_update_irq();
 }
 
+void chip_emu_clear_intreq(uint16_t bits)
+{
+    g_intreq &= (uint16_t)~bits;
+    chip_emu_update_irq();
+}
+
 /* Poll the host COM1 UART for received bytes.  Called every PIT tick. */
 void chip_emu_serial_poll(void)
 {

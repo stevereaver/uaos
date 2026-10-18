@@ -21,6 +21,10 @@ void     chip_write_u16(uint32_t addr, uint16_t v);
 
 /* Raise INTREQ bits and update the M68k IRQ level. */
 void     chip_emu_raise_intreq(uint16_t bits);
+/* Clear INTREQ bits — the emulated exec-side interrupt acknowledge
+ * (UAOS-326).  Same effect as a guest write to $DFF09C with SET/CLR=0:
+ * chip_emu_update_irq re-evaluates the level line. */
+void     chip_emu_clear_intreq(uint16_t bits);
 
 /* Tier 3: execute a copper list and render the resulting display state.
  * chip_emu_copper_jump(list, addr): if addr != 0 it becomes the active

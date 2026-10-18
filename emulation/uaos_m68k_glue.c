@@ -8589,6 +8589,31 @@ static int guest_ipl(void)
     return (int)((m68k_get_reg(NULL, M68K_REG_SR) >> 8) & 7);
 }
 
+/* Exec-side acknowledge for a delivered INTREQ bit (UAOS-326).  On real
+ * AmigaOS, exec's interrupt dispatch clears the request once a server
+ * chain has run — claimed or not — and likewise clears a bit that has
+ * no handler at all; only a direct SetIntVector handler is expected to
+ * acknowledge its own source.  PORTS/EXTER are CIA-sourced: the pending
+ * state lives in the CIA ICR (EXTER isn't even a register bit —
+ * irq_pending_bits synthesizes it from the CIA-B line), so the ICR
+ * servers get their shot first, then whatever remains pending is acked
+ * at the source; a bare g_intreq clear there would be re-raised by the
+ * still-latched ICR.  Physical bits clear through the same register
+ * path a guest INTREQ write takes, so chip_emu_update_irq re-evaluates
+ * the level line. */
+static void deliver_cia_icr(int cia);
+static void exec_intack(int n, uint16_t bit)
+{
+    if (n == 3 || n == 13) {
+        int cia = (n == 3) ? 0 : 1;
+        uint8_t icr;
+        deliver_cia_icr(cia);
+        icr = chip_emu_cia_icr_pending(cia);
+        if (icr) chip_emu_cia_icr_ack(cia, icr);
+    }
+    chip_emu_clear_intreq(bit);
+}
+
 /* Invoke the exec Interrupt structures registered for INTREQ bit n:
  * chain dispatch for AddIntServer slots, direct call for SetIntVector. */
 static void deliver_intvect_bit(int n)
@@ -8614,6 +8639,12 @@ static void deliver_intvect_bit(int n)
                 break;
             in = next;
         }
+        /* Exec acknowledges the request once the chain has run —
+         * claimed or not.  Leaving it set redelivered it on every level
+         * check, which was the AGATest VERTB storm: INTENA arms VERTB
+         * and chip_emu_vblank raises it each frame, but AGATest installs
+         * no servers so nothing ever cleared the bit (UAOS-326). */
+        exec_intack(n, bit);
     } else if (code && code < GUEST_RAM_SIZE) {
         if (!(s_irq_seen & bit)) {
             s_irq_seen |= bit;
@@ -8628,9 +8659,14 @@ static void deliver_intvect_bit(int n)
         }
         g_dlv_isr++;
         m68k_isr_call(code, bit, guest_read_be32(iv + IV_DATA), iv);
+        /* A direct SetIntVector handler acknowledges its own source —
+         * an unacknowledged bit stays set in g_intreq and is redelivered
+         * on the next delivery round, matching level-triggered hw. */
+    } else {
+        /* No handler installed (or a garbage vector) — exec clears the
+         * request rather than redelivering it forever. */
+        exec_intack(n, bit);
     }
-    /* An unacknowledged bit stays set in g_intreq and is redelivered on
-     * the next delivery round — matching level-triggered hardware. */
 }
 
 /* Dispatch pending+enabled ICR bits for this CIA to the Interrupt
