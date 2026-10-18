@@ -216,6 +216,12 @@ int IRQ_Mode(void) { return g_mode; }
  * vector is re-armed if a shared-handler attach re-unmasks the GSI. */
 #define IRQ_STORM_PER_TICK 400
 
+/* Vector carrying the system timebase (ISA IRQ0).  Masking it freezes
+ * g_pit_ticks and every tick-derived deadline — and a periodic edge
+ * source cannot produce the level-line storm this failsafe exists
+ * for — so the PIT vector is exempt from storm masking. */
+static int g_tick_vec = -1;
+
 void IRQ_StormTick(void)
 {
     if (g_mode != IRQ_MODE_IOAPIC) return;
@@ -226,11 +232,12 @@ void IRQ_StormTick(void)
     for (int v = 32; v < 128; v++) {
         uint64_t d = now[v] - last[v];
         last[v] = now[v];
-        if (d <= IRQ_STORM_PER_TICK || g_kind[v] != VEC_APIC || stormed[v])
+        if (d <= IRQ_STORM_PER_TICK || g_kind[v] != VEC_APIC || stormed[v]
+            || v == g_tick_vec)
             continue;
         stormed[v] = 1;
         kprint("[IRQ] storm on vector "); kprintdec((uint32_t)v);
-        kprint(" (gsi "); kprintdec(g_gsi[v]); kprint(") — masking\n");
+        kprint(" (gsi "); kprintdec(g_gsi[v]); kprint(") -- masking\n");
         IOAPIC_Mask(g_gsi[v]);
     }
 }
@@ -244,8 +251,9 @@ void IRQ_StormMask(int vector)
 {
     if (vector < 32 || vector > 255) return;
     if (g_kind[vector] != VEC_APIC) return;
+    if (vector == g_tick_vec) return;   /* never mask the timebase */
     kprint("[IRQ] storm on vector "); kprintdec((uint32_t)vector);
-    kprint(" (gsi "); kprintdec(g_gsi[vector]); kprint(") — masking\n");
+    kprint(" (gsi "); kprintdec(g_gsi[vector]); kprint(") -- masking\n");
     IOAPIC_Mask(g_gsi[vector]);
 }
 
@@ -350,12 +358,12 @@ static int ich_route_gsi(uint8_t bus, uint8_t dev, uint8_t fn)
         if (((ir >> ((pin - 1) * 4)) & 0xF) != ((pin - 1) & 0x7)) {
             kprint("[IRQ] ich-route dev=");
             kprintdec(dev); kprint("."); kprintdec(fn);
-            kprint(" dir read 0 and write failed — untrusted\n");
+            kprint(" dir read 0 and write failed -- untrusted\n");
             return -1;      /* fall back to the PCI intline register */
         }
         kprint("[IRQ] ich-route dev=");
         kprintdec(dev); kprint("."); kprintdec(fn);
-        kprint(" dir was 0x0 — programmed pin map, dir=");
+        kprint(" dir was 0x0 -- programmed pin map, dir=");
         kprinthex(ir); kprint("\n");
     }
 
@@ -699,6 +707,7 @@ int IRQ_AttachISA(int isa_irq, ISRHandler handler, const char *name)
         g_kind[vec] = VEC_PIC;
         g_gsi[vec]  = (uint8_t)isa_irq;
         PIC_UnmaskIRQ(isa_irq);
+        if (isa_irq == 0) g_tick_vec = vec;
         return vec;
     }
 
@@ -713,6 +722,7 @@ int IRQ_AttachISA(int isa_irq, ISRHandler handler, const char *name)
     g_kind[vec] = VEC_APIC;
     g_gsi[vec]  = (uint8_t)gsi;
     IOAPIC_Unmask((uint32_t)gsi);
+    if (isa_irq == 0) g_tick_vec = vec;
     return vec;
 }
 
@@ -724,6 +734,7 @@ int IRQ_AttachISAPIC(int isa_irq, ISRHandler handler, const char *name)
     g_kind[vec] = VEC_PIC;
     g_gsi[vec]  = (uint8_t)isa_irq;
     PIC_UnmaskIRQ(isa_irq);
+    if (isa_irq == 0) g_tick_vec = vec;
     return vec;
 }
 
@@ -917,7 +928,7 @@ void IRQ_Init(uint32_t mb2_phys)
             if (rcba && !(rcba[0x31FF] & 0x01)) {
                 rcba[0x31FF] |= 0x01;
                 (void)rcba[0x31FF];
-                kprint("[IRQ] ich: OIC AEN set — IOxAPIC enabled\n");
+                kprint("[IRQ] ich: OIC AEN set -- IOxAPIC enabled\n");
             }
         }
         IOAPIC_Init();

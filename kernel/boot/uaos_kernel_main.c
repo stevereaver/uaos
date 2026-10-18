@@ -162,13 +162,14 @@ static inline uint64_t rdtsc(void)
 /* Forward declarations (defined further down) */
 void kprint(const char *s);
 void kprinthex(uint64_t v);
+void kprinthex_min(uint64_t v);
 void kprintdec(uint32_t v);
 
 static void APIC_Init(void)
 {
     /* Read APIC base from MSR 0x1B.  Bits 35:12 are the physical base. */
     uint64_t apic_base = rdmsr(0x1B);
-    kprint("[APIC] MSR 0x1B base="); kprinthex(apic_base); kprint("\n");
+    kprint("[APIC] MSR 0x1B base="); kprinthex_min(apic_base); kprint("\n");
 
     /* Default base is 0xFEE00000; bail if the APIC is not enabled. */
     if (!(apic_base & 0x800)) {
@@ -196,18 +197,18 @@ static void APIC_Init(void)
 
     /* Spurious Interrupt Vector Register (SVR) at offset 0x0F0 */
     uint32_t svr = lapic[0x0F0 / 4];
-    kprint("[APIC] SVR old="); kprinthex(svr); kprint("\n");
+    kprint("[APIC] SVR old="); kprinthex_min(svr); kprint("\n");
     /* Ensure APIC software enable (bit 8) and set spurious vector 0xFF */
     svr = (svr & ~0xFF) | 0xFF | 0x100;
     lapic[0x0F0 / 4] = svr;
 
     /* LVT LINT0 at offset 0x350 — configure for ExtINT (delivery mode 111) */
     uint32_t lint0 = lapic[0x350 / 4];
-    kprint("[APIC] LINT0 old="); kprinthex(lint0); kprint("\n");
+    kprint("[APIC] LINT0 old="); kprinthex_min(lint0); kprint("\n");
     lint0 = (lint0 & ~0x10700) | 0x700;  /* ExtINT, not masked, edge trig */
     lapic[0x350 / 4] = lint0;
 
-    kprint("[APIC] LINT0 new="); kprinthex(lapic[0x350 / 4]); kprint("\n");
+    kprint("[APIC] LINT0 new="); kprinthex_min(lapic[0x350 / 4]); kprint("\n");
     kprint("[APIC] APIC initialised.\n");
 }
 
@@ -241,6 +242,21 @@ void kprinthex(uint64_t v)
     for (int i = 0; i < 16; i++)
         buf[2 + i] = hex[(v >> ((15 - i) * 4)) & 0xF];
     buf[18] = '\0';
+    kprint(buf);
+}
+
+/* Minimal-width hex: "0x0" .. "0xFFFFFFFFFFFFFFFF" (no leading zero pad) */
+void kprinthex_min(uint64_t v)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[19];
+    buf[0] = '0'; buf[1] = 'x';
+    int shift = 60;
+    while (shift > 0 && ((v >> shift) & 0xF) == 0) shift -= 4;
+    int i = 2;
+    for (; shift >= 0; shift -= 4)
+        buf[i++] = hex[(v >> shift) & 0xF];
+    buf[i] = '\0';
     kprint(buf);
 }
 
@@ -286,17 +302,52 @@ extern int BlockDev_Read(BlockDev *dev, uint64_t sector, void *buffer, uint32_t 
 void PIT_IRQHandler(uint64_t vector, uint64_t error_code)
 {
     (void)vector; (void)error_code;
+
+    /* UAOS-334: while the read-back is active, latch channel-0
+     * status+count — status bit7 is the live OUT0 pin.  The PIT runs
+     * mode 3 (square wave): a real IRQ0 delivery happens on the rising
+     * edge, so a single-edge handler always runs while OUT=1.  QEMU's
+     * IO-APIC additionally delivers on a stale level=1 assertion
+     * emitted at the falling transition (its edge path delivers on
+     * every level=1 call, not on 0->1 transitions), producing a second
+     * dispatch per period that lands while OUT=0.  The gate starts on
+     * and Tickmon_PitPhase calibrates over the first 256 dispatches:
+     * single-edge machines disable gate AND read-back (zero port I/O
+     * per tick, no dropped late ticks); double-edge machines keep both
+     * for ongoing stats.  pitgate=on/off overrides the calibration. */
+    if (g_pit_rb) {
+        outb(0x43, 0xE2);              /* read-back: status+count, ch0 */
+        uint8_t  pst  = inb(0x40);
+        uint16_t pcnt = (uint16_t)(inb(0x40) | ((uint16_t)inb(0x40) << 8));
+        Tickmon_PitPhase(pst, pcnt);
+        if (g_pit_gate && !(pst & 0x80))
+            return;
+    }
     g_pit_ticks++;
-    Tickmon_PitTick(diag_rdtsc());   /* tick jitter instrumentation   */
-    Prof_Tick();                   /* sampling profiler             */
-    IRQ_StormTick();
-    net_stack_tick();
-    PS2Kbd_RepeatTick();     /* software key repeat (UAOS-299) */
-    timer_ProcessTicks();
-    Task_WakeTimers();       /* re-ready tasks whose sleep deadline passed */
-    Watchdog_Tick();         /* stall detector: runs before schedule */
-    CpuFreq_Tick();          /* busy% sampler + ondemand governor (UAOS-272) */
-    Task_ScheduleFromIRQ();
+
+    /* UAOS-332: per-call-site cycle cost — identifies which tick
+     * consumer owns the worst single dispatch. */
+    uint64_t deltas[TICKMON_PIT_PHASES];
+    int pi = 0;
+    uint64_t tp;
+#define TICK_PHASE(fn) do {          \
+        tp = diag_rdtsc();           \
+        fn;                          \
+        deltas[pi++] = diag_rdtsc() - tp; \
+    } while (0)
+
+    TICK_PHASE(Tickmon_PitTick(tp)); /* tick jitter instrumentation   */
+    TICK_PHASE(Prof_Tick());         /* sampling profiler             */
+    TICK_PHASE(IRQ_StormTick());
+    TICK_PHASE(net_stack_tick());
+    TICK_PHASE(PS2Kbd_RepeatTick()); /* software key repeat (UAOS-299) */
+    TICK_PHASE(timer_ProcessTicks());
+    TICK_PHASE(Task_WakeTimers());   /* re-ready tasks whose sleep deadline passed */
+    TICK_PHASE(Watchdog_Tick());     /* stall detector: runs before schedule */
+    TICK_PHASE(CpuFreq_Tick());      /* busy% sampler + ondemand governor (UAOS-272) */
+    TICK_PHASE(Task_ScheduleFromIRQ());
+#undef TICK_PHASE
+    Tickmon_PitPhases(deltas, pi);
 }
 
 /* Counting-only IRQ handler for the pre-scheduler delivery probe —
@@ -555,6 +606,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
         }
     }
 
+    /* PIT OUT0 gate — "pitgate=on"/"pitgate=off" overrides the
+     * auto-calibration that runs over the first 256 dispatches
+     * (UAOS-334).  Default is auto: gate on while sampling, kept only
+     * if double-edge delivery is observed. */
+    if (Mb2_CmdlineHas(mb2_info_phys, "pitgate=off")) {
+        Tickmon_PitGateForce(2);
+        kprint("[BOOT] PIT OUT0 gate forced off (pitgate=off)\n");
+    } else if (Mb2_CmdlineHas(mb2_info_phys, "pitgate=on")) {
+        Tickmon_PitGateForce(1);
+        kprint("[BOOT] PIT OUT0 gate forced on (pitgate=on)\n");
+    }
+
     /* Initialise framebuffer from Multiboot2 info */
     kprint("[BOOT] Initialising framebuffer...\n");
     FB_Init(mb2_info_phys);
@@ -593,7 +656,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     if (entropy_hw_available())
         kprint("[BOOT] Hardware RNG available (RDRAND/RDSEED)\n");
     else
-        kprint("[BOOT] WARNING: no hardware RNG — TSC-jitter entropy fallback\n");
+        kprint("[BOOT] WARNING: no hardware RNG -- TSC-jitter entropy fallback\n");
 
     /* Initialise host audio subsystem */
     kprint("[BOOT] Initialising audio subsystem...\n");
@@ -695,7 +758,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     if (rc != 0) {
         kprint("[BOOT] WARNING: Bridge init returned ");
         kprintdec((uint32_t)rc);
-        kprint(" — emulation unavailable.\n");
+        kprint(" -- emulation unavailable.\n");
         chip_emu_set_keyboard_route(0); /* native shell keeps keyboard input */
     } else {
         kprint("[BOOT] M68k emulation bridge ready.\n");
@@ -948,7 +1011,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
      * backing pages on first touch.  The window's pages are non-present
      * until accessed, so this must run after vector 14 is registered. */
     if (rc == 0 && UAOS_Bridge_PostInitProbe() != 0)
-        kprint("[BOOT] WARNING: M68k guest window probe failed — emulation may be broken.\n");
+        kprint("[BOOT] WARNING: M68k guest window probe failed -- emulation may be broken.\n");
 
     /* Second self-test battery (floppy write paths + chipset diagnostics).
      * Must run after vector 14 is registered: several tests read/write
@@ -1055,7 +1118,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
             __asm__ volatile ("pause");
         __asm__ volatile ("cli");
         if (g_irq_probe_hits == 0) {
-            kprint("[BOOT] WARNING: no PIT ticks via IO-APIC — "
+            kprint("[BOOT] WARNING: no PIT ticks via IO-APIC -- "
                    "8259 fallback\n");
             IRQ_PicFallback();
             int pv = IRQ_AttachISAPIC(0, IRQProbe_Handler, "probe");
@@ -1121,7 +1184,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
             /* Keep the cursor centred — USB HID/bcm5974 still feeds it */
             g_mouse.x = (int)(g_fb_width_irq  >> 1);
             g_mouse.y = (int)(g_fb_height_irq >> 1);
-            kprint("[BOOT] No i8042 controller — PS/2 absent, "
+            kprint("[BOOT] No i8042 controller -- PS/2 absent, "
                    "input is USB HID only.\n");
         }
         Cursor_Init(g_mouse.x, g_mouse.y);
@@ -1152,9 +1215,9 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     else if (ps2_present)
         kprint("[BOOT] vmmouse not found, using PS/2 relative.\n");
     else
-        kprint("[BOOT] vmmouse not found — input is USB HID only.\n");
+        kprint("[BOOT] vmmouse not found -- input is USB HID only.\n");
 
-    kprint("[BOOT] Enabling interrupts — starting scheduler.\n");
+    kprint("[BOOT] Enabling interrupts -- starting scheduler.\n");
 
     /* Init scheduler BEFORE creating any tasks */
     TaskScheduler_Init();
@@ -1224,7 +1287,7 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
 
     /* Set shell-only mode before Startup-Sequence runs */
     if (boot_mode == 2) {
-        kprint("[BOOT] Shell-only mode — Workbench will not be loaded.\n");
+        kprint("[BOOT] Shell-only mode -- Workbench will not be loaded.\n");
         extern void ShellWin_SetShellOnlyMode(int mode);
         ShellWin_SetShellOnlyMode(1);
     }

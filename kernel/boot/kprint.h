@@ -17,6 +17,9 @@ void kprint(const char *s);
 /* Print a hex number to console */
 void kprinthex(uint64_t v);
 
+/* Print a hex number without leading-zero padding ("0x8F") */
+void kprinthex_min(uint64_t v);
+
 /* Print a decimal number to console */
 void kprintdec(uint32_t v);
 

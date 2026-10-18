@@ -101,17 +101,42 @@ void     Watchdog_Test(void);        /* artificial stall — C:watchdog TEST */
  * tickmon.c — tick/IRQ timing instrumentation (UAOS-208)
  * ------------------------------------------------------------------------- */
 #define TICKMON_LAT_BUCKETS 16    /* log2(cycles) buckets */
+#define TICKMON_PHASE_RING  16    /* ch0 status/count samples kept      */
+#define TICKMON_PIT_PHASES  10    /* call sites timed in PIT_IRQHandler */
 
 void Tickmon_PitTick(uint64_t tsc);              /* from PIT_IRQHandler      */
 void Tickmon_IrqDur(uint8_t vector, uint64_t cycles); /* from ISR_Dispatch   */
+void Tickmon_PitPhase(uint8_t status, uint16_t count); /* i8254 ch0 read-back */
+void Tickmon_PitPhases(const uint64_t *deltas, int n); /* ISR call-site cost */
+void Tickmon_PitGateForce(int mode);             /* pitgate= boot arg: 1 on 2 off */
+
+/* Adaptive OUT0 gate state — read by PIT_IRQHandler each dispatch.
+ * gstate: 0 = calibrating, 1 = double-edge confirmed (gate on),
+ *         2 = single-edge (gate + read-back both off). */
+extern volatile uint8_t g_pit_rb;
+extern volatile uint8_t g_pit_gate;
+extern volatile uint8_t g_pit_gstate;
 
 typedef struct {
     uint64_t pit_last_tsc;
     uint64_t pit_min_delta, pit_max_delta, pit_sum_delta, pit_samples;
     uint64_t pit_min_idx, pit_max_idx;           /* sample # of extremes     */
     uint64_t pit_min_prev;                       /* delta preceding the min  */
+    uint64_t pit_max_t0, pit_max_t1;             /* TSC window of max period */
     uint64_t irq_hist[TICKMON_LAT_BUCKETS];      /* all vectors, log2 cycles */
     uint64_t vec_max_cycles[256];                /* worst single dispatch    */
+    uint64_t vec_max_at[256];                    /* g_pit_ticks of each max  */
+    /* UAOS-334: OUT0 phase at dispatch (mode-3 square wave) */
+    uint64_t phase_out1, phase_out0, phase_alt;
+    uint32_t phase_idx;
+    uint8_t  phase_status[TICKMON_PHASE_RING];
+    uint16_t phase_count[TICKMON_PHASE_RING];
+    /* UAOS-332: PIT_IRQHandler call-site costs */
+    uint64_t phase_max[TICKMON_PIT_PHASES];
+    uint64_t phase_max_at[TICKMON_PIT_PHASES];
+    uint64_t worst_phases[TICKMON_PIT_PHASES];   /* breakdown at whole max   */
+    uint64_t whole_max, whole_max_at;
+    uint8_t  pit_gstate;                         /* OUT0 gate: 0 calib 1 on 2 off */
 } TickmonStats;
 void Tickmon_Snapshot(TickmonStats *out);
 void Tickmon_Clear(void);
