@@ -782,8 +782,10 @@ uint64_t chip_emu_m68k_cycles(void)
 }
 
 /* Deliver the highest enabled M68k interrupt level based on INTREQ/INTENA and
- * external CIA sources.  Amiga level mapping: bits 0-4 -> 1, 5-8 -> 2,
- * 9-12 -> 3, 13-14 -> 4.  CIA-B is routed to level 6. */
+ * external CIA sources.  Amiga level mapping: TBE/DSKBLK/SOFTINT (0-2) -> 1,
+ * PORTS (3) -> 2, COPER/VERTB/BLIT (4-6) -> 3, AUD0-3 (7-10) -> 4,
+ * RBF/DSKSYN (11-12) -> 5, EXTER/INTEN (13-14) -> 6.  CIA-B is routed to
+ * level 6. */
 void chip_emu_update_irq(void)
 {
     int level = 0;
@@ -2311,7 +2313,7 @@ void chip_emu_audio_advance(uint32_t amiga_cycles)
                 if (a->len > 0) a->len--;
                 if (a->len == 0) {
                     /* DMA restart: in real Paula this triggers an interrupt and reloads */
-                    g_intreq |= (uint16_t)(0x0200u << ch); /* AUD0..AUD3 bits 9-12 */
+                    g_intreq |= (uint16_t)(0x0080u << ch); /* AUD0..AUD3 bits 7-10 */
                     chip_emu_update_irq();
                 }
             }
