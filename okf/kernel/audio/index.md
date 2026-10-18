@@ -26,7 +26,9 @@ The chipset emulator (`kernel/chipset/chip_emu.c`) tracks four channels with `AU
 
 - `byte_sel` toggles between the high and low byte of the current `AUDxDAT` word.
 - When the low byte finishes, the next word is fetched from guest RAM and `AUDxLEN` is decremented.
-- When `AUDxLEN` reaches zero, the corresponding `INTREQ` bit (9–12) is set.
+- When `AUDxLEN` reaches zero, the corresponding `INTREQ` bit (7–10, one per channel) is set → interrupt level 4 (UAOS-244; fixed in `395bd55`, was incorrectly raised on bits 9–12 so AUD3 landed on DSKSYN/level 5).
+
+Metal-verified on MBP4,1 by `system/Demos/src/AudIrqTest.s` (guest: `SYS:Demos/AudIrqTest`): direct AUDx writes for all four channels, `SetIntVector` level-4 servers count block-complete IRQs (~118 each across a ~2 s `Delay`), the ISR re-arms `AUDxLC/LEN` (classic player loop), and a 4-tone chord phase drives the HDA backend.  QEMU regression: `tests/qemu_audirq_test.py` watches the serial `RawPutChar` stream for `AUDIRQ PASS`.  Buffer allocated via `AllocMem(MEMF_CHIP)` landed inside the 8 MB Paula DMA window; `DMACON` master bit 9 + per-channel enables gate the fetches.
 
 `chip_emu_audio_sample_8bit()` returns the currently selected byte as a signed value.
 

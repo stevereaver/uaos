@@ -2223,7 +2223,8 @@ static void dos_DateStamp(M68kCPUState *cpu)
 
 static void dos_Delay(M68kCPUState *cpu)
 {
-    uint32_t ticks = cpu->d[0];
+    /* dos.library Delay(ticks) — argument arrives in D1 (AmigaOS conv). */
+    uint32_t ticks = cpu->d[1];
     if (ticks == 0) return;
 
     /* Amiga ticks are 1/50 s = 2 PIT ticks at 100 Hz.  Block on the
