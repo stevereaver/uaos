@@ -17,6 +17,7 @@
 #include "../dos/dma.h"
 #include "../boot/kprint.h"
 #include "../irq/irq.h"
+#include "../exec/task.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -179,6 +180,8 @@ static AhciPort g_ports[MAX_PORTS];
 static int      g_ndisks = 0;
 static volatile int g_irq_seen = 0;
 static volatile uint32_t g_irq_is[MAX_PORTS]; /* PxIS bits acked by IRQ */
+static int      g_irq_attached = 0;           /* AHCI_SetupIRQ succeeded */
+static UaosTask * volatile g_cmd_owner = 0;   /* task owning slot 0      */
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -234,12 +237,29 @@ static void ms_spin(uint32_t ms)
     while (rdtsc() < end) __asm__ volatile ("pause");
 }
 
+/* Fine-grained spin for command completion — ~100 us granularity instead
+ * of ms_spin's 1 ms, which dominated per-command latency once the wait
+ * was calibrated (UAOS-230). */
+static void us_spin(uint32_t us)
+{
+    if (!g_tsc_khz) { ms_spin((us + 999) / 1000); return; }
+    uint64_t end = rdtsc() + (g_tsc_khz * us) / 1000;
+    while (rdtsc() < end) __asm__ volatile ("pause");
+}
+
 static int wait_not_busy(int port, int timeout_ms)
 {
-    for (int i = 0; i < timeout_ms * 10; i++) {
-        uint32_t tfd = *px(port, PX_TFD);
-        if (!(tfd & (TFD_BSY | TFD_DRQ))) return 0;
-        ms_spin(1);
+    if (g_tsc_khz) {
+        uint64_t deadline = rdtsc() + g_tsc_khz * timeout_ms;
+        for (;;) {
+            if (!(*px(port, PX_TFD) & (TFD_BSY | TFD_DRQ))) return 0;
+            if (rdtsc() > deadline) return -1;
+            us_spin(100);
+        }
+    }
+    for (int i = 0; i < timeout_ms; i++) {
+        if (!(*px(port, PX_TFD) & (TFD_BSY | TFD_DRQ))) return 0;
+        us_spin(100);   /* uncalibrated → ms_spin(1) per call */
     }
     return -1;
 }
@@ -264,6 +284,9 @@ static void ahci_irq_handler(uint64_t vector, uint64_t error_code)
         }
         if (is) g_hba[HBA_IS / 4] = is;
     }
+    /* Wake the task blocked in ahci_cmd — Signal() is IRQ-context safe. */
+    UaosTask *w = g_cmd_owner;
+    if (w && w->tc_State != TASK_REMOVED) Signal(w, SIGF_AHCI);
     IRQ_EOI((int)vector);
 }
 
@@ -271,15 +294,47 @@ static void ahci_irq_handler(uint64_t vector, uint64_t error_code)
 /* Command issue                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Slot 0 is the only command slot and the header/FIS/PRDT above are
+ * shared memory — the command path must be serialised now that the
+ * completion wait can deschedule (the blockdev cli no longer implies
+ * mutual exclusion, UAOS-230).  Contenders sleep on SIGF_AHCI with a
+ * short timeout rather than spinning: the caller holds cli, so a raw
+ * spin would starve the owner forever.  A stale owner whose task was
+ * killed mid-command is reclaimed on the next acquire. */
+static void ahci_cmd_acquire(UaosTask *me)
+{
+    for (;;) {
+        uint64_t fl = irq_save();
+        if (!g_cmd_owner || g_cmd_owner->tc_State == TASK_REMOVED) {
+            g_cmd_owner = me;
+            irq_restore(fl);
+            return;
+        }
+        irq_restore(fl);
+        Task_WaitTicks(SIGF_AHCI, 5);
+    }
+}
+
+static void ahci_cmd_release(UaosTask *me)
+{
+    uint64_t fl = irq_save();
+    if (g_cmd_owner == me) g_cmd_owner = 0;
+    irq_restore(fl);
+}
+
 /* Issue one command in slot 0.  fislen is in dwords; write=1 sets the
  * H2D 'W' flag (device expects to receive data). */
 static int ahci_cmd(AhciPort *p, uint8_t cmd, uint64_t lba, uint16_t count,
                     void *buf, uint32_t bytes, int write)
 {
     int port = (int)(p - g_ports);
+    UaosTask *me = Task_Current();
+
+    if (me) ahci_cmd_acquire(me);
 
     if (wait_not_busy(port, 500) != 0) {
         kprint("[AHCI] port busy\n");
+        if (me) ahci_cmd_release(me);
         return -1;
     }
 
@@ -314,20 +369,36 @@ static int ahci_cmd(AhciPort *p, uint8_t cmd, uint64_t lba, uint16_t count,
     *px(port, PX_IS) = 0xFFFFFFFF;                /* clear pending */
     *px(port, PX_CI) = 1;                         /* issue slot 0 */
 
-    /* Wait for CI bit0 to clear (poll; IRQ also acknowledged by handler) */
-    for (int i = 0; i < 5000; i++) {
+    /* Wait for CI bit0 to clear.  When a task context and a routed IRQ
+     * both exist, block on SIGF_AHCI — the handler signals on completion
+     * so latency tracks the hardware instead of a poll interval.  Boot
+     * (pre-task) commands and unrouted configs fall back to a ~100 us
+     * calibrated poll.  5 s overall deadline either way. */
+    int use_irq = (me != 0) && g_irq_attached;
+
+    int rc = -1, timed_out = 0;
+    uint64_t deadline = g_tsc_khz ? rdtsc() + g_tsc_khz * 5000 : 0;
+    int spins = 5000;   /* uncalibrated fallback: 5000 x ~1 ms */
+    for (;;) {
         uint32_t is = *px(port, PX_IS) | g_irq_is[port];
         if (is & IS_TFES) {
             *px(port, PX_IS) = is;
             kprint("[AHCI] TFES error serr=");
             kprinthex(*px(port, PX_SERR)); kprint("\n");
-            return -1;
+            break;
         }
-        if (!(*px(port, PX_CI) & 1)) return 0;
-        ms_spin(1);
+        if (!(*px(port, PX_CI) & 1)) { rc = 0; break; }
+        if (g_tsc_khz) timed_out = (rdtsc() > deadline);
+        else           timed_out = (--spins <= 0);
+        if (timed_out) {
+            kprint("[AHCI] command timeout\n");
+            break;
+        }
+        if (use_irq) Task_WaitTicks(SIGF_AHCI, 5);
+        else         us_spin(100);
     }
-    kprint("[AHCI] command timeout\n");
-    return -1;
+    if (me) ahci_cmd_release(me);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -414,6 +485,31 @@ static int ahci_identify(AhciPort *p)
 
 static uint8_t g_io_buf[PRDT_MAX * 65536] __attribute__((aligned(512)));
 
+/* 64-bit bounce copy — replaced the original byte-wise loop, which cost
+ * ~one byte per cycle over up-to-512 KiB chunks (UAOS-230). */
+static void fast_copy(void *dst, const void *src, uint32_t n)
+{
+    uint64_t *d = (uint64_t *)dst;
+    const uint64_t *s = (const uint64_t *)src;
+    uint32_t q = n / 8;
+    for (uint32_t i = 0; i < q; i++) d[i] = s[i];
+    uint8_t *db = (uint8_t *)(d + q);
+    const uint8_t *sb = (const uint8_t *)(s + q);
+    for (uint32_t i = 0; i < (n & 7); i++) db[i] = sb[i];
+}
+
+/* DMA-safe data pointer for a transfer: the caller buffer itself when it
+ * is dword-aligned (PRDT DBA requires even addresses) and fully inside
+ * the identity-mapped range, else the static bounce buffer.  Zero-copy
+ * removes the bounce copy entirely for the aligned common case. */
+static int io_dma_ok(const void *buf, uint32_t bytes)
+{
+    uintptr_t a = (uintptr_t)buf;
+    if (a & 3) return 0;
+    return DMA_IsAccessible((void *)a) &&
+           DMA_IsAccessible((void *)(a + bytes - 1));
+}
+
 static int ahci_read(BlockDev *dev, uint64_t sector, void *buffer,
                      uint32_t num_sectors)
 {
@@ -422,13 +518,13 @@ static int ahci_read(BlockDev *dev, uint64_t sector, void *buffer,
     while (num_sectors) {
         uint32_t chunk = num_sectors > (PRDT_MAX * 128)
                        ? (PRDT_MAX * 128) : num_sectors;
-        if (ahci_cmd(p, 0x25, sector, (uint16_t)chunk,
-                     g_io_buf, chunk * 512, 0) != 0)
+        uint32_t bytes = chunk * 512;
+        int direct = io_dma_ok(buffer, bytes);
+        void *data = direct ? buffer : (void *)g_io_buf;
+        if (ahci_cmd(p, 0x25, sector, (uint16_t)chunk, data, bytes, 0) != 0)
             return -1;
-        uint8_t *d = (uint8_t *)buffer;
-        const uint8_t *s = g_io_buf;
-        for (uint32_t i = 0; i < chunk * 512; i++) d[i] = s[i];
-        buffer = d;
+        if (!direct) fast_copy(buffer, g_io_buf, bytes);
+        buffer = (uint8_t *)buffer + bytes;
         sector += chunk;
         num_sectors -= chunk;
     }
@@ -443,12 +539,16 @@ static int ahci_write(BlockDev *dev, uint64_t sector, const void *buffer,
     while (num_sectors) {
         uint32_t chunk = num_sectors > (PRDT_MAX * 128)
                        ? (PRDT_MAX * 128) : num_sectors;
-        const uint8_t *s = (const uint8_t *)buffer;
-        for (uint32_t i = 0; i < chunk * 512; i++) g_io_buf[i] = s[i];
+        uint32_t bytes = chunk * 512;
+        const void *data = buffer;
+        if (!io_dma_ok(buffer, bytes)) {
+            fast_copy(g_io_buf, buffer, bytes);
+            data = g_io_buf;
+        }
         if (ahci_cmd(p, 0x35, sector, (uint16_t)chunk,
-                     g_io_buf, chunk * 512, 1) != 0)
+                     (void *)data, bytes, 1) != 0)
             return -1;
-        buffer = s + chunk * 512;
+        buffer = (const uint8_t *)buffer + bytes;
         sector += chunk;
         num_sectors -= chunk;
     }
@@ -597,6 +697,7 @@ void AHCI_SetupIRQ(void)
     if (vec < 0)
         vec = IRQ_AttachPCI(g_bus, g_dev, g_fn, ahci_irq_handler, "ahci");
     if (vec >= 0) {
+        g_irq_attached = 1;
         kprint("[AHCI] IRQ attached, vector ");
         kprintdec((uint32_t)vec); kprint("\n");
     } else {
