@@ -59,6 +59,23 @@ void m68k_set_cur_cwd(const char *path);
 /* Emulation halt flag — set by dos_Exit to break the execute loop */
 extern int g_emu_halted;
 
+/* ---- Per-window guest subtask scheduler (UAOS-307) --------------------
+ * AddTask'd guest tasks and CreateProc'd Processes run as Musashi
+ * contexts inside the owning M68k wrapper's RAM window.  The wrapper's
+ * slice loop calls UAOS_M68k_SubSchedTick() after each m68k_execute to
+ * round-robin contexts; blocking exec/dos handlers pump or park them. */
+void     UAOS_M68k_SubSchedTick(void);
+void     UAOS_Sub_ReleaseWindow(uint8_t *ram);
+int      UAOS_Sub_IsCur(void);                 /* running ctx is a subtask */
+int      UAOS_Sub_AddProc(uint32_t task, uint32_t init_pc,
+                          uint32_t final_pc, uint32_t init_sp);
+int      UAOS_Sub_Delay(uint32_t amiga_ticks); /* 0=main,1=done,2=parked */
+int      UAOS_Sub_WaitTOF(void);               /* 1=handled (subtask ctx) */
+/* dos_Exit hook: returns nonzero when the exit was consumed (subtask
+ * exit, or main parked while children still run) — cpu->pc redirected. */
+int      UAOS_Sub_OnDosExit(void *cpu);       /* cpu is M68kCPUState * */
+#define UAOS_SUB_RESUME_STUB_ADDR 0x1EF068u   /* cpu->pc target on park */
+
 /* When non-zero, chipset sync (chip_emu_cpu_chipram_access) is skipped
  * during M68k memory accesses.  Set during per-task M68k execution to
  * prevent the global blitter/copper from operating on the wrong g_ram. */

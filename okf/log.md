@@ -1814,3 +1814,45 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
 * **Found + fixed**: `dos_Delay` read `cpu->d[0]` for the tick count — AmigaOS `Delay()` passes it in **D1**. Every D1 caller slept a garbage duration (guest task orphans parked mid-Delay, `ps`-visible). Now reads `cpu->d[1]`; rebuilt ISO verified (`mov 0x4(%rdi)`). Note: `SYS:Demos/CIATest` exits silently with no verdict on both pre- and post-fix builds — broken demo, not a Delay regression.
 * Host staging notes: test binaries served from `root@pve.reavernet:/root/uaos_stage` (`python3 -m http.server 8000`); guest `wget` ignores `-O` and saves into cwd; `copy` won't multi-source into a dir — copy one file at a time with an explicit destination name.
 * **Docs**: `okf/kernel/{audio,exec}/index.md`.
+
+## 2026-10-18 — UAOS-307 implemented: guest AddTask/CreateProc subtask scheduling
+
+* **Per-window multi-context M68k scheduler** (`emulation/uaos_m68k_glue.c`,
+  `exec_task.c`, `dos_lib.c`, `graphics_lib.c`, `uaos_emu.h`): guest-created
+  tasks (`AddTask`, DOS `CreateProc`/`SystemTagList`) now run as extra
+  Musashi contexts inside the same 16 MB `g_ram` window — one host
+  `UaosTask` multiplexes a `WSched` of up to `SUB_MAX`=8 `SubCtx` slots
+  (`sizeof(m68ki_cpu_core)` each) plus the main context.
+* **Dispatch**: `UAOS_M68k_SubSchedTick()` runs once per 10k-cycle slice —
+  promotes timed-out parked waits, round-robins to the next runnable ctx
+  preferring highest guest `ln_Pri`; `Forbid`/`Disable` suppress switching.
+  First run seeds PC=initPC, SP=tc_SPReg/SPUpper (or glue scratch stack),
+  SR=0x2000, A6=ExecBase, `SUB_EXIT_STUB` as the return address (bare
+  `rts` → finalPC via `emu_guest_call` → slot freed).
+* **Blocking**: `Wait`/`WaitPort`/`WaitIO`/`DoIO`/`Delay`/`WaitTOF` park the
+  ctx (`SUB_WAIT_PARKED`) at the calling stub (idempotent re-entry) or
+  `SUB_RESUME_STUB` (entry side-effects); `wait_kind` predicates get
+  re-checked each tick.  Top-level wait loops nap on a private host wake
+  bit and `sub_pump_ready()` gives READY siblings 4000-cycle bursts so a
+  worker runs while main blocks.
+* **Signals**: `sub_signal_target` writes the guest node's `tc_SigRecvd`,
+  promotes parked ctxs, nudges the owner host task; `sub_mirror_sigrecvd`
+  mirrors the host sigrecvd into the main proc's guest node so guest code
+  reading `tc_SigRecvd` directly sees deliveries.
+* **Teardown**: `RemTask(self)` frees the ctx (list unlink, MemEntry +
+  scratch-stack cleanup) and parks at `SUB_PARK_STUB`; `UAOS_Sub_OnDosExit`
+  frees a dying subtask or marks `main_dead` and parks main so children
+  keep running; `UAOS_Sub_ReleaseWindow` tears the WSched down with the
+  window.  `LIB_SUB` private stubs (`0x1EF060` band) + `g_cur_stub`
+  tracking identify the live ctx in every handler (`FindTask(0)`,
+  `Signal`, `SetSignal`, `Alloc/FreeSignal`, port/semaphore owners).
+* **Fallbacks preserved**: `AddTask` with NULL initPC or full slots links
+  a dormant node on `TaskWait`; `CreateProc`/`SystemTagList` keep the
+  queued `PendingProc` respawn when shared-window spawn fails.
+* **Verified (QEMU)**: `tests/qemu_guesttask_test.py` (new) —
+  `GUESTTASK PASS` (worker ran, PutMsg arrived, Signal delivered);
+  devload PASS, devio PASS, libload PASS, exec_coverage PASS,
+  m68k_lifecycle 24/24, smoke 24/24.
+* **Docs**: `okf/concepts/m68k_emulation.md` (Guest Subtask Scheduling),
+  `okf/kernel/exec/index.md`, `okf/kernel/exec/other_libraries.md`,
+  `okf/emulation/index.md`.

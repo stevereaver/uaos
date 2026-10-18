@@ -1860,6 +1860,12 @@ static void graphics_WaitTOF(void)
      * the guest (e.g. WritePixelArray8 into a SuperBitMap) are rendered
      * to the framebuffer on the next vertical blank. */
     UaosTask *t = Task_Current();
+    /* Guest subtask context: park/frame-wait on the VBlank counter
+     * instead of the host task's VBlank signal bit (UAOS-307). */
+    {
+        extern int UAOS_Sub_WaitTOF(void);
+        if (UAOS_Sub_WaitTOF()) { WM_Redraw(); return; }
+    }
     if (t && t->type == TASK_TYPE_M68K && t->m68k_vblank_sig >= 0) {
         uint32_t sigmask = (1u << (unsigned int)t->m68k_vblank_sig);
         /* Clear any already-pending VBlank signal so we wait for the next one. */

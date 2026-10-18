@@ -1274,6 +1274,16 @@ static void install_stub(int lib_id, int func_idx)
  * (0x1EF000) in the unused band below the guest stack. */
 #define IRQ_STUB_BASE  0x1EF040u
 
+/* UAOS-307 private subtask-scheduler stubs (ILLEGAL + LIB_SUB + fn + RTS),
+ * in the free tail of the 0x1EF000-0x1EF080 trap band. */
+#define LIB_SUB          0xF0
+#define SUB_FN_EXIT      1     /* task RTS'd past initPC — run finalPC, free */
+#define SUB_FN_RESUME    2     /* parked wait completion stub             */
+#define SUB_FN_PARK      3     /* dead/idle context spin loop             */
+#define SUB_EXIT_STUB    0x1EF060u
+#define SUB_RESUME_STUB  0x1EF068u
+#define SUB_PARK_STUB    0x1EF070u
+
 /* bsdsocket.library LVO offsets (AmiTCP/IP standard) */
 #define LVO_BSD_SOCKET        (-30)
 #define LVO_BSD_BIND          (-36)
@@ -2251,6 +2261,7 @@ static void guest_list_add_tail(uint32_t list, uint32_t node)
 }
 
 static int  exec_alloc_sigbit(void);
+static uint32_t emu_cur_task(void);   /* UAOS-307 — defined with the subtask scheduler */
 
 /* Guest-visible Process/CLI/RDArgs addresses — fixed region published by
  * UAOS_Emu_SetupProcess() so they can never sit inside the program image. */
@@ -2556,6 +2567,21 @@ void install_library_tables(void)
         g_ram[s + 0] = 0x4A; g_ram[s + 1] = 0xFC;
         g_ram[s + 2] = LIB_IRQ; g_ram[s + 3] = (uint8_t)lvl;
         guest_write_be32(0x60u + (uint32_t)lvl * 4u, s);
+    }
+
+    /* UAOS-307 private subtask stubs: ILLEGAL+LIB_SUB+fn, then RTS. */
+    {
+        static const struct { uint32_t a; uint8_t fn; } sub_stubs[] = {
+            { SUB_EXIT_STUB,   SUB_FN_EXIT   },
+            { SUB_RESUME_STUB, SUB_FN_RESUME },
+            { SUB_PARK_STUB,   SUB_FN_PARK   },
+        };
+        for (unsigned i = 0; i < sizeof(sub_stubs)/sizeof(sub_stubs[0]); i++) {
+            uint32_t s = sub_stubs[i].a;
+            g_ram[s + 0] = 0x4A; g_ram[s + 1] = 0xFC;
+            g_ram[s + 2] = LIB_SUB; g_ram[s + 3] = sub_stubs[i].fn;
+            g_ram[s + 4] = 0x4E; g_ram[s + 5] = 0x75;
+        }
     }
 
     /* Pre-fill ALL DOS LVO slots (-6 .. -996) with ILLEGAL catch-all stubs
@@ -4147,7 +4173,7 @@ static void exec_FindTask(void)
     /* FindTask(name=a1): NULL → our task; otherwise search the system
      * TaskReady then TaskWait lists (AddTask links guest tasks there). */
     uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
-    if (!name) { m68k_set_reg(M68K_REG_D0, g_guest_proc_addr); return; }
+    if (!name) { m68k_set_reg(M68K_REG_D0, emu_cur_task()); return; }
     uint32_t hit = glue_find_name(EXEC_BASE + 0x196, name);   /* TaskReady */
     if (!hit) hit = glue_find_name(EXEC_BASE + 0x1A4, name);  /* TaskWait  */
     m68k_set_reg(M68K_REG_D0, hit);
@@ -4236,6 +4262,723 @@ static void glue_list_add_tail(uint32_t list, uint32_t node)
     glue_w32(list + LH_TAILPRED, node);
 }
 
+/* =========================================================================
+ * UAOS-307 — per-window guest subtask scheduler
+ *
+ * AddTask'd guest tasks and CreateProc'd child Processes share the owning
+ * M68k wrapper's RAM window.  Each gets a full Musashi context in a
+ * per-window table (WSched); slot -1 is the main (wrapper-entry) context.
+ *
+ * Dispatch model:
+ *  - UAOS_M68k_SubSchedTick() runs after every m68k_execute() slice in the
+ *    exec_task.c wrapper loop and round-robins the live Musashi context to
+ *    the next READY context (main included) when Forbid/Disable are clear.
+ *  - Blocking exec/dos handlers (Wait/WaitPort/WaitIO/DoIO/Delay/WaitTOF)
+ *    either pump READY siblings between their own 1-tick host naps
+ *    (top-level path) or, when running nested inside a pump, park the
+ *    context: state = WAIT_PARKED and PC rewound to the call's trap stub,
+ *    then m68k_end_timeslice() unwinds to the pump frame.  Re-dispatching a
+ *    parked context re-executes the stub, so blocking calls must stay
+ *    idempotent — DoIO/Delay/WaitTOF park at SUB_RESUME_STUB instead,
+ *    whose handler completes the call without re-running its entry side
+ *    effects.
+ *  - sub_signal_target() is the single wake path: PutMsg/ReplyMsg/
+ *    IOReply/Signal set the target guest node's tc_SigRecvd, promote a
+ *    parked context to READY, and nudge the host wrapper on its reserved
+ *    wake bit so a top-level nap ends early.  Timed/IO/port waits are
+ *    also re-checked every sched tick (sub_wait_done) so completions that
+ *    signalled another task still wake the waiter within a slice.
+ * ========================================================================= */
+
+#define SUB_FREE        0
+#define SUB_READY       1     /* runnable — sched tick / pump may run it */
+#define SUB_WAIT_FRAME  2     /* suspended inside a C wait loop (cur only) */
+#define SUB_WAIT_PARKED 3     /* frozen at a trap stub — signalable */
+
+#define SUBW_NONE   0
+#define SUBW_IOMSG  1     /* disk-dev io still ln_Type == NT_MESSAGE */
+#define SUBW_IOQ    2     /* emulated io still IOF_QUEUED            */
+#define SUBW_TICKS  3     /* PIT-tick deadline in wait_dl            */
+#define SUBW_VBLANK 4     /* vblank counter changed from wait_io     */
+#define SUBW_PORT   5     /* port message list non-empty             */
+
+#define SUB_MAX      8
+#define SUB_MAXWIN   4
+#define SUB_CTX_SZ   1024
+#define SUB_QUANTA   4000   /* cycles per pumped/nested burst          */
+
+#define SUB_TC_SIGWAIT   0x16
+#define SUB_TC_SIGRECVD  0x1A
+#define SUB_TC_MEMENTRY  0x4A
+#define SUB_READY_G      3    /* guest TS_READY */
+
+/* io_Flags / IORequest offsets are #defined further down with the device
+ * section — the wait-promotion checks need them here. */
+#ifndef IO_FLAGS
+#define IO_FLAGS      30
+#define IO_ERROR      31
+#define IOF_QUICK     0x01
+#define IOF_QUEUED    0x10
+#define IOF_DONE      0x80
+#define TS_WAIT_G     4
+#endif
+
+typedef struct {
+    uint8_t  state;         /* SUB_*                                  */
+    uint8_t  started;       /* ctx[] holds a saved Musashi context    */
+    uint8_t  wait_kind;     /* SUBW_* — promotion check for parked ctxs */
+    uint8_t  alloc_stack;   /* init_sp block was glue-allocated        */
+    uint32_t task_addr;     /* guest Task/Process node address        */
+    uint32_t init_pc;
+    uint32_t final_pc;
+    uint32_t init_sp;
+    uint32_t wait_io;       /* io/port/vblank-count for wait_kind     */
+    uint64_t wait_dl;       /* PIT-tick deadline for SUBW_TICKS       */
+    uint32_t sigalloc;      /* host-style signal-allocation mask      */
+    uint8_t  ctx[SUB_CTX_SZ];
+} SubCtx;
+
+typedef struct {
+    uint8_t  *ram;          /* g_ram window this scheduler owns        */
+    UaosTask *owner;        /* host wrapper task                       */
+    int8_t    cur;          /* live context: -1 = main, 0..SUB_MAX-1   */
+    int8_t    wake_bit;     /* host signal bit nudging the wrapper     */
+    uint8_t   main_dead;    /* main exited while subtasks still live   */
+    int       nsub;         /* number of live subtask slots            */
+    uint8_t   main_ctx[SUB_CTX_SZ];
+    SubCtx    s[SUB_MAX];
+} WSched;
+
+static WSched  g_wsched[SUB_MAXWIN];
+int            g_sub_depth;          /* >0 = ctx runs nested inside a pump */
+static uint32_t g_cur_stub;          /* trap stub of the in-flight LVO call */
+
+extern volatile uint64_t g_pit_ticks;
+extern volatile uint32_t g_m68k_block_marks;
+extern uint32_t chip_emu_vblank_count(void);
+static uint32_t ram_r32(uint8_t *ram, uint32_t a);
+static void ram_w32(uint8_t *ram, uint32_t a, uint32_t v);
+static void guest_list_enqueue(uint32_t list, uint32_t node);
+static uint32_t emu_guest_call(uint32_t pc, uint32_t d0, uint32_t d1,
+                               uint32_t a0, uint32_t a1, uint32_t a6);
+static void sub_park_main(void);
+
+static WSched *sub_ws(uint8_t *ram)
+{
+    for (int i = 0; i < SUB_MAXWIN; i++)
+        if (g_wsched[i].ram == ram) return &g_wsched[i];
+    return NULL;
+}
+
+static WSched *sub_ws_bind(UaosTask *owner)
+{
+    WSched *w = sub_ws(g_ram);
+    if (w) return w;
+    if (!owner || !g_ram) return NULL;
+    for (int i = 0; i < SUB_MAXWIN; i++) {
+        if (g_wsched[i].ram) continue;
+        w = &g_wsched[i];
+        emu_memset((uint8_t *)w, 0, sizeof(*w));
+        w->ram      = g_ram;
+        w->owner    = owner;
+        w->cur      = -1;
+        w->wake_bit = -1;
+        /* Reserve a host signal bit so subtask wakeups can interrupt the
+         * wrapper's 1-tick naps instead of waiting out the tick. */
+        for (int b = 0; b < 32; b++) {
+            if ((owner->tc_SigAlloc >> b) & 1) {
+                owner->tc_SigAlloc &= ~(1u << b);
+                w->wake_bit = (int8_t)b;
+                break;
+            }
+        }
+        return w;
+    }
+    return NULL;
+}
+
+void UAOS_Sub_ReleaseWindow(uint8_t *ram)
+{
+    WSched *w = sub_ws(ram);
+    if (w) w->ram = NULL;
+}
+
+static SubCtx *sub_cur_ctx(void)
+{
+    WSched *w = sub_ws(g_ram);
+    if (!w || w->cur < 0) return NULL;
+    return &w->s[w->cur];
+}
+
+int UAOS_Sub_IsCur(void) { return sub_cur_ctx() != NULL; }
+
+/* Guest node address of the running context (main proc when no subtask). */
+static uint32_t emu_cur_task(void)
+{
+    SubCtx *sc = sub_cur_ctx();
+    return sc ? sc->task_addr : g_guest_proc_addr;
+}
+
+static int sub_live_count(WSched *w)
+{
+    return w->nsub;
+}
+
+static uint32_t sub_host_wake_mask(WSched *w)
+{
+    return (w && w->wake_bit >= 0) ? (1u << (unsigned int)w->wake_bit) : 0;
+}
+
+static void sub_mark_ready(WSched *w, SubCtx *c)
+{
+    c->state = SUB_READY;
+    g_ram[c->task_addr + PRC_TC_STATE] = SUB_READY_G;
+    (void)w;
+}
+
+/* Install `idx` (-1 = main) as the live Musashi context, saving the
+ * outgoing context into its slot first. */
+static void sub_install(WSched *w, int idx)
+{
+    if (w->cur == idx) return;
+    if (w->cur >= 0) m68k_get_context(w->s[w->cur].ctx);
+    else if (w->cur == -1) m68k_get_context(w->main_ctx);
+    /* cur == -2: the live context is dead — nothing worth saving */
+    w->cur = (int8_t)idx;
+    if (idx < 0) {
+        m68k_set_context(w->main_ctx);
+        guest_write_be32(EXEC_BASE + 0x114, g_guest_proc_addr); /* ThisTask */
+        return;
+    }
+    SubCtx *c = &w->s[idx];
+    if (!c->started) {
+        c->started = 1;
+        /* First run: PC=initPC on the task's own stack, supervisor SR,
+         * A6=SysBase, SUB_EXIT_STUB pushed as the return address so an
+         * RTS at the end lands on the finalPC/teardown handler. */
+        uint32_t sp = c->init_sp;
+        if (sp >= 4 && sp + 4 <= GUEST_RAM_SIZE) {
+            sp -= 4;
+            guest_write_be32(sp, SUB_EXIT_STUB);
+        }
+        m68k_set_reg(M68K_REG_SP, sp);
+        m68k_set_reg(M68K_REG_PC, c->init_pc);
+        m68k_set_reg(M68K_REG_SR, 0x2000);
+        m68k_set_reg(M68K_REG_A6, EXEC_BASE);
+        m68k_set_reg(M68K_REG_D0, 0);
+        m68k_set_reg(M68K_REG_A0, 0);
+        m68k_set_reg(M68K_REG_A1, 0);
+    } else {
+        m68k_set_context(c->ctx);
+    }
+    g_ram[c->task_addr + PRC_TC_STATE] = TS_RUN_G;
+    guest_write_be32(EXEC_BASE + 0x114, c->task_addr);
+}
+
+/* Condition check for parked contexts — used by the sched tick to
+ * promote ctxs whose wait finished without a signal aimed at them. */
+static int sub_wait_done(SubCtx *c)
+{
+    switch (c->wait_kind) {
+    case SUBW_IOMSG:
+        return g_ram[c->wait_io + LN_TYPE] != NT_MESSAGE_G;
+    case SUBW_IOQ:
+        return !(g_ram[c->wait_io + IO_FLAGS] & IOF_QUEUED);
+    case SUBW_TICKS:
+        return g_pit_ticks >= c->wait_dl;
+    case SUBW_VBLANK:
+        return chip_emu_vblank_count() != c->wait_io;
+    case SUBW_PORT:
+        return !glue_list_empty(c->wait_io + MP_MSGLIST);
+    }
+    return 0;
+}
+
+/* Run each READY subtask context (except the caller's own) for a short
+ * nested burst, then restore the caller's context.  Called from the
+ * top-level blocking loops so a waiting context feeds runnable siblings.
+ * Pumped contexts that block park themselves at their trap stub and
+ * unwind this execute with m68k_end_timeslice(). */
+static void sub_pump_ready(void)
+{
+    WSched *w = sub_ws(g_ram);
+    if (!w || g_hook_nest_level || g_sub_depth >= 3) return;
+    for (int i = 0; i < SUB_MAX; i++) {
+        if (w->s[i].state != SUB_READY || i == w->cur) continue;
+        /* Forbid()/Disable() suppress subtask switching. */
+        if ((int8_t)g_ram[EXEC_BASE + 0x127] >= 0 ||
+            (int8_t)g_ram[EXEC_BASE + 0x126] >= 0)
+            break;
+        int caller = w->cur;
+        if (caller >= 0)       m68k_get_context(w->s[caller].ctx);
+        else if (caller == -1) m68k_get_context(w->main_ctx);
+        /* caller == -2: dead context — nothing worth saving */
+        w->cur = (int8_t)i;
+        SubCtx *c = &w->s[i];
+        if (!c->started) {
+            c->started = 1;
+            uint32_t sp = c->init_sp;
+            if (sp >= 4 && sp + 4 <= GUEST_RAM_SIZE) {
+                sp -= 4;
+                guest_write_be32(sp, SUB_EXIT_STUB);
+            }
+            m68k_set_reg(M68K_REG_SP, sp);
+            m68k_set_reg(M68K_REG_PC, c->init_pc);
+            m68k_set_reg(M68K_REG_SR, 0x2000);
+            m68k_set_reg(M68K_REG_A6, EXEC_BASE);
+            m68k_set_reg(M68K_REG_D0, 0);
+            m68k_set_reg(M68K_REG_A0, 0);
+            m68k_set_reg(M68K_REG_A1, 0);
+        } else {
+            m68k_set_context(c->ctx);
+        }
+        g_ram[c->task_addr + PRC_TC_STATE] = TS_RUN_G;
+        guest_write_be32(EXEC_BASE + 0x114, c->task_addr);
+        g_sub_depth++;
+        m68k_execute(SUB_QUANTA);
+        g_sub_depth--;
+        m68k_get_context(c->ctx);
+        /* Restore the caller's context — the pumped ctx may have parked,
+         * died, or simply burned its burst. */
+        w->cur = (int8_t)caller;
+        if (caller >= 0) {
+            m68k_set_context(w->s[caller].ctx);
+            g_ram[w->s[caller].task_addr + PRC_TC_STATE] = TS_RUN_G;
+            guest_write_be32(EXEC_BASE + 0x114, w->s[caller].task_addr);
+        } else {
+            m68k_set_context(w->main_ctx);
+            guest_write_be32(EXEC_BASE + 0x114, g_guest_proc_addr);
+        }
+        if (g_emu_halted) break;
+    }
+}
+
+/* Called once per top-level m68k_execute() slice by the exec_task.c
+ * wrapper loop: promote timed-out parked waits, then round-robin the
+ * live context to the next runnable (main included). */
+void UAOS_M68k_SubSchedTick(void)
+{
+    WSched *w = sub_ws(g_ram);
+    if (!w || g_hook_nest_level || g_sub_depth) return;
+
+    for (int i = 0; i < SUB_MAX; i++)
+        if (w->s[i].state == SUB_WAIT_PARKED && w->s[i].wait_kind &&
+            sub_wait_done(&w->s[i]))
+            sub_mark_ready(w, &w->s[i]);
+
+    /* Forbid()/Disable() suppress subtask switching. */
+    if ((int8_t)g_ram[EXEC_BASE + 0x127] >= 0 ||
+        (int8_t)g_ram[EXEC_BASE + 0x126] >= 0)
+        return;
+
+    /* Current slot died or parked — it must be reselected. */
+    if (w->cur >= 0 && w->s[w->cur].state != SUB_READY) w->cur = -2;
+
+    if (!w->nsub) {
+        if (w->main_dead) { g_emu_halted = 1; return; }
+        if (w->cur == -1) return;   /* only main — it is already live */
+        /* cur == -2: a dead ctx is live — fall through, reselect main */
+    }
+
+    /* Round-robin from the context after cur; among READY candidates the
+     * highest guest ln_Pri wins (AmigaOS priority semantics, coarse). */
+    for (int k = 1; k <= SUB_MAX + 1; k++) {
+        int idx = ((w->cur + 1 + k) % (SUB_MAX + 1)) - 1;
+        if (idx < 0) {
+            if (!w->main_dead) { sub_install(w, -1); return; }
+            continue;
+        }
+        if (w->s[idx].state != SUB_READY) continue;
+        int best = idx;
+        int bpri = (int8_t)g_ram[w->s[idx].task_addr + LN_PRI];
+        for (int j = k + 1; j <= SUB_MAX + 1; j++) {
+            int jx = ((w->cur + 1 + j) % (SUB_MAX + 1)) - 1;
+            if (jx >= 0 && w->s[jx].state == SUB_READY &&
+                (int8_t)g_ram[w->s[jx].task_addr + LN_PRI] > bpri) {
+                best = jx;
+                bpri = (int8_t)g_ram[w->s[jx].task_addr + LN_PRI];
+            }
+        }
+        sub_install(w, best);
+        return;
+    }
+    /* Nothing runnable. */
+    if (w->cur == -2) {
+        /* The live context died — halt when main is gone too. */
+        w->cur = -1;
+        if (w->main_dead) { g_emu_halted = 1; return; }
+        sub_install(w, -1);
+    }
+}
+
+/* Generic block/yield used by the blocking exec handlers.
+ * `park_pc` is the address the context resumes at when re-dispatched:
+ * the calling stub (idempotent re-entry) or SUB_RESUME_STUB (waits with
+ * entry side effects — DoIO, Delay, WaitTOF).  Returns 1 when the caller
+ * must bail immediately (context parked), 0 after one top-level
+ * nap+pump iteration.  Main context: returns 0 without doing anything. */
+static int sub_park_or_wait(uint32_t park_pc)
+{
+    SubCtx *sc = sub_cur_ctx();
+    if (!sc) return 0;
+    if (g_sub_depth && !g_hook_nest_level) {
+        sc->state = SUB_WAIT_PARKED;
+        g_ram[sc->task_addr + PRC_TC_STATE] = TS_WAIT_G;
+        m68k_set_reg(M68K_REG_PC, park_pc);
+        m68k_end_timeslice();
+        return 1;
+    }
+    WSched *w = sub_ws(g_ram);
+    sc->state = SUB_WAIT_FRAME;
+    g_ram[sc->task_addr + PRC_TC_STATE] = TS_WAIT_G;
+    g_blocked_in = 6;
+    g_m68k_block_marks++;
+    Task_WaitTicks(sub_host_wake_mask(w), 1);
+    g_blocked_in = 0;
+    sc->state = SUB_READY;
+    g_ram[sc->task_addr + PRC_TC_STATE] = TS_RUN_G;
+    UAOS_M68k_DeliverInterrupts();
+    sub_pump_ready();
+    return 0;
+}
+
+/* Mirror the host task's sigrecvd into its guest node so guest code
+ * reading tc_SigRecvd directly (FindTask'd node, port waiters) sees the
+ * same signal state the host scheduler does. */
+static void sub_mirror_sigrecvd(UaosTask *t, uint32_t task_addr)
+{
+    if (!t || t->type != TASK_TYPE_M68K || !t->m68k_ram ||
+        task_addr + 0x20 > GUEST_RAM_SIZE) return;
+    ram_w32(t->m68k_ram, task_addr + SUB_TC_SIGRECVD, t->tc_SigRecvd);
+}
+
+/* Single wake path for guest-visible signals: the target's tc_SigRecvd
+ * gets the mask, a parked context promotes to READY, and the host
+ * wrapper is nudged on its wake bit so a top-level nap ends early.
+ * Non-subtask targets fall back to the host-task Signal path. */
+static void sub_signal_target(uint8_t *ram, uint32_t task_addr, uint32_t mask)
+{
+    if (!task_addr || !mask) return;
+    WSched *w = sub_ws(ram);
+    if (w) {
+        for (int i = 0; i < SUB_MAX; i++) {
+            SubCtx *c = &w->s[i];
+            if (c->state == SUB_FREE || c->task_addr != task_addr) continue;
+            ram_w32(ram, task_addr + SUB_TC_SIGRECVD,
+                    ram_r32(ram, task_addr + SUB_TC_SIGRECVD) | mask);
+            if (c->state == SUB_WAIT_PARKED) {
+                c->state = SUB_READY;
+                ram[task_addr + PRC_TC_STATE] = SUB_READY_G;
+            }
+            if (w->owner && w->wake_bit >= 0)
+                Signal(w->owner, 1u << (unsigned int)w->wake_bit);
+            return;
+        }
+    }
+    UaosTask *t = Task_FindByM68kAddr(task_addr);
+    if (t) {
+        Signal(t, mask);
+        sub_mirror_sigrecvd(t, task_addr);
+    }
+}
+
+/* Free a subtask context: unlink its guest node from the Exec task
+ * lists, free any MemEntry-tracked allocations, drop the slot. */
+static void sub_ctx_free(WSched *w, SubCtx *c)
+{
+    uint32_t task = c->task_addr;
+    if (task && task + 0x60 < GUEST_RAM_SIZE) {
+        uint32_t succ = glue_r32(task + LN_SUCC);
+        uint32_t pred = glue_r32(task + LN_PRED);
+        if (succ && pred) {
+            glue_w32(pred + LN_SUCC, succ);
+            glue_w32(succ + LN_PRED, pred);
+            glue_w32(task + LN_SUCC, 0);
+            glue_w32(task + LN_PRED, 0);
+        }
+        /* MemEntry cleanup: each tc_MemEntry node is a MemList header —
+         * ml_NumEntries @+0x0E, MemEntry {reqs,len,addr}[] @+0x10. */
+        uint32_t list = task + SUB_TC_MEMENTRY;
+        uint32_t head = glue_r32(list + MLH_HEAD);
+        int guard = 0;
+        while (head && head != list + MLH_TAIL && guard++ < 64) {
+            uint32_t next = glue_r32(head + LN_SUCC);
+            uint32_t n    = glue_r16(head + 0x0E);
+            uint32_t me   = head + 0x10;
+            for (uint32_t i = 0; i < n && i < 64; i++, me += 12) {
+                uint32_t len  = glue_r32(me + 4);
+                uint32_t addr = glue_r32(me + 8);
+                if (addr && len) dos_FreeMem_glue(addr, len);
+            }
+            head = next;
+        }
+    }
+    if (c->alloc_stack && c->init_sp)
+        dos_FreeMem_glue(c->init_sp, 4096);
+    c->state     = SUB_FREE;
+    c->wait_kind = SUBW_NONE;
+    c->task_addr = 0;
+    if (w->nsub > 0) w->nsub--;
+}
+
+/* LIB_SUB/SUB_FN_EXIT — the running context RTS'd past its initPC.
+ * Invoke finalPC (nested, on this task's context) then free the slot. */
+static void sub_task_exit(void)
+{
+    SubCtx *sc = sub_cur_ctx();
+    WSched *w  = sub_ws(g_ram);
+    if (!sc || !w) { m68k_set_reg(M68K_REG_PC, SUB_PARK_STUB); return; }
+    if (sc->final_pc && sc->final_pc < GUEST_RAM_SIZE)
+        emu_guest_call(sc->final_pc, 0, 0, 0, 0, EXEC_BASE);
+    sub_ctx_free(w, sc);
+    /* Park whatever remains of this context — the sched tick reselects
+     * a live context (or halts) at the next slice boundary. */
+    m68k_set_reg(M68K_REG_PC, SUB_PARK_STUB);
+    m68k_end_timeslice();
+}
+
+/* LIB_SUB/SUB_FN_RESUME — completion stub for waits with entry side
+ * effects (DoIO re-BeginIOs, Delay re-reads D1, WaitTOF re-arms the
+ * VBlank wait).  On completion write the result and RTS back through
+ * the return address the original jsr pushed. */
+static void sub_resume(void)
+{
+    SubCtx *sc = sub_cur_ctx();
+    if (!sc || sc->wait_kind == SUBW_NONE) {
+        m68k_set_reg(M68K_REG_PC, SUB_PARK_STUB);
+        return;
+    }
+    if (!sub_wait_done(sc)) {
+        if (sub_park_or_wait(SUB_RESUME_STUB)) return;
+        m68k_set_reg(M68K_REG_PC, SUB_RESUME_STUB);
+        return;
+    }
+    uint32_t d0 = 0;
+    if (sc->wait_kind == SUBW_IOQ || sc->wait_kind == SUBW_IOMSG) {
+        uint32_t io   = sc->wait_io;
+        uint32_t port = glue_r32(io + MN_REPLYPORT);
+        if (port) glue_list_remove_msg(port + MP_MSGLIST, io);
+        d0 = (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR];
+    }
+    sc->wait_kind = SUBW_NONE;
+    m68k_set_reg(M68K_REG_D0, d0);
+    m68k_set_reg(M68K_REG_PC, SUB_RESUME_STUB + 4);   /* RTS to caller */
+}
+
+/* LIB_SUB/SUB_FN_PARK — idle spin for a dead context and for a main
+ * context that exited while subtasks still live.  Feeds READY siblings,
+ * naps when nothing is runnable, and halts the window once the last
+ * context dies. */
+static void sub_park_main(void)
+{
+    WSched *w = sub_ws(g_ram);
+    /* A subtask ctx reaching the park stub while still allocated dropped
+     * off initPC (bare `rts`) — free it like RemTask(NULL) would. */
+    if (w && w->cur >= 0 && w->s[w->cur].state != SUB_FREE)
+        sub_ctx_free(w, &w->s[w->cur]);
+    if (!w || (!w->nsub && w->main_dead)) {
+        g_emu_halted = 1;
+        m68k_end_timeslice();
+        return;
+    }
+    UAOS_M68k_DeliverInterrupts();
+    sub_pump_ready();
+    /* Nap only when nothing is runnable — with READY contexts the sched
+     * tick needs the slice to end so it can dispatch them. */
+    int any = 0;
+    if (w) {
+        for (int i = 0; i < SUB_MAX; i++)
+            if (w->s[i].state == SUB_READY) { any = 1; break; }
+    }
+    if (!any) {
+        g_blocked_in = 7;
+        g_m68k_block_marks++;
+        Task_WaitTicks(sub_host_wake_mask(w), 1);
+        g_blocked_in = 0;
+    }
+    m68k_set_reg(M68K_REG_PC, SUB_PARK_STUB);
+    m68k_end_timeslice();   /* let the sched tick reselect a live ctx */
+}
+
+/* Register a guest Task/Process node as a runnable context in this
+ * window.  Returns nonzero on success — the caller's exec/dos wrapper
+ * decides the guest-visible result. */
+int UAOS_Sub_AddProc(uint32_t task, uint32_t init_pc, uint32_t final_pc,
+                     uint32_t init_sp)
+{
+    if (!task || task + 0x60 > GUEST_RAM_SIZE || !init_pc ||
+        init_pc >= GUEST_RAM_SIZE)
+        return 0;
+    UaosTask *self = Task_Current();
+    WSched *w = sub_ws_bind(self);
+    if (!w) return 0;
+    int slot = -1;
+    for (int i = 0; i < SUB_MAX; i++)
+        if (w->s[i].state == SUB_FREE) { slot = i; break; }
+    if (slot < 0) return 0;
+
+    if (!init_sp) {
+        /* AddTask callers normally set tc_SPReg/tc_SPUpper; when neither
+         * is present give the task a scratch stack and free it on exit. */
+        init_sp = glue_r32(task + PRC_TC_SPREG);
+        if (!init_sp) init_sp = glue_r32(task + PRC_TC_SPUPPER);
+    }
+    int alloc_stack = 0;
+    if (!init_sp) {
+        uint32_t blk = 0;
+        dos_AllocMem_glue(4096, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &blk);
+        if (!blk) return 0;
+        init_sp = blk + 4096;
+        alloc_stack = 1;
+    }
+
+    uint32_t sigalloc = glue_r32(task + PRC_TC_SIGALLOC);
+    if (!sigalloc) sigalloc = 0xFFFFFFFFu;
+    /* A Process (CreateProc child) has an embedded pr_MsgPort at +0x5C —
+     * reserve its signal bit from the child's own mask so replies land
+     * in the child's tc_SigRecvd, not the parent's. */
+    if (g_ram[task + LN_TYPE] == NT_PROCESS_G) {
+        for (int b = 0; b < 32; b++) {
+            if ((sigalloc >> b) & 1) {
+                sigalloc &= ~(1u << b);
+                glue_w8(task + 0x5C + MP_SIGBIT, (uint8_t)b);
+                break;
+            }
+        }
+    }
+    glue_w32(task + PRC_TC_SIGALLOC, sigalloc);
+
+    SubCtx *c = &w->s[slot];
+    c->task_addr  = task;
+    c->init_pc    = init_pc;
+    c->final_pc   = final_pc;
+    c->init_sp    = init_sp;
+    c->wait_io    = 0;
+    c->wait_dl    = 0;
+    c->sigalloc   = sigalloc;
+    c->alloc_stack = (uint8_t)alloc_stack;
+    c->wait_kind  = SUBW_NONE;
+    c->started    = 0;
+    c->state      = SUB_READY;
+    w->nsub++;
+    g_ram[task + PRC_TC_STATE] = SUB_READY_G;
+    guest_list_enqueue(EXEC_BASE + 0x196, task);   /* TaskReady */
+    return 1;
+}
+
+/* Kill a context by guest task address (RemTask(non-self) path). */
+static void sub_kill_task(WSched *w, uint32_t task)
+{
+    for (int i = 0; i < SUB_MAX; i++) {
+        SubCtx *c = &w->s[i];
+        if (c->state == SUB_FREE || c->task_addr != task) continue;
+        if (i == w->cur) {
+            /* Self-removal: free the slot, park whatever context is left
+             * live until the sched tick reselects. */
+            sub_ctx_free(w, c);
+            m68k_set_reg(M68K_REG_PC, SUB_PARK_STUB);
+            m68k_end_timeslice();
+            return;
+        }
+        sub_ctx_free(w, c);
+        return;
+    }
+}
+
+/* Wait-loop helper for waits that must not re-run their entry side
+ * effects: park at SUB_RESUME_STUB (nested) or frame-wait (top-level)
+ * until sub_wait_done.  `self` is the host task for the halt check. */
+static void sub_wait_cond_or_park(SubCtx *sc, UaosTask *self)
+{
+    while (!sub_wait_done(sc)) {
+        if (self && self->type == TASK_TYPE_M68K && self->m68k_halted) break;
+        if (sub_park_or_wait(SUB_RESUME_STUB)) return;
+    }
+    if (sub_wait_done(sc)) {
+        uint32_t port = glue_r32(sc->wait_io + MN_REPLYPORT);
+        if (sc->wait_kind == SUBW_IOQ || sc->wait_kind == SUBW_IOMSG) {
+            if (port) glue_list_remove_msg(port + MP_MSGLIST, sc->wait_io);
+        }
+        sc->wait_kind = SUBW_NONE;
+    }
+}
+
+/* dos.library Delay() for a guest subtask context.  Returns:
+ *   0 — current context is main (caller runs the normal path)
+ *   1 — handled: delay completed (top-level path)
+ *   2 — handled: context parked — caller must set cpu->pc = SUB_RESUME_STUB */
+int UAOS_Sub_Delay(uint32_t amiga_ticks)
+{
+    SubCtx *sc = sub_cur_ctx();
+    if (!sc) return 0;
+    uint64_t deadline = g_pit_ticks + (uint64_t)amiga_ticks * 2;
+    if (g_sub_depth && !g_hook_nest_level) {
+        sc->wait_kind = SUBW_TICKS;
+        sc->wait_dl   = deadline;
+        sc->state     = SUB_WAIT_PARKED;
+        g_ram[sc->task_addr + PRC_TC_STATE] = TS_WAIT_G;
+        return 2;
+    }
+    UaosTask *self = Task_Current();
+    while (g_pit_ticks < deadline) {
+        if (self && self->type == TASK_TYPE_M68K && self->m68k_halted) break;
+        sc->wait_kind = SUBW_TICKS;
+        sc->wait_dl   = deadline;
+        if (sub_park_or_wait(SUB_RESUME_STUB)) {
+            /* became nested mid-wait (defensive) — park on the stub */
+            return 2;
+        }
+    }
+    sc->wait_kind = SUBW_NONE;
+    return 1;
+}
+
+/* graphics.library WaitTOF() for a guest subtask context (live-regs
+ * dispatch — parks the Musashi PC directly).  Returns 1 when handled. */
+int UAOS_Sub_WaitTOF(void)
+{
+    SubCtx *sc = sub_cur_ctx();
+    if (!sc) return 0;
+    uint32_t start = chip_emu_vblank_count();
+    sc->wait_kind = SUBW_VBLANK;
+    sc->wait_io   = start;
+    UaosTask *self = Task_Current();
+    while (!sub_wait_done(sc)) {
+        if (self && self->type == TASK_TYPE_M68K && self->m68k_halted) break;
+        if (sub_park_or_wait(SUB_RESUME_STUB)) return 1;
+    }
+    sc->wait_kind = SUBW_NONE;
+    return 1;
+}
+
+/* dos_Exit() hook: subtask Exit frees the context; main Exit with live
+ * subtasks parks main so the children keep running in this window.
+ * Returns 1 when handled (cpu->pc already redirected — no halt). */
+int UAOS_Sub_OnDosExit(void *cpu_v)
+{
+    M68kCPUState *cpu = (M68kCPUState *)cpu_v;
+    WSched *w = sub_ws(g_ram);
+    if (!w) return 0;
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        sub_ctx_free(w, sc);
+        cpu->pc = SUB_PARK_STUB;
+        return 1;
+    }
+    if (!w->nsub) return 0;
+    w->main_dead = 1;
+    cpu->pc = SUB_PARK_STUB;
+    /* Same detach semantics as the queued-respawn path: the launching
+     * shell's Wait(SIGF_CHILD) returns when the parent exits even though
+     * the window lives on for the children. */
+    UaosTask *cur = Task_Current();
+    if (cur && cur->parent && cur->parent->tc_State != TASK_REMOVED) {
+        Signal(cur->parent, SIGF_CHILD);
+        cur->parent = NULL;
+    }
+    return 1;
+}
+
 /* -------------------------------------------------------------------------
  * exec.library signal / message primitives (guest-memory compatible)
  * ------------------------------------------------------------------------- */
@@ -4248,11 +4991,40 @@ static void exec_Wait(void)
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
+    /* Guest subtask context: the host task's signal mask isn't this
+     * context's — signals live in the guest node's tc_SigRecvd.  Block
+     * on that mask; nested contexts park at the Wait stub and re-enter
+     * when their mask lands (UAOS-307). */
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        glue_w32(sc->task_addr + SUB_TC_SIGWAIT, sigmask);
+        for (;;) {
+            UaosTask *t = Task_Current();
+            if (t && t->type == TASK_TYPE_M68K && t->m68k_halted) {
+                m68k_end_timeslice();
+                break;
+            }
+            uint32_t got = glue_r32(sc->task_addr + SUB_TC_SIGRECVD) & sigmask;
+            if (got) {
+                glue_w32(sc->task_addr + SUB_TC_SIGRECVD,
+                         glue_r32(sc->task_addr + SUB_TC_SIGRECVD) & ~got);
+                glue_w32(sc->task_addr + SUB_TC_SIGWAIT, 0);
+                m68k_set_reg(M68K_REG_D0, got);
+                break;
+            }
+            if (sub_park_or_wait(g_cur_stub)) return;
+        }
+        return;
+    }
     /* Wait() blocks the host task, so the m68k slice loop — where guest
      * IRQs are normally dispatched — stops running.  Nap in 1-tick slices
      * and deliver pending guest interrupts between them; handlers may
      * Signal() this task (or PutMsg into a port it watches), which is how
-     * OctaMED's player/input engine wakes its main loop. */
+     * OctaMED's player/input engine wakes its main loop.  The subtask
+     * wake bit joins the nap mask so a child context's signal ends the
+     * nap early; READY children get a burst every iteration (UAOS-307). */
+    WSched *w = sub_ws(g_ram);
+    uint32_t wmask = sub_host_wake_mask(w);
     uint32_t got = 0;
     for (;;) {
         UaosTask *t = Task_Current();
@@ -4264,9 +5036,10 @@ static void exec_Wait(void)
         }
         g_blocked_in = 1;
         g_m68k_block_marks++;
-        got = Task_WaitTicks(sigmask, 1);
+        got = Task_WaitTicks(sigmask | wmask, 1) & sigmask;
         g_blocked_in = 0;
         UAOS_M68k_DeliverInterrupts();
+        sub_pump_ready();
         if (got) break;
         if (t && (t->tc_SigRecvd & sigmask)) {
             got = t->tc_SigRecvd & sigmask;
@@ -4274,6 +5047,7 @@ static void exec_Wait(void)
             break;
         }
     }
+    sub_mirror_sigrecvd(Task_Current(), g_guest_proc_addr);
     m68k_set_reg(M68K_REG_D0, got);
 }
 
@@ -4281,21 +5055,68 @@ static void exec_Signal(void)
 {
     uint32_t task_addr = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t sigmask   = m68k_get_reg(NULL, M68K_REG_D0);
+    SubCtx *sc = sub_cur_ctx();
+    if (sc && (!task_addr || task_addr == sc->task_addr)) {
+        /* Signal(self) on a subtask: set bits in the guest node's
+         * tc_SigRecvd — the host task's signal word isn't ours. */
+        glue_w32(sc->task_addr + SUB_TC_SIGRECVD,
+                 glue_r32(sc->task_addr + SUB_TC_SIGRECVD) | sigmask);
+        return;
+    }
+    if (task_addr && task_addr != emu_cur_task()) {
+        sub_signal_target(g_ram, task_addr, sigmask);
+        return;
+    }
+    /* Signal(NULL)/self or the main proc — host task signal model. */
     UaosTask *t = Task_FindByM68kAddr(task_addr);
     if (!t) t = Task_Current();
-    if (t) Signal(t, sigmask);
+    if (t) {
+        Signal(t, sigmask);
+        sub_mirror_sigrecvd(t, task_addr ? task_addr : g_guest_proc_addr);
+    }
 }
 
 static void exec_SetSignal(void)
 {
     uint32_t newsigs = m68k_get_reg(NULL, M68K_REG_D0);
     uint32_t sigmask = m68k_get_reg(NULL, M68K_REG_D1);
-    m68k_set_reg(M68K_REG_D0, SetSignal(newsigs, sigmask));
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        uint32_t old = glue_r32(sc->task_addr + SUB_TC_SIGRECVD);
+        glue_w32(sc->task_addr + SUB_TC_SIGRECVD,
+                 (old & ~sigmask) | (newsigs & sigmask));
+        m68k_set_reg(M68K_REG_D0, old);
+        return;
+    }
+    {
+        uint32_t old = SetSignal(newsigs, sigmask);
+        sub_mirror_sigrecvd(Task_Current(), g_guest_proc_addr);
+        m68k_set_reg(M68K_REG_D0, old);
+    }
 }
 
 static void exec_AllocSignal(void)
 {
     int32_t signal_num = (int32_t)m68k_get_reg(NULL, M68K_REG_D0);
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        /* Subtask signal space: the ctx's own allocation mask, mirrored
+         * into the guest node's tc_SigAlloc. */
+        uint32_t mask = sc->sigalloc;
+        if (signal_num == -1) {
+            for (int i = 0; i < 32; i++) {
+                if ((mask >> i) & 1) { signal_num = i; break; }
+            }
+        }
+        if (signal_num < 0 || signal_num > 31 || !((mask >> signal_num) & 1)) {
+            m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+            return;
+        }
+        sc->sigalloc &= ~(1u << signal_num);
+        glue_w32(sc->task_addr + PRC_TC_SIGALLOC, sc->sigalloc);
+        m68k_set_reg(M68K_REG_D0, (uint32_t)signal_num);
+        return;
+    }
     UaosTask *t = Task_Current();
     if (!t) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
 
@@ -4324,6 +5145,17 @@ static void exec_AllocSignal(void)
 static void exec_FreeSignal(void)
 {
     uint32_t signal_num = m68k_get_reg(NULL, M68K_REG_D0);
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        if (signal_num < 32) {
+            sc->sigalloc |= (1u << signal_num);
+            glue_w32(sc->task_addr + PRC_TC_SIGALLOC, sc->sigalloc);
+            m68k_set_reg(M68K_REG_D0, 0);
+        } else {
+            m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+        }
+        return;
+    }
     UaosTask *t = Task_Current();
     if (!t) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
 
@@ -4348,11 +5180,8 @@ static void exec_PutMsg(void)
     glue_list_add_tail(port + MP_MSGLIST, msg);
 
     uint32_t sigtask = glue_r32(port + MP_SIGTASK);
-    UaosTask *t = Task_FindByM68kAddr(sigtask);
-    if (t) {
-        uint32_t sigbit = glue_r8(port + MP_SIGBIT);
-        Signal(t, 1U << sigbit);
-    }
+    sub_signal_target(g_ram, sigtask,
+                      1u << (glue_r8(port + MP_SIGBIT) & 31));
 }
 
 volatile uint32_t g_getmsg_calls, g_getmsg_hit;
@@ -4397,11 +5226,8 @@ static void exec_ReplyMsg(void)
         g_ram[msg + LN_TYPE] = NT_REPLYMSG;
         glue_list_add_tail(reply_port + MP_MSGLIST, msg);
         uint32_t sigtask = glue_r32(reply_port + MP_SIGTASK);
-        UaosTask *t = Task_FindByM68kAddr(sigtask);
-        if (t) {
-            uint32_t sigbit = glue_r8(reply_port + MP_SIGBIT);
-            Signal(t, 1U << sigbit);
-        }
+        sub_signal_target(g_ram, sigtask,
+                          1u << (glue_r8(reply_port + MP_SIGBIT) & 31));
     }
 }
 
@@ -4650,21 +5476,39 @@ static void exec_WaitPort(void)
             m68k_end_timeslice();
             break;
         }
+        /* Guest subtask context: parked/napped like Wait.  The park
+         * records SUBW_PORT so the sched tick promotes us once the list
+         * is non-empty even if the poster signalled another task. */
+        SubCtx *sc = sub_cur_ctx();
+        if (sc) {
+            sc->wait_kind = SUBW_PORT;
+            sc->wait_io   = port;
+            if (sub_park_or_wait(g_cur_stub)) return;
+            continue;
+        }
         if (!g_chipset_sync_disabled)
             UAOS_Intuition_PostIntuiTicks();
         else
             UAOS_M68k_DeliverInterrupts();   /* per-task ctx: keep guest IRQs flowing */
         /* One-tick nap as a real blocking wait (UAOS-169): the task
          * deschedules immediately instead of sti;hlt-ing as g_current,
-         * and wakes early when PutMsg signals the port's sigbit. */
+         * and wakes early when PutMsg signals the port's sigbit.  The
+         * subtask wake bit joins the mask so a child's message ends the
+         * nap early; READY children get a burst each iteration (UAOS-307). */
+        WSched *w = sub_ws(g_ram);
         g_blocked_in = 2;
         g_m68k_block_marks++;
-        Task_WaitTicks(mask, 1);
+        Task_WaitTicks(mask | sub_host_wake_mask(w), 1);
         g_blocked_in = 0;
+        sub_pump_ready();
         /* Consume the port signal — it only means "check the list"; a
          * leftover edge must not skip every future nap. */
         if (mask && (self->tc_SigRecvd & mask))
             Task_ClearSig(mask);
+    }
+    {
+        SubCtx *sc = sub_cur_ctx();
+        if (sc) sc->wait_kind = SUBW_NONE;
     }
 
     /* WaitPort returns a pointer to the FIRST queued message (peek — the
@@ -5006,11 +5850,36 @@ static void exec_FindPort(void)
 
 static int exec_alloc_sigbit(void)
 {
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        /* Subtask port signals allocate from the ctx's own mask so the
+         * port's MP_SIGBIT lands in the guest node's signal space. */
+        for (int i = 0; i < 32; i++)
+            if ((sc->sigalloc >> i) & 1) {
+                sc->sigalloc &= ~(1u << i);
+                glue_w32(sc->task_addr + PRC_TC_SIGALLOC, sc->sigalloc);
+                return i;
+            }
+        return -1;
+    }
     UaosTask *t = Task_Current();
     if (!t) return -1;
     for (int i = 0; i < 32; i++)
         if ((t->tc_SigAlloc >> i) & 1) { t->tc_SigAlloc &= ~(1U << i); return i; }
     return -1;
+}
+
+static void exec_free_sigbit(int sb)
+{
+    if (sb < 0 || sb > 31) return;
+    SubCtx *sc = sub_cur_ctx();
+    if (sc) {
+        sc->sigalloc |= (1u << sb);
+        glue_w32(sc->task_addr + PRC_TC_SIGALLOC, sc->sigalloc);
+        return;
+    }
+    UaosTask *t = Task_Current();
+    if (t) t->tc_SigAlloc |= (1U << sb);
 }
 
 static void exec_CreateMsgPort(void)
@@ -5024,7 +5893,7 @@ static void exec_CreateMsgPort(void)
     int sb = exec_alloc_sigbit();
     if (sb < 0) { dos_FreeMem_glue(port, MSGPORT_SZ); m68k_set_reg(M68K_REG_D0, 0); return; }
     g_ram[port + MP_SIGBIT] = (uint8_t)sb;
-    glue_w32(port + MP_SIGTASK, g_guest_proc_addr);
+    glue_w32(port + MP_SIGTASK, emu_cur_task());
     glue_list_new(port + MP_MSGLIST);
     m68k_set_reg(M68K_REG_D0, port);
 }
@@ -5033,9 +5902,7 @@ static void exec_DeleteMsgPort(void)
 {
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     if (!port) return;
-    uint32_t sb = glue_r8(port + MP_SIGBIT);
-    UaosTask *t = Task_Current();
-    if (t && sb < 32) t->tc_SigAlloc |= (1U << sb);
+    exec_free_sigbit((int)glue_r8(port + MP_SIGBIT));
     dos_FreeMem_glue(port, MSGPORT_SZ);
 }
 
@@ -5119,6 +5986,8 @@ void UAOS_M68k_ReleaseTaskResources(UaosTask *t)
     /* If the dying task left a blocking-wait flag set (killed mid-nap),
      * clear it — the flag is global and the writer is gone. */
     g_blocked_in = 0;
+    /* UAOS-307: drop the window's guest-subtask scheduler table. */
+    UAOS_Sub_ReleaseWindow(t->m68k_ram);
 }
 #define IOF_QUICK     0x01   /* io_Flags: device may complete synchronously */
 #define IOF_QUEUED    0x10   /* io_Flags: device is holding the request     */
@@ -5169,8 +6038,8 @@ void UAOS_Emu_IOReply(uint8_t *ram, uint32_t io)
     ram_w32(ram, port + MP_MSGLIST + LH_TAILPRED, io);
 
     uint32_t sigtask = ram_r32(ram, port + MP_SIGTASK);
-    UaosTask *t = Task_FindByM68kAddr(sigtask);
-    if (t) Signal(t, 1U << ram[port + MP_SIGBIT]);
+    sub_signal_target(ram, sigtask,
+                      1u << (ram[port + MP_SIGBIT] & 31));
 }
 
 static void exec_CreateIORequest(void)
@@ -5375,13 +6244,29 @@ static void io_wait_req(uint32_t io)
             m68k_end_timeslice();
             break;
         }
+        SubCtx *sc = sub_cur_ctx();
+        if (sc) {
+            /* Subtask WaitIO: parked at the WaitIO stub — re-entry is
+             * idempotent (the flag is re-checked).  SUBW_IOQ lets the
+             * sched tick promote us when the request completes without
+             * signalling this context. */
+            sc->wait_kind = SUBW_IOQ;
+            sc->wait_io   = io;
+            if (sub_park_or_wait(g_cur_stub)) return;
+            continue;
+        }
         g_blocked_in = 3;
         g_m68k_block_marks++;
-        Task_WaitTicks(mask, 1);
+        Task_WaitTicks(mask | sub_host_wake_mask(sub_ws(g_ram)), 1);
         g_blocked_in = 0;
+        sub_pump_ready();
         /* Consume the port signal edge — it only means "check the flag". */
         if (mask && (self->tc_SigRecvd & mask)) Task_ClearSig(mask);
         UAOS_M68k_DeliverInterrupts();
+    }
+    {
+        SubCtx *sc = sub_cur_ctx();
+        if (sc) sc->wait_kind = SUBW_NONE;
     }
     if (port) glue_list_remove_msg(port + MP_MSGLIST, io);
 }
@@ -5417,13 +6302,27 @@ static void io_wait_dev(uint32_t io)
             m68k_end_timeslice();
             break;
         }
+        SubCtx *sc = sub_cur_ctx();
+        if (sc) {
+            /* Same idempotent-park model as io_wait_req — SUBW_IOMSG is
+             * the sched-tick promotion check. */
+            sc->wait_kind = SUBW_IOMSG;
+            sc->wait_io   = io;
+            if (sub_park_or_wait(g_cur_stub)) return;
+            continue;
+        }
         g_blocked_in = 3;
         g_m68k_block_marks++;
-        Task_WaitTicks(mask, 1);
+        Task_WaitTicks(mask | sub_host_wake_mask(sub_ws(g_ram)), 1);
         g_blocked_in = 0;
+        sub_pump_ready();
         /* Consume the port signal edge — it only means "check the node". */
         if (mask && (self->tc_SigRecvd & mask)) Task_ClearSig(mask);
         UAOS_M68k_DeliverInterrupts();
+    }
+    {
+        SubCtx *sc = sub_cur_ctx();
+        if (sc) sc->wait_kind = SUBW_NONE;
     }
     if (port) glue_list_remove_msg(port + MP_MSGLIST, io);
 }
@@ -5438,13 +6337,26 @@ static void exec_DoIO(void)
      * BeginIO vector (-30) instead. */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io) { m68k_set_reg(M68K_REG_D0, -20); return; }
+    SubCtx *sc = sub_cur_ctx();
     uint32_t dev = io_diskdev(io);
     if (dev) {
         g_ram[io + IO_FLAGS] = (g_ram[io + IO_FLAGS] | IOF_QUICK) &
                                (uint8_t)~(IOF_QUEUED | IOF_DONE);
         emu_guest_call(dev - 30, 0, 0, 0, io, dev);
-        if (!(g_ram[io + IO_FLAGS] & IOF_QUICK))
+        if (!(g_ram[io + IO_FLAGS] & IOF_QUICK)) {
+            if (sc) {
+                /* DoIO is not idempotent — a parked context resuming at
+                 * the DoIO stub would re-run BeginIO.  Park at the
+                 * resume stub; its handler completes with io_Error. */
+                sc->wait_kind = SUBW_IOMSG;
+                sc->wait_io   = io;
+                sub_wait_cond_or_park(sc, Task_Current());
+                m68k_set_reg(M68K_REG_D0,
+                             (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
+                return;
+            }
             io_wait_dev(io);
+        }
         m68k_set_reg(M68K_REG_D0,
                      (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
         return;
@@ -5452,8 +6364,17 @@ static void exec_DoIO(void)
     g_ram[io + IO_FLAGS] = (g_ram[io + IO_FLAGS] | IOF_QUICK) &
                            (uint8_t)~(IOF_QUEUED | IOF_DONE);
     io_dispatch_device(io);
-    if (g_ram[io + IO_FLAGS] & IOF_QUEUED)
+    if (g_ram[io + IO_FLAGS] & IOF_QUEUED) {
+        if (sc) {
+            sc->wait_kind = SUBW_IOQ;
+            sc->wait_io   = io;
+            sub_wait_cond_or_park(sc, Task_Current());
+            m68k_set_reg(M68K_REG_D0,
+                         (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
+            return;
+        }
         io_wait_req(io);
+    }
     m68k_set_reg(M68K_REG_D0,
                  (uint32_t)(int32_t)(int8_t)g_ram[io + IO_ERROR]);
 }
@@ -5740,7 +6661,7 @@ static void exec_ObtainSem(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
     if (!sem) return;
-    glue_w32(sem + SS_OWNER, g_guest_proc_addr);
+    glue_w32(sem + SS_OWNER, emu_cur_task());
     glue_w16(sem + SS_NESTCOUNT, glue_r16(sem + SS_NESTCOUNT) + 1);
 }
 
@@ -5758,9 +6679,9 @@ static void exec_AttemptSem(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t owner = sem ? glue_r32(sem + SS_OWNER) : 0;
-    if (!owner || owner == g_guest_proc_addr) {
+    if (!owner || owner == emu_cur_task()) {
         if (sem) {
-            glue_w32(sem + SS_OWNER, g_guest_proc_addr);
+            glue_w32(sem + SS_OWNER, emu_cur_task());
             glue_w16(sem + SS_NESTCOUNT, glue_r16(sem + SS_NESTCOUNT) + 1);
         }
         m68k_set_reg(M68K_REG_D0, 1);
@@ -5781,7 +6702,7 @@ static void exec_ObtainSemList(void)
     uint32_t cur = glue_r32(m68k_get_reg(NULL, M68K_REG_A0));
     int guard = 0;
     while (cur && glue_r32(cur + LN_SUCC) && guard++ < 256) {
-        glue_w32(cur + SS_OWNER, g_guest_proc_addr);
+        glue_w32(cur + SS_OWNER, emu_cur_task());
         glue_w16(cur + SS_NESTCOUNT, glue_r16(cur + SS_NESTCOUNT) + 1);
         cur = glue_r32(cur + LN_SUCC);
     }
@@ -5841,7 +6762,7 @@ static void exec_SetTaskPri(void)
 static void exec_SetExcept(void)
 {
     /* SetExcept(newSignals=d0, signalSet=d1) → D0=old & mask */
-    uint32_t proc = g_guest_proc_addr;
+    uint32_t proc = emu_cur_task();
     uint32_t mask = m68k_get_reg(NULL, M68K_REG_D1);
     uint32_t old  = proc ? glue_r32(proc + 0x1E) : 0;   /* tc_SigExcept */
     if (proc) glue_w32(proc + 0x1E,
@@ -5852,7 +6773,7 @@ static void exec_SetExcept(void)
 static void exec_AllocTrap(void)
 {
     /* AllocTrap(trapNum=d0) → D0=trap or -1; bitmap in task tc_TrapAlloc */
-    uint32_t proc = g_guest_proc_addr;
+    uint32_t proc = emu_cur_task();
     int32_t num = (int32_t)m68k_get_reg(NULL, M68K_REG_D0);
     if (!proc) { m68k_set_reg(M68K_REG_D0, -1); return; }
     uint32_t alloc = glue_r16(proc + 0x22);   /* tc_TrapAlloc (bits = avail) */
@@ -5869,7 +6790,7 @@ static void exec_AllocTrap(void)
 
 static void exec_FreeTrap(void)
 {
-    uint32_t proc = g_guest_proc_addr;
+    uint32_t proc = emu_cur_task();
     uint32_t num  = m68k_get_reg(NULL, M68K_REG_D0);
     if (proc && num < 16)
         glue_w16(proc + 0x22, glue_r16(proc + 0x22) | (1u << num));
@@ -6134,34 +7055,57 @@ static void exec_AddMemList(void)
 static void exec_AddTask(void)
 {
     /* AddTask(task=a1, initPC=a2, finalPC=a3) → D0 = task.
-     * We cannot actually schedule a second m68k context in this window,
-     * so the node is linked on TaskWait (priority-ordered) where
-     * FindTask()/Signal() can see it. */
-    uint32_t task = m68k_get_reg(NULL, M68K_REG_A1);
+     * UAOS-307: the task becomes a real runnable Musashi context in this
+     * window — registered on TaskReady and picked up by the sched tick /
+     * blocking-path pumps.  tc_SPReg (else tc_SPUpper) provides its
+     * stack; a guest that leaves both zero gets a scratch stack freed on
+     * exit. */
+    uint32_t task    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t initpc  = m68k_get_reg(NULL, M68K_REG_A2);
+    uint32_t finalpc = m68k_get_reg(NULL, M68K_REG_A3);
     if (!task || task + 0x14 > GUEST_RAM_SIZE) {
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
-    g_ram[task + PRC_TC_STATE] = TS_WAIT_G;
-    guest_list_enqueue(EXEC_BASE + 0x1A4, task);   /* TaskWait */
+    if (!UAOS_Sub_AddProc(task, initpc, finalpc, 0)) {
+        /* No runnable context (NULL initPC, slot exhaustion) — keep the
+         * pre-UAOS-307 semantics: link the node on TaskWait so FindTask
+         * still resolves it and RemTask can unlink it. */
+        g_ram[task + PRC_TC_STATE] = TS_WAIT_G;
+        guest_list_enqueue(EXEC_BASE + 0x1A4, task);
+    }
     m68k_set_reg(M68K_REG_D0, task);
 }
 
 static void exec_RemTask(void)
 {
-    /* RemTask(task=a1): NULL or our own Process = self-removal — end the
-     * guest like stub_RemTask/dos_Exit do.  Otherwise just unlink it. */
+    /* RemTask(task=a1): NULL or the running context's own node =
+     * self-removal.  A subtask frees its context slot and parks; the
+     * main Process ends the guest like stub_RemTask/dos_Exit do.
+     * Otherwise unlink it and free its context if one exists. */
     uint32_t task = m68k_get_reg(NULL, M68K_REG_A1);
-    if (!task || task == g_guest_proc_addr) {
+    if (!task || task == emu_cur_task()) {
+        WSched *w = sub_ws(g_ram);
+        SubCtx *sc = sub_cur_ctx();
+        if (w && sc) {
+            sub_ctx_free(w, sc);
+            m68k_set_reg(M68K_REG_PC, SUB_PARK_STUB);
+            m68k_end_timeslice();
+            return;
+        }
         UaosTask *t = Task_Current();
         if (t && t->type == TASK_TYPE_M68K) t->m68k_halted = 1;
         m68k_end_timeslice();
         return;
     }
+    WSched *w = sub_ws(g_ram);
+    if (w) sub_kill_task(w, task);
     uint32_t succ = glue_r32(task + LN_SUCC);
     uint32_t pred = glue_r32(task + LN_PRED);
-    glue_w32(pred + LN_SUCC, succ);
-    glue_w32(succ + LN_PRED, pred);
+    if (succ && pred) {   /* already-removed ctxs have both zeroed */
+        glue_w32(pred + LN_SUCC, succ);
+        glue_w32(succ + LN_PRED, pred);
+    }
 }
 
 /* SysBase-registered object lists — AddX/RemX are pure list ops. */
@@ -7903,6 +8847,7 @@ int m68k_illg_instr_callback(int opcode)
 
     /* Advance PC past the 2-byte dispatch word */
     m68k_set_reg(M68K_REG_PC, pc + 2);
+    g_cur_stub = pc - 2;   /* UAOS-307: parked contexts rewind here */
 
     int trace_this = 0;
     {
@@ -7927,6 +8872,16 @@ int m68k_illg_instr_callback(int opcode)
          * already pushed the 68020 exception frame; dispatch the level's
          * sources and emulate RTE to resume the interrupted code. */
         irq_vector_entry(fn);
+        return 1;
+    }
+
+    if (lib == LIB_SUB) {
+        /* UAOS-307 private subtask stubs. */
+        switch (fn) {
+        case SUB_FN_EXIT:   sub_task_exit(); break;
+        case SUB_FN_RESUME: sub_resume();    break;
+        case SUB_FN_PARK:   sub_park_main(); break;
+        }
         return 1;
     }
 

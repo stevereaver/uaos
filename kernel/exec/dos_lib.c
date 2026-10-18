@@ -1276,6 +1276,13 @@ static void dos_Exit(M68kCPUState *cpu)
         }
         return;   /* g_emu_halted stays 0 — m68k_execute continues */
     }
+    /* UAOS-307: a subtask context's Exit frees that context; a main
+     * context exiting with live children parks so they keep running.
+     * Either way the window stays up — no halt. */
+    {
+        extern int UAOS_Sub_OnDosExit(void *);
+        if (UAOS_Sub_OnDosExit(cpu)) return;
+    }
     (void)cpu;
     g_emu_halted = 1;
 }
@@ -2227,6 +2234,15 @@ static void dos_Delay(M68kCPUState *cpu)
     uint32_t ticks = cpu->d[1];
     if (ticks == 0) return;
 
+    /* UAOS-307: a guest subtask context parks on the resume stub (or
+     * frame-waits when top-level) instead of host-sleeping the wrapper. */
+    {
+        extern int UAOS_Sub_Delay(uint32_t);
+        int r = UAOS_Sub_Delay(ticks);
+        if (r == 2) { cpu->pc = 0x1EF068u; return; }  /* SUB_RESUME_STUB */
+        if (r) return;
+    }
+
     /* Amiga ticks are 1/50 s = 2 PIT ticks at 100 Hz.  Block on the
      * wait queue instead of busy-waiting so a Delay()ing guest task
      * does not stay runnable and starve lower priorities.  Sleep in
@@ -2937,6 +2953,21 @@ static void dos_CreateProc(M68kCPUState *cpu)
         return;
     }
 
+    /* UAOS-307: prefer a real shared-window context — the child runs
+     * concurrently (its Exit frees just its context, and a parent Exit
+     * parks main until the last child dies).  Falls back to the queued
+     * sequential-respawn model when the context table is full. */
+    {
+        extern int UAOS_Sub_AddProc(uint32_t, uint32_t, uint32_t, uint32_t);
+        if (UAOS_Sub_AddProc(proc_addr, entry, 0, stack_top)) {
+            kprint("[dos] CreateProc '");
+            kprint(proc_name);
+            kprint("' spawned (shared window)\n");
+            cpu->d[0] = proc_addr + PR_MSGPORT;
+            return;
+        }
+    }
+
     PendingProc *pp = &g_pending_procs[g_pending_tail];
     pp->entry     = entry;
     pp->stack_top = stack_top;
@@ -3260,12 +3291,6 @@ static void dos_SystemTagList(M68kCPUState *cpu)
     /* The seglist's first longword is the next-BPTR link; code begins +4
      * past it.  A caller-supplied BPTR must be shifted back to an address. */
     uint32_t seg_addr = seglist_is_bptr ? (np_seglist << 2) : np_seglist;
-    PendingProc *pp = &g_pending_procs[g_pending_tail];
-    pp->entry     = seg_addr + 4;
-    pp->stack_top = stack_top;
-    pp->proc      = proc_addr;
-    pp->proc_port = proc_addr + PR_MSGPORT;
-    g_pending_tail = (g_pending_tail + 1) % MAX_PENDING_PROC;
 
     /* Stash arguments on the child's stack frame if provided */
     if (np_argptr && np_arglen) {
@@ -3277,6 +3302,27 @@ static void dos_SystemTagList(M68kCPUState *cpu)
             guest_write_be32(proc_addr + PR_ARGUMENTS, arg_buf);
         }
     }
+
+    /* UAOS-307: real shared-window context when the table has room —
+     * covers CreateNewProc-style launches that come through System(). */
+    {
+        extern int UAOS_Sub_AddProc(uint32_t, uint32_t, uint32_t, uint32_t);
+        if (UAOS_Sub_AddProc(proc_addr, seg_addr + 4, 0, stack_top)) {
+            kprint("[dos] SystemTagList '");
+            kprint(proc_name);
+            kprint("' spawned (shared window)\n");
+            cpu->a[0] = proc_addr + PR_MSGPORT;
+            cpu->d[0] = 0;
+            return;
+        }
+    }
+
+    PendingProc *pp = &g_pending_procs[g_pending_tail];
+    pp->entry     = seg_addr + 4;
+    pp->stack_top = stack_top;
+    pp->proc      = proc_addr;
+    pp->proc_port = proc_addr + PR_MSGPORT;
+    g_pending_tail = (g_pending_tail + 1) % MAX_PENDING_PROC;
 
     kprint("[dos] SystemTagList: queued process '");
     kprint(proc_name);

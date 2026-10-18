@@ -22,7 +22,7 @@ The emulation layer provides the infrastructure to execute Motorola 68000 binary
 
 ## Execution Model
 
-Emulated tasks are created as `UaosTask` objects with an M68k context. When the scheduler switches to an M68k task, it invokes the Musashi `m68k_execute()` function. The scheduler supports multiple M68k tasks, each with its own 16 MB guest RAM pool (8 MB chip + 8 MB fast).
+Emulated tasks are created as `UaosTask` objects with an M68k context. When the scheduler switches to an M68k task, it invokes the Musashi `m68k_execute()` function. The scheduler supports multiple M68k tasks, each with its own 16 MB guest RAM pool (8 MB chip + 8 MB fast). Within one guest window, guest-created tasks (`AddTask`, `CreateProc`) run as additional Musashi contexts multiplexed by the per-window subtask scheduler — see "Guest Subtask Scheduling (UAOS-307)" in `concepts/m68k_emulation.md`.
 
 ## Guest Memory Layout (Musashi Build)
 

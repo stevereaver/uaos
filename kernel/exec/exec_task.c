@@ -416,6 +416,11 @@ static void m68k_wrapper_entry(void *arg)
         uint32_t ran = m68k_cycles_run();
         g_m68k_cycles += (uint64_t)ran;
 
+        /* UAOS-307: round-robin the live Musashi context to the next
+         * runnable guest context (AddTask'd subtasks / CreateProc'd
+         * children share this window). */
+        { extern void UAOS_M68k_SubSchedTick(void); UAOS_M68k_SubSchedTick(); }
+
         /* Liveness: any blocking nap during this slice proves the guest
          * can still be descheduled — reset its spin budget. */
         if (g_m68k_block_marks != marks_seen) {
