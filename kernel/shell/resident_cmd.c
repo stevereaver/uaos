@@ -128,14 +128,14 @@ int Resident_Add(const char *name, const char *path, int permanent)
 
     if (nread != file_size) return -1;
 
-    /* Determine type from header */
+    /* Determine type from header — type is a BE16 field at offset 4. */
     int type = RESIDENT_TYPE_UNKNOWN;
     if (file_size >= UAOS_BIN_HEADER_SIZE) {
         if (uaos_bin_check_magic(data)) {
-            uint8_t type_byte = data[6];  /* Type byte at offset 6 */
-            if (type_byte == UAOS_BIN_TYPE_NATIVE) {
+            uint16_t bin_type = uaos_bin_u16(data + 4);
+            if (bin_type == UAOS_BIN_TYPE_NATIVE) {
                 type = RESIDENT_TYPE_NATIVE;
-            } else if (type_byte == UAOS_BIN_TYPE_M68K) {
+            } else if (bin_type == UAOS_BIN_TYPE_M68K) {
                 type = RESIDENT_TYPE_M68K;
             }
         }
