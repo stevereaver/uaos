@@ -2,7 +2,9 @@
 
 ## 2026-10-19 — UAOS-336 metal Early Startup hold (~48 s) — instrumented
 * **Found** on MBP4,1 (192.168.10.222): tickcheck max PIT period ~148.9G cycles at sample 200 (ES entry); RTC count froze too — no external IRQs reached the CPU during the menu despite `sti`. `es_wait_key`'s iteration-count fallback then took ~48 s. Metal tickcheck otherwise: gate off (single-edge), 100.0/s vs RTC, worst PIT dispatch 169k cyc (timer=150k).
-* **003d532**: fallback now TSC-bounded (`Tickmon_TscHz`, 3 GHz if uncalibrated); `[ES] entry/stall/exit` klog snapshots (IF, vector counts, LAPIC TPR/PPR/SVR/LINT0/ISR/IRR, IOAPIC RTE2/8, PIC IMR/ISR). QEMU verified, smoke 24/24. Root cause pending metal boot.
+* **003d532**: fallback now TSC-bounded (`Tickmon_TscHz`, 3 GHz if uncalibrated); `[ES] entry/stall/exit` klog snapshots (IF, vector counts, LAPIC TPR/PPR/SVR/LINT0/ISR/IRR, IOAPIC RTE2/8, PIC IMR/ISR). QEMU verified, smoke 24/24.
+* **Root cause (metal, corrected)**: the menu was fine (`[ES] exit +ticks=202`). The gap starts at ES exit: `S:Startup-Sequence` runs pre-scheduler with IF=0 and `C:NetStart`'s DHCP summed nominal 10 ms delays per `netdev_poll`; sky2's costly poll stretched the 15 s timeout to ~48 s with the cable out (~5 s with it in). The ES screen stays up until the WM paints.
+* **87ed448**: DHCP timeouts TSC-measured; `netdev_link_up()` op (sky2 PHY stat, e1000 STATUS.LU, else -1) — no carrier → 3 s wait then skip DHCP; ES no-key exit paints "Starting UAOS...". QEMU e1000 link-down: Startup-Sequence→telnetd 23.8 s → 12.5 s. Metal confirm pending.
 
 ## 2026-10-18 — TODO sweep part 6: UAOS-322/326/327/333/15/334+332/331
 
