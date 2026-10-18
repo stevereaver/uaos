@@ -27,6 +27,7 @@
 #include "../irq/rtc.h"
 #include "../irq/ps2kbd.h"
 #include "../net/ntp.h"
+#include "../audio/audio.h"
 #include "../net/timezone.h"
 #include "blanker.h"
 #include "format_win.h"
@@ -1453,9 +1454,9 @@ static void draw_menubar(int W)
         int title_w = 0;
         for (const char *p = g_screen_title; *p; p++) title_w += 8;
         int title_x = mx + 16;
-        /* reserve: clock + mem + CPU% + depth gadget */
-        if (title_x + title_w > W - 320 - SCRDEPTH_W)
-            title_x = W - 320 - SCRDEPTH_W - title_w;
+        /* reserve: clock + mem + CPU% + VOL + depth gadget */
+        if (title_x + title_w > W - 400 - SCRDEPTH_W)
+            title_x = W - 400 - SCRDEPTH_W - title_w;
         if (title_x > mx && title_w > 0)
             FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
     }
@@ -1467,6 +1468,28 @@ static void draw_menubar(int W)
     static char g_clock_str[16];
     static char g_mem_str[24];
     static char g_cpu_str[12];
+    /* Volume string — rebuilt whenever volume/mute changes (not tick-gated:
+     * Fn+vol keys must update the bar promptly). */
+    static char g_vol_str[12];
+    static int g_vol_cached = -1, g_vol_mute_cached = -1;
+    {
+        int v = audio_get_volume(), m = audio_get_mute();
+        if (v != g_vol_cached || m != g_vol_mute_cached) {
+            g_vol_cached = v; g_vol_mute_cached = m;
+            int vi = 0;
+            if (m) {
+                g_vol_str[vi++] = 'M'; g_vol_str[vi++] = 'U';
+                g_vol_str[vi++] = 'T'; g_vol_str[vi++] = 'E';
+            } else {
+                g_vol_str[vi++] = 'V'; g_vol_str[vi++] = 'O';
+                g_vol_str[vi++] = 'L'; g_vol_str[vi++] = ' ';
+                if (v >= 100) { g_vol_str[vi++] = '1'; g_vol_str[vi++] = '0'; }
+                else if (v >= 10) g_vol_str[vi++] = (char)('0' + v / 10);
+                g_vol_str[vi++] = (char)('0' + v % 10);
+            }
+            g_vol_str[vi] = '\0';
+        }
+    }
     static uint32_t g_menubar_strs_tick = 0xFFFFFFFFu;
     if (g_menubar_strs_tick != Desktop_GetTick()) {
         g_menubar_strs_tick = Desktop_GetTick();
@@ -1524,7 +1547,12 @@ static void draw_menubar(int W)
         FB_PutStr(mem_x, 2, g_mem_str, WB_CREAM, WB_BLUE);
         int clen = 0;
         for (const char *p = g_cpu_str; *p; p++) clen++;
-        FB_PutStr(mem_x - clen * 8 - 16, 2, g_cpu_str, WB_CREAM, WB_BLUE);
+        int cpu_x = mem_x - clen * 8 - 16;
+        FB_PutStr(cpu_x, 2, g_cpu_str, WB_CREAM, WB_BLUE);
+        int vlen = 0;
+        for (const char *p = g_vol_str; *p; p++) vlen++;
+        FB_PutStr(cpu_x - vlen * 8 - 16, 2, g_vol_str,
+                  g_vol_mute_cached ? WB_WHITE : WB_CREAM, WB_BLUE);
     }
 
     /* Screen depth gadget at the bar's right edge (Amiga convention):
@@ -3482,5 +3510,10 @@ void Desktop_FlushClockRedraw(void)
         /* The clock lives inside the menubar strip — repaint only that. */
         WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
     }
+}
+
+void Desktop_MenubarInvalidate(void)
+{
+    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
 }
 

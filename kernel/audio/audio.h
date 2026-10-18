@@ -29,6 +29,10 @@ typedef struct AudioBackend {
     /* Shut the backend down (optional, may be NULL). */
     void (*shutdown)(void);
 
+    /* Program the codec/output amp for master volume 0-100 and mute
+     * (optional, may be NULL — the mixer applies a software gain on top). */
+    void (*set_volume)(int pct, int muted);
+
     /* Human-readable name for diagnostics. */
     const char *name;
 } AudioBackend;
@@ -73,6 +77,20 @@ unsigned int audio_ring_read(int16_t *dst, unsigned int n);
  * ring (the backend keeps draining it), so a diagnostic can inject a known
  * signal via audio_ring_write and measure it end to end. */
 void audio_ring_solo(int on);
+
+/* -------------------------------------------------------------------------
+ * Master output volume / mute
+ * ------------------------------------------------------------------------- */
+
+/* Master volume 0-100 (default 100 = full scale).  Applied as a software
+ * gain in audio_ring_write so it covers the Paula mix and injected test
+ * tones, and forwarded to the backend's codec-amp hook when present. */
+void audio_set_volume(int pct);
+int  audio_get_volume(void);
+void audio_set_mute(int on);
+int  audio_get_mute(void);
+void audio_mute_toggle(void);
+void audio_adjust_volume(int delta_pct);
 
 /* -------------------------------------------------------------------------
  * Paula→host helpers exposed to the mixer

@@ -12,6 +12,7 @@ void Desktop_Draw(void);          /* render full desktop (call once after FB_Ini
 void Desktop_DrawMenuDropdown(void); /* render open menu dropdown on top of windows */
 void Desktop_UpdateClock(void);   /* redraw clock area in menu bar                 */
 void Desktop_RedrawRect(int rx, int ry, int rw, int rh); /* repaint backdrop rect */
+void Desktop_MenubarInvalidate(void); /* repaint the menubar strip (volume/clock) — IRQ-safe */
 
 /* Workbench load control - desktop only draws after LoadWB is called */
 void Desktop_MarkWorkbenchLoaded(void);  /* call from LoadWB */

@@ -106,6 +106,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMD ("pciscan",         Cmd_Pciscan        ),
     CMD ("irqroute",        Cmd_Irqroute       ),
     CMD ("audiotest",       Cmd_Audiotest      ),
+    CMD ("volume",          Cmd_Volume         ),
     CMD ("peek",            Cmd_Peek           ),
     CMD ("poke",            Cmd_Poke           ),
     CMD ("irqaudit",        Cmd_Irqaudit       ),

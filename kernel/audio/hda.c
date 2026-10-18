@@ -382,6 +382,45 @@ static void hda_unmute_in(int nid, uint32_t wcaps, int idx)
     hda_set(nid, 0x300, 0x7000 | ((uint32_t)idx << 8) | gain);
 }
 
+/* Widgets carrying the master volume — one out-amp per configured path,
+ * preferring the DAC (deepest nid) so attenuation doesn't compound across
+ * the pin/mixer hops.  caps = amp-capabilities parameter (0x12). */
+#define HDA_MAX_VOL 8
+static struct { uint8_t nid; uint32_t caps; } g_vol[HDA_MAX_VOL];
+static int g_nvol = 0;
+
+static void hda_vol_register(const struct hda_path *p)
+{
+    if (g_nvol >= HDA_MAX_VOL) return;
+    for (int i = p->n - 1; i >= 0; i--) {
+        int nid = p->nids[i];
+        uint32_t wcaps = hda_get_param(nid, 0x09);
+        if (!(wcaps & (1u << 2))) continue;          /* no output amp */
+        uint32_t caps = (wcaps & (1u << 3)) ? hda_get_param(nid, 0x12) : 0;
+        if (!(caps & 0x7F)) continue;               /* no steps to attenuate */
+        for (int j = 0; j < g_nvol; j++)            /* shared DAC: once */
+            if (g_vol[j].nid == (uint8_t)nid) return;
+        g_vol[g_nvol].nid = (uint8_t)nid;
+        g_vol[g_nvol].caps = caps;
+        g_nvol++;
+        return;
+    }
+}
+
+/* Master volume → codec out-amps.  Gain is linear in the widget's step
+ * range (offset counts as steps down from max); mute uses the amp mute bit. */
+static void hda_backend_set_volume(int pct, int muted)
+{
+    if (!g_ready) return;
+    for (int i = 0; i < g_nvol; i++) {
+        uint32_t steps = g_vol[i].caps & 0x7F;
+        uint32_t gain = muted ? 0 : (steps * (uint32_t)pct) / 100;
+        uint32_t pay = 0xB000 | gain;               /* out amp, L+R, idx 0 */
+        if (muted || pct == 0) pay |= 0x80;         /* SET_AMP mute bit */
+        hda_set(g_vol[i].nid, 0x300, pay);
+    }
+}
+
 /* Apply the Apple fixup: ALC889_FIXUP_MBP_VREF (GPIO1 + VREF_80 on the HP
  * pin among 0x14/0x15/0x19).  Also used for the other Apple ALC885/889
  * subsystems that share the MBP_VREF fixup in Linux's quirk table. */
@@ -721,6 +760,7 @@ static int hda_backend_init(void)
             continue;
         }
         hda_enable_path(&path);
+        hda_vol_register(&path);
         KLOG(KLOG_AUDIO, KLOG_DEBUG,
              "hda: pin %x dev=%u -> dac %x path %x/%x/%x/%x\n",
              (uint32_t)nid, devt, (uint32_t)path.nids[path.n - 1],
@@ -778,8 +818,9 @@ static void hda_backend_shutdown(void)
 }
 
 AudioBackend audio_backend_hda = {
-    .init     = hda_backend_init,
-    .service  = hda_backend_service,
-    .shutdown = hda_backend_shutdown,
-    .name     = "HDA",
+    .init       = hda_backend_init,
+    .service    = hda_backend_service,
+    .shutdown   = hda_backend_shutdown,
+    .set_volume = hda_backend_set_volume,
+    .name       = "HDA",
 };

@@ -225,9 +225,23 @@ static void ac97_backend_shutdown(void)
     g_ac97_ready = 0;
 }
 
+static void ac97_backend_set_volume(int pct, int muted)
+{
+    if (!g_ac97_ready) return;
+    /* PCM out (reg 0x18): 5-bit attenuation per channel (~1.5 dB steps),
+     * bit15 = mute.  Master out (0x02) stays at 0 dB. */
+    if (muted || pct == 0) {
+        ac97_codec_write(0x18, 0x8000u);
+    } else {
+        uint16_t att = (uint16_t)(31 - (uint32_t)pct * 31 / 100);
+        ac97_codec_write(0x18, (uint16_t)(att | (att << 8)));
+    }
+}
+
 AudioBackend audio_backend_ac97 = {
-    .init     = ac97_backend_init,
-    .service  = ac97_backend_service,
-    .shutdown = ac97_backend_shutdown,
-    .name     = "AC97",
+    .init       = ac97_backend_init,
+    .service    = ac97_backend_service,
+    .shutdown   = ac97_backend_shutdown,
+    .set_volume = ac97_backend_set_volume,
+    .name       = "AC97",
 };

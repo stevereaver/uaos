@@ -34,6 +34,11 @@ static unsigned int g_ring_write = 0;
 static unsigned int g_ring_read = 0;
 static unsigned int g_ring_count = 0;
 
+/* Master output volume/mute — software gain applied in audio_ring_write,
+ * plus the backend's codec-amp hook.  Default is full scale. */
+static int g_volume = 100;
+static int g_mute = 0;
+
 unsigned int audio_ring_free(void)
 {
     return AUDIO_RING_SAMPLES - g_ring_count;
@@ -47,10 +52,16 @@ unsigned int audio_ring_ready(void)
 unsigned int audio_ring_write(const int16_t *src, unsigned int n)
 {
     if (n > audio_ring_free()) n = audio_ring_free();
+    int vol = g_mute ? 0 : g_volume;
     for (unsigned int i = 0; i < n; i++) {
         unsigned int idx = g_ring_write * 2;
-        g_ring[idx + 0] = src[i * 2 + 0];
-        g_ring[idx + 1] = src[i * 2 + 1];
+        int32_t l = src[i * 2 + 0], r = src[i * 2 + 1];
+        if (vol != 100) {
+            l = l * vol / 100;
+            r = r * vol / 100;
+        }
+        g_ring[idx + 0] = (int16_t)l;
+        g_ring[idx + 1] = (int16_t)r;
         g_ring_write = (g_ring_write + 1) & (AUDIO_RING_SAMPLES - 1);
         g_ring_count++;
     }
@@ -85,6 +96,41 @@ int16_t audio_led_filter(int16_t in, int16_t *state)
     /* One-pole low-pass filter approximating the Amiga LED filter. */
     *state = (int16_t)((in + (31 * *state)) / 32);
     return *state;
+}
+
+/* -------------------------------------------------------------------------
+ * Master volume / mute
+ * ------------------------------------------------------------------------- */
+
+static void audio_apply_volume(void)
+{
+    if (g_backend && g_backend->set_volume)
+        g_backend->set_volume(g_volume, g_mute);
+}
+
+void audio_set_volume(int pct)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    g_volume = pct;
+    audio_apply_volume();
+}
+
+int audio_get_volume(void) { return g_volume; }
+
+void audio_set_mute(int on)
+{
+    g_mute = !!on;
+    audio_apply_volume();
+}
+
+int audio_get_mute(void) { return g_mute; }
+
+void audio_mute_toggle(void) { audio_set_mute(!g_mute); }
+
+void audio_adjust_volume(int delta_pct)
+{
+    audio_set_volume(g_volume + delta_pct);
 }
 
 /* -------------------------------------------------------------------------
@@ -129,6 +175,7 @@ void audio_init(void)
     g_backend = NULL;
 
     audio_select_backend();
+    audio_apply_volume();       /* push default 100/unmuted to the codec */
 }
 
 const char *audio_backend_name(void)

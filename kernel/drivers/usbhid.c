@@ -19,6 +19,8 @@
 #include "../irq/ps2mouse.h"
 #include "../chipset/chip_emu.h"
 #include "../display/cursor.h"
+#include "../display/desktop.h"
+#include "../audio/audio.h"
 #include "../exec/task.h"
 #include "../klog/klog.h"
 #include "../dos/dma.h"
@@ -201,9 +203,10 @@ static void hid_dump_report(HidDev *hd, const uint8_t *r, int len)
 
 /* Fn-chord handling for Apple report-mode keyboards (UAOS-139).
  * Agreed pattern: Fn+key activates the ancillary function — Fn+F1/F2 =
- * display brightness down/up, Fn+arrows = PgUp/PgDn/Home/End,
- * Fn+Backspace = Del — the chorded key is consumed and never reaches the
- * key ring.  Returns 1 when the usage was consumed/handled. */
+ * display brightness down/up, Fn+F10/F11/F12 = mute / volume down/up,
+ * Fn+arrows = PgUp/PgDn/Home/End, Fn+Backspace = Del — the chorded key is
+ * consumed and never reaches the key ring.  Returns 1 when the usage was
+ * consumed/handled. */
 static int hid_fn_chord(uint8_t u)
 {
     char vk;
@@ -213,6 +216,14 @@ static int hid_fn_chord(uint8_t u)
         NV50BL_Adjust(u == 0x3A ? -5 : 5);
         return 1;
     }
+    case 0x43:                       /* F10 — mute toggle */
+        audio_mute_toggle();
+        Desktop_MenubarInvalidate();
+        return 1;
+    case 0x44: case 0x45:            /* F11 / F12 — volume down / up */
+        audio_adjust_volume(u == 0x44 ? -5 : 5);
+        Desktop_MenubarInvalidate();
+        return 1;
     case 0x52: vk = KBD_VKEY_PGUP;  break;   /* Fn+Up    */
     case 0x51: vk = KBD_VKEY_PGDN;  break;   /* Fn+Down  */
     case 0x50: vk = KBD_VKEY_HOME;  break;   /* Fn+Left  */
