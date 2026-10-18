@@ -30,12 +30,16 @@
  * treats as a command interrupt; IAC EC erases a char; IAC AYT gets a
  * "yes" reply.
  *
- * Dead peers: a session that sees no input for TELNETD_IDLE_PROBE_TICKS
- * gets an IAC AYT liveness probe (a live client answers; a vanished one
- * lets the probe's retransmits exhaust, which tcp_tick turns into
- * TCP_CLOSED).  No input at all for TELNETD_IDLE_TICKS closes the
- * session — a laptop that slept holding the connection would otherwise
- * pin a remote shell slot forever.
+ * Dead peers: after TELNETD_KEEPALIVE_TICKS with no input the pump
+ * sends an IAC NOP keepalive, repeated every interval while the
+ * connection stays idle.  Clients silently ignore NOP, but the segment
+ * carries data — a peer that vanished without FIN/RST stops ACKing,
+ * which lets tcp_tick's retransmit exhaustion turn the socket
+ * TCP_CLOSED and free the session within seconds.  No input at all for
+ * TELNETD_IDLE_TICKS closes the session outright — a laptop that slept
+ * holding the connection would otherwise pin a remote shell slot
+ * forever.  (Replaces the one-shot IAC AYT probe, which an ACKing
+ * middlebox could answer on the dead peer's behalf.)
  */
 
 #include "telnetd.h"
@@ -81,10 +85,10 @@ enum {
     NVT_CR,             /* CR delivered — swallow a following LF/NUL */
 };
 
-/* PIT runs at 100 Hz — express the watchdog budget in ticks.  Halfway
- * idle we probe the peer with IAC AYT; fully idle we close. */
-#define TELNETD_IDLE_PROBE_TICKS  30000u   /* ~5 min  */
-#define TELNETD_IDLE_TICKS        60000u   /* ~10 min */
+/* Watchdog budget expressed via UAOS_PIT_HZ.  Every keepalive interval
+ * of silence we ping the peer with an IAC NOP; fully idle we close. */
+#define TELNETD_KEEPALIVE_TICKS   (60u  * UAOS_PIT_HZ)   /* ~60 s   */
+#define TELNETD_IDLE_TICKS        (600u * UAOS_PIT_HZ)   /* ~10 min */
 
 extern volatile uint64_t g_pit_ticks;      /* 100 Hz */
 
@@ -330,40 +334,51 @@ static void pump_task(void *arg)
      * moment a frame lands instead of waiting out the 100 Hz tick. */
     net_rx_notify_arm();
 
-    /* Idle watchdog: last_rx only advances on received input.  A peer
-     * that vanishes without FIN/RST (sleep, NAT drop) keeps the socket
-     * ESTABLISHED forever — the half-timeout IAC AYT probe forces the
-     * dead connection to exhaust its retransmits in tcp_tick, and the
-     * full timeout closes a silent-but-alive peer that ignores AYT. */
+    /* Idle watchdog + dead-peer keepalive: last_rx only advances on
+     * received input.  A peer that vanishes without FIN/RST (sleep,
+     * NAT drop, dead host) keeps the socket ESTABLISHED forever — an
+     * idle connection has no stack-side dead-peer detection.  Every
+     * TELNETD_KEEPALIVE_TICKS of silence we send IAC NOP: invisible to
+     * the client, but data-bearing, so a dead peer stops ACKing and
+     * tcp_tick retires the socket via retransmit exhaustion (~5 s).
+     * The full TELNETD_IDLE_TICKS still closes a live-but-silent peer.
+     * Sending a keepalive deliberately does NOT touch last_rx — only
+     * peer input counts as activity. */
     uint64_t last_rx = g_pit_ticks;
-    int      probed  = 0;
+    uint64_t next_ka = last_rx + TELNETD_KEEPALIVE_TICKS;
+    const char *why  = "socket dead";
 
     for (;;) {
         /* Daemon asked to stop, superseded by a fresh Telnetd_Start, or
          * the net stack was shut down (netstop).  net_stack_shutdown()
          * leaves the socket table untouched, so the socket state alone
          * cannot tell us the stack is gone. */
-        if (g_stop || gen != g_generation || !net_stack_is_up())
+        if (g_stop || gen != g_generation || !net_stack_is_up()) {
+            why = "stopped";
             break;
+        }
 
-        /* Socket gone (peer closed / RST / probe retx exhaustion) — or
-         * the slot was retired under us and reissued to a different
+        /* Socket gone (peer closed / RST / keepalive retx exhaustion) —
+         * or the slot was retired under us and reissued to a different
          * connection: tcp_rx/tcp_tick free sockets asynchronously, so a
          * bare index is not proof of ownership.  The generation check
          * reports CLOSED on any mismatch — without it a slow pump would
          * steal a recycled slot's input and, on exit, close a live
          * connection that isn't ours (UAOS-263). */
         TcpState t = tcp_conn_state(sock, cgen);
-        if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT)
+        if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) {
+            why = "socket dead";
             break;
+        }
 
         int n = tcp_conn_recv(sock, cgen, buf, sizeof(buf));
         /* Half-close: peer sent FIN and RX buffer is drained */
-        if (n <= 0 && t == TCP_CLOSE_WAIT)
+        if (n <= 0 && t == TCP_CLOSE_WAIT) {
+            why = "peer closed";
             break;
+        }
         if (n > 0) {
             last_rx = g_pit_ticks;
-            probed  = 0;
         }
         for (int i = 0; i < n; i++) {
             uint8_t c = buf[i];
@@ -392,23 +407,27 @@ static void pump_task(void *arg)
         }
 
         /* Shell side ended (ENDCLI) or slot released */
-        if (ShellWin_RemoteIsDead(sess))
+        if (ShellWin_RemoteIsDead(sess)) {
+            why = "shell ended";
             break;
+        }
 
-        /* Idle watchdog — see the block above. */
+        /* Idle watchdog + keepalive — see the block above. */
         {
             uint64_t idle = g_pit_ticks - last_rx;
-            if (!probed && idle >= TELNETD_IDLE_PROBE_TICKS) {
-                static const uint8_t ayt[] = { TN_IAC, TN_AYT };
-                send_buf(sock, cgen, ayt, (int)sizeof(ayt));
-                probed = 1;
-            }
             if (idle >= TELNETD_IDLE_TICKS) {
                 static const char to[] =
                     "\r\n[telnetd: idle timeout — closing]\r\n";
                 send_buf(sock, cgen, (const uint8_t *)to,
                          (int)sizeof(to) - 1);
+                why = "idle timeout";
                 break;
+            }
+            if (idle >= TELNETD_KEEPALIVE_TICKS &&
+                g_pit_ticks >= next_ka) {
+                static const uint8_t nop[] = { TN_IAC, TN_NOP };
+                send_buf(sock, cgen, nop, (int)sizeof(nop));
+                next_ka = g_pit_ticks + TELNETD_KEEPALIVE_TICKS;
             }
         }
 
@@ -428,7 +447,9 @@ static void pump_task(void *arg)
         kprint(ipbuf);
         kprint(":");
         kprintdec(ctx->peer_port);
-        kprint(" (up ");
+        kprint(" (");
+        kprint(why);
+        kprint(", up ");
         kprintdec((uint32_t)((g_pit_ticks - ctx->t_connect) / UAOS_PIT_HZ));
         kprint("s)\n");
     }

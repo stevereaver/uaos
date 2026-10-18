@@ -268,9 +268,14 @@ static int shell_kb_enqueue(ShellInstance *s, char c)
 /* Consume a pending break request: clears the flag and drops every
  * queued input byte.  Flushing matters for safety — input typed while a
  * command ran (including the Ctrl-C itself) must not be executed after
- * the break.  Returns 1 if a break was pending. */
+ * the break.  Returns 1 if a break was pending.  A killed remote
+ * session reports as a break too: every break-polled wait (CMD_BREAK
+ * loops, script FOR/execute dispatchers, pager key reads) then unwinds
+ * like a user Ctrl-C instead of pinning the shell inside a long-running
+ * command until it finishes (UAOS-322). */
 static int shell_take_break(ShellInstance *s)
 {
+    if (s->remote && s->remote_dead) return 1;
     if (!s->break_req) return 0;
     s->break_req = 0;
     uint64_t fl = irq_save();
@@ -367,6 +372,9 @@ static void remote_send_raw(ShellInstance *s, const uint8_t *data, int len)
         int sent = tcp_conn_send(s->remote_sock, s->remote_gen,
                                  data, (uint16_t)chunk);
         if (sent <= 0) {
+            /* RemoteKill can land while we sleep in the stall wait —
+             * bail instead of waiting out the 60 s bound. */
+            if (s->remote_dead) return;
             TcpState t = tcp_conn_state(s->remote_sock, s->remote_gen);
             if (t != TCP_ESTABLISHED && t != TCP_CLOSE_WAIT) {
                 s->remote_dead = 1;
@@ -3985,7 +3993,11 @@ static void shell_wait_input(ShellInstance *s)
  * because duration-based callers (wait, irqstat, taskstat, tickcheck)
  * rely on the elapsed time; reply-waiting callers (ping, DNS, NTP)
  * notice their flag sooner because the poll already ran.  A pending
- * break cuts the wait short. */
+ * break cuts the wait short — and so does a killed remote session:
+ * RemoteKill signals SIGF_BREAKF, which wakes the wait below, but
+ * without the remote_dead check the loop just re-slept until the full
+ * deadline (a `wait 60` pinned its shell slot for the whole minute
+ * after the client was already gone — UAOS-322). */
 static void shell_yield_ms(void *shell_extra, uint32_t ms)
 {
     ShellInstance *s = (ShellInstance *)shell_extra;
@@ -3996,7 +4008,7 @@ static void shell_yield_ms(void *shell_extra, uint32_t ms)
     uint64_t start = g_pit_ticks;
     while (g_pit_ticks - start < ticks) {
         uint64_t left;
-        if (s && s->break_req) break;
+        if (s && (s->break_req || (s->remote && s->remote_dead))) break;
         net_rx_notify_arm();
         net_stack_poll();
         left = ticks - (g_pit_ticks - start);
