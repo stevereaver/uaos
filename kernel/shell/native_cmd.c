@@ -106,6 +106,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDH ("usbdiag",    Cmd_Usbdiag,       "usbdiag [sec] - UHCI register dump/sampler"),
     CMDH ("crash",      Cmd_Crash,         "trigger a test kernel panic"),
     CMDH ("memcheck",   Cmd_Memcheck,      "memcheck [on|off|test] - heap guard debugging"),
+    CMDH ("minject",    Cmd_MInject,       "minject X=x Y=y [L=] [R=] | DRAG X0= Y0= X1= Y1= - synthetic pointer injection"),
     CMDH ("chiptrace",  Cmd_Chiptrace,     "chiptrace [class|pc] - custom-chip tracer"),
     CMDH ("taskdump",   Cmd_Taskdump,      "taskdump <task> - saved frame/registers"),
     CMDH ("taskstat",   Cmd_Taskstat,      "taskstat [<sec>|NOW] - per-task CPU% + switches"),

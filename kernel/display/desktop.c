@@ -1750,19 +1750,29 @@ static IconState *get_icons(int *count)
     /* Trashcan presence bitmask — a volume's Trashcan drawer can appear
      * or disappear without the mount table changing (Format vs Format
      * NOICON, or the drawer being deleted), so it is part of the cache
-     * fingerprint. */
-    uint32_t trash_mask = 0;
-    for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
-        char mname[32], tdir[48];
-        if (!VFS_GetMountName(mi, mname, 32)) continue;
-        int di = 0;
-        const char *tp = mname;
-        while (*tp && di < 38) tdir[di++] = *tp++;
-        tdir[di++] = ':';
-        tp = "Trashcan";
-        while (*tp && di < 46) tdir[di++] = *tp++;
-        tdir[di] = '\0';
-        if (VFS_IsDir(tdir)) trash_mask |= (1u << mi);
+     * fingerprint.  Each VFS_IsDir is a synchronous handler round-trip
+     * (BlockDev_Read on real media) — on metal this ran on EVERY damage
+     * flush and put EventPump inside BlockDev_Read ~10% of the time
+     * (~96 ms slices), which is what made window drags and pointer
+     * motion stutter.  Probe at most every ~2 s and reuse the cached
+     * mask between probes (UAOS-319). */
+    static uint64_t s_trash_next = 0;
+    uint32_t trash_mask = cache_trash_mask;
+    if (g_pit_ticks >= s_trash_next) {
+        s_trash_next = g_pit_ticks + 200;
+        trash_mask = 0;
+        for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
+            char mname[32], tdir[48];
+            if (!VFS_GetMountName(mi, mname, 32)) continue;
+            int di = 0;
+            const char *tp = mname;
+            while (*tp && di < 38) tdir[di++] = *tp++;
+            tdir[di++] = ':';
+            tp = "Trashcan";
+            while (*tp && di < 46) tdir[di++] = *tp++;
+            tdir[di] = '\0';
+            if (VFS_IsDir(tdir)) trash_mask |= (1u << mi);
+        }
     }
 
     int changed = (mount_count != cache_mount_count) ||
