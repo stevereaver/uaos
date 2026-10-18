@@ -1101,59 +1101,69 @@ static void inst_print(ShellInstance *s, const char *line)
         WM_Redraw();   /* pre-open banner lines — the open ends in WM_Redraw */
 }
 
-static void inst_cmd_help(ShellInstance *s)
+/* help [<cmd>] — command list is generated from the native registry and
+ * the live C: directory, so it cannot drift out of sync when a new
+ * command is added (UAOS-279). */
+static void inst_cmd_help(ShellInstance *s, const char *args)
 {
+    /* help <cmd> — usage line for a single command */
+    if (args) {
+        while (*args == ' ') args++;
+        if (*args) {
+            char name[32];
+            int i = 0;
+            while (args[i] && args[i] != ' ' && i < 31) {
+                name[i] = args[i]; i++;
+            }
+            name[i] = '\0';
+            NativeCmd_PrintHelp(s,
+                (void (*)(void *, const char *))inst_print, name);
+            return;
+        }
+    }
+
     inst_print(s, "UAOS Shell v0.1");
     inst_print(s, "");
     inst_print(s, "Shell built-in commands:");
-    inst_print(s, "  help               show this help");
+    inst_print(s, "  help [cmd]         show this help / usage for a command");
     inst_print(s, "  cd [path]          change/show directory");
     inst_print(s, "  alias [name cmd]   create/list command aliases");
     inst_print(s, "  unalias <name>     remove an alias");
     inst_print(s, "  set [name val]     set/list local environment variable");
     inst_print(s, "  unset <name>       remove local environment variable");
     inst_print(s, "  path [dirs..] [ADD] show/set/add command search path");
-    inst_print(s, "");
-    inst_print(s, "C: binaries (type 'which <cmd>' to locate):");
-    inst_print(s, "  version            OS version info");
     inst_print(s, "  showconfig         show hardware configuration");
-    inst_print(s, "  mem                memory information");
-    inst_print(s, "  libs               loaded kernel libraries");
-    inst_print(s, "  clear              clear the shell window");
-    inst_print(s, "  reboot             warm reboot");
-    inst_print(s, "  dir [path]         list directory");
-    inst_print(s, "  makedir <path>     create directory");
-    inst_print(s, "  delete <path>      delete file or empty dir");
-    inst_print(s, "  type <file>        print file contents");
-    inst_print(s, "  copy <src> <dst>   copy file");
-    inst_print(s, "  rename <from> <to> rename/move file");
-    inst_print(s, "  pwd                print working directory");
-    inst_print(s, "  echo <text>        print text to shell");
-    inst_print(s, "  protect <f> <path> set file attributes (+r,-r,+h,-h)");
-    inst_print(s, "  attr <path>        show file attributes");
-    inst_print(s, "  info [device]      show mounted disks/volumes");
-    inst_print(s, "  date               show current date/time");
-    inst_print(s, "  which <cmd>        locate a command");
-    inst_print(s, "  disks              list detected block devices");
-    inst_print(s, "  fdisk <device>     partition a block device");
-    inst_print(s, "  format <dev> [fs]  format a partition");
-    inst_print(s, "  pointer            open pointer preferences");
-    inst_print(s, "  run <cmd> [args]   run a command detached (background)");
-    inst_print(s, "  runback <cmd>      run a command in the background");
-    inst_print(s, "  resload <cmd>      load command into resident list");
-    inst_print(s, "  assign [name tgt]  create/list assigns (AmigaDOS)");
-    inst_print(s, "  mount <dev> [from] mount a handler device");
-    inst_print(s, "  execute <script>   run a script file");
-    inst_print(s, "  loadwb             launch Workbench desktop");
-    inst_print(s, "  telnetd [PORT=n|STOP]  start/stop telnet debug shell service");
-    inst_print(s, "  ps                 list running tasks");
-    inst_print(s, "  klog [s,l=level]   set/show kernel log levels");
-    inst_print(s, "  dmesg [subsys|lvl] dump kernel log ring buffer");
-    inst_print(s, "  irqstat [sec|NOW]  per-vector interrupt counts + rates");
-    inst_print(s, "  usbdiag [sec]      UHCI interrupt-path register dump/sampler");
-    inst_print(s, "  crash              trigger test kernel panic (destroys session)");
-    inst_print(s, "  memcheck [on|off|test]  heap guard/poison debugging");
-    inst_print(s, "  chiptrace [on|off|<class>|pc]  custom-chip/CIA access tracer");
+    inst_print(s, "");
+    inst_print(s, "Commands (native registry + C: binaries, 'which <cmd>' to locate):");
+    NativeCmd_PrintHelp(s, (void (*)(void *, const char *))inst_print, NULL);
+
+    /* Userspace C: binaries (ELF64 tools) live outside the native table —
+     * enumerate C: directly so new tools appear without a help edit. */
+    {
+        static VfsDirEnt cdir[160];
+        int nent = VFS_ReadDir("C:", cdir, 160);
+        if (nent > 0) {
+            char line[MAX_LINE_LEN];
+            int col = 0, first = 1;
+            for (int i = 0; i < nent; i++) {
+                if (cdir[i].is_dir) continue;
+                const char *nm = cdir[i].name;
+                int nl = slen(nm);
+                if (NativeCmd_Exists(nm)) continue;     /* already listed */
+                if (nl == 0 || nl > 15) continue;
+                if (first) { inst_print(s, ""); first = 0; }
+                if (col == 0) { line[0] = ' '; line[1] = ' '; line[2] = '\0'; }
+                int li = slen(line);
+                for (int k = 0; k < nl && li < MAX_LINE_LEN - 2; k++)
+                    line[li++] = nm[k];
+                while (li % 18 != 0 && li < MAX_LINE_LEN - 2) line[li++] = ' ';
+                line[li] = '\0';
+                if (++col == 4) { inst_print(s, line); col = 0; }
+            }
+            if (col) inst_print(s, line);
+        }
+    }
+
     inst_print(s, "");
     inst_print(s, "Script flow control:");
     inst_print(s, "  IF <c> THEN <cmd>                    single-line conditional");
@@ -5021,7 +5031,7 @@ static void run_cmd(ShellInstance *s, const char *line)
         const char *args = cmd_to_run + cl;
         while (*args == ' ') args++;
 
-        if (i==0) inst_cmd_help(s);
+        if (i==0) inst_cmd_help(s, args);
         else if (i==1) inst_cmd_cd(s, args);
         else if (i==2) inst_cmd_alias(s, args);
         else if (i==3) inst_cmd_unalias(s, args);
@@ -5774,20 +5784,26 @@ static void inst_tab_complete(ShellInstance *s)
                 TC_ADD(builtins[i]);
         }
 
-        /* Native commands — iterate k_native_cmds via NativeCmd_Exists +
-         * direct table walk.  We re-declare a minimal local table because
-         * k_native_cmds is static to native_cmd.c.  The canonical list is
-         * the same as k_native_cmds[] in native_cmd.c. */
-        const char *natcmds[] = {
-            "version","mem","libs","clear","reboot","dir","makedir",
-            "delete","type","copy","rename","pwd","echo","protect","attr",
-            "info","date","which","disks","fdisk","format","pointer","run",
-            "assign","execute","loadwb","calculator","ifconfig","ping",
-            "route","nslookup","ntpd","clock","grep","more","rx", NULL
-        };
-        for (int i = 0; natcmds[i]; i++) {
-            if (tc_has_prefix(natcmds[i], prefix, pfx_len))
-                TC_ADD(natcmds[i]);
+        /* Native commands — walk the real registry (UAOS-279: no second
+         * hand-maintained list to drift). */
+        int ncmd = NativeCmd_Count();
+        for (int i = 0; i < ncmd; i++) {
+            const char *nm = NativeCmd_NameAt(i);
+            if (nm && tc_has_prefix(nm, prefix, pfx_len))
+                TC_ADD(nm);
+        }
+
+        /* Userspace C: binaries (ELF64 tools) live outside the registry —
+         * enumerate C: so they complete too. */
+        {
+            static VfsDirEnt cdir[160];
+            int nent = VFS_ReadDir("C:", cdir, 160);
+            for (int i = 0; i < nent; i++) {
+                if (!cdir[i].is_dir &&
+                    tc_has_prefix(cdir[i].name, prefix, pfx_len) &&
+                    !NativeCmd_Exists(cdir[i].name))
+                    TC_ADD(cdir[i].name);
+            }
         }
 
     } else {

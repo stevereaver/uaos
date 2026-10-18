@@ -16,141 +16,153 @@
  * Command table
  * ------------------------------------------------------------------------- */
 
-#define CMD(n, f)     { (n), (f), NULL }
-#define CMDT(n, f, t) { (n), (f), (t) }
+#define CMD(n, f)       { (n), (f), NULL, NULL }
+#define CMDT(n, f, t)   { (n), (f), (t), NULL }
+#define CMDH(n, f, h)   { (n), (f), NULL, (h) }
+#define CMDTH(n,f,t,h)  { (n), (f), (t), (h) }
 
 typedef struct {
     const char  *name;      /* lowercase canonical name matching C: stub */
     NativeCmdFn  fn;
     const char  *template;  /* AmigaDOS template string, or NULL */
+    const char  *desc;      /* one-line help text, or NULL */
 } NativeCmdEntry;
 
+/* help and tab-completion both iterate this table — there is intentionally
+ * no second hand-maintained command list to drift out of sync (UAOS-279). */
 static const NativeCmdEntry k_native_cmds[] = {
-    CMD ("version",    Cmd_Version  ),
-    CMD ("mem",        Cmd_Mem      ),
-    CMD ("cpu",        Cmd_Cpu      ),
-    CMD ("libs",       Cmd_Libs     ),
-    CMD ("clear",      Cmd_Clear    ),
-    CMD ("reboot",     Cmd_Reboot   ),
-    CMD ("pwd",        Cmd_Pwd      ),
-    CMD ("info",       Cmd_Info     ),
-    CMD ("date",       Cmd_Date     ),
-    CMD ("which",      Cmd_Which    ),
-    CMD ("disks",      Cmd_Disks    ),
-    CMD ("fdisk",      Cmd_Fdisk    ),
-    CMD ("format",     Cmd_Format   ),
-    CMDT("fsck",       Cmd_Fsck,
+    CMDH ("version",    Cmd_Version  , "OS version info"),
+    CMDH ("mem",        Cmd_Mem      , "memory information"),
+    CMDH ("cpu",        Cmd_Cpu      , "CPU information"),
+    CMDH ("libs",       Cmd_Libs     , "loaded kernel libraries"),
+    CMDH ("clear",      Cmd_Clear    , "clear the shell window"),
+    CMDH ("reboot",     Cmd_Reboot   , "warm reboot"),
+    CMDH ("pwd",        Cmd_Pwd      , "print working directory"),
+    CMDH ("info",       Cmd_Info     , "show mounted disks/volumes"),
+    CMDH ("date",       Cmd_Date     , "show/set date and time"),
+    CMDH ("which",      Cmd_Which    , "which <cmd> — locate a command"),
+    CMDH ("disks",      Cmd_Disks    , "list detected block devices"),
+    CMDH ("fdisk",      Cmd_Fdisk    , "fdisk <device> — partition a block device"),
+    CMDH ("format",     Cmd_Format   , "format <dev> [fs] — format a partition"),
+    CMDTH("fsck",       Cmd_Fsck,
          "DEVICE,LIST/S,INFO/S,CHECK/S,REPAIR/S,FIX/S,INTERACTIVE/S,"
-         "VERBOSE/S,SURFACE/S,DUMP/K/N,ALL/S"),
-    CMD ("pointer",    Cmd_Pointer  ),
-    CMD ("run",        Cmd_Run      ),
-    CMD ("wbrun",      Cmd_WBRun    ),
-    CMD ("assign",     Cmd_Assign   ),
-    CMD ("execute",    Cmd_Execute  ),
-    CMD ("loadwb",     Cmd_LoadWB   ),
-    CMD ("calculator", Cmd_CalcWin  ),
-    CMD ("ifconfig",   Cmd_Ifconfig ),
-    CMD ("ping",       Cmd_Ping     ),
-    CMD ("route",      Cmd_Route    ),
-    CMD ("nslookup",   Cmd_Nslookup ),
-    CMD ("ntpd",       Cmd_Ntpd     ),
-    CMD ("netstart",   Cmd_Netstart ),
-    CMD ("netstop",    Cmd_Netstop  ),
-    CMD ("clock",      Cmd_ClockWin ),
-    CMD ("vim",        Cmd_Vim      ),
-    CMD ("newcli",     Cmd_NewCLI   ),
-    CMD ("newshell",   Cmd_NewCLI   ),  /* alias */
-    CMD ("ask",        Cmd_Ask      ),
-    CMD ("resident",   Cmd_Resident ),
-    CMD ("ps",         Cmd_Ps       ),
-    CMD ("netinfo",    Cmd_NetInfo  ),
-    CMD ("wait",       Cmd_Wait     ),
-    CMD ("prompt",     Cmd_Prompt   ),
-    CMD ("stack",      Cmd_Stack    ),
-    CMD ("why",        Cmd_Why      ),
-    CMD ("failat",     Cmd_Failat   ),
-    CMD ("quit",       Cmd_Quit     ),
-    CMD ("endcli",     Cmd_EndCLI   ),
-    CMD ("relabel",    Cmd_Relabel  ),
-    CMD ("getenv",          Cmd_GetEnv        ),
-    CMD ("unset",           Cmd_UnSet         ),
-    CMD ("jobs",            Cmd_Jobs          ),
-    CMDT("install",         Cmd_Install,       "DEVICE/A,NOBOOT/S" ),
-    CMD ("diskchange",      Cmd_DiskChange    ),
-    CMD ("dismount",        Cmd_Dismount      ),
-    CMD ("adf",             Cmd_Adf           ),
-    CMD ("addbuffers",      Cmd_AddBuffers    ),
-    CMDT("requestchoice",   Cmd_RequestChoice, "TITLE/A,BODY/A,BUTTON/M" ),
-    CMDT("requestfile",     Cmd_RequestFile,   "TITLE/K,DRAWER/K,FILE/K,PATTERN/K,PUBSCREEN/K" ),
-    CMDT("changetaskpri",   Cmd_ChangeTaskPri, "PRI/A/N,TASK/K" ),
-    CMDT("status",          Cmd_Status,        "FULL/S,TCB/S,CLI/S" ),
-    CMD ("rx",              Cmd_Rx             ),
-    CMDT("telnetd",         Cmd_Telnetd,       "PORT/K/N,STOP/S,STATUS/S" ),
-    CMD ("strace",          Cmd_Strace         ),
-    CMD ("klog",            Cmd_Klog           ),
-    CMD ("debug",           Cmd_Klog           ),  /* alias */
-    CMD ("dmesg",           Cmd_Dmesg          ),
-    CMD ("irqstat",         Cmd_Irqstat        ),
-    CMD ("usbdiag",         Cmd_Usbdiag        ),
-    CMD ("crash",           Cmd_Crash          ),
-    CMD ("memcheck",        Cmd_Memcheck       ),
-    CMD ("chiptrace",       Cmd_Chiptrace      ),
-    CMD ("taskdump",        Cmd_Taskdump       ),
-    CMD ("taskstat",        Cmd_Taskstat       ),
-    CMD ("watchdog",        Cmd_Watchdog       ),
-    CMD ("ports",           Cmd_Ports          ),
-    CMD ("timers",          Cmd_Timers         ),
-    CMD ("handles",         Cmd_Handles        ),
-    CMD ("netstat",         Cmd_Netstat        ),
-    CMD ("diskdiag",        Cmd_Diskdiag       ),
-    CMD ("pciscan",         Cmd_Pciscan        ),
-    CMD ("irqroute",        Cmd_Irqroute       ),
-    CMD ("audiotest",       Cmd_Audiotest      ),
-    CMD ("volume",          Cmd_Volume         ),
-    CMD ("hdadump",         Cmd_HdaDump        ),
-    CMD ("peek",            Cmd_Peek           ),
-    CMD ("poke",            Cmd_Poke           ),
-    CMD ("irqaudit",        Cmd_Irqaudit       ),
-    CMD ("sercon",          Cmd_Sercon         ),
-    CMD ("tickcheck",       Cmd_Tickcheck      ),
-    CMD ("etrace",          Cmd_Etrace         ),
-    CMD ("prof",            Cmd_Prof           ),
-    CMD ("failalloc",       Cmd_Failalloc      ),
-    CMD ("pktmon",          Cmd_Pktmon         ),
-    CMD ("screenshot",      Cmd_Screenshot     ),
+         "VERBOSE/S,SURFACE/S,DUMP/K/N,ALL/S",
+         "filesystem check/repair tool"),
+    CMDH ("pointer",    Cmd_Pointer  , "open pointer preferences"),
+    CMDH ("run",        Cmd_Run      , "run <cmd> [args] — detached background run"),
+    CMDH ("wbrun",      Cmd_WBRun    , "launch a program with Workbench args"),
+    CMDH ("assign",     Cmd_Assign   , "assign [name tgt] — create/list assigns"),
+    CMDH ("execute",    Cmd_Execute  , "execute <script> — run a script file"),
+    CMDH ("loadwb",     Cmd_LoadWB   , "launch Workbench desktop"),
+    CMDH ("calculator", Cmd_CalcWin  , "open calculator window"),
+    CMDH ("ifconfig",   Cmd_Ifconfig , "ifconfig [opts] — network interface config"),
+    CMDH ("ping",       Cmd_Ping     , "ping <host> — ICMP echo + RTT"),
+    CMDH ("route",      Cmd_Route    , "route table show/add/del"),
+    CMDH ("nslookup",   Cmd_Nslookup , "nslookup <host> — DNS resolution"),
+    CMDH ("ntpd",       Cmd_Ntpd     , "NTP time sync daemon"),
+    CMDH ("netstart",   Cmd_Netstart , "bring up the network stack"),
+    CMDH ("netstop",    Cmd_Netstop  , "shut down the network stack"),
+    CMDH ("clock",      Cmd_ClockWin , "open clock window"),
+    CMDH ("vim",        Cmd_Vim      , "vim <file> — inline text editor"),
+    CMDH ("newcli",     Cmd_NewCLI   , "open a new shell window"),
+    CMDH ("newshell",   Cmd_NewCLI   , "alias for newcli"),
+    CMDH ("ask",        Cmd_Ask      , "ask <prompt> — read a line of input"),
+    CMDH ("resident",   Cmd_Resident , "resident list management"),
+    CMDH ("ps",         Cmd_Ps       , "list running tasks"),
+    CMDH ("netinfo",    Cmd_NetInfo  , "network interfaces/ARP/DNS summary"),
+    CMDH ("wait",       Cmd_Wait     , "wait <n> [SEC|MSEC|TICKS]"),
+    CMDH ("prompt",     Cmd_Prompt   , "prompt <str> — set shell prompt"),
+    CMDH ("stack",      Cmd_Stack    , "stack [n] — show/set CLI stack size"),
+    CMDH ("why",        Cmd_Why      , "explain last command's return code"),
+    CMDH ("failat",     Cmd_Failat   , "failat [n] — script failure threshold"),
+    CMDH ("quit",       Cmd_Quit     , "quit a running script"),
+    CMDH ("endcli",     Cmd_EndCLI   , "close this shell"),
+    CMDH ("relabel",    Cmd_Relabel  , "relabel <dev> <name> — set volume label"),
+    CMDH ("getenv",     Cmd_GetEnv   , "getenv <name> — print env variable"),
+    CMDH ("unset",      Cmd_UnSet    , "unset <name> — remove env variable"),
+    CMDH ("jobs",       Cmd_Jobs     , "list background jobs"),
+    CMDTH("install",    Cmd_Install,       "DEVICE/A,NOBOOT/S",
+         "install <dev> — write a boot block"),
+    CMDH ("diskchange", Cmd_DiskChange, "diskchange <dev> — notify media change"),
+    CMDH ("dismount",   Cmd_Dismount,  "dismount <dev> — unmount a volume"),
+    CMDH ("adf",        Cmd_Adf,       "adf <file> — mount an ADF floppy image"),
+    CMDH ("addbuffers", Cmd_AddBuffers,"addbuffers <dev> [n] — grow fs cache"),
+    CMDTH("requestchoice",Cmd_RequestChoice, "TITLE/A,BODY/A,BUTTON/M",
+         "open a choice requester"),
+    CMDTH("requestfile",Cmd_RequestFile,"TITLE/K,DRAWER/K,FILE/K,PATTERN/K,PUBSCREEN/K",
+         "open a file requester"),
+    CMDTH("changetaskpri",Cmd_ChangeTaskPri,"PRI/A/N,TASK/K",
+         "change a task's priority"),
+    CMDTH("status",     Cmd_Status,        "FULL/S,TCB/S,CLI/S",
+         "CLI process status"),
+    CMDH ("rx",         Cmd_Rx,            "run an ARexx/REXX script"),
+    CMDTH("telnetd",    Cmd_Telnetd,       "PORT/K/N,STOP/S,STATUS/S",
+         "telnet shell service [PORT=n|STOP|STATUS]"),
+    CMDH ("strace",     Cmd_Strace,        "strace [-o] — syscall/dos call trace"),
+    CMDH ("klog",       Cmd_Klog,          "klog [s,l=level] — kernel log levels"),
+    CMDH ("debug",      Cmd_Klog,          "alias for klog"),
+    CMDH ("dmesg",      Cmd_Dmesg,         "dmesg [subsys|lvl] — kernel log dump"),
+    CMDH ("irqstat",    Cmd_Irqstat,       "irqstat [sec|NOW] — per-vector IRQ counts"),
+    CMDH ("usbdiag",    Cmd_Usbdiag,       "usbdiag [sec] — UHCI register dump/sampler"),
+    CMDH ("crash",      Cmd_Crash,         "trigger a test kernel panic"),
+    CMDH ("memcheck",   Cmd_Memcheck,      "memcheck [on|off|test] — heap guard debugging"),
+    CMDH ("chiptrace",  Cmd_Chiptrace,     "chiptrace [class|pc] — custom-chip tracer"),
+    CMDH ("taskdump",   Cmd_Taskdump,      "taskdump <task> — saved frame/registers"),
+    CMDH ("taskstat",   Cmd_Taskstat,      "taskstat [<sec>|NOW] — per-task CPU% + switches"),
+    CMDH ("watchdog",   Cmd_Watchdog,      "kernel stall watchdog status"),
+    CMDH ("ports",      Cmd_Ports,         "MsgPort queue dump"),
+    CMDH ("timers",     Cmd_Timers,        "timer.device pending-request dump"),
+    CMDH ("handles",    Cmd_Handles,       "open-file/lock/handler queue dump"),
+    CMDH ("netstat",    Cmd_Netstat,       "TCP/UDP socket table dump"),
+    CMDH ("diskdiag",   Cmd_Diskdiag,      "diskdiag [dev] — storage-path stage dump"),
+    CMDH ("pciscan",    Cmd_Pciscan,       "PCI device enumeration"),
+    CMDH ("irqroute",   Cmd_Irqroute,      "irqroute [BDF] — INTx/MSI route decode"),
+    CMDH ("audiotest",  Cmd_Audiotest,     "audio output test tones"),
+    CMDH ("volume",     Cmd_Volume,        "volume [0-100] — master volume"),
+    CMDH ("hdadump",    Cmd_HdaDump,       "HDA codec widget dump"),
+    CMDH ("peek",       Cmd_Peek,          "peek <addr> — physical memory read"),
+    CMDH ("poke",       Cmd_Poke,          "poke <addr> <val> — physical memory write"),
+    CMDH ("irqaudit",   Cmd_Irqaudit,      "Disable/Forbid critical-section audit"),
+    CMDH ("sercon",     Cmd_Sercon,        "serial console bridge"),
+    CMDH ("tickcheck",  Cmd_Tickcheck,     "PIT/TSC/RTC drift + IRQ latency"),
+    CMDH ("etrace",     Cmd_Etrace,        "kernel event trace ring"),
+    CMDH ("prof",       Cmd_Prof,          "sampling profiler"),
+    CMDH ("failalloc",  Cmd_Failalloc,     "deterministic AllocMem fault injection"),
+    CMDH ("pktmon",     Cmd_Pktmon,        "packet capture to pcap"),
+    CMDH ("screenshot", Cmd_Screenshot,    "capture screen to JPG"),
     /* Prefs editors (stubs — Phase 3) */
-    CMD ("screenmode",      Cmd_ScreenMode  ),
-    CMD ("font",            Cmd_Font        ),
-    CMD ("icontrol",        Cmd_IControl    ),
-    CMD ("input",           Cmd_Input       ),
-    CMD ("palette",         Cmd_Palette     ),
-    CMD ("wbpattern",       Cmd_WBPattern   ),
-    CMD ("serial",          Cmd_Serial      ),
-    CMD ("printer",         Cmd_Printer     ),
-    CMD ("time",            Cmd_PrefsTime   ),
-    CMD ("locale",          Cmd_PrefsLocale ),
+    CMDH ("screenmode", Cmd_ScreenMode, "screen-mode prefs editor"),
+    CMDH ("font",       Cmd_Font,       "font prefs editor"),
+    CMDH ("icontrol",   Cmd_IControl,   "icon prefs editor"),
+    CMDH ("input",      Cmd_Input,      "input prefs editor"),
+    CMDH ("palette",    Cmd_Palette,    "palette prefs editor"),
+    CMDH ("wbpattern",  Cmd_WBPattern,  "workbench-pattern prefs editor"),
+    CMDH ("serial",     Cmd_Serial,     "serial prefs editor"),
+    CMDH ("printer",    Cmd_Printer,    "printer prefs editor"),
+    CMDH ("time",       Cmd_PrefsTime,  "time prefs editor"),
+    CMDH ("locale",     Cmd_PrefsLocale,"locale prefs editor"),
     /* Tools & Commodities */
-    CMD ("exchange",        Cmd_Exchange    ),
-    CMD ("blanker",         Cmd_Blanker     ),
-    CMD ("backlight",       Cmd_Backlight   ),
+    CMDH ("exchange",   Cmd_Exchange,   "CX commodity manager"),
+    CMDH ("blanker",    Cmd_Blanker,    "screen blanker control"),
+    CMDH ("backlight",  Cmd_Backlight,  "display backlight control"),
     /* Printing & CrossDOS */
-    CMD ("print",           Cmd_Print       ),
-    CMD ("crossdos",        Cmd_CrossDOS    ),
+    CMDH ("print",      Cmd_Print,      "print <file> — printer output"),
+    CMDH ("crossdos",   Cmd_CrossDOS,   "FAT filesystem exchange"),
     /* Editor */
-    CMD ("ed",              Cmd_Ed          ),
+    CMDH ("ed",         Cmd_Ed,         "ed <file> — line editor"),
     /* Help */
-    CMD ("guide",           Cmd_Guide       ),
+    CMDH ("guide",      Cmd_Guide,      "open the AmigaGuide help viewer"),
     /* Shell-state commands — alias/unalias/path/skip/lab are normally
      * intercepted as built-ins or script keywords before the native
      * table; these entries let the C: binaries resolve too. */
-    CMD ("runback",         Cmd_RunBack     ),
-    CMD ("alias",           Cmd_Alias       ),
-    CMD ("unalias",         Cmd_UnAlias     ),
-    CMD ("path",            Cmd_Path        ),
-    CMD ("skip",            Cmd_Skip        ),
-    CMD ("lab",             Cmd_Lab         ),
-    CMD ("resload",         Cmd_ResLoad     ),
-    { NULL, NULL, NULL }
+    CMDH ("runback",    Cmd_RunBack,    "run a command in the background"),
+    CMDH ("alias",      Cmd_Alias,      "alias [name cmd] — command aliases"),
+    CMDH ("unalias",    Cmd_UnAlias,    "remove an alias"),
+    CMDH ("path",       Cmd_Path,       "path [dirs..] [ADD] — command search path"),
+    CMDH ("skip",       Cmd_Skip,       "script: skip to label/lines"),
+    CMDH ("lab",        Cmd_Lab,        "script: define a label"),
+    CMDH ("resload",    Cmd_ResLoad,    "resload <cmd> — load into resident list"),
+    { NULL, NULL, NULL, NULL }
 };
 
 /* -------------------------------------------------------------------------
@@ -240,4 +252,72 @@ int NativeCmd_Exists(const char *name)
             return 1;
     }
     return 0;
+}
+
+int NativeCmd_Count(void)
+{
+    int n = 0;
+    while (k_native_cmds[n].name) n++;
+    return n;
+}
+
+const char *NativeCmd_NameAt(int i)
+{
+    return (i >= 0 && i < NativeCmd_Count()) ? k_native_cmds[i].name : NULL;
+}
+
+/* Append "name" right-aligned to width into buf (no libc sprintf). */
+static void nc_pad(char *buf, const char *name, int width)
+{
+    int i = 0;
+    while (name[i] && i < 60) { buf[i] = name[i]; i++; }
+    while (i < width) buf[i++] = ' ';
+    buf[i] = '\0';
+}
+
+static void nc_cat(char *buf, const char *s, int max)
+{
+    int i = 0;
+    while (buf[i]) i++;
+    while (*s && i < max - 1) buf[i++] = *s++;
+    buf[i] = '\0';
+}
+
+void NativeCmd_PrintHelp(void *shell, void (*print)(void *, const char *),
+                         const char *name)
+{
+    if (!print) return;
+    if (name) {
+        /* help <cmd> — usage line for one command */
+        for (int i = 0; k_native_cmds[i].name; i++) {
+            if (!nc_ieq(k_native_cmds[i].name, name)) continue;
+            char line[160];
+            nc_pad(line, k_native_cmds[i].name, 16);
+            nc_cat(line, k_native_cmds[i].desc ? k_native_cmds[i].desc : "",
+                   sizeof(line));
+            print(shell, line);
+            if (k_native_cmds[i].template) {
+                char tl[160];
+                tl[0] = '\0';
+                nc_cat(tl, "  template: ", sizeof(tl));
+                nc_cat(tl, k_native_cmds[i].template, sizeof(tl));
+                print(shell, tl);
+            }
+            return;
+        }
+        char msg[96];
+        msg[0] = '\0';
+        nc_cat(msg, "help: no native command '", sizeof(msg));
+        nc_cat(msg, name, sizeof(msg));
+        nc_cat(msg, "'", sizeof(msg));
+        print(shell, msg);
+        return;
+    }
+    for (int i = 0; k_native_cmds[i].name; i++) {
+        char line[160];
+        nc_pad(line, k_native_cmds[i].name, 16);
+        nc_cat(line, k_native_cmds[i].desc ? k_native_cmds[i].desc : "",
+               sizeof(line));
+        print(shell, line);
+    }
 }

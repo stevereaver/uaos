@@ -188,6 +188,20 @@ int NativeCmd_Run(const char *name, NativeCmdCtx *ctx, const char *args);
 /* Check whether a name is a registered native command (1=yes, 0=no) */
 int NativeCmd_Exists(const char *name);
 
+/* Table iteration for help and tab-completion (UAOS-279).
+ * NativeCmd_Count() + NativeCmd_NameAt(i) enumerate the registry; there is
+ * no second hand-maintained command list — help output and command
+ * completion both read the same table the dispatcher uses. */
+int          NativeCmd_Count(void);
+const char  *NativeCmd_NameAt(int i);
+
+/* Print command help through a print callback.
+ *   name == NULL  -> one "name            description" line per command
+ *   name == <cmd> -> usage line for that command plus its AmigaDOS template
+ *                    (or an error line when the name is unknown) */
+void NativeCmd_PrintHelp(void *shell, void (*print)(void *, const char *),
+                         const char *name);
+
 /* -------------------------------------------------------------------------
  * Forward declarations — one per cmd_*.c source file
  * ------------------------------------------------------------------------- */
