@@ -36,7 +36,7 @@ static unsigned int g_ring_count = 0;
 
 /* Master output volume/mute — software gain applied in audio_ring_write,
  * plus the backend's codec-amp hook.  Default is full scale. */
-static int g_volume = 100;
+static int g_volume = 50;
 static int g_mute = 0;
 
 unsigned int audio_ring_free(void)
@@ -175,7 +175,7 @@ void audio_init(void)
     g_backend = NULL;
 
     audio_select_backend();
-    audio_apply_volume();       /* push default 100/unmuted to the codec */
+    audio_apply_volume();       /* push default 50/unmuted to the codec */
 }
 
 const char *audio_backend_name(void)

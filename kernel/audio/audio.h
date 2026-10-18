@@ -82,7 +82,7 @@ void audio_ring_solo(int on);
  * Master output volume / mute
  * ------------------------------------------------------------------------- */
 
-/* Master volume 0-100 (default 100 = full scale).  Applied as a software
+/* Master volume 0-100 (default 50).  Applied as a software
  * gain in audio_ring_write so it covers the Paula mix and injected test
  * tones, and forwarded to the backend's codec-amp hook when present. */
 void audio_set_volume(int pct);
