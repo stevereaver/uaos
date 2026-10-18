@@ -11,6 +11,7 @@
 #include "wm.h"
 #include "framebuffer.h"
 #include "desktop.h"
+#include "requester.h"
 #include "adf_picker.h"
 #include "../shell/exec_file.h"
 #include "../dos/blockdev.h"
@@ -557,7 +558,22 @@ static void browser_open_entry(Browser *b, int icon)
                 extras[n_extra] = extra_paths[n_extra];
                 n_extra++;
             }
-            ExecFile_RunWB(file_path, extras, n_extra);
+            int rc = ExecFile_RunWB(file_path, extras, n_extra);
+            if (rc < 0) {
+                /* "Unable to open <leaf>" + reason (UAOS-15) */
+                char l1[96];
+                char l2[96];
+                int i = 0;
+                const char *m = "Unable to open ";
+                while (m[i] && i < 95) { l1[i] = m[i]; i++; }
+                const char *nm = e[icon].name;
+                for (int j = 0; nm[j] && i < 95; j++) l1[i++] = nm[j];
+                l1[i] = '\0';
+                ExecFile_WBErrMsg(rc, l2, sizeof(l2));
+                const char *lines[] = { l1, l2, NULL };
+                Requester_Info("Workbench",
+                               (const char **)lines, NULL, NULL);
+            }
         }
     }
 }

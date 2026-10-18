@@ -19,14 +19,9 @@
 #include <stddef.h>
 #include <string.h>
 
-/* No-op print callback for commands that don't need output */
-static void exec_nop_print(void *shell, const char *line)
-{
-    (void)shell;
-    (void)line;
-}
-
-/* Fallback line printer for X64 binaries launched without a shell instance. */
+/* Line printer for tools launched without a shell instance — output
+ * goes to the serial/klog console since WB launches have no console
+ * window. */
 static void exec_kprint_line(void *shell, const char *line)
 {
     (void)shell;
@@ -43,7 +38,7 @@ static NativeCmdCtx exec_make_ctx(void)
     NativeCmdCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.shell          = NULL;
-    ctx.print          = exec_nop_print;
+    ctx.print          = exec_kprint_line;
     ctx.cwd            = "";
     ctx.path           = "";
     ctx.shell_extra    = NULL;
@@ -296,6 +291,56 @@ static void wb_dirname(const char *path, char *out, int max)
     out[i] = '\0';
 }
 
+/* Leaf of the last failed tool resolution — lets callers say
+ * "Default tool not found: X" instead of a bare "not found". */
+static char g_wb_err_tool[64];
+
+const char *ExecFile_WBErrTool(void) { return g_wb_err_tool; }
+
+static void wb_err_tool(const char *dt)
+{
+    int i = 0;
+    while (dt[i] && i < (int)sizeof(g_wb_err_tool) - 1) {
+        g_wb_err_tool[i] = dt[i];
+        i++;
+    }
+    g_wb_err_tool[i] = '\0';
+}
+
+/* AmigaDOS-style single-line failure text for ExecFile_RunWB codes. */
+const char *ExecFile_WBErrMsg(int rc, char *buf, int max)
+{
+    int i = 0;
+    const char *msg;
+    if (rc == -1 && g_wb_err_tool[0]) {
+        const char *pre = "Default tool not found: ";
+        while (pre[i] && i < max - 1) { buf[i] = pre[i]; i++; }
+        for (int j = 0; g_wb_err_tool[j] && i < max - 1; j++)
+            buf[i++] = g_wb_err_tool[j];
+        buf[i] = '\0';
+        return buf;
+    }
+    msg = (rc == -3) ? "No default tool" :
+          (rc == -1) ? "Object not found" : "Not an executable";
+    while (msg[i] && i < max - 1) { buf[i] = msg[i]; i++; }
+    buf[i] = '\0';
+    return buf;
+}
+
+/* Append one argument to a WB arg string; quote when it has spaces. */
+static void wb_arg_append(char *dst, int max, const char *p)
+{
+    int i = 0;
+    while (dst[i]) i++;
+    if (i && i < max - 2) dst[i++] = ' ';
+    int quote = 0;
+    for (const char *q = p; *q; q++) if (*q == ' ') { quote = 1; break; }
+    if (quote && i < max - 2) dst[i++] = '"';
+    for (int j = 0; p[j] && i < max - 2; j++) dst[i++] = p[j];
+    if (quote && i < max - 1) dst[i++] = '"';
+    dst[i] = '\0';
+}
+
 /* Launch `path` with Workbench semantics.  extra_paths are additional
  * selected icons (shift-click) that become WBArg[1..n] after any project
  * argument. */
@@ -303,6 +348,7 @@ int ExecFile_RunWB(const char *path,
                    const char **extra_paths, int num_extra)
 {
     if (!path || !*path) return -1;
+    g_wb_err_tool[0] = '\0';
 
     /* Parse the clicked icon — controls type, stack, tool window, and
      * (for projects) the default tool. */
@@ -311,23 +357,47 @@ int ExecFile_RunWB(const char *path,
     if (!has_icon) memset(&meta, 0, sizeof(meta));
 
     /* Resolve the real tool: a project icon's do_DefaultTool, otherwise
-     * the file itself.  Relative default tools resolve inside the
-     * project's drawer (classic WB behaviour). */
+     * the file itself.  A default tool carrying a volume/assign is used
+     * as-is; a bare name is searched in the project drawer, then C:,
+     * SYS:Utilities/, SYS:Tools/, SYS:System/ and SYS: (classic WB tool
+     * search path, first hit wins). */
     static char tool_path[160];
     int is_project = has_icon && meta.type == WB_PROJECT;
     if (is_project) {
-        if (!meta.default_tool[0]) return -2;
+        if (!meta.default_tool[0]) return -3;
         const char *dt = meta.default_tool;
         int has_vol = 0;
         for (const char *q = dt; *q; q++) if (*q == ':') { has_vol = 1; break; }
-        int i = 0;
         if (!has_vol) {
             char dir[96];
+            static const char *const search[] = {
+                "C:", "SYS:Utilities/", "SYS:Tools/", "SYS:System/", "SYS:"
+            };
             wb_dirname(path, dir, sizeof(dir));
-            for (int j = 0; dir[j] && i < 158; j++) tool_path[i++] = dir[j];
+            int found = 0;
+            for (int d = -1; d < 5 && !found; d++) {
+                const char *base = (d < 0) ? dir : search[d];
+                int i = 0;
+                for (int j = 0; base[j] && i < 158; j++)
+                    tool_path[i++] = base[j];
+                for (int j = 0; dt[j] && i < 159; j++)
+                    tool_path[i++] = dt[j];
+                tool_path[i] = '\0';
+                VfsFile probe;
+                if (VFS_Open(&probe, tool_path, VFS_READ)) {
+                    VFS_Close(&probe);
+                    found = 1;
+                }
+            }
+            if (!found) {
+                wb_err_tool(dt);
+                return -1;
+            }
+        } else {
+            int i = 0;
+            for (int j = 0; dt[j] && i < 159; j++) tool_path[i++] = dt[j];
+            tool_path[i] = '\0';
         }
-        for (int j = 0; dt[j] && i < 159; j++) tool_path[i++] = dt[j];
-        tool_path[i] = '\0';
     } else {
         int i = 0;
         while (path[i] && i < 159) { tool_path[i] = path[i]; i++; }
@@ -345,7 +415,13 @@ int ExecFile_RunWB(const char *path,
 
     /* ---- Inspect the tool binary ---- */
     VfsFile fh;
-    if (!VFS_Open(&fh, tool_path, VFS_READ)) return -1;
+    if (!VFS_Open(&fh, tool_path, VFS_READ)) {
+        if (is_project) {
+            const char *dt = meta.default_tool;
+            wb_err_tool(dt[0] ? dt : tool_path);
+        }
+        return -1;
+    }
     uint32_t file_size = VFS_Size(&fh);
     if (file_size < 4 || file_size > EXEC_MAX_PAYLOAD) {
         VFS_Close(&fh);
@@ -367,10 +443,21 @@ int ExecFile_RunWB(const char *path,
         int ni = 0;
         while (ni < 16 && hdr[12 + ni]) { bin_name[ni] = (char)hdr[12 + ni]; ni++; }
         bin_name[ni] = '\0';
-        if (type == UAOS_BIN_TYPE_NATIVE) {
-            /* Native commands have no WB environment — launch normally. */
+        if (type == UAOS_BIN_TYPE_NATIVE || type == UAOS_BIN_TYPE_X64) {
+            /* Non-M68k tools get no WBStartup message — pass the
+             * project (+ any shift-selected extras) as the argument
+             * string instead, space-separated and quoted as needed. */
             VFS_Close(&fh);
-            return ExecFile_Run(tool_path, "");
+            static char wb_argstr[480];
+            wb_argstr[0] = '\0';
+            if (is_project)
+                wb_arg_append(wb_argstr, sizeof(wb_argstr), path);
+            for (int i = 0; i < num_extra; i++) {
+                if (extra_paths[i] && extra_paths[i][0])
+                    wb_arg_append(wb_argstr, sizeof(wb_argstr),
+                                  extra_paths[i]);
+            }
+            return ExecFile_Run(tool_path, wb_argstr);
         }
         if (type != UAOS_BIN_TYPE_M68K) { VFS_Close(&fh); return -2; }
         if (!payload_size || payload_size > EXEC_MAX_PAYLOAD ||

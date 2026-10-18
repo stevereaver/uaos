@@ -3407,10 +3407,29 @@ static void desktop_icon_activate(IconState *ic)
             /* .adf shortcut → drive picker (UAOS-158) */
             AdfPicker_Open(ic->leaveout_path);
         } else {
-            /* Workbench launch semantics (UAOS-253) */
+            /* Workbench launch semantics (UAOS-253); report failures
+             * in a requester (UAOS-15). */
             extern int ExecFile_RunWB(const char *path,
                                       const char **x, int n);
-            ExecFile_RunWB(ic->leaveout_path, NULL, 0);
+            extern const char *ExecFile_WBErrMsg(int rc, char *buf,
+                                                 int max);
+            int rc = ExecFile_RunWB(ic->leaveout_path, NULL, 0);
+            if (rc < 0) {
+                char l1[96];
+                char l2[96];
+                int i = 0;
+                const char *m = "Unable to open ";
+                while (m[i] && i < 95) { l1[i] = m[i]; i++; }
+                const char *leaf = ic->leaveout_path;
+                for (const char *p = leaf; *p; p++)
+                    if (*p == '/' || *p == ':') leaf = p + 1;
+                for (int j = 0; leaf[j] && i < 95; j++) l1[i++] = leaf[j];
+                l1[i] = '\0';
+                ExecFile_WBErrMsg(rc, l2, sizeof(l2));
+                const char *lines[] = { l1, l2, NULL };
+                Requester_Info("Workbench",
+                               (const char **)lines, NULL, NULL);
+            }
         }
     } else if (ic->volume) {
         FileBrowser_Open(ic->volume);

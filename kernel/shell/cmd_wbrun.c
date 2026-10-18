@@ -57,6 +57,24 @@ void Cmd_WBRun(NativeCmdCtx *ctx, const char *args)
     }
 
     int r = ExecFile_RunWB(target, argv, n - 1);
-    if (r == -1)      PRINT("wbrun: object not found");
-    else if (r == -2) PRINT("wbrun: not executable / bad format");
+    if (r < 0) {
+        /* Mirror the Workbench requester text: "Unable to open X" +
+         * a reason line. */
+        char reason[96];
+        char line[160];
+        ExecFile_WBErrMsg(r, reason, sizeof(reason));
+        int i = 0;
+        const char *p = "wbrun: ";
+        while (p[i]) { line[i] = p[i]; i++; }
+        const char *leaf = paths[0];
+        for (const char *q = leaf; *q; q++)
+            if (*q == '/' || *q == ':') leaf = q + 1;
+        for (int j = 0; leaf[j] && i < 100; j++) line[i++] = leaf[j];
+        line[i++] = ':';
+        line[i++] = ' ';
+        for (int j = 0; reason[j] && i < 158; j++) line[i++] = reason[j];
+        line[i] = '\0';
+        PRINT(line);
+        if (ctx->set_rc) ctx->set_rc(ctx->shell_extra, 20);
+    }
 }
