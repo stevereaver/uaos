@@ -50,6 +50,10 @@ The mixer is the single producer and the active backend is the single consumer. 
 
 Because the buffer is larger than one AC97 half-buffer, the backend can consume in 2048-sample bursts while the mixer produces 480 frames per tick.
 
+## Master Volume / Mute (UAOS-315)
+
+`audio_set_volume(0-100)` / `audio_set_mute()` / `audio_mute_toggle()` / `audio_adjust_volume()` expose a master output control that defaults to 100 (full scale).  Two layers apply it: `audio_ring_write()` scales every frame by `vol/100` (so the Paula mix *and* `audio_ring_solo` injections are covered), and an optional `AudioBackend.set_volume(pct, muted)` hook programs the codec amp.  The HDA hook keeps a list of one output amp per configured pin→DAC path (DAC preferred, deduped for the shared DAC) and issues `SET_AMP_GAIN_MUTE` (payload `0xB000 | mute<<7 | gain`) with gain linear across the amp's step range; the AC97 hook drives PCM-out register 0x18 (5-bit attenuation + mute bit).  The `volume` shell command prints `volume: NN|MUTE (backend X)` and accepts a value or `MUTE`.
+
 ## Backends
 
 ### AC97
