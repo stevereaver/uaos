@@ -9,6 +9,7 @@
 #include "framebuffer.h"
 #include "gadgets.h"
 #include "../irq/ps2kbd.h"
+#include "../audio/audio.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -395,6 +396,14 @@ static int req_event(int handle, int event, int a, int b, int c)
  * Public API
  * ========================================================================= */
 
+/* Error beep on alert-type requester open — the audible half of the
+ * classic Workbench flash.  String requesters don't beep: they are
+ * user-initiated edits (rename, new drawer), not errors. */
+static void req_beep(void)
+{
+    audio_beep(AUDIO_BEEP_FREQ_HZ, AUDIO_BEEP_MS);
+}
+
 void Requester_Confirm(const char *title, const char *body,
                        const char *btn1, const char *btn2,
                        ReqCallback cb, void *user_data)
@@ -435,6 +444,7 @@ void Requester_Confirm(const char *title, const char *body,
     record_last_message();
     WM_RaiseWindow(g_req.wm_handle);
     WM_Redraw();
+    req_beep();
 }
 
 void Requester_Choice(const char *title, const char *body,
@@ -479,6 +489,7 @@ void Requester_Choice(const char *title, const char *body,
     record_last_message();
     WM_RaiseWindow(g_req.wm_handle);
     WM_Redraw();
+    req_beep();
 }
 
 void Requester_String(const char *title, const char *prompt,
@@ -575,6 +586,7 @@ void Requester_Info(const char *title, const char **lines,
     record_last_message();
     WM_RaiseWindow(g_req.wm_handle);
     WM_Redraw();
+    req_beep();
 }
 
 void Requester_Close(void)

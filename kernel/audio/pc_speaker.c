@@ -63,14 +63,15 @@ static void pcspk_backend_service(void)
         return;
     }
 
-    /* Map average absolute sample value to a tone.  This is a very coarse
-     * approximation, but it lets the user hear that audio is active. */
+    /* Map mean absolute sample value to a tone.  Mean |s| (rather than
+     * |mean s|) keeps symmetric AC signals like the square-wave error
+     * beep audible — a signed average would cancel to ~0. */
     int32_t sum = 0;
     for (unsigned int i = 0; i < n; i++) {
-        sum += g_pcspk_buf[i * 2 + 0];
+        int32_t s = g_pcspk_buf[i * 2 + 0];
+        sum += s < 0 ? -s : s;
     }
-    int avg = (int)(sum / (int32_t)n);
-    int energy = avg < 0 ? -avg : avg;
+    int energy = (int)(sum / (int32_t)n);
 
     if (energy < 64) {
         pc_speaker_tone(0);

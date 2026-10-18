@@ -2427,6 +2427,7 @@ void Desktop_DisplayBeepFlash(uint32_t color)
     if (color) {
         g_beep_flash_color = color;
         g_beep_flash_until = g_pit_ticks + 5;  /* 50 ms at 100 Hz */
+        audio_beep(AUDIO_BEEP_FREQ_HZ, AUDIO_BEEP_MS);
     } else {
         g_beep_flash_color = 0;
         g_beep_flash_until = 0;

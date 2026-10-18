@@ -79,6 +79,17 @@ unsigned int audio_ring_read(int16_t *dst, unsigned int n);
 void audio_ring_solo(int on);
 
 /* -------------------------------------------------------------------------
+ * Error beep
+ * ------------------------------------------------------------------------- */
+
+/* Queue a short square-wave error beep.  The tone is mixed at generation
+ * time so it plays through whichever backend is active (HDA/AC97 PCM or
+ * the PC-speaker tone path).  freq_hz == 0 or ms == 0 stops a live beep. */
+#define AUDIO_BEEP_FREQ_HZ 880
+#define AUDIO_BEEP_MS      120
+void audio_beep(uint32_t freq_hz, uint32_t ms);
+
+/* -------------------------------------------------------------------------
  * Master output volume / mute
  * ------------------------------------------------------------------------- */
 

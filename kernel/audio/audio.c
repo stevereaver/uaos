@@ -165,6 +165,32 @@ static void audio_select_backend(void)
 /* Small local mix buffer. */
 static int16_t g_mix_buf[SAMPLES_PER_TICK * 2];
 
+/* -------------------------------------------------------------------------
+ * Error beep — square-wave burst mixed into the generated stream.
+ * ------------------------------------------------------------------------- */
+
+#define BEEP_AMPLITUDE 8192   /* quarter scale, added to both channels */
+
+static uint32_t g_beep_step  = 0;  /* 16.16 phase step per sample */
+static uint32_t g_beep_phase = 0;
+static int      g_beep_left  = 0;  /* frames remaining */
+
+void audio_beep(uint32_t freq_hz, uint32_t ms)
+{
+    if (freq_hz == 0 || ms == 0) { g_beep_left = 0; return; }
+    g_beep_step  = (uint32_t)(((uint64_t)freq_hz * 65536ULL) / AUDIO_SAMPLE_RATE);
+    g_beep_phase = 0;
+    g_beep_left  = (int)((AUDIO_SAMPLE_RATE * ms) / 1000u);
+}
+
+static int16_t beep_sample(void)
+{
+    if (g_beep_left <= 0) return 0;
+    g_beep_left--;
+    g_beep_phase += g_beep_step;
+    return (g_beep_phase & 0x8000u) ? BEEP_AMPLITUDE : -BEEP_AMPLITUDE;
+}
+
 void audio_init(void)
 {
     for (int i = 0; i < AUDIO_CHANNELS; i++) g_led_state[i] = 0;
@@ -211,6 +237,10 @@ static unsigned int audio_generate(void)
             if (ch & 1u) mix_r += s;
             else         mix_l += s;
         }
+
+        /* Error beep rides on top of the Paula mix. */
+        int16_t b = beep_sample();
+        if (b) { mix_l += b; mix_r += b; }
 
         /* Clamp to 16-bit signed range. */
         if (mix_l > 32767)  mix_l = 32767;
