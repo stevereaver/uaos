@@ -1,5 +1,23 @@
 # OKF Change Log
 
+## 2026-10-18 — UAOS-134 closed; EHCI/MSC split to UAOS-317
+
+* **Verified** (QEMU, current ISO, headless telnetd+monitor): 2 UHCI HCs
+  IO-APIC routed (vec52/GSI20, vec55/GSI23), hub 0409:55AA bound intr=1,
+  monitor hotplug `device_add usb-mouse` → `usb: dev vid=0x0627` →
+  `hid: mouse` → `uhci: intr arm` → `usb: late enum`; `irqstat` uhci
+  vector +12 after 6 sendkey (press+release reports).  No usb warn/err,
+  no watchdog.
+* **Closed** UAOS-134 (acceptance met: controllers enumerate, devices
+  appear incl. hub downstream, interrupt transfers delivered — metal
+  evidence in the 2026-10-08/17 card comments).
+* **Created** UAOS-317 "EHCI host controller driver + USB mass-storage
+  class (phase 2)" — the card's two unimplemented Work items (no
+  `ehci.c`, no MSC/blockdev) moved there with area:drivers +
+  type:feature.
+* **Docs**: `okf/platforms/macbook41.md` — USB row, work-item list, and
+  the `ehci_release_ports` hand-off note now point at UAOS-317.
+
 ## 2026-10-18 — usb-enum idle CPU burn fixed + metal-verified (UAOS-314)
 
 * **Root cause** (two compounding costs, MBP4,1): the 100 ms port scan
