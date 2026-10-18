@@ -1727,6 +1727,7 @@ static IconState *get_icons(int *count)
     static int  cache_appicon_count = -1;
     static int  cache_leaveout_version = -1;
     static uint32_t cache_trash_mask = 0;
+    static uint32_t cache_vfs_seq = 0xFFFFFFFFu;  /* force first probe */
 
     if (!initialised) {
         for (int i = 0; i < MAX_ICONS; i++) {
@@ -1754,12 +1755,14 @@ static IconState *get_icons(int *count)
      * (BlockDev_Read on real media) — on metal this ran on EVERY damage
      * flush and put EventPump inside BlockDev_Read ~10% of the time
      * (~96 ms slices), which is what made window drags and pointer
-     * motion stutter.  Probe at most every ~2 s and reuse the cached
-     * mask between probes (UAOS-319). */
-    static uint64_t s_trash_next = 0;
+     * motion stutter.  Re-probe only when the filesystem actually
+     * mutated: VFS_ChangeSeq() counts every directory-visible write
+     * (CREATE_DIR/DELETE/RENAME/WRITE) on RAMFS and handler volumes, so
+     * an unchanged seq means the Trashcan set cannot have moved and the
+     * cached mask is reused with zero disk I/O (UAOS-319). */
+    uint32_t vfs_seq = VFS_ChangeSeq();
     uint32_t trash_mask = cache_trash_mask;
-    if (g_pit_ticks >= s_trash_next) {
-        s_trash_next = g_pit_ticks + 200;
+    if (vfs_seq != cache_vfs_seq) {
         trash_mask = 0;
         for (int mi = 0; mi < mount_count && mi < MAX_ICONS; mi++) {
             char mname[32], tdir[48];
@@ -1773,6 +1776,7 @@ static IconState *get_icons(int *count)
             tdir[di] = '\0';
             if (VFS_IsDir(tdir)) trash_mask |= (1u << mi);
         }
+        cache_vfs_seq = vfs_seq;
     }
 
     int changed = (mount_count != cache_mount_count) ||
