@@ -322,6 +322,36 @@ static void ahci_cmd_release(UaosTask *me)
     irq_restore(fl);
 }
 
+/* The dying task owned slot 0 mid-command — zero-copy DMA may still be
+ * writing the caller's buffer, which Task_Exit is about to free.
+ * Drain the in-flight command first (normally <1 ms), and if it refuses
+ * to complete inside ~500 ms stop the port engine so the HBA can no
+ * longer write the freed memory; the command list stays programmed and
+ * ST is re-armed so the port remains usable (UAOS-318). */
+void AHCI_TaskDying(UaosTask *t)
+{
+    if (!t || !g_hba || g_cmd_owner != t) return;
+    uint64_t deadline = g_tsc_khz ? rdtsc() + g_tsc_khz * 500 : 0;
+    for (int port = 0; port < MAX_PORTS; port++) {
+        if (!g_ports[port].present) continue;
+        while (*px(port, PX_CI) & 1) {
+            if (!g_tsc_khz || rdtsc() > deadline) {
+                uint32_t c = *px(port, PX_CMD);
+                *px(port, PX_CMD) = c & ~PXCMD_ST;
+                for (int i = 0; i < 500 &&
+                        (*px(port, PX_CMD) & PXCMD_CR); i++)
+                    ms_spin(1);
+                *px(port, PX_CI) = 0;             /* drop pending slot */
+                *px(port, PX_CMD) |= PXCMD_ST;    /* re-arm engine */
+                kprint("[AHCI] aborted in-flight command on owner death\n");
+                break;
+            }
+            us_spin(100);
+        }
+    }
+    g_cmd_owner = 0;
+}
+
 /* Issue one command in slot 0.  fislen is in dwords; write=1 sets the
  * H2D 'W' flag (device expects to receive data). */
 static int ahci_cmd(AhciPort *p, uint8_t cmd, uint64_t lba, uint16_t count,

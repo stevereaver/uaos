@@ -715,6 +715,13 @@ void Task_Exit(void)
     if (g_current) {
         /* If this task is the one blocked in WaitTOF(), clear the global. */
         if (g_wait_tof_task == g_current) g_wait_tof_task = NULL;
+        /* If this task owns an in-flight AHCI slot-0 command, drain or
+         * abort it now — the zero-copy PRDT may still be writing memory
+         * that the cleanup steps below are about to free (UAOS-318). */
+        {
+            extern void AHCI_TaskDying(struct UaosTask *t);
+            AHCI_TaskDying(g_current);
+        }
         /* Free the M68k VBlank signal bit if one was allocated. */
         if (g_current->type == TASK_TYPE_M68K && g_current->m68k_vblank_sig >= 0) {
             g_current->tc_SigAlloc |= (1u << (unsigned int)g_current->m68k_vblank_sig);

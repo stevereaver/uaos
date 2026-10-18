@@ -15,4 +15,11 @@ int AHCI_Init(void);
  * Must be called after IRQ_Init/IDT_Init. */
 void AHCI_SetupIRQ(void);
 
+struct UaosTask;
+/* Called from Task_Exit before the dying task's memory is freed:
+ * drains (or aborts) an in-flight slot-0 command the task owned so the
+ * HBA can't DMA into freed memory (UAOS-318).  Cheap no-op when the
+ * task isn't the current command owner. */
+void AHCI_TaskDying(struct UaosTask *t);
+
 #endif
