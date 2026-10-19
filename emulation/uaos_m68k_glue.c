@@ -1147,6 +1147,13 @@ extern void     UAOS_DOS_UnLoadSeg(uint32_t seglist_bptr);
 #define GADTOOLS_FREE_VISUAL_INFO       20
 #define GADTOOLS_GT_GET_GADGET_ATTRS_A 21
 
+/* Catch-all slot indices for unimplemented LVOs (UAOS-344): pre-filling
+ * the whole JVT range means AlohaWorkbench (-402), intuitionPrivate1-4,
+ * and every other unimplemented vector return D0=0 cleanly instead of
+ * executing zeroed guest RAM. */
+#define INTUITION_STUB_FN  250
+#define GADTOOLS_STUB_FN   250
+
 /* Build the stub: ILLEGAL word followed by (lib<<8|func) word */
 static void install_stub(int lib_id, int func_idx)
 {
@@ -2941,7 +2948,12 @@ void install_library_tables(void)
         install_lvo(GRAPHICS_BASE, lvo, LIB_GRAPHICS, slot);
     }
 
-    /* intuition.library at INTUITION_BASE */
+    /* intuition.library at INTUITION_BASE — pre-fill the full registered
+     * JVT range (-6 .. -1236) with the catch-all stub so unimplemented
+     * vectors (AlohaWorkbench -402, intuitionPrivate1-4, V44+ calls)
+     * return D0=0 instead of jumping into zeroed RAM (UAOS-344). */
+    for (int lvo = -6; lvo >= -1236; lvo -= 6)
+        install_lvo(INTUITION_BASE, lvo, LIB_INTUITION, INTUITION_STUB_FN);
     install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_LIBRARY                              , LIB_INTUITION, INTUITION_OPEN_LIBRARY);
     install_lvo(INTUITION_BASE, LVO_INTUITION_CLOSE_LIBRARY                             , LIB_INTUITION, INTUITION_CLOSE_LIBRARY);
     install_lvo(INTUITION_BASE, LVO_INTUITION_OPEN_WINDOW                               , LIB_INTUITION, INTUITION_OPEN_WINDOW);
@@ -3101,7 +3113,10 @@ void install_library_tables(void)
     install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_SCREEN_LIST                        , LIB_INTUITION, INTUITION_UNLOCK_SCREEN_LIST);
     install_lvo(INTUITION_BASE, LVO_INTUITION_LOCK_SCREEN_GI                            , LIB_INTUITION, INTUITION_LOCK_SCREEN_GI);
     install_lvo(INTUITION_BASE, LVO_INTUITION_UNLOCK_SCREEN_GI                          , LIB_INTUITION, INTUITION_UNLOCK_SCREEN_GI);
-    /* gadtools.library at GADTOOLS_BASE */
+    /* gadtools.library at GADTOOLS_BASE — same catch-all pre-fill for
+     * the registered range (-6 .. -174, per libmap_selfcheck). */
+    for (int lvo = -6; lvo >= -174; lvo -= 6)
+        install_lvo(GADTOOLS_BASE, lvo, LIB_GADTOOLS, GADTOOLS_STUB_FN);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_CREATE_GADGET_A,       LIB_GADTOOLS, GADTOOLS_CREATE_GADGET_A);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_FREE_GADGETS,            LIB_GADTOOLS, GADTOOLS_FREE_GADGETS);
     install_lvo(GADTOOLS_BASE, LVO_GADTOOLS_GT_SET_GADGET_ATTRS_A,   LIB_GADTOOLS, GADTOOLS_GT_SET_GADGET_ATTRS_A);

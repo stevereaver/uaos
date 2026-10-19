@@ -474,3 +474,90 @@ The Intuition library keeps a small internal table (`IntuitionSlot`) that maps g
 Intuition LVO offsets in `emulation/uaos_m68k_glue.c` match the AmigaOS 3.x `intuition_lib.fd` file for the classic functions. Recent additions and corrections include `OnMenu` (-114), `OffMenu` (-108), `ViewAddress` (-126), `ViewPortAddress` (-132), `GetScreenData` (-306), `LockIBase` (-294), `UnlockIBase` (-300), `LockPubScreen` (-384), `UnlockPubScreen` (-390), `LockPubScreenList` (-396), `UnlockPubScreenList` (-402), `NextPubScreen` (-408), `SetDefaultPubScreen` (-420), `PubScreenStatus` (-426), `GetDefaultPubScreen` (-432), `SysReqHandler` (-450), `GetVisualInfoA` (-630), and `FreeVisualInfo` (-636). Additional LVOs now installed: `MoveWindowInFrontOf` (-516), `SetEditHook` (-510), `ObtainGIRPort` (-456), `ReleaseGIRPort` (-492), `StripIntuiMessages` (-504), `NewObjectA` (-48), `DisposeObject` (-168), `SetAttrsA` (-180), `GetAttr` (-192), `AddClass` (-198), `GetAttrsA` (-204), `RemoveClass` (-210), `NextObject` (-216), `DoGadgetMethodA` (-222), `SetSuperAttrsA` (-228), `DoMethodA` (-258), `DoSuperMethodA` (-288), `CoerceMethodA` (-312), `MakeClass` (-330), and `FreeClass` (-336). These LVOs use the same function indices as the internal dispatch table in `kernel/exec/intuition_lib.c` (indices 97–116).
 
 Newly wired LVOs in this session: `HelpControl` at the AmigaOS 3.x offset `-828`; `StartScreenNotifyTagList` (-900), `EndScreenNotify` (-906), `GetWindowAttr` (-912), `SetWindowAttr` (-918), `GetScreenAttr` (-924), `SetScreenAttr` (-930), `NewObject` (-936), `SetAttrs` (-942), `GetAttrs` (-948), `DoMethod` (-954), `DoSuperMethod` (-960), `CoerceMethod` (-966), `SetGadgetAttrsA` (-972), `SetSuperAttrs` (-978), `SetWindowPointer` (-984), `OpenWindowTags` (-990), `OpenScreenTags` (-996), `DoGadgetMethod` (-1044), and `SetGadgetAttrs` (-1050). The non-A varargs wrappers are not standard AmigaOS 3.x LVOs (they are normally provided by `amiga.lib`); they are assigned custom LVO slots in the unused range and are wired to the internal dispatch table indices 117–136. `SetGadgetAttrsA` shares the existing `SetAttrsA` dispatcher path; the new `SetGadgetAttrs` (non-A) wrapper builds a tag list from the guest stack and calls `SetGadgetAttrsA`.
+
+## 40.86b7 reconstruction comparison (UAOS-338)
+
+A full semantic diff against the manually reconstructed Cosmos-patched
+`intuition.library` 40.86b7 (`~/workspaces/intuition_40.86b7_020`, binary
+SHA-256 `db9a905f…8520`) is recorded in
+`documentation/intuition_40.86b7_comparison_report.md`. All 179 installed
+LVO offsets match the real vector table exactly (the real table has 138
+slots, -6..-828; UAOS's post-3.1-style vectors -834..-1224 are custom-range
+extensions). The divergences found, all guest-observable:
+
+- **Flag words are wrong**: `Screen.Type` constants
+  (`CUSTOMSCREEN` 0x000F, `CUSTOMBITMAP` 0x0040, `SCREENBEHIND` 0x0080,
+  `SCREENQUIET` 0x0100, `AUTOSCROLL` 0x4000), `Gadget.Flags`
+  (`GFLG_SELECTED` 0x0080, `GFLG_DISABLED` 0x0100, label mask 0x3000), and
+  `Gadget.Activation` (`GACT_TOGGLESELECT` 0x0100, string-mode bits
+  0x0200/0x0400, border bits 0x0010-0x0080) all differ from the NDK values
+  guests compile against; UAOS's invented `GFLG_*BORDER`/`GFLG_SYSGADGET`
+  bits collide with real RELWIDTH/RELRIGHT/DISABLED/TABCYCLE/LABELIMAGE.
+- **Function bugs**: `NextObject` skips the first element and returns the
+  link block instead of the Object; `SysReqHandler` dequeues+frees the
+  IntuiMessage (real only peeks — callers GetMsg afterwards);
+  `SetEditHook` implements the V33 `(gadget,hook)` signature instead of the
+  V40 global `ib+$ab8` hook; `InitRequester` zeroes 40B not $70;
+  `SetDMRequest`/`ClearDMRequest` test REQACTIVE wrong in both directions;
+  `GadgetMouse` treats A1 as Window* instead of GadgetInfo*;
+  `WindowLimits` stores zero args and never writes `win+$10..$16`;
+  `SetWindowTitles` ignores `-1` sentinels and the screen-title arg;
+  `DoubleClick` hardcodes 500 ms instead of Preferences thresholds.
+- **Image/BOOPSI**: `DrawImage`/`DrawImageState`/`EraseImage`/
+  `PointInImage` lack the image-method hook path (`image+8==0xFFFF` →
+  IM_* BOOPSI dispatch), so guest BOOPSI images misrender; `NewObjectA`
+  pre-allocates before `OM_NEW` instead of letting the dispatcher chain
+  allocate, so guest-defined classes can't work.
+- **JVT safety**: no catch-all stubs for intuition/gadtools/graphics —
+  unimplemented vectors (`AlohaWorkbench` -402, `intuitionPrivate1-4`)
+  jump into zeroed RAM.
+
+Follow-up cards: UAOS-339 (flag constants), UAOS-340
+(NextObject/SysReqHandler/InitRequester/DMRequest), UAOS-341
+(SetEditHook/WindowLimits/SetWindowTitles/DoubleClick/GadgetMouse etc.),
+UAOS-342 (image hook dispatch), UAOS-343 (BOOPSI OM_NEW lifecycle),
+UAOS-344 (JVT catch-alls + AlohaWorkbench), UAOS-345 (Begin/EndRefresh
+flag semantics).
+
+### Implementation (all cards done, 2026-10-19)
+
+All findings above are now implemented — see the report's
+"Implementation status" section. Key structural changes:
+
+- Canonical `GFLG_*`/`GACT_*`/`GTYP_*`/`WFLG_*`/`Screen.Type`/`IM_*`
+  values; `Requester` is the real 0x70-byte layout and `AmigaWindow`
+  carries the canonical tail (`MoreFlags` 0x84, `HelpGroup` 0xde).
+- Relative gadget geometry (`GFLG_REL*`) is resolved through the shared
+  `gadget_box()` helper; `GA_Rel*` tags set the flag bits.
+- `SysReqHandler` peeks instead of dequeueing; `NextObject` returns
+  `block+12`; `SetDMRequest`/`ClearDMRequest` fail only on `REQACTIVE`;
+  `HelpControl` walks same-help-group windows setting `MoreFlags` bit
+  `0x20`.
+- `NewObjectA` → real `OM_NEW` convention: the class is the object arg,
+  `rootclass` allocates, and all 22 built-in dispatchers
+  `UAOS_BOOPSI_SuperDispatch` first. Guest dispatcher arg order is
+  `a0=cl, a1=msg, a2=obj`. Subclass instance data lives at
+  `obj+InstOffset`; `PropInfo`/`StringInfo` live at
+  `Gadget.SpecialInfo`.
+- `DrawImage`/`EraseImage`/`PointInImage` route `Depth==0xFFFF` objects
+  through class dispatch (`IM_DRAW`/`IM_ERASE`/`IM_HITTEST`); imageclass
+  objects lead with a real `struct Image` carrying the marker.
+- intuition (-6..-1236) and gadtools (-6..-174) JVTs are pre-filled with
+  catch-all stubs (fn 250 → `D0=0`) before the real installs land.
+- `BeginRefresh`/`EndRefresh` toggle `WFLG_WINDOWREFRESH` +
+  `MoreFlags` 0x100 on the guest Window.
+
+Known limitation: `SetEditHook` stores/returns the global hook
+correctly, but the string-gadget edit path doesn't invoke it yet
+(UAOS string editing is skeletal — no SGWork).
+
+Verified: clean ISO build, `tests/smoke.sh` 24/24,
+`qemu_layout_test.py` 12/12, `qemu_m68k_lifecycle_test.py` 24/24
+(incl. 150 s OctaMED soak).
+
+Earlier prose in this file claiming "screen type flags now match the
+AmigaOS 3.x definitions" is superseded by this comparison — the tag
+*numbers* match, the `Screen.Type`/`Gadget` flag *bit values* do not. The
+"LVO offsets" paragraph above documents a stale numbering; the
+`LVO_INTUITION_*` defines in `uaos_m68k_glue.c` are the authority and were
+verified against the binary's autoinit table.

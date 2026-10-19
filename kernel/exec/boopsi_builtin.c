@@ -166,16 +166,37 @@ static uint32_t rootclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW:
-            /* Object is already allocated; just succeed. */
-            return 1;
+            /* Real rootclass: for OM_NEW the object argument is the leaf
+             * CLASS — rootclass allocates the instance here. */
+            return UAOS_BOOPSI_AllocForClass(obj);
         case OM_DISPOSE:
             return 1;
         case OM_SET:
             return 1;
         case OM_GET:
             return 0;
-        case OM_ADDTAIL:
-        case OM_REMOVE:
+        case OM_ADDTAIL: {
+            /* Real rootclass: AddTail(msg+4 list, obj's MinNode at -12). */
+            uint32_t list = mem_u32(msg + 4);
+            uint32_t node = obj - OBJ_HEADER_SIZE;
+            uint32_t tailpred;
+            if (!list || list + 12 > GUEST_RAM_SIZE) return 0;
+            tailpred = mem_u32(list + 8);
+            if (!tailpred) return 0;
+            mem_w32(node + 0, list + 4);       /* ln_Succ = &lh_Tail   */
+            mem_w32(node + 4, tailpred);       /* ln_Pred              */
+            mem_w32(tailpred, node);           /* tailpred->ln_Succ    */
+            mem_w32(list + 8, node);           /* lh_TailPred = node   */
+            return obj;
+        }
+        case OM_REMOVE: {
+            uint32_t node = obj - OBJ_HEADER_SIZE;
+            uint32_t succ = mem_u32(node + 0);
+            uint32_t pred = mem_u32(node + 4);
+            if (succ && succ + 4 < GUEST_RAM_SIZE) mem_w32(succ + 4, pred);
+            if (pred && pred < GUEST_RAM_SIZE)     mem_w32(pred, succ);
+            return obj;
+        }
         case OM_ADDMEMBER:
         case OM_REMMEMBER:
         case OM_NOTIFY:
@@ -213,18 +234,26 @@ static uint32_t create_intuitext(const char *text, uint32_t text_attr)
     return it;
 }
 
+/* GA_Rel* tags set the matching GFLG_REL* bit and store the raw value in
+ * the field it relativises (real gadgetclass convention). */
+static void gad_set_flag(uint32_t obj, uint16_t flag, uint32_t field, uint32_t data)
+{
+    mem_w16(obj + field, (uint16_t)(int16_t)data);
+    mem_w16(obj + GAD_OFF_FLAGS, mem_u16(obj + GAD_OFF_FLAGS) | flag);
+}
+
 static int gadget_set_tag(uint32_t tag, uint32_t data, void *ctx)
 {
     uint32_t obj = (uint32_t)(uintptr_t)ctx;
     switch (tag) {
         case GA_Left:       mem_w16(obj + GAD_OFF_LEFTEDGE, (uint16_t)(int16_t)data); break;
-        case GA_RelRight:   break;
+        case GA_RelRight:   gad_set_flag(obj, GFLG_RELRIGHT,  GAD_OFF_LEFTEDGE,  data); break;
         case GA_Top:        mem_w16(obj + GAD_OFF_TOPEDGE, (uint16_t)(int16_t)data); break;
-        case GA_RelBottom:  break;
+        case GA_RelBottom:  gad_set_flag(obj, GFLG_RELBOTTOM, GAD_OFF_TOPEDGE,   data); break;
         case GA_Width:      mem_w16(obj + GAD_OFF_WIDTH, (uint16_t)(int16_t)data); break;
-        case GA_RelWidth:   break;
+        case GA_RelWidth:   gad_set_flag(obj, GFLG_RELWIDTH,  GAD_OFF_WIDTH,     data); break;
         case GA_Height:     mem_w16(obj + GAD_OFF_HEIGHT, (uint16_t)(int16_t)data); break;
-        case GA_RelHeight:  break;
+        case GA_RelHeight:  gad_set_flag(obj, GFLG_RELHEIGHT, GAD_OFF_HEIGHT,    data); break;
         case GA_Text:
         case GA_Label: {
             char text[80] = "";
@@ -324,7 +353,7 @@ static void gadget_render(uint32_t obj, uint32_t rport, uint32_t redraw)
     FB_DrawRect(sx, sy, w, h, fg);
 
     uint32_t label = mem_u32(obj + GAD_OFF_GADGETTEXT);
-    if (label && (flags & GFLG_LABELITEXT)) {
+    if (label && (flags & GFLG_LABELMASK) == GFLG_LABELITEXT) {
         uint32_t text = mem_u32(label + ITEXT_OFF_ITEXT);
         if (text) {
             char buf[64] = "";
@@ -347,13 +376,17 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
             memset(&g_ram[obj], 0, GAD_SIZE);
             /* Default to a boolean push-button gadget. */
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_BOOLGADGET);
             mem_w16(obj + GAD_OFF_ACTIVATION, GACT_IMMEDIATE | GACT_RELVERIFY);
             walk_tags(tags, gadget_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_DISPOSE: {
             uint32_t label = mem_u32(obj + GAD_OFF_GADGETTEXT);
@@ -466,27 +499,34 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 /* =========================================================================
  * imageclass
  * ========================================================================= */
-#define BIMG_OFF_WIDTH   0
-#define BIMG_OFF_HEIGHT  4
-#define BIMG_OFF_FGPEN   8
-#define BIMG_OFF_BGPEN   12
-#define BIMG_OFF_DATA    16
-#define BIMG_OFF_LEFT    20
-#define BIMG_OFF_TOP     24
-#define BIMG_OFF_BITMAP  28
-#define BIMG_INST_SIZE   32
+/* Instance data leads with a real struct Image so guests can use an
+ * imageclass object wherever an Image* is expected; Depth = 0xFFFF is
+ * the BOOPSI marker the real $4b78 image hook keys on (UAOS-342). */
+#define BIMG_OFF_LEFT      0    /* Image.LeftEdge   (s16) */
+#define BIMG_OFF_TOP       2    /* Image.TopEdge    (s16) */
+#define BIMG_OFF_WIDTH     4    /* Image.Width      (s16) */
+#define BIMG_OFF_HEIGHT    6    /* Image.Height     (s16) */
+#define BIMG_OFF_DEPTH     8    /* Image.Depth — 0xFFFF BOOPSI marker */
+#define BIMG_OFF_DATA      10   /* Image.ImageData  (ptr) */
+#define BIMG_OFF_PLANEPICK 14   /* Image.PlanePick  (u8)  */
+#define BIMG_OFF_PLANEONOFF 15  /* Image.PlaneOnOff (u8)  */
+#define BIMG_OFF_NEXTIMG   16   /* Image.NextImage  (ptr) */
+#define BIMG_OFF_FGPEN     20   /* UAOS extras */
+#define BIMG_OFF_BGPEN     24
+#define BIMG_OFF_BITMAP    28
+#define BIMG_INST_SIZE     32
 
 static int image_set_tag(uint32_t tag, uint32_t data, void *ctx)
 {
     uint32_t obj = (uint32_t)(uintptr_t)ctx;
     switch (tag) {
-        case IA_Width:      mem_w32(obj + BIMG_OFF_WIDTH, (uint32_t)(int32_t)(int16_t)data); break;
-        case IA_Height:     mem_w32(obj + BIMG_OFF_HEIGHT, (uint32_t)(int32_t)(int16_t)data); break;
+        case IA_Width:      mem_w16(obj + BIMG_OFF_WIDTH, (uint16_t)(int16_t)data); break;
+        case IA_Height:     mem_w16(obj + BIMG_OFF_HEIGHT, (uint16_t)(int16_t)data); break;
         case IA_FGPen:      mem_w32(obj + BIMG_OFF_FGPEN, data); break;
         case IA_BGPen:      mem_w32(obj + BIMG_OFF_BGPEN, data); break;
         case IA_Data:       mem_w32(obj + BIMG_OFF_DATA, data); break;
-        case IA_Left:       mem_w32(obj + BIMG_OFF_LEFT, (uint32_t)(int32_t)(int16_t)data); break;
-        case IA_Top:        mem_w32(obj + BIMG_OFF_TOP, (uint32_t)(int32_t)(int16_t)data); break;
+        case IA_Left:       mem_w16(obj + BIMG_OFF_LEFT, (uint16_t)(int16_t)data); break;
+        case IA_Top:        mem_w16(obj + BIMG_OFF_TOP, (uint16_t)(int16_t)data); break;
         case IA_SupportsDisable: break;
         case IA_Mode:       break;
         /* imageclass also accepts a BitMap via IM_BitMap extension */
@@ -505,10 +545,15 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
             memset(&g_ram[obj], 0, BIMG_INST_SIZE);
+            mem_w16(obj + BIMG_OFF_DEPTH, 0xFFFF);  /* BOOPSI image marker */
             walk_tags(tags, image_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_DISPOSE:
             return 1;
@@ -523,13 +568,13 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             if (!store) return 0;
             uint32_t value = 0;
             switch (attr) {
-                case IA_Width:   value = mem_u32(obj + BIMG_OFF_WIDTH); break;
-                case IA_Height:  value = mem_u32(obj + BIMG_OFF_HEIGHT); break;
+                case IA_Width:   value = mem_s16(obj + BIMG_OFF_WIDTH); break;
+                case IA_Height:  value = mem_s16(obj + BIMG_OFF_HEIGHT); break;
                 case IA_FGPen:   value = mem_u32(obj + BIMG_OFF_FGPEN); break;
                 case IA_BGPen:   value = mem_u32(obj + BIMG_OFF_BGPEN); break;
                 case IA_Data:    value = mem_u32(obj + BIMG_OFF_DATA); break;
-                case IA_Left:    value = mem_u32(obj + BIMG_OFF_LEFT); break;
-                case IA_Top:     value = mem_u32(obj + BIMG_OFF_TOP); break;
+                case IA_Left:    value = mem_s16(obj + BIMG_OFF_LEFT); break;
+                case IA_Top:     value = mem_s16(obj + BIMG_OFF_TOP); break;
                 default: return 0;
             }
             mem_w32(store, value);
@@ -540,15 +585,15 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
              * Build a temporary Image structure from the instance data
              * and blit it to the RastPort. */
             uint32_t rport   = mem_u32(msg + IMDRAW_OFF_RPORT);
-            int32_t  xoff    = (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETX);
-            int32_t  yoff    = (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETY);
+            int32_t  xoff    = (int32_t)mem_s16(msg + IMDRAW_OFF_OFFSETX);
+            int32_t  yoff    = (int32_t)mem_s16(msg + IMDRAW_OFF_OFFSETY);
             uint32_t state   = mem_u32(msg + IMDRAW_OFF_STATE);
             (void)state;
 
-            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
-            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
-            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
-            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            int32_t w  = (int32_t)mem_s16(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_s16(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_s16(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_s16(obj + BIMG_OFF_TOP);
             uint32_t data = mem_u32(obj + BIMG_OFF_DATA);
 
             if (data && w > 0 && h > 0 && rport) {
@@ -584,12 +629,12 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             /* impErase: { MethodID, RPort, OffsetX, OffsetY }
              * Fill the image rectangle with the RastPort's background pen. */
             uint32_t rport = mem_u32(msg + IMERASE_OFF_RPORT);
-            int32_t  xoff  = (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETX);
-            int32_t  yoff  = (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETY);
-            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
-            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
-            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
-            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            int32_t  xoff  = (int32_t)mem_s16(msg + IMERASE_OFF_OFFSETX);
+            int32_t  yoff  = (int32_t)mem_s16(msg + IMERASE_OFF_OFFSETY);
+            int32_t w  = (int32_t)mem_s16(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_s16(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_s16(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_s16(obj + BIMG_OFF_TOP);
             if (w > 0 && h > 0 && rport) {
                 /* RectFill(rp, xMin, yMin, xMax, yMax)
                  * A1=rp, D0=xMin, D1=yMin, D2=xMax, D3=yMax */
@@ -609,16 +654,16 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
              * the image normally; the caller is responsible for setting
              * up the clipping layer. */
             uint32_t rport = mem_u32(msg + IMDRAWFRAME_OFF_RPORT);
-            int32_t  xoff  = (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETX);
-            int32_t  yoff  = (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETY);
+            int32_t  xoff  = (int32_t)mem_s16(msg + IMDRAWFRAME_OFF_OFFSETX);
+            int32_t  yoff  = (int32_t)mem_s16(msg + IMDRAWFRAME_OFF_OFFSETY);
             uint32_t state = mem_u32(msg + IMDRAWFRAME_OFF_STATE);
             (void)state;
             (void)mem_u32(msg + IMDRAWFRAME_OFF_FRAME); /* clip frame — layers handle this */
 
-            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
-            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
-            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
-            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            int32_t w  = (int32_t)mem_s16(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_s16(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_s16(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_s16(obj + BIMG_OFF_TOP);
             uint32_t data = mem_u32(obj + BIMG_OFF_DATA);
 
             if (data && w > 0 && h > 0 && rport) {
@@ -640,14 +685,14 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             /* impEraseFrame: { MethodID, RPort, IBox* Frame, OffsetX, OffsetY }
              * Like IM_ERASE but clipped to the frame rectangle. */
             uint32_t rport = mem_u32(msg + IMERASEFRAME_OFF_RPORT);
-            int32_t  xoff  = (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETX);
-            int32_t  yoff  = (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETY);
+            int32_t  xoff  = (int32_t)mem_s16(msg + IMERASEFRAME_OFF_OFFSETX);
+            int32_t  yoff  = (int32_t)mem_s16(msg + IMERASEFRAME_OFF_OFFSETY);
             (void)mem_u32(msg + IMERASEFRAME_OFF_FRAME);
 
-            int32_t w  = (int32_t)mem_u32(obj + BIMG_OFF_WIDTH);
-            int32_t h  = (int32_t)mem_u32(obj + BIMG_OFF_HEIGHT);
-            int32_t il = (int32_t)mem_u32(obj + BIMG_OFF_LEFT);
-            int32_t it = (int32_t)mem_u32(obj + BIMG_OFF_TOP);
+            int32_t w  = (int32_t)mem_s16(obj + BIMG_OFF_WIDTH);
+            int32_t h  = (int32_t)mem_s16(obj + BIMG_OFF_HEIGHT);
+            int32_t il = (int32_t)mem_s16(obj + BIMG_OFF_LEFT);
+            int32_t it = (int32_t)mem_s16(obj + BIMG_OFF_TOP);
             if (w > 0 && h > 0 && rport) {
                 extern void m68k_set_reg(int reg, unsigned int value);
                 m68k_set_reg(9, rport);
@@ -697,10 +742,14 @@ static uint32_t pointerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            memset(&g_ram[obj], 0, BPTR_INST_SIZE);
+            memset(&g_ram[obj + BIMG_INST_SIZE], 0, BPTR_INST_SIZE - BIMG_INST_SIZE);
             walk_tags(tags, pointer_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_DISPOSE:
             return 1;
@@ -722,13 +771,13 @@ static uint32_t pointerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case POINTERA_XResolution: value = mem_u32(obj + BPTR_OFF_XRES); break;
                 case POINTERA_YResolution: value = mem_u32(obj + BPTR_OFF_YRES); break;
                 case POINTERA_Flags:       value = mem_u32(obj + BPTR_OFF_FLAGS); break;
-                default: return imageclass_dispatch(cls, obj, msg); /* IA_* */
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg); /* IA_* */
             }
             mem_w32(store, value);
             return 1;
         }
         default:
-            return imageclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
     (void)cls;
 }
@@ -767,10 +816,14 @@ static uint32_t menuclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
             memset(&g_ram[obj], 0, BMENU_INST_SIZE);
             walk_tags(tags, menu_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_DISPOSE: {
             /* Dispose children and siblings. */
@@ -842,7 +895,7 @@ static uint32_t menuclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 0;
         }
         default:
-            return rootclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
     (void)cls;
 }
@@ -891,10 +944,14 @@ static uint32_t windowclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
             memset(&g_ram[obj], 0, BWIN_INST_SIZE);
             walk_tags(tags, win_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_DISPOSE:
             return 1;
@@ -928,7 +985,7 @@ static uint32_t windowclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         default:
-            return rootclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
     (void)cls;
 }
@@ -936,10 +993,10 @@ static uint32_t windowclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 /* =========================================================================
  * modelclass — broadcasts OM_NOTIFY to dependent gadgets via ICA_TARGET
  * ========================================================================= */
-#define BMODEL_OFF_TARGET    0    /* ICA_TARGET: object to notify */
-#define BMODEL_OFF_MAP       4    /* ICA_MAP: tag-mapping table (unused) */
-#define BMODEL_OFF_CHILDREN  8    /* head of dependent list */
-#define BMODEL_OFF_NEXT     12    /* next in model chain */
+#define BMODEL_OFF_TARGET  (GAD_SIZE + 0)    /* ICA_TARGET: object to notify */
+#define BMODEL_OFF_MAP  (GAD_SIZE + 4)    /* ICA_MAP: tag-mapping table (unused) */
+#define BMODEL_OFF_CHILDREN  (GAD_SIZE + 8)    /* head of dependent list */
+#define BMODEL_OFF_NEXT  (GAD_SIZE + 12)    /* next in model chain */
 #define BMODEL_INST_SIZE    16
 
 static int model_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -958,10 +1015,14 @@ static uint32_t modelclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            memset(&g_ram[obj], 0, BMODEL_INST_SIZE);
+            memset(&g_ram[obj + GAD_SIZE], 0, BMODEL_INST_SIZE);
             walk_tags(tags, model_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
@@ -992,7 +1053,7 @@ static uint32_t modelclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             }
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1044,20 +1105,21 @@ static uint32_t frbuttonclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            /* Let gadgetclass handle GA_* first. */
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Apply BOOLGADGET_* tags. */
             walk_tags(tags, frbutton_set_tag, (void*)(uintptr_t)obj);
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_BOOLGADGET);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, frbutton_set_tag, (void*)(uintptr_t)obj);
             /* Also let gadgetclass handle GA_* tags. */
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -1071,22 +1133,22 @@ static uint32_t frbuttonclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                     mem_w32(store, mem_u32(obj + GAD_OFF_GADGETTEXT));
                     return 1;
                 default:
-                    return gadgetclass_dispatch(cls, obj, msg);
+                    return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
 /* =========================================================================
  * bevelbox — bevel box image (subclass of imageclass)
  * ========================================================================= */
-#define BBBOX_OFF_DRAWINFO  0
-#define BBBOX_OFF_FRAME     4   /* IBox: Left, Top, Width, Height (8 bytes) */
-#define BBBOX_OFF_RECESSED 12
-#define BBBOX_OFF_SUNKEN   13
-#define BBBOX_OFF_OFFSET   14   /* BVS_OFFSET: bevel rendering offset */
+#define BBBOX_OFF_DRAWINFO  (BIMG_INST_SIZE + 0)
+#define BBBOX_OFF_FRAME  (BIMG_INST_SIZE + 4)   /* IBox: Left, Top, Width, Height (8 bytes) */
+#define BBBOX_OFF_RECESSED  (BIMG_INST_SIZE + 12)
+#define BBBOX_OFF_SUNKEN  (BIMG_INST_SIZE + 13)
+#define BBBOX_OFF_OFFSET  (BIMG_INST_SIZE + 14)   /* BVS_OFFSET: bevel rendering offset */
 #define BBBOX_INST_SIZE   16
 
 static int bevelbox_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -1114,10 +1176,14 @@ static uint32_t bevelbox_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            memset(&g_ram[obj], 0, BBBOX_INST_SIZE);
+            memset(&g_ram[obj + BIMG_INST_SIZE], 0, BBBOX_INST_SIZE);
             walk_tags(tags, bevelbox_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
@@ -1137,7 +1203,7 @@ static uint32_t bevelbox_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case BVS_OFFSET:   mem_w32(store, (uint32_t)(int32_t)mem_s16(obj + BBBOX_OFF_OFFSET)); return 1;
                 case BVS_RECESSED: mem_w32(store, g_ram[obj + BBBOX_OFF_RECESSED]); return 1;
                 case BVS_SUNKEN:   mem_w32(store, g_ram[obj + BBBOX_OFF_SUNKEN]); return 1;
-                default: return imageclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         case IM_DRAW:
@@ -1148,11 +1214,11 @@ static uint32_t bevelbox_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 mem_u32(msg + IMDRAWFRAME_OFF_RPORT);
             (void)rport;
             int32_t xoff = (method == IM_DRAW) ?
-                (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETX) :
-                (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETX);
+                (int32_t)mem_s16(msg + IMDRAW_OFF_OFFSETX) :
+                (int32_t)mem_s16(msg + IMDRAWFRAME_OFF_OFFSETX);
             int32_t yoff = (method == IM_DRAW) ?
-                (int32_t)mem_u32(msg + IMDRAW_OFF_OFFSETY) :
-                (int32_t)mem_u32(msg + IMDRAWFRAME_OFF_OFFSETY);
+                (int32_t)mem_s16(msg + IMDRAW_OFF_OFFSETY) :
+                (int32_t)mem_s16(msg + IMDRAWFRAME_OFF_OFFSETY);
 
             int16_t left   = mem_s16(obj + BBBOX_OFF_FRAME);
             int16_t top    = mem_s16(obj + BBBOX_OFF_FRAME + 2);
@@ -1176,11 +1242,11 @@ static uint32_t bevelbox_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
         case IM_ERASEFRAME: {
             /* Fill the bevel box area with the background pen. */
             int32_t xoff = (method == IM_ERASE) ?
-                (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETX) :
-                (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETX);
+                (int32_t)mem_s16(msg + IMERASE_OFF_OFFSETX) :
+                (int32_t)mem_s16(msg + IMERASEFRAME_OFF_OFFSETX);
             int32_t yoff = (method == IM_ERASE) ?
-                (int32_t)mem_u32(msg + IMERASE_OFF_OFFSETY) :
-                (int32_t)mem_u32(msg + IMERASEFRAME_OFF_OFFSETY);
+                (int32_t)mem_s16(msg + IMERASE_OFF_OFFSETY) :
+                (int32_t)mem_s16(msg + IMERASEFRAME_OFF_OFFSETY);
             int16_t left   = mem_s16(obj + BBBOX_OFF_FRAME);
             int16_t top    = mem_s16(obj + BBBOX_OFF_FRAME + 2);
             int16_t width  = mem_s16(obj + BBBOX_OFF_FRAME + 4);
@@ -1192,20 +1258,20 @@ static uint32_t bevelbox_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         default:
-            return imageclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
 /* =========================================================================
  * menuitemclass — companion to menuclass for individual menu items
  * ========================================================================= */
-#define BMITEM_OFF_LABEL    0    /* MA_Label string/IntuiText */
-#define BMITEM_OFF_COMMAND  4    /* command key */
-#define BMITEM_OFF_CHECKED  8    /* checked state */
-#define BMITEM_OFF_DISABLED 9
-#define BMITEM_OFF_NEXT    10    /* next item in chain */
-#define BMITEM_OFF_SUB     14    /* submenu (menuclass child) */
-#define BMITEM_OFF_PARENT  18
+#define BMITEM_OFF_LABEL  (BMENU_INST_SIZE + 0)    /* MA_Label string/IntuiText */
+#define BMITEM_OFF_COMMAND  (BMENU_INST_SIZE + 4)    /* command key */
+#define BMITEM_OFF_CHECKED  (BMENU_INST_SIZE + 8)    /* checked state */
+#define BMITEM_OFF_DISABLED  (BMENU_INST_SIZE + 9)
+#define BMITEM_OFF_NEXT  (BMENU_INST_SIZE + 10)    /* next item in chain */
+#define BMITEM_OFF_SUB  (BMENU_INST_SIZE + 14)    /* submenu (menuclass child) */
+#define BMITEM_OFF_PARENT  (BMENU_INST_SIZE + 18)
 #define BMITEM_INST_SIZE   22
 
 static int menuitem_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -1227,10 +1293,14 @@ static uint32_t menuitemclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            memset(&g_ram[obj], 0, BMITEM_INST_SIZE);
+            memset(&g_ram[obj + BMENU_INST_SIZE], 0, BMITEM_INST_SIZE);
             walk_tags(tags, menuitem_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
@@ -1251,7 +1321,7 @@ static uint32_t menuitemclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             }
         }
         default:
-            return menuclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1278,10 +1348,14 @@ static uint32_t fillrectclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
             memset(&g_ram[obj], 0, BFILL_INST_SIZE);
             walk_tags(tags, fillrect_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
@@ -1299,7 +1373,7 @@ static uint32_t fillrectclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             }
         }
         default:
-            return rootclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1331,18 +1405,19 @@ static uint32_t sysgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            /* Let gadgetclass handle GA_* first. */
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             walk_tags(tags, sysg_set_tag, (void*)(uintptr_t)obj);
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_SYSGADGET | GTYP_BOOLGADGET);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, sysg_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -1352,10 +1427,10 @@ static uint32_t sysgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 mem_w32(store, mem_u32(obj + GAD_OFF_SPECIALINFO));
                 return 1;
             }
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1363,10 +1438,10 @@ static uint32_t sysgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
  * groupgclass — group gadget for layout + mutual exclusion
  * (subclass of gadgetclass, V36)
  * ========================================================================= */
-#define BGRP_OFF_CHILDREN  0    /* head of child gadget list */
-#define BGRP_OFF_ACTIVE    4    /* currently active child */
-#define BGRP_OFF_LABELS    8    /* label array pointer */
-#define BGRP_OFF_ACTIVEKEY 12   /* keyboard shortcut for active child */
+#define BGRP_OFF_CHILDREN  (GAD_SIZE + 0)    /* head of child gadget list */
+#define BGRP_OFF_ACTIVE  (GAD_SIZE + 4)    /* currently active child */
+#define BGRP_OFF_LABELS  (GAD_SIZE + 8)    /* label array pointer */
+#define BGRP_OFF_ACTIVEKEY  (GAD_SIZE + 12)   /* keyboard shortcut for active child */
 #define BGRP_INST_SIZE    16
 
 static int groupg_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -1386,16 +1461,18 @@ static uint32_t groupgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             walk_tags(tags, groupg_set_tag, (void*)(uintptr_t)obj);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, groupg_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -1406,7 +1483,7 @@ static uint32_t groupgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case GROUPG_Active:    mem_w32(store, mem_u32(obj + BGRP_OFF_ACTIVE)); return 1;
                 case GROUPG_Labels:    mem_w32(store, mem_u32(obj + BGRP_OFF_LABELS)); return 1;
                 case GROUPG_ActiveKey: mem_w32(store, mem_u32(obj + BGRP_OFF_ACTIVEKEY)); return 1;
-                default: return gadgetclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         case OM_ADDMEMBER: {
@@ -1451,7 +1528,7 @@ static uint32_t groupgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1462,7 +1539,7 @@ static uint32_t groupgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 /* The prop gadget instance data stores the PropInfo fields that in classic
  * AmigaOS live in Gadget.SpecialInfo.  We allocate a PropInfo block in
  * guest RAM and point SpecialInfo at it. */
-#define BPROP_OFF_PROPINFO  0    /* pointer to guest PropInfo struct */
+#define BPROP_OFF_PROPINFO  GAD_OFF_SPECIALINFO /* PropInfo ptr: Gadget.SpecialInfo */
 #define BPROP_INST_SIZE     4
 
 static int propg_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -1536,9 +1613,11 @@ static uint32_t propgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Allocate a PropInfo structure in guest RAM. */
             uint32_t pi = intu_alloc(32);  /* PropInfo is ~18 bytes, round up */
             if (pi) {
@@ -1548,17 +1627,17 @@ static uint32_t propgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             }
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_PROPGADGET);
             walk_tags(tags, propg_set_tag, (void*)(uintptr_t)obj);
-            return r;
+            return obj;
         }
         case OM_DISPOSE: {
             uint32_t pi = mem_u32(obj + BPROP_OFF_PROPINFO);
             if (pi) intu_free(pi);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, propg_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -1570,11 +1649,11 @@ static uint32_t propgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case PGA_VertPot:   mem_w32(store, mem_u16(pi + PROP_OFF_VERTPOT)); return 1;
                 case PGA_HorizBody: mem_w32(store, mem_u16(pi + PROP_OFF_HORIZBODY)); return 1;
                 case PGA_VertBody:  mem_w32(store, mem_u16(pi + PROP_OFF_VERTBODY)); return 1;
-                default: return gadgetclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1585,7 +1664,7 @@ static uint32_t propgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
 /* The string gadget instance data stores a StringInfo structure in guest
  * RAM, pointed to by Gadget.SpecialInfo.  The StringInfo holds the buffer,
  * undo buffer, cursor position, max chars, etc. */
-#define BSTR_OFF_STRINFO   0    /* pointer to guest StringInfo struct */
+#define BSTR_OFF_STRINFO   GAD_OFF_SPECIALINFO /* StringInfo ptr: Gadget.SpecialInfo */
 #define BSTR_INST_SIZE     4
 
 /* StringInfo structure size (from NDK): ~26 bytes, round to 32 */
@@ -1665,9 +1744,11 @@ static uint32_t strgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Allocate a StringInfo structure in guest RAM. */
             uint32_t si = intu_alloc(BSTR_SI_SIZE);
             if (si) {
@@ -1677,7 +1758,7 @@ static uint32_t strgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             }
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_STRGADGET);
             walk_tags(tags, strg_set_tag, (void*)(uintptr_t)obj);
-            return r;
+            return obj;
         }
         case OM_DISPOSE: {
             uint32_t si = mem_u32(obj + BSTR_OFF_STRINFO);
@@ -1688,12 +1769,12 @@ static uint32_t strgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 if (undo) intu_free(undo);
                 intu_free(si);
             }
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, strg_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -1713,7 +1794,7 @@ static uint32_t strgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case STRINGA_TextVal:
                     if (si) { mem_w32(store, mem_u32(si + SI_OFF_BUFFER)); return 1; }
                     return 0;
-                default: return gadgetclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         case GM_GOACTIVE: {
@@ -1771,7 +1852,7 @@ static uint32_t strgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return GMR_NOREUSE | SGA_USE;
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1808,10 +1889,14 @@ static uint32_t icclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
             memset(&g_ram[obj], 0, BIC_INST_SIZE);
             walk_tags(tags, ic_set_tag, (void*)(uintptr_t)obj);
-            return 1;
+            return obj;
         }
         case OM_DISPOSE:
             return 1;
@@ -1895,7 +1980,7 @@ static uint32_t icclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         default:
-            return rootclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -1995,17 +2080,19 @@ static uint32_t buttongclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             walk_tags(tags, buttong_set_tag, (void*)(uintptr_t)obj);
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_BOOLGADGET);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, buttong_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -2034,11 +2121,11 @@ static uint32_t buttongclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                     mem_w32(store, (mem_u16(obj + GAD_OFF_FLAGS) & GFLG_DISABLED) ? 1 : 0);
                     return 1;
                 default:
-                    return gadgetclass_dispatch(cls, obj, msg);
+                    return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -2049,12 +2136,12 @@ static uint32_t buttongclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
  * to set a level value between Min and Max.  It uses a PropInfo internally
  * (like propgclass) but exposes SLIDER_* integer attributes.
  * ========================================================================= */
-#define BSLD_OFF_PROPINFO  0    /* pointer to guest PropInfo struct */
-#define BSLD_OFF_MIN       4    /* SLIDER_Min (uint16) */
-#define BSLD_OFF_MAX       6    /* SLIDER_Max (uint16) */
-#define BSLD_OFF_LEVEL     8    /* SLIDER_Level / SLIDER_Top (uint16) */
-#define BSLD_OFF_ORIENT   10    /* 0 = vertical, 1 = horizontal */
-#define BSLD_OFF_KNOBPIX  12    /* SLIDER_KnobPixels */
+#define BSLD_OFF_PROPINFO  GAD_OFF_SPECIALINFO /* PropInfo ptr: Gadget.SpecialInfo */
+#define BSLD_OFF_MIN  (GAD_SIZE + 4)    /* SLIDER_Min (uint16) */
+#define BSLD_OFF_MAX  (GAD_SIZE + 6)    /* SLIDER_Max (uint16) */
+#define BSLD_OFF_LEVEL  (GAD_SIZE + 8)    /* SLIDER_Level / SLIDER_Top (uint16) */
+#define BSLD_OFF_ORIENT  (GAD_SIZE + 10)    /* 0 = vertical, 1 = horizontal */
+#define BSLD_OFF_KNOBPIX  (GAD_SIZE + 12)    /* SLIDER_KnobPixels */
 #define BSLD_INST_SIZE    16
 
 static void slider_recalc_body(uint32_t obj)
@@ -2125,9 +2212,11 @@ static uint32_t slidergclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Allocate a PropInfo for the slider. */
             uint32_t pi = intu_alloc(32);
             if (pi) {
@@ -2143,17 +2232,17 @@ static uint32_t slidergclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             mem_w16(obj + BSLD_OFF_KNOBPIX, 0);
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_PROPGADGET);
             walk_tags(tags, slider_set_tag, (void*)(uintptr_t)obj);
-            return r;
+            return obj;
         }
         case OM_DISPOSE: {
             uint32_t pi = mem_u32(obj + BSLD_OFF_PROPINFO);
             if (pi) intu_free(pi);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, slider_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -2166,11 +2255,11 @@ static uint32_t slidergclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case SLIDER_Top:   mem_w32(store, mem_u16(obj + BSLD_OFF_LEVEL)); return 1;
                 case SLIDER_Orientation: mem_w32(store, mem_u16(obj + BSLD_OFF_ORIENT)); return 1;
                 case SLIDER_KnobPixels:  mem_w32(store, mem_u16(obj + BSLD_OFF_KNOBPIX)); return 1;
-                default: return gadgetclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -2181,10 +2270,10 @@ static uint32_t slidergclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
  * Top, Total, and Visible.  It converts these to PropInfo Pot/Body values
  * and delegates rendering/input to propgclass.
  * ========================================================================= */
-#define BSCR_OFF_TOP      0    /* SCROLLER_Top (uint16) */
-#define BSCR_OFF_TOTAL    2    /* SCROLLER_Total (uint16) */
-#define BSCR_OFF_VISIBLE  4    /* SCROLLER_Visible (uint16) */
-#define BSCR_OFF_ORIENT   6    /* 0 = vertical, 1 = horizontal */
+#define BSCR_OFF_TOP  (GAD_SIZE + BPROP_INST_SIZE + 0)    /* SCROLLER_Top (uint16) */
+#define BSCR_OFF_TOTAL  (GAD_SIZE + BPROP_INST_SIZE + 2)    /* SCROLLER_Total (uint16) */
+#define BSCR_OFF_VISIBLE  (GAD_SIZE + BPROP_INST_SIZE + 4)    /* SCROLLER_Visible (uint16) */
+#define BSCR_OFF_ORIENT  (GAD_SIZE + BPROP_INST_SIZE + 6)    /* 0 = vertical, 1 = horizontal */
 #define BSCR_INST_SIZE    8
 
 static void scroller_recalc(uint32_t obj)
@@ -2279,21 +2368,23 @@ static uint32_t scrollbarclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = propgclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Defaults: Top=0, Total=100, Visible=10, vertical. */
             mem_w16(obj + BSCR_OFF_TOP, 0);
             mem_w16(obj + BSCR_OFF_TOTAL, 100);
             mem_w16(obj + BSCR_OFF_VISIBLE, 10);
             mem_w16(obj + BSCR_OFF_ORIENT, SCR_ORIENT_VERT);
             walk_tags(tags, scroller_set_tag, (void*)(uintptr_t)obj);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, scroller_set_tag, (void*)(uintptr_t)obj);
-            return propgclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -2308,11 +2399,11 @@ static uint32_t scrollbarclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
                 case SCROLLBARA_Total:        mem_w32(store, mem_u16(obj + BSCR_OFF_TOTAL)); return 1;
                 case SCROLLBARA_Visible:      mem_w32(store, mem_u16(obj + BSCR_OFF_VISIBLE)); return 1;
                 case SCROLLBARA_Orientation:  mem_w32(store, mem_u16(obj + BSCR_OFF_ORIENT)); return 1;
-                default: return propgclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         default:
-            return propgclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -2323,12 +2414,12 @@ static uint32_t scrollbarclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
  * user to switch between pages of content by selecting a tab.  The active
  * page index is stored in the instance data and exposed via PAGERA_*.
  * ========================================================================= */
-#define BPGR_OFF_ACTIVE     0    /* PAGERA_Active (uint16) */
-#define BPGR_OFF_TOTAL      2    /* PAGERA_Total (uint16) */
-#define BPGR_OFF_LABELS     4    /* PAGERA_Labels: guest pointer to label array */
-#define BPGR_OFF_ORIENT     8    /* 0 = horizontal, 1 = vertical */
-#define BPGR_OFF_STYLE     10    /* tab style */
-#define BPGR_OFF_SPACING   12    /* spacing between tabs */
+#define BPGR_OFF_ACTIVE  (GAD_SIZE + 0)    /* PAGERA_Active (uint16) */
+#define BPGR_OFF_TOTAL  (GAD_SIZE + 2)    /* PAGERA_Total (uint16) */
+#define BPGR_OFF_LABELS  (GAD_SIZE + 4)    /* PAGERA_Labels: guest pointer to label array */
+#define BPGR_OFF_ORIENT  (GAD_SIZE + 8)    /* 0 = horizontal, 1 = vertical */
+#define BPGR_OFF_STYLE  (GAD_SIZE + 10)    /* tab style */
+#define BPGR_OFF_SPACING  (GAD_SIZE + 12)    /* spacing between tabs */
 #define BPGR_INST_SIZE     16
 
 static int pager_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -2371,9 +2462,11 @@ static uint32_t pagerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Defaults: Active=0, Total=1, horizontal. */
             mem_w16(obj + BPGR_OFF_ACTIVE, 0);
             mem_w16(obj + BPGR_OFF_TOTAL, 1);
@@ -2382,12 +2475,12 @@ static uint32_t pagerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             mem_w16(obj + BPGR_OFF_SPACING, 4);
             walk_tags(tags, pager_set_tag, (void*)(uintptr_t)obj);
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_CUSTOMGADGET);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, pager_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -2400,7 +2493,7 @@ static uint32_t pagerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case PAGERA_Orientation: mem_w32(store, mem_u16(obj + BPGR_OFF_ORIENT)); return 1;
                 case PAGERA_Style:       mem_w32(store, mem_u16(obj + BPGR_OFF_STYLE)); return 1;
                 case PAGERA_Spacing:     mem_w32(store, mem_u16(obj + BPGR_OFF_SPACING)); return 1;
-                default: return gadgetclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         case GM_GOACTIVE: {
@@ -2451,7 +2544,7 @@ static uint32_t pagerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return GMR_NOREUSE;
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -2462,14 +2555,14 @@ static uint32_t pagerclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
  * the user to select one.  It uses LVGA_* attributes for the item list,
  * top/visible/total counts, and the selected index.
  * ========================================================================= */
-#define BLV_OFF_TOP        0    /* LVGA_Top (uint16) */
-#define BLV_OFF_VISIBLE    2    /* LVGA_Visible (uint16) */
-#define BLV_OFF_TOTAL      4    /* LVGA_Total (uint16) */
-#define BLV_OFF_SELECTED   6    /* LVGA_Selected (int16, -1 = none) */
-#define BLV_OFF_LABELS     8    /* LVGA_Labels: guest pointer to label array */
-#define BLV_OFF_MULTI      12   /* LVGA_MultiSelect flag */
-#define BLV_OFF_READONLY   13   /* LVGA_ReadOnly flag */
-#define BLV_OFF_SPACING    14   /* LVGA_Spacing */
+#define BLV_OFF_TOP  (GAD_SIZE + 0)    /* LVGA_Top (uint16) */
+#define BLV_OFF_VISIBLE  (GAD_SIZE + 2)    /* LVGA_Visible (uint16) */
+#define BLV_OFF_TOTAL  (GAD_SIZE + 4)    /* LVGA_Total (uint16) */
+#define BLV_OFF_SELECTED  (GAD_SIZE + 6)    /* LVGA_Selected (int16, -1 = none) */
+#define BLV_OFF_LABELS  (GAD_SIZE + 8)    /* LVGA_Labels: guest pointer to label array */
+#define BLV_OFF_MULTI  (GAD_SIZE + 12)   /* LVGA_MultiSelect flag */
+#define BLV_OFF_READONLY  (GAD_SIZE + 13)   /* LVGA_ReadOnly flag */
+#define BLV_OFF_SPACING  (GAD_SIZE + 14)   /* LVGA_Spacing */
 #define BLV_INST_SIZE      16
 
 static int listview_set_tag(uint32_t tag, uint32_t data, void *ctx)
@@ -2515,9 +2608,11 @@ static uint32_t listviewgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
     uint32_t method = mem_u32(msg + MSG_OFF_METHODID);
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             /* Defaults: Top=0, Visible=5, Total=0, Selected=-1. */
             mem_w16(obj + BLV_OFF_TOP, 0);
             mem_w16(obj + BLV_OFF_VISIBLE, 5);
@@ -2526,12 +2621,12 @@ static uint32_t listviewgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
             mem_w16(obj + BLV_OFF_SPACING, 0);
             walk_tags(tags, listview_set_tag, (void*)(uintptr_t)obj);
             mem_w16(obj + GAD_OFF_GADGETTYPE, GTYP_CUSTOMGADGET);
-            return r;
+            return obj;
         }
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
             walk_tags(tags, listview_set_tag, (void*)(uintptr_t)obj);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         }
         case OM_GET: {
             uint32_t attr = mem_u32(msg + OPGET_OFF_ATTRID);
@@ -2548,7 +2643,7 @@ static uint32_t listviewgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
                 case LVGA_MultiSelect:mem_w32(store, g_ram[obj + BLV_OFF_MULTI]); return 1;
                 case LVGA_ReadOnly:   mem_w32(store, g_ram[obj + BLV_OFF_READONLY]); return 1;
                 case LVGA_Spacing:    mem_w32(store, mem_u16(obj + BLV_OFF_SPACING)); return 1;
-                default: return gadgetclass_dispatch(cls, obj, msg);
+                default: return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         case GM_GOACTIVE: {
@@ -2591,7 +2686,7 @@ static uint32_t listviewgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg
             return GMR_NOREUSE;
         }
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -2783,8 +2878,8 @@ static void lyt_natural(uint32_t obj, int depth, int *w, int *h)
             int cw = 0, ch = 0;
             uint32_t cobj = mem_u32(rec + LCH_OFF_OBJ);
             if (mem_u32(rec + LCH_OFF_IS_IMG)) {
-                cw = (int)mem_u32(cobj + BIMG_OFF_WIDTH);
-                ch = (int)mem_u32(cobj + BIMG_OFF_HEIGHT);
+                cw = (int)mem_s16(cobj + BIMG_OFF_WIDTH);
+                ch = (int)mem_s16(cobj + BIMG_OFF_HEIGHT);
             } else {
                 lyt_natural(cobj, depth + 1, &cw, &ch);
             }
@@ -2881,8 +2976,8 @@ static UINode *lyt_child_node(UIArena *a, uint32_t rec, int orient,
     int is_img   = (int)mem_u32(rec + LCH_OFF_IS_IMG);
     int nw = 0, nh = 0;
     if (is_img) {
-        nw = (int)mem_u32(obj + BIMG_OFF_WIDTH);
-        nh = (int)mem_u32(obj + BIMG_OFF_HEIGHT);
+        nw = (int)mem_s16(obj + BIMG_OFF_WIDTH);
+        nh = (int)mem_s16(obj + BIMG_OFF_HEIGHT);
         if (nw <= 0) nw = 8;
         if (nh <= 0) nh = 8;
     } else {
@@ -2971,8 +3066,8 @@ static void layout_run(uint32_t lay)
         uint32_t obj = mem_u32(map[i].rec + LCH_OFF_OBJ);
         UINode  *nd  = map[i].node;
         if (mem_u32(map[i].rec + LCH_OFF_IS_IMG)) {
-            mem_w32(obj + BIMG_OFF_LEFT, (uint32_t)(int32_t)nd->x);
-            mem_w32(obj + BIMG_OFF_TOP,  (uint32_t)(int32_t)nd->y);
+            mem_w16(obj + BIMG_OFF_LEFT, (uint16_t)nd->x);
+            mem_w16(obj + BIMG_OFF_TOP,  (uint16_t)nd->y);
             continue;
         }
         mem_w16(obj + GAD_OFF_LEFTEDGE, (uint16_t)(int16_t)nd->x);
@@ -3154,22 +3249,25 @@ static uint32_t layoutgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
     uint32_t base   = obj + GAD_SIZE;
     switch (method) {
         case OM_NEW: {
+            /* Real BOOPSI: OM_NEW receives the CLASS as the object;
+             * DoSuperMethodA to obtain the allocated instance. */
+            obj = UAOS_BOOPSI_SuperDispatch(obj, msg);
+            if (!obj) return 0;
+            base = obj + GAD_SIZE;   /* recompute: obj was the class */
             uint32_t tags = mem_u32(msg + OPNEW_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
-            if (!r) return 0;
             memset(&g_ram[base], 0, BLYT_INST_SIZE);
             /* orientation aliases: vgroup.gadget/hgroup.gadget */
             if (cls == g_hgroupgclass)
                 mem_w32(base + BLYT_OFF_ORIENT, LAYOUT_ORIENT_HORIZ);
             walk_tags(tags, layout_set_tag, (void*)(uintptr_t)obj);
-            return r;
+            return obj;
         }
         case OM_DISPOSE:
             lyt_free_children(base);
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
         case OM_SET: {
             uint32_t tags = mem_u32(msg + OPSET_OFF_ATTRLIST);
-            uint32_t r = gadgetclass_dispatch(cls, obj, msg);
+            uint32_t r = UAOS_BOOPSI_SuperDispatch(obj, msg);
             walk_tags(tags, layout_set_tag, (void*)(uintptr_t)obj);
             /* Live re-attach: children added to an already-open layout
              * are spliced into the window and laid out immediately. */
@@ -3193,7 +3291,7 @@ static uint32_t layoutgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
                 case LAYOUT_Label:
                     mem_w32(store, mem_u32(base + BLYT_OFF_LABEL)); return 1;
                 default:
-                    return gadgetclass_dispatch(cls, obj, msg);
+                    return UAOS_BOOPSI_SuperDispatch(obj, msg);
             }
         }
         case OM_ADDMEMBER: {
@@ -3246,7 +3344,7 @@ static uint32_t layoutgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             layout_run(obj);
             return 1;
         default:
-            return gadgetclass_dispatch(cls, obj, msg);
+            return UAOS_BOOPSI_SuperDispatch(obj, msg);
     }
 }
 
@@ -3303,7 +3401,9 @@ void UAOS_BOOPSI_RegisterBuiltinClasses(void)
     g_imageclass = make_builtin_class("imageclass", "rootclass", g_rootclass, 0, BIMG_INST_SIZE, imageclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_imageclass);
 
-    g_pointerclass = make_builtin_class("pointerclass", "imageclass", g_imageclass, 0, BPTR_INST_SIZE, pointerclass_dispatch);
+    g_pointerclass = make_builtin_class("pointerclass", "imageclass", g_imageclass,
+                                       BIMG_INST_SIZE, BPTR_INST_SIZE - BIMG_INST_SIZE,
+                                       pointerclass_dispatch);
     UAOS_BOOPSI_RegisterClass(g_pointerclass);
 
     g_menuclass = make_builtin_class("menuclass", "rootclass", g_rootclass, 0, BMENU_INST_SIZE, menuclass_dispatch);

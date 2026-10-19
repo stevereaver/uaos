@@ -141,7 +141,20 @@ typedef struct {
     uint32_t MessageKey;      /* 94 */
     uint8_t  DetailPen;       /* 98 */
     uint8_t  BlockPen;        /* 99 */
-    uint8_t  Pad1[38];        /* 100-137 */
+    uint32_t CheckMark;       /* 100 (0x64) Image* */
+    uint32_t ScreenTitle;     /* 104 (0x68) STRPTR — window's screen title */
+    uint16_t GZZMouseX;       /* 108 (0x6c) */
+    uint16_t GZZMouseY;       /* 110 */
+    uint16_t GZZWidth;        /* 112 (0x70) */
+    uint16_t GZZHeight;       /* 114 */
+    uint32_t ExtData;         /* 116 (0x74) */
+    uint32_t UserData;        /* 120 (0x78) */
+    uint32_t WLayer;          /* 124 (0x7c) Layer* */
+    uint32_t IFont;           /* 128 (0x80) TextFont* */
+    uint32_t MoreFlags;       /* 132 (0x84) WFLG2_*; bit 0x20 = help on   */
+    uint8_t  Pad1[86];        /* 136-221 (undocumented internals)         */
+    uint32_t HelpGroup;       /* 222 (0xde) — WA_HelpGroup id             */
+    uint8_t  Pad2[14];        /* spare — total 240                        */
 } AmigaWindow;
 
 /* Window field offsets (for code that prefers explicit offsets) */
@@ -150,6 +163,10 @@ typedef struct {
 #define WIN_OFF_TOPEDGE      6
 #define WIN_OFF_WIDTH        8
 #define WIN_OFF_HEIGHT      10
+#define WIN_OFF_MINWIDTH    16
+#define WIN_OFF_MINHEIGHT   18
+#define WIN_OFF_MAXWIDTH    20
+#define WIN_OFF_MAXHEIGHT   22
 #define WIN_OFF_IDCMPFLAGS  82
 #define WIN_OFF_FLAGS       24
 #define WIN_OFF_MENUSTRIP   28
@@ -164,28 +181,49 @@ typedef struct {
 #define WIN_OFF_MESSAGEKEY  94
 #define WIN_OFF_DETAILPEN   98
 #define WIN_OFF_BLOCKPEN    99
+#define WIN_OFF_CHECKMARK  100
+#define WIN_OFF_SCREENTITLE 104
+#define WIN_OFF_GZZWIDTH   112
+#define WIN_OFF_GZZHEIGHT  114
+#define WIN_OFF_EXTDATA    116
+#define WIN_OFF_USERDATA   120
+#define WIN_OFF_WLAYER     124
+#define WIN_OFF_IFONT      128
+#define WIN_OFF_MOREFLAGS  132   /* 0x84: bit 0x20 = HC_GADGETHELP state  */
+#define WIN_OFF_MOUSEQUEUE 156   /* 0x9c: SetMouseQueue target word       */
+#define WIN_OFF_MENULEND   212   /* 0xd4: LendMenus borrower window       */
+#define WIN_OFF_HELPGROUP  222   /* 0xde: WA_HelpGroup id                 */
 
-/* Window flags (AmigaOS 3.x compatible) */
-#define WFLG_CLOSEGADGET     0x0001
-#define WFLG_DRAGBAR         0x0002
-#define WFLG_DEPTHGADGET     0x0004
-#define WFLG_SIZEGADGET      0x0008
-#define WFLG_SIZEBRIGHT      0x0010
-#define WFLG_SIZEBBOTTOM     0x0020
-#define WFLG_REFRESHBITS     0x00C0
-#define WFLG_SMART_REFRESH   0x0000
-#define WFLG_SIMPLE_REFRESH  0x0040
-#define WFLG_SUPER_BITMAP    0x0080
-#define WFLG_OTHER_REFRESH   0x00C0
-#define WFLG_BACKDROP        0x0100
-#define WFLG_REPORTMOUSE     0x0200
-#define WFLG_GIMMEZEROZERO   0x0400
-#define WFLG_BORDERLESS      0x0800
-#define WFLG_ACTIVATE        0x1000
-#define WFLG_NOCAREREFRESH   0x2000
-#define WFLG_NW_EXTENDED     0x4000
-#define WFLG_NEWLOOKMENUS    0x8000
+/* Window.Flags — canonical AmigaOS values (intuition/intuition.h).
+ * Guests set these via NewWindow.Flags/WA_* tags and read them back, so
+ * every bit must match the real layout.  (UAOS-339 — the low gadget bits
+ * had CLOSE/SIZE swapped, and NOCAREREFRESH/NW_EXTENDED/NEWLOOKMENUS sat
+ * on real WINDOWACTIVE/INREQUEST/MENUSTATE.) */
+#define WFLG_SIZEGADGET      0x00000001
+#define WFLG_DRAGBAR         0x00000002
+#define WFLG_DEPTHGADGET     0x00000004
+#define WFLG_CLOSEGADGET     0x00000008
+#define WFLG_SIZEBRIGHT      0x00000010
+#define WFLG_SIZEBBOTTOM     0x00000020
+#define WFLG_SMART_REFRESH   0x00000000
+#define WFLG_SIMPLE_REFRESH  0x00000040
+#define WFLG_SUPER_BITMAP    0x00000080
+#define WFLG_OTHER_REFRESH   0x000000C0
+#define WFLG_REFRESHBITS     0x000000C0
+#define WFLG_BACKDROP        0x00000100
+#define WFLG_REPORTMOUSE     0x00000200
+#define WFLG_GIMMEZEROZERO   0x00000400
+#define WFLG_BORDERLESS      0x00000800
+#define WFLG_ACTIVATE        0x00001000
+#define WFLG_WINDOWACTIVE    0x00002000
+#define WFLG_INREQUEST       0x00004000
+#define WFLG_MENUSTATE       0x00008000
 #define WFLG_RMBTRAP         0x00010000
+#define WFLG_NOCAREREFRESH   0x00020000
+#define WFLG_NW_EXTENDED     0x00040000
+#define WFLG_NEWLOOKMENUS    0x00080000
+#define WFLG_ZOOMED          0x10000000
+#define WFLG_WINDOWREFRESH   0x01000000
 #define WFLG_WBENCHWINDOW    0x02000000
 
 /* IDCMP flags — real AmigaOS bit assignments (intuition/idcmp.h).  Guests
@@ -309,31 +347,52 @@ typedef struct {
 #define GAD_OFF_USERDATA   40
 #define GAD_SIZE           44
 
-#define GFLG_SYSGADGET     0x2000
-#define GFLG_SELECTED      0x0040
-#define GFLG_GADGETUP      0x0001
-#define GFLG_GADGETDOWN    0x0002
-#define GFLG_DISABLED      0x0080
+/* Gadget.Flags — canonical AmigaOS values (intuition/intuition.i).  Guests
+ * compile against the real NDK and read/write this word directly, so every
+ * bit must match: a guest-disabled gadget (0x0100) must read disabled here,
+ * and UAOS-written bits must not land on real flag meanings.  (UAOS-339 —
+ * previous values had SELECTED/DISABLED shifted and invented border bits
+ * colliding with RELWIDTH/RELRIGHT/DISABLED/TABCYCLE.) */
+#define GFLG_GADGHIGHBITS  0x0003   /* highlight-mode mask */
+#define GFLG_GADGHCOMP     0x0000   /* complement the whole gadget box  */
+#define GFLG_GADGHBOX      0x0001   /* box the gadget                   */
+#define GFLG_GADGHIMAGE    0x0002   /* draw SelectRender                */
+#define GFLG_GADGHNONE     0x0003   /* no highlight                     */
+#define GFLG_GADGIMAGE     0x0004   /* GadgetRender is an Image*        */
 #define GFLG_RELBOTTOM     0x0008
-#define GFLG_RIGHTBORDER   0x0010
-#define GFLG_LEFTBORDER    0x0020
-#define GFLG_TOPBORDER     0x0100
-#define GFLG_BOTTOMBORDER  0x0200
+#define GFLG_RELRIGHT      0x0010
+#define GFLG_RELWIDTH      0x0020
+#define GFLG_RELHEIGHT     0x0040
+#define GFLG_SELECTED      0x0080
+#define GFLG_DISABLED      0x0100
+#define GFLG_TABCYCLE      0x0200
 #define GFLG_STRINGEXTEND  0x0400
 #define GFLG_IMAGEDISABLE  0x0800
-#define GFLG_LABELITEXT    0x1000
-#define GFLG_LABELIMAGE    0x4000
-#define GFLG_LABELSTRING   0x6000
+#define GFLG_LABELMASK     0x3000
+#define GFLG_LABELITEXT    0x0000   /* GadgetText is IntuiText (default) */
+#define GFLG_LABELSTRING   0x1000
+#define GFLG_LABELIMAGE    0x2000
+#define GFLG_RELSPECIAL    0x4000
 
+/* Gadget.Activation — canonical AmigaOS values.  The real *BORDER bits
+ * live here, not in Flags.  There is no real GACT_INTUITICKS bit; guests
+ * get ticks via IDCMP_INTUITICKS. */
 #define GACT_IMMEDIATE     0x0001
 #define GACT_RELVERIFY     0x0002
-#define GACT_TOGGLESELECT  0x0004
-#define GACT_INTUITICKS    0x0040
+#define GACT_ENDGADGET     0x0004
+#define GACT_FOLLOWMOUSE   0x0008
+#define GACT_RIGHTBORDER   0x0010
+#define GACT_LEFTBORDER    0x0020
+#define GACT_TOPBORDER     0x0040
+#define GACT_BOTTOMBORDER  0x0080
+#define GACT_TOGGLESELECT  0x0100
+#define GACT_STRINGCENTER  0x0200
+#define GACT_STRINGRIGHT   0x0400
 #define GACT_STRINGLEFT    0x0000
-#define GACT_STRINGRIGHT   0x0008
-#define GACT_STRINGCENTER  0x0010
-#define GACT_STRINGLONGEST 0x0018
-#define GACT_RELTOP        0x0020
+#define GACT_LONGINT       0x0800
+#define GACT_ALTKEYMAP     0x1000
+#define GACT_BOOLEXTEND    0x2000
+#define GACT_GADGETTYPE    0xE000   /* reserved: internal gadget types */
 
 /* AmigaOS PropInfo structure offsets (UAOS tail extends it with the
  * GadTools slider Min/Max so GTSL_Level can round-trip through pot) */
@@ -391,19 +450,40 @@ typedef struct {
 #define PROP_FLAGS_DRAWRELY  0x0400
 
 
-#define GTYP_SYSGADGET     0x8000
-#define GTYP_SIZER          0x0000
-#define GTYP_WDRAGGING      0x0001
-#define GTYP_WDEPTH         0x0002
-#define GTYP_WCLOSE         0x0004
-#define GTYP_WZOOM          0x0008
+/* Gadget.GadgetType — canonical AmigaOS values (intuition/intuition.i).
+ * Custom gadget types occupy the low bits; system-gadget subtypes the
+ * high byte.  (UAOS-339 — PROPGADGET was 0x0002, colliding with
+ * GTYP_GADGET0002, and the sysgadget subtypes were invented values.) */
+#define GTYP_CUSTOMGADGET   0x0000
 #define GTYP_BOOLGADGET     0x0001
-#define GTYP_PROPGADGET     0x0002
-#define GTYP_INTGADGET      0x0003
+#define GTYP_GADGET0002     0x0002
+#define GTYP_PROPGADGET     0x0003
 #define GTYP_STRGADGET      0x0004
-#define GTYP_CUSTOMGADGET   0x0005
+#define GTYP_INTGADGET      0x0005   /* UAOS extension (real uses STRGADGET+LONGINT) */
 #define GTYP_LISTVIEW       0x0006   /* UAOS simple listview as custom gadget subtype */
 #define GTYP_CYCLE          0x0007   /* UAOS GadTools cycle gadget subtype */
+#define GTYP_GADGETTYPE     0x0007   /* mask of the custom-type bits */
+
+/* System-gadget subtypes (high byte of GadgetType). */
+#define GTYP_SIZING         0x0010
+#define GTYP_WDRAGGING      0x0020
+#define GTYP_SDRAGGING      0x0040
+#define GTYP_WUPFRONT       0x0080
+#define GTYP_SUPFRONT       0x0100
+#define GTYP_WDOWNBACK      0x0200
+#define GTYP_SDOWNBACK      0x0400
+#define GTYP_CLOSE          0x0800
+#define GTYP_REQGADGET      0x1000
+#define GTYP_GZZGADGET      0x2000
+#define GTYP_SCRGADGET      0x4000
+#define GTYP_SYSGADGET      0x8000
+
+/* Aliases used by the UAOS chrome gadgets.  Real intuition has no zoom
+ * sysgadget in V40; depth is WUPFRONT|WDOWNBACK. */
+#define GTYP_SIZER          GTYP_SIZING
+#define GTYP_WDEPTH         (GTYP_WUPFRONT | GTYP_WDOWNBACK)
+#define GTYP_WCLOSE         GTYP_CLOSE
+#define GTYP_WZOOM          0x0008   /* UAOS extension, no real V40 type */
 
 #define SYSGAD_CLOSE        1
 #define SYSGAD_DRAG         2
@@ -473,19 +553,34 @@ typedef struct {
 /* Menu flags */
 #define MENUENABLED  0x0001
 /* -------------------------------------------------------------------------
- * AmigaOS Requester structure offsets (packed, partial)
+ * AmigaOS Requester structure offsets — canonical intuition/intuition.h
+ * layout (struct Requester, sizeof = 0x70).  Guests build these with the
+ * real NDK, so every field offset must match: UAOS-339/340 found the old
+ * packed 40-byte layout misreading ReqText/ReqGadget/Width from wrong
+ * addresses.
  * ------------------------------------------------------------------------- */
 #define REQ_OFF_OLDERREQUEST  0
-#define REQ_OFF_REQTITLE      4
-#define REQ_OFF_REQTEXT       8
-#define REQ_OFF_LEFTEDGE     12
-#define REQ_OFF_TOPEDGE      14
-#define REQ_OFF_WIDTH        16
-#define REQ_OFF_HEIGHT       18
-#define REQ_OFF_FLAGS        20
-#define REQ_OFF_REQGADGET    22
-#define REQ_OFF_REQGADGETS   24
-#define REQ_SIZE             40
+#define REQ_OFF_LEFTEDGE      4
+#define REQ_OFF_TOPEDGE       6
+#define REQ_OFF_WIDTH         8
+#define REQ_OFF_HEIGHT       10
+#define REQ_OFF_RELLEFT      12
+#define REQ_OFF_RELTOP       14
+#define REQ_OFF_REQGADGET    16   /* first Gadget* of the button list    */
+#define REQ_OFF_REQBORDER    20
+#define REQ_OFF_REQTEXT      24   /* IntuiText*                          */
+#define REQ_OFF_FLAGS        28   /* 0x1c — REQACTIVE et al              */
+#define REQ_OFF_BACKFILL     30
+#define REQ_OFF_REQLAYER     32
+#define REQ_OFF_IMAGEBMAP    68
+#define REQ_OFF_RWINDOW      72
+#define REQ_SIZE            112   /* 0x70 */
+
+/* Requester.Flags (real AmigaOS values) */
+#define REQ_ACTIVE       0x0001   /* REQACTIVE — requester is in use      */
+#define REQ_OFFPOINTER   0x0002
+#define REQ_HIGHLIGHT    0x0004
+#define REQ_NOISYREQ     0x0008
 
 /* -------------------------------------------------------------------------
  * AmigaOS NewScreen structure offsets
@@ -637,15 +732,25 @@ typedef struct {
 #define DRI_AMIGAOVERPEN       11
 #define DRI_PEN_MAX            12
 
-/* Screen type / flag bits */
-#define CUSTOMSCREEN     0x0000
+/* Screen.Type — canonical AmigaOS values (intuition/screens.h).  Guests
+ * read screen->Type directly with these bits.  (UAOS-339 — the previous
+ * values had every flag shifted.) */
+#define SCREENTYPE       0x000F   /* low nibble: the screen type field  */
 #define WBENCHSCREEN     0x0001
 #define PUBLICSCREEN     0x0002
-#define CUSTOMBITMAP     0x0008
+#define CUSTOMSCREEN     0x000F
 #define SHOWTITLE        0x0010
-#define BEHIND           0x0020
-#define QUIET            0x0040
-#define AUTOSCROLL       0x0080
+#define BEEPING          0x0020
+#define CUSTOMBITMAP     0x0040
+#define SCREENBEHIND     0x0080
+#define SCREENQUIET      0x0100
+#define SCREENHIRES      0x0200
+#define PENSHARED        0x0400
+#define NS_EXTENDED      0x1000
+#define AUTOSCROLL       0x4000
+/* Short aliases used throughout intuition_lib.c */
+#define BEHIND           SCREENBEHIND
+#define QUIET            SCREENQUIET
 
 /* -------------------------------------------------------------------------
  * TagItem for OpenWindowTagList() tag parsing
@@ -1399,11 +1504,18 @@ typedef struct {
 #define GM_LAYOUT       0x69
 #define GM_DOMAIN       0x6A
 
-/* Image methods (IM_*) — method IDs for imageclass dispatch */
+/* Image methods (IM_*) — canonical AmigaOS method IDs (intuition/classes.h) */
 #define IM_DRAW         0x202
-#define IM_ERASE        0x203
-#define IM_DRAWFRAME    0x204
-#define IM_ERASEFRAME   0x205
+#define IM_HITTEST      0x203
+#define IM_ERASE        0x204
+#define IM_MOVE         0x205
+#define IM_SIZECHANGE   0x206
+#define IM_DRAWFRAME    0x207
+#define IM_FRAMEBOX     0x208
+#define IM_HITFRAME     0x209
+#define IM_ERASEFRAME   0x20A
+#define IM_DOMAINFRAME  0x20B
+#define IM_SETDRWIDTH   0x20C
 
 /* BOOPSI messages (field offsets within the guest message block) */
 #define MSG_OFF_METHODID   0
@@ -1433,31 +1545,37 @@ typedef struct {
 #define IBOX_OFF_WIDTH   4
 #define IBOX_OFF_HEIGHT  6
 
-/* IM_DRAW message (impDraw): { MethodID, RPort, OffsetX, OffsetY, State } */
+/* IM_DRAW message (impDraw) — canonical layout:
+ * { MethodID, RastPort, DrawInfo, Offset{X,Y}, State } */
 #define IMDRAW_OFF_RPORT    4
-#define IMDRAW_OFF_OFFSETX  8
-#define IMDRAW_OFF_OFFSETY  12
+#define IMDRAW_OFF_DRAWINFO 8
+#define IMDRAW_OFF_OFFSETX  12   /* WORD */
+#define IMDRAW_OFF_OFFSETY  14   /* WORD */
 #define IMDRAW_OFF_STATE    16
 
-/* IM_ERASE message (impErase): { MethodID, RPort, OffsetX, OffsetY } */
+/* IM_ERASE message (impErase):
+ * { MethodID, RastPort, DrawInfo, Offset{X,Y} } */
 #define IMERASE_OFF_RPORT    4
-#define IMERASE_OFF_OFFSETX  8
-#define IMERASE_OFF_OFFSETY  12
+#define IMERASE_OFF_DRAWINFO 8
+#define IMERASE_OFF_OFFSETX  12  /* WORD */
+#define IMERASE_OFF_OFFSETY  14  /* WORD */
 
 /* IM_DRAWFRAME message (impDrawFrame):
- * { MethodID, RPort, IBox* Frame, OffsetX, OffsetY, State } */
+ * { MethodID, RastPort, DrawInfo, Offset{X,Y}, IBox* Frame, State } */
 #define IMDRAWFRAME_OFF_RPORT    4
-#define IMDRAWFRAME_OFF_FRAME    8
-#define IMDRAWFRAME_OFF_OFFSETX  12
-#define IMDRAWFRAME_OFF_OFFSETY  16
+#define IMDRAWFRAME_OFF_DRAWINFO 8
+#define IMDRAWFRAME_OFF_OFFSETX  12  /* WORD */
+#define IMDRAWFRAME_OFF_OFFSETY  14  /* WORD */
+#define IMDRAWFRAME_OFF_FRAME    16
 #define IMDRAWFRAME_OFF_STATE    20
 
 /* IM_ERASEFRAME message (impEraseFrame):
- * { MethodID, RPort, IBox* Frame, OffsetX, OffsetY } */
+ * { MethodID, RastPort, DrawInfo, Offset{X,Y}, IBox* Frame } */
 #define IMERASEFRAME_OFF_RPORT    4
-#define IMERASEFRAME_OFF_FRAME    8
-#define IMERASEFRAME_OFF_OFFSETX  12
-#define IMERASEFRAME_OFF_OFFSETY  16
+#define IMERASEFRAME_OFF_DRAWINFO 8
+#define IMERASEFRAME_OFF_OFFSETX  12  /* WORD */
+#define IMERASEFRAME_OFF_OFFSETY  14  /* WORD */
+#define IMERASEFRAME_OFF_FRAME    16
 
 /* Dispatch entry point called from uaos_m68k_glue.c */
 void UAOS_Intuition_Dispatch(uint32_t fn);

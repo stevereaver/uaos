@@ -274,7 +274,6 @@ static uint32_t create_boolean_kind(uint32_t prev, uint32_t ng, uint32_t tags,
 
     uint16_t activation = GACT_IMMEDIATE | GACT_RELVERIFY;
     if (ng_flags & NG_TOGGLE) activation |= GACT_TOGGLESELECT;
-    if (ng_flags & NG_LIVE) activation |= GACT_INTUITICKS;
 
     uint16_t flags = 0;
     if (ng_flags & NG_DISABLED) flags |= GFLG_DISABLED;
@@ -415,7 +414,7 @@ static uint32_t create_slider_kind(uint32_t prev, uint32_t ng, uint32_t tags)
     gt_w32(pi + PROP_OFF_GMIN, (uint32_t)min);
     gt_w32(pi + PROP_OFF_GMAX, (uint32_t)max);
 
-    uint16_t activation = GACT_IMMEDIATE | GACT_RELVERIFY | GACT_INTUITICKS;
+    uint16_t activation = GACT_IMMEDIATE | GACT_RELVERIFY;
     uint16_t flags = 0;
     if (ng_flags & NG_DISABLED) flags |= GFLG_DISABLED;
 
@@ -600,7 +599,7 @@ static uint32_t gadtools_CreateContext(void)
             for (int i = 0; i < GAD_SIZE; i++) gt_w8(gad + i, 0);
             gt_w16(gad + GAD_OFF_WIDTH, 1);
             gt_w16(gad + GAD_OFF_HEIGHT, 1);
-            gt_w16(gad + GAD_OFF_FLAGS, GFLG_SYSGADGET | GFLG_DISABLED);
+            gt_w16(gad + GAD_OFF_FLAGS, GFLG_DISABLED);
             gt_w16(gad + GAD_OFF_ACTIVATION, 0);
             gt_w16(gad + GAD_OFF_GADGETTYPE, GTYP_SYSGADGET);
             gt_w32(glistptr, gad);
@@ -626,7 +625,7 @@ static void free_gadget_chain(uint32_t gad)
             intu_free(label);
         }
         if (special) {
-            uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F;
+            uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & GTYP_GADGETTYPE;
             if (type == GTYP_STRGADGET || type == GTYP_INTGADGET) {
                 uint32_t buf = gt_u32(special + SI_OFF_BUFFER);
                 if (buf) intu_free(buf);
@@ -664,7 +663,7 @@ static void gadtools_GT_SetGadgetAttrsA(void)
         return;
     }
 
-    uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F;
+    uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & GTYP_GADGETTYPE;
     uint32_t special = gt_u32(gad + GAD_OFF_SPECIALINFO);
     int special_ok = special && gt_ok(special, SI_SIZE);
 
@@ -803,7 +802,7 @@ static void gadtools_GT_GetGadgetAttrsA(void)
 
     int ok = 0;
     if (gad && gt_ok(gad, GAD_SIZE) && tags) {
-        uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F;
+        uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & GTYP_GADGETTYPE;
         uint32_t special = gt_u32(gad + GAD_OFF_SPECIALINFO);
         int special_ok = special && gt_ok(special, SI_SIZE);
 
@@ -1442,8 +1441,19 @@ static void *gadtools_funcs[] = {
     gadtools_GT_GetGadgetAttrsA,
 };
 
+/* Catch-all for unimplemented gadtools LVO slots (UAOS-344): the glue
+ * pre-fills the whole jump-table range with index 250 so unknown calls
+ * return D0=0 instead of running guest RAM. */
+#define GADTOOLS_STUB_FN 250
+
+static void gadtools_Unimplemented(void)
+{
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
 void UAOS_GADTOOLS_Dispatch(uint32_t fn)
 {
+    if (fn == GADTOOLS_STUB_FN) { gadtools_Unimplemented(); return; }
     if (fn >= 1 && fn <= GADTOOLS_MAX_FUNC) {
         void (*f)(void) = gadtools_funcs[fn - 1];
         if (f) f();

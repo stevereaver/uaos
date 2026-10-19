@@ -608,6 +608,8 @@ static void free_window_idcmp(uint32_t win_ptr)
 }
 
 static int gadget_is_boopsi_object(uint32_t gad);
+static void gadget_box(uint32_t win_ptr, uint32_t gad,
+                       int *x, int *y, int *w, int *h);
 
 static void free_gadget_list(uint32_t gad)
 {
@@ -766,7 +768,9 @@ static uint32_t create_guest_gadget(uint32_t next, int16_t left, int16_t top,
     mem_w16(gad + GAD_OFF_TOPEDGE,    top);
     mem_w16(gad + GAD_OFF_WIDTH,      width);
     mem_w16(gad + GAD_OFF_HEIGHT,     height);
-    mem_w16(gad + GAD_OFF_FLAGS,      GFLG_SYSGADGET);
+    /* Real system gadgets carry no guest-visible Flags bits — the sysgadget
+     * identity lives in GadgetType (GTYP_SYSGADGET | subtype). */
+    mem_w16(gad + GAD_OFF_FLAGS,      0);
     mem_w16(gad + GAD_OFF_ACTIVATION, GACT_IMMEDIATE | GACT_RELVERIFY);
     mem_w16(gad + GAD_OFF_GADGETTYPE, GTYP_SYSGADGET | gadget_type);
     mem_w32(gad + GAD_OFF_GADGETRENDER, 0);
@@ -821,7 +825,7 @@ static void gzz_mouse_to_content(IntuitionSlot *slot, int *x, int *y)
  * radio button. */
 static int gad_type_id(uint32_t gad)
 {
-    return (int)(mem_u16(gad + GAD_OFF_GADGETTYPE) & 0x000F);
+    return (int)(mem_u16(gad + GAD_OFF_GADGETTYPE) & GTYP_GADGETTYPE);
 }
 
 static int gad_is_checkbox_or_radio(uint32_t gad)
@@ -1220,9 +1224,12 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
             }
             uint32_t gad = gadget_at(win_ptr, relx, rely);
             if (gad && !(mem_u16(gad + GAD_OFF_FLAGS) & GFLG_DISABLED)) {
+                int gbx, gby, gbw, gbh;
+                gadget_box(win_ptr, gad, &gbx, &gby, &gbw, &gbh);
+                (void)gbw; (void)gbh;
                 if (gad_is_listview(gad)) {
-                    int gx = relx - mem_s16(gad + GAD_OFF_LEFTEDGE);
-                    int gy = rely - mem_s16(gad + GAD_OFF_TOPEDGE);
+                    int gx = relx - gbx;
+                    int gy = rely - gby;
                     if (listview_scrollbar_hit(gad, gx, gy)) {
                         if (slot) {
                             slot->drag_gad = gad;
@@ -1261,7 +1268,7 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 } else if (gad_is_string_gadget(gad)) {
                     if (slot) {
                         int new_pos = string_gadget_cursor_from_click(
-                            gad, relx - mem_s16(gad + GAD_OFF_LEFTEDGE));
+                            gad, relx - gbx);
                         if (slot->active_string_gad == gad && g_kbd_mods.shift) {
                             slot->active_string_sel_end = (uint16_t)new_pos;
                             slot->active_string_cursor = (uint16_t)new_pos;
@@ -1275,8 +1282,8 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
                 } else if (gad_type_id(gad) == GTYP_PROPGADGET) {
                     uint32_t prop = mem_u32(gad + GAD_OFF_SPECIALINFO);
                     if (prop) {
-                        int gx = relx - mem_s16(gad + GAD_OFF_LEFTEDGE);
-                        int gy = rely - mem_s16(gad + GAD_OFF_TOPEDGE);
+                        int gx = relx - gbx;
+                        int gy = rely - gby;
                         if (prop_knob_hit(gad, gx, gy)) {
                             if (slot) {
                                 slot->drag_gad = gad;
@@ -1407,8 +1414,11 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
             gzz_mouse_to_content(slot, &relx, &rely);
             if (slot && slot->drag_gad) {
                 uint32_t gad = slot->drag_gad;
-                int gx = relx - mem_s16(gad + GAD_OFF_LEFTEDGE);
-                int gy = rely - mem_s16(gad + GAD_OFF_TOPEDGE);
+                int gbx, gby, gbw, gbh;
+                gadget_box(win_ptr, gad, &gbx, &gby, &gbw, &gbh);
+                (void)gbw; (void)gbh;
+                int gx = relx - gbx;
+                int gy = rely - gby;
                 int changed = 0;
                 if (slot->drag_kind == 1 && gad_type_id(gad) == GTYP_PROPGADGET)
                     changed = prop_update_from_drag(gad, gx, gy);
@@ -1493,8 +1503,8 @@ static int intu_wm_event_handler_bound(int wm_handle, int event_type, int p1, in
              * on IDCMP_ACTIVEWINDOW messages. */
             {
                 uint32_t wf = mem_u32(win_ptr + WIN_OFF_FLAGS);
-                if (p1) wf |=  0x00004000u;
-                else    wf &= ~0x00004000u;
+                if (p1) wf |=  WFLG_WINDOWACTIVE;
+                else    wf &= ~WFLG_WINDOWACTIVE;
                 mem_w32(win_ptr + WIN_OFF_FLAGS, wf);
             }
             if (p1 && (idcmp & IDCMP_ACTIVEWINDOW))
@@ -1721,7 +1731,7 @@ static uint32_t GetGadgetInfo(uint32_t gad, uint32_t info_id)
 {
     if (!gad) return 0;
     uint16_t type = mem_u16(gad + GAD_OFF_GADGETTYPE);
-    int type_id = type & 0x000F;
+    int type_id = type & GTYP_GADGETTYPE;
     uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
     uint32_t special = mem_u32(gad + GAD_OFF_SPECIALINFO);
 
@@ -1806,7 +1816,7 @@ static void intuition_ModifyProp(void)
     uint16_t vbody = (uint16_t)m68k_get_reg(NULL, M68K_REG_D4);
     if (gad) {
         uint16_t type = mem_u16(gad + GAD_OFF_GADGETTYPE);
-        if ((type & 0x000F) == GTYP_PROPGADGET) {
+        if ((type & GTYP_GADGETTYPE) == GTYP_PROPGADGET) {
             uint32_t prop = mem_u32(gad + GAD_OFF_SPECIALINFO);
             if (prop) {
                 mem_w16(prop + PROP_OFF_FLAGS, flags);
@@ -1838,7 +1848,7 @@ static void intuition_ActivateGadget(void)
     int ok = 0;
     if (gad && win_ptr) {
         uint16_t type = mem_u16(gad + GAD_OFF_GADGETTYPE);
-        if ((type & 0x000F) == GTYP_STRGADGET) {
+        if ((type & GTYP_GADGETTYPE) == GTYP_STRGADGET) {
             /* Mark the gadget as the active string gadget and focus the window. */
             IntuitionSlot *slot = find_slot_by_guest(win_ptr);
             if (slot) WM_RequestFocus(slot->wm_handle);
@@ -1846,6 +1856,29 @@ static void intuition_ActivateGadget(void)
         }
     }
     m68k_set_reg(M68K_REG_D0, ok ? 1 : 0);
+}
+
+/* Resolve a gadget's window-relative box honoring the canonical
+ * GFLG_REL* bits: RELRIGHT/RELBOTTOM store a negative offset from the
+ * window's right/bottom edge, RELWIDTH/RELHEIGHT a delta from the window
+ * size.  Used by hit-testing, rendering, and GadgetBox. */
+static void gadget_box(uint32_t win_ptr, uint32_t gad,
+                       int *x, int *y, int *w, int *h)
+{
+    int left = (int)mem_s16(gad + GAD_OFF_LEFTEDGE);
+    int top  = (int)mem_s16(gad + GAD_OFF_TOPEDGE);
+    int gw   = (int)mem_s16(gad + GAD_OFF_WIDTH);
+    int gh   = (int)mem_s16(gad + GAD_OFF_HEIGHT);
+    if (win_ptr) {
+        uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
+        int ww = (int)mem_s16(win_ptr + WIN_OFF_WIDTH);
+        int wh = (int)mem_s16(win_ptr + WIN_OFF_HEIGHT);
+        if (flags & GFLG_RELRIGHT)  left += ww;
+        if (flags & GFLG_RELBOTTOM) top  += wh;
+        if (flags & GFLG_RELWIDTH)  gw   += ww;
+        if (flags & GFLG_RELHEIGHT) gh   += wh;
+    }
+    *x = left; *y = top; *w = gw; *h = gh;
 }
 
 /* Find the topmost custom gadget at window-relative coordinates. */
@@ -1864,10 +1897,8 @@ static uint32_t gadget_at(uint32_t win_ptr, int mx, int my)
             gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
             continue;
         }
-        int16_t left = mem_s16(gad + GAD_OFF_LEFTEDGE);
-        int16_t top  = mem_s16(gad + GAD_OFF_TOPEDGE);
-        int16_t w    = mem_s16(gad + GAD_OFF_WIDTH);
-        int16_t h    = mem_s16(gad + GAD_OFF_HEIGHT);
+        int left, top, w, h;
+        gadget_box(win_ptr, gad, &left, &top, &w, &h);
         if (mx >= left && mx < left + w && my >= top && my < top + h)
             return gad;
         gad = mem_u32(gad + GAD_OFF_NEXTGADGET);
@@ -1880,7 +1911,7 @@ static int gadget_label_text(uint32_t gad, char *buf, int max)
 {
     uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
     buf[0] = '\0';
-    if (flags & GFLG_LABELITEXT) {
+    if ((flags & GFLG_LABELMASK) == GFLG_LABELITEXT) {
         uint32_t label = mem_u32(gad + GAD_OFF_GADGETTEXT);
         if (label) {
             uint32_t text_ptr = mem_u32(label + ITEXT_OFF_ITEXT);
@@ -2379,11 +2410,9 @@ static void render_custom_gadgets(int win_x, int win_y, int off_x, int off_y, ui
             continue;
         }
 
-        int16_t left   = mem_s16(gad + GAD_OFF_LEFTEDGE);
-        int16_t top    = mem_s16(gad + GAD_OFF_TOPEDGE);
-        int16_t w      = mem_s16(gad + GAD_OFF_WIDTH);
-        int16_t h      = mem_s16(gad + GAD_OFF_HEIGHT);
-        int type_id = type & 0x000F;
+        int left, top, w, h;
+        gadget_box(win_ptr, gad, &left, &top, &w, &h);
+        int type_id = type & GTYP_GADGETTYPE;
         uint16_t activation = mem_u16(gad + GAD_OFF_ACTIVATION);
         uint32_t special = mem_u32(gad + GAD_OFF_SPECIALINFO);
 
@@ -6359,6 +6388,8 @@ static void intuition_OpenWindowTagList(void)
         IntuitionSlot *group_slot = find_slot_by_guest(help_group_window);
         if (group_slot) slot->help_group = group_slot->help_group;
     }
+    /* Guest-visible HelpGroup field (real Window+0xde). */
+    mem_w32(win_ptr + WIN_OFF_HELPGROUP, slot->help_group);
     if (busy_pointer >= 0) {
         Cursor_SetBusy(busy_pointer);
     } else if (wa_pointer) {
@@ -6405,7 +6436,7 @@ static void intuition_OpenWindowTagList(void)
          * window already has focus from WM_AddWindow, so no WM_EVT_FOCUS
          * will fire to set WFLG_WINDOWACTIVE later. */
         mem_w32(win_ptr + WIN_OFF_FLAGS,
-                mem_u32(win_ptr + WIN_OFF_FLAGS) | 0x00004000u);
+                mem_u32(win_ptr + WIN_OFF_FLAGS) | WFLG_WINDOWACTIVE);
         WM_RequestFocus(wh);
     }
 
@@ -6562,6 +6593,13 @@ static void intuition_BeginRefresh(void)
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
     if (!slot) return;
 
+    /* Real $36f6 sets guest-visible state too: WFLG_WINDOWREFRESH in
+     * Window.Flags and bit 0x100 in Window.MoreFlags.  Guests poll these. */
+    mem_w32(win_ptr + WIN_OFF_FLAGS,
+            mem_u32(win_ptr + WIN_OFF_FLAGS) | WFLG_WINDOWREFRESH);
+    mem_w32(win_ptr + WIN_OFF_MOREFLAGS,
+            mem_u32(win_ptr + WIN_OFF_MOREFLAGS) | 0x100);
+
     slot->refreshing = 1;
     int wx = (int)mem_s16(win_ptr + WIN_OFF_LEFTEDGE);
     int wy = (int)mem_s16(win_ptr + WIN_OFF_TOPEDGE);
@@ -6584,6 +6622,12 @@ static void intuition_EndRefresh(void)
     uint32_t complete = m68k_get_reg(NULL, M68K_REG_D0);
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
     if (!slot) return;
+
+    /* Real $3754 unwinds both guest-visible flag bits. */
+    mem_w32(win_ptr + WIN_OFF_FLAGS,
+            mem_u32(win_ptr + WIN_OFF_FLAGS) & ~WFLG_WINDOWREFRESH);
+    mem_w32(win_ptr + WIN_OFF_MOREFLAGS,
+            mem_u32(win_ptr + WIN_OFF_MOREFLAGS) & ~0x100u);
 
     slot->refreshing = 0;
     if (complete) {
@@ -6625,21 +6669,41 @@ static void intuition_ModifyIDCMP(void)
 }
 
 /* SetWindowTitles(window, title, screenTitle)
- * A0 = window, A1 = title, A2 = screenTitle */
+ * A0 = window, A1 = title, A2 = screenTitle.
+ * Real semantics (int 40 $15a0a): a title arg of -1 (0xFFFFFFFF) is left
+ * alone — both other values, including NULL, replace the pointer.  The
+ * screen title is stored on the window (Window.ScreenTitle, +0x68) and,
+ * when the window is active, also pushed to the screen's title text. */
 static void intuition_SetWindowTitles(void)
 {
     uint32_t win_ptr   = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t title_ptr = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t scr_title = m68k_get_reg(NULL, M68K_REG_A2);
 
     if (!win_ptr) return;
+    IntuitionSlot *slot = find_slot_by_guest(win_ptr);
 
-    if (title_ptr) {
-        char title[32];
-        guest_str(title, title_ptr, sizeof(title));
+    if (title_ptr != 0xFFFFFFFFu) {
         mem_w32(win_ptr + WIN_OFF_TITLE, title_ptr);
+        mem_w16(win_ptr + 0xCE, 0xFFFF);   /* invalidate text-extent cache */
+        if (slot) {
+            char title[32] = "";
+            if (title_ptr) guest_str(title, title_ptr, sizeof(title));
+            WM_SetWindowTitle(slot->wm_handle, title);
+        }
+    }
 
-        IntuitionSlot *slot = find_slot_by_guest(win_ptr);
-        if (slot) WM_SetWindowTitle(slot->wm_handle, title);
+    if (scr_title != 0xFFFFFFFFu) {
+        mem_w32(win_ptr + WIN_OFF_SCREENTITLE, scr_title);
+        if (slot) slot->screen_title = scr_title;
+        /* If this window is active, its screen title drives the bar. */
+        if (mem_u32(win_ptr + WIN_OFF_FLAGS) & WFLG_WINDOWACTIVE) {
+            uint32_t scr = mem_u32(win_ptr + WIN_OFF_WSCREEN);
+            if (scr) mem_w32(scr + SCR_OFF_TITLE, scr_title);
+            char t[64] = "";
+            if (scr_title) guest_str(t, scr_title, sizeof(t));
+            Desktop_SetScreenTitle(t[0] ? t : NULL, t[0] != '\0');
+        }
     }
 }
 
@@ -6908,7 +6972,10 @@ static void intuition_SetWindowAttrsA(void)
                 }
                 break;
             case WA_HelpGroup:
-                if (slot) slot->help_group = data;
+                if (slot) {
+                    slot->help_group = data;
+                    mem_w32(win_ptr + WIN_OFF_HELPGROUP, data);
+                }
                 break;
             case WA_HelpGroupWindow:
                 if (slot) slot->help_group_window = data;
@@ -7602,6 +7669,51 @@ static uint32_t intu_resolve_font_attr(uint32_t text_attr)
 #define IMG_OFF_NEXTIMAGE  16
 #define IMG_SIZE           20
 
+/* -------------------------------------------------------------------------
+ * BOOPSI image-method dispatch (real $4b78 image hook — UAOS-342)
+ *
+ * An image object is marked by Depth == 0xFFFF (IMG_OFF_DEPTH); the class
+ * pointer is at object-4, and the dispatcher hook entry at class+8 is
+ * called with a0 = class, a1 = Msg*, a2 = image-object.  impDraw/impErase/
+ * impHitTest messages are built on the guest heap (freed after the call,
+ * since InvokeM68kHook is synchronous).
+ * ------------------------------------------------------------------------- */
+/* impDraw:  {MethodID, RastPort, DrawInfo, Offset{X,Y}, State} = 20 */
+/* impErase: {MethodID, RastPort, DrawInfo, Offset{X,Y}}        = 16 */
+/* impHitTest:{MethodID, Point{X,Y}, DrawInfo}                  = 12 */
+
+static int image_is_boopsi(uint32_t image)
+{
+    return image + IMG_SIZE <= GUEST_RAM_SIZE &&
+           mem_u16(image + IMG_OFF_DEPTH) == 0xFFFF;
+}
+
+static uint32_t image_method_call(uint32_t image, uint32_t msg,
+                                  uint32_t method_id, uint32_t rp,
+                                  uint32_t drawinfo, int16_t x, int16_t y,
+                                  uint32_t state)
+{
+    uint32_t cl = mem_u32(image - 4);
+    if (!cl || cl + CLASS_OFF_DISPATCHER_ENTRY + 4 > GUEST_RAM_SIZE)
+        return 0;
+    if (!mem_u32(cl + CLASS_OFF_DISPATCHER_ENTRY))
+        return 0;
+    mem_w32(msg + 0, method_id);
+    if (method_id == IM_HITTEST) {
+        mem_w16(msg + 4, (uint16_t)x);   /* Point.X/Y at +4/+6 */
+        mem_w16(msg + 6, (uint16_t)y);
+        mem_w32(msg + 8, drawinfo);
+    } else {
+        mem_w32(msg + 4, rp);
+        mem_w32(msg + 8, drawinfo);
+        mem_w16(msg + 12, (uint16_t)x);  /* Offset.X/Y */
+        mem_w16(msg + 14, (uint16_t)y);
+        if (method_id == IM_DRAW)
+            mem_w32(msg + 16, state);
+    }
+    return UAOS_InvokeM68kHook(cl + CLASS_OFF_DISPATCHER, cl, msg, image);
+}
+
 /* Border structure offsets */
 #define BORDER_OFF_LEFTEDGE    0
 #define BORDER_OFF_TOPEDGE     2
@@ -7686,6 +7798,18 @@ static void intuition_DrawImage(void)
 
         int dst_x = xoff + left;
         int dst_y = yoff + top;
+
+        if (image_is_boopsi(image)) {
+            /* BOOPSI image object — dispatch IM_DRAW through its class. */
+            uint32_t msg = intu_alloc(24);
+            if (msg) {
+                image_method_call(image, msg, IM_DRAW, rp, 0,
+                                  (int16_t)xoff, (int16_t)yoff, 0);
+                intu_free(msg);
+            }
+            image = next_image;
+            continue;
+        }
 
         if (image_data && width > 0 && height > 0) {
             int bpr = ((width + 15) / 16) * 2;
@@ -8219,48 +8343,57 @@ static void intuition_RethinkDisplay(void)
     m68k_set_reg(M68K_REG_D0, 0);
 }
 
-/* ClearDMRequest(window) — A0 = window
- * Clear the Window.DMRequest field (set to NULL).  Returns TRUE. */
-static void intuition_ClearDMRequest(void)
+/* Shared SetDMRequest/ClearDMRequest body (real int 40: both LVOs enter
+ * the same code, Clear just supplies requester = NULL).  If the window
+ * already holds a requester whose Flags word has REQACTIVE set the call
+ * fails with 0 and leaves the slot alone; otherwise the new pointer is
+ * stored and 1 is returned. */
+static void dm_request_shared(uint32_t win_ptr, uint32_t req_ptr)
 {
-    uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
-    if (win_ptr)
-        mem_w32(win_ptr + WIN_OFF_DMREQUEST, 0);
-    m68k_set_reg(M68K_REG_D0, 1);
-}
-
-/* SetDMRequest(window, requester) — A0 = window, A1 = requester
- * Set the Window.DMRequest field to the supplied requester pointer.
- * Returns TRUE on success. */
-static void intuition_SetDMRequest(void)
-{
-    uint32_t win_ptr  = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t req_ptr  = m68k_get_reg(NULL, M68K_REG_A1);
     if (win_ptr) {
-        /* AmigaOS returns FALSE if there's already an active DMRequest. */
-        if (mem_u32(win_ptr + WIN_OFF_DMREQUEST)) {
+        uint32_t old = mem_u32(win_ptr + WIN_OFF_DMREQUEST);
+        if (old && old + REQ_OFF_FLAGS + 2 <= GUEST_RAM_SIZE &&
+            (mem_u16(old + REQ_OFF_FLAGS) & REQ_ACTIVE)) {
             m68k_set_reg(M68K_REG_D0, 0);
             return;
         }
         mem_w32(win_ptr + WIN_OFF_DMREQUEST, req_ptr);
         m68k_set_reg(M68K_REG_D0, 1);
-    } else {
-        m68k_set_reg(M68K_REG_D0, 0);
+        return;
     }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+/* ClearDMRequest(window) — A0 = window.  Returns TRUE. */
+static void intuition_ClearDMRequest(void)
+{
+    dm_request_shared(m68k_get_reg(NULL, M68K_REG_A0), 0);
+}
+
+/* SetDMRequest(window, requester) — A0 = window, A1 = requester */
+static void intuition_SetDMRequest(void)
+{
+    dm_request_shared(m68k_get_reg(NULL, M68K_REG_A0),
+                      m68k_get_reg(NULL, M68K_REG_A1));
 }
 
 /* SetMouseQueue(window, queue_length) — A0 = window, D0 = queue_length
- * Set the mouse movement queue limit.  The IntuitionSlot stores this
- * and post_intui_message() enforces it.  Returns the previous limit. */
+ * Real semantics: swaps the word at Window+0x9c (MouseQueue) and
+ * returns the old value sign-extended.  The IntuitionSlot mirrors it
+ * for post_intui_message(). */
 static void intuition_SetMouseQueue(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t new_len = m68k_get_reg(NULL, M68K_REG_D0);
+    if (!win_ptr || win_ptr + WIN_OFF_MOUSEQUEUE + 2 > GUEST_RAM_SIZE) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
+    int16_t old = (int16_t)mem_u16(win_ptr + WIN_OFF_MOUSEQUEUE);
+    mem_w16(win_ptr + WIN_OFF_MOUSEQUEUE, (uint16_t)new_len);
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
-    uint32_t old = slot ? slot->mouse_queue : 0;
-    if (slot)
-        slot->mouse_queue = (uint16_t)new_len;
-    m68k_set_reg(M68K_REG_D0, old);
+    if (slot) slot->mouse_queue = (uint16_t)new_len;
+    m68k_set_reg(M68K_REG_D0, (uint32_t)(int32_t)old);
 }
 
 /* SetPubScreenModes(flags) — D0 = flags
@@ -8274,36 +8407,42 @@ static void intuition_SetPubScreenModes(void)
     m68k_set_reg(M68K_REG_D0, old);
 }
 
-/* LendMenus(window, requester) — A0 = window, A1 = borrower
- * Record which window lends its menus.  On UAOS menus are handled by
- * the desktop, so this is informational only.  Returns TRUE. */
+/* LendMenus(fromWindow, toWindow) — A0 = lender, A1 = borrower.
+ * Real semantics: the borrower window pointer is stored in the lender's
+ * MenuLend field (Window+0xd4).  Menu rendering stays desktop-side. */
 static void intuition_LendMenus(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
-    (void)m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t borrower = m68k_get_reg(NULL, M68K_REG_A1);
+    if (win_ptr && win_ptr + WIN_OFF_MENULEND + 4 <= GUEST_RAM_SIZE)
+        mem_w32(win_ptr + WIN_OFF_MENULEND, borrower);
     g_lend_menus_window = win_ptr;
     m68k_set_reg(M68K_REG_D0, 1);
 }
 
-/* GadgetMouse(gadget, window, mouse_point) — A0 = gadget, A1 = window, A2 = Point*
- * Store the mouse coordinates relative to the gadget's top-left corner
- * into the Point structure at A2.  The Point struct is { WORD X, WORD Y }. */
+/* GadgetMouse(gadget, ginfo, mousepoint) — A0 = gadget, A1 = GadgetInfo*,
+ * A2 = Point*.  Real V40 signature: A1 is a GadgetInfo whose gi_Window
+ * (offset 4) supplies the mouse position.  The result is the mouse point
+ * relative to the gadget's resolved position (GFLG_REL* aware). */
 static void intuition_GadgetMouse(void)
 {
     uint32_t gad    = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t win    = m68k_get_reg(NULL, M68K_REG_A1);
+    uint32_t ginfo  = m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t point  = m68k_get_reg(NULL, M68K_REG_A2);
-    if (!gad || !win || !point) return;
+    if (!gad || !ginfo || !point) return;
+
+    uint32_t win = mem_u32(ginfo + 4);   /* GadgetInfo.gi_Window */
+    if (!win) return;
 
     /* Window.MouseX/MouseY are at NDK offsets 14/12. */
     int16_t mx = (int16_t)mem_u16(win + 14);
     int16_t my = (int16_t)mem_u16(win + 12);
-    int16_t gx = (int16_t)mem_s16(gad + GAD_OFF_LEFTEDGE);
-    int16_t gy = (int16_t)mem_s16(gad + GAD_OFF_TOPEDGE);
+    int gx, gy, gw, gh;
+    gadget_box(win, gad, &gx, &gy, &gw, &gh);
 
     /* Point is { WORD X, WORD Y } — X at offset 0, Y at offset 2. */
-    mem_w16(point,     (uint16_t)(mx - gx));
-    mem_w16(point + 2, (uint16_t)(my - gy));
+    mem_w16(point,     (uint16_t)(int16_t)(mx - gx));
+    mem_w16(point + 2, (uint16_t)(int16_t)(my - gy));
 }
 
 /* =========================================================================
@@ -8357,6 +8496,19 @@ static void intuition_PointInImage(void)
     uint32_t image = m68k_get_reg(NULL, M68K_REG_A0);
 
     while (image && image + IMG_SIZE <= GUEST_RAM_SIZE) {
+        if (image_is_boopsi(image)) {
+            /* BOOPSI image — IM_HITTEST through the class dispatcher. */
+            uint32_t msg = intu_alloc(16);
+            uint32_t hit = 0;
+            if (msg) {
+                hit = image_method_call(image, msg, IM_HITTEST, 0, 0,
+                                        x, y, 0);
+                intu_free(msg);
+            }
+            m68k_set_reg(M68K_REG_D0, hit ? 1 : 0);
+            return;
+        }
+
         int16_t  left   = mem_s16(image + IMG_OFF_LEFTEDGE);
         int16_t  top    = mem_s16(image + IMG_OFF_TOPEDGE);
         int16_t  width  = mem_s16(image + IMG_OFF_WIDTH);
@@ -8384,6 +8536,16 @@ static void intuition_EraseImage(void)
     int yoff       = (int)m68k_get_reg(NULL, M68K_REG_D1);
 
     while (image && image + IMG_SIZE <= GUEST_RAM_SIZE) {
+        if (image_is_boopsi(image)) {
+            uint32_t msg = intu_alloc(20);
+            if (msg) {
+                image_method_call(image, msg, IM_ERASE, rp, 0,
+                                  (int16_t)xoff, (int16_t)yoff, 0);
+                intu_free(msg);
+            }
+            image = mem_u32(image + IMG_OFF_NEXTIMAGE);
+            continue;
+        }
         int16_t  left   = mem_s16(image + IMG_OFF_LEFTEDGE);
         int16_t  top    = mem_s16(image + IMG_OFF_TOPEDGE);
         int16_t  width  = mem_s16(image + IMG_OFF_WIDTH);
@@ -8865,31 +9027,8 @@ static void intuition_GadgetBox(void)
 
     if (!gad || !ibox || ibox + 8 > GUEST_RAM_SIZE) return;
 
-    int16_t g_left = mem_s16(gad + GAD_OFF_LEFTEDGE);
-    int16_t g_top  = mem_s16(gad + GAD_OFF_TOPEDGE);
-    int16_t g_w    = mem_s16(gad + GAD_OFF_WIDTH);
-    int16_t g_h    = mem_s16(gad + GAD_OFF_HEIGHT);
-    uint16_t flags = mem_u16(gad + GAD_OFF_FLAGS);
-
-    /* Window dimensions for relative positioning. */
-    int16_t win_w = 0, win_h = 0;
-    if (win) {
-        win_w = mem_s16(win + WIN_OFF_WIDTH);
-        win_h = mem_s16(win + WIN_OFF_HEIGHT);
-    }
-
-    /* GFLG_RELRIGHT (0x0010): LeftEdge is offset from right edge. */
-    if (flags & 0x0010)
-        g_left = (int16_t)(win_w + g_left);
-    /* GFLG_RELBOTTOM (0x0008): TopEdge is offset from bottom edge. */
-    if (flags & 0x0008)
-        g_top = (int16_t)(win_h + g_top);
-    /* GFLG_RELWIDTH (0x0020): Width is relative to window width. */
-    if (flags & 0x0020)
-        g_w = (int16_t)(win_w + g_w);
-    /* GFLG_BOTTOMBORDER (0x0200): Height is relative to window height. */
-    if (flags & 0x0200)
-        g_h = (int16_t)(win_h + g_h);
+    int g_left, g_top, g_w, g_h;
+    gadget_box(win, gad, &g_left, &g_top, &g_w, &g_h);
 
     /* Apply the additional offset and store into the IBox. */
     mem_w16(ibox + IBOX_OFF_LEFT,   (uint16_t)(g_left + left_off));
@@ -10582,7 +10721,17 @@ static void intuition_CurrentTime(void)
     if (mic_ptr) mem_w32(mic_ptr, micros);
 }
 
-/* DoubleClick(sSeconds, sMicros, cSeconds, cMicros) — D0/D1/D2/D3; returns BOOL in D0 */
+static uint32_t read_host_u32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
+}
+
+/* DoubleClick(sSeconds, sMicros, cSeconds, cMicros) — D0/D1/D2/D3; BOOL in D0
+ * Real algorithm (int 40 $281e): the threshold is the Preferences
+ * DoubleClick timeval (secs+micros).  Borrow-correct cMic when it is
+ * smaller than sMic, then compare second-difference against the
+ * threshold seconds; on equality demand a strictly-smaller micro delta. */
 static void intuition_DoubleClick(void)
 {
     uint32_t s_sec = m68k_get_reg(NULL, M68K_REG_D0);
@@ -10590,11 +10739,17 @@ static void intuition_DoubleClick(void)
     uint32_t c_sec = m68k_get_reg(NULL, M68K_REG_D2);
     uint32_t c_mic = m68k_get_reg(NULL, M68K_REG_D3);
 
-    uint32_t diff_sec  = (c_sec > s_sec) ? (c_sec - s_sec) : (s_sec - c_sec);
-    uint32_t diff_mic  = (c_mic > s_mic) ? (c_mic - s_mic) : (s_mic - c_mic);
-    uint32_t diff      = diff_sec * 1000000 + diff_mic;
+    init_prefs();
+    uint32_t dc_secs   = read_host_u32(&g_intu_prefs[PREF_OFF_DOUBLECLICK]);
+    uint32_t dc_micros = read_host_u32(&g_intu_prefs[PREF_OFF_DOUBLECLICK + 4]);
+    if (!dc_secs && !dc_micros) dc_micros = 500000;   /* sane default */
 
-    m68k_set_reg(M68K_REG_D0, diff < 500000 ? 1 : 0);
+    if (s_mic > c_mic) { c_sec -= 1; c_mic += 1000000; }
+    int32_t diff = (int32_t)(c_sec - s_sec - dc_secs);
+    int ok = 0;
+    if (diff < 0) ok = 1;
+    else if (diff == 0 && (c_mic - s_mic) < dc_micros) ok = 1;
+    m68k_set_reg(M68K_REG_D0, ok);
 }
 
 /* ReportMouse(flag, window) — D0, A0 */
@@ -10680,7 +10835,7 @@ static void intuition_Request(void)
     int num_buttons = 0;
     char btn_labels[REQ_MAX_BUTTONS][32];
 
-    uint32_t gad = mem_u32(req + REQ_OFF_REQGADGETS);
+    uint32_t gad = mem_u32(req + REQ_OFF_REQGADGET);
     while (gad && num_buttons < REQ_MAX_BUTTONS) {
         btn_labels[num_buttons][0] = '\0';
         uint32_t label = mem_u32(gad + GAD_OFF_GADGETTEXT);
@@ -10744,11 +10899,11 @@ static void intuition_ViewPortAddress(void)
 /* GetScreenData(buffer, size, type, screen) — A0, D0, D1, A1
  *
  * Type is an AmigaOS screen type flag:
- *   CUSTOMSCREEN (0)     -> use the supplied Screen pointer
- *   WBENCHSCREEN (1)     -> copy from the Workbench screen
- *   PUBLICSCREEN (2)     -> copy from the default public screen
- *   Other type values    -> use the supplied Screen pointer if active,
- *                           otherwise zero the buffer. */
+ *   CUSTOMSCREEN (0x000F) -> use the supplied Screen pointer
+ *   WBENCHSCREEN (0x0001) -> copy from the Workbench screen
+ *   PUBLICSCREEN (0x0002) -> copy from the default public screen
+ *   Other type values     -> use the supplied Screen pointer if active,
+ *                            otherwise zero the buffer. */
 static void intuition_GetScreenData(void)
 {
     uint32_t buf   = m68k_get_reg(NULL, M68K_REG_A0);
@@ -10907,9 +11062,11 @@ static void intuition_PubScreenStatus(void)
 }
 
 /* SysReqHandler(window, idcmpPtr, waitInput) — A0, A1, D0
- * Returns the IDCMP class of the next requester message in the window's
- * UserPort.  If waitInput is non-zero, polls briefly for a message to arrive.
- * The caller is responsible for retrieving and freeing the actual message. */
+ * Real behavior: PEEKS at the first pending IntuiMessage in the window's
+ * UserPort and returns its IDCMP class — the message stays queued so the
+ * caller's GetMsg still sees it.  If idcmpPtr is not (ULONG)-1, the
+ * class is stored there.  waitInput polls briefly for a message to
+ * arrive.  Returns 0 when nothing is pending. */
 static void intuition_SysReqHandler(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
@@ -10929,27 +11086,21 @@ static void intuition_SysReqHandler(void)
 
     uint32_t list = user_port + MP_OFF_MSGLIST;
     uint32_t msg = 0;
-
-    if (wait_input) {
-        for (int i = 0; i < 1000 && !msg; i++) {
-            uint32_t head = mem_u32(list + LH_OFF_HEAD);
-            uint32_t tail = list + LH_OFF_TAIL;
-            if (head != tail) msg = guest_list_remove_head(list);
-            if (!msg) {
-                Task_Yield();
-            }
-        }
-    } else {
+    int tries = wait_input ? 1000 : 1;
+    for (int i = 0; i < tries && !msg; i++) {
         uint32_t head = mem_u32(list + LH_OFF_HEAD);
         uint32_t tail = list + LH_OFF_TAIL;
-        if (head != tail) msg = guest_list_remove_head(list);
+        /* Peek only — do NOT unlink or free the message. */
+        if (head && head != tail) msg = head;
+        if (!msg) Task_Yield();
     }
 
     uint32_t result = 0;
-    if (msg) {
+    if (msg && msg + IM_OFF_CLASS + 4 <= GUEST_RAM_SIZE) {
         result = mem_u32(msg + IM_OFF_CLASS);
-        if (idcmp_ptr) mem_w32(idcmp_ptr, result);
-        intu_free(msg);
+        if (idcmp_ptr && idcmp_ptr != 0xFFFFFFFF &&
+            idcmp_ptr + 4 <= GUEST_RAM_SIZE)
+            mem_w32(idcmp_ptr, result);
     }
     m68k_set_reg(M68K_REG_D0, result);
 }
@@ -10990,25 +11141,53 @@ static void intuition_HideWindow(void)
 }
 
 /* WindowLimits(window, widthMin, heightMin, widthMax, heightMax)
- * A0, D0, D1, D2, D3; returns BOOL in D0 */
+ * A0, D0, D1, D2, D3; returns BOOL in D0.
+ * Real semantics (int 40 $15a6a): each NONZERO word is validated against
+ * the window's current size before being stored into the guest fields —
+ * min-width/height must not exceed Width/Height, max-width/height must
+ * not be smaller.  Any failing argument makes the whole call fail. */
 static void intuition_WindowLimits(void)
 {
     uint32_t win_ptr = m68k_get_reg(NULL, M68K_REG_A0);
-    int16_t  min_w   = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
-    int16_t  min_h   = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
-    int16_t  max_w   = (int16_t)m68k_get_reg(NULL, M68K_REG_D2);
-    int16_t  max_h   = (int16_t)m68k_get_reg(NULL, M68K_REG_D3);
+    int32_t  min_w   = (int16_t)m68k_get_reg(NULL, M68K_REG_D0);
+    int32_t  min_h   = (int16_t)m68k_get_reg(NULL, M68K_REG_D1);
+    int32_t  max_w   = (int16_t)m68k_get_reg(NULL, M68K_REG_D2);
+    int32_t  max_h   = (int16_t)m68k_get_reg(NULL, M68K_REG_D3);
 
     IntuitionSlot *slot = find_slot_by_guest(win_ptr);
-    if (!slot) {
+    if (!win_ptr || !slot) {
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
-    slot->min_w = min_w;
-    slot->min_h = min_h;
-    slot->max_w = max_w;
-    slot->max_h = max_h;
-    m68k_set_reg(M68K_REG_D0, 1);
+
+    int16_t cur_w = mem_s16(win_ptr + WIN_OFF_WIDTH);
+    int16_t cur_h = mem_s16(win_ptr + WIN_OFF_HEIGHT);
+    uint16_t ok = 1;
+
+    if (min_w) {
+        if (min_w > cur_w) ok = 0;
+        else mem_w16(win_ptr + WIN_OFF_MINWIDTH, (uint16_t)min_w);
+    }
+    if (min_h) {
+        if (min_h > cur_h) ok = 0;
+        else mem_w16(win_ptr + WIN_OFF_MINHEIGHT, (uint16_t)min_h);
+    }
+    if (max_w) {
+        if ((uint16_t)cur_w > (uint16_t)max_w) ok = 0;
+        else mem_w16(win_ptr + WIN_OFF_MAXWIDTH, (uint16_t)max_w);
+    }
+    if (max_h) {
+        if ((uint16_t)cur_h > (uint16_t)max_h) ok = 0;
+        else mem_w16(win_ptr + WIN_OFF_MAXHEIGHT, (uint16_t)max_h);
+    }
+
+    if (ok) {
+        slot->min_w = (int16_t)mem_u16(win_ptr + WIN_OFF_MINWIDTH);
+        slot->min_h = (int16_t)mem_u16(win_ptr + WIN_OFF_MINHEIGHT);
+        slot->max_w = (int16_t)mem_u16(win_ptr + WIN_OFF_MAXWIDTH);
+        slot->max_h = (int16_t)mem_u16(win_ptr + WIN_OFF_MAXHEIGHT);
+    }
+    m68k_set_reg(M68K_REG_D0, (int16_t)ok);   /* sign-extended like real */
 }
 
 /* ChangeWindowBox(window, left, top, width, height)
@@ -11072,21 +11251,19 @@ static void intuition_MoveWindowInFrontOf(void)
     }
 }
 
-/* SetEditHook(gadget, hook) — A0, A1; returns old hook in D0 */
+/* Global string-editing hook — real intuition stores it on IntuitionBase
+ * (+0xab8); UAOS has no guest-visible library data area, so it lives
+ * here and is consulted by string-gadget editing. */
+static uint32_t g_edit_hook = 0;
+
+/* SetEditHook(hook) — A0; returns the previous hook in D0.
+ * V40 signature: ONE argument — the new global Hook* — not the V33
+ * (gadget, hook) pair.  Treating A0 as a Gadget* corrupts guest memory. */
 static void intuition_SetEditHook(void)
 {
-    uint32_t gad = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t hook = m68k_get_reg(NULL, M68K_REG_A1);
-    uint32_t old = 0;
-    if (gad) {
-        /* Real SetEditHook writes si->EditHook, not gad->UserData. */
-        uint32_t si = mem_u32(gad + GAD_OFF_SPECIALINFO);
-        if (si) {
-            old = mem_u32(si + SI_OFF_EDITHOOK);
-            mem_w32(si + SI_OFF_EDITHOOK, hook);
-        }
-    }
-    m68k_set_reg(M68K_REG_D0, old);
+    uint32_t hook = m68k_get_reg(NULL, M68K_REG_A0);
+    m68k_set_reg(M68K_REG_D0, g_edit_hook);
+    g_edit_hook = hook;
 }
 
 /* ObtainGIRPort(gadgetInfo) — A0; returns temporary RastPort* in D0 */
@@ -11273,8 +11450,10 @@ static uint32_t boopsi_dispatch(uint32_t object, uint32_t method,
          * longword decoded from inside the dispatcher's machine code. */
         uint32_t entry = mem_u32(cls + CLASS_OFF_DISPATCHER_ENTRY);
         if (entry) {
+            /* Real BOOPSI dispatcher convention: a0 = class, a1 = Msg,
+             * a2 = object (reconstruction $681e/$683c confirm). */
             result = UAOS_InvokeM68kHook(cls + CLASS_OFF_DISPATCHER,
-                                         cls, object, use_msg);
+                                         cls, use_msg, object);
         }
     }
 
@@ -11335,7 +11514,13 @@ static void free_boopsi_object(uint32_t object)
 }
 
 /* NewObjectA(classPtr, classID, tagList) — A0, A1, A2
- * Returns object pointer in D0. */
+ * Returns object pointer in D0.
+ * Real semantics (int 40 $3dae): the class's object refcount (+0x2c) is
+ * bumped, OM_NEW is dispatched with the CLASS as the object argument
+ * (the dispatcher chain allocates — rootclass does the AllocMem), the
+ * refcount is dropped, and the method result is the object.  Guest-
+ * defined classes therefore work: their OM_NEW sees a class and must
+ * DoSuperMethodA to obtain the instance. */
 static void intuition_NewObjectA(void)
 {
     uint32_t class_ptr = m68k_get_reg(NULL, M68K_REG_A0);
@@ -11348,21 +11533,14 @@ static void intuition_NewObjectA(void)
         return;
     }
 
-    uint32_t object = alloc_boopsi_object(cls);
-    if (!object) {
-        m68k_set_reg(M68K_REG_D0, 0);
-        return;
-    }
-    boopsi_set_object_class(object, cls);
-
+    mem_w32(cls + CLASS_OFF_OBJECT_COUNT,
+            mem_u32(cls + CLASS_OFF_OBJECT_COUNT) + 1);
     uint32_t msg = alloc_stack_msg(OM_NEW, tag_list, 0);
-    uint32_t result = boopsi_dispatch(object, OM_NEW, msg, cls);
+    uint32_t object = boopsi_dispatch(cls, OM_NEW, msg, cls);
     free_stack_msg(12);
+    mem_w32(cls + CLASS_OFF_OBJECT_COUNT,
+            mem_u32(cls + CLASS_OFF_OBJECT_COUNT) - 1);
 
-    if (!result) {
-        free_boopsi_object(object);
-        object = 0;
-    }
     m68k_set_reg(M68K_REG_D0, object);
 }
 
@@ -11586,6 +11764,34 @@ uint32_t UAOS_BOOPSI_Dispatch(uint32_t object, uint32_t method, uint32_t msg, ui
     return boopsi_dispatch(object, method, msg, start_class);
 }
 
+/* DoSuperMethodA equivalent for native built-in dispatchers: forwards to
+ * the superclass of the class currently handling the method (the nest
+ * stack's top), preserving the real BOOPSI convention. */
+uint32_t UAOS_BOOPSI_SuperDispatch(uint32_t object, uint32_t msg)
+{
+    return boopsi_super_dispatch(object, mem_u32(msg + MSG_OFF_METHODID), msg);
+}
+
+/* Allocate an object for `leaf_cls`: OBJ_HEADER + InstOffset + InstSize,
+ * zeroed, class longword stored at object-4.  Used by rootclass OM_NEW —
+ * real BOOPSI semantics have the dispatcher chain (not NewObjectA)
+ * allocate the instance. */
+uint32_t UAOS_BOOPSI_AllocForClass(uint32_t leaf_cls)
+{
+    uint32_t obj = alloc_boopsi_object(leaf_cls);
+    if (obj) boopsi_set_object_class(obj, leaf_cls);
+    return obj;
+}
+
+/* Full dispose helper for native OM_NEW failure paths: runs OM_DISPOSE
+ * down the super chain then frees the object block. */
+void UAOS_BOOPSI_DisposeOf(uint32_t obj)
+{
+    if (!obj) return;
+    boopsi_dispatch(obj, OM_DISPOSE, 0, 0);
+    free_boopsi_object(obj);
+}
+
 /* Public registration helper for built-in classes. */
 void UAOS_BOOPSI_RegisterClass(uint32_t cls)
 {
@@ -11599,20 +11805,31 @@ void UAOS_BOOPSI_RegisterClass(uint32_t cls)
     }
 }
 
-/* RemoveClass(class) — A0; returns nothing useful. */
+/* RemoveClass(class) — A0; returns the class pointer (nonzero) on
+ * success, 0 for NULL.  Unlinks the class from the private registry —
+ * guests check the return for truth. */
 static void intuition_RemoveClass(void)
 {
     uint32_t cls = m68k_get_reg(NULL, M68K_REG_A0);
-    if (!cls) return;
+    if (!cls) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
     for (int i = 0; i < MAX_BOOPSI_CLASSES; i++) {
         if (g_boopsi_classes[i].active && g_boopsi_classes[i].class_ptr == cls) {
             g_boopsi_classes[i].active = 0;
             g_boopsi_classes[i].class_ptr = 0;
         }
     }
+    m68k_set_reg(M68K_REG_D0, cls);
 }
 
-/* NextObject(objectPtrPtr) — A0; returns next object in D0. */
+/* NextObject(objectPtrPtr) — A0; returns next object in D0.
+ * Real semantics: the cursor cell holds a link-block address; each block
+ * leads with the next-block pointer at +0 and the Object* is block+12
+ * (the 12-byte node/class header precedes instance data).  The call
+ * advances the cursor to the successor and returns the CURRENT block's
+ * object; when the current block has no successor it returns NULL. */
 static void intuition_NextObject(void)
 {
     uint32_t ptrptr = m68k_get_reg(NULL, M68K_REG_A0);
@@ -11620,14 +11837,18 @@ static void intuition_NextObject(void)
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
-    uint32_t cur = mem_u32(ptrptr);
-    if (!cur) {
+    uint32_t block = mem_u32(ptrptr);
+    if (!block || block + 4 > GUEST_RAM_SIZE) {
         m68k_set_reg(M68K_REG_D0, 0);
         return;
     }
-    uint32_t next = mem_u32(cur + OBJ_OFF_LN_SUCC);
+    uint32_t next = mem_u32(block + OBJ_OFF_LN_SUCC);
+    if (!next) {
+        m68k_set_reg(M68K_REG_D0, 0);
+        return;
+    }
     mem_w32(ptrptr, next);
-    m68k_set_reg(M68K_REG_D0, next);
+    m68k_set_reg(M68K_REG_D0, block + OBJ_HEADER_SIZE);
 }
 
 /* -------------------------------------------------------------------------
@@ -11789,16 +12010,22 @@ static void intuition_HelpControl(void)
     uint8_t enabled = (flags & HC_GADGETHELP) ? 1 : 0;
     slot->help_enabled = enabled;
 
-    /* Propagate HC_GADGETHELP to every other window in the same help-group. */
-    if (slot->help_group) {
-        for (int i = 0; i < MAX_INTUITION_WINS; i++) {
-            IntuitionSlot *other = &g_intu_wins[i];
-            if (other->active && other != slot &&
-                other->help_group == slot->help_group) {
-                other->help_enabled = enabled;
-            }
-        }
+    /* Mirror the guest-visible state: real HelpControl sets/clears bit
+     * 0x20 of Window.MoreFlags (win+0x84) for every window sharing the
+     * same HelpGroup id (win+0xde). */
+    for (int i = 0; i < MAX_INTUITION_WINS; i++) {
+        IntuitionSlot *other = &g_intu_wins[i];
+        if (!other->active || !other->guest_win) continue;
+        int same = (other == slot) ||
+                   (slot->help_group &&
+                    other->help_group == slot->help_group);
+        if (!same) continue;
+        other->help_enabled = enabled;
+        uint32_t mf = mem_u32(other->guest_win + WIN_OFF_MOREFLAGS);
+        if (enabled) mf |= 0x20; else mf &= ~0x20u;
+        mem_w32(other->guest_win + WIN_OFF_MOREFLAGS, mf);
     }
+    m68k_set_reg(M68K_REG_D0, 4);   /* real HelpControl always returns 4 */
 }
 
 /* StartScreenNotifyTagList(tagList) — A0; returns handle in D0. */
@@ -12339,8 +12566,25 @@ static void *intuition_funcs[] = {
     intuition_UnlockScreenGI,
 };
 
+/* Catch-all for JVT slots without an ILLEGAL dispatch stub of their own
+ * (AlohaWorkbench -402, intuitionPrivate1-4, and every other gap in the
+ * real V40 vector table).  The glue pre-fills the whole LVO range with
+ * index 250 so unknown calls return D0=0 instead of jumping into RAM. */
+static void intuition_Unimplemented(void)
+{
+    static int logged = 0;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr, "[INTUITION] unimplemented LVO hit (D0=0)\n");
+    }
+    m68k_set_reg(M68K_REG_D0, 0);
+}
+
+#define INTUITION_STUB_FN 250
+
 void UAOS_Intuition_Dispatch(uint32_t fn)
 {
+    if (fn == INTUITION_STUB_FN) { intuition_Unimplemented(); return; }
     if (fn == 0 || fn > (sizeof(intuition_funcs) / sizeof(intuition_funcs[0]))) {
         fprintf(stderr, "[INTUITION] unknown fn=%u\n", fn);
         return;

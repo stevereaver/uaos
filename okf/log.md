@@ -1943,3 +1943,53 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
 * **Checked, kept open**: UAOS-244 (HDA live, AUDx IRQ PASS; audible .med blocked on UAOS-320), UAOS-131 umbrella (health snapshot comment), UAOS-234.
 * **Filed**: UAOS-327 (info 4 GiB wrap), UAOS-328 (GPT protective MBR as partition + duplicate DH0:), UAOS-329 (handler name dangling pointer), UAOS-330 (volume icons → NDOS fallback, wrong Disk.info path), UAOS-331 (shell/diag UX nits), UAOS-332 (PIT gap / ISR worst-case).
 * **Docs**: `okf/platforms/macbook41.md` (metal check pass section).
+
+## 2026-10-19T05:42Z — intuition.library 40.86b7 reconstruction comparison (UAOS-338)
+
+* **Review**: compared `~/workspaces/intuition_40.86b7_020` (manual C
+  reconstruction of Cosmos-patched intuition 40.86b7) against
+  `kernel/exec/intuition_lib.c`. All installed LVO offsets verified
+  against the binary's autoinit vector table.
+* **Findings** (full detail:
+  `documentation/intuition_40.86b7_comparison_report.md`): wrong
+  guest-visible `Screen.Type`/`GFLG_*`/`GACT_*` flag constants;
+  `NextObject`, `SysReqHandler`, `SetEditHook`, `InitRequester`,
+  `DMRequest`, `GadgetMouse`, `WindowLimits`, `SetWindowTitles`,
+  `DoubleClick` semantic divergences; missing image-method hook path for
+  BOOPSI images; `NewObjectA` pre-allocates vs real dispatcher-allocation
+  convention; no catch-all stubs in intuition/gadtools/graphics JVTs.
+* **Plane**: UAOS-338 tracking card; follow-ups filed UAOS-339..UAOS-345.
+* **Docs**: `okf/kernel/exec/intuition_library.md` comparison section.
+  No code changed — review only.
+
+## 2026-10-19T06:21Z — intuition 40.86b7 fixes implemented (UAOS-339..345)
+
+* **Constants**: canonical NDK values for `Screen.Type`, `GFLG_*`,
+  `GACT_*`, `GTYP_*`, `WFLG_*`, `IM_*`; `Requester` reshaped to the real
+  0x70-byte layout; `AmigaWindow` extended so `MoreFlags` (0x84) and
+  `HelpGroup` (0xde) are guest-visible. `GA_Rel*` tags set `GFLG_REL*`
+  bits; shared `gadget_box()` resolves relative geometry for hit-test,
+  render, and `OM_SET`.
+* **APIs**: `NextObject` returns `block+12` after advancing the cursor;
+  `SysReqHandler` peeks only; `InitRequester` clears 0x70; DM-request
+  pair fails only on `REQACTIVE`; `RemoveClass` returns the class;
+  `HelpControl` toggles `MoreFlags` 0x20 per help group, returns 4;
+  `SetEditHook` is the V40 global swap; `WindowLimits` validates nonzero
+  args; `GadgetMouse` takes `GadgetInfo*` in A1; `SetMouseQueue`/
+  `LendMenus` write win+0x9c/0xd4; `BeginRefresh`/`EndRefresh` toggle
+  `WFLG_WINDOWREFRESH` + `MoreFlags` 0x100.
+* **BOOPSI**: `NewObjectA` dispatches `OM_NEW` with the class as object;
+  rootclass allocates via `UAOS_BOOPSI_AllocForClass`; all 22 built-in
+  dispatchers super-dispatch first. Guest hook arg order fixed to
+  a0=cl/a1=msg/a2=obj. Subclass instance data moved to `obj+InstOffset`
+  (was overlaying embedded Gadget/Image headers); PropInfo/StringInfo at
+  `Gadget.SpecialInfo`. `DrawImage`/`EraseImage`/`PointInImage` dispatch
+  IM_* for `Depth==0xFFFF` objects; imageclass leads with a real
+  `struct Image` + marker.
+* **JVT**: intuition -6..-1236 and gadtools -6..-174 pre-filled with
+  catch-all stubs (fn 250 → D0=0) — AlohaWorkbench (-402) and
+  intuitionPrivate1-4 no longer jump into zeroed RAM.
+* **Verified**: clean ISO build; `tests/smoke.sh` 24/24;
+  `qemu_layout_test.py` 12/12; `qemu_m68k_lifecycle_test.py` 24/24
+  (OctaMED 150 s soak). Report gains an "Implementation status" section.
+* **Plane**: UAOS-339..UAOS-345 all Done.

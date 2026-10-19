@@ -21,6 +21,16 @@ void UAOS_BOOPSI_RegisterClass(uint32_t cls);
 /* Public BOOPSI dispatch helper (used by built-in class disposal). */
 uint32_t UAOS_BOOPSI_Dispatch(uint32_t object, uint32_t method, uint32_t msg, uint32_t start_class);
 
+/* DoSuperMethodA for native built-in dispatchers — forwards the current
+ * method to the superclass of the class whose dispatcher is running. */
+uint32_t UAOS_BOOPSI_SuperDispatch(uint32_t object, uint32_t msg);
+
+/* Allocate an object for `leaf_cls` — used by rootclass OM_NEW. */
+uint32_t UAOS_BOOPSI_AllocForClass(uint32_t leaf_cls);
+
+/* Run OM_DISPOSE and free the object block (native OM_NEW failure path). */
+void UAOS_BOOPSI_DisposeOf(uint32_t obj);
+
 /* -----------------------------------------------------------------------
  * layout.gadget (UAOS-128)
  *
