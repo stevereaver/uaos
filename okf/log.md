@@ -1,5 +1,10 @@
 # OKF Change Log
 
+## 2026-10-19 — UAOS-337 metal cascade repaint artifact fixed
+* **Symptom**: Early Startup option 2/3 (no Startup-Sequence / shell-only) on MBP4,1 left a waterfall of ghost window frames; shell itself worked.
+* **Root cause**: `repaint_damaged()`/`redraw_full()` only repainted the backdrop when `Desktop_IsWorkbenchLoaded()`; pre-WB, desktop-flagged damage (a vacated window rect) was never erased, so every move left a permanent ghost. Pitch-independent — reproduced identically in QEMU.
+* **6093905**: vacated damage fills with ES `WB_BLUE` pre-WB; all `Desktop_Mouse*` handlers early-return on `!g_workbench_loaded`. QEMU `minject` drag: 161,847 stale pixels → 0; smoke 24/24; wblaunch 6/6.
+
 ## 2026-10-19 — UAOS-336 metal Early Startup hold (~48 s) — instrumented
 * **Found** on MBP4,1 (192.168.10.222): tickcheck max PIT period ~148.9G cycles at sample 200 (ES entry); RTC count froze too — no external IRQs reached the CPU during the menu despite `sti`. `es_wait_key`'s iteration-count fallback then took ~48 s. Metal tickcheck otherwise: gate off (single-edge), 100.0/s vs RTC, worst PIT dispatch 169k cyc (timer=150k).
 * **003d532**: fallback now TSC-bounded (`Tickmon_TscHz`, 3 GHz if uncalibrated); `[ES] entry/stall/exit` klog snapshots (IF, vector counts, LAPIC TPR/PPR/SVR/LINT0/ISR/IRR, IOAPIC RTE2/8, PIC IMR/ISR). QEMU verified, smoke 24/24.
