@@ -2388,9 +2388,11 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
 
     /* Repaint only desktop icons intersecting the damage (footprint incl.
      * label area + 1px highlight margin).  Hidden when the Backdrop menu
-     * toggle is active. */
+     * toggle is active, or inside the front guest screen's vertical band
+     * (that area is the screen's raster/border, not the Workbench). */
     if (!g_backdrop_hidden && x1 > x0 && y1 > y0) {
-        int n;
+        int n, band_y0 = 0, band_y1 = 0;
+        int band = UAOS_Intuition_FrontScreenBandRows(&band_y0, &band_y1);
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
             IconState *ic = &icons[i];
@@ -2398,6 +2400,8 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
             if (lx < 0) lx = 0;
             if (lx - 1 >= x1 || ic->y - 1 >= y1 ||
                 lx + LABEL_W + 1 <= x0 || ic->y + ICON_H + 1 <= y0)
+                continue;
+            if (band && ic->y < band_y1 && ic->y + ICON_H > band_y0)
                 continue;
             draw_icon_state(ic);
         }
@@ -2427,11 +2431,15 @@ void Desktop_Draw(void)
     draw_menubar(W);
 
     /* Disk icons — all come from get_icons (VFS-mounted volumes + partitions).
-     * Hidden when the Backdrop menu toggle is active. */
+     * Hidden when the Backdrop menu toggle is active, or inside the front
+     * guest screen's vertical band. */
     if (!g_backdrop_hidden) {
-        int n;
+        int n, band_y0 = 0, band_y1 = 0;
+        int band = UAOS_Intuition_FrontScreenBandRows(&band_y0, &band_y1);
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
+            if (band && icons[i].y < band_y1 && icons[i].y + ICON_H > band_y0)
+                continue;
             draw_icon_state(&icons[i]);
         }
         draw_drop_target_highlight(icons, n);

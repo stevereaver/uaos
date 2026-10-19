@@ -3948,6 +3948,30 @@ static uint32_t disp_find_mode(uint32_t mode_id)
     return 0;
 }
 
+/* Standard (nominal) raster dimensions for a DisplayID.  Looks up the
+ * display-database table first, then decodes the classic pre-V39 monitor
+ * "keys" (LORES_KEY/HIRES_KEY/...) that applications still pass to
+ * SA_DisplayID.  Keys occupy the low 16 bits of the mode ID — bit 15 =
+ * hires, bit 5 = super-hires, bit 2 = lace — while UAOS table IDs carry a
+ * monitor index in bits 16-27 and never alias them.  Non-lace keys use the
+ * PAL row counts the chipset defaults to.  Returns 0 for unknown IDs. */
+int uaos_gfx_mode_dims(uint32_t mode_id, uint16_t *w, uint16_t *h)
+{
+    for (size_t i = 0; i < UAOS_MODE_COUNT; i++) {
+        if (uaos_modes[i].mode_id == mode_id) {
+            *w = uaos_modes[i].width;
+            *h = uaos_modes[i].height;
+            return 1;
+        }
+    }
+    if (mode_id & 0xFFFF0000u) return 0;
+    if (mode_id == 0x00008021u) { *w = 640; *h = 480; return 1; }  /* PRODUCTIVITY_KEY */
+    if (mode_id == 0x00008025u) { *w = 640; *h = 960; return 1; }  /* PRODUCTIVITYLACE_KEY */
+    *w = (mode_id & 0x20u) ? 1280 : (mode_id & 0x8000u) ? 640 : 320;
+    *h = (mode_id & 0x4u) ? 512 : 256;
+    return 1;
+}
+
 static uint32_t disp_next_mode(uint32_t mode_id)
 {
     disp_init_table();

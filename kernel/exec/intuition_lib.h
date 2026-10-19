@@ -65,6 +65,12 @@ int UAOS_Intuition_FrontScreenDraggable(void);
 int UAOS_Intuition_FrontScreenTop(void);
 int UAOS_Intuition_DragScreenTo(int new_top);
 
+/* Rows [y0,y1) owned by the front guest screen's vertical band — the area
+ * a custom screen claims across the full display width (raster + border).
+ * Desktop chrome (icons) intersecting the band is suppressed while a
+ * non-Workbench guest screen is front.  Returns 0 when none is front. */
+int UAOS_Intuition_FrontScreenBandRows(int *y0, int *y1);
+
 /* Retire every Intuition window/screen/requester owned by a task that is
  * about to lose its per-task RAM window (UAOS-265).  Called from
  * Task_Exit() before Task_ReleaseM68kRam(); without it, screen slots keep

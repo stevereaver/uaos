@@ -1993,3 +1993,39 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
   `qemu_layout_test.py` 12/12; `qemu_m68k_lifecycle_test.py` 24/24
   (OctaMED 150 s soak). Report gains an "Implementation status" section.
 * **Plane**: UAOS-339..UAOS-345 all Done.
+
+## 2026-10-19T07:09Z — OctaMED custom-screen presentation (UAOS-346)
+
+* **Symptom**: OctaMED V5 launched into what looked like a 640-wide
+  Workbench window — "not opening its own screen".  GDB probing showed
+  `OpenScreen` already worked: a front custom `ScreenSlot` existed; the
+  compositor drew WB desktop/icons around it and the screen resolved to
+  640x768 instead of the requested mode's standard raster.
+* **Root causes**: (1) `SA_Height=-1` (STDSCREENHEIGHT) fell back to the
+  framebuffer height; the `SA_DisplayID=0x8000` (HIRES_KEY) OctaMED passes
+  had no lookup path — the display table only carries UAOS mode IDs.
+  (2) The compositor composited the screen behind / WB desktop into
+  *every* region the front screen's rect didn't cover, so a 640-wide
+  screen had Workbench grey and disk icons beside it — no Amiga band
+  semantics.
+* **Fix**: `uaos_gfx_mode_dims()` (graphics.library) resolves a DisplayID
+  to its standard raster — UAOS table first, then the classic low-16-bit
+  monitor keys (lores/hires/super, lace bit -> 512 rows, HAM/EHB/DPF
+  variants, PRODUCTIVITY 640x480); `open_screen_internal` uses it for
+  `SA_Width/Height <= 0` before the fb fallback.  In the compositor,
+  `emit_screen_surround()` implements the copper-band model: rows above
+  and below the front screen's band composite the screen behind (or the
+  native desktop), while in-band area outside the raster is filled with
+  the screen's border colour (ColorMap pen 0).  Desktop icons inside a
+  non-LikeWorkbench front screen's band rows are suppressed via
+  `UAOS_Intuition_FrontScreenBandRows()` in both icon loops.
+* **Result**: OctaMED now gets the 640x256 PAL hires screen it asks for;
+  its window fills the band, its real menu strip (Project/Display/Song/…)
+  appears in the screen bar, and the area beside the raster is border —
+  Workbench only shows below the screen band (the screen behind).
+* **Verified**: clean ISO build; `qemu_octamed_ui_test.py` screendump;
+  `qemu_layout_test.py` 12/12; `qemu_m68k_lifecycle_test.py` 24/24
+  (OctaMED 150 s soak); `smoke.sh` 24/24.
+* **Docs**: `okf/kernel/exec/intuition_library.md` (OpenScreen row,
+  compositing paragraph), `okf/kernel/display/index.md` (screen band
+  compositing note).

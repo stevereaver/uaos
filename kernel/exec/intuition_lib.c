@@ -49,6 +49,7 @@ extern void         m68k_write_memory_32(unsigned int addr, unsigned int val);
 extern uint32_t UAOS_InvokeM68kHook(uint32_t hook_ptr, uint32_t a0, uint32_t a1, uint32_t a2);
 extern uint32_t uaos_gfx_default_font(void);
 extern void     uaos_gfx_set_vp_modeid(uint32_t vp, uint32_t modeid);
+extern int      uaos_gfx_mode_dims(uint32_t mode_id, uint16_t *w, uint16_t *h);
 extern void dos_AllocMem_glue(uint32_t size, uint32_t reqs, uint32_t *out_addr);
 extern void dos_FreeMem_glue(uint32_t addr, uint32_t size);
 extern uint32_t dos_LockPath_glue(const char *path);
@@ -4851,6 +4852,51 @@ static void emit_reveal_screen(int x, int y, int w, int h)
     g_ram = saved;
 }
 
+/* The screen's border colour — ColorMap pen 0, or the default palette's
+ * pen 0 when the screen has no colour table.  Used to fill the part of a
+ * screen's vertical band that its BitMap raster doesn't cover. */
+static uint32_t screen_border_rgb(ScreenSlot *slot)
+{
+    uint32_t cmap = screen_colormap(slot);
+    if (cmap) {
+        uint32_t table = mem_u32(cmap + CM_OFF_COLORTABLE);
+        if (table) return mem_u32(table) | 0xFF000000u;
+    }
+    return amiga_pen_to_rgb(0) | 0xFF000000u;
+}
+
+/* Fill whatever the front screen leaves uncovered in host rect (x,y,w,h).
+ * Screens own their whole vertical band, like copper-managed display
+ * bands on real hardware: rows above and below the band belong to the
+ * screen behind (the UAOS-9 pull-down reveal), while the in-band area the
+ * raster doesn't span horizontally shows the screen border — never the
+ * Workbench desktop. */
+static void emit_screen_surround(ScreenSlot *slot, int x, int y, int w, int h)
+{
+    int band_top = slot->top;
+    int band_bot = slot->top + slot->height;
+    int bot = y + h;
+
+    if (y < band_top) {
+        int sh = band_top - y < h ? band_top - y : h;
+        emit_reveal_screen(x, y, w, sh);
+    }
+    if (bot > band_bot) {
+        int sy = band_bot > y ? band_bot : y;
+        emit_reveal_screen(x, sy, w, bot - sy);
+    }
+
+    int sy0 = y > band_top ? y : band_top;
+    int sy1 = bot < band_bot ? bot : band_bot;
+    if (sy0 >= sy1) return;
+    uint32_t border = screen_border_rgb(slot);
+    if (x < slot->left)
+        FB_FillRect(x, sy0, slot->left - x, sy1 - sy0, border);
+    if (x + w > slot->left + slot->width)
+        FB_FillRect(slot->left + slot->width, sy0,
+                    x + w - slot->left - slot->width, sy1 - sy0, border);
+}
+
 /* Render the front Intuition screen's BitMap into the host framebuffer.
  * SA_BackFill runs first so the hook/pen fill lands inside the screen
  * BitMap (or directly on the framebuffer when the screen has none).
@@ -4868,7 +4914,7 @@ static int render_screen_backdrop_impl(void)
         uint32_t bm = slot->bitmap;
 
         if (!screen_covers_rect(slot, 0, 0, (int)g_fb.width, (int)g_fb.height))
-            emit_reveal_screen(0, 0, (int)g_fb.width, (int)g_fb.height);
+            emit_screen_surround(slot, 0, 0, (int)g_fb.width, (int)g_fb.height);
 
         /* SA_BackFill lands inside the screen BitMap, which retains the
          * pixels — re-run it only when its (hook/pen, bitmap, rastport,
@@ -4990,10 +5036,11 @@ static int render_screen_backdrop_region_impl(int x, int y, int w, int h)
         if (screen_is_orphaned(slot)) { retire_orphaned_screen(slot); continue; }
         uint32_t bm = slot->bitmap;
         if (!bm) return slot->backfill ? 1 : 0;
-        /* Where the damage reaches past the front screen's rect the
-         * screen behind is composited underneath first (UAOS-9). */
+        /* Where the damage reaches past the front screen's raster the
+         * surround is composited underneath first: screen-behind reveal
+         * outside the band, screen border inside it. */
         if (!screen_covers_rect(slot, x, y, w, h))
-            emit_reveal_screen(x, y, w, h);
+            emit_screen_surround(slot, x, y, w, h);
         /* The damage means the back buffer's copy is stale — emit the
          * current pen-cache contents for the region (UAOS-102). */
         scr_cache_ensure(slot);
@@ -5695,6 +5742,18 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     apply_parent_screen_defaults(parent_ptr, &width, &height, &depth,
                                  &detail_pen, &block_pen);
 
+    /* SA_Width/SA_Height of -1 (STDSCREENWIDTH/STDSCREENHEIGHT) ask for the
+     * DisplayID's standard raster, not the host framebuffer size — an
+     * explicit SA_DisplayID (OctaMED passes HIRES_KEY) pins the screen to
+     * that mode's nominal dimensions.  Unknown/absent IDs fall through to
+     * the framebuffer default. */
+    if ((width <= 0 || height <= 0) && display_id) {
+        uint16_t mw = 0, mh = 0;
+        if (uaos_gfx_mode_dims(display_id, &mw, &mh)) {
+            if (width <= 0)  width  = (int16_t)mw;
+            if (height <= 0) height = (int16_t)mh;
+        }
+    }
     if (width <= 0)  width  = (int16_t)g_fb.width;
     if (height <= 0) height = (int16_t)g_fb.height;
 
@@ -9346,6 +9405,19 @@ int UAOS_Intuition_FrontScreenTop(void)
 {
     ScreenSlot *s = find_front_screen();
     return s ? (int)s->top : 0;
+}
+
+/* Rows [y0,y1) owned by the front guest screen's vertical band.  Workbench
+ * icons intersecting the band are hidden — that area shows the screen's
+ * raster or border, not the desktop.  Returns 0 when no non-Workbench
+ * guest screen is front (LikeWorkbench/public screens keep icons). */
+int UAOS_Intuition_FrontScreenBandRows(int *y0, int *y1)
+{
+    ScreenSlot *s = find_front_screen();
+    if (!s || s->like_workbench) return 0;
+    *y0 = s->top;
+    *y1 = s->top + s->height;
+    return 1;
 }
 
 int UAOS_Intuition_DragScreenTo(int new_top)
