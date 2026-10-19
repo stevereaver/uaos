@@ -63,6 +63,55 @@ static WM_PaletteFn g_palette_fn = NULL;
  * screen rectangle (move, resize, zoom, close). */
 static WM_VacateFn g_vacate_fn = NULL;
 
+/* Optional visibility callback — windows on a non-displayed screen are
+ * hidden — and the front screen's band (copper-style split, see WM_BandFn). */
+static WM_VisibleFn g_visible_fn = NULL;
+static WM_BandFn    g_band_fn    = NULL;
+
+int WM_CurrentLayer = 0;
+
+/* Front-screen band clamped to the display; 0 = single layer. */
+static int band_rows(int *y0, int *y1)
+{
+    if (!g_band_fn || !g_band_fn(y0, y1)) return 0;
+    if (*y0 < 0) *y0 = 0;
+    if (*y1 > (int)g_fb.height) *y1 = (int)g_fb.height;
+    if (*y1 < *y0) *y1 = *y0;
+    return !(*y0 == 0 && *y1 == (int)g_fb.height);
+}
+
+/* Layer that owns host row y. */
+static int layer_at(int y)
+{
+    int y0, y1;
+    return (band_rows(&y0, &y1) && (y < y0 || y >= y1)) ? 1 : 0;
+}
+
+static int visible_in(int wh, int layer)
+{
+    return g_visible_fn ? g_visible_fn(wh, layer) : layer == 0;
+}
+
+/* Shown at all: on the front screen, or on the screen behind while part
+ * of it is revealed. */
+static int win_visible(int wh)
+{
+    int y0, y1;
+    return visible_in(wh, 0) || (band_rows(&y0, &y1) && visible_in(wh, 1));
+}
+
+/* Topmost shown window — the front screen's first, then the screen
+ * behind's — or -1. */
+static int top_visible(void)
+{
+    int y0, y1, band = band_rows(&y0, &y1);
+    for (int layer = 0; layer <= band; layer++)
+        for (int i = g_nwins - 1; i >= 0; i--)
+            if (g_wins[g_zorder[i]].active && visible_in(g_zorder[i], layer))
+                return g_zorder[i];
+    return -1;
+}
+
 /* Notify the vacate hook that a window is about to vacate (x,y,w,h). */
 static void wm_vacate(int wh, int x, int y, int w, int h)
 {
@@ -697,7 +746,7 @@ static int hit_test(int mx, int my)
     for (int i = g_nwins - 1; i >= 0; i--) {
         int wh = g_zorder[i];
         WmWindow *w = &g_wins[wh];
-        if (!w->active) continue;
+        if (!w->active || !visible_in(wh, layer_at(my))) continue;
         if (modal_wh >= 0 && wh != modal_wh) continue;
         if (mx >= w->x && mx < w->x + w->w &&
             my >= w->y && my < w->y + w->h)
@@ -796,7 +845,7 @@ static void depth_window(int wh)
 
     /* Focus shifts to the new topmost window */
     int old_focus = g_focus;
-    g_focus = g_zorder[g_nwins - 1];
+    g_focus = top_visible();
     /* B6: notify Intuition of the focus change so IDCMP_ACTIVEWINDOW /
      * INACTIVEWINDOW are sent (WM_LowerWindow already did this; depth_window
      * was setting g_focus directly and skipping the notification). */
@@ -924,6 +973,8 @@ int WM_AddWindow(int x, int y, int w, int h, const char *title,
     win->draw     = draw;
     win->on_key   = on_key;
     win->active   = 1;
+    win->has_screen_key = 0;
+    win->screen_key     = 0;
     str_copy(win->title, title, 32);
 
     g_zorder[g_nwins++] = slot;
@@ -961,6 +1012,64 @@ void WM_SetModal(int handle)
 void WM_SetPaletteFn(WM_PaletteFn fn)
 {
     g_palette_fn = fn;
+}
+
+void WM_SetVisibleFn(WM_VisibleFn fn)
+{
+    g_visible_fn = fn;
+}
+
+void WM_SetBandFn(WM_BandFn fn)
+{
+    g_band_fn = fn;
+}
+
+int WM_BandRows(int *y0, int *y1)
+{
+    return band_rows(y0, y1);
+}
+
+int WM_WindowLayer(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS || !g_wins[handle].active)
+        return -1;
+    if (visible_in(handle, 0)) return 0;
+    int y0, y1;
+    return (band_rows(&y0, &y1) && visible_in(handle, 1)) ? 1 : -1;
+}
+
+void WM_SetScreenKey(int handle, uint32_t key)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS || !g_wins[handle].active)
+        return;
+    g_wins[handle].has_screen_key = 1;
+    g_wins[handle].screen_key     = key;
+}
+
+int WM_GetScreenKey(int handle, uint32_t *key)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS || !g_wins[handle].active ||
+        !g_wins[handle].has_screen_key)
+        return 0;
+    *key = g_wins[handle].screen_key;
+    return 1;
+}
+
+int WM_IsWindowVisible(int handle)
+{
+    if (handle < 0 || handle >= WM_MAX_WINDOWS || !g_wins[handle].active)
+        return 0;
+    return win_visible(handle);
+}
+
+void WM_RefocusVisible(void)
+{
+    if (g_focus >= 0 && g_wins[g_focus].active && win_visible(g_focus))
+        return;
+    int old_focus = g_focus;
+    g_focus = top_visible();
+    damage_add_win(g_focus, 0);
+    wm_notify_focus_change(old_focus, g_focus);
 }
 
 void WM_SetVacateFn(WM_VacateFn fn)
@@ -1335,6 +1444,57 @@ void WM_RawKeyEvent(int code, int qual)
  * region.  The back buffer persists across frames, so windows and desktop
  * areas outside the damage keep their pixels; the FB dirty rect bounds the
  * flip to the repainted footprints. */
+/* Paint one display layer (0 = front screen, 1 = screen behind) clipped
+ * to [x0,x1)x[y0,y1): backdrop (when desktop-damaged or full) then that
+ * layer's windows back-to-front. */
+static void paint_layer(int layer, int x0, int y0, int x1, int y1,
+                        int desktop, int full)
+{
+    if (x1 <= x0 || y1 <= y0) return;
+    FB_SetClipRect(x0, y0, x1 - x0, y1 - y0);
+    WM_CurrentLayer = layer;
+    if (desktop) {
+        if (Desktop_IsWorkbenchLoaded()) {
+            if (full) Desktop_Draw();
+            else      Desktop_RedrawRect(x0, y0, x1 - x0, y1 - y0);
+        } else {
+            WB_InitPalette();
+            FB_FillRect(x0, y0, x1 - x0, y1 - y0, WB_BLUE);
+        }
+    }
+    /* The desktop may have applied a custom Intuition screen palette —
+     * reset to the Workbench chrome palette before window borders. */
+    WB_InitPalette();
+    for (int i = 0; i < g_nwins; i++) {
+        int wh = g_zorder[i];
+        WmWindow *w = &g_wins[wh];
+        if (!w->active || !visible_in(wh, layer)) continue;
+        if (w->x >= x1 || w->y >= y1 ||
+            w->x + w->w <= x0 || w->y + w->h <= y0)
+            continue;
+        repaint_window(wh);
+    }
+    WM_CurrentLayer = 0;
+}
+
+/* Composite the scene for [x0,x1)x[y0,y1).  When the front screen covers
+ * only a band of rows, the rows above and below it are painted from the
+ * screen behind — what the copper did on real hardware by switching
+ * bitplane pointers at the screen's first scanline.  The whole frame is
+ * built in the back buffer and flipped, so no beam timing is needed. */
+static void paint_scene(int x0, int y0, int x1, int y1, int desktop, int full)
+{
+    int by0, by1;
+    if (band_rows(&by0, &by1)) {
+        paint_layer(1, x0, y0, x1, y1 < by0 ? y1 : by0, desktop, full);
+        paint_layer(1, x0, y0 > by1 ? y0 : by1, x1, y1, desktop, full);
+        paint_layer(0, x0, y0 > by0 ? y0 : by0, x1, y1 < by1 ? y1 : by1,
+                    desktop, full);
+    } else {
+        paint_layer(0, x0, y0, x1, y1, desktop, full);
+    }
+}
+
 static void repaint_damaged(void)
 {
     /* Erase any cursor sprite still occupying a buffer: the sprite is
@@ -1369,38 +1529,17 @@ static void repaint_damaged(void)
      * intersecting the damage — it popped to the front during title-bar
      * drags.  With the clip, nothing outside the damage is touched in the
      * back buffer or on screen. */
-    FB_SetClipRect(x0, y0, x1 - x0, y1 - y0);
-
     /* Backdrop/icons/menubar only where the damage can expose them.
      * Before Workbench loads (shell-only / no-Startup-Sequence boots) the
      * desktop layer doesn't exist, but a desktop-flagged damage still means
      * "a window vacated this region" — it must be erased anyway or the
      * persistent back buffer keeps replaying the old frame pixels, leaving
      * a permanent ghost for every move/resize/close.  The pre-Workbench
-     * backdrop is the Early-Startup blue. */
-    if (desktop) {
-        if (Desktop_IsWorkbenchLoaded()) {
-            Desktop_RedrawRect(x0, y0, x1 - x0, y1 - y0);
-        } else {
-            WB_InitPalette();
-            FB_FillRect(x0, y0, x1 - x0, y1 - y0, WB_BLUE);
-        }
-    }
-
-    /* Same chrome-palette reset as WM_Redraw. */
-    WB_InitPalette();
-
-    /* Repaint only windows intersecting the damage, back-to-front so a
-     * restacked or vacated region resolves to the new z-order. */
-    for (int i = 0; i < g_nwins; i++) {
-        int wh = g_zorder[i];
-        WmWindow *w = &g_wins[wh];
-        if (!w->active) continue;
-        if (w->x >= x1 || w->y >= y1 ||
-            w->x + w->w <= x0 || w->y + w->h <= y0)
-            continue;
-        repaint_window(wh);
-    }
+     * backdrop is the Early-Startup blue.  Windows intersecting the damage
+     * repaint back-to-front so a restacked or vacated region resolves to
+     * the new z-order — per display layer (paint_scene). */
+    paint_scene(x0, y0, x1, y1, desktop, 0);
+    FB_SetClipRect(x0, y0, x1 - x0, y1 - y0);
 
     /* The menu dropdown floats above windows and manages its own geometry —
      * repaint it whenever open so hover/switch damage is reflected. */
@@ -1460,28 +1599,10 @@ static void redraw_full(void)
 
     FB_BeginDraw();
 
-    /* Repaint full desktop backdrop only if Workbench has been loaded.
-     * Before that the backdrop is the Early-Startup blue — fill it so a
-     * full redraw also erases vacated window regions. */
-    if (Desktop_IsWorkbenchLoaded()) {
-        Desktop_Draw();
-    } else {
-        WB_InitPalette();
-        FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, WB_BLUE);
-    }
-
-    /* The desktop may have applied a custom Intuition screen palette. Reset
-     * to the default Workbench chrome palette before drawing window borders,
-     * title bars and gadgets so every window (native or Intuition) matches. */
-    WB_InitPalette();
-
-    /* Paint windows back-to-front */
-    for (int i = 0; i < g_nwins; i++) {
-        int wh = g_zorder[i];
-        WmWindow *w = &g_wins[wh];
-        if (!w->active) continue;
-        repaint_window(wh);
-    }
+    /* Full desktop backdrop (Early-Startup blue before Workbench loads)
+     * plus every shown window back-to-front, per display layer. */
+    paint_scene(0, 0, (int)g_fb.width, (int)g_fb.height, 1, 1);
+    FB_ClearClip();
 
     /* Workbench menu dropdown must float above all windows. */
     Desktop_DrawMenuDropdown();
@@ -1576,7 +1697,7 @@ void WM_CloseWindow(int handle)
     /* Update focus to the new top window before deactivating so that
      * any focus notification hook can still read the closing window. */
     if (g_focus == handle)
-        g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
+        g_focus = top_visible();
 
     /* Free the slot */
     w->active = 0;
@@ -1742,7 +1863,7 @@ void WM_LowerWindow(int handle)
 
     int old_focus = g_focus;
     /* Focus stays with the now-topmost window */
-    g_focus = (g_nwins > 0) ? g_zorder[g_nwins - 1] : -1;
+    g_focus = top_visible();
     /* Lowering reveals whatever was beneath — windows or desktop — plus the
      * previous and new focus windows' title bars. */
     damage_add_win(handle, 1);

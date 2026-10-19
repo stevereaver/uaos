@@ -10,6 +10,8 @@
 #ifndef UAOS_WM_H
 #define UAOS_WM_H
 
+#include <stdint.h>
+
 #define WM_MAX_WINDOWS  16
 
 /* Title bar height: 1px raised top edge + 9px interior (Topaz/8 glyph
@@ -49,6 +51,19 @@ typedef void (*WM_PaletteFn)(int win_handle);
  * uses this to erase stale pixels from the screen's planar BitMap. */
 typedef void (*WM_VacateFn)(int win_handle, int x, int y, int w, int h);
 
+/* Optional visibility callback: returns 1 when a window belongs to the
+ * given display layer — 0 = the front screen, 1 = the screen behind it.
+ * Windows in neither layer are neither painted, hit-tested nor given
+ * focus — Intuition uses this to make each screen a separate display. */
+typedef int (*WM_VisibleFn)(int win_handle, int layer);
+
+/* Optional band callback: when the front screen covers only rows [y0,y1)
+ * of the display (dragged down, or shorter than the display) it returns 1
+ * and every frame is composited Amiga copper-style — rows outside the band
+ * come from layer 1 (the screen behind: its backdrop, windows and title
+ * bar), rows inside it from layer 0.  Return 0 for a full-display front. */
+typedef int (*WM_BandFn)(int *y0, int *y1);
+
 #define WM_EVT_CLOSE_REQUEST 1
 #define WM_EVT_MOUSE_DOWN    2
 #define WM_EVT_MOUSE_UP      3
@@ -86,6 +101,8 @@ typedef struct {
     int        zoomed;        /* 1 = currently maximised                   */
     int        restore_x, restore_y, restore_w, restore_h;
     int        modal;         /* 1 = only this window may be hit-tested    */
+    int        has_screen_key; /* 1 = screen_key binds window to a screen  */
+    uint32_t   screen_key;    /* opaque screen binding (Intuition-defined) */
 } WmWindow;
 
 /* Register a window — returns handle (0..WM_MAX_WINDOWS-1) or -1 on fail */
@@ -112,6 +129,33 @@ void WM_SetPaletteFn(WM_PaletteFn fn);
 /* Set a global vacate callback invoked just before a window vacates its
  * screen rectangle (move, resize, zoom, close).  Pass NULL to disable. */
 void WM_SetVacateFn(WM_VacateFn fn);
+
+/* Bind a native window to a screen (opaque key interpreted by the
+ * visibility callback) / read the binding back.  Unbound windows return 0. */
+void WM_SetScreenKey(int handle, uint32_t key);
+int  WM_GetScreenKey(int handle, uint32_t *key);
+
+/* Set the per-window visibility callback (see WM_VisibleFn). */
+void WM_SetVisibleFn(WM_VisibleFn fn);
+
+/* Set the front-screen band callback (see WM_BandFn). */
+void WM_SetBandFn(WM_BandFn fn);
+
+/* Front screen's band rows; 0 when the front screen owns the whole
+ * display (single layer). */
+int  WM_BandRows(int *y0, int *y1);
+
+/* Display layer a window is shown in: 0 front screen, 1 screen behind,
+ * -1 hidden / invalid. */
+int  WM_WindowLayer(int handle);
+
+/* 1 if the window is shown on the current front screen. */
+int  WM_IsWindowVisible(int handle);
+
+/* Re-evaluate visibility after the front screen changed: if the focused
+ * window is now hidden, focus moves to the topmost visible window (or
+ * none), with the usual focus notifications. */
+void WM_RefocusVisible(void);
 
 /* Tell the WM the total content size and visible viewport height so scrollbars
  * can be proportional and scroll clamping is correct.
@@ -197,6 +241,10 @@ WM_DrawFn WM_GetDrawFn(int handle);   /* returns NULL if handle invalid/inactive
 /* Handle of the window currently being painted by WM_Redraw/repaint_window.
  * Draw callbacks can use this to identify themselves instead of hit-testing. */
 extern int WM_CurrentDrawHandle;
+
+/* Display layer being composited while the desktop/windows repaint
+ * (0 = front screen, 1 = screen behind) — see WM_BandFn. */
+extern int WM_CurrentLayer;
 
 /* Get the absolute screen geometry of an active window. Returns 1 if active. */
 int       WM_GetWindowRect(int handle, int *x, int *y, int *w, int *h);

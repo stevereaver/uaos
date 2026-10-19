@@ -71,6 +71,14 @@ int UAOS_Intuition_DragScreenTo(int new_top);
  * non-Workbench guest screen is front.  Returns 0 when none is front. */
 int UAOS_Intuition_FrontScreenBandRows(int *y0, int *y1);
 
+/* The screen behind the front one (UAOS-349 pull-down reveal): render it
+ * into a host rect (1 = custom screen emitted, 0 = it is Workbench, which
+ * the desktop draws natively), its title-bar text, and whether it is a
+ * custom screen. */
+int UAOS_Intuition_RenderBehindBackdropRegion(int x, int y, int w, int h);
+const char *UAOS_Intuition_BehindScreenTitle(void);
+int UAOS_Intuition_BehindIsCustom(void);
+
 /* Retire every Intuition window/screen/requester owned by a task that is
  * about to lose its per-task RAM window (UAOS-265).  Called from
  * Task_Exit() before Task_ReleaseM68kRam(); without it, screen slots keep

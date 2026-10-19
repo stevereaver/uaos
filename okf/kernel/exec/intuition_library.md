@@ -230,7 +230,7 @@ Requesters are rendered using the native WM: a grey window with a title bar, bod
 | `MoveScreen` | Implemented | Updates the guest `Screen` `LeftEdge`/`TopEdge` fields and clamps the new position to the screen's `SA_DClip` / `SA_Overscan` constraint rectangle, if any. |
 | `ScreenToFront` | Implemented | Marks the screen as the active screen, refreshes the desktop title, and damages the whole desktop so the backdrop repaints from the new front BitMap. |
 | `ScreenToBack` | Implemented | Marks the screen as behind, picks another active screen for the title, and damages the desktop. |
-| `ScreenDepth` | Implemented | V39 depth-arrangement: `SDEPTH_TOFRONT`/`SDEPTH_TOBACK` adjust the front/back flag and damage the desktop. The menubar screen-depth gadget (right edge of the screen bar) cycles screens on click; shift-click steps backwards (`UAOS_Intuition_CycleScreen`, also LAmiga+M/N). |
+| `ScreenDepth` | Implemented | V39 depth-arrangement: `SDEPTH_TOFRONT`/`SDEPTH_TOBACK` adjust the front/back flag and damage the desktop. The menubar screen-depth gadget (right edge of the screen bar) cycles screens on click; shift-click steps backwards (`UAOS_Intuition_CycleScreen`, also LAmiga+M/N); Workbench is always a stop, even without a `ScreenSlot` (UAOS-348). |
 | `ScreenPosition` | Implemented | V39 screen positioning: `SPOS_RELATIVE` moves by `(x1,y1)`, `SPOS_ABSOLUTE` sets position, `SPOS_MAKEVISIBLE` clamps a rectangle into view. Final position is clamped to the `SA_DClip` / `SA_Overscan` constraint rectangle. |
 | `ShowTitle` | Implemented | Toggles the `SHOWTITLE` flag and shows/hides the screen title in the desktop menu bar. |
 | `AllocScreenBuffer` | Implemented | Allocates a `ScreenBuffer` with a `BitMap` (copy or screen bitmap) and a `DBufInfo`.  `SB_COPY_BITMAP` allocates a new BitMap; `SB_SCREEN_BITMAP` reuses the screen's existing BitMap. |
@@ -253,7 +253,7 @@ Every `IntuitionSlot`/`ScreenSlot` records its owning `UaosTask` — the guest `
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `LockPubScreen` | Implemented | Returns a named public screen by `SA_PubName`, or the default/frontmost screen when name is `NULL`. The screen's lock count is incremented. |
+| `LockPubScreen` | Implemented | Returns a named public screen by `SA_PubName`, or the default public screen (Workbench) when name is `NULL` — never simply the front screen, so visitor windows don't land on another app's custom screen (UAOS-348). Opening Workbench on demand does not take the display from a front custom screen. The screen's lock count is incremented. |
 | `UnlockPubScreen` | Implemented | Decrements the screen's lock count. |
 | `LockPubScreenList` | Implemented | Returns a real guest `List` containing a node for every active public screen. Each node stores the screen's public name and guest `Screen*` pointer. |
 | `UnlockPubScreenList` | Implemented | Walks the list, frees all nodes and their name strings, and frees the list header. |

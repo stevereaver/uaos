@@ -2029,3 +2029,76 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
 * **Docs**: `okf/kernel/exec/intuition_library.md` (OpenScreen row,
   compositing paragraph), `okf/kernel/display/index.md` (screen band
   compositing note).
+
+## 2026-10-19T10:20Z — MenuDemo custom-screen QUIT menu demo (UAOS-347)
+
+* **Added** `system/Demos/src/MenuDemo.s`: AmigaOS 3.1-style M68k demo —
+  `OpenScreenTagList` for a full-size `CUSTOMSCREEN`, activated window,
+  `SetMenuStrip` with a static strip (Menu "Project" -> MenuItem "Quit",
+  `COMMSEQ` 'Q').  Waits on `IDCMP_MENUPICK`; exits on the first
+  non-`MENUNULL` code (and on `IDCMP_CLOSEWINDOW`).  Cleanup path:
+  `ClearMenuStrip`/`CloseWindow`/`CloseScreen`/`CloseLibrary`.
+* **Built**: vasm `-Fhunk` + vlink `-bamigahunk` + `gen_uaos_m68k` wrap ->
+  `SYS_ROOT/Demos/MenuDemo` (1740 B); source ships in `SYS_ROOT/Demos/src/`.
+* **Verified** in QEMU (headless, GDB-stub driven): MenuDemo task +
+  window registered; RMB gesture on the "Project" title opens the
+  dropdown ("Quit Q" item rendered); release over the item posts
+  `MENUPICK` menu number `0xF800` -> task exits cleanly.
+* **Docs**: `okf/system/index.md` (MenuDemo bullet in M68k Demo Programs).
+
+## 2026-10-19T10:52Z — Custom screens are separate displays (UAOS-348)
+
+* **Bug** (reported against UAOS-347 MenuDemo): `OpenScreenTagList(CUSTOMSCREEN)`
+  + `WA_CustomScreen` looked like a window on Workbench — Shell, drawers and
+  icons drew over the custom screen, the bar showed Workbench fallback titles
+  after the guest strip, and the depth gadget couldn't cycle back.
+* **Root causes**: wm.c painted/hit-tested/focused every window regardless of
+  screen; `UAOS_Intuition_CycleScreen` only cycled `ScreenSlot`s (native WB has
+  none → `count <= 1` return); `get_default_pub_screen` returned the front
+  screen; desktop `menu_title()` fell back to WB titles past a short strip.
+* **Fix**: `WM_SetVisibleFn`/`WM_IsWindowVisible`/`WM_RefocusVisible` +
+  `WM_SetScreenKey` (wm.c/h); Intuition `intu_window_visible` compares window
+  vs front-screen display keys (Workbench = 0), `bind_native_window_screen`
+  binds requesters/alerts/ASL to the parent's screen; `update_desktop_title`
+  refocuses + damages on front change and re-fronts Workbench when the front
+  screen goes away; CycleScreen gains a virtual Workbench stop; default pub
+  screen = Workbench (opened without stealing the display); custom-screen bar
+  shows only the focused window's menus; band icons not clickable.
+* **Added**: `tests/qemu_screen_test.py` (12 checks: isolation, depth-gadget
+  cycle both ways with focus, QUIT).
+* **Verified**: clean ISO build; `qemu_screen_test.py` 12/12;
+  `qemu_layout_test.py` 12/12; `qemu_m68k_lifecycle_test.py` 24/24;
+  `smoke.sh` 24/24; `qemu_octamed_ui_test.py` (startup requester now on
+  OctaMED's screen, full Project/Display/Song/… strip).
+* **Docs**: `okf/kernel/display/index.md` (screens-as-displays paragraph,
+  depth-gadget note), `okf/kernel/exec/intuition_library.md` (ScreenDepth,
+  LockPubScreen rows).
+
+## 2026-10-19T11:15Z — Screen pull-down drag reveals the screen behind (UAOS-349)
+
+* **Added** copper-style band compositing: `WM_SetBandFn`/`WM_BandRows`/
+  `WM_WindowLayer`/`WM_CurrentLayer` (wm.c/h); `paint_scene()` paints rows
+  outside the front screen's band from layer 1 (screen behind: backdrop,
+  icons, windows, its own bar) and rows inside from layer 0, each pass
+  clipped (`paint_layer`).  No vblank simulation needed — frames are built
+  in the back buffer and flipped; the band split is what the copper did.
+* **Changed** `WM_VisibleFn` to take a layer; `hit_test` picks the layer
+  by row (revealed windows are clickable/activatable); focus fallback
+  prefers the front layer.
+* **Added** Intuition: `intu_band_rows`, layer-aware `intu_window_visible`,
+  `behind_screen_key`, native-Workbench recency stamp `g_wb_front_seq` in
+  `reveal_screen()`, `UAOS_Intuition_RenderBehindBackdropRegion` /
+  `BehindScreenTitle` / `BehindIsCustom`; Workbench not draggable;
+  `DragScreenTo` refocuses.
+* **Changed** desktop: front bar rides at its band top, behind bar at row
+  0 (`draw_menubar(W, by, layer)`); menus + hit-tests follow the bar of the
+  active window's screen (`menu_bar_y`, `front_bar_y`, `bars_invalidate`).
+* **Side effect (correct)**: Workbench windows now also show below short
+  custom screens (OctaMED 640x256), not just its backdrop/icons.
+* **Verified**: `tests/qemu_screen_test.py` 22/22 (new drag checks: top
+  follows bar, window rides, Shell in layer 1, menu drops from moved bar,
+  revealed click activates Shell, drag up re-covers + refocuses);
+  `qemu_layout_test.py` 12/12; `qemu_m68k_lifecycle_test.py` 24/24;
+  `smoke.sh` 24/24; `qemu_octamed_ui_test.py` (Workbench visible below).
+* **Docs**: `okf/kernel/display/index.md` (band compositing paragraph),
+  `okf/tools/index.md` (screen test scope).

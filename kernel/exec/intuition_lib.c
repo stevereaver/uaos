@@ -382,6 +382,9 @@ static IntuitionSlot *alloc_slot(void)
     return NULL;
 }
 
+static void bind_native_window_screen(int wh, uint32_t parent_win,
+                                      uint32_t screen);
+
 static IntuitionSlot *find_slot_by_guest(uint32_t guest_win)
 {
     for (int i = 0; i < MAX_INTUITION_WINS; i++) {
@@ -2907,6 +2910,7 @@ static uint32_t build_requester_internal(uint32_t parent_win, const char *title,
         free_intuition_signal(sig);
         return 0;
     }
+    bind_native_window_screen(wh, parent_win, 0);
 
     uint32_t guest_win = intu_alloc(sizeof(AmigaWindow));
     if (!guest_win) {
@@ -3954,6 +3958,7 @@ int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
         free_intuition_signal(sig);
         return 0;
     }
+    bind_native_window_screen(wh, 0, mem_u32(req_ptr + FRQP_SCREEN));
     g_frq.wm_handle = wh;
     g_frq.active    = 1;
     WM_SetEventHandler(wh, frq_event_handler);
@@ -4210,6 +4215,7 @@ static uint32_t build_alert_internal(uint32_t alert_str, uint32_t alert_num,
         free_intuition_signal(sig);
         return 0;
     }
+    bind_native_window_screen(wh, 0, 0);
 
     uint32_t guest_win = intu_alloc(sizeof(AmigaWindow));
     if (!guest_win) {
@@ -4380,6 +4386,23 @@ typedef struct ScreenSlot {
 
 static ScreenSlot g_intu_screens[MAX_INTUITION_SCREENS];
 
+/* The Workbench screen (OpenWorkbench / default public screen).  Windows on
+ * it — and native WM windows, which have no guest screen — form the
+ * Workbench display; every other screen is a separate display. */
+static uint32_t g_workbench_screen;
+static uint32_t open_workbench_internal(void);
+static ScreenSlot *find_front_screen(void);
+static int screen_is_orphaned(const ScreenSlot *slot);
+static void mark_screen_front(ScreenSlot *slot);
+static ScreenSlot *reveal_screen(void);
+static uint32_t screen_border_rgb(ScreenSlot *slot);
+static void emit_reveal_screen(int x, int y, int w, int h);
+static uint32_t g_front_seq;
+/* front_seq stamp of the native Workbench desktop (no ScreenSlot) — taken
+ * whenever it becomes the displayed screen, so it can be "the screen
+ * behind" a custom screen in recency order like any slot. */
+static uint32_t g_wb_front_seq = 0;
+
 static uint32_t screen_colormap(ScreenSlot *slot);
 
 static ScreenSlot *find_screen_slot(uint32_t screen_ptr)
@@ -4478,8 +4501,89 @@ static void init_guest_screen(uint32_t scr, ScreenSlot *slot, uint16_t type_flag
     sync_screen_bitmap(scr, slot->bitmap);
 }
 
+/* Display key of the front screen: 0 = Workbench (or no guest screen in
+ * front, i.e. the native desktop), else the custom screen's guest pointer. */
+static uint32_t front_screen_key(void)
+{
+    ScreenSlot *f = find_front_screen();
+    return (f && f->guest_screen != g_workbench_screen) ? f->guest_screen : 0;
+}
+
+/* Display key of a window: its guest screen unless that is Workbench.
+ * Native windows (no Intuition slot) belong to Workbench. */
+static uint32_t window_screen_key(int wh)
+{
+    IntuitionSlot *slot = get_slot_from_handle(wh);
+    uint32_t scr = 0;
+    if (slot) scr = slot->screen;
+    else if (!WM_GetScreenKey(wh, &scr)) return 0;
+    if (!scr || scr == g_workbench_screen || !find_screen_slot(scr))
+        return 0;
+    return scr;
+}
+
+/* Bind a native helper window Intuition opens on a guest's behalf
+ * (requester, alert, file requester) to a screen: the parent window's
+ * screen, else an explicit screen, else the screen currently displayed —
+ * so a requester raised by an app on its custom screen appears there. */
+static void bind_native_window_screen(int wh, uint32_t parent_win,
+                                      uint32_t screen)
+{
+    IntuitionSlot *p = parent_win ? find_slot_by_guest(parent_win) : NULL;
+    uint32_t key;
+    if (p) key = window_screen_key(p->wm_handle);
+    else if (screen && find_screen_slot(screen))
+        key = (screen == g_workbench_screen) ? 0 : screen;
+    else key = front_screen_key();
+    WM_SetScreenKey(wh, key);
+}
+
+/* Display key of the screen behind the front one (0 = Workbench). */
+static uint32_t behind_screen_key(void)
+{
+    ScreenSlot *b = reveal_screen();
+    return (b && b->guest_screen != g_workbench_screen) ? b->guest_screen : 0;
+}
+
+/* WM visibility hook: like the Amiga, each screen is its own display.
+ * Layer 0 is the front screen; layer 1 the screen behind, composited into
+ * the rows the front screen's band leaves uncovered (pull-down drag or a
+ * screen shorter than the display). */
+static int intu_window_visible(int wh, int layer)
+{
+    return window_screen_key(wh) ==
+           (layer ? behind_screen_key() : front_screen_key());
+}
+
+/* WM band hook: a custom front screen owns only its own rows of the
+ * display.  Workbench (slot or native) covers the whole display. */
+static int intu_band_rows(int *y0, int *y1)
+{
+    ScreenSlot *f = find_front_screen();
+    if (!f || f->guest_screen == g_workbench_screen) return 0;
+    *y0 = f->top;
+    *y1 = f->top + f->height;
+    return 1;
+}
+
 static void update_desktop_title(void)
 {
+    /* Front display changed: windows of the old screen disappear, the new
+     * screen's appear, and focus (menus, keys) must follow. */
+    static uint32_t last_key = 0;
+    /* The front screen closed or went away: Workbench takes the display. */
+    if (!find_front_screen() && g_workbench_screen) {
+        ScreenSlot *wb = find_screen_slot(g_workbench_screen);
+        if (wb && !screen_is_orphaned(wb)) mark_screen_front(wb);
+    }
+    uint32_t key = front_screen_key();
+    if (key != last_key) {
+        last_key = key;
+        if (!find_front_screen()) g_wb_front_seq = ++g_front_seq;
+        WM_RefocusVisible();
+        WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, (int)g_fb.height);
+    }
+
     ScreenSlot *front = NULL;
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
         if (g_intu_screens[i].active && g_intu_screens[i].is_front) {
@@ -4829,7 +4933,46 @@ static ScreenSlot *reveal_screen(void)
         if (slot->front_seq && (!best || slot->front_seq > best->front_seq))
             best = slot;
     }
+    /* The native Workbench desktop has no slot but is a screen too: NULL
+     * means it is the one behind (it was displayed more recently than any
+     * other candidate, or there is no other screen). */
+    int wb_slot = g_workbench_screen && find_screen_slot(g_workbench_screen);
+    if (!wb_slot && find_front_screen() &&
+        (!best || g_wb_front_seq > best->front_seq))
+        return NULL;
     return best ? best : first;
+}
+
+/* Render the screen behind into host rect (x,y,w,h) for the WM's layer-1
+ * pass.  Returns 1 when a custom screen behind was emitted; 0 when the
+ * screen behind is Workbench, which the desktop draws natively (backdrop,
+ * icons). */
+int UAOS_Intuition_RenderBehindBackdropRegion(int x, int y, int w, int h)
+{
+    ScreenSlot *b = reveal_screen();
+    if (!b || b->guest_screen == g_workbench_screen || !b->bitmap) return 0;
+    uint8_t *saved = g_ram;
+    if (b->owner && b->owner->m68k_ram)
+        g_ram = b->owner->m68k_ram;
+    FB_FillRect(x, y, w, h, screen_border_rgb(b));
+    g_ram = saved;
+    emit_reveal_screen(x, y, w, h);
+    return 1;
+}
+
+/* Title bar text of the screen behind (NULL = none / Workbench). */
+const char *UAOS_Intuition_BehindScreenTitle(void)
+{
+    ScreenSlot *b = reveal_screen();
+    if (!b || b->guest_screen == g_workbench_screen || !b->show_title)
+        return NULL;
+    return b->title[0] ? b->title : NULL;
+}
+
+/* 1 when the screen behind is a custom (non-Workbench) screen. */
+int UAOS_Intuition_BehindIsCustom(void)
+{
+    return behind_screen_key() != 0;
 }
 
 /* Emit the reveal screen's BitMap for the host rectangle (x,y,w,h) into
@@ -5961,17 +6104,13 @@ static void signal_pub_screen(ScreenSlot *slot)
 
 static uint32_t get_default_pub_screen(void)
 {
-    /* Return the frontmost active screen, or create a default Workbench screen. */
-    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
-        if (g_intu_screens[i].active && g_intu_screens[i].is_front)
-            return g_intu_screens[i].guest_screen;
-    }
-    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
-        if (g_intu_screens[i].active)
-            return g_intu_screens[i].guest_screen;
-    }
-    /* Create a default Workbench screen. */
-    return open_screen_internal(0, 0);
+    /* The default public screen is Workbench — not whichever screen is in
+     * front: a visitor window must not land on another app's custom
+     * screen just because that screen is currently displayed. */
+    if (g_workbench_screen && find_screen_slot(g_workbench_screen))
+        return g_workbench_screen;
+    g_workbench_screen = open_workbench_internal();
+    return g_workbench_screen;
 }
 
 /* =========================================================================
@@ -7493,7 +7632,14 @@ static uint32_t open_workbench_internal(void)
     slot->width = (int16_t)g_fb.width;
     slot->height = (int16_t)g_fb.height;
     slot->show_title = 1;
-    mark_screen_front(slot);
+    /* Workbench only takes the display when no other screen holds it —
+     * opening it on demand (LockPubScreen) must not bury a custom screen. */
+    int other_front = 0;
+    for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
+        if (&g_intu_screens[i] != slot && g_intu_screens[i].active &&
+            g_intu_screens[i].is_front)
+            other_front = 1;
+    if (!other_front) mark_screen_front(slot);
     slot->lock_count = 0;
     slot->title[0] = '\0';
     local_str_copy(slot->pub_name, "Workbench", sizeof(slot->pub_name));
@@ -7540,10 +7686,6 @@ static uint32_t open_workbench_internal(void)
     mem_w8(guest_screen + SCR_OFF_DETAILPEN, 0);
     mem_w8(guest_screen + SCR_OFF_BLOCKPEN, 1);
 
-    for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
-        if (g_intu_screens[i].active && &g_intu_screens[i] != slot)
-            g_intu_screens[i].is_front = 0;
-    }
     update_desktop_title();
     return guest_screen;
 }
@@ -9351,18 +9493,26 @@ static void intuition_ScreenToFront(void)
  * Called by LAmiga+M (next) / LAmiga+N (previous). */
 void UAOS_Intuition_CycleScreen(int direction)
 {
-    /* Collect active screen indices */
-    int indices[MAX_INTUITION_SCREENS];
+    /* Collect active screen indices.  Workbench is always a stop: when it
+     * has no ScreenSlot (the native desktop) it is represented by -1,
+     * meaning "no guest screen in front". */
+    int indices[MAX_INTUITION_SCREENS + 1];
     int count = 0;
     int front_idx = -1;
+    int have_wb = 0;
 
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++) {
-        if (g_intu_screens[i].active) {
-            indices[count] = i;
-            if (g_intu_screens[i].is_front)
-                front_idx = count;
-            count++;
-        }
+        ScreenSlot *s = &g_intu_screens[i];
+        if (!s->active || screen_is_orphaned(s)) continue;
+        if (s->guest_screen == g_workbench_screen) have_wb = 1;
+        indices[count] = i;
+        if (s->is_front)
+            front_idx = count;
+        count++;
+    }
+    if (!have_wb) {
+        if (front_idx < 0) front_idx = count;
+        indices[count++] = -1;
     }
 
     if (count <= 1) return;  /* nothing to cycle */
@@ -9376,12 +9526,14 @@ void UAOS_Intuition_CycleScreen(int direction)
     /* Bring the selected screen to front */
     for (int i = 0; i < MAX_INTUITION_SCREENS; i++)
         g_intu_screens[i].is_front = 0;
-    mark_screen_front(&g_intu_screens[indices[next_idx]]);
+    int sel = indices[next_idx];
+    if (sel >= 0) mark_screen_front(&g_intu_screens[sel]);
 
     update_desktop_title();
     front_screen_repaint();
-    screen_notify_event(g_intu_screens[indices[next_idx]].guest_screen,
-                        SNOTIFY_TYPE_DEPTH);
+    if (sel >= 0)
+        screen_notify_event(g_intu_screens[sel].guest_screen,
+                            SNOTIFY_TYPE_DEPTH);
 }
 
 /* -------------------------------------------------------------------------
@@ -9398,7 +9550,8 @@ void UAOS_Intuition_CycleScreen(int direction)
 int UAOS_Intuition_FrontScreenDraggable(void)
 {
     ScreenSlot *s = find_front_screen();
-    return s && s->draggable;
+    /* Workbench is the bottom display; only screens above it slide. */
+    return s && s->draggable && s->guest_screen != g_workbench_screen;
 }
 
 int UAOS_Intuition_FrontScreenTop(void)
@@ -9471,6 +9624,9 @@ int UAOS_Intuition_DragScreenTo(int new_top)
     int y0 = old_top < new_top ? old_top : new_top;
     int y1 = (old_top < new_top ? new_top : old_top) + s->height;
     WM_InvalidateDesktopRect(0, y0, (int)g_fb.width, y1 - y0);
+    /* Pushing the screen back up can cover the screen behind entirely —
+     * focus may not stay on a window that is no longer on display. */
+    WM_RefocusVisible();
     return 1;
 }
 
@@ -12688,6 +12844,8 @@ void UAOS_INTUITION_Register(void)
                       intuition_funcs);
     WM_SetPaletteFn(intuition_apply_window_palette);
     WM_SetVacateFn(intu_screen_vacate);
+    WM_SetVisibleFn(intu_window_visible);
+    WM_SetBandFn(intu_band_rows);
 
     /* Register builtin BOOPSI classes into the shared emulator RAM and
      * record the heap span they occupy.  Per-task M68k guests resolve the

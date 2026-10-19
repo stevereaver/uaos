@@ -1193,10 +1193,62 @@ static int host_menu_max_label_width(const HostMenu *menu)
 
 /* Return the title of the Nth menu, either from the active guest strip or
  * the hardcoded fallback titles. */
+/* 1 while a non-Workbench guest screen owns the display — its bar shows
+ * only the active window's menus, never the Workbench menus. */
+static int custom_screen_front(void)
+{
+    int y0, y1;
+    return UAOS_Intuition_FrontScreenBandRows(&y0, &y1);
+}
+
+/* Screen bars (UAOS-349).  The front screen's bar rides at the top of its
+ * band, so pulling the screen down slides the bar with it; the rows above
+ * show the screen behind, including its own bar at the top of the display.
+ * Menus drop from the bar of the screen that owns the active window. */
+static int front_bar_y(void)
+{
+    int y0, y1;
+    return WM_BandRows(&y0, &y1) ? y0 : 0;
+}
+
+static int focus_layer(void)
+{
+    return WM_WindowLayer(WM_GetFocus()) == 1;
+}
+
+static int menu_bar_y(void)
+{
+    return focus_layer() ? 0 : front_bar_y();
+}
+
+static int in_bar(int my, int by)
+{
+    return my >= by && my < by + MENUBAR_H;
+}
+
+/* The bar hosting the menus belongs to a custom (non-Workbench) screen. */
+static int menu_bar_custom(void)
+{
+    return focus_layer() ? UAOS_Intuition_BehindIsCustom()
+                         : custom_screen_front();
+}
+
+/* Damage both screen bars: the front screen's (wherever it rides) and,
+ * while it is pulled down, the screen behind's at the top. */
+static void bars_invalidate(void)
+{
+    int W = (int)g_fb.width;
+    WM_InvalidateDesktopRect(0, 0, W, MENUBAR_H);
+    int fy = front_bar_y();
+    if (fy) WM_InvalidateDesktopRect(0, fy, W, MENUBAR_H);
+}
+
 static const char *menu_title(int index)
 {
-    if (g_guest_menu_active && index >= 0 && index < g_active_menu_count)
-        return g_active_menus[index].label;
+    if (g_guest_menu_active)
+        return (index >= 0 && index < g_active_menu_count)
+               ? g_active_menus[index].label : NULL;
+    if (menu_bar_custom()) return NULL;
     const char *fallback[] = { "Workbench", "Window", "Icons", "Tools" };
     if (index >= 0 && index < (int)(sizeof(fallback) / sizeof(fallback[0])))
         return fallback[index];
@@ -1324,7 +1376,7 @@ static void draw_menu_dropdown(int W)
         int h = n * item_h + pad_y * 2;
 
         g_menu_x = menu_title_x(g_menu_index);
-        g_menu_y = MENUBAR_H;
+        g_menu_y = menu_bar_y() + MENUBAR_H;
         g_menu_w = w;
         g_menu_h = h;
 
@@ -1365,7 +1417,7 @@ static void draw_menu_dropdown(int W)
 
     /* Anchor to the active menu title. */
     g_menu_x = menu_title_x(g_menu_index);
-    g_menu_y = MENUBAR_H;
+    g_menu_y = menu_bar_y() + MENUBAR_H;
     g_menu_w = w;
     g_menu_h = h;
 
@@ -1471,42 +1523,47 @@ static void draw_menu_dropdown(int W)
     }
 }
 
-static void draw_menubar(int W)
+/* Draw a screen bar with its top at row `by`.  layer 0 is the front
+ * screen's bar, layer 1 the screen behind's (UAOS-349); only the bar of the
+ * screen owning the active window carries menu titles. */
+static void draw_menubar(int W, int by, int layer)
 {
     /* Update the active menu strip from the focused guest window. */
     refresh_active_menus();
 
     /* Top bevel: black outer, white inner (K+W+B+...) */
-    FB_DrawHLine(0, 0, W, WB_BLACK);
-    FB_DrawHLine(0, 1, W, WB_WHITE);
+    FB_DrawHLine(0, by, W, WB_BLACK);
+    FB_DrawHLine(0, by + 1, W, WB_WHITE);
     /* Blue fill between the white highlight and the black bottom */
-    FB_FillRect(0, 2, W, MENUBAR_H - 3, WB_BLUE);
+    FB_FillRect(0, by + 2, W, MENUBAR_H - 3, WB_BLUE);
     /* Black bottom edge */
-    FB_DrawHLine(0, MENUBAR_H - 1, W, WB_BLACK);
+    FB_DrawHLine(0, by + MENUBAR_H - 1, W, WB_BLACK);
 
     /* Menu titles (clean 8x16 system font, centred in the 20px bar) */
     int mx = 8;
-    for (int i = 0; ; i++) {
+    for (int i = 0; layer == focus_layer(); i++) {
         const char *title = menu_title(i);
         if (!title) break;
         /* Highlight the active menu title with a black bar, white text. */
         uint32_t bg = (g_menu_index == i) ? WB_BLACK : WB_BLUE;
-        FB_PutStr(mx, 2, title, WB_WHITE, bg);
+        FB_PutStr(mx, by + 2, title, WB_WHITE, bg);
         int len = 0;
         for (const char *p = title; *p; p++) len++;
         mx += len * 8 + 16;
     }
 
     /* Screen title — drawn between menus and clock when requested */
-    if (g_show_screen_title && g_screen_title[0]) {
+    const char *stitle = layer ? UAOS_Intuition_BehindScreenTitle()
+                               : (g_show_screen_title ? g_screen_title : NULL);
+    if (stitle && stitle[0]) {
         int title_w = 0;
-        for (const char *p = g_screen_title; *p; p++) title_w += 8;
+        for (const char *p = stitle; *p; p++) title_w += 8;
         int title_x = mx + 16;
         /* reserve: clock + mem + CPU% + VOL + depth gadget */
         if (title_x + title_w > W - 400 - SCRDEPTH_W)
             title_x = W - 400 - SCRDEPTH_W - title_w;
         if (title_x > mx && title_w > 0)
-            FB_PutStr(title_x, 2, g_screen_title, WB_WHITE, WB_BLUE);
+            FB_PutStr(title_x, by + 2, stitle, WB_WHITE, WB_BLUE);
     }
 
     /* Clock + free-memory strings — rebuilt only when the 1 Hz tick changes.
@@ -1583,7 +1640,7 @@ static void draw_menubar(int W)
     int clk_len = 0;
     for (const char *p = g_clock_str; *p; p++) clk_len++;
     int clk_x = W - clk_len * 8 - 8 - SCRDEPTH_W;
-    FB_PutStr(clk_x, 2, g_clock_str, WB_WHITE, WB_BLUE);
+    FB_PutStr(clk_x, by + 2, g_clock_str, WB_WHITE, WB_BLUE);
 
     /* Memory display — show free memory just left of the clock,
      * and the CPU busy% (UAOS-272) left of that.  Both sit outside the
@@ -1592,14 +1649,14 @@ static void draw_menubar(int W)
         int mlen = 0;
         for (const char *p = g_mem_str; *p; p++) mlen++;
         int mem_x = clk_x - mlen * 8 - 16;
-        FB_PutStr(mem_x, 2, g_mem_str, WB_CREAM, WB_BLUE);
+        FB_PutStr(mem_x, by + 2, g_mem_str, WB_CREAM, WB_BLUE);
         int clen = 0;
         for (const char *p = g_cpu_str; *p; p++) clen++;
         int cpu_x = mem_x - clen * 8 - 16;
-        FB_PutStr(cpu_x, 2, g_cpu_str, WB_CREAM, WB_BLUE);
+        FB_PutStr(cpu_x, by + 2, g_cpu_str, WB_CREAM, WB_BLUE);
         int vlen = 0;
         for (const char *p = g_vol_str; *p; p++) vlen++;
-        FB_PutStr(cpu_x - vlen * 8 - 16, 2, g_vol_str,
+        FB_PutStr(cpu_x - vlen * 8 - 16, by + 2, g_vol_str,
                   g_vol_mute_cached ? WB_WHITE : WB_CREAM, WB_BLUE);
     }
 
@@ -1609,7 +1666,7 @@ static void draw_menubar(int W)
      * menubar_depth_hit(). */
     {
         int gx = W - SCRDEPTH_W;
-        int gy = 1, gw = SCRDEPTH_W - 2, gh = MENUBAR_H - 2;
+        int gy = by + 1, gw = SCRDEPTH_W - 2, gh = MENUBAR_H - 2;
         FB_FillRect(gx, gy, gw, gh, WB_GREY);
         FB_DrawHLine(gx, gy, gw, WB_WHITE);
         FB_DrawVLine(gx, gy, gh, WB_WHITE);
@@ -2359,12 +2416,17 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     if (!g_fb.valid) return;
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
-    int top    = MENUBAR_H;
+    /* WM_CurrentLayer: 0 = front screen, 1 = the screen behind showing
+     * through outside the front screen's band (UAOS-349). */
+    int layer  = WM_CurrentLayer;
+    int by     = layer ? 0 : front_bar_y();
+    int top    = by + MENUBAR_H;
     int bottom = H;
 
     /* Use the front Intuition screen's palette for desktop chrome, matching
-     * Desktop_Draw. */
-    UAOS_Intuition_ApplyFrontScreenPalette();
+     * Desktop_Draw; the screen behind keeps the Workbench chrome palette. */
+    if (layer) WB_InitPalette();
+    else       UAOS_Intuition_ApplyFrontScreenPalette();
 
     /* Clip to backdrop area */
     int x0 = rx < 0 ? 0 : rx;
@@ -2382,17 +2444,23 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
 
         /* If the front Intuition screen has a custom BitMap, render the
          * damaged region of it over the base fill (same layering as
-         * Desktop_Draw's RenderScreenBackdrop). */
-        UAOS_Intuition_RenderScreenBackdropRegion(x0, y0, x1 - x0, y1 - y0);
+         * Desktop_Draw's RenderScreenBackdrop) — or the screen behind's,
+         * which is Workbench when nothing is emitted. */
+        if (layer)
+            UAOS_Intuition_RenderBehindBackdropRegion(x0, y0, x1 - x0, y1 - y0);
+        else
+            UAOS_Intuition_RenderScreenBackdropRegion(x0, y0, x1 - x0, y1 - y0);
     }
 
     /* Repaint only desktop icons intersecting the damage (footprint incl.
      * label area + 1px highlight margin).  Hidden when the Backdrop menu
      * toggle is active, or inside the front guest screen's vertical band
      * (that area is the screen's raster/border, not the Workbench). */
-    if (!g_backdrop_hidden && x1 > x0 && y1 > y0) {
+    if (!g_backdrop_hidden && x1 > x0 && y1 > y0 &&
+        !(layer && UAOS_Intuition_BehindIsCustom())) {
         int n, band_y0 = 0, band_y1 = 0;
-        int band = UAOS_Intuition_FrontScreenBandRows(&band_y0, &band_y1);
+        int band = !layer &&
+                   UAOS_Intuition_FrontScreenBandRows(&band_y0, &band_y1);
         IconState *icons = get_icons(&n);
         for (int i = 0; i < n; i++) {
             IconState *ic = &icons[i];
@@ -2411,24 +2479,31 @@ void Desktop_RedrawRect(int rx, int ry, int rw, int rh)
     /* Lasso rectangle on top of icons, below bars */
     draw_lasso(W, H);
 
-    /* Repaint the menubar only when the damage reaches the top strip —
+    /* Repaint the screen bar only when the damage reaches its strip —
      * a vacated window may have overlapped it. */
-    if (ry < MENUBAR_H)
-        draw_menubar(W);
+    if (ry < by + MENUBAR_H && ry + rh > by)
+        draw_menubar(W, by, layer);
 }
 
 void Desktop_Draw(void)
 {
     if (!g_fb.valid) return;
 
-    /* Use the front Intuition screen's palette for desktop chrome. */
-    UAOS_Intuition_ApplyFrontScreenPalette();
-
     int W = (int)g_fb.width;
     int H = (int)g_fb.height;
 
+    /* The screen behind (layer 1) has no SA_BackFill state to re-run —
+     * the region path renders it in full. */
+    if (WM_CurrentLayer) {
+        Desktop_RedrawRect(0, 0, W, H);
+        return;
+    }
+
+    /* Use the front Intuition screen's palette for desktop chrome. */
+    UAOS_Intuition_ApplyFrontScreenPalette();
+
     draw_backdrop(W, H);
-    draw_menubar(W);
+    draw_menubar(W, front_bar_y(), 0);
 
     /* Disk icons — all come from get_icons (VFS-mounted volumes + partitions).
      * Hidden when the Backdrop menu toggle is active, or inside the front
@@ -2489,7 +2564,7 @@ void Desktop_SetScreenTitle(const char *title, int show)
         g_screen_title[0] = '\0';
     }
     /* The screen title renders inside the menubar strip only. */
-    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
+    bars_invalidate();
 }
 
 void Desktop_DisplayBeepFlash(uint32_t color)
@@ -2605,14 +2680,15 @@ static volatile int g_clock_dirty = 0;
 /* Return the number of available menus (guest strip or fallback). */
 static int active_menu_count(void)
 {
-    return g_guest_menu_active ? g_active_menu_count : (int)NUM_MENUS;
+    if (g_guest_menu_active) return g_active_menu_count;
+    return menu_bar_custom() ? 0 : (int)NUM_MENUS;
 }
 
 /* Hit-test the menubar and return which menu index was clicked (-1 = none).
  * Replicates the layout logic from draw_menubar. */
 static int menubar_hit(int mx, int my)
 {
-    if (my < 0 || my >= MENUBAR_H) return -1;
+    if (!in_bar(my, menu_bar_y())) return -1;
     int x = 8;
     for (int i = 0; i < active_menu_count(); i++) {
         const char *title = menu_title(i);
@@ -2631,7 +2707,7 @@ static int menubar_hit(int mx, int my)
  * depth gadget.  Replicates the layout logic from draw_menubar. */
 static int menubar_clock_hit(int mx, int my)
 {
-    if (my < 0 || my >= MENUBAR_H) return 0;
+    if (!in_bar(my, front_bar_y())) return 0;
     int clk_x = (int)g_fb.width - 8 * 8 - 8 - SCRDEPTH_W;
     return mx >= clk_x - 4 && mx < (int)g_fb.width - SCRDEPTH_W;
 }
@@ -2639,7 +2715,11 @@ static int menubar_clock_hit(int mx, int my)
 /* Hit-test the screen depth gadget at the bar's right edge. */
 static int menubar_depth_hit(int mx, int my)
 {
-    if (my < 0 || my >= MENUBAR_H) return 0;
+    /* Either bar's gadget: the front screen's, or the screen behind's at
+     * the top of the display while the front one is pulled down. */
+    if (!in_bar(my, front_bar_y()) && !(my >= 0 && my < front_bar_y() &&
+                                       my < MENUBAR_H))
+        return 0;
     return mx >= (int)g_fb.width - SCRDEPTH_W;
 }
 
@@ -2756,7 +2836,7 @@ static void menu_update_geometry(void)
     }
 
     g_menu_x = menu_title_x(g_menu_index);
-    g_menu_y = MENUBAR_H;
+    g_menu_y = menu_bar_y() + MENUBAR_H;
     g_menu_w = label_w + pad_x * 2;
     g_menu_h = n * item_h + pad_y * 2;
     if (g_menu_x + g_menu_w > W) g_menu_x = W - g_menu_w;
@@ -2806,7 +2886,7 @@ static void menu_invalidate(void)
     int osx = g_submenu_x, osy = g_submenu_y,
         osw = g_submenu_w, osh = g_submenu_h;
     menu_update_geometry();
-    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
+    bars_invalidate();
     WM_InvalidateDesktopRect(ox, oy, ow + 4, oh + 4);
     if (osw > 0)
         WM_InvalidateDesktopRect(osx, osy, osw + 4, osh + 4);
@@ -2841,7 +2921,7 @@ static void menu_invalidate_items(void)
 static void menu_state_try_open(void)
 {
     if (!g_menu_state || g_menu_index >= 0) return;
-    if (g_menu_my < 0 || g_menu_my >= MENUBAR_H) return;
+    if (!in_bar(g_menu_my, menu_bar_y())) return;
     int menu = menubar_hit(g_menu_mx, g_menu_my);
     if (menu >= 0 && menu < active_menu_count()) {
         g_menu_index = menu;
@@ -2870,7 +2950,7 @@ static void menu_update_hover(int mx, int my)
     /* In menu state with no dropdown open yet (menu button went down over
      * a window, Amiga-style), reaching the screen bar opens the menu under
      * the pointer — this is the RMB-anywhere drag gesture. */
-    if (g_menu_state && g_menu_index < 0 && my >= 0 && my < MENUBAR_H) {
+    if (g_menu_state && g_menu_index < 0 && in_bar(my, menu_bar_y())) {
         int menu = menubar_hit(mx, my);
         if (menu >= 0 && menu < active_menu_count()) {
             g_menu_index = menu;
@@ -2885,7 +2965,7 @@ static void menu_update_hover(int mx, int my)
     if (g_menu_index < 0) return;
 
     /* Switch menus if the cursor moves over another menu title. */
-    if (my >= 0 && my < MENUBAR_H) {
+    if (in_bar(my, menu_bar_y())) {
         int menu = menubar_hit(mx, my);
         if (menu >= 0 && menu < active_menu_count() && menu != g_menu_index) {
             g_menu_index = menu;
@@ -2955,7 +3035,7 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     if (!g_workbench_loaded) return 0;
 
     /* ── Right-click on menubar: open the selected menu ───── */
-    if (right_pressed && my >= 0 && my < MENUBAR_H) {
+    if (right_pressed && in_bar(my, menu_bar_y())) {
         /* Pressing the menu button straight on the bar still owes the
          * focused guest its IDCMP_MENUVERIFY (masked on IDCMP flags) — the
          * lazy-strip populate runs before the first hover's deferred
@@ -3030,7 +3110,7 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
      * leaves the screen dropped.  The press is still consumed so it
      * can't arm the backdrop double-click or start an invisible lasso
      * anchored in the menubar. */
-    if (left_pressed && my >= 0 && my < MENUBAR_H) {
+    if (left_pressed && in_bar(my, front_bar_y())) {
         if (UAOS_Intuition_FrontScreenDraggable()) {
             g_scrbar_drag     = 1;
             g_scrbar_drag_my  = my;
@@ -3042,6 +3122,15 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
     /* ── Desktop icon press (start potential drag) ─────── */
     int n;
     IconState *icons = get_icons(&n);
+
+    /* Inside a custom screen's band the Workbench icons are not on the
+     * display (they are hidden on draw) — they must not be clickable. */
+    {
+        int by0, by1;
+        if (UAOS_Intuition_FrontScreenBandRows(&by0, &by1) &&
+            my >= by0 && my < by1)
+            return 1;
+    }
 
     DT_LOG("[DT] Checking "); DT_LOG_DEC(n); DT_LOG(" icons for hit\n");
 
@@ -3633,12 +3722,12 @@ void Desktop_FlushClockRedraw(void)
     if (g_clock_dirty) {
         g_clock_dirty = 0;
         /* The clock lives inside the menubar strip — repaint only that. */
-        WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
+        bars_invalidate();
     }
 }
 
 void Desktop_MenubarInvalidate(void)
 {
-    WM_InvalidateDesktopRect(0, 0, (int)g_fb.width, MENUBAR_H);
+    bars_invalidate();
 }
 

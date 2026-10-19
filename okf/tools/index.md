@@ -18,6 +18,13 @@ Programs under `tools/` that run on the build host — binary wrappers used by
 - [qemu_layout_test.py](/tools/qemu_layout_test.md) (`tests/`) —
   end-to-end QEMU regression for the M68k BOOPSI layout path: drives
   LayoutTest with closed-loop pointer control via the monitor + GDB stub.
+- `tests/qemu_screen_test.py` — custom-screen isolation regression
+  (UAOS-348): launches `SYS:Demos/MenuDemo`, asserts only the front
+  screen's windows are visible/focused (`WM_IsWindowVisible`, `g_focus`),
+  cycles to Workbench and back via the screen-bar depth gadget, drags
+  the screen bar down to reveal Workbench behind (UAOS-349: layer checks,
+  moved-bar menu, revealed-window click, drag back up), then picks
+  Project → Quit. Screendumps to `/tmp/sc_*.ppm`.
 - [make_splash.py](/tools/make_splash.md) — converts `splash.jpg` into a
   self-describing RGB24 blob linked into the kernel (boot splash) via
   `ld -r -b binary`; run by `build_iso.sh`.
