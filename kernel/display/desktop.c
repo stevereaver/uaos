@@ -2939,6 +2939,12 @@ static void menu_update_hover(int mx, int my)
 int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
 {
     if (!left_pressed && !right_pressed) return 0;
+    /* No Workbench → no desktop: before LoadWB the screen is the bare
+     * Early-Startup blue, so a click must not arm the lasso, icons,
+     * menus, or the backdrop double-click→new-Shell shortcut.  Shell-only
+     * and no-Startup-Sequence boots never load it at all — stray pointer
+     * input there would otherwise open cascaded shell windows. */
+    if (!g_workbench_loaded) return 0;
 
     /* ── Right-click on menubar: open the selected menu ───── */
     if (right_pressed && my >= 0 && my < MENUBAR_H) {
@@ -3084,12 +3090,15 @@ int Desktop_MouseEvent(int mx, int my, int left_pressed, int right_pressed)
 
 void Desktop_MouseHover(int mx, int my)
 {
+    if (!g_workbench_loaded) return;   /* no desktop before LoadWB */
     menu_update_hover(mx, my);
 }
 
 void Desktop_RightButtonRelease(int mx, int my)
 {
     (void)mx; (void)my;
+
+    if (!g_workbench_loaded) return;   /* no desktop before LoadWB */
 
     if (g_menu_index < 0) {
         /* Menu state ended without a dropdown ever opening (menu button
@@ -3166,6 +3175,8 @@ static int icon_at_pos(IconState *icons, int n, int mx, int my, int exclude);
 
 void Desktop_MouseMove(int mx, int my, int btn_left)
 {
+    if (!g_workbench_loaded) return;   /* no desktop before LoadWB */
+
     /* Screen pull-down drag (UAOS-9) — the bar the button went down on
      * owns the gesture until release. */
     if (g_scrbar_drag) {
@@ -3453,6 +3464,8 @@ static void desktop_open_selected_icon(void)
 void Desktop_MouseRelease(int mx, int my)
 {
     (void)mx; (void)my;
+
+    if (!g_workbench_loaded) return;   /* no desktop before LoadWB */
 
     /* Screen pull-down drag ends — the screen stays at its dropped
      * TopEdge (Amiga behaviour: drag the bar again to pull it back). */

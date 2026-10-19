@@ -1371,9 +1371,21 @@ static void repaint_damaged(void)
      * back buffer or on screen. */
     FB_SetClipRect(x0, y0, x1 - x0, y1 - y0);
 
-    /* Backdrop/icons/menubar only where the damage can expose them. */
-    if (desktop && Desktop_IsWorkbenchLoaded())
-        Desktop_RedrawRect(x0, y0, x1 - x0, y1 - y0);
+    /* Backdrop/icons/menubar only where the damage can expose them.
+     * Before Workbench loads (shell-only / no-Startup-Sequence boots) the
+     * desktop layer doesn't exist, but a desktop-flagged damage still means
+     * "a window vacated this region" — it must be erased anyway or the
+     * persistent back buffer keeps replaying the old frame pixels, leaving
+     * a permanent ghost for every move/resize/close.  The pre-Workbench
+     * backdrop is the Early-Startup blue. */
+    if (desktop) {
+        if (Desktop_IsWorkbenchLoaded()) {
+            Desktop_RedrawRect(x0, y0, x1 - x0, y1 - y0);
+        } else {
+            WB_InitPalette();
+            FB_FillRect(x0, y0, x1 - x0, y1 - y0, WB_BLUE);
+        }
+    }
 
     /* Same chrome-palette reset as WM_Redraw. */
     WB_InitPalette();
@@ -1448,9 +1460,15 @@ static void redraw_full(void)
 
     FB_BeginDraw();
 
-    /* Repaint full desktop backdrop only if Workbench has been loaded */
-    if (Desktop_IsWorkbenchLoaded())
+    /* Repaint full desktop backdrop only if Workbench has been loaded.
+     * Before that the backdrop is the Early-Startup blue — fill it so a
+     * full redraw also erases vacated window regions. */
+    if (Desktop_IsWorkbenchLoaded()) {
         Desktop_Draw();
+    } else {
+        WB_InitPalette();
+        FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, WB_BLUE);
+    }
 
     /* The desktop may have applied a custom Intuition screen palette. Reset
      * to the default Workbench chrome palette before drawing window borders,
