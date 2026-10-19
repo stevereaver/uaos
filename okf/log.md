@@ -2102,3 +2102,17 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
   `smoke.sh` 24/24; `qemu_octamed_ui_test.py` (Workbench visible below).
 * **Docs**: `okf/kernel/display/index.md` (band compositing paragraph),
   `okf/tools/index.md` (screen test scope).
+
+## 2026-10-19T20:10Z — MenuDemo ships as raw Amiga hunk, runs on real AmigaOS (UAOS-350)
+
+* **Problem**: staged `Demos:MenuDemo` was the `gen_uaos_m68k`-wrapped hunk;
+  its first longword is `UAOS` not `HUNK_HEADER` (`0x000003F3`), so AmigaDOS
+  `LoadSeg` on a real Amiga reports "file is not executable".
+* **Fix**: new `RAW_DEMOS`/`WRAP_DEMOS` split in `Makefile` — MenuDemo is
+  staged as the raw `vlink -bamigahunk` output.  All three UAOS launch
+  paths already detect `UAOS_BIN_HUNK_MAGIC` (`shell_win.c`,
+  `ExecFile_Run`, `ExecFile_RunWB`) and run raw hunks unwrapped, so the
+  byte-identical file runs on both UAOS and real AmigaOS.  Other demos keep
+  the wrapper (UAOS-only test tools).
+* **Verified**: staged file starts with `0x000003F3`;
+  `tests/qemu_screen_test.py` 22/22 under UAOS.

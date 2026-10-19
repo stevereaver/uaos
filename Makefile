@@ -652,9 +652,19 @@ $(BUILD)/%.hunk: $(BUILD)/%.o
 	@echo "  VLINK   $@"
 	$(Q)$(VLINK_BIN) -bamigahunk -o $@ $<
 
-$(DEMO_BINS): $(SYSROOT)/Demos/%: $(BUILD)/%.hunk $(GEN_M68K) | $(DIRS_STAMP)
+# MenuDemo ships as a raw Amiga hunk — no gen_uaos_m68k wrapper — so the
+# byte-identical file also runs under real AmigaOS (LoadSeg-compatible).
+# UAOS detects HUNK_MAGIC in shell_win/exec_file and runs it unwrapped.
+RAW_DEMOS  := MenuDemo
+WRAP_DEMOS := $(filter-out $(RAW_DEMOS),$(DEMOS))
+
+$(addprefix $(SYSROOT)/Demos/,$(WRAP_DEMOS)): $(SYSROOT)/Demos/%: $(BUILD)/%.hunk $(GEN_M68K) | $(DIRS_STAMP)
 	@echo "  WRAP    Demos:$*"
 	$(Q)$(GEN_M68K) $* $< $@
+
+$(addprefix $(SYSROOT)/Demos/,$(RAW_DEMOS)): $(SYSROOT)/Demos/%: $(BUILD)/%.hunk | $(DIRS_STAMP)
+	@echo "  HUNK    Demos:$*"
+	$(Q)cp $< $@
 endif
 
 # uaostest.library ships as a real Amiga hunk-format binary — no
