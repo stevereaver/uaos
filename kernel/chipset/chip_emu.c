@@ -240,6 +240,9 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_JOY1DAT  0x00C
 #define REG_POTGOR   0x016   /* read-only (POTGO write is 0x034) */
 #define REG_POTGO    0x034   /* write-only pot output enables */
+#define REG_JOYTEST  0x036   /* write-only mouse counter preload */
+#define REG_VPOSW    0x02A
+#define REG_VHPOSW   0x02C
 #define REG_DSKDAT   0x026
 #define REG_DSKLEN   0x024
 #define REG_DSKPTH   0x020
@@ -269,6 +272,9 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_BLTAPT   0x050
 #define REG_BLTDPT   0x054
 #define REG_BLTSIZE  0x058
+#define REG_BLTCON0L 0x05B   /* ECS byte write: minterm low byte of BLTCON0 */
+#define REG_BLTSIZV  0x05C   /* ECS vertical blit size (write first) */
+#define REG_BLTSIZH  0x05E   /* ECS horizontal blit size (write triggers) */
 #define REG_BLTCMOD  0x060
 #define REG_BLTBMOD  0x062
 #define REG_BLTAMOD  0x064
@@ -281,6 +287,7 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_COP2LC   0x084
 #define REG_COPJMP1  0x088
 #define REG_COPJMP2  0x08A
+#define REG_COPINS   0x08C   /* last copper instruction word (read shadow) */
 
 #define REG_BPLCON0  0x100
 #define REG_BPLCON1  0x102
@@ -306,6 +313,10 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_DDFSTOP  0x094
 #define REG_DIWHIGH  0x1E4
 #define REG_COPCON   0x02E
+#define REG_CLXCON2  0x10E
+#define REG_HHPOSW   0x1D8
+#define REG_HHPOSR   0x1DA
+#define REG_BEAMCON0 0x1DC
 
 #define REG_SPR0PT   0x120
 #define REG_SPR1PT   0x124
@@ -684,6 +695,16 @@ static void dma_slot_alloc_copper(int max_slots)
     }
 }
 
+/* Blitter completion: drop the busy state and raise the BLIT interrupt
+ * (INTREQ bit 6) — real Agnus signals blit end this way. */
+static void blitter_finish(void)
+{
+    g_blitter_busy = 0;
+    g_blitter_words_remaining = 0;
+    g_intreq |= 0x0040u;
+    chip_emu_update_irq();
+}
+
 /* Allocate remaining free slots to the Blitter.  When DMACON BLTPRI is clear,
  * every fourth free slot is yielded to the CPU (left as DMA_CHAN_COUNT). */
 static void dma_slot_alloc_blitter(void)
@@ -711,10 +732,8 @@ static void dma_slot_alloc_blitter(void)
         g_blitter_words_remaining--;
         yield++;
     }
-    if (g_blitter_words_remaining <= 0 && !g_line_state.active && !g_area_state.active) {
-        g_blitter_busy = 0;
-        g_blitter_words_remaining = 0;
-    }
+    if (g_blitter_words_remaining <= 0 && !g_line_state.active && !g_area_state.active)
+        blitter_finish();
     g_ram = saved_ram;
 }
 
@@ -747,14 +766,17 @@ static uint8_t g_bp_odd[COLLISION_WIDTH];
 /* Paula audio channel state */
 #define AUDIO_CHANNELS 4
 typedef struct {
-    uint32_t ptr;
-    uint16_t len;
+    uint32_t ptr;       /* working DMA pointer (loads from lc at restart) */
+    uint32_t lc;        /* AUDxLC latch — loop/restart base */
+    uint16_t len;       /* AUDxLEN latch — words per DMA block */
+    uint16_t len_work;  /* working length counter */
     uint16_t per;
     uint16_t vol;
     uint16_t dat;
     uint16_t counter;
     uint8_t  byte_sel;  /* 0 = high byte of dat, 1 = low byte */
     uint8_t  dma_on;
+    uint8_t  attach_phase; /* both-attach alternation: 0 = volume, 1 = period */
 } AudioChannel;
 static AudioChannel g_audio[AUDIO_CHANNELS];
 
@@ -765,6 +787,16 @@ static uint16_t g_dsklen;   /* disk length/control */
 static uint16_t g_dskdat;   /* disk data */
 static uint16_t g_dsk_sync; /* disk sync word */
 static uint32_t g_dskpt;    /* disk DMA pointer */
+static uint16_t g_potgo;    /* POTGO shadow — output enables + START strobe */
+static uint8_t  g_pot_counter[2]; /* pot charge counters, reset on START */
+static uint16_t g_vposw;    /* beam-position write shadows */
+static uint16_t g_vhposw;
+static uint16_t g_hhposw;
+static uint16_t g_beamcon0; /* BEAMCON0 shadow (VARBEAMEN etc. not wired) */
+static uint16_t g_clxcon2;  /* AGA extended collision control */
+static uint16_t g_joytest;  /* JOYTEST mouse counter preload shadow */
+static uint16_t g_bltsizv;  /* ECS blit vertical size (BLTSIZV write) */
+static uint16_t g_copins;   /* last copper instruction word fetched */
 static uint32_t g_dsk_index; /* current offset in the synthetic disk buffer */
 static uint8_t  g_dsk_buffer[901120]; /* synthetic 880 KiB ADF buffer */
 
@@ -861,7 +893,7 @@ static void aga_color_write(uint32_t color_index, uint16_t value)
  * Public chip emulator entry points
  * ----------------------------------------------------------------------- */
 
-static void blitter_execute(uint16_t size);
+static void blitter_execute(int width, int height);
 uint8_t chip_read_u8(uint32_t addr);
 void chip_write_u8(uint32_t addr, uint8_t v);
 uint16_t chip_read_u16(uint32_t addr);
@@ -975,6 +1007,24 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
             break;
         }
         case REG_DSKSYNC: g_dsk_sync = (uint16_t)value; break;
+        case REG_VPOSW:  g_vposw  = (uint16_t)value; break; /* shadow; beam unchanged */
+        case REG_VHPOSW: g_vhposw = (uint16_t)value; break;
+        case REG_JOYTEST: g_joytest = (uint16_t)value; break;
+        case REG_POTGO: {
+            g_potgo = (uint16_t)value;
+            /* START (bit 15) restarts the pot charge counters — on real
+             * hardware the pins discharge and the counters measure the
+             * charge time in scanlines. */
+            if (value & 0x8000u) {
+                g_pot_counter[0] = 0;
+                g_pot_counter[1] = 0;
+            }
+            break;
+        }
+        case REG_HHPOSW:   g_hhposw   = (uint16_t)value; break;
+        case REG_BEAMCON0: g_beamcon0 = (uint16_t)value; break; /* shadow — VARBEAMEN not wired */
+        case REG_CLXCON2:  g_clxcon2  = (uint16_t)value; break;
+        case REG_COPINS:   g_copins   = (uint16_t)value; break; /* harmless */
         case REG_DMACON: g_dmacon = update_setclr(g_dmacon, (uint16_t)value); break;
         case REG_INTENA: {
             g_intena = update_setclr(g_intena, (uint16_t)value);
@@ -1031,7 +1081,26 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
             if (w == 0) w = 64;
             if (h == 0) h = 1024;
             g_blitter_words_remaining = w * h;
-            blitter_execute(size);
+            blitter_execute(w, h);
+            break;
+        }
+        case REG_BLTCON0L:
+            /* ECS: byte-write updates the minterm (low) byte of BLTCON0
+             * only, leaving the ASH/USE fields untouched. */
+            g_bltcon0 = (uint16_t)((g_bltcon0 & 0xFF00u) | (value & 0xFFu));
+            break;
+        case REG_BLTSIZV:
+            /* ECS large blit: vertical size is stored until the BLTSIZH
+             * write triggers the blit. */
+            g_bltsizv = (uint16_t)value;
+            break;
+        case REG_BLTSIZH: {
+            int w = (int)value & 0x7FFF;
+            int h = g_bltsizv & 0x7FFF;
+            if (w == 0) w = 32768;
+            if (h == 0) h = 32768;
+            g_blitter_words_remaining = w * h;
+            blitter_execute(w, h);
             break;
         }
         case REG_BPLCON2: g_bplcon2 = (uint16_t)value; break;
@@ -1086,9 +1155,9 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
 #undef SPR_WRITE_CASES
 
 #define AUD_WRITE_CASES(idx) \
-        case REG_AUDxLCH(idx): g_audio[idx].ptr = (width_bytes >= 4) ? value : ((g_audio[idx].ptr & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); g_audio_ram = g_ram; break; \
-        case REG_AUDxLCH(idx) + 2: g_audio[idx].ptr = (g_audio[idx].ptr & 0xFFFF0000u) | (value & 0xFFFFu); g_audio_ram = g_ram; break; \
-        case REG_AUDxLEN(idx): g_audio[idx].len = (uint16_t)value; break; \
+        case REG_AUDxLCH(idx): g_audio[idx].lc = (width_bytes >= 4) ? value : ((g_audio[idx].lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); g_audio_ram = g_ram; break; \
+        case REG_AUDxLCH(idx) + 2: g_audio[idx].lc = (g_audio[idx].lc & 0xFFFF0000u) | (value & 0xFFFFu); g_audio_ram = g_ram; break; \
+        case REG_AUDxLEN(idx): g_audio[idx].len = (uint16_t)value; if (!g_audio[idx].len_work) g_audio[idx].len_work = g_audio[idx].len; break; \
         case REG_AUDxPER(idx): g_audio[idx].per = (uint16_t)value; g_audio[idx].counter = (uint16_t)value; break; \
         case REG_AUDxVOL(idx): g_audio[idx].vol = (uint16_t)((value & 0x40u) ? 64u : (value & 0x3Fu)); break; \
         case REG_AUDxDAT(idx): g_audio[idx].dat = (uint16_t)value; break
@@ -1121,6 +1190,11 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
                 uint32_t color_index = (bank << 5) | idx;
                 if (color_index < AGA_PALETTE_SIZE)
                     aga_color_write(color_index, (uint16_t)value);
+            } else {
+                /* All other unhandled registers (strobes, AGA beam/timing
+                 * regs, REFPTR, ...) keep a shadow so reads return the
+                 * last written value. */
+                g_aga_regs[regoff_to_index(regoff)] = (uint16_t)value;
             }
             break;
         }
@@ -1192,9 +1266,18 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
         case REG_INTREQR: value = g_intreq; break;
         case REG_ADKCONR: value = g_adkcon; break;
         case REG_DSKDATR: value = g_dskdat; break;
-        case REG_POT0DAT: value = 0; break;
-        case REG_POT1DAT: value = 0; break;
-        case REG_DSKBYTR: value = 0; break;
+        case REG_POT0DAT: value = ((uint32_t)g_pot_counter[0] << 8) | g_pot_counter[0]; break;
+        case REG_POT1DAT: value = ((uint32_t)g_pot_counter[1] << 8) | g_pot_counter[1]; break;
+        case REG_DSKBYTR: {
+            /* bit15 DSKBYT byte-ready, bit14 DMAON, bit13 DSKWRITE,
+             * bit12 WORDEQUAL (DSKSYNC match), bits 7-0 data byte. */
+            uint16_t v = (uint16_t)(g_dskdat & 0xFFu);
+            if (g_dsklen & 0x8000u) v |= 0xC000u;              /* DMAON + byte ready */
+            if (g_dsklen & 0x4000u) v |= 0x2000u;              /* write direction */
+            if (g_dskdat == g_dsk_sync && g_dsk_sync) v |= 0x1000u;
+            value = v;
+            break;
+        }
         case REG_DSKPTL: value = g_dskpt & 0xFFFFu; break;
         case REG_DSKPTH: value = (g_dskpt >> 16) & 0xFFFFu; break;
         case REG_DSKDAT: {
@@ -1212,10 +1295,20 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
         case REG_POTGOR: {
             /* POTGOR ($DFF016): pot/digitizer data inputs — mouse buttons
              * 2/3 live here on real hardware (active-low):
-             *   bit 10 = right button port 0, bit 8 = middle button port 0. */
+             *   bit 10 = right button port 0, bit 8 = middle button port 0.
+             * When a POTGO OUTx bit is set the pin is driven by the
+             * corresponding DATx bit instead of reading the input. */
             uint32_t v = 0xFFFFu;
             if (g_mouse.btn_right)  v &= ~(1u << 10);
             if (g_mouse.btn_middle) v &= ~(1u << 8);
+            if (g_potgo & 0x4000u)  /* OUTLX → read bit 14 */
+                v = (v & ~0x4000u) | ((g_potgo & 0x2000u) ? 0x4000u : 0u);
+            if (g_potgo & 0x1000u)  /* OUTLY → read bit 12 */
+                v = (v & ~0x1000u) | ((g_potgo & 0x0800u) ? 0x1000u : 0u);
+            if (g_potgo & 0x0400u)  /* OUTRX → read bit 10 */
+                v = (v & ~0x0400u) | ((g_potgo & 0x0200u) ? 0x0400u : 0u);
+            if (g_potgo & 0x0100u)  /* OUTRY → read bit 8 */
+                v = (v & ~0x0100u) | ((g_potgo & 0x0080u) ? 0x0100u : 0u);
             value = v;
             break;
         }
@@ -1256,6 +1349,30 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
             break;
         }
         case REG_DENISEID: value = 0x00F8u; break;          /* AGA Denise/Lisa ID */
+        case REG_VPOSW:   value = g_vposw; break;
+        case REG_VHPOSW:  value = g_vhposw; break;
+        case REG_SERPER:  value = g_serper; break;
+        case REG_SERDAT:  value = g_serdat; break;
+        case REG_DSKLEN:  value = g_dsklen; break;
+        case REG_DSKSYNC: value = g_dsk_sync; break;
+        case REG_JOYTEST: value = g_joytest; break;
+        case REG_POTGO:   value = g_potgo; break;
+        case REG_COPINS:  value = g_copins; break;
+        case REG_HHPOSW:  value = g_hhposw; break;
+        case REG_BEAMCON0: value = g_beamcon0; break;
+        case REG_CLXCON2: value = g_clxcon2; break;
+        case REG_BLTCON0L: value = g_bltcon0 & 0xFFu; break;
+        case REG_BLTSIZV: value = g_bltsizv; break;
+        case REG_BLTSIZH: value = 0; break; /* write-only trigger */
+        case REG_HHPOSR: {
+            /* Hi-res beam position: VHPOSR format plus the least
+             * significant horizontal bit (VHPOSR drops H0). */
+            int v, h;
+            beam_position_from_cycles(beam_cycles_now(), &v, &h);
+            value = (((uint32_t)v & 0xFFu) << 8) |
+                    ((uint32_t)(h >> 1) & 0xFEu) | ((uint32_t)h & 1u);
+            break;
+        }
 
         case REG_BPLCON0: value = g_bplcon0; break;
         case REG_BPLCON1: value = g_bplcon1; break;
@@ -1339,8 +1456,8 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
 #undef SPR_READ_CASES
 
 #define AUD_READ_CASES(idx) \
-        case REG_AUDxLCH(idx): value = (g_audio[idx].ptr >> 16) & 0xFFFFu; break; \
-        case REG_AUDxLCH(idx) + 2: value = g_audio[idx].ptr & 0xFFFFu; break; \
+        case REG_AUDxLCH(idx): value = (g_audio[idx].lc >> 16) & 0xFFFFu; break; \
+        case REG_AUDxLCH(idx) + 2: value = g_audio[idx].lc & 0xFFFFu; break; \
         case REG_AUDxLEN(idx): value = g_audio[idx].len; break; \
         case REG_AUDxPER(idx): value = g_audio[idx].per; break; \
         case REG_AUDxVOL(idx): value = g_audio[idx].vol; break; \
@@ -1471,8 +1588,7 @@ static void blitter_line_step(void)
     ls->remaining--;
     if (ls->remaining == 0) {
         ls->active = 0;
-        g_blitter_busy = 0;
-        g_blitter_words_remaining = 0;
+        blitter_finish();
         return;
     }
 
@@ -1593,21 +1709,16 @@ static void blitter_area_step(void)
 
     if (g_area_state.words_remaining <= 0) {
         g_area_state.active = 0;
-        g_blitter_busy = 0;
-        g_blitter_words_remaining = 0;
+        blitter_finish();
     }
 }
 
 /* Execute an area blit triggered by a write to BLTSIZE.
  * Width is in words (hsize, bits 5-0 of size), height in lines
  * (vsize, bits 15-6) — hardware/blit.h. */
-static void blitter_execute(uint16_t size)
+static void blitter_execute(int width, int height)
 {
-    int width  = size & 0x3F;
-    int height = (size >> 6) & 0x3FF;
     g_blit_ram = g_ram;
-    if (width == 0)  width = 64;
-    if (height == 0) height = 1024;
 
     int line_mode = g_bltcon1 & 1u;
     int desc      = (g_bltcon1 >> 1) & 1u;
@@ -1717,6 +1828,9 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
         uint64_t end_line   = (target_cycles - g_cycles_at_frame_start) / g_cycles_per_line;
         for (uint64_t line = start_line; line <= end_line; line++) {
             int y = (int)(line % (uint64_t)lines);
+            /* Pot charge counters measure lines since the last POTGO START. */
+            if (g_pot_counter[0] < 0xFFu) g_pot_counter[0]++;
+            if (g_pot_counter[1] < 0xFFu) g_pot_counter[1]++;
             dma_slot_reset();
             dma_slot_release_if_disabled(DMA_CHAN_DISK,   0x0010u); /* DSKEN */
             dma_slot_release_if_disabled(DMA_CHAN_AUDIO,  0x0200u); /* AUDEN */
@@ -2322,6 +2436,8 @@ uint8_t chip_emu_cia_set_icr(int id, uint8_t v)
 int8_t chip_emu_audio_sample_8bit(int ch)
 {
     if (ch < 0 || ch >= AUDIO_CHANNELS) return 0;
+    /* A channel used as an attach modulator produces no audio of its own. */
+    if (ch < 3 && (g_adkcon & ((1u << ch) | (1u << (ch + 4))))) return 0;
     const AudioChannel *a = &g_audio[ch];
     uint16_t word = a->dat;
     if (a->byte_sel == 0) {
@@ -2344,12 +2460,15 @@ void chip_emu_audio_set_channel(int ch, uint32_t ptr, uint16_t len, uint16_t per
 {
     if (ch < 0 || ch >= AUDIO_CHANNELS) return;
     AudioChannel *a = &g_audio[ch];
+    a->lc = ptr;
     a->ptr = ptr;
     a->len = len;
+    a->len_work = len;
     a->per = per;
     a->counter = per;
     a->vol = (uint16_t)(vol & 0x3Fu);
     a->byte_sel = 0;
+    a->attach_phase = 0;
     g_audio_ram = g_ram;
     /* Fetch the first word so the channel starts immediately. */
     if (a->ptr + 1 < GUEST_RAM_SIZE) {
@@ -2379,8 +2498,22 @@ void chip_emu_audio_advance(uint32_t amiga_cycles)
         AudioChannel *a = &g_audio[ch];
         if (!a->per || a->len == 0) continue;
 
+        /* ADKCON attach bits (hardware/adkbits): modulator channel i
+         * (i<3) feeds channel i+1 — bit i = volume attach, bit i+4 =
+         * period attach.  USE3VN/USE3PN attach channel 3 to nothing. */
+        int att_vol = (ch < 3) && (g_adkcon & (1u << ch));
+        int att_per = (ch < 3) && (g_adkcon & (1u << (ch + 4)));
+        int is_modulator = att_vol || att_per;
+
         uint32_t remaining = amiga_cycles;
         while (remaining > 0) {
+            if (a->len_work == 0) {
+                /* DMA (re)start: working pointer/length load from the
+                 * AUDxLC/AUDxLEN latches — this is also the loop point. */
+                a->ptr = a->lc;
+                a->len_work = a->len;
+                if (a->len_work == 0) break;
+            }
             if (a->counter > remaining) {
                 a->counter -= (uint16_t)remaining;
                 break;
@@ -2397,9 +2530,25 @@ void chip_emu_audio_advance(uint32_t amiga_cycles)
                     a->dat = chip_read_u16(a->ptr);
                 }
                 a->ptr += 2;
-                if (a->len > 0) a->len--;
-                if (a->len == 0) {
-                    /* DMA restart: in real Paula this triggers an interrupt and reloads */
+
+                if (is_modulator) {
+                    /* Attach: each fetched modulator word writes the next
+                     * channel's AUDxVOL (V6-V0) or AUDxPER; when both are
+                     * attached the writes alternate, volume first. */
+                    if (att_vol && (!att_per || a->attach_phase == 0)) {
+                        g_audio[ch + 1].vol =
+                            (uint16_t)((a->dat & 0x40u) ? 64u : (a->dat & 0x3Fu));
+                    } else {
+                        g_audio[ch + 1].per = a->dat;
+                    }
+                    if (att_vol && att_per) a->attach_phase ^= 1u;
+                }
+
+                if (a->len_work > 0) a->len_work--;
+                if (a->len_work == 0) {
+                    /* End of the DMA block: Paula reloads the working
+                     * registers from AUDxLC/AUDxLEN (loop) and raises the
+                     * channel interrupt. */
                     g_intreq |= (uint16_t)(0x0080u << ch); /* AUD0..AUD3 bits 7-10 */
                     chip_emu_update_irq();
                 }
@@ -2509,7 +2658,7 @@ void chip_emu_cia_tick(void)
 {
     if (g_blitter_busy && g_blitter_busy_ticks > 0) {
         g_blitter_busy_ticks--;
-        if (g_blitter_busy_ticks == 0) g_blitter_busy = 0;
+        if (g_blitter_busy_ticks == 0) blitter_finish();
     }
     /* If the blitter ran out of words it is cleared in the scanline loop. */
 
@@ -2634,6 +2783,7 @@ static int copper_run_to_beam(int copper_slots)
 
         uint16_t w1 = chip_read_u16(pc);
         uint16_t w2 = chip_read_u16(pc + 2);
+        g_copins = w1; /* COPINS read shadow: last instruction word fetched */
 
         if ((w1 & 1u) == 0) {
             /* MOVE */
@@ -3235,12 +3385,24 @@ void chip_emu_reset(void)
 
     for (int i = 0; i < AUDIO_CHANNELS; i++) {
         g_audio[i].ptr = 0;
+        g_audio[i].lc = 0;
         g_audio[i].len = 0;
+        g_audio[i].len_work = 0;
         g_audio[i].per = 0;
         g_audio[i].vol = 0;
         g_audio[i].dat = 0;
         g_audio[i].counter = 0;
+        g_audio[i].attach_phase = 0;
     }
+
+    g_potgo = 0;
+    g_pot_counter[0] = g_pot_counter[1] = 0;
+    g_vposw = g_vhposw = g_hhposw = 0;
+    g_beamcon0 = 0;
+    g_clxcon2 = 0;
+    g_joytest = 0;
+    g_bltsizv = 0;
+    g_copins = 0;
 
     memset(&g_cia_a, 0, sizeof(g_cia_a));
     memset(&g_cia_b, 0, sizeof(g_cia_b));
@@ -3317,7 +3479,9 @@ void chip_emu_unbind_ram(uint8_t *ram)
         g_audio_ram = NULL;
         for (int i = 0; i < AUDIO_CHANNELS; i++) {
             g_audio[i].ptr = 0;
+            g_audio[i].lc = 0;
             g_audio[i].len = 0;
+            g_audio[i].len_work = 0;
         }
         g_dmacon &= ~0x000Fu; /* AUD0-3EN */
     }
@@ -4266,6 +4430,116 @@ int chip_emu_cia_test(void)
     g_cia_b = save_b;
     g_intreq = save_intreq;
     g_cia_b_irq = save_b_irq;
+    chip_emu_update_irq();
+    return errors == 0;
+}
+
+/* Custom-chip register coverage test (UAOS-359): write-only register
+ * shadows, POTGO output-mode bits, DSKBYTR composition, BLTCON0L/ECS
+ * BLTSIZV-H large blits, the blitter completion IRQ, and Paula audio
+ * looping + attach modulation.  Returns 1 on success. */
+int chip_emu_custom_test(void)
+{
+    const uint32_t A = 0x2FF000u;  /* AGA window base offset */
+    int errors = 0;
+    uint16_t save_dmacon  = g_dmacon;
+    uint16_t save_intreq  = g_intreq;
+    uint16_t save_adkcon  = g_adkcon;
+    uint16_t save_potgo   = g_potgo;
+    uint16_t save_dsklen  = g_dsklen;
+    uint16_t save_dskdat  = g_dskdat;
+    uint16_t save_dsk_sync = g_dsk_sync;
+    uint8_t  save_pot[2]  = { g_pot_counter[0], g_pot_counter[1] };
+    AudioChannel save_a0 = g_audio[0], save_a1 = g_audio[1];
+
+    /* --- write-only register shadows read back ------------------------- */
+    chip_emu_write(A + 0x1C0u, 0x1234u, 2);              /* HTOTAL (default shadow) */
+    if ((chip_emu_read(A + 0x1C0u, 2) & 0xFFFFu) != 0x1234u) errors++;
+    chip_emu_write(A + REG_BEAMCON0, 0x0054u, 2);
+    if (chip_emu_read(A + REG_BEAMCON0, 2) != 0x0054u) errors++;
+    chip_emu_write(A + REG_SERPER, 0x0171u, 2);
+    if (chip_emu_read(A + REG_SERPER, 2) != 0x0171u) errors++;
+    chip_emu_write(A + REG_SERDAT, 0x0055u, 2);
+    if (chip_emu_read(A + REG_SERDAT, 2) != 0x0055u) errors++;
+    chip_emu_write(A + REG_VPOSW, 0x00A5u, 2);
+    if (chip_emu_read(A + REG_VPOSW, 2) != 0x00A5u) errors++;
+
+    /* --- POTGO output-mode bits + START counter reset ------------------ */
+    chip_emu_write(A + REG_POTGO, 0x8400u, 2);           /* START|OUTRX, DATRX=0 */
+    if (chip_emu_read(A + REG_POTGOR, 2) & 0x0400u) errors++;   /* bit10 driven 0 */
+    if (g_pot_counter[0] != 0 || g_pot_counter[1] != 0) errors++;
+    chip_emu_write(A + REG_POTGO, 0x0600u, 2);           /* OUTRX + DATRX=1 */
+    if (!(chip_emu_read(A + REG_POTGOR, 2) & 0x0400u)) errors++; /* driven 1 */
+    chip_emu_write(A + REG_POTGO, 0x0000u, 2);
+    if (!(chip_emu_read(A + REG_POTGOR, 2) & 0x0400u)) errors++; /* floats high */
+
+    /* --- DSKBYTR composition ------------------------------------------- */
+    chip_emu_write(A + REG_DSKLEN, 0x8000u, 2);          /* DMAON */
+    chip_emu_write(A + REG_DSKDAT, 0x4489u, 2);
+    chip_emu_write(A + REG_DSKSYNC, 0x4489u, 2);
+    {
+        uint32_t v = chip_emu_read(A + REG_DSKBYTR, 2);
+        if ((v & 0xC000u) != 0xC000u) errors++;           /* DSKBYT|DMAON */
+        if (!(v & 0x1000u)) errors++;                     /* WORDEQUAL */
+        if ((v & 0xFFu) != 0x89u) errors++;               /* data byte */
+    }
+
+    /* --- BLTCON0L minterm-byte write ------------------------------------ */
+    chip_emu_write(A + REG_BLTCON0, 0x9F00u, 2);
+    chip_emu_write(A + REG_BLTCON0L, 0xCAu, 1);
+    if (g_bltcon0 != 0x9FCAu) errors++;
+
+    /* --- ECS BLTSIZV/H blit + BLIT completion IRQ ------------------------ */
+    g_intreq &= ~0x0040u;
+    g_dmacon = 0x8040u;                                   /* master + BLTEN */
+    chip_emu_write(A + REG_BLTCON0, 0x0000u, 2);          /* no channels — pure drain */
+    chip_emu_write(A + REG_BLTCON1, 0x0000u, 2);
+    chip_emu_write(A + REG_BLTSIZV, 4u, 2);
+    chip_emu_write(A + REG_BLTSIZH, 2u, 2);
+    if (!g_blitter_busy) errors++;
+    if (g_blitter_words_remaining != 8) errors++;
+    int blit_irq_seen = 0;
+    for (int i = 0; i < 8 && !blit_irq_seen; i++) {
+        dma_slot_reset();
+        dma_slot_alloc_blitter();
+        if (g_intreq & 0x0040u) blit_irq_seen = 1;
+    }
+    if (!blit_irq_seen) errors++;                         /* BLIT IRQ on end */
+    if (g_blitter_busy) errors++;
+
+    /* --- Paula audio loop reload ---------------------------------------- */
+    g_audio_ram = g_ram;
+    chip_write_u16(0x9000u, 0x1122u);
+    chip_emu_audio_set_channel(0, 0x9000u, 1, 2, 64);    /* 1-word loop */
+    g_dmacon = 0x8201u;                                   /* AUDEN + ch0 */
+    g_adkcon = 0x8000u;
+    for (int i = 0; i < 40; i++) chip_emu_audio_advance(1);
+    /* After several wraps the working pointer must loop back to lc. */
+    if (g_audio[0].ptr != 0x9000u && g_audio[0].ptr != 0x9002u) errors++;
+    if (g_audio[0].len_work > 1) errors++;
+
+    /* --- attach: ch0 modulates ch1 volume (ADKCON USE0V1 = bit 0) ------- */
+    chip_write_u16(0x9000u, 20u);
+    chip_write_u16(0x9002u, 30u);
+    chip_emu_audio_set_channel(0, 0x9000u, 2, 1, 64);
+    chip_emu_audio_set_channel(1, 0x9000u, 8, 10, 10);
+    g_adkcon = 0x8001u;                                   /* master + USE0V1 */
+    g_dmacon = 0x8203u;                                   /* AUDEN + ch0 + ch1 */
+    for (int i = 0; i < 32; i++) chip_emu_audio_advance(1);
+    if (g_audio[1].vol != 20 && g_audio[1].vol != 30) errors++;
+    if (chip_emu_audio_sample_8bit(0) != 0) errors++;     /* modulator silenced */
+
+    g_audio[0] = save_a0;
+    g_audio[1] = save_a1;
+    g_dmacon = save_dmacon;
+    g_intreq = save_intreq;
+    g_adkcon = save_adkcon;
+    g_potgo = save_potgo;
+    g_dsklen = save_dsklen;
+    g_dskdat = save_dskdat;
+    g_dsk_sync = save_dsk_sync;
+    g_pot_counter[0] = save_pot[0];
+    g_pot_counter[1] = save_pot[1];
     chip_emu_update_irq();
     return errors == 0;
 }
