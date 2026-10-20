@@ -1,5 +1,48 @@
 # OKF Change Log
 
+## 2026-10-20 — TODO sweep part 7: UAOS-362/360/359/361
+
+* **UAOS-362** (`8d6156f`): BOOPSI guest ABI aligned to the NDK —
+  OM_*/GM_*/IM_* method IDs, `gpInput`/`gpDomain`/`impDraw`/`impHitTest`
+  layouts, `GMR_*` flags, and `gpi_IEvent` as a real `InputEvent` (UBYTE
+  class/subclass @+4/+5). UAOS-private `SGA_*`/`IM_*` ranges moved out
+  of the NDK space. LayoutTest 12/12.
+* **UAOS-360** (`2c1cee3`): CIA completeness — TOD counters + alarm
+  (`ALRM` ICR bit), SDR/SP serial shift register, CRA/CRB timer modes
+  (one-shot/continuous, load-on-start, PB6/7 toggle/pulse pin modes,
+  INMODE Phi/TOD/CNT sources), FLAG input sampling, `chip_emu_cia_test`.
+* **UAOS-359** (`feb2d79`): custom-chip register coverage — POTGOR
+  honouring POTGO output-mode bits + POTxDAT counters, SERBYT/DENISEID/
+  DSKDATR/HHPOSR/COPINS/CLXDAT read-backs, BLTSIZV/H ECS blit sizes,
+  BEAMCON0/AGA timing shadow, write-only registers read back via the
+  `g_aga_regs` shadow, blitter completion IRQ (`BLTZERO`+INTREQ), Paula
+  audio AUDxLC latch + loop reload + ADKCON attach modulation,
+  `chip_emu_custom_test` extended.
+* **UAOS-361** (`7dbd93b`): Exec semaphore V39 semantics + ExecBase
+  completeness — shared/exclusive grants (`ss_QueueCount`), wait queue
+  mixing stack-carved blocking waiters (`SEM_WAIT_TAG`) with Procure
+  `SemaphoreMessage` bids (`ln_Name` = SM_SHARED/SM_EXCLUSIVE), real
+  Procure/Vacate async bid semantics (grant replies `ssm_Semaphore`,
+  Vacate cancels or releases), `ProcureSegList` at V47 LVO -792,
+  `ObtainSemaphoreShared`/`AttemptSemaphoreShared`, `SUBW_SEM` parked
+  contexts with ~5 s stale-owner steal, `Obtain/ReleaseSemaphoreList`
+  on the real paths; ExecBase ResModules chain (synthetic Resident
+  tags in free 0xC000–0x1A000 band), TaskTrap/Except/ExitCode RTS
+  stubs, five SoftInt headers, `ex_MemHandlers`, `TaskTrapAlloc`,
+  `LastAlert[0..3]` rotation, `tc_SigAlloc`/`tc_TrapAlloc` mirrors.
+* **Verified**: QEMU/OVMF (`run_with_disk.sh`) selftest battery —
+  `chip_emu_cia_test`, extended `chip_emu_custom_test`, and new
+  `uaos_exec_sem_test` (nesting, Attempt gating, queued-waiter grants,
+  shared-chain vs exclusive head, Procure/Vacate round-trips,
+  ProcureSegList, sem-list calls) all PASS; telnetd clean.
+* **Caveat found**: BIOS El Torito boot (`qemu -cdrom -boot d`) now
+  triple-faults post-`UAOS_MMU_Init` — `Mb2_CmdlineHas` reads the mb2
+  info page before the IDT/#PF handler exists. OVMF path (the
+  supported `run_with_disk.sh` flow) unaffected; all cmdline parsing
+  should eventually snapshot the cmdline pre-sandbox.
+* **Docs**: `okf/concepts/amiga_abi.md` (BOOPSI alignment note,
+  semaphore/hardware gap updates).
+
 ## 2026-10-19 — UAOS-337 metal cascade repaint artifact fixed
 * **Symptom**: Early Startup option 2/3 (no Startup-Sequence / shell-only) on MBP4,1 left a waterfall of ghost window frames; shell itself worked.
 * **Root cause**: `repaint_damaged()`/`redraw_full()` only repainted the backdrop when `Desktop_IsWorkbenchLoaded()`; pre-WB, desktop-flagged damage (a vacated window rect) was never erased, so every move left a permanent ghost. Pitch-independent — reproduced identically in QEMU.

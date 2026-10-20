@@ -99,10 +99,18 @@ action codes in bits 8+ of `strgclass` GM_* return values
   `gpInput`/`gpDomain`/`impDraw`/`impHitTest` layouts, `GMR_*` flags, and the
   `InputEvent` carried by `gpi_IEvent`.  Only trailing-field extensions and
   the `SGA_*`/`IM_*` private ranges remain UAOS-specific.
-- Hardware gaps: several read-only custom registers (POTGOR, SERBYT, DENISEID,
-  DSKDATR, HHPOSR, COPINS), CIA TOD/serial-shift/timer modes, AGA display
-  registers, blitter completion IRQ, audio attach/looping details.
+- Hardware gaps closed (UAOS-359/360): read-only custom registers (POTGOR,
+  SERBYT, DENISEID, DSKDATR, HHPOSR, COPINS), CIA TOD/serial-shift/timer
+  modes/pin semantics, AGA display registers, blitter completion IRQ,
+  audio attach/looping details are now modelled.
 - Missing devices: trackdisk, input, gameport, serial.device, parallel.device,
   clipboard, printer, narrator, scsidisk/CD support, keymap resource.
-- Semaphore shared/exclusive modes and `SemaphoreMessage`-based
-  Procure/Vacate semantics are not implemented (exclusive nesting only).
+- Semaphores are now full V39 semantics (UAOS-361): shared/exclusive
+  grants via `ss_QueueCount`, `ss_WaitQueue` mixing blocking waiters with
+  `SemaphoreMessage` bids (`ln_Name` = SM_SHARED/SM_EXCLUSIVE),
+  Procure/Vacate bid cancellation, `ProcureSegList` (V47 LVO -792) as a
+  UAOS extension, and ExecBase completeness (ResModules, trap/exit-code
+  stubs, SoftInt headers, `LastAlert[0..3]`, `TaskSigAlloc`/`TaskTrapAlloc`
+  mirrors).  Multi-owner tracking is still single-`ss_Owner` like real
+  Exec; blocked waiters park as `SUBW_SEM` contexts with a ~5 s
+  stale-owner steal.
