@@ -2234,3 +2234,13 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
   reference, verified behaviours, and remaining gaps (missing devices,
   CIA TOD/serial, AGA regs, semaphore Procure/Vacate, vendored `.i`
   includes opportunity).
+
+## 2026-10-20T02:30Z — REA reverse-engineering skill vendored (UAOS-363)
+
+* **Created**: `.devin/skills/reverse-engineer-anything/` — `SKILL.md` +
+  `references/` (android, connection-and-recovery, evidence-workflows,
+  javascript, native-and-artifacts, runtime-observation) vendored verbatim
+  from `morluto/rea@5fa4defc` (`.agents/skills/reverse-engineer-anything`,
+  skill metadata version 42), with upstream MIT `LICENSE` alongside.
+  Drives the already-configured `rea` MCP server for binary/firmware RE
+  (e.g. SetPatch / ROM analysis); skips REA for plain source analysis.
