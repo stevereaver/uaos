@@ -238,6 +238,7 @@ A host audio subsystem in `kernel/audio/` provides a 48 kHz stereo mixer and a p
 - The AC97 backend (`kernel/audio/ac97.c`) uses the Intel ICH AC97 controller (PCI class 0x04/0x01/0x00), double-buffered DMA descriptors, and a 48 kHz 16-bit stereo stream.
 - The PC speaker backend (`kernel/audio/pc_speaker.c`) remains as a low-fidelity fallback.
 - Boot-time tests `audio_sine_test()` and `audio_pattern_test()` set up a Paula channel with a sine wave and verify the mixer path is active.
+- UAOS-244 verified the guest direct-register path end-to-end (`SYS:Demos/AudIrqTest`, `tests/qemu_audirq_test.py`): AUDxLCH/LCL writes bind sample fetches to the writing task's own `g_ram` window (`g_audio_ram`), MEMF_CHIP buffers inside the 0–8 MB window are valid DMA sources, and AUD0–3 block-complete INTREQ bits 7–10 deliver at interrupt level 4 to `SetIntVector` servers that can clear + re-arm for sustained playback.  Measured per-channel IRQ rates scale exactly as 1/AUDxPER.
 
 ### CIA-A and CIA-B
 

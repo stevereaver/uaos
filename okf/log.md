@@ -1,5 +1,48 @@
 # OKF Change Log
 
+## 2026-10-21 — UAOS-244 Paula/CIA direct-register audio path verified
+
+* **UAOS-244**: ran the card's dedicated regression guest
+  (`SYS:Demos/AudIrqTest`, source `system/Demos/src/AudIrqTest.s`)
+  under QEMU — **AUDIRQ PASS**.  The test bangs `AUDxLCH/LCL`,
+  `AUDxLEN`, `AUDxPER`, `AUDxVOL`, `DMACON` and `INTENA` directly on
+  all four channels exactly like an OctaMED-class player, installs
+  `SetIntVector` level-4 servers on INTREQ bits 7–10, and runs the
+  classic ISR clear/re-arm loop.  Result:
+  `AUD0=356 AUD1=296 AUD2=254 AUD3=222` block-complete IRQs in ~2 s —
+  counts scale *exactly* as `1/AUDxPER` (200/240/280/320: predicted
+  356/297/254/223), proving per-channel period→rate pacing, not just
+  "some IRQs fired".  MEMF_CHIP buffer landed at `0x204C8`, inside
+  the 0–8 MB Paula DMA window and fetched through the running task's
+  own `g_ram` window (`g_audio_ram` binding).  INTENA `0xC780`→`0x8028`
+  teardown confirmed master/channel gating; a ~3 s 4-tone chord then
+  ran through the host mixer (`kernel/audio/` — pcspk/NULL backend
+  under headless QEMU, mixer path still exercised).
+* **Live OctaMED arming evidence** (same session, `title.med` —
+  proper `MMD1`, avoids the `cub.med` ST-import path): OctaMED
+  installs `AddICRVector ciaa bit=0 code=0x816CB4` (CIA-A timer-A
+  tempo tick) and `SetIntVector vec=7 code=0x817E2A` (AUD0
+  block-complete) — the tracker uses exactly the path verified.
+* **Fixes committed** (`39b9a07`): two guest-input bugs found driving
+  the ASL requester — PS/2 cursor Down/Right mapped to swapped Amiga
+  rawkeys (`ps2kbd.c`: Down emitted `0x4E`=Right, Right emitted
+  `0x4D`=Down), and the file requester accepted RAWKEY Return *and*
+  the paired cooked `'\r'`, descending two levels per press
+  (`frq.ret_dup_guard`).  Verified live: `down` moves the selection;
+  one Return now descends exactly once.
+* **Residual blocker (app-compat, parent UAOS-234 — not the audio
+  path)**: a recurring `WILD-PC pc=0 cb=0x801A90` fires inside a
+  host-invoked guest callback (hook/ISR/libcall class) whose memory
+  appears recycled — the address region later holds MMD pattern data
+  (`"1000--"` ASCII rows).  Post-corruption OctaMED stops consuming
+  IDCMP, so the Play Song gadget can no longer be driven to produce
+  actual speaker output.  Also noted: the Play Song gadget at
+  window-relative y=11 is shadowed by the 20-px WM drag band
+  (`WM_TITLEBAR_H`) — only rel-y 20–24 is clickable; coordinate-space
+  mismatch between GZZ-relative gadget bounds and the drag hit-test.
+* **Metal caveat**: QEMU verification only; MBP4,1 target remains
+  unreachable, so AC97-audible playback on hardware is unverified.
+
 ## 2026-10-21 — TODO sweep part 9: UAOS-320 OctaMED song-load crash
 
 * **UAOS-320** (`253337f`): the card's "OctaMED exits on the song-load
