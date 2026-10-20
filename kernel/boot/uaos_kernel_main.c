@@ -415,6 +415,7 @@ extern int chip_emu_ham8_test(void);
 extern int chip_emu_64color_test(void);
 extern int chip_emu_diwhigh_test(void);
 extern int chip_emu_agnus_slot_test(void);
+extern int uaos_exec_sem_test(void);
 extern int chip_emu_sprite_border_test(void);
 extern int chip_emu_sprite_priority_test(void);
 extern int chip_emu_sprite_superhires_test(void);
@@ -1083,6 +1084,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running Agnus slot table test...\n");
     int agnus_test = chip_emu_agnus_slot_test();
     kprint(agnus_test ? "[BOOT] Agnus slot table test PASSED\n" : "[BOOT] Agnus slot table test FAILED\n");
+
+    kprint("[BOOT] Running Exec semaphore test...\n");
+    int sem_test = uaos_exec_sem_test();
+    kprint(sem_test ? "[BOOT] Exec semaphore test PASSED\n" : "[BOOT] Exec semaphore test FAILED\n");
     } /* run_selftests */
 
     /* The chipset self-tests scribble into the framebuffer — restore the

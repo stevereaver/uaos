@@ -831,6 +831,7 @@ extern void     UAOS_DOS_UnLoadSeg(uint32_t seglist_bptr);
 #define EXEC_CHILD_ORPHAN     117
 #define EXEC_CHILD_STATUS     118
 #define EXEC_CHILD_WAIT       119
+#define EXEC_PROCURE_SEGLIST  120
 #define EXEC_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* bsdsocket.library function indices */
@@ -1217,6 +1218,7 @@ static void install_stub(int lib_id, int func_idx)
 #define PRC_TC_IDNEST      0x10
 #define PRC_TC_TDNEST      0x11
 #define PRC_TC_SIGALLOC    0x12
+#define PRC_TC_TRAPALLOC   0x22
 #define PRC_TC_SPREG       0x36
 #define PRC_TC_SPLOWER     0x3A
 #define PRC_TC_SPUPPER     0x3E
@@ -1577,6 +1579,7 @@ static void install_stub(int lib_id, int func_idx)
 #define LVO_ALLOC_POOLED      (-708)
 #define LVO_FREE_POOLED       (-714)
 #define LVO_ATTEMPT_SEM_SHARED (-720)
+#define LVO_PROCURE_SEGLIST    (-792)
 #define LVO_COLD_REBOOT       (-726)
 #define LVO_STACK_SWAP        (-732)  /* V37 */
 #define LVO_CHILD_FREE        (-738)  /* V40 */
@@ -1900,6 +1903,7 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case EXEC_MAKE_FUNCTIONS: return (uint32_t)((int)EXEC_BASE + LVO_MAKE_FUNCTIONS);
             case EXEC_SUM_KICK_DATA: return (uint32_t)((int)EXEC_BASE + LVO_SUM_KICK_DATA);
             case EXEC_ATTEMPT_SEM_SHARED: return (uint32_t)((int)EXEC_BASE + LVO_ATTEMPT_SEM_SHARED);
+            case EXEC_PROCURE_SEGLIST:   return (uint32_t)((int)EXEC_BASE + LVO_PROCURE_SEGLIST);
             case EXEC_COLD_REBOOT:   return (uint32_t)((int)EXEC_BASE + LVO_COLD_REBOOT);
             case EXEC_CREATE_POOL:   return (uint32_t)((int)EXEC_BASE + LVO_CREATE_POOL);
             case EXEC_DELETE_POOL:   return (uint32_t)((int)EXEC_BASE + LVO_DELETE_POOL);
@@ -2402,6 +2406,9 @@ uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
      * of the free mask so a guest AllocSignal can't steal them. */
     guest_write_be32(proc + PRC_TC_SIGALLOC,
                      0xFFFF0000u & ~((1u << sb1) | (1u << sb2)));
+    /* tc_TrapAlloc (+0x22): bits = free traps — 0-14 (trap 15 is
+     * SysBase.TaskTrapAlloc's exec-reserved bit). */
+    guest_write_be16(proc + PRC_TC_TRAPALLOC, 0x7FFF);
 
     /* Seglist BPTR of the loaded program (hunk_load writes LoadSeg-style
      * [size][next][data] headers; the seglist is the first link field). */
@@ -2521,6 +2528,7 @@ uint32_t UAOS_Emu_SetupWbLaunch(const UaosWbLaunch *wb, uint32_t cmdname_bptr)
      * of the free mask so a guest AllocSignal can't steal them. */
     guest_write_be32(proc + PRC_TC_SIGALLOC,
                      0xFFFF0000u & ~((1u << wb_sb1) | (1u << wb_sb2)));
+    guest_write_be16(proc + PRC_TC_TRAPALLOC, 0x7FFF);
 
     /* Fake Workbench Process — the WBStartup reply port lives inside it.
      * No host task owns it, so ReplyMsg just leaves the message on its
@@ -2658,7 +2666,102 @@ void install_library_tables(void)
     g_ram[EXEC_BASE + 0x212] = 50;           /* VBlankFrequency  (V36) */
     g_ram[EXEC_BASE + 0x213] = 50;           /* PowerSupplyFreq  (V36) */
     guest_write_be32(EXEC_BASE + 0x13C, 0xFFFF0000u); /* TaskSigAlloc */
+    guest_write_be16(EXEC_BASE + 0x140, 0x8000);      /* TaskTrapAlloc */
     guest_write_be32(EXEC_BASE + 0x238, 709379u);     /* ex_EClockFrequency */
+    guest_write_be32(EXEC_BASE + 0x240, 1);           /* ex_TaskID */
+
+    /* ExecBase completeness (UAOS-361):
+     *  +0x1B2 SoftInts      — five SoftIntList headers (16 bytes each)
+     *  +0x268 ex_MemHandlers — V39 low-mem handler MinList
+     *  +0x130/134/138 TaskTrap/Except/ExitCode — RTS stubs (no default
+     *    handlers installed; a guest that jumps one just returns)
+     *  +0x12C ResModules    — NULL-terminated APTR array of synthetic
+     *    Resident tags, one per registered ROM module. */
+    for (int i = 0; i < 5; i++) {
+        uint32_t h = EXEC_BASE + 0x1B2 + (uint32_t)i * 16;
+        guest_write_be32(h + 0, h + 4);
+        guest_write_be32(h + 4, 0);
+        guest_write_be32(h + 8, h);
+    }
+    {
+        uint32_t mh = EXEC_BASE + 0x268;
+        guest_write_be32(mh + 0, mh + 4);
+        guest_write_be32(mh + 4, 0);
+        guest_write_be32(mh + 8, mh);
+    }
+    {
+        /* Static exec arena in the free slice of the reserved band —
+         * 0xC000-0x1A000 sits above is_stub_addr's dispatch range
+         * (0x2000-0xC000) and the SetFunction trampoline arena
+         * (0xB000-0xC000), below PROC_ENV (0x1B000):
+         *   0xC000  trap-code default stubs — bare RTS instructions
+         *   0xC040  ResModules APTR array (<=48 entries + NULL)
+         *   0xC200+ synthetic Resident tags, one per ROM module      */
+        for (int i = 0; i < 3; i++) {
+            g_ram[0xC000 + i * 2]     = 0x4E;
+            g_ram[0xC000 + i * 2 + 1] = 0x75;
+        }
+        guest_write_be32(EXEC_BASE + 0x130, 0xC000); /* TaskTrapCode  */
+        guest_write_be32(EXEC_BASE + 0x134, 0xC002); /* TaskExceptCode */
+        guest_write_be32(EXEC_BASE + 0x138, 0xC004); /* TaskExitCode  */
+
+        char *mnames[48]; uint16_t mvers[48];
+        int nmod = UAOS_ROM_ListAll(mnames, mvers, 48);
+        if (nmod > 48) nmod = 48;
+        uint32_t tag = 0xC200;
+        int wrote = 0;
+        for (int i = 0; i < nmod && tag + 128 < 0x18000; i++) {
+            uint32_t t0 = tag;
+            uint32_t nm = tag + 26;
+            uint32_t p  = nm;
+            for (const char *s = mnames[i]; *s && p < 0x17F80; s++)
+                g_ram[p++] = (uint8_t)*s;
+            g_ram[p++] = 0;
+            uint32_t id = p;
+            for (const char *s = mnames[i]; *s && p < 0x17F80; s++)
+                g_ram[p++] = (uint8_t)*s;
+            if (p + 8 < 0x17F80) {
+                g_ram[p++] = ' ';
+                char vb[12]; u32_dec(mvers[i], vb, (int)sizeof(vb));
+                for (int j = 0; vb[j]; j++) g_ram[p++] = (uint8_t)vb[j];
+                g_ram[p++] = '.'; g_ram[p++] = '0';
+            }
+            g_ram[p++] = 0;
+            /* Resident struct — rt_MatchWord/MatchTag make it a real
+             * RomTag; rt_Init points at the RTS stub so a curious
+             * InitResident can't wander. */
+            guest_write_be16(t0 +  0, 0x4AFC);
+            guest_write_be32(t0 +  2, t0);
+            guest_write_be32(t0 +  6, t0 + 26);        /* rt_EndSkip  */
+            g_ram[t0 + 10] = 1;                        /* RTF_COLDSTART */
+            g_ram[t0 + 11] = (uint8_t)(mvers[i] > 255 ? 40 : mvers[i]);
+            {
+                /* rt_Type from the module-name suffix. */
+                const char *s = mnames[i];
+                int l = 0; while (s[l]) l++;
+                uint8_t rt = NT_LIBRARY_G;
+                if (l >= 7 && s[l-7] == '.' && s[l-6] == 'd' &&
+                    s[l-5] == 'e' && s[l-4] == 'v' && s[l-3] == 'i' &&
+                    s[l-2] == 'c' && s[l-1] == 'e')
+                    rt = NT_DEVICE_G;
+                else if (l >= 9 && s[l-9] == '.' && s[l-8] == 'r' &&
+                         s[l-7] == 'e' && s[l-6] == 's' && s[l-5] == 'o' &&
+                         s[l-4] == 'u' && s[l-3] == 'r' && s[l-2] == 'c' &&
+                         s[l-1] == 'e')
+                    rt = 8;                            /* NT_RESOURCE */
+                g_ram[t0 + 12] = rt;
+            }
+            g_ram[t0 + 13] = 0;                        /* rt_Pri      */
+            guest_write_be32(t0 + 14, nm);             /* rt_Name     */
+            guest_write_be32(t0 + 18, id);             /* rt_IdString */
+            guest_write_be32(t0 + 22, 0xC000);         /* rt_Init→RTS */
+            guest_write_be32(0xC040 + (uint32_t)wrote * 4, t0);
+            wrote++;
+            tag = (p + 1) & ~1u;                       /* keep even */
+        }
+        guest_write_be32(0xC040 + (uint32_t)wrote * 4, 0);
+        guest_write_be32(EXEC_BASE + 0x12C, 0xC040);   /* ResModules */
+    }
 
     /* System list headers — canonical execbase.i offsets.  An Amiga List
      * header is: lh_Head=&lh_Tail, lh_Tail=NULL, lh_TailPred=&lh_Head. */
@@ -2831,6 +2934,7 @@ void install_library_tables(void)
     install_lvo(EXEC_BASE, LVO_MAKE_FUNCTIONS, LIB_EXEC, EXEC_MAKE_FUNCTIONS);
     install_lvo(EXEC_BASE, LVO_SUM_KICK_DATA, LIB_EXEC, EXEC_SUM_KICK_DATA);
     install_lvo(EXEC_BASE, LVO_ATTEMPT_SEM_SHARED, LIB_EXEC, EXEC_ATTEMPT_SEM_SHARED);
+    install_lvo(EXEC_BASE, LVO_PROCURE_SEGLIST,    LIB_EXEC, EXEC_PROCURE_SEGLIST);
     install_lvo(EXEC_BASE, LVO_COLD_REBOOT,   LIB_EXEC, EXEC_COLD_REBOOT);
     install_lvo(EXEC_BASE, LVO_CREATE_POOL,   LIB_EXEC, EXEC_CREATE_POOL);
     install_lvo(EXEC_BASE, LVO_DELETE_POOL,   LIB_EXEC, EXEC_DELETE_POOL);
@@ -4378,6 +4482,14 @@ static void glue_list_add_tail(uint32_t list, uint32_t node)
 #define SUBW_TICKS  3     /* PIT-tick deadline in wait_dl            */
 #define SUBW_VBLANK 4     /* vblank counter changed from wait_io     */
 #define SUBW_PORT   5     /* port message list non-empty             */
+#define SUBW_SEM    6     /* signal-semaphore grant/steal in wait_io */
+
+/* SignalSemaphore field offsets (exec/semaphores.h) — needed by the
+ * SUBW_SEM promotion check above the semaphore section proper. */
+#define SS_NESTCOUNT 14
+#define SS_WAITQUEUE 16
+#define SS_OWNER     40
+#define SS_QUEUECNT  44
 
 #define SUB_MAX      8
 #define SUB_MAXWIN   4
@@ -4567,6 +4679,14 @@ static int sub_wait_done(SubCtx *c)
         return chip_emu_vblank_count() != c->wait_io;
     case SUBW_PORT:
         return !glue_list_empty(c->wait_io + MP_MSGLIST);
+    case SUBW_SEM:
+        /* Granted when this ctx became the owner, when the sem went
+         * shared (a chained shared grant keeps the first owner), or the
+         * stale-owner deadline in wait_dl expired (the re-entering stub
+         * then takes the lock forcibly — see sem_obtain). */
+        return glue_r32(c->wait_io + SS_OWNER) == c->task_addr ||
+               (int16_t)glue_r16(c->wait_io + SS_QUEUECNT) > 0 ||
+               g_pit_ticks >= c->wait_dl;
     }
     return 0;
 }
@@ -5203,26 +5323,26 @@ static void exec_AllocSignal(void)
     UaosTask *t = Task_Current();
     if (!t) { m68k_set_reg(M68K_REG_D0, (uint32_t)-1); return; }
 
+    int32_t r = -1;
     if (signal_num == -1) {
         uint32_t alloc_mask = t->tc_SigAlloc;
         for (int i = 0; i < 32; i++) {
             if ((alloc_mask >> i) & 1) {
                 t->tc_SigAlloc &= ~(1U << i);
-                m68k_set_reg(M68K_REG_D0, (uint32_t)i);
-                return;
+                r = i;
+                break;
             }
         }
-        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-    } else if (signal_num >= 0 && signal_num < 32) {
-        if ((t->tc_SigAlloc >> signal_num) & 1) {
-            t->tc_SigAlloc &= ~(1U << signal_num);
-            m68k_set_reg(M68K_REG_D0, (uint32_t)signal_num);
-        } else {
-            m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
-        }
-    } else {
-        m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
+    } else if (signal_num >= 0 && signal_num < 32 &&
+               ((t->tc_SigAlloc >> signal_num) & 1)) {
+        t->tc_SigAlloc &= ~(1U << signal_num);
+        r = signal_num;
     }
+    /* Mirror the host mask into the guest node's tc_SigAlloc so code
+     * reading its own task node sees the allocator's real state. */
+    if (g_guest_proc_addr)
+        glue_w32(g_guest_proc_addr + PRC_TC_SIGALLOC, t->tc_SigAlloc);
+    m68k_set_reg(M68K_REG_D0, (uint32_t)r);
 }
 
 static void exec_FreeSignal(void)
@@ -5244,6 +5364,8 @@ static void exec_FreeSignal(void)
 
     if (signal_num < 32) {
         t->tc_SigAlloc |= (1U << signal_num);
+        if (g_guest_proc_addr)
+            glue_w32(g_guest_proc_addr + PRC_TC_SIGALLOC, t->tc_SigAlloc);
         m68k_set_reg(M68K_REG_D0, 0);
     } else {
         m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
@@ -5963,7 +6085,12 @@ static int exec_alloc_sigbit(void)
     UaosTask *t = Task_Current();
     if (!t) return -1;
     for (int i = 0; i < 32; i++)
-        if ((t->tc_SigAlloc >> i) & 1) { t->tc_SigAlloc &= ~(1U << i); return i; }
+        if ((t->tc_SigAlloc >> i) & 1) {
+            t->tc_SigAlloc &= ~(1U << i);
+            if (g_guest_proc_addr)
+                glue_w32(g_guest_proc_addr + PRC_TC_SIGALLOC, t->tc_SigAlloc);
+            return i;
+        }
     return -1;
 }
 
@@ -5977,7 +6104,11 @@ static void exec_free_sigbit(int sb)
         return;
     }
     UaosTask *t = Task_Current();
-    if (t) t->tc_SigAlloc |= (1U << sb);
+    if (t) {
+        t->tc_SigAlloc |= (1U << sb);
+        if (g_guest_proc_addr)
+            glue_w32(g_guest_proc_addr + PRC_TC_SIGALLOC, t->tc_SigAlloc);
+    }
 }
 
 static void exec_CreateMsgPort(void)
@@ -6726,20 +6857,34 @@ static void audio_dev_Close(void)
     m68k_set_reg(M68K_REG_D0, 0);
 }
 
-/* ---- semaphores (single-context approximation) ---------------------------
+/* ---- semaphores (V39 shared/exclusive + Procure/Vacate bids) --------------
  * SignalSemaphore (exec/semaphores.h):
  *   +0  Node ss_Link (14)
- *   +14 SHORT ss_NestCount
- *   +16 MinList ss_WaitQueue (12)
+ *   +14 SHORT ss_NestCount         — exclusive-owner recursion depth
+ *   +16 MinList ss_WaitQueue (12)  — blocking waiters + Procure bid msgs
  *   +28 SemaphoreRequest ss_MultipleLink (12)
- *   +40 APTR ss_Owner
- *   +44 SHORT ss_QueueCount
+ *   +40 APTR ss_Owner              — exclusive owner / first shared owner
+ *   +44 SHORT ss_QueueCount        — -1 exclusive-or-free, >=0 shared count
+ *
+ * ss_WaitQueue holds two private node shapes:
+ *   - blocking waiters: a 20-byte scratch block carved below the blocked
+ *     task's trap SP — mln_Succ@0, mln_Pred@4, waiter|SEM_WAIT_TAG@8,
+ *     bid@12, steal deadline@16.  SEM_WAIT_TAG's top bit keeps +8 from
+ *     ever looking like a Node type byte, which is how grant code tells
+ *     waiter blocks from bid messages.
+ *   - Procure bids: the caller's SemaphoreMessage — its Node is linked
+ *     directly, the shared/exclusive bid flag lives in ln_Name
+ *     (SM_SHARED=1 / SM_EXCLUSIVE=0 per the autodocs) and ssm_Semaphore
+ *     at +20 is filled on grant (NULL on Vacate abort).
  * ------------------------------------------------------------------------- */
-#define SS_NESTCOUNT 14
-#define SS_WAITQUEUE 16
-#define SS_OWNER     40
-#define SS_QUEUECNT  44
 #define SEM_SIZE     46
+#define SSM_SEMAPHORE 20
+
+#define SEM_WAIT_TAG   0x80000000u
+#define SEM_BID_EXCL   0          /* SM_EXCLUSIVE */
+#define SEM_BID_SHARED 1          /* SM_SHARED    */
+#define SEMW_SZ        20         /* waiter scratch block size    */
+#define SEM_WAIT_TICKS 500u       /* ~5 s @100 Hz stale-owner cap */
 
 static void sem_init(uint32_t sem)
 {
@@ -6758,67 +6903,372 @@ static void exec_InitSemaphore(void)
     if (sem && sem + SEM_SIZE < GUEST_RAM_SIZE) sem_init(sem);
 }
 
+/* Grantability: exclusive locks nest for the owner; shared locks chain
+ * while the sem is free, already shared, or held exclusively by us
+ * (V39 AttemptSemaphoreShared grants over the caller's exclusive). */
+static int sem_can_grant(uint32_t sem, uint32_t task, int shared)
+{
+    uint32_t owner = glue_r32(sem + SS_OWNER);
+    int16_t  qc    = (int16_t)glue_r16(sem + SS_QUEUECNT);
+    if (shared)
+        return !owner || qc >= 0 || owner == task;
+    return !owner || (owner == task && qc < 0);
+}
+
+static void sem_grant(uint32_t sem, uint32_t task, int shared)
+{
+    if (shared) {
+        int16_t qc = (int16_t)glue_r16(sem + SS_QUEUECNT);
+        if (!glue_r32(sem + SS_OWNER)) {
+            glue_w32(sem + SS_OWNER, task);
+            qc = 0;
+        } else if (qc < 0) {
+            qc = 0;                  /* shared grant over own exclusive */
+        }
+        glue_w16(sem + SS_QUEUECNT, (uint16_t)(qc + 1));
+    } else {
+        glue_w32(sem + SS_OWNER, task);
+        glue_w16(sem + SS_NESTCOUNT,
+                 (uint16_t)(glue_r16(sem + SS_NESTCOUNT) + 1));
+    }
+}
+
+static void sem_node_remove(uint32_t node)
+{
+    uint32_t succ = glue_r32(node + LN_SUCC);
+    uint32_t pred = glue_r32(node + LN_PRED);
+    glue_w32(pred + LN_SUCC, succ);
+    glue_w32(succ + LN_PRED, pred);
+}
+
+/* Reply a SemaphoreMessage the way exec_ReplyMsg does (enqueue on the
+ * reply port, run the port arrival action, NT_REPLYMSG/NT_FREEMSG). */
+static void sem_reply_msg(uint32_t msg)
+{
+    uint32_t reply = glue_r32(msg + MN_REPLYPORT);
+    if (!reply) {
+        g_ram[msg + LN_TYPE] = NT_FREEMSG;
+        return;
+    }
+    g_ram[msg + LN_TYPE] = NT_REPLYMSG;
+    guest_list_enqueue(reply + MP_MSGLIST, msg);
+    port_arrival_action(g_ram, reply);
+}
+
+/* The semaphore just went free — grant queued requests FIFO.  Shared
+ * requests chain (every leading shared request is granted together);
+ * an exclusive head stops the drain once the sem is owned again. */
+static void sem_free_grant(uint32_t sem)
+{
+    int guard = 0;
+    for (;;) {
+        uint32_t node = glue_r32(sem + SS_WAITQUEUE + MLH_HEAD);
+        if (!node || node == sem + SS_WAITQUEUE + MLH_TAIL || guard++ > 64)
+            return;
+        uint32_t tagged = glue_r32(node + 8);
+        int shared = (tagged & SEM_WAIT_TAG)
+                   ? (glue_r32(node + 12) != 0)
+                   : (glue_r32(node + LN_NAME) != 0);
+        /* Once owned (shared chain in progress) only further shared
+         * requests may proceed — an exclusive head waits out the
+         * sharers. */
+        if (glue_r32(sem + SS_OWNER) && !shared) return;
+        uint32_t owner;
+        sem_node_remove(node);
+        if (tagged & SEM_WAIT_TAG) {                 /* blocking waiter */
+            owner = tagged & ~SEM_WAIT_TAG;
+        } else {                                     /* Procure bid msg */
+            uint32_t reply = glue_r32(node + MN_REPLYPORT);
+            owner  = reply ? glue_r32(reply + MP_SIGTASK) : 0;
+            glue_w32(node + SSM_SEMAPHORE, sem);
+            sem_reply_msg(node);
+            if (!owner) continue;   /* replied but nobody to grant to */
+        }
+        sem_grant(sem, owner, shared);
+        if (!shared) return;                         /* exclusive — done */
+    }
+}
+
+/* Release one hold — shared count first (shared holds release shared
+ * grants), then exclusive nesting; when nothing remains the sem frees
+ * and the wait queue drains. */
+static void sem_release_once(uint32_t sem)
+{
+    int16_t  qc = (int16_t)glue_r16(sem + SS_QUEUECNT);
+    uint16_t n  = glue_r16(sem + SS_NESTCOUNT);
+    if (qc > 0) {
+        glue_w16(sem + SS_QUEUECNT, (uint16_t)(qc - 1));
+        if (qc - 1 > 0 || n > 0) return;             /* sharers/nest left */
+    } else if (n) {
+        glue_w16(sem + SS_NESTCOUNT, n - 1);
+        if (n - 1 > 0 || qc > 0) return;
+    } else {
+        return;                                      /* nothing held */
+    }
+    glue_w32(sem + SS_OWNER, 0);
+    glue_w16(sem + SS_QUEUECNT, (uint16_t)-1);
+    sem_free_grant(sem);
+}
+
+/* Our waiter block still on the queue?  Returns its address or 0. */
+static uint32_t sem_find_waiter(uint32_t sem, uint32_t task)
+{
+    uint32_t node = glue_r32(sem + SS_WAITQUEUE + MLH_HEAD);
+    uint32_t tail = sem + SS_WAITQUEUE + MLH_TAIL;
+    int guard = 0;
+    while (node && node != tail && guard++ < 64) {
+        uint32_t tagged = glue_r32(node + 8);
+        if ((tagged & SEM_WAIT_TAG) && (tagged & ~SEM_WAIT_TAG) == task)
+            return node;
+        node = glue_r32(node + LN_SUCC);
+    }
+    return 0;
+}
+
+/* Obtain with blocking + wait-queue bookkeeping, shared by
+ * ObtainSemaphore / ObtainSemaphoreShared / ObtainSemaphoreList. */
+static void sem_obtain(uint32_t sem, int shared)
+{
+    uint32_t task = emu_cur_task();
+    uint32_t sp   = m68k_get_reg(NULL, M68K_REG_SP);
+    /* Waiter scratch rides just under the trap SP — stable across parked
+     * stub re-entries since every re-dispatch lands at the same SP. */
+    uint32_t ssr  = (sp >= SEMW_SZ + 4 && sp < GUEST_RAM_SIZE)
+                  ? sp - SEMW_SZ : 0;
+    SubCtx *sc = sub_cur_ctx();
+
+    /* Parked waiter whose grant already landed: the re-executed stub
+     * re-entered the call — hand it back without another nest. */
+    if (sc && sc->wait_kind == SUBW_SEM) {
+        int mine = (sc->wait_io == sem);
+        sc->wait_kind = SUBW_NONE;
+        /* Re-entry at the stub after promotion: we hold the lock only if
+         * the grant removed our waiter node — a queued node means the
+         * wakeup was spurious and the wait loop below continues it. */
+        if (mine && !sem_find_waiter(sem, sc->task_addr) &&
+            (glue_r32(sem + SS_OWNER) == sc->task_addr ||
+             (int16_t)glue_r16(sem + SS_QUEUECNT) > 0))
+            return;
+    }
+
+    int waiting = 0;
+    for (;;) {
+        if (sem_can_grant(sem, task, shared)) {
+            /* Granted while we slept — the releasing task already applied
+             * our grant (owner + count); returning here would double it.
+             * A shared grant keeps the first owner's task in ss_Owner, so
+             * shared-mode acceptance also covers grants behind a chain. */
+            uint32_t stale = sem_find_waiter(sem, task);
+            if (waiting && !stale &&
+                (glue_r32(sem + SS_OWNER) == task ||
+                 (int16_t)glue_r16(sem + SS_QUEUECNT) > 0)) {
+                if (sc) sc->wait_kind = SUBW_NONE;
+                return;
+            }
+            /* A stale copy of our waiter block must not survive a grant. */
+            if (stale) sem_node_remove(stale);
+            sem_grant(sem, task, shared);
+            if (sc) sc->wait_kind = SUBW_NONE;
+            return;
+        }
+        if (!ssr) return;               /* nowhere to park — give up */
+
+        waiting = 1;
+        uint32_t mine = sem_find_waiter(sem, task);
+        if (!mine) {
+            mine = ssr;
+            glue_w32(mine +  8, task | SEM_WAIT_TAG);
+            glue_w32(mine + 12, (uint32_t)shared);
+            glue_w32(mine + 16, (uint32_t)(g_pit_ticks + SEM_WAIT_TICKS));
+            guest_list_add_tail(sem + SS_WAITQUEUE, mine);
+        }
+
+        /* Stale owner — a cross-window registry replica or a leaked lock
+         * the owner can never release.  Real exec waits forever; a guest
+         * would deadlock, so after ~5 s the waiter steals the lock. */
+        uint32_t dl = glue_r32(mine + 16);
+        if ((int32_t)(dl - (uint32_t)g_pit_ticks) <= 0) {
+            sem_node_remove(mine);
+            glue_w32(sem + SS_OWNER, task);
+            glue_w16(sem + SS_NESTCOUNT, 1);
+            glue_w16(sem + SS_QUEUECNT, (uint16_t)-1);
+            emu_print("[exec] semaphore wait timed out — stealing stale owner\n");
+            if (sc) sc->wait_kind = SUBW_NONE;
+            return;
+        }
+
+        if (sc) {
+            sc->wait_kind = SUBW_SEM;
+            sc->wait_io   = sem;
+            sc->wait_dl   = dl;
+            if (sub_park_or_wait(g_cur_stub)) return;
+            continue;
+        }
+        /* Main context: 1-tick naps like WaitPort — keep guest IRQs and
+         * runnable sibling ctxs (the owner may be a subtask) pumping. */
+        {
+            WSched *w = sub_ws(g_ram);
+            g_blocked_in = 8;
+            g_m68k_block_marks++;
+            Task_WaitTicks(sub_host_wake_mask(w), 1);
+            g_blocked_in = 0;
+            UAOS_M68k_DeliverInterrupts();
+            sub_pump_ready();
+            UaosTask *t = Task_Current();
+            if (t && t->type == TASK_TYPE_M68K && t->m68k_halted) {
+                m68k_end_timeslice();
+                return;
+            }
+        }
+    }
+}
+
 static void exec_ObtainSem(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
-    if (!sem) return;
-    glue_w32(sem + SS_OWNER, emu_cur_task());
-    glue_w16(sem + SS_NESTCOUNT, glue_r16(sem + SS_NESTCOUNT) + 1);
+    if (sem) sem_obtain(sem, SEM_BID_EXCL);
+}
+
+static void exec_ObtainSemShared(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    if (sem) sem_obtain(sem, SEM_BID_SHARED);
 }
 
 static void exec_ReleaseSem(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
-    if (!sem) return;
-    uint32_t n = glue_r16(sem + SS_NESTCOUNT);
-    if (n) n--;
-    glue_w16(sem + SS_NESTCOUNT, n);
-    if (!n) glue_w32(sem + SS_OWNER, 0);
+    if (sem) sem_release_once(sem);
 }
 
 static void exec_AttemptSem(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
-    uint32_t owner = sem ? glue_r32(sem + SS_OWNER) : 0;
-    if (!owner || owner == emu_cur_task()) {
-        if (sem) {
-            glue_w32(sem + SS_OWNER, emu_cur_task());
-            glue_w16(sem + SS_NESTCOUNT, glue_r16(sem + SS_NESTCOUNT) + 1);
-        }
+    if (sem && sem_can_grant(sem, emu_cur_task(), SEM_BID_EXCL)) {
+        sem_grant(sem, emu_cur_task(), SEM_BID_EXCL);
         m68k_set_reg(M68K_REG_D0, 1);
     } else {
         m68k_set_reg(M68K_REG_D0, 0);
     }
 }
 
-static void exec_Procure(void)   { m68k_set_reg(M68K_REG_D0, 1); }
-static void exec_Vacate(void)    { }
+static void exec_AttemptSemShared(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    if (sem && sem_can_grant(sem, emu_cur_task(), SEM_BID_SHARED)) {
+        sem_grant(sem, emu_cur_task(), SEM_BID_SHARED);
+        m68k_set_reg(M68K_REG_D0, 1);
+    } else {
+        m68k_set_reg(M68K_REG_D0, 0);
+    }
+}
+
+/* Procure(sem=a0, bidmsg=a1) — V39 async bid.  Immediate grant replies
+ * the bid with ssm_Semaphore=sem; otherwise the message's Node queues on
+ * ss_WaitQueue until a release grants it.  ln_Name carries the bid flag:
+ * SM_SHARED(1) or SM_EXCLUSIVE(0). */
+static void exec_Procure(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t bid = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!sem || !bid) return;
+    int shared = glue_r32(bid + LN_NAME) != 0;
+    if (sem_can_grant(sem, emu_cur_task(), shared)) {
+        sem_grant(sem, emu_cur_task(), shared);
+        glue_w32(bid + SSM_SEMAPHORE, sem);
+        sem_reply_msg(bid);
+    } else {
+        guest_list_add_tail(sem + SS_WAITQUEUE, bid);
+    }
+}
+
+/* Vacate(sem=a0, bidmsg=a1) — cancel a queued bid (replied with
+ * ssm_Semaphore=NULL), or release a hold when the bid already replied. */
+static void exec_Vacate(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t bid = m68k_get_reg(NULL, M68K_REG_A1);
+    if (!sem || !bid) return;
+
+    uint32_t node = glue_r32(sem + SS_WAITQUEUE + MLH_HEAD);
+    uint32_t tail = sem + SS_WAITQUEUE + MLH_TAIL;
+    int guard = 0;
+    while (node && node != tail && guard++ < 64) {
+        if (node == bid) {
+            sem_node_remove(node);
+            glue_w32(bid + SSM_SEMAPHORE, 0);
+            sem_reply_msg(bid);
+            return;
+        }
+        node = glue_r32(node + LN_SUCC);
+    }
+    /* Not queued — the bid already replied.  A grant left ssm_Semaphore
+     * pointing at this sem: clear it and release one hold.  Anything
+     * else (never procured, already vacated) is a no-op so a repeated
+     * Vacate can't release somebody else's lock. */
+    if (glue_r32(bid + SSM_SEMAPHORE) == sem) {
+        glue_w32(bid + SSM_SEMAPHORE, 0);
+        sem_release_once(sem);
+    } else {
+        glue_w32(bid + SSM_SEMAPHORE, 0);
+    }
+}
+
+/* ProcureSegList(sem=a0, bidSegList=d0) — V47 (OS3.2, LVO -792).  A
+ * seglist whose segments each begin with a SemaphoreMessage (after the
+ * [size][next] BCPL header); every message bids on the semaphore.  All
+ * bids post — D0=TRUE on a non-empty list, FALSE when there was nothing
+ * to procure with. */
+static void exec_ProcureSegList(void)
+{
+    uint32_t sem = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t bptr = m68k_get_reg(NULL, M68K_REG_D0);
+    int used = 0;
+    while (bptr) {
+        uint32_t seg = bptr << 2;
+        if (seg + 8 + SSM_SEMAPHORE + 4 > GUEST_RAM_SIZE) break;
+        uint32_t msg = seg + 8;
+        int shared = glue_r32(msg + LN_NAME) != 0;
+        if (sem_can_grant(sem, emu_cur_task(), shared)) {
+            sem_grant(sem, emu_cur_task(), shared);
+            glue_w32(msg + SSM_SEMAPHORE, sem);
+            sem_reply_msg(msg);
+        } else {
+            guest_list_add_tail(sem + SS_WAITQUEUE, msg);
+        }
+        used++;
+        bptr = glue_r32(seg + 4);
+    }
+    m68k_set_reg(M68K_REG_D0, used ? 1 : 0);
+}
 
 #define SEMLIST_ADDR (EXEC_BASE + 0x214)   /* SysBase SemaphoreList */
 
 static void exec_ObtainSemList(void)
 {
-    /* ObtainSemaphoreList(list=a0) — MinList of SignalSemaphores; obtain
-     * every node in order (same non-blocking semantics as ObtainSem). */
-    uint32_t cur = glue_r32(m68k_get_reg(NULL, M68K_REG_A0));
+    /* ObtainSemaphoreList(list=a0) — List of SignalSemaphores linked via
+     * ss_Link; obtain every member exclusively, in list order (the
+     * autodocs warn callers to hold a higher-level lock against
+     * cross-order deadlocks — same exposure here). */
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t cur  = glue_r32(list + MLH_HEAD);
     int guard = 0;
-    while (cur && glue_r32(cur + LN_SUCC) && guard++ < 256) {
-        glue_w32(cur + SS_OWNER, emu_cur_task());
-        glue_w16(cur + SS_NESTCOUNT, glue_r16(cur + SS_NESTCOUNT) + 1);
-        cur = glue_r32(cur + LN_SUCC);
+    while (cur && cur != list + MLH_TAIL && guard++ < 256) {
+        uint32_t next = glue_r32(cur + LN_SUCC);
+        sem_obtain(cur, SEM_BID_EXCL);
+        cur = next;
     }
 }
 
 static void exec_ReleaseSemList(void)
 {
-    uint32_t cur = glue_r32(m68k_get_reg(NULL, M68K_REG_A0));
+    uint32_t list = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t cur  = glue_r32(list + MLH_HEAD);
     int guard = 0;
-    while (cur && glue_r32(cur + LN_SUCC) && guard++ < 256) {
-        uint32_t n = glue_r16(cur + SS_NESTCOUNT);
-        if (n) n--;
-        glue_w16(cur + SS_NESTCOUNT, n);
-        if (!n) glue_w32(cur + SS_OWNER, 0);
-        cur = glue_r32(cur + LN_SUCC);
+    while (cur && cur != list + MLH_TAIL && guard++ < 256) {
+        uint32_t next = glue_r32(cur + LN_SUCC);
+        sem_release_once(cur);
+        cur = next;
     }
 }
 
@@ -6995,6 +7445,7 @@ static uint32_t semreg_materialize(SemRegEnt *e)
     glue_w32(resem + SS_WAITQUEUE + MLH_TAILPRED, resem + SS_WAITQUEUE + MLH_HEAD);
     glue_w32(resem + SS_OWNER, 0);
     glue_w16(resem + SS_NESTCOUNT, 0);
+    glue_w16(resem + SS_QUEUECNT, (uint16_t)-1);
 
     /* ln_Name: remap when it pointed inside the sem's own block (SetPatch
      * stores the name inline); otherwise clone the registry name. */
@@ -7078,6 +7529,248 @@ static void exec_RemSemaphore(void)
     uint32_t pred = glue_r32(sem + LN_PRED);
     glue_w32(pred + LN_SUCC, succ);
     glue_w32(succ + LN_PRED, pred);
+}
+
+/* ---- semaphore self-test (UAOS-361) -------------------------------------
+ * Drives the LVO handlers directly with fabricated registers and fake
+ * task addresses — the m68k register file is global, so handlers behave
+ * outside an execution slice too.  Covers exclusive nesting, Attempt /
+ * AttemptShared gating, queued-waiter grants, Procure/Vacate bid
+ * messages, ProcureSegList and the semaphore-list calls. */
+int uaos_exec_sem_test(void)
+{
+    int fails = 0;
+#define SEMT_FAIL(cond, msg) \
+    do { if (cond) { fails++; emu_print("[semtest] FAIL: " msg "\n"); } } while (0)
+
+    uint32_t sem = 0, s2 = 0, portB = 0, portC = 0, bid = 0, bid2 = 0;
+    uint32_t wq1 = 0, wq2 = 0, seg1 = 0, seg2 = 0, slist = 0;
+    dos_AllocMem_glue(SEM_SIZE, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &sem);
+    dos_AllocMem_glue(SEM_SIZE, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &s2);
+    dos_AllocMem_glue(48, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &portB);
+    dos_AllocMem_glue(48, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &portC);
+    dos_AllocMem_glue(48, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &bid);
+    dos_AllocMem_glue(48, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &bid2);
+    dos_AllocMem_glue(32, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &wq1);
+    dos_AllocMem_glue(32, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &wq2);
+    dos_AllocMem_glue(64, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &seg1);
+    dos_AllocMem_glue(64, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &seg2);
+    dos_AllocMem_glue(16, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &slist);
+    if (!sem || !s2 || !portB || !portC || !bid || !bid2 ||
+        !wq1 || !wq2 || !seg1 || !seg2 || !slist) {
+        emu_print("[semtest] FAIL: alloc\n");
+        return 0;
+    }
+    /* Fake tasks A/B/C — plain guest addresses; the handlers only store
+     * them, never dereference. */
+    const uint32_t A = 0x31000, B = 0x31100, C = 0x31200;
+    /* B/C reply ports: empty msglist, MP_SIGTASK set, PA_SIGNAL sigbit. */
+    for (int i = 0; i < 2; i++) {
+        uint32_t p = i ? portC : portB;
+        glue_w32(p + MP_MSGLIST + MLH_HEAD,     p + MP_MSGLIST + MLH_TAIL);
+        glue_w32(p + MP_MSGLIST + MLH_TAIL,     0);
+        glue_w32(p + MP_MSGLIST + MLH_TAILPRED, p + MP_MSGLIST + MLH_HEAD);
+        glue_w32(p + MP_SIGTASK, i ? C : B);
+    }
+
+    uint32_t saved_proc = g_guest_proc_addr;
+    uint32_t saved_sp   = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
+    /* Waiter scratch normally lives under the trap SP — give the test a
+     * real SP so the obtain path can build it. */
+    m68k_set_reg(M68K_REG_SP, 0x38000);
+
+    /* InitSemaphore */
+    m68k_set_reg(M68K_REG_A0, sem);
+    exec_InitSemaphore();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != 0 ||
+              glue_r16(sem + SS_QUEUECNT) != 0xFFFF ||
+              glue_r16(sem + SS_NESTCOUNT) != 0,
+              "InitSemaphore fields");
+
+    /* Exclusive obtain + nesting (task A) */
+    g_guest_proc_addr = A;
+    exec_ObtainSem();
+    exec_ObtainSem();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != A ||
+              glue_r16(sem + SS_NESTCOUNT) != 2,
+              "exclusive obtain nests");
+
+    /* Attempt by a non-owner fails; a queued Procure bid waits */
+    g_guest_proc_addr = B;
+    m68k_set_reg(M68K_REG_A0, sem);
+    exec_AttemptSem();
+    SEMT_FAIL(m68k_get_reg(NULL, M68K_REG_D0) != 0,
+              "AttemptSemaphore refused when owned");
+    glue_w32(bid + MN_REPLYPORT, portB);
+    glue_w32(bid + LN_NAME, SEM_BID_EXCL);
+    glue_w32(bid + SSM_SEMAPHORE, 0);
+    m68k_set_reg(M68K_REG_A0, sem);
+    m68k_set_reg(M68K_REG_A1, bid);
+    exec_Procure();
+    SEMT_FAIL(glue_r32(sem + SS_WAITQUEUE + MLH_HEAD) != bid,
+              "Procure queues bid on ss_WaitQueue");
+
+    /* One release keeps the nest; the second grants the bid */
+    g_guest_proc_addr = A;
+    m68k_set_reg(M68K_REG_A0, sem);
+    exec_ReleaseSem();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != A, "release keeps nested owner");
+    exec_ReleaseSem();
+    SEMT_FAIL(glue_r32(bid + SSM_SEMAPHORE) != sem, "granted bid sets ssm");
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != B, "grant hands sem to bidder");
+    SEMT_FAIL(glue_list_empty(portB + MP_MSGLIST),
+              "granted bid lands on reply port");
+    (void)glue_list_remove_head(portB + MP_MSGLIST);
+
+    /* Vacate on a replied bid releases the hold */
+    g_guest_proc_addr = B;
+    exec_Vacate();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != 0, "Vacate releases granted bid");
+    SEMT_FAIL(glue_r32(bid + SSM_SEMAPHORE) != 0, "Vacate clears ssm");
+
+    /* Shared chaining: B then C shared bids both grant; exclusive attempt
+     * fails while sharers hold; shared attempt succeeds (V39 rule). */
+    g_guest_proc_addr = B;
+    glue_w32(bid + LN_NAME, SEM_BID_SHARED);
+    exec_Procure();
+    SEMT_FAIL(glue_r16(sem + SS_QUEUECNT) != 1 ||
+              glue_r32(sem + SS_OWNER) != B,
+              "shared bid grants on free sem");
+    g_guest_proc_addr = C;
+    glue_w32(bid2 + MN_REPLYPORT, portC);
+    glue_w32(bid2 + LN_NAME, SEM_BID_SHARED);
+    glue_w32(bid2 + SSM_SEMAPHORE, 0);
+    m68k_set_reg(M68K_REG_A0, sem);
+    m68k_set_reg(M68K_REG_A1, bid2);
+    exec_Procure();
+    SEMT_FAIL(glue_r16(sem + SS_QUEUECNT) != 2, "shared bids chain");
+    g_guest_proc_addr = A;
+    m68k_set_reg(M68K_REG_A0, sem);
+    exec_AttemptSem();
+    SEMT_FAIL(m68k_get_reg(NULL, M68K_REG_D0) != 0,
+              "exclusive attempt refused vs sharers");
+    exec_AttemptSemShared();
+    SEMT_FAIL(m68k_get_reg(NULL, M68K_REG_D0) != 1,
+              "shared attempt grants vs sharers");
+    SEMT_FAIL(glue_r16(sem + SS_QUEUECNT) != 3, "shared count grows");
+    /* Drain: Vacate B, Vacate C, Release A's shared hold → free */
+    g_guest_proc_addr = B;
+    m68k_set_reg(M68K_REG_A0, sem);
+    m68k_set_reg(M68K_REG_A1, bid);
+    exec_Vacate();
+    SEMT_FAIL(glue_r16(sem + SS_QUEUECNT) != 2, "shared release drops count");
+    g_guest_proc_addr = C;
+    m68k_set_reg(M68K_REG_A1, bid2);
+    exec_Vacate();
+    g_guest_proc_addr = A;
+    exec_ReleaseSem();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != 0 ||
+              (int16_t)glue_r16(sem + SS_QUEUECNT) != -1,
+              "sem frees after last shared release");
+
+    /* Queued blocking-waiter block grants on release (fabricated the way
+     * a parked ObtainSem leaves it). */
+    g_guest_proc_addr = B;
+    m68k_set_reg(M68K_REG_A0, sem);
+    exec_ObtainSem();                       /* B exclusive */
+    glue_w32(wq1 + 8,  C | SEM_WAIT_TAG);
+    glue_w32(wq1 + 12, SEM_BID_EXCL);
+    glue_w32(wq1 + 16, (uint32_t)(g_pit_ticks + SEM_WAIT_TICKS));
+    guest_list_add_tail(sem + SS_WAITQUEUE, wq1);
+    exec_ReleaseSem();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != C ||
+              glue_r16(sem + SS_NESTCOUNT) != 1,
+              "queued waiter grants on release");
+    SEMT_FAIL(!glue_list_empty(sem + SS_WAITQUEUE),
+              "wait queue drains on grant");
+    /* C releases its fabricated hold */
+    g_guest_proc_addr = C;
+    exec_ReleaseSem();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != 0, "waiter release frees");
+
+    /* Shared waiter chains ahead of an exclusive head */
+    g_guest_proc_addr = B;
+    m68k_set_reg(M68K_REG_A0, sem);
+    exec_ObtainSem();
+    glue_w32(wq1 + 8,  C | SEM_WAIT_TAG);
+    glue_w32(wq1 + 12, SEM_BID_SHARED);
+    glue_w32(wq1 + 16, (uint32_t)(g_pit_ticks + SEM_WAIT_TICKS));
+    glue_w32(wq2 + 8,  A | SEM_WAIT_TAG);
+    glue_w32(wq2 + 12, SEM_BID_EXCL);
+    glue_w32(wq2 + 16, (uint32_t)(g_pit_ticks + SEM_WAIT_TICKS));
+    guest_list_add_tail(sem + SS_WAITQUEUE, wq1);
+    guest_list_add_tail(sem + SS_WAITQUEUE, wq2);
+    exec_ReleaseSem();
+    SEMT_FAIL(glue_r16(sem + SS_QUEUECNT) != 1 ||
+              glue_r32(sem + SS_OWNER) != C,
+              "shared waiter grants on release");
+    SEMT_FAIL(glue_r32(sem + SS_WAITQUEUE + MLH_HEAD) != wq2,
+              "exclusive head stays queued behind sharer");
+    g_guest_proc_addr = C;
+    exec_ReleaseSem();                      /* shared drain → A grants */
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != A,
+              "exclusive head grants after sharers drain");
+    g_guest_proc_addr = A;
+    exec_ReleaseSem();
+
+    /* ProcureSegList: two-segment seglist, each payload a SemaphoreMessage
+     * — on a free sem both bids grant + reply immediately. */
+    glue_w32(seg1 + 0, 64);  glue_w32(seg1 + 4, seg2 >> 2);
+    glue_w32(seg2 + 0, 64);  glue_w32(seg2 + 4, 0);
+    glue_w32(seg1 + 8 + MN_REPLYPORT, portB);
+    glue_w32(seg1 + 8 + LN_NAME, SEM_BID_SHARED);
+    glue_w32(seg1 + 8 + SSM_SEMAPHORE, 0);
+    glue_w32(seg2 + 8 + MN_REPLYPORT, portC);
+    glue_w32(seg2 + 8 + LN_NAME, SEM_BID_SHARED);
+    glue_w32(seg2 + 8 + SSM_SEMAPHORE, 0);
+    g_guest_proc_addr = B;
+    m68k_set_reg(M68K_REG_A0, sem);
+    m68k_set_reg(M68K_REG_D0, seg1 >> 2);
+    exec_ProcureSegList();
+    SEMT_FAIL(m68k_get_reg(NULL, M68K_REG_D0) != 1,
+              "ProcureSegList returns TRUE");
+    SEMT_FAIL(glue_r16(sem + SS_QUEUECNT) != 2,
+              "ProcureSegList procures every segment");
+    SEMT_FAIL(glue_r32(seg1 + 8 + SSM_SEMAPHORE) != sem ||
+              glue_r32(seg2 + 8 + SSM_SEMAPHORE) != sem,
+              "ProcureSegList fills ssm_Semaphore");
+    /* drop the replies and the holds */
+    (void)glue_list_remove_head(portB + MP_MSGLIST);
+    (void)glue_list_remove_head(portC + MP_MSGLIST);
+    g_guest_proc_addr = B;
+    m68k_set_reg(M68K_REG_A0, sem);
+    m68k_set_reg(M68K_REG_A1, seg1 + 8);
+    exec_Vacate();
+    m68k_set_reg(M68K_REG_A1, seg2 + 8);
+    exec_Vacate();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != 0, "seglist vacates free");
+
+    /* ObtainSemaphoreList / ReleaseSemaphoreList over a real List */
+    m68k_set_reg(M68K_REG_A0, s2);
+    exec_InitSemaphore();
+    glue_w32(slist + MLH_HEAD,     slist + MLH_TAIL);
+    glue_w32(slist + MLH_TAIL,     0);
+    glue_w32(slist + MLH_TAILPRED, slist + MLH_HEAD);
+    glue_w32(sem + LN_SUCC, 0); glue_w32(sem + LN_PRED, 0);
+    glue_w32(s2  + LN_SUCC, 0); glue_w32(s2  + LN_PRED, 0);
+    guest_list_add_tail(slist, sem);
+    guest_list_add_tail(slist, s2);
+    g_guest_proc_addr = A;
+    m68k_set_reg(M68K_REG_A0, slist);
+    exec_ObtainSemList();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != A ||
+              glue_r32(s2 + SS_OWNER) != A,
+              "ObtainSemaphoreList obtains each member");
+    exec_ReleaseSemList();
+    SEMT_FAIL(glue_r32(sem + SS_OWNER) != 0 ||
+              glue_r32(s2 + SS_OWNER) != 0,
+              "ReleaseSemaphoreList frees each member");
+
+    g_guest_proc_addr = saved_proc;
+    m68k_set_reg(M68K_REG_SP, saved_sp);
+    emu_print(fails ? "[semtest] FAILED\n" : "[semtest] PASSED\n");
+    return fails == 0;
+#undef SEMT_FAIL
 }
 
 /* ---- misc -------------------------------------------------------------- */
@@ -7484,7 +8177,11 @@ static void exec_Alert(void)
 {
     /* Alert(alertNum=d7): fatal on real hardware; log it — continuing is
      * more useful for bring-up than wedging the guest.  Record it in
-     * ExecBase.LastAlert[0] (+0x202) like the real ROM does. */
+     * ExecBase.LastAlert[0..3] (+0x202), shifting older entries up like
+     * the real ROM does. */
+    for (int i = 3; i > 0; i--)
+        guest_write_be32(EXEC_BASE + 0x202 + (uint32_t)i * 4,
+                         glue_r32(EXEC_BASE + 0x202 + (uint32_t)(i - 1) * 4));
     guest_write_be32(EXEC_BASE + 0x202,
                      (uint32_t)m68k_get_reg(NULL, M68K_REG_D7));
     static uint32_t prints = 0;
@@ -7862,11 +8559,12 @@ void UAOS_Exec_Dispatch(uint32_t fn)
         case EXEC_TYPE_OF_MEM:   exec_TypeOfMem();    break;
         case EXEC_PROCURE:       exec_Procure();      break;
         case EXEC_VACATE:        exec_Vacate();       break;
+        case EXEC_PROCURE_SEGLIST:   exec_ProcureSegList();  break;
         case EXEC_INIT_SEMAPHORE:    exec_InitSemaphore(); break;
         case EXEC_OBTAIN_SEM:  exec_ObtainSem();     break;
         case EXEC_RELEASE_SEM: exec_ReleaseSem();   break;
         case EXEC_ATTEMPT_SEM: exec_AttemptSem();   break;
-        case EXEC_OBTAIN_SEM_SHARED: exec_ObtainSem();    break;
+        case EXEC_OBTAIN_SEM_SHARED: exec_ObtainSemShared();    break;
         case EXEC_OBTAIN_SEM_LIST:   exec_ObtainSemList(); break;
         case EXEC_RELEASE_SEM_LIST:  exec_ReleaseSemList(); break;
         case EXEC_FIND_SEMAPHORE:    exec_FindSemaphore(); break;
@@ -7909,7 +8607,7 @@ void UAOS_Exec_Dispatch(uint32_t fn)
         case EXEC_MAKE_LIBRARY:   exec_MakeLibrary(); break;
         case EXEC_MAKE_FUNCTIONS: exec_MakeFunctions(); break;
         case EXEC_SUM_KICK_DATA:  exec_SumKickData(); break;
-        case EXEC_ATTEMPT_SEM_SHARED: exec_AttemptSem(); break;
+        case EXEC_ATTEMPT_SEM_SHARED: exec_AttemptSemShared(); break;
         case EXEC_COLD_REBOOT:    exec_ColdReboot();  break;
         case EXEC_CREATE_POOL:    exec_CreatePool();  break;
         case EXEC_DELETE_POOL:    exec_DeletePool();  break;
@@ -9344,11 +10042,12 @@ int m68k_illg_instr_callback(int opcode)
             case EXEC_TYPE_OF_MEM:   exec_TypeOfMem();    break;
             case EXEC_PROCURE:       exec_Procure();      break;
             case EXEC_VACATE:        exec_Vacate();       break;
+            case EXEC_PROCURE_SEGLIST:   exec_ProcureSegList();  break;
             case EXEC_INIT_SEMAPHORE:    exec_InitSemaphore(); break;
             case EXEC_OBTAIN_SEM:  exec_ObtainSem();     break;
             case EXEC_RELEASE_SEM: exec_ReleaseSem();   break;
             case EXEC_ATTEMPT_SEM: exec_AttemptSem();   break;
-            case EXEC_OBTAIN_SEM_SHARED: exec_ObtainSem();    break;
+            case EXEC_OBTAIN_SEM_SHARED: exec_ObtainSemShared();    break;
             case EXEC_OBTAIN_SEM_LIST:   exec_ObtainSemList(); break;
             case EXEC_RELEASE_SEM_LIST:  exec_ReleaseSemList(); break;
             case EXEC_FIND_SEMAPHORE:    exec_FindSemaphore(); break;
@@ -9391,7 +10090,7 @@ int m68k_illg_instr_callback(int opcode)
             case EXEC_MAKE_LIBRARY:   exec_MakeLibrary(); break;
             case EXEC_MAKE_FUNCTIONS: exec_MakeFunctions(); break;
             case EXEC_SUM_KICK_DATA:  exec_SumKickData(); break;
-            case EXEC_ATTEMPT_SEM_SHARED: exec_AttemptSem(); break;
+            case EXEC_ATTEMPT_SEM_SHARED: exec_AttemptSemShared(); break;
             case EXEC_COLD_REBOOT:    exec_ColdReboot();  break;
             case EXEC_CREATE_POOL:    exec_CreatePool();  break;
             case EXEC_DELETE_POOL:    exec_DeletePool();  break;
