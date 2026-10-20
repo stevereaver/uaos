@@ -1,5 +1,51 @@
 # OKF Change Log
 
+## 2026-10-21 — TODO sweep part 9: UAOS-320 OctaMED song-load crash
+
+* **UAOS-320** (`253337f`): the card's "OctaMED exits on the song-load
+  path" reproduced under QEMU as a **host kernel page fault**, not an
+  app exit — the whole OS `cli; hlt`'d, matching the metal symptom.
+  Forensics (live PC-ring + frozen guest-RAM post-mortem in
+  `/tmp/octa_ram.bin`): the CLI launch did reach the song-load code
+  (`Open('OCTAMED:Songs/cub.med')` + full 32,324-byte read) and died in
+  teardown — a "close all requesters" loop walked an Exec list head at
+  `a4+0x1280` that was never `NewList`'d, read a nonzero sentinel from
+  guest address 0, and called `FreeGadgets(A0=1)`.  The unbounded
+  `free_gadget_chain` then dereferenced the wild pointer from host
+  context → PF → halt.
+* **Root cause**: OctaMED runs the list init only when
+  `GetVisualInfoA(screen)` returns non-NULL, and its screen pointer is
+  NULL in this path.  NDK semantics resolve a NULL screen to the
+  default public screen; our gadtools/intuition `GetVisualInfoA`
+  returned 0 → init aborted → list head stayed 0.
+* **Fixes**: `GetVisualInfoA(NULL)` → `get_default_pub_screen()` in
+  both libraries (exported `UAOS_Intuition_DefaultPubScreen`); every
+  free-path guest-structure walk (`free_gadget_chain`,
+  `free_menu_chain`, `free_menuitem_chain`, `free_intuitext`) is now
+  `gt_ok`-bounded with iteration/depth caps; native requesters bound
+  to a custom screen get screen-relative origin translation
+  (`adjust_for_bound_screen`, ASL semantics) plus a bind-time clamp
+  into the screen's display band — the ASL requester otherwise lands
+  in rows owned by the screen behind (invisible + unclickable) when
+  the app screen's `TopEdge` ≠ 0.
+* **CLI arg finding**: `m68k_argv[1]` correctly carries
+  `OCTAMED:SONGS/cub.med`, but OctaMED V5 does **not** auto-open a
+  positional filename argument — verified live (no `Open()` after
+  delivery); it is a Workbench-style arg.  The serial `cub.med`
+  evidence in the earlier crash run came from a different code path.
+* **Verified**: `tests/qemu_octamed_cli_test.py` 11/11 — CLI-arg
+  launch survives + argv evidence; RAWKEY delivery; RAmiga+O
+  (`sendkey meta_r-o` → COMMSEQ → MENUPICK) → intermediate requester →
+  `AslRequest` "Open Song/Module" → Volumes → `OCTAMED:` → `Songs` →
+  `cub.med` → OK → old-format `Continue` prompt → full load → task
+  alive in event loop.  No page fault, no fatal `WILD-PC`.  Smoke
+  24/24.
+* Notes for the card: `S:OctaMEDPro.defkeys` is absent from the
+  OctaMED disk — Shift+letter shortcuts are unbound; the menu
+  command-key path is the working trigger.  `cub.med` lacks MMDx
+  magic — the "Unrecognized file format. Load as old ST-song?" prompt
+  is correct OctaMED behaviour, not a failure.
+
 ## 2026-10-20 — TODO sweep part 8: UAOS-335 PIT-ISR boundedness + measurement
 
 * **UAOS-335** (`c242ec4`): investigated the ~45M-cycle `timer`

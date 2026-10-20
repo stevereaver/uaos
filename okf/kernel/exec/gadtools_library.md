@@ -87,6 +87,10 @@ These are used for gadget structures, `StringInfo`, `IntuiText` labels, and the 
 
 `FreeMenus(menu)` walks the `Menu`/`MenuItem` tree (including sub-item chains) and frees the `IntuiText` labels plus the structures via the guest heap.
 
+`GetVisualInfoA(screen, tags)` resolves a NULL screen to the default public screen (`UAOS_Intuition_DefaultPubScreen()`) per the autodocs — a NULL return on NULL input previously broke apps that pass NULL for the Workbench screen before opening their own (UAOS-320: OctaMED skipped a `NewList` it only runs when the call succeeds, and its teardown then dereferenced the uninitialized list).
+
+**Guest-pointer hygiene** (UAOS-320): every structure walker in the free paths — `free_gadget_chain` (`FreeGadgets`), `free_menu_chain` / `free_menuitem_chain` (`FreeMenus`), `free_intuitext` — validates each guest pointer with `gt_ok()` before dereferencing and caps chain/depth iteration. A malformed chain head or corrupted `NextGadget`/`NextItem`/`SubItem` can no longer read or fault outside the guest RAM window from host context — previously `FreeGadgets(A0=1)` walked the host off `g_ram` into a page fault that halted the whole OS.
+
 `LayoutMenuItemsA(firstItem, vi, tags)` measures each item's label using the host 8x16 font and sets `MenuItem.LeftEdge/TopEdge/Width/Height` with a vertical item layout. Sub-items are laid out recursively to the right of their parent item.
 
 `LayoutMenusA(firstMenu, vi, tags)` lays out menu titles horizontally across the menu bar and calls `LayoutMenuItemsA` for each menu's first item. Each menu width is expanded to fit the widest item if necessary.
