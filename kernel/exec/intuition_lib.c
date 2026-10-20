@@ -384,6 +384,9 @@ static IntuitionSlot *alloc_slot(void)
 
 static void bind_native_window_screen(int wh, uint32_t parent_win,
                                       uint32_t screen);
+static void adjust_for_bound_screen(int16_t *left, int16_t *top,
+                                    int16_t width, int16_t height,
+                                    uint32_t screen_tag);
 
 static IntuitionSlot *find_slot_by_guest(uint32_t guest_win)
 {
@@ -3943,10 +3946,9 @@ int UAOS_Intuition_AslFileRequest(uint32_t req_ptr, uint32_t tags)
                    FRQ_FIELD_H + 6;
 
     {
-        uint32_t scr = mem_u32(req_ptr + FRQP_SCREEN);
         int16_t cx = (int16_t)wx, cy = (int16_t)wy;
-        auto_adjust_window_geometry(&cx, &cy, (int16_t)win_w,
-                                    (int16_t)win_h, scr);
+        adjust_for_bound_screen(&cx, &cy, (int16_t)win_w, (int16_t)win_h,
+                                mem_u32(req_ptr + FRQP_SCREEN));
         wx = cx; wy = cy;
     }
 
@@ -4533,6 +4535,31 @@ static uint32_t window_screen_key(int wh)
  * (requester, alert, file requester) to a screen: the parent window's
  * screen, else an explicit screen, else the screen currently displayed —
  * so a requester raised by an app on its custom screen appears there. */
+/* Geometry for a native requester bound the way bind_native_window_screen
+ * resolves it: the explicit screen tag, else the front screen.  Native
+ * requester coordinates are screen-relative (like WA_LeftEdge/TopEdge in
+ * the guest OpenWindow path), so translate by the screen's origin before
+ * clamping inside its display band.  Without this a requester bound to a
+ * front custom screen can land entirely in rows owned by the screen
+ * behind — invisible and unreachable by mouse input (UAOS-320). */
+static void adjust_for_bound_screen(int16_t *left, int16_t *top,
+                                    int16_t width, int16_t height,
+                                    uint32_t screen_tag)
+{
+    uint32_t scr = screen_tag;
+    if (!scr || !find_screen_slot(scr)) {
+        ScreenSlot *f = find_front_screen();
+        scr = (f && f->guest_screen != g_workbench_screen)
+                  ? f->guest_screen : 0;
+    }
+    ScreenSlot *ss = scr ? find_screen_slot(scr) : NULL;
+    if (ss) {
+        *left += (int16_t)ss->left;
+        *top  += (int16_t)ss->top;
+    }
+    auto_adjust_window_geometry(left, top, width, height, scr);
+}
+
 static void bind_native_window_screen(int wh, uint32_t parent_win,
                                       uint32_t screen)
 {
@@ -4543,6 +4570,28 @@ static void bind_native_window_screen(int wh, uint32_t parent_win,
         key = (screen == g_workbench_screen) ? 0 : screen;
     else key = front_screen_key();
     WM_SetScreenKey(wh, key);
+
+    /* A window bound to a custom screen is only visible and clickable
+     * inside that screen's display band — rows outside belong to the
+     * screen behind.  Clamp the window fully into the band so a requester
+     * placed with framebuffer coordinates (or bound via the front-screen
+     * fallback) can't strand input on an offset screen (UAOS-320). */
+    if (key) {
+        ScreenSlot *ss = find_screen_slot(key);
+        int x, y, w, h;
+        if (ss && WM_GetWindowRect(wh, &x, &y, &w, &h)) {
+            int nx = x, ny = y;
+            if (nx < ss->left) nx = ss->left;
+            if (ny < ss->top)  ny = ss->top;
+            if (nx + w > ss->left + ss->width)
+                nx = ss->left + ss->width - w;
+            if (ny + h > ss->top + ss->height)
+                ny = ss->top + ss->height - h;
+            if (nx < ss->left) nx = ss->left;
+            if (ny < ss->top)  ny = ss->top;
+            if (nx != x || ny != y) WM_MoveWindow(wh, nx, ny);
+        }
+    }
 }
 
 /* Display key of the screen behind the front one (0 = Workbench). */
@@ -6148,6 +6197,13 @@ static uint32_t get_default_pub_screen(void)
         return g_workbench_screen;
     g_workbench_screen = open_workbench_internal();
     return g_workbench_screen;
+}
+
+/* Exported for gadtools.library: GetVisualInfoA(NULL screen) must resolve
+ * the default public screen rather than fail (NDK semantics). */
+uint32_t UAOS_Intuition_DefaultPubScreen(void)
+{
+    return get_default_pub_screen();
 }
 
 /* =========================================================================
@@ -9837,6 +9893,9 @@ static void intuition_GetVisualInfoA(void)
     uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     (void)m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t result = 0;
+    /* A NULL screen means the default public screen per the autodocs —
+     * system requesters use it before their app screen exists (UAOS-320). */
+    if (!screen_ptr) screen_ptr = get_default_pub_screen();
     if (screen_ptr) {
         uint32_t vi = intu_alloc(VI_SIZE);
         if (vi) {

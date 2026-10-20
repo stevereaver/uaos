@@ -614,17 +614,22 @@ static uint32_t gadtools_CreateContext(void)
  * ========================================================================= */
 static void free_gadget_chain(uint32_t gad)
 {
-    while (gad) {
+    /* Bound every guest dereference: a wild chain pointer must not let a
+     * bad app page-fault the kernel (UAOS-320 — a corrupt OctaMED list
+     * walked the host off g_ram).  intu_free itself rejects non-blocks. */
+    int guard = 0;
+    while (gad && guard++ < 4096) {
+        if (!gt_ok(gad, GAD_SIZE)) break;
         uint32_t next = gt_u32(gad + GAD_OFF_NEXTGADGET);
         uint32_t special = gt_u32(gad + GAD_OFF_SPECIALINFO);
         uint32_t label = gt_u32(gad + GAD_OFF_GADGETTEXT);
 
-        if (label) {
+        if (label && gt_ok(label, ITEXT_SIZE)) {
             uint32_t text = gt_u32(label + ITEXT_OFF_ITEXT);
             if (text) intu_free(text);
             intu_free(label);
         }
-        if (special) {
+        if (special && gt_ok(special, SI_SIZE)) {
             uint16_t type = gt_u16(gad + GAD_OFF_GADGETTYPE) & GTYP_GADGETTYPE;
             if (type == GTYP_STRGADGET || type == GTYP_INTGADGET) {
                 uint32_t buf = gt_u32(special + SI_OFF_BUFFER);
@@ -902,11 +907,16 @@ static void gadtools_GT_GetGadgetAttrsA(void)
 /* =========================================================================
  * VisualInfo
  * ========================================================================= */
+extern uint32_t UAOS_Intuition_DefaultPubScreen(void);
+
 static void gadtools_GetVisualInfoA(void)
 {
     uint32_t screen_ptr = m68k_get_reg(NULL, M68K_REG_A0);
     (void)m68k_get_reg(NULL, M68K_REG_A1);
     uint32_t result = 0;
+    /* A NULL screen means the default public screen per the autodocs —
+     * requesters resolve it before the app screen exists (UAOS-320). */
+    if (!screen_ptr) screen_ptr = UAOS_Intuition_DefaultPubScreen();
     if (screen_ptr) {
         uint32_t vi = intu_alloc(GTVI_SIZE);
         if (vi) {
@@ -1069,32 +1079,43 @@ static uint32_t alloc_intuitext(const char *text)
 
 static void free_intuitext(uint32_t it)
 {
-    if (!it) return;
+    if (!it || !gt_ok(it, ITEXT_SIZE)) return;
     uint32_t str = gt_u32(it + ITEXT_OFF_ITEXT);
     if (str) intu_free(str);
     intu_free(it);
 }
 
-static void free_menuitem_chain(uint32_t mi)
+static void free_menuitem_chain_depth(uint32_t mi, int depth)
 {
-    while (mi) {
+    int guard = 0;
+    while (mi && guard++ < 4096) {
+        if (!gt_ok(mi, MENUITEM_ALLOC_SIZE)) break;
         uint32_t next = gt_u32(mi + MENUITEM_OFF_NEXTITEM);
         uint32_t sub = gt_u32(mi + MENUITEM_OFF_SUBITEM);
-        if (sub) free_menuitem_chain(sub);
+        if (sub && depth < 8) free_menuitem_chain_depth(sub, depth + 1);
         uint32_t fill = gt_u32(mi + MENUITEM_OFF_ITEMFILL);
-        if (fill && (gt_u16(mi + MENUITEM_OFF_FLAGS) & ITEMTEXT))
+        if (fill && gt_ok(fill, ITEXT_SIZE) &&
+            (gt_u16(mi + MENUITEM_OFF_FLAGS) & ITEMTEXT))
             free_intuitext(fill);
         uint32_t selfill = gt_u32(mi + MENUITEM_OFF_SELECTFILL);
-        if (selfill && (gt_u16(mi + MENUITEM_OFF_FLAGS) & ITEMTEXT))
+        if (selfill && gt_ok(selfill, ITEXT_SIZE) &&
+            (gt_u16(mi + MENUITEM_OFF_FLAGS) & ITEMTEXT))
             free_intuitext(selfill);
         intu_free(mi);
         mi = next;
     }
 }
 
+static void free_menuitem_chain(uint32_t mi)
+{
+    free_menuitem_chain_depth(mi, 0);
+}
+
 static void free_menu_chain(uint32_t menu)
 {
-    while (menu) {
+    int guard = 0;
+    while (menu && guard++ < 4096) {
+        if (!gt_ok(menu, MENU_OFF_SIZE)) break;
         uint32_t next = gt_u32(menu + MENU_OFF_NEXTMENU);
         uint32_t name = gt_u32(menu + MENU_OFF_MENUNAME);
         if (name) free_intuitext(name);
