@@ -4370,6 +4370,13 @@ typedef struct ScreenSlot {
     uint8_t  minimize_isg;
     uint8_t  owns_bitmap;   /* 1 = screen BitMap was allocated by us */
     uint8_t  owns_colormap; /* 1 = ColorMap was allocated by us */
+    /* Display-mode raster dims resolved from SA_DisplayID (mode key or full
+     * mode ID via uaos_gfx_mode_dims).  While this screen is front the
+     * display runs at this logical resolution — the Amiga model where the
+     * monitor follows the front screen's dot clock (UAOS-351).  0 = keep
+     * the physical framebuffer mode. */
+    uint16_t mode_w;
+    uint16_t mode_h;
     uint32_t rastport;      /* guest Screen.RastPort */
     uint32_t viewport;      /* guest ViewPort (carries the ColorMap) */
     uint32_t rasinfo;       /* guest RasInfo for the embedded ViewPort */
@@ -4566,6 +4573,21 @@ static int intu_band_rows(int *y0, int *y1)
     return 1;
 }
 
+/* The monitor follows the front screen's dot clock (UAOS-351): while a
+ * custom screen fronts its own display mode the logical display becomes
+ * that mode's raster dims and the flip path scales it to the physical
+ * panel — chunky pixels, exactly like a real Amiga switching the monitor
+ * to the front screen's mode.  A screen with no resolvable DisplayID, or
+ * Workbench, runs the physical mode. */
+static void sync_display_mode(void)
+{
+    ScreenSlot *f = find_front_screen();
+    if (f && f->guest_screen != g_workbench_screen && f->mode_w && f->mode_h)
+        FB_SetLogicalMode((int)f->mode_w, (int)f->mode_h);
+    else
+        FB_SetLogicalMode((int)FB_PhysWidth(), (int)FB_PhysHeight());
+}
+
 static void update_desktop_title(void)
 {
     /* Front display changed: windows of the old screen disappear, the new
@@ -4576,6 +4598,9 @@ static void update_desktop_title(void)
         ScreenSlot *wb = find_screen_slot(g_workbench_screen);
         if (wb && !screen_is_orphaned(wb)) mark_screen_front(wb);
     }
+    /* Mode switch before the invalidate below so it covers the new
+     * logical geometry. */
+    sync_display_mode();
     uint32_t key = front_screen_key();
     if (key != last_key) {
         last_key = key;
@@ -5984,6 +6009,18 @@ static uint32_t open_screen_internal(uint32_t new_screen_ptr, uint32_t tag_list_
     }
 
     slot->display_id       = display_id;
+    /* The display mode this screen runs at while front.  An explicit
+     * SA_DisplayID (mode ID or key, e.g. OctaMED's HIRES_KEY) pins the
+     * logical display to the mode's nominal raster dims; no DisplayID
+     * keeps the physical framebuffer mode. */
+    slot->mode_w = slot->mode_h = 0;
+    if (display_id) {
+        uint16_t mw = 0, mh = 0;
+        if (uaos_gfx_mode_dims(display_id, &mw, &mh)) {
+            slot->mode_w = mw;
+            slot->mode_h = mh;
+        }
+    }
     slot->bitmap           = bitmap_ptr;
     /* If SA_Interleaved is requested with a custom bitmap, set the
      * BMF_INTERLEAVED bit (0x01) in the guest BitMap flags. */

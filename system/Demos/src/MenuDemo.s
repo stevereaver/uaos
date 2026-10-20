@@ -56,6 +56,12 @@ SA_Height           equ (SA_Dummy+$04)
 SA_Depth            equ (SA_Dummy+$05)
 SA_Title            equ (SA_Dummy+$08)
 SA_Type             equ (SA_Dummy+$0D)
+SA_DisplayID        equ (SA_Dummy+$12)
+
+; Display mode keys (graphics/displayinfo.h — the pre-V39 monitor keys that
+; real 3.1 programs pass to SA_DisplayID; the monitor resolves them to the
+; machine's default mode, e.g. PAL hires = 640x256 on a PAL machine).
+HIRES_KEY           equ $00008000
 
 ; WA_ window tags (intuition/intuition.h)
 WA_Dummy            equ (TAG_USER+99)
@@ -104,7 +110,9 @@ MENUNULL            equ $FFFF
 CHECKIT             equ $0001
 ITEMTEXT            equ $0002
 COMMSEQ             equ $0004
+MENUTOGGLE          equ $0008
 ITEMENABLED         equ $0010
+HIGHCOMP            equ $0040           ; select = complement ItemFill
 MENUENABLED         equ $0001
 
 ; ---------------------------------------------------------------------------
@@ -272,8 +280,8 @@ menu_project:
         dc.w    0                       ; TopEdge
         dc.w    88                      ; Width  (select box on screen bar)
         dc.w    11                      ; Height
-        dc.b    MENUENABLED             ; Flags
-        dc.b    0                       ; pad
+        dc.w    MENUENABLED             ; Flags (word: MENUENABLED=$0001,
+                                        ;   $0100 would be MIDRAWN)
         dc.l    str_menu                ; MenuName -> "Project"
         dc.l    mi_quit                 ; FirstItem
         dc.w    0,0,0,0                 ; JazzX, JazzY, BeatX, BeatY (unused)
@@ -285,7 +293,12 @@ mi_quit:
         dc.w    0                       ; TopEdge
         dc.w    80                      ; Width
         dc.w    11                      ; Height
-        dc.w    ITEMTEXT|ITEMENABLED|COMMSEQ   ; Flags
+        dc.w    ITEMTEXT|ITEMENABLED|COMMSEQ|HIGHCOMP   ; Flags
+                                        ; HIGHCOMP is required: bits 6-7
+                                        ; = 0 mean HIGHIMAGE, which makes
+                                        ; real Intuition render SelectFill
+                                        ; (NULL -> Image at address 0,
+                                        ;  mangled glyphs) on selection.
         dc.l    0                       ; MutualExclude
         dc.l    it_quit                 ; ItemFill -> IntuiText
         dc.l    0                       ; SelectFill
@@ -299,7 +312,7 @@ mi_quit:
 it_quit:
         dc.b    1                       ; FrontPen
         dc.b    0                       ; BackPen
-        dc.b    1                       ; DrawMode = JAM1
+        dc.b    1                       ; DrawMode = JAM2
         dc.b    0                       ; pad
         dc.w    0                       ; LeftEdge
         dc.w    1                       ; TopEdge
@@ -315,6 +328,9 @@ scrtags:
         dc.l    SA_Height,      STDSCREENHEIGHT
         dc.l    SA_Depth,       2
         dc.l    SA_Type,        CUSTOMSCREEN
+        dc.l    SA_DisplayID,   HIRES_KEY   ; classic hires raster (640x256
+                                            ; PAL) — the screen switches the
+                                            ; display mode like on real hw
         dc.l    SA_Title,       str_scrtitle
         dc.l    TAG_DONE,       0
 

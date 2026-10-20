@@ -39,7 +39,13 @@ The hot primitives (`FB_FillRect`, `FB_DrawHLine`, `FB_DrawVLine`, `FB_PutChar`,
 
 ### Mode-Size Clamp
 
-`FB_Init` clamps `g_fb.width`/`g_fb.height` to the back-buffer dimensions (`BB_MAX_W` × `BB_MAX_H` = 1440×1024) so the desktop always lays out inside the drawable region even if GRUB selects a larger mode.
+`FB_Init` clamps `g_fb.width`/`g_fb.height` to the back-buffer dimensions (`BB_MAX_W` × `BB_MAX_H` = 1440×1024) so the desktop always lays out inside the drawable region even if GRUB selects a larger mode. Those clamped dims are also the physical view (`g_view_w`/`g_view_h`).
+
+### Logical Display Mode — per-screen resolution (UAOS-351)
+
+`g_fb.width`/`g_fb.height` are the *logical* display every drawing and hit-test path works in; the physical mode the firmware produced is fixed. While a custom Intuition screen fronts its own `SA_DisplayID` mode, `intuition_lib.c`'s `sync_display_mode()` (called from `update_desktop_title()` on every front change) sets the logical display to that mode's nominal raster dims via `FB_SetLogicalMode()` — the Amiga model where the monitor follows the front screen's dot clock: a `HIRES_KEY` screen *is* a 640×256 display. `FB_SetLogicalMode(w <= 0)` restores the physical mode (Workbench's case — a screen without a resolvable DisplayID keeps it too).
+
+When logical ≠ physical (`FB_IsScaled()`), `FB_Flip()` and every direct-mode primitive tail route through `flip_logical_rect()`, a nearest-neighbour resampler that walks the logical back buffer with a 16.16 step into physical VRAM (floor start edges, ceil end edges so partial destination cells are fully covered). The mouse pointer, band compositing and all guest coordinates stay in logical space — no input remapping is needed because input already lives in `g_mouse` logical coords; during a pull-down the revealed screen-behind is drawn in the front screen's logical space (real hardware can mix modes per band — this is the accepted approximation). `FB_Watchdog()` and the cursor's direct-VRAM restore fast path skip scaled mode, since backbuf/VRAM no longer correspond linearly. `dbgcon.c` still writes physical coords directly — a known debug-path limitation.
 
 ### String Clipping
 

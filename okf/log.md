@@ -2116,3 +2116,121 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
   the wrapper (UAOS-only test tools).
 * **Verified**: staged file starts with `0x000003F3`;
   `tests/qemu_screen_test.py` 22/22 under UAOS.
+
+## 2026-10-19T20:50Z — MenuDemo real-Amiga fixes + per-screen resolution emulation (UAOS-351)
+
+* **Problem (menu)**: on real AmigaOS the demo ran but the "Quit" item
+  rendered mangled.  `Menu.Flags` was emitted `dc.b MENUENABLED; dc.b 0`
+  (little-endian `0x0100` = MIDRAWN, not MENUENABLED) and `MenuItem.Flags`
+  lacked `HIGHCOMP` — flag bits 6-7 of 0 mean HIGHIMAGE, so real Intuition
+  rendered `SelectFill` (NULL) as an `Image` on selection.
+* **Fix (menu)**: `Menu.Flags` is now `dc.w MENUENABLED`; the item flags
+  gained `HIGHCOMP`.  UAOS's own menu renderer ignored both fields, which
+  is why only real hardware exposed it.
+* **Feature (resolution)**: on real hardware a custom screen's DisplayID
+  changes the monitor mode; UAOS now emulates it.  `ScreenSlot` gains
+  `mode_w/mode_h` resolved from `SA_DisplayID` via `uaos_gfx_mode_dims`
+  (mode IDs and the pre-V39 keys).  `sync_display_mode()` in
+  `update_desktop_title()` makes the front screen's mode the *logical*
+  display (`FB_SetLogicalMode`); the framebuffer keeps a fixed physical
+  view (`g_view_*`) and `flip_logical_rect()` nearest-neighbour resamples
+  the logical back buffer into VRAM on flip and on every direct-mode
+  primitive tail (fb puts, lines, fills, blits, both fonts).
+  `FB_Watchdog` and the cursor's direct-VRAM restore skip scaled mode.
+  MenuDemo now passes `SA_DisplayID, HIRES_KEY` → 640×256 logical,
+  chunked up to the physical panel exactly like a PAL Amiga monitor.
+* **Approximation**: during pull-down the revealed screen-behind renders
+  in the front screen's logical space (real hardware can mix modes per
+  band); its windows/icons are clipped to the logical raster.
+* **Verified**: `tests/qemu_screen_test.py` 22/22 (DROP reduced to 200 to
+  fit the 256-row logical display; `g_fb.width` re-read per front state);
+  screendumps confirm the chunky mode change both ways and the reveal.
+  Staged `Demos/MenuDemo` still starts with `0x000003F3`.
+* **Docs**: `okf/kernel/display/index.md` (Logical Display Mode section),
+  `okf/system/index.md` (MenuDemo bullet).
+
+## 2026-10-19T23:20Z — Full Amiga display-mode database (UAOS-352)
+
+* **Problem**: OctaMED opened its own screen but the mode DB was a
+  16-entry synthetic list — the `0x1100x` IDs were real
+  `NTSC_MONITOR_ID` composites mislabelled "PAL"/"DBLPAL"/etc with wrong
+  dims, and `uaos_gfx_mode_dims()` only knew bare 16-bit keys.  User
+  asked for all resolution and colour-depth modes to be available.
+* **Fix** (`kernel/exec/graphics_lib.c`): the table now enumerates the
+  real AmigaOS 3.1 DisplayIDs from `graphics/modeid.h` — NTSC/PAL × all
+  composite keys (LORES/HIRES/SUPER × lace/HAM/EHB/DPF/DPF2/SDBL),
+  DBLNTSC (320–640×400/800), DBLPAL (320–640×512/1024), VGA
+  (640×480/960), EURO72 (640×400/800), EURO36 (200/400-row composites),
+  SUPER72 (400–800×300/600), A2024 (1024×800/1024), Multiscan
+  productivity (640×480/960) — plus UAOS-private RTG modes under
+  monitor `0x40001000` (to 1440×900, 8 bpp).  `DI_DEPTH` is now the
+  mode's max bitplanes (6 for HAM/EHB/DPF, 8 on AGA-era/RTG).
+* **Decoder**: `uaos_gfx_mode_dims()` does a per-family composite decode —
+  `0x8000`=hires, `0x20`=super, `0x4`=lace on the composable families;
+  `0x8000`=hires and bit 0=lace on DBLNTSC/DBLPAL (bit 2=flicker-free);
+  VGA/EURO72 fixed geometry, bit-0 lace; bare keys → PAL default.
+  `disp_find_mode()` synthesizes a DisplayInfo for valid-but-unlisted
+  composites so `FindDisplayInfo`/`GetDisplayInfoData`/
+  `ModeNotAvailable`/`CoerceMode` cover the whole space.  `mode_dipf()`
+  derives `DIPF_*` flags per mode; `BestModeIDA()` now parses
+  `BIDTAG_*` (DIPF must/must-not with SPECIAL_FLAGS default,
+  DesiredWidth/Height, Depth, MonitorID) instead of returning table[0].
+* **Verified**: new `tests/test_mode_decode.sh` unit test — extracts the
+  real table+decoder, 51/51 across every family and invalid IDs.
+  QEMU: screen 22/22, idcmp 16/16, layout 12/12, lifecycle 24/24,
+  OctaMED UI clean; GDB probe shows OctaMED's `SA_DisplayID=0x8000`
+  (HIRES_KEY) → 640×256 as requested.  qemu_octamed_iff_test.py 7/9
+  fails identically without the change (stash-verified, pre-existing
+  ASL requester navigation issue — unrelated).
+* **Docs**: `okf/kernel/exec/graphics_library.md` (display-mode DB
+  section), `okf/kernel/exec/intuition_library.md` (SA_DisplayID note),
+  `okf/tools/index.md` (new test).
+
+## 2026-10-20T02:20Z — Amiga ABI audit vs NDK 40.13 headers (UAOS-353)
+
+* **Audit**: compared every hand-rolled Amiga structure/offset/constant in
+  `kernel/exec/amiga_task.h`, `kernel/exec/dos_lib.c`, `kernel/dos/*.h`,
+  `emulation/uaos_m68k_glue.c`, device sources and `kernel/chipset/chip_emu.c`
+  against the NDK 40.13 include tree (amiga_includes, ~526 headers).
+* **Exec fixes**: `NT_TASK`=1 + full `NT_*`/`TS_*`/`TF_*` sets; `MEMF_LOCAL`
+  =0x100/`MEMF_24BITDMA`=0x200; heap allocs 8-byte aligned; semaphore
+  `SS_OWNER`=40/`SS_QUEUECNT`=44; `CreateIORequest` starts `NT_UNKNOWN`;
+  OpenDevice decline returns `IOERR_OPENFAIL`(-1); `tc_SigAlloc`=0xFFFF0000;
+  PutMsg/ReplyMsg now Enqueue by `ln_Pri` and honour `PF_ACTION`
+  (PA_SIGNAL/PA_SOFTINT via Cause/PA_IGNORE); AddPort/AddSemaphore Enqueue;
+  ExecBase gains `SoftVer`=39, `MaxLocMem`/`MaxExtMem`, `EClockFrequency`
+  =709379, `LastAlert` written by exec_Alert; AvailMem honours
+  `MEMF_LARGEST`/`MEMF_TOTAL`; `MemEntry` teardown matches 8-byte stride;
+  `boopsi_builtin.c` guest-RAM bound raised to 16 MiB; host SIGF_BREAKF maps
+  to guest `SIGBREAKF_CTRL_C` (bit 12).
+* **DOS fixes**: `FileLock` 20 B (`fl_Volume` at 16); `FileInfoBlock`
+  fib_* FIBF/FIBB bits to NDK; `InfoData` serialized in canonical order,
+  crossdos/device handlers read `dp_Arg2`; `ExAll` writes `ed_Name`/
+  `ed_Comment` as C-string pointers (was BSTR BPTRs) with real
+  `ed_Next` chain termination; `LockDosList` uses real `LDF_*` bit flags
+  and returns BPTR, `NextDosEntry` returns APTR; Fault string table rebuilt
+  on canonical ERROR_* codes; `handler.h` lifecycle codes renamed off the
+  `ACTION_STARTUP` name collision.
+* **Device fixes**: `timer.device` real device LVO map (BeginIO -30, AbortIO
+  -36, AddTime -42, SubTime -48, CmpTime -54, ReadEClock -60, GetSysTime -66),
+  unit-aware TR_ADDREQUEST, E-clock 709379 Hz, GetSysTime in Amiga 1978
+  epoch; `keyboard.device` commands 9–13 (KBD_READEVENT=9); `audio.device`
+  `ADCMD_ALLOCATE`=32, others 9–14; console keymap cmds left unimplemented
+  (return IOERR_NOCMD).
+* **Hardware fixes (`chip_emu.c`)**: `CLXCON` moved to $098; blitter DMA gate
+  bit $0040; copper end-of-list INTREQ bit $0010; BLTCON1 octant bits
+  SUD|SUL|AUL (4..2); BLTSIZE width/height decode; big-endian byte lanes on
+  odd addresses; `INTREQR`/`INTENAR`/`DSKBYTR`/`ADKCONR`/`BLTDDAT` readable;
+  CIA ICR bit 7 = pending-IRQ status, CIA-A parallel port; AUDxVOL bit 6
+  forces volume 64.  `chip_emu_parallel_test` and blitter self-tests updated.
+* **Demo sources**: `DevIOTest.s` `KBD_READEVENT` 12→9, `UtilTest.s`
+  `TD_AddTime` -66→-42 — the only guest constants that baked in the old
+  wrong numbering.
+* **Verified**: full build + ISO clean, zero warnings. QEMU regressions:
+  exec_coverage PASS, guesttask PASS, devio PASS, devload PASS, audirq
+  PASS, optlibs PASS, wblaunch 6/6, m68k_lifecycle 24/24 (incl. 150 s
+  OctaMED soak).
+* **Docs**: new `okf/concepts/amiga_abi.md` cataloguing the canonical ABI
+  reference, verified behaviours, and remaining gaps (missing devices,
+  CIA TOD/serial, AGA regs, semaphore Procure/Vacate, vendored `.i`
+  includes opportunity).

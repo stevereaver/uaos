@@ -72,8 +72,10 @@ void Handler_CheckReplies(void);
 /* -------------------------------------------------------------------------
  * Handler lifecycle actions
  * ------------------------------------------------------------------------- */
-#define ACTION_STARTUP  2000
-#define ACTION_SHUTDOWN 2001
+/* UAOS-internal handler lifecycle actions (not AmigaDOS packet codes —
+ * the real ACTION_STARTUP is 0, see dospacket.h). */
+#define UAOS_ACTION_STARTUP  2000
+#define UAOS_ACTION_SHUTDOWN 2001
 
 /* -------------------------------------------------------------------------
  * Global IoErr (single-threaded = one global value)

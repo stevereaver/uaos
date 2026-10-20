@@ -35,12 +35,27 @@
 #define MLH_TAILPRED 0x08
 #define MINLIST_SIZE 0x0C  /* 12 bytes */
 
-/* ln_Type values */
-#define NT_MSGPORT   4
-#define NT_TASK      13
-#define NT_PROCESS   13   /* Process IS a Task */
-#define NT_LIBRARY   9
-#define NT_SIGNALSEM 15
+/* ln_Type values (exec/nodes.h) */
+#define NT_UNKNOWN      0
+#define NT_TASK         1   /* Exec task */
+#define NT_INTERRUPT    2
+#define NT_DEVICE       3
+#define NT_MSGPORT      4
+#define NT_MESSAGE      5
+#define NT_FREEMSG      6
+#define NT_REPLYMSG     7
+#define NT_RESOURCE     8
+#define NT_LIBRARY      9
+#define NT_MEMORY      10
+#define NT_SOFTINT     11
+#define NT_FONT        12
+#define NT_PROCESS     13   /* AmigaDOS Process (a Task with DOS fields) */
+#define NT_SEMAPHORE   14
+#define NT_SIGNALSEM   15
+#define NT_BOOTNODE    16
+#define NT_KICKMEM     17
+#define NT_GRAPHICS    18
+#define NT_DEATHMESSAGE 19
 
 /* MsgPort flags (mp_Flags, PA_*) */
 #define PA_SIGNAL    0
@@ -93,22 +108,28 @@
 #define TASK_TC_MEMENTRY    0x4A   /* embedded struct List (14) */
 #define TASK_TC_USERDATA    0x58   /* APTR   */
 
-/* tc_Flags bits */
-#define TF_PROCTASK  0x01
-#define TF_ETASK     0x02
-#define TF_STACKCHK  0x04
-#define TF_EXCEPT    0x08
-#define TF_SWITCH    0x10
-#define TF_LAUNCH    0x20
+/* tc_Flags bits (exec/tasks.h) */
+#define TB_ETASK     3
+#define TB_STACKCHK  4
+#define TB_EXCEPT    5
+#define TB_SWITCH    6
+#define TB_LAUNCH    7
 
-/* tc_State values */
+#define TF_PROCTIME  0x01   /* (1L<<0) — task is timing-sensitive */
+#define TF_ETASK     0x08   /* (1L<<3) */
+#define TF_STACKCHK  0x10   /* (1L<<4) */
+#define TF_EXCEPT    0x20   /* (1L<<5) */
+#define TF_SWITCH    0x40   /* (1L<<6) */
+#define TF_LAUNCH    0x80   /* (1L<<7) */
+
+/* tc_State values (exec/tasks.h) */
 #define TS_INVALID   0
 #define TS_ADDED     1
 #define TS_RUN       2
-#define TS_WAIT      3
-#define TS_READY     4
-#define TS_REMOVED   5
-#define TS_EXCEPT    6
+#define TS_READY     3
+#define TS_WAIT      4
+#define TS_EXCEPT    5
+#define TS_REMOVED   6
 
 /* ========================================================================
  * struct Process — extends Task (dos/dosextens.h)
@@ -152,33 +173,35 @@
  * struct CommandLineInterface (dos/dosextens.h)
  * ======================================================================== */
 
-#define CLI_SIZE            0x80   /* allocate generously; struct is ~0x64 */
+#define CLI_SIZE            0x80   /* canonical struct is 0x40; UAOS uses
+                                    * 0x40-0x7F for private extensions */
 
-#define CLI_RESULT2         0x00   /* LONG */
-#define CLI_SETNAME         0x04   /* BPTR */
-#define CLI_COMMANDDIR      0x08   /* BPTR */
-#define CLI_RETURNCODE      0x0C   /* LONG */
-#define CLI_COMMANDNAME     0x10   /* BPTR BSTR */
-#define CLI_FAILLEVEL       0x14   /* LONG */
-#define CLI_PROMPT          0x18   /* BPTR */
-#define CLI_DEFAULTINPUT    0x1C   /* BPTR */
-#define CLI_DEFAULTOUTPUT   0x20   /* BPTR */
-#define CLI_ERRORLEVEL      0x24   /* LONG */
-#define CLI_BACKGROUND      0x28   /* LONG */
-#define CLI_CURRENTINPUT    0x2C   /* BPTR */
-#define CLI_CURRENTOUTPUT   0x30   /* BPTR */
-#define CLI_RUNTIME         0x34   /* LONG */
-#define CLI_CURRENTDIRNAME  0x38   /* BPTR */
-#define CLI_DIRLEN          0x3C   /* LONG */
-#define CLI_PROGDIR         0x40   /* BPTR — set by SetProgramDir */
-#define CLI_INTERACTIVE     0x44   /* LONG */
-#define CLI_SAMELEVEL       0x48   /* BPTR */
-#define CLI_SETPROC         0x4C   /* APTR */
-#define CLI_EXNAME          0x50   /* APTR */
-#define CLI_EXNAMELEN       0x54   /* LONG */
-#define CLI_MODULE          0x58   /* BPTR — seglist of running command
-                                      * (some SAS/C stubs use +0x3C) */
-#define CLI_MODULE_SC       0x3C   /* SAS/C convention observed in OctaMED */
+/* Canonical V36 CommandLineInterface (dos/dosextens.h) — the only part of
+ * the struct guests may rely on. */
+#define CLI_RESULT2         0x00   /* LONG — IoErr of last command */
+#define CLI_SETNAME         0x04   /* BSTR — directory for 'set' cmd */
+#define CLI_COMMANDDIR      0x08   /* BPTR — head of path locklist */
+#define CLI_RETURNCODE      0x0C   /* LONG — return code of last cmd */
+#define CLI_COMMANDNAME     0x10   /* BSTR — name of current command */
+#define CLI_FAILLEVEL       0x14   /* LONG — level for 'fail' */
+#define CLI_PROMPT          0x18   /* BSTR — prompt string */
+#define CLI_STANDARDINPUT   0x1C   /* BPTR — default (terminal) input */
+#define CLI_CURRENTINPUT    0x20   /* BPTR — input actually used */
+#define CLI_COMMANDFILE     0x24   /* BSTR — name of EXECUTE cmd file */
+#define CLI_INTERACTIVE     0x28   /* LONG — prompts required? */
+#define CLI_BACKGROUND      0x2C   /* LONG — created by RUN? */
+#define CLI_CURRENTOUTPUT   0x30   /* BPTR — output actually used */
+#define CLI_DEFAULTSTACK    0x34   /* LONG — stack size in longwords */
+#define CLI_STANDARDOUTPUT  0x38   /* BPTR — default (terminal) output */
+#define CLI_MODULE          0x3C   /* BPTR — seglist of running command */
+
+/* UAOS private extension area (0x40+) — mirrors the fields programs used
+ * to find in the 1.3-era CLI plus a few UAOS conveniences. */
+#define CLI_XPROGDIR        0x40   /* BPTR — SetProgramDir() lock */
+#define CLI_XCURDIRNAME     0x44   /* BSTR — current directory name */
+#define CLI_XCOMMANDLINE    0x48   /* BSTR — full command line text */
+#define CLI_XERRORLEVEL     0x4C   /* LONG — error level (1.3: 0x24) */
+#define CLI_XRUNTIME        0x50   /* LONG — runtime used (1.3: 0x34) */
 
 /* ========================================================================
  * ExecBase (struct ExecBase / SysBase) offsets — exec/execbase.i
@@ -189,6 +212,9 @@
 #define EXECBASE_TDNESTCNT  0x127  /* BYTE  TDNestCnt (-1 = permitted) */
 #define EXECBASE_ATTNFLAGS  0x128  /* WORD  AFF_* */
 #define EXECBASE_ATTNRESCHED 0x12A /* BYTE */
+#define EXECBASE_SOFTVER    0x22   /* UWORD SoftVer (kickstart release) */
+#define EXECBASE_MAXLOCMEM  0x3E   /* ULONG MaxLocMem (top of chip RAM) */
+#define EXECBASE_MAXEXTMEM  0x4E   /* APTR MaxExtMem (top of ext/fast)  */
 #define EXECBASE_TASKSIGALLOC 0x13C /* ULONG TaskSigAlloc */
 #define EXECBASE_TASKTRAPALLOC 0x140 /* UWORD TaskTrapAlloc */
 #define EXECBASE_MEMLIST    0x142  /* struct List MemList */
@@ -209,5 +235,22 @@
 #define LIB_IDSTRING        0x18   /* APTR lib_IdString */
 #define LIB_SUM             0x1C   /* ULONG lib_Sum */
 #define LIB_OPENCNT         0x20   /* WORD lib_OpenCnt */
+
+/* -------------------------------------------------------------------------
+ * struct SemaphoreRequest / SignalSemaphore / SemaphoreMessage
+ * (exec/semaphores.h, guest layout — 46/24/12 bytes)
+ * ------------------------------------------------------------------------- */
+#define SSR_LINK    0x00   /* MinNode (8)   */
+#define SSR_WAITER  0x08   /* struct Task * — size 12 */
+
+#define SS_LINK        0x00   /* struct Node (14)          */
+#define SS_NESTCOUNT   0x0E   /* WORD                      */
+#define SS_WAITQUEUE   0x10   /* struct MinList (12)       */
+#define SS_MULTIPLELINK 0x1C  /* SemaphoreRequest (12)     */
+#define SS_OWNER       0x28   /* struct Task *             */
+#define SS_QUEUECNT    0x2C   /* WORD — size 46            */
+
+#define SSM_MESSAGE    0x00   /* struct Message (20)       */
+#define SSM_SEMAPHORE  0x14   /* struct SignalSemaphore * — size 24 */
 
 #endif /* AMIGA_TASK_H */

@@ -73,8 +73,28 @@ extern int  Task_Yield(void);
 #define MEMF_CHIP   0x00000002u
 #define MEMF_FAST   0x00000004u
 
-/* Forward display-mode database layout used by Tier 3 copper builder. */
-#define AGA_FLAG 0x80000000u
+/* Display-mode database layout used by Tier 3 copper builder.
+ * Mode IDs follow graphics/modeid.h (AmigaOS 3.1, V40.13):
+ *   MONITOR_ID_MASK 0xFFFF1000 — monitor index in bits 12-31
+ *   low bits carry the mode key: HIRES 0x8000, SUPER 0x20, HAM 0x800,
+ *   DPF 0x400, DPF2 0x440, EHB 0x80; bit meanings for the raster differ
+ *   per monitor family (0x4 = lace on NTSC/PAL/EURO36/SUPER72 composites,
+ *   0x4 = flicker-free + 0x1 = lace on the DBL/VGA/EURO72 families).
+ * Bit 31 stays free for UAOS's own AGA/RTG flag (real IDs never set it). */
+#define AGA_FLAG         0x80000000u
+#define MONITOR_ID_MASK  0xFFFF1000u
+
+#define MON_NTSC    0x00011000u
+#define MON_PAL     0x00021000u
+#define MON_VGA     0x00031000u
+#define MON_A2024   0x00041000u
+#define MON_PROTO   0x00051000u
+#define MON_EURO72  0x00061000u
+#define MON_EURO36  0x00071000u
+#define MON_SUPER72 0x00081000u
+#define MON_DBLNTSC 0x00091000u
+#define MON_DBLPAL  0x000a1000u
+#define MON_UAOSRTG 0x40001000u  /* UAOS-private chunky/RTG family */
 
 #define DI_MODEID      0
 #define DI_WIDTH       4
@@ -85,6 +105,8 @@ extern int  Task_Yield(void);
 #define DI_SIZE       14
 
 static uint32_t disp_find_mode(uint32_t mode_id);
+static uint8_t  disp_mode_flags(uint32_t mode_id);
+int uaos_gfx_mode_dims(uint32_t mode_id, uint16_t *w, uint16_t *h);
 
 /* =========================================================================
  * LVO slot table for graphics.library
@@ -3858,34 +3880,157 @@ typedef struct {
     const char *name;
 } UaosDisplayMode;
 
-/* Mode ID layout (AmigaOS 3.x compatible):
- *   bit 31: AGA flag
- *   bits 28-30: reserved
- *   bits 16-27: monitor/mode index (upper nibble = monitor, lower = mode)
- *   bits 12-15: reserved
- *   bits  8-11: depth flags (HAM/EHB/24-bit)
- *   bits  0-7:  depth in bitplanes
- */
-
+/* The enumerable display database — the set screenmode requesters and
+ * BestModeIDA offer.  Nominal raster dims per the OS 3.5/3.9 manuals:
+ * NTSC 200/400, PAL 256/512, DBLNTSC 400/800, DBLPAL 512/1024,
+ * VGA 480/960, EURO72 400/800, EURO36 200/400, SUPER72 300/600.
+ * depth = max bitplanes the mode carries (6 for HAM/EHB/DPF, 8 on the
+ * AGA-era/RTG families).  Modes not listed still resolve through
+ * uaos_gfx_mode_dims()'s composite decode. */
 static const UaosDisplayMode uaos_modes[] = {
-    /* OCS/ECS modes */
-    { 0x00011000,  320,  256, 5, "PAL:320x256" },
-    { 0x00011001,  320,  200, 5, "NTSC:320x200" },
-    { 0x00011002,  640,  256, 4, "DBLPAL:640x256" },
-    { 0x00011003,  640,  400, 4, "DBLNTSC:640x400" },
-    { 0x00011004,  640,  512, 4, "SUPER72:640x512" },
-    { 0x00011005,  800,  600, 4, "EURO72:800x600" },
-    { 0x00011006, 1024,  768, 4, "EURO36:1024x768" },
-    { 0x00011007, 1280,  720, 4, "VESA:1280x720" },
-    /* AGA modes (same geometry, up to 8 bitplanes / 256 colours / 24-bit palette) */
-    { 0x80011000,  320,  256, 8, "AGA:PAL:320x256" },
-    { 0x80011001,  320,  200, 8, "AGA:NTSC:320x200" },
-    { 0x80011002,  640,  256, 8, "AGA:DBLPAL:640x256" },
-    { 0x80011003,  640,  400, 8, "AGA:DBLNTSC:640x400" },
-    { 0x80011004,  640,  512, 8, "AGA:SUPER72:640x512" },
-    { 0x80011005,  800,  600, 8, "AGA:EURO72:800x600" },
-    { 0x80011006, 1024,  768, 8, "AGA:EURO36:1024x768" },
-    { 0x80011007, 1280,  720, 8, "AGA:VESA:1280x720" },
+    /* ---- Default-monitor productivity keys (Multiscan) --------------- */
+    { 0x00008021,  640,  480, 8, "Multiscan:Productivity" },
+    { 0x00008025,  640,  960, 8, "Multiscan:Productivity Laced" },
+
+    /* ---- NTSC family ------------------------------------------------ */
+    { MON_NTSC|0x0000,  320, 200, 6, "NTSC:LowRes" },
+    { MON_NTSC|0x0004,  320, 400, 6, "NTSC:LowRes Laced" },
+    { MON_NTSC|0x0008,  320, 200, 6, "NTSC:LowRes ScanDoubled" },
+    { MON_NTSC|0x0800,  320, 200, 6, "NTSC:LowRes HAM" },
+    { MON_NTSC|0x0804,  320, 400, 6, "NTSC:LowRes HAM Laced" },
+    { MON_NTSC|0x0080,  320, 200, 6, "NTSC:LowRes ExtraHalfBrite" },
+    { MON_NTSC|0x0084,  320, 400, 6, "NTSC:LowRes EHB Laced" },
+    { MON_NTSC|0x0400,  320, 200, 6, "NTSC:LowRes DualPlayfield" },
+    { MON_NTSC|0x0404,  320, 400, 6, "NTSC:LowRes DPF Laced" },
+    { MON_NTSC|0x0440,  320, 200, 6, "NTSC:LowRes DualPlayfield2" },
+    { MON_NTSC|0x8000,  640, 200, 4, "NTSC:HiRes" },
+    { MON_NTSC|0x8004,  640, 400, 4, "NTSC:HiRes Laced" },
+    { MON_NTSC|0x8800,  640, 200, 6, "NTSC:HiRes HAM" },
+    { MON_NTSC|0x8804,  640, 400, 6, "NTSC:HiRes HAM Laced" },
+    { MON_NTSC|0x8080,  640, 200, 6, "NTSC:HiRes ExtraHalfBrite" },
+    { MON_NTSC|0x8400,  640, 200, 4, "NTSC:HiRes DualPlayfield" },
+    { MON_NTSC|0x8440,  640, 200, 4, "NTSC:HiRes DualPlayfield2" },
+    { MON_NTSC|0x8020, 1280, 200, 4, "NTSC:SuperHiRes" },
+    { MON_NTSC|0x8024, 1280, 400, 4, "NTSC:SuperHiRes Laced" },
+    { MON_NTSC|0x8820, 1280, 200, 6, "NTSC:SuperHiRes HAM" },
+    { MON_NTSC|0x8420, 1280, 200, 4, "NTSC:SuperHiRes DualPlayfield" },
+
+    /* ---- PAL family ------------------------------------------------- */
+    { MON_PAL|0x0000,  320, 256, 6, "PAL:LowRes" },
+    { MON_PAL|0x0004,  320, 512, 6, "PAL:LowRes Laced" },
+    { MON_PAL|0x0008,  320, 256, 6, "PAL:LowRes ScanDoubled" },
+    { MON_PAL|0x0800,  320, 256, 6, "PAL:LowRes HAM" },
+    { MON_PAL|0x0804,  320, 512, 6, "PAL:LowRes HAM Laced" },
+    { MON_PAL|0x0080,  320, 256, 6, "PAL:LowRes ExtraHalfBrite" },
+    { MON_PAL|0x0084,  320, 512, 6, "PAL:LowRes EHB Laced" },
+    { MON_PAL|0x0400,  320, 256, 6, "PAL:LowRes DualPlayfield" },
+    { MON_PAL|0x0404,  320, 512, 6, "PAL:LowRes DPF Laced" },
+    { MON_PAL|0x0440,  320, 256, 6, "PAL:LowRes DualPlayfield2" },
+    { MON_PAL|0x8000,  640, 256, 4, "PAL:HiRes" },
+    { MON_PAL|0x8004,  640, 512, 4, "PAL:HiRes Laced" },
+    { MON_PAL|0x8800,  640, 256, 6, "PAL:HiRes HAM" },
+    { MON_PAL|0x8804,  640, 512, 6, "PAL:HiRes HAM Laced" },
+    { MON_PAL|0x8080,  640, 256, 6, "PAL:HiRes ExtraHalfBrite" },
+    { MON_PAL|0x8400,  640, 256, 4, "PAL:HiRes DualPlayfield" },
+    { MON_PAL|0x8440,  640, 256, 4, "PAL:HiRes DualPlayfield2" },
+    { MON_PAL|0x8020, 1280, 256, 4, "PAL:SuperHiRes" },
+    { MON_PAL|0x8024, 1280, 512, 4, "PAL:SuperHiRes Laced" },
+    { MON_PAL|0x8820, 1280, 256, 6, "PAL:SuperHiRes HAM" },
+    { MON_PAL|0x8420, 1280, 256, 4, "PAL:SuperHiRes DualPlayfield" },
+
+    /* ---- DBLNTSC (scan-doubled NTSC; 400/800-row family) ------------- */
+    { 0x00091000,  320, 400, 8, "DBLNTSC:LowRes" },
+    { 0x00091004,  320, 400, 8, "DBLNTSC:LowRes NoFlicker" },
+    { 0x00091005,  320, 800, 8, "DBLNTSC:LowRes Laced" },
+    { 0x00091200,  320, 400, 8, "DBLNTSC:ExtraLoRes" },
+    { 0x00091204,  320, 400, 8, "DBLNTSC:ExtraLoRes NoFlicker" },
+    { 0x00091800,  320, 400, 6, "DBLNTSC:LowRes HAM" },
+    { 0x00091080,  320, 400, 6, "DBLNTSC:LowRes ExtraHalfBrite" },
+    { 0x00091400,  320, 400, 6, "DBLNTSC:LowRes DualPlayfield" },
+    { 0x00099000,  640, 400, 8, "DBLNTSC:HiRes" },
+    { 0x00099004,  640, 400, 8, "DBLNTSC:HiRes NoFlicker" },
+    { 0x00099005,  640, 800, 8, "DBLNTSC:HiRes Laced" },
+    { 0x00099800,  640, 400, 6, "DBLNTSC:HiRes HAM" },
+    { 0x00099080,  640, 400, 6, "DBLNTSC:HiRes ExtraHalfBrite" },
+    { 0x00099400,  640, 400, 6, "DBLNTSC:HiRes DualPlayfield" },
+
+    /* ---- DBLPAL (scan-doubled PAL; 512/1024-row family) -------------- */
+    { 0x000a1000,  320, 512, 8, "DBLPAL:LowRes" },
+    { 0x000a1004,  320, 512, 8, "DBLPAL:LowRes NoFlicker" },
+    { 0x000a1005,  320,1024, 8, "DBLPAL:LowRes Laced" },
+    { 0x000a1200,  320, 512, 8, "DBLPAL:ExtraLoRes" },
+    { 0x000a1204,  320, 512, 8, "DBLPAL:ExtraLoRes NoFlicker" },
+    { 0x000a1800,  320, 512, 6, "DBLPAL:LowRes HAM" },
+    { 0x000a1080,  320, 512, 6, "DBLPAL:LowRes ExtraHalfBrite" },
+    { 0x000a1400,  320, 512, 6, "DBLPAL:LowRes DualPlayfield" },
+    { 0x000a9000,  640, 512, 8, "DBLPAL:HiRes" },
+    { 0x000a9004,  640, 512, 8, "DBLPAL:HiRes NoFlicker" },
+    { 0x000a9005,  640,1024, 8, "DBLPAL:HiRes Laced" },
+    { 0x000a9800,  640, 512, 6, "DBLPAL:HiRes HAM" },
+    { 0x000a9080,  640, 512, 6, "DBLPAL:HiRes ExtraHalfBrite" },
+    { 0x000a9400,  640, 512, 6, "DBLPAL:HiRes DualPlayfield" },
+
+    /* ---- VGA monitor (640x480/960) ----------------------------------- */
+    { 0x00031004,  640, 480, 8, "VGA:ExtraLoRes" },
+    { 0x00039004,  640, 480, 8, "VGA:LoRes" },
+    { 0x00039024,  640, 480, 8, "VGA:Productivity" },
+    { 0x00031005,  640, 960, 8, "VGA:ExtraLoRes Laced" },
+    { 0x00039005,  640, 960, 8, "VGA:LoRes Laced" },
+    { 0x00039025,  640, 960, 8, "VGA:Productivity Laced" },
+    { 0x00031804,  640, 480, 8, "VGA:HAM" },
+    { 0x00031084,  640, 480, 8, "VGA:ExtraHalfBrite" },
+    { 0x00031000,  640, 480, 8, "VGA:ExtraLoRes ScanDoubled" },
+    { 0x00039000,  640, 480, 8, "VGA:LoRes ScanDoubled" },
+    { 0x00039020,  640, 480, 8, "VGA:Productivity ScanDoubled" },
+    { 0x00039800,  640, 480, 8, "VGA:LoRes HAM ScanDoubled" },
+
+    /* ---- EURO72 (640x400/800) ---------------------------------------- */
+    { 0x00061004,  640, 400, 8, "EURO72:ExtraLoRes" },
+    { 0x00069004,  640, 400, 8, "EURO72:LoRes" },
+    { 0x00069024,  640, 400, 8, "EURO72:Productivity" },
+    { 0x00061005,  640, 800, 8, "EURO72:ExtraLoRes Laced" },
+    { 0x00069005,  640, 800, 8, "EURO72:LoRes Laced" },
+    { 0x00069025,  640, 800, 8, "EURO72:Productivity Laced" },
+    { 0x00061804,  640, 400, 8, "EURO72:HAM" },
+    { 0x00061084,  640, 400, 8, "EURO72:ExtraHalfBrite" },
+    { 0x00061000,  640, 400, 8, "EURO72:ExtraLoRes ScanDoubled" },
+    { 0x00069000,  640, 400, 8, "EURO72:LoRes ScanDoubled" },
+    { 0x00069020,  640, 400, 8, "EURO72:Productivity ScanDoubled" },
+
+    /* ---- EURO36 (NTSC-height composites, 200/400) -------------------- */
+    { MON_EURO36|0x0000,  320, 200, 8, "EURO36:LowRes" },
+    { MON_EURO36|0x0004,  320, 400, 8, "EURO36:LowRes Laced" },
+    { MON_EURO36|0x8000,  640, 200, 8, "EURO36:HiRes" },
+    { MON_EURO36|0x8004,  640, 400, 8, "EURO36:HiRes Laced" },
+    { MON_EURO36|0x8020, 1280, 200, 8, "EURO36:SuperHiRes" },
+    { MON_EURO36|0x8024, 1280, 400, 8, "EURO36:SuperHiRes Laced" },
+    { MON_EURO36|0x0800,  320, 200, 8, "EURO36:LowRes HAM" },
+    { MON_EURO36|0x8800,  640, 200, 8, "EURO36:HiRes HAM" },
+    { MON_EURO36|0x0080,  320, 200, 8, "EURO36:LowRes ExtraHalfBrite" },
+
+    /* ---- SUPER72 (400x300/600, 800x300/600) --------------------------- */
+    { MON_SUPER72|0x0000,  400, 300, 8, "SUPER72:LoRes" },
+    { MON_SUPER72|0x0004,  400, 600, 8, "SUPER72:LoRes Laced" },
+    { MON_SUPER72|0x8000,  400, 300, 8, "SUPER72:HiRes" },
+    { MON_SUPER72|0x8004,  400, 600, 8, "SUPER72:HiRes Laced" },
+    { MON_SUPER72|0x8020,  800, 300, 8, "SUPER72:SuperHiRes" },
+    { MON_SUPER72|0x8024,  800, 600, 8, "SUPER72:SuperHiRes Laced" },
+    { 0x00081008,  400, 600, 8, "SUPER72:LoRes ScanDoubled" },
+    { 0x00089008,  400, 600, 8, "SUPER72:HiRes ScanDoubled" },
+    { 0x00089028,  800, 600, 8, "SUPER72:SuperHiRes ScanDoubled" },
+    { 0x00081808,  400, 600, 6, "SUPER72:LoRes HAM ScanDoubled" },
+    { 0x00089808,  400, 600, 6, "SUPER72:HiRes HAM ScanDoubled" },
+
+    /* ---- A2024 greyscale -------------------------------------------- */
+    { MON_A2024|0x0000, 1024,1024, 2, "A2024:1024x1024 10Hz" },
+    { MON_A2024|0x8000, 1024, 800, 2, "A2024:1024x800 15Hz" },
+
+    /* ---- UAOS-private chunky/RTG-style modes -------------------------- */
+    { MON_UAOSRTG|0x0000,  800,  600, 8, "RTG:800x600" },
+    { MON_UAOSRTG|0x0001, 1024,  768, 8, "RTG:1024x768" },
+    { MON_UAOSRTG|0x0002, 1280,  720, 8, "RTG:1280x720" },
+    { MON_UAOSRTG|0x0003, 1280, 1024, 8, "RTG:1280x1024" },
+    { MON_UAOSRTG|0x0004, 1440,  900, 8, "RTG:1440x900" },
 };
 #define UAOS_MODE_COUNT (sizeof(uaos_modes) / sizeof(uaos_modes[0]))
 
@@ -3914,9 +4059,7 @@ static void disp_init_table(void)
         m68k_write_memory_16(entry + DI_WIDTH, uaos_modes[i].width);
         m68k_write_memory_16(entry + DI_HEIGHT, uaos_modes[i].height);
         m68k_write_memory_8(entry + DI_DEPTH, uaos_modes[i].depth);
-        uint8_t flags = 0;
-        if (uaos_modes[i].mode_id & AGA_FLAG) flags |= 0x01;
-        m68k_write_memory_8(entry + DI_FLAGS, flags);
+        m68k_write_memory_8(entry + DI_FLAGS, disp_mode_flags(uaos_modes[i].mode_id));
         m68k_write_memory_32(entry + DI_NAME, name_ptr);
         for (size_t j = 0; j <= strlen(uaos_modes[i].name); j++)
             m68k_write_memory_8(name_ptr + j, (uint8_t)uaos_modes[i].name[j]);
@@ -3937,6 +4080,79 @@ static void disp_init_monitor(void)
     g_monitor = mon;
 }
 
+/* DisplayInfo property flags (graphics/displayinfo.h) — the subset UAOS
+ * reports and filters on. */
+#define DIPF_IS_LACE     0x00000001u
+#define DIPF_IS_DUALPF   0x00000002u
+#define DIPF_IS_PF2PRI   0x00000004u
+#define DIPF_IS_HAM      0x00000008u
+#define DIPF_IS_ECS      0x00000010u
+#define DIPF_IS_PAL      0x00000020u
+#define DIPF_IS_AA       0x00010000u
+#define DIPF_IS_EHB      0x00001000u
+#define DIPF_IS_FOREIGN  0x80000000u
+#define DIPF_SPECIAL     0x0000100Eu  /* DUALPF|PF2PRI|HAM|EHB */
+
+/* Property flags for a DisplayID, decoded from the mode key bits the way
+ * modeid.h documents (0x800 = HAM, 0x80 = EHB, 0x400/0x440 = DPF/DPF2)
+ * plus the monitor family for lace and chipset generation. */
+static uint32_t mode_dipf(uint32_t id)
+{
+    uint32_t f = DIPF_IS_ECS;
+    uint32_t mon = id & MONITOR_ID_MASK;
+    uint32_t key = id & ~MONITOR_ID_MASK;
+    if (mon == MON_PAL || mon == MON_DBLPAL) f |= DIPF_IS_PAL;
+    if (key & 0x00000800u) f |= DIPF_IS_HAM;
+    if (key & 0x00000080u) f |= DIPF_IS_EHB;
+    if (key & 0x00000400u) f |= DIPF_IS_DUALPF;
+    if ((key & 0x00000440u) == 0x440u) f |= DIPF_IS_PF2PRI;
+    switch (mon) {
+        case MON_VGA: case MON_EURO72: case MON_DBLNTSC: case MON_DBLPAL:
+            if (key & 0x1) f |= DIPF_IS_LACE;
+            f |= DIPF_IS_AA;
+            break;
+        case MON_UAOSRTG:
+            f |= DIPF_IS_AA | DIPF_IS_FOREIGN;
+            break;
+        default:
+            if (key & 0x4) f |= DIPF_IS_LACE;
+            if (mon == MON_A2024 || mon == MON_EURO36 || mon == MON_SUPER72)
+                f |= DIPF_IS_AA;
+            break;
+    }
+    if (id & AGA_FLAG) f |= DIPF_IS_AA | DIPF_IS_FOREIGN;
+    return f;
+}
+
+/* Max bitplanes a mode carries: 6 for HAM/EHB/DPF and non-hires planar
+ * modes, 8 on the AGA-era and RTG families, 4 otherwise. */
+static uint8_t disp_mode_depth(uint32_t id)
+{
+    if (id & AGA_FLAG) return 8;
+    uint32_t mon = id & MONITOR_ID_MASK;
+    uint32_t key = id & ~MONITOR_ID_MASK;
+    if (key & (0x800u | 0x080u | 0x400u)) return 6;      /* HAM/EHB/DPF */
+    if (mon == MON_UAOSRTG || mon == MON_VGA || mon == MON_EURO72 ||
+        mon == MON_EURO36 || mon == MON_SUPER72 ||
+        mon == MON_DBLNTSC || mon == MON_DBLPAL) return 8;
+    if (!(key & (0x8000u | 0x0020u))) return 6;          /* lores family */
+    return 4;
+}
+
+/* Internal DI_FLAGS byte: bit0 AGA, bit2 HAM, bit3 EHB, bit4 DPF. */
+static uint8_t disp_mode_flags(uint32_t mode_id)
+{
+    uint8_t f = 0;
+    if (mode_id & AGA_FLAG) f |= 0x01;
+    if (mode_id & 0x00000800u) f |= 0x04;
+    if (mode_id & 0x00000080u) f |= 0x08;
+    if (mode_id & 0x00000400u) f |= 0x10;
+    return f;
+}
+
+/* Scratch DisplayInfo for a valid-but-unlisted composite mode. */
+static uint32_t g_synth_di = 0;
+
 static uint32_t disp_find_mode(uint32_t mode_id)
 {
     disp_init_table();
@@ -3945,18 +4161,43 @@ static uint32_t disp_find_mode(uint32_t mode_id)
         if (m68k_read_memory_32(g_disp_table + (uint32_t)(i * DI_SIZE) + DI_MODEID) == mode_id)
             return g_disp_table + (uint32_t)(i * DI_SIZE);
     }
-    return 0;
+    /* Composite mode that resolves but isn't enumerated: synthesize a
+     * single-entry DisplayInfo so FindDisplayInfo/GetDisplayInfoData/
+     * ModeNotAvailable/CoerceMode still honour it. */
+    uint16_t w = 0, h = 0;
+    if (!uaos_gfx_mode_dims(mode_id, &w, &h)) return 0;
+    if (!g_synth_di) {
+        dos_AllocMem_glue(DI_SIZE + 16, 0, &g_synth_di);
+        if (!g_synth_di) return 0;
+        static const char nm[] = "UAOS:Mode";
+        for (size_t i = 0; i < sizeof(nm); i++)
+            m68k_write_memory_8(g_synth_di + DI_SIZE + (uint32_t)i, (uint8_t)nm[i]);
+        m68k_write_memory_32(g_synth_di + DI_NAME, g_synth_di + DI_SIZE);
+    }
+    m68k_write_memory_32(g_synth_di + DI_MODEID, mode_id);
+    m68k_write_memory_16(g_synth_di + DI_WIDTH, w);
+    m68k_write_memory_16(g_synth_di + DI_HEIGHT, h);
+    m68k_write_memory_8(g_synth_di + DI_DEPTH, disp_mode_depth(mode_id));
+    m68k_write_memory_8(g_synth_di + DI_FLAGS, disp_mode_flags(mode_id));
+    return g_synth_di;
 }
 
 /* Standard (nominal) raster dimensions for a DisplayID.  Looks up the
- * display-database table first, then decodes the classic pre-V39 monitor
- * "keys" (LORES_KEY/HIRES_KEY/...) that applications still pass to
- * SA_DisplayID.  Keys occupy the low 16 bits of the mode ID — bit 15 =
- * hires, bit 5 = super-hires, bit 2 = lace — while UAOS table IDs carry a
- * monitor index in bits 16-27 and never alias them.  Non-lace keys use the
- * PAL row counts the chipset defaults to.  Returns 0 for unknown IDs. */
+ * display-database table first, then decodes monitor-family composites:
+ *
+ *   - NTSC/PAL/EURO36/SUPER72/default families compose the classic keys
+ *     (0x8000 hires, 0x20 super-hires, 0x4 lace) over the monitor's base
+ *     raster — NTSC 200/400, PAL 256/512, EURO36 200/400, SUPER72 300/600.
+ *   - DBLNTSC/DBLPAL: 0x8000 selects hires width, bit 0 laces (400/800,
+ *     512/1024 rows).
+ *   - VGA 640x480 (960 laced), EURO72 640x400 (800 laced).
+ *   - A2024: 1024x1024 (10Hz) / 1024x800 (15Hz).
+ *   - Bare keys (no monitor bits) resolve on the PAL default monitor, as
+ *     on real Amigas.
+ * Returns 0 for unrecognised IDs. */
 int uaos_gfx_mode_dims(uint32_t mode_id, uint16_t *w, uint16_t *h)
 {
+    if (mode_id == 0xFFFFFFFFu) return 0;
     for (size_t i = 0; i < UAOS_MODE_COUNT; i++) {
         if (uaos_modes[i].mode_id == mode_id) {
             *w = uaos_modes[i].width;
@@ -3964,11 +4205,38 @@ int uaos_gfx_mode_dims(uint32_t mode_id, uint16_t *w, uint16_t *h)
             return 1;
         }
     }
-    if (mode_id & 0xFFFF0000u) return 0;
-    if (mode_id == 0x00008021u) { *w = 640; *h = 480; return 1; }  /* PRODUCTIVITY_KEY */
-    if (mode_id == 0x00008025u) { *w = 640; *h = 960; return 1; }  /* PRODUCTIVITYLACE_KEY */
-    *w = (mode_id & 0x20u) ? 1280 : (mode_id & 0x8000u) ? 640 : 320;
-    *h = (mode_id & 0x4u) ? 512 : 256;
+    uint32_t mon = mode_id & MONITOR_ID_MASK;
+    uint32_t key = mode_id & ~MONITOR_ID_MASK;
+    switch (mon) {
+        case MON_VGA:
+            *w = 640; *h = (key & 0x1) ? 960 : 480; return 1;
+        case MON_EURO72:
+            *w = 640; *h = (key & 0x1) ? 800 : 400; return 1;
+        case MON_DBLNTSC:
+            *w = (key & 0x8000u) ? 640 : 320; *h = (key & 0x1) ? 800 : 400;
+            return 1;
+        case MON_DBLPAL:
+            *w = (key & 0x8000u) ? 640 : 320; *h = (key & 0x1) ? 1024 : 512;
+            return 1;
+        case MON_A2024:
+            *w = 1024; *h = (mode_id == MON_A2024) ? 1024 : 800; return 1;
+    }
+    /* Composable families: default(=PAL), NTSC, PAL, PROTO, EURO36, SUPER72. */
+    int lw = 0, bw = 0, sw = 0, bh = 0, dh = 0;
+    switch (mon) {
+        case 0x00000000u: case MON_PAL: case MON_PROTO:
+            lw = 320; bw = 640; sw = 1280; bh = 256; dh = 512; break;
+        case MON_NTSC: case MON_EURO36:
+            lw = 320; bw = 640; sw = 1280; bh = 200; dh = 400; break;
+        case MON_SUPER72:
+            lw = 400; bw = 400; sw = 800; bh = 300; dh = 600; break;
+        default:
+            return 0;
+    }
+    if (key == 0x8021u) { *w = 640; *h = 480; return 1; }  /* PRODUCTIVITY_KEY */
+    if (key == 0x8025u) { *w = 640; *h = 960; return 1; }  /* PRODUCTIVITYLACE_KEY */
+    *w = (uint16_t)((key & 0x20u) ? sw : (key & 0x8000u) ? bw : lw);
+    *h = (uint16_t)((key & 0x4u) ? dh : bh);
     return 1;
 }
 
@@ -4072,23 +4340,67 @@ static void graphics_GetDisplayInfoData(void)
 static void graphics_ModeNotAvailable(void)
 {
     /* ModeNotAvailable(modeID) — D0 = modeID
-     * Returns 0 if available, non-zero if not.
+     * Returns 0 if available, non-zero if not.  Any mode that resolves —
+     * enumerated or composite — is available.
      */
     uint32_t mode_id = m68k_get_reg(NULL, M68K_REG_D0);
-    m68k_set_reg(M68K_REG_D0, disp_find_mode(mode_id) ? 0 : 1);
+    uint16_t w = 0, h = 0;
+    m68k_set_reg(M68K_REG_D0, uaos_gfx_mode_dims(mode_id, &w, &h) ? 0 : 1);
 }
+
+/* BestModeIDA tags (graphics/displayinfo.h). */
+#define BIDTAG_DIPFMustHave    0x80000001u
+#define BIDTAG_DIPFMustNotHave 0x80000002u
+#define BIDTAG_DesiredWidth    0x80000006u
+#define BIDTAG_DesiredHeight   0x80000007u
+#define BIDTAG_Depth           0x80000008u
+#define BIDTAG_MonitorID       0x80000009u
 
 static void graphics_BestModeIDA(void)
 {
-    /* BestModeIDA(tags) — A0 = tags
-     * Returns a suitable mode ID in D0.
-     */
-    (void)m68k_get_reg(NULL, M68K_REG_A0);
-    disp_init_table();
-    uint32_t id = 0;
-    if (UAOS_MODE_COUNT > 0 && g_disp_table)
-        id = m68k_read_memory_32(g_disp_table + DI_MODEID);
-    m68k_set_reg(M68K_REG_D0, id);
+    /* BestModeIDA(tags) — A0 = tags.  Returns a suitable mode ID in D0.
+     * Picks the enumerated mode matching the DIPF constraints, monitor and
+     * depth, closest to the desired size. */
+    uint32_t tags = m68k_get_reg(NULL, M68K_REG_A0);
+    uint32_t must_have = 0, must_not = DIPF_SPECIAL;
+    uint32_t want_mon = 0;
+    uint16_t want_w = 0, want_h = 0;
+    uint8_t  want_d = 0;
+    if (tags) {
+        for (int i = 0; i < 64; i++) {
+            uint32_t t = m68k_read_memory_32(tags); tags += 4;
+            uint32_t v = m68k_read_memory_32(tags); tags += 4;
+            if (t == 0) break; /* TAG_DONE */
+            switch (t) {
+                case BIDTAG_DIPFMustHave:    must_have = v; break;
+                case BIDTAG_DIPFMustNotHave: must_not  = v; break;
+                case BIDTAG_DesiredWidth:    want_w = (uint16_t)v; break;
+                case BIDTAG_DesiredHeight:   want_h = (uint16_t)v; break;
+                case BIDTAG_Depth:           want_d = (uint8_t)v; break;
+                case BIDTAG_MonitorID:       want_mon = v & MONITOR_ID_MASK; break;
+                default: break;
+            }
+        }
+    }
+
+    uint32_t best = 0;
+    long best_score = -1;
+    for (size_t i = 0; i < UAOS_MODE_COUNT; i++) {
+        uint32_t id = uaos_modes[i].mode_id;
+        uint32_t dipf = mode_dipf(id);
+        if ((dipf & must_have) != must_have) continue;
+        if (dipf & must_not) continue;
+        if (want_mon && (id & MONITOR_ID_MASK) != want_mon) continue;
+        if (want_d && uaos_modes[i].depth < want_d) continue;
+        long dw = want_w ? (long)uaos_modes[i].width  - want_w : 0;
+        long dh = want_h ? (long)uaos_modes[i].height - want_h : 0;
+        long score = (dw < 0 ? -dw * 10 : dw) + (dh < 0 ? -dh * 10 : dh);
+        if (best_score < 0 || score < best_score) {
+            best_score = score;
+            best = id;
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, best);
 }
 
 static void graphics_CoerceMode(void)
@@ -4100,7 +4412,8 @@ static void graphics_CoerceMode(void)
     uint32_t mode_id = m68k_get_reg(NULL, M68K_REG_D0);
     (void)m68k_get_reg(NULL, M68K_REG_D1);
     (void)m68k_get_reg(NULL, M68K_REG_A0);
-    if (disp_find_mode(mode_id)) {
+    uint16_t w = 0, h = 0;
+    if (uaos_gfx_mode_dims(mode_id, &w, &h)) {
         m68k_set_reg(M68K_REG_D0, mode_id);
     } else {
         disp_init_table();

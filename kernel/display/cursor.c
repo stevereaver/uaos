@@ -250,8 +250,10 @@ static void cursor_restore_bg(int x, int y)
     int off_y = cur_custom_active ? cur_custom_y : 0;
 
     /* Fast path: 32bpp row memcpy back to VRAM, mirrored into the back
-     * buffer so the shadow stays coherent for the next save. */
-    if (g_fb.bpp == 32) {
+     * buffer so the shadow stays coherent for the next save.  Skipped in
+     * scaled mode — VRAM rows aren't logical rows there, so restore goes
+     * through FB_PutPixel which resamples (UAOS-351). */
+    if (g_fb.bpp == 32 && !FB_IsScaled()) {
         uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
         for (int row = 0; row < cur_h; row++) {
             int py = y + off_y + row;

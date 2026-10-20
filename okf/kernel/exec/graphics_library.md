@@ -184,17 +184,40 @@ All planar writes funnel through `blit_surface_put()` and `planar_fill_rect()`, 
 
 ### Display-mode database
 
+The mode table (`uaos_modes[]`) enumerates the real AmigaOS 3.1 DisplayIDs
+from `graphics/modeid.h` — NTSC/PAL × all composite keys (LORES/HIRES/
+SUPER-HIRES × lace, HAM, EHB, DPF/DPF2, scan-doubled), DBLNTSC (320–640×
+400/800), DBLPAL (320–640×512/1024), VGA (640×480/960), EURO72 (640×400/800),
+EURO36 (200/400-row composites), SUPER72 (400–800×300/600), A2024
+(1024×800/1024), Multiscan productivity (640×480/960) — plus UAOS-private
+RTG modes under monitor `0x40001000` (up to 1440×900, 8 bpp). Nominal raster
+dims follow the OS 3.5/3.9 monitor tables; `DI_DEPTH` is the mode's max
+bitplanes (6 for HAM/EHB/DPF, 8 on AGA-era/RTG families).
+
+`uaos_gfx_mode_dims()` resolves nominal dims for any ID: table hit first,
+then a per-family composite decode — `0x8000`=hires, `0x20`=super, `0x4`=
+lace on the NTSC/PAL/EURO36/SUPER72/default families; `0x8000`=hires and
+bit 0=lace on DBLNTSC/DBLPAL (bit 2 = flicker-free); VGA/EURO72 fixed
+geometry with bit-0 lace; bare keys resolve on the PAL default monitor.
+Modes that decode but aren't enumerated still synthesize a DisplayInfo
+record so `FindDisplayInfo`/`GetDisplayInfoData`/`ModeNotAvailable`/
+`CoerceMode` honour the full composite space.
+
+`mode_dipf()` derives the `DIPF_*` property flags per mode (LACE, DUALPF,
+PF2PRI, HAM, EHB, ECS, PAL, AA, FOREIGN) from the documented mode-key bits
+and the monitor family.
+
 | Function | Status | Notes |
 |----------|--------|-------|
 | `OpenMonitor` | Implemented | Returns a built-in `MonitorSpec` (dummy). |
 | `CloseMonitor` | Implemented | No-op. |
-| `FindDisplayInfo` | Implemented | Returns a `DisplayInfo` record for a known mode ID. |
+| `FindDisplayInfo` | Implemented | Returns a `DisplayInfo` for a known mode ID; synthesizes one for valid unlisted composites. |
 | `NextDisplayInfo` | Implemented | Iterates the built-in mode ID table. |
 | `GetDisplayInfoData` | Implemented | Returns `DTAG_DISP_DIM` (dimensions) or `DTAG_NAME` data. |
 | `GetVPModeID` | Implemented | Returns `ViewPort.DisplayID`. |
-| `ModeNotAvailable` | Implemented | Returns 0 for known modes, 1 otherwise. |
-| `BestModeIDA` | Implemented | Returns the first known mode ID. |
-| `CoerceMode` | Implemented | Returns the mode ID if known, else the first known mode. |
+| `ModeNotAvailable` | Implemented | Returns 0 for any resolvable mode (enumerated or composite), 1 otherwise. |
+| `BestModeIDA` | Implemented | Parses `BIDTAG_DIPFMustHave`/`MustNotHave` (default must-not = SPECIAL_FLAGS), `BIDTAG_DesiredWidth`/`Height`, `BIDTAG_Depth`, `BIDTAG_MonitorID`; returns the closest enumerated mode. |
+| `CoerceMode` | Implemented | Returns the mode ID if resolvable, else the first known mode. |
 | `VideoControl` | Implemented | Parses tag list and updates `ColorMap` extension attributes (attached viewport, ViewPortExtra, display handles, border blank, chroma key, chroma pen, bitplane key, user clip, playfield/sprite base offsets). |
 
 ### Layer / Intuition helpers

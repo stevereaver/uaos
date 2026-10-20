@@ -70,7 +70,7 @@ extern uint32_t ntp_get_epoch(void);
  * Global State
  * ========================================================================= */
 
-static uint64_t g_eclock_value = 0;  /* E-clock counter in microseconds */
+static uint64_t g_eclock_value = 0;  /* E-clock counter in eclock ticks */
 static uint32_t g_tick_counter = 0;  /* Global tick counter (~100Hz) */
 
 /* Timer request queue entry (host-side tracking).
@@ -337,6 +337,20 @@ void TimerDevice_DiagDump(void *ctx, void (*emit)(void *, const char *))
 #define TIMER_SUB_TIME      9
 #define TIMER_CMP_TIME      10
 
+/* devices/timer.h unit numbers (io_Unit, set at OpenDevice) */
+#define UNIT_MICROHZ     0
+#define UNIT_VBLANK      1
+#define UNIT_ECLOCK      2
+#define UNIT_WAITUNTIL   3
+#define UNIT_WAITECLOCK  4
+
+#define TIMER_VBLANK_HZ  50      /* PAL field rate */
+#define TIMER_ECLOCK_HZ  709379u /* Amiga E-clock */
+
+/* Amiga system time counts seconds since 1978-01-01; ntp_get_epoch()
+ * returns Unix seconds (1970 epoch) — shift by the DOS epoch delta. */
+#define AMIGA_EPOCH_OFFSET 252460800u
+
 /* =========================================================================
  * timer.device function implementations
  * ========================================================================= */
@@ -357,7 +371,7 @@ static void timer_CloseDevice(M68kCPUState *cpu)
 
 static void timer_BeginIO(M68kCPUState *cpu)
 {
-    /* BeginIO vector (-42): A1 = IORequest.
+    /* BeginIO vector (-30, DEV_BEGINIO): A1 = IORequest.
      *
      * TR_ADDREQUEST queues the delay and leaves IOF_QUEUED set — the PIT
      * tick path replies the request when it expires.  TR_GETSYSTIME and
@@ -373,12 +387,31 @@ static void timer_BeginIO(M68kCPUState *cpu)
 
     switch (cmd) {
         case TR_ADDREQUEST: {
-            /* timeval at tr_node+32 */
+            /* timeval at tr_node+32; interpretation depends on io_Unit */
             uint32_t seconds = timer_r32(io + TR_SECS);
             uint32_t micros  = timer_r32(io + TR_MICRO);
+            uint32_t unit    = timer_r32(io + IO_UNIT);
+            uint32_t ticks;
 
-            /* ~100 Hz tick: 100 ticks/s, 10 ms each */
-            uint32_t ticks = (seconds * 100) + (micros / 10000);
+            switch (unit) {
+            case UNIT_VBLANK:
+                /* timeval counts vertical blanks (50 Hz PAL). */
+                ticks = seconds * TIMER_VBLANK_HZ + micros / 20;
+                break;
+            case UNIT_ECLOCK:
+            case UNIT_WAITECLOCK:
+                /* tr_time is an EClockVal {ev_hi, ev_lo} in eclock ticks.
+                 * One PIT tick (10 ms) = ~7094 eclocks. */
+                ticks = (uint32_t)((((uint64_t)seconds << 32) | micros)
+                                   / (TIMER_ECLOCK_HZ / 100));
+                break;
+            case UNIT_WAITUNTIL:
+            case UNIT_MICROHZ:
+            default:
+                /* ~100 Hz tick: 100 ticks/s, 10 ms each */
+                ticks = (seconds * 100) + (micros / 10000);
+                break;
+            }
             if (ticks == 0) ticks = 1;  /* Minimum 1 tick */
 
             TimerQueueEntry_t *entry = timer_alloc_entry();
@@ -408,6 +441,8 @@ static void timer_BeginIO(M68kCPUState *cpu)
 
         case TR_GETSYSTIME: {
             uint32_t epoch = ntp_get_epoch();
+            epoch = (epoch >= AMIGA_EPOCH_OFFSET)
+                    ? epoch - AMIGA_EPOCH_OFFSET : 0;
             timer_w32(io + TR_SECS,  epoch);
             timer_w32(io + TR_MICRO, 0);  /* only second precision from RTC */
             tr_w8(g_ram, io + IO_ERROR, 0);
@@ -471,6 +506,7 @@ static void timer_GetSysTime(M68kCPUState *cpu)
     }
 
     uint32_t epoch = ntp_get_epoch();
+    epoch = (epoch >= AMIGA_EPOCH_OFFSET) ? epoch - AMIGA_EPOCH_OFFSET : 0;
     timer_w32(time_ptr,     epoch);
     timer_w32(time_ptr + 4, 0);  /* only second precision from ntp_get_epoch */
 
@@ -483,7 +519,7 @@ static void timer_ECLOCK_UPDATE(M68kCPUState *cpu)
      * Called periodically by the system to advance the E-clock
      * Each call adds approximately 40 microseconds (typical Amiga E-clock period) */
     (void)cpu;
-    g_eclock_value += 40;  /* ~40 microseconds per E-clock tick */
+    g_eclock_value += 28;  /* ~40 µs = ~28 eclock ticks per call */
 }
 
 static void timer_ReadEClock(M68kCPUState *cpu)
@@ -501,18 +537,16 @@ static void timer_ReadEClock(M68kCPUState *cpu)
      * even when nobody calls ECLOCK_UPDATE (UAOS-240). */
     static uint32_t eclock_last_tick = 0;
     if (g_tick_counter != eclock_last_tick) {
+        /* Advance in eclock ticks: 10 ms per PIT tick at 709379 Hz. */
         g_eclock_value += (uint64_t)(g_tick_counter - eclock_last_tick)
-                          * 10000;               /* 10 ms per tick */
+                          * TIMER_ECLOCK_HZ / 100;
         eclock_last_tick = g_tick_counter;
     }
 
     timer_w32(eclock_ptr,     (uint32_t)(g_eclock_value >> 32));
     timer_w32(eclock_ptr + 4, (uint32_t)g_eclock_value);
 
-    /* Return E-clock frequency (~709379 ticks per second on PAL Amiga;
-     * we drive it in microseconds — callers only use the value for
-     * elapsed-time scaling, so a rounded PAL rate keeps intervals sane) */
-    cpu->d[0] = 709379;
+    cpu->d[0] = TIMER_ECLOCK_HZ;
 }
 
 static void timer_AddTime(M68kCPUState *cpu)
@@ -622,19 +656,19 @@ static void *timer_funcs[] = {
     timer_CmpTime,      /* index 10 */
 };
 
-/* timer.device LVOs -> timer_funcs[] indices.
- * -6/-12 are the device Open/Close vectors, -42/-48 BeginIO/AbortIO,
- * and the timer "library" calls live at -66..-90 (canonical timer.fd). */
+/* timer.device LVOs -> timer_funcs[] indices (canonical timer_pragmas):
+ * -6/-12 device Open/Close, -30/-36 device BeginIO/AbortIO, and the
+ * timer "library" calls at -42..-66. */
 static const UaosRomLvo timer_lvo_map[] = {
     {  -6, 1 },   /* Open        */
     { -12, 2 },   /* Close       */
-    { -42, 3 },   /* BeginIO     */
-    { -48, 4 },   /* AbortIO     */
-    { -66, 8 },   /* AddTime     */
-    { -72, 9 },   /* SubTime     */
-    { -78, 10 },  /* CmpTime     */
-    { -84, 7 },   /* ReadEClock  */
-    { -90, 5 },   /* GetSysTime  */
+    { -30, 3 },   /* BeginIO     */
+    { -36, 4 },   /* AbortIO     */
+    { -42, 8 },   /* AddTime     */
+    { -48, 9 },   /* SubTime     */
+    { -54, 10 },  /* CmpTime     */
+    { -60, 7 },   /* ReadEClock  */
+    { -66, 5 },   /* GetSysTime  */
 };
 
 /* =========================================================================

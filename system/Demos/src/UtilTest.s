@@ -42,7 +42,7 @@ MF_SPNeg         equ -60
 MB_IEEESPAdd     equ -66
 
 ; timer.device vectors
-TD_AddTime       equ -66
+TD_AddTime       equ -42  ; timer.device AddTime LVO
 
 IO_DEVICE        equ 20
 IO_ERROR         equ 31

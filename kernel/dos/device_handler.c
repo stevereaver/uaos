@@ -142,7 +142,9 @@ static void dev_action_wait_char(DeviceHandler *dh, DosPacket *pkt)
 static void dev_action_disk_info(DeviceHandler *dh, DosPacket *pkt)
 {
     (void)dh;
-    InfoData *id = (InfoData *)(uintptr_t)(uint32_t)pkt->dp_Arg1;
+    /* Pointer convention: InfoData* rides in dp_Arg2 (matches
+     * VFS_GetVolumeInfo/dos_Info); dp_Arg1 is the lock/unit arg. */
+    InfoData *id = (InfoData *)(uintptr_t)pkt->dp_Arg2;
     if (id) {
         id->id_NumBlocks = 0;
         id->id_NumBlocksUsed = 0;

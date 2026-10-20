@@ -189,7 +189,9 @@ try:
     mon.send(f"screendump {SHOT.format('1_custom')}")
 
     _, _, W = gdb.mouse()
-    # depth gadget: far right of the bar
+    # depth gadget: far right of the bar.  g_fb.width is the *logical*
+    # display width — it follows the front screen's mode (UAOS-351), so it
+    # must be re-read before every click.
     move_to(W - 10, 8); click()
     st = gdb.state()
     check("depth gadget -> Workbench: Shell visible", visible(sw))
@@ -197,6 +199,7 @@ try:
     check("depth gadget -> Workbench: focus left demo", st["focus"] != dw, f"focus={st['focus']}")
     mon.send(f"screendump {SHOT.format('2_wb_again')}")
 
+    _, _, W = gdb.mouse()
     move_to(W - 10, 8); click()
     st = gdb.state()
     check("depth gadget -> custom again: demo visible, Shell hidden",
@@ -205,7 +208,9 @@ try:
     mon.send(f"screendump {SHOT.format('3_custom_again')}")
 
     # --- screen pull-down drag (UAOS-349) --------------------------------
-    DROP = 300
+    # The front screen runs at 640x256 (HIRES_KEY), so the logical display
+    # is 256 rows tall while it is front — DragScreenTo clamps top at 248.
+    DROP = 200
     demo_y0 = win_y(dw)
     drag(400, 8, 8 + DROP)
     top = front_top()
@@ -228,7 +233,7 @@ try:
     check("drag down: menu opens from the moved bar", mi == 0 and my_ == (top or 0) + 20,
           f"menu_index={mi} menu_y={my_}")
     mon.send(f"screendump {SHOT.format('3b2_menu_moved')}")
-    move_to(700, 650); mon.send("mouse_button 0"); time.sleep(0.8)
+    move_to(600, 250); mon.send("mouse_button 0"); time.sleep(0.8)
     st = gdb.state()
     check("drag down: cancelled menu leaves MenuDemo running",
           any("MenuDemo" in n and s_ != 3 for s_, n in st["tasks"]))

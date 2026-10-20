@@ -56,14 +56,11 @@
 #define CMD_RESET             1
 #define CMD_FLUSH             8
 #define CMD_NONSTD            9
-#define KBD_ADDRESETHANDLER     (CMD_NONSTD + 0)   /* 9  */
-#define KBD_RESETHANDLERDONE    (CMD_NONSTD + 1)   /* 10 */
-#define KBD_RESETHANDLER        (CMD_NONSTD + 2)   /* 11 */
-#define KBD_READEVENT           (CMD_NONSTD + 3)   /* 12 */
-#define KBD_READMATRIX          (CMD_NONSTD + 4)   /* 13 */
-#define KBD_ADDRESETHANDLERDONE (CMD_NONSTD + 5)   /* 14 */
-#define KBD_REMRESETHANDLER     (CMD_NONSTD + 6)   /* 15 */
-#define KBD_REMRESETHANDLERDONE (CMD_NONSTD + 7)   /* 16 */
+#define KBD_READEVENT           (CMD_NONSTD + 0)   /* 9  */
+#define KBD_READMATRIX          (CMD_NONSTD + 1)   /* 10 */
+#define KBD_ADDRESETHANDLER     (CMD_NONSTD + 2)   /* 11 */
+#define KBD_REMRESETHANDLER     (CMD_NONSTD + 3)   /* 12 */
+#define KBD_RESETHANDLERDONE    (CMD_NONSTD + 4)   /* 13 */
 
 #define IOERR_ABORTED  (-2)
 #define IOERR_NOCMD    (-3)
@@ -232,11 +229,8 @@ static void keyboard_BeginIO(M68kCPUState *cpu)
         break;
 
     case KBD_ADDRESETHANDLER:
-    case KBD_ADDRESETHANDLERDONE:
-    case KBD_RESETHANDLER:
-    case KBD_RESETHANDLERDONE:
     case KBD_REMRESETHANDLER:
-    case KBD_REMRESETHANDLERDONE:
+    case KBD_RESETHANDLERDONE:
         /* Ctrl-Amiga-Amiga reset handlers — the driver forces reset
          * unconditionally (PS2Kbd_CheckResetChord), so these register
          * as successful no-ops. */
@@ -279,12 +273,15 @@ static void *keyboard_funcs[] = {
 };
 
 /* Device vectors -> keyboard_funcs[] indices (Open -6, Close -12,
- * BeginIO -42, AbortIO -48). */
+ * BeginIO -30, AbortIO -36 — canonical exec/io.h device vectors;
+ * -42/-48 aliases kept for guests that used the old map). */
 static const UaosRomLvo keyboard_lvo_map[] = {
     {  -6, 1 },   /* Open     */
     { -12, 2 },   /* Close    */
-    { -42, 3 },   /* BeginIO  */
-    { -48, 4 },   /* AbortIO  */
+    { -30, 3 },   /* BeginIO  */
+    { -36, 4 },   /* AbortIO  */
+    { -42, 3 },   /* legacy BeginIO alias */
+    { -48, 4 },   /* legacy AbortIO alias */
 };
 
 /* =========================================================================

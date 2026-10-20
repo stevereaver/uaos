@@ -35,9 +35,10 @@ typedef struct DosPacket {
 } DosPacket;
 
 /* -------------------------------------------------------------------------
- * AmigaDOS Action Codes (KS 3.1 compatible)
+ * AmigaDOS Action Codes (dos/dosextens.h, NDK 40.13)
  * ------------------------------------------------------------------------- */
 #define ACTION_NIL                0
+#define ACTION_STARTUP            0
 #define ACTION_GET_BLOCK          2
 #define ACTION_SET_MAP            4
 #define ACTION_DIE                5
@@ -67,23 +68,40 @@ typedef struct DosPacket {
 #define ACTION_DISK_TYPE         32
 #define ACTION_DISK_CHANGE       33
 #define ACTION_SET_DATE          34
-#define ACTION_SAME_LOCK         40
+
+#define ACTION_SCREEN_MODE      994
+#define ACTION_CHANGE_SIGNAL    995
+
+#define ACTION_READ_RETURN     1001
+#define ACTION_WRITE_RETURN    1002
 #define ACTION_FINDUPDATE      1004
 #define ACTION_FINDINPUT       1005
 #define ACTION_FINDOUTPUT      1006
 #define ACTION_END             1007
 #define ACTION_SEEK            1008
-#define ACTION_WRITE_PROTECT   1023
+#define ACTION_FORMAT          1020
+#define ACTION_MAKE_LINK       1021
+#define ACTION_SET_FILE_SIZE   1022   /* fast file system only in 1.3 */
+#define ACTION_WRITE_PROTECT   1023   /* fast file system only in 1.3 */
+#define ACTION_READ_LINK       1024
+#define ACTION_FH_FROM_LOCK    1026
 #define ACTION_IS_FILESYSTEM   1027
-#define ACTION_SET_FILE_SIZE   1030
-#define ACTION_CHANGE_MODE     1034
-#define ACTION_COPY_DIR_FH     1035
-#define ACTION_PARENT_FH       1036
-#define ACTION_EXAMINE_ALL     1037
-#define ACTION_EXAMINE_FH      1038
+#define ACTION_CHANGE_MODE     1028
+#define ACTION_COPY_DIR_FH     1030
+#define ACTION_PARENT_FH       1031
+#define ACTION_EXAMINE_ALL     1033
+#define ACTION_EXAMINE_FH      1034
+#define ACTION_EXAMINE_ALL_END 1035   /* V39 */
+#define ACTION_SET_OWNER       1036   /* V39 */
+#define ACTION_SAME_LOCK         40
+#define ACTION_LOCK_RECORD     2008
+#define ACTION_FREE_RECORD     2009
+#define ACTION_ADD_NOTIFY      4097
+#define ACTION_REMOVE_NOTIFY   4098
+#define ACTION_SERIALIZE_DISK  4200
 
 /* -------------------------------------------------------------------------
- * Common AmigaDOS Error Codes (IoErr values)
+ * Common AmigaDOS Error Codes (dos/dos.h, NDK 40.13)
  * ------------------------------------------------------------------------- */
 #define ERROR_NO_FREE_STORE          103
 #define ERROR_TASK_TABLE_FULL        105
@@ -95,31 +113,41 @@ typedef struct DosPacket {
 #define ERROR_UNMATCHED_QUOTES       119
 #define ERROR_LINE_TOO_LONG          120
 #define ERROR_FILE_NOT_OBJECT        121
-#define ERROR_INVALID_RES_LIBRARY    122
-#define ERROR_INVALID_DIRECTORY      123
+#define ERROR_INVALID_RESIDENT_LIBRARY 122
+#define ERROR_NO_DEFAULT_DIR         201
 #define ERROR_OBJECT_IN_USE          202
 #define ERROR_OBJECT_EXISTS          203
 #define ERROR_DIR_NOT_FOUND          204
 #define ERROR_OBJECT_NOT_FOUND       205
 #define ERROR_BAD_STREAM_NAME        206
 #define ERROR_OBJECT_TOO_LARGE       207
-#define ERROR_OBJECT_WRONG_TYPE      212
 #define ERROR_ACTION_NOT_KNOWN       209
 #define ERROR_INVALID_COMPONENT_NAME 210
-#define ERROR_DEVICE_NOT_MOUNTED     215
-#define ERROR_NOT_A_DOS_DISK         216
+#define ERROR_INVALID_LOCK           211
+#define ERROR_OBJECT_WRONG_TYPE      212
+#define ERROR_DISK_NOT_VALIDATED     213
+#define ERROR_DISK_WRITE_PROTECTED   214
+#define ERROR_RENAME_ACROSS_DEVICES  215
+#define ERROR_DIRECTORY_NOT_EMPTY    216
+#define ERROR_TOO_MANY_LEVELS        217
+#define ERROR_DEVICE_NOT_MOUNTED     218
+#define ERROR_SEEK_ERROR             219
+#define ERROR_COMMENT_TOO_BIG        220
 #define ERROR_DISK_FULL              221
-#define ERROR_DISK_WRITE_PROTECTED   222
-#define ERROR_DISK_NOT_VALIDATED     223
-#define ERROR_DELETE_PROTECTED       225
-#define ERROR_WRITE_PROTECTED        226
-#define ERROR_READ_PROTECTED         227
-#define ERROR_NOT_A_DIRECTORY        232
-#define ERROR_NO_DISK_INSERTED       233
+#define ERROR_DELETE_PROTECTED       222
+#define ERROR_WRITE_PROTECTED        223
+#define ERROR_READ_PROTECTED         224
+#define ERROR_NOT_A_DOS_DISK         225
+#define ERROR_NO_DISK                226
 #define ERROR_NO_MORE_ENTRIES        232
-#define ERROR_TOO_MANY_LEVELS        235
-#define ERROR_DEVICE_NOT_FOUND       218
-#define ERROR_COMMENT_TOO_BIG        213
+#define ERROR_IS_SOFT_LINK           233
+#define ERROR_OBJECT_LINKED          234
+#define ERROR_BAD_HUNK               235
+#define ERROR_NOT_IMPLEMENTED        236
+#define ERROR_RECORD_NOT_LOCKED      240
+#define ERROR_LOCK_COLLISION         241
+#define ERROR_LOCK_TIMEOUT           242
+#define ERROR_UNLOCK_ERROR           243
 
 /* -------------------------------------------------------------------------
  * Seek / Open / Lock constants

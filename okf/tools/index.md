@@ -25,6 +25,13 @@ Programs under `tools/` that run on the build host — binary wrappers used by
   the screen bar down to reveal Workbench behind (UAOS-349: layer checks,
   moved-bar menu, revealed-window click, drag back up), then picks
   Project → Quit. Screendumps to `/tmp/sc_*.ppm`.
+- `tests/test_mode_decode.sh` — host-side unit test for the display-mode
+  database (UAOS-352): pattern-extracts `uaos_modes[]` and
+  `uaos_gfx_mode_dims()` out of `kernel/exec/graphics_lib.c`, compiles
+  them standalone, and checks nominal raster dims for every monitor
+  family (NTSC/PAL/DBLNTSC/DBLPAL/VGA/EURO72/EURO36/SUPER72/A2024/
+  Multiscan/RTG) plus the classic composite keys and invalid IDs.
+  No QEMU needed.
 - [make_splash.py](/tools/make_splash.md) — converts `splash.jpg` into a
   self-describing RGB24 blob linked into the kernel (boot splash) via
   `ld -r -b binary`; run by `build_iso.sh`.

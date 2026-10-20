@@ -45,7 +45,10 @@ extern void         FB_DrawRect(int x, int y, int w, int h, uint32_t colour);
 extern void         FB_PutStr(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 extern void         UAOS_Graphics_Dispatch(uint32_t fn);
 
-#define GUEST_RAM_SIZE (2 * 1024 * 1024)
+#define GUEST_RAM_SIZE (16 * 1024 * 1024)  /* match emulation/uaos_emu.h —
+                                            * guest pointers ≥ 2 MB (e.g.
+                                            * the generated-lib arena) are
+                                            * legal and must pass bounds. */
 
 /* GM_* message offsets (AmigaOS 3.x) */
 #define GMHT_OFF_GINFO   4

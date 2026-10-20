@@ -55,7 +55,7 @@ TR_MICRO     equ 36
 CMD_WRITE       equ 3
 TR_ADDREQUEST   equ 9
 TR_GETSYSTIME   equ 10
-KBD_READEVENT   equ 12
+KBD_READEVENT   equ 9   ; CMD_NONSTD+0 (devices/keyboard.h)
 
 IOERR_ABORTED   equ -2
 IE_SIZE         equ 22

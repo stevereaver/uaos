@@ -333,11 +333,10 @@ static uint32_t guest_read_be32(uint32_t addr)
 #define MEMF_PUBLIC     0x00000001u
 #define MEMF_CHIP       0x00000002u
 #define MEMF_FAST       0x00000004u
-#define MEMF_LOCAL      0x00000008u
-#define MEMF_24BITDMA   0x00000010u
-#define MEMF_DMA        0x00000010u
+#define MEMF_LOCAL      0x00000100u
+#define MEMF_24BITDMA   0x00000200u
 #define MEMF_CLEAR      0x00010000u
-#define MEMF_EXPUNGE    0x80000000u
+#define MEMF_NO_EXPUNGE 0x80000000u
 
 #define HEAP_HDR        8u           /* header size in bytes             */
 #define HEAP_MAGIC      0x80000000u  /* marks an allocated block         */
@@ -463,7 +462,7 @@ static void heap_freelist_init_pool(uint32_t list_slot, uint32_t magic_slot,
         return;  /* host table full — keep legacy in-window semantics */
 
     uint32_t start = pool_start;
-    start = (start + 3u) & ~3u;
+    start = (start + 7u) & ~7u;   /* MEM_BLOCKSIZE alignment */
     if (start < HEAP_FREE_BASE) start = HEAP_FREE_BASE;
     if (start + HEAP_HDR >= pool_end) return; /* no room */
 
@@ -502,10 +501,12 @@ static void heap_freelist_init_fast(void)
                             HEAP_FAST_START, HEAP_FAST_END);
 }
 
-/* Allocate 'size' bytes from a specific free list.  Returns guest addr or 0. */
+/* Allocate 'size' bytes from a specific free list.  Returns guest addr or 0.
+ * Sizes and block boundaries stay MEM_BLOCKSIZE (8) aligned so every
+ * returned pointer satisfies the AmigaOS alignment guarantee. */
 static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
 {
-    size = (size + 3u) & ~3u;
+    size = (size + 7u) & ~7u;
     uint32_t need = size + HEAP_HDR;
 
     uint32_t prev_slot = list_slot;  /* address of the pointer to current */
@@ -518,7 +519,7 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
 
         if (blk_size >= need) {
             /* Split if there's enough room for another free block */
-            if (blk_size >= need + HEAP_HDR + 4u) {
+            if (blk_size >= need + HEAP_HDR + 8u) {
                 uint32_t rem = cur + need;
                 uint32_t rem_size = blk_size - need;
                 guest_write_be32(rem + 0, rem_size);
@@ -743,7 +744,7 @@ static uint32_t mc_alloc(uint32_t size, uint32_t reqs)
     if (Failalloc_ShouldFail(FAILALLOC_GUEST)) return 0;
 
     if (!g_memcheck_on) {
-        if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA))
+        if (reqs & (MEMF_CHIP | MEMF_24BITDMA))
             return heap_alloc_fl_chip(size);
         if (reqs & MEMF_FAST)
             return heap_alloc_fl_fast(size);
@@ -752,26 +753,30 @@ static uint32_t mc_alloc(uint32_t size, uint32_t reqs)
         return a;
     }
 
+    /* +12: front guard + tail guard + up to 4 bytes of alignment slack.
+     * The payload is slid to the next MEM_BLOCKSIZE boundary so callers
+     * still get AmigaOS-guaranteed 8-byte alignment under memcheck. */
     uint32_t raw = 0;
-    if (reqs & (MEMF_CHIP | MEMF_DMA | MEMF_24BITDMA))
-        raw = heap_alloc_fl_chip(size + 8);
+    if (reqs & (MEMF_CHIP | MEMF_24BITDMA))
+        raw = heap_alloc_fl_chip(size + 12);
     else if (reqs & MEMF_FAST)
-        raw = heap_alloc_fl_fast(size + 8);
+        raw = heap_alloc_fl_fast(size + 12);
     else {
-        raw = heap_alloc_fl_fast(size + 8);
-        if (!raw) raw = heap_alloc_fl_chip(size + 8);
+        raw = heap_alloc_fl_fast(size + 12);
+        if (!raw) raw = heap_alloc_fl_chip(size + 12);
     }
     if (!raw) return 0;
 
-    /* The pool already zeroed the block; write guards over the slack. */
-    guest_write_be32(raw + 0, MC_GUARD_WORD);            /* front guard  */
-    guest_write_be32(raw + 4 + size, MC_GUARD_WORD);     /* tail guard   */
+    uint32_t payload = (raw + 11u) & ~7u;   /* front guard at payload-4
+                                             * stays inside the block */
+    guest_write_be32(payload - 4, MC_GUARD_WORD);         /* front guard  */
+    guest_write_be32(payload + size, MC_GUARD_WORD);      /* tail guard   */
     if (!(reqs & MEMF_CLEAR)) {
-        for (uint32_t i = 0; i < size && raw + 4 + i < GUEST_RAM_SIZE; i++)
-            g_ram[raw + 4 + i] = MC_ALLOC_FILL;
+        for (uint32_t i = 0; i < size && payload + i < GUEST_RAM_SIZE; i++)
+            g_ram[payload + i] = MC_ALLOC_FILL;
     }
-    mc_record(raw + 4, size, raw - HEAP_HDR);
-    return raw + 4;
+    mc_record(payload, size, raw - HEAP_HDR);
+    return payload;
 }
 
 static void mc_free(uint32_t addr)
@@ -797,7 +802,7 @@ static void mc_free(uint32_t addr)
         uint8_t *saved = g_ram;
         if (r->ram) g_ram = r->ram;
         mc_check_guards(r, "freed");
-        heap_free_fl(r->payload - 4);   /* gross payload → real heap header */
+        heap_free_fl(r->blk + HEAP_HDR);   /* heap payload → real header */
         g_ram = saved;
         irq_restore(flags);
     }
@@ -825,7 +830,7 @@ uint32_t Memcheck_FreeByOwner(void *owner)
         if (g_mc[i].payload && g_mc[i].owner == owner) {
             if (g_mc[i].ram) g_ram = g_mc[i].ram;
             mc_check_guards(&g_mc[i], "task-exit");
-            heap_free_fl(g_mc[i].payload - 4);
+            heap_free_fl(g_mc[i].blk + HEAP_HDR);
             g_mc[i].payload = 0;
             freed++;
         }
@@ -1055,15 +1060,18 @@ static void dos_FreeMem(M68kCPUState *cpu)
     mc_free(addr);
 }
 
-/* Allocate a FileLock in guest RAM and return its BPTR */
+/* Allocate a FileLock in guest RAM and return its BPTR.
+ * Real AmigaOS FileLock (dos/dosextens.h), 20 bytes:
+ *   fl_Link 0 (BPTR), fl_Key 4, fl_Access 8, fl_Task 12, fl_Volume 16. */
 static uint32_t guest_alloc_filelock(uint32_t handle, int32_t access)
 {
-    uint32_t addr = heap_alloc(16);
+    uint32_t addr = heap_alloc(20);
     if (!addr) return 0;
-    guest_write_be32(addr + 0, handle);
-    guest_write_be32(addr + 4, (uint32_t)access);
-    guest_write_be32(addr + 8, 1);
-    guest_write_be32(addr + 12, 0);
+    guest_write_be32(addr + 0, 0);                 /* fl_Link   = 0 */
+    guest_write_be32(addr + 4, handle);            /* fl_Key    */
+    guest_write_be32(addr + 8, (uint32_t)access);  /* fl_Access */
+    guest_write_be32(addr + 12, 1);                /* fl_Task   = RAM handler marker */
+    guest_write_be32(addr + 16, 0);                /* fl_Volume = 0 */
     return addr >> 2;
 }
 
@@ -1073,9 +1081,9 @@ static int guest_read_filelock(uint32_t lock_bptr,
                                 int32_t  *out_access)
 {
     uint32_t addr = lock_bptr << 2;
-    if (addr + 16 > GUEST_RAM_SIZE) return 0;
-    if (out_handle) *out_handle = guest_read_be32(addr + 0);
-    if (out_access) *out_access = (int32_t)guest_read_be32(addr + 4);
+    if (addr + 20 > GUEST_RAM_SIZE) return 0;
+    if (out_handle) *out_handle = guest_read_be32(addr + 4);          /* fl_Key    */
+    if (out_access) *out_access = (int32_t)guest_read_be32(addr + 8); /* fl_Access */
     return 1;
 }
 
@@ -1303,6 +1311,7 @@ static void dos_Fault(M68kCPUState *cpu)
     uint32_t len  = cpu->d[4];
     if (!buf || !len || code == 0) { cpu->d[0] = 0; return; }
 
+    /* Canonical AmigaDOS fault strings (dos/dos.h error numbers). */
     static const struct { int code; const char *text; } tab[] = {
         { 103, "not enough memory available" },
         { 105, "task table full" },
@@ -1315,7 +1324,7 @@ static void dos_Fault(M68kCPUState *cpu)
         { 120, "line too long" },
         { 121, "file is not an object" },
         { 122, "invalid resident library" },
-        { 123, "invalid directory" },
+        { 201, "no default directory" },
         { 202, "object is in use" },
         { 203, "object already exists" },
         { 204, "directory not found" },
@@ -1324,21 +1333,31 @@ static void dos_Fault(M68kCPUState *cpu)
         { 207, "object too large" },
         { 209, "action not known" },
         { 210, "invalid component name" },
+        { 211, "invalid lock" },
         { 212, "object is not of required type" },
-        { 215, "device not mounted" },
-        { 216, "not a DOS disk" },
-        { 218, "seek error" },
-        { 219, "comment too big" },
-        { 220, "disk is full" },
-        { 221, "disk is full" },
-        { 222, "disk is write-protected" },
-        { 223, "file is protected against deletion" },
-        { 224, "file is protected against writing" },
-        { 225, "no disk in drive" },
-        { 226, "file is protected against reading" },
-        { 232, "not a valid DOS file" },
-        { 234, "bad hunk" },
-        { 235, "not implemented" },
+        { 213, "disk not validated" },
+        { 214, "disk write protected" },
+        { 215, "rename across devices" },
+        { 216, "directory not empty" },
+        { 217, "too many levels" },
+        { 218, "device not mounted" },
+        { 219, "seek error" },
+        { 220, "comment too big" },
+        { 221, "disk full" },
+        { 222, "file is protected against deletion" },
+        { 223, "file is protected against writing" },
+        { 224, "file is protected against reading" },
+        { 225, "not a DOS disk" },
+        { 226, "no disk in drive" },
+        { 232, "no more entries in directory" },
+        { 233, "object is a soft link" },
+        { 234, "object is linked" },
+        { 235, "bad hunk" },
+        { 236, "not implemented" },
+        { 240, "record not locked" },
+        { 241, "record lock collision" },
+        { 242, "record lock timeout" },
+        { 243, "unlock error" },
     };
 
     const char *text = NULL;
@@ -2852,8 +2871,9 @@ static uint32_t build_process_struct(const char *name, uint8_t pri,
     for (uint32_t i = 0; i <= name_len; i++)
         g_ram[name_addr + i] = (uint8_t)name[i];
 
-    /* tc_SigAlloc: all bits free */
-    guest_write_be32(proc_addr + TASK_TC_SIGALLOC, 0xFFFFFFFFu);
+    /* tc_SigAlloc: bits 0-15 are OS-reserved (real Exec semantic —
+     * keeps guest AllocSignal away from SIGB_ABORT/CHILD/DOS etc.) */
+    guest_write_be32(proc_addr + TASK_TC_SIGALLOC, 0xFFFF0000u);
     /* tc_SP bounds (stack checking / runtime diagnostics) */
     guest_write_be32(proc_addr + TASK_TC_SPLOWER, stack_low);
     guest_write_be32(proc_addr + TASK_TC_SPUPPER, stack_top);
@@ -4054,6 +4074,23 @@ static int32_t dos_examine_pkt(MsgPort *port, int32_t action,
     return res;
 }
 
+/* Marshal a native InfoData into guest RAM big-endian, real AmigaOS
+ * field order (dos/dos.h): NumSoftErrors 0, UnitNumber 4, DiskState 8,
+ * NumBlocks 12, NumBlocksUsed 16, BytesPerBlock 20, DiskType 24,
+ * VolumeNode 28, InUse 32. */
+static void dos_infodata_to_guest(uint32_t dst, const InfoData *id)
+{
+    guest_write_be32(dst + 0,  (uint32_t)id->id_NumSoftErrors);
+    guest_write_be32(dst + 4,  (uint32_t)id->id_UnitNumber);
+    guest_write_be32(dst + 8,  (uint32_t)id->id_DiskState);
+    guest_write_be32(dst + 12, (uint32_t)id->id_NumBlocks);
+    guest_write_be32(dst + 16, (uint32_t)id->id_NumBlocksUsed);
+    guest_write_be32(dst + 20, (uint32_t)id->id_BytesPerBlock);
+    guest_write_be32(dst + 24, (uint32_t)id->id_DiskType);
+    guest_write_be32(dst + 28, (uint32_t)id->id_VolumeNode);
+    guest_write_be32(dst + 32, (uint32_t)id->id_InUse);
+}
+
 /* --- Info (LVO -114): D1=lock BPTR, D2=InfoData* ----------------------- */
 static void dos_Info(M68kCPUState *cpu)
 {
@@ -4072,8 +4109,14 @@ static void dos_Info(M68kCPUState *cpu)
     if (!ent) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return; }
     MsgPort *port = dos_lock_port(ent);
     if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return; }
-    cpu->d[0] = (uint32_t)DoPkt(port, ACTION_INFO, (int32_t)handle,
-                                (intptr_t)(g_ram + idp), 0, 0, 0);
+    /* Handlers fill a *native* InfoData — marshal it into guest RAM
+     * big-endian; the guest never sees host layout or byte order. */
+    InfoData id;
+    memset(&id, 0, sizeof(id));
+    int32_t res = DoPkt(port, ACTION_INFO, (int32_t)handle,
+                        (intptr_t)&id, 0, 0, 0);
+    if (res == DOSTRUE) dos_infodata_to_guest(idp, &id);
+    cpu->d[0] = (uint32_t)res;
 }
 
 /* --- IsFileSystem (LVO -708): D1=name → D0 ---------------------------- */
@@ -4251,34 +4294,30 @@ static void dos_OpenFromLock(M68kCPUState *cpu)
 }
 
 /* --- ExAll (LVO -432) / ExAllEnd (LVO -990) -----------------------------
- * ExAllData sizes per data type: ED_NAME 8, ED_TYPE 12, ED_SIZE 16,
- * ED_PROTECTION 20, ED_DATE 32, ED_COMMENT 36, ED_OWNER 40.
+ * ExAllData fixed-part sizes per data type: ED_NAME 8, ED_TYPE 12,
+ * ED_SIZE 16, ED_PROTECTION 20, ED_DATE 32, ED_COMMENT 36, ED_OWNER 40.
+ * ed_Name/ed_Comment are APTRs to NUL-terminated strings placed in the
+ * buffer right after the last used field of each entry (dos/exall.h).
  * ExAllControl: eac_Entries 0, eac_LastKey 4, eac_MatchString 8,
- * eac_MatchFunc 12.  Name/comment strings are BSTRs carved from the
- * free-list heap; ExAllEnd (or unlock) releases them. */
+ * eac_MatchFunc 12. */
 static const uint8_t exall_sizes[8] = { 0, 8, 12, 16, 20, 32, 36, 40 };
 
-static uint32_t g_exall_strs[256];
-static int      g_exall_str_count;
-
-static uint32_t exall_bstr(const char *s)
+/* Write a NUL-terminated C string at guest addr `p`; return bytes used
+ * (len+1 rounded up to a longword). */
+static uint32_t exall_cstr(uint32_t p, const char *s)
 {
-    int len = 0;
+    uint32_t len = 0;
     while (s[len] && len < 255) len++;
-    uint32_t addr = heap_alloc_fl(4 + ((uint32_t)len + 1 + 3) / 4 * 4);
-    if (!addr) return 0;
-    g_ram[addr] = (uint8_t)len;
-    for (int i = 0; i < len; i++) g_ram[addr + 1 + i] = (uint8_t)s[i];
-    if (g_exall_str_count < 256)
-        g_exall_strs[g_exall_str_count++] = addr;
-    return addr >> 2;
+    for (uint32_t i = 0; i < len; i++) g_ram[p + i] = (uint8_t)s[i];
+    g_ram[p + len] = 0;
+    return (len + 4u) & ~3u;
 }
 
-static void exall_free_strs(void)
+static uint32_t exall_cstr_len(const char *s)
 {
-    for (int i = 0; i < g_exall_str_count; i++)
-        heap_free_fl(g_exall_strs[i]);
-    g_exall_str_count = 0;
+    uint32_t len = 0;
+    while (s[len] && len < 255) len++;
+    return (len + 4u) & ~3u;
 }
 
 static void dos_ExAll(M68kCPUState *cpu)
@@ -4306,16 +4345,24 @@ static void dos_ExAll(M68kCPUState *cpu)
     MsgPort *port = dos_lock_port(ent);
     if (!port) { SetIoErr(ERROR_DEVICE_NOT_MOUNTED); return; }
 
-    uint32_t p = buf;
+    uint32_t p = buf, last = 0;
     uint32_t n = 0;
-    while (p + esz <= buf + size && p + esz <= GUEST_RAM_SIZE) {
+    for (;;) {
         FileInfoBlock fib;
         memset(&fib, 0, sizeof(fib));
         int32_t res = DoPkt(port, ACTION_EXAMINE_ALL, (int32_t)handle,
                             (intptr_t)&fib, 0, 0, 0);
         if (res != DOSTRUE) break;
-        uint32_t nb = exall_bstr(fib.fib_FileName);
-        guest_write_be32(p + 4, nb);
+
+        /* Entry = fixed fields + name C string (+ comment C string when
+         * the type requests it), each longword-aligned. */
+        uint32_t need = esz + exall_cstr_len(fib.fib_FileName);
+        if (type >= 6) need += exall_cstr_len(fib.fib_Comment);
+        if (p + need > buf + size || p + need > GUEST_RAM_SIZE) break;
+
+        uint32_t strp = p + esz;
+        guest_write_be32(p + 4, strp);               /* ed_Name (APTR) */
+        strp += exall_cstr(strp, fib.fib_FileName);
         if (type >= 2) guest_write_be32(p + 8, (uint32_t)fib.fib_DirEntryType);
         if (type >= 3) guest_write_be32(p + 12, (uint32_t)fib.fib_Size);
         if (type >= 4) guest_write_be32(p + 16, (uint32_t)fib.fib_Protection);
@@ -4324,17 +4371,21 @@ static void dos_ExAll(M68kCPUState *cpu)
             guest_write_be32(p + 24, (uint32_t)fib.fib_Date.ds_Minute);
             guest_write_be32(p + 28, (uint32_t)fib.fib_Date.ds_Tick);
         }
-        if (type >= 6) guest_write_be32(p + 32, exall_bstr(fib.fib_Comment));
+        if (type >= 6) {
+            guest_write_be32(p + 32, strp);          /* ed_Comment (APTR) */
+            strp += exall_cstr(strp, fib.fib_Comment);
+        }
         if (type >= 7) {
             g_ram[p + 36] = 0; g_ram[p + 37] = 0;
             g_ram[p + 38] = 0; g_ram[p + 39] = 0;
         }
-        guest_write_be32(p + 0, p + esz);   /* ed_Next (APTR) */
-        p += esz;
+        guest_write_be32(p + 0, p + need);           /* ed_Next (APTR) */
+        last = p;
+        p += need;
         n++;
     }
     if (n)
-        guest_write_be32(p - esz, 0);       /* terminate list */
+        guest_write_be32(last + 0, 0);               /* terminate list */
     guest_write_be32(ctrl + 0, guest_read_be32(ctrl + 0) + n); /* eac_Entries */
     guest_write_be32(ctrl + 4, n ? p : guest_read_be32(ctrl + 4)); /* eac_LastKey */
     cpu->d[0] = n ? DOSTRUE : DOSFALSE;
@@ -4345,9 +4396,9 @@ static void dos_ExAll(M68kCPUState *cpu)
 
 static void dos_ExAllEnd(M68kCPUState *cpu)
 {
-    /* D1=lock D2=buf D3=size D4=data D5=control → free entry strings. */
+    /* D1=lock D2=buf D3=size D4=data D5=control.
+     * Strings live inside the caller's buffer — nothing to release. */
     (void)cpu;
-    exall_free_strs();
     cpu->d[0] = DOSTRUE;
 }
 
@@ -4494,24 +4545,34 @@ static uint32_t doslist_bstr(const char *s)
     return addr >> 2;   /* BSTR BPTR */
 }
 
+/* LDF_* flag bits passed to LockDosList (dos/dosextens.h): bits 0/1 are
+ * LDF_READ/LDF_WRITE lock access (mandatory, no-op here), bits 2-4 are
+ * the entry-type selector mask. */
+#define LDF_DEVICES  0x04u   /* (1<<LDB_DEVICES) */
+#define LDF_VOLUMES  0x08u   /* (1<<LDB_VOLUMES) */
+#define LDF_ASSIGNS  0x10u   /* (1<<LDB_ASSIGNS) */
+#define LDF_ALL      (LDF_DEVICES | LDF_VOLUMES | LDF_ASSIGNS)
+
 static void dos_LockDosList(M68kCPUState *cpu)
 {
     uint32_t flags = cpu->d[1];
-    /* LDF_DEVICES 1, LDF_VOLUMES 2, LDF_ASSIGNS 4.  0 = all. */
+    uint32_t want = flags & LDF_ALL;
+    if (!want) want = LDF_ALL;
     uint32_t head = 0, tail = 0;
     DosList *n = NULL;
     while ((n = DosList_Next(n)) != NULL) {
         uint32_t gtype;
         if (n->dol_Type == DLT_DEVICE) {
-            if (flags && !(flags & 1)) continue;
-            gtype = 1;
+            if (!(want & LDF_DEVICES)) continue;
+            gtype = DLT_DEVICE;
         } else if (n->dol_Type == DLT_VOLUME) {
-            if (flags && !(flags & 2)) continue;
-            gtype = 2;
+            if (!(want & LDF_VOLUMES)) continue;
+            gtype = DLT_VOLUME;
         } else if (n->dol_Type == DLT_ASSIGN) {
-            if (flags && !(flags & 4)) continue;
+            if (!(want & LDF_ASSIGNS)) continue;
             /* bound assign = directory link, unbound = non-binding */
-            gtype = n->u.dol_Assign.dol_Lock ? 0 : 4;
+            gtype = n->u.dol_Assign.dol_Lock ? DLT_DIRECTORY
+                                           : DLT_NONBINDING;
         } else {
             continue;
         }
@@ -4526,7 +4587,7 @@ static void dos_LockDosList(M68kCPUState *cpu)
         if (tail) guest_write_be32(tail + 0, node >> 2);
         tail = node;
     }
-    cpu->d[0] = head;
+    cpu->d[0] = head >> 2;   /* LockDosList returns a BPTR */
 }
 
 static void dos_UnlockDosList(M68kCPUState *cpu)
@@ -4545,12 +4606,12 @@ static void dos_AttemptLockDosList(M68kCPUState *cpu) { dos_LockDosList(cpu); }
 
 static void dos_NextDosEntry(M68kCPUState *cpu)
 {
-    /* D1=APTR node → D0=APTR next */
+    /* D1=APTR node, D2=flags (type mask, ignored — the snapshot is
+     * already filtered) → D0=BPTR to the next DosList. */
     uint32_t node = cpu->d[1];
     cpu->d[0] = 0;
     if (!node || node + GDOL_NODE_SIZE > GUEST_RAM_SIZE) return;
-    uint32_t nb = guest_read_be32(node + 0);
-    cpu->d[0] = nb ? (nb << 2) : 0;
+    cpu->d[0] = guest_read_be32(node + 0);   /* dol_Next is a BPTR */
 }
 
 /* --- Buffered I/O (LVO -306..-366) --------------------------------------
@@ -4902,7 +4963,7 @@ void dos_AvailMem_glue(uint32_t attrs, uint32_t *total, uint32_t *largest)
 
 /* Lock() for a native C path — same ACTION_LOCATE_OBJECT plumbing as
  * dos_Lock but without an M68kCPUState.  Returns a FileLock BPTR or 0.
- * The 16-byte guest FileLock rides the never-freed bump heap like every
+ * The 20-byte guest FileLock rides the never-freed bump heap like every
  * other lock; the caller frees the handler-side node via
  * dos_UnLockBPTR_glue. */
 uint32_t dos_LockPath_glue(const char *path)

@@ -412,11 +412,12 @@ static uint32_t heap_alloc(uint32_t size)
 /* =========================================================================
  * Guest-visible FileLock helpers
  * FileLock lives in guest RAM so M68k binaries can inspect / pass BPTRs.
- * Layout (16 bytes, big-endian, matching 32-bit AmigaOS):
- *   offset 0: fl_Key     (BPTR to handle table slot)
- *   offset 4: fl_Access  (SHARED_LOCK=-2 / EXCLUSIVE_LOCK=-1)
- *   offset 8: fl_Task    (handler marker, not a real guest pointer)
- *   offset 12: fl_Volume (DosList BPTR, 0 for now)
+ * Layout (20 bytes, big-endian, matching 32-bit AmigaOS):
+ *   offset 0:  fl_Link   (BPTR to next lock, 0 for now)
+ *   offset 4:  fl_Key    (BPTR to handle table slot)
+ *   offset 8:  fl_Access (SHARED_LOCK=-2 / EXCLUSIVE_LOCK=-1)
+ *   offset 12: fl_Task   (handler marker, not a real guest pointer)
+ *   offset 16: fl_Volume (DosList BPTR, 0 for now)
  * ========================================================================= */
 
 /* Bounds: every accessor must stay inside the 16 MB window — a wild or
@@ -458,12 +459,15 @@ static uint16_t guest_read_be16(uint32_t addr)
  * On failure returns 0 (no free store). */
 static uint32_t guest_alloc_filelock(uint32_t handle, int32_t access)
 {
-    uint32_t addr = heap_alloc(sizeof(FileLock));
+    /* Real AmigaOS FileLock (dos/dosextens.h), 20 bytes:
+     *   fl_Link 0 (BPTR), fl_Key 4, fl_Access 8, fl_Task 12, fl_Volume 16. */
+    uint32_t addr = heap_alloc(20);
     if (!addr) return 0;
-    guest_write_be32(addr + 0, handle);       /* fl_Key    */
-    guest_write_be32(addr + 4, (uint32_t)access); /* fl_Access */
-    guest_write_be32(addr + 8, 1);             /* fl_Task   = RAM handler marker */
-    guest_write_be32(addr + 12, 0);            /* fl_Volume = 0 */
+    guest_write_be32(addr + 0, 0);                 /* fl_Link   = 0 */
+    guest_write_be32(addr + 4, handle);            /* fl_Key    */
+    guest_write_be32(addr + 8, (uint32_t)access);  /* fl_Access */
+    guest_write_be32(addr + 12, 1);                /* fl_Task   = RAM handler marker */
+    guest_write_be32(addr + 16, 0);                /* fl_Volume = 0 */
     return addr >> 2;  /* BPTR = addr >> 2 */
 }
 
@@ -473,9 +477,9 @@ static int guest_read_filelock(uint32_t lock_bptr,
                                 int32_t  *out_access)
 {
     uint32_t addr = lock_bptr << 2;
-    if (addr + sizeof(FileLock) > GUEST_RAM_SIZE) return 0;
-    if (out_handle) *out_handle = guest_read_be32(addr + 0);
-    if (out_access) *out_access = (int32_t)guest_read_be32(addr + 4);
+    if (addr + 20 > GUEST_RAM_SIZE) return 0;
+    if (out_handle) *out_handle = guest_read_be32(addr + 4);          /* fl_Key    */
+    if (out_access) *out_access = (int32_t)guest_read_be32(addr + 8); /* fl_Access */
     return 1;
 }
 
@@ -673,7 +677,7 @@ unsigned int m68k_read_disassembler_32(unsigned int addr) { return m68k_read_mem
 #define MEMF_PUBLIC      0x00000001u
 #define MEMF_CHIP        0x00000002u
 #define MEMF_FAST        0x00000004u
-#define MEMF_24BITDMA    0x00020000u
+#define MEMF_24BITDMA    0x00000200u
 #define MEMF_CLEAR_FLAG  0x00010000u
 
 #define NT_LIBRARY       9
@@ -1224,21 +1228,29 @@ static void install_stub(int lib_id, int func_idx)
 #define PMP_MSGLIST        0x14   /* embedded struct List (14 bytes) */
 
 /* CommandLineInterface offsets (UAOS extended layout — amiga_task.h) */
-#define CLI_SETNAME        0x04
-#define CLI_COMMANDNAME    0x10
-#define CLI_FAILLEVEL      0x14
-#define CLI_PROMPT         0x18
-#define CLI_DEFAULTINPUT   0x1C
-#define CLI_DEFAULTOUTPUT  0x20
-#define CLI_ERRORLEVEL     0x24
-#define CLI_CURRENTINPUT   0x2C
-#define CLI_CURRENTOUTPUT  0x30
-#define CLI_CURRENTDIRNAME 0x38
-#define CLI_INTERACTIVE    0x44
-#define CLI_MODULE         0x58   /* BPTR seglist of running command */
-#define CLI_MODULE_SC      0x3C   /* same slot, SAS/C + classic-NDK layout */
+/* CommandLineInterface — canonical V36 layout (dos/dosextens.h); fields
+ * 0x00-0x3C are the documented ABI.  UAOS extras live at 0x40+. */
+#define CLI_SETNAME        0x04   /* BSTR */
+#define CLI_COMMANDNAME    0x10   /* BSTR */
+#define CLI_FAILLEVEL      0x14   /* LONG */
+#define CLI_PROMPT         0x18   /* BSTR */
+#define CLI_STANDARDINPUT  0x1C   /* BPTR */
+#define CLI_CURRENTINPUT   0x20   /* BPTR */
+#define CLI_COMMANDFILE    0x24   /* BSTR — EXECUTE file name (0 for cmds) */
+#define CLI_INTERACTIVE    0x28   /* LONG */
+#define CLI_BACKGROUND     0x2C   /* LONG — TRUE if created by RUN */
+#define CLI_CURRENTOUTPUT  0x30   /* BPTR */
+#define CLI_DEFAULTSTACK   0x34   /* LONG — stack size in longwords */
+#define CLI_STANDARDOUTPUT 0x38   /* BPTR */
+#define CLI_MODULE         0x3C   /* BPTR seglist of running command */
+/* UAOS private extension area (kept inside the 0x80 CLI block) */
+#define CLI_XPROGDIR       0x40   /* BPTR — SetProgramDir() lock */
+#define CLI_XCURDIRNAME    0x44   /* BSTR — current directory name */
+#define CLI_XCOMMANDLINE   0x48   /* BSTR — full command line text */
+#define CLI_XERRORLEVEL    0x4C   /* LONG */
 
 /* Node types / task state / port flags */
+#define NT_UNKNOWN_G       0
 #define NT_MESSAGE_G       5
 #define NT_FREEMSG         6
 #define NT_REPLYMSG        7
@@ -1247,6 +1259,8 @@ static void install_stub(int lib_id, int func_idx)
 #define NT_DEVICE_G        3
 #define NT_PROCESS_G       13
 #define PA_SIGNAL_G        0
+#define PA_SOFTINT_G       1
+#define PA_IGNORE_G        2
 #define TS_RUN_G           2
 #define TF_PROCTASK_G      0x01
 
@@ -2314,8 +2328,8 @@ static void proc_env_bstr(uint32_t addr, const char *s, uint32_t max)
 }
 
 /* Initialise a MsgPort at `mp` owned by guest task `owner` with a real
- * allocated signal bit (PA_SIGNAL semantics). */
-static void proc_env_msgport(uint32_t mp, uint32_t owner)
+ * allocated signal bit (PA_SIGNAL semantics).  Returns the bit used. */
+static int proc_env_msgport(uint32_t mp, uint32_t owner)
 {
     int sb = exec_alloc_sigbit();
     if (sb < 0) sb = 0;
@@ -2326,6 +2340,7 @@ static void proc_env_msgport(uint32_t mp, uint32_t owner)
     guest_write_be32(mp + PMP_MSGLIST + 0, mp + PMP_MSGLIST + 4);
     guest_write_be32(mp + PMP_MSGLIST + 4, 0);
     guest_write_be32(mp + PMP_MSGLIST + 8, mp + PMP_MSGLIST + 0);
+    return sb;
 }
 
 /* Populate the guest-side Process/Task/CLI environment in the dedicated
@@ -2360,7 +2375,6 @@ uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
     g_ram[proc + PRC_TC_STATE]  = TS_RUN_G;
     g_ram[proc + PRC_TC_IDNEST] = (uint8_t)-1;
     g_ram[proc + PRC_TC_TDNEST] = (uint8_t)-1;
-    guest_write_be32(proc + PRC_TC_SIGALLOC, 0xFFFFFFFFu);
     guest_write_be32(proc + PRC_TC_SPREG,   STACK_TOP);
     guest_write_be32(proc + PRC_TC_SPLOWER, STACK_TOP - PROC_STACK_SIZE);
     guest_write_be32(proc + PRC_TC_SPUPPER, STACK_TOP);
@@ -2369,8 +2383,12 @@ uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
      * so WaitPort/PutMsg on them behaves like AmigaOS.  pr_ConsoleTask is
      * what dos.library/GetConsoleTask returns and what startup code uses
      * to reach the console handler. */
-    proc_env_msgport(proc + PRC_MSGPORT, proc);
-    proc_env_msgport(PROC_CONPORT, proc);
+    int sb1 = proc_env_msgport(proc + PRC_MSGPORT, proc);
+    int sb2 = proc_env_msgport(PROC_CONPORT, proc);
+    /* tc_SigAlloc: bits 0-15 are OS-reserved; the two port bits come out
+     * of the free mask so a guest AllocSignal can't steal them. */
+    guest_write_be32(proc + PRC_TC_SIGALLOC,
+                     0xFFFF0000u & ~((1u << sb1) | (1u << sb2)));
 
     /* Seglist BPTR of the loaded program (hunk_load writes LoadSeg-style
      * [size][next][data] headers; the seglist is the first link field). */
@@ -2403,16 +2421,19 @@ uint32_t UAOS_Emu_SetupProcess(uint32_t cmdname_bptr)
     guest_write_be32(cli + CLI_COMMANDNAME,    cmdname_bptr);
     guest_write_be32(cli + CLI_FAILLEVEL,      10);
     guest_write_be32(cli + CLI_PROMPT,         PROC_PROMPT >> 2);
-    guest_write_be32(cli + CLI_DEFAULTINPUT,   DOS_STDIN_BPTR);
-    guest_write_be32(cli + CLI_DEFAULTOUTPUT,  DOS_STDOUT_BPTR);
-    guest_write_be32(cli + CLI_ERRORLEVEL,     10);
-    /* cli_Background (+0x28) = 0 — foreground command. */
-    guest_write_be32(cli + CLI_CURRENTINPUT,   g_cmdline_bptr); /* cli_CommandLine */
-    guest_write_be32(cli + CLI_CURRENTOUTPUT,  DOS_STDOUT_BPTR);
-    guest_write_be32(cli + CLI_CURRENTDIRNAME, PROC_CURDIR >> 2);
-    guest_write_be32(cli + CLI_MODULE_SC,      seglist); /* classic/SAS-C slot */
+    guest_write_be32(cli + CLI_STANDARDINPUT,  DOS_STDIN_BPTR);
+    guest_write_be32(cli + CLI_CURRENTINPUT,   DOS_STDIN_BPTR);
+    /* cli_CommandFile (+0x24) = 0 — not an EXECUTE script.
+     * cli_Background   (+0x2C) = 0 — foreground command. */
     guest_write_be32(cli + CLI_INTERACTIVE,    1);
-    guest_write_be32(cli + CLI_MODULE,         seglist); /* extended slot */
+    guest_write_be32(cli + CLI_CURRENTOUTPUT,  DOS_STDOUT_BPTR);
+    guest_write_be32(cli + CLI_DEFAULTSTACK,   0);
+    guest_write_be32(cli + CLI_STANDARDOUTPUT, DOS_STDOUT_BPTR);
+    guest_write_be32(cli + CLI_MODULE,         seglist);
+    /* UAOS private extension fields (0x40+). */
+    guest_write_be32(cli + CLI_XCURDIRNAME,    PROC_CURDIR >> 2);
+    guest_write_be32(cli + CLI_XCOMMANDLINE,   g_cmdline_bptr);
+    guest_write_be32(cli + CLI_XERRORLEVEL,    10);
 
     /* ExecBase+0x114 = ThisTask — guest programs read their Process here. */
     guest_write_be32(EXEC_BASE + 0x114, proc);
@@ -2477,13 +2498,16 @@ uint32_t UAOS_Emu_SetupWbLaunch(const UaosWbLaunch *wb, uint32_t cmdname_bptr)
     g_ram[proc + PRC_TC_STATE]  = TS_RUN_G;
     g_ram[proc + PRC_TC_IDNEST] = (uint8_t)-1;
     g_ram[proc + PRC_TC_TDNEST] = (uint8_t)-1;
-    guest_write_be32(proc + PRC_TC_SIGALLOC, 0xFFFFFFFFu);
     guest_write_be32(proc + PRC_TC_SPREG,   STACK_TOP);
     guest_write_be32(proc + PRC_TC_SPLOWER, STACK_TOP - PROC_STACK_SIZE);
     guest_write_be32(proc + PRC_TC_SPUPPER, STACK_TOP);
 
-    proc_env_msgport(proc + PRC_MSGPORT, proc);
-    proc_env_msgport(PROC_CONPORT, proc);
+    int wb_sb1 = proc_env_msgport(proc + PRC_MSGPORT, proc);
+    int wb_sb2 = proc_env_msgport(PROC_CONPORT, proc);
+    /* tc_SigAlloc: bits 0-15 are OS-reserved; the two port bits come out
+     * of the free mask so a guest AllocSignal can't steal them. */
+    guest_write_be32(proc + PRC_TC_SIGALLOC,
+                     0xFFFF0000u & ~((1u << wb_sb1) | (1u << wb_sb2)));
 
     /* Fake Workbench Process — the WBStartup reply port lives inside it.
      * No host task owns it, so ReplyMsg just leaves the message on its
@@ -2615,8 +2639,13 @@ void install_library_tables(void)
     g_ram[EXEC_BASE + 0x126] = (uint8_t)-1;  /* IDNestCnt */
     g_ram[EXEC_BASE + 0x127] = (uint8_t)-1;  /* TDNestCnt */
     guest_write_be16(EXEC_BASE + 0x128, 0x0003); /* AttnFlags: 68010+68020 */
+    guest_write_be16(EXEC_BASE + 0x22, 39);  /* SoftVer: OS version (V39) */
+    guest_write_be32(EXEC_BASE + 0x3E, 0x00800000u); /* MaxLocMem: top of chip RAM */
+    guest_write_be32(EXEC_BASE + 0x4E, 0x01000000u); /* MaxExtMem: top of fast RAM */
     g_ram[EXEC_BASE + 0x212] = 50;           /* VBlankFrequency  (V36) */
     g_ram[EXEC_BASE + 0x213] = 50;           /* PowerSupplyFreq  (V36) */
+    guest_write_be32(EXEC_BASE + 0x13C, 0xFFFF0000u); /* TaskSigAlloc */
+    guest_write_be32(EXEC_BASE + 0x238, 709379u);     /* ex_EClockFrequency */
 
     /* System list headers — canonical execbase.i offsets.  An Amiga List
      * header is: lh_Head=&lh_Tail, lh_Tail=NULL, lh_TailPred=&lh_Head. */
@@ -4664,7 +4693,12 @@ static void sub_mirror_sigrecvd(UaosTask *t, uint32_t task_addr)
 {
     if (!t || t->type != TASK_TYPE_M68K || !t->m68k_ram ||
         task_addr + 0x20 > GUEST_RAM_SIZE) return;
-    ram_w32(t->m68k_ram, task_addr + SUB_TC_SIGRECVD, t->tc_SigRecvd);
+    uint32_t m = t->tc_SigRecvd;
+    /* Host SIGF_BREAKF (bit 8) is AmigaDOS SIGBREAKF_CTRL_C (bit 12) on the
+     * guest — guest bit 8 is SIGB_DOS.  Translate so guest code polling
+     * CheckSignal(SIGBREAKF_CTRL_C) sees console Ctrl-C. */
+    if (m & (1u << 8)) { m &= ~(1u << 8); m |= (1u << 12); }
+    ram_w32(t->m68k_ram, task_addr + SUB_TC_SIGRECVD, m);
 }
 
 /* Single wake path for guest-visible signals: the target's tc_SigRecvd
@@ -4712,7 +4746,8 @@ static void sub_ctx_free(WSched *w, SubCtx *c)
             glue_w32(task + LN_PRED, 0);
         }
         /* MemEntry cleanup: each tc_MemEntry node is a MemList header —
-         * ml_NumEntries @+0x0E, MemEntry {reqs,len,addr}[] @+0x10. */
+         * ml_NumEntries @+0x0E, MemEntry {meu_Addr, me_Length}[] @+0x10,
+         * 8 bytes each (exec/memory.h). */
         uint32_t list = task + SUB_TC_MEMENTRY;
         uint32_t head = glue_r32(list + MLH_HEAD);
         int guard = 0;
@@ -4720,9 +4755,9 @@ static void sub_ctx_free(WSched *w, SubCtx *c)
             uint32_t next = glue_r32(head + LN_SUCC);
             uint32_t n    = glue_r16(head + 0x0E);
             uint32_t me   = head + 0x10;
-            for (uint32_t i = 0; i < n && i < 64; i++, me += 12) {
+            for (uint32_t i = 0; i < n && i < 64; i++, me += 8) {
+                uint32_t addr = glue_r32(me + 0);
                 uint32_t len  = glue_r32(me + 4);
-                uint32_t addr = glue_r32(me + 8);
                 if (addr && len) dos_FreeMem_glue(addr, len);
             }
             head = next;
@@ -4848,7 +4883,7 @@ int UAOS_Sub_AddProc(uint32_t task, uint32_t init_pc, uint32_t final_pc,
     }
 
     uint32_t sigalloc = glue_r32(task + PRC_TC_SIGALLOC);
-    if (!sigalloc) sigalloc = 0xFFFFFFFFu;
+    if (!sigalloc) sigalloc = 0xFFFF0000u;   /* bits 0-15 OS-reserved */
     /* A Process (CreateProc child) has an embedded pr_MsgPort at +0x5C —
      * reserve its signal bit from the child's own mask so replies land
      * in the child's tc_SigRecvd, not the parent's. */
@@ -5182,21 +5217,36 @@ static void exec_FreeSignal(void)
     }
 }
 
+/* Deliver a port's arrival action after a message lands (exec/ports.h):
+ * mp_Flags & PF_ACTION selects PA_SIGNAL (Signal mp_SigTask's mp_SigBit),
+ * PA_SOFTINT (Cause the Interrupt at mp_SigTask) or PA_IGNORE. */
+static void port_arrival_action(uint8_t *ram, uint32_t port)
+{
+    uint8_t action = ram[port + MP_FLAGS] & 3u;
+    uint32_t sigtask = glue_r32(port + MP_SIGTASK);
+    if (action == PA_SIGNAL_G) {
+        sub_signal_target(ram, sigtask,
+                          1u << (glue_r8(port + MP_SIGBIT) & 31));
+    } else if (action == PA_SOFTINT_G) {
+        uint32_t code = glue_r32(sigtask + IS_CODE);
+        if (code) m68k_isr_call(code, 0x0004u /*SOFTINT*/,
+                                glue_r32(sigtask + IS_DATA), sigtask);
+    }
+    /* PA_IGNORE: no arrival action */
+}
+
 static void exec_PutMsg(void)
 {
     /* PutMsg(port, message) — A0 = port, A1 = message.  Real Exec marks
      * the node NT_MESSAGE so WaitIO/CheckIO can tell a live request from
-     * a replied one. */
+     * a replied one, and inserts by ln_Pri (Enqueue). */
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t msg  = m68k_get_reg(NULL, M68K_REG_A1);
     if (!port || !msg) return;
 
     g_ram[msg + LN_TYPE] = NT_MESSAGE_G;
-    glue_list_add_tail(port + MP_MSGLIST, msg);
-
-    uint32_t sigtask = glue_r32(port + MP_SIGTASK);
-    sub_signal_target(g_ram, sigtask,
-                      1u << (glue_r8(port + MP_SIGBIT) & 31));
+    guest_list_enqueue(port + MP_MSGLIST, msg);
+    port_arrival_action(g_ram, port);
 }
 
 volatile uint32_t g_getmsg_calls, g_getmsg_hit;
@@ -5239,10 +5289,8 @@ static void exec_ReplyMsg(void)
     }
     {
         g_ram[msg + LN_TYPE] = NT_REPLYMSG;
-        glue_list_add_tail(reply_port + MP_MSGLIST, msg);
-        uint32_t sigtask = glue_r32(reply_port + MP_SIGTASK);
-        sub_signal_target(g_ram, sigtask,
-                          1u << (glue_r8(reply_port + MP_SIGBIT) & 31));
+        guest_list_enqueue(reply_port + MP_MSGLIST, msg);
+        port_arrival_action(g_ram, reply_port);
     }
 }
 
@@ -5638,10 +5686,12 @@ static void exec_CopyMem(int quick)
 
 static void exec_AvailMem(void)
 {
+    /* exec/memory.h: MEMF_TOTAL (1<<19) asks for total free; otherwise
+     * (incl. MEMF_LARGEST) the result is the largest contiguous chunk. */
     uint32_t attrs = m68k_get_reg(NULL, M68K_REG_D1);
     uint32_t total = 0, largest = 0;
     dos_AvailMem_glue(attrs, &total, &largest);
-    m68k_set_reg(M68K_REG_D0, total);
+    m68k_set_reg(M68K_REG_D0, (attrs & 0x00080000u) ? total : largest);
 }
 
 static void exec_TypeOfMem(void)
@@ -5824,7 +5874,7 @@ static void exec_FindName(void)
 static void exec_AddPort(void)
 {
     uint32_t port = m68k_get_reg(NULL, M68K_REG_A1);
-    glue_list_add_tail(PORTLIST_ADDR, port);
+    guest_list_enqueue(PORTLIST_ADDR, port);   /* real exec uses Enqueue */
 }
 
 static void exec_RemPort(void)
@@ -6067,7 +6117,9 @@ static void exec_CreateIORequest(void)
     dos_AllocMem_glue(size, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &io);
     if (!io) { m68k_set_reg(M68K_REG_D0, 0); return; }
     for (uint32_t i = 0; i < size; i++) g_ram[io + i] = 0;
-    g_ram[io + LN_TYPE] = NT_REPLYMSG;
+    /* Real CreateIORequest leaves ln_Type = NT_UNKNOWN; it becomes
+     * NT_REPLYMSG only when the request is ReplyMsg'd. */
+    g_ram[io + LN_TYPE] = NT_UNKNOWN_G;
     glue_w32(io + MN_REPLYPORT, port);
     glue_w16(io + MN_LENGTH, size);
     m68k_set_reg(M68K_REG_D0, io);
@@ -6133,8 +6185,8 @@ static void exec_OpenDevice(void)
              * path) rather than talking to a fake base. */
             if (emu_name_is_declined(name)) {
                 glue_w32(ioreq + IO_DEVICE, 0);
-                g_ram[ioreq + IO_ERROR] = (uint8_t)-6;   /* IOERR_OPENFAIL */
-                m68k_set_reg(M68K_REG_D0, (uint32_t)-6);
+                g_ram[ioreq + IO_ERROR] = (uint8_t)-1;   /* IOERR_OPENFAIL */
+                m68k_set_reg(M68K_REG_D0, (uint32_t)-1);
                 return;
             }
             devbase = FAKE_LIB_BASE;
@@ -6223,9 +6275,9 @@ static int io_dispatch_device(uint32_t io)
         return 1;
     }
     /* ROM-registered device with a generated base: run its BeginIO
-     * vector (LVO -42) so DoIO/SendIO reach the module (UAOS-238). */
+     * vector (LVO -30, DEV_BEGINIO) so DoIO/SendIO reach the module. */
     UaosRomModule *dm = emu_gen_rom(dev);
-    int fn = dm ? rom_lvo_fn(dm, -42) : 0;
+    int fn = dm ? rom_lvo_fn(dm, -30) : 0;
     if (fn) {
         uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
         m68k_set_reg(M68K_REG_A1, io);
@@ -6479,7 +6531,7 @@ static void io_abort_device(uint32_t io)
         return;
     }
     UaosRomModule *dm = emu_gen_rom(dev);
-    int fn = dm ? rom_lvo_fn(dm, -48) : 0;
+    int fn = dm ? rom_lvo_fn(dm, -36) : 0;   /* DEV_ABORTIO */
     if (fn) {
         uint32_t saved_a1 = m68k_get_reg(NULL, M68K_REG_A1);
         m68k_set_reg(M68K_REG_A1, io);
@@ -6495,9 +6547,9 @@ static void io_abort_device(uint32_t io)
 
 static void exec_AbortIO(void)
 {
-    /* AbortIO(ioRequest=a1): run the device's AbortIO vector (-36 on a
-     * real device — our generated bases still take -48; the -36 stubs
-     * land here too via the LIB_ROM/audio dispatch special-cases). */
+    /* AbortIO(ioRequest=a1): run the device's AbortIO vector (-36,
+     * DEV_ABORTIO — generated bases bind -36 now, legacy -48 stubs land
+     * here too via the LIB_ROM/audio dispatch special-cases). */
     uint32_t io = m68k_get_reg(NULL, M68K_REG_A1);
     if (!io || io + IOSTD_SIZE >= GUEST_RAM_SIZE) {
         m68k_set_reg(M68K_REG_D0, -3);   /* IOERR_NOCMD */
@@ -6539,13 +6591,14 @@ static void exec_AbortIO(void)
 #define CMD_STOP         6
 #define CMD_START        7
 #define CMD_FLUSH        8
-#define ADCMD_ALLOCATE   9    /* CMD_NONSTD+0 */
-#define ADCMD_FREE       10
-#define ADCMD_SETPREC    11
-#define ADCMD_FINISH     12
-#define ADCMD_PERVOL     13
-#define ADCMD_LOCK       14
-#define ADCMD_WAITCYCLE  15
+/* devices/audio.h — commands are CMD_NONSTD+0..5 except ALLOCATE=32 */
+#define ADCMD_FREE       9    /* CMD_NONSTD+0 */
+#define ADCMD_SETPREC    10
+#define ADCMD_FINISH     11
+#define ADCMD_PERVOL     12
+#define ADCMD_LOCK       13
+#define ADCMD_WAITCYCLE  14
+#define ADCMD_ALLOCATE   32
 
 #define ADIOERR_ALLOCFAILED  (-11)
 
@@ -6645,14 +6698,14 @@ static void audio_dev_Close(void)
  *   +0  Node ss_Link (14)
  *   +14 SHORT ss_NestCount
  *   +16 MinList ss_WaitQueue (12)
- *   +28 APTR ss_Owner
- *   +32 SHORT ss_QueueCnt
- *   +34 WORD ss_Link wait count pad
+ *   +28 SemaphoreRequest ss_MultipleLink (12)
+ *   +40 APTR ss_Owner
+ *   +44 SHORT ss_QueueCount
  * ------------------------------------------------------------------------- */
 #define SS_NESTCOUNT 14
 #define SS_WAITQUEUE 16
-#define SS_OWNER     28
-#define SS_QUEUECNT  32
+#define SS_OWNER     40
+#define SS_QUEUECNT  44
 #define SEM_SIZE     46
 
 static void sem_init(uint32_t sem)
@@ -6746,7 +6799,7 @@ static void exec_FindSemaphore(void)
 static void exec_AddSemaphore(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A1);
-    if (sem) glue_list_add_tail(SEMLIST_ADDR, sem);
+    if (sem) guest_list_enqueue(SEMLIST_ADDR, sem);   /* real AddSemaphore enqueues */
 }
 
 static void exec_RemSemaphore(void)
@@ -7153,7 +7206,10 @@ static void exec_Debug(void)       { }
 static void exec_Alert(void)
 {
     /* Alert(alertNum=d7): fatal on real hardware; log it — continuing is
-     * more useful for bring-up than wedging the guest. */
+     * more useful for bring-up than wedging the guest.  Record it in
+     * ExecBase.LastAlert[0] (+0x202) like the real ROM does. */
+    guest_write_be32(EXEC_BASE + 0x202,
+                     (uint32_t)m68k_get_reg(NULL, M68K_REG_D7));
     static uint32_t prints = 0;
     if (prints++ < 20) {
         char m[40] = "[exec] Alert 0x";

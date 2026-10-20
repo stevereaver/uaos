@@ -229,9 +229,16 @@ static uint32_t regoff_to_index(uint32_t regoff)
  * ----------------------------------------------------------------------- */
 
 #define REG_SERDATR  0x018
+#define REG_DSKDATR  0x008
+#define REG_ADKCONR  0x010
+#define REG_POT0DAT  0x012
+#define REG_POT1DAT  0x014
+#define REG_DSKBYTR  0x01A
+#define REG_INTENAR  0x01C
+#define REG_INTREQR  0x01E
 #define REG_JOY0DAT  0x00A
 #define REG_JOY1DAT  0x00C
-#define REG_POTGOR   0x016   /* read-only; shares offset with CLXCON write */
+#define REG_POTGOR   0x016   /* read-only (POTGO write is 0x034) */
 #define REG_POTGO    0x034   /* write-only pot output enables */
 #define REG_DSKDAT   0x026
 #define REG_DSKLEN   0x024
@@ -242,7 +249,7 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_DSKSYNC  0x07E
 #define REG_DENISEID 0x07C
 #define REG_CLXDAT   0x00E
-#define REG_CLXCON   0x016
+#define REG_CLXCON   0x098
 #define REG_DMACONR  0x002
 #define REG_DMACON   0x096
 #define REG_INTENA   0x09A
@@ -262,9 +269,9 @@ static uint32_t regoff_to_index(uint32_t regoff)
 #define REG_BLTAPT   0x050
 #define REG_BLTDPT   0x054
 #define REG_BLTSIZE  0x058
-#define REG_BLTAMOD  0x060
+#define REG_BLTCMOD  0x060
 #define REG_BLTBMOD  0x062
-#define REG_BLTCMOD  0x064
+#define REG_BLTAMOD  0x064
 #define REG_BLTDMOD  0x066
 #define REG_BLTCDAT  0x070
 #define REG_BLTBDAT  0x072
@@ -919,10 +926,11 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
      * Special registers below may override the simple mirroring. */
     if (width_bytes == 1) {
         uint32_t idx = regoff_to_index(regoff);
+        /* Big-endian bus: even offset = high byte, odd offset = low byte. */
         if (offset & 1u)
-            g_aga_regs[idx] = (uint16_t)((g_aga_regs[idx] & 0x00FFu) | ((value & 0xFFu) << 8));
-        else
             g_aga_regs[idx] = (uint16_t)((g_aga_regs[idx] & 0xFF00u) | (value & 0xFFu));
+        else
+            g_aga_regs[idx] = (uint16_t)((g_aga_regs[idx] & 0x00FFu) | ((value & 0xFFu) << 8));
     } else if (width_bytes == 2) {
         g_aga_regs[regoff_to_index(regoff)] = (uint16_t)(value & 0xFFFFu);
     } else {
@@ -1018,10 +1026,10 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_BLTSIZE: {
             uint16_t size = (uint16_t)value;
             g_bltsize = size;
-            int w = (size >> 6) & 0x3FF;
-            int h = size & 0x3F;
-            if (w == 0) w = 1024;
-            if (h == 0) h = 64;
+            int w = size & 0x3F;             /* hsize: words per row */
+            int h = (size >> 6) & 0x3FF;     /* vsize: rows */
+            if (w == 0) w = 64;
+            if (h == 0) h = 1024;
             g_blitter_words_remaining = w * h;
             blitter_execute(size);
             break;
@@ -1082,7 +1090,7 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_AUDxLCH(idx) + 2: g_audio[idx].ptr = (g_audio[idx].ptr & 0xFFFF0000u) | (value & 0xFFFFu); g_audio_ram = g_ram; break; \
         case REG_AUDxLEN(idx): g_audio[idx].len = (uint16_t)value; break; \
         case REG_AUDxPER(idx): g_audio[idx].per = (uint16_t)value; g_audio[idx].counter = (uint16_t)value; break; \
-        case REG_AUDxVOL(idx): g_audio[idx].vol = (uint16_t)(value & 0x40u ? (value & 0x3Fu) : (value & 0x3Fu)); break; \
+        case REG_AUDxVOL(idx): g_audio[idx].vol = (uint16_t)((value & 0x40u) ? 64u : (value & 0x3Fu)); break; \
         case REG_AUDxDAT(idx): g_audio[idx].dat = (uint16_t)value; break
 
         AUD_WRITE_CASES(0);
@@ -1157,29 +1165,36 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
     /* Special register read behavior. */
     switch (regoff) {
         case REG_SERDATR: {
-            /* SERDATR status layout:
-             *   bit  8: RBF   (receive buffer full)
-             *   bit  9: overrun (receiver overrun)
-             *   bit 10: framing (framing error)
-             *   bit 11: break (break detected)
-             *   bit 12: TBE   (transmit buffer empty)
-             *   bit 13: TSRE  (transmit shift register empty)
-             * Lower 8 bits hold the received byte when RBF is set.
-             * Sticky error flags are cleared after they are reported. */
+            /* SERDATR status layout (HRM):
+             *   bits 0-8:  received data
+             *   bit 11:    RXD    (serial input pin — not modelled)
+             *   bit 12:    TSRE   (transmit shift register empty)
+             *   bit 13:    TBE    (transmit buffer empty)
+             *   bit 14:    RBF    (receive buffer full)
+             *   bit 15:    OVRUN  (receiver overrun, read-clears) */
             uint16_t status = 0;
             if (g_paula_serial.rx_full) {
                 status |= (g_paula_serial.rx_shift & 0xFFu);     /* data */
-                status |= 0x0100u;                               /* RBF - register buffer full */
+                status |= 0x4000u;                               /* RBF */
                 g_paula_serial.rx_full = 0;
             }
-            if (g_paula_serial.break_det) { status |= 0x0800u; g_paula_serial.break_det = 0; }
-            if (g_paula_serial.framing)   { status |= 0x0400u; g_paula_serial.framing = 0; }
-            if (g_paula_serial.overrun)   { status |= 0x0200u; g_paula_serial.overrun = 0; }
-            if (!g_paula_serial.tx_pending) status |= 0x1000u;    /* TBE - transmit buffer empty */
-            status |= 0x2000u;                                     /* TSRE - transmit shift empty */
+            if (g_paula_serial.overrun)   { status |= 0x8000u; g_paula_serial.overrun = 0; }
+            /* Framing/break have no SERDATR bits — drain the flags so a
+             * stale error can't wedge a later read path. */
+            g_paula_serial.break_det = 0;
+            g_paula_serial.framing   = 0;
+            if (!g_paula_serial.tx_pending) status |= 0x2000u;    /* TBE */
+            status |= 0x1000u;                                     /* TSRE */
             value = (uint32_t)status;
             break;
         }
+        case REG_INTENAR: value = g_intena; break;
+        case REG_INTREQR: value = g_intreq; break;
+        case REG_ADKCONR: value = g_adkcon; break;
+        case REG_DSKDATR: value = g_dskdat; break;
+        case REG_POT0DAT: value = 0; break;
+        case REG_POT1DAT: value = 0; break;
+        case REG_DSKBYTR: value = 0; break;
         case REG_DSKPTL: value = g_dskpt & 0xFFFFu; break;
         case REG_DSKPTH: value = (g_dskpt >> 16) & 0xFFFFu; break;
         case REG_DSKDAT: {
@@ -1226,15 +1241,18 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
         case REG_ADKCON: value = g_adkcon; break;
 
         case REG_VPOSR: {
+            /* Real layout: bit 15 LOF, bits 14-8 Agnus ID, bit 7 LOL,
+             * bits 2-0 vertical counter bits V10-V8.  Agnus AGA id 0x22. */
             int v, h;
             beam_position_from_cycles(beam_cycles_now(), &v, &h);
-            value = ((uint32_t)(v & 0xFF) << 8) | 0x8000u; /* AGA id + vertical */
+            value = (0x22u << 8) | ((uint32_t)(v >> 8) & 7u);
             break;
         }
         case REG_VHPOSR: {
+            /* Real layout: bits 15-8 = V7-V0, bits 7-0 = H8-H1. */
             int v, h;
             beam_position_from_cycles(beam_cycles_now(), &v, &h);
-            value = (uint32_t)(v & 0x100u) | ((uint32_t)(h & 0xFF) << 0);
+            value = (((uint32_t)v & 0xFFu) << 8) | ((uint32_t)(h >> 1) & 0xFFu);
             break;
         }
         case REG_DENISEID: value = 0x00F8u; break;          /* AGA Denise/Lisa ID */
@@ -1363,9 +1381,10 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
     }
 
     if (width_bytes == 1) {
+        /* Big-endian bus: even offset = high byte, odd offset = low byte. */
         if (offset & 1u)
-            return (uint32_t)(value >> 8) & 0xFFu;
-        return (uint32_t)(value & 0xFFu);
+            return (uint32_t)(value & 0xFFu);
+        return (uint32_t)(value >> 8) & 0xFFu;
     }
 
     return (uint32_t)(value & 0xFFFFu);
@@ -1580,14 +1599,15 @@ static void blitter_area_step(void)
 }
 
 /* Execute an area blit triggered by a write to BLTSIZE.
- * Width is in words (bits 15-6 of size), height in lines (bits 5-0). */
+ * Width is in words (hsize, bits 5-0 of size), height in lines
+ * (vsize, bits 15-6) — hardware/blit.h. */
 static void blitter_execute(uint16_t size)
 {
-    int width  = (size >> 6) & 0x3FF;
-    int height = size & 0x3F;
+    int width  = size & 0x3F;
+    int height = (size >> 6) & 0x3FF;
     g_blit_ram = g_ram;
-    if (width == 0)  width = 1024;
-    if (height == 0) height = 64;
+    if (width == 0)  width = 64;
+    if (height == 0) height = 1024;
 
     int line_mode = g_bltcon1 & 1u;
     int desc      = (g_bltcon1 >> 1) & 1u;
@@ -1602,13 +1622,14 @@ static void blitter_execute(uint16_t size)
 
     if (line_mode) {
         /* Amiga line mode: set up a persistent line state and draw one pixel
-         * per allocated DMA slot.  BLTCON1 bits 4-7 are the octant, bit 1 is
-         * SING.  BLTAPTL is the initial Bresenham accumulator; BLTDPT is the
-         * word containing the start pixel.  ASH is the starting bit. */
-        int octant = (g_bltcon1 >> 4) & 0xFu;
-        int sx = (octant & 1u) ? -1 : 1;
-        int sy = (octant & 2u) ? -1 : 1;
-        int swap = (octant & 4u) ? 1 : 0;
+         * per allocated DMA slot.  BLTCON1 bits 4/3/2 are the octant
+         * (SUD/SUL/AUL, hardware/blit.h), bit 1 is SING.  BLTAPTL is the
+         * initial Bresenham accumulator; BLTDPT is the word containing the
+         * start pixel.  ASH is the starting bit. */
+        int octant = (g_bltcon1 >> 2) & 0x7u;
+        int sx = (octant & 2u) ? -1 : 1;     /* SUL → x decreases */
+        int sy = (octant & 4u) ? -1 : 1;     /* SUD → y decreases */
+        int swap = (octant & 1u) ? 1 : 0;    /* AUL → major-axis swap */
         int singular = (g_bltcon1 & 0x02u) ? 1 : 0;
 
         int amod = (int)(int16_t)g_bltamod;
@@ -1702,7 +1723,7 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
             dma_slot_release_if_disabled(DMA_CHAN_SPRITE, 0x0020u); /* SPREN */
             dma_slot_release_if_disabled(DMA_CHAN_BITPLANE, 0x0100u); /* BPLEN */
             dma_slot_release_if_disabled(DMA_CHAN_COPPER, 0x0080u); /* COPEN */
-            dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0008u); /* BLTEN */
+            dma_slot_release_if_disabled(DMA_CHAN_BLITTER, 0x0040u); /* BLTEN */
 
             dma_slot_alloc_bitplanes();
             dma_slot_alloc_copper(32);
@@ -2080,10 +2101,14 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
             return cia->pra;
         }
         case CIA_REG_PRB: {
-            uint8_t c = 0;
-            lpt1_recv(&c);
-            /* Output bits return the last written value; input bits read the host. */
-            return (cia->prb & cia->ddrb) | (c & ~cia->ddrb);
+            /* Real wiring: parallel-port data lives on CIA-A PRB ($BFE101);
+             * CIA-B PRB is floppy drive control — input bits float high. */
+            if (cia == &g_cia_a) {
+                uint8_t c = 0;
+                lpt1_recv(&c);
+                return (cia->prb & cia->ddrb) | (c & ~cia->ddrb);
+            }
+            return (cia->prb & cia->ddrb) | (~cia->ddrb & 0xFFu);
         }
         case CIA_REG_DDRA: return cia->ddra;
         case CIA_REG_DDRB: return cia->ddrb;
@@ -2132,13 +2157,14 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         case CIA_REG_PRA:  cia->pra  = v; break;
         case CIA_REG_PRB: {
             cia->prb = v;
-            if (cia == &g_cia_b) {
-                /* Only drive the bits that are configured as outputs. */
-                uint8_t out = v & cia->ddrb;
-                lpt1_send(out);
-                /* PRB also carries the floppy drive-control lines; input
+            if (cia == &g_cia_a) {
+                /* Parallel-port data bus lives on CIA-A PRB — only drive
+                 * the bits configured as outputs. */
+                lpt1_send((uint8_t)(v & cia->ddrb));
+            } else if (cia == &g_cia_b) {
+                /* PRB carries the floppy drive-control lines; input
                  * bits float high. */
-                floppy_drive_control((uint8_t)(out | ~cia->ddrb));
+                floppy_drive_control((uint8_t)((v & cia->ddrb) | ~cia->ddrb));
             }
             break;
         }
@@ -2146,8 +2172,8 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         case CIA_REG_DDRB: {
             uint8_t changed = cia->ddrb ^ v;
             cia->ddrb = v;
-            if (cia == &g_cia_b && (changed & ~v) != 0) {
-                /* Bits changed to input: re-read the host port. */
+            if (cia == &g_cia_a && (changed & ~v) != 0) {
+                /* Parallel bits changed to input: re-read the host port. */
                 uint8_t c = 0;
                 lpt1_recv(&c);
                 (void)c;
@@ -2435,10 +2461,10 @@ static int copper_run_to_beam(int copper_slots)
         if ((w1 & 1u) == 0) {
             /* MOVE */
             uint32_t regoff = (uint32_t)(w1 & 0xFFFEu);
-            /* COPCON bit 0 = "copper danger": when clear, the copper cannot
-             * write to the Blitter register block (0x040-0x058). */
-            int copper_danger = g_copcon & 1u;
-            if (regoff < 0x040u || regoff > 0x058u || copper_danger) {
+            /* COPCON bit 1 = CDANG "copper danger": when clear, the copper
+             * cannot write to the protected register range $040-$07F. */
+            int copper_danger = g_copcon & 2u;
+            if (regoff < 0x040u || regoff >= 0x080u || copper_danger) {
                 chip_emu_write(AGA_REG_BASE_OFF + regoff, w2, 2);
             }
             pc += 4;
@@ -2446,8 +2472,8 @@ static int copper_run_to_beam(int copper_slots)
             /* WAIT */
             if ((w1 & 0xFFFEu) == 0xFFFEu && (w2 & 0xFFFEu) == 0xFFFEu) {
                 g_copper_pc = pc;
-                /* Copper end-of-list interrupt request (COPER, bit 6). */
-                g_intreq |= 0x0040u;
+                /* Copper end-of-list interrupt request (INTB_COPER, bit 4). */
+                g_intreq |= 0x0010u;
                 chip_emu_update_irq();
                 return 1; /* end of list */
             }
@@ -3211,14 +3237,15 @@ int chip_emu_line_test(void)
     g_bltadat = 0x8000u;
     g_bltbdat = 0xFFFFu;
     g_bltcon0 = 0x0BCAu | (10u << 12); /* minterm 0xCA, ASH=10, useA+useC+useD */
-    g_bltcon1 = 0x0011u;               /* LINE=1, octant 0 */
+    g_bltcon1 = 0x0001u;               /* LINE=1, octant 0 (SUD/SUL/AUL=0) */
     g_bltsize = 0;
     g_blitter_words_remaining = 0;
     g_blitter_busy = 0;
     g_line_state.active = 0;
 
-    /* Trigger the blitter via BLTSIZE.  Width is the line length (major + 1). */
-    chip_emu_write(REG_BLTSIZE, (11 << 6) | 1, 2);
+    /* Trigger the blitter via BLTSIZE: hsize = line length (major + 1),
+     * vsize ignored in line mode (write 1). */
+    chip_emu_write(REG_BLTSIZE, (1 << 6) | 11, 2);
 
     /* Wait for slot-based blitter to finish. */
     for (int i = 0; i < 1000 && g_blitter_busy; i++) {
@@ -3264,8 +3291,8 @@ int chip_emu_fill_test(void)
     g_blitter_busy = 0;
     g_line_state.active = 0;
 
-    /* Width=2 words, height=1 line. */
-    chip_emu_write(REG_BLTSIZE, (2 << 6) | 1, 2);
+    /* Width=2 words, height=1 line: BLTSIZE = (vsize<<6)|hsize. */
+    chip_emu_write(REG_BLTSIZE, (1 << 6) | 2, 2);
 
     for (int i = 0; i < 1000 && g_blitter_busy; i++) {
         chip_emu_render_frame();
@@ -3317,8 +3344,8 @@ int chip_emu_fill_complex_test(void)
     g_blitter_busy = 0;
     g_line_state.active = 0;
 
-    /* Width=4 words, height=1 line. */
-    chip_emu_write(REG_BLTSIZE, (4 << 6) | 1, 2);
+    /* Width=4 words, height=1 line: BLTSIZE = (vsize<<6)|hsize. */
+    chip_emu_write(REG_BLTSIZE, (1 << 6) | 4, 2);
 
     for (int i = 0; i < 1000 && g_blitter_busy; i++) {
         chip_emu_render_frame();
@@ -3657,14 +3684,14 @@ int chip_emu_sprite_subpixel_test(void)
     return FB_GetPixel(0, 55) == 0x00FF0000u || FB_GetPixel(1, 55) == 0x00FF0000u;
 }
 
-/* Test helper for the CIA-B parallel port: drive all bits out, write a known
- * pattern to PRB, and read it back.  Returns 1 on success. */
+/* Test helper for the CIA-A parallel port: drive all bits out, write a
+ * known pattern to PRB ($BFE101 = window offset 0xFE101), and read it
+ * back.  Returns 1 on success. */
 int chip_emu_parallel_test(void)
 {
-    /* Write to CIA-B DDRB to make all bits output, then write PRB and read back. */
-    chip_emu_write(0xBFD003, 0xFF, 1); /* DDRB all output */
-    chip_emu_write(0xBFD001, 0xA5, 1); /* PRB */
-    uint32_t v = chip_emu_read(0xBFD001, 1);
+    chip_emu_write(0xFE301, 0xFF, 1); /* DDRB all output */
+    chip_emu_write(0xFE101, 0xA5, 1); /* PRB */
+    uint32_t v = chip_emu_read(0xFE101, 1);
     return (v & 0xFFu) == 0xA5;
 }
 

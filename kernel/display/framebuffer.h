@@ -61,6 +61,18 @@ uint32_t *FB_BackbufRow(int y);    /* NULL when y is out of range   */
 int       FB_BackbufCoherent(void);/* 1 when back buf mirrors screen */
 void      FB_Watchdog(void);       /* UAOS-265: backbuf/VRAM spot check */
 
+/* Logical display mode (UAOS-351, per-screen resolutions).  g_fb.width/
+ * height are the LOGICAL display all drawing works in; the physical mode
+ * the firmware produced is fixed.  When they differ — i.e. a custom
+ * Intuition screen fronts its own display mode — the flip path resamples
+ * the logical frame into physical VRAM (nearest neighbour), so a classic
+ * 640x256 screen fills the display just like a real monitor following the
+ * front screen's dot clock.  w/h <= 0 restores the physical mode. */
+void     FB_SetLogicalMode(int w, int h);
+int      FB_IsScaled(void);        /* 1 while logical != physical           */
+uint32_t FB_PhysWidth(void);       /* managed physical (visible) region    */
+uint32_t FB_PhysHeight(void);
+
 /* Extend the dirty rectangle (no-op when not drawing). Used by callers that
  * touch VRAM directly while a back-buffer frame is in progress (e.g. the
  * cursor sprite drawn at frame end) so FB_Flip will copy those pixels too. */

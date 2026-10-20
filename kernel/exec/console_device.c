@@ -299,12 +299,16 @@ static void *console_funcs[] = {
 };
 
 /* Device vectors -> console_funcs[] indices (Open -6, Close -12,
- * BeginIO -42, AbortIO -48).  All command I/O flows through BeginIO. */
+ * BeginIO -30, AbortIO -36 — canonical exec/io.h device vectors;
+ * -42/-48 aliases kept for guests that used the old map).
+ * All command I/O flows through BeginIO. */
 static const UaosRomLvo console_lvo_map[] = {
     {  -6, 1 },   /* Open     */
     { -12, 2 },   /* Close    */
-    { -42, 3 },   /* BeginIO  */
-    { -48, 4 },   /* AbortIO  */
+    { -30, 3 },   /* BeginIO  */
+    { -36, 4 },   /* AbortIO  */
+    { -42, 3 },   /* legacy BeginIO alias */
+    { -48, 4 },   /* legacy AbortIO alias */
 };
 
 /* =========================================================================

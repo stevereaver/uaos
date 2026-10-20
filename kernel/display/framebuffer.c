@@ -72,6 +72,81 @@ static int g_draw_depth = 0;   /* nested BeginDraw count; only depth 0 owns the 
  * brutally slow on uncached apertures — MBP4,1 boots with nomtrr). */
 static int g_bb_coherent = 0;
 
+/* Physical vs logical display geometry (UAOS-351: per-screen modes).
+ *
+ * g_fb.width/height are the LOGICAL display every caller works in; the
+ * physical mode the firmware/GOP produced is g_view_w x g_view_h (the part
+ * of VRAM we manage).  They differ while a custom Intuition screen fronts
+ * its own display mode — the Amiga model, where the monitor follows the
+ * front screen's dot clock: a 640x256 screen then *is* a 640x256 display,
+ * and the flip path resamples (nearest neighbour) logical -> physical so
+ * it fills the panel with chunky pixels instead of living in a corner.
+ * g_scaled is the quick test (logical != physical). */
+static uint32_t g_view_w = 0, g_view_h = 0;   /* managed physical region  */
+static int      g_scaled  = 0;                /* logical != physical      */
+
+/* Scale-blit a rect of the logical back buffer into physical VRAM.
+ * Start edges map floor, end edges ceil so partial destination cells are
+ * fully covered; the inner loop walks the source with a 16.16 step. */
+static void flip_logical_rect(int lx0, int ly0, int lx1, int ly1)
+{
+    int lw = (int)g_fb.width, lh = (int)g_fb.height;
+    int pw = (int)g_view_w,   ph = (int)g_view_h;
+    if (lx0 < 0) lx0 = 0;
+    if (ly0 < 0) ly0 = 0;
+    if (lx1 > lw) lx1 = lw;
+    if (ly1 > lh) ly1 = lh;
+    if (lx0 >= lx1 || ly0 >= ly1 || !pw || !ph || !lw || !lh) return;
+    int px0 = lx0 * pw / lw;
+    int py0 = ly0 * ph / lh;
+    int px1 = (lx1 * pw + lw - 1) / lw;
+    int py1 = (ly1 * ph + lh - 1) / lh;
+    uint8_t *dst = (uint8_t *)(uintptr_t)g_fb.phys_addr;
+    uint32_t xstep = ((uint32_t)lw << 16) / (uint32_t)pw;
+    for (int py = py0; py < py1; py++) {
+        const uint32_t *srow = g_backbuf[py * lh / ph];
+        uint32_t acc = (uint32_t)px0 * xstep;
+        if (g_fb.bpp == 32) {
+            uint32_t *drow = (uint32_t *)(dst + (uint32_t)py * g_fb.pitch);
+            for (int px = px0; px < px1; px++) {
+                drow[px] = srow[acc >> 16];
+                acc += xstep;
+            }
+        } else {
+            uint8_t *drow = dst + (uint32_t)py * g_fb.pitch;
+            for (int px = px0; px < px1; px++) {
+                uint32_t c = srow[acc >> 16];
+                acc += xstep;
+                uint8_t *p = drow + px * 3;
+                p[0] = (uint8_t)(c & 0xFF);
+                p[1] = (uint8_t)((c >> 8) & 0xFF);
+                p[2] = (uint8_t)((c >> 16) & 0xFF);
+            }
+        }
+    }
+}
+
+void FB_SetLogicalMode(int w, int h)
+{
+    if (!g_fb.valid || !g_view_w) return;
+    if (w <= 0 || h <= 0) { w = (int)g_view_w; h = (int)g_view_h; }
+    if (w > BB_MAX_W) w = BB_MAX_W;
+    if (h > BB_MAX_H) h = BB_MAX_H;
+    if (w < 32) w = 32;
+    if (h < 32) h = 32;
+    if ((int)g_fb.width == w && (int)g_fb.height == h) return;
+    g_fb.width  = (uint32_t)w;
+    g_fb.height = (uint32_t)h;
+    g_scaled = (w != (int)g_view_w || h != (int)g_view_h);
+    /* All logical pixels are stale after a geometry change — callers
+     * invalidate the whole display, so the next frame repaints and the
+     * flip covers everything. */
+}
+
+int      FB_IsScaled(void)     { return g_scaled; }
+uint32_t FB_PhysWidth(void)    { return g_view_w; }
+uint32_t FB_PhysHeight(void)   { return g_view_h; }
+
 /* Dirty rectangle (in back-buffer space) accumulated between FB_BeginDraw
  * and FB_Flip.  FB_Flip memcpy's only these rows to VRAM.  Invalid (empty)
  * when dirty_x1 < dirty_x0.  Coordinates are clamped to BB_MAX_W/H. */
@@ -228,7 +303,9 @@ int FB_BackbufCoherent(void)
  * once per divergence episode per sample point. */
 void FB_Watchdog(void)
 {
-    if (!g_fb.valid || g_drawing || g_fb.bpp != 32) return;
+    /* Scaled mode (custom screen at its own resolution) intentionally makes
+     * backbuf and VRAM diverge in the linear compare — skip. */
+    if (!g_fb.valid || g_drawing || g_fb.bpp != 32 || g_scaled) return;
 
     static const int rel[3][2] = { {24, -12}, {-24, -12}, {0, -40} };
     static int alarmed[3];
@@ -315,7 +392,15 @@ void FB_Flip(void)
     if (y1 > H) y1 = H;
 
     if (x0 < x1 && y0 < y1) {
-        if (g_fb.bpp == 32) {
+        if (g_scaled) {
+            /* Logical -> physical resample (custom screen at its own
+             * display mode).  The back buffer stays authoritative in
+             * logical space once the whole logical frame has been
+             * committed. */
+            flip_logical_rect(x0, y0, x1, y1);
+            if (x0 == 0 && y0 == 0 && x1 >= W && y1 >= H)
+                g_bb_coherent = 1;
+        } else if (g_fb.bpp == 32) {
             for (int y = y0; y < y1; y++) {
                 uint8_t *row_dst = dst + (uint32_t)y * g_fb.pitch + (uint32_t)x0 * 4;
                 memcpy(row_dst, &g_backbuf[y][x0],
@@ -398,9 +483,13 @@ void FB_Init(uint32_t mb2_info_phys)
                  * than that would leave regions permanently undrawn and let
                  * primitives write past the back buffer.  Clamp the
                  * WM-visible width/height so the desktop lays out inside
-                 * the drawable region; the extra VRAM rows stay untouched. */
+                 * the drawable region; the extra VRAM rows stay untouched.
+                 * The clamped region is also the physical view the logical
+                 * display scales into (g_view_*; see UAOS-351 note above). */
                 if (g_fb.width  > BB_MAX_W) g_fb.width  = BB_MAX_W;
                 if (g_fb.height > BB_MAX_H) g_fb.height = BB_MAX_H;
+                g_view_w = g_fb.width;
+                g_view_h = g_fb.height;
 
                 /* UAOS-139: log the achieved mode so bare-metal bring-up
                  * can record which GOP/VESA mode the firmware picked. */
@@ -438,6 +527,7 @@ static inline void put_pixel32(uint8_t *base, uint32_t pitch,
     if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
         g_backbuf[y][x] = colour;   /* target in drawing mode, mirror otherwise */
     if (g_drawing) return;
+    if (g_scaled) { flip_logical_rect(x, y, x + 1, y + 1); return; }
     uint32_t *px = (uint32_t *)(base + (uint32_t)y * pitch + (uint32_t)x * 4);
     *px = colour;
 }
@@ -448,6 +538,7 @@ static inline void put_pixel24(uint8_t *base, uint32_t pitch,
     if ((unsigned)x < BB_MAX_W && (unsigned)y < BB_MAX_H)
         g_backbuf[y][x] = colour;
     if (g_drawing) return;
+    if (g_scaled) { flip_logical_rect(x, y, x + 1, y + 1); return; }
     uint8_t *px = base + (uint32_t)y * pitch + (uint32_t)x * 3;
     px[0] = (uint8_t)(colour & 0xFF);
     px[1] = (uint8_t)((colour >> 8) & 0xFF);
@@ -493,6 +584,7 @@ void FB_DrawHLine(int x, int y, int len, uint32_t colour)
         dirty_add(x0, y, x1, y + 1);
         return;
     }
+    if (g_scaled) { flip_logical_rect(x0, y, x1, y + 1); return; }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -534,6 +626,7 @@ void FB_DrawVLine(int x, int y, int len, uint32_t colour)
         dirty_add(x, y0, x + 1, y1);
         return;
     }
+    if (g_scaled) { flip_logical_rect(x, y0, x + 1, y1); return; }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -573,6 +666,7 @@ void FB_FillRect(int x, int y, int w, int h, uint32_t colour)
         dirty_add(x0, y0, x1, y1);
         return;
     }
+    if (g_scaled) { flip_logical_rect(x0, y0, x1, y1); return; }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -627,6 +721,7 @@ void FB_FillRectDithered(int x, int y, int w, int h, uint32_t col_a, uint32_t co
         dirty_add(x0, y0, x1, y1);
         return;
     }
+    if (g_scaled) { flip_logical_rect(x0, y0, x1, y1); return; }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -697,6 +792,7 @@ void FB_BlitARGB(int x, int y, int w, const uint32_t *argb, int invert)
         dirty_add(x0, y, x1, y + 1);
         return;
     }
+    if (g_scaled) { flip_logical_rect(x0, y, x1, y + 1); return; }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -752,6 +848,7 @@ void FB_BlitRow(int x, int y, int n, const uint32_t *rgb)
         dirty_add(x0, y, x1, y + 1);
         return;
     }
+    if (g_scaled) { flip_logical_rect(x0, y, x1, y + 1); return; }
 
     uint8_t *base = (uint8_t *)(uintptr_t)g_fb.phys_addr;
     if (g_fb.bpp == 32) {
@@ -887,7 +984,9 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
     if (c < 0x20 || c > 0x7E) c = '?';
     const uint8_t *glyph = g_font8x16[c - 0x20];
 
-    if (g_drawing) {
+    /* Back-buffer writes cover drawing mode and scaled-direct mode — in the
+     * latter the glyph rect is pushed through the resampler afterwards. */
+    if (g_drawing || g_scaled) {
         for (int row = 0; row < 16; row++) {
             int py = y + row;
             if (py < 0) continue;
@@ -902,8 +1001,10 @@ void FB_PutChar(int x, int y, char ch, uint32_t fg, uint32_t bg)
             }
         }
         int dx0 = x, dy0 = y, dx1 = x + 8, dy1 = y + 16;
-        if (clip_rect(&dx0, &dy0, &dx1, &dy1))
-            dirty_add(dx0, dy0, dx1, dy1);
+        if (clip_rect(&dx0, &dy0, &dx1, &dy1)) {
+            if (g_drawing) dirty_add(dx0, dy0, dx1, dy1);
+            else           flip_logical_rect(dx0, dy0, dx1, dy1);
+        }
         return;
     }
 
@@ -1094,7 +1195,7 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
     if (c < 0x20 || c > 0x7E) c = '?';
     const uint8_t *glyph = g_font_small[c - 0x20];
 
-    if (g_drawing) {
+    if (g_drawing || g_scaled) {
         for (int row = 0; row < 8; row++) {
             int py = y + row;
             if (py < 0) continue;
@@ -1109,8 +1210,10 @@ void FB_PutCharSmall(int x, int y, char ch, uint32_t fg, uint32_t bg)
             }
         }
         int dx0 = x, dy0 = y, dx1 = x + 8, dy1 = y + 8;
-        if (clip_rect(&dx0, &dy0, &dx1, &dy1))
-            dirty_add(dx0, dy0, dx1, dy1);
+        if (clip_rect(&dx0, &dy0, &dx1, &dy1)) {
+            if (g_drawing) dirty_add(dx0, dy0, dx1, dy1);
+            else           flip_logical_rect(dx0, dy0, dx1, dy1);
+        }
         return;
     }
 
