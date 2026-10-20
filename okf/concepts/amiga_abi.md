@@ -4,7 +4,7 @@ title: Amiga Guest ABI
 description: The AmigaOS-compatible ABI layer — guest structure layouts, constants, and LVO conventions for M68k software.
 tags: [m68k, emulation, abi, ndk, amigaos]
 status: stable
-generated: { by: agent:devin, at: 2026-10-20T02:18:00Z }
+generated: { by: agent:devin, at: 2026-10-20T10:44:49Z }
 ---
 
 # Amiga Guest ABI
@@ -58,13 +58,47 @@ header values. `dos_lib.c` includes `amiga_task.h` directly; the glue keeps loca
   end-of-list INTREQ bit $0010; CIA-A owns the parallel port; CIA ICR bit 7 is
   interrupt status; AUDxVOL bit 6 forces volume 64.
 
+## BOOPSI Method ABI (UAOS-362)
+
+All guest-visible BOOPSI method IDs and message layouts are the real NDK
+values — NDK-compiled guest classes interoperate with the built-in classes in
+both directions (`DoSuperMethodA` into a native superclass, host-built messages
+into a guest dispatcher):
+
+- `OM_*` = `0x100`–`0x10A` (`intuition/classusr.h`): `opSet`, `opGet`,
+  `opUpdate`, `opAddTail`, `opMember` layouts match.
+- `GM_*` = `0`–`7` (`intuition/gadgetclass.h`, GM_DOMAIN is V47): `gpHitTest`,
+  `gpRender`, `gpInput`, `gpGoInactive`, `gpLayout`, `gpDomain` (embedded IBox
+  at `gpd_Domain`, `gpd_Which`/`gpd_Attrs`) layouts match. `GMR_*` return flags
+  are the real bit values (`GMR_MEACTIVE`=0, `GMR_NOREUSE`=2, `GMR_REUSE`=4,
+  `GMR_VERIFY`=8, `GMR_NEXTACTIVE`=16, `GMR_PREVACTIVE`=32,
+  `GMR_GADGETHIT`=4).
+- `IM_*` = `0x202`–`0x209` (`intuition/imageclass.h`): `impDraw`, `impErase`,
+  `impHitTest` layouts match (`imp_Offset` at +8, `imp_State` at +12,
+  `imp_DrInfo` at +16; `imp_Dimensions` carries the frame box for the
+  `*FRAME` variants — no `IBox*` pointer).
+- `gpi_IEvent` carries a real `struct InputEvent` (`devices/inputevent.i`):
+  `ie_Class`/`ie_SubClass` are UBYTEs at +4/+5, `ie_Code` UWORD at +6,
+  `ie_Qualifier` at +8, `ie_position` at +10/+12, `ie_TimeStamp` at +14
+  (22 bytes total). `IECLASS_RAWKEY`=0x01; `IECODE_UP_PREFIX`=0x80 marks
+  releases.
+
+UAOS-private extensions that live *past the NDK struct end* (safe — NDK
+classes never read them): `gpHitTest`+12 flags, `gpInput`+24 flags, `SGA_*`
+action codes in bits 8+ of `strgclass` GM_* return values
+(`SGA_END`=0x8000), and `IM_SIZECHANGE`/`IM_DOMAINFRAME`/`IM_SETDRWIDTH` at
+`0x500+` (no NDK counterpart).
+
 ## Intentional Divergences / Remaining Gaps
 
 - Guest demo sources still hand-roll LVOs/constants; vendoring the NDK `.i`
   includes is the main maintainability opportunity.
 - Host-side `MsgPort`/`Message`/`SignalSemaphore` structs in `dospacket.h` and
   `exec_ipc.c` deliberately differ from guest layouts (native-only objects).
-- `intuition_lib.h` GM_HANDLEINPUT uses a UAOS-private message layout.
+- BOOPSI guest-visible ABI is fully NDK-aligned (UAOS-362): method IDs,
+  `gpInput`/`gpDomain`/`impDraw`/`impHitTest` layouts, `GMR_*` flags, and the
+  `InputEvent` carried by `gpi_IEvent`.  Only trailing-field extensions and
+  the `SGA_*`/`IM_*` private ranges remain UAOS-specific.
 - Hardware gaps: several read-only custom registers (POTGOR, SERBYT, DENISEID,
   DSKDATR, HHPOSR, COPINS), CIA TOD/serial-shift/timer modes, AGA display
   registers, blitter completion IRQ, audio attach/looping details.

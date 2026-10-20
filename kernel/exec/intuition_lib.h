@@ -1200,30 +1200,41 @@ typedef struct {
 #define IDS_INACTIVEDISABLED 7
 
 /* -------------------------------------------------------------------------
- * SGA_* — string gadget actions (returned by GM_HANDLEINPUT)
+ * SGA_* — UAOS-private string gadget actions OR'd into the high byte of
+ * GM_HANDLEINPUT/GM_GOINACTIVE return values (bits 0-5 are the real NDK
+ * GMR_* flags; NDK-compiled gadgets may ignore the extension).
  * ------------------------------------------------------------------------- */
 #define SGA_NONE       0
 #define SGA_USE        0  /* same as SGA_NONE — use the current value */
-#define SGA_EXIT       1  /* exit the string gadget */
-#define SGA_NEXT       2  /* move to next string gadget */
-#define SGA_PREV       3  /* move to previous string gadget */
-#define SGA_REDISPLAY  4  /* redraw the string gadget */
-#define SGA_ACTIVE     5  /* gadget became active */
+#define SGA_EXIT       (1 << 8)  /* exit the string gadget */
+#define SGA_NEXT       (2 << 8)  /* move to next string gadget */
+#define SGA_PREV       (3 << 8)  /* move to previous string gadget */
+#define SGA_REDISPLAY  (4 << 8)  /* redraw the string gadget */
+#define SGA_ACTIVE     (5 << 8)  /* gadget became active */
 #define SGA_END        0x8000  /* OR with action to signal completion */
 
 /* -------------------------------------------------------------------------
- * InputEvent structure offsets (for GM_HANDLEINPUT)
+ * InputEvent structure offsets (for GM_HANDLEINPUT gpi_IEvent)
+ * Real NDK layout (devices/inputevent.i): Class/SubClass are UBYTEs.
  * ------------------------------------------------------------------------- */
 #define IE_OFF_NEXT     0    /* struct InputEvent *ie_NextEvent */
-#define IE_OFF_CLASS    4    /* UWORD ie_Class */
-#define IE_OFF_SUBCLASS 6    /* UWORD ie_SubClass */
-#define IE_OFF_CODE     8    /* UWORD ie_Code */
-#define IE_OFF_QUAL     10   /* UWORD ie_Qualifier */
+#define IE_OFF_CLASS    4    /* UBYTE ie_Class */
+#define IE_OFF_SUBCLASS 5    /* UBYTE ie_SubClass */
+#define IE_OFF_CODE     6    /* UWORD ie_Code */
+#define IE_OFF_QUAL     8    /* UWORD ie_Qualifier */
+#define IE_OFF_X        10   /* WORD  ie_position.ie_x */
+#define IE_OFF_Y        12   /* WORD  ie_position.ie_y */
+#define IE_OFF_STAMP    14   /* struct timeval ie_TimeStamp (8 bytes) */
+#define IE_SIZE         22   /* ie_SIZEOF */
 
-/* InputEvent classes */
-#define IECLASS_RAWKEY     0x11
-#define IECLASS_RAWMOUSE   0x12
-#define IECLASS_TIMER      0x1F
+/* InputEvent classes (devices/inputevent.h) */
+#define IECLASS_RAWKEY     0x01
+#define IECLASS_RAWMOUSE   0x02
+#define IECLASS_EVENT      0x03
+#define IECLASS_TIMER      0x06
+
+/* ie_Code for IECLASS_RAWKEY: rawkey code | IECODE_UP_PREFIX on release */
+#define IECODE_UP_PREFIX   0x80
 
 /* Raw key codes (ie_Code for IECLASS_RAWKEY, pressed) */
 #define IEKEY_RETURN    0x44
@@ -1497,39 +1508,44 @@ typedef struct {
 /* CLASS_OFF_FLAGS bits */
 #define CLASS_FLAG_NATIVE     0x0001
 
-/* BOOPSI root methods */
-#define OM_NEW         1
-#define OM_DISPOSE     2
-#define OM_SET         3
-#define OM_GET         4
-#define OM_ADDTAIL     5
-#define OM_REMOVE      6
-#define OM_ADDMEMBER   7
-#define OM_REMMEMBER   8
-#define OM_NOTIFY      9
-#define OM_UPDATE      10
+/* BOOPSI root methods — real NDK values (intuition/classusr.h) */
+#define OM_Dummy       0x100
+#define OM_NEW         0x101
+#define OM_DISPOSE     0x102
+#define OM_SET         0x103
+#define OM_GET         0x104
+#define OM_ADDTAIL     0x105
+#define OM_REMOVE      0x106
+#define OM_NOTIFY      0x107
+#define OM_UPDATE      0x108
+#define OM_ADDMEMBER   0x109
+#define OM_REMMEMBER   0x10A
 
-/* Gadget methods (GM_*) */
-#define GM_HITTEST      0x64
-#define GM_RENDER       0x65
-#define GM_GOACTIVE     0x66
-#define GM_HANDLEINPUT  0x67
-#define GM_GOINACTIVE   0x68
-#define GM_LAYOUT       0x69
-#define GM_DOMAIN       0x6A
+/* Gadget methods (GM_*) — real NDK values (intuition/gadgetclass.h).
+ * GM_HELPTEST is V37; GM_DOMAIN arrived with the V47 header set. */
+#define GM_HITTEST      0
+#define GM_RENDER       1
+#define GM_GOACTIVE     2
+#define GM_HANDLEINPUT  3
+#define GM_GOINACTIVE   4
+#define GM_HELPTEST     5
+#define GM_LAYOUT       6
+#define GM_DOMAIN       7
 
-/* Image methods (IM_*) — canonical AmigaOS method IDs (intuition/classes.h) */
+/* Image methods (IM_*) — real NDK values (intuition/imageclass.h) */
 #define IM_DRAW         0x202
 #define IM_HITTEST      0x203
 #define IM_ERASE        0x204
 #define IM_MOVE         0x205
-#define IM_SIZECHANGE   0x206
-#define IM_DRAWFRAME    0x207
-#define IM_FRAMEBOX     0x208
-#define IM_HITFRAME     0x209
-#define IM_ERASEFRAME   0x20A
-#define IM_DOMAINFRAME  0x20B
-#define IM_SETDRWIDTH   0x20C
+#define IM_DRAWFRAME    0x206
+#define IM_FRAMEBOX     0x207
+#define IM_HITFRAME     0x208
+#define IM_ERASEFRAME   0x209
+
+/* UAOS-private image methods — no NDK counterpart */
+#define IM_SIZECHANGE   0x500
+#define IM_DOMAINFRAME  0x501
+#define IM_SETDRWIDTH   0x502
 
 /* BOOPSI messages (field offsets within the guest message block) */
 #define MSG_OFF_METHODID   0
@@ -1549,9 +1565,16 @@ typedef struct {
 #define GMLAYOUT_OFF_GINFO    4
 #define GMLAYOUT_OFF_INITIAL  8
 
-/* GM_DOMAIN message (gpDomain): { MethodID, GInfo, IBox* } */
+/* GM_DOMAIN message (gpDomain — V47 gadgetclass.h):
+ * { MethodID, GInfo, RPort, Which, IBox Domain (embedded), TagItem* Attrs } */
 #define GMDOMAIN_OFF_GINFO    4
-#define GMDOMAIN_OFF_DOMAIN   8
+#define GMDOMAIN_OFF_RPORT    8
+#define GMDOMAIN_OFF_WHICH    12
+#define GMDOMAIN_OFF_DOMAIN   16   /* embedded IBox — the gadget fills this */
+#define GMDOMAIN_OFF_ATTRS    24
+#define GDOMAIN_MINIMUM       0
+#define GDOMAIN_NOMINAL       1
+#define GDOMAIN_MAXIMUM       2
 
 /* IBox structure: { WORD Left, Top; WORD Width, Height; } — 8 bytes */
 #define IBOX_OFF_LEFT    0
@@ -1559,37 +1582,49 @@ typedef struct {
 #define IBOX_OFF_WIDTH   4
 #define IBOX_OFF_HEIGHT  6
 
-/* IM_DRAW message (impDraw) — canonical layout:
- * { MethodID, RastPort, DrawInfo, Offset{X,Y}, State } */
+/* IM_DRAW message (impDraw — imageclass.h):
+ * { MethodID, RastPort, Offset{X,Y}, State, DrawInfo, Dimensions }
+ * imp_Dimensions is present only for IM_DRAWFRAME. */
 #define IMDRAW_OFF_RPORT    4
-#define IMDRAW_OFF_DRAWINFO 8
-#define IMDRAW_OFF_OFFSETX  12   /* WORD */
-#define IMDRAW_OFF_OFFSETY  14   /* WORD */
-#define IMDRAW_OFF_STATE    16
+#define IMDRAW_OFF_OFFSETX  8    /* WORD */
+#define IMDRAW_OFF_OFFSETY  10   /* WORD */
+#define IMDRAW_OFF_STATE    12
+#define IMDRAW_OFF_DRAWINFO 16
+#define IMDRAW_OFF_WIDTH    20   /* WORD — IM_DRAWFRAME only */
+#define IMDRAW_OFF_HEIGHT   22   /* WORD — IM_DRAWFRAME only */
 
-/* IM_ERASE message (impErase):
- * { MethodID, RastPort, DrawInfo, Offset{X,Y} } */
+/* IM_ERASE message (impErase — subset of impDraw):
+ * { MethodID, RastPort, Offset{X,Y}, Dimensions }
+ * imp_Dimensions is present only for IM_ERASEFRAME. */
 #define IMERASE_OFF_RPORT    4
-#define IMERASE_OFF_DRAWINFO 8
-#define IMERASE_OFF_OFFSETX  12  /* WORD */
-#define IMERASE_OFF_OFFSETY  14  /* WORD */
+#define IMERASE_OFF_OFFSETX  8   /* WORD */
+#define IMERASE_OFF_OFFSETY  10  /* WORD */
+#define IMERASE_OFF_WIDTH    12  /* WORD — IM_ERASEFRAME only */
+#define IMERASE_OFF_HEIGHT   14  /* WORD — IM_ERASEFRAME only */
 
-/* IM_DRAWFRAME message (impDrawFrame):
- * { MethodID, RastPort, DrawInfo, Offset{X,Y}, IBox* Frame, State } */
-#define IMDRAWFRAME_OFF_RPORT    4
-#define IMDRAWFRAME_OFF_DRAWINFO 8
-#define IMDRAWFRAME_OFF_OFFSETX  12  /* WORD */
-#define IMDRAWFRAME_OFF_OFFSETY  14  /* WORD */
-#define IMDRAWFRAME_OFF_FRAME    16
-#define IMDRAWFRAME_OFF_STATE    20
+/* IM_HITTEST message (impHitTest):
+ * { MethodID, Point{X,Y}, Dimensions }
+ * imp_Dimensions is present only for IM_HITFRAME. */
+#define IMHIT_OFF_POINTX    4    /* WORD */
+#define IMHIT_OFF_POINTY    6    /* WORD */
+#define IMHIT_OFF_WIDTH     8    /* WORD — IM_HITFRAME only */
+#define IMHIT_OFF_HEIGHT    10   /* WORD — IM_HITFRAME only */
 
-/* IM_ERASEFRAME message (impEraseFrame):
- * { MethodID, RastPort, DrawInfo, Offset{X,Y}, IBox* Frame } */
-#define IMERASEFRAME_OFF_RPORT    4
-#define IMERASEFRAME_OFF_DRAWINFO 8
-#define IMERASEFRAME_OFF_OFFSETX  12  /* WORD */
-#define IMERASEFRAME_OFF_OFFSETY  14  /* WORD */
-#define IMERASEFRAME_OFF_FRAME    16
+/* IM_DRAWFRAME aliases into the impDraw layout */
+#define IMDRAWFRAME_OFF_RPORT    IMDRAW_OFF_RPORT
+#define IMDRAWFRAME_OFF_OFFSETX  IMDRAW_OFF_OFFSETX
+#define IMDRAWFRAME_OFF_OFFSETY  IMDRAW_OFF_OFFSETY
+#define IMDRAWFRAME_OFF_STATE    IMDRAW_OFF_STATE
+#define IMDRAWFRAME_OFF_DRAWINFO IMDRAW_OFF_DRAWINFO
+#define IMDRAWFRAME_OFF_WIDTH    IMDRAW_OFF_WIDTH
+#define IMDRAWFRAME_OFF_HEIGHT   IMDRAW_OFF_HEIGHT
+
+/* IM_ERASEFRAME aliases into the impErase layout */
+#define IMERASEFRAME_OFF_RPORT    IMERASE_OFF_RPORT
+#define IMERASEFRAME_OFF_OFFSETX  IMERASE_OFF_OFFSETX
+#define IMERASEFRAME_OFF_OFFSETY  IMERASE_OFF_OFFSETY
+#define IMERASEFRAME_OFF_WIDTH    IMERASE_OFF_WIDTH
+#define IMERASEFRAME_OFF_HEIGHT   IMERASE_OFF_HEIGHT
 
 /* Dispatch entry point called from uaos_m68k_glue.c */
 void UAOS_Intuition_Dispatch(uint32_t fn);

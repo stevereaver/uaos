@@ -71,9 +71,14 @@ extern void         UAOS_Graphics_Dispatch(uint32_t fn);
 #define GMGI_OFF_GINFO   4
 #define GMGI_OFF_ABORT   8
 
-#define GMR_NOREUSE   0
-#define GMR_REUSE     1
-#define GMR_MEACTIVE  2
+/* GMR_* return flags — real NDK values (intuition/gadgetclass.h) */
+#define GMR_MEACTIVE   0
+#define GMR_NOREUSE    (1 << 1)
+#define GMR_REUSE      (1 << 2)
+#define GMR_VERIFY     (1 << 3)
+#define GMR_NEXTACTIVE (1 << 4)
+#define GMR_PREVACTIVE (1 << 5)
+#define GMR_GADGETHIT  0x00000004   /* GM_HITTEST hit */
 
 static inline uint32_t mem_u32(uint32_t a)
 {
@@ -430,7 +435,7 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
         case GM_HITTEST: {
             int16_t mx = mem_s16(msg + GMHT_OFF_MOUSEX);
             int16_t my = mem_s16(msg + GMHT_OFF_MOUSEY);
-            return gadget_point_inside(obj, mx, my) ? 1 : 0;
+            return gadget_point_inside(obj, mx, my) ? GMR_GADGETHIT : 0;
         }
         case GM_RENDER: {
             uint32_t rport = mem_u32(msg + GMR_OFF_RPORT);
@@ -477,20 +482,17 @@ static uint32_t gadgetclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         case GM_DOMAIN: {
-            /* Return the gadget's domain rectangle in the IBox* at
-             * GMDOMAIN_OFF_DOMAIN.  For the base gadgetclass the domain
-             * is the gadget's own LeftEdge/TopEdge/Width/Height. */
-            uint32_t domain = mem_u32(msg + GMDOMAIN_OFF_DOMAIN);
-            if (domain) {
-                int16_t left  = mem_s16(obj + GAD_OFF_LEFTEDGE);
-                int16_t top   = mem_s16(obj + GAD_OFF_TOPEDGE);
-                int16_t width = mem_s16(obj + GAD_OFF_WIDTH);
-                int16_t height = mem_s16(obj + GAD_OFF_HEIGHT);
-                mem_w16(domain + IBOX_OFF_LEFT,   (uint16_t)left);
-                mem_w16(domain + IBOX_OFF_TOP,    (uint16_t)top);
-                mem_w16(domain + IBOX_OFF_WIDTH,  (uint16_t)width);
-                mem_w16(domain + IBOX_OFF_HEIGHT, (uint16_t)height);
-            }
+            /* gpDomain (V47): report the gadget's own box in the embedded
+             * gpd_Domain IBox.  For the base gadgetclass MINIMUM/NOMINAL/
+             * MAXIMUM all collapse to the gadget's declared geometry. */
+            int16_t left  = mem_s16(obj + GAD_OFF_LEFTEDGE);
+            int16_t top   = mem_s16(obj + GAD_OFF_TOPEDGE);
+            int16_t width = mem_s16(obj + GAD_OFF_WIDTH);
+            int16_t height = mem_s16(obj + GAD_OFF_HEIGHT);
+            mem_w16(msg + GMDOMAIN_OFF_DOMAIN + IBOX_OFF_LEFT,   (uint16_t)left);
+            mem_w16(msg + GMDOMAIN_OFF_DOMAIN + IBOX_OFF_TOP,    (uint16_t)top);
+            mem_w16(msg + GMDOMAIN_OFF_DOMAIN + IBOX_OFF_WIDTH,  (uint16_t)width);
+            mem_w16(msg + GMDOMAIN_OFF_DOMAIN + IBOX_OFF_HEIGHT, (uint16_t)height);
             return 1;
         }
         default:
@@ -652,8 +654,8 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         case IM_DRAWFRAME: {
-            /* impDrawFrame: { MethodID, RPort, IBox* Frame, OffsetX, OffsetY, State }
-             * Like IM_DRAW but clipped to the frame rectangle.  We draw
+            /* impDraw (NDK): MethodID, RPort, Offset{X,Y}, State, DrInfo,
+             * Dimensions{W,H} — the Dimensions give the frame box.  We draw
              * the image normally; the caller is responsible for setting
              * up the clipping layer. */
             uint32_t rport = mem_u32(msg + IMDRAWFRAME_OFF_RPORT);
@@ -661,7 +663,7 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             int32_t  yoff  = (int32_t)mem_s16(msg + IMDRAWFRAME_OFF_OFFSETY);
             uint32_t state = mem_u32(msg + IMDRAWFRAME_OFF_STATE);
             (void)state;
-            (void)mem_u32(msg + IMDRAWFRAME_OFF_FRAME); /* clip frame — layers handle this */
+            (void)mem_s16(msg + IMDRAWFRAME_OFF_WIDTH);  /* frame box — layers clip */
 
             int32_t w  = (int32_t)mem_s16(obj + BIMG_OFF_WIDTH);
             int32_t h  = (int32_t)mem_s16(obj + BIMG_OFF_HEIGHT);
@@ -685,12 +687,12 @@ static uint32_t imageclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
             return 1;
         }
         case IM_ERASEFRAME: {
-            /* impEraseFrame: { MethodID, RPort, IBox* Frame, OffsetX, OffsetY }
-             * Like IM_ERASE but clipped to the frame rectangle. */
+            /* impErase (NDK): MethodID, RPort, Offset{X,Y}, Dimensions{W,H}
+             * — like IM_ERASE but clipped to the frame dimensions. */
             uint32_t rport = mem_u32(msg + IMERASEFRAME_OFF_RPORT);
             int32_t  xoff  = (int32_t)mem_s16(msg + IMERASEFRAME_OFF_OFFSETX);
             int32_t  yoff  = (int32_t)mem_s16(msg + IMERASEFRAME_OFF_OFFSETY);
-            (void)mem_u32(msg + IMERASEFRAME_OFF_FRAME);
+            (void)mem_s16(msg + IMERASEFRAME_OFF_WIDTH);
 
             int32_t w  = (int32_t)mem_s16(obj + BIMG_OFF_WIDTH);
             int32_t h  = (int32_t)mem_s16(obj + BIMG_OFF_HEIGHT);
@@ -1810,14 +1812,16 @@ static uint32_t strgclass_dispatch(uint32_t cls, uint32_t obj, uint32_t msg)
         }
         case GM_HANDLEINPUT: {
             /* Process keyboard input for the string gadget.
+             * gpi_IEvent points to a real struct InputEvent (devices/
+             * inputevent.i layout: UBYTE Class @4, UWORD Code @6).
              * Return SGA_* action codes OR'd with GMR_* flags. */
             uint32_t ievent = mem_u32(msg + GMI_OFF_IEVENT);
-            if (ievent && ievent + 12 <= GUEST_RAM_SIZE) {
-                uint16_t ie_class = mem_u16(ievent + IE_OFF_CLASS);
+            if (ievent && ievent + IE_SIZE <= GUEST_RAM_SIZE) {
+                uint8_t  ie_class = g_ram[ievent + IE_OFF_CLASS];
                 uint16_t ie_code  = mem_u16(ievent + IE_OFF_CODE);
                 if (ie_class == IECLASS_RAWKEY) {
-                    /* Key press (bit 0 of ie_Code clear = pressed). */
-                    if (!(ie_code & 0x8000)) {
+                    /* Key press (IECODE_UP_PREFIX clear = pressed). */
+                    if (!(ie_code & IECODE_UP_PREFIX)) {
                         uint16_t key = ie_code & 0x7F;
                         if (key == IEKEY_RETURN) {
                             /* Commit and exit. */

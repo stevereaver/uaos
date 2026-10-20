@@ -7916,9 +7916,12 @@ static uint32_t intu_resolve_font_attr(uint32_t text_attr)
  * impHitTest messages are built on the guest heap (freed after the call,
  * since InvokeM68kHook is synchronous).
  * ------------------------------------------------------------------------- */
-/* impDraw:  {MethodID, RastPort, DrawInfo, Offset{X,Y}, State} = 20 */
-/* impErase: {MethodID, RastPort, DrawInfo, Offset{X,Y}}        = 16 */
-/* impHitTest:{MethodID, Point{X,Y}, DrawInfo}                  = 12 */
+/* impDraw (NDK imageclass.h): {MethodID, RPort, Offset{X,Y}, State, DrInfo,
+ *                              Dimensions{W,H} (DRAWFRAME only)}         */
+/* impErase:                   {MethodID, RPort, Offset{X,Y}, Dimensions
+ *                              (ERASEFRAME only)}                       */
+/* impHitTest:                 {MethodID, Point{X,Y}, Dimensions
+ *                              (HITFRAME only)}                         */
 
 static int image_is_boopsi(uint32_t image)
 {
@@ -7938,16 +7941,15 @@ static uint32_t image_method_call(uint32_t image, uint32_t msg,
         return 0;
     mem_w32(msg + 0, method_id);
     if (method_id == IM_HITTEST) {
-        mem_w16(msg + 4, (uint16_t)x);   /* Point.X/Y at +4/+6 */
-        mem_w16(msg + 6, (uint16_t)y);
-        mem_w32(msg + 8, drawinfo);
+        mem_w16(msg + IMHIT_OFF_POINTX, (uint16_t)x);   /* Point.X/Y at +4/+6 */
+        mem_w16(msg + IMHIT_OFF_POINTY, (uint16_t)y);
     } else {
-        mem_w32(msg + 4, rp);
-        mem_w32(msg + 8, drawinfo);
-        mem_w16(msg + 12, (uint16_t)x);  /* Offset.X/Y */
-        mem_w16(msg + 14, (uint16_t)y);
+        mem_w32(msg + IMDRAW_OFF_RPORT, rp);
+        mem_w16(msg + IMDRAW_OFF_OFFSETX, (uint16_t)x);
+        mem_w16(msg + IMDRAW_OFF_OFFSETY, (uint16_t)y);
         if (method_id == IM_DRAW)
-            mem_w32(msg + 16, state);
+            mem_w32(msg + IMDRAW_OFF_STATE, state);
+        mem_w32(msg + IMDRAW_OFF_DRAWINFO, drawinfo);
     }
     return UAOS_InvokeM68kHook(cl + CLASS_OFF_DISPATCHER, cl, msg, image);
 }
