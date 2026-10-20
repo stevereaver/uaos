@@ -78,6 +78,10 @@ int      chip_emu_timing_lock_test(void);
 
 /* Tier 5: CIA timers */
 void     chip_emu_cia_tick(void);
+void     chip_emu_cia_set_flag(int id, int level); /* FLAG pin (CIAA=BUSY) */
+void     chip_emu_cia_set_cnt(int id, int level);  /* CNT pin level */
+void     chip_emu_cia_set_sp(int id, int level);   /* SP pin level */
+int      chip_emu_cia_test(void);
 
 /* Guest interrupt state for per-task M68k dispatch (UAOS-241): per-task
  * Musashi contexts have no usable exception-vector table, so exec polls

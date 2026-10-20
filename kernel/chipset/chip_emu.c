@@ -1893,12 +1893,26 @@ typedef struct CIA_Timer {
     uint16_t latch;
     uint16_t counter;
     uint8_t  cra;
+    int      pb_out;   /* PB6 (timer A) / PB7 (timer B) pin level while the
+                        * PBON bit routes the underflow to the pin */
 } CIA_Timer;
 
 typedef struct CIA_State {
     CIA_Timer ta;
     CIA_Timer tb;
-    uint32_t  tod;     /* BCD-ish 24-bit TOD counter */
+    uint8_t   tod[3];       /* TOD: [0]=tenths [1]=seconds [2]=minutes */
+    uint8_t   tod_latch[3]; /* read-latch: TOD_HI read freezes MID+LO */
+    uint8_t   alarm[3];     /* TOD alarm (written while CRB.7=1) */
+    uint32_t  tod_accum;    /* E-clock accumulator toward the next 1/10 s */
+    int       tod_running;  /* 8520 holds the clock while TOD_HI is written */
+    int       tod_latched;  /* MID/LO frozen until TOD_LO is read */
+    uint8_t   sdr;          /* serial data register */
+    int       sdr_out_bits; /* bits left in an output-mode (SPMODE=1) shift */
+    uint32_t  sdr_out_accum;/* E-clock accumulator toward the next out bit */
+    int       sdr_in_count; /* input-mode bits collected toward ICR.SP */
+    int       sp_pin;       /* SP input pin level (idle high) */
+    int       cnt_pin;      /* CNT input pin level (idle high) */
+    int       flag_pin;     /* FLAG input pin level (idle high) */
     uint8_t   pra, prb;
     uint8_t   ddra, ddrb;
     uint8_t   icr;
@@ -2103,12 +2117,21 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
         case CIA_REG_PRB: {
             /* Real wiring: parallel-port data lives on CIA-A PRB ($BFE101);
              * CIA-B PRB is floppy drive control — input bits float high. */
+            uint8_t v;
             if (cia == &g_cia_a) {
                 uint8_t c = 0;
                 lpt1_recv(&c);
-                return (cia->prb & cia->ddrb) | (c & ~cia->ddrb);
+                v = (uint8_t)((cia->prb & cia->ddrb) | (c & ~cia->ddrb));
+            } else {
+                v = (uint8_t)((cia->prb & cia->ddrb) | (~cia->ddrb & 0xFFu));
             }
-            return (cia->prb & cia->ddrb) | (~cia->ddrb & 0xFFu);
+            /* PB6/PB7 are timer outputs while PBON=1 — the underflow pin
+             * level overrides the port register regardless of DDRB. */
+            if (cia->ta.cra & 0x02u)
+                v = (uint8_t)((v & ~0x40u) | (cia->ta.pb_out ? 0x40u : 0u));
+            if (cia->tb.cra & 0x02u)
+                v = (uint8_t)((v & ~0x80u) | (cia->tb.pb_out ? 0x80u : 0u));
+            return v;
         }
         case CIA_REG_DDRA: return cia->ddra;
         case CIA_REG_DDRB: return cia->ddrb;
@@ -2116,15 +2139,26 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
         case CIA_REG_TAHI: return (cia_read_timer(&cia->ta) >> 8) & 0xFFu;
         case CIA_REG_TBLO: return cia_read_timer(&cia->tb) & 0xFFu;
         case CIA_REG_TBHI: return (cia_read_timer(&cia->tb) >> 8) & 0xFFu;
-        case CIA_REG_TOD_LO: return cia->tod & 0xFFu;
-        case CIA_REG_TOD_MID: return (cia->tod >> 8) & 0xFFu;
-        case CIA_REG_TOD_HI: return (cia->tod >> 16) & 0xFFu;
+        /* 8520 TOD read latching: reading TOD_HI freezes MID+LO so the
+         * bytes are coherent; reading TOD_LO releases the latch. */
+        case CIA_REG_TOD_LO: {
+            uint8_t v = cia->tod_latched ? cia->tod_latch[0] : cia->tod[0];
+            cia->tod_latched = 0;
+            return v;
+        }
+        case CIA_REG_TOD_MID:
+            return cia->tod_latched ? cia->tod_latch[1] : cia->tod[1];
+        case CIA_REG_TOD_HI:
+            cia->tod_latch[0] = cia->tod[0];
+            cia->tod_latch[1] = cia->tod[1];
+            cia->tod_latched = 1;
+            return cia->tod[2];
         case CIA_REG_SDR: {
             if (cia == &g_cia_a) {
                 int v = kbd_sdr_pop();
-                return (v >= 0) ? (uint32_t)v : 0;
+                return (v >= 0) ? (uint32_t)v : cia->sdr;
             }
-            return 0;
+            return cia->sdr;
         }
         case CIA_REG_ICR: {
             uint32_t v = cia->icr;
@@ -2132,8 +2166,9 @@ static uint32_t cia_read(CIA_State *cia, int reg, int width_bytes)
             cia_irq_reval(cia == &g_cia_a ? 0 : 1);
             return v;
         }
-        case CIA_REG_CRA: return cia->ta.cra;
-        case CIA_REG_CRB: return cia->tb.cra;
+        /* LOAD (bit 4) is a write-only strobe — reads back as 0. */
+        case CIA_REG_CRA: return cia->ta.cra & ~0x10u;
+        case CIA_REG_CRB: return cia->tb.cra & ~0x10u;
         default: return 0;
     }
 }
@@ -2188,13 +2223,33 @@ static void cia_write(CIA_State *cia, int reg, uint32_t value, int width_bytes)
         case CIA_REG_TAHI: cia_write_timer_hi(&cia->ta, v); break;
         case CIA_REG_TBLO: cia_write_timer_lo(&cia->tb, v); break;
         case CIA_REG_TBHI: cia_write_timer_hi(&cia->tb, v); break;
-        case CIA_REG_TOD_LO: cia->tod = (cia->tod & 0xFFFF00u) | v; break;
-        case CIA_REG_TOD_MID: cia->tod = (cia->tod & 0xFF00FFu) | ((uint32_t)v << 8); break;
-        case CIA_REG_TOD_HI: cia->tod = (cia->tod & 0x00FFFFu) | ((uint32_t)v << 16); break;
+        case CIA_REG_TOD_LO:
+        case CIA_REG_TOD_MID:
+        case CIA_REG_TOD_HI: {
+            int idx = reg - CIA_REG_TOD_LO;
+            if (cia->tb.cra & 0x80u) {
+                /* CRB ALARM: TOD writes land on the alarm latch. */
+                cia->alarm[idx] = v;
+            } else {
+                /* 8520: writing TOD_HI halts the clock; writing TOD_LO
+                 * starts it, so HI→MID→LO sets the time coherently. */
+                cia->tod[idx] = v;
+                if (reg == CIA_REG_TOD_HI)      cia->tod_running = 0;
+                else if (reg == CIA_REG_TOD_LO) cia->tod_running = 1;
+            }
+            break;
+        }
         case CIA_REG_SDR: {
-            /* CIAA SDR writes are keyboard commands; CIAB SDR writes are
-             * external serial.  Both are accepted and ignored for now. */
-            (void)v;
+            cia->sdr = v;
+            if (cia->ta.cra & 0x40u) {
+                /* SPMODE=1: output shift — 8 bits out on SP, one CNT clock
+                 * pulse each, then the SP (bit 3) ICR flag. */
+                cia->sdr_out_bits = 8;
+                cia->sdr_out_accum = 0;
+            } else if (cia == &g_cia_a) {
+                /* CIAA SDR writes in input mode are keyboard commands
+                 * (caps-lock LED etc.) — accepted, no emulation needed. */
+            }
             break;
         }
         case CIA_REG_ICR: {
@@ -2372,6 +2427,84 @@ void chip_emu_audio_tick(void)
 #define CIA_E_CLOCK_HZ      709379u
 #define CIA_TICKS_PER_PIT   (CIA_E_CLOCK_HZ / 100u)
 
+/* Decrement a CIA timer by `dec` count pulses.  Handles reload vs one-shot
+ * stop (RUNMODE bit 3), the PB6/PB7 pin output (PBON/OUTMODE bits 1:2) and
+ * the timer's ICR flag.  Returns the number of underflow events so timer A
+ * can cascade into a TA-fed timer B. */
+static int cia_timer_dec(CIA_State *cia, CIA_Timer *tm, uint8_t tbit,
+                         int id, uint32_t dec)
+{
+    int underflows = 0, guard = 128;
+    while (dec && guard-- > 0) {
+        if (tm->counter > dec) { tm->counter -= (uint16_t)dec; break; }
+        dec -= tm->counter;
+        underflows++;
+        if (tm->cra & 0x02u) {                    /* PBON: drive PB6/PB7 */
+            if (tm->cra & 0x04u) tm->pb_out ^= 1; /* OUTMODE=1: toggle */
+            else                 tm->pb_out = 0;  /* OUTMODE=0: low pulse */
+        }
+        if (tm->cra & 0x08u) {          /* one-shot: reload, stop */
+            tm->counter = tm->latch;
+            tm->cra &= ~1u;
+            dec = 0;
+        } else {                        /* continuous: reload */
+            tm->counter = tm->latch;
+        }
+        cia->icr |= tbit;
+    }
+    if (underflows) cia_irq_reval(id);
+    return underflows;
+}
+
+/* Feed one positive CNT-pin edge into a CIA: samples one SP bit into the
+ * SDR while the serial port is in input mode, and counts any timer whose
+ * input mode selects the CNT pin (CRA.5 for timer A; CRB.6:5==01 for
+ * timer B). */
+static void cia_cnt_edge(CIA_State *cia, int id)
+{
+    if (!(cia->ta.cra & 0x40u)) {           /* SPMODE=0: serial input */
+        cia->sdr = (uint8_t)((cia->sdr << 1) | (cia->sp_pin & 1));
+        if (++cia->sdr_in_count >= 8) {
+            cia->sdr_in_count = 0;
+            cia->icr |= 0x08u;
+            cia_irq_reval(id);
+        }
+    }
+    if ((cia->ta.cra & 1u) && (cia->ta.cra & 0x20u))
+        cia_timer_dec(cia, &cia->ta, 0x01u, id, 1);
+    if ((cia->tb.cra & 1u) && ((cia->tb.cra >> 5) & 3u) == 1u)
+        cia_timer_dec(cia, &cia->tb, 0x02u, id, 1);
+}
+
+/* CIA input-pin level hooks (8520 FLAG/SP/CNT semantics).  FLAG sets ICR
+ * bit 4 on a negative edge — CIAA's FLAG pin is the parallel-port BUSY
+ * line, CIAB's is the serial-port RI line.  CNT positive edges feed
+ * CNT-clocked timers and input-mode serial shifts; SP is the serial data
+ * level sampled on those edges. */
+void chip_emu_cia_set_flag(int id, int level)
+{
+    CIA_State *c = cia_state(id);
+    level = level ? 1 : 0;
+    if (c->flag_pin && !level) {
+        c->icr |= 0x10u;
+        cia_irq_reval(id);
+    }
+    c->flag_pin = level;
+}
+
+void chip_emu_cia_set_cnt(int id, int level)
+{
+    CIA_State *c = cia_state(id);
+    level = level ? 1 : 0;
+    if (!c->cnt_pin && level) cia_cnt_edge(c, id);
+    c->cnt_pin = level;
+}
+
+void chip_emu_cia_set_sp(int id, int level)
+{
+    cia_state(id)->sp_pin = level ? 1 : 0;
+}
+
 void chip_emu_cia_tick(void)
 {
     if (g_blitter_busy && g_blitter_busy_ticks > 0) {
@@ -2383,28 +2516,72 @@ void chip_emu_cia_tick(void)
     CIA_State *cias[2] = { &g_cia_a, &g_cia_b };
     for (int i = 0; i < 2; i++) {
         CIA_State *cia = cias[i];
-        for (int t = 0; t < 2; t++) {
-            CIA_Timer *tm = (t == 0) ? &cia->ta : &cia->tb;
-            if (!(tm->cra & 1u)) continue; /* not running */
-            uint32_t dec = CIA_TICKS_PER_PIT;
-            uint8_t tbit = (t == 0) ? 0x01u : 0x02u;
-            int guard = 64;
-            while (dec && guard-- > 0) {
-                if (tm->counter > dec) { tm->counter -= (uint16_t)dec; break; }
-                /* underflow during this tick */
-                dec -= tm->counter;
-                if (tm->cra & 0x08u) {          /* one-shot: reload, stop */
-                    tm->counter = tm->latch;
-                    tm->cra &= ~1u;
-                    dec = 0;
-                } else {                        /* continuous: reload */
-                    tm->counter = tm->latch;
+
+        /* Pulse-mode PB6/PB7: on real silicon the underflow pulse is one
+         * E-clock wide — model it as one host tick. */
+        if ((cia->ta.cra & 0x06u) == 0x02u) cia->ta.pb_out = 1;
+        if ((cia->tb.cra & 0x06u) == 0x02u) cia->tb.pb_out = 1;
+
+        /* Timer A — CRA.5 INMODE: 0 = E-clock, 1 = CNT pin edges. */
+        int ta_ufs = 0;
+        if ((cia->ta.cra & 1u) && !(cia->ta.cra & 0x20u))
+            ta_ufs = cia_timer_dec(cia, &cia->ta, 0x01u, i, CIA_TICKS_PER_PIT);
+
+        /* Timer B — CRB.6:5 INMODE: 00 E-clock, 01 CNT pin, 10 timer-A
+         * underflow, 11 timer-A underflow while CNT is high. */
+        if (cia->tb.cra & 1u) {
+            uint32_t dec = 0;
+            switch ((cia->tb.cra >> 5) & 3u) {
+                case 0:  dec = CIA_TICKS_PER_PIT; break;
+                case 2:  dec = (uint32_t)ta_ufs;  break;
+                case 3:  dec = cia->cnt_pin ? (uint32_t)ta_ufs : 0; break;
+                default: break; /* 01 = CNT edges via cia_cnt_edge() */
+            }
+            if (dec) cia_timer_dec(cia, &cia->tb, 0x02u, i, dec);
+        }
+
+        /* Output-mode serial shift: ~2 E-clock cycles per bit (the CNT
+         * output clock); the SP ICR flag fires when all 8 bits are out. */
+        if (cia->sdr_out_bits > 0) {
+            cia->sdr_out_accum += CIA_TICKS_PER_PIT;
+            while (cia->sdr_out_bits > 0 && cia->sdr_out_accum >= 2u) {
+                cia->sdr_out_accum -= 2u;
+                cia->sdr = (uint8_t)(cia->sdr << 1);
+                if (--cia->sdr_out_bits == 0) {
+                    cia->icr |= 0x08u;
+                    cia_irq_reval(i);
                 }
-                cia->icr |= tbit;
-                cia_irq_reval(i);
+            }
+        }
+
+        /* TOD: mains-derived input prescaled to 1/10 s ticks (CRA.7 TODIN
+         * only selects the 50 vs 60 Hz divisor — the tenths rate is the
+         * same).  Alarm equality raises ICR bit 2. */
+        if (cia->tod_running) {
+            cia->tod_accum += CIA_TICKS_PER_PIT;
+            while (cia->tod_accum >= CIA_E_CLOCK_HZ / 10u) {
+                cia->tod_accum -= CIA_E_CLOCK_HZ / 10u;
+                if (++cia->tod[0] >= 10) {
+                    cia->tod[0] = 0;
+                    if (++cia->tod[1] >= 60) {
+                        cia->tod[1] = 0;
+                        if (++cia->tod[2] >= 60) cia->tod[2] = 0;
+                    }
+                }
+                if (cia->tod[0] == cia->alarm[0] &&
+                    cia->tod[1] == cia->alarm[1] &&
+                    cia->tod[2] == cia->alarm[2]) {
+                    cia->icr |= 0x04u;
+                    cia_irq_reval(i);
+                }
             }
         }
     }
+
+    /* CIAA FLAG is the parallel-port BUSY line on real Amigas — sample the
+     * host LPT1 status at tick rate and translate falling edges. */
+    if (g_lpt1_present)
+        chip_emu_cia_set_flag(0, (io_inb(LPT1_STAT) & 0x80u) ? 1 : 0);
 }
 
 /* =========================================================================
@@ -3075,6 +3252,12 @@ void chip_emu_reset(void)
     g_cia_b.ddrb = 0;
     g_cia_a.icr_mask = 0;
     g_cia_b.icr_mask = 0;
+    /* Idle-high input pins, TOD counting from reset, PB pins high. */
+    g_cia_a.tod_running = g_cia_b.tod_running = 1;
+    g_cia_a.ta.pb_out = g_cia_a.tb.pb_out = 1;
+    g_cia_b.ta.pb_out = g_cia_b.tb.pb_out = 1;
+    g_cia_a.sp_pin = g_cia_a.cnt_pin = g_cia_a.flag_pin = 1;
+    g_cia_b.sp_pin = g_cia_b.cnt_pin = g_cia_b.flag_pin = 1;
 
     g_vposr = 0;
     g_vhposr = 0;
@@ -3965,6 +4148,126 @@ int chip_emu_diwhigh_test(void)
     chip_emu_write(diwhigh_off, 0x1234u, 2);
     uint32_t v = chip_emu_read(diwhigh_off, 2);
     return (v & 0xFFFFu) == 0x1234u;
+}
+
+/* CIA completeness test (UAOS-360): TOD alarm IRQ, TOD write-halt/resume
+ * and read-latch semantics, SDR output shift + CNT/SP-driven input shift,
+ * timer-B TA-cascade and CNT-gated modes, FLAG negative edge, and the
+ * PB6/PB7 toggle output.  Exercises the real MMIO window plus the pin
+ * hooks; state is restored on exit.  Returns 1 on success. */
+int chip_emu_cia_test(void)
+{
+    const uint32_t B = 0xFD000u;  /* CIA-B window base (even byte lane) */
+    CIA_State save_a = g_cia_a, save_b = g_cia_b;
+    uint16_t save_intreq = g_intreq;
+    int save_b_irq = g_cia_b_irq;
+    int errors = 0;
+
+    memset(&g_cia_a, 0, sizeof(g_cia_a));
+    memset(&g_cia_b, 0, sizeof(g_cia_b));
+    g_cia_b.tod_running = 1;
+    g_cia_b.ta.pb_out = g_cia_b.tb.pb_out = 1;
+    g_cia_b.sp_pin = g_cia_b.cnt_pin = g_cia_b.flag_pin = 1;
+
+    /* --- TOD alarm IRQ ------------------------------------------------ */
+    chip_emu_write(B + (CIA_REG_CRB << 8), 0x80, 1);   /* CRB.7: alarm writes */
+    chip_emu_write(B + (CIA_REG_TOD_HI << 8), 0, 1);
+    chip_emu_write(B + (CIA_REG_TOD_MID << 8), 0, 1);
+    chip_emu_write(B + (CIA_REG_TOD_LO << 8), 3, 1);   /* alarm = 0.3 s */
+    chip_emu_write(B + (CIA_REG_CRB << 8), 0x00, 1);
+    chip_emu_write(B + (CIA_REG_TOD_HI << 8), 0, 1);   /* halt clock */
+    chip_emu_write(B + (CIA_REG_TOD_MID << 8), 0, 1);
+    chip_emu_write(B + (CIA_REG_TOD_LO << 8), 0, 1);   /* restart clock */
+    chip_emu_write(B + (CIA_REG_ICR << 8), 0x84, 1);   /* enable ALRM */
+    for (int i = 0; i < 60 && !(g_cia_b.icr & 0x04u); i++)
+        chip_emu_cia_tick();
+    if (!(g_cia_b.icr & 0x04u)) errors++;  /* alarm ICR bit raised */
+    if (!g_cia_b_irq) errors++;            /* EXTER line asserted */
+
+    /* --- TOD write-halt/read-latch ------------------------------------- */
+    chip_emu_write(B + (CIA_REG_TOD_HI << 8), 0, 1);   /* halt the clock */
+    uint8_t tenths_halted = g_cia_b.tod[0];
+    for (int i = 0; i < 25; i++) chip_emu_cia_tick();
+    if (g_cia_b.tod[0] != tenths_halted) errors++;     /* held while LO unwritten */
+    chip_emu_write(B + (CIA_REG_TOD_LO << 8), (uint32_t)tenths_halted, 1);
+    for (int i = 0; i < 15; i++) chip_emu_cia_tick();
+    if (g_cia_b.tod[0] == tenths_halted) errors++;     /* resumed */
+    g_cia_b.tod[1] = 5;
+    chip_emu_read(B + (CIA_REG_TOD_HI << 8), 1);       /* latch MID+LO */
+    g_cia_b.tod[1] = 9;                                 /* clock moves on */
+    if (chip_emu_read(B + (CIA_REG_TOD_MID << 8), 1) != 5) errors++;
+    chip_emu_read(B + (CIA_REG_TOD_LO << 8), 1);       /* release latch */
+    if (chip_emu_read(B + (CIA_REG_TOD_MID << 8), 1) != 9) errors++;
+
+    /* --- SDR output shift (SPMODE=1) ----------------------------------- */
+    chip_emu_read(B + (CIA_REG_ICR << 8), 1);          /* clear pending */
+    chip_emu_write(B + (CIA_REG_ICR << 8), 0x88, 1);   /* enable SP */
+    chip_emu_write(B + (CIA_REG_CRA << 8), 0x40, 1);   /* SPMODE=1 */
+    chip_emu_write(B + (CIA_REG_SDR << 8), 0xA5, 1);   /* starts 8-bit shift */
+    chip_emu_cia_tick();   /* 8 bits @ ~2 E-clocks — done within one tick */
+    if (!(g_cia_b.icr & 0x08u)) errors++;
+
+    /* --- SDR input shift via CNT/SP pins ------------------------------- */
+    g_cia_b.sdr = 0;
+    chip_emu_write(B + (CIA_REG_CRA << 8), 0x00, 1);   /* SPMODE=0 input */
+    chip_emu_read(B + (CIA_REG_ICR << 8), 1);
+    for (int b = 0; b < 8; b++) {                      /* shift in 0xF0, MSB first */
+        chip_emu_cia_set_sp(1, (b < 4) ? 1 : 0);
+        chip_emu_cia_set_cnt(1, 0);
+        chip_emu_cia_set_cnt(1, 1);
+    }
+    if (g_cia_b.sdr != 0xF0) errors++;
+    if (!(g_cia_b.icr & 0x08u)) errors++;
+
+    /* --- Timer B TA-cascade (INMODE=10) -------------------------------- */
+    chip_emu_read(B + (CIA_REG_ICR << 8), 1);
+    chip_emu_write(B + (CIA_REG_CRA << 8), 0x00, 1);   /* stop TA */
+    chip_emu_write(B + (CIA_REG_TALO << 8), 0xE8, 1);  /* TA latch = 1000 */
+    chip_emu_write(B + (CIA_REG_TAHI << 8), 0x03, 1);
+    chip_emu_write(B + (CIA_REG_TBLO << 8), 5, 1);     /* TB latch = 5 */
+    chip_emu_write(B + (CIA_REG_TBHI << 8), 0, 1);
+    chip_emu_write(B + (CIA_REG_CRA << 8), 0x01, 1);   /* TA start, E-clock */
+    chip_emu_write(B + (CIA_REG_CRB << 8), 0x41, 1);   /* TB start, IN_TA */
+    chip_emu_cia_tick();   /* ~7 TA underflows/tick > 5+1 counts needed */
+    if (!(g_cia_b.icr & 0x02u)) errors++;              /* TB underflowed */
+
+    /* --- Timer B CNT-gated TA cascade (INMODE=11) ----------------------- */
+    chip_emu_read(B + (CIA_REG_ICR << 8), 1);
+    chip_emu_write(B + (CIA_REG_CRB << 8), 0x00, 1);   /* stop TB */
+    chip_emu_write(B + (CIA_REG_TBLO << 8), 100, 1);
+    chip_emu_write(B + (CIA_REG_TBHI << 8), 0, 1);
+    chip_emu_write(B + (CIA_REG_CRB << 8), 0x61, 1);   /* IN_TA_CNT, start */
+    chip_emu_cia_set_cnt(1, 0);                         /* CNT low → gated */
+    for (int i = 0; i < 3; i++) chip_emu_cia_tick();
+    if (g_cia_b.tb.counter != 100 && g_cia_b.tb.counter != 101) errors++;
+    chip_emu_cia_set_cnt(1, 1);                         /* CNT high → counts */
+    chip_emu_cia_tick();
+    if (g_cia_b.tb.counter >= 100) errors++;
+
+    /* --- FLAG pin negative edge ---------------------------------------- */
+    chip_emu_read(B + (CIA_REG_ICR << 8), 1);
+    chip_emu_cia_set_flag(1, 1);                        /* no edge */
+    if (g_cia_b.icr & 0x10u) errors++;
+    chip_emu_cia_set_flag(1, 0);                        /* falling edge */
+    if (!(g_cia_b.icr & 0x10u)) errors++;
+    chip_emu_cia_set_flag(1, 1);
+
+    /* --- PB6 toggle output (PBON|OUTMODE on timer A) -------------------- */
+    chip_emu_write(B + (CIA_REG_CRA << 8), 0x00, 1);   /* stop TA */
+    chip_emu_write(B + (CIA_REG_TALO << 8), 0xE8, 1);  /* TA latch = 1000 */
+    chip_emu_write(B + (CIA_REG_TAHI << 8), 0x03, 1);
+    chip_emu_write(B + (CIA_REG_CRA << 8), 0x07, 1);   /* START|PBON|toggle */
+    uint32_t prb0 = chip_emu_read(B + (CIA_REG_PRB << 8), 1);
+    chip_emu_cia_tick();                                /* odd # underflows */
+    uint32_t prb1 = chip_emu_read(B + (CIA_REG_PRB << 8), 1);
+    if (((prb0 ^ prb1) & 0x40u) == 0) errors++;        /* PB6 toggled */
+
+    g_cia_a = save_a;
+    g_cia_b = save_b;
+    g_intreq = save_intreq;
+    g_cia_b_irq = save_b_irq;
+    chip_emu_update_irq();
+    return errors == 0;
 }
 
 /* =========================================================================

@@ -1048,6 +1048,10 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     int serial_test = chip_emu_serial_test();
     kprint(serial_test ? "[BOOT] Serial port test PASSED\n" : "[BOOT] Serial port test FAILED\n");
 
+    kprint("[BOOT] Running CIA timer/TOD/serial test...\n");
+    int cia_test = chip_emu_cia_test();
+    kprint(cia_test ? "[BOOT] CIA timer/TOD/serial test PASSED\n" : "[BOOT] CIA timer/TOD/serial test FAILED\n");
+
     kprint("[BOOT] Running CPU/chipset timing-lock test...\n");
     int timing_lock_test = chip_emu_timing_lock_test();
     kprint(timing_lock_test ? "[BOOT] Timing-lock test PASSED\n" : "[BOOT] Timing-lock test FAILED\n");
