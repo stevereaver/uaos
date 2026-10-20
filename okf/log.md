@@ -2244,3 +2244,71 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
   skill metadata version 42), with upstream MIT `LICENSE` alongside.
   Drives the already-configured `rea` MCP server for binary/firmware RE
   (e.g. SetPatch / ROM analysis); skips REA for plain source analysis.
+
+## 2026-10-20T03:50Z — SetPatch 43.6b byte-identical reconstruction + FS-UAE harness (UAOS-364)
+
+* **Done**: `setpatch/` (untracked) now holds a complete reassemblable
+  reconstruction: `tools/gen_source.py` emits `src/SetPatch_43.6b.s`
+  (all 278 relocations symbolic, 38 `mod_*` modules with decoded
+  `$0BAD00nn` op lists, ~80 forced-raw sites where gas can't reproduce
+  original encodings), `tools/obj2hunk.py` rebuilds the Hunk file with
+  the original relocation-group order. `make verify` => byte-identical
+  (sha256 edf32d1c...).
+* **Harness**: `test/run_fsuae.sh` boots KS3.1 under FS-UAE (bootable
+  ADF + generated startup-sequence, DH0 host dir), runs SetPatch x2 +
+  `checksp`, auto-kills. Models A3000 and A4000/040; bare A1200 cannot
+  boot this kick31.rom (exec vector-base at 0x08000398 + FPU-probe
+  loop). Results in `test/results/`; docs `test/README.md`,
+  `okf/concepts/setpatch_re.md`.
+* **Findings**: 43.6b installs 7 patches on 68030, 8 on 040 (adds
+  HWG FPU fix); stock 40.16 installs 4 on both.
+
+## 2026-10-20T06:55Z — SetPatch_UAOS_43.7 shipped; B1-B9 verified on FS-UAE (UAOS-364, Done)
+
+* **Shipped**: `setpatch/build/SetPatch_UAOS_43.7` (15056 B; original
+  14868 B, rebuild still byte-identical). All nine findings fixed in
+  `src/SetPatch_UAOS_43.7.s`.
+* **Bisect root cause** (the "installs 0-3 patches" flakiness): not the
+  fixes — two more reconstruction hazards. B9b: op0's
+  `dc.w 0x6000,0x0288` was a hardcoded `braw` displacement to the op
+  loop (any insert desynced it) -> computed `braw loc_14b0`. B9c: the
+  module scan strides 4 bytes, so every `$6100FFFE` header must stay
+  aligned mod 4 -> the three 2-byte inserts (B2/B6/B7) got `nop` pads;
+  all 38 `mod_*` symbols verified mod-4.
+* **Runtime proof (Kick 3.1)**: A3000 -> 6 patches (AGA correctly
+  absent on ECS); A4000/040 -> 8 (AGA + HWG FPU fix); QUIET silent;
+  NOCACHE drops data-cache; second run "already installed"; WBStartup
+  launch replies + installs (original stalls -> B4 proven); B1 probe
+  shows the old binary's wild write lands and the new one writes
+  nothing. B6 proven via relaxed-gate variant. B2/B5 inspection-only
+  (op7 dead code; NMI module gated exec <=37.255) — documented as such.
+* **Docs**: `setpatch/docs/{BUGS,FIXES_43.7}.md` verification tables +
+  layout-invariants section; `test/README.md` covers `wb7`/`wbold`/
+  `b1new`/`b1old`/`runv` scenarios and the `wblaunch`/`checksp_b1`
+  tools.
+
+## 2026-10-20T07:40Z — SetPatch RE findings swept into UAOS (UAOS-365)
+
+* **Audit**: SetPatch 43.6b driver's guest-visible requirements vs
+  UAOS. Already correct: LoadSeg hunk layout, BSS zero-fill,
+  `pr_SegList`/`cli_Module`, WBStartup delivery,
+  `CacheControl` returning 0.
+* **Fixes**: `exec_SetFunction` old-vector trampolines at
+  `0xB000–0xC000` (was recursion bug: returned slot addr, then slot
+  overwritten with `JMP new`); cross-window named-semaphore registry
+  `g_semreg` with `FindSemaphore` local-replica materialization +
+  `Task_ReleaseM68kRam` snapshot so sems outlive their installer;
+  real `dos_ReadArgs` subset parser +
+  `dos_FreeArgs` + `dos_GetArgStr` via `g_cmdline_bptr`;
+  `dos_PrintFault` (fn 104) sharing extracted `dos_fault_text()`;
+  glue `heap_alloc` delegates to the live free-list pool (was
+  colliding with freelist-owned memory); `MEMF_REVERSE`
+  carve-from-high-end through freelist + `mc_alloc`.
+* **Verified**: `tests/qemu_sempatch_test.py` +
+  `SYS:Demos/{SemPatchTest,SemPatchRead}` — 11/11 checks over
+  `RawPutChar` serial stream. No regressions: exec-coverage,
+  guesttask, wblaunch suites all pass.
+* **Docs**: `okf/concepts/setpatch_re.md` (UAOS-365 section),
+  `okf/emulation/index.md` (trampoline arena + SetFunction ABI note),
+  `okf/kernel/exec/index.md` (semaphore registry, MEMF_REVERSE,
+  teardown hook), `okf/kernel/dos/index.md` (arg/fault functions).

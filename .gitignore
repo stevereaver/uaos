@@ -21,3 +21,5 @@ tests/*.vdi
 
 extras
 extras/*
+
+setpatch

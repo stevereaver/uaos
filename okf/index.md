@@ -35,6 +35,7 @@ Welcome to the UAOS Architecture library. This documentation is organized using 
 
 - [Icons](/concepts/icons.md) - Amiga `.info` icon loading, selected-state rendering, and desktop selection interaction.
 - [Thunking and LVOs](/concepts/thunking.md) - Calling native libraries from emulated M68k code.
+- [SetPatch 43.6b RE](/concepts/setpatch_re.md) - Byte-identical reconstruction of SetPatch 43.6b + FS-UAE harness (untracked `setpatch/` dir; Plane: UAOS-364).
 - [Concepts Index](/concepts/index.md) - All cross-cutting concepts.
 
 ## Hardware Platforms

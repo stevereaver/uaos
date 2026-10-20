@@ -398,8 +398,19 @@ void UAOS_Glue_SetRamBase(uint8_t *base)
     }
 }
 
+/* Allocate from the chip free list once that pool is live (dos_lib.c);
+ * returns 0 while the bump pointer still owns the space. */
+extern uint32_t dos_HeapAllocChip_glue(uint32_t size);
+
 static uint32_t heap_alloc(uint32_t size)
 {
+    /* Internal structures that must survive for the task's lifetime used
+     * to bump-allocate past g_uaos_heap_ptr — but the chip free-list pool
+     * starts at exactly that address once initialised, so a post-AllocMem
+     * FileLock/seglist alloc overwrote the pool's free-block header
+     * (UAOS-365).  Delegate to the pool when it exists. */
+    uint32_t fl = dos_HeapAllocChip_glue(size);
+    if (fl) return fl;
     /* Align to 4 bytes; program hunks stay in chip RAM (0x001000-0x7F0000). */
     size = (size + 3) & ~3u;
     if (g_uaos_heap_ptr + size > 0x007F0000u) return 0;
@@ -945,6 +956,7 @@ extern void     UAOS_DOS_UnLoadSeg(uint32_t seglist_bptr);
 #define DOS_SET_VBUF         101
 #define DOS_SET_MODE         102
 #define DOS_STR_TO_LONG      103
+#define DOS_PRINT_FAULT      104
 #define DOS_STUB_LVO      250  /* catch-all stub marker for unimplemented LVOs */
 
 /* intuition.library function indices */
@@ -1913,6 +1925,7 @@ static uint32_t stub_addr(int lib_id, int func_idx)
             case DOS_VFWRITEF:       return (uint32_t)((int)DOS_BASE + LVO_DOS_VFWRITEF);
             case DOS_READARGS:       return (uint32_t)((int)DOS_BASE + LVO_DOS_READARGS);
             case DOS_STR_TO_LONG:    return (uint32_t)((int)DOS_BASE + LVO_DOS_STR_TO_LONG);
+            case DOS_PRINT_FAULT:    return (uint32_t)((int)DOS_BASE + LVO_DOS_PRINT_FAULT);
             case DOS_GETARGSTR:      return (uint32_t)((int)DOS_BASE + LVO_DOS_GET_ARG_STR);
             case DOS_ISINTERACTIVE:  return (uint32_t)((int)DOS_BASE + LVO_DOS_ISINTERACTIVE);
             case DOS_DELETEFILE:     return (uint32_t)((int)DOS_BASE + LVO_DOS_DELETEFILE);
@@ -2934,6 +2947,7 @@ void install_library_tables(void)
     install_lvo(DOS_BASE, LVO_DOS_SET_VBUF,        LIB_DOS, DOS_SET_VBUF);
     install_lvo(DOS_BASE, LVO_DOS_SET_MODE,        LIB_DOS, DOS_SET_MODE);
     install_lvo(DOS_BASE, LVO_DOS_STR_TO_LONG,     LIB_DOS, DOS_STR_TO_LONG);
+    install_lvo(DOS_BASE, LVO_DOS_PRINT_FAULT,     LIB_DOS, DOS_PRINT_FAULT);
 
     /* bsdsocket.library at BSD_BASE — pre-fill range with MOVEQ #0,D0 + RTS */
     for (int lvo = -6; lvo >= -216; lvo -= 6) {
@@ -3247,6 +3261,22 @@ static int    g_genlib_count = 0;
 #define GENLIB_ARENA_END   0x00800000u
 static uint32_t g_genlib_heap = GENLIB_ARENA_START;
 
+/* ---- SetFunction old-vector trampolines (UAOS-365) ----------------------
+ * The vector SetFunction returns must stay CALLABLE after the slot is
+ * overwritten — AmigaOS library slots are JMPs, so "old" is the JMP
+ * target and SetFunction-installed wrappers can chain to it.  Here the
+ * untouched slot holds a 6-byte ILLEGAL dispatch stub that gets replaced
+ * by "JMP new"; returning the slot address would chain the patch back
+ * into itself.  The original stub is instead copied onto a trampoline in
+ * the 0xB000-0xC000 slice of the reserved 0xA000-0x1A000 band — inside
+ * is_stub_addr's 0x2000-0xC000 dispatch range and clear of the gadtools
+ * base struct (0xA000-0xA040) — so a patched caller invoking old still
+ * reaches the native implementation. */
+#define OLDVEC_TRAMP_BASE 0x0000B000u
+#define OLDVEC_TRAMP_END  0x0000C000u
+#define OLDVEC_TRAMP_SIZE 8u
+static uint32_t g_oldvec_next = OLDVEC_TRAMP_BASE;
+
 /* -------------------------------------------------------------------------
  * Guest code ranges — heap-resident M68k code the instr hook must not
  * mistake for decruncher artifacts.  Disk-loaded .library segments and
@@ -3384,6 +3414,9 @@ void emu_reset_genlibs(void)
         if (g_genlibs[i].ram != g_ram) g_genlibs[w++] = g_genlibs[i];
     g_genlib_count = w;
     g_genlib_heap  = GENLIB_ARENA_START;
+
+    /* SetFunction old-vector trampolines are per-window too. */
+    g_oldvec_next  = OLDVEC_TRAMP_BASE;
 
     w = 0;
     for (int i = 0; i < g_disklib_count; i++)
@@ -6789,23 +6822,258 @@ static void exec_ReleaseSemList(void)
     }
 }
 
+/* ---- Cross-window named-semaphore registry (UAOS-365) -------------------
+ * AmigaOS keeps a single system SemaphoreList: a semaphore named by one
+ * task — SetPatch's « SetPatch » is the canonical example, carrying the
+ * patch version in private fields after the 46-byte SignalSemaphore — is
+ * FindSemaphore-able by every later task.  Per-task guest-RAM windows
+ * make each window's SEMLIST private, so this host-side registry records
+ * every named AddSemaphore.  A local FindSemaphore miss consults it and
+ * materialises a self-contained replica — sem block, name, and the
+ * SetPatch-style private MinList payload — inside the caller's window.
+ *
+ * Replicas are local objects: Obtain/Release on them never reach the
+ * owner's copy, and the private-list data is a point-in-time snapshot.
+ * What the registry preserves is the *name and data* across windows,
+ * which is what version/handshake semaphores exist for.  When the owning
+ * window is released the registry snapshots the block so the name
+ * outlives its installer, matching AmigaOS where abandoned named
+ * semaphores persist on SemaphoreList. */
+
+#define SEMREG_MAX      32
+#define SEMREG_NAME_MAX 48
+#define SEMREG_SNAP_MAX 640   /* sem block + private ext + inline name */
+#define SEMREG_NODES    32
+#define SEMREG_NODE_MAX 136   /* MinNode(8) + inline payload           */
+
+typedef struct {
+    char     name[SEMREG_NAME_MAX];
+    uint8_t *ram;      /* owning guest window; NULL after release */
+    uint32_t addr;     /* semaphore address inside the window     */
+    uint16_t snap_len;
+    uint8_t  snap[SEMREG_SNAP_MAX];
+    uint16_t n_nodes;
+    uint16_t node_len[SEMREG_NODES];
+    uint8_t  nodes[SEMREG_NODES][SEMREG_NODE_MAX];
+} SemRegEnt;
+static SemRegEnt g_semreg[SEMREG_MAX];
+static int g_semreg_count;
+
+static uint32_t win_r32(uint8_t *w, uint32_t a)
+{
+    if (a + 4 > GUEST_RAM_SIZE) return 0;
+    return ((uint32_t)w[a] << 24) | ((uint32_t)w[a + 1] << 16)
+         | ((uint32_t)w[a + 2] <<  8) | (uint32_t)w[a + 3];
+}
+
+static int win_str(uint8_t *w, uint32_t a, char *out, int max)
+{
+    int i = 0;
+    if (w && a < GUEST_RAM_SIZE)
+        while (i < max - 1 && a + i < GUEST_RAM_SIZE && w[a + i]) {
+            out[i] = (char)w[a + i];
+            i++;
+        }
+    out[i] = 0;
+    return i;
+}
+
+/* Probe a private-list node's extent: SetPatch patch-name nodes store a
+ * BSTR (length byte + chars) at MinNode+8; a C string at +8 is accepted
+ * too, and an empty/garbage tail degrades to a fixed bound. */
+static int semreg_node_len(uint8_t *w, uint32_t cur)
+{
+    int b = w[cur + 8];
+    if (b > 0 && b <= SEMREG_NODE_MAX - 9) {
+        /* Plausible BSTR length — but only if it also doesn't look like a
+         * NUL-terminated string that happens to start with a small byte.
+         * Prefer the C-string check when a NUL shows up earlier. */
+        for (int i = 8; i < 8 + b && i < SEMREG_NODE_MAX; i++)
+            if (cur + i >= GUEST_RAM_SIZE || !w[cur + i]) return i + 1;
+        return 8 + 1 + b;
+    }
+    for (int i = 8; i < SEMREG_NODE_MAX; i++)
+        if (cur + i >= GUEST_RAM_SIZE || !w[cur + i]) return i + 1;
+    return SEMREG_NODE_MAX;
+}
+
+/* Snapshot a semaphore block + its private MinList nodes from window w.
+ * The block length follows SetPatch's own allocation (64 + name length,
+ * capped) so the private MinList, version/revision words and the inline
+ * name copy all land inside the snapshot. */
+static void semreg_capture(uint8_t *w, uint32_t sem, SemRegEnt *e)
+{
+    uint32_t namelen = 0;
+    while (namelen < SEMREG_NAME_MAX - 1 && e->name[namelen]) namelen++;
+    uint32_t n = 64u + namelen + 1u;
+    if (n > SEMREG_SNAP_MAX) n = SEMREG_SNAP_MAX;
+    if (sem + n > GUEST_RAM_SIZE) n = GUEST_RAM_SIZE - sem;
+    emu_memcpy(e->snap, w + sem, n);
+    e->snap_len = (uint16_t)n;
+
+    e->n_nodes = 0;
+    uint32_t hdr  = sem + SEM_SIZE;
+    uint32_t cur  = win_r32(w, hdr + MLH_HEAD);
+    uint32_t tail = win_r32(w, hdr + MLH_TAIL);
+    if (!tail && cur && cur != hdr + MLH_TAIL) {
+        int guard = 0;
+        while (cur && cur != hdr + MLH_TAIL &&
+               cur + 8 <= GUEST_RAM_SIZE &&
+               e->n_nodes < SEMREG_NODES && guard++ < SEMREG_NODES) {
+            int nl = semreg_node_len(w, cur);
+            if (cur + (uint32_t)nl > GUEST_RAM_SIZE)
+                nl = (int)(GUEST_RAM_SIZE - cur);
+            emu_memcpy(e->nodes[e->n_nodes], w + cur, (unsigned int)nl);
+            e->node_len[e->n_nodes] = (uint16_t)nl;
+            e->n_nodes++;
+            cur = win_r32(w, cur + LN_SUCC);
+        }
+    }
+}
+
+static void semreg_add(uint32_t sem)
+{
+    char name[SEMREG_NAME_MAX];
+    uint32_t nm = glue_r32(sem + LN_NAME);
+    if (!nm || !win_str(g_ram, nm, name, SEMREG_NAME_MAX)) return;
+    for (int i = 0; i < g_semreg_count; i++)
+        if (g_semreg[i].ram == g_ram && g_semreg[i].addr == sem)
+            return;                 /* same node re-added */
+    if (g_semreg_count >= SEMREG_MAX) {
+        emu_print("[exec] named-semaphore registry full -- sem stays window-local\n");
+        return;
+    }
+    SemRegEnt *e = &g_semreg[g_semreg_count++];
+    emu_memset(e, 0, sizeof(*e));
+    emu_memcpy(e->name, name, SEMREG_NAME_MAX);
+    e->ram  = g_ram;
+    e->addr = sem;
+}
+
+static void semreg_remove(uint8_t *ram, uint32_t sem)
+{
+    for (int i = 0; i < g_semreg_count; i++)
+        if (g_semreg[i].ram == ram && g_semreg[i].addr == sem) {
+            for (int j = i; j + 1 < g_semreg_count; j++)
+                g_semreg[j] = g_semreg[j + 1];
+            g_semreg_count--;
+            return;
+        }
+}
+
+/* Snapshot every semaphore owned by a window that is being released —
+ * AmigaOS named semaphores outlive their installer, so later tasks must
+ * still FindSemaphore them.  Called from Task_ReleaseM68kRam before the
+ * slot is freed. */
+void UAOS_SemReg_ReleaseWindow(uint8_t *ram)
+{
+    for (int i = 0; i < g_semreg_count; i++) {
+        SemRegEnt *e = &g_semreg[i];
+        if (e->ram != ram) continue;
+        semreg_capture(ram, e->addr, e);
+        e->ram = NULL;
+    }
+}
+
+/* Build a self-contained replica of a registry semaphore in the current
+ * window and Enqueue it on the local SemaphoreList. */
+static uint32_t semreg_materialize(SemRegEnt *e)
+{
+    if (e->ram) semreg_capture(e->ram, e->addr, e);   /* refresh live copy */
+    if (e->snap_len < SEM_SIZE) return 0;
+
+    uint32_t resem = 0;
+    dos_AllocMem_glue(e->snap_len, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &resem);
+    if (!resem) return 0;
+    emu_memcpy(g_ram + resem, e->snap, e->snap_len);
+
+    /* Repair linkage: the copy carries owner-window addresses. */
+    glue_w32(resem + LN_SUCC, 0);
+    glue_w32(resem + LN_PRED, 0);
+    glue_w32(resem + SS_WAITQUEUE + MLH_HEAD,     resem + SS_WAITQUEUE + MLH_TAIL);
+    glue_w32(resem + SS_WAITQUEUE + MLH_TAIL,     0);
+    glue_w32(resem + SS_WAITQUEUE + MLH_TAILPRED, resem + SS_WAITQUEUE + MLH_HEAD);
+    glue_w32(resem + SS_OWNER, 0);
+    glue_w16(resem + SS_NESTCOUNT, 0);
+
+    /* ln_Name: remap when it pointed inside the sem's own block (SetPatch
+     * stores the name inline); otherwise clone the registry name. */
+    uint32_t old_nm = glue_r32(resem + LN_NAME);
+    if (old_nm >= e->addr && old_nm < e->addr + e->snap_len) {
+        glue_w32(resem + LN_NAME, resem + (old_nm - e->addr));
+    } else {
+        uint32_t nm2 = 0, nlen = (uint32_t)emu_strlen(e->name) + 1;
+        dos_AllocMem_glue(nlen, MEMF_PUBLIC | MEMF_CLEAR_FLAG, &nm2);
+        if (nm2) {
+            for (uint32_t i = 0; i < nlen; i++)
+                g_ram[nm2 + i] = (uint8_t)e->name[i];
+            glue_w32(resem + LN_NAME, nm2);
+        }
+    }
+
+    /* Private MinList replica at SignalSemaphore+SEM_SIZE (the SetPatch
+     * extension).  Empty-initialised when the source had none. */
+    uint32_t phdr = resem + SEM_SIZE;
+    glue_w32(phdr + MLH_HEAD,     phdr + MLH_TAIL);
+    glue_w32(phdr + MLH_TAIL,     0);
+    glue_w32(phdr + MLH_TAILPRED, phdr + MLH_HEAD);
+    for (int i = 0; i < e->n_nodes; i++) {
+        uint32_t node = 0;
+        dos_AllocMem_glue(e->node_len[i], MEMF_PUBLIC | MEMF_CLEAR_FLAG, &node);
+        if (!node) break;
+        emu_memcpy(g_ram + node, e->nodes[i], e->node_len[i]);
+        /* AddTail on the private MinList (8-byte MinNode links). */
+        uint32_t tailpred = glue_r32(phdr + MLH_TAILPRED);
+        glue_w32(node + 0, phdr + MLH_TAIL);
+        glue_w32(node + 4, tailpred);
+        glue_w32(tailpred + 0, node);
+        glue_w32(phdr + MLH_TAILPRED, node);
+    }
+
+    guest_list_enqueue(SEMLIST_ADDR, resem);
+    return resem;
+}
+
 static void exec_FindSemaphore(void)
 {
     /* FindSemaphore(name=a1) → D0 = SignalSemaphore* or 0 */
     uint32_t name = m68k_get_reg(NULL, M68K_REG_A1);
-    m68k_set_reg(M68K_REG_D0, glue_find_name(SEMLIST_ADDR, name));
+    uint32_t sem  = glue_find_name(SEMLIST_ADDR, name);
+    if (!sem) {
+        /* Local miss — consult the cross-window registry so a named
+         * semaphore added by another M68k task (or one that already
+         * exited) resolves the way a shared AmigaOS SemaphoreList would. */
+        char nm[SEMREG_NAME_MAX];
+        if (win_str(g_ram, name, nm, SEMREG_NAME_MAX)) {
+            for (int i = 0; i < g_semreg_count && !sem; i++) {
+                SemRegEnt *e = &g_semreg[i];
+                if (e->ram == g_ram) continue;   /* local miss is authoritative */
+                int eq = 1;
+                for (int j = 0; j < SEMREG_NAME_MAX; j++) {
+                    if (e->name[j] != nm[j]) { eq = 0; break; }
+                    if (!e->name[j]) break;
+                }
+                if (eq) sem = semreg_materialize(e);
+            }
+        }
+    }
+    m68k_set_reg(M68K_REG_D0, sem);
 }
 
 static void exec_AddSemaphore(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A1);
-    if (sem) guest_list_enqueue(SEMLIST_ADDR, sem);   /* real AddSemaphore enqueues */
+    if (sem) {
+        guest_list_enqueue(SEMLIST_ADDR, sem);   /* real AddSemaphore enqueues */
+        semreg_add(sem);   /* named sems become cross-window visible */
+    }
 }
 
 static void exec_RemSemaphore(void)
 {
     uint32_t sem = m68k_get_reg(NULL, M68K_REG_A1);
     if (!sem) return;
+    semreg_remove(g_ram, sem);   /* drop the registry entry before unlink */
     uint32_t succ = glue_r32(sem + LN_SUCC);
     uint32_t pred = glue_r32(sem + LN_PRED);
     glue_w32(pred + LN_SUCC, succ);
@@ -6921,23 +7189,32 @@ static void exec_StackSwap(void)
 
 static void exec_SetFunction(void)
 {
-    /* SetFunction(library=a1, funcOffset=a0 (negative), newFunc=d0? no:
-     * SetFunction(library=a1, funcOffset=a0, newFunc=d0) → D0=old vector.
+    /* SetFunction(library=a1, funcOffset=a0, newFunc=d0) → D0=old vector.
      * Real proto: SetFunction(a1=lib, a0=lvo, d0=newfunc). */
     uint32_t lib = m68k_get_reg(NULL, M68K_REG_A1);
     int32_t  lvo = (int32_t)m68k_get_reg(NULL, M68K_REG_A0);
     uint32_t fn  = m68k_get_reg(NULL, M68K_REG_D0);
     uint32_t addr = (uint32_t)((int)lib + lvo);
-    /* "Old" is the previously installed routine: if the slot already holds
-     * a JMP abs.l (an earlier SetFunction), that's its 32-bit target — NOT
-     * the slot address, which would chain the caller back into its own
-     * replacement and self-recurse.  For an ILLEGAL dispatch stub the slot
-     * address itself remains callable (it still reaches the native impl),
-     * so it is the correct old value. */
+    /* A slot that already holds a JMP abs.l (an earlier SetFunction)
+     * yields its 32-bit target — NOT the slot address, which would chain
+     * the caller back into its own replacement and self-recurse.  For an
+     * untouched stub (ILLEGAL dispatch or other code) preserve the 6
+     * bytes on a trampoline and return that; an ILLEGAL copied there
+     * still dispatches to the native implementation.  Arena exhaustion
+     * degrades to the slot address — the new vector — matching the
+     * pre-UAOS-365 behaviour. */
     uint32_t old = addr;
-    if (addr + 6 <= GUEST_RAM_SIZE &&
-        g_ram[addr] == 0x4E && g_ram[addr + 1] == 0xF9)
-        old = glue_r32(addr + 2);
+    if (addr + 6 <= GUEST_RAM_SIZE) {
+        if (g_ram[addr] == 0x4E && g_ram[addr + 1] == 0xF9)
+            old = glue_r32(addr + 2);
+        else if (g_oldvec_next + OLDVEC_TRAMP_SIZE <= OLDVEC_TRAMP_END) {
+            old = g_oldvec_next;
+            for (int i = 0; i < 6; i++)
+                g_ram[old + i] = g_ram[addr + i];
+            g_ram[old + 6] = g_ram[old + 7] = 0;
+            g_oldvec_next += OLDVEC_TRAMP_SIZE;
+        }
+    }
     m68k_set_reg(M68K_REG_D0, old);
     if (addr + 6 <= GUEST_RAM_SIZE && fn) {
         g_ram[addr+0] = 0x4E; g_ram[addr+1] = 0xF9;  /* JMP abs.l */

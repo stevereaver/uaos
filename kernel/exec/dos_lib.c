@@ -336,6 +336,7 @@ static uint32_t guest_read_be32(uint32_t addr)
 #define MEMF_LOCAL      0x00000100u
 #define MEMF_24BITDMA   0x00000200u
 #define MEMF_CLEAR      0x00010000u
+#define MEMF_REVERSE    0x00040000u
 #define MEMF_NO_EXPUNGE 0x80000000u
 
 #define HEAP_HDR        8u           /* header size in bytes             */
@@ -503,8 +504,13 @@ static void heap_freelist_init_fast(void)
 
 /* Allocate 'size' bytes from a specific free list.  Returns guest addr or 0.
  * Sizes and block boundaries stay MEM_BLOCKSIZE (8) aligned so every
- * returned pointer satisfies the AmigaOS alignment guarantee. */
-static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
+ * returned pointer satisfies the AmigaOS alignment guarantee.
+ * `reverse` implements MEMF_REVERSE (UAOS-365): the request is carved off
+ * the TOP of the free block so tools that grow allocations downward get
+ * the highest available address — the free-block header stays at cur and
+ * only its size shrinks. */
+static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot,
+                                   int reverse)
 {
     size = (size + 7u) & ~7u;
     uint32_t need = size + HEAP_HDR;
@@ -518,6 +524,18 @@ static uint32_t heap_alloc_fl_pool(uint32_t size, uint32_t list_slot)
         uint32_t next_bptr = guest_read_be32(cur + 4);
 
         if (blk_size >= need) {
+            if (reverse && blk_size >= need + HEAP_HDR + 8u) {
+                /* Carve from the top: free remainder keeps cur's header
+                 * and next link; the allocated span sits at the end. */
+                uint32_t rem_size   = blk_size - need;
+                uint32_t alloc_base = cur + rem_size;
+                guest_write_be32(cur + 0, rem_size);
+                guest_write_be32(alloc_base + 0, need | HEAP_MAGIC);
+                for (uint32_t i = HEAP_HDR;
+                     i < need && alloc_base + i < GUEST_RAM_SIZE; i++)
+                    g_ram[alloc_base + i] = 0;
+                return alloc_base + HEAP_HDR;
+            }
             /* Split if there's enough room for another free block */
             if (blk_size >= need + HEAP_HDR + 8u) {
                 uint32_t rem = cur + need;
@@ -597,26 +615,46 @@ static void heap_free_fl_pool(uint32_t addr, uint32_t list_slot)
     }
 }
 
+/* Report whether the chip free-list pool has been initialised in the
+ * current window — the legacy bump allocators must switch to it once it
+ * exists, since the pool's first free block starts at g_uaos_heap_ptr and
+ * a post-init bump alloc would overwrite its header (UAOS-365). */
+static int heap_chip_pool_live(void)
+{
+    int i = heap_head_find();
+    if (i >= 0) return g_heap_heads[i].chip_init;
+    return guest_read_be32(HEAP_MAGIC_SLOT_CHIP) == HEAP_POOL_MAGIC;
+}
+
 /* Allocate 'size' bytes from the chip free list. */
-static uint32_t heap_alloc_fl_chip(uint32_t size)
+static uint32_t heap_alloc_fl_chip(uint32_t size, int reverse)
 {
     heap_freelist_init();
-    return heap_alloc_fl_pool(size, HEAP_LIST_SLOT_CHIP);
+    return heap_alloc_fl_pool(size, HEAP_LIST_SLOT_CHIP, reverse);
 }
 
 /* Allocate 'size' bytes from the fast free list. */
-static uint32_t heap_alloc_fl_fast(uint32_t size)
+static uint32_t heap_alloc_fl_fast(uint32_t size, int reverse)
 {
     heap_freelist_init_fast();
-    return heap_alloc_fl_pool(size, HEAP_LIST_SLOT_FAST);
+    return heap_alloc_fl_pool(size, HEAP_LIST_SLOT_FAST, reverse);
+}
+
+/* Exported for uaos_m68k_glue.c's internal heap_alloc callers: returns an
+ * allocation from the chip free list when the pool is live, else 0 so the
+ * caller can fall back to the bump pointer. */
+uint32_t dos_HeapAllocChip_glue(uint32_t size)
+{
+    if (!heap_chip_pool_live()) return 0;
+    return heap_alloc_fl_chip(size, 0);
 }
 
 /* Legacy single-pool allocator: defaults to fast with chip fallback.
  * Preserves old callers until they are updated to pass requirements. */
 static uint32_t heap_alloc_fl(uint32_t size)
 {
-    uint32_t addr = heap_alloc_fl_fast(size);
-    if (!addr) addr = heap_alloc_fl_chip(size);
+    uint32_t addr = heap_alloc_fl_fast(size, 0);
+    if (!addr) addr = heap_alloc_fl_chip(size, 0);
     return addr;
 }
 
@@ -743,13 +781,14 @@ static uint32_t mc_alloc(uint32_t size, uint32_t reqs)
      * exercise unchecked-NULL bugs.  Inert unless enabled. */
     if (Failalloc_ShouldFail(FAILALLOC_GUEST)) return 0;
 
+    int rev = (reqs & MEMF_REVERSE) != 0;
     if (!g_memcheck_on) {
         if (reqs & (MEMF_CHIP | MEMF_24BITDMA))
-            return heap_alloc_fl_chip(size);
+            return heap_alloc_fl_chip(size, rev);
         if (reqs & MEMF_FAST)
-            return heap_alloc_fl_fast(size);
-        uint32_t a = heap_alloc_fl_fast(size);
-        if (!a) a = heap_alloc_fl_chip(size);
+            return heap_alloc_fl_fast(size, rev);
+        uint32_t a = heap_alloc_fl_fast(size, rev);
+        if (!a) a = heap_alloc_fl_chip(size, rev);
         return a;
     }
 
@@ -758,12 +797,12 @@ static uint32_t mc_alloc(uint32_t size, uint32_t reqs)
      * still get AmigaOS-guaranteed 8-byte alignment under memcheck. */
     uint32_t raw = 0;
     if (reqs & (MEMF_CHIP | MEMF_24BITDMA))
-        raw = heap_alloc_fl_chip(size + 12);
+        raw = heap_alloc_fl_chip(size + 12, rev);
     else if (reqs & MEMF_FAST)
-        raw = heap_alloc_fl_fast(size + 12);
+        raw = heap_alloc_fl_fast(size + 12, rev);
     else {
-        raw = heap_alloc_fl_fast(size + 12);
-        if (!raw) raw = heap_alloc_fl_chip(size + 12);
+        raw = heap_alloc_fl_fast(size + 12, rev);
+        if (!raw) raw = heap_alloc_fl_chip(size + 12, rev);
     }
     if (!raw) return 0;
 
@@ -1020,9 +1059,14 @@ uint32_t Memcheck_SelfTest(void)
 
 /* Legacy bump allocator — still used for internal structures that are never
  * freed (FileLocks, library tables, etc.) and for the initial program load.
- * Program hunks must live in chip RAM, so cap the bump pointer there. */
+ * Program hunks must live in chip RAM, so cap the bump pointer there.
+ * Once the chip free-list pool is live it owns the space starting at
+ * g_uaos_heap_ptr — bump allocs past it would overwrite the pool's free-
+ * block header (UAOS-365), so delegate while the pool exists. */
 static uint32_t heap_alloc(uint32_t size)
 {
+    if (heap_chip_pool_live())
+        return heap_alloc_fl_chip(size, 0);
     size = (size + 3) & ~3u;
     if (g_uaos_heap_ptr + size > HEAP_CHIP_END) return 0;
     uint32_t addr = g_uaos_heap_ptr;
@@ -1206,15 +1250,381 @@ static void dos_VFWritef(M68kCPUState *cpu)
     cpu->d[0] = 0;
 }
 
+/* ---- ReadArgs (UAOS-365) --------------------------------------------------
+ * Real AmigaOS ReadArgs(template=D1, array=D2, rdargs=D3) parses the
+ * process command line against a keyword template.  The previous stub
+ * returned a non-zero fake without touching the array, so every guest
+ * that parsed switches (SetPatch's QUIET/S,NOCACHE/S,REVERSE/S,NOAGA/S or
+ * any C: command) read uninitialised slots.
+ *
+ * Covered subset: comma-separated template entries with /A /K /S /N /F
+ * qualifiers ('=' counts as /K), NAME=VALUE and bare-NAME forms for
+ * keyword items, case-insensitive matching with unique-prefix
+ * abbreviations, double-quoted values with '*' escapes, /F rest-of-line
+ * capture, and the documented ERROR_* IoErr codes.  /M items parse but
+ * keep only the last value.  The caller-supplied RDArgs (D3) is ignored —
+ * a private block is always allocated and returned; FreeArgs releases it.
+ *
+ * The argument source is the launch command line (g_cmdline_bptr) — the
+ * wrapper already strips the command name, matching what ReadArgs sees
+ * via cli_CommandLine on a real process. */
+
+#define RDA_MAX_ITEMS 16
+#define RDA_BLK_SIZE  64           /* RDArgs struct + private magic    */
+#define RDA_MAGIC_OFF 56
+#define RDA_MAGIC     0x52444155u  /* 'RDAU'                            */
+#define RDA_BUF_OFF   16           /* RDA_Buffer                        */
+#define RDA_BUFSZ_OFF 20           /* RDA_BufSiz                        */
+
+#define RDA_F_A 0x01
+#define RDA_F_K 0x02
+#define RDA_F_S 0x04
+#define RDA_F_N 0x08
+#define RDA_F_F 0x10
+
+static int rda_flag_of(char c)
+{
+    if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+    switch (c) {
+    case 'A': return RDA_F_A;
+    case 'K': return RDA_F_K;
+    case 'S': return RDA_F_S;
+    case 'N': return RDA_F_N;
+    case 'F': return RDA_F_F;
+    case 'T': return RDA_F_S;
+    case 'M': return RDA_F_K;     /* multi — approximate as keyword */
+    }
+    return -1;
+}
+
+/* case-insensitive full equality */
+static int rda_ci_eq(const char *a, const char *b)
+{
+    int i = 0;
+    while (a[i] && b[i]) {
+        char x = a[i], y = b[i];
+        if (x >= 'a' && x <= 'z') x = (char)(x - 32);
+        if (y >= 'a' && y <= 'z') y = (char)(y - 32);
+        if (x != y) return 0;
+        i++;
+    }
+    return a[i] == b[i];
+}
+
+/* nonzero when `pre` is a nonempty case-insensitive prefix of `full` */
+static int rda_ci_isprefix(const char *pre, const char *full)
+{
+    int i = 0;
+    while (pre[i]) {
+        char x = pre[i], y = full[i];
+        if (!y) return 0;
+        if (x >= 'a' && x <= 'z') x = (char)(x - 32);
+        if (y >= 'a' && y <= 'z') y = (char)(y - 32);
+        if (x != y) return 0;
+        i++;
+    }
+    return i > 0;
+}
+
+static int rda_parse_num(const char *s, uint32_t *out)
+{
+    int neg = 0;
+    uint32_t v = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { neg = 1; s++; }
+    if (s[0] == '$') {
+        s++;
+        if (!*s) return 0;
+        for (; *s; s++) {
+            char c = *s; int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else break;
+            v = (v << 4) | (uint32_t)d;
+        }
+    } else if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+        if (!*s) return 0;
+        for (; *s; s++) {
+            char c = *s; int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else break;
+            v = (v << 4) | (uint32_t)d;
+        }
+    } else {
+        int any = 0;
+        for (; *s >= '0' && *s <= '9'; s++) { v = v * 10 + (uint32_t)(*s - '0'); any = 1; }
+        if (!any) return 0;
+    }
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s) return 0;
+    *out = neg ? (uint32_t)(-(int32_t)v) : v;
+    return 1;
+}
+
+/* Read one whitespace-delimited token, honouring double quotes and '*'
+ * escapes inside them.  Advances *pp; returns 1 on a token, 0 at EOL,
+ * -1 on unmatched quotes. */
+static int rda_next_token(const char *line, int llen, int *pp,
+                          char *tok, int tmax)
+{
+    int p = *pp, tl = 0;
+    while (p < llen && (line[p] == ' ' || line[p] == '\t')) p++;
+    if (p >= llen) { *pp = p; return 0; }
+    while (p < llen && line[p] != ' ' && line[p] != '\t') {
+        char c = line[p];
+        if (c == '"') {
+            p++;
+            while (p < llen && line[p] != '"') {
+                if (line[p] == '*' && p + 1 < llen) p++;
+                if (tl < tmax - 1) tok[tl++] = line[p];
+                p++;
+            }
+            if (p >= llen) { *pp = p; return -1; }
+            p++;
+            continue;
+        }
+        if (tl < tmax - 1) tok[tl++] = c;
+        p++;
+    }
+    tok[tl] = 0;
+    *pp = p;
+    return 1;
+}
+
 static void dos_ReadArgs(M68kCPUState *cpu)
 {
-    (void)cpu;
-    cpu->d[0] = 1;
+    uint32_t tmpl  = cpu->d[1];
+    uint32_t array = cpu->d[2];
+    cpu->d[0] = 0;
+
+    typedef struct { char name[24]; uint8_t flags, filled; } RdItem;
+    RdItem items[RDA_MAX_ITEMS];
+    int nitems = 0, pending = 0, err = 0;
+    uint32_t rda = 0;
+
+    if (!tmpl || tmpl >= GUEST_RAM_SIZE) { SetIoErr(ERROR_BAD_TEMPLATE); return; }
+
+    /* ---- parse template ---- */
+    uint32_t tp = tmpl;
+    while (g_ram[tp]) {
+        while (g_ram[tp] == ',' || g_ram[tp] == ' ') tp++;
+        if (!g_ram[tp]) break;
+        if (nitems >= RDA_MAX_ITEMS) { err = ERROR_BAD_TEMPLATE; goto fail; }
+        int flags = pending; pending = 0;
+        /* leading flags — a bare "/K"-style comma item applies to the next */
+        while (g_ram[tp] == '/' || g_ram[tp] == '=') {
+            if (g_ram[tp] == '=') { flags |= RDA_F_K; tp++; }
+            else {
+                tp++;
+                int f = rda_flag_of((char)g_ram[tp]);
+                if (f < 0) { err = ERROR_BAD_TEMPLATE; goto fail; }
+                flags |= f; tp++;
+            }
+        }
+        if (g_ram[tp] == ',' || g_ram[tp] == ' ' || !g_ram[tp]) {
+            pending |= flags;
+            continue;
+        }
+        int nl = 0;
+        while (nl < 23 && g_ram[tp] && g_ram[tp] != ',' && g_ram[tp] != '/'
+               && g_ram[tp] != ' ' && g_ram[tp] != '=')
+            items[nitems].name[nl++] = (char)g_ram[tp++];
+        items[nitems].name[nl] = 0;
+        while (g_ram[tp] == '/' || g_ram[tp] == '=') {
+            if (g_ram[tp] == '=') { flags |= RDA_F_K; tp++; }
+            else {
+                tp++;
+                int f = rda_flag_of((char)g_ram[tp]);
+                if (f < 0) { err = ERROR_BAD_TEMPLATE; goto fail; }
+                flags |= f; tp++;
+            }
+        }
+        if (!nl) { err = ERROR_BAD_TEMPLATE; goto fail; }
+        items[nitems].flags  = (uint8_t)flags;
+        items[nitems].filled = 0;
+        nitems++;
+    }
+    if (pending) { err = ERROR_BAD_TEMPLATE; goto fail; }
+
+    /* ---- command line text (BSTR, trailing newline stripped) ---- */
+    char line[256]; int llen = 0;
+    if (g_cmdline_bptr) {
+        uint32_t b = g_cmdline_bptr << 2;
+        if (b < GUEST_RAM_SIZE) {
+            int n = g_ram[b];
+            if (b + 1 + (uint32_t)n > GUEST_RAM_SIZE)
+                n = (int)(GUEST_RAM_SIZE - b - 1);
+            for (int i = 0; i < n && llen < 255; i++) {
+                char c = (char)g_ram[b + 1 + i];
+                if (c == '\n' || c == '\r') break;
+                line[llen++] = c;
+            }
+        }
+    }
+    line[llen] = 0;
+
+    /* ---- RDArgs block: struct + result-string pool ---- */
+    uint32_t pool_sz = RDA_BLK_SIZE + (uint32_t)llen + 32;
+    rda = mc_alloc(pool_sz, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!rda) { SetIoErr(ERROR_NO_FREE_STORE); return; }
+    uint32_t spool = rda + RDA_BLK_SIZE;
+    uint32_t spos  = 0;
+    uint32_t smax  = pool_sz - RDA_BLK_SIZE;
+    guest_write_be32(rda + RDA_BUF_OFF,   spool);
+    guest_write_be32(rda + RDA_BUFSZ_OFF, smax);
+    guest_write_be32(rda + RDA_MAGIC_OFF, RDA_MAGIC);
+
+    for (int i = 0; i < nitems; i++)
+        guest_write_be32(array + (uint32_t)i * 4, 0);
+
+    /* ---- scan the command line ---- */
+    {
+        int p = 0;
+        for (;;) {
+            char tok[192];
+            int tstart = p;
+            int r = rda_next_token(line, llen, &p, tok, (int)sizeof(tok));
+            if (r < 0) { err = ERROR_UNMATCHED_QUOTES; goto fail; }
+            if (r == 0) break;
+            int tl = 0; while (tok[tl]) tl++;
+
+            /* split KNAME=rest */
+            int eq = -1;
+            for (int i = 0; i < tl; i++) if (tok[i] == '=') { eq = i; break; }
+            int kl = (eq >= 0) ? eq : tl;
+            if (kl > 63) kl = 63;
+            char kname[64];
+            for (int i = 0; i < kl; i++) kname[i] = tok[i];
+            kname[kl] = 0;
+
+            /* keyword match — '=' tokens may reference ANY item; bare
+             * tokens only /K and /S items.  Exact wins; otherwise a
+             * unique prefix abbreviation. */
+            int mi = -1;
+            if (kl) {
+                int npre = 0, pre = -1;
+                for (int i = 0; i < nitems; i++) {
+                    if (eq < 0 && !(items[i].flags & (RDA_F_K | RDA_F_S)))
+                        continue;
+                    if (rda_ci_eq(kname, items[i].name)) { mi = i; break; }
+                    if (rda_ci_isprefix(kname, items[i].name)) { npre++; pre = i; }
+                }
+                if (mi < 0 && npre == 1) mi = pre;
+            }
+
+            if (mi >= 0) {
+                const char *val = NULL;
+                if (items[mi].flags & RDA_F_S) {
+                    items[mi].filled = 1;
+                    guest_write_be32(array + (uint32_t)mi * 4, (uint32_t)-1);
+                    continue;
+                }
+                if (items[mi].flags & RDA_F_F) {
+                    /* rest of line after the keyword / '=' */
+                    int off = tstart;
+                    while (off < llen && line[off] && line[off] != '=' &&
+                           line[off] != ' ' && line[off] != '\t') off++;
+                    if (off < llen && line[off] == '=') off++;
+                    while (off < llen && (line[off] == ' ' || line[off] == '\t')) off++;
+                    val = line + off;
+                } else if (eq >= 0) {
+                    val = tok + eq + 1;
+                } else {
+                    char vtok[192];
+                    int vr = rda_next_token(line, llen, &p, vtok, (int)sizeof(vtok));
+                    if (vr < 0) { err = ERROR_UNMATCHED_QUOTES; goto fail; }
+                    if (vr > 0) {
+                        /* keep the value in a stable buffer — vtok is
+                         * loop-local */
+                        for (int i = 0; i < 192; i++) tok[i] = vtok[i];
+                        val = tok;
+                    }
+                }
+                items[mi].filled = 1;
+                if (items[mi].flags & RDA_F_N) {
+                    uint32_t num;
+                    if (!val || !rda_parse_num(val, &num)) {
+                        err = ERROR_BAD_NUMBER; goto fail;
+                    }
+                    guest_write_be32(array + (uint32_t)mi * 4, num);
+                    continue;
+                }
+                if (!val || !*val) {
+                    if (items[mi].flags & RDA_F_A) {
+                        err = ERROR_KEY_NEEDS_ARG; goto fail;
+                    }
+                    continue;
+                }
+                uint32_t sl = 0;
+                while (val[sl] && sl < 191) sl++;
+                if (spos + sl + 1 > smax) {
+                    if (spos + 1 >= smax) continue;
+                    sl = smax - spos - 1;
+                }
+                for (uint32_t i = 0; i < sl; i++)
+                    g_ram[spool + spos + i] = (uint8_t)val[i];
+                g_ram[spool + spos + sl] = 0;
+                guest_write_be32(array + (uint32_t)mi * 4, spool + spos);
+                spos += sl + 1;
+                continue;
+            }
+
+            /* positional fill: next unfilled non-K non-S item */
+            int pi = -1;
+            for (int i = 0; i < nitems; i++)
+                if (!items[i].filled &&
+                    !(items[i].flags & (RDA_F_K | RDA_F_S))) { pi = i; break; }
+            if (pi < 0) { err = ERROR_TOO_MANY_ARGS; goto fail; }
+            items[pi].filled = 1;
+            if (items[pi].flags & RDA_F_N) {
+                uint32_t num;
+                if (!rda_parse_num(tok, &num)) { err = ERROR_BAD_NUMBER; goto fail; }
+                guest_write_be32(array + (uint32_t)pi * 4, num);
+                continue;
+            }
+            const char *val = tok;
+            if (items[pi].flags & RDA_F_F) {
+                int off = tstart;
+                while (off < llen && (line[off] == ' ' || line[off] == '\t')) off++;
+                val = line + off;
+            }
+            uint32_t sl = 0;
+            while (val[sl] && sl < 191) sl++;
+            if (spos + sl + 1 > smax) {
+                if (spos + 1 >= smax) continue;
+                sl = smax - spos - 1;
+            }
+            for (uint32_t i = 0; i < sl; i++)
+                g_ram[spool + spos + i] = (uint8_t)val[i];
+            g_ram[spool + spos + sl] = 0;
+            guest_write_be32(array + (uint32_t)pi * 4, spool + spos);
+            spos += sl + 1;
+        }
+    }
+
+    /* ---- required-argument check ---- */
+    for (int i = 0; i < nitems; i++)
+        if ((items[i].flags & RDA_F_A) && !items[i].filled) {
+            err = ERROR_REQUIRED_ARG_MISSING;
+            goto fail;
+        }
+    cpu->d[0] = rda;
+    return;
+
+fail:
+    if (rda) mc_free(rda);
+    SetIoErr(err);
+    cpu->d[0] = 0;
 }
 
 static void dos_GetArgStr(M68kCPUState *cpu)
 {
-    cpu->d[0] = 0;
+    /* → BPTR to the command-line BSTR (cli_CommandLine equivalent) */
+    cpu->d[0] = g_cmdline_bptr;
 }
 
 static void dos_IsInteractive(M68kCPUState *cpu)
@@ -1300,18 +1710,10 @@ static void dos_IoErr(M68kCPUState *cpu)
     cpu->d[0] = (uint32_t)IoErr();
 }
 
-/* Fault(code=d1, header=d2, buffer=d3, len=d4): format a standard IoErr
- * message as "<header>: <text>" (or just "<text>" when header is NULL),
- * NUL-terminated and clipped to len bytes.  Returns TRUE when code != 0. */
-static void dos_Fault(M68kCPUState *cpu)
+/* Canonical AmigaDOS fault strings (dos/dos.h error numbers) — shared by
+ * Fault() and PrintFault().  Returns NULL for unlisted codes. */
+static const char *dos_fault_text(uint32_t code)
 {
-    uint32_t code = cpu->d[1];
-    uint32_t hdrp = cpu->d[2];
-    uint32_t buf  = cpu->d[3];
-    uint32_t len  = cpu->d[4];
-    if (!buf || !len || code == 0) { cpu->d[0] = 0; return; }
-
-    /* Canonical AmigaDOS fault strings (dos/dos.h error numbers). */
     static const struct { int code; const char *text; } tab[] = {
         { 103, "not enough memory available" },
         { 105, "task table full" },
@@ -1360,10 +1762,23 @@ static void dos_Fault(M68kCPUState *cpu)
         { 243, "unlock error" },
     };
 
-    const char *text = NULL;
     for (unsigned i = 0; i < sizeof(tab)/sizeof(tab[0]); i++)
-        if ((int)code == tab[i].code) { text = tab[i].text; break; }
+        if ((int)code == tab[i].code) return tab[i].text;
+    return NULL;
+}
 
+/* Fault(code=d1, header=d2, buffer=d3, len=d4): format a standard IoErr
+ * message as "<header>: <text>" (or just "<text>" when header is NULL),
+ * NUL-terminated and clipped to len bytes.  Returns TRUE when code != 0. */
+static void dos_Fault(M68kCPUState *cpu)
+{
+    uint32_t code = cpu->d[1];
+    uint32_t hdrp = cpu->d[2];
+    uint32_t buf  = cpu->d[3];
+    uint32_t len  = cpu->d[4];
+    if (!buf || !len || code == 0) { cpu->d[0] = 0; return; }
+
+    const char *text = dos_fault_text(code);
     char num[32];
     if (!text) {
         char *p = num;
@@ -1387,6 +1802,41 @@ static void dos_Fault(M68kCPUState *cpu)
     g_ram[buf + w] = 0;
     cpu->d[0] = 1;
     KLOG(KLOG_DOS, KLOG_INFO, "[dos] Fault(%ld) -> '%s'\n", (long)code, (char *)g_ram + buf);
+}
+
+/* PrintFault(code=d1, header=d2): print the standard IoErr message for
+ * `code` to the current output as "<header>: <text>".  Returns TRUE when
+ * code != 0 (the real API returns DOSTRUE on success). */
+static void dos_PrintFault(M68kCPUState *cpu)
+{
+    uint32_t code = cpu->d[1];
+    uint32_t hdrp = cpu->d[2];
+    if (code == 0) { cpu->d[0] = DOSFALSE; return; }
+    const char *text = dos_fault_text(code);
+    char num[32];
+    if (!text) {
+        char *p = num;
+        const char *pfx = "error code ";
+        while (*pfx) *p++ = *pfx++;
+        uint32_t v = code;
+        char d[10]; int nd = 0;
+        do { d[nd++] = (char)('0' + v % 10); v /= 10; } while (v && nd < 10);
+        while (nd) *p++ = d[--nd];
+        *p = '\0';
+        text = num;
+    }
+    char line[192];
+    int i = 0;
+    if (hdrp && hdrp < GUEST_RAM_SIZE) {
+        while (i < 160 && hdrp < GUEST_RAM_SIZE && g_ram[hdrp])
+            line[i++] = (char)g_ram[hdrp++];
+        if (i && i < 188) { line[i++] = ':'; line[i++] = ' '; }
+    }
+    while (i < 188 && *text) line[i++] = *text++;
+    line[i++] = '\n'; line[i] = '\0';
+    if (g_print) g_print(line);
+    else kprint(line);
+    cpu->d[0] = DOSTRUE;
 }
 
 
@@ -2559,8 +3009,9 @@ static uint32_t loadseg_hunk_load(const uint8_t *bin, uint32_t bin_size)
          * The seglist BPTR points at the link field, so
          *   link_addr = allocated+4, data = allocated+8. */
         uint32_t seg_size = (8 + (bytes ? bytes : 4) + 3u) & ~3u;
-        allocated[i] = (mem_req & MEMF_CHIP) ? heap_alloc_fl_chip(seg_size)
-                     : (mem_req & MEMF_FAST) ? heap_alloc_fl_fast(seg_size)
+        int rev = (mem_req & MEMF_REVERSE) != 0;
+        allocated[i] = (mem_req & MEMF_CHIP) ? heap_alloc_fl_chip(seg_size, rev)
+                     : (mem_req & MEMF_FAST) ? heap_alloc_fl_fast(seg_size, rev)
                      : heap_alloc_fl(seg_size);
         if (!allocated[i]) goto fail;
         hunk_base[i] = allocated[i] + 8;
@@ -3935,7 +4386,12 @@ static void dos_SelectOutput(M68kCPUState *cpu)
 
 static void dos_FreeArgs(M68kCPUState *cpu)
 {
-    /* D1=RDArgs — our ReadArgs used a fixed guest buffer; nothing to free */
+    /* D1=RDArgs — release the block allocated by dos_ReadArgs (magic at
+     * RDA_MAGIC_OFF); anything else is tolerated as a no-op. */
+    uint32_t rda = cpu->d[1];
+    if (rda && rda + RDA_BLK_SIZE <= GUEST_RAM_SIZE &&
+        guest_read_be32(rda + RDA_MAGIC_OFF) == RDA_MAGIC)
+        mc_free(rda);
     cpu->d[0] = DOSTRUE;
 }
 
@@ -4829,6 +5285,7 @@ static void *dos_funcs[] = {
     dos_SetVBuf,            /* index 101 */
     dos_SetMode,            /* index 102 */
     dos_StrToLong,          /* index 103 */
+    dos_PrintFault,         /* index 104 — UAOS-365 */
 };
 
 /* =========================================================================

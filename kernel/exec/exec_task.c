@@ -109,6 +109,11 @@ void Task_ReleaseM68kRam(UaosTask *t)
          * tenant the dead task's freelist head (UAOS-247). */
         { extern void UAOS_Heap_ReleaseWindow(uint8_t *ram);
           UAOS_Heap_ReleaseWindow(t->m68k_ram); }
+        /* Snapshot this window's named semaphores into the cross-window
+         * registry — AmigaOS named semaphores outlive their installer, so
+         * a later task's FindSemaphore must still resolve them (UAOS-365).
+         * Runs while the window memory is still valid. */
+        UAOS_SemReg_ReleaseWindow(t->m68k_ram);
         free_m68k_ram_slot(t->m68k_ram);
         t->m68k_ram = NULL;
     }

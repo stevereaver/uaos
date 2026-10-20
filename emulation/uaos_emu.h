@@ -66,6 +66,10 @@ extern int g_emu_halted;
  * round-robin contexts; blocking exec/dos handlers pump or park them. */
 void     UAOS_M68k_SubSchedTick(void);
 void     UAOS_Sub_ReleaseWindow(uint8_t *ram);
+/* Named-semaphore registry (UAOS-365): snapshot sems owned by a window
+ * being released so cross-task FindSemaphore replicas outlive the
+ * installer, matching AmigaOS SemaphoreList persistence. */
+void     UAOS_SemReg_ReleaseWindow(uint8_t *ram);
 int      UAOS_Sub_IsCur(void);                 /* running ctx is a subtask */
 int      UAOS_Sub_AddProc(uint32_t task, uint32_t init_pc,
                           uint32_t final_pc, uint32_t init_sp);
