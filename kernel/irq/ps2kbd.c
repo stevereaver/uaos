@@ -387,8 +387,8 @@ void PS2Kbd_IRQHandler(uint64_t vector, uint64_t error_code)
             switch (key) {
                 case 0x48: ac = 0x4C; vk = KBD_VKEY_UP;    break; /* Up    */
                 case 0x4B: ac = 0x4F; vk = KBD_VKEY_LEFT;  break; /* Left  */
-                case 0x50: ac = 0x4E; vk = KBD_VKEY_DOWN;  break; /* Down  */
-                case 0x4D: ac = 0x4D; vk = KBD_VKEY_RIGHT; break; /* Right */
+                case 0x50: ac = 0x4D; vk = KBD_VKEY_DOWN;  break; /* Down  */
+                case 0x4D: ac = 0x4E; vk = KBD_VKEY_RIGHT; break; /* Right */
                 case 0x1C: ac = 0x43; break; /* KP Enter */
                 case 0x35: ac = 0x5C; break; /* KP / */
                 case 0x53: ac = 0x46; break; /* Delete */

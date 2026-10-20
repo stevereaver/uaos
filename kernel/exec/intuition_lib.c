@@ -3098,6 +3098,8 @@ typedef struct {
     int       rows;          /* visible rows this window height allows */
     int       vol_mode;      /* listing volumes instead of files */
     int       rescan;        /* handler asked for dir reload */
+    int       ret_dup_guard; /* RAWKEY Return already accepted — swallow the
+                              * cooked '\r' that follows the same press */
     int       enter_typed;   /* drawer field committed — validate in ctx */
     uint64_t  last_click;    /* double-click detect */
     int       last_sel_click;
@@ -3441,7 +3443,9 @@ static void frq_on_key(char c)
             g_frq.rescan = 1;
         }
     } else if (c == '\r' || c == '\n') {
-        if (g_frq.edit_field == FRQ_EDIT_DRAWER) {
+        if (g_frq.ret_dup_guard) {
+            g_frq.ret_dup_guard = 0;
+        } else if (g_frq.edit_field == FRQ_EDIT_DRAWER) {
             g_frq.enter_typed = 1;      /* VFS_IsDir in the wait loop */
             g_frq.rescan = 1;
         } else if (g_frq.edit_field == FRQ_EDIT_PATTERN) {
@@ -3483,6 +3487,7 @@ static int frq_event_handler(int wh, int event_type, int p1, int p2, int p3)
             g_frq.done = 2;
         } else if (code == 0x44) {              /* Return → open/accept */
             frq_accept();
+            g_frq.ret_dup_guard = 1;
         } else if (code == 0x4C) {              /* cursor up */
             if (g_frq.sel > 0) {
                 g_frq.sel--;
