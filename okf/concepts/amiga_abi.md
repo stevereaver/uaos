@@ -103,8 +103,17 @@ action codes in bits 8+ of `strgclass` GM_* return values
   SERBYT, DENISEID, DSKDATR, HHPOSR, COPINS), CIA TOD/serial-shift/timer
   modes/pin semantics, AGA display registers, blitter completion IRQ,
   audio attach/looping details are now modelled.
-- Missing devices: trackdisk, input, gameport, serial.device, parallel.device,
-  clipboard, printer, narrator, scsidisk/CD support, keymap resource.
+- Devices added (UAOS-358): `clipboard.device` (32 KiB host-backed clip
+  store, write/update/read clip-id protocol, queued reads completed via
+  `UAOS_Emu_IOReply`, `CBD_*` commands, IFF `FTXT` wrap/unwrap host API),
+  `printer.device` (byte streams + `PRD_PRTCOMMAND` escape translation +
+  `PRD_DUMPRPORT`/`PRD_QUERY` into the `PRT:` LPT1/ring backend),
+  `parallel.device` (port layer on the same backend: `PDCMD_QUERY`
+  io_Status bits, `PDCMD_SETPARAMS` latching), and `narrator.device`
+  (real `narrator_rb`/`mouth_rb` ABI with NDK field validation; synthesis
+  itself is a no-op).  All expose real `-30`/`-36` BeginIO/AbortIO LVOs.
+- Missing devices: trackdisk, input, gameport, serial.device,
+  scsidisk/CD support, keymap resource.
 - Semaphores are now full V39 semantics (UAOS-361): shared/exclusive
   grants via `ss_QueueCount`, `ss_WaitQueue` mixing blocking waiters with
   `SemaphoreMessage` bids (`ln_Name` = SM_SHARED/SM_EXCLUSIVE),

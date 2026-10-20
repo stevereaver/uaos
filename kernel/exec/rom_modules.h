@@ -99,6 +99,24 @@ void UAOS_TIMER_Register(void);
 /* Register keyboard.device */
 void UAOS_KEYBOARD_Register(void);
 
+/* Register clipboard.device (UAOS-358) */
+void UAOS_CLIPBOARD_Register(void);
+
+/* Register printer.device (UAOS-358) */
+void UAOS_PRINTER_Register(void);
+
+/* Register narrator.device (UAOS-358) */
+void UAOS_NARRATOR_Register(void);
+
+/* Register parallel.device (UAOS-358) */
+void UAOS_PARALLEL_Register(void);
+
+/* Host clipboard text helpers (clipboard.device backing store) */
+int      ClipDev_SetText(const char *text, uint32_t len);
+uint32_t ClipDev_GetText(char *out, uint32_t max);
+struct UaosTask;
+void     ClipDev_DropTaskRequests(struct UaosTask *t);
+
 /* Register graphics.library */
 void UAOS_GRAPHICS_Register(void);
 

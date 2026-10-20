@@ -167,6 +167,22 @@ AmigaOS timing device.
 
 When a queued timer request expires (from `timer_ProcessTicks`, ~100 Hz), the entry's recorded requester RAM window gets the `UAOS_Emu_IOReply` treatment: `IOF_DONE`, node onto `mn_ReplyPort`, `Signal(mp_SigTask, 1<<mp_SigBit)`.
 
+## clipboard.device (`kernel/exec/clipboard_device.c`, UAOS-358)
+
+Stream-oriented system clipboard backed by a 32 KiB host buffer. `CMD_WRITE` appends bytes at `io_Offset` — a write at offset 0 opens a new clip stream and bumps the write clip-id, so readers holding the old id get `CBERR_OBSOLETEID`; `CMD_UPDATE` publishes the staged stream (the byte stream is opaque — apps conventionally write IFF `FORM FTXT`/`CHRS`). `CMD_READ` serves from the published clip at `io_Offset`; on an empty clip the request queues (`IOF_QUEUED`) in an 8-entry pending table until a publish flushes it through `UAOS_Emu_IOReply`. `CBD_POST` records the provider port (no SatisfyMsg handshake — queued reads complete on data instead); `CBD_CURRENTREADID`/`CBD_CURRENTWRITEID` report the ids; `CBD_CHANGEHOOK` accepts-and-ignores. `CMD_STOP`/`CMD_START` gate reads; `AbortIO` pulls a pending read with `IOERR_ABORTED`; `ClipDev_DropTaskRequests` purges a task's queued reads on exit. `ClipDev_SetText`/`ClipDev_GetText` are the host clipboard entry points — they wrap/unwrap plain text as `FORM FTXT` so native tools see real IFF. Unit 0 (`PRIMARY_CLIP`) only.
+
+## printer.device (`kernel/exec/printer_device.c`, UAOS-358)
+
+AmigaOS printer.device write-through to the host print handler — `PRT:`'s LPT1 strober when hardware exists, its ring sink otherwise. `CMD_WRITE`/`PRD_RAWWRITE` stream `io_Data`/`io_Length` bytes via `PrintHandler_SendByte`; `PRD_PRTCOMMAND` translates `IOPrtCmdReq` command indices (aRIS/aRIN/aIND/aNEL/aRI, the SGR attribute toggles, aHTS/aVTS, aSLPP) into real ISO/DEC escape sequences, accepting unimplemented indices silently; `PRD_DUMPRPORT` accepts and completes (no raster pipeline yet); `PRD_QUERY` fills a 4-byte status word (`PrintHandler_IsPresent()`). `CMD_READ` reports `IOERR_NOCMD`.
+
+## parallel.device (`kernel/exec/printer_device.c`, UAOS-358)
+
+The port layer printer.device sits on, registered alongside on the same backend so `PDCMD_*` commands (same numbers as `PRD_RAWWRITE`/`PRD_PRTCOMMAND`) get their real `devices/parallel.h` semantics: `PDCMD_QUERY` fills `IOExtPar.io_Status` (`IOPTF_PARSEL` when LPT1 probed, `IOPTF_PAPEROUT` otherwise, `IOPTF_RWDIR` from the last direction); `PDCMD_SETPARAMS` latches `io_ParFlags`+`io_PTermArray` and echoes the latched flags back on subsequent opens; `CMD_WRITE` streams bytes; `CMD_READ` completes zero-length (no read hardware behind the strober).
+
+## narrator.device (`kernel/exec/narrator_device.c`, UAOS-358)
+
+AmigaOS text-to-speech device — synthesis is a no-op but the request ABI is real: `CMD_WRITE` validates the 88-byte `narrator_rb` (rate 40–400, pitch 65–320, sex 0–1, mode 0–2, volume ≤64, freq 5000–28000 → `ND_RateErr`/`ND_PitchErr`/`ND_SexErr`/`ND_ModeErr`/`ND_VolErr`/`ND_FreqErr`; a zero field means "default") and completes `io_Error=0`; `CMD_READ` returns a neutral `mouth_rb` — `ND_NoWrite` until a write has landed; unit≠0 opens fail `ND_UnitErr`; unknown commands report `ND_Unimpl`. Enough for programs that probe for speech capability.
+
 ## ROM Module Registration
 
 All of the above libraries and devices are registered at boot by `kernel/exec/rom_modules.c` via `UAOS_ROM_RegisterAll()`. The ROM module table supports up to 64 modules and maps names to version, base, and native function tables. The registered set also includes `exec.library`, `dos.library`, `graphics.library`, `intuition.library`, `bsdsocket.library`, `workbench.library`, `mathieeesingbas.library`, and `mathtrans.library`.

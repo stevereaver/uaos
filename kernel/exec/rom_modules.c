@@ -216,6 +216,18 @@ void UAOS_ROM_RegisterAll(void)
     /* Register keyboard.device */
     UAOS_KEYBOARD_Register();
 
+    /* Register clipboard.device (UAOS-358) */
+    UAOS_CLIPBOARD_Register();
+
+    /* Register printer.device (UAOS-358) */
+    UAOS_PRINTER_Register();
+
+    /* Register narrator.device (UAOS-358) */
+    UAOS_NARRATOR_Register();
+
+    /* Register parallel.device (UAOS-358) */
+    UAOS_PARALLEL_Register();
+
     /* Register graphics.library */
     UAOS_GRAPHICS_Register();
 

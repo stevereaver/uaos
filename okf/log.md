@@ -1,6 +1,6 @@
 # OKF Change Log
 
-## 2026-10-20 — TODO sweep part 7: UAOS-362/360/359/361
+## 2026-10-20 — TODO sweep part 7: UAOS-362/360/359/361/358
 
 * **UAOS-362** (`8d6156f`): BOOPSI guest ABI aligned to the NDK —
   OM_*/GM_*/IM_* method IDs, `gpInput`/`gpDomain`/`impDraw`/`impHitTest`
@@ -30,6 +30,19 @@
   tags in free 0xC000–0x1A000 band), TaskTrap/Except/ExitCode RTS
   stubs, five SoftInt headers, `ex_MemHandlers`, `TaskTrapAlloc`,
   `LastAlert[0..3]` rotation, `tc_SigAlloc`/`tc_TrapAlloc` mirrors.
+* **UAOS-358**: four new ROM devices with real NDK `-30`/`-36`
+  BeginIO/AbortIO LVOs — `clipboard.device` (32 KiB host clip store,
+  offset-0 write = new clip-id, `CMD_UPDATE` publish, queued async reads
+  flushed via `UAOS_Emu_IOReply`, `CBD_POST`/`CURRENTREADID`/
+  `CURRENTWRITEID`/`CHANGEHOOK`, `ClipDev_SetText`/`GetText` IFF `FTXT`
+  host API), `printer.device` (`CMD_WRITE`/`PRD_RAWWRITE` →
+  `PrintHandler_SendByte`, `PRD_PRTCOMMAND` ISO/DEC escape translation,
+  `PRD_DUMPRPORT`/`PRD_QUERY`), `parallel.device` (same backend,
+  `PDCMD_QUERY` io_Status bits, `PDCMD_SETPARAMS` latching, zero-len
+  reads), `narrator.device` (real `narrator_rb`/`mouth_rb` ABI, NDK
+  range validation → `ND_*` errors, `ND_NoWrite` gating; synthesis
+  no-op). New `uaos_clipdev_test`/`uaos_printdev_test`/
+  `uaos_narrdev_test` in the selftest battery.
 * **Verified**: QEMU/OVMF (`run_with_disk.sh`) selftest battery —
   `chip_emu_cia_test`, extended `chip_emu_custom_test`, and new
   `uaos_exec_sem_test` (nesting, Attempt gating, queued-waiter grants,

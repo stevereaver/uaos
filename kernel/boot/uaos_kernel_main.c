@@ -416,6 +416,9 @@ extern int chip_emu_64color_test(void);
 extern int chip_emu_diwhigh_test(void);
 extern int chip_emu_agnus_slot_test(void);
 extern int uaos_exec_sem_test(void);
+extern int uaos_clipdev_test(void);
+extern int uaos_printdev_test(void);
+extern int uaos_narrdev_test(void);
 extern int chip_emu_sprite_border_test(void);
 extern int chip_emu_sprite_priority_test(void);
 extern int chip_emu_sprite_superhires_test(void);
@@ -1088,6 +1091,18 @@ void uaos_kernel_main(uint32_t mb2_magic, uint32_t mb2_info_phys)
     kprint("[BOOT] Running Exec semaphore test...\n");
     int sem_test = uaos_exec_sem_test();
     kprint(sem_test ? "[BOOT] Exec semaphore test PASSED\n" : "[BOOT] Exec semaphore test FAILED\n");
+
+    kprint("[BOOT] Running clipboard.device test...\n");
+    int clipdev_test = uaos_clipdev_test();
+    kprint(clipdev_test ? "[BOOT] clipboard.device test PASSED\n" : "[BOOT] clipboard.device test FAILED\n");
+
+    kprint("[BOOT] Running printer/parallel.device test...\n");
+    int printdev_test = uaos_printdev_test();
+    kprint(printdev_test ? "[BOOT] printer/parallel.device test PASSED\n" : "[BOOT] printer/parallel.device test FAILED\n");
+
+    kprint("[BOOT] Running narrator.device test...\n");
+    int narrdev_test = uaos_narrdev_test();
+    kprint(narrdev_test ? "[BOOT] narrator.device test PASSED\n" : "[BOOT] narrator.device test FAILED\n");
     } /* run_selftests */
 
     /* The chipset self-tests scribble into the framebuffer — restore the
