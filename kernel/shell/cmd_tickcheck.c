@@ -18,6 +18,7 @@
 #include "../irq/rtc.h"
 
 extern volatile uint64_t g_pit_ticks;
+extern void Timer_TickSubphases(uint64_t out[8], int clear);
 
 static inline void es_outb(uint16_t port, uint8_t val)
 {
@@ -177,7 +178,9 @@ void Cmd_Tickcheck(NativeCmdCtx *ctx, const char *args)
     uint64_t hz = Tickmon_TscHz();
 
     if (cmd_kw_find(args, "clear")) {
+        uint64_t tt[8];
         Tickmon_Clear();
+        Timer_TickSubphases(tt, 1);
         PRINT("tickcheck: counters cleared");
         return;
     }
@@ -336,6 +339,28 @@ void Cmd_Tickcheck(NativeCmdCtx *ctx, const char *args)
         if (cmd_slen(line) > 60) { PRINT(line); cmd_scopy(line, "  ", CMD_MAX_LINE); }
     }
     if (any) PRINT(line); else PRINT("  (no samples)");
+
+    /* UAOS-335: sub-phase maxima inside timer_ProcessTicks — which tick
+     * body owns the worst "timer" phase above. */
+    {
+        static const char *const k_tt_names[8] = {
+            "beam", "cia", "flp", "aud", "kbd", "usb", "ser", "vbl",
+        };
+        uint64_t tt[8];
+        Timer_TickSubphases(tt, 0);
+        PRINT("pit timer sub-phases (max cyc):");
+        any = 0;
+        cmd_scopy(line, "  ", CMD_MAX_LINE);
+        for (int i = 0; i < 8; i++) {
+            if (!tt[i]) continue;
+            any = 1;
+            cmd_scat(line, k_tt_names[i], CMD_MAX_LINE);
+            cmd_scat(line, "=", CMD_MAX_LINE);
+            kcyc(line, tt[i]);
+            cmd_scat(line, "  ", CMD_MAX_LINE);
+        }
+        if (any) PRINT(line); else PRINT("  (no samples)");
+    }
 
     if (s.whole_max) {
         cmd_scopy(line, "worst pit dispatch ", CMD_MAX_LINE);

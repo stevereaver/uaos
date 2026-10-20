@@ -22,6 +22,7 @@
 #include "chipset/chip_emu.h"
 #include "chipset/floppy.h"
 #include "audio/audio.h"
+#include "../dbg/diag.h"
 #include "../../emulation/uaos_emu.h"
 
 /* =========================================================================
@@ -220,6 +221,23 @@ void IODev_DropTaskRequests(UaosTask *t)
  * Timer Tick Processing — called from the PIT ISR periodically
  * ========================================================================= */
 
+/* --- UAOS-335 sub-phase maxima: which tick body owns the worst
+ * timer_ProcessTicks time.  Read out via `tickcheck` (sub-phase
+ * section); CLEAR also rebases these.  Cheap: two rdtsc per body. */
+static uint64_t tt_max[8];
+
+void Timer_TickSubphases(uint64_t out[8], int clear)
+{
+    for (int i = 0; i < 8; i++) {
+        out[i] = tt_max[i];
+        if (clear) tt_max[i] = 0;
+    }
+}
+
+#define TT(fn, i) do { uint64_t t0_ = diag_rdtsc(); fn; \
+    uint64_t d_ = diag_rdtsc() - t0_; \
+    if (d_ > tt_max[i]) tt_max[i] = d_; } while (0)
+
 void timer_ProcessTicks(void)
 {
     g_tick_counter++;
@@ -227,23 +245,23 @@ void timer_ProcessTicks(void)
     /* Keep PIT only for host audio/video timing.  Beam and subsystems are
      * advanced from the M68k cycle counter via chip_emu_beam_tick(); audio
      * DMA is advanced by the scheduler and mixed by the 48 kHz audio path. */
-    chip_emu_beam_tick(g_tick_counter);
-    chip_emu_cia_tick();
-    floppy_tick();
-    audio_tick();
+    TT(chip_emu_beam_tick(g_tick_counter), 0);
+    TT(chip_emu_cia_tick(), 1);
+    TT(floppy_tick(), 2);
+    TT(audio_tick(), 3);
     if ((g_tick_counter & 1u) == 0)
-        chip_emu_poll_ps2_keyboard();   /* 50 Hz — 20 ms worst-case key latency */
+        TT(chip_emu_poll_ps2_keyboard(), 4);   /* 50 Hz — 20 ms worst-case key latency */
     /* USB interrupt-transfer completion scan — plain memory reads on the
      * TD chain; complements the INTx IRQ path, so 50 Hz fallback suffices. */
     if ((g_tick_counter & 1u) == 0) {
         extern void USB_Poll(void);
-        USB_Poll();
+        TT(USB_Poll(), 5);
     }
-    chip_emu_serial_poll();
+    TT(chip_emu_serial_poll(), 6);
 
     /* Generate a PAL-equivalent VBlank interrupt every 2 ticks (~50 Hz). */
     if ((g_tick_counter & 1u) == 0) {
-        chip_emu_vblank();
+        TT(chip_emu_vblank(), 7);
         /* Wake any M68k task blocked inside graphics.library/WaitTOF(). */
         extern UaosTask *g_wait_tof_task;
         if (g_wait_tof_task && g_wait_tof_task->m68k_vblank_sig >= 0) {

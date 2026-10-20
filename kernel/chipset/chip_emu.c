@@ -1970,7 +1970,21 @@ void chip_emu_beam_tick(uint32_t tick_counter)
      * where g_ram may be a suspended guest's window or the shared base. */
     uint8_t *saved_ram = g_ram;
     if (g_display_ram) g_ram = g_display_ram;
-    chip_emu_run_to_cycle(chip_emu_m68k_cycles());
+    /* Bound the ISR-path catch-up (UAOS-335): a PIT tick that lands
+     * mid-slice of the M68k exec loop can find the beam scheduler a
+     * full 1M-cycle slice (~7 PAL frames, ~2200 scanlines of DMA slot
+     * allocation, copper and audio advance) behind — a ~2 ms ISR stall.
+     * The exec loop re-syncs to g_m68k_cycles after every slice in task
+     * context, so the tick only needs steady progress: drain at most a
+     * few lines per call and let the slice boundary (or the next tick)
+     * handle the rest. */
+    uint64_t target = chip_emu_m68k_cycles();
+    if (g_cycles_per_line) {
+        uint64_t budget = (uint64_t)g_cycles_per_line * 4;
+        if (target - g_last_scheduled_cycle > budget)
+            target = g_last_scheduled_cycle + budget;
+    }
+    chip_emu_run_to_cycle(target);
     g_ram = saved_ram;
 }
 
@@ -2505,8 +2519,14 @@ void chip_emu_audio_advance(uint32_t amiga_cycles)
         int att_per = (ch < 3) && (g_adkcon & (1u << (ch + 4)));
         int is_modulator = att_vol || att_per;
 
+        /* Bound per-call work (UAOS-335): the mixer calls this once per
+         * 48 kHz output sample (~148 Amiga cycles) inside the PIT tick
+         * path.  A pathological AUDxPER (<16 is below any physical sample
+         * rate) would iterate cycles/per times per call — cap the period
+         * expiries and drop the residual; the channel just aliases. */
         uint32_t remaining = amiga_cycles;
-        while (remaining > 0) {
+        int steps = 32;
+        while (remaining > 0 && steps-- > 0) {
             if (a->len_work == 0) {
                 /* DMA (re)start: working pointer/length load from the
                  * AUDxLC/AUDxLEN latches — this is also the loop point. */
