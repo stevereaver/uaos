@@ -188,7 +188,7 @@ Sprite collision detection is now implemented: `CLXDAT` (`0x00E`) is read-and-cl
 
 ### Beam Timing and Display Window
 
-`VPOSR` and `VHPOSR` are now derived from the M68k cycle counter.  `chip_emu_beam_tick()` is still called from the 100 Hz PIT path, but it only runs the scheduler to the current M68k cycle count and updates the beam registers from that result; the PIT no longer drives chipset advancement directly.  PAL mode uses 312 lines per frame and NTSC mode uses 262 lines, with the beam position computed from the color-clock cycle count.
+`VPOSR` and `VHPOSR` are now derived from the M68k cycle counter.  `chip_emu_beam_tick()` is still called from the 100 Hz PIT path, but it only runs the scheduler toward the current M68k cycle count — **bounded to 4 scanlines per call** (UAOS-335): a tick landing mid-slice of the M68k exec loop can find the scheduler ~7 PAL frames behind, and draining that in interrupt context produced multi-ms ISR stalls.  The exec loop's task-context re-sync after every `m68k_execute()` slice guarantees full catch-up, so the tick only needs steady progress.  The PIT no longer drives chipset advancement directly.  PAL mode uses 312 lines per frame and NTSC mode uses 262 lines, with the beam position computed from the color-clock cycle count.
 
 The horizontal blanking period is now modeled in the DMA slot table: slots 0 through 18 are outside the active display, and bitplane DMA is never allocated there.  The fixed refresh, disk, audio and sprite slots continue to occupy the start of the line, so CPU access during HBLANK sees less contention from bitplane DMA.
 
@@ -228,7 +228,7 @@ VBlank, CIA timers, and audio DMA all set the correct `INTREQ` bits and drive th
 
 ### Paula Audio
 
-Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_advance()` advances the DMA pointer by a configurable number of Amiga master-clock cycles, fetching the next 16-bit word when the period counter expires so the high byte is played first, then the low byte.
+Four audio channels are tracked with `AUDxLCH/LCL`, `AUDxLEN`, `AUDxPER`, `AUDxVOL`, and `AUDxDAT`.  `chip_emu_audio_advance()` advances the DMA pointer by a configurable number of Amiga master-clock cycles, fetching the next 16-bit word when the period counter expires so the high byte is played first, then the low byte.  Per-call work is capped at 32 period expiries (UAOS-335) — a pathological `AUDxPER` below any physical rate would otherwise iterate `cycles/per` times inside the 48 kHz mix path on the PIT tick; the residual is dropped and the channel simply aliases.
 
 A host audio subsystem in `kernel/audio/` provides a 48 kHz stereo mixer and a pluggable backend interface (`AudioBackend`).
 

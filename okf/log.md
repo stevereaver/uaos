@@ -1,5 +1,30 @@
 # OKF Change Log
 
+## 2026-10-20 — TODO sweep part 8: UAOS-335 PIT-ISR boundedness + measurement
+
+* **UAOS-335** (`c242ec4`): investigated the ~45M-cycle `timer`
+  phase worst under a spinning M68k guest (SpinTest).  Found and fixed
+  two genuinely unbounded ISR paths — `chip_emu_beam_tick()` could
+  drain a full 1M-cycle M68k slice (~7 PAL frames of scanline/DMA/
+  copper/audio advance) in interrupt context (now ≤4 scanlines/call;
+  the exec loop's task-context re-sync guarantees catch-up), and
+  `chip_emu_audio_advance()` iterated `cycles/AUDxPER` expiries per
+  call (now capped at 32, residual dropped).  `timer_ProcessTicks`
+  bodies are individually rdtsc-profiled and surfaced as a
+  `pit timer sub-phases` section in `tickcheck` (CLEAR rebases them).
+  Post-fix under SpinTest: `timer` phase worst 44674k → 3618k cyc
+  (`beam=2815k aud=3047k cia=416k`) — bounded real work plus residual
+  QEMU TCG vCPU-preemption noise (rdtsc counts host descheduling;
+  idle-phase readings show identical magnitudes).  Metal (MBP4,1)
+  re-measure remains blocked — no route to the box from this
+  workspace.  Selftest 34/34, smoke 24/24.
+* Operational note: a run of "Self-tests skipped" boots traced to a
+  stale serial log — the earlier QEMU launches had been killed by a
+  `pkill -f qemu-system` self-match (the wrapper shell's own cmdline
+  contained the pattern).  The MB2 cmdline (`selftest` flag) was
+  parsed correctly all along, verified with a temporary
+  `Mb2_DumpCmdline` both pre- and post-MMU under OVMF (reverted).
+
 ## 2026-10-20 — TODO sweep part 7: UAOS-362/360/359/361/358
 
 * **UAOS-362** (`8d6156f`): BOOPSI guest ABI aligned to the NDK —
