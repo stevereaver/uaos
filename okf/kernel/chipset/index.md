@@ -93,6 +93,16 @@ The resulting 256-entry palette is stored internally as host `0x00RRGGBB` values
 
 `BPLCON0` selects the depth and mode, `DIWSTART`/`DIWSTOP` define the display window, `DIWHIGH` (`0x1E4`) extends the window beyond 512 lines, and `DDFSTART`/`DDFSTOP` help derive the fetch width.
 
+## Takeover Display Mode (UAOS-366)
+
+When an M68k guest takes over the machine (`LoadView(NULL)` + own copper list/DMA), the chipset presents the emulated display directly instead of the Workbench desktop:
+
+- `chip_emu_takeover_begin(owner)` / `chip_emu_takeover_end(owner)` / `chip_emu_takeover_active()` / `chip_emu_takeover_owner()` — end() only acts for the owner (NULL forces) and kicks a full desktop repaint (or unblank) via `WM_Redraw`/`Blanker_OnInput`.
+- `takeover_render_line(y)` runs in the `chip_emu_run_to_cycle()` line loop right after `copper_run_to_beam()` — mid-frame copper changes are visible like real hardware.  The Amiga PAL display area (lines `$1A`–`$138`, 368 lores px from hpos `$40`) is integer-scaled and centered in the host framebuffer and blitted with `FB_BlitRow`.
+- Bitplane fetches use real hardware semantics: each line reads the live `BPLxPT` pointer then advances it by `bytes_per_row + BPLxMOD`; `chip_emu_vblank()` re-arms `g_copper_pc = COP1LC` and `g_spr_dma_ptr = SPRxPT` at every frame start (real re-latch — the copper list restarts each frame).
+- Triggers: `graphics_LoadView(NULL)` from an M68k task begins takeover; `LoadView(view)` and task teardown (`Task_ReleaseM68kRam`, `m68k_wrapper_entry` exit) end it.  The exec slice loop drives `chip_emu_run_to_cycle()` when the current task is the owner.
+- Desktop gating while active: `WM_FlushRedraw` drops damage, `WM_Redraw` early-returns, `Blanker_Tick/Flush/OnInput` and the software cursor paints are suppressed (same pattern as the blanker gate).
+
 ## Page Fault Decoder
 
 The page fault handler (`kernel/exec/page_fault_handler.c`) decodes the x86_64 instruction that caused the chip-window access and forwards it to `chip_emu_read`/`chip_emu_write`.  Tier 2 decoding supports:
@@ -168,12 +178,12 @@ The AGA Blitter is triggered by writes to `BLTSIZE` (`0x058`).  It supports area
 
 Blitter execution is now slot-driven for both line and area modes.  Writing `BLTSIZE` sets the busy flag and initialises persistent line or area state; each allocated Blitter DMA slot advances the state by one pixel (line mode) or one word (area mode).  `DMACONR` (register `0x002`) reflects `BLITZ` (bit 14) while the blitter is active, and the busy flag is only cleared when the last slot completes, so polling software sees the real completion time.  The live pointer registers (`BLTAPT`, `BLTBPT`, `BLTCPT`, `BLTDPT`) are updated after each word, so mid-blit reads return the correct current values.
 
-**Line mode and area-fill mode** — `blitter_execute()` has a stateful Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and a persistent per-row fill state for `BLTCON1` bits 3–4 (`IFEFE`/`EFE`).
+**Line mode and area-fill mode (HRM-exact, UAOS-366)** — `blitter_execute()` starts a stateful HRM Bresenham line drawer for `BLTCON1` bit 0 (`LINE`) and polygon-fill area mode for `BLTCON1` bits 3–4 (`EFE`/`IFE`) with `FCI` (bit 2) as the initial fill carry.
 
-- Line mode uses `BLTAPTL` as the Bresenham accumulator, applies the B-channel texture (`BLTBDAT`) through the `BLTCON0` minterm, honours the `SING` bit, and draws exactly one pixel per allocated Blitter DMA slot.
-- Area mode processes each word from MSB (bit 15) to LSB (bit 0), matching the Amiga's left-to-right screen layout, and carries the fill state across words within the same row.
-- A dedicated `chip_emu_fill_complex_test()` exercises a self-intersecting polygon (bowtie) to verify that the fill state toggles at each edge and carries across word boundaries.
-- `chip_emu_blitter_busy_test()` and `chip_emu_blitter_desc_test()` verify that large area blits complete across multiple frames and that descending-mode overlapping copies work word-by-word.
+- Line mode: `BLTSIZE` vsize is the pixel count (hsize must be 2); octant bits `SUD`/`SUL`/`AUL` select major axis and step signs; per pixel the accumulator test `acc >= 0 ? acc += BLTAMOD + minor step : acc += BLTBMOD` is followed by an unconditional major-axis step; X steps move `ASH` with word wrap, Y steps add `±BLTCMOD`; `SING` draws the whole line but suppresses writes until a Y step; `SIGN` negates the initial accumulator; the B texture bit is `(BLTBDAT >> BSH) & 1` with `BSH` decrementing per pixel.  On finish the live `BLTAPTL`, `BLTCPT`/`BLTDPT`, `ASH`, `BSH` are written back.  Minterm inputs are the channel data (fetch or `BLT*DAT`), not gated by the USE bits.
+- Area mode: `DESC` walks pointers −2 per word and subtracts modulos at row end; `BLTAFWM`/`BLTALWM` apply to the first/last word *processed*; the barrel shifter is fed by the previous word of the same channel carried across rows (`prev<<16|cur >> sh` ascending, `(cur<<sh)|(prev>>(16−sh))` descending); polygon fill applies to the minterm output bit 0→15 per word, carry = `FCI` at each row start (inclusive `out=bit|carry`, exclusive `out=carry` after `carry^=bit`).
+- `DMACONR` bit 13 (`BZERO`) reads 1 when every D word of the last blit was zero.
+- Boot selftests (`selftest` cmdline): line test covers shallow + steep octants and SING; fill test runs the HRM inclusive/exclusive × FCI vectors on a 2-word DESC blit; `chip_emu_fill_complex_test()` checks exclusive-fill carry across word boundaries; `chip_emu_blitter_desc_test()` checks an overlapping descending copy plus the ASH barrel-shifter carry.
 
 
 ### Hardware Sprites

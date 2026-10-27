@@ -1847,8 +1847,20 @@ static void graphics_LoadView(void)
     uint32_t view = m68k_get_reg(NULL, M68K_REG_A1);
     if (!view) {
         FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, 0);
+        /* An M68k guest calling LoadView(NULL) is taking the machine over
+         * (demos do this before installing their own copper list + DMA).
+         * Present the emulated display directly instead of the desktop
+         * (UAOS-366). */
+        {
+            UaosTask *t = Task_Current();
+            if (t && t->type == TASK_TYPE_M68K)
+                chip_emu_takeover_begin(t);
+        }
         return;
     }
+    /* A non-NULL LoadView restores a normal View — end any takeover this
+     * task held (no-op if it isn't the owner). */
+    chip_emu_takeover_end(Task_Current());
 
     /* If MrgCop has built a copper list, use the chipset renderer. */
     if (s_view_copper) {

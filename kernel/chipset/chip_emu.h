@@ -21,6 +21,8 @@ void     chip_write_u16(uint32_t addr, uint16_t v);
 
 /* Raise INTREQ bits and update the M68k IRQ level. */
 void     chip_emu_raise_intreq(uint16_t bits);
+/* Recompute the pending M68k IRQ level from INTREQ/INTENA (+CIA lines). */
+void     chip_emu_update_irq(void);
 /* Clear INTREQ bits — the emulated exec-side interrupt acknowledge
  * (UAOS-326).  Same effect as a guest write to $DFF09C with SET/CLR=0:
  * chip_emu_update_irq re-evaluates the level line. */
@@ -72,6 +74,16 @@ void     chip_emu_vblank(void);
 uint32_t chip_emu_vblank_count(void);
 void     chip_emu_beam_tick(uint32_t tick_counter);
 void     chip_emu_run_to_cycle(uint64_t target_cycles);
+
+/* Takeover display mode (UAOS-366): an M68k guest that takes over the
+ * machine (LoadView(NULL), own copper list + DMA) gets the emulated
+ * display presented directly — each scanline is rasterized at copper
+ * time and desktop repaints are suppressed while active.
+ * takeover_end() only acts for the current owner; owner==NULL forces it. */
+void     chip_emu_takeover_begin(void *owner);
+void     chip_emu_takeover_end(void *owner);
+int      chip_emu_takeover_active(void);
+void    *chip_emu_takeover_owner(void);
 uint64_t chip_emu_stolen_cycles(void);
 void     chip_emu_cpu_chipram_access(uint32_t addr, int is_write);
 int      chip_emu_timing_lock_test(void);
@@ -125,5 +137,12 @@ int      chip_emu_sprite_in_use(int slot);
 uint16_t chip_emu_fmode(void);
 int      chip_emu_bpl_fetch_width(void);
 int      chip_emu_spr_fetch_width(void);
+
+/* Diagnostics (UAOS-366): expose the display RAM window and a text dump of
+ * the chipset register state so a guest takeover screen can be inspected
+ * without a debugger. */
+const uint8_t *chip_emu_display_ram(void);
+uint32_t       chip_emu_guest_ram_size(void);
+void           chip_emu_dump_report(char *buf, uint32_t buflen);
 
 #endif /* UAOS_CHIP_EMU_H */

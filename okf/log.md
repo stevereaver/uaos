@@ -2482,3 +2482,220 @@ User reported `audiotest` still silent at volume 100 on MBP4,1. Live inspection 
   `okf/emulation/index.md` (trampoline arena + SetFunction ABI note),
   `okf/kernel/exec/index.md` (semaphore registry, MEMF_REVERSE,
   teardown hook), `okf/kernel/dos/index.md` (arg/fault functions).
+
+## 2025-10-25 — UAOS-366: Run Spaceballs "State of the Art" on UAOS
+
+RE'd extras/StateOfTheArt.eXe (8-hunk Amiga executable, Spaceballs trackmo):
+system-friendly takeover — hunk0 wrapper (VBR install via Supervisor(),
+hw save/restore), hunk6 beam calibrate + LMB-click gate, hunk3 bootstrapper
+(decruncher, installs code at guest 0x3ec00, jumps to 0x3f000), hunk4 packed
+payload, hunk7 CHIP copper list.
+
+UAOS fixes in emulation/uaos_m68k_glue.c:
+- exec_Supervisor: synthesize 68020 format-0 exception frame (SR/PC/fmt)
+  so supervisor functions returning via RTE resume correctly (real
+  Supervisor() ABI — Exec enters via JSR, function exits via RTE).
+- hunk_load: emu_code_range_add() for every HUNK_CODE so ANY-flagged
+  code hunks allocated in the chip pool (e.g. hunk6 @0x20008) aren't
+  killed by the low-reentry wild-PC heuristic.
+- low-reentry heuristic: exempt guests that installed a nonzero VBR —
+  takeover demos legitimately execute decrunched code at 0x20000-0x80000.
+- install_library_tables: populate all unused exception vectors (2-24,
+  32-255) with an RTE stub — real ROMs never leave zero vectors and
+  demo "swallow exception" stubs trampoline through old vector contents.
+
+Status: binary launches, calibrates, waits for click, advances through
+CacheControl+Supervisor/VBR install into silent takeover execution.
+Next: verify payload at 0x3f000 runs (PC probe + chiptrace of copper/
+blitter/audio activity); host display doesn't render guest chip DMA.
+
+## 2026-10-25T11:00Z — UAOS-366: takeover display mode (demo output now presented on screen)
+
+* **Added** "takeover display" mode in `kernel/chipset/chip_emu.{c,h}`:
+  `chip_emu_takeover_begin/end/active/owner` + per-scanline rasterizer
+  `takeover_render_line(y)` driven from the `chip_emu_run_to_cycle()` line
+  loop right after `copper_run_to_beam()` — mid-frame copper changes now
+  land on screen.  Amiga PAL display area (lines $1A-$138, 368 lores px
+  from hpos $40) is integer-scaled + centered in the host fb (2x on
+  1024x768 => 736x572 at (144,98)) via `FB_BlitRow`.
+* **HW semantics**: BPLxPT are live DMA pointers in takeover — each fetched
+  line reads the current pointer then advances it by bytes_per_row +
+  BPLxMOD; `chip_emu_vblank()` now re-arms `g_copper_pc = g_cop1lc` and
+  `g_spr_dma_ptr = g_spr_pt` at frame start (real hardware re-latch; the
+  copper list restarts every frame, reloading BPLxPT/palette).
+* **Refactor**: pixel decode split out of `render_scanline` into
+  `decode_scanline()` (writes a line buffer; FB_PutPixel path preserved);
+  DIW/DDF math factored into `diw_ddf_params()` shared with render_frame.
+* **Triggers**: `graphics_LoadView(NULL)` from an M68k task -> takeover
+  begin; `LoadView(view)` -> end; task teardown (`Task_ReleaseM68kRam` +
+  `m68k_wrapper_entry` exit) -> end (which kicks a full WM repaint /
+  unblank).  Slice loop drives `chip_emu_run_to_cycle` when the current
+  task is the takeover owner.
+* **Desktop gating**: `WM_FlushRedraw` drops damage and `WM_Redraw`
+  early-returns while takeover active (mirror of blanker gating);
+  `Blanker_Tick/Flush/OnInput` and `Cursor_Flush`/`cursor_commit_draw`
+  suppressed so the Workbench can't paint over the guest display.
+* **Verified in QEMU**: demo loads, left-click passes its LMB gate,
+  VBR=0x800790, DMACON=0x7f0, COP1LC=0x3fe0e; screendumps show the
+  mapped Amiga window (736x572 centered) presenting the guest's
+  COLOR00 display state with the desktop fully suppressed.  BPL1PT/BPL2PT
+  observed live-advancing and copper reloading each frame.
+* **Open**: guest then parks in a ~10-byte loop at PC 0x3f2b4-0x3f2be
+  (real-time paced ~7.5M cyc/s) showing an all-white (COLOR00=$FFF)
+  display for 60s+ — likely waiting on an unmet flag/interrupt (audio
+  position or ISR-set flag are prime suspects); not investigated further
+  per plan.  Regression suites pass: qemu_guesttask_test, qemu_screen_test
+  (22 checks), no new build warnings.
+
+## 2025-10-25 — UAOS-366 round 3: SOTA plays multiple parts
+- emulation/uaos_m68k_glue.c UAOS_M68k_DeliverInterrupts: return early when the
+  guest VBR != 0 — the exec-level poll acked VERTB (no exec handler) before the
+  CPU autovector reached the demo's own level-3 ISR (frame counter stuck at 0).
+- kernel/chipset/chip_emu.c chip_emu_read_impl: byte reads of custom regs read
+  the containing word via the computed path (`btst #5,$dff01f` on INTREQR read
+  a stale backing word).
+- diw_ddf_params: OCS VSTOP bit 8 = !bit 7 when DIWHIGH unused (DIWSTOP $3EC1 →
+  line $13E; display was clipped to the top ~35 lines).
+- Result: intro, "OF" title, Spaceballs Production dragon, moiré and textured
+  scroller parts render under QEMU at real-time pace.
+
+## 2026-10-26T09:45Z — UAOS-366: HRM-exact blitter line/fill/desc modes — SOTA objects now visible
+
+* **Rewrote** `blitter_line_step`/`blitter_area_step`/`blitter_execute` in
+  `kernel/chipset/chip_emu.c` to Amiga HRM semantics — fixes the "missing
+  objects" (SING line-draw + descending-fill filled vectors) in State of
+  the Art.
+* **Line mode**: BLTSIZE vsize = pixel count (hsize must be 2); octant
+  decode SUD=major-X / SUL=minor-neg / AUL=major-neg; Bresenham per HRM
+  node0128 (acc0=4dy-2dx signed, AMOD on acc>=0 + minor step, BMOD else,
+  always major step); X steps move ASH with word wrap at 15<->0 (+/-2),
+  Y steps add +/-BLTCMOD; SING draws the whole line but suppresses pixel
+  writes until a Y step; SIGN negates the initial accumulator; B texture
+  bit (BLTBDAT>>BSH)&1 with BSH-- mod 16; live write-back of BLTAPTL,
+  BLTCPT/BLTDPT, ASH, BSH on finish.  USE bits no longer zero minterm
+  inputs (channel data regs always feed the minterm).
+* **Area mode**: DESC walks pointers -2 per word and SUBTRACTS modulos at
+  row end (guests pre-point at the last word); AFWM/ALWM apply to
+  first/last word in PROCESSING order; barrel shifter is fed by the
+  PREVIOUS word (per-blit prevA/prevB carried across rows; asc =
+  (prev<<16|cur)>>sh, desc = (cur<<sh)|(prev>>(16-sh))); BLT*DAT regs hold
+  last data seen; polygon fill applies to the minterm OUTPUT word,
+  bit 0->15 per word in processing order, carry = FCI at every row start
+  (inclusive: out=bit|carry,carry^=bit; exclusive: carry^=bit,out=carry).
+* **BZERO**: DMACONR bit13 reads 1 when every D output word of the last
+  blit was zero (g_blit_d_nonzero inverse).
+* **Selftests rewritten** to HRM conventions: line test covers shallow
+  X-major + steep Y-major octants pixel-exact plus a SING one-pixel-per-row
+  check; fill test runs the 4 HRM vectors on a 2-word DESC blit;
+  fill_complex checks exclusive-fill carry across word boundaries; desc
+  test is an overlapping downward copy (pointers at last word, nonzero
+  modulo) plus an ascending ASH=4 shifter carry check.  Booted with
+  `selftest` on the grub cmdline — all 5 blitter tests PASSED on serial.
+* **Runtime**: probe13 — demo PC now advances through the show
+  (0x3fb18, 0x521b0, 0x3e360, 0x50b46, 0x40218 vs the old park at 0x3f2b4);
+  23,425+ line-mode blits logged in ~4min; screendumps show real multi-color
+  vector graphics (uniq 7-16 vs uniform white before): purple intro,
+  bright scene p6 (mean 168,191,207), orange scene p9-10, black transition
+  p11-12.  Contact sheet /tmp/sota5_sheet.png.
+* Regressions: qemu_screen_test 22/22, qemu_guesttask_test,
+  qemu_octamed_ui_test — all PASS.  Temp diag counters + grub flag removed.
+ls okf/log.md .devin/okf/log.md 2>/dev/null | head -3
+
+## UAOS-366 takeover display geometry fixes
+- diw_ddf_params: real DIWHIGH layout (VSTOP hi=bits 8-10, HSTART bit5, HSTOP bit13); OCS HSTOP bit8 always set; HRM fetch formulas lores diff/8+1, hires diff/4+2 words x16px.
+- decode_scanline: scroll is a right-shift delay (sx = x - scroll); odd planes use PF1H, even planes PF2H even in single-playfield mode (moire effect).
+- takeover_render_line: pixels placed at fetch-origin hpos (DDFSTRT&0xFC)*2+17 lores / +9 hires, DIW h-clip; window recentred (hpos 0x69, lines 0x18-0x13F); sprite DMA state machine + compositing added.
+- chip_emu_write: beam scheduler catches up to live CPU cycle before applying custom-register writes.
+- exec_task.c: takeover guests run 568-cycle slices (~1.25 lines) instead of 10000.
+- Moire now renders recognisably and centred; offline RAM render shows residual streaks are IN the plane data => remaining issue is mid-frame buffer-update timing, not pixel mapping. qemu_screen_test 22/22 pass.
+
+## UAOS-366 doubling fix (2026)
+- The mid-line write-sync made chip_emu_run_to_cycle re-run the SAME scanline on every register write; each pass re-advanced g_bpl_pt by bpr+mod -> per-plane drift -> stacked-double image + ghosting. Added s_last_proc_line guard: each absolute line processed exactly once (resets on frame-base wrap). This fixed the user's reported doubling/ghosting and also stops audio/copper/DMA side effects double-firing.
+- User confirms: centered, text/flash sequences near-perfect. Dancers (4-6 plane vector scenes) still noise; dragon now near-correct.
+- Open: dancer scene noise — likely blitter line/fill output OR mid-frame buffer race; needs RAM dump during a dancer scene to decide (last dump missed the click window).
+
+## UAOS-366 vector-scene diagnosis (2026) — key finding
+- ramdump shell command added (kernel/shell/cmd_ramdump.c): register header + chip-RAM to RAM:ramdump.bin; START=/LEN= options; exfil via gnu base64 over telnet. chip_emu.c: chip_emu_display_ram(), chip_emu_guest_ram_size(), chip_emu_dump_report() with blit counters (blits/line/area, lastdpt/apt, bc0/bc1/bsz/adat/bdat/cdat, modulos, afwm/alwm, ll* last-line-blit regs, cw CPU-write count/last/window).
+- Purple hand scene + dancer scenes: planes are ALL ZERO (not noise — never written). cw=0 => zero CPU RAM writes; ~3000 line blits all launched with BLTCON0 USE=0 (USE nibble = 0, e.g. 0x0012) => no-op/pacing blits. The vector draw engine is not producing output — control-flow issue, not fetch/blit-quality.
+- Moiré scene line blits DO write (rings render) => engine works when it fires. Vector plotter likely interrupt-driven (L2 PORTS/CIA or L3 BLIT-done/VERTB) and not reaching, or gated on a flag.
+- Reverted scroll extra-word advance (regression: hires dragon sheared diagonally).
+- Added byte-write merge for 16-bit regs in chip_emu_write (byte write to 0x40=high, 0x41=low merged into word) — was not the cause but is correct HW behavior anyway.
+
+## UAOS-366 vector scenes FIXED — chipset correctness bugs (2026-10-27)
+Found by chiptrace (`chiptrace PC 1` + `chiptrace CHIP ON` over telnet in QEMU) and an offline WinUAE-faithful Python replay (/tmp/replay.py) of the captured blitter register stream.
+- chip_emu_write: 32-bit writes are now two 16-bit bus writes (hi→offset, lo→offset+2). Only pointer regs handled longs before; `move.l #$0BCA0001,BLTCON0` put BLTCON1's value in BLTCON0 (USE=0) and never wrote BLTCON1. Same for AFWM/ALWM, CMOD/BMOD, AMOD/DMOD, AUDxLEN/PER.
+- DMA pointer low words (BLTxPTL, BPLxPTL, SPRxPTL, COPxLCL, AUDxLCL, DSKPTL) store v & $FFFE (WinUAE custom.cpp). SOTA's line routine loads byte addresses (base+y*bpr+x/8).
+- Blitter line mode (WinUAE blitter.cpp semantics): USED ignored; writes only if USEC; first write → BLTDPT, later writes → BLTCPT. SIGN (BLTCON1 b6) is the first-step sign; BLTAPTL is used as-is (old code negated it).
+- COPJMP1/COPJMP2 strobes now reload the copper PC (CPU write or copper MOVE).
+- Copper rewritten line-timed (copper_run_line): 16-bit VP7-0:HP8-1 comparator with VE/HE masks, VP7 always compared, BFD blitter-wait; 2 fetches per instruction on odd cycles not taken by refresh/disk/audio/sprite/bitplane DMA (HRM fig 6-9 lores "- 4 6 2 - 3 5 1", hires "4 2 3 1"); execution resumes across lines. Two passes per line: up to DDFSTRT (affects this line), then to end of line (affects next).
+- Removed the fake COPER INTREQ the old copper raised at every end-of-list: it doubled the demo's level-3 frame counter so timed scenes were skipped.
+- Selftests: boot with `selftest` on the multiboot2 cmdline (build a temp ISO from build/iso-staging with grub-mkrescue). All 33 pass. lt_setup now sets SIGN when 4dy-2dx<0 (HRM).
+- Gotcha: QEMU test harness instances all forward host 2323 → only one can run at a time.
+
+## UAOS-366 white intro screen — interrupt starvation fixed (2026-10-27)
+Symptom: demo start showed ~18s+ pure white then slowly faded in; intro counter milestones (cmpiw #890 etc. in the L3 handler) advanced ~0.2-2/s instead of ~50-100/s.
+- Disassembled the guest's own L3 handler (VBR relocated to $800790): it unconditionally `addiw #1,$3f4a8` per invocation and re-pends SOFTINT ($8004->INTREQ) every other run, so the scene counter advances only when level-3 interrupts are actually delivered to the guest CPU.
+- Root cause: g_intreq/g_intena are global chipset state, but int_level/asserts and exec-side consumption are per-context:
+  * chip_emu_update_irq() called m68k_set_irq() on whatever Musashi context happened to be installed (timer-ISR or another task's slice) -> the owner's pending level landed on a foreign context.
+  * UAOS_M68k_DeliverInterrupts() (exec-poll) bailed only when the CURRENT ctx VBR!=0; any other task with VBR=0 saw the owner's pending VERTB/SOFTINT/BLIT bits and exec_intack()'d them globally.
+  * Same for irq_vector_entry(): a foreign VBR=0 context that took the level delivered+acked the owner's bits into its own window.
+- Fixes:
+  * chip_emu_update_irq(): during takeover, return without m68k_set_irq() when g_ram != g_display_ram (pending bits persist; owner's own scheduler runs re-assert).
+  * chip_emu_run_to_cycle(): call chip_emu_update_irq() at the end — requests raised while a foreign window was bound get asserted on the owner's next scheduler run.
+  * UAOS_M68k_DeliverInterrupts(): return early while chip_emu_takeover_active() — no exec-poll consumption of owner INTREQ.
+  * irq_vector_entry(): during takeover, skip delivery but still pop the emulated RTE frame (a stub-vector context that lands here took an IRQ belonging to the owner).
+- Result in QEMU: intro counter now ticks ~85/s, milestone 961 hit ~19s in, demo progresses hand->clap->dragon->moire+dancer. Dancer silhouette renders in the moire scene.
+
+## UAOS-366 post-word-flash hang — INTEN master ignored (2026-10-27)
+Symptom (VBox + QEMU): after the word-flash sequence (GROOVEY/HIGH/MUSIC) the demo hangs — VBox white screen, QEMU frozen dragon title.
+- CPU sat in `btst #5,INTREQR` vblank-poll loops at $3E360/$3E384 with ireq=0; immediately before the poll it writes `INTENA=$4000` — clears INTEN bit14 = interrupt MASTER off, then polls VERTB requests manually (classic OS-off frame sync).
+- Bug: chip_emu_update_irq() computed pending = intreq & intena & $7FFF — ignoring master bit14. Delivery continued -> the demo's own L3 handler ack'd VERTB ($0020->INTREQ) before the poll loop could see the request bit -> poll starved forever.
+- Same bug in glue irq_pending_bits() (exec-poll path).
+- Fixes: pending = 0 when INTEN master clear (chip_emu_update_irq + irq_pending_bits); CIA-B level-6 force also gated on master.
+- Note: request bits still latch in INTREQ while master is off — required for the polling technique to work.
+
+## UAOS-366 mid-demo broken section (2026-10-27, open)
+After the INTEN-master fix the demo advances continuously; user reports the section BETWEEN the word-flash sequence and the later dancer scenes still renders wrong (dancers themselves now OK).
+- QEMU captures: the broken stretch is a run of scenes with BPLCON0=$6200 (EHB/6-plane) and $3200 (3-plane), cop1lc cycling 0x50c98/0x40fa2/0x4d360/0x40fc8/0x411f0. Screen is mostly black with only thin vertical dotted strips + occasional noise block.
+- Copper list at 0x411f0: 3 planes, bplmod=0x20, mid-frame BPLCON1 0->0x40, plane ptrs 0x6cf2e/0x6d6f0/0x5fa9c, sprites all parked at 0x412a8.
+- Unknown yet whether the plane buffers are empty (draw engine not firing — like the old purple-hand case) or fetched wrong. Next step: ramdump during the broken scene on VBox (blits/line/area counters + lastdpt in the header will show if the blitter draws).
+
+## UAOS-366 face/black scene — live pointer drift (2026-10-27, root cause located)
+- VBox ramdump of the black scene (should be big red/orange EHB face): 41k blits fired with real params (llbc0=0x6a4a), and the image data IS in chip RAM (rendered the 0x5a000 plane region → face silhouette present). So draw engine works; display fetch fails.
+- QEMU live probe of the same scene (cop1=0x45d36, bplcon0=0x5200 → 5 planes): g_bpl_pt[0..4] = 0xfbfe0, 0xf8e08, 0x108740, 0x105568, 0x102390 — ALL far past the 1MB chip-RAM window. takeover_render_line() advances each pointer by bpr+mod per fetched line; bounds check fails → planes NULL → black.
+- The scene's copper list (0x45d36) DOES contain the per-frame reload: WAIT $1b01 (line 27) then BPL1PT=0x63588, BPL2PT=0x603b0, BPL3PT=0x5d1d8, BPL4PT=0x5a000, BPL5PT=0x69938; line-28 MOVE BPLCON0=0x5200. If the reload ran, pointers could only drift ~11KB within a frame — 0xfbfe0 means the reload has not run for ~37+ frames.
+- => The line-timed copper executor stalls before the line-27 MOVEs in these lists (earlier lists DID run — hands/dancers render). Debug next: why the copper doesn't reach the pointer-reload MOVEs — likely a WAIT/SKIP that never satisfies under the new comparator, or the list's sprite-pointer/WAIT structure. Then re-check word-flash scene.
+- Files: kernel/chipset/chip_emu.c (copper_run_line 3110+9x, takeover_render_line advance ~3845), frame_start_rearm re-arms pc from g_cop1lc each vblank (2220).
+
+## UAOS-366 mid-scene — dump #2 confirms draw-into-buffers (2026-10-27)
+- User re-dumped the SAME black scene (it's a rotoscoped dancing-woman torso with motion-blur, not a face). Header: blits=0x2492e (150k), lastdpt=0x5d1d6, lldpt=0x5cd48 — the blitter is actively writing INSIDE the displayed plane buffer region (copper sets BPL3PT=0x5d1d8, BPL4PT=0x5a000). Draw engine + target region both confirmed good.
+- => Confirmed display-fetch-side bug: planes contain image, screen black. The live g_bpl_pt[] drift (0xfbfe0+/0x102390+) far exceeds one frame's bounded advance (~0x31d8): the per-frame copper reload at WAIT $1b01 is NOT re-running for these lists.
+- NEXT: trace copper execution on this list (log pc progression / MOVE count per frame). Check whether copper_run_line's per-line budget or a WAIT stall prevents reaching line 27 on frames 2+, or whether rearm fires at all mid-scene (verify g_copper_pc==g_cop1lc at frame start). Then fix and recheck word-flash outlines (same fetch class).
+- New dump file: /tmp/vb_ramdump.bin (overwrote prior). Real reference shot: user says silhouette w/ motion blur of dancing woman's mid-section.
+
+## UAOS-366 mid-scene black screens — FIXED (2026-10-27)
+Root cause: copper fetch parity. copper_next_fetch() forced ODD colour clocks, but the free "-" slots inside the bitplane fetch window sit at (h-DDFSTRT) mod 8 == {0,4} — EVEN h when DDFSTRT is even. In <=4-plane scenes odd free slots still exist (unused plane 5/6 slots), so hands/dancers worked. In 6-plane EHB scenes (BPLCON0=0x6200) every odd slot in the window is taken by planes 1-6 → copper got ~0 fetches/line → g_copper_pc frozen at the list start → the per-frame BPLxPT reload never ran → pointers drifted unboundedly past 1MB → fetch bounds-check failed → black screen (with thin stray strips).
+Live probe evidence: p0 monotonically climbing 0x111661c→0x14b9e40 at ~10.5KB/frame, pc==cop1lc constant, vb advancing.
+Fix 1: copper_next_fetch scans BOTH parities for a free slot (chip_emu.c ~3133).
+Fix 2 (defensive): bind g_display_ram around the per-line copper/sprite/render block in chip_emu_run_to_cycle so the copper never executes a foreign task's window.
+Verified in QEMU: the whole mid-section now renders — rotoscoped dancing-woman silhouettes in red/orange EHB with motion-blur layering, continuous scene flow 275s+. Regressions: screen 22/22, guesttask PASS.
+Remaining: word-flash font outline fuzziness (minor), audio crackle on real HW, final end-to-end incl. title/exit on VBox+MBP4,1.
+
+## UAOS-366 white-background scenes — FIXED (2026-10-27)
+Symptom: ~1:09 dancer scenes show black silhouette on plain WHITE bg; real demo has green/cyan checkerboard tiles behind it.
+Diagnosis chain: the scene paints its background by palette writes (per-region/per-line COL MOVEs — "copper chunky"), not plane data. Live probe: aga_color_write called ~3.3M times but g_aga_palette[0] stayed 0xffffff — every write had color_index>=0x40 (bank 2). BPLCON3 read back 0x4E75 (the demo legitimately writes BPLCON3 for ECS sprite-resolution/border features; bits 13-15 = AGA palette BANK, ignored by real OCS/ECS Denise). Our emu applied the bank unconditionally -> all color writes scattered to invisible banks -> stale white/orange palette.
+Fix (chip_emu.c): new sticky g_aga_active flag — palette bank + LOCT only apply when a real AGA display mode is engaged (FMODE nonzero or BPLCON0 BPU3/8-plane). Otherwise COLORxx writes always target bank 0, matching OCS/ECS hardware. Also added colw/colwl/colwd/pc fields to ramdump header for palette-write diagnostics.
+Verified in QEMU: colwd=0 (no more bank-dropped writes), c0 cycles through scene colors (0xEEFFDD/0xAAEEBB greens, 0x550000, 0x110044), frames show the red/orange face + blue/green/teal blocky backgrounds + pink/blue vector scenes.
+
+## UAOS-366 banding / mid-line palette writes — implemented (2026-10-27)
+Cause: scenes paint 2D checkerboard/tile backgrounds via the copper writing COLOR regs at specific beam clocks INSIDE a scanline (hpos-varying WAITs like "v=07 h=c6/b6/a6..." alternating lines). We resolved each line with one palette snapshot -> tiles collapsed into bands.
+Fix (chip_emu.c): per-line color-event log g_cev[] — copper_run_line records each COLOR-reg write with its clock h; takeover path renders per-pixel INDEXES (rowidx[]) not rgb; after the full line's copper ran, pal_at(idx,h) resolves each pixel against line-start palette + events with h<=pix_h (HAM pixels keep precomputed rgb). takeover_render_line runs the line's remaining copper itself before compositing. g_pal_start snapshot + g_cev_n reset per line.
+
+## UAOS-366 ~1:41 black screen — copper executes CODE as list (2026-10-27)
+Dump: cop1=0x50c00 points at m68k code (4e75/41f9/33fc opcodes); every control reg holds 0x4e75 (RTS opcode written as data). pc=0x50c60. Real list at 0x50c50: `0109 fffe; 0100 1200; 0180 0; 0182 0; ffff fffe` — a "park display" transition list. Nearby demo code at 0x50c64+ writes INTENA/L3-vector/COP1LC=0x50c98 (scene setup).
+=> The copper runs garbage because cop1lc=0x50c00 (self-poisoning via garbage MOVEs to 0x80/0x82, or the scene-setup routine that writes the correct 0x50c98 never ran). Suspect: the routine that updates cop1lc per frame lives in the demo's interrupt-driven frame loop — if takeover IRQ gating starves it in THIS scene the pointer goes stale/corrupt. colwd=0 (bank fix working). NEXT: probe in QEMU whether cop1lc ever holds 0x50c98 during this scene, and whether the demo's L3 handler runs (check its frame counter like before at 0x3f4a8/VBR 0x800790); if handler starves, the fix is in chip_emu_update_irq/exec_task scheduling not copper.
+
+## UAOS-366 ~1:41 black — probe data (2026-10-27)
+- cop1lc cycles 40af0→40c00→50c00→40fa2 (demo's frame routine runs — it's a park-list transition phase). At cop=0x50c00 the region holds m68k code, and 0x50c50 holds the real park list (0109 fffe...ffff fffe). Offset: cop1lc is 0x50 BEFORE the real list.
+- Executing code as copper MOVEs poisons regs (0x4e75=RTS in bplcon1/2/3,bplmod1) AND self-writes COP1LCH/L (the byte pattern f080 decodes MOVE 0x80=..) => permanent cascade once triggered.
+- NEXT: instrument chip_emu_write for COP1LC (0x80/0x82) to log writer source (CPU vs copper — flag set inside copper_run_line) + value; determine whether cop1lc=0x50c00 came from a CPU write (real demo intent? unlikely) or a garbage copper self-write, and what triggered the first bad cop1lc. Also check whether the demo's frame counter/interrupt handler runs in this phase (0x3f4a8 read 0 — counter may have moved; verify liveness another way, e.g. vbr=0x800790 handler PC).

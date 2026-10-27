@@ -9,6 +9,7 @@
 #include "commodities.h"
 #include "framebuffer.h"
 #include "wm.h"
+#include "../chipset/chip_emu.h"
 #include "../klog/klog.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -100,6 +101,10 @@ void Blanker_Tick(void)
     /* Only count idle time when active */
     if (b->state != CX_STATE_ACTIVE) return;
 
+    /* A guest hardware takeover owns the display — never blank over it
+     * (UAOS-366). */
+    if (chip_emu_takeover_active()) return;
+
     g_blanker_idle++;
 
     if (g_blanker_idle >= g_blanker_timeout && !g_blanker_blanked) {
@@ -120,6 +125,9 @@ void Blanker_Flush(void)
     if (!g_blanker_pending) return;
     g_blanker_pending = 0;
     if (g_blanker_blanked || !g_fb.valid) return;
+    /* Guest takeover owns the display — don't paint the black frame
+     * (UAOS-366). */
+    if (chip_emu_takeover_active()) return;
 
     FB_BeginDraw();
     FB_FillRect(0, 0, (int)g_fb.width, (int)g_fb.height, WB_BLACK);
@@ -135,6 +143,10 @@ void Blanker_Flush(void)
 
 void Blanker_OnInput(void)
 {
+    /* During a guest takeover, input must not unblank or trigger a desktop
+     * repaint — the emulated display owns the screen (UAOS-366). */
+    if (chip_emu_takeover_active()) return;
+
     /* Reset idle counter on any input activity */
     g_blanker_idle = 0;
 

@@ -131,6 +131,7 @@ static const NativeCmdEntry k_native_cmds[] = {
     CMDH ("failalloc",  Cmd_Failalloc,     "deterministic AllocMem fault injection"),
     CMDH ("pktmon",     Cmd_Pktmon,        "packet capture to pcap"),
     CMDH ("screenshot", Cmd_Screenshot,    "capture screen to JPG"),
+    CMDH ("ramdump",    Cmd_Ramdump,       "dump chip state + guest RAM to file"),
     /* Prefs editors (stubs - Phase 3) */
     CMDH ("screenmode", Cmd_ScreenMode, "screen-mode prefs editor"),
     CMDH ("font",       Cmd_Font,       "font prefs editor"),

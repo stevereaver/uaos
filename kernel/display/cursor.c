@@ -16,6 +16,7 @@
 
 #include "cursor.h"
 #include "framebuffer.h"
+#include "../chipset/chip_emu.h"
 #include "../irq/irq.h"
 #include <stdint.h>
 #include <string.h>
@@ -348,6 +349,9 @@ static void cursor_commit_draw(void)
     cur_moved = 0;
     irq_restore(flags);
 
+    /* Guest takeover owns the display — suppress sprite paints (UAOS-366). */
+    if (chip_emu_takeover_active()) return;
+
     cursor_save_bg(x, y);
     cursor_draw(x, y);
     drw_x = x;
@@ -396,6 +400,9 @@ void Cursor_Flush(void)
 {
     if (!cur_moved) return;
     cur_moved = 0;
+    /* A guest hardware takeover owns the screen — don't draw or restore
+     * the software cursor over the emulated display (UAOS-366). */
+    if (chip_emu_takeover_active()) return;
     UAOS_Intuition_CheckPendingPointer();
     /* While a back-buffered frame is in progress the frame-end
      * Cursor_Redraw paints the cursor at the new position anyway. */

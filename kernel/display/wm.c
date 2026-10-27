@@ -6,6 +6,7 @@
 #include "desktop.h"
 #include "blanker.h"
 #include "filebrowser.h"
+#include "../chipset/chip_emu.h"
 #include "../exec/task.h"
 #include "../irq/irq.h"
 #include <stdint.h>
@@ -1566,8 +1567,10 @@ void WM_InvalidateDesktopRect(int x, int y, int w, int h)
 void WM_FlushRedraw(void)
 {
     if (!g_dmg_pending) return;
-    /* While blanked, drop pending damage — un-blank repaints via WM_Redraw. */
-    if (Blanker_IsBlanked()) {
+    /* While blanked or a guest takeover owns the display, drop pending
+     * damage — un-blank repaints via WM_Redraw, takeover release does the
+     * same (UAOS-366). */
+    if (Blanker_IsBlanked() || chip_emu_takeover_active()) {
         uint64_t irqf = irq_save();
         g_dmg_pending = 0;
         g_dmg_desktop = 0;
@@ -1618,6 +1621,9 @@ void WM_Redraw(void)
      * would undo the blank (e.g. the 1 Hz clock flush).  Input un-blanks
      * via Blanker_OnInput(), which clears the flag before redrawing. */
     if (Blanker_IsBlanked()) return;
+    /* A guest hardware takeover owns the screen — desktop repaints would
+     * overwrite the emulated Amiga display (UAOS-366). */
+    if (chip_emu_takeover_active()) return;
 
     /* UAOS-190/192: a WM_Redraw caller used to paint the whole scene
      * synchronously on its own (preemptible) task context — ~70 call

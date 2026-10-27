@@ -379,6 +379,14 @@ static uint16_t g_bplcon2;  /* playfield priorities / genlock */
 static uint16_t g_bplcon3;  /* AGA bank/LOCT / sprite resolution */
 static uint16_t g_bplcon4;  /* AGA color bank lower bits / sprite bank */
 static uint16_t g_fmode;    /* AGA fetch mode: bitplane/sprite fetch width */
+/* Sticky "software actually runs an AGA display mode" flag.  ECS-era
+ * programs legitimately write BPLCON3 ($106) for sprite-resolution and
+ * border features — bits 13-15 are the AGA *palette bank* and are IGNORED
+ * by real OCS/ECS Denise, but our AGA model would redirect COLOR writes
+ * to banks the display never reads (UAOS-366 white backgrounds: SOTA
+ * writes BPLCON3=0x4E75 → bank 2 → all 3M+ palette writes invisible).
+ * Gate bank/LOCT behind a real AGA fetch mode: FMODE nonzero or BPU3. */
+static int g_aga_active;
 
 static uint16_t g_bplmod1;  /* bitplane modulo (odd planes) */
 static uint16_t g_bplmod2;  /* bitplane modulo (even planes) */
@@ -404,18 +412,28 @@ static uint8_t  g_blitter_busy; /* blitter status */
 static uint32_t g_blitter_busy_ticks; /* PIT ticks remaining for busy */
 static int      g_blitter_words_remaining; /* words left for slot-based execution */
 
-/* Persistent state for line-mode blits (one pixel per DMA slot). */
+/* Persistent state for line-mode blits (one pixel per DMA slot).
+ * HRM-exact: C and D share the same word address by convention; the
+ * accumulator/modulos drive a Bresenham walk whose axes are chosen by the
+ * octant bits (BLTCON1 SUD/SUL/AUL). */
 typedef struct {
     int active;
-    int x, y;           /* current position relative to line start */
-    int bit;            /* current bit within the word (0..15) */
-    int acc;            /* Bresenham accumulator */
-    int amod;           /* accumulator decrement on major+minor step */
-    int bmod;           /* accumulator increment on major-only step */
-    int sx, sy, swap;   /* octant direction/swap */
-    int steps;          /* total pixels to draw */
+    uint32_t cpt;       /* current word address for C reads */
+    uint32_t dpt;       /* current word address for D writes */
+    int ash;            /* current pixel bit position (BLTCON0 bits 15-12) */
+    int bsh;            /* texture bit position (BLTCON1 bits 15-12) */
+    int acc;            /* Bresenham accumulator (signed) */
+    int sign;           /* current SIGN: from BLTCON1 at start, then acc<0 */
+    int amod;           /* acc step on major+minor move: 4(dy-dx), negative */
+    int bmod;           /* acc step on major-only move: 4dy */
+    int cmod;           /* byte modulo added on Y-axis steps */
+    int x_major;        /* SUD: 1 = X is the major axis, 0 = Y major */
+    int major_neg;      /* AUL: major-axis step is negative */
+    int minor_neg;      /* SUL: minor-axis step is negative */
+    int sing;           /* SING: at most one pixel write per row */
+    int suppress;       /* SING: currently suppressing pixel writes */
     int remaining;      /* pixels left */
-    int texture_bit;    /* current bit in B texture */
+    int first;          /* next write is the line's first D write */
 } BlitterLineState;
 static BlitterLineState g_line_state;
 
@@ -424,9 +442,11 @@ typedef struct {
     int active;
     int width;          /* original BLTSIZE width in words */
     int height;         /* original BLTSIZE height in lines */
-    int x;              /* current word within the row */
+    int x;              /* current word within the row (processing order) */
     int y;              /* current row */
-    int fill_state;     /* per-row polygon fill state */
+    int fill_state;     /* polygon fill carry, init to FCI at row start */
+    uint16_t prevA;     /* previous A word (post-mask) feeding the shifter */
+    uint16_t prevB;     /* previous B word feeding the shifter */
     uint32_t apt;       /* current A pointer */
     uint32_t bpt;       /* current B pointer */
     uint32_t cpt;       /* current C pointer */
@@ -434,6 +454,10 @@ typedef struct {
     int words_remaining; /* words left in this blit */
 } BlitterAreaState;
 static BlitterAreaState g_area_state;
+
+/* BZERO (DMACONR bit 13): 1 when every D word written by the last blit was
+ * zero.  Tracked as its inverse; cleared by blitter_finish and reset. */
+static int g_blit_d_nonzero;
 
 /* Sprite collision state */
 static uint16_t g_clxdat;   /* collision data (read and clear) */
@@ -609,6 +633,7 @@ static int dma_slot_count(DMA_Channel channel)
 
 /* Forward declarations for helpers defined below the display-variable block. */
 static int bpl_depth(void);
+static int ehb_active(void);
 static int bpl_hires(void);
 static uint16_t g_ddfstart;
 static uint16_t g_ddfstop;
@@ -676,6 +701,13 @@ static uint8_t *g_blit_ram = NULL;
  * chip_emu_beam_tick() binds this so scanline DMA resolves the right space
  * regardless of which task is scheduled. */
 static uint8_t *g_display_ram = NULL;
+
+/* Takeover display mode (UAOS-366): while an M68k guest owns the machine,
+ * the per-line loop in chip_emu_run_to_cycle() rasterizes the emulated
+ * display straight to the framebuffer and desktop repaints are gated. */
+static int   g_takeover_display = 0;
+static void *g_takeover_owner   = NULL;
+static int   g_sched_running    = 0;  /* inside chip_emu_run_to_cycle */
 
 /* Likewise for Paula audio: the mixer fetches DMA words in whatever task
  * context is current, so capture the RAM window bound when the guest last
@@ -817,6 +849,18 @@ static uint16_t update_setclr(uint16_t state, uint16_t value)
 uint64_t chip_emu_m68k_cycles(void)
 {
     extern uint64_t g_m68k_cycles;
+    extern int m68k_cycles_run(void);
+    extern int m68k_cycles_remaining(void);
+    /* g_m68k_cycles only advances between m68k_execute() slices.  While a
+     * slice is running (remaining > 0 inside an instruction handler) add
+     * the cycles consumed so far, so beam-position reads (VPOSR/VHPOSR
+     * polling loops in takeover code) see continuous time instead of a
+     * value frozen for the whole slice and then jumping many lines
+     * (UAOS-366). */
+    if (m68k_cycles_remaining() > 0) {
+        int run = m68k_cycles_run();
+        if (run > 0) return g_m68k_cycles + (uint64_t)run;
+    }
     return g_m68k_cycles;
 }
 
@@ -828,7 +872,13 @@ uint64_t chip_emu_m68k_cycles(void)
 void chip_emu_update_irq(void)
 {
     int level = 0;
-    uint16_t pending = g_intreq & g_intena & 0x7FFFu;
+    /* INTENA bit 14 (INTEN) is the master enable: when clear, NO
+     * interrupts are delivered even with per-bit enables set — the
+     * request bits still latch in INTREQ for guests that poll them
+     * (SOTA's takeover scenes do exactly that: INTENA=$4000 then
+     * `btst #5,INTREQR` loops, which starved when we kept delivering). */
+    uint16_t pending = (g_intena & 0x4000u)
+                     ? (uint16_t)(g_intreq & g_intena & 0x7FFFu) : 0;
     if (pending) {
         /* Real Amiga bit->level map: TBE/DSKBLK/SOFTINT (0-2) -> L1,
          * PORTS (3) -> L2, COPER/VERTB/BLIT (4-6) -> L3, AUD0-3 (7-10) -> L4,
@@ -840,9 +890,19 @@ void chip_emu_update_irq(void)
         else if (pending & 0x0008u) level = 2;
         else                        level = 1;
     }
-    if (g_cia_b_irq) {
+    if (g_cia_b_irq && (g_intena & 0x4000u)) {
         if (level < 6) level = 6;
     }
+    /* UAOS-366: while a guest owns the chipset, drive the IRQ pins only
+     * when the owner's RAM window is bound.  The int_level is part of the
+     * live Musashi context — asserting while another task's context (or
+     * an ISR with a stale window) is installed hands the owner's
+     * interrupts to that context's autovector, starving the owner (SOTA's
+     * scene counter ran ~50x slow → long white intro).  Pending bits stay
+     * in INTREQ and are re-asserted the next time the owner's scheduler
+     * runs update_irq with its window bound. */
+    if (g_takeover_display && g_display_ram && g_ram != g_display_ram)
+        return;
     /* Safe to inject in any context: every guest (shared boot context and
      * per-task) has populated autovector entries pointing at ILLEGAL
      * dispatch stubs that run the exec IntVects/cia.resource servers and
@@ -861,11 +921,17 @@ void chip_emu_update_irq(void)
  * components.
  * ----------------------------------------------------------------------- */
 
+uint32_t g_colw_count;      /* aga_color_write call count (UAOS-366 diag) */
+uint32_t g_colw_last;       /* packed last (idx<<16)|value */
+uint32_t g_colw_dropped;    /* writes redirected to a nonzero AGA bank */
+
 static void aga_color_write(uint32_t color_index, uint16_t value)
 {
+    g_colw_count++;
+    g_colw_last = (color_index << 16) | value;
     uint32_t color = g_aga_palette[color_index];
 
-    if (g_bplcon3 & 0x0200u) { /* LOCT=1: update low nibbles */
+    if (g_aga_active && (g_bplcon3 & 0x0200u)) { /* LOCT=1: update low nibbles */
         uint32_t r0 = (value >> 8) & 0x0Fu;
         uint32_t g0 = (value >> 4) & 0x0Fu;
         uint32_t b0 = value & 0x0Fu;
@@ -899,7 +965,21 @@ void chip_write_u8(uint32_t addr, uint8_t v);
 uint16_t chip_read_u16(uint32_t addr);
 void chip_write_u16(uint32_t addr, uint16_t v);
 static int bpl_hires(void);
-static int copper_run_to_beam(int copper_slots);
+#define COPPER_LINE_END 0xE3   /* colour clocks per line (PAL 227) */
+static int copper_run_line(int vpos, int *ch, int h_end);
+static int g_cop_jumped;   /* COPJMPx strobed during the current MOVE */
+static void takeover_render_line(int y, int *cop_h);
+
+/* Mid-line colour-write events (UAOS-366): the copper records each COLOR
+ * register write with its beam-clock h; the compositor replays them per
+ * pixel against this line-start palette — paints 2D tile backgrounds. */
+#define CEV_MAX 64
+static struct { uint8_t h; uint8_t idx; uint16_t pad; uint32_t rgb; } g_cev[CEV_MAX];
+static int      g_cev_n;
+static uint32_t g_pal_start[AGA_PALETTE_SIZE];
+static void sprite_dma_line(int y);
+static void frame_start_rearm(void);
+static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes);
 
 struct CIA_State;
 static int cia_offset_to_reg(uint32_t offset, int *cia_id);
@@ -941,10 +1021,49 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
 {
     Chiptrace_Hit(offset, value, width_bytes, 1);
 
+    /* Catch the beam scheduler up to the CPU's live cycle position before
+     * applying the write: custom-register writes then take effect at the
+     * correct raster position (mid-frame splits, palette changes, BPL
+     * pointer updates) instead of at the end of the CPU slice (UAOS-366).
+     * Skipped when already inside the scheduler (copper MOVEs land here). */
+    if (!g_sched_running) chip_emu_run_to_cycle(beam_cycles_now());
+
     int cia_id, cia_reg = cia_offset_to_reg(offset, &cia_id);
     if (cia_reg >= 0) {
         cia_write(cia_state(cia_id), cia_reg, value, width_bytes);
         return;
+    }
+
+    /* A 32-bit write to the custom chips is two consecutive 16-bit bus
+     * writes (high word to `offset`, low word to `offset+2`).  Only the
+     * pointer registers had 32-bit handling; every other register took the
+     * LOW word and never wrote its neighbour, so the common demo idiom
+     * `move.l #$0BCA0001,BLTCON0` (BLTCON0+BLTCON1), or long writes to
+     * AFWM/ALWM, CMOD/BMOD, AMOD/DMOD, AUDxLEN/PER, loaded the wrong value
+     * and dropped the second register (UAOS-366). */
+    if (width_bytes == 4) {
+        chip_emu_write(offset, (value >> 16) & 0xFFFFu, 2);
+        chip_emu_write(offset + 2u, value & 0xFFFFu, 2);
+        return;
+    }
+
+    /* DMA pointer registers have no bit 0: Agnus addresses words only, so
+     * every pointer low word stores `v & $FFFE` (WinUAE custom.cpp
+     * BLTxPTL/BPLxPTL/SPRxPTL/COPxLCL/AUDxLCL/DSKPTL).  Line-drawing
+     * routines rely on it — State of the Art loads BLTCPT/BLTDPT with the
+     * byte address base + y*bpr + x/8 and lets the chip drop bit 0; using
+     * the odd address read/wrote a misaligned word and scattered stray
+     * edge bits that the polygon fill smeared into streaks (UAOS-366). */
+    {
+        uint32_t ro = (offset >= AGA_REG_BASE_OFF) ? offset_to_regoff(offset) : offset;
+        if (width_bytes == 2 && ro < 0x200u &&
+            (ro == 0x022u ||                                      /* DSKPTL  */
+             (ro >= 0x048u && ro <= 0x056u && (ro & 3u) == 2u) || /* BLTxPTL */
+             ro == 0x082u || ro == 0x086u ||                      /* COPxLCL */
+             (ro >= 0x0A2u && ro <= 0x0D2u && (ro & 0xFu) == 2u) || /* AUDxLCL */
+             (ro >= 0x0E2u && ro <= 0x0FEu && (ro & 3u) == 2u) || /* BPLxPTL */
+             (ro >= 0x122u && ro <= 0x13Eu && (ro & 3u) == 2u)))  /* SPRxPTL */
+            value &= ~1u;
     }
 
     uint32_t regoff = offset;
@@ -952,6 +1071,22 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         regoff = offset_to_regoff(offset);
     } else if (offset >= 0x1000u) {
         return; /* outside AGA register area: swallow */
+    }
+
+    /* Byte writes to a 16-bit register update one half only (big-endian:
+     * even offset = high byte, odd = low byte).  Merge into a word write on
+     * the containing register so the semantic cases below see the complete
+     * new value — demos that byte-program the blitter registers (State of
+     * the Art writes BLTCON0's ASH/USE and LF halves separately) otherwise
+     * lose the other half (UAOS-366).  BLTCON0L is itself a byte register
+     * at an odd offset and keeps its dedicated case. */
+    if (width_bytes == 1 && regoff != REG_BLTCON0L) {
+        uint32_t base = regoff & ~1u;
+        uint16_t cur = (uint16_t)chip_emu_read_impl(base, 2);
+        value = (uint32_t)((regoff & 1u) ? ((cur & 0xFF00u) | (value & 0xFFu))
+                                         : ((cur & 0x00FFu) | ((value & 0xFFu) << 8)));
+        regoff = base;
+        width_bytes = 2;
     }
 
     /* Handle byte and half-word writes to the register backing store first.
@@ -1048,10 +1183,22 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_COP1LC + 2: g_cop1lc = (g_cop1lc & 0xFFFF0000u) | (value & 0xFFFFu); g_display_ram = g_ram; break;
         case REG_COP2LC:     g_cop2lc = (width_bytes >= 4) ? value : ((g_cop2lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); break;
         case REG_COP2LC + 2: g_cop2lc = (g_cop2lc & 0xFFFF0000u) | (value & 0xFFFFu); break;
-        case REG_COPJMP1: g_copjmp1 = 1; break;
-        case REG_COPJMP2: g_copjmp2 = 1; break;
+        /* Strobes: the copper PC reloads from COPxLC immediately — from a
+         * CPU write or from a copper MOVE (chained / double-buffered
+         * lists).  Previously only a flag was set and nothing jumped
+         * (UAOS-366). */
+        case REG_COPJMP1:
+            g_copjmp1 = 1; g_copper_pc = g_cop1lc; g_cop_jumped = 1;
+            if (!g_sched_running) g_display_ram = g_ram;
+            break;
+        case REG_COPJMP2:
+            g_copjmp2 = 1; g_copper_pc = g_cop2lc; g_cop_jumped = 1;
+            if (!g_sched_running) g_display_ram = g_ram;
+            break;
 
-        case REG_BPLCON0: g_bplcon0 = (uint16_t)value; break;
+        case REG_BPLCON0: g_bplcon0 = (uint16_t)value;
+            if (value & 0x0010u) g_aga_active = 1; /* BPU3: 8-plane = AGA-only */
+            break;
         case REG_BPLCON1: g_bplcon1 = (uint16_t)value; break;
 
         case REG_BLTCON0: g_bltcon0 = (uint16_t)value; break;
@@ -1106,7 +1253,8 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_BPLCON2: g_bplcon2 = (uint16_t)value; break;
         case REG_BPLCON3: g_bplcon3 = (uint16_t)value; break;
         case REG_BPLCON4: g_bplcon4 = (uint16_t)value; break;
-        case REG_FMODE:   g_fmode   = (uint16_t)value; break;
+        case REG_FMODE:   g_fmode   = (uint16_t)value;
+            if (value) g_aga_active = 1; break;
 
         case REG_BPLMOD1: g_bplmod1 = (uint16_t)value; break;
         case REG_BPLMOD2: g_bplmod2 = (uint16_t)value; break;
@@ -1185,9 +1333,10 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         default: {
             /* Color registers: COLOR00-COLOR31 at 0x180-0x1BE. */
             if (regoff >= REG_COLOR00 && regoff < REG_COLOR00 + 0x40u) {
-                uint32_t bank = (g_bplcon3 >> 13) & 0x7u;
+                uint32_t bank = g_aga_active ? (g_bplcon3 >> 13) & 0x7u : 0u;
                 uint32_t idx  = (regoff - REG_COLOR00) >> 1;
                 uint32_t color_index = (bank << 5) | idx;
+                if (bank && color_index < AGA_PALETTE_SIZE) g_colw_dropped++;
                 if (color_index < AGA_PALETTE_SIZE)
                     aga_color_write(color_index, (uint16_t)value);
             } else {
@@ -1222,6 +1371,16 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
     } else if (offset >= 0x1000u) {
         return 0; /* outside AGA register area: harmless zero */
     }
+    /* Byte reads: the custom chips only answer word cycles — read the
+     * containing word through the normal (computed-register) path and pick
+     * the lane.  Switching on an odd regoff missed every computed register
+     * (e.g. `btst #5,$dff01f` polling INTREQR's VERTB bit read a stale
+     * backing word — UAOS-366). */
+    if (width_bytes == 1) {
+        uint32_t w = chip_emu_read_impl(offset & ~1u, 2);
+        return (offset & 1u) ? (w & 0xFFu) : ((w >> 8) & 0xFFu);
+    }
+
     if (g_chipset_sync_disabled && regoff < 0x80u && !(regoff & 1))
         g_emu_reg_reads[regoff >> 1]++;
 
@@ -1327,6 +1486,8 @@ static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes)
         case REG_DMACONR:
             value = g_dmacon;
             if (g_blitter_busy) value |= 0x4000u; /* BLITZ busy flag */
+            /* BZERO: set when every D word the last blit produced was 0. */
+            if (!g_blit_d_nonzero) value |= 0x2000u;
             break;
         case REG_DMACON: value = g_dmacon; break;
         case REG_INTENA: value = g_intena; break;
@@ -1545,64 +1706,117 @@ void chip_write_u16(uint32_t addr, uint16_t v)
 
 /* Step the line-mode Blitter by one pixel.  Called once per allocated DMA slot.
  * The line state is persistent across slots/scanlines. */
+/* Step the line-mode Blitter by one pixel.  HRM semantics:
+ *   A = BLTADAT >> ASH  (single mask bit at position 15-ASH for 0x8000)
+ *   B = 0xFFFF/0x0000 from texture bit (BLTBDAT >> BSH) & 1; BSH-- mod 16
+ *       after every pixel
+ *   C = word read at BLTCPT, D = minterm(A,B,C) written at BLTDPT
+ * Per pixel: plot, then acc >= 0 -> acc += BLTAMOD + minor-axis step,
+ * acc < 0 -> acc += BLTBMOD; always a major-axis step.  X steps move ASH
+ * (wrapping to the adjacent word at 15<->0, address +-2); Y steps add
+ * +-BLTCMOD.  SING suppresses further writes until a Y step occurs. */
 static void blitter_line_step(void)
 {
-    if (!g_line_state.active || g_line_state.remaining <= 0) return;
-
     BlitterLineState *ls = &g_line_state;
+    if (!ls->active || ls->remaining <= 0) return;
 
-    int pixel_x = ls->x + ls->bit;
-    int word_dx = pixel_x / 16;
-    int bit = pixel_x % 16;
+    uint32_t cpt = ls->cpt;
+    uint32_t dpt = ls->dpt;
 
-    uint32_t off = (uint32_t)(g_bltdpt
-        + (uint32_t)(ls->y * (int)(int16_t)g_bltdmod)
-        + (uint32_t)(word_dx * 2));
-    if (off + 1 < GUEST_RAM_SIZE) {
-        uint16_t mask = (uint16_t)(1u << (15 - bit));
-        uint16_t c = chip_read_u16(off);
-        uint16_t a = mask;
-        uint16_t b = g_bltbdat; /* line texture */
-
-        /* Apply the minterm from BLTCON0.  For line mode the standard solid
-         * line minterm is 0xCA (texture where A is set, otherwise C). */
-        uint16_t d = 0;
-        int useA = (g_bltcon0 >> 11) & 1u;
-        int useB = (g_bltcon0 >> 10) & 1u;
+    if (!ls->suppress) {
+        uint16_t a = (uint16_t)(g_bltadat >> ls->ash);
+        uint16_t b = ((g_bltbdat >> ls->bsh) & 1u) ? 0xFFFFu : 0x0000u;
+        /* Line-mode channel quirks (real Agnus, documented in WinUAE's
+         * blitter.cpp and EAB "Undocumented Amiga hardware stuff"):
+         *  - the USED bit does not matter: the result is always written;
+         *  - with USEC clear nothing is written at all;
+         *  - the first write goes to BLTDPT, every later write to the
+         *    address in BLTCPT (BLTCMOD steps both).
+         * State of the Art draws its vector shapes with BLTCON0=$xA4A
+         * (A+C, D clear) — gating on USED dropped every line (UAOS-366). */
         int useC = (g_bltcon0 >> 9) & 1u;
+        uint16_t c = useC ? ((cpt + 1 < GUEST_RAM_SIZE) ? chip_read_u16(cpt) : 0)
+                          : g_bltcdat;
+        uint32_t wpt = ls->first ? dpt : cpt;
         int minterm = g_bltcon0 & 0xFFu;
-        if (useA || useB || useC) {
-            for (int bit = 0; bit < 16; bit++) {
-                int abit = (a >> bit) & 1u;
-                int bbit = (b >> bit) & 1u;
-                int cbit = (c >> bit) & 1u;
-                int idx = (abit << 2) | (bbit << 1) | cbit;
-                if (minterm & (1u << idx)) d |= (uint16_t)(1u << bit);
-            }
-        } else {
-            d = c | mask; /* fallback if no source channels */
+        uint16_t d = 0;
+        for (int bit = 0; bit < 16; bit++) {
+            int idx = (((a >> bit) & 1u) << 2) |
+                      (((b >> bit) & 1u) << 1) |
+                      (((c >> bit) & 1u) << 0);
+            if (minterm & (1u << idx)) d |= (uint16_t)(1u << bit);
         }
-        chip_write_u16(off, d);
+        if (useC && wpt + 1 < GUEST_RAM_SIZE) {
+            chip_write_u16(wpt, d);
+            if (d != 0) g_blit_d_nonzero = 1;
+        }
+        ls->first = 0;
+        g_bltcdat = c;
     }
+
+    /* BSH decrements (mod 16) after every pixel, suppressed or not. */
+    ls->bsh = (ls->bsh - 1) & 0xFu;
 
     ls->remaining--;
-    if (ls->remaining == 0) {
+    int done = (ls->remaining <= 0);
+
+    /* SING: once a pixel is written, no more writes until a Y step. */
+    if (ls->sing) ls->suppress = 1;
+
+    /* Minor-axis step when SIGN is clear.  SIGN is the sign *before* this
+     * step's accumulator update: initially the BLTCON1 SIGN bit, afterwards
+     * the sign of the accumulator (WinUAE blitter_line_proc). */
+    int was_pos = !ls->sign;
+    if (was_pos) {
+        ls->acc += ls->amod;
+        if (ls->x_major) {
+            /* minor = Y */
+            int32_t m = ls->minor_neg ? -ls->cmod : ls->cmod;
+            cpt = (uint32_t)((int32_t)cpt + m);
+            dpt = (uint32_t)((int32_t)dpt + m);
+            ls->suppress = 0;    /* a Y step occurred */
+        } else {
+            /* minor = X */
+            if (ls->minor_neg) {
+                if (--ls->ash < 0) { ls->ash = 15; cpt -= 2; dpt -= 2; }
+            } else {
+                if (++ls->ash > 15) { ls->ash = 0; cpt += 2; dpt += 2; }
+            }
+        }
+    } else {
+        ls->acc += ls->bmod;
+    }
+    ls->acc = (int16_t)ls->acc;     /* BLTAPTL is a 16-bit register */
+    ls->sign = ls->acc < 0;
+
+    /* Major-axis step (always). */
+    if (ls->x_major) {
+        if (ls->major_neg) {
+            if (--ls->ash < 0) { ls->ash = 15; cpt -= 2; dpt -= 2; }
+        } else {
+            if (++ls->ash > 15) { ls->ash = 0; cpt += 2; dpt += 2; }
+        }
+    } else {
+        int32_t m = ls->major_neg ? -ls->cmod : ls->cmod;
+        cpt = (uint32_t)((int32_t)cpt + m);
+        dpt = (uint32_t)((int32_t)dpt + m);
+        ls->suppress = 0;        /* a Y step occurred */
+    }
+
+    ls->cpt = cpt;
+    ls->dpt = dpt;
+    g_bltcpt = cpt;
+    g_bltdpt = dpt;
+
+    if (done) {
+        /* Hardware write-back: live accumulator, final bit positions and
+         * final pointers are visible in the registers. */
+        g_bltapt = (g_bltapt & 0xFFFF0000u) | ((uint32_t)ls->acc & 0xFFFFu);
+        g_bltcon0 = (uint16_t)((g_bltcon0 & 0x0FFFu) | ((uint16_t)ls->ash << 12));
+        g_bltcon1 = (uint16_t)((g_bltcon1 & 0x0FFFu) | ((uint16_t)ls->bsh << 12));
         ls->active = 0;
         blitter_finish();
-        return;
     }
-
-    if (ls->acc < 0) {
-        ls->acc += ls->bmod;
-    } else {
-        ls->acc += ls->amod;
-        if (ls->swap) ls->x += ls->sx;
-        else          ls->y += ls->sy;
-    }
-    if (ls->swap) ls->y += ls->sy;
-    else          ls->x += ls->sx;
-
-    ls->texture_bit = (ls->texture_bit + 1) & 0xFu;
 }
 
 /* Step the area-mode Blitter by one word.  Called once per allocated DMA slot.
@@ -1625,52 +1839,78 @@ static void blitter_area_step(void)
     int minterm = g_bltcon0 & 0xFFu;
     int ash = (g_bltcon0 >> 12) & 0xFu;
     int bsh = (g_bltcon1 >> 12) & 0xFu;
-    int fill_mode = (g_bltcon1 >> 3) & 0x3u;
+    int efe  = (g_bltcon1 >> 4) & 1u;   /* HRM: bit 4 = EFE (FILL_XOR) */
+    int ife  = (g_bltcon1 >> 3) & 1u;   /* HRM: bit 3 = IFE (FILL_OR)  */
+    int fci  = (g_bltcon1 >> 2) & 1u;
+
+    /* Fill carry re-initialises to FCI at the start of every row and
+     * carries across words of that row (and only within it). */
+    int carry = (x == 0) ? fci : g_area_state.fill_state;
 
     uint32_t apt = g_area_state.apt;
     uint32_t bpt = g_area_state.bpt;
     uint32_t cpt = g_area_state.cpt;
     uint32_t dpt = g_area_state.dpt;
 
-    int stride = desc ? -2 : 2;
-    int amod = (int)(int16_t)g_bltamod;
-    int bmod = (int)(int16_t)g_bltbmod;
-    int cmod = (int)(int16_t)g_bltcmod;
-    int dmod = (int)(int16_t)g_bltdmod;
+    /* Source fetch; USEA/USEB off substitutes the constant data register
+     * (which still flows through masks and the barrel shifter). */
+    uint16_t a_cur = useA ? chip_read_u16(apt) : g_bltadat;
+    uint16_t b_cur = useB ? chip_read_u16(bpt) : g_bltbdat;
+    uint16_t c     = useC ? chip_read_u16(cpt) : g_bltcdat;
 
-    uint16_t a = useA ? chip_read_u16(apt) : g_bltadat;
-    uint16_t b = useB ? chip_read_u16(bpt) : g_bltbdat;
-    uint16_t c = useC ? chip_read_u16(cpt) : g_bltcdat;
+    /* AFWM on the first word processed, ALWM on the last — in processing
+     * order, independent of DESC. */
+    if (x == 0)         a_cur &= g_bltafwm;
+    if (x == width - 1) a_cur &= g_bltalwm;
 
-    int x_fwd = desc ? (width - 1 - x) : x;
-    if (x_fwd == 0)       a &= g_bltafwm;
-    if (x_fwd == width - 1) a &= g_bltalwm;
+    /* Barrel shifters: bits come in from the PREVIOUS word of the same
+     * channel (processing order), carried across row boundaries.
+     * Ascending feeds prev high->cur low; descending reverses. */
+    uint16_t a, b;
+    if (ash == 0)    a = a_cur;
+    else if (!desc)  a = (uint16_t)((((uint32_t)g_area_state.prevA << 16) | a_cur) >> ash);
+    else             a = (uint16_t)((a_cur << ash) | (g_area_state.prevA >> (16 - ash)));
+    if (bsh == 0)    b = b_cur;
+    else if (!desc)  b = (uint16_t)((((uint32_t)g_area_state.prevB << 16) | b_cur) >> bsh);
+    else             b = (uint16_t)((b_cur << bsh) | (g_area_state.prevB >> (16 - bsh)));
+    g_area_state.prevA = a_cur;
+    g_area_state.prevB = b_cur;
 
-    if (ash) a = (uint16_t)((a >> ash) | (a << (16 - ash)));
-    if (bsh) b = (uint16_t)((b >> bsh) | (b << (16 - bsh)));
+    /* BLT*DAT registers hold the last data seen on each channel. */
+    g_bltadat = a_cur;
+    g_bltbdat = b_cur;
+    g_bltcdat = c;
 
-    uint16_t d = 0;
-    for (int bit = 15; bit >= 0; bit--) {
-        int abit = (a >> bit) & 1u;
-        int bbit = (b >> bit) & 1u;
-        int cbit = (c >> bit) & 1u;
-        int idx = (abit << 2) | (bbit << 1) | cbit;
-        int bit_out = (minterm & (1u << idx)) ? 1 : 0;
-
-        if (fill_mode) {
-            if (abit) g_area_state.fill_state ^= 1;
-            if (fill_mode & 1u) {
-                bit_out = g_area_state.fill_state;
-            } else {
-                bit_out = abit ? (g_area_state.fill_state ^ 1) : g_area_state.fill_state;
-            }
-        }
-        if (bit_out)
-            d |= (uint16_t)(1u << bit);
+    /* Minterm over the shifted/masked inputs. */
+    uint16_t m = 0;
+    for (int bit = 0; bit < 16; bit++) {
+        int idx = (((a >> bit) & 1u) << 2) | (((b >> bit) & 1u) << 1) | ((c >> bit) & 1u);
+        if (minterm & (1u << idx)) m |= (uint16_t)(1u << bit);
     }
 
-    if (useD) chip_write_u16(dpt, d);
+    /* Polygon fill applies to the minterm output, bit 0 -> 15 within each
+     * word (right-to-left on screen), words in processing order. */
+    uint16_t d = m;
+    if (ife || efe) {
+        uint16_t out = 0;
+        for (int bit = 0; bit < 16; bit++) {
+            int src = (m >> bit) & 1;
+            int ob;
+            if (ife)      { ob = src | carry; carry ^= src; } /* inclusive */
+            else          { carry ^= src;     ob = carry;   } /* exclusive */
+            if (ob) out |= (uint16_t)(1u << bit);
+        }
+        d = out;
+    }
+    g_area_state.fill_state = carry;
 
+    if (useD) {
+        chip_write_u16(dpt, d);
+        if (d != 0) g_blit_d_nonzero = 1;
+    }
+
+    /* Pointers step in processing order: -2 descending, +2 ascending. */
+    int stride = desc ? -2 : 2;
     if (useA) apt = (uint32_t)((int32_t)apt + stride);
     if (useB) bpt = (uint32_t)((int32_t)bpt + stride);
     if (useC) cpt = (uint32_t)((int32_t)cpt + stride);
@@ -1693,13 +1933,19 @@ static void blitter_area_step(void)
     if (x >= width) {
         g_area_state.x = 0;
         g_area_state.y = y + 1;
-        g_area_state.fill_state = 0; /* fill state resets per row */
         if (y + 1 < height) {
+            /* Row end: modulo is added ascending, SUBTRACTED descending
+             * (DESC guests point at the last word and program negative
+             * deltas as needed). */
+            int sgn = desc ? -1 : 1;
+            int amod = sgn * (int)(int16_t)g_bltamod;
+            int bmod = sgn * (int)(int16_t)g_bltbmod;
+            int cmod = sgn * (int)(int16_t)g_bltcmod;
+            int dmod = sgn * (int)(int16_t)g_bltdmod;
             if (useA) g_area_state.apt = (uint32_t)((int32_t)apt + amod);
             if (useB) g_area_state.bpt = (uint32_t)((int32_t)bpt + bmod);
             if (useC) g_area_state.cpt = (uint32_t)((int32_t)cpt + cmod);
             if (useD) g_area_state.dpt = (uint32_t)((int32_t)dpt + dmod);
-            /* Update live registers again after modulo. */
             g_bltapt = g_area_state.apt;
             g_bltbpt = g_area_state.bpt;
             g_bltcpt = g_area_state.cpt;
@@ -1716,85 +1962,88 @@ static void blitter_area_step(void)
 /* Execute an area blit triggered by a write to BLTSIZE.
  * Width is in words (hsize, bits 5-0 of size), height in lines
  * (vsize, bits 15-6) — hardware/blit.h. */
+/* Diagnostics (UAOS-366): count blit launches and record where the last
+ * blit's D channel pointed, so a ramdump shows whether the guest's
+ * draw engine is firing and where its output lands. */
+static uint32_t g_blit_count, g_blit_line_count, g_blit_area_count;
+static uint32_t g_blit_last_dpt, g_blit_last_apt;
+static uint32_t g_cpu_cw_count;   /* CPU writes below 0x80000 (chip RAM) */
+static uint32_t g_cpu_cw_last;    /* last such write address */
+static uint8_t *g_cpu_cw_ram;     /* window the last write targeted */
+static uint32_t g_ll_dpt, g_ll_cpt, g_ll_bc0, g_ll_bc1, g_ll_bsz, g_ll_adat;
+
 static void blitter_execute(int width, int height)
 {
     g_blit_ram = g_ram;
+    g_blit_count++;
+    g_blit_last_dpt = g_bltdpt;
+    g_blit_last_apt = g_bltapt;
 
     int line_mode = g_bltcon1 & 1u;
-    int desc      = (g_bltcon1 >> 1) & 1u;
-    int useA      = (g_bltcon0 >> 11) & 1u;
-    int useB      = (g_bltcon0 >> 10) & 1u;
-    int useC      = (g_bltcon0 >> 9) & 1u;
-    int useD      = (g_bltcon0 >> 8) & 1u;
-    int minterm   = g_bltcon0 & 0xFFu;
     int ash       = (g_bltcon0 >> 12) & 0xFu;
     int bsh       = (g_bltcon1 >> 12) & 0xFu;
-    int fill_mode = (g_bltcon1 >> 3) & 0x3u; /* bits 3-4: inclusive/exclusive fill */
 
     if (line_mode) {
-        /* Amiga line mode: set up a persistent line state and draw one pixel
-         * per allocated DMA slot.  BLTCON1 bits 4/3/2 are the octant
-         * (SUD/SUL/AUL, hardware/blit.h), bit 1 is SING.  BLTAPTL is the
-         * initial Bresenham accumulator; BLTDPT is the word containing the
-         * start pixel.  ASH is the starting bit. */
+        g_blit_line_count++;
+        g_ll_dpt = g_bltdpt; g_ll_cpt = g_bltcpt;
+        g_ll_bc0 = g_bltcon0; g_ll_bc1 = g_bltcon1;
+        g_ll_bsz = g_bltsize; g_ll_adat = g_bltadat;
+        /* Amiga line mode (HRM node0128).  BLTSIZE = (length << 6) | 2 —
+         * the pixel count is the VSIZE field `height`, hsize must be 2.
+         * BLTCON1 bits: 15-12 BSH, 6 SIGN, 4 SUD (major axis X),
+         * 3 SUL (minor step negative), 2 AUL (major step negative),
+         * 1 SING (one pixel per row), 0 LINE. */
         int octant = (g_bltcon1 >> 2) & 0x7u;
-        int sx = (octant & 2u) ? -1 : 1;     /* SUL → x decreases */
-        int sy = (octant & 4u) ? -1 : 1;     /* SUD → y decreases */
-        int swap = (octant & 1u) ? 1 : 0;    /* AUL → major-axis swap */
-        int singular = (g_bltcon1 & 0x02u) ? 1 : 0;
-
-        int amod = (int)(int16_t)g_bltamod;
-        int bmod = (int)(int16_t)g_bltbmod;
-        int minor = (bmod < 0 ? -bmod : bmod) / 4;
-        int major = (int)(width - 1);
-        if (minor > major) { int t = major; major = minor; minor = t; }
-        if (major < 1) major = 1;
-
+        /* BLTAPTL holds the signed accumulator 4dy-2dx as loaded; SIGN
+         * (BLTCON1 bit 6) is only the sign used for the first step. */
         int acc = (int)(int16_t)(g_bltapt & 0xFFFFu);
-        int ash = (g_bltcon0 >> 12) & 0xFu;
+        g_line_state.sign = (g_bltcon1 & 0x40u) ? 1 : 0;
 
-        g_line_state.active = 1;
-        g_line_state.x = 0;
-        g_line_state.y = 0;
-        g_line_state.bit = ash;
+        g_line_state.cpt = g_bltcpt ? g_bltcpt : g_bltdpt;
+        g_line_state.dpt = g_bltdpt ? g_bltdpt : g_bltcpt;
+        g_line_state.ash = ash;
+        g_line_state.bsh = bsh;
         g_line_state.acc = acc;
-        g_line_state.amod = amod;
-        g_line_state.bmod = bmod;
-        g_line_state.sx = sx;
-        g_line_state.sy = sy;
-        g_line_state.swap = swap;
-        g_line_state.steps = singular ? 1 : (major + 1);
-        g_line_state.remaining = g_line_state.steps;
-        g_line_state.texture_bit = 0;
+        g_line_state.amod = (int)(int16_t)g_bltamod;
+        g_line_state.bmod = (int)(int16_t)g_bltbmod;
+        g_line_state.cmod = (int)(int16_t)g_bltcmod;
+        g_line_state.x_major   = (octant >> 2) & 1;   /* SUD */
+        g_line_state.minor_neg = (octant >> 1) & 1;   /* SUL */
+        g_line_state.major_neg = (octant >> 0) & 1;   /* AUL */
+        g_line_state.sing = (g_bltcon1 >> 1) & 1u;
+        g_line_state.suppress = 0;
+        g_line_state.first = 1;
+        g_line_state.remaining = height;
+        g_line_state.active = 1;
 
+        g_blit_d_nonzero = 0;
         g_blitter_busy = 1;
-        g_blitter_words_remaining = g_line_state.steps;
+        g_blitter_words_remaining = height;
         g_blitter_busy_ticks = 0;
         return;
     }
 
+    g_blit_area_count++;
     g_area_state.active = 1;
     g_area_state.width = width;
     g_area_state.height = height;
     g_area_state.x = 0;
     g_area_state.y = 0;
     g_area_state.fill_state = 0;
+    g_area_state.prevA = 0;
+    g_area_state.prevB = 0;
     g_area_state.words_remaining = width * height;
 
+    /* In DESC mode the guest already points each channel at the LAST word;
+     * the blitter walks pointers downward (-2 per word) and subtracts
+     * modulos at row end.  No pointer adjustment here. */
     g_area_state.apt = g_bltapt;
     g_area_state.bpt = g_bltbpt;
     g_area_state.cpt = g_bltcpt;
     g_area_state.dpt = g_bltdpt;
 
-    if (desc) {
-        uint32_t offset = (uint32_t)(width - 1) * 2u;
-        if (useA) g_area_state.apt += offset;
-        if (useB) g_area_state.bpt += offset;
-        if (useC) g_area_state.cpt += offset;
-        if (useD) g_area_state.dpt += offset;
-    }
-
     g_line_state.active = 0;
+    g_blit_d_nonzero = 0;
     g_blitter_busy = 1;
     g_blitter_words_remaining = width * height;
     g_blitter_busy_ticks = 0;
@@ -1819,6 +2068,8 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
 {
     if (target_cycles <= g_last_scheduled_cycle) return;
 
+    g_sched_running = 1;
+
     /* Process each scanline between the last scheduled beam and the target.
      * Use non-wrapping absolute line numbers so that a full frame (or multiple
      * frames) advances every line exactly once. */
@@ -1826,7 +2077,18 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
     if (g_cycles_per_line != 0) {
         uint64_t start_line = (g_last_scheduled_cycle - g_cycles_at_frame_start) / g_cycles_per_line;
         uint64_t end_line   = (target_cycles - g_cycles_at_frame_start) / g_cycles_per_line;
+        /* Each line's side effects (copper, sprite/BPL pointer advance,
+         * audio, stolen-cycle accounting) must run exactly once — the beam
+         * is now also synced on every custom-register write mid-line, so
+         * the last partial line would otherwise be processed again on the
+         * next call, re-advancing BPLxPT and producing ghosting/doubling
+         * (UAOS-366).  Reset the guard whenever the line numbering wraps
+         * (new frame base / reinitialised timing). */
+        static int64_t s_last_proc_line = -1;
+        if (end_line <= (uint64_t)s_last_proc_line) s_last_proc_line = -1;
         for (uint64_t line = start_line; line <= end_line; line++) {
+            if (s_last_proc_line >= 0 && line <= (uint64_t)s_last_proc_line) continue;
+            s_last_proc_line = (int64_t)line;
             int y = (int)(line % (uint64_t)lines);
             /* Pot charge counters measure lines since the last POTGO START. */
             if (g_pot_counter[0] < 0xFFu) g_pot_counter[0]++;
@@ -1865,7 +2127,35 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
 
             g_vposr = (uint16_t)y;
             g_vhposr = 0;
-            copper_run_to_beam(copper_slots);
+            /* Line-timed copper: everything it does before the bitplane
+             * fetch starts affects this line; the rest of the line's
+             * copper activity lands on the next one.  The copper issues a
+             * MOVE every 4 colour clocks (~56 per line) rather than the
+             * 32-slot DMA-table cap (UAOS-366). */
+            (void)copper_slots;
+            /* Copper fetches + takeover fetches resolve through g_ram —
+             * bind the display-list owner's window.  Without this the
+             * copper executes whichever task's RAM was bound when the
+             * scheduler ran, stalls on garbage WAITs, and the per-frame
+             * BPLxPT reload never happens (UAOS-366 mid-scene black). */
+            uint8_t *saved_ram = g_ram;
+            if (g_takeover_display && g_display_ram)
+                g_ram = g_display_ram;
+            /* Per-line mid-line colour events: reset the log and snapshot
+             * the line-start palette before the copper runs (UAOS-366). */
+            g_cev_n = 0;
+            if (g_takeover_display)
+                memcpy(g_pal_start, g_aga_palette, sizeof(g_pal_start));
+            int cop_h = 0;
+            copper_run_line(y, &cop_h, (int)(g_ddfstart & 0xFEu));
+            /* Takeover display: rasterize this line now so mid-frame
+             * copper changes are visible (UAOS-366). */
+            if (g_takeover_display) {
+                sprite_dma_line(y);
+                takeover_render_line(y, &cop_h); /* runs pass-2 copper itself */
+            }
+            copper_run_line(y, &cop_h, COPPER_LINE_END); /* no-op if done */
+            g_ram = saved_ram;
         }
     }
 
@@ -1876,6 +2166,14 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
     g_vhposr = (uint16_t)(h & 0xFFu);
 
     g_last_scheduled_cycle = target_cycles;
+    g_sched_running = 0;
+
+    /* UAOS-366: re-evaluate the IRQ line whenever the scheduler ran — a
+     * vblank/BLIT request raised while a foreign window was bound (ISR
+     * context) could not assert the pins; the next owner-bound run picks
+     * it up here.  update_irq itself gates on window ownership during
+     * takeover. */
+    chip_emu_update_irq();
 }
 
 /* Return the cumulative CPU cycles stolen by DMA. */
@@ -1890,18 +2188,25 @@ uint64_t chip_emu_stolen_cycles(void)
  * contention. */
 void chip_emu_cpu_chipram_access(uint32_t addr, int is_write)
 {
-    (void)is_write;
+    /* Track CPU writes for the ramdump diagnostic (UAOS-366): whether the
+     * guest's draw engine stores to the display buffers (chip RAM) or to a
+     * fast-RAM staging area. */
+    if (is_write) {
+        g_cpu_cw_count++;
+        g_cpu_cw_last = addr;
+        g_cpu_cw_ram = g_ram;
+    }
 
     /* Fast RAM (0x800000+) is not on the Agnus bus, so no wait states. */
     if (addr >= 0x800000u) return;
 
     extern uint64_t g_m68k_cycles;
-    chip_emu_run_to_cycle(g_m68k_cycles);
+    chip_emu_run_to_cycle(beam_cycles_now());
 
     if (g_cycles_per_line == 0 || g_dma_slots_current_count == 0) return;
 
     /* Compute the current slot within the current line. */
-    uint64_t beam_cycles = g_m68k_cycles - g_cycles_at_frame_start;
+    uint64_t beam_cycles = beam_cycles_now() - g_cycles_at_frame_start;
     int hpos = (int)(beam_cycles % g_cycles_per_line);
     int slot = (int)((uint64_t)hpos * g_dma_slots_current_count / g_cycles_per_line);
     if (slot < 0) slot = 0;
@@ -1950,6 +2255,10 @@ void chip_emu_vblank(void)
     uint64_t frame_cycle = chip_emu_m68k_cycles();
     g_cycles_at_frame_start = frame_cycle;
     g_last_scheduled_cycle = frame_cycle;
+    /* Real hardware re-latches COP1LC and the sprite DMA pointers at
+     * VBlank — the copper restarts its list every frame (this is what
+     * reloads BPLxPT, palette and mid-frame effects each frame). */
+    frame_start_rearm();
     /* Set VBlank interrupt request (INTREQ bit 5). */
     g_intreq |= 0x0020u;
     /* At VBlank, beam is at the top of the display. */
@@ -1987,6 +2296,37 @@ void chip_emu_beam_tick(uint32_t tick_counter)
     chip_emu_run_to_cycle(target);
     g_ram = saved_ram;
 }
+
+void chip_emu_takeover_begin(void *owner)
+{
+    if (g_takeover_display && g_takeover_owner == owner) return;
+    g_takeover_display = 1;
+    g_takeover_owner = owner;
+    KLOG(KLOG_DISP, KLOG_WARN, "takeover: guest took over the display (owner %p)", owner);
+}
+
+void chip_emu_takeover_end(void *owner)
+{
+    if (!g_takeover_display) return;
+    if (owner != NULL && owner != g_takeover_owner) return;
+    g_takeover_display = 0;
+    g_takeover_owner = NULL;
+    KLOG(KLOG_DISP, KLOG_WARN, "takeover: display released, repainting desktop");
+    /* WM damage was dropped while we owned the screen — mark the whole
+     * display dirty so the pump repaints the desktop.  If the screen was
+     * blanked when the guest released it, restore via the unblank path
+     * (WM_Redraw alone is a no-op while blanked). */
+    {
+        extern int  Blanker_IsBlanked(void);
+        extern void Blanker_OnInput(void);
+        extern void WM_Redraw(void);
+        if (Blanker_IsBlanked()) Blanker_OnInput();
+        else                     WM_Redraw();
+    }
+}
+
+int   chip_emu_takeover_active(void) { return g_takeover_display; }
+void *chip_emu_takeover_owner(void)  { return g_takeover_owner; }
 
 uint32_t chip_emu_vblank_count(void)
 {
@@ -2217,7 +2557,13 @@ static void cia_write_timer_lo(CIA_Timer *t, uint8_t v)
 static void cia_write_timer_hi(CIA_Timer *t, uint8_t v)
 {
     t->latch = (uint16_t)((t->latch & 0x00FFu) | ((uint16_t)v << 8));
-    if (!(t->cra & 1u)) t->counter = t->latch;
+    if (!(t->cra & 1u)) {
+        t->counter = t->latch;
+        /* 8520: a high-byte write in one-shot mode (RUNMODE=1) loads the
+         * counter AND starts the timer — the classic CIA delay idiom
+         * (CRA=$08, TALO, TAHI, poll ICR) relies on it (UAOS-366). */
+        if (t->cra & 0x08u) t->cra |= 1u;
+    }
 }
 
 /* UAOS-241 diag: per-reg read counters for CIAA (peek via nm). */
@@ -2770,36 +3116,97 @@ void chip_emu_cia_tick(void)
 
 #define COPPER_MOVE_LIMIT 4096
 
-static int copper_wait_satisfied(int target_v, int target_h, int mask_v, int mask_h, int vpos, int hpos)
+/* Mid-line colour-write events (UAOS-366).  Demos paint 2D tiled/checkered
+ * backgrounds by having the copper write COLOR registers at specific beam
+ * clocks INSIDE a scanline (e.g. SOTA's dancing-silhouette scenes).
+ * Rendering the whole line with one palette snapshot collapses those into
+ * vertical bands — so the copper records each write with its h position
+ * and the compositor replays them per pixel against the line-start
+ * palette. */
+/* Palette colour for index `idx` at colour clock `h` of the current line. */
+static uint32_t pal_at(uint32_t idx, int h)
 {
-    return ((vpos & mask_v) >= (target_v & mask_v)) &&
-           ((hpos & mask_h) >= (target_h & mask_h));
+    uint32_t ci = idx & 0xFFu;
+    int ehb = ehb_active() && ci >= 32;
+    if (ehb) ci -= 32;
+    uint32_t rgb = (ci < AGA_PALETTE_SIZE) ? g_pal_start[ci] : 0;
+    for (int i = 0; i < g_cev_n; i++)
+        if (g_cev[i].idx == ci && (int)g_cev[i].h <= h) rgb = g_cev[i].rgb;
+    return ehb ? ((rgb >> 1) & 0x7F7F7Fu) : rgb;
 }
 
-/* Execute copper instructions until a WAIT that cannot be satisfied at the
- * supplied beam position is reached.  Returns 1 if the copper reached the
- * end-of-list impossible WAIT.  `copper_slots` is the number of DMA slots
- * the copper has been granted this line; each instruction consumes 2 slots. */
-static int copper_run_to_beam(int copper_slots)
+/* Agnus copper comparator (HRM node005B): the beam position VP7-0:HP8-1 is
+ * compared as ONE 16-bit value against the WAIT/SKIP target, through the
+ * mask VE6-0 (word 2 bits 14-8) / HE8-1 (bits 7-1); VP7 is always
+ * compared.  `hcc` is the horizontal position in colour clocks.  Word 2
+ * bit 15 clear (BFD=0) additionally holds until the blitter is idle. */
+static int copper_wait_satisfied(uint16_t w1, uint16_t w2, int vpos, int hcc)
 {
-    int vpos, hpos;
-    beam_position_from_cycles(beam_cycles_now(), &vpos, &hpos);
+    if (!(w2 & 0x8000u) && g_blitter_busy) return 0;
+    uint16_t mask = (uint16_t)(0x8000u | (w2 & 0x7FFEu));
+    uint16_t pos  = (uint16_t)(((vpos & 0xFF) << 8) | (hcc & 0xFE));
+    return (uint16_t)(pos & mask) >= (uint16_t)(w1 & 0xFFFEu & mask);
+}
 
+/* Line-timed copper (UAOS-366).  The copper runs on its own colour-clock
+ * timeline within line `vpos`: every MOVE/SKIP costs 4 colour clocks and a
+ * WAIT resolves to the first h position on this line where the comparator
+ * is satisfied (or stalls to the next line).  Execution continues across
+ * line boundaries exactly where it left off, which copper loops rely on
+ * (WAIT h → per-line MOVEs → SKIP v → COPJMP1, one iteration per line).
+ * Runs from *ch up to h_end; *ch is updated.  Returns 1 at end-of-list. */
+
+/* Is odd colour clock h taken by a higher-priority DMA channel?  HRM
+ * figure 6-9: refresh $01-$07, disk $09-$0D, audio $0F-$15, sprites
+ * $17-$35; inside the bitplane fetch window the lores block
+ * "- 4 6 2 - 3 5 1" (hires "4 2 3 1") puts planes 1-4 on odd cycles. */
+static int copper_cycle_blocked(int h)
+{
+    uint16_t d = g_dmacon;
+    if (!(d & 0x0200u)) return 0;                       /* DMAEN off */
+    if (h <= 0x07) return 1;                            /* refresh */
+    if (h <= 0x0D) return (d & 0x0010u) != 0;           /* disk */
+    if (h <= 0x15) return (d >> ((h - 0x0F) / 2)) & 1u; /* audio 0-3 */
+    if (h <= 0x35) return (d & 0x0020u) != 0;           /* sprites */
+    if (!(d & 0x0100u)) return 0;                       /* BPLEN off */
+    int depth = bpl_depth();
+    if (depth <= 0) return 0;
+    int hires = bpl_hires();
+    int start = (int)(g_ddfstart & 0xFCu);
+    int stop  = (int)(g_ddfstop & 0xFCu) + (hires ? 4 : 8);
+    if (h < start || h >= stop) return 0;
+    int plane;
+    if (hires) { static const int m[4] = {4, 2, 3, 1}; plane = m[(h - start) & 3]; }
+    else       { static const int m[8] = {0, 4, 6, 2, 0, 3, 5, 1}; plane = m[(h - start) & 7]; }
+    return plane != 0 && plane <= depth;
+}
+
+/* Next colour clock >= h the copper can fetch on (it has priority over
+ * the blitter and the CPU).  The free "-" slots inside the bitplane
+ * window sit at (h - DDFSTRT) mod 8 == {0,4} — even h when DDFSTRT is
+ * even — so the fetch must accept either parity or a 6-plane EHB scene
+ * starves the copper to zero slots per line (UAOS-366 black mid-scenes:
+ * copper frozen at list start, BPLxPT drifted past RAM). */
+static int copper_next_fetch(int h)
+{
+    while (h < COPPER_LINE_END && copper_cycle_blocked(h)) h++;
+    return h < COPPER_LINE_END ? h : COPPER_LINE_END;
+}
+
+static int copper_run_line(int vpos, int *ch, int h_end)
+{
     uint32_t pc = g_copper_pc;
     if (!pc) return 0;
+    int h = *ch;
+    int ret = 0;
 
-    for (int i = 0; i < COPPER_MOVE_LIMIT; i++) {
-        if (copper_slots < 2) {
-            /* Copper has run out of DMA slots for this line; stall here. */
-            g_copper_pc = pc;
-            return 0;
-        }
-        copper_slots -= 2;
+    for (int i = 0; i < COPPER_MOVE_LIMIT && h < h_end; i++) {
+        if (pc + 4 >= GUEST_RAM_SIZE) break;
 
-        if (pc + 4 >= GUEST_RAM_SIZE) {
-            g_copper_pc = pc;
-            return 0;
-        }
+        /* Every instruction is two copper fetches. */
+        int f2 = copper_next_fetch(copper_next_fetch(h) + 1);
+        if (f2 >= COPPER_LINE_END) { h = COPPER_LINE_END; break; }
+        if (f2 >= h_end) { h = h_end; break; }
 
         uint16_t w1 = chip_read_u16(pc);
         uint16_t w2 = chip_read_u16(pc + 2);
@@ -2811,59 +3218,79 @@ static int copper_run_to_beam(int copper_slots)
             /* COPCON bit 1 = CDANG "copper danger": when clear, the copper
              * cannot write to the protected register range $040-$07F. */
             int copper_danger = g_copcon & 2u;
-            if (regoff < 0x040u || regoff >= 0x080u || copper_danger) {
-                chip_emu_write(AGA_REG_BASE_OFF + regoff, w2, 2);
-            }
             pc += 4;
+            h = f2 + 1;
+            if (regoff < 0x040u || regoff >= 0x080u || copper_danger) {
+                g_cop_jumped = 0;
+                chip_emu_write(AGA_REG_BASE_OFF + regoff, w2, 2);
+                if (g_cop_jumped) { pc = g_copper_pc; g_cop_jumped = 0; }
+                if (regoff >= REG_COLOR00 && regoff < REG_COLOR00 + 0x40u &&
+                    g_cev_n < CEV_MAX) {
+                    uint32_t bank = g_aga_active ? (g_bplcon3 >> 13) & 7u : 0u;
+                    uint32_t ci = (bank << 5) | ((regoff - REG_COLOR00) >> 1);
+                    g_cev[g_cev_n].h   = (uint8_t)h;
+                    g_cev[g_cev_n].idx = (uint8_t)ci;
+                    g_cev[g_cev_n].rgb = (ci < AGA_PALETTE_SIZE)
+                                       ? g_aga_palette[ci] : 0;
+                    g_cev_n++;
+                }
+            }
         } else if ((w2 & 1u) == 0) {
             /* WAIT */
             if ((w1 & 0xFFFEu) == 0xFFFEu && (w2 & 0xFFFEu) == 0xFFFEu) {
-                g_copper_pc = pc;
-                /* Copper end-of-list interrupt request (INTB_COPER, bit 4). */
-                g_intreq |= 0x0010u;
-                chip_emu_update_irq();
-                return 1; /* end of list */
+                h = COPPER_LINE_END;          /* end of list: idle */
+                ret = 1;
+                break;
             }
-            int target_v = (w1 >> 8) & 0xFF;
-            int target_h = (w1 >> 1) & 0x7F;
-            int mask_v   = (w2 >> 8) & 0xFF;
-            int mask_h   = (w2 >> 1) & 0x7F;
-            if (copper_wait_satisfied(target_v, target_h, mask_v, mask_h, vpos, hpos)) {
-                pc += 4;
-            } else {
-                g_copper_pc = pc;
-                return 0;
+            /* Not satisfiable even at the end of this line → stall to the
+             * next line without scanning (the common case). */
+            if (!copper_wait_satisfied(w1, w2, vpos, COPPER_LINE_END - 1)) {
+                h = COPPER_LINE_END;
+                break;
             }
+            int t = f2 + 1;
+            while (t < COPPER_LINE_END && !copper_wait_satisfied(w1, w2, vpos, t))
+                t += 2;
+            if (t >= COPPER_LINE_END) { h = COPPER_LINE_END; break; } /* next line */
+            if (t >= h_end) { h = h_end; break; } /* resolves later this line */
+            h = t + 2;                        /* wake-up latency */
+            pc += 4;
         } else {
             /* SKIP */
-            int target_v = (w1 >> 8) & 0xFF;
-            int target_h = (w1 >> 1) & 0x7F;
-            int mask_v   = (w2 >> 8) & 0xFF;
-            int mask_h   = (w2 >> 1) & 0x7F;
-            if (copper_wait_satisfied(target_v, target_h, mask_v, mask_h, vpos, hpos)) {
-                pc += 8; /* skip next instruction */
-            } else {
-                pc += 4;
-            }
+            h = f2 + 1;
+            pc += copper_wait_satisfied(w1, w2, vpos, h) ? 8 : 4;
         }
     }
     g_copper_pc = pc;
-    return 0;
+    *ch = h;
+    return ret;
+}
+
+/* Live beam position for the copper comparator (vpos, colour clocks).
+ * g_cycles_per_line counts M68k cycles, two per colour clock. */
+static void copper_live_beam(int *vpos, int *hcc)
+{
+    int hpos;
+    beam_position_from_cycles(beam_cycles_now(), vpos, &hpos);
+    *hcc = hpos / 2;
 }
 
 void chip_emu_copper_jump(int list, uint32_t addr)
 {
+    int v, h;
     if (list == 1) {
         if (addr) g_cop1lc = addr;
         g_copjmp1 = 1;
         g_copper_pc = g_cop1lc;
         g_display_ram = g_ram; /* display fetches must read the owner's window */
-        copper_run_to_beam(100); /* allow a burst at copper restart */
+        copper_live_beam(&v, &h);
+        copper_run_line(v, &h, COPPER_LINE_END); /* burst at copper restart */
     } else if (list == 2) {
         if (addr) g_cop2lc = addr;
         g_copjmp2 = 1;
         g_copper_pc = g_cop2lc;
-        copper_run_to_beam(100);
+        copper_live_beam(&v, &h);
+        copper_run_line(v, &h, COPPER_LINE_END);
     }
 }
 
@@ -2947,18 +3374,16 @@ static uint32_t pixel_to_rgb(int index, int prev_rgb)
     return g_aga_palette[index & 0xFF];
 }
 
-/* Render one scanline of bitplanes into the host framebuffer.
- * y is the display line, fetch_y is the bitplane line to read (interlace
- * uses half the display line).  bytes_per_row is the hardware fetch width. */
-static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, int bytes_per_row)
+/* Decode one scanline of bitplane data into an RGB pixel buffer.
+ * planes[] holds the resolved host pointer for each plane (NULL = no data);
+ * the buffer receives fetch_pixels RGB values.  Handles single/dual
+ * playfield, horizontal scroll, HAM/EHB conversion, and updates the
+ * per-line collision occupancy arrays (g_bp_even/g_bp_odd + CLXDAT). */
+static void decode_scanline(uint8_t *const planes[8], int fetch_pixels, uint32_t *linebuf,
+                            uint8_t *idxbuf)
 {
     int depth = bpl_depth();
     if (depth < 1 || depth > 8) return;
-    int hires = bpl_hires();
-    int pix_scale = hires ? 1 : 2;              /* low-res pixels are doubled */
-    int fb_w = (int)g_fb.width;
-    int fb_h = (int)g_fb.height;
-    if (y < 0 || y >= fb_h) return;
 
     /* Clear per-scanline collision occupancy for this line. */
     for (int i = 0; i < COLLISION_WIDTH; i++) {
@@ -2969,12 +3394,6 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
     /* Horizontal scroll: PF1H in bits 3-0, PF2H in bits 7-4. */
     int pf1_scroll = g_bplcon1 & 0xF;
     int pf2_scroll = (g_bplcon1 >> 4) & 0xF;
-
-    /* Fetch pointers for each plane. */
-    uint8_t *planes[8];
-    for (int p = 0; p < depth; p++) {
-        planes[p] = bpl_line_ptr(p, fetch_y, bytes_per_row);
-    }
 
     int dblpf = bpl_dblpf();
     int pf2_prio = g_bplcon2 & 0x7u; /* PF2P0-PF2P2 */
@@ -2990,16 +3409,16 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
         if (dblpf) {
             int idx1 = 0, idx2 = 0;
             for (int p = 0; p < pf1_depth; p++) {
-                int sx = x + pf1_scroll;
-                if (sx < 0) sx = 0;
+                int sx = x - pf1_scroll;
+                if (sx < 0) continue;
                 int byte = sx / 8;
                 int bit  = 7 - (sx & 7);
                 if (planes[p * 2] && (planes[p * 2][byte] & (1 << bit)))
                     idx1 |= (1 << p);
             }
             for (int p = 0; p < pf2_depth; p++) {
-                int sx = x + pf2_scroll;
-                if (sx < 0) sx = 0;
+                int sx = x - pf2_scroll;
+                if (sx < 0) continue;
                 int byte = sx / 8;
                 int bit  = 7 - (sx & 7);
                 if (planes[p * 2 + 1] && (planes[p * 2 + 1][byte] & (1 << bit)))
@@ -3015,14 +3434,18 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
                 g_bp_even[x] = (idx1 != 0);
                 g_bp_odd[x] = (idx2 != 0);
             }
+            if (idxbuf) idxbuf[x] = ham_active() ? 0xFFu : (uint8_t)idx;
             rgb = pixel_to_rgb(idx, prev_rgb);
         } else {
             int index = 0;
             for (int p = 0; p < depth; p++) {
-                int scroll = pf1_scroll;
-                int sx = x + scroll;
-                if (sx < 0) sx = 0;
-                if (sx >= fetch_pixels) sx = fetch_pixels - 1;
+                /* Even in single-playfield mode the hardware applies the
+                 * PF1H scroll to odd planes (BPL1/3/5) and PF2H to even
+                 * planes (BPL2/4/6) — demos exploit this for moiré
+                 * effects (UAOS-366). */
+                int scroll = (p & 1) ? pf2_scroll : pf1_scroll;
+                int sx = x - scroll;
+                if (sx < 0 || sx >= fetch_pixels) continue;
                 int byte = sx / 8;
                 int bit  = 7 - (sx & 7);
                 if (planes[p] && (planes[p][byte] & (1 << bit)))
@@ -3032,17 +3455,45 @@ static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, i
                 g_bp_even[x] = ((index & 0x55u) != 0);
                 g_bp_odd[x] = ((index & 0xAAu) != 0);
             }
+            if (idxbuf) idxbuf[x] = ham_active() ? 0xFFu : (uint8_t)index;
             rgb = pixel_to_rgb(index, prev_rgb);
         }
         prev_rgb = rgb;
+        linebuf[x] = rgb;
 
         if (x < COLLISION_WIDTH && g_bp_even[x] && g_bp_odd[x]) {
             g_clxdat |= 0x0001u; /* even/odd bitplane collision */
         }
+    }
+}
 
+/* Render one scanline of bitplanes into the host framebuffer.
+ * y is the display line, fetch_y is the bitplane line to read (interlace
+ * uses half the display line).  bytes_per_row is the hardware fetch width. */
+static void render_scanline(int y, int fetch_y, int x_start, int fetch_pixels, int bytes_per_row)
+{
+    int depth = bpl_depth();
+    if (depth < 1 || depth > 8) return;
+    int hires = bpl_hires();
+    int pix_scale = hires ? 1 : 2;              /* low-res pixels are doubled */
+    int fb_w = (int)g_fb.width;
+    int fb_h = (int)g_fb.height;
+    if (y < 0 || y >= fb_h) return;
+    if (fetch_pixels > 1280) fetch_pixels = 1280;
+
+    /* Fetch pointers for each plane. */
+    uint8_t *planes[8] = {0};
+    for (int p = 0; p < depth; p++) {
+        planes[p] = bpl_line_ptr(p, fetch_y, bytes_per_row);
+    }
+
+    static uint32_t linebuf[1280];
+    decode_scanline(planes, fetch_pixels, linebuf, NULL);
+
+    for (int x = 0; x < fetch_pixels; x++) {
         int dst_x = x_start + x * pix_scale;
         for (int s = 0; s < pix_scale && (dst_x + s) < fb_w; s++) {
-            FB_PutPixel(dst_x + s, y, rgb);
+            FB_PutPixel(dst_x + s, y, linebuf[x]);
         }
     }
 }
@@ -3212,6 +3663,78 @@ static void render_sprites_on_scanline(int y, int bytes_per_row)
     }
 }
 
+/* Display-window geometry shared by render_frame and the takeover per-line
+ * renderer.
+ *
+ * Horizontal values are in lores pixels (DIW compares against the beam
+ * position in lores-pixel units; the DDF registers count colour clocks,
+ * 2 lores px each).  diw_x is returned relative to hpos $80 (the guest
+ * framebuffer convention used by the non-takeover renderer).
+ *
+ * DIWHIGH layout (real hardware):
+ *   bits 0-2:  VSTART bits 8-10
+ *   bits 8-10: VSTOP bits 8-10
+ *   bit 5:     HSTART bit 8
+ *   bit 13:    HSTOP bit 8
+ * OCS/ECS (no DIWHIGH): VSTOP bit 8 is the inverse of DIWSTOP bit 15's
+ * byte bit 7, and HSTOP bit 8 is always set — so DIWSTOP $3EC1 means
+ * vstop $13E and DIWSTOP $3EC7 means hstop $1C7 (UAOS-366).
+ *
+ * Fetch width derives from DDFSTART/DDFSTOP (HRM):
+ *   lores: words = (ddf_stop - ddf_start)/8 + 1   (fetch every 8 clocks)
+ *   hires: words = (ddf_stop - ddf_start)/4 + 2   (fetch every 4 clocks)
+ * Each word is 16 pixels at the active resolution. */
+static void diw_ddf_params(int *diw_x, int *diw_x_stop,
+                           int *diw_v_start, int *diw_v_stop,
+                           int *fetch_pixels, int *bytes_per_row)
+{
+    int diw_v_start_raw = (g_diwstart >> 8) & 0xFF;
+    int diw_v_stop_raw  = (g_diwstop >> 8) & 0xFF;
+
+    int diw_v_start_hi = g_diwhigh & 0x7;          /* VSTART bits 8-10 */
+    int diw_v_stop_hi  = (g_diwhigh >> 8) & 0x7;   /* VSTOP bits 8-10 */
+
+    int diw_v_start_full = (diw_v_start_hi << 8) | diw_v_start_raw;
+    int diw_v_stop_full  = (diw_v_stop_hi  << 8) | diw_v_stop_raw;
+    /* OCS/ECS (no DIWHIGH): VSTOP bit 8 is the inverse of bit 7, so
+     * DIWSTOP $3EC1 stops at line $13E, not $3E (UAOS-366). */
+    if (g_diwhigh == 0 && !(diw_v_stop_raw & 0x80)) diw_v_stop_full |= 0x100;
+    if (diw_v_stop_full < diw_v_start_full) diw_v_stop_full += 0x800;
+
+    int hstart_raw = g_diwstart & 0xFF;
+    int hstop_raw  = g_diwstop & 0xFF;
+    if (g_diwhigh) {
+        hstart_raw |= ((g_diwhigh >> 5) & 1) << 8;
+        hstop_raw  |= ((g_diwhigh >> 13) & 1) << 8;
+    } else {
+        hstop_raw |= 0x100; /* OCS/ECS: HSTOP bit 8 is always set */
+    }
+    if (hstop_raw < hstart_raw) { hstart_raw = 0; hstop_raw = 0x1FF; }
+
+    *diw_x      = hstart_raw - 0x80;
+    *diw_x_stop = hstop_raw - 0x80;
+    int diw_width = *diw_x_stop - *diw_x;
+    if (diw_width <= 0) diw_width = 320;
+
+    int ddf_start = g_ddfstart & 0xFF;
+    int ddf_stop  = g_ddfstop & 0xFF;
+    int fp = diw_width;
+    int hires = bpl_hires();
+    if (ddf_stop > ddf_start && (ddf_stop - ddf_start) >= 8) {
+        int ddf_diff = ddf_stop - ddf_start;
+        int words = hires ? (ddf_diff / 4 + 2) : (ddf_diff / 8 + 1);
+        fp = words * 16;
+    }
+    if (fp <= 0 || fp > 1280) fp = 320;
+    int bpr = (fp + 7) / 8;
+    if (bpr < 1) bpr = 1;
+
+    *diw_v_start = diw_v_start_full;
+    *diw_v_stop  = diw_v_stop_full;
+    *fetch_pixels = fp;
+    *bytes_per_row = bpr;
+}
+
 /* Render the current chipset state to the host framebuffer.
  * Rendering is performed after the cycle-driven scheduler has already advanced
  * the copper, blitter and audio state; this function no longer builds its own
@@ -3246,50 +3769,12 @@ void chip_emu_render_frame(void)
      * chipset timing is now cycle-driven. */
     chip_emu_run_to_cycle(g_last_scheduled_cycle + g_cycles_per_frame);
 
-    /* Derive display window.
-     * Horizontal start is in lores pixels with an $80 origin.
-     * Vertical stop uses the low 8 bits from DIWSTOP plus high bits from
-     * DIWHIGH.  DIWHIGH uses a simplified mapping here:
-     *   bits 0-2: VSTART bits 8-10
-     *   bits 3-5: VSTOP bits 8-10
-     *   bit 4:    HSTART bit 8 (simplified)
-     *   bit 5:    HSTOP bit 8 (simplified)
-     * This is not the exact Amiga DIWHIGH layout, but it extends the window
-     * beyond 512 lines and supports wide HSTOP values. */
-    int diw_v_start = (g_diwstart >> 8) & 0xFF;
-    int diw_v_stop_raw = (g_diwstop >> 8) & 0xFF;
-    int diw_h_stop_raw = g_diwstop & 0xFF;
-
-    int diw_v_start_hi = (g_diwhigh >> 0) & 0x7; /* VSTART bits 8-10 */
-    int diw_v_stop_hi  = (g_diwhigh >> 3) & 0x7; /* VSTOP bits 8-10 */
-    int diw_h_start_hi = (g_diwhigh >> 4) & 0x1; /* HSTART bit 8 */
-    int diw_h_stop_hi  = (g_diwhigh >> 5) & 0x1; /* HSTOP bit 8 */
-
-    int diw_v_start_full = (diw_v_start_hi << 8) | diw_v_start;
-    int diw_v_stop_full  = (diw_v_stop_hi  << 8) | diw_v_stop_raw;
-    if (diw_v_stop_full < diw_v_start_full) diw_v_stop_full += 0x800;
-
-    int diw_x = ((diw_h_start_hi & 1) << 8) | ((g_diwstart & 0xFF) - 0x80);
-    int diw_x_stop = ((diw_h_stop_hi & 1) << 8) | (diw_h_stop_raw + 0x80);
-    if (diw_x_stop < diw_x) diw_x_stop += 0x200;
-    int diw_width = diw_x_stop - diw_x;
-    if (diw_width <= 0) diw_width = 320;
-
-    /* Derive fetch width from DDFSTART/DDFSTOP.
-     * DDF has 4-pixel resolution.  words = (ddf_stop - ddf_start) / 4 + 2,
-     * and each word is 8 lores pixels or 16 hires pixels. */
-    int ddf_start = g_ddfstart & 0xFF;
-    int ddf_stop  = g_ddfstop & 0xFF;
-    int fetch_pixels = diw_width;
-    int hires = bpl_hires();
-    if (ddf_stop > ddf_start && (ddf_stop - ddf_start) >= 8) {
-        int ddf_diff = ddf_stop - ddf_start;
-        int words = (ddf_diff / 4) + 2;
-        fetch_pixels = words * (hires ? 16 : 8);
-    }
-    if (fetch_pixels <= 0 || fetch_pixels > 1280) fetch_pixels = 320;
-    int bytes_per_row = (fetch_pixels + 7) / 8;
-    if (bytes_per_row < 1) bytes_per_row = 1;
+    /* Display-window geometry and fetch width — shared with the takeover
+     * per-line renderer (diw_ddf_params). */
+    int diw_x, diw_x_stop, diw_v_start_full, diw_v_stop_full;
+    int fetch_pixels, bytes_per_row;
+    diw_ddf_params(&diw_x, &diw_x_stop, &diw_v_start_full, &diw_v_stop_full,
+                   &fetch_pixels, &bytes_per_row);
 
     int x_start = diw_x < 0 ? 0 : diw_x;
     int y_start = diw_v_start_full;
@@ -3317,6 +3802,209 @@ void chip_emu_render_frame(void)
     }
 
     update_sprite_collisions();
+    g_ram = saved_ram;
+}
+
+/* =========================================================================
+ * Takeover display mode (UAOS-366)
+ *
+ * While a guest owns the machine (chip_emu_takeover_begin), the beam
+ * scheduler rasterizes every visible line right after the copper ran —
+ * mid-frame copper/color changes appear exactly like real hardware.
+ * The window covers beam hpos $69-$1D9 (lores px) and lines $18-$13F so a
+ * standard 320x256 screen ($81-$1C1 x $2C-$12C) sits dead centre with
+ * overscan room on every side (UAOS-366).
+ * ========================================================================= */
+#define TK_FIRST_LINE   0x18u   /* first mapped line */
+#define TK_LINES        296     /* lines $18-$13F */
+#define TK_LAST_LINE    (TK_FIRST_LINE + TK_LINES)
+#define TK_WIN_W        368     /* lores pixels of overscan width */
+#define TK_H0           0x69    /* beam hpos (lores px) at window left edge */
+
+/* Re-arm display DMA state at frame start (called from chip_emu_vblank):
+ * copper restarts from COP1LC, sprite fetch pointers reload from SPRxPT.
+ * Defined here because g_spr_dma_ptr is declared with the render code. */
+static void frame_start_rearm(void)
+{
+    if (g_cop1lc) g_copper_pc = g_cop1lc;
+    for (int spr = 0; spr < SPRITE_COUNT; spr++) g_spr_dma_ptr[spr] = g_spr_pt[spr];
+}
+
+/* Per-line sprite channel state machine (takeover mode).  Hardware reads
+ * the two control words (SPRxPOS/SPRxCTL) when the sprite's current VSTOP
+ * line is reached — and re-reads them at line 0 — then fetches one data
+ * word pair per line while the sprite is active.  This is also how sprite
+ * multiplexing works. */
+static void sprite_dma_line(int y)
+{
+    if (!(g_dmacon & 0x0020u)) return; /* SPREN */
+    for (int spr = 0; spr < SPRITE_COUNT; spr++) {
+        uint16_t pos = g_spr_pos[spr];
+        uint16_t ctl = g_spr_ctl[spr];
+        int vstop = (ctl >> 8) | ((ctl & 0x04u) << 6);
+        if (y == 0 || y == vstop) {
+            if (g_spr_dma_ptr[spr] + 4 <= GUEST_RAM_SIZE) {
+                pos = chip_read_u16(g_spr_dma_ptr[spr]);
+                ctl = chip_read_u16(g_spr_dma_ptr[spr] + 2);
+                g_spr_pos[spr] = pos;
+                g_spr_ctl[spr] = ctl;
+            }
+            g_spr_dma_ptr[spr] += 4;
+        }
+        int vstart = (pos >> 8) | ((ctl & 0x02u) << 7);
+        vstop = (ctl >> 8) | ((ctl & 0x04u) << 6);
+        if (vstop <= vstart) vstop += 0x200;
+        if (y >= vstart && y < vstop) {
+            if (g_spr_dma_ptr[spr] + 4 <= GUEST_RAM_SIZE) {
+                g_spr_data[spr][0] = chip_read_u16(g_spr_dma_ptr[spr]);
+                g_spr_datb[spr][0] = chip_read_u16(g_spr_dma_ptr[spr] + 2);
+            } else {
+                g_spr_data[spr][0] = 0;
+                g_spr_datb[spr][0] = 0;
+            }
+            g_spr_dma_ptr[spr] += 4;
+        }
+    }
+}
+
+static void takeover_render_line(int y, int *cop_h)
+{
+    if (!g_fb.valid) return;
+    if (y < (int)TK_FIRST_LINE || y >= (int)TK_LAST_LINE) return;
+
+    int fb_w = (int)g_fb.width;
+    int fb_h = (int)g_fb.height;
+    int s = fb_w / TK_WIN_W;
+    if (fb_h / (int)TK_LINES < s) s = fb_h / (int)TK_LINES;
+    if (s < 1) s = 1;
+    if (s > 4) s = 4;
+    int ox = (fb_w - TK_WIN_W * s) / 2;
+    int oy = (fb_h - (int)TK_LINES * s) / 2;
+    int fy = oy + (y - (int)TK_FIRST_LINE) * s;
+    if (fy >= fb_h) return;
+
+    /* Bitplane fetches resolve through g_ram — bind the window that owns
+     * the display list (beam_tick runs in ISR context). */
+    uint8_t *saved_ram = g_ram;
+    if (g_display_ram) g_ram = g_display_ram;
+
+    int diw_x, diw_x_stop, diw_v_start, diw_v_stop, fetch_pixels, bpr;
+    diw_ddf_params(&diw_x, &diw_x_stop, &diw_v_start, &diw_v_stop,
+                   &fetch_pixels, &bpr);
+    /* DIW window bounds in raw beam hpos (lores px). */
+    int diw_h0 = diw_x + 0x80;
+    int diw_h1 = diw_x_stop + 0x80;
+
+    /* Compose the host row as palette INDEXES: border = index 0, playfield
+     * pixels get their planar index, sprites their colour index.  Indexes
+     * are resolved to RGB only after the rest of the line's copper ran —
+     * its mid-line COLOR writes then land at the right h (UAOS-366). */
+    static uint32_t rowbuf[TK_WIN_W * 4];
+    static uint8_t  rowidx[TK_WIN_W * 4];
+    static uint8_t  rowocc[TK_WIN_W * 4]; /* playfield occupancy per pixel */
+    int wpx = TK_WIN_W * s;
+    for (int i = 0; i < wpx; i++) { rowbuf[i] = 0; rowidx[i] = 0; rowocc[i] = 0; }
+
+    int depth = bpl_depth();
+    if ((g_dmacon & 0x0100u) && depth >= 1 && depth <= 8 &&
+        y >= diw_v_start && y < diw_v_stop) {
+        int hires = bpl_hires();
+        int fp = fetch_pixels > 1280 ? 1280 : fetch_pixels;
+        static uint32_t linebuf[1280];
+        static uint8_t  idxbuf[1280];
+        uint8_t *planes[8] = {0};
+        for (int p = 0; p < depth; p++) {
+            /* Live DMA pointer semantics: fetch this line at the current
+             * BPLxPT, then advance by bytes_per_row + modulo — the copper
+             * reloads the pointers every frame (UAOS-366). */
+            uint32_t addr = g_bpl_pt[p];
+            if (addr && addr + (uint32_t)bpr <= GUEST_RAM_SIZE)
+                planes[p] = g_ram + addr;
+            int32_t mod = (int32_t)(int16_t)(((p & 1) == 0) ? g_bplmod1 : g_bplmod2);
+            g_bpl_pt[p] = (uint32_t)((int64_t)addr + bpr + mod);
+        }
+        decode_scanline(planes, fp, linebuf, idxbuf);
+
+        /* The first fetched pixel appears at beam hpos
+         * (DDFSTRT & $FC)*2 + 17 lores px (hires: +9) — HRM:
+         * DIWSTRT/2 - DDFSTRT = 8.5 (lores) / 4.5 (hires) colour clocks.
+         * BPLCON1 scroll is applied inside decode_scanline.  Playfield
+         * pixels are clipped to the horizontal display window. */
+        int origin = ((g_ddfstart & 0xFC) * 2) + (hires ? 9 : 17);
+        int span = hires ? (s / 2 > 0 ? s / 2 : 1) : s;
+        for (int x = 0; x < fp; x++) {
+            /* position of stream pixel x in half-lores-px units */
+            int h2 = origin * 2 + (hires ? x : x * 2);
+            if (h2 < diw_h0 * 2 || h2 >= diw_h1 * 2) continue;
+            int px = (h2 - TK_H0 * 2) * s / 2;
+            for (int k = 0; k < span; k++) {
+                int idx = px + k;
+                if (idx >= 0 && idx < wpx) {
+                    rowbuf[idx] = linebuf[x];
+                    rowidx[idx] = idxbuf[x];
+                    rowocc[idx] = 1;
+                }
+            }
+        }
+    }
+
+    /* Run the rest of the line's copper now: its mid-line COLOR writes are
+     * recorded as events and applied when rowidx is resolved to RGB below
+     * (UAOS-366 checkerboard/tile backgrounds). */
+    copper_run_line(y, cop_h, COPPER_LINE_END);
+
+    /* Sprites: DMA data was fetched per line by sprite_dma_line().
+     * hstart is in colour clocks: x-units = (pos*2) + ctl bit 0.
+     * Each sprite pixel is one lores px.  Sprites are NOT clipped by
+     * DIW — they can appear in the border. */
+    if (g_dmacon & 0x0020u) {
+        for (int spr = SPRITE_COUNT - 1; spr >= 0; spr--) {
+            uint16_t pos = g_spr_pos[spr];
+            uint16_t ctl = g_spr_ctl[spr];
+            int vstart = (pos >> 8) | ((ctl & 0x02u) << 7);
+            int vstop  = (ctl >> 8) | ((ctl & 0x04u) << 6);
+            if (vstop <= vstart) vstop += 0x200;
+            if (y < vstart || y >= vstop) continue;
+
+            int attached = (ctl >> 7) & 1u;
+            int pair = spr >> 1;
+            int hx = (((pos & 0xFF) << 1) | (ctl & 1)) - TK_H0;
+            int behind = (g_bplcon2 >> (8 + pair)) & 1u;
+            for (int i = 0; i < 16; i++) {
+                int b = 15 - i;
+                int idx = ((g_spr_data[spr][0] >> b) & 1u) |
+                          (((g_spr_datb[spr][0] >> b) & 1u) << 1);
+                if (attached && (spr & 1) == 0) {
+                    idx |= ((g_spr_data[spr + 1][0] >> b) & 1u) << 2;
+                    idx |= ((g_spr_datb[spr + 1][0] >> b) & 1u) << 3;
+                }
+                if (idx == 0) continue;
+                uint8_t sidx = attached
+                    ? (uint8_t)((16 + idx) & 0xFF)
+                    : (uint8_t)((17 + pair * 4 + idx - 1) & 0xFF);
+                int px = (hx + i) * s;
+                for (int k = 0; k < s; k++) {
+                    int dx = px + k;
+                    if (dx < 0 || dx >= wpx) continue;
+                    if (behind && rowocc[dx]) continue;
+                    rowidx[dx] = sidx;
+                }
+            }
+            if (attached) spr--; /* pair drawn: skip the odd member */
+        }
+    }
+
+    /* Resolve indexes to RGB: 0xFF marks pixels whose rgb is already final
+     * (HAM).  Everything else goes through pal_at() so the copper's
+     * mid-line colour writes land at the correct h position. */
+    for (int i = 0; i < wpx; i++) {
+        if (rowidx[i] != 0xFFu)
+            rowbuf[i] = pal_at(rowidx[i], TK_H0 + i / s);
+    }
+
+    for (int k = 0; k < s && fy + k < fb_h; k++)
+        FB_BlitRow(ox, fy + k, wpx, rowbuf);
+
     g_ram = saved_ram;
 }
 
@@ -3352,6 +4040,7 @@ void chip_emu_reset(void)
     g_bplcon3 = 0;
     g_bplcon4 = 0x0011u; /* AGA default colour bank bits */
     g_fmode   = 0;        /* OCS fetch mode (16-bit) */
+    g_aga_active = 0;
     g_bplmod1 = 0;
     g_bplmod2 = 0;
     g_diwstart = 0x2C81u;
@@ -3366,6 +4055,9 @@ void chip_emu_reset(void)
     g_copjmp1 = 0;
     g_copjmp2 = 0;
     g_copper_pc = 0;
+
+    g_takeover_display = 0;
+    g_takeover_owner = NULL;
 
     for (int i = 0; i < 8; i++) {
         g_bpl_pt[i] = 0;
@@ -3402,6 +4094,9 @@ void chip_emu_reset(void)
     g_blitter_busy = 0;
     g_blitter_busy_ticks = 0;
     g_blitter_words_remaining = 0;
+    g_blit_d_nonzero = 0;
+    memset(&g_line_state, 0, sizeof(g_line_state));
+    memset(&g_area_state, 0, sizeof(g_area_state));
 
     for (int i = 0; i < AUDIO_CHANNELS; i++) {
         g_audio[i].ptr = 0;
@@ -3576,158 +4271,175 @@ int chip_emu_dma_test(void)
 /* Test helper for Blitter line mode: draw a diagonal line from (10,10) to
  * (20,18) using the Amiga octant/delta encoding and check that the destination
  * word contains some set bits.  Returns 1 on success. */
+/* Line-mode test helpers (HRM node0128 conventions). */
+static uint16_t lt_word(uint32_t addr)
+{
+    return (uint16_t)((g_ram[addr] << 8) | g_ram[addr + 1]);
+}
+
+static void lt_blit_reset(void)
+{
+    g_bltsize = 0;
+    g_blitter_words_remaining = 0;
+    g_blitter_busy = 0;
+    g_line_state.active = 0;
+    g_area_state.active = 0;
+    g_bltadat = 0x8000u;
+    g_bltbdat = 0xFFFFu;
+    g_bltamod = 0; g_bltbmod = 0; g_bltcmod = 40;
+    g_bltafwm = 0xFFFFu; g_bltalwm = 0xFFFFu;
+}
+
+static void lt_drain(void)
+{
+    for (int i = 0; i < 1000 && g_blitter_busy; i++)
+        chip_emu_render_frame();
+}
+
+/* HRM-style line setup: major/minor deltas, octant = SUD|SUL|AUL at
+ * BLTCON1[4:2].  acc0 = 4*minor - 2*major, AMOD = 4*(minor-major),
+ * BMOD = 4*minor, BLTSIZE = (major+1)<<6 | 2. */
+static void lt_setup(uint32_t dst, int x0, int y0, int major, int minor,
+                     uint8_t octant, int sing)
+{
+    g_bltapt  = (uint16_t)(int16_t)(4 * minor - 2 * major);
+    g_bltamod = (uint16_t)(int16_t)(4 * (minor - major)); /* negative */
+    g_bltbmod = (uint16_t)(int16_t)(4 * minor);
+    g_bltcmod = 40;
+    g_bltcpt  = dst + y0 * 40 + (x0 / 16) * 2;
+    g_bltdpt  = g_bltcpt;
+    g_bltcon0 = (uint16_t)(0x0BCAu | ((x0 & 15u) << 12)); /* A+C+D, minterm CA */
+    g_bltcon1 = (uint16_t)(0x0001u | ((uint16_t)octant << 2) |
+                         (sing ? 0x0002u : 0) |
+                         ((4 * minor - 2 * major) < 0 ? 0x0040u : 0));
+    chip_emu_write(REG_BLTSIZE, (uint16_t)((major + 1) << 6 | 2), 2);
+    lt_drain();
+}
+
+/* Test helper for line mode: HRM-exact Bresenham for a shallow (X-major)
+ * and a steep (Y-major) octant plus a SING one-pixel-per-row check. */
 int chip_emu_line_test(void)
 {
     uint32_t dst = 0x11000u;
     if (dst + 1024 > GUEST_RAM_SIZE) return 0;
 
-    /* Clear destination bitmap (40 bytes per line). */
+    /* Shallow X-major line (10,10)->(20,12): dx=10 dy=2, octant SUD=1
+     * (X major, minor positive, major positive).  Expected pixels:
+     * y10: x10-12  y11: x13-17  y12: x18-20. */
     for (int i = 0; i < 1024; i++) g_ram[dst + i] = 0;
+    lt_blit_reset();
+    lt_setup(dst, 10, 10, 10, 2, 0x4 /* SUD */, 0);
+    if (lt_word(dst + 10 * 40) != 0x0038) return 0;   /* bits 10,11,12 */
+    if (lt_word(dst + 11 * 40) != 0x0007) return 0;   /* bits 13,14,15 */
+    if (lt_word(dst + 11 * 40 + 2) != 0xC000) return 0; /* bits 16,17 */
+    if (lt_word(dst + 12 * 40 + 2) != 0x3800) return 0; /* bits 18,19,20 */
 
-    /* Line (10,10) -> (20,18): dx=10, dy=8, octant 0 (positive x, positive y,
-     * x major).  Amiga line-mode setup:
-     *   BLTAMOD = 4*(dy - dx) = -8
-     *   BLTBMOD = 4*dy        = 32
-     *   BLTAPT  = 4*dy - 2*dx = 12  (accumulator)
-     *   BLTCON0 ASH = 10 (starting bit within first word)
-     *   BLTCON0 channels: use A, C, D; SRCB=0; minterm=0xCA (solid line)
-     *   BLTCON1 = LINE | octant 0
-     *   BLTDMOD = 40 (bitplane width)
-     *   BLTADAT = 0x8000
-     *   BLTBDAT = 0xFFFF (solid texture)
-     */
-    g_bltapt = (uint32_t)(int16_t)(12);   /* accumulator */
-    g_bltdpt = dst + (10 * 40) + ((10 / 16) * 2); /* word containing (10,10) */
-    g_bltdmod = 40;
-    g_bltamod = (uint16_t)(int16_t)(-8);
-    g_bltbmod = 32;
-    g_bltadat = 0x8000u;
-    g_bltbdat = 0xFFFFu;
-    g_bltcon0 = 0x0BCAu | (10u << 12); /* minterm 0xCA, ASH=10, useA+useC+useD */
-    g_bltcon1 = 0x0001u;               /* LINE=1, octant 0 (SUD/SUL/AUL=0) */
-    g_bltsize = 0;
-    g_blitter_words_remaining = 0;
-    g_blitter_busy = 0;
-    g_line_state.active = 0;
+    /* Steep Y-major line (10,10)->(12,20): dx=2 dy=10, octant 0
+     * (Y major down, X minor positive).  Expected:
+     * y10-12 x10, y13-17 x11, y18-20 x12. */
+    for (int i = 0; i < 1024; i++) g_ram[dst + i] = 0;
+    lt_blit_reset();
+    lt_setup(dst, 10, 10, 10, 2, 0x0, 0);
+    for (int y = 10; y <= 12; y++)
+        if (lt_word(dst + y * 40) != 0x0020) return 0;  /* x=10 */
+    for (int y = 13; y <= 17; y++)
+        if (lt_word(dst + y * 40) != 0x0010) return 0;  /* x=11 */
+    for (int y = 18; y <= 20; y++)
+        if (lt_word(dst + y * 40) != 0x0008) return 0;  /* x=12 */
 
-    /* Trigger the blitter via BLTSIZE: hsize = line length (major + 1),
-     * vsize ignored in line mode (write 1). */
-    chip_emu_write(REG_BLTSIZE, (1 << 6) | 11, 2);
-
-    /* Wait for slot-based blitter to finish. */
-    for (int i = 0; i < 1000 && g_blitter_busy; i++) {
-        chip_emu_render_frame();
-    }
-
-    /* Check that at least one bit was set in the destination. */
-    for (int i = 0; i < 1024; i++) {
-        if (g_ram[dst + i] != 0) return 1;
-    }
-    return 0;
+    /* SING: same shallow line but at most one pixel per row — exactly the
+     * three leftmost row pixels survive (x10, x13, x18). */
+    for (int i = 0; i < 1024; i++) g_ram[dst + i] = 0;
+    lt_blit_reset();
+    lt_setup(dst, 10, 10, 10, 2, 0x4, 1);
+    if (lt_word(dst + 10 * 40) != 0x0020) return 0;      /* x=10 only */
+    if (lt_word(dst + 11 * 40) != 0x0004) return 0;      /* x=13 only */
+    if (lt_word(dst + 12 * 40 + 2) != 0x2000) return 0;  /* x=18 only */
+    return 1;
 }
 
-/* Test helper for Blitter exclusive fill mode: fill between two vertical edges.
- * A row with left edge at bit 4 and right edge at bit 12 should produce filled
- * bits 5-11 (exclusive fill leaves the edge bits unset).  Returns 1 on success. */
+/* Test helper for HRM polygon fill: the HRM vectors on a 2-word-wide
+ * descending blit.  The row is left word 0x2418, right word 0x0000; DESC
+ * processes the right word first and the fill carry propagates into the
+ * left word.  Expected (left word, right word):
+ *   IFE FCI=0: 3C18 0000    EFE FCI=0: 1C08 0000
+ *   IFE FCI=1: E7FF FFFF    EFE FCI=1: E3F7 FFFF
+ * Returns 1 on success. */
 int chip_emu_fill_test(void)
 {
     uint32_t src = 0x12000u;
     uint32_t dst = 0x12100u;
     if (src + 512 > GUEST_RAM_SIZE || dst + 512 > GUEST_RAM_SIZE) return 0;
 
-    /* One source row: single-pixel edges at bit 4 and bit 12.
-     * chip_read_u16 is big-endian, so word 0 uses bytes 1/0 (low/high). */
-    g_ram[src + 0] = 0x00; /* word 0 high byte */
-    g_ram[src + 1] = 0x10; /* word 0 low byte -> bit 4 of word 0 */
-    g_ram[src + 2] = 0x10; /* word 1 high byte -> bit 12 of word 1 */
-    g_ram[src + 3] = 0x00; /* word 1 low byte */
+    static const struct { int ife, fci; uint16_t lo, hi; } vec[4] = {
+        { 1, 0, 0x3C18, 0x0000 },
+        { 0, 0, 0x1C08, 0x0000 },
+        { 1, 1, 0xE7FF, 0xFFFF },
+        { 0, 1, 0xE3F7, 0xFFFF },
+    };
 
-    /* Clear destination. */
-    for (int i = 0; i < 16; i++) g_ram[dst + i] = 0;
+    for (int t = 0; t < 4; t++) {
+        /* src: left word (low addr) = 0x2418, right word = 0x0000. */
+        g_ram[src + 0] = 0x24; g_ram[src + 1] = 0x18;
+        g_ram[src + 2] = 0x00; g_ram[src + 3] = 0x00;
+        for (int i = 0; i < 8; i++) g_ram[dst + i] = 0;
 
-    g_bltapt = src;
-    g_bltdpt = dst;
-    g_bltamod = 0;
-    g_bltdmod = 0;
-    g_bltafwm = 0xFFFFu;
-    g_bltalwm = 0xFFFFu;
-    g_bltcon0 = 0x0900u; /* use A and D */
-    g_bltcon1 = 0x0010u; /* EFE exclusive fill */
-    g_bltsize = 0;
-    g_blitter_words_remaining = 0;
-    g_blitter_busy = 0;
-    g_line_state.active = 0;
+        /* DESC: pointers at the LAST word (higher addr), 1 row x 2 words. */
+        g_bltapt = src + 2;
+        g_bltdpt = dst + 2;
+        g_bltamod = 0;
+        g_bltdmod = 0;
+        g_bltafwm = 0xFFFFu;
+        g_bltalwm = 0xFFFFu;
+        g_bltcon0 = 0x09F0u; /* use A + D, minterm A -> D */
+        g_bltcon1 = (uint16_t)(0x0002u |                 /* DESC */
+                             (vec[t].ife ? 0x08u : 0x10u) | /* IFE bit3 / EFE bit4 */
+                             (vec[t].fci ? 0x04u : 0));
+        lt_blit_reset();
+        chip_emu_write(REG_BLTSIZE, (1 << 6) | 2, 2);
+        lt_drain();
 
-    /* Width=2 words, height=1 line: BLTSIZE = (vsize<<6)|hsize. */
-    chip_emu_write(REG_BLTSIZE, (1 << 6) | 2, 2);
-
-    for (int i = 0; i < 1000 && g_blitter_busy; i++) {
-        chip_emu_render_frame();
+        if (lt_word(dst) != vec[t].lo || lt_word(dst + 2) != vec[t].hi)
+            return 0;
     }
-
-    /* Area fill now scans each word from MSB (bit 15) to LSB (bit 0) and carries
-     * the fill state across words.  Starting outside (fill_state=0), the edge
-     * at bit 4 toggles the state to 1; bits 0-3 of word 0 are therefore filled.
-     * The state persists into word 1, where bits 15-12 are filled.  The edge at
-     * bit 12 toggles the state back to 0, leaving bits 11-0 of word 1 unfilled.
-     * In exclusive fill, the edge pixel itself uses the old state: bit 4 is
-     * unfilled (old state was 0) and bit 12 is filled (old state was 1). */
-    uint16_t d0 = (uint16_t)((g_ram[dst + 0] << 8) | g_ram[dst + 1]);
-    uint16_t d1 = (uint16_t)((g_ram[dst + 2] << 8) | g_ram[dst + 3]);
-    return (d0 == 0x000Fu && d1 == 0xF000u);
+    return 1;
 }
 
-/* Test helper for Blitter self-intersecting polygon fill: a bowtie with four
- * vertical edges.  The fill state must toggle at each edge and carry across
- * word boundaries.  Returns 1 on success. */
+/* Test helper for fill carry propagating across word boundaries on an
+ * ascending blit: exclusive fill of edges at bit4 of each alternating word
+ * produces FFF0/0FFF pairs.  Returns 1 on success. */
 int chip_emu_fill_complex_test(void)
 {
     uint32_t src = 0x15000u;
     uint32_t dst = 0x15100u;
     if (src + 512 > GUEST_RAM_SIZE || dst + 512 > GUEST_RAM_SIZE) return 0;
 
-    /* Clear source and destination. */
     for (int i = 0; i < 16; i++) {
         g_ram[src + i] = 0;
         g_ram[dst + i] = 0;
     }
-
-    /* Four edges forming a bowtie: bits 4, 12, 20, 28 of the row. */
-    g_ram[src + 1] = 0x10; /* word 0, bit 4 */
-    g_ram[src + 2] = 0x10; /* word 1, bit 12 */
-    g_ram[src + 5] = 0x10; /* word 2, bit 20 */
-    g_ram[src + 6] = 0x10; /* word 3, bit 28 */
+    /* Edges: bit4 of word0, bit12 of word1, bit4 of word2, bit12 of word3.
+     * Exclusive fill, LSB-first processing, carry across words:
+     *   w0 bit4: carry 0->1, out carries on -> 0xFFF0
+     *   w1 bit12: bits0-11 fill (carry in=1), bit12 -> 0 -> 0x0FFF
+     *   w2/w3 repeat. */
+    g_ram[src + 1] = 0x10; /* w0 bit4  */
+    g_ram[src + 2] = 0x10; /* w1 bit12 */
+    g_ram[src + 5] = 0x10; /* w2 bit4  */
+    g_ram[src + 6] = 0x10; /* w3 bit12 */
 
     g_bltapt = src;
     g_bltdpt = dst;
     g_bltamod = 0;
     g_bltdmod = 0;
-    g_bltafwm = 0xFFFFu;
-    g_bltalwm = 0xFFFFu;
-    g_bltcon0 = 0x0900u; /* use A and D */
-    g_bltcon1 = 0x0010u; /* EFE exclusive fill */
-    g_bltsize = 0;
-    g_blitter_words_remaining = 0;
-    g_blitter_busy = 0;
-    g_line_state.active = 0;
-
-    /* Width=4 words, height=1 line: BLTSIZE = (vsize<<6)|hsize. */
+    g_bltcon0 = 0x09F0u;
+    g_bltcon1 = 0x0010u; /* EFE (bit 4), ascending */
+    lt_blit_reset();
     chip_emu_write(REG_BLTSIZE, (1 << 6) | 4, 2);
+    lt_drain();
 
-    for (int i = 0; i < 1000 && g_blitter_busy; i++) {
-        chip_emu_render_frame();
-    }
-
-    /* In exclusive fill, scanning MSB to LSB with state carrying across words:
-     *   edge at bit 4:  outside->inside, edge bit unfilled, bits 0-3 filled.
-     *   edge at bit 12: inside->outside, edge bit filled, bits 0-11 unfilled.
-     *   edge at bit 20: outside->inside, edge bit unfilled, bits 0-3 filled.
-     *   edge at bit 28: inside->outside, edge bit filled, bits 0-11 unfilled. */
-    uint16_t w0 = (uint16_t)((g_ram[dst + 0] << 8) | g_ram[dst + 1]);
-    uint16_t w1 = (uint16_t)((g_ram[dst + 2] << 8) | g_ram[dst + 3]);
-    uint16_t w2 = (uint16_t)((g_ram[dst + 4] << 8) | g_ram[dst + 5]);
-    uint16_t w3 = (uint16_t)((g_ram[dst + 6] << 8) | g_ram[dst + 7]);
-    return (w0 == 0x000Fu && w1 == 0xF000u && w2 == 0x000Fu && w3 == 0xF000u);
+    return (lt_word(dst + 0) == 0xFFF0 && lt_word(dst + 2) == 0x0FFF &&
+            lt_word(dst + 4) == 0xFFF0 && lt_word(dst + 6) == 0x0FFF);
 }
 
 /* Test helper for large Blitter area copies: verify that a multi-frame blit
@@ -3780,42 +4492,51 @@ int chip_emu_blitter_busy_test(void)
  * are the same buffer.  In descending mode with D=A, the copy should still work
  * correctly word-by-word because the Blitter advances backwards.
  * Returns 1 on success. */
+/* Descending-mode overlapping copy: pointers at the last word, nonzero
+ * modulo.  A 4-word x 2-row rect at buf+0 is copied down 2 words to buf+4;
+ * the DESC order prevents smear.  Row stride = 16 bytes (8 words), so the
+ * descending row-end modulo is rowbytes - 2*width = 8. */
 int chip_emu_blitter_desc_test(void)
 {
-    /* Overlapping copy: source and destination are the same buffer.
-     * In descending mode with D=A, the copy should still work correctly
-     * word-by-word because the Blitter advances backwards. */
     uint32_t buf = 0x1C000u;
     if (buf + 4096 > GUEST_RAM_SIZE) return 0;
 
-    for (int i = 0; i < 4096; i++) g_ram[buf + i] = (uint8_t)(i & 0xFFu);
+    for (int i = 0; i < 32; i++) g_ram[buf + i] = (uint8_t)(0x10 + i);
 
-    g_bltapt = buf;
-    g_bltdpt = buf;
-    g_bltamod = 0;
-    g_bltdmod = 0;
+    /* DESC: A/D point at the last word of the last row. */
+    lt_blit_reset();
+    g_bltapt = buf + 22;   /* last word of src row 1 */
+    g_bltdpt = buf + 26;   /* last word of dst row 1 */
+    g_bltamod = 8;         /* subtracted at row end in DESC */
+    g_bltdmod = 8;
     g_bltafwm = 0xFFFFu;
     g_bltalwm = 0xFFFFu;
-    g_bltcon0 = 0x09F0u; /* use A and D, minterm A -> D */
-    g_bltcon1 = 0x0002u; /* DESC=1 */
-    g_bltsize = 0;
-    g_blitter_words_remaining = 0;
-    g_blitter_busy = 0;
-    g_area_state.active = 0;
-    g_line_state.active = 0;
-
-    chip_emu_write(REG_BLTSIZE, (8 << 6) | 8, 2);
-
-    int loops = 0;
-    while (g_blitter_busy && loops < 5000) {
-        chip_emu_render_frame();
-        loops++;
-    }
+    g_bltcon0 = 0x09F0u;   /* A -> D */
+    g_bltcon1 = 0x0002u;   /* DESC */
+    chip_emu_write(REG_BLTSIZE, (2 << 6) | 4, 2); /* 2 rows x 4 words */
+    lt_drain();
     if (g_blitter_busy) return 0;
 
-    /* The data should still match the original pattern (copy to same location). */
-    for (int i = 0; i < 4096; i++) {
-        if (g_ram[buf + i] != (uint8_t)(i & 0xFFu)) return 0;
+    /* dst row0 = original src row0 (buf+4..11), dst row1 = src row1 (buf+20..27). */
+    for (int i = 0; i < 8; i++) {
+        if (g_ram[buf + 4 + i] != (uint8_t)(0x10 + i)) return 0;
+        if (g_ram[buf + 20 + i] != (uint8_t)(0x10 + 16 + i)) return 0;
+    }
+
+    /* Shifter check: ascending copy of a 2-word row, ASH=4 — bits carry in
+     * from the previous word: w0 ABCD,w1 1234 -> dst 0ABC,D123. */
+    {
+        uint32_t s = buf + 64, d = buf + 80;
+        g_ram[s + 0] = 0xAB; g_ram[s + 1] = 0xCD;
+        g_ram[s + 2] = 0x12; g_ram[s + 3] = 0x34;
+        for (int i = 0; i < 4; i++) g_ram[d + i] = 0;
+        lt_blit_reset();
+        g_bltapt = s; g_bltdpt = d;
+        g_bltcon0 = (uint16_t)(0x09F0u | (4u << 12)); /* ASH=4 */
+        g_bltcon1 = 0;
+        chip_emu_write(REG_BLTSIZE, (1 << 6) | 2, 2);
+        lt_drain();
+        if (lt_word(d) != 0x0ABC || lt_word(d + 2) != 0xD123) return 0;
     }
     return 1;
 }
@@ -4639,6 +5360,92 @@ int chip_emu_sprite_in_use(int slot)
 }
 
 uint16_t chip_emu_fmode(void) { return g_fmode; }
+
+const uint8_t *chip_emu_display_ram(void)
+{
+    return g_display_ram ? g_display_ram : g_ram;
+}
+
+uint32_t chip_emu_guest_ram_size(void) { return GUEST_RAM_SIZE; }
+
+/* Text register dump for the `ramdump` shell command (UAOS-366).
+ * Self-contained append helpers — no libc snprintf in the kernel. */
+static uint32_t dump_cat(char *buf, uint32_t buflen, uint32_t pos, const char *s)
+{
+    while (pos < buflen - 1 && *s) buf[pos++] = *s++;
+    buf[pos] = 0;
+    return pos;
+}
+static uint32_t dump_hex(char *buf, uint32_t buflen, uint32_t pos, uint32_t v, int ndig)
+{
+    static const char h[] = "0123456789abcdef";
+    for (int i = ndig - 1; i >= 0 && pos < buflen - 1; i--) buf[pos++] = h[(v >> (i * 4)) & 15];
+    buf[pos] = 0;
+    return pos;
+}
+static void dumpx(char *buf, uint32_t buflen, uint32_t *pos, const char *tag, uint32_t v)
+{
+    *pos = dump_cat(buf, buflen, *pos, tag);
+    *pos = dump_hex(buf, buflen, *pos, v, 8);
+    *pos = dump_cat(buf, buflen, *pos, " ");
+}
+void chip_emu_dump_report(char *buf, uint32_t buflen)
+{
+    if (!buf || buflen < 8) return;
+    buf[0] = 0;
+    uint32_t pos = 0;
+    dumpx(buf, buflen, &pos, "dmacon=", g_dmacon);
+    dumpx(buf, buflen, &pos, "intena=", g_intena);
+    dumpx(buf, buflen, &pos, "intreq=", g_intreq);
+    dumpx(buf, buflen, &pos, "vposr=", g_vposr);
+    dumpx(buf, buflen, &pos, "diw=", g_diwstart);
+    dumpx(buf, buflen, &pos, "diwstop=", g_diwstop);
+    dumpx(buf, buflen, &pos, "ddf=", g_ddfstart);
+    dumpx(buf, buflen, &pos, "ddfstop=", g_ddfstop);
+    dumpx(buf, buflen, &pos, "bplmod1=", g_bplmod1);
+    dumpx(buf, buflen, &pos, "bplmod2=", g_bplmod2);
+    dumpx(buf, buflen, &pos, "bplcon0=", g_bplcon0);
+    dumpx(buf, buflen, &pos, "bplcon1=", g_bplcon1);
+    dumpx(buf, buflen, &pos, "bplcon2=", g_bplcon2);
+    dumpx(buf, buflen, &pos, "bplcon3=", g_bplcon3);
+    dumpx(buf, buflen, &pos, "cop1=", g_cop1lc);
+    dumpx(buf, buflen, &pos, "cop2=", g_cop2lc);
+    dumpx(buf, buflen, &pos, "colw=", g_colw_count);
+    dumpx(buf, buflen, &pos, "colwl=", g_colw_last);
+    dumpx(buf, buflen, &pos, "colwd=", g_colw_dropped);
+    dumpx(buf, buflen, &pos, "pc=", g_copper_pc);
+    pos = dump_cat(buf, buflen, pos, "takeover=");
+    pos = dump_hex(buf, buflen, pos, g_takeover_display, 1);
+    pos = dump_cat(buf, buflen, pos, " ");
+    dumpx(buf, buflen, &pos, "blits=", g_blit_count);
+    dumpx(buf, buflen, &pos, "line=", g_blit_line_count);
+    dumpx(buf, buflen, &pos, "area=", g_blit_area_count);
+    dumpx(buf, buflen, &pos, "lastdpt=", g_blit_last_dpt);
+    dumpx(buf, buflen, &pos, "lastapt=", g_blit_last_apt);
+    dumpx(buf, buflen, &pos, "bc0=", g_bltcon0);
+    dumpx(buf, buflen, &pos, "bc1=", g_bltcon1);
+    dumpx(buf, buflen, &pos, "bsz=", g_bltsize);
+    dumpx(buf, buflen, &pos, "adat=", g_bltadat);
+    dumpx(buf, buflen, &pos, "bdat=", g_bltbdat);
+    dumpx(buf, buflen, &pos, "cdat=", g_bltcdat);
+    dumpx(buf, buflen, &pos, "amod=", g_bltamod);
+    dumpx(buf, buflen, &pos, "bmod=", g_bltbmod);
+    dumpx(buf, buflen, &pos, "cmod=", g_bltcmod);
+    dumpx(buf, buflen, &pos, "dmod=", g_bltdmod);
+    dumpx(buf, buflen, &pos, "afwm=", g_bltafwm);
+    dumpx(buf, buflen, &pos, "alwm=", g_bltalwm);
+    dumpx(buf, buflen, &pos, "lldpt=", g_ll_dpt);
+    dumpx(buf, buflen, &pos, "llcpt=", g_ll_cpt);
+    dumpx(buf, buflen, &pos, "llbc0=", g_ll_bc0);
+    dumpx(buf, buflen, &pos, "llbc1=", g_ll_bc1);
+    dumpx(buf, buflen, &pos, "llbsz=", g_ll_bsz);
+    dumpx(buf, buflen, &pos, "lladat=", g_ll_adat);
+    dumpx(buf, buflen, &pos, "cw=", g_cpu_cw_count);
+    dumpx(buf, buflen, &pos, "cwlast=", g_cpu_cw_last);
+    dumpx(buf, buflen, &pos, "cwram==disp?", (uintptr_t)g_cpu_cw_ram == (uintptr_t)g_display_ram);
+    for (int i = 0; i < 6; i++) dumpx(buf, buflen, &pos, "bpl", g_bpl_pt[i]);
+    for (int i = 0; i < 8; i++) dumpx(buf, buflen, &pos, "spr", g_spr_pt[i]);
+}
 
 int chip_emu_bpl_fetch_width(void)
 {

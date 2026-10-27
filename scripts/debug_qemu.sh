@@ -47,6 +47,7 @@ echo "  Attach : gdb ${REPO_ROOT}/build/uaos-kernel.elf -ex 'target remote :$GDB
 echo ""
 
 qemu-system-x86_64 \
+  -display gtk \
   -machine q35,usb=off \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file="$OVMF_VARS" \
@@ -57,3 +58,4 @@ qemu-system-x86_64 \
   -serial "file:${SERIAL_LOG}" \
   -m 512M -vga virtio -no-reboot -no-shutdown \
   -gdb tcp::"$GDB_PORT" -S
+ 

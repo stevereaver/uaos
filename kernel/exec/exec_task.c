@@ -99,6 +99,10 @@ static void free_m68k_ram_slot(uint8_t *ram)
 void Task_ReleaseM68kRam(UaosTask *t)
 {
     if (t && t->type == TASK_TYPE_M68K && t->m68k_ram) {
+        /* If the dying task owned the takeover display, release it so the
+         * desktop repaints (UAOS-366) — covers exits that never reached
+         * the end of m68k_wrapper_entry. */
+        chip_emu_takeover_end(t);
         /* Detach the dead task's window from the chipset DMA engines
          * before the slot is freed — the PIT-driven copper/blitter/audio/
          * floppy paths remember which window they were launched against
@@ -317,7 +321,7 @@ static void m68k_wrapper_entry(void *arg)
 
     /* Set up M68k CPU */
     m68k_init();
-    m68k_set_cpu_type(2);  /* M68K_CPU_TYPE_68020 */
+    m68k_set_cpu_type(4);  /* M68K_CPU_TYPE_68020 (enum: 1=000 2=010 3=EC020 4=020) */
     /* Re-register the ILLEGAL instruction callback — m68k_init() clears it. */
     extern int m68k_illg_instr_callback(int opcode);
     extern void m68k_set_illg_instr_callback(int (*cb)(int));
@@ -415,11 +419,49 @@ static void m68k_wrapper_entry(void *arg)
     }
 
     while (!task->m68k_halted) {
-        /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles */
-        m68k_execute(10000);
+        /* Execute ~1 ms worth of cycles at ~7 MHz ≈ 7000 cycles.
+         * UAOS-366: for hardware-takeover guests use ~1.25-scanline slices
+         * instead — the beam scheduler can only run at slice boundaries,
+         * so a 10000-cycle slice leaves the beam ~22 lines behind the CPU:
+         * VERTB IRQs and mid-frame register writes land dozens of lines
+         * late, producing stale/garbage bands at frame boundaries. */
+        int takeover = chip_emu_takeover_active() &&
+                       chip_emu_takeover_owner() == task;
+        m68k_execute(takeover ? 568 : 10000);
         Chiptrace_PcSample();
         uint32_t ran = m68k_cycles_run();
         g_m68k_cycles += (uint64_t)ran;
+
+        /* UAOS-366: real-time pacing for hardware-takeover guests (own VBR
+         * installed).  The chipset beam is derived from g_m68k_cycles, so an
+         * unthrottled CPU runs VBlank-synced demos several times too fast.
+         * Keep emulated time within one PIT tick of wall time:
+         * PAL frame 141648 cycles x 50 Hz / 100 Hz PIT = 70824 per tick. */
+        {
+            extern volatile uint64_t g_pit_ticks;
+            static uint64_t pace_tick, pace_cyc;
+            static int pacing;
+            if (m68k_get_reg(NULL, 24 /*M68K_REG_VBR*/) != 0) {
+                if (!pacing) { pacing = 1; pace_tick = g_pit_ticks; pace_cyc = g_m68k_cycles; }
+                while (!task->m68k_halted &&
+                       g_m68k_cycles - pace_cyc >
+                       (g_pit_ticks - pace_tick + 1) * 70824ull) {
+                    Task_SleepTicks(1);
+                    { extern void UAOS_M68k_DeliverInterrupts(void); UAOS_M68k_DeliverInterrupts(); }
+                }
+            } else {
+                pacing = 0;
+            }
+        }
+
+        /* UAOS-366: while a takeover guest owns the chipset, advance the
+         * beam scheduler from this loop so the per-line display renderer
+         * and DMA engines keep pace with emulated time.  Normally not done
+         * here (comment below: wrong g_ram for other tasks' blits) — but in
+         * takeover the owner task is the only chip client. */
+        if (chip_emu_takeover_active() && chip_emu_takeover_owner() == task) {
+            chip_emu_run_to_cycle(g_m68k_cycles);
+        }
 
         /* UAOS-307: round-robin the live Musashi context to the next
          * runnable guest context (AddTask'd subtasks / CreateProc'd
@@ -562,6 +604,10 @@ static void m68k_wrapper_entry(void *arg)
          * m68k_execute() and round-robins to the shell/idle tasks. */
         __asm__ volatile ("pause");
     }
+
+    /* UAOS-366: if this task held the takeover display, release it so the
+     * desktop repaints (covers guests that never call LoadView back). */
+    chip_emu_takeover_end(task);
 
     /* Re-enable chipset sync before exiting */
     extern int g_chipset_sync_disabled;

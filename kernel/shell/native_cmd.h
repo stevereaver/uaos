@@ -294,6 +294,7 @@ void Cmd_Prof            (NativeCmdCtx *ctx, const char *args);
 void Cmd_Failalloc       (NativeCmdCtx *ctx, const char *args);
 void Cmd_Pktmon          (NativeCmdCtx *ctx, const char *args);
 void Cmd_Screenshot      (NativeCmdCtx *ctx, const char *args);
+void Cmd_Ramdump         (NativeCmdCtx *ctx, const char *args);
 
 /* Prefs editors (stubs — Phase 3) */
 void Cmd_ScreenMode      (NativeCmdCtx *ctx, const char *args);

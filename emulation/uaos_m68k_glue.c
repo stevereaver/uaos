@@ -176,7 +176,13 @@ void uaos_m68k_instr_hook(unsigned int pc)
             g_m68k_saw_app_code = 1;
     } else if (g_m68k_saw_app_code && g_m68k_low_reentry < 4 &&
                pc >= 0x20000u && pc < 0x80000u &&
-               !emu_guest_code_range(pc)) {
+               !emu_guest_code_range(pc) &&
+               m68k_get_reg(NULL, M68K_REG_VBR) == 0) {
+        /* A guest that moved its vector base register has taken over the
+         * machine demo-style: it legitimately executes code in the low
+         * 512K (e.g. Spaceballs "State of the Art" runs its payload from
+         * absolute 0x3ec00), so the packed-hunk kill zone does not
+         * apply. */
         /* After the decrunched program is running in fast RAM, execution
          * must never return to [0x20000,0x80000): that band holds the
          * dead packed input hunks.  Pool/generation addresses above
@@ -210,6 +216,37 @@ void uaos_m68k_instr_hook(unsigned int pc)
                        ? guest_read_be32(sp + (uint32_t)(k*4)) : 0;
             u32_hex(v, n); j = 0;
             while (n[j] && i < 60) b[i++] = n[j++];
+            b[i++] = '\n'; b[i] = '\0';
+            emu_print(b);
+        }
+        /* A-regs + code bytes at the wild PC (SOTA debug). */
+        {
+            i = 0; t = "[m68k]   a6=0x";
+            while (t[i]) { b[i] = t[i]; i++; }
+            u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_A6), n); j = 0;
+            while (n[j] && i < 60) b[i++] = n[j++];
+            t = " vbr=0x"; j = 0; while (t[j]) b[i++] = t[j++];
+            u32_hex((uint32_t)m68k_get_reg(NULL, M68K_REG_VBR), n); j = 0;
+            while (n[j] && i < 60) b[i++] = n[j++];
+            b[i++] = '\n'; b[i] = '\0';
+            emu_print(b);
+            i = 0; t = "[m68k]   code@";
+            while (t[i]) { b[i] = t[i]; i++; }
+            static const char hx[] = "0123456789ABCDEF";
+            for (uint32_t k2 = 0; k2 < 16; k2++) {
+                uint8_t v2 = (pc + k2 < GUEST_RAM_SIZE) ? g_ram[pc + k2] : 0;
+                b[i++] = hx[v2 >> 4]; b[i++] = hx[v2 & 15];
+            }
+            b[i++] = '\n'; b[i] = '\0';
+            emu_print(b);
+            i = 0; t = "[m68k]   ring ";
+            while (t[i]) { b[i] = t[i]; i++; }
+            for (int k2 = 0; k2 < 8 && i < 120; k2++) {
+                uint32_t rp = g_m68k_pc_ring[(g_m68k_pc_ring_idx - 8 + k2) & (M68K_PC_RING_SZ - 1)];
+                u32_hex(rp, n); j = 0;
+                while (n[j] && i < 120) b[i++] = n[j++];
+                b[i++] = ' ';
+            }
             b[i++] = '\n'; b[i] = '\0';
             emu_print(b);
         }
@@ -2619,6 +2656,22 @@ void install_library_tables(void)
         g_ram[s + 0] = 0x4A; g_ram[s + 1] = 0xFC;
         g_ram[s + 2] = LIB_IRQ; g_ram[s + 3] = (uint8_t)lvl;
         guest_write_be32(0x60u + (uint32_t)lvl * 4u, s);
+    }
+
+    /* UAOS-366: populate every other exception/trap/user vector with an
+     * RTE stub.  Real Amiga ROMs point every vector somewhere; takeover
+     * demos (State of the Art) build a "swallow exception" VBR table whose
+     * stubs trampoline through the OLD vector contents — a zero slot jumps
+     * to PC=0.  An RTE handler pops the exception frame and resumes. */
+    {
+        const uint32_t RTE_STUB = 0x1EF078u;
+        g_ram[RTE_STUB + 0] = 0x4E; g_ram[RTE_STUB + 1] = 0x73;
+        for (int v = 2; v < 256; v++) {
+            uint32_t slot = (uint32_t)v * 4u;
+            if (v >= 25 && v <= 31) continue;          /* autovectors above */
+            if (guest_read_be32(slot) == 0)
+                guest_write_be32(slot, RTE_STUB);
+        }
     }
 
     /* UAOS-307 private subtask stubs: ILLEGAL+LIB_SUB+fn, then RTS. */
@@ -7933,11 +7986,21 @@ static void exec_SetFunction(void)
 static void exec_Supervisor(void)
 {
     /* Supervisor(userFunc=a5): run a5 in "supervisor mode".  The guest is
-     * always supervisor anyway, so just jump into the function — the
-     * caller's return address is still on the stack, so the function's
-     * RTS returns straight to the jsr site. */
+     * always supervisor anyway.  Real Exec enters the function as if by a
+     * JSR and the function returns via RTE — not RTS — popping a saved
+     * user SR and the continuation PC from an exception frame.  The
+     * caller's jsr return address is already on the stack; lay a 68020
+     * format-0 frame under it ([SR][PC][fmt=0]) so the function's RTE
+     * returns to the jsr site with the caller's SR. */
     uint32_t fn = m68k_get_reg(NULL, M68K_REG_A5);
-    if (fn && fn < GUEST_RAM_SIZE) {
+    uint32_t sp = m68k_get_reg(NULL, M68K_REG_SP);
+    if (fn && fn < GUEST_RAM_SIZE && sp >= 4 && sp + 4 <= GUEST_RAM_SIZE) {
+        uint32_t ret = guest_read_be32(sp);
+        sp -= 4;
+        guest_write_be16(sp + 0, (uint16_t)m68k_get_reg(NULL, M68K_REG_SR));
+        guest_write_be32(sp + 2, ret);
+        guest_write_be16(sp + 6, 0);          /* format-0 frame word */
+        m68k_set_reg(M68K_REG_SP, sp);
         g_m68k_last_cb_entry = fn;
         g_m68k_last_cb_data  = 0;
         g_m68k_last_cb_kind  = 4;   /* Supervisor */
@@ -9625,6 +9688,9 @@ static uint16_t irq_pending_bits(void)
 {
     extern uint16_t g_intreq;   /* chip_emu.c — requests, incl. unmasked */
     uint16_t intena = chip_emu_intena_shadow();
+    /* INTEN master (bit 14) gates every source — guests that poll INTREQ
+     * with the master off must not have the bits eaten (UAOS-366). */
+    if (!(intena & 0x4000u)) return 0;
     uint16_t pend = (uint16_t)(g_intreq & intena & 0x7FFFu);
     if (chip_emu_cia_b_pending() && (intena & 0x2000u)) pend |= 0x2000u;
     return pend;
@@ -9759,6 +9825,17 @@ void UAOS_M68k_DeliverInterrupts(void)
 {
     g_dlv_calls++;
     if (!g_ram) return;
+    /* UAOS-366: while a guest owns the chipset, ALL of INTREQ belongs to
+     * it — any exec-level poll (this task's own included) would ack the
+     * owner's pending bits into a window that can't consume them via the
+     * real autovector, starving the owner's ISRs. */
+    if (chip_emu_takeover_active()) return;
+    /* UAOS-366: a guest that installed its own VBR has taken over the
+     * hardware — interrupts reach it only through the real autovector
+     * path (its vector table).  The exec-level poll would ack VERTB/CIA
+     * sources with no exec handler before the CPU takes them, starving
+     * the guest's own ISRs. */
+    if (m68k_get_reg(NULL, M68K_REG_VBR) != 0) return;
 
     uint16_t pend = irq_pending_bits();
     if (pend) g_dlv_pend = pend;
@@ -9791,13 +9868,20 @@ uint32_t g_dlv_vec = 0;   /* UAOS-241 diag: real autovector deliveries */
 static void irq_vector_entry(int level)
 {
     g_dlv_vec++;
-    uint16_t pend = irq_pending_bits();
-    for (int n = 0; n < 15; n++) {
-        if ((pend & (1u << n)) && g_irq_bit_level[n] == level)
-            deliver_intvect_bit(n);
+    /* UAOS-366: during a hardware takeover only the owner's VBR vectors
+     * (reached directly by Musashi, never through this stub) may consume
+     * chipset interrupts.  A stub-vector context that lands here took an
+     * IRQ that belongs to the owner — swallow the exception and leave
+     * INTREQ pending for it. */
+    if (!chip_emu_takeover_active()) {
+        uint16_t pend = irq_pending_bits();
+        for (int n = 0; n < 15; n++) {
+            if ((pend & (1u << n)) && g_irq_bit_level[n] == level)
+                deliver_intvect_bit(n);
+        }
+        if (level == 2) deliver_cia_icr(0);
+        if (level == 6) deliver_cia_icr(1);
     }
-    if (level == 2) deliver_cia_icr(0);
-    if (level == 6) deliver_cia_icr(1);
 
     /* Emulated RTE: restore the interrupted SR/PC from the exception frame. */
     uint32_t sp = (uint32_t)m68k_get_reg(NULL, M68K_REG_SP);
@@ -10531,6 +10615,9 @@ uint32_t hunk_load(const uint8_t *bin, uint32_t bin_size)
             uint32_t bytes = words * 4;
             if (p + bytes > end) { emu_cprint("[hunk] CODE/DATA overflow\n"); return 0; }
             emu_memcpy(g_ram + g_hunk_base[cur], p, bytes);
+            if (type == HUNK_CODE)
+                emu_code_range_add(g_hunk_base[cur],
+                                   g_hunk_base[cur] + bytes);
             p += bytes;
 
         } else if (type == HUNK_BSS) {
