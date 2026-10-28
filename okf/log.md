@@ -2725,3 +2725,87 @@ Dump: cop1=0x50c00 points at m68k code (4e75/41f9/33fc opcodes); every control r
 - The transition wander stomped it to 0x50C00 AFTER the scene write (CPU @vpos158, stomp @vpos217) -> whole scene displays the code page -> black for the scene's full duration, recovers only when the sequencer advances. QEMU showed ~20s then 0x40fa2 next scene.
 - On real HW the same wander+stomp exists but must land BEFORE the scene's cop1lc write (benign). The residual is a phase race: our wandering copper reaches the stomp LATE (after the scene write) vs early on real HW — wander march rate through the filler/code WAITs likely differs (real HW marches faster through display-off lines, or our accidental-WAIT stalls are longer).
 - Files: chip_emu.c (frame_wrap cycle-driven boundary, COPEN gate, cop1w/copl diag rings).
+
+## UAOS-366 ~1:41 — wander guard implemented (2026-10-27)
+- Disassembled the demo's scene code: 0x50C28 = "install list" routine (DMACON=$7FD0/$87D0, MOVE.L A0,COP1LC, RTS — NO COPJMP1 strobe, rearm-driven only); 0x50C64 installs L3 vector $64 -> handler 0x502CE; the handler runs the scene job chain every 6th frame (CMPI.W #6,$50316) — cop1lc is written ONCE per scene, stable for the whole scene.
+- Root cause refined: the 0x368 park buffer is a deliberate SAFE-IDLE fill (`001e f078` = MOVEs to read-only $1E) — the demo relies on the CPU repointing it. On real HW the wander is bounded/benign; ours marches ~6KB into the 0x19C4 code table and the `MOVE COP1LCL,#0x0C00` stomp lands AFTER the scene's cop1lc write -> whole-scene black (write-once means no per-frame recovery).
+- FIX C (landed): wander guard — a run of >64 consecutive MOVEs to the same protected/read-only register (<$40) is the fill signature; g_cop_stalled parks the copper until the next frame_start_rearm. Prevents reaching code while leaving real lists (interleaved WAITs/varied regs, color writes >=$40) untouched.
+- Verification in QEMU in progress; VBox retest pending.
+
+## UAOS-366 — ~1:41 FIXED, dragon-screen repeat = guard regression (2026-10-28)
+- ~1:41 sequence now plays through clean in QEMU (wander guard works: full run had no 4E75 poison, cop cycles real lists). VBox confirmed "near perfect".
+- NEW artifact: dragon scene (cop1=0x3e516, bplcon0=0xc200 terrain scroll) showed a repeating band near the bottom. Cause = my wander guard FALSE-STALLED: the real list contains ~1019 consecutive `MOVE reg0` (`0000 xxxx`) padding — tripped the >64 same-reg-<0x40 threshold -> copper parked mid-list -> bottom lost per-line updates.
+- FIX: exclude reg 0 (BLTDDAT — a real register write, legitimate padding) from the fill-run test. The park signature `001e f078` (read-only INTREQR) still triggers the guard.
+- Rebuilt; verifying dragon scene + ~1:41 regression together.
+
+## UAOS-366 — regressions green after dragon fix (2026-10-28)
+- qemu_screen_test: 22/22 PASS; qemu_guesttask_test: PASS.
+- Dragon title card captures (dr_033/035) render correctly — clean bottom, no repeat band. Thin vertical stripe column at the left window edge remains — may be intended texture edge or residual; pending user's VBox compare.
+- Status: ~1:41 black FIXED (wander guard, reg-0-excluded for legit padding), frame boundary cycle-driven, COPEN gate, all prior scenes intact. Awaiting VBox retest.
+
+## UAOS-366 — audio fixes: double-advance, LED filter, clipping, AC97 link (2026-10-28)
+- Report: HDA on VBox = very low + crackly; AC97 = silent.
+- Crackle: chip_emu_audio_advance was driven TWICE — per-emulated-line in the scheduler (wrong unit: g_cycles_per_line ~454 m68k cycles passed as ~3.58MHz Paula clocks = ~2x too fast) AND per-48kHz-sample in the mixer -> ~2-3x DMA speed -> overruns. Now the mixer alone advances it, paced by the emulated m68k-cycle delta (/2 = color clocks) — synced to the guest's AUDx programming + reload IRQs.
+- Crackle (second cause): two Paula channels per side each scaled ±32512 then summed -> clamped every loud peak. Channel scale now /128 (headroom for 2ch).
+- "Low/dull": LED filter (in + 31*state)/32 was a ~240 Hz pole vs the Amiga's ~7 kHz -> treble dead. Now (in*7 + 3*state)/10 ~5.3 kHz. Default g_volume 50 -> 80.
+- AC97 silence: init never released the AC-link — added GLOB_CNT cold-reset assert/release + GLOB_STA codec-ready poll before codec writes.
+- Files: kernel/audio/audio.c, audio.h, ac97.c, kernel/chipset/chip_emu.c. VBox retest pending (QEMU has no audio device here).
+
+## UAOS-366 — audio fixes had no effect on VBox (2026-10-28)
+- User retest: "not really any change" — HDA still low+crackly, AC97 still silent. So the double-advance/filter/clip fixes weren't the root cause.
+- Next diagnostic: `C:audiotest` plays a 1 kHz sine through the same ring->backend->codec path, bypassing Paula emulation — isolates whether the fault is (a) output path (ring/backend/codec underrun/gain) vs (b) Paula emulation decoding wrong data.
+- Candidate causes remaining: (1) ring/backend underrun -> mostly-zeros+sparse audio = "low and crackly"; (2) Paula channel decode (pointer/per/attach) producing noise; (3) codec amp/gain structure.
+- `C:hdadump` dumps HDA widget state if backend is HDA.
+
+## UAOS-366 — HDA audiotest clean -> real bug = signed-sample decode (2026-10-28)
+- User ran C:audiotest on VBox/Intel-HDA: tone CLEAR -> output path (ring->HDA->codec) is healthy. So the low+crackly lives in the Paula->mixer decode.
+- ROOT CAUSE: audio_generate decoded `s = (uint8_t)chip_emu_audio_sample_8bit(ch) - 128` — but the helper returns the ALREADY-SIGNED int8 sample. Re-centering folded every sample to |v|-128 -> rectified, DC-offset, mangled waveform -> crackly + quiet. Fix: `s = sample_8bit * 256` direct.
+- Earlier mixer changes kept and still correct: single emulated-delta advance (no double), lighter LED filter, /128 channel headroom, g_volume 80.
+- AC97: GLOB_CNT link fix unverified (user tested HDA only) — ask for AC97 retest.
+- hdadump output (healthy): cad=0 afg=1, 4 output paths pin->dac (0a->02, 0b->04, 0c->03, 0f->05), fmt=0x11/0x4111, corb=1, sd=4.
+
+## UAOS-366 — HDA improved, dropouts remain; AC97 still silent (2026-10-28)
+- Retest: HDA now has recognizable samples (signed-decode fix worked) but "very choppy, dropping in and out". AC97 still silent. hdadump lpib=0x1000 -> stream IS advancing.
+- Dropouts = the emulated-cycle-delta advance I added froze Paula DMA whenever the guest task slept (WaitTOF-style blocks) -> held byte -> silence until it woke. On real HW channel DMA keeps running while the CPU idles -> the advance must be wall-rate. REVERTED to wall-rate AMIGA_DELTA16 advance (the scheduler double-advance is already gone, so this is now the single correct advance).
+- AC97: added kprint diagnostics to init — [AC97] no device / bad bars / codec (not) ready / streaming — to localize the silence from the serial log.
+- Kept: signed-decode, /128 headroom, ~5kHz LED filter, g_volume 80, single advance.
+
+## UAOS-366 — audio still unresolved; pacing hypothesis (2026-10-28)
+- VBox log supplied is HOST-side noise, not the guest serial log — need the [AC97] kernel prints from the guest serial port to localize AC97 silence.
+- HDA: audiotest CLEAN (path good), demo audio choppy/dropping -> the choppiness is plausibly the GUEST RUNNING ~60% in bursty 568-cycle slices: the demo's AUDx note programming clusters -> bursty music timing, matching the slowed video — a guest-pacing limit, not an audio-decode bug. Signed-decode + advance fixes are correct and kept.
+- NEXT: (a) guest serial [AC97] output; (b) consider raising takeover guest throughput (slice size/priority in exec_task.c) — fixes slowed video+audio together.
+
+## UAOS-366 — AC97 codec-id probe + HDA self-balancing ring (2026-10-28)
+- AC97 serial: "[AC97] device found / bars ok / codec NOT ready / streaming" — but the ready-poll read GLOB_STA bit0 (GSCI interrupt status, never sets) not the real codec-ready. Replaced with a codec VENDOR-ID read (regs 0x7C/0x7E): "[AC97] codec id=XXXX:XXXX" — 0xFFFF => AC-link truly down; real id => codec reachable, fault is in DMA/format.
+- HDA dropouts: production was a FIXED 480/tick; any mismatch between the PIT-rate production and the codec's real drain creeps the ring empty (silence) or full (dropped tail). Made audio_tick SELF-BALANCING: tops the ring up to AUDIO_RING_TARGET (8192 = ~170ms) each tick — production tracks actual consumption. audio_generate now takes n.
+- Kept: signed decode, wall-rate advance, /128 headroom, ~5kHz filter, vol 80.
+
+## UAOS-366 — AC97 codec alive; added Paula-state dump + civ probe (2026-10-28)
+- AC97 codec id=0x8384:0x7600 (SigmaTel) — AC-link UP, registers respond -> silence is DMA path or codec power, not init. Fixed: powerdown reg 0x26=0x0000 (DACs may default off), front-DAC rate now 0x2C (was surround 0x2E), BD ctl high-byte IOC/BUP bits. Added civ/sr/picb probe after DMA start -> shows if the bus-master engine actually moves.
+- HDA choppy: self-balancing ring didn't fix -> content (Paula channels) is intermittent, not ring level. Added per-channel audio state (alc/aptr/alen/alw/aper/avol/adat + adkcon) to chip_emu_dump_report -> `ramdump` during playback now shows whether channels are mid-block vs len=0/vol=0/stale -> the real dropout cause.
+
+## UAOS-366 — AC97 DMA runs but silent; readback probe added (2026-10-28)
+- Serial: codec id=0x8384:0x7600 (SigmaTel, alive); civ=0 sr=0 picb=0x800 — the bus-master engine IS fetching (picb advanced) -> init/DMA not the fault. So silence = mixer reg writes not landing OR output path muted.
+- Added: powerdown 0x26=0, front-DAC rate 0x2C (was 0x2E surround), BD ctl high-byte IOC/BUP, + readback probe "[AC97] rb mst= pcm= pwd=" to verify codec writes stick.
+- HDA choppy: ramdump now dumps Paula channels (alc/aptr/alen/alw/aper/avol/adat + adkcon) — need ramdump DURING choppy audio to see if channels are mid-block vs vol=0/len=0/stale.
+
+## UAOS-366 — ramdump showed Paula channels; smoothed-rate advance (2026-10-28)
+- Live channel state (ramdump now includes alc/aper/avol/alen/alw/adat + adkcon): all 4 channels active, avol=0x40/0x31, nonzero adat, alen=1 streaming blocks. intena=0xe024 -> NO AUDx IRQ bits -> demo does NOT use audio interrupts; it streams via DMA loop + CPU updates.
+- Conclusion: "dropping in and out" is the DMA pacing. Wall-rate advance outruns the ~60% guest's supply -> loops into unwritten mem -> gaps. Pure per-tick emulated delta freezes on guest sleeps -> DC holds.
+- NEW: smoothed emulated-rate advance — tracks the guest's actual progress during execution AND keeps the current loop playing through brief sleeps (s_advance_rate, EMA of m68k-cycles/2 per sample). Should give continuous audio at the demo's real tempo.
+- Also: audio fields moved early in ramdump report (640-byte buffer truncated them at llbsz before).
+
+## UAOS-366 — pacing reverted (was fine); audio dropouts = ring underrun (2026-10-28)
+- User confirmed playback pace was near-perfect -> the VBR-gated pacer WAS engaging (SOTA does install a VBR) -> my takeover-gate change was wrong AND starved the guest (beam-render eats the same cycle budget -> <7MHz -> black screen returned). REVERTED.
+- Audio now: correct pitch (wall-rate advance) but "dropping in and out". Channels have valid data (ramdump) + output path clean (audiotest) -> gaps = ring underrun: demo's heavy guest+beam work delays audio_tick -> ring drains to empty -> backend plays zeros for a stretch.
+- Raised AUDIO_RING_TARGET to 7/8 (~280ms) for underrun headroom. If still choppy, the dropout is in Paula channel content (len=0/vol=0 windows) not the path.
+
+## UAOS-366 — black screen recurred; wander guard tightened (2026-10-28)
+- Ramdump at blackscreen: cop1=0x50c00, pc=0x50c60, bplcon1/2/3+bplmod1 all 0x4e75 — the code-as-copper poison is BACK (same signature as the original ~1:41 stomp).
+- The >64-same-reg guard misses shorter/varied wander paths. The demo's park filler is specifically MOVE #$F078 to READ-ONLY INTREQR ($1E) — a write to a read-only reg is never a real list op. Added: stall on >=4 consecutive regoff==0x1E MOVEs -> catches the wander regardless of run length.
+- Audio dropouts persist (correct pitch). Ramdump showed 3/4 channels at adat=0 -> channels genuinely producing silence -> next: determine if that's real content (sparse notes) or DMA reading zeros (ptr/window issue).
+
+## UAOS-366 — wander guard tightened + audnz diagnostic (2026-10-28)
+- Wander guard now also stalls on >=4 consecutive regoff==0x1E (INTREQR, read-only) MOVEs — the demo's park filler signature — so shorter wander paths can't reach the code stomp. Should kill the recurring somersault black screen.
+- Added g_audio_nz_pct: % of mixer output samples that are nonzero, dumped as audnz= in ramdump. Splits the dropout fault: low => Paula channels produce silence (fetch/ptr bug); high => mixer is fine and the dropout is downstream.
+- Reverted the takeover pacing gate (was starving guest -> black screen). Audio advance = wall-rate (correct pitch). Ring target 280ms.

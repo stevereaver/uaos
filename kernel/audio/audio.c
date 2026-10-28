@@ -36,7 +36,7 @@ static unsigned int g_ring_count = 0;
 
 /* Master output volume/mute — software gain applied in audio_ring_write,
  * plus the backend's codec-amp hook.  Default is full scale. */
-static int g_volume = 50;
+static int g_volume = 80;
 static int g_mute = 0;
 
 unsigned int audio_ring_free(void)
@@ -87,14 +87,19 @@ unsigned int audio_ring_read(int16_t *dst, unsigned int n)
 
 static int16_t g_led_state[AUDIO_CHANNELS];
 static uint32_t g_amiga_clock_frac = 0; /* 16.16 fractional accumulator */
+static uint32_t g_nz_count = 0, g_tot_count = 0;
+uint32_t g_audio_nz_pct = 0; /* % of output samples that were nonzero (dump) */
+static uint64_t g_last_audio_cycles = 0; /* last emulated cycle count */
 
 /* Currently selected host backend. */
 static AudioBackend *g_backend = NULL;
 
 int16_t audio_led_filter(int16_t in, int16_t *state)
 {
-    /* One-pole low-pass filter approximating the Amiga LED filter. */
-    *state = (int16_t)((in + (31 * *state)) / 32);
+    /* One-pole low-pass approximating the Amiga's ~7 kHz LED filter.
+     * The old (in + 31*state)/32 pole sat near 240 Hz and muffled all
+     * treble (UAOS-366 "low/dull" audio). */
+    *state = (int16_t)((in * 7 + (3 * *state)) / 10);
     return *state;
 }
 
@@ -209,11 +214,16 @@ const char *audio_backend_name(void)
     return g_backend ? g_backend->name : NULL;
 }
 
-/* Generate a batch of 48 kHz stereo samples into g_mix_buf. */
-static unsigned int audio_generate(void)
+/* Generate up to n frames of 48 kHz stereo samples into g_mix_buf
+ * (g_mix_buf holds SAMPLES_PER_TICK, so callers pass n <= that). */
+static unsigned int audio_generate(unsigned int n)
 {
-    for (int i = 0; i < SAMPLES_PER_TICK; i++) {
-        /* Advance Paula DMA by the integer Amiga cycles for this sample. */
+    for (unsigned int i = 0; i < n; i++) {
+        /* Advance Paula DMA at the fixed real Amiga-clock rate per output
+         * sample — correct sample pitch regardless of guest speed.  Pacing
+         * it off the emulated cycle counter made it chase the (too-fast)
+         * guest -> chipmunk pitch (UAOS-366).  The scheduler-side per-line
+         * advance is removed, so this is the only advance (no double). */
         g_amiga_clock_frac += AMIGA_DELTA16;
         uint32_t cycles = g_amiga_clock_frac >> 16;
         g_amiga_clock_frac &= 0xFFFFu;
@@ -221,14 +231,18 @@ static unsigned int audio_generate(void)
 
         int32_t mix_l = 0, mix_r = 0;
         for (int ch = 0; ch < AUDIO_CHANNELS; ch++) {
-            /* Paula samples are 8-bit unsigned; convert to signed 16-bit. */
-            int16_t s = (int16_t)(((int)(uint8_t)chip_emu_audio_sample_8bit(ch) - 128) * 256);
+            /* Paula samples are SIGNED 8-bit; chip_emu_audio_sample_8bit
+             * returns the value already signed — scale it, don't re-center
+             * (the old (uint8_t)ret-128 folded every sample to |v|-128 ->
+             * rectified, crackly, quiet — UAOS-366). */
+            int16_t s = (int16_t)chip_emu_audio_sample_8bit(ch) * 256;
             s = audio_led_filter(s, &g_led_state[ch]);
 
-            /* Apply channel volume (0-64). */
+            /* Apply channel volume (0-64), halved for two channels per
+             * side so the sum cannot clip (UAOS-366 crackle). */
             uint8_t vol = chip_emu_audio_volume(ch);
             if (vol) {
-                s = (int16_t)((int32_t)s * (int32_t)vol / 64);
+                s = (int16_t)((int32_t)s * (int32_t)vol / 128);
             } else {
                 s = 0;
             }
@@ -250,8 +264,14 @@ static unsigned int audio_generate(void)
 
         g_mix_buf[i * 2 + 0] = (int16_t)mix_l;
         g_mix_buf[i * 2 + 1] = (int16_t)mix_r;
+        g_nz_count += (mix_l || mix_r) ? 1u : 0u;
+        g_tot_count++;
+        if (g_tot_count >= AUDIO_SAMPLE_RATE) {
+            g_audio_nz_pct = (unsigned int)((g_nz_count * 100ull) / g_tot_count);
+            g_nz_count = 0; g_tot_count = 0;
+        }
     }
-    return SAMPLES_PER_TICK;
+    return n;
 }
 
 static int g_ring_solo = 0;
@@ -264,8 +284,19 @@ void audio_ring_solo(int on)
 void audio_tick(void)
 {
     if (!g_ring_solo) {
-        unsigned int produced = audio_generate();
-        audio_ring_write(g_mix_buf, produced);
+        /* Keep the ring ~half full — produce whatever the backend drained
+         * since the last tick instead of a fixed 480 frames.  Production
+         * now tracks the codec's real consumption, so tick jitter or a
+         * backend draining at a slightly different rate can't creep the
+         * ring to empty (silence) or full (dropped tail) — the source of
+         * the "dropping in and out" chop on HDA (UAOS-366). */
+        unsigned int guard = 0;
+        while (audio_ring_ready() < AUDIO_RING_TARGET &&
+               guard++ < (AUDIO_RING_SAMPLES / SAMPLES_PER_TICK)) {
+            unsigned int want = AUDIO_RING_TARGET - audio_ring_ready();
+            if (want > SAMPLES_PER_TICK) want = SAMPLES_PER_TICK;
+            audio_ring_write(g_mix_buf, audio_generate(want));
+        }
     }
 
     if (g_backend && g_backend->service) {

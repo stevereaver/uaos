@@ -58,6 +58,11 @@ int16_t audio_led_filter(int16_t in, int16_t *state);
  * ------------------------------------------------------------------------- */
 
 #define AUDIO_RING_SAMPLES 16384
+/* Fill level the tick top-up maintains.  Under the demo's heavy
+ * guest+beam-render load the PIT/audio_tick can be delayed, draining the
+ * ring to empty -> the backend plays a stretch of zeros -> "dropping in
+ * and out".  Keep a large margin (~280 ms) of headroom (UAOS-366). */
+#define AUDIO_RING_TARGET ((AUDIO_RING_SAMPLES * 7) / 8)
 
 /* Return the number of free stereo frames the mixer can write. */
 unsigned int audio_ring_free(void);
@@ -110,6 +115,10 @@ void audio_adjust_volume(int delta_pct);
 /* Advance Paula audio DMA by the given number of Amiga master-clock cycles.
  * Defined in the chipset emulator. */
 extern void chip_emu_audio_advance(uint32_t amiga_cycles);
+
+/* Cumulative emulated M68k cycle counter — used to pace Paula DMA at the
+ * guest's own rate so audio stays in sync with register programming. */
+extern uint64_t chip_emu_m68k_cycles(void);
 
 /* Return the current 8-bit signed sample for the given Paula channel. */
 extern int8_t chip_emu_audio_sample_8bit(int ch);

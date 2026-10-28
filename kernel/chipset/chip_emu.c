@@ -2168,10 +2168,9 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
             int copper_slots = dma_slot_count(DMA_CHAN_COPPER);
             dma_slot_alloc_blitter();
 
-            /* Audio DMA: schedule sample fetches based on audio periods. */
-            if (g_dmacon & 0x0200u) {
-                chip_emu_audio_advance(g_cycles_per_line);
-            }
+            /* Audio DMA advance is owned by the 100 Hz mixer tick, paced
+             * by the emulated cycle delta — advancing here too produced a
+             * second, wrong-unit advance (~2x speed -> crackle, UAOS-366). */
 
             /* Mark remaining slots as CPU slots and count stolen cycles. */
             int cpu_slots = 0;
@@ -3293,15 +3292,23 @@ static int copper_next_fetch(int h)
     return h < COPPER_LINE_END ? h : COPPER_LINE_END;
 }
 
+/* Wander guard (UAOS-366 ~1:41): the demo parks the copper in a
+ * `001e f078` fill region during list rebuilds and relies on the CPU
+ * repointing it within the frame.  On real HW the wander is bounded; in
+ * our emu it marched ~6KB through the fill into the `0x19C4` code table
+ * and a stray `MOVE COP1LCL,#0x0C00` self-poisoned COP1LC -> black.
+ * A run of >64 consecutive MOVEs to the *same* protected/read-only
+ * register is a fill signature — real lists interleave WAITs and varied
+ * registers — so park the copper until the next frame rearm. */
+int g_cop_stalled = 0;
+static int s_fill_reg = -1, s_fill_n = 0, s_rofill_n = 0;
+
 static int copper_run_line(int vpos, int *ch, int h_end)
 {
     uint32_t pc = g_copper_pc;
-    if (!pc) return 0;
+    if (!pc || g_cop_stalled) return 0;
     /* COPEN (DMACON bit 7): the copper DMA channel off means no bus
-     * access — the copper simply halts wherever it is.  Demos park it
-     * this way while rebuilding lists; without the gate our copper kept
-     * marching through the 0x368 filler park into code, hit a stray
-     * `MOVE COP1LCL,#0x0C00` and self-poisoned (UAOS-366 ~1:41 black). */
+     * access — the copper simply halts wherever it is. */
     if (!(g_dmacon & 0x0080u)) return 0;
     int h = *ch;
     int ret = 0;
@@ -3330,6 +3337,31 @@ static int copper_run_line(int vpos, int *ch, int h_end)
             int copper_danger = g_copcon & 2u;
             pc += 4;
             h = f2 + 1;
+            /* Fill-run detection: identical protected-target MOVEs mean
+             * the copper is marching a park region, not a real list.
+             * Reg 0 (BLTDDAT) is excluded — demos legitimately pad lists
+             * with long `0000 xxxx` runs (dragon-scene repeat bug). */
+            if (regoff && regoff < 0x40u) {
+                s_fill_n = (regoff == (uint32_t)s_fill_reg) ? s_fill_n + 1 : 1;
+                s_fill_reg = (int)regoff;
+                if (s_fill_n > 64) {
+                    g_cop_stalled = 1;
+                    g_copper_pc = pc; *ch = h;
+                    return 0;
+                }
+            } else { s_fill_reg = -1; s_fill_n = 0; }
+            /* Park filler is specifically MOVE #$F078 to read-only INTREQR
+             * ($1E) — a write to a read-only reg is never a real list op,
+             * so a short run of them is unambiguous filler -> stall right
+             * away instead of needing a 64-move run (UAOS-366 blackscreen
+             * recurring via shorter wander paths). */
+            if (regoff == 0x1Eu) {
+                if (++s_rofill_n >= 4) {
+                    g_cop_stalled = 1;
+                    g_copper_pc = pc; *ch = h;
+                    return 0;
+                }
+            } else s_rofill_n = 0;
             if (regoff < 0x040u || regoff >= 0x080u || copper_danger) {
                 g_cop_jumped = 0;
                 s_copper_write = 1; s_copper_iaddr = pc - 4;
@@ -3939,6 +3971,7 @@ void chip_emu_render_frame(void)
 static void frame_start_rearm(void)
 {
     if (g_cop1lc) g_copper_pc = g_cop1lc;
+    g_cop_stalled = 0; /* release the wander guard each frame rearm */
     for (int spr = 0; spr < SPRITE_COUNT; spr++) g_spr_dma_ptr[spr] = g_spr_pt[spr];
 }
 
@@ -5522,6 +5555,18 @@ void chip_emu_dump_report(char *buf, uint32_t buflen)
     dumpx(buf, buflen, &pos, "bplcon3=", g_bplcon3);
     dumpx(buf, buflen, &pos, "cop1=", g_cop1lc);
     dumpx(buf, buflen, &pos, "cop2=", g_cop2lc);
+    /* Paula channel state early — the 640-byte report buffer fills up
+     * before the tail fields, so put audio first (UAOS-366). */
+    { extern uint32_t g_audio_nz_pct; dumpx(buf, buflen, &pos, "audnz=", g_audio_nz_pct); }
+    dumpx(buf, buflen, &pos, "adkcon=", g_adkcon);
+    for (int i = 0; i < AUDIO_CHANNELS; i++) {
+        dumpx(buf, buflen, &pos, "alc",  g_audio[i].lc);
+        dumpx(buf, buflen, &pos, "aper", g_audio[i].per);
+        dumpx(buf, buflen, &pos, "avol", g_audio[i].vol);
+        dumpx(buf, buflen, &pos, "alen", g_audio[i].len);
+        dumpx(buf, buflen, &pos, "alw",  g_audio[i].len_work);
+        dumpx(buf, buflen, &pos, "adat", g_audio[i].dat);
+    }
     dumpx(buf, buflen, &pos, "colw=", g_colw_count);
     dumpx(buf, buflen, &pos, "colwl=", g_colw_last);
     dumpx(buf, buflen, &pos, "colwd=", g_colw_dropped);

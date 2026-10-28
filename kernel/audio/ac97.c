@@ -121,8 +121,10 @@ static void ac97_build_descriptors(void)
         uint8_t   *ctl   = (uint8_t   *)(g_ac97_desc + i * 8 + 6);
         *addr = g_buf_phys + i * AC97_HALF_BYTES;
         *len  = (uint16_t)AC97_HALF_SAMPLES;
-        /* IOC on every descriptor, LVI on the last one. */
-        *ctl = 0x01u | ((i == AC97_DESC_COUNT - 1) ? 0x80u : 0x00u);
+        /* AC97 BD control is the HIGH byte of the 16-bit field (offset 7):
+         * bit7 of that byte = IOC (bit15), bit6 = BUP (bit14). */
+        g_ac97_desc[i * 8 + 7] = 0x80u | ((i == AC97_DESC_COUNT - 1) ? 0x40u : 0x00u);
+        *ctl = 0;
     }
 }
 
@@ -151,7 +153,8 @@ static void ac97_fill_half(int half)
 static int ac97_backend_init(void)
 {
     uint8_t bus, dev, fn;
-    if (!ac97_find_pci(&bus, &dev, &fn)) return 0;
+    if (!ac97_find_pci(&bus, &dev, &fn)) { kprint("[AC97] no 0401 device\n"); return 0; }
+    kprint("[AC97] device found\n");
 
     /* Enable I/O space and bus mastering. */
     uint32_t cmd = pci_read32(bus, dev, fn, 4);
@@ -160,18 +163,50 @@ static int ac97_backend_init(void)
 
     g_namba  = (uint16_t)(pci_read32(bus, dev, fn, 0x10) & 0xFFFEu);
     g_nabmba = (uint16_t)(pci_read32(bus, dev, fn, 0x14) & 0xFFFEu);
-    if (g_namba == 0 || g_nabmba == 0) return 0;
+    if (g_namba == 0 || g_nabmba == 0) { kprint("[AC97] bad BARs\n"); return 0; }
+    kprint("[AC97] bars ok, link reset\n");
+
+    /* Bring the AC-link out of cold reset via GLOB_CNT — without this the
+     * codec register writes land on a dead link and nothing plays
+     * (UAOS-366: AC97 silent).  NABMBAR+0x2C = GLOB_CNT, +0x30 = GLOB_STA. */
+    outl(g_nabmba + 0x2C, 0x00000000u);          /* assert cold reset */
+    for (volatile int i = 0; i < 20000; i++) {}
+    outl(g_nabmba + 0x2C, 0x00000002u);          /* release the link */
+    for (volatile int i = 0; i < 20000; i++) {}
+    /* Codec presence check: vendor ID at codec regs 0x7C/0x7E.  A real
+     * codec returns a non-0/non-FFFF id; 0xFFFF means the AC-link never
+     * came up (the earlier GLOB_STA bit-0 poll is GSCI, not ready). */
+    uint16_t vid0 = inw(g_namba + 0x7C);
+    uint16_t vid1 = inw(g_namba + 0x7E);
+    kprint("[AC97] codec id=");
+    kprinthex(vid0); kprint(":"); kprinthex(vid1); kprint("\n");
 
     /* Cold reset the AC97 codec. */
     ac97_codec_write(0x00, 0xFFFFu);
     for (volatile int i = 0; i < 100000; i++) {}
 
+    /* Power everything up: powerdown control/stat (0x26) = all sections on
+     * — many codecs default the front DAC/analog to powered-down, which is
+     * silent even with volumes unmuted. */
+    ac97_codec_write(0x26, 0x0000u);
+
     /* Set master and PCM out volumes to 0 dB (unmuted). */
     ac97_codec_write(0x02, 0x0000u);
     ac97_codec_write(0x18, 0x0000u);
 
-    /* Set sample rate to 48 kHz (default). */
-    ac97_codec_write(0x2E, 48000u);
+    /* Set the FRONT DAC rate (0x2C) — 0x2E is surround, not the stereo
+     * output path (UAOS-366). */
+    ac97_codec_write(0x2C, 48000u);
+
+    /* Readback — if these return the defaults/0xFFFF the codec writes are
+     * not landing (I/O path wrong), which is the silence cause. */
+    kprint("[AC97] rb mst=");
+    kprinthex((uint32_t)inw(g_namba + 0x02));
+    kprint(" pcm=");
+    kprinthex((uint32_t)inw(g_namba + 0x18));
+    kprint(" pwd=");
+    kprinthex((uint32_t)inw(g_namba + 0x26));
+    kprint("\n");
 
     g_buf_phys  = host_phys(g_ac97_buf);
     g_desc_phys = host_phys(g_ac97_desc);
@@ -193,8 +228,20 @@ static int ac97_backend_init(void)
     /* Start DMA. */
     outb(g_nabmba + 0x1B, 0x01u);
 
+    /* Probe whether the engine actually moves: CIV (0x14) is the current
+     * index, SR (0x16) reports DCH/halted + FIFO status. */
+    for (volatile int i = 0; i < 50000; i++) {}
+    kprint("[AC97] civ=");
+    kprinthex((uint32_t)inb(g_nabmba + 0x14));
+    kprint(" sr=");
+    kprinthex((uint32_t)inw(g_nabmba + 0x16));
+    kprint(" picb=");
+    kprinthex((uint32_t)inw(g_nabmba + 0x18));
+    kprint("\n");
+
     g_ac97_last_civ = -1;
     g_ac97_ready = 1;
+    kprint("[AC97] streaming\n");
     return 1;
 }
 
