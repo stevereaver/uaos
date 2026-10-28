@@ -588,9 +588,14 @@ unsigned int m68k_read_memory_32(unsigned int addr)
  * primitive. */
 #define GUEST_WRITE_BARRIER() __asm__ volatile("mfence" ::: "memory")
 
+/* Guest m68k PC of the instruction performing a chip-window write —
+ * read by the COP1LC write trace in chip_emu.c (UAOS-366). */
+uint32_t g_m68k_chipwr_pc;
+
 void m68k_write_memory_8(unsigned int addr, unsigned int val)
 {
     if (is_chip_window(addr)) {
+        g_m68k_chipwr_pc = m68k_get_reg(NULL, M68K_REG_PC);
         chip_emu_write(addr - CHIP_WINDOW_START, val, 1);
         GUEST_WRITE_BARRIER();
         return;
@@ -605,6 +610,7 @@ void m68k_write_memory_8(unsigned int addr, unsigned int val)
 void m68k_write_memory_16(unsigned int addr, unsigned int val)
 {
     if (is_chip_window(addr) && addr + 1 <= CHIP_WINDOW_END) {
+        g_m68k_chipwr_pc = m68k_get_reg(NULL, M68K_REG_PC);
         chip_emu_write(addr - CHIP_WINDOW_START, val, 2);
         GUEST_WRITE_BARRIER();
         return;
@@ -644,6 +650,7 @@ void UAOS_Emu_SetTarCompat(const char *name)
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
 {
     if (is_chip_window(addr) && addr + 3 <= CHIP_WINDOW_END) {
+        g_m68k_chipwr_pc = m68k_get_reg(NULL, M68K_REG_PC);
         chip_emu_write(addr - CHIP_WINDOW_START, val, 4);
         GUEST_WRITE_BARRIER();
         return;

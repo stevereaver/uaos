@@ -709,6 +709,25 @@ static int   g_takeover_display = 0;
 static void *g_takeover_owner   = NULL;
 static int   g_sched_running    = 0;  /* inside chip_emu_run_to_cycle */
 
+/* COP1LC write trace (UAOS-366, ~1:41 black scene): COP1LC was found
+ * pointing at m68k code 0x50 bytes before the real park list.  Ring of
+ * the last writers — [0]=value, [1]=meta (bits1:0 src, 5:4 width,
+ * 16:8 vpos, 29:20 regoff), [2]=copper insn addr or guest m68k PC,
+ * [3]=g_cop1lc after the write.  Read via the GDB probe. */
+#define COP1W_RING 32
+uint32_t g_cop1w_ring[COP1W_RING][4];
+int      g_cop1w_idx;
+static int      s_copper_write;
+static uint32_t s_copper_iaddr;
+extern uint32_t g_m68k_chipwr_pc;
+
+/* Per-line copper PC history (same bug): shows which list the copper ran
+ * off before reaching code — [0]=vpos, [1]=pc at line start, [2]=h start. */
+#define COPL_RING 1024
+uint32_t g_copl_ring[COPL_RING][3];
+int      g_copl_idx;
+int      g_copl_freeze;   /* set on the first copper-write of COP1LCL=#0x0C00 */
+
 /* Likewise for Paula audio: the mixer fetches DMA words in whatever task
  * context is current, so capture the RAM window bound when the guest last
  * programmed a channel's location registers. */
@@ -979,6 +998,7 @@ static int      g_cev_n;
 static uint32_t g_pal_start[AGA_PALETTE_SIZE];
 static void sprite_dma_line(int y);
 static void frame_start_rearm(void);
+static void frame_wrap(void);
 static uint32_t chip_emu_read_impl(uint32_t offset, int width_bytes);
 
 struct CIA_State;
@@ -1015,6 +1035,22 @@ void chip_emu_serial_poll(void)
         if (lsr & 0x08u) g_paula_serial.framing = 1;   /* framing error */
         if (lsr & 0x02u) g_paula_serial.overrun = 1;   /* receiver overrun */
     }
+}
+
+static void cop1w_trace(uint32_t regoff, uint32_t value, int width)
+{
+    int v, h;
+    uint32_t *e = g_cop1w_ring[g_cop1w_idx % COP1W_RING];
+    beam_position_from_cycles(beam_cycles_now(), &v, &h);
+    e[0] = value;
+    e[1] = (uint32_t)(s_copper_write ? 1 : 0) | ((uint32_t)width << 4) |
+           ((uint32_t)(v & 0x1FF) << 8) | ((regoff & 0x3FFu) << 20);
+    e[2] = s_copper_write ? s_copper_iaddr : g_m68k_chipwr_pc;
+    e[3] = g_cop1lc;
+    g_cop1w_idx++;
+    if (s_copper_write && regoff == REG_COP1LC + 2 &&
+        (value & 0xFFFFu) == 0x0C00u)
+        g_copl_freeze = 1;
 }
 
 void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
@@ -1179,8 +1215,8 @@ void chip_emu_write(uint32_t offset, uint32_t value, int width_bytes)
         case REG_INTREQ: g_intreq = update_setclr(g_intreq, (uint16_t)value); chip_emu_update_irq(); break;
         case REG_ADKCON: g_adkcon = update_setclr(g_adkcon, (uint16_t)value); break;
 
-        case REG_COP1LC:     g_cop1lc = (width_bytes >= 4) ? value : ((g_cop1lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); g_display_ram = g_ram; break;
-        case REG_COP1LC + 2: g_cop1lc = (g_cop1lc & 0xFFFF0000u) | (value & 0xFFFFu); g_display_ram = g_ram; break;
+        case REG_COP1LC:     g_cop1lc = (width_bytes >= 4) ? value : ((g_cop1lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); g_display_ram = g_ram; cop1w_trace(regoff, value, width_bytes); break;
+        case REG_COP1LC + 2: g_cop1lc = (g_cop1lc & 0xFFFF0000u) | (value & 0xFFFFu); g_display_ram = g_ram; cop1w_trace(regoff, value, width_bytes); break;
         case REG_COP2LC:     g_cop2lc = (width_bytes >= 4) ? value : ((g_cop2lc & 0x0000FFFFu) | ((value & 0xFFFFu) << 16)); break;
         case REG_COP2LC + 2: g_cop2lc = (g_cop2lc & 0xFFFF0000u) | (value & 0xFFFFu); break;
         /* Strobes: the copper PC reloads from COPxLC immediately — from a
@@ -2075,8 +2111,14 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
      * frames) advances every line exactly once. */
     int lines = (g_chip_mode == CHIP_MODE_NTSC) ? NTSC_LINES_PER_FRAME : PAL_LINES_PER_FRAME;
     if (g_cycles_per_line != 0) {
-        uint64_t start_line = (g_last_scheduled_cycle - g_cycles_at_frame_start) / g_cycles_per_line;
-        uint64_t end_line   = (target_cycles - g_cycles_at_frame_start) / g_cycles_per_line;
+        /* Clamp: the frame base may sit ahead of the scheduler/cycle
+         * counters (it is set from an in-slice estimate at vblank) —
+         * subtracting then would underflow to ~2^64 and the wrap check
+         * below would fire every iteration (UAOS-366). */
+        uint64_t start_line = (g_last_scheduled_cycle > g_cycles_at_frame_start)
+            ? (g_last_scheduled_cycle - g_cycles_at_frame_start) / g_cycles_per_line : 0;
+        uint64_t end_line   = (target_cycles > g_cycles_at_frame_start)
+            ? (target_cycles - g_cycles_at_frame_start) / g_cycles_per_line : 0;
         /* Each line's side effects (copper, sprite/BPL pointer advance,
          * audio, stolen-cycle accounting) must run exactly once — the beam
          * is now also synced on every custom-register write mid-line, so
@@ -2087,6 +2129,26 @@ void chip_emu_run_to_cycle(uint64_t target_cycles)
         static int64_t s_last_proc_line = -1;
         if (end_line <= (uint64_t)s_last_proc_line) s_last_proc_line = -1;
         for (uint64_t line = start_line; line <= end_line; line++) {
+            /* Cycle-driven frame wrap (UAOS-366): during takeover the real
+             * boundary is the beam wrap at `lines` — NOT the host vblank
+             * tick, which fires whenever the wall clock says so and was
+             * re-arming the copper mid-frame onto the 0x368 filler park —
+             * it then wandered into code and self-poisoned COP1LC (~1:41
+             * black screen). */
+            if (g_takeover_display && line >= (uint64_t)lines) {
+                frame_wrap();
+                /* Renumber cleanly against the advanced frame base
+                 * instead of subtracting `lines` — cpf may have changed
+                 * by a line (LACE) and the loop must not see stale
+                 * bounds. */
+                lines = (g_chip_mode == CHIP_MODE_NTSC) ? NTSC_LINES_PER_FRAME
+                                                        : PAL_LINES_PER_FRAME;
+                end_line = (target_cycles > g_cycles_at_frame_start)
+                    ? (target_cycles - g_cycles_at_frame_start) / g_cycles_per_line : 0;
+                s_last_proc_line = -1;
+                line = (uint64_t)-1; /* for-update ++ -> 0 = new frame's line 0 */
+                continue;
+            }
             if (s_last_proc_line >= 0 && line <= (uint64_t)s_last_proc_line) continue;
             s_last_proc_line = (int64_t)line;
             int y = (int)(line % (uint64_t)lines);
@@ -2239,8 +2301,46 @@ void chip_emu_cpu_chipram_access(uint32_t addr, int is_write)
     chip_emu_run_to_cycle(g_m68k_cycles);
 }
 
+/* The frame-boundary work shared by the wall-tick path and the
+ * cycle-driven wrap: counters, interlace toggle, copper/sprite rearm and
+ * the VERTB request.  The frame base advances by exactly one frame so
+ * successive boundaries stay on a fixed grid (no drift). */
+static void frame_wrap(void)
+{
+    g_vblank_count++;
+    g_frame_counter++;
+    /* Toggle interlace field every VBlank when LACE is enabled. */
+    if (g_bplcon0 & 0x0004u) {
+        g_interlace_field ^= 1;
+    } else {
+        g_interlace_field = 0;
+    }
+    /* Recompute color-clock parameters after field change. */
+    update_color_clock_params();
+    g_cycles_at_frame_start += g_cycles_per_frame;
+    /* Real hardware re-latches COP1LC and the sprite DMA pointers at
+     * VBlank — the copper restarts its list every frame (this is what
+     * reloads BPLxPT, palette and mid-frame effects each frame). */
+    frame_start_rearm();
+    /* Set VBlank interrupt request (INTREQ bit 5). */
+    g_intreq |= 0x0020u;
+    /* At VBlank, beam is at the top of the display. */
+    g_vposr = 0;
+    g_vhposr = 0;
+    chip_emu_update_irq();
+}
+
 void chip_emu_vblank(void)
 {
+    /* During hardware takeover the frame boundary belongs to the emulated
+     * beam: the wrap fires inside the scheduler when the guest completes
+     * a full frame of cycles, so the copper rearm always lands at a true
+     * frame end.  The host tick only drains the scheduler — if the frame
+     * is not due yet, nothing happens (UAOS-366). */
+    if (g_takeover_display && g_cycles_per_frame) {
+        chip_emu_run_to_cycle(chip_emu_m68k_cycles());
+        return;
+    }
     g_vblank_count++;
     g_frame_counter++;
     /* Toggle interlace field every VBlank when LACE is enabled. */
@@ -3197,8 +3297,18 @@ static int copper_run_line(int vpos, int *ch, int h_end)
 {
     uint32_t pc = g_copper_pc;
     if (!pc) return 0;
+    /* COPEN (DMACON bit 7): the copper DMA channel off means no bus
+     * access — the copper simply halts wherever it is.  Demos park it
+     * this way while rebuilding lists; without the gate our copper kept
+     * marching through the 0x368 filler park into code, hit a stray
+     * `MOVE COP1LCL,#0x0C00` and self-poisoned (UAOS-366 ~1:41 black). */
+    if (!(g_dmacon & 0x0080u)) return 0;
     int h = *ch;
     int ret = 0;
+    if (!g_copl_freeze) {
+        uint32_t *le = g_copl_ring[g_copl_idx++ % COPL_RING];
+        le[0] = (uint32_t)vpos; le[1] = pc; le[2] = (uint32_t)h;
+    }
 
     for (int i = 0; i < COPPER_MOVE_LIMIT && h < h_end; i++) {
         if (pc + 4 >= GUEST_RAM_SIZE) break;
@@ -3222,7 +3332,9 @@ static int copper_run_line(int vpos, int *ch, int h_end)
             h = f2 + 1;
             if (regoff < 0x040u || regoff >= 0x080u || copper_danger) {
                 g_cop_jumped = 0;
+                s_copper_write = 1; s_copper_iaddr = pc - 4;
                 chip_emu_write(AGA_REG_BASE_OFF + regoff, w2, 2);
+                s_copper_write = 0;
                 if (g_cop_jumped) { pc = g_copper_pc; g_cop_jumped = 0; }
                 if (regoff >= REG_COLOR00 && regoff < REG_COLOR00 + 0x40u &&
                     g_cev_n < CEV_MAX) {
